@@ -49,3 +49,21 @@ CLAUDE.md
 ADDENDUM_*.md
 QA_*.md
 ELv2_BUILD_*.md
+QUESTIONS.md
+
+# Data files
+*.xlsx
+*.xls
+*.csv
+
+# Backup files
+*.bak
+*.tmp
+*.sqlite
+
+# Certificates and keys
+*.pem
+*.key
+*.cert
+*.p12
+*.pfx
