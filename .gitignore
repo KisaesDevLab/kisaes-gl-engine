@@ -41,6 +41,7 @@ playwright-report/
 
 # Claude Code
 .claude/
+CLAUDE.md
 
 # Build plans and internal docs (keep local only)
 *_PLAN.md
