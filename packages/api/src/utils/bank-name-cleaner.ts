@@ -58,7 +58,6 @@ const MERCHANT_MAP: Record<string, string> = {
   'xfinity': 'Xfinity',
   'spectrum': 'Spectrum',
   'intuit': 'Intuit',
-  'quickbooks': 'QuickBooks',
   'fubo': 'Fubo TV',
   'appsumo': 'AppSumo',
   'appsumo.com': 'AppSumo',
