@@ -1,0 +1,73 @@
+import { Router } from 'express';
+import { createInvoiceSchema, recordPaymentSchema, voidTransactionSchema, transactionFiltersSchema } from '@kis-books/shared';
+import { authenticate } from '../middleware/auth.js';
+import { validate } from '../middleware/validate.js';
+import * as invoiceService from '../services/invoice.service.js';
+import * as ledger from '../services/ledger.service.js';
+import * as pdfService from '../services/pdf.service.js';
+import * as emailService from '../services/email.service.js';
+
+export const invoicesRouter = Router();
+invoicesRouter.use(authenticate);
+
+invoicesRouter.get('/', async (req, res) => {
+  const filters = transactionFiltersSchema.parse(req.query);
+  const result = await ledger.listTransactions(req.tenantId, { ...filters, txnType: 'invoice' });
+  res.json(result);
+});
+
+invoicesRouter.post('/', validate(createInvoiceSchema), async (req, res) => {
+  const invoice = await invoiceService.createInvoice(req.tenantId, req.body, req.userId);
+  res.status(201).json({ invoice });
+});
+
+invoicesRouter.get('/:id', async (req, res) => {
+  const invoice = await ledger.getTransaction(req.tenantId, req.params['id']!);
+  res.json({ invoice });
+});
+
+invoicesRouter.put('/:id', validate(createInvoiceSchema), async (req, res) => {
+  const invoice = await invoiceService.updateInvoice(req.tenantId, req.params['id']!, req.body, req.userId);
+  res.json({ invoice });
+});
+
+invoicesRouter.post('/:id/mark-sent', async (req, res) => {
+  await invoiceService.markAsSent(req.tenantId, req.params['id']!);
+  const invoice = await ledger.getTransaction(req.tenantId, req.params['id']!);
+  res.json({ invoice });
+});
+
+invoicesRouter.post('/:id/send', async (req, res) => {
+  await invoiceService.sendInvoice(req.tenantId, req.params['id']!, req.userId);
+  const invoice = await ledger.getTransaction(req.tenantId, req.params['id']!);
+  res.json({ invoice });
+});
+
+invoicesRouter.post('/:id/payment', validate(recordPaymentSchema), async (req, res) => {
+  const payment = await invoiceService.recordPayment(req.tenantId, req.params['id']!, req.body, req.userId);
+  res.status(201).json({ payment });
+});
+
+invoicesRouter.post('/:id/void', validate(voidTransactionSchema), async (req, res) => {
+  await invoiceService.voidInvoice(req.tenantId, req.params['id']!, req.body.reason, req.userId);
+  const invoice = await ledger.getTransaction(req.tenantId, req.params['id']!);
+  res.json({ invoice });
+});
+
+invoicesRouter.get('/:id/pdf', async (req, res) => {
+  const pdf = await pdfService.generateInvoicePdf(req.tenantId, req.params['id']!);
+  const contentType = pdf[0] === 0x3c ? 'text/html' : 'application/pdf'; // '<' = HTML fallback
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Disposition', `inline; filename="invoice-${req.params['id']}.pdf"`);
+  res.send(pdf);
+});
+
+invoicesRouter.post('/:id/remind', async (req, res) => {
+  await emailService.sendPaymentReminder(req.tenantId, req.params['id']!);
+  res.json({ message: 'Reminder sent' });
+});
+
+invoicesRouter.post('/:id/duplicate', async (req, res) => {
+  const invoice = await invoiceService.duplicateInvoice(req.tenantId, req.params['id']!, req.userId);
+  res.status(201).json({ invoice });
+});

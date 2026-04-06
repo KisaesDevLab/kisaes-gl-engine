@@ -1,0 +1,55 @@
+import { z } from 'zod';
+
+export const aiConfigUpdateSchema = z.object({
+  isEnabled: z.boolean().optional(),
+  categorizationProvider: z.string().nullable().optional(),
+  categorizationModel: z.string().nullable().optional(),
+  ocrProvider: z.string().nullable().optional(),
+  ocrModel: z.string().nullable().optional(),
+  documentClassificationProvider: z.string().nullable().optional(),
+  documentClassificationModel: z.string().nullable().optional(),
+  fallbackChain: z.array(z.string()).optional(),
+  anthropicApiKey: z.string().optional(),
+  openaiApiKey: z.string().optional(),
+  geminiApiKey: z.string().optional(),
+  ollamaBaseUrl: z.string().optional(),
+  glmOcrApiKey: z.string().optional(),
+  glmOcrBaseUrl: z.string().optional(),
+  autoCategorizeOnImport: z.boolean().optional(),
+  autoOcrOnUpload: z.boolean().optional(),
+  categorizationConfidenceThreshold: z.number().min(0).max(1).optional(),
+  maxConcurrentJobs: z.number().int().min(1).max(20).optional(),
+  trackUsage: z.boolean().optional(),
+  monthlyBudgetLimit: z.number().nullable().optional(),
+});
+
+export const aiCategorizeSchema = z.object({
+  feedItemId: z.string().uuid(),
+});
+
+export const aiBatchCategorizeSchema = z.object({
+  feedItemIds: z.array(z.string().uuid()).min(1).max(100),
+});
+
+export const aiOcrSchema = z.object({
+  attachmentId: z.string().uuid(),
+});
+
+export const aiClassifySchema = z.object({
+  attachmentId: z.string().uuid(),
+});
+
+export const aiPromptTemplateSchema = z.object({
+  taskType: z.string(),
+  provider: z.string().nullable().optional(),
+  systemPrompt: z.string().min(1),
+  userPromptTemplate: z.string().min(1),
+  outputSchema: z.any().optional(),
+  notes: z.string().optional(),
+});
+
+export const aiJobAcceptSchema = z.object({
+  accepted: z.boolean(),
+  modified: z.boolean().optional(),
+  overrideData: z.any().optional(),
+});

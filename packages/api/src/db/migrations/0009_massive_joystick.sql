@@ -1,0 +1,1 @@
+ALTER TABLE "companies" ADD COLUMN "category_filter_mode" varchar(10) DEFAULT 'by_type';

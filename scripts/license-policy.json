@@ -1,0 +1,98 @@
+{
+  "_comment": "Machine-readable license policy for vibe-tb (Elastic License 2.0).",
+  "_updated": "2026-04-05",
+
+  "projectLicense": "Elastic-2.0",
+
+  "allowed": [
+    "MIT",
+    "MIT/X11",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "CC0-1.0",
+    "0BSD",
+    "Unlicense",
+    "BlueOak-1.0.0",
+    "(MIT AND Zlib)",
+    "(MIT OR GPL-3.0-or-later)"
+  ],
+
+  "reviewRequired": [
+    "LGPL-2.0",
+    "LGPL-2.1",
+    "LGPL-3.0",
+    "MPL-2.0",
+    "GPL-3.0",
+    "GPL-3.0-only",
+    "GPL-3.0-or-later",
+    "CC-BY-4.0",
+    "MIT*"
+  ],
+
+  "denied": [
+    "GPL-2.0-only",
+    "GPL-2.0",
+    "AGPL-3.0",
+    "AGPL-3.0-only",
+    "AGPL-3.0-or-later",
+    "SSPL-1.0",
+    "Commons Clause",
+    "Proprietary",
+    "Commercial",
+    "UNLICENSED"
+  ],
+
+  "knownIssues": [
+    {
+      "package": "buffers",
+      "version": "0.1.1",
+      "detectedLicense": "UNKNOWN — no license field",
+      "severity": "RESOLVED",
+      "resolution": "Added npm override in server/package.json forcing exceljs to use unzipper@^0.12.3 which dropped the binary→buffers chain entirely. Verified buffers and binary are no longer in the dependency tree.",
+      "resolvedDate": "2026-03-22"
+    },
+    {
+      "package": "caniuse-lite",
+      "version": "*",
+      "detectedLicense": "CC-BY-4.0",
+      "severity": "LOW",
+      "pulledInBy": "vite (dev dependency — never shipped to users)",
+      "action": "Acceptable. CC-BY-4.0 is a data/creative-works license. This package is build-time only and not bundled into the application. No attribution required in shipped code.",
+      "notes": "Dev dependency only. Does not affect runtime or distribution."
+    },
+    {
+      "package": "jszip",
+      "version": "3.10.1",
+      "detectedLicense": "(MIT OR GPL-3.0-or-later)",
+      "severity": "LOW",
+      "action": "Elect MIT. No action required.",
+      "notes": "Dual-licensed. MIT option is compatible."
+    }
+  ],
+
+  "elv2Requirements": {
+    "licenseFile": {
+      "required": true,
+      "path": "LICENSE",
+      "status": "PRESENT — full Elastic License 2.0 text"
+    },
+    "noticeFile": {
+      "required": true,
+      "path": "NOTICE",
+      "status": "PRESENT — copyright, attribution, and third-party notices"
+    },
+    "sourceHeaders": {
+      "required": true,
+      "status": "COMPLETE — all source files have ELv2 headers",
+      "note": "ELv2 requires that licensing notices not be removed or obscured."
+    },
+    "sourceCodeLink": {
+      "required": false,
+      "description": "Not legally required by ELv2, but kept for transparency.",
+      "status": "IMPLEMENTED — Source Code link in Sidebar footer (Sidebar.tsx)",
+      "note": "Link points to GitHub repo."
+    }
+  }
+}

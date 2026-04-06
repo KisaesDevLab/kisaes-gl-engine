@@ -1,0 +1,1 @@
+ALTER TABLE "users" ADD COLUMN "display_preferences" jsonb DEFAULT '{"fontScale":1,"theme":"system"}';
