@@ -5,7 +5,7 @@ export const swaggerSpec = {
     version: '2.0.0',
     description: 'Public API for Vibe MyBooks — a self-hosted bookkeeping application. Supports API key and JWT authentication.',
     contact: { name: 'Kisaes LLC' },
-    license: { name: 'Elastic License 2.0 (ELv2)', url: 'https://www.elastic.co/licensing/elastic-license' },
+    license: { name: 'PolyForm Internal Use License 1.0.0', url: 'https://polyformproject.org/licenses/internal-use/1.0.0' },
   },
   servers: [
     { url: '/api/v2', description: 'API v2' },

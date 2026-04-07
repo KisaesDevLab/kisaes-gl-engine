@@ -1,9 +1,9 @@
 #!/bin/bash
 # scripts/check-license-headers.sh
-# Fails if any source file is missing the ELv2 license header.
+# Fails if any source file is missing the PolyForm Internal Use license header.
 
-HEADER_PATTERN="Licensed under the Elastic License 2.0"
-EXTENSIONS=("ts" "tsx")
+HEADER_PATTERN="Licensed under the PolyForm Internal Use License"
+EXTENSIONS=("ts" "tsx" "js" "jsx" "sql" "sh" "py")
 EXCLUDE_DIRS=("node_modules" ".git" "dist" "build" ".next" "coverage" ".vite")
 MISSING=0
 
@@ -18,12 +18,12 @@ for ext in "${EXTENSIONS[@]}"; do
       echo "MISSING HEADER: $file"
       MISSING=$((MISSING + 1))
     fi
-  done < <(eval "find client/src server/src -name '*.$ext' $EXCLUDE_ARGS -type f")
+  done < <(eval "find packages -name '*.$ext' $EXCLUDE_ARGS -type f")
 done
 
 if [ $MISSING -gt 0 ]; then
   echo ""
-  echo "ERROR: $MISSING file(s) missing ELv2 license header."
+  echo "ERROR: $MISSING file(s) missing PolyForm license header."
   echo "Run: bash scripts/add-license-header.sh"
   exit 1
 fi
