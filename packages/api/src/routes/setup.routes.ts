@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import * as setupService from '../services/setup.service.js';
+import { createDemoTenant } from '../services/demo-data.service.js';
 
 export const setupRouter = Router();
 
@@ -69,12 +70,41 @@ setupRouter.post('/initialize', async (req, res) => {
       businessType: config.company.businessType,
     });
 
+    // Step 4 (optional): Create a demo tenant with sample data.
+    //
+    // Wrapped in its own try/catch so a demo-seeding failure does NOT
+    // roll back the admin/company creation above — the real setup must
+    // still succeed even if the demo step has a bug. Any failure is
+    // reported alongside the success response so the operator knows
+    // something went wrong without losing the rest of the install.
+    let demoResult: Awaited<ReturnType<typeof createDemoTenant>> | null = null;
+    let demoError: string | null = null;
+    if (config.createDemoCompany) {
+      try {
+        demoResult = await createDemoTenant(admin.userId, {
+          log: (line) => console.log(`[demo-seed] ${line}`),
+        });
+      } catch (err) {
+        demoError = err instanceof Error ? err.message : 'Demo company creation failed';
+        console.error('[demo-seed] failed:', err);
+      }
+    }
+
     res.status(201).json({
       success: true,
       message: 'Setup complete! You can now log in.',
       envPath,
       tenantId: admin.tenantId,
       userId: admin.userId,
+      demo: demoResult
+        ? {
+            tenantId: demoResult.tenantId,
+            tenantName: demoResult.tenantName,
+            transactionCount: demoResult.counts.total,
+            trialBalanceValid: demoResult.trialBalanceValid,
+          }
+        : null,
+      demoError,
     });
   } catch (err) {
     res.status(500).json({ error: { message: err instanceof Error ? err.message : 'Setup failed' } });

@@ -276,23 +276,10 @@ function renderInvoiceHtml(data: InvoicePdfData): string {
 export async function generateInvoicePdf(tenantId: string, invoiceId: string): Promise<Buffer> {
   const data = await gatherInvoiceData(tenantId, invoiceId);
   const html = renderInvoiceHtml(data);
-
-  try {
-    const puppeteer = await import('puppeteer');
-    const browser = await puppeteer.default.launch({ headless: true, args: ['--no-sandbox'] });
-    const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'networkidle0' });
-    const pdfBuffer = await page.pdf({
-      format: 'Letter',
-      margin: { top: '0.5in', bottom: '0.5in', left: '0.5in', right: '0.5in' },
-      printBackground: true,
-    });
-    await browser.close();
-    return Buffer.from(pdfBuffer);
-  } catch {
-    // Fallback: return HTML as buffer if Puppeteer isn't available
-    return Buffer.from(html, 'utf-8');
-  }
+  return htmlToPdfBuffer(html, {
+    format: 'Letter',
+    margin: { top: '0.5in', bottom: '0.5in', left: '0.5in', right: '0.5in' },
+  });
 }
 
 export async function getInvoiceHtml(tenantId: string, invoiceId: string): Promise<string> {
@@ -498,21 +485,55 @@ export async function generateCheckPdf(tenantId: string, checkIds: string[], for
   }
 
   const html = renderCheckHtml(checks, format);
+  return htmlToPdfBuffer(html, {
+    format: 'Letter',
+    margin: { top: '0', bottom: '0', left: '0', right: '0' },
+  });
+}
 
+// ─── Shared Puppeteer helper ──────────────────────────────────────
+//
+// Centralizes Chromium launch and `page.pdf()` so every PDF in the app
+// goes through the same code path.
+//
+// IMPORTANT: errors are NOT caught here. The previous version had a
+// `try/catch` that returned the raw HTML as a Buffer when Puppeteer
+// failed — combined with `Content-Type: application/pdf` in the routes
+// this produced files that PDF readers display as garbage. Silent data
+// corruption is worse than a 500. If Chromium isn't reachable, let the
+// error propagate to the global error handler so the user sees an
+// actionable failure.
+
+interface PdfOptions {
+  format?: 'Letter' | 'A4';
+  margin?: { top: string; bottom: string; left: string; right: string };
+}
+
+async function htmlToPdfBuffer(html: string, opts: PdfOptions = {}): Promise<Buffer> {
+  const puppeteer = await import('puppeteer');
+  const browser = await puppeteer.default.launch({
+    headless: true,
+    // --no-sandbox / --disable-setuid-sandbox are required when running
+    // Chromium as root inside a container. The image installs Chromium
+    // from apk; PUPPETEER_EXECUTABLE_PATH (set in the Dockerfile) tells
+    // puppeteer where it lives. We also pass it explicitly so dev
+    // environments without the env var still work.
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    executablePath: process.env['PUPPETEER_EXECUTABLE_PATH'] || undefined,
+  });
   try {
-    const puppeteer = await import('puppeteer');
-    const browser = await puppeteer.default.launch({ headless: true, args: ['--no-sandbox'] });
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: 'networkidle0' });
     const pdfBuffer = await page.pdf({
-      format: 'Letter',
-      margin: { top: '0', bottom: '0', left: '0', right: '0' },
+      format: opts.format || 'Letter',
+      margin: opts.margin || { top: '0.5in', bottom: '0.5in', left: '0.5in', right: '0.5in' },
       printBackground: true,
     });
-    await browser.close();
     return Buffer.from(pdfBuffer);
-  } catch {
-    return Buffer.from(html, 'utf-8');
+  } finally {
+    // Ensure the browser is always closed even if pdf() throws, so we
+    // don't leak Chromium processes inside the container.
+    await browser.close();
   }
 }
 

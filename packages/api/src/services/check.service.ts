@@ -31,16 +31,34 @@ export async function createCheck(tenantId: string, input: WriteCheckInput, user
   if (input.printLater) {
     printStatus = 'queue';
   } else {
-    // Hand-written: assign next check number
-    const company = await db.query.companies.findFirst({ where: eq(companies.tenantId, tenantId) });
-    const settings = (company?.checkSettings as Record<string, unknown>) || {};
-    checkNumber = (settings['nextCheckNumber'] as number) || 1001;
+    // Hand-written: atomically allocate the next check number.
+    //
+    // The previous implementation read `nextCheckNumber` from the JSONB
+    // settings, used it, and wrote back the incremented value as separate
+    // statements. Two concurrent createCheck calls would both read the
+    // same value and assign IT to two different checks — and checks are
+    // literal payment instruments. Banks reject duplicates.
+    //
+    // Fix: a single UPDATE … RETURNING statement using jsonb_set to
+    // atomically increment the counter. Postgres serializes UPDATEs on
+    // the same row so each caller gets a distinct number, even with no
+    // application-level locking.
+    const result = await db.execute(sql`
+      UPDATE companies
+      SET check_settings = jsonb_set(
+        COALESCE(check_settings, '{}'::jsonb),
+        '{nextCheckNumber}',
+        to_jsonb(COALESCE((check_settings->>'nextCheckNumber')::int, 1001) + 1)
+      )
+      WHERE tenant_id = ${tenantId}
+      RETURNING (check_settings->>'nextCheckNumber')::int - 1 AS assigned_number
+    `);
+    const assigned = (result.rows[0] as { assigned_number: number | null } | undefined)?.assigned_number;
+    if (assigned === null || assigned === undefined) {
+      throw AppError.internal('Failed to allocate check number for tenant');
+    }
+    checkNumber = Number(assigned);
     printStatus = 'hand_written';
-
-    // Update next check number
-    await db.update(companies).set({
-      checkSettings: { ...settings, nextCheckNumber: checkNumber + 1 },
-    }).where(eq(companies.tenantId, tenantId));
   }
 
   const txn = await ledger.postTransaction(tenantId, {
@@ -52,14 +70,16 @@ export async function createCheck(tenantId: string, input: WriteCheckInput, user
     lines: journalLines,
   }, userId);
 
-  // Update with check-specific fields
+  // Update with check-specific fields. Tenant_id in WHERE for defense in
+  // depth (CLAUDE.md rule #17), even though `txn` was returned from
+  // ledger.postTransaction which already scoped by tenant.
   await db.update(transactions).set({
     checkNumber,
     printStatus,
     payeeNameOnCheck: input.payeeNameOnCheck,
     payeeAddress: input.payeeAddress || null,
     printedMemo: input.printedMemo || null,
-  }).where(eq(transactions.id, txn.id));
+  }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txn.id)));
 
   // Apply tags if provided
   if (input.tagIds && input.tagIds.length > 0) {
@@ -140,41 +160,66 @@ export async function getPrintQueue(tenantId: string, bankAccountId?: string) {
 export async function printChecks(tenantId: string, bankAccountId: string, checkIds: string[], startingNumber: number, format: string, userId?: string) {
   const batchId = crypto.randomUUID();
 
-  for (let i = 0; i < checkIds.length; i++) {
-    const checkId = checkIds[i]!;
-    const txn = await db.query.transactions.findFirst({
-      where: and(eq(transactions.tenantId, tenantId), eq(transactions.id, checkId)),
-    });
-    if (!txn) throw AppError.notFound(`Check ${checkId} not found`);
-    if (txn.printStatus !== 'queue') throw AppError.badRequest(`Check ${checkId} is not in the print queue`);
+  // Wrap the entire batch in a single database transaction. Without this,
+  // a partial print run leaves some checks marked 'printed' with new
+  // numbers and others still in 'queue', and the next print's starting
+  // number is left in an indeterminate state. Locking each check row
+  // serializes concurrent print runs that overlap on a check id.
+  return await db.transaction(async (tx) => {
+    for (let i = 0; i < checkIds.length; i++) {
+      const checkId = checkIds[i]!;
 
-    await db.update(transactions).set({
-      checkNumber: startingNumber + i,
-      printStatus: 'printed',
-      printedAt: new Date(),
-      printBatchId: batchId,
-      updatedAt: new Date(),
-    }).where(eq(transactions.id, checkId));
-  }
+      // Lock the check row before reading its status, so two concurrent
+      // print operations on the same set of checks can't both observe
+      // status='queue' and both assign different numbers to it.
+      const [txn] = await tx.select().from(transactions)
+        .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, checkId)))
+        .for('update')
+        .limit(1);
 
-  // Update company next check number
-  const company = await db.query.companies.findFirst({ where: eq(companies.tenantId, tenantId) });
-  const settings = (company?.checkSettings as Record<string, unknown>) || {};
-  await db.update(companies).set({
-    checkSettings: { ...settings, nextCheckNumber: startingNumber + checkIds.length },
-  }).where(eq(companies.tenantId, tenantId));
+      if (!txn) throw AppError.notFound(`Check ${checkId} not found`);
+      if (txn.printStatus !== 'queue') throw AppError.badRequest(`Check ${checkId} is not in the print queue`);
 
-  await auditLog(tenantId, 'create', 'check_print', batchId, null, {
-    checkCount: checkIds.length,
-    range: `${startingNumber}-${startingNumber + checkIds.length - 1}`,
-    format,
-  }, userId);
+      await tx.update(transactions).set({
+        checkNumber: startingNumber + i,
+        printStatus: 'printed',
+        printedAt: new Date(),
+        printBatchId: batchId,
+        updatedAt: new Date(),
+      }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, checkId)));
+    }
 
-  return {
-    batchId,
-    checksPrinted: checkIds.length,
-    checkNumberRange: `${startingNumber}–${startingNumber + checkIds.length - 1}`,
-  };
+    // Update company next check number atomically via jsonb_set so we
+    // don't clobber concurrent updates to other settings keys. We use
+    // GREATEST() to make this safe under concurrent print runs that
+    // happen to specify overlapping starting numbers — the larger value
+    // always wins, so we never roll the counter backwards.
+    const newNext = startingNumber + checkIds.length;
+    await tx.execute(sql`
+      UPDATE companies
+      SET check_settings = jsonb_set(
+        COALESCE(check_settings, '{}'::jsonb),
+        '{nextCheckNumber}',
+        to_jsonb(GREATEST(
+          COALESCE((check_settings->>'nextCheckNumber')::int, 1001),
+          ${newNext}
+        ))
+      )
+      WHERE tenant_id = ${tenantId}
+    `);
+
+    await auditLog(tenantId, 'create', 'check_print', batchId, null, {
+      checkCount: checkIds.length,
+      range: `${startingNumber}-${startingNumber + checkIds.length - 1}`,
+      format,
+    }, userId, tx);
+
+    return {
+      batchId,
+      checksPrinted: checkIds.length,
+      checkNumberRange: `${startingNumber}–${startingNumber + checkIds.length - 1}`,
+    };
+  });
 }
 
 export async function requeueChecks(tenantId: string, checkIds: string[]) {

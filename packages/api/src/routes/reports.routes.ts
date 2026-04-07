@@ -13,8 +13,54 @@ function fmtNum(n: any): string {
   return isNaN(v) ? '' : v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// Friendly transaction type abbreviations used in CSV / PDF exports.
+// Mirrors the TXN_TYPE_LABELS map in
+// packages/web/src/features/reports/GeneralLedgerReport.tsx — keep these
+// two in sync. (They're not yet in @kis-books/shared because the backend
+// only needs them for export rendering, not for any business logic.)
+const TXN_TYPE_LABELS: Record<string, string> = {
+  invoice: 'INV',
+  customer_payment: 'PMT',
+  cash_sale: 'SALE',
+  expense: 'CHK',
+  deposit: 'DEP',
+  transfer: 'XFR',
+  journal_entry: 'JE',
+  credit_memo: 'CM',
+  customer_refund: 'REF',
+};
+function fmtTxnType(t: string | null | undefined): string {
+  if (!t) return '';
+  return TXN_TYPE_LABELS[t] || t.toUpperCase();
+}
+
+// Column metadata for the export helpers.
+//   - `align`  controls text-align in the rendered HTML/PDF cell.
+//              Right-aligned columns get the `.amount` class which the
+//              embedded report stylesheet styles as monospace + right.
+//   - `width`  is a CSS width string (e.g., '72px') applied to <th> and
+//              <td> in the rendered table. Columns without an explicit
+//              width auto-size, so a flex column like Description gets
+//              the leftover space.
+type ExportColumn = { key: string; label: string; align?: 'left' | 'right'; width?: string };
+
+// Optional per-row rendering directives. A row that sets `_section: true`
+// is rendered as a single cell spanning the full table (gray header band)
+// using the `_label` field as the text. A row that sets `_summary: true`
+// keeps its normal column cells but is styled bold + tinted to mark it
+// as a subtotal / beginning / ending balance. Both fields are stripped
+// from CSV export because CSV is column-oriented and doesn't have a
+// concept of colspan rows — for CSV the row is rendered using its
+// regular column keys, so put the label in one of the regular columns
+// too if you want it to appear in the spreadsheet output.
+type ExportRow = Record<string, unknown> & {
+  _section?: boolean;
+  _summary?: boolean;
+  _label?: string;
+};
+
 // Build structured export rows that match on-screen display
-function extractDataAndColumns(reportData: any): { rows: any[]; columns: Array<{ key: string; label: string }> } {
+function extractDataAndColumns(reportData: any): { rows: any[]; columns: ExportColumn[] } {
   // ─── Comparative reports (have columns + rows with values arrays) ───
   if (reportData.columns && reportData.rows && Array.isArray(reportData.columns)) {
     const cols = [
@@ -121,6 +167,89 @@ function extractDataAndColumns(reportData: any): { rows: any[]; columns: Array<{
     return { rows, columns };
   }
 
+  // ─── General Ledger (grouped by account) ───
+  // Detected by the presence of `accounts` array where each entry has a
+  // `lines` array — that's our new GL shape from buildGeneralLedger.
+  if (Array.isArray(reportData.accounts) && reportData.accounts[0]?.lines !== undefined) {
+    // Explicit column widths so the Date column doesn't expand to fit
+    // the longest section-header label. The Description column is the
+    // only flex column — it takes the remaining horizontal space.
+    const columns: ExportColumn[] = [
+      { key: 'date', label: 'Date', width: '72px' },
+      { key: 'type', label: 'Type', width: '52px' },
+      { key: 'ref', label: 'Ref', width: '64px' },
+      { key: 'name', label: 'Name', width: '160px' },
+      { key: 'description', label: 'Description' },
+      { key: 'debit', label: 'Debit', align: 'right', width: '92px' },
+      { key: 'credit', label: 'Credit', align: 'right', width: '92px' },
+      { key: 'balance', label: 'Balance', align: 'right', width: '100px' },
+    ];
+    const rows: ExportRow[] = [];
+    for (const acct of reportData.accounts as any[]) {
+      const acctLabel = `${acct.accountNumber || ''} ${acct.name}`.trim();
+      const sectionLabel = `${acctLabel} (${acct.accountType})`;
+
+      // Section header: spans the full table via colspan in PDF, and
+      // also lands in the Description column so CSV (which is column-
+      // oriented and has no concept of colspan) still shows it.
+      rows.push({
+        _section: true,
+        _label: sectionLabel,
+        date: '', type: '', ref: '', name: '',
+        description: sectionLabel,
+        debit: '', credit: '', balance: '',
+      });
+
+      // Beginning balance row — labeled in the Description column so the
+      // narrow Date column doesn't have to widen to fit "Beginning balance".
+      rows.push({
+        _summary: true,
+        date: '', type: '', ref: '', name: '',
+        description: 'Beginning balance',
+        debit: '', credit: '',
+        balance: fmtNum(acct.beginningBalance),
+      });
+
+      // Activity rows — txn type rendered as friendly abbreviation
+      // (CHK / PMT / SALE / etc.) to match the on-screen view.
+      for (const line of acct.lines as any[]) {
+        rows.push({
+          date: line.date,
+          type: fmtTxnType(line.txnType),
+          ref: line.txnNumber || '',
+          name: line.contactName || '',
+          description: line.description || '',
+          debit: line.debit ? fmtNum(line.debit) : '',
+          credit: line.credit ? fmtNum(line.credit) : '',
+          balance: fmtNum(line.runningBalance),
+        });
+      }
+
+      // Period total — label in Description, money in their columns.
+      rows.push({
+        _summary: true,
+        date: '', type: '', ref: '', name: '',
+        description: 'Total period activity',
+        debit: fmtNum(acct.periodDebits),
+        credit: fmtNum(acct.periodCredits),
+        balance: '',
+      });
+
+      // Ending balance — same shape as beginning.
+      rows.push({
+        _summary: true,
+        date: '', type: '', ref: '', name: '',
+        description: 'Ending balance',
+        debit: '', credit: '',
+        balance: fmtNum(acct.endingBalance),
+      });
+
+      // Spacer row between accounts
+      rows.push({ date: '', type: '', ref: '', name: '', description: '', debit: '', credit: '', balance: '' });
+    }
+    return { rows, columns };
+  }
+
   // ─── Cash Flow (scalar values) ───
   if (reportData.operatingActivities !== undefined || reportData.netChange !== undefined) {
     const columns = [{ key: 'label', label: 'Item' }, { key: 'amount', label: 'Amount' }];
@@ -164,22 +293,55 @@ function extractDataAndColumns(reportData: any): { rows: any[]; columns: Array<{
   return { rows, columns };
 }
 
-function buildHtmlTable(rows: any[], columns: Array<{ key: string; label: string }>): string {
+function buildHtmlTable(rows: ExportRow[], columns: ExportColumn[]): string {
   if (!rows.length) return '<p>No data</p>';
-  const header = columns.map((c) => `<th>${c.label}</th>`).join('');
+
+  // Per-column width style attribute. Columns without an explicit width
+  // get nothing (auto-size), so the description column flexes to fill
+  // the remaining space.
+  const widthStyle = (c: ExportColumn) => (c.width ? ` style="width:${c.width}"` : '');
+
+  // Right-aligned columns get the `.amount` class on BOTH the header and
+  // every body cell so the column edge is consistent (including for empty
+  // cells like blank debits/credits).
+  const header = columns.map((c) => {
+    const cls = c.align === 'right' ? ' class="amount"' : '';
+    return `<th${cls}${widthStyle(c)}>${c.label}</th>`;
+  }).join('');
+
   const body = rows.map((row) => {
+    // Explicit section row → single cell spanning all columns. Used by
+    // the General Ledger to render account headers as full-width bands
+    // instead of cramming the label into the Date column.
+    if (row._section) {
+      return `<tr style="background:#f3f4f6;font-weight:600"><td colspan="${columns.length}">${row._label || ''}</td></tr>`;
+    }
+
+    // Per-column cell rendering, used by both _summary rows and normal
+    // data rows.
     const firstKey = columns[0]?.key;
     const firstVal = firstKey ? row[firstKey] : undefined;
-    const isSectionHeader = typeof firstVal === 'string' && firstVal.startsWith('---');
-    const isTotalRow = typeof firstVal === 'string' && (firstVal.startsWith('Total') || firstVal.startsWith('TOTAL') || firstVal === 'NET INCOME');
+    const isLegacySection = typeof firstVal === 'string' && firstVal.startsWith('---');
+    const isLegacyTotal = typeof firstVal === 'string' && (firstVal.startsWith('Total') || firstVal.startsWith('TOTAL') || firstVal === 'NET INCOME');
+
     const cells = columns.map((c) => {
       let val = row[c.key];
       if (typeof val === 'string' && val.startsWith('---')) val = val.replace(/^---\s*|\s*---$/g, '');
       const isNum = typeof val === 'number';
-      return `<td${isNum ? ' class="amount"' : ''}>${val !== null && val !== undefined ? (isNum ? fmtNum(val) : val) : ''}</td>`;
+      // Apply `.amount` if the column declares right-alignment OR the
+      // value is a JS number (legacy auto-detect for older report shapes).
+      const cls = (c.align === 'right' || isNum) ? ' class="amount"' : '';
+      return `<td${cls}${widthStyle(c)}>${val !== null && val !== undefined ? (isNum ? fmtNum(val) : val) : ''}</td>`;
     }).join('');
-    if (isSectionHeader) return `<tr style="background:#f3f4f6;font-weight:600">${cells}</tr>`;
-    if (isTotalRow) return `<tr class="total-row" style="font-weight:700;border-top:2px solid #111">${cells}</tr>`;
+
+    // Explicit summary row marker (per-account beginning / ending /
+    // period total in the General Ledger). Bold + tinted background.
+    if (row._summary) return `<tr style="font-weight:600;background:#fafafa">${cells}</tr>`;
+
+    // Legacy detection for the older P&L / BS / Trial Balance flatteners
+    // that haven't been migrated to explicit row metadata.
+    if (isLegacySection) return `<tr style="background:#f3f4f6;font-weight:600">${cells}</tr>`;
+    if (isLegacyTotal) return `<tr class="total-row" style="font-weight:700;border-top:2px solid #111">${cells}</tr>`;
     return `<tr>${cells}</tr>`;
   }).join('');
   return `<table><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`;
@@ -211,9 +373,16 @@ async function respond(res: any, reportData: any, format: string | undefined) {
       companyName = (result.rows as any[])[0]?.business_name || 'Company';
     } catch { /* use default */ }
 
+    // Wide reports use landscape so all columns fit without truncation.
+    // The General Ledger has 8 columns (Date / Type / Ref / Name /
+    // Description / Debit / Credit / Balance) which won't fit on portrait
+    // letter at a readable font size.
+    const isWideReport = Array.isArray(reportData.accounts) && reportData.accounts[0]?.lines !== undefined;
+    const orientation: 'portrait' | 'landscape' = isWideReport ? 'landscape' : 'portrait';
+
     const html = exportService.toReportHtml(reportData.title || 'Report', companyName, dateLabel, tableHtml);
-    const pdf = await exportService.toPdf(html);
-    res.setHeader('Content-Type', pdf[0] === 0x3c ? 'text/html' : 'application/pdf');
+    const pdf = await exportService.toPdf(html, { orientation });
+    res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${(reportData.title || 'report').replace(/\s+/g, '_')}.pdf"`);
     return res.send(pdf);
   }

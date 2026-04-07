@@ -56,8 +56,7 @@ invoicesRouter.post('/:id/void', validate(voidTransactionSchema), async (req, re
 
 invoicesRouter.get('/:id/pdf', async (req, res) => {
   const pdf = await pdfService.generateInvoicePdf(req.tenantId, req.params['id']!);
-  const contentType = pdf[0] === 0x3c ? 'text/html' : 'application/pdf'; // '<' = HTML fallback
-  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="invoice-${req.params['id']}.pdf"`);
   res.send(pdf);
 });

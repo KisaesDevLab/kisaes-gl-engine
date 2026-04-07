@@ -1,12 +1,12 @@
 import { eq, and, sql, lte, count } from 'drizzle-orm';
 import type { JournalLineInput, TxnType, TxnStatus } from '@kis-books/shared';
-import { db } from '../db/index.js';
+import { db, type DbOrTx } from '../db/index.js';
 import { transactions, journalLines, accounts, companies, contacts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 
-async function checkLockDate(tenantId: string, txnDate: string) {
-  const result = await db.execute(sql`
+async function checkLockDate(executor: DbOrTx, tenantId: string, txnDate: string) {
+  const result = await executor.execute(sql`
     SELECT lock_date FROM companies WHERE tenant_id = ${tenantId} LIMIT 1
   `);
   const lockDate = (result.rows as any[])[0]?.lock_date;
@@ -37,10 +37,9 @@ interface PostTransactionInput {
 }
 
 export async function postTransaction(tenantId: string, input: PostTransactionInput, userId?: string) {
-  // Check lock date
-  await checkLockDate(tenantId, input.txnDate);
-
-  // Validate debits = credits
+  // Validate debits = credits BEFORE opening a database transaction —
+  // there's no point holding a tx open while we add up two numbers in
+  // memory, and a fast-fail on bad input avoids unnecessary lock churn.
   let totalDebits = 0;
   let totalCredits = 0;
   for (const line of input.lines) {
@@ -58,188 +57,231 @@ export async function postTransaction(tenantId: string, input: PostTransactionIn
     throw AppError.badRequest('Transaction must have non-zero amounts');
   }
 
-  // Insert transaction
-  const [txn] = await db.insert(transactions).values({
-    tenantId,
-    txnType: input.txnType,
-    txnNumber: input.txnNumber || null,
-    txnDate: input.txnDate,
-    dueDate: input.dueDate || null,
-    status: input.status || 'posted',
-    contactId: input.contactId || null,
-    memo: input.memo || null,
-    internalNotes: input.internalNotes || null,
-    paymentTerms: input.paymentTerms || null,
-    subtotal: input.subtotal || null,
-    taxAmount: input.taxAmount || '0',
-    total: input.total || null,
-    amountPaid: input.amountPaid || '0',
-    balanceDue: input.balanceDue || null,
-    invoiceStatus: input.invoiceStatus || null,
-    appliedToInvoiceId: input.appliedToInvoiceId || null,
-    sourceEstimateId: input.sourceEstimateId || null,
-  }).returning();
+  // Wrap the transaction header insert + lines insert + balance updates +
+  // audit log in a single database transaction. Without this, a crash or
+  // error between any two of these steps leaves torn state — a transaction
+  // missing its lines, or lines whose accounts.balance was never updated.
+  return await db.transaction(async (tx) => {
+    await checkLockDate(tx, tenantId, input.txnDate);
 
-  if (!txn) throw AppError.internal('Failed to create transaction');
+    // Insert transaction header
+    const [txn] = await tx.insert(transactions).values({
+      tenantId,
+      txnType: input.txnType,
+      txnNumber: input.txnNumber || null,
+      txnDate: input.txnDate,
+      dueDate: input.dueDate || null,
+      status: input.status || 'posted',
+      contactId: input.contactId || null,
+      memo: input.memo || null,
+      internalNotes: input.internalNotes || null,
+      paymentTerms: input.paymentTerms || null,
+      subtotal: input.subtotal || null,
+      taxAmount: input.taxAmount || '0',
+      total: input.total || null,
+      amountPaid: input.amountPaid || '0',
+      balanceDue: input.balanceDue || null,
+      invoiceStatus: input.invoiceStatus || null,
+      appliedToInvoiceId: input.appliedToInvoiceId || null,
+      sourceEstimateId: input.sourceEstimateId || null,
+    }).returning();
 
-  // Insert journal lines
-  const lineValues = input.lines.map((line, i) => ({
-    tenantId,
-    transactionId: txn.id,
-    accountId: line.accountId,
-    debit: line.debit || '0',
-    credit: line.credit || '0',
-    description: line.description || null,
-    quantity: line.quantity || null,
-    unitPrice: line.unitPrice || null,
-    isTaxable: line.isTaxable || false,
-    taxRate: line.taxRate || '0',
-    taxAmount: line.taxAmount || '0',
-    lineOrder: i,
-  }));
+    if (!txn) throw AppError.internal('Failed to create transaction');
 
-  const lines = await db.insert(journalLines).values(lineValues).returning();
+    // Insert journal lines
+    const lineValues = input.lines.map((line, i) => ({
+      tenantId,
+      transactionId: txn.id,
+      accountId: line.accountId,
+      debit: line.debit || '0',
+      credit: line.credit || '0',
+      description: line.description || null,
+      quantity: line.quantity || null,
+      unitPrice: line.unitPrice || null,
+      isTaxable: line.isTaxable || false,
+      taxRate: line.taxRate || '0',
+      taxAmount: line.taxAmount || '0',
+      lineOrder: i,
+    }));
 
-  // Update account balances (only for posted transactions)
-  if (txn.status === 'posted') {
-    await updateAccountBalances(tenantId, input.lines);
-  }
+    const lines = await tx.insert(journalLines).values(lineValues).returning();
 
-  await auditLog(tenantId, 'create', 'transaction', txn.id, null, { txnType: txn.txnType, total: input.total }, userId);
+    // Update account balances (only for posted transactions)
+    if (txn.status === 'posted') {
+      await updateAccountBalances(tx, tenantId, input.lines);
+    }
 
-  return { ...txn, lines };
+    await auditLog(tenantId, 'create', 'transaction', txn.id, null, { txnType: txn.txnType, total: input.total }, userId, tx);
+
+    return { ...txn, lines };
+  });
 }
 
 export async function voidTransaction(tenantId: string, txnId: string, reason: string, userId?: string) {
-  const txn = await db.query.transactions.findFirst({
-    where: and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)),
+  // Wrap in a database transaction AND lock the row up front. Without the
+  // row lock, two concurrent void calls on the same transaction can both
+  // observe status='posted', both pass the check below, and both call
+  // updateAccountBalances — double-reversing the balances and corrupting
+  // the trial balance. SELECT … FOR UPDATE serializes the void path so
+  // the second caller blocks until the first commits, then reads the
+  // already-voided state and throws "already void" cleanly.
+  return await db.transaction(async (tx) => {
+    const [txn] = await tx.select().from(transactions)
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
+      .for('update')
+      .limit(1);
+
+    if (!txn) throw AppError.notFound('Transaction not found');
+    if (txn.status === 'void') throw AppError.badRequest('Transaction is already void');
+
+    // Check lock date against the transaction's date
+    await checkLockDate(tx, tenantId, txn.txnDate);
+
+    // Get original lines
+    const originalLines = await tx.select().from(journalLines)
+      .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)));
+
+    // Mark as void. Tenant_id is included in the WHERE clause for
+    // defense-in-depth (CLAUDE.md rule #17) — even though we already
+    // confirmed the row belongs to this tenant via the locked SELECT.
+    await tx.update(transactions).set({
+      status: 'void',
+      voidReason: reason,
+      voidedAt: new Date(),
+      updatedAt: new Date(),
+      invoiceStatus: txn.txnType === 'invoice' ? 'void' : txn.invoiceStatus,
+    }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)));
+
+    // Create reversing journal lines (swap debits and credits)
+    if (originalLines.length > 0) {
+      const reversingLines = originalLines.map((line) => ({
+        accountId: line.accountId,
+        debit: line.credit,
+        credit: line.debit,
+        description: `Void: ${line.description || ''}`.trim(),
+      }));
+
+      // Reverse account balances
+      await updateAccountBalances(tx, tenantId, reversingLines);
+    }
+
+    await auditLog(tenantId, 'void', 'transaction', txnId, txn, { reason }, userId, tx);
   });
-
-  if (!txn) throw AppError.notFound('Transaction not found');
-  if (txn.status === 'void') throw AppError.badRequest('Transaction is already void');
-
-  // Check lock date against the transaction's date
-  await checkLockDate(tenantId, txn.txnDate);
-
-  // Get original lines
-  const originalLines = await db.select().from(journalLines)
-    .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)));
-
-  // Mark as void
-  await db.update(transactions).set({
-    status: 'void',
-    voidReason: reason,
-    voidedAt: new Date(),
-    updatedAt: new Date(),
-    invoiceStatus: txn.txnType === 'invoice' ? 'void' : txn.invoiceStatus,
-  }).where(eq(transactions.id, txnId));
-
-  // Create reversing journal lines (swap debits and credits)
-  if (originalLines.length > 0) {
-    const reversingLines = originalLines.map((line) => ({
-      accountId: line.accountId,
-      debit: line.credit,
-      credit: line.debit,
-      description: `Void: ${line.description || ''}`.trim(),
-    }));
-
-    // Reverse account balances
-    await updateAccountBalances(tenantId, reversingLines);
-  }
-
-  await auditLog(tenantId, 'void', 'transaction', txnId, txn, { reason }, userId);
 }
 
 export async function updateTransaction(tenantId: string, txnId: string, input: PostTransactionInput, userId?: string) {
-  const existing = await db.query.transactions.findFirst({
-    where: and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)),
-  });
-
-  if (!existing) throw AppError.notFound('Transaction not found');
-  if (existing.status === 'void') throw AppError.badRequest('Cannot update a void transaction');
-
-  // Check lock date for both old and new dates
-  await checkLockDate(tenantId, existing.txnDate);
-  await checkLockDate(tenantId, input.txnDate);
-
-  // Get original lines and reverse their balances
-  const originalLines = await db.select().from(journalLines)
-    .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)));
-
-  if (originalLines.length > 0 && existing.status === 'posted') {
-    const reversingLines = originalLines.map((line) => ({
-      accountId: line.accountId,
-      debit: line.credit,
-      credit: line.debit,
-    }));
-    await updateAccountBalances(tenantId, reversingLines);
-  }
-
-  // Delete old lines
-  await db.delete(journalLines).where(eq(journalLines.transactionId, txnId));
-
-  // Validate new lines
+  // Validate the new lines balance up front (in-memory, no DB access).
   let totalDebits = 0;
   let totalCredits = 0;
   for (const line of input.lines) {
     totalDebits += parseFloat(line.debit || '0');
     totalCredits += parseFloat(line.credit || '0');
   }
-
   if (Math.abs(totalDebits - totalCredits) > 0.0001) {
     throw AppError.badRequest('Transaction does not balance');
   }
 
-  // Update transaction
-  await db.update(transactions).set({
-    txnDate: input.txnDate,
-    dueDate: input.dueDate || null,
-    contactId: input.contactId || null,
-    memo: input.memo || null,
-    subtotal: input.subtotal || null,
-    taxAmount: input.taxAmount || '0',
-    total: input.total || null,
-    balanceDue: input.balanceDue || null,
-    updatedAt: new Date(),
-  }).where(eq(transactions.id, txnId));
+  // Wrap in a database transaction AND lock the row. Without the lock,
+  // two concurrent updates of the same transaction can interleave their
+  // reverse-old-balances → delete-lines → insert-new-lines → apply-new
+  // balances steps and corrupt account balances + leave duplicated /
+  // missing journal lines. SELECT … FOR UPDATE serializes them.
+  return await db.transaction(async (tx) => {
+    const [existing] = await tx.select().from(transactions)
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
+      .for('update')
+      .limit(1);
 
-  // Insert new lines
-  const lineValues = input.lines.map((line, i) => ({
-    tenantId,
-    transactionId: txnId,
-    accountId: line.accountId,
-    debit: line.debit || '0',
-    credit: line.credit || '0',
-    description: line.description || null,
-    quantity: line.quantity || null,
-    unitPrice: line.unitPrice || null,
-    isTaxable: line.isTaxable || false,
-    taxRate: line.taxRate || '0',
-    taxAmount: line.taxAmount || '0',
-    lineOrder: i,
-  }));
+    if (!existing) throw AppError.notFound('Transaction not found');
+    if (existing.status === 'void') throw AppError.badRequest('Cannot update a void transaction');
 
-  const lines = await db.insert(journalLines).values(lineValues).returning();
+    // Check lock date for both old and new dates
+    await checkLockDate(tx, tenantId, existing.txnDate);
+    await checkLockDate(tx, tenantId, input.txnDate);
 
-  // Apply new balances
-  if (existing.status === 'posted') {
-    await updateAccountBalances(tenantId, input.lines);
-  }
+    // Get original lines and reverse their balances
+    const originalLines = await tx.select().from(journalLines)
+      .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)));
 
-  await auditLog(tenantId, 'update', 'transaction', txnId, existing, input, userId);
+    if (originalLines.length > 0 && existing.status === 'posted') {
+      const reversingLines = originalLines.map((line) => ({
+        accountId: line.accountId,
+        debit: line.credit,
+        credit: line.debit,
+      }));
+      await updateAccountBalances(tx, tenantId, reversingLines);
+    }
 
-  const updated = await db.query.transactions.findFirst({ where: eq(transactions.id, txnId) });
-  return { ...updated, lines };
+    // Delete old lines (tenant_id scoped — defense in depth per CLAUDE.md #17)
+    await tx.delete(journalLines)
+      .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)));
+
+    // Update transaction
+    await tx.update(transactions).set({
+      txnDate: input.txnDate,
+      dueDate: input.dueDate || null,
+      contactId: input.contactId || null,
+      memo: input.memo || null,
+      subtotal: input.subtotal || null,
+      taxAmount: input.taxAmount || '0',
+      total: input.total || null,
+      balanceDue: input.balanceDue || null,
+      updatedAt: new Date(),
+    }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)));
+
+    // Insert new lines
+    const lineValues = input.lines.map((line, i) => ({
+      tenantId,
+      transactionId: txnId,
+      accountId: line.accountId,
+      debit: line.debit || '0',
+      credit: line.credit || '0',
+      description: line.description || null,
+      quantity: line.quantity || null,
+      unitPrice: line.unitPrice || null,
+      isTaxable: line.isTaxable || false,
+      taxRate: line.taxRate || '0',
+      taxAmount: line.taxAmount || '0',
+      lineOrder: i,
+    }));
+
+    const lines = await tx.insert(journalLines).values(lineValues).returning();
+
+    // Apply new balances
+    if (existing.status === 'posted') {
+      await updateAccountBalances(tx, tenantId, input.lines);
+    }
+
+    await auditLog(tenantId, 'update', 'transaction', txnId, existing, input, userId, tx);
+
+    const [updated] = await tx.select().from(transactions)
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
+      .limit(1);
+    return { ...updated, lines };
+  });
 }
 
-async function updateAccountBalances(tenantId: string, lines: Array<{ accountId: string; debit?: string; credit?: string }>) {
+async function updateAccountBalances(
+  executor: DbOrTx,
+  tenantId: string,
+  lines: Array<{ accountId: string; debit?: string; credit?: string }>,
+) {
+  // The arithmetic is done SQL-side (`balance = balance + delta`) so the
+  // UPDATE is atomic at the row level — Postgres serializes concurrent
+  // updates on the same row and the read-modify-write is internal to the
+  // statement. The lost-update race that would happen if we did
+  // `read balance → compute new → write` from JS is not present here.
+  //
+  // The transaction wrapper around this helper exists to keep the balance
+  // update atomic *with the journal_lines insert*, not to protect the
+  // increment itself.
   for (const line of lines) {
     const debit = parseFloat(line.debit || '0');
     const credit = parseFloat(line.credit || '0');
     const delta = debit - credit;
 
     if (delta !== 0) {
-      await db.update(accounts).set({
+      await executor.update(accounts).set({
         balance: sql`${accounts.balance} + ${delta.toFixed(4)}::decimal`,
         updatedAt: new Date(),
       }).where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, line.accountId)));

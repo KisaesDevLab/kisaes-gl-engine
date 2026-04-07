@@ -105,7 +105,7 @@ budgetsRouter.get('/:id/vs-actual', async (req, res) => {
     const tableHtml = `<table><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`;
     const html = toReportHtml(data.title || 'Budget vs Actual', 'Company', `${data.startDate} to ${data.endDate}`, tableHtml);
     const pdf = await toPdf(html);
-    res.setHeader('Content-Type', pdf[0] === 0x3c ? 'text/html' : 'application/pdf');
+    res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', 'attachment; filename="Budget_vs_Actual.pdf"');
     return res.send(pdf);
   }

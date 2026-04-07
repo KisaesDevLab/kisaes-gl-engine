@@ -145,6 +145,15 @@ export interface SetupConfig {
   ports?: { api?: number; frontend?: number };
   admin: { email: string; password: string; displayName: string };
   company: { name: string; industry?: string; entityType?: string; businessType?: string };
+  /**
+   * If true, the setup flow also creates a second "Demo Bookkeeping Co"
+   * tenant populated with sample transactions across the current year and
+   * the prior year. The admin user is granted owner access to both tenants
+   * and can switch between them from the app UI. Opt-in because it's
+   * roughly 200 extra ledger writes and the extra tenant is a surprise if
+   * you weren't expecting it.
+   */
+  createDemoCompany?: boolean;
 }
 
 export async function checkPortAvailability(port: number): Promise<{ port: number; available: boolean }> {

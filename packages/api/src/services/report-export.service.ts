@@ -36,20 +36,34 @@ export function toReportHtml(
 </body></html>`;
 }
 
-export async function toPdf(html: string): Promise<Buffer> {
+export interface ToPdfOptions {
+  /** Page orientation. Defaults to portrait. Use 'landscape' for wide
+   * reports like the General Ledger that need extra horizontal room. */
+  orientation?: 'portrait' | 'landscape';
+}
+
+export async function toPdf(html: string, options: ToPdfOptions = {}): Promise<Buffer> {
+  // Errors are NOT caught here — see the long-form note in
+  // pdf.service.ts. The previous version returned raw HTML as a Buffer
+  // on failure, which the routes then served with Content-Type:
+  // application/pdf, producing files that PDF readers display as garbage.
+  const puppeteer = await import('puppeteer');
+  const browser = await puppeteer.default.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    executablePath: process.env['PUPPETEER_EXECUTABLE_PATH'] || undefined,
+  });
   try {
-    const puppeteer = await import('puppeteer');
-    const browser = await puppeteer.default.launch({ headless: true, args: ['--no-sandbox'] });
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: 'networkidle0' });
     const pdf = await page.pdf({
       format: 'Letter',
+      landscape: options.orientation === 'landscape',
       margin: { top: '0.5in', bottom: '0.5in', left: '0.5in', right: '0.5in' },
       printBackground: true,
     });
-    await browser.close();
     return Buffer.from(pdf);
-  } catch {
-    return Buffer.from(html, 'utf-8');
+  } finally {
+    await browser.close();
   }
 }

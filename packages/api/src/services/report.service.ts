@@ -386,20 +386,226 @@ export async function build1099VendorSummary(tenantId: string, year: string) {
 
 // ─── GENERAL ─────────────────────────────────────────────────────
 
+/**
+ * General Ledger report — properly grouped by account, with beginning
+ * balance, line-by-line running balance, period totals, and ending
+ * balance for each account. This matches the format any accountant or
+ * auditor expects to see.
+ *
+ * Income statement accounts (revenue/expense) use a fiscal-year reset
+ * for the beginning balance: their "beginning of period" balance is
+ * computed from the fiscal year start, not from the beginning of time,
+ * because revenue/expense accounts conceptually close to retained
+ * earnings at fiscal year end. Balance sheet accounts (asset, liability,
+ * equity) carry their cumulative balance forward forever.
+ *
+ * Running balances are shown using the natural sign convention:
+ *   - debit-normal accounts (asset, expense):  balance = debits - credits
+ *   - credit-normal accounts (liab, equity, revenue):  balance = credits - debits
+ * so a "normal" balance is always displayed as a positive number.
+ */
 export async function buildGeneralLedger(tenantId: string, startDate: string, endDate: string) {
-  const rows = await db.execute(sql`
-    SELECT a.id as account_id, a.account_number, a.name as account_name, a.account_type,
-      jl.id as line_id, jl.debit, jl.credit, jl.description,
-      t.txn_date, t.txn_type, t.txn_number, t.memo
-    FROM journal_lines jl
-    JOIN accounts a ON a.id = jl.account_id
-    JOIN transactions t ON t.id = jl.transaction_id
-    WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
-      AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
-    ORDER BY a.account_number, a.name, t.txn_date, jl.line_order
+  // Resolve the company's fiscal year start. The current fiscal year is
+  // determined by the report's startDate so the YTD reset behavior follows
+  // the period the user is asking about.
+  const companyRow = await db.execute(sql`
+    SELECT fiscal_year_start_month FROM companies WHERE tenant_id = ${tenantId} LIMIT 1
+  `);
+  const fyStartMonth: number = (companyRow.rows as { fiscal_year_start_month?: number }[])[0]?.fiscal_year_start_month || 1;
+  const startDt = new Date(startDate);
+  let fyStartYear = startDt.getFullYear();
+  if (startDt.getMonth() + 1 < fyStartMonth) fyStartYear--;
+  const fyStart = `${fyStartYear}-${String(fyStartMonth).padStart(2, '0')}-01`;
+
+  // 1. All accounts (so we can include accounts that have beginning
+  //    balance only and no period activity).
+  const accountsResult = await db.execute(sql`
+    SELECT id, account_number, name, account_type, system_tag, is_system
+    FROM accounts
+    WHERE tenant_id = ${tenantId}
+    ORDER BY
+      CASE account_type
+        WHEN 'asset' THEN 1
+        WHEN 'liability' THEN 2
+        WHEN 'equity' THEN 3
+        WHEN 'revenue' THEN 4
+        WHEN 'expense' THEN 5
+        ELSE 6
+      END,
+      account_number NULLS LAST,
+      name
   `);
 
-  return { title: 'General Ledger', startDate, endDate, data: rows.rows };
+  // 2. Beginning balances (per account) — debit-side and credit-side sums
+  //    of all activity strictly before the report startDate. For income
+  //    statement accounts, only count activity from the fiscal year start.
+  const beginResult = await db.execute(sql`
+    SELECT a.id,
+      COALESCE(SUM(
+        CASE
+          WHEN a.account_type IN ('asset','liability','equity') THEN jl.debit
+          WHEN t.txn_date >= ${fyStart} THEN jl.debit
+          ELSE 0
+        END
+      ), 0) AS begin_debit,
+      COALESCE(SUM(
+        CASE
+          WHEN a.account_type IN ('asset','liability','equity') THEN jl.credit
+          WHEN t.txn_date >= ${fyStart} THEN jl.credit
+          ELSE 0
+        END
+      ), 0) AS begin_credit
+    FROM accounts a
+    LEFT JOIN journal_lines jl
+      ON jl.account_id = a.id AND jl.tenant_id = ${tenantId}
+    LEFT JOIN transactions t
+      ON t.id = jl.transaction_id
+      AND t.status = 'posted'
+      AND t.txn_date < ${startDate}
+    WHERE a.tenant_id = ${tenantId}
+    GROUP BY a.id
+  `);
+
+  // 3. Period activity (all journal lines in [startDate, endDate])
+  const linesResult = await db.execute(sql`
+    SELECT
+      jl.id AS line_id,
+      jl.account_id,
+      jl.debit,
+      jl.credit,
+      jl.description AS line_description,
+      jl.line_order,
+      t.id AS transaction_id,
+      t.txn_date,
+      t.txn_type,
+      t.txn_number,
+      t.memo AS txn_memo,
+      c.display_name AS contact_name
+    FROM journal_lines jl
+    JOIN transactions t ON t.id = jl.transaction_id
+    LEFT JOIN contacts c ON c.id = t.contact_id
+    WHERE jl.tenant_id = ${tenantId}
+      AND t.status = 'posted'
+      AND t.txn_date >= ${startDate}
+      AND t.txn_date <= ${endDate}
+    ORDER BY jl.account_id, t.txn_date, t.created_at, jl.line_order
+  `);
+
+  // ── Build the response ───────────────────────────────────────
+  type AccountRow = {
+    id: string;
+    account_number: string | null;
+    name: string;
+    account_type: string;
+    system_tag: string | null;
+    is_system: boolean;
+  };
+  type BeginRow = { id: string; begin_debit: string; begin_credit: string };
+  type LineRow = {
+    line_id: string;
+    account_id: string;
+    debit: string;
+    credit: string;
+    line_description: string | null;
+    line_order: number;
+    transaction_id: string;
+    txn_date: string;
+    txn_type: string;
+    txn_number: string | null;
+    txn_memo: string | null;
+    contact_name: string | null;
+  };
+
+  const allAccounts = accountsResult.rows as unknown as AccountRow[];
+  const beginRows = beginResult.rows as unknown as BeginRow[];
+  const lines = linesResult.rows as unknown as LineRow[];
+
+  // Index beginning balances and period lines by account id
+  const beginMap = new Map<string, { debit: number; credit: number }>();
+  for (const r of beginRows) {
+    beginMap.set(r.id, { debit: parseFloat(r.begin_debit), credit: parseFloat(r.begin_credit) });
+  }
+  const linesByAccount = new Map<string, LineRow[]>();
+  for (const line of lines) {
+    const arr = linesByAccount.get(line.account_id) || [];
+    arr.push(line);
+    linesByAccount.set(line.account_id, arr);
+  }
+
+  // Helper: signed balance using the account's natural sign convention.
+  // Asset and expense are debit-normal; everything else is credit-normal.
+  const isDebitNormal = (type: string) => type === 'asset' || type === 'expense';
+  const naturalBalance = (type: string, debit: number, credit: number) =>
+    isDebitNormal(type) ? debit - credit : credit - debit;
+
+  let totalDebits = 0;
+  let totalCredits = 0;
+
+  const accounts = allAccounts
+    .map((acct) => {
+      const begin = beginMap.get(acct.id) || { debit: 0, credit: 0 };
+      const beginningBalance = naturalBalance(acct.account_type, begin.debit, begin.credit);
+      const periodLines = linesByAccount.get(acct.id) || [];
+
+      // Skip accounts with no activity AND no beginning balance — they're
+      // noise on the report. (This is what every commercial GL does.)
+      if (periodLines.length === 0 && Math.abs(beginningBalance) < 0.005) {
+        return null;
+      }
+
+      let running = beginningBalance;
+      let periodDebits = 0;
+      let periodCredits = 0;
+
+      const reportLines = periodLines.map((line) => {
+        const debit = parseFloat(line.debit);
+        const credit = parseFloat(line.credit);
+        running += naturalBalance(acct.account_type, debit, credit);
+        periodDebits += debit;
+        periodCredits += credit;
+
+        return {
+          lineId: line.line_id,
+          transactionId: line.transaction_id,
+          date: line.txn_date,
+          txnType: line.txn_type,
+          txnNumber: line.txn_number,
+          contactName: line.contact_name,
+          // Prefer the per-line description, fall back to the transaction memo
+          description: line.line_description || line.txn_memo || '',
+          debit,
+          credit,
+          runningBalance: running,
+        };
+      });
+
+      totalDebits += periodDebits;
+      totalCredits += periodCredits;
+
+      return {
+        id: acct.id,
+        accountNumber: acct.account_number,
+        name: acct.name,
+        accountType: acct.account_type,
+        normalBalance: isDebitNormal(acct.account_type) ? ('debit' as const) : ('credit' as const),
+        beginningBalance,
+        lines: reportLines,
+        periodDebits,
+        periodCredits,
+        endingBalance: running,
+      };
+    })
+    .filter((a): a is NonNullable<typeof a> => a !== null);
+
+  return {
+    title: 'General Ledger',
+    startDate,
+    endDate,
+    fiscalYearStart: fyStart,
+    accounts,
+    totalDebits,
+    totalCredits,
+  };
 }
 
 export async function buildTrialBalance(tenantId: string, startDate: string, endDate: string) {
