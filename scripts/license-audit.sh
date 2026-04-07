@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
-# license-audit.sh — Automated license compliance audit for vibe-tb
-# License: Elastic-2.0
+# license-audit.sh — Automated license compliance audit for Vibe MyBooks
+# License: PolyForm Internal Use 1.0.0 (SEE LICENSE IN LICENSE)
 #
 # Usage:  ./scripts/license-audit.sh [--quiet] [--json]
 #   --quiet   Suppress passing checks; show only warnings and failures
@@ -48,8 +48,15 @@ header "1. Required project files"
 if [[ -f "$ROOT/LICENSE" ]]; then
   pass "LICENSE file present"
 else
-  fail "LICENSE file MISSING — required for ELv2 distribution"
+  fail "LICENSE file MISSING — required for PolyForm Internal Use compliance"
   bump_fail
+fi
+
+if [[ -f "$ROOT/NOTICE" ]]; then
+  pass "NOTICE file present"
+else
+  warn "NOTICE file missing — recommended for attribution"
+  bump_warn
 fi
 
 if [[ -f "$ROOT/README.md" ]] || [[ -f "$ROOT/README" ]]; then
@@ -59,19 +66,20 @@ else
   bump_warn
 fi
 
-# ── 2. ELv2 source file headers ─────────────────────────────────────────────
+# ── 2. PolyForm source file headers ──────────────────────────────────────────
 header "2. Source file headers"
 
-HEADER_PATTERN="Licensed under the Elastic License 2.0|Elastic-2.0|ELv2|Copyright.*Kisaes"
-TS_FILES=$(find "$ROOT/client/src" "$ROOT/server/src" -name "*.ts" -o -name "*.tsx" 2>/dev/null | wc -l | tr -d ' ')
-HEADERS_FOUND=$(find "$ROOT/client/src" "$ROOT/server/src" -name "*.ts" -o -name "*.tsx" 2>/dev/null \
+HEADER_PATTERN="Licensed under the PolyForm Internal Use License|Copyright.*Kisaes"
+TS_FILES=$(find "$ROOT/packages" -name "*.ts" -o -name "*.tsx" 2>/dev/null | grep -v node_modules | wc -l | tr -d ' ')
+HEADERS_FOUND=$(find "$ROOT/packages" -name "*.ts" -o -name "*.tsx" 2>/dev/null \
+  | grep -v node_modules \
   | xargs grep -l -E "$HEADER_PATTERN" 2>/dev/null | wc -l | tr -d ' ')
 
 info "$HEADERS_FOUND / $TS_FILES source files have license headers"
 
 if [[ "$HEADERS_FOUND" -eq 0 ]]; then
   warn "No source files contain license headers"
-  warn "Minimum header:  // Licensed under the Elastic License 2.0 (ELv2)"
+  warn "Minimum header:  // Licensed under the PolyForm Internal Use License 1.0.0"
   bump_warn
 elif [[ "$HEADERS_FOUND" -lt "$TS_FILES" ]]; then
   warn "$(( TS_FILES - HEADERS_FOUND )) source files missing license headers"
@@ -85,7 +93,7 @@ header "3. Source code visibility"
 
 S13_PATTERN="source|Source|github|GitHub|repository|git\.io"
 S13_HITS=$(grep -r -l -E "$S13_PATTERN" \
-  "$ROOT/client/src" 2>/dev/null | wc -l | tr -d ' ')
+  "$ROOT/packages/web/src" 2>/dev/null | wc -l | tr -d ' ')
 
 if [[ "$S13_HITS" -gt 0 ]]; then
   pass "Found source-code link in client source ($S13_HITS file(s))"
@@ -113,7 +121,7 @@ else
 fi
 
 # Check for bundled minified third-party files
-MINIFIED=$(find "$ROOT/client/src" "$ROOT/server/src" \
+MINIFIED=$(find "$ROOT/packages" \
   -not -path "*/node_modules/*" \
   -name "*.min.js" -o -name "*.min.css" 2>/dev/null)
 
@@ -125,79 +133,48 @@ else
   pass "No minified files in source tree"
 fi
 
-# ── 5. Client dependency licenses ────────────────────────────────────────────
-header "5. Client dependency licenses"
+# ── 5. Dependency license scan ───────────────────────────────────────────────
+header "5. Dependency licenses"
 
-CLIENT_DIR="$ROOT/client"
-if [[ ! -d "$CLIENT_DIR/node_modules" ]]; then
-  warn "client/node_modules not installed — run: cd client && npm install"
+if [[ ! -d "$ROOT/node_modules" ]]; then
+  warn "node_modules not installed — run: npm install"
   bump_warn
 else
-  info "Scanning client dependencies with license-checker…"
-  CLIENT_LICENSES=$(cd "$CLIENT_DIR" && npx --yes license-checker \
+  info "Scanning workspace dependencies with license-checker…"
+  WORKSPACE_LICENSES=$(cd "$ROOT" && npx --yes license-checker \
     --excludePrivatePackages --summary 2>/dev/null || true)
-  echo "$CLIENT_LICENSES" | while read -r line; do
-    echo "  $line"
-  done
-
-  # Check for denied licenses (AGPL denied under ELv2)
-  DENIED_PATTERN="GPL-2.0-only|SSPL|AGPL|Commons Clause|Proprietary|Commercial|UNLICENSED"
-  CLIENT_DENIED=$(cd "$CLIENT_DIR" && npx license-checker \
-    --excludePrivatePackages --csv 2>/dev/null \
-    | grep -E "$DENIED_PATTERN" || true)
-
-  if [[ -n "$CLIENT_DENIED" ]]; then
-    fail "Denied licenses found in client dependencies:"
-    echo "$CLIENT_DENIED" | while read -r line; do fail "  $line"; done
-    bump_fail
-  else
-    pass "No denied licenses in client dependencies"
-  fi
-fi
-
-# ── 6. Server dependency licenses ────────────────────────────────────────────
-header "6. Server dependency licenses"
-
-SERVER_DIR="$ROOT/server"
-if [[ ! -d "$SERVER_DIR/node_modules" ]]; then
-  warn "server/node_modules not installed — run: cd server && npm install"
-  bump_warn
-else
-  info "Scanning server dependencies with license-checker…"
-  SERVER_LICENSES=$(cd "$SERVER_DIR" && npx license-checker \
-    --excludePrivatePackages --summary 2>/dev/null || true)
-  echo "$SERVER_LICENSES" | while read -r line; do
+  echo "$WORKSPACE_LICENSES" | while read -r line; do
     echo "  $line"
   done
 
   # Check for denied licenses
-  SERVER_DENIED=$(cd "$SERVER_DIR" && npx license-checker \
+  DENIED_PATTERN="GPL-2.0-only|SSPL|AGPL|Commons Clause|Proprietary|Commercial|UNLICENSED"
+  WORKSPACE_DENIED=$(cd "$ROOT" && npx license-checker \
     --excludePrivatePackages --csv 2>/dev/null \
     | grep -E "$DENIED_PATTERN" || true)
 
-  if [[ -n "$SERVER_DENIED" ]]; then
-    fail "Denied licenses found in server dependencies:"
-    echo "$SERVER_DENIED" | while read -r line; do fail "  $line"; done
+  if [[ -n "$WORKSPACE_DENIED" ]]; then
+    fail "Denied licenses found in dependencies:"
+    echo "$WORKSPACE_DENIED" | while read -r line; do fail "  $line"; done
     bump_fail
   else
-    pass "No denied licenses in server dependencies"
+    pass "No denied licenses in dependencies"
   fi
 
   # Check for unlicensed packages
-  SERVER_UNLICENSED=$(cd "$SERVER_DIR" && npx license-checker \
+  WORKSPACE_UNLICENSED=$(cd "$ROOT" && npx license-checker \
     --excludePrivatePackages --csv 2>/dev/null \
     | grep -i '"Custom:' || true)
 
-  if [[ -n "$SERVER_UNLICENSED" ]]; then
+  if [[ -n "$WORKSPACE_UNLICENSED" ]]; then
     warn "Packages with non-standard/custom license entries (manual review required):"
-    echo "$SERVER_UNLICENSED" | while read -r line; do warn "  $line"; done
-    warn "Known issue: buffers@0.1.1 — no license field (transitive via exceljs). See license-policy.json."
+    echo "$WORKSPACE_UNLICENSED" | while read -r line; do warn "  $line"; done
     bump_warn
   fi
 fi
 
-# ── 7. Known issues from policy file ─────────────────────────────────────────
-header "7. Known issues (from license-policy.json)"
+# ── 6. Known issues from policy file ─────────────────────────────────────────
+header "6. Known issues (from license-policy.json)"
 
 if command -v node &>/dev/null && [[ -f "$POLICY" ]]; then
   node -e "
@@ -206,7 +183,7 @@ if command -v node &>/dev/null && [[ -f "$POLICY" ]]; then
       const sev = i.severity === 'HIGH' ? '✘ HIGH' : '⚠  ' + i.severity;
       console.log('  ' + sev + ' — ' + i.package + '@' + i.version);
       console.log('    License : ' + (i.detectedLicense || i.actualLicense));
-      console.log('    Action  : ' + i.action);
+      console.log('    Action  : ' + (i.action || i.resolution || ''));
       console.log('');
     });
   " 2>/dev/null || warn "Could not parse license-policy.json"
@@ -214,10 +191,10 @@ else
   warn "license-policy.json not found or node unavailable"
 fi
 
-info "ELv2 requirements:"
+info "PolyForm Internal Use requirements:"
 node -e "
   const p = require('$POLICY');
-  const r = p.elv2Requirements || {};
+  const r = p.polyformRequirements || {};
   Object.entries(r).forEach(([k, v]) => {
     const status = v.status || '';
     const ok = status.toLowerCase().includes('missing') ||
@@ -227,8 +204,8 @@ node -e "
   });
 " 2>/dev/null || true
 
-# ── 8. Summary ───────────────────────────────────────────────────────────────
-header "8. Audit Summary"
+# ── 7. Summary ───────────────────────────────────────────────────────────────
+header "7. Audit Summary"
 
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 echo ""
@@ -247,7 +224,7 @@ fi
 
 # Save plain-text report
 {
-  echo "vibe-tb License Audit"
+  echo "Vibe MyBooks License Audit"
   echo "Timestamp: $TIMESTAMP"
   echo "Failures: $FAILURES  |  Warnings: $WARNINGS"
   echo ""

@@ -1,12 +1,11 @@
 #!/bin/bash
 # scripts/add-license-header.sh
-# Adds the ELv2 license header to source files that are missing it.
+# Adds the PolyForm Internal Use license header to source files that are missing it.
 
-HEADER_PATTERN="Licensed under the Elastic License 2.0"
-HEADER='// Copyright 2025-2026 Kisaes LLC
-// Licensed under the Elastic License 2.0 (ELv2); you may not use this file
-// except in compliance with the Elastic License 2.0.
-// See LICENSE file in the project root for full license text.
+HEADER_PATTERN="Licensed under the PolyForm Internal Use License"
+HEADER='// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
 '
 EXTENSIONS=("ts" "tsx")
 EXCLUDE_DIRS=("node_modules" ".git" "dist" "build" ".next" "coverage" ".vite")
@@ -24,7 +23,7 @@ for ext in "${EXTENSIONS[@]}"; do
       echo "Added header: $file"
       ADDED=$((ADDED + 1))
     fi
-  done < <(eval "find client/src server/src -name '*.$ext' $EXCLUDE_ARGS -type f")
+  done < <(eval "find packages -name '*.$ext' $EXCLUDE_ARGS -type f")
 done
 
 if [ $ADDED -eq 0 ]; then
