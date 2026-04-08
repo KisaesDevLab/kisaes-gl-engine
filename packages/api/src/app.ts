@@ -12,6 +12,9 @@ import { accountsRouter } from './routes/accounts.routes.js';
 import { contactsRouter } from './routes/contacts.routes.js';
 import { transactionsRouter } from './routes/transactions.routes.js';
 import { invoicesRouter } from './routes/invoices.routes.js';
+import { billsRouter } from './routes/bills.routes.js';
+import { vendorCreditsRouter } from './routes/vendor-credits.routes.js';
+import { billPaymentsRouter } from './routes/bill-payments.routes.js';
 import { estimatesRouter } from './routes/estimates.routes.js';
 import { tagsRouter } from './routes/tags.routes.js';
 import { reportsRouter } from './routes/reports.routes.js';
@@ -67,6 +70,9 @@ app.use('/api/v1/accounts', accountsRouter);
 app.use('/api/v1/contacts', contactsRouter);
 app.use('/api/v1/transactions', transactionsRouter);
 app.use('/api/v1/invoices', invoicesRouter);
+app.use('/api/v1/bills', billsRouter);
+app.use('/api/v1/vendor-credits', vendorCreditsRouter);
+app.use('/api/v1/bill-payments', billPaymentsRouter);
 app.use('/api/v1/estimates', estimatesRouter);
 app.use('/api/v1/tags', tagsRouter);
 app.use('/api/v1/reports', reportsRouter);
@@ -119,6 +125,16 @@ app.get('/api/v1/auth/methods', async (req, res) => {
   const email = req.query['email'] as string | undefined;
   const methods = await getAuthMethods(email);
   res.json(methods);
+});
+
+// Public COA template options (no auth required — used by the first-run
+// setup wizard, the in-app setup wizard, and the register page to populate
+// the business-type dropdown). Returns the live list from the database so
+// templates added by super admins show up everywhere.
+app.get('/api/v1/coa-templates/options', async (_req, res) => {
+  const { listOptions } = await import('./services/coa-templates.service.js');
+  const options = await listOptions();
+  res.json({ options });
 });
 
 // Public API v2

@@ -31,6 +31,11 @@ interface PostTransactionInput {
   amountPaid?: string;
   balanceDue?: string;
   invoiceStatus?: string;
+  // Accounts payable fields
+  billStatus?: string;
+  termsDays?: number;
+  creditsApplied?: string;
+  vendorInvoiceNumber?: string;
   appliedToInvoiceId?: string;
   sourceEstimateId?: string;
   lines: JournalLineInput[];
@@ -82,6 +87,10 @@ export async function postTransaction(tenantId: string, input: PostTransactionIn
       amountPaid: input.amountPaid || '0',
       balanceDue: input.balanceDue || null,
       invoiceStatus: input.invoiceStatus || null,
+      billStatus: input.billStatus || null,
+      termsDays: input.termsDays ?? null,
+      creditsApplied: input.creditsApplied || '0',
+      vendorInvoiceNumber: input.vendorInvoiceNumber || null,
       appliedToInvoiceId: input.appliedToInvoiceId || null,
       sourceEstimateId: input.sourceEstimateId || null,
     }).returning();

@@ -64,6 +64,11 @@ bankingRouter.put('/feed/:id/match', validate(matchSchema), async (req, res) => 
   res.json({ message: 'Matched' });
 });
 
+bankingRouter.get('/feed/:id/match-candidates', async (req, res) => {
+  const candidates = await bankFeedService.findMatchCandidates(req.tenantId, req.params['id']!);
+  res.json({ candidates });
+});
+
 bankingRouter.put('/feed/:id/exclude', async (req, res) => {
   await bankFeedService.exclude(req.tenantId, req.params['id']!);
   res.json({ message: 'Excluded' });

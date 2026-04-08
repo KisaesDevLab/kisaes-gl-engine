@@ -1,8 +1,9 @@
 import { eq, and, lte, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { recurringSchedules, transactions, journalLines } from '../db/schema/index.js';
+import { recurringSchedules, transactions, journalLines, accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
+import * as billService from './bill.service.js';
 
 function calculateNextOccurrence(current: string, frequency: string, interval: number): string {
   const d = new Date(current);
@@ -72,23 +73,56 @@ export async function postNext(tenantId: string, scheduleId: string) {
   // Get template transaction
   const template = await ledger.getTransaction(tenantId, sched.templateTransactionId);
 
-  // Clone lines from template
-  const lines = template.lines.map((l) => ({
-    accountId: l.accountId,
-    debit: l.debit,
-    credit: l.credit,
-    description: l.description || undefined,
-  }));
+  let txn;
+  if (template.txnType === 'bill') {
+    // Bills need bill-specific fields (bill_status, due_date, balance_due,
+    // bill number) — route through bill.service.createBill so all those
+    // fields get set correctly. Reconstruct the bill input from the
+    // template's expense lines (the debit side; the credit line is AP).
+    const apAccount = await db.query.accounts.findFirst({
+      where: and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'accounts_payable')),
+    });
+    const expenseLines = template.lines
+      .filter((l) => parseFloat(l.debit) > 0 && (!apAccount || l.accountId !== apAccount.id))
+      .map((l) => ({
+        accountId: l.accountId,
+        amount: parseFloat(l.debit).toFixed(2),
+        description: l.description || undefined,
+      }));
 
-  // Post new transaction
-  const txn = await ledger.postTransaction(tenantId, {
-    txnType: template.txnType as any,
-    txnDate: sched.nextOccurrence,
-    contactId: template.contactId || undefined,
-    memo: template.memo || undefined,
-    total: template.total || undefined,
-    lines,
-  });
+    if (expenseLines.length === 0) {
+      throw AppError.internal('Recurring bill template has no expense lines');
+    }
+
+    txn = await billService.createBill(tenantId, {
+      contactId: template.contactId || '',
+      txnDate: sched.nextOccurrence,
+      // Don't pass dueDate — let createBill recalculate it from the template's
+      // payment terms relative to the new occurrence date.
+      paymentTerms: template.paymentTerms || undefined,
+      termsDays: template.termsDays ?? undefined,
+      vendorInvoiceNumber: template.vendorInvoiceNumber || undefined,
+      memo: template.memo || undefined,
+      lines: expenseLines,
+    });
+  } else {
+    // Generic clone path for other transaction types.
+    const lines = template.lines.map((l) => ({
+      accountId: l.accountId,
+      debit: l.debit,
+      credit: l.credit,
+      description: l.description || undefined,
+    }));
+
+    txn = await ledger.postTransaction(tenantId, {
+      txnType: template.txnType as any,
+      txnDate: sched.nextOccurrence,
+      contactId: template.contactId || undefined,
+      memo: template.memo || undefined,
+      total: template.total || undefined,
+      lines,
+    });
+  }
 
   // Update schedule
   const nextOcc = calculateNextOccurrence(sched.nextOccurrence, sched.frequency, sched.intervalValue ?? 1);

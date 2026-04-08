@@ -9,6 +9,7 @@ import * as invoiceService from './invoice.service.js';
 import * as creditMemoService from './credit-memo.service.js';
 import * as journalEntryService from './journal-entry.service.js';
 import * as ledger from './ledger.service.js';
+import * as billService from './bill.service.js';
 
 // ─── Fuzzy Matching ──────────────────────────────────────────────
 
@@ -149,6 +150,8 @@ export async function validateBatch(tenantId: string, txnType: string, contextAc
       }
     } else if (['invoice', 'credit_memo', 'customer_payment'].includes(txnType)) {
       errors.push({ field: 'contact_name', message: 'Customer is required' });
+    } else if (txnType === 'bill') {
+      errors.push({ field: 'contact_name', message: 'Vendor is required' });
     }
 
     const status = errors.length > 0 ? 'invalid' : newContact ? 'warning' : 'valid';
@@ -282,6 +285,21 @@ export async function saveBatch(
             unitPrice: amount,
           }],
           memo: row.memo,
+        }, userId);
+        break;
+
+      case 'bill':
+        txn = await billService.createBill(tenantId, {
+          contactId: contactId!,
+          txnDate: row.date!,
+          dueDate: row.dueDate,
+          vendorInvoiceNumber: row.invoiceNo,
+          memo: row.memo,
+          lines: [{
+            accountId: accountId!,
+            description: row.description || row.memo || undefined,
+            amount,
+          }],
         }, userId);
         break;
 

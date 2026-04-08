@@ -27,6 +27,11 @@ dashboardRouter.get('/receivables', async (req, res) => {
   res.json(data);
 });
 
+dashboardRouter.get('/payables', async (req, res) => {
+  const data = await dashboardService.getPayablesSummary(req.tenantId);
+  res.json(data);
+});
+
 dashboardRouter.get('/action-items', async (req, res) => {
   const data = await dashboardService.getActionItems(req.tenantId);
   res.json(data);

@@ -20,6 +20,11 @@ export const transactions = pgTable('transactions', {
   amountPaid: decimal('amount_paid', { precision: 19, scale: 4 }).default('0'),
   balanceDue: decimal('balance_due', { precision: 19, scale: 4 }),
   invoiceStatus: varchar('invoice_status', { length: 20 }),
+  // Accounts payable (bills, vendor credits)
+  billStatus: varchar('bill_status', { length: 20 }),
+  termsDays: integer('terms_days'),
+  creditsApplied: decimal('credits_applied', { precision: 19, scale: 4 }).default('0'),
+  vendorInvoiceNumber: varchar('vendor_invoice_number', { length: 100 }),
   sentAt: timestamp('sent_at', { withTimezone: true }),
   viewedAt: timestamp('viewed_at', { withTimezone: true }),
   paidAt: timestamp('paid_at', { withTimezone: true }),
@@ -45,6 +50,38 @@ export const transactions = pgTable('transactions', {
   dateIdx: index('idx_txn_date').on(table.tenantId, table.txnDate),
   contactIdx: index('idx_txn_contact').on(table.tenantId, table.contactId),
   statusIdx: index('idx_txn_status').on(table.tenantId, table.status),
+  billStatusIdx: index('idx_txn_bill_status').on(table.tenantId, table.billStatus),
+  vendorInvIdx: index('idx_txn_vendor_inv').on(table.tenantId, table.vendorInvoiceNumber),
+}));
+
+export const billPaymentApplications = pgTable('bill_payment_applications', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull(),
+  companyId: uuid('company_id'),
+  paymentId: uuid('payment_id').notNull(),
+  billId: uuid('bill_id').notNull(),
+  amount: decimal('amount', { precision: 19, scale: 4 }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (table) => ({
+  paymentIdx: index('idx_bpa_payment').on(table.paymentId),
+  billIdx: index('idx_bpa_bill').on(table.billId),
+  tenantIdx: index('idx_bpa_tenant').on(table.tenantId),
+}));
+
+export const vendorCreditApplications = pgTable('vendor_credit_applications', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull(),
+  companyId: uuid('company_id'),
+  paymentId: uuid('payment_id').notNull(),
+  creditId: uuid('credit_id').notNull(),
+  billId: uuid('bill_id').notNull(),
+  amount: decimal('amount', { precision: 19, scale: 4 }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (table) => ({
+  paymentIdx: index('idx_vca_payment').on(table.paymentId),
+  creditIdx: index('idx_vca_credit').on(table.creditId),
+  billIdx: index('idx_vca_bill').on(table.billId),
+  tenantIdx: index('idx_vca_tenant').on(table.tenantId),
 }));
 
 export const journalLines = pgTable('journal_lines', {

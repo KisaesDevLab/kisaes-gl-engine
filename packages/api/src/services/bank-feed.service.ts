@@ -131,6 +131,89 @@ export async function match(tenantId: string, feedItemId: string, transactionId:
   }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
 }
 
+/**
+ * Find candidate transactions that could match a bank feed item.
+ *
+ * Heuristic: same dollar amount, within ±5 days of the feed item's date,
+ * not already matched to another feed item, and on the same bank account.
+ *
+ * Returns bill payments, write-checks (expense txns with check fields), and
+ * other expense/deposit txns that touch the connected bank account. Bill
+ * payments are prioritized so users can avoid creating duplicate expenses
+ * for invoices they already paid through Pay Bills.
+ */
+export async function findMatchCandidates(tenantId: string, feedItemId: string) {
+  const item = await db.query.bankFeedItems.findFirst({
+    where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)),
+  });
+  if (!item) return [];
+
+  // Resolve the connected bank account so we only suggest transactions that
+  // touched the same physical account.
+  if (!item.bankConnectionId) return [];
+  const conn = await db.query.bankConnections.findFirst({
+    where: eq(bankConnections.id, item.bankConnectionId),
+  });
+  if (!conn) return [];
+
+  const feedAmount = parseFloat(String(item.amount || '0'));
+  if (feedAmount === 0) return [];
+
+  // ±5-day window
+  const feedDate = new Date(item.feedDate);
+  const start = new Date(feedDate);
+  start.setDate(start.getDate() - 5);
+  const end = new Date(feedDate);
+  end.setDate(end.getDate() + 5);
+  const startStr = start.toISOString().split('T')[0]!;
+  const endStr = end.toISOString().split('T')[0]!;
+
+  // Bank feed amounts are signed: negative = money leaving (expense, check,
+  // bill payment), positive = money in (deposit). For matching we compare
+  // absolute value against the txn total.
+  const absAmount = Math.abs(feedAmount).toFixed(4);
+
+  const rows = await db.execute(sql`
+    SELECT t.id, t.txn_type, t.txn_number, t.txn_date, t.total, t.memo,
+      t.check_number, t.print_status,
+      c.display_name AS contact_name
+    FROM transactions t
+    LEFT JOIN contacts c ON c.id = t.contact_id
+    WHERE t.tenant_id = ${tenantId}
+      AND t.status = 'posted'
+      AND t.txn_date >= ${startStr} AND t.txn_date <= ${endStr}
+      AND ABS(CAST(t.total AS DECIMAL) - ${absAmount}) < 0.01
+      AND t.txn_type IN ('bill_payment', 'expense', 'deposit', 'transfer')
+      AND t.id IN (
+        SELECT transaction_id FROM journal_lines
+        WHERE tenant_id = ${tenantId}
+          AND account_id = ${conn.accountId}
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM bank_feed_items bfi
+        WHERE bfi.tenant_id = ${tenantId}
+          AND bfi.matched_transaction_id = t.id
+          AND bfi.id != ${feedItemId}
+      )
+    ORDER BY
+      CASE t.txn_type WHEN 'bill_payment' THEN 0 ELSE 1 END,
+      ABS(EXTRACT(EPOCH FROM (t.txn_date::timestamp - ${item.feedDate}::timestamp))) ASC
+    LIMIT 10
+  `);
+
+  return (rows.rows as any[]).map((r) => ({
+    id: r.id,
+    txnType: r.txn_type,
+    txnNumber: r.txn_number,
+    txnDate: r.txn_date,
+    total: r.total,
+    memo: r.memo,
+    checkNumber: r.check_number,
+    printStatus: r.print_status,
+    contactName: r.contact_name,
+  }));
+}
+
 export async function exclude(tenantId: string, feedItemId: string) {
   await db.update(bankFeedItems).set({
     status: 'excluded',

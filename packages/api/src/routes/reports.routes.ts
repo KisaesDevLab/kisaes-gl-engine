@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import * as reportService from '../services/report.service.js';
+import * as apReportService from '../services/ap-report.service.js';
 import * as exportService from '../services/report-export.service.js';
 import * as comparisonService from '../services/report-comparison.service.js';
 
@@ -452,6 +453,57 @@ reportsRouter.get('/ar-aging-summary', async (req, res) => {
 reportsRouter.get('/ar-aging-detail', async (req, res) => {
   const { as_of_date, format } = req.query as Record<string, string>;
   const data = await reportService.buildARAgingDetail(req.tenantId, as_of_date || new Date().toISOString().split('T')[0]!);
+  await respond(res, data, format);
+});
+
+// Accounts Payable
+reportsRouter.get('/ap-aging-summary', async (req, res) => {
+  const { as_of_date, format } = req.query as Record<string, string>;
+  const data = await apReportService.buildApAgingSummary(req.tenantId, as_of_date || new Date().toISOString().split('T')[0]!);
+  await respond(res, data, format);
+});
+
+reportsRouter.get('/ap-aging-detail', async (req, res) => {
+  const { as_of_date, format } = req.query as Record<string, string>;
+  const data = await apReportService.buildApAgingDetail(req.tenantId, as_of_date || new Date().toISOString().split('T')[0]!);
+  await respond(res, data, format);
+});
+
+reportsRouter.get('/unpaid-bills', async (req, res) => {
+  const { contact_id, due_on_or_before, overdue_only, format } = req.query as Record<string, string>;
+  const data = await apReportService.buildUnpaidBills(req.tenantId, {
+    contactId: contact_id || undefined,
+    dueOnOrBefore: due_on_or_before || undefined,
+    overdueOnly: overdue_only === 'true',
+  });
+  await respond(res, data, format);
+});
+
+reportsRouter.get('/bill-payment-history', async (req, res) => {
+  const { start_date, end_date, format } = req.query as Record<string, string>;
+  const data = await apReportService.buildBillPaymentHistory(req.tenantId, {
+    startDate: start_date,
+    endDate: end_date,
+  });
+  await respond(res, data, format);
+});
+
+reportsRouter.get('/vendor-statement', async (req, res) => {
+  const { vendor_id, start_date, end_date, format } = req.query as Record<string, string>;
+  if (!vendor_id) {
+    return res.status(400).json({ error: { message: 'vendor_id is required' } });
+  }
+  const data = await apReportService.buildVendorStatement(req.tenantId, vendor_id, {
+    startDate: start_date,
+    endDate: end_date,
+  });
+  return respond(res, data, format);
+});
+
+reportsRouter.get('/ap-1099-prep', async (req, res) => {
+  const { tax_year, format } = req.query as Record<string, string>;
+  const year = tax_year ? parseInt(tax_year, 10) : new Date().getFullYear();
+  const data = await apReportService.buildAp1099Prep(req.tenantId, year);
   await respond(res, data, format);
 });
 

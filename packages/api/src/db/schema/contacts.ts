@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, decimal, boolean, date, timestamp, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, decimal, boolean, date, timestamp, integer, index } from 'drizzle-orm/pg-core';
 
 export const contacts = pgTable('contacts', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -27,6 +27,7 @@ export const contacts = pgTable('contacts', {
   shippingCountry: varchar('shipping_country', { length: 3 }).default('US'),
   // Customer-specific
   defaultPaymentTerms: varchar('default_payment_terms', { length: 50 }),
+  defaultTermsDays: integer('default_terms_days'),
   openingBalance: decimal('opening_balance', { precision: 19, scale: 4 }).default('0'),
   openingBalanceDate: date('opening_balance_date'),
   // Vendor-specific

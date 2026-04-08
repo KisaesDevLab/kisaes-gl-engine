@@ -143,6 +143,84 @@ export async function getReceivablesSummary(tenantId: string) {
   };
 }
 
+export async function getPayablesSummary(tenantId: string) {
+  const today = new Date().toISOString().split('T')[0]!;
+
+  // Open bills for this tenant
+  const billsResult = await db.execute(sql`
+    SELECT t.id, t.due_date, t.balance_due, t.total
+    FROM transactions t
+    WHERE t.tenant_id = ${tenantId}
+      AND t.txn_type = 'bill'
+      AND t.status = 'posted'
+      AND t.bill_status IN ('unpaid', 'partial', 'overdue')
+      AND COALESCE(t.balance_due, 0) > 0
+  `);
+
+  const todayDate = new Date(today);
+  const oneWeek = new Date(todayDate);
+  oneWeek.setDate(oneWeek.getDate() + 7);
+
+  let totalOwed = 0;
+  let overdueCount = 0;
+  let overdueAmount = 0;
+  let dueThisWeekCount = 0;
+  let dueThisWeekAmount = 0;
+  let billCount = 0;
+
+  for (const row of billsResult.rows as any[]) {
+    const balance = parseFloat(row.balance_due || row.total || '0');
+    if (balance <= 0) continue;
+    billCount++;
+    totalOwed += balance;
+
+    if (row.due_date) {
+      const due = new Date(row.due_date);
+      if (due < todayDate) {
+        overdueCount++;
+        overdueAmount += balance;
+      } else if (due <= oneWeek) {
+        dueThisWeekCount++;
+        dueThisWeekAmount += balance;
+      }
+    }
+  }
+
+  // Available vendor credits
+  const creditsResult = await db.execute(sql`
+    SELECT COUNT(*) as count, COALESCE(SUM(CAST(balance_due AS DECIMAL)), 0) as total
+    FROM transactions
+    WHERE tenant_id = ${tenantId}
+      AND txn_type = 'vendor_credit'
+      AND status = 'posted'
+      AND COALESCE(balance_due, 0) > 0
+  `);
+  const creditCount = parseInt((creditsResult.rows as any[])[0]?.count || '0');
+  const creditAmount = parseFloat((creditsResult.rows as any[])[0]?.total || '0');
+
+  // AP balance from the system account (defensive — falls back to bill total)
+  const apResult = await db.execute(sql`
+    SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) as balance
+    FROM journal_lines jl
+    JOIN accounts a ON a.id = jl.account_id AND a.system_tag = 'accounts_payable'
+    JOIN transactions t ON t.id = jl.transaction_id
+    WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
+  `);
+  const apBalance = parseFloat((apResult.rows as any[])[0]?.balance || '0');
+
+  return {
+    totalOwed,
+    billCount,
+    overdueCount,
+    overdueAmount,
+    dueThisWeekCount,
+    dueThisWeekAmount,
+    creditCount,
+    creditAmount,
+    apBalance,
+  };
+}
+
 export async function getActionItems(tenantId: string) {
   // Pending bank feed items
   const feedResult = await db.execute(sql`

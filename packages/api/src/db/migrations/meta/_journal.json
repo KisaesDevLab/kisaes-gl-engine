@@ -246,6 +246,20 @@
       "when": 1775490000000,
       "tag": "0034_bank_feed_original_description",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1775500000000,
+      "tag": "0035_accounts_payable",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1775510000000,
+      "tag": "0036_coa_templates",
+      "breakpoints": true
     }
   ]
 }
