@@ -52,6 +52,9 @@ async function main() {
     console.log(`  Bank deposits:     ${result.counts.deposits}`);
     console.log(`  Transfers:         ${result.counts.transfers}`);
     console.log(`  Journal entries:   ${result.counts.journalEntries}`);
+    console.log(`  Bills:             ${result.counts.bills}`);
+    console.log(`  Vendor credits:    ${result.counts.vendorCredits}`);
+    console.log(`  Bill payments:     ${result.counts.billPayments}`);
     console.log(`  TOTAL:             ${result.counts.total}`);
     console.log();
     console.log(`  Trial balance valid: ${result.trialBalanceValid ? 'YES' : 'NO'}`);

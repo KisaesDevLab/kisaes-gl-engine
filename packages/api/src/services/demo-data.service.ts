@@ -26,6 +26,9 @@ import * as accountsService from './accounts.service.js';
 import * as ledger from './ledger.service.js';
 import * as invoiceService from './invoice.service.js';
 import * as paymentService from './payment.service.js';
+import * as billService from './bill.service.js';
+import * as vendorCreditService from './vendor-credit.service.js';
+import * as billPaymentService from './bill-payment.service.js';
 
 export interface DemoTenantOptions {
   tenantName?: string;
@@ -46,6 +49,9 @@ export interface DemoTenantResult {
     deposits: number;
     transfers: number;
     journalEntries: number;
+    bills: number;
+    vendorCredits: number;
+    billPayments: number;
     total: number;
   };
   trialBalanceValid: boolean;
@@ -92,7 +98,11 @@ export async function createDemoTenant(
       tenantId: existing.id,
       tenantName: existing.name,
       alreadyExisted: true,
-      counts: { invoices: 0, customerPayments: 0, cashSales: 0, expenses: 0, deposits: 0, transfers: 0, journalEntries: 0, total: 0 },
+      counts: {
+        invoices: 0, customerPayments: 0, cashSales: 0, expenses: 0,
+        deposits: 0, transfers: 0, journalEntries: 0,
+        bills: 0, vendorCredits: 0, billPayments: 0, total: 0,
+      },
       trialBalanceValid: true,
     };
   }
@@ -135,13 +145,7 @@ export async function createDemoTenant(
     if (!a) throw new Error(`System account not found: ${tag}`);
     return a;
   };
-  const byNumber = (num: string) => {
-    const a = allAccounts.find((x) => x.accountNumber === num);
-    if (!a) throw new Error(`Account not found: ${num}`);
-    return a;
-  };
-
-  const checkingAcct = byNumber('10110');
+  const checkingAcct = byTag('cash_on_hand');
   const paymentsClearingAcct = byTag('payments_clearing');
   const revenueAccts = allAccounts.filter((a) => a.accountType === 'revenue' && !a.isSystem);
   const expenseAccts = allAccounts.filter((a) => a.accountType === 'expense' && !a.isSystem);
@@ -157,12 +161,25 @@ export async function createDemoTenant(
     { displayName: 'Metro Design Studio', email: 'contact@metrodesign.example.com' },
     { displayName: 'Sunrise Consulting', email: 'hello@sunrise.example.com' },
   ];
-  const vendorData = [
+  const vendorData: Array<{
+    displayName: string;
+    email: string;
+    defaultPaymentTerms?: string;
+    is1099Eligible?: boolean;
+  }> = [
     { displayName: 'City Power & Light', email: 'billing@citypower.example.com' },
     { displayName: 'Office Depot Supply', email: 'accounts@officedepot.example.com' },
     { displayName: 'AT&T Business', email: 'commercial@att.example.com' },
     { displayName: 'Commercial Insurance Group', email: 'policy@cig.example.com' },
     { displayName: 'Downtown Office Lease LLC', email: 'rent@downtownlease.example.com' },
+    // AP-specific vendors — these get billed via the bills workflow so the
+    // demo shows the full Accounts Payable lifecycle (bill → pay bills →
+    // optionally with credits applied) alongside the simpler one-step
+    // expenses above.
+    { displayName: 'TechWorks IT Solutions', email: 'ar@techworks.example.com', defaultPaymentTerms: 'net_30', is1099Eligible: true },
+    { displayName: 'Crawford Legal LLP', email: 'billing@crawfordlegal.example.com', defaultPaymentTerms: 'net_15', is1099Eligible: true },
+    { displayName: 'BrightAds Marketing', email: 'accounts@brightads.example.com', defaultPaymentTerms: 'net_30', is1099Eligible: true },
+    { displayName: 'Cloudbase Software Inc', email: 'billing@cloudbase.example.com', defaultPaymentTerms: 'net_30' },
   ];
 
   const customers: Array<{ id: string; displayName: string }> = [];
@@ -184,6 +201,8 @@ export async function createDemoTenant(
       contactType: 'vendor',
       email: v.email,
       isActive: true,
+      defaultPaymentTerms: v.defaultPaymentTerms || null,
+      is1099Eligible: v.is1099Eligible || false,
     }).returning();
     if (row) vendors.push({ id: row.id, displayName: row.displayName });
   }
@@ -303,6 +322,9 @@ export async function createDemoTenant(
     deposits: 0,
     transfers: 0,
     journalEntries: 0,
+    bills: 0,
+    vendorCredits: 0,
+    billPayments: 0,
     total: 0,
   };
 
@@ -492,6 +514,19 @@ export async function createDemoTenant(
     }
   }
 
+  // ── 10. Accounts Payable: bills, vendor credits, bill payments ──
+  //
+  // Demonstrates the full AP lifecycle separately from the simple expense
+  // flow above. Plan:
+  //   - Quarterly bills from 4 AP-specific vendors (IT, legal, marketing,
+  //     software) across the same date range as the rest of the demo
+  //   - Most bills get paid via the Pay Bills workflow (consolidating
+  //     multiple bills per vendor into one check)
+  //   - A few bills are left open: some current, some overdue
+  //   - Two vendor credits — one applied during a payment, one still
+  //     available — so the AP aging report shows credit balances too
+  await seedAccountsPayable(tenant.id, vendors, expenseAccts, checkingAcct, counts, log);
+
   counts.total =
     counts.invoices +
     counts.customerPayments +
@@ -499,9 +534,12 @@ export async function createDemoTenant(
     counts.expenses +
     counts.deposits +
     counts.transfers +
-    counts.journalEntries;
+    counts.journalEntries +
+    counts.bills +
+    counts.vendorCredits +
+    counts.billPayments;
 
-  // ── 10. Sanity check: trial balance must balance ──────────────
+  // ── 11. Sanity check: trial balance must balance ──────────────
   const val = await ledger.validateBalance(tenant.id);
   log(
     `Demo seed complete: ${counts.total} transactions, trial balance ${val.valid ? 'VALID' : 'INVALID'} ` +
@@ -515,4 +553,351 @@ export async function createDemoTenant(
     counts,
     trialBalanceValid: val.valid,
   };
+}
+
+// ─── Accounts Payable demo seeding ──────────────────────────────────
+//
+// Builds out the AP side of the demo: bills from 4 dedicated AP vendors,
+// realistic payment patterns (most paid via consolidated checks, some
+// partial, some unpaid, some overdue, with a couple of vendor credits
+// applied along the way).
+//
+// All bills go through bill.service.createBill (so bill_status, due_date,
+// numbering, and journal entries follow the production code path) and all
+// payments go through bill-payment.service.payBills (which exercises the
+// FOR UPDATE locks, credit allocation, and bill_payment_applications logic
+// the AP tests cover). This means the demo doubles as a smoke test of the
+// AP code path on every fresh install.
+async function seedAccountsPayable(
+  tenantId: string,
+  vendors: Array<{ id: string; displayName: string }>,
+  expenseAccts: Array<{ id: string; name: string }>,
+  checkingAcct: { id: string },
+  counts: { bills: number; vendorCredits: number; billPayments: number },
+  log: (line: string) => void,
+) {
+  // Vendor lookup — relies on the order in vendorData. The first 5 vendors
+  // (utility, office supply, telco, insurance, landlord) are still owned by
+  // the simple-expense flow above; vendors 5–8 are AP-flow vendors.
+  const techVendor = vendors[5];      // TechWorks IT Solutions
+  const legalVendor = vendors[6];     // Crawford Legal LLP
+  const marketingVendor = vendors[7]; // BrightAds Marketing
+  const softwareVendor = vendors[8];  // Cloudbase Software Inc
+
+  if (!techVendor || !legalVendor || !marketingVendor || !softwareVendor) {
+    log('  ⚠ AP demo skipped — required vendors not found');
+    return;
+  }
+
+  // Map bill descriptions to plausible expense accounts. Falls back to the
+  // first available expense account so the demo never crashes if the COA
+  // template doesn't include an exact match.
+  const findExpenseAcct = (pattern: RegExp) =>
+    expenseAccts.find((a) => pattern.test(a.name)) || expenseAccts[0]!;
+  const itAcct = findExpenseAcct(/comput|office|equipment|technology|supplies/i);
+  const legalAcct = findExpenseAcct(/legal|professional|consulting/i);
+  const marketingAcct = findExpenseAcct(/market|advertis|promotion/i);
+  const softwareAcct = findExpenseAcct(/software|subscript|dues/i);
+
+  // ── Bill plan ──────────────────────────────────────────────────
+  //
+  // Each entry: { date, vendor, account, amount, description, vendor invoice #
+  // (the vendor's reference, distinct from our BILL-NNNNN), and an optional
+  // payment plan that says how/when this bill should be paid.
+  //
+  // payAfter days: how long after the bill date the payment was made
+  // payment   : 'check' | 'ach' | null (null = leave unpaid)
+  // partial   : if true, only pay half (creates a 'partial' bill_status)
+  // useCredit : if set, applies the indexed vendor credit during payment
+  type BillSpec = {
+    date: string;
+    vendor: { id: string; displayName: string };
+    accountId: string;
+    amount: string;
+    description: string;
+    vendorInvoiceNumber: string;
+    paymentTerms: string;
+    pay: { after: number; method: 'check' | 'ach' | 'check_handwritten'; partial?: boolean } | null;
+  };
+
+  const billSpecs: BillSpec[] = [
+    // ─── 2025 Q1
+    {
+      date: '2025-01-12', vendor: techVendor, accountId: itAcct.id,
+      amount: '2450.00', description: 'Workstation refresh - 3 units',
+      vendorInvoiceNumber: 'TW-25011', paymentTerms: 'net_30',
+      pay: { after: 22, method: 'check' },
+    },
+    {
+      date: '2025-02-05', vendor: legalVendor, accountId: legalAcct.id,
+      amount: '1200.00', description: 'Contract review - service agreements',
+      vendorInvoiceNumber: 'CL-2502-A', paymentTerms: 'net_15',
+      pay: { after: 12, method: 'ach' },
+    },
+    {
+      date: '2025-03-18', vendor: marketingVendor, accountId: marketingAcct.id,
+      amount: '3850.00', description: 'Q1 digital ad campaign',
+      vendorInvoiceNumber: 'BA-Q1-2025', paymentTerms: 'net_30',
+      pay: { after: 18, method: 'ach' },
+    },
+    {
+      date: '2025-03-22', vendor: softwareVendor, accountId: softwareAcct.id,
+      amount: '480.00', description: 'CRM software - annual license',
+      vendorInvoiceNumber: 'CB-9981', paymentTerms: 'net_30',
+      pay: { after: 8, method: 'check' },
+    },
+
+    // ─── 2025 Q2
+    {
+      date: '2025-04-15', vendor: techVendor, accountId: itAcct.id,
+      amount: '725.00', description: 'Network switch + cabling',
+      vendorInvoiceNumber: 'TW-25048', paymentTerms: 'net_30',
+      pay: { after: 25, method: 'check' },
+    },
+    {
+      date: '2025-05-09', vendor: legalVendor, accountId: legalAcct.id,
+      amount: '2200.00', description: 'Trademark filing + counsel',
+      vendorInvoiceNumber: 'CL-2505-B', paymentTerms: 'net_15',
+      pay: { after: 14, method: 'ach' },
+    },
+    {
+      date: '2025-06-04', vendor: marketingVendor, accountId: marketingAcct.id,
+      amount: '1650.00', description: 'Logo redesign + brand guide',
+      vendorInvoiceNumber: 'BA-25060', paymentTerms: 'net_30',
+      pay: { after: 30, method: 'check' },
+    },
+
+    // ─── 2025 Q3
+    {
+      date: '2025-07-08', vendor: softwareVendor, accountId: softwareAcct.id,
+      amount: '299.00', description: 'Project management tool - annual',
+      vendorInvoiceNumber: 'CB-10422', paymentTerms: 'net_30',
+      pay: { after: 5, method: 'ach' },
+    },
+    {
+      date: '2025-08-11', vendor: techVendor, accountId: itAcct.id,
+      amount: '1875.00', description: 'Server upgrade + installation',
+      vendorInvoiceNumber: 'TW-25117', paymentTerms: 'net_30',
+      pay: { after: 28, method: 'check' },
+    },
+    {
+      date: '2025-09-02', vendor: legalVendor, accountId: legalAcct.id,
+      amount: '950.00', description: 'Employee handbook review',
+      vendorInvoiceNumber: 'CL-2509-A', paymentTerms: 'net_15',
+      pay: { after: 12, method: 'ach' },
+    },
+    {
+      date: '2025-09-19', vendor: marketingVendor, accountId: marketingAcct.id,
+      amount: '4200.00', description: 'Trade show booth + materials',
+      vendorInvoiceNumber: 'BA-25092', paymentTerms: 'net_30',
+      pay: { after: 35, method: 'check' },
+    },
+
+    // ─── 2025 Q4
+    {
+      date: '2025-10-14', vendor: techVendor, accountId: itAcct.id,
+      amount: '540.00', description: 'Backup software licenses',
+      vendorInvoiceNumber: 'TW-25143', paymentTerms: 'net_30',
+      pay: { after: 18, method: 'check' },
+    },
+    {
+      date: '2025-11-06', vendor: softwareVendor, accountId: softwareAcct.id,
+      amount: '1200.00', description: 'Cloud storage - annual upgrade',
+      vendorInvoiceNumber: 'CB-11507', paymentTerms: 'net_30',
+      pay: { after: 22, method: 'ach' },
+    },
+    {
+      date: '2025-12-01', vendor: legalVendor, accountId: legalAcct.id,
+      amount: '1800.00', description: 'Year-end compliance review',
+      vendorInvoiceNumber: 'CL-2512-A', paymentTerms: 'net_15',
+      // Paid only partially — illustrates the 'partial' bill status
+      pay: { after: 14, method: 'ach', partial: true },
+    },
+
+    // ─── 2026 Q1
+    {
+      date: '2026-01-08', vendor: marketingVendor, accountId: marketingAcct.id,
+      amount: '2750.00', description: 'New year campaign launch',
+      vendorInvoiceNumber: 'BA-26001', paymentTerms: 'net_30',
+      pay: { after: 25, method: 'check' },
+    },
+    {
+      date: '2026-02-11', vendor: techVendor, accountId: itAcct.id,
+      amount: '395.00', description: 'Replacement laptop battery',
+      vendorInvoiceNumber: 'TW-26019', paymentTerms: 'net_30',
+      pay: { after: 12, method: 'check_handwritten' },
+    },
+
+    // ─── Open / unpaid bills (relative to demo "today" = 2026-04-06)
+    // Recent + within terms — should show as 'unpaid', not yet due
+    {
+      date: '2026-03-25', vendor: softwareVendor, accountId: softwareAcct.id,
+      amount: '660.00', description: 'Helpdesk software - quarterly',
+      vendorInvoiceNumber: 'CB-12104', paymentTerms: 'net_30',
+      pay: null,
+    },
+    {
+      date: '2026-04-01', vendor: marketingVendor, accountId: marketingAcct.id,
+      amount: '1900.00', description: 'April content production',
+      vendorInvoiceNumber: 'BA-26032', paymentTerms: 'net_30',
+      pay: null,
+    },
+
+    // Past due — should appear in the AP aging "1-30 days" bucket
+    {
+      date: '2026-02-20', vendor: legalVendor, accountId: legalAcct.id,
+      amount: '1450.00', description: 'Vendor contract negotiation',
+      vendorInvoiceNumber: 'CL-2602-B', paymentTerms: 'net_15',
+      pay: null, // due 2026-03-07, ~30 days overdue as of 2026-04-06
+    },
+    {
+      date: '2026-03-05', vendor: techVendor, accountId: itAcct.id,
+      amount: '880.00', description: 'Conference room AV equipment',
+      vendorInvoiceNumber: 'TW-26032', paymentTerms: 'net_15',
+      pay: null, // due 2026-03-20, ~17 days overdue
+    },
+  ];
+
+  // ── Create the bills ──────────────────────────────────────────
+  type CreatedBill = {
+    id: string;
+    spec: BillSpec;
+    totalNum: number;
+  };
+  const created: CreatedBill[] = [];
+
+  for (const spec of billSpecs) {
+    try {
+      const bill = await billService.createBill(tenantId, {
+        contactId: spec.vendor.id,
+        txnDate: spec.date,
+        paymentTerms: spec.paymentTerms,
+        vendorInvoiceNumber: spec.vendorInvoiceNumber,
+        memo: spec.description,
+        lines: [
+          { accountId: spec.accountId, amount: spec.amount, description: spec.description },
+        ],
+      });
+      created.push({ id: bill.id, spec, totalNum: parseFloat(spec.amount) });
+      counts.bills++;
+    } catch (err) {
+      log(`  ✗ Failed to create bill for ${spec.vendor.displayName} on ${spec.date}: ${(err as Error).message}`);
+    }
+  }
+  log(`Created ${counts.bills} bills`);
+
+  // ── Vendor credits ────────────────────────────────────────────
+  //
+  // Two credits issued by vendors:
+  //   1. From TechWorks (returned defective equipment) — applied during a
+  //      bill payment so the demo's "credits applied" report has data.
+  //   2. From BrightAds (pricing adjustment) — left available so the
+  //      AP aging report shows credit balances and the Pay Bills page
+  //      can offer it next time those bills get paid.
+  let techCreditId: string | null = null;
+  try {
+    const techCredit = await vendorCreditService.createVendorCredit(tenantId, {
+      contactId: techVendor.id,
+      txnDate: '2025-08-15',
+      memo: 'Returned defective workstation',
+      lines: [{ accountId: itAcct.id, amount: '375.00', description: 'Returned defective workstation' }],
+    });
+    techCreditId = techCredit.id;
+    counts.vendorCredits++;
+  } catch (err) {
+    log(`  ✗ Failed to create TechWorks credit: ${(err as Error).message}`);
+  }
+
+  try {
+    await vendorCreditService.createVendorCredit(tenantId, {
+      contactId: marketingVendor.id,
+      txnDate: '2026-03-15',
+      memo: 'Q1 spend over-billing - partial refund',
+      lines: [{ accountId: marketingAcct.id, amount: '250.00', description: 'Pricing adjustment' }],
+    });
+    counts.vendorCredits++;
+  } catch (err) {
+    log(`  ✗ Failed to create BrightAds credit: ${(err as Error).message}`);
+  }
+  log(`Created ${counts.vendorCredits} vendor credits`);
+
+  // ── Pay bills ─────────────────────────────────────────────────
+  //
+  // Group payable bills by (vendor, payment date, method) so multi-bill
+  // payments to the same vendor get consolidated into one check — this is
+  // how Pay Bills behaves in production.
+  type PayKey = string;
+  const payGroups = new Map<PayKey, {
+    vendorId: string;
+    txnDate: string;
+    method: 'check' | 'ach' | 'check_handwritten';
+    bills: Array<{ billId: string; amount: string }>;
+  }>();
+
+  for (const c of created) {
+    if (!c.spec.pay) continue;
+    // Compute the payment date deterministically from bill date + offset
+    const billDate = new Date(c.spec.date);
+    billDate.setDate(billDate.getDate() + c.spec.pay.after);
+    const payDate = billDate.toISOString().split('T')[0]!;
+    const method = c.spec.pay.method;
+    const key: PayKey = `${c.spec.vendor.id}|${payDate}|${method}`;
+
+    const amount = c.spec.pay.partial
+      ? (c.totalNum / 2).toFixed(2)
+      : c.totalNum.toFixed(2);
+
+    const existing = payGroups.get(key);
+    if (existing) {
+      existing.bills.push({ billId: c.id, amount });
+    } else {
+      payGroups.set(key, {
+        vendorId: c.spec.vendor.id,
+        txnDate: payDate,
+        method,
+        bills: [{ billId: c.id, amount }],
+      });
+    }
+  }
+
+  // Pick one payment group from TechWorks to apply the tech credit against.
+  // We mutate the first techVendor group's amount to match (the credit
+  // application reduces the cash leg, so the chosen bill must be at least
+  // as large as the credit).
+  let creditApplicationDone = false;
+
+  for (const group of payGroups.values()) {
+    try {
+      // Apply the TechWorks credit to the first eligible TechWorks payment
+      // (one bill ≥ $375). Limited to a single application so the demo
+      // shows both the "credit applied" and "credit available" states.
+      let credits: Array<{ creditId: string; billId: string; amount: string }> | undefined;
+      if (
+        !creditApplicationDone &&
+        techCreditId &&
+        group.vendorId === techVendor.id &&
+        group.bills.length > 0 &&
+        parseFloat(group.bills[0]!.amount) >= 375
+      ) {
+        credits = [{ creditId: techCreditId, billId: group.bills[0]!.billId, amount: '375.00' }];
+        creditApplicationDone = true;
+      }
+
+      await billPaymentService.payBills(tenantId, {
+        bankAccountId: checkingAcct.id,
+        txnDate: group.txnDate,
+        method: group.method,
+        // For 'check' method, queue for printing (mirrors how a real user
+        // would prep checks for the next print run); 'check_handwritten'
+        // immediately allocates a number; 'ach' has no print state.
+        printLater: group.method === 'check',
+        bills: group.bills,
+        credits,
+      });
+      counts.billPayments++;
+    } catch (err) {
+      log(`  ✗ Failed bill payment on ${group.txnDate}: ${(err as Error).message}`);
+    }
+  }
+  log(`Posted ${counts.billPayments} bill payments`);
 }
