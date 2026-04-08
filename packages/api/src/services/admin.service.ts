@@ -305,14 +305,21 @@ export async function getGlobalSettings() {
   };
 }
 
+// Default product name. Kept as an exported constant so the sidebar's
+// "powered by" footer logic and the API both compare against the same
+// string — change it in one place and both sides agree.
+export const DEFAULT_APP_NAME = 'Vibe MyBooks';
+
 export async function getApplicationSettings() {
   const appUrl = await getSetting('application_url');
   const maxFileSize = await getSetting('max_file_size_mb');
   const backupSchedule = await getSetting('backup_schedule');
+  const appName = await getSetting('app_name');
   return {
     applicationUrl: appUrl ?? '',
     maxFileSizeMb: maxFileSize ?? process.env['MAX_FILE_SIZE_MB'] ?? '10',
     backupSchedule: backupSchedule ?? 'none',
+    appName: appName && appName.trim() ? appName : DEFAULT_APP_NAME,
   };
 }
 
@@ -320,8 +327,29 @@ export async function saveApplicationSettings(input: {
   applicationUrl: string;
   maxFileSizeMb: string;
   backupSchedule: string;
+  appName?: string;
 }) {
   await setSetting('application_url', input.applicationUrl);
   await setSetting('max_file_size_mb', input.maxFileSizeMb);
   await setSetting('backup_schedule', input.backupSchedule);
+  if (input.appName !== undefined) {
+    // An empty string means "reset to default" — store empty so the
+    // getter falls back to DEFAULT_APP_NAME on the next read.
+    await setSetting('app_name', input.appName.trim());
+  }
+}
+
+/**
+ * Lightweight branding lookup used by the authenticated `/auth/me`
+ * response. Kept separate from the heavier getApplicationSettings so the
+ * sidebar fetch path doesn't pull in unrelated settings (and so it can
+ * be cached independently in the future).
+ */
+export async function getBranding(): Promise<{ appName: string; isCustomName: boolean }> {
+  const stored = await getSetting('app_name');
+  const appName = stored && stored.trim() ? stored : DEFAULT_APP_NAME;
+  return {
+    appName,
+    isCustomName: appName !== DEFAULT_APP_NAME,
+  };
 }

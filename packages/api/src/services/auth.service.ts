@@ -158,16 +158,19 @@ export async function login(input: LoginInput): Promise<{ user: typeof users.$in
   });
 
   if (!user) {
-    throw AppError.unauthorized('Invalid email or password');
+    throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDENTIALS');
   }
 
   if (!user.isActive) {
-    throw AppError.unauthorized('Account is deactivated');
+    throw AppError.forbidden(
+      'This account has been deactivated. Please contact your administrator.',
+      'ACCOUNT_DEACTIVATED',
+    );
   }
 
   const validPassword = await bcrypt.compare(input.password, user.passwordHash);
   if (!validPassword) {
-    throw AppError.unauthorized('Invalid email or password');
+    throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDENTIALS');
   }
 
   // Update last login

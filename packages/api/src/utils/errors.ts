@@ -12,12 +12,12 @@ export class AppError extends Error {
     return new AppError(400, message, code);
   }
 
-  static unauthorized(message: string = 'Unauthorized') {
-    return new AppError(401, message, 'UNAUTHORIZED');
+  static unauthorized(message: string = 'Unauthorized', code: string = 'UNAUTHORIZED') {
+    return new AppError(401, message, code);
   }
 
-  static forbidden(message: string = 'Forbidden') {
-    return new AppError(403, message, 'FORBIDDEN');
+  static forbidden(message: string = 'Forbidden', code: string = 'FORBIDDEN') {
+    return new AppError(403, message, code);
   }
 
   static notFound(message: string = 'Not found') {

@@ -194,7 +194,15 @@ authRouter.get('/me', authenticate, async (req, res) => {
   const companyService = await import('../services/company.service.js');
   const companiesList = await companyService.listCompanies(req.tenantId, req.userId);
   const accessibleTenants = await authService.getAccessibleTenants(req.userId);
-  res.json({ user: sanitizeUser(user), companies: companiesList, accessibleTenants, activeTenantId: req.tenantId });
+  const adminService = await import('../services/admin.service.js');
+  const branding = await adminService.getBranding();
+  res.json({
+    user: sanitizeUser(user),
+    companies: companiesList,
+    accessibleTenants,
+    activeTenantId: req.tenantId,
+    branding,
+  });
 });
 
 authRouter.post('/switch-tenant', authenticate, async (req, res) => {
