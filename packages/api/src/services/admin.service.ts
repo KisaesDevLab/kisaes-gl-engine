@@ -240,14 +240,14 @@ export async function includeCompanyForAccountant(userId: string, companyId: str
 
 // ─── System Settings (DB-backed) ─────────────────────────────────
 
-async function getSetting(key: string): Promise<string | null> {
+export async function getSetting(key: string): Promise<string | null> {
   const row = await db.query.systemSettings.findFirst({
     where: eq(systemSettings.key, key),
   });
   return row?.value ?? null;
 }
 
-async function setSetting(key: string, value: string): Promise<void> {
+export async function setSetting(key: string, value: string): Promise<void> {
   await db
     .insert(systemSettings)
     .values({ key, value, updatedAt: new Date() })
@@ -324,4 +324,73 @@ export async function saveApplicationSettings(input: {
   await setSetting('application_url', input.applicationUrl);
   await setSetting('max_file_size_mb', input.maxFileSizeMb);
   await setSetting('backup_schedule', input.backupSchedule);
+}
+
+// ─── Backup Remote Config ────────────────────────────────────────
+
+export interface BackupRemoteConfig {
+  backupRemoteProvider: string;
+  backupRemoteConfig: string; // JSON string, secrets encrypted
+  backupLocalRetentionDays: string;
+  backupRemoteRetentionPreset: string;
+  backupRemoteRetentionDaily: string;
+  backupRemoteRetentionWeekly: string;
+  backupRemoteRetentionMonthly: string;
+  backupRemoteRetentionYearly: string;
+  backupLastRun: string;
+}
+
+const GFS_PRESETS: Record<string, { daily: string; weekly: string; monthly: string; yearly: string }> = {
+  recommended: { daily: '14', weekly: '8', monthly: '12', yearly: '7' },
+  minimal: { daily: '7', weekly: '4', monthly: '6', yearly: '0' },
+  compliance: { daily: '30', weekly: '12', monthly: '24', yearly: '10' },
+  unlimited: { daily: '0', weekly: '0', monthly: '0', yearly: '0' },
+};
+
+export { GFS_PRESETS };
+
+export async function getBackupRemoteConfig(): Promise<BackupRemoteConfig> {
+  const provider = await getSetting('backup_remote_provider');
+  const config = await getSetting('backup_remote_config');
+  const localRetention = await getSetting('backup_local_retention_days');
+  const preset = await getSetting('backup_remote_retention_preset');
+  const daily = await getSetting('backup_remote_retention_daily');
+  const weekly = await getSetting('backup_remote_retention_weekly');
+  const monthly = await getSetting('backup_remote_retention_monthly');
+  const yearly = await getSetting('backup_remote_retention_yearly');
+  const lastRun = await getSetting('backup_last_run');
+
+  return {
+    backupRemoteProvider: provider ?? 'none',
+    backupRemoteConfig: config ?? '{}',
+    backupLocalRetentionDays: localRetention ?? '30',
+    backupRemoteRetentionPreset: preset ?? 'recommended',
+    backupRemoteRetentionDaily: daily ?? '14',
+    backupRemoteRetentionWeekly: weekly ?? '8',
+    backupRemoteRetentionMonthly: monthly ?? '12',
+    backupRemoteRetentionYearly: yearly ?? '7',
+    backupLastRun: lastRun ?? '',
+  };
+}
+
+export async function saveBackupRemoteConfig(input: Partial<BackupRemoteConfig>) {
+  if (input.backupRemoteProvider !== undefined) await setSetting('backup_remote_provider', input.backupRemoteProvider);
+  if (input.backupRemoteConfig !== undefined) await setSetting('backup_remote_config', input.backupRemoteConfig);
+  if (input.backupLocalRetentionDays !== undefined) await setSetting('backup_local_retention_days', input.backupLocalRetentionDays);
+  if (input.backupRemoteRetentionPreset !== undefined) {
+    await setSetting('backup_remote_retention_preset', input.backupRemoteRetentionPreset);
+    // Auto-populate tier values from preset (unless custom)
+    const presetValues = GFS_PRESETS[input.backupRemoteRetentionPreset];
+    if (presetValues) {
+      await setSetting('backup_remote_retention_daily', presetValues.daily);
+      await setSetting('backup_remote_retention_weekly', presetValues.weekly);
+      await setSetting('backup_remote_retention_monthly', presetValues.monthly);
+      await setSetting('backup_remote_retention_yearly', presetValues.yearly);
+    }
+  }
+  if (input.backupRemoteRetentionDaily !== undefined) await setSetting('backup_remote_retention_daily', input.backupRemoteRetentionDaily);
+  if (input.backupRemoteRetentionWeekly !== undefined) await setSetting('backup_remote_retention_weekly', input.backupRemoteRetentionWeekly);
+  if (input.backupRemoteRetentionMonthly !== undefined) await setSetting('backup_remote_retention_monthly', input.backupRemoteRetentionMonthly);
+  if (input.backupRemoteRetentionYearly !== undefined) await setSetting('backup_remote_retention_yearly', input.backupRemoteRetentionYearly);
+  if (input.backupLastRun !== undefined) await setSetting('backup_last_run', input.backupLastRun);
 }
