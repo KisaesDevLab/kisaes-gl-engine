@@ -216,7 +216,7 @@ export async function recordPayment(tenantId: string, invoiceId: string, input: 
   }, userId);
 
   // Update invoice
-  const invoiceStatus = newBalance <= 0.001 ? 'paid' : 'partial';
+  const invoiceStatus = newBalance <= 0.01 ? 'paid' : 'partial';
   await db.update(transactions).set({
     amountPaid: newPaid.toFixed(4),
     balanceDue: Math.max(0, newBalance).toFixed(4),

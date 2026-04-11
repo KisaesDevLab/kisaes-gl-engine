@@ -288,6 +288,34 @@
       "when": 1775550000000,
       "tag": "0040_portable_backup",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1775560000000,
+      "tag": "0041_payroll_import",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1775570000000,
+      "tag": "0042_transaction_source",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1775580000000,
+      "tag": "0043_payroll_decimal_fix",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1775590000000,
+      "tag": "0044_login_lockout",
+      "breakpoints": true
     }
   ]
 }

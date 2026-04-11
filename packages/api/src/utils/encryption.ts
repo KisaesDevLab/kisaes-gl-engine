@@ -7,7 +7,13 @@ const TAG_LENGTH = 16;
 function getKey(): Buffer {
   const keyHex = process.env['PLAID_ENCRYPTION_KEY'];
   if (!keyHex || keyHex.length < 32) {
-    // Fallback to a derived key from JWT_SECRET for development
+    if (process.env['NODE_ENV'] === 'production') {
+      throw new Error(
+        'PLAID_ENCRYPTION_KEY must be set in production (minimum 32 chars or 64 hex chars). ' +
+        'Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"',
+      );
+    }
+    // Fallback to a derived key from JWT_SECRET for development/test only
     const secret = process.env['JWT_SECRET'] || 'dev-fallback-key';
     return crypto.createHash('sha256').update(secret).digest();
   }

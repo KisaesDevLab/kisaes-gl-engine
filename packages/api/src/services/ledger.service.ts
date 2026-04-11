@@ -1,4 +1,6 @@
 import { eq, and, sql, lte, count } from 'drizzle-orm';
+import DecimalLib from 'decimal.js';
+const Decimal = DecimalLib.default || DecimalLib;
 import type { JournalLineInput, TxnType, TxnStatus } from '@kis-books/shared';
 import { db, type DbOrTx } from '../db/index.js';
 import { transactions, journalLines, accounts, companies, contacts } from '../db/schema/index.js';
@@ -38,6 +40,9 @@ interface PostTransactionInput {
   vendorInvoiceNumber?: string;
   appliedToInvoiceId?: string;
   sourceEstimateId?: string;
+  // Source tracking
+  source?: string;
+  sourceId?: string;
   lines: JournalLineInput[];
 }
 
@@ -45,20 +50,21 @@ export async function postTransaction(tenantId: string, input: PostTransactionIn
   // Validate debits = credits BEFORE opening a database transaction —
   // there's no point holding a tx open while we add up two numbers in
   // memory, and a fast-fail on bad input avoids unnecessary lock churn.
-  let totalDebits = 0;
-  let totalCredits = 0;
+  // Uses Decimal.js to avoid floating-point rounding in monetary sums.
+  let totalDebits = new Decimal('0');
+  let totalCredits = new Decimal('0');
   for (const line of input.lines) {
-    totalDebits += parseFloat(line.debit || '0');
-    totalCredits += parseFloat(line.credit || '0');
+    totalDebits = totalDebits.plus(line.debit || '0');
+    totalCredits = totalCredits.plus(line.credit || '0');
   }
 
-  if (Math.abs(totalDebits - totalCredits) > 0.0001) {
+  if (totalDebits.minus(totalCredits).abs().greaterThan('0.0001')) {
     throw AppError.badRequest(
       `Transaction does not balance: debits (${totalDebits.toFixed(4)}) != credits (${totalCredits.toFixed(4)})`,
     );
   }
 
-  if (totalDebits === 0 && totalCredits === 0) {
+  if (totalDebits.isZero() && totalCredits.isZero()) {
     throw AppError.badRequest('Transaction must have non-zero amounts');
   }
 
@@ -93,6 +99,8 @@ export async function postTransaction(tenantId: string, input: PostTransactionIn
       vendorInvoiceNumber: input.vendorInvoiceNumber || null,
       appliedToInvoiceId: input.appliedToInvoiceId || null,
       sourceEstimateId: input.sourceEstimateId || null,
+      source: input.source || null,
+      sourceId: input.sourceId || null,
     }).returning();
 
     if (!txn) throw AppError.internal('Failed to create transaction');
@@ -180,13 +188,13 @@ export async function voidTransaction(tenantId: string, txnId: string, reason: s
 
 export async function updateTransaction(tenantId: string, txnId: string, input: PostTransactionInput, userId?: string) {
   // Validate the new lines balance up front (in-memory, no DB access).
-  let totalDebits = 0;
-  let totalCredits = 0;
+  let totalDebits = new Decimal('0');
+  let totalCredits = new Decimal('0');
   for (const line of input.lines) {
-    totalDebits += parseFloat(line.debit || '0');
-    totalCredits += parseFloat(line.credit || '0');
+    totalDebits = totalDebits.plus(line.debit || '0');
+    totalCredits = totalCredits.plus(line.credit || '0');
   }
-  if (Math.abs(totalDebits - totalCredits) > 0.0001) {
+  if (totalDebits.minus(totalCredits).abs().greaterThan('0.0001')) {
     throw AppError.badRequest('Transaction does not balance');
   }
 
@@ -285,11 +293,9 @@ async function updateAccountBalances(
   // update atomic *with the journal_lines insert*, not to protect the
   // increment itself.
   for (const line of lines) {
-    const debit = parseFloat(line.debit || '0');
-    const credit = parseFloat(line.credit || '0');
-    const delta = debit - credit;
+    const delta = new Decimal(line.debit || '0').minus(line.credit || '0');
 
-    if (delta !== 0) {
+    if (!delta.isZero()) {
       await executor.update(accounts).set({
         balance: sql`${accounts.balance} + ${delta.toFixed(4)}::decimal`,
         updatedAt: new Date(),

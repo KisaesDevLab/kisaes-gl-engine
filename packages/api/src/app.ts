@@ -4,6 +4,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import compression from 'compression';
+import rateLimit from 'express-rate-limit';
 import { env } from './config/env.js';
 import { errorHandler } from './middleware/error-handler.js';
 import { authRouter } from './routes/auth.routes.js';
@@ -45,6 +46,7 @@ import { aiRouter } from './routes/ai.routes.js';
 import { chatRouter } from './routes/chat.routes.js';
 import { oauthRouter } from './routes/oauth.routes.js';
 import { storageRouter } from './routes/storage.routes.js';
+import { payrollImportRouter } from './routes/payroll-import.routes.js';
 import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './swagger.js';
 
@@ -54,8 +56,18 @@ export const app = express();
 app.use(helmet());
 app.use(cors({ origin: env.CORS_ORIGIN, credentials: true }));
 app.use(compression());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(morgan('short'));
+
+// Global rate limiter — 200 requests/minute per IP
+const globalLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: { message: 'Too many requests, please try again later' } },
+});
+app.use('/api/', globalLimiter);
 
 // Health check
 app.get('/health', (_req, res) => {
@@ -118,6 +130,7 @@ app.use('/api/v1/ai', aiRouter);
 app.use('/api/v1/chat', chatRouter);
 app.use('/oauth', oauthRouter);
 app.use('/api/v1/settings/storage', storageRouter);
+app.use('/api/v1/payroll-import', payrollImportRouter);
 
 // MCP Server endpoint
 app.post('/mcp', async (req, res) => {

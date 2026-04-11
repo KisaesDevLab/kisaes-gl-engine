@@ -54,6 +54,17 @@ bankingRouter.put('/feed/:id', async (req, res) => {
   res.json({ item });
 });
 
+bankingRouter.get('/feed/:id/payroll-overlap', async (req, res) => {
+  const item = await bankFeedService.getFeedItem(req.tenantId, req.params['id']!);
+  if (!item) { res.json({ overlaps: [] }); return; }
+  const conn = await bankFeedService.getConnectionForItem(req.tenantId, item.bankConnectionId);
+  if (!conn) { res.json({ overlaps: [] }); return; }
+  const overlaps = await bankFeedService.checkPayrollOverlap(
+    req.tenantId, item.feedDate, Math.abs(parseFloat(item.amount)), conn.accountId,
+  );
+  res.json({ overlaps });
+});
+
 bankingRouter.put('/feed/:id/categorize', validate(categorizeSchema), async (req, res) => {
   const txn = await bankFeedService.categorize(req.tenantId, req.params['id']!, req.body, req.userId);
   res.json({ transaction: txn });
@@ -115,10 +126,13 @@ bankingRouter.post('/feed/import', upload.single('file'), async (req, res) => {
   const { accountId, mapping } = req.body;
 
   // Ensure we have a bank connection for this account
-  const connections = await bankConnectionService.list(req.tenantId);
+  let connections = await bankConnectionService.list(req.tenantId);
   let conn = connections.find((c) => c.accountId === accountId);
   if (!conn) {
-    conn = await bankConnectionService.createManualConnection(req.tenantId, accountId, 'CSV Import') ?? undefined;
+    const created = await bankConnectionService.createManualConnection(req.tenantId, accountId, 'CSV Import');
+    if (!created) { res.status(500).json({ error: { message: 'Failed to create connection' } }); return; }
+    connections = await bankConnectionService.list(req.tenantId);
+    conn = connections.find((c) => c.accountId === accountId);
   }
   if (!conn) { res.status(500).json({ error: { message: 'Failed to create connection' } }); return; }
 

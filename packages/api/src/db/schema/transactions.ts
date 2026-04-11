@@ -42,6 +42,9 @@ export const transactions = pgTable('transactions', {
   printedMemo: varchar('printed_memo', { length: 255 }),
   printedAt: timestamp('printed_at', { withTimezone: true }),
   printBatchId: uuid('print_batch_id'),
+  // Source tracking — identifies where this transaction originated
+  source: varchar('source', { length: 30 }),  // 'payroll_import', 'bank_feed', 'manual', 'recurring', etc.
+  sourceId: varchar('source_id', { length: 100 }), // payroll session ID, bank feed item ID, etc.
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
@@ -52,6 +55,7 @@ export const transactions = pgTable('transactions', {
   statusIdx: index('idx_txn_status').on(table.tenantId, table.status),
   billStatusIdx: index('idx_txn_bill_status').on(table.tenantId, table.billStatus),
   vendorInvIdx: index('idx_txn_vendor_inv').on(table.tenantId, table.vendorInvoiceNumber),
+  sourceIdx: index('idx_txn_source').on(table.tenantId, table.source, table.sourceId),
 }));
 
 export const billPaymentApplications = pgTable('bill_payment_applications', {

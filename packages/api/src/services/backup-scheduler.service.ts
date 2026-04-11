@@ -1,6 +1,7 @@
 import { db } from '../db/index.js';
 import { tenants } from '../db/schema/index.js';
 import { getSetting, setSetting } from './admin.service.js';
+import { decrypt as decryptField } from '../utils/encryption.js';
 import {
   createBackup,
   purgeExpiredLocalBackups,
@@ -33,6 +34,14 @@ async function runBackupCycle(): Promise<void> {
 
     console.log(`[Backup Scheduler] Backup is due (schedule: ${schedule}, last run: ${lastRun || 'never'})`);
 
+    // Retrieve the stored backup passphrase (encrypted in system settings)
+    const encryptedPassphrase = await getSetting('backup_scheduled_passphrase');
+    if (!encryptedPassphrase) {
+      console.warn('[Backup Scheduler] No backup passphrase configured. Set one in Admin → System Settings. Skipping.');
+      return;
+    }
+    const passphrase = decryptField(encryptedPassphrase);
+
     // Get all tenant IDs
     const allTenants = await db.select({ id: tenants.id }).from(tenants);
     console.log(`[Backup Scheduler] Creating backups for ${allTenants.length} tenant(s)...`);
@@ -42,7 +51,7 @@ async function runBackupCycle(): Promise<void> {
 
     for (const tenant of allTenants) {
       try {
-        await createBackup(tenant.id);
+        await createBackup(tenant.id, passphrase);
         successCount++;
       } catch (err: any) {
         errorCount++;

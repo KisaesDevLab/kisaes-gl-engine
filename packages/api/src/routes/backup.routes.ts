@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import multer from 'multer';
-import { authenticate } from '../middleware/auth.js';
+import { authenticate, requireSuperAdmin } from '../middleware/auth.js';
 import { validatePassphraseStrength } from '../services/portable-encryption.service.js';
 import * as backupService from '../services/backup.service.js';
 
@@ -32,8 +32,8 @@ backupRouter.post('/create', async (req, res) => {
   res.status(201).json(result);
 });
 
-// Create a full system backup (admin only)
-backupRouter.post('/system', async (req, res) => {
+// Create a full system backup (super admin only)
+backupRouter.post('/system', requireSuperAdmin, async (req, res) => {
   const { passphrase } = req.body;
   if (!passphrase || typeof passphrase !== 'string') {
     res.status(400).json({ error: { message: 'Passphrase is required' } });

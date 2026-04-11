@@ -21,3 +21,4 @@ export * from './ai.js';
 export * from './mcp.js';
 export * from './storage.js';
 export * from './coa-templates.js';
+export * from './payroll.js';

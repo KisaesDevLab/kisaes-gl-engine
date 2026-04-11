@@ -68,7 +68,7 @@ export async function receivePayment(tenantId: string, input: ReceivePaymentInpu
       }
 
       const newBalance = Math.max(0, invoiceTotal - newPaid);
-      const invoiceStatus = newBalance <= 0.001 ? 'paid' : 'partial';
+      const invoiceStatus = newBalance <= 0.01 ? 'paid' : 'partial';
 
       await tx.insert(paymentApplications).values({
         tenantId,
@@ -179,7 +179,7 @@ export async function unapplyPayment(tenantId: string, paymentId: string, invoic
       const restoredPaid = Math.max(0, parseFloat(invoice.amountPaid || '0') - parseFloat(app.amount));
       const invoiceTotal = parseFloat(invoice.total || '0');
       const newBalance = invoiceTotal - restoredPaid;
-      const status = restoredPaid <= 0.001 ? 'sent' : 'partial';
+      const status = restoredPaid <= 0.01 ? 'sent' : 'partial';
 
       await tx.update(transactions).set({
         amountPaid: restoredPaid.toFixed(4),

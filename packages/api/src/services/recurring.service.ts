@@ -192,3 +192,29 @@ export async function processAllDue() {
 
   return { processed, total: dueSchedules.length };
 }
+
+// In-process scheduler. Auto-mode recurring schedules must post on their
+// nextOccurrence date; without this, users set a schedule to auto and the
+// transactions silently never land in the ledger. Runs in the api boot
+// process alongside backup-scheduler; the worker container stays a no-op
+// until the BullMQ infrastructure in Phase 9 replaces this.
+const RECURRING_CHECK_INTERVAL_MS = 60 * 60 * 1000; // hourly
+const RECURRING_INITIAL_DELAY_MS = 2 * 60 * 1000; // 2 minutes after boot
+
+export function startRecurringScheduler(): void {
+  console.log('[Recurring Scheduler] Registered (checks hourly, first check in 2 min)');
+
+  const runCycle = async () => {
+    try {
+      const result = await processAllDue();
+      if (result.processed > 0) {
+        console.log(`[Recurring Scheduler] Posted ${result.processed}/${result.total} due schedule(s)`);
+      }
+    } catch (err: any) {
+      console.error('[Recurring Scheduler] Cycle error:', err.message);
+    }
+  };
+
+  setTimeout(() => { runCycle(); }, RECURRING_INITIAL_DELAY_MS);
+  setInterval(() => { runCycle(); }, RECURRING_CHECK_INTERVAL_MS);
+}

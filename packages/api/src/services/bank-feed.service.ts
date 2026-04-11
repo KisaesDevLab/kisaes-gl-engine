@@ -1,7 +1,7 @@
-import { eq, and, sql, count } from 'drizzle-orm';
+import { eq, and, sql, count, gte, lte } from 'drizzle-orm';
 import type { BankFeedFilters, CategorizeInput, CsvColumnMapping } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { bankFeedItems, bankConnections, accounts } from '../db/schema/index.js';
+import { bankFeedItems, bankConnections, accounts, transactions, journalLines } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
 import { cleanBankDescription } from '../utils/bank-name-cleaner.js';
@@ -77,16 +77,80 @@ export async function updateFeedItem(tenantId: string, feedItemId: string, input
   if (!item) throw AppError.notFound('Bank feed item not found');
 
   const updates: Record<string, any> = { updatedAt: new Date() };
-  if (input.feedDate !== undefined) updates.feedDate = input.feedDate;
-  if (input.description !== undefined) updates.description = input.description;
-  if (input.memo !== undefined) updates.category = input.memo;
-  if (input.contactId !== undefined) updates.suggestedContactId = input.contactId || null;
+  if (input.feedDate !== undefined) updates['feedDate'] = input.feedDate;
+  if (input.description !== undefined) updates['description'] = input.description;
+  if (input.memo !== undefined) updates['memo'] = input.memo;
+  if (input.contactId !== undefined) updates['suggestedContactId'] = input.contactId || null;
 
   await db.update(bankFeedItems).set(updates)
     .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
   return db.query.bankFeedItems.findFirst({
     where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)),
   });
+}
+
+// ── Feed Item Helpers ──
+
+export async function getFeedItem(tenantId: string, itemId: string) {
+  return db.query.bankFeedItems.findFirst({
+    where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, itemId)),
+  });
+}
+
+export async function getConnectionForItem(tenantId: string, connectionId: string) {
+  return db.query.bankConnections.findFirst({
+    where: and(eq(bankConnections.tenantId, tenantId), eq(bankConnections.id, connectionId)),
+  });
+}
+
+// ── Payroll Overlap Check ──
+
+export async function checkPayrollOverlap(
+  tenantId: string,
+  feedDate: string,
+  absAmount: number,
+  bankAccountId: string,
+): Promise<Array<{ txnId: string; memo: string; date: string; amount: string }>> {
+  // Look for payroll-sourced transactions within ±5 days that have a journal
+  // line touching the bank account with a matching amount.
+  const startDate = new Date(feedDate);
+  startDate.setDate(startDate.getDate() - 5);
+  const endDate = new Date(feedDate);
+  endDate.setDate(endDate.getDate() + 5);
+
+  const matches = await db
+    .select({
+      txnId: transactions.id,
+      memo: transactions.memo,
+      txnDate: transactions.txnDate,
+      credit: journalLines.credit,
+      debit: journalLines.debit,
+    })
+    .from(transactions)
+    .innerJoin(journalLines, and(
+      eq(journalLines.transactionId, transactions.id),
+      eq(journalLines.accountId, bankAccountId),
+    ))
+    .where(and(
+      eq(transactions.tenantId, tenantId),
+      eq(transactions.source, 'payroll_import'),
+      eq(transactions.status, 'posted'),
+      gte(transactions.txnDate, startDate.toISOString().split('T')[0]!),
+      lte(transactions.txnDate, endDate.toISOString().split('T')[0]!),
+    ));
+
+  // Filter by matching amount (within $0.01)
+  return matches
+    .filter(m => {
+      const lineAmount = Math.abs(parseFloat(m.credit || '0')) + Math.abs(parseFloat(m.debit || '0'));
+      return Math.abs(lineAmount - absAmount) < 0.01;
+    })
+    .map(m => ({
+      txnId: m.txnId,
+      memo: m.memo || 'Payroll JE',
+      date: m.txnDate,
+      amount: (parseFloat(m.credit || '0') || parseFloat(m.debit || '0')).toFixed(2),
+    }));
 }
 
 export async function categorize(tenantId: string, feedItemId: string, input: CategorizeInput, userId?: string) {
@@ -152,6 +216,8 @@ export async function categorize(tenantId: string, feedItemId: string, input: Ca
       contactId: input.contactId || (item.suggestedContactId ?? undefined),
       memo: input.memo || (item.category as string) || item.description || undefined,
       total: amount.toFixed(4),
+      source: 'bank_feed',
+      sourceId: item.id,
       lines: isExpense
         ? [
             { accountId: input.accountId, debit: amount.toFixed(4), credit: '0', description: item.description || undefined },

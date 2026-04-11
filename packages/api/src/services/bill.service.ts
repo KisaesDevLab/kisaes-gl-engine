@@ -449,7 +449,7 @@ export async function recomputeBillStatus(executor: DbOrTx, tenantId: string, bi
   const balanceDue = Math.max(0, total - paid - credits);
 
   let status: 'unpaid' | 'partial' | 'paid' = 'unpaid';
-  if (balanceDue <= 0.0001) status = 'paid';
+  if (balanceDue <= 0.01) status = 'paid';
   else if (paid > 0 || credits > 0) status = 'partial';
 
   await executor.update(transactions).set({
@@ -483,7 +483,7 @@ export async function recomputeVendorCreditBalance(executor: DbOrTx, tenantId: s
   await executor.update(transactions).set({
     creditsApplied: applied.toFixed(4),
     balanceDue: balanceDue.toFixed(4),
-    billStatus: balanceDue <= 0.0001 ? 'paid' : 'unpaid',
+    billStatus: balanceDue <= 0.01 ? 'paid' : 'unpaid',
     updatedAt: new Date(),
   }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, creditId)));
 }
