@@ -9,10 +9,21 @@ import { db } from '../db/index.js';
 import { tenants, users, companies, userTenantAccess } from '../db/schema/index.js';
 import { sql } from 'drizzle-orm';
 import * as accountsService from './accounts.service.js';
+import * as adminService from './admin.service.js';
+import {
+  createSentinel,
+  readSentinelHeader,
+  sentinelExists,
+  SentinelError,
+} from './sentinel.service.js';
+import { ensureHostId } from './host-id.service.js';
+import { writeAtomicSync } from '../utils/atomic-write.js';
+import { SystemSettingsKeys } from '../constants/system-settings-keys.js';
+import { generateRecoveryKey } from './recovery-key.service.js';
+import { writeRecoveryFile } from './env-recovery.service.js';
 
 const CONFIG_DIR = process.env['CONFIG_DIR'] || '/data/config';
 const INITIALIZED_MARKER = path.join(CONFIG_DIR, '.initialized');
-const SETUP_TOKEN_FILE = path.join(CONFIG_DIR, '.setup-token');
 
 // Advisory-lock key used to serialize `/initialize` and `/restore/execute`
 // calls across concurrent processes. Picked arbitrarily; the only
@@ -46,9 +57,8 @@ export function isInitialized(): boolean {
 }
 
 export function markInitialized(extra: Record<string, unknown> = {}): void {
-  if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true });
   const payload = { initializedAt: new Date().toISOString(), ...extra };
-  fs.writeFileSync(INITIALIZED_MARKER, JSON.stringify(payload, null, 2), { mode: 0o600 });
+  writeAtomicSync(INITIALIZED_MARKER, JSON.stringify(payload, null, 2), 0o600);
 }
 
 export async function getSetupStatus(): Promise<SetupStatus> {
@@ -92,6 +102,59 @@ export async function getSetupStatus(): Promise<SetupStatus> {
           const tenantCount = await db.execute(sql`SELECT COUNT(*) as cnt FROM tenants`);
           const hasTenants = parseInt((tenantCount.rows as any[])[0]?.cnt || '0') > 0;
           if (hasTenants) {
+            // SENTINEL GUARD (F2): do not self-heal if the sentinel exists
+            // and its installation ID disagrees with the DB. That combination
+            // means the DB was wiped and an attacker — or a mistake — has
+            // inserted tenant+user rows without updating installation_id in
+            // system_settings. Letting self-heal run would hide the reset
+            // from the validator. Instead, bail out with statusCheckFailed
+            // so the route guard stays locked and the validator produces
+            // the appropriate diagnostic page on next boot.
+            if (sentinelExists()) {
+              try {
+                const header = readSentinelHeader();
+                const dbInstallationId = await adminService.getSetting(
+                  SystemSettingsKeys.INSTALLATION_ID,
+                );
+                if (header && dbInstallationId && header.installationId !== dbInstallationId) {
+                  return {
+                    envFileExists,
+                    databaseReachable: true,
+                    databaseInitialized: true,
+                    hasAdminUser,
+                    smtpConfigured,
+                    setupComplete: true,
+                    statusCheckFailed: true,
+                  };
+                }
+                if (header && !dbInstallationId) {
+                  // Sentinel exists but DB has no installation_id row — the
+                  // tenant rows came from somewhere other than a real setup.
+                  // Refuse to self-heal.
+                  return {
+                    envFileExists,
+                    databaseReachable: true,
+                    databaseInitialized: true,
+                    hasAdminUser,
+                    smtpConfigured,
+                    setupComplete: true,
+                    statusCheckFailed: true,
+                  };
+                }
+              } catch {
+                // If we can't read the sentinel at all, be conservative and
+                // block self-heal too.
+                return {
+                  envFileExists,
+                  databaseReachable: true,
+                  databaseInitialized: true,
+                  hasAdminUser,
+                  smtpConfigured,
+                  setupComplete: true,
+                  statusCheckFailed: true,
+                };
+              }
+            }
             try {
               markInitialized({ recoveredFromExistingData: true });
             } catch {
@@ -139,67 +202,6 @@ export async function getSetupStatus(): Promise<SetupStatus> {
 }
 
 /**
- * First-run setup token. Generated on startup when the system is not yet
- * initialized, printed to the server console, and required as an
- * `X-Setup-Token` header on `/initialize` and `/restore/execute`. This
- * binds the ability to complete setup to console access — an anonymous
- * caller on the network cannot reach those endpoints even if the guard
- * misfires.
- *
- * The token is consumed (deleted) on successful initialization.
- */
-export function ensureSetupToken(): string | null {
-  if (isInitialized()) {
-    // Stale token from an aborted run? Clean it up.
-    if (fs.existsSync(SETUP_TOKEN_FILE)) {
-      try { fs.unlinkSync(SETUP_TOKEN_FILE); } catch { /* best-effort */ }
-    }
-    return null;
-  }
-
-  if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true });
-
-  if (fs.existsSync(SETUP_TOKEN_FILE)) {
-    try {
-      const existing = fs.readFileSync(SETUP_TOKEN_FILE, 'utf-8').trim();
-      if (existing.length >= 48) return existing;
-    } catch {
-      // fall through and regenerate
-    }
-  }
-
-  const token = crypto.randomBytes(24).toString('hex'); // 48 hex chars
-  fs.writeFileSync(SETUP_TOKEN_FILE, token, { mode: 0o600 });
-  return token;
-}
-
-export function validateSetupToken(provided: string | undefined | null): boolean {
-  if (!provided || typeof provided !== 'string') return false;
-  if (!fs.existsSync(SETUP_TOKEN_FILE)) return false;
-  let stored: string;
-  try {
-    stored = fs.readFileSync(SETUP_TOKEN_FILE, 'utf-8').trim();
-  } catch {
-    return false;
-  }
-  if (stored.length < 48) return false;
-  const a = Buffer.from(stored);
-  const b = Buffer.from(provided);
-  if (a.length !== b.length) return false;
-  try {
-    return crypto.timingSafeEqual(a, b);
-  } catch {
-    return false;
-  }
-}
-
-export function consumeSetupToken(): void {
-  if (fs.existsSync(SETUP_TOKEN_FILE)) {
-    try { fs.unlinkSync(SETUP_TOKEN_FILE); } catch { /* best-effort */ }
-  }
-}
-
-/**
  * Wrap a setup operation in a Postgres advisory lock so concurrent
  * `/initialize` calls can't both proceed. Throws if the lock cannot be
  * acquired. Release happens in `finally` regardless of outcome.
@@ -239,6 +241,10 @@ export function generateSecrets() {
     dbPassword: generateSecurePassword(20),
     jwtSecret: generateJwtSecret(),
     backupKey: crypto.randomBytes(32).toString('hex'),
+    // Installation ENCRYPTION_KEY — encrypts the sentinel file. 64-char hex
+    // (32 bytes). Generated alongside the backup key so a single
+    // /generate-secrets call produces every secret the env file needs.
+    encryptionKey: crypto.randomBytes(32).toString('hex'),
   };
 }
 
@@ -312,6 +318,7 @@ export interface SetupConfig {
   smtp?: SmtpConfig;
   jwtSecret: string;
   backupKey: string;
+  encryptionKey: string;
   appUrl?: string;
   ports?: { api?: number; frontend?: number };
   admin: { email: string; password: string; displayName: string };
@@ -360,6 +367,10 @@ REDIS_HOST_PORT=${config.redis.port}
 JWT_SECRET=${config.jwtSecret}
 JWT_ACCESS_EXPIRY=15m
 JWT_REFRESH_EXPIRY=7d
+
+# Installation encryption key — encrypts the sentinel file at /data/.sentinel.
+# Do NOT regenerate — a new key cannot decrypt the existing sentinel.
+ENCRYPTION_KEY=${config.encryptionKey}
 
 # Server Ports
 PORT=${apiPort}
@@ -473,4 +484,85 @@ export async function createAdminUser(input: { email: string; password: string; 
   await accountsService.seedFromTemplate(tenant.id, input.businessType || 'default');
 
   return { tenantId: tenant.id, userId: user.id };
+}
+
+/**
+ * Finalize installation integrity state: generate an installation_id, write
+ * it to system_settings, create the volume-pinned host-id file if missing,
+ * write the encrypted sentinel file, and hand back the generated installation
+ * ID so the caller can stash it in the .initialized marker for redundancy.
+ *
+ * Throws if any step fails. The caller (setup.routes.ts) must abort the
+ * /initialize response with 500 when this throws (F9) — a partial setup
+ * without a sentinel leaves the installation defenseless against the very
+ * threat this work exists to solve.
+ *
+ * Idempotent only in the sense that writeAtomicSync will overwrite the
+ * sentinel; callers should guard against repeat invocation with
+ * withSetupLock.
+ */
+export async function completeSetupSentinel(input: {
+  adminEmail: string;
+  databaseUrl: string;
+  jwtSecret: string;
+  encryptionKey: string;
+  appVersion: string;
+  tenantCountAtSetup: number;
+}): Promise<{ installationId: string; hostId: string; recoveryKey: string }> {
+  const installationId = crypto.randomUUID();
+  await adminService.setSetting(SystemSettingsKeys.INSTALLATION_ID, installationId);
+
+  const hostId = ensureHostId();
+
+  try {
+    createSentinel(
+      {
+        installationId,
+        hostId,
+        adminEmail: input.adminEmail,
+        appVersion: input.appVersion,
+        databaseUrl: input.databaseUrl,
+        jwtSecret: input.jwtSecret,
+        tenantCountAtSetup: input.tenantCountAtSetup,
+      },
+      input.encryptionKey,
+    );
+  } catch (err) {
+    const message = err instanceof SentinelError ? err.message : (err as Error).message;
+    throw new Error(
+      `Failed to write installation sentinel: ${message}. Setup is aborting — ` +
+        `/data/ must be writable before re-running setup. The partially-created ` +
+        `installation_id in system_settings will be overwritten on the next attempt.`,
+    );
+  }
+
+  // Phase B: generate the recovery key and write /data/.env.recovery. The
+  // key is returned to the caller so it can be shown exactly once in the
+  // wizard UI. We do NOT persist the plaintext key anywhere — it lives only
+  // in the HTTP response body until the operator acknowledges it.
+  //
+  // Sentinel write already succeeded, so if recovery file writing fails we
+  // log but don't abort setup — the installation is still protected by the
+  // sentinel, and the operator can regenerate the recovery file later from
+  // admin settings (Phase B.8).
+  const recoveryKey = generateRecoveryKey();
+  try {
+    writeRecoveryFile(
+      recoveryKey,
+      {
+        encryptionKey: input.encryptionKey,
+        jwtSecret: input.jwtSecret,
+        databaseUrl: input.databaseUrl,
+      },
+      installationId,
+    );
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[setup] failed to write /data/.env.recovery: ${(err as Error).message}. ` +
+        `Setup will continue but operator must regenerate the recovery file from admin settings.`,
+    );
+  }
+
+  return { installationId, hostId, recoveryKey };
 }

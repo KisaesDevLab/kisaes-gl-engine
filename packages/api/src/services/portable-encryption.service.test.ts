@@ -56,6 +56,47 @@ describe('Portable Encryption Service', () => {
       expect(() => decryptWithPassphrase(wrongMagic, testPassphrase))
         .toThrow('invalid magic bytes');
     });
+
+    it('should still decrypt legacy v1 files (100k iterations)', () => {
+      // Phase C F19: the default format version was bumped from v1 (100k
+      // PBKDF2 iterations) to v2 (600k). Existing backups and .env.recovery
+      // files on upgraded installs are v1 and must keep decrypting.
+      //
+      // Build a v1 file by hand: same layout as the service produces, but
+      // with FORMAT_VERSION=1 and the matching 100k iteration count.
+      const passphrase = 'legacy-v1-passphrase';
+      const plaintext = Buffer.from('legacy v1 payload');
+      const salt = crypto.randomBytes(32);
+      const iv = crypto.randomBytes(12);
+      const legacyKey = crypto.pbkdf2Sync(passphrase, salt, 100_000, 32, 'sha512');
+      const cipher = crypto.createCipheriv('aes-256-gcm', legacyKey, iv);
+      const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+      const authTag = cipher.getAuthTag();
+
+      const header = Buffer.alloc(5);
+      header.write('VMBP', 0, 'ascii');
+      header.writeUInt8(1, 4); // v1
+      const legacyFile = Buffer.concat([header, salt, iv, authTag, ciphertext]);
+
+      const decrypted = decryptWithPassphrase(legacyFile, passphrase);
+      expect(decrypted.toString()).toBe('legacy v1 payload');
+    });
+
+    it('should write v2 files by default after the F19 bump', () => {
+      const encrypted = encryptWithPassphrase(testData, testPassphrase);
+      // 5th byte (index 4) is the version byte
+      expect(encrypted.readUInt8(4)).toBe(2);
+    });
+
+    it('should reject an unknown format version', () => {
+      // Header layout is 4 magic + 1 version + 32 salt + 12 IV + 16 tag = 65
+      // bytes. Add a few ciphertext bytes so the buffer clears the HEADER_SIZE
+      // gate inside decryptWithPassphrase.
+      const bogus = Buffer.alloc(4 + 1 + 32 + 12 + 16 + 16);
+      bogus.write('VMBP', 0, 'ascii');
+      bogus.writeUInt8(99, 4);
+      expect(() => decryptWithPassphrase(bogus, testPassphrase)).toThrow(/format version/);
+    });
   });
 
   describe('detectEncryptionMethod', () => {

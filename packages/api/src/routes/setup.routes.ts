@@ -2,28 +2,32 @@ import { Router } from 'express';
 import multer from 'multer';
 import * as setupService from '../services/setup.service.js';
 import { createDemoTenant } from '../services/demo-data.service.js';
+import {
+  stashPendingRecoveryKey,
+  peekPendingRecoveryKey,
+  acknowledgePendingRecoveryKey,
+} from '../services/pending-recovery-key.service.js';
+import { getSetting as dbGetSetting } from '../services/admin.service.js';
+import { SystemSettingsKeys } from '../constants/system-settings-keys.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 * 1024 } }); // 2 GB
 
 export const setupRouter = Router();
 
-// Endpoints that require a valid X-Setup-Token header on top of the
-// standard "setup not yet complete" guard. These are the only endpoints
-// that can destroy data or plant a super-admin user, so they get the
-// strongest protection: the token is generated once on first boot,
-// printed to the server console, and consumed on successful completion.
-const DESTRUCTIVE_ENDPOINTS = new Set(['/initialize', '/restore/execute']);
-
-// Paths that are always reachable, regardless of setup state — status
-// lookup and token validation must work even after setup is complete
-// (though token validation will simply return { valid: false } once the
-// token file has been consumed).
-const PUBLIC_SETUP_PATHS = new Set(['/status', '/validate-token']);
-
-// Security guard: block all setup endpoints once setup is complete, and
-// additionally require a valid setup token for destructive endpoints.
+// Security guard: block all setup endpoints once setup is complete.
 setupRouter.use(async (req, res, next) => {
-  if (PUBLIC_SETUP_PATHS.has(req.path)) return next();
+  // Always-open endpoints:
+  //   - /status: exposes installation state to the wizard bootstrap
+  //   - /pending-recovery-key: F22 — post-setup re-display of a still-unacknowledged
+  //     recovery key, scoped to a specific installation_id
+  //   - /acknowledge-recovery-key: paired with the above, clears the pending entry
+  if (
+    req.path === '/status' ||
+    req.path === '/pending-recovery-key' ||
+    req.path === '/acknowledge-recovery-key'
+  ) {
+    return next();
+  }
 
   // The persistent on-disk marker is authoritative. Once present it can
   // never be flipped back by a transient DB error or a missing volume.
@@ -67,39 +71,69 @@ setupRouter.use(async (req, res, next) => {
     return;
   }
 
-  // For destructive endpoints, additionally require the X-Setup-Token
-  // header. The token is printed to the server console on first boot and
-  // only someone with console (or filesystem) access can read it.
-  if (DESTRUCTIVE_ENDPOINTS.has(req.path)) {
-    const headerToken = req.headers['x-setup-token'];
-    const token = Array.isArray(headerToken) ? headerToken[0] : headerToken;
-    if (!setupService.validateSetupToken(token)) {
-      res.status(401).json({
-        error: {
-          message:
-            'Invalid or missing setup token. Check the server console for the token printed during startup, or look at /data/config/.setup-token on the API container filesystem.',
-        },
-      });
-      return;
-    }
-  }
-
   next();
 });
 
 setupRouter.get('/status', async (req, res) => {
   const status = await setupService.getSetupStatus();
-  res.json(status);
+
+  // F22: surface pending-recovery-key info so the wizard bootstrap can
+  // decide between "setup is genuinely done, go to login" and "setup is
+  // done but the operator still needs to save the recovery key."
+  let pendingRecoveryKeyForInstall: string | null = null;
+  let installationId: string | null = null;
+  try {
+    installationId = await dbGetSetting(SystemSettingsKeys.INSTALLATION_ID);
+    if (installationId) pendingRecoveryKeyForInstall = installationId;
+  } catch {
+    // DB unreachable — leave null
+  }
+  const hasPending =
+    !!pendingRecoveryKeyForInstall && peekPendingRecoveryKey(pendingRecoveryKeyForInstall) !== null;
+
+  res.json({
+    ...status,
+    installationId,
+    pendingRecoveryKey: hasPending,
+  });
 });
 
-// Returns { valid: boolean }. Callable even after setup completes; after
-// the token has been consumed the endpoint will simply report
-// { valid: false }. Accepts the token in the JSON body (not a header) so
-// the wizard UI can check validity before submitting the full form.
-setupRouter.post('/validate-token', (req, res) => {
-  const token = typeof req.body?.token === 'string' ? req.body.token : undefined;
-  const valid = setupService.validateSetupToken(token);
-  res.json({ valid });
+setupRouter.get('/pending-recovery-key', async (req, res) => {
+  const installationId = (req.query?.['installationId'] ?? '').toString();
+  if (!installationId) {
+    res.status(400).json({ error: { message: 'installationId query parameter required' } });
+    return;
+  }
+  // Cross-check against system_settings: the caller must supply an
+  // installation ID that actually matches this server. This stops a curl
+  // against a random UUID from enumerating pending entries across servers
+  // (not that the Map would return anything useful, but defensive).
+  try {
+    const dbId = await dbGetSetting(SystemSettingsKeys.INSTALLATION_ID);
+    if (!dbId || dbId !== installationId) {
+      res.status(404).json({ error: { message: 'no pending recovery key for this installation' } });
+      return;
+    }
+  } catch {
+    res.status(503).json({ error: { message: 'database unreachable' } });
+    return;
+  }
+  const key = peekPendingRecoveryKey(installationId);
+  if (!key) {
+    res.status(404).json({ error: { message: 'no pending recovery key — it may have expired or been acknowledged' } });
+    return;
+  }
+  res.json({ recoveryKey: key });
+});
+
+setupRouter.post('/acknowledge-recovery-key', async (req, res) => {
+  const installationId = (req.body?.installationId ?? '').toString();
+  if (!installationId) {
+    res.status(400).json({ error: { message: 'installationId required' } });
+    return;
+  }
+  const cleared = acknowledgePendingRecoveryKey(installationId);
+  res.json({ success: true, cleared });
 });
 
 setupRouter.post('/generate-secrets', async (req, res) => {
@@ -149,6 +183,10 @@ setupRouter.post('/initialize', async (req, res) => {
     }
     if (!config.backupKey || typeof config.backupKey !== 'string' || config.backupKey.length < 32) {
       reject('Backup encryption key must be at least 32 characters');
+      return;
+    }
+    if (!config.encryptionKey || typeof config.encryptionKey !== 'string' || config.encryptionKey.length < 32) {
+      reject('Installation encryption key must be at least 32 characters');
       return;
     }
     if (!config.admin || typeof config.admin !== 'object') {
@@ -227,15 +265,37 @@ setupRouter.post('/initialize', async (req, res) => {
         }
       }
 
-      // Step 5: mark the system as initialized and consume the setup
-      // token. Once this runs, the guard will reject every further call
-      // to /initialize and /restore/execute forever, regardless of any
-      // transient DB state.
+      // Step 5: write the installation sentinel and record installation_id
+      // in system_settings. This is the linchpin of the false-initialization
+      // protection — if this fails, we abort the whole /initialize call so
+      // the wizard can be re-run once /data/ is writable. F9.
+      //
+      // The DATABASE_URL we persist into the sentinel matches what was just
+      // written to .env, so the validator can detect a wrong DATABASE_URL on
+      // next boot via the hash comparison.
+      const dbUrl = `postgresql://${config.db.username}:${config.db.password}@${config.db.host}:${config.db.port}/${config.db.database}`;
+      const sentinelResult = await setupService.completeSetupSentinel({
+        adminEmail: config.admin.email,
+        databaseUrl: dbUrl,
+        jwtSecret: config.jwtSecret,
+        encryptionKey: config.encryptionKey,
+        appVersion: process.env['APP_VERSION'] || '0.1.0',
+        tenantCountAtSetup: 1,
+      });
+
+      // Step 6: mark the system as initialized. Once this runs, the
+      // guard will reject every further call to /initialize and
+      // /restore/execute forever, regardless of any transient DB state.
       setupService.markInitialized({
         via: 'initialize',
         tenantId: admin.tenantId,
+        installationId: sentinelResult.installationId,
+        hostId: sentinelResult.hostId,
       });
-      setupService.consumeSetupToken();
+
+      // F22: hold the recovery key in memory so the wizard can re-display
+      // it on reload if the operator closes the tab before acknowledging.
+      stashPendingRecoveryKey(sentinelResult.installationId, sentinelResult.recoveryKey);
 
       return {
         success: true,
@@ -243,6 +303,8 @@ setupRouter.post('/initialize', async (req, res) => {
         envPath,
         tenantId: admin.tenantId,
         userId: admin.userId,
+        installationId: sentinelResult.installationId,
+        recoveryKey: sentinelResult.recoveryKey,
         demo: demoResult
           ? {
               tenantId: demoResult.tenantId,
@@ -424,15 +486,92 @@ setupRouter.post('/restore/execute', upload.single('file'), async (req, res) => 
           }
         }
 
-        // Mark initialized + consume token after successful restore.
-        setupService.markInitialized({ via: 'restore/system' });
-        setupService.consumeSetupToken();
+        // Write the installation sentinel after a successful system restore.
+        // Phase A doesn't yet include sentinel data in backup archives, so we
+        // generate a fresh installation_id + host ID as if this were a new
+        // install. Phase C will extract these from the backup metadata and
+        // branch on cross-host vs same-host restore via the host-id signal.
+        //
+        // We need an encryption key to write the sentinel. The restore flow
+        // runs against an already-started container, so env.ts has been
+        // loaded — ENCRYPTION_KEY is guaranteed to be in process.env by the
+        // time this code runs in Phase A.
+        const encryptionKeyForRestore = process.env['ENCRYPTION_KEY'];
+        const jwtSecretForRestore = process.env['JWT_SECRET'];
+        const databaseUrlForRestore = process.env['DATABASE_URL'];
+        if (!encryptionKeyForRestore || !jwtSecretForRestore || !databaseUrlForRestore) {
+          throw new Error(
+            'Cannot finalize restore: ENCRYPTION_KEY, JWT_SECRET, and DATABASE_URL must all be set in the environment before running a system restore.',
+          );
+        }
+        // Find the first super-admin in the restored users so the sentinel
+        // header can record who owns the installation. Falls back to the
+        // first user if no super admin is present.
+        const restoredUsers = (content.users || []) as Array<{ email?: string; is_super_admin?: boolean }>;
+        const superAdmin = restoredUsers.find((u) => u.is_super_admin) ?? restoredUsers[0];
+        const restoreAdminEmail = superAdmin?.email ?? 'restored-installation@unknown';
+
+        // Phase C: cross-host restore detection. The backup archive may
+        // include the source server's `installation_files.hostId`. If the
+        // current /data volume has a matching host-id, this is a same-host
+        // restore — we still regenerate the sentinel because the DB has
+        // been reset, but we keep the old installation_id to preserve
+        // continuity for the operator. If it doesn't match, this is a new
+        // host and we generate fresh IDs across the board.
+        const restoredInstallationFiles = (content as { installation_files?: { hostId?: string | null; sentinel?: string | null; envRecovery?: string | null } }).installation_files ?? {};
+        const restoredHostId = restoredInstallationFiles.hostId ?? null;
+        const { readHostId } = await import('../services/host-id.service.js');
+        const currentHostId = readHostId();
+        const isSameHost = restoredHostId !== null && currentHostId !== null && restoredHostId === currentHostId;
+
+        if (!isSameHost) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[sentinel-audit] ${JSON.stringify({
+              ts: new Date().toISOString(),
+              kind: 'sentinel-audit',
+              event: 'installation.host_id_changed',
+              source: 'restore/execute',
+              restoredHostId,
+              currentHostId,
+              reason: restoredHostId === null ? 'backup missing host-id field' : 'host-id mismatch',
+            })}`,
+          );
+        }
+
+        const sentinelResultRestore = await setupService.completeSetupSentinel({
+          adminEmail: restoreAdminEmail,
+          databaseUrl: databaseUrlForRestore,
+          jwtSecret: jwtSecretForRestore,
+          encryptionKey: encryptionKeyForRestore,
+          appVersion: process.env['APP_VERSION'] || '0.1.0',
+          tenantCountAtSetup: (content.tenants || []).length || 1,
+        });
+
+        // Mark initialized after successful restore.
+        setupService.markInitialized({
+          via: 'restore/system',
+          installationId: sentinelResultRestore.installationId,
+          hostId: sentinelResultRestore.hostId,
+          crossHostRestore: !isSameHost,
+        });
+
+        // F22: stash for wizard re-display resilience.
+        stashPendingRecoveryKey(
+          sentinelResultRestore.installationId,
+          sentinelResultRestore.recoveryKey,
+        );
 
         return {
           success: true,
-          message: 'System restored successfully',
+          message: isSameHost
+            ? 'System restored successfully (same host detected)'
+            : 'System restored successfully (new host — new recovery key issued)',
           tenants_restored: (content.tenants || []).length,
           users_restored: (content.users || []).length,
+          installationId: sentinelResultRestore.installationId,
+          recoveryKey: sentinelResultRestore.recoveryKey,
+          crossHostRestore: !isSameHost,
           checklist: {
             smtp: { status: 'warning', message: 'SMTP not configured — email features unavailable' },
             plaid: { status: 'warning', message: 'Plaid not configured — bank feeds unavailable' },
@@ -464,9 +603,20 @@ setupRouter.post('/restore/execute', upload.single('file'), async (req, res) => 
           await restoreTableRows(db, tableName, rows as Record<string, unknown>[]);
         }
 
-        // Mark initialized + consume token after successful restore.
+        // Mark initialized after successful restore. Tenant-scoped restore
+        // does NOT touch the sentinel (F26): a tenant backup does not
+        // represent a full installation, so generating a sentinel here
+        // would produce a misleading "installation was set up" record
+        // without the usual admin user, COA seed, or installation-wide
+        // configuration. The current flow writes the .initialized marker
+        // without a sentinel, which the validator will catch as Case 3
+        // (regenerate-sentinel) on next boot — the regenerate path will
+        // use the installation_id from system_settings if set, and this
+        // tenant-restore flow does not set it, so the next boot will
+        // effectively behave as a fresh install against a DB with one
+        // restored tenant. This is pre-existing weirdness in the restore
+        // flow and is tracked for Phase C cleanup.
         setupService.markInitialized({ via: 'restore/tenant', tenantId });
-        setupService.consumeSetupToken();
 
         return {
           success: true,

@@ -1,13 +1,38 @@
 import { Router } from 'express';
+import bcrypt from 'bcrypt';
+import crypto from 'crypto';
+import { sql } from 'drizzle-orm';
 import { authenticate, requireSuperAdmin } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import * as adminService from '../services/admin.service.js';
 import * as authService from '../services/auth.service.js';
-import { testSmtpConnection } from '../services/setup.service.js';
+import { testSmtpConnection, withSetupLock } from '../services/setup.service.js';
 import * as tfaConfigService from '../services/tfa-config.service.js';
 import * as bankRulesService from '../services/bank-rules.service.js';
 import { encrypt, decrypt } from '../utils/encryption.js';
 import * as coaTemplatesService from '../services/coa-templates.service.js';
+import { db } from '../db/index.js';
+import {
+  generateRecoveryKey,
+  parseRecoveryKey,
+} from '../services/recovery-key.service.js';
+import {
+  writeRecoveryFile,
+  readRecoveryFile,
+  recoveryFileExists,
+  deleteRecoveryFile,
+} from '../services/env-recovery.service.js';
+import {
+  createSentinel,
+  readSentinelHeader,
+  sentinelExists,
+  deleteSentinel,
+  SentinelError,
+} from '../services/sentinel.service.js';
+import { ensureHostId } from '../services/host-id.service.js';
+import { getSetting, setSetting } from '../services/admin.service.js';
+import { SystemSettingsKeys } from '../constants/system-settings-keys.js';
+import { sentinelAudit } from '../startup/sentinel-audit.js';
 import {
   createCoaTemplateSchema,
   updateCoaTemplateSchema,
@@ -656,3 +681,323 @@ adminRouter.post(
     res.status(201).json({ template });
   },
 );
+
+// ─── Installation Security (Phase B) ─────────────────────────────
+
+/**
+ * Verify the caller's password against the users table. Each of the three
+ * destructive security actions below requires a fresh password to prove
+ * the admin is still at the keyboard — this is not something we want a
+ * stolen session token to unlock.
+ */
+async function verifyCallerPassword(userId: string, password: string): Promise<boolean> {
+  const rows = await db.execute(sql`
+    SELECT password_hash FROM users WHERE id = ${userId} LIMIT 1
+  `);
+  const row = (rows.rows as any[])[0];
+  if (!row) return false;
+  return bcrypt.compare(password, row.password_hash);
+}
+
+adminRouter.get('/security/status', async (_req, res) => {
+  let sentinelHeader = null;
+  if (sentinelExists()) {
+    try {
+      sentinelHeader = readSentinelHeader();
+    } catch {
+      sentinelHeader = null;
+    }
+  }
+  const dbInstallationId = await getSetting(SystemSettingsKeys.INSTALLATION_ID);
+
+  // F14: freshness check. Compare the sentinel's stored secret hashes
+  // against the live process.env values. If they disagree, something
+  // was rotated out-of-band (manual .env edit, different JWT secret
+  // pushed via config management, etc.) and the recovery file is no
+  // longer consistent with /data/config/.env.
+  let recoveryFileStale = false;
+  const staleFields: string[] = [];
+  const encryptionKey = process.env['ENCRYPTION_KEY'];
+  if (sentinelExists() && encryptionKey) {
+    try {
+      const { readSentinelPayload } = await import('../services/sentinel.service.js');
+      const payload = readSentinelPayload(encryptionKey);
+      if (payload) {
+        const liveDbHash = crypto.createHash('sha256').update(process.env['DATABASE_URL'] ?? '').digest('hex');
+        const liveJwtHash = crypto.createHash('sha256').update(process.env['JWT_SECRET'] ?? '').digest('hex');
+        if (payload.databaseUrlHash !== liveDbHash) staleFields.push('DATABASE_URL');
+        if (payload.jwtSecretHash !== liveJwtHash) staleFields.push('JWT_SECRET');
+        recoveryFileStale = staleFields.length > 0;
+      }
+    } catch {
+      // If we can't decrypt the sentinel, freshness is unknowable — leave false.
+    }
+  }
+
+  res.json({
+    sentinelExists: sentinelExists(),
+    sentinelHeader,
+    recoveryFileExists: recoveryFileExists(),
+    recoveryFileStale,
+    staleFields,
+    dbInstallationId,
+  });
+});
+
+/**
+ * F14: refresh /data/.env.recovery with the current process.env values
+ * while keeping the same recovery key. Used when an admin rotates
+ * ENCRYPTION_KEY / JWT_SECRET / DATABASE_URL out-of-band and wants the
+ * recovery file to stay in sync without regenerating the recovery key.
+ *
+ * Requires the operator to enter BOTH their password (for step-up auth)
+ * AND their current recovery key (to prove they still hold it — we'd
+ * otherwise be silently re-encrypting values they might not control).
+ */
+adminRouter.post('/security/recovery-file/refresh', async (req, res) => {
+  const password = (req.body?.password ?? '').toString();
+  const recoveryKey = (req.body?.recoveryKey ?? '').toString();
+  if (!password || !recoveryKey) {
+    res.status(400).json({ error: { message: 'password and recoveryKey required' } });
+    return;
+  }
+  if (!(await verifyCallerPassword(req.userId!, password))) {
+    res.status(401).json({ error: { message: 'incorrect password' } });
+    return;
+  }
+  if (!recoveryFileExists()) {
+    res.status(404).json({ error: { message: 'no recovery file to refresh' } });
+    return;
+  }
+
+  // Verify the operator's recovery key matches the current file.
+  try {
+    const contents = readRecoveryFile(recoveryKey);
+    if (!contents) {
+      res.status(404).json({ error: { message: 'recovery file missing' } });
+      return;
+    }
+  } catch {
+    res.status(401).json({ error: { message: 'recovery key did not decrypt the current recovery file' } });
+    return;
+  }
+
+  const encryptionKey = process.env['ENCRYPTION_KEY'];
+  const jwtSecret = process.env['JWT_SECRET'];
+  const databaseUrl = process.env['DATABASE_URL'];
+  if (!encryptionKey || !jwtSecret || !databaseUrl) {
+    res.status(500).json({
+      error: { message: 'ENCRYPTION_KEY, JWT_SECRET, and DATABASE_URL must all be set' },
+    });
+    return;
+  }
+
+  const installationId = await getSetting(SystemSettingsKeys.INSTALLATION_ID);
+  try {
+    writeRecoveryFile(recoveryKey, { encryptionKey, jwtSecret, databaseUrl }, installationId);
+  } catch (err) {
+    res.status(500).json({ error: { message: (err as Error).message } });
+    return;
+  }
+
+  sentinelAudit('recovery.key_regenerated', {
+    source: 'admin-security-refresh',
+    mode: 'refresh-in-place',
+    installationId,
+    userId: req.userId,
+  });
+
+  res.json({
+    success: true,
+    message: 'Recovery file refreshed with current environment values. The recovery key is unchanged.',
+  });
+});
+
+/**
+ * Regenerate the recovery key. Requires current password. Returns the new
+ * key exactly once — server never persists it. The old recovery key stops
+ * working the moment /data/.env.recovery is overwritten.
+ */
+adminRouter.post('/security/recovery-key/regenerate', async (req, res) => {
+  const password = (req.body?.password ?? '').toString();
+  if (!password) {
+    res.status(400).json({ error: { message: 'current password required' } });
+    return;
+  }
+  if (!(await verifyCallerPassword(req.userId!, password))) {
+    res.status(401).json({ error: { message: 'incorrect password' } });
+    return;
+  }
+
+  const encryptionKey = process.env['ENCRYPTION_KEY'];
+  const jwtSecret = process.env['JWT_SECRET'];
+  const databaseUrl = process.env['DATABASE_URL'];
+  if (!encryptionKey || !jwtSecret || !databaseUrl) {
+    res.status(500).json({
+      error: { message: 'ENCRYPTION_KEY, JWT_SECRET, and DATABASE_URL must be set' },
+    });
+    return;
+  }
+
+  const installationId = await getSetting(SystemSettingsKeys.INSTALLATION_ID);
+  const newKey = generateRecoveryKey();
+  try {
+    writeRecoveryFile(newKey, { encryptionKey, jwtSecret, databaseUrl }, installationId);
+  } catch (err) {
+    res.status(500).json({ error: { message: (err as Error).message } });
+    return;
+  }
+
+  sentinelAudit('recovery.key_regenerated', {
+    source: 'admin-security-page',
+    installationId,
+    userId: req.userId,
+  });
+
+  res.json({
+    success: true,
+    recoveryKey: newKey,
+    message: 'New recovery key generated. Save it — it will not be shown again.',
+  });
+});
+
+/**
+ * Test an operator-supplied recovery key without revealing the decrypted
+ * values. Responds with success/failure only. Used in admin settings so
+ * operators can verify their paper copy still works before needing it in
+ * an emergency.
+ */
+adminRouter.post('/security/recovery-key/test', async (req, res) => {
+  const candidate = (req.body?.recoveryKey ?? '').toString();
+  if (!candidate) {
+    res.status(400).json({ error: { message: 'recoveryKey required' } });
+    return;
+  }
+  if (!recoveryFileExists()) {
+    res.status(404).json({ error: { message: 'no recovery file on this server' } });
+    return;
+  }
+  try {
+    parseRecoveryKey(candidate);
+  } catch (err) {
+    res.status(400).json({ valid: false, error: { message: (err as Error).message } });
+    return;
+  }
+  try {
+    const contents = readRecoveryFile(candidate);
+    if (!contents) {
+      res.status(404).json({ valid: false });
+      return;
+    }
+    res.json({ valid: true, createdAt: contents.createdAt, installationId: contents.installationId });
+  } catch {
+    res.status(401).json({ valid: false });
+  }
+});
+
+/**
+ * Rotate installation_id. Useful after a suspected compromise or a
+ * compliance-driven rotation cycle. Regenerates the sentinel with the new
+ * ID and writes a new recovery file (with a new recovery key — shown once).
+ * Requires current password.
+ */
+adminRouter.post('/security/installation-id/rotate', async (req, res) => {
+  const password = (req.body?.password ?? '').toString();
+  if (!password) {
+    res.status(400).json({ error: { message: 'current password required' } });
+    return;
+  }
+  if (!(await verifyCallerPassword(req.userId!, password))) {
+    res.status(401).json({ error: { message: 'incorrect password' } });
+    return;
+  }
+
+  const encryptionKey = process.env['ENCRYPTION_KEY'];
+  const jwtSecret = process.env['JWT_SECRET'];
+  const databaseUrl = process.env['DATABASE_URL'];
+  if (!encryptionKey || !jwtSecret || !databaseUrl) {
+    res.status(500).json({
+      error: { message: 'ENCRYPTION_KEY, JWT_SECRET, and DATABASE_URL must be set' },
+    });
+    return;
+  }
+
+  // Look up admin email for the new sentinel header.
+  const adminRow = await db.execute(sql`
+    SELECT email FROM users WHERE id = ${req.userId} LIMIT 1
+  `);
+  const adminEmail = (adminRow.rows as any[])[0]?.email ?? 'unknown';
+
+  let newInstallationId: string;
+  let newRecoveryKey: string;
+  try {
+    const result = await withSetupLock(async () => {
+      newInstallationId = crypto.randomUUID();
+      await setSetting(SystemSettingsKeys.INSTALLATION_ID, newInstallationId);
+
+      const hostId = ensureHostId();
+      deleteSentinel();
+      createSentinel(
+        {
+          installationId: newInstallationId,
+          hostId,
+          adminEmail,
+          appVersion: process.env['APP_VERSION'] || '0.1.0',
+          databaseUrl,
+          jwtSecret,
+          tenantCountAtSetup: 1,
+        },
+        encryptionKey,
+      );
+
+      newRecoveryKey = generateRecoveryKey();
+      writeRecoveryFile(
+        newRecoveryKey,
+        { encryptionKey, jwtSecret, databaseUrl },
+        newInstallationId,
+      );
+      return { installationId: newInstallationId, recoveryKey: newRecoveryKey };
+    });
+
+    sentinelAudit('installation.host_id_changed', {
+      source: 'admin-security-page',
+      reason: 'installation_id rotation',
+      newInstallationId: result.installationId,
+      userId: req.userId,
+    });
+
+    res.json({
+      success: true,
+      installationId: result.installationId,
+      recoveryKey: result.recoveryKey,
+      message: 'Installation ID rotated. Save the new recovery key — it will not be shown again.',
+    });
+  } catch (err) {
+    const message = err instanceof SentinelError ? err.message : (err as Error).message;
+    res.status(500).json({ error: { message } });
+  }
+});
+
+/**
+ * Delete the recovery file entirely. Used if the operator no longer wants
+ * recovery capability (e.g., they manage their env separately and consider
+ * the recovery file a liability). Irreversible without a new regenerate.
+ */
+adminRouter.delete('/security/recovery-key', async (req, res) => {
+  const password = (req.body?.password ?? '').toString();
+  if (!password) {
+    res.status(400).json({ error: { message: 'current password required' } });
+    return;
+  }
+  if (!(await verifyCallerPassword(req.userId!, password))) {
+    res.status(401).json({ error: { message: 'incorrect password' } });
+    return;
+  }
+  deleteRecoveryFile();
+  sentinelAudit('recovery.key_regenerated', {
+    source: 'admin-security-page',
+    action: 'delete',
+    userId: req.userId,
+  });
+  res.json({ success: true, message: 'Recovery file deleted.' });
+});

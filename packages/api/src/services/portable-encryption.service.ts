@@ -2,10 +2,27 @@ import crypto from 'crypto';
 
 // File format magic bytes to distinguish encryption methods
 const PASSPHRASE_MAGIC = Buffer.from('VMBP', 'ascii'); // Vibe MyBooks Passphrase
-const FORMAT_VERSION = 1;
 
-// PBKDF2 parameters
-const PBKDF2_ITERATIONS = 100_000;
+/**
+ * Format versions — the iteration count used by PBKDF2 is tied to the
+ * version byte so we can bump it without breaking existing files.
+ *
+ *   v1 → 100,000 iterations (legacy; original release)
+ *   v2 → 600,000 iterations (OWASP 2023 recommendation for PBKDF2-SHA512)
+ *
+ * Writes always use the latest version. Reads dispatch on the version
+ * byte so existing backups and .env.recovery files from v1 continue to
+ * decrypt with the original parameters. F19.
+ */
+const FORMAT_VERSION_V1 = 1;
+const FORMAT_VERSION_V2 = 2;
+const FORMAT_VERSION_LATEST = FORMAT_VERSION_V2;
+
+const PBKDF2_ITERATIONS_BY_VERSION: Record<number, number> = {
+  [FORMAT_VERSION_V1]: 100_000,
+  [FORMAT_VERSION_V2]: 600_000,
+};
+
 const KEY_LENGTH = 32; // 256 bits
 const SALT_LENGTH = 32;
 const IV_LENGTH = 12; // AES-GCM standard
@@ -18,10 +35,16 @@ const HEADER_SIZE = PASSPHRASE_MAGIC.length + 1 + SALT_LENGTH + IV_LENGTH + AUTH
 export type PassphraseStrength = 'weak' | 'fair' | 'strong' | 'very_strong';
 
 /**
- * Derive an AES-256 key from a passphrase using PBKDF2.
+ * Derive an AES-256 key from a passphrase using PBKDF2. The iteration count
+ * is selected by format version so existing v1 files can still be decrypted
+ * after the v2 bump.
  */
-function deriveKey(passphrase: string, salt: Buffer): Buffer {
-  return crypto.pbkdf2Sync(passphrase, salt, PBKDF2_ITERATIONS, KEY_LENGTH, 'sha512');
+function deriveKey(passphrase: string, salt: Buffer, version: number): Buffer {
+  const iterations = PBKDF2_ITERATIONS_BY_VERSION[version];
+  if (!iterations) {
+    throw new Error(`Unsupported encryption format version: ${version}`);
+  }
+  return crypto.pbkdf2Sync(passphrase, salt, iterations, KEY_LENGTH, 'sha512');
 }
 
 /**
@@ -34,7 +57,7 @@ function deriveKey(passphrase: string, salt: Buffer): Buffer {
  */
 export function encryptWithPassphrase(data: Buffer, passphrase: string): Buffer {
   const salt = crypto.randomBytes(SALT_LENGTH);
-  const key = deriveKey(passphrase, salt);
+  const key = deriveKey(passphrase, salt, FORMAT_VERSION_LATEST);
   const iv = crypto.randomBytes(IV_LENGTH);
 
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
@@ -44,7 +67,7 @@ export function encryptWithPassphrase(data: Buffer, passphrase: string): Buffer 
   // Pack: magic + version + salt + iv + authTag + ciphertext
   const header = Buffer.alloc(PASSPHRASE_MAGIC.length + 1);
   PASSPHRASE_MAGIC.copy(header, 0);
-  header.writeUInt8(FORMAT_VERSION, PASSPHRASE_MAGIC.length);
+  header.writeUInt8(FORMAT_VERSION_LATEST, PASSPHRASE_MAGIC.length);
 
   return Buffer.concat([header, salt, iv, authTag, encrypted]);
 }
@@ -66,7 +89,7 @@ export function decryptWithPassphrase(fileBuffer: Buffer, passphrase: string): B
   }
 
   const version = fileBuffer.readUInt8(PASSPHRASE_MAGIC.length);
-  if (version !== FORMAT_VERSION) {
+  if (!PBKDF2_ITERATIONS_BY_VERSION[version]) {
     throw new Error(`Unsupported encryption format version: ${version}`);
   }
 
@@ -79,7 +102,7 @@ export function decryptWithPassphrase(fileBuffer: Buffer, passphrase: string): B
   offset += AUTH_TAG_LENGTH;
   const encrypted = fileBuffer.subarray(offset);
 
-  const key = deriveKey(passphrase, salt);
+  const key = deriveKey(passphrase, salt, version);
 
   try {
     const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);

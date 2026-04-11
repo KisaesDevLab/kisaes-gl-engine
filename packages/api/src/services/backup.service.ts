@@ -246,6 +246,43 @@ export async function createSystemBackup(
     checksum: '',
   };
 
+  // Phase C: capture installation-integrity files inside the backup so a
+  // restore to a NEW server can cleanly branch on host-id mismatch (see
+  // /restore/execute in setup.routes.ts). These files are dotfiles under
+  // /data so they don't flow through the regular attachment path.
+  //
+  // /data/.sentinel is already AES-256-GCM encrypted with this server's
+  // ENCRYPTION_KEY. We embed it raw; on restore, the receiving server
+  // (which may have a different ENCRYPTION_KEY) treats the restored
+  // sentinel as advisory metadata and generates a fresh one using its own
+  // key. /data/.host-id is a plaintext UUID — comparing it to the new
+  // server's host-id is the signal for cross-host detection.
+  //
+  // /data/.env.recovery is also embedded so operators don't lose their
+  // Phase B recovery capability after a restore. The file is already
+  // encrypted with the operator's recovery key (not the ENCRYPTION_KEY),
+  // so it can be carried between servers safely — the new operator will
+  // need to know the original recovery key to decrypt it, which matches
+  // the existing threat model.
+  const dataDir = process.env['DATA_DIR'] || '/data';
+  const installationFiles: { sentinel: string | null; hostId: string | null; envRecovery: string | null } = {
+    sentinel: null,
+    hostId: null,
+    envRecovery: null,
+  };
+  try {
+    const sp = path.join(dataDir, '.sentinel');
+    if (fs.existsSync(sp)) installationFiles.sentinel = fs.readFileSync(sp).toString('base64');
+  } catch { /* non-fatal */ }
+  try {
+    const hp = path.join(dataDir, '.host-id');
+    if (fs.existsSync(hp)) installationFiles.hostId = fs.readFileSync(hp, 'utf8').trim();
+  } catch { /* non-fatal */ }
+  try {
+    const rp = path.join(dataDir, '.env.recovery');
+    if (fs.existsSync(rp)) installationFiles.envRecovery = fs.readFileSync(rp).toString('base64');
+  } catch { /* non-fatal */ }
+
   const contentObj = {
     metadata,
     tenants: allTenants,
@@ -253,6 +290,7 @@ export async function createSystemBackup(
     user_tenant_access: utaResult.rows,
     system_config: systemConfig,
     tenant_data: tenantData,
+    installation_files: installationFiles,
   };
 
   const contentBuffer = Buffer.from(JSON.stringify(contentObj));
