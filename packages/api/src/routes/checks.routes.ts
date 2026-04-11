@@ -42,8 +42,7 @@ checksRouter.post('/test-print', async (req, res) => {
 checksRouter.post('/render', async (req, res) => {
   const { checkIds, format } = req.body;
   const pdf = await pdfService.generateCheckPdf(req.tenantId, checkIds, format || 'voucher');
-  const contentType = pdf[0] === 0x3c ? 'text/html' : 'application/pdf';
-  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', 'inline; filename="checks.pdf"');
   res.send(pdf);
 });

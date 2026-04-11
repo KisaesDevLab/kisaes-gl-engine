@@ -1,4 +1,4 @@
-import { db } from '../db/index.js';
+import { db, type DbOrTx } from '../db/index.js';
 import { auditLog as auditLogTable } from '../db/schema/audit-log.js';
 
 export async function auditLog(
@@ -9,8 +9,14 @@ export async function auditLog(
   before: unknown | null,
   after: unknown | null,
   userId?: string,
+  // Optional executor — pass an active transaction handle to make the
+  // audit insert commit/rollback atomically with the operation it
+  // describes. Without this, a financial change can succeed while the
+  // audit row insert fails, leaving an unaudited change.
+  executor?: DbOrTx,
 ): Promise<void> {
-  await db.insert(auditLogTable).values({
+  const exec = executor ?? db;
+  await exec.insert(auditLogTable).values({
     tenantId,
     action,
     entityType,

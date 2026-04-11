@@ -20,16 +20,29 @@ function computeDueDate(txnDate: string, terms: string | undefined): string | un
 }
 
 async function getNextInvoiceNumber(tenantId: string): Promise<string> {
-  const company = await db.query.companies.findFirst({ where: eq(companies.tenantId, tenantId) });
-  const prefix = company?.invoicePrefix || 'INV-';
-  const nextNum = company?.invoiceNextNumber || 1001;
+  // Atomically reserve the next number with a single UPDATE…RETURNING.
+  // Postgres serializes concurrent UPDATEs on the same row, so two
+  // simultaneous invoice creations always get distinct numbers — unlike
+  // the previous read-then-update pattern, which could hand the same
+  // number to two different invoices.
+  const [updated] = await db.update(companies)
+    .set({
+      invoiceNextNumber: sql`${companies.invoiceNextNumber} + 1`,
+      updatedAt: new Date(),
+    })
+    .where(eq(companies.tenantId, tenantId))
+    .returning({
+      // Returning the post-increment value; the number we just "claimed"
+      // is one less than that.
+      newNext: companies.invoiceNextNumber,
+      prefix: companies.invoicePrefix,
+    });
 
-  // Increment the next number
-  await db.update(companies)
-    .set({ invoiceNextNumber: nextNum + 1, updatedAt: new Date() })
-    .where(eq(companies.tenantId, tenantId));
-
-  return `${prefix}${nextNum}`;
+  if (!updated || updated.newNext === null) {
+    throw AppError.internal('Company row not found or invoice number not initialized for this tenant');
+  }
+  const claimed = updated.newNext - 1;
+  return `${updated.prefix || 'INV-'}${claimed}`;
 }
 
 async function getSystemAccount(tenantId: string, systemTag: string): Promise<string> {

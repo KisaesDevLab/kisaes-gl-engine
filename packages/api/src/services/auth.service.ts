@@ -223,21 +223,33 @@ export async function switchTenant(userId: string, targetTenantId: string): Prom
 export async function refresh(refreshToken: string): Promise<AuthTokens> {
   const tokenHash = hashToken(refreshToken);
 
-  const session = await db.query.sessions.findFirst({
-    where: eq(sessions.refreshTokenHash, tokenHash),
-  });
+  // Atomic delete-and-return: only the caller that wins the race actually
+  // gets the session row. A concurrent second call (e.g., two browser tabs
+  // both detecting an expired access token at the same instant) gets an
+  // empty result and throws cleanly. This preserves the replay-protection
+  // guarantee that refresh-token rotation is supposed to give: any second
+  // use of a rotated token is rejected.
+  //
+  // The previous implementation did findFirst → check → delete → insert
+  // as four separate statements, so two tabs could both observe the
+  // session, both delete it (one is a no-op), and both mint new tokens.
+  // That's fine for usability but breaks replay protection — an attacker
+  // who somehow got a copy of the refresh token would be able to use it
+  // alongside the legitimate user instead of being detected.
+  const [session] = await db.delete(sessions)
+    .where(eq(sessions.refreshTokenHash, tokenHash))
+    .returning();
 
   if (!session) {
     throw AppError.unauthorized('Invalid refresh token');
   }
 
   if (new Date() > session.expiresAt) {
-    // Clean up expired session
-    await db.delete(sessions).where(eq(sessions.id, session.id));
     throw AppError.unauthorized('Refresh token expired');
   }
 
-  // Get user
+  // Get user (after we've claimed the session row, so even if user lookup
+  // fails the old refresh token is already invalidated)
   const user = await db.query.users.findFirst({
     where: eq(users.id, session.userId),
   });
@@ -245,9 +257,6 @@ export async function refresh(refreshToken: string): Promise<AuthTokens> {
   if (!user || !user.isActive) {
     throw AppError.unauthorized('User not found or deactivated');
   }
-
-  // Rotate refresh token
-  await db.delete(sessions).where(eq(sessions.id, session.id));
 
   const jwtPayload: JwtPayload = { userId: user.id, tenantId: user.tenantId, role: user.role, isSuperAdmin: user.isSuperAdmin || false };
   const newAccessToken = generateAccessToken(jwtPayload);
