@@ -224,7 +224,58 @@ describe('Bill Service', () => {
   });
 
   describe('updateBill / voidBill', () => {
-    it('blocks edit on a paid bill', async () => {
+    it('blocks changing the total on a paid bill', async () => {
+      const bill = await billService.createBill(tenantId, {
+        contactId: vendorId,
+        txnDate: '2026-04-01',
+        lines: [{ accountId: officeSuppliesId, amount: '100.00' }],
+      });
+
+      await billPaymentService.payBills(tenantId, {
+        bankAccountId,
+        txnDate: '2026-04-02',
+        method: 'check',
+        printLater: true,
+        bills: [{ billId: bill.id, amount: '100.00' }],
+      });
+
+      // Changing total from $100 → $200 on a paid bill must fail.
+      // The expense lines can be reallocated but the total is locked
+      // because payment applications already reference it.
+      await expect(
+        billService.updateBill(tenantId, bill.id, {
+          contactId: vendorId,
+          txnDate: '2026-04-01',
+          lines: [{ accountId: officeSuppliesId, amount: '200.00' }],
+        }),
+      ).rejects.toThrow('Cannot change the total');
+    });
+
+    it('blocks changing the vendor on a paid bill', async () => {
+      const bill = await billService.createBill(tenantId, {
+        contactId: vendorId,
+        txnDate: '2026-04-01',
+        lines: [{ accountId: officeSuppliesId, amount: '100.00' }],
+      });
+
+      await billPaymentService.payBills(tenantId, {
+        bankAccountId,
+        txnDate: '2026-04-02',
+        method: 'check',
+        printLater: true,
+        bills: [{ billId: bill.id, amount: '100.00' }],
+      });
+
+      await expect(
+        billService.updateBill(tenantId, bill.id, {
+          contactId: vendorBId,
+          txnDate: '2026-04-01',
+          lines: [{ accountId: officeSuppliesId, amount: '100.00' }],
+        }),
+      ).rejects.toThrow('Cannot change the vendor');
+    });
+
+    it('blocks changing the bill date on a paid bill', async () => {
       const bill = await billService.createBill(tenantId, {
         contactId: vendorId,
         txnDate: '2026-04-01',
@@ -242,10 +293,92 @@ describe('Bill Service', () => {
       await expect(
         billService.updateBill(tenantId, bill.id, {
           contactId: vendorId,
-          txnDate: '2026-04-01',
-          lines: [{ accountId: officeSuppliesId, amount: '200.00' }],
+          txnDate: '2026-04-03',
+          lines: [{ accountId: officeSuppliesId, amount: '100.00' }],
         }),
-      ).rejects.toThrow('payments or credits applied');
+      ).rejects.toThrow('Cannot change the bill date');
+    });
+
+    it('allows reallocating expense lines on a paid bill without changing the total', async () => {
+      // Single $100 line on Office Supplies, fully paid
+      const bill = await billService.createBill(tenantId, {
+        contactId: vendorId,
+        txnDate: '2026-04-01',
+        lines: [{ accountId: officeSuppliesId, amount: '100.00' }],
+      });
+
+      await billPaymentService.payBills(tenantId, {
+        bankAccountId,
+        txnDate: '2026-04-02',
+        method: 'check',
+        printLater: true,
+        bills: [{ billId: bill.id, amount: '100.00' }],
+      });
+
+      // Reallocate: split into $60 Office Supplies + $40 Utilities.
+      // Total stays at $100, payment applications remain valid, bill
+      // stays 'paid'.
+      await billService.updateBill(tenantId, bill.id, {
+        contactId: vendorId,
+        txnDate: '2026-04-01',
+        lines: [
+          { accountId: officeSuppliesId, amount: '60.00', description: 'Office (reallocated)' },
+          { accountId: utilitiesId, amount: '40.00', description: 'Utilities (reallocated)' },
+        ],
+      });
+
+      // Bill is still fully paid
+      const updated = await billService.getBill(tenantId, bill.id);
+      expect(updated.billStatus).toBe('paid');
+      expect(parseFloat(updated.total || '0')).toBe(100);
+      expect(parseFloat(updated.amountPaid || '0')).toBe(100);
+      expect(parseFloat(updated.balanceDue || '0')).toBe(0);
+
+      // Expense lines reflect the reallocation
+      const expenseLines = (updated.lines || []).filter((l: any) => parseFloat(l.debit) > 0);
+      expect(expenseLines).toHaveLength(2);
+      const totalsByAccount = new Map<string, number>();
+      for (const l of expenseLines as any[]) {
+        totalsByAccount.set(l.accountId, (totalsByAccount.get(l.accountId) || 0) + parseFloat(l.debit));
+      }
+      expect(totalsByAccount.get(officeSuppliesId)).toBe(60);
+      expect(totalsByAccount.get(utilitiesId)).toBe(40);
+
+      // Account balances moved correspondingly
+      const office = await accountsService.getById(tenantId, officeSuppliesId);
+      const utils = await accountsService.getById(tenantId, utilitiesId);
+      expect(parseFloat(office.balance || '0')).toBe(60);
+      expect(parseFloat(utils.balance || '0')).toBe(40);
+    });
+
+    it('allows reallocation on a partially paid bill', async () => {
+      const bill = await billService.createBill(tenantId, {
+        contactId: vendorId,
+        txnDate: '2026-04-01',
+        lines: [{ accountId: officeSuppliesId, amount: '500.00' }],
+      });
+
+      await billPaymentService.payBills(tenantId, {
+        bankAccountId,
+        txnDate: '2026-04-02',
+        method: 'ach',
+        bills: [{ billId: bill.id, amount: '200.00' }],
+      });
+
+      await billService.updateBill(tenantId, bill.id, {
+        contactId: vendorId,
+        txnDate: '2026-04-01',
+        lines: [
+          { accountId: officeSuppliesId, amount: '300.00' },
+          { accountId: utilitiesId, amount: '200.00' },
+        ],
+      });
+
+      const updated = await billService.getBill(tenantId, bill.id);
+      expect(updated.billStatus).toBe('partial');
+      expect(parseFloat(updated.total || '0')).toBe(500);
+      expect(parseFloat(updated.amountPaid || '0')).toBe(200);
+      expect(parseFloat(updated.balanceDue || '0')).toBe(300);
     });
 
     it('blocks void on a partially paid bill', async () => {

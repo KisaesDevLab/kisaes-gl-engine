@@ -19,6 +19,7 @@ export * from './types/ai.js';
 export * from './types/mcp.js';
 export * from './types/ap.js';
 export * from './types/coa-templates.js';
+export * from './types/backup.js';
 
 // Schemas
 export * from './schemas/auth.js';
@@ -38,6 +39,9 @@ export * from './schemas/passwordless.js';
 export * from './schemas/plaid.js';
 export * from './schemas/ai.js';
 export * from './schemas/ap.js';
+export * from './schemas/admin.js';
+export * from './schemas/chat.js';
+export * from './schemas/backup.js';
 
 // Constants
 export * from './constants/coa-templates.js';

@@ -61,9 +61,30 @@ async function loadVendorDefaults(tenantId: string, contactId: string) {
   return vendor;
 }
 
+/**
+ * Verify that every accountId referenced by a bill's lines belongs
+ * to the caller's tenant. Without this check, a crafted payload
+ * could reference an account id from another tenant — the ledger
+ * service would happily post a journal line against it. Rejecting
+ * at the bill layer keeps the error message specific to what the
+ * user actually submitted.
+ */
+async function assertAccountsInTenant(tenantId: string, accountIds: string[]): Promise<void> {
+  if (accountIds.length === 0) return;
+  const unique = [...new Set(accountIds)];
+  const rows = await db
+    .select({ id: accounts.id })
+    .from(accounts)
+    .where(and(eq(accounts.tenantId, tenantId), inArray(accounts.id, unique)));
+  if (rows.length !== unique.length) {
+    throw AppError.badRequest('One or more bill line accounts do not belong to this tenant');
+  }
+}
+
 export async function createBill(tenantId: string, input: CreateBillInput, userId?: string) {
   if (input.lines.length === 0) throw AppError.badRequest('Bill must have at least one line');
 
+  await assertAccountsInTenant(tenantId, input.lines.map((l) => l.accountId));
   const apAccountId = await getApAccountId(tenantId);
   const vendor = await loadVendorDefaults(tenantId, input.contactId);
 
@@ -117,19 +138,76 @@ export async function updateBill(tenantId: string, billId: string, input: Create
   const existing = await ledger.getTransaction(tenantId, billId);
   if (existing.txnType !== 'bill') throw AppError.badRequest('Not a bill');
   if (existing.status === 'void') throw AppError.badRequest('Cannot edit a void bill');
-  if (existing.billStatus && existing.billStatus !== 'unpaid') {
-    throw AppError.badRequest('Cannot edit a bill that has payments or credits applied. Void payments first.');
-  }
+
+  await assertAccountsInTenant(tenantId, input.lines.map((l) => l.accountId));
+
+  // A bill is considered "locked" for total/vendor/date edits as soon
+  // as any payment or vendor credit has been applied to it. The user
+  // can still reallocate the expense lines (move money between
+  // accounts, split a line, add or remove lines, edit descriptions)
+  // but the AMOUNT TOTAL must stay the same so existing payment /
+  // credit applications remain consistent, the VENDOR must stay the
+  // same so payments don't end up pointing at a different contact,
+  // and the BILL DATE must stay the same so the payment can't end up
+  // dated before the bill.
+  const isLocked = !!existing.billStatus && existing.billStatus !== 'unpaid';
 
   const apAccountId = await getApAccountId(tenantId);
-  const vendor = await loadVendorDefaults(tenantId, input.contactId);
 
-  const paymentTerms = input.paymentTerms || vendor.defaultPaymentTerms || undefined;
-  const termsDays = input.termsDays ?? vendor.defaultTermsDays ?? undefined;
-  const dueDate = input.dueDate || computeBillDueDate(input.txnDate, paymentTerms, termsDays);
+  // Vendor resolution depends on whether we're locked to the existing
+  // vendor. If locked, we re-use the existing contactId verbatim and
+  // ignore whatever the client sent, so a tampered payload can't sneak
+  // through a vendor swap. If unlocked, we accept the new vendor.
+  let resolvedContactId: string;
+  if (isLocked) {
+    if (!existing.contactId) throw AppError.internal('Paid bill missing contactId');
+    if (input.contactId && input.contactId !== existing.contactId) {
+      throw AppError.badRequest(
+        'Cannot change the vendor on a bill that has payments or credits applied. ' +
+        'Void the payments first, or create a new bill with the correct vendor.',
+      );
+    }
+    resolvedContactId = existing.contactId;
+  } else {
+    resolvedContactId = input.contactId;
+  }
+  const vendor = await loadVendorDefaults(tenantId, resolvedContactId);
+
+  // Date resolution: locked bills keep the original txnDate. Payment
+  // transactions already reference this date; letting it move forward
+  // would create a paid-before-billed state, and moving it backward
+  // could push it behind the lock date.
+  const resolvedTxnDate = isLocked ? existing.txnDate : input.txnDate;
+  if (isLocked && input.txnDate && input.txnDate !== existing.txnDate) {
+    throw AppError.badRequest(
+      'Cannot change the bill date on a bill that has payments or credits applied.',
+    );
+  }
+
+  const paymentTerms = isLocked
+    ? (existing.paymentTerms || undefined)
+    : (input.paymentTerms || vendor.defaultPaymentTerms || undefined);
+  const termsDays = isLocked
+    ? (existing.termsDays ?? undefined)
+    : (input.termsDays ?? vendor.defaultTermsDays ?? undefined);
+  const dueDate = isLocked
+    ? (existing.dueDate || undefined)
+    : (input.dueDate || computeBillDueDate(resolvedTxnDate, paymentTerms, termsDays));
 
   const total = input.lines.reduce((sum, l) => sum + parseFloat(l.amount || '0'), 0);
   if (total <= 0) throw AppError.badRequest('Bill total must be positive');
+
+  // Total-lock enforcement. The same 0.01 tolerance everywhere else in
+  // the codebase uses for rounding absorbs tax and per-line rounding
+  // drift without letting meaningful changes slip through.
+  const existingTotal = parseFloat(existing.total || '0');
+  if (isLocked && Math.abs(total - existingTotal) > 0.01) {
+    throw AppError.badRequest(
+      `Cannot change the total on a paid bill. Expected $${existingTotal.toFixed(2)}, ` +
+      `got $${total.toFixed(2)}. Reallocate between expense accounts instead — ` +
+      `the sum of all lines must equal the original total.`,
+    );
+  }
 
   const journalLines = [
     ...input.lines.map((l) => ({
@@ -141,35 +219,56 @@ export async function updateBill(tenantId: string, billId: string, input: Create
     { accountId: apAccountId, debit: '0', credit: total.toFixed(4) },
   ];
 
-  // We need to also update the bill-specific columns that ledger.updateTransaction
-  // doesn't currently set. ledger.updateTransaction overwrites total/balanceDue/etc.
-  // After the ledger update, set bill-specific fields explicitly.
+  // Post the expense/AP journal change via the ledger. For a locked
+  // bill total is unchanged, so the AP credit nets out to zero net
+  // movement; only the expense-account allocation shifts. For an
+  // unlocked bill the AP balance moves with the new total.
   const updated = await ledger.updateTransaction(tenantId, billId, {
     txnType: 'bill',
-    txnDate: input.txnDate,
+    txnDate: resolvedTxnDate,
     dueDate,
-    contactId: input.contactId,
+    contactId: resolvedContactId,
     memo: input.memo,
     internalNotes: input.internalNotes,
     paymentTerms,
     termsDays,
     vendorInvoiceNumber: input.vendorInvoiceNumber,
     total: total.toFixed(4),
-    balanceDue: total.toFixed(4),
+    // For locked bills, preserve the existing balance_due (which
+    // reflects payments / credits already applied). For unlocked
+    // bills, balance_due equals the full total.
+    balanceDue: isLocked ? (existing.balanceDue || '0') : total.toFixed(4),
     lines: journalLines,
   }, userId);
 
-  // ledger.updateTransaction does not currently propagate vendor_invoice_number,
-  // payment_terms, terms_days, or bill_status. Set them explicitly here.
-  await db.update(transactions).set({
-    paymentTerms: paymentTerms || null,
-    termsDays: termsDays ?? null,
-    vendorInvoiceNumber: input.vendorInvoiceNumber || null,
-    billStatus: 'unpaid',
-    creditsApplied: '0',
-    amountPaid: '0',
-    updatedAt: new Date(),
-  }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, billId)));
+  if (isLocked) {
+    // Preserve payment-derived state, but update the bill-specific
+    // columns that ledger.updateTransaction doesn't touch
+    // (vendorInvoiceNumber, paymentTerms, termsDays). Do NOT reset
+    // amountPaid/creditsApplied/billStatus — recompute them from the
+    // application tables so any drift between ledger.updateTransaction's
+    // total write and the sum of applications gets corrected.
+    await db.update(transactions).set({
+      paymentTerms: paymentTerms || null,
+      termsDays: termsDays ?? null,
+      vendorInvoiceNumber: input.vendorInvoiceNumber || null,
+      updatedAt: new Date(),
+    }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, billId)));
+
+    await recomputeBillStatus(db, tenantId, billId);
+  } else {
+    // Unpaid edit path: safe to hard-reset the payment fields since
+    // nothing has been applied yet.
+    await db.update(transactions).set({
+      paymentTerms: paymentTerms || null,
+      termsDays: termsDays ?? null,
+      vendorInvoiceNumber: input.vendorInvoiceNumber || null,
+      billStatus: 'unpaid',
+      creditsApplied: '0',
+      amountPaid: '0',
+      updatedAt: new Date(),
+    }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, billId)));
+  }
 
   return updated;
 }

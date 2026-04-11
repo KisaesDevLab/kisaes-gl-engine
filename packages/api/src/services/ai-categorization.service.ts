@@ -31,12 +31,14 @@ export async function categorize(tenantId: string, feedItemId: string) {
       suggestedContactId: history.contactId,
       confidenceScore: '0.95',
       updatedAt: new Date(),
-    }).where(eq(bankFeedItems.id, feedItemId));
+    }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
 
     // Resolve contact name for the cleansing pipeline
     let contactName: string | null = null;
     if (history.contactId) {
-      const contact = await db.query.contacts.findFirst({ where: eq(contacts.id, history.contactId) });
+      const contact = await db.query.contacts.findFirst({
+        where: and(eq(contacts.tenantId, tenantId), eq(contacts.id, history.contactId)),
+      });
       contactName = contact?.displayName || null;
     }
 
@@ -85,7 +87,7 @@ export async function categorize(tenantId: string, feedItemId: string) {
         suggestedContactId: matchedVendor?.id || null,
         confidenceScore: String(confidence),
         updatedAt: new Date(),
-      }).where(eq(bankFeedItems.id, feedItemId));
+      }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
     }
 
     await orchestrator.completeJob(job.id, result, parsed, confidence);
@@ -110,6 +112,23 @@ export async function recordUserDecision(tenantId: string, feedItemId: string, a
     where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)),
   });
   if (!item) return;
+
+  // Verify accountId and contactId belong to this tenant before we
+  // store them in categorization_history. Without this check a client
+  // could poison the learning table with a cross-tenant id that would
+  // later be surfaced as a suggestion (categorize() returns the stored
+  // ids verbatim).
+  const account = await db.query.accounts.findFirst({
+    where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, accountId)),
+  });
+  if (!account) throw AppError.badRequest('Account not found in this tenant');
+
+  if (contactId) {
+    const contact = await db.query.contacts.findFirst({
+      where: and(eq(contacts.tenantId, tenantId), eq(contacts.id, contactId)),
+    });
+    if (!contact) throw AppError.badRequest('Contact not found in this tenant');
+  }
 
   const pattern = (item.description || '').toLowerCase().trim();
   if (!pattern) return;

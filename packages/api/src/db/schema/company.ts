@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, integer, decimal, boolean, timestamp, jsonb, date } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, integer, decimal, boolean, timestamp, jsonb, date, bigint } from 'drizzle-orm/pg-core';
 
 export const companies = pgTable('companies', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -37,6 +37,20 @@ export const companies = pgTable('companies', {
   lockDate: date('lock_date'),
   setupComplete: boolean('setup_complete').default(false),
   mcpEnabled: boolean('mcp_enabled').default(false),
+  // Per-company chat opt-in (tier 2 of two-tier consent — see
+  // AI_CHAT_SUPPORT_PLAN.md §8.1). System enables on ai_config,
+  // company opts in here. Both must be true for the chat panel
+  // to appear.
+  chatSupportEnabled: boolean('chat_support_enabled').default(false),
+  // Remote backup configuration
+  remoteBackupEnabled: boolean('remote_backup_enabled').default(false),
+  remoteBackupDestination: varchar('remote_backup_destination', { length: 30 }),
+  remoteBackupConfig: jsonb('remote_backup_config'),
+  remoteBackupSchedule: varchar('remote_backup_schedule', { length: 20 }),
+  remoteBackupPassphraseHash: varchar('remote_backup_passphrase_hash', { length: 255 }),
+  remoteBackupLastAt: timestamp('remote_backup_last_at', { withTimezone: true }),
+  remoteBackupLastStatus: varchar('remote_backup_last_status', { length: 20 }),
+  remoteBackupLastSize: bigint('remote_backup_last_size', { mode: 'number' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 });

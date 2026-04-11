@@ -10,7 +10,9 @@
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "test": "vitest run",
-    "migrate": "tsx src/db/migrate.ts"
+    "migrate": "tsx src/db/migrate.ts",
+    "seed:coa": "tsx src/db/seeds/coa.ts",
+    "generate-knowledge": "tsx src/scripts/generate-knowledge.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.82.0",
@@ -41,11 +43,11 @@
     "pg": "^8.12.0",
     "plaid": "^41.4.0",
     "puppeteer": "^24.40.0",
+    "ssh2-sftp-client": "^12.1.1",
     "swagger-ui-express": "^5.0.1",
     "zod": "^3.23.0"
   },
   "devDependencies": {
-    "@types/swagger-ui-express": "^4.1.8",
     "@types/bcrypt": "^5.0.2",
     "@types/compression": "^1.7.5",
     "@types/cors": "^2.8.17",
@@ -54,6 +56,8 @@
     "@types/morgan": "^1.9.9",
     "@types/multer": "^1.4.12",
     "@types/pg": "^8.11.10",
+    "@types/ssh2-sftp-client": "^9.0.6",
+    "@types/swagger-ui-express": "^4.1.8",
     "drizzle-kit": "^0.24.0",
     "tsx": "^4.19.0",
     "typescript": "^5.5.0",

@@ -13,7 +13,7 @@
  * duplicates. To re-seed cleanly, delete the existing demo tenant first.
  */
 
-import { eq, sql } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   tenants,
@@ -60,6 +60,28 @@ export interface DemoTenantResult {
 const DEFAULT_TENANT_NAME = 'Demo Bookkeeping Co';
 const DEFAULT_SLUG = 'demo-co';
 
+interface VendorSeed {
+  displayName: string;
+  email: string;
+  defaultPaymentTerms?: string;
+  is1099Eligible?: boolean;
+}
+
+// All vendors used by the demo. The first 5 are owned by the simple expense
+// flow (rent, utilities, telco, insurance, office supplies). Vendors 5–8 are
+// AP-flow vendors that get billed via the bills/pay-bills workflow.
+const VENDOR_DATA: VendorSeed[] = [
+  { displayName: 'City Power & Light', email: 'billing@citypower.example.com' },
+  { displayName: 'Office Depot Supply', email: 'accounts@officedepot.example.com' },
+  { displayName: 'AT&T Business', email: 'commercial@att.example.com' },
+  { displayName: 'Commercial Insurance Group', email: 'policy@cig.example.com' },
+  { displayName: 'Downtown Office Lease LLC', email: 'rent@downtownlease.example.com' },
+  { displayName: 'TechWorks IT Solutions', email: 'ar@techworks.example.com', defaultPaymentTerms: 'net_30', is1099Eligible: true },
+  { displayName: 'Crawford Legal LLP', email: 'billing@crawfordlegal.example.com', defaultPaymentTerms: 'net_15', is1099Eligible: true },
+  { displayName: 'BrightAds Marketing', email: 'accounts@brightads.example.com', defaultPaymentTerms: 'net_30', is1099Eligible: true },
+  { displayName: 'Cloudbase Software Inc', email: 'billing@cloudbase.example.com', defaultPaymentTerms: 'net_30' },
+];
+
 // Deterministic LCG — same call order produces the same demo data every run.
 // This is NOT cryptographic; it's so the demo tenant looks identical across
 // reinstalls, which makes screenshots/docs reproducible.
@@ -91,19 +113,76 @@ export async function createDemoTenant(
   };
 
   // ── 1. Check for existing tenant ──────────────────────────────
+  //
+  // The seeder is idempotent on the slug. If a tenant with this slug
+  // already exists we don't recreate the base data — but we DO check
+  // whether the AP section has been run against it. This makes the
+  // seeder upgrade-aware: a tenant that was seeded before bills/AP
+  // existed gets the new AP data backfilled the next time the seeder
+  // runs, without the user having to delete + reseed.
   const existing = await db.query.tenants.findFirst({ where: eq(tenants.slug, slug) });
   if (existing) {
-    log(`Demo tenant "${slug}" already exists; skipping creation.`);
+    const hasBills = await db.execute(sql`
+      SELECT 1 FROM transactions
+      WHERE tenant_id = ${existing.id} AND txn_type = 'bill'
+      LIMIT 1
+    `);
+    const apAlreadySeeded = (hasBills.rows as any[]).length > 0;
+
+    if (apAlreadySeeded) {
+      log(`Demo tenant "${slug}" already exists with AP data; skipping.`);
+      return {
+        tenantId: existing.id,
+        tenantName: existing.name,
+        alreadyExisted: true,
+        counts: {
+          invoices: 0, customerPayments: 0, cashSales: 0, expenses: 0,
+          deposits: 0, transfers: 0, journalEntries: 0,
+          bills: 0, vendorCredits: 0, billPayments: 0, total: 0,
+        },
+        trialBalanceValid: true,
+      };
+    }
+
+    // Backfill AP into the existing tenant
+    log(`Demo tenant "${slug}" exists but has no AP data — backfilling bills, vendor credits, and bill payments.`);
+    const counts = {
+      invoices: 0, customerPayments: 0, cashSales: 0, expenses: 0,
+      deposits: 0, transfers: 0, journalEntries: 0,
+      bills: 0, vendorCredits: 0, billPayments: 0, total: 0,
+    };
+
+    // Resolve the accounts and contacts that the AP section needs
+    const allAccounts = await db.select().from(accounts).where(eq(accounts.tenantId, existing.id));
+    const checking = allAccounts.find((a) => a.systemTag === 'cash_on_hand');
+    const expenseAccts = allAccounts.filter((a) => a.accountType === 'expense' && !a.isSystem);
+    if (!checking || expenseAccts.length === 0) {
+      log(`  ⚠ Cannot backfill AP — checking or expense accounts not found in existing tenant.`);
+      return {
+        tenantId: existing.id,
+        tenantName: existing.name,
+        alreadyExisted: true,
+        counts,
+        trialBalanceValid: true,
+      };
+    }
+
+    const apVendors = await ensureApVendors(existing.id, log);
+
+    await seedAccountsPayable(existing.id, apVendors, expenseAccts, checking, counts, log);
+
+    counts.total = counts.bills + counts.vendorCredits + counts.billPayments;
+    const val = await ledger.validateBalance(existing.id);
+    log(
+      `AP backfill complete: ${counts.total} new transactions, trial balance ${val.valid ? 'VALID' : 'INVALID'}`,
+    );
+
     return {
       tenantId: existing.id,
       tenantName: existing.name,
       alreadyExisted: true,
-      counts: {
-        invoices: 0, customerPayments: 0, cashSales: 0, expenses: 0,
-        deposits: 0, transfers: 0, journalEntries: 0,
-        bills: 0, vendorCredits: 0, billPayments: 0, total: 0,
-      },
-      trialBalanceValid: true,
+      counts,
+      trialBalanceValid: val.valid,
     };
   }
 
@@ -161,26 +240,7 @@ export async function createDemoTenant(
     { displayName: 'Metro Design Studio', email: 'contact@metrodesign.example.com' },
     { displayName: 'Sunrise Consulting', email: 'hello@sunrise.example.com' },
   ];
-  const vendorData: Array<{
-    displayName: string;
-    email: string;
-    defaultPaymentTerms?: string;
-    is1099Eligible?: boolean;
-  }> = [
-    { displayName: 'City Power & Light', email: 'billing@citypower.example.com' },
-    { displayName: 'Office Depot Supply', email: 'accounts@officedepot.example.com' },
-    { displayName: 'AT&T Business', email: 'commercial@att.example.com' },
-    { displayName: 'Commercial Insurance Group', email: 'policy@cig.example.com' },
-    { displayName: 'Downtown Office Lease LLC', email: 'rent@downtownlease.example.com' },
-    // AP-specific vendors — these get billed via the bills workflow so the
-    // demo shows the full Accounts Payable lifecycle (bill → pay bills →
-    // optionally with credits applied) alongside the simpler one-step
-    // expenses above.
-    { displayName: 'TechWorks IT Solutions', email: 'ar@techworks.example.com', defaultPaymentTerms: 'net_30', is1099Eligible: true },
-    { displayName: 'Crawford Legal LLP', email: 'billing@crawfordlegal.example.com', defaultPaymentTerms: 'net_15', is1099Eligible: true },
-    { displayName: 'BrightAds Marketing', email: 'accounts@brightads.example.com', defaultPaymentTerms: 'net_30', is1099Eligible: true },
-    { displayName: 'Cloudbase Software Inc', email: 'billing@cloudbase.example.com', defaultPaymentTerms: 'net_30' },
-  ];
+  const vendorData = VENDOR_DATA;
 
   const customers: Array<{ id: string; displayName: string }> = [];
   for (const c of customerData) {
@@ -553,6 +613,50 @@ export async function createDemoTenant(
     counts,
     trialBalanceValid: val.valid,
   };
+}
+
+/**
+ * Ensure all 9 demo vendors exist for the given tenant. Used by the AP
+ * backfill path: an existing demo tenant created before AP existed only
+ * has the first 5 vendors, so we look up by display name and create the
+ * AP-flow vendors if missing. Returns the vendors in VENDOR_DATA order so
+ * seedAccountsPayable's positional indices (vendors[5]–vendors[8]) work
+ * the same way for both the fresh-create and backfill paths.
+ */
+async function ensureApVendors(
+  tenantId: string,
+  log: (line: string) => void,
+): Promise<Array<{ id: string; displayName: string }>> {
+  const result: Array<{ id: string; displayName: string }> = [];
+
+  for (const v of VENDOR_DATA) {
+    const found = await db.query.contacts.findFirst({
+      where: and(
+        eq(contacts.tenantId, tenantId),
+        eq(contacts.displayName, v.displayName),
+      ),
+    });
+
+    if (found) {
+      result.push({ id: found.id, displayName: found.displayName });
+    } else {
+      const [row] = await db.insert(contacts).values({
+        tenantId,
+        displayName: v.displayName,
+        contactType: 'vendor',
+        email: v.email,
+        isActive: true,
+        defaultPaymentTerms: v.defaultPaymentTerms || null,
+        is1099Eligible: v.is1099Eligible || false,
+      }).returning();
+      if (row) {
+        result.push({ id: row.id, displayName: row.displayName });
+        log(`  Created vendor: ${v.displayName}`);
+      }
+    }
+  }
+
+  return result;
 }
 
 // ─── Accounts Payable demo seeding ──────────────────────────────────

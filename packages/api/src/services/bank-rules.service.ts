@@ -242,14 +242,18 @@ export async function submitRuleForGlobal(userId: string, email: string, tenantI
   // Get account name from the assigned account (if any)
   let accountName: string | null = null;
   if (rule.assignAccountId) {
-    const acct = await db.query.accounts.findFirst({ where: eq(accounts.id, rule.assignAccountId) });
+    const acct = await db.query.accounts.findFirst({
+      where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, rule.assignAccountId)),
+    });
     accountName = acct?.name || null;
   }
 
   // Get contact name (if any)
   let contactName: string | null = null;
   if (rule.assignContactId) {
-    const contact = await db.query.contacts.findFirst({ where: eq(contacts.id, rule.assignContactId) });
+    const contact = await db.query.contacts.findFirst({
+      where: and(eq(contacts.tenantId, tenantId), eq(contacts.id, rule.assignContactId)),
+    });
     contactName = contact?.displayName || null;
   }
 

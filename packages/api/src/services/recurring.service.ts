@@ -69,6 +69,45 @@ export async function deactivate(tenantId: string, id: string) {
 
 export async function postNext(tenantId: string, scheduleId: string) {
   const sched = await getById(tenantId, scheduleId);
+  const claimedOccurrence = sched.nextOccurrence;
+  const nextOcc = calculateNextOccurrence(sched.nextOccurrence, sched.frequency, sched.intervalValue ?? 1);
+  const isExpired = sched.endDate && new Date(nextOcc) > new Date(sched.endDate);
+
+  // Claim this occurrence atomically. The UPDATE only succeeds if the
+  // schedule is still on the occurrence we read above — if another
+  // worker (or a manual trigger racing with the scheduler) already
+  // advanced it, our UPDATE affects zero rows and we bail without
+  // posting a duplicate transaction. This is the conditional-UPDATE
+  // claim pattern from the prior audit, applied to recurring jobs.
+  //
+  // We update next_occurrence and last_posted_at here BEFORE posting
+  // the ledger transaction, so any failure to post leaves the schedule
+  // slightly ahead of where it "should" be — the user can manually
+  // back it up or skip the occurrence. That's less bad than the
+  // alternative, which is double-posting after a retry.
+  const [claimed] = await db.update(recurringSchedules)
+    .set({
+      nextOccurrence: nextOcc,
+      lastPostedAt: new Date(),
+      isActive: isExpired ? 'false' : 'true',
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(recurringSchedules.tenantId, tenantId),
+      eq(recurringSchedules.id, scheduleId),
+      eq(recurringSchedules.nextOccurrence, claimedOccurrence),
+      eq(recurringSchedules.isActive, 'true'),
+    ))
+    .returning();
+
+  if (!claimed) {
+    // Another worker already advanced this schedule, or it was deactivated.
+    throw AppError.conflict(
+      `Recurring schedule ${scheduleId} is not on occurrence ${claimedOccurrence} ` +
+      `(either already posted by another worker, or deactivated).`,
+      'RECURRING_ALREADY_CLAIMED',
+    );
+  }
 
   // Get template transaction
   const template = await ledger.getTransaction(tenantId, sched.templateTransactionId);
@@ -124,19 +163,10 @@ export async function postNext(tenantId: string, scheduleId: string) {
     });
   }
 
-  // Update schedule
-  const nextOcc = calculateNextOccurrence(sched.nextOccurrence, sched.frequency, sched.intervalValue ?? 1);
-
-  // Check if past end date
-  const isExpired = sched.endDate && new Date(nextOcc) > new Date(sched.endDate);
-
-  await db.update(recurringSchedules).set({
-    nextOccurrence: nextOcc,
-    lastPostedAt: new Date(),
-    isActive: isExpired ? 'false' : 'true',
-    updatedAt: new Date(),
-  }).where(eq(recurringSchedules.id, scheduleId));
-
+  // Schedule was already claimed + advanced at the top of this function.
+  // `claimed` contains the post-claim row, unused here but referenced
+  // so `void` keeps TypeScript quiet about the unused binding.
+  void claimed;
   return txn;
 }
 

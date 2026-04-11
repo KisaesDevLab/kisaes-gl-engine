@@ -260,6 +260,34 @@
       "when": 1775510000000,
       "tag": "0036_coa_templates",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1775520000000,
+      "tag": "0037_bill_attachment_type_fix",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1775530000000,
+      "tag": "0038_chat_support",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1775540000000,
+      "tag": "0039_coa_template_hidden",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1775550000000,
+      "tag": "0040_portable_backup",
+      "breakpoints": true
     }
   ]
 }

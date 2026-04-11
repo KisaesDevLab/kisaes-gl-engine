@@ -40,9 +40,10 @@ describe('Accounts Service', () => {
 
       // Check system accounts exist
       const systemAccounts = result.data.filter((a) => a.isSystem);
-      expect(systemAccounts.length).toBe(6);
+      expect(systemAccounts.length).toBe(7);
       const tags = systemAccounts.map((a) => a.systemTag).sort();
       expect(tags).toContain('accounts_receivable');
+      expect(tags).toContain('accounts_payable');
       expect(tags).toContain('payments_clearing');
       expect(tags).toContain('retained_earnings');
       expect(tags).toContain('opening_balances');
@@ -104,7 +105,7 @@ describe('Accounts Service', () => {
       const assets = await accountsService.list(tenantId, { accountType: 'asset', limit: 100, offset: 0 });
       expect(assets.data.every((a) => a.accountType === 'asset')).toBe(true);
 
-      const searched = await accountsService.list(tenantId, { search: 'checking', limit: 100, offset: 0 });
+      const searched = await accountsService.list(tenantId, { search: 'cash', limit: 100, offset: 0 });
       expect(searched.data.length).toBeGreaterThan(0);
     });
   });
@@ -180,7 +181,7 @@ describe('Accounts Service', () => {
       await accountsService.seedFromTemplate(tenantId, 'default');
       const csv = await accountsService.exportToCsv(tenantId);
       expect(csv).toContain('Account Number,Name,Type');
-      expect(csv).toContain('Business Checking');
+      expect(csv).toContain('Cash');
     });
   });
 });

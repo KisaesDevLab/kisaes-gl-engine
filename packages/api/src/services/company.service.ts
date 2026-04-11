@@ -4,7 +4,6 @@ import { db } from '../db/index.js';
 import { companies, accountantCompanyExclusions } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
-import * as accountsService from './accounts.service.js';
 
 // List all companies for a tenant, filtered by accountant exclusions if applicable
 export async function listCompanies(tenantId: string, userId?: string) {
@@ -36,12 +35,53 @@ export async function getCompany(tenantId: string, companyId?: string) {
   return company;
 }
 
+// Fields the tenant's own users may edit via /companies/:id. Any
+// field not in this list — notably `tenantId` and `id` — is
+// silently dropped even if it appears in `input`. The Zod schema
+// already strips unknown keys, but this allowlist is defense in
+// depth against a future schema that uses .passthrough() or a
+// direct call that bypasses the route layer.
+const COMPANY_UPDATABLE_FIELDS = [
+  'businessName',
+  'legalName',
+  'ein',
+  'addressLine1',
+  'addressLine2',
+  'city',
+  'state',
+  'zip',
+  'country',
+  'phone',
+  'email',
+  'website',
+  'industry',
+  'entityType',
+  'fiscalYearStartMonth',
+  'accountingMethod',
+  'defaultPaymentTerms',
+  'invoicePrefix',
+  'invoiceNextNumber',
+  'defaultSalesTaxRate',
+  'currency',
+  'dateFormat',
+  'categoryFilterMode',
+] as const;
+
 export async function updateCompany(tenantId: string, companyId: string, input: UpdateCompanyInput, userId?: string) {
   const existing = await getCompany(tenantId, companyId);
 
+  // Explicit allowlist: never trust `input` to be free of tenantId /
+  // id keys that could move the company between tenants.
+  const updates: Record<string, unknown> = { updatedAt: new Date() };
+  for (const key of COMPANY_UPDATABLE_FIELDS) {
+    if ((input as Record<string, unknown>)[key] !== undefined) {
+      updates[key] = (input as Record<string, unknown>)[key];
+    }
+  }
+
   const [updated] = await db
     .update(companies)
-    .set({ ...input, updatedAt: new Date() })
+    .set(updates as Partial<typeof companies.$inferInsert>)
     .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)))
     .returning();
 
@@ -136,8 +176,28 @@ export async function createCompanyForTenant(tenantId: string, businessName: str
   return company;
 }
 
-// Create an additional company under the same tenant (with COA seeding)
+// Create an additional company under the same tenant.
+//
+// NOTE: companies within a single tenant SHARE one chart of accounts.
+// The unique index on accounts is `(tenant_id, account_number)` — there
+// is no `company_id` in that index — so only one COA can exist per
+// tenant. The previous version of this function called
+// `seedFromTemplate(tenantId, businessType, company.id)` which crashed
+// with a unique-constraint violation as soon as the tenant already had
+// any accounts (which is always true after first-run setup).
+//
+// The `businessType` parameter is intentionally accepted but unused.
+// It's part of the public API surface and removing it would break the
+// existing UI form that posts it. Documented as a no-op so a future
+// reviewer doesn't try to "fix" it.
+//
+// If a user genuinely needs a separate chart of accounts, they should
+// create a separate TENANT instead of a separate company. The admin
+// tenant-management UI under /admin/tenants supports this.
 export async function createAdditionalCompany(tenantId: string, input: { businessName: string; entityType?: string; industry?: string; businessType?: string }) {
+  // `businessType` is accepted but intentionally not used — see header comment.
+  void input.businessType;
+
   const [company] = await db.insert(companies).values({
     tenantId,
     businessName: input.businessName,
@@ -147,9 +207,6 @@ export async function createAdditionalCompany(tenantId: string, input: { busines
   }).returning();
 
   if (!company) throw AppError.internal('Failed to create company');
-
-  // Seed COA for the new company
-  await accountsService.seedFromTemplate(tenantId, input.businessType || 'default', company.id);
 
   return company;
 }

@@ -64,10 +64,15 @@ billsRouter.post('/:id/attach-draft', async (req, res) => {
     res.status(400).json({ error: { message: 'draftId is required' } });
     return;
   }
+  // Re-link as 'bill' so the BillDetailPage's <AttachmentPanel
+  // attachableType="bill" /> picks them up. Other transaction types
+  // (expense, deposit, etc.) follow the same convention of using
+  // their `txnType` as the attachable type — see
+  // transactions.routes.ts and TransactionDetail.tsx.
   const reassigned = await attachmentService.reassignDraftAttachments(
     req.tenantId,
     draftId,
-    'transaction',
+    'bill',
     req.params['id']!,
   );
   res.json({ reassigned });

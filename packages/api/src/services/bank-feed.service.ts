@@ -8,6 +8,20 @@ import { cleanBankDescription } from '../utils/bank-name-cleaner.js';
 import { cleanNameViaRules } from './bank-rules.service.js';
 import { updateLearning } from './categorization-ai.service.js';
 
+/**
+ * Verify a client-supplied `bankConnectionId` belongs to the caller's
+ * tenant. Without this check, the CSV/OFX/statement import paths would
+ * let a user insert bank_feed_items labelled with their own tenantId
+ * but pointing at another tenant's bank_connections.id, polluting
+ * cross-tenant joins.
+ */
+async function assertConnectionInTenant(tenantId: string, bankConnectionId: string): Promise<void> {
+  const conn = await db.query.bankConnections.findFirst({
+    where: and(eq(bankConnections.tenantId, tenantId), eq(bankConnections.id, bankConnectionId)),
+  });
+  if (!conn) throw AppError.notFound('Bank connection not found');
+}
+
 export async function list(tenantId: string, filters: BankFeedFilters) {
   const conditions = [eq(bankFeedItems.tenantId, tenantId)];
   if (filters.status) conditions.push(eq(bankFeedItems.status, filters.status));
@@ -68,67 +82,142 @@ export async function updateFeedItem(tenantId: string, feedItemId: string, input
   if (input.memo !== undefined) updates.category = input.memo;
   if (input.contactId !== undefined) updates.suggestedContactId = input.contactId || null;
 
-  await db.update(bankFeedItems).set(updates).where(eq(bankFeedItems.id, feedItemId));
-  return db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, feedItemId) });
+  await db.update(bankFeedItems).set(updates)
+    .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
+  return db.query.bankFeedItems.findFirst({
+    where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)),
+  });
 }
 
 export async function categorize(tenantId: string, feedItemId: string, input: CategorizeInput, userId?: string) {
-  const item = await db.query.bankFeedItems.findFirst({
-    where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)),
-  });
-  if (!item) throw AppError.notFound('Bank feed item not found');
+  // Atomic claim: flip the feed item from 'pending' to 'categorizing'
+  // in one UPDATE. Two concurrent categorize calls (double-clicks,
+  // retries, two users opening the same item) serialize here — only
+  // one of them gets a row back from the UPDATE, the other gets an
+  // empty result and throws cleanly. Previously there was no guard at
+  // all, so both calls would post duplicate ledger transactions for
+  // the same feed item.
+  //
+  // The intermediate 'categorizing' state is a claim marker. On
+  // success we transition it to 'categorized'; on failure in the
+  // posting step below we revert it back to 'pending' so the user can
+  // retry.
+  const [claimed] = await db.update(bankFeedItems)
+    .set({ status: 'categorizing', updatedAt: new Date() })
+    .where(and(
+      eq(bankFeedItems.tenantId, tenantId),
+      eq(bankFeedItems.id, feedItemId),
+      eq(bankFeedItems.status, 'pending'),
+    ))
+    .returning();
 
-  // Determine if this is an expense (positive amount = money out) or deposit (negative = money in)
-  const amount = Math.abs(parseFloat(item.amount));
-  const isExpense = parseFloat(item.amount) > 0;
+  if (!claimed) {
+    // Either the item doesn't exist, belongs to another tenant, or
+    // has already been categorized/matched/claimed by another call.
+    const existing = await db.query.bankFeedItems.findFirst({
+      where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)),
+    });
+    if (!existing) throw AppError.notFound('Bank feed item not found');
+    throw AppError.badRequest(
+      `Bank feed item is not pending (current status: ${existing.status}). ` +
+      `It may already be categorized or in progress.`,
+    );
+  }
 
-  // Get the bank account from the connection
-  const conn = await db.query.bankConnections.findFirst({
-    where: eq(bankConnections.id, item.bankConnectionId),
-  });
-  if (!conn) throw AppError.notFound('Bank connection not found');
+  const item = claimed;
 
-  const txn = await ledger.postTransaction(tenantId, {
-    txnType: isExpense ? 'expense' : 'deposit',
-    txnDate: item.feedDate,
-    contactId: input.contactId || (item.suggestedContactId ?? undefined),
-    memo: input.memo || (item.category as string) || item.description || undefined,
-    total: amount.toFixed(4),
-    lines: isExpense
-      ? [
-          { accountId: input.accountId, debit: amount.toFixed(4), credit: '0', description: item.description || undefined },
-          { accountId: conn.accountId, debit: '0', credit: amount.toFixed(4) },
-        ]
-      : [
-          { accountId: conn.accountId, debit: amount.toFixed(4), credit: '0' },
-          { accountId: input.accountId, debit: '0', credit: amount.toFixed(4), description: item.description || undefined },
-        ],
-  }, userId);
+  try {
+    // Determine if this is an expense (positive amount = money out) or deposit (negative = money in)
+    const amount = Math.abs(parseFloat(item.amount));
+    const isExpense = parseFloat(item.amount) > 0;
 
-  await db.update(bankFeedItems).set({
-    status: 'categorized',
-    matchedTransactionId: txn.id,
-    updatedAt: new Date(),
-  }).where(eq(bankFeedItems.id, feedItemId));
+    // Get the bank account from the connection.
+    // Tenant-scoped via a join on accounts.tenant_id for defense in
+    // depth — connection.id is already known-good (came from `item`),
+    // but this keeps CLAUDE.md rule #17 honest.
+    const conn = await db.query.bankConnections.findFirst({
+      where: eq(bankConnections.id, item.bankConnectionId),
+    });
+    if (!conn) throw AppError.notFound('Bank connection not found');
+    const connAccount = await db.query.accounts.findFirst({
+      where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, conn.accountId)),
+    });
+    if (!connAccount) {
+      throw AppError.notFound('Bank connection does not belong to this tenant');
+    }
 
-  // Update categorization learning history
-  updateLearning(
-    tenantId,
-    item.originalDescription || item.description || '',
-    input.accountId,
-    input.contactId || null,
-    true,
-  ).catch(() => {});
+    const txn = await ledger.postTransaction(tenantId, {
+      txnType: isExpense ? 'expense' : 'deposit',
+      txnDate: item.feedDate,
+      contactId: input.contactId || (item.suggestedContactId ?? undefined),
+      memo: input.memo || (item.category as string) || item.description || undefined,
+      total: amount.toFixed(4),
+      lines: isExpense
+        ? [
+            { accountId: input.accountId, debit: amount.toFixed(4), credit: '0', description: item.description || undefined },
+            { accountId: conn.accountId, debit: '0', credit: amount.toFixed(4) },
+          ]
+        : [
+            { accountId: conn.accountId, debit: amount.toFixed(4), credit: '0' },
+            { accountId: input.accountId, debit: '0', credit: amount.toFixed(4), description: item.description || undefined },
+          ],
+    }, userId);
 
-  return txn;
+    await db.update(bankFeedItems).set({
+      status: 'categorized',
+      matchedTransactionId: txn.id,
+      updatedAt: new Date(),
+    }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
+
+    // Update categorization learning history
+    updateLearning(
+      tenantId,
+      item.originalDescription || item.description || '',
+      input.accountId,
+      input.contactId || null,
+      true,
+    ).catch(() => {});
+
+    return txn;
+  } catch (err) {
+    // Revert the claim so the user can retry. Only revert if we still
+    // own the claim (status === 'categorizing'); if something else has
+    // changed the status, leave it alone.
+    await db.update(bankFeedItems).set({
+      status: 'pending',
+      updatedAt: new Date(),
+    }).where(and(
+      eq(bankFeedItems.tenantId, tenantId),
+      eq(bankFeedItems.id, feedItemId),
+      eq(bankFeedItems.status, 'categorizing'),
+    ));
+    throw err;
+  }
 }
 
 export async function match(tenantId: string, feedItemId: string, transactionId: string) {
-  await db.update(bankFeedItems).set({
-    status: 'matched',
-    matchedTransactionId: transactionId,
-    updatedAt: new Date(),
-  }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
+  // Claim atomically in the same style as categorize: only transition
+  // from 'pending' → 'matched'. Prevents double-matching the same feed
+  // item if the user clicks "Match" twice or two users race.
+  const [matched] = await db.update(bankFeedItems)
+    .set({
+      status: 'matched',
+      matchedTransactionId: transactionId,
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(bankFeedItems.tenantId, tenantId),
+      eq(bankFeedItems.id, feedItemId),
+      eq(bankFeedItems.status, 'pending'),
+    ))
+    .returning();
+  if (!matched) {
+    const existing = await db.query.bankFeedItems.findFirst({
+      where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)),
+    });
+    if (!existing) throw AppError.notFound('Bank feed item not found');
+    throw AppError.badRequest(`Bank feed item is not pending (current status: ${existing.status}).`);
+  }
 }
 
 /**
@@ -222,45 +311,64 @@ export async function exclude(tenantId: string, feedItemId: string) {
 }
 
 export async function bulkApprove(tenantId: string, feedItemIds: string[]) {
+  // Wrap each item in try/catch so a single bad row (already
+  // claimed, deleted, missing suggestion, ledger-post failure) can't
+  // abort the whole batch. Returns per-item failures for the caller
+  // to surface.
   let approved = 0;
+  const failures: Array<{ id: string; error: string }> = [];
   for (const id of feedItemIds) {
-    const item = await db.query.bankFeedItems.findFirst({
-      where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, id)),
-    });
-    if (item && item.status === 'pending' && item.suggestedAccountId) {
-      await categorize(tenantId, id, { accountId: item.suggestedAccountId, contactId: item.suggestedContactId || undefined });
-      approved++;
+    try {
+      const item = await db.query.bankFeedItems.findFirst({
+        where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, id)),
+      });
+      if (item && item.status === 'pending' && item.suggestedAccountId) {
+        await categorize(tenantId, id, { accountId: item.suggestedAccountId, contactId: item.suggestedContactId || undefined });
+        approved++;
+      }
+    } catch (err: any) {
+      failures.push({ id, error: err?.message || 'unknown error' });
     }
   }
-  return { approved };
+  return { approved, failures };
 }
 
 export async function bulkCategorize(tenantId: string, feedItemIds: string[], accountId: string, contactId?: string, memo?: string, userId?: string) {
   let categorized = 0;
+  const failures: Array<{ id: string; error: string }> = [];
   for (const id of feedItemIds) {
-    const item = await db.query.bankFeedItems.findFirst({
-      where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, id)),
-    });
-    if (item && item.status === 'pending') {
-      await categorize(tenantId, id, { accountId, contactId, memo }, userId);
-      categorized++;
+    try {
+      const item = await db.query.bankFeedItems.findFirst({
+        where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, id)),
+      });
+      if (item && item.status === 'pending') {
+        await categorize(tenantId, id, { accountId, contactId, memo }, userId);
+        categorized++;
+      }
+    } catch (err: any) {
+      failures.push({ id, error: err?.message || 'unknown error' });
     }
   }
-  return { categorized };
+  return { categorized, failures };
 }
 
 export async function bulkExclude(tenantId: string, feedItemIds: string[]) {
   let excluded = 0;
+  const failures: Array<{ id: string; error: string }> = [];
   for (const id of feedItemIds) {
-    const item = await db.query.bankFeedItems.findFirst({
-      where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, id)),
-    });
-    if (item && item.status === 'pending') {
-      await exclude(tenantId, id);
-      excluded++;
+    try {
+      const item = await db.query.bankFeedItems.findFirst({
+        where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, id)),
+      });
+      if (item && item.status === 'pending') {
+        await exclude(tenantId, id);
+        excluded++;
+      }
+    } catch (err: any) {
+      failures.push({ id, error: err?.message || 'unknown error' });
     }
   }
-  return { excluded };
+  return { excluded, failures };
 }
 
 /**
@@ -309,7 +417,7 @@ async function runCleansingPipeline(tenantId: string, items: any[]) {
     // Update the description if it changed
     if (cleanedName && cleanedName !== item.description) {
       await db.update(bankFeedItems).set({ description: cleanedName, updatedAt: new Date() })
-        .where(eq(bankFeedItems.id, item.id));
+        .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, item.id)));
       (item as any).description = cleanedName;
     }
   }
@@ -326,7 +434,9 @@ export async function runCategorizationPipeline(tenantId: string, items: any[]) 
 
   for (const item of items) {
     // Skip if already categorized (e.g., by the cleansing pipeline's AI step)
-    const current = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, item.id) });
+    const current = await db.query.bankFeedItems.findFirst({
+      where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, item.id)),
+    });
     if (!current || current.status !== 'pending') continue;
 
     const ruleResult = await bankRulesService.evaluateRules(tenantId, {
@@ -345,7 +455,9 @@ export async function runCategorizationPipeline(tenantId: string, items: any[]) 
   // AI suggestions on remaining pending items
   const pendingIds = [];
   for (const item of items) {
-    const current = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, item.id) });
+    const current = await db.query.bankFeedItems.findFirst({
+      where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, item.id)),
+    });
     if (current && current.status === 'pending') pendingIds.push(item.id);
   }
   if (pendingIds.length > 0) {
@@ -371,6 +483,7 @@ export async function importFromCsv(
   csvText: string,
   mapping: CsvColumnMapping,
 ) {
+  await assertConnectionInTenant(tenantId, bankConnectionId);
   const lines = csvText.split('\n').filter((l) => l.trim());
   if (lines.length < 2) throw AppError.badRequest('CSV must have header + data rows');
 
@@ -434,6 +547,7 @@ export async function importFromCsv(
 }
 
 export async function importFromOfx(tenantId: string, bankConnectionId: string, ofxContent: string) {
+  await assertConnectionInTenant(tenantId, bankConnectionId);
   // Simple OFX/QFX parser — extract STMTTRN elements
   const txnRegex = /<STMTTRN>([\s\S]*?)<\/STMTTRN>/gi;
   const items: Array<typeof bankFeedItems.$inferInsert> = [];
@@ -514,6 +628,7 @@ export async function importStatementItems(
   bankConnectionId: string,
   transactions: Array<{ date: string; description: string; amount: string; type?: string }>,
 ) {
+  await assertConnectionInTenant(tenantId, bankConnectionId);
   const items: Array<typeof bankFeedItems.$inferInsert> = transactions.map((txn) => ({
     tenantId,
     bankConnectionId,
