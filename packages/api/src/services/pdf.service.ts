@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { companies, contacts, transactions, journalLines, accounts } from '../db/schema/index.js';
+import { companies, contacts, transactions, journalLines, accounts, billPaymentApplications, vendorCreditApplications } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 
 interface InvoicePdfData {
@@ -289,6 +289,22 @@ export async function getInvoiceHtml(tenantId: string, invoiceId: string): Promi
 
 // ─── Check PDF Generation ───────────────────────────────────────
 
+interface BillPaymentStubLine {
+  txnNumber: string | null;
+  vendorInvoiceNumber: string | null;
+  txnDate: string;
+  description: string | null;
+  originalAmount: string;
+  paidAmount: string;
+}
+
+interface VendorCreditStubLine {
+  txnNumber: string | null;
+  txnDate: string;
+  description: string | null;
+  amount: string;
+}
+
 interface CheckData {
   checkNumber: number | null;
   date: string;
@@ -311,6 +327,11 @@ interface CheckData {
   printVoucherStub: boolean;
   offsetX: number;
   offsetY: number;
+  // Populated when this check is a bill payment — itemized voucher
+  billPaymentBills?: BillPaymentStubLine[];
+  billPaymentCredits?: VendorCreditStubLine[];
+  billPaymentTotalBills?: string;
+  billPaymentTotalCredits?: string;
 }
 
 async function gatherCheckData(tenantId: string, checkId: string): Promise<CheckData> {
@@ -327,10 +348,77 @@ async function gatherCheckData(tenantId: string, checkId: string): Promise<Check
   // Import numberToWords
   const { numberToWords } = await import('@kis-books/shared');
 
+  // For bill payments, the payeeName isn't stored on the txn — pull from
+  // the linked contact (vendor). Also load the bill/credit applications so
+  // the voucher can itemize what the check pays off.
+  let payeeName = txn.payeeNameOnCheck || '';
+  let billPaymentBills: BillPaymentStubLine[] | undefined;
+  let billPaymentCredits: VendorCreditStubLine[] | undefined;
+  let billPaymentTotalBills: string | undefined;
+  let billPaymentTotalCredits: string | undefined;
+
+  if (txn.txnType === 'bill_payment') {
+    if (!payeeName && txn.contactId) {
+      const vendor = await db.query.contacts.findFirst({
+        where: and(eq(contacts.tenantId, tenantId), eq(contacts.id, txn.contactId)),
+      });
+      if (vendor) payeeName = vendor.displayName;
+    }
+
+    // Fetch bills paid by this payment, joined to the bill transactions for display fields
+    const billRows = await db.select({
+      txnNumber: transactions.txnNumber,
+      vendorInvoiceNumber: transactions.vendorInvoiceNumber,
+      txnDate: transactions.txnDate,
+      memo: transactions.memo,
+      total: transactions.total,
+      paidAmount: billPaymentApplications.amount,
+    }).from(billPaymentApplications)
+      .leftJoin(transactions, eq(billPaymentApplications.billId, transactions.id))
+      .where(and(
+        eq(billPaymentApplications.tenantId, tenantId),
+        eq(billPaymentApplications.paymentId, checkId),
+      ));
+
+    billPaymentBills = billRows.map((r) => ({
+      txnNumber: r.txnNumber,
+      vendorInvoiceNumber: r.vendorInvoiceNumber,
+      txnDate: r.txnDate || '',
+      description: r.memo,
+      originalAmount: parseFloat(r.total || '0').toFixed(2),
+      paidAmount: parseFloat(r.paidAmount || '0').toFixed(2),
+    }));
+
+    // Fetch credits applied in this payment
+    const creditRows = await db.select({
+      txnNumber: transactions.txnNumber,
+      txnDate: transactions.txnDate,
+      memo: transactions.memo,
+      amount: vendorCreditApplications.amount,
+    }).from(vendorCreditApplications)
+      .leftJoin(transactions, eq(vendorCreditApplications.creditId, transactions.id))
+      .where(and(
+        eq(vendorCreditApplications.tenantId, tenantId),
+        eq(vendorCreditApplications.paymentId, checkId),
+      ));
+
+    billPaymentCredits = creditRows.map((r) => ({
+      txnNumber: r.txnNumber,
+      txnDate: r.txnDate || '',
+      description: r.memo,
+      amount: parseFloat(r.amount || '0').toFixed(2),
+    }));
+
+    const totalBills = billPaymentBills.reduce((s, b) => s + parseFloat(b.paidAmount), 0);
+    const totalCredits = billPaymentCredits.reduce((s, c) => s + parseFloat(c.amount), 0);
+    billPaymentTotalBills = totalBills.toFixed(2);
+    billPaymentTotalCredits = totalCredits.toFixed(2);
+  }
+
   return {
     checkNumber: txn.checkNumber,
     date: txn.txnDate,
-    payeeName: txn.payeeNameOnCheck || '',
+    payeeName,
     amount: parseFloat(txn.total || '0').toFixed(2),
     amountInWords: numberToWords(parseFloat(txn.total || '0')),
     memo: txn.printedMemo || txn.memo || '',
@@ -360,6 +448,10 @@ async function gatherCheckData(tenantId: string, checkId: string): Promise<Check
     printVoucherStub: settings['printVoucherStub'] !== false,
     offsetX: settings['alignmentOffsetX'] || 0,
     offsetY: settings['alignmentOffsetY'] || 0,
+    billPaymentBills,
+    billPaymentCredits,
+    billPaymentTotalBills,
+    billPaymentTotalCredits,
   };
 }
 
@@ -369,7 +461,72 @@ function renderCheckHtml(checks: CheckData[], format: string): string {
   const checkTop = format === 'check_middle' ? '3.67in' : '0';
 
   const checksHtml = checks.map((c) => {
-    const stubHtml = `
+    // Bill payment voucher: itemize bills and credits instead of the simple
+    // 1-line stub. Falls back to the basic stub for non-bill-payment checks
+    // (regular Write Check transactions).
+    const isBillPayment = c.billPaymentBills && c.billPaymentBills.length > 0;
+    const billPaymentStub = isBillPayment ? `
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-weight:600">
+        <div>BILL PAYMENT VOUCHER</div>
+        <div>Check #${c.checkNumber || '____'}</div>
+        <div>Date: ${c.date}</div>
+      </div>
+      <div style="margin-bottom:4px">Pay to: <strong>${esc(c.payeeName)}</strong></div>
+      <table style="width:100%;border-collapse:collapse;font-size:8.5px;margin-top:6px">
+        <thead>
+          <tr style="border-bottom:1px solid #999">
+            <th style="text-align:left;padding:2px 4px">Bill #</th>
+            <th style="text-align:left;padding:2px 4px">Vendor Inv #</th>
+            <th style="text-align:left;padding:2px 4px">Date</th>
+            <th style="text-align:right;padding:2px 4px">Original</th>
+            <th style="text-align:right;padding:2px 4px">Paid</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${(c.billPaymentBills || []).map((b) => `
+            <tr>
+              <td style="padding:2px 4px">${esc(b.txnNumber || '')}</td>
+              <td style="padding:2px 4px">${esc(b.vendorInvoiceNumber || '')}</td>
+              <td style="padding:2px 4px">${esc(b.txnDate)}</td>
+              <td style="padding:2px 4px;text-align:right;font-family:monospace">$${b.originalAmount}</td>
+              <td style="padding:2px 4px;text-align:right;font-family:monospace">$${b.paidAmount}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+      ${(c.billPaymentCredits && c.billPaymentCredits.length > 0) ? `
+        <div style="margin-top:6px;font-weight:600;font-size:8.5px">Credits Applied:</div>
+        <table style="width:100%;border-collapse:collapse;font-size:8.5px">
+          <thead>
+            <tr style="border-bottom:1px solid #999">
+              <th style="text-align:left;padding:2px 4px">Credit #</th>
+              <th style="text-align:left;padding:2px 4px">Date</th>
+              <th style="text-align:left;padding:2px 4px">Description</th>
+              <th style="text-align:right;padding:2px 4px">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${c.billPaymentCredits.map((cr) => `
+              <tr>
+                <td style="padding:2px 4px">${esc(cr.txnNumber || '')}</td>
+                <td style="padding:2px 4px">${esc(cr.txnDate)}</td>
+                <td style="padding:2px 4px">${esc(cr.description || '')}</td>
+                <td style="padding:2px 4px;text-align:right;font-family:monospace">($${cr.amount})</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      ` : ''}
+      <div style="margin-top:8px;border-top:1px solid #000;padding-top:4px;text-align:right;font-size:9px">
+        <div>Total Bills: <span style="display:inline-block;width:80px;font-family:monospace">$${c.billPaymentTotalBills}</span></div>
+        ${(c.billPaymentTotalCredits && parseFloat(c.billPaymentTotalCredits) > 0)
+          ? `<div>Credits: <span style="display:inline-block;width:80px;font-family:monospace">($${c.billPaymentTotalCredits})</span></div>`
+          : ''}
+        <div style="font-weight:700;margin-top:2px">Check Total: <span style="display:inline-block;width:80px;font-family:monospace">$${c.amount}</span></div>
+      </div>
+    ` : null;
+
+    const basicStub = `
       <div style="display:flex;justify-content:space-between;margin-bottom:8px">
         <div><strong>Check #${c.checkNumber || '____'}</strong></div>
         <div>Date: ${c.date}</div>
@@ -378,6 +535,8 @@ function renderCheckHtml(checks: CheckData[], format: string): string {
       <div>Pay to: ${esc(c.payeeName)}</div>
       ${c.memo ? `<div>Memo: ${esc(c.memo)}</div>` : ''}
     `;
+
+    const stubHtml = billPaymentStub || basicStub;
 
     return `
     <div class="check" style="height:${checkHeight};position:relative;page-break-after:always;margin-left:${c.offsetX}px;margin-top:${c.offsetY}px">

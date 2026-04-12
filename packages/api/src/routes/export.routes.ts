@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { authenticate } from '../middleware/auth.js';
+import { companyContext } from '../middleware/company.js';
 import * as exportService from '../services/export.service.js';
 import * as importService from '../services/import.service.js';
 
@@ -8,6 +9,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 
 export const exportRouter = Router();
 exportRouter.use(authenticate);
+exportRouter.use(companyContext);
 
 // Full data export as individual CSVs (JSON response with file contents)
 exportRouter.get('/full', async (req, res) => {
@@ -31,10 +33,10 @@ exportRouter.post('/opening-balances', upload.single('file'), async (req, res) =
   if (req.file) {
     const csvText = req.file.buffer.toString('utf-8');
     const balances = await importService.parseOpeningBalancesCsv(csvText);
-    const result = await importService.importOpeningBalances(req.tenantId, balances);
+    const result = await importService.importOpeningBalances(req.tenantId, balances, req.companyId);
     res.status(201).json(result);
   } else if (req.body.balances) {
-    const result = await importService.importOpeningBalances(req.tenantId, req.body.balances);
+    const result = await importService.importOpeningBalances(req.tenantId, req.body.balances, req.companyId);
     res.status(201).json(result);
   } else {
     res.status(400).json({ error: { message: 'No file or balances provided' } });

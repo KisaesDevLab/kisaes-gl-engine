@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { bankFeedFiltersSchema, categorizeSchema, matchSchema, startReconciliationSchema, updateReconciliationLinesSchema, bankImportSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as bankConnectionService from '../services/bank-connection.service.js';
 import * as bankFeedService from '../services/bank-feed.service.js';
@@ -11,6 +12,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 
 export const bankingRouter = Router();
 bankingRouter.use(authenticate);
+bankingRouter.use(companyContext);
 
 // ─── Bank Connections ────────────────────────────────────────────
 
@@ -54,14 +56,30 @@ bankingRouter.put('/feed/:id', async (req, res) => {
   res.json({ item });
 });
 
+bankingRouter.get('/feed/:id/payroll-overlap', async (req, res) => {
+  const item = await bankFeedService.getFeedItem(req.tenantId, req.params['id']!);
+  if (!item) { res.json({ overlaps: [] }); return; }
+  const conn = await bankFeedService.getConnectionForItem(req.tenantId, item.bankConnectionId);
+  if (!conn) { res.json({ overlaps: [] }); return; }
+  const overlaps = await bankFeedService.checkPayrollOverlap(
+    req.tenantId, item.feedDate, Math.abs(parseFloat(item.amount)), conn.accountId,
+  );
+  res.json({ overlaps });
+});
+
 bankingRouter.put('/feed/:id/categorize', validate(categorizeSchema), async (req, res) => {
-  const txn = await bankFeedService.categorize(req.tenantId, req.params['id']!, req.body, req.userId);
+  const txn = await bankFeedService.categorize(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId);
   res.json({ transaction: txn });
 });
 
 bankingRouter.put('/feed/:id/match', validate(matchSchema), async (req, res) => {
   await bankFeedService.match(req.tenantId, req.params['id']!, req.body.transactionId);
   res.json({ message: 'Matched' });
+});
+
+bankingRouter.get('/feed/:id/match-candidates', async (req, res) => {
+  const candidates = await bankFeedService.findMatchCandidates(req.tenantId, req.params['id']!);
+  res.json({ candidates });
 });
 
 bankingRouter.put('/feed/:id/exclude', async (req, res) => {
@@ -80,7 +98,7 @@ bankingRouter.post('/feed/bulk-categorize', async (req, res) => {
     res.status(400).json({ error: { message: 'feedItemIds and accountId are required' } });
     return;
   }
-  const result = await bankFeedService.bulkCategorize(req.tenantId, feedItemIds, accountId, contactId, memo, req.userId);
+  const result = await bankFeedService.bulkCategorize(req.tenantId, feedItemIds, accountId, contactId, memo, req.userId, req.companyId);
   res.json(result);
 });
 
@@ -110,10 +128,13 @@ bankingRouter.post('/feed/import', upload.single('file'), async (req, res) => {
   const { accountId, mapping } = req.body;
 
   // Ensure we have a bank connection for this account
-  const connections = await bankConnectionService.list(req.tenantId);
+  let connections = await bankConnectionService.list(req.tenantId);
   let conn = connections.find((c) => c.accountId === accountId);
   if (!conn) {
-    conn = await bankConnectionService.createManualConnection(req.tenantId, accountId, 'CSV Import') ?? undefined;
+    const created = await bankConnectionService.createManualConnection(req.tenantId, accountId, 'CSV Import');
+    if (!created) { res.status(500).json({ error: { message: 'Failed to create connection' } }); return; }
+    connections = await bankConnectionService.list(req.tenantId);
+    conn = connections.find((c) => c.accountId === accountId);
   }
   if (!conn) { res.status(500).json({ error: { message: 'Failed to create connection' } }); return; }
 

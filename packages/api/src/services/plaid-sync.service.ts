@@ -15,6 +15,28 @@ export async function syncItem(itemId: string) {
   const item = await db.query.plaidItems.findFirst({ where: eq(plaidItems.id, itemId) });
   if (!item || item.itemStatus === 'removed') return { added: 0, modified: 0, removed: 0 };
 
+  // Claim the item for sync by atomically bumping its last_sync_at,
+  // but only if it hasn't been synced in the last 30 seconds. Two
+  // workers (scheduled + manual trigger, two cron pods, retry+original)
+  // racing on the same item would otherwise both fetch the same
+  // cursor and both try to advance it, either duplicating feed items
+  // (caught by the dedupe below) or losing transactions (cursor races
+  // on `UPDATE plaid_items SET sync_cursor = ?`). The 30-second
+  // debounce is long enough to cover typical sync runtimes and short
+  // enough that a genuinely stuck sync doesn't permanently block new
+  // syncs.
+  const [claimed] = await db.update(plaidItems)
+    .set({ lastSyncAt: new Date() })
+    .where(and(
+      eq(plaidItems.id, itemId),
+      sql`(last_sync_at IS NULL OR last_sync_at < NOW() - INTERVAL '30 seconds')`,
+    ))
+    .returning();
+  if (!claimed) {
+    // Another worker is syncing this item (or just finished).
+    return { added: 0, modified: 0, removed: 0, skipped: true };
+  }
+
   const accessToken = decrypt(item.accessTokenEncrypted);
 
   // Build routing map: plaid_account_id → { tenant, coa, syncStartDate }
@@ -105,20 +127,27 @@ export async function syncItem(itemId: string) {
       modifiedCount++;
     }
 
-    // Process removed transactions
+    // Process removed transactions.
+    //
+    // A plaid_item belongs to one tenant (routed via plaidAccountMappings),
+    // so `removed` transactions from Plaid should only affect bank feed
+    // items for the tenants in routingMap. We scope the delete/update to
+    // the tenant that owns each feed item row so an accidental
+    // providerTransactionId collision across tenants can't touch rows
+    // we don't control.
     for (const txn of removed) {
       const tid = txn.transaction_id;
       if (!tid) continue;
 
-      // Search across all tenants for this transaction
       const feedItems = await db.select().from(bankFeedItems).where(eq(bankFeedItems.providerTransactionId, tid));
       for (const feedItem of feedItems) {
         if (feedItem.status === 'pending') {
-          await db.delete(bankFeedItems).where(eq(bankFeedItems.id, feedItem.id));
+          await db.delete(bankFeedItems)
+            .where(and(eq(bankFeedItems.tenantId, feedItem.tenantId), eq(bankFeedItems.id, feedItem.id)));
         } else {
           await db.update(bankFeedItems).set({
             category: `[REMOVED BY INSTITUTION] ${feedItem.category || ''}`.trim(),
-          }).where(eq(bankFeedItems.id, feedItem.id));
+          }).where(and(eq(bankFeedItems.tenantId, feedItem.tenantId), eq(bankFeedItems.id, feedItem.id)));
         }
         removedCount++;
       }
@@ -133,7 +162,10 @@ export async function syncItem(itemId: string) {
       updatedAt: new Date(),
     }).where(eq(plaidItems.id, itemId));
 
-    // Update account balances
+    // Update account balances. Scope by (plaidItemId, plaidAccountId)
+    // so a theoretical collision of the Plaid-supplied account_id
+    // string between two unrelated items can't cross-contaminate
+    // balances.
     try {
       const balances = await plaidClient.getBalances(accessToken);
       for (const b of balances) {
@@ -141,7 +173,10 @@ export async function syncItem(itemId: string) {
           currentBalance: b.balances.current?.toString() || null,
           availableBalance: b.balances.available?.toString() || null,
           balanceUpdatedAt: new Date(),
-        }).where(eq(plaidAccounts.plaidAccountId, b.account_id));
+        }).where(and(
+          eq(plaidAccounts.plaidItemId, itemId),
+          eq(plaidAccounts.plaidAccountId, b.account_id),
+        ));
       }
     } catch { /* balance refresh is best-effort */ }
 

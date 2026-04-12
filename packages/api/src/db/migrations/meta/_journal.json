@@ -246,6 +246,83 @@
       "when": 1775490000000,
       "tag": "0034_bank_feed_original_description",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1775500000000,
+      "tag": "0035_accounts_payable",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1775510000000,
+      "tag": "0036_coa_templates",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1775520000000,
+      "tag": "0037_bill_attachment_type_fix",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1775530000000,
+      "tag": "0038_chat_support",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1775540000000,
+      "tag": "0039_coa_template_hidden",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1775550000000,
+      "tag": "0040_portable_backup",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1775560000000,
+      "tag": "0041_payroll_import",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1775570000000,
+      "tag": "0042_transaction_source",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1775580000000,
+      "tag": "0043_payroll_decimal_fix",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1775590000000,
+      "tag": "0044_login_lockout",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1775600000000,
+      "tag": "0045_backfill_company_id",
+      "breakpoints": true
     }
   ]
 }

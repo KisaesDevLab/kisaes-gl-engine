@@ -50,7 +50,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     req.userId = payload.userId;
     req.tenantId = payload.tenantId;
     req.userRole = payload.role;
-    req.isSuperAdmin = payload.isSuperAdmin || false;
+    req.isSuperAdmin = !!user.isSuperAdmin;
     req.impersonating = payload.impersonating;
     next();
   } catch (err) {

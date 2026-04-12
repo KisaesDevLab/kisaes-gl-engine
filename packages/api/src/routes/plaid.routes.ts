@@ -60,6 +60,12 @@ plaidRouter.get('/items/:id', authenticate, async (req, res) => {
 // ─── Tier 1: Unmap Company ─────────────────────────────────────
 
 plaidRouter.post('/items/:id/unmap-company', authenticate, async (req, res) => {
+  // Visibility gate: the caller must already have a relationship to
+  // this item (creator, super admin, or mapped into one of its
+  // accounts in a tenant they can access). Without this, any
+  // authenticated user could probe /items/:id/unmap-company with
+  // random UUIDs.
+  await plaidConnection.assertCanAccessItem(req.userId, req.params['id']!);
   await plaidConnection.unmapCompany(req.params['id']!, req.tenantId, req.body.deletePendingItems ?? false, req.userId);
   res.json({ unmapped: true });
 });
@@ -67,15 +73,27 @@ plaidRouter.post('/items/:id/unmap-company', authenticate, async (req, res) => {
 // ─── Tier 2: Delete Connection ─────────────────────────────────
 
 plaidRouter.delete('/items/:id', authenticate, async (req, res) => {
-  await plaidConnection.deleteConnection(req.params['id']!, req.body?.deletePendingItems ?? false, req.userId);
+  // `deleteConnection` already enforces creator / super-admin / admin-of-all-tenants
+  // permission internally; we still pre-check here so random-UUID probes
+  // can't distinguish "doesn't exist" from "exists but not yours".
+  await plaidConnection.assertCanAccessItem(req.userId, req.params['id']!);
+  // `deletePendingItems` comes from the query string to avoid relying
+  // on DELETE request bodies (many clients strip them).
+  const deletePending =
+    req.query['deletePendingItems'] === 'true' || req.body?.deletePendingItems === true;
+  await plaidConnection.deleteConnection(req.params['id']!, deletePending, req.userId);
   res.json({ removed: true });
 });
 
 // ─── Account Mapping (Two-Step) ────────────────────────────────
 
 plaidRouter.post('/accounts/:id/assign', authenticate, async (req, res) => {
+  // Tenant comes from the JWT only (CLAUDE.md §17 — never trust
+  // client-supplied tenant_id). The previous version of this route
+  // accepted `req.body.tenantId` and let a user assign a Plaid
+  // account into any tenant whose COA account UUID they knew.
   const mapping = await plaidMapping.assignAccountToCompany(
-    req.params['id']!, req.body.tenantId || req.tenantId, req.body.coaAccountId,
+    req.params['id']!, req.tenantId, req.body.coaAccountId,
     req.body.syncStartDate || null, req.userId,
   );
   res.status(201).json(mapping);
@@ -116,11 +134,13 @@ plaidRouter.post('/accounts/:id/create-and-map', authenticate, async (req, res) 
 // ─── Sync ──────────────────────────────────────────────────────
 
 plaidRouter.post('/items/:id/sync', authenticate, async (req, res) => {
+  await plaidConnection.assertCanAccessItem(req.userId, req.params['id']!);
   const result = await plaidSync.syncItem(req.params['id']!);
   res.json(result);
 });
 
 plaidRouter.get('/items/:id/sync-history', authenticate, async (req, res) => {
+  await plaidConnection.assertCanAccessItem(req.userId, req.params['id']!);
   const { db } = await import('../db/index.js');
   const { plaidItems } = await import('../db/schema/index.js');
   const { eq } = await import('drizzle-orm');
@@ -139,6 +159,7 @@ plaidRouter.get('/items/:id/sync-history', authenticate, async (req, res) => {
 // ─── Activity Log ──────────────────────────────────────────────
 
 plaidRouter.get('/items/:id/activity', authenticate, async (req, res) => {
+  await plaidConnection.assertCanAccessItem(req.userId, req.params['id']!);
   const { db } = await import('../db/index.js');
   const { plaidItemActivity } = await import('../db/schema/index.js');
   const { eq, or, and, isNull, desc } = await import('drizzle-orm');

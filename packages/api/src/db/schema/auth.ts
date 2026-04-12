@@ -31,6 +31,9 @@ export const users = pgTable('users', {
   tfaRecoveryCodesRemaining: integer('tfa_recovery_codes_remaining').default(0),
   tfaFailedAttempts: integer('tfa_failed_attempts').default(0),
   tfaLockedUntil: timestamp('tfa_locked_until', { withTimezone: true }),
+  // Login lockout
+  loginFailedAttempts: integer('login_failed_attempts').default(0),
+  loginLockedUntil: timestamp('login_locked_until', { withTimezone: true }),
   // Passwordless fields
   preferredLoginMethod: varchar('preferred_login_method', { length: 20 }).default('password'), // password | magic_link | passkey
   magicLinkEnabled: boolean('magic_link_enabled').default(false),

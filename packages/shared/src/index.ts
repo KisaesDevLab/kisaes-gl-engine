@@ -17,6 +17,10 @@ export * from './types/passwordless.js';
 export * from './types/plaid.js';
 export * from './types/ai.js';
 export * from './types/mcp.js';
+export * from './types/ap.js';
+export * from './types/coa-templates.js';
+export * from './types/backup.js';
+export * from './types/payroll.js';
 
 // Schemas
 export * from './schemas/auth.js';
@@ -35,10 +39,16 @@ export * from './schemas/tfa.js';
 export * from './schemas/passwordless.js';
 export * from './schemas/plaid.js';
 export * from './schemas/ai.js';
+export * from './schemas/ap.js';
+export * from './schemas/admin.js';
+export * from './schemas/chat.js';
+export * from './schemas/backup.js';
+export * from './schemas/payroll.js';
 
 // Constants
 export * from './constants/coa-templates.js';
 export * from './constants/tag-colors.js';
+export * from './constants/accounting.js';
 
 // Utils
 export * from './utils/money.js';

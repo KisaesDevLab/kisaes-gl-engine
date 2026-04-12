@@ -131,7 +131,7 @@ apiV2Router.post('/contacts', async (req, res) => {
 
 apiV2Router.get('/transactions', async (req, res) => {
   const filters = transactionFiltersSchema.parse(req.query);
-  const result = await ledger.listTransactions(req.tenantId, filters);
+  const result = await ledger.listTransactions(req.tenantId, filters, req.companyId);
   res.json(result);
 });
 
@@ -218,7 +218,8 @@ apiV2Router.get('/reports/trial-balance', async (req, res) => {
   const { start_date, end_date } = req.query as Record<string, string>;
   const today = new Date().toISOString().split('T')[0]!;
   const year = new Date().getFullYear();
-  const data = await reportService.buildTrialBalance(req.tenantId, start_date || `${year}-01-01`, end_date || today);
+  const scope = req.query['scope'] === 'consolidated' ? null : req.companyId;
+  const data = await reportService.buildTrialBalance(req.tenantId, start_date || `${year}-01-01`, end_date || today, scope);
   res.json(data);
 });
 
@@ -226,14 +227,16 @@ apiV2Router.get('/reports/profit-loss', async (req, res) => {
   const { start_date, end_date, basis } = req.query as Record<string, string>;
   const today = new Date().toISOString().split('T')[0]!;
   const year = new Date().getFullYear();
-  const data = await reportService.buildProfitAndLoss(req.tenantId, start_date || `${year}-01-01`, end_date || today, (basis as any) || 'accrual');
+  const scope = req.query['scope'] === 'consolidated' ? null : req.companyId;
+  const data = await reportService.buildProfitAndLoss(req.tenantId, start_date || `${year}-01-01`, end_date || today, (basis as any) || 'accrual', scope);
   res.json(data);
 });
 
 apiV2Router.get('/reports/balance-sheet', async (req, res) => {
   const { as_of_date, basis } = req.query as Record<string, string>;
   const today = new Date().toISOString().split('T')[0]!;
-  const data = await reportService.buildBalanceSheet(req.tenantId, as_of_date || today, (basis as any) || 'accrual');
+  const scope = req.query['scope'] === 'consolidated' ? null : req.companyId;
+  const data = await reportService.buildBalanceSheet(req.tenantId, as_of_date || today, (basis as any) || 'accrual', scope);
   res.json(data);
 });
 
@@ -241,7 +244,8 @@ apiV2Router.get('/reports/cash-flow', async (req, res) => {
   const { start_date, end_date } = req.query as Record<string, string>;
   const today = new Date().toISOString().split('T')[0]!;
   const year = new Date().getFullYear();
-  const data = await reportService.buildCashFlowStatement(req.tenantId, start_date || `${year}-01-01`, end_date || today);
+  const scope = req.query['scope'] === 'consolidated' ? null : req.companyId;
+  const data = await reportService.buildCashFlowStatement(req.tenantId, start_date || `${year}-01-01`, end_date || today, scope);
   res.json(data);
 });
 
@@ -249,7 +253,8 @@ apiV2Router.get('/reports/general-ledger', async (req, res) => {
   const { start_date, end_date } = req.query as Record<string, string>;
   const today = new Date().toISOString().split('T')[0]!;
   const year = new Date().getFullYear();
-  const data = await reportService.buildGeneralLedger(req.tenantId, start_date || `${year}-01-01`, end_date || today);
+  const scope = req.query['scope'] === 'consolidated' ? null : req.companyId;
+  const data = await reportService.buildGeneralLedger(req.tenantId, start_date || `${year}-01-01`, end_date || today, scope);
   res.json(data);
 });
 

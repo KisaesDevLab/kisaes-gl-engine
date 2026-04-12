@@ -28,12 +28,62 @@ export const aiConfig = pgTable('ai_config', {
   // Cost tracking
   trackUsage: boolean('track_usage').default(true),
   monthlyBudgetLimit: decimal('monthly_budget_limit', { precision: 19, scale: 4 }),
+  // Chat support feature (see AI_CHAT_SUPPORT_PLAN.md §2.1)
+  chatSupportEnabled: boolean('chat_support_enabled').default(false),
+  chatProvider: varchar('chat_provider', { length: 30 }),
+  chatModel: varchar('chat_model', { length: 100 }),
+  chatMaxHistory: integer('chat_max_history').default(50),
+  chatDataAccessLevel: varchar('chat_data_access_level', { length: 20 }).default('contextual'),
   // Metadata
   configuredBy: uuid('configured_by'),
   configuredAt: timestamp('configured_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 });
+
+// Chat Conversations — one row per conversation thread between a user
+// and the assistant. Soft-delete via status='archived'. Auto-titled
+// from the first user message by chat.service.
+export const chatConversations = pgTable('chat_conversations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull(),
+  userId: uuid('user_id').notNull(),
+  title: varchar('title', { length: 255 }),
+  status: varchar('status', { length: 20 }).default('active'),
+  messageCount: integer('message_count').default(0),
+  lastMessageAt: timestamp('last_message_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+}, (table) => ({
+  userIdx: index('idx_cc_user').on(table.userId, table.status),
+  tenantIdx: index('idx_cc_tenant').on(table.tenantId),
+}));
+
+// Chat Messages — individual user/assistant turns within a conversation.
+// `screen_context` and `entity_context` capture what the user was looking
+// at when they sent the message, so the assistant can give specific
+// answers without re-querying. Provider/model/tokens are recorded for
+// cost tracking via ai_usage_log.
+export const chatMessages = pgTable('chat_messages', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  conversationId: uuid('conversation_id').notNull().references(() => chatConversations.id, { onDelete: 'cascade' }),
+  tenantId: uuid('tenant_id').notNull(),
+  role: varchar('role', { length: 20 }).notNull(), // 'user' | 'assistant' | 'system'
+  content: text('content').notNull(),
+  // Context at time of message
+  screenContext: varchar('screen_context', { length: 100 }),
+  entityContext: jsonb('entity_context'),
+  // AI metadata (only set on assistant messages)
+  provider: varchar('provider', { length: 30 }),
+  model: varchar('model', { length: 100 }),
+  inputTokens: integer('input_tokens'),
+  outputTokens: integer('output_tokens'),
+  durationMs: integer('duration_ms'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (table) => ({
+  conversationIdx: index('idx_cm_conversation').on(table.conversationId, table.createdAt),
+  tenantIdx: index('idx_cm_tenant').on(table.tenantId),
+}));
 
 // AI processing jobs
 export const aiJobs = pgTable('ai_jobs', {

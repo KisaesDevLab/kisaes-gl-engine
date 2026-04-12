@@ -50,10 +50,13 @@ export async function assignAccountToCompany(plaidAccountId: string, tenantId: s
     mappedByName: user?.displayName || null,
   }).returning();
 
-  // Update COA balance from Plaid balance
+  // Update COA balance from Plaid balance. The `accounts` table is
+  // tenant-scoped, so we bind the UPDATE to the caller's tenant for
+  // defense in depth (CLAUDE.md #17).
   const pa = await db.query.plaidAccounts.findFirst({ where: eq(plaidAccounts.id, plaidAccountId) });
   if (pa?.currentBalance) {
-    await db.update(accounts).set({ balance: pa.currentBalance }).where(eq(accounts.id, coaAccountId));
+    await db.update(accounts).set({ balance: pa.currentBalance })
+      .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, coaAccountId)));
   }
 
   return mapping;
@@ -67,7 +70,8 @@ export async function unmapAccount(plaidAccountId: string, tenantId: string) {
   });
   if (!mapping) throw AppError.notFound('Mapping not found');
 
-  await db.delete(plaidAccountMappings).where(eq(plaidAccountMappings.id, mapping.id));
+  await db.delete(plaidAccountMappings)
+    .where(and(eq(plaidAccountMappings.tenantId, tenantId), eq(plaidAccountMappings.id, mapping.id)));
   return { unmapped: true };
 }
 

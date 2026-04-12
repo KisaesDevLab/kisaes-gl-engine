@@ -7,11 +7,16 @@ export type TxnType =
   | 'transfer'
   | 'journal_entry'
   | 'credit_memo'
-  | 'customer_refund';
+  | 'customer_refund'
+  | 'bill'
+  | 'vendor_credit'
+  | 'bill_payment';
 
 export type TxnStatus = 'draft' | 'posted' | 'void';
 
 export type InvoiceStatus = 'draft' | 'sent' | 'viewed' | 'partial' | 'paid' | 'void';
+
+export type BillStatus = 'unpaid' | 'partial' | 'paid' | 'overdue';
 
 export interface JournalLine {
   id: string;
@@ -48,6 +53,10 @@ export interface Transaction {
   amountPaid: string;
   balanceDue: string | null;
   invoiceStatus: InvoiceStatus | null;
+  billStatus: BillStatus | null;
+  termsDays: number | null;
+  creditsApplied: string | null;
+  vendorInvoiceNumber: string | null;
   sentAt: string | null;
   viewedAt: string | null;
   paidAt: string | null;

@@ -14,10 +14,10 @@ function buildTransferPayload(input: CreateTransferInput) {
   };
 }
 
-export async function createTransfer(tenantId: string, input: CreateTransferInput, userId?: string) {
-  return ledger.postTransaction(tenantId, buildTransferPayload(input), userId);
+export async function createTransfer(tenantId: string, input: CreateTransferInput, userId?: string, companyId?: string) {
+  return ledger.postTransaction(tenantId, buildTransferPayload(input), userId, companyId);
 }
 
-export async function updateTransfer(tenantId: string, txnId: string, input: CreateTransferInput, userId?: string) {
-  return ledger.updateTransaction(tenantId, txnId, buildTransferPayload(input), userId);
+export async function updateTransfer(tenantId: string, txnId: string, input: CreateTransferInput, userId?: string, companyId?: string) {
+  return ledger.updateTransaction(tenantId, txnId, buildTransferPayload(input), userId, companyId);
 }

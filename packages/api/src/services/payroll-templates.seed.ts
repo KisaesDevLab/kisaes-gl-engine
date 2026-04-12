@@ -1,0 +1,214 @@
+import { db } from '../db/index.js';
+import { payrollProviderTemplates } from '../db/schema/index.js';
+import { eq, and } from 'drizzle-orm';
+
+const SYSTEM_TEMPLATES = [
+  {
+    name: 'Gusto — Payroll Journal',
+    providerKey: 'gusto',
+    description: 'Gusto Payroll Journal export. Export path: Gusto → Reports → Payroll Journal → Export CSV. Contains one row per employee per pay period with detailed tax breakdowns.',
+    columnMap: {
+      header_row: 0,
+      data_start_row: 1,
+      skip_footer_rows: 0,
+      date_format: 'MM/DD/YYYY',
+      mappings: {
+        employee_name: { source: 'Employee Name' },
+        check_date: { source: 'Check Date', format: 'MM/DD/YYYY' },
+        gross_pay: { source: 'Gross Pay' },
+        regular_pay: { source: 'Regular Pay' },
+        overtime_pay: { source: 'Overtime Pay' },
+        bonus_pay: { source: 'Bonus' },
+        federal_income_tax: { source: 'Federal Income Tax' },
+        state_income_tax: { source: 'State Income Tax' },
+        social_security_ee: { source: 'Social Security (Employee)' },
+        medicare_ee: { source: 'Medicare (Employee)' },
+        health_insurance_ee: { source: 'Health Insurance' },
+        retirement_401k_ee: { source: '401(k)' },
+        net_pay: { source: 'Net Pay' },
+        social_security_er: { source: 'Social Security (Employer)' },
+        medicare_er: { source: 'Medicare (Employer)' },
+        futa_er: { source: 'FUTA' },
+        suta_er: { source: 'SUTA' },
+      },
+      skip_rules: [
+        { type: 'blank_field', field: 'employee_name' },
+        { type: 'value_match', field: 'employee_name', values: ['Total', 'Grand Total', 'Totals'] },
+      ],
+      defaults: { is_contractor: false },
+    },
+    fileFormatHints: { delimiter: ',', encoding: 'utf-8' },
+  },
+  {
+    name: 'ADP Run — Payroll Detail',
+    providerKey: 'adp_run',
+    description: 'ADP Run Payroll Detail Report export. Export path: ADP Run → Reports → Payroll Detail → Export to Excel. Note: ADP often includes company header rows — set header row to 4-6.',
+    columnMap: {
+      header_row: 4,
+      data_start_row: 5,
+      skip_footer_rows: 2,
+      date_format: 'MM/DD/YYYY',
+      mappings: {
+        employee_id: { source: 'File #' },
+        employee_name: { source: 'Employee Name' },
+        check_date: { source: 'Check Date', format: 'MM/DD/YYYY' },
+        regular_pay: { source: 'Reg Earnings' },
+        overtime_pay: { source: 'OT Earnings' },
+        gross_pay: { source: 'Gross' },
+        federal_income_tax: { source: 'FIT' },
+        state_income_tax: { source: 'SIT' },
+        social_security_ee: { source: 'FICA/EE' },
+        medicare_ee: { source: 'MEDI/EE' },
+        net_pay: { source: 'Net Pay' },
+        social_security_er: { source: 'FICA/ER' },
+        medicare_er: { source: 'MEDI/ER' },
+        futa_er: { source: 'FUTA' },
+        suta_er: { source: 'SUTA' },
+      },
+      skip_rules: [
+        { type: 'blank_field', field: 'employee_name' },
+        { type: 'value_match', field: 'employee_name', values: ['Total', 'Grand Total', 'Totals', 'Company Total'] },
+      ],
+      defaults: { is_contractor: false },
+    },
+    fileFormatHints: { delimiter: ',', encoding: 'utf-8', headerRowVariable: true },
+  },
+  {
+    name: 'QuickBooks Online Payroll — Summary',
+    providerKey: 'qbo_payroll',
+    description: 'QuickBooks Online Payroll Summary export. Export path: QBO → Reports → Payroll Summary → Export to Excel. QBO prepends report metadata rows — adjust header row as needed.',
+    columnMap: {
+      header_row: 3,
+      data_start_row: 4,
+      skip_footer_rows: 1,
+      date_format: 'MM/DD/YYYY',
+      mappings: {
+        employee_name: { source: 'Employee' },
+        check_date: { source: 'Pay Period' },
+        gross_pay: { source: 'Gross Pay' },
+        federal_income_tax: { source: 'Federal Taxes' },
+        state_income_tax: { source: 'State Taxes' },
+        net_pay: { source: 'Net Pay' },
+      },
+      skip_rules: [
+        { type: 'blank_field', field: 'employee_name' },
+        { type: 'value_match', field: 'employee_name', values: ['Total', 'Totals'] },
+      ],
+      defaults: { is_contractor: false },
+    },
+    fileFormatHints: { delimiter: ',', encoding: 'utf-8', headerRowVariable: true },
+  },
+  {
+    name: 'Paychex Flex — Payroll Register',
+    providerKey: 'paychex_flex',
+    description: 'Paychex Flex Payroll Register export. Export path: Paychex Flex → Reports → Payroll Register → Download CSV. Clean format, closest to the standard schema.',
+    columnMap: {
+      header_row: 0,
+      data_start_row: 1,
+      skip_footer_rows: 0,
+      date_format: 'MM/DD/YYYY',
+      mappings: {
+        employee_name: { source: 'EE Name' },
+        check_date: { source: 'Check Date', format: 'MM/DD/YYYY' },
+        gross_pay: { source: 'Gross' },
+        federal_income_tax: { source: 'Fed W/H' },
+        state_income_tax: { source: 'State W/H' },
+        social_security_ee: { source: 'OASDI/EE' },
+        medicare_ee: { source: 'MED/EE' },
+        net_pay: { source: 'Net' },
+        social_security_er: { source: 'OASDI/ER' },
+        medicare_er: { source: 'MED/ER' },
+        futa_er: { source: 'FUTA' },
+        suta_er: { source: 'SUTA' },
+      },
+      skip_rules: [
+        { type: 'blank_field', field: 'employee_name' },
+        { type: 'value_match', field: 'employee_name', values: ['Total', 'Grand Total'] },
+      ],
+      defaults: { is_contractor: false },
+    },
+    fileFormatHints: { delimiter: ',', encoding: 'utf-8' },
+  },
+  {
+    name: 'Square Payroll',
+    providerKey: 'square_payroll',
+    description: 'Square Payroll export. Export path: Square Dashboard → Payroll → Tax Forms & Reports → Payroll Export. Square aggregates taxes into totals without granular breakdown.',
+    columnMap: {
+      header_row: 0,
+      data_start_row: 1,
+      skip_footer_rows: 0,
+      date_format: 'YYYY-MM-DD',
+      mappings: {
+        employee_name: { source: 'Name' },
+        pay_period_start: { source: 'Pay Period Start' },
+        pay_period_end: { source: 'Pay Period End' },
+        gross_pay: { source: 'Gross Pay' },
+        other_ee_tax: { source: 'Total Employee Taxes' },
+        other_er_tax: { source: 'Total Employer Taxes' },
+        other_deduction_ee: { source: 'Total Deductions' },
+        net_pay: { source: 'Net Pay' },
+      },
+      skip_rules: [
+        { type: 'blank_field', field: 'employee_name' },
+      ],
+      defaults: { is_contractor: false },
+    },
+    fileFormatHints: { delimiter: ',', encoding: 'utf-8' },
+  },
+  {
+    name: 'Payroll Relief — GL Entries',
+    providerKey: 'payroll_relief',
+    description: 'AccountantsWorld Payroll Relief GL Journal export. Export path: Payroll Relief → Reports → GL Entries → Export to CSV. Optionally also export Checks report for disbursement detail. This is a Mode B (pre-built JE) import — the file contains balanced debit/credit journal entries grouped by pay date.',
+    columnMap: {
+      date: { source: 'Date', format: 'MM/DD/YYYY' },
+      description: { source: 'Description' },
+      debit: { source: 'Debit' },
+      credit: { source: 'Credit' },
+      memo: { source: 'Memo' },
+      reference: { source: 'Reference' },
+    },
+    fileFormatHints: {
+      header_row: 0,
+      currency_format: '$#,##0.00',
+      memo_period_regex: 'Period: (\\d{2}/\\d{2}/\\d{4}) to (\\d{2}/\\d{2}/\\d{4})',
+      contractor_prefix: '1099',
+      trailing_comma: true,
+    },
+  },
+  {
+    name: 'Generic / Manual Mapping',
+    providerKey: 'custom',
+    description: 'Start with a blank mapping and manually assign each column. Use this when your payroll export doesn\'t match any of the pre-built provider templates.',
+    columnMap: {
+      header_row: 0,
+      data_start_row: 1,
+      mappings: {},
+      skip_rules: [{ type: 'blank_field', field: 'employee_name' }],
+    },
+    fileFormatHints: {},
+  },
+];
+
+export async function seedPayrollTemplates() {
+  for (const tpl of SYSTEM_TEMPLATES) {
+    const [existing] = await db.select({ id: payrollProviderTemplates.id })
+      .from(payrollProviderTemplates)
+      .where(and(
+        eq(payrollProviderTemplates.providerKey, tpl.providerKey),
+        eq(payrollProviderTemplates.isSystem, true),
+      ))
+      .limit(1);
+
+    if (!existing) {
+      await db.insert(payrollProviderTemplates).values({
+        name: tpl.name,
+        providerKey: tpl.providerKey,
+        description: tpl.description,
+        columnMap: tpl.columnMap,
+        fileFormatHints: tpl.fileFormatHints,
+        isSystem: true,
+        tenantId: null,
+      });
+    }
+  }
+}

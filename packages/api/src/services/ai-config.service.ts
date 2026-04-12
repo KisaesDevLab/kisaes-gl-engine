@@ -40,6 +40,12 @@ export async function getConfig() {
     maxConcurrentJobs: config.maxConcurrentJobs || 5,
     trackUsage: config.trackUsage ?? true,
     monthlyBudgetLimit: config.monthlyBudgetLimit ? parseFloat(config.monthlyBudgetLimit) : null,
+    // Chat support (see AI_CHAT_SUPPORT_PLAN.md §2.1)
+    chatSupportEnabled: config.chatSupportEnabled ?? false,
+    chatProvider: config.chatProvider,
+    chatModel: config.chatModel,
+    chatMaxHistory: config.chatMaxHistory ?? 50,
+    chatDataAccessLevel: (config.chatDataAccessLevel as 'none' | 'contextual' | 'full') || 'contextual',
   };
 }
 
@@ -71,6 +77,12 @@ export async function updateConfig(input: any, userId?: string) {
   if (input.maxConcurrentJobs !== undefined) updates.maxConcurrentJobs = input.maxConcurrentJobs;
   if (input.trackUsage !== undefined) updates.trackUsage = input.trackUsage;
   if (input.monthlyBudgetLimit !== undefined) updates.monthlyBudgetLimit = input.monthlyBudgetLimit != null ? String(input.monthlyBudgetLimit) : null;
+  // Chat support
+  if (input.chatSupportEnabled !== undefined) updates.chatSupportEnabled = input.chatSupportEnabled;
+  if (input.chatProvider !== undefined) updates.chatProvider = input.chatProvider || null;
+  if (input.chatModel !== undefined) updates.chatModel = input.chatModel || null;
+  if (input.chatMaxHistory !== undefined) updates.chatMaxHistory = input.chatMaxHistory;
+  if (input.chatDataAccessLevel !== undefined) updates.chatDataAccessLevel = input.chatDataAccessLevel;
   if (userId) { updates.configuredBy = userId; updates.configuredAt = new Date(); }
 
   await db.update(aiConfig).set(updates).where(eq(aiConfig.id, config.id));

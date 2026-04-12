@@ -53,3 +53,39 @@ export const aiJobAcceptSchema = z.object({
   modified: z.boolean().optional(),
   overrideData: z.any().optional(),
 });
+
+// Recording a user decision on an AI categorization suggestion.
+// Feeds the categorization_history table used by the learning loop.
+export const aiCategorizeAcceptSchema = z.object({
+  feedItemId: z.string().uuid(),
+  accountId: z.string().uuid(),
+  contactId: z.string().uuid().nullable().optional(),
+  accepted: z.boolean(),
+  modified: z.boolean().optional(),
+});
+
+// Parse a bank statement attachment via AI.
+export const aiParseStatementSchema = z.object({
+  attachmentId: z.string().uuid(),
+});
+
+// Import transactions from a previously-parsed statement. The
+// `transactions` array is capped to keep the downstream insert loop
+// bounded.
+export const aiImportStatementSchema = z.object({
+  bankConnectionId: z.string().uuid(),
+  transactions: z
+    .array(
+      z.object({
+        date: z.string().min(1).max(20),
+        description: z.string().max(500),
+        amount: z.string().max(30),
+        type: z.string().max(20).optional(),
+      }),
+    )
+    .min(1)
+    .max(5000),
+});
+
+// Admin prompt template mutations.
+export const aiUpdatePromptTemplateSchema = aiPromptTemplateSchema.partial();

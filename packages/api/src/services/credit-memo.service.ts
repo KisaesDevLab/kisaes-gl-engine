@@ -5,7 +5,7 @@ import { accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
 
-export async function createCreditMemo(tenantId: string, input: CreateCreditMemoInput, userId?: string) {
+export async function createCreditMemo(tenantId: string, input: CreateCreditMemoInput, userId?: string, companyId?: string) {
   const arAccount = await db.query.accounts.findFirst({
     where: and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'accounts_receivable')),
   });
@@ -36,5 +36,5 @@ export async function createCreditMemo(tenantId: string, input: CreateCreditMemo
       ...revenueLines,
       { accountId: arAccount.id, debit: '0', credit: subtotal.toFixed(4) },
     ],
-  }, userId);
+  }, userId, companyId);
 }

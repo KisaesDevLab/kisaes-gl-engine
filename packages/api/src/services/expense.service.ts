@@ -30,10 +30,10 @@ function buildExpensePayload(input: CreateExpenseInput) {
   };
 }
 
-export async function createExpense(tenantId: string, input: CreateExpenseInput, userId?: string) {
-  return ledger.postTransaction(tenantId, buildExpensePayload(input), userId);
+export async function createExpense(tenantId: string, input: CreateExpenseInput, userId?: string, companyId?: string) {
+  return ledger.postTransaction(tenantId, buildExpensePayload(input), userId, companyId);
 }
 
-export async function updateExpense(tenantId: string, txnId: string, input: CreateExpenseInput, userId?: string) {
-  return ledger.updateTransaction(tenantId, txnId, buildExpensePayload(input), userId);
+export async function updateExpense(tenantId: string, txnId: string, input: CreateExpenseInput, userId?: string, companyId?: string) {
+  return ledger.updateTransaction(tenantId, txnId, buildExpensePayload(input), userId, companyId);
 }

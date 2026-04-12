@@ -75,6 +75,7 @@ function formatLabel(start: Date, end: Date): string {
 export async function buildComparativePL(
   tenantId: string, startDate: string, endDate: string, basis: Basis,
   compareMode: CompareMode, periods: number = 6, periodType: PeriodType = 'month',
+  companyId: string | null = null,
 ) {
   if (compareMode === 'multi_period') {
     const ranges = getMultiPeriodRanges(endDate, periods, periodType);
@@ -82,7 +83,7 @@ export async function buildComparativePL(
     columns.push({ label: 'Total', startDate: '', endDate: '' });
 
     // Get P&L for each period
-    const plResults = await Promise.all(ranges.map((r) => reportService.buildProfitAndLoss(tenantId, r.startDate, r.endDate, basis)));
+    const plResults = await Promise.all(ranges.map((r) => reportService.buildProfitAndLoss(tenantId, r.startDate, r.endDate, basis, companyId)));
 
     // Collect all unique accounts
     const accountMap = new Map<string, { name: string; accountNumber: string | null; type: 'revenue' | 'expense' }>();
@@ -116,7 +117,7 @@ export async function buildComparativePL(
   }
 
   // Two-column comparison modes
-  const currentPL = await reportService.buildProfitAndLoss(tenantId, startDate, endDate, basis);
+  const currentPL = await reportService.buildProfitAndLoss(tenantId, startDate, endDate, basis, companyId);
   let priorRange: DateRange;
 
   if (compareMode === 'previous_year') {
@@ -127,7 +128,7 @@ export async function buildComparativePL(
     priorRange = getPriorPeriodRange(startDate, endDate);
   }
 
-  const priorPL = await reportService.buildProfitAndLoss(tenantId, priorRange.startDate, priorRange.endDate, basis);
+  const priorPL = await reportService.buildProfitAndLoss(tenantId, priorRange.startDate, priorRange.endDate, basis, companyId);
 
   const columns = [
     { label: formatLabel(new Date(startDate), new Date(endDate)), startDate, endDate },
@@ -165,8 +166,9 @@ export async function buildComparativePL(
 
 export async function buildComparativeBS(
   tenantId: string, asOfDate: string, basis: Basis, compareMode: CompareMode,
+  companyId: string | null = null,
 ) {
-  const currentBS = await reportService.buildBalanceSheet(tenantId, asOfDate, basis);
+  const currentBS = await reportService.buildBalanceSheet(tenantId, asOfDate, basis, companyId);
   let priorDate: string;
 
   if (compareMode === 'previous_year') {
@@ -179,7 +181,7 @@ export async function buildComparativeBS(
     priorDate = d.toISOString().split('T')[0]!;
   }
 
-  const priorBS = await reportService.buildBalanceSheet(tenantId, priorDate, basis);
+  const priorBS = await reportService.buildBalanceSheet(tenantId, priorDate, basis, companyId);
 
   const columns = [
     { label: asOfDate },

@@ -42,4 +42,7 @@ export const updateCompanySettingsSchema = z.object({
   dateFormat: z.string().max(20).optional(),
   categoryFilterMode: z.enum(categoryFilterModes).optional(),
   lockDate: z.string().nullable().optional(),
+  // Per-company AI chat assistant opt-in (tier 2 of two-tier consent —
+  // see AI_CHAT_SUPPORT_PLAN.md §8.1).
+  chatSupportEnabled: z.boolean().optional(),
 });

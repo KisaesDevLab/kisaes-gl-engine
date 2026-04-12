@@ -153,21 +153,50 @@ export async function getAccessibleTenants(userId: string) {
 }
 
 export async function login(input: LoginInput): Promise<{ user: typeof users.$inferSelect; tokens: AuthTokens; accessibleTenants: any[] }> {
+  const MAX_LOGIN_ATTEMPTS = 5;
+  const LOCKOUT_MINUTES = 15;
+
   const user = await db.query.users.findFirst({
     where: eq(users.email, input.email),
   });
 
   if (!user) {
-    throw AppError.unauthorized('Invalid email or password');
+    throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDENTIALS');
   }
 
   if (!user.isActive) {
-    throw AppError.unauthorized('Account is deactivated');
+    throw AppError.forbidden(
+      'This account has been deactivated. Please contact your administrator.',
+      'ACCOUNT_DEACTIVATED',
+    );
+  }
+
+  // Check account lockout
+  if (user.loginLockedUntil && new Date(user.loginLockedUntil) > new Date()) {
+    const minutesLeft = Math.ceil((new Date(user.loginLockedUntil).getTime() - Date.now()) / 60000);
+    throw AppError.forbidden(
+      `Account is temporarily locked due to too many failed login attempts. Try again in ${minutesLeft} minute${minutesLeft === 1 ? '' : 's'}.`,
+      'ACCOUNT_LOCKED',
+    );
   }
 
   const validPassword = await bcrypt.compare(input.password, user.passwordHash);
   if (!validPassword) {
-    throw AppError.unauthorized('Invalid email or password');
+    const attempts = (user.loginFailedAttempts || 0) + 1;
+    const lockUntil = attempts >= MAX_LOGIN_ATTEMPTS
+      ? new Date(Date.now() + LOCKOUT_MINUTES * 60 * 1000)
+      : null;
+    await db.update(users)
+      .set({ loginFailedAttempts: attempts, loginLockedUntil: lockUntil, updatedAt: new Date() })
+      .where(eq(users.id, user.id));
+    throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDENTIALS');
+  }
+
+  // Reset failed attempts on successful login
+  if (user.loginFailedAttempts && user.loginFailedAttempts > 0) {
+    await db.update(users)
+      .set({ loginFailedAttempts: 0, loginLockedUntil: null, updatedAt: new Date() })
+      .where(eq(users.id, user.id));
   }
 
   // Update last login

@@ -4,6 +4,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import compression from 'compression';
+import rateLimit from 'express-rate-limit';
 import { env } from './config/env.js';
 import { errorHandler } from './middleware/error-handler.js';
 import { authRouter } from './routes/auth.routes.js';
@@ -12,6 +13,9 @@ import { accountsRouter } from './routes/accounts.routes.js';
 import { contactsRouter } from './routes/contacts.routes.js';
 import { transactionsRouter } from './routes/transactions.routes.js';
 import { invoicesRouter } from './routes/invoices.routes.js';
+import { billsRouter } from './routes/bills.routes.js';
+import { vendorCreditsRouter } from './routes/vendor-credits.routes.js';
+import { billPaymentsRouter } from './routes/bill-payments.routes.js';
 import { estimatesRouter } from './routes/estimates.routes.js';
 import { tagsRouter } from './routes/tags.routes.js';
 import { reportsRouter } from './routes/reports.routes.js';
@@ -27,6 +31,8 @@ import { bankRulesRouter } from './routes/bank-rules.routes.js';
 import { duplicatesRouter } from './routes/duplicates.routes.js';
 import { budgetsRouter } from './routes/budgets.routes.js';
 import { backupRouter } from './routes/backup.routes.js';
+import { tenantExportRouter } from './routes/tenant-export.routes.js';
+import { remoteBackupRouter } from './routes/remote-backup.routes.js';
 import { exportRouter } from './routes/export.routes.js';
 import { auditRouter } from './routes/audit.routes.js';
 import { adminRouter } from './routes/admin.routes.js';
@@ -37,8 +43,10 @@ import { passkeyRouter } from './routes/passkey.routes.js';
 import { magicLinkRouter } from './routes/magic-link.routes.js';
 import { plaidRouter } from './routes/plaid.routes.js';
 import { aiRouter } from './routes/ai.routes.js';
+import { chatRouter } from './routes/chat.routes.js';
 import { oauthRouter } from './routes/oauth.routes.js';
 import { storageRouter } from './routes/storage.routes.js';
+import { payrollImportRouter } from './routes/payroll-import.routes.js';
 import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './swagger.js';
 
@@ -48,8 +56,18 @@ export const app = express();
 app.use(helmet());
 app.use(cors({ origin: env.CORS_ORIGIN, credentials: true }));
 app.use(compression());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(morgan('short'));
+
+// Global rate limiter — 200 requests/minute per IP
+const globalLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: { message: 'Too many requests, please try again later' } },
+});
+app.use('/api/', globalLimiter);
 
 // Health check
 app.get('/health', (_req, res) => {
@@ -67,6 +85,9 @@ app.use('/api/v1/accounts', accountsRouter);
 app.use('/api/v1/contacts', contactsRouter);
 app.use('/api/v1/transactions', transactionsRouter);
 app.use('/api/v1/invoices', invoicesRouter);
+app.use('/api/v1/bills', billsRouter);
+app.use('/api/v1/vendor-credits', vendorCreditsRouter);
+app.use('/api/v1/bill-payments', billPaymentsRouter);
 app.use('/api/v1/estimates', estimatesRouter);
 app.use('/api/v1/tags', tagsRouter);
 app.use('/api/v1/reports', reportsRouter);
@@ -82,6 +103,8 @@ app.use('/api/v1/bank-rules', bankRulesRouter);
 app.use('/api/v1/duplicates', duplicatesRouter);
 app.use('/api/v1/budgets', budgetsRouter);
 app.use('/api/v1/backup', backupRouter);
+app.use('/api/v1/tenant-export', tenantExportRouter);
+app.use('/api/v1/remote-backup', remoteBackupRouter);
 app.use('/api/v1/export', exportRouter);
 app.use('/api/v1/audit-log', auditRouter);
 app.use('/api/v1/admin', adminRouter);
@@ -104,8 +127,10 @@ app.put('/api/v1/users/me/login-preference', authMw, async (req: any, res: any) 
 app.use('/api/v1/auth/magic-link', magicLinkRouter);
 app.use('/api/v1/plaid', plaidRouter);
 app.use('/api/v1/ai', aiRouter);
+app.use('/api/v1/chat', chatRouter);
 app.use('/oauth', oauthRouter);
 app.use('/api/v1/settings/storage', storageRouter);
+app.use('/api/v1/payroll-import', payrollImportRouter);
 
 // MCP Server endpoint
 app.post('/mcp', async (req, res) => {
@@ -119,6 +144,16 @@ app.get('/api/v1/auth/methods', async (req, res) => {
   const email = req.query['email'] as string | undefined;
   const methods = await getAuthMethods(email);
   res.json(methods);
+});
+
+// Public COA template options (no auth required — used by the first-run
+// setup wizard, the in-app setup wizard, and the register page to populate
+// the business-type dropdown). Returns the live list from the database so
+// templates added by super admins show up everywhere.
+app.get('/api/v1/coa-templates/options', async (_req, res) => {
+  const { listOptions } = await import('./services/coa-templates.service.js');
+  const options = await listOptions();
+  res.json({ options });
 });
 
 // Public API v2

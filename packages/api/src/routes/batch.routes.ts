@@ -1,12 +1,14 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { authenticate } from '../middleware/auth.js';
+import { companyContext } from '../middleware/company.js';
 import * as batchService from '../services/batch.service.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 export const batchRouter = Router();
 batchRouter.use(authenticate);
+batchRouter.use(companyContext);
 
 batchRouter.post('/validate', async (req, res) => {
   const { txn_type, context_account_id, rows } = req.body;
@@ -19,7 +21,7 @@ batchRouter.post('/save', async (req, res) => {
   const result = await batchService.saveBatch(
     req.tenantId, txn_type, context_account_id, rows,
     { autoCreateContacts: auto_create_contacts, skipInvalid: skip_invalid },
-    req.userId,
+    req.userId, req.companyId,
   );
   res.status(201).json(result);
 });

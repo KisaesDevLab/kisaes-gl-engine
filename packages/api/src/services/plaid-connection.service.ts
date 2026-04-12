@@ -161,7 +161,46 @@ export async function getItemDetail(userId: string, itemId: string) {
   if (!item) throw AppError.notFound('Connection not found');
 
   const { accounts, hiddenAccountCount } = await getVisibleAccounts(userId, itemId);
+
+  // Visibility check: the caller may only see this item if they created
+  // it, or have a mapping to at least one of its accounts, or are a
+  // super admin. Without this gate any authenticated user could
+  // enumerate every Plaid item in the database by UUID and pull
+  // institution metadata (see security review §2).
+  const { users } = await import('../db/schema/index.js');
+  const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+  const isSuperAdmin = !!user?.isSuperAdmin;
+  const isCreator = item.createdBy === userId;
+  if (!isSuperAdmin && !isCreator && accounts.length === 0) {
+    throw AppError.notFound('Connection not found');
+  }
+
   return { ...item, accounts, hiddenAccountCount, accessTokenEncrypted: undefined };
+}
+
+/**
+ * Throw unless `userId` has permission to operate on the given Plaid
+ * item. Used to gate sync triggers, sync-history reads, and activity
+ * log reads so they can't be driven by an unrelated authenticated
+ * user who happens to know the item's UUID.
+ *
+ * "Permission" here means: the user is a super admin, OR they created
+ * the item, OR at least one account under the item is currently
+ * mapped into a tenant the user has active access to.
+ */
+export async function assertCanAccessItem(userId: string, itemId: string): Promise<void> {
+  const item = await db.query.plaidItems.findFirst({ where: eq(plaidItems.id, itemId) });
+  if (!item) throw AppError.notFound('Connection not found');
+
+  const { users } = await import('../db/schema/index.js');
+  const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+  if (user?.isSuperAdmin) return;
+  if (item.createdBy === userId) return;
+
+  const { accounts } = await getVisibleAccounts(userId, itemId);
+  if (accounts.length === 0) {
+    throw AppError.notFound('Connection not found');
+  }
 }
 
 // ─── Tier 1: Unmap Company ─────────────────────────────────────
@@ -178,9 +217,13 @@ export async function unmapCompany(plaidItemId: string, tenantId: string, delete
     .where(and(eq(plaidAccountMappings.tenantId, tenantId)));
   const relevantMappings = mappings.filter((m) => accountIds.includes(m.plaidAccountId));
 
-  // Delete mappings
+  // Delete mappings. Scoped to the caller's tenant for defense in
+  // depth — `relevantMappings` is already filtered to this tenant's
+  // rows, but an explicit tenantId in the WHERE keeps CLAUDE.md rule
+  // #17 honest against a future refactor that forgets the filter.
   for (const m of relevantMappings) {
-    await db.delete(plaidAccountMappings).where(eq(plaidAccountMappings.id, m.id));
+    await db.delete(plaidAccountMappings)
+      .where(and(eq(plaidAccountMappings.tenantId, tenantId), eq(plaidAccountMappings.id, m.id)));
   }
 
   // Optionally delete pending feed items
@@ -238,9 +281,15 @@ export async function deleteConnection(plaidItemId: string, deletePendingItems: 
     }
   }
 
-  // 4. Delete all mappings
+  // 4. Delete all mappings. This path runs in the "Delete Entire
+  // Connection" flow, so it's allowed to touch mappings across every
+  // tenant attached to this Plaid item. Scope each delete by the
+  // mapping's own tenantId (already looked up above) so we never
+  // accidentally delete mappings owned by an unrelated tenant whose
+  // id collides in an ORM bug.
   for (const m of allMappings) {
-    await db.delete(plaidAccountMappings).where(eq(plaidAccountMappings.id, m.id));
+    await db.delete(plaidAccountMappings)
+      .where(and(eq(plaidAccountMappings.tenantId, m.tenantId), eq(plaidAccountMappings.id, m.id)));
   }
 
   // 5. Soft-delete accounts

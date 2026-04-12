@@ -1,12 +1,14 @@
 import { Router } from 'express';
 import { createInvoiceSchema, transactionFiltersSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as ledger from '../services/ledger.service.js';
 import * as invoiceService from '../services/invoice.service.js';
 
 export const estimatesRouter = Router();
 estimatesRouter.use(authenticate);
+estimatesRouter.use(companyContext);
 
 estimatesRouter.get('/', async (req, res) => {
   // Estimates are stored as transactions with txnType='invoice' and status='draft', invoiceStatus='draft'
@@ -29,7 +31,7 @@ estimatesRouter.post('/', validate(createInvoiceSchema), async (req, res) => {
       const lineTotal = parseFloat(l.quantity) * parseFloat(l.unitPrice);
       return { accountId: l.accountId, debit: '0', credit: lineTotal.toFixed(4), description: l.description };
     }),
-  }, req.userId);
+  }, req.userId, req.companyId);
 
   res.status(201).json({ estimate });
 });
@@ -52,7 +54,7 @@ estimatesRouter.post('/:id/convert', async (req, res) => {
     contactId: estimate.contactId!,
     lines: invoiceLines,
     memo: estimate.memo || undefined,
-  }, req.userId);
+  }, req.userId, req.companyId);
 
   res.status(201).json({ invoice });
 });

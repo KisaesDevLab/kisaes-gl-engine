@@ -32,8 +32,20 @@ export async function update(tenantId: string, id: string, input: { name?: strin
 }
 
 export async function remove(tenantId: string, id: string) {
-  await db.delete(budgetLines).where(eq(budgetLines.budgetId, id));
-  await db.delete(budgets).where(and(eq(budgets.tenantId, tenantId), eq(budgets.id, id)));
+  // `budget_lines` has no tenant_id column — it's scoped transitively
+  // via `budget_id → budgets.tenant_id`. We verify ownership before
+  // deleting the lines so a malformed id can't wipe another tenant's
+  // budget lines, and we wrap both deletes in a transaction so a
+  // partial failure doesn't leave dangling lines.
+  await db.transaction(async (tx) => {
+    const budget = await tx.query.budgets.findFirst({
+      where: and(eq(budgets.tenantId, tenantId), eq(budgets.id, id)),
+    });
+    if (!budget) throw AppError.notFound('Budget not found');
+
+    await tx.delete(budgetLines).where(eq(budgetLines.budgetId, id));
+    await tx.delete(budgets).where(and(eq(budgets.tenantId, tenantId), eq(budgets.id, id)));
+  });
 }
 
 export async function getLines(tenantId: string, budgetId: string) {
@@ -156,10 +168,10 @@ export async function adjustByPercent(tenantId: string, budgetId: string, percen
   await updateLines(tenantId, budgetId, adjusted);
 }
 
-export async function buildBudgetVsActual(tenantId: string, budgetId: string, startDate: string, endDate: string) {
+export async function buildBudgetVsActual(tenantId: string, budgetId: string, startDate: string, endDate: string, companyId: string | null = null) {
   const budget = await getById(tenantId, budgetId);
   const lines = await getLines(tenantId, budgetId);
-  const pl = await reportService.buildProfitAndLoss(tenantId, startDate, endDate, 'accrual');
+  const pl = await reportService.buildProfitAndLoss(tenantId, startDate, endDate, 'accrual', companyId);
 
   function buildRow(line: any) {
     const monthTotal = [1,2,3,4,5,6,7,8,9,10,11,12].reduce((s, m) => s + parseFloat(line[`month_${m}`] || '0'), 0);

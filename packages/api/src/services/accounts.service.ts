@@ -5,6 +5,7 @@ import { db } from '../db/index.js';
 import { accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import * as coaTemplatesService from './coa-templates.service.js';
 
 export async function list(tenantId: string, filters: AccountFilters) {
   const conditions = [eq(accounts.tenantId, tenantId)];
@@ -134,7 +135,15 @@ export async function deactivate(tenantId: string, id: string, userId?: string) 
 }
 
 export async function seedFromTemplate(tenantId: string, templateName: string = 'default', companyId?: string) {
-  const template = COA_TEMPLATES[templateName] || COA_TEMPLATES['default'];
+  // DB-first: super admins can edit templates at runtime via /admin/coa-templates,
+  // and those edits live in the coa_templates table. Fall back to the static
+  // BUSINESS_TEMPLATES constant for legacy aliases (`default`/`service`/etc.)
+  // and for the brief window before bootstrapBuiltins has populated the table.
+  let template = await coaTemplatesService.getAccountsForSeed(templateName);
+  if (!template) {
+    const fallback = COA_TEMPLATES[templateName] || COA_TEMPLATES['default'];
+    template = fallback ?? null;
+  }
   if (!template) {
     throw AppError.badRequest(`Unknown template: ${templateName}`);
   }
@@ -150,7 +159,13 @@ export async function seedFromTemplate(tenantId: string, templateName: string = 
     systemTag: t.systemTag,
   }));
 
-  await db.insert(accounts).values(values);
+  // Wrap in a db.transaction so a partial failure (e.g., a unique
+  // constraint collision on (tenant_id, account_number) caused by a
+  // re-seed of an already-seeded tenant) rolls back cleanly instead of
+  // leaving the tenant with a half-populated chart of accounts.
+  await db.transaction(async (tx) => {
+    await tx.insert(accounts).values(values);
+  });
 }
 
 export async function importFromCsv(tenantId: string, csvData: Array<{ name: string; accountNumber?: string; accountType: string; detailType?: string }>, userId?: string) {

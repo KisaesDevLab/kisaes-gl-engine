@@ -65,25 +65,33 @@ export async function remove(tenantId: string, id: string) {
 export async function merge(tenantId: string, sourceId: string, targetId: string) {
   const source = await getById(tenantId, sourceId);
   const target = await getById(tenantId, targetId);
+  void source;
 
-  // Re-tag: update transaction_tags from source to target (skip duplicates)
-  await db.execute(sql`
-    UPDATE transaction_tags SET tag_id = ${targetId}
-    WHERE tenant_id = ${tenantId} AND tag_id = ${sourceId}
-      AND transaction_id NOT IN (
-        SELECT transaction_id FROM transaction_tags WHERE tag_id = ${targetId}
-      )
-  `);
-  // Delete remaining (duplicates)
-  await db.delete(transactionTags).where(and(eq(transactionTags.tenantId, tenantId), eq(transactionTags.tagId, sourceId)));
+  // Merge + source delete are now in a single db.transaction so a
+  // partial failure (e.g., FK constraint on the delete) rolls back
+  // the re-tagging. Also every statement is scoped by tenant_id.
+  await db.transaction(async (tx) => {
+    // Re-tag: update transaction_tags from source to target (skip duplicates)
+    await tx.execute(sql`
+      UPDATE transaction_tags SET tag_id = ${targetId}
+      WHERE tenant_id = ${tenantId} AND tag_id = ${sourceId}
+        AND transaction_id NOT IN (
+          SELECT transaction_id FROM transaction_tags WHERE tag_id = ${targetId} AND tenant_id = ${tenantId}
+        )
+    `);
+    // Delete remaining (duplicates)
+    await tx.delete(transactionTags).where(and(eq(transactionTags.tenantId, tenantId), eq(transactionTags.tagId, sourceId)));
 
-  // Update usage count on target
-  const countResult = await db.select({ cnt: count() }).from(transactionTags)
-    .where(and(eq(transactionTags.tenantId, tenantId), eq(transactionTags.tagId, targetId)));
-  await db.update(tags).set({ usageCount: countResult[0]?.cnt ?? 0 }).where(eq(tags.id, targetId));
+    // Update usage count on target
+    const countResult = await tx.select({ cnt: count() }).from(transactionTags)
+      .where(and(eq(transactionTags.tenantId, tenantId), eq(transactionTags.tagId, targetId)));
+    await tx.update(tags)
+      .set({ usageCount: countResult[0]?.cnt ?? 0 })
+      .where(and(eq(tags.tenantId, tenantId), eq(tags.id, targetId)));
 
-  // Delete source
-  await db.delete(tags).where(eq(tags.id, sourceId));
+    // Delete source
+    await tx.delete(tags).where(and(eq(tags.tenantId, tenantId), eq(tags.id, sourceId)));
+  });
 
   return target;
 }
@@ -146,7 +154,9 @@ export async function addTags(tenantId: string, transactionId: string, tagIds: s
     const tag = tagsToAdd.find((t) => t.id === tagId);
     if (!tag || !tag.groupId) continue;
 
-    const group = await db.query.tagGroups.findFirst({ where: eq(tagGroups.id, tag.groupId) });
+    const group = await db.query.tagGroups.findFirst({
+      where: and(eq(tagGroups.tenantId, tenantId), eq(tagGroups.id, tag.groupId)),
+    });
     if (group?.isSingleSelect) {
       // Remove other tags from this group on this transaction
       const groupTagIds = tagsToAdd.filter((t) => t.groupId === tag.groupId).map((t) => t.id);
@@ -167,8 +177,9 @@ export async function addTags(tenantId: string, transactionId: string, tagIds: s
       VALUES (${transactionId}, ${tagId}, ${tenantId})
       ON CONFLICT (transaction_id, tag_id) DO NOTHING
     `);
-    // Increment usage count
-    await db.update(tags).set({ usageCount: sql`${tags.usageCount} + 1` }).where(eq(tags.id, tagId));
+    // Increment usage count (tenant-scoped per CLAUDE.md #17)
+    await db.update(tags).set({ usageCount: sql`${tags.usageCount} + 1` })
+      .where(and(eq(tags.tenantId, tenantId), eq(tags.id, tagId)));
   }
 }
 
@@ -179,7 +190,8 @@ export async function removeTags(tenantId: string, transactionId: string, tagIds
       eq(transactionTags.transactionId, transactionId),
       eq(transactionTags.tagId, tagId),
     ));
-    await db.update(tags).set({ usageCount: sql`GREATEST(${tags.usageCount} - 1, 0)` }).where(eq(tags.id, tagId));
+    await db.update(tags).set({ usageCount: sql`GREATEST(${tags.usageCount} - 1, 0)` })
+      .where(and(eq(tags.tenantId, tenantId), eq(tags.id, tagId)));
   }
 }
 
@@ -208,14 +220,6 @@ export async function bulkRemoveTags(tenantId: string, transactionIds: string[],
   for (const txnId of transactionIds) {
     await removeTags(tenantId, txnId, tagIds);
   }
-}
-
-export async function getTagsForTransaction(transactionId: string) {
-  const result = await db.select({ tag: tags })
-    .from(transactionTags)
-    .innerJoin(tags, eq(transactionTags.tagId, tags.id))
-    .where(eq(transactionTags.transactionId, transactionId));
-  return result.map((r) => r.tag);
 }
 
 export async function getTagsForTransactions(tenantId: string, transactionIds: string[]) {

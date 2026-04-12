@@ -18,9 +18,24 @@ function dateFilter(startDate?: string, endDate?: string) {
   return parts.length > 0 ? sql.join(parts, sql` AND `) : sql`TRUE`;
 }
 
+function companyFilter(companyId: string | null, alias: string = 't') {
+  if (!companyId) return sql`TRUE`;
+  if (alias === 'jl') return sql`jl.company_id = ${companyId}`;
+  return sql`t.company_id = ${companyId}`;
+}
+
+async function getFiscalYearStart(tenantId: string, companyId: string | null): Promise<number> {
+  if (companyId) {
+    const row = await db.execute(sql`SELECT fiscal_year_start_month FROM companies WHERE id = ${companyId}`);
+    return (row.rows as any[])[0]?.fiscal_year_start_month ?? 1;
+  }
+  const row = await db.execute(sql`SELECT fiscal_year_start_month FROM companies WHERE tenant_id = ${tenantId} ORDER BY created_at LIMIT 1`);
+  return (row.rows as any[])[0]?.fiscal_year_start_month ?? 1;
+}
+
 // ─── FINANCIAL STATEMENTS ────────────────────────────────────────
 
-export async function buildProfitAndLoss(tenantId: string, startDate: string, endDate: string, basis: Basis = 'accrual') {
+export async function buildProfitAndLoss(tenantId: string, startDate: string, endDate: string, basis: Basis = 'accrual', companyId: string | null = null) {
   const rows = await db.execute(sql`
     SELECT a.id, a.account_number, a.name, a.account_type, a.detail_type,
       COALESCE(SUM(jl.debit), 0) as total_debit,
@@ -30,6 +45,7 @@ export async function buildProfitAndLoss(tenantId: string, startDate: string, en
       AND jl.transaction_id IN (
         SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
         AND txn_date >= ${startDate} AND txn_date <= ${endDate}
+        AND ${companyId ? sql`company_id = ${companyId}` : sql`TRUE`}
       )
     WHERE a.tenant_id = ${tenantId} AND a.account_type IN ('revenue', 'expense')
     GROUP BY a.id ORDER BY a.account_number, a.name
@@ -61,7 +77,7 @@ export async function buildProfitAndLoss(tenantId: string, startDate: string, en
   };
 }
 
-export async function buildBalanceSheet(tenantId: string, asOfDate: string, basis: Basis = 'accrual') {
+export async function buildBalanceSheet(tenantId: string, asOfDate: string, basis: Basis = 'accrual', companyId: string | null = null) {
   const rows = await db.execute(sql`
     SELECT a.id, a.account_number, a.name, a.account_type, a.detail_type, a.system_tag,
       COALESCE(SUM(jl.debit), 0) as total_debit,
@@ -71,6 +87,7 @@ export async function buildBalanceSheet(tenantId: string, asOfDate: string, basi
       AND jl.transaction_id IN (
         SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
         AND txn_date <= ${asOfDate}
+        AND ${companyId ? sql`company_id = ${companyId}` : sql`TRUE`}
       )
     WHERE a.tenant_id = ${tenantId} AND a.account_type IN ('asset', 'liability', 'equity')
     GROUP BY a.id ORDER BY a.account_number, a.name
@@ -93,9 +110,7 @@ export async function buildBalanceSheet(tenantId: string, asOfDate: string, basi
   }
 
   // Automatic year-end closing: split into Retained Earnings (prior years) + Current Year Net Income
-  // Get fiscal year start month
-  const companyRow = await db.execute(sql`SELECT fiscal_year_start_month FROM companies WHERE tenant_id = ${tenantId} LIMIT 1`);
-  const fyStartMonth = (companyRow.rows as any[])[0]?.fiscal_year_start_month || 1;
+  const fyStartMonth = await getFiscalYearStart(tenantId, companyId);
 
   // Compute current fiscal year start date
   const asOf = new Date(asOfDate);
@@ -108,14 +123,14 @@ export async function buildBalanceSheet(tenantId: string, asOfDate: string, basi
     const d = new Date(currentFYStart);
     d.setDate(d.getDate() - 1);
     return d.toISOString().split('T')[0]!;
-  })(), basis);
+  })(), basis, companyId);
   if (retainedPL.netIncome !== 0) {
     equity.push({ name: 'Retained Earnings (Prior Years)', accountNumber: null, balance: retainedPL.netIncome });
     totalEquity += retainedPL.netIncome;
   }
 
   // Current year net income
-  const currentPL = await buildProfitAndLoss(tenantId, currentFYStart, asOfDate, basis);
+  const currentPL = await buildProfitAndLoss(tenantId, currentFYStart, asOfDate, basis, companyId);
   if (currentPL.netIncome !== 0) {
     equity.push({ name: 'Net Income (Current Year)', accountNumber: null, balance: currentPL.netIncome });
     totalEquity += currentPL.netIncome;
@@ -130,9 +145,8 @@ export async function buildBalanceSheet(tenantId: string, asOfDate: string, basi
   };
 }
 
-export async function buildCashFlowStatement(tenantId: string, startDate: string, endDate: string) {
-  // Simplified: operating = net income, investing/financing = transfers to/from asset accounts
-  const pl = await buildProfitAndLoss(tenantId, startDate, endDate, 'accrual');
+export async function buildCashFlowStatement(tenantId: string, startDate: string, endDate: string, companyId: string | null = null) {
+  const pl = await buildProfitAndLoss(tenantId, startDate, endDate, 'accrual', companyId);
   return {
     title: 'Cash Flow Statement', startDate, endDate,
     operatingActivities: pl.netIncome,
@@ -144,7 +158,7 @@ export async function buildCashFlowStatement(tenantId: string, startDate: string
 
 // ─── RECEIVABLES ─────────────────────────────────────────────────
 
-export async function buildARAgingSummary(tenantId: string, asOfDate: string) {
+export async function buildARAgingSummary(tenantId: string, asOfDate: string, companyId: string | null = null) {
   const rows = await db.execute(sql`
     SELECT t.id, t.txn_number, t.txn_date, t.due_date, t.total, t.amount_paid, t.balance_due,
       t.contact_id, c.display_name as customer_name
@@ -153,6 +167,7 @@ export async function buildARAgingSummary(tenantId: string, asOfDate: string) {
     WHERE t.tenant_id = ${tenantId} AND t.txn_type = 'invoice' AND t.status = 'posted'
       AND t.invoice_status NOT IN ('paid', 'void')
       AND t.txn_date <= ${asOfDate}
+      AND ${companyFilter(companyId)}
     ORDER BY t.due_date
   `);
 
@@ -183,16 +198,17 @@ export async function buildARAgingSummary(tenantId: string, asOfDate: string) {
   };
 }
 
-export async function buildARAgingDetail(tenantId: string, asOfDate: string) {
-  return buildARAgingSummary(tenantId, asOfDate);
+export async function buildARAgingDetail(tenantId: string, asOfDate: string, companyId: string | null = null) {
+  return buildARAgingSummary(tenantId, asOfDate, companyId);
 }
 
-export async function buildCustomerBalanceSummary(tenantId: string) {
+export async function buildCustomerBalanceSummary(tenantId: string, companyId: string | null = null) {
   const rows = await db.execute(sql`
     SELECT c.id, c.display_name,
       COALESCE(SUM(CASE WHEN t.txn_type = 'invoice' AND t.status = 'posted' THEN CAST(t.balance_due AS DECIMAL) ELSE 0 END), 0) as balance
     FROM contacts c
     LEFT JOIN transactions t ON t.contact_id = c.id AND t.tenant_id = ${tenantId}
+      AND ${companyFilter(companyId)}
     WHERE c.tenant_id = ${tenantId} AND c.contact_type IN ('customer', 'both') AND c.is_active = true
     GROUP BY c.id ORDER BY c.display_name
   `);
@@ -203,12 +219,12 @@ export async function buildCustomerBalanceSummary(tenantId: string) {
   };
 }
 
-export async function buildCustomerBalanceDetail(tenantId: string) {
-  return buildCustomerBalanceSummary(tenantId);
+export async function buildCustomerBalanceDetail(tenantId: string, companyId: string | null = null) {
+  return buildCustomerBalanceSummary(tenantId, companyId);
 }
 
-export async function buildInvoiceList(tenantId: string, filters?: { startDate?: string; endDate?: string; status?: string }) {
-  const conditions = [sql`t.tenant_id = ${tenantId}`, sql`t.txn_type = 'invoice'`];
+export async function buildInvoiceList(tenantId: string, filters?: { startDate?: string; endDate?: string; status?: string }, companyId: string | null = null) {
+  const conditions = [sql`t.tenant_id = ${tenantId}`, sql`t.txn_type = 'invoice'`, companyFilter(companyId)];
   if (filters?.startDate) conditions.push(sql`t.txn_date >= ${filters.startDate}`);
   if (filters?.endDate) conditions.push(sql`t.txn_date <= ${filters.endDate}`);
   if (filters?.status) conditions.push(sql`t.invoice_status = ${filters.status}`);
@@ -227,7 +243,7 @@ export async function buildInvoiceList(tenantId: string, filters?: { startDate?:
 
 // ─── EXPENSES ────────────────────────────────────────────────────
 
-export async function buildExpenseByVendor(tenantId: string, startDate: string, endDate: string) {
+export async function buildExpenseByVendor(tenantId: string, startDate: string, endDate: string, companyId: string | null = null) {
   const rows = await db.execute(sql`
     SELECT COALESCE(c.display_name, 'Uncategorized') as vendor_name,
       SUM(jl.debit) as total
@@ -238,13 +254,14 @@ export async function buildExpenseByVendor(tenantId: string, startDate: string, 
     WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
       AND jl.debit > 0
+      AND ${companyFilter(companyId)}
     GROUP BY c.display_name ORDER BY total DESC
   `);
 
   return { title: 'Expenses by Vendor', startDate, endDate, data: rows.rows };
 }
 
-export async function buildExpenseByCategory(tenantId: string, startDate: string, endDate: string) {
+export async function buildExpenseByCategory(tenantId: string, startDate: string, endDate: string, companyId: string | null = null) {
   const rows = await db.execute(sql`
     SELECT a.name as category, a.account_number,
       SUM(jl.debit) as total
@@ -254,18 +271,20 @@ export async function buildExpenseByCategory(tenantId: string, startDate: string
     WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
       AND jl.debit > 0
+      AND ${companyFilter(companyId)}
     GROUP BY a.id ORDER BY total DESC
   `);
 
   return { title: 'Expenses by Category', startDate, endDate, data: rows.rows };
 }
 
-export async function buildVendorBalanceSummary(tenantId: string) {
+export async function buildVendorBalanceSummary(tenantId: string, companyId: string | null = null) {
   const rows = await db.execute(sql`
     SELECT c.id, c.display_name,
       COALESCE(SUM(CASE WHEN t.status = 'posted' THEN CAST(t.total AS DECIMAL) ELSE 0 END), 0) as total_spent
     FROM contacts c
     LEFT JOIN transactions t ON t.contact_id = c.id AND t.tenant_id = ${tenantId} AND t.txn_type = 'expense'
+      AND ${companyFilter(companyId)}
     WHERE c.tenant_id = ${tenantId} AND c.contact_type IN ('vendor', 'both') AND c.is_active = true
     GROUP BY c.id ORDER BY c.display_name
   `);
@@ -273,11 +292,12 @@ export async function buildVendorBalanceSummary(tenantId: string) {
   return { title: 'Vendor Balance Summary', data: rows.rows };
 }
 
-export async function buildTransactionListByVendor(tenantId: string, vendorId: string, dateRange?: DateRange) {
+export async function buildTransactionListByVendor(tenantId: string, vendorId: string, dateRange?: DateRange, companyId: string | null = null) {
   const conditions = [
     sql`t.tenant_id = ${tenantId}`,
     sql`t.contact_id = ${vendorId}`,
     sql`t.status = 'posted'`,
+    companyFilter(companyId),
   ];
   if (dateRange?.startDate) conditions.push(sql`t.txn_date >= ${dateRange.startDate}`);
   if (dateRange?.endDate) conditions.push(sql`t.txn_date <= ${dateRange.endDate}`);
@@ -294,15 +314,16 @@ export async function buildTransactionListByVendor(tenantId: string, vendorId: s
 
 // ─── BANKING ─────────────────────────────────────────────────────
 
-export async function buildBankReconciliationSummary(tenantId: string, accountId: string) {
+export async function buildBankReconciliationSummary(tenantId: string, accountId: string, companyId: string | null = null) {
   return { title: 'Bank Reconciliation Summary', accountId, data: [] };
 }
 
-export async function buildDepositDetail(tenantId: string, dateRange?: DateRange) {
+export async function buildDepositDetail(tenantId: string, dateRange?: DateRange, companyId: string | null = null) {
   const conditions = [
     sql`t.tenant_id = ${tenantId}`,
     sql`t.txn_type = 'deposit'`,
     sql`t.status = 'posted'`,
+    companyFilter(companyId),
   ];
   if (dateRange?.startDate) conditions.push(sql`t.txn_date >= ${dateRange.startDate}`);
   if (dateRange?.endDate) conditions.push(sql`t.txn_date <= ${dateRange.endDate}`);
@@ -317,11 +338,12 @@ export async function buildDepositDetail(tenantId: string, dateRange?: DateRange
   return { title: 'Deposit Detail', data: rows.rows };
 }
 
-export async function buildCheckRegister(tenantId: string, accountId: string, dateRange?: DateRange) {
+export async function buildCheckRegister(tenantId: string, accountId: string, dateRange?: DateRange, companyId: string | null = null) {
   const conditions = [
     sql`jl.tenant_id = ${tenantId}`,
     sql`jl.account_id = ${accountId}`,
     sql`t.status = 'posted'`,
+    companyFilter(companyId),
   ];
   if (dateRange?.startDate) conditions.push(sql`t.txn_date >= ${dateRange.startDate}`);
   if (dateRange?.endDate) conditions.push(sql`t.txn_date <= ${dateRange.endDate}`);
@@ -340,7 +362,7 @@ export async function buildCheckRegister(tenantId: string, accountId: string, da
 
 // ─── TAX ─────────────────────────────────────────────────────────
 
-export async function buildSalesTaxLiability(tenantId: string, startDate: string, endDate: string) {
+export async function buildSalesTaxLiability(tenantId: string, startDate: string, endDate: string, companyId: string | null = null) {
   const rows = await db.execute(sql`
     SELECT COALESCE(SUM(CAST(t.tax_amount AS DECIMAL)), 0) as total_tax,
       COALESCE(SUM(CAST(t.subtotal AS DECIMAL)), 0) as total_sales
@@ -348,6 +370,7 @@ export async function buildSalesTaxLiability(tenantId: string, startDate: string
     WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
       AND t.txn_type IN ('invoice', 'cash_sale')
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
+      AND ${companyFilter(companyId)}
   `);
 
   const row = (rows.rows as any[])[0] || { total_tax: '0', total_sales: '0' };
@@ -358,15 +381,15 @@ export async function buildSalesTaxLiability(tenantId: string, startDate: string
   };
 }
 
-export async function buildTaxableSalesSummary(tenantId: string, startDate: string, endDate: string) {
-  return buildSalesTaxLiability(tenantId, startDate, endDate);
+export async function buildTaxableSalesSummary(tenantId: string, startDate: string, endDate: string, companyId: string | null = null) {
+  return buildSalesTaxLiability(tenantId, startDate, endDate, companyId);
 }
 
-export async function buildSalesTaxPayments(tenantId: string, startDate: string, endDate: string) {
+export async function buildSalesTaxPayments(tenantId: string, startDate: string, endDate: string, companyId: string | null = null) {
   return { title: 'Sales Tax Payments', startDate, endDate, data: [] };
 }
 
-export async function build1099VendorSummary(tenantId: string, year: string) {
+export async function build1099VendorSummary(tenantId: string, year: string, companyId: string | null = null) {
   const startDate = `${year}-01-01`;
   const endDate = `${year}-12-31`;
 
@@ -377,6 +400,7 @@ export async function build1099VendorSummary(tenantId: string, year: string) {
     JOIN transactions t ON t.contact_id = c.id AND t.tenant_id = ${tenantId}
       AND t.txn_type = 'expense' AND t.status = 'posted'
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
+      AND ${companyFilter(companyId)}
     WHERE c.tenant_id = ${tenantId} AND c.is_1099_eligible = true
     GROUP BY c.id ORDER BY total_paid DESC
   `);
@@ -404,14 +428,8 @@ export async function build1099VendorSummary(tenantId: string, year: string) {
  *   - credit-normal accounts (liab, equity, revenue):  balance = credits - debits
  * so a "normal" balance is always displayed as a positive number.
  */
-export async function buildGeneralLedger(tenantId: string, startDate: string, endDate: string) {
-  // Resolve the company's fiscal year start. The current fiscal year is
-  // determined by the report's startDate so the YTD reset behavior follows
-  // the period the user is asking about.
-  const companyRow = await db.execute(sql`
-    SELECT fiscal_year_start_month FROM companies WHERE tenant_id = ${tenantId} LIMIT 1
-  `);
-  const fyStartMonth: number = (companyRow.rows as { fiscal_year_start_month?: number }[])[0]?.fiscal_year_start_month || 1;
+export async function buildGeneralLedger(tenantId: string, startDate: string, endDate: string, companyId: string | null = null) {
+  const fyStartMonth = await getFiscalYearStart(tenantId, companyId);
   const startDt = new Date(startDate);
   let fyStartYear = startDt.getFullYear();
   if (startDt.getMonth() + 1 < fyStartMonth) fyStartYear--;
@@ -458,10 +476,13 @@ export async function buildGeneralLedger(tenantId: string, startDate: string, en
     FROM accounts a
     LEFT JOIN journal_lines jl
       ON jl.account_id = a.id AND jl.tenant_id = ${tenantId}
+      AND jl.transaction_id IN (
+        SELECT id FROM transactions
+        WHERE tenant_id = ${tenantId} AND status = 'posted' AND txn_date < ${startDate}
+        AND ${companyId ? sql`company_id = ${companyId}` : sql`TRUE`}
+      )
     LEFT JOIN transactions t
       ON t.id = jl.transaction_id
-      AND t.status = 'posted'
-      AND t.txn_date < ${startDate}
     WHERE a.tenant_id = ${tenantId}
     GROUP BY a.id
   `);
@@ -488,6 +509,7 @@ export async function buildGeneralLedger(tenantId: string, startDate: string, en
       AND t.status = 'posted'
       AND t.txn_date >= ${startDate}
       AND t.txn_date <= ${endDate}
+      AND ${companyFilter(companyId)}
     ORDER BY jl.account_id, t.txn_date, t.created_at, jl.line_order
   `);
 
@@ -608,10 +630,8 @@ export async function buildGeneralLedger(tenantId: string, startDate: string, en
   };
 }
 
-export async function buildTrialBalance(tenantId: string, startDate: string, endDate: string) {
-  // Get fiscal year start month
-  const companyRow = await db.execute(sql`SELECT fiscal_year_start_month FROM companies WHERE tenant_id = ${tenantId} LIMIT 1`);
-  const fyStartMonth = (companyRow.rows as any[])[0]?.fiscal_year_start_month || 1;
+export async function buildTrialBalance(tenantId: string, startDate: string, endDate: string, companyId: string | null = null) {
+  const fyStartMonth = await getFiscalYearStart(tenantId, companyId);
 
   // Compute current fiscal year start based on the report end date
   const endDt = new Date(endDate);
@@ -639,7 +659,12 @@ export async function buildTrialBalance(tenantId: string, startDate: string, end
       ), 0) as total_credit
     FROM accounts a
     LEFT JOIN journal_lines jl ON jl.account_id = a.id AND jl.tenant_id = ${tenantId}
-    LEFT JOIN transactions t ON t.id = jl.transaction_id AND t.status = 'posted' AND t.txn_date <= ${endDate}
+      AND jl.transaction_id IN (
+        SELECT id FROM transactions
+        WHERE tenant_id = ${tenantId} AND status = 'posted' AND txn_date <= ${endDate}
+        AND ${companyId ? sql`company_id = ${companyId}` : sql`TRUE`}
+      )
+    LEFT JOIN transactions t ON t.id = jl.transaction_id
     WHERE a.tenant_id = ${tenantId}
     GROUP BY a.id
     HAVING COALESCE(SUM(jl.debit), 0) > 0 OR COALESCE(SUM(jl.credit), 0) > 0
@@ -660,7 +685,7 @@ export async function buildTrialBalance(tenantId: string, startDate: string, end
     const priorEndDate = new Date(fyStart);
     priorEndDate.setDate(priorEndDate.getDate() - 1);
     const priorEnd = priorEndDate.toISOString().split('T')[0]!;
-    const retainedPL = await buildProfitAndLoss(tenantId, '1900-01-01', priorEnd, 'accrual');
+    const retainedPL = await buildProfitAndLoss(tenantId, '1900-01-01', priorEnd, 'accrual', companyId);
     if (retainedPL.netIncome !== 0) {
       // Retained earnings is a credit-balance equity account
       const reDebit = retainedPL.netIncome < 0 ? Math.abs(retainedPL.netIncome) : 0;
@@ -686,8 +711,8 @@ export async function buildTrialBalance(tenantId: string, startDate: string, end
 
 export async function buildTransactionList(tenantId: string, filters?: {
   startDate?: string; endDate?: string; txnType?: string; accountId?: string;
-}) {
-  const conditions = [sql`t.tenant_id = ${tenantId}`, sql`t.status = 'posted'`];
+}, companyId: string | null = null) {
+  const conditions = [sql`t.tenant_id = ${tenantId}`, sql`t.status = 'posted'`, companyFilter(companyId)];
   if (filters?.startDate) conditions.push(sql`t.txn_date >= ${filters.startDate}`);
   if (filters?.endDate) conditions.push(sql`t.txn_date <= ${filters.endDate}`);
   if (filters?.txnType) conditions.push(sql`t.txn_type = ${filters.txnType}`);
@@ -704,10 +729,10 @@ export async function buildTransactionList(tenantId: string, filters?: {
   return { title: 'Transaction List', data: rows.rows };
 }
 
-export async function buildJournalEntryReport(tenantId: string, dateRange?: DateRange) {
-  return buildTransactionList(tenantId, { ...dateRange, txnType: 'journal_entry' });
+export async function buildJournalEntryReport(tenantId: string, dateRange?: DateRange, companyId: string | null = null) {
+  return buildTransactionList(tenantId, { ...dateRange, txnType: 'journal_entry' }, companyId);
 }
 
-export async function buildAccountReport(tenantId: string, accountId: string, dateRange?: DateRange) {
-  return buildCheckRegister(tenantId, accountId, dateRange);
+export async function buildAccountReport(tenantId: string, accountId: string, dateRange?: DateRange, companyId: string | null = null) {
+  return buildCheckRegister(tenantId, accountId, dateRange, companyId);
 }
