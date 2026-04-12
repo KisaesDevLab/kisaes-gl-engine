@@ -153,7 +153,7 @@ export async function checkPayrollOverlap(
     }));
 }
 
-export async function categorize(tenantId: string, feedItemId: string, input: CategorizeInput, userId?: string) {
+export async function categorize(tenantId: string, feedItemId: string, input: CategorizeInput, userId?: string, companyId?: string) {
   // Atomic claim: flip the feed item from 'pending' to 'categorizing'
   // in one UPDATE. Two concurrent categorize calls (double-clicks,
   // retries, two users opening the same item) serialize here — only
@@ -227,7 +227,7 @@ export async function categorize(tenantId: string, feedItemId: string, input: Ca
             { accountId: conn.accountId, debit: amount.toFixed(4), credit: '0' },
             { accountId: input.accountId, debit: '0', credit: amount.toFixed(4), description: item.description || undefined },
           ],
-    }, userId);
+    }, userId, companyId);
 
     await db.update(bankFeedItems).set({
       status: 'categorized',
@@ -399,7 +399,7 @@ export async function bulkApprove(tenantId: string, feedItemIds: string[]) {
   return { approved, failures };
 }
 
-export async function bulkCategorize(tenantId: string, feedItemIds: string[], accountId: string, contactId?: string, memo?: string, userId?: string) {
+export async function bulkCategorize(tenantId: string, feedItemIds: string[], accountId: string, contactId?: string, memo?: string, userId?: string, companyId?: string) {
   let categorized = 0;
   const failures: Array<{ id: string; error: string }> = [];
   for (const id of feedItemIds) {
@@ -408,7 +408,7 @@ export async function bulkCategorize(tenantId: string, feedItemIds: string[], ac
         where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, id)),
       });
       if (item && item.status === 'pending') {
-        await categorize(tenantId, id, { accountId, contactId, memo }, userId);
+        await categorize(tenantId, id, { accountId, contactId, memo }, userId, companyId);
         categorized++;
       }
     } catch (err: any) {

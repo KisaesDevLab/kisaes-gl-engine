@@ -199,6 +199,7 @@ export async function saveBatch(
   rows: BatchRow[],
   options: { autoCreateContacts?: boolean; skipInvalid?: boolean } = {},
   userId?: string,
+  companyId?: string,
 ) {
   // Validate first
   const validation = await validateBatch(tenantId, txnType, contextAccountId, rows);
@@ -246,7 +247,7 @@ export async function saveBatch(
           expenseAccountId: accountId!,
           amount,
           memo: row.memo,
-        }, userId);
+        }, userId, companyId);
         break;
 
       case 'deposit':
@@ -255,7 +256,7 @@ export async function saveBatch(
           depositToAccountId: contextAccountId!,
           lines: [{ accountId: accountId!, amount, description: row.memo }],
           memo: row.memo,
-        }, userId);
+        }, userId, companyId);
         break;
 
       case 'credit_card_credit':
@@ -270,7 +271,7 @@ export async function saveBatch(
             { accountId: contextAccountId!, debit: amount, credit: '0' },
             { accountId: accountId!, debit: '0', credit: amount },
           ],
-        }, userId);
+        }, userId, companyId);
         break;
 
       case 'invoice':
@@ -285,7 +286,7 @@ export async function saveBatch(
             unitPrice: amount,
           }],
           memo: row.memo,
-        }, userId);
+        }, userId, companyId);
         break;
 
       case 'bill':
@@ -300,7 +301,7 @@ export async function saveBatch(
             description: row.description || row.memo || undefined,
             amount,
           }],
-        }, userId);
+        }, userId, companyId);
         break;
 
       case 'credit_memo':
@@ -314,7 +315,7 @@ export async function saveBatch(
             unitPrice: amount,
           }],
           memo: row.memo,
-        }, userId);
+        }, userId, companyId);
         break;
 
       case 'journal_entry':
@@ -336,7 +337,7 @@ export async function saveBatch(
             { accountId: contextAccountId!, debit: amount, credit: '0' },
             { accountId: arAccount?.id || contextAccountId!, debit: '0', credit: amount },
           ],
-        }, userId);
+        }, userId, companyId);
         break;
     }
 
@@ -372,7 +373,7 @@ export async function saveBatch(
         txnDate: groupRows[0]!.date!,
         memo: groupRows[0]!.memo,
         lines,
-      }, userId);
+      }, userId, companyId);
 
       for (const row of groupRows) {
         savedTxns.push({ id: txn.id, txnNumber: txn.txnNumber, rowNumber: row.rowNumber });

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { writeCheckSchema, printCheckSchema, checkSettingsSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as checkService from '../services/check.service.js';
 import * as pdfService from '../services/pdf.service.js';
@@ -10,9 +11,10 @@ import { companies } from '../db/schema/index.js';
 
 export const checksRouter = Router();
 checksRouter.use(authenticate);
+checksRouter.use(companyContext);
 
 checksRouter.post('/', validate(writeCheckSchema), async (req, res) => {
-  const check = await checkService.createCheck(req.tenantId, req.body, req.userId);
+  const check = await checkService.createCheck(req.tenantId, req.body, req.userId, req.companyId);
   res.status(201).json({ check });
 });
 
@@ -24,12 +26,12 @@ checksRouter.get('/', async (req, res) => {
     endDate: req.query['end_date'] as string,
     limit: parseInt(req.query['limit'] as string) || 50,
     offset: parseInt(req.query['offset'] as string) || 0,
-  });
+  }, req.companyId);
   res.json(result);
 });
 
 checksRouter.get('/print-queue', async (req, res) => {
-  const data = await checkService.getPrintQueue(req.tenantId, req.query['bank_account_id'] as string);
+  const data = await checkService.getPrintQueue(req.tenantId, req.query['bank_account_id'] as string, req.companyId);
   res.json({ data });
 });
 
@@ -67,14 +69,16 @@ checksRouter.post('/requeue', async (req, res) => {
 
 // Check settings
 checksRouter.get('/settings', async (req, res) => {
-  const company = await db.query.companies.findFirst({ where: eq(companies.tenantId, req.tenantId) });
+  const { and: andOp } = await import('drizzle-orm');
+  const company = await db.query.companies.findFirst({ where: andOp(eq(companies.tenantId, req.tenantId), eq(companies.id, req.companyId)) });
   res.json({ settings: company?.checkSettings || {} });
 });
 
 checksRouter.put('/settings', validate(checkSettingsSchema), async (req, res) => {
-  const company = await db.query.companies.findFirst({ where: eq(companies.tenantId, req.tenantId) });
+  const { and: andOp } = await import('drizzle-orm');
+  const company = await db.query.companies.findFirst({ where: andOp(eq(companies.tenantId, req.tenantId), eq(companies.id, req.companyId)) });
   const current = (company?.checkSettings as Record<string, unknown>) || {};
   const merged = { ...current, ...req.body };
-  await db.update(companies).set({ checkSettings: merged }).where(eq(companies.tenantId, req.tenantId));
+  await db.update(companies).set({ checkSettings: merged }).where(andOp(eq(companies.tenantId, req.tenantId), eq(companies.id, req.companyId)));
   res.json({ settings: merged });
 });

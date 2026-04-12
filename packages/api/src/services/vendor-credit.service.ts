@@ -20,7 +20,7 @@ async function getNextVendorCreditNumber(tenantId: string): Promise<string> {
   return `VC-${String(next).padStart(5, '0')}`;
 }
 
-export async function createVendorCredit(tenantId: string, input: CreateVendorCreditInput, userId?: string) {
+export async function createVendorCredit(tenantId: string, input: CreateVendorCreditInput, userId?: string, companyId?: string) {
   if (input.lines.length === 0) throw AppError.badRequest('Vendor credit must have at least one line');
 
   const apAccountId = await getApAccountId(tenantId);
@@ -53,7 +53,7 @@ export async function createVendorCredit(tenantId: string, input: CreateVendorCr
     creditsApplied: '0',
     billStatus: 'unpaid',
     lines: journalLines,
-  }, userId);
+  }, userId, companyId);
 }
 
 export async function getVendorCredit(tenantId: string, creditId: string) {
@@ -83,11 +83,12 @@ export async function listVendorCredits(tenantId: string, filters: {
   search?: string;
   limit?: number;
   offset?: number;
-}) {
+}, companyId?: string) {
   const conditions = [
     eq(transactions.tenantId, tenantId),
     eq(transactions.txnType, 'vendor_credit'),
   ];
+  if (companyId) conditions.push(eq(transactions.companyId, companyId));
   if (filters.contactId) conditions.push(eq(transactions.contactId, filters.contactId));
   if (filters.startDate) conditions.push(sql`${transactions.txnDate} >= ${filters.startDate}`);
   if (filters.endDate) conditions.push(sql`${transactions.txnDate} <= ${filters.endDate}`);

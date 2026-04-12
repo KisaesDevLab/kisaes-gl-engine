@@ -1,5 +1,6 @@
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import { authenticate } from '../middleware/auth.js';
+import { companyContext } from '../middleware/company.js';
 import * as reportService from '../services/report.service.js';
 import * as apReportService from '../services/ap-report.service.js';
 import * as exportService from '../services/report-export.service.js';
@@ -7,6 +8,13 @@ import * as comparisonService from '../services/report-comparison.service.js';
 
 export const reportsRouter = Router();
 reportsRouter.use(authenticate);
+reportsRouter.use(companyContext);
+
+function resolveCompanyScope(req: Request): string | null {
+  const scope = req.query['scope'] as string | undefined;
+  if (scope === 'consolidated') return null;
+  return req.companyId;
+}
 
 // Format a number for export
 function fmtNum(n: any): string {
@@ -365,13 +373,20 @@ async function respond(res: any, reportData: any, format: string | undefined) {
       : reportData.asOfDate ? `As of ${reportData.asOfDate}` : '';
     const tableHtml = buildHtmlTable(rows, columns);
 
-    // Get company name scoped to tenant
     let companyName = 'Company';
     try {
       const { db } = await import('../db/index.js');
       const { sql } = await import('drizzle-orm');
-      const result = await db.execute(sql`SELECT business_name FROM companies WHERE tenant_id = ${res.req.tenantId} LIMIT 1`);
-      companyName = (result.rows as any[])[0]?.business_name || 'Company';
+      const scope = res.req.query['scope'] as string | undefined;
+      if (scope === 'consolidated') {
+        companyName = 'Consolidated';
+      } else if (res.req.companyId) {
+        const result = await db.execute(sql`SELECT business_name FROM companies WHERE id = ${res.req.companyId}`);
+        companyName = (result.rows as any[])[0]?.business_name || 'Company';
+      } else {
+        const result = await db.execute(sql`SELECT business_name FROM companies WHERE tenant_id = ${res.req.tenantId} LIMIT 1`);
+        companyName = (result.rows as any[])[0]?.business_name || 'Company';
+      }
     } catch { /* use default */ }
 
     // Wide reports use landscape so all columns fit without truncation.
@@ -397,6 +412,7 @@ reportsRouter.get('/profit-loss', async (req, res) => {
   const sd = start_date || `${today.getFullYear()}-01-01`;
   const ed = end_date || today.toISOString().split('T')[0]!;
   const b = (basis as 'cash' | 'accrual') || 'accrual';
+  const companyId = resolveCompanyScope(req);
 
   if (compare) {
     const data = await comparisonService.buildComparativePL(
@@ -404,22 +420,25 @@ reportsRouter.get('/profit-loss', async (req, res) => {
       compare as any,
       parseInt(periods || '6'),
       (period_type as any) || 'month',
+      companyId,
     );
     await respond(res, data, format);
   } else {
-    const data = await reportService.buildProfitAndLoss(req.tenantId, sd, ed, b);
+    const data = await reportService.buildProfitAndLoss(req.tenantId, sd, ed, b, companyId);
     await respond(res, data, format);
   }
 });
 
 reportsRouter.get('/balance-sheet', async (req, res) => {
   const { as_of_date, basis, format, compare } = req.query as Record<string, string>;
+  const companyId = resolveCompanyScope(req);
   if (compare) {
     const data = await comparisonService.buildComparativeBS(
       req.tenantId,
       as_of_date || new Date().toISOString().split('T')[0]!,
       (basis as 'cash' | 'accrual') || 'accrual',
       compare as any,
+      companyId,
     );
     await respond(res, data, format);
     return;
@@ -428,6 +447,7 @@ reportsRouter.get('/balance-sheet', async (req, res) => {
     req.tenantId,
     as_of_date || new Date().toISOString().split('T')[0]!,
     (basis as 'cash' | 'accrual') || 'accrual',
+    companyId,
   );
   await respond(res, data, format);
 });
@@ -435,10 +455,12 @@ reportsRouter.get('/balance-sheet', async (req, res) => {
 reportsRouter.get('/cash-flow', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
   const today = new Date();
+  const companyId = resolveCompanyScope(req);
   const data = await reportService.buildCashFlowStatement(
     req.tenantId,
     start_date || `${today.getFullYear()}-01-01`,
     end_date || today.toISOString().split('T')[0]!,
+    companyId,
   );
   await respond(res, data, format);
 });
@@ -446,26 +468,26 @@ reportsRouter.get('/cash-flow', async (req, res) => {
 // Receivables
 reportsRouter.get('/ar-aging-summary', async (req, res) => {
   const { as_of_date, format } = req.query as Record<string, string>;
-  const data = await reportService.buildARAgingSummary(req.tenantId, as_of_date || new Date().toISOString().split('T')[0]!);
+  const data = await reportService.buildARAgingSummary(req.tenantId, as_of_date || new Date().toISOString().split('T')[0]!, resolveCompanyScope(req));
   await respond(res, data, format);
 });
 
 reportsRouter.get('/ar-aging-detail', async (req, res) => {
   const { as_of_date, format } = req.query as Record<string, string>;
-  const data = await reportService.buildARAgingDetail(req.tenantId, as_of_date || new Date().toISOString().split('T')[0]!);
+  const data = await reportService.buildARAgingDetail(req.tenantId, as_of_date || new Date().toISOString().split('T')[0]!, resolveCompanyScope(req));
   await respond(res, data, format);
 });
 
 // Accounts Payable
 reportsRouter.get('/ap-aging-summary', async (req, res) => {
   const { as_of_date, format } = req.query as Record<string, string>;
-  const data = await apReportService.buildApAgingSummary(req.tenantId, as_of_date || new Date().toISOString().split('T')[0]!);
+  const data = await apReportService.buildApAgingSummary(req.tenantId, as_of_date || new Date().toISOString().split('T')[0]!, resolveCompanyScope(req));
   await respond(res, data, format);
 });
 
 reportsRouter.get('/ap-aging-detail', async (req, res) => {
   const { as_of_date, format } = req.query as Record<string, string>;
-  const data = await apReportService.buildApAgingDetail(req.tenantId, as_of_date || new Date().toISOString().split('T')[0]!);
+  const data = await apReportService.buildApAgingDetail(req.tenantId, as_of_date || new Date().toISOString().split('T')[0]!, resolveCompanyScope(req));
   await respond(res, data, format);
 });
 
@@ -475,7 +497,7 @@ reportsRouter.get('/unpaid-bills', async (req, res) => {
     contactId: contact_id || undefined,
     dueOnOrBefore: due_on_or_before || undefined,
     overdueOnly: overdue_only === 'true',
-  });
+  }, resolveCompanyScope(req));
   await respond(res, data, format);
 });
 
@@ -484,7 +506,7 @@ reportsRouter.get('/bill-payment-history', async (req, res) => {
   const data = await apReportService.buildBillPaymentHistory(req.tenantId, {
     startDate: start_date,
     endDate: end_date,
-  });
+  }, resolveCompanyScope(req));
   await respond(res, data, format);
 });
 
@@ -496,30 +518,30 @@ reportsRouter.get('/vendor-statement', async (req, res) => {
   const data = await apReportService.buildVendorStatement(req.tenantId, vendor_id, {
     startDate: start_date,
     endDate: end_date,
-  });
+  }, resolveCompanyScope(req));
   return respond(res, data, format);
 });
 
 reportsRouter.get('/ap-1099-prep', async (req, res) => {
   const { tax_year, format } = req.query as Record<string, string>;
   const year = tax_year ? parseInt(tax_year, 10) : new Date().getFullYear();
-  const data = await apReportService.buildAp1099Prep(req.tenantId, year);
+  const data = await apReportService.buildAp1099Prep(req.tenantId, year, resolveCompanyScope(req));
   await respond(res, data, format);
 });
 
 reportsRouter.get('/customer-balance-summary', async (req, res) => {
-  const data = await reportService.buildCustomerBalanceSummary(req.tenantId);
+  const data = await reportService.buildCustomerBalanceSummary(req.tenantId, resolveCompanyScope(req));
   await respond(res, data, req.query['format'] as string);
 });
 
 reportsRouter.get('/customer-balance-detail', async (req, res) => {
-  const data = await reportService.buildCustomerBalanceDetail(req.tenantId);
+  const data = await reportService.buildCustomerBalanceDetail(req.tenantId, resolveCompanyScope(req));
   await respond(res, data, req.query['format'] as string);
 });
 
 reportsRouter.get('/invoice-list', async (req, res) => {
   const { start_date, end_date, status, format } = req.query as Record<string, string>;
-  const data = await reportService.buildInvoiceList(req.tenantId, { startDate: start_date, endDate: end_date, status });
+  const data = await reportService.buildInvoiceList(req.tenantId, { startDate: start_date, endDate: end_date, status }, resolveCompanyScope(req));
   await respond(res, data, format);
 });
 
@@ -527,43 +549,43 @@ reportsRouter.get('/invoice-list', async (req, res) => {
 reportsRouter.get('/expense-by-vendor', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
   const today = new Date();
-  const data = await reportService.buildExpenseByVendor(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!);
+  const data = await reportService.buildExpenseByVendor(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!, resolveCompanyScope(req));
   await respond(res, data, format);
 });
 
 reportsRouter.get('/expense-by-category', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
   const today = new Date();
-  const data = await reportService.buildExpenseByCategory(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!);
+  const data = await reportService.buildExpenseByCategory(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!, resolveCompanyScope(req));
   await respond(res, data, format);
 });
 
 reportsRouter.get('/vendor-balance-summary', async (req, res) => {
-  const data = await reportService.buildVendorBalanceSummary(req.tenantId);
+  const data = await reportService.buildVendorBalanceSummary(req.tenantId, resolveCompanyScope(req));
   await respond(res, data, req.query['format'] as string);
 });
 
 reportsRouter.get('/transaction-list-by-vendor', async (req, res) => {
   const { vendor_id, start_date, end_date, format } = req.query as Record<string, string>;
-  const data = await reportService.buildTransactionListByVendor(req.tenantId, vendor_id || '', { startDate: start_date, endDate: end_date });
+  const data = await reportService.buildTransactionListByVendor(req.tenantId, vendor_id || '', { startDate: start_date, endDate: end_date }, resolveCompanyScope(req));
   await respond(res, data, format);
 });
 
 // Banking
 reportsRouter.get('/bank-reconciliation-summary', async (req, res) => {
-  const data = await reportService.buildBankReconciliationSummary(req.tenantId, (req.query['account_id'] as string) || '');
+  const data = await reportService.buildBankReconciliationSummary(req.tenantId, (req.query['account_id'] as string) || '', resolveCompanyScope(req));
   await respond(res, data, req.query['format'] as string);
 });
 
 reportsRouter.get('/deposit-detail', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
-  const data = await reportService.buildDepositDetail(req.tenantId, { startDate: start_date, endDate: end_date });
+  const data = await reportService.buildDepositDetail(req.tenantId, { startDate: start_date, endDate: end_date }, resolveCompanyScope(req));
   await respond(res, data, format);
 });
 
 reportsRouter.get('/check-register', async (req, res) => {
   const { account_id, start_date, end_date, format } = req.query as Record<string, string>;
-  const data = await reportService.buildCheckRegister(req.tenantId, account_id || '', { startDate: start_date, endDate: end_date });
+  const data = await reportService.buildCheckRegister(req.tenantId, account_id || '', { startDate: start_date, endDate: end_date }, resolveCompanyScope(req));
   await respond(res, data, format);
 });
 
@@ -571,27 +593,27 @@ reportsRouter.get('/check-register', async (req, res) => {
 reportsRouter.get('/sales-tax-liability', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
   const today = new Date();
-  const data = await reportService.buildSalesTaxLiability(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!);
+  const data = await reportService.buildSalesTaxLiability(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!, resolveCompanyScope(req));
   await respond(res, data, format);
 });
 
 reportsRouter.get('/taxable-sales-summary', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
   const today = new Date();
-  const data = await reportService.buildTaxableSalesSummary(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!);
+  const data = await reportService.buildTaxableSalesSummary(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!, resolveCompanyScope(req));
   await respond(res, data, format);
 });
 
 reportsRouter.get('/sales-tax-payments', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
   const today = new Date();
-  const data = await reportService.buildSalesTaxPayments(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!);
+  const data = await reportService.buildSalesTaxPayments(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!, resolveCompanyScope(req));
   await respond(res, data, format);
 });
 
 reportsRouter.get('/vendor-1099-summary', async (req, res) => {
   const { year, format } = req.query as Record<string, string>;
-  const data = await reportService.build1099VendorSummary(req.tenantId, year || String(new Date().getFullYear()));
+  const data = await reportService.build1099VendorSummary(req.tenantId, year || String(new Date().getFullYear()), resolveCompanyScope(req));
   await respond(res, data, format);
 });
 
@@ -599,7 +621,7 @@ reportsRouter.get('/vendor-1099-summary', async (req, res) => {
 reportsRouter.get('/general-ledger', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
   const today = new Date();
-  const data = await reportService.buildGeneralLedger(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!);
+  const data = await reportService.buildGeneralLedger(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!, resolveCompanyScope(req));
   await respond(res, data, format);
 });
 
@@ -611,24 +633,25 @@ reportsRouter.get('/trial-balance', async (req, res) => {
     req.tenantId,
     start_date || `${year}-01-01`,
     end_date || as_of_date || today,
+    resolveCompanyScope(req),
   );
   await respond(res, data, format);
 });
 
 reportsRouter.get('/transaction-list', async (req, res) => {
   const { start_date, end_date, txn_type, account_id, format } = req.query as Record<string, string>;
-  const data = await reportService.buildTransactionList(req.tenantId, { startDate: start_date, endDate: end_date, txnType: txn_type, accountId: account_id });
+  const data = await reportService.buildTransactionList(req.tenantId, { startDate: start_date, endDate: end_date, txnType: txn_type, accountId: account_id }, resolveCompanyScope(req));
   await respond(res, data, format);
 });
 
 reportsRouter.get('/journal-entry-report', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
-  const data = await reportService.buildJournalEntryReport(req.tenantId, { startDate: start_date, endDate: end_date });
+  const data = await reportService.buildJournalEntryReport(req.tenantId, { startDate: start_date, endDate: end_date }, resolveCompanyScope(req));
   await respond(res, data, format);
 });
 
 reportsRouter.get('/account-report', async (req, res) => {
   const { account_id, start_date, end_date, format } = req.query as Record<string, string>;
-  const data = await reportService.buildAccountReport(req.tenantId, account_id || '', { startDate: start_date, endDate: end_date });
+  const data = await reportService.buildAccountReport(req.tenantId, account_id || '', { startDate: start_date, endDate: end_date }, resolveCompanyScope(req));
   await respond(res, data, format);
 });

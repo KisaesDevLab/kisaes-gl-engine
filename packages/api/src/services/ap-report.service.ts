@@ -3,11 +3,12 @@ import { db } from '../db/index.js';
 
 interface DateRange { startDate?: string; endDate?: string }
 
-/**
- * AP aging — vendors with outstanding bill balances bucketed by days overdue
- * relative to as_of_date.
- */
-export async function buildApAgingSummary(tenantId: string, asOfDate: string) {
+function companyFilter(companyId: string | null) {
+  if (!companyId) return sql`TRUE`;
+  return sql`t.company_id = ${companyId}`;
+}
+
+export async function buildApAgingSummary(tenantId: string, asOfDate: string, companyId: string | null = null) {
   const rows = await db.execute(sql`
     SELECT t.id, t.txn_number, t.vendor_invoice_number, t.txn_date, t.due_date,
       t.total, t.amount_paid, t.credits_applied, t.balance_due,
@@ -20,6 +21,7 @@ export async function buildApAgingSummary(tenantId: string, asOfDate: string) {
       AND t.bill_status IN ('unpaid', 'partial', 'overdue')
       AND COALESCE(t.balance_due, 0) > 0
       AND t.txn_date <= ${asOfDate}
+      AND ${companyFilter(companyId)}
     ORDER BY c.display_name, t.due_date
   `);
 
@@ -98,21 +100,22 @@ export async function buildApAgingSummary(tenantId: string, asOfDate: string) {
   };
 }
 
-export async function buildApAgingDetail(tenantId: string, asOfDate: string) {
-  return buildApAgingSummary(tenantId, asOfDate);
+export async function buildApAgingDetail(tenantId: string, asOfDate: string, companyId: string | null = null) {
+  return buildApAgingSummary(tenantId, asOfDate, companyId);
 }
 
 export async function buildUnpaidBills(tenantId: string, filters?: {
   contactId?: string;
   dueOnOrBefore?: string;
   overdueOnly?: boolean;
-}) {
+}, companyId: string | null = null) {
   const conditions = [
     sql`t.tenant_id = ${tenantId}`,
     sql`t.txn_type = 'bill'`,
     sql`t.status = 'posted'`,
     sql`t.bill_status IN ('unpaid', 'partial', 'overdue')`,
     sql`COALESCE(t.balance_due, 0) > 0`,
+    companyFilter(companyId),
   ];
   if (filters?.contactId) conditions.push(sql`t.contact_id = ${filters.contactId}`);
   if (filters?.dueOnOrBefore) conditions.push(sql`t.due_date <= ${filters.dueOnOrBefore}`);
@@ -134,11 +137,12 @@ export async function buildUnpaidBills(tenantId: string, filters?: {
   };
 }
 
-export async function buildBillPaymentHistory(tenantId: string, range: DateRange) {
+export async function buildBillPaymentHistory(tenantId: string, range: DateRange, companyId: string | null = null) {
   const conditions = [
     sql`t.tenant_id = ${tenantId}`,
     sql`t.txn_type = 'bill_payment'`,
     sql`t.status = 'posted'`,
+    companyFilter(companyId),
   ];
   if (range.startDate) conditions.push(sql`t.txn_date >= ${range.startDate}`);
   if (range.endDate) conditions.push(sql`t.txn_date <= ${range.endDate}`);
@@ -156,12 +160,10 @@ export async function buildBillPaymentHistory(tenantId: string, range: DateRange
   return { title: 'Bill Payment History', data: rows.rows as any[] };
 }
 
-export async function buildVendorStatement(tenantId: string, vendorId: string, range: DateRange) {
-  // Activity log: bills, vendor credits, bill payments, with running balance
+export async function buildVendorStatement(tenantId: string, vendorId: string, range: DateRange, companyId: string | null = null) {
   const startDate = range.startDate || `${new Date().getFullYear()}-01-01`;
   const endDate = range.endDate || new Date().toISOString().split('T')[0]!;
 
-  // Opening balance: all activity before startDate
   const openingResult = await db.execute(sql`
     SELECT COALESCE(SUM(
       CASE
@@ -177,6 +179,7 @@ export async function buildVendorStatement(tenantId: string, vendorId: string, r
       AND t.status = 'posted'
       AND t.txn_type IN ('bill', 'vendor_credit', 'bill_payment')
       AND t.txn_date < ${startDate}
+      AND ${companyFilter(companyId)}
   `);
   const openingBalance = parseFloat((openingResult.rows[0] as { opening: string })?.opening || '0');
 
@@ -189,6 +192,7 @@ export async function buildVendorStatement(tenantId: string, vendorId: string, r
       AND t.status = 'posted'
       AND t.txn_type IN ('bill', 'vendor_credit', 'bill_payment')
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
+      AND ${companyFilter(companyId)}
     ORDER BY t.txn_date, t.created_at
   `);
 
@@ -222,9 +226,7 @@ export async function buildVendorStatement(tenantId: string, vendorId: string, r
   };
 }
 
-export async function buildAp1099Prep(tenantId: string, taxYear: number) {
-  // Total payments per 1099-eligible vendor in the tax year.
-  // We sum bill_payment + expense (write check) totals where contact is flagged.
+export async function buildAp1099Prep(tenantId: string, taxYear: number, companyId: string | null = null) {
   const start = `${taxYear}-01-01`;
   const end = `${taxYear}-12-31`;
 
@@ -236,6 +238,7 @@ export async function buildAp1099Prep(tenantId: string, taxYear: number) {
       AND t.status = 'posted'
       AND t.txn_type IN ('expense', 'bill_payment')
       AND t.txn_date >= ${start} AND t.txn_date <= ${end}
+      AND ${companyFilter(companyId)}
     WHERE c.tenant_id = ${tenantId}
       AND c.is_1099_eligible = true
       AND c.contact_type IN ('vendor', 'both')

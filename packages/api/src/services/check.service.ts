@@ -7,7 +7,7 @@ import * as ledger from './ledger.service.js';
 import { auditLog } from '../middleware/audit.js';
 import crypto from 'crypto';
 
-export async function createCheck(tenantId: string, input: WriteCheckInput, userId?: string) {
+export async function createCheck(tenantId: string, input: WriteCheckInput, userId?: string, companyId?: string) {
   // Build journal lines: DR each expense line, CR bank
   const totalAmount = input.lines.reduce((s, l) => s + parseFloat(l.amount), 0);
   if (Math.abs(totalAmount - parseFloat(input.amount)) > 0.01) {
@@ -68,7 +68,7 @@ export async function createCheck(tenantId: string, input: WriteCheckInput, user
     memo: input.memo,
     total: input.amount,
     lines: journalLines,
-  }, userId);
+  }, userId, companyId);
 
   // Update with check-specific fields. Tenant_id in WHERE for defense in
   // depth (CLAUDE.md rule #17), even though `txn` was returned from
@@ -94,12 +94,13 @@ export async function createCheck(tenantId: string, input: WriteCheckInput, user
 
 export async function listChecks(tenantId: string, filters?: {
   bankAccountId?: string; printStatus?: string; startDate?: string; endDate?: string; limit?: number; offset?: number;
-}) {
+}, companyId?: string) {
   const conds = [
     sql`t.tenant_id = ${tenantId}`,
     sql`t.txn_type = 'expense'`,
     sql`t.print_status IS NOT NULL`,
   ];
+  if (companyId) conds.push(sql`t.company_id = ${companyId}`);
   if (filters?.bankAccountId) conds.push(sql`EXISTS (SELECT 1 FROM journal_lines jl2 WHERE jl2.transaction_id = t.id AND jl2.account_id = ${filters.bankAccountId} AND jl2.credit > 0)`);
   if (filters?.printStatus) conds.push(sql`t.print_status = ${filters.printStatus}`);
   if (filters?.startDate) conds.push(sql`t.txn_date >= ${filters.startDate}`);
@@ -130,8 +131,9 @@ export async function listChecks(tenantId: string, filters?: {
   }))};
 }
 
-export async function getPrintQueue(tenantId: string, bankAccountId?: string) {
+export async function getPrintQueue(tenantId: string, bankAccountId?: string, companyId?: string) {
   const pqConds = [sql`t.tenant_id = ${tenantId}`, sql`t.print_status = 'queue'`];
+  if (companyId) pqConds.push(sql`t.company_id = ${companyId}`);
   if (bankAccountId) {
     pqConds.push(sql`t.id IN (SELECT transaction_id FROM journal_lines WHERE account_id = ${bankAccountId} AND credit > 0)`);
   }

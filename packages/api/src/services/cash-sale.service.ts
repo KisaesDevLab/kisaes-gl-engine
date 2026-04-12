@@ -68,12 +68,12 @@ async function buildCashSalePayload(tenantId: string, input: CreateCashSaleInput
   };
 }
 
-export async function createCashSale(tenantId: string, input: CreateCashSaleInput, userId?: string) {
+export async function createCashSale(tenantId: string, input: CreateCashSaleInput, userId?: string, companyId?: string) {
   const payload = await buildCashSalePayload(tenantId, input);
-  return ledger.postTransaction(tenantId, payload, userId);
+  return ledger.postTransaction(tenantId, payload, userId, companyId);
 }
 
-export async function updateCashSale(tenantId: string, txnId: string, input: CreateCashSaleInput, userId?: string) {
+export async function updateCashSale(tenantId: string, txnId: string, input: CreateCashSaleInput, userId?: string, companyId?: string) {
   const payload = await buildCashSalePayload(tenantId, input);
-  return ledger.updateTransaction(tenantId, txnId, payload, userId);
+  return ledger.updateTransaction(tenantId, txnId, payload, userId, companyId);
 }

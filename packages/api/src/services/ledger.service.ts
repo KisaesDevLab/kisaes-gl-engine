@@ -46,7 +46,9 @@ interface PostTransactionInput {
   lines: JournalLineInput[];
 }
 
-export async function postTransaction(tenantId: string, input: PostTransactionInput, userId?: string) {
+export { PostTransactionInput };
+
+export async function postTransaction(tenantId: string, input: PostTransactionInput, userId?: string, companyId?: string) {
   // Validate debits = credits BEFORE opening a database transaction —
   // there's no point holding a tx open while we add up two numbers in
   // memory, and a fast-fail on bad input avoids unnecessary lock churn.
@@ -78,6 +80,7 @@ export async function postTransaction(tenantId: string, input: PostTransactionIn
     // Insert transaction header
     const [txn] = await tx.insert(transactions).values({
       tenantId,
+      companyId: companyId || null,
       txnType: input.txnType,
       txnNumber: input.txnNumber || null,
       txnDate: input.txnDate,
@@ -108,6 +111,7 @@ export async function postTransaction(tenantId: string, input: PostTransactionIn
     // Insert journal lines
     const lineValues = input.lines.map((line, i) => ({
       tenantId,
+      companyId: companyId || null,
       transactionId: txn.id,
       accountId: line.accountId,
       debit: line.debit || '0',
@@ -186,7 +190,7 @@ export async function voidTransaction(tenantId: string, txnId: string, reason: s
   });
 }
 
-export async function updateTransaction(tenantId: string, txnId: string, input: PostTransactionInput, userId?: string) {
+export async function updateTransaction(tenantId: string, txnId: string, input: PostTransactionInput, userId?: string, companyId?: string) {
   // Validate the new lines balance up front (in-memory, no DB access).
   let totalDebits = new Decimal('0');
   let totalCredits = new Decimal('0');
@@ -249,6 +253,7 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
     // Insert new lines
     const lineValues = input.lines.map((line, i) => ({
       tenantId,
+      companyId: companyId || null,
       transactionId: txnId,
       accountId: line.accountId,
       debit: line.debit || '0',
@@ -338,8 +343,9 @@ export async function getTransaction(tenantId: string, txnId: string) {
 export async function listTransactions(tenantId: string, filters: {
   txnType?: string; status?: string; contactId?: string; accountId?: string; startDate?: string; endDate?: string;
   search?: string; limit?: number; offset?: number;
-}) {
+}, companyId?: string) {
   const conditions = [eq(transactions.tenantId, tenantId)];
+  if (companyId) conditions.push(eq(transactions.companyId, companyId));
 
   if (filters.txnType) conditions.push(eq(transactions.txnType, filters.txnType));
   if (filters.status) conditions.push(eq(transactions.status, filters.status));

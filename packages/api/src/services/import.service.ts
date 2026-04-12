@@ -6,7 +6,7 @@ import * as accountsService from './accounts.service.js';
 import * as contactsService from './contacts.service.js';
 import * as ledger from './ledger.service.js';
 
-export async function importOpeningBalances(tenantId: string, balances: Array<{ accountName?: string; accountNumber?: string; accountId?: string; balance: string }>) {
+export async function importOpeningBalances(tenantId: string, balances: Array<{ accountName?: string; accountNumber?: string; accountId?: string; balance: string }>, companyId?: string) {
   // Resolve account names/numbers to IDs
   const allAccounts = await db.select().from(accounts).where(eq(accounts.tenantId, tenantId));
 
@@ -61,7 +61,7 @@ export async function importOpeningBalances(tenantId: string, balances: Array<{ 
     txnDate: new Date().toISOString().split('T')[0]!,
     memo: 'Opening balances import',
     lines: resolvedLines,
-  });
+  }, undefined, companyId);
 
   return { transactionId: txn.id, linesCreated: resolvedLines.length };
 }

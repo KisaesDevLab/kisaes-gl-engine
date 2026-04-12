@@ -78,7 +78,7 @@ interface VendorPaymentGroup {
  * cash amount (bills - credits), since the credit's original journal entry
  * has already moved AP for the credit portion.
  */
-export async function payBills(tenantId: string, input: PayBillsInput, userId?: string) {
+export async function payBills(tenantId: string, input: PayBillsInput, userId?: string, companyId?: string) {
   if (input.bills.length === 0) throw AppError.badRequest('Must select at least one bill to pay');
 
   const apAccountId = await getApAccountId(tenantId);
@@ -275,6 +275,7 @@ export async function payBills(tenantId: string, input: PayBillsInput, userId?: 
       // bill-payment specific fields and stay in this tx).
       const [payment] = await tx.insert(transactions).values({
         tenantId,
+        companyId: companyId || null,
         txnType: 'bill_payment',
         txnDate: input.txnDate,
         contactId: grp.vendorId,
@@ -289,6 +290,7 @@ export async function payBills(tenantId: string, input: PayBillsInput, userId?: 
       // Insert journal lines
       const lineValues = lines.map((l, i) => ({
         tenantId,
+        companyId: companyId || null,
         transactionId: payment.id,
         accountId: l.accountId,
         debit: l.debit,

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { createBillSchema, billFiltersSchema, payableBillsQuerySchema, voidTransactionSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as billService from '../services/bill.service.js';
 import * as billOcrService from '../services/ai-bill-ocr.service.js';
@@ -8,10 +9,11 @@ import * as attachmentService from '../services/attachment.service.js';
 
 export const billsRouter = Router();
 billsRouter.use(authenticate);
+billsRouter.use(companyContext);
 
 billsRouter.get('/', async (req, res) => {
   const filters = billFiltersSchema.parse(req.query);
-  const result = await billService.listBills(req.tenantId, filters);
+  const result = await billService.listBills(req.tenantId, filters, req.companyId);
   res.json(result);
 });
 
@@ -22,7 +24,7 @@ billsRouter.get('/payable', async (req, res) => {
 });
 
 billsRouter.post('/', validate(createBillSchema), async (req, res) => {
-  const bill = await billService.createBill(req.tenantId, req.body, req.userId);
+  const bill = await billService.createBill(req.tenantId, req.body, req.userId, req.companyId);
   res.status(201).json({ bill });
 });
 
@@ -32,7 +34,7 @@ billsRouter.get('/:id', async (req, res) => {
 });
 
 billsRouter.put('/:id', validate(createBillSchema), async (req, res) => {
-  const bill = await billService.updateBill(req.tenantId, req.params['id']!, req.body, req.userId);
+  const bill = await billService.updateBill(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId);
   res.json({ bill });
 });
 

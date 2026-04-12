@@ -136,14 +136,12 @@ export async function postNext(tenantId: string, scheduleId: string) {
     txn = await billService.createBill(tenantId, {
       contactId: template.contactId || '',
       txnDate: sched.nextOccurrence,
-      // Don't pass dueDate — let createBill recalculate it from the template's
-      // payment terms relative to the new occurrence date.
       paymentTerms: template.paymentTerms || undefined,
       termsDays: template.termsDays ?? undefined,
       vendorInvoiceNumber: template.vendorInvoiceNumber || undefined,
       memo: template.memo || undefined,
       lines: expenseLines,
-    });
+    }, undefined, template.companyId || undefined);
   } else {
     // Generic clone path for other transaction types.
     const lines = template.lines.map((l) => ({
@@ -160,7 +158,7 @@ export async function postNext(tenantId: string, scheduleId: string) {
       memo: template.memo || undefined,
       total: template.total || undefined,
       lines,
-    });
+    }, undefined, template.companyId || undefined);
   }
 
   // Schedule was already claimed + advanced at the top of this function.

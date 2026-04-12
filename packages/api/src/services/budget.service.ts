@@ -168,10 +168,10 @@ export async function adjustByPercent(tenantId: string, budgetId: string, percen
   await updateLines(tenantId, budgetId, adjusted);
 }
 
-export async function buildBudgetVsActual(tenantId: string, budgetId: string, startDate: string, endDate: string) {
+export async function buildBudgetVsActual(tenantId: string, budgetId: string, startDate: string, endDate: string, companyId: string | null = null) {
   const budget = await getById(tenantId, budgetId);
   const lines = await getLines(tenantId, budgetId);
-  const pl = await reportService.buildProfitAndLoss(tenantId, startDate, endDate, 'accrual');
+  const pl = await reportService.buildProfitAndLoss(tenantId, startDate, endDate, 'accrual', companyId);
 
   function buildRow(line: any) {
     const monthTotal = [1,2,3,4,5,6,7,8,9,10,11,12].reduce((s, m) => s + parseFloat(line[`month_${m}`] || '0'), 0);

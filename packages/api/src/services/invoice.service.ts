@@ -89,7 +89,7 @@ function buildTaxLines(inputLines: CreateInvoiceInput['lines'], defaultTaxRate: 
   return { revenueLines, subtotal, totalTax, total: subtotal + totalTax };
 }
 
-export async function createInvoice(tenantId: string, input: CreateInvoiceInput, userId?: string) {
+export async function createInvoice(tenantId: string, input: CreateInvoiceInput, userId?: string, companyId?: string) {
   const arAccountId = await getSystemAccount(tenantId, 'accounts_receivable');
   const defaultTaxRate = await getDefaultTaxRate(tenantId);
   const { revenueLines, subtotal, totalTax, total } = buildTaxLines(input.lines, defaultTaxRate);
@@ -125,10 +125,10 @@ export async function createInvoice(tenantId: string, input: CreateInvoiceInput,
     status: 'posted',
     invoiceStatus: 'draft',
     lines: journalLines,
-  }, userId);
+  }, userId, companyId);
 }
 
-export async function updateInvoice(tenantId: string, invoiceId: string, input: CreateInvoiceInput, userId?: string) {
+export async function updateInvoice(tenantId: string, invoiceId: string, input: CreateInvoiceInput, userId?: string, companyId?: string) {
   const existing = await ledger.getTransaction(tenantId, invoiceId);
   if (existing.txnType !== 'invoice') throw AppError.badRequest('Not an invoice');
   if (existing.status === 'void') throw AppError.badRequest('Cannot edit a void invoice');
@@ -164,7 +164,7 @@ export async function updateInvoice(tenantId: string, invoiceId: string, input: 
     total: total.toFixed(4),
     balanceDue: balanceDue.toFixed(4),
     lines: journalLines,
-  }, userId);
+  }, userId, companyId);
 }
 
 export async function markAsSent(tenantId: string, invoiceId: string) {
@@ -189,7 +189,7 @@ export async function sendInvoice(tenantId: string, invoiceId: string, userId?: 
   }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, invoiceId)));
 }
 
-export async function recordPayment(tenantId: string, invoiceId: string, input: RecordPaymentInput, userId?: string) {
+export async function recordPayment(tenantId: string, invoiceId: string, input: RecordPaymentInput, userId?: string, companyId?: string) {
   const invoice = await ledger.getTransaction(tenantId, invoiceId);
   if (invoice.txnType !== 'invoice') throw AppError.badRequest('Not an invoice');
   if (invoice.status === 'void') throw AppError.badRequest('Cannot pay a void invoice');
@@ -213,7 +213,7 @@ export async function recordPayment(tenantId: string, invoiceId: string, input: 
       { accountId: input.depositToAccountId, debit: input.amount, credit: '0' },
       { accountId: arAccountId, debit: '0', credit: input.amount },
     ],
-  }, userId);
+  }, userId, companyId);
 
   // Update invoice
   const invoiceStatus = newBalance <= 0.01 ? 'paid' : 'partial';
@@ -234,7 +234,7 @@ export async function voidInvoice(tenantId: string, invoiceId: string, reason: s
   return ledger.voidTransaction(tenantId, invoiceId, reason, userId);
 }
 
-export async function duplicateInvoice(tenantId: string, invoiceId: string, userId?: string) {
+export async function duplicateInvoice(tenantId: string, invoiceId: string, userId?: string, companyId?: string) {
   const original = await ledger.getTransaction(tenantId, invoiceId);
   if (original.txnType !== 'invoice') throw AppError.badRequest('Not an invoice');
 
@@ -263,5 +263,5 @@ export async function duplicateInvoice(tenantId: string, invoiceId: string, user
     amountPaid: '0',
     invoiceStatus: 'draft',
     lines,
-  }, userId);
+  }, userId, companyId);
 }

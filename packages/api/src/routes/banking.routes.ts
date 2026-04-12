@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { bankFeedFiltersSchema, categorizeSchema, matchSchema, startReconciliationSchema, updateReconciliationLinesSchema, bankImportSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as bankConnectionService from '../services/bank-connection.service.js';
 import * as bankFeedService from '../services/bank-feed.service.js';
@@ -11,6 +12,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 
 export const bankingRouter = Router();
 bankingRouter.use(authenticate);
+bankingRouter.use(companyContext);
 
 // ─── Bank Connections ────────────────────────────────────────────
 
@@ -66,7 +68,7 @@ bankingRouter.get('/feed/:id/payroll-overlap', async (req, res) => {
 });
 
 bankingRouter.put('/feed/:id/categorize', validate(categorizeSchema), async (req, res) => {
-  const txn = await bankFeedService.categorize(req.tenantId, req.params['id']!, req.body, req.userId);
+  const txn = await bankFeedService.categorize(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId);
   res.json({ transaction: txn });
 });
 
@@ -96,7 +98,7 @@ bankingRouter.post('/feed/bulk-categorize', async (req, res) => {
     res.status(400).json({ error: { message: 'feedItemIds and accountId are required' } });
     return;
   }
-  const result = await bankFeedService.bulkCategorize(req.tenantId, feedItemIds, accountId, contactId, memo, req.userId);
+  const result = await bankFeedService.bulkCategorize(req.tenantId, feedItemIds, accountId, contactId, memo, req.userId, req.companyId);
   res.json(result);
 });
 

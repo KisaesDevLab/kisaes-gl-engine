@@ -336,6 +336,7 @@ export async function postJE(
   userId: string,
   forcePost = false,
   aggregationMode: 'summary' | 'per_employee' = 'summary',
+  companyId?: string,
 ) {
   const session = await importService.getSession(tenantId, sessionId);
   if (session.status === 'posted') throw AppError.badRequest('Session already posted');
@@ -380,7 +381,7 @@ export async function postJE(
       source: 'payroll_import',
       sourceId: sessionId,
       lines,
-    }, userId);
+    }, userId, companyId);
 
     postedIds.push(txn.id);
   }

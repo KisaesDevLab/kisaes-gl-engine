@@ -81,7 +81,7 @@ async function assertAccountsInTenant(tenantId: string, accountIds: string[]): P
   }
 }
 
-export async function createBill(tenantId: string, input: CreateBillInput, userId?: string) {
+export async function createBill(tenantId: string, input: CreateBillInput, userId?: string, companyId?: string) {
   if (input.lines.length === 0) throw AppError.badRequest('Bill must have at least one line');
 
   await assertAccountsInTenant(tenantId, input.lines.map((l) => l.accountId));
@@ -125,7 +125,7 @@ export async function createBill(tenantId: string, input: CreateBillInput, userI
     creditsApplied: '0',
     billStatus: 'unpaid',
     lines: journalLines,
-  }, userId);
+  }, userId, companyId);
 }
 
 export async function getBill(tenantId: string, billId: string) {
@@ -134,7 +134,7 @@ export async function getBill(tenantId: string, billId: string) {
   return bill;
 }
 
-export async function updateBill(tenantId: string, billId: string, input: CreateBillInput, userId?: string) {
+export async function updateBill(tenantId: string, billId: string, input: CreateBillInput, userId?: string, companyId?: string) {
   const existing = await ledger.getTransaction(tenantId, billId);
   if (existing.txnType !== 'bill') throw AppError.badRequest('Not a bill');
   if (existing.status === 'void') throw AppError.badRequest('Cannot edit a void bill');
@@ -239,7 +239,7 @@ export async function updateBill(tenantId: string, billId: string, input: Create
     // bills, balance_due equals the full total.
     balanceDue: isLocked ? (existing.balanceDue || '0') : total.toFixed(4),
     lines: journalLines,
-  }, userId);
+  }, userId, companyId);
 
   if (isLocked) {
     // Preserve payment-derived state, but update the bill-specific
@@ -282,11 +282,12 @@ export async function voidBill(tenantId: string, billId: string, reason: string,
   return ledger.voidTransaction(tenantId, billId, reason, userId);
 }
 
-export async function listBills(tenantId: string, filters: BillFilters) {
+export async function listBills(tenantId: string, filters: BillFilters, companyId?: string) {
   const conditions = [
     eq(transactions.tenantId, tenantId),
     eq(transactions.txnType, 'bill'),
   ];
+  if (companyId) conditions.push(eq(transactions.companyId, companyId));
 
   if (filters.contactId) conditions.push(eq(transactions.contactId, filters.contactId));
   if (filters.billStatus) conditions.push(eq(transactions.billStatus, filters.billStatus));

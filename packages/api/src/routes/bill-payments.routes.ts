@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import { payBillsSchema, voidTransactionSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as billPaymentService from '../services/bill-payment.service.js';
 
 export const billPaymentsRouter = Router();
 billPaymentsRouter.use(authenticate);
+billPaymentsRouter.use(companyContext);
 
 billPaymentsRouter.get('/', async (req, res) => {
   const data = await billPaymentService.listBillPayments(req.tenantId, {
@@ -19,7 +21,7 @@ billPaymentsRouter.get('/', async (req, res) => {
 });
 
 billPaymentsRouter.post('/', validate(payBillsSchema), async (req, res) => {
-  const result = await billPaymentService.payBills(req.tenantId, req.body, req.userId);
+  const result = await billPaymentService.payBills(req.tenantId, req.body, req.userId, req.companyId);
   res.status(201).json(result);
 });
 

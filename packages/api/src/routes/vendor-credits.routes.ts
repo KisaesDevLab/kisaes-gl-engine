@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import { createVendorCreditSchema, voidTransactionSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as vendorCreditService from '../services/vendor-credit.service.js';
 
 export const vendorCreditsRouter = Router();
 vendorCreditsRouter.use(authenticate);
+vendorCreditsRouter.use(companyContext);
 
 vendorCreditsRouter.get('/', async (req, res) => {
   const result = await vendorCreditService.listVendorCredits(req.tenantId, {
@@ -15,7 +17,7 @@ vendorCreditsRouter.get('/', async (req, res) => {
     search: req.query['search'] as string | undefined,
     limit: req.query['limit'] ? Number(req.query['limit']) : undefined,
     offset: req.query['offset'] ? Number(req.query['offset']) : undefined,
-  });
+  }, req.companyId);
   res.json(result);
 });
 
@@ -25,7 +27,7 @@ vendorCreditsRouter.get('/available/:vendorId', async (req, res) => {
 });
 
 vendorCreditsRouter.post('/', validate(createVendorCreditSchema), async (req, res) => {
-  const credit = await vendorCreditService.createVendorCredit(req.tenantId, req.body, req.userId);
+  const credit = await vendorCreditService.createVendorCredit(req.tenantId, req.body, req.userId, req.companyId);
   res.status(201).json({ credit });
 });
 

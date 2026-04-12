@@ -5,7 +5,7 @@ import { accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
 
-export async function createCustomerRefund(tenantId: string, input: CreateCustomerRefundInput, userId?: string) {
+export async function createCustomerRefund(tenantId: string, input: CreateCustomerRefundInput, userId?: string, companyId?: string) {
   const arAccount = await db.query.accounts.findFirst({
     where: and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'accounts_receivable')),
   });
@@ -23,5 +23,5 @@ export async function createCustomerRefund(tenantId: string, input: CreateCustom
       { accountId: arAccount.id, debit: input.amount, credit: '0' },
       { accountId: input.refundFromAccountId, debit: '0', credit: input.amount },
     ],
-  }, userId);
+  }, userId, companyId);
 }

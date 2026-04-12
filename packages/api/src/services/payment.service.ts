@@ -6,7 +6,7 @@ import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
 import { auditLog } from '../middleware/audit.js';
 
-export async function receivePayment(tenantId: string, input: ReceivePaymentInput, userId?: string) {
+export async function receivePayment(tenantId: string, input: ReceivePaymentInput, userId?: string, companyId?: string) {
   // Get AR account (read outside tx — it's a stable lookup)
   const arAccount = await db.query.accounts.findFirst({
     where: and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'accounts_receivable')),
@@ -29,7 +29,7 @@ export async function receivePayment(tenantId: string, input: ReceivePaymentInpu
       { accountId: input.depositTo, debit: input.amount, credit: '0' },
       { accountId: arAccount.id, debit: '0', credit: input.amount },
     ],
-  }, userId);
+  }, userId, companyId);
 
   // Apply the payment to invoices atomically. For each application:
   //   1. Lock the invoice row (SELECT … FOR UPDATE) so no other

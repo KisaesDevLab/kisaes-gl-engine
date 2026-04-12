@@ -26,10 +26,10 @@ function buildDepositPayload(input: CreateDepositInput) {
   };
 }
 
-export async function createDeposit(tenantId: string, input: CreateDepositInput, userId?: string) {
-  return ledger.postTransaction(tenantId, buildDepositPayload(input), userId);
+export async function createDeposit(tenantId: string, input: CreateDepositInput, userId?: string, companyId?: string) {
+  return ledger.postTransaction(tenantId, buildDepositPayload(input), userId, companyId);
 }
 
-export async function updateDeposit(tenantId: string, txnId: string, input: CreateDepositInput, userId?: string) {
-  return ledger.updateTransaction(tenantId, txnId, buildDepositPayload(input), userId);
+export async function updateDeposit(tenantId: string, txnId: string, input: CreateDepositInput, userId?: string, companyId?: string) {
+  return ledger.updateTransaction(tenantId, txnId, buildDepositPayload(input), userId, companyId);
 }

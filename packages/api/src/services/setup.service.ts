@@ -237,14 +237,29 @@ export function generateJwtSecret(): string {
 }
 
 export function generateSecrets() {
+  // Reuse existing process.env values when they are set so the wizard
+  // writes the same secrets the container is already running with. This
+  // matters in dev where docker-compose reads from a host .env file and
+  // the wizard would otherwise produce a NEW ENCRYPTION_KEY that doesn't
+  // match the one used by the running process — the next container
+  // restart would then hit SENTINEL_DECRYPT_FAILED.
+  //
+  // /generate-secrets is only reachable while the setup guard is open
+  // (setupComplete=false), so this is not a post-setup info-leak surface.
+  const envJwt = process.env['JWT_SECRET'];
+  const envBackup = process.env['BACKUP_ENCRYPTION_KEY'];
+  const envEncryption = process.env['ENCRYPTION_KEY'];
+  // Use >= 32 (not env.ts's >= 20) so reused values pass the stricter
+  // /initialize validation. Values shorter than that — the default dev
+  // placeholder "change-me-in-production" — get replaced with a fresh one.
   return {
     dbPassword: generateSecurePassword(20),
-    jwtSecret: generateJwtSecret(),
-    backupKey: crypto.randomBytes(32).toString('hex'),
+    jwtSecret: envJwt && envJwt.length >= 32 ? envJwt : generateJwtSecret(),
+    backupKey: envBackup && envBackup.length >= 32 ? envBackup : crypto.randomBytes(32).toString('hex'),
     // Installation ENCRYPTION_KEY — encrypts the sentinel file. 64-char hex
-    // (32 bytes). Generated alongside the backup key so a single
-    // /generate-secrets call produces every secret the env file needs.
-    encryptionKey: crypto.randomBytes(32).toString('hex'),
+    // (32 bytes). Reused from process.env when present so the sentinel
+    // stays decryptable across container restarts.
+    encryptionKey: envEncryption && envEncryption.length >= 32 ? envEncryption : crypto.randomBytes(32).toString('hex'),
   };
 }
 

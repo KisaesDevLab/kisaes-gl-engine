@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import multer from 'multer';
 import { authenticate } from '../middleware/auth.js';
+import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import {
   payrollUploadSchema,
@@ -51,6 +52,7 @@ const upload = multer({
 
 export const payrollImportRouter = Router();
 payrollImportRouter.use(authenticate);
+payrollImportRouter.use(companyContext);
 
 // ── Upload ──
 payrollImportRouter.post('/upload',
@@ -158,9 +160,9 @@ payrollImportRouter.post('/sessions/:id/post', validate(postPayrollSchema), asyn
   const { forcePost, aggregationMode } = req.body;
   let result;
   if (session.importMode === 'prebuilt_je') {
-    result = await modeBService.postModeBJE(req.tenantId, sessionId, req.userId, forcePost);
+    result = await modeBService.postModeBJE(req.tenantId, sessionId, req.userId, forcePost, req.companyId);
   } else {
-    result = await jeService.postJE(req.tenantId, sessionId, req.userId, forcePost, aggregationMode);
+    result = await jeService.postJE(req.tenantId, sessionId, req.userId, forcePost, aggregationMode, req.companyId);
   }
   res.json(result);
 });
@@ -182,7 +184,7 @@ payrollImportRouter.get('/sessions/:id/checks', async (req, res) => {
 payrollImportRouter.post('/sessions/:id/checks/post', validate(postChecksSchema), async (req, res) => {
   const sessionId = uuidParam.parse(req.params['id']);
   const result = await modeBService.postChecks(
-    req.tenantId, sessionId, req.body.bankAccountId, req.body.clearingAccountId, req.body.checkIds, req.userId,
+    req.tenantId, sessionId, req.body.bankAccountId, req.body.clearingAccountId, req.body.checkIds, req.userId, req.companyId,
   );
   res.json(result);
 });

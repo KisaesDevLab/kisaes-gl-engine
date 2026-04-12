@@ -231,7 +231,7 @@ export async function generateModeBJE(tenantId: string, sessionId: string): Prom
 
 // ── Post Mode B JEs ──
 
-export async function postModeBJE(tenantId: string, sessionId: string, userId: string, forcePost = false) {
+export async function postModeBJE(tenantId: string, sessionId: string, userId: string, forcePost = false, companyId?: string) {
   const session = await importService.getSession(tenantId, sessionId);
   if (session.status === 'posted') throw AppError.badRequest('Session already posted');
 
@@ -277,7 +277,7 @@ export async function postModeBJE(tenantId: string, sessionId: string, userId: s
       source: 'payroll_import',
       sourceId: sessionId,
       lines,
-    }, userId);
+    }, userId, companyId);
 
     postedIds.push(txn.id);
   }
@@ -307,6 +307,7 @@ export async function postChecks(
   clearingAccountId: string,
   checkIds: string[],
   userId: string,
+  companyId?: string,
 ) {
   await importService.getSession(tenantId, sessionId);
 
@@ -353,7 +354,7 @@ export async function postChecks(
           description: check.payeeName,
         },
       ],
-    }, userId);
+    }, userId, companyId);
 
     await db.update(payrollCheckRegisterRows)
       .set({ posted: true, transactionId: txn.id })

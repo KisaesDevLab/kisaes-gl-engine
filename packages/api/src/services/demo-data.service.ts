@@ -169,7 +169,8 @@ export async function createDemoTenant(
 
     const apVendors = await ensureApVendors(existing.id, log);
 
-    await seedAccountsPayable(existing.id, apVendors, expenseAccts, checking, counts, log);
+    const existingCompany = await db.query.companies.findFirst({ where: eq(companies.tenantId, existing.id) });
+    await seedAccountsPayable(existing.id, apVendors, expenseAccts, checking, counts, log, existingCompany?.id);
 
     counts.total = counts.bills + counts.vendorCredits + counts.billPayments;
     const val = await ledger.validateBalance(existing.id);
@@ -198,7 +199,7 @@ export async function createDemoTenant(
     isActive: true,
   });
 
-  await db.insert(companies).values({
+  const [demoCompany] = await db.insert(companies).values({
     tenantId: tenant.id,
     businessName: tenantName,
     entityType: 'single_member_llc',
@@ -212,7 +213,8 @@ export async function createDemoTenant(
     setupComplete: true,
     invoicePrefix: 'INV-',
     invoiceNextNumber: 1001,
-  });
+  }).returning();
+  const demoCompanyId = demoCompany?.id;
 
   // ── 3. Seed COA ───────────────────────────────────────────────
   await accountsService.seedFromTemplate(tenant.id, 'default');
@@ -410,7 +412,7 @@ export async function createDemoTenant(
               isTaxable: false,
             },
           ],
-        } as unknown as Parameters<typeof invoiceService.createInvoice>[1]);
+        } as unknown as Parameters<typeof invoiceService.createInvoice>[1], undefined, demoCompanyId);
         createdInvoices.push({
           id: inv.id,
           total: parseFloat(plan.amount),
@@ -431,7 +433,7 @@ export async function createDemoTenant(
             { accountId: paymentsClearingAcct.id, debit: plan.amount, credit: '0' },
             { accountId: revenueAcct.id, debit: '0', credit: plan.amount, description: plan.description },
           ],
-        });
+        }, undefined, demoCompanyId);
         counts.cashSales++;
       } else if (plan.kind === 'expense') {
         const vendor = vendors[plan.vendorIdx]!;
@@ -446,7 +448,7 @@ export async function createDemoTenant(
             { accountId: expAcct.id, debit: plan.amount, credit: '0', description: plan.description },
             { accountId: checkingAcct.id, debit: '0', credit: plan.amount },
           ],
-        });
+        }, undefined, demoCompanyId);
         counts.expenses++;
       } else if (plan.kind === 'rent') {
         const vendor = vendors[4]!;
@@ -461,7 +463,7 @@ export async function createDemoTenant(
             { accountId: rentAcct.id, debit: plan.amount, credit: '0', description: 'Monthly office rent' },
             { accountId: checkingAcct.id, debit: '0', credit: plan.amount },
           ],
-        });
+        }, undefined, demoCompanyId);
         counts.expenses++;
       } else if (plan.kind === 'payroll') {
         const payrollAcct = expenseAccts.find((a) => /salar|payroll|wage/i.test(a.name)) || expenseAccts[0]!;
@@ -474,7 +476,7 @@ export async function createDemoTenant(
             { accountId: payrollAcct.id, debit: plan.amount, credit: '0', description: 'Payroll' },
             { accountId: checkingAcct.id, debit: '0', credit: plan.amount },
           ],
-        });
+        }, undefined, demoCompanyId);
         counts.journalEntries++;
       }
     } catch (err) {
@@ -507,6 +509,8 @@ export async function createDemoTenant(
           memo: 'Customer payment',
           applications: [{ invoiceId: inv.id, amount }],
         } as unknown as Parameters<typeof paymentService.receivePayment>[1],
+        undefined,
+        demoCompanyId,
       );
       counts.customerPayments++;
     } catch (err) {
@@ -541,7 +545,7 @@ export async function createDemoTenant(
           { accountId: checkingAcct.id, debit: depositAmount, credit: '0' },
           { accountId: paymentsClearingAcct.id, debit: '0', credit: depositAmount },
         ],
-      });
+      }, undefined, demoCompanyId);
       counts.deposits++;
     } catch (err) {
       log(`  ✗ Failed deposit for ${year}-${month}: ${(err as Error).message}`);
@@ -566,7 +570,7 @@ export async function createDemoTenant(
             { accountId: savingsAcct.id, debit: amt, credit: '0' },
             { accountId: checkingAcct.id, debit: '0', credit: amt },
           ],
-        });
+        }, undefined, demoCompanyId);
         counts.transfers++;
       } catch (err) {
         log(`  ✗ Transfer failed: ${(err as Error).message}`);
@@ -585,7 +589,7 @@ export async function createDemoTenant(
   //   - A few bills are left open: some current, some overdue
   //   - Two vendor credits — one applied during a payment, one still
   //     available — so the AP aging report shows credit balances too
-  await seedAccountsPayable(tenant.id, vendors, expenseAccts, checkingAcct, counts, log);
+  await seedAccountsPayable(tenant.id, vendors, expenseAccts, checkingAcct, counts, log, demoCompanyId);
 
   counts.total =
     counts.invoices +
@@ -679,6 +683,7 @@ async function seedAccountsPayable(
   checkingAcct: { id: string },
   counts: { bills: number; vendorCredits: number; billPayments: number },
   log: (line: string) => void,
+  companyId?: string,
 ) {
   // Vendor lookup — relies on the order in vendorData. The first 5 vendors
   // (utility, office supply, telco, insurance, landlord) are still owned by
@@ -881,7 +886,7 @@ async function seedAccountsPayable(
         lines: [
           { accountId: spec.accountId, amount: spec.amount, description: spec.description },
         ],
-      });
+      }, undefined, companyId);
       created.push({ id: bill.id, spec, totalNum: parseFloat(spec.amount) });
       counts.bills++;
     } catch (err) {
@@ -905,7 +910,7 @@ async function seedAccountsPayable(
       txnDate: '2025-08-15',
       memo: 'Returned defective workstation',
       lines: [{ accountId: itAcct.id, amount: '375.00', description: 'Returned defective workstation' }],
-    });
+    }, undefined, companyId);
     techCreditId = techCredit.id;
     counts.vendorCredits++;
   } catch (err) {
@@ -918,7 +923,7 @@ async function seedAccountsPayable(
       txnDate: '2026-03-15',
       memo: 'Q1 spend over-billing - partial refund',
       lines: [{ accountId: marketingAcct.id, amount: '250.00', description: 'Pricing adjustment' }],
-    });
+    }, undefined, companyId);
     counts.vendorCredits++;
   } catch (err) {
     log(`  ✗ Failed to create BrightAds credit: ${(err as Error).message}`);
