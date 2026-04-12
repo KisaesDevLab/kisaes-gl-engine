@@ -50,6 +50,7 @@ ADDENDUM_*.md
 QA_*.md
 ELv2_BUILD_*.md
 QUESTIONS.md
+Build Plans/
 
 # Data files
 *.xlsx
