@@ -1,0 +1,8 @@
+AccountID,Account Description,Debit,Credit,Check Date,Pay Group
+GL-6000,Regular Wages,4000.00,0.00,01/15/2026,Biweekly
+GL-6005,Paycheck Tips,500.00,0.00,01/15/2026,Biweekly
+GL-6200,Employer FICA,344.25,0.00,01/15/2026,Biweekly
+GL-2120,Federal Tax,0.00,675.00,01/15/2026,Biweekly
+GL-2100,Employee FICA,0.00,344.25,01/15/2026,Biweekly
+GL-2300,Tips Owed,0.00,500.00,01/15/2026,Biweekly
+GL-1010,Net Pay,0.00,3325.00,01/15/2026,Biweekly

@@ -4,6 +4,82 @@ export type PayrollImportMode = 'employee_level' | 'prebuilt_je';
 export type PayrollSessionStatus = 'uploaded' | 'mapped' | 'validated' | 'posted' | 'failed' | 'cancelled';
 export type PayrollCheckType = 'employee' | 'contractor' | 'tax_payment';
 
+export type PayrollProvider =
+  | 'gusto' | 'adp_run' | 'adp_run_gli'
+  | 'qbo_payroll'
+  | 'paychex_flex' | 'paychex_flex_gls'
+  | 'square_payroll'
+  | 'payroll_relief_gl' | 'payroll_relief_checks'
+  | 'onpay_gl_summary' | 'onpay_listing'
+  | 'toast_je_report' | 'toast_payroll_detail'
+  | 'custom';
+
+/** Mode B column configuration — describes how a provider's GL export maps to debit/credit entries */
+export interface ModeBColumnConfig {
+  dateColumn: string;
+  descriptionColumn: string;
+  amountConvention: 'separate_dr_cr' | 'signed_single' | 'category_derived';
+  debitColumn?: string;          // for 'separate_dr_cr'
+  creditColumn?: string;         // for 'separate_dr_cr'
+  amountColumn?: string;         // for 'signed_single' or 'category_derived'
+  accountCategoryColumn?: string; // for 'category_derived'
+  memoColumn?: string;
+  referenceColumn?: string;
+  accountCodeColumn?: string;     // GL account number if present
+}
+
+/** Mode B column configs per provider */
+export const MODE_B_COLUMN_CONFIGS: Record<string, ModeBColumnConfig> = {
+  payroll_relief_gl: {
+    dateColumn: 'Date', descriptionColumn: 'Description',
+    amountConvention: 'separate_dr_cr',
+    debitColumn: 'Debit', creditColumn: 'Credit',
+    memoColumn: 'Memo', referenceColumn: 'Reference',
+  },
+  adp_run_gli: {
+    dateColumn: 'Check Date', descriptionColumn: 'GL Account Description',
+    amountConvention: 'separate_dr_cr', // TODO: verify with sample file — may be signed_single
+    debitColumn: 'Debit Amount', creditColumn: 'Credit Amount',
+    accountCodeColumn: 'GL Account Number',
+  },
+  paychex_flex_gls: {
+    dateColumn: 'Check Date', descriptionColumn: 'Description',
+    amountConvention: 'separate_dr_cr',
+    debitColumn: 'Debit', creditColumn: 'Credit',
+    accountCodeColumn: 'GL Account',
+  },
+  onpay_gl_summary: {
+    dateColumn: 'Pay Date', descriptionColumn: 'Description',
+    amountConvention: 'category_derived',
+    amountColumn: 'Amount',
+    accountCategoryColumn: 'Category', // Expense, Liability, Asset
+  },
+  toast_je_report: {
+    dateColumn: 'Check Date', descriptionColumn: 'Account Description',
+    amountConvention: 'separate_dr_cr',
+    debitColumn: 'Debit', creditColumn: 'Credit',
+    accountCodeColumn: 'AccountID',
+  },
+};
+
+/** Display names for providers */
+export const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  gusto: 'Gusto',
+  adp_run: 'ADP Run',
+  adp_run_gli: 'ADP Run',
+  qbo_payroll: 'QuickBooks Online Payroll',
+  paychex_flex: 'Paychex Flex',
+  paychex_flex_gls: 'Paychex Flex',
+  square_payroll: 'Square Payroll',
+  payroll_relief_gl: 'Payroll Relief',
+  payroll_relief_checks: 'Payroll Relief',
+  onpay_gl_summary: 'OnPay',
+  onpay_listing: 'OnPay',
+  toast_je_report: 'Toast Payroll',
+  toast_payroll_detail: 'Toast Payroll',
+  custom: 'Custom',
+};
+
 /** Canonical payroll row — one row per employee per pay period (Mode A) */
 export interface PayrollImportRow {
   // Identity
@@ -56,6 +132,9 @@ export interface PayrollImportRow {
   retirement_401k_er?: number;
   other_benefit_er?: number;
 
+  // Reimbursements (non-taxable, separate from gross wages)
+  reimbursement_ee?: number;
+
   // Contractor
   is_contractor?: boolean;
   contractor_pay?: number;
@@ -100,6 +179,7 @@ export const PAYROLL_STANDARD_FIELDS: Record<string, { label: string; category: 
   health_insurance_er: { label: 'Health Insurance (Employer)', category: 'er_benefit' },
   retirement_401k_er: { label: '401(k) Match (Employer)', category: 'er_benefit' },
   other_benefit_er: { label: 'Other Benefit (Employer)', category: 'er_benefit' },
+  reimbursement_ee: { label: 'Reimbursement (Employee)', category: 'ee_deduction' },
   is_contractor: { label: 'Is Contractor (1099)', category: 'contractor' },
   contractor_pay: { label: 'Contractor Pay', category: 'contractor' },
   memo: { label: 'Memo', category: 'other' },
@@ -122,6 +202,7 @@ export enum PayrollLineType {
   RETIREMENT_PAYABLE = 'retirement_payable',
   OTHER_DEDUCTION_PAYABLE = 'other_deduction_payable',
   PAYROLL_CLEARING = 'payroll_clearing',
+  REIMBURSEMENT_EXPENSE = 'reimbursement_expense',
   CONTRACTOR_EXPENSE = 'contractor_expense',
   CONTRACTOR_PAYABLE = 'contractor_payable',
 }
@@ -143,6 +224,7 @@ export const PAYROLL_LINE_TYPE_LABELS: Record<PayrollLineType, string> = {
   [PayrollLineType.RETIREMENT_PAYABLE]: 'Retirement (401k) Payable',
   [PayrollLineType.OTHER_DEDUCTION_PAYABLE]: 'Other Deductions Payable',
   [PayrollLineType.PAYROLL_CLEARING]: 'Payroll Clearing / Cash',
+  [PayrollLineType.REIMBURSEMENT_EXPENSE]: 'Employee Reimbursements',
   [PayrollLineType.CONTRACTOR_EXPENSE]: 'Contractor Expense',
   [PayrollLineType.CONTRACTOR_PAYABLE]: 'Contractor Payable / Cash',
 };
@@ -164,6 +246,7 @@ export const DEFAULT_ACCOUNT_SEARCH: Record<string, string[]> = {
   [PayrollLineType.RETIREMENT_PAYABLE]: ['2200', '401k Payable', 'Retirement Payable'],
   [PayrollLineType.OTHER_DEDUCTION_PAYABLE]: ['2210', 'Other Payroll Payable', 'Other Deductions'],
   [PayrollLineType.PAYROLL_CLEARING]: ['1000', '1010', 'Checking', 'Payroll Clearing', 'Cash'],
+  [PayrollLineType.REIMBURSEMENT_EXPENSE]: ['6400', 'Reimbursement', 'Employee Reimbursement'],
   [PayrollLineType.CONTRACTOR_EXPENSE]: ['6300', 'Contract Labor', 'Subcontractor'],
   [PayrollLineType.CONTRACTOR_PAYABLE]: ['2000', 'Accounts Payable', 'Cash'],
 };
@@ -200,16 +283,107 @@ export const PAYROLL_RELIEF_DESCRIPTION_SUGGESTIONS: Record<string, {
   '1099 Net Payroll': { search_terms: ['1000', 'Checking', 'Cash', 'Payroll Clearing'], expected_normal_balance: 'credit', category: 'asset' },
 };
 
+type DescSuggestionMap = Record<string, { search_terms: string[]; expected_normal_balance: 'debit' | 'credit'; category: 'expense' | 'liability' | 'asset' }>;
+
+/** ADP Run GL Interface description suggestions */
+export const ADP_GLI_DESCRIPTION_SUGGESTIONS: DescSuggestionMap = {
+  'Payroll - Salaries & Wages': { search_terms: ['6000', 'Wages', 'Salaries', 'Payroll Expense'], expected_normal_balance: 'debit', category: 'expense' },
+  'Payroll - Officer Compensation': { search_terms: ['6001', 'Officer', 'Compensation'], expected_normal_balance: 'debit', category: 'expense' },
+  'ER Social Security': { search_terms: ['6200', 'Payroll Tax', 'SS Expense', 'FICA Expense'], expected_normal_balance: 'debit', category: 'expense' },
+  'ER Medicare': { search_terms: ['6200', 'Payroll Tax', 'Medicare Expense'], expected_normal_balance: 'debit', category: 'expense' },
+  'FUTA': { search_terms: ['6210', 'FUTA', 'Federal Unemployment'], expected_normal_balance: 'debit', category: 'expense' },
+  'SUTA': { search_terms: ['6220', 'SUTA', 'State Unemployment'], expected_normal_balance: 'debit', category: 'expense' },
+  'Federal Withholding': { search_terms: ['2120', 'FIT Payable', 'Federal Tax Payable', 'Federal Income Tax'], expected_normal_balance: 'credit', category: 'liability' },
+  'State Withholding': { search_terms: ['2130', 'SIT Payable', 'State Tax Payable'], expected_normal_balance: 'credit', category: 'liability' },
+  'Social Security Withholding': { search_terms: ['2100', 'SS Payable', 'FICA Payable', 'Social Security'], expected_normal_balance: 'credit', category: 'liability' },
+  'Medicare Withholding': { search_terms: ['2110', 'Medicare Payable'], expected_normal_balance: 'credit', category: 'liability' },
+  '401(k) Deduction': { search_terms: ['2160', '401k Payable', 'Retirement Payable'], expected_normal_balance: 'credit', category: 'liability' },
+  'Health Insurance Deduction': { search_terms: ['2190', 'Health Insurance Payable'], expected_normal_balance: 'credit', category: 'liability' },
+  'Net Pay': { search_terms: ['1000', '1010', 'Checking', 'Payroll Clearing', 'Cash'], expected_normal_balance: 'credit', category: 'asset' },
+  'Direct Deposit': { search_terms: ['1000', '1010', 'Checking', 'Cash'], expected_normal_balance: 'credit', category: 'asset' },
+};
+
+/** Paychex Flex GLS description suggestions */
+export const PAYCHEX_GLS_DESCRIPTION_SUGGESTIONS: DescSuggestionMap = {
+  'Gross Wages': { search_terms: ['6000', 'Wages', 'Salaries', 'Payroll Expense'], expected_normal_balance: 'debit', category: 'expense' },
+  'OASDI/ER': { search_terms: ['6200', 'Payroll Tax', 'SS Expense', 'FICA Expense'], expected_normal_balance: 'debit', category: 'expense' },
+  'MED/ER': { search_terms: ['6200', 'Payroll Tax', 'Medicare Expense'], expected_normal_balance: 'debit', category: 'expense' },
+  'FUTA': { search_terms: ['6210', 'FUTA', 'Federal Unemployment'], expected_normal_balance: 'debit', category: 'expense' },
+  'SUTA': { search_terms: ['6220', 'SUTA', 'State Unemployment'], expected_normal_balance: 'debit', category: 'expense' },
+  'Fed W/H': { search_terms: ['2120', 'FIT Payable', 'Federal Tax Payable'], expected_normal_balance: 'credit', category: 'liability' },
+  'State W/H': { search_terms: ['2130', 'SIT Payable', 'State Tax Payable'], expected_normal_balance: 'credit', category: 'liability' },
+  'OASDI/EE': { search_terms: ['2100', 'SS Payable', 'FICA Payable'], expected_normal_balance: 'credit', category: 'liability' },
+  'MED/EE': { search_terms: ['2110', 'Medicare Payable'], expected_normal_balance: 'credit', category: 'liability' },
+  'Net Check': { search_terms: ['1000', '1010', 'Checking', 'Payroll Clearing', 'Cash'], expected_normal_balance: 'credit', category: 'asset' },
+};
+
+/** OnPay GL Summary description suggestions */
+export const ONPAY_GL_DESCRIPTION_SUGGESTIONS: DescSuggestionMap = {
+  'Wages Expense': { search_terms: ['6000', 'Wages', 'Salaries', 'Payroll Expense'], expected_normal_balance: 'debit', category: 'expense' },
+  'FICA - Employer': { search_terms: ['6200', 'Payroll Tax', 'FICA Expense'], expected_normal_balance: 'debit', category: 'expense' },
+  'FUTA Expense': { search_terms: ['6210', 'FUTA', 'Federal Unemployment'], expected_normal_balance: 'debit', category: 'expense' },
+  'SUTA Expense': { search_terms: ['6220', 'SUTA', 'State Unemployment'], expected_normal_balance: 'debit', category: 'expense' },
+  'Federal Income Tax W/H': { search_terms: ['2120', 'FIT Payable', 'Federal Tax Payable'], expected_normal_balance: 'credit', category: 'liability' },
+  'State Income Tax W/H': { search_terms: ['2130', 'SIT Payable', 'State Tax Payable'], expected_normal_balance: 'credit', category: 'liability' },
+  'FICA - Employee': { search_terms: ['2100', 'SS Payable', 'FICA Payable'], expected_normal_balance: 'credit', category: 'liability' },
+  'Medicare - Employee': { search_terms: ['2110', 'Medicare Payable'], expected_normal_balance: 'credit', category: 'liability' },
+  'Net Payroll': { search_terms: ['1000', '1010', 'Checking', 'Payroll Clearing', 'Cash'], expected_normal_balance: 'credit', category: 'asset' },
+  'Tax Sweep': { search_terms: ['1000', 'Checking', 'Cash', 'Tax Deposit'], expected_normal_balance: 'credit', category: 'asset' },
+};
+
+/** Toast JE Report description suggestions (includes restaurant-specific items) */
+export const TOAST_JE_DESCRIPTION_SUGGESTIONS: DescSuggestionMap = {
+  'Regular Wages': { search_terms: ['6000', 'Wages', 'Salaries', 'Payroll Expense'], expected_normal_balance: 'debit', category: 'expense' },
+  'Salary': { search_terms: ['6000', 'Wages', 'Salaries'], expected_normal_balance: 'debit', category: 'expense' },
+  'Employer FICA': { search_terms: ['6200', 'Payroll Tax', 'FICA Expense'], expected_normal_balance: 'debit', category: 'expense' },
+  'FUTA': { search_terms: ['6210', 'FUTA', 'Federal Unemployment'], expected_normal_balance: 'debit', category: 'expense' },
+  'SUTA': { search_terms: ['6220', 'SUTA', 'State Unemployment'], expected_normal_balance: 'debit', category: 'expense' },
+  'Paycheck Tips': { search_terms: ['6005', 'Tips Expense', 'Tip Wages'], expected_normal_balance: 'debit', category: 'expense' },
+  'Tips Owed': { search_terms: ['2300', 'Tips Payable', 'Gratuity Payable'], expected_normal_balance: 'credit', category: 'liability' },
+  'Gratuity Owed': { search_terms: ['2310', 'Gratuity Payable', 'Tips Payable'], expected_normal_balance: 'credit', category: 'liability' },
+  'Federal Tax': { search_terms: ['2120', 'FIT Payable', 'Federal Tax Payable'], expected_normal_balance: 'credit', category: 'liability' },
+  'State Tax': { search_terms: ['2130', 'SIT Payable', 'State Tax Payable'], expected_normal_balance: 'credit', category: 'liability' },
+  'Employee FICA': { search_terms: ['2100', 'SS Payable', 'FICA Payable'], expected_normal_balance: 'credit', category: 'liability' },
+  'Net Pay': { search_terms: ['1000', '1010', 'Checking', 'Payroll Clearing', 'Cash'], expected_normal_balance: 'credit', category: 'asset' },
+  'Toast Service Fee': { search_terms: ['6500', 'Service Fee', 'Processing Fee', 'SaaS Fee'], expected_normal_balance: 'debit', category: 'expense' },
+};
+
+/** All Mode B description suggestion maps, keyed by provider */
+export const MODE_B_DESCRIPTION_SUGGESTIONS: Record<string, DescSuggestionMap> = {
+  payroll_relief_gl: PAYROLL_RELIEF_DESCRIPTION_SUGGESTIONS,
+  adp_run_gli: ADP_GLI_DESCRIPTION_SUGGESTIONS,
+  paychex_flex_gls: PAYCHEX_GLS_DESCRIPTION_SUGGESTIONS,
+  onpay_gl_summary: ONPAY_GL_DESCRIPTION_SUGGESTIONS,
+  toast_je_report: TOAST_JE_DESCRIPTION_SUGGESTIONS,
+};
+
 /** Provider signatures for auto-detection */
 export const PROVIDER_SIGNATURES: Record<string, string[]> = {
+  // Mode A (employee-level)
   gusto: ['Employee Name', 'Check Date', 'Gross Pay', 'Net Pay', 'Federal Income Tax', 'Social Security (Employee)'],
   adp_run: ['File #', 'Employee Name', 'Check Date', 'Earnings', 'Taxes', 'Net Pay', 'Deductions'],
   qbo_payroll: ['Employee', 'Pay Period', 'Total Hours', 'Gross Pay', 'Federal Taxes', 'State Taxes', 'Net Pay'],
   paychex_flex: ['EE Name', 'Check Date', 'Gross', 'Fed W/H', 'State W/H', 'OASDI/EE', 'MED/EE', 'Net'],
   square_payroll: ['Name', 'Pay Period Start', 'Pay Period End', 'Net Pay', 'Total Employer Taxes', 'Total Employee Taxes'],
+  onpay_listing: ['Employee Name', 'Check Date', 'Gross Wages', 'Net Pay', 'Federal Tax', 'State Tax', 'FICA Employee'],
+  toast_payroll_detail: ['Employee Name', 'Check Date', 'Earning Name', 'Earning Amount', 'Tax Name', 'Tax Amount'],
+  // Mode B (GL-mapped)
   payroll_relief_gl: ['Date', 'Reference', 'Account', 'Description', 'Debit', 'Credit', 'Memo'],
   payroll_relief_checks: ['Check Number', 'Date', 'Payee Name', 'Cash Account', 'Account', 'Amount', 'Memo'],
+  adp_run_gli: ['Company Code', 'Check Date', 'GL Account Number', 'GL Account Description', 'Debit Amount', 'Credit Amount'],
+  paychex_flex_gls: ['Check Date', 'GL Account', 'Description', 'Debit', 'Credit'],
+  onpay_gl_summary: ['Pay Date', 'Description', 'Category', 'Amount'],
+  toast_je_report: ['AccountID', 'Account Description', 'Debit', 'Credit', 'Check Date', 'Pay Group'],
 };
+
+/** Set of Mode B provider keys for import mode detection */
+export const MODE_B_PROVIDERS = new Set([
+  'payroll_relief_gl',
+  'adp_run_gli',
+  'paychex_flex_gls',
+  'onpay_gl_summary',
+  'toast_je_report',
+]);
 
 /** Tax agency patterns for check classification */
 export const TAX_AGENCY_PATTERNS = [

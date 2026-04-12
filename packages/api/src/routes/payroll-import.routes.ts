@@ -41,10 +41,10 @@ const upload = multer({
     } else {
       // Be lenient — CSV files sometimes get misidentified
       const ext = file.originalname.toLowerCase();
-      if (ext.endsWith('.csv') || ext.endsWith('.tsv') || ext.endsWith('.xlsx') || ext.endsWith('.xls')) {
+      if (ext.endsWith('.csv') || ext.endsWith('.tsv') || ext.endsWith('.xlsx') || ext.endsWith('.xls') || ext.endsWith('.txt')) {
         cb(null, true);
       } else {
-        cb(new Error(`File type ${file.mimetype} is not allowed. Accepted: .csv, .tsv, .xlsx, .xls`));
+        cb(new Error(`File type ${file.mimetype} is not allowed. Accepted: .csv, .tsv, .xlsx, .xls, .txt`));
       }
     }
   },

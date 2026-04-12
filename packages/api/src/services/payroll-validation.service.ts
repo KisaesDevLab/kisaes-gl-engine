@@ -1,9 +1,22 @@
 import { eq, and } from 'drizzle-orm';
 import type { PayrollValidationMessage, PayrollValidationSummary } from '@kis-books/shared';
+import { MODE_B_COLUMN_CONFIGS } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { payrollImportSessions, payrollImportRows, payrollImportErrors, accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { parseCurrency } from './payroll-parse.service.js';
 import * as importService from './payroll-import.service.js';
+
+// ── SSN Pattern Scanner ──
+
+const SSN_PATTERN = /\b\d{3}-\d{2}-\d{4}\b/;
+
+function scanForSSN(rawData: Record<string, any>): boolean {
+  for (const value of Object.values(rawData)) {
+    if (typeof value === 'string' && SSN_PATTERN.test(value)) return true;
+  }
+  return false;
+}
 
 // ── Validation Rules ──
 
@@ -117,6 +130,8 @@ export async function dispatchValidation(tenantId: string, sessionId: string): P
 
 export async function validateSession(tenantId: string, sessionId: string): Promise<PayrollValidationSummary> {
   const session = await importService.getSession(tenantId, sessionId);
+  const metadata = session.metadata as any;
+  const provider = metadata?.detectedProvider || null;
 
   const rows = await db.select().from(payrollImportRows)
     .where(eq(payrollImportRows.sessionId, sessionId))
@@ -127,10 +142,28 @@ export async function validateSession(tenantId: string, sessionId: string): Prom
   let errorRows = 0;
   const allMessages: PayrollValidationMessage[] = [];
   const employeeNames = new Map<string, number>();
+  let ssnDetected = false;
+
+  // Gusto missing column tracking
+  let gustoTaxColumnsAllZero = true;
 
   for (const row of rows) {
     const mapped = (row.mappedData || row.rawData) as Record<string, any>;
     const msgs = validateRow(mapped, row.rowNumber);
+
+    // SSN scan
+    if (!ssnDetected) {
+      const raw = row.rawData as Record<string, any>;
+      if (scanForSSN(raw)) ssnDetected = true;
+    }
+
+    // Gusto: track if tax columns have any non-zero values
+    if (provider === 'gusto' && gustoTaxColumnsAllZero) {
+      const taxFields = ['federal_income_tax', 'social_security_ee', 'medicare_ee'];
+      for (const f of taxFields) {
+        if (Number(mapped[f] ?? 0) !== 0) { gustoTaxColumnsAllZero = false; break; }
+      }
+    }
 
     // DUPLICATE_EMPLOYEE check
     const empName = String(mapped['employee_name'] || '').toLowerCase().trim();
@@ -166,13 +199,43 @@ export async function validateSession(tenantId: string, sessionId: string): Prom
       .where(eq(payrollImportRows.id, row.id));
   }
 
+  // SSN detected error
+  if (ssnDetected) {
+    allMessages.unshift({
+      field: 'file',
+      code: 'SSN_DETECTED',
+      message: 'This file appears to contain Social Security numbers. Remove SSN columns before uploading.',
+      severity: 'error',
+    });
+    errorRows++;
+  }
+
+  // Gusto: missing tax columns warning
+  if (provider === 'gusto' && gustoTaxColumnsAllZero && rows.length > 0) {
+    allMessages.push({
+      field: 'file',
+      code: 'GUSTO_MISSING_COLUMNS',
+      message: 'Tax withholding columns appear empty. When exporting from Gusto, check all boxes under "Extra Details" (Earnings, Employee taxes, Employer taxes, Deductions, Benefits, Reimbursements).',
+      severity: 'warning',
+    });
+  }
+
   // DUPLICATE_FILE check
-  const metadata = session.metadata as any;
   if (metadata?.isDuplicate) {
     allMessages.push({
       field: 'file',
       code: 'DUPLICATE_FILE',
       message: 'This file has been imported before (matching SHA-256 hash)',
+      severity: 'warning',
+    });
+  }
+
+  // DUPLICATE_BY_KEY check
+  if (metadata?.isDuplicateByKey) {
+    allMessages.push({
+      field: 'file',
+      code: 'DUPLICATE_BY_KEY',
+      message: 'A payroll import with matching data (same provider, dates, and amounts) has already been posted.',
       severity: 'warning',
     });
   }
@@ -200,18 +263,64 @@ export async function validateSession(tenantId: string, sessionId: string): Prom
 
 export async function validateModeBSession(tenantId: string, sessionId: string): Promise<PayrollValidationSummary> {
   const session = await importService.getSession(tenantId, sessionId);
+  const metadata = session.metadata as any;
+  const provider = metadata?.detectedProvider || 'payroll_relief_gl';
+  const columnConfig = MODE_B_COLUMN_CONFIGS[provider] || MODE_B_COLUMN_CONFIGS['payroll_relief_gl']!;
+
   const rows = await db.select().from(payrollImportRows)
     .where(eq(payrollImportRows.sessionId, sessionId))
     .orderBy(payrollImportRows.rowNumber);
 
   const messages: PayrollValidationMessage[] = [];
+  let warningCount = 0;
+  let ssnDetected = false;
+
+  // Minimum row count check
+  if (rows.length < 2) {
+    messages.push({
+      field: 'file',
+      code: 'EMPTY_FILE',
+      message: 'Mode B import requires at least 2 data rows (1 debit + 1 credit minimum).',
+      severity: 'error',
+    });
+  }
+
   const dateGroups = new Map<string, { debits: number; credits: number }>();
+  let toastSaasFeeDetected = false;
+  let adpClearingDetected = false;
+  let toastAccountIdBlank = true;
 
   for (const row of rows) {
     const raw = row.rawData as Record<string, string>;
-    const date = raw['Date'] || raw['date'] || '';
-    const debit = parseFloat(String(raw['Debit'] || '0').replace(/[$,]/g, '')) || 0;
-    const credit = parseFloat(String(raw['Credit'] || '0').replace(/[$,]/g, '')) || 0;
+
+    // SSN scan
+    if (!ssnDetected && scanForSSN(raw)) ssnDetected = true;
+
+    // Extract date and amounts using provider-specific columns
+    const dateCol = columnConfig.dateColumn;
+    const date = raw[dateCol] || raw[dateCol.toLowerCase()] || raw['Date'] || raw['date'] || '';
+
+    let debit = 0;
+    let credit = 0;
+
+    if (columnConfig.amountConvention === 'separate_dr_cr') {
+      const drCol = columnConfig.debitColumn || 'Debit';
+      const crCol = columnConfig.creditColumn || 'Credit';
+      debit = parseCurrency(raw[drCol] || raw[drCol.toLowerCase()]);
+      credit = parseCurrency(raw[crCol] || raw[crCol.toLowerCase()]);
+    } else if (columnConfig.amountConvention === 'signed_single') {
+      const amtCol = columnConfig.amountColumn || 'Amount';
+      const val = parseCurrency(raw[amtCol] || raw[amtCol.toLowerCase()]);
+      if (val >= 0) debit = val;
+      else credit = Math.abs(val);
+    } else if (columnConfig.amountConvention === 'category_derived') {
+      const amtCol = columnConfig.amountColumn || 'Amount';
+      const catCol = columnConfig.accountCategoryColumn || 'Category';
+      const amount = Math.abs(parseCurrency(raw[amtCol] || raw[amtCol.toLowerCase()]));
+      const category = (raw[catCol] || raw[catCol.toLowerCase()] || '').toLowerCase().trim();
+      if (category.startsWith('expense') || category.startsWith('cost')) debit = amount;
+      else credit = amount;
+    }
 
     if (date) {
       const group = dateGroups.get(date) || { debits: 0, credits: 0 };
@@ -219,9 +328,40 @@ export async function validateModeBSession(tenantId: string, sessionId: string):
       group.credits += credit;
       dateGroups.set(date, group);
     }
+
+    // Provider-specific line-level checks
+    const descCol = columnConfig.descriptionColumn;
+    const desc = (raw[descCol] || raw[descCol.toLowerCase()] || '').toLowerCase();
+
+    if (provider === 'toast_je_report') {
+      if (desc.includes('service fee') || desc.includes('saas fee')) toastSaasFeeDetected = true;
+      const accountIdCol = columnConfig.accountCodeColumn || 'AccountID';
+      const accountId = raw[accountIdCol] || raw[accountIdCol.toLowerCase()] || '';
+      if (accountId.trim()) toastAccountIdBlank = false;
+    }
+
+    if (provider === 'adp_run_gli') {
+      if (desc.includes('clearing') || desc.includes('check register')) adpClearingDetected = true;
+    }
   }
 
+  // SSN detected
+  if (ssnDetected) {
+    messages.unshift({
+      field: 'file',
+      code: 'SSN_DETECTED',
+      message: 'This file appears to contain Social Security numbers. Remove SSN columns before uploading.',
+      severity: 'error',
+    });
+  }
+
+  // Tally all errors from the top: SSN, empty file counted here
   let errorCount = 0;
+  if (ssnDetected) errorCount++;
+  if (rows.length < 2) errorCount++;
+
+  // Balance check per date group
+  let balanceErrors = 0;
   for (const [date, group] of dateGroups) {
     if (Math.abs(group.debits - group.credits) > 0.01) {
       messages.push({
@@ -230,8 +370,52 @@ export async function validateModeBSession(tenantId: string, sessionId: string):
         message: `Date group ${date}: debits (${group.debits.toFixed(2)}) ≠ credits (${group.credits.toFixed(2)})`,
         severity: 'error',
       });
-      errorCount++;
+      balanceErrors++;
     }
+  }
+  errorCount += balanceErrors;
+
+  // Toast: SaaS fee warning
+  if (toastSaasFeeDetected) {
+    messages.push({
+      field: 'file',
+      code: 'TOAST_SAAS_FEE',
+      message: 'Toast service/SaaS fee line items detected. You may choose to exclude these from the payroll JE and book them separately.',
+      severity: 'warning',
+    });
+    warningCount++;
+  }
+
+  // Toast: AccountID blank
+  if (provider === 'toast_je_report' && toastAccountIdBlank && rows.length > 0) {
+    messages.push({
+      field: 'file',
+      code: 'TOAST_NO_ACCOUNT_ID',
+      message: 'AccountID column is entirely blank. Contact Toast Payroll support to configure GL account codes in the JE Report export.',
+      severity: 'error',
+    });
+    errorCount++;
+  }
+
+  // ADP: Clearing account warning
+  if (adpClearingDetected) {
+    messages.push({
+      field: 'file',
+      code: 'ADP_CLEARING_ENTRIES',
+      message: 'ADP Clearing account entries detected. You may have exported with "Include check register data = Yes". These extra entries may cause the JE to not balance as expected.',
+      severity: 'warning',
+    });
+    warningCount++;
+  }
+
+  // Duplicate checks
+  if (metadata?.isDuplicate) {
+    messages.push({ field: 'file', code: 'DUPLICATE_FILE', message: 'This file has been imported before (matching SHA-256 hash)', severity: 'warning' });
+    warningCount++;
+  }
+  if (metadata?.isDuplicateByKey) {
+    messages.push({ field: 'file', code: 'DUPLICATE_BY_KEY', message: 'A payroll import with matching data has already been posted.', severity: 'warning' });
+    warningCount++;
   }
 
   const status = errorCount > 0 ? 'failed' : 'validated';
@@ -241,9 +425,9 @@ export async function validateModeBSession(tenantId: string, sessionId: string):
 
   return {
     totalRows: rows.length,
-    validRows: rows.length - errorCount,
-    warningRows: 0,
-    errorRows: errorCount,
+    validRows: rows.length,       // Mode B doesn't validate individual rows — balance is per date-group
+    warningRows: warningCount,
+    errorRows: errorCount,        // File-level + balance errors
     messages,
   };
 }

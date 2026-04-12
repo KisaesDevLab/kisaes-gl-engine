@@ -1,0 +1,8 @@
+Company Code,Company Name,Batch Number,Check Date,GL Account Number,GL Account Description,Debit Amount,Credit Amount
+ABC,ABC Company,001,01/15/2026,6000,Payroll - Salaries & Wages,5000.00,0.00
+ABC,ABC Company,001,01/15/2026,6200,ER Social Security,310.00,0.00
+ABC,ABC Company,001,01/15/2026,6200,ER Medicare,72.50,0.00
+ABC,ABC Company,001,01/15/2026,2120,Federal Withholding,0.00,750.00
+ABC,ABC Company,001,01/15/2026,2100,Social Security Withholding,0.00,620.00
+ABC,ABC Company,001,01/15/2026,2110,Medicare Withholding,0.00,145.00
+ABC,ABC Company,001,01/15/2026,1010,Net Pay,0.00,3867.50

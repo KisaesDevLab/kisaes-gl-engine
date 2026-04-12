@@ -34,6 +34,7 @@ interface AggregatedAmounts {
   health_ins: number;  // EE + ER
   retirement: number;  // EE + ER (all 401k)
   other_deduction: number;
+  reimbursement: number;
   net_pay: number;
   contractor_expense: number;
   contractor_payable: number;
@@ -49,6 +50,7 @@ function aggregateRows(mappedRows: Record<string, any>[]): AggregatedAmounts {
     fit: 0, sit: 0, local_tax: 0,
     ss: 0, medicare: 0, futa: 0, suta: 0,
     health_ins: 0, retirement: 0, other_deduction: 0,
+    reimbursement: 0,
     net_pay: 0, contractor_expense: 0, contractor_payable: 0,
   };
 
@@ -73,6 +75,7 @@ function aggregateRows(mappedRows: Record<string, any>[]): AggregatedAmounts {
     agg.other_deduction += n(row, 'hsa_ee') + n(row, 'other_deduction_ee') + n(row, 'other_benefit_er');
     agg.health_ins += n(row, 'health_insurance_ee') + n(row, 'health_insurance_er');
     agg.retirement += n(row, 'retirement_401k_ee') + n(row, 'roth_401k_ee') + n(row, 'retirement_401k_er');
+    agg.reimbursement += n(row, 'reimbursement_ee');
     agg.net_pay += n(row, 'net_pay');
 
     agg.employer_tax += n(row, 'social_security_er') + n(row, 'medicare_er') +
@@ -107,10 +110,11 @@ function buildJELines(
     });
   };
 
-  // DEBITS
-  addLine(PayrollLineType.GROSS_WAGES_EXPENSE, 'Gross Wages Expense', agg.gross_wages, 0);
+  // DEBITS — subtract reimbursements from gross wages (they're non-taxable pass-through, not wage expense)
+  addLine(PayrollLineType.GROSS_WAGES_EXPENSE, 'Gross Wages Expense', agg.gross_wages - agg.reimbursement, 0);
   addLine(PayrollLineType.EMPLOYER_TAX_EXPENSE, 'Employer Payroll Tax Expense', agg.employer_tax, 0);
   if (agg.employer_benefits > 0) addLine(PayrollLineType.EMPLOYER_BENEFITS_EXPENSE, 'Employer Benefits Expense', agg.employer_benefits, 0);
+  if (agg.reimbursement > 0) addLine(PayrollLineType.REIMBURSEMENT_EXPENSE, 'Employee Reimbursements', agg.reimbursement, 0);
   if (agg.contractor_expense > 0) addLine(PayrollLineType.CONTRACTOR_EXPENSE, 'Contractor Expense', agg.contractor_expense, 0);
 
   // CREDITS

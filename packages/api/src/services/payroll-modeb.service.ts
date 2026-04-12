@@ -1,6 +1,6 @@
 import { eq, and, inArray } from 'drizzle-orm';
-import type { PayrollJEPreview, PayrollCheckRow } from '@kis-books/shared';
-import { TAX_AGENCY_PATTERNS } from '@kis-books/shared';
+import type { PayrollJEPreview, PayrollCheckRow, ModeBColumnConfig } from '@kis-books/shared';
+import { TAX_AGENCY_PATTERNS, MODE_B_COLUMN_CONFIGS, PROVIDER_DISPLAY_NAMES } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import {
   payrollImportSessions,
@@ -15,7 +15,27 @@ import { parseCurrency, parseDate, parseFile, detectHeaderRow, detectProvider } 
 import * as ledger from './ledger.service.js';
 import * as importService from './payroll-import.service.js';
 
-// ── Mode B: Parse GLEntries.csv ──
+// ── Default column config (Payroll Relief backward compat) ──
+
+const DEFAULT_CONFIG: ModeBColumnConfig = MODE_B_COLUMN_CONFIGS['payroll_relief_gl']!;
+
+/** Resolve the column config for a given provider */
+function resolveColumnConfig(provider: string | null): ModeBColumnConfig {
+  if (provider && MODE_B_COLUMN_CONFIGS[provider]) return MODE_B_COLUMN_CONFIGS[provider]!;
+  return DEFAULT_CONFIG;
+}
+
+/** Case-insensitive column lookup — tries exact then lowercase match */
+function col(row: Record<string, string>, colName: string): string {
+  if (row[colName] !== undefined) return row[colName]!;
+  const lower = colName.toLowerCase();
+  for (const [key, val] of Object.entries(row)) {
+    if (key.toLowerCase() === lower) return val;
+  }
+  return '';
+}
+
+// ── Mode B: Parse GL Entries (generalized) ──
 
 interface GLEntryRow {
   date: string;
@@ -24,19 +44,59 @@ interface GLEntryRow {
   debit: number;
   credit: number;
   memo: string;
+  accountCode: string;
 }
 
-export function parseGLEntries(rows: Record<string, string>[]): GLEntryRow[] {
+export function parseGLEntries(rows: Record<string, string>[], config?: ModeBColumnConfig): GLEntryRow[] {
+  const c = config || DEFAULT_CONFIG;
+
   return rows
-    .filter(r => r['Description'] || r['description'])
-    .map(r => ({
-      date: parseDate(r['Date'] || r['date'] || '') || '',
-      reference: r['Reference'] || r['reference'] || '',
-      description: (r['Description'] || r['description'] || '').trim(),
-      debit: parseCurrency(r['Debit'] || r['debit']),
-      credit: parseCurrency(r['Credit'] || r['credit']),
-      memo: (r['Memo'] || r['memo'] || '').trim(),
-    }))
+    .filter(r => col(r, c.descriptionColumn))
+    .map(r => {
+      const description = col(r, c.descriptionColumn).trim();
+      const dateStr = col(r, c.dateColumn);
+      const memo = c.memoColumn ? col(r, c.memoColumn).trim() : '';
+      const reference = c.referenceColumn ? col(r, c.referenceColumn) : '';
+      const accountCode = c.accountCodeColumn ? col(r, c.accountCodeColumn) : '';
+
+      let debit = 0;
+      let credit = 0;
+
+      switch (c.amountConvention) {
+        case 'separate_dr_cr': {
+          debit = parseCurrency(col(r, c.debitColumn || 'Debit'));
+          credit = parseCurrency(col(r, c.creditColumn || 'Credit'));
+          break;
+        }
+        case 'signed_single': {
+          const amount = parseCurrency(col(r, c.amountColumn || 'Amount'));
+          if (amount >= 0) debit = amount;
+          else credit = Math.abs(amount);
+          break;
+        }
+        case 'category_derived': {
+          const amount = Math.abs(parseCurrency(col(r, c.amountColumn || 'Amount')));
+          const category = col(r, c.accountCategoryColumn || 'Category').toLowerCase().trim();
+          // Expenses are debits; Liabilities and Assets (net pay) are credits
+          if (category.startsWith('expense') || category.startsWith('cost')) {
+            debit = amount;
+          } else {
+            credit = amount;
+          }
+          break;
+        }
+      }
+
+      return {
+        date: parseDate(dateStr) || '',
+        reference,
+        description,
+        debit,
+        credit,
+        memo,
+        accountCode,
+      };
+    })
     .filter(r => r.description && (r.debit > 0 || r.credit > 0));
 }
 
@@ -55,7 +115,19 @@ export function groupByDate(entries: GLEntryRow[]): Map<string, GLEntryRow[]> {
 
 // ── Extract Pay Period from Memo ──
 
-export function extractPayPeriod(memo: string): { start: string; end: string } | null {
+export function extractPayPeriod(memo: string, periodRegex?: string): { start: string; end: string } | null {
+  // Try custom regex first if provided
+  if (periodRegex) {
+    try {
+      const customMatch = memo.match(new RegExp(periodRegex, 'i'));
+      if (customMatch && customMatch[1] && customMatch[2]) {
+        const start = parseDate(customMatch[1]);
+        const end = parseDate(customMatch[2]);
+        if (start && end) return { start, end };
+      }
+    } catch { /* invalid regex, fall through */ }
+  }
+  // Default: "Period: MM/DD/YYYY to MM/DD/YYYY"
   const match = memo.match(/Period:\s*(\d{2}\/\d{2}\/\d{4})\s*to\s*(\d{2}\/\d{2}\/\d{4})/i);
   if (!match) return null;
   const start = parseDate(match[1]!);
@@ -165,13 +237,17 @@ export async function getChecks(tenantId: string, sessionId: string): Promise<Pa
 export async function generateModeBJE(tenantId: string, sessionId: string): Promise<{ previews: PayrollJEPreview[] }> {
   const session = await importService.getSession(tenantId, sessionId);
   const companyId = session.companyId;
+  const metadata = session.metadata as any;
+  const providerKey = metadata?.detectedProvider || 'payroll_relief_gl';
+  const columnConfig = resolveColumnConfig(providerKey);
+  const providerName = PROVIDER_DISPLAY_NAMES[providerKey] || 'Payroll';
 
   // Get all raw rows
   const rawRows = await db.select().from(payrollImportRows)
     .where(eq(payrollImportRows.sessionId, sessionId))
     .orderBy(payrollImportRows.rowNumber);
 
-  const entries = parseGLEntries(rawRows.map(r => r.rawData as Record<string, string>));
+  const entries = parseGLEntries(rawRows.map(r => r.rawData as Record<string, string>), columnConfig);
   const groups = groupByDate(entries);
 
   // Get description→account mappings
@@ -213,8 +289,8 @@ export async function generateModeBJE(tenantId: string, sessionId: string): Prom
     });
 
     const memo = payPeriod
-      ? `Payroll — ${payPeriod.start} to ${payPeriod.end} — Payroll Relief`
-      : `Payroll — ${date}`;
+      ? `Payroll — ${payPeriod.start} to ${payPeriod.end} — ${providerName}`
+      : `Payroll — ${date} — ${providerName}`;
 
     previews.push({
       date,

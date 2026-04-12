@@ -1,0 +1,10 @@
+Date,Reference,Account,Description,Debit,Credit,Memo
+01/15/2026,01/15/2026,,Wages and Salary,"$5,000.00","$0.00","Period: 01/01/2026 to 01/15/2026"
+01/15/2026,01/15/2026,,Social Security Expense,"$310.00","$0.00","Period: 01/01/2026 to 01/15/2026"
+01/15/2026,01/15/2026,,Medicare Expense,"$72.50","$0.00","Period: 01/01/2026 to 01/15/2026"
+01/15/2026,01/15/2026,,Federal Withholding,"$0.00","$750.00","Period: 01/01/2026 to 01/15/2026"
+01/15/2026,01/15/2026,,Social Security Withholding,"$0.00","$310.00","Period: 01/01/2026 to 01/15/2026"
+01/15/2026,01/15/2026,,Medicare Withholding,"$0.00","$72.50","Period: 01/01/2026 to 01/15/2026"
+01/15/2026,01/15/2026,,Social Security Payable,"$0.00","$310.00","Period: 01/01/2026 to 01/15/2026"
+01/15/2026,01/15/2026,,Medicare Payable,"$0.00","$72.50","Period: 01/01/2026 to 01/15/2026"
+01/15/2026,01/15/2026,,Net Payroll,"$0.00","$3,867.50","Period: 01/01/2026 to 01/15/2026"

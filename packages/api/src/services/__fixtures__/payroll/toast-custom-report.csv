@@ -1,0 +1,7 @@
+Employee Name,Check Date,Earning Name,Earning Amount,Tax Name,Tax Amount
+John Doe,01/15/2026,Regular Wages,4000.00,,
+John Doe,01/15/2026,Tips,500.00,,
+John Doe,01/15/2026,,0.00,Federal Tax,675.00
+John Doe,01/15/2026,,0.00,FICA,344.25
+Jane Smith,01/15/2026,Regular Wages,3500.00,,
+Jane Smith,01/15/2026,,0.00,Federal Tax,525.00

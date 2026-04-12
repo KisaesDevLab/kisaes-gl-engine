@@ -2,7 +2,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { ColumnMapConfig, PayrollImportRow } from '@kis-books/shared';
-import { PROVIDER_SIGNATURES } from '@kis-books/shared';
+import { PROVIDER_SIGNATURES, MODE_B_PROVIDERS } from '@kis-books/shared';
 import { AppError } from '../utils/errors.js';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
@@ -63,12 +63,16 @@ export function parseCsvText(text: string, delimiter = ','): string[][] {
 
 // ── XLSX Parser ──
 
-export async function parseXlsxBuffer(buffer: Buffer): Promise<string[][]> {
+export async function parseXlsxBuffer(
+  buffer: Buffer,
+  options?: { sheetName?: string; sheetIndex?: number },
+): Promise<string[][]> {
   const XLSX = await import('xlsx');
   const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
-  const firstSheet = wb.Sheets[wb.SheetNames[0]!];
-  if (!firstSheet) throw AppError.badRequest('Excel file has no sheets');
-  const data: any[][] = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '' });
+  const sheetName = options?.sheetName || wb.SheetNames[options?.sheetIndex ?? 0];
+  const sheet = sheetName ? wb.Sheets[sheetName] : undefined;
+  if (!sheet) throw AppError.badRequest('Excel file has no sheets');
+  const data: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
   return data.map(row => row.map((cell: any) => {
     if (cell instanceof Date) {
       return cell.toISOString().split('T')[0]!;
@@ -89,7 +93,7 @@ export function detectFileType(filename: string, buffer: Buffer): 'csv' | 'tsv' 
     return ext === '.xlsx' ? 'xlsx' : 'xls';
   }
   if (ext === '.tsv') return 'tsv';
-  // Check content for tabs vs commas
+  // .txt and .csv: auto-detect delimiter from content
   const sample = buffer.slice(0, 2000).toString('utf-8');
   const tabs = (sample.match(/\t/g) || []).length;
   const commas = (sample.match(/,/g) || []).length;
@@ -129,15 +133,23 @@ export function detectHeaderRow(rows: string[][], maxScan = 10): number {
 
 // ── Provider Auto-Detection ──
 
+/** Normalize a header string for resilient matching (handles Gusto column drift, etc.) */
+function normalizeHeader(h: string): string {
+  return h.toLowerCase().trim()
+    .replace(/\s+/g, ' ')         // collapse multiple spaces
+    .replace(/[()\/\\]/g, '');     // strip parens & slashes
+}
+
 export function detectProvider(headers: string[]): { provider: string; confidence: number } | null {
-  const normalizedHeaders = headers.map(h => h.toLowerCase().trim());
+  const normalizedHeaders = headers.map(normalizeHeader);
   let bestProvider: string | null = null;
   let bestScore = 0;
 
   for (const [provider, signature] of Object.entries(PROVIDER_SIGNATURES)) {
-    const matched = signature.filter(sig =>
-      normalizedHeaders.some(h => h === sig.toLowerCase() || h.includes(sig.toLowerCase()))
-    );
+    const matched = signature.filter(sig => {
+      const normSig = normalizeHeader(sig);
+      return normalizedHeaders.some(h => h === normSig || h.includes(normSig));
+    });
     const score = matched.length / signature.length;
     if (score > bestScore) {
       bestScore = score;
@@ -154,7 +166,7 @@ export function detectProvider(headers: string[]): { provider: string; confidenc
 // ── Determine import mode from provider detection ──
 
 export function detectImportMode(provider: string | null): 'employee_level' | 'prebuilt_je' {
-  if (provider === 'payroll_relief_gl') return 'prebuilt_je';
+  if (provider && MODE_B_PROVIDERS.has(provider)) return 'prebuilt_je';
   return 'employee_level';
 }
 
@@ -166,7 +178,7 @@ export function hashBuffer(buffer: Buffer): string {
 
 // ── File Storage ──
 
-const ALLOWED_EXTENSIONS = ['.csv', '.tsv', '.xlsx', '.xls'];
+const ALLOWED_EXTENSIONS = ['.csv', '.tsv', '.xlsx', '.xls', '.txt'];
 
 export async function storePayrollFile(
   buffer: Buffer,
@@ -186,7 +198,26 @@ export async function storePayrollFile(
 
 // ── Parse File to Rows ──
 
-export async function parseFile(buffer: Buffer, filename: string): Promise<{
+/** Decode a buffer to text, falling back to Windows-1252 if UTF-8 produces replacement characters */
+function decodeBuffer(buffer: Buffer): string {
+  const utf8 = buffer.toString('utf-8');
+  // If UTF-8 decoding produced replacement characters, try Windows-1252 (common for ADP/Paychex)
+  if (utf8.includes('\ufffd')) {
+    try {
+      const decoder = new TextDecoder('windows-1252');
+      return decoder.decode(buffer);
+    } catch {
+      // TextDecoder may not support windows-1252 in all runtimes; fall back to UTF-8
+    }
+  }
+  return utf8;
+}
+
+export async function parseFile(
+  buffer: Buffer,
+  filename: string,
+  options?: { sheetName?: string; sheetIndex?: number },
+): Promise<{
   rows: string[][];
   fileType: 'csv' | 'tsv' | 'xlsx' | 'xls';
 }> {
@@ -198,10 +229,10 @@ export async function parseFile(buffer: Buffer, filename: string): Promise<{
   let rows: string[][];
 
   if (fileType === 'xlsx' || fileType === 'xls') {
-    rows = await parseXlsxBuffer(buffer);
+    rows = await parseXlsxBuffer(buffer, options);
   } else {
     const delimiter = fileType === 'tsv' ? '\t' : ',';
-    const text = buffer.toString('utf-8');
+    const text = decodeBuffer(buffer);
     rows = parseCsvText(text, delimiter);
   }
 
@@ -346,6 +377,7 @@ export function applyColumnMapping(
       'net_pay',
       'social_security_er', 'medicare_er', 'futa_er', 'suta_er', 'other_er_tax',
       'health_insurance_er', 'retirement_401k_er', 'other_benefit_er',
+      'reimbursement_ee',
       'contractor_pay',
     ];
     for (const field of currencyFields) {
@@ -406,8 +438,43 @@ export function toPayrollImportRow(mapped: Record<string, any>): PayrollImportRo
     health_insurance_er: m.health_insurance_er != null ? Number(m.health_insurance_er) : undefined,
     retirement_401k_er: m.retirement_401k_er != null ? Number(m.retirement_401k_er) : undefined,
     other_benefit_er: m.other_benefit_er != null ? Number(m.other_benefit_er) : undefined,
+    reimbursement_ee: m.reimbursement_ee != null ? Number(m.reimbursement_ee) : undefined,
     is_contractor: m.is_contractor || false,
     contractor_pay: m.contractor_pay != null ? Number(m.contractor_pay) : undefined,
     memo: m.memo || undefined,
   };
+}
+
+// ── Pivot Long-Format Rows (Toast custom reports) ──
+// Toast uses rows like: Employee Name, Earning Name, Earning Amount (one row per earning/tax line)
+// This pivots them into the standard wide format (one row per employee)
+
+export function pivotLongFormat(
+  rows: Record<string, any>[],
+  config: { employeeField: string; nameField: string; amountField: string; dateField: string },
+): Record<string, any>[] {
+  const { employeeField, nameField, amountField, dateField } = config;
+  const grouped = new Map<string, Record<string, any>>();
+
+  for (const row of rows) {
+    const empKey = String(row[employeeField] || '').trim();
+    if (!empKey) continue;
+
+    const dateVal = row[dateField] || '';
+    const key = `${empKey}|${dateVal}`;
+
+    if (!grouped.has(key)) {
+      grouped.set(key, { employee_name: empKey, check_date: dateVal });
+    }
+
+    const entry = grouped.get(key)!;
+    const name = String(row[nameField] || '').trim().toLowerCase().replace(/\s+/g, '_');
+    const amount = row[amountField];
+
+    if (name && amount !== undefined) {
+      entry[name] = (entry[name] || 0) + (typeof amount === 'number' ? amount : parseFloat(String(amount).replace(/[$,]/g, '')) || 0);
+    }
+  }
+
+  return Array.from(grouped.values());
 }

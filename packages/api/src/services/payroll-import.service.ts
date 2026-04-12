@@ -1,8 +1,11 @@
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import { eq, and, ne, sql, count, desc, inArray } from 'drizzle-orm';
 import type { ColumnMapConfig, PayrollSessionFilters } from '@kis-books/shared';
 import {
   PAYROLL_RELIEF_DESCRIPTION_SUGGESTIONS,
+  MODE_B_DESCRIPTION_SUGGESTIONS,
+  MODE_B_COLUMN_CONFIGS,
   PAYROLL_LINE_TYPE_LABELS,
   DEFAULT_ACCOUNT_SEARCH,
   PayrollLineType,
@@ -29,10 +32,80 @@ import {
   storePayrollFile,
   hashBuffer,
   applyColumnMapping,
+  parseCurrency,
+  pivotLongFormat,
 } from './payroll-parse.service.js';
 import { env } from '../config/env.js';
 
 const UPLOAD_DIR = env.UPLOAD_DIR || '/data/uploads';
+
+// ── Idempotency Key Computation ──
+
+function computeIdempotencyKey(
+  provider: string | null,
+  rows: string[][],
+  headers: string[],
+): string | null {
+  if (!provider || !rows.length) return null;
+
+  const headerIdx = new Map<string, number>();
+  headers.forEach((h, i) => headerIdx.set(h.toLowerCase().trim(), i));
+
+  function getCol(row: string[], colName: string): string {
+    const idx = headerIdx.get(colName.toLowerCase().trim());
+    return idx !== undefined ? (row[idx] || '').trim() : '';
+  }
+
+  function getAmount(row: string[], colName: string): number {
+    const val = getCol(row, colName);
+    return parseFloat(val.replace(/[$,]/g, '')) || 0;
+  }
+
+  switch (provider) {
+    case 'gusto': {
+      const dates = rows.map(r => getCol(r, 'Check Date')).filter(Boolean);
+      const ppStart = rows.map(r => getCol(r, 'Pay Period Start')).filter(Boolean);
+      const ppEnd = rows.map(r => getCol(r, 'Pay Period End')).filter(Boolean);
+      const totalGross = rows.reduce((sum, r) => sum + getAmount(r, 'Gross Pay'), 0);
+      const material = `${dates[0] || ''}|${ppStart[0] || ''}|${ppEnd[0] || ''}|${totalGross.toFixed(2)}|${rows.length}`;
+      return crypto.createHash('sha256').update(material).digest('hex').slice(0, 32);
+    }
+    case 'adp_run_gli': {
+      const dates = rows.map(r => getCol(r, 'Check Date')).filter(Boolean);
+      const totalDebit = rows.reduce((sum, r) => sum + getAmount(r, 'Debit Amount'), 0);
+      const material = `${dates[0] || ''}|${totalDebit.toFixed(2)}`;
+      return crypto.createHash('sha256').update(material).digest('hex').slice(0, 32);
+    }
+    case 'paychex_flex_gls': {
+      const dates = rows.map(r => getCol(r, 'Check Date')).filter(Boolean);
+      const totalDebit = rows.reduce((sum, r) => sum + getAmount(r, 'Debit'), 0);
+      const totalCredit = rows.reduce((sum, r) => sum + getAmount(r, 'Credit'), 0);
+      const material = `${dates[0] || ''}|${totalDebit.toFixed(2)}|${totalCredit.toFixed(2)}|${rows.length}`;
+      return crypto.createHash('sha256').update(material).digest('hex').slice(0, 32);
+    }
+    case 'onpay_gl_summary': {
+      const dates = rows.map(r => getCol(r, 'Pay Date')).filter(Boolean);
+      const totalAmount = rows.reduce((sum, r) => sum + getAmount(r, 'Amount'), 0);
+      const material = `${dates[0] || ''}|${totalAmount.toFixed(2)}`;
+      return crypto.createHash('sha256').update(material).digest('hex').slice(0, 32);
+    }
+    case 'square_payroll': {
+      const dates = rows.map(r => getCol(r, 'Pay Period Start')).filter(Boolean);
+      const endDates = rows.map(r => getCol(r, 'Pay Period End')).filter(Boolean);
+      const material = `${dates[0] || ''}|${endDates[0] || ''}`;
+      return crypto.createHash('sha256').update(material).digest('hex').slice(0, 32);
+    }
+    case 'toast_je_report': {
+      const dates = rows.map(r => getCol(r, 'Check Date')).filter(Boolean);
+      const payGroup = rows.map(r => getCol(r, 'Pay Group')).filter(Boolean);
+      const material = `${dates[0] || ''}|${payGroup[0] || ''}|${rows.length}`;
+      return crypto.createHash('sha256').update(material).digest('hex').slice(0, 32);
+    }
+    default:
+      // Fall back to null — file hash will be used
+      return null;
+  }
+}
 
 // ── Upload & Create Session ──
 
@@ -80,6 +153,25 @@ export async function uploadPayrollFile(
     companionFilename = companionFile.originalname;
   }
 
+  // Compute idempotency key
+  const dataRows = rows.slice(headerRowIdx + 1);
+  const idempotencyKey = computeIdempotencyKey(detection?.provider || null, dataRows, headers);
+
+  // Check idempotency key duplicate (in addition to file hash check)
+  let isDuplicateByKey = false;
+  if (idempotencyKey && detection?.provider && companyId) {
+    const [existingByKey] = await db.select({ id: payrollImportSessions.id })
+      .from(payrollImportSessions)
+      .where(and(
+        eq(payrollImportSessions.tenantId, tenantId),
+        eq(payrollImportSessions.detectedProvider, detection.provider),
+        eq(payrollImportSessions.idempotencyKey, idempotencyKey),
+        eq(payrollImportSessions.status, 'posted'),
+      ))
+      .limit(1);
+    isDuplicateByKey = !!existingByKey;
+  }
+
   // Create session
   const [session] = await db.insert(payrollImportSessions).values({
     tenantId,
@@ -97,6 +189,8 @@ export async function uploadPayrollFile(
     status: 'uploaded',
     rowCount: rows.length - headerRowIdx - 1,
     errorCount: 0,
+    idempotencyKey: idempotencyKey || null,
+    detectedProvider: detection?.provider || null,
     createdBy: userId,
     metadata: {
       fileType,
@@ -105,13 +199,13 @@ export async function uploadPayrollFile(
       detectedProvider: detection?.provider || null,
       detectedConfidence: detection?.confidence || 0,
       isDuplicate,
+      isDuplicateByKey,
     },
   }).returning();
 
   if (!session) throw AppError.internal('Failed to create import session');
 
-  // Store raw rows
-  const dataRows = rows.slice(headerRowIdx + 1);
+  // Store raw rows (dataRows already computed above for idempotency)
   if (dataRows.length > 0) {
     const rowValues = dataRows.map((row, i) => {
       const rawData: Record<string, string> = {};
@@ -141,6 +235,7 @@ export async function uploadPayrollFile(
       detectedConfidence: detection?.confidence || 0,
       importMode,
       isDuplicate,
+      isDuplicateByKey,
       rowCount: dataRows.length,
     },
   };
@@ -177,7 +272,7 @@ export async function getPreview(tenantId: string, sessionId: string) {
 
 // ── Apply Column Mapping (Mode A) ──
 
-export async function applyMapping(tenantId: string, sessionId: string, config: ColumnMapConfig) {
+export async function applyMapping(tenantId: string, sessionId: string, config: ColumnMapConfig & { rowFormat?: string; pivotConfig?: any }) {
   const session = await getSession(tenantId, sessionId);
   const metadata = session.metadata as any;
   const headers: string[] = metadata?.headers || [];
@@ -186,6 +281,33 @@ export async function applyMapping(tenantId: string, sessionId: string, config: 
   const rawRows = await db.select().from(payrollImportRows)
     .where(eq(payrollImportRows.sessionId, sessionId))
     .orderBy(payrollImportRows.rowNumber);
+
+  // Handle long-format pivot (e.g. Toast custom reports) before standard mapping
+  if (config.rowFormat === 'long' && config.pivotConfig) {
+    const rawRecords = rawRows.map(r => r.rawData as Record<string, any>);
+    const pivoted = pivotLongFormat(rawRecords, config.pivotConfig);
+
+    // Replace raw rows in DB with pivoted rows
+    if (pivoted.length > 0) {
+      await db.delete(payrollImportRows).where(eq(payrollImportRows.sessionId, sessionId));
+      const pivotedValues = pivoted.map((row, i) => ({
+        sessionId: session.id,
+        rowNumber: i + 1,
+        rawData: row,
+        mappedData: row, // pivoted data IS the mapped data for long-format
+        validationStatus: 'pending' as const,
+      }));
+      for (let i = 0; i < pivotedValues.length; i += 500) {
+        await db.insert(payrollImportRows).values(pivotedValues.slice(i, i + 500));
+      }
+    }
+
+    await db.update(payrollImportSessions)
+      .set({ status: 'mapped', rowCount: pivoted.length, updatedAt: new Date() })
+      .where(eq(payrollImportSessions.id, sessionId));
+
+    return { mappedCount: pivoted.length, skippedCount: rawRows.length - pivoted.length };
+  }
 
   // Reconstruct row arrays from raw data
   const rowArrays = rawRows.map(r => {
@@ -345,6 +467,9 @@ export async function deleteTemplate(tenantId: string, templateId: string) {
 export async function getDescriptionMap(tenantId: string, sessionId: string) {
   const session = await getSession(tenantId, sessionId);
   const companyId = session.companyId;
+  const metadata = session.metadata as any;
+  const providerKey = metadata?.detectedProvider || 'payroll_relief_gl';
+  const columnConfig = MODE_B_COLUMN_CONFIGS[providerKey] || MODE_B_COLUMN_CONFIGS['payroll_relief_gl']!;
 
   // Get all raw rows to extract unique descriptions
   const rows = await db.select().from(payrollImportRows)
@@ -355,11 +480,32 @@ export async function getDescriptionMap(tenantId: string, sessionId: string) {
 
   for (const row of rows) {
     const raw = row.rawData as Record<string, string>;
-    const desc = raw['Description'] || raw['description'] || '';
+    // Use provider-specific column names
+    const descCol = columnConfig.descriptionColumn;
+    const desc = raw[descCol] || raw[descCol.toLowerCase()] || raw['Description'] || raw['description'] || '';
     if (!desc) continue;
 
-    const debit = parseFloat(String(raw['Debit'] || '0').replace(/[$,]/g, '')) || 0;
-    const credit = parseFloat(String(raw['Credit'] || '0').replace(/[$,]/g, '')) || 0;
+    let debit = 0;
+    let credit = 0;
+
+    if (columnConfig.amountConvention === 'separate_dr_cr') {
+      const drCol = columnConfig.debitColumn || 'Debit';
+      const crCol = columnConfig.creditColumn || 'Credit';
+      debit = parseCurrency(raw[drCol] || raw[drCol.toLowerCase()]);
+      credit = parseCurrency(raw[crCol] || raw[crCol.toLowerCase()]);
+    } else if (columnConfig.amountConvention === 'signed_single') {
+      const amtCol = columnConfig.amountColumn || 'Amount';
+      const val = parseCurrency(raw[amtCol] || raw[amtCol.toLowerCase()]);
+      if (val >= 0) debit = val;
+      else credit = Math.abs(val);
+    } else if (columnConfig.amountConvention === 'category_derived') {
+      const amtCol = columnConfig.amountColumn || 'Amount';
+      const catCol = columnConfig.accountCategoryColumn || 'Category';
+      const amount = Math.abs(parseCurrency(raw[amtCol] || raw[amtCol.toLowerCase()]));
+      const category = (raw[catCol] || raw[catCol.toLowerCase()] || '').toLowerCase().trim();
+      if (category.startsWith('expense') || category.startsWith('cost')) debit = amount;
+      else credit = amount;
+    }
 
     if (!descriptionEntries.has(desc)) {
       descriptionEntries.set(desc, {
@@ -392,6 +538,9 @@ export async function getDescriptionMap(tenantId: string, sessionId: string) {
       eq(accounts.isActive, true),
     ));
 
+  // Use provider-specific suggestion map
+  const suggestions = MODE_B_DESCRIPTION_SUGGESTIONS[providerKey] || PAYROLL_RELIEF_DESCRIPTION_SUGGESTIONS;
+
   // Build result
   const result = Array.from(descriptionEntries.entries()).map(([description, info]) => {
     const existing = existingMap.get(description);
@@ -407,9 +556,8 @@ export async function getDescriptionMap(tenantId: string, sessionId: string) {
     if (existing) {
       status = 'mapped';
     } else {
-      const suggestion = (PAYROLL_RELIEF_DESCRIPTION_SUGGESTIONS as any)[description];
+      const suggestion = suggestions[description];
       if (suggestion) {
-        // Fuzzy match against accounts
         const matchedAccount = accts.find(a =>
           suggestion.search_terms.some((term: string) =>
             a.accountNumber === term ||
@@ -574,6 +722,38 @@ export async function autoMapAccounts(tenantId: string, companyId: string) {
 // ── Duplicate File Guard (shared by Mode A + Mode B posting) ──
 
 export async function checkDuplicateFileHash(tenantId: string, session: typeof payrollImportSessions.$inferSelect) {
+  // Check idempotency key first (provider-specific composite key)
+  if (session.idempotencyKey && session.detectedProvider) {
+    const conditions = [
+      eq(payrollImportSessions.tenantId, tenantId),
+      eq(payrollImportSessions.detectedProvider, session.detectedProvider),
+      eq(payrollImportSessions.idempotencyKey, session.idempotencyKey),
+      eq(payrollImportSessions.status, 'posted'),
+      ne(payrollImportSessions.id, session.id),
+    ];
+    // Scope to same company if session has a companyId (matches the unique index)
+    if (session.companyId) {
+      conditions.push(eq(payrollImportSessions.companyId, session.companyId));
+    }
+    const [priorByKey] = await db.select({
+      id: payrollImportSessions.id,
+      createdAt: payrollImportSessions.createdAt,
+      originalFilename: payrollImportSessions.originalFilename,
+    })
+      .from(payrollImportSessions)
+      .where(and(...conditions))
+      .limit(1);
+
+    if (priorByKey) {
+      const date = priorByKey.createdAt ? new Date(priorByKey.createdAt).toLocaleDateString() : 'unknown date';
+      throw AppError.badRequest(
+        `A payroll import with matching data was already posted on ${date} (file "${priorByKey.originalFilename}"). ` +
+        `Reverse that import first if you need to re-post.`
+      );
+    }
+  }
+
+  // Fall back to file hash check (backward compat for Payroll Relief and unknown providers)
   const [priorPosted] = await db.select({
     id: payrollImportSessions.id,
     createdAt: payrollImportSessions.createdAt,

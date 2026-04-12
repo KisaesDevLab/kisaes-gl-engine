@@ -10,6 +10,7 @@ export const payrollUploadSchema = z.object({
   payPeriodStart: z.string().optional(),
   payPeriodEnd: z.string().optional(),
   checkDate: z.string().optional(),
+  metadata: z.record(z.string(), z.any()).optional(), // Provider-specific metadata (e.g. OnPay Run ID)
 });
 
 const columnMappingEntrySchema = z.object({
@@ -50,7 +51,7 @@ export const descriptionMapEntrySchema = z.object({
 });
 
 export const saveDescriptionMapSchema = z.object({
-  providerKey: z.string().default('payroll_relief'),
+  providerKey: z.string().default('payroll_relief_gl'),
   mappings: z.array(descriptionMapEntrySchema).min(1),
 });
 

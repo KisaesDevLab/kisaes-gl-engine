@@ -1,0 +1,7 @@
+Pay Date,Description,Category,Amount
+01/15/2026,Wages Expense,Expense,5000.00
+01/15/2026,FICA - Employer,Expense,382.50
+01/15/2026,FUTA Expense,Expense,42.00
+01/15/2026,Federal Income Tax W/H,Liability,750.00
+01/15/2026,FICA - Employee,Liability,382.50
+01/15/2026,Net Payroll,Asset,4292.00

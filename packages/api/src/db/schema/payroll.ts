@@ -40,6 +40,8 @@ export const payrollImportSessions = pgTable('payroll_import_sessions', {
   journalEntryIds: jsonb('journal_entry_ids'), // uuid[] for Mode B multi-JE
   columnMapSnapshot: jsonb('column_map_snapshot'),
   metadata: jsonb('metadata'),
+  idempotencyKey: varchar('idempotency_key', { length: 255 }),
+  detectedProvider: varchar('detected_provider', { length: 50 }),
   createdBy: uuid('created_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
