@@ -13,3 +13,9 @@
 | "Reconciliation is already in progress" | Another reconciliation for this account is open | Finish or cancel the existing reconciliation before starting a new one |
 | "Recurring schedule is not on occurrence …" | Two workers tried to post the same scheduled occurrence | Refresh the page; the other worker already created the transaction |
 | "Cannot delete an active tenant" (admin) | Tenant must be disabled first | Disable the tenant via **Admin → Tenants** and then retry the deletion |
+| "Passphrase must be at least 12 characters" | Backup passphrase is too short | Choose a longer passphrase — 12 characters minimum for encrypted backups |
+| "Invalid recovery code" | The recovery code was already used or mistyped | Recovery codes are single-use. Check for typos, or try another code. If all codes are spent, contact your administrator |
+| "SMTP connection failed" | Email settings are incorrect or the mail server is unreachable | Check your SMTP host, port, username, and password under **Settings → Email Settings →**. Use **Test Connection** to verify |
+| "Duplicate file detected" | A payroll file with the same content was already imported | Check your import history — the file may have already been processed. If this is a different pay period with the same filename, rename it and try again |
+| "AI provider not configured" | No AI provider has been set up | An administrator must configure an AI provider under **Admin → AI Processing →** before OCR, categorization, or chat features work |
+| "Storage migration in progress" | Files are being moved between storage providers | Wait for the migration to complete (check the progress bar under **Settings → File Storage →**) before making further changes |

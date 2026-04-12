@@ -33,12 +33,20 @@ lines (debits + credits) to the General Ledger. Account balances are derived fro
 those lines. The major sections of the app are:
 
 - **Dashboard** — at-a-glance view of cash position, AR, AP, recent activity
-- **Banking** — connect bank accounts, import statements, categorize feed items
-- **Sales** — invoices, customers, customer payments, deposits, sales receipts
-- **Expenses** — bills (AP), expenses (one-step), checks, vendor credits
-- **Reports** — P&L, Balance Sheet, AR/AP Aging, Trial Balance, General Ledger
-- **Reconciliation** — bank reconciliation against statements
-- **Settings / Admin** — chart of accounts, contacts, tags, preferences
+- **Banking** — connect bank accounts (Plaid or CSV), import statements, categorize
+  feed items, bank rules, reconciliation
+- **Sales** — invoices, estimates, customer payments, deposits, cash sales, items
+- **Expenses** — bills (AP), expenses (one-step), checks, vendor credits, pay bills
+- **Transactions** — journal entries, transfers, batch entry, recurring schedules,
+  duplicate review
+- **Reports** — 30+ reports: P&L, Balance Sheet, Cash Flow, AR/AP Aging, Trial
+  Balance, General Ledger, Budget vs. Actual, 1099 Preparation, and more
+- **Budgets** — annual budget planning with monthly breakdown
+- **Attachments** — receipt capture with AI OCR, document library
+- **Settings** — company profile, preferences, tags, team, backup/restore, email,
+  cloud storage, API keys, 2FA, passkeys
+- **Admin** — tenant management, users, AI processing, Plaid, MCP, COA templates,
+  global bank rules, system settings
 
 ## Key Terminology (Vibe MyBooks-specific)
 
@@ -107,6 +115,49 @@ type. Both sides must balance (sum of debits = sum of credits).
 
 ### Closing Date / Lock Date
 See "Lock Date" above. Same concept, two names depending on context.
+
+### Batch Entry
+A spreadsheet-style interface for entering many transactions at once. Supports paste
+from Excel and CSV import. Found at **Transactions → Batch Entry →**.
+
+### Recurring Transaction
+A transaction set to repeat on a schedule (daily, weekly, monthly, quarterly, or
+annually). Can auto-post or send a reminder. Managed under **Recurring Transactions →**.
+
+### Items (Products & Services)
+Reusable line entries for invoices with a name, description, unit price, and income
+account. Select items when adding lines to an invoice to auto-fill details.
+
+### Passkey
+A passwordless login credential using fingerprint, face recognition, or a hardware
+security key (YubiKey). Your biometric data never leaves your device.
+
+### Recovery Codes
+Single-use backup codes (XXXX-XXXX format) generated when you enable two-factor
+authentication. Store them safely — they're your backup if you lose access to your
+authenticator app.
+
+### Portable Backup
+A passphrase-encrypted `.vmb` backup file that can be restored on any Vibe MyBooks
+installation. The passphrase is not recoverable — if you forget it, the backup is lost.
+
+### Attachment
+Any file (receipt, invoice copy, contract, supporting document) attached to a transaction,
+invoice, or bill. Managed via the paperclip icon on transactions or the
+**Attachment Library →**.
+
+### Confidence Threshold
+The minimum certainty level (0–1) the AI must reach before automatically accepting a
+categorization. Default is 0.7 (70%). Lower values accept more suggestions with less
+accuracy.
+
+### Fiscal Year
+The 12-month period your company uses for financial reporting. May or may not align
+with the calendar year. Set under **Settings → Preferences →**.
+
+### Cash Sale
+A transaction that records a sale and immediate payment in one step (no invoice or
+receivable created). Use when the customer pays at the point of sale.
 
 ## Major Workflows
 
@@ -220,6 +271,51 @@ customer's Accounts Receivable balance. Then go to the customer's open invoice
 and use Receive Payment with the journal entry as the source. Consult your
 accountant for the correct treatment in your jurisdiction.
 
+### "How do I set up 2FA?"
+Go to **Settings → Security →** and choose your preferred method (Authenticator App,
+Email, or SMS). Follow the setup steps — you'll be given recovery codes to save in a
+safe place. You can enable multiple methods and choose which to use at login.
+
+### "I lost my authenticator app — how do I log in?"
+Use one of your recovery codes at the 2FA prompt. Each code works once. After logging
+in, go to **Settings → Security →** to reconfigure your authenticator. If you've used
+all your recovery codes, contact your administrator.
+
+### "How do I import lots of transactions at once?"
+Use **Batch Entry →** in the Transactions menu. Pick the transaction type, then paste
+from a spreadsheet or import a CSV file. You can enter expenses, deposits, invoices,
+bills, journal entries, and more in bulk.
+
+### "How do I set up a recurring bill?"
+Enter the bill normally, then on the bill detail page click **Make Recurring**. Choose
+frequency (monthly, weekly, etc.), mode (auto-post or reminder), and start date. The
+system will create the bill automatically on schedule.
+
+### "How do I back up my data?"
+Go to **Settings → Backup & Restore →** and click **Create Encrypted Backup**. Set a
+strong passphrase (minimum 12 characters). The backup downloads as a `.vmb` file. Store
+it somewhere safe — if you forget the passphrase, the backup cannot be recovered.
+
+### "How do I switch between companies?"
+Click the company name at the top of the sidebar. A dropdown shows all your companies —
+click one to switch. Your data and reports will update to reflect the selected company.
+
+### "How do I connect my bank account?"
+Go to **Banking → Bank Connections →** and click **Connect Bank**. If Plaid is
+configured by your administrator, you can search for your bank and log in securely.
+Otherwise, you can import bank statements manually as CSV files.
+
+### "What file types can I attach to transactions?"
+Any file type is supported. Common attachments are receipt photos, invoice PDFs,
+contracts, and supporting documents. Upload via the paperclip icon on any transaction,
+invoice, or bill.
+
+### "How does AI categorization work?"
+When bank feed items are imported, AI can automatically suggest expense or income
+categories. The suggestion includes a confidence score. You review and accept or change
+the category in the Bank Feed. An administrator must enable AI under
+**Admin → AI Processing →**.
+
 ## Reports Quick Reference
 
 - **Profit and Loss (P&L)** — revenue minus expenses for a period. Tells you if
@@ -240,6 +336,27 @@ accountant for the correct treatment in your jurisdiction.
 - **1099 Preparation** — totals paid to each 1099-eligible vendor in a year.
 - **Sales Tax Liability** — sales tax you've collected and owe to the
   taxing authority.
+- **Taxable Sales Summary** — total taxable sales for a period, broken down
+  by tax rate.
+- **Sales Tax Payments** — history of sales tax payments made.
+- **Expenses by Vendor** — total expenses grouped by vendor for a period.
+- **Expenses by Category** — total expenses grouped by account/category.
+- **Customer Balance Summary** — what each customer owes, with totals.
+- **Customer Balance Detail** — line-by-line detail of each customer's
+  open transactions.
+- **Vendor Balance Summary** — what you owe each vendor, with totals.
+- **AP Aging Detail** — line-by-line aging of each vendor's unpaid bills.
+- **AR Aging Detail** — line-by-line aging of each customer's unpaid invoices.
+- **Unpaid Bills** — all outstanding bills across all vendors.
+- **Bill Payment History** — log of all bill payments made.
+- **Transactions by Vendor** — every transaction involving a specific vendor.
+- **Bank Reconciliation Summary** — reconciliation status for each bank account.
+- **Deposit Detail** — breakdown of each bank deposit and its component payments.
+- **Check Register** — all checks written, with check numbers, payees, and amounts.
+- **1099 Vendor Summary** — detailed 1099-eligible payments per vendor.
+- **Transaction List** — all transactions for a period in date order.
+- **Journal Entries Report** — all journal entries for a period.
+- **Budget Overview** — summary view of all budget lines for a fiscal year.
 
 ## Error Resolution
 
@@ -256,6 +373,12 @@ accountant for the correct treatment in your jurisdiction.
 | "Reconciliation is already in progress" | Another reconciliation for this account is open | Finish or cancel the existing reconciliation before starting a new one |
 | "Recurring schedule is not on occurrence …" | Two workers tried to post the same scheduled occurrence | Refresh the page; the other worker already created the transaction |
 | "Cannot delete an active tenant" (admin) | Tenant must be disabled first | Disable the tenant via **Admin → Tenants** and then retry the deletion |
+| "Passphrase must be at least 12 characters" | Backup passphrase is too short | Choose a longer passphrase — 12 characters minimum for encrypted backups |
+| "Invalid recovery code" | The recovery code was already used or mistyped | Recovery codes are single-use. Check for typos, or try another code. If all codes are spent, contact your administrator |
+| "SMTP connection failed" | Email settings are incorrect or the mail server is unreachable | Check your SMTP host, port, username, and password under **Settings → Email Settings →**. Use **Test Connection** to verify |
+| "Duplicate file detected" | A payroll file with the same content was already imported | Check your import history — the file may have already been processed. If this is a different pay period with the same filename, rename it and try again |
+| "AI provider not configured" | No AI provider has been set up | An administrator must configure an AI provider under **Admin → AI Processing →** before OCR, categorization, or chat features work |
+| "Storage migration in progress" | Files are being moved between storage providers | Wait for the migration to complete (check the progress bar under **Settings → File Storage →**) before making further changes |
 
 ## Capability Boundaries
 
@@ -270,6 +393,370 @@ accountant for the correct treatment in your jurisdiction.
 - You **cannot** access another user's or another company's data.
 - You **cannot** give tax, legal, or investment advice. Stay in the lane of
   "what does this mean and how do I use the app".
+
+## Security & Authentication
+
+### Two-Factor Authentication (2FA)
+Vibe MyBooks supports multiple 2FA methods, configured under **Settings → Security →**:
+
+- **TOTP** — use an authenticator app (Google Authenticator, Authy, etc.) to generate
+  time-based codes. This is the most common and recommended method.
+- **Email** — receive a 6-digit code at your account email address.
+- **SMS** — receive a 6-digit code via text message (must be enabled by the administrator
+  under **Admin → System Settings →**).
+
+When enabling 2FA for the first time, you'll be given **recovery codes** — 8–10 single-use
+backup codes in XXXX-XXXX format. Store them somewhere safe (you can copy or download them
+as a text file). If you lose your authenticator, these codes are the only way in. The system
+warns you when fewer than 3 remain. You can regenerate codes under **Settings → Security →**,
+but this invalidates all previous codes and requires your password.
+
+**Trusted Devices:** After entering your 2FA code you can optionally check "Trust this
+device for 30 days" to skip 2FA on that browser. This trust is per-device only.
+
+### Passkeys (Passwordless Login)
+Passkeys let you sign in with your fingerprint, face recognition, or a hardware security key
+(YubiKey, etc.) instead of typing a password. To set up a passkey:
+
+1. Go to **Settings → Security →** and find the Passkeys section.
+2. Click **Register Passkey** and follow your browser's prompt.
+3. Give it a name (e.g., "MacBook Touch ID" or "YubiKey 5").
+
+Each passkey shows its creation date and last use. You can rename or remove passkeys at
+any time. Your biometric data never leaves your device — Vibe MyBooks only stores a
+cryptographic public key.
+
+### Magic Links
+Magic links let you sign in via an email link instead of a password. To enable:
+
+1. Go to **Settings → Security →** and look for Login Methods.
+2. Toggle **Magic Link Login** on. Note: you must already have TOTP or SMS 2FA configured.
+
+When you click the magic link in your email, you'll still need to complete 2FA verification
+for security.
+
+### Team & User Management
+Company owners can invite other users under **Settings → Team →**. Invited users receive
+an email with a link to set up their account. Each user can have different roles and access
+levels per company. Use **Admin → All Users →** (admin only) to manage users across the
+entire system.
+
+## Advanced Features
+
+### Batch Entry
+Batch entry is a spreadsheet-style interface for entering many transactions at once. Open
+it from **Transactions → Batch Entry →**.
+
+1. **Pick a transaction type** — Expenses, Deposits, Credit Card Charges/Credits, Invoices,
+   Bills, Credit Memos, Journal Entries, or Customer Payments.
+2. **Enter rows** — the grid auto-extends as you fill the last row. You can also paste
+   from Excel or Google Sheets (Tab + Enter delimiters), or import a CSV file.
+3. **Validate** — each row shows a green checkmark (valid), red X (invalid), or orange
+   triangle (warning). Click **Validate** to check all rows before saving.
+4. **Save All** — posts all valid rows. A confirmation shows how many transactions were
+   created and any new contacts that were auto-created.
+
+The columns change depending on the type. For example, Expenses show Date, Ref No, Payee,
+Account, Memo, Amount. Journal Entries show Date, Ref No, Account, Name, Memo, Debit, Credit.
+
+### Recurring Transactions
+Turn any transaction into a recurring schedule by clicking **Make Recurring** on the
+transaction detail page.
+
+- **Frequency:** Daily, Weekly, Monthly, Quarterly, or Annually.
+- **Interval:** e.g., "Every 2 weeks" or "Every 3 months."
+- **Mode:** **Auto-post** creates the transaction automatically on schedule.
+  **Reminder only** sends you a notification to post it manually.
+- **Start / End Date:** when the schedule begins and optionally when it stops.
+
+A preview shows the next 5 occurrence dates. Manage all schedules from
+**Recurring Transactions →** in the sidebar.
+
+### Products & Services (Items)
+Items are reusable line entries for invoices. Manage them under **Products & Services →**
+in the sidebar. Each item has:
+
+- **Name** (required) — what appears on the invoice line
+- **Description** — longer detail text
+- **Unit Price** — default price (can be overridden per invoice)
+- **Income Account** — which revenue account to credit
+- **Taxable** — whether sales tax applies
+
+When creating an invoice, select an item from the line item dropdown to auto-fill the
+description and price.
+
+### Duplicate Detection
+Vibe MyBooks automatically flags potentially duplicate transactions. Review them at
+**Duplicate Review →** in the sidebar. For each potential duplicate pair, you can:
+
+- **Dismiss** — mark as not a duplicate (they're different transactions)
+- **Merge** — combine into one transaction
+
+### Account Register
+The register view is an inline ledger for any account. Go to **Chart of Accounts →**,
+then click the register icon next to an account (or click the account name). It shows
+every transaction that hits that account in date order, with running balance.
+
+### Tags
+Tags let you label transactions for cross-cutting reporting (projects, departments,
+locations, properties). Manage tags under **Settings → Tags →**.
+
+- **Groups** — organize related tags (e.g., "Department" group with tags "Sales",
+  "Engineering", "Operations").
+- **Single-Select Groups** — a transaction can only have one tag from a single-select
+  group. Multi-select groups allow multiple.
+- Tags can be applied when creating or editing any transaction.
+- Filter by tags on reports to see activity for specific projects or departments.
+
+### Budgets
+Create and manage budgets under **Budgets →** in the sidebar.
+
+1. **Select a fiscal year** and click **Create Budget**.
+2. **Quick Setup** options: Start Blank, Copy Last Year's Budget, Use Last Year's Actuals,
+   or Actuals + Growth % (enter a percentage increase).
+3. **Monthly view** shows 12 columns (one per month) plus an annual total. **Annual view**
+   shows a single amount per account.
+4. Revenue accounts (blue) and expense accounts (red) are separated. Net Income is
+   calculated automatically.
+
+Helpful shortcuts:
+- **Spread Annual** — distributes an annual total evenly across all 12 months.
+- **Copy Prior Year** — copies values from last year's budget.
+- **Fill from Actuals** — fills with last year's actual amounts.
+- **Adjust %** — increase or decrease all budget amounts by a percentage.
+- **Hide Zero** — filter out accounts with no budget entered.
+
+Run **Reports → Budget vs. Actual →** to compare your budget against actual results.
+
+## Setup & Administration
+
+### Managing Multiple Companies
+Vibe MyBooks supports multiple companies under one login. The company switcher is at the
+top of the sidebar — click it to see all your companies.
+
+- **Switch company** — click any company name in the dropdown. The app reloads with that
+  company's data.
+- **Create a new company** — click **New Company** in the dropdown. Enter a business name,
+  entity type, and business type (which determines the chart of accounts template).
+- For accountants/bookkeepers with multiple clients, the dropdown also shows a
+  **Switch Client** section for switching between tenants.
+
+### Backup & Restore
+Manage backups under **Settings → Backup & Restore →**.
+
+**Creating a Backup:**
+1. Click **Create Encrypted Backup**.
+2. Set a passphrase (minimum 12 characters). A strength meter shows Weak / Fair / Strong /
+   Very Strong.
+3. The backup downloads as a `.vmb` file (Vibe MyBooks Backup). **If you forget the
+   passphrase, the backup cannot be recovered.**
+
+**Restoring a Backup:**
+1. Upload a `.vmb` (portable) or `.kbk` (legacy) file.
+2. For `.vmb` files, enter the backup passphrase.
+3. Type "RESTORE" to confirm.
+4. The system validates and restores the data.
+
+Legacy `.kbk` backups were encrypted with the server key and don't require a passphrase.
+
+**Backup History** shows all previous backups with size, date, and format. You can download
+or delete old backups from this list.
+
+### Cloud File Storage
+Configure where Vibe MyBooks stores uploaded files (attachments, receipts) under
+**Settings → File Storage →**.
+
+Supported providers:
+- **Local Disk** — always available, the default
+- **Dropbox** — OAuth connection
+- **Google Drive** — OAuth connection
+- **OneDrive** — OAuth connection
+- **S3-Compatible** — any S3 service (AWS, MinIO, Cloudflare R2, etc.)
+
+For OAuth providers, you'll need to set up API credentials and follow the redirect URI
+instructions shown on the settings page. For S3, enter your bucket name, region, endpoint,
+access key, secret key, and optional path prefix.
+
+When switching providers, existing files are automatically migrated. A progress bar shows
+migration status.
+
+### Data Export
+Export your data under **Settings → Export Data →**. Available formats include CSV and
+Excel. You can export transactions, contacts, chart of accounts, and other data.
+
+### Opening Balances
+If you're migrating from another system, enter your opening balances under
+**Settings → Opening Balances →**. This sets the starting account balances as of your
+go-live date so your reports are accurate from day one.
+
+### Payroll Import
+Import payroll data from your payroll provider under **Payroll Import** (if available
+in the sidebar).
+
+1. **Upload** — drag and drop a CSV, TSV, XLS, or XLSX file. Optionally select your
+   payroll provider template for auto-detection.
+2. **Map** — map your file's columns to payroll data fields. Two modes:
+   - **Mode A (Employee-level)** — maps individual employee pay details
+   - **Mode B (Pre-built JE)** — maps GL account descriptions to amounts
+3. **Validate** — review the extracted data for accuracy.
+4. **Preview & Post** — review the journal entries that will be created, then click
+   **Post** to record them in the general ledger.
+
+The system auto-detects your payroll provider and shows a confidence percentage. Duplicate
+file detection warns you if the same file was already imported.
+
+### Email (SMTP) Configuration
+Configure outgoing email under **Settings → Email Settings →**. Enter your SMTP host,
+port, username, password, and "from" address. Use **Test Connection** to verify the
+settings work before saving. Email is used for sending invoices, password resets, magic
+links, and 2FA codes.
+
+## AI Features & Attachments
+
+### AI Processing Overview
+Vibe MyBooks uses AI for automatic transaction categorization, receipt OCR, bill scanning,
+and bank statement parsing. An administrator must configure an AI provider before these
+features are available. Go to **Admin → AI Processing →** to set up.
+
+**Supported AI Providers:**
+- Anthropic (Claude Sonnet 4, Haiku 4.5)
+- OpenAI (GPT-4o, GPT-4o-mini)
+- Google Gemini (Gemini 2.5 Flash, Pro)
+- Ollama (self-hosted models — no API key required)
+- GLM-OCR (Cloud and Local)
+
+### AI Transaction Categorization
+When bank feed items are imported (via Plaid or CSV), AI can automatically assign expense
+or income categories.
+
+- Enable under **Admin → AI Processing →** with the "Auto-categorize bank feed items on
+  import" toggle.
+- A **confidence threshold** (default 0.7 / 70%) controls how certain the AI must be
+  before accepting a categorization. Lower thresholds accept more suggestions but with
+  less accuracy.
+- You can customize the categorization prompt to match your business's terminology.
+- Review AI suggestions in the **Bank Feed →** — each item shows the suggested category
+  and confidence score.
+
+### Receipt OCR
+Snap a photo or upload an image of a receipt, and AI extracts the vendor name, date, total,
+and tax amount.
+
+1. On any transaction, open the attachment panel and click **Capture Receipt**.
+2. Drag and drop or browse for the receipt image.
+3. If AI OCR is enabled ("Auto-OCR receipts on upload"), the system automatically extracts
+   data and shows it with a confidence score (e.g., "87% confidence").
+4. Review and edit any extracted fields before creating the expense.
+5. The receipt image is automatically attached to the resulting transaction.
+
+### Bill OCR / Document Scanning
+Similar to receipt OCR but for vendor invoices and bills. Upload a bill image and the AI
+extracts vendor, date, line items, and totals to pre-fill the bill entry form.
+
+### AI Bank Statement Parsing
+Upload a bank or credit card statement PDF, and the AI extracts individual transactions.
+This is useful when Plaid isn't available or for credit card statements that can't be
+connected electronically.
+
+### In-App Chat Assistant
+The chat assistant (the speech bubble icon in the bottom-right) can answer questions about
+the app, explain accounting concepts, and help you navigate to the right screen. It reads
+the current screen context to give relevant answers.
+
+**Data access levels** (configured by admin):
+- **None** — general help only
+- **Contextual** — can see what screen you're on and what fields are filled
+- **Full** — can look up balances and lists for your company (read-only)
+
+The assistant never creates, edits, or deletes data — it guides you to the right screen
+instead.
+
+### Attachments
+You can attach files (receipts, invoices, contracts, supporting documents) to any
+transaction, invoice, or bill.
+
+**Attaching Files:**
+- Open a transaction and click the attachment/paperclip icon.
+- **Upload new** — drag and drop or browse for a file.
+- **Attach existing** — pick a file already in your attachment library.
+
+**Attachment Library:**
+View all uploaded files across your company at **Attachment Library →** in the sidebar.
+Files can be re-attached to other transactions from here.
+
+Attachments support any file type. The count of attachments appears as a badge on
+transactions, invoices, and bills in list views.
+
+## Checks
+
+### Writing a Check
+Go to **Write Check →** in the sidebar to create a new check.
+
+**Check Fields:**
+- **Bank Account** — the account the check draws from (required)
+- **Date** — check date
+- **Pay to the Order of** — select a contact (vendor or other payee)
+- **Payee Name on Check** — auto-filled from the contact, but you can override it
+  (useful when the legal name differs from how you know the vendor)
+- **Amount** — the check total (automatically converted to words for the check face,
+  e.g., "Two Hundred Thirty-Four and 50/100 Dollars")
+- **Printed Memo** — appears on the physical check
+- **Internal Memo** — for your records only, not printed
+
+**Expense Lines:**
+Below the check header, add one or more expense line items with Account, Description,
+and Amount. If you split the check across multiple accounts, the lines must total the
+check amount.
+
+**Saving:**
+- **Save** — records the check immediately (posted to the ledger).
+- **Save & Queue for Print** — records the check and adds it to the print queue.
+
+The journal entry is the same as an expense: `DR Expense Account(s) / CR Bank Account`.
+
+### Printing Checks
+Go to **Print Checks →** to see all checks queued for printing.
+
+1. Review the list of queued checks (payee, amount, date).
+2. Select which checks to print (or select all).
+3. Click **Print** to send to your printer.
+
+Check print settings (check layout, starting check number, alignment) can be configured
+under **Settings → Check Print Settings →**. A test print option lets you verify
+alignment before printing real checks.
+
+## API & Integrations
+
+### Plaid Bank Connections
+Plaid connects your bank accounts directly to Vibe MyBooks for automatic transaction
+import. Set up under **Admin → Plaid Integration →** (requires Plaid API credentials).
+
+Once configured, users connect banks via **Banking → Bank Connections →**:
+1. Click **Connect Bank** and search for your bank.
+2. Log in through Plaid's secure window.
+3. Select which accounts to import.
+4. Transactions sync automatically (you can also click **Sync** to pull immediately).
+
+Imported transactions appear in the **Bank Feed →** for categorization or matching
+against existing transactions.
+
+### API Keys
+Generate API keys for external integrations under **Settings → API Keys →**. Each key
+has a name and can be revoked at any time. API keys provide programmatic access to your
+company's data for automation, reporting tools, or custom integrations.
+
+### MCP Server (AI Assistant Integration)
+Vibe MyBooks includes an MCP (Model Context Protocol) server that lets external AI
+assistants (like Claude) interact with your accounting data. Configure under
+**Admin → MCP / API Access →**.
+
+The MCP server provides read-only access to accounting data, enabling AI assistants to
+answer questions about your books, generate summaries, and help with analysis — all
+without being able to modify data.
+
+### OAuth 2.0
+Vibe MyBooks supports OAuth 2.0 for third-party application authentication. This allows
+external apps to connect and access data on behalf of a user with proper authorization.
 
 
 ## Screen Catalog (auto-generated)
@@ -295,7 +782,7 @@ The following screens exist in the application. Use these names and paths when d
 
 - **Invoices** (`/invoices`)
 - **New Invoice** (`/invoices/new`) — actions: Save Changes, Create Invoice
-- **Invoice Detail** (`/invoices/:id`)
+- **Invoice** (`/invoices/:id`)
 - **New Invoice** (`/invoices/:id/edit`) — actions: Save Changes, Create Invoice
 
 ### Expenses
@@ -304,10 +791,7 @@ The following screens exist in the application. Use these names and paths when d
 - **Print Checks** (`/checks/print`)
 - **Bills** (`/bills`)
 - **Enter Bill** (`/bills/new`) — actions: Save Changes, Create Bill
-- **}`}>
-              {status.toUpperCase()}
-            </span>
-            {isVoid && <span className=** (`/bills/:id`) — actions: Edit, Edit Lines, Void Bill
+- **Bill** (`/bills/:id`) — actions: Edit, Edit Lines, Void Bill
 - **Enter Bill** (`/bills/:id/edit`) — actions: Save Changes, Create Bill
 - **Vendor Credits** (`/vendor-credits`)
 - **Enter Vendor Credit** (`/vendor-credits/new`) — actions: Create Vendor Credit
@@ -388,6 +872,9 @@ The following screens exist in the application. Use these names and paths when d
 - **Backup & Restore** (`/settings/backup`)
 - **Audit Log** (`/settings/audit-log`)
 - **Export Data** (`/settings/export`)
+- **Export Company Data** (`/settings/tenant-export`)
+- **Import Complete** (`/settings/tenant-import`) — actions: Import as New Company, Merge into Company
+- **Remote Backups** (`/settings/remote-backup`)
 - **Opening Balances** (`/settings/opening-balances`)
 - **Preferences** (`/settings/preferences`) — actions: Save Preferences
 - **Email Settings** (`/settings/email`) — actions: Test Connection, Save Email Settings
@@ -396,22 +883,12 @@ The following screens exist in the application. Use these names and paths when d
 - **Two-Factor Authentication** (`/settings/security`)
 - **Connected Apps** (`/settings/connected-apps`)
 - **File Storage** (`/settings/storage`) — actions: Update credentials, Connect
+- **Payroll Account Mapping** (`/settings/payroll-accounts`) — actions: Auto-Map, Save Mappings
 - **Settings** (`/settings`)
 
-### Admin
+### *
 
-- **Admin Dashboard** (`/admin`)
-- **Tenants** (`/admin/tenants`)
-- **Tenant Detail** (`/admin/tenants/:id`)
-- **All Users** (`/admin/users`)
-- **System Settings** (`/admin/system`) — actions: Send Test Email, Test Connection, Send Test, Save SMS Settings, Save Settings
-- **Global Bank Rules** (`/admin/bank-rules`) — actions: Save Changes, Create Rule, Cancel
-- **COA Templates** (`/admin/coa-templates`) — actions: Cancel
-- **Two-Factor Authentication** (`/admin/tfa`)
-- **Plaid Integration** (`/admin/plaid`)
-- **Plaid Connection Monitor** (`/admin/plaid/connections`)
-- **AI Processing** (`/admin/ai`)
-- **MCP / API Access** (`/admin/mcp`) — actions: Save Configuration
+- **Not Found** (`*`)
 
 ### Attachments
 
@@ -429,6 +906,11 @@ The following screens exist in the application. Use these names and paths when d
 ### Items
 
 - **Products & Services** (`/items`)
+
+### Payroll
+
+- **Import Payroll** (`/payroll/import`)
+- **Payroll Import History** (`/payroll/imports`)
 
 ### Receive payment
 

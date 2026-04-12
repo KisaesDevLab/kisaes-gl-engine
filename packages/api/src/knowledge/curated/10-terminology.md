@@ -65,3 +65,46 @@ type. Both sides must balance (sum of debits = sum of credits).
 
 ### Closing Date / Lock Date
 See "Lock Date" above. Same concept, two names depending on context.
+
+### Batch Entry
+A spreadsheet-style interface for entering many transactions at once. Supports paste
+from Excel and CSV import. Found at **Transactions → Batch Entry →**.
+
+### Recurring Transaction
+A transaction set to repeat on a schedule (daily, weekly, monthly, quarterly, or
+annually). Can auto-post or send a reminder. Managed under **Recurring Transactions →**.
+
+### Items (Products & Services)
+Reusable line entries for invoices with a name, description, unit price, and income
+account. Select items when adding lines to an invoice to auto-fill details.
+
+### Passkey
+A passwordless login credential using fingerprint, face recognition, or a hardware
+security key (YubiKey). Your biometric data never leaves your device.
+
+### Recovery Codes
+Single-use backup codes (XXXX-XXXX format) generated when you enable two-factor
+authentication. Store them safely — they're your backup if you lose access to your
+authenticator app.
+
+### Portable Backup
+A passphrase-encrypted `.vmb` backup file that can be restored on any Vibe MyBooks
+installation. The passphrase is not recoverable — if you forget it, the backup is lost.
+
+### Attachment
+Any file (receipt, invoice copy, contract, supporting document) attached to a transaction,
+invoice, or bill. Managed via the paperclip icon on transactions or the
+**Attachment Library →**.
+
+### Confidence Threshold
+The minimum certainty level (0–1) the AI must reach before automatically accepting a
+categorization. Default is 0.7 (70%). Lower values accept more suggestions with less
+accuracy.
+
+### Fiscal Year
+The 12-month period your company uses for financial reporting. May or may not align
+with the calendar year. Set under **Settings → Preferences →**.
+
+### Cash Sale
+A transaction that records a sale and immediate payment in one step (no invoice or
+receivable created). Use when the customer pays at the point of sale.

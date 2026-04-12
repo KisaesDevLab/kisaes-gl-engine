@@ -205,6 +205,14 @@ function extractH1Title(src: string): string | null {
   const literalMatch = inner.match(/^([A-Za-z][^<{]*?)$/);
   if (literalMatch) return literalMatch[1]!.trim();
 
+  // Text followed by JSX (e.g., "Bill {bill.txnNumber}\n<span...>"):
+  // extract the leading text before the first JSX element or expression.
+  const leadingTextMatch = inner.match(/^([A-Za-z][^<{]*?)\s*[{<]/);
+  if (leadingTextMatch) {
+    const text = leadingTextMatch[1]!.trim();
+    if (text.length >= 3) return text;
+  }
+
   // Then ternary: {isEdit ? 'Edit Bill' : 'Enter Bill'}
   // Take the second branch (the "create" form is the more common one)
   const ternaryMatch = inner.match(/\?\s*['"]([^'"]+)['"]\s*:\s*['"]([^'"]+)['"]/);

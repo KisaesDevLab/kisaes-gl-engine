@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-04-09T00:12:42.473Z",
+  "generatedAt": "2026-04-12T04:36:04.362Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -8,86 +8,17 @@
       "30-common-questions.md",
       "40-reports.md",
       "50-errors.md",
-      "60-capability-boundaries.md"
+      "60-capability-boundaries.md",
+      "70-security-auth.md",
+      "80-advanced-features.md",
+      "90-setup-admin.md",
+      "92-ai-attachments.md",
+      "94-checks.md",
+      "96-api-integrations.md"
     ],
-    "totalBytes": 14983
+    "totalBytes": 39151
   },
   "screens": [
-    {
-      "id": "admin",
-      "path": "/admin",
-      "component": "AdminDashboard",
-      "sourceFile": "packages/web/src/features/admin/AdminDashboard.tsx",
-      "title": "Admin Dashboard",
-      "section": "Admin",
-      "actions": []
-    },
-    {
-      "id": "admin-tenants",
-      "path": "/admin/tenants",
-      "component": "TenantListPage",
-      "sourceFile": "packages/web/src/features/admin/TenantListPage.tsx",
-      "title": "Tenants",
-      "section": "Admin",
-      "actions": []
-    },
-    {
-      "id": "admin-tenants",
-      "path": "/admin/tenants/:id",
-      "component": "TenantDetailPage",
-      "sourceFile": "packages/web/src/features/admin/TenantDetailPage.tsx",
-      "title": "Tenant Detail",
-      "section": "Admin",
-      "actions": []
-    },
-    {
-      "id": "admin-users",
-      "path": "/admin/users",
-      "component": "UserListPage",
-      "sourceFile": "packages/web/src/features/admin/UserListPage.tsx",
-      "title": "All Users",
-      "section": "Admin",
-      "actions": []
-    },
-    {
-      "id": "admin-system",
-      "path": "/admin/system",
-      "component": "SystemSettingsPage",
-      "sourceFile": "packages/web/src/features/settings/SystemSettingsPage.tsx",
-      "title": "System Settings",
-      "section": "Admin",
-      "actions": [
-        "Send Test Email",
-        "Test Connection",
-        "Send Test",
-        "Save SMS Settings",
-        "Save Settings"
-      ]
-    },
-    {
-      "id": "admin-bank-rules",
-      "path": "/admin/bank-rules",
-      "component": "GlobalBankRulesPage",
-      "sourceFile": "packages/web/src/features/admin/GlobalBankRulesPage.tsx",
-      "title": "Global Bank Rules",
-      "section": "Admin",
-      "actions": [
-        "Save Changes",
-        "Create Rule",
-        "Cancel"
-      ]
-    },
-    {
-      "id": "admin-coa-templates",
-      "path": "/admin/coa-templates",
-      "component": "CoaTemplatesPage",
-      "sourceFile": "packages/web/src/features/admin/CoaTemplatesPage.tsx",
-      "title": "COA Templates",
-      "section": "Admin",
-      "actions": [
-        "Cancel"
-      ]
-    },
     {
       "id": "dashboard",
       "path": "/",
@@ -477,7 +408,7 @@
       "path": "/invoices/:id",
       "component": "InvoiceDetailPage",
       "sourceFile": "packages/web/src/features/invoicing/InvoiceDetailPage.tsx",
-      "title": "Invoice Detail",
+      "title": "Invoice",
       "section": "Sales",
       "actions": []
     },
@@ -530,7 +461,7 @@
       "path": "/bills/:id",
       "component": "BillDetailPage",
       "sourceFile": "packages/web/src/features/ap/BillDetailPage.tsx",
-      "title": "}`}>\r\n              {status.toUpperCase()}\r\n            </span>\r\n            {isVoid && <span className=",
+      "title": "Bill",
       "section": "Expenses",
       "actions": [
         "Edit",
@@ -943,6 +874,36 @@
       "actions": []
     },
     {
+      "id": "settings-tenant-export",
+      "path": "/settings/tenant-export",
+      "component": "TenantExportPage",
+      "sourceFile": "packages/web/src/features/settings/TenantExportPage.tsx",
+      "title": "Export Company Data",
+      "section": "Settings",
+      "actions": []
+    },
+    {
+      "id": "settings-tenant-import",
+      "path": "/settings/tenant-import",
+      "component": "TenantImportPage",
+      "sourceFile": "packages/web/src/features/settings/TenantImportPage.tsx",
+      "title": "Import Complete",
+      "section": "Settings",
+      "actions": [
+        "Import as New Company",
+        "Merge into Company"
+      ]
+    },
+    {
+      "id": "settings-remote-backup",
+      "path": "/settings/remote-backup",
+      "component": "RemoteBackupSettingsPage",
+      "sourceFile": "packages/web/src/features/settings/RemoteBackupSettingsPage.tsx",
+      "title": "Remote Backups",
+      "section": "Settings",
+      "actions": []
+    },
+    {
       "id": "settings-opening-balances",
       "path": "/settings/opening-balances",
       "component": "OpeningBalancesPage",
@@ -1029,50 +990,33 @@
       ]
     },
     {
-      "id": "admin-tfa",
-      "path": "/admin/tfa",
-      "component": "TfaConfigPage",
-      "sourceFile": "packages/web/src/features/admin/TfaConfigPage.tsx",
-      "title": "Two-Factor Authentication",
-      "section": "Admin",
+      "id": "payroll-import",
+      "path": "/payroll/import",
+      "component": "PayrollImportPage",
+      "sourceFile": "packages/web/src/features/payroll/PayrollImportPage.tsx",
+      "title": "Import Payroll",
+      "section": "Payroll",
       "actions": []
     },
     {
-      "id": "admin-plaid",
-      "path": "/admin/plaid",
-      "component": "PlaidConfigPage",
-      "sourceFile": "packages/web/src/features/admin/PlaidConfigPage.tsx",
-      "title": "Plaid Integration",
-      "section": "Admin",
+      "id": "payroll-imports",
+      "path": "/payroll/imports",
+      "component": "PayrollHistoryPage",
+      "sourceFile": "packages/web/src/features/payroll/PayrollHistoryPage.tsx",
+      "title": "Payroll Import History",
+      "section": "Payroll",
       "actions": []
     },
     {
-      "id": "admin-plaid-connections",
-      "path": "/admin/plaid/connections",
-      "component": "PlaidConnectionsMonitorPage",
-      "sourceFile": "packages/web/src/features/admin/PlaidConnectionsMonitorPage.tsx",
-      "title": "Plaid Connection Monitor",
-      "section": "Admin",
-      "actions": []
-    },
-    {
-      "id": "admin-ai",
-      "path": "/admin/ai",
-      "component": "AiConfigPage",
-      "sourceFile": "packages/web/src/features/admin/AiConfigPage.tsx",
-      "title": "AI Processing",
-      "section": "Admin",
-      "actions": []
-    },
-    {
-      "id": "admin-mcp",
-      "path": "/admin/mcp",
-      "component": "McpConfigPage",
-      "sourceFile": "packages/web/src/features/admin/McpConfigPage.tsx",
-      "title": "MCP / API Access",
-      "section": "Admin",
+      "id": "settings-payroll-accounts",
+      "path": "/settings/payroll-accounts",
+      "component": "PayrollAccountMappingPage",
+      "sourceFile": "packages/web/src/features/payroll/PayrollAccountMappingPage.tsx",
+      "title": "Payroll Account Mapping",
+      "section": "Settings",
       "actions": [
-        "Save Configuration"
+        "Auto-Map",
+        "Save Mappings"
       ]
     },
     {
@@ -1101,6 +1045,15 @@
       "title": "Article",
       "section": "Help",
       "actions": []
+    },
+    {
+      "id": "*",
+      "path": "*",
+      "component": "NotFoundPage",
+      "sourceFile": "packages/web/src/features/NotFoundPage.tsx",
+      "title": "Not Found",
+      "section": "*",
+      "actions": []
     }
   ],
   "workflows": [
@@ -1127,6 +1080,16 @@
     "Reconciliation",
     "Journal Entry",
     "Closing Date / Lock Date",
+    "Batch Entry",
+    "Recurring Transaction",
+    "Items (Products & Services)",
+    "Passkey",
+    "Recovery Codes",
+    "Portable Backup",
+    "Attachment",
+    "Confidence Threshold",
+    "Fiscal Year",
+    "Cash Sale",
     "Bank Feed Categorization",
     "Period Close",
     "\"How is the due date calculated on a bill?\"",
@@ -1136,6 +1099,44 @@
     "\"I voided a bill but the journal entries are still there\"",
     "\"How do I edit a paid bill?\"",
     "\"Where do I see what a customer owes me?\"",
-    "\"How do I write off a bad debt?\""
+    "\"How do I write off a bad debt?\"",
+    "\"How do I set up 2FA?\"",
+    "\"I lost my authenticator app — how do I log in?\"",
+    "\"How do I import lots of transactions at once?\"",
+    "\"How do I set up a recurring bill?\"",
+    "\"How do I back up my data?\"",
+    "\"How do I switch between companies?\"",
+    "\"How do I connect my bank account?\"",
+    "\"What file types can I attach to transactions?\"",
+    "\"How does AI categorization work?\"",
+    "Two-Factor Authentication (2FA)",
+    "Passkeys (Passwordless Login)",
+    "Magic Links",
+    "Team & User Management",
+    "Recurring Transactions",
+    "Products & Services (Items)",
+    "Duplicate Detection",
+    "Account Register",
+    "Budgets",
+    "Managing Multiple Companies",
+    "Backup & Restore",
+    "Cloud File Storage",
+    "Data Export",
+    "Opening Balances",
+    "Payroll Import",
+    "Email (SMTP) Configuration",
+    "AI Processing Overview",
+    "AI Transaction Categorization",
+    "Receipt OCR",
+    "Bill OCR / Document Scanning",
+    "AI Bank Statement Parsing",
+    "In-App Chat Assistant",
+    "Attachments",
+    "Writing a Check",
+    "Printing Checks",
+    "Plaid Bank Connections",
+    "API Keys",
+    "MCP Server (AI Assistant Integration)",
+    "OAuth 2.0"
   ]
 }

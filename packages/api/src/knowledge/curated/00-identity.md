@@ -33,9 +33,17 @@ lines (debits + credits) to the General Ledger. Account balances are derived fro
 those lines. The major sections of the app are:
 
 - **Dashboard** — at-a-glance view of cash position, AR, AP, recent activity
-- **Banking** — connect bank accounts, import statements, categorize feed items
-- **Sales** — invoices, customers, customer payments, deposits, sales receipts
-- **Expenses** — bills (AP), expenses (one-step), checks, vendor credits
-- **Reports** — P&L, Balance Sheet, AR/AP Aging, Trial Balance, General Ledger
-- **Reconciliation** — bank reconciliation against statements
-- **Settings / Admin** — chart of accounts, contacts, tags, preferences
+- **Banking** — connect bank accounts (Plaid or CSV), import statements, categorize
+  feed items, bank rules, reconciliation
+- **Sales** — invoices, estimates, customer payments, deposits, cash sales, items
+- **Expenses** — bills (AP), expenses (one-step), checks, vendor credits, pay bills
+- **Transactions** — journal entries, transfers, batch entry, recurring schedules,
+  duplicate review
+- **Reports** — 30+ reports: P&L, Balance Sheet, Cash Flow, AR/AP Aging, Trial
+  Balance, General Ledger, Budget vs. Actual, 1099 Preparation, and more
+- **Budgets** — annual budget planning with monthly breakdown
+- **Attachments** — receipt capture with AI OCR, document library
+- **Settings** — company profile, preferences, tags, team, backup/restore, email,
+  cloud storage, API keys, 2FA, passkeys
+- **Admin** — tenant management, users, AI processing, Plaid, MCP, COA templates,
+  global bank rules, system settings
