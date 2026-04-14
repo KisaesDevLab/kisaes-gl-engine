@@ -1,4 +1,4 @@
-import { eq, and, sql, lte, count } from 'drizzle-orm';
+import { eq, and, sql, lte, count, inArray } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import type { JournalLineInput, TxnType, TxnStatus } from '@kis-books/shared';
@@ -6,6 +6,44 @@ import { db, type DbOrTx } from '../db/index.js';
 import { transactions, journalLines, accounts, companies, contacts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+
+/**
+ * Every journal line references an accountId. The caller supplies those IDs
+ * in their request body — we cannot assume they belong to this tenant just
+ * because the enclosing transaction row will. This runs a single query to
+ * confirm every distinct accountId in the input is owned by the tenant (and
+ * by the company, when a companyId is given). Without it, a malicious but
+ * authenticated user in tenant A could post journal lines against an
+ * account UUID belonging to tenant B — the lines would land with tenantId=A
+ * but the foreign-key reference corrupts tenant B's balance denormalization.
+ */
+async function assertAccountsInScope(
+  executor: DbOrTx,
+  tenantId: string,
+  companyId: string | null | undefined,
+  accountIds: string[],
+): Promise<void> {
+  if (accountIds.length === 0) return;
+  const unique = [...new Set(accountIds)];
+  const rows = await executor
+    .select({ id: accounts.id, companyId: accounts.companyId })
+    .from(accounts)
+    .where(and(eq(accounts.tenantId, tenantId), inArray(accounts.id, unique)));
+  if (rows.length !== unique.length) {
+    throw AppError.badRequest('One or more journal line accounts do not belong to this tenant');
+  }
+  // Company-level check: if the caller is acting within a company scope,
+  // only tenant-wide accounts (companyId IS NULL) and accounts belonging to
+  // that same company are valid. Otherwise an invoice for company A could
+  // post revenue to company B's income account inside the same tenant.
+  if (companyId) {
+    for (const row of rows) {
+      if (row.companyId !== null && row.companyId !== companyId) {
+        throw AppError.badRequest('One or more journal line accounts belong to a different company');
+      }
+    }
+  }
+}
 
 async function checkLockDate(executor: DbOrTx, tenantId: string, txnDate: string) {
   const result = await executor.execute(sql`
@@ -76,6 +114,12 @@ export async function postTransaction(tenantId: string, input: PostTransactionIn
   // missing its lines, or lines whose accounts.balance was never updated.
   return await db.transaction(async (tx) => {
     await checkLockDate(tx, tenantId, input.txnDate);
+    await assertAccountsInScope(
+      tx,
+      tenantId,
+      companyId ?? null,
+      input.lines.map((l) => l.accountId),
+    );
 
     // Insert transaction header
     const [txn] = await tx.insert(transactions).values({
@@ -219,6 +263,14 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
     // Check lock date for both old and new dates
     await checkLockDate(tx, tenantId, existing.txnDate);
     await checkLockDate(tx, tenantId, input.txnDate);
+
+    // Validate the new lines' account ownership inside this tenant/company.
+    await assertAccountsInScope(
+      tx,
+      tenantId,
+      companyId ?? existing.companyId ?? null,
+      input.lines.map((l) => l.accountId),
+    );
 
     // Get original lines and reverse their balances
     const originalLines = await tx.select().from(journalLines)

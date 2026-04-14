@@ -9,6 +9,7 @@ import { db } from '../db/index.js';
 import { users, attachments, transactions, contacts } from '../db/schema/index.js';
 import * as attachmentService from '../services/attachment.service.js';
 import * as ocrService from '../services/ocr.service.js';
+import { parseLimit, parseOffset } from '../utils/pagination.js';
 
 const ALLOWED_MIME_TYPES = [
   'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/tiff', 'image/bmp',
@@ -30,6 +31,84 @@ const upload = multer({
     }
   },
 });
+
+// Magic-byte sniff against the claimed MIME type. The fileFilter above only
+// sees the client-supplied `file.mimetype`, so a `malicious.exe` claiming
+// `application/pdf` sails through. After upload we inspect the buffer's
+// leading bytes and refuse anything whose content clearly doesn't match.
+// Text/CSV formats have no reliable magic, so we only reject them if they
+// start with bytes that are plainly a zip/OLE/PE/ELF binary.
+const ZIP_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+const OLE_MAGIC = Buffer.from([0xd0, 0xcf, 0x11, 0xe0]);
+const PE_MAGIC = Buffer.from([0x4d, 0x5a]); // MZ
+const ELF_MAGIC = Buffer.from([0x7f, 0x45, 0x4c, 0x46]); // 0x7F ELF
+const MACHO_MAGICS = [
+  Buffer.from([0xfe, 0xed, 0xfa, 0xce]),
+  Buffer.from([0xfe, 0xed, 0xfa, 0xcf]),
+  Buffer.from([0xcf, 0xfa, 0xed, 0xfe]),
+  Buffer.from([0xca, 0xfe, 0xba, 0xbe]),
+];
+
+function startsWith(buf: Buffer, magic: Buffer): boolean {
+  if (buf.length < magic.length) return false;
+  return buf.subarray(0, magic.length).equals(magic);
+}
+
+function verifyAttachmentContent(mime: string, buf: Buffer): void {
+  const err = () => { throw new Error('Uploaded file content does not match its declared type.'); };
+
+  if (mime === 'application/pdf') {
+    if (!startsWith(buf, Buffer.from('%PDF-'))) err();
+    return;
+  }
+  if (mime === 'image/jpeg') {
+    if (!(buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff)) err();
+    return;
+  }
+  if (mime === 'image/png') {
+    if (!startsWith(buf, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) err();
+    return;
+  }
+  if (mime === 'image/gif') {
+    if (!(startsWith(buf, Buffer.from('GIF87a')) || startsWith(buf, Buffer.from('GIF89a')))) err();
+    return;
+  }
+  if (mime === 'image/webp') {
+    if (!(startsWith(buf, Buffer.from('RIFF')) && buf.length > 12 && buf.subarray(8, 12).equals(Buffer.from('WEBP')))) err();
+    return;
+  }
+  if (mime === 'image/bmp') {
+    if (!startsWith(buf, Buffer.from('BM'))) err();
+    return;
+  }
+  if (mime === 'image/tiff') {
+    if (!(startsWith(buf, Buffer.from([0x49, 0x49, 0x2a, 0x00])) || startsWith(buf, Buffer.from([0x4d, 0x4d, 0x00, 0x2a])))) err();
+    return;
+  }
+  if (
+    mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+    mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  ) {
+    if (!startsWith(buf, ZIP_MAGIC)) err();
+    return;
+  }
+  if (mime === 'application/vnd.ms-excel') {
+    if (!startsWith(buf, OLE_MAGIC)) err();
+    return;
+  }
+  if (mime === 'text/csv' || mime === 'text/plain') {
+    // No reliable magic for text — refuse anything that's clearly a binary
+    // executable or archive masquerading as text.
+    if (
+      startsWith(buf, ZIP_MAGIC) ||
+      startsWith(buf, OLE_MAGIC) ||
+      startsWith(buf, PE_MAGIC) ||
+      startsWith(buf, ELF_MAGIC) ||
+      MACHO_MAGICS.some((m) => startsWith(buf, m))
+    ) err();
+    return;
+  }
+}
 
 export const attachmentsRouter = Router();
 
@@ -81,6 +160,13 @@ attachmentsRouter.post('/', upload.single('file'), async (req, res) => {
     return;
   }
 
+  try {
+    verifyAttachmentContent(req.file.mimetype, req.file.buffer);
+  } catch (err: any) {
+    res.status(400).json({ error: { message: err.message || 'Invalid upload' } });
+    return;
+  }
+
   const attachment = await attachmentService.upload(req.tenantId, req.file, attachableType, attachableId);
 
   // Auto-trigger OCR for receipt images
@@ -95,8 +181,8 @@ attachmentsRouter.get('/', async (req, res) => {
   const result = await attachmentService.list(req.tenantId, {
     attachableType: req.query['attachable_type'] as string,
     attachableId: req.query['attachable_id'] as string,
-    limit: parseInt(req.query['limit'] as string) || 50,
-    offset: parseInt(req.query['offset'] as string) || 0,
+    limit: parseLimit(req.query['limit']),
+    offset: parseOffset(req.query['offset']),
   });
   res.json(result);
 });

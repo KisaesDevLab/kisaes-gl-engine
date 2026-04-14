@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { aiConfig } from '../db/schema/index.js';
 import { encrypt, decrypt } from '../utils/encryption.js';
+import { assertExternalUrlSafe } from '../utils/url-safety.js';
 
 async function getOrCreateConfig() {
   let config = await db.query.aiConfig.findFirst();
@@ -68,9 +69,15 @@ export async function updateConfig(input: any, userId?: string) {
   if (input.anthropicApiKey !== undefined) updates.anthropicApiKeyEncrypted = input.anthropicApiKey ? encrypt(input.anthropicApiKey) : null;
   if (input.openaiApiKey !== undefined) updates.openaiApiKeyEncrypted = input.openaiApiKey ? encrypt(input.openaiApiKey) : null;
   if (input.geminiApiKey !== undefined) updates.geminiApiKeyEncrypted = input.geminiApiKey ? encrypt(input.geminiApiKey) : null;
-  if (input.ollamaBaseUrl !== undefined) updates.ollamaBaseUrl = input.ollamaBaseUrl || null;
+  if (input.ollamaBaseUrl !== undefined) {
+    if (input.ollamaBaseUrl) assertExternalUrlSafe(input.ollamaBaseUrl, 'Ollama base URL');
+    updates.ollamaBaseUrl = input.ollamaBaseUrl || null;
+  }
   if (input.glmOcrApiKey !== undefined) updates.glmOcrApiKeyEncrypted = input.glmOcrApiKey ? encrypt(input.glmOcrApiKey) : null;
-  if (input.glmOcrBaseUrl !== undefined) updates.glmOcrBaseUrl = input.glmOcrBaseUrl || null;
+  if (input.glmOcrBaseUrl !== undefined) {
+    if (input.glmOcrBaseUrl) assertExternalUrlSafe(input.glmOcrBaseUrl, 'GLM-OCR base URL');
+    updates.glmOcrBaseUrl = input.glmOcrBaseUrl || null;
+  }
   if (input.autoCategorizeOnImport !== undefined) updates.autoCategorizeOnImport = input.autoCategorizeOnImport;
   if (input.autoOcrOnUpload !== undefined) updates.autoOcrOnUpload = input.autoOcrOnUpload;
   if (input.categorizationConfidenceThreshold !== undefined) updates.categorizationConfidenceThreshold = String(input.categorizationConfidenceThreshold);

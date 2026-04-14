@@ -5,6 +5,7 @@ import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as checkService from '../services/check.service.js';
 import * as pdfService from '../services/pdf.service.js';
+import { parseLimit, parseOffset } from '../utils/pagination.js';
 import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { companies } from '../db/schema/index.js';
@@ -24,8 +25,8 @@ checksRouter.get('/', async (req, res) => {
     printStatus: req.query['print_status'] as string,
     startDate: req.query['start_date'] as string,
     endDate: req.query['end_date'] as string,
-    limit: parseInt(req.query['limit'] as string) || 50,
-    offset: parseInt(req.query['offset'] as string) || 0,
+    limit: parseLimit(req.query['limit']),
+    offset: parseOffset(req.query['offset']),
   }, req.companyId);
   res.json(result);
 });

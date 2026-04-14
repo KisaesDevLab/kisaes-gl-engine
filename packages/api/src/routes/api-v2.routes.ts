@@ -28,6 +28,7 @@ import * as attachmentService from '../services/attachment.service.js';
 import { db } from '../db/index.js';
 import { accounts, contacts, items } from '../db/schema/index.js';
 import { eq, and, sql } from 'drizzle-orm';
+import { parseLimit, parseOffset } from '../utils/pagination.js';
 import {
   createExpenseSchema, createTransferSchema, createDepositSchema,
   createJournalEntrySchema, createCashSaleSchema, createInvoiceSchema,
@@ -367,8 +368,8 @@ apiV2Router.get('/checks', async (req, res) => {
     printStatus: req.query['print_status'] as string,
     startDate: req.query['start_date'] as string,
     endDate: req.query['end_date'] as string,
-    limit: parseInt(req.query['limit'] as string) || 50,
-    offset: parseInt(req.query['offset'] as string) || 0,
+    limit: parseLimit(req.query['limit']),
+    offset: parseOffset(req.query['offset']),
   }, req.companyId);
   res.json(result);
 });

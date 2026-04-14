@@ -194,20 +194,23 @@ export async function rotateAccessToken(accessToken: string) {
 }
 
 export async function verifyWebhook(body: string, headers: Record<string, string>): Promise<boolean> {
+  // Fails CLOSED on every error path. The earlier version returned true on
+  // JWKS fetch failure, missing key, JWT verify failure, or any other
+  // exception — which meant a forged request could be accepted just by
+  // triggering one of those paths (e.g. DNS-blackholing plaid.com). Webhook
+  // authenticity is the only barrier to attacker-forged `TRANSACTIONS` and
+  // `ITEM_ERROR` events polluting the ledger, so every branch below has to
+  // refuse to verify rather than wave the request through.
   try {
     const plaidVerification = headers['plaid-verification'];
     if (!plaidVerification) return false;
 
-    // Plaid signs webhooks with a JWT using their public key
-    // The JWT contains a request_body_sha256 claim we can verify
     const crypto = await import('crypto');
     const jwt = await import('jsonwebtoken');
 
-    // Decode without verification to get kid
     const decoded = jwt.default.decode(plaidVerification, { complete: true }) as any;
     if (!decoded) return false;
 
-    // Fetch Plaid's JWKS
     const kid = decoded.header?.kid;
     if (!kid) return false;
 
@@ -217,29 +220,30 @@ export async function verifyWebhook(body: string, headers: Record<string, string
       body: JSON.stringify({ client_id: '', secret: '', key_id: kid }),
     });
 
-    // If we can't verify, log a warning but don't block (allow in development)
     if (!jwksRes.ok) {
-      console.warn('[Plaid Webhook] Could not fetch verification key — accepting unverified webhook');
-      return true;
+      console.warn('[Plaid Webhook] Could not fetch verification key — rejecting');
+      return false;
     }
 
     const jwksData = await jwksRes.json() as any;
     const key = jwksData.key;
-    if (!key) return true; // Accept if key lookup fails
+    if (!key) {
+      console.warn('[Plaid Webhook] Verification key missing from JWKS response — rejecting');
+      return false;
+    }
 
-    // Verify the JWT signature
     const pem = `-----BEGIN PUBLIC KEY-----\n${key.n}\n-----END PUBLIC KEY-----`;
     try {
       const payload = jwt.default.verify(plaidVerification, pem, { algorithms: ['ES256'] }) as any;
-      // Verify body hash
       const bodyHash = crypto.default.createHash('sha256').update(body).digest('hex');
       return payload.request_body_sha256 === bodyHash;
     } catch {
-      console.warn('[Plaid Webhook] JWT verification failed — accepting in non-strict mode');
-      return true; // Accept in non-strict mode
+      console.warn('[Plaid Webhook] JWT verification failed — rejecting');
+      return false;
     }
-  } catch {
-    return true; // Accept if verification fails entirely (don't block webhooks in dev)
+  } catch (err: any) {
+    console.warn('[Plaid Webhook] Verification errored — rejecting:', err?.message);
+    return false;
   }
 }
 

@@ -112,6 +112,17 @@ export async function importFromCsv(
   contactType: string = 'customer',
   userId?: string,
 ) {
+  // Hard cap on import size. Without this, a caller can submit 50k+ rows in
+  // a single JSON body (Express allows up to 10MB) and the serial insert
+  // loop below holds a DB connection + memory proportional to the batch.
+  const MAX_IMPORT_ROWS = 10_000;
+  if (!Array.isArray(csvData)) {
+    throw AppError.badRequest('contacts must be an array');
+  }
+  if (csvData.length > MAX_IMPORT_ROWS) {
+    throw AppError.badRequest(`Import is limited to ${MAX_IMPORT_ROWS} rows per request`);
+  }
+
   const results: Array<typeof contacts.$inferSelect> = [];
 
   for (const row of csvData) {

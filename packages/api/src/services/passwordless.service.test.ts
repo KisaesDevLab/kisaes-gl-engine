@@ -72,20 +72,28 @@ describe('Auth Availability Service', () => {
     expect(methods.passkey).toBe(true);
   });
 
+  // The endpoint now returns the *same* shape regardless of email, because
+  // the previous "add extra fields when user exists" behavior was an email
+  // enumeration oracle (see security commit). All three cases should now
+  // produce identical keys with safe defaults.
+
   it('should return auth methods for anonymous user', async () => {
     const result = await authAvailability.getAuthMethods();
     expect(result.loginMethods.password).toBe(true);
-    expect(result).not.toHaveProperty('userHasPasskeys');
+    expect(result.userHasPasskeys).toBe(false);
+    expect(result.userPreferredMethod).toBe('password');
   });
 
   it('should not leak email existence for unknown emails', async () => {
     const result = await authAvailability.getAuthMethods('nonexistent@example.com');
-    expect(result).not.toHaveProperty('userHasPasskeys');
+    expect(result.userHasPasskeys).toBe(false);
+    expect(result.userPreferredMethod).toBe('password');
   });
 
-  it('should return user hints for known email', async () => {
+  it('should return the same shape for a known email', async () => {
     await createTestUser();
     const result = await authAvailability.getAuthMethods('pless-test@example.com') as any;
+    // Defaults only — no user-specific hints to avoid leaking existence.
     expect(result.userHasPasskeys).toBe(false);
     expect(result.userPreferredMethod).toBe('password');
   });

@@ -3,6 +3,7 @@ import { createItemSchema, updateItemSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import * as itemsService from '../services/items.service.js';
+import { parseLimit, parseOffset } from '../utils/pagination.js';
 
 export const itemsRouter = Router();
 itemsRouter.use(authenticate);
@@ -11,8 +12,8 @@ itemsRouter.get('/', async (req, res) => {
   const result = await itemsService.list(req.tenantId, {
     isActive: req.query['is_active'] === 'true' ? true : req.query['is_active'] === 'false' ? false : undefined,
     search: req.query['search'] as string,
-    limit: parseInt(req.query['limit'] as string) || 100,
-    offset: parseInt(req.query['offset'] as string) || 0,
+    limit: parseLimit(req.query['limit'], 100),
+    offset: parseOffset(req.query['offset']),
   });
   res.json(result);
 });

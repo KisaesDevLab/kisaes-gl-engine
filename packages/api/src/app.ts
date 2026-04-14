@@ -79,6 +79,16 @@ const globalLimiter = rateLimit({
 });
 app.use('/api/', globalLimiter);
 
+// Sensitive API responses must never be cached by shared proxies or by the
+// browser back/forward cache. This stamps every /api/v1/* response with a
+// private/no-store policy so responses that contain tenant data, audit
+// entries, or the authenticated user's profile don't leak to another
+// session that reuses the same intermediary.
+app.use('/api/v1/', (_req, res, next) => {
+  res.set('Cache-Control', 'private, no-store, max-age=0');
+  next();
+});
+
 // Health check
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });

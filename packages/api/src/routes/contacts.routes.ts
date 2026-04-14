@@ -3,6 +3,7 @@ import { createContactSchema, updateContactSchema, contactFiltersSchema, mergeCo
 import { authenticate } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import * as contactsService from '../services/contacts.service.js';
+import { parseLimit, parseOffset } from '../utils/pagination.js';
 
 export const contactsRouter = Router();
 contactsRouter.use(authenticate);
@@ -57,8 +58,8 @@ contactsRouter.delete('/:id', async (req, res) => {
 
 contactsRouter.get('/:id/transactions', async (req, res) => {
   const result = await contactsService.getTransactionHistory(req.tenantId, req.params['id']!, {
-    limit: req.query['limit'] ? parseInt(req.query['limit'] as string) : 50,
-    offset: req.query['offset'] ? parseInt(req.query['offset'] as string) : 0,
+    limit: parseLimit(req.query['limit']),
+    offset: parseOffset(req.query['offset']),
   });
   res.json(result);
 });

@@ -152,6 +152,14 @@ export async function getAccessibleTenants(userId: string) {
   }));
 }
 
+// A real bcrypt hash of an empty input. Used to equalize timing when the
+// login path gets an email that isn't registered: we still run bcrypt.compare
+// so the response time matches the user-exists branch. Without this, an
+// attacker can enumerate valid emails by measuring whether a login attempt
+// ran bcrypt (~200ms) or returned immediately (~10ms).
+const DUMMY_PASSWORD_HASH =
+  '$2b$12$CwTycUXWue0Thq9StjUM0uJ8lGwkE1dKtDSpFQNshLQ4uMRGjB3sC';
+
 export async function login(input: LoginInput): Promise<{ user: typeof users.$inferSelect; tokens: AuthTokens; accessibleTenants: any[] }> {
   const MAX_LOGIN_ATTEMPTS = 5;
   const LOCKOUT_MINUTES = 15;
@@ -161,6 +169,10 @@ export async function login(input: LoginInput): Promise<{ user: typeof users.$in
   });
 
   if (!user) {
+    // Equalize timing with the user-exists path — always run a bcrypt
+    // compare so enumeration via response time isn't possible. Discard
+    // the result, fall through to the same error.
+    await bcrypt.compare(input.password, DUMMY_PASSWORD_HASH);
     throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDENTIALS');
   }
 
