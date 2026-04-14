@@ -1,4 +1,5 @@
 import { eq, and, sql } from 'drizzle-orm';
+import { isDebitNormal } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { accounts, journalLines, transactions, contacts, reconciliationLines, reconciliations } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -65,11 +66,6 @@ function getAllowedEntryTypes(detailType: string | null, accountType: string): s
       if (accountType === 'equity') return ['journal_entry'];
       return [];
   }
-}
-
-// Check if account uses debit-normal balance (assets, expenses)
-function isDebitNormal(accountType: string): boolean {
-  return accountType === 'asset' || accountType === 'expense';
 }
 
 export async function getRegister(tenantId: string, accountId: string, filters: RegisterFilters) {

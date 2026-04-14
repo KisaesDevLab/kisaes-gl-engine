@@ -1,8 +1,30 @@
-import { eq, and, sql, ilike, count } from 'drizzle-orm';
+import { eq, and, sql, ilike, count, inArray } from 'drizzle-orm';
 import type { CreateTagInput, UpdateTagInput, TagFilters } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { tags, tagGroups, transactionTags, savedReportFilters } from '../db/schema/index.js';
+import { tags, tagGroups, transactionTags, savedReportFilters, transactions } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+
+// Defense-in-depth tenant checks for transaction-tag mutations. Without
+// these, a caller who knows (or guesses) a txn/tag UUID from another
+// tenant could pollute transaction_tags with mismatched tenant_id + id
+// combinations. The rows wouldn't surface to either side's scoped
+// queries, but the write itself is still a tenant-isolation breach.
+async function assertTransactionInTenant(tenantId: string, transactionId: string): Promise<void> {
+  const row = await db.select({ id: transactions.id }).from(transactions)
+    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, transactionId)))
+    .limit(1);
+  if (row.length === 0) throw AppError.notFound('Transaction not found');
+}
+
+async function assertTagsInTenant(tenantId: string, tagIds: string[]): Promise<void> {
+  if (tagIds.length === 0) return;
+  const unique = [...new Set(tagIds)];
+  const rows = await db.select({ id: tags.id }).from(tags)
+    .where(and(eq(tags.tenantId, tenantId), inArray(tags.id, unique)));
+  if (rows.length !== unique.length) {
+    throw AppError.badRequest('One or more tags do not belong to this tenant');
+  }
+}
 
 // ─── Tag CRUD ────────────────────────────────────────────────────
 
@@ -147,6 +169,8 @@ export async function reorderGroups(tenantId: string, orderedIds: string[]) {
 
 export async function addTags(tenantId: string, transactionId: string, tagIds: string[]) {
   if (tagIds.length === 0) return;
+  await assertTransactionInTenant(tenantId, transactionId);
+  await assertTagsInTenant(tenantId, tagIds);
 
   // Enforce single-select group rules
   const tagsToAdd = await db.select().from(tags).where(and(eq(tags.tenantId, tenantId)));
@@ -184,6 +208,8 @@ export async function addTags(tenantId: string, transactionId: string, tagIds: s
 }
 
 export async function removeTags(tenantId: string, transactionId: string, tagIds: string[]) {
+  if (tagIds.length === 0) return;
+  await assertTransactionInTenant(tenantId, transactionId);
   for (const tagId of tagIds) {
     await db.delete(transactionTags).where(and(
       eq(transactionTags.tenantId, tenantId),
@@ -196,6 +222,9 @@ export async function removeTags(tenantId: string, transactionId: string, tagIds
 }
 
 export async function replaceTags(tenantId: string, transactionId: string, tagIds: string[]) {
+  await assertTransactionInTenant(tenantId, transactionId);
+  if (tagIds.length > 0) await assertTagsInTenant(tenantId, tagIds);
+
   // Get existing
   const existing = await db.select().from(transactionTags)
     .where(and(eq(transactionTags.tenantId, tenantId), eq(transactionTags.transactionId, transactionId)));

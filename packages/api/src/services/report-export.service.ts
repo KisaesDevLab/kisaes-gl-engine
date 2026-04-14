@@ -1,10 +1,41 @@
+/**
+ * Escape a string for safe insertion into HTML. Used by the PDF pipeline
+ * so user-controlled strings (account names, memos, P&L section labels,
+ * company names) can't inject markup or script tags into the rendered
+ * PDF — puppeteer would otherwise execute them.
+ */
+export function escapeHtml(s: unknown): string {
+  if (s === null || s === undefined) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Prefix CSV values that look like formula attacks (start with =, +, @,
+ * or a lone - followed by alphanumerics — i.e. a potential function call
+ * or reference) with a leading apostrophe so Excel / Google Sheets treat
+ * them as literal text. Skips decorative section banners like
+ * "--- REVENUE ---" whose leading dashes are cosmetic, not attacks.
+ */
+function neutralizeFormula(s: string): string {
+  if (/^[=+@]/.test(s)) return `'${s}`;
+  // Lone '-' followed by a letter/digit (e.g. -SUM(...), -1+1) — but not
+  // our "---" section banners.
+  if (/^-[A-Za-z0-9]/.test(s)) return `'${s}`;
+  return s;
+}
+
 export function toCsv(data: Record<string, unknown>[], columns: Array<{ key: string; label: string }>): string {
-  const header = columns.map((c) => `"${c.label}"`).join(',');
+  const header = columns.map((c) => `"${neutralizeFormula(c.label).replace(/"/g, '""')}"`).join(',');
   const rows = data.map((row) =>
     columns.map((c) => {
       const val = row[c.key];
       if (val === null || val === undefined) return '""';
-      return `"${String(val).replace(/"/g, '""')}"`;
+      return `"${neutralizeFormula(String(val)).replace(/"/g, '""')}"`;
     }).join(','),
   );
   return header + '\n' + rows.join('\n');
@@ -29,9 +60,9 @@ export function toReportHtml(
   @media print{body{padding:0}}
 </style></head>
 <body>
-  <h1>${companyName}</h1>
-  <div style="font-size:16px;font-weight:600;margin-bottom:2px">${title}</div>
-  <div class="meta">${dateLabel}</div>
+  <h1>${escapeHtml(companyName)}</h1>
+  <div style="font-size:16px;font-weight:600;margin-bottom:2px">${escapeHtml(title)}</div>
+  <div class="meta">${escapeHtml(dateLabel)}</div>
   ${tableHtml}
 </body></html>`;
 }

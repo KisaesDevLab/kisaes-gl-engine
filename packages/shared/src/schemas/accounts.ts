@@ -1,6 +1,9 @@
 import { z } from 'zod';
 
-const accountTypes = ['asset', 'liability', 'equity', 'revenue', 'expense'] as const;
+const accountTypes = [
+  'asset', 'liability', 'equity',
+  'revenue', 'cogs', 'expense', 'other_revenue', 'other_expense',
+] as const;
 
 export const createAccountSchema = z.object({
   accountNumber: z.string().max(20).nullish(),

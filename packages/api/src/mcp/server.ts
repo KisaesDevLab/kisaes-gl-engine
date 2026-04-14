@@ -227,13 +227,29 @@ registerTool('send_invoice', 'Send an invoice via email', { company_id: 'string?
   return sendInvoice(tenantId, p.invoice_id, auth.userId);
 });
 
-registerTool('record_payment', 'Record a payment against invoice(s)', {
-  company_id: 'string?', customer_id: 'string', amount: 'string', date: 'string', deposit_to: 'string?',
+registerTool('record_payment', 'Record a customer payment and apply it to open invoices', {
+  company_id: 'string?', customer_id: 'string', amount: 'string', date: 'string',
+  deposit_to: 'string', applications: 'string', payment_method: 'string?', memo: 'string?',
 }, async (p, auth) => {
   checkScope(auth, 'invoicing');
   const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { receivePaymentSchema } = await import('@kis-books/shared');
   const { receivePayment } = await import('../services/payment.service.js');
-  return receivePayment(tenantId, { contactId: p.customer_id, amount: p.amount, txnDate: p.date, depositToAccountId: p.deposit_to } as any, auth.userId);
+  const applications = typeof p.applications === 'string' ? JSON.parse(p.applications) : p.applications;
+  const input = receivePaymentSchema.parse({
+    customerId: p.customer_id, date: p.date, amount: p.amount, depositTo: p.deposit_to,
+    paymentMethod: p.payment_method, memo: p.memo, applications,
+  });
+  return receivePayment(tenantId, input, auth.userId);
+});
+
+registerTool('get_open_invoices', 'List open invoices for a customer (for payment application)', {
+  company_id: 'string?', customer_id: 'string',
+}, async (p, auth) => {
+  checkScope(auth, 'read');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { getOpenInvoicesForCustomer } = await import('../services/payment.service.js');
+  return getOpenInvoicesForCustomer(tenantId, p.customer_id);
 });
 
 registerTool('create_deposit', 'Create a bank deposit', {
@@ -364,12 +380,13 @@ registerTool('run_expense_by_vendor', 'Expense by vendor report', { company_id: 
 registerTool('tag_transaction', 'Apply tags to a transaction', { company_id: 'string?', transaction_id: 'string', tag_ids: 'string' }, async (p, auth) => {
   checkScope(auth, 'write');
   const tenantId = await getTenantId(await resolveCompany(auth, p));
-  const { db } = await import('../db/index.js');
-  const { transactionTags } = await import('../db/schema/index.js');
+  const { addTags } = await import('../services/tags.service.js');
   const tagIds = typeof p.tag_ids === 'string' ? JSON.parse(p.tag_ids) : p.tag_ids;
-  for (const tagId of tagIds) {
-    await db.insert(transactionTags).values({ transactionId: p.transaction_id, tagId, tenantId }).onConflictDoNothing();
-  }
+  // Route through the service so its tenant-ownership checks
+  // (assertTransactionInTenant + assertTagsInTenant) run. Going directly
+  // to the table would let a caller insert rows with a tenant_id they
+  // own but a transaction_id / tag_id from a different tenant.
+  await addTags(tenantId, p.transaction_id, tagIds);
   return { tagged: true, tagCount: tagIds.length };
 });
 
@@ -400,6 +417,412 @@ registerTool('get_company_info', 'Get company details', { company_id: 'string?' 
   const company = await db.query.companies.findFirst({ where: eq(companies.id, companyId) });
   if (!company) throw new Error('NOT_FOUND: Company not found');
   return company;
+});
+
+// ─── Bills / Accounts Payable ───────────────────────────────────
+
+registerTool('list_bills', 'List bills / AP (?status, ?contact_id, ?overdue_only)', {
+  company_id: 'string?', status: 'string?', contact_id: 'string?', start_date: 'string?', end_date: 'string?',
+  overdue_only: 'boolean?', limit: 'number?',
+}, async (p, auth) => {
+  checkScope(auth, 'read');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { listBills } = await import('../services/bill.service.js');
+  return listBills(tenantId, {
+    billStatus: p.status, contactId: p.contact_id, startDate: p.start_date, endDate: p.end_date,
+    overdueOnly: p.overdue_only, limit: p.limit || 50, offset: 0,
+  } as any, undefined);
+});
+
+registerTool('get_bill', 'Get a bill with journal lines', { company_id: 'string?', bill_id: 'string' }, async (p, auth) => {
+  checkScope(auth, 'read');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { getBill } = await import('../services/bill.service.js');
+  return getBill(tenantId, p.bill_id);
+});
+
+registerTool('create_bill', 'Record a bill from a vendor', {
+  company_id: 'string?', vendor_id: 'string', date: 'string', due_date: 'string?',
+  payment_terms: 'string?', vendor_invoice_number: 'string?', lines: 'string', memo: 'string?',
+}, async (p, auth) => {
+  checkScope(auth, 'write');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { createBillSchema } = await import('@kis-books/shared');
+  const { createBill } = await import('../services/bill.service.js');
+  const lines = typeof p.lines === 'string' ? JSON.parse(p.lines) : p.lines;
+  const input = createBillSchema.parse({
+    contactId: p.vendor_id, txnDate: p.date, dueDate: p.due_date,
+    paymentTerms: p.payment_terms, vendorInvoiceNumber: p.vendor_invoice_number,
+    memo: p.memo, lines,
+  });
+  return createBill(tenantId, input, auth.userId);
+});
+
+registerTool('void_bill', 'Void a bill (creates reversing entry)', {
+  company_id: 'string?', bill_id: 'string', reason: 'string',
+}, async (p, auth) => {
+  checkScope(auth, 'write');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { voidBill } = await import('../services/bill.service.js');
+  await voidBill(tenantId, p.bill_id, p.reason, auth.userId);
+  return { voided: true };
+});
+
+registerTool('get_payable_bills', 'Unpaid bills with balance due', {
+  company_id: 'string?', contact_id: 'string?', due_on_or_before: 'string?',
+}, async (p, auth) => {
+  checkScope(auth, 'read');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { getPayableBills } = await import('../services/bill.service.js');
+  return getPayableBills(tenantId, { contactId: p.contact_id, dueOnOrBefore: p.due_on_or_before });
+});
+
+// ─── Bill Payments ──────────────────────────────────────────────
+
+registerTool('list_bill_payments', 'List bill payments', {
+  company_id: 'string?', contact_id: 'string?', start_date: 'string?', end_date: 'string?', limit: 'number?',
+}, async (p, auth) => {
+  checkScope(auth, 'read');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { listBillPayments } = await import('../services/bill-payment.service.js');
+  return listBillPayments(tenantId, {
+    contactId: p.contact_id, startDate: p.start_date, endDate: p.end_date, limit: p.limit || 50, offset: 0,
+  });
+});
+
+registerTool('pay_bills', 'Pay one or more bills from a bank account', {
+  company_id: 'string?', bank_account_id: 'string', date: 'string', method: 'string',
+  bills: 'string', credits: 'string?', print_later: 'boolean?', memo: 'string?',
+}, async (p, auth) => {
+  checkScope(auth, 'write');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { payBillsSchema } = await import('@kis-books/shared');
+  const { payBills } = await import('../services/bill-payment.service.js');
+  const bills = typeof p.bills === 'string' ? JSON.parse(p.bills) : p.bills;
+  const credits = p.credits ? (typeof p.credits === 'string' ? JSON.parse(p.credits) : p.credits) : undefined;
+  const input = payBillsSchema.parse({
+    bankAccountId: p.bank_account_id, txnDate: p.date, method: p.method,
+    printLater: p.print_later, memo: p.memo, bills, credits,
+  });
+  return payBills(tenantId, input, auth.userId);
+});
+
+registerTool('void_bill_payment', 'Void a bill payment', {
+  company_id: 'string?', payment_id: 'string', reason: 'string',
+}, async (p, auth) => {
+  checkScope(auth, 'write');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { voidBillPayment } = await import('../services/bill-payment.service.js');
+  await voidBillPayment(tenantId, p.payment_id, p.reason, auth.userId);
+  return { voided: true };
+});
+
+// ─── Vendor Credits ─────────────────────────────────────────────
+
+registerTool('list_vendor_credits', 'List vendor credits', {
+  company_id: 'string?', contact_id: 'string?', start_date: 'string?', end_date: 'string?', search: 'string?', limit: 'number?',
+}, async (p, auth) => {
+  checkScope(auth, 'read');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { listVendorCredits } = await import('../services/vendor-credit.service.js');
+  return listVendorCredits(tenantId, {
+    contactId: p.contact_id, startDate: p.start_date, endDate: p.end_date, search: p.search,
+    limit: p.limit || 50, offset: 0,
+  });
+});
+
+registerTool('create_vendor_credit', 'Create a vendor credit', {
+  company_id: 'string?', vendor_id: 'string', date: 'string', vendor_invoice_number: 'string?',
+  lines: 'string', memo: 'string?',
+}, async (p, auth) => {
+  checkScope(auth, 'write');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { createVendorCreditSchema } = await import('@kis-books/shared');
+  const { createVendorCredit } = await import('../services/vendor-credit.service.js');
+  const lines = typeof p.lines === 'string' ? JSON.parse(p.lines) : p.lines;
+  const input = createVendorCreditSchema.parse({
+    contactId: p.vendor_id, txnDate: p.date, vendorInvoiceNumber: p.vendor_invoice_number,
+    memo: p.memo, lines,
+  });
+  return createVendorCredit(tenantId, input, auth.userId);
+});
+
+registerTool('get_available_vendor_credits', 'Credits with remaining balance for a vendor', {
+  company_id: 'string?', vendor_id: 'string',
+}, async (p, auth) => {
+  checkScope(auth, 'read');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { getAvailableCredits } = await import('../services/vendor-credit.service.js');
+  return getAvailableCredits(tenantId, p.vendor_id);
+});
+
+// ─── Checks ─────────────────────────────────────────────────────
+
+registerTool('list_checks', 'List written checks', {
+  company_id: 'string?', bank_account_id: 'string?', print_status: 'string?',
+  start_date: 'string?', end_date: 'string?', limit: 'number?',
+}, async (p, auth) => {
+  checkScope(auth, 'read');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { listChecks } = await import('../services/check.service.js');
+  return listChecks(tenantId, {
+    bankAccountId: p.bank_account_id, printStatus: p.print_status,
+    startDate: p.start_date, endDate: p.end_date, limit: p.limit || 50, offset: 0,
+  });
+});
+
+registerTool('write_check', 'Write a check to a payee', {
+  company_id: 'string?', bank_account_id: 'string', date: 'string',
+  payee_name: 'string', amount: 'string', lines: 'string',
+  contact_id: 'string?', payee_address: 'string?', memo: 'string?',
+  printed_memo: 'string?', print_later: 'boolean?',
+}, async (p, auth) => {
+  checkScope(auth, 'write');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { writeCheckSchema } = await import('@kis-books/shared');
+  const { createCheck } = await import('../services/check.service.js');
+  const lines = typeof p.lines === 'string' ? JSON.parse(p.lines) : p.lines;
+  const input = writeCheckSchema.parse({
+    bankAccountId: p.bank_account_id, txnDate: p.date,
+    payeeNameOnCheck: p.payee_name, amount: p.amount,
+    contactId: p.contact_id, payeeAddress: p.payee_address,
+    memo: p.memo, printedMemo: p.printed_memo,
+    printLater: p.print_later ?? false, lines,
+  });
+  return createCheck(tenantId, input, auth.userId);
+});
+
+registerTool('get_check_print_queue', 'Checks queued for printing', {
+  company_id: 'string?', bank_account_id: 'string?',
+}, async (p, auth) => {
+  checkScope(auth, 'read');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { getPrintQueue } = await import('../services/check.service.js');
+  return getPrintQueue(tenantId, p.bank_account_id);
+});
+
+// ─── Recurring Transactions ─────────────────────────────────────
+
+registerTool('list_recurring', 'List recurring schedules', { company_id: 'string?' }, async (p, auth) => {
+  checkScope(auth, 'read');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { list } = await import('../services/recurring.service.js');
+  return list(tenantId);
+});
+
+registerTool('post_recurring_now', 'Post the next occurrence of a recurring schedule immediately', {
+  company_id: 'string?', schedule_id: 'string',
+}, async (p, auth) => {
+  checkScope(auth, 'write');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { postNext } = await import('../services/recurring.service.js');
+  return postNext(tenantId, p.schedule_id);
+});
+
+// ─── Budgets ────────────────────────────────────────────────────
+
+registerTool('list_budgets', 'List budgets', { company_id: 'string?' }, async (p, auth) => {
+  checkScope(auth, 'read');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { list } = await import('../services/budget.service.js');
+  return list(tenantId);
+});
+
+registerTool('get_budget', 'Get a budget with lines', { company_id: 'string?', budget_id: 'string' }, async (p, auth) => {
+  checkScope(auth, 'read');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { getById, getLines } = await import('../services/budget.service.js');
+  const budget = await getById(tenantId, p.budget_id);
+  const lines = await getLines(tenantId, p.budget_id);
+  return { budget, lines };
+});
+
+registerTool('run_budget_vs_actual', 'Budget vs Actual for a period', {
+  company_id: 'string?', budget_id: 'string', start_date: 'string', end_date: 'string',
+}, async (p, auth) => {
+  checkScope(auth, 'reports');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { buildBudgetVsActual } = await import('../services/budget.service.js');
+  return buildBudgetVsActual(tenantId, p.budget_id, p.start_date, p.end_date);
+});
+
+// ─── Dashboard ──────────────────────────────────────────────────
+
+registerTool('get_dashboard_snapshot', 'Overall financial snapshot', { company_id: 'string?' }, async (p, auth) => {
+  checkScope(auth, 'read');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { getFinancialSnapshot } = await import('../services/dashboard.service.js');
+  return getFinancialSnapshot(tenantId);
+});
+
+registerTool('get_cash_position', 'Cash across all bank accounts', { company_id: 'string?' }, async (p, auth) => {
+  checkScope(auth, 'read');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { getCashPosition } = await import('../services/dashboard.service.js');
+  return getCashPosition(tenantId);
+});
+
+registerTool('get_receivables_summary', 'AR summary with aging buckets', { company_id: 'string?' }, async (p, auth) => {
+  checkScope(auth, 'read');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { getReceivablesSummary } = await import('../services/dashboard.service.js');
+  return getReceivablesSummary(tenantId);
+});
+
+registerTool('get_payables_summary', 'AP summary with aging buckets', { company_id: 'string?' }, async (p, auth) => {
+  checkScope(auth, 'read');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { getPayablesSummary } = await import('../services/dashboard.service.js');
+  return getPayablesSummary(tenantId);
+});
+
+registerTool('get_action_items', 'Overdue invoices, bills due, pending feed items', { company_id: 'string?' }, async (p, auth) => {
+  checkScope(auth, 'read');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { getActionItems } = await import('../services/dashboard.service.js');
+  return getActionItems(tenantId);
+});
+
+registerTool('get_revexp_trend', 'Revenue/expense trend (?months)', { company_id: 'string?', months: 'number?' }, async (p, auth) => {
+  checkScope(auth, 'read');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { getRevExpTrend } = await import('../services/dashboard.service.js');
+  return getRevExpTrend(tenantId, p.months || 6);
+});
+
+// ─── Bank Feed Actions ──────────────────────────────────────────
+
+registerTool('match_feed_item', 'Match a bank feed item to an existing transaction', {
+  company_id: 'string?', feed_item_id: 'string', transaction_id: 'string',
+}, async (p, auth) => {
+  checkScope(auth, 'banking');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { match } = await import('../services/bank-feed.service.js');
+  await match(tenantId, p.feed_item_id, p.transaction_id);
+  return { matched: true };
+});
+
+registerTool('find_feed_match_candidates', 'Find existing transactions that may match a feed item', {
+  company_id: 'string?', feed_item_id: 'string',
+}, async (p, auth) => {
+  checkScope(auth, 'banking');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { findMatchCandidates } = await import('../services/bank-feed.service.js');
+  return findMatchCandidates(tenantId, p.feed_item_id);
+});
+
+registerTool('exclude_feed_item', 'Exclude a feed item from the ledger', {
+  company_id: 'string?', feed_item_id: 'string',
+}, async (p, auth) => {
+  checkScope(auth, 'banking');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { exclude } = await import('../services/bank-feed.service.js');
+  await exclude(tenantId, p.feed_item_id);
+  return { excluded: true };
+});
+
+registerTool('bulk_approve_feed_items', 'Bulk approve bank feed items (applies AI suggestions)', {
+  company_id: 'string?', feed_item_ids: 'string',
+}, async (p, auth) => {
+  checkScope(auth, 'banking');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const ids = typeof p.feed_item_ids === 'string' ? JSON.parse(p.feed_item_ids) : p.feed_item_ids;
+  const { bulkApprove } = await import('../services/bank-feed.service.js');
+  return bulkApprove(tenantId, ids);
+});
+
+// ─── Reconciliation ─────────────────────────────────────────────
+
+registerTool('get_reconciliation_history', 'Reconciliation history for an account', {
+  company_id: 'string?', account_id: 'string',
+}, async (p, auth) => {
+  checkScope(auth, 'read');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { getHistory } = await import('../services/reconciliation.service.js');
+  return getHistory(tenantId, p.account_id);
+});
+
+registerTool('start_reconciliation', 'Start a bank reconciliation session', {
+  company_id: 'string?', account_id: 'string', statement_date: 'string', statement_ending_balance: 'string',
+}, async (p, auth) => {
+  checkScope(auth, 'banking');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { start } = await import('../services/reconciliation.service.js');
+  return start(tenantId, p.account_id, p.statement_date, p.statement_ending_balance);
+});
+
+// ─── Attachments ────────────────────────────────────────────────
+
+registerTool('list_attachments', 'List attachment metadata (optionally filtered by attachable type/id)', {
+  company_id: 'string?', attachable_type: 'string?', attachable_id: 'string?', limit: 'number?',
+}, async (p, auth) => {
+  checkScope(auth, 'read');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { list } = await import('../services/attachment.service.js');
+  return list(tenantId, {
+    attachableType: p.attachable_type, attachableId: p.attachable_id, limit: p.limit || 50, offset: 0,
+  });
+});
+
+// ─── Additional Reports ─────────────────────────────────────────
+
+registerTool('run_balance_sheet_basis', 'Balance sheet with basis option', {
+  company_id: 'string?', as_of_date: 'string', basis: 'string?',
+}, async (p, auth) => {
+  checkScope(auth, 'reports');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { buildBalanceSheet } = await import('../services/report.service.js');
+  return buildBalanceSheet(tenantId, p.as_of_date, (p.basis as any) || 'accrual');
+});
+
+registerTool('run_expense_by_category', 'Expense by category (account)', {
+  company_id: 'string?', start_date: 'string', end_date: 'string',
+}, async (p, auth) => {
+  checkScope(auth, 'reports');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { buildExpenseByCategory } = await import('../services/report.service.js');
+  return buildExpenseByCategory(tenantId, p.start_date, p.end_date);
+});
+
+registerTool('run_vendor_balance', 'Vendor balance summary (outstanding AP by vendor)', { company_id: 'string?' }, async (p, auth) => {
+  checkScope(auth, 'reports');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { buildVendorBalanceSummary } = await import('../services/report.service.js');
+  return buildVendorBalanceSummary(tenantId);
+});
+
+registerTool('run_customer_balance', 'Customer balance summary (outstanding AR by customer)', { company_id: 'string?' }, async (p, auth) => {
+  checkScope(auth, 'reports');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { buildCustomerBalanceSummary } = await import('../services/report.service.js');
+  return buildCustomerBalanceSummary(tenantId);
+});
+
+registerTool('run_1099_vendor_summary', '1099-reportable vendor totals for a year', {
+  company_id: 'string?', year: 'string',
+}, async (p, auth) => {
+  checkScope(auth, 'reports');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { build1099VendorSummary } = await import('../services/report.service.js');
+  return build1099VendorSummary(tenantId, p.year);
+});
+
+registerTool('run_sales_tax_liability', 'Sales tax collected and owed', {
+  company_id: 'string?', start_date: 'string', end_date: 'string',
+}, async (p, auth) => {
+  checkScope(auth, 'reports');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { buildSalesTaxLiability } = await import('../services/report.service.js');
+  return buildSalesTaxLiability(tenantId, p.start_date, p.end_date);
+});
+
+registerTool('run_check_register', 'Check register for a bank account', {
+  company_id: 'string?', account_id: 'string', start_date: 'string?', end_date: 'string?',
+}, async (p, auth) => {
+  checkScope(auth, 'reports');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { buildCheckRegister } = await import('../services/report.service.js');
+  return buildCheckRegister(tenantId, p.account_id, p.start_date && p.end_date ? { startDate: p.start_date, endDate: p.end_date } : undefined);
 });
 
 // ─── Express Handler (JSON-RPC over HTTP) ────────────────────────
@@ -442,6 +865,15 @@ export async function handleMcpRequest(req: Request, res: Response) {
         { uri: 'kisbooks://company/{id}/recent-transactions', name: 'Recent Transactions', description: 'Last 50 transactions' },
         { uri: 'kisbooks://company/{id}/bank-feed/pending', name: 'Pending Bank Feed', description: 'Pending bank feed items' },
         { uri: 'kisbooks://company/{id}/invoices/overdue', name: 'Overdue Invoices', description: 'Overdue invoices' },
+        { uri: 'kisbooks://company/{id}/bills/payable', name: 'Payable Bills', description: 'Unpaid bills with balance due' },
+        { uri: 'kisbooks://company/{id}/bill-payments', name: 'Bill Payments', description: 'Recent bill payments' },
+        { uri: 'kisbooks://company/{id}/vendor-credits', name: 'Vendor Credits', description: 'Vendor credits with remaining balance' },
+        { uri: 'kisbooks://company/{id}/recurring', name: 'Recurring Schedules', description: 'Active recurring transactions' },
+        { uri: 'kisbooks://company/{id}/budgets', name: 'Budgets', description: 'Budgets defined for this company' },
+        { uri: 'kisbooks://company/{id}/checks/print-queue', name: 'Check Print Queue', description: 'Checks queued for printing' },
+        { uri: 'kisbooks://company/{id}/reconciliations', name: 'Reconciliations', description: 'Reconciliation history' },
+        { uri: 'kisbooks://company/{id}/items', name: 'Items', description: 'Products / services catalog' },
+        { uri: 'kisbooks://company/{id}/tags', name: 'Tags', description: 'Tag groups and tags' },
         { uri: 'kisbooks://company/{id}/dashboard', name: 'Dashboard', description: 'Dashboard summary' },
       ];
       res.json({ jsonrpc: '2.0', id: body.id, result: { resources: resourceList } });
@@ -483,6 +915,55 @@ export async function handleMcpRequest(req: Request, res: Response) {
           case 'invoices/overdue':
             data = await database.select().from(transactions).where(and(eq(transactions.tenantId, tenantId), eq(transactions.txnType, 'invoice' as any), sql`due_date < CURRENT_DATE`)).limit(50);
             break;
+          case 'bills/payable': {
+            const { getPayableBills } = await import('../services/bill.service.js');
+            data = await getPayableBills(tenantId, {});
+            break;
+          }
+          case 'bill-payments': {
+            const { listBillPayments } = await import('../services/bill-payment.service.js');
+            data = await listBillPayments(tenantId, { limit: 100, offset: 0 });
+            break;
+          }
+          case 'vendor-credits': {
+            const { listVendorCredits } = await import('../services/vendor-credit.service.js');
+            data = await listVendorCredits(tenantId, { limit: 100, offset: 0 });
+            break;
+          }
+          case 'recurring': {
+            const { list: listRecurring } = await import('../services/recurring.service.js');
+            data = await listRecurring(tenantId);
+            break;
+          }
+          case 'budgets': {
+            const { list: listBudgets } = await import('../services/budget.service.js');
+            data = await listBudgets(tenantId);
+            break;
+          }
+          case 'checks/print-queue': {
+            const { getPrintQueue } = await import('../services/check.service.js');
+            data = await getPrintQueue(tenantId);
+            break;
+          }
+          case 'reconciliations': {
+            const { reconciliations } = await import('../db/schema/index.js');
+            data = await database.select().from(reconciliations)
+              .where(eq(reconciliations.tenantId, tenantId))
+              .orderBy(desc(reconciliations.statementDate))
+              .limit(50);
+            break;
+          }
+          case 'items': {
+            const { list: listItems } = await import('../services/items.service.js');
+            data = await listItems(tenantId, { limit: 200, offset: 0 });
+            break;
+          }
+          case 'tags': {
+            const { list: listTags, listGroups } = await import('../services/tags.service.js');
+            const [tags, groups] = await Promise.all([listTags(tenantId), listGroups(tenantId)]);
+            data = { tags, groups };
+            break;
+          }
           case 'dashboard': {
             const { getFinancialSnapshot } = await import('../services/dashboard.service.js');
             data = await getFinancialSnapshot(tenantId);

@@ -1,6 +1,9 @@
 import { z } from 'zod';
 
-const accountTypes = ['asset', 'liability', 'equity', 'revenue', 'expense'] as const;
+const accountTypes = [
+  'asset', 'liability', 'equity',
+  'revenue', 'cogs', 'expense', 'other_revenue', 'other_expense',
+] as const;
 
 /**
  * One row of a chart-of-accounts template — matches CoaTemplateAccount in

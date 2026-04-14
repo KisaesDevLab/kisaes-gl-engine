@@ -29,15 +29,15 @@ export async function getFinancialSnapshot(tenantId: string) {
       JOIN transactions t ON t.id = jl.transaction_id
       WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
         AND t.txn_date >= ${start} AND t.txn_date <= ${end}
-        AND a.account_type IN ('revenue', 'expense')
+        AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense')
       GROUP BY a.account_type
     `);
 
     let revenue = 0, expenses = 0;
     for (const row of rows.rows as any[]) {
       const amt = Math.abs(parseFloat(row.total_credit) - parseFloat(row.total_debit));
-      if (row.account_type === 'revenue') revenue = amt;
-      else expenses = amt;
+      if (row.account_type === 'revenue' || row.account_type === 'other_revenue') revenue += amt;
+      else expenses += amt;
     }
     return { revenue, expenses, netIncome: revenue - expenses };
   }
@@ -68,15 +68,15 @@ export async function getRevExpTrend(tenantId: string, months: number = 6) {
       JOIN transactions t ON t.id = jl.transaction_id
       WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
         AND t.txn_date >= ${start} AND t.txn_date <= ${end}
-        AND a.account_type IN ('revenue', 'expense')
+        AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense')
       GROUP BY a.account_type
     `);
 
     let revenue = 0, expenses = 0;
     for (const row of rows.rows as any[]) {
       const amt = Math.abs(parseFloat(row.total_credit) - parseFloat(row.total_debit));
-      if (row.account_type === 'revenue') revenue = amt;
-      else expenses = amt;
+      if (row.account_type === 'revenue' || row.account_type === 'other_revenue') revenue += amt;
+      else expenses += amt;
     }
     data.push({ month: label, revenue, expenses });
   }

@@ -77,13 +77,66 @@ budgetsRouter.get('/:id/vs-actual', async (req, res) => {
       { key: 'pct', label: '% Variance' },
     ];
     const rows: any[] = [];
-    rows.push({ account: '--- REVENUE ---', budget: '', actual: '', variance: '', pct: '' });
-    for (const r of data.revenue) rows.push({ account: r.accountName, budget: fmtN(r.budget), actual: fmtN(r.actual), variance: fmtN(r.varianceDollar), pct: fmtP(r.variancePercent) });
-    rows.push({ account: 'Total Revenue', budget: fmtN(data.totalRevenueBudget), actual: fmtN(data.totalRevenueActual), variance: fmtN(data.totalRevenueActual - data.totalRevenueBudget), pct: '' });
-    rows.push({ account: '--- EXPENSES ---', budget: '', actual: '', variance: '', pct: '' });
-    for (const e of data.expenses) rows.push({ account: e.accountName, budget: fmtN(e.budget), actual: fmtN(e.actual), variance: fmtN(e.varianceDollar), pct: fmtP(e.variancePercent) });
-    rows.push({ account: 'Total Expenses', budget: fmtN(data.totalExpenseBudget), actual: fmtN(data.totalExpenseActual), variance: fmtN(data.totalExpenseActual - data.totalExpenseBudget), pct: '' });
-    rows.push({ account: 'NET INCOME', budget: fmtN(data.netIncomeBudget), actual: fmtN(data.netIncomeActual), variance: fmtN(data.netIncomeActual - data.netIncomeBudget), pct: '' });
+    const section = (label: string) => rows.push({ _section: true, account: label, budget: '', actual: '', variance: '', pct: '' });
+    const detailRow = (r: any) => rows.push({
+      account: r.accountName,
+      budget: fmtN(r.budget),
+      actual: fmtN(r.actual),
+      variance: fmtN(r.varianceDollar),
+      pct: fmtP(r.variancePercent),
+    });
+    const totalRow = (label: string, budget: number, actual: number) => rows.push({
+      _total: true,
+      account: label,
+      budget: fmtN(budget),
+      actual: fmtN(actual),
+      variance: fmtN(actual - budget),
+      pct: '',
+    });
+
+    const hasCogs = (data.cogs?.length ?? 0) > 0;
+    const hasOtherRev = (data.otherRevenue?.length ?? 0) > 0;
+    const hasOtherExp = (data.otherExpenses?.length ?? 0) > 0;
+
+    const L = (data as any).labels as import('@kis-books/shared').PLSectionLabels | undefined;
+    const revenueLabel = L?.revenue || 'Revenue';
+    const cogsLabel = L?.cogs || 'Cost of Goods Sold';
+    const grossProfitLabel = L?.grossProfit || 'Gross Profit';
+    const expensesLabel = L?.expenses || 'Expenses';
+    const otherRevenueLabel = L?.otherRevenue || 'Other Revenue';
+    const otherExpensesLabel = L?.otherExpenses || 'Other Expenses';
+    const netIncomeLabel = L?.netIncome || 'Net Income';
+
+    section(`--- ${revenueLabel.toUpperCase()} ---`);
+    for (const r of data.revenue) detailRow(r);
+    totalRow(`Total ${revenueLabel}`, data.totalRevenueBudget, data.totalRevenueActual);
+
+    if (hasCogs) {
+      section(`--- ${cogsLabel.toUpperCase()} ---`);
+      for (const r of data.cogs) detailRow(r);
+      totalRow(`Total ${cogsLabel}`, data.totalCogsBudget, data.totalCogsActual);
+      totalRow(grossProfitLabel,
+        data.totalRevenueBudget - data.totalCogsBudget,
+        data.totalRevenueActual - data.totalCogsActual);
+    }
+
+    section(`--- ${expensesLabel.toUpperCase()} ---`);
+    for (const e of data.expenses) detailRow(e);
+    totalRow(`Total ${expensesLabel}`, data.totalExpenseBudget, data.totalExpenseActual);
+
+    if (hasOtherRev) {
+      section(`--- ${otherRevenueLabel.toUpperCase()} ---`);
+      for (const r of data.otherRevenue) detailRow(r);
+      totalRow(`Total ${otherRevenueLabel}`, data.totalOtherRevenueBudget, data.totalOtherRevenueActual);
+    }
+
+    if (hasOtherExp) {
+      section(`--- ${otherExpensesLabel.toUpperCase()} ---`);
+      for (const r of data.otherExpenses) detailRow(r);
+      totalRow(`Total ${otherExpensesLabel}`, data.totalOtherExpenseBudget, data.totalOtherExpenseActual);
+    }
+
+    totalRow(netIncomeLabel.toUpperCase(), data.netIncomeBudget, data.netIncomeActual);
 
     if (format === 'csv') {
       const { toCsv } = await import('../services/report-export.service.js');
@@ -93,14 +146,17 @@ budgetsRouter.get('/:id/vs-actual', async (req, res) => {
       return res.send(csv);
     }
     // PDF
-    const { toReportHtml, toPdf } = await import('../services/report-export.service.js');
-    const header = columns.map((c) => `<th>${c.label}</th>`).join('');
+    const { toReportHtml, toPdf, escapeHtml } = await import('../services/report-export.service.js');
+    const header = columns.map((c) => `<th>${escapeHtml(c.label)}</th>`).join('');
     const body = rows.map((r) => {
       const first = r.account;
-      const isSection = typeof first === 'string' && first.startsWith('---');
-      const isTotal = typeof first === 'string' && (first.startsWith('Total') || first === 'NET INCOME');
-      const style = isSection ? ' style="background:#f3f4f6;font-weight:600"' : isTotal ? ' style="font-weight:700;border-top:2px solid #111"' : '';
-      return `<tr${style}>${columns.map((c) => `<td${c.key !== 'account' ? ' class="amount"' : ''}>${(isSection ? first.replace(/^---\s*|\s*---$/g, '') : r[c.key]) || ''}</td>`).join('')}</tr>`;
+      const style = r._section ? ' style="background:#f3f4f6;font-weight:600"' : r._total ? ' style="font-weight:700;border-top:2px solid #111"' : '';
+      return `<tr${style}>${columns.map((c) => {
+        const val = r._section && c.key === 'account'
+          ? first.replace(/^---\s*|\s*---$/g, '')
+          : r[c.key];
+        return `<td${c.key !== 'account' ? ' class="amount"' : ''}>${escapeHtml(val || '')}</td>`;
+      }).join('')}</tr>`;
     }).join('');
     const tableHtml = `<table><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`;
     const html = toReportHtml(data.title || 'Budget vs Actual', 'Company', `${data.startDate} to ${data.endDate}`, tableHtml);

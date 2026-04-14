@@ -9,8 +9,14 @@ export async function resolveMcpAuth(token: string): Promise<McpAuthContext> {
 
   const hash = crypto.createHash('sha256').update(token).digest('hex');
 
-  // Try API key first (starts with "kis_")
-  if (token.startsWith('kis_')) {
+  // OAuth access tokens are minted with a `kis_at_` prefix (see
+  // oauth.service.ts). API keys generated via the web UI use an
+  // `sk_live_` prefix (see api-keys.routes.ts). We route by prefix so the
+  // right table is queried; anything else is rejected up front.
+  const isOauth = token.startsWith('kis_at_');
+  const isApiKey = token.startsWith('sk_live_') || token.startsWith('sk_test_');
+
+  if (isApiKey) {
     const key = await db.query.apiKeys.findFirst({
       where: and(eq(apiKeys.keyHash, hash), eq(apiKeys.isActive, true)),
     });
@@ -40,24 +46,27 @@ export async function resolveMcpAuth(token: string): Promise<McpAuthContext> {
     };
   }
 
-  // Try OAuth token
-  const oauthToken = await db.query.oauthTokens.findFirst({
-    where: and(eq(oauthTokens.accessTokenHash, hash)),
-  });
-  if (!oauthToken) throw new Error('AUTH_REQUIRED: Invalid token');
-  if (oauthToken.revokedAt) throw new Error('AUTH_REQUIRED: Token has been revoked');
-  if (new Date(oauthToken.accessTokenExpiresAt) < new Date()) throw new Error('AUTH_EXPIRED: Token has expired');
+  if (isOauth) {
+    const oauthToken = await db.query.oauthTokens.findFirst({
+      where: and(eq(oauthTokens.accessTokenHash, hash)),
+    });
+    if (!oauthToken) throw new Error('AUTH_REQUIRED: Invalid token');
+    if (oauthToken.revokedAt) throw new Error('AUTH_REQUIRED: Token has been revoked');
+    if (new Date(oauthToken.accessTokenExpiresAt) < new Date()) throw new Error('AUTH_EXPIRED: Token has expired');
 
-  const user = await db.query.users.findFirst({ where: eq(users.id, oauthToken.userId) });
-  if (!user || !user.isActive) throw new Error('AUTH_REQUIRED: User account is inactive');
+    const user = await db.query.users.findFirst({ where: eq(users.id, oauthToken.userId) });
+    if (!user || !user.isActive) throw new Error('AUTH_REQUIRED: User account is inactive');
 
-  return {
-    userId: user.id,
-    tenantId: user.tenantId,
-    source: 'oauth',
-    scopes: (oauthToken.scopes || 'all').split(',').filter(Boolean),
-    allowedCompanies: null,
-  };
+    return {
+      userId: user.id,
+      tenantId: user.tenantId,
+      source: 'oauth',
+      scopes: (oauthToken.scopes || 'all').split(',').filter(Boolean),
+      allowedCompanies: null,
+    };
+  }
+
+  throw new Error('AUTH_REQUIRED: Unrecognized token format');
 }
 
 export function checkScope(auth: McpAuthContext, requiredScope: string): void {
