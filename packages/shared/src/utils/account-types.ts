@@ -22,7 +22,11 @@ export function isPLType(t: AccountType | string): boolean {
 // credit-normal accounts are the reverse (liability, equity, revenue,
 // other_revenue). Used anywhere we compute running balances, render the
 // register, or pick a side for opening balances and trial balance.
-const DEBIT_NORMAL_TYPES: Set<AccountType> = new Set([
+// Explicit Set<AccountType> type arg so the inferred element type is the
+// AccountType union rather than `string`. Strict tsconfigs (and the
+// default config tsc falls back to when an extends chain fails to load)
+// reject `Set<string>` assigned to `Set<AccountType>` without this.
+const DEBIT_NORMAL_TYPES = new Set<AccountType>([
   'asset', 'cogs', 'expense', 'other_expense',
 ]);
 
