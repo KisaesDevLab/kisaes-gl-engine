@@ -7,6 +7,11 @@ const envSchema = z.object({
   JWT_ACCESS_EXPIRY: z.string().default('15m'),
   JWT_REFRESH_EXPIRY: z.string().default('7d'),
   ENCRYPTION_KEY: z.string().min(32, 'ENCRYPTION_KEY must be at least 32 hex characters (16 bytes) — the setup wizard generates a 64-char hex value by default'),
+  // PLAID_ENCRYPTION_KEY is used by utils/encryption.ts to wrap Plaid,
+  // Stripe, OAuth refresh tokens, TFA secrets, and any other data we
+  // store encrypted. Validated here so the app fails at boot — not on
+  // first encrypt() call — if the operator forgets to set it.
+  PLAID_ENCRYPTION_KEY: z.string().min(32, 'PLAID_ENCRYPTION_KEY must be at least 32 chars (64 hex chars); generate one with crypto.randomBytes(32).toString("hex")'),
   PORT: z.coerce.number().default(3001),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   CORS_ORIGIN: z
