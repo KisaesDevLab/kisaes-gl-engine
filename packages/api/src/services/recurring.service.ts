@@ -204,8 +204,14 @@ export function startRecurringScheduler(): void {
 
   const runCycle = async () => {
     try {
-      const result = await processAllDue();
-      if (result.processed > 0) {
+      // Advisory-lock the cycle so that when multiple API instances run
+      // (horizontal scale, or a rolling deploy with a moment of overlap)
+      // only one processes the tick. Correctness is already guaranteed by
+      // postNext's conditional-UPDATE claim pattern — this just avoids
+      // wasting DB scans on every instance.
+      const { withSchedulerLock } = await import('../utils/scheduler-lock.js');
+      const result = await withSchedulerLock('recurring-scheduler', processAllDue);
+      if (result && result.processed > 0) {
         console.log(`[Recurring Scheduler] Posted ${result.processed}/${result.total} due schedule(s)`);
       }
     } catch (err: any) {

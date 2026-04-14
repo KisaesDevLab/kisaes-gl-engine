@@ -92,13 +92,23 @@ async function runBackupCycle(): Promise<void> {
 export function startBackupScheduler(): void {
   console.log('[Backup Scheduler] Registered (checks every 60 min, first check in 5 min)');
 
+  // Wrap each cycle in a Postgres advisory lock keyed to the scheduler
+  // name, so two instances sharing the DB can't both see "backup is due",
+  // both run the cycle, and both produce duplicate archive files. The
+  // lock is session-scoped — a crash between acquire and release still
+  // frees it at connection close.
+  const lockedRun = async () => {
+    const { withSchedulerLock } = await import('../utils/scheduler-lock.js');
+    await withSchedulerLock('backup-scheduler', runBackupCycle);
+  };
+
   // Initial check after delay
   setTimeout(() => {
-    runBackupCycle().catch((err) => console.error('[Backup Scheduler] Initial check error:', err.message));
+    lockedRun().catch((err) => console.error('[Backup Scheduler] Initial check error:', err.message));
   }, INITIAL_DELAY_MS);
 
   // Recurring check
   setInterval(() => {
-    runBackupCycle().catch((err) => console.error('[Backup Scheduler] Interval check error:', err.message));
+    lockedRun().catch((err) => console.error('[Backup Scheduler] Interval check error:', err.message));
   }, CHECK_INTERVAL_MS);
 }
