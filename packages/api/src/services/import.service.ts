@@ -1,4 +1,5 @@
 import { eq, and } from 'drizzle-orm';
+import { isDebitNormal } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -31,9 +32,9 @@ export async function importOpeningBalances(tenantId: string, balances: Array<{ 
     const amount = parseFloat(entry.balance);
     if (amount === 0) continue;
 
-    const isDebitNormal = account.accountType === 'asset' || account.accountType === 'expense';
+    const debitNormal = isDebitNormal(account.accountType);
 
-    if ((isDebitNormal && amount > 0) || (!isDebitNormal && amount < 0)) {
+    if ((debitNormal && amount > 0) || (!debitNormal && amount < 0)) {
       resolvedLines.push({ accountId: account.id, debit: Math.abs(amount).toFixed(4), credit: '0', description: `Opening balance - ${account.name}` });
       totalDebits += Math.abs(amount);
     } else {

@@ -43,7 +43,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
 
   const token = queryToken || authHeader!.slice(7);
   try {
-    const payload = jwt.verify(token, env.JWT_SECRET) as JwtPayload;
+    const payload = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as JwtPayload;
 
     // Verify user is still active
     const user = await db.query.users.findFirst({ where: eq(users.id, payload.userId) });

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { authenticate } from '../middleware/auth.js';
 import * as passkeyService from '../services/passkey.service.js';
+import { setRefreshCookie } from '../utils/refresh-cookie.js';
 
 const authLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -20,7 +21,12 @@ passkeyRouter.post('/login/options', authLimiter, async (req, res) => {
 
 passkeyRouter.post('/login/verify', authLimiter, async (req, res) => {
   const result = await passkeyService.verifyAuthentication(req.body);
-  res.json(result);
+  setRefreshCookie(res, result.tokens.refreshToken);
+  res.json({
+    user: result.user,
+    tokens: { accessToken: result.tokens.accessToken },
+    accessibleTenants: result.accessibleTenants,
+  });
 });
 
 // ─── Protected (registration + management — auth required) ─────

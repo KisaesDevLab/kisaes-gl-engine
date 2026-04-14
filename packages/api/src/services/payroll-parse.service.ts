@@ -67,8 +67,17 @@ export async function parseXlsxBuffer(
   buffer: Buffer,
   options?: { sheetName?: string; sheetIndex?: number },
 ): Promise<string[][]> {
+  // Reject anything that doesn't have a zip (xlsx) or OLE (xls) header before
+  // we hand it to the parser. Malformed input either blows up inside the lib
+  // or — worse — gets interpreted as a different format.
+  if (!(buffer[0] === 0x50 && buffer[1] === 0x4b) && !(buffer[0] === 0xd0 && buffer[1] === 0xcf)) {
+    throw AppError.badRequest('File does not appear to be a valid Excel workbook.');
+  }
   const XLSX = await import('xlsx');
-  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+  // sheetRows caps how many rows the parser will materialize, which limits
+  // the damage an adversarial workbook can do (very-tall sheets, zip bombs
+  // that expand to enormous row counts).
+  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true, sheetRows: MAX_ROW_COUNT + 10 });
   const sheetName = options?.sheetName || wb.SheetNames[options?.sheetIndex ?? 0];
   const sheet = sheetName ? wb.Sheets[sheetName] : undefined;
   if (!sheet) throw AppError.badRequest('Excel file has no sheets');
@@ -86,14 +95,20 @@ export async function parseXlsxBuffer(
 export function detectFileType(filename: string, buffer: Buffer): 'csv' | 'tsv' | 'xlsx' | 'xls' {
   const ext = path.extname(filename).toLowerCase();
   if (ext === '.xlsx' || ext === '.xls') {
-    // Check XLSX magic bytes (PK zip)
+    // Require the magic bytes to match the claimed extension. The previous
+    // implementation fell through to the extension when magic bytes didn't
+    // match, which let a file renamed .xlsx be handed to the XLSX parser.
     if (buffer[0] === 0x50 && buffer[1] === 0x4b) return 'xlsx';
-    // Check XLS magic bytes (compound doc)
     if (buffer[0] === 0xd0 && buffer[1] === 0xcf) return 'xls';
-    return ext === '.xlsx' ? 'xlsx' : 'xls';
+    throw AppError.badRequest(`File extension ${ext} does not match the uploaded content.`);
   }
   if (ext === '.tsv') return 'tsv';
-  // .txt and .csv: auto-detect delimiter from content
+  // .txt and .csv: auto-detect delimiter from content. A genuine zip/OLE
+  // header here means someone uploaded an Excel file with a .csv extension —
+  // refuse it rather than try to parse binary as UTF-8.
+  if ((buffer[0] === 0x50 && buffer[1] === 0x4b) || (buffer[0] === 0xd0 && buffer[1] === 0xcf)) {
+    throw AppError.badRequest(`File extension ${ext || '(none)'} does not match the uploaded content.`);
+  }
   const sample = buffer.slice(0, 2000).toString('utf-8');
   const tabs = (sample.match(/\t/g) || []).length;
   const commas = (sample.match(/,/g) || []).length;

@@ -85,34 +85,47 @@ export async function buildComparativePL(
     // Get P&L for each period
     const plResults = await Promise.all(ranges.map((r) => reportService.buildProfitAndLoss(tenantId, r.startDate, r.endDate, basis, companyId)));
 
-    // Collect all unique accounts
-    const accountMap = new Map<string, { name: string; accountNumber: string | null; type: 'revenue' | 'expense' }>();
+    type PLType = 'revenue' | 'cogs' | 'expense' | 'other_revenue' | 'other_expense';
+    const sectionKey: Record<PLType, 'revenue' | 'cogs' | 'expenses' | 'otherRevenue' | 'otherExpenses'> = {
+      revenue: 'revenue', cogs: 'cogs', expense: 'expenses',
+      other_revenue: 'otherRevenue', other_expense: 'otherExpenses',
+    };
+    const accountMap = new Map<string, { name: string; accountNumber: string | null; type: PLType }>();
     for (const pl of plResults) {
       for (const r of pl.revenue) accountMap.set(r.name, { name: r.name, accountNumber: r.accountNumber, type: 'revenue' });
-      for (const e of pl.expenses) accountMap.set(e.name, { name: e.name, accountNumber: e.accountNumber, type: 'expense' });
+      for (const r of pl.cogs) accountMap.set(r.name, { name: r.name, accountNumber: r.accountNumber, type: 'cogs' });
+      for (const r of pl.expenses) accountMap.set(r.name, { name: r.name, accountNumber: r.accountNumber, type: 'expense' });
+      for (const r of pl.otherRevenue) accountMap.set(r.name, { name: r.name, accountNumber: r.accountNumber, type: 'other_revenue' });
+      for (const r of pl.otherExpenses) accountMap.set(r.name, { name: r.name, accountNumber: r.accountNumber, type: 'other_expense' });
     }
 
     const rows = [...accountMap.values()].map((acct) => {
       const values = plResults.map((pl) => {
-        const items = acct.type === 'revenue' ? pl.revenue : pl.expenses;
+        const items = (pl as any)[sectionKey[acct.type]] as Array<{ name: string; amount: number }>;
         return items.find((i) => i.name === acct.name)?.amount || 0;
       });
       values.push(values.reduce((a, b) => a + b, 0)); // Total column
       return { account: acct.name, accountNumber: acct.accountNumber, accountType: acct.type, values };
     });
 
-    // Add totals
-    const revTotals = plResults.map((pl) => pl.totalRevenue);
-    revTotals.push(revTotals.reduce((a, b) => a + b, 0));
-    const expTotals = plResults.map((pl) => pl.totalExpenses);
-    expTotals.push(expTotals.reduce((a, b) => a + b, 0));
-    const netTotals = plResults.map((pl) => pl.netIncome);
-    netTotals.push(netTotals.reduce((a, b) => a + b, 0));
+    const withTotal = (vals: number[]) => { vals.push(vals.reduce((a, b) => a + b, 0)); return vals; };
+    const revTotals = withTotal(plResults.map((pl) => pl.totalRevenue));
+    const cogsTotals = withTotal(plResults.map((pl) => pl.totalCogs));
+    const expTotals = withTotal(plResults.map((pl) => pl.totalExpenses));
+    const otherRevTotals = withTotal(plResults.map((pl) => pl.totalOtherRevenue));
+    const otherExpTotals = withTotal(plResults.map((pl) => pl.totalOtherExpenses));
+    const netTotals = withTotal(plResults.map((pl) => pl.netIncome));
 
     return {
       title: 'Profit and Loss (Comparative)', comparisonMode: compareMode,
+      labels: plResults[0]?.labels,
       columns, rows,
-      totalRevenue: revTotals, totalExpenses: expTotals, netIncome: netTotals,
+      totalRevenue: revTotals,
+      totalCogs: cogsTotals,
+      totalExpenses: expTotals,
+      totalOtherRevenue: otherRevTotals,
+      totalOtherExpenses: otherExpTotals,
+      netIncome: netTotals,
     };
   }
 
@@ -137,30 +150,47 @@ export async function buildComparativePL(
     { label: '% Change', type: 'percent_variance' },
   ];
 
-  // Build merged rows
-  const allAccounts = new Map<string, { name: string; accountNumber: string | null; type: string }>();
-  for (const r of [...currentPL.revenue, ...priorPL.revenue]) allAccounts.set(r.name, { name: r.name, accountNumber: r.accountNumber, type: 'revenue' });
-  for (const e of [...currentPL.expenses, ...priorPL.expenses]) allAccounts.set(e.name, { name: e.name, accountNumber: e.accountNumber, type: 'expense' });
+  type PLType = 'revenue' | 'cogs' | 'expense' | 'other_revenue' | 'other_expense';
+  const allAccounts = new Map<string, { name: string; accountNumber: string | null; type: PLType }>();
+  const collect = (pl: any) => {
+    for (const r of pl.revenue) allAccounts.set(r.name, { name: r.name, accountNumber: r.accountNumber, type: 'revenue' });
+    for (const r of pl.cogs) allAccounts.set(r.name, { name: r.name, accountNumber: r.accountNumber, type: 'cogs' });
+    for (const r of pl.expenses) allAccounts.set(r.name, { name: r.name, accountNumber: r.accountNumber, type: 'expense' });
+    for (const r of pl.otherRevenue) allAccounts.set(r.name, { name: r.name, accountNumber: r.accountNumber, type: 'other_revenue' });
+    for (const r of pl.otherExpenses) allAccounts.set(r.name, { name: r.name, accountNumber: r.accountNumber, type: 'other_expense' });
+  };
+  collect(currentPL);
+  collect(priorPL);
+
+  const sectionKey: Record<PLType, 'revenue' | 'cogs' | 'expenses' | 'otherRevenue' | 'otherExpenses'> = {
+    revenue: 'revenue', cogs: 'cogs', expense: 'expenses',
+    other_revenue: 'otherRevenue', other_expense: 'otherExpenses',
+  };
 
   const rows = [...allAccounts.values()].map((acct) => {
-    const currentItems = acct.type === 'revenue' ? currentPL.revenue : currentPL.expenses;
-    const priorItems = acct.type === 'revenue' ? priorPL.revenue : priorPL.expenses;
+    const currentItems = (currentPL as any)[sectionKey[acct.type]] as Array<{ name: string; amount: number }>;
+    const priorItems = (priorPL as any)[sectionKey[acct.type]] as Array<{ name: string; amount: number }>;
     const current = currentItems.find((i) => i.name === acct.name)?.amount || 0;
     const prior = priorItems.find((i) => i.name === acct.name)?.amount || 0;
     const v = computeVariance(current, prior);
     return { account: acct.name, accountNumber: acct.accountNumber, accountType: acct.type, values: [current, prior, v.dollarChange, v.percentChange] };
   });
 
-  const revVar = computeVariance(currentPL.totalRevenue, priorPL.totalRevenue);
-  const expVar = computeVariance(currentPL.totalExpenses, priorPL.totalExpenses);
-  const netVar = computeVariance(currentPL.netIncome, priorPL.netIncome);
+  const varRow = (cur: number, pr: number) => {
+    const v = computeVariance(cur, pr);
+    return [cur, pr, v.dollarChange, v.percentChange];
+  };
 
   return {
     title: 'Profit and Loss (Comparative)', comparisonMode: compareMode,
+    labels: currentPL.labels,
     columns, rows,
-    totalRevenue: [currentPL.totalRevenue, priorPL.totalRevenue, revVar.dollarChange, revVar.percentChange],
-    totalExpenses: [currentPL.totalExpenses, priorPL.totalExpenses, expVar.dollarChange, expVar.percentChange],
-    netIncome: [currentPL.netIncome, priorPL.netIncome, netVar.dollarChange, netVar.percentChange],
+    totalRevenue: varRow(currentPL.totalRevenue, priorPL.totalRevenue),
+    totalCogs: varRow(currentPL.totalCogs, priorPL.totalCogs),
+    totalExpenses: varRow(currentPL.totalExpenses, priorPL.totalExpenses),
+    totalOtherRevenue: varRow(currentPL.totalOtherRevenue, priorPL.totalOtherRevenue),
+    totalOtherExpenses: varRow(currentPL.totalOtherExpenses, priorPL.totalOtherExpenses),
+    netIncome: varRow(currentPL.netIncome, priorPL.netIncome),
   };
 }
 

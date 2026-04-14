@@ -34,22 +34,68 @@ function getRpOrigin(): string {
 }
 
 // ─── Challenge Storage (in-memory with TTL) ────────────────────
+//
+// Registration challenges are keyed by userId because the caller is already
+// authenticated — only the user who requested registration may complete it.
+//
+// Authentication challenges cannot be keyed by userId (passkey sign-in is
+// optionally usernameless/discoverable). Instead, we key them by the
+// challenge bytes themselves and require the client to echo that exact
+// challenge back inside the signed clientDataJSON. Previously, the verify
+// path iterated the map and accepted the first unexpired auth challenge it
+// found, which meant a challenge issued for one pending sign-in could be
+// consumed by a concurrent attacker's verify call — breaking the single-use
+// guarantee WebAuthn depends on.
 
+const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const challengeStore = new Map<string, { challenge: string; expires: number }>();
 
-function storeChallenge(userId: string, challenge: string): void {
-  challengeStore.set(`webauthn:${userId}`, { challenge, expires: Date.now() + 5 * 60 * 1000 });
+function storeRegistrationChallenge(userId: string, challenge: string): void {
+  challengeStore.set(`reg:${userId}`, { challenge, expires: Date.now() + CHALLENGE_TTL_MS });
 }
 
-function getChallenge(userId: string): string | null {
-  const key = `webauthn:${userId}`;
+function consumeRegistrationChallenge(userId: string): string | null {
+  const key = `reg:${userId}`;
   const entry = challengeStore.get(key);
-  if (!entry || Date.now() > entry.expires) {
-    challengeStore.delete(key);
+  challengeStore.delete(key);
+  if (!entry || Date.now() > entry.expires) return null;
+  return entry.challenge;
+}
+
+function storeAuthenticationChallenge(challenge: string): void {
+  challengeStore.set(`auth:${challenge}`, { challenge, expires: Date.now() + CHALLENGE_TTL_MS });
+}
+
+function consumeAuthenticationChallenge(challenge: string): boolean {
+  const key = `auth:${challenge}`;
+  const entry = challengeStore.get(key);
+  challengeStore.delete(key);
+  if (!entry || Date.now() > entry.expires) return false;
+  return entry.challenge === challenge;
+}
+
+// Opportunistic sweep so the in-memory map doesn't grow unbounded if some
+// challenges are never consumed (e.g., user abandons the flow).
+function sweepExpiredChallenges(): void {
+  const now = Date.now();
+  for (const [key, val] of challengeStore.entries()) {
+    if (now > val.expires) challengeStore.delete(key);
+  }
+}
+
+function extractChallengeFromResponse(clientDataJSONBase64Url: string): string | null {
+  try {
+    const json = Buffer.from(clientDataJSONBase64Url, 'base64url').toString('utf-8');
+    const parsed = JSON.parse(json) as { challenge?: string };
+    if (typeof parsed.challenge !== 'string') return null;
+    // The echoed challenge must be a plausible base64url token; reject
+    // anything with unexpected characters so we don't feed garbage into
+    // the library or use it as a map-probe primitive.
+    if (!/^[A-Za-z0-9_-]+$/.test(parsed.challenge)) return null;
+    return parsed.challenge;
+  } catch {
     return null;
   }
-  challengeStore.delete(key);
-  return entry.challenge;
 }
 
 // ─── Registration ──────────────────────────────────────────────
@@ -81,12 +127,12 @@ export async function getRegistrationOptions(userId: string) {
     attestationType: 'none',
   });
 
-  storeChallenge(userId, options.challenge);
+  storeRegistrationChallenge(userId, options.challenge);
   return options;
 }
 
 export async function verifyRegistration(userId: string, response: RegistrationResponseJSON, deviceName?: string) {
-  const expectedChallenge = getChallenge(userId);
+  const expectedChallenge = consumeRegistrationChallenge(userId);
   if (!expectedChallenge) throw AppError.badRequest('Challenge expired or not found. Please try again.');
 
   const verification = await verifyRegistrationResponse({
@@ -141,36 +187,33 @@ export async function getAuthenticationOptions(email?: string) {
     userVerification: 'required',
   });
 
-  // Store challenge keyed by challenge itself (since we may not know the user yet)
-  storeChallenge(`auth:${options.challenge}`, options.challenge);
+  sweepExpiredChallenges();
+  storeAuthenticationChallenge(options.challenge);
   return options;
 }
 
-export async function verifyAuthentication(response: AuthenticationResponseJSON, expectedChallenge?: string) {
-  // Look up the credential
+export async function verifyAuthentication(response: AuthenticationResponseJSON) {
+  // Look up the credential first so a nonexistent credentialId fails fast
+  // without touching the challenge store.
   const pk = await db.query.passkeys.findFirst({
     where: eq(passkeys.credentialId, response.id),
   });
   if (!pk) throw AppError.unauthorized('Passkey not recognized.');
 
-  // Retrieve challenge
-  const challenge = expectedChallenge || getChallenge(`auth:${response.response.clientDataJSON}`);
-  // Try the challenge stored by the options call
-  let storedChallenge: string | null = null;
-  // We stored it as auth:<challenge>, so iterate to find it
-  for (const [key, val] of challengeStore.entries()) {
-    if (key.startsWith('auth:') && Date.now() < val.expires) {
-      storedChallenge = val.challenge;
-      challengeStore.delete(key);
-      break;
-    }
+  // The challenge is whatever the authenticator signed over. We must use the
+  // value echoed in clientDataJSON and then verify it matches a challenge we
+  // actually issued. Consuming by exact-match + single-use prevents the
+  // "first unexpired auth challenge wins" race that used to let a challenge
+  // issued for one sign-in be claimed by a concurrent attacker's request.
+  const echoedChallenge = extractChallengeFromResponse(response.response.clientDataJSON);
+  if (!echoedChallenge) throw AppError.badRequest('Malformed passkey response.');
+  if (!consumeAuthenticationChallenge(echoedChallenge)) {
+    throw AppError.badRequest('Challenge expired or already used. Please try again.');
   }
-
-  if (!storedChallenge) throw AppError.badRequest('Challenge expired. Please try again.');
 
   const verification = await verifyAuthenticationResponse({
     response,
-    expectedChallenge: storedChallenge,
+    expectedChallenge: echoedChallenge,
     expectedOrigin: getRpOrigin(),
     expectedRPID: getRpId(),
     credential: {

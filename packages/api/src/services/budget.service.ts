@@ -99,7 +99,7 @@ export async function fillFromActuals(tenantId: string, budgetId: string) {
   const revenueExpenseAccounts = await db.select().from(accounts)
     .where(and(eq(accounts.tenantId, tenantId), eq(accounts.isActive, true)));
 
-  for (const account of revenueExpenseAccounts.filter((a) => ['revenue', 'expense'].includes(a.accountType))) {
+  for (const account of revenueExpenseAccounts.filter((a) => ['revenue', 'cogs', 'expense', 'other_revenue', 'other_expense'].includes(a.accountType))) {
     const monthlyAmounts: string[] = [];
     for (let m = 0; m < 12; m++) {
       const month = ((fyStartMonth - 1 + m) % 12) + 1;
@@ -173,9 +173,17 @@ export async function buildBudgetVsActual(tenantId: string, budgetId: string, st
   const lines = await getLines(tenantId, budgetId);
   const pl = await reportService.buildProfitAndLoss(tenantId, startDate, endDate, 'accrual', companyId);
 
+  const plItemsByType: Record<string, any[]> = {
+    revenue: pl.revenue,
+    cogs: pl.cogs,
+    expense: pl.expenses,
+    other_revenue: pl.otherRevenue,
+    other_expense: pl.otherExpenses,
+  };
+
   function buildRow(line: any) {
     const monthTotal = [1,2,3,4,5,6,7,8,9,10,11,12].reduce((s, m) => s + parseFloat(line[`month_${m}`] || '0'), 0);
-    const plItems = line.account_type === 'revenue' ? pl.revenue : pl.expenses;
+    const plItems = plItemsByType[line.account_type] ?? [];
     const actual = plItems.find((i: any) => i.name === line.account_name)?.amount || 0;
     const varianceDollar = actual - monthTotal;
     const variancePercent = monthTotal === 0 ? null : (varianceDollar / Math.abs(monthTotal)) * 100;
@@ -193,26 +201,52 @@ export async function buildBudgetVsActual(tenantId: string, budgetId: string, st
 
   const allRows = (lines as any[]).map(buildRow).filter((r) => r.budget !== 0 || r.actual !== 0);
   const revenue = allRows.filter((r) => r.accountType === 'revenue');
+  const cogs = allRows.filter((r) => r.accountType === 'cogs');
   const expenses = allRows.filter((r) => r.accountType === 'expense');
+  const otherRevenue = allRows.filter((r) => r.accountType === 'other_revenue');
+  const otherExpenses = allRows.filter((r) => r.accountType === 'other_expense');
 
-  const totalRevenueBudget = revenue.reduce((s, r) => s + r.budget, 0);
-  const totalRevenueActual = revenue.reduce((s, r) => s + r.actual, 0);
-  const totalExpenseBudget = expenses.reduce((s, r) => s + r.budget, 0);
-  const totalExpenseActual = expenses.reduce((s, r) => s + r.actual, 0);
+  const sumBudget = (rs: any[]) => rs.reduce((s, r) => s + r.budget, 0);
+  const sumActual = (rs: any[]) => rs.reduce((s, r) => s + r.actual, 0);
+  const totalRevenueBudget = sumBudget(revenue);
+  const totalRevenueActual = sumActual(revenue);
+  const totalCogsBudget = sumBudget(cogs);
+  const totalCogsActual = sumActual(cogs);
+  const totalExpenseBudget = sumBudget(expenses);
+  const totalExpenseActual = sumActual(expenses);
+  const totalOtherRevenueBudget = sumBudget(otherRevenue);
+  const totalOtherRevenueActual = sumActual(otherRevenue);
+  const totalOtherExpenseBudget = sumBudget(otherExpenses);
+  const totalOtherExpenseActual = sumActual(otherExpenses);
+
+  const netIncomeBudget =
+    totalRevenueBudget + totalOtherRevenueBudget - totalCogsBudget - totalExpenseBudget - totalOtherExpenseBudget;
+  const netIncomeActual =
+    totalRevenueActual + totalOtherRevenueActual - totalCogsActual - totalExpenseActual - totalOtherExpenseActual;
 
   return {
     title: 'Budget vs Actual',
+    labels: pl.labels,
     budgetName: budget.name,
     fiscalYear: budget.fiscalYear,
     startDate, endDate,
     revenue,
+    cogs,
     expenses,
+    otherRevenue,
+    otherExpenses,
     totalRevenueBudget,
     totalRevenueActual,
+    totalCogsBudget,
+    totalCogsActual,
     totalExpenseBudget,
     totalExpenseActual,
-    netIncomeBudget: totalRevenueBudget - totalExpenseBudget,
-    netIncomeActual: totalRevenueActual - totalExpenseActual,
+    totalOtherRevenueBudget,
+    totalOtherRevenueActual,
+    totalOtherExpenseBudget,
+    totalOtherExpenseActual,
+    netIncomeBudget,
+    netIncomeActual,
   };
 }
 
@@ -234,13 +268,19 @@ export async function buildBudgetOverview(tenantId: string, budgetId: string) {
   }).filter((r) => r.annualTotal !== 0);
 
   const revenue = rows.filter((r) => r.accountType === 'revenue');
+  const cogs = rows.filter((r) => r.accountType === 'cogs');
   const expenses = rows.filter((r) => r.accountType === 'expense');
+  const otherRevenue = rows.filter((r) => r.accountType === 'other_revenue');
+  const otherExpenses = rows.filter((r) => r.accountType === 'other_expense');
 
   return {
     title: 'Budget Overview',
     budgetName: budget.name,
     fiscalYear: budget.fiscalYear,
     revenue,
+    cogs,
     expenses,
+    otherRevenue,
+    otherExpenses,
   };
 }

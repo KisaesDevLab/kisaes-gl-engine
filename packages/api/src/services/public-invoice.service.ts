@@ -79,9 +79,11 @@ export async function generatePublicToken(tenantId: string, invoiceId: string): 
   // Idempotent: return existing token if already set
   if (invoice.publicToken) return invoice.publicToken;
 
-  // 12 bytes → 16-char base64url token (96-bit entropy, brute-force infeasible)
-  // Short enough for SMS auto-linking. Example: /pay/AbCdEfGh1234-_xY
-  const token = crypto.randomBytes(12).toString('base64url');
+  // 20 bytes → 27-char base64url token (160-bit entropy). This token is a
+  // bearer credential — anyone with it can view the invoice and pay online —
+  // so it must be well past the range where online brute force is feasible
+  // even with slack rate limits.
+  const token = crypto.randomBytes(20).toString('base64url');
 
   await db.update(transactions)
     .set({ publicToken: token, updatedAt: new Date() })

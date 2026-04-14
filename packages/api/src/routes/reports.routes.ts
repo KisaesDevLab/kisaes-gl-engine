@@ -1,6 +1,7 @@
 import { Router, type Request } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
+import { expensiveOpLimiter } from '../middleware/expensive-op-limiter.js';
 import * as reportService from '../services/report.service.js';
 import * as apReportService from '../services/ap-report.service.js';
 import * as exportService from '../services/report-export.service.js';
@@ -9,6 +10,7 @@ import * as comparisonService from '../services/report-comparison.service.js';
 export const reportsRouter = Router();
 reportsRouter.use(authenticate);
 reportsRouter.use(companyContext);
+reportsRouter.use(expensiveOpLimiter);
 
 function resolveCompanyScope(req: Request): string | null {
   const scope = req.query['scope'] as string | undefined;
@@ -68,6 +70,7 @@ type ExportColumn = { key: string; label: string; align?: 'left' | 'right'; widt
 type ExportRow = Record<string, unknown> & {
   _section?: boolean;
   _summary?: boolean;
+  _total?: boolean;
   _label?: string;
 };
 
@@ -82,10 +85,15 @@ function extractDataAndColumns(reportData: any): { rows: any[]; columns: ExportC
 
     const rows: any[] = [];
 
-    // Separate by accountType if present
-    const revenueRows = reportData.rows.filter((r: any) => r.accountType === 'revenue');
-    const expenseRows = reportData.rows.filter((r: any) => r.accountType === 'expense');
-    const otherRows = reportData.rows.filter((r: any) => r.accountType !== 'revenue' && r.accountType !== 'expense');
+    const rowsByType = (t: string) => reportData.rows.filter((r: any) => r.accountType === t);
+    const revenueRows = rowsByType('revenue');
+    const cogsRows = rowsByType('cogs');
+    const expenseRows = rowsByType('expense');
+    const otherRevenueRows = rowsByType('other_revenue');
+    const otherExpenseRows = rowsByType('other_expense');
+    const L = reportData.labels as import('@kis-books/shared').PLSectionLabels | undefined;
+    const lab = (k: keyof import('@kis-books/shared').PLSectionLabels, fallback: string) =>
+      L?.[k] || fallback;
 
     const mapRow = (r: any) => {
       const row: any = { account: r.accountNumber ? `${r.accountNumber} — ${r.account || r.name}` : (r.account || r.name) };
@@ -93,23 +101,78 @@ function extractDataAndColumns(reportData: any): { rows: any[]; columns: ExportC
       return row;
     };
     const totalRow = (label: string, values: any[]) => {
-      const row: any = { account: label };
+      const row: any = { _total: true, account: label };
       (values || []).forEach((v: any, i: number) => { row[reportData.columns[i]?.label || `Col${i}`] = fmtNum(v); });
       return row;
     };
+    // Build a subtotal row "a − b" across all period columns. Handles
+    // comparative report column shapes (current / prior / $ change /
+    // % change) correctly — percent columns are re-derived from the new
+    // current/prior rather than naively subtracting source percents.
+    const zipSubtract = (a: number[], b: number[]) => {
+      const base = (a || []).map((v, i) =>
+        reportData.columns[i]?.type === 'percent_variance'
+          ? null
+          : (v ?? 0) - (b?.[i] ?? 0),
+      );
+      for (let i = 0; i < base.length; i++) {
+        const col = reportData.columns[i];
+        if (col?.type === 'variance') {
+          base[i] = (base[0] ?? 0) - (base[1] ?? 0);
+        } else if (col?.type === 'percent_variance') {
+          const cur = base[0] ?? 0;
+          const pr = base[1] ?? 0;
+          base[i] = pr === 0 ? null : ((cur - pr) / Math.abs(pr)) * 100;
+        }
+      }
+      return base;
+    };
+
+    const hasCogs = cogsRows.length > 0;
+    const hasOtherRev = otherRevenueRows.length > 0;
+    const hasOtherExp = otherExpenseRows.length > 0;
+    const showOperatingIncome = hasCogs || hasOtherRev || hasOtherExp;
+
+    const revenueLabel = lab('revenue', 'Revenue');
+    const cogsLabel = lab('cogs', 'Cost of Goods Sold');
+    const grossProfitLabel = lab('grossProfit', 'Gross Profit');
+    const expensesLabel = lab('expenses', 'Expenses');
+    const operatingIncomeLabel = lab('operatingIncome', 'Operating Income');
+    const otherRevenueLabel = lab('otherRevenue', 'Other Revenue');
+    const otherExpensesLabel = lab('otherExpenses', 'Other Expenses');
+    const netIncomeLabel = lab('netIncome', 'Net Income');
 
     if (revenueRows.length) {
-      rows.push({ account: '--- REVENUE ---' });
+      rows.push({ account: `--- ${revenueLabel.toUpperCase()} ---` });
       rows.push(...revenueRows.map(mapRow));
-      if (reportData.totalRevenue) rows.push(totalRow('Total Revenue', reportData.totalRevenue));
+      if (reportData.totalRevenue) rows.push(totalRow(`Total ${revenueLabel}`, reportData.totalRevenue));
+    }
+    if (hasCogs) {
+      rows.push({ account: `--- ${cogsLabel.toUpperCase()} ---` });
+      rows.push(...cogsRows.map(mapRow));
+      if (reportData.totalCogs) rows.push(totalRow(`Total ${cogsLabel}`, reportData.totalCogs));
+      rows.push(totalRow(grossProfitLabel, zipSubtract(reportData.totalRevenue, reportData.totalCogs)));
     }
     if (expenseRows.length) {
-      rows.push({ account: '--- EXPENSES ---' });
+      rows.push({ account: `--- ${expensesLabel.toUpperCase()} ---` });
       rows.push(...expenseRows.map(mapRow));
-      if (reportData.totalExpenses) rows.push(totalRow('Total Expenses', reportData.totalExpenses));
+      if (reportData.totalExpenses) rows.push(totalRow(`Total ${expensesLabel}`, reportData.totalExpenses));
     }
-    if (otherRows.length) rows.push(...otherRows.map(mapRow));
-    if (reportData.netIncome) rows.push(totalRow('Net Income', reportData.netIncome));
+    if (showOperatingIncome) {
+      const gp = hasCogs ? zipSubtract(reportData.totalRevenue, reportData.totalCogs) : reportData.totalRevenue;
+      rows.push(totalRow(operatingIncomeLabel, zipSubtract(gp, reportData.totalExpenses)));
+    }
+    if (hasOtherRev) {
+      rows.push({ account: `--- ${otherRevenueLabel.toUpperCase()} ---` });
+      rows.push(...otherRevenueRows.map(mapRow));
+      if (reportData.totalOtherRevenue) rows.push(totalRow(`Total ${otherRevenueLabel}`, reportData.totalOtherRevenue));
+    }
+    if (hasOtherExp) {
+      rows.push({ account: `--- ${otherExpensesLabel.toUpperCase()} ---` });
+      rows.push(...otherExpenseRows.map(mapRow));
+      if (reportData.totalOtherExpenses) rows.push(totalRow(`Total ${otherExpensesLabel}`, reportData.totalOtherExpenses));
+    }
+    if (reportData.netIncome) rows.push(totalRow(netIncomeLabel, reportData.netIncome));
 
     // Comparative Balance Sheet
     if (reportData.assets && reportData.totalAssets) {
@@ -140,19 +203,66 @@ function extractDataAndColumns(reportData: any): { rows: any[]; columns: ExportC
       { key: 'amount', label: 'Amount', align: 'right' },
     ];
     const rows: any[] = [];
-    rows.push({ account: '--- REVENUE ---', amount: '' });
-    for (const r of reportData.revenue) {
-      rows.push({ account: r.accountNumber ? `${r.accountNumber} — ${r.name}` : r.name, amount: fmtNum(r.amount) });
+    const line = (account: string, amount: any = '') => rows.push({ account, amount });
+    const totalLine = (account: string, amount: any = '') => rows.push({ _total: true, account, amount });
+    const accountLine = (entry: any) => line(
+      entry.accountNumber ? `${entry.accountNumber} — ${entry.name}` : entry.name,
+      fmtNum(entry.amount),
+    );
+
+    const hasCogs = (reportData.cogs?.length ?? 0) > 0;
+    const hasOtherRev = (reportData.otherRevenue?.length ?? 0) > 0;
+    const hasOtherExp = (reportData.otherExpenses?.length ?? 0) > 0;
+    const showOperatingIncome = hasCogs || hasOtherRev || hasOtherExp;
+
+    const L = reportData.labels as import('@kis-books/shared').PLSectionLabels | undefined;
+    const revenueLabel = L?.revenue || 'Revenue';
+    const cogsLabel = L?.cogs || 'Cost of Goods Sold';
+    const grossProfitLabel = L?.grossProfit || 'Gross Profit';
+    const expensesLabel = L?.expenses || 'Expenses';
+    const operatingIncomeLabel = L?.operatingIncome || 'Operating Income';
+    const otherRevenueLabel = L?.otherRevenue || 'Other Revenue';
+    const otherExpensesLabel = L?.otherExpenses || 'Other Expenses';
+    const netIncomeLabel = L?.netIncome || 'Net Income';
+
+    line(`--- ${revenueLabel.toUpperCase()} ---`);
+    for (const r of reportData.revenue) accountLine(r);
+    totalLine(`Total ${revenueLabel}`, fmtNum(reportData.totalRevenue));
+    line('');
+
+    if (hasCogs) {
+      line(`--- ${cogsLabel.toUpperCase()} ---`);
+      for (const r of reportData.cogs) accountLine(r);
+      totalLine(`Total ${cogsLabel}`, fmtNum(reportData.totalCogs));
+      totalLine(grossProfitLabel, fmtNum(reportData.grossProfit ?? 0));
+      line('');
     }
-    rows.push({ account: 'Total Revenue', amount: fmtNum(reportData.totalRevenue) });
-    rows.push({ account: '', amount: '' });
-    rows.push({ account: '--- EXPENSES ---', amount: '' });
-    for (const e of reportData.expenses) {
-      rows.push({ account: e.accountNumber ? `${e.accountNumber} — ${e.name}` : e.name, amount: fmtNum(e.amount) });
+
+    line(`--- ${expensesLabel.toUpperCase()} ---`);
+    for (const e of reportData.expenses) accountLine(e);
+    totalLine(`Total ${expensesLabel}`, fmtNum(reportData.totalExpenses));
+    line('');
+
+    if (showOperatingIncome) {
+      totalLine(operatingIncomeLabel, fmtNum(reportData.operatingIncome ?? 0));
+      line('');
     }
-    rows.push({ account: 'Total Expenses', amount: fmtNum(reportData.totalExpenses) });
-    rows.push({ account: '', amount: '' });
-    rows.push({ account: 'NET INCOME', amount: fmtNum(reportData.netIncome) });
+
+    if (hasOtherRev) {
+      line(`--- ${otherRevenueLabel.toUpperCase()} ---`);
+      for (const r of reportData.otherRevenue) accountLine(r);
+      totalLine(`Total ${otherRevenueLabel}`, fmtNum(reportData.totalOtherRevenue));
+      line('');
+    }
+
+    if (hasOtherExp) {
+      line(`--- ${otherExpensesLabel.toUpperCase()} ---`);
+      for (const r of reportData.otherExpenses) accountLine(r);
+      totalLine(`Total ${otherExpensesLabel}`, fmtNum(reportData.totalOtherExpenses));
+      line('');
+    }
+
+    totalLine(netIncomeLabel.toUpperCase(), fmtNum(reportData.netIncome));
     return { rows, columns };
   }
 
@@ -386,7 +496,7 @@ function buildHtmlTable(rows: ExportRow[], columns: ExportColumn[]): string {
   // cells like blank debits/credits).
   const header = columns.map((c) => {
     const cls = c.align === 'right' ? ' class="amount"' : '';
-    return `<th${cls}${widthStyle(c)}>${c.label}</th>`;
+    return `<th${cls}${widthStyle(c)}>${exportService.escapeHtml(c.label)}</th>`;
   }).join('');
 
   const body = rows.map((row) => {
@@ -394,15 +504,21 @@ function buildHtmlTable(rows: ExportRow[], columns: ExportColumn[]): string {
     // the General Ledger to render account headers as full-width bands
     // instead of cramming the label into the Date column.
     if (row._section) {
-      return `<tr style="background:#f3f4f6;font-weight:600"><td colspan="${columns.length}">${row._label || ''}</td></tr>`;
+      return `<tr style="background:#f3f4f6;font-weight:600"><td colspan="${columns.length}">${exportService.escapeHtml(row._label || '')}</td></tr>`;
     }
 
     // Per-column cell rendering, used by both _summary rows and normal
     // data rows.
     const firstKey = columns[0]?.key;
     const firstVal = firstKey ? row[firstKey] : undefined;
+    // Prefer explicit markers (`_total`, `_section`) — rows emitted from
+    // paths that know their role tag themselves. Fall back to string
+    // detection for older flatteners that just push raw rows.
+    // Note: explicit `_section` rows are already handled via early return
+    // above, so by this point row._section is always falsy.
     const isLegacySection = typeof firstVal === 'string' && firstVal.startsWith('---');
-    const isLegacyTotal = typeof firstVal === 'string' && (firstVal.startsWith('Total') || firstVal.startsWith('TOTAL') || firstVal === 'NET INCOME');
+    const isLegacyTotal = row._total === true
+      || (typeof firstVal === 'string' && (firstVal.startsWith('Total') || firstVal.startsWith('TOTAL') || firstVal === 'NET INCOME'));
 
     const cells = columns.map((c) => {
       let val = row[c.key];
@@ -411,7 +527,10 @@ function buildHtmlTable(rows: ExportRow[], columns: ExportColumn[]): string {
       // Apply `.amount` if the column declares right-alignment OR the
       // value is a JS number (legacy auto-detect for older report shapes).
       const cls = (c.align === 'right' || isNum) ? ' class="amount"' : '';
-      return `<td${cls}${widthStyle(c)}>${val !== null && val !== undefined ? (isNum ? fmtNum(val) : val) : ''}</td>`;
+      const rendered = val === null || val === undefined
+        ? ''
+        : isNum ? fmtNum(val) : exportService.escapeHtml(val);
+      return `<td${cls}${widthStyle(c)}>${rendered}</td>`;
     }).join('');
 
     // Explicit summary row marker (per-account beginning / ending /

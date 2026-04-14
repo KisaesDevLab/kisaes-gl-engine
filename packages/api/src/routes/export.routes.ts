@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { authenticate } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
+import { expensiveOpLimiter } from '../middleware/expensive-op-limiter.js';
 import * as exportService from '../services/export.service.js';
 import * as importService from '../services/import.service.js';
 
@@ -10,6 +11,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 export const exportRouter = Router();
 exportRouter.use(authenticate);
 exportRouter.use(companyContext);
+exportRouter.use(expensiveOpLimiter);
 
 // Full data export as individual CSVs (JSON response with file contents)
 exportRouter.get('/full', async (req, res) => {

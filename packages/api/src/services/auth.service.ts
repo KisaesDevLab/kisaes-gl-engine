@@ -353,9 +353,21 @@ export async function resetPassword(token: string, newPassword: string): Promise
   await db.update(users).set({ passwordHash, updatedAt: new Date() })
     .where(eq(users.id, resetRecord.userId));
 
-  // Mark token as used
+  // Mark this token as used and purge any other outstanding reset tokens for
+  // the user so a stolen reset link can't race the legitimate one.
   await db.update(passwordResetTokens).set({ usedAt: new Date() })
     .where(eq(passwordResetTokens.id, resetRecord.id));
+  await db.delete(passwordResetTokens).where(
+    and(
+      eq(passwordResetTokens.userId, resetRecord.userId),
+      sql`${passwordResetTokens.usedAt} IS NULL`,
+    ),
+  );
+
+  // A password reset is a trust-boundary event: every refresh token that
+  // existed before this point must be invalidated, otherwise an attacker
+  // who captured a refresh token keeps session access across the reset.
+  await db.delete(sessions).where(eq(sessions.userId, resetRecord.userId));
 }
 
 export async function inviteUser(tenantId: string, input: { email: string; displayName: string; role: string }): Promise<{ user: typeof users.$inferSelect; temporaryPassword: string | null; existingUser: boolean }> {

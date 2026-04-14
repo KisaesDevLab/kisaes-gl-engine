@@ -351,6 +351,27 @@
       "when": 1775640000000,
       "tag": "0049_tailscale_audit",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1775650000000,
+      "tag": "0050_extended_pl_account_types",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1775660000000,
+      "tag": "0051_tenant_report_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1776470000000,
+      "tag": "0052_transaction_tags_unique",
+      "breakpoints": true
     }
   ]
 }

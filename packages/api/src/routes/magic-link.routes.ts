@@ -3,6 +3,7 @@ import rateLimit from 'express-rate-limit';
 import * as magicLinkService from '../services/magic-link.service.js';
 import * as tfaService from '../services/tfa.service.js';
 import * as authService from '../services/auth.service.js';
+import { setRefreshCookie } from '../utils/refresh-cookie.js';
 
 const authLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -85,6 +86,7 @@ magicLinkRouter.post('/tfa/verify', authLimiter, async (req, res) => {
   const expiresAt = new Date(); expiresAt.setDate(expiresAt.getDate() + 7);
   await db.insert(sessions).values({ userId: user.id, refreshTokenHash: refreshHash, expiresAt });
 
+  setRefreshCookie(res, refreshToken);
   res.json({
     user: {
       id: user.id, tenantId: user.tenantId, email: user.email,
@@ -93,7 +95,7 @@ magicLinkRouter.post('/tfa/verify', authLimiter, async (req, res) => {
       displayPreferences: user.displayPreferences,
       createdAt: user.createdAt, updatedAt: user.updatedAt,
     },
-    tokens: { accessToken, refreshToken },
+    tokens: { accessToken },
     accessibleTenants,
   });
 });

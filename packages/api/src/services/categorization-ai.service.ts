@@ -66,7 +66,7 @@ export async function suggestCategorization(tenantId: string, feedItemId: string
     SELECT t.contact_id, jl.account_id, c.display_name
     FROM transactions t
     JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.debit > 0
-    JOIN accounts a ON a.id = jl.account_id AND a.account_type = 'expense'
+    JOIN accounts a ON a.id = jl.account_id AND a.account_type IN ('cogs', 'expense', 'other_expense')
     LEFT JOIN contacts c ON c.id = t.contact_id
     WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
       AND (LOWER(t.memo) = ${cleanedDesc} OR LOWER(c.display_name) = ${cleanedDesc})
@@ -90,7 +90,7 @@ export async function suggestCategorization(tenantId: string, feedItemId: string
     SELECT t.contact_id, jl.account_id, c.display_name
     FROM transactions t
     JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.debit > 0
-    JOIN accounts a ON a.id = jl.account_id AND a.account_type = 'expense'
+    JOIN accounts a ON a.id = jl.account_id AND a.account_type IN ('cogs', 'expense', 'other_expense')
     JOIN contacts c ON c.id = t.contact_id
     WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
       AND (${cleanedDesc} LIKE '%' || LOWER(c.display_name) || '%'

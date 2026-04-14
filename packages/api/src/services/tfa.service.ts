@@ -60,6 +60,11 @@ export async function checkTfaRequired(userId: string, deviceFingerprint?: strin
   };
 }
 
+// Minimum interval between code issuances for a single user+method. Prevents
+// an attacker with a valid tfaToken from spamming SMS/email to exhaust
+// quotas, cost us money, or DoS the real user's inbox.
+const CODE_ISSUE_MIN_INTERVAL_MS = 30_000;
+
 export async function generateAndSendCode(userId: string, method: 'email' | 'sms'): Promise<{
   method: string;
   destinationMasked: string;
@@ -68,6 +73,24 @@ export async function generateAndSendCode(userId: string, method: 'email' | 'sms
   const config = await tfaConfigService.getConfig();
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   if (!user) throw AppError.notFound('User not found');
+
+  // If the user is in a TFA lockout, refuse to issue more codes so an
+  // attacker can't keep burning delivery quota while locked out.
+  if (user.tfaLockedUntil && new Date() < user.tfaLockedUntil) {
+    throw AppError.tooManyRequests('Too many failed attempts. Try again later.');
+  }
+
+  // Throttle issuance per user+method so a stolen tfaToken can't spam the
+  // user's inbox or rack up SMS cost. Uses the existing codes table as the
+  // rate-limit ledger — no extra state needed.
+  const [recent] = await db.select({ createdAt: tfaCodes.createdAt })
+    .from(tfaCodes)
+    .where(and(eq(tfaCodes.userId, userId), eq(tfaCodes.method, method)))
+    .orderBy(sql`${tfaCodes.createdAt} DESC`)
+    .limit(1);
+  if (recent?.createdAt && Date.now() - new Date(recent.createdAt).getTime() < CODE_ISSUE_MIN_INTERVAL_MS) {
+    throw AppError.tooManyRequests('Please wait a moment before requesting another code.');
+  }
 
   const code = generateCode(config.codeLength);
   const codeHash = await bcrypt.hash(code, 12);
@@ -211,7 +234,7 @@ export function generateTfaToken(userId: string): string {
 
 export function verifyTfaToken(token: string): { userId: string } | null {
   try {
-    const payload = jwt.verify(token, env.JWT_SECRET) as any;
+    const payload = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as any;
     if (!payload.tfa_pending) return null;
     return { userId: payload.userId };
   } catch {

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { loginSchema, registerSchema, forgotPasswordSchema, resetPasswordSchema, refreshTokenSchema, updatePreferencesSchema } from '@kis-books/shared';
+import { loginSchema, registerSchema, forgotPasswordSchema, resetPasswordSchema, updatePreferencesSchema } from '@kis-books/shared';
 import { validate } from '../middleware/validate.js';
 import { authenticate } from '../middleware/auth.js';
 import * as authService from '../services/auth.service.js';
@@ -7,6 +7,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { users } from '../db/schema/index.js';
 import rateLimit from 'express-rate-limit';
+import { setRefreshCookie, clearRefreshCookie, readRefreshCookie } from '../utils/refresh-cookie.js';
 
 const authLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
@@ -18,9 +19,10 @@ export const authRouter = Router();
 
 authRouter.post('/register', authLimiter, validate(registerSchema), async (req, res) => {
   const result = await authService.register(req.body);
+  setRefreshCookie(res, result.tokens.refreshToken);
   res.status(201).json({
     user: sanitizeUser(result.user),
-    tokens: result.tokens,
+    tokens: { accessToken: result.tokens.accessToken },
   });
 });
 
@@ -45,9 +47,10 @@ authRouter.post('/login', authLimiter, validate(loginSchema), async (req, res) =
     return;
   }
 
+  setRefreshCookie(res, result.tokens.refreshToken);
   res.json({
     user: sanitizeUser(result.user),
-    tokens: result.tokens,
+    tokens: { accessToken: result.tokens.accessToken },
     accessibleTenants: result.accessibleTenants,
   });
 });
@@ -104,9 +107,10 @@ authRouter.post('/tfa/verify', authLimiter, async (req, res) => {
   const expiresAt = new Date(); expiresAt.setDate(expiresAt.getDate() + 7);
   await db.insert(sessions).values({ userId: user.id, refreshTokenHash: refreshHash, expiresAt });
 
+  setRefreshCookie(res, refreshToken);
   res.json({
     user: sanitizeUser(user),
-    tokens: { accessToken, refreshToken },
+    tokens: { accessToken },
     accessibleTenants,
   });
 });
@@ -159,23 +163,37 @@ authRouter.post('/tfa/verify-recovery', authLimiter, async (req, res) => {
   const expiresAt = new Date(); expiresAt.setDate(expiresAt.getDate() + 7);
   await db.insert(sessions).values({ userId: user.id, refreshTokenHash: refreshHash, expiresAt });
 
+  setRefreshCookie(res, refreshToken);
   res.json({
     user: sanitizeUser(user),
-    tokens: { accessToken, refreshToken },
+    tokens: { accessToken },
     accessibleTenants,
   });
 });
 
-authRouter.post('/refresh', validate(refreshTokenSchema), async (req, res) => {
-  const tokens = await authService.refresh(req.body.refreshToken);
-  res.json({ tokens });
+authRouter.post('/refresh', async (req, res) => {
+  // Refresh token lives in an HttpOnly cookie so it's never exposed to page
+  // scripts. We still accept body.refreshToken as a deprecated path for
+  // older clients that predated the cookie; once the web bundle is updated
+  // this branch goes unused and can be removed.
+  const fromCookie = readRefreshCookie(req);
+  const fromBody = typeof req.body?.refreshToken === 'string' ? req.body.refreshToken : undefined;
+  const refreshToken = fromCookie || fromBody;
+  if (!refreshToken) {
+    res.status(401).json({ error: { message: 'Missing refresh token' } });
+    return;
+  }
+  const tokens = await authService.refresh(refreshToken);
+  setRefreshCookie(res, tokens.refreshToken);
+  res.json({ tokens: { accessToken: tokens.accessToken } });
 });
 
 authRouter.post('/logout', async (req, res) => {
-  const { refreshToken } = req.body;
+  const refreshToken = readRefreshCookie(req) || req.body?.refreshToken;
   if (refreshToken) {
     await authService.logout(refreshToken);
   }
+  clearRefreshCookie(res);
   res.json({ message: 'Logged out' });
 });
 
@@ -207,7 +225,8 @@ authRouter.get('/me', authenticate, async (req, res) => {
 
 authRouter.post('/switch-tenant', authenticate, async (req, res) => {
   const tokens = await authService.switchTenant(req.userId, req.body.tenantId);
-  res.json({ tokens });
+  setRefreshCookie(res, tokens.refreshToken);
+  res.json({ tokens: { accessToken: tokens.accessToken } });
 });
 
 authRouter.post('/create-client', authenticate, async (req, res) => {

@@ -1,6 +1,8 @@
 import { eq, and, sql, lte, gte, between, count, or, ne } from 'drizzle-orm';
+import { type PLSectionLabels, isDebitNormal as isDebitNormalShared, COST_TYPES } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { transactions, journalLines, accounts, contacts } from '../db/schema/index.js';
+import { getPLLabels } from './tenant-report-settings.service.js';
 
 type Basis = 'accrual' | 'cash';
 
@@ -35,7 +37,36 @@ async function getFiscalYearStart(tenantId: string, companyId: string | null): P
 
 // ─── FINANCIAL STATEMENTS ────────────────────────────────────────
 
-export async function buildProfitAndLoss(tenantId: string, startDate: string, endDate: string, basis: Basis = 'accrual', companyId: string | null = null) {
+export interface PLEntry { name: string; accountNumber: string | null; amount: number }
+
+export interface PLResult {
+  title: string;
+  startDate: string;
+  endDate: string;
+  basis: Basis;
+  labels: PLSectionLabels;
+  revenue: PLEntry[];
+  totalRevenue: number;
+  cogs: PLEntry[];
+  totalCogs: number;
+  expenses: PLEntry[];
+  totalExpenses: number;
+  otherRevenue: PLEntry[];
+  totalOtherRevenue: number;
+  otherExpenses: PLEntry[];
+  totalOtherExpenses: number;
+  grossProfit: number | null;
+  operatingIncome: number | null;
+  netIncome: number;
+}
+
+export async function buildProfitAndLoss(
+  tenantId: string,
+  startDate: string,
+  endDate: string,
+  basis: Basis = 'accrual',
+  companyId: string | null = null,
+): Promise<PLResult> {
   const rows = await db.execute(sql`
     SELECT a.id, a.account_number, a.name, a.account_type, a.detail_type,
       COALESCE(SUM(jl.debit), 0) as total_debit,
@@ -47,33 +78,58 @@ export async function buildProfitAndLoss(tenantId: string, startDate: string, en
         AND txn_date >= ${startDate} AND txn_date <= ${endDate}
         AND ${companyId ? sql`company_id = ${companyId}` : sql`TRUE`}
       )
-    WHERE a.tenant_id = ${tenantId} AND a.account_type IN ('revenue', 'expense')
+    WHERE a.tenant_id = ${tenantId}
+      AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense')
     GROUP BY a.id ORDER BY a.account_number, a.name
   `);
 
-  const revenue: Array<{ name: string; accountNumber: string | null; amount: number }> = [];
-  const expenses: Array<{ name: string; accountNumber: string | null; amount: number }> = [];
-  let totalRevenue = 0, totalExpenses = 0;
+  const revenue: PLEntry[] = [];
+  const cogs: PLEntry[] = [];
+  const expenses: PLEntry[] = [];
+  const otherRevenue: PLEntry[] = [];
+  const otherExpenses: PLEntry[] = [];
+  let totalRevenue = 0;
+  let totalCogs = 0;
+  let totalExpenses = 0;
+  let totalOtherRevenue = 0;
+  let totalOtherExpenses = 0;
 
   for (const row of rows.rows as any[]) {
     const amount = Math.abs(parseFloat(row.total_credit) - parseFloat(row.total_debit));
     if (amount === 0) continue;
-    const entry = { name: row.name, accountNumber: row.account_number, amount };
-    if (row.account_type === 'revenue') {
-      revenue.push(entry);
-      totalRevenue += amount;
-    } else {
-      expenses.push(entry);
-      totalExpenses += amount;
+    const entry: PLEntry = { name: row.name, accountNumber: row.account_number, amount };
+    switch (row.account_type) {
+      case 'revenue': revenue.push(entry); totalRevenue += amount; break;
+      case 'cogs': cogs.push(entry); totalCogs += amount; break;
+      case 'expense': expenses.push(entry); totalExpenses += amount; break;
+      case 'other_revenue': otherRevenue.push(entry); totalOtherRevenue += amount; break;
+      case 'other_expense': otherExpenses.push(entry); totalOtherExpenses += amount; break;
     }
   }
+
+  const hasCogs = cogs.length > 0;
+  const hasOther = otherRevenue.length > 0 || otherExpenses.length > 0;
+  const grossProfit = hasCogs ? totalRevenue - totalCogs : null;
+  const operatingIncome = hasCogs || hasOther
+    ? (grossProfit ?? totalRevenue) - totalExpenses
+    : null;
+  const netIncome =
+    totalRevenue + totalOtherRevenue - totalCogs - totalExpenses - totalOtherExpenses;
+
+  const labels = await getPLLabels(tenantId);
 
   return {
     title: 'Profit and Loss',
     startDate, endDate, basis,
+    labels,
     revenue, totalRevenue,
+    cogs, totalCogs,
     expenses, totalExpenses,
-    netIncome: totalRevenue - totalExpenses,
+    otherRevenue, totalOtherRevenue,
+    otherExpenses, totalOtherExpenses,
+    grossProfit,
+    operatingIncome,
+    netIncome,
   };
 }
 
@@ -249,7 +305,7 @@ export async function buildExpenseByVendor(tenantId: string, startDate: string, 
       SUM(jl.debit) as total
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
-    JOIN accounts a ON a.id = jl.account_id AND a.account_type = 'expense'
+    JOIN accounts a ON a.id = jl.account_id AND a.account_type IN ('cogs', 'expense', 'other_expense')
     LEFT JOIN contacts c ON c.id = t.contact_id AND c.tenant_id = ${tenantId}
     WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
@@ -263,11 +319,11 @@ export async function buildExpenseByVendor(tenantId: string, startDate: string, 
 
 export async function buildExpenseByCategory(tenantId: string, startDate: string, endDate: string, companyId: string | null = null) {
   const rows = await db.execute(sql`
-    SELECT a.name as category, a.account_number,
+    SELECT a.name as category, a.account_number, a.account_type,
       SUM(jl.debit) as total
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
-    JOIN accounts a ON a.id = jl.account_id AND a.account_type = 'expense'
+    JOIN accounts a ON a.id = jl.account_id AND a.account_type IN ('cogs', 'expense', 'other_expense')
     WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
       AND jl.debit > 0
@@ -555,10 +611,10 @@ export async function buildGeneralLedger(tenantId: string, startDate: string, en
   }
 
   // Helper: signed balance using the account's natural sign convention.
-  // Asset and expense are debit-normal; everything else is credit-normal.
-  const isDebitNormal = (type: string) => type === 'asset' || type === 'expense';
+  // asset / cogs / expense / other_expense are debit-normal; the rest
+  // (liability / equity / revenue / other_revenue) are credit-normal.
   const naturalBalance = (type: string, debit: number, credit: number) =>
-    isDebitNormal(type) ? debit - credit : credit - debit;
+    isDebitNormalShared(type) ? debit - credit : credit - debit;
 
   let totalDebits = 0;
   let totalCredits = 0;
@@ -609,7 +665,7 @@ export async function buildGeneralLedger(tenantId: string, startDate: string, en
         accountNumber: acct.account_number,
         name: acct.name,
         accountType: acct.account_type,
-        normalBalance: isDebitNormal(acct.account_type) ? ('debit' as const) : ('credit' as const),
+        normalBalance: isDebitNormalShared(acct.account_type) ? ('debit' as const) : ('credit' as const),
         beginningBalance,
         lines: reportLines,
         periodDebits,
