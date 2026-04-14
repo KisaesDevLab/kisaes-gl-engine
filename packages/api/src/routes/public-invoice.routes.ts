@@ -7,10 +7,12 @@ import * as pdfService from '../services/pdf.service.js';
 
 export const publicInvoiceRouter = Router();
 
-// Tighter rate limit for public endpoints: 30 req/min/IP
+// Tight rate limit — these endpoints are unauthenticated bearer-token
+// surfaces, so we want to keep distributed brute-force against the 160-bit
+// invoice token well below the already-infeasible threshold.
 const publicLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 30,
+  max: 10,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: { message: 'Too many requests. Please try again later.' } },

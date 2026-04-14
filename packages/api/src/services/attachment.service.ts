@@ -11,6 +11,21 @@ function ensureDir(dir: string) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
+// Resolves a filePath (stored in the DB as "/uploads/attachments/<tenant>/<uuid>.ext")
+// to an absolute path under UPLOAD_DIR and refuses anything that escapes the
+// root via "..", symlinks, or absolute overrides. The DB value is considered
+// trusted today, but these defenses are cheap and protect against any future
+// primitive that lets a user influence filePath.
+function resolveUploadPath(filePath: string): string {
+  const rel = filePath.replace(/^\/uploads\//, '');
+  const root = path.resolve(env.UPLOAD_DIR);
+  const resolved = path.resolve(root, rel);
+  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+    throw AppError.notFound('File not found');
+  }
+  return resolved;
+}
+
 export async function upload(
   tenantId: string,
   file: { originalname: string; buffer: Buffer; mimetype: string; size: number },
@@ -113,7 +128,7 @@ export async function download(tenantId: string, id: string) {
     return { stream: Readable.from(data), attachment };
   } catch {
     // Fallback to direct filesystem for backward compatibility
-    const fullPath = path.join(env.UPLOAD_DIR, attachment.filePath.replace('/uploads/', ''));
+    const fullPath = resolveUploadPath(attachment.filePath);
     if (!fs.existsSync(fullPath)) throw AppError.notFound('File not found');
     return { stream: fs.createReadStream(fullPath), attachment };
   }
@@ -130,8 +145,13 @@ export async function remove(tenantId: string, id: string) {
     if (key) await provider.delete(key);
   } catch {
     // Fallback to direct filesystem
-    const fullPath = path.join(env.UPLOAD_DIR, attachment.filePath.replace('/uploads/', ''));
-    if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
+    try {
+      const fullPath = resolveUploadPath(attachment.filePath);
+      if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
+    } catch {
+      // Path didn't resolve under UPLOAD_DIR — leave DB row to be deleted
+      // below so a poisoned filePath can't block attachment cleanup.
+    }
   }
   await db.delete(attachments).where(and(eq(attachments.tenantId, tenantId), eq(attachments.id, id)));
 }

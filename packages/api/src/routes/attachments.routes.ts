@@ -48,7 +48,7 @@ attachmentsRouter.get('/:id/download', async (req, res) => {
   // the client sees the real status code — not a bogus "invalid token".
   let payload: JwtPayload;
   try {
-    payload = jwt.verify(token, env.JWT_SECRET) as JwtPayload;
+    payload = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as JwtPayload;
   } catch (err) {
     const isExpired = err instanceof Error && err.name === 'TokenExpiredError';
     res.status(401).json({
