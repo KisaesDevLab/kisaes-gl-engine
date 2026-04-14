@@ -67,27 +67,61 @@ export async function parseXlsxBuffer(
   buffer: Buffer,
   options?: { sheetName?: string; sheetIndex?: number },
 ): Promise<string[][]> {
-  // Reject anything that doesn't have a zip (xlsx) or OLE (xls) header before
-  // we hand it to the parser. Malformed input either blows up inside the lib
-  // or — worse — gets interpreted as a different format.
-  if (!(buffer[0] === 0x50 && buffer[1] === 0x4b) && !(buffer[0] === 0xd0 && buffer[1] === 0xcf)) {
+  // Reject anything that doesn't have the zip header for xlsx/docx. We
+  // dropped xls (the 1997 OLE compound-document format) support when
+  // migrating off sheetjs/xlsx — exceljs doesn't parse xls and that
+  // format is rare in modern payroll exports. Users with legacy xls
+  // files should re-export as xlsx.
+  if (!(buffer[0] === 0x50 && buffer[1] === 0x4b)) {
+    if (buffer[0] === 0xd0 && buffer[1] === 0xcf) {
+      throw AppError.badRequest('Legacy .xls files are not supported. Please re-save as .xlsx (Excel 2007+ format).');
+    }
     throw AppError.badRequest('File does not appear to be a valid Excel workbook.');
   }
-  const XLSX = await import('xlsx');
-  // sheetRows caps how many rows the parser will materialize, which limits
-  // the damage an adversarial workbook can do (very-tall sheets, zip bombs
-  // that expand to enormous row counts).
-  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true, sheetRows: MAX_ROW_COUNT + 10 });
-  const sheetName = options?.sheetName || wb.SheetNames[options?.sheetIndex ?? 0];
-  const sheet = sheetName ? wb.Sheets[sheetName] : undefined;
+  const ExcelJS = await import('exceljs');
+  const workbook = new ExcelJS.default.Workbook();
+  await workbook.xlsx.load(buffer as unknown as ArrayBuffer);
+  const sheet = options?.sheetName
+    ? workbook.getWorksheet(options.sheetName)
+    : workbook.worksheets[options?.sheetIndex ?? 0];
   if (!sheet) throw AppError.badRequest('Excel file has no sheets');
-  const data: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
-  return data.map(row => row.map((cell: any) => {
-    if (cell instanceof Date) {
-      return cell.toISOString().split('T')[0]!;
+
+  // Cap the row scan — an adversarial workbook claiming millions of rows
+  // shouldn't fan out into unbounded work even if exceljs would otherwise
+  // walk every one. Matches the sheetRows guard we had on the old lib.
+  const rows: string[][] = [];
+  let rowCount = 0;
+  sheet.eachRow({ includeEmpty: false }, (row) => {
+    if (rowCount++ >= MAX_ROW_COUNT + 10) return;
+    const out: string[] = [];
+    const values = row.values as unknown[];
+    // exceljs leaves index 0 empty; cells are 1-indexed in row.values.
+    for (let i = 1; i < values.length; i++) {
+      const v = values[i];
+      if (v === null || v === undefined) {
+        out.push('');
+      } else if (v instanceof Date) {
+        out.push(v.toISOString().split('T')[0]!);
+      } else if (typeof v === 'object') {
+        // Rich-text cells arrive as { richText: [...] }; hyperlinks as
+        // { text, hyperlink }. Flatten to plain text.
+        const obj = v as { text?: string; result?: unknown; richText?: { text: string }[] };
+        if (Array.isArray(obj.richText)) {
+          out.push(obj.richText.map((r) => r.text || '').join(''));
+        } else if (obj.text !== undefined) {
+          out.push(String(obj.text));
+        } else if (obj.result !== undefined) {
+          out.push(String(obj.result));
+        } else {
+          out.push('');
+        }
+      } else {
+        out.push(String(v));
+      }
     }
-    return String(cell ?? '');
-  }));
+    rows.push(out);
+  });
+  return rows;
 }
 
 // ── File Type Detection ──

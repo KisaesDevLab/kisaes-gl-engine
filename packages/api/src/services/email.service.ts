@@ -94,59 +94,11 @@ async function getInvoiceEmailData(tenantId: string, invoiceId: string) {
   };
 }
 
-export async function sendInvoice(tenantId: string, invoiceId: string) {
-  const { txn, companyId, companyName, customerEmail, customerName } = await getInvoiceEmailData(tenantId, invoiceId);
-  if (!customerEmail) {
-    console.log(`[EMAIL] No email for customer, skipping send for invoice ${invoiceId}`);
-    return;
-  }
-
-  const pdfBuffer = await pdfService.generateInvoicePdf(tenantId, invoiceId);
-  const total = parseFloat(txn.total || '0').toFixed(2);
-
-  // Check for online payment link
-  let paymentLinkSection = '';
-  if (txn.publicToken) {
-    const company = await db.query.companies.findFirst({
-      where: eq(companies.tenantId, tenantId),
-    });
-    if (company?.onlinePaymentsEnabled) {
-      const { env } = await import('../config/env.js');
-      const paymentLink = `${env.CORS_ORIGIN}/pay/${txn.publicToken}`;
-      paymentLinkSection = `\nPay this invoice online: ${paymentLink}\n`;
-    }
-  }
-
-  const subject = renderTemplate('Invoice {{invoice_number}} from {{company_name}}', {
-    invoice_number: txn.txnNumber || invoiceId.slice(0, 8),
-    company_name: companyName,
-  });
-
-  const body = renderTemplate(
-    'Dear {{customer_name}},\n\nPlease find attached invoice {{invoice_number}} for ${{amount_due}}.\n{{payment_link_section}}\n' + (txn.dueDate ? 'Due date: {{due_date}}\n\n' : '') + 'Thank you for your business!\n\n{{company_name}}',
-    {
-      customer_name: customerName,
-      invoice_number: txn.txnNumber || invoiceId.slice(0, 8),
-      amount_due: total,
-      payment_link_section: paymentLinkSection,
-      due_date: txn.dueDate || '',
-      company_name: companyName,
-    },
-  );
-
-  const { from, transport } = await createTransport(tenantId, companyId);
-  await transport.sendMail({
-    from,
-    to: customerEmail,
-    subject,
-    text: body,
-    attachments: [{
-      filename: `invoice-${txn.txnNumber || invoiceId.slice(0, 8)}.pdf`,
-      content: pdfBuffer,
-      contentType: 'application/pdf',
-    }],
-  });
-}
+// sendInvoice historically lived here but was superseded by
+// invoice.service.sendInvoice, which is the one every call site now uses
+// (routes/invoices.routes.ts, mcp/server.ts). Removed the duplicate so
+// future maintenance doesn't drift on two implementations that look the
+// same from the outside.
 
 export async function sendPaymentReminder(tenantId: string, invoiceId: string) {
   const { txn, companyId, companyName, customerEmail, customerName } = await getInvoiceEmailData(tenantId, invoiceId);
