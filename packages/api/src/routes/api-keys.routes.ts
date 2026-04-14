@@ -32,9 +32,20 @@ apiKeysRouter.get('/', async (req, res) => {
   res.json({ keys });
 });
 
+// What MCP scopes a role is permitted to mint. The previous
+// implementation wrote no `scopes` column on insert, so the table default
+// `all` applied and a readonly user could create an `sk_live_` key whose
+// MCP session bypasses role-level write restrictions. Now the key's
+// scopes are clamped to what the creating role is itself entitled to.
+const SCOPES_FOR_ROLE: Record<string, string[]> = {
+  owner: ['all'],
+  accountant: ['read', 'write', 'reports', 'invoicing', 'banking'],
+  readonly: ['read', 'reports'],
+};
+
 // Generate new API key
 apiKeysRouter.post('/', async (req, res) => {
-  const { name, role, expiresAt } = req.body;
+  const { name, role, expiresAt, scopes } = req.body;
   if (!name) {
     res.status(400).json({ error: { message: 'Name is required' } });
     return;
@@ -52,6 +63,21 @@ apiKeysRouter.post('/', async (req, res) => {
     return;
   }
 
+  // Clamp requested scopes to what the role allows. If the caller didn't
+  // specify scopes, default to the role's full envelope (which is still
+  // narrower than the previous `all` default for non-owners).
+  const allowedForRole = SCOPES_FOR_ROLE[requestedRole] || ['read'];
+  const requestedScopes: string[] = Array.isArray(scopes)
+    ? scopes
+    : typeof scopes === 'string' && scopes.length > 0
+      ? scopes.split(',').map((s) => s.trim()).filter(Boolean)
+      : allowedForRole;
+  const scopesToStore = requestedScopes.filter((s) => allowedForRole.includes(s));
+  if (scopesToStore.length === 0) {
+    res.status(400).json({ error: { message: `No valid scopes for role ${requestedRole}` } });
+    return;
+  }
+
   const rawKey = generateApiKey();
   const keyHash = hashKey(rawKey);
   const keyPrefix = rawKey.slice(0, 12);
@@ -63,6 +89,7 @@ apiKeysRouter.post('/', async (req, res) => {
     keyPrefix,
     keyHash,
     role: requestedRole,
+    scopes: scopesToStore.join(','),
     expiresAt: expiresAt ? new Date(expiresAt) : null,
   }).returning();
 

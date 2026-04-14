@@ -139,15 +139,25 @@ app.use('/api/v1/tenant-settings', tenantSettingsRouter);
 app.use('/api/v1/users/me/tfa', tfaRouter);
 app.use('/api/v1/auth/passkeys', passkeyRouter);
 
-// User login preference (authenticated)
+// User login preference (authenticated). Validates the values explicitly —
+// preferredLoginMethod is a known enum used by auth-availability to decide
+// which login UI to surface; writing an arbitrary string there wouldn't
+// grant privilege but would silently disable login hints for the user.
 import { authenticate as authMw } from './middleware/auth.js';
 app.put('/api/v1/users/me/login-preference', authMw, async (req: any, res: any) => {
   const { eq } = await import('drizzle-orm');
   const { db } = await import('./db/index.js');
   const { users } = await import('./db/schema/index.js');
   const updates: any = { updatedAt: new Date() };
-  if (req.body.preferredLoginMethod !== undefined) updates.preferredLoginMethod = req.body.preferredLoginMethod;
-  if (req.body.magicLinkEnabled !== undefined) updates.magicLinkEnabled = req.body.magicLinkEnabled;
+  const ALLOWED_METHODS = new Set(['password', 'magic_link', 'passkey']);
+  if (req.body.preferredLoginMethod !== undefined) {
+    if (!ALLOWED_METHODS.has(String(req.body.preferredLoginMethod))) {
+      res.status(400).json({ error: { message: 'Invalid preferredLoginMethod' } });
+      return;
+    }
+    updates.preferredLoginMethod = req.body.preferredLoginMethod;
+  }
+  if (req.body.magicLinkEnabled !== undefined) updates.magicLinkEnabled = !!req.body.magicLinkEnabled;
   await db.update(users).set(updates).where(eq(users.id, req.userId));
   res.json({ updated: true });
 });

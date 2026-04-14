@@ -281,33 +281,45 @@ export function parseCurrency(value: string | number | null | undefined): number
 
 // ── Date Parsing ──
 
+// Build a normalized YYYY-MM-DD string only if year/month/day form a real
+// date. Returns null on semantic invalidity — previously the regex-only
+// path would happily emit "2024-13-45" and let Postgres reject it at
+// insert time, which makes errors show up far from their origin.
+function normalizeYmd(y: string | undefined, m: string | undefined, d: string | undefined): string | null {
+  if (!y || !m || !d) return null;
+  const yearNum = Number(y);
+  const monthNum = Number(m);
+  const dayNum = Number(d);
+  if (yearNum < 1900 || yearNum > 2999) return null;
+  if (monthNum < 1 || monthNum > 12) return null;
+  if (dayNum < 1 || dayNum > 31) return null;
+  // JS Date roundtrip catches month-specific day limits (e.g., Feb 30).
+  const dt = new Date(Date.UTC(yearNum, monthNum - 1, dayNum));
+  if (dt.getUTCFullYear() !== yearNum || dt.getUTCMonth() !== monthNum - 1 || dt.getUTCDate() !== dayNum) {
+    return null;
+  }
+  return `${String(yearNum).padStart(4, '0')}-${String(monthNum).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
+}
+
 export function parseDate(value: string, _format?: string): string | null {
   if (!value || !value.trim()) return null;
   const str = value.trim();
 
   // Already ISO?
-  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+  const iso = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (iso) return normalizeYmd(iso[1], iso[2], iso[3]);
 
   // Try MM/DD/YYYY (most common US format)
   const usMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (usMatch) {
-    const [, m, d, y] = usMatch;
-    return `${y}-${m!.padStart(2, '0')}-${d!.padStart(2, '0')}`;
-  }
+  if (usMatch) return normalizeYmd(usMatch[3], usMatch[1], usMatch[2]);
 
   // Try MM-DD-YYYY
   const dashMatch = str.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
-  if (dashMatch) {
-    const [, m, d, y] = dashMatch;
-    return `${y}-${m!.padStart(2, '0')}-${d!.padStart(2, '0')}`;
-  }
+  if (dashMatch) return normalizeYmd(dashMatch[3], dashMatch[1], dashMatch[2]);
 
   // Try YYYY/MM/DD
   const isoSlash = str.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
-  if (isoSlash) {
-    const [, y, m, d] = isoSlash;
-    return `${y}-${m!.padStart(2, '0')}-${d!.padStart(2, '0')}`;
-  }
+  if (isoSlash) return normalizeYmd(isoSlash[1], isoSlash[2], isoSlash[3]);
 
   return null;
 }
