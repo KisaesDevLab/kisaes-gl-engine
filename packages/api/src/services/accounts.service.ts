@@ -81,6 +81,19 @@ export async function create(tenantId: string, input: CreateAccountInput, userId
 export async function update(tenantId: string, id: string, input: UpdateAccountInput, userId?: string) {
   const existing = await getById(tenantId, id);
 
+  // Scrub fields that are never legitimately set by a caller. Previously
+  // the spread-into-update below would let a client payload set
+  // `isSystem: false` on a system account (neutralizing its protection and
+  // unlocking deactivate), or write a `balance` directly, bypassing the
+  // ledger. Keep the defense here even though the Zod schema should already
+  // reject them, because schemas drift and this cost is one line.
+  const sanitized: Record<string, unknown> = { ...(input as unknown as Record<string, unknown>) };
+  delete sanitized['isSystem'];
+  delete sanitized['is_system'];
+  delete sanitized['balance'];
+  delete sanitized['tenantId'];
+  delete sanitized['companyId'];
+
   // Block type change on system accounts
   if (existing.isSystem && input.accountType && input.accountType !== existing.accountType) {
     throw AppError.badRequest('Cannot change the type of a system account');
@@ -101,7 +114,7 @@ export async function update(tenantId: string, id: string, input: UpdateAccountI
 
   const [updated] = await db
     .update(accounts)
-    .set({ ...input, updatedAt: new Date() })
+    .set({ ...sanitized, updatedAt: new Date() })
     .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, id)))
     .returning();
 

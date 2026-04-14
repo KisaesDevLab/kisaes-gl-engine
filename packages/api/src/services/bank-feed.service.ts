@@ -377,6 +377,16 @@ export async function exclude(tenantId: string, feedItemId: string) {
 }
 
 export async function bulkApprove(tenantId: string, feedItemIds: string[]) {
+  if (!Array.isArray(feedItemIds)) {
+    throw AppError.badRequest('feedItemIds must be an array');
+  }
+  // Cap the batch size — without this the sequential loop below makes one
+  // DB query per id, letting a caller serialize thousands of queries on a
+  // single request and lock up the event loop.
+  const MAX_BATCH = 500;
+  if (feedItemIds.length > MAX_BATCH) {
+    throw AppError.badRequest(`Bulk approve is limited to ${MAX_BATCH} items per request`);
+  }
   // Wrap each item in try/catch so a single bad row (already
   // claimed, deleted, missing suggestion, ledger-post failure) can't
   // abort the whole batch. Returns per-item failures for the caller
@@ -552,6 +562,13 @@ export async function importFromCsv(
   await assertConnectionInTenant(tenantId, bankConnectionId);
   const lines = csvText.split('\n').filter((l) => l.trim());
   if (lines.length < 2) throw AppError.badRequest('CSV must have header + data rows');
+  // Cap import size so a caller can't tie up the DB connection with a
+  // multi-megabyte CSV. 50k statement lines is well past anything a real
+  // bank statement produces.
+  const MAX_ROWS = 50_000;
+  if (lines.length - 1 > MAX_ROWS) {
+    throw AppError.badRequest(`CSV is limited to ${MAX_ROWS} transactions per import`);
+  }
 
   const items: Array<typeof bankFeedItems.$inferInsert> = [];
 

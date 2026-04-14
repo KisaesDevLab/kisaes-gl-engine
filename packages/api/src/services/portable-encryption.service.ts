@@ -243,9 +243,17 @@ export function generateChecksum(data: Buffer): string {
 }
 
 /**
- * Verify a SHA-256 checksum.
+ * Verify a SHA-256 checksum. Uses a constant-time comparison so that a
+ * mismatched prefix doesn't leak position-of-first-difference via response
+ * timing. Not load-bearing today (the AEAD auth tag is the real integrity
+ * check) but keeps the primitive safe for any future code path that relies
+ * on checksum equality for authentication rather than just corruption
+ * detection.
  */
 export function verifyChecksum(data: Buffer, checksum: string): boolean {
   const expected = generateChecksum(data);
-  return expected === checksum;
+  const a = Buffer.from(expected);
+  const b = Buffer.from(checksum);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
 }

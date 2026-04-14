@@ -31,6 +31,49 @@ function registerTool(name: string, description: string, schema: Record<string, 
   tools.set(name, { description, schema, handler });
 }
 
+// Bounds applied to every tool-call payload before it reaches a handler.
+// The per-tool `schema` on ToolDef is a hint object used to advertise shape
+// to the MCP client (`tools/list`); it's not a runtime validator. Without
+// these coarse guards, a caller can send `{ limit: 1e12 }` or a 10MB
+// payload and the handler will happily forward it to Drizzle / the DB.
+//
+// This isn't a replacement for per-tool input validation — a future
+// iteration should give each tool a Zod schema. Until then, these bounds
+// close the obvious DoS/resource-exhaustion surface.
+const MCP_MAX_PARAMS_BYTES = 32 * 1024;
+const MCP_MAX_NUMERIC_LIMIT = 1000;
+
+function sanitizeMcpParams(params: unknown): Record<string, unknown> {
+  if (params === null || params === undefined) return {};
+  if (typeof params !== 'object' || Array.isArray(params)) {
+    throw new Error('INVALID_PARAMS: tool arguments must be an object');
+  }
+  // Serialized-size ceiling — catches deeply nested or array-bomb payloads
+  // without us needing to walk the object recursively.
+  const serialized = JSON.stringify(params);
+  if (serialized.length > MCP_MAX_PARAMS_BYTES) {
+    throw new Error('INVALID_PARAMS: tool arguments exceed maximum size');
+  }
+  const out: Record<string, unknown> = { ...(params as Record<string, unknown>) };
+  // Cap common pagination / range parameters. Handlers using different
+  // names still pay the serialized-size ceiling above.
+  for (const key of ['limit', 'months', 'count'] as const) {
+    if (key in out) {
+      const n = Number(out[key]);
+      if (!Number.isFinite(n) || n < 0) {
+        throw new Error(`INVALID_PARAMS: "${key}" must be a non-negative number`);
+      }
+      out[key] = Math.min(Math.floor(n), MCP_MAX_NUMERIC_LIMIT);
+    }
+  }
+  if ('offset' in out) {
+    const n = Number(out['offset']);
+    if (!Number.isFinite(n) || n < 0) throw new Error('INVALID_PARAMS: "offset" must be non-negative');
+    out['offset'] = Math.floor(n);
+  }
+  return out;
+}
+
 // ─── Context Tools ──────────────────────────────────────────────
 
 registerTool('list_companies', 'List all companies the user has access to', {}, async (_p, auth) => {
@@ -991,15 +1034,17 @@ export async function handleMcpRequest(req: Request, res: Response) {
 
     if (body.method === 'tools/call') {
       const toolName = body.params?.name;
-      const toolParams = body.params?.arguments || {};
+      const rawParams = body.params?.arguments || {};
       const toolDef = tools.get(toolName);
       if (!toolDef) {
         res.json({ jsonrpc: '2.0', id: body.id, error: { code: -32601, message: `Unknown tool: ${toolName}` } });
         return;
       }
 
+      const toolParams = sanitizeMcpParams(rawParams);
       const result = await toolDef.handler(toolParams, auth);
-      await logMcpRequest({ auth, toolName, companyId: toolParams.company_id, parameters: toolParams, status: 'success', responseSummary: typeof result === 'object' ? JSON.stringify(result).slice(0, 200) : String(result), durationMs: Date.now() - start, ipAddress: req.ip, userAgent: req.headers['user-agent'] });
+      const loggedCompanyId = typeof toolParams['company_id'] === 'string' ? toolParams['company_id'] : undefined;
+      await logMcpRequest({ auth, toolName, companyId: loggedCompanyId, parameters: toolParams, status: 'success', responseSummary: typeof result === 'object' ? JSON.stringify(result).slice(0, 200) : String(result), durationMs: Date.now() - start, ipAddress: req.ip, userAgent: req.headers['user-agent'] });
       res.json({ jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } });
       return;
     }

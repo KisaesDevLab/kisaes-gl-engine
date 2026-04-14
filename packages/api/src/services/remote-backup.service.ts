@@ -5,6 +5,7 @@ import { sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import { assertExternalUrlSafe } from '../utils/url-safety.js';
 
 
 const BACKUP_DIR = process.env['BACKUP_DIR'] || '/data/backups';
@@ -79,6 +80,7 @@ async function testSftpConnection(config: SftpConfig): Promise<{ success: boolea
 
 async function testWebDavConnection(config: WebDavConfig): Promise<{ success: boolean; message: string }> {
   try {
+    assertExternalUrlSafe(config.url, 'WebDAV URL');
     const response = await fetch(config.url, {
       method: 'OPTIONS',
       headers: {
@@ -176,6 +178,7 @@ async function uploadWebDav(
   config: WebDavConfig,
 ): Promise<{ success: boolean; message: string; size?: number }> {
   try {
+    assertExternalUrlSafe(config.url, 'WebDAV URL');
     const fileBuffer = fs.readFileSync(filePath);
     const uploadUrl = config.url.endsWith('/') ? config.url + fileName : config.url + '/' + fileName;
 

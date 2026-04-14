@@ -78,7 +78,7 @@ export const adminTfaConfigSchema = z.object({
   tfaMaxAttempts: z.number().int().min(1).max(10).optional(),
   tfaLockoutMinutes: z.number().int().min(1).max(1440).optional(),
   tfaTrustDeviceDays: z.number().int().min(0).max(365).optional(),
-}).passthrough();
+}).strict();
 export type AdminTfaConfigInput = z.infer<typeof adminTfaConfigSchema>;
 
 export const adminTfaSmsTestSchema = z.object({
@@ -121,7 +121,7 @@ export const adminPlaidConfigSchema = z.object({
   plaidWebhookUrl: z.string().max(500).nullish(),
   plaidProducts: z.array(z.string().max(50)).optional(),
   plaidCountryCodes: z.array(z.string().length(2)).optional(),
-}).passthrough();
+}).strict();
 export type AdminPlaidConfigInput = z.infer<typeof adminPlaidConfigSchema>;
 
 // ─── Bank rule submission moderation ──────────────────────────

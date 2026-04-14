@@ -4,6 +4,7 @@ import { authenticate } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import * as accountsService from '../services/accounts.service.js';
 import * as registerService from '../services/register.service.js';
+import { parseLimit, parseOffset } from '../utils/pagination.js';
 
 export const accountsRouter = Router();
 accountsRouter.use(authenticate);
@@ -53,8 +54,8 @@ accountsRouter.delete('/:id', async (req, res) => {
 
 accountsRouter.get('/:id/ledger', async (req, res) => {
   const result = await accountsService.getAccountLedger(req.tenantId, req.params['id']!, {
-    limit: req.query['limit'] ? parseInt(req.query['limit'] as string) : 50,
-    offset: req.query['offset'] ? parseInt(req.query['offset'] as string) : 0,
+    limit: parseLimit(req.query['limit']),
+    offset: parseOffset(req.query['offset']),
   });
   res.json(result);
 });

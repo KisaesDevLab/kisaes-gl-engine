@@ -92,6 +92,13 @@ export async function getAuthMethods(email?: string) {
   const caps = await getSystemCapabilities();
   const config = await tfaConfigService.getConfig();
 
+  // The response shape is fixed regardless of whether the caller supplied
+  // an email, whether that email is registered, and whether that account
+  // has passkeys. Previously, registered emails got two extra fields
+  // (`userHasPasskeys`, `userPreferredMethod`) appended — which turned the
+  // endpoint into a reliable email-enumeration oracle. Always return the
+  // same keys with safe defaults; only mutate the values we've decided are
+  // safe to disclose (currently: none).
   const base = {
     loginMethods: {
       password: true,
@@ -101,21 +108,16 @@ export async function getAuthMethods(email?: string) {
     tfaAvailable: config.isEnabled,
     smtpReady: caps.smtpReady,
     smsReady: caps.smsReady,
+    userHasPasskeys: false,
+    userPreferredMethod: 'password' as string,
   };
 
   if (!email) return base;
 
-  // Add user-specific hints without leaking email existence
-  const user = await db.query.users.findFirst({ where: eq(users.email, email) });
-  if (!user) return base; // Same shape — no email enumeration
-
-  const passkeyCount = (await db.select({ id: passkeys.id }).from(passkeys).where(eq(passkeys.userId, user.id))).length;
-
-  return {
-    ...base,
-    userHasPasskeys: passkeyCount > 0,
-    userPreferredMethod: user.preferredLoginMethod || 'password',
-  };
+  // Touch the DB either way so timing matches when the email is / isn't
+  // registered. The result is intentionally discarded — see note above.
+  await db.query.users.findFirst({ where: eq(users.email, email) });
+  return base;
 }
 
 // ─── Helper to get passwordless config ─────────────────────────
