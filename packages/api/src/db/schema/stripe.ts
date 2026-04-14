@@ -2,7 +2,7 @@ import { pgTable, uuid, varchar, boolean, timestamp, jsonb, text, index } from '
 
 export const stripeWebhookLog = pgTable('stripe_webhook_log', {
   id: uuid('id').primaryKey().defaultRandom(),
-  tenantId: uuid('tenant_id'),
+  tenantId: uuid('tenant_id').notNull(),
   eventId: varchar('event_id', { length: 255 }).notNull().unique(),
   eventType: varchar('event_type', { length: 100 }).notNull(),
   paymentIntentId: varchar('payment_intent_id', { length: 255 }),

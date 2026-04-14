@@ -116,7 +116,7 @@ export async function getAuthMethods(email?: string) {
 
   // Touch the DB either way so timing matches when the email is / isn't
   // registered. The result is intentionally discarded — see note above.
-  await db.query.users.findFirst({ where: eq(users.email, email) });
+  await db.query.users.findFirst({ where: eq(users.email, email.trim().toLowerCase()) });
   return base;
 }
 

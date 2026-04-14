@@ -1,10 +1,37 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 import multer from 'multer';
+import { and, eq } from 'drizzle-orm';
 import { authenticate } from '../middleware/auth.js';
 import { validatePassphraseStrength } from '../services/portable-encryption.service.js';
 import * as tenantExportService from '../services/tenant-export.service.js';
 import { getImportProgress } from '../services/tenant-export.service.js';
+import { db } from '../db/index.js';
+import { userTenantAccess } from '../db/schema/index.js';
+import { AppError } from '../utils/errors.js';
+
+// A merge-import rewrites the target tenant's ledger. Only users with an
+// active access grant on that tenant (and super admins) may initiate it —
+// otherwise any authenticated user could send `target_company_id=<victim>`
+// in the body and have their exported data written into somebody else's
+// books. Previous code only checked that the tenant row existed.
+async function assertUserMayMergeIntoTenant(userId: string, targetTenantId: string, isSuperAdmin: boolean): Promise<void> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(targetTenantId)) {
+    throw AppError.badRequest('Invalid target tenant id');
+  }
+  if (isSuperAdmin) return;
+  const access = await db.query.userTenantAccess.findFirst({
+    where: and(
+      eq(userTenantAccess.userId, userId),
+      eq(userTenantAccess.tenantId, targetTenantId),
+      eq(userTenantAccess.isActive, true),
+    ),
+  });
+  if (!access) throw AppError.forbidden('You do not have access to this tenant');
+  if (access.role !== 'owner' && access.role !== 'admin') {
+    throw AppError.forbidden('Only tenant owners or admins may merge data into a tenant');
+  }
+}
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -92,6 +119,7 @@ tenantExportRouter.post('/import', async (req, res) => {
       res.status(400).json({ error: { message: 'target_company_id is required for merge mode' } });
       return;
     }
+    await assertUserMayMergeIntoTenant(req.userId, target_company_id, req.isSuperAdmin);
     const result = await tenantExportService.importMergeIntoTenant(
       validation_token,
       target_company_id,
@@ -135,6 +163,7 @@ tenantExportRouter.post('/import/merge-preview', async (req, res) => {
     return;
   }
 
+  await assertUserMayMergeIntoTenant(req.userId, target_tenant_id, req.isSuperAdmin);
   const preview = await tenantExportService.getMergePreview(validation_token, target_tenant_id);
   res.json(preview);
 });

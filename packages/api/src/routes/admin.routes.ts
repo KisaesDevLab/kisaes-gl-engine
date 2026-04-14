@@ -125,11 +125,15 @@ adminRouter.get('/users', async (req, res) => {
 });
 
 adminRouter.post('/users/create', async (req, res) => {
-  const { email, password, displayName, tenantId, role } = req.body;
-  if (!email || !password || !tenantId) {
+  const { email: rawEmail, password, displayName, tenantId, role } = req.body;
+  if (!rawEmail || !password || !tenantId) {
     res.status(400).json({ error: { message: 'email, password, and tenantId are required' } });
     return;
   }
+  // Normalize to lowercase; users.email is treated case-insensitively
+  // elsewhere in the auth path, so storing mixed-case here would create a
+  // row that no normal login flow can find.
+  const email = String(rawEmail).trim().toLowerCase();
 
   const { users, tenants, userTenantAccess } = await import('../db/schema/index.js');
   const { eq } = await import('drizzle-orm');

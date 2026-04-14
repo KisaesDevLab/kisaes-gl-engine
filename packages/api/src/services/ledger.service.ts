@@ -3,7 +3,7 @@ import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import type { JournalLineInput, TxnType, TxnStatus } from '@kis-books/shared';
 import { db, type DbOrTx } from '../db/index.js';
-import { transactions, journalLines, accounts, companies, contacts } from '../db/schema/index.js';
+import { transactions, journalLines, accounts, companies, contacts, reconciliations, reconciliationLines } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 
@@ -271,6 +271,29 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
       companyId ?? existing.companyId ?? null,
       input.lines.map((l) => l.accountId),
     );
+
+    // Refuse to edit if any of this transaction's journal lines were
+    // marked cleared inside a completed reconciliation. Allowing the edit
+    // would silently decouple the reconciliation's cleared total from the
+    // actual line amounts, which is an audit-trail integrity break that
+    // isn't recoverable without re-doing the reconciliation.
+    const clearedInCompleted = await tx.execute(sql`
+      SELECT 1
+      FROM ${reconciliationLines} rl
+      JOIN ${reconciliations} r ON r.id = rl.reconciliation_id
+      JOIN ${journalLines} jl ON jl.id = rl.journal_line_id
+      WHERE r.tenant_id = ${tenantId}
+        AND r.status = 'complete'
+        AND rl.is_cleared = true
+        AND jl.transaction_id = ${txnId}
+      LIMIT 1
+    `);
+    if ((clearedInCompleted.rows as unknown[]).length > 0) {
+      throw AppError.badRequest(
+        'Cannot edit a transaction that is part of a completed bank reconciliation. ' +
+          'Undo the reconciliation first, or void this transaction and post a correcting entry.',
+      );
+    }
 
     // Get original lines and reverse their balances
     const originalLines = await tx.select().from(journalLines)

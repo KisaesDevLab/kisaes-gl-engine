@@ -12,20 +12,54 @@ import { testSmtpConnection } from '../services/setup.service.js';
 import { AppError } from '../utils/errors.js';
 import { env } from '../config/env.js';
 
+// Force the on-disk extension from the claimed MIME, not from the upload
+// filename. An uploader can send `Content-Type: image/png` with an
+// `evil.svg` originalname — and if we trusted the original extension, the
+// file would be saved as .svg and later served with SVG MIME, turning the
+// logo URL into an XSS vector (inline SVG is scriptable).
+const LOGO_MIME_TO_EXT: Record<string, string> = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/webp': '.webp',
+};
+
 const upload = multer({
   storage: multer.diskStorage({
     destination: path.join(env.UPLOAD_DIR, 'logos'),
     filename: (_req, file, cb) => {
-      const ext = path.extname(file.originalname);
+      const ext = LOGO_MIME_TO_EXT[file.mimetype] || '.bin';
       cb(null, `${crypto.randomUUID()}${ext}`);
     },
   }),
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB for logos
   fileFilter: (_req, file, cb) => {
-    const allowed = ['image/png', 'image/jpeg', 'image/webp'];
-    cb(null, allowed.includes(file.mimetype));
+    cb(null, !!LOGO_MIME_TO_EXT[file.mimetype]);
   },
 });
+
+// Post-upload: sniff buffer header so a misdeclared MIME (e.g., SVG
+// claiming image/png) still can't land on disk with a script payload.
+function verifyLogoMagicBytes(filePath: string, mime: string): void {
+  const fs = require('fs') as typeof import('fs');
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const buf = Buffer.alloc(16);
+    fs.readSync(fd, buf, 0, 16, 0);
+    const pngOk = buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+    const jpegOk = buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+    const webpOk = buf.subarray(0, 4).toString('ascii') === 'RIFF' && buf.subarray(8, 12).toString('ascii') === 'WEBP';
+    const match =
+      (mime === 'image/png' && pngOk) ||
+      (mime === 'image/jpeg' && jpegOk) ||
+      (mime === 'image/webp' && webpOk);
+    if (!match) {
+      fs.unlinkSync(filePath);
+      throw AppError.badRequest('Logo content does not match its declared image type');
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+}
 
 export const companyRouter = Router();
 
@@ -59,6 +93,7 @@ companyRouter.post('/logo', upload.single('logo'), async (req, res) => {
     res.status(400).json({ error: { message: 'No file uploaded' } });
     return;
   }
+  verifyLogoMagicBytes(req.file.path, req.file.mimetype);
   const logoUrl = `/uploads/logos/${req.file.filename}`;
   const company = await companyService.updateLogo(req.tenantId, req.companyId, logoUrl, req.userId);
   res.json({ company });

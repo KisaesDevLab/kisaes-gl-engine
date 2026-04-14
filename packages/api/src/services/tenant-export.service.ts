@@ -425,6 +425,13 @@ export async function previewImport(
     throw AppError.badRequest(msg);
   }
 
+  // Cap the decrypted payload before JSON.parse allocates its own copy.
+  // AES-GCM doesn't expand input, so this only triggers if the upstream
+  // encrypted file is unreasonably large.
+  if (decrypted.length > 500 * 1024 * 1024) {
+    throw AppError.badRequest('Export payload exceeds size limit');
+  }
+
   let payload: ExportPayload;
   try {
     payload = JSON.parse(decrypted.toString());

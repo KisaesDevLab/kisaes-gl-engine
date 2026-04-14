@@ -262,7 +262,7 @@ export async function parseFile(
 
 export function parseCurrency(value: string | number | null | undefined): number {
   if (value == null || value === '') return 0;
-  if (typeof value === 'number') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
   let str = String(value).trim();
   // Handle parenthetical negatives: (1,234.56) → -1234.56
   const isNeg = str.startsWith('(') && str.endsWith(')');
@@ -273,7 +273,9 @@ export function parseCurrency(value: string | number | null | undefined): number
   // Strip $, commas, spaces
   str = str.replace(/[$,\s]/g, '');
   const num = parseFloat(str);
-  if (isNaN(num)) return 0;
+  // Reject NaN and Infinity — "Infinity" and "1e400" both parse to values
+  // that corrupt downstream arithmetic. Unknown values become 0.
+  if (!Number.isFinite(num)) return 0;
   return (isNeg || trailingNeg) ? -num : num;
 }
 

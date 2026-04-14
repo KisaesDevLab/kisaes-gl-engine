@@ -170,7 +170,7 @@ export async function getAuthenticationOptions(email?: string) {
   let allowCredentials: { id: string; transports?: any[] }[] = [];
 
   if (email) {
-    const user = await db.query.users.findFirst({ where: eq(users.email, email) });
+    const user = await db.query.users.findFirst({ where: eq(users.email, email.trim().toLowerCase()) });
     if (user) {
       const creds = await db.select({ credentialId: passkeys.credentialId, transports: passkeys.transports })
         .from(passkeys).where(eq(passkeys.userId, user.id));
