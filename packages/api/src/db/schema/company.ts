@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, integer, decimal, boolean, timestamp, jsonb, date, bigint } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, integer, decimal, boolean, timestamp, jsonb, date, bigint } from 'drizzle-orm/pg-core';
 
 export const companies = pgTable('companies', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -51,6 +51,11 @@ export const companies = pgTable('companies', {
   remoteBackupLastAt: timestamp('remote_backup_last_at', { withTimezone: true }),
   remoteBackupLastStatus: varchar('remote_backup_last_status', { length: 20 }),
   remoteBackupLastSize: bigint('remote_backup_last_size', { mode: 'number' }),
+  // Stripe online payments (per-company keys)
+  stripeSecretKeyEncrypted: text('stripe_secret_key_encrypted'),
+  stripePublishableKey: varchar('stripe_publishable_key', { length: 255 }),
+  stripeWebhookSecretEncrypted: text('stripe_webhook_secret_encrypted'),
+  onlinePaymentsEnabled: boolean('online_payments_enabled').default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 });

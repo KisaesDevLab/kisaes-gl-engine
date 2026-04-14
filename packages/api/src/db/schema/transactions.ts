@@ -45,6 +45,9 @@ export const transactions = pgTable('transactions', {
   // Source tracking — identifies where this transaction originated
   source: varchar('source', { length: 30 }),  // 'payroll_import', 'bank_feed', 'manual', 'recurring', etc.
   sourceId: varchar('source_id', { length: 100 }), // payroll session ID, bank feed item ID, etc.
+  // Public invoice link + Stripe payment
+  publicToken: varchar('public_token', { length: 64 }),
+  stripePaymentIntentId: varchar('stripe_payment_intent_id', { length: 255 }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({

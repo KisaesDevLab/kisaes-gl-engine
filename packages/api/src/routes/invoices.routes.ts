@@ -68,6 +68,15 @@ invoicesRouter.post('/:id/remind', async (req, res) => {
   res.json({ message: 'Reminder sent' });
 });
 
+invoicesRouter.post('/:id/share-link', async (req, res) => {
+  if (req.userRole === 'readonly') {
+    res.status(403).json({ error: { message: 'Readonly users cannot generate share links' } });
+    return;
+  }
+  const link = await invoiceService.generateShareLink(req.tenantId, req.params['id']!);
+  res.json({ link });
+});
+
 invoicesRouter.post('/:id/duplicate', async (req, res) => {
   const invoice = await invoiceService.duplicateInvoice(req.tenantId, req.params['id']!, req.userId, req.companyId);
   res.status(201).json({ invoice });

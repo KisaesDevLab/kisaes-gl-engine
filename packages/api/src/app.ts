@@ -47,6 +47,7 @@ import { chatRouter } from './routes/chat.routes.js';
 import { oauthRouter } from './routes/oauth.routes.js';
 import { storageRouter } from './routes/storage.routes.js';
 import { payrollImportRouter } from './routes/payroll-import.routes.js';
+import { knowledgeRouter } from './routes/knowledge.routes.js';
 import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './swagger.js';
 
@@ -56,6 +57,11 @@ export const app = express();
 app.use(helmet());
 app.use(cors({ origin: env.CORS_ORIGIN, credentials: true }));
 app.use(compression());
+
+// Stripe webhook route MUST be mounted BEFORE express.json() — raw body needed for signature verification
+import { stripeWebhookRouter } from './routes/stripe-webhook.routes.js';
+app.use('/api/v1/stripe', stripeWebhookRouter);
+
 app.use(express.json({ limit: '10mb' }));
 app.use(morgan('short'));
 
@@ -77,6 +83,10 @@ app.get('/health', (_req, res) => {
 // Setup routes (no auth required — self-destructs after setup)
 import { setupRouter } from './routes/setup.routes.js';
 app.use('/api/setup', setupRouter);
+
+// Public invoice routes (no auth required — customer-facing payment links)
+import { publicInvoiceRouter } from './routes/public-invoice.routes.js';
+app.use('/api/v1/public/invoices', publicInvoiceRouter);
 
 // Routes
 app.use('/api/v1/auth', authRouter);
@@ -131,6 +141,7 @@ app.use('/api/v1/chat', chatRouter);
 app.use('/oauth', oauthRouter);
 app.use('/api/v1/settings/storage', storageRouter);
 app.use('/api/v1/payroll-import', payrollImportRouter);
+app.use('/api/v1/knowledge', knowledgeRouter);
 
 // MCP Server endpoint
 app.post('/mcp', async (req, res) => {

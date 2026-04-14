@@ -18,6 +18,8 @@ const envSchema = z.object({
   UPLOAD_DIR: z.string().default('/data/uploads'),
   MAX_FILE_SIZE_MB: z.coerce.number().default(10),
   BCRYPT_ROUNDS: z.coerce.number().default(12),
+  TAILSCALE_SOCKET_PATH: z.string().default('/var/run/tailscale/tailscaled.sock'),
+  TS_HOSTNAME: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

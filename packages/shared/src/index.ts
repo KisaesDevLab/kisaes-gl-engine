@@ -21,6 +21,7 @@ export * from './types/ap.js';
 export * from './types/coa-templates.js';
 export * from './types/backup.js';
 export * from './types/payroll.js';
+export * from './types/tailscale.js';
 
 // Schemas
 export * from './schemas/auth.js';
@@ -44,6 +45,8 @@ export * from './schemas/admin.js';
 export * from './schemas/chat.js';
 export * from './schemas/backup.js';
 export * from './schemas/payroll.js';
+export * from './schemas/stripe.js';
+export * from './schemas/tailscale.js';
 
 // Constants
 export * from './constants/coa-templates.js';

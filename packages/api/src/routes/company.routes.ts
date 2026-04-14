@@ -149,3 +149,27 @@ companyRouter.post('/users/:userId/reactivate', async (req, res) => {
   await authService.reactivateUser(req.tenantId, req.params['userId']!);
   res.json({ message: 'User reactivated' });
 });
+
+// ── Stripe Settings ──
+
+companyRouter.get('/stripe', async (req, res) => {
+  const { getStripeConfig } = await import('../services/stripe.service.js');
+  const config = await getStripeConfig(req.tenantId, req.companyId);
+  res.json(config);
+});
+
+companyRouter.put('/stripe', async (req, res) => {
+  if (req.userRole !== 'owner') throw AppError.forbidden('Only owners can configure payment settings');
+  const { stripeConfigSchema } = await import('@kis-books/shared');
+  const parsed = stripeConfigSchema.parse(req.body);
+  const { configureStripe } = await import('../services/stripe.service.js');
+  await configureStripe(req.tenantId, req.companyId, parsed);
+  res.json({ message: 'Stripe configured', onlinePaymentsEnabled: true });
+});
+
+companyRouter.delete('/stripe', async (req, res) => {
+  if (req.userRole !== 'owner') throw AppError.forbidden('Only owners can configure payment settings');
+  const { removeStripeConfig } = await import('../services/stripe.service.js');
+  await removeStripeConfig(req.tenantId, req.companyId);
+  res.json({ message: 'Stripe configuration removed', onlinePaymentsEnabled: false });
+});

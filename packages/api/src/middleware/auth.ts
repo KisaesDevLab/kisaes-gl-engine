@@ -33,11 +33,15 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
   }
 
   const authHeader = req.headers.authorization;
-  if (!authHeader?.startsWith('Bearer ')) {
+  // Allow token as query param for direct-navigation exports (PDF open in new tab).
+  // The access token is already short-lived (15min), so the exposure window is small.
+  const queryToken = req.query['_token'] as string | undefined;
+
+  if (!authHeader?.startsWith('Bearer ') && !queryToken) {
     throw AppError.unauthorized('Missing or invalid authorization header');
   }
 
-  const token = authHeader.slice(7);
+  const token = queryToken || authHeader!.slice(7);
   try {
     const payload = jwt.verify(token, env.JWT_SECRET) as JwtPayload;
 

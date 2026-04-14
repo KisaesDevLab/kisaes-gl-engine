@@ -99,17 +99,31 @@ export async function sendInvoice(tenantId: string, invoiceId: string) {
   const pdfBuffer = await pdfService.generateInvoicePdf(tenantId, invoiceId);
   const total = parseFloat(txn.total || '0').toFixed(2);
 
+  // Check for online payment link
+  let paymentLinkSection = '';
+  if (txn.publicToken) {
+    const company = await db.query.companies.findFirst({
+      where: eq(companies.tenantId, tenantId),
+    });
+    if (company?.onlinePaymentsEnabled) {
+      const { env } = await import('../config/env.js');
+      const paymentLink = `${env.CORS_ORIGIN}/pay/${txn.publicToken}`;
+      paymentLinkSection = `\nPay this invoice online: ${paymentLink}\n`;
+    }
+  }
+
   const subject = renderTemplate('Invoice {{invoice_number}} from {{company_name}}', {
     invoice_number: txn.txnNumber || invoiceId.slice(0, 8),
     company_name: companyName,
   });
 
   const body = renderTemplate(
-    'Dear {{customer_name}},\n\nPlease find attached invoice {{invoice_number}} for ${{amount_due}}.\n\n' + (txn.dueDate ? 'Due date: {{due_date}}\n\n' : '') + 'Thank you for your business!\n\n{{company_name}}',
+    'Dear {{customer_name}},\n\nPlease find attached invoice {{invoice_number}} for ${{amount_due}}.\n{{payment_link_section}}\n' + (txn.dueDate ? 'Due date: {{due_date}}\n\n' : '') + 'Thank you for your business!\n\n{{company_name}}',
     {
       customer_name: customerName,
       invoice_number: txn.txnNumber || invoiceId.slice(0, 8),
       amount_due: total,
+      payment_link_section: paymentLinkSection,
       due_date: txn.dueDate || '',
       company_name: companyName,
     },
@@ -135,12 +149,24 @@ export async function sendPaymentReminder(tenantId: string, invoiceId: string) {
 
   const balanceDue = parseFloat(txn.balanceDue || txn.total || '0').toFixed(2);
 
+  // Check for online payment link
+  let paymentLinkLine = '';
+  if (txn.publicToken) {
+    const company = await db.query.companies.findFirst({
+      where: eq(companies.tenantId, tenantId),
+    });
+    if (company?.onlinePaymentsEnabled) {
+      const { env } = await import('../config/env.js');
+      paymentLinkLine = `\nPay online: ${env.CORS_ORIGIN}/pay/${txn.publicToken}\n`;
+    }
+  }
+
   const { from, transport } = await createTransport(tenantId, companyId);
   await transport.sendMail({
     from,
     to: customerEmail,
     subject: `Payment Reminder: Invoice ${txn.txnNumber || invoiceId.slice(0, 8)} from ${companyName}`,
-    text: `Dear ${customerName},\n\nThis is a friendly reminder that invoice ${txn.txnNumber || invoiceId.slice(0, 8)} has a balance due of $${balanceDue}.\n\n${txn.dueDate ? `Due date: ${txn.dueDate}\n\n` : ''}Please remit payment at your earliest convenience.\n\nThank you,\n${companyName}`,
+    text: `Dear ${customerName},\n\nThis is a friendly reminder that invoice ${txn.txnNumber || invoiceId.slice(0, 8)} has a balance due of $${balanceDue}.\n${paymentLinkLine}\n${txn.dueDate ? `Due date: ${txn.dueDate}\n\n` : ''}Please remit payment at your earliest convenience.\n\nThank you,\n${companyName}`,
   });
 }
 

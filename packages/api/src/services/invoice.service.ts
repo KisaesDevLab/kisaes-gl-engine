@@ -178,6 +178,26 @@ export async function markAsSent(tenantId: string, invoiceId: string) {
   }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, invoiceId)));
 }
 
+export async function generateShareLink(tenantId: string, invoiceId: string): Promise<string> {
+  const txn = await ledger.getTransaction(tenantId, invoiceId);
+  if (txn.txnType !== 'invoice') throw AppError.badRequest('Not an invoice');
+
+  const { generatePublicToken } = await import('./public-invoice.service.js');
+  const token = await generatePublicToken(tenantId, invoiceId);
+
+  // Auto-mark draft as sent when generating a share link
+  if (txn.invoiceStatus === 'draft') {
+    await db.update(transactions).set({
+      invoiceStatus: 'sent',
+      sentAt: new Date(),
+      updatedAt: new Date(),
+    }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, invoiceId)));
+  }
+
+  const { env } = await import('../config/env.js');
+  return `${env.CORS_ORIGIN}/pay/${token}`;
+}
+
 export async function sendInvoice(tenantId: string, invoiceId: string, userId?: string) {
   const txn = await ledger.getTransaction(tenantId, invoiceId);
   if (txn.txnType !== 'invoice') throw AppError.badRequest('Not an invoice');

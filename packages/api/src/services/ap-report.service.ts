@@ -27,8 +27,8 @@ export async function buildApAgingSummary(tenantId: string, asOfDate: string, co
 
   const asOf = new Date(asOfDate);
   const vendorMap = new Map<string, {
-    contactId: string;
-    vendorName: string;
+    contact_id: string;
+    vendor_name: string;
     current: number;
     bucket1to30: number;
     bucket31to60: number;
@@ -53,8 +53,8 @@ export async function buildApAgingSummary(tenantId: string, asOfDate: string, co
 
     const key = row.contact_id || 'unknown';
     const v = vendorMap.get(key) || {
-      contactId: row.contact_id || '',
-      vendorName: row.vendor_name || 'Unknown',
+      contact_id: row.contact_id || '',
+      vendor_name: row.vendor_name || 'Unknown',
       current: 0, bucket1to30: 0, bucket31to60: 0, bucket61to90: 0, bucketOver90: 0, total: 0,
     };
     if (bucket === 'current') v.current += balance;
@@ -81,7 +81,7 @@ export async function buildApAgingSummary(tenantId: string, asOfDate: string, co
     });
   }
 
-  const vendors = Array.from(vendorMap.values()).sort((a, b) => a.vendorName.localeCompare(b.vendorName));
+  const vendors = Array.from(vendorMap.values()).sort((a, b) => a.vendor_name.localeCompare(b.vendor_name));
   const totals = vendors.reduce((acc, v) => ({
     current: acc.current + v.current,
     bucket1to30: acc.bucket1to30 + v.bucket1to30,
@@ -232,6 +232,7 @@ export async function buildAp1099Prep(tenantId: string, taxYear: number, company
 
   const rows = await db.execute(sql`
     SELECT c.id, c.display_name, c.tax_id,
+      c.billing_line1, c.billing_city, c.billing_state, c.billing_zip,
       COALESCE(SUM(CAST(t.total AS DECIMAL)), 0) as total_paid
     FROM contacts c
     LEFT JOIN transactions t ON t.contact_id = c.id AND t.tenant_id = ${tenantId}
@@ -242,17 +243,21 @@ export async function buildAp1099Prep(tenantId: string, taxYear: number, company
     WHERE c.tenant_id = ${tenantId}
       AND c.is_1099_eligible = true
       AND c.contact_type IN ('vendor', 'both')
-    GROUP BY c.id, c.display_name, c.tax_id
+    GROUP BY c.id, c.display_name, c.tax_id, c.billing_line1, c.billing_city, c.billing_state, c.billing_zip
     ORDER BY c.display_name
   `);
 
-  const data = (rows.rows as any[]).map((row) => ({
-    contact_id: row.id,
-    vendor_name: row.display_name,
-    tax_id: row.tax_id,
-    total_paid: parseFloat(row.total_paid || '0'),
-    over_threshold: parseFloat(row.total_paid || '0') >= 600,
-  }));
+  const data = (rows.rows as any[]).map((row) => {
+    const parts = [row.billing_line1, row.billing_city, row.billing_state, row.billing_zip].filter(Boolean);
+    return {
+      contact_id: row.id,
+      vendor_name: row.display_name,
+      address: parts.join(', ') || '',
+      tax_id: row.tax_id,
+      total_paid: parseFloat(row.total_paid || '0'),
+      over_threshold: parseFloat(row.total_paid || '0') >= 600,
+    };
+  });
 
   return { title: '1099 Vendor Preparation', taxYear, data };
 }

@@ -54,10 +54,14 @@ import {
   adminPlaidConfigSchema,
 } from '@kis-books/shared';
 import { eq } from 'drizzle-orm';
+import { tailscaleRouter } from './tailscale.routes.js';
 
 export const adminRouter = Router();
 adminRouter.use(authenticate);
 adminRouter.use(requireSuperAdmin);
+
+// Tailscale remote-access management (super-admin only, already gated above).
+adminRouter.use('/tailscale', tailscaleRouter);
 
 // ─── System Stats ────────────────────────────────────────────────
 
@@ -118,6 +122,51 @@ adminRouter.delete('/tenants/:id', async (req, res) => {
 adminRouter.get('/users', async (req, res) => {
   const users = await adminService.listAllUsers();
   res.json({ users });
+});
+
+adminRouter.post('/users/create', async (req, res) => {
+  const { email, password, displayName, tenantId, role } = req.body;
+  if (!email || !password || !tenantId) {
+    res.status(400).json({ error: { message: 'email, password, and tenantId are required' } });
+    return;
+  }
+
+  const { users, tenants, userTenantAccess } = await import('../db/schema/index.js');
+  const { eq } = await import('drizzle-orm');
+  const { env } = await import('../config/env.js');
+
+  // Check email uniqueness
+  const existing = await db.query.users.findFirst({ where: eq(users.email, email) });
+  if (existing) {
+    res.status(409).json({ error: { message: 'A user with this email already exists' } });
+    return;
+  }
+
+  // Verify tenant exists
+  const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
+  if (!tenant) {
+    res.status(404).json({ error: { message: 'Tenant not found' } });
+    return;
+  }
+
+  const passwordHash = await bcrypt.hash(password, env.BCRYPT_ROUNDS);
+  const [user] = await db.insert(users).values({
+    tenantId,
+    email,
+    passwordHash,
+    displayName: displayName || null,
+    role: role || 'owner',
+  }).returning();
+
+  if (user) {
+    await db.insert(userTenantAccess).values({
+      userId: user.id,
+      tenantId,
+      role: role || 'owner',
+    }).onConflictDoNothing();
+  }
+
+  res.status(201).json({ user: { id: user!.id, email: user!.email, displayName: user!.displayName, role: user!.role } });
 });
 
 adminRouter.post('/users/:id/reset-password', validate(adminResetPasswordSchema), async (req, res) => {

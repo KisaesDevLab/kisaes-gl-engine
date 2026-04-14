@@ -23,8 +23,8 @@ export function toReportHtml(
   .meta{color:#666;margin-bottom:20px;font-size:11px}
   table{width:100%;border-collapse:collapse}
   th{background:#f3f4f6;padding:6px 8px;text-align:left;font-size:10px;text-transform:uppercase;border-bottom:2px solid #d1d5db}
-  td{padding:5px 8px;border-bottom:1px solid #e5e7eb}
-  .amount{text-align:right;font-family:monospace}
+  td{padding:5px 8px;border-bottom:1px solid #e5e7eb;font-size:11px}
+  .amount{text-align:right;font-variant-numeric:tabular-nums}
   .total-row{font-weight:bold;border-top:2px solid #111}
   @media print{body{padding:0}}
 </style></head>

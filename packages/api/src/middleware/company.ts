@@ -19,7 +19,9 @@ declare global {
  * Must be used AFTER the authenticate middleware.
  */
 export async function companyContext(req: Request, _res: Response, next: NextFunction) {
-  const headerCompanyId = req.headers['x-company-id'] as string | undefined;
+  // Accept company ID from header or query param (direct-navigation PDF exports).
+  const headerCompanyId = (req.headers['x-company-id'] as string | undefined)
+    || (req.query['_company'] as string | undefined);
 
   if (headerCompanyId) {
     // Validate it belongs to this tenant

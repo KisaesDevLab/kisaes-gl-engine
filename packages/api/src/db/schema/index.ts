@@ -22,3 +22,6 @@ export * from './mcp.js';
 export * from './storage.js';
 export * from './coa-templates.js';
 export * from './payroll.js';
+export * from './stripe.js';
+export * from './knowledge.js';
+export * from './tailscale.js';
