@@ -9,14 +9,31 @@ import { GoogleDriveProvider } from './google-drive.provider.js';
 import { OneDriveProvider } from './onedrive.provider.js';
 import { S3Provider } from './s3.provider.js';
 
-// Cache provider instances per tenant
+// Cache provider instances per tenant. Capped + periodic sweep so that an
+// installation hosting many tenants doesn't keep every tenant's decrypted
+// OAuth token resident in memory forever.
 const providerCache = new Map<string, { provider: StorageProvider; expiresAt: number }>();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const PROVIDER_CACHE_MAX = 256;
+
+function evictOldestProviderCacheEntry(): void {
+  if (providerCache.size < PROVIDER_CACHE_MAX) return;
+  const oldest = providerCache.keys().next().value;
+  if (oldest !== undefined) providerCache.delete(oldest);
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of providerCache) {
+    if (entry.expiresAt < now) providerCache.delete(key);
+  }
+}, CACHE_TTL);
 
 export async function getProviderForTenant(tenantId: string): Promise<StorageProvider> {
   // Check cache
   const cached = providerCache.get(tenantId);
   if (cached && Date.now() < cached.expiresAt) return cached.provider;
+  evictOldestProviderCacheEntry();
 
   // Query active provider
   const record = await db.query.storageProviders.findFirst({

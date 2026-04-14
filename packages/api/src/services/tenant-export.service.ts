@@ -45,8 +45,18 @@ const EXPORT_DIR = process.env['BACKUP_DIR'] || '/data/backups';
 const TEMP_DIR = path.join(EXPORT_DIR, '_temp');
 const APP_VERSION = '0.3.0';
 
-// Token cache for validated imports (in-memory, short-lived)
+// Token cache for validated imports (in-memory, short-lived). Capped so an
+// authenticated caller spamming /import/validate can't hold multi-GB of
+// decrypted payloads in memory while the 5-minute sweep runs — each cache
+// entry is potentially a full tenant export.
+const VALIDATION_CACHE_MAX = 32;
 const validationCache = new Map<string, { data: ExportPayload; expiresAt: number }>();
+
+function evictOldestValidationEntry(): void {
+  if (validationCache.size < VALIDATION_CACHE_MAX) return;
+  const oldest = validationCache.keys().next().value;
+  if (oldest !== undefined) validationCache.delete(oldest);
+}
 
 // Cleanup expired tokens every 5 minutes
 setInterval(() => {
@@ -455,6 +465,7 @@ export async function previewImport(
 
   // Generate a short-lived validation token
   const validationToken = crypto.randomUUID();
+  evictOldestValidationEntry();
   validationCache.set(validationToken, {
     data: payload,
     expiresAt: Date.now() + 30 * 60 * 1000, // 30 minutes
