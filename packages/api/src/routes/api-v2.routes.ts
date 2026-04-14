@@ -178,7 +178,10 @@ apiV2Router.post('/transactions', async (req, res) => {
       result = await cashSaleService.createCashSale(req.tenantId, createCashSaleSchema.parse(body), req.userId);
       break;
     default:
-      res.status(400).json({ error: { message: `Unsupported transaction type: ${txnType}. Use: expense, deposit, transfer, journal_entry, cash_sale` } });
+      // Don't echo the caller-supplied txnType — it's user input, and
+      // reflecting it in the error string adds no debug value the caller
+      // didn't already have.
+      res.status(400).json({ error: { message: 'Unsupported transaction type. Use: expense, deposit, transfer, journal_entry, cash_sale' } });
       return;
   }
 
@@ -227,6 +230,13 @@ apiV2Router.get('/items', async (req, res) => {
 apiV2Router.post('/items', async (req, res) => {
   const { name, description, unitPrice, incomeAccountId, isTaxable } = req.body;
   if (!name || !incomeAccountId) { res.status(400).json({ error: { message: 'name and incomeAccountId are required' } }); return; }
+  // Caller-supplied incomeAccountId is a UUID — verify the account lives in
+  // the caller's tenant before accepting it, or the item row ends up with a
+  // dangling cross-tenant FK that later corrupts revenue posting.
+  const [accountOk] = await db.select({ id: accounts.id }).from(accounts)
+    .where(and(eq(accounts.tenantId, req.tenantId), eq(accounts.id, incomeAccountId)))
+    .limit(1);
+  if (!accountOk) { res.status(400).json({ error: { message: 'Invalid income account' } }); return; }
   const [item] = await db.insert(items).values({
     tenantId: req.tenantId,
     companyId: req.companyId || null,

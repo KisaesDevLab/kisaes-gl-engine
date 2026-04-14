@@ -8,6 +8,7 @@ import nodemailer from 'nodemailer';
 import { db } from '../db/index.js';
 import { tenants, users, companies, userTenantAccess } from '../db/schema/index.js';
 import { sql } from 'drizzle-orm';
+import { env } from '../config/env.js';
 import * as accountsService from './accounts.service.js';
 import * as adminService from './admin.service.js';
 import {
@@ -476,7 +477,7 @@ export async function createAdminUser(input: { email: string; password: string; 
   });
 
   // Create user (first user is super admin)
-  const passwordHash = await bcrypt.hash(input.password, 12);
+  const passwordHash = await bcrypt.hash(input.password, env.BCRYPT_ROUNDS);
   const [user] = await db.insert(users).values({
     tenantId: tenant.id,
     email: input.email,

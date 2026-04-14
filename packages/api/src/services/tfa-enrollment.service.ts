@@ -25,7 +25,7 @@ async function generateRecoveryCodes(): Promise<{ plaintext: string[]; hashes: s
   for (let i = 0; i < 10; i++) {
     const code = generateRecoveryCode();
     codes.push(code);
-    hashes.push(await bcrypt.hash(code.replace(/-/g, ''), 12));
+    hashes.push(await bcrypt.hash(code.replace(/-/g, ''), env.BCRYPT_ROUNDS));
   }
   return { plaintext: codes, hashes };
 }

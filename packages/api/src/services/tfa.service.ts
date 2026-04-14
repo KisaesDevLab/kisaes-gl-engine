@@ -93,7 +93,7 @@ export async function generateAndSendCode(userId: string, method: 'email' | 'sms
   }
 
   const code = generateCode(config.codeLength);
-  const codeHash = await bcrypt.hash(code, 12);
+  const codeHash = await bcrypt.hash(code, env.BCRYPT_ROUNDS);
   const expiresAt = new Date(Date.now() + config.codeExpirySeconds * 1000);
 
   // Delete any existing unused codes for this user + method
