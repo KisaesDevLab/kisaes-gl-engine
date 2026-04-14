@@ -310,7 +310,7 @@ export async function resetUserPassword(userId: string, newPassword: string, act
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   if (!user) throw AppError.notFound('User not found');
 
-  const passwordHash = await bcrypt.hash(newPassword, 12);
+  const passwordHash = await bcrypt.hash(newPassword, env.BCRYPT_ROUNDS);
   await db.update(users).set({ passwordHash, updatedAt: new Date() }).where(eq(users.id, userId));
   await auditLog(user.tenantId, 'update', 'user_password_reset', userId, null, { email: user.email }, actingUserId);
 }

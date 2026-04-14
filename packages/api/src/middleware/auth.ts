@@ -7,6 +7,7 @@ import { AppError } from '../utils/errors.js';
 import { db } from '../db/index.js';
 import { users } from '../db/schema/index.js';
 import { apiKeyAuth } from './api-key-auth.js';
+import { consumeDownloadToken } from '../utils/download-token.js';
 
 declare global {
   namespace Express {
@@ -32,9 +33,30 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     return apiKeyAuth(req, res, next);
   }
 
+  // Preferred URL-auth path for direct-navigation exports (open PDF in new
+  // tab): single-use ~60s download tokens issued by /api/v1/downloads/token.
+  // The token carries the session context forward without exposing the JWT
+  // in URLs, history, or proxy logs.
+  const dlTokenRaw = req.query['_dl'];
+  const dlToken = typeof dlTokenRaw === 'string' ? dlTokenRaw : undefined;
+  if (dlToken) {
+    const payload = consumeDownloadToken(dlToken);
+    if (!payload) throw AppError.unauthorized('Invalid or expired download token');
+    req.userId = payload.userId;
+    req.tenantId = payload.tenantId;
+    req.userRole = payload.userRole;
+    req.isSuperAdmin = payload.isSuperAdmin;
+    if (payload.companyId && !req.headers['x-company-id']) {
+      req.headers['x-company-id'] = payload.companyId;
+    }
+    next();
+    return;
+  }
+
   const authHeader = req.headers.authorization;
-  // Allow token as query param for direct-navigation exports (PDF open in new tab).
-  // The access token is already short-lived (15min), so the exposure window is small.
+  // Legacy URL-auth path kept for backward compatibility. Prefer ?_dl= for
+  // new integrations — it avoids putting the full access token in URLs,
+  // browser history, and referer headers.
   const queryToken = req.query['_token'] as string | undefined;
 
   if (!authHeader?.startsWith('Bearer ') && !queryToken) {

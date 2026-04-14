@@ -9,7 +9,16 @@ const envSchema = z.object({
   ENCRYPTION_KEY: z.string().min(32, 'ENCRYPTION_KEY must be at least 32 hex characters (16 bytes) — the setup wizard generates a 64-char hex value by default'),
   PORT: z.coerce.number().default(3001),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
-  CORS_ORIGIN: z.string().default('http://localhost:5173'),
+  CORS_ORIGIN: z
+    .string()
+    .default('http://localhost:5173')
+    // Refuse the combination of credentials:true with a wildcard origin.
+    // Express allows it, modern browsers reject it, but the intent is so
+    // clearly misconfigured that we'd rather fail startup than have the
+    // app run with a confused CORS policy.
+    .refine((v) => v !== '*', {
+      message: 'CORS_ORIGIN must not be "*" because the app sends credentials.',
+    }),
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().default(587),
   SMTP_USER: z.string().optional(),
