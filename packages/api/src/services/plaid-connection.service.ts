@@ -336,6 +336,11 @@ export async function refreshItemStatus(itemId: string) {
 }
 
 export async function getUpdateLinkToken(itemId: string, userId: string) {
+  // Requires the caller to have actual access to the item — previously we
+  // only checked existence, so any authenticated user knowing an itemId
+  // could mint an update-link token and re-auth someone else's bank
+  // connection.
+  await assertCanAccessItem(userId, itemId);
   const item = await db.query.plaidItems.findFirst({ where: eq(plaidItems.id, itemId) });
   if (!item) throw AppError.notFound('Connection not found');
   const accessToken = decrypt(item.accessTokenEncrypted);

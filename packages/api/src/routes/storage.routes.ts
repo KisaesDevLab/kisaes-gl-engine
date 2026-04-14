@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import crypto from 'crypto';
 import { eq, and } from 'drizzle-orm';
 import { authenticate } from '../middleware/auth.js';
 import { db } from '../db/index.js';
@@ -9,6 +10,38 @@ import * as migrationService from '../services/storage-migration.service.js';
 
 export const storageRouter = Router();
 storageRouter.use(authenticate);
+
+// In-memory OAuth state store. The /connect/:provider route mints a random
+// state bound to (tenantId, userId, provider) and includes it in the
+// provider redirect. On /callback/:provider we consume the state and
+// require the callback's tenantId/userId/provider to match. Without this,
+// an attacker-initiated OAuth flow (attacker's browser starts it, tricks
+// the victim into clicking the callback URL) would let the attacker's
+// tokens be written into the victim's storage provider record.
+interface OAuthState {
+  tenantId: string;
+  userId: string;
+  provider: string;
+  expiresAt: number;
+}
+const oauthStateStore = new Map<string, OAuthState>();
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+
+function issueOAuthState(tenantId: string, userId: string, provider: string): string {
+  const now = Date.now();
+  // opportunistic sweep
+  for (const [k, v] of oauthStateStore.entries()) if (now > v.expiresAt) oauthStateStore.delete(k);
+  const state = crypto.randomBytes(32).toString('base64url');
+  oauthStateStore.set(state, { tenantId, userId, provider, expiresAt: now + OAUTH_STATE_TTL_MS });
+  return state;
+}
+
+function consumeOAuthState(state: string, tenantId: string, userId: string, provider: string): boolean {
+  const entry = oauthStateStore.get(state);
+  oauthStateStore.delete(state);
+  if (!entry || Date.now() > entry.expiresAt) return false;
+  return entry.tenantId === tenantId && entry.userId === userId && entry.provider === provider;
+}
 
 // ─── Helper: get tenant's provider record ──────────────────────
 
@@ -123,31 +156,31 @@ storageRouter.post('/configure/:provider', async (req, res) => {
 
 storageRouter.get('/connect/:provider', async (req, res) => {
   const provider = req.params['provider']!;
-  const appUrl = process.env['CORS_ORIGIN'] || 'http://localhost:5173';
   const callbackUrl = `${req.protocol}://${req.get('host')}/api/v1/settings/storage/callback/${provider}`;
 
   // Read this tenant's OAuth app credentials from their storageProviders record
   const record = await getTenantProviderRecord(req.tenantId, provider);
   const config = (record?.config || {}) as Record<string, any>;
+  const state = issueOAuthState(req.tenantId, req.userId, provider);
 
   switch (provider) {
     case 'dropbox': {
       const appKey = config['app_key'];
       if (!appKey) { res.status(400).json({ error: { message: 'Dropbox app credentials not configured. Please configure them first.' } }); return; }
-      res.redirect(`https://www.dropbox.com/oauth2/authorize?client_id=${appKey}&response_type=code&redirect_uri=${encodeURIComponent(callbackUrl)}&token_access_type=offline`);
+      res.redirect(`https://www.dropbox.com/oauth2/authorize?client_id=${appKey}&response_type=code&redirect_uri=${encodeURIComponent(callbackUrl)}&token_access_type=offline&state=${encodeURIComponent(state)}`);
       break;
     }
     case 'google_drive': {
       const clientId = config['client_id'];
       if (!clientId) { res.status(400).json({ error: { message: 'Google Drive credentials not configured. Please configure them first.' } }); return; }
-      res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&response_type=code&redirect_uri=${encodeURIComponent(callbackUrl)}&scope=https://www.googleapis.com/auth/drive.file&access_type=offline&prompt=consent`);
+      res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&response_type=code&redirect_uri=${encodeURIComponent(callbackUrl)}&scope=https://www.googleapis.com/auth/drive.file&access_type=offline&prompt=consent&state=${encodeURIComponent(state)}`);
       break;
     }
     case 'onedrive': {
       const clientId = config['client_id'];
       const msTenantId = config['ms_tenant_id'] || 'common';
       if (!clientId) { res.status(400).json({ error: { message: 'OneDrive credentials not configured. Please configure them first.' } }); return; }
-      res.redirect(`https://login.microsoftonline.com/${msTenantId}/oauth2/v2.0/authorize?client_id=${clientId}&response_type=code&redirect_uri=${encodeURIComponent(callbackUrl)}&scope=Files.ReadWrite%20User.Read%20offline_access`);
+      res.redirect(`https://login.microsoftonline.com/${msTenantId}/oauth2/v2.0/authorize?client_id=${clientId}&response_type=code&redirect_uri=${encodeURIComponent(callbackUrl)}&scope=Files.ReadWrite%20User.Read%20offline_access&state=${encodeURIComponent(state)}`);
       break;
     }
     default:
@@ -160,10 +193,18 @@ storageRouter.get('/connect/:provider', async (req, res) => {
 storageRouter.get('/callback/:provider', async (req, res) => {
   const provider = req.params['provider']!;
   const code = req.query['code'] as string;
+  const state = req.query['state'] as string | undefined;
   const appUrl = process.env['CORS_ORIGIN'] || 'http://localhost:5173';
   const callbackUrl = `${req.protocol}://${req.get('host')}/api/v1/settings/storage/callback/${provider}`;
 
   if (!code) { res.redirect(`${appUrl}/settings/storage?error=no_code`); return; }
+  if (!state || !consumeOAuthState(state, req.tenantId, req.userId, provider)) {
+    // Either the state is missing (CSRF-style attack where a different
+    // user's browser completes an attacker-initiated OAuth flow) or it
+    // doesn't match the tenant+user+provider that minted it.
+    res.redirect(`${appUrl}/settings/storage?error=invalid_state`);
+    return;
+  }
 
   try {
     // Read this tenant's OAuth app credentials

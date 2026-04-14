@@ -53,7 +53,12 @@ async function createTransport(tenantId: string, companyId?: string) {
 function renderTemplate(template: string, vars: Record<string, string>): string {
   let result = template;
   for (const [key, value] of Object.entries(vars)) {
-    result = result.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), value);
+    // Strip CR/LF from interpolated values — otherwise a user-supplied
+    // displayName containing "\r\nBcc: attacker@..." could inject email
+    // headers when the template is used for the Subject line or when a
+    // downstream renderer treats newlines as header separators.
+    const safe = value == null ? '' : String(value).replace(/[\r\n]/g, ' ');
+    result = result.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), safe);
   }
   return result;
 }

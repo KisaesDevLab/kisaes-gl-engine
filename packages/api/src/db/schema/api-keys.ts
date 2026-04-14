@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, boolean, integer, bigint, timestamp, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, boolean, integer, bigint, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core';
 
 export const apiKeys = pgTable('api_keys', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -25,7 +25,10 @@ export const apiKeys = pgTable('api_keys', {
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
   revokedBy: uuid('revoked_by'),
 }, (table) => ({
-  keyHashIdx: index('idx_api_keys_hash').on(table.keyHash),
+  // Unique: two rows must never share a hash. Lookup-by-hash is how we
+  // authenticate API calls, and findFirst() returning the wrong row on
+  // collision would be authentication identity confusion.
+  keyHashIdx: uniqueIndex('idx_api_keys_hash').on(table.keyHash),
   tenantIdx: index('idx_api_keys_tenant').on(table.tenantId),
   userIdx: index('idx_api_keys_user').on(table.userId),
 }));

@@ -12,6 +12,15 @@ import { createCompanyForTenant } from './company.service.js';
 import { seedFromTemplate } from './accounts.service.js';
 import * as systemEmail from './system-email.service.js';
 
+// Email is used as the unique-identifier primary key for a user. Case
+// variations would otherwise create separate accounts (Alice@example and
+// alice@example), which is both a UX pitfall and a security issue — a
+// squatter could register `Victim@example.com` and prevent `victim@example.com`
+// from ever being used. Normalize at every boundary.
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
 function generateSlug(name: string): string {
   return name
     .toLowerCase()
@@ -84,9 +93,10 @@ export async function createClientTenant(creatorUserId: string, input: { company
 }
 
 export async function register(input: RegisterInput): Promise<{ user: typeof users.$inferSelect; tokens: AuthTokens }> {
+  const email = normalizeEmail(input.email);
   // Check if email already exists across all tenants
   const existingUser = await db.query.users.findFirst({
-    where: eq(users.email, input.email),
+    where: eq(users.email, email),
   });
   if (existingUser) {
     throw AppError.conflict('An account with this email already exists', 'EMAIL_EXISTS');
@@ -106,7 +116,7 @@ export async function register(input: RegisterInput): Promise<{ user: typeof use
   const passwordHash = await bcrypt.hash(input.password, env.BCRYPT_ROUNDS);
   const [user] = await db.insert(users).values({
     tenantId: tenant.id,
-    email: input.email,
+    email,
     passwordHash,
     displayName: input.displayName,
     role: 'owner',
@@ -164,8 +174,9 @@ export async function login(input: LoginInput): Promise<{ user: typeof users.$in
   const MAX_LOGIN_ATTEMPTS = 5;
   const LOCKOUT_MINUTES = 15;
 
+  const email = normalizeEmail(input.email);
   const user = await db.query.users.findFirst({
-    where: eq(users.email, input.email),
+    where: eq(users.email, email),
   });
 
   if (!user) {
@@ -313,8 +324,9 @@ export async function logout(refreshToken: string): Promise<void> {
 }
 
 export async function forgotPassword(email: string): Promise<void> {
+  const normalized = normalizeEmail(email);
   const user = await db.query.users.findFirst({
-    where: eq(users.email, email),
+    where: eq(users.email, normalized),
   });
 
   // Always return success to prevent email enumeration
@@ -337,7 +349,7 @@ export async function forgotPassword(email: string): Promise<void> {
   });
 
   // Send the email (uses system SMTP, falls back to stub if not configured)
-  await systemEmail.sendPasswordResetEmail(email, rawToken);
+  await systemEmail.sendPasswordResetEmail(normalized, rawToken);
 }
 
 export async function resetPassword(token: string, newPassword: string): Promise<void> {
@@ -384,9 +396,10 @@ export async function resetPassword(token: string, newPassword: string): Promise
 
 export async function inviteUser(tenantId: string, input: { email: string; displayName: string; role: string }): Promise<{ user: typeof users.$inferSelect; temporaryPassword: string | null; existingUser: boolean }> {
   const role = input.role || 'accountant';
+  const email = normalizeEmail(input.email);
 
   // Check if user already exists
-  const existing = await db.query.users.findFirst({ where: eq(users.email, input.email) });
+  const existing = await db.query.users.findFirst({ where: eq(users.email, email) });
 
   if (existing) {
     // User exists — check if they already have access to this tenant
@@ -416,7 +429,7 @@ export async function inviteUser(tenantId: string, input: { email: string; displ
 
   const [user] = await db.insert(users).values({
     tenantId,
-    email: input.email,
+    email,
     passwordHash,
     displayName: input.displayName,
     role,

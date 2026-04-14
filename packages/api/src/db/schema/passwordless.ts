@@ -30,6 +30,9 @@ export const magicLinks = pgTable('magic_links', {
   userAgent: text('user_agent'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
-  tokenIdx: index('idx_ml_token').on(table.tokenHash),
+  // Unique: magic-link tokens are single-use and verified by hash lookup.
+  // Two rows with the same tokenHash would let a collision authenticate
+  // as the wrong user.
+  tokenIdx: uniqueIndex('idx_ml_token').on(table.tokenHash),
   userIdx: index('idx_ml_user').on(table.userId),
 }));

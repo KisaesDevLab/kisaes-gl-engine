@@ -385,6 +385,13 @@ export async function restoreFromBackup(
 }> {
   try {
     const { data: decrypted, method } = smartDecrypt(fileBuffer, passphrase);
+    // Reject implausibly large decrypted blobs before JSON.parse allocates
+    // another copy. AES-GCM doesn't expand its input, so a file that
+    // decrypts to >500MB was either produced by malformed tooling or a
+    // future compressed format — either way we don't want to parse it.
+    if (decrypted.length > 500 * 1024 * 1024) {
+      throw AppError.badRequest('Backup payload exceeds size limit');
+    }
     const content = JSON.parse(decrypted.toString());
     const metadata = content.metadata ?? {};
 

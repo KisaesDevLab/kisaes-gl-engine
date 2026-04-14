@@ -266,7 +266,12 @@ export async function handleWebhookEvent(
     throw AppError.badRequest(`Webhook signature verification failed: ${err.message}`);
   }
 
-  // Idempotency: skip if already processed
+  // Idempotency: skip if already processed. eventId has a UNIQUE constraint
+  // at the DB level (schema: stripe_webhook_log.event_id unique), so the
+  // INSERT itself is the atomic barrier — two concurrent deliveries cannot
+  // both claim the row. The pre-check keeps the hot path fast; if two
+  // workers race past it the second INSERT will fail with 23505 and we
+  // treat that as "already processed" rather than letting the error escape.
   const [existing] = await db.select({ id: stripeWebhookLog.id })
     .from(stripeWebhookLog)
     .where(eq(stripeWebhookLog.eventId, event.id))
@@ -274,15 +279,21 @@ export async function handleWebhookEvent(
 
   if (existing) return; // Already processed
 
-  // Log the event
-  await db.insert(stripeWebhookLog).values({
-    tenantId: company.tenantId,
-    eventId: event.id,
-    eventType: event.type,
-    paymentIntentId: (event.data.object as any)?.id || null,
-    payload: event.data.object as any,
-    processed: false,
-  });
+  try {
+    await db.insert(stripeWebhookLog).values({
+      tenantId: company.tenantId,
+      eventId: event.id,
+      eventType: event.type,
+      paymentIntentId: (event.data.object as any)?.id || null,
+      payload: event.data.object as any,
+      processed: false,
+    });
+  } catch (err: any) {
+    if (err?.code === '23505' || /unique/i.test(err?.message || '')) {
+      return; // another delivery beat us to it
+    }
+    throw err;
+  }
 
   // Dispatch by event type
   try {

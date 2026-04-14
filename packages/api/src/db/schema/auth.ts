@@ -47,7 +47,7 @@ export const users = pgTable('users', {
 export const passwordResetTokens = pgTable('password_reset_tokens', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').notNull().references(() => users.id),
-  tokenHash: varchar('token_hash', { length: 255 }).notNull(),
+  tokenHash: varchar('token_hash', { length: 255 }).notNull().unique(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   usedAt: timestamp('used_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
@@ -56,7 +56,7 @@ export const passwordResetTokens = pgTable('password_reset_tokens', {
 export const sessions = pgTable('sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').notNull().references(() => users.id),
-  refreshTokenHash: varchar('refresh_token_hash', { length: 255 }).notNull(),
+  refreshTokenHash: varchar('refresh_token_hash', { length: 255 }).notNull().unique(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });

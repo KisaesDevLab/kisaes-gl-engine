@@ -560,6 +560,15 @@ export async function importFromCsv(
   mapping: CsvColumnMapping,
 ) {
   await assertConnectionInTenant(tenantId, bankConnectionId);
+  // Byte ceiling: a single 50MB line would sail past the row-count check
+  // below but still exhaust memory when split into a giant single-entry
+  // array. Express.json already caps the request body, but this route can
+  // be fed via other paths (tenant import, worker retry) so enforce it
+  // here too.
+  const MAX_CSV_BYTES = 20 * 1024 * 1024;
+  if (Buffer.byteLength(csvText, 'utf8') > MAX_CSV_BYTES) {
+    throw AppError.badRequest(`CSV exceeds ${MAX_CSV_BYTES / 1024 / 1024}MB limit`);
+  }
   const lines = csvText.split('\n').filter((l) => l.trim());
   if (lines.length < 2) throw AppError.badRequest('CSV must have header + data rows');
   // Cap import size so a caller can't tie up the DB connection with a

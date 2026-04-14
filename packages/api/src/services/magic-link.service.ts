@@ -14,7 +14,8 @@ function hashToken(token: string): string {
 }
 
 export async function sendMagicLink(email: string, ipAddress: string, userAgent: string) {
-  const user = await db.query.users.findFirst({ where: eq(users.email, email) });
+  const normalized = email.trim().toLowerCase();
+  const user = await db.query.users.findFirst({ where: eq(users.email, normalized) });
   // Don't reveal whether user exists — always return success-like response
   if (!user || !user.isActive) {
     return { sent: true, expiresInMinutes: 15 };
