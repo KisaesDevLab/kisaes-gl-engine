@@ -58,7 +58,42 @@ import { swaggerSpec } from './swagger.js';
 export const app = express();
 
 // Middleware
-app.use(helmet());
+// Helmet defaults are tuned for HTTPS public sites. Vibe MyBooks is a
+// self-hosted appliance that operators typically reach over plain HTTP
+// on a LAN IP (e.g. http://192.168.1.10:3001), and two of helmet's
+// defaults break that access mode:
+//
+//   1. The CSP directive `upgrade-insecure-requests` tells modern
+//      Chromium browsers to rewrite every subresource URL from http://
+//      to https://. When the page itself is loaded from a LAN IP with
+//      no TLS, the JS/CSS bundle requests get silently upgraded, the
+//      server can't answer them, and the user sees a blank white page.
+//      Localhost is exempt (it's a "potentially trustworthy" origin in
+//      the Secure Contexts spec) so the issue only appears on LAN.
+//
+//   2. Inline scripts in dist/index.html (the crypto.randomUUID shim for
+//      insecure contexts and the pre-paint theme resolver that prevents
+//      a dark/light flash) are blocked by `script-src 'self'`. The
+//      crypto shim is belt-and-suspenders (the module import in
+//      main.tsx also runs a polyfill), but the theme resolver has to
+//      run before the bundle to avoid the flash. Hash-allowlisting the
+//      two inline scripts is fragile across rebuilds — the app is a
+//      first-party appliance, not a site that renders third-party
+//      content, so 'unsafe-inline' is an acceptable tradeoff here.
+//
+// If the operator fronts the appliance with an HTTPS reverse proxy,
+// the proxy can add its own HSTS / upgrade-insecure-requests headers.
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+        'upgrade-insecure-requests': null,
+        'script-src': ["'self'", "'unsafe-inline'"],
+      },
+    },
+  }),
+);
 app.use(cors({ origin: env.CORS_ORIGIN, credentials: true }));
 app.use(compression());
 
