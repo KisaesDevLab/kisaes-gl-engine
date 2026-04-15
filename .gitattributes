@@ -1,0 +1,10 @@
+# Force LF line endings for shell scripts. Without this, a Windows clone
+# with core.autocrlf=true would convert the docker-entrypoint.sh shebang
+# to "#!/bin/sh\r", and any local `docker compose build` would bake the
+# CRLFs into the image. The resulting container fails to start with
+# "exec /docker-entrypoint.sh: no such file or directory" — the kernel is
+# actually failing to find an interpreter called "/bin/sh\r", but the
+# error message blames the script.
+*.sh            text eol=lf
+docker-entrypoint.sh text eol=lf
+Dockerfile      text eol=lf
