@@ -90,13 +90,13 @@ export async function buildComparativePL(
       revenue: 'revenue', cogs: 'cogs', expense: 'expenses',
       other_revenue: 'otherRevenue', other_expense: 'otherExpenses',
     };
-    const accountMap = new Map<string, { name: string; accountNumber: string | null; type: PLType }>();
+    const accountMap = new Map<string, { accountId: string; name: string; accountNumber: string | null; type: PLType }>();
     for (const pl of plResults) {
-      for (const r of pl.revenue) accountMap.set(r.name, { name: r.name, accountNumber: r.accountNumber, type: 'revenue' });
-      for (const r of pl.cogs) accountMap.set(r.name, { name: r.name, accountNumber: r.accountNumber, type: 'cogs' });
-      for (const r of pl.expenses) accountMap.set(r.name, { name: r.name, accountNumber: r.accountNumber, type: 'expense' });
-      for (const r of pl.otherRevenue) accountMap.set(r.name, { name: r.name, accountNumber: r.accountNumber, type: 'other_revenue' });
-      for (const r of pl.otherExpenses) accountMap.set(r.name, { name: r.name, accountNumber: r.accountNumber, type: 'other_expense' });
+      for (const r of pl.revenue) accountMap.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'revenue' });
+      for (const r of pl.cogs) accountMap.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'cogs' });
+      for (const r of pl.expenses) accountMap.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'expense' });
+      for (const r of pl.otherRevenue) accountMap.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_revenue' });
+      for (const r of pl.otherExpenses) accountMap.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_expense' });
     }
 
     const rows = [...accountMap.values()].map((acct) => {
@@ -105,7 +105,7 @@ export async function buildComparativePL(
         return items.find((i) => i.name === acct.name)?.amount || 0;
       });
       values.push(values.reduce((a, b) => a + b, 0)); // Total column
-      return { account: acct.name, accountNumber: acct.accountNumber, accountType: acct.type, values };
+      return { accountId: acct.accountId, account: acct.name, accountNumber: acct.accountNumber, accountType: acct.type, values };
     });
 
     const withTotal = (vals: number[]) => { vals.push(vals.reduce((a, b) => a + b, 0)); return vals; };
@@ -151,13 +151,13 @@ export async function buildComparativePL(
   ];
 
   type PLType = 'revenue' | 'cogs' | 'expense' | 'other_revenue' | 'other_expense';
-  const allAccounts = new Map<string, { name: string; accountNumber: string | null; type: PLType }>();
+  const allAccounts = new Map<string, { accountId: string; name: string; accountNumber: string | null; type: PLType }>();
   const collect = (pl: any) => {
-    for (const r of pl.revenue) allAccounts.set(r.name, { name: r.name, accountNumber: r.accountNumber, type: 'revenue' });
-    for (const r of pl.cogs) allAccounts.set(r.name, { name: r.name, accountNumber: r.accountNumber, type: 'cogs' });
-    for (const r of pl.expenses) allAccounts.set(r.name, { name: r.name, accountNumber: r.accountNumber, type: 'expense' });
-    for (const r of pl.otherRevenue) allAccounts.set(r.name, { name: r.name, accountNumber: r.accountNumber, type: 'other_revenue' });
-    for (const r of pl.otherExpenses) allAccounts.set(r.name, { name: r.name, accountNumber: r.accountNumber, type: 'other_expense' });
+    for (const r of pl.revenue) allAccounts.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'revenue' });
+    for (const r of pl.cogs) allAccounts.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'cogs' });
+    for (const r of pl.expenses) allAccounts.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'expense' });
+    for (const r of pl.otherRevenue) allAccounts.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_revenue' });
+    for (const r of pl.otherExpenses) allAccounts.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_expense' });
   };
   collect(currentPL);
   collect(priorPL);
@@ -173,7 +173,7 @@ export async function buildComparativePL(
     const current = currentItems.find((i) => i.name === acct.name)?.amount || 0;
     const prior = priorItems.find((i) => i.name === acct.name)?.amount || 0;
     const v = computeVariance(current, prior);
-    return { account: acct.name, accountNumber: acct.accountNumber, accountType: acct.type, values: [current, prior, v.dollarChange, v.percentChange] };
+    return { accountId: acct.accountId, account: acct.name, accountNumber: acct.accountNumber, accountType: acct.type, values: [current, prior, v.dollarChange, v.percentChange] };
   });
 
   const varRow = (cur: number, pr: number) => {
@@ -213,20 +213,29 @@ export async function buildComparativeBS(
 
   const priorBS = await reportService.buildBalanceSheet(tenantId, priorDate, basis, companyId);
 
+  // Per-column asOfDate lets the web's QuickZoom drill-down build the right
+  // transaction filter for each period. Variance columns carry no date.
   const columns = [
-    { label: asOfDate },
-    { label: priorDate },
+    { label: asOfDate, asOfDate },
+    { label: priorDate, asOfDate: priorDate },
     { label: '$ Change', type: 'variance' },
     { label: '% Change', type: 'percent_variance' },
   ];
 
-  function mergeSection(current: Array<{ name: string; accountNumber: string | null; balance: number }>, prior: Array<{ name: string; accountNumber: string | null; balance: number }>) {
+  type BSRow = { accountId: string | null; name: string; accountNumber: string | null; balance: number };
+  function mergeSection(current: BSRow[], prior: BSRow[]) {
     const names = new Set([...current.map((c) => c.name), ...prior.map((p) => p.name)]);
     return [...names].map((name) => {
-      const cur = current.find((c) => c.name === name)?.balance || 0;
-      const pri = prior.find((p) => p.name === name)?.balance || 0;
-      const v = computeVariance(cur, pri);
-      return { name, values: [cur, pri, v.dollarChange, v.percentChange] };
+      const cur = current.find((c) => c.name === name);
+      const pri = prior.find((p) => p.name === name);
+      const curBal = cur?.balance || 0;
+      const priBal = pri?.balance || 0;
+      const v = computeVariance(curBal, priBal);
+      return {
+        accountId: cur?.accountId ?? pri?.accountId ?? null,
+        name,
+        values: [curBal, priBal, v.dollarChange, v.percentChange],
+      };
     });
   }
 

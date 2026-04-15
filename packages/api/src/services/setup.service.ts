@@ -250,6 +250,7 @@ export function generateSecrets() {
   const envJwt = process.env['JWT_SECRET'];
   const envBackup = process.env['BACKUP_ENCRYPTION_KEY'];
   const envEncryption = process.env['ENCRYPTION_KEY'];
+  const envPlaidEncryption = process.env['PLAID_ENCRYPTION_KEY'];
   // Use >= 32 (not env.ts's >= 20) so reused values pass the stricter
   // /initialize validation. Values shorter than that — the default dev
   // placeholder "change-me-in-production" — get replaced with a fresh one.
@@ -261,6 +262,14 @@ export function generateSecrets() {
     // (32 bytes). Reused from process.env when present so the sentinel
     // stays decryptable across container restarts.
     encryptionKey: envEncryption && envEncryption.length >= 32 ? envEncryption : crypto.randomBytes(32).toString('hex'),
+    // PLAID_ENCRYPTION_KEY — wraps Plaid / Stripe / OAuth refresh tokens
+    // and TFA secrets. Distinct from the sentinel key so a key-rotation on
+    // one surface doesn't force a rotation on the other. Reused from
+    // process.env for the same reason encryptionKey is.
+    plaidEncryptionKey:
+      envPlaidEncryption && envPlaidEncryption.length >= 32
+        ? envPlaidEncryption
+        : crypto.randomBytes(32).toString('hex'),
   };
 }
 
@@ -335,6 +344,7 @@ export interface SetupConfig {
   jwtSecret: string;
   backupKey: string;
   encryptionKey: string;
+  plaidEncryptionKey: string;
   appUrl?: string;
   ports?: { api?: number; frontend?: number };
   admin: { email: string; password: string; displayName: string };
@@ -387,6 +397,11 @@ JWT_REFRESH_EXPIRY=7d
 # Installation encryption key — encrypts the sentinel file at /data/.sentinel.
 # Do NOT regenerate — a new key cannot decrypt the existing sentinel.
 ENCRYPTION_KEY=${config.encryptionKey}
+
+# Token encryption key — wraps Plaid access tokens, Stripe secrets, OAuth
+# refresh tokens, and TFA secrets at rest. Do NOT regenerate after tokens
+# have been stored: a new key cannot decrypt existing ciphertext.
+PLAID_ENCRYPTION_KEY=${config.plaidEncryptionKey}
 
 # Server Ports
 PORT=${apiPort}
