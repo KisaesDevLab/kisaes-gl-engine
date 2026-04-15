@@ -146,11 +146,16 @@ setupRouter.post('/test-database', async (req, res) => {
   res.json(result);
 });
 
-// Return the Postgres connection parameters the API container is currently
-// running with (parsed from DATABASE_URL) so the wizard's Database step can
-// pre-populate fields that actually match the running Postgres service.
-// Never returns the password — the operator supplies that themselves so we
-// don't leak POSTGRES_PASSWORD over HTTP.
+// Return the Postgres connection parameters (including the auto-generated
+// POSTGRES_PASSWORD) that the API container is currently running with,
+// parsed from DATABASE_URL. The wizard uses these to pre-fill the Database
+// step so the end user — who never sees the POSTGRES_PASSWORD minted by
+// scripts/install.sh — can click straight through without typing anything.
+//
+// Safe by construction: this endpoint sits behind the same route guard
+// that blocks every non-status setup endpoint once .initialized exists
+// (see setupRouter.use above). Post-setup the endpoint returns 403. See
+// the getDatabaseDefaults() docstring for the full threat-model rationale.
 setupRouter.get('/db-defaults', async (_req, res) => {
   res.json(setupService.getDatabaseDefaults());
 });
