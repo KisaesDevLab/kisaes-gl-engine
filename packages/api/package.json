@@ -19,7 +19,7 @@
     "@aws-sdk/client-s3": "^3.1024.0",
     "@aws-sdk/s3-request-presigner": "^3.1024.0",
     "@azure/msal-node": "^5.1.2",
-    "@google/genai": "^1.48.0",
+    "@google/genai": "^1.50.1",
     "@kis-books/shared": "*",
     "@microsoft/microsoft-graph-client": "^3.0.7",
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -65,6 +65,6 @@
     "drizzle-kit": "^0.31.10",
     "tsx": "^4.19.0",
     "typescript": "^5.5.0",
-    "vitest": "^2.0.0"
+    "vitest": "^3.2.4"
   }
 }
