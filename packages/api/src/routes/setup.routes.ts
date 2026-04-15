@@ -189,6 +189,10 @@ setupRouter.post('/initialize', async (req, res) => {
       reject('Installation encryption key must be at least 32 characters');
       return;
     }
+    if (!config.plaidEncryptionKey || typeof config.plaidEncryptionKey !== 'string' || config.plaidEncryptionKey.length < 32) {
+      reject('Token encryption key must be at least 32 characters');
+      return;
+    }
     if (!config.admin || typeof config.admin !== 'object') {
       reject('Admin account details are required');
       return;
