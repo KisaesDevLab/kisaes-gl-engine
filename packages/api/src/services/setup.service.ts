@@ -281,6 +281,52 @@ export interface DbConfig {
   password: string;
 }
 
+/**
+ * Parse DATABASE_URL from the current process environment (injected by
+ * docker-compose from the host .env) and return the non-secret components
+ * so the setup wizard can pre-populate its Database step with values that
+ * actually match the running Postgres container.
+ *
+ * The password is intentionally NOT returned. Exposing POSTGRES_PASSWORD
+ * over an HTTP endpoint — even a setup-only one — creates a needless
+ * info-leak surface; the operator already has it in their .env file and
+ * can type it once. Returning everything else, however, avoids the far
+ * more common failure mode where operators accept the old hardcoded
+ * `kisbooks/kisbooks/db` defaults and get a confusing authentication
+ * failure attributed to "Seeding chart of accounts".
+ */
+export function getDatabaseDefaults(): {
+  host: string;
+  port: number;
+  database: string;
+  username: string;
+  source: 'env' | 'fallback';
+} {
+  const url = process.env['DATABASE_URL'];
+  if (url) {
+    try {
+      const parsed = new URL(url);
+      return {
+        host: parsed.hostname || 'db',
+        port: parsed.port ? Number(parsed.port) : 5432,
+        database: (parsed.pathname || '').replace(/^\//, '') || 'kisbooks',
+        username: decodeURIComponent(parsed.username || '') || 'kisbooks',
+        source: 'env',
+      };
+    } catch {
+      // Malformed DATABASE_URL — fall through to compose defaults.
+    }
+  }
+  // Match the docker-compose.yml service/user/db defaults.
+  return {
+    host: process.env['POSTGRES_HOST'] || 'db',
+    port: Number(process.env['POSTGRES_PORT'] || 5432),
+    database: process.env['POSTGRES_DB'] || 'kisbooks',
+    username: process.env['POSTGRES_USER'] || 'kisbooks',
+    source: 'fallback',
+  };
+}
+
 export async function testDatabaseConnection(config: DbConfig): Promise<{ success: boolean; error?: string }> {
   const pool = new pg.Pool({
     host: config.host,

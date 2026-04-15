@@ -146,6 +146,15 @@ setupRouter.post('/test-database', async (req, res) => {
   res.json(result);
 });
 
+// Return the Postgres connection parameters the API container is currently
+// running with (parsed from DATABASE_URL) so the wizard's Database step can
+// pre-populate fields that actually match the running Postgres service.
+// Never returns the password — the operator supplies that themselves so we
+// don't leak POSTGRES_PASSWORD over HTTP.
+setupRouter.get('/db-defaults', async (_req, res) => {
+  res.json(setupService.getDatabaseDefaults());
+});
+
 setupRouter.post('/check-port', async (req, res) => {
   const { port } = req.body;
   if (!port || port < 1 || port > 65535) {
@@ -231,7 +240,15 @@ setupRouter.post('/initialize', async (req, res) => {
       // Step 1: Test database connection
       const dbTest = await setupService.testDatabaseConnection(config.db);
       if (!dbTest.success) {
-        throw new Error(`Database connection failed: ${dbTest.error}`);
+        // Surface a clearly-labeled prefix so the wizard UI can attribute
+        // the failure to the Database step instead of whichever step
+        // happens to be "active" when the /initialize promise rejects.
+        const isAuth = /password authentication failed/i.test(dbTest.error || '');
+        const hint = isAuth
+          ? ' Check that the password matches POSTGRES_PASSWORD in your .env file' +
+            ` (the wizard does not default this value for you). Postgres reported: ${dbTest.error}`
+          : ` ${dbTest.error}`;
+        throw new Error(`[step:database] Database connection failed:${hint}`);
       }
 
       // Step 2: Write .env file (refuses to overwrite an existing file)
