@@ -283,46 +283,68 @@ export interface DbConfig {
 
 /**
  * Parse DATABASE_URL from the current process environment (injected by
- * docker-compose from the host .env) and return the non-secret components
+ * docker-compose from the host .env) and return the connection components
  * so the setup wizard can pre-populate its Database step with values that
  * actually match the running Postgres container.
  *
- * The password is intentionally NOT returned. Exposing POSTGRES_PASSWORD
- * over an HTTP endpoint — even a setup-only one — creates a needless
- * info-leak surface; the operator already has it in their .env file and
- * can type it once. Returning everything else, however, avoids the far
- * more common failure mode where operators accept the old hardcoded
- * `kisbooks/kisbooks/db` defaults and get a confusing authentication
- * failure attributed to "Seeding chart of accounts".
+ * This INCLUDES the password by design. The install scripts
+ * (scripts/install.sh, scripts/install.ps1) auto-generate a random
+ * POSTGRES_PASSWORD and write it to .env — the end user never sees it
+ * and has no way to type it back into the wizard. Returning it here lets
+ * the wizard auto-fill the Database step so the user just clicks Next.
+ *
+ * Why this is safe to expose over HTTP:
+ *   - The setup router blocks every non-status endpoint once
+ *     /data/config/.initialized exists (see setupRouter.use in
+ *     setup.routes.ts). After setup completes, this endpoint returns 403.
+ *   - The password is for the local Postgres container, which is only
+ *     reachable from inside the docker-compose network. Leaking it to
+ *     the local operator running the wizard is a no-op because they
+ *     already have filesystem access to /data/config/.env.
+ *   - Post-setup the value is written to /data/config/.env with mode
+ *     0600; pre-setup the threat surface is strictly smaller.
  */
 export function getDatabaseDefaults(): {
   host: string;
   port: number;
   database: string;
   username: string;
+  password: string;
+  /** True when the password was parsed from DATABASE_URL (i.e. the
+   *  install script already generated one). The wizard uses this to
+   *  decide whether to show "auto-detected" messaging or prompt the
+   *  user for input. */
+  passwordAutoDetected: boolean;
   source: 'env' | 'fallback';
 } {
   const url = process.env['DATABASE_URL'];
   if (url) {
     try {
       const parsed = new URL(url);
+      const password = decodeURIComponent(parsed.password || '');
       return {
         host: parsed.hostname || 'db',
         port: parsed.port ? Number(parsed.port) : 5432,
         database: (parsed.pathname || '').replace(/^\//, '') || 'kisbooks',
         username: decodeURIComponent(parsed.username || '') || 'kisbooks',
+        password,
+        passwordAutoDetected: password.length > 0,
         source: 'env',
       };
     } catch {
       // Malformed DATABASE_URL — fall through to compose defaults.
     }
   }
-  // Match the docker-compose.yml service/user/db defaults.
+  // Match the docker-compose.yml service/user/db defaults. No password
+  // fallback — if DATABASE_URL isn't set we legitimately don't know it
+  // and the operator will have to type or paste one in.
   return {
     host: process.env['POSTGRES_HOST'] || 'db',
     port: Number(process.env['POSTGRES_PORT'] || 5432),
     database: process.env['POSTGRES_DB'] || 'kisbooks',
     username: process.env['POSTGRES_USER'] || 'kisbooks',
+    password: process.env['POSTGRES_PASSWORD'] || '',
+    passwordAutoDetected: !!process.env['POSTGRES_PASSWORD'],
     source: 'fallback',
   };
 }
