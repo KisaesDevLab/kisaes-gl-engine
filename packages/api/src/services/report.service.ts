@@ -37,7 +37,7 @@ async function getFiscalYearStart(tenantId: string, companyId: string | null): P
 
 // ─── FINANCIAL STATEMENTS ────────────────────────────────────────
 
-export interface PLEntry { name: string; accountNumber: string | null; amount: number }
+export interface PLEntry { accountId: string; name: string; accountNumber: string | null; amount: number }
 
 export interface PLResult {
   title: string;
@@ -97,7 +97,7 @@ export async function buildProfitAndLoss(
   for (const row of rows.rows as any[]) {
     const amount = Math.abs(parseFloat(row.total_credit) - parseFloat(row.total_debit));
     if (amount === 0) continue;
-    const entry: PLEntry = { name: row.name, accountNumber: row.account_number, amount };
+    const entry: PLEntry = { accountId: row.id, name: row.name, accountNumber: row.account_number, amount };
     switch (row.account_type) {
       case 'revenue': revenue.push(entry); totalRevenue += amount; break;
       case 'cogs': cogs.push(entry); totalCogs += amount; break;
@@ -149,9 +149,10 @@ export async function buildBalanceSheet(tenantId: string, asOfDate: string, basi
     GROUP BY a.id ORDER BY a.account_number, a.name
   `);
 
-  const assets: Array<{ name: string; accountNumber: string | null; balance: number }> = [];
-  const liabilities: Array<{ name: string; accountNumber: string | null; balance: number }> = [];
-  const equity: Array<{ name: string; accountNumber: string | null; balance: number }> = [];
+  type BSEntry = { accountId: string | null; name: string; accountNumber: string | null; balance: number };
+  const assets: BSEntry[] = [];
+  const liabilities: BSEntry[] = [];
+  const equity: BSEntry[] = [];
   let totalAssets = 0, totalLiabilities = 0, totalEquity = 0;
 
   for (const row of rows.rows as any[]) {
@@ -159,7 +160,7 @@ export async function buildBalanceSheet(tenantId: string, asOfDate: string, basi
     if (row.system_tag === 'retained_earnings') continue;
     const balance = parseFloat(row.total_debit) - parseFloat(row.total_credit);
     if (balance === 0) continue;
-    const entry = { name: row.name, accountNumber: row.account_number, balance };
+    const entry: BSEntry = { accountId: row.id, name: row.name, accountNumber: row.account_number, balance };
     if (row.account_type === 'asset') { assets.push(entry); totalAssets += balance; }
     else if (row.account_type === 'liability') { liabilities.push(entry); totalLiabilities += Math.abs(balance); }
     else { equity.push(entry); totalEquity += Math.abs(balance); }
@@ -181,14 +182,14 @@ export async function buildBalanceSheet(tenantId: string, asOfDate: string, basi
     return d.toISOString().split('T')[0]!;
   })(), basis, companyId);
   if (retainedPL.netIncome !== 0) {
-    equity.push({ name: 'Retained Earnings (Prior Years)', accountNumber: null, balance: retainedPL.netIncome });
+    equity.push({ accountId: null, name: 'Retained Earnings (Prior Years)', accountNumber: null, balance: retainedPL.netIncome });
     totalEquity += retainedPL.netIncome;
   }
 
   // Current year net income
   const currentPL = await buildProfitAndLoss(tenantId, currentFYStart, asOfDate, basis, companyId);
   if (currentPL.netIncome !== 0) {
-    equity.push({ name: 'Net Income (Current Year)', accountNumber: null, balance: currentPL.netIncome });
+    equity.push({ accountId: null, name: 'Net Income (Current Year)', accountNumber: null, balance: currentPL.netIncome });
     totalEquity += currentPL.netIncome;
   }
 
@@ -301,7 +302,7 @@ export async function buildInvoiceList(tenantId: string, filters?: { startDate?:
 
 export async function buildExpenseByVendor(tenantId: string, startDate: string, endDate: string, companyId: string | null = null) {
   const rows = await db.execute(sql`
-    SELECT COALESCE(c.display_name, 'Uncategorized') as vendor_name,
+    SELECT c.id as contact_id, COALESCE(c.display_name, 'Uncategorized') as vendor_name,
       SUM(jl.debit) as total
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
@@ -311,7 +312,7 @@ export async function buildExpenseByVendor(tenantId: string, startDate: string, 
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
       AND jl.debit > 0
       AND ${companyFilter(companyId)}
-    GROUP BY c.display_name ORDER BY total DESC
+    GROUP BY c.id, c.display_name ORDER BY total DESC
   `);
 
   return { title: 'Expenses by Vendor', startDate, endDate, data: rows.rows };
@@ -319,7 +320,7 @@ export async function buildExpenseByVendor(tenantId: string, startDate: string, 
 
 export async function buildExpenseByCategory(tenantId: string, startDate: string, endDate: string, companyId: string | null = null) {
   const rows = await db.execute(sql`
-    SELECT a.name as category, a.account_number, a.account_type,
+    SELECT a.id as account_id, a.name as category, a.account_number, a.account_type,
       SUM(jl.debit) as total
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
