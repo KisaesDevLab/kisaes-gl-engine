@@ -10,6 +10,7 @@ import {
 import * as authService from './auth.service.js';
 import * as aiConfigService from './ai-config.service.js';
 import * as chatService from './chat.service.js';
+import * as aiConsent from './ai-consent.service.js';
 import * as providers from './ai-providers/index.js';
 import { encrypt } from '../utils/encryption.js';
 
@@ -48,6 +49,11 @@ async function setup() {
     where: eq(companies.tenantId, tenantId),
   });
   companyId = company!.id;
+  // Accept the system AI disclosure once per test — the new PII
+  // consent gate blocks updateConfig({ isEnabled: true }) without it.
+  // Chat tests don't exercise the disclosure flow, so we accept up
+  // front to keep the existing setup working.
+  await aiConsent.acceptSystemDisclosure(userId);
 }
 
 describe('Chat Service', () => {

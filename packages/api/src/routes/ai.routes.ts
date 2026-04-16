@@ -11,6 +11,7 @@ import {
   aiImportStatementSchema,
   aiPromptTemplateSchema,
   aiUpdatePromptTemplateSchema,
+  aiTaskTogglesSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireSuperAdmin } from '../middleware/auth.js';
@@ -22,6 +23,11 @@ import * as aiStatementParser from '../services/ai-statement-parser.service.js';
 import * as aiDocClassifier from '../services/ai-document-classifier.service.js';
 import * as aiOrchestrator from '../services/ai-orchestrator.service.js';
 import * as aiPrompt from '../services/ai-prompt.service.js';
+import * as aiConsent from '../services/ai-consent.service.js';
+import { AppError } from '../utils/errors.js';
+import { db } from '../db/index.js';
+import { companies } from '../db/schema/index.js';
+import { eq, and } from 'drizzle-orm';
 
 export const aiRouter = Router();
 
@@ -58,6 +64,23 @@ aiRouter.put('/admin/config', authenticate, requireSuperAdmin, validate(aiConfig
 aiRouter.post('/admin/test/:provider', authenticate, requireSuperAdmin, async (req, res) => {
   const result = await aiConfigService.testProvider(req.params['provider']!);
   res.json(result);
+});
+
+// ─── Admin — System AI Disclosure (Tier 1) ─────────────────────
+//
+// The super admin must accept this before ai_config.is_enabled can
+// flip to true (enforced inside updateConfig). Version bumps happen
+// via invalidateCompanyConsent when data-flow config changes.
+
+aiRouter.get('/admin/disclosure', authenticate, requireSuperAdmin, async (_req, res) => {
+  const d = await aiConsent.getSystemDisclosure();
+  res.json(d);
+});
+
+aiRouter.post('/admin/disclosure/accept', authenticate, requireSuperAdmin, async (req, res) => {
+  await aiConsent.acceptSystemDisclosure(req.userId!);
+  const d = await aiConsent.getSystemDisclosure();
+  res.json(d);
 });
 
 aiRouter.get('/admin/usage', authenticate, requireSuperAdmin, async (req, res) => {
@@ -176,6 +199,58 @@ aiRouter.get('/status', authenticate, async (_req, res) => {
     hasStatementParser: config.isEnabled && hasAnyKey && !!ocrProvider,
     hasDocumentClassifier: config.isEnabled && hasAnyKey && !!config.documentClassificationProvider,
   });
+});
+
+// ─── Company AI Consent (Tier 2) ───────────────────────────────
+//
+// Per-tenant endpoints for the company owner. Disclosure text is
+// generated dynamically from the current system config so the owner
+// always sees which providers will handle their data when they accept.
+
+aiRouter.get('/consent', authenticate, async (req, res) => {
+  const status = await aiConsent.getTenantConsentStatus(req.tenantId);
+  res.json(status);
+});
+
+// Verify a companyId belongs to the authenticated tenant before
+// proceeding. Without this, a member of tenant A could accept consent
+// on behalf of a company owned by tenant B.
+async function assertCompanyInTenant(tenantId: string, companyId: string): Promise<void> {
+  const [row] = await db.select({ id: companies.id }).from(companies)
+    .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)))
+    .limit(1);
+  if (!row) {
+    throw AppError.notFound('Company not found in this tenant');
+  }
+}
+
+aiRouter.get('/consent/:companyId/disclosure', authenticate, async (req, res) => {
+  const companyId = req.params['companyId']!;
+  await assertCompanyInTenant(req.tenantId, companyId);
+  const d = await aiConsent.getCompanyDisclosure(req.tenantId, companyId);
+  res.json(d);
+});
+
+aiRouter.post('/consent/:companyId/accept', authenticate, async (req, res) => {
+  const companyId = req.params['companyId']!;
+  await assertCompanyInTenant(req.tenantId, companyId);
+  const d = await aiConsent.acceptCompanyDisclosure(req.tenantId, companyId, req.userId!);
+  res.json(d);
+});
+
+aiRouter.post('/consent/:companyId/revoke', authenticate, async (req, res) => {
+  const companyId = req.params['companyId']!;
+  await assertCompanyInTenant(req.tenantId, companyId);
+  await aiConsent.revokeCompanyConsent(req.tenantId, companyId, req.userId!);
+  res.json({ revoked: true });
+});
+
+aiRouter.patch('/consent/:companyId/tasks', authenticate, validate(aiTaskTogglesSchema), async (req, res) => {
+  const companyId = req.params['companyId']!;
+  await assertCompanyInTenant(req.tenantId, companyId);
+  const toggles = req.body as Partial<Record<aiConsent.AiTaskKey, boolean>>;
+  const next = await aiConsent.setCompanyTaskToggles(req.tenantId, companyId, toggles, req.userId!);
+  res.json({ tasks: next });
 });
 
 // ─── Usage ─────────────────────────────────────────────────────

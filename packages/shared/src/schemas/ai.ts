@@ -21,6 +21,8 @@ export const aiConfigUpdateSchema = z.object({
   maxConcurrentJobs: z.number().int().min(1).max(20).optional(),
   trackUsage: z.boolean().optional(),
   monthlyBudgetLimit: z.number().nullable().optional(),
+  piiProtectionLevel: z.enum(['strict', 'standard', 'permissive']).optional(),
+  cloudVisionEnabled: z.boolean().optional(),
 });
 
 export const aiCategorizeSchema = z.object({
@@ -85,6 +87,14 @@ export const aiImportStatementSchema = z.object({
     )
     .min(1)
     .max(5000),
+});
+
+// Per-company AI task toggles. Used by PATCH /ai/consent/:companyId/tasks.
+export const aiTaskTogglesSchema = z.object({
+  categorization: z.boolean().optional(),
+  receipt_ocr: z.boolean().optional(),
+  statement_parsing: z.boolean().optional(),
+  document_classification: z.boolean().optional(),
 });
 
 // Admin prompt template mutations.

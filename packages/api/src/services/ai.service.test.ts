@@ -7,6 +7,7 @@ import * as aiConfigService from './ai-config.service.js';
 import * as aiCategorization from './ai-categorization.service.js';
 import * as aiPrompt from './ai-prompt.service.js';
 import * as aiOrchestrator from './ai-orchestrator.service.js';
+import * as aiConsent from './ai-consent.service.js';
 import { eq, and } from 'drizzle-orm';
 
 async function cleanDb() {
@@ -45,6 +46,8 @@ describe('AI Config Service', () => {
   });
 
   it('should update config', async () => {
+    const { user } = await createTestUser();
+    await aiConsent.acceptSystemDisclosure(user.id);
     await aiConfigService.updateConfig({ isEnabled: true, categorizationProvider: 'anthropic' });
     const config = await aiConfigService.getConfig();
     expect(config.isEnabled).toBe(true);
@@ -110,6 +113,7 @@ describe('AI Categorization Service', () => {
     }).returning();
 
     // Enable AI but categorization should use history, not AI
+    await aiConsent.acceptSystemDisclosure(user.id);
     await aiConfigService.updateConfig({ isEnabled: true, categorizationProvider: 'anthropic' });
 
     const result = await aiCategorization.categorize(user.tenantId, item!.id);
@@ -214,7 +218,21 @@ describe('AI Orchestrator — Budget Check', () => {
 
   it('should reject when budget exceeded', async () => {
     const { user } = await createTestUser();
+    await aiConsent.acceptSystemDisclosure(user.id);
     await aiConfigService.updateConfig({ isEnabled: true, monthlyBudgetLimit: 0.01 });
+    // Read the current disclosure version after enabling (it may have
+    // been bumped by the re-consent trigger on false→true).
+    const cfg = await aiConfigService.getRawConfig();
+    const currentVersion = cfg.disclosureVersion ?? 1;
+    // Opt the company in to categorization so the new consent gate
+    // doesn't short-circuit the budget check we're testing.
+    await db.update(companies).set({
+      aiEnabled: true,
+      aiDisclosureAcceptedAt: new Date(),
+      aiDisclosureAcceptedBy: user.id,
+      aiDisclosureVersion: currentVersion,
+      aiEnabledTasks: { categorization: true, receipt_ocr: false, statement_parsing: false, document_classification: false },
+    }).where(eq(companies.tenantId, user.tenantId));
 
     // Add usage that exceeds budget
     await db.insert(aiUsageLog).values({

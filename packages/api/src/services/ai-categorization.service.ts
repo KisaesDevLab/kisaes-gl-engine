@@ -4,6 +4,7 @@ import { bankFeedItems, accounts, contacts, categorizationHistory } from '../db/
 import { AppError } from '../utils/errors.js';
 import * as aiConfigService from './ai-config.service.js';
 import * as orchestrator from './ai-orchestrator.service.js';
+import { sanitize, type PiiType } from './pii-sanitizer.service.js';
 
 // Three-layer categorization: Rules → History → AI
 
@@ -30,6 +31,7 @@ export async function categorize(tenantId: string, feedItemId: string) {
       suggestedAccountId: history.accountId,
       suggestedContactId: history.contactId,
       confidenceScore: '0.95',
+      matchType: 'history',
       updatedAt: new Date(),
     }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
 
@@ -53,23 +55,29 @@ export async function categorize(tenantId: string, feedItemId: string) {
   const coaAccounts = await db.select({ id: accounts.id, name: accounts.name, accountNumber: accounts.accountNumber, accountType: accounts.accountType })
     .from(accounts).where(and(eq(accounts.tenantId, tenantId), eq(accounts.isActive, true)));
 
-  // Strip characters that could escape a JSON-encoded string when the
-  // model echoes them back and we JSON.parse the result. Removing CR/LF
-  // also makes prompt-injection payloads that rely on line breaks less
-  // effective. The values are names/descriptions — control chars aren't
-  // semantically meaningful here.
-  const sanitizeForPrompt = (s: string | null | undefined): string =>
+  // Control-character strip — defense against prompt-injection payloads
+  // that rely on CR/LF in merchant or vendor names. The PII sanitizer
+  // handles identity-related redaction separately.
+  const stripCtl = (s: string | null | undefined): string =>
     (s || '').replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 500);
 
   const coaList = coaAccounts
-    .map((a) => `${a.accountNumber || ''} ${sanitizeForPrompt(a.name)} (${a.accountType})`)
+    .map((a) => `${a.accountNumber || ''} ${stripCtl(a.name)} (${a.accountType})`)
     .join('\n');
 
   // Get known vendors
   const vendors = await db.select({ id: contacts.id, displayName: contacts.displayName })
     .from(contacts).where(and(eq(contacts.tenantId, tenantId), eq(contacts.isActive, true))).limit(200);
-  const vendorList = vendors.map((v) => sanitizeForPrompt(v.displayName)).join(', ');
-  const safeDescription = sanitizeForPrompt(item.description);
+  const vendorList = vendors.map((v) => stripCtl(v.displayName)).join(', ');
+
+  // PII sanitizer — mode picked by the provider that will actually run
+  // this call (self-hosted → 'none', cloud → 'minimal' for categorization).
+  // Mask SSN / EIN and personal names after VENMO/ZELLE/PAYPAL/CASHAPP so
+  // the cloud model never sees "VENMO PAYMENT JOHN SMITH".
+  const piiMode = orchestrator.piiModeFor(config.categorizationProvider!, 'categorize');
+  const pii = sanitize(stripCtl(item.description), piiMode);
+  const safeDescription = pii.text;
+  const piiRedacted: PiiType[] = pii.detected;
 
   const job = await orchestrator.createJob(tenantId, 'categorize', 'bank_feed_item', feedItemId, { description: item.description, amount: item.amount });
 
@@ -97,11 +105,17 @@ export async function categorize(tenantId: string, feedItemId: string) {
         suggestedAccountId: matchedAccount.id,
         suggestedContactId: matchedVendor?.id || null,
         confidenceScore: String(confidence),
+        matchType: 'ai',
         updatedAt: new Date(),
       }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
     }
 
-    await orchestrator.completeJob(job.id, result, parsed, confidence);
+    await orchestrator.completeJob(
+      job.id,
+      result,
+      orchestrator.withAiMetadata(parsed, { piiRedacted }),
+      confidence,
+    );
 
     return {
       accountId: matchedAccount?.id || null,

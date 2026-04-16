@@ -34,6 +34,16 @@ export const aiConfig = pgTable('ai_config', {
   chatModel: varchar('chat_model', { length: 100 }),
   chatMaxHistory: integer('chat_max_history').default(50),
   chatDataAccessLevel: varchar('chat_data_access_level', { length: 20 }).default('contextual'),
+  // PII protection (see Build Plans/AI_PII_PROTECTION_ADDENDUM.md §Tier 1).
+  // piiProtectionLevel: 'strict' | 'standard' | 'permissive'. Default strict
+  // means no raw images ever go to cloud providers. cloudVisionEnabled is
+  // the escape hatch for permissive mode and requires an explicit admin
+  // acknowledgment captured in adminDisclosureAcceptedAt.
+  piiProtectionLevel: varchar('pii_protection_level', { length: 20 }).notNull().default('strict'),
+  cloudVisionEnabled: boolean('cloud_vision_enabled').notNull().default(false),
+  adminDisclosureAcceptedAt: timestamp('admin_disclosure_accepted_at', { withTimezone: true }),
+  adminDisclosureAcceptedBy: uuid('admin_disclosure_accepted_by'),
+  disclosureVersion: integer('disclosure_version').notNull().default(1),
   // Metadata
   configuredBy: uuid('configured_by'),
   configuredAt: timestamp('configured_at', { withTimezone: true }),
