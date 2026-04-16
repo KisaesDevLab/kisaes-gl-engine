@@ -1,13 +1,19 @@
 import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { aiConfig } from '../db/schema/index.js';
-import { encrypt, decrypt } from '../utils/encryption.js';
+import { encrypt } from '../utils/encryption.js';
 import { assertExternalUrlSafe } from '../utils/url-safety.js';
+import { AppError } from '../utils/errors.js';
+import * as aiConsent from './ai-consent.service.js';
 
 async function getOrCreateConfig() {
   let config = await db.query.aiConfig.findFirst();
   if (!config) {
-    const [created] = await db.insert(aiConfig).values({}).returning();
+    const [created] = await db.insert(aiConfig).values({
+      piiProtectionLevel: 'strict',
+      cloudVisionEnabled: false,
+      disclosureVersion: 1,
+    }).returning();
     config = created!;
     // Seed default prompt templates on first config creation
     try {
@@ -47,6 +53,12 @@ export async function getConfig() {
     chatModel: config.chatModel,
     chatMaxHistory: config.chatMaxHistory ?? 50,
     chatDataAccessLevel: (config.chatDataAccessLevel as 'none' | 'contextual' | 'full') || 'contextual',
+    // PII protection
+    piiProtectionLevel: config.piiProtectionLevel ?? 'strict',
+    cloudVisionEnabled: !!config.cloudVisionEnabled,
+    adminDisclosureAcceptedAt: config.adminDisclosureAcceptedAt ?? null,
+    adminDisclosureAcceptedBy: config.adminDisclosureAcceptedBy ?? null,
+    disclosureVersion: config.disclosureVersion ?? 1,
   };
 }
 
@@ -58,7 +70,20 @@ export async function updateConfig(input: any, userId?: string) {
   const config = await getOrCreateConfig();
   const updates: any = { updatedAt: new Date() };
 
-  if (input.isEnabled !== undefined) updates.isEnabled = input.isEnabled;
+  // Snapshot the data-flow-relevant fields BEFORE applying updates so
+  // we can detect loosening changes and bump disclosure_version.
+  // See ai-consent.service changeRequiresReconsent() for the rules.
+  const before = await aiConsent.snapshotDataFlow();
+
+  if (input.isEnabled !== undefined) {
+    // Gate: cannot enable AI until the super admin has accepted the
+    // system disclosure. Acceptance is recorded separately via
+    // ai-consent.acceptSystemDisclosure.
+    if (input.isEnabled === true && !(config as any).adminDisclosureAcceptedAt) {
+      throw AppError.badRequest('Accept the AI processing disclosure before enabling AI. See System Settings → AI → Disclosure.');
+    }
+    updates.isEnabled = input.isEnabled;
+  }
   if (input.categorizationProvider !== undefined) updates.categorizationProvider = input.categorizationProvider;
   if (input.categorizationModel !== undefined) updates.categorizationModel = input.categorizationModel;
   if (input.ocrProvider !== undefined) updates.ocrProvider = input.ocrProvider;
@@ -90,9 +115,27 @@ export async function updateConfig(input: any, userId?: string) {
   if (input.chatModel !== undefined) updates.chatModel = input.chatModel || null;
   if (input.chatMaxHistory !== undefined) updates.chatMaxHistory = input.chatMaxHistory;
   if (input.chatDataAccessLevel !== undefined) updates.chatDataAccessLevel = input.chatDataAccessLevel;
+  // PII protection fields. Changes here are the primary trigger for
+  // company-consent invalidation, checked after the update commits.
+  if (input.piiProtectionLevel !== undefined) {
+    const lvl = String(input.piiProtectionLevel);
+    if (!['strict', 'standard', 'permissive'].includes(lvl)) {
+      throw AppError.badRequest('piiProtectionLevel must be strict, standard, or permissive');
+    }
+    updates.piiProtectionLevel = lvl;
+  }
+  if (input.cloudVisionEnabled !== undefined) updates.cloudVisionEnabled = !!input.cloudVisionEnabled;
   if (userId) { updates.configuredBy = userId; updates.configuredAt = new Date(); }
 
   await db.update(aiConfig).set(updates).where(eq(aiConfig.id, config.id));
+
+  // Compare post-update data flow against the snapshot. If the change
+  // loosens data handling, bump ai_config.disclosure_version so every
+  // company with stale consent is paused until re-acceptance.
+  const after = await aiConsent.snapshotDataFlow();
+  const reason = aiConsent.changeRequiresReconsent(before, after);
+  if (reason) await aiConsent.invalidateCompanyConsent(reason, userId);
+
   return getConfig();
 }
 

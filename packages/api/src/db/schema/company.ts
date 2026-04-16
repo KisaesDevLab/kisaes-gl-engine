@@ -42,6 +42,21 @@ export const companies = pgTable('companies', {
   // company opts in here. Both must be true for the chat panel
   // to appear.
   chatSupportEnabled: boolean('chat_support_enabled').default(false),
+  // Per-company AI consent (tier 2 of the AI PII addendum). Same
+  // pattern as chatSupportEnabled but covers the core AI tasks
+  // (categorization, receipt OCR, statement parsing, document
+  // classification). aiDisclosureVersion points at the
+  // ai_config.disclosure_version that was in effect when the owner
+  // accepted — if the admin later changes a setting that loosens
+  // data handling, ai_config.disclosure_version increments and the
+  // company is paused until re-acceptance.
+  aiEnabled: boolean('ai_enabled').notNull().default(false),
+  aiEnabledTasks: jsonb('ai_enabled_tasks').notNull().default(
+    '{"categorization":false,"receipt_ocr":false,"statement_parsing":false,"document_classification":false}'
+  ),
+  aiDisclosureAcceptedAt: timestamp('ai_disclosure_accepted_at', { withTimezone: true }),
+  aiDisclosureAcceptedBy: uuid('ai_disclosure_accepted_by'),
+  aiDisclosureVersion: integer('ai_disclosure_version'),
   // Remote backup configuration
   remoteBackupEnabled: boolean('remote_backup_enabled').default(false),
   remoteBackupDestination: varchar('remote_backup_destination', { length: 30 }),

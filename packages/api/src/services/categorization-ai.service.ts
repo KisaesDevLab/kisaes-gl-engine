@@ -49,6 +49,7 @@ export async function suggestCategorization(tenantId: string, feedItemId: string
         suggestedAccountId: historyMatch.accountId,
         suggestedContactId: historyMatch.contactId,
         confidenceScore: confidence.toFixed(2),
+        matchType: 'history',
         updatedAt: new Date(),
       }).where(eq(bankFeedItems.id, feedItemId));
 
@@ -79,6 +80,7 @@ export async function suggestCategorization(tenantId: string, feedItemId: string
       suggestedAccountId: row.account_id,
       suggestedContactId: row.contact_id,
       confidenceScore: '1.00',
+      matchType: 'exact',
       updatedAt: new Date(),
     }).where(eq(bankFeedItems.id, feedItemId));
 
@@ -104,6 +106,7 @@ export async function suggestCategorization(tenantId: string, feedItemId: string
       suggestedAccountId: row.account_id,
       suggestedContactId: row.contact_id,
       confidenceScore: '0.80',
+      matchType: 'fuzzy',
       updatedAt: new Date(),
     }).where(eq(bankFeedItems.id, feedItemId));
 

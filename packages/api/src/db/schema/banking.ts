@@ -34,6 +34,7 @@ export const bankFeedItems = pgTable('bank_feed_items', {
   suggestedAccountId: uuid('suggested_account_id'),
   suggestedContactId: uuid('suggested_contact_id'),
   confidenceScore: decimal('confidence_score', { precision: 3, scale: 2 }),
+  matchType: varchar('match_type', { length: 20 }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({

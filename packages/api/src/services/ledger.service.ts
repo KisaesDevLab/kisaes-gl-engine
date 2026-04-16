@@ -3,7 +3,7 @@ import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import type { JournalLineInput, TxnType, TxnStatus } from '@kis-books/shared';
 import { db, type DbOrTx } from '../db/index.js';
-import { transactions, journalLines, accounts, companies, contacts, reconciliations, reconciliationLines } from '../db/schema/index.js';
+import { transactions, journalLines, accounts, companies, contacts, reconciliations, reconciliationLines, bankFeedItems } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 
@@ -454,9 +454,16 @@ export async function listTransactions(tenantId: string, filters: {
       amountPaid: transactions.amountPaid,
       balanceDue: transactions.balanceDue,
       invoiceStatus: transactions.invoiceStatus,
+      source: transactions.source,
+      sourceId: transactions.sourceId,
+      aiCategorized: bankFeedItems.matchType,
       createdAt: transactions.createdAt,
     }).from(transactions)
       .leftJoin(contacts, eq(transactions.contactId, contacts.id))
+      .leftJoin(bankFeedItems, and(
+        eq(transactions.source, 'bank_feed'),
+        sql`${transactions.sourceId} = ${bankFeedItems.id}::text`,
+      ))
       .where(where)
       .orderBy(sql`${transactions.txnDate} DESC`, sql`${transactions.createdAt} DESC`)
       .limit(filters.limit ?? 50)
