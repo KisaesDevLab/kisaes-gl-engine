@@ -3,6 +3,9 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { eq, and, sql, inArray } from 'drizzle-orm';
+import DecimalLib from 'decimal.js';
+const Decimal = DecimalLib.default || DecimalLib;
+type Decimal = InstanceType<typeof Decimal>;
 import type { PayBillsInput } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import {
@@ -15,6 +18,12 @@ import {
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as billService from './bill.service.js';
+
+// Precision tolerance for float-style leftover comparisons. Decimal.js
+// already avoids the rounding issues that `parseFloat` produced here;
+// this threshold only handles the case where user-typed amounts may
+// legitimately carry a sub-penny mismatch (e.g. 0.005 rounding).
+const EPSILON = new Decimal('0.0001');
 
 async function getApAccountId(tenantId: string): Promise<string> {
   const account = await db.query.accounts.findFirst({
@@ -47,21 +56,23 @@ interface VendorPaymentGroup {
   /**
    * Bills selected for payment in this group.
    * `amount` is the user-entered "this bill takes X of coverage" — total
-   * satisfaction (cash + credits allocated to this bill).
+   * satisfaction (cash + credits allocated to this bill). Stored as
+   * Decimal so per-bill credit allocation doesn't lose precision across
+   * repeated sums.
    * `cashAmount` is computed after credit allocation: amount minus the
    * credits whose `billId` points at this bill. This is what gets persisted
    * in `bill_payment_applications` and what `bill.amount_paid` reflects.
    */
   vendorBills: Array<{
     billId: string;
-    amount: number;
-    cashAmount: number;
+    amount: Decimal;
+    cashAmount: Decimal;
     bill: typeof transactions.$inferSelect;
   }>;
-  vendorCredits: Array<{ creditId: string; billId: string; amount: number }>;
-  totalBills: number;
-  totalCredits: number;
-  netPayment: number;
+  vendorCredits: Array<{ creditId: string; billId: string; amount: Decimal }>;
+  totalBills: Decimal;
+  totalCredits: Decimal;
+  netPayment: Decimal;
 }
 
 /**
@@ -126,17 +137,20 @@ export async function payBills(tenantId: string, input: PayBillsInput, userId?: 
       throw AppError.badRequest('One or more vendor credits not found');
     }
 
-    // Group by vendor: one bill_payment transaction per vendor
+    // Group by vendor: one bill_payment transaction per vendor.
+    // All monetary math runs through Decimal.js so cumulative rounding
+    // across many selected bills can't drift the AP debit off the bank
+    // credit by a fraction of a cent.
     const groups = new Map<string, VendorPaymentGroup>();
     for (const billLine of input.bills) {
       const bill = lockedBills.find((b) => b.id === billLine.billId);
       if (!bill || !bill.contactId) {
         throw AppError.badRequest(`Bill ${billLine.billId} has no vendor`);
       }
-      const amount = parseFloat(billLine.amount);
-      if (amount <= 0) throw AppError.badRequest('Payment amount must be positive');
-      const balanceDue = parseFloat(bill.balanceDue || '0');
-      if (amount > balanceDue + 0.0001) {
+      const amount = new Decimal(billLine.amount);
+      if (amount.lessThanOrEqualTo(0)) throw AppError.badRequest('Payment amount must be positive');
+      const balanceDue = new Decimal(bill.balanceDue || '0');
+      if (amount.minus(balanceDue).greaterThan(EPSILON)) {
         throw AppError.badRequest(
           `Payment amount ${amount.toFixed(2)} exceeds balance due ${balanceDue.toFixed(2)} on bill ${bill.txnNumber || bill.id}`,
         );
@@ -146,12 +160,12 @@ export async function payBills(tenantId: string, input: PayBillsInput, userId?: 
         vendorId: bill.contactId,
         vendorBills: [],
         vendorCredits: [],
-        totalBills: 0,
-        totalCredits: 0,
-        netPayment: 0,
+        totalBills: new Decimal('0'),
+        totalCredits: new Decimal('0'),
+        netPayment: new Decimal('0'),
       };
       grp.vendorBills.push({ billId: bill.id, amount, cashAmount: amount, bill });
-      grp.totalBills += amount;
+      grp.totalBills = grp.totalBills.plus(amount);
       groups.set(bill.contactId, grp);
     }
 
@@ -166,11 +180,11 @@ export async function payBills(tenantId: string, input: PayBillsInput, userId?: 
       if (targetBill.contactId !== credit.contactId) {
         throw AppError.badRequest('A vendor credit can only be applied to bills from the same vendor');
       }
-      const amount = parseFloat(credLine.amount);
-      if (amount <= 0) throw AppError.badRequest('Credit application amount must be positive');
+      const amount = new Decimal(credLine.amount);
+      if (amount.lessThanOrEqualTo(0)) throw AppError.badRequest('Credit application amount must be positive');
 
-      const creditAvailable = parseFloat(credit.balanceDue || '0');
-      if (amount > creditAvailable + 0.0001) {
+      const creditAvailable = new Decimal(credit.balanceDue || '0');
+      if (amount.minus(creditAvailable).greaterThan(EPSILON)) {
         throw AppError.badRequest(
           `Credit ${credit.txnNumber || credit.id} only has ${creditAvailable.toFixed(2)} available`,
         );
@@ -179,33 +193,35 @@ export async function payBills(tenantId: string, input: PayBillsInput, userId?: 
       const grp = groups.get(credit.contactId);
       if (!grp) throw AppError.badRequest('Cannot apply credit to a vendor with no selected bills');
       grp.vendorCredits.push({ creditId: credit.id, billId: targetBill.id, amount });
-      grp.totalCredits += amount;
+      grp.totalCredits = grp.totalCredits.plus(amount);
     }
 
     // Validate per-vendor: credits cannot exceed bills
     for (const grp of groups.values()) {
-      if (grp.totalCredits > grp.totalBills + 0.0001) {
+      if (grp.totalCredits.minus(grp.totalBills).greaterThan(EPSILON)) {
         throw AppError.badRequest('Total credits applied for a vendor cannot exceed total bills selected');
       }
-      grp.netPayment = grp.totalBills - grp.totalCredits;
+      grp.netPayment = grp.totalBills.minus(grp.totalCredits);
 
       // Allocate credits per bill: subtract credits targeting this bill from
       // the bill's cash portion. We accept the user's per-bill credit
       // allocation as authoritative.
-      const creditByBill = new Map<string, number>();
+      const creditByBill = new Map<string, Decimal>();
       for (const cr of grp.vendorCredits) {
-        creditByBill.set(cr.billId, (creditByBill.get(cr.billId) || 0) + cr.amount);
+        const prior = creditByBill.get(cr.billId) || new Decimal('0');
+        creditByBill.set(cr.billId, prior.plus(cr.amount));
       }
       for (const b of grp.vendorBills) {
-        const creditForThisBill = creditByBill.get(b.billId) || 0;
-        b.cashAmount = b.amount - creditForThisBill;
-        if (b.cashAmount < -0.0001) {
+        const creditForThisBill = creditByBill.get(b.billId) || new Decimal('0');
+        let cash = b.amount.minus(creditForThisBill);
+        if (cash.lessThan(EPSILON.negated())) {
           throw AppError.badRequest(
             `Credits applied to bill ${b.bill.txnNumber || b.billId} exceed the bill's payment amount`,
           );
         }
-        // Clamp tiny floating-point negatives
-        if (b.cashAmount < 0) b.cashAmount = 0;
+        // Clamp sub-penny negatives that are within tolerance
+        if (cash.isNegative()) cash = new Decimal('0');
+        b.cashAmount = cash;
       }
     }
 
@@ -236,7 +252,7 @@ export async function payBills(tenantId: string, input: PayBillsInput, userId?: 
         description: 'Bill payment',
       });
 
-      if (grp.netPayment > 0) {
+      if (grp.netPayment.greaterThan(0)) {
         lines.push({
           accountId: input.bankAccountId,
           debit: '0',
@@ -245,7 +261,7 @@ export async function payBills(tenantId: string, input: PayBillsInput, userId?: 
         });
       }
 
-      if (grp.totalCredits > 0) {
+      if (grp.totalCredits.greaterThan(0)) {
         lines.push({
           accountId: apAccountId,
           debit: '0',
@@ -254,10 +270,10 @@ export async function payBills(tenantId: string, input: PayBillsInput, userId?: 
         });
       }
 
-      // Sanity: debits == credits
-      const debits = lines.reduce((s, l) => s + parseFloat(l.debit), 0);
-      const credits = lines.reduce((s, l) => s + parseFloat(l.credit), 0);
-      if (Math.abs(debits - credits) > 0.0001) {
+      // Sanity: debits == credits (Decimal — no IEEE754 slop)
+      const debits = lines.reduce((s, l) => s.plus(l.debit), new Decimal('0'));
+      const credits = lines.reduce((s, l) => s.plus(l.credit), new Decimal('0'));
+      if (debits.minus(credits).abs().greaterThan(EPSILON)) {
         throw AppError.internal('Bill payment journal does not balance');
       }
 
@@ -304,10 +320,11 @@ export async function payBills(tenantId: string, input: PayBillsInput, userId?: 
       }));
       await tx.insert(journalLines).values(lineValues);
 
-      // Update account balances
+      // Update account balances. Arithmetic is Decimal-side; the actual
+      // UPDATE remains SQL-atomic (`balance = balance + delta::decimal`).
       for (const l of lines) {
-        const delta = parseFloat(l.debit) - parseFloat(l.credit);
-        if (delta !== 0) {
+        const delta = new Decimal(l.debit).minus(l.credit);
+        if (!delta.isZero()) {
           await tx.update(accounts).set({
             balance: sql`${accounts.balance} + ${delta.toFixed(4)}::decimal`,
             updatedAt: new Date(),
@@ -322,7 +339,7 @@ export async function payBills(tenantId: string, input: PayBillsInput, userId?: 
       // Skip bills whose cash portion is zero (credits cover the entire bill);
       // the schema's CHECK (amount > 0) constraint would reject them and
       // recomputeBillStatus reads from both tables anyway.
-      const cashApps = grp.vendorBills.filter((b) => b.cashAmount > 0);
+      const cashApps = grp.vendorBills.filter((b) => b.cashAmount.greaterThan(0));
       if (cashApps.length > 0) {
         await tx.insert(billPaymentApplications).values(cashApps.map((b) => ({
           tenantId,
@@ -358,7 +375,7 @@ export async function payBills(tenantId: string, input: PayBillsInput, userId?: 
         vendorId: grp.vendorId,
         bills: grp.vendorBills.length,
         credits: grp.vendorCredits.length,
-        net: grp.netPayment,
+        net: grp.netPayment.toFixed(4),
       }, userId, tx);
 
       createdPayments.push({ payment, group: grp });
@@ -432,8 +449,9 @@ export async function voidBillPayment(tenantId: string, paymentId: string, reaso
       .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, paymentId)));
 
     for (const line of originalLines) {
-      const delta = parseFloat(line.credit) - parseFloat(line.debit); // reversed
-      if (delta !== 0) {
+      // Reversed: was debit/credit → becomes credit-minus-debit.
+      const delta = new Decimal(line.credit).minus(line.debit);
+      if (!delta.isZero()) {
         await tx.update(accounts).set({
           balance: sql`${accounts.balance} + ${delta.toFixed(4)}::decimal`,
           updatedAt: new Date(),

@@ -1,6 +1,11 @@
 -- Copyright 2026 Kisaes LLC
 -- Licensed under the PolyForm Internal Use License 1.0.0.
 -- You may not distribute this software. See LICENSE for terms.
+-- migration-policy: non-additive-exception
+-- Includes `ALTER COLUMN stripe_webhook_log.tenant_id SET NOT NULL`,
+-- which is safe here because no production code path has ever inserted
+-- NULL into this column (added in an earlier migration but only ever
+-- written with a real tenant_id by the webhook handler).
 -- Add UNIQUE constraints to token / key / code hash columns. Collisions on
 -- these columns would be authentication identity confusion — findFirst()
 -- returning the wrong row on lookup-by-hash would authenticate the caller

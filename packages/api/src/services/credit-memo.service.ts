@@ -4,6 +4,8 @@
 
 import type { CreateCreditMemoInput } from '@kis-books/shared';
 import { eq, and } from 'drizzle-orm';
+import DecimalLib from 'decimal.js';
+const Decimal = DecimalLib.default || DecimalLib;
 import { db } from '../db/index.js';
 import { accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -15,10 +17,10 @@ export async function createCreditMemo(tenantId: string, input: CreateCreditMemo
   });
   if (!arAccount) throw AppError.internal('AR account not found');
 
-  let subtotal = 0;
+  let subtotal = new Decimal('0');
   const revenueLines = input.lines.map((line) => {
-    const lineTotal = parseFloat(line.quantity) * parseFloat(line.unitPrice);
-    subtotal += lineTotal;
+    const lineTotal = new Decimal(line.quantity).times(line.unitPrice);
+    subtotal = subtotal.plus(lineTotal);
     return {
       accountId: line.accountId,
       debit: lineTotal.toFixed(4),

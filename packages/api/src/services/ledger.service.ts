@@ -496,9 +496,17 @@ export async function getAccountBalance(tenantId: string, accountId: string, asO
   }).from(journalLines).where(and(...conditions));
 
   const row = result[0];
-  const debit = parseFloat(row?.totalDebit || '0');
-  const credit = parseFloat(row?.totalCredit || '0');
-  return { debit, credit, balance: debit - credit };
+  // Sum through Decimal then round to 4-decimal precision once, so callers
+  // get a clean `number` without the IEEE754 drift that repeated parseFloat
+  // accumulation used to produce on large ledgers.
+  const debit = new Decimal(row?.totalDebit || '0');
+  const credit = new Decimal(row?.totalCredit || '0');
+  const balance = debit.minus(credit);
+  return {
+    debit: Number(debit.toFixed(4)),
+    credit: Number(credit.toFixed(4)),
+    balance: Number(balance.toFixed(4)),
+  };
 }
 
 export async function validateBalance(tenantId: string): Promise<{ valid: boolean; totalDebits: number; totalCredits: number; difference: number }> {
@@ -509,14 +517,14 @@ export async function validateBalance(tenantId: string): Promise<{ valid: boolea
   }).from(sql`journal_lines jl JOIN transactions t ON jl.transaction_id = t.id WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'`);
 
   const row = result[0];
-  const totalDebits = parseFloat(row?.totalDebits || '0');
-  const totalCredits = parseFloat(row?.totalCredits || '0');
-  const difference = Math.abs(totalDebits - totalCredits);
+  const totalDebits = new Decimal(row?.totalDebits || '0');
+  const totalCredits = new Decimal(row?.totalCredits || '0');
+  const difference = totalDebits.minus(totalCredits).abs();
 
   return {
-    valid: difference < 0.01,
-    totalDebits,
-    totalCredits,
-    difference,
+    valid: difference.lessThan('0.01'),
+    totalDebits: Number(totalDebits.toFixed(4)),
+    totalCredits: Number(totalCredits.toFixed(4)),
+    difference: Number(difference.toFixed(4)),
   };
 }

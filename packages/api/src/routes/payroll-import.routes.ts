@@ -36,20 +36,67 @@ const PAYROLL_MIME_TYPES = [
   'application/vnd.ms-excel',
 ];
 
+// Zip-container and binary signatures we reject even if the extension or
+// MIME claims CSV. Without this, a renamed `evil.exe` uploaded with a
+// blank MIME was accepted by the extension-only fallback.
+const ZIP_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04]); // xlsx is a zip
+const OLE_MAGIC = Buffer.from([0xd0, 0xcf, 0x11, 0xe0]); // xls
+const PE_MAGIC = Buffer.from([0x4d, 0x5a]);              // Windows exe
+const ELF_MAGIC = Buffer.from([0x7f, 0x45, 0x4c, 0x46]);
+const MACHO_MAGICS = [
+  Buffer.from([0xfe, 0xed, 0xfa, 0xce]),
+  Buffer.from([0xfe, 0xed, 0xfa, 0xcf]),
+  Buffer.from([0xcf, 0xfa, 0xed, 0xfe]),
+  Buffer.from([0xca, 0xfe, 0xba, 0xbe]),
+];
+
+function startsWith(buf: Buffer, magic: Buffer): boolean {
+  return buf.length >= magic.length && buf.subarray(0, magic.length).equals(magic);
+}
+
+function verifyPayrollContent(file: Express.Multer.File): void {
+  const buf = file.buffer;
+  const name = file.originalname.toLowerCase();
+  const err = () => { throw new Error('Uploaded payroll file content does not match its declared type.'); };
+  if (name.endsWith('.xlsx')) {
+    if (!startsWith(buf, ZIP_MAGIC)) err();
+    return;
+  }
+  if (name.endsWith('.xls')) {
+    if (!startsWith(buf, OLE_MAGIC)) err();
+    return;
+  }
+  // .csv / .tsv / .txt — no magic, so reject anything that's obviously a
+  // binary executable or archive.
+  if (
+    startsWith(buf, ZIP_MAGIC) ||
+    startsWith(buf, OLE_MAGIC) ||
+    startsWith(buf, PE_MAGIC) ||
+    startsWith(buf, ELF_MAGIC) ||
+    MACHO_MAGICS.some((m) => startsWith(buf, m))
+  ) err();
+}
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (PAYROLL_MIME_TYPES.includes(file.mimetype)) {
       cb(null, true);
+      return;
+    }
+    // Browsers occasionally send `application/octet-stream` for CSV
+    // uploads — allow an extension fallback only in that case so that
+    // an attacker can't bypass the MIME allowlist by claiming
+    // something else (e.g. `application/x-msdownload`). The magic-byte
+    // check in the handler rejects anything binary regardless.
+    const permissiveMime = file.mimetype === 'application/octet-stream' || file.mimetype === '';
+    const ext = file.originalname.toLowerCase();
+    const allowedExt = ext.endsWith('.csv') || ext.endsWith('.tsv') || ext.endsWith('.xlsx') || ext.endsWith('.xls') || ext.endsWith('.txt');
+    if (permissiveMime && allowedExt) {
+      cb(null, true);
     } else {
-      // Be lenient — CSV files sometimes get misidentified
-      const ext = file.originalname.toLowerCase();
-      if (ext.endsWith('.csv') || ext.endsWith('.tsv') || ext.endsWith('.xlsx') || ext.endsWith('.xls') || ext.endsWith('.txt')) {
-        cb(null, true);
-      } else {
-        cb(new Error(`File type ${file.mimetype} is not allowed. Accepted: .csv, .tsv, .xlsx, .xls, .txt`));
-      }
+      cb(new Error(`File type ${file.mimetype} is not allowed. Accepted: .csv, .tsv, .xlsx, .xls, .txt`));
     }
   },
 });
@@ -72,10 +119,25 @@ payrollImportRouter.post('/upload',
       return;
     }
 
+    try {
+      verifyPayrollContent(mainFile);
+    } catch (err: any) {
+      res.status(400).json({ error: { message: err.message || 'Invalid upload' } });
+      return;
+    }
+
     // Validate body fields
     const opts = payrollUploadSchema.parse(req.body);
 
     const companionFile = files['companionFile']?.[0];
+    if (companionFile) {
+      try {
+        verifyPayrollContent(companionFile);
+      } catch (err: any) {
+        res.status(400).json({ error: { message: err.message || 'Invalid companion file' } });
+        return;
+      }
+    }
     const result = await importService.uploadPayrollFile(
       req.tenantId,
       opts.companyId || undefined,

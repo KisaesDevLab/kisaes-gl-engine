@@ -20,10 +20,12 @@
     "license:headers": "bash scripts/check-license-headers.sh",
     "license:headers:fix": "bash scripts/add-license-header.sh",
     "license:sbom": "bash scripts/generate-sbom.sh",
+    "migrations:check": "bash scripts/check-migration-policy.sh",
     "prepare": "husky"
   },
   "lint-staged": {
     "packages/**/*.{ts,tsx,js,jsx,mjs,cjs,sql,sh,py}": "bash scripts/check-license-headers.sh",
+    "packages/api/src/db/migrations/*.sql": "bash scripts/check-migration-policy.sh",
     "**/package.json": "bash scripts/license-audit.sh --quiet"
   },
   "license": "SEE LICENSE IN LICENSE",

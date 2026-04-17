@@ -128,10 +128,16 @@ app.use('/api/v1/', (_req, res, next) => {
   next();
 });
 
-// Health check
-app.get('/health', (_req, res) => {
+// Health check. Served at both paths so uptime monitors get the same
+// response regardless of whether the main app or one of the fallback
+// apps (env-missing, diagnostic) is responding — those only expose
+// `/api/health`. Routing to both here avoids alerting gaps during the
+// brief window a fallback is in place.
+const healthHandler = (_req: express.Request, res: express.Response) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
+};
+app.get('/health', healthHandler);
+app.get('/api/health', healthHandler);
 
 // Setup routes (no auth required — self-destructs after setup)
 import { setupRouter } from './routes/setup.routes.js';

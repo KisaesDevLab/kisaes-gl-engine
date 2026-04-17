@@ -41,7 +41,14 @@ import {
   createVendorCreditSchema, receivePaymentSchema,
   writeCheckSchema, categorizeSchema, matchSchema, bankFeedFiltersSchema,
   startReconciliationSchema, createTagSchema, transactionTagsSchema,
+  createAccountSchema, createContactSchema, createItemSchema,
 } from '@kis-books/shared';
+import { z } from 'zod';
+
+// Schemas for the few v2-only endpoints not backed by a shared schema.
+// Defining them inline keeps the shared package clean and ensures v2
+// matches v1's "every write is Zod-validated" guarantee (CLAUDE.md #9).
+const switchTenantBodySchema = z.object({ tenantId: z.string().uuid() });
 
 export const apiV2Router = Router();
 
@@ -88,7 +95,8 @@ apiV2Router.get('/tenants', async (req, res) => {
 });
 
 apiV2Router.post('/tenants/switch', async (req, res) => {
-  const tokens = await authService.switchTenant(req.userId, req.body.tenantId);
+  const { tenantId } = switchTenantBodySchema.parse(req.body);
+  const tokens = await authService.switchTenant(req.userId, tenantId);
   res.json({ tokens });
 });
 
@@ -110,12 +118,16 @@ apiV2Router.get('/accounts/:id', async (req, res) => {
 });
 
 apiV2Router.post('/accounts', async (req, res) => {
-  const { name, accountNumber, accountType, detailType, description } = req.body;
-  if (!name || !accountType) { res.status(400).json({ error: { message: 'name and accountType are required' } }); return; }
+  const input = createAccountSchema.parse(req.body);
   const [account] = await db.insert(accounts).values({
     tenantId: req.tenantId,
     companyId: req.companyId || null,
-    name, accountNumber: accountNumber || null, accountType, detailType: detailType || null, description: description || null,
+    name: input.name,
+    accountNumber: input.accountNumber ?? null,
+    accountType: input.accountType,
+    detailType: input.detailType ?? null,
+    description: input.description ?? null,
+    parentId: input.parentId ?? null,
   }).returning();
   res.status(201).json({ account });
 });
@@ -138,13 +150,31 @@ apiV2Router.get('/contacts/:id', async (req, res) => {
 });
 
 apiV2Router.post('/contacts', async (req, res) => {
-  const { displayName, contactType, email, phone, billingLine1, billingCity, billingState, billingZip } = req.body;
-  if (!displayName) { res.status(400).json({ error: { message: 'displayName is required' } }); return; }
+  const input = createContactSchema.parse(req.body);
   const [contact] = await db.insert(contacts).values({
     tenantId: req.tenantId,
     companyId: req.companyId || null,
-    displayName, contactType: contactType || 'customer', email: email || null, phone: phone || null,
-    billingLine1: billingLine1 || null, billingCity: billingCity || null, billingState: billingState || null, billingZip: billingZip || null,
+    contactType: input.contactType,
+    displayName: input.displayName,
+    companyName: input.companyName ?? null,
+    firstName: input.firstName ?? null,
+    lastName: input.lastName ?? null,
+    email: input.email || null,
+    phone: input.phone ?? null,
+    billingLine1: input.billingLine1 ?? null,
+    billingLine2: input.billingLine2 ?? null,
+    billingCity: input.billingCity ?? null,
+    billingState: input.billingState ?? null,
+    billingZip: input.billingZip ?? null,
+    billingCountry: input.billingCountry,
+    shippingLine1: input.shippingLine1 ?? null,
+    shippingLine2: input.shippingLine2 ?? null,
+    shippingCity: input.shippingCity ?? null,
+    shippingState: input.shippingState ?? null,
+    shippingZip: input.shippingZip ?? null,
+    shippingCountry: input.shippingCountry,
+    defaultPaymentTerms: input.defaultPaymentTerms ?? null,
+    openingBalance: input.openingBalance,
   }).returning();
   res.status(201).json({ contact });
 });
@@ -233,20 +263,22 @@ apiV2Router.get('/items', async (req, res) => {
 });
 
 apiV2Router.post('/items', async (req, res) => {
-  const { name, description, unitPrice, incomeAccountId, isTaxable } = req.body;
-  if (!name || !incomeAccountId) { res.status(400).json({ error: { message: 'name and incomeAccountId are required' } }); return; }
+  const input = createItemSchema.parse(req.body);
   // Caller-supplied incomeAccountId is a UUID — verify the account lives in
   // the caller's tenant before accepting it, or the item row ends up with a
   // dangling cross-tenant FK that later corrupts revenue posting.
   const [accountOk] = await db.select({ id: accounts.id }).from(accounts)
-    .where(and(eq(accounts.tenantId, req.tenantId), eq(accounts.id, incomeAccountId)))
+    .where(and(eq(accounts.tenantId, req.tenantId), eq(accounts.id, input.incomeAccountId)))
     .limit(1);
   if (!accountOk) { res.status(400).json({ error: { message: 'Invalid income account' } }); return; }
   const [item] = await db.insert(items).values({
     tenantId: req.tenantId,
     companyId: req.companyId || null,
-    name, description: description || null, unitPrice: unitPrice || null,
-    incomeAccountId, isTaxable: isTaxable ?? true,
+    name: input.name,
+    description: input.description ?? null,
+    unitPrice: input.unitPrice ?? null,
+    incomeAccountId: input.incomeAccountId,
+    isTaxable: input.isTaxable,
   }).returning();
   res.status(201).json({ item });
 });
