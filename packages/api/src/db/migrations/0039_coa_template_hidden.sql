@@ -1,3 +1,6 @@
+-- Copyright 2026 Kisaes LLC
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- You may not distribute this software. See LICENSE for terms.
 -- Add `is_hidden` to coa_templates so super admins can hide a
 -- template (built-in or custom) from the registration / setup
 -- business-type dropdowns without deleting it.

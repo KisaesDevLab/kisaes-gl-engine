@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 export type AiProviderName = 'anthropic' | 'openai' | 'gemini' | 'ollama' | 'glm_ocr_cloud' | 'glm_ocr_local';
 export type AiJobType = 'categorize' | 'ocr_receipt' | 'ocr_statement' | 'ocr_invoice' | 'classify_document';
 export type AiJobStatus = 'pending' | 'processing' | 'complete' | 'failed' | 'cancelled';

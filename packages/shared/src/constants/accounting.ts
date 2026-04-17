@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 /**
  * Threshold below which a bill/invoice is considered fully paid.
  * Amounts at or below this value are treated as rounding dust.

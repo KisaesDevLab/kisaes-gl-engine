@@ -1,3 +1,6 @@
+-- Copyright 2026 Kisaes LLC
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- You may not distribute this software. See LICENSE for terms.
 -- Add original_description column to bank_feed_items
 ALTER TABLE "bank_feed_items" ADD COLUMN IF NOT EXISTS "original_description" varchar(500);
 

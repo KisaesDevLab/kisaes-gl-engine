@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 /**
  * CRC32 (IEEE 802.3, poly 0xEDB88320). Used by the installation sentinel
  * header to detect byte-level corruption before attempting GCM decryption,

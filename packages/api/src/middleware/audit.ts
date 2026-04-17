@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 import { db, type DbOrTx } from '../db/index.js';
 import { auditLog as auditLogTable } from '../db/schema/audit-log.js';
 

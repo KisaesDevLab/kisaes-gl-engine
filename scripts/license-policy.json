@@ -8,7 +8,10 @@
   "allowed": [
     "MIT",
     "MIT/X11",
+    "MIT-0",
     "Apache-2.0",
+    "BSD",
+    "BSD*",
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
@@ -16,8 +19,12 @@
     "0BSD",
     "Unlicense",
     "BlueOak-1.0.0",
+    "Python-2.0",
     "(MIT AND Zlib)",
-    "(MIT OR GPL-3.0-or-later)"
+    "(MIT AND ISC)",
+    "MIT AND ISC",
+    "(MIT OR GPL-3.0-or-later)",
+    "(MPL-2.0 OR Apache-2.0)"
   ],
 
   "reviewRequired": [
@@ -62,6 +69,38 @@
       "severity": "LOW",
       "action": "Elect MIT. No action required.",
       "notes": "Dual-licensed. MIT option is compatible."
+    },
+    {
+      "package": "dompurify",
+      "version": "3.4.0",
+      "detectedLicense": "(MPL-2.0 OR Apache-2.0)",
+      "severity": "LOW",
+      "action": "Elect Apache-2.0. No action required.",
+      "notes": "Dual-licensed. Apache-2.0 option is on the allowed list."
+    },
+    {
+      "package": "rgbcolor",
+      "version": "1.0.1",
+      "detectedLicense": "MIT OR SEE LICENSE IN FEEL-FREE.md",
+      "severity": "LOW",
+      "action": "Elect MIT. No action required.",
+      "notes": "FEEL-FREE.md is a permission-granting notice, not a restriction. license-checker reports this as MIT*."
+    },
+    {
+      "package": "url-template",
+      "version": "2.0.8",
+      "detectedLicense": "BSD",
+      "severity": "LOW",
+      "action": "Accept. Generic BSD license; effectively BSD-2-Clause or BSD-3-Clause terms.",
+      "notes": "license-checker reports this as BSD* due to the non-SPDX 'BSD' string in package.json."
+    },
+    {
+      "package": "buffers",
+      "version": "0.1.1",
+      "detectedLicense": "Custom (no LICENSE file)",
+      "severity": "RESOLVED",
+      "action": "Resolved via top-level override `unzipper@^0.12.3` in root package.json. Newer unzipper removes the `binary`→`buffers` transitive chain.",
+      "notes": "Was pulled in by exceljs → unzipper@0.10.x → binary → buffers. No longer in the dependency tree."
     }
   ],
 
@@ -78,8 +117,8 @@
     },
     "sourceHeaders": {
       "required": true,
-      "status": "OPTIONAL — Add PolyForm header via scripts/add-license-header.sh when source headers are introduced",
-      "note": "PolyForm Internal Use requires that licensing notices not be removed or obscured where present."
+      "status": "ENFORCED — All first-party source files carry the PolyForm header; check-license-headers.sh runs in CI and as a pre-commit hook.",
+      "note": "PolyForm Internal Use requires that licensing notices not be removed or obscured where present. Extensions covered: .ts, .tsx, .js, .jsx, .mjs, .cjs, .sql, .sh, .py."
     },
     "noDistribution": {
       "required": true,

@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 import { db } from '../db/index.js';
 import { mcpRequestLog } from '../db/schema/index.js';
 import type { McpAuthContext } from '@kis-books/shared';

@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 // PII sanitizer — pattern-based redaction of text before it is sent to a
 // cloud AI provider. Runs entirely on the server with regex and string
 // operations; no external calls, no async work.

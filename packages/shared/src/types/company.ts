@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 export type EntityType = 'sole_prop' | 'single_member_llc' | 's_corp' | 'c_corp' | 'partnership';
 export type AccountingMethod = 'cash' | 'accrual';
 export type PaymentTerms = 'due_on_receipt' | 'net_15' | 'net_30' | 'net_60' | 'net_90' | 'custom';

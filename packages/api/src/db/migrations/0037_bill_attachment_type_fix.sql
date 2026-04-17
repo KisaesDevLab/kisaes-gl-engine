@@ -1,3 +1,6 @@
+-- Copyright 2026 Kisaes LLC
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- You may not distribute this software. See LICENSE for terms.
 -- Fix: existing bill OCR attachments were re-linked under
 -- attachable_type='transaction' by an earlier version of
 -- /bills/:id/attach-draft. The convention used by every other

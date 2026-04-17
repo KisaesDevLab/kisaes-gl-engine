@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 /**
  * Creates a "Demo Bookkeeping Co" tenant populated with realistic sample
  * transactions spanning the current year and the prior year.

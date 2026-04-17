@@ -1,3 +1,6 @@
+-- Copyright 2026 Kisaes LLC
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- You may not distribute this software. See LICENSE for terms.
 -- Plaid Cross-Company Addendum Migration
 -- Converts plaid_items and plaid_accounts from tenant-scoped to system-scoped
 -- Adds plaid_account_mappings bridge table and plaid_item_activity log

@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 import type { AiProvider, CompletionParams, VisionParams, CompletionResult } from './ai-provider.interface.js';
 
 export class GlmOcrProvider implements AiProvider {
@@ -104,8 +108,10 @@ export class GlmOcrProvider implements AiProvider {
         const baseUrl = this.apiKeyOrUrl.replace(/\/$/, '');
         const response = await fetch(`${baseUrl}/api/tags`);
         const data = await response.json() as any;
-        const hasGlm = (data.models || []).some((m: any) => m.name?.includes('glm-ocr'));
-        return { success: true, modelInfo: hasGlm ? 'GLM-OCR available' : 'GLM-OCR model not found' };
+        const models = (data.models || []).map((m: any) => m.name || '');
+        const hasGlm = models.some((n: string) => n.toLowerCase().includes('glm-ocr') || n.toLowerCase().includes('glm_ocr'));
+        const modelList = models.join(', ');
+        return { success: true, modelInfo: hasGlm ? `GLM-OCR available (${modelList})` : `GLM-OCR model not found. Available: ${modelList || 'none'}` };
       }
     } catch (err: any) {
       return { success: false, error: err.message };

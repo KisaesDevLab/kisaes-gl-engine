@@ -1,0 +1,63 @@
+name: License compliance
+
+on:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+  schedule:
+    # Weekly drift check: Mondays 08:00 UTC. Catches upstream dependency
+    # relicensing (e.g. a dep flipping to AGPL) even without a PR.
+    - cron: '0 8 * * 1'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: License audit (dependencies + policy)
+        run: npm run license:audit:json
+
+      - name: License header coverage
+        run: npm run license:headers
+
+      - name: Generate SBOM
+        if: always()
+        run: npm run license:sbom
+
+      - name: Upload audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: license-audit-${{ github.run_id }}
+          path: |
+            scripts/license-audit-result.txt
+            scripts/license-audit-result.json
+            scripts/sbom.cdx.json
+            scripts/license-inventory.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Open drift issue on scheduled failure
+        if: failure() && github.event_name == 'schedule'
+        uses: peter-evans/create-issue-from-file@v5
+        with:
+          title: "License compliance drift detected (${{ github.run_id }})"
+          content-filepath: scripts/license-audit-result.txt
+          labels: |
+            license
+            compliance
+            automated

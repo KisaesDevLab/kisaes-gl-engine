@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 import { pgTable, uuid, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
 
 export const accountantCompanyExclusions = pgTable('accountant_company_exclusions', {

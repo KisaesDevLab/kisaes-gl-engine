@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 // Simple in-memory rate limiter (production should use Redis). The Map is
 // capped so an attacker pumping unique keys can't grow it without bound —
 // when we're at the ceiling and need to insert a new bucket we evict the

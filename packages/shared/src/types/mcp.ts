@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 export type McpScope = 'all' | 'read' | 'write' | 'reports' | 'banking' | 'invoicing';
 export type McpAuthMethod = 'api_key' | 'oauth';
 

@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 import { Router } from 'express';
 import express from 'express';
 import * as stripeService from '../services/stripe.service.js';

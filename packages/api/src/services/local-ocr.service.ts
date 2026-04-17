@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 // Local OCR — priority-2 text extraction that runs entirely on-server.
 //
 // See Build Plans/AI_PII_PROTECTION_ADDENDUM.md §Layer 1 Priority 2.
