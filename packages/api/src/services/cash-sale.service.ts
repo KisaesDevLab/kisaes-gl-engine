@@ -3,6 +3,8 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { eq, and } from 'drizzle-orm';
+import DecimalLib from 'decimal.js';
+const Decimal = DecimalLib.default || DecimalLib;
 import type { CreateCashSaleInput } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { accounts, companies } from '../db/schema/index.js';
@@ -19,21 +21,25 @@ async function getSystemAccount(tenantId: string, systemTag: string): Promise<st
 
 async function buildCashSalePayload(tenantId: string, input: CreateCashSaleInput) {
   const company = await db.query.companies.findFirst({ where: eq(companies.tenantId, tenantId) });
-  const defaultTaxRate = parseFloat(company?.defaultSalesTaxRate || '0');
+  const defaultTaxRate = new Decimal(company?.defaultSalesTaxRate || '0');
 
-  let subtotal = 0;
-  let totalTax = 0;
+  // All arithmetic runs through Decimal.js so invoice_total == sum of
+  // journal line amounts exactly — float math here was accumulating
+  // sub-cent drift that showed up as "Transaction does not balance"
+  // failures on very large cash sales.
+  let subtotal = new Decimal('0');
+  let totalTax = new Decimal('0');
 
   const revenueLines = input.lines.map((line) => {
-    const qty = parseFloat(line.quantity);
-    const price = parseFloat(line.unitPrice);
-    const lineTotal = qty * price;
-    subtotal += lineTotal;
+    const qty = new Decimal(line.quantity);
+    const price = new Decimal(line.unitPrice);
+    const lineTotal = qty.times(price);
+    subtotal = subtotal.plus(lineTotal);
 
     const taxable = line.isTaxable !== false;
-    const rate = taxable ? parseFloat(line.taxRate || String(defaultTaxRate)) : 0;
-    const lineTax = taxable && rate > 0 ? lineTotal * rate : 0;
-    totalTax += lineTax;
+    const rate = taxable ? new Decimal(line.taxRate ?? defaultTaxRate.toString()) : new Decimal('0');
+    const lineTax = taxable && rate.greaterThan(0) ? lineTotal.times(rate) : new Decimal('0');
+    totalTax = totalTax.plus(lineTax);
 
     return {
       accountId: line.accountId,
@@ -43,19 +49,19 @@ async function buildCashSalePayload(tenantId: string, input: CreateCashSaleInput
       quantity: line.quantity,
       unitPrice: line.unitPrice,
       isTaxable: taxable,
-      taxRate: rate > 0 ? rate.toString() : '0',
+      taxRate: rate.greaterThan(0) ? rate.toString() : '0',
       taxAmount: lineTax.toFixed(4),
     };
   });
 
-  const total = subtotal + totalTax;
+  const total = subtotal.plus(totalTax);
 
   const journalLines: any[] = [
     { accountId: input.depositToAccountId, debit: total.toFixed(4), credit: '0' },
     ...revenueLines,
   ];
 
-  if (totalTax > 0) {
+  if (totalTax.greaterThan(0)) {
     const taxAccountId = await getSystemAccount(tenantId, 'sales_tax_payable');
     journalLines.push({ accountId: taxAccountId, debit: '0', credit: totalTax.toFixed(4), description: 'Sales Tax' });
   }

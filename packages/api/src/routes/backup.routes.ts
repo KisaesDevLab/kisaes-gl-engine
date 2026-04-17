@@ -10,6 +10,40 @@ import * as backupService from '../services/backup.service.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
 
+// Vibe MyBooks backup files always start with the passphrase-format magic
+// "VMBP" OR they are legacy server-key-encrypted (no magic, raw bytes with
+// at least 32 bytes of IV + authTag header). Pre-flight the upload so an
+// obviously-wrong file (e.g. someone dragged a JPEG in) is rejected with a
+// 400 instead of blowing up inside the decryption path as a 500.
+const VMBP_MAGIC = Buffer.from('VMBP', 'ascii');
+const MIN_SERVER_KEY_SIZE = 32; // 16 IV + 16 authTag
+
+function looksLikeBackup(buf: Buffer): boolean {
+  if (buf.length >= VMBP_MAGIC.length && buf.subarray(0, VMBP_MAGIC.length).equals(VMBP_MAGIC)) {
+    return true;
+  }
+  // Legacy server-key format has no header magic; the best we can do is
+  // require the minimum envelope size plus reject anything that clearly
+  // looks like a plain-text or document file.
+  if (buf.length < MIN_SERVER_KEY_SIZE) return false;
+  if (buf.subarray(0, 4).equals(Buffer.from('%PDF'))) return false;
+  if (buf.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) return false; // zip/xlsx
+  if (buf.subarray(0, 2).equals(Buffer.from([0xff, 0xd8]))) return false; // jpeg
+  if (buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return false; // png
+  return true;
+}
+
+// Filenames may legitimately contain spaces or international characters;
+// quote them per RFC 6266 so a stray `"` or newline in the path can't
+// break the Content-Disposition header. Also substitute any control chars
+// as a belt-and-braces defence — downloadBackup validates basename already
+// but the remote download path only has the tail of a key we built.
+function encodeContentDisposition(fileName: string, inline = false): string {
+  const safe = fileName.replace(/[\x00-\x1f"\\]/g, '_');
+  const encoded = encodeURIComponent(fileName);
+  return `${inline ? 'inline' : 'attachment'}; filename="${safe}"; filename*=UTF-8''${encoded}`;
+}
+
 export const backupRouter = Router();
 backupRouter.use(authenticate);
 
@@ -65,7 +99,7 @@ backupRouter.get('/download/:fileName', async (req, res) => {
   const data = await backupService.downloadBackup(req.tenantId, req.params['fileName']!, req.userId);
   const fileName = req.params['fileName']!;
   res.setHeader('Content-Type', 'application/octet-stream');
-  res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+  res.setHeader('Content-Disposition', encodeContentDisposition(fileName));
   res.send(data);
 });
 
@@ -79,6 +113,10 @@ backupRouter.delete('/:fileName', async (req, res) => {
 backupRouter.post('/restore', upload.single('file'), async (req, res) => {
   if (!req.file) {
     res.status(400).json({ error: { message: 'No file uploaded' } });
+    return;
+  }
+  if (!looksLikeBackup(req.file.buffer)) {
+    res.status(400).json({ error: { message: 'Uploaded file is not a Vibe MyBooks backup.' } });
     return;
   }
   const passphrase = req.body?.passphrase;
@@ -111,7 +149,7 @@ backupRouter.get('/remote/download/*', async (req, res) => {
     const data = await backupService.downloadRemoteBackup(key);
     const fileName = key.split('/').pop() || 'backup.kbk';
     res.setHeader('Content-Type', 'application/octet-stream');
-    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('Content-Disposition', encodeContentDisposition(fileName));
     res.send(data);
   } catch (err: any) {
     res.status(500).json({ error: { message: err.message } });

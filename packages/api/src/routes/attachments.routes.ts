@@ -5,9 +5,10 @@
 import { Router } from 'express';
 import multer from 'multer';
 import jwt from 'jsonwebtoken';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, sql, count } from 'drizzle-orm';
 import type { JwtPayload } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { auditLog } from '../middleware/audit.js';
 import { env } from '../config/env.js';
 import { db } from '../db/index.js';
 import { users, attachments, transactions, contacts } from '../db/schema/index.js';
@@ -173,6 +174,16 @@ attachmentsRouter.post('/', upload.single('file'), async (req, res) => {
 
   const attachment = await attachmentService.upload(req.tenantId, req.file, attachableType, attachableId);
 
+  await auditLog(
+    req.tenantId,
+    'create',
+    'attachment',
+    attachment?.id ?? null,
+    null,
+    { attachableType, attachableId, fileName: attachment?.fileName, mimeType: attachment?.mimeType, fileSize: attachment?.fileSize },
+    req.userId,
+  );
+
   // Auto-trigger OCR for receipt images
   if (req.file.mimetype.startsWith('image/')) {
     ocrService.processReceipt(req.tenantId, attachment!.id).catch(() => {});
@@ -202,43 +213,63 @@ attachmentsRouter.post('/:id/link', async (req, res) => {
     res.status(400).json({ error: { message: 'attachableType and attachableId required' } });
     return;
   }
-  await attachmentService.linkAttachment(req.tenantId, req.params['id']!, attachableType, attachableId);
+  const attachmentId = req.params['id']!;
+  await attachmentService.linkAttachment(req.tenantId, attachmentId, attachableType, attachableId);
+  await auditLog(
+    req.tenantId,
+    'update',
+    'attachment',
+    attachmentId,
+    null,
+    { attachableType, attachableId },
+    req.userId,
+  );
   res.json({ linked: true });
 });
 
-// Enriched library endpoint — joins attachments with transactions + contacts
+// Enriched library endpoint — joins attachments with transactions + contacts.
+// Paginated per CLAUDE.md rule #16: returns { data, total, limit, offset }.
 attachmentsRouter.get('/library', async (req, res) => {
-  const rows = await db
-    .select({
-      id: attachments.id,
-      fileName: attachments.fileName,
-      fileSize: attachments.fileSize,
-      mimeType: attachments.mimeType,
-      attachableType: attachments.attachableType,
-      attachableId: attachments.attachableId,
-      ocrStatus: attachments.ocrStatus,
-      ocrTotal: attachments.ocrTotal,
-      createdAt: attachments.createdAt,
-      txnDate: transactions.txnDate,
-      txnType: transactions.txnType,
-      txnMemo: transactions.memo,
-      contactId: transactions.contactId,
-      contactName: contacts.displayName,
-    })
-    .from(attachments)
-    .leftJoin(transactions, and(
-      eq(attachments.attachableId, transactions.id),
-      eq(attachments.tenantId, transactions.tenantId),
-    ))
-    .leftJoin(contacts, and(
-      eq(transactions.contactId, contacts.id),
-      eq(transactions.tenantId, contacts.tenantId),
-    ))
-    .where(eq(attachments.tenantId, req.tenantId))
-    .orderBy(sql`${attachments.createdAt} desc`)
-    .limit(500);
+  const limit = parseLimit(req.query['limit'], 100, 500);
+  const offset = parseOffset(req.query['offset']);
 
-  res.json({ data: rows });
+  const where = eq(attachments.tenantId, req.tenantId);
+
+  const [rows, totalRows] = await Promise.all([
+    db
+      .select({
+        id: attachments.id,
+        fileName: attachments.fileName,
+        fileSize: attachments.fileSize,
+        mimeType: attachments.mimeType,
+        attachableType: attachments.attachableType,
+        attachableId: attachments.attachableId,
+        ocrStatus: attachments.ocrStatus,
+        ocrTotal: attachments.ocrTotal,
+        createdAt: attachments.createdAt,
+        txnDate: transactions.txnDate,
+        txnType: transactions.txnType,
+        txnMemo: transactions.memo,
+        contactId: transactions.contactId,
+        contactName: contacts.displayName,
+      })
+      .from(attachments)
+      .leftJoin(transactions, and(
+        eq(attachments.attachableId, transactions.id),
+        eq(attachments.tenantId, transactions.tenantId),
+      ))
+      .leftJoin(contacts, and(
+        eq(transactions.contactId, contacts.id),
+        eq(transactions.tenantId, contacts.tenantId),
+      ))
+      .where(where)
+      .orderBy(sql`${attachments.createdAt} desc`)
+      .limit(limit)
+      .offset(offset),
+    db.select({ count: count() }).from(attachments).where(where),
+  ]);
+
+  res.json({ data: rows, total: totalRows[0]?.count ?? 0, limit, offset });
 });
 
 attachmentsRouter.get('/:id', async (req, res) => {
@@ -248,7 +279,18 @@ attachmentsRouter.get('/:id', async (req, res) => {
 
 
 attachmentsRouter.delete('/:id', async (req, res) => {
-  await attachmentService.remove(req.tenantId, req.params['id']!);
+  const attachmentId = req.params['id']!;
+  const before = await attachmentService.getById(req.tenantId, attachmentId).catch(() => null);
+  await attachmentService.remove(req.tenantId, attachmentId);
+  await auditLog(
+    req.tenantId,
+    'delete',
+    'attachment',
+    attachmentId,
+    before,
+    null,
+    req.userId,
+  );
   res.json({ message: 'Attachment deleted' });
 });
 

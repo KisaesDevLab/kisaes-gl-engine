@@ -1,0 +1,23 @@
+name: Migration policy
+
+# Enforce CLAUDE.md rule #13 — migrations are additive only, unless
+# the file carries an explicit `non-additive-exception` marker.
+
+on:
+  pull_request:
+    paths:
+      - 'packages/api/src/db/migrations/**'
+      - 'scripts/check-migration-policy.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check migration policy
+        run: bash scripts/check-migration-policy.sh

@@ -3,12 +3,19 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { eq, and, sql } from 'drizzle-orm';
+import DecimalLib from 'decimal.js';
+const Decimal = DecimalLib.default || DecimalLib;
 import type { ReceivePaymentInput } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { transactions, accounts, paymentApplications, depositLines } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
 import { auditLog } from '../middleware/audit.js';
+
+// Tolerance for overapplication / paid-off checks. Covers tax rounding
+// at 4 decimal places (0.0001) × a few lines, plus the historic 1¢
+// grace that bookkeepers expect.
+const OVERAPPLY_TOLERANCE = new Decimal('0.01');
 
 export async function receivePayment(tenantId: string, input: ReceivePaymentInput, userId?: string, companyId?: string) {
   // Get AR account (read outside tx — it's a stable lookup)
@@ -56,23 +63,24 @@ export async function receivePayment(tenantId: string, input: ReceivePaymentInpu
         throw AppError.notFound(`Invoice ${app.invoiceId} not found`);
       }
 
-      const currentPaid = parseFloat(invoice.amountPaid || '0');
-      const invoiceTotal = parseFloat(invoice.total || '0');
-      const applyAmount = parseFloat(app.amount);
-      const newPaid = currentPaid + applyAmount;
+      const currentPaid = new Decimal(invoice.amountPaid || '0');
+      const invoiceTotal = new Decimal(invoice.total || '0');
+      const applyAmount = new Decimal(app.amount);
+      const newPaid = currentPaid.plus(applyAmount);
 
-      // Overapplication guard. Tolerance of 0.01 covers tax/rounding edge
-      // cases (the same tolerance the invoice service uses elsewhere).
-      if (newPaid - invoiceTotal > 0.01) {
+      // Overapplication guard (Decimal math — no IEEE754 slop across
+      // repeated partial payments).
+      if (newPaid.minus(invoiceTotal).greaterThan(OVERAPPLY_TOLERANCE)) {
         throw AppError.badRequest(
           `Payment of ${applyAmount.toFixed(2)} would overapply invoice ` +
           `${invoice.txnNumber || invoice.id}: current paid ${currentPaid.toFixed(2)}, ` +
-          `total ${invoiceTotal.toFixed(2)}, max remaining ${(invoiceTotal - currentPaid).toFixed(2)}`,
+          `total ${invoiceTotal.toFixed(2)}, max remaining ${invoiceTotal.minus(currentPaid).toFixed(2)}`,
         );
       }
 
-      const newBalance = Math.max(0, invoiceTotal - newPaid);
-      const invoiceStatus = newBalance <= 0.01 ? 'paid' : 'partial';
+      let newBalance = invoiceTotal.minus(newPaid);
+      if (newBalance.isNegative()) newBalance = new Decimal('0');
+      const invoiceStatus = newBalance.lessThanOrEqualTo(OVERAPPLY_TOLERANCE) ? 'paid' : 'partial';
 
       await tx.insert(paymentApplications).values({
         tenantId,
@@ -139,6 +147,9 @@ export async function getPendingDeposits(tenantId: string) {
     ORDER BY t.txn_date ASC
   `);
 
+  // Keep amounts as numbers in the API response (what the web expects),
+  // but sum them through Decimal so the Payments Clearing tile doesn't
+  // drift when there are many small items.
   const items = (rows.rows as any[]).map((r) => ({
     transactionId: r.transaction_id,
     txnType: r.txn_type,
@@ -146,13 +157,14 @@ export async function getPendingDeposits(tenantId: string) {
     customerName: r.customer_name,
     refNo: r.ref_no,
     paymentMethod: null,
-    amount: parseFloat(r.amount),
+    amount: Number(new Decimal(r.amount || '0').toFixed(4)),
   }));
 
-  return {
-    paymentsClearingBalance: items.reduce((s, i) => s + i.amount, 0),
-    items,
-  };
+  const paymentsClearingBalance = Number(
+    items.reduce((s, i) => s.plus(i.amount), new Decimal('0')).toFixed(4),
+  );
+
+  return { paymentsClearingBalance, items };
 }
 
 export async function unapplyPayment(tenantId: string, paymentId: string, invoiceId: string) {
@@ -180,10 +192,11 @@ export async function unapplyPayment(tenantId: string, paymentId: string, invoic
       .limit(1);
 
     if (invoice) {
-      const restoredPaid = Math.max(0, parseFloat(invoice.amountPaid || '0') - parseFloat(app.amount));
-      const invoiceTotal = parseFloat(invoice.total || '0');
-      const newBalance = invoiceTotal - restoredPaid;
-      const status = restoredPaid <= 0.01 ? 'sent' : 'partial';
+      let restoredPaid = new Decimal(invoice.amountPaid || '0').minus(app.amount);
+      if (restoredPaid.isNegative()) restoredPaid = new Decimal('0');
+      const invoiceTotal = new Decimal(invoice.total || '0');
+      const newBalance = invoiceTotal.minus(restoredPaid);
+      const status = restoredPaid.lessThanOrEqualTo(OVERAPPLY_TOLERANCE) ? 'sent' : 'partial';
 
       await tx.update(transactions).set({
         amountPaid: restoredPaid.toFixed(4),
