@@ -21,7 +21,7 @@
     "license:headers:fix": "bash scripts/add-license-header.sh",
     "license:sbom": "bash scripts/generate-sbom.sh",
     "migrations:check": "bash scripts/check-migration-policy.sh",
-    "prepare": "husky"
+    "prepare": "husky || true"
   },
   "lint-staged": {
     "packages/**/*.{ts,tsx,js,jsx,mjs,cjs,sql,sh,py}": "bash scripts/check-license-headers.sh",
