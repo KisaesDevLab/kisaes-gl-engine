@@ -13,17 +13,30 @@
     "dev": "docker compose -f docker-compose.yml -f docker-compose.dev.yml up",
     "build": "npm run build --workspaces",
     "test": "npm run test --workspaces --if-present",
-    "lint": "npm run lint --workspaces --if-present"
+    "lint": "npm run lint --workspaces --if-present",
+    "license:audit": "bash scripts/license-audit.sh",
+    "license:audit:quiet": "bash scripts/license-audit.sh --quiet",
+    "license:audit:json": "bash scripts/license-audit.sh --json --quiet",
+    "license:headers": "bash scripts/check-license-headers.sh",
+    "license:headers:fix": "bash scripts/add-license-header.sh",
+    "license:sbom": "bash scripts/generate-sbom.sh",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "packages/**/*.{ts,tsx,js,jsx,mjs,cjs,sql,sh,py}": "bash scripts/check-license-headers.sh",
+    "**/package.json": "bash scripts/license-audit.sh --quiet"
   },
   "license": "SEE LICENSE IN LICENSE",
   "author": "Kisaes LLC",
   "devDependencies": {
-    "@playwright/test": "^1.59.1"
+    "@playwright/test": "^1.59.1",
+    "husky": "9.1.7",
+    "lint-staged": "16.4.0"
   },
-  "dependencies": {},
   "overrides": {
     "@esbuild-kit/core-utils": {
       "esbuild": "^0.25.0"
-    }
+    },
+    "unzipper": "^0.12.3"
   }
 }

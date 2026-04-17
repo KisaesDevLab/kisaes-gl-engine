@@ -1,3 +1,6 @@
+-- Copyright 2026 Kisaes LLC
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- You may not distribute this software. See LICENSE for terms.
 -- Accounts Payable: bills, vendor credits, bill payments
 -- Adds bill-specific columns to transactions, vendor-default columns to contacts,
 -- and the two application/junction tables that link payments to bills and credits.

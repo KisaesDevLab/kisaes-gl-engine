@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 import type { SmsProvider } from './sms-provider.interface.js';
 import { TwilioProvider } from './twilio.provider.js';
 import { TextLinkSmsProvider } from './textlinksms.provider.js';

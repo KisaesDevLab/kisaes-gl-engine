@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 import type { AiProvider, CompletionParams, CompletionResult } from './ai-provider.interface.js';
 import { AnthropicProvider } from './anthropic.provider.js';
 import { OpenAiProvider } from './openai.provider.js';

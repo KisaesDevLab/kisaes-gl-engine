@@ -1,3 +1,6 @@
+-- Copyright 2026 Kisaes LLC
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- You may not distribute this software. See LICENSE for terms.
 -- Add provider-specific idempotency support to payroll import sessions
 ALTER TABLE payroll_import_sessions
   ADD COLUMN IF NOT EXISTS idempotency_key varchar(255),

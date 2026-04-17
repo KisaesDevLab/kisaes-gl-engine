@@ -1,3 +1,6 @@
+-- Copyright 2026 Kisaes LLC
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- You may not distribute this software. See LICENSE for terms.
 -- AI PII Protection — system-level settings.
 --
 -- See Build Plans/AI_PII_PROTECTION_ADDENDUM.md §Tier 1: System-Level

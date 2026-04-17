@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 import { eq, and, ilike, sql, count } from 'drizzle-orm';
 import type { CreateAccountInput, UpdateAccountInput, AccountFilters } from '@kis-books/shared';
 import { COA_TEMPLATES } from '@kis-books/shared';

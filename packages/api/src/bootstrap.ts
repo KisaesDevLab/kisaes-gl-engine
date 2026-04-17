@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 /**
  * Application entrypoint. Replaces the pre-Phase-A `src/index.ts` as the
  * file pointed to by package.json `main` / `start` and the Dockerfile CMD.

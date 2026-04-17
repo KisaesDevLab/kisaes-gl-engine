@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 import { pgTable, uuid, varchar, text, decimal, boolean, date, timestamp, integer, index } from 'drizzle-orm/pg-core';
 
 export const contacts = pgTable('contacts', {

@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 /**
  * In-memory holding area for the recovery key produced by /initialize or
  * /restore/execute, until the operator clicks "I have saved this" on the

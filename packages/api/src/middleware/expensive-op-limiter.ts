@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 import rateLimit from 'express-rate-limit';
 
 // Shared per-user limiter for endpoints that do meaningful work on each call:

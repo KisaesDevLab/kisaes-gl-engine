@@ -70,20 +70,25 @@ fi
 header "2. Source file headers"
 
 HEADER_PATTERN="Licensed under the PolyForm Internal Use License|Copyright.*Kisaes"
-TS_FILES=$(find "$ROOT/packages" -name "*.ts" -o -name "*.tsx" 2>/dev/null | grep -v node_modules | wc -l | tr -d ' ')
-HEADERS_FOUND=$(find "$ROOT/packages" -name "*.ts" -o -name "*.tsx" 2>/dev/null \
-  | grep -v node_modules \
-  | xargs grep -l -E "$HEADER_PATTERN" 2>/dev/null | wc -l | tr -d ' ')
+# Exclude build output, compiled artifacts, caches — matches add-license-header.sh and check-license-headers.sh
+FIND_EXCLUDES='-not -path */node_modules/* -not -path */dist/* -not -path */build/* -not -path */.next/* -not -path */coverage/* -not -path */.vite/*'
+TS_FILES=$(eval "find \"$ROOT/packages\" \\( -name '*.ts' -o -name '*.tsx' \\) $FIND_EXCLUDES -type f 2>/dev/null" | wc -l | tr -d ' ' || true)
+HEADERS_FOUND=$(eval "find \"$ROOT/packages\" \\( -name '*.ts' -o -name '*.tsx' \\) $FIND_EXCLUDES -type f 2>/dev/null" \
+  | { xargs grep -l -E "$HEADER_PATTERN" 2>/dev/null || true; } | wc -l | tr -d ' ' || true)
+TS_FILES=${TS_FILES:-0}
+HEADERS_FOUND=${HEADERS_FOUND:-0}
 
 info "$HEADERS_FOUND / $TS_FILES source files have license headers"
 
 if [[ "$HEADERS_FOUND" -eq 0 ]]; then
-  warn "No source files contain license headers"
-  warn "Minimum header:  // Licensed under the PolyForm Internal Use License 1.0.0"
-  bump_warn
+  fail "No source files contain license headers"
+  fail "Required header:  // Licensed under the PolyForm Internal Use License 1.0.0"
+  fail "Run: bash scripts/add-license-header.sh"
+  bump_fail
 elif [[ "$HEADERS_FOUND" -lt "$TS_FILES" ]]; then
-  warn "$(( TS_FILES - HEADERS_FOUND )) source files missing license headers"
-  bump_warn
+  fail "$(( TS_FILES - HEADERS_FOUND )) source files missing license headers"
+  fail "Run: bash scripts/add-license-header.sh"
+  bump_fail
 else
   pass "All source files have license headers"
 fi
@@ -177,32 +182,32 @@ fi
 header "6. Known issues (from license-policy.json)"
 
 if command -v node &>/dev/null && [[ -f "$POLICY" ]]; then
-  node -e "
-    const p = require('$POLICY');
+  POLICY_PATH="$POLICY" node -e '
+    const p = require(process.env.POLICY_PATH);
     (p.knownIssues || []).forEach(i => {
-      const sev = i.severity === 'HIGH' ? '✘ HIGH' : '⚠  ' + i.severity;
-      console.log('  ' + sev + ' — ' + i.package + '@' + i.version);
-      console.log('    License : ' + (i.detectedLicense || i.actualLicense));
-      console.log('    Action  : ' + (i.action || i.resolution || ''));
-      console.log('');
+      const sev = i.severity === "HIGH" ? "✘ HIGH" : "⚠  " + i.severity;
+      console.log("  " + sev + " — " + i.package + "@" + i.version);
+      console.log("    License : " + (i.detectedLicense || i.actualLicense));
+      console.log("    Action  : " + (i.action || i.resolution || ""));
+      console.log("");
     });
-  " 2>/dev/null || warn "Could not parse license-policy.json"
+  ' 2>/dev/null || warn "Could not parse license-policy.json"
 else
   warn "license-policy.json not found or node unavailable"
 fi
 
 info "PolyForm Internal Use requirements:"
-node -e "
-  const p = require('$POLICY');
+POLICY_PATH="$POLICY" node -e '
+  const p = require(process.env.POLICY_PATH);
   const r = p.polyformRequirements || {};
   Object.entries(r).forEach(([k, v]) => {
-    const status = v.status || '';
-    const ok = status.toLowerCase().includes('missing') ||
-                status.toLowerCase().includes('not ') ? false : true;
-    const icon = ok ? '✔' : '✘';
-    console.log('  ' + icon + ' ' + k + ': ' + status);
+    const status = v.status || "";
+    const ok = status.toLowerCase().includes("missing") ||
+                status.toLowerCase().includes("not ") ? false : true;
+    const icon = ok ? "✔" : "✘";
+    console.log("  " + icon + " " + k + ": " + status);
   });
-" 2>/dev/null || true
+' 2>/dev/null || true
 
 # ── 7. Summary ───────────────────────────────────────────────────────────────
 header "7. Audit Summary"
@@ -231,6 +236,29 @@ fi
   echo "Run ./scripts/license-audit.sh for full details."
   echo "See scripts/license-policy.json for policy and known issues."
 } > "$REPORT"
+
+# Machine-readable JSON report (for CI consumption)
+if $EMIT_JSON; then
+  JSON_REPORT="$ROOT/scripts/license-audit-result.json"
+  STATUS="pass"
+  if [[ $FAILURES -gt 0 ]]; then STATUS="fail"
+  elif [[ $WARNINGS -gt 0 ]]; then STATUS="warn"; fi
+  cat > "$JSON_REPORT" <<EOF
+{
+  "timestamp": "$TIMESTAMP",
+  "status": "$STATUS",
+  "failures": $FAILURES,
+  "warnings": $WARNINGS,
+  "headerCoverage": {
+    "filesWithHeaders": $HEADERS_FOUND,
+    "totalSourceFiles": $TS_FILES
+  },
+  "policyFile": "scripts/license-policy.json",
+  "reportFile": "scripts/license-audit-result.txt"
+}
+EOF
+  echo "  JSON report saved to: scripts/license-audit-result.json"
+fi
 
 echo ""
 echo "  Report saved to: scripts/license-audit-result.txt"

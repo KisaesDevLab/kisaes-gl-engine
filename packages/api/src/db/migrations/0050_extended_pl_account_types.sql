@@ -1,3 +1,6 @@
+-- Copyright 2026 Kisaes LLC
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- You may not distribute this software. See LICENSE for terms.
 -- Extended P&L: reclassify accounts into the new account types.
 -- Adds cogs / other_revenue / other_expense alongside the existing
 -- revenue / expense so the Profit & Loss report can render Gross Profit,

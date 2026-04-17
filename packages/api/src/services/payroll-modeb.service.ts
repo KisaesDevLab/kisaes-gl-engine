@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 import { eq, and, inArray } from 'drizzle-orm';
 import type { PayrollJEPreview, PayrollCheckRow, ModeBColumnConfig } from '@kis-books/shared';
 import { TAX_AGENCY_PATTERNS, MODE_B_COLUMN_CONFIGS, PROVIDER_DISPLAY_NAMES } from '@kis-books/shared';

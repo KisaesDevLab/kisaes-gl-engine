@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-04-12T04:36:04.362Z",
+  "generatedAt": "2026-04-16T02:43:17.429Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -16,9 +16,18 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 39151
+    "totalBytes": 42687
   },
   "screens": [
+    {
+      "id": "pay",
+      "path": "/pay/:token",
+      "component": "PublicInvoicePage",
+      "sourceFile": "packages/web/src/features/public/PublicInvoicePage.tsx",
+      "title": "Public Invoice",
+      "section": "Pay",
+      "actions": []
+    },
     {
       "id": "dashboard",
       "path": "/",
@@ -32,8 +41,8 @@
       "id": "accounts",
       "path": "/accounts",
       "component": "AccountsListPage",
-      "sourceFile": "packages/web/src/features/accounts/AccountsListPage.tsx",
-      "title": "Chart of Accounts",
+      "sourceFile": null,
+      "title": "Accounts List",
       "section": "Accounts",
       "actions": []
     },
@@ -50,8 +59,8 @@
       "id": "contacts",
       "path": "/contacts",
       "component": "ContactsListPage",
-      "sourceFile": "packages/web/src/features/contacts/ContactsListPage.tsx",
-      "title": "Contacts",
+      "sourceFile": null,
+      "title": "Contacts List",
       "section": "Contacts",
       "actions": []
     },
@@ -59,19 +68,16 @@
       "id": "contacts-new",
       "path": "/contacts/new",
       "component": "ContactFormPage",
-      "sourceFile": "packages/web/src/features/contacts/ContactFormPage.tsx",
-      "title": "New Contact",
+      "sourceFile": null,
+      "title": "Contact Form",
       "section": "Contacts",
-      "actions": [
-        "Save Changes",
-        "Create Contact"
-      ]
+      "actions": []
     },
     {
       "id": "contacts",
       "path": "/contacts/:id",
       "component": "ContactDetailPage",
-      "sourceFile": "packages/web/src/features/contacts/ContactDetailPage.tsx",
+      "sourceFile": null,
       "title": "Contact Detail",
       "section": "Contacts",
       "actions": []
@@ -80,20 +86,17 @@
       "id": "contacts-edit",
       "path": "/contacts/:id/edit",
       "component": "ContactFormPage",
-      "sourceFile": "packages/web/src/features/contacts/ContactFormPage.tsx",
-      "title": "New Contact",
+      "sourceFile": null,
+      "title": "Contact Form",
       "section": "Contacts",
-      "actions": [
-        "Save Changes",
-        "Create Contact"
-      ]
+      "actions": []
     },
     {
       "id": "transactions",
       "path": "/transactions",
       "component": "TransactionListPage",
-      "sourceFile": "packages/web/src/features/transactions/TransactionListPage.tsx",
-      "title": "Transactions",
+      "sourceFile": null,
+      "title": "Transaction List",
       "section": "Transactions",
       "actions": []
     },
@@ -101,150 +104,115 @@
       "id": "transactions",
       "path": "/transactions/:id",
       "component": "TransactionDetail",
-      "sourceFile": "packages/web/src/features/transactions/TransactionDetail.tsx",
+      "sourceFile": null,
       "title": "Transaction Detail",
       "section": "Transactions",
-      "actions": [
-        "Void"
-      ]
+      "actions": []
     },
     {
       "id": "transactions-new-journal-entry",
       "path": "/transactions/new/journal-entry",
       "component": "JournalEntryForm",
-      "sourceFile": "packages/web/src/features/transactions/JournalEntryForm.tsx",
-      "title": "New Journal Entry",
+      "sourceFile": null,
+      "title": "Journal Entry",
       "section": "Transactions",
-      "actions": [
-        "Save Changes",
-        "Post Journal Entry"
-      ]
+      "actions": []
     },
     {
       "id": "transactions-new-expense",
       "path": "/transactions/new/expense",
       "component": "ExpenseForm",
-      "sourceFile": "packages/web/src/features/transactions/ExpenseForm.tsx",
-      "title": "New Expense",
+      "sourceFile": null,
+      "title": "Expense",
       "section": "Transactions",
-      "actions": [
-        "Save Changes",
-        "Record Expense"
-      ]
+      "actions": []
     },
     {
       "id": "transactions-new-transfer",
       "path": "/transactions/new/transfer",
       "component": "TransferForm",
-      "sourceFile": "packages/web/src/features/transactions/TransferForm.tsx",
-      "title": "New Transfer",
+      "sourceFile": null,
+      "title": "Transfer",
       "section": "Transactions",
-      "actions": [
-        "Save Changes",
-        "Record Transfer"
-      ]
+      "actions": []
     },
     {
       "id": "transactions-new-deposit",
       "path": "/transactions/new/deposit",
       "component": "DepositForm",
-      "sourceFile": "packages/web/src/features/transactions/DepositForm.tsx",
-      "title": "New Deposit",
+      "sourceFile": null,
+      "title": "Deposit",
       "section": "Transactions",
-      "actions": [
-        "Save Changes",
-        "Record Deposit"
-      ]
+      "actions": []
     },
     {
       "id": "transactions-new-cash-sale",
       "path": "/transactions/new/cash-sale",
       "component": "CashSaleForm",
-      "sourceFile": "packages/web/src/features/transactions/CashSaleForm.tsx",
-      "title": "New Cash Sale",
+      "sourceFile": null,
+      "title": "Cash Sale",
       "section": "Transactions",
-      "actions": [
-        "Save Changes",
-        "Record Cash Sale"
-      ]
+      "actions": []
     },
     {
       "id": "transactions-edit-expense",
       "path": "/transactions/:id/edit/expense",
       "component": "ExpenseForm",
-      "sourceFile": "packages/web/src/features/transactions/ExpenseForm.tsx",
-      "title": "New Expense",
+      "sourceFile": null,
+      "title": "Expense",
       "section": "Transactions",
-      "actions": [
-        "Save Changes",
-        "Record Expense"
-      ]
+      "actions": []
     },
     {
       "id": "transactions-edit-transfer",
       "path": "/transactions/:id/edit/transfer",
       "component": "TransferForm",
-      "sourceFile": "packages/web/src/features/transactions/TransferForm.tsx",
-      "title": "New Transfer",
+      "sourceFile": null,
+      "title": "Transfer",
       "section": "Transactions",
-      "actions": [
-        "Save Changes",
-        "Record Transfer"
-      ]
+      "actions": []
     },
     {
       "id": "transactions-edit-deposit",
       "path": "/transactions/:id/edit/deposit",
       "component": "DepositForm",
-      "sourceFile": "packages/web/src/features/transactions/DepositForm.tsx",
-      "title": "New Deposit",
+      "sourceFile": null,
+      "title": "Deposit",
       "section": "Transactions",
-      "actions": [
-        "Save Changes",
-        "Record Deposit"
-      ]
+      "actions": []
     },
     {
       "id": "transactions-edit-cash-sale",
       "path": "/transactions/:id/edit/cash-sale",
       "component": "CashSaleForm",
-      "sourceFile": "packages/web/src/features/transactions/CashSaleForm.tsx",
-      "title": "New Cash Sale",
+      "sourceFile": null,
+      "title": "Cash Sale",
       "section": "Transactions",
-      "actions": [
-        "Save Changes",
-        "Record Cash Sale"
-      ]
+      "actions": []
     },
     {
       "id": "transactions-edit-journal-entry",
       "path": "/transactions/:id/edit/journal-entry",
       "component": "JournalEntryForm",
-      "sourceFile": "packages/web/src/features/transactions/JournalEntryForm.tsx",
-      "title": "New Journal Entry",
+      "sourceFile": null,
+      "title": "Journal Entry",
       "section": "Transactions",
-      "actions": [
-        "Save Changes",
-        "Post Journal Entry"
-      ]
+      "actions": []
     },
     {
       "id": "transactions-batch",
       "path": "/transactions/batch",
       "component": "BatchEntryPage",
-      "sourceFile": "packages/web/src/features/transactions/BatchEntryPage.tsx",
+      "sourceFile": null,
       "title": "Batch Entry",
       "section": "Transactions",
-      "actions": [
-        "Validate",
-        "Save All"
-      ]
+      "actions": []
     },
     {
       "id": "checks-write",
       "path": "/checks/write",
       "component": "WriteCheckPage",
-      "sourceFile": "packages/web/src/features/checks/WriteCheckPage.tsx",
+      "sourceFile": null,
       "title": "Write Check",
       "section": "Expenses",
       "actions": []
@@ -253,7 +221,7 @@
       "id": "checks-print",
       "path": "/checks/print",
       "component": "PrintChecksPage",
-      "sourceFile": "packages/web/src/features/checks/PrintChecksPage.tsx",
+      "sourceFile": null,
       "title": "Print Checks",
       "section": "Expenses",
       "actions": []
@@ -262,50 +230,35 @@
       "id": "settings-check-printing",
       "path": "/settings/check-printing",
       "component": "CheckPrintSettingsPage",
-      "sourceFile": "packages/web/src/features/settings/CheckPrintSettingsPage.tsx",
+      "sourceFile": null,
       "title": "Check Print Settings",
       "section": "Settings",
-      "actions": [
-        "PUT",
-        "Content-Type",
-        "POST",
-        "Failed to generate test page",
-        "Failed to generate test print",
-        "Save Settings"
-      ]
+      "actions": []
     },
     {
       "id": "banking",
       "path": "/banking",
       "component": "BankConnectionsPage",
-      "sourceFile": "packages/web/src/features/banking/BankConnectionsPage.tsx",
+      "sourceFile": null,
       "title": "Bank Connections",
       "section": "Banking",
-      "actions": [
-        "Sync",
-        "Activity",
-        "Disconnect company",
-        "Bank",
-        "Delete entire connection"
-      ]
+      "actions": []
     },
     {
       "id": "banking-feed",
       "path": "/banking/feed",
       "component": "BankFeedPage",
-      "sourceFile": "packages/web/src/features/banking/BankFeedPage.tsx",
+      "sourceFile": null,
       "title": "Bank Feed",
       "section": "Banking",
-      "actions": [
-        "Save"
-      ]
+      "actions": []
     },
     {
       "id": "banking-statement-upload",
       "path": "/banking/statement-upload",
       "component": "StatementUploadPage",
-      "sourceFile": "packages/web/src/features/banking/StatementUploadPage.tsx",
-      "title": "Import Bank Statement",
+      "sourceFile": null,
+      "title": "Statement Upload",
       "section": "Banking",
       "actions": []
     },
@@ -313,18 +266,16 @@
       "id": "banking-reconcile",
       "path": "/banking/reconcile",
       "component": "ReconciliationPage",
-      "sourceFile": "packages/web/src/features/banking/ReconciliationPage.tsx",
-      "title": "Bank Reconciliation",
+      "sourceFile": null,
+      "title": "Reconciliation",
       "section": "Banking",
-      "actions": [
-        "Start Reconciliation"
-      ]
+      "actions": []
     },
     {
       "id": "banking-reconciliation-history",
       "path": "/banking/reconciliation-history",
       "component": "ReconciliationHistoryPage",
-      "sourceFile": "packages/web/src/features/banking/ReconciliationHistoryPage.tsx",
+      "sourceFile": null,
       "title": "Reconciliation History",
       "section": "Banking",
       "actions": []
@@ -333,20 +284,16 @@
       "id": "banking-rules",
       "path": "/banking/rules",
       "component": "BankRulesPage",
-      "sourceFile": "packages/web/src/features/banking/BankRulesPage.tsx",
+      "sourceFile": null,
       "title": "Bank Rules",
       "section": "Banking",
-      "actions": [
-        "Cancel",
-        "Save Changes",
-        "Create Rule"
-      ]
+      "actions": []
     },
     {
       "id": "duplicates",
       "path": "/duplicates",
       "component": "DuplicateReviewPage",
-      "sourceFile": "packages/web/src/features/transactions/DuplicateReviewPage.tsx",
+      "sourceFile": null,
       "title": "Duplicate Review",
       "section": "Duplicates",
       "actions": []
@@ -355,8 +302,8 @@
       "id": "items",
       "path": "/items",
       "component": "ItemsListPage",
-      "sourceFile": "packages/web/src/features/items/ItemsListPage.tsx",
-      "title": "Products & Services",
+      "sourceFile": null,
+      "title": "Items List",
       "section": "Items",
       "actions": []
     },
@@ -364,30 +311,26 @@
       "id": "receive-payment",
       "path": "/receive-payment",
       "component": "ReceivePaymentPage",
-      "sourceFile": "packages/web/src/features/invoicing/ReceivePaymentPage.tsx",
+      "sourceFile": null,
       "title": "Receive Payment",
       "section": "Receive payment",
-      "actions": [
-        "Save Payment"
-      ]
+      "actions": []
     },
     {
       "id": "banking-deposit",
       "path": "/banking/deposit",
       "component": "BankDepositPage",
-      "sourceFile": "packages/web/src/features/banking/BankDepositPage.tsx",
+      "sourceFile": null,
       "title": "Bank Deposit",
       "section": "Banking",
-      "actions": [
-        "Save Deposit"
-      ]
+      "actions": []
     },
     {
       "id": "invoices",
       "path": "/invoices",
       "component": "InvoiceListPage",
-      "sourceFile": "packages/web/src/features/invoicing/InvoiceListPage.tsx",
-      "title": "Invoices",
+      "sourceFile": null,
+      "title": "Invoice List",
       "section": "Sales",
       "actions": []
     },
@@ -395,20 +338,17 @@
       "id": "invoices-new",
       "path": "/invoices/new",
       "component": "InvoiceForm",
-      "sourceFile": "packages/web/src/features/invoicing/InvoiceForm.tsx",
-      "title": "New Invoice",
+      "sourceFile": null,
+      "title": "Invoice",
       "section": "Sales",
-      "actions": [
-        "Save Changes",
-        "Create Invoice"
-      ]
+      "actions": []
     },
     {
       "id": "invoices",
       "path": "/invoices/:id",
       "component": "InvoiceDetailPage",
-      "sourceFile": "packages/web/src/features/invoicing/InvoiceDetailPage.tsx",
-      "title": "Invoice",
+      "sourceFile": null,
+      "title": "Invoice Detail",
       "section": "Sales",
       "actions": []
     },
@@ -416,31 +356,26 @@
       "id": "invoices-edit",
       "path": "/invoices/:id/edit",
       "component": "InvoiceForm",
-      "sourceFile": "packages/web/src/features/invoicing/InvoiceForm.tsx",
-      "title": "New Invoice",
+      "sourceFile": null,
+      "title": "Invoice",
       "section": "Sales",
-      "actions": [
-        "Save Changes",
-        "Create Invoice"
-      ]
+      "actions": []
     },
     {
       "id": "settings-invoice-template",
       "path": "/settings/invoice-template",
       "component": "InvoiceTemplateEditor",
-      "sourceFile": "packages/web/src/features/invoicing/InvoiceTemplateEditor.tsx",
-      "title": "Invoice Template",
+      "sourceFile": null,
+      "title": "Invoice Template Editor",
       "section": "Settings",
-      "actions": [
-        "Save Template"
-      ]
+      "actions": []
     },
     {
       "id": "bills",
       "path": "/bills",
       "component": "BillListPage",
-      "sourceFile": "packages/web/src/features/ap/BillListPage.tsx",
-      "title": "Bills",
+      "sourceFile": null,
+      "title": "Bill List",
       "section": "Expenses",
       "actions": []
     },
@@ -448,45 +383,35 @@
       "id": "bills-new",
       "path": "/bills/new",
       "component": "EnterBillPage",
-      "sourceFile": "packages/web/src/features/ap/EnterBillPage.tsx",
+      "sourceFile": null,
       "title": "Enter Bill",
       "section": "Expenses",
-      "actions": [
-        "Save Changes",
-        "Create Bill"
-      ]
+      "actions": []
     },
     {
       "id": "bills",
       "path": "/bills/:id",
       "component": "BillDetailPage",
-      "sourceFile": "packages/web/src/features/ap/BillDetailPage.tsx",
-      "title": "Bill",
+      "sourceFile": null,
+      "title": "Bill Detail",
       "section": "Expenses",
-      "actions": [
-        "Edit",
-        "Edit Lines",
-        "Void Bill"
-      ]
+      "actions": []
     },
     {
       "id": "bills-edit",
       "path": "/bills/:id/edit",
       "component": "EnterBillPage",
-      "sourceFile": "packages/web/src/features/ap/EnterBillPage.tsx",
+      "sourceFile": null,
       "title": "Enter Bill",
       "section": "Expenses",
-      "actions": [
-        "Save Changes",
-        "Create Bill"
-      ]
+      "actions": []
     },
     {
       "id": "vendor-credits",
       "path": "/vendor-credits",
       "component": "VendorCreditListPage",
-      "sourceFile": "packages/web/src/features/ap/VendorCreditListPage.tsx",
-      "title": "Vendor Credits",
+      "sourceFile": null,
+      "title": "Vendor Credit List",
       "section": "Expenses",
       "actions": []
     },
@@ -494,30 +419,25 @@
       "id": "vendor-credits-new",
       "path": "/vendor-credits/new",
       "component": "EnterVendorCreditPage",
-      "sourceFile": "packages/web/src/features/ap/EnterVendorCreditPage.tsx",
+      "sourceFile": null,
       "title": "Enter Vendor Credit",
       "section": "Expenses",
-      "actions": [
-        "Create Vendor Credit"
-      ]
+      "actions": []
     },
     {
       "id": "pay-bills",
       "path": "/pay-bills",
       "component": "PayBillsPage",
-      "sourceFile": "packages/web/src/features/ap/PayBillsPage.tsx",
+      "sourceFile": null,
       "title": "Pay Bills",
       "section": "Expenses",
-      "actions": [
-        "Apply Credits",
-        "Pay Selected"
-      ]
+      "actions": []
     },
     {
       "id": "attachments",
       "path": "/attachments",
       "component": "AttachmentLibraryPage",
-      "sourceFile": "packages/web/src/features/attachments/AttachmentLibraryPage.tsx",
+      "sourceFile": null,
       "title": "Attachment Library",
       "section": "Attachments",
       "actions": []
@@ -526,8 +446,8 @@
       "id": "recurring",
       "path": "/recurring",
       "component": "RecurringListPage",
-      "sourceFile": "packages/web/src/features/transactions/RecurringListPage.tsx",
-      "title": "Recurring Transactions",
+      "sourceFile": null,
+      "title": "Recurring List",
       "section": "Recurring",
       "actions": []
     },
@@ -535,32 +455,25 @@
       "id": "settings-tags",
       "path": "/settings/tags",
       "component": "TagManagerPage",
-      "sourceFile": "packages/web/src/features/tags/TagManagerPage.tsx",
+      "sourceFile": null,
       "title": "Tag Manager",
       "section": "Settings",
-      "actions": [
-        "Create",
-        "Create Group"
-      ]
+      "actions": []
     },
     {
       "id": "budgets",
       "path": "/budgets",
       "component": "BudgetEditorPage",
-      "sourceFile": "packages/web/src/features/budgets/BudgetEditorPage.tsx",
+      "sourceFile": null,
       "title": "Budget Editor",
       "section": "Budgeting",
-      "actions": [
-        "Show All",
-        "Hide Zero",
-        "Apply"
-      ]
+      "actions": []
     },
     {
       "id": "reports",
       "path": "/reports",
       "component": "ReportsPage",
-      "sourceFile": "packages/web/src/features/reports/ReportsPage.tsx",
+      "sourceFile": null,
       "title": "Reports",
       "section": "Reports",
       "actions": []
@@ -569,7 +482,7 @@
       "id": "reports-profit-loss",
       "path": "/reports/profit-loss",
       "component": "ProfitAndLossReport",
-      "sourceFile": "packages/web/src/features/reports/ProfitAndLossReport.tsx",
+      "sourceFile": null,
       "title": "Profit And Loss",
       "section": "Reports",
       "actions": []
@@ -578,7 +491,7 @@
       "id": "reports-balance-sheet",
       "path": "/reports/balance-sheet",
       "component": "BalanceSheetReport",
-      "sourceFile": "packages/web/src/features/reports/BalanceSheetReport.tsx",
+      "sourceFile": null,
       "title": "Balance Sheet",
       "section": "Reports",
       "actions": []
@@ -587,7 +500,7 @@
       "id": "reports-cash-flow",
       "path": "/reports/cash-flow",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "Cash Flow Statement",
       "section": "Reports",
       "actions": []
@@ -596,7 +509,7 @@
       "id": "reports-ar-aging-summary",
       "path": "/reports/ar-aging-summary",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "AR Aging Summary",
       "section": "Reports",
       "actions": []
@@ -605,7 +518,7 @@
       "id": "reports-ar-aging-detail",
       "path": "/reports/ar-aging-detail",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "AR Aging Detail",
       "section": "Reports",
       "actions": []
@@ -614,7 +527,7 @@
       "id": "reports-customer-balance-summary",
       "path": "/reports/customer-balance-summary",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "Customer Balance Summary",
       "section": "Reports",
       "actions": []
@@ -623,7 +536,7 @@
       "id": "reports-customer-balance-detail",
       "path": "/reports/customer-balance-detail",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "Customer Balance Detail",
       "section": "Reports",
       "actions": []
@@ -632,7 +545,7 @@
       "id": "reports-invoice-list",
       "path": "/reports/invoice-list",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "Invoice List",
       "section": "Reports",
       "actions": []
@@ -641,7 +554,7 @@
       "id": "reports-expense-by-vendor",
       "path": "/reports/expense-by-vendor",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "Expenses by Vendor",
       "section": "Reports",
       "actions": []
@@ -650,7 +563,7 @@
       "id": "reports-expense-by-category",
       "path": "/reports/expense-by-category",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "Expenses by Category",
       "section": "Reports",
       "actions": []
@@ -659,7 +572,7 @@
       "id": "reports-vendor-balance-summary",
       "path": "/reports/vendor-balance-summary",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "Vendor Balance Summary",
       "section": "Reports",
       "actions": []
@@ -668,7 +581,7 @@
       "id": "reports-ap-aging-summary",
       "path": "/reports/ap-aging-summary",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "AP Aging Summary",
       "section": "Reports",
       "actions": []
@@ -677,7 +590,7 @@
       "id": "reports-ap-aging-detail",
       "path": "/reports/ap-aging-detail",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "AP Aging Detail",
       "section": "Reports",
       "actions": []
@@ -686,7 +599,7 @@
       "id": "reports-unpaid-bills",
       "path": "/reports/unpaid-bills",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "Unpaid Bills",
       "section": "Reports",
       "actions": []
@@ -695,7 +608,7 @@
       "id": "reports-bill-payment-history",
       "path": "/reports/bill-payment-history",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "Bill Payment History",
       "section": "Reports",
       "actions": []
@@ -704,7 +617,7 @@
       "id": "reports-ap-1099-prep",
       "path": "/reports/ap-1099-prep",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "1099 Preparation",
       "section": "Reports",
       "actions": []
@@ -713,7 +626,7 @@
       "id": "reports-transaction-list-by-vendor",
       "path": "/reports/transaction-list-by-vendor",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "Transactions by Vendor",
       "section": "Reports",
       "actions": []
@@ -722,7 +635,7 @@
       "id": "reports-bank-reconciliation-summary",
       "path": "/reports/bank-reconciliation-summary",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "Bank Reconciliation",
       "section": "Reports",
       "actions": []
@@ -731,7 +644,7 @@
       "id": "reports-deposit-detail",
       "path": "/reports/deposit-detail",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "Deposit Detail",
       "section": "Reports",
       "actions": []
@@ -740,7 +653,7 @@
       "id": "reports-check-register",
       "path": "/reports/check-register",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "Check Register",
       "section": "Reports",
       "actions": []
@@ -749,7 +662,7 @@
       "id": "reports-sales-tax-liability",
       "path": "/reports/sales-tax-liability",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "Sales Tax Liability",
       "section": "Reports",
       "actions": []
@@ -758,7 +671,7 @@
       "id": "reports-taxable-sales-summary",
       "path": "/reports/taxable-sales-summary",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "Taxable Sales Summary",
       "section": "Reports",
       "actions": []
@@ -767,7 +680,7 @@
       "id": "reports-sales-tax-payments",
       "path": "/reports/sales-tax-payments",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "Sales Tax Payments",
       "section": "Reports",
       "actions": []
@@ -776,7 +689,7 @@
       "id": "reports-vendor-1099-summary",
       "path": "/reports/vendor-1099-summary",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "1099 Vendor Summary",
       "section": "Reports",
       "actions": []
@@ -785,7 +698,7 @@
       "id": "reports-general-ledger",
       "path": "/reports/general-ledger",
       "component": "GeneralLedgerReport",
-      "sourceFile": "packages/web/src/features/reports/GeneralLedgerReport.tsx",
+      "sourceFile": null,
       "title": "General Ledger",
       "section": "Reports",
       "actions": []
@@ -794,7 +707,7 @@
       "id": "reports-trial-balance",
       "path": "/reports/trial-balance",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "Trial Balance",
       "section": "Reports",
       "actions": []
@@ -803,7 +716,7 @@
       "id": "reports-transaction-list",
       "path": "/reports/transaction-list",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "Transaction List",
       "section": "Reports",
       "actions": []
@@ -812,7 +725,7 @@
       "id": "reports-journal-entry-report",
       "path": "/reports/journal-entry-report",
       "component": "GenericReport",
-      "sourceFile": "packages/web/src/features/reports/GenericReport.tsx",
+      "sourceFile": null,
       "title": "Journal Entries",
       "section": "Reports",
       "actions": []
@@ -821,7 +734,7 @@
       "id": "reports-budget-vs-actual",
       "path": "/reports/budget-vs-actual",
       "component": "BudgetVsActualReport",
-      "sourceFile": "packages/web/src/features/reports/BudgetVsActualReport.tsx",
+      "sourceFile": null,
       "title": "Budget Vs Actual",
       "section": "Reports",
       "actions": []
@@ -830,7 +743,7 @@
       "id": "reports-budget-overview",
       "path": "/reports/budget-overview",
       "component": "BudgetOverviewReport",
-      "sourceFile": "packages/web/src/features/reports/BudgetOverviewReport.tsx",
+      "sourceFile": null,
       "title": "Budget Overview",
       "section": "Reports",
       "actions": []
@@ -839,19 +752,17 @@
       "id": "settings-company",
       "path": "/settings/company",
       "component": "CompanyProfilePage",
-      "sourceFile": "packages/web/src/features/company/CompanyProfilePage.tsx",
+      "sourceFile": null,
       "title": "Company Profile",
       "section": "Settings",
-      "actions": [
-        "Save Changes"
-      ]
+      "actions": []
     },
     {
       "id": "settings-backup",
       "path": "/settings/backup",
       "component": "BackupRestorePage",
-      "sourceFile": "packages/web/src/features/settings/BackupRestorePage.tsx",
-      "title": "Backup & Restore",
+      "sourceFile": null,
+      "title": "Backup Restore",
       "section": "Settings",
       "actions": []
     },
@@ -859,7 +770,7 @@
       "id": "settings-audit-log",
       "path": "/settings/audit-log",
       "component": "AuditLogPage",
-      "sourceFile": "packages/web/src/features/settings/AuditLogPage.tsx",
+      "sourceFile": null,
       "title": "Audit Log",
       "section": "Settings",
       "actions": []
@@ -868,8 +779,8 @@
       "id": "settings-export",
       "path": "/settings/export",
       "component": "DataExportPage",
-      "sourceFile": "packages/web/src/features/settings/DataExportPage.tsx",
-      "title": "Export Data",
+      "sourceFile": null,
+      "title": "Data Export",
       "section": "Settings",
       "actions": []
     },
@@ -877,8 +788,8 @@
       "id": "settings-tenant-export",
       "path": "/settings/tenant-export",
       "component": "TenantExportPage",
-      "sourceFile": "packages/web/src/features/settings/TenantExportPage.tsx",
-      "title": "Export Company Data",
+      "sourceFile": null,
+      "title": "Tenant Export",
       "section": "Settings",
       "actions": []
     },
@@ -886,20 +797,17 @@
       "id": "settings-tenant-import",
       "path": "/settings/tenant-import",
       "component": "TenantImportPage",
-      "sourceFile": "packages/web/src/features/settings/TenantImportPage.tsx",
-      "title": "Import Complete",
+      "sourceFile": null,
+      "title": "Tenant Import",
       "section": "Settings",
-      "actions": [
-        "Import as New Company",
-        "Merge into Company"
-      ]
+      "actions": []
     },
     {
       "id": "settings-remote-backup",
       "path": "/settings/remote-backup",
       "component": "RemoteBackupSettingsPage",
-      "sourceFile": "packages/web/src/features/settings/RemoteBackupSettingsPage.tsx",
-      "title": "Remote Backups",
+      "sourceFile": null,
+      "title": "Remote Backup Settings",
       "section": "Settings",
       "actions": []
     },
@@ -907,7 +815,7 @@
       "id": "settings-opening-balances",
       "path": "/settings/opening-balances",
       "component": "OpeningBalancesPage",
-      "sourceFile": "packages/web/src/features/settings/OpeningBalancesPage.tsx",
+      "sourceFile": null,
       "title": "Opening Balances",
       "section": "Settings",
       "actions": []
@@ -916,55 +824,71 @@
       "id": "settings-preferences",
       "path": "/settings/preferences",
       "component": "PreferencesPage",
-      "sourceFile": "packages/web/src/features/settings/PreferencesPage.tsx",
+      "sourceFile": null,
       "title": "Preferences",
       "section": "Settings",
-      "actions": [
-        "Save Preferences"
-      ]
+      "actions": []
     },
     {
       "id": "settings-email",
       "path": "/settings/email",
       "component": "EmailSettingsPage",
-      "sourceFile": "packages/web/src/features/settings/EmailSettingsPage.tsx",
+      "sourceFile": null,
       "title": "Email Settings",
       "section": "Settings",
-      "actions": [
-        "Test Connection",
-        "Save Email Settings"
-      ]
+      "actions": []
+    },
+    {
+      "id": "settings-ai",
+      "path": "/settings/ai",
+      "component": "CompanyAiSettingsPage",
+      "sourceFile": null,
+      "title": "Company Ai Settings",
+      "section": "Settings",
+      "actions": []
+    },
+    {
+      "id": "settings-report-labels",
+      "path": "/settings/report-labels",
+      "component": "ReportLabelsPage",
+      "sourceFile": null,
+      "title": "Report Labels",
+      "section": "Settings",
+      "actions": []
+    },
+    {
+      "id": "settings-online-payments",
+      "path": "/settings/online-payments",
+      "component": "StripeSettingsPage",
+      "sourceFile": null,
+      "title": "Stripe Settings",
+      "section": "Settings",
+      "actions": []
     },
     {
       "id": "settings-team",
       "path": "/settings/team",
       "component": "TeamPage",
-      "sourceFile": "packages/web/src/features/settings/TeamPage.tsx",
+      "sourceFile": null,
       "title": "Team",
       "section": "Settings",
-      "actions": [
-        "Invite"
-      ]
+      "actions": []
     },
     {
       "id": "settings-api-keys",
       "path": "/settings/api-keys",
       "component": "ApiKeysPage",
-      "sourceFile": "packages/web/src/features/settings/ApiKeysPage.tsx",
-      "title": "API Keys",
+      "sourceFile": null,
+      "title": "Api Keys",
       "section": "Settings",
-      "actions": [
-        "Cancel",
-        "Generate Key",
-        "Done"
-      ]
+      "actions": []
     },
     {
       "id": "settings-security",
       "path": "/settings/security",
       "component": "TfaSettingsPage",
-      "sourceFile": "packages/web/src/features/settings/TfaSettingsPage.tsx",
-      "title": "Two-Factor Authentication",
+      "sourceFile": null,
+      "title": "Tfa Settings",
       "section": "Settings",
       "actions": []
     },
@@ -972,7 +896,7 @@
       "id": "settings-connected-apps",
       "path": "/settings/connected-apps",
       "component": "ConnectedAppsPage",
-      "sourceFile": "packages/web/src/features/settings/ConnectedAppsPage.tsx",
+      "sourceFile": null,
       "title": "Connected Apps",
       "section": "Settings",
       "actions": []
@@ -981,20 +905,17 @@
       "id": "settings-storage",
       "path": "/settings/storage",
       "component": "StorageSettingsPage",
-      "sourceFile": "packages/web/src/features/settings/StorageSettingsPage.tsx",
-      "title": "File Storage",
+      "sourceFile": null,
+      "title": "Storage Settings",
       "section": "Settings",
-      "actions": [
-        "Update credentials",
-        "Connect"
-      ]
+      "actions": []
     },
     {
       "id": "payroll-import",
       "path": "/payroll/import",
       "component": "PayrollImportPage",
-      "sourceFile": "packages/web/src/features/payroll/PayrollImportPage.tsx",
-      "title": "Import Payroll",
+      "sourceFile": null,
+      "title": "Payroll Import",
       "section": "Payroll",
       "actions": []
     },
@@ -1002,8 +923,8 @@
       "id": "payroll-imports",
       "path": "/payroll/imports",
       "component": "PayrollHistoryPage",
-      "sourceFile": "packages/web/src/features/payroll/PayrollHistoryPage.tsx",
-      "title": "Payroll Import History",
+      "sourceFile": null,
+      "title": "Payroll History",
       "section": "Payroll",
       "actions": []
     },
@@ -1011,19 +932,16 @@
       "id": "settings-payroll-accounts",
       "path": "/settings/payroll-accounts",
       "component": "PayrollAccountMappingPage",
-      "sourceFile": "packages/web/src/features/payroll/PayrollAccountMappingPage.tsx",
+      "sourceFile": null,
       "title": "Payroll Account Mapping",
       "section": "Settings",
-      "actions": [
-        "Auto-Map",
-        "Save Mappings"
-      ]
+      "actions": []
     },
     {
       "id": "settings",
       "path": "/settings",
       "component": "SettingsPage",
-      "sourceFile": "packages/web/src/features/settings/SettingsPage.tsx",
+      "sourceFile": null,
       "title": "Settings",
       "section": "Settings",
       "actions": []
@@ -1032,7 +950,7 @@
       "id": "help",
       "path": "/help",
       "component": "KnowledgeBasePage",
-      "sourceFile": "packages/web/src/features/help/KnowledgeBasePage.tsx",
+      "sourceFile": null,
       "title": "Knowledge Base",
       "section": "Help",
       "actions": []
@@ -1041,7 +959,7 @@
       "id": "help",
       "path": "/help/:id",
       "component": "ArticlePage",
-      "sourceFile": "packages/web/src/features/help/ArticlePage.tsx",
+      "sourceFile": null,
       "title": "Article",
       "section": "Help",
       "actions": []
@@ -1134,8 +1052,9 @@
     "Attachments",
     "Writing a Check",
     "Printing Checks",
-    "Plaid Bank Connections",
+    "REST API (v2)",
     "API Keys",
+    "Plaid Bank Connections",
     "MCP Server (AI Assistant Integration)",
     "OAuth 2.0"
   ]

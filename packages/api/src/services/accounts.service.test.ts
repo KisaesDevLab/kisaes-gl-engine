@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { db } from '../db/index.js';
 import { tenants, users, sessions, accounts, companies, auditLog } from '../db/schema/index.js';

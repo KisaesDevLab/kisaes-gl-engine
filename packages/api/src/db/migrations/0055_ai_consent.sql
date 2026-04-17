@@ -1,3 +1,6 @@
+-- Copyright 2026 Kisaes LLC
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- You may not distribute this software. See LICENSE for terms.
 -- AI Consent — company-level opt-in.
 --
 -- See Build Plans/AI_PII_PROTECTION_ADDENDUM.md §Tier 2: Company-Level

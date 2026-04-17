@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 import fs from 'fs';
 import { eq, and, ilike } from 'drizzle-orm';
 import { db } from '../db/index.js';

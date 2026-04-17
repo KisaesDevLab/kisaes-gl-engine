@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 // Aggressive MCP tenant-isolation audit. Each test creates two tenants
 // with an API key each, then tries to use Tenant A's key to observe or
 // mutate Tenant B's data via MCP tools or resources.

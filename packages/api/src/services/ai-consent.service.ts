@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 // Two-tier AI consent service.
 //
 // See Build Plans/AI_PII_PROTECTION_ADDENDUM.md §Two-Tier Consent Model.

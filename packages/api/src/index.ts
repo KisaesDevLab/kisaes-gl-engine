@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { app } from './app.js';
 import { env } from './config/env.js';

@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 export type PrintStatus = 'queue' | 'printed' | 'hand_written';
 
 export interface WriteCheckInput {

@@ -727,36 +727,97 @@ alignment before printing real checks.
 
 ## API & Integrations
 
+### REST API (v2)
+Vibe MyBooks exposes a stable REST API under **`/api/v2/`** for external
+integrations, automation, and custom reporting. All endpoints return JSON
+and use string amounts (`"1234.5600"`) to preserve decimal precision.
+
+**Resource coverage in v2:**
+- Context: `/me`, `/tenants`, `/tenants/switch`, `/docs`
+- Chart of accounts, contacts, items, tags
+- Transactions (expense / deposit / transfer / journal_entry / cash_sale),
+  void, tagging
+- Invoices and customer payments (`/payments/receive`)
+- Bills (AP), bill-payments, vendor-credits
+- Checks and the print queue
+- Recurring schedules (list / create / update / deactivate / post-now)
+- Budgets (with budget-vs-actual)
+- Dashboard snapshots (cash position, AR/AP summary, action items,
+  trend, snapshot)
+- Bank connections, bank feed (list / categorize / match / exclude /
+  bulk-approve), reconciliation history and start
+- Attachment metadata
+- Financial reports: trial balance, P&L, balance sheet, cash flow,
+  general ledger, AR aging, expense by vendor, expense by category,
+  vendor balance, customer balance, 1099 vendor summary, sales tax
+  liability, check register
+
+**What is still v1-only:** file uploads (multipart), Plaid link-token
+minting, reconciliation line updates and complete/undo, check print batch,
+bank rules, batch entry, import/export, backup, admin, AI chat, estimates.
+
+### API Keys
+Generate API keys for external integrations under
+**Settings → API Keys →**. Each key has a name, a role
+(readonly / accountant / owner), a set of scopes, and an optional
+expiration. Keys can be restricted to specific companies within a tenant.
+The full key value is shown **only once** at creation. API keys authenticate
+via the `X-API-Key` header on the REST API, or `Authorization: Bearer`
+on MCP.
+
+Rate limit: 100 requests per minute per key on the REST API, 60 requests
+per minute per key on MCP. JWT tokens are also supported for web / mobile
+app flows.
+
 ### Plaid Bank Connections
-Plaid connects your bank accounts directly to Vibe MyBooks for automatic transaction
-import. Set up under **Admin → Plaid Integration →** (requires Plaid API credentials).
+Plaid connects your bank accounts directly to Vibe MyBooks for automatic
+transaction import. Set up under **Admin → Plaid Integration →**
+(requires Plaid API credentials).
 
 Once configured, users connect banks via **Banking → Bank Connections →**:
 1. Click **Connect Bank** and search for your bank.
 2. Log in through Plaid's secure window.
 3. Select which accounts to import.
-4. Transactions sync automatically (you can also click **Sync** to pull immediately).
+4. Transactions sync automatically (you can also click **Sync** to pull
+   immediately).
 
-Imported transactions appear in the **Bank Feed →** for categorization or matching
-against existing transactions.
-
-### API Keys
-Generate API keys for external integrations under **Settings → API Keys →**. Each key
-has a name and can be revoked at any time. API keys provide programmatic access to your
-company's data for automation, reporting tools, or custom integrations.
+Imported transactions appear in the **Bank Feed →** for categorization or
+matching against existing transactions.
 
 ### MCP Server (AI Assistant Integration)
-Vibe MyBooks includes an MCP (Model Context Protocol) server that lets external AI
-assistants (like Claude) interact with your accounting data. Configure under
-**Admin → MCP / API Access →**.
+Vibe MyBooks includes an MCP (Model Context Protocol) server at **`/mcp`**
+that lets external AI assistants (Claude, GPT, etc.) interact with your
+accounting data. MCP supports **both read and write operations** subject
+to the key's scopes.
 
-The MCP server provides read-only access to accounting data, enabling AI assistants to
-answer questions about your books, generate summaries, and help with analysis — all
-without being able to modify data.
+Enable MCP:
+1. System-wide under **Admin → MCP / API Access →**
+2. Per-company under **Settings → Company Profile → API & MCP Access →**
+   (off by default — must be explicitly enabled for each company)
+
+**Tool groups (79+ tools):** context, chart of accounts, contacts,
+transactions (including void), invoices, bills and AP, bill payments,
+vendor credits, customer payments, checks, recurring, budgets, dashboard,
+bank feed, reconciliation, attachments, items, tags, search, and
+financial reports.
+
+**Resources (read-only snapshots):** `kisbooks://companies`, and under
+`kisbooks://company/{id}/`: chart-of-accounts, contacts,
+recent-transactions, bank-feed/pending, invoices/overdue, bills/payable,
+bill-payments, vendor-credits, recurring, budgets, checks/print-queue,
+reconciliations, items, tags, dashboard.
+
+**Scopes gate each tool:** `all`, `read`, `write`, `reports`, `invoicing`,
+`banking`. Assign scopes when generating the key. Every MCP call is
+audited (tool, company, sanitized parameters, status, duration) —
+view under **Admin → MCP Audit Log**.
 
 ### OAuth 2.0
-Vibe MyBooks supports OAuth 2.0 for third-party application authentication. This allows
-external apps to connect and access data on behalf of a user with proper authorization.
+Vibe MyBooks supports OAuth 2.0 for third-party application authentication
+(authorization code flow). Third-party apps redirect users to a consent
+screen showing the requesting app and requested scopes; users can then
+authorize or deny. Authorized apps appear under
+**Settings → Connected Apps**, where users can revoke access.
 
 
 ## Screen Catalog (auto-generated)
@@ -770,64 +831,64 @@ The following screens exist in the application. Use these names and paths when d
 
 ### Banking
 
-- **Bank Connections** (`/banking`) — actions: Sync, Activity, Disconnect company, Bank, Delete entire connection
-- **Bank Feed** (`/banking/feed`) — actions: Save
-- **Import Bank Statement** (`/banking/statement-upload`)
-- **Bank Reconciliation** (`/banking/reconcile`) — actions: Start Reconciliation
+- **Bank Connections** (`/banking`)
+- **Bank Feed** (`/banking/feed`)
+- **Statement Upload** (`/banking/statement-upload`)
+- **Reconciliation** (`/banking/reconcile`)
 - **Reconciliation History** (`/banking/reconciliation-history`)
-- **Bank Rules** (`/banking/rules`) — actions: Cancel, Save Changes, Create Rule
-- **Bank Deposit** (`/banking/deposit`) — actions: Save Deposit
+- **Bank Rules** (`/banking/rules`)
+- **Bank Deposit** (`/banking/deposit`)
 
 ### Sales
 
-- **Invoices** (`/invoices`)
-- **New Invoice** (`/invoices/new`) — actions: Save Changes, Create Invoice
-- **Invoice** (`/invoices/:id`)
-- **New Invoice** (`/invoices/:id/edit`) — actions: Save Changes, Create Invoice
+- **Invoice List** (`/invoices`)
+- **Invoice** (`/invoices/new`)
+- **Invoice Detail** (`/invoices/:id`)
+- **Invoice** (`/invoices/:id/edit`)
 
 ### Expenses
 
 - **Write Check** (`/checks/write`)
 - **Print Checks** (`/checks/print`)
-- **Bills** (`/bills`)
-- **Enter Bill** (`/bills/new`) — actions: Save Changes, Create Bill
-- **Bill** (`/bills/:id`) — actions: Edit, Edit Lines, Void Bill
-- **Enter Bill** (`/bills/:id/edit`) — actions: Save Changes, Create Bill
-- **Vendor Credits** (`/vendor-credits`)
-- **Enter Vendor Credit** (`/vendor-credits/new`) — actions: Create Vendor Credit
-- **Pay Bills** (`/pay-bills`) — actions: Apply Credits, Pay Selected
+- **Bill List** (`/bills`)
+- **Enter Bill** (`/bills/new`)
+- **Bill Detail** (`/bills/:id`)
+- **Enter Bill** (`/bills/:id/edit`)
+- **Vendor Credit List** (`/vendor-credits`)
+- **Enter Vendor Credit** (`/vendor-credits/new`)
+- **Pay Bills** (`/pay-bills`)
 
 ### Transactions
 
-- **Transactions** (`/transactions`)
-- **Transaction Detail** (`/transactions/:id`) — actions: Void
-- **New Journal Entry** (`/transactions/new/journal-entry`) — actions: Save Changes, Post Journal Entry
-- **New Expense** (`/transactions/new/expense`) — actions: Save Changes, Record Expense
-- **New Transfer** (`/transactions/new/transfer`) — actions: Save Changes, Record Transfer
-- **New Deposit** (`/transactions/new/deposit`) — actions: Save Changes, Record Deposit
-- **New Cash Sale** (`/transactions/new/cash-sale`) — actions: Save Changes, Record Cash Sale
-- **New Expense** (`/transactions/:id/edit/expense`) — actions: Save Changes, Record Expense
-- **New Transfer** (`/transactions/:id/edit/transfer`) — actions: Save Changes, Record Transfer
-- **New Deposit** (`/transactions/:id/edit/deposit`) — actions: Save Changes, Record Deposit
-- **New Cash Sale** (`/transactions/:id/edit/cash-sale`) — actions: Save Changes, Record Cash Sale
-- **New Journal Entry** (`/transactions/:id/edit/journal-entry`) — actions: Save Changes, Post Journal Entry
-- **Batch Entry** (`/transactions/batch`) — actions: Validate, Save All
+- **Transaction List** (`/transactions`)
+- **Transaction Detail** (`/transactions/:id`)
+- **Journal Entry** (`/transactions/new/journal-entry`)
+- **Expense** (`/transactions/new/expense`)
+- **Transfer** (`/transactions/new/transfer`)
+- **Deposit** (`/transactions/new/deposit`)
+- **Cash Sale** (`/transactions/new/cash-sale`)
+- **Expense** (`/transactions/:id/edit/expense`)
+- **Transfer** (`/transactions/:id/edit/transfer`)
+- **Deposit** (`/transactions/:id/edit/deposit`)
+- **Cash Sale** (`/transactions/:id/edit/cash-sale`)
+- **Journal Entry** (`/transactions/:id/edit/journal-entry`)
+- **Batch Entry** (`/transactions/batch`)
 
 ### Contacts
 
-- **Contacts** (`/contacts`)
-- **New Contact** (`/contacts/new`) — actions: Save Changes, Create Contact
+- **Contacts List** (`/contacts`)
+- **Contact Form** (`/contacts/new`)
 - **Contact Detail** (`/contacts/:id`)
-- **New Contact** (`/contacts/:id/edit`) — actions: Save Changes, Create Contact
+- **Contact Form** (`/contacts/:id/edit`)
 
 ### Accounts
 
-- **Chart of Accounts** (`/accounts`)
+- **Accounts List** (`/accounts`)
 - **Account Register** (`/accounts/:id/register`)
 
 ### Budgeting
 
-- **Budget Editor** (`/budgets`) — actions: Show All, Hide Zero, Apply
+- **Budget Editor** (`/budgets`)
 
 ### Reports
 
@@ -865,25 +926,28 @@ The following screens exist in the application. Use these names and paths when d
 
 ### Settings
 
-- **Check Print Settings** (`/settings/check-printing`) — actions: PUT, Content-Type, POST, Failed to generate test page, Failed to generate test print, Save Settings
-- **Invoice Template** (`/settings/invoice-template`) — actions: Save Template
-- **Tag Manager** (`/settings/tags`) — actions: Create, Create Group
-- **Company Profile** (`/settings/company`) — actions: Save Changes
-- **Backup & Restore** (`/settings/backup`)
+- **Check Print Settings** (`/settings/check-printing`)
+- **Invoice Template Editor** (`/settings/invoice-template`)
+- **Tag Manager** (`/settings/tags`)
+- **Company Profile** (`/settings/company`)
+- **Backup Restore** (`/settings/backup`)
 - **Audit Log** (`/settings/audit-log`)
-- **Export Data** (`/settings/export`)
-- **Export Company Data** (`/settings/tenant-export`)
-- **Import Complete** (`/settings/tenant-import`) — actions: Import as New Company, Merge into Company
-- **Remote Backups** (`/settings/remote-backup`)
+- **Data Export** (`/settings/export`)
+- **Tenant Export** (`/settings/tenant-export`)
+- **Tenant Import** (`/settings/tenant-import`)
+- **Remote Backup Settings** (`/settings/remote-backup`)
 - **Opening Balances** (`/settings/opening-balances`)
-- **Preferences** (`/settings/preferences`) — actions: Save Preferences
-- **Email Settings** (`/settings/email`) — actions: Test Connection, Save Email Settings
-- **Team** (`/settings/team`) — actions: Invite
-- **API Keys** (`/settings/api-keys`) — actions: Cancel, Generate Key, Done
-- **Two-Factor Authentication** (`/settings/security`)
+- **Preferences** (`/settings/preferences`)
+- **Email Settings** (`/settings/email`)
+- **Company Ai Settings** (`/settings/ai`)
+- **Report Labels** (`/settings/report-labels`)
+- **Stripe Settings** (`/settings/online-payments`)
+- **Team** (`/settings/team`)
+- **Api Keys** (`/settings/api-keys`)
+- **Tfa Settings** (`/settings/security`)
 - **Connected Apps** (`/settings/connected-apps`)
-- **File Storage** (`/settings/storage`) — actions: Update credentials, Connect
-- **Payroll Account Mapping** (`/settings/payroll-accounts`) — actions: Auto-Map, Save Mappings
+- **Storage Settings** (`/settings/storage`)
+- **Payroll Account Mapping** (`/settings/payroll-accounts`)
 - **Settings** (`/settings`)
 
 ### *
@@ -905,17 +969,21 @@ The following screens exist in the application. Use these names and paths when d
 
 ### Items
 
-- **Products & Services** (`/items`)
+- **Items List** (`/items`)
+
+### Pay
+
+- **Public Invoice** (`/pay/:token`)
 
 ### Payroll
 
-- **Import Payroll** (`/payroll/import`)
-- **Payroll Import History** (`/payroll/imports`)
+- **Payroll Import** (`/payroll/import`)
+- **Payroll History** (`/payroll/imports`)
 
 ### Receive payment
 
-- **Receive Payment** (`/receive-payment`) — actions: Save Payment
+- **Receive Payment** (`/receive-payment`)
 
 ### Recurring
 
-- **Recurring Transactions** (`/recurring`)
+- **Recurring List** (`/recurring`)

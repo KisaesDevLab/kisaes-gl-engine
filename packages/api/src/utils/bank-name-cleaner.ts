@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 /**
  * Cleans raw bank transaction descriptions into readable payee names.
  * This is the last-resort fallback — runs only when bank rules, categorization

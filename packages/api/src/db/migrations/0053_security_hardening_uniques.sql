@@ -1,3 +1,6 @@
+-- Copyright 2026 Kisaes LLC
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- You may not distribute this software. See LICENSE for terms.
 -- Add UNIQUE constraints to token / key / code hash columns. Collisions on
 -- these columns would be authentication identity confusion — findFirst()
 -- returning the wrong row on lookup-by-hash would authenticate the caller

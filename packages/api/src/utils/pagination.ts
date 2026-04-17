@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 // Coerce caller-supplied ?limit= / ?offset= values into safe bounds. Without
 // these helpers, routes that parseInt() the raw query accept unbounded
 // requests like ?limit=1e9, which at best waste DB work and at worst OOM

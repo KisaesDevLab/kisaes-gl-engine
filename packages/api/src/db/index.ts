@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
 import { env } from '../config/env.js';

@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 import type { StorageProvider, FileMetadata, StorageResult, HealthResult } from './storage-provider.interface.js';
 
 export class GoogleDriveProvider implements StorageProvider {

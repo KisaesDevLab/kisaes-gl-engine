@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 export type BankFeedStatus = 'pending' | 'matched' | 'categorized' | 'excluded';
 export type SyncStatus = 'active' | 'error' | 'disconnected';
 export type ReconciliationStatus = 'in_progress' | 'complete';

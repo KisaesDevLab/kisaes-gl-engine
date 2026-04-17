@@ -1,3 +1,7 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// You may not distribute this software. See LICENSE for terms.
+
 // Minimal SSRF-defense helpers for URLs supplied by admins (Ollama endpoint,
 // WebDAV backup target, etc.). These are *string-level* checks — they don't
 // resolve DNS, so an attacker registering evil.example with A=127.0.0.1
