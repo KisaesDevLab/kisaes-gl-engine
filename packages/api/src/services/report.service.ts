@@ -3,10 +3,23 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { eq, and, sql, lte, gte, between, count, or, ne } from 'drizzle-orm';
+import DecimalLib from 'decimal.js';
+const Decimal = DecimalLib.default || DecimalLib;
 import { type PLSectionLabels, isDebitNormal as isDebitNormalShared, COST_TYPES } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { transactions, journalLines, accounts, contacts } from '../db/schema/index.js';
 import { getPLLabels } from './tenant-report-settings.service.js';
+
+// Money parsers. Reports expose `number` to the UI, but every SUM /
+// DIFFERENCE runs through Decimal so aggregating hundreds of rows
+// doesn't drift a P&L total or balance-sheet line by a few cents.
+// Treat these helpers like `parseFloat` with exact arithmetic.
+function num(x: string | number | null | undefined): number {
+  return Number(new Decimal(x || 0).toFixed(4));
+}
+function sub(a: string | number | null | undefined, b: string | number | null | undefined): number {
+  return Number(new Decimal(a || 0).minus(b || 0).toFixed(4));
+}
 
 type Basis = 'accrual' | 'cash';
 
@@ -99,7 +112,7 @@ export async function buildProfitAndLoss(
   let totalOtherExpenses = 0;
 
   for (const row of rows.rows as any[]) {
-    const amount = Math.abs(parseFloat(row.total_credit) - parseFloat(row.total_debit));
+    const amount = Math.abs(sub(row.total_credit, row.total_debit));
     if (amount === 0) continue;
     const entry: PLEntry = { accountId: row.id, name: row.name, accountNumber: row.account_number, amount };
     switch (row.account_type) {
@@ -162,7 +175,7 @@ export async function buildBalanceSheet(tenantId: string, asOfDate: string, basi
   for (const row of rows.rows as any[]) {
     // Skip the Retained Earnings system account — we compute it dynamically below
     if (row.system_tag === 'retained_earnings') continue;
-    const balance = parseFloat(row.total_debit) - parseFloat(row.total_credit);
+    const balance = sub(row.total_debit, row.total_credit);
     if (balance === 0) continue;
     const entry: BSEntry = { accountId: row.id, name: row.name, accountNumber: row.account_number, balance };
     if (row.account_type === 'asset') { assets.push(entry); totalAssets += balance; }
@@ -237,7 +250,7 @@ export async function buildARAgingSummary(tenantId: string, asOfDate: string, co
   const details: any[] = [];
 
   for (const row of rows.rows as any[]) {
-    const balance = parseFloat(row.balance_due || row.total || '0');
+    const balance = num(row.balance_due || row.total || '0');
     if (balance <= 0) continue;
     const dueDate = new Date(row.due_date || row.txn_date);
     const daysOverdue = Math.floor((asOf.getTime() - dueDate.getTime()) / 86400000);
@@ -276,7 +289,7 @@ export async function buildCustomerBalanceSummary(tenantId: string, companyId: s
 
   return {
     title: 'Customer Balance Summary',
-    data: (rows.rows as any[]).filter(r => parseFloat(r.balance) !== 0),
+    data: (rows.rows as any[]).filter(r => num(r.balance) !== 0),
   };
 }
 
@@ -437,8 +450,8 @@ export async function buildSalesTaxLiability(tenantId: string, startDate: string
   const row = (rows.rows as any[])[0] || { total_tax: '0', total_sales: '0' };
   return {
     title: 'Sales Tax Liability', startDate, endDate,
-    totalSales: parseFloat(row.total_sales),
-    totalTax: parseFloat(row.total_tax),
+    totalSales: num(row.total_sales),
+    totalTax: num(row.total_tax),
   };
 }
 
@@ -606,7 +619,7 @@ export async function buildGeneralLedger(tenantId: string, startDate: string, en
   // Index beginning balances and period lines by account id
   const beginMap = new Map<string, { debit: number; credit: number }>();
   for (const r of beginRows) {
-    beginMap.set(r.id, { debit: parseFloat(r.begin_debit), credit: parseFloat(r.begin_credit) });
+    beginMap.set(r.id, { debit: num(r.begin_debit), credit: num(r.begin_credit) });
   }
   const linesByAccount = new Map<string, LineRow[]>();
   for (const line of lines) {
@@ -641,11 +654,14 @@ export async function buildGeneralLedger(tenantId: string, startDate: string, en
       let periodCredits = 0;
 
       const reportLines = periodLines.map((line) => {
-        const debit = parseFloat(line.debit);
-        const credit = parseFloat(line.credit);
-        running += naturalBalance(acct.account_type, debit, credit);
-        periodDebits += debit;
-        periodCredits += credit;
+        const debit = num(line.debit);
+        const credit = num(line.credit);
+        // Running balance accumulates through many lines — running +=
+        // naturalBalance via float drifts at the cent level. Go
+        // through Decimal on every add to keep the GL column exact.
+        running = Number(new Decimal(running).plus(naturalBalance(acct.account_type, debit, credit)).toFixed(4));
+        periodDebits = Number(new Decimal(periodDebits).plus(debit).toFixed(4));
+        periodCredits = Number(new Decimal(periodCredits).plus(credit).toFixed(4));
 
         return {
           lineId: line.line_id,
@@ -732,14 +748,22 @@ export async function buildTrialBalance(tenantId: string, startDate: string, end
     ORDER BY a.account_number, a.name
   `);
 
-  let totalDebits = 0, totalCredits = 0;
+  // Trial balance totals must tie out to the penny for every user.
+  // Accumulate through Decimal so the "totalDebits === totalCredits"
+  // check at the bottom of the report isn't off by fractional cents.
+  let td = new Decimal('0');
+  let tc = new Decimal('0');
   const data = (rows.rows as any[]).map(r => {
-    const d = parseFloat(r.total_debit);
-    const c = parseFloat(r.total_credit);
-    totalDebits += d;
-    totalCredits += c;
+    const d = num(r.total_debit);
+    const c = num(r.total_credit);
+    td = td.plus(d);
+    tc = tc.plus(c);
     return { ...r, total_debit: d, total_credit: c };
   });
+  // Kept mutable because the Retained Earnings injection below still
+  // needs to add reDebit/reCredit to the running totals.
+  let totalDebits = Number(td.toFixed(4));
+  let totalCredits = Number(tc.toFixed(4));
 
   // Add Retained Earnings row for prior-year net income (virtual closing)
   if (fyStart > '1900-01-02') {
@@ -755,8 +779,8 @@ export async function buildTrialBalance(tenantId: string, startDate: string, end
         id: null, account_number: '3900', name: 'Retained Earnings', account_type: 'equity',
         total_debit: reDebit, total_credit: reCredit,
       });
-      totalDebits += reDebit;
-      totalCredits += reCredit;
+      totalDebits = Number(new Decimal(totalDebits).plus(reDebit).toFixed(4));
+      totalCredits = Number(new Decimal(totalCredits).plus(reCredit).toFixed(4));
     }
   }
 

@@ -46,6 +46,14 @@ COPY packages/worker/ ./packages/worker/
 # Build shared package
 RUN npm run build --workspace=@kis-books/shared
 
+# Create the non-root runtime user and transfer ownership. The same
+# UID/GID 1001 as the production image (root Dockerfile) so a host
+# bind-mount of ./data works for both.
+RUN addgroup -g 1001 -S app && adduser -S -u 1001 -G app app \
+  && mkdir -p /data/uploads /data/backups /data/config /data/generated \
+  && chown -R app:app /app /data
+
 EXPOSE 3001
 
+USER app
 CMD ["npx", "tsx", "packages/api/src/bootstrap.ts"]

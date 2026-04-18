@@ -2,14 +2,18 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
+import DecimalLib from 'decimal.js';
+const Decimal = DecimalLib.default || DecimalLib;
 import type { CreateDepositInput } from '@kis-books/shared';
 import * as ledger from './ledger.service.js';
 
 function buildDepositPayload(input: CreateDepositInput) {
-  let totalAmount = 0;
+  // Sum line amounts through Decimal so the debit to the deposit
+  // account and the sum of credits match exactly. Float accumulation
+  // drifts and ledger.postTransaction would reject the total.
+  let totalAmount = new Decimal('0');
   const creditLines = input.lines.map((line) => {
-    const amt = parseFloat(line.amount);
-    totalAmount += amt;
+    totalAmount = totalAmount.plus(line.amount);
     return {
       accountId: line.accountId,
       debit: '0',
@@ -18,13 +22,14 @@ function buildDepositPayload(input: CreateDepositInput) {
     };
   });
 
+  const totalStr = totalAmount.toFixed(4);
   return {
     txnType: 'deposit' as const,
     txnDate: input.txnDate,
     memo: input.memo,
-    total: totalAmount.toFixed(4),
+    total: totalStr,
     lines: [
-      { accountId: input.depositToAccountId, debit: totalAmount.toFixed(4), credit: '0' },
+      { accountId: input.depositToAccountId, debit: totalStr, credit: '0' },
       ...creditLines,
     ],
   };

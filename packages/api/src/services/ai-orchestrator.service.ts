@@ -48,16 +48,26 @@ function isLocalUrl(raw: string | null | undefined): boolean {
   if (!raw) return false;
   try {
     const u = new URL(raw);
-    const host = u.hostname.toLowerCase();
-    if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') return true;
+    // Normalise: lowercase, strip trailing dot (valid FQDN suffix
+    // that URL parsing keeps), strip IPv6 brackets so `::1` matches
+    // equality-wise.
+    let host = u.hostname.toLowerCase();
+    if (host.endsWith('.')) host = host.slice(0, -1);
+    if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
+
+    if (host === 'localhost' || host === '::1' || host === '0.0.0.0') return true;
     if (host.endsWith('.local') || host.endsWith('.internal')) return true;
+    // Whole 127.0.0.0/8 loopback range per RFC 1122 — `127.0.0.2`,
+    // `127.1.2.3` etc. all route to the local host and must count as
+    // self-hosted.
+    if (/^127\./.test(host)) return true;
     // RFC 1918 private ranges
     if (/^10\./.test(host)) return true;
     if (/^192\.168\./.test(host)) return true;
     if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true;
     // Docker/Compose short names (no dots) and IPv6 link-local fe80::/10
-    if (!host.includes('.') && !host.startsWith('[')) return true;
-    if (host.startsWith('fe80:') || host.startsWith('[fe80:')) return true;
+    if (!host.includes('.') && !host.includes(':')) return true;
+    if (host.startsWith('fe80:')) return true;
     return false;
   } catch {
     return false;
