@@ -30,7 +30,17 @@
  * here, make sure they stay env-free.
  */
 
-const REQUIRED_ENV_VARS = ['DATABASE_URL', 'JWT_SECRET', 'ENCRYPTION_KEY'] as const;
+// Every var that will trip Zod validation in env.ts. Listed here so the
+// pre-check catches them before any module import chain runs — otherwise
+// the operator sees a dense "Invalid environment variables: { FOO: ['Required'] }"
+// dump instead of the friendly "copy .env.example" message below. Keep in
+// sync with the required fields in config/env.ts.
+const REQUIRED_ENV_VARS = [
+  'DATABASE_URL',
+  'JWT_SECRET',
+  'ENCRYPTION_KEY',
+  'PLAID_ENCRYPTION_KEY',
+] as const;
 
 async function main(): Promise<void> {
   // --- Phase B: env pre-check ------------------------------------------
@@ -70,7 +80,16 @@ async function main(): Promise<void> {
     console.error(
       `[bootstrap] missing required environment variables and no sentinel to recover from: ${missing.join(', ')}.`,
     );
-    console.error('[bootstrap] copy .env.example to /data/config/.env and fill it in before starting.');
+    console.error('[bootstrap] fix this by either:');
+    console.error('[bootstrap]   a) re-running scripts/install.sh (generates fresh secrets in .env), or');
+    console.error('[bootstrap]   b) adding these lines to your .env (generate 64-hex-char values with `openssl rand -hex 32`):');
+    for (const key of missing) {
+      if (key === 'DATABASE_URL') {
+        console.error(`[bootstrap]        ${key}=postgresql://USER:PASS@HOST:5432/DB`);
+      } else {
+        console.error(`[bootstrap]        ${key}=<64 hex chars>`);
+      }
+    }
     process.exit(1);
   }
 
