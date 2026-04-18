@@ -23,7 +23,7 @@ export const createBillSchema = z.object({
   vendorInvoiceNumber: z.string().max(100).optional(),
   memo: z.string().optional(),
   internalNotes: z.string().optional(),
-  lines: z.array(billLineSchema).min(1, 'At least one line is required'),
+  lines: z.array(billLineSchema).min(1, 'At least one line is required').max(500, 'Too many lines'),
 });
 
 const vendorCreditLineSchema = z.object({
@@ -37,7 +37,7 @@ export const createVendorCreditSchema = z.object({
   txnDate: z.string().min(1),
   vendorInvoiceNumber: z.string().max(100).optional(),
   memo: z.string().optional(),
-  lines: z.array(vendorCreditLineSchema).min(1, 'At least one line is required'),
+  lines: z.array(vendorCreditLineSchema).min(1, 'At least one line is required').max(500, 'Too many lines'),
 });
 
 const billPaymentBillSchema = z.object({

@@ -15,6 +15,7 @@ import { users, attachments, transactions, contacts } from '../db/schema/index.j
 import * as attachmentService from '../services/attachment.service.js';
 import * as ocrService from '../services/ocr.service.js';
 import { parseLimit, parseOffset } from '../utils/pagination.js';
+import { consumeDownloadToken } from '../utils/download-token.js';
 
 const ALLOWED_MIME_TYPES = [
   'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/tiff', 'image/bmp',
@@ -117,40 +118,59 @@ function verifyAttachmentContent(mime: string, buf: Buffer): void {
 
 export const attachmentsRouter = Router();
 
-// Download route supports ?token= query param for <img>/<iframe> inline preview.
-// The token may be in the query string (browsers can't send custom headers on
-// <a>/<img>/<iframe> requests) or in the Authorization header.
+// Download route supports two auth modes:
+//   1. Authorization: Bearer <JWT> — standard API call from the SPA fetch
+//      client.
+//   2. ?_dl=<download-token> — a single-use, ~60-second token issued by
+//      /api/v1/downloads/token, suitable for <a>/<img>/<iframe> where
+//      custom headers can't be set.
+// The legacy `?token=<JWT>` path is deliberately removed: putting a full
+// 15-minute access token in a URL leaks it into server logs, browser
+// history, referer headers, and proxy logs. Clients that were using it
+// should switch to /api/v1/downloads/token + ?_dl=.
 attachmentsRouter.get('/:id/download', async (req, res) => {
-  const token = (req.query['token'] as string) || req.headers.authorization?.slice(7);
-  if (!token) {
-    res.status(401).json({ error: { message: 'Authentication required' } });
-    return;
+  const dlTokenRaw = req.query['_dl'];
+  const dlToken = typeof dlTokenRaw === 'string' ? dlTokenRaw : undefined;
+
+  let tenantId: string | undefined;
+  if (dlToken) {
+    const payload = consumeDownloadToken(dlToken);
+    if (!payload) {
+      res.status(401).json({ error: { message: 'Invalid or expired download token' } });
+      return;
+    }
+    tenantId = payload.tenantId;
+  } else {
+    const header = req.headers.authorization;
+    if (!header?.startsWith('Bearer ')) {
+      res.status(401).json({ error: { message: 'Authentication required' } });
+      return;
+    }
+    let payload: JwtPayload;
+    try {
+      payload = jwt.verify(header.slice(7), env.JWT_SECRET, { algorithms: ['HS256'] }) as JwtPayload;
+    } catch (err) {
+      const isExpired = err instanceof Error && err.name === 'TokenExpiredError';
+      res.status(401).json({ error: { message: isExpired ? 'Token expired' : 'Invalid token' } });
+      return;
+    }
+    const user = await db.query.users.findFirst({ where: eq(users.id, payload.userId) });
+    if (!user || !user.isActive) {
+      res.status(401).json({ error: { message: 'Account is deactivated' } });
+      return;
+    }
+    tenantId = payload.tenantId;
   }
 
-  // Only the JWT verify step produces a 401. Any other failure (DB, missing
-  // attachment, stream error) must propagate to the global error handler so
-  // the client sees the real status code — not a bogus "invalid token".
-  let payload: JwtPayload;
-  try {
-    payload = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as JwtPayload;
-  } catch (err) {
-    const isExpired = err instanceof Error && err.name === 'TokenExpiredError';
-    res.status(401).json({
-      error: { message: isExpired ? 'Token expired' : 'Invalid token' },
-    });
-    return;
-  }
-
-  const user = await db.query.users.findFirst({ where: eq(users.id, payload.userId) });
-  if (!user || !user.isActive) {
-    res.status(401).json({ error: { message: 'Account is deactivated' } });
-    return;
-  }
-
-  const { stream, attachment } = await attachmentService.download(payload.tenantId, req.params['id']!);
+  const { stream, attachment } = await attachmentService.download(tenantId!, req.params['id']!);
   res.setHeader('Content-Type', attachment.mimeType || 'application/octet-stream');
   const disposition = req.query['inline'] === '1' ? 'inline' : 'attachment';
-  res.setHeader('Content-Disposition', `${disposition}; filename="${attachment.fileName}"`);
+  // Content-Disposition filename escapement — quote any internal quote so a
+  // malicious fileName can't break out of the header (defense-in-depth; file
+  // names are tenant-scoped and sanitized at upload, but the header is on
+  // an auth-less path so we err cautious).
+  const safeName = (attachment.fileName || 'download').replace(/[\r\n"]/g, '_');
+  res.setHeader('Content-Disposition', `${disposition}; filename="${safeName}"`);
   stream.pipe(res);
 });
 

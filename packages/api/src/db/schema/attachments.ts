@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-import { pgTable, uuid, varchar, integer, text, decimal, date, timestamp, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, integer, text, decimal, date, timestamp, index, boolean } from 'drizzle-orm/pg-core';
 
 export const attachments = pgTable('attachments', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -43,7 +43,7 @@ export const recurringSchedules = pgTable('recurring_schedules', {
   endDate: date('end_date'),
   nextOccurrence: date('next_occurrence').notNull(),
   lastPostedAt: timestamp('last_posted_at', { withTimezone: true }),
-  isActive: varchar('is_active', { length: 5 }).default('true'),
+  isActive: boolean('is_active').default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 });

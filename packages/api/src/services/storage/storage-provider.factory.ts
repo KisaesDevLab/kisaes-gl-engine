@@ -12,12 +12,19 @@ import { DropboxProvider } from './dropbox.provider.js';
 import { GoogleDriveProvider } from './google-drive.provider.js';
 import { OneDriveProvider } from './onedrive.provider.js';
 import { S3Provider } from './s3.provider.js';
+import { ensureFreshAccessToken } from './oauth-refresh.js';
 
 // Cache provider instances per tenant. Capped + periodic sweep so that an
 // installation hosting many tenants doesn't keep every tenant's decrypted
 // OAuth token resident in memory forever.
 const providerCache = new Map<string, { provider: StorageProvider; expiresAt: number }>();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+// 60s cache: short enough that a token refresh pushed through by
+// ensureFreshAccessToken takes effect on the next storage op without
+// needing an explicit invalidateProviderCache() call from the refresher.
+// Previously 5 minutes, which meant a token refreshed on the factory's
+// miss path lived in the cached provider for up to 5 minutes after the
+// underlying DB row was updated.
+const CACHE_TTL = 60 * 1000;
 const PROVIDER_CACHE_MAX = 256;
 
 function evictOldestProviderCacheEntry(): void {
@@ -60,15 +67,30 @@ export async function getProviderForTenant(tenantId: string): Promise<StoragePro
       break;
     case 'dropbox':
       if (!record.accessTokenEncrypted) throw new Error('Dropbox access token not configured');
-      provider = new DropboxProvider(decrypt(record.accessTokenEncrypted), config);
+      // ensureFreshAccessToken refreshes the token if it's within 60s of
+      // expiry and persists the new one. Critical because Dropbox's newer
+      // short-lived tokens expire in ~4 hours — without refresh, backup
+      // uploads silently 401 after that window.
+      provider = new DropboxProvider(
+        await ensureFreshAccessToken(tenantId, 'dropbox', record),
+        config,
+      );
       break;
     case 'google_drive':
       if (!record.accessTokenEncrypted) throw new Error('Google Drive access token not configured');
-      provider = new GoogleDriveProvider(decrypt(record.accessTokenEncrypted), config);
+      // Google access tokens expire in 1 hour. Without refresh the backup
+      // scheduler fails silently after first run.
+      provider = new GoogleDriveProvider(
+        await ensureFreshAccessToken(tenantId, 'google_drive', record),
+        config,
+      );
       break;
     case 'onedrive':
       if (!record.accessTokenEncrypted) throw new Error('OneDrive access token not configured');
-      provider = new OneDriveProvider(decrypt(record.accessTokenEncrypted), config);
+      provider = new OneDriveProvider(
+        await ensureFreshAccessToken(tenantId, 'onedrive', record),
+        config,
+      );
       break;
     case 's3':
       if (!config['bucket'] || !config['accessKeyId']) throw new Error('S3 configuration incomplete');

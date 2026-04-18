@@ -40,6 +40,10 @@ export interface PlaidItem {
   createdByEmail: string | null;
   createdAt: string;
   accounts?: PlaidAccount[];
+  // The items list endpoint enriches each item with the count of accounts
+  // hidden from the current tenant (mapped to a different tenant or
+  // never-mapped). Absent on single-item reads.
+  hiddenAccountCount?: number;
 }
 
 export interface PlaidAccount {

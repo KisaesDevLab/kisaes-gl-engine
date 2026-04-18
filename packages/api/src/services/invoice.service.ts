@@ -10,6 +10,7 @@ import type { CreateInvoiceInput, RecordPaymentInput } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { transactions, accounts, companies } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
 
 function computeDueDate(txnDate: string, terms: string | undefined): string | undefined {
@@ -178,7 +179,7 @@ export async function updateInvoice(tenantId: string, invoiceId: string, input: 
   }, userId, companyId);
 }
 
-export async function markAsSent(tenantId: string, invoiceId: string) {
+export async function markAsSent(tenantId: string, invoiceId: string, userId?: string) {
   const txn = await ledger.getTransaction(tenantId, invoiceId);
   if (txn.txnType !== 'invoice') throw AppError.badRequest('Not an invoice');
   if (txn.invoiceStatus !== 'draft') throw AppError.badRequest('Only draft invoices can be marked as sent');
@@ -187,9 +188,11 @@ export async function markAsSent(tenantId: string, invoiceId: string) {
     invoiceStatus: 'sent',
     updatedAt: new Date(),
   }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, invoiceId)));
+  await auditLog(tenantId, 'update', 'invoice', invoiceId,
+    { invoiceStatus: 'draft' }, { invoiceStatus: 'sent', via: 'mark_sent' }, userId);
 }
 
-export async function generateShareLink(tenantId: string, invoiceId: string): Promise<string> {
+export async function generateShareLink(tenantId: string, invoiceId: string, userId?: string): Promise<string> {
   const txn = await ledger.getTransaction(tenantId, invoiceId);
   if (txn.txnType !== 'invoice') throw AppError.badRequest('Not an invoice');
 
@@ -205,6 +208,11 @@ export async function generateShareLink(tenantId: string, invoiceId: string): Pr
     }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, invoiceId)));
   }
 
+  // Audit share-link generation: it grants anonymous read + pay access to
+  // the invoice, so we want a trail for who issued it and when.
+  await auditLog(tenantId, 'create', 'invoice_share_link', invoiceId, null,
+    { via: 'generate_share_link', previousStatus: txn.invoiceStatus }, userId);
+
   const { env } = await import('../config/env.js');
   return `${env.CORS_ORIGIN}/pay/${token}`;
 }
@@ -218,6 +226,8 @@ export async function sendInvoice(tenantId: string, invoiceId: string, userId?: 
     sentAt: new Date(),
     updatedAt: new Date(),
   }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, invoiceId)));
+  await auditLog(tenantId, 'update', 'invoice', invoiceId,
+    { invoiceStatus: txn.invoiceStatus }, { invoiceStatus: 'sent', via: 'send_invoice' }, userId);
 }
 
 export async function recordPayment(tenantId: string, invoiceId: string, input: RecordPaymentInput, userId?: string, companyId?: string) {

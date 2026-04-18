@@ -34,16 +34,20 @@ export async function create(tenantId: string, templateTransactionId: string, sc
     startDate: schedule.startDate,
     endDate: schedule.endDate || null,
     nextOccurrence: schedule.startDate,
-    isActive: 'true',
+    isActive: true,
   }).returning();
 
   return sched;
 }
 
-export async function list(tenantId: string) {
+export async function list(tenantId: string, limit = 500) {
+  // Cap the result set to avoid shipping an unbounded list to the UI. 500 is
+  // well past what any real bookkeeper has; the few operators who cross it
+  // can filter via scheduling-frequency in a future iteration.
   return db.select().from(recurringSchedules)
-    .where(and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.isActive, 'true')))
-    .orderBy(recurringSchedules.nextOccurrence);
+    .where(and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.isActive, true)))
+    .orderBy(recurringSchedules.nextOccurrence)
+    .limit(limit);
 }
 
 export async function getById(tenantId: string, id: string) {
@@ -67,7 +71,7 @@ export async function update(tenantId: string, id: string, input: {
 
 export async function deactivate(tenantId: string, id: string) {
   await db.update(recurringSchedules)
-    .set({ isActive: 'false', updatedAt: new Date() })
+    .set({ isActive: false, updatedAt: new Date() })
     .where(and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id)));
 }
 
@@ -93,14 +97,14 @@ export async function postNext(tenantId: string, scheduleId: string) {
     .set({
       nextOccurrence: nextOcc,
       lastPostedAt: new Date(),
-      isActive: isExpired ? 'false' : 'true',
+      isActive: !isExpired,
       updatedAt: new Date(),
     })
     .where(and(
       eq(recurringSchedules.tenantId, tenantId),
       eq(recurringSchedules.id, scheduleId),
       eq(recurringSchedules.nextOccurrence, claimedOccurrence),
-      eq(recurringSchedules.isActive, 'true'),
+      eq(recurringSchedules.isActive, true),
     ))
     .returning();
 
@@ -173,11 +177,18 @@ export async function postNext(tenantId: string, scheduleId: string) {
 }
 
 export async function processAllDue() {
-  const today = new Date().toISOString().split('T')[0]!;
+  // Use Postgres CURRENT_DATE rather than a Node-side toISOString() — the
+  // API / worker container runs in UTC, but the recurring schedules are
+  // compared against txn_date (a DATE column that Postgres treats as a
+  // calendar day in the session TZ). CURRENT_DATE stays consistent with
+  // however Postgres is configured. Using it avoids the off-by-one that
+  // toISOString() introduces near UTC midnight.
+  const todayRow = await db.execute(sql`SELECT CURRENT_DATE::text AS today`);
+  const today = (todayRow.rows as { today: string }[])[0]?.today ?? new Date().toISOString().split('T')[0]!;
 
   const dueSchedules = await db.select().from(recurringSchedules)
     .where(and(
-      eq(recurringSchedules.isActive, 'true'),
+      eq(recurringSchedules.isActive, true),
       eq(recurringSchedules.mode, 'auto'),
       lte(recurringSchedules.nextOccurrence, today),
     ));
@@ -203,6 +214,20 @@ export async function processAllDue() {
 const RECURRING_CHECK_INTERVAL_MS = 60 * 60 * 1000; // hourly
 const RECURRING_INITIAL_DELAY_MS = 2 * 60 * 1000; // 2 minutes after boot
 
+/**
+ * Delete expired session rows. Each login + each refresh inserts a new
+ * sessions row; old rows are only cleaned up when a user explicitly logs
+ * out or runs through a password reset. Without periodic cleanup the
+ * sessions table grows unbounded for the lifetime of the install.
+ */
+async function pruneExpiredSessions(): Promise<{ pruned: number }> {
+  const { sessions } = await import('../db/schema/index.js');
+  const result = await db.delete(sessions)
+    .where(sql`${sessions.expiresAt} < NOW() - INTERVAL '1 day'`)
+    .returning({ id: sessions.id });
+  return { pruned: result.length };
+}
+
 export function startRecurringScheduler(): void {
   console.log('[Recurring Scheduler] Registered (checks hourly, first check in 2 min)');
 
@@ -217,6 +242,14 @@ export function startRecurringScheduler(): void {
       const result = await withSchedulerLock('recurring-scheduler', processAllDue);
       if (result && result.processed > 0) {
         console.log(`[Recurring Scheduler] Posted ${result.processed}/${result.total} due schedule(s)`);
+      }
+
+      // Piggyback the session prune on the same hourly tick — cheap to run,
+      // keeps the sessions table bounded. Uses its own lock so a slow tick
+      // on recurring doesn't block the prune next time around.
+      const prune = await withSchedulerLock('session-prune', pruneExpiredSessions);
+      if (prune && prune.pruned > 0) {
+        console.log(`[Session Prune] Removed ${prune.pruned} expired session row(s)`);
       }
     } catch (err: any) {
       console.error('[Recurring Scheduler] Cycle error:', err.message);

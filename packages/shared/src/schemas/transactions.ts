@@ -5,6 +5,11 @@
 import { z } from 'zod';
 
 const txnTypes = ['invoice', 'customer_payment', 'cash_sale', 'expense', 'deposit', 'transfer', 'journal_entry', 'credit_memo', 'customer_refund'] as const;
+
+// Cap on any journal-line / line-item array. 500 is well beyond any realistic
+// invoice or deposit and bounds the input size so a malicious client can't
+// push a 100k-line transaction that pins CPU on the validate + balance path.
+const MAX_LINES = 500;
 const txnStatuses = ['draft', 'posted', 'void'] as const;
 
 const journalLineInputSchema = z.object({
@@ -22,7 +27,7 @@ const journalLineInputSchema = z.object({
 export const createJournalEntrySchema = z.object({
   txnDate: z.string().min(1),
   memo: z.string().optional(),
-  lines: z.array(journalLineInputSchema).min(2, 'At least 2 lines required'),
+  lines: z.array(journalLineInputSchema).min(2, 'At least 2 lines required').max(MAX_LINES),
 });
 
 export const createExpenseSchema = z.object({
@@ -35,7 +40,7 @@ export const createExpenseSchema = z.object({
     expenseAccountId: z.string().uuid(),
     amount: z.string().min(1),
     description: z.string().optional(),
-  })).optional(),
+  })).max(MAX_LINES).optional(),
   memo: z.string().optional(),
   tags: z.array(z.string().uuid()).optional(),
 });
@@ -57,7 +62,7 @@ const depositLineSchema = z.object({
 export const createDepositSchema = z.object({
   txnDate: z.string().min(1),
   depositToAccountId: z.string().uuid(),
-  lines: z.array(depositLineSchema).min(1),
+  lines: z.array(depositLineSchema).min(1).max(MAX_LINES),
   memo: z.string().optional(),
 });
 
@@ -74,7 +79,7 @@ export const createCashSaleSchema = z.object({
   txnDate: z.string().min(1),
   contactId: z.string().uuid().optional(),
   depositToAccountId: z.string().uuid(),
-  lines: z.array(lineItemSchema).min(1),
+  lines: z.array(lineItemSchema).min(1).max(MAX_LINES),
   memo: z.string().optional(),
 });
 
@@ -83,7 +88,7 @@ export const createInvoiceSchema = z.object({
   dueDate: z.string().optional(),
   contactId: z.string().uuid(),
   paymentTerms: z.string().optional(),
-  lines: z.array(lineItemSchema).min(1),
+  lines: z.array(lineItemSchema).min(1).max(MAX_LINES),
   memo: z.string().optional(),
   internalNotes: z.string().optional(),
 });
@@ -103,7 +108,7 @@ export const createCreditMemoSchema = z.object({
     description: z.string().optional(),
     quantity: z.string().min(1),
     unitPrice: z.string().min(1),
-  })).min(1),
+  })).min(1).max(MAX_LINES),
   memo: z.string().optional(),
   appliedToInvoiceId: z.string().uuid().optional(),
 });

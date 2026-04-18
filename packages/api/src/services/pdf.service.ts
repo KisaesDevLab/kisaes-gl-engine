@@ -140,7 +140,7 @@ function renderInvoiceHtml(data: InvoicePdfData): string {
   const lineRows = lines.map((l) => `
     <tr>
       <td style="padding:8px;border-bottom:1px solid #e5e7eb">${esc(l.description || l.accountName)}</td>
-      <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:center">${l.quantity || '1'}</td>
+      <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:center">${esc(l.quantity || '1')}</td>
       <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right">$${fmt(l.unitPrice)}</td>
       <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right">$${fmt(l.amount)}</td>
     </tr>
@@ -151,6 +151,13 @@ function renderInvoiceHtml(data: InvoicePdfData): string {
   // Lower window: ~0.5" from left, ~2.125" from top, 3.5"×1" — recipient address
   // Page margins: 0.5" all sides (set in generateInvoicePdf)
 
+  // Accent color is an internal-only string ('#2563EB'). It still goes through
+  // the same escape to keep the CSS context safe even if future code lets a
+  // tenant customize it — a hostile value like `red}body{...}` would otherwise
+  // escape the rule.
+  const accentSafe = esc(accentColor);
+  const termsLabel = inv.paymentTerms ? inv.paymentTerms.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) : '';
+
   return `<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><style>
@@ -159,7 +166,7 @@ function renderInvoiceHtml(data: InvoicePdfData): string {
 
   /* Return address block — positioned for upper envelope window */
   .return-address{height:0.875in;width:3.5in;padding:0;font-size:11px;line-height:1.35}
-  .return-address .company-name{font-weight:700;font-size:13px;color:${accentColor}}
+  .return-address .company-name{font-weight:700;font-size:13px;color:${accentSafe}}
 
   /* Spacer between address blocks to align with lower window */
   .address-spacer{height:0.25in}
@@ -169,7 +176,7 @@ function renderInvoiceHtml(data: InvoicePdfData): string {
 
   /* Invoice title and details — floated right at top */
   .invoice-header{float:right;text-align:right;margin-top:0}
-  .invoice-header h2{font-size:26px;margin:0 0 6px;color:${accentColor};text-transform:uppercase;letter-spacing:1px}
+  .invoice-header h2{font-size:26px;margin:0 0 6px;color:${accentSafe};text-transform:uppercase;letter-spacing:1px}
   .invoice-header .detail{font-size:12px;color:#374151;margin:2px 0}
 
   .clear{clear:both}
@@ -178,12 +185,12 @@ function renderInvoiceHtml(data: InvoicePdfData): string {
   .content{margin-top:0.3in}
 
   table{width:100%;border-collapse:collapse;margin-bottom:16px}
-  thead th{background:${accentColor};color:white;padding:8px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:0.5px}
+  thead th{background:${accentSafe};color:white;padding:8px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:0.5px}
   tbody td{padding:7px 8px;border-bottom:1px solid #e5e7eb;font-size:12px}
 
   .totals{width:280px;margin-left:auto}
   .totals tr td{padding:3px 8px;font-size:12px}
-  .totals .total{font-size:16px;font-weight:bold;border-top:2px solid ${accentColor}}
+  .totals .total{font-size:16px;font-weight:bold;border-top:2px solid ${accentSafe}}
 
   .footer{margin-top:30px;text-align:center;color:#6b7280;font-size:11px;border-top:1px solid #e5e7eb;padding-top:15px}
   .notes{margin-top:16px;padding:10px;background:#f9fafb;border-radius:6px;font-size:11px}
@@ -197,21 +204,24 @@ function renderInvoiceHtml(data: InvoicePdfData): string {
 </style></head>
 <body>
 <div class="page">
-  <!-- Invoice title block — top right -->
+  <!-- Invoice title block — top right. Every user-controllable field is
+       routed through esc() — the document is rendered by Puppeteer with
+       --no-sandbox and network access, so stored XSS here would let a
+       malicious invoice-data value exfiltrate the document during render. -->
   <div class="invoice-header">
-    <h2>${documentType}</h2>
-    ${inv.txnNumber ? `<div class="detail"><strong>${documentType} #${inv.txnNumber}</strong></div>` : ''}
-    <div class="detail">Date: ${inv.txnDate}</div>
-    ${inv.dueDate ? `<div class="detail">Due Date: ${inv.dueDate}</div>` : ''}
-    ${inv.paymentTerms ? `<div class="detail">Terms: ${inv.paymentTerms.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())}</div>` : ''}
+    <h2>${esc(documentType)}</h2>
+    ${inv.txnNumber ? `<div class="detail"><strong>${esc(documentType)} #${esc(inv.txnNumber)}</strong></div>` : ''}
+    <div class="detail">Date: ${esc(inv.txnDate)}</div>
+    ${inv.dueDate ? `<div class="detail">Due Date: ${esc(inv.dueDate)}</div>` : ''}
+    ${inv.paymentTerms ? `<div class="detail">Terms: ${esc(termsLabel)}</div>` : ''}
   </div>
 
   <!-- Return address — upper envelope window -->
   <div class="return-address">
     <div class="company-name">${esc(co.businessName)}</div>
-    ${co.addressLine1 ? `<div>${co.addressLine1}</div>` : ''}
-    ${co.city ? `<div>${[co.city, co.state, co.zip].filter(Boolean).join(', ')}</div>` : ''}
-    ${co.phone ? `<div>${co.phone}</div>` : ''}
+    ${co.addressLine1 ? `<div>${esc(co.addressLine1)}</div>` : ''}
+    ${co.city ? `<div>${esc([co.city, co.state, co.zip].filter(Boolean).join(', '))}</div>` : ''}
+    ${co.phone ? `<div>${esc(co.phone)}</div>` : ''}
   </div>
 
   <div class="address-spacer"></div>
@@ -219,8 +229,8 @@ function renderInvoiceHtml(data: InvoicePdfData): string {
   <!-- Recipient address — lower envelope window -->
   <div class="recipient-address">
     <div><strong>${esc(cu.displayName)}</strong></div>
-    ${cu.billingLine1 ? `<div>${cu.billingLine1}</div>` : ''}
-    ${cu.billingCity ? `<div>${[cu.billingCity, cu.billingState, cu.billingZip].filter(Boolean).join(', ')}</div>` : ''}
+    ${cu.billingLine1 ? `<div>${esc(cu.billingLine1)}</div>` : ''}
+    ${cu.billingCity ? `<div>${esc([cu.billingCity, cu.billingState, cu.billingZip].filter(Boolean).join(', '))}</div>` : ''}
   </div>
 
   <div class="clear"></div>
@@ -256,11 +266,11 @@ function renderInvoiceHtml(data: InvoicePdfData): string {
         <tr>
           <td style="width:50%">
             <strong>${esc(co.businessName)}</strong><br>
-            ${inv.txnNumber ? `${documentType} #${inv.txnNumber}` : ''}
+            ${inv.txnNumber ? `${esc(documentType)} #${esc(inv.txnNumber)}` : ''}
           </td>
           <td style="text-align:right">
             <strong>Amount Due: $${fmt(parseFloat(inv.amountPaid) > 0 ? inv.balanceDue : inv.total)}</strong><br>
-            ${inv.dueDate ? `Due: ${inv.dueDate}` : ''}
+            ${inv.dueDate ? `Due: ${esc(inv.dueDate)}` : ''}
           </td>
         </tr>
         <tr>
@@ -270,7 +280,7 @@ function renderInvoiceHtml(data: InvoicePdfData): string {
       </table>
     </div>
 
-    <div class="footer">${footerText}</div>
+    <div class="footer">${esc(footerText)}</div>
   </div>
 </div>
 </body>
@@ -472,8 +482,8 @@ function renderCheckHtml(checks: CheckData[], format: string): string {
     const billPaymentStub = isBillPayment ? `
       <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-weight:600">
         <div>BILL PAYMENT VOUCHER</div>
-        <div>Check #${c.checkNumber || '____'}</div>
-        <div>Date: ${c.date}</div>
+        <div>Check #${c.checkNumber ? esc(String(c.checkNumber)) : '____'}</div>
+        <div>Date: ${esc(c.date)}</div>
       </div>
       <div style="margin-bottom:4px">Pay to: <strong>${esc(c.payeeName)}</strong></div>
       <table style="width:100%;border-collapse:collapse;font-size:8.5px;margin-top:6px">
@@ -522,19 +532,19 @@ function renderCheckHtml(checks: CheckData[], format: string): string {
         </table>
       ` : ''}
       <div style="margin-top:8px;border-top:1px solid #000;padding-top:4px;text-align:right;font-size:9px">
-        <div>Total Bills: <span style="display:inline-block;width:80px;font-family:monospace">$${c.billPaymentTotalBills}</span></div>
+        <div>Total Bills: <span style="display:inline-block;width:80px;font-family:monospace">$${esc(c.billPaymentTotalBills || '0.00')}</span></div>
         ${(c.billPaymentTotalCredits && parseFloat(c.billPaymentTotalCredits) > 0)
-          ? `<div>Credits: <span style="display:inline-block;width:80px;font-family:monospace">($${c.billPaymentTotalCredits})</span></div>`
+          ? `<div>Credits: <span style="display:inline-block;width:80px;font-family:monospace">($${esc(c.billPaymentTotalCredits)})</span></div>`
           : ''}
-        <div style="font-weight:700;margin-top:2px">Check Total: <span style="display:inline-block;width:80px;font-family:monospace">$${c.amount}</span></div>
+        <div style="font-weight:700;margin-top:2px">Check Total: <span style="display:inline-block;width:80px;font-family:monospace">$${esc(c.amount)}</span></div>
       </div>
     ` : null;
 
     const basicStub = `
       <div style="display:flex;justify-content:space-between;margin-bottom:8px">
-        <div><strong>Check #${c.checkNumber || '____'}</strong></div>
-        <div>Date: ${c.date}</div>
-        <div>Amount: $${c.amount}</div>
+        <div><strong>Check #${c.checkNumber ? esc(String(c.checkNumber)) : '____'}</strong></div>
+        <div>Date: ${esc(c.date)}</div>
+        <div>Amount: $${esc(c.amount)}</div>
       </div>
       <div>Pay to: ${esc(c.payeeName)}</div>
       ${c.memo ? `<div>Memo: ${esc(c.memo)}</div>` : ''}
@@ -542,8 +552,13 @@ function renderCheckHtml(checks: CheckData[], format: string): string {
 
     const stubHtml = billPaymentStub || basicStub;
 
+    // offsetX / offsetY are operator-tunable alignment numbers. Coerce to a
+     // plain integer via Number() so a hostile setting value can't break out
+     // of the CSS context (e.g. "0px;background:url(javascript:...)").
+    const safeOffsetX = Number.isFinite(c.offsetX) ? Number(c.offsetX) : 0;
+    const safeOffsetY = Number.isFinite(c.offsetY) ? Number(c.offsetY) : 0;
     return `
-    <div class="check" style="height:${checkHeight};position:relative;page-break-after:always;margin-left:${c.offsetX}px;margin-top:${c.offsetY}px">
+    <div class="check" style="height:${checkHeight};position:relative;page-break-after:always;margin-left:${safeOffsetX}px;margin-top:${safeOffsetY}px">
       <!-- Top stub (check_middle format only) -->
       ${format === 'check_middle' && c.printVoucherStub ? `
         <div style="position:absolute;top:0;left:0;right:0;height:3.5in;padding:0.3in 0.25in;font-size:9px;border-bottom:2px dashed #ccc">
@@ -563,13 +578,13 @@ function renderCheckHtml(checks: CheckData[], format: string): string {
 
         ${c.printCheckNumber ? `
           <div style="position:absolute;top:0.25in;right:0.5in;font-size:10px;font-weight:700">
-            ${c.checkNumber ? `No. ${c.checkNumber}` : ''}
+            ${c.checkNumber ? `No. ${esc(String(c.checkNumber))}` : ''}
           </div>
         ` : ''}
 
         <div style="position:absolute;top:0.9in;right:0.5in;font-size:11px">
           ${c.printDateLine ? `<span style="color:#666;font-size:9px">DATE</span>` : ''}
-          <span style="margin-left:8px;${c.printDateLine ? 'border-bottom:1px solid #000;' : ''}padding:0 12px">${c.date}</span>
+          <span style="margin-left:8px;${c.printDateLine ? 'border-bottom:1px solid #000;' : ''}padding:0 12px">${esc(c.date)}</span>
         </div>
 
         <div style="position:absolute;top:1.3in;left:0.25in;right:1.6in;font-size:10px">
@@ -581,7 +596,7 @@ function renderCheckHtml(checks: CheckData[], format: string): string {
 
         <div style="position:absolute;top:1.3in;right:0.25in;width:1.2in;text-align:center">
           <div style="${c.printAmountBox ? 'border:2px solid #000;' : ''}padding:4px 8px;font-size:14px;font-weight:700;font-family:monospace">
-            $${c.amount}
+            $${esc(c.amount)}
           </div>
         </div>
 
@@ -617,7 +632,7 @@ function renderCheckHtml(checks: CheckData[], format: string): string {
 
         ${c.printMicrLine ? `
           <div style="position:absolute;bottom:0.15in;left:0.5in;right:0.5in;font-family:'MICR','Courier New',monospace;font-size:12px;letter-spacing:2px;color:#333">
-            ${c.bank.routing ? `⑆${c.bank.routing}⑆` : ''} ${c.bank.account ? `⑈${c.bank.account}⑈` : ''} ${c.checkNumber ? `⑆${String(c.checkNumber).padStart(4, '0')}⑆` : ''}
+            ${c.bank.routing ? `⑆${esc(c.bank.routing)}⑆` : ''} ${c.bank.account ? `⑈${esc(c.bank.account)}⑈` : ''} ${c.checkNumber ? `⑆${esc(String(c.checkNumber).padStart(4, '0'))}⑆` : ''}
           </div>
         ` : ''}
       </div>
@@ -686,7 +701,25 @@ async function htmlToPdfBuffer(html: string, opts: PdfOptions = {}): Promise<Buf
   });
   try {
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'networkidle0' });
+    // Defense-in-depth for stored XSS in user-supplied invoice data (memo,
+    // billing address, txn number, etc.). Even though every interpolation in
+    // the HTML generator routes through esc(), a future edit might miss one.
+    // Disabling JS + blocking all non-data network requests means even a
+    // successful injection cannot exfiltrate anything during rendering.
+    await page.setJavaScriptEnabled(false);
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      const url = req.url();
+      // Allow the inline HTML we injected (about:blank / data:) and refuse
+      // everything else. Puppeteer issues file:// lookups for some fonts —
+      // we aren't using remote fonts, so blanket-deny network protocols.
+      if (url.startsWith('data:') || url.startsWith('about:') || url.startsWith('file:')) {
+        req.continue();
+      } else {
+        req.abort();
+      }
+    });
+    await page.setContent(html, { waitUntil: 'load' });
     const pdfBuffer = await page.pdf({
       format: opts.format || 'Letter',
       margin: opts.margin || { top: '0.5in', bottom: '0.5in', left: '0.5in', right: '0.5in' },

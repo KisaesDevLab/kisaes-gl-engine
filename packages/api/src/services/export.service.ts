@@ -6,10 +6,22 @@ import { eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { accounts, contacts, transactions, journalLines } from '../db/schema/index.js';
 
+// Defeat CSV formula injection. Excel / Google Sheets / Numbers treat cells
+// starting with `=`, `+`, `-`, `@`, TAB, CR as a formula — so a customer
+// displayName of `=HYPERLINK("http://evil",A1)` opens as a live hyperlink in
+// the accountant's exported CSV. OWASP's recommended mitigation: prefix any
+// cell starting with one of those characters with a leading apostrophe, which
+// the spreadsheet strips on open and which neutralizes the formula parser.
+const FORMULA_TRIGGER_RE = /^[=+\-@\t\r]/;
+function neutralizeCsvFormula(s: string): string {
+  return FORMULA_TRIGGER_RE.test(s) ? `'${s}` : s;
+}
+
 function toCsvRow(values: (string | number | null | undefined)[]): string {
   return values.map((v) => {
     if (v === null || v === undefined) return '""';
-    return `"${String(v).replace(/"/g, '""')}"`;
+    const neutralized = neutralizeCsvFormula(String(v));
+    return `"${neutralized.replace(/"/g, '""')}"`;
   }).join(',');
 }
 

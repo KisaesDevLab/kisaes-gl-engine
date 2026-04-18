@@ -253,7 +253,7 @@ export async function login(input: LoginInput): Promise<{ user: typeof users.$in
   };
 }
 
-export async function switchTenant(userId: string, targetTenantId: string): Promise<AuthTokens> {
+export async function switchTenant(userId: string, targetTenantId: string, priorRefreshToken?: string): Promise<AuthTokens> {
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   if (!user) throw AppError.notFound('User not found');
 
@@ -271,7 +271,23 @@ export async function switchTenant(userId: string, targetTenantId: string): Prom
   const jwtPayload: JwtPayload = { userId: user.id, tenantId: targetTenantId, role, isSuperAdmin: user.isSuperAdmin || false };
   const accessToken = generateAccessToken(jwtPayload);
   const refreshToken = generateRefreshToken();
-  await createSession(user.id, refreshToken);
+
+  // Revoke the prior refresh token *and* issue the new one in a single
+  // transaction. Previously switchTenant minted a new pair while leaving
+  // the old refresh token valid — a compromised browser tab under the old
+  // tenant context could keep refreshing long after the user switched.
+  await db.transaction(async (tx) => {
+    if (priorRefreshToken) {
+      await tx.delete(sessions).where(eq(sessions.refreshTokenHash, hashToken(priorRefreshToken)));
+    }
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 7);
+    await tx.insert(sessions).values({
+      userId: user.id,
+      refreshTokenHash: hashToken(refreshToken),
+      expiresAt,
+    });
+  });
 
   return { accessToken, refreshToken };
 }

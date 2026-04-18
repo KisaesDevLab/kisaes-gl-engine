@@ -11,10 +11,14 @@ import { auditLog } from '../middleware/audit.js';
 
 // List all companies for a tenant, filtered by accountant exclusions if applicable
 export async function listCompanies(tenantId: string, userId?: string) {
+  // Include `currency` in the summary so the frontend can render money in
+  // the correct locale without a second fetch. Previously the UI had no
+  // access to currency at the company-summary level and hardcoded USD.
   const allCompanies = await db.select({
     id: companies.id,
     businessName: companies.businessName,
     setupComplete: companies.setupComplete,
+    currency: companies.currency,
   }).from(companies).where(eq(companies.tenantId, tenantId));
 
   if (!userId) return allCompanies;

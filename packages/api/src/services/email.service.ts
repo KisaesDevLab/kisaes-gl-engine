@@ -67,6 +67,25 @@ function renderTemplate(template: string, vars: Record<string, string>): string 
   return result;
 }
 
+/**
+ * Build an email Subject line safely. Subjects accept ad-hoc template
+ * literals in a few places; this helper strips CR/LF from every
+ * interpolated segment so a user-editable field (txnNumber, displayName,
+ * companyName) can never split the Subject header.
+ */
+function safeSubject(parts: TemplateStringsArray, ...values: Array<string | number | null | undefined>): string {
+  let out = '';
+  parts.forEach((p, i) => {
+    out += p;
+    if (i < values.length) {
+      const v = values[i];
+      const str = v == null ? '' : String(v);
+      out += str.replace(/[\r\n]/g, ' ');
+    }
+  });
+  return out;
+}
+
 async function getInvoiceEmailData(tenantId: string, invoiceId: string) {
   const txn = await db.query.transactions.findFirst({
     where: and(eq(transactions.tenantId, tenantId), eq(transactions.id, invoiceId)),
@@ -126,7 +145,7 @@ export async function sendPaymentReminder(tenantId: string, invoiceId: string) {
   await transport.sendMail({
     from,
     to: customerEmail,
-    subject: `Payment Reminder: Invoice ${txn.txnNumber || invoiceId.slice(0, 8)} from ${companyName}`,
+    subject: safeSubject`Payment Reminder: Invoice ${txn.txnNumber || invoiceId.slice(0, 8)} from ${companyName}`,
     text: `Dear ${customerName},\n\nThis is a friendly reminder that invoice ${txn.txnNumber || invoiceId.slice(0, 8)} has a balance due of $${balanceDue}.\n${paymentLinkLine}\n${txn.dueDate ? `Due date: ${txn.dueDate}\n\n` : ''}Please remit payment at your earliest convenience.\n\nThank you,\n${companyName}`,
   });
 }
@@ -150,7 +169,7 @@ export async function sendPaymentConfirmation(tenantId: string, paymentTxnId: st
   await transport.sendMail({
     from,
     to: contact.email,
-    subject: `Payment Received - ${company?.businessName || 'Company'}`,
+    subject: safeSubject`Payment Received - ${company?.businessName || 'Company'}`,
     text: `Dear ${contact.displayName},\n\nWe have received your payment of $${parseFloat(payment.total || '0').toFixed(2)} on ${payment.txnDate}.\n\nThank you!\n${company?.businessName || 'Company'}`,
   });
 }

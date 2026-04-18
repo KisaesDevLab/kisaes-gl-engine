@@ -37,6 +37,9 @@ export interface JournalLine {
   taxAmount: string;
   lineOrder: number;
   createdAt: string;
+  // Denormalised display helpers populated by list endpoints.
+  accountName?: string | null;
+  accountNumber?: string | null;
 }
 
 export interface Transaction {
@@ -73,6 +76,14 @@ export interface Transaction {
   createdAt: string;
   updatedAt: string;
   lines?: JournalLine[];
+  // List endpoints enrich transactions with denormalised display helpers.
+  // Both are absent on raw detail / insert payloads.
+  contactName?: string | null;
+  contactPhone?: string | null;
+  aiCategorized?: 'ai' | 'manual' | 'rule' | string | null;
+  daysOverdue?: number;
+  // Detail endpoints for invoices may include a currency override.
+  currency?: string | null;
 }
 
 export interface JournalLineInput {

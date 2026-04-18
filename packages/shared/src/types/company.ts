@@ -37,6 +37,7 @@ export interface Company {
   setupComplete: boolean;
   createdAt: string;
   updatedAt: string;
+  mcpEnabled?: boolean;
 }
 
 export interface UpdateCompanyInput {
@@ -63,7 +64,10 @@ export interface UpdateCompanyInput {
   currency?: string;
   dateFormat?: string;
   categoryFilterMode?: CategoryFilterMode;
+  mcpEnabled?: boolean;
 }
+
+import type { LineEntryMode } from './items.js';
 
 export interface CompanySettings {
   fiscalYearStartMonth: number;
@@ -75,4 +79,7 @@ export interface CompanySettings {
   currency: string;
   dateFormat: string;
   categoryFilterMode: CategoryFilterMode;
+  defaultLineEntryMode?: LineEntryMode;
+  lockDate?: string | null;
+  chatSupportEnabled?: boolean;
 }

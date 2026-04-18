@@ -107,11 +107,11 @@ export async function generateAndSendCode(userId: string, method: 'email' | 'sms
   if (method === 'email') {
     destination = user.email;
     try {
-      await systemEmail.sendCustomEmail(
-        user.email,
-        'Your Vibe MyBooks verification code',
-        `<p>Your verification code is: <strong style="font-size:24px;letter-spacing:4px">${code}</strong></p><p style="color:#6B7280;font-size:14px">This code expires in ${config.codeExpirySeconds / 60} minutes.</p>`,
-      );
+      await systemEmail.sendActionEmail({
+        to: user.email,
+        subject: 'Your Vibe MyBooks verification code',
+        bodyText: `Your verification code is: ${code}\n\nThis code expires in ${config.codeExpirySeconds / 60} minutes.`,
+      });
     } catch {
       await systemEmail.sendPasswordResetEmail(user.email, code); // fallback
     }

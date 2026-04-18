@@ -14,6 +14,20 @@ export const adminResetPasswordSchema = z.object({
 });
 export type AdminResetPasswordInput = z.infer<typeof adminResetPasswordSchema>;
 
+// Admin-side user creation. The route was manually checking fields; moving
+// to Zod means the error handler produces the standard VALIDATION_ERROR
+// shape and the password policy lives alongside the rest of the admin
+// schemas rather than inline in the route.
+export const adminCreateUserRoles = ['owner', 'accountant', 'bookkeeper', 'readonly'] as const;
+export const adminCreateUserSchema = z.object({
+  email: z.string().email().max(255),
+  password: z.string().min(12, 'Password must be at least 12 characters').max(128),
+  displayName: z.string().min(1).max(255).optional(),
+  tenantId: z.string().uuid(),
+  role: z.enum(adminCreateUserRoles).default('owner'),
+});
+export type AdminCreateUserInput = z.infer<typeof adminCreateUserSchema>;
+
 export const adminToggleTenantAccessSchema = z.object({
   tenantId: z.string().uuid(),
 });

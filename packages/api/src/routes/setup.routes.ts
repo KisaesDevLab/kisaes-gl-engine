@@ -4,6 +4,7 @@
 
 import { Router } from 'express';
 import multer from 'multer';
+import rateLimit from 'express-rate-limit';
 import * as setupService from '../services/setup.service.js';
 import { createDemoTenant } from '../services/demo-data.service.js';
 import {
@@ -16,7 +17,23 @@ import { SystemSettingsKeys } from '../constants/system-settings-keys.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 * 1024 } }); // 2 GB
 
+// Rate-limit the pre-setup endpoints: they're unauthenticated (by design —
+// the first-run wizard has to be reachable before any user exists) and a
+// few of them perform real network / subprocess work (test-database,
+// test-smtp, check-port). Without a limiter, a LAN-reachable pre-install
+// server acts as a free port scanner / SMTP prober for anyone on the
+// network. Tight limit because legitimate wizard traffic is a handful of
+// calls from one browser.
+const setupLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: { message: 'Too many setup requests', code: 'SETUP_RATE_LIMIT' } },
+});
+
 export const setupRouter = Router();
+setupRouter.use(setupLimiter);
 
 // Security guard: block all setup endpoints once setup is complete.
 setupRouter.use(async (req, res, next) => {
@@ -207,9 +224,17 @@ setupRouter.post('/initialize', async (req, res) => {
       reject('Installation encryption key must be at least 32 characters');
       return;
     }
+    // plaidEncryptionKey: clients no longer submit this (the wizard used
+    // to surface it; it's now entirely server-side because non-technical
+    // operators kept asking "what is this Plaid thing?" during setup).
+    // If the client omits it we mint one here using crypto.randomBytes so
+    // the rest of the flow always has a valid value. The key is still
+    // validated on API boot by config/env.ts, and the recovery-key flow
+    // still writes it into /data/.env.recovery alongside the others — so
+    // nothing downstream changes.
     if (!config.plaidEncryptionKey || typeof config.plaidEncryptionKey !== 'string' || config.plaidEncryptionKey.length < 32) {
-      reject('Token encryption key must be at least 32 characters');
-      return;
+      const { randomBytes } = await import('crypto');
+      config.plaidEncryptionKey = randomBytes(32).toString('hex');
     }
     if (!config.admin || typeof config.admin !== 'object') {
       reject('Admin account details are required');

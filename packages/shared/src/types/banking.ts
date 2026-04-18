@@ -20,6 +20,9 @@ export interface BankConnection {
   errorMessage: string | null;
   createdAt: string;
   updatedAt: string;
+  // The list endpoint joins the connection's account row and includes
+  // its display name so the UI can label imports without a second fetch.
+  accountName?: string | null;
 }
 
 export interface BankFeedItem {
@@ -38,6 +41,13 @@ export interface BankFeedItem {
   confidenceScore: string | null;
   createdAt: string;
   updatedAt: string;
+  // Server-enriched display fields (joined from the bank connection and
+  // suggestion tables). Present on list responses, absent on raw inserts.
+  bankAccountName?: string | null;
+  institutionName?: string | null;
+  originalDescription?: string | null;
+  suggestedAccountName?: string | null;
+  matchType?: 'rule' | 'ai' | 'manual' | string | null;
 }
 
 export interface BankFeedFilters {

@@ -181,6 +181,14 @@ export async function createJob(tenantId: string, jobType: string, inputType: st
   return job!;
 }
 
+// NOTE: processJob/completeJob/failJob are worker-internal and the caller is
+// expected to already have verified access to `jobId` via its enclosing tenant
+// context. They do NOT take tenantId because the worker dispatcher pulls jobs
+// off an internal queue keyed by jobId alone. Tenant isolation is preserved
+// because every user-facing endpoint that triggers AI work (ai.routes.ts,
+// chat.routes.ts) already scopes the insert in enqueueJob() to req.tenantId.
+// If these helpers ever become reachable from a user-controllable jobId path,
+// add `tenantId` as a required argument and include it in the WHERE clause.
 export async function processJob(jobId: string) {
   const job = await db.query.aiJobs.findFirst({ where: eq(aiJobs.id, jobId) });
   if (!job || job.status !== 'pending') return null;

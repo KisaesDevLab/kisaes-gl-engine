@@ -10,6 +10,11 @@ function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+/** Strip CR/LF from a subject-line segment to prevent header injection. */
+function safeSubjectSegment(s: string): string {
+  return s.replace(/[\r\n]/g, ' ');
+}
+
 /**
  * System-level email service — uses global SMTP settings (from system_settings table or .env).
  * Used for password resets, user invites, and system notifications.
@@ -84,7 +89,7 @@ export async function sendInviteEmail(email: string, inviterName: string, tenant
   await transport.sendMail({
     from,
     to: email,
-    subject: `Vibe MyBooks — You've been invited to ${tenantName}`,
+    subject: `Vibe MyBooks — You've been invited to ${safeSubjectSegment(tenantName)}`,
     text: `${inviterName} has invited you to access "${tenantName}" on Vibe MyBooks.\n\nYour temporary login credentials:\nEmail: ${email}\nPassword: ${temporaryPassword}\n\nLog in at: ${loginLink}\n\nPlease change your password after your first login.`,
     html: `
       <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:480px;margin:0 auto;padding:20px">
@@ -115,7 +120,7 @@ export async function sendAccessGrantedEmail(email: string, tenantName: string, 
   await transport.sendMail({
     from,
     to: email,
-    subject: `Vibe MyBooks — Access granted to ${tenantName}`,
+    subject: `Vibe MyBooks — Access granted to ${safeSubjectSegment(tenantName)}`,
     text: `You've been granted access to "${tenantName}" on Vibe MyBooks.\n\nLog in with your existing credentials at: ${baseUrl}/login\n\nYou can switch to this company from the company switcher in the sidebar.`,
     html: `
       <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:480px;margin:0 auto;padding:20px">
@@ -134,12 +139,51 @@ export async function sendAccessGrantedEmail(email: string, tenantName: string, 
   });
 }
 
+/**
+ * Send a plain-text email with an optional CTA button. Replaces the old
+ * `sendCustomEmail(to, subject, html)` which took raw HTML and invited
+ * callers to concatenate user-controlled strings into the body. Structured
+ * inputs make HTML injection impossible by construction: the body text is
+ * HTML-escaped before rendering, and the CTA URL must pass basic safety
+ * checks (http(s)/mailto only).
+ */
+export async function sendActionEmail(params: {
+  to: string;
+  subject: string;
+  bodyText: string;
+  cta?: { label: string; url: string };
+}): Promise<void> {
+  const { from, transport } = await createTransport();
+  const safeSubject = safeSubjectSegment(params.subject);
+  const safeBody = escapeHtml(params.bodyText).replace(/\n/g, '<br>');
+
+  let ctaHtml = '';
+  if (params.cta) {
+    // Only allow http(s) and mailto links in the CTA. Blocks javascript: /
+    // data: / file:/// URLs that would otherwise render as clickable links.
+    const u = params.cta.url;
+    const ok = /^https?:\/\//i.test(u) || /^mailto:/i.test(u);
+    if (ok) {
+      ctaHtml = `<p><a href="${escapeHtml(u)}" style="display:inline-block;padding:12px 24px;background:#4F46E5;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;">${escapeHtml(params.cta.label)}</a></p>`;
+    }
+  }
+
+  const html = `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:480px;margin:0 auto;padding:20px"><p>${safeBody}</p>${ctaHtml}</div>`;
+
+  await transport.sendMail({ from, to: params.to, subject: safeSubject, text: params.bodyText, html });
+}
+
+/**
+ * Deprecated: prefer sendActionEmail. Kept only for call sites we haven't
+ * migrated yet. Callers MUST only pass HTML they've already escaped or
+ * that contains no user-controlled substrings.
+ */
 export async function sendCustomEmail(to: string, subject: string, html: string): Promise<void> {
   const { from, transport } = await createTransport();
   await transport.sendMail({
     from,
     to,
-    subject,
+    subject: safeSubjectSegment(subject),
     html: `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:480px;margin:0 auto;padding:20px">${html}</div>`,
   });
 }

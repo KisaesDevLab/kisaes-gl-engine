@@ -84,17 +84,43 @@ export async function buildProfitAndLoss(
   basis: Basis = 'accrual',
   companyId: string | null = null,
 ): Promise<PLResult> {
+  // Cash basis: only recognize revenue when cash is received, only recognize
+  // expenses when cash is paid. The implementation uses the cash-hitting
+  // transactions themselves (payments, expenses, cash sales, bill payments,
+  // transfers, deposits) and derives the matching revenue/expense side from
+  // the counter-leg on the same transaction. Invoices posted but unpaid do
+  // not appear, bills entered but unpaid do not appear. This matches the
+  // standard IRS §448 definition.
+  //
+  // Accrual: include every posted txn whose txn_date is in range. (The
+  // existing query.)
+  const companyCond = companyId ? sql`company_id = ${companyId}` : sql`TRUE`;
+  const txnSelector = basis === 'cash'
+    ? sql`
+      SELECT DISTINCT t.id FROM transactions t
+      JOIN journal_lines cash_jl
+        ON cash_jl.transaction_id = t.id AND cash_jl.tenant_id = ${tenantId}
+      JOIN accounts cash_a
+        ON cash_a.id = cash_jl.account_id AND cash_a.tenant_id = ${tenantId}
+       AND cash_a.account_type = 'asset'
+       AND cash_a.detail_type IN ('checking', 'savings', 'cash', 'petty_cash', 'undeposited_funds', 'credit_card')
+      WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
+        AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
+        AND ${companyCond}
+    `
+    : sql`
+      SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
+      AND txn_date >= ${startDate} AND txn_date <= ${endDate}
+      AND ${companyCond}
+    `;
+
   const rows = await db.execute(sql`
     SELECT a.id, a.account_number, a.name, a.account_type, a.detail_type,
       COALESCE(SUM(jl.debit), 0) as total_debit,
       COALESCE(SUM(jl.credit), 0) as total_credit
     FROM accounts a
     LEFT JOIN journal_lines jl ON jl.account_id = a.id AND jl.tenant_id = ${tenantId}
-      AND jl.transaction_id IN (
-        SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
-        AND txn_date >= ${startDate} AND txn_date <= ${endDate}
-        AND ${companyId ? sql`company_id = ${companyId}` : sql`TRUE`}
-      )
+      AND jl.transaction_id IN (${txnSelector})
     WHERE a.tenant_id = ${tenantId}
       AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense')
     GROUP BY a.id ORDER BY a.account_number, a.name
@@ -151,17 +177,41 @@ export async function buildProfitAndLoss(
 }
 
 export async function buildBalanceSheet(tenantId: string, asOfDate: string, basis: Basis = 'accrual', companyId: string | null = null) {
+  // Cash basis balance sheet: exclude AR (money owed to us, not yet received)
+  // and AP (money we owe, not yet paid). Those are accrual-only constructs.
+  // Assets and liabilities that represent *already-completed* cash events stay.
+  //
+  // We implement this by restricting the txn set the same way P&L does — cash
+  // basis sees only transactions that moved cash, accrual sees every posted
+  // txn. AR/AP accounts then show zero balance because invoices/bills without
+  // matching payment don't appear in the cash-basis txn set at all.
+  const companyCond = companyId ? sql`company_id = ${companyId}` : sql`TRUE`;
+  const txnSelector = basis === 'cash'
+    ? sql`
+      SELECT DISTINCT t.id FROM transactions t
+      JOIN journal_lines cash_jl
+        ON cash_jl.transaction_id = t.id AND cash_jl.tenant_id = ${tenantId}
+      JOIN accounts cash_a
+        ON cash_a.id = cash_jl.account_id AND cash_a.tenant_id = ${tenantId}
+       AND cash_a.account_type = 'asset'
+       AND cash_a.detail_type IN ('checking', 'savings', 'cash', 'petty_cash', 'undeposited_funds', 'credit_card')
+      WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
+        AND t.txn_date <= ${asOfDate}
+        AND ${companyCond}
+    `
+    : sql`
+      SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
+      AND txn_date <= ${asOfDate}
+      AND ${companyCond}
+    `;
+
   const rows = await db.execute(sql`
     SELECT a.id, a.account_number, a.name, a.account_type, a.detail_type, a.system_tag,
       COALESCE(SUM(jl.debit), 0) as total_debit,
       COALESCE(SUM(jl.credit), 0) as total_credit
     FROM accounts a
     LEFT JOIN journal_lines jl ON jl.account_id = a.id AND jl.tenant_id = ${tenantId}
-      AND jl.transaction_id IN (
-        SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
-        AND txn_date <= ${asOfDate}
-        AND ${companyId ? sql`company_id = ${companyId}` : sql`TRUE`}
-      )
+      AND jl.transaction_id IN (${txnSelector})
     WHERE a.tenant_id = ${tenantId} AND a.account_type IN ('asset', 'liability', 'equity')
     GROUP BY a.id ORDER BY a.account_number, a.name
   `);

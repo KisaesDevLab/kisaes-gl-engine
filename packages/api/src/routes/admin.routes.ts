@@ -3,6 +3,7 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import { sql } from 'drizzle-orm';
@@ -37,6 +38,8 @@ import { ensureHostId } from '../services/host-id.service.js';
 import { getSetting, setSetting } from '../services/admin.service.js';
 import { SystemSettingsKeys } from '../constants/system-settings-keys.js';
 import { sentinelAudit } from '../startup/sentinel-audit.js';
+import { env } from '../config/env.js';
+import { issueOAuthState, verifyOAuthState } from '../utils/oauth-state.js';
 import {
   createCoaTemplateSchema,
   updateCoaTemplateSchema,
@@ -54,6 +57,7 @@ import {
   adminTfaConfigSchema,
   adminTfaSmsTestSchema,
   adminCreateClientSchema,
+  adminCreateUserSchema,
   adminMcpConfigSchema,
   adminPlaidConfigSchema,
 } from '@kis-books/shared';
@@ -63,6 +67,21 @@ import { tailscaleRouter } from './tailscale.routes.js';
 export const adminRouter = Router();
 adminRouter.use(authenticate);
 adminRouter.use(requireSuperAdmin);
+
+// Step-up auth limiter. Destructive security endpoints (rotate installation
+// ID, regenerate recovery key, refresh recovery file, delete recovery file)
+// all require the admin's current password in the body. Without a dedicated
+// limiter a compromised super-admin session could brute-force the password
+// under the permissive global 200/min limit. Keyed by userId because the
+// attacker has the session, not necessarily the same IP as the legit admin.
+const stepUpLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  keyGenerator: (req) => (req as any).userId || req.ip || 'anonymous',
+  message: { error: { message: 'Too many step-up attempts, please wait a minute', code: 'STEP_UP_RATE_LIMIT' } },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // Tailscale remote-access management (super-admin only, already gated above).
 adminRouter.use('/tailscale', tailscaleRouter);
@@ -128,29 +147,28 @@ adminRouter.get('/users', async (req, res) => {
   res.json({ users });
 });
 
-adminRouter.post('/users/create', async (req, res) => {
+adminRouter.post('/users/create', validate(adminCreateUserSchema), async (req, res) => {
   const { email: rawEmail, password, displayName, tenantId, role } = req.body;
-  if (!rawEmail || !password || !tenantId) {
-    res.status(400).json({ error: { message: 'email, password, and tenantId are required' } });
-    return;
-  }
   // Normalize to lowercase; users.email is treated case-insensitively
   // elsewhere in the auth path, so storing mixed-case here would create a
   // row that no normal login flow can find.
-  const email = String(rawEmail).trim().toLowerCase();
+  const email = rawEmail.trim().toLowerCase();
 
   const { users, tenants, userTenantAccess } = await import('../db/schema/index.js');
   const { eq } = await import('drizzle-orm');
   const { env } = await import('../config/env.js');
 
-  // Check email uniqueness
+  // Pre-flight checks: cheap reads outside the transaction so we return the
+  // user-friendly 409 / 404 quickly. The transaction below *re-checks*
+  // uniqueness (via the unique constraint on users.email) so a concurrent
+  // insert can't produce a duplicate, and rolls back both inserts together
+  // on failure.
   const existing = await db.query.users.findFirst({ where: eq(users.email, email) });
   if (existing) {
     res.status(409).json({ error: { message: 'A user with this email already exists' } });
     return;
   }
 
-  // Verify tenant exists
   const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
   if (!tenant) {
     res.status(404).json({ error: { message: 'Tenant not found' } });
@@ -158,23 +176,35 @@ adminRouter.post('/users/create', async (req, res) => {
   }
 
   const passwordHash = await bcrypt.hash(password, env.BCRYPT_ROUNDS);
-  const [user] = await db.insert(users).values({
-    tenantId,
-    email,
-    passwordHash,
-    displayName: displayName || null,
-    role: role || 'owner',
-  }).returning();
 
-  if (user) {
-    await db.insert(userTenantAccess).values({
-      userId: user.id,
-      tenantId,
-      role: role || 'owner',
-    }).onConflictDoNothing();
+  try {
+    const user = await db.transaction(async (tx) => {
+      const [u] = await tx.insert(users).values({
+        tenantId,
+        email,
+        passwordHash,
+        displayName: displayName || null,
+        role,
+      }).returning();
+      if (!u) throw new Error('user insert returned no row');
+      await tx.insert(userTenantAccess).values({
+        userId: u.id,
+        tenantId,
+        role,
+      }).onConflictDoNothing();
+      return u;
+    });
+    res.status(201).json({ user: { id: user.id, email: user.email, displayName: user.displayName, role: user.role } });
+  } catch (err: any) {
+    // Unique-constraint violation on users.email — race with another
+    // concurrent create. Map to 409 so the client sees the same shape as
+    // the pre-flight check.
+    if (err?.code === '23505' || /unique/i.test(err?.message || '')) {
+      res.status(409).json({ error: { message: 'A user with this email already exists' } });
+      return;
+    }
+    throw err;
   }
-
-  res.status(201).json({ user: { id: user!.id, email: user!.email, displayName: user!.displayName, role: user!.role } });
 });
 
 adminRouter.post('/users/:id/reset-password', validate(adminResetPasswordSchema), async (req, res) => {
@@ -563,10 +593,19 @@ adminRouter.post('/backup/remote-test', async (req, res) => {
 
 // ─── Backup Remote OAuth Flow ────────────────────────────────────
 
+// Callback base comes from env, not from req headers. A tenant who stands up
+// the appliance behind a reverse proxy that forwards an arbitrary Host header
+// could otherwise trick the server into building a callback URL pointing at
+// an attacker-controlled host (host-header injection).
+function oauthCallbackBase(): string {
+  const origin = (env.CORS_ORIGIN || 'http://localhost:5173').replace(/\/$/, '');
+  return origin;
+}
+
 adminRouter.get('/backup/remote-connect/:provider', async (req, res) => {
   const provider = req.params['provider']!;
-  const appUrl = process.env['CORS_ORIGIN'] || 'http://localhost:5173';
-  const callbackUrl = `${req.protocol}://${req.get('host')}/api/v1/admin/backup/remote-callback/${provider}`;
+  const callbackUrl = `${oauthCallbackBase()}/api/v1/admin/backup/remote-callback/${provider}`;
+  const state = issueOAuthState(req.userId, provider);
 
   const config = await adminService.getBackupRemoteConfig();
   const parsed = JSON.parse(config.backupRemoteConfig) as Record<string, any>;
@@ -575,20 +614,20 @@ adminRouter.get('/backup/remote-connect/:provider', async (req, res) => {
     case 'dropbox': {
       const appKey = parsed['app_key'];
       if (!appKey) { res.status(400).json({ error: { message: 'Dropbox app credentials not configured' } }); return; }
-      res.redirect(`https://www.dropbox.com/oauth2/authorize?client_id=${appKey}&response_type=code&redirect_uri=${encodeURIComponent(callbackUrl)}&token_access_type=offline`);
+      res.redirect(`https://www.dropbox.com/oauth2/authorize?client_id=${appKey}&response_type=code&redirect_uri=${encodeURIComponent(callbackUrl)}&state=${encodeURIComponent(state)}&token_access_type=offline`);
       break;
     }
     case 'google_drive': {
       const clientId = parsed['client_id'];
       if (!clientId) { res.status(400).json({ error: { message: 'Google Drive credentials not configured' } }); return; }
-      res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&response_type=code&redirect_uri=${encodeURIComponent(callbackUrl)}&scope=https://www.googleapis.com/auth/drive.file&access_type=offline&prompt=consent`);
+      res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&response_type=code&redirect_uri=${encodeURIComponent(callbackUrl)}&state=${encodeURIComponent(state)}&scope=https://www.googleapis.com/auth/drive.file&access_type=offline&prompt=consent`);
       break;
     }
     case 'onedrive': {
       const clientId = parsed['client_id'];
       const msTenantId = parsed['ms_tenant_id'] || 'common';
       if (!clientId) { res.status(400).json({ error: { message: 'OneDrive credentials not configured' } }); return; }
-      res.redirect(`https://login.microsoftonline.com/${msTenantId}/oauth2/v2.0/authorize?client_id=${clientId}&response_type=code&redirect_uri=${encodeURIComponent(callbackUrl)}&scope=Files.ReadWrite%20User.Read%20offline_access`);
+      res.redirect(`https://login.microsoftonline.com/${msTenantId}/oauth2/v2.0/authorize?client_id=${clientId}&response_type=code&redirect_uri=${encodeURIComponent(callbackUrl)}&state=${encodeURIComponent(state)}&scope=Files.ReadWrite%20User.Read%20offline_access`);
       break;
     }
     default:
@@ -599,10 +638,18 @@ adminRouter.get('/backup/remote-connect/:provider', async (req, res) => {
 adminRouter.get('/backup/remote-callback/:provider', async (req, res) => {
   const provider = req.params['provider']!;
   const code = req.query['code'] as string;
-  const appUrl = process.env['CORS_ORIGIN'] || 'http://localhost:5173';
-  const callbackUrl = `${req.protocol}://${req.get('host')}/api/v1/admin/backup/remote-callback/${provider}`;
+  const state = req.query['state'] as string | undefined;
+  const appUrl = oauthCallbackBase();
+  const callbackUrl = `${appUrl}/api/v1/admin/backup/remote-callback/${provider}`;
 
   if (!code) { res.redirect(`${appUrl}/admin/system?error=no_code`); return; }
+  // Verify the state was issued by us for this admin + provider. Without
+  // this an attacker can complete the OAuth dance against a token they
+  // control and bind their cloud account to the tenant's backup config.
+  if (!verifyOAuthState(state, req.userId, provider)) {
+    res.redirect(`${appUrl}/admin/system?error=invalid_state`);
+    return;
+  }
 
   try {
     const config = await adminService.getBackupRemoteConfig();
@@ -811,7 +858,7 @@ adminRouter.get('/security/status', async (_req, res) => {
  * AND their current recovery key (to prove they still hold it — we'd
  * otherwise be silently re-encrypting values they might not control).
  */
-adminRouter.post('/security/recovery-file/refresh', async (req, res) => {
+adminRouter.post('/security/recovery-file/refresh', stepUpLimiter, async (req, res) => {
   const password = (req.body?.password ?? '').toString();
   const recoveryKey = (req.body?.recoveryKey ?? '').toString();
   if (!password || !recoveryKey) {
@@ -875,7 +922,7 @@ adminRouter.post('/security/recovery-file/refresh', async (req, res) => {
  * key exactly once — server never persists it. The old recovery key stops
  * working the moment /data/.env.recovery is overwritten.
  */
-adminRouter.post('/security/recovery-key/regenerate', async (req, res) => {
+adminRouter.post('/security/recovery-key/regenerate', stepUpLimiter, async (req, res) => {
   const password = (req.body?.password ?? '').toString();
   if (!password) {
     res.status(400).json({ error: { message: 'current password required' } });
@@ -958,7 +1005,7 @@ adminRouter.post('/security/recovery-key/test', async (req, res) => {
  * ID and writes a new recovery file (with a new recovery key — shown once).
  * Requires current password.
  */
-adminRouter.post('/security/installation-id/rotate', async (req, res) => {
+adminRouter.post('/security/installation-id/rotate', stepUpLimiter, async (req, res) => {
   const password = (req.body?.password ?? '').toString();
   if (!password) {
     res.status(400).json({ error: { message: 'current password required' } });
@@ -1040,7 +1087,7 @@ adminRouter.post('/security/installation-id/rotate', async (req, res) => {
  * recovery capability (e.g., they manage their env separately and consider
  * the recovery file a liability). Irreversible without a new regenerate.
  */
-adminRouter.delete('/security/recovery-key', async (req, res) => {
+adminRouter.delete('/security/recovery-key', stepUpLimiter, async (req, res) => {
   const password = (req.body?.password ?? '').toString();
   if (!password) {
     res.status(400).json({ error: { message: 'current password required' } });

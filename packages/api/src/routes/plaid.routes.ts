@@ -3,12 +3,40 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { Router } from 'express';
+import { z } from 'zod';
+import {
+  plaidExchangeSchema, plaidCreateAndMapSchema,
+} from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { validate } from '../middleware/validate.js';
 import * as plaidClient from '../services/plaid-client.service.js';
 import * as plaidConnection from '../services/plaid-connection.service.js';
 import * as plaidMapping from '../services/plaid-mapping.service.js';
 import * as plaidSync from '../services/plaid-sync.service.js';
 import * as plaidWebhook from '../services/plaid-webhook.service.js';
+
+// Local schemas for plaid routes that weren't covered in shared. Kept close
+// to the route where they're used; promote to shared if the frontend starts
+// type-checking against the request shape.
+const assignAccountSchema = z.object({
+  coaAccountId: z.string().uuid(),
+  syncStartDate: z.string().optional(),
+});
+const remapAccountSchema = z.object({
+  coaAccountId: z.string().uuid(),
+});
+const syncDateSchema = z.object({
+  syncStartDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'syncStartDate must be YYYY-MM-DD'),
+});
+const syncToggleSchema = z.object({
+  enabled: z.boolean(),
+});
+const unmapCompanySchema = z.object({
+  deletePendingItems: z.boolean().optional(),
+});
+const updateLinkTokenSchema = z.object({
+  itemId: z.string().uuid(),
+});
 
 export const plaidRouter = Router();
 
@@ -19,14 +47,14 @@ plaidRouter.post('/link-token', authenticate, async (req, res) => {
   res.json({ linkToken });
 });
 
-plaidRouter.post('/link-token/update', authenticate, async (req, res) => {
+plaidRouter.post('/link-token/update', authenticate, validate(updateLinkTokenSchema), async (req, res) => {
   const linkToken = await plaidConnection.getUpdateLinkToken(req.body.itemId, req.userId);
   res.json({ linkToken });
 });
 
 // ─── Exchange & Connection (System-Scoped) ─────────────────────
 
-plaidRouter.post('/exchange', authenticate, async (req, res) => {
+plaidRouter.post('/exchange', authenticate, validate(plaidExchangeSchema), async (req, res) => {
   const result = await plaidConnection.createConnection(req.userId, req.body.publicToken, {
     institutionId: req.body.institutionId,
     institutionName: req.body.institutionName,
@@ -63,7 +91,7 @@ plaidRouter.get('/items/:id', authenticate, async (req, res) => {
 
 // ─── Tier 1: Unmap Company ─────────────────────────────────────
 
-plaidRouter.post('/items/:id/unmap-company', authenticate, async (req, res) => {
+plaidRouter.post('/items/:id/unmap-company', authenticate, validate(unmapCompanySchema), async (req, res) => {
   // Visibility gate: the caller must already have a relationship to
   // this item (creator, super admin, or mapped into one of its
   // accounts in a tenant they can access). Without this, any
@@ -91,7 +119,7 @@ plaidRouter.delete('/items/:id', authenticate, async (req, res) => {
 
 // ─── Account Mapping (Two-Step) ────────────────────────────────
 
-plaidRouter.post('/accounts/:id/assign', authenticate, async (req, res) => {
+plaidRouter.post('/accounts/:id/assign', authenticate, validate(assignAccountSchema), async (req, res) => {
   // Tenant comes from the JWT only (CLAUDE.md §17 — never trust
   // client-supplied tenant_id). The previous version of this route
   // accepted `req.body.tenantId` and let a user assign a Plaid
@@ -108,17 +136,17 @@ plaidRouter.post('/accounts/:id/unmap', authenticate, async (req, res) => {
   res.json({ unmapped: true });
 });
 
-plaidRouter.put('/accounts/:id/remap', authenticate, async (req, res) => {
+plaidRouter.put('/accounts/:id/remap', authenticate, validate(remapAccountSchema), async (req, res) => {
   const mapping = await plaidMapping.remapAccount(req.params['id']!, req.tenantId, req.body.coaAccountId, req.userId);
   res.json(mapping);
 });
 
-plaidRouter.put('/accounts/:id/sync-date', authenticate, async (req, res) => {
+plaidRouter.put('/accounts/:id/sync-date', authenticate, validate(syncDateSchema), async (req, res) => {
   await plaidMapping.updateSyncStartDate(req.params['id']!, req.tenantId, req.body.syncStartDate);
   res.json({ updated: true });
 });
 
-plaidRouter.put('/accounts/:id/sync-toggle', authenticate, async (req, res) => {
+plaidRouter.put('/accounts/:id/sync-toggle', authenticate, validate(syncToggleSchema), async (req, res) => {
   await plaidMapping.toggleSync(req.params['id']!, req.tenantId, req.body.enabled);
   res.json({ updated: true });
 });
@@ -128,7 +156,9 @@ plaidRouter.get('/accounts/:id/suggestions', authenticate, async (req, res) => {
   res.json({ suggestions });
 });
 
-plaidRouter.post('/accounts/:id/create-and-map', authenticate, async (req, res) => {
+plaidRouter.post('/accounts/:id/create-and-map', authenticate, validate(
+  plaidCreateAndMapSchema.extend({ syncStartDate: z.string().optional() }),
+), async (req, res) => {
   const account = await plaidMapping.createAndMapAccount(
     req.tenantId, req.params['id']!, req.body, req.body.syncStartDate || null, req.userId,
   );

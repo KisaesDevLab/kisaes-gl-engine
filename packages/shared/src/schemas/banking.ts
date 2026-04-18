@@ -49,3 +49,44 @@ export const bankImportSchema = z.object({
     creditColumn: z.number().int().min(0).optional(),
   }),
 });
+
+// ─── Bulk bank-feed operations ─────────────────────────────────────
+// Cap the array sizes: any bulk op past 500 items is almost certainly a
+// client bug, and an uncapped input turns a single request into an O(n)
+// DoS surface against the ledger.
+
+export const bulkApproveSchema = z.object({
+  feedItemIds: z.array(z.string().uuid()).min(1).max(500),
+});
+
+export const bulkCategorizeSchema = z.object({
+  feedItemIds: z.array(z.string().uuid()).min(1).max(500),
+  accountId: z.string().uuid(),
+  contactId: z.string().uuid().optional(),
+  memo: z.string().max(500).optional(),
+});
+
+export const bulkExcludeSchema = z.object({
+  feedItemIds: z.array(z.string().uuid()).min(1).max(500),
+});
+
+export const bulkRecleanseSchema = z.object({
+  feedItemIds: z.array(z.string().uuid()).min(1).max(500),
+});
+
+// Manual bank connections created from the UI ("CSV import" path).
+export const createManualConnectionSchema = z.object({
+  accountId: z.string().uuid(),
+  institutionName: z.string().min(1).max(255).optional(),
+});
+
+// A feed item edit — memo / description / date / contact (all optional).
+// Strict to reject unknown keys, since the service spreads req.body into
+// the update set.
+export const updateFeedItemSchema = z.object({
+  feedDate: z.string().optional(),
+  description: z.string().max(500).optional(),
+  memo: z.string().max(500).optional(),
+  contactId: z.string().uuid().nullable().optional(),
+  category: z.string().max(100).optional(),
+}).strict();

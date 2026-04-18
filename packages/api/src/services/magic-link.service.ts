@@ -76,16 +76,16 @@ export async function sendMagicLink(email: string, ipAddress: string, userAgent:
   const link = `${appUrl}/auth/magic?token=${token}`;
 
   try {
-    await systemEmail.sendCustomEmail(
-      user.email,
-      'Log in to Vibe MyBooks',
-      `<p>Click the link below to log in:</p>
-       <p><a href="${link}" style="display:inline-block;padding:12px 24px;background:#4F46E5;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;">Log In to Vibe MyBooks</a></p>
-       <p style="color:#6B7280;font-size:14px;">This link expires in ${expiryMinutes} minutes and can only be used once.</p>
-       <p style="color:#6B7280;font-size:14px;">If you didn't request this, ignore this email.</p>`,
-    );
-  } catch {
-    // If email fails, still don't reveal user existence
+    await systemEmail.sendActionEmail({
+      to: user.email,
+      subject: 'Log in to Vibe MyBooks',
+      bodyText: `Click the button below to log in.\n\nThis link expires in ${expiryMinutes} minutes and can only be used once.\n\nIf you didn't request this, ignore this email.`,
+      cta: { label: 'Log In to Vibe MyBooks', url: link },
+    });
+  } catch (err) {
+    // Don't reveal user existence on email failure, but do log so an
+    // SMTP misconfiguration doesn't silently drop every magic-link.
+    console.warn(`[magic-link] email send failed for user ${user.id}:`, err);
   }
 
   await auditLog(user.tenantId, 'create', 'magic_link_sent', user.id, null, { ip: ipAddress }, user.id);

@@ -5,8 +5,17 @@
 import { z } from 'zod';
 
 const envSchema = z.object({
-  DATABASE_URL: z.string().url(),
-  REDIS_URL: z.string().url(),
+  // Require the postgres(ql):// scheme explicitly. z.string().url() accepts
+  // any valid URL (including http://), so a typo in the .env file would
+  // pass validation and fail later with an opaque driver error.
+  DATABASE_URL: z.string().url().refine(
+    (v) => /^postgres(ql)?:\/\//i.test(v),
+    { message: 'DATABASE_URL must start with postgres:// or postgresql://' },
+  ),
+  REDIS_URL: z.string().url().refine(
+    (v) => /^rediss?:\/\//i.test(v),
+    { message: 'REDIS_URL must start with redis:// or rediss://' },
+  ),
   JWT_SECRET: z.string().min(20, 'JWT_SECRET must be at least 20 characters for security'),
   JWT_ACCESS_EXPIRY: z.string().default('15m'),
   JWT_REFRESH_EXPIRY: z.string().default('7d'),

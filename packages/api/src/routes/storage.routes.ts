@@ -9,6 +9,7 @@ import { authenticate } from '../middleware/auth.js';
 import { db } from '../db/index.js';
 import { storageProviders } from '../db/schema/index.js';
 import { encrypt, decrypt } from '../utils/encryption.js';
+import { env } from '../config/env.js';
 import { getProviderForTenant, invalidateProviderCache } from '../services/storage/storage-provider.factory.js';
 import * as migrationService from '../services/storage-migration.service.js';
 
@@ -160,7 +161,11 @@ storageRouter.post('/configure/:provider', async (req, res) => {
 
 storageRouter.get('/connect/:provider', async (req, res) => {
   const provider = req.params['provider']!;
-  const callbackUrl = `${req.protocol}://${req.get('host')}/api/v1/settings/storage/callback/${provider}`;
+  // Use env.CORS_ORIGIN rather than derived host header. A reverse proxy
+  // forwarding a crafted Host could otherwise let an attacker point the
+  // callback URL at their own host (host-header injection / OAuth leak).
+  const callbackBase = (env.CORS_ORIGIN || 'http://localhost:5173').replace(/\/$/, '');
+  const callbackUrl = `${callbackBase}/api/v1/settings/storage/callback/${provider}`;
 
   // Read this tenant's OAuth app credentials from their storageProviders record
   const record = await getTenantProviderRecord(req.tenantId, provider);
@@ -199,7 +204,11 @@ storageRouter.get('/callback/:provider', async (req, res) => {
   const code = req.query['code'] as string;
   const state = req.query['state'] as string | undefined;
   const appUrl = process.env['CORS_ORIGIN'] || 'http://localhost:5173';
-  const callbackUrl = `${req.protocol}://${req.get('host')}/api/v1/settings/storage/callback/${provider}`;
+  // Use env.CORS_ORIGIN rather than derived host header. A reverse proxy
+  // forwarding a crafted Host could otherwise let an attacker point the
+  // callback URL at their own host (host-header injection / OAuth leak).
+  const callbackBase = (env.CORS_ORIGIN || 'http://localhost:5173').replace(/\/$/, '');
+  const callbackUrl = `${callbackBase}/api/v1/settings/storage/callback/${provider}`;
 
   if (!code) { res.redirect(`${appUrl}/settings/storage?error=no_code`); return; }
   if (!state || !consumeOAuthState(state, req.tenantId, req.userId, provider)) {

@@ -4,7 +4,12 @@
 
 import { Router } from 'express';
 import multer from 'multer';
-import { bankFeedFiltersSchema, categorizeSchema, matchSchema, startReconciliationSchema, updateReconciliationLinesSchema, bankImportSchema } from '@kis-books/shared';
+import {
+  bankFeedFiltersSchema, categorizeSchema, matchSchema,
+  startReconciliationSchema, updateReconciliationLinesSchema, bankImportSchema,
+  bulkApproveSchema, bulkCategorizeSchema, bulkExcludeSchema, bulkRecleanseSchema,
+  createManualConnectionSchema, updateFeedItemSchema,
+} from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
@@ -30,7 +35,7 @@ bankingRouter.post('/connections/link-token', async (req, res) => {
   res.json(result);
 });
 
-bankingRouter.post('/connections', async (req, res) => {
+bankingRouter.post('/connections', validate(createManualConnectionSchema), async (req, res) => {
   const conn = await bankConnectionService.createManualConnection(
     req.tenantId, req.body.accountId, req.body.institutionName || 'Manual Import',
   );
@@ -55,7 +60,7 @@ bankingRouter.get('/feed', async (req, res) => {
   res.json(result);
 });
 
-bankingRouter.put('/feed/:id', async (req, res) => {
+bankingRouter.put('/feed/:id', validate(updateFeedItemSchema), async (req, res) => {
   const item = await bankFeedService.updateFeedItem(req.tenantId, req.params['id']!, req.body);
   res.json({ item });
 });
@@ -91,45 +96,59 @@ bankingRouter.put('/feed/:id/exclude', async (req, res) => {
   res.json({ message: 'Excluded' });
 });
 
-bankingRouter.post('/feed/bulk-approve', async (req, res) => {
+bankingRouter.post('/feed/bulk-approve', validate(bulkApproveSchema), async (req, res) => {
   const result = await bankFeedService.bulkApprove(req.tenantId, req.body.feedItemIds);
   res.json(result);
 });
 
-bankingRouter.post('/feed/bulk-categorize', async (req, res) => {
+bankingRouter.post('/feed/bulk-categorize', validate(bulkCategorizeSchema), async (req, res) => {
   const { feedItemIds, accountId, contactId, memo } = req.body;
-  if (!feedItemIds?.length || !accountId) {
-    res.status(400).json({ error: { message: 'feedItemIds and accountId are required' } });
-    return;
-  }
   const result = await bankFeedService.bulkCategorize(req.tenantId, feedItemIds, accountId, contactId, memo, req.userId, req.companyId);
   res.json(result);
 });
 
-bankingRouter.post('/feed/bulk-recleanse', async (req, res) => {
-  const { feedItemIds } = req.body;
-  if (!feedItemIds?.length) {
-    res.status(400).json({ error: { message: 'feedItemIds is required' } });
-    return;
-  }
-  const result = await bankFeedService.bulkRecleanse(req.tenantId, feedItemIds);
+bankingRouter.post('/feed/bulk-recleanse', validate(bulkRecleanseSchema), async (req, res) => {
+  const result = await bankFeedService.bulkRecleanse(req.tenantId, req.body.feedItemIds);
   res.json(result);
 });
 
-bankingRouter.post('/feed/bulk-exclude', async (req, res) => {
-  const { feedItemIds } = req.body;
-  if (!feedItemIds?.length) {
-    res.status(400).json({ error: { message: 'feedItemIds is required' } });
-    return;
-  }
-  const result = await bankFeedService.bulkExclude(req.tenantId, feedItemIds);
+bankingRouter.post('/feed/bulk-exclude', validate(bulkExcludeSchema), async (req, res) => {
+  const result = await bankFeedService.bulkExclude(req.tenantId, req.body.feedItemIds);
   res.json(result);
 });
 
 bankingRouter.post('/feed/import', upload.single('file'), async (req, res) => {
   if (!req.file) { res.status(400).json({ error: { message: 'No file' } }); return; }
 
-  const { accountId, mapping } = req.body;
+  // Validate the multipart form body. Multer parses into req.body as plain
+  // strings/Buffers, so we run a Zod check here rather than via the route
+  // middleware (which assumes application/json bodies).
+  const { accountId, mapping } = req.body as { accountId?: unknown; mapping?: unknown };
+  if (typeof accountId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(accountId)) {
+    res.status(400).json({ error: { message: 'accountId must be a UUID', code: 'VALIDATION_ERROR' } });
+    return;
+  }
+
+  // mapping may arrive as a JSON string (when the form encodes it), as an
+  // object (rare — depends on client), or absent. A bad JSON payload used to
+  // crash the handler with an unhandled SyntaxError → generic 500.
+  let parsedMapping: { date: number; description: number; amount: number } = { date: 0, description: 1, amount: 2 };
+  if (mapping !== undefined) {
+    try {
+      const raw = typeof mapping === 'string' ? JSON.parse(mapping) : mapping;
+      const d = Number(raw?.date);
+      const desc = Number(raw?.description);
+      const amt = Number(raw?.amount);
+      if (!Number.isInteger(d) || !Number.isInteger(desc) || !Number.isInteger(amt) || d < 0 || desc < 0 || amt < 0) {
+        throw new Error('mapping must have integer date/description/amount columns');
+      }
+      parsedMapping = { date: d, description: desc, amount: amt };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'invalid mapping';
+      res.status(400).json({ error: { message: `Invalid mapping: ${msg}`, code: 'VALIDATION_ERROR' } });
+      return;
+    }
+  }
 
   // Ensure we have a bank connection for this account
   let connections = await bankConnectionService.list(req.tenantId);
@@ -149,7 +168,6 @@ bankingRouter.post('/feed/import', upload.single('file'), async (req, res) => {
   if (ext.endsWith('.ofx') || ext.endsWith('.qfx')) {
     items = await bankFeedService.importFromOfx(req.tenantId, conn.id, content);
   } else {
-    const parsedMapping = typeof mapping === 'string' ? JSON.parse(mapping) : (mapping || { date: 0, description: 1, amount: 2 });
     items = await bankFeedService.importFromCsv(req.tenantId, conn.id, content, parsedMapping);
   }
 

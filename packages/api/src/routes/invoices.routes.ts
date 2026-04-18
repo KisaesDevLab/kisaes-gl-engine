@@ -38,7 +38,7 @@ invoicesRouter.put('/:id', validate(createInvoiceSchema), async (req, res) => {
 });
 
 invoicesRouter.post('/:id/mark-sent', async (req, res) => {
-  await invoiceService.markAsSent(req.tenantId, req.params['id']!);
+  await invoiceService.markAsSent(req.tenantId, req.params['id']!, req.userId);
   const invoice = await ledger.getTransaction(req.tenantId, req.params['id']!);
   res.json({ invoice });
 });
@@ -77,7 +77,7 @@ invoicesRouter.post('/:id/share-link', async (req, res) => {
     res.status(403).json({ error: { message: 'Readonly users cannot generate share links' } });
     return;
   }
-  const link = await invoiceService.generateShareLink(req.tenantId, req.params['id']!);
+  const link = await invoiceService.generateShareLink(req.tenantId, req.params['id']!, req.userId);
   res.json({ link });
 });
 
