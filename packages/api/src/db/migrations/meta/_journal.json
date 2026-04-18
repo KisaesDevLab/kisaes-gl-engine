@@ -379,6 +379,34 @@
       "when": 1776480000000,
       "tag": "0053_security_hardening_uniques",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1776490000000,
+      "tag": "0054_ai_pii_protection",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1776500000000,
+      "tag": "0055_ai_consent",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1776510000000,
+      "tag": "0056_bank_feed_match_type",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1776520000000,
+      "tag": "0057_openai_compat_provider",
+      "breakpoints": true
     }
   ]
 }

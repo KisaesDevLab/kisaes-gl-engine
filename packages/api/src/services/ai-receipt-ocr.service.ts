@@ -70,7 +70,7 @@ export async function processReceipt(tenantId: string, attachmentId: string) {
     let result;
     let parsed: any;
 
-    if (orchestrator.isSelfHostedProvider(ocrProvider)) {
+    if (orchestrator.isSelfHostedProvider(ocrProvider, { openaiCompatBaseUrl: rawConfig.openaiCompatBaseUrl })) {
       // Self-hosted path: image stays local.
       const provider = getProvider(ocrProvider, rawConfig, config.ocrModel || undefined);
       const base64 = imageBuffer.toString('base64');
@@ -138,7 +138,7 @@ export async function processReceipt(tenantId: string, attachmentId: string) {
         extractionSource = 'cloud_vision_permissive';
       } else {
         const rawText = extraction.kind === 'pdf_text' ? extraction.text : extraction.text;
-        const pii = sanitize(rawText, orchestrator.piiModeFor(ocrProvider, 'ocr_receipt'));
+        const pii = sanitize(rawText, orchestrator.piiModeFor(ocrProvider, 'ocr_receipt', { openaiCompatBaseUrl: rawConfig.openaiCompatBaseUrl }));
         piiRedactedList = pii.detected;
         if (extraction.kind === 'tesseract') {
           qualityWarnings.push('tesseract_local_ocr');

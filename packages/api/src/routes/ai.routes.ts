@@ -193,7 +193,11 @@ aiRouter.get('/status', authenticate, async (_req, res) => {
     config.hasAnthropicKey ||
     config.hasOpenaiKey ||
     config.hasGeminiKey ||
-    !!config.ollamaBaseUrl;
+    !!config.ollamaBaseUrl ||
+    // openai_compat is configured by URL — its base URL being set is
+    // equivalent to "credentials present" for readiness purposes. (An
+    // optional bearer key may also be configured.)
+    !!config.openaiCompatBaseUrl;
   const ocrProvider = config.ocrProvider || config.categorizationProvider;
   res.json({
     isEnabled: config.isEnabled && hasAnyKey && hasAnyProvider,

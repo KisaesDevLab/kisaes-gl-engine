@@ -90,7 +90,7 @@ export async function classifyDocument(tenantId: string, attachmentId: string): 
     let docType: DocumentType;
     let confidence: number;
 
-    if (orchestrator.isSelfHostedProvider(provider)) {
+    if (orchestrator.isSelfHostedProvider(provider, { openaiCompatBaseUrl: rawConfig.openaiCompatBaseUrl })) {
       const aiProvider = gp(provider, rawConfig, config.documentClassificationModel || undefined);
       const base64 = fileBuffer.toString('base64');
       result = await aiProvider.completeWithImage({
@@ -145,7 +145,7 @@ export async function classifyDocument(tenantId: string, attachmentId: string): 
           } as any;
         } else {
           const snippet = extraction.text.slice(0, 500);
-          const pii = sanitize(snippet, orchestrator.piiModeFor(provider, 'classify_document'));
+          const pii = sanitize(snippet, orchestrator.piiModeFor(provider, 'classify_document', { openaiCompatBaseUrl: rawConfig.openaiCompatBaseUrl }));
           piiRedactedList = pii.detected;
           extractionSource = extraction.kind === 'pdf_text' ? 'pdf_text_layer' : 'tesseract_local';
           if (extraction.kind === 'tesseract') qualityWarnings.push('tesseract_local_ocr');

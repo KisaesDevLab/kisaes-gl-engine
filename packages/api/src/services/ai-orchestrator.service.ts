@@ -34,10 +34,40 @@ function consentReasonMessage(reason: string | undefined): string {
 
 // Providers whose calls stay on-server. For these the PII sanitizer is a
 // no-op and the cloud-vision gate is skipped.
-const SELF_HOSTED_PROVIDERS = new Set(['ollama', 'glm_ocr_local']);
+//
+// `openai_compat` is a special case — the admin points it at an arbitrary
+// URL, so whether data stays on-server depends on where that URL resolves.
+// isSelfHostedProvider() inspects the configured URL and returns true only
+// when it's clearly local (loopback, private IP, .local hostname, or a
+// Docker/Compose-style short DNS name). Anything else — including any
+// https://public.cloud/... URL — is treated as cloud so the PII sanitizer
+// still engages.
+const ALWAYS_SELF_HOSTED = new Set(['ollama', 'glm_ocr_local']);
 
-export function isSelfHostedProvider(providerName: string): boolean {
-  return SELF_HOSTED_PROVIDERS.has(providerName);
+function isLocalUrl(raw: string | null | undefined): boolean {
+  if (!raw) return false;
+  try {
+    const u = new URL(raw);
+    const host = u.hostname.toLowerCase();
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') return true;
+    if (host.endsWith('.local') || host.endsWith('.internal')) return true;
+    // RFC 1918 private ranges
+    if (/^10\./.test(host)) return true;
+    if (/^192\.168\./.test(host)) return true;
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true;
+    // Docker/Compose short names (no dots) and IPv6 link-local fe80::/10
+    if (!host.includes('.') && !host.startsWith('[')) return true;
+    if (host.startsWith('fe80:') || host.startsWith('[fe80:')) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+export function isSelfHostedProvider(providerName: string, config?: { openaiCompatBaseUrl?: string | null }): boolean {
+  if (ALWAYS_SELF_HOSTED.has(providerName)) return true;
+  if (providerName === 'openai_compat') return isLocalUrl(config?.openaiCompatBaseUrl);
+  return false;
 }
 
 /**
@@ -45,8 +75,15 @@ export function isSelfHostedProvider(providerName: string): boolean {
  * providers get `none` (data never leaves the server); cloud providers
  * get a task-appropriate mode per addendum §PII Sanitizer.
  */
-export function piiModeFor(providerName: string, task: AiTask): SanitizerMode {
-  return pickMode(providerName, task);
+export function piiModeFor(
+  providerName: string,
+  task: AiTask,
+  config?: { openaiCompatBaseUrl?: string | null },
+): SanitizerMode {
+  // Pass through the URL-aware self-hosted check for openai_compat so
+  // sanitization correctly skips when the admin points it at a local
+  // server, and correctly engages when it's aimed at a cloud URL.
+  return pickMode(providerName, task, isSelfHostedProvider(providerName, config));
 }
 
 /**
@@ -56,8 +93,8 @@ export function piiModeFor(providerName: string, task: AiTask): SanitizerMode {
  * 'permissive'` — the admin opt-in path per addendum §Tier 1.
  */
 export async function assertCloudVisionAllowed(providerName: string): Promise<void> {
-  if (isSelfHostedProvider(providerName)) return;
   const raw = await aiConfigService.getRawConfig();
+  if (isSelfHostedProvider(providerName, { openaiCompatBaseUrl: raw.openaiCompatBaseUrl })) return;
   const cloudVisionEnabled = !!raw.cloudVisionEnabled;
   const level = raw.piiProtectionLevel || 'strict';
   if (cloudVisionEnabled && level === 'permissive') return;

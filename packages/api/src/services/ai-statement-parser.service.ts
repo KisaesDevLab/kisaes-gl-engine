@@ -69,7 +69,7 @@ export async function parseStatement(tenantId: string, attachmentId: string) {
     let result;
     let parsed: any;
 
-    if (orchestrator.isSelfHostedProvider(ocrProvider)) {
+    if (orchestrator.isSelfHostedProvider(ocrProvider, { openaiCompatBaseUrl: rawConfig.openaiCompatBaseUrl })) {
       const provider = getProvider(ocrProvider, rawConfig, config.ocrModel || undefined);
       const base64 = fileBuffer.toString('base64');
       result = await provider.completeWithImage({
@@ -144,7 +144,7 @@ export async function parseStatement(tenantId: string, attachmentId: string) {
         const header = fullText.slice(0, splitIndex);
         const body = fullText.slice(splitIndex);
         const headerSan = sanitizeStatementHeader(header);
-        const bodySan = sanitize(body, orchestrator.piiModeFor(ocrProvider, 'ocr_statement'));
+        const bodySan = sanitize(body, orchestrator.piiModeFor(ocrProvider, 'ocr_statement', { openaiCompatBaseUrl: rawConfig.openaiCompatBaseUrl }));
         piiRedactedList = [...new Set([...headerSan.detected, ...bodySan.detected])];
 
         if (extraction.kind === 'tesseract') {

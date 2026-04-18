@@ -24,6 +24,13 @@ export const aiConfig = pgTable('ai_config', {
   ollamaBaseUrl: varchar('ollama_base_url', { length: 500 }),
   glmOcrApiKeyEncrypted: text('glm_ocr_api_key_encrypted'),
   glmOcrBaseUrl: varchar('glm_ocr_base_url', { length: 500 }),
+  // Generic OpenAI-compatible local/remote server (Ollama /v1,
+  // llama.cpp server, LM Studio, vLLM, etc.). Configured with a base
+  // URL, a default model, and an optional API key (some servers
+  // require auth; the default Ollama/llama.cpp setups do not).
+  openaiCompatBaseUrl: varchar('openai_compat_base_url', { length: 500 }),
+  openaiCompatApiKeyEncrypted: text('openai_compat_api_key_encrypted'),
+  openaiCompatModel: varchar('openai_compat_model', { length: 100 }),
   // Processing settings
   autoCategorizeOnImport: boolean('auto_categorize_on_import').default(true),
   autoOcrOnUpload: boolean('auto_ocr_on_upload').default(true),

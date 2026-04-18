@@ -45,6 +45,12 @@ export async function getConfig() {
     ollamaBaseUrl: config.ollamaBaseUrl,
     hasGlmOcrKey: !!config.glmOcrApiKeyEncrypted,
     glmOcrBaseUrl: config.glmOcrBaseUrl,
+    // Generic OpenAI-compatible server — Ollama /v1, llama.cpp, LM
+    // Studio, vLLM, etc. Key returned as a boolean flag; plaintext
+    // round-trips via the write path only.
+    openaiCompatBaseUrl: config.openaiCompatBaseUrl,
+    openaiCompatModel: config.openaiCompatModel,
+    hasOpenaiCompatKey: !!config.openaiCompatApiKeyEncrypted,
     autoCategorizeOnImport: config.autoCategorizeOnImport ?? true,
     autoOcrOnUpload: config.autoOcrOnUpload ?? true,
     categorizationConfidenceThreshold: parseFloat(config.categorizationConfidenceThreshold || '0.70'),
@@ -107,6 +113,15 @@ export async function updateConfig(input: any, userId?: string) {
     if (input.glmOcrBaseUrl) assertExternalUrlSafe(input.glmOcrBaseUrl, 'GLM-OCR base URL');
     updates.glmOcrBaseUrl = input.glmOcrBaseUrl || null;
   }
+  // Generic OpenAI-compatible provider. assertExternalUrlSafe blocks
+  // SSRF (link-local, metadata endpoints) the same way it does for the
+  // Ollama / GLM-OCR URLs.
+  if (input.openaiCompatApiKey !== undefined) updates.openaiCompatApiKeyEncrypted = input.openaiCompatApiKey ? encrypt(input.openaiCompatApiKey) : null;
+  if (input.openaiCompatBaseUrl !== undefined) {
+    if (input.openaiCompatBaseUrl) assertExternalUrlSafe(input.openaiCompatBaseUrl, 'OpenAI-compat base URL');
+    updates.openaiCompatBaseUrl = input.openaiCompatBaseUrl || null;
+  }
+  if (input.openaiCompatModel !== undefined) updates.openaiCompatModel = input.openaiCompatModel || null;
   if (input.autoCategorizeOnImport !== undefined) updates.autoCategorizeOnImport = input.autoCategorizeOnImport;
   if (input.autoOcrOnUpload !== undefined) updates.autoOcrOnUpload = input.autoOcrOnUpload;
   if (input.categorizationConfidenceThreshold !== undefined) updates.categorizationConfidenceThreshold = String(input.categorizationConfidenceThreshold);

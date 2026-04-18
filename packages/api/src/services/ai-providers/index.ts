@@ -8,6 +8,7 @@ import { OpenAiProvider } from './openai.provider.js';
 import { GeminiProvider } from './gemini.provider.js';
 import { OllamaProvider } from './ollama.provider.js';
 import { GlmOcrProvider } from './glm-ocr.provider.js';
+import { OpenAiCompatProvider } from './openai-compat.provider.js';
 import { decrypt } from '../../utils/encryption.js';
 import { retryWithBackoff } from '../../utils/retry.js';
 
@@ -21,6 +22,9 @@ interface AiConfigRow {
   ollamaBaseUrl?: string | null;
   glmOcrApiKeyEncrypted?: string | null;
   glmOcrBaseUrl?: string | null;
+  openaiCompatBaseUrl?: string | null;
+  openaiCompatApiKeyEncrypted?: string | null;
+  openaiCompatModel?: string | null;
 }
 
 export function getProvider(providerName: string, config: AiConfigRow, model?: string): AiProvider {
@@ -51,6 +55,17 @@ export function getProvider(providerName: string, config: AiConfigRow, model?: s
       const localApiKey = config.glmOcrApiKeyEncrypted ? decrypt(config.glmOcrApiKeyEncrypted) : undefined;
       return new GlmOcrProvider('local', url, localApiKey);
     }
+    case 'openai_compat': {
+      // Generic OpenAI-compatible local/remote server. Points at
+      // Ollama's `/v1`, llama.cpp's server, LM Studio, vLLM, etc.
+      // Admin supplies: base URL (required), model name (defaults to
+      // llama3.2 — a common Ollama model; callers can override via
+      // the optional `model` argument), optional bearer API key.
+      if (!config.openaiCompatBaseUrl) throw new Error('OpenAI-compat base URL not configured');
+      const apiKey = config.openaiCompatApiKeyEncrypted ? decrypt(config.openaiCompatApiKeyEncrypted) : undefined;
+      const effectiveModel = model || config.openaiCompatModel || 'llama3.2';
+      return new OpenAiCompatProvider(config.openaiCompatBaseUrl, effectiveModel, apiKey);
+    }
     default:
       throw new Error(`Unknown AI provider: ${providerName}`);
   }
@@ -64,6 +79,7 @@ export function hasCredentials(providerName: string, config: AiConfigRow): boole
     case 'ollama': return true; // always available if Ollama is running
     case 'glm_ocr_cloud': return !!config.glmOcrApiKeyEncrypted;
     case 'glm_ocr_local': return true;
+    case 'openai_compat': return !!config.openaiCompatBaseUrl;
     default: return false;
   }
 }
