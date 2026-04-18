@@ -760,8 +760,10 @@ export async function buildTrialBalance(tenantId: string, startDate: string, end
     tc = tc.plus(c);
     return { ...r, total_debit: d, total_credit: c };
   });
-  const totalDebits = Number(td.toFixed(4));
-  const totalCredits = Number(tc.toFixed(4));
+  // Kept mutable because the Retained Earnings injection below still
+  // needs to add reDebit/reCredit to the running totals.
+  let totalDebits = Number(td.toFixed(4));
+  let totalCredits = Number(tc.toFixed(4));
 
   // Add Retained Earnings row for prior-year net income (virtual closing)
   if (fyStart > '1900-01-02') {
@@ -777,8 +779,8 @@ export async function buildTrialBalance(tenantId: string, startDate: string, end
         id: null, account_number: '3900', name: 'Retained Earnings', account_type: 'equity',
         total_debit: reDebit, total_credit: reCredit,
       });
-      totalDebits += reDebit;
-      totalCredits += reCredit;
+      totalDebits = Number(new Decimal(totalDebits).plus(reDebit).toFixed(4));
+      totalCredits = Number(new Decimal(totalCredits).plus(reCredit).toFixed(4));
     }
   }
 
