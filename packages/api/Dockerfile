@@ -54,15 +54,16 @@ RUN addgroup -g 1001 -S app && adduser -S -u 1001 -G app app \
   && mkdir -p /data/uploads /data/backups /data/config /data/generated \
   && chown -R app:app /app /data
 
-# Install the entrypoint that normalizes the bind-mounted /data volume
-# to UID 1001 before dropping privileges. Operators running a fresh
-# install don't have to remember `chown -R 1001:1001 ./data`.
-COPY packages/api/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
+# Install the shared entrypoint that normalizes the bind-mounted /data
+# volume to UID 1001 before dropping privileges. Same script the prod
+# Dockerfile uses, so dev + prod behave identically on first boot.
+COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
+  && chmod 0755 /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE 3001
 
-# Entry runs as root to chown /data, then drops to `app` via su-exec.
-# Do NOT add `USER app` here — the entrypoint handles privilege drop.
+# Entry runs as root to chown /data, then su-exec's down to `app`.
+# Do NOT add `USER app` — the entrypoint handles privilege drop.
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["npx", "tsx", "packages/api/src/bootstrap.ts"]
