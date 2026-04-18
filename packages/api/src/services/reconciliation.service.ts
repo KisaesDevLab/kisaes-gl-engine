@@ -3,6 +3,8 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { eq, and, sql } from 'drizzle-orm';
+import DecimalLib from 'decimal.js';
+const Decimal = DecimalLib.default || DecimalLib;
 import { db } from '../db/index.js';
 import { reconciliations, reconciliationLines, journalLines, transactions, accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -95,15 +97,17 @@ export async function getReconciliation(tenantId: string, reconciliationId: stri
     ORDER BY t.txn_date, t.created_at
   `);
 
-  // Calculate cleared balance
-  let clearedTotal = parseFloat(recon.beginningBalance);
+  // Cleared-balance arithmetic runs through Decimal so the difference
+  // shown to users is an exact penny figure. Float drift here is what
+  // makes reconciliations that should tie out show $0.01 difference.
+  let cleared = new Decimal(recon.beginningBalance);
   for (const line of lines.rows as any[]) {
     if (line.is_cleared) {
-      clearedTotal += parseFloat(line.debit) - parseFloat(line.credit);
+      cleared = cleared.plus(new Decimal(line.debit).minus(line.credit));
     }
   }
-
-  const difference = parseFloat(recon.statementEndingBalance) - clearedTotal;
+  const clearedTotal = Number(cleared.toFixed(4));
+  const difference = Number(new Decimal(recon.statementEndingBalance).minus(cleared).toFixed(4));
 
   return { ...recon, lines: lines.rows, clearedBalance: clearedTotal, difference };
 }
@@ -159,20 +163,20 @@ export async function complete(tenantId: string, reconciliationId: string, userI
       JOIN journal_lines jl ON jl.id = rl.journal_line_id
       WHERE rl.reconciliation_id = ${reconciliationId}
     `);
-    let clearedTotal = parseFloat(recon.beginningBalance);
+    let cleared = new Decimal(recon.beginningBalance);
     for (const line of linesResult.rows as any[]) {
       if (line.is_cleared) {
-        clearedTotal += parseFloat(line.debit) - parseFloat(line.credit);
+        cleared = cleared.plus(new Decimal(line.debit).minus(line.credit));
       }
     }
-    const difference = parseFloat(recon.statementEndingBalance) - clearedTotal;
-    if (Math.abs(difference) > 0.01) {
+    const difference = new Decimal(recon.statementEndingBalance).minus(cleared);
+    if (difference.abs().greaterThan('0.01')) {
       throw AppError.badRequest(`Cannot complete: difference is $${difference.toFixed(2)}, must be $0.00`);
     }
 
     await tx.update(reconciliations).set({
       status: 'complete',
-      clearedBalance: clearedTotal.toFixed(4),
+      clearedBalance: cleared.toFixed(4),
       difference: '0',
       completedAt: new Date(),
       completedBy: userId || null,

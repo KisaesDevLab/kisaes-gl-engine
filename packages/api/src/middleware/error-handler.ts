@@ -6,6 +6,16 @@ import type { Request, Response, NextFunction } from 'express';
 import { ZodError } from 'zod';
 import { AppError } from '../utils/errors.js';
 
+// Body-parser throws a custom error with `.type === 'entity.too.large'`
+// when a request exceeds express.json()'s `limit`. Without this case
+// the handler fell through to the generic 500, so clients couldn't
+// distinguish a misbehaving server from an oversize request.
+interface BodyParserError extends Error {
+  type?: string;
+  status?: number;
+  statusCode?: number;
+}
+
 export function errorHandler(
   err: Error,
   _req: Request,
@@ -18,6 +28,20 @@ export function errorHandler(
         message: err.message,
         code: err.code,
       },
+    });
+    return;
+  }
+
+  const bpErr = err as BodyParserError;
+  if (bpErr.type === 'entity.too.large') {
+    res.status(413).json({
+      error: { message: 'Request body exceeds the size limit.', code: 'PAYLOAD_TOO_LARGE' },
+    });
+    return;
+  }
+  if (bpErr.type === 'entity.parse.failed') {
+    res.status(400).json({
+      error: { message: 'Request body could not be parsed as JSON.', code: 'INVALID_JSON' },
     });
     return;
   }

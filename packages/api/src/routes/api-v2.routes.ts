@@ -6,6 +6,7 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { authenticate } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
+import { auditLog } from '../middleware/audit.js';
 import * as authService from '../services/auth.service.js';
 import * as companyService from '../services/company.service.js';
 import * as reportService from '../services/report.service.js';
@@ -129,6 +130,7 @@ apiV2Router.post('/accounts', async (req, res) => {
     description: input.description ?? null,
     parentId: input.parentId ?? null,
   }).returning();
+  if (account) await auditLog(req.tenantId, 'create', 'account', account.id, null, account, req.userId);
   res.status(201).json({ account });
 });
 
@@ -176,6 +178,7 @@ apiV2Router.post('/contacts', async (req, res) => {
     defaultPaymentTerms: input.defaultPaymentTerms ?? null,
     openingBalance: input.openingBalance,
   }).returning();
+  if (contact) await auditLog(req.tenantId, 'create', 'contact', contact.id, null, contact, req.userId);
   res.status(201).json({ contact });
 });
 
@@ -280,6 +283,7 @@ apiV2Router.post('/items', async (req, res) => {
     incomeAccountId: input.incomeAccountId,
     isTaxable: input.isTaxable,
   }).returning();
+  if (item) await auditLog(req.tenantId, 'create', 'item', item.id, null, item, req.userId);
   res.status(201).json({ item });
 });
 

@@ -163,8 +163,14 @@ export async function verifyCode(userId: string, code: string, method: string): 
     }
     try {
       const { verifySync, NobleCryptoPlugin, ScureBase32Plugin } = await import('otplib');
+      const { decrypt } = await import('../utils/encryption.js');
       const plugins = { crypto: new NobleCryptoPlugin(), base32: new ScureBase32Plugin() };
-      const result = verifySync({ token: code, secret: user.tfaTotpSecretEncrypted, epochTolerance: 30, ...plugins });
+      // Stored value is AES-GCM ciphertext. Fall back to raw on decrypt
+      // failure so TOTP secrets written by the pre-hardening build still
+      // verify — those rows re-encrypt the next time the user re-enrols.
+      let secret: string;
+      try { secret = decrypt(user.tfaTotpSecretEncrypted); } catch { secret = user.tfaTotpSecretEncrypted; }
+      const result = verifySync({ token: code, secret, epochTolerance: 30, ...plugins });
       isValid = result.valid;
     } catch {
       isValid = false;

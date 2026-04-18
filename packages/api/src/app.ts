@@ -105,6 +105,12 @@ app.use(compression());
 import { stripeWebhookRouter } from './routes/stripe-webhook.routes.js';
 app.use('/api/v1/stripe', stripeWebhookRouter);
 
+// Plaid webhook — same raw-body requirement. Plaid signs the exact
+// bytes it sent, so the handler must see those bytes, not a re-
+// stringified parsed object. Mounted here before express.json().
+import { plaidWebhookRouter } from './routes/plaid-webhook.routes.js';
+app.use('/api/v1/plaid/webhooks', plaidWebhookRouter);
+
 app.use(express.json({ limit: '10mb' }));
 app.use(morgan('short'));
 
@@ -131,10 +137,46 @@ app.use('/api/v1/', (_req, res, next) => {
 // Health check. Served at both paths so uptime monitors get the same
 // response regardless of whether the main app or one of the fallback
 // apps (env-missing, diagnostic) is responding — those only expose
-// `/api/health`. Routing to both here avoids alerting gaps during the
-// brief window a fallback is in place.
-const healthHandler = (_req: express.Request, res: express.Response) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+// `/api/health`.
+//
+// DEEP health check: runs a trivial SELECT 1 against Postgres with a
+// short timeout. A socket-open check on the API port is not enough —
+// orchestrators need to know whether the container can actually serve
+// queries. On DB failure the endpoint returns 503 so Kubernetes /
+// Compose / any load balancer routes around the unhealthy instance.
+//
+// Redis is not probed here because the API package has no direct Redis
+// client — Redis is only used by the worker (via BullMQ). If the API
+// starts using Redis directly (e.g., for cached session lookups), add
+// the probe here.
+import { sql } from 'drizzle-orm';
+import { db as _dbForHealth } from './db/index.js';
+
+const healthHandler = async (_req: express.Request, res: express.Response) => {
+  const t0 = Date.now();
+  let dbOk = false;
+  let dbError: string | undefined;
+  try {
+    // 2s timeout — the healthcheck interval is 30s, so a slow DB
+    // surfaces quickly without the probe itself piling up connections.
+    await Promise.race([
+      _dbForHealth.execute(sql`SELECT 1`),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('db probe timeout')), 2000)),
+    ]);
+    dbOk = true;
+  } catch (err) {
+    dbError = err instanceof Error ? err.message : String(err);
+  }
+  const latencyMs = Date.now() - t0;
+  if (dbOk) {
+    res.json({ status: 'ok', timestamp: new Date().toISOString(), checks: { db: { ok: true, latencyMs } } });
+  } else {
+    res.status(503).json({
+      status: 'degraded',
+      timestamp: new Date().toISOString(),
+      checks: { db: { ok: false, error: dbError, latencyMs } },
+    });
+  }
 };
 app.get('/health', healthHandler);
 app.get('/api/health', healthHandler);
@@ -269,6 +311,16 @@ if (env.NODE_ENV === 'production') {
     res.sendFile(path.join(webDistPath, 'index.html'));
   });
 }
+
+// JSON 404 for unmatched `/api/*` routes. Without this Express falls
+// back to its default HTML 404 page, which is (a) confusing for API
+// clients, and (b) inconsistent with the JSON shape every other error
+// uses. Leaves the SPA fallback above to handle non-API paths.
+app.use('/api', (_req, res) => {
+  res.status(404).json({
+    error: { message: 'Not found', code: 'NOT_FOUND' },
+  });
+});
 
 // Error handler (must be last)
 app.use(errorHandler);

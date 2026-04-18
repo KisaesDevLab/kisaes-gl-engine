@@ -12,6 +12,21 @@ import { auditLog } from '../middleware/audit.js';
 import * as tfaConfigService from './tfa-config.service.js';
 import * as tfaService from './tfa.service.js';
 import { env } from '../config/env.js';
+import { encrypt, decrypt } from '../utils/encryption.js';
+
+// Column name includes "Encrypted" but earlier versions stored the raw
+// TOTP secret. We now encrypt at rest and decrypt on verify. To remain
+// compatible with pre-hardening rows that are still plaintext (not yet
+// re-enrolled), decryption silently falls back to the input. This lets
+// users keep using their existing TOTP generator; next re-enrol writes
+// the encrypted form.
+function decryptTotpSecret(stored: string): string {
+  try {
+    return decrypt(stored);
+  } catch {
+    return stored;
+  }
+}
 
 function generateRecoveryCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -141,7 +156,9 @@ export async function addTotpMethod(userId: string): Promise<{ secret: string; q
   if (!user) throw AppError.notFound('User not found');
 
   await db.update(users).set({
-    tfaTotpSecretEncrypted: secret, // In production, encrypt this
+    // AES-256-GCM at rest via utils/encryption.encrypt. DB compromise
+    // no longer yields every user's TOTP generator.
+    tfaTotpSecretEncrypted: encrypt(secret),
     tfaTotpVerified: false,
     updatedAt: new Date(),
   }).where(eq(users.id, userId));
@@ -156,7 +173,8 @@ export async function verifyTotpSetup(userId: string, code: string): Promise<boo
 
   const { verifySync, NobleCryptoPlugin, ScureBase32Plugin } = await import('otplib');
   const plugins = { crypto: new NobleCryptoPlugin(), base32: new ScureBase32Plugin() };
-  const result = verifySync({ token: code, secret: user.tfaTotpSecretEncrypted, epochTolerance: 30, ...plugins });
+  const secret = decryptTotpSecret(user.tfaTotpSecretEncrypted);
+  const result = verifySync({ token: code, secret, epochTolerance: 30, ...plugins });
   const valid = result.valid;
   if (!valid) return false;
 

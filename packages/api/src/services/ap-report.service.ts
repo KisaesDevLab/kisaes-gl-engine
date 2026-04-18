@@ -3,7 +3,18 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { sql } from 'drizzle-orm';
+import DecimalLib from 'decimal.js';
+const Decimal = DecimalLib.default || DecimalLib;
 import { db } from '../db/index.js';
+
+// Helper: add `b` to `a` via Decimal and return a plain number rounded
+// to 4 decimals. Reports expose `number` to the UI, but accumulation
+// happens through Decimal so sub-cent drift doesn't compound over
+// hundreds of rows (which was making AP aging totals read "$12,345.67"
+// when the underlying ledger said "$12,345.68").
+function addMoney(a: number, b: number | string | null | undefined): number {
+  return Number(new Decimal(a).plus(b || 0).toFixed(4));
+}
 
 interface DateRange { startDate?: string; endDate?: string }
 
@@ -43,9 +54,14 @@ export async function buildApAgingSummary(tenantId: string, asOfDate: string, co
   const details: any[] = [];
 
   for (const row of rows.rows as any[]) {
-    const balance = parseFloat(row.balance_due || row.total || '0');
+    const balance = Number(new Decimal(row.balance_due || row.total || '0').toFixed(4));
     if (balance <= 0) continue;
-    const dueDate = new Date(row.due_date || row.txn_date);
+    // Parse the date as UTC midnight to avoid a ±1 day drift in aging
+    // buckets when the server's local timezone isn't UTC. Plain DATE
+    // columns come back as YYYY-MM-DD, which JS Date interprets as
+    // local time by default.
+    const rawDate = row.due_date || row.txn_date;
+    const dueDate = new Date(`${rawDate}T00:00:00Z`);
     const daysOverdue = Math.floor((asOf.getTime() - dueDate.getTime()) / 86400000);
 
     let bucket: 'current' | '1_30' | '31_60' | '61_90' | 'over_90';
@@ -61,12 +77,12 @@ export async function buildApAgingSummary(tenantId: string, asOfDate: string, co
       vendor_name: row.vendor_name || 'Unknown',
       current: 0, bucket1to30: 0, bucket31to60: 0, bucket61to90: 0, bucketOver90: 0, total: 0,
     };
-    if (bucket === 'current') v.current += balance;
-    else if (bucket === '1_30') v.bucket1to30 += balance;
-    else if (bucket === '31_60') v.bucket31to60 += balance;
-    else if (bucket === '61_90') v.bucket61to90 += balance;
-    else v.bucketOver90 += balance;
-    v.total += balance;
+    if (bucket === 'current') v.current = addMoney(v.current, balance);
+    else if (bucket === '1_30') v.bucket1to30 = addMoney(v.bucket1to30, balance);
+    else if (bucket === '31_60') v.bucket31to60 = addMoney(v.bucket31to60, balance);
+    else if (bucket === '61_90') v.bucket61to90 = addMoney(v.bucket61to90, balance);
+    else v.bucketOver90 = addMoney(v.bucketOver90, balance);
+    v.total = addMoney(v.total, balance);
     vendorMap.set(key, v);
 
     details.push({
@@ -79,7 +95,7 @@ export async function buildApAgingSummary(tenantId: string, asOfDate: string, co
       due_date: row.due_date,
       days_overdue: Math.max(0, daysOverdue),
       total: row.total,
-      paid: parseFloat(row.amount_paid || '0') + parseFloat(row.credits_applied || '0'),
+      paid: Number(new Decimal(row.amount_paid || '0').plus(row.credits_applied || '0').toFixed(4)),
       balance,
       bucket,
     });
@@ -185,7 +201,7 @@ export async function buildVendorStatement(tenantId: string, vendorId: string, r
       AND t.txn_date < ${startDate}
       AND ${companyFilter(companyId)}
   `);
-  const openingBalance = parseFloat((openingResult.rows[0] as { opening: string })?.opening || '0');
+  const openingBalance = Number(new Decimal((openingResult.rows[0] as { opening: string })?.opening || '0').toFixed(4));
 
   const activity = await db.execute(sql`
     SELECT t.id, t.txn_type, t.txn_date, t.txn_number, t.vendor_invoice_number,
@@ -202,11 +218,11 @@ export async function buildVendorStatement(tenantId: string, vendorId: string, r
 
   let running = openingBalance;
   const lines = (activity.rows as any[]).map((row) => {
-    const amount = parseFloat(row.total || '0');
+    const amount = Number(new Decimal(row.total || '0').toFixed(4));
     let charge = 0, payment = 0;
-    if (row.txn_type === 'bill') { charge = amount; running += amount; }
-    else if (row.txn_type === 'vendor_credit') { payment = amount; running -= amount; }
-    else if (row.txn_type === 'bill_payment') { payment = amount; running -= amount; }
+    if (row.txn_type === 'bill') { charge = amount; running = addMoney(running, amount); }
+    else if (row.txn_type === 'vendor_credit') { payment = amount; running = addMoney(running, -amount); }
+    else if (row.txn_type === 'bill_payment') { payment = amount; running = addMoney(running, -amount); }
     return {
       txn_date: row.txn_date,
       txn_type: row.txn_type,
@@ -253,13 +269,16 @@ export async function buildAp1099Prep(tenantId: string, taxYear: number, company
 
   const data = (rows.rows as any[]).map((row) => {
     const parts = [row.billing_line1, row.billing_city, row.billing_state, row.billing_zip].filter(Boolean);
+    // 1099 threshold check must not drift — $599.99999 should NOT hit
+    // the 1099 bucket. Decimal comparison is exact.
+    const totalPaid = new Decimal(row.total_paid || '0');
     return {
       contact_id: row.id,
       vendor_name: row.display_name,
       address: parts.join(', ') || '',
       tax_id: row.tax_id,
-      total_paid: parseFloat(row.total_paid || '0'),
-      over_threshold: parseFloat(row.total_paid || '0') >= 600,
+      total_paid: Number(totalPaid.toFixed(4)),
+      over_threshold: totalPaid.greaterThanOrEqualTo(600),
     };
   });
 

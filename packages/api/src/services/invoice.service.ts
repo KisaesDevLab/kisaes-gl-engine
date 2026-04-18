@@ -3,6 +3,9 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { eq, and, sql } from 'drizzle-orm';
+import DecimalLib from 'decimal.js';
+const Decimal = DecimalLib.default || DecimalLib;
+type Decimal = InstanceType<typeof Decimal>;
 import type { CreateInvoiceInput, RecordPaymentInput } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { transactions, accounts, companies } from '../db/schema/index.js';
@@ -57,25 +60,29 @@ async function getSystemAccount(tenantId: string, systemTag: string): Promise<st
   return account.id;
 }
 
-async function getDefaultTaxRate(tenantId: string): Promise<number> {
+async function getDefaultTaxRate(tenantId: string): Promise<Decimal> {
   const company = await db.query.companies.findFirst({ where: eq(companies.tenantId, tenantId) });
-  return parseFloat(company?.defaultSalesTaxRate || '0');
+  return new Decimal(company?.defaultSalesTaxRate || '0');
 }
 
-function buildTaxLines(inputLines: CreateInvoiceInput['lines'], defaultTaxRate: number) {
-  let subtotal = 0;
-  let totalTax = 0;
+function buildTaxLines(inputLines: CreateInvoiceInput['lines'], defaultTaxRate: Decimal) {
+  // Line total + tax math in Decimal — with per-line tax rates each
+  // multiply compounds drift. Float here produced invoices where
+  // total ≠ sum(line credits) by up to a few cents on large invoices,
+  // triggering ledger.postTransaction's balance check failure.
+  let subtotal = new Decimal('0');
+  let totalTax = new Decimal('0');
 
   const revenueLines = inputLines.map((line) => {
-    const qty = parseFloat(line.quantity);
-    const price = parseFloat(line.unitPrice);
-    const lineTotal = qty * price;
-    subtotal += lineTotal;
+    const qty = new Decimal(line.quantity);
+    const price = new Decimal(line.unitPrice);
+    const lineTotal = qty.times(price);
+    subtotal = subtotal.plus(lineTotal);
 
     const taxable = line.isTaxable !== false; // default true
-    const rate = taxable ? parseFloat(line.taxRate || String(defaultTaxRate)) : 0;
-    const lineTax = taxable && rate > 0 ? lineTotal * rate : 0;
-    totalTax += lineTax;
+    const rate = taxable ? new Decimal(line.taxRate ?? defaultTaxRate.toString()) : new Decimal('0');
+    const lineTax = taxable && rate.greaterThan(0) ? lineTotal.times(rate) : new Decimal('0');
+    totalTax = totalTax.plus(lineTax);
 
     return {
       accountId: line.accountId,
@@ -85,12 +92,12 @@ function buildTaxLines(inputLines: CreateInvoiceInput['lines'], defaultTaxRate: 
       quantity: line.quantity,
       unitPrice: line.unitPrice,
       isTaxable: taxable,
-      taxRate: rate > 0 ? rate.toString() : '0',
+      taxRate: rate.greaterThan(0) ? rate.toString() : '0',
       taxAmount: lineTax.toFixed(4),
     };
   });
 
-  return { revenueLines, subtotal, totalTax, total: subtotal + totalTax };
+  return { revenueLines, subtotal, totalTax, total: subtotal.plus(totalTax) };
 }
 
 export async function createInvoice(tenantId: string, input: CreateInvoiceInput, userId?: string, companyId?: string) {
@@ -107,7 +114,7 @@ export async function createInvoice(tenantId: string, input: CreateInvoiceInput,
   ];
 
   // Post tax to Sales Tax Payable liability account
-  if (totalTax > 0) {
+  if (totalTax.greaterThan(0)) {
     const taxAccountId = await getSystemAccount(tenantId, 'sales_tax_payable');
     journalLines.push({ accountId: taxAccountId, debit: '0', credit: totalTax.toFixed(4), description: 'Sales Tax' });
   }
@@ -142,15 +149,15 @@ export async function updateInvoice(tenantId: string, invoiceId: string, input: 
   const defaultTaxRate = await getDefaultTaxRate(tenantId);
   const { revenueLines, subtotal, totalTax, total } = buildTaxLines(input.lines, defaultTaxRate);
 
-  const amountPaid = parseFloat(existing.amountPaid || '0');
-  const balanceDue = total - amountPaid;
+  const amountPaid = new Decimal(existing.amountPaid || '0');
+  const balanceDue = total.minus(amountPaid);
 
   const journalLines: any[] = [
     { accountId: arAccountId, debit: total.toFixed(4), credit: '0' },
     ...revenueLines,
   ];
 
-  if (totalTax > 0) {
+  if (totalTax.greaterThan(0)) {
     const taxAccountId = await getSystemAccount(tenantId, 'sales_tax_payable');
     journalLines.push({ accountId: taxAccountId, debit: '0', credit: totalTax.toFixed(4), description: 'Sales Tax' });
   }
@@ -219,11 +226,11 @@ export async function recordPayment(tenantId: string, invoiceId: string, input: 
   if (invoice.status === 'void') throw AppError.badRequest('Cannot pay a void invoice');
 
   const arAccountId = await getSystemAccount(tenantId, 'accounts_receivable');
-  const paymentAmount = parseFloat(input.amount);
-  const currentPaid = parseFloat(invoice.amountPaid || '0');
-  const invoiceTotal = parseFloat(invoice.total || '0');
-  const newPaid = currentPaid + paymentAmount;
-  const newBalance = invoiceTotal - newPaid;
+  const paymentAmount = new Decimal(input.amount);
+  const currentPaid = new Decimal(invoice.amountPaid || '0');
+  const invoiceTotal = new Decimal(invoice.total || '0');
+  const newPaid = currentPaid.plus(paymentAmount);
+  const newBalance = invoiceTotal.minus(newPaid);
 
   // Create payment transaction
   const payment = await ledger.postTransaction(tenantId, {
@@ -239,11 +246,14 @@ export async function recordPayment(tenantId: string, invoiceId: string, input: 
     ],
   }, userId, companyId);
 
-  // Update invoice
-  const invoiceStatus = newBalance <= 0.01 ? 'paid' : 'partial';
+  // Update invoice — tolerance of 1¢ matches the rest of the money
+  // paths. `Math.max(0, ...)` replaced with a Decimal clamp.
+  const tolerance = new Decimal('0.01');
+  const invoiceStatus = newBalance.lessThanOrEqualTo(tolerance) ? 'paid' : 'partial';
+  const clampedBalance = newBalance.isNegative() ? new Decimal('0') : newBalance;
   await db.update(transactions).set({
     amountPaid: newPaid.toFixed(4),
-    balanceDue: Math.max(0, newBalance).toFixed(4),
+    balanceDue: clampedBalance.toFixed(4),
     invoiceStatus,
     paidAt: invoiceStatus === 'paid' ? new Date() : null,
     updatedAt: new Date(),

@@ -3,6 +3,8 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { eq, and, sql, count, inArray } from 'drizzle-orm';
+import DecimalLib from 'decimal.js';
+const Decimal = DecimalLib.default || DecimalLib;
 import type { CreateBillInput, BillFilters } from '@kis-books/shared';
 import { db, type DbOrTx } from '../db/index.js';
 import { transactions, accounts, contacts } from '../db/schema/index.js';
@@ -97,13 +99,17 @@ export async function createBill(tenantId: string, input: CreateBillInput, userI
   const termsDays = input.termsDays ?? vendor.defaultTermsDays ?? undefined;
   const dueDate = input.dueDate || computeBillDueDate(input.txnDate, paymentTerms, termsDays);
 
-  const total = input.lines.reduce((sum, l) => sum + parseFloat(l.amount || '0'), 0);
-  if (total <= 0) throw AppError.badRequest('Bill total must be positive');
+  // Sum line amounts through Decimal — float arithmetic drifts on
+  // multi-line bills and makes the AP credit ≠ sum of expense debits
+  // by a sub-cent, which ledger.postTransaction then rejects as an
+  // unbalanced transaction.
+  const total = input.lines.reduce((sum, l) => sum.plus(l.amount || '0'), new Decimal('0'));
+  if (total.lessThanOrEqualTo(0)) throw AppError.badRequest('Bill total must be positive');
 
   const journalLines = [
     ...input.lines.map((l) => ({
       accountId: l.accountId,
-      debit: parseFloat(l.amount).toFixed(4),
+      debit: new Decimal(l.amount).toFixed(4),
       credit: '0',
       description: l.description || input.memo,
     })),
@@ -198,14 +204,15 @@ export async function updateBill(tenantId: string, billId: string, input: Create
     ? (existing.dueDate || undefined)
     : (input.dueDate || computeBillDueDate(resolvedTxnDate, paymentTerms, termsDays));
 
-  const total = input.lines.reduce((sum, l) => sum + parseFloat(l.amount || '0'), 0);
-  if (total <= 0) throw AppError.badRequest('Bill total must be positive');
+  const total = input.lines.reduce((sum, l) => sum.plus(l.amount || '0'), new Decimal('0'));
+  if (total.lessThanOrEqualTo(0)) throw AppError.badRequest('Bill total must be positive');
 
-  // Total-lock enforcement. The same 0.01 tolerance everywhere else in
-  // the codebase uses for rounding absorbs tax and per-line rounding
-  // drift without letting meaningful changes slip through.
-  const existingTotal = parseFloat(existing.total || '0');
-  if (isLocked && Math.abs(total - existingTotal) > 0.01) {
+  // Total-lock enforcement. The same 0.01 tolerance used elsewhere
+  // absorbs tax and per-line rounding drift without letting meaningful
+  // changes slip through.
+  const existingTotal = new Decimal(existing.total || '0');
+  const tolerance = new Decimal('0.01');
+  if (isLocked && total.minus(existingTotal).abs().greaterThan(tolerance)) {
     throw AppError.badRequest(
       `Cannot change the total on a paid bill. Expected $${existingTotal.toFixed(2)}, ` +
       `got $${total.toFixed(2)}. Reallocate between expense accounts instead — ` +
@@ -216,7 +223,7 @@ export async function updateBill(tenantId: string, billId: string, input: Create
   const journalLines = [
     ...input.lines.map((l) => ({
       accountId: l.accountId,
-      debit: parseFloat(l.amount).toFixed(4),
+      debit: new Decimal(l.amount).toFixed(4),
       credit: '0',
       description: l.description || input.memo,
     })),
@@ -448,14 +455,16 @@ export async function recomputeBillStatus(executor: DbOrTx, tenantId: string, bi
   const row = (result.rows as Array<{ total: string | null; paid: string | number; credits: string | number }>)[0];
   if (!row) return;
 
-  const total = parseFloat(row.total || '0');
-  const paid = parseFloat(String(row.paid));
-  const credits = parseFloat(String(row.credits));
-  const balanceDue = Math.max(0, total - paid - credits);
+  const total = new Decimal(row.total || '0');
+  const paid = new Decimal(String(row.paid));
+  const credits = new Decimal(String(row.credits));
+  let balanceDue = total.minus(paid).minus(credits);
+  if (balanceDue.isNegative()) balanceDue = new Decimal('0');
 
+  const tolerance = new Decimal('0.01');
   let status: 'unpaid' | 'partial' | 'paid' = 'unpaid';
-  if (balanceDue <= 0.01) status = 'paid';
-  else if (paid > 0 || credits > 0) status = 'partial';
+  if (balanceDue.lessThanOrEqualTo(tolerance)) status = 'paid';
+  else if (paid.greaterThan(0) || credits.greaterThan(0)) status = 'partial';
 
   await executor.update(transactions).set({
     amountPaid: paid.toFixed(4),
@@ -481,14 +490,16 @@ export async function recomputeVendorCreditBalance(executor: DbOrTx, tenantId: s
   const row = (result.rows as Array<{ total: string | null; applied: string | number }>)[0];
   if (!row) return;
 
-  const total = parseFloat(row.total || '0');
-  const applied = parseFloat(String(row.applied));
-  const balanceDue = Math.max(0, total - applied);
+  const total = new Decimal(row.total || '0');
+  const applied = new Decimal(String(row.applied));
+  let balanceDue = total.minus(applied);
+  if (balanceDue.isNegative()) balanceDue = new Decimal('0');
+  const tolerance = new Decimal('0.01');
 
   await executor.update(transactions).set({
     creditsApplied: applied.toFixed(4),
     balanceDue: balanceDue.toFixed(4),
-    billStatus: balanceDue <= 0.01 ? 'paid' : 'unpaid',
+    billStatus: balanceDue.lessThanOrEqualTo(tolerance) ? 'paid' : 'unpaid',
     updatedAt: new Date(),
   }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, creditId)));
 }

@@ -179,21 +179,8 @@ plaidRouter.get('/items/:id/activity', authenticate, async (req, res) => {
   res.json({ activity: logs });
 });
 
-// ─── Webhooks (verified by signature) ──────────────────────────
-
-plaidRouter.post('/webhooks', async (req, res) => {
-  try {
-    const rawBody = JSON.stringify(req.body);
-    const headers = Object.fromEntries(Object.entries(req.headers).map(([k, v]) => [k, String(v)]));
-    const verified = await plaidClient.verifyWebhook(rawBody, headers);
-    if (!verified) {
-      res.status(401).json({ error: 'Webhook verification failed' });
-      return;
-    }
-    await plaidWebhook.handleWebhook(req.body);
-    res.json({ received: true });
-  } catch (err: any) {
-    console.error('[Plaid Webhook] Error:', err.message);
-    res.status(500).json({ error: 'Webhook processing failed' });
-  }
-});
+// The webhook lives on its own router (plaidWebhookRouter below) so it
+// can be mounted BEFORE express.json() and receive the raw request
+// body. Plaid's JWS signature is computed over the exact bytes Plaid
+// sent; re-serialising a parsed body (the old `JSON.stringify(req.body)`
+// path) produces different bytes and verification fails deterministically.
