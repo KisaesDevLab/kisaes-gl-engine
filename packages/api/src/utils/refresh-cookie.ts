@@ -7,9 +7,13 @@ import { env } from '../config/env.js';
 
 // Refresh tokens live in an HttpOnly cookie scoped to /api/v1/auth so they
 // are not exposed to any page script, cannot be exfiltrated via XSS, and
-// only ride along on auth-route requests. SameSite=strict blocks CSRF
-// from other origins entirely — /refresh simply won't see the cookie on a
-// cross-site request, so there's nothing for an attacker site to trigger.
+// only ride along on auth-route requests. SameSite=Lax still blocks the
+// classic CSRF vector (POSTs from attacker origins don't carry the cookie)
+// while allowing the cookie to ride top-level navigations — this matters
+// when a user clicks a magic link or an invoice-share link from Gmail /
+// Outlook and lands on our origin: the first navigation must be able to
+// pick up an existing session or complete the auth flow. Path scoping
+// keeps the cookie off every request that isn't /api/v1/auth/*.
 
 const REFRESH_COOKIE_NAME = 'kb_refresh';
 const COOKIE_PATH = '/api/v1/auth';
@@ -20,7 +24,7 @@ export function setRefreshCookie(res: Response, refreshToken: string): void {
   const parts = [
     `${REFRESH_COOKIE_NAME}=${refreshToken}`,
     'HttpOnly',
-    'SameSite=Strict',
+    'SameSite=Lax',
     `Path=${COOKIE_PATH}`,
     `Max-Age=${SEVEN_DAYS_SECONDS}`,
   ];
@@ -33,7 +37,7 @@ export function clearRefreshCookie(res: Response): void {
   const parts = [
     `${REFRESH_COOKIE_NAME}=`,
     'HttpOnly',
-    'SameSite=Strict',
+    'SameSite=Lax',
     `Path=${COOKIE_PATH}`,
     'Max-Age=0',
   ];
