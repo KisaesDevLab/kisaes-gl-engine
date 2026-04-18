@@ -116,7 +116,7 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
     let result;
     let parsed: any;
 
-    if (orchestrator.isSelfHostedProvider(ocrProvider)) {
+    if (orchestrator.isSelfHostedProvider(ocrProvider, { openaiCompatBaseUrl: rawConfig.openaiCompatBaseUrl })) {
       const provider = getProvider(ocrProvider, rawConfig, config.ocrModel || undefined);
       const base64 = fileBuffer.toString('base64');
       result = await provider.completeWithImage({
@@ -177,7 +177,7 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
         extractionSource = 'cloud_vision_permissive';
       } else {
         const rawText = extraction.text;
-        const pii = sanitize(rawText, orchestrator.piiModeFor(ocrProvider, 'ocr_invoice'));
+        const pii = sanitize(rawText, orchestrator.piiModeFor(ocrProvider, 'ocr_invoice', { openaiCompatBaseUrl: rawConfig.openaiCompatBaseUrl }));
         piiRedactedList = pii.detected;
         if (extraction.kind === 'tesseract') {
           qualityWarnings.push('tesseract_local_ocr');

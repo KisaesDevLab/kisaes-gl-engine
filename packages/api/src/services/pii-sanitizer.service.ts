@@ -227,13 +227,21 @@ export function sanitizeTransactionDescription(input: string | null | undefined)
  * Self-hosted providers bypass sanitization entirely because no data
  * leaves the server; cloud providers apply a mode appropriate to the
  * task's risk profile.
+ *
+ * For `openai_compat` the caller must decide whether it's pointing at
+ * a local or cloud URL and pass `isSelfHosted` accordingly — the
+ * sanitizer can't read the ai_config table itself. Default (boolean
+ * omitted) is CLOUD so PII sanitization engages unless the orchestrator
+ * has affirmatively verified the target is local.
  */
 export function pickMode(
   providerName: string,
-  task: 'categorize' | 'ocr_receipt' | 'ocr_invoice' | 'ocr_statement' | 'classify_document'
+  task: 'categorize' | 'ocr_receipt' | 'ocr_invoice' | 'ocr_statement' | 'classify_document',
+  isSelfHosted?: boolean,
 ): SanitizerMode {
-  const selfHosted = providerName === 'ollama' || providerName === 'glm_ocr_local';
-  if (selfHosted) return 'none';
+  const alwaysLocal = providerName === 'ollama' || providerName === 'glm_ocr_local';
+  const resolvedSelfHosted = alwaysLocal || isSelfHosted === true;
+  if (resolvedSelfHosted) return 'none';
   switch (task) {
     case 'ocr_statement':
       return 'strict';

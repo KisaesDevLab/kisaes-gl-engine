@@ -77,8 +77,15 @@ export async function categorize(tenantId: string, feedItemId: string) {
   // PII sanitizer — mode picked by the provider that will actually run
   // this call (self-hosted → 'none', cloud → 'minimal' for categorization).
   // Mask SSN / EIN and personal names after VENMO/ZELLE/PAYPAL/CASHAPP so
-  // the cloud model never sees "VENMO PAYMENT JOHN SMITH".
-  const piiMode = orchestrator.piiModeFor(config.categorizationProvider!, 'categorize');
+  // the cloud model never sees "VENMO PAYMENT JOHN SMITH". The rawConfig
+  // fetch moved up so the openai_compat URL can feed the self-hosted
+  // detection in piiModeFor.
+  const rawConfig = await aiConfigService.getRawConfig();
+  const piiMode = orchestrator.piiModeFor(
+    config.categorizationProvider!,
+    'categorize',
+    { openaiCompatBaseUrl: rawConfig.openaiCompatBaseUrl },
+  );
   const pii = sanitize(stripCtl(item.description), piiMode);
   const safeDescription = pii.text;
   const piiRedacted: PiiType[] = pii.detected;
@@ -86,7 +93,7 @@ export async function categorize(tenantId: string, feedItemId: string) {
   const job = await orchestrator.createJob(tenantId, 'categorize', 'bank_feed_item', feedItemId, { description: item.description, amount: item.amount });
 
   try {
-    const rawConfig = await aiConfigService.getRawConfig();
+    // rawConfig was fetched above for the PII mode decision.
     const { executeWithFallback } = await import('./ai-providers/index.js');
 
     const result = await executeWithFallback({
