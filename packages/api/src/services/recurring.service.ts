@@ -135,6 +135,10 @@ export async function postNext(tenantId: string, scheduleId: string) {
         accountId: l.accountId,
         amount: parseFloat(l.debit).toFixed(2),
         description: l.description || undefined,
+        // ADR 0XX §7.2 — carry the template line's tag onto each
+        // generated instance so segment-scoped recurrences keep their
+        // tag trail intact.
+        tagId: l.tagId ?? null,
       }));
 
     if (expenseLines.length === 0) {
@@ -157,6 +161,8 @@ export async function postNext(tenantId: string, scheduleId: string) {
       debit: l.debit,
       credit: l.credit,
       description: l.description || undefined,
+      // ADR 0XX §7.2 — preserve per-line tag on every recurring instance.
+      tagId: l.tagId ?? null,
     }));
 
     txn = await ledger.postTransaction(tenantId, {

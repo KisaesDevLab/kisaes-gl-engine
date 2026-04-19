@@ -500,6 +500,9 @@ export async function getTransaction(tenantId: string, txnId: string) {
 
 export async function listTransactions(tenantId: string, filters: {
   txnType?: string; status?: string; contactId?: string; accountId?: string; startDate?: string; endDate?: string;
+  // ADR 0XX §5.2 — header-level tag filter semantics: keep the
+  // transaction if *any* of its journal_lines carries this tag.
+  tagId?: string;
   search?: string; limit?: number; offset?: number;
 }, companyId?: string) {
   const conditions = [eq(transactions.tenantId, tenantId)];
@@ -512,6 +515,9 @@ export async function listTransactions(tenantId: string, filters: {
   if (filters.endDate) conditions.push(sql`${transactions.txnDate} <= ${filters.endDate}`);
   if (filters.accountId) {
     conditions.push(sql`${transactions.id} IN (SELECT transaction_id FROM journal_lines WHERE account_id = ${filters.accountId} AND tenant_id = ${tenantId})`);
+  }
+  if (filters.tagId) {
+    conditions.push(sql`EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = ${transactions.id} AND jl.tenant_id = ${tenantId} AND jl.tag_id = ${filters.tagId})`);
   }
   if (filters.search) {
     conditions.push(sql`(${transactions.memo} ILIKE ${'%' + filters.search + '%'} OR ${transactions.txnNumber} ILIKE ${'%' + filters.search + '%'} OR ${contacts.displayName} ILIKE ${'%' + filters.search + '%'})`);
@@ -541,6 +547,18 @@ export async function listTransactions(tenantId: string, filters: {
       sourceId: transactions.sourceId,
       aiCategorized: bankFeedItems.matchType,
       createdAt: transactions.createdAt,
+      // ADR 0XX §4.1 — aggregate of distinct tag names from the
+      // transaction's journal lines. Null when every line is untagged;
+      // a one-element array when uniform; two+ elements when mixed.
+      // Rendered in the list's Tag column as a pill / "Mixed" / "—".
+      lineTags: sql<string[] | null>`(
+        SELECT array_agg(DISTINCT t2.name ORDER BY t2.name)
+        FROM journal_lines jl
+        JOIN tags t2 ON t2.id = jl.tag_id
+        WHERE jl.transaction_id = ${transactions.id}
+          AND jl.tenant_id = ${tenantId}
+          AND jl.tag_id IS NOT NULL
+      )`,
     }).from(transactions)
       .leftJoin(contacts, eq(transactions.contactId, contacts.id))
       .leftJoin(bankFeedItems, and(

@@ -148,6 +148,7 @@ export interface BillFilters {
   endDate?: string;
   dueOnOrBefore?: string;
   overdueOnly?: boolean;
+  tagId?: string;
   search?: string;
   limit?: number;
   offset?: number;

@@ -910,11 +910,17 @@ export async function buildTrialBalance(
 
 export async function buildTransactionList(tenantId: string, filters?: {
   startDate?: string; endDate?: string; txnType?: string; accountId?: string;
+  // ADR 0XX §5.2 — header-level tag filter: keep the transaction when
+  // any of its journal_lines carries this tag.
+  tagId?: string;
 }, companyId: string | null = null) {
   const conditions = [sql`t.tenant_id = ${tenantId}`, sql`t.status = 'posted'`, companyFilter(companyId)];
   if (filters?.startDate) conditions.push(sql`t.txn_date >= ${filters.startDate}`);
   if (filters?.endDate) conditions.push(sql`t.txn_date <= ${filters.endDate}`);
   if (filters?.txnType) conditions.push(sql`t.txn_type = ${filters.txnType}`);
+  if (filters?.tagId) {
+    conditions.push(sql`EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = t.id AND jl.tenant_id = ${tenantId} AND jl.tag_id = ${filters.tagId})`);
+  }
 
   const rows = await db.execute(sql`
     SELECT t.id, t.txn_type, t.txn_number, t.txn_date, t.total, t.memo, t.status,

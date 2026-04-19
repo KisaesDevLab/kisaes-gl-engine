@@ -306,6 +306,11 @@ export async function listBills(tenantId: string, filters: BillFilters, companyI
   if (filters.billStatus) conditions.push(eq(transactions.billStatus, filters.billStatus));
   if (filters.startDate) conditions.push(sql`${transactions.txnDate} >= ${filters.startDate}`);
   if (filters.endDate) conditions.push(sql`${transactions.txnDate} <= ${filters.endDate}`);
+  // ADR 0XX §5.2 — header-level tag filter via EXISTS on the line set.
+  if ((filters as BillFilters & { tagId?: string }).tagId) {
+    const tagId = (filters as BillFilters & { tagId?: string }).tagId!;
+    conditions.push(sql`EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = ${transactions.id} AND jl.tenant_id = ${tenantId} AND jl.tag_id = ${tagId})`);
+  }
   if (filters.dueOnOrBefore) conditions.push(sql`${transactions.dueDate} <= ${filters.dueOnOrBefore}`);
   if (filters.overdueOnly) {
     conditions.push(sql`${transactions.dueDate} < CURRENT_DATE`);
