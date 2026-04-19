@@ -12,6 +12,8 @@ const billLineSchema = z.object({
   description: z.string().optional(),
   amount: z.string().min(1),
   itemId: z.string().uuid().optional(),
+  // ADR 0XX: per-line tag.
+  tagId: z.string().uuid().nullable().optional(),
 });
 
 export const createBillSchema = z.object({
@@ -30,6 +32,7 @@ const vendorCreditLineSchema = z.object({
   accountId: z.string().uuid(),
   description: z.string().optional(),
   amount: z.string().min(1),
+  tagId: z.string().uuid().nullable().optional(),
 });
 
 export const createVendorCreditSchema = z.object({

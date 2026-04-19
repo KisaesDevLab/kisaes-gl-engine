@@ -51,6 +51,7 @@ async function buildCashSalePayload(tenantId: string, input: CreateCashSaleInput
       isTaxable: taxable,
       taxRate: rate.greaterThan(0) ? rate.toString() : '0',
       taxAmount: lineTax.toFixed(4),
+      tagId: line.tagId,
     };
   });
 

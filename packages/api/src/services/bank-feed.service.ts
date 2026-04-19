@@ -222,14 +222,18 @@ export async function categorize(tenantId: string, feedItemId: string, input: Ca
       total: amount.toFixed(4),
       source: 'bank_feed',
       sourceId: item.id,
+      // ADR 0XY §3.3 — bank-feed categorization stamps the rule-
+      // provided (or user-provided) tag on the user-facing expense or
+      // revenue line. The cash-account leg stays untagged because it
+      // isn't a segment-relevant posting.
       lines: isExpense
         ? [
-            { accountId: input.accountId, debit: amount.toFixed(4), credit: '0', description: item.description || undefined },
+            { accountId: input.accountId, debit: amount.toFixed(4), credit: '0', description: item.description || undefined, tagId: input.tagId },
             { accountId: conn.accountId, debit: '0', credit: amount.toFixed(4) },
           ]
         : [
             { accountId: conn.accountId, debit: amount.toFixed(4), credit: '0' },
-            { accountId: input.accountId, debit: '0', credit: amount.toFixed(4), description: item.description || undefined },
+            { accountId: input.accountId, debit: '0', credit: amount.toFixed(4), description: item.description || undefined, tagId: input.tagId },
           ],
     }, userId, companyId);
 
@@ -528,6 +532,8 @@ export async function runCategorizationPipeline(tenantId: string, items: any[]) 
         accountId: ruleResult.assignAccountId,
         contactId: ruleResult.assignContactId || undefined,
         memo: ruleResult.assignMemo || undefined,
+        // ADR 0XY §3.3 — rule-assigned tag propagates to the new txn.
+        tagId: ruleResult.assignTagId ?? undefined,
       });
     }
   }

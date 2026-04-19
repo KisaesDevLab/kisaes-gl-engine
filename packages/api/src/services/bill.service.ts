@@ -112,6 +112,7 @@ export async function createBill(tenantId: string, input: CreateBillInput, userI
       debit: new Decimal(l.amount).toFixed(4),
       credit: '0',
       description: l.description || input.memo,
+      tagId: l.tagId,
     })),
     { accountId: apAccountId, debit: '0', credit: total.toFixed(4) },
   ];
@@ -226,6 +227,7 @@ export async function updateBill(tenantId: string, billId: string, input: Create
       debit: new Decimal(l.amount).toFixed(4),
       credit: '0',
       description: l.description || input.memo,
+      tagId: l.tagId,
     })),
     { accountId: apAccountId, debit: '0', credit: total.toFixed(4) },
   ];

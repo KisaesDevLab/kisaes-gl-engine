@@ -7,9 +7,66 @@ import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import type { JournalLineInput, TxnType, TxnStatus } from '@kis-books/shared';
 import { db, type DbOrTx } from '../db/index.js';
-import { transactions, journalLines, accounts, companies, contacts, reconciliations, reconciliationLines, bankFeedItems } from '../db/schema/index.js';
+import { transactions, journalLines, accounts, companies, contacts, reconciliations, reconciliationLines, bankFeedItems, transactionTags } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import { env } from '../config/env.js';
+import { deriveHeaderTags } from './tags/derive-header-tags.js';
+import { resolveDefaultTag } from './tags/resolve-default-tag.js';
+
+// ADR 0XY §3.2 — belt-and-suspenders default-tag resolution at the
+// ledger write path. When the split-level tags flag is on and the
+// transaction's contact is a vendor-type contact carrying a
+// default_tag_id, stamp it onto any line that did not arrive with an
+// explicit tag. Item-default resolution is not done here because
+// journal-line-level item_id is not propagated through JournalLineInput
+// today; per-type services (invoice, cash_sale) that know item_id at
+// build time can call resolveDefaultTag themselves as a future
+// enhancement. Bank-rule and AI sources are populated by their
+// respective service layers.
+async function loadContactDefaultTagId(
+  executor: DbOrTx,
+  tenantId: string,
+  contactId: string | null | undefined,
+): Promise<string | null> {
+  if (!contactId) return null;
+  if (!env.TAGS_SPLIT_LEVEL_V2) return null;
+  const rows = await executor
+    .select({ defaultTagId: contacts.defaultTagId, contactType: contacts.contactType })
+    .from(contacts)
+    .where(and(eq(contacts.tenantId, tenantId), eq(contacts.id, contactId)))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+  // ADR 0XY §2.1 — contact default only applies to vendor-type contacts.
+  // Customers do not contribute to the default-tag chain.
+  if (row.contactType !== 'vendor' && row.contactType !== 'both') return null;
+  return row.defaultTagId ?? null;
+}
+
+// ADR 0XX §4: when TAGS_SPLIT_LEVEL_V2 is on, journal_lines.tag_id is
+// authoritative and transaction_tags is a derived compatibility surface.
+// On every ledger write we replace the junction rows for this transaction
+// with the set of distinct tag IDs present on its lines. When the flag is
+// off (rollout states 1–3) we leave transaction_tags alone — it stays
+// authoritative and tags.service.ts remains the sole writer.
+async function syncTransactionTagsFromLines(
+  executor: DbOrTx,
+  tenantId: string,
+  companyId: string | null,
+  transactionId: string,
+  lines: Array<{ tagId?: string | null | undefined }>,
+): Promise<void> {
+  if (!env.TAGS_SPLIT_LEVEL_V2) return;
+  const tagIds = deriveHeaderTags(lines);
+  await executor
+    .delete(transactionTags)
+    .where(and(eq(transactionTags.tenantId, tenantId), eq(transactionTags.transactionId, transactionId)));
+  if (tagIds.length === 0) return;
+  await executor.insert(transactionTags).values(
+    tagIds.map((tagId) => ({ tenantId, companyId, transactionId, tagId })),
+  );
+}
 
 /**
  * Every journal line references an accountId. The caller supplies those IDs
@@ -156,6 +213,12 @@ export async function postTransaction(tenantId: string, input: PostTransactionIn
 
     if (!txn) throw AppError.internal('Failed to create transaction');
 
+    // ADR 0XY §3.2 — resolve default tags once per transaction before
+    // inserting lines. Under current context the only source populated
+    // here is the vendor contact's default_tag_id; future callers can
+    // thread item/rule/AI sources through by extending the input shape.
+    const contactDefaultTagId = await loadContactDefaultTagId(tx, tenantId, input.contactId);
+
     // Insert journal lines
     const lineValues = input.lines.map((line, i) => ({
       tenantId,
@@ -171,9 +234,15 @@ export async function postTransaction(tenantId: string, input: PostTransactionIn
       taxRate: line.taxRate || '0',
       taxAmount: line.taxAmount || '0',
       lineOrder: i,
+      tagId: resolveDefaultTag({
+        explicitUserTagId: line.tagId,
+        contactDefaultTagId,
+      }),
     }));
 
     const lines = await tx.insert(journalLines).values(lineValues).returning();
+
+    await syncTransactionTagsFromLines(tx, tenantId, companyId || null, txn.id, lineValues);
 
     // Update account balances (only for posted transactions)
     if (txn.status === 'posted') {
@@ -329,6 +398,9 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
       updatedAt: new Date(),
     }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)));
 
+    // Resolve default tags for the new line set (ADR 0XY §3.2 as above).
+    const contactDefaultTagId = await loadContactDefaultTagId(tx, tenantId, input.contactId);
+
     // Insert new lines
     const lineValues = input.lines.map((line, i) => ({
       tenantId,
@@ -344,9 +416,15 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
       taxRate: line.taxRate || '0',
       taxAmount: line.taxAmount || '0',
       lineOrder: i,
+      tagId: resolveDefaultTag({
+        explicitUserTagId: line.tagId,
+        contactDefaultTagId,
+      }),
     }));
 
     const lines = await tx.insert(journalLines).values(lineValues).returning();
+
+    await syncTransactionTagsFromLines(tx, tenantId, companyId ?? existing.companyId ?? null, txnId, lineValues);
 
     // Apply new balances
     if (existing.status === 'posted') {
@@ -411,6 +489,7 @@ export async function getTransaction(tenantId: string, txnId: string) {
     taxRate: journalLines.taxRate,
     taxAmount: journalLines.taxAmount,
     lineOrder: journalLines.lineOrder,
+    tagId: journalLines.tagId,
   }).from(journalLines)
     .leftJoin(accounts, eq(journalLines.accountId, accounts.id))
     .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)))

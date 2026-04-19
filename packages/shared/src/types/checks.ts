@@ -18,6 +18,7 @@ export interface WriteCheckInput {
     accountId: string;
     description?: string;
     amount: string;
+    tagId?: string | null;
   }>;
   tagIds?: string[];
 }

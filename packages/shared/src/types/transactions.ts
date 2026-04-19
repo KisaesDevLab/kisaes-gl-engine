@@ -36,6 +36,8 @@ export interface JournalLine {
   taxRate: string;
   taxAmount: string;
   lineOrder: number;
+  // ADR 0XX split-level tag. Null when untagged.
+  tagId: string | null;
   createdAt: string;
   // Denormalised display helpers populated by list endpoints.
   accountName?: string | null;
@@ -96,6 +98,10 @@ export interface JournalLineInput {
   isTaxable?: boolean;
   taxRate?: string;
   taxAmount?: string;
+  // ADR 0XX: optional per-line tag. Undefined means "caller did not specify";
+  // null means "explicitly untagged." The ledger service persists whichever
+  // the caller passes; if neither is set the column is stored as NULL.
+  tagId?: string | null;
 }
 
 export interface CreateJournalEntryInput {
@@ -108,6 +114,7 @@ export interface ExpenseLineItem {
   expenseAccountId: string;
   amount: string;
   description?: string;
+  tagId?: string | null;
 }
 
 export interface CreateExpenseInput {
@@ -138,6 +145,7 @@ export interface CreateDepositInput {
     accountId: string;
     amount: string;
     description?: string;
+    tagId?: string | null;
   }>;
   memo?: string;
 }
@@ -153,6 +161,7 @@ export interface CreateCashSaleInput {
     unitPrice: string;
     isTaxable?: boolean;
     taxRate?: string;
+    tagId?: string | null;
   }>;
   memo?: string;
 }
@@ -169,6 +178,7 @@ export interface CreateInvoiceInput {
     unitPrice: string;
     isTaxable?: boolean;
     taxRate?: string;
+    tagId?: string | null;
   }>;
   memo?: string;
   internalNotes?: string;
@@ -189,6 +199,7 @@ export interface CreateCreditMemoInput {
     description?: string;
     quantity: string;
     unitPrice: string;
+    tagId?: string | null;
   }>;
   memo?: string;
   appliedToInvoiceId?: string;

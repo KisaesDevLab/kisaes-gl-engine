@@ -28,6 +28,7 @@ export async function createCreditMemo(tenantId: string, input: CreateCreditMemo
       description: line.description,
       quantity: line.quantity,
       unitPrice: line.unitPrice,
+      tagId: line.tagId,
     };
   });
 

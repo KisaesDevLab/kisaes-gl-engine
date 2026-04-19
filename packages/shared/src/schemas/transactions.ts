@@ -22,6 +22,9 @@ const journalLineInputSchema = z.object({
   isTaxable: z.boolean().default(false),
   taxRate: z.string().default('0'),
   taxAmount: z.string().default('0'),
+  // ADR 0XX — optional per-line tag. Null means explicitly untagged;
+  // undefined (omitted) means the caller is not sending a tag value.
+  tagId: z.string().uuid().nullable().optional(),
 });
 
 export const createJournalEntrySchema = z.object({
@@ -40,6 +43,8 @@ export const createExpenseSchema = z.object({
     expenseAccountId: z.string().uuid(),
     amount: z.string().min(1),
     description: z.string().optional(),
+    // ADR 0XX: per-line tag.
+    tagId: z.string().uuid().nullable().optional(),
   })).max(MAX_LINES).optional(),
   memo: z.string().optional(),
   tags: z.array(z.string().uuid()).optional(),
@@ -57,6 +62,7 @@ const depositLineSchema = z.object({
   accountId: z.string().uuid(),
   amount: z.string().min(1),
   description: z.string().optional(),
+  tagId: z.string().uuid().nullable().optional(),
 });
 
 export const createDepositSchema = z.object({
@@ -73,6 +79,7 @@ const lineItemSchema = z.object({
   unitPrice: z.string().min(1),
   isTaxable: z.boolean().default(false),
   taxRate: z.string().default('0'),
+  tagId: z.string().uuid().nullable().optional(),
 });
 
 export const createCashSaleSchema = z.object({
@@ -108,6 +115,7 @@ export const createCreditMemoSchema = z.object({
     description: z.string().optional(),
     quantity: z.string().min(1),
     unitPrice: z.string().min(1),
+    tagId: z.string().uuid().nullable().optional(),
   })).min(1).max(MAX_LINES),
   memo: z.string().optional(),
   appliedToInvoiceId: z.string().uuid().optional(),

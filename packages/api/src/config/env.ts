@@ -47,6 +47,26 @@ const envSchema = z.object({
   BCRYPT_ROUNDS: z.coerce.number().default(12),
   TAILSCALE_SOCKET_PATH: z.string().default('/var/run/tailscale/tailscaled.sock'),
   TS_HOSTNAME: z.string().optional(),
+  // ADR 0XX feature flag. When on, the ledger service treats
+  // journal_lines.tag_id as the authoritative tag source and mirrors
+  // the derived set into transaction_tags for legacy read paths. When
+  // off (the default during rollout states 1–3), tag_id is written when
+  // the caller supplies it but transaction_tags remains authoritative
+  // and untouched by the ledger writes.
+  TAGS_SPLIT_LEVEL_V2: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true' || v === '1')
+    .default('false'),
+  // ADR 0XW feature flag. Gates tag-scoped Budget vs. Actuals behavior.
+  // When off, tag_id is still written on budget rows by the service
+  // layer but report endpoints ignore the scope and return company-wide
+  // actuals — matching pre-ADR behavior.
+  TAG_BUDGETS_V1: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true' || v === '1')
+    .default('false'),
 });
 
 export type Env = z.infer<typeof envSchema>;

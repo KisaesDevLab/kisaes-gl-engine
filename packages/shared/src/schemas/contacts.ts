@@ -33,6 +33,9 @@ export const createContactSchema = z.object({
   taxId: z.string().max(30).nullish(),
   is1099Eligible: z.boolean().default(false),
   notes: z.string().nullish(),
+  // ADR 0XY: vendor-scoped default tag. Set on any contact; the resolver
+  // only reads it when the contact is contact_type in ('vendor','both').
+  defaultTagId: z.string().uuid().nullable().optional(),
 });
 
 export const updateContactSchema = z.object({
@@ -61,6 +64,7 @@ export const updateContactSchema = z.object({
   is1099Eligible: z.boolean().optional(),
   notes: z.string().nullish(),
   isActive: z.boolean().optional(),
+  defaultTagId: z.string().uuid().nullable().optional(),
 });
 
 export const contactFiltersSchema = z.object({

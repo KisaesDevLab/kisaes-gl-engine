@@ -20,7 +20,13 @@ function buildExpensePayload(input: CreateExpenseInput) {
       debit: parseFloat(line.amount).toFixed(4),
       credit: '0',
       description: line.description || input.memo,
+      // ADR 0XX — carry the per-line tag (3-state) through to the ledger.
+      // Preserving `undefined` vs explicit `null` lets the ledger
+      // resolver apply the contact default when the user hasn't set
+      // a line tag (ADR 0XY §2.3).
+      tagId: line.tagId,
     })),
+    // Payment-side cash credit has no user-facing tag; leave null.
     { accountId: input.payFromAccountId, debit: '0', credit: total },
   ];
 

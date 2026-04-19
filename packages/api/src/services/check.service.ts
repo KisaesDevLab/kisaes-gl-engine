@@ -24,6 +24,7 @@ export async function createCheck(tenantId: string, input: WriteCheckInput, user
       debit: l.amount,
       credit: '0',
       description: l.description,
+      tagId: l.tagId,
     })),
     { accountId: input.bankAccountId, debit: '0', credit: input.amount },
   ];

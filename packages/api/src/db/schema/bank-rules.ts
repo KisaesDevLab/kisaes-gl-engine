@@ -24,6 +24,9 @@ export const bankRules = pgTable('bank_rules', {
   assignAccountName: varchar('assign_account_name', { length: 255 }),
   assignContactName: varchar('assign_contact_name', { length: 255 }),
   assignMemo: varchar('assign_memo', { length: 500 }),
+  // ADR 0XY: tag stamped onto every journal line produced when this
+  // rule matches a bank feed categorization.
+  assignTagId: uuid('assign_tag_id'),
   autoConfirm: boolean('auto_confirm').default(false),
   timesApplied: integer('times_applied').default(0),
   lastAppliedAt: timestamp('last_applied_at', { withTimezone: true }),
@@ -32,6 +35,7 @@ export const bankRules = pgTable('bank_rules', {
 }, (table) => ({
   tenantIdx: index('idx_br_tenant').on(table.tenantId),
   activeIdx: index('idx_br_active').on(table.tenantId, table.isActive),
+  assignTagIdx: index('idx_bank_rules_assign_tag_id').on(table.assignTagId),
 }));
 
 export const globalRuleSubmissions = pgTable('global_rule_submissions', {

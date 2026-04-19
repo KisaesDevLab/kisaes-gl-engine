@@ -64,6 +64,11 @@ export interface CategorizeInput {
   accountId: string;
   contactId?: string;
   memo?: string;
+  // ADR 0XY §6 — tag stamped onto the categorized transaction's
+  // user-side journal line. Typically sourced from a matching bank
+  // rule's assign_tag_id or from explicit user selection in the
+  // categorization drawer. Null means explicitly untagged.
+  tagId?: string | null;
 }
 
 export interface Reconciliation {
