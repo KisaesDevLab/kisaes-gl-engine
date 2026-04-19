@@ -73,9 +73,16 @@ CREATE INDEX IF NOT EXISTS idx_budget_periods_budget_account
 -- Zero-amount cells are preserved because a user may have deliberately
 -- planned $0 for a given month and we cannot distinguish that from
 -- unset — downstream readers can filter amount <> 0 as needed.
+--
+-- The INNER JOIN on budgets filters out orphan budget_lines rows whose
+-- budget_id no longer exists — pre-existing data corruption from a
+-- period before budget_lines had a FK constraint. Orphans can't
+-- participate in the new FK-constrained budget_periods table; dropping
+-- them on backfill is the only safe option.
 INSERT INTO budget_periods (budget_id, account_id, period_index, amount)
 SELECT bl.budget_id, bl.account_id, p.idx, p.amt
 FROM budget_lines bl
+JOIN budgets b ON b.id = bl.budget_id
 CROSS JOIN LATERAL (VALUES
   (1::smallint,  bl.month_1),
   (2::smallint,  bl.month_2),
