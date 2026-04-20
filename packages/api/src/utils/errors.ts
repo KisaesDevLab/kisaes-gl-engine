@@ -7,6 +7,11 @@ export class AppError extends Error {
     public statusCode: number,
     message: string,
     public code?: string,
+    // Optional structured payload included verbatim in the error
+    // response body. Lets callers attach machine-readable context
+    // (e.g., tag-usage counts on a 409) without stringifying into
+    // the message. Serialized as `error.details` by the error handler.
+    public details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = 'AppError';
@@ -32,8 +37,8 @@ export class AppError extends Error {
     return new AppError(429, message, 'TOO_MANY_REQUESTS');
   }
 
-  static conflict(message: string, code?: string) {
-    return new AppError(409, message, code);
+  static conflict(message: string, code?: string, details?: Record<string, unknown>) {
+    return new AppError(409, message, code, details);
   }
 
   static internal(message: string = 'Internal server error') {

@@ -55,20 +55,23 @@ export async function fullExport(tenantId: string): Promise<Record<string, strin
     transactionsCsv += toCsvRow([t.id, t.txn_type, t.txn_number, t.txn_date, t.status, t.total, t.memo, t.contact_name, t.invoice_status, t.amount_paid, t.balance_due]) + '\n';
   }
 
-  // Journal Lines CSV
+  // Journal Lines CSV — ADR 0XX §6.3 gains a `line_tag` column for
+  // per-line tag export. Joined off the tags table via optional FK.
   const lines = await db.execute(sql`
     SELECT jl.id, jl.transaction_id, jl.account_id, jl.debit, jl.credit, jl.description,
       a.name as account_name, a.account_number,
+      tag.name as line_tag,
       t.txn_date, t.txn_type
     FROM journal_lines jl
     JOIN accounts a ON a.id = jl.account_id
     JOIN transactions t ON t.id = jl.transaction_id
+    LEFT JOIN tags tag ON tag.id = jl.tag_id
     WHERE jl.tenant_id = ${tenantId}
     ORDER BY t.txn_date, jl.line_order
   `);
-  let journalLinesCsv = 'ID,Transaction ID,Account Number,Account Name,Debit,Credit,Description,Date,Type\n';
+  let journalLinesCsv = 'ID,Transaction ID,Account Number,Account Name,Debit,Credit,Description,Line Tag,Date,Type\n';
   for (const l of lines.rows as any[]) {
-    journalLinesCsv += toCsvRow([l.id, l.transaction_id, l.account_number, l.account_name, l.debit, l.credit, l.description, l.txn_date, l.txn_type]) + '\n';
+    journalLinesCsv += toCsvRow([l.id, l.transaction_id, l.account_number, l.account_name, l.debit, l.credit, l.description, l.line_tag, l.txn_date, l.txn_type]) + '\n';
   }
 
   return {

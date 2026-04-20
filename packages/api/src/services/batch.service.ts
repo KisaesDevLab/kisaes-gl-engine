@@ -84,6 +84,11 @@ interface BatchRow {
   description?: string;
   dueDate?: string;
   invoiceNo?: string;
+  // ADR 0XX §4 / build-plan Phase 8 — per-row tag flows straight onto
+  // the single split line this row produces. Optional; when absent the
+  // service-layer default-tag resolver still gets a chance to fill it
+  // from item/vendor/bank-rule sources.
+  tagId?: string | null;
 }
 
 interface RowResult {
@@ -244,12 +249,19 @@ export async function saveBatch(
     switch (txnType) {
       case 'expense':
       case 'credit_card_charge':
+        // Use the multi-line `lines[]` form so the per-row tag
+        // round-trips — the single-line shortcut on CreateExpenseInput
+        // does not carry a tagId field.
         txn = await expenseService.createExpense(tenantId, {
           txnDate: row.date!,
           contactId: contactId || undefined,
           payFromAccountId: contextAccountId!,
-          expenseAccountId: accountId!,
-          amount,
+          lines: [{
+            expenseAccountId: accountId!,
+            amount,
+            description: row.memo,
+            tagId: row.tagId ?? null,
+          }],
           memo: row.memo,
         }, userId, companyId);
         break;
@@ -258,7 +270,7 @@ export async function saveBatch(
         txn = await depositService.createDeposit(tenantId, {
           txnDate: row.date!,
           depositToAccountId: contextAccountId!,
-          lines: [{ accountId: accountId!, amount, description: row.memo }],
+          lines: [{ accountId: accountId!, amount, description: row.memo, tagId: row.tagId ?? null }],
           memo: row.memo,
         }, userId, companyId);
         break;
@@ -272,8 +284,8 @@ export async function saveBatch(
           memo: row.memo,
           total: amount,
           lines: [
-            { accountId: contextAccountId!, debit: amount, credit: '0' },
-            { accountId: accountId!, debit: '0', credit: amount },
+            { accountId: contextAccountId!, debit: amount, credit: '0', tagId: row.tagId ?? null },
+            { accountId: accountId!, debit: '0', credit: amount, tagId: row.tagId ?? null },
           ],
         }, userId, companyId);
         break;
@@ -288,6 +300,7 @@ export async function saveBatch(
             description: row.description || row.memo || undefined,
             quantity: '1',
             unitPrice: amount,
+            tagId: row.tagId ?? null,
           }],
           memo: row.memo,
         }, userId, companyId);
@@ -304,6 +317,7 @@ export async function saveBatch(
             accountId: accountId!,
             description: row.description || row.memo || undefined,
             amount,
+            tagId: row.tagId ?? null,
           }],
         }, userId, companyId);
         break;
@@ -317,6 +331,7 @@ export async function saveBatch(
             description: row.description || row.memo || undefined,
             quantity: '1',
             unitPrice: amount,
+            tagId: row.tagId ?? null,
           }],
           memo: row.memo,
         }, userId, companyId);
@@ -338,8 +353,8 @@ export async function saveBatch(
           memo: row.memo,
           total: amount,
           lines: [
-            { accountId: contextAccountId!, debit: amount, credit: '0' },
-            { accountId: arAccount?.id || contextAccountId!, debit: '0', credit: amount },
+            { accountId: contextAccountId!, debit: amount, credit: '0', tagId: row.tagId ?? null },
+            { accountId: arAccount?.id || contextAccountId!, debit: '0', credit: amount, tagId: row.tagId ?? null },
           ],
         }, userId, companyId);
         break;
@@ -370,6 +385,7 @@ export async function saveBatch(
           debit: String(row.debit || '0'),
           credit: String(row.credit || '0'),
           description: row.memo || row.description,
+          tagId: row.tagId ?? null,
         });
       }
 

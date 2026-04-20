@@ -14,12 +14,15 @@ export const items = pgTable('items', {
   incomeAccountId: uuid('income_account_id').notNull(),
   isTaxable: boolean('is_taxable').default(true),
   isActive: boolean('is_active').default(true),
+  // ADR 0XY: default tag applied to new journal lines that reference this item.
+  defaultTagId: uuid('default_tag_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
   tenantIdx: index('idx_items_tenant').on(table.tenantId),
   activeIdx: index('idx_items_active').on(table.tenantId, table.isActive),
   nameIdx: uniqueIndex('idx_items_tenant_name').on(table.tenantId, table.name),
+  defaultTagIdx: index('idx_items_default_tag_id').on(table.defaultTagId),
 }));
 
 export const paymentApplications = pgTable('payment_applications', {

@@ -93,6 +93,16 @@ adminRouter.get('/stats', async (req, res) => {
   res.json(stats);
 });
 
+// Build-plan Phase 3 — manually re-trigger the chunked split-level
+// tag backfill. Safe to call anytime; the advisory lock prevents
+// concurrent runs and the sweep is a no-op once no untagged-but-
+// transaction-tagged journal_lines remain.
+adminRouter.post('/tags/backfill-sweep', async (_req, res) => {
+  const { runChunkedTagBackfill } = await import('../services/tags/backfill-sweep.service.js');
+  const result = await runChunkedTagBackfill();
+  res.json(result);
+});
+
 adminRouter.get('/settings', async (req, res) => {
   const settings = await adminService.getGlobalSettings();
   const appSettings = await adminService.getApplicationSettings();

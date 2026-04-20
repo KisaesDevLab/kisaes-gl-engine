@@ -186,6 +186,10 @@ export async function evaluateRules(tenantId: string, feedItem: { description: s
       assignAccountId: rule.assignAccountId,
       assignContactId: rule.assignContactId,
       assignMemo: rule.assignMemo,
+      // ADR 0XY §6 — carry the rule's assigned tag into the
+      // categorization result so the bank feed service can stamp it
+      // onto the created transaction's journal lines.
+      assignTagId: rule.assignTagId,
       autoConfirm: rule.autoConfirm,
     };
   }
@@ -224,6 +228,10 @@ export async function evaluateRules(tenantId: string, feedItem: { description: s
       assignAccountId: accountId,
       assignContactId: contactId,
       assignMemo: rule.assignMemo,
+      // Global rules do not currently carry a tag (would need to live in
+      // global_rule_submissions and be approved). Return null for shape
+      // consistency so callers can uniformly read assignTagId.
+      assignTagId: null as string | null,
       autoConfirm: rule.autoConfirm,
     };
   }

@@ -51,6 +51,8 @@ QA_*.md
 ELv2_BUILD_*.md
 QUESTIONS.md
 Build Plans/
+docs/plans/
+docs/adr/
 
 # Data files
 *.xlsx

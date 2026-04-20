@@ -19,6 +19,7 @@ function buildDepositPayload(input: CreateDepositInput) {
       debit: '0',
       credit: line.amount,
       description: line.description,
+      tagId: line.tagId,
     };
   });
 

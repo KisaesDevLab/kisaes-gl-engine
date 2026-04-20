@@ -64,6 +64,12 @@ export const bulkCategorizeSchema = z.object({
   accountId: z.string().uuid(),
   contactId: z.string().uuid().optional(),
   memo: z.string().max(500).optional(),
+  tagId: z.string().uuid().nullable().optional(),
+});
+
+export const bulkSetTagSchema = z.object({
+  feedItemIds: z.array(z.string().uuid()).min(1).max(500),
+  tagId: z.string().uuid().nullable(),
 });
 
 export const bulkExcludeSchema = z.object({

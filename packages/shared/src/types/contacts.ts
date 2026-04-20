@@ -30,6 +30,8 @@ export interface Contact {
   openingBalance: string;
   openingBalanceDate: string | null;
   defaultExpenseAccountId: string | null;
+  // ADR 0XY — vendor-scoped default tag.
+  defaultTagId: string | null;
   taxId: string | null;
   is1099Eligible: boolean;
   notes: string | null;
@@ -62,6 +64,7 @@ export interface CreateContactInput {
   openingBalance?: string;
   openingBalanceDate?: string | null;
   defaultExpenseAccountId?: string | null;
+  defaultTagId?: string | null;
   taxId?: string | null;
   is1099Eligible?: boolean;
   notes?: string | null;
@@ -89,6 +92,7 @@ export interface UpdateContactInput {
   shippingCountry?: string;
   defaultPaymentTerms?: string | null;
   defaultExpenseAccountId?: string | null;
+  defaultTagId?: string | null;
   taxId?: string | null;
   is1099Eligible?: boolean;
   notes?: string | null;

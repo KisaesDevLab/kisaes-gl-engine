@@ -21,6 +21,7 @@
     "license:headers:fix": "bash scripts/add-license-header.sh",
     "license:sbom": "bash scripts/generate-sbom.sh",
     "migrations:check": "bash scripts/check-migration-policy.sh",
+    "any:check": "bash scripts/check-any-baseline.sh",
     "prepare": "husky || true"
   },
   "lint-staged": {
@@ -30,6 +31,9 @@
   },
   "license": "SEE LICENSE IN LICENSE",
   "author": "Kisaes LLC",
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "devDependencies": {
     "@playwright/test": "^1.59.1",
     "husky": "9.1.7",

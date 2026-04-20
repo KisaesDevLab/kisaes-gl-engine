@@ -5,7 +5,7 @@
 import { eq, and, sql, count, gte, lte } from 'drizzle-orm';
 import type { BankFeedFilters, CategorizeInput, CsvColumnMapping } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { bankFeedItems, bankConnections, accounts, transactions, journalLines } from '../db/schema/index.js';
+import { bankFeedItems, bankConnections, accounts, transactions, journalLines, transactionTags as transactionTagsTable } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
 import { cleanBankDescription } from '../utils/bank-name-cleaner.js';
@@ -222,14 +222,18 @@ export async function categorize(tenantId: string, feedItemId: string, input: Ca
       total: amount.toFixed(4),
       source: 'bank_feed',
       sourceId: item.id,
+      // ADR 0XY §3.3 — bank-feed categorization stamps the rule-
+      // provided (or user-provided) tag on the user-facing expense or
+      // revenue line. The cash-account leg stays untagged because it
+      // isn't a segment-relevant posting.
       lines: isExpense
         ? [
-            { accountId: input.accountId, debit: amount.toFixed(4), credit: '0', description: item.description || undefined },
+            { accountId: input.accountId, debit: amount.toFixed(4), credit: '0', description: item.description || undefined, tagId: input.tagId },
             { accountId: conn.accountId, debit: '0', credit: amount.toFixed(4) },
           ]
         : [
             { accountId: conn.accountId, debit: amount.toFixed(4), credit: '0' },
-            { accountId: input.accountId, debit: '0', credit: amount.toFixed(4), description: item.description || undefined },
+            { accountId: input.accountId, debit: '0', credit: amount.toFixed(4), description: item.description || undefined, tagId: input.tagId },
           ],
     }, userId, companyId);
 
@@ -413,7 +417,7 @@ export async function bulkApprove(tenantId: string, feedItemIds: string[]) {
   return { approved, failures };
 }
 
-export async function bulkCategorize(tenantId: string, feedItemIds: string[], accountId: string, contactId?: string, memo?: string, userId?: string, companyId?: string) {
+export async function bulkCategorize(tenantId: string, feedItemIds: string[], accountId: string, contactId?: string, memo?: string, tagId?: string | null, userId?: string, companyId?: string) {
   let categorized = 0;
   const failures: Array<{ id: string; error: string }> = [];
   for (const id of feedItemIds) {
@@ -422,7 +426,7 @@ export async function bulkCategorize(tenantId: string, feedItemIds: string[], ac
         where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, id)),
       });
       if (item && item.status === 'pending') {
-        await categorize(tenantId, id, { accountId, contactId, memo }, userId, companyId);
+        await categorize(tenantId, id, { accountId, contactId, memo, tagId }, userId, companyId);
         categorized++;
       }
     } catch (err: any) {
@@ -430,6 +434,49 @@ export async function bulkCategorize(tenantId: string, feedItemIds: string[], ac
     }
   }
   return { categorized, failures };
+}
+
+// ADR 0XX §7 / build plan Phase 8 — Bank Feed bulk "set tag" action.
+// Applies only to feed items that have already been converted into a
+// transaction (status in 'categorized' or 'matched'). Stamps the given
+// tag onto every journal_line of each matched transaction and syncs
+// the transaction_tags junction when TAGS_SPLIT_LEVEL_V2 is on.
+export async function bulkSetTag(tenantId: string, feedItemIds: string[], tagId: string | null) {
+  let updated = 0;
+  const failures: Array<{ id: string; error: string }> = [];
+  for (const id of feedItemIds) {
+    try {
+      const item = await db.query.bankFeedItems.findFirst({
+        where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, id)),
+      });
+      if (!item || !item.matchedTransactionId) {
+        failures.push({ id, error: 'no converted transaction to tag' });
+        continue;
+      }
+      await db.update(journalLines).set({ tagId })
+        .where(and(
+          eq(journalLines.tenantId, tenantId),
+          eq(journalLines.transactionId, item.matchedTransactionId),
+        ));
+      if (tagId) {
+        await db.insert(transactionTagsTable).values({
+          tenantId,
+          companyId: item.companyId,
+          transactionId: item.matchedTransactionId,
+          tagId,
+        }).onConflictDoNothing();
+      } else {
+        await db.delete(transactionTagsTable).where(and(
+          eq(transactionTagsTable.tenantId, tenantId),
+          eq(transactionTagsTable.transactionId, item.matchedTransactionId),
+        ));
+      }
+      updated++;
+    } catch (err: any) {
+      failures.push({ id, error: err?.message || 'unknown error' });
+    }
+  }
+  return { updated, failures };
 }
 
 export async function bulkExclude(tenantId: string, feedItemIds: string[]) {
@@ -528,6 +575,8 @@ export async function runCategorizationPipeline(tenantId: string, items: any[]) 
         accountId: ruleResult.assignAccountId,
         contactId: ruleResult.assignContactId || undefined,
         memo: ruleResult.assignMemo || undefined,
+        // ADR 0XY §3.3 — rule-assigned tag propagates to the new txn.
+        tagId: ruleResult.assignTagId ?? undefined,
       });
     }
   }

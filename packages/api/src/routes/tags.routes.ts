@@ -53,6 +53,16 @@ tagsRouter.get('/:id', async (req, res) => {
   res.json({ tag });
 });
 
+// ADR 0XX §8 / ADR 0XY §5 — pre-delete usage check. UI calls this before
+// showing the confirm dialog so the user sees "used by N transactions /
+// M budgets" with actionable reassignment CTAs instead of hitting a 409
+// on the DELETE.
+tagsRouter.get('/:id/usage', async (req, res) => {
+  const tag = await tagsService.getById(req.tenantId, req.params['id']!);
+  const usage = await tagsService.getUsage(req.tenantId, req.params['id']!);
+  res.json({ tag, usage });
+});
+
 tagsRouter.put('/:id', validate(updateTagSchema), async (req, res) => {
   const tag = await tagsService.update(req.tenantId, req.params['id']!, req.body);
   res.json({ tag });

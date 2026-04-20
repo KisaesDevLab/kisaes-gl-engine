@@ -177,3 +177,16 @@ budgetsRouter.get('/:id/overview', async (req, res) => {
   const data = await budgetService.buildBudgetOverview(req.tenantId, req.params['id']!);
   res.json(data);
 });
+
+// ADR 0XW — tag-scoped Budget vs. Actuals. Respects the budget's tag_id
+// scope when aggregating actuals from journal_lines. Requires the
+// TAG_BUDGETS_V1 env flag to be enabled. Returns a per-account,
+// per-month matrix with variances.
+budgetsRouter.get('/:id/tag-actuals', async (req, res) => {
+  const data = await budgetService.runTagScopedBudgetVsActuals(
+    req.tenantId,
+    req.params['id']!,
+    req.companyId ?? null,
+  );
+  res.json(data);
+});

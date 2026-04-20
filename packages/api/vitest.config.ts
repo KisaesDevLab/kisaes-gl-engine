@@ -9,6 +9,11 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['src/**/*.test.ts'],
+    // globalSetup runs ONCE before the suite boots — the right place for
+    // schema migrations so every DB-touching test observes the same
+    // schema. setupFiles runs per-file and is reserved for per-test env
+    // vars and module-reset hooks.
+    globalSetup: ['./src/test-global-setup.ts'],
     setupFiles: ['./src/test-setup.ts'],
     pool: 'forks',
     poolOptions: {

@@ -615,12 +615,21 @@ apiV2Router.get('/attachments/:id', async (req, res) => {
 
 // ─── Reports ────────────────────────────────────────────────────
 
+// ADR 0XX §5 — optional single-select tag scope. `tag_id` preferred,
+// `tagId` accepted. Empty string ignored so clients don't need to
+// conditionally omit the param.
+function v2TagFilter(req: { query: Record<string, unknown> }): string | null {
+  const raw = (req.query['tag_id'] ?? req.query['tagId']) as string | undefined;
+  if (!raw || typeof raw !== 'string' || raw.trim() === '') return null;
+  return raw;
+}
+
 apiV2Router.get('/reports/trial-balance', async (req, res) => {
   const { start_date, end_date } = req.query as Record<string, string>;
   const today = new Date().toISOString().split('T')[0]!;
   const year = new Date().getFullYear();
   const scope = req.query['scope'] === 'consolidated' ? null : req.companyId;
-  const data = await reportService.buildTrialBalance(req.tenantId, start_date || `${year}-01-01`, end_date || today, scope);
+  const data = await reportService.buildTrialBalance(req.tenantId, start_date || `${year}-01-01`, end_date || today, scope, v2TagFilter(req));
   res.json(data);
 });
 
@@ -629,7 +638,7 @@ apiV2Router.get('/reports/profit-loss', async (req, res) => {
   const today = new Date().toISOString().split('T')[0]!;
   const year = new Date().getFullYear();
   const scope = req.query['scope'] === 'consolidated' ? null : req.companyId;
-  const data = await reportService.buildProfitAndLoss(req.tenantId, start_date || `${year}-01-01`, end_date || today, (basis as any) || 'accrual', scope);
+  const data = await reportService.buildProfitAndLoss(req.tenantId, start_date || `${year}-01-01`, end_date || today, (basis as any) || 'accrual', scope, v2TagFilter(req));
   res.json(data);
 });
 
@@ -637,7 +646,7 @@ apiV2Router.get('/reports/balance-sheet', async (req, res) => {
   const { as_of_date, basis } = req.query as Record<string, string>;
   const today = new Date().toISOString().split('T')[0]!;
   const scope = req.query['scope'] === 'consolidated' ? null : req.companyId;
-  const data = await reportService.buildBalanceSheet(req.tenantId, as_of_date || today, (basis as any) || 'accrual', scope);
+  const data = await reportService.buildBalanceSheet(req.tenantId, as_of_date || today, (basis as any) || 'accrual', scope, v2TagFilter(req));
   res.json(data);
 });
 
@@ -646,7 +655,7 @@ apiV2Router.get('/reports/cash-flow', async (req, res) => {
   const today = new Date().toISOString().split('T')[0]!;
   const year = new Date().getFullYear();
   const scope = req.query['scope'] === 'consolidated' ? null : req.companyId;
-  const data = await reportService.buildCashFlowStatement(req.tenantId, start_date || `${year}-01-01`, end_date || today, scope);
+  const data = await reportService.buildCashFlowStatement(req.tenantId, start_date || `${year}-01-01`, end_date || today, scope, v2TagFilter(req));
   res.json(data);
 });
 
@@ -655,14 +664,14 @@ apiV2Router.get('/reports/general-ledger', async (req, res) => {
   const today = new Date().toISOString().split('T')[0]!;
   const year = new Date().getFullYear();
   const scope = req.query['scope'] === 'consolidated' ? null : req.companyId;
-  const data = await reportService.buildGeneralLedger(req.tenantId, start_date || `${year}-01-01`, end_date || today, scope);
+  const data = await reportService.buildGeneralLedger(req.tenantId, start_date || `${year}-01-01`, end_date || today, scope, v2TagFilter(req));
   res.json(data);
 });
 
 apiV2Router.get('/reports/ar-aging', async (req, res) => {
   const asOf = (req.query['as_of_date'] as string) || new Date().toISOString().split('T')[0]!;
   const scope = req.query['scope'] === 'consolidated' ? null : req.companyId;
-  const data = await reportService.buildARAgingSummary(req.tenantId, asOf, scope);
+  const data = await reportService.buildARAgingSummary(req.tenantId, asOf, scope, v2TagFilter(req));
   res.json(data);
 });
 
@@ -671,7 +680,7 @@ apiV2Router.get('/reports/expense-by-vendor', async (req, res) => {
   const today = new Date().toISOString().split('T')[0]!;
   const year = new Date().getFullYear();
   const scope = req.query['scope'] === 'consolidated' ? null : req.companyId;
-  const data = await reportService.buildExpenseByVendor(req.tenantId, start_date || `${year}-01-01`, end_date || today, scope);
+  const data = await reportService.buildExpenseByVendor(req.tenantId, start_date || `${year}-01-01`, end_date || today, scope, v2TagFilter(req));
   res.json(data);
 });
 
@@ -680,7 +689,7 @@ apiV2Router.get('/reports/expense-by-category', async (req, res) => {
   const today = new Date().toISOString().split('T')[0]!;
   const year = new Date().getFullYear();
   const scope = req.query['scope'] === 'consolidated' ? null : req.companyId;
-  const data = await reportService.buildExpenseByCategory(req.tenantId, start_date || `${year}-01-01`, end_date || today, scope);
+  const data = await reportService.buildExpenseByCategory(req.tenantId, start_date || `${year}-01-01`, end_date || today, scope, v2TagFilter(req));
   res.json(data);
 });
 
@@ -692,7 +701,7 @@ apiV2Router.get('/reports/vendor-balance', async (req, res) => {
 
 apiV2Router.get('/reports/customer-balance', async (req, res) => {
   const scope = req.query['scope'] === 'consolidated' ? null : req.companyId;
-  const data = await reportService.buildCustomerBalanceSummary(req.tenantId, scope);
+  const data = await reportService.buildCustomerBalanceSummary(req.tenantId, scope, v2TagFilter(req));
   res.json(data);
 });
 

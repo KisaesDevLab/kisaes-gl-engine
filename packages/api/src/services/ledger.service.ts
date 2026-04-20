@@ -7,9 +7,127 @@ import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import type { JournalLineInput, TxnType, TxnStatus } from '@kis-books/shared';
 import { db, type DbOrTx } from '../db/index.js';
-import { transactions, journalLines, accounts, companies, contacts, reconciliations, reconciliationLines, bankFeedItems } from '../db/schema/index.js';
+import { transactions, journalLines, accounts, companies, contacts, reconciliations, reconciliationLines, bankFeedItems, transactionTags, items } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import { env } from '../config/env.js';
+import { deriveHeaderTags } from './tags/derive-header-tags.js';
+import { resolveDefaultTag } from './tags/resolve-default-tag.js';
+
+// ADR 0XY §3.2 — belt-and-suspenders default-tag resolution at the
+// ledger write path. When the split-level tags flag is on we batch-load
+// both sources available at this layer — the contact's default_tag_id
+// and items.default_tag_id for every itemId present on the lines — and
+// feed them into `resolveDefaultTag` per line. Bank-rule and AI sources
+// are attached by the calling service and flow through verbatim.
+async function loadContactDefaultTagId(
+  executor: DbOrTx,
+  tenantId: string,
+  contactId: string | null | undefined,
+): Promise<string | null> {
+  if (!contactId) return null;
+  if (!env.TAGS_SPLIT_LEVEL_V2) return null;
+  const rows = await executor
+    .select({ defaultTagId: contacts.defaultTagId, contactType: contacts.contactType })
+    .from(contacts)
+    .where(and(eq(contacts.tenantId, tenantId), eq(contacts.id, contactId)))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+  // ADR 0XY §2.1 — contact default only applies to vendor-type contacts.
+  // Customers do not contribute to the default-tag chain.
+  if (row.contactType !== 'vendor' && row.contactType !== 'both') return null;
+  return row.defaultTagId ?? null;
+}
+
+// Batch-load items.default_tag_id for every distinct itemId referenced by
+// the input lines. Returns a Map keyed by itemId so the resolver lookup
+// stays O(1) inside the per-line loop. One query per transaction, not
+// one per line — critical for invoices with many items.
+async function loadItemDefaultTagMap(
+  executor: DbOrTx,
+  tenantId: string,
+  lines: Array<{ itemId?: string | null | undefined }>,
+): Promise<Map<string, string | null>> {
+  if (!env.TAGS_SPLIT_LEVEL_V2) return new Map();
+  const itemIds = Array.from(
+    new Set(
+      lines
+        .map((l) => l.itemId)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0),
+    ),
+  );
+  if (itemIds.length === 0) return new Map();
+  const rows = await executor
+    .select({ id: items.id, defaultTagId: items.defaultTagId })
+    .from(items)
+    .where(and(eq(items.tenantId, tenantId), inArray(items.id, itemIds)));
+  const map = new Map<string, string | null>();
+  for (const r of rows) map.set(r.id, r.defaultTagId ?? null);
+  return map;
+}
+
+// ADR 0XX §4: when TAGS_SPLIT_LEVEL_V2 is on, journal_lines.tag_id is
+// authoritative and transaction_tags is a derived compatibility surface.
+// On every ledger write we replace the junction rows for this transaction
+// with the set of distinct tag IDs present on its lines. When the flag is
+// off (rollout states 1–3) we leave transaction_tags alone — it stays
+// authoritative and tags.service.ts remains the sole writer.
+//
+// ADR 0XX §3.1 backfill rule "first-assigned wins" means multi-tag header
+// transactions end up with every line stamped with the earliest tag.
+// Re-syncing from lines then collapses the junction to that single tag,
+// silently dropping the secondary tags. We detect that here and audit-log
+// it so multi-tag tenants have a paper trail and can reconcile with
+// ADR 0XX §5.3 multi-tag-per-line future work.
+async function syncTransactionTagsFromLines(
+  executor: DbOrTx,
+  tenantId: string,
+  companyId: string | null,
+  transactionId: string,
+  lines: Array<{ tagId?: string | null | undefined }>,
+): Promise<void> {
+  if (!env.TAGS_SPLIT_LEVEL_V2) return;
+  const tagIds = deriveHeaderTags(lines);
+
+  // Read existing junction rows before we clobber them — needed so we can
+  // log exactly which tags get dropped. One SELECT is cheap; multi-tag
+  // transactions are rare in practice.
+  const existing = await executor
+    .select({ tagId: transactionTags.tagId })
+    .from(transactionTags)
+    .where(and(eq(transactionTags.tenantId, tenantId), eq(transactionTags.transactionId, transactionId)));
+  const existingIds = existing.map((r) => r.tagId);
+  const newSet = new Set(tagIds);
+  const dropped = existingIds.filter((id) => !newSet.has(id));
+
+  await executor
+    .delete(transactionTags)
+    .where(and(eq(transactionTags.tenantId, tenantId), eq(transactionTags.transactionId, transactionId)));
+  if (tagIds.length > 0) {
+    await executor.insert(transactionTags).values(
+      tagIds.map((tagId) => ({ tenantId, companyId, transactionId, tagId })),
+    );
+  }
+
+  if (dropped.length > 0) {
+    // Best-effort audit trail; never block the ledger write on a logging
+    // failure. auditLog writes to its own table, so even if this throws
+    // on a flaky DB connection the core write has already committed.
+    try {
+      await auditLog(
+        tenantId,
+        'update',
+        'transaction_tags',
+        transactionId,
+        { tagIds: existingIds },
+        { tagIds, droppedTagIds: dropped, reason: 'multi_tag_collapsed_by_line_sync' },
+      );
+    } catch {
+      // Intentionally swallow — audit-log pressure shouldn't break ledger writes.
+    }
+  }
+}
 
 /**
  * Every journal line references an accountId. The caller supplies those IDs
@@ -156,6 +274,14 @@ export async function postTransaction(tenantId: string, input: PostTransactionIn
 
     if (!txn) throw AppError.internal('Failed to create transaction');
 
+    // ADR 0XY §3.2 — resolve default tags once per transaction before
+    // inserting lines. Contact + item defaults are batch-loaded here;
+    // bank-rule and AI sources ride along on each line from the caller.
+    const [contactDefaultTagId, itemDefaultTagMap] = await Promise.all([
+      loadContactDefaultTagId(tx, tenantId, input.contactId),
+      loadItemDefaultTagMap(tx, tenantId, input.lines),
+    ]);
+
     // Insert journal lines
     const lineValues = input.lines.map((line, i) => ({
       tenantId,
@@ -165,15 +291,25 @@ export async function postTransaction(tenantId: string, input: PostTransactionIn
       debit: line.debit || '0',
       credit: line.credit || '0',
       description: line.description || null,
+      itemId: line.itemId || null,
       quantity: line.quantity || null,
       unitPrice: line.unitPrice || null,
       isTaxable: line.isTaxable || false,
       taxRate: line.taxRate || '0',
       taxAmount: line.taxAmount || '0',
       lineOrder: i,
+      tagId: resolveDefaultTag({
+        explicitUserTagId: line.tagId,
+        bankRuleTagId: line.bankRuleTagId ?? undefined,
+        aiSuggestedTagId: line.aiSuggestedTagId ?? undefined,
+        itemDefaultTagId: line.itemId ? itemDefaultTagMap.get(line.itemId) ?? null : undefined,
+        contactDefaultTagId,
+      }),
     }));
 
     const lines = await tx.insert(journalLines).values(lineValues).returning();
+
+    await syncTransactionTagsFromLines(tx, tenantId, companyId || null, txn.id, lineValues);
 
     // Update account balances (only for posted transactions)
     if (txn.status === 'posted') {
@@ -329,6 +465,12 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
       updatedAt: new Date(),
     }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)));
 
+    // Resolve default tags for the new line set (ADR 0XY §3.2 as above).
+    const [contactDefaultTagId, itemDefaultTagMap] = await Promise.all([
+      loadContactDefaultTagId(tx, tenantId, input.contactId),
+      loadItemDefaultTagMap(tx, tenantId, input.lines),
+    ]);
+
     // Insert new lines
     const lineValues = input.lines.map((line, i) => ({
       tenantId,
@@ -338,15 +480,25 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
       debit: line.debit || '0',
       credit: line.credit || '0',
       description: line.description || null,
+      itemId: line.itemId || null,
       quantity: line.quantity || null,
       unitPrice: line.unitPrice || null,
       isTaxable: line.isTaxable || false,
       taxRate: line.taxRate || '0',
       taxAmount: line.taxAmount || '0',
       lineOrder: i,
+      tagId: resolveDefaultTag({
+        explicitUserTagId: line.tagId,
+        bankRuleTagId: line.bankRuleTagId ?? undefined,
+        aiSuggestedTagId: line.aiSuggestedTagId ?? undefined,
+        itemDefaultTagId: line.itemId ? itemDefaultTagMap.get(line.itemId) ?? null : undefined,
+        contactDefaultTagId,
+      }),
     }));
 
     const lines = await tx.insert(journalLines).values(lineValues).returning();
+
+    await syncTransactionTagsFromLines(tx, tenantId, companyId ?? existing.companyId ?? null, txnId, lineValues);
 
     // Apply new balances
     if (existing.status === 'posted') {
@@ -411,6 +563,7 @@ export async function getTransaction(tenantId: string, txnId: string) {
     taxRate: journalLines.taxRate,
     taxAmount: journalLines.taxAmount,
     lineOrder: journalLines.lineOrder,
+    tagId: journalLines.tagId,
   }).from(journalLines)
     .leftJoin(accounts, eq(journalLines.accountId, accounts.id))
     .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)))
@@ -421,6 +574,9 @@ export async function getTransaction(tenantId: string, txnId: string) {
 
 export async function listTransactions(tenantId: string, filters: {
   txnType?: string; status?: string; contactId?: string; accountId?: string; startDate?: string; endDate?: string;
+  // ADR 0XX §5.2 — header-level tag filter semantics: keep the
+  // transaction if *any* of its journal_lines carries this tag.
+  tagId?: string;
   search?: string; limit?: number; offset?: number;
 }, companyId?: string) {
   const conditions = [eq(transactions.tenantId, tenantId)];
@@ -433,6 +589,9 @@ export async function listTransactions(tenantId: string, filters: {
   if (filters.endDate) conditions.push(sql`${transactions.txnDate} <= ${filters.endDate}`);
   if (filters.accountId) {
     conditions.push(sql`${transactions.id} IN (SELECT transaction_id FROM journal_lines WHERE account_id = ${filters.accountId} AND tenant_id = ${tenantId})`);
+  }
+  if (filters.tagId) {
+    conditions.push(sql`EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = ${transactions.id} AND jl.tenant_id = ${tenantId} AND jl.tag_id = ${filters.tagId})`);
   }
   if (filters.search) {
     conditions.push(sql`(${transactions.memo} ILIKE ${'%' + filters.search + '%'} OR ${transactions.txnNumber} ILIKE ${'%' + filters.search + '%'} OR ${contacts.displayName} ILIKE ${'%' + filters.search + '%'})`);
@@ -462,6 +621,18 @@ export async function listTransactions(tenantId: string, filters: {
       sourceId: transactions.sourceId,
       aiCategorized: bankFeedItems.matchType,
       createdAt: transactions.createdAt,
+      // ADR 0XX §4.1 — aggregate of distinct tag names from the
+      // transaction's journal lines. Null when every line is untagged;
+      // a one-element array when uniform; two+ elements when mixed.
+      // Rendered in the list's Tag column as a pill / "Mixed" / "—".
+      lineTags: sql<string[] | null>`(
+        SELECT array_agg(DISTINCT t2.name ORDER BY t2.name)
+        FROM journal_lines jl
+        JOIN tags t2 ON t2.id = jl.tag_id
+        WHERE jl.transaction_id = ${transactions.id}
+          AND jl.tenant_id = ${tenantId}
+          AND jl.tag_id IS NOT NULL
+      )`,
     }).from(transactions)
       .leftJoin(contacts, eq(transactions.contactId, contacts.id))
       .leftJoin(bankFeedItems, and(

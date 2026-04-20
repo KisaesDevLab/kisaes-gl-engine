@@ -221,4 +221,148 @@ describe('MCP server integration', () => {
     });
     expect(resp.error).toBeDefined();
   });
+
+  // ─── ADR 0XX — split-level tags over MCP ─────────────────────────
+
+  it('tools/list advertises split-level-tag tools', async () => {
+    const resp = await rpc('tools/list');
+    const names = resp.result.tools.map((t: any) => t.name);
+    expect(names).toContain('set_transaction_tag');
+    expect(names).toContain('tag_transaction');
+    expect(names).toContain('bulk_set_bank_feed_tag');
+    // Report tools advertise the tag_id argument in their schema.
+    const pnlTool = resp.result.tools.find((t: any) => t.name === 'run_profit_loss');
+    expect(pnlTool?.inputSchema?.properties?.tag_id).toBeDefined();
+    const tbTool = resp.result.tools.find((t: any) => t.name === 'run_trial_balance');
+    expect(tbTool?.inputSchema?.properties?.tag_id).toBeDefined();
+  });
+
+  it('tools/call set_transaction_tag stamps every journal line', async () => {
+    // Set up: find accounts, create tag, post a journal entry.
+    const { accounts } = await import('../db/schema/index.js');
+    const { eq: eqOp, and: andOp } = await import('drizzle-orm');
+    const allAccounts = await db.select().from(accounts).where(eqOp(accounts.tenantId, tenantId));
+    const expense = allAccounts.find((a) => a.accountType === 'expense')!;
+    const bank = allAccounts.find((a) =>
+      a.accountType === 'asset' && (a.detailType === 'bank' || a.name.toLowerCase().includes('check')),
+    )!;
+
+    // Create a tag through MCP so the path exercises the same auth+tenant flow.
+    const { tags: tagsTable } = await import('../db/schema/index.js');
+    const [tag] = await db.insert(tagsTable).values({ tenantId, name: `MCPTag-${Date.now()}` }).returning();
+
+    // Post a JE via the service (MCP create_journal_entry exercises the same path).
+    const createResp = await rpc('tools/call', {
+      name: 'create_journal_entry',
+      arguments: {
+        date: '2026-04-10',
+        lines: JSON.stringify([
+          { accountId: expense.id, debit: '20', credit: '0' },
+          { accountId: bank.id, debit: '0', credit: '20' },
+        ]),
+      },
+    });
+    const createdTxn = JSON.parse(createResp.result.content[0].text);
+    const txnId = createdTxn.id;
+
+    // Apply the tag via the new single-tag MCP tool.
+    const setResp = await rpc('tools/call', {
+      name: 'set_transaction_tag',
+      arguments: { transaction_id: txnId, tag_id: tag!.id },
+    });
+    expect(setResp.error).toBeUndefined();
+    const setPayload = JSON.parse(setResp.result.content[0].text);
+    expect(setPayload.tagged).toBe(true);
+    expect(setPayload.tagId).toBe(tag!.id);
+
+    // Confirm the stamp landed on every journal line.
+    const { journalLines } = await import('../db/schema/index.js');
+    const lines = await db.select().from(journalLines).where(andOp(
+      eqOp(journalLines.tenantId, tenantId),
+      eqOp(journalLines.transactionId, txnId),
+    ));
+    expect(lines.length).toBe(2);
+    for (const line of lines) {
+      expect(line.tagId).toBe(tag!.id);
+    }
+  });
+
+  it('tools/call tag_transaction with a single tag still lands line-level', async () => {
+    const { accounts, tags: tagsTable, journalLines } = await import('../db/schema/index.js');
+    const { eq: eqOp, and: andOp } = await import('drizzle-orm');
+    const allAccounts = await db.select().from(accounts).where(eqOp(accounts.tenantId, tenantId));
+    const expense = allAccounts.find((a) => a.accountType === 'expense')!;
+    const bank = allAccounts.find((a) =>
+      a.accountType === 'asset' && (a.detailType === 'bank' || a.name.toLowerCase().includes('check')),
+    )!;
+    const [tag] = await db.insert(tagsTable).values({ tenantId, name: `MCPTagLegacy-${Date.now()}` }).returning();
+
+    const createResp = await rpc('tools/call', {
+      name: 'create_journal_entry',
+      arguments: {
+        date: '2026-04-10',
+        lines: JSON.stringify([
+          { accountId: expense.id, debit: '15', credit: '0' },
+          { accountId: bank.id, debit: '0', credit: '15' },
+        ]),
+      },
+    });
+    const txnId = JSON.parse(createResp.result.content[0].text).id;
+
+    const resp = await rpc('tools/call', {
+      name: 'tag_transaction',
+      arguments: { transaction_id: txnId, tag_ids: JSON.stringify([tag!.id]) },
+    });
+    expect(resp.error).toBeUndefined();
+    const payload = JSON.parse(resp.result.content[0].text);
+    expect(payload.lineLevel).toBe(true);
+
+    const lines = await db.select().from(journalLines).where(andOp(
+      eqOp(journalLines.tenantId, tenantId),
+      eqOp(journalLines.transactionId, txnId),
+    ));
+    for (const l of lines) expect(l.tagId).toBe(tag!.id);
+  });
+
+  it('tools/call run_profit_loss accepts tag_id and scopes totals', async () => {
+    const { accounts, tags: tagsTable } = await import('../db/schema/index.js');
+    const { eq: eqOp } = await import('drizzle-orm');
+    const allAccounts = await db.select().from(accounts).where(eqOp(accounts.tenantId, tenantId));
+    const expense = allAccounts.find((a) => a.accountType === 'expense')!;
+    const bank = allAccounts.find((a) =>
+      a.accountType === 'asset' && (a.detailType === 'bank' || a.name.toLowerCase().includes('check')),
+    )!;
+    const [tag] = await db.insert(tagsTable).values({ tenantId, name: `PLScope-${Date.now()}` }).returning();
+
+    // One tagged, one untagged.
+    await rpc('tools/call', {
+      name: 'create_journal_entry',
+      arguments: {
+        date: '2026-04-11',
+        lines: JSON.stringify([
+          { accountId: expense.id, debit: '40', credit: '0', tagId: tag!.id },
+          { accountId: bank.id, debit: '0', credit: '40', tagId: tag!.id },
+        ]),
+      },
+    });
+    await rpc('tools/call', {
+      name: 'create_journal_entry',
+      arguments: {
+        date: '2026-04-11',
+        lines: JSON.stringify([
+          { accountId: expense.id, debit: '10', credit: '0' },
+          { accountId: bank.id, debit: '0', credit: '10' },
+        ]),
+      },
+    });
+
+    const filtered = await rpc('tools/call', {
+      name: 'run_profit_loss',
+      arguments: { start_date: '2026-01-01', end_date: '2026-12-31', tag_id: tag!.id },
+    });
+    expect(filtered.error).toBeUndefined();
+    const filteredData = JSON.parse(filtered.result.content[0].text);
+    // Filtered expenses include only the tag=40 line.
+    expect(Number(filteredData.totalExpenses)).toBe(40);
+  });
 });

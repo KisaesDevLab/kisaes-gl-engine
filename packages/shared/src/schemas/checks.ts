@@ -18,6 +18,9 @@ export const writeCheckSchema = z.object({
     accountId: z.string().uuid(),
     description: z.string().optional(),
     amount: z.string().min(1),
+    // ADR 0XX: per-line tag. `tagIds` remains for header-level multi-tag
+    // compatibility; `tagId` here is the line-level value.
+    tagId: z.string().uuid().nullable().optional(),
   })).min(1),
   tagIds: z.array(z.string().uuid()).optional(),
 });

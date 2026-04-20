@@ -12,6 +12,8 @@ const billLineSchema = z.object({
   description: z.string().optional(),
   amount: z.string().min(1),
   itemId: z.string().uuid().optional(),
+  // ADR 0XX: per-line tag.
+  tagId: z.string().uuid().nullable().optional(),
 });
 
 export const createBillSchema = z.object({
@@ -30,6 +32,7 @@ const vendorCreditLineSchema = z.object({
   accountId: z.string().uuid(),
   description: z.string().optional(),
   amount: z.string().min(1),
+  tagId: z.string().uuid().nullable().optional(),
 });
 
 export const createVendorCreditSchema = z.object({
@@ -68,6 +71,8 @@ export const billFiltersSchema = z.object({
   endDate: z.string().optional(),
   dueOnOrBefore: z.string().optional(),
   overdueOnly: z.coerce.boolean().optional(),
+  // ADR 0XX §5.2 — header-level tag filter.
+  tagId: z.string().uuid().optional(),
   search: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(500).default(50),
   offset: z.coerce.number().int().min(0).default(0),

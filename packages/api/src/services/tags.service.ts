@@ -5,7 +5,7 @@
 import { eq, and, sql, ilike, count, inArray } from 'drizzle-orm';
 import type { CreateTagInput, UpdateTagInput, TagFilters } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { tags, tagGroups, transactionTags, savedReportFilters, transactions } from '../db/schema/index.js';
+import { tags, tagGroups, transactionTags, savedReportFilters, transactions, journalLines, items, contacts, budgets, bankRules } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 
 // Defense-in-depth tenant checks for transaction-tag mutations. Without
@@ -83,7 +83,105 @@ export async function update(tenantId: string, id: string, input: UpdateTagInput
   return updated;
 }
 
+// ADR 0XX §8 / ADR 0XY §5 — Every place a tag_id is stored with ON DELETE
+// RESTRICT. Counting them up front lets the UI surface "this tag is used
+// by N transactions / M budgets / …" before the user tries to delete,
+// and lets the API return a structured 409 instead of a raw FK violation.
+export interface TagUsage {
+  transactionLines: number;   // journal_lines.tag_id
+  transactions: number;       // distinct transaction_tags rows
+  budgets: number;            // budgets.tag_id
+  items: number;              // items.default_tag_id
+  vendorContacts: number;     // contacts.default_tag_id on vendor/both contacts
+  customerContacts: number;   // contacts.default_tag_id on customer-only contacts (ignored by resolver, still FK-blocks delete)
+  bankRules: number;          // bank_rules.assign_tag_id
+  total: number;              // sum, for "can delete?" short-circuit
+}
+
+export async function getUsage(tenantId: string, tagId: string): Promise<TagUsage> {
+  // One query per surface, parallelized. Counts are tenant-scoped on every
+  // table. transaction_tags may carry multiple rows per transaction so we
+  // COUNT DISTINCT to match the UI's "N transactions" framing.
+  //
+  // The contacts check is split by contact_type so the UI can report
+  // "N vendors / M customers" separately — the resolver only consults
+  // vendor/both contacts (ADR 0XY §2.1), but `contacts.default_tag_id`
+  // is a real FK on every row regardless of type. Counting only the
+  // vendor half would let the service greenlight a delete that then
+  // explodes at the DB with a 23503 when a lingering customer-type
+  // contact still references the tag.
+  const [
+    jlRow,
+    txnRow,
+    budgetRow,
+    itemRow,
+    vendorContactRow,
+    customerContactRow,
+    ruleRow,
+  ] = await Promise.all([
+    db.select({ c: count() }).from(journalLines)
+      .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.tagId, tagId))),
+    db.select({ c: sql<number>`count(DISTINCT ${transactionTags.transactionId})` }).from(transactionTags)
+      .where(and(eq(transactionTags.tenantId, tenantId), eq(transactionTags.tagId, tagId))),
+    db.select({ c: count() }).from(budgets)
+      .where(and(eq(budgets.tenantId, tenantId), eq(budgets.tagId, tagId))),
+    db.select({ c: count() }).from(items)
+      .where(and(eq(items.tenantId, tenantId), eq(items.defaultTagId, tagId))),
+    db.select({ c: count() }).from(contacts)
+      .where(and(
+        eq(contacts.tenantId, tenantId),
+        eq(contacts.defaultTagId, tagId),
+        inArray(contacts.contactType, ['vendor', 'both']),
+      )),
+    db.select({ c: count() }).from(contacts)
+      .where(and(
+        eq(contacts.tenantId, tenantId),
+        eq(contacts.defaultTagId, tagId),
+        eq(contacts.contactType, 'customer'),
+      )),
+    db.select({ c: count() }).from(bankRules)
+      .where(and(eq(bankRules.tenantId, tenantId), eq(bankRules.assignTagId, tagId))),
+  ]);
+
+  const transactionLines = Number(jlRow[0]?.c ?? 0);
+  const transactionsCount = Number(txnRow[0]?.c ?? 0);
+  const budgetsCount = Number(budgetRow[0]?.c ?? 0);
+  const itemsCount = Number(itemRow[0]?.c ?? 0);
+  const vendorContacts = Number(vendorContactRow[0]?.c ?? 0);
+  const customerContacts = Number(customerContactRow[0]?.c ?? 0);
+  const bankRulesCount = Number(ruleRow[0]?.c ?? 0);
+
+  return {
+    transactionLines,
+    transactions: transactionsCount,
+    budgets: budgetsCount,
+    items: itemsCount,
+    vendorContacts,
+    customerContacts,
+    bankRules: bankRulesCount,
+    total:
+      transactionLines + transactionsCount + budgetsCount
+      + itemsCount + vendorContacts + customerContacts + bankRulesCount,
+  };
+}
+
 export async function remove(tenantId: string, id: string) {
+  // Surface a structured 409 before the raw FK violation hits, so the UI
+  // can show "this tag is used by N transactions / M budgets / …" and
+  // offer reassignment / merge instead of failing with an opaque
+  // Postgres 23503 at the transaction_tags or journal_lines layer.
+  const tag = await getById(tenantId, id);
+  const usage = await getUsage(tenantId, id);
+  if (usage.total > 0) {
+    throw AppError.conflict(
+      `Tag "${tag.name}" is in use and cannot be deleted. Reassign or merge first.`,
+      'TAG_IN_USE',
+      { tag: { id: tag.id, name: tag.name }, usage: usage as unknown as Record<string, unknown> },
+    );
+  }
+  // transaction_tags is already empty when usage.transactions is 0, but we
+  // still sweep it defensively to handle any race between the usage count
+  // and the delete.
   await db.delete(transactionTags).where(and(eq(transactionTags.tenantId, tenantId), eq(transactionTags.tagId, id)));
   await db.delete(tags).where(and(eq(tags.tenantId, tenantId), eq(tags.id, id)));
 }
@@ -229,18 +327,78 @@ export async function replaceTags(tenantId: string, transactionId: string, tagId
   await assertTransactionInTenant(tenantId, transactionId);
   if (tagIds.length > 0) await assertTagsInTenant(tenantId, tagIds);
 
-  // Get existing
+  // ADR 0XX §4 — split-level tags are line-authoritative. A 0- or 1-tag
+  // replace is the common single-tag case and must land on every
+  // journal line, not just the legacy junction. Delegating to
+  // `setTransactionLineTag` also takes care of the junction re-sync,
+  // so the dedupe logic below only applies to the legacy multi-tag
+  // path. Once the junction is retired in Phase 10, the multi-tag
+  // branch goes away with it.
+  if (tagIds.length <= 1) {
+    await setTransactionLineTag(tenantId, transactionId, tagIds[0] ?? null);
+    return;
+  }
+
+  // Multi-tag replace: junction-only (legacy). Lines keep whatever
+  // tag they already had — multi-tag-per-line is future work (ADR
+  // 0XX §5.3) and the junction is the only current home for it.
   const existing = await db.select().from(transactionTags)
     .where(and(eq(transactionTags.tenantId, tenantId), eq(transactionTags.transactionId, transactionId)));
   const existingIds = existing.map((r) => r.tagId);
 
-  // Remove old
   const toRemove = existingIds.filter((id) => !tagIds.includes(id));
   if (toRemove.length > 0) await removeTags(tenantId, transactionId, toRemove);
 
-  // Add new
   const toAdd = tagIds.filter((id) => !existingIds.includes(id));
   if (toAdd.length > 0) await addTags(tenantId, transactionId, toAdd);
+}
+
+// ADR 0XX §4 — set a single tag (or clear) on every journal line of a
+// transaction AND re-sync the transaction_tags junction to match. This
+// is the right entry point for "apply tag X to this whole transaction"
+// under the split-level model. Bank-feed bulk-set-tag already uses the
+// same pattern; this helper hoists it to a shared service so junction
+// callers (API v2 POST /transactions/:id/tags, MCP tag_transaction)
+// stop silently overwriting line tags on next ledger edit.
+export async function setTransactionLineTag(
+  tenantId: string,
+  transactionId: string,
+  tagId: string | null,
+): Promise<void> {
+  await assertTransactionInTenant(tenantId, transactionId);
+  if (tagId) await assertTagsInTenant(tenantId, [tagId]);
+
+  await db.transaction(async (tx) => {
+    await tx.update(journalLines).set({ tagId })
+      .where(and(
+        eq(journalLines.tenantId, tenantId),
+        eq(journalLines.transactionId, transactionId),
+      ));
+
+    await tx.delete(transactionTags).where(and(
+      eq(transactionTags.tenantId, tenantId),
+      eq(transactionTags.transactionId, transactionId),
+    ));
+
+    if (tagId) {
+      // Look up company_id from the transaction so multi-company
+      // tenants don't lose the scope. One query is cheap here — the
+      // ledger path already reads the row, but this helper lives
+      // outside that path so we pay the extra fetch ourselves.
+      const [txn] = await tx.select({ companyId: transactions.companyId }).from(transactions)
+        .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, transactionId)))
+        .limit(1);
+
+      await tx.insert(transactionTags).values({
+        tenantId,
+        companyId: txn?.companyId ?? null,
+        transactionId,
+        tagId,
+      });
+      await tx.update(tags).set({ usageCount: sql`${tags.usageCount} + 1` })
+        .where(and(eq(tags.tenantId, tenantId), eq(tags.id, tagId)));
+    }
+  });
 }
 
 export async function bulkAddTags(tenantId: string, transactionIds: string[], tagIds: string[]) {

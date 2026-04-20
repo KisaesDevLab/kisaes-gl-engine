@@ -16,6 +16,9 @@ export const createBankRuleSchema = z.object({
   assignAccountId: z.string().uuid().nullish(),
   assignContactId: z.string().uuid().nullish(),
   assignMemo: z.string().max(500).nullish(),
+  // ADR 0XY §6: tag stamped onto every journal line produced when the rule
+  // matches a bank feed transaction during categorization.
+  assignTagId: z.string().uuid().nullable().optional(),
   autoConfirm: z.boolean().default(false),
   priority: z.number().int().default(0),
 });

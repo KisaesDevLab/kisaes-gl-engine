@@ -13,6 +13,7 @@ export interface BillLineInput {
   description?: string;
   amount: string;
   itemId?: string;
+  tagId?: string | null;
 }
 
 export interface CreateBillInput {
@@ -31,6 +32,7 @@ export interface VendorCreditLineInput {
   accountId: string;
   description?: string;
   amount: string;
+  tagId?: string | null;
 }
 
 export interface CreateVendorCreditInput {
@@ -146,6 +148,7 @@ export interface BillFilters {
   endDate?: string;
   dueOnOrBefore?: string;
   overdueOnly?: boolean;
+  tagId?: string;
   search?: string;
   limit?: number;
   offset?: number;

@@ -7,6 +7,7 @@ import { db } from '../db/index.js';
 import { budgets, budgetLines, accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as reportService from './report.service.js';
+import { env } from '../config/env.js';
 
 export async function list(tenantId: string) {
   return db.select().from(budgets).where(eq(budgets.tenantId, tenantId)).orderBy(sql`${budgets.fiscalYear} DESC`);
@@ -18,17 +19,50 @@ export async function getById(tenantId: string, id: string) {
   return budget;
 }
 
-export async function create(tenantId: string, input: { name: string; fiscalYear: number }) {
+export interface CreateBudgetInput {
+  name: string;
+  fiscalYear: number;
+  // ADR 0XW additions — all optional; legacy callers still work.
+  tagId?: string | null;
+  description?: string | null;
+  periodType?: 'monthly' | 'quarterly' | 'annual';
+  status?: 'draft' | 'active' | 'archived';
+  fiscalYearStart?: string | null;
+}
+
+export async function create(tenantId: string, input: CreateBudgetInput) {
   const existing = await db.query.budgets.findFirst({
     where: and(eq(budgets.tenantId, tenantId), eq(budgets.fiscalYear, input.fiscalYear)),
   });
   if (existing) throw AppError.conflict('A budget for this fiscal year already exists');
 
-  const [budget] = await db.insert(budgets).values({ tenantId, name: input.name, fiscalYear: input.fiscalYear }).returning();
+  // Derive fiscal_year_start if caller didn't supply one. Matches the
+  // migration 0061 backfill: Jan 1 of the integer fiscal year.
+  const fiscalYearStart =
+    input.fiscalYearStart ?? `${input.fiscalYear}-01-01`;
+
+  const [budget] = await db.insert(budgets).values({
+    tenantId,
+    name: input.name,
+    fiscalYear: input.fiscalYear,
+    tagId: input.tagId ?? null,
+    description: input.description ?? null,
+    periodType: input.periodType ?? 'monthly',
+    status: input.status ?? 'active',
+    fiscalYearStart,
+  }).returning();
   return budget;
 }
 
-export async function update(tenantId: string, id: string, input: { name?: string; isActive?: boolean }) {
+export interface UpdateBudgetInput {
+  name?: string;
+  isActive?: boolean;
+  tagId?: string | null;
+  description?: string | null;
+  status?: 'draft' | 'active' | 'archived';
+}
+
+export async function update(tenantId: string, id: string, input: UpdateBudgetInput) {
   const [updated] = await db.update(budgets).set({ ...input, updatedAt: new Date() })
     .where(and(eq(budgets.tenantId, tenantId), eq(budgets.id, id))).returning();
   if (!updated) throw AppError.notFound('Budget not found');
@@ -98,6 +132,13 @@ export async function fillFromActuals(tenantId: string, budgetId: string) {
   const companyResult = await db.execute(sql`SELECT fiscal_year_start_month FROM companies WHERE tenant_id = ${tenantId} LIMIT 1`);
   const fyStartMonth = (companyResult.rows as any[])[0]?.fiscal_year_start_month || 1;
 
+  // ADR 0XW §4 — when the budget is tag-scoped, the seed must also be
+  // tag-scoped so next year's plan mirrors the same slice of actuals
+  // the Budget vs. Actuals report will later evaluate. When the budget
+  // is company-wide (tagId is null) we aggregate every line, matching
+  // the prior behavior.
+  const budgetTagId = (budget as { tagId?: string | null }).tagId ?? null;
+
   // Get actuals for the prior fiscal year
   const priorYear = budget.fiscalYear - 1;
   const revenueExpenseAccounts = await db.select().from(accounts)
@@ -117,6 +158,7 @@ export async function fillFromActuals(tenantId: string, budgetId: string) {
         JOIN transactions t ON t.id = jl.transaction_id
         WHERE jl.tenant_id = ${tenantId} AND jl.account_id = ${account.id}
           AND t.status = 'posted' AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
+          ${budgetTagId ? sql`AND jl.tag_id = ${budgetTagId}` : sql``}
       `);
       const row = (result.rows as any[])[0] || { total_debit: '0', total_credit: '0' };
       const amount = Math.abs(parseFloat(row.total_credit) - parseFloat(row.total_debit));
@@ -251,6 +293,162 @@ export async function buildBudgetVsActual(tenantId: string, budgetId: string, st
     totalOtherExpenseActual,
     netIncomeBudget,
     netIncomeActual,
+  };
+}
+
+/**
+ * ADR 0XW §6 — Budget vs. Actuals scoped to the budget's tag (or
+ * company-wide when tag_id is null). Actuals are aggregated directly
+ * from journal_lines against posted transactions, so the query respects
+ * split-level tag scoping introduced in ADR 0XX.
+ *
+ * Output is a per-account / per-month matrix plus row and column
+ * totals. Variance sign flips for expense-type accounts so "positive =
+ * good" reads consistently in the UI.
+ *
+ * Requires `env.TAG_BUDGETS_V1`. When the flag is off, callers should
+ * use `buildBudgetVsActual` (the legacy company-wide P&L-backed path)
+ * to preserve pre-ADR behavior verbatim.
+ */
+export async function runTagScopedBudgetVsActuals(
+  tenantId: string,
+  budgetId: string,
+  companyId: string | null = null,
+) {
+  if (!env.TAG_BUDGETS_V1) {
+    throw AppError.badRequest('TAG_BUDGETS_V1 feature flag is not enabled');
+  }
+
+  const budget = await getById(tenantId, budgetId);
+
+  // fiscal_year_start is always populated by migration 0061's backfill,
+  // but defensively fall back to Jan 1 of the legacy fiscal_year if
+  // something cleared the column post-backfill.
+  const fiscalStart = (budget as { fiscalYearStart?: string | null }).fiscalYearStart
+    ?? `${budget.fiscalYear}-01-01`;
+  const tagId = (budget as { tagId?: string | null }).tagId ?? null;
+
+  const lines = await getLines(tenantId, budgetId);
+
+  // Pull every posted line in the fiscal year for the relevant accounts,
+  // tag-filtered when the budget has a tag scope.
+  const accountIds = (lines as Array<{ account_id: string }>).map((l) => l.account_id);
+  if (accountIds.length === 0) {
+    return { budget, fiscalYearStart: fiscalStart, tagId, rows: [], totals: { perMonth: [], grand: 0 } };
+  }
+
+  // Build the 12 month buckets (month_1..month_12) of posted activity
+  // per account. Uses date_trunc + offset math so a non-calendar fiscal
+  // year works: bucket = month diff between txn_date and fiscal_start.
+  const actualsRows = await db.execute(sql`
+    WITH params AS (
+      SELECT ${fiscalStart}::date AS fy_start,
+             (${fiscalStart}::date + INTERVAL '1 year')::date AS fy_end
+    )
+    SELECT
+      jl.account_id,
+      -- period_index 1..12 = month offset from fiscal_year_start + 1
+      (EXTRACT(YEAR FROM age(t.txn_date, p.fy_start)) * 12
+       + EXTRACT(MONTH FROM age(t.txn_date, p.fy_start))
+       + 1)::smallint AS period_index,
+      SUM(jl.debit - jl.credit) AS signed_total
+    FROM journal_lines jl
+    JOIN transactions t ON t.id = jl.transaction_id
+    CROSS JOIN params p
+    WHERE jl.tenant_id = ${tenantId}
+      AND t.status = 'posted'
+      AND t.txn_date >= p.fy_start
+      AND t.txn_date <  p.fy_end
+      AND jl.account_id = ANY(${sql.raw(`ARRAY[${accountIds.map((id) => `'${id}'`).join(',')}]::uuid[]`)})
+      ${tagId ? sql`AND jl.tag_id = ${tagId}` : sql``}
+      ${companyId ? sql`AND jl.company_id = ${companyId}` : sql``}
+    GROUP BY jl.account_id, period_index
+  `);
+
+  const actualsByAccount = new Map<string, Map<number, number>>();
+  for (const row of actualsRows.rows as Array<{ account_id: string; period_index: number; signed_total: string }>) {
+    const perMonth = actualsByAccount.get(row.account_id) ?? new Map<number, number>();
+    perMonth.set(Number(row.period_index), parseFloat(row.signed_total));
+    actualsByAccount.set(row.account_id, perMonth);
+  }
+
+  type Cell = { periodIndex: number; budget: number; actual: number; variance: number; variancePct: number | null };
+  type Row = {
+    accountId: string;
+    accountName: string;
+    accountNumber: string;
+    accountType: string;
+    cells: Cell[];
+    rowTotal: Cell;
+  };
+
+  // For expense-type accounts we flip the variance sign so that
+  // "actual under budget" reads positive; revenue accounts already do.
+  function signFor(accountType: string): 1 | -1 {
+    return ['expense', 'cogs', 'other_expense'].includes(accountType) ? -1 : 1;
+  }
+
+  const rows: Row[] = (lines as Array<Record<string, unknown>>).map((line) => {
+    const accountId = line['account_id'] as string;
+    const accountType = line['account_type'] as string;
+    const signFlip = signFor(accountType);
+    const perMonth = actualsByAccount.get(accountId) ?? new Map<number, number>();
+    const cells: Cell[] = [];
+    let rowBudget = 0;
+    let rowActual = 0;
+    for (let m = 1; m <= 12; m += 1) {
+      const budgetAmt = parseFloat(String(line[`month_${m}`] ?? '0'));
+      const actualAmt = Math.abs(perMonth.get(m) ?? 0);
+      const varianceRaw = (actualAmt - budgetAmt) * signFlip;
+      cells.push({
+        periodIndex: m,
+        budget: budgetAmt,
+        actual: actualAmt,
+        variance: varianceRaw,
+        variancePct: budgetAmt === 0 ? null : (varianceRaw / Math.abs(budgetAmt)) * 100,
+      });
+      rowBudget += budgetAmt;
+      rowActual += actualAmt;
+    }
+    const rowVariance = (rowActual - rowBudget) * signFlip;
+    return {
+      accountId,
+      accountName: line['account_name'] as string,
+      accountNumber: line['account_number'] as string,
+      accountType,
+      cells,
+      rowTotal: {
+        periodIndex: 0,
+        budget: rowBudget,
+        actual: rowActual,
+        variance: rowVariance,
+        variancePct: rowBudget === 0 ? null : (rowVariance / Math.abs(rowBudget)) * 100,
+      },
+    };
+  });
+
+  // Column totals — sum across every row for each month.
+  const perMonth: Cell[] = Array.from({ length: 12 }, (_, i) => {
+    const m = i + 1;
+    const budgetSum = rows.reduce((s, r) => s + (r.cells[i]?.budget ?? 0), 0);
+    const actualSum = rows.reduce((s, r) => s + (r.cells[i]?.actual ?? 0), 0);
+    const variance = actualSum - budgetSum;
+    return {
+      periodIndex: m,
+      budget: budgetSum,
+      actual: actualSum,
+      variance,
+      variancePct: budgetSum === 0 ? null : (variance / Math.abs(budgetSum)) * 100,
+    };
+  });
+  const grand = rows.reduce((s, r) => s + r.rowTotal.actual - r.rowTotal.budget, 0);
+
+  return {
+    budget,
+    fiscalYearStart: fiscalStart,
+    tagId,
+    rows,
+    totals: { perMonth, grand },
   };
 }
 

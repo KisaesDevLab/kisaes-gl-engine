@@ -111,11 +111,15 @@ export const journalLines = pgTable('journal_lines', {
   taxRate: decimal('tax_rate', { precision: 5, scale: 4 }).default('0'),
   taxAmount: decimal('tax_amount', { precision: 19, scale: 4 }).default('0'),
   lineOrder: integer('line_order').default(0),
+  // ADR 0XX: split-level tag. FK declared in migration 0059 (ON DELETE RESTRICT).
+  tagId: uuid('tag_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
   transactionIdx: index('idx_jl_transaction').on(table.transactionId),
   accountIdx: index('idx_jl_account').on(table.tenantId, table.accountId),
   tenantIdx: index('idx_jl_tenant').on(table.tenantId),
+  tagIdx: index('idx_journal_lines_tag_id').on(table.tagId),
+  tenantTagIdx: index('idx_journal_lines_tenant_tag').on(table.tenantId, table.tagId),
 }));
 
 export const tagGroups = pgTable('tag_groups', {

@@ -43,6 +43,11 @@ jobs:
       - name: Typecheck worker
         run: npx tsc --noEmit
         working-directory: packages/worker
+      - name: Guard against new `any` types
+        # CLAUDE.md #14 bans `any`; we carry a baseline for pre-existing
+        # occurrences and this step fails the build if the count grows.
+        # Debt paydown is expected (the script prints "update BASELINE_*").
+        run: npm run any:check
 
   test:
     runs-on: ubuntu-latest
@@ -80,12 +85,18 @@ jobs:
         # migrate.ts resolves `./packages/api/src/db/migrations` relative
         # to cwd, so run it from the repo root — not from packages/api.
         run: npx tsx packages/api/src/db/migrate.ts
-      - name: Run unit tests
+      - name: Run api unit tests
         env:
           DATABASE_URL: postgresql://kisbooks:kisbooks@localhost:5434/kisbooks_test
           JWT_SECRET: test-secret-key-for-testing-only
         run: npm test
         working-directory: packages/api
+      - name: Run shared unit tests
+        run: npm test
+        working-directory: packages/shared
+      - name: Run web unit tests
+        run: npm test
+        working-directory: packages/web
 
   # E2E is kept separate because it needs a live api+web stack. We run
   # it as a best-effort in CI via docker compose — failures here don't

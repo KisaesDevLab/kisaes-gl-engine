@@ -95,6 +95,11 @@ function buildTaxLines(inputLines: CreateInvoiceInput['lines'], defaultTaxRate: 
       isTaxable: taxable,
       taxRate: rate.greaterThan(0) ? rate.toString() : '0',
       taxAmount: lineTax.toFixed(4),
+      // ADR 0XX — invoice revenue lines carry the user-selected tag.
+      // AR and sales-tax lines below remain untagged (internal postings).
+      // Pass the 3-state value; the ledger resolver fills in defaults
+      // when undefined, per ADR 0XY §2.3.
+      tagId: line.tagId,
     };
   });
 

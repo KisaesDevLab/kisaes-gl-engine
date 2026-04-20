@@ -102,8 +102,19 @@ bankingRouter.post('/feed/bulk-approve', validate(bulkApproveSchema), async (req
 });
 
 bankingRouter.post('/feed/bulk-categorize', validate(bulkCategorizeSchema), async (req, res) => {
-  const { feedItemIds, accountId, contactId, memo } = req.body;
-  const result = await bankFeedService.bulkCategorize(req.tenantId, feedItemIds, accountId, contactId, memo, req.userId, req.companyId);
+  const { feedItemIds, accountId, contactId, memo, tagId } = req.body;
+  const result = await bankFeedService.bulkCategorize(req.tenantId, feedItemIds, accountId, contactId, memo, tagId, req.userId, req.companyId);
+  res.json(result);
+});
+
+// ADR 0XX §7 — Bank Feed bulk "set tag" on already-categorized feed items.
+bankingRouter.post('/feed/bulk-set-tag', async (req, res) => {
+  const { feedItemIds, tagId } = req.body as { feedItemIds?: string[]; tagId?: string | null };
+  if (!Array.isArray(feedItemIds) || feedItemIds.length === 0) {
+    res.status(400).json({ error: { message: 'feedItemIds array required' } });
+    return;
+  }
+  const result = await bankFeedService.bulkSetTag(req.tenantId, feedItemIds, tagId ?? null);
   res.json(result);
 });
 

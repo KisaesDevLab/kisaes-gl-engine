@@ -38,6 +38,10 @@ export const contacts = pgTable('contacts', {
   defaultExpenseAccountId: uuid('default_expense_account_id'),
   taxId: varchar('tax_id', { length: 30 }),
   is1099Eligible: boolean('is_1099_eligible').default(false),
+  // ADR 0XY: default tag for transactions that reference this contact.
+  // Per §2.1 this source is consulted ONLY when contact_type is
+  // 'vendor' or 'both'. Customer-only contacts ignore the column.
+  defaultTagId: uuid('default_tag_id'),
   // Shared
   notes: text('notes'),
   isActive: boolean('is_active').default(true),
@@ -47,4 +51,5 @@ export const contacts = pgTable('contacts', {
   tenantIdx: index('idx_contacts_tenant').on(table.tenantId),
   typeIdx: index('idx_contacts_type').on(table.tenantId, table.contactType),
   nameIdx: index('idx_contacts_name').on(table.tenantId, table.displayName),
+  defaultTagIdx: index('idx_contacts_default_tag_id').on(table.defaultTagId),
 }));
