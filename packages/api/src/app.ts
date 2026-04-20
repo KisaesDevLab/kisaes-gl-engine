@@ -123,11 +123,37 @@ app.use(
   }),
 );
 
-// Trust the appliance's front nginx so req.protocol respects
-// X-Forwarded-Proto and req.ip reflects the client, not the proxy.
-// Without this, request-derived URLs (below) pick up http:// even when
-// the user is on https:// through the reverse proxy.
-app.set('trust proxy', true);
+// Trust-proxy configuration.
+//
+// Security-sensitive: `req.ip`, `req.protocol`, and `req.headers.host`
+// are all read from X-Forwarded-* when trust proxy is enabled. Every
+// consumer of these (rate limiters, staff IP allowlist, Stripe IP
+// allowlist, baseUrlFor) makes authorization or URL-construction
+// decisions based on them. Blanket `trust proxy: true` without a real
+// proxy in front of the appliance lets an attacker spoof the headers
+// and trivially bypass those checks.
+//
+// Defaults to `'loopback'` (only 127.0.0.0/8, ::1, fc00::/7 — safe for
+// direct-exposure installs). Operators behind a reverse proxy or the
+// Cloudflare Tunnel sidecar should set TRUST_PROXY=true (or a CIDR
+// list like `"10.0.0.0/8,cloudflared"`). The Cloudflare Tunnel setup
+// guide calls this out — without TRUST_PROXY=true, the tunnel's
+// X-Forwarded-For header is ignored and every request appears to
+// come from the cloudflared sidecar's internal IP.
+const trustProxyRaw = process.env['TRUST_PROXY'];
+if (!trustProxyRaw) {
+  app.set('trust proxy', 'loopback');
+} else if (trustProxyRaw === 'true' || trustProxyRaw === '1') {
+  app.set('trust proxy', true);
+} else if (trustProxyRaw === 'false' || trustProxyRaw === '0') {
+  app.set('trust proxy', false);
+} else if (/^\d+$/.test(trustProxyRaw)) {
+  // Numeric → treat as number of hops (Express feature).
+  app.set('trust proxy', Number(trustProxyRaw));
+} else {
+  // Comma-separated CIDR list / keyword (e.g. "10.0.0.0/8,loopback").
+  app.set('trust proxy', trustProxyRaw.split(',').map((s) => s.trim()).filter(Boolean));
+}
 app.use(compression());
 
 // Stripe webhook route MUST be mounted BEFORE express.json() — raw body needed for signature verification

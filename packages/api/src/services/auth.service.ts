@@ -5,7 +5,7 @@
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
-import { eq, and, sql, asc } from 'drizzle-orm';
+import { eq, and, sql, asc, inArray } from 'drizzle-orm';
 import type { RegisterInput, LoginInput, AuthTokens, JwtPayload } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { tenants, users, sessions, userTenantAccess, companies, passwordResetTokens } from '../db/schema/index.js';
@@ -91,7 +91,10 @@ async function createSession(userId: string, refreshToken: string): Promise<void
 
   if (active.length > MAX_SESSIONS_PER_USER) {
     const toDrop = active.slice(0, active.length - MAX_SESSIONS_PER_USER).map((s) => s.id);
-    await db.delete(sessions).where(sql`${sessions.id} = ANY(${toDrop})`);
+    // drizzle's `inArray` parameterises each id individually instead of
+    // sending a PG array literal — avoids text/uuid coercion surprises
+    // with `ANY($n::uuid[])` when the driver skips the cast.
+    await db.delete(sessions).where(inArray(sessions.id, toDrop));
   }
 }
 

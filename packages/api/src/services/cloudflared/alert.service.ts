@@ -86,13 +86,16 @@ export async function pollOnce(now: number = Date.now()): Promise<{ alerted: boo
       ? (status.error || 'sidecar unreachable')
       : 'zero active connections';
     console.warn(`[cloudflared-alerter] Tunnel down for ${Math.floor(downFor / 1000)}s — ${reason}`);
+    // audit_log.entity_id is a uuid column; the cloudflared sidecar
+    // isn't a row we own, so leave entity_id null and carry the fact
+    // in entityType + afterData instead.
     await auditLog(
       SYSTEM_TENANT_ID,
       'update',
       'tunnel_alert',
-      'cloudflared',
       null,
-      { downForSeconds: Math.floor(downFor / 1000), reason, lastHealthyAt: status.lastHealthyAt },
+      null,
+      { component: 'cloudflared', downForSeconds: Math.floor(downFor / 1000), reason, lastHealthyAt: status.lastHealthyAt },
     );
     state.lastAlertAt = now;
     return { alerted: true, reason };
