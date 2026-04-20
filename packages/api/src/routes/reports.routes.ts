@@ -11,10 +11,29 @@ import * as apReportService from '../services/ap-report.service.js';
 import * as exportService from '../services/report-export.service.js';
 import * as comparisonService from '../services/report-comparison.service.js';
 
+// Build-plan Phase 5 cache-invalidation hook. We don't run a Redis
+// report cache today, but clients may cache report responses locally
+// (service workers, HTTP caches, in-memory React Query entries).
+// Incrementing this value on a schema-shape change invalidates every
+// downstream cache in one step; new clients read the header and throw
+// away any locally cached response whose version doesn't match.
+//
+// Bump on:
+//   - any change to the report response JSON shape
+//   - any change to tag-filter aggregation semantics
+//   - any migration that alters what splits/lines the reports observe
+//
+// Format: monotonic integer as a string; clients compare by equality.
+export const REPORT_SCHEMA_VERSION = '2';
+
 export const reportsRouter = Router();
 reportsRouter.use(authenticate);
 reportsRouter.use(companyContext);
 reportsRouter.use(expensiveOpLimiter);
+reportsRouter.use((_req, res, next) => {
+  res.setHeader('X-Report-Schema-Version', REPORT_SCHEMA_VERSION);
+  next();
+});
 
 function resolveCompanyScope(req: Request): string | null {
   const scope = req.query['scope'] as string | undefined;
@@ -599,6 +618,15 @@ async function respond(res: any, reportData: any, format: string | undefined) {
   res.json(reportData);
 }
 
+// ADR 0XX §5 — single-select tag filter. Accepts `tag_id` (preferred) and
+// `tagId` as a fallback so clients that already send camelCase don't break.
+// Empty string is treated as "no filter" the same as absent.
+function readTagFilter(req: { query: Record<string, unknown> }): string | null {
+  const raw = (req.query['tag_id'] ?? req.query['tagId']) as string | undefined;
+  if (!raw || typeof raw !== 'string' || raw.trim() === '') return null;
+  return raw;
+}
+
 // Financial Statements
 reportsRouter.get('/profit-loss', async (req, res) => {
   const { start_date, end_date, basis, format, compare, periods, period_type } = req.query as Record<string, string>;
@@ -607,6 +635,7 @@ reportsRouter.get('/profit-loss', async (req, res) => {
   const ed = end_date || today.toISOString().split('T')[0]!;
   const b = (basis as 'cash' | 'accrual') || 'accrual';
   const companyId = resolveCompanyScope(req);
+  const tagId = readTagFilter(req);
 
   if (compare) {
     const data = await comparisonService.buildComparativePL(
@@ -618,7 +647,7 @@ reportsRouter.get('/profit-loss', async (req, res) => {
     );
     await respond(res, data, format);
   } else {
-    const data = await reportService.buildProfitAndLoss(req.tenantId, sd, ed, b, companyId);
+    const data = await reportService.buildProfitAndLoss(req.tenantId, sd, ed, b, companyId, tagId);
     await respond(res, data, format);
   }
 });
@@ -626,6 +655,7 @@ reportsRouter.get('/profit-loss', async (req, res) => {
 reportsRouter.get('/balance-sheet', async (req, res) => {
   const { as_of_date, basis, format, compare } = req.query as Record<string, string>;
   const companyId = resolveCompanyScope(req);
+  const tagId = readTagFilter(req);
   if (compare) {
     const data = await comparisonService.buildComparativeBS(
       req.tenantId,
@@ -642,6 +672,7 @@ reportsRouter.get('/balance-sheet', async (req, res) => {
     as_of_date || new Date().toISOString().split('T')[0]!,
     (basis as 'cash' | 'accrual') || 'accrual',
     companyId,
+    tagId,
   );
   await respond(res, data, format);
 });
@@ -650,11 +681,13 @@ reportsRouter.get('/cash-flow', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
   const today = new Date();
   const companyId = resolveCompanyScope(req);
+  const tagId = readTagFilter(req);
   const data = await reportService.buildCashFlowStatement(
     req.tenantId,
     start_date || `${today.getFullYear()}-01-01`,
     end_date || today.toISOString().split('T')[0]!,
     companyId,
+    tagId,
   );
   await respond(res, data, format);
 });
@@ -662,7 +695,7 @@ reportsRouter.get('/cash-flow', async (req, res) => {
 // Receivables
 reportsRouter.get('/ar-aging-summary', async (req, res) => {
   const { as_of_date, format } = req.query as Record<string, string>;
-  const data = await reportService.buildARAgingSummary(req.tenantId, as_of_date || new Date().toISOString().split('T')[0]!, resolveCompanyScope(req));
+  const data = await reportService.buildARAgingSummary(req.tenantId, as_of_date || new Date().toISOString().split('T')[0]!, resolveCompanyScope(req), readTagFilter(req));
   // For CSV/PDF, aggregate by customer to match on-screen summary layout.
   // Build vendor-shaped rows so extractDataAndColumns' AP aging handler renders them.
   if (format === 'csv' || format === 'pdf') {
@@ -700,7 +733,7 @@ reportsRouter.get('/ar-aging-summary', async (req, res) => {
 
 reportsRouter.get('/ar-aging-detail', async (req, res) => {
   const { as_of_date, format } = req.query as Record<string, string>;
-  const data = await reportService.buildARAgingDetail(req.tenantId, as_of_date || new Date().toISOString().split('T')[0]!, resolveCompanyScope(req));
+  const data = await reportService.buildARAgingDetail(req.tenantId, as_of_date || new Date().toISOString().split('T')[0]!, resolveCompanyScope(req), readTagFilter(req));
   // For CSV/PDF, export line-level detail matching on-screen layout
   if (format === 'csv' || format === 'pdf') {
     const exportData = {
@@ -723,13 +756,13 @@ reportsRouter.get('/ar-aging-detail', async (req, res) => {
 // Accounts Payable
 reportsRouter.get('/ap-aging-summary', async (req, res) => {
   const { as_of_date, format } = req.query as Record<string, string>;
-  const data = await apReportService.buildApAgingSummary(req.tenantId, as_of_date || new Date().toISOString().split('T')[0]!, resolveCompanyScope(req));
+  const data = await apReportService.buildApAgingSummary(req.tenantId, as_of_date || new Date().toISOString().split('T')[0]!, resolveCompanyScope(req), readTagFilter(req));
   await respond(res, data, format);
 });
 
 reportsRouter.get('/ap-aging-detail', async (req, res) => {
   const { as_of_date, format } = req.query as Record<string, string>;
-  const data = await apReportService.buildApAgingDetail(req.tenantId, as_of_date || new Date().toISOString().split('T')[0]!, resolveCompanyScope(req));
+  const data = await apReportService.buildApAgingDetail(req.tenantId, as_of_date || new Date().toISOString().split('T')[0]!, resolveCompanyScope(req), readTagFilter(req));
   // For CSV/PDF export, use the line-level details instead of the vendor summary
   if (format === 'csv' || format === 'pdf') {
     const { vendors, totals, ...rest } = data;
@@ -843,7 +876,7 @@ reportsRouter.get('/ap-1099-prep', async (req, res) => {
 });
 
 reportsRouter.get('/customer-balance-summary', async (req, res) => {
-  const data = await reportService.buildCustomerBalanceSummary(req.tenantId, resolveCompanyScope(req));
+  const data = await reportService.buildCustomerBalanceSummary(req.tenantId, resolveCompanyScope(req), readTagFilter(req));
   await respond(res, { ...data, _exportColumns: [
     { key: 'display_name', label: 'Customer' },
     { key: 'balance', label: 'Balance', align: 'right' },
@@ -851,7 +884,7 @@ reportsRouter.get('/customer-balance-summary', async (req, res) => {
 });
 
 reportsRouter.get('/customer-balance-detail', async (req, res) => {
-  const data = await reportService.buildCustomerBalanceDetail(req.tenantId, resolveCompanyScope(req));
+  const data = await reportService.buildCustomerBalanceDetail(req.tenantId, resolveCompanyScope(req), readTagFilter(req));
   await respond(res, { ...data, _exportColumns: [
     { key: 'display_name', label: 'Customer' },
     { key: 'balance', label: 'Balance', align: 'right' },
@@ -860,7 +893,8 @@ reportsRouter.get('/customer-balance-detail', async (req, res) => {
 
 reportsRouter.get('/invoice-list', async (req, res) => {
   const { start_date, end_date, status, format } = req.query as Record<string, string>;
-  const data = await reportService.buildInvoiceList(req.tenantId, { startDate: start_date, endDate: end_date, status }, resolveCompanyScope(req));
+  const tagId = readTagFilter(req);
+  const data = await reportService.buildInvoiceList(req.tenantId, { startDate: start_date, endDate: end_date, status, ...(tagId ? { tagId } : {}) }, resolveCompanyScope(req));
   await respond(res, { ...data, _exportColumns: [
     { key: 'txn_number', label: 'Number' },
     { key: 'customer_name', label: 'Customer' },
@@ -875,7 +909,7 @@ reportsRouter.get('/invoice-list', async (req, res) => {
 reportsRouter.get('/expense-by-vendor', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
   const today = new Date();
-  const data = await reportService.buildExpenseByVendor(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!, resolveCompanyScope(req));
+  const data = await reportService.buildExpenseByVendor(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!, resolveCompanyScope(req), readTagFilter(req));
   await respond(res, { ...data, _exportColumns: [
     { key: 'vendor_name', label: 'Vendor' },
     { key: 'total', label: 'Total', align: 'right' },
@@ -885,10 +919,45 @@ reportsRouter.get('/expense-by-vendor', async (req, res) => {
 reportsRouter.get('/expense-by-category', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
   const today = new Date();
-  const data = await reportService.buildExpenseByCategory(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!, resolveCompanyScope(req));
+  const data = await reportService.buildExpenseByCategory(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!, resolveCompanyScope(req), readTagFilter(req));
   await respond(res, { ...data, _exportColumns: [
     { key: 'account_number', label: '#' },
     { key: 'category', label: 'Category' },
+    { key: 'total', label: 'Total', align: 'right' },
+  ]}, format);
+});
+
+// Sales
+reportsRouter.get('/sales-by-customer', async (req, res) => {
+  const { start_date, end_date, format } = req.query as Record<string, string>;
+  const today = new Date();
+  const data = await reportService.buildSalesByCustomer(
+    req.tenantId,
+    start_date || `${today.getFullYear()}-01-01`,
+    end_date || today.toISOString().split('T')[0]!,
+    resolveCompanyScope(req),
+    readTagFilter(req),
+  );
+  await respond(res, { ...data, _exportColumns: [
+    { key: 'customer_name', label: 'Customer' },
+    { key: 'total', label: 'Total', align: 'right' },
+  ]}, format);
+});
+
+reportsRouter.get('/sales-by-item', async (req, res) => {
+  const { start_date, end_date, format } = req.query as Record<string, string>;
+  const today = new Date();
+  const data = await reportService.buildSalesByItem(
+    req.tenantId,
+    start_date || `${today.getFullYear()}-01-01`,
+    end_date || today.toISOString().split('T')[0]!,
+    resolveCompanyScope(req),
+    readTagFilter(req),
+  );
+  await respond(res, { ...data, _exportColumns: [
+    { key: 'item_sku', label: 'SKU' },
+    { key: 'item_name', label: 'Item' },
+    { key: 'txn_count', label: 'Txns', align: 'right' },
     { key: 'total', label: 'Total', align: 'right' },
   ]}, format);
 });
@@ -932,7 +1001,7 @@ reportsRouter.get('/deposit-detail', async (req, res) => {
 
 reportsRouter.get('/check-register', async (req, res) => {
   const { account_id, start_date, end_date, format } = req.query as Record<string, string>;
-  const data = await reportService.buildCheckRegister(req.tenantId, account_id || '', { startDate: start_date, endDate: end_date }, resolveCompanyScope(req));
+  const data = await reportService.buildCheckRegister(req.tenantId, account_id || '', { startDate: start_date, endDate: end_date }, resolveCompanyScope(req), readTagFilter(req));
   await respond(res, { ...data, _exportColumns: [
     { key: 'txn_date', label: 'Date' },
     { key: 'txn_type', label: 'Type' },
@@ -1005,7 +1074,7 @@ reportsRouter.get('/vendor-1099-summary', async (req, res) => {
 reportsRouter.get('/general-ledger', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
   const today = new Date();
-  const data = await reportService.buildGeneralLedger(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!, resolveCompanyScope(req));
+  const data = await reportService.buildGeneralLedger(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!, resolveCompanyScope(req), readTagFilter(req));
   await respond(res, data, format);
 });
 
@@ -1018,6 +1087,7 @@ reportsRouter.get('/trial-balance', async (req, res) => {
     start_date || `${year}-01-01`,
     end_date || as_of_date || today,
     resolveCompanyScope(req),
+    readTagFilter(req),
   );
   await respond(res, { ...data, _exportColumns: [
     { key: 'account_number', label: '#' },
@@ -1030,7 +1100,8 @@ reportsRouter.get('/trial-balance', async (req, res) => {
 
 reportsRouter.get('/transaction-list', async (req, res) => {
   const { start_date, end_date, txn_type, account_id, format } = req.query as Record<string, string>;
-  const data = await reportService.buildTransactionList(req.tenantId, { startDate: start_date, endDate: end_date, txnType: txn_type, accountId: account_id }, resolveCompanyScope(req));
+  const tagId = readTagFilter(req);
+  const data = await reportService.buildTransactionList(req.tenantId, { startDate: start_date, endDate: end_date, txnType: txn_type, accountId: account_id, ...(tagId ? { tagId } : {}) }, resolveCompanyScope(req));
   await respond(res, { ...data, _exportColumns: [
     { key: 'txn_date', label: 'Date' },
     { key: 'txn_type', label: 'Type' },
@@ -1038,12 +1109,14 @@ reportsRouter.get('/transaction-list', async (req, res) => {
     { key: 'contact_name', label: 'Contact' },
     { key: 'total', label: 'Amount', align: 'right' },
     { key: 'memo', label: 'Memo' },
+    // ADR 0XX §6.3 — line-level tag aggregation on the export row.
+    { key: 'line_tag', label: 'Tag' },
   ]}, format);
 });
 
 reportsRouter.get('/journal-entry-report', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
-  const data = await reportService.buildJournalEntryReport(req.tenantId, { startDate: start_date, endDate: end_date }, resolveCompanyScope(req));
+  const data = await reportService.buildJournalEntryReport(req.tenantId, { startDate: start_date, endDate: end_date }, resolveCompanyScope(req), readTagFilter(req));
   await respond(res, { ...data, _exportColumns: [
     { key: 'txn_date', label: 'Date' },
     { key: 'txn_number', label: 'Number' },
@@ -1054,7 +1127,7 @@ reportsRouter.get('/journal-entry-report', async (req, res) => {
 
 reportsRouter.get('/account-report', async (req, res) => {
   const { account_id, start_date, end_date, format } = req.query as Record<string, string>;
-  const data = await reportService.buildAccountReport(req.tenantId, account_id || '', { startDate: start_date, endDate: end_date }, resolveCompanyScope(req));
+  const data = await reportService.buildAccountReport(req.tenantId, account_id || '', { startDate: start_date, endDate: end_date }, resolveCompanyScope(req), readTagFilter(req));
   await respond(res, { ...data, _exportColumns: [
     { key: 'txn_date', label: 'Date' },
     { key: 'txn_type', label: 'Type' },

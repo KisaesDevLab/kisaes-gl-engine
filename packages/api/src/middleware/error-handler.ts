@@ -27,6 +27,10 @@ export function errorHandler(
       error: {
         message: err.message,
         code: err.code,
+        // Only included when the thrower attached context. Enables
+        // clients to read structured payloads (e.g., tag-usage counts
+        // on a TAG_IN_USE 409) without parsing the message string.
+        ...(err.details ? { details: err.details } : {}),
       },
     });
     return;

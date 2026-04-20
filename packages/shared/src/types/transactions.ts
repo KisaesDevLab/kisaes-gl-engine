@@ -102,6 +102,16 @@ export interface JournalLineInput {
   // null means "explicitly untagged." The ledger service persists whichever
   // the caller passes; if neither is set the column is stored as NULL.
   tagId?: string | null;
+  // ADR 0XY §3.2 — when the line references an item, the ledger service
+  // batch-loads items.default_tag_id and feeds it into the resolver so
+  // item-default resolution runs server-side. Persisted on the journal
+  // line too for reporting continuity.
+  itemId?: string | null;
+  // ADR 0XY §2 — bank-rule or AI sources populated by the caller. Never
+  // persisted as-is; consumed by the resolver chain before the line is
+  // stored. `explicitUserTagId` (the column above) still wins.
+  bankRuleTagId?: string | null;
+  aiSuggestedTagId?: string | null;
 }
 
 export interface CreateJournalEntryInput {

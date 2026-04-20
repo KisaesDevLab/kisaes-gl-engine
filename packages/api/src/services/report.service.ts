@@ -311,7 +311,18 @@ export async function buildCashFlowStatement(
 
 // ─── RECEIVABLES ─────────────────────────────────────────────────
 
-export async function buildARAgingSummary(tenantId: string, asOfDate: string, companyId: string | null = null) {
+export async function buildARAgingSummary(
+  tenantId: string,
+  asOfDate: string,
+  companyId: string | null = null,
+  // ADR 0XX §5.2 — header-level report: keep the invoice when any of its
+  // journal_lines carries the tag. Balance stays the invoice total;
+  // filter is an inclusion test, not a line-level aggregation.
+  tagId: string | null = null,
+) {
+  const tagClause = tagId
+    ? sql` AND EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = t.id AND jl.tenant_id = ${tenantId} AND jl.tag_id = ${tagId})`
+    : sql``;
   const rows = await db.execute(sql`
     SELECT t.id, t.txn_number, t.txn_date, t.due_date, t.total, t.amount_paid, t.balance_due,
       t.contact_id, c.display_name as customer_name
@@ -321,6 +332,7 @@ export async function buildARAgingSummary(tenantId: string, asOfDate: string, co
       AND t.invoice_status NOT IN ('paid', 'void')
       AND t.txn_date <= ${asOfDate}
       AND ${companyFilter(companyId)}
+      ${tagClause}
     ORDER BY t.due_date
   `);
 
@@ -351,17 +363,30 @@ export async function buildARAgingSummary(tenantId: string, asOfDate: string, co
   };
 }
 
-export async function buildARAgingDetail(tenantId: string, asOfDate: string, companyId: string | null = null) {
-  return buildARAgingSummary(tenantId, asOfDate, companyId);
+export async function buildARAgingDetail(
+  tenantId: string,
+  asOfDate: string,
+  companyId: string | null = null,
+  tagId: string | null = null,
+) {
+  return buildARAgingSummary(tenantId, asOfDate, companyId, tagId);
 }
 
-export async function buildCustomerBalanceSummary(tenantId: string, companyId: string | null = null) {
+export async function buildCustomerBalanceSummary(
+  tenantId: string,
+  companyId: string | null = null,
+  tagId: string | null = null,
+) {
+  // Header-level tag filter: only count invoices that touch a tagged line.
+  const txnTagFilter = tagId
+    ? sql` AND EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = t.id AND jl.tenant_id = ${tenantId} AND jl.tag_id = ${tagId})`
+    : sql``;
   const rows = await db.execute(sql`
     SELECT c.id, c.display_name,
       COALESCE(SUM(CASE WHEN t.txn_type = 'invoice' AND t.status = 'posted' THEN CAST(t.balance_due AS DECIMAL) ELSE 0 END), 0) as balance
     FROM contacts c
     LEFT JOIN transactions t ON t.contact_id = c.id AND t.tenant_id = ${tenantId}
-      AND ${companyFilter(companyId)}
+      AND ${companyFilter(companyId)}${txnTagFilter}
     WHERE c.tenant_id = ${tenantId} AND c.contact_type IN ('customer', 'both') AND c.is_active = true
     GROUP BY c.id ORDER BY c.display_name
   `);
@@ -372,15 +397,26 @@ export async function buildCustomerBalanceSummary(tenantId: string, companyId: s
   };
 }
 
-export async function buildCustomerBalanceDetail(tenantId: string, companyId: string | null = null) {
-  return buildCustomerBalanceSummary(tenantId, companyId);
+export async function buildCustomerBalanceDetail(
+  tenantId: string,
+  companyId: string | null = null,
+  tagId: string | null = null,
+) {
+  return buildCustomerBalanceSummary(tenantId, companyId, tagId);
 }
 
-export async function buildInvoiceList(tenantId: string, filters?: { startDate?: string; endDate?: string; status?: string }, companyId: string | null = null) {
+export async function buildInvoiceList(
+  tenantId: string,
+  filters?: { startDate?: string; endDate?: string; status?: string; tagId?: string },
+  companyId: string | null = null,
+) {
   const conditions = [sql`t.tenant_id = ${tenantId}`, sql`t.txn_type = 'invoice'`, companyFilter(companyId)];
   if (filters?.startDate) conditions.push(sql`t.txn_date >= ${filters.startDate}`);
   if (filters?.endDate) conditions.push(sql`t.txn_date <= ${filters.endDate}`);
   if (filters?.status) conditions.push(sql`t.invoice_status = ${filters.status}`);
+  if (filters?.tagId) {
+    conditions.push(sql`EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = t.id AND jl.tenant_id = ${tenantId} AND jl.tag_id = ${filters.tagId})`);
+  }
 
   const rows = await db.execute(sql`
     SELECT t.id, t.txn_number, t.txn_date, t.due_date, t.total, t.amount_paid, t.balance_due,
@@ -447,6 +483,78 @@ export async function buildExpenseByCategory(
   return { title: 'Expenses by Category', startDate, endDate, data: rows.rows };
 }
 
+// ─── SALES ────────────────────────────────────────────────────────
+
+// Sales by Customer — aggregates revenue (credits to revenue-type
+// accounts) grouped by the transaction's contact. Scoped to posted
+// sales transactions in the given date range. Line-level tag filter:
+// when tagId is supplied we narrow the aggregation to lines that
+// carry the tag (project-accounting semantic, same as P&L and
+// Expenses by Vendor).
+export async function buildSalesByCustomer(
+  tenantId: string,
+  startDate: string,
+  endDate: string,
+  companyId: string | null = null,
+  tagId: string | null = null,
+) {
+  const tagClause = tagId ? sql`AND jl.tag_id = ${tagId}` : sql``;
+  const rows = await db.execute(sql`
+    SELECT c.id as contact_id, COALESCE(c.display_name, 'Uncategorized') as customer_name,
+      SUM(jl.credit) as total
+    FROM journal_lines jl
+    JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
+    JOIN accounts a ON a.id = jl.account_id AND a.account_type IN ('revenue', 'other_revenue')
+    LEFT JOIN contacts c ON c.id = t.contact_id AND c.tenant_id = ${tenantId}
+    WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
+      AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
+      AND jl.credit > 0
+      AND t.txn_type IN ('invoice', 'cash_sale', 'credit_memo')
+      AND ${companyFilter(companyId)}
+      ${tagClause}
+    GROUP BY c.id, c.display_name ORDER BY total DESC
+  `);
+
+  return { title: 'Sales by Customer', startDate, endDate, data: rows.rows };
+}
+
+// Sales by Item — aggregates revenue (credits to revenue-type
+// accounts) grouped by `journal_lines.item_id`. Lines without an item
+// (e.g. ad-hoc revenue entries) collapse into a single
+// "Uncategorized" bucket so totals stay conserved against Sales by
+// Customer / P&L. Same tag semantic as Sales by Customer.
+export async function buildSalesByItem(
+  tenantId: string,
+  startDate: string,
+  endDate: string,
+  companyId: string | null = null,
+  tagId: string | null = null,
+) {
+  const tagClause = tagId ? sql`AND jl.tag_id = ${tagId}` : sql``;
+  const rows = await db.execute(sql`
+    SELECT
+      jl.item_id,
+      COALESCE(i.name, 'Uncategorized') as item_name,
+      COALESCE(i.sku, '') as item_sku,
+      SUM(jl.credit) as total,
+      COUNT(DISTINCT jl.transaction_id)::int as txn_count
+    FROM journal_lines jl
+    JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
+    JOIN accounts a ON a.id = jl.account_id AND a.account_type IN ('revenue', 'other_revenue')
+    LEFT JOIN items i ON i.id = jl.item_id AND i.tenant_id = ${tenantId}
+    WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
+      AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
+      AND jl.credit > 0
+      AND t.txn_type IN ('invoice', 'cash_sale', 'credit_memo')
+      AND ${companyFilter(companyId)}
+      ${tagClause}
+    GROUP BY jl.item_id, i.name, i.sku
+    ORDER BY total DESC
+  `);
+
+  return { title: 'Sales by Item', startDate, endDate, data: rows.rows };
+}
+
 export async function buildVendorBalanceSummary(tenantId: string, companyId: string | null = null) {
   const rows = await db.execute(sql`
     SELECT c.id, c.display_name,
@@ -507,7 +615,16 @@ export async function buildDepositDetail(tenantId: string, dateRange?: DateRange
   return { title: 'Deposit Detail', data: rows.rows };
 }
 
-export async function buildCheckRegister(tenantId: string, accountId: string, dateRange?: DateRange, companyId: string | null = null) {
+export async function buildCheckRegister(
+  tenantId: string,
+  accountId: string,
+  dateRange?: DateRange,
+  companyId: string | null = null,
+  // ADR 0XX §5.1 — line-level tag semantic: hide lines whose tag_id
+  // does not match. Account-level reports are project-accounting
+  // surfaces, so this matches P&L/GL behavior.
+  tagId: string | null = null,
+) {
   const conditions = [
     sql`jl.tenant_id = ${tenantId}`,
     sql`jl.account_id = ${accountId}`,
@@ -516,6 +633,7 @@ export async function buildCheckRegister(tenantId: string, accountId: string, da
   ];
   if (dateRange?.startDate) conditions.push(sql`t.txn_date >= ${dateRange.startDate}`);
   if (dateRange?.endDate) conditions.push(sql`t.txn_date <= ${dateRange.endDate}`);
+  if (tagId) conditions.push(sql`jl.tag_id = ${tagId}`);
 
   const rows = await db.execute(sql`
     SELECT t.id, t.txn_type, t.txn_number, t.txn_date, t.memo,
@@ -676,6 +794,9 @@ export async function buildGeneralLedger(
       jl.credit,
       jl.description AS line_description,
       jl.line_order,
+      -- ADR 0XX §6.3 — per-line tag surfaced for CSV/Excel export.
+      jl.tag_id AS line_tag_id,
+      tag.name AS line_tag_name,
       t.id AS transaction_id,
       t.txn_date,
       t.txn_type,
@@ -685,6 +806,7 @@ export async function buildGeneralLedger(
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id
     LEFT JOIN contacts c ON c.id = t.contact_id
+    LEFT JOIN tags tag ON tag.id = jl.tag_id AND tag.tenant_id = ${tenantId}
     WHERE jl.tenant_id = ${tenantId}
       AND t.status = 'posted'
       AND t.txn_date >= ${startDate}
@@ -710,6 +832,8 @@ export async function buildGeneralLedger(
     credit: string;
     line_description: string | null;
     line_order: number;
+    line_tag_id: string | null;
+    line_tag_name: string | null;
     transaction_id: string;
     txn_date: string;
     txn_type: string;
@@ -780,6 +904,10 @@ export async function buildGeneralLedger(
           description: line.line_description || line.txn_memo || '',
           debit,
           credit,
+          // ADR 0XX §6.3 — per-line tag flows to the GL response so
+          // CSV/Excel exports can include a `line_tag` column.
+          tagId: line.line_tag_id,
+          tagName: line.line_tag_name,
           runningBalance: running,
         };
       });
@@ -818,7 +946,15 @@ export async function buildTrialBalance(
   startDate: string,
   endDate: string,
   companyId: string | null = null,
-  // ADR 0XX §5.1 — line-level tag scope filter.
+  // ADR 0XX §5.1 — Trial Balance uses the **transaction-level** tag
+  // semantic (include every line of any transaction that has at least
+  // one line carrying the tag) rather than the line-level filter used
+  // by P&L/GL. A fundamental accounting invariant of the TB is
+  // debits = credits; line-level filtering breaks that invariant for
+  // mixed-tag transactions (only one side of a balanced entry would
+  // survive the filter). Swapping in EXISTS preserves the invariant
+  // while still narrowing the report to transactions the tag actually
+  // touched.
   tagId: string | null = null,
 ) {
   const fyStartMonth = await getFiscalYearStart(tenantId, companyId);
@@ -828,7 +964,9 @@ export async function buildTrialBalance(
   let fyStartYear = endDt.getFullYear();
   if (endDt.getMonth() + 1 < fyStartMonth) fyStartYear--;
   const fyStart = `${fyStartYear}-${String(fyStartMonth).padStart(2, '0')}-01`;
-  const tagClause = tagId ? sql` AND jl.tag_id = ${tagId}` : sql``;
+  const tagExistsClause = tagId
+    ? sql` AND EXISTS (SELECT 1 FROM journal_lines jl2 WHERE jl2.transaction_id = transactions.id AND jl2.tenant_id = ${tenantId} AND jl2.tag_id = ${tagId})`
+    : sql``;
 
   // For balance sheet accounts (asset, liability, equity): show cumulative balance through end date
   // For income statement accounts (revenue, expense): show balance only from fiscal year start through end date
@@ -854,7 +992,8 @@ export async function buildTrialBalance(
         SELECT id FROM transactions
         WHERE tenant_id = ${tenantId} AND status = 'posted' AND txn_date <= ${endDate}
         AND ${companyId ? sql`company_id = ${companyId}` : sql`TRUE`}
-      )${tagClause}
+        ${tagExistsClause}
+      )
     LEFT JOIN transactions t ON t.id = jl.transaction_id
     WHERE a.tenant_id = ${tenantId}
     GROUP BY a.id
@@ -879,7 +1018,17 @@ export async function buildTrialBalance(
   let totalDebits = Number(td.toFixed(4));
   let totalCredits = Number(tc.toFixed(4));
 
-  // Add Retained Earnings row for prior-year net income (virtual closing)
+  // Add Retained Earnings row for prior-year net income (virtual closing).
+  //
+  // Caveat: this injection delegates to buildProfitAndLoss, which uses
+  // the LINE-LEVEL tag filter even though TB itself uses the EXISTS
+  // filter. For pure-uniform-tag tenants the two semantics agree, so
+  // the common case stays correct. A mixed-tag tenant running prior-
+  // year data through a tag-filtered TB will see RE computed on the
+  // line-level subset, which can reintroduce a small debits-vs-credits
+  // drift limited to the prior-year RE row. Revisit in Phase 10 if any
+  // tenant trips this; the fix is an EXISTS-semantic prior-year P&L
+  // variant. Captured in tags-v2 followups.
   if (fyStart > '1900-01-02') {
     const priorEndDate = new Date(fyStart);
     priorEndDate.setDate(priorEndDate.getDate() - 1);
@@ -924,7 +1073,16 @@ export async function buildTransactionList(tenantId: string, filters?: {
 
   const rows = await db.execute(sql`
     SELECT t.id, t.txn_type, t.txn_number, t.txn_date, t.total, t.memo, t.status,
-      c.display_name as contact_name
+      c.display_name as contact_name,
+      -- ADR 0XX 6.3 — comma-separated list of tag names on the txns
+      -- journal lines, exported as the line_tag column. Distinct so
+      -- multi-tag headers show "Project A, Project B" once each.
+      (
+        SELECT string_agg(DISTINCT tg.name, ', ' ORDER BY tg.name)
+        FROM journal_lines jl
+        JOIN tags tg ON tg.id = jl.tag_id AND tg.tenant_id = ${tenantId}
+        WHERE jl.transaction_id = t.id AND jl.tenant_id = ${tenantId}
+      ) AS line_tag
     FROM transactions t
     LEFT JOIN contacts c ON c.id = t.contact_id AND c.tenant_id = ${tenantId}
     WHERE ${sql.join(conditions, sql` AND `)}
@@ -934,10 +1092,29 @@ export async function buildTransactionList(tenantId: string, filters?: {
   return { title: 'Transaction List', data: rows.rows };
 }
 
-export async function buildJournalEntryReport(tenantId: string, dateRange?: DateRange, companyId: string | null = null) {
-  return buildTransactionList(tenantId, { ...dateRange, txnType: 'journal_entry' }, companyId);
+export async function buildJournalEntryReport(
+  tenantId: string,
+  dateRange?: DateRange,
+  companyId: string | null = null,
+  // ADR 0XX §5.2 — Journal Entry / Transaction Detail report uses the
+  // header semantic: keep the journal entry if any of its lines carry
+  // the tag. Line-level fidelity is still available in the GL / Account
+  // Detail views, which filter line-by-line.
+  tagId: string | null = null,
+) {
+  return buildTransactionList(
+    tenantId,
+    { ...dateRange, txnType: 'journal_entry', ...(tagId ? { tagId } : {}) },
+    companyId,
+  );
 }
 
-export async function buildAccountReport(tenantId: string, accountId: string, dateRange?: DateRange, companyId: string | null = null) {
-  return buildCheckRegister(tenantId, accountId, dateRange, companyId);
+export async function buildAccountReport(
+  tenantId: string,
+  accountId: string,
+  dateRange?: DateRange,
+  companyId: string | null = null,
+  tagId: string | null = null,
+) {
+  return buildCheckRegister(tenantId, accountId, dateRange, companyId, tagId);
 }

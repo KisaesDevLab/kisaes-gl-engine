@@ -170,32 +170,43 @@ registerTool('void_transaction', 'Void a transaction', { company_id: 'string?', 
 
 // ─── Report Tools ───────────────────────────────────────────────
 
-registerTool('run_profit_loss', 'Generate P&L report', { company_id: 'string?', start_date: 'string', end_date: 'string', basis: 'string?' }, async (p, auth) => {
+// ADR 0XX §5 — reports that support the split-level tag filter expose
+// it through the MCP tool schema as an optional `tag_id`. Semantics
+// match the HTTP surface: line-level for P&L / GL / expense-by-*,
+// transaction-level EXISTS for TB / BS / aging / customer+vendor
+// balance. Empty string → null so LLM clients don't need to special-case
+// the "no filter" path.
+function mcpTagFilter(p: Record<string, unknown>): string | null {
+  const raw = p['tag_id'];
+  return typeof raw === 'string' && raw.length > 0 ? raw : null;
+}
+
+registerTool('run_profit_loss', 'Generate P&L report (optional tag_id scopes to lines carrying that tag)', { company_id: 'string?', start_date: 'string', end_date: 'string', basis: 'string?', tag_id: 'string?' }, async (p, auth) => {
   checkScope(auth, 'reports');
   const tenantId = await getTenantId(await resolveCompany(auth, p));
   const { buildProfitAndLoss } = await import('../services/report.service.js');
-  return buildProfitAndLoss(tenantId, p.start_date, p.end_date, p.basis || 'accrual');
+  return buildProfitAndLoss(tenantId, p.start_date, p.end_date, p.basis || 'accrual', null, mcpTagFilter(p));
 });
 
-registerTool('run_balance_sheet', 'Generate Balance Sheet', { company_id: 'string?', as_of_date: 'string' }, async (p, auth) => {
+registerTool('run_balance_sheet', 'Generate Balance Sheet (optional tag_id scopes to transactions touching that tag)', { company_id: 'string?', as_of_date: 'string', tag_id: 'string?' }, async (p, auth) => {
   checkScope(auth, 'reports');
   const tenantId = await getTenantId(await resolveCompany(auth, p));
   const { buildBalanceSheet } = await import('../services/report.service.js');
-  return buildBalanceSheet(tenantId, p.as_of_date, 'accrual');
+  return buildBalanceSheet(tenantId, p.as_of_date, 'accrual', null, mcpTagFilter(p));
 });
 
-registerTool('run_trial_balance', 'Generate Trial Balance', { company_id: 'string?', start_date: 'string', end_date: 'string' }, async (p, auth) => {
+registerTool('run_trial_balance', 'Generate Trial Balance (optional tag_id — uses transaction-level EXISTS to preserve debits=credits invariant)', { company_id: 'string?', start_date: 'string', end_date: 'string', tag_id: 'string?' }, async (p, auth) => {
   checkScope(auth, 'reports');
   const tenantId = await getTenantId(await resolveCompany(auth, p));
   const { buildTrialBalance } = await import('../services/report.service.js');
-  return buildTrialBalance(tenantId, p.start_date, p.end_date);
+  return buildTrialBalance(tenantId, p.start_date, p.end_date, null, mcpTagFilter(p));
 });
 
-registerTool('run_general_ledger', 'Generate General Ledger', { company_id: 'string?', start_date: 'string', end_date: 'string' }, async (p, auth) => {
+registerTool('run_general_ledger', 'Generate General Ledger (optional tag_id filters lines)', { company_id: 'string?', start_date: 'string', end_date: 'string', tag_id: 'string?' }, async (p, auth) => {
   checkScope(auth, 'reports');
   const tenantId = await getTenantId(await resolveCompany(auth, p));
   const { buildGeneralLedger } = await import('../services/report.service.js');
-  return buildGeneralLedger(tenantId, p.start_date, p.end_date);
+  return buildGeneralLedger(tenantId, p.start_date, p.end_date, null, mcpTagFilter(p));
 });
 
 // ─── Invoice Tools ──────────────────────────────────────────────
@@ -378,13 +389,30 @@ registerTool('sync_bank_connection', 'Trigger manual bank sync', { company_id: '
   return syncItem(p.connection_id);
 });
 
-registerTool('categorize_feed_item', 'Categorize a bank feed item', {
-  company_id: 'string?', feed_item_id: 'string', account_id: 'string', contact_id: 'string?', memo: 'string?',
+registerTool('categorize_feed_item', 'Categorize a bank feed item (optional tag_id stamps every resulting journal line)', {
+  company_id: 'string?', feed_item_id: 'string', account_id: 'string', contact_id: 'string?', memo: 'string?', tag_id: 'string?',
 }, async (p, auth) => {
   checkScope(auth, 'banking');
   const tenantId = await getTenantId(await resolveCompany(auth, p));
   const { categorize } = await import('../services/bank-feed.service.js');
-  return categorize(tenantId, p.feed_item_id, { accountId: p.account_id, contactId: p.contact_id, memo: p.memo } as any);
+  const tagId: string | null | undefined = typeof p.tag_id === 'string' && p.tag_id.length > 0 ? p.tag_id : undefined;
+  return categorize(
+    tenantId,
+    p.feed_item_id,
+    { accountId: p.account_id, contactId: p.contact_id, memo: p.memo, ...(tagId !== undefined ? { tagId } : {}) } as any,
+  );
+});
+
+registerTool('bulk_set_bank_feed_tag', 'Set (or clear with empty tag_id) a single tag on every matched journal line across many bank feed items', {
+  company_id: 'string?', feed_item_ids: 'string', tag_id: 'string?',
+}, async (p, auth) => {
+  checkScope(auth, 'banking');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { bulkSetTag } = await import('../services/bank-feed.service.js');
+  const ids = typeof p.feed_item_ids === 'string' ? JSON.parse(p.feed_item_ids) : p.feed_item_ids;
+  if (!Array.isArray(ids)) throw new Error('INVALID_PARAMS: feed_item_ids must be an array');
+  const tagId: string | null = typeof p.tag_id === 'string' && p.tag_id.length > 0 ? p.tag_id : null;
+  return bulkSetTag(tenantId, ids, tagId);
 });
 
 // ─── Reconciliation Tools ───────────────────────────────────────
@@ -401,40 +429,55 @@ registerTool('get_reconciliation_status', 'Get reconciliation status for an acco
 
 // ─── Additional Report Tools ────────────────────────────────────
 
-registerTool('run_ar_aging', 'Accounts receivable aging report', { company_id: 'string?', as_of_date: 'string' }, async (p, auth) => {
+registerTool('run_ar_aging', 'Accounts receivable aging report (optional tag_id)', { company_id: 'string?', as_of_date: 'string', tag_id: 'string?' }, async (p, auth) => {
   checkScope(auth, 'reports');
   const tenantId = await getTenantId(await resolveCompany(auth, p));
   const { buildARAgingSummary } = await import('../services/report.service.js');
-  return buildARAgingSummary(tenantId, p.as_of_date);
+  return buildARAgingSummary(tenantId, p.as_of_date, null, mcpTagFilter(p));
 });
 
-registerTool('run_cash_flow', 'Generate Cash Flow Statement', { company_id: 'string?', start_date: 'string', end_date: 'string' }, async (p, auth) => {
+registerTool('run_cash_flow', 'Generate Cash Flow Statement (optional tag_id)', { company_id: 'string?', start_date: 'string', end_date: 'string', tag_id: 'string?' }, async (p, auth) => {
   checkScope(auth, 'reports');
   const tenantId = await getTenantId(await resolveCompany(auth, p));
   const { buildCashFlowStatement } = await import('../services/report.service.js');
-  return buildCashFlowStatement(tenantId, p.start_date, p.end_date);
+  return buildCashFlowStatement(tenantId, p.start_date, p.end_date, null, mcpTagFilter(p));
 });
 
-registerTool('run_expense_by_vendor', 'Expense by vendor report', { company_id: 'string?', start_date: 'string', end_date: 'string' }, async (p, auth) => {
+registerTool('run_expense_by_vendor', 'Expense by vendor report (optional tag_id)', { company_id: 'string?', start_date: 'string', end_date: 'string', tag_id: 'string?' }, async (p, auth) => {
   checkScope(auth, 'reports');
   const tenantId = await getTenantId(await resolveCompany(auth, p));
   const { buildExpenseByVendor } = await import('../services/report.service.js');
-  return buildExpenseByVendor(tenantId, p.start_date, p.end_date);
+  return buildExpenseByVendor(tenantId, p.start_date, p.end_date, null, mcpTagFilter(p));
 });
 
 // ─── Tag Transaction Tool ───────────────────────────────────────
 
-registerTool('tag_transaction', 'Apply tags to a transaction', { company_id: 'string?', transaction_id: 'string', tag_ids: 'string' }, async (p, auth) => {
+registerTool('tag_transaction', 'Apply tags to a transaction (single tag stamps every journal line; ≥2 tags fall back to header-level junction for legacy multi-tag clients)', { company_id: 'string?', transaction_id: 'string', tag_ids: 'string' }, async (p, auth) => {
   checkScope(auth, 'write');
   const tenantId = await getTenantId(await resolveCompany(auth, p));
-  const { addTags } = await import('../services/tags.service.js');
   const tagIds = typeof p.tag_ids === 'string' ? JSON.parse(p.tag_ids) : p.tag_ids;
-  // Route through the service so its tenant-ownership checks
-  // (assertTransactionInTenant + assertTagsInTenant) run. Going directly
-  // to the table would let a caller insert rows with a tenant_id they
-  // own but a transaction_id / tag_id from a different tenant.
-  await addTags(tenantId, p.transaction_id, tagIds);
-  return { tagged: true, tagCount: tagIds.length };
+  if (!Array.isArray(tagIds)) throw new Error('INVALID_PARAMS: tag_ids must be an array');
+
+  // ADR 0XX §4 — the split-level model is line-authoritative. Route the
+  // 0/1-tag case through replaceTags, which delegates to
+  // setTransactionLineTag (updates journal_lines AND re-syncs junction).
+  // For ≥2 tags we keep the legacy header-level junction behavior so
+  // existing LLM clients that batch-tagged transactions don't regress.
+  const { replaceTags } = await import('../services/tags.service.js');
+  await replaceTags(tenantId, p.transaction_id, tagIds);
+  return { tagged: true, tagCount: tagIds.length, lineLevel: tagIds.length <= 1 };
+});
+
+// Convenience — single-tag-only MCP action that maps 1:1 to the ADR 0XX
+// semantic. Preferred for new LLM prompts; `tag_transaction` with a
+// single-element array is equivalent.
+registerTool('set_transaction_tag', 'Apply a single tag (or clear) to every journal line of a transaction', { company_id: 'string?', transaction_id: 'string', tag_id: 'string?' }, async (p, auth) => {
+  checkScope(auth, 'write');
+  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const { setTransactionLineTag } = await import('../services/tags.service.js');
+  const tagId: string | null = typeof p.tag_id === 'string' && p.tag_id.length > 0 ? p.tag_id : null;
+  await setTransactionLineTag(tenantId, p.transaction_id, tagId);
+  return { tagged: tagId !== null, tagId };
 });
 
 // ─── Overdue Summary Tool ───────────────────────────────────────
@@ -684,12 +727,23 @@ registerTool('get_budget', 'Get a budget with lines', { company_id: 'string?', b
   return { budget, lines };
 });
 
-registerTool('run_budget_vs_actual', 'Budget vs Actual for a period', {
+registerTool('run_budget_vs_actual', 'Budget vs Actual for a period. When the budget has a tag scope and TAG_BUDGETS_V1 is on, returns the tag-scoped matrix (accounts × 12 months, actuals filtered by budget.tag_id). Otherwise returns the legacy company-wide period aggregate.', {
   company_id: 'string?', budget_id: 'string', start_date: 'string', end_date: 'string',
 }, async (p, auth) => {
   checkScope(auth, 'reports');
   const tenantId = await getTenantId(await resolveCompany(auth, p));
-  const { buildBudgetVsActual } = await import('../services/budget.service.js');
+  const { buildBudgetVsActual, runTagScopedBudgetVsActuals, getById } = await import('../services/budget.service.js');
+  const { env: serverEnv } = await import('../config/env.js');
+  const budget = await getById(tenantId, p.budget_id);
+  const tagId = (budget as { tagId?: string | null }).tagId ?? null;
+
+  // Tag-scoped path is the ADR 0XW semantic and only applies when the
+  // budget itself is tag-scoped AND the feature flag is on. Otherwise
+  // we fall back to the legacy period-aggregate report so MCP clients
+  // don't regress for tenants still on `TAG_BUDGETS_V1=false`.
+  if (tagId && serverEnv.TAG_BUDGETS_V1) {
+    return runTagScopedBudgetVsActuals(tenantId, p.budget_id);
+  }
   return buildBudgetVsActual(tenantId, p.budget_id, p.start_date, p.end_date);
 });
 
@@ -822,13 +876,13 @@ registerTool('run_balance_sheet_basis', 'Balance sheet with basis option', {
   return buildBalanceSheet(tenantId, p.as_of_date, (p.basis as any) || 'accrual');
 });
 
-registerTool('run_expense_by_category', 'Expense by category (account)', {
-  company_id: 'string?', start_date: 'string', end_date: 'string',
+registerTool('run_expense_by_category', 'Expense by category (account) (optional tag_id)', {
+  company_id: 'string?', start_date: 'string', end_date: 'string', tag_id: 'string?',
 }, async (p, auth) => {
   checkScope(auth, 'reports');
   const tenantId = await getTenantId(await resolveCompany(auth, p));
   const { buildExpenseByCategory } = await import('../services/report.service.js');
-  return buildExpenseByCategory(tenantId, p.start_date, p.end_date);
+  return buildExpenseByCategory(tenantId, p.start_date, p.end_date, null, mcpTagFilter(p));
 });
 
 registerTool('run_vendor_balance', 'Vendor balance summary (outstanding AP by vendor)', { company_id: 'string?' }, async (p, auth) => {
@@ -838,11 +892,11 @@ registerTool('run_vendor_balance', 'Vendor balance summary (outstanding AP by ve
   return buildVendorBalanceSummary(tenantId);
 });
 
-registerTool('run_customer_balance', 'Customer balance summary (outstanding AR by customer)', { company_id: 'string?' }, async (p, auth) => {
+registerTool('run_customer_balance', 'Customer balance summary (outstanding AR by customer) (optional tag_id)', { company_id: 'string?', tag_id: 'string?' }, async (p, auth) => {
   checkScope(auth, 'reports');
   const tenantId = await getTenantId(await resolveCompany(auth, p));
   const { buildCustomerBalanceSummary } = await import('../services/report.service.js');
-  return buildCustomerBalanceSummary(tenantId);
+  return buildCustomerBalanceSummary(tenantId, null, mcpTagFilter(p));
 });
 
 registerTool('run_1099_vendor_summary', '1099-reportable vendor totals for a year', {
@@ -863,13 +917,19 @@ registerTool('run_sales_tax_liability', 'Sales tax collected and owed', {
   return buildSalesTaxLiability(tenantId, p.start_date, p.end_date);
 });
 
-registerTool('run_check_register', 'Check register for a bank account', {
-  company_id: 'string?', account_id: 'string', start_date: 'string?', end_date: 'string?',
+registerTool('run_check_register', 'Check register for a bank account (optional tag_id)', {
+  company_id: 'string?', account_id: 'string', start_date: 'string?', end_date: 'string?', tag_id: 'string?',
 }, async (p, auth) => {
   checkScope(auth, 'reports');
   const tenantId = await getTenantId(await resolveCompany(auth, p));
   const { buildCheckRegister } = await import('../services/report.service.js');
-  return buildCheckRegister(tenantId, p.account_id, p.start_date && p.end_date ? { startDate: p.start_date, endDate: p.end_date } : undefined);
+  return buildCheckRegister(
+    tenantId,
+    p.account_id,
+    p.start_date && p.end_date ? { startDate: p.start_date, endDate: p.end_date } : undefined,
+    null,
+    mcpTagFilter(p),
+  );
 });
 
 // ─── Express Handler (JSON-RPC over HTTP) ────────────────────────

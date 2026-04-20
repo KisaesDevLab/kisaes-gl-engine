@@ -37,6 +37,10 @@ export const bankFeedItems = pgTable('bank_feed_items', {
   matchedTransactionId: uuid('matched_transaction_id'),
   suggestedAccountId: uuid('suggested_account_id'),
   suggestedContactId: uuid('suggested_contact_id'),
+  // ADR 0XX §7.3 / ADR 0XY §3.4 — AI's per-line tag suggestion. Flows
+  // through resolveDefaultTag at precedence level 2.5 when the user
+  // accepts the categorization.
+  suggestedTagId: uuid('suggested_tag_id'),
   confidenceScore: decimal('confidence_score', { precision: 3, scale: 2 }),
   matchType: varchar('match_type', { length: 20 }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),

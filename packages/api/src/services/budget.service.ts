@@ -132,6 +132,13 @@ export async function fillFromActuals(tenantId: string, budgetId: string) {
   const companyResult = await db.execute(sql`SELECT fiscal_year_start_month FROM companies WHERE tenant_id = ${tenantId} LIMIT 1`);
   const fyStartMonth = (companyResult.rows as any[])[0]?.fiscal_year_start_month || 1;
 
+  // ADR 0XW §4 — when the budget is tag-scoped, the seed must also be
+  // tag-scoped so next year's plan mirrors the same slice of actuals
+  // the Budget vs. Actuals report will later evaluate. When the budget
+  // is company-wide (tagId is null) we aggregate every line, matching
+  // the prior behavior.
+  const budgetTagId = (budget as { tagId?: string | null }).tagId ?? null;
+
   // Get actuals for the prior fiscal year
   const priorYear = budget.fiscalYear - 1;
   const revenueExpenseAccounts = await db.select().from(accounts)
@@ -151,6 +158,7 @@ export async function fillFromActuals(tenantId: string, budgetId: string) {
         JOIN transactions t ON t.id = jl.transaction_id
         WHERE jl.tenant_id = ${tenantId} AND jl.account_id = ${account.id}
           AND t.status = 'posted' AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
+          ${budgetTagId ? sql`AND jl.tag_id = ${budgetTagId}` : sql``}
       `);
       const row = (result.rows as any[])[0] || { total_debit: '0', total_credit: '0' };
       const amount = Math.abs(parseFloat(row.total_credit) - parseFloat(row.total_debit));

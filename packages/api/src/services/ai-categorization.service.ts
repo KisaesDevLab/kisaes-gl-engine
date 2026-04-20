@@ -133,6 +133,9 @@ export async function categorize(tenantId: string, feedItemId: string) {
       await db.update(bankFeedItems).set({
         suggestedAccountId: matchedAccount.id,
         suggestedContactId: matchedVendor?.id || null,
+        // ADR 0XY §3.4 — persist the AI's tag suggestion so the categorize
+        // drawer can show it pre-selected without another LLM round-trip.
+        suggestedTagId: matchedTag?.id || null,
         confidenceScore: String(confidence),
         matchType: 'ai',
         updatedAt: new Date(),

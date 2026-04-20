@@ -435,6 +435,20 @@
       "when": 1776560000000,
       "tag": "0061_tag_budgets",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1776570000000,
+      "tag": "0062_recurring_template_tags",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1776580000000,
+      "tag": "0063_bank_feed_suggested_tag",
+      "breakpoints": true
     }
   ]
 }

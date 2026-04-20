@@ -331,7 +331,7 @@ describe('Tenant isolation audit — cross-tenant attacks must not leak or mutat
     // Service swallows missing rows silently — but the important assertion
     // is that B's schedule remains active.
     const stillActive = await db.query.recurringSchedules.findFirst({ where: eq(recurringSchedules.id, bSched!.id) });
-    expect(stillActive?.isActive).toBe('true');
+    expect(stillActive?.isActive).toBe(true);
     expect(r.status).toBeLessThan(500);
   });
 

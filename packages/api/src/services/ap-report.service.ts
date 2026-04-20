@@ -23,7 +23,19 @@ function companyFilter(companyId: string | null) {
   return sql`t.company_id = ${companyId}`;
 }
 
-export async function buildApAgingSummary(tenantId: string, asOfDate: string, companyId: string | null = null) {
+export async function buildApAgingSummary(
+  tenantId: string,
+  asOfDate: string,
+  companyId: string | null = null,
+  // ADR 0XX §5.2 — header-level tag semantic: include the bill if any
+  // of its journal_lines carries the tag. Bill totals remain the
+  // transaction totals (the whole bill is either in or out of the
+  // aging bucket, not partially apportioned by tagged line amount).
+  tagId: string | null = null,
+) {
+  const tagClause = tagId
+    ? sql` AND EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = t.id AND jl.tenant_id = ${tenantId} AND jl.tag_id = ${tagId})`
+    : sql``;
   const rows = await db.execute(sql`
     SELECT t.id, t.txn_number, t.vendor_invoice_number, t.txn_date, t.due_date,
       t.total, t.amount_paid, t.credits_applied, t.balance_due,
@@ -37,6 +49,7 @@ export async function buildApAgingSummary(tenantId: string, asOfDate: string, co
       AND COALESCE(t.balance_due, 0) > 0
       AND t.txn_date <= ${asOfDate}
       AND ${companyFilter(companyId)}
+      ${tagClause}
     ORDER BY c.display_name, t.due_date
   `);
 
@@ -120,8 +133,13 @@ export async function buildApAgingSummary(tenantId: string, asOfDate: string, co
   };
 }
 
-export async function buildApAgingDetail(tenantId: string, asOfDate: string, companyId: string | null = null) {
-  return buildApAgingSummary(tenantId, asOfDate, companyId);
+export async function buildApAgingDetail(
+  tenantId: string,
+  asOfDate: string,
+  companyId: string | null = null,
+  tagId: string | null = null,
+) {
+  return buildApAgingSummary(tenantId, asOfDate, companyId, tagId);
 }
 
 export async function buildUnpaidBills(tenantId: string, filters?: {

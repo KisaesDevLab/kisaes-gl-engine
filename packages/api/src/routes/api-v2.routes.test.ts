@@ -356,4 +356,104 @@ describe('api-v2 integration (new endpoints)', () => {
     const r = await req('POST', '/transactions/00000000-0000-0000-0000-000000000000/tags', { tagIds: 'not-an-array' });
     expect(r.status).toBe(400);
   });
+
+  // ADR 0XX §4 — with the split-level-tags fix, POST /transactions/:id/tags
+  // with a single tag must stamp every journal_line, not just the legacy
+  // transaction_tags junction. Otherwise the tag silently disappears on
+  // the next ledger edit (which re-syncs the junction from lines).
+  it('POST /transactions/:id/tags stamps single tag at line level (ADR 0XX §4)', async () => {
+    const create = await req('POST', '/transactions', {
+      txnType: 'expense',
+      txnDate: '2026-04-10',
+      payFromAccountId: bankAccountId,
+      lines: [{ expenseAccountId, amount: '42.00' }],
+    });
+    const txnId = create.json.transaction.id;
+    const tag = await req('POST', '/tags', { name: `LineLevelTag-${Date.now()}` });
+    const tagId = tag.json.tag.id;
+
+    const r = await req('POST', `/transactions/${txnId}/tags`, { tagIds: [tagId] });
+    expect(r.status).toBe(200);
+
+    const lines = await db.query.journalLines.findMany({
+      where: (jl, { eq }) => eq(jl.transactionId, txnId),
+    });
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) {
+      expect(line.tagId).toBe(tagId);
+    }
+  });
+
+  it('POST /transactions/:id/tags with empty tagIds clears line tags (ADR 0XX §4)', async () => {
+    const create = await req('POST', '/transactions', {
+      txnType: 'expense',
+      txnDate: '2026-04-10',
+      payFromAccountId: bankAccountId,
+      lines: [{ expenseAccountId, amount: '17.00' }],
+    });
+    const txnId = create.json.transaction.id;
+    const tag = await req('POST', '/tags', { name: `ToClear-${Date.now()}` });
+    await req('POST', `/transactions/${txnId}/tags`, { tagIds: [tag.json.tag.id] });
+
+    const clear = await req('POST', `/transactions/${txnId}/tags`, { tagIds: [] });
+    expect(clear.status).toBe(200);
+    const lines = await db.query.journalLines.findMany({
+      where: (jl, { eq }) => eq(jl.transactionId, txnId),
+    });
+    for (const line of lines) {
+      expect(line.tagId).toBeNull();
+    }
+  });
+
+  it('POST /transactions with tagId on each line persists line-level tags', async () => {
+    const tag = await req('POST', '/tags', { name: `InlineTag-${Date.now()}` });
+    const tagId = tag.json.tag.id;
+    const create = await req('POST', '/transactions', {
+      txnType: 'expense',
+      txnDate: '2026-04-10',
+      payFromAccountId: bankAccountId,
+      lines: [{ expenseAccountId, amount: '31.00', tagId }],
+    });
+    expect(create.status).toBe(201);
+    const txnId = create.json.transaction.id;
+
+    const lines = await db.query.journalLines.findMany({
+      where: (jl, { eq }) => eq(jl.transactionId, txnId),
+    });
+    const expenseLine = lines.find((l) => l.accountId === expenseAccountId);
+    expect(expenseLine?.tagId).toBe(tagId);
+  });
+
+  it('GET /reports/profit-loss with tag_id scopes the P&L to that tag', async () => {
+    const tag = await req('POST', '/tags', { name: `PLScope-${Date.now()}` });
+    const tagId = tag.json.tag.id;
+
+    // One expense tagged with this tag, one without. The POST /transactions
+    // path doesn't thread req.companyId through to the expense service
+    // today (separate issue, outside tags scope), so written transactions
+    // end up with company_id=NULL. Run the P&L in ?scope=consolidated so
+    // the test doesn't depend on that wiring — the tag filter behavior is
+    // identical either way.
+    await req('POST', '/transactions', {
+      txnType: 'expense',
+      txnDate: '2026-04-10',
+      payFromAccountId: bankAccountId,
+      lines: [{ expenseAccountId, amount: '80.00', tagId }],
+    });
+    await req('POST', '/transactions', {
+      txnType: 'expense',
+      txnDate: '2026-04-10',
+      payFromAccountId: bankAccountId,
+      lines: [{ expenseAccountId, amount: '20.00' }],
+    });
+
+    const all = await req('GET', '/reports/profit-loss?start_date=2026-01-01&end_date=2026-12-31&scope=consolidated');
+    const filtered = await req('GET', `/reports/profit-loss?start_date=2026-01-01&end_date=2026-12-31&scope=consolidated&tag_id=${tagId}`);
+    expect(all.status).toBe(200);
+    expect(filtered.status).toBe(200);
+    // Filtered expense total equals only the tag-matching line (80).
+    expect(Number(filtered.json.totalExpenses)).toBe(80);
+    // Unfiltered expense total is strictly greater (includes the untagged 20 too).
+    expect(Number(all.json.totalExpenses)).toBeGreaterThanOrEqual(100);
+  });
 });
