@@ -123,7 +123,7 @@ async function getInvoiceEmailData(tenantId: string, invoiceId: string) {
 // future maintenance doesn't drift on two implementations that look the
 // same from the outside.
 
-export async function sendPaymentReminder(tenantId: string, invoiceId: string) {
+export async function sendPaymentReminder(tenantId: string, invoiceId: string, baseUrl?: string) {
   const { txn, companyId, companyName, customerEmail, customerName } = await getInvoiceEmailData(tenantId, invoiceId);
   if (!customerEmail) return;
 
@@ -136,8 +136,14 @@ export async function sendPaymentReminder(tenantId: string, invoiceId: string) {
       where: eq(companies.tenantId, tenantId),
     });
     if (company?.onlinePaymentsEnabled) {
-      const { env } = await import('../config/env.js');
-      paymentLinkLine = `\nPay online: ${env.CORS_ORIGIN}/pay/${txn.publicToken}\n`;
+      // Issue #32: emit the payment link under the origin the merchant
+      // was on when the reminder was triggered, so IP:port fallback
+      // users get a link that resolves in their clients. Scheduled /
+      // system senders without a request fall back to CORS_ORIGIN's
+      // first entry via firstConfiguredOrigin().
+      const { firstConfiguredOrigin } = await import('../utils/base-url.js');
+      const origin = baseUrl || firstConfiguredOrigin();
+      paymentLinkLine = `\nPay online: ${origin}/pay/${txn.publicToken}\n`;
     }
   }
 

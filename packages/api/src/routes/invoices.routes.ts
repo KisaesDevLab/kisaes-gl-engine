@@ -68,7 +68,8 @@ invoicesRouter.get('/:id/pdf', async (req, res) => {
 });
 
 invoicesRouter.post('/:id/remind', async (req, res) => {
-  await emailService.sendPaymentReminder(req.tenantId, req.params['id']!);
+  const { baseUrlFor } = await import('../utils/base-url.js');
+  await emailService.sendPaymentReminder(req.tenantId, req.params['id']!, baseUrlFor(req));
   res.json({ message: 'Reminder sent' });
 });
 
@@ -77,7 +78,8 @@ invoicesRouter.post('/:id/share-link', async (req, res) => {
     res.status(403).json({ error: { message: 'Readonly users cannot generate share links' } });
     return;
   }
-  const link = await invoiceService.generateShareLink(req.tenantId, req.params['id']!, req.userId);
+  const { baseUrlFor } = await import('../utils/base-url.js');
+  const link = await invoiceService.generateShareLink(req.tenantId, req.params['id']!, req.userId, baseUrlFor(req));
   res.json({ link });
 });
 

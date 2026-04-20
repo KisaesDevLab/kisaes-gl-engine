@@ -217,6 +217,16 @@ export function withAiMetadata<T extends Record<string, any>>(
 }
 
 export async function completeJob(jobId: string, result: CompletionResult, outputData: any, confidenceScore: number) {
+  // Some code paths (e.g. the keyword-first document classifier) synthesize
+  // a CompletionResult with a pseudo-provider like 'local' that isn't
+  // registered in getProvider(). Treat those as zero-cost rather than
+  // letting the unknown-provider throw abort the whole job completion.
+  let estimatedCost = '0';
+  try {
+    const rawConfig = await aiConfigService.getRawConfig();
+    estimatedCost = String(getProvider(result.provider, rawConfig, result.model).estimateCost(result.inputTokens, result.outputTokens));
+  } catch { /* unknown/pseudo provider → cost stays 0 */ }
+
   await db.update(aiJobs).set({
     status: 'complete',
     provider: result.provider,
@@ -225,7 +235,7 @@ export async function completeJob(jobId: string, result: CompletionResult, outpu
     confidenceScore: String(confidenceScore),
     inputTokens: result.inputTokens,
     outputTokens: result.outputTokens,
-    estimatedCost: String(getProvider(result.provider, await aiConfigService.getRawConfig(), result.model).estimateCost(result.inputTokens, result.outputTokens)),
+    estimatedCost,
     processingCompletedAt: new Date(),
     processingDurationMs: result.durationMs,
     updatedAt: new Date(),

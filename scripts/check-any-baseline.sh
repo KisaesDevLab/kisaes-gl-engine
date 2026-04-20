@@ -18,7 +18,7 @@
 set -u
 
 BASELINE_API=362
-BASELINE_WEB=4
+BASELINE_WEB=3
 BASELINE_WORKER=0
 
 api_count=$(grep -rEh ": any\b|as any\b" packages/api/src --include='*.ts' --exclude='*.test.ts' 2>/dev/null | wc -l | tr -d ' ')
