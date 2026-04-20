@@ -98,7 +98,36 @@ app.use(
     },
   }),
 );
-app.use(cors({ origin: env.CORS_ORIGIN, credentials: true }));
+// CORS accepts a comma-separated list so the same appliance can be
+// reached under multiple origins — typically the mDNS hostname
+// (http://mb.kisaes.local) plus an IP:port fallback
+// (http://192.168.68.100:3081) for Windows clients whose Chrome/Edge
+// Secure DNS or Firefox DoH bypass the mDNS resolver. A single value
+// keeps working unchanged.
+const allowedOrigins = new Set(
+  env.CORS_ORIGIN.split(',')
+    .map((s) => s.trim().replace(/\/$/, ''))
+    .filter(Boolean),
+);
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      // Same-origin fetches, curl, and server-to-server traffic arrive
+      // without an Origin header — always allow. Browsers send Origin
+      // on every cross-origin request so we get the security check we
+      // want without blocking first-party calls.
+      if (!origin) return cb(null, true);
+      cb(null, allowedOrigins.has(origin.replace(/\/$/, '')));
+    },
+    credentials: true,
+  }),
+);
+
+// Trust the appliance's front nginx so req.protocol respects
+// X-Forwarded-Proto and req.ip reflects the client, not the proxy.
+// Without this, request-derived URLs (below) pick up http:// even when
+// the user is on https:// through the reverse proxy.
+app.set('trust proxy', true);
 app.use(compression());
 
 // Stripe webhook route MUST be mounted BEFORE express.json() — raw body needed for signature verification

@@ -197,7 +197,7 @@ export async function markAsSent(tenantId: string, invoiceId: string, userId?: s
     { invoiceStatus: 'draft' }, { invoiceStatus: 'sent', via: 'mark_sent' }, userId);
 }
 
-export async function generateShareLink(tenantId: string, invoiceId: string, userId?: string): Promise<string> {
+export async function generateShareLink(tenantId: string, invoiceId: string, userId?: string, baseUrl?: string): Promise<string> {
   const txn = await ledger.getTransaction(tenantId, invoiceId);
   if (txn.txnType !== 'invoice') throw AppError.badRequest('Not an invoice');
 
@@ -218,8 +218,14 @@ export async function generateShareLink(tenantId: string, invoiceId: string, use
   await auditLog(tenantId, 'create', 'invoice_share_link', invoiceId, null,
     { via: 'generate_share_link', previousStatus: txn.invoiceStatus }, userId);
 
-  const { env } = await import('../config/env.js');
-  return `${env.CORS_ORIGIN}/pay/${token}`;
+  // Prefer the request-derived origin (issue #32): the merchant sees a
+  // link matching the URL they're on, so mDNS / IP-port fallback users
+  // get a link they can follow in their own clients. Falls back to
+  // CORS_ORIGIN's first entry when called outside a request context
+  // (e.g. scheduled jobs).
+  const { firstConfiguredOrigin } = await import('../utils/base-url.js');
+  const origin = baseUrl || firstConfiguredOrigin();
+  return `${origin}/pay/${token}`;
 }
 
 export async function sendInvoice(tenantId: string, invoiceId: string, userId?: string) {
