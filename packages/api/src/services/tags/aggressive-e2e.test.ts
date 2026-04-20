@@ -46,27 +46,25 @@ let expenseA: string;
 let cashB: string;
 
 async function cleanDb() {
-  // Touch every tag-bearing table first to avoid tripping FK RESTRICT
-  // during the global cleanup. Order matters: lines → transactions →
-  // junction → items/contacts/bank_rules/budgets (which hold FKs to
-  // tags) → tags → tenants.
-  await db.delete(bankFeedItems);
-  await db.delete(bankConnections);
-  await db.delete(transactionTags);
-  await db.delete(journalLines);
-  await db.delete(transactions);
-  await db.delete(bankRules);
-  await db.delete(budgetLines);
-  await db.delete(budgets);
-  await db.delete(items);
-  await db.delete(contacts);
-  await db.delete(tags);
-  await db.delete(accounts);
-  await db.delete(companies);
-  await db.delete(auditLog);
-  await db.delete(sessions);
-  await db.delete(users);
-  await db.delete(tenants);
+  // TRUNCATE every public table in one statement with CASCADE so no
+  // ordering is required and any rows a sibling test file left behind
+  // (e.g., reconciliations, recurring_schedules, tenant_export_jobs)
+  // cannot trip an FK RESTRICT during cleanup. Excludes the Drizzle
+  // migration bookkeeping tables so schema head stays intact.
+  await db.execute(sql`
+    DO $$
+    DECLARE r RECORD;
+    BEGIN
+      FOR r IN (
+        SELECT tablename FROM pg_tables
+        WHERE schemaname = 'public'
+          AND tablename NOT LIKE '\\_\\_drizzle\\_%' ESCAPE '\\'
+          AND tablename NOT LIKE 'drizzle\\_%' ESCAPE '\\'
+      ) LOOP
+        EXECUTE 'TRUNCATE TABLE public.' || quote_ident(r.tablename) || ' RESTART IDENTITY CASCADE';
+      END LOOP;
+    END $$;
+  `);
 }
 
 async function mkTenant(slug: string): Promise<string> {
