@@ -3,17 +3,27 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { verifyTurnstile } from './turnstile.js';
+import { verifyTurnstile, invalidateTurnstileSecretCache } from './turnstile.js';
+
+// The secret resolver prefers system_settings over env, then memoizes
+// its result. Mock the dynamic import at the top so tests can drive
+// the env side without any DB lookup; bust the cache between tests so
+// env changes take effect immediately.
+vi.mock('../services/admin.service.js', () => ({
+  getSetting: vi.fn(async () => null),
+}));
 
 describe('verifyTurnstile', () => {
   const originalSecret = process.env['TURNSTILE_SECRET_KEY'];
 
   beforeEach(() => {
     delete process.env['TURNSTILE_SECRET_KEY'];
+    invalidateTurnstileSecretCache();
   });
   afterEach(() => {
     if (originalSecret === undefined) delete process.env['TURNSTILE_SECRET_KEY'];
     else process.env['TURNSTILE_SECRET_KEY'] = originalSecret;
+    invalidateTurnstileSecretCache();
     vi.restoreAllMocks();
   });
 

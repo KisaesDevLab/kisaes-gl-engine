@@ -99,6 +99,55 @@ adminRouter.get('/cloudflared/status', async (_req, res) => {
   res.json(status);
 });
 
+// ─── Tunnel / Turnstile reconfigure (Phase 9) ──────────────────
+// Read current state + rotate Turnstile keys without editing .env +
+// restarting. Tunnel token rotation is NOT exposed here — the
+// cloudflared sidecar reads its token at container start and can't
+// hot-swap; rotating the tunnel requires restarting that sidecar
+// with a new token, which is an ops action (documented in
+// docs/firm-cloudflare-setup.md Part G). This endpoint surfaces
+// everything an admin CAN change live, and flags what they can't.
+adminRouter.get('/tunnel-config', async (_req, res) => {
+  const { getCloudflaredStatus } = await import('../services/cloudflared/status.service.js');
+  const [tunnelStatus, siteKey, secretKey] = await Promise.all([
+    getCloudflaredStatus(),
+    adminService.getSetting(SystemSettingsKeys.TURNSTILE_SITE_KEY),
+    adminService.getSetting(SystemSettingsKeys.TURNSTILE_SECRET_KEY),
+  ]);
+  const envSiteKey = process.env['TURNSTILE_SITE_KEY'] || null;
+  const envSecretKey = process.env['TURNSTILE_SECRET_KEY'] || null;
+  res.json({
+    tunnel: tunnelStatus,
+    // Expose the site key (public) so the admin can copy / verify it;
+    // NEVER expose the secret — only whether one is configured.
+    turnstileSiteKey: siteKey ?? envSiteKey,
+    turnstileSecretConfigured: !!(secretKey ?? envSecretKey),
+    // Tell the UI where each current value is coming from so the
+    // operator knows whether an admin-panel rotation will override
+    // a .env value or write the first one.
+    turnstileSiteKeySource: siteKey ? 'database' : envSiteKey ? 'env' : 'unset',
+    turnstileSecretSource: secretKey ? 'database' : envSecretKey ? 'env' : 'unset',
+  });
+});
+
+adminRouter.put('/tunnel-config', async (req, res) => {
+  const siteKey = typeof req.body?.turnstileSiteKey === 'string' ? req.body.turnstileSiteKey.trim() : null;
+  const secretKey = typeof req.body?.turnstileSecretKey === 'string' ? req.body.turnstileSecretKey.trim() : null;
+  if (siteKey !== null) {
+    await adminService.setSetting(SystemSettingsKeys.TURNSTILE_SITE_KEY, siteKey);
+  }
+  // Empty string in secretKey means "leave unchanged" so the UI can
+  // send the site key without the operator re-entering the secret.
+  if (secretKey) {
+    await adminService.setSetting(SystemSettingsKeys.TURNSTILE_SECRET_KEY, secretKey);
+  }
+  // Bust the in-memory cache so the very next auth request sees the
+  // new secret. See utils/turnstile.ts.
+  const { invalidateTurnstileSecretCache } = await import('../utils/turnstile.js');
+  invalidateTurnstileSecretCache();
+  res.json({ saved: true });
+});
+
 // ─── Staff IP Allowlist (Phase 6) ──────────────────────────────
 // Super-admin only. The allowlist is ignored at request time unless
 // STAFF_IP_ALLOWLIST_ENFORCED=1 — CRUD works either way so operators
@@ -264,6 +313,15 @@ adminRouter.post('/users/create', validate(adminCreateUserSchema), async (req, r
 adminRouter.post('/users/:id/reset-password', validate(adminResetPasswordSchema), async (req, res) => {
   await adminService.resetUserPassword(req.params['id']!, req.body.password, req.userId);
   res.json({ message: 'Password reset' });
+});
+
+// Admin-required lockout unlock — CLOUDFLARE_TUNNEL_PLAN Phase 3.
+// Auto-unlock-after-15-min was removed because it gave credential-
+// stuffing attackers a cheap oracle. A locked account now requires
+// an explicit admin action to reset the failed-attempts counter.
+adminRouter.post('/users/:id/unlock', async (req, res) => {
+  const result = await adminService.unlockUser(req.params['id']!, req.userId);
+  res.json(result);
 });
 
 adminRouter.post('/users/:id/toggle-active', async (req, res) => {

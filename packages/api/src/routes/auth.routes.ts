@@ -13,12 +13,16 @@ import { users } from '../db/schema/index.js';
 import rateLimit from 'express-rate-limit';
 import { setRefreshCookie, clearRefreshCookie, readRefreshCookie } from '../utils/refresh-cookie.js';
 import { requireTurnstile } from '../utils/turnstile.js';
+import { getRateLimitStore } from '../utils/rate-limit-store.js';
 
 // Per-IP limiter — the existing loose bound (10 requests / minute from
-// the same IP across any auth endpoint).
+// the same IP across any auth endpoint). Redis-backed when
+// RATE_LIMIT_REDIS=1 so counters survive a container restart; falls
+// back to in-memory otherwise.
 const authLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
   max: 10,
+  store: getRateLimitStore('auth'),
   message: { error: { message: 'Too many requests, please try again later', code: 'RATE_LIMIT' } },
 });
 
@@ -35,6 +39,7 @@ const loginAccountLimiter = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
+  store: getRateLimitStore('login-account'),
   keyGenerator: (req) => {
     const email = (req.body && typeof req.body === 'object' && 'email' in req.body
       ? String((req.body as { email?: string }).email || '')

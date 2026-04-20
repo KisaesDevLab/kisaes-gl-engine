@@ -114,6 +114,38 @@ describe('Auth Service', () => {
         }),
       ).rejects.toThrow('Invalid email or password');
     });
+
+    it('locks the account after 5 failed attempts and requires admin unlock', async () => {
+      const reg = await authService.register({
+        email: 'lockout@example.com',
+        password: 'password123',
+        displayName: 'Lockout User',
+        companyName: 'Lockout Co',
+      });
+
+      for (let i = 0; i < 5; i++) {
+        await expect(
+          authService.login({ email: 'lockout@example.com', password: 'wrongpassword' }),
+        ).rejects.toThrow('Invalid email or password');
+      }
+
+      // 6th attempt — even with the correct password — must fail
+      // because the account is now locked. Auto-unlock-after-15-min
+      // was removed per CLOUDFLARE_TUNNEL_PLAN Phase 3.
+      await expect(
+        authService.login({ email: 'lockout@example.com', password: 'password123' }),
+      ).rejects.toThrow(/locked/i);
+
+      // Admin unlock clears the counter and lets the correct
+      // password through.
+      const { unlockUser } = await import('./admin.service.js');
+      const result = await unlockUser(reg.user.id, reg.user.id);
+      expect(result.unlocked).toBe(true);
+      expect(result.wasLocked).toBe(true);
+
+      const ok = await authService.login({ email: 'lockout@example.com', password: 'password123' });
+      expect(ok.tokens.accessToken).toBeTruthy();
+    });
   });
 
   describe('refresh', () => {

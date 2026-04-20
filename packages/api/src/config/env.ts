@@ -19,6 +19,14 @@ const envSchema = z.object({
   JWT_SECRET: z.string().min(20, 'JWT_SECRET must be at least 20 characters for security'),
   JWT_ACCESS_EXPIRY: z.string().default('15m'),
   JWT_REFRESH_EXPIRY: z.string().default('7d'),
+  // CLOUDFLARE_TUNNEL_PLAN Phase 3 — idle timeout on admin routes.
+  // requireSuperAdmin() rejects tokens older than this. Default 30m
+  // means a super-admin who walks away from the appliance will need
+  // to re-login before the admin-panel accepts their next click.
+  // Normal staff access tokens are governed by JWT_ACCESS_EXPIRY and
+  // are automatically refreshed via the refresh cookie; this is an
+  // additional, tighter bound that applies only to the admin scope.
+  JWT_ADMIN_MAX_AGE: z.string().default('30m'),
   ENCRYPTION_KEY: z.string().min(32, 'ENCRYPTION_KEY must be at least 32 hex characters (16 bytes) — the setup wizard generates a 64-char hex value by default'),
   // PLAID_ENCRYPTION_KEY is used by utils/encryption.ts to wrap Plaid,
   // Stripe, OAuth refresh tokens, TFA secrets, and any other data we

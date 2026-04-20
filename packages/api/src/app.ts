@@ -161,11 +161,16 @@ app.use('/api/v1/', staffIpAllowlist());
 // stay under the global bound. Webhook paths reach their respective
 // raw-body handlers via /api/v1/stripe and /api/v1/plaid/webhooks,
 // which are mounted BEFORE this middleware in the chain.
+// Optional Redis-backed store — see utils/rate-limit-store.ts. Off by
+// default; enable with RATE_LIMIT_REDIS=1 when running multi-instance
+// or when counters must survive container restart.
+import { getRateLimitStore } from './utils/rate-limit-store.js';
 const globalLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 300,
   standardHeaders: true,
   legacyHeaders: false,
+  store: getRateLimitStore('global'),
   message: { error: { message: 'Too many requests, please try again later' } },
 });
 app.use('/api/', globalLimiter);

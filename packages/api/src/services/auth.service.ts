@@ -212,7 +212,6 @@ const DUMMY_PASSWORD_HASH =
 
 export async function login(input: LoginInput): Promise<{ user: typeof users.$inferSelect; tokens: AuthTokens; accessibleTenants: any[] }> {
   const MAX_LOGIN_ATTEMPTS = 5;
-  const LOCKOUT_MINUTES = 15;
 
   const email = normalizeEmail(input.email);
   const user = await db.query.users.findFirst({
@@ -234,11 +233,17 @@ export async function login(input: LoginInput): Promise<{ user: typeof users.$in
     );
   }
 
-  // Check account lockout
-  if (user.loginLockedUntil && new Date(user.loginLockedUntil) > new Date()) {
-    const minutesLeft = Math.ceil((new Date(user.loginLockedUntil).getTime() - Date.now()) / 60000);
+  // Account lockout — CLOUDFLARE_TUNNEL_PLAN Phase 3.
+  // Locked accounts stay locked until a super-admin explicitly
+  // unlocks them via POST /admin/users/:id/unlock. Previously the
+  // record carried a loginLockedUntil timestamp that auto-released
+  // after 15 minutes, which made sustained credential-stuffing free
+  // (attacker waits 16 min, tries another 5). Admin-unlock removes
+  // that cheap oracle; loginLockedUntil being set (to any date past
+  // or future) blocks login.
+  if (user.loginLockedUntil) {
     throw AppError.forbidden(
-      `Account is temporarily locked due to too many failed login attempts. Try again in ${minutesLeft} minute${minutesLeft === 1 ? '' : 's'}.`,
+      'This account is locked due to too many failed login attempts. Contact your administrator to unlock it.',
       'ACCOUNT_LOCKED',
     );
   }
@@ -246,9 +251,10 @@ export async function login(input: LoginInput): Promise<{ user: typeof users.$in
   const validPassword = await bcrypt.compare(input.password, user.passwordHash);
   if (!validPassword) {
     const attempts = (user.loginFailedAttempts || 0) + 1;
-    const lockUntil = attempts >= MAX_LOGIN_ATTEMPTS
-      ? new Date(Date.now() + LOCKOUT_MINUTES * 60 * 1000)
-      : null;
+    // When the threshold is hit, stamp the lockout with "now" as a
+    // sentinel — any truthy value means locked. The admin unlock path
+    // clears both columns.
+    const lockUntil = attempts >= MAX_LOGIN_ATTEMPTS ? new Date() : null;
     await db.update(users)
       .set({ loginFailedAttempts: attempts, loginLockedUntil: lockUntil, updatedAt: new Date() })
       .where(eq(users.id, user.id));
@@ -440,6 +446,18 @@ export async function resetPassword(token: string, newPassword: string): Promise
   if (new Date() > resetRecord.expiresAt) {
     await db.delete(passwordResetTokens).where(eq(passwordResetTokens.id, resetRecord.id));
     throw AppError.badRequest('Reset token has expired. Please request a new one.');
+  }
+
+  // HIBP breached-password check on password-reset too — the reset
+  // path is the most common way users set a new password, so blocking
+  // here is where the protection actually matters in practice. Fails
+  // open on HIBP outage.
+  const breach = await checkPasswordBreached(newPassword);
+  if (breach.ok && breach.breached) {
+    throw AppError.badRequest(
+      `This password has appeared in ${breach.count.toLocaleString()} known data breaches and is unsafe to reuse. Pick a different password.`,
+      'PASSWORD_BREACHED',
+    );
   }
 
   // Update password

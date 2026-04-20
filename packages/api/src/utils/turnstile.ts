@@ -19,6 +19,36 @@ import type { Request, Response, NextFunction } from 'express';
 const SITEVERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
 const SITEVERIFY_TIMEOUT_MS = 3000;
 
+// Cached Turnstile secret — refreshed on admin-panel writes via
+// invalidateTurnstileSecretCache(). Without a cache we'd hit the DB
+// on every single auth request; with one we pay the DB cost only
+// when the secret is rotated. `loaded` distinguishes "never loaded"
+// from "loaded as null" (unconfigured).
+let secretCache: { loaded: boolean; value: string | null } = { loaded: false, value: null };
+
+async function resolveSecret(): Promise<string | null> {
+  if (secretCache.loaded) return secretCache.value;
+  try {
+    const { getSetting } = await import('../services/admin.service.js');
+    const { SystemSettingsKeys } = await import('../constants/system-settings-keys.js');
+    const dbValue = await getSetting(SystemSettingsKeys.TURNSTILE_SECRET_KEY);
+    if (dbValue) {
+      secretCache = { loaded: true, value: dbValue };
+      return dbValue;
+    }
+  } catch {
+    // DB unreachable on early boot — fall through to env.
+  }
+  const envValue = process.env['TURNSTILE_SECRET_KEY'];
+  secretCache = { loaded: true, value: envValue || null };
+  return secretCache.value;
+}
+
+/** Called by the admin save path so the next verify sees the new key. */
+export function invalidateTurnstileSecretCache(): void {
+  secretCache = { loaded: false, value: null };
+}
+
 export interface TurnstileResult {
   /** Whether to let the request through. `true` on verify-success AND on fail-open paths. */
   allow: boolean;
@@ -41,7 +71,7 @@ export interface TurnstileResult {
  * code paths in callers.
  */
 export async function verifyTurnstile(token: string | null | undefined, remoteIp?: string): Promise<TurnstileResult> {
-  const secret = process.env['TURNSTILE_SECRET_KEY'];
+  const secret = await resolveSecret();
   if (!secret || secret === 'disabled') {
     return { allow: true, skipped: 'disabled' };
   }
