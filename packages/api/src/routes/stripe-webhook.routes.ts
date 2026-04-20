@@ -5,8 +5,15 @@
 import { Router } from 'express';
 import express from 'express';
 import * as stripeService from '../services/stripe.service.js';
+import { stripeIpAllowlist } from '../utils/stripe-ip-allowlist.js';
 
 export const stripeWebhookRouter = Router();
+
+// Optional Stripe IP allowlist — see CLOUDFLARE_TUNNEL_PLAN Phase 7.
+// Default off; enable with STRIPE_WEBHOOK_IP_ALLOWLIST_ENFORCED=1. The
+// middleware no-ops when disabled so the existing signature-verify
+// path remains the authoritative check either way.
+stripeWebhookRouter.use(stripeIpAllowlist());
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

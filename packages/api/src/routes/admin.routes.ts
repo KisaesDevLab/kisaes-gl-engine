@@ -86,6 +86,50 @@ const stepUpLimiter = rateLimit({
 // Tailscale remote-access management (super-admin only, already gated above).
 adminRouter.use('/tailscale', tailscaleRouter);
 
+// ─── Cloudflare Tunnel Status (Phase 8) ────────────────────────
+// Super-admin only. Returns a snapshot of the cloudflared sidecar's
+// Prometheus metrics so the admin UI can render "tunnel connected —
+// N connections" without anyone needing a Cloudflare dashboard
+// session. Safe against a disconnected or absent cloudflared: the
+// service returns `reachable: false` rather than throwing, so the
+// response is always 200 + useful even during an outage.
+adminRouter.get('/cloudflared/status', async (_req, res) => {
+  const { getCloudflaredStatus } = await import('../services/cloudflared/status.service.js');
+  const status = await getCloudflaredStatus();
+  res.json(status);
+});
+
+// ─── Staff IP Allowlist (Phase 6) ──────────────────────────────
+// Super-admin only. The allowlist is ignored at request time unless
+// STAFF_IP_ALLOWLIST_ENFORCED=1 — CRUD works either way so operators
+// can populate and test the list before flipping enforcement on.
+adminRouter.get('/ip-allowlist', async (_req, res) => {
+  const { listEntries } = await import('../services/staff-ip-allowlist.service.js');
+  const entries = await listEntries();
+  res.json({
+    enforced: process.env['STAFF_IP_ALLOWLIST_ENFORCED'] === '1',
+    entries,
+  });
+});
+
+adminRouter.post('/ip-allowlist', async (req, res) => {
+  const { addEntry, invalidateCache } = await import('../services/staff-ip-allowlist.service.js');
+  const entry = await addEntry({
+    cidr: String(req.body?.cidr || ''),
+    description: req.body?.description ?? null,
+    createdBy: req.userId,
+  });
+  invalidateCache();
+  res.status(201).json(entry);
+});
+
+adminRouter.delete('/ip-allowlist/:id', async (req, res) => {
+  const { removeEntry, invalidateCache } = await import('../services/staff-ip-allowlist.service.js');
+  await removeEntry(req.params['id']!);
+  invalidateCache();
+  res.json({ deleted: true });
+});
+
 // ─── System Stats ────────────────────────────────────────────────
 
 adminRouter.get('/stats', async (req, res) => {

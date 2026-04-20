@@ -103,6 +103,15 @@ export async function getAuthMethods(email?: string) {
   // endpoint into a reliable email-enumeration oracle. Always return the
   // same keys with safe defaults; only mutate the values we've decided are
   // safe to disclose (currently: none).
+  // Turnstile site key is safe to expose to the browser — it's the
+  // public half of the pair (the secret lives server-side in
+  // TURNSTILE_SECRET_KEY). The literal string `disabled` or an empty
+  // value means "no widget on the login page", which also aligns with
+  // the server-side verifier's skip-on-disabled path so dev and
+  // LAN-only installs stay silent.
+  const rawSiteKey = process.env['TURNSTILE_SITE_KEY'];
+  const turnstileSiteKey = rawSiteKey && rawSiteKey !== 'disabled' ? rawSiteKey : null;
+
   const base = {
     loginMethods: {
       password: true,
@@ -114,6 +123,7 @@ export async function getAuthMethods(email?: string) {
     smsReady: caps.smsReady,
     userHasPasskeys: false,
     userPreferredMethod: 'password' as string,
+    turnstileSiteKey,
   };
 
   if (!email) return base;

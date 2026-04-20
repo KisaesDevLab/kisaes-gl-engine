@@ -143,10 +143,27 @@ app.use('/api/v1/plaid/webhooks', plaidWebhookRouter);
 app.use(express.json({ limit: '10mb' }));
 app.use(morgan('short'));
 
-// Global rate limiter — 200 requests/minute per IP
+// Optional staff-route IP allowlist (CLOUDFLARE_TUNNEL_PLAN Phase 6).
+// No-op unless STAFF_IP_ALLOWLIST_ENFORCED=1 is set. Mounted after the
+// webhook routers so external machine-to-machine traffic reaches its
+// raw-body handlers without an IP check; mounted before authenticate()
+// so unauthorised IPs get a uniform 403 without leaking whether a
+// session would've worked. Super-admin tokens bypass the check (break-
+// glass).
+import { staffIpAllowlist } from './middleware/staff-ip-allowlist.js';
+app.use('/api/v1/', staffIpAllowlist());
+
+// Global rate limiter — 300 requests/minute per IP.
+// See CLOUDFLARE_TUNNEL_PLAN Phase 5: this is a broad per-IP ceiling
+// across the whole /api surface; tighter per-endpoint and per-account
+// limiters (auth.routes.ts, ai.routes.ts, chat.routes.ts, etc.) sit
+// below it and catch credential-stuffing / scraping patterns that
+// stay under the global bound. Webhook paths reach their respective
+// raw-body handlers via /api/v1/stripe and /api/v1/plaid/webhooks,
+// which are mounted BEFORE this middleware in the chain.
 const globalLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 200,
+  max: 300,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: { message: 'Too many requests, please try again later' } },

@@ -5,7 +5,7 @@
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, sql, asc } from 'drizzle-orm';
 import type { RegisterInput, LoginInput, AuthTokens, JwtPayload } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { tenants, users, sessions, userTenantAccess, companies, passwordResetTokens } from '../db/schema/index.js';
@@ -15,6 +15,13 @@ import { auditLog } from '../middleware/audit.js';
 import { createCompanyForTenant } from './company.service.js';
 import { seedFromTemplate } from './accounts.service.js';
 import * as systemEmail from './system-email.service.js';
+import { checkPasswordBreached } from '../utils/hibp.js';
+
+// Cap per CLOUDFLARE_TUNNEL_PLAN Phase 3: max 3 concurrent sessions per
+// user. Oldest refresh token is revoked when the limit is exceeded —
+// prevents an attacker who grabs one refresh token from holding it
+// indefinitely after the user logs in elsewhere.
+const MAX_SESSIONS_PER_USER = 3;
 
 // Email is used as the unique-identifier primary key for a user. Case
 // variations would otherwise create separate accounts (Alice@example and
@@ -69,6 +76,23 @@ async function createSession(userId: string, refreshToken: string): Promise<void
     refreshTokenHash: hashToken(refreshToken),
     expiresAt,
   });
+
+  // Enforce the per-user session cap. Running the trim AFTER the insert
+  // keeps the new session the most-recent row so a rapid re-login never
+  // revokes its own token. Only active (non-expired) sessions count
+  // against the cap.
+  const active = await db.select({ id: sessions.id, createdAt: sessions.createdAt })
+    .from(sessions)
+    .where(and(
+      eq(sessions.userId, userId),
+      sql`${sessions.expiresAt} > NOW()`,
+    ))
+    .orderBy(asc(sessions.createdAt));
+
+  if (active.length > MAX_SESSIONS_PER_USER) {
+    const toDrop = active.slice(0, active.length - MAX_SESSIONS_PER_USER).map((s) => s.id);
+    await db.delete(sessions).where(sql`${sessions.id} = ANY(${toDrop})`);
+  }
 }
 
 export async function createClientTenant(creatorUserId: string, input: { companyName: string; industry?: string; entityType?: string; businessType?: string }): Promise<{ tenantId: string; companyId: string; tenantName: string }> {
@@ -104,6 +128,18 @@ export async function register(input: RegisterInput): Promise<{ user: typeof use
   });
   if (existingUser) {
     throw AppError.conflict('An account with this email already exists', 'EMAIL_EXISTS');
+  }
+
+  // HIBP breached-password check. Fails open on network error so an
+  // HIBP outage doesn't block registration; callers just get the
+  // pre-HIBP baseline for that request. Re-checked explicitly on every
+  // future password change.
+  const breach = await checkPasswordBreached(input.password);
+  if (breach.ok && breach.breached) {
+    throw AppError.badRequest(
+      `This password has appeared in ${breach.count.toLocaleString()} known data breaches and is unsafe to reuse. Pick a different password.`,
+      'PASSWORD_BREACHED',
+    );
   }
 
   // Create tenant
@@ -216,6 +252,20 @@ export async function login(input: LoginInput): Promise<{ user: typeof users.$in
     await db.update(users)
       .set({ loginFailedAttempts: attempts, loginLockedUntil: lockUntil, updatedAt: new Date() })
       .where(eq(users.id, user.id));
+    // Audit the failed attempt so the login-events view is complete.
+    // The user's own id is carried as both entityId and userId so the
+    // row is attributable even when the attempt is from a third party
+    // guessing the email — the audit trail still captures which account
+    // was targeted.
+    await auditLog(
+      user.tenantId,
+      'login',
+      'user_login_failed',
+      user.id,
+      null,
+      { attempts, locked: !!lockUntil, reason: 'invalid_password' },
+      user.id,
+    );
     throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDENTIALS');
   }
 

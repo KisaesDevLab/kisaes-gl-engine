@@ -12,16 +12,49 @@ import { db } from '../db/index.js';
 import { users } from '../db/schema/index.js';
 import rateLimit from 'express-rate-limit';
 import { setRefreshCookie, clearRefreshCookie, readRefreshCookie } from '../utils/refresh-cookie.js';
+import { requireTurnstile } from '../utils/turnstile.js';
 
+// Per-IP limiter — the existing loose bound (10 requests / minute from
+// the same IP across any auth endpoint).
 const authLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
   max: 10,
   message: { error: { message: 'Too many requests, please try again later', code: 'RATE_LIMIT' } },
 });
 
+// Per-account login limiter — see CLOUDFLARE_TUNNEL_PLAN Phase 5.
+// Caps the number of login attempts against a single email address to
+// 10 in 15 minutes, regardless of how many source IPs they come from.
+// Blocks the "spray attack" pattern where a credential-stuffing tool
+// rotates through residential proxies to stay under the per-IP bound
+// while hammering the same target account. Keyed by normalized email
+// from the JSON body; requests without an email fall through to the
+// per-IP limiter alone.
+const loginAccountLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const email = (req.body && typeof req.body === 'object' && 'email' in req.body
+      ? String((req.body as { email?: string }).email || '')
+      : ''
+    ).trim().toLowerCase();
+    // Prefix so the email namespace can't collide with the IP-keyed
+    // limiters sharing the same in-memory store.
+    return email ? `account:${email}` : `ip:${req.ip || 'unknown'}`;
+  },
+  message: {
+    error: {
+      message: 'Too many login attempts for this account. Wait 15 minutes or use password recovery.',
+      code: 'ACCOUNT_RATE_LIMIT',
+    },
+  },
+});
+
 export const authRouter = Router();
 
-authRouter.post('/register', authLimiter, validate(registerSchema), async (req, res) => {
+authRouter.post('/register', authLimiter, requireTurnstile(), validate(registerSchema), async (req, res) => {
   const result = await authService.register(req.body);
   setRefreshCookie(res, result.tokens.refreshToken);
   res.status(201).json({
@@ -30,7 +63,7 @@ authRouter.post('/register', authLimiter, validate(registerSchema), async (req, 
   });
 });
 
-authRouter.post('/login', authLimiter, validate(loginSchema), async (req, res) => {
+authRouter.post('/login', authLimiter, loginAccountLimiter, requireTurnstile(), validate(loginSchema), async (req, res) => {
   const result = await authService.login(req.body);
 
   // Check if 2FA is required
@@ -201,7 +234,7 @@ authRouter.post('/logout', async (req, res) => {
   res.json({ message: 'Logged out' });
 });
 
-authRouter.post('/forgot-password', authLimiter, validate(forgotPasswordSchema), async (req, res) => {
+authRouter.post('/forgot-password', authLimiter, requireTurnstile(), validate(forgotPasswordSchema), async (req, res) => {
   await authService.forgotPassword(req.body.email);
   res.json({ message: 'If an account exists with that email, a reset link has been sent' });
 });
