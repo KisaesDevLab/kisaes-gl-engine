@@ -98,10 +98,15 @@ jobs:
         run: npm test
         working-directory: packages/web
 
-  # E2E is kept separate because it needs a live api+web stack. We run
-  # it as a best-effort in CI via docker compose — failures here don't
-  # currently gate merge, but the job is surfaced so regressions are
-  # visible. Flip `continue-on-error` to false once it's stable in CI.
+  # E2E runs the full api+web+worker stack via docker compose and hits
+  # it with Playwright. The job was previously a no-op — the step only
+  # started db+redis, and even that failed because compose refused to
+  # interpolate the required ENCRYPTION_KEY / PLAID_ENCRYPTION_KEY guards
+  # on the api + worker services. Now: we synthesize a CI-only .env with
+  # throwaway 64-hex secrets, bring up db+redis+api+web+worker with
+  # `--wait` so healthchecks gate playwright, and run the suite.
+  # `continue-on-error: true` remains until a few consecutive clean
+  # runs prove stability; flipping it to false is a follow-up PR.
   e2e:
     runs-on: ubuntu-latest
     needs: typecheck
@@ -117,14 +122,50 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
-      - name: Bring up stack
-        env:
-          POSTGRES_PASSWORD: ci-only-password
-          JWT_SECRET: ci-only-jwt-secret-at-least-20-chars
+      - name: Synthesize CI-only .env
+        # docker-compose.yml interpolates ${ENCRYPTION_KEY:?...} etc. and
+        # also references `env_file: .env` on api + worker. Both the
+        # interpolation and the env_file need to be satisfied; writing a
+        # real .env file covers both. Values are throwaway — the test DB
+        # is torn down with the runner.
         run: |
-          docker compose -f docker-compose.yml up -d db redis
-          # Give services a moment to come up; healthchecks should gate this
-          sleep 10
+          cat > .env <<EOF
+          POSTGRES_USER=kisbooks
+          POSTGRES_PASSWORD=ci-only-password
+          POSTGRES_DB=kisbooks
+          JWT_SECRET=ci-only-jwt-secret-at-least-20-chars
+          ENCRYPTION_KEY=$(openssl rand -hex 32)
+          PLAID_ENCRYPTION_KEY=$(openssl rand -hex 32)
+          NODE_ENV=test
+          CORS_ORIGIN=http://localhost:5173
+          EOF
+      - name: Bring up stack
+        # Only the services the e2e suite needs — tailscale would try to
+        # register against a tailnet and is irrelevant to the bookkeeping
+        # flow. `--wait` blocks until every named service reports healthy
+        # (or a 10m timeout). api has a 60s start_period for migrations,
+        # so the first build can legitimately take a few minutes.
+        run: docker compose -f docker-compose.yml up -d --wait db redis api web worker
+      - name: Show api logs on failure
+        if: failure()
+        run: |
+          docker compose -f docker-compose.yml logs api --tail=200
+          docker compose -f docker-compose.yml ps
       - name: Run Playwright
         run: npx playwright test
         working-directory: e2e
+      - name: Capture stack logs on test failure
+        if: failure()
+        run: |
+          echo "::group::api logs"
+          docker compose -f docker-compose.yml logs api --tail=500
+          echo "::endgroup::"
+          echo "::group::web logs"
+          docker compose -f docker-compose.yml logs web --tail=200
+          echo "::endgroup::"
+          echo "::group::worker logs"
+          docker compose -f docker-compose.yml logs worker --tail=200
+          echo "::endgroup::"
+      - name: Tear down stack
+        if: always()
+        run: docker compose -f docker-compose.yml down -v
