@@ -20,6 +20,8 @@
 import { getCloudflaredStatus } from './status.service.js';
 import { auditLog } from '../../middleware/audit.js';
 import { withSchedulerLock } from '../../utils/scheduler-lock.js';
+import { recordSchedulerTick, incCounter } from '../../utils/metrics.js';
+import { log } from '../../utils/logger.js';
 
 const POLL_INTERVAL_MS = 30_000;
 const DEFAULT_THRESHOLD_MS = 2 * 60 * 1000;
@@ -55,7 +57,8 @@ function thresholdMs(): number {
  * can drive ticks deterministically.
  */
 export async function pollOnce(now: number = Date.now()): Promise<{ alerted: boolean; reason?: string }> {
-  return (await withSchedulerLock('cloudflared-alerter', async () => {
+  const started = Date.now();
+  const result = (await withSchedulerLock('cloudflared-alerter', async () => {
     const status = await getCloudflaredStatus();
 
     if (status.reachable && status.connected) {
@@ -98,8 +101,12 @@ export async function pollOnce(now: number = Date.now()): Promise<{ alerted: boo
       { component: 'cloudflared', downForSeconds: Math.floor(downFor / 1000), reason, lastHealthyAt: status.lastHealthyAt },
     );
     state.lastAlertAt = now;
+    incCounter('cloudflared_alerts_total', 'Total cloudflared tunnel-down alerts emitted', { reason });
+    log.warn({ component: 'cloudflared-alerter', event: 'tunnel_alert', downForSeconds: Math.floor(downFor / 1000), reason });
     return { alerted: true, reason };
   })) ?? { alerted: false };
+  recordSchedulerTick('cloudflared_alerter', Date.now() - started, 'ok');
+  return result;
 }
 
 let timer: ReturnType<typeof setInterval> | null = null;

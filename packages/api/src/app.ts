@@ -361,12 +361,28 @@ app.get('/api/v1/coa-templates/options', async (_req, res) => {
 // Public API v2
 app.use('/api/v2', apiV2Router);
 
-// Swagger UI — public in development, requires auth in production
-import { authenticate as swaggerAuth } from './middleware/auth.js';
+// Swagger UI — public in development, super-admin only in production.
+// The API surface map is sensitive info-leak for a firm-employee tenant
+// (routes like /admin/tailscale, /admin/backup-verify, Plaid webhooks
+// etc.); anyone authenticated shouldn't be able to browse it. In
+// development we leave it open so contributors can poke the API
+// without first minting a super-admin token.
+//
+// authenticate() is async — `await` it so its throws (AppError.unauthorized)
+// reach the Express error handler via express-async-errors instead of
+// leaking as unhandled promise rejections.
+import { authenticate as swaggerAuth, requireSuperAdmin as swaggerRequireSuperAdmin } from './middleware/auth.js';
 app.use('/api/docs',
-  (req: any, res: any, next: any) => {
-    if (env.NODE_ENV === 'production') return swaggerAuth(req, res, next);
-    next();
+  async (req: any, res: any, next: any) => {
+    if (env.NODE_ENV !== 'production') return next();
+    await swaggerAuth(req, res, (err?: unknown) => {
+      if (err) return next(err);
+      try {
+        swaggerRequireSuperAdmin(req, res, next);
+      } catch (e) {
+        next(e);
+      }
+    });
   },
   swaggerUi.serve,
   swaggerUi.setup(swaggerSpec, {

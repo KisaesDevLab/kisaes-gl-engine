@@ -5,6 +5,7 @@
 import RedisPkg from 'ioredis';
 import { RedisStore, type SendCommandFn } from 'rate-limit-redis';
 import type { Store } from 'express-rate-limit';
+import { recordSecurityEvent } from './security-audit.js';
 
 // ioredis v5 ships a CommonJS default export; TS sees it as a
 // namespace through node's interop. Unwrap to the constructor and
@@ -51,6 +52,17 @@ function getClient(): RedisClient {
     // Log once per minute-ish rather than per-call; ioredis will keep
     // retrying in the background.
     console.warn('[rate-limit-redis] Redis error:', err.message);
+    // Also emit a coalesced security-degradation audit row so super-
+    // admins see that RATE_LIMIT_REDIS=1 is effectively fallback-in-
+    // memory. Gated behind RATE_LIMIT_REDIS_ALERT so operators can
+    // silence the alert if Redis flapping becomes background noise.
+    if (process.env['RATE_LIMIT_REDIS_ALERT'] !== '0') {
+      recordSecurityEvent({
+        component: 'rate_limit_redis',
+        reason: 'connection_error',
+        details: { message: err.message },
+      });
+    }
   });
   return sharedClient;
 }

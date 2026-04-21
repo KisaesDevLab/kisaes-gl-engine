@@ -75,6 +75,49 @@ const envSchema = z.object({
     .optional()
     .transform((v) => v === 'true' || v === '1')
     .default('false'),
+  // CLOUDFLARE_TUNNEL_PLAN Phase 6 — staff IP allowlist. "1" enforces.
+  STAFF_IP_ALLOWLIST_ENFORCED: z.enum(['0', '1']).optional().default('0'),
+  // CLOUDFLARE_TUNNEL_PLAN Phase 7 — Stripe webhook IP allowlist. "1" enforces.
+  STRIPE_WEBHOOK_IP_ALLOWLIST_ENFORCED: z.enum(['0', '1']).optional().default('0'),
+  // CLOUDFLARE_TUNNEL_PLAN Phase 4 — opt-in Redis-backed rate limit store.
+  RATE_LIMIT_REDIS: z.enum(['0', '1']).optional().default('0'),
+  // CLOUDFLARE_TUNNEL_PLAN Phase 1 — disable HIBP breach lookup (tests/offline).
+  HIBP_DISABLED: z.enum(['0', '1']).optional().default('0'),
+  // Configurable HIBP client timeout (ms). Slow networks may need >3000.
+  HIBP_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
+  // Cloudflare Tunnel — optional values come in via admin UI / DB; env
+  // overrides cover the headless install case. Both keys are opaque
+  // strings; the literal value "disabled" skips Turnstile verification
+  // (dev + test only).
+  TURNSTILE_SITE_KEY: z.string().optional(),
+  TURNSTILE_SECRET_KEY: z.string().optional(),
+  // cloudflared sidecar metrics endpoint for status.service. Default
+  // matches the compose sidecar (--metrics 0.0.0.0:2000).
+  CLOUDFLARED_METRICS_URL: z.string().url().optional(),
+  // Minutes the tunnel may stay down before alert.service emits an
+  // audit entry. Default 2 minutes.
+  CLOUDFLARED_ALERT_THRESHOLD_MS: z.coerce.number().int().positive().default(2 * 60_000),
+  // Opt-in: super-admin audit when rate-limit Redis silently fails.
+  // When RATE_LIMIT_REDIS=1 but the store can't connect, the app
+  // degrades to per-container in-memory counters. Flag defaults to "1"
+  // (alert is on) so operators discover the degradation; flip to "0"
+  // only if audit noise becomes a problem.
+  RATE_LIMIT_REDIS_ALERT: z.enum(['0', '1']).optional().default('1'),
+  // Trust-proxy setting — consumed in app.ts. Supports boolean, numeric
+  // hop count, or comma-separated CIDR list; default (unset) is
+  // "loopback" per Express semantics. Validated as a string so the
+  // richer parser in app.ts can interpret it.
+  TRUST_PROXY: z.string().optional(),
+  // Scheduler observability — structured log level for pino logger.
+  LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
+  // Backup-verification scheduler cadence. Default 30 days; operators
+  // on regulated deployments may tighten.
+  BACKUP_VERIFY_INTERVAL_MS: z.coerce.number().int().positive().default(30 * 24 * 60 * 60_000),
+  // Version stamp baked into the image by CI (Dockerfile ARG VERSION).
+  // Falls back to "dev" for local `docker compose build` and "unknown"
+  // when the var is unset entirely (running via tsx from source).
+  // Consumed by updates.service to tell operators what they're running.
+  VIBE_MYBOOKS_VERSION: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

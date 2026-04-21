@@ -67,6 +67,27 @@ function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
+/**
+ * Mint a fresh access+refresh pair for an already-authenticated user and
+ * persist the refresh-token session, enforcing MAX_SESSIONS_PER_USER.
+ *
+ * This is the single entry point every non-password login path (TFA,
+ * magic link, passkey) must use. The session cap lives inside
+ * createSession, so skipping this helper defeats the cap — the inline
+ * db.insert(sessions) pattern this replaces was doing exactly that and
+ * letting attackers hold indefinitely-many refresh tokens.
+ *
+ * Also reads JWT_ACCESS_EXPIRY from env via generateAccessToken, so
+ * operators who tune the access-token lifetime only have to change it
+ * in one place.
+ */
+export async function issueSession(payload: JwtPayload): Promise<AuthTokens> {
+  const accessToken = generateAccessToken(payload);
+  const refreshToken = generateRefreshToken();
+  await createSession(payload.userId, refreshToken);
+  return { accessToken, refreshToken };
+}
+
 async function createSession(userId: string, refreshToken: string): Promise<void> {
   const expiresAt = new Date();
   expiresAt.setDate(expiresAt.getDate() + 7); // 7 days
@@ -77,25 +98,11 @@ async function createSession(userId: string, refreshToken: string): Promise<void
     expiresAt,
   });
 
-  // Enforce the per-user session cap. Running the trim AFTER the insert
-  // keeps the new session the most-recent row so a rapid re-login never
-  // revokes its own token. Only active (non-expired) sessions count
-  // against the cap.
-  const active = await db.select({ id: sessions.id, createdAt: sessions.createdAt })
-    .from(sessions)
-    .where(and(
-      eq(sessions.userId, userId),
-      sql`${sessions.expiresAt} > NOW()`,
-    ))
-    .orderBy(asc(sessions.createdAt));
-
-  if (active.length > MAX_SESSIONS_PER_USER) {
-    const toDrop = active.slice(0, active.length - MAX_SESSIONS_PER_USER).map((s) => s.id);
-    // drizzle's `inArray` parameterises each id individually instead of
-    // sending a PG array literal — avoids text/uuid coercion surprises
-    // with `ANY($n::uuid[])` when the driver skips the cast.
-    await db.delete(sessions).where(inArray(sessions.id, toDrop));
-  }
+  // Running the trim AFTER the insert keeps the new session the most-
+  // recent row so a rapid re-login never revokes its own token. Shared
+  // with switchTenant's post-transaction path so cap enforcement lives
+  // in exactly one place.
+  await trimOldestSessions(userId);
 }
 
 export async function createClientTenant(creatorUserId: string, input: { companyName: string; industry?: string; entityType?: string; businessType?: string }): Promise<{ tenantId: string; companyId: string; tenantName: string }> {
@@ -348,7 +355,34 @@ export async function switchTenant(userId: string, targetTenantId: string, prior
     });
   });
 
+  // Enforce the per-user session cap. The `priorRefreshToken` branch
+  // above keeps net count unchanged, but the api-v2 switchTenant path
+  // doesn't pass a prior token and would otherwise grow sessions
+  // without bound. Running the trim here handles both paths
+  // consistently and is idempotent when nothing needs trimming.
+  await trimOldestSessions(user.id);
+
   return { accessToken, refreshToken };
+}
+
+/**
+ * Drop the oldest active sessions for a user until MAX_SESSIONS_PER_USER
+ * remain. Called after any flow that might push the user over the cap.
+ * Idempotent — a no-op when the user already has ≤ the cap.
+ */
+async function trimOldestSessions(userId: string): Promise<void> {
+  const active = await db.select({ id: sessions.id, createdAt: sessions.createdAt })
+    .from(sessions)
+    .where(and(
+      eq(sessions.userId, userId),
+      sql`${sessions.expiresAt} > NOW()`,
+    ))
+    .orderBy(asc(sessions.createdAt));
+
+  if (active.length > MAX_SESSIONS_PER_USER) {
+    const toDrop = active.slice(0, active.length - MAX_SESSIONS_PER_USER).map((s) => s.id);
+    await db.delete(sessions).where(inArray(sessions.id, toDrop));
+  }
 }
 
 export async function refresh(refreshToken: string): Promise<AuthTokens> {

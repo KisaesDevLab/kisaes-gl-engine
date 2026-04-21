@@ -29,7 +29,12 @@ function extractSuperAdminFromAuthHeader(header: string | undefined): boolean {
   if (!header || !header.startsWith('Bearer ')) return false;
   const token = header.slice(7);
   try {
-    const payload = jwt.verify(token, env.JWT_SECRET) as { isSuperAdmin?: boolean };
+    // Pin HS256 to match every other jwt.verify site in the app.
+    // jsonwebtoken@9 already rejects `alg: none`, but leaving the
+    // algorithms array implicit means a future library-upgrade
+    // default change (or an accidental asymmetric-key confusion)
+    // could weaken this specific bypass path.
+    const payload = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as { isSuperAdmin?: boolean };
     return !!payload.isSuperAdmin;
   } catch {
     return false;

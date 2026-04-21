@@ -2,8 +2,6 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-import crypto from 'crypto';
-import jwt from 'jsonwebtoken';
 import { eq, and } from 'drizzle-orm';
 import {
   generateRegistrationOptions,
@@ -16,7 +14,7 @@ import type {
   AuthenticationResponseJSON,
 } from '@simplewebauthn/server';
 import { db } from '../db/index.js';
-import { passkeys, users, sessions } from '../db/schema/index.js';
+import { passkeys, users } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -243,14 +241,16 @@ export async function verifyAuthentication(response: AuthenticationResponseJSON)
   if (!user) throw AppError.notFound('User not found');
   if (!user.isActive) throw AppError.unauthorized('Account is deactivated');
 
-  const accessToken = jwt.sign(
-    { userId: user.id, tenantId: user.tenantId, role: user.role, isSuperAdmin: user.isSuperAdmin || false },
-    env.JWT_SECRET, { expiresIn: 900 },
-  );
-  const refreshToken = crypto.randomBytes(48).toString('hex');
-  const refreshHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
-  const expiresAt = new Date(); expiresAt.setDate(expiresAt.getDate() + 7);
-  await db.insert(sessions).values({ userId: user.id, refreshTokenHash: refreshHash, expiresAt });
+  // Mint tokens via the shared helper so MAX_SESSIONS_PER_USER is enforced
+  // and JWT_ACCESS_EXPIRY is honoured. The previous inline path bypassed
+  // both and let passkey logins accumulate unbounded session rows.
+  const { issueSession } = await import('./auth.service.js');
+  const { accessToken, refreshToken } = await issueSession({
+    userId: user.id,
+    tenantId: user.tenantId,
+    role: user.role,
+    isSuperAdmin: user.isSuperAdmin || false,
+  });
 
   // Update last login
   await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));

@@ -15,6 +15,7 @@
 // limit doing its job.
 
 import type { Request, Response, NextFunction } from 'express';
+import { recordSecurityEvent } from './security-audit.js';
 
 const SITEVERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
 const SITEVERIFY_TIMEOUT_MS = 3000;
@@ -95,6 +96,7 @@ export async function verifyTurnstile(token: string | null | undefined, remoteIp
     });
     if (!res.ok) {
       // CF siteverify is degraded — fail open (see file header).
+      recordSecurityEvent({ component: 'turnstile', reason: 'network_error', details: { status: res.status } });
       return { allow: true, skipped: 'network_error' };
     }
     const data = (await res.json()) as {
@@ -106,6 +108,7 @@ export async function verifyTurnstile(token: string | null | undefined, remoteIp
     return { allow: false, errorCodes: data['error-codes'] || ['unknown'], raw: data };
   } catch (err) {
     const reason = err instanceof Error && err.name === 'AbortError' ? 'timeout' : 'network_error';
+    recordSecurityEvent({ component: 'turnstile', reason });
     // Fail open on timeout/network: global rate limits + per-account
     // lockout still bound the damage if Turnstile is actually down.
     return { allow: true, skipped: reason };

@@ -3,6 +3,7 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import crypto from 'crypto';
+import { recordSecurityEvent } from './security-audit.js';
 
 // Have I Been Pwned — Pwned Passwords API (k-anonymity).
 // https://haveibeenpwned.com/API/v3#PwnedPasswords
@@ -75,6 +76,7 @@ export async function checkPasswordBreached(password: string): Promise<HibpCheck
       signal: controller.signal,
     });
     if (!res.ok) {
+      recordSecurityEvent({ component: 'hibp', reason: 'network_error', details: { status: res.status } });
       return { ok: false, breached: false, count: 0, skipped: 'network_error' };
     }
     const body = await res.text();
@@ -91,6 +93,7 @@ export async function checkPasswordBreached(password: string): Promise<HibpCheck
     return { ok: true, breached: false, count: 0 };
   } catch (err) {
     const reason = err instanceof Error && err.name === 'AbortError' ? 'timeout' : 'network_error';
+    recordSecurityEvent({ component: 'hibp', reason });
     return { ok: false, breached: false, count: 0, skipped: reason };
   } finally {
     clearTimeout(timer);

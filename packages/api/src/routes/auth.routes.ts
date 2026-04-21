@@ -57,6 +57,32 @@ const loginAccountLimiter = rateLimit({
   },
 });
 
+// Per-email forgot-password limiter. Pairs with the per-IP authLimiter
+// to stop an attacker rotating residential proxies from triggering a
+// mailbox full of reset links for a single victim. Cap is 5 requests
+// per hour per email; the existing authLimiter (10/min/IP) catches the
+// volumetric case, this one catches the per-victim case.
+const forgotPasswordEmailLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: getRateLimitStore('forgot-password-email'),
+  keyGenerator: (req) => {
+    const email = (req.body && typeof req.body === 'object' && 'email' in req.body
+      ? String((req.body as { email?: string }).email || '')
+      : ''
+    ).trim().toLowerCase();
+    return email ? `email:${email}` : `ip:${req.ip || 'unknown'}`;
+  },
+  message: {
+    error: {
+      message: 'Too many password reset requests for this email. Try again later.',
+      code: 'FORGOT_PASSWORD_RATE_LIMIT',
+    },
+  },
+});
+
 export const authRouter = Router();
 
 authRouter.post('/register', authLimiter, requireTurnstile(), validate(registerSchema), async (req, res) => {
@@ -130,24 +156,18 @@ authRouter.post('/tfa/verify', authLimiter, async (req, res) => {
     await tfaService.trustDevice(payload.userId, deviceFingerprint, req.headers['user-agent'] || '', req.ip || '');
   }
 
-  // Issue real tokens
+  // Issue real tokens via the shared helper — this is what enforces
+  // MAX_SESSIONS_PER_USER and reads JWT_ACCESS_EXPIRY from env. The
+  // prior inline db.insert(sessions) path bypassed both.
   const user = await authService.getMe(payload.userId);
   const accessibleTenants = await authService.getAccessibleTenants(payload.userId);
-  const activeTenant = accessibleTenants[0];
 
-  const jwt = await import('jsonwebtoken');
-  const { env } = await import('../config/env.js');
-  const accessToken = jwt.default.sign(
-    { userId: user.id, tenantId: user.tenantId, role: user.role, isSuperAdmin: user.isSuperAdmin || false },
-    env.JWT_SECRET, { expiresIn: 900 },
-  );
-  const crypto = await import('crypto');
-  const refreshToken = crypto.default.randomBytes(48).toString('hex');
-  const refreshHash = crypto.default.createHash('sha256').update(refreshToken).digest('hex');
-  const { sessions } = await import('../db/schema/index.js');
-  const { db } = await import('../db/index.js');
-  const expiresAt = new Date(); expiresAt.setDate(expiresAt.getDate() + 7);
-  await db.insert(sessions).values({ userId: user.id, refreshTokenHash: refreshHash, expiresAt });
+  const { accessToken, refreshToken } = await authService.issueSession({
+    userId: user.id,
+    tenantId: user.tenantId,
+    role: user.role,
+    isSuperAdmin: user.isSuperAdmin || false,
+  });
 
   setRefreshCookie(res, refreshToken);
   res.json({
@@ -188,22 +208,15 @@ authRouter.post('/tfa/verify-recovery', authLimiter, async (req, res) => {
     res.status(400).json({ error: { message: 'Invalid recovery code' } }); return;
   }
 
-  // Issue real tokens (same as tfa/verify success path)
+  // Issue real tokens via the shared helper (same as tfa/verify success path).
   const user = await authService.getMe(payload.userId);
   const accessibleTenants = await authService.getAccessibleTenants(payload.userId);
-  const jwt = await import('jsonwebtoken');
-  const { env } = await import('../config/env.js');
-  const accessToken = jwt.default.sign(
-    { userId: user.id, tenantId: user.tenantId, role: user.role, isSuperAdmin: user.isSuperAdmin || false },
-    env.JWT_SECRET, { expiresIn: 900 },
-  );
-  const crypto = await import('crypto');
-  const refreshToken = crypto.default.randomBytes(48).toString('hex');
-  const refreshHash = crypto.default.createHash('sha256').update(refreshToken).digest('hex');
-  const { sessions } = await import('../db/schema/index.js');
-  const { db } = await import('../db/index.js');
-  const expiresAt = new Date(); expiresAt.setDate(expiresAt.getDate() + 7);
-  await db.insert(sessions).values({ userId: user.id, refreshTokenHash: refreshHash, expiresAt });
+  const { accessToken, refreshToken } = await authService.issueSession({
+    userId: user.id,
+    tenantId: user.tenantId,
+    role: user.role,
+    isSuperAdmin: user.isSuperAdmin || false,
+  });
 
   setRefreshCookie(res, refreshToken);
   res.json({
@@ -239,7 +252,7 @@ authRouter.post('/logout', async (req, res) => {
   res.json({ message: 'Logged out' });
 });
 
-authRouter.post('/forgot-password', authLimiter, requireTurnstile(), validate(forgotPasswordSchema), async (req, res) => {
+authRouter.post('/forgot-password', authLimiter, forgotPasswordEmailLimiter, requireTurnstile(), validate(forgotPasswordSchema), async (req, res) => {
   await authService.forgotPassword(req.body.email);
   res.json({ message: 'If an account exists with that email, a reset link has been sent' });
 });
