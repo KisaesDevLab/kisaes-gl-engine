@@ -9,6 +9,8 @@ import { db, pool } from './db/index.js';
 import { startBackupScheduler } from './services/backup-scheduler.service.js';
 import { startRecurringScheduler } from './services/recurring.service.js';
 import { startFingerprintScheduler } from './services/db-fingerprint.service.js';
+import { startCloudflaredAlerter, stopCloudflaredAlerter } from './services/cloudflared/alert.service.js';
+import { startBackupVerifier, stopBackupVerifier } from './services/backup-verify.service.js';
 import * as coaTemplatesService from './services/coa-templates.service.js';
 import { seedPayrollTemplates } from './services/payroll-templates.seed.js';
 import type { Server } from 'http';
@@ -35,6 +37,11 @@ function installShutdownHandlers(server: Server): void {
 
     // Stop accepting new HTTP connections; existing ones finish.
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    // Halt the interval-based schedulers so they don't try to run
+    // a tick against a closing pool. Ticks that are already in
+    // flight drain via the advisory lock's existing timeout.
+    stopCloudflaredAlerter();
+    stopBackupVerifier();
     try {
       await pool.end();
       console.log('[shutdown] DB pool closed, exiting cleanly');
@@ -58,7 +65,49 @@ function installShutdownHandlers(server: Server): void {
   });
 }
 
+function logBootSummary(): void {
+  // Security-sensitive effective settings, logged once at boot. Uses
+  // the plain console so the line is visible even when LOG_LEVEL is
+  // raised in production. Any operator looking at "what's on on this
+  // appliance" should be able to answer from the first 20 log lines.
+  const summary = {
+    event: 'boot_summary',
+    nodeEnv: env.NODE_ENV,
+    corsOrigin: env.CORS_ORIGIN,
+    staffIpAllowlistEnforced: env.STAFF_IP_ALLOWLIST_ENFORCED === '1',
+    stripeWebhookIpAllowlistEnforced: env.STRIPE_WEBHOOK_IP_ALLOWLIST_ENFORCED === '1',
+    rateLimitRedis: env.RATE_LIMIT_REDIS === '1',
+    hibpDisabled: env.HIBP_DISABLED === '1',
+    turnstileConfigured: Boolean(env.TURNSTILE_SECRET_KEY) && env.TURNSTILE_SECRET_KEY !== 'disabled',
+    trustProxy: env.TRUST_PROXY ?? 'loopback',
+    tagsSplitLevelV2: env.TAGS_SPLIT_LEVEL_V2,
+    tagBudgetsV1: env.TAG_BUDGETS_V1,
+  };
+  console.log('[boot]', JSON.stringify(summary));
+
+  // Production-mode sanity checks. These don't fail boot — a dev
+  // running docker-compose.dev.yml on localhost is expected to hit
+  // them — but they loudly surface misconfig that would otherwise
+  // manifest as silent tenant-data leakage or CORS-preflight
+  // mysteries.
+  if (env.NODE_ENV === 'production') {
+    if (env.CORS_ORIGIN.includes('localhost') || env.CORS_ORIGIN.includes('127.0.0.1')) {
+      console.warn('[boot] WARN: CORS_ORIGIN contains localhost in NODE_ENV=production. Set it to your real hostname (e.g. https://books.yourfirm.com) before exposing the appliance.');
+    }
+    if (!env.TURNSTILE_SECRET_KEY || env.TURNSTILE_SECRET_KEY === 'disabled') {
+      console.warn('[boot] WARN: Turnstile is disabled. Public-facing installs should configure TURNSTILE_SITE_KEY + TURNSTILE_SECRET_KEY to blunt credential-stuffing bots.');
+    }
+    if (env.STAFF_IP_ALLOWLIST_ENFORCED !== '1' && env.CORS_ORIGIN !== 'http://localhost:5173') {
+      // Soft note — staff IP allowlist is optional, but worth
+      // mentioning on a non-localhost deployment that it's off.
+      console.log('[boot] NOTE: STAFF_IP_ALLOWLIST_ENFORCED=0. Set to 1 and populate via Admin → Security → Staff IP Allowlist for office-only access.');
+    }
+  }
+}
+
 async function start() {
+  logBootSummary();
+
   // Run migrations
   console.log('Running migrations...');
   await migrate(db, { migrationsFolder: './packages/api/src/db/migrations' });
@@ -90,6 +139,14 @@ async function start() {
     startBackupScheduler();
     startRecurringScheduler();
     startFingerprintScheduler();
+    // The worker container (when present) also starts these two; the
+    // Postgres advisory lock in each scheduler's cycle ensures only
+    // one process does a given tick. Single-container installs
+    // (docker-compose.prod.yml has no worker service) rely on these
+    // calls to fire the tunnel-health audit and the monthly backup
+    // integrity check.
+    startCloudflaredAlerter();
+    startBackupVerifier();
   });
   installShutdownHandlers(server);
 }

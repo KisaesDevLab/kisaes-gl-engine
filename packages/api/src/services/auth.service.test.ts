@@ -114,6 +114,65 @@ describe('Auth Service', () => {
         }),
       ).rejects.toThrow('Invalid email or password');
     });
+
+    it('caps per-user sessions at 3; the oldest gets revoked when a fourth login arrives', async () => {
+      const reg = await authService.register({
+        email: 'session-cap@example.com',
+        password: 'password123',
+        displayName: 'Session Cap',
+        companyName: 'Cap Co',
+      });
+      // Registration already created session #1. Login three more
+      // times — the oldest (the register session) should be trimmed
+      // once we cross the MAX_SESSIONS_PER_USER=3 threshold.
+      const logins = [];
+      for (let i = 0; i < 3; i++) {
+        const r = await authService.login({ email: 'session-cap@example.com', password: 'password123' });
+        logins.push(r);
+      }
+
+      // Verify: the original register refresh token must now fail,
+      // while the three most recent sessions all work.
+      await expect(authService.refresh(reg.tokens.refreshToken)).rejects.toThrow('Invalid refresh token');
+      for (const login of logins) {
+        // refresh() rotates, so we test once and then remaining
+        // sessions remain live via their new tokens.
+        const newTokens = await authService.refresh(login.tokens.refreshToken);
+        expect(newTokens.accessToken).toBeTruthy();
+      }
+    });
+
+    it('locks the account after 5 failed attempts and requires admin unlock', async () => {
+      const reg = await authService.register({
+        email: 'lockout@example.com',
+        password: 'password123',
+        displayName: 'Lockout User',
+        companyName: 'Lockout Co',
+      });
+
+      for (let i = 0; i < 5; i++) {
+        await expect(
+          authService.login({ email: 'lockout@example.com', password: 'wrongpassword' }),
+        ).rejects.toThrow('Invalid email or password');
+      }
+
+      // 6th attempt — even with the correct password — must fail
+      // because the account is now locked. Auto-unlock-after-15-min
+      // was removed per CLOUDFLARE_TUNNEL_PLAN Phase 3.
+      await expect(
+        authService.login({ email: 'lockout@example.com', password: 'password123' }),
+      ).rejects.toThrow(/locked/i);
+
+      // Admin unlock clears the counter and lets the correct
+      // password through.
+      const { unlockUser } = await import('./admin.service.js');
+      const result = await unlockUser(reg.user.id, reg.user.id);
+      expect(result.unlocked).toBe(true);
+      expect(result.wasLocked).toBe(true);
+
+      const ok = await authService.login({ email: 'lockout@example.com', password: 'password123' });
+      expect(ok.tokens.accessToken).toBeTruthy();
+    });
   });
 
   describe('refresh', () => {

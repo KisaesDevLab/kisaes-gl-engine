@@ -103,6 +103,26 @@ export async function getAuthMethods(email?: string) {
   // endpoint into a reliable email-enumeration oracle. Always return the
   // same keys with safe defaults; only mutate the values we've decided are
   // safe to disclose (currently: none).
+  // Turnstile site key is safe to expose to the browser — it's the
+  // public half of the pair (the secret lives server-side). Admin-UI
+  // writes land in system_settings; env is the fallback so an
+  // airgapped first-boot still works. `disabled` or empty either way
+  // means "no widget on the login page", which aligns with the
+  // server-side verifier's skip-on-disabled path.
+  let turnstileSiteKey: string | null = null;
+  try {
+    const { getSetting } = await import('./admin.service.js');
+    const { SystemSettingsKeys } = await import('../constants/system-settings-keys.js');
+    const dbValue = await getSetting(SystemSettingsKeys.TURNSTILE_SITE_KEY);
+    if (dbValue && dbValue !== 'disabled') turnstileSiteKey = dbValue;
+  } catch {
+    // DB unreachable — fall through to env.
+  }
+  if (!turnstileSiteKey) {
+    const rawSiteKey = process.env['TURNSTILE_SITE_KEY'];
+    turnstileSiteKey = rawSiteKey && rawSiteKey !== 'disabled' ? rawSiteKey : null;
+  }
+
   const base = {
     loginMethods: {
       password: true,
@@ -114,6 +134,7 @@ export async function getAuthMethods(email?: string) {
     smsReady: caps.smsReady,
     userHasPasskeys: false,
     userPreferredMethod: 'password' as string,
+    turnstileSiteKey,
   };
 
   if (!email) return base;

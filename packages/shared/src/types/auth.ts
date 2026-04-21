@@ -25,6 +25,8 @@ export interface Session {
 export interface LoginInput {
   email: string;
   password: string;
+  /** Cloudflare Turnstile response token from the login widget. Empty when Turnstile is server-disabled. */
+  turnstileToken?: string;
 }
 
 export interface RegisterInput {
@@ -33,6 +35,8 @@ export interface RegisterInput {
   displayName: string;
   companyName: string;
   businessType?: string;
+  /** Cloudflare Turnstile response token from the signup widget. Empty when Turnstile is server-disabled. */
+  turnstileToken?: string;
 }
 
 export interface AuthTokens {

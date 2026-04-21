@@ -123,11 +123,37 @@ app.use(
   }),
 );
 
-// Trust the appliance's front nginx so req.protocol respects
-// X-Forwarded-Proto and req.ip reflects the client, not the proxy.
-// Without this, request-derived URLs (below) pick up http:// even when
-// the user is on https:// through the reverse proxy.
-app.set('trust proxy', true);
+// Trust-proxy configuration.
+//
+// Security-sensitive: `req.ip`, `req.protocol`, and `req.headers.host`
+// are all read from X-Forwarded-* when trust proxy is enabled. Every
+// consumer of these (rate limiters, staff IP allowlist, Stripe IP
+// allowlist, baseUrlFor) makes authorization or URL-construction
+// decisions based on them. Blanket `trust proxy: true` without a real
+// proxy in front of the appliance lets an attacker spoof the headers
+// and trivially bypass those checks.
+//
+// Defaults to `'loopback'` (only 127.0.0.0/8, ::1, fc00::/7 — safe for
+// direct-exposure installs). Operators behind a reverse proxy or the
+// Cloudflare Tunnel sidecar should set TRUST_PROXY=true (or a CIDR
+// list like `"10.0.0.0/8,cloudflared"`). The Cloudflare Tunnel setup
+// guide calls this out — without TRUST_PROXY=true, the tunnel's
+// X-Forwarded-For header is ignored and every request appears to
+// come from the cloudflared sidecar's internal IP.
+const trustProxyRaw = process.env['TRUST_PROXY'];
+if (!trustProxyRaw) {
+  app.set('trust proxy', 'loopback');
+} else if (trustProxyRaw === 'true' || trustProxyRaw === '1') {
+  app.set('trust proxy', true);
+} else if (trustProxyRaw === 'false' || trustProxyRaw === '0') {
+  app.set('trust proxy', false);
+} else if (/^\d+$/.test(trustProxyRaw)) {
+  // Numeric → treat as number of hops (Express feature).
+  app.set('trust proxy', Number(trustProxyRaw));
+} else {
+  // Comma-separated CIDR list / keyword (e.g. "10.0.0.0/8,loopback").
+  app.set('trust proxy', trustProxyRaw.split(',').map((s) => s.trim()).filter(Boolean));
+}
 app.use(compression());
 
 // Stripe webhook route MUST be mounted BEFORE express.json() — raw body needed for signature verification
@@ -143,12 +169,34 @@ app.use('/api/v1/plaid/webhooks', plaidWebhookRouter);
 app.use(express.json({ limit: '10mb' }));
 app.use(morgan('short'));
 
-// Global rate limiter — 200 requests/minute per IP
+// Optional staff-route IP allowlist (CLOUDFLARE_TUNNEL_PLAN Phase 6).
+// No-op unless STAFF_IP_ALLOWLIST_ENFORCED=1 is set. Mounted after the
+// webhook routers so external machine-to-machine traffic reaches its
+// raw-body handlers without an IP check; mounted before authenticate()
+// so unauthorised IPs get a uniform 403 without leaking whether a
+// session would've worked. Super-admin tokens bypass the check (break-
+// glass).
+import { staffIpAllowlist } from './middleware/staff-ip-allowlist.js';
+app.use('/api/v1/', staffIpAllowlist());
+
+// Global rate limiter — 300 requests/minute per IP.
+// See CLOUDFLARE_TUNNEL_PLAN Phase 5: this is a broad per-IP ceiling
+// across the whole /api surface; tighter per-endpoint and per-account
+// limiters (auth.routes.ts, ai.routes.ts, chat.routes.ts, etc.) sit
+// below it and catch credential-stuffing / scraping patterns that
+// stay under the global bound. Webhook paths reach their respective
+// raw-body handlers via /api/v1/stripe and /api/v1/plaid/webhooks,
+// which are mounted BEFORE this middleware in the chain.
+// Optional Redis-backed store — see utils/rate-limit-store.ts. Off by
+// default; enable with RATE_LIMIT_REDIS=1 when running multi-instance
+// or when counters must survive container restart.
+import { getRateLimitStore } from './utils/rate-limit-store.js';
 const globalLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 200,
+  max: 300,
   standardHeaders: true,
   legacyHeaders: false,
+  store: getRateLimitStore('global'),
   message: { error: { message: 'Too many requests, please try again later' } },
 });
 app.use('/api/', globalLimiter);
@@ -313,12 +361,28 @@ app.get('/api/v1/coa-templates/options', async (_req, res) => {
 // Public API v2
 app.use('/api/v2', apiV2Router);
 
-// Swagger UI — public in development, requires auth in production
-import { authenticate as swaggerAuth } from './middleware/auth.js';
+// Swagger UI — public in development, super-admin only in production.
+// The API surface map is sensitive info-leak for a firm-employee tenant
+// (routes like /admin/tailscale, /admin/backup-verify, Plaid webhooks
+// etc.); anyone authenticated shouldn't be able to browse it. In
+// development we leave it open so contributors can poke the API
+// without first minting a super-admin token.
+//
+// authenticate() is async — `await` it so its throws (AppError.unauthorized)
+// reach the Express error handler via express-async-errors instead of
+// leaking as unhandled promise rejections.
+import { authenticate as swaggerAuth, requireSuperAdmin as swaggerRequireSuperAdmin } from './middleware/auth.js';
 app.use('/api/docs',
-  (req: any, res: any, next: any) => {
-    if (env.NODE_ENV === 'production') return swaggerAuth(req, res, next);
-    next();
+  async (req: any, res: any, next: any) => {
+    if (env.NODE_ENV !== 'production') return next();
+    await swaggerAuth(req, res, (err?: unknown) => {
+      if (err) return next(err);
+      try {
+        swaggerRequireSuperAdmin(req, res, next);
+      } catch (e) {
+        next(e);
+      }
+    });
   },
   swaggerUi.serve,
   swaggerUi.setup(swaggerSpec, {

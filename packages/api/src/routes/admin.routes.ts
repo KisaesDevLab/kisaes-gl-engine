@@ -86,6 +86,114 @@ const stepUpLimiter = rateLimit({
 // Tailscale remote-access management (super-admin only, already gated above).
 adminRouter.use('/tailscale', tailscaleRouter);
 
+// Prometheus-format metrics endpoint. Mounted under the admin router
+// (rather than top-level /metrics) so it inherits:
+//   - authenticate + requireSuperAdmin (this router's guards)
+//   - the global rate limiter (/api/...)
+//   - the staff-IP allowlist when enforced (/api/v1/...)
+// Scheduler counters and per-tenant activity can reveal firm behaviour
+// if exposed broadly, so the triple gate is deliberate. Prometheus
+// operators point their scrape config at /api/v1/admin/metrics and
+// configure it with a super-admin bearer token.
+adminRouter.get('/metrics', async (_req, res) => {
+  const { renderMetrics } = await import('../utils/metrics.js');
+  res.set('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+  res.send(renderMetrics());
+});
+
+// ─── Cloudflare Tunnel Status (Phase 8) ────────────────────────
+// Super-admin only. Returns a snapshot of the cloudflared sidecar's
+// Prometheus metrics so the admin UI can render "tunnel connected —
+// N connections" without anyone needing a Cloudflare dashboard
+// session. Safe against a disconnected or absent cloudflared: the
+// service returns `reachable: false` rather than throwing, so the
+// response is always 200 + useful even during an outage.
+adminRouter.get('/cloudflared/status', async (_req, res) => {
+  const { getCloudflaredStatus } = await import('../services/cloudflared/status.service.js');
+  const status = await getCloudflaredStatus();
+  res.json(status);
+});
+
+// ─── Tunnel / Turnstile reconfigure (Phase 9) ──────────────────
+// Read current state + rotate Turnstile keys without editing .env +
+// restarting. Tunnel token rotation is NOT exposed here — the
+// cloudflared sidecar reads its token at container start and can't
+// hot-swap; rotating the tunnel requires restarting that sidecar
+// with a new token, which is an ops action (documented in
+// docs/firm-cloudflare-setup.md Part G). This endpoint surfaces
+// everything an admin CAN change live, and flags what they can't.
+adminRouter.get('/tunnel-config', async (_req, res) => {
+  const { getCloudflaredStatus } = await import('../services/cloudflared/status.service.js');
+  const [tunnelStatus, siteKey, secretKey] = await Promise.all([
+    getCloudflaredStatus(),
+    adminService.getSetting(SystemSettingsKeys.TURNSTILE_SITE_KEY),
+    adminService.getSetting(SystemSettingsKeys.TURNSTILE_SECRET_KEY),
+  ]);
+  const envSiteKey = process.env['TURNSTILE_SITE_KEY'] || null;
+  const envSecretKey = process.env['TURNSTILE_SECRET_KEY'] || null;
+  res.json({
+    tunnel: tunnelStatus,
+    // Expose the site key (public) so the admin can copy / verify it;
+    // NEVER expose the secret — only whether one is configured.
+    turnstileSiteKey: siteKey ?? envSiteKey,
+    turnstileSecretConfigured: !!(secretKey ?? envSecretKey),
+    // Tell the UI where each current value is coming from so the
+    // operator knows whether an admin-panel rotation will override
+    // a .env value or write the first one.
+    turnstileSiteKeySource: siteKey ? 'database' : envSiteKey ? 'env' : 'unset',
+    turnstileSecretSource: secretKey ? 'database' : envSecretKey ? 'env' : 'unset',
+  });
+});
+
+adminRouter.put('/tunnel-config', async (req, res) => {
+  const siteKey = typeof req.body?.turnstileSiteKey === 'string' ? req.body.turnstileSiteKey.trim() : null;
+  const secretKey = typeof req.body?.turnstileSecretKey === 'string' ? req.body.turnstileSecretKey.trim() : null;
+  if (siteKey !== null) {
+    await adminService.setSetting(SystemSettingsKeys.TURNSTILE_SITE_KEY, siteKey);
+  }
+  // Empty string in secretKey means "leave unchanged" so the UI can
+  // send the site key without the operator re-entering the secret.
+  if (secretKey) {
+    await adminService.setSetting(SystemSettingsKeys.TURNSTILE_SECRET_KEY, secretKey);
+  }
+  // Bust the in-memory cache so the very next auth request sees the
+  // new secret. See utils/turnstile.ts.
+  const { invalidateTurnstileSecretCache } = await import('../utils/turnstile.js');
+  invalidateTurnstileSecretCache();
+  res.json({ saved: true });
+});
+
+// ─── Staff IP Allowlist (Phase 6) ──────────────────────────────
+// Super-admin only. The allowlist is ignored at request time unless
+// STAFF_IP_ALLOWLIST_ENFORCED=1 — CRUD works either way so operators
+// can populate and test the list before flipping enforcement on.
+adminRouter.get('/ip-allowlist', async (_req, res) => {
+  const { listEntries } = await import('../services/staff-ip-allowlist.service.js');
+  const entries = await listEntries();
+  res.json({
+    enforced: process.env['STAFF_IP_ALLOWLIST_ENFORCED'] === '1',
+    entries,
+  });
+});
+
+adminRouter.post('/ip-allowlist', async (req, res) => {
+  const { addEntry, invalidateCache } = await import('../services/staff-ip-allowlist.service.js');
+  const entry = await addEntry({
+    cidr: String(req.body?.cidr || ''),
+    description: req.body?.description ?? null,
+    createdBy: req.userId,
+  });
+  invalidateCache();
+  res.status(201).json(entry);
+});
+
+adminRouter.delete('/ip-allowlist/:id', async (req, res) => {
+  const { removeEntry, invalidateCache } = await import('../services/staff-ip-allowlist.service.js');
+  await removeEntry(req.params['id']!);
+  invalidateCache();
+  res.json({ deleted: true });
+});
+
 // ─── System Stats ────────────────────────────────────────────────
 
 adminRouter.get('/stats', async (req, res) => {
@@ -220,6 +328,47 @@ adminRouter.post('/users/create', validate(adminCreateUserSchema), async (req, r
 adminRouter.post('/users/:id/reset-password', validate(adminResetPasswordSchema), async (req, res) => {
   await adminService.resetUserPassword(req.params['id']!, req.body.password, req.userId);
   res.json({ message: 'Password reset' });
+});
+
+// Admin-required lockout unlock — CLOUDFLARE_TUNNEL_PLAN Phase 3.
+// Auto-unlock-after-15-min was removed because it gave credential-
+// stuffing attackers a cheap oracle. A locked account now requires
+// an explicit admin action to reset the failed-attempts counter.
+adminRouter.post('/users/:id/unlock', async (req, res) => {
+  const result = await adminService.unlockUser(req.params['id']!, req.userId);
+  res.json(result);
+});
+
+// Manual backup verification trigger. The worker runs this monthly
+// automatically; super-admins can also kick it off on demand after
+// restoring from disaster to confirm the new backups are readable.
+// Runs synchronously — expect 1–5s per backup file. Uses the same
+// advisory lock as the scheduler so a manual click during a worker
+// tick returns 409 instead of doing duplicate I/O and duplicate
+// audit-log entries.
+adminRouter.post('/backup-verify', async (_req, res) => {
+  const { verifyLatestBackups } = await import('../services/backup-verify.service.js');
+  const { withSchedulerLock } = await import('../utils/scheduler-lock.js');
+  const summary = await withSchedulerLock('backup-verifier', verifyLatestBackups);
+  if (summary === null) {
+    res.status(409).json({
+      error: { message: 'A backup verification is already running. Try again in a minute.', code: 'VERIFY_IN_PROGRESS' },
+    });
+    return;
+  }
+  res.json(summary);
+});
+
+// GitHub release check — read-only, cached 5 min. Does NOT apply any
+// update; it only tells the operator whether a newer image exists on
+// GHCR so they can bump VIBE_MYBOOKS_TAG and pull on their schedule.
+// ?force=1 bypasses the cache for operators who just finished a release
+// and want to confirm the stamp shows up.
+adminRouter.get('/updates/check', async (req, res) => {
+  const { checkForUpdate } = await import('../services/updates.service.js');
+  const force = req.query['force'] === '1' || req.query['force'] === 'true';
+  const result = await checkForUpdate(force);
+  res.json(result);
 });
 
 adminRouter.post('/users/:id/toggle-active', async (req, res) => {

@@ -8,6 +8,9 @@ import { recurringSchedules, transactions, journalLines, accounts } from '../db/
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
 import * as billService from './bill.service.js';
+import { incCounter, recordSchedulerTick } from '../utils/metrics.js';
+import { log } from '../utils/logger.js';
+import { withSchedulerLock } from '../utils/scheduler-lock.js';
 
 function calculateNextOccurrence(current: string, frequency: string, interval: number): string {
   const d = new Date(current);
@@ -238,16 +241,17 @@ export function startRecurringScheduler(): void {
   console.log('[Recurring Scheduler] Registered (checks hourly, first check in 2 min)');
 
   const runCycle = async () => {
+    const started = Date.now();
     try {
       // Advisory-lock the cycle so that when multiple API instances run
       // (horizontal scale, or a rolling deploy with a moment of overlap)
       // only one processes the tick. Correctness is already guaranteed by
       // postNext's conditional-UPDATE claim pattern — this just avoids
       // wasting DB scans on every instance.
-      const { withSchedulerLock } = await import('../utils/scheduler-lock.js');
       const result = await withSchedulerLock('recurring-scheduler', processAllDue);
       if (result && result.processed > 0) {
-        console.log(`[Recurring Scheduler] Posted ${result.processed}/${result.total} due schedule(s)`);
+        log.info({ component: 'recurring-scheduler', event: 'cycle_posted', processed: result.processed, total: result.total });
+        incCounter('recurring_posted_total', 'Total recurring transactions posted', undefined, result.processed);
       }
 
       // Piggyback the session prune on the same hourly tick — cheap to run,
@@ -255,10 +259,13 @@ export function startRecurringScheduler(): void {
       // on recurring doesn't block the prune next time around.
       const prune = await withSchedulerLock('session-prune', pruneExpiredSessions);
       if (prune && prune.pruned > 0) {
-        console.log(`[Session Prune] Removed ${prune.pruned} expired session row(s)`);
+        log.info({ component: 'session-prune', event: 'pruned', count: prune.pruned });
+        incCounter('session_prune_total', 'Total expired sessions pruned', undefined, prune.pruned);
       }
+      recordSchedulerTick('recurring', Date.now() - started, 'ok');
     } catch (err: any) {
-      console.error('[Recurring Scheduler] Cycle error:', err.message);
+      log.error({ component: 'recurring-scheduler', event: 'cycle_error', message: err.message });
+      recordSchedulerTick('recurring', Date.now() - started, 'error');
     }
   };
 

@@ -29,3 +29,4 @@ export * from './payroll.js';
 export * from './stripe.js';
 export * from './knowledge.js';
 export * from './tailscale.js';
+export * from './staff-ip-allowlist.js';

@@ -21,7 +21,24 @@ declare global {
       userRole: string;
       isSuperAdmin: boolean;
       impersonating?: string;
+      /** JWT `iat` claim in seconds. Set by authenticate() — used by
+       *  requireSuperAdmin to enforce the admin idle-timeout bound. */
+      tokenIssuedAt?: number;
     }
+  }
+}
+
+function parseExpiryToSeconds(expiry: string): number {
+  const match = expiry.match(/^(\d+)(s|m|h|d)$/);
+  if (!match) return 1800;
+  const value = parseInt(match[1]!, 10);
+  const unit = match[2]!;
+  switch (unit) {
+    case 's': return value;
+    case 'm': return value * 60;
+    case 'h': return value * 3600;
+    case 'd': return value * 86400;
+    default: return 1800;
   }
 }
 
@@ -69,7 +86,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
 
   const token = queryToken || authHeader!.slice(7);
   try {
-    const payload = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as JwtPayload;
+    const payload = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as JwtPayload & { iat?: number };
 
     // Verify user is still active
     const user = await db.query.users.findFirst({ where: eq(users.id, payload.userId) });
@@ -82,6 +99,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     req.userRole = payload.role;
     req.isSuperAdmin = !!user.isSuperAdmin;
     req.impersonating = payload.impersonating;
+    req.tokenIssuedAt = typeof payload.iat === 'number' ? payload.iat : undefined;
     next();
   } catch (err) {
     if (err instanceof AppError) throw err;
@@ -92,10 +110,27 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
 /**
  * Middleware that requires super admin role.
  * Must be used AFTER authenticate.
+ *
+ * Also enforces the admin idle-timeout bound (CLOUDFLARE_TUNNEL_PLAN
+ * Phase 3). Tokens older than JWT_ADMIN_MAX_AGE are rejected with
+ * `ADMIN_SESSION_EXPIRED` so the frontend can force a re-login on
+ * admin routes without affecting the normal staff session. Skipped
+ * for API-key callers (req.tokenIssuedAt is undefined) because API
+ * keys have their own rotation policy.
  */
 export function requireSuperAdmin(req: Request, _res: Response, next: NextFunction) {
   if (!req.isSuperAdmin) {
     throw AppError.forbidden('Super admin access required');
+  }
+  if (req.tokenIssuedAt) {
+    const maxAgeSec = parseExpiryToSeconds(env.JWT_ADMIN_MAX_AGE);
+    const ageSec = Math.floor(Date.now() / 1000) - req.tokenIssuedAt;
+    if (ageSec > maxAgeSec) {
+      throw AppError.unauthorized(
+        `Admin session idle timeout exceeded (${Math.floor(maxAgeSec / 60)} minutes). Please sign in again.`,
+        'ADMIN_SESSION_EXPIRED',
+      );
+    }
   }
   next();
 }

@@ -319,6 +319,34 @@ export async function resetUserPassword(userId: string, newPassword: string, act
   await auditLog(user.tenantId, 'update', 'user_password_reset', userId, null, { email: user.email }, actingUserId);
 }
 
+/**
+ * Unlock a user whose login was locked by MAX_LOGIN_ATTEMPTS. See
+ * CLOUDFLARE_TUNNEL_PLAN Phase 3 — auto-unlock was removed because it
+ * gave credential-stuffing attackers a free wait-15-minutes-and-retry
+ * path. Super-admin explicit action is now the only way back in.
+ * Safe to call even when the user isn't locked — it's a clear of the
+ * failed-attempts counter either way.
+ */
+export async function unlockUser(userId: string, actingUserId?: string) {
+  const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+  if (!user) throw AppError.notFound('User not found');
+
+  const wasLocked = !!user.loginLockedUntil;
+  await db.update(users)
+    .set({ loginFailedAttempts: 0, loginLockedUntil: null, updatedAt: new Date() })
+    .where(eq(users.id, userId));
+  await auditLog(
+    user.tenantId,
+    'update',
+    'user_login_unlocked',
+    userId,
+    { failedAttempts: user.loginFailedAttempts || 0, wasLocked },
+    { failedAttempts: 0, wasLocked: false },
+    actingUserId,
+  );
+  return { unlocked: true, wasLocked };
+}
+
 export async function toggleUserActive(userId: string, actingUserId?: string) {
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   if (!user) throw AppError.notFound('User not found');

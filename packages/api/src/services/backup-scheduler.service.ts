@@ -12,6 +12,8 @@ import {
   purgeExpiredRemoteBackups,
   type GfsRetentionConfig,
 } from './backup.service.js';
+import { recordSchedulerTick } from '../utils/metrics.js';
+import { log } from '../utils/logger.js';
 
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 60 minutes
 const INITIAL_DELAY_MS = 5 * 60 * 1000; // 5 minutes after boot
@@ -23,9 +25,13 @@ const SCHEDULE_INTERVALS: Record<string, number> = {
 };
 
 async function runBackupCycle(): Promise<void> {
+  const started = Date.now();
   try {
     const schedule = await getSetting('backup_schedule');
-    if (!schedule || schedule === 'none') return;
+    if (!schedule || schedule === 'none') {
+      recordSchedulerTick('backup', Date.now() - started, 'skipped');
+      return;
+    }
 
     const intervalMs = SCHEDULE_INTERVALS[schedule];
     if (!intervalMs) return;
@@ -87,9 +93,12 @@ async function runBackupCycle(): Promise<void> {
 
     // Mark completion
     await setSetting('backup_last_run', new Date().toISOString());
-    console.log('[Backup Scheduler] Cycle complete');
+    const durationMs = Date.now() - started;
+    log.info({ component: 'backup-scheduler', event: 'cycle_complete', durationMs, schedule });
+    recordSchedulerTick('backup', durationMs, 'ok');
   } catch (err: any) {
-    console.error('[Backup Scheduler] Unexpected error:', err.message);
+    log.error({ component: 'backup-scheduler', event: 'cycle_error', message: err.message, durationMs: Date.now() - started });
+    recordSchedulerTick('backup', Date.now() - started, 'error');
   }
 }
 
