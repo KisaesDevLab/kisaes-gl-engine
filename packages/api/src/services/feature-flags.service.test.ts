@@ -34,12 +34,18 @@ describe('feature-flags.service', () => {
   });
 
   describe('seedDefaultsForNewTenant', () => {
-    it('inserts all eight Practice flags as enabled', async () => {
+    it('inserts a row for every Practice flag, honoring the per-flag default', async () => {
       await featureFlagsService.seedDefaultsForNewTenant(tenantId);
       const flags = await featureFlagsService.listFlagsForTenant(tenantId);
+      // Every flag in the catalog should have a row.
       expect(Object.keys(flags)).toHaveLength(PRACTICE_FEATURE_FLAGS.length);
+      // FLAGS_DEFAULT_OFF_FOR_NEW_TENANTS is the source of truth for which
+      // flags ship disabled on a fresh tenant. Re-deriving expected here
+      // (rather than asserting all-true) prevents test/impl drift when the
+      // OFF list changes.
       for (const key of PRACTICE_FEATURE_FLAGS) {
-        expect(flags[key]?.enabled).toBe(true);
+        const expected = !featureFlagsService.FLAGS_DEFAULT_OFF_FOR_NEW_TENANTS.has(key);
+        expect(flags[key]?.enabled, `flag ${key} expected enabled=${expected}`).toBe(expected);
       }
     });
 

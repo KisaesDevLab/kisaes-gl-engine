@@ -123,7 +123,11 @@ export async function setFlag(
 // row would exist.
 // 3-tier rules plan, Phase 2 — flags that should default OFF for
 // new tenants. Every other PRACTICE_FEATURE_FLAG defaults ON.
-const FLAGS_DEFAULT_OFF_FOR_NEW_TENANTS: ReadonlySet<string> = new Set([
+//
+// Exported so the test suite can derive expected per-flag defaults
+// without duplicating the list (drift between this set and the test's
+// expectations was the source of CI failures #25067536004 etc.).
+export const FLAGS_DEFAULT_OFF_FOR_NEW_TENANTS: ReadonlySet<string> = new Set([
   'RULES_TIERED_V1',
   'RECURRING_DOC_REQUESTS_V1',
   'DOC_REQUEST_SMS_V1',

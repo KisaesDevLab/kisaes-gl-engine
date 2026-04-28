@@ -17,13 +17,33 @@
 
 set -u
 
-BASELINE_API=361
-BASELINE_WEB=3
+# Baselines reflect post-2026-04-28 cleanup: the regex now strips comment
+# lines (//-line comments and *-block-comment continuations) so it doesn't
+# false-positive on prose that happens to contain ": any X" or "as any X".
+# Pre-cleanup api was 361 / web was 3, but ~6 of those were comment matches;
+# real type-annotation count is below that. Don't bump these without
+# auditing the diff first.
+BASELINE_API=359
+BASELINE_WEB=1
 BASELINE_WORKER=0
 
-api_count=$(grep -rEh ": any\b|as any\b" packages/api/src --include='*.ts' --exclude='*.test.ts' 2>/dev/null | wc -l | tr -d ' ')
-web_count=$(grep -rEh ": any\b|as any\b" packages/web/src --include='*.ts' --include='*.tsx' --exclude='*.test.ts' --exclude='*.test.tsx' 2>/dev/null | wc -l | tr -d ' ')
-worker_count=$(grep -rEh ": any\b|as any\b" packages/worker/src --include='*.ts' 2>/dev/null | wc -l | tr -d ' ')
+# Filter pipeline:
+#   1. grep matches `: any` or `as any` with word-boundary on the word.
+#   2. drop lines that start with //  (single-line comments)
+#   3. drop lines that start with *   (block-comment continuations)
+# Surviving false positives (e.g. `as any` inside JSX text content)
+# get acknowledged in the baseline above; ts-eslint with full AST
+# awareness would be the next iteration if drift gets noisy.
+_count_anys() {
+    grep -rEh ": any\b|as any\b" "$@" 2>/dev/null \
+        | grep -vE '^[[:space:]]*//' \
+        | grep -vE '^[[:space:]]*\*' \
+        | wc -l | tr -d ' '
+}
+
+api_count=$(_count_anys packages/api/src --include='*.ts' --exclude='*.test.ts')
+web_count=$(_count_anys packages/web/src --include='*.ts' --include='*.tsx' --exclude='*.test.ts' --exclude='*.test.tsx')
+worker_count=$(_count_anys packages/worker/src --include='*.ts')
 
 fail=0
 
