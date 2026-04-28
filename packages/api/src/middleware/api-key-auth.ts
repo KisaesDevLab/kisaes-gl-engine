@@ -49,6 +49,9 @@ export async function apiKeyAuth(req: Request, _res: Response, next: NextFunctio
   req.userId = record.userId;
   req.tenantId = record.tenantId;
   req.userRole = record.role;
+  // API keys are issued by staff users for staff workflows. Practice
+  // routes still gate on userType so default 'staff' is correct here.
+  req.userType = 'staff';
   req.isSuperAdmin = false;
   req.impersonating = undefined;
 

@@ -51,21 +51,50 @@ for file in "${files[@]}"; do
 
   base="$(basename "$file")"
 
+  # Skip rollback companions. Rollback files are by definition
+  # non-additive — they exist to undo a forward migration — and
+  # are never executed as part of normal `drizzle migrate` runs.
+  if [[ "$base" == *.rollback.sql ]]; then
+    continue
+  fi
+
   # Allow explicit per-file exemption via filename prefix.
   if [[ "$base" == allow-non-additive_* ]]; then
     continue
   fi
 
   # Allow explicit in-file exemption marker in the first 10 lines.
-  if head -n 10 "$file" | grep -q -- '-- migration-policy: non-additive-exception'; then
+  # Use bash `read` (builtin, no fork) so large batches don't
+  # fork-bomb on Windows MSYS (the previous `head -n 10 | grep`
+  # form forked twice per file × N files).
+  marker_found=0
+  i=0
+  while (( i < 10 )) && IFS= read -r line; do
+    if [[ "$line" == *"-- migration-policy: non-additive-exception"* ]]; then
+      marker_found=1
+      break
+    fi
+    i=$((i + 1))
+  done < "$file"
+  if (( marker_found == 1 )); then
     continue
   fi
 
-  # Case-insensitive, ignore comment lines (-- ...).
-  content="$(grep -viE '^\s*--' "$file" || true)"
+  # Read whole file, strip comment lines, into one variable —
+  # pure bash, no subshell. Previously this used a subshell with
+  # `grep -v` which doubled the per-file fork count.
+  content=""
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[[:space:]]*-- ]] && continue
+    content+="$line"$'\n'
+  done < "$file"
 
+  # One grep per pattern (still — but with -i and a string in
+  # memory rather than a fresh file read each time). Could be
+  # collapsed further but the pattern alternation makes the
+  # error report ambiguous, so keep one call per rule.
   match() {
-    echo "$content" | grep -iE "$1" >/dev/null
+    printf '%s' "$content" | grep -qiE "$1"
   }
 
   report() {

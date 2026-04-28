@@ -17,6 +17,13 @@ export class TwilioProvider implements SmsProvider {
   }
 
   async sendCode(phoneNumber: string, code: string, appName: string): Promise<SendResult> {
+    return this.sendText(
+      phoneNumber,
+      `Your ${appName} verification code is: ${code}. It expires in 5 minutes.`,
+    );
+  }
+
+  async sendText(phoneNumber: string, body: string): Promise<SendResult> {
     try {
       // twilio is an optional dependency — install with: npm i twilio
       const twilio = (await import('twilio' as any)).default as any;
@@ -24,7 +31,7 @@ export class TwilioProvider implements SmsProvider {
       const message = await client.messages.create({
         to: phoneNumber,
         from: this.fromNumber,
-        body: `Your ${appName} verification code is: ${code}. It expires in 5 minutes.`,
+        body,
       });
       return { success: true, providerMessageId: message.sid };
     } catch (err: any) {

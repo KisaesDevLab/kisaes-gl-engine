@@ -20,19 +20,37 @@ import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 
 // ─── RP Configuration ──────────────────────────────────────────
+//
+// Resolution order (vibe-distribution-plan D3):
+//   1. WEBAUTHN_RP_ID env (explicit; multi-app installs set this so
+//      the rpId stays stable across an HTTPS-terminating reverse proxy
+//      whose PUBLIC_URL host matches but whose proxied origin doesn't).
+//   2. URL(PUBLIC_URL).hostname — single source for the externally
+//      visible origin in the new env contract. PUBLIC_URL has a Zod
+//      default of http://localhost:5173, so this branch is the
+//      effective default.
+//   3. 'localhost' — final defensive fallback when PUBLIC_URL is set
+//      to something unparseable (would have failed Zod validation
+//      already, so this is belt-and-suspenders).
+//
+// rpOrigin (the WebAuthn origin string the browser must echo back at
+// verification time) is just PUBLIC_URL — Zod's url() refinement
+// guarantees it parses, and the schema default covers single-app dev.
 
-function getRpId(): string {
-  // Derive from CORS_ORIGIN or default to localhost
+// Exported for unit tests under refresh-cookie-style env-reload pattern.
+export function getRpId(): string {
+  if (env.WEBAUTHN_RP_ID && env.WEBAUTHN_RP_ID.length > 0) {
+    return env.WEBAUTHN_RP_ID;
+  }
   try {
-    const url = new URL(env.CORS_ORIGIN);
-    return url.hostname;
+    return new URL(env.PUBLIC_URL).hostname;
   } catch {
     return 'localhost';
   }
 }
 
-function getRpOrigin(): string {
-  return env.CORS_ORIGIN || 'http://localhost:5173';
+export function getRpOrigin(): string {
+  return env.PUBLIC_URL;
 }
 
 // ─── Challenge Storage (in-memory with TTL) ────────────────────

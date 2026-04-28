@@ -56,6 +56,27 @@ import { oauthRouter } from './routes/oauth.routes.js';
 import { storageRouter } from './routes/storage.routes.js';
 import { payrollImportRouter } from './routes/payroll-import.routes.js';
 import { knowledgeRouter } from './routes/knowledge.routes.js';
+import { featureFlagsRouter, adminFeatureFlagsRouter } from './routes/feature-flags.routes.js';
+import { practiceClassificationRouter } from './routes/practice-classification.routes.js';
+import { practiceSettingsRouter } from './routes/practice-settings.routes.js';
+import { matchActionsRouter } from './routes/match-actions.routes.js';
+import { conditionalRulesRouter } from './routes/conditional-rules.routes.js';
+import { firmsRouter } from './routes/firms.routes.js';
+import { reviewChecksRouter } from './routes/review-checks.routes.js';
+import { portalContactsRouter } from './routes/portal-contacts.routes.js';
+import { portalAuthRouter } from './routes/portal-auth.routes.js';
+import { portalQuestionsRouter } from './routes/portal-questions.routes.js';
+import { portalQuestionsPublicRouter } from './routes/portal-questions-public.routes.js';
+import { portalFinancialsPublicRouter } from './routes/portal-financials-public.routes.js';
+import { portalRemindersRouter } from './routes/portal-reminders.routes.js';
+import { portalTrackingRouter } from './routes/portal-tracking.routes.js';
+import { portal1099Router } from './routes/portal-1099.routes.js';
+import { portalReportsRouter } from './routes/portal-reports.routes.js';
+import { portalReceiptsRouter } from './routes/portal-receipts.routes.js';
+import { portalReceiptsPublicRouter } from './routes/portal-receipts-public.routes.js';
+import { portalW9PublicRouter } from './routes/portal-w9-public.routes.js';
+import { recurringDocRequestsRouter } from './routes/recurring-doc-requests.routes.js';
+import { portalDocumentRequestsPublicRouter } from './routes/portal-document-requests-public.routes.js';
 import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './swagger.js';
 
@@ -166,6 +187,12 @@ app.use('/api/v1/stripe', stripeWebhookRouter);
 import { plaidWebhookRouter } from './routes/plaid-webhook.routes.js';
 app.use('/api/v1/plaid/webhooks', plaidWebhookRouter);
 
+// DOC_REQUEST_SMS_V1 — inbound SMS webhooks. Mounted before
+// express.json() so the router can decode form-urlencoded bodies and
+// verify HMAC signatures against the raw-form representation.
+import { smsInboundRouter } from './routes/sms-inbound.routes.js';
+app.use('/api/sms/inbound', smsInboundRouter);
+
 app.use(express.json({ limit: '10mb' }));
 app.use(morgan('short'));
 
@@ -216,43 +243,72 @@ app.use('/api/v1/', (_req, res, next) => {
 // apps (env-missing, diagnostic) is responding — those only expose
 // `/api/health`.
 //
-// DEEP health check: runs a trivial SELECT 1 against Postgres with a
-// short timeout. A socket-open check on the API port is not enough —
+// DEEP health check: pings Postgres + Redis in parallel with bounded
+// timeouts. A socket-open check on the API port is not enough —
 // orchestrators need to know whether the container can actually serve
-// queries. On DB failure the endpoint returns 503 so Kubernetes /
-// Compose / any load balancer routes around the unhealthy instance.
+// queries. On DB or Redis failure the endpoint returns 503 so
+// Kubernetes / Compose / any load balancer routes around the
+// unhealthy instance.
 //
-// Redis is not probed here because the API package has no direct Redis
-// client — Redis is only used by the worker (via BullMQ). If the API
-// starts using Redis directly (e.g., for cached session lookups), add
-// the probe here.
+// Response shape (vibe-distribution-plan.md §Vibe MyBooks health):
+//   { status: 'ok' | 'degraded',
+//     db: 'ok' | 'fail',
+//     redis: 'ok' | 'fail',
+//     queue: 'ok' | 'fail',
+//     timestamp,
+//     checks: { db: {...}, redis: {...}, queue: {...} } }
+// The top-level db/redis/queue strings are what the installer's
+// `vibe doctor` reads; the `checks.*` block keeps latency / error
+// detail for human debugging.
+//
+// `queue: 'ok'` mirrors `redis: 'ok'` for now — BullMQ queues aren't
+// wired yet (worker schedulers run via Postgres advisory locks), so
+// "queue infra is up" === "Redis is up". When BullMQ ships, deepen
+// this check (e.g., HMGET on a known key, or read an oldest-job
+// timestamp).
 import { sql } from 'drizzle-orm';
 import { db as _dbForHealth } from './db/index.js';
+import { redisPing } from './utils/health-redis.js';
 
 const healthHandler = async (_req: express.Request, res: express.Response) => {
   const t0 = Date.now();
-  let dbOk = false;
-  let dbError: string | undefined;
-  try {
-    // 2s timeout — the healthcheck interval is 30s, so a slow DB
-    // surfaces quickly without the probe itself piling up connections.
-    await Promise.race([
-      _dbForHealth.execute(sql`SELECT 1`),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('db probe timeout')), 2000)),
-    ]);
-    dbOk = true;
-  } catch (err) {
-    dbError = err instanceof Error ? err.message : String(err);
-  }
-  const latencyMs = Date.now() - t0;
-  if (dbOk) {
-    res.json({ status: 'ok', timestamp: new Date().toISOString(), checks: { db: { ok: true, latencyMs } } });
+
+  const dbProbe = (async () => {
+    try {
+      await Promise.race([
+        _dbForHealth.execute(sql`SELECT 1`),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('db probe timeout')), 2000)),
+      ]);
+      return { ok: true, latencyMs: Date.now() - t0 };
+    } catch (err) {
+      return {
+        ok: false,
+        latencyMs: Date.now() - t0,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  })();
+
+  const [db, redis] = await Promise.all([dbProbe, redisPing()]);
+
+  // Queue health rides on Redis until BullMQ wiring lands.
+  const queue = { ok: redis.ok, latencyMs: redis.latencyMs, error: redis.error };
+  const allOk = db.ok && redis.ok && queue.ok;
+  const status = allOk ? 'ok' : 'degraded';
+
+  const body = {
+    status,
+    db: db.ok ? 'ok' : 'fail',
+    redis: redis.ok ? 'ok' : 'fail',
+    queue: queue.ok ? 'ok' : 'fail',
+    timestamp: new Date().toISOString(),
+    checks: { db, redis, queue },
+  };
+
+  if (allOk) {
+    res.json(body);
   } else {
-    res.status(503).json({
-      status: 'degraded',
-      timestamp: new Date().toISOString(),
-      checks: { db: { ok: false, error: dbError, latencyMs } },
-    });
+    res.status(503).json(body);
   }
 };
 app.get('/health', healthHandler);
@@ -333,6 +389,40 @@ app.use('/oauth', oauthRouter);
 app.use('/api/v1/settings/storage', storageRouter);
 app.use('/api/v1/payroll-import', payrollImportRouter);
 app.use('/api/v1/knowledge', knowledgeRouter);
+app.use('/api/v1/feature-flags', featureFlagsRouter);
+app.use('/api/v1/admin/feature-flags', adminFeatureFlagsRouter);
+app.use('/api/v1/practice/classification', practiceClassificationRouter);
+app.use('/api/v1/practice/classification', matchActionsRouter);
+app.use('/api/v1/practice/settings', practiceSettingsRouter);
+app.use('/api/v1/practice/conditional-rules', conditionalRulesRouter);
+app.use('/api/v1/firms', firmsRouter);
+app.use('/api/v1/practice/checks', reviewChecksRouter);
+app.use('/api/v1/practice/portal', portalContactsRouter);
+app.use('/api/v1/practice/portal/questions', portalQuestionsRouter);
+app.use('/api/v1/practice/portal/reminders', portalRemindersRouter);
+app.use('/api/v1/practice/1099', portal1099Router);
+app.use('/api/v1/practice/reports', portalReportsRouter);
+app.use('/api/v1/practice/receipts', portalReceiptsRouter);
+// RECURRING_DOC_REQUESTS_V1 — both rule-CRUD and document-requests
+// grid live under the same router (single feature-flag gate). The
+// router's prefix is "/", so the routes inside read as
+// /api/v1/practice/recurring-doc-requests/... and
+// /api/v1/practice/document-requests/...
+app.use('/api/v1/practice', recurringDocRequestsRouter);
+
+// Public portal API — note no /v1, no JWT auth. Rate-limited per route.
+app.use('/api/portal', portalAuthRouter);
+app.use('/api/portal/questions', portalQuestionsPublicRouter);
+app.use('/api/portal/financials', portalFinancialsPublicRouter);
+// Tracking pixel + click wrapper — public, no auth.
+app.use('/api/portal', portalTrackingRouter);
+// Public W-9 form — token in URL is the auth.
+app.use('/api/w9', portalW9PublicRouter);
+// Portal-side receipt upload (signed-in contact).
+app.use('/api/portal/receipts', portalReceiptsPublicRouter);
+// Portal-side outstanding-doc-requests list — drives the "Documents
+// requested" panel on the portal dashboard.
+app.use('/api/portal/document-requests', portalDocumentRequestsPublicRouter);
 
 // MCP Server endpoint
 app.post('/mcp', async (req, res) => {

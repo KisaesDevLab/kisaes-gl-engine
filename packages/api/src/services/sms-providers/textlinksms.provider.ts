@@ -15,6 +15,13 @@ export class TextLinkSmsProvider implements SmsProvider {
   }
 
   async sendCode(phoneNumber: string, code: string, _appName: string): Promise<SendResult> {
+    return this.sendText(
+      phoneNumber,
+      `Your ${this.serviceName} verification code is: ${code}. It expires in 5 minutes.`,
+    );
+  }
+
+  async sendText(phoneNumber: string, body: string): Promise<SendResult> {
     try {
       const response = await fetch('https://textlinksms.com/api/send-sms', {
         method: 'POST',
@@ -24,13 +31,13 @@ export class TextLinkSmsProvider implements SmsProvider {
         },
         body: JSON.stringify({
           phone_number: phoneNumber,
-          text: `Your ${this.serviceName} verification code is: ${code}. It expires in 5 minutes.`,
+          text: body,
         }),
       });
 
       if (!response.ok) {
-        const body = await response.text();
-        return { success: false, error: `TextLinkSMS error (${response.status}): ${body}` };
+        const errBody = await response.text();
+        return { success: false, error: `TextLinkSMS error (${response.status}): ${errBody}` };
       }
 
       const data = await response.json() as any;

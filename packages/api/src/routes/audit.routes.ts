@@ -7,6 +7,7 @@ import { authenticate } from '../middleware/auth.js';
 import { db } from '../db/index.js';
 import { sql, count } from 'drizzle-orm';
 import { auditLog } from '../db/schema/index.js';
+import { toCsvRow } from '../services/export.service.js';
 
 export const auditRouter = Router();
 auditRouter.use(authenticate);
@@ -66,9 +67,20 @@ auditRouter.get('/export', async (req, res) => {
     ORDER BY created_at DESC
   `);
 
+  // Use the shared toCsvRow helper so this export gets the same
+  // formula-injection neutralization (`=HYPERLINK(...)`) and quote
+  // escaping as the rest of the CSV exports. Building the row by
+  // hand previously left audit_log fields like entity_id wide open
+  // — a synthetic entity_id starting with `=` would inject a
+  // HYPERLINK formula when an accountant opened the export in Excel.
   let csv = 'Timestamp,Action,Entity Type,Entity ID\n';
-  for (const row of result.rows as any[]) {
-    csv += `"${row.created_at}","${row.action}","${row.entity_type}","${row.entity_id || ''}"\n`;
+  for (const row of result.rows as Array<{
+    created_at: string | Date;
+    action: string;
+    entity_type: string;
+    entity_id: string | null;
+  }>) {
+    csv += toCsvRow([row.created_at, row.action, row.entity_type, row.entity_id]) + '\n';
   }
 
   res.setHeader('Content-Type', 'text/csv');

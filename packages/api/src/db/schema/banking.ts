@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-import { pgTable, uuid, varchar, text, decimal, boolean, date, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, decimal, boolean, date, timestamp, index, uniqueIndex, jsonb } from 'drizzle-orm/pg-core';
 
 export const bankConnections = pgTable('bank_connections', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -43,6 +43,13 @@ export const bankFeedItems = pgTable('bank_feed_items', {
   suggestedTagId: uuid('suggested_tag_id'),
   confidenceScore: decimal('confidence_score', { precision: 3, scale: 2 }),
   matchType: varchar('match_type', { length: 20 }),
+  // Phase 4 — when a conditional rule's `skip_ai` action fires
+  // for this item, the AI categorizer batch step skips it.
+  skipAi: boolean('skip_ai').notNull().default(false),
+  // Phase 4 — when a conditional rule's split_by_* action fires,
+  // this JSONB carries the per-split config that the categorize
+  // path consumes to post N journal_lines instead of 2.
+  splitsConfig: jsonb('splits_config'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({

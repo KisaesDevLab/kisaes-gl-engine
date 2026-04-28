@@ -2,12 +2,18 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
+import type { UserType } from '../constants/user-types.js';
+
 export interface User {
   id: string;
   tenantId: string;
   email: string;
   displayName: string | null;
   role: string;
+  // Added in VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 1. Optional in the
+  // wire type so stale clients hitting a new server tolerate the
+  // missing field — the sidebar guard treats undefined as 'staff'.
+  userType?: UserType;
   isActive: boolean;
   isSuperAdmin: boolean;
   lastLoginAt: string | null;

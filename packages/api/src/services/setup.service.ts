@@ -15,6 +15,7 @@ import { sql } from 'drizzle-orm';
 import { env } from '../config/env.js';
 import * as accountsService from './accounts.service.js';
 import * as adminService from './admin.service.js';
+import { seedDefaultsForNewTenant as seedFeatureFlags } from './feature-flags.service.js';
 import {
   createSentinel,
   readSentinelHeader,
@@ -585,6 +586,10 @@ export async function createAdminUser(input: { email: string; password: string; 
 
   // Seed COA with business type template
   await accountsService.seedFromTemplate(tenant.id, input.businessType || 'default');
+
+  // First-run setup creates the bootstrap tenant; Practice flags
+  // are on by default so the operator can see them immediately.
+  await seedFeatureFlags(tenant.id);
 
   return { tenantId: tenant.id, userId: user.id };
 }

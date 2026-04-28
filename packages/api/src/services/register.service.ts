@@ -15,8 +15,13 @@ interface RegisterFilters {
   payee?: string;
   search?: string;
   reconciled?: 'cleared' | 'reconciled' | 'uncleared' | 'all';
-  minAmount?: number;
-  maxAmount?: number;
+  // Strings, not numbers — money is `decimal(19,4)` per CLAUDE.md.
+  // Round-tripping through `parseFloat` introduces IEEE754 drift on
+  // edge values; passing the raw string lets PostgreSQL parse with
+  // arbitrary precision. The validator below rejects anything that's
+  // not a positive decimal so the SQL bind never sees garbage.
+  minAmount?: string;
+  maxAmount?: string;
   includeVoid?: boolean;
   sortBy?: 'date' | 'ref_no' | 'type' | 'amount';
   sortDir?: 'asc' | 'desc';

@@ -17,10 +17,14 @@ function neutralizeCsvFormula(s: string): string {
   return FORMULA_TRIGGER_RE.test(s) ? `'${s}` : s;
 }
 
-function toCsvRow(values: (string | number | null | undefined)[]): string {
+// Exported so other CSV-emitting routes (audit export, future reports)
+// can reuse the same formula-neutralization + quote-escape pipeline
+// instead of re-implementing it. Treats Date instances as ISO strings.
+export function toCsvRow(values: (string | number | Date | null | undefined)[]): string {
   return values.map((v) => {
     if (v === null || v === undefined) return '""';
-    const neutralized = neutralizeCsvFormula(String(v));
+    const stringified = v instanceof Date ? v.toISOString() : String(v);
+    const neutralized = neutralizeCsvFormula(stringified);
     return `"${neutralized.replace(/"/g, '""')}"`;
   }).join(',');
 }

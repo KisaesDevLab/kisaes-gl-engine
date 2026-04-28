@@ -19,6 +19,10 @@ declare global {
       userId: string;
       tenantId: string;
       userRole: string;
+      /** 'staff' (firm employee) or 'client' (read-only contact in /portal).
+       *  Practice routes server-side gate on this so a client user with a
+       *  bookkeeper role can't reach /api/v1/practice/* by skipping the UI. */
+      userType: 'staff' | 'client';
       isSuperAdmin: boolean;
       impersonating?: string;
       /** JWT `iat` claim in seconds. Set by authenticate() — used by
@@ -66,6 +70,9 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     req.userId = payload.userId;
     req.tenantId = payload.tenantId;
     req.userRole = payload.userRole;
+    // Download tokens are issued only to staff sessions; clients have no
+    // PDF-export surface in /portal. Default 'staff' is safe.
+    req.userType = 'staff';
     req.isSuperAdmin = payload.isSuperAdmin;
     if (payload.companyId && !req.headers['x-company-id']) {
       req.headers['x-company-id'] = payload.companyId;
@@ -97,6 +104,9 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     req.userId = payload.userId;
     req.tenantId = payload.tenantId;
     req.userRole = payload.role;
+    // user.userType is constrained at the DB layer (CHECK IN ('staff','client'))
+    // but defaults to 'staff' for any column null/legacy edge.
+    req.userType = user.userType === 'client' ? 'client' : 'staff';
     req.isSuperAdmin = !!user.isSuperAdmin;
     req.impersonating = payload.impersonating;
     req.tokenIssuedAt = typeof payload.iat === 'number' ? payload.iat : undefined;

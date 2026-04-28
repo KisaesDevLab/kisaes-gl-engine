@@ -20,10 +20,20 @@ is_tracked_ext() {
 check_file() {
   local file="$1"
   [[ -f "$file" ]] || return 0
-  if ! head -5 "$file" | grep -q "$HEADER_PATTERN"; then
-    echo "MISSING HEADER: $file"
-    MISSING=$((MISSING + 1))
-  fi
+  # Use bash builtins instead of `head -5 | grep` because, on
+  # Windows MSYS, lint-staged passing 400+ staged files exhausts
+  # the Cygwin fork pool (cygheap read copy failed / couldn't
+  # create signal pipe). `read` is a builtin, no fork. Same
+  # semantics: scan the first 5 lines for HEADER_PATTERN.
+  local i=0 line
+  while (( i < 5 )) && IFS= read -r line; do
+    if [[ "$line" == *"$HEADER_PATTERN"* ]]; then
+      return 0
+    fi
+    i=$((i + 1))
+  done < "$file"
+  echo "MISSING HEADER: $file"
+  MISSING=$((MISSING + 1))
 }
 
 if [ $# -gt 0 ]; then

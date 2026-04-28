@@ -14,34 +14,55 @@ import { env } from '../config/env.js';
 // Outlook and lands on our origin: the first navigation must be able to
 // pick up an existing session or complete the auth flow. Path scoping
 // keeps the cookie off every request that isn't /api/v1/auth/*.
+//
+// vibe-distribution-plan §multi-app cookie isolation: in multi-app mode
+// (Caddy ingress at https://<host>/mybooks/) the operator sets
+// COOKIE_PATH=/mybooks so the cookie is scoped under the app's prefix
+// — otherwise the browser would also send it to /connect/, /tb/, etc.
+// Single-app mode keeps COOKIE_PATH='/' (the env-default) and the
+// resolved Path is just /api/v1/auth, unchanged from before.
 
 const REFRESH_COOKIE_NAME = 'kb_refresh';
-const COOKIE_PATH = '/api/v1/auth';
+const COOKIE_SUB_PATH = '/api/v1/auth';
 const SEVEN_DAYS_SECONDS = 7 * 24 * 60 * 60;
 
+// Resolve the final Path value once. env.COOKIE_PATH is normalized to
+// '/' or '/<prefix>' (no trailing slash), so concatenation with the
+// fixed sub-path always produces a single leading slash.
+function resolvedCookiePath(): string {
+  const prefix = env.COOKIE_PATH === '/' ? '' : env.COOKIE_PATH;
+  return `${prefix}${COOKIE_SUB_PATH}`;
+}
+
+// Resolve the Secure flag. Explicit COOKIE_SECURE wins (multi-app
+// mode forces it on). Falls back to NODE_ENV=production for the
+// pre-existing single-app behavior.
+function resolvedSecure(): boolean {
+  if (env.COOKIE_SECURE !== undefined) return env.COOKIE_SECURE;
+  return env.NODE_ENV === 'production';
+}
+
 export function setRefreshCookie(res: Response, refreshToken: string): void {
-  const secure = env.NODE_ENV === 'production';
   const parts = [
     `${REFRESH_COOKIE_NAME}=${refreshToken}`,
     'HttpOnly',
     'SameSite=Lax',
-    `Path=${COOKIE_PATH}`,
+    `Path=${resolvedCookiePath()}`,
     `Max-Age=${SEVEN_DAYS_SECONDS}`,
   ];
-  if (secure) parts.push('Secure');
+  if (resolvedSecure()) parts.push('Secure');
   appendSetCookie(res, parts.join('; '));
 }
 
 export function clearRefreshCookie(res: Response): void {
-  const secure = env.NODE_ENV === 'production';
   const parts = [
     `${REFRESH_COOKIE_NAME}=`,
     'HttpOnly',
     'SameSite=Lax',
-    `Path=${COOKIE_PATH}`,
+    `Path=${resolvedCookiePath()}`,
     'Max-Age=0',
   ];
-  if (secure) parts.push('Secure');
+  if (resolvedSecure()) parts.push('Secure');
   appendSetCookie(res, parts.join('; '));
 }
 

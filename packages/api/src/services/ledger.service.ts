@@ -342,6 +342,30 @@ export async function voidTransaction(tenantId: string, txnId: string, reason: s
     // Check lock date against the transaction's date
     await checkLockDate(tx, tenantId, txn.txnDate);
 
+    // Mirror updateTransaction's reconciliation guard: a transaction
+    // whose lines are cleared in a COMPLETED bank rec must not be
+    // voided directly. Voiding flips status without writing reversing
+    // lines onto the cleared journal_lines themselves, which leaves
+    // the rec's cleared total stale and unreconcilable. Operator must
+    // undo the rec first, then void + post a correction.
+    const clearedInCompleted = await tx.execute(sql`
+      SELECT 1
+      FROM ${reconciliationLines} rl
+      JOIN ${reconciliations} r ON r.id = rl.reconciliation_id
+      JOIN ${journalLines} jl ON jl.id = rl.journal_line_id
+      WHERE r.tenant_id = ${tenantId}
+        AND r.status = 'complete'
+        AND rl.is_cleared = true
+        AND jl.transaction_id = ${txnId}
+      LIMIT 1
+    `);
+    if ((clearedInCompleted.rows as unknown[]).length > 0) {
+      throw AppError.badRequest(
+        'Cannot void a transaction whose lines are cleared in a completed bank reconciliation. ' +
+          'Undo the reconciliation first, then void and post a correcting entry.',
+      );
+    }
+
     // Get original lines
     const originalLines = await tx.select().from(journalLines)
       .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)));

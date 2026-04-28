@@ -3,7 +3,15 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { eq, and } from 'drizzle-orm';
+import DecimalLib from 'decimal.js';
 import { isDebitNormal } from '@kis-books/shared';
+
+// decimal.js ships a CommonJS default export; TS sees it as a
+// namespace through node's interop. Unwrap to the constructor and
+// grab the instance type from it. Same pattern as bill-payment.service.
+// eslint-disable-next-line @typescript-eslint/no-redeclare
+const Decimal = DecimalLib.default || DecimalLib;
+type Decimal = InstanceType<typeof Decimal>;
 import { db } from '../db/index.js';
 import { accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -16,8 +24,14 @@ export async function importOpeningBalances(tenantId: string, balances: Array<{ 
   const allAccounts = await db.select().from(accounts).where(eq(accounts.tenantId, tenantId));
 
   const resolvedLines: Array<{ accountId: string; debit: string; credit: string; description: string }> = [];
-  let totalDebits = 0;
-  let totalCredits = 0;
+  // Decimal arithmetic — JS-number accumulators silently corrupted
+  // the offset entry on imports of more than ~10 lines because each
+  // `+=` step lost a few ULPs of precision against decimal(19,4).
+  // Decimal.js (already a project dep, used in bill-payment etc.)
+  // gives arbitrary-precision summation that round-trips cleanly
+  // to the SQL numeric column.
+  let totalDebits = new Decimal(0);
+  let totalCredits = new Decimal(0);
 
   for (const entry of balances) {
     let account;
@@ -33,17 +47,23 @@ export async function importOpeningBalances(tenantId: string, balances: Array<{ 
       throw AppError.badRequest(`Account not found: ${entry.accountName || entry.accountNumber || entry.accountId}`);
     }
 
-    const amount = parseFloat(entry.balance);
-    if (amount === 0) continue;
+    let amount: Decimal;
+    try {
+      amount = new Decimal(entry.balance);
+    } catch {
+      throw AppError.badRequest(`Invalid balance value for ${entry.accountName || entry.accountNumber || entry.accountId}: "${entry.balance}"`);
+    }
+    if (amount.isZero()) continue;
 
     const debitNormal = isDebitNormal(account.accountType);
+    const absAmount = amount.abs();
 
-    if ((debitNormal && amount > 0) || (!debitNormal && amount < 0)) {
-      resolvedLines.push({ accountId: account.id, debit: Math.abs(amount).toFixed(4), credit: '0', description: `Opening balance - ${account.name}` });
-      totalDebits += Math.abs(amount);
+    if ((debitNormal && amount.greaterThan(0)) || (!debitNormal && amount.lessThan(0))) {
+      resolvedLines.push({ accountId: account.id, debit: absAmount.toFixed(4), credit: '0', description: `Opening balance - ${account.name}` });
+      totalDebits = totalDebits.plus(absAmount);
     } else {
-      resolvedLines.push({ accountId: account.id, debit: '0', credit: Math.abs(amount).toFixed(4), description: `Opening balance - ${account.name}` });
-      totalCredits += Math.abs(amount);
+      resolvedLines.push({ accountId: account.id, debit: '0', credit: absAmount.toFixed(4), description: `Opening balance - ${account.name}` });
+      totalCredits = totalCredits.plus(absAmount);
     }
   }
 
@@ -51,12 +71,16 @@ export async function importOpeningBalances(tenantId: string, balances: Array<{ 
   const openingBalancesAccount = allAccounts.find((a) => a.systemTag === 'opening_balances');
   if (!openingBalancesAccount) throw AppError.internal('Opening Balances equity account not found');
 
-  const difference = totalDebits - totalCredits;
-  if (Math.abs(difference) > 0.01) {
-    if (difference > 0) {
+  const difference = totalDebits.minus(totalCredits);
+  // 0.01 cents — anything inside 1¢ is float-tolerance noise from the
+  // user's input data, not our arithmetic. The decimal accumulator is
+  // exact, but legitimate input data sometimes only has 2-decimal
+  // precision and the user's expected tie isn't at the 4th place.
+  if (difference.abs().greaterThan('0.01')) {
+    if (difference.greaterThan(0)) {
       resolvedLines.push({ accountId: openingBalancesAccount.id, debit: '0', credit: difference.toFixed(4), description: 'Opening balance offset' });
     } else {
-      resolvedLines.push({ accountId: openingBalancesAccount.id, debit: Math.abs(difference).toFixed(4), credit: '0', description: 'Opening balance offset' });
+      resolvedLines.push({ accountId: openingBalancesAccount.id, debit: difference.abs().toFixed(4), credit: '0', description: 'Opening balance offset' });
     }
   }
 

@@ -118,6 +118,80 @@ const envSchema = z.object({
   // when the var is unset entirely (running via tsx from source).
   // Consumed by updates.service to tell operators what they're running.
   VIBE_MYBOOKS_VERSION: z.string().optional(),
+  // vibe-distribution-plan §Vibe MyBooks env table.
+  //
+  // PUBLIC_URL is the canonical externally-visible URL of this app —
+  // used to mint absolute links in emails / OAuth redirects / WebAuthn
+  // origins. Single-app default points at the dev SPA; multi-app sets
+  // it to e.g. https://vibe.local/mybooks. Does NOT need a trailing
+  // slash; consumers add one if they need it.
+  PUBLIC_URL: z.string().url().default('http://localhost:5173'),
+  // COOKIE_PATH narrows the Path attribute on every cookie this app
+  // sets. Default '/' matches single-app mode. Multi-app mode sets
+  // it to '/mybooks' so cookies don't leak into sibling apps on the
+  // same origin (vibe-distribution-plan §multi-app cookie isolation).
+  // Consumers append per-cookie sub-paths (e.g. '/api/v1/auth' for
+  // the refresh cookie) after this prefix.
+  COOKIE_PATH: z
+    .string()
+    .default('/')
+    .transform((v) => (v === '' ? '/' : v))
+    // Strip trailing slash so consumers can always concat with a
+    // leading-slash sub-path without producing '//api/v1/auth'.
+    .transform((v) => (v.length > 1 && v.endsWith('/') ? v.slice(0, -1) : v))
+    // Reject anything that wouldn't form a valid Path attribute. Catches
+    // typo'd `mybooks` (no leading slash — silently produces a relative
+    // cookie path the browser drops) and pathological values containing
+    // cookie-attribute separators (`;`), spaces, or non-ASCII. Allow
+    // forward-slashes, alphanumerics, dash, underscore, dot.
+    .refine((v) => /^\/[A-Za-z0-9_\-./]*$/.test(v), {
+      message:
+        'COOKIE_PATH must be an absolute path starting with "/" containing only [A-Za-z0-9_-./] (e.g. "/" or "/mybooks").',
+    }),
+  // COOKIE_SECURE toggles the Secure attribute. Defaults to NODE_ENV
+  // production for backward compat with the old refresh-cookie code,
+  // but the env var lets multi-app mode force Secure on regardless of
+  // NODE_ENV (the front door is always HTTPS in multi-app, even when
+  // NODE_ENV=development on the host).
+  COOKIE_SECURE: z
+    .string()
+    .optional()
+    .transform((v) => {
+      if (v === undefined || v === '') return undefined;
+      return v === 'true' || v === '1';
+    }),
+  // WEBAUTHN_RP_ID is the Relying Party identifier for passkeys.
+  // Optional — falls back to URL(PUBLIC_URL).hostname, then 'localhost'.
+  // Must match the host the browser is on at registration / sign-in
+  // time, or the WebAuthn API will refuse the credential.
+  WEBAUTHN_RP_ID: z.string().optional(),
+  // License-token plumbing (vibe-distribution-plan D6). Single-app
+  // installs and CI run with DISABLE_LICENSE_CHECK=1; production
+  // appliances boot with both LICENSE_PUBLIC_KEY (PEM) and
+  // LICENSE_TOKEN (RS256 JWT issued by licensing.kisaes.com).
+  LICENSE_PUBLIC_KEY: z.string().optional(),
+  LICENSE_TOKEN: z.string().optional(),
+  // Accept the common boolean-string forms in addition to '0'/'1' so
+  // operators can write DISABLE_LICENSE_CHECK=true and not hit a
+  // cryptic Zod enum failure at boot. Normalizes to '0'|'1'.
+  DISABLE_LICENSE_CHECK: z
+    .string()
+    .optional()
+    .default('0')
+    .transform((v) => {
+      const lower = v.toLowerCase();
+      if (lower === '1' || lower === 'true' || lower === 'yes' || lower === 'on') return '1';
+      return '0';
+    }),
+  // Audience / issuer are env-driven so staging environments can
+  // point at a mock licensing server without recompiling. Defaults
+  // match the production licensing service.
+  LICENSE_AUDIENCE: z.string().default('vibe-mybooks'),
+  LICENSE_ISSUER: z.string().default('licensing.kisaes.com'),
+  // Clock-skew tolerance in seconds passed to jwt.verify. Default
+  // 60s covers normal NTP drift; ops on islanded networks may need
+  // higher. Setting 0 reverts to strict.
+  LICENSE_CLOCK_TOLERANCE_SECONDS: z.coerce.number().int().nonnegative().default(60),
 });
 
 export type Env = z.infer<typeof envSchema>;

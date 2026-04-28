@@ -307,13 +307,19 @@ authRouter.put('/me/preferences', authenticate, validate(updatePreferencesSchema
   res.json({ displayPreferences: merged });
 });
 
-function sanitizeUser(user: { id: string; tenantId: string; email: string; displayName: string | null; role: string; isActive: boolean | null; isSuperAdmin: boolean | null; lastLoginAt: Date | null; displayPreferences: unknown; createdAt: Date | null; updatedAt: Date | null }) {
+function sanitizeUser(user: { id: string; tenantId: string; email: string; displayName: string | null; role: string; userType: string | null; isActive: boolean | null; isSuperAdmin: boolean | null; lastLoginAt: Date | null; displayPreferences: unknown; createdAt: Date | null; updatedAt: Date | null }) {
+  // Narrow user_type to the known enum. A column-level CHECK in
+  // migration 0065 enforces this at the DB layer, but coercing at
+  // the serialization boundary means a stale server that ran
+  // before the migration still returns a valid default.
+  const userType = user.userType === 'client' ? 'client' : 'staff';
   return {
     id: user.id,
     tenantId: user.tenantId,
     email: user.email,
     displayName: user.displayName,
     role: user.role,
+    userType,
     isActive: user.isActive,
     isSuperAdmin: user.isSuperAdmin || false,
     lastLoginAt: user.lastLoginAt,

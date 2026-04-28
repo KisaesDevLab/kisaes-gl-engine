@@ -9,6 +9,11 @@ export const tenants = pgTable('tenants', {
   name: varchar('name', { length: 255 }).notNull(),
   slug: varchar('slug', { length: 100 }).unique().notNull(),
   reportSettings: jsonb('report_settings'),
+  // Added in VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 2a. Stores
+  // per-tenant overrides for the 4-bucket classification
+  // thresholds; shape is a partial ClassificationThresholds
+  // (merged with defaults from shared/constants).
+  practiceSettings: jsonb('practice_settings'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 });
@@ -20,6 +25,12 @@ export const users = pgTable('users', {
   passwordHash: varchar('password_hash', { length: 255 }).notNull(),
   displayName: varchar('display_name', { length: 255 }),
   role: varchar('role', { length: 50 }).notNull().default('owner'),
+  // `user_type` is orthogonal to `role` — every firm staffer uses
+  // a staff role (owner/accountant/bookkeeper/readonly) and is a
+  // 'staff' user_type. 'client' is reserved for the commercial-
+  // gated non-staff app user introduced by the Practice build
+  // plan; portal contacts are not users and live elsewhere.
+  userType: varchar('user_type', { length: 20 }).notNull().default('staff'),
   isActive: boolean('is_active').default(true),
   isSuperAdmin: boolean('is_super_admin').default(false),
   lastLoginAt: timestamp('last_login_at', { withTimezone: true }),

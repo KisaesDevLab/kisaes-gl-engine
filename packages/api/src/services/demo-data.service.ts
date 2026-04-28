@@ -28,6 +28,7 @@ import {
 } from '../db/schema/index.js';
 import * as accountsService from './accounts.service.js';
 import * as ledger from './ledger.service.js';
+import { seedDefaultsForNewTenant as seedFeatureFlags } from './feature-flags.service.js';
 import * as invoiceService from './invoice.service.js';
 import * as paymentService from './payment.service.js';
 import * as billService from './bill.service.js';
@@ -195,6 +196,10 @@ export async function createDemoTenant(
   const [tenant] = await db.insert(tenants).values({ name: tenantName, slug }).returning();
   if (!tenant) throw new Error('Failed to create demo tenant');
   log(`Created tenant: ${tenant.name} (${tenant.id})`);
+
+  // Demo tenant gets the same new-tenant default as real ones —
+  // all Practice flags on so the demo fully exercises the sidebar.
+  await seedFeatureFlags(tenant.id);
 
   await db.insert(userTenantAccess).values({
     userId: adminUserId,

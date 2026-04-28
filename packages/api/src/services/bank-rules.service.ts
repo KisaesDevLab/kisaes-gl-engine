@@ -7,6 +7,10 @@ import type { CreateBankRuleInput, UpdateBankRuleInput } from '@kis-books/shared
 import { db } from '../db/index.js';
 import { bankRules, accounts, contacts, globalRuleSubmissions } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+// 3-tier rules plan, Phase 4 — vendor find-or-create lives in
+// rule-symbol-resolution.service.ts now so the legacy and the
+// conditional-rules pipeline use ONE implementation.
+import { findOrCreateContact } from './rule-symbol-resolution.service.js';
 
 // ─── Tenant Rules (existing) ────────────────────────────────────
 
@@ -127,24 +131,6 @@ async function fuzzyMatchAccount(tenantId: string, accountName: string): Promise
   return bestScore >= 0.5 ? bestId : null;
 }
 
-async function findOrCreateContact(tenantId: string, contactName: string): Promise<string | null> {
-  if (!contactName) return null;
-
-  // Try exact match first
-  const existing = await db.query.contacts.findFirst({
-    where: and(eq(contacts.tenantId, tenantId), sql`LOWER(${contacts.displayName}) = LOWER(${contactName})`),
-  });
-  if (existing) return existing.id;
-
-  // Auto-create
-  const [created] = await db.insert(contacts).values({
-    tenantId,
-    displayName: contactName,
-    contactType: 'vendor',
-  }).returning();
-
-  return created?.id || null;
-}
 
 // ─── Rule Evaluation ────────────────────────────────────────────
 

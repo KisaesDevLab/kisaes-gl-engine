@@ -22,9 +22,22 @@ import { aiConfig, companies } from '../db/schema/index.js';
 import { auditLog } from '../middleware/audit.js';
 import { AppError } from '../utils/errors.js';
 
-export type AiTaskKey = 'categorization' | 'receipt_ocr' | 'statement_parsing' | 'document_classification';
+export type AiTaskKey =
+  | 'categorization'
+  | 'receipt_ocr'
+  | 'statement_parsing'
+  | 'document_classification'
+  | 'enrich_vendor'
+  | 'judgment_review';
 
-const ALL_TASK_KEYS: AiTaskKey[] = ['categorization', 'receipt_ocr', 'statement_parsing', 'document_classification'];
+const ALL_TASK_KEYS: AiTaskKey[] = [
+  'categorization',
+  'receipt_ocr',
+  'statement_parsing',
+  'document_classification',
+  'enrich_vendor',
+  'judgment_review',
+];
 
 // Keep this text in the service so disclosure generation can be audited
 // and version-bumped centrally. If the wording changes, increment
@@ -534,6 +547,8 @@ export const DEFAULT_TASK_TOGGLES: Record<AiTaskKey, boolean> = {
   receipt_ocr: false,
   statement_parsing: false,
   document_classification: false,
+  enrich_vendor: false,
+  judgment_review: false,
 };
 
 // Exposed for ai-config.service so it can compose in a transaction.

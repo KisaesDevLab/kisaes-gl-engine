@@ -16,6 +16,7 @@ import { createCompanyForTenant } from './company.service.js';
 import { seedFromTemplate } from './accounts.service.js';
 import * as systemEmail from './system-email.service.js';
 import { checkPasswordBreached } from '../utils/hibp.js';
+import { seedDefaultsForNewTenant as seedFeatureFlags } from './feature-flags.service.js';
 
 // Cap per CLOUDFLARE_TUNNEL_PLAN Phase 3: max 3 concurrent sessions per
 // user. Oldest refresh token is revoked when the limit is exceeded —
@@ -117,6 +118,13 @@ export async function createClientTenant(creatorUserId: string, input: { company
   await createCompanyForTenant(tenant.id, input.companyName);
   await seedFromTemplate(tenant.id, input.businessType || 'default');
 
+  // New-tenant default: Practice flags turned ON. The build plan
+  // distinguishes pre-Phase-1 tenants (migration seeds disabled)
+  // from freshly-created tenants (all flags on). Called after
+  // tenant.id exists but before we return so the caller always
+  // sees a fully-configured tenant.
+  await seedFeatureFlags(tenant.id);
+
   // Get the company that was just created
   const company = await db.query.companies.findFirst({ where: eq(companies.tenantId, tenant.id) });
 
@@ -179,6 +187,9 @@ export async function register(input: RegisterInput): Promise<{ user: typeof use
   // Create company and seed COA
   await createCompanyForTenant(tenant.id, input.companyName);
   await seedFromTemplate(tenant.id, input.businessType || 'default');
+
+  // New-tenant Practice flag seed (see createClientTenant above).
+  await seedFeatureFlags(tenant.id);
 
   // Create tenant access record
   await db.insert(userTenantAccess).values({ userId: user.id, tenantId: tenant.id, role: 'owner' });

@@ -64,6 +64,16 @@ accountsRouter.get('/:id/ledger', async (req, res) => {
   res.json(result);
 });
 
+// Money filter values stay as strings end-to-end so we never lose
+// precision through a JS-number round-trip against the decimal(19,4)
+// column. The pattern below tolerates `123`, `123.45`, `123.4567`,
+// and rejects anything else (incl. exponent / signs / NaN tricks).
+const MONEY_FILTER_RE = /^\d+(\.\d{1,4})?$/;
+function safeMoneyFilter(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw === '') return undefined;
+  return MONEY_FILTER_RE.test(raw) ? raw : undefined;
+}
+
 accountsRouter.get('/:id/register', async (req, res) => {
   const q = req.query as Record<string, string>;
   const result = await registerService.getRegister(req.tenantId, req.params['id']!, {
@@ -73,8 +83,8 @@ accountsRouter.get('/:id/register', async (req, res) => {
     payee: q['payee'],
     search: q['search'],
     reconciled: q['reconciled'] as any,
-    minAmount: q['min_amount'] ? parseFloat(q['min_amount']) : undefined,
-    maxAmount: q['max_amount'] ? parseFloat(q['max_amount']) : undefined,
+    minAmount: safeMoneyFilter(q['min_amount']),
+    maxAmount: safeMoneyFilter(q['max_amount']),
     includeVoid: q['include_void'] === 'true',
     sortBy: q['sort_by'] as any,
     sortDir: q['sort_dir'] as any,

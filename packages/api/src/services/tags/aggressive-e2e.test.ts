@@ -50,7 +50,10 @@ async function cleanDb() {
   // ordering is required and any rows a sibling test file left behind
   // (e.g., reconciliations, recurring_schedules, tenant_export_jobs)
   // cannot trip an FK RESTRICT during cleanup. Excludes the Drizzle
-  // migration bookkeeping tables so schema head stays intact.
+  // migration bookkeeping tables so schema head stays intact, plus
+  // any "registry" tables populated by migration seed (currently
+  // check_registry from 0068) so subsequent tests in the run still
+  // see the FK targets they expect.
   await db.execute(sql`
     DO $$
     DECLARE r RECORD;
@@ -60,6 +63,7 @@ async function cleanDb() {
         WHERE schemaname = 'public'
           AND tablename NOT LIKE '\\_\\_drizzle\\_%' ESCAPE '\\'
           AND tablename NOT LIKE 'drizzle\\_%' ESCAPE '\\'
+          AND tablename NOT IN ('check_registry')
       ) LOOP
         EXECUTE 'TRUNCATE TABLE public.' || quote_ident(r.tablename) || ' RESTART IDENTITY CASCADE';
       END LOOP;

@@ -236,7 +236,14 @@ export function sanitizeTransactionDescription(input: string | null | undefined)
  */
 export function pickMode(
   providerName: string,
-  task: 'categorize' | 'ocr_receipt' | 'ocr_invoice' | 'ocr_statement' | 'classify_document',
+  task:
+    | 'categorize'
+    | 'ocr_receipt'
+    | 'ocr_invoice'
+    | 'ocr_statement'
+    | 'classify_document'
+    | 'enrich_vendor'
+    | 'judgment_review',
   isSelfHosted?: boolean,
 ): SanitizerMode {
   const alwaysLocal = providerName === 'ollama' || providerName === 'glm_ocr_local';
@@ -250,6 +257,11 @@ export function pickMode(
       return 'standard';
     case 'categorize':
     case 'classify_document':
+    // Vendor enrichment and judgment review only need the merchant
+    // descriptor — no SSN/EIN risk in either, so 'minimal' (mask
+    // names after VENMO/ZELLE/PAYPAL/CASHAPP) matches categorization.
+    case 'enrich_vendor':
+    case 'judgment_review':
       return 'minimal';
   }
 }

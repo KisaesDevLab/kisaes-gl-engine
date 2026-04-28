@@ -214,6 +214,55 @@ export async function categorize(tenantId: string, feedItemId: string, input: Ca
       throw AppError.notFound('Bank connection does not belong to this tenant');
     }
 
+    // Phase 4 — when a conditional rule's split_by_* action
+    // staged a splits_config blob, post N user-facing journal
+    // lines instead of the standard one. The cash-leg is still
+    // a single line so the bank account stays simple.
+    const splitsConfig = item.splitsConfig as
+      | { kind: 'percentage'; splits: Array<{ accountId: string; percent: number; tagId: string | null; memo: string | null }> }
+      | { kind: 'fixed'; splits: Array<{ accountId: string; amount: string; tagId: string | null; memo: string | null }> }
+      | null;
+
+    const userLines: Array<{ accountId: string; debit: string; credit: string; description?: string; tagId?: string }> = [];
+    if (splitsConfig && splitsConfig.splits.length > 0) {
+      const totalCents = Math.round(amount * 100);
+      let allocatedCents = 0;
+      for (let i = 0; i < splitsConfig.splits.length; i++) {
+        const s = splitsConfig.splits[i]!;
+        let lineCents: number;
+        if (splitsConfig.kind === 'percentage') {
+          lineCents = i === splitsConfig.splits.length - 1
+            ? totalCents - allocatedCents
+            : Math.round((totalCents * (s as { percent: number }).percent) / 100);
+        } else {
+          lineCents = Math.round(parseFloat((s as { amount: string }).amount) * 100);
+        }
+        allocatedCents += lineCents;
+        const lineAmt = (lineCents / 100).toFixed(4);
+        userLines.push({
+          accountId: s.accountId,
+          debit: isExpense ? lineAmt : '0',
+          credit: isExpense ? '0' : lineAmt,
+          description: s.memo ?? item.description ?? undefined,
+          tagId: s.tagId ?? input.tagId ?? undefined,
+        });
+      }
+    } else {
+      userLines.push({
+        accountId: input.accountId,
+        debit: isExpense ? amount.toFixed(4) : '0',
+        credit: isExpense ? '0' : amount.toFixed(4),
+        description: item.description || undefined,
+        tagId: input.tagId ?? undefined,
+      });
+    }
+
+    const cashLine = {
+      accountId: conn.accountId,
+      debit: isExpense ? '0' : amount.toFixed(4),
+      credit: isExpense ? amount.toFixed(4) : '0',
+    };
+
     const txn = await ledger.postTransaction(tenantId, {
       txnType: isExpense ? 'expense' : 'deposit',
       txnDate: item.feedDate,
@@ -225,16 +274,9 @@ export async function categorize(tenantId: string, feedItemId: string, input: Ca
       // ADR 0XY §3.3 — bank-feed categorization stamps the rule-
       // provided (or user-provided) tag on the user-facing expense or
       // revenue line. The cash-account leg stays untagged because it
-      // isn't a segment-relevant posting.
-      lines: isExpense
-        ? [
-            { accountId: input.accountId, debit: amount.toFixed(4), credit: '0', description: item.description || undefined, tagId: input.tagId },
-            { accountId: conn.accountId, debit: '0', credit: amount.toFixed(4) },
-          ]
-        : [
-            { accountId: conn.accountId, debit: amount.toFixed(4), credit: '0' },
-            { accountId: input.accountId, debit: '0', credit: amount.toFixed(4), description: item.description || undefined, tagId: input.tagId },
-          ],
+      // isn't a segment-relevant posting. Phase 4 split actions
+      // produce one user line per split + the single cash line.
+      lines: isExpense ? [...userLines, cashLine] : [cashLine, ...userLines],
     }, userId, companyId);
 
     await db.update(bankFeedItems).set({
@@ -558,9 +600,75 @@ async function runCleansingPipeline(tenantId: string, items: any[]) {
 export async function runCategorizationPipeline(tenantId: string, items: any[]) {
   const bankRulesService = await import('./bank-rules.service.js');
   const categorizationService = await import('./categorization-ai.service.js');
+  const classificationStateService = await import('./practice-classification.service.js');
+  const conditionalRulesApply = await import('./conditional-rules-apply.service.js');
+
+  // Per-item rule lookup. A rule that fires here needs to record
+  // its id on the state row so Bucket 2 can render "grouped by
+  // rule" in Phase 2b. Rules that don't auto-confirm still
+  // produce a state row with bucket='rule' so a bookkeeper can
+  // see the rule attribution without the transaction being
+  // auto-posted.
+  const ruleFiredByItem = new Map<string, { ruleId: string | null }>();
+  // Tracks items where a Phase-4 conditional rule fired without
+  // continue_after_match — those skip the legacy bank-rule eval
+  // entirely (build plan §4.5).
+  const conditionalShortCircuited = new Set<string>();
+
+  // Phase 4 — conditional rules engine. Runs BEFORE legacy bank
+  // rules per build plan §4.5. Conditional rules can stage
+  // suggestedAccountId / suggestedContactId / suggestedTagId /
+  // memo / skip_ai / splits_config on the feed item before the
+  // legacy evaluator runs. If a conditional rule fires without
+  // continue_after_match, we mark the item to skip legacy rules.
+  for (const item of items) {
+    const current = await db.query.bankFeedItems.findFirst({
+      where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, item.id)),
+    });
+    if (!current || current.status !== 'pending') continue;
+    try {
+      // Resolve the bank-connection's GL account so the Phase-4
+      // condition field `account_source_id` tests against the
+      // human-meaningful account uuid, not the connection PK.
+      const conn = await db.query.bankConnections.findFirst({
+        where: and(
+          eq(bankConnections.tenantId, tenantId),
+          eq(bankConnections.id, current.bankConnectionId),
+        ),
+        columns: { id: true, accountId: true },
+      });
+      const result = await conditionalRulesApply.applyForFeedItem(tenantId, {
+        id: current.id,
+        description: current.description,
+        originalDescription: current.originalDescription,
+        amount: current.amount,
+        feedDate: current.feedDate,
+        bankConnectionAccountId: conn?.accountId ?? current.bankConnectionId,
+      });
+      if (result.shortCircuitedLegacyRules) {
+        conditionalShortCircuited.add(item.id);
+      }
+      // Stash the conditional rule attribution so the
+      // classification-state upsert below records it. The first
+      // fire wins for attribution (lowest priority); stacked
+      // continue_after_match fires don't overwrite.
+      if (result.fires.length > 0) {
+        const firstFire = result.fires[0]!;
+        if (!ruleFiredByItem.has(item.id)) {
+          ruleFiredByItem.set(item.id, { ruleId: firstFire.ruleId });
+        }
+      }
+    } catch (err) {
+      // Engine failures shouldn't abort the pipeline.
+      console.warn(
+        `[runCategorizationPipeline] conditional-rules apply failed for item ${item.id}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
 
   for (const item of items) {
-    // Skip if already categorized (e.g., by the cleansing pipeline's AI step)
+    if (conditionalShortCircuited.has(item.id)) continue;
     const current = await db.query.bankFeedItems.findFirst({
       where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, item.id)),
     });
@@ -570,6 +678,10 @@ export async function runCategorizationPipeline(tenantId: string, items: any[]) 
       description: current.description,
       amount: parseFloat(current.amount),
     });
+    if (ruleResult.matched) {
+      // Capture which rule fired — even if autoConfirm is false.
+      ruleFiredByItem.set(item.id, { ruleId: ruleResult.ruleId ?? null });
+    }
     if (ruleResult.matched && ruleResult.autoConfirm && ruleResult.assignAccountId) {
       await categorize(tenantId, item.id, {
         accountId: ruleResult.assignAccountId,
@@ -581,16 +693,76 @@ export async function runCategorizationPipeline(tenantId: string, items: any[]) 
     }
   }
 
-  // AI suggestions on remaining pending items
+  // AI suggestions on remaining pending items.
+  // Phase 4 — items with skip_ai=true (set by a conditional
+  // rule's `skip_ai` action) are filtered out so the AI
+  // categorizer doesn't waste tokens on patterns the bookkeeper
+  // has explicitly excluded.
   const pendingIds = [];
   for (const item of items) {
     const current = await db.query.bankFeedItems.findFirst({
       where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, item.id)),
     });
-    if (current && current.status === 'pending') pendingIds.push(item.id);
+    if (current && current.status === 'pending' && !current.skipAi) {
+      pendingIds.push(item.id);
+    }
   }
   if (pendingIds.length > 0) {
     await categorizationService.suggestForBatch(tenantId, pendingIds).catch(() => {});
+  }
+
+  // Phase 3 — potential-match detection. Runs after rules + AI
+  // so the matcher has access to the final feed item state, but
+  // before the classification-state upsert so the upsert can
+  // persist the candidates and use them for bucket assignment.
+  // Lazy-imported to avoid pulling the matcher's transitive deps
+  // when this hot path runs in non-bucket-workflow tenants.
+  const potentialMatchService = await import('./potential-match.service.js');
+  const candidatesByItem = new Map<string, Awaited<ReturnType<typeof potentialMatchService.findMatches>>>();
+  for (const item of items) {
+    const current = await db.query.bankFeedItems.findFirst({
+      where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, item.id)),
+    });
+    if (!current || current.status !== 'pending') continue;
+    try {
+      const candidates = await potentialMatchService.findMatches(tenantId, item.id);
+      candidatesByItem.set(item.id, candidates);
+    } catch (err) {
+      // A matcher failure on one item shouldn't kill the
+      // pipeline — log and move on with no candidates for that
+      // item. The state-row upsert below still runs so the row
+      // ends up in some non-Bucket-1 bucket.
+      console.warn(
+        `[runCategorizationPipeline] potential-match find failed for item ${item.id}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
+  // Classification state upsert — runs AFTER rules + AI + matcher
+  // so the state row reads the final suggestedAccountId /
+  // confidenceScore / matchType plus the persisted candidates.
+  // Failures here are logged but do not abort the pipeline: the
+  // state table is an augmentation, not the source of truth for
+  // legacy categorization.
+  for (const item of items) {
+    const current = await db.query.bankFeedItems.findFirst({
+      where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, item.id)),
+    });
+    if (!current) continue;
+    const matched = ruleFiredByItem.get(item.id);
+    const candidates = candidatesByItem.get(item.id) ?? [];
+    try {
+      await classificationStateService.upsertStateForFeedItem(tenantId, item.id, {
+        matchedRuleId: matched?.ruleId ?? null,
+        matchCandidates: candidates,
+      });
+    } catch (err) {
+      console.warn(
+        `[runCategorizationPipeline] classification-state upsert failed for item ${item.id}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   }
 }
 

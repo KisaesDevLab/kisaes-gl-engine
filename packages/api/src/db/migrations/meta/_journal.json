@@ -456,6 +456,209 @@
       "when": 1776590000000,
       "tag": "0064_staff_ip_allowlist",
       "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1776600000000,
+      "tag": "0065_practice_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1776610000000,
+      "tag": "0066_practice_classification",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1776620000000,
+      "tag": "0067_conditional_rules",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1776630000000,
+      "tag": "0068_review_checks",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1776640000000,
+      "tag": "0069_portal_contacts",
+      "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1776650000000,
+      "tag": "0070_portal_auth",
+      "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1776660000000,
+      "tag": "0071_portal_questions",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1776670000000,
+      "tag": "0072_portal_templates",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1776680000000,
+      "tag": "0073_portal_reminders",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1776690000000,
+      "tag": "0074_portal_1099",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1776700000000,
+      "tag": "0075_portal_reports",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1776710000000,
+      "tag": "0076_portal_receipts",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1776720000000,
+      "tag": "0077_filing_details",
+      "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1776730000000,
+      "tag": "0078_tin_match_fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1776740000000,
+      "tag": "0079_w9_address",
+      "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1776750000000,
+      "tag": "0080_w9_request_phone",
+      "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1776760000000,
+      "tag": "0081_firms_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1776770000000,
+      "tag": "0082_w9_exclusion",
+      "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1776780000000,
+      "tag": "0083_ai_expansion_feature_flags",
+      "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1776790000000,
+      "tag": "0084_receipt_amount_mismatch_check",
+      "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1776800000000,
+      "tag": "0085_rules_scope_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1776810000000,
+      "tag": "0086_rules_stats_view_tier",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1776820000000,
+      "tag": "0087_ai_judgment_check",
+      "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1776830000000,
+      "tag": "0088_recurring_doc_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1776840000000,
+      "tag": "0089_w9_account_mapping",
+      "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1776850000000,
+      "tag": "0090_doc_request_sms",
+      "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1776860000000,
+      "tag": "0091_recurring_cron_cadence",
+      "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1776870000000,
+      "tag": "0092_statement_auto_import",
+      "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1776880000000,
+      "tag": "0093_firm_tag_templates",
+      "breakpoints": true
     }
   ]
 }

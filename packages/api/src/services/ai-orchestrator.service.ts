@@ -13,7 +13,14 @@ import type { CompletionParams, CompletionResult, VisionParams } from './ai-prov
 import { pickMode, type SanitizerMode } from './pii-sanitizer.service.js';
 import { checkTenantTaskConsent, type AiTaskKey } from './ai-consent.service.js';
 
-export type AiTask = 'categorize' | 'ocr_receipt' | 'ocr_invoice' | 'ocr_statement' | 'classify_document';
+export type AiTask =
+  | 'categorize'
+  | 'ocr_receipt'
+  | 'ocr_invoice'
+  | 'ocr_statement'
+  | 'classify_document'
+  | 'enrich_vendor'
+  | 'judgment_review';
 
 function consentReasonMessage(reason: string | undefined): string {
   switch (reason) {
@@ -135,6 +142,8 @@ const JOB_TO_TASK: Record<string, AiTaskKey> = {
   ocr_invoice: 'receipt_ocr',
   ocr_statement: 'statement_parsing',
   classify_document: 'document_classification',
+  enrich_vendor: 'enrich_vendor',
+  judgment_review: 'judgment_review',
 };
 
 export async function createJob(tenantId: string, jobType: string, inputType: string, inputId: string, inputData?: any) {

@@ -11,6 +11,7 @@ import { startRecurringScheduler } from './services/recurring.service.js';
 import { startFingerprintScheduler } from './services/db-fingerprint.service.js';
 import { startCloudflaredAlerter, stopCloudflaredAlerter } from './services/cloudflared/alert.service.js';
 import { startBackupVerifier, stopBackupVerifier } from './services/backup-verify.service.js';
+import { startRecurringDocRequestScheduler, stopRecurringDocRequestScheduler } from './services/recurring-doc-request-scheduler.service.js';
 import * as coaTemplatesService from './services/coa-templates.service.js';
 import { seedPayrollTemplates } from './services/payroll-templates.seed.js';
 import type { Server } from 'http';
@@ -42,6 +43,7 @@ function installShutdownHandlers(server: Server): void {
     // flight drain via the advisory lock's existing timeout.
     stopCloudflaredAlerter();
     stopBackupVerifier();
+    stopRecurringDocRequestScheduler();
     try {
       await pool.end();
       console.log('[shutdown] DB pool closed, exiting cleanly');
@@ -147,6 +149,10 @@ async function start() {
     // integrity check.
     startCloudflaredAlerter();
     startBackupVerifier();
+    // RECURRING_DOC_REQUESTS_V1 — calendar-cadence issuance scheduler.
+    // Advisory-locked so the worker container can also run it without
+    // double-firing.
+    startRecurringDocRequestScheduler();
   });
   installShutdownHandlers(server);
 }
