@@ -78,11 +78,12 @@ export function buildOriginAllowlist(corsOriginRaw: string): {
         throw new Error(
           `CORS_ORIGIN entry ${JSON.stringify(entry)} starts with "/" ` +
             `but is not a valid regex literal. If your regex contained ` +
-            `a {m,n} quantifier (e.g. /^.{0,99}$/), the comma split ` +
-            `the pattern in half — rewrite without the comma quantifier ` +
-            `(e.g. /^.{0}.{0,99}$/ → /^.{0,99}$/, or use a character ` +
-            `class repetition). If you meant a literal path origin, ` +
-            `use a scheme like http://localhost:5173 instead.`,
+            `a {m,n} quantifier (e.g. /^.{0,99}$/), the inner comma ` +
+            `split the pattern in half — rewrite without the comma ` +
+            `quantifier. Workarounds: combine fixed and unbounded reps ` +
+            `(\`/^.{0}.+$/\` ≈ "0+ chars"), use \`*\`/\`+\`/\`?\` directly, ` +
+            `or use a character-class repetition. If you meant a literal ` +
+            `origin, use one with a scheme (e.g. http://localhost:5173).`,
         );
       }
 
