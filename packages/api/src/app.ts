@@ -124,12 +124,11 @@ app.use(
 // (http://mb.kisaes.local) plus an IP:port fallback
 // (http://192.168.68.100:3081) for Windows clients whose Chrome/Edge
 // Secure DNS or Firefox DoH bypass the mDNS resolver. A single value
-// keeps working unchanged.
-const allowedOrigins = new Set(
-  env.CORS_ORIGIN.split(',')
-    .map((s) => s.trim().replace(/\/$/, ''))
-    .filter(Boolean),
-);
+// keeps working unchanged. Entries in `/pattern/flags` form are
+// compiled as regex (used by the appliance overlay to admit any
+// `*.firm.com` host without listing each one).
+import { buildOriginAllowlist } from './utils/cors-allowlist.js';
+const originAllowlist = buildOriginAllowlist(env.CORS_ORIGIN);
 app.use(
   cors({
     origin: (origin, cb) => {
@@ -138,7 +137,7 @@ app.use(
       // on every cross-origin request so we get the security check we
       // want without blocking first-party calls.
       if (!origin) return cb(null, true);
-      cb(null, allowedOrigins.has(origin.replace(/\/$/, '')));
+      cb(null, originAllowlist.matches(origin));
     },
     credentials: true,
   }),
@@ -225,6 +224,15 @@ const globalLimiter = rateLimit({
   legacyHeaders: false,
   store: getRateLimitStore('global'),
   message: { error: { message: 'Too many requests, please try again later' } },
+  // Liveness/readiness probes are exempt — ops tools poll them on tight
+  // intervals (HAProxy emergency probe at 1s, Caddy upstream every 2s,
+  // Docker HEALTHCHECK every 30s). Counting those toward the 300/min
+  // budget would crowd out real client traffic without adding any
+  // security value (the endpoints reveal nothing tenant-specific).
+  skip: (req) => {
+    const p = req.path;
+    return p === '/ping' || p === '/health' || p.endsWith('/ping') || p.endsWith('/health');
+  },
 });
 app.use('/api/', globalLimiter);
 
@@ -250,25 +258,33 @@ app.use('/api/v1/', (_req, res, next) => {
 // Kubernetes / Compose / any load balancer routes around the
 // unhealthy instance.
 //
-// Response shape (vibe-distribution-plan.md §Vibe MyBooks health):
+// Response shape (vibe-distribution-plan.md §Vibe MyBooks health,
+// extended in vibe-mybooks-compatibility-addendum §3.6 with workers):
 //   { status: 'ok' | 'degraded',
 //     db: 'ok' | 'fail',
 //     redis: 'ok' | 'fail',
 //     queue: 'ok' | 'fail',
+//     workers: 'ok' | 'fail',
 //     timestamp,
-//     checks: { db: {...}, redis: {...}, queue: {...} } }
-// The top-level db/redis/queue strings are what the installer's
-// `vibe doctor` reads; the `checks.*` block keeps latency / error
-// detail for human debugging.
+//     checks: { db: {...}, redis: {...}, queue: {...}, workers: {...} } }
+// The top-level strings are what the installer's `vibe doctor` and the
+// appliance health probe read; the `checks.*` block keeps latency /
+// error detail for human debugging.
 //
 // `queue: 'ok'` mirrors `redis: 'ok'` for now — BullMQ queues aren't
 // wired yet (worker schedulers run via Postgres advisory locks), so
 // "queue infra is up" === "Redis is up". When BullMQ ships, deepen
 // this check (e.g., HMGET on a known key, or read an oldest-job
 // timestamp).
+//
+// `workers` reads `mybooks:workers:heartbeat:*` keys written by the
+// worker container every 15s with a 30s TTL — see
+// utils/worker-heartbeat.ts. EXPECT_WORKER=false skips the check so
+// api-only deployments don't degrade.
 import { sql } from 'drizzle-orm';
 import { db as _dbForHealth } from './db/index.js';
 import { redisPing } from './utils/health-redis.js';
+import { readHeartbeats } from './utils/worker-heartbeat.js';
 
 const healthHandler = async (_req: express.Request, res: express.Response) => {
   const t0 = Date.now();
@@ -289,11 +305,19 @@ const healthHandler = async (_req: express.Request, res: express.Response) => {
     }
   })();
 
-  const [db, redis] = await Promise.all([dbProbe, redisPing()]);
+  const [db, redis, workers] = await Promise.all([dbProbe, redisPing(), readHeartbeats()]);
 
   // Queue health rides on Redis until BullMQ wiring lands.
   const queue = { ok: redis.ok, latencyMs: redis.latencyMs, error: redis.error };
-  const allOk = db.ok && redis.ok && queue.ok;
+
+  // Workers sub-check is gated on EXPECT_WORKER. Default true matches
+  // standalone docker-compose (which always runs the worker service);
+  // operators on api-only deployments set EXPECT_WORKER=false so a
+  // missing heartbeat doesn't drag the overall status to degraded.
+  const workersCheckActive = env.EXPECT_WORKER;
+  const workersOk = workersCheckActive ? workers.ok : true;
+
+  const allOk = db.ok && redis.ok && queue.ok && workersOk;
   const status = allOk ? 'ok' : 'degraded';
 
   const body = {
@@ -301,8 +325,20 @@ const healthHandler = async (_req: express.Request, res: express.Response) => {
     db: db.ok ? 'ok' : 'fail',
     redis: redis.ok ? 'ok' : 'fail',
     queue: queue.ok ? 'ok' : 'fail',
+    workers: workersOk ? 'ok' : 'fail',
     timestamp: new Date().toISOString(),
-    checks: { db, redis, queue },
+    checks: {
+      db,
+      redis,
+      queue,
+      workers: {
+        ...workers,
+        // Make the EXPECT_WORKER gating visible in the response body
+        // so operators inspecting /health output understand why a
+        // missing heartbeat isn't tripping degraded status.
+        expected: workersCheckActive,
+      },
+    },
   };
 
   if (allOk) {
@@ -313,6 +349,23 @@ const healthHandler = async (_req: express.Request, res: express.Response) => {
 };
 app.get('/health', healthHandler);
 app.get('/api/health', healthHandler);
+// vibe-mybooks-compatibility-addendum §3.5 — `/api/v1/health` alias is
+// the path the appliance manifest references. Existing `/health` and
+// `/api/health` stay reachable so Caddy / Docker HEALTHCHECK / uptime
+// monitors that hardcoded the old paths keep working.
+app.get('/api/v1/health', healthHandler);
+
+// vibe-mybooks-compatibility-addendum §3.5, §3.14.5 — liveness probe.
+// Stays 200 even when DB or Redis is down (that's the readiness
+// concern of /health). Used by the appliance's HAProxy emergency
+// proxy as the backend health check at port 5171, where "DB is
+// wonky" is exactly the scenario where staff need to log in.
+const pingHandler = (_req: express.Request, res: express.Response) => {
+  res.json({ ok: true });
+};
+app.get('/ping', pingHandler);
+app.get('/api/ping', pingHandler);
+app.get('/api/v1/ping', pingHandler);
 
 // Setup routes (no auth required — self-destructs after setup)
 import { setupRouter } from './routes/setup.routes.js';

@@ -4,6 +4,7 @@
 
 import type { Request, Response } from 'express';
 import { env } from '../config/env.js';
+import { resolvedSecure } from './cookie-secure.js';
 
 // Refresh tokens live in an HttpOnly cookie scoped to /api/v1/auth so they
 // are not exposed to any page script, cannot be exfiltrated via XSS, and
@@ -32,14 +33,6 @@ const SEVEN_DAYS_SECONDS = 7 * 24 * 60 * 60;
 function resolvedCookiePath(): string {
   const prefix = env.COOKIE_PATH === '/' ? '' : env.COOKIE_PATH;
   return `${prefix}${COOKIE_SUB_PATH}`;
-}
-
-// Resolve the Secure flag. Explicit COOKIE_SECURE wins (multi-app
-// mode forces it on). Falls back to NODE_ENV=production for the
-// pre-existing single-app behavior.
-function resolvedSecure(): boolean {
-  if (env.COOKIE_SECURE !== undefined) return env.COOKIE_SECURE;
-  return env.NODE_ENV === 'production';
 }
 
 export function setRefreshCookie(res: Response, refreshToken: string): void {

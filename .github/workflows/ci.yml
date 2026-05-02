@@ -82,9 +82,9 @@ jobs:
       - name: Run migrations against test DB
         env:
           DATABASE_URL: postgresql://kisbooks:kisbooks@localhost:5434/kisbooks_test
-        # migrate.ts resolves `./packages/api/src/db/migrations` relative
-        # to cwd, so run it from the repo root — not from packages/api.
-        run: npx tsx packages/api/src/db/migrate.ts
+        # migrate.ts resolves the migrations folder via import.meta.url
+        # so it works from any cwd. Repo root is fine.
+        run: npx tsx packages/api/src/migrate.ts
       - name: Run api unit tests
         env:
           DATABASE_URL: postgresql://kisbooks:kisbooks@localhost:5434/kisbooks_test

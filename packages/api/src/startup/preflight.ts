@@ -3,10 +3,10 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { sql } from 'drizzle-orm';
-import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import crypto from 'crypto';
 import { db } from '../db/index.js';
 import { env } from '../config/env.js';
+import { applyMigrations, checkPendingMigrations, MIGRATIONS_FOLDER } from './migrations.js';
 import {
   sentinelExists,
   readSentinelHeader,
@@ -39,16 +39,49 @@ import { sentinelAudit } from './sentinel-audit.js';
 export async function runPreflight(): Promise<ValidationResult> {
   // Step 1: migrations must run so `system_settings` is guaranteed to exist.
   // This is a no-op on an already-migrated DB.
-  console.log('[preflight] running migrations...');
-  try {
-    await migrate(db, { migrationsFolder: './packages/api/src/db/migrations' });
-  } catch (err) {
-    console.error('[preflight] migration failed:', err);
-    return {
-      status: 'blocked',
-      code: 'UNKNOWN',
-      details: `migration failed: ${(err as Error).message}`,
-    };
+  //
+  // MIGRATIONS_AUTO=false (appliance mode) flips this to a check-only
+  // path: if any migrations are pending we exit non-zero with a
+  // documented message instead of running them, so the appliance's
+  // operator UI shows the failure rather than auto-applying schema
+  // changes the operator may not have approved yet.
+  if (env.MIGRATIONS_AUTO) {
+    console.log('[preflight] running migrations...');
+    try {
+      await applyMigrations(MIGRATIONS_FOLDER);
+    } catch (err) {
+      console.error('[preflight] migration failed:', err);
+      return {
+        status: 'blocked',
+        code: 'UNKNOWN',
+        details: `migration failed: ${(err as Error).message}`,
+      };
+    }
+  } else {
+    let status;
+    try {
+      status = await checkPendingMigrations(MIGRATIONS_FOLDER);
+    } catch (err) {
+      console.error('[preflight] failed to read migration status:', err);
+      return {
+        status: 'blocked',
+        code: 'UNKNOWN',
+        details: `cannot read migration status: ${(err as Error).message}`,
+      };
+    }
+    if (status.pending) {
+      console.error(
+        `[preflight] Schema migration pending (${status.applied}/${status.total} applied). ` +
+          `MIGRATIONS_AUTO=false; run the migrations container before starting the server: ` +
+          `\`npx tsx packages/api/src/migrate.ts\``,
+      );
+      // Exit directly — the diagnostic app is for installation-state
+      // failures (CRC / orphan sentinel / etc.), not for "ops forgot to
+      // run migrations". Clean exit gives the appliance compose a clear
+      // restart-on-failure signal it can surface to the operator.
+      process.exit(1);
+    }
+    console.log(`[preflight] migrations up to date (${status.applied}/${status.total})`);
   }
 
   // Step 2: gather the current DB installation_id.

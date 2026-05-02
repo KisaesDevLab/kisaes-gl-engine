@@ -14,6 +14,7 @@ import { AppError } from '../utils/errors.js';
 import * as portalAuth from '../services/portal-auth.service.js';
 import * as contactSvc from '../services/portal-contact.service.js';
 import { getRateLimitStore } from '../utils/rate-limit-store.js';
+import { resolvedSecure } from '../utils/cookie-secure.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 9 — portal-side auth
 // endpoints. Mounted at /api/portal/auth/* (note the lack of /v1 —
@@ -94,8 +95,10 @@ portalAuthRouter.post('/auth/verify', validate(verifySchema), async (req, res) =
   });
 
   // Set the session cookie. SameSite=Lax matches the staff cookie pattern;
-  // Secure is enabled in production but skipped in dev/HTTP.
-  const isProd = process.env['NODE_ENV'] === 'production';
+  // Secure follows resolvedSecure() — honoring COOKIE_SECURE override so
+  // the appliance's emergency-access proxy (plain HTTP at port 5171) can
+  // operate from a NODE_ENV=production build without silently dropping
+  // the cookie. See vibe-mybooks-compatibility-addendum §3.14.4.
   const cookieParts = [
     `${PORTAL_SESSION_COOKIE}=${encodeURIComponent(session.sessionToken)}`,
     'Path=/',
@@ -103,7 +106,7 @@ portalAuthRouter.post('/auth/verify', validate(verifySchema), async (req, res) =
     'SameSite=Lax',
     `Max-Age=${Math.floor((session.expiresAt.getTime() - Date.now()) / 1000)}`,
   ];
-  if (isProd) cookieParts.push('Secure');
+  if (resolvedSecure()) cookieParts.push('Secure');
   res.setHeader('Set-Cookie', cookieParts.join('; '));
 
   res.json({
@@ -142,7 +145,9 @@ portalAuthRouter.post(
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
     });
-    const isProd = process.env['NODE_ENV'] === 'production';
+    // Same cookie shape as the magic-link verify path — see comment
+    // there for why we route through resolvedSecure() rather than a
+    // hard NODE_ENV check.
     const cookieParts = [
       `${PORTAL_SESSION_COOKIE}=${encodeURIComponent(session.sessionToken)}`,
       'Path=/',
@@ -150,7 +155,7 @@ portalAuthRouter.post(
       'SameSite=Lax',
       `Max-Age=${Math.floor((session.expiresAt.getTime() - Date.now()) / 1000)}`,
     ];
-    if (isProd) cookieParts.push('Secure');
+    if (resolvedSecure()) cookieParts.push('Secure');
     res.setHeader('Set-Cookie', cookieParts.join('; '));
     res.json({
       ok: true,

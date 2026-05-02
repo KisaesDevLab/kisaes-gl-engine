@@ -192,6 +192,36 @@ const envSchema = z.object({
   // 60s covers normal NTP drift; ops on islanded networks may need
   // higher. Setting 0 reverts to strict.
   LICENSE_CLOCK_TOLERANCE_SECONDS: z.coerce.number().int().nonnegative().default(60),
+  // vibe-mybooks-compatibility-addendum §3.4. Standalone keeps
+  // auto-migrate on (default) so the existing first-boot story is
+  // unchanged. Appliance mode sets MIGRATIONS_AUTO=false and runs
+  // migrations as an explicit one-shot container before starting the
+  // server, so a failed migration is visible in the appliance's
+  // operator UI rather than silently restarting the api container.
+  // When false: server refuses to start if pending migrations are
+  // detected (operator must run `npm run migrate` first).
+  MIGRATIONS_AUTO: z
+    .string()
+    .optional()
+    .default('true')
+    .transform((v) => {
+      const lower = v.toLowerCase();
+      return lower !== 'false' && lower !== '0' && lower !== 'no' && lower !== 'off';
+    }),
+  // vibe-mybooks-compatibility-addendum §3.6. When true (default),
+  // /health includes a `workers` sub-check that fails if no worker
+  // heartbeat has landed in Redis within the last 30s. Set to false
+  // for deployments that intentionally run only the api container
+  // (bare-bones single-tenant installs) so the missing heartbeat
+  // doesn't degrade the health probe.
+  EXPECT_WORKER: z
+    .string()
+    .optional()
+    .default('true')
+    .transform((v) => {
+      const lower = v.toLowerCase();
+      return lower !== 'false' && lower !== '0' && lower !== 'no' && lower !== 'off';
+    }),
 });
 
 export type Env = z.infer<typeof envSchema>;

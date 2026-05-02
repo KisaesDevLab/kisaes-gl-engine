@@ -2,10 +2,10 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { app } from './app.js';
 import { env } from './config/env.js';
-import { db, pool } from './db/index.js';
+import { pool } from './db/index.js';
+import { applyMigrations, MIGRATIONS_FOLDER } from './startup/migrations.js';
 import { startBackupScheduler } from './services/backup-scheduler.service.js';
 import { startRecurringScheduler } from './services/recurring.service.js';
 import { startFingerprintScheduler } from './services/db-fingerprint.service.js';
@@ -110,10 +110,16 @@ function logBootSummary(): void {
 async function start() {
   logBootSummary();
 
-  // Run migrations
-  console.log('Running migrations...');
-  await migrate(db, { migrationsFolder: './packages/api/src/db/migrations' });
-  console.log('Migrations complete.');
+  // Run migrations. preflight.ts has already migrated (or refused to
+  // start when MIGRATIONS_AUTO=false and migrations are pending), so
+  // this call is idempotent — kept for the path where index.ts is
+  // loaded outside the bootstrap flow (legacy scripts, integration
+  // tests). Skipped entirely when MIGRATIONS_AUTO=false.
+  if (env.MIGRATIONS_AUTO) {
+    console.log('Running migrations...');
+    await applyMigrations(MIGRATIONS_FOLDER);
+    console.log('Migrations complete.');
+  }
 
   // Bootstrap built-in COA templates from the static BUSINESS_TEMPLATES
   // constant. Idempotent — only inserts when the coa_templates table is

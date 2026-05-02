@@ -1,5 +1,17 @@
 FROM node:20-alpine
 
+# OCI image labels. metadata-action injects matching labels at build time
+# in CI (which override these), but keeping them in the Dockerfile means
+# `docker build .` locally — and any consumer that bypasses metadata-action
+# — still gets meaningful values. `org.opencontainers.image.version` is
+# injected by metadata-action only and is intentionally absent here.
+LABEL org.opencontainers.image.source="https://github.com/KisaesDevLab/Vibe-MyBooks" \
+      org.opencontainers.image.url="https://github.com/KisaesDevLab/Vibe-MyBooks" \
+      org.opencontainers.image.title="Vibe MyBooks API" \
+      org.opencontainers.image.description="Vibe MyBooks REST API and BullMQ worker (same image, different CMD)" \
+      org.opencontainers.image.vendor="Kisaes LLC" \
+      org.opencontainers.image.licenses="PolyForm-Internal-Use-1.0.0"
+
 WORKDIR /app
 
 # This Dockerfile builds a single image used by both the `api` and `worker`

@@ -14,6 +14,14 @@ import type { AddressInfo } from 'node:net';
 
 type ProbeResult = { ok: boolean; latencyMs: number; error?: string };
 
+interface WorkerCheck {
+  ok: boolean;
+  count: number;
+  lastHeartbeatMs: number | null;
+  expected: boolean;
+  error?: string;
+}
+
 interface FetchedHealth {
   status: number;
   body: {
@@ -21,26 +29,37 @@ interface FetchedHealth {
     db: 'ok' | 'fail';
     redis: 'ok' | 'fail';
     queue: 'ok' | 'fail';
+    workers: 'ok' | 'fail';
     timestamp: string;
-    checks: { db: ProbeResult; redis: ProbeResult; queue: ProbeResult };
+    checks: { db: ProbeResult; redis: ProbeResult; queue: ProbeResult; workers: WorkerCheck };
   };
 }
 
-async function probeHealth(opts: { db: ProbeResult; redis: ProbeResult }): Promise<FetchedHealth> {
+async function probeHealth(opts: {
+  db: ProbeResult;
+  redis: ProbeResult;
+  workers?: { ok: boolean; count: number; lastHeartbeatMs: number | null; error?: string };
+  expectWorker?: boolean;
+}): Promise<FetchedHealth> {
   const app = express();
   app.get('/health', (_req, res) => {
     const db = opts.db;
     const redis = opts.redis;
     const queue = { ok: redis.ok, latencyMs: redis.latencyMs, error: redis.error };
-    const allOk = db.ok && redis.ok && queue.ok;
+    // Default workers state: a fresh heartbeat present.
+    const workers = opts.workers ?? { ok: true, count: 1, lastHeartbeatMs: 1000 };
+    const expectWorker = opts.expectWorker ?? true;
+    const workersOk = expectWorker ? workers.ok : true;
+    const allOk = db.ok && redis.ok && queue.ok && workersOk;
     const status = allOk ? 'ok' : 'degraded';
     const body = {
       status,
       db: db.ok ? 'ok' : 'fail',
       redis: redis.ok ? 'ok' : 'fail',
       queue: queue.ok ? 'ok' : 'fail',
+      workers: workersOk ? 'ok' : 'fail',
       timestamp: new Date().toISOString(),
-      checks: { db, redis, queue },
+      checks: { db, redis, queue, workers: { ...workers, expected: expectWorker } },
     };
     if (allOk) res.json(body);
     else res.status(503).json(body);
@@ -55,8 +74,8 @@ async function probeHealth(opts: { db: ProbeResult; redis: ProbeResult }): Promi
   return { status: r.status, body };
 }
 
-describe('health handler shape (vibe-distribution-plan)', () => {
-  it('all-ok: returns 200 + status:"ok" + db/redis/queue:"ok"', async () => {
+describe('health handler shape (vibe-distribution-plan + addendum §3.6)', () => {
+  it('all-ok: returns 200 + status:"ok" + db/redis/queue/workers:"ok"', async () => {
     const r = await probeHealth({
       db: { ok: true, latencyMs: 5 },
       redis: { ok: true, latencyMs: 2 },
@@ -66,9 +85,40 @@ describe('health handler shape (vibe-distribution-plan)', () => {
     expect(r.body.db).toBe('ok');
     expect(r.body.redis).toBe('ok');
     expect(r.body.queue).toBe('ok');
+    expect(r.body.workers).toBe('ok');
     expect(r.body.checks).toHaveProperty('db');
     expect(r.body.checks).toHaveProperty('redis');
     expect(r.body.checks).toHaveProperty('queue');
+    expect(r.body.checks).toHaveProperty('workers');
+  });
+
+  it('worker stale: returns 503 + workers:"fail" while db/redis are ok', async () => {
+    const r = await probeHealth({
+      db: { ok: true, latencyMs: 4 },
+      redis: { ok: true, latencyMs: 2 },
+      workers: { ok: false, count: 1, lastHeartbeatMs: 45_000 }, // >30s old
+    });
+    expect(r.status).toBe(503);
+    expect(r.body.status).toBe('degraded');
+    expect(r.body.db).toBe('ok');
+    expect(r.body.redis).toBe('ok');
+    expect(r.body.workers).toBe('fail');
+    expect(r.body.checks.workers.expected).toBe(true);
+    expect(r.body.checks.workers.lastHeartbeatMs).toBe(45_000);
+  });
+
+  it('EXPECT_WORKER=false: missing heartbeat does NOT degrade overall status', async () => {
+    const r = await probeHealth({
+      db: { ok: true, latencyMs: 4 },
+      redis: { ok: true, latencyMs: 2 },
+      workers: { ok: false, count: 0, lastHeartbeatMs: null },
+      expectWorker: false,
+    });
+    expect(r.status).toBe(200);
+    expect(r.body.status).toBe('ok');
+    expect(r.body.workers).toBe('ok');
+    expect(r.body.checks.workers.expected).toBe(false);
+    expect(r.body.checks.workers.count).toBe(0);
   });
 
   it('redis down: returns 503 + status:"degraded" + redis:"fail" + queue:"fail" + db:"ok"', async () => {

@@ -10,7 +10,7 @@
     "dev": "tsx watch src/bootstrap.ts",
     "start": "node dist/bootstrap.js",
     "test": "vitest run",
-    "migrate": "tsx src/db/migrate.ts",
+    "migrate": "tsx src/migrate.ts",
     "seed:coa": "tsx src/db/seeds/coa.ts",
     "generate-knowledge": "tsx src/scripts/generate-knowledge.ts"
   },

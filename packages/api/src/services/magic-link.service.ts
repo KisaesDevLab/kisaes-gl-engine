@@ -71,9 +71,12 @@ export async function sendMagicLink(email: string, ipAddress: string, userAgent:
     userAgent,
   });
 
-  // Send email
-  const appUrl = env.CORS_ORIGIN || 'http://localhost:5173';
-  const link = `${appUrl}/auth/magic?token=${token}`;
+  // Send email. Use PUBLIC_URL (the canonical externally-visible URL)
+  // rather than CORS_ORIGIN, which is comma-separated and would produce
+  // broken links on multi-origin appliances. PUBLIC_URL and CORS_ORIGIN
+  // share the same default (http://localhost:5173) for single-origin
+  // standalone installs, so existing customers see no change.
+  const link = `${env.PUBLIC_URL.replace(/\/$/, '')}/auth/magic?token=${token}`;
 
   try {
     await systemEmail.sendActionEmail({
