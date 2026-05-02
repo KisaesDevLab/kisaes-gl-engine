@@ -14,7 +14,7 @@ import { AppError } from '../utils/errors.js';
 import * as portalAuth from '../services/portal-auth.service.js';
 import * as contactSvc from '../services/portal-contact.service.js';
 import { getRateLimitStore } from '../utils/rate-limit-store.js';
-import { resolvedSecure } from '../utils/cookie-secure.js';
+import { resolvedSecure, appendSetCookie } from '../utils/cookie-secure.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 9 — portal-side auth
 // endpoints. Mounted at /api/portal/auth/* (note the lack of /v1 —
@@ -99,15 +99,21 @@ portalAuthRouter.post('/auth/verify', validate(verifySchema), async (req, res) =
   // the appliance's emergency-access proxy (plain HTTP at port 5171) can
   // operate from a NODE_ENV=production build without silently dropping
   // the cookie. See vibe-mybooks-compatibility-addendum §3.14.4.
+  // Clamp Max-Age at 0 — a session whose expiresAt is already in the
+  // past (clock skew, regenerated session, fixture quirk) would set a
+  // cookie with a negative Max-Age, which browsers treat as
+  // "expire immediately" — login would appear to succeed but the very
+  // next request would arrive without the cookie.
+  const maxAgeSec = Math.max(0, Math.floor((session.expiresAt.getTime() - Date.now()) / 1000));
   const cookieParts = [
     `${PORTAL_SESSION_COOKIE}=${encodeURIComponent(session.sessionToken)}`,
     'Path=/',
     'HttpOnly',
     'SameSite=Lax',
-    `Max-Age=${Math.floor((session.expiresAt.getTime() - Date.now()) / 1000)}`,
+    `Max-Age=${maxAgeSec}`,
   ];
   if (resolvedSecure()) cookieParts.push('Secure');
-  res.setHeader('Set-Cookie', cookieParts.join('; '));
+  appendSetCookie(res, cookieParts.join('; '));
 
   res.json({
     ok: true,
@@ -147,16 +153,17 @@ portalAuthRouter.post(
     });
     // Same cookie shape as the magic-link verify path — see comment
     // there for why we route through resolvedSecure() rather than a
-    // hard NODE_ENV check.
+    // hard NODE_ENV check, and why we clamp Max-Age at 0.
+    const maxAgeSec = Math.max(0, Math.floor((session.expiresAt.getTime() - Date.now()) / 1000));
     const cookieParts = [
       `${PORTAL_SESSION_COOKIE}=${encodeURIComponent(session.sessionToken)}`,
       'Path=/',
       'HttpOnly',
       'SameSite=Lax',
-      `Max-Age=${Math.floor((session.expiresAt.getTime() - Date.now()) / 1000)}`,
+      `Max-Age=${maxAgeSec}`,
     ];
     if (resolvedSecure()) cookieParts.push('Secure');
-    res.setHeader('Set-Cookie', cookieParts.join('; '));
+    appendSetCookie(res, cookieParts.join('; '));
     res.json({
       ok: true,
       contactId: session.contactId,
@@ -190,8 +197,8 @@ portalAuthRouter.post('/auth/logout', async (req, res) => {
     .find((c) => c.startsWith(`${PORTAL_SESSION_COOKIE}=`));
   const token = match ? decodeURIComponent(match.slice(PORTAL_SESSION_COOKIE.length + 1)) : '';
   await portalAuth.logout(token);
-  res.setHeader(
-    'Set-Cookie',
+  appendSetCookie(
+    res,
     `${PORTAL_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`,
   );
   res.json({ ok: true });

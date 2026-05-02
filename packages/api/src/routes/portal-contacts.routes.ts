@@ -10,6 +10,7 @@ import { AppError } from '../utils/errors.js';
 import * as svc from '../services/portal-contact.service.js';
 import * as portalAuth from '../services/portal-auth.service.js';
 import { PORTAL_PREVIEW_COOKIE } from '../middleware/portal-auth.js';
+import { resolvedSecure, appendSetCookie } from '../utils/cookie-secure.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 8 — bookkeeper-side
 // portal-contact admin endpoints. Mounted at /api/v1/practice/portal/...
@@ -206,16 +207,17 @@ portalContactsRouter.post('/preview/start', validate(startPreviewSchema), async 
     companyId: req.body.companyId,
     origin: req.body.origin,
   });
-  const isProd = process.env['NODE_ENV'] === 'production';
+  // Same emergency-access-friendly cookie shape as portal-auth.routes.ts.
+  const maxAgeSec = Math.max(0, Math.floor((result.expiresAt.getTime() - Date.now()) / 1000));
   const cookieParts = [
     `${PORTAL_PREVIEW_COOKIE}=${encodeURIComponent(result.token)}`,
     'Path=/',
     'HttpOnly',
     'SameSite=Lax',
-    `Max-Age=${Math.floor((result.expiresAt.getTime() - Date.now()) / 1000)}`,
+    `Max-Age=${maxAgeSec}`,
   ];
-  if (isProd) cookieParts.push('Secure');
-  res.setHeader('Set-Cookie', cookieParts.join('; '));
+  if (resolvedSecure()) cookieParts.push('Secure');
+  appendSetCookie(res, cookieParts.join('; '));
   res.json({
     redirectUrl: '/portal/',
     expiresAt: result.expiresAt.toISOString(),

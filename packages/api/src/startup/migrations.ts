@@ -45,6 +45,14 @@ function readJournal(folder: string): MigrationsJournal {
 
 export interface PendingMigrationStatus {
   pending: boolean;
+  /**
+   * True when the DB has MORE applied migrations than the journal
+   * lists — i.e. the operator rolled back the code without rolling
+   * back the DB. preflight.ts surfaces this as a separate blocked
+   * code (DATABASE_AHEAD) so the operator gets actionable advice
+   * rather than the generic "schema migration pending" message.
+   */
+  ahead: boolean;
   applied: number;
   total: number;
 }
@@ -72,7 +80,7 @@ export async function checkPendingMigrations(
     applied = 0;
   }
 
-  return { pending: applied < total, applied, total };
+  return { pending: applied < total, ahead: applied > total, applied, total };
 }
 
 /**

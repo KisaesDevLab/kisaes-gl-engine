@@ -60,5 +60,25 @@ describe('checkPendingMigrations', () => {
     const status = await checkPendingMigrations(MIGRATIONS_FOLDER);
     expect(status.applied).toBe(0);
     expect(status.pending).toBe(true);
+    expect(status.ahead).toBe(false);
+  });
+
+  it('reports ahead=true when the DB has more migrations than the journal', async () => {
+    // Code rolled back to a release with fewer migrations than the
+    // DB has applied. checkPendingMigrations must surface this so
+    // preflight can return DATABASE_AHEAD instead of silently
+    // booting against a too-new schema.
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const journal = JSON.parse(
+      readFileSync(resolve(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
+    ) as { entries: unknown[] };
+    const total = journal.entries.length;
+    executeMock.mockResolvedValueOnce({ rows: [{ n: total + 5 }] });
+    const status = await checkPendingMigrations(MIGRATIONS_FOLDER);
+    expect(status.applied).toBe(total + 5);
+    expect(status.total).toBe(total);
+    expect(status.pending).toBe(false);
+    expect(status.ahead).toBe(true);
   });
 });

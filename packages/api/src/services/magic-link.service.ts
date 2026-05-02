@@ -3,7 +3,7 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import crypto from 'crypto';
-import { eq, and, sql, lt } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { magicLinks, users } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';

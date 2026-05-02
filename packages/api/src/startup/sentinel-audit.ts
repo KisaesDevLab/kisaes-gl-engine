@@ -25,6 +25,10 @@ export type SentinelAuditEvent =
   | 'installation.corrupt_sentinel_detected'
   | 'installation.decrypt_failed'
   | 'installation.orphaned_data_detected'
+  // vibe-mybooks-compatibility-addendum §3.4 — MIGRATIONS_AUTO=false
+  // operator-state events
+  | 'installation.migrations_pending'
+  | 'installation.database_ahead_of_code'
   // Phase B recovery events
   | 'recovery.key_regenerated'
   | 'recovery.key_used'

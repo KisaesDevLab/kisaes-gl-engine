@@ -40,6 +40,21 @@ export type ValidationBlockedCode =
   | 'SENTINEL_DECRYPT_FAILED'
   | 'SENTINEL_CORRUPT'
   | 'ORPHANED_DATA'
+  /**
+   * MIGRATIONS_AUTO=false and there are pending migrations in the
+   * journal that haven't been applied to the DB. The operator must
+   * run `npx tsx packages/api/src/migrate.ts` (or the appliance's
+   * one-shot migrate container) before starting the api. Distinct
+   * from DATABASE_AHEAD because the recovery action is opposite.
+   */
+  | 'MIGRATIONS_PENDING'
+  /**
+   * The DB has more migrations applied than the journal in the
+   * running binary expects — the operator likely rolled back the
+   * code without rolling back the DB. Recovery: re-deploy a code
+   * version >= the DB's schema version, OR roll back the DB.
+   */
+  | 'DATABASE_AHEAD'
   | 'UNKNOWN';
 
 export type ValidationResult =

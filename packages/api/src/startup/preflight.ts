@@ -41,10 +41,9 @@ export async function runPreflight(): Promise<ValidationResult> {
   // This is a no-op on an already-migrated DB.
   //
   // MIGRATIONS_AUTO=false (appliance mode) flips this to a check-only
-  // path: if any migrations are pending we exit non-zero with a
-  // documented message instead of running them, so the appliance's
-  // operator UI shows the failure rather than auto-applying schema
-  // changes the operator may not have approved yet.
+  // path: if any migrations are pending we return a blocked status so
+  // bootstrap.ts surfaces the diagnostic app, instead of auto-applying
+  // schema changes the operator may not have approved yet.
   if (env.MIGRATIONS_AUTO) {
     console.log('[preflight] running migrations...');
     try {
@@ -70,16 +69,27 @@ export async function runPreflight(): Promise<ValidationResult> {
       };
     }
     if (status.pending) {
-      console.error(
-        `[preflight] Schema migration pending (${status.applied}/${status.total} applied). ` +
-          `MIGRATIONS_AUTO=false; run the migrations container before starting the server: ` +
-          `\`npx tsx packages/api/src/migrate.ts\``,
-      );
-      // Exit directly — the diagnostic app is for installation-state
-      // failures (CRC / orphan sentinel / etc.), not for "ops forgot to
-      // run migrations". Clean exit gives the appliance compose a clear
-      // restart-on-failure signal it can surface to the operator.
-      process.exit(1);
+      const msg =
+        `Schema migration pending (${status.applied}/${status.total} applied). ` +
+        `MIGRATIONS_AUTO=false; run the migrations container before starting the server: ` +
+        `\`npx tsx packages/api/src/migrate.ts\``;
+      console.error(`[preflight] ${msg}`);
+      // Return blocked rather than process.exit so bootstrap.ts can
+      // surface the diagnostic app — same pattern as every other
+      // installation-state failure. Compose's restart-on-failure
+      // policy then loops, but the operator sees a useful error page
+      // at /api/diagnostic instead of an opaque container restart.
+      return { status: 'blocked', code: 'MIGRATIONS_PENDING', details: msg };
+    }
+    if (status.ahead) {
+      const msg =
+        `DB schema is AHEAD of this binary (${status.applied} applied, ` +
+        `${status.total} expected). The operator likely rolled back the ` +
+        `code without rolling back the DB. Either re-deploy a code version ` +
+        `>= the DB's schema, or restore the DB from a snapshot taken before ` +
+        `the code rollback.`;
+      console.error(`[preflight] ${msg}`);
+      return { status: 'blocked', code: 'DATABASE_AHEAD', details: msg };
     }
     console.log(`[preflight] migrations up to date (${status.applied}/${status.total})`);
   }
@@ -286,6 +296,10 @@ function blockedEvent(
       return 'installation.decrypt_failed';
     case 'ORPHANED_DATA':
       return 'installation.orphaned_data_detected';
+    case 'MIGRATIONS_PENDING':
+      return 'installation.migrations_pending';
+    case 'DATABASE_AHEAD':
+      return 'installation.database_ahead_of_code';
     case 'UNKNOWN':
     default:
       return 'installation.mismatch_detected';

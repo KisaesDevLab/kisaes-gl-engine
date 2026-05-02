@@ -125,7 +125,17 @@ const envSchema = z.object({
   // origins. Single-app default points at the dev SPA; multi-app sets
   // it to e.g. https://vibe.local/mybooks. Does NOT need a trailing
   // slash; consumers add one if they need it.
-  PUBLIC_URL: z.string().url().default('http://localhost:5173'),
+  //
+  // refine() restricts to http(s) — z.string().url() also accepts
+  // file:// / ftp:// / chrome-extension:// which would produce
+  // unusable absolute links if pasted into the env by mistake.
+  PUBLIC_URL: z
+    .string()
+    .url()
+    .refine((v) => /^https?:\/\//i.test(v), {
+      message: 'PUBLIC_URL must use http:// or https://',
+    })
+    .default('http://localhost:5173'),
   // COOKIE_PATH narrows the Path attribute on every cookie this app
   // sets. Default '/' matches single-app mode. Multi-app mode sets
   // it to '/mybooks' so cookies don't leak into sibling apps on the

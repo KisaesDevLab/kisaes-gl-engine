@@ -4,7 +4,7 @@
 
 import type { Request, Response } from 'express';
 import { env } from '../config/env.js';
-import { resolvedSecure } from './cookie-secure.js';
+import { resolvedSecure, appendSetCookie } from './cookie-secure.js';
 
 // Refresh tokens live in an HttpOnly cookie scoped to /api/v1/auth so they
 // are not exposed to any page script, cannot be exfiltrated via XSS, and
@@ -75,13 +75,3 @@ export function readRefreshCookie(req: Request): string | undefined {
   return undefined;
 }
 
-function appendSetCookie(res: Response, cookie: string): void {
-  const existing = res.getHeader('Set-Cookie');
-  if (!existing) {
-    res.setHeader('Set-Cookie', cookie);
-  } else if (Array.isArray(existing)) {
-    res.setHeader('Set-Cookie', [...existing, cookie]);
-  } else {
-    res.setHeader('Set-Cookie', [String(existing), cookie]);
-  }
-}
