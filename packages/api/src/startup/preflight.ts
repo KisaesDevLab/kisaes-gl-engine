@@ -74,6 +74,15 @@ export async function runPreflight(): Promise<ValidationResult> {
         `MIGRATIONS_AUTO=false; run the migrations container before starting the server: ` +
         `\`npx tsx packages/api/src/migrate.ts\``;
       console.error(`[preflight] ${msg}`);
+      // Emit the audit line directly — the migration block returns
+      // before the validateInstallation switch where blocked outcomes
+      // are normally audited. Without this call MIGRATIONS_PENDING
+      // would be silent in the compliance trail.
+      sentinelAudit('installation.migrations_pending', {
+        applied: status.applied,
+        total: status.total,
+        details: msg,
+      });
       // Return blocked rather than process.exit so bootstrap.ts can
       // surface the diagnostic app — same pattern as every other
       // installation-state failure. Compose's restart-on-failure
@@ -84,11 +93,18 @@ export async function runPreflight(): Promise<ValidationResult> {
     if (status.ahead) {
       const msg =
         `DB schema is AHEAD of this binary (${status.applied} applied, ` +
-        `${status.total} expected). The operator likely rolled back the ` +
-        `code without rolling back the DB. Either re-deploy a code version ` +
-        `>= the DB's schema, or restore the DB from a snapshot taken before ` +
-        `the code rollback.`;
+        `${status.total} expected). Two common causes: (1) you rolled ` +
+        `back the code without rolling back the DB, or (2) you switched ` +
+        `to a binary built from a branch with fewer migrations than the ` +
+        `DB has applied. Either re-deploy a code version whose journal ` +
+        `matches the applied set, or restore the DB from a snapshot ` +
+        `taken before the divergence.`;
       console.error(`[preflight] ${msg}`);
+      sentinelAudit('installation.database_ahead_of_code', {
+        applied: status.applied,
+        total: status.total,
+        details: msg,
+      });
       return { status: 'blocked', code: 'DATABASE_AHEAD', details: msg };
     }
     console.log(`[preflight] migrations up to date (${status.applied}/${status.total})`);

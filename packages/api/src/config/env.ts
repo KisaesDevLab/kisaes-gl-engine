@@ -237,6 +237,17 @@ const envSchema = z.object({
 export type Env = z.infer<typeof envSchema>;
 
 function loadEnv(): Env {
+  // QA-R2 L3 — ALLOWED_ORIGIN alias. The appliance manifest declares
+  // CORS_ORIGIN with `aliases: [ALLOWED_ORIGIN]`, but the appliance's
+  // template engine may not honor manifest aliases. If the operator
+  // (or an older appliance integration) writes the value as
+  // ALLOWED_ORIGIN, accept it as a fallback so the app doesn't
+  // silently fall through to the localhost default. Explicit
+  // CORS_ORIGIN always wins.
+  if (!process.env['CORS_ORIGIN'] && process.env['ALLOWED_ORIGIN']) {
+    process.env['CORS_ORIGIN'] = process.env['ALLOWED_ORIGIN'];
+  }
+
   const result = envSchema.safeParse(process.env);
   if (!result.success) {
     console.error('Invalid environment variables:', result.error.flatten().fieldErrors);

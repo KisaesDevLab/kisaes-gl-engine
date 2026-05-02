@@ -80,7 +80,7 @@ describe('worker-heartbeat (vibe-mybooks-compatibility-addendum §3.6)', () => {
     expect(delMock).not.toHaveBeenCalled();
   });
 
-  it('handle.stop() returns within ~1s even if DEL hangs', async () => {
+  it('handle.stop() returns within ~1s even if DEL hangs (QA-R2 M4 — tightened bound)', async () => {
     delMock.mockImplementationOnce(
       () => new Promise(() => {/* never resolves */}),
     );
@@ -88,8 +88,12 @@ describe('worker-heartbeat (vibe-mybooks-compatibility-addendum §3.6)', () => {
     const t0 = Date.now();
     await handle.stop();
     const elapsed = Date.now() - t0;
-    // Should bail out via the 1s timeout — generous bound for CI.
-    expect(elapsed).toBeLessThan(2500);
+    // Stop timeout is 1000ms; tighten the bound to <1500 so a regression
+    // that fell through to ioredis's 2000ms commandTimeout (or skipped
+    // the timeout race entirely) would be caught.
+    expect(elapsed).toBeLessThan(1500);
+    // Sanity floor — must be at least the timeout duration.
+    expect(elapsed).toBeGreaterThanOrEqual(900);
   });
 
   it('readHeartbeats returns ok=false with count=0 when no keys present', async () => {
@@ -167,20 +171,28 @@ describe('worker-heartbeat (vibe-mybooks-compatibility-addendum §3.6)', () => {
     expect(status.ok).toBe(true);
   });
 
-  it('readHeartbeats chunks MGET when keys exceed batch size', async () => {
-    // 250 keys → 3 MGET batches of 100 + 50.
+  it('readHeartbeats chunks MGET into batches of 100 with correct contents (QA-R2 M1)', async () => {
+    // 250 keys → 3 MGET batches: 100, 100, 50.
     const keys = Array.from({ length: 250 }, (_, i) => `${HEARTBEAT_KEY_PREFIX}w${i}`);
     scanMock.mockResolvedValueOnce(['0', keys]);
     mgetMock.mockImplementation(async (...args: unknown[]) => {
-      // ioredis client.mget(...args) accepts spread or array. Mock
-      // sees the args as-spread.
       return Array.from({ length: args.length }, () => new Date().toISOString());
     });
     const status = await readHeartbeats();
     expect(status.count).toBe(250);
     expect(status.ok).toBe(true);
-    // 250 / 100 → 3 batches.
     expect(mgetMock).toHaveBeenCalledTimes(3);
+
+    // Assert each batch has the right keys, in order — catches an
+    // off-by-one slicing regression that would still produce 3 calls
+    // but lose keys at the chunk boundaries.
+    expect(mgetMock.mock.calls[0]).toEqual(keys.slice(0, 100));
+    expect(mgetMock.mock.calls[1]).toEqual(keys.slice(100, 200));
+    expect(mgetMock.mock.calls[2]).toEqual(keys.slice(200, 250));
+    // And the union of all calls covers every key exactly once.
+    const allKeysSent = mgetMock.mock.calls.flat();
+    expect(allKeysSent).toHaveLength(250);
+    expect(new Set(allKeysSent).size).toBe(250);
   });
 
   it('after closeWorkerHeartbeatClients(), readHeartbeats returns a closing error rather than spawning a fresh client', async () => {
@@ -192,27 +204,64 @@ describe('worker-heartbeat (vibe-mybooks-compatibility-addendum §3.6)', () => {
     expect(scanMock).not.toHaveBeenCalled();
   });
 
-  it('logs a warning after FAILURE_LOG_THRESHOLD consecutive write failures', async () => {
-    setMock.mockRejectedValue(new Error('test redis down'));
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const handle = startHeartbeat('test-worker-failing');
-    // Wait long enough for the immediate tick + manual tick triggers
-    // — we can't easily force the interval, so simulate by waiting for
-    // the first immediate tick to land its rejection.
-    await new Promise((r) => setTimeout(r, 50));
-    // Manually invoke tick a few more times by simulating the
-    // interval would have fired. Easier: trigger via repeated
-    // startHeartbeat passes — but the cleaner approach is to just
-    // verify the immediate tick rejected and the warn-on-Nth path
-    // is unit-testable in isolation via the threshold logic.
-    // For this test, we just confirm the spy is set up and the
-    // first failure was caught silently.
-    expect(setMock).toHaveBeenCalled();
-    // Warn count after 1 failure should be 0 (threshold is 3).
-    expect(warnSpy).not.toHaveBeenCalled();
-    await handle.stop();
-    warnSpy.mockRestore();
-    setMock.mockReset();
-    setMock.mockResolvedValue('OK');
+  it('logs a warning ONLY after FAILURE_LOG_THRESHOLD consecutive write failures (QA-R2 H2)', async () => {
+    // Drive failures via fake timers. vi.advanceTimersByTimeAsync
+    // also flushes the resulting promise microtasks so the rejected
+    // set() call gets caught and consecutiveFailures increments.
+    vi.useFakeTimers();
+    try {
+      setMock.mockReset();
+      setMock.mockRejectedValue(new Error('test redis down'));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const handle = startHeartbeat('test-worker-failing');
+
+      // Immediate tick (1st failure) — let the rejected promise settle.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(setMock).toHaveBeenCalledTimes(1);
+      expect(warnSpy).not.toHaveBeenCalled();
+
+      // Tick 2 (15s later, 2nd failure) — still under threshold.
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(setMock).toHaveBeenCalledTimes(2);
+      expect(warnSpy).not.toHaveBeenCalled();
+
+      // Tick 3 (3rd failure, threshold reached) — warn fires once.
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(setMock).toHaveBeenCalledTimes(3);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0]?.[0]).toMatch(/3 consecutive/);
+
+      // Tick 4-11 — silent (between threshold and next log point at 12).
+      for (let i = 0; i < 8; i++) {
+        await vi.advanceTimersByTimeAsync(15_000);
+      }
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+
+      // Tick 12 (multiple of FAILURE_LOG_THRESHOLD * 4 = 12) — warn again.
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+
+      // Recovery: set succeeds, counter resets, warn count stays at 2.
+      setMock.mockReset();
+      setMock.mockResolvedValue('OK');
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+
+      // Use real timers for the stop() call — it itself uses setTimeout
+      // (the 1s race) and we want it to actually elapse.
+      vi.useRealTimers();
+      await handle.stop();
+      warnSpy.mockRestore();
+    } finally {
+      // Defensive: if assertions threw, make sure we leave real timers
+      // in place so subsequent tests don't inherit fake ones.
+      try {
+        vi.useRealTimers();
+      } catch {
+        /* already real */
+      }
+      setMock.mockReset();
+      setMock.mockResolvedValue('OK');
+    }
   });
 });

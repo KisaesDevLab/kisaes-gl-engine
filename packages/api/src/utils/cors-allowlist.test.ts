@@ -87,13 +87,27 @@ describe('buildOriginAllowlist', () => {
     expect(() => buildOriginAllowlist('/^[\\s\\S]*$/')).toThrow(/trivially permissive/);
   });
 
-  it('treats /path-without-trailing-slash as a literal (not a regex)', () => {
-    // A bare '/foo' or '/foo/bar' isn't a regex literal — it's an
-    // unparseable origin. Don't silently swallow as a regex; treat as a
-    // literal so the operator sees it stays unmatched.
-    const m = buildOriginAllowlist('/foo');
-    expect(m.regexes).toHaveLength(0);
-    expect(m.literals.has('/foo')).toBe(true);
+  it('catches single-scheme wildcards (security guard, QA-R2 C2)', () => {
+    // The earlier 2-sample heuristic missed these — only one https
+    // probe meant `^https:\/\/.+$` snuck through. Now 5 probes
+    // including 3 https and 2 http origins; matchCount=3 trips the
+    // guard.
+    expect(() => buildOriginAllowlist('/^https:\\/\\/.+$/')).toThrow(/trivially permissive/);
+    expect(() => buildOriginAllowlist('/^http:\\/\\/.+$/')).toThrow(/trivially permissive/);
+    expect(() => buildOriginAllowlist('/^https?:\\/\\/.+$/')).toThrow(/trivially permissive/);
+  });
+
+  it('throws when /pattern/ has no balanced closing slash (QA-R2 H1 — comma-quantifier split)', () => {
+    // `/^.{0,99}$/` gets split on the inner comma into '/^.{0' and
+    // '99}$/'. Both look like regex starts but neither parses as
+    // /pattern/flags. We surface the issue rather than silently
+    // falling through to literal mode and rejecting all CORS traffic.
+    expect(() => buildOriginAllowlist('/^.{0,99}$/')).toThrow(/not a valid regex literal/);
+    // An entry that opens with `/` but never closes — operator typo.
+    expect(() => buildOriginAllowlist('/^abc')).toThrow(/not a valid regex literal/);
+    // The previous "treats `/foo` as literal" behavior is now an
+    // explicit error — silent fallthrough hid configuration mistakes.
+    expect(() => buildOriginAllowlist('/foo')).toThrow(/not a valid regex literal/);
   });
 
   it('accepts the d (hasIndices) regex flag', () => {
@@ -101,5 +115,13 @@ describe('buildOriginAllowlist', () => {
     // operators who upgrade Node and find their working regex breaks.
     const m = buildOriginAllowlist('/^https:\\/\\/example\\.com$/d');
     expect(m.matches('https://example.com')).toBe(true);
+  });
+
+  it('legitimate firm-pattern regexes pass the trivially-permissive guard', () => {
+    // Sanity: real-world patterns operators are likely to write must
+    // not trip the guard.
+    expect(() => buildOriginAllowlist('/^https:\\/\\/[a-z0-9-]+\\.firm\\.com$/')).not.toThrow();
+    expect(() => buildOriginAllowlist('/^https:\\/\\/(?:app|admin)\\.acme\\.test$/')).not.toThrow();
+    expect(() => buildOriginAllowlist('/^https:\\/\\/mybooks-[0-9]+\\.example\\.com$/')).not.toThrow();
   });
 });

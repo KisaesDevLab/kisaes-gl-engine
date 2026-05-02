@@ -16,15 +16,38 @@
  *   `https://acme.firm.com.attacker.example`.
  *
  * Entries are trimmed; empty entries are ignored. Bad regex (compile
- * failure, unanchored, or trivially permissive like `.*`) throws at
- * boot so misconfiguration surfaces immediately rather than failing
- * obscurely on the first cross-origin request.
+ * failure, unanchored, comma-bearing quantifier that got split, or
+ * trivially permissive like `.*`) throws at boot so misconfiguration
+ * surfaces immediately rather than failing obscurely on the first
+ * cross-origin request.
  *
  * Both literal and regex matching operate on the same normalized form
  * (trailing slash stripped, lowercased) so behavior is symmetric — a
  * regex `/^https:\/\/MB\.kisaes\.local$/i` and a literal
  * `https://MB.kisaes.local` both match `Origin: https://mb.kisaes.local`.
+ *
+ * Known limitation: this function splits the input on `,`, so a regex
+ * with a `{m,n}` quantifier (e.g. `/^.{0,99}$/`) gets split mid-pattern
+ * and BOTH halves fail the `/pattern/flags` shape check. We detect
+ * that case and throw with an actionable message rather than silently
+ * falling through to literal mode and rejecting all CORS traffic.
  */
+
+/**
+ * Probes used by the trivially-permissive guard. A regex that matches
+ * two or more of these unrelated origins is too broad to be a useful
+ * allowlist entry. Covers both http and https schemes and varied host
+ * shapes so single-scheme wildcards (`^https:\/\/.+$`) can't slip past
+ * by failing on a different-scheme probe.
+ */
+const TRIVIAL_PROBES = [
+  'https://probe-1.example.com',
+  'https://probe-2.different.test',
+  'http://probe-3.example.org:8080',
+  'http://probe-4.different.test',
+  'https://attacker.example',
+] as const;
+
 export function buildOriginAllowlist(corsOriginRaw: string): {
   matches: (origin: string) => boolean;
   literals: ReadonlySet<string>;
@@ -38,57 +61,73 @@ export function buildOriginAllowlist(corsOriginRaw: string): {
     if (!entry) continue;
 
     if (entry.startsWith('/') && entry.length >= 2) {
-      // Match `/pattern/flags` — flags optional. Trailing flags must be
-      // a syntactically plausible JS RegExp flag set (no validation
-      // beyond shape — RegExp constructor catches semantic errors); if
-      // the closing-slash structure doesn't parse, fall through to
-      // literal so a stray '/path' doesn't get silently mis-parsed as
-      // a regex.
+      // Try to parse as `/pattern/flags`. Find the LAST `/` to support
+      // patterns containing escaped slashes (`/^https:\/\/x$/`).
       const lastSlash = entry.lastIndexOf('/');
-      if (lastSlash > 0) {
-        const pattern = entry.slice(1, lastSlash);
-        const flags = entry.slice(lastSlash + 1);
-        if (/^[gimsuyd]*$/.test(flags) && pattern.length > 0) {
-          // Anchor enforcement: refuse unanchored regexes. Without
-          // ^...$, `^https:\/\/.*\.firm\.com` matches
-          // `https://acme.firm.com.attacker.example` — full bypass.
-          // Operators who want unanchored matching can write
-          // `^.*<pattern>.*$` explicitly so the intent is visible.
-          if (!pattern.startsWith('^') || !(pattern.endsWith('$') || pattern.endsWith('\\z'))) {
-            throw new Error(
-              `CORS_ORIGIN regex entry ${JSON.stringify(entry)} must be anchored: ` +
-                `pattern must start with "^" and end with "$" (got pattern: ${JSON.stringify(pattern)}). ` +
-                `Unanchored regexes are rejected because they trivially match attacker-controlled origins.`,
-            );
-          }
+      const looksLikeRegex = lastSlash > 0;
+      const pattern = looksLikeRegex ? entry.slice(1, lastSlash) : '';
+      const flags = looksLikeRegex ? entry.slice(lastSlash + 1) : '';
+      const validShape = looksLikeRegex && /^[gimsuyd]*$/.test(flags) && pattern.length > 0;
 
-          let compiled: RegExp;
-          try {
-            compiled = new RegExp(pattern, flags);
-          } catch (err) {
-            throw new Error(
-              `CORS_ORIGIN regex entry ${JSON.stringify(entry)} failed to compile: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-            );
-          }
-
-          // Reject trivially-permissive patterns. With credentials:true
-          // CORS, a wildcard regex is exactly the wide-open the env.ts
-          // refine() refuses for the literal "*". Sample two unrelated
-          // hostile origins; if both pass, the pattern matches anything.
-          if (compiled.test('https://attacker.example.com') && compiled.test('http://malicious.test:9999')) {
-            throw new Error(
-              `CORS_ORIGIN regex entry ${JSON.stringify(entry)} is trivially permissive ` +
-                `(matches arbitrary origins). Tighten the pattern — e.g. ` +
-                `/^https:\\/\\/[a-z0-9-]+\\.firm\\.com$/ — or use a literal origin instead.`,
-            );
-          }
-
-          regexes.push(compiled);
-          continue;
-        }
+      if (!validShape) {
+        // Entry starts with `/` but isn't a valid `/pattern/flags`
+        // literal. The most common cause is a `{m,n}` quantifier that
+        // got split on its inner comma — split on outer commas can't
+        // tell `{0,99}` apart from a list separator without a real
+        // regex parser. Throw with an actionable message.
+        throw new Error(
+          `CORS_ORIGIN entry ${JSON.stringify(entry)} starts with "/" ` +
+            `but is not a valid regex literal. If your regex contained ` +
+            `a {m,n} quantifier (e.g. /^.{0,99}$/), the comma split ` +
+            `the pattern in half — rewrite without the comma quantifier ` +
+            `(e.g. /^.{0}.{0,99}$/ → /^.{0,99}$/, or use a character ` +
+            `class repetition). If you meant a literal path origin, ` +
+            `use a scheme like http://localhost:5173 instead.`,
+        );
       }
+
+      // Anchor enforcement: refuse unanchored regexes. Without
+      // ^...$, `^https:\/\/.*\.firm\.com` matches
+      // `https://acme.firm.com.attacker.example` — full bypass.
+      // Operators who want unanchored matching can write
+      // `^.*<pattern>.*$` explicitly so the intent is visible.
+      if (!pattern.startsWith('^') || !(pattern.endsWith('$') || pattern.endsWith('\\z'))) {
+        throw new Error(
+          `CORS_ORIGIN regex entry ${JSON.stringify(entry)} must be anchored: ` +
+            `pattern must start with "^" and end with "$" (got pattern: ${JSON.stringify(pattern)}). ` +
+            `Unanchored regexes are rejected because they trivially match attacker-controlled origins.`,
+        );
+      }
+
+      let compiled: RegExp;
+      try {
+        compiled = new RegExp(pattern, flags);
+      } catch (err) {
+        throw new Error(
+          `CORS_ORIGIN regex entry ${JSON.stringify(entry)} failed to compile: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+
+      // Reject trivially-permissive patterns. With credentials:true
+      // CORS, a wildcard regex is exactly the wide-open the env.ts
+      // refine() refuses for the literal "*". Sample 5 unrelated
+      // origins covering both schemes; a regex that matches 2+ of
+      // them admits "too much" — even single-scheme wildcards
+      // (`^https:\/\/.+$`) trip on probe-1 + probe-2 + attacker.
+      const matchCount = TRIVIAL_PROBES.filter((o) => compiled.test(normalizeOrigin(o))).length;
+      if (matchCount >= 2) {
+        throw new Error(
+          `CORS_ORIGIN regex entry ${JSON.stringify(entry)} is trivially permissive ` +
+            `(matched ${matchCount}/${TRIVIAL_PROBES.length} unrelated probe origins). ` +
+            `Tighten the pattern — e.g. /^https:\\/\\/[a-z0-9-]+\\.firm\\.com$/ — ` +
+            `or use a literal origin instead.`,
+        );
+      }
+
+      regexes.push(compiled);
+      continue;
     }
 
     literals.add(normalizeOrigin(entry));

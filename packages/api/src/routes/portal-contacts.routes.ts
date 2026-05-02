@@ -230,8 +230,8 @@ portalContactsRouter.post('/preview/end', async (req, res) => {
   if (id) {
     await portalAuth.endPreview(id, req.userId);
   }
-  res.setHeader(
-    'Set-Cookie',
+  appendSetCookie(
+    res,
     `${PORTAL_PREVIEW_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`,
   );
   res.json({ ok: true });
