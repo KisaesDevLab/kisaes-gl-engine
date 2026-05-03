@@ -1,4 +1,4 @@
-FROM node:20-alpine
+FROM node:24-alpine
 
 # OCI image labels. metadata-action injects matching labels at build time
 # in CI (which override these), but keeping them in the Dockerfile means
