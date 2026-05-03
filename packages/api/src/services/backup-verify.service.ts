@@ -211,12 +211,47 @@ export async function verifyLatestBackups(): Promise<VerifySummary> {
 }
 
 const DEFAULT_INTERVAL_MS = 30 * 24 * 60 * 60 * 1000;
-let verifyTimer: ReturnType<typeof setInterval> | null = null;
+// Node.js setInterval/setTimeout silently truncates delays larger than
+// 2^31-1 ms (~24.85 days) to 1ms. The 30-day default above exceeds
+// that, so a raw `setInterval(cb, DEFAULT_INTERVAL_MS)` runaway-fires
+// at ~1000 cycles/sec — flooding logs and starving the event loop
+// (which is exactly how /health stops responding when nothing else is
+// obviously broken). Sleep in MAX_TIMEOUT_MS chunks instead.
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
+let verifyTimer: ReturnType<typeof setTimeout> | null = null;
+let verifyStopped = false;
 
 function intervalMs(): number {
   const raw = process.env['BACKUP_VERIFY_INTERVAL_MS'];
   const parsed = raw ? Number(raw) : NaN;
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_INTERVAL_MS;
+}
+
+// Sleep `delay` ms then call `fn`, in chunks ≤ MAX_TIMEOUT_MS so Node
+// doesn't quietly downgrade the timer.
+function scheduleAfter(delay: number, fn: () => void): void {
+  if (verifyStopped) return;
+  const chunk = Math.min(delay, MAX_TIMEOUT_MS);
+  verifyTimer = setTimeout(() => {
+    if (verifyStopped) return;
+    if (delay > chunk) {
+      scheduleAfter(delay - chunk, fn);
+    } else {
+      fn();
+    }
+  }, chunk);
+  verifyTimer.unref?.();
+}
+
+// One verification cycle, then re-arm for the next at intervalMs().
+// Chained via `.finally` so a failed/slow cycle never overlaps with
+// the next — different from the prior setInterval which would have
+// allowed overlap if a cycle ran longer than the interval.
+function tickAndReschedule(): void {
+  void withSchedulerLock('backup-verifier', verifyLatestBackups)
+    .catch((err) => log.error({ component: 'backup-verifier', event: 'interval_error', message: err instanceof Error ? err.message : String(err) }))
+    .finally(() => scheduleAfter(intervalMs(), tickAndReschedule));
 }
 
 /**
@@ -225,25 +260,17 @@ function intervalMs(): number {
  */
 export function startBackupVerifier(): void {
   if (verifyTimer) return;
-  const interval = intervalMs();
+  verifyStopped = false;
   // Delay the first tick by an hour to avoid competing with the
   // main backup scheduler's 5-minute warmup. The advisory lock
   // keeps us safe either way, but the sequencing is cleaner.
-  const initial = setTimeout(() => {
-    void withSchedulerLock('backup-verifier', verifyLatestBackups)
-      .catch((err) => log.error({ component: 'backup-verifier', event: 'initial_error', message: err instanceof Error ? err.message : String(err) }));
-  }, 60 * 60 * 1000);
-  initial.unref?.();
-  verifyTimer = setInterval(() => {
-    void withSchedulerLock('backup-verifier', verifyLatestBackups)
-      .catch((err) => log.error({ component: 'backup-verifier', event: 'interval_error', message: err instanceof Error ? err.message : String(err) }));
-  }, interval);
-  verifyTimer.unref?.();
-  log.info({ component: 'backup-verifier', event: 'started', intervalMs: interval });
+  scheduleAfter(60 * 60 * 1000, tickAndReschedule);
+  log.info({ component: 'backup-verifier', event: 'started', intervalMs: intervalMs() });
 }
 
 export function stopBackupVerifier(): void {
-  if (verifyTimer) { clearInterval(verifyTimer); verifyTimer = null; }
+  verifyStopped = true;
+  if (verifyTimer) { clearTimeout(verifyTimer); verifyTimer = null; }
 }
 
 // Used by integration tests that need to reset state between runs.
