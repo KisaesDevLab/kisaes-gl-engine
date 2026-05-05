@@ -8,9 +8,9 @@
 // inline; we never persist the raw file bytes (just sha256 + parsed
 // canonical rows in the import_sessions row).
 
-import { Router } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
 import multer from 'multer';
-import { authenticate, requireSuperAdmin } from '../middleware/auth.js';
+import { authenticate } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
 import {
   importUploadOptionsSchema,
@@ -97,9 +97,33 @@ const upload = multer({
   },
 });
 
+/**
+ * Staff-write gate. Bulk import was originally super-admin-only, but
+ * the right scope for it is "any tenant staffer who can post to the
+ * GL" — i.e. owner / accountant / bookkeeper. Mirrors the policy in
+ * `requirePracticeAccess` (middleware/practice-access.ts:23-30):
+ *   - userType !== 'client': clients have a separate /portal API surface
+ *     and must never reach staff routes even with a write-equivalent role.
+ *   - userRole !== 'readonly': readonly accounts may not post JEs, and
+ *     bulk import posts JEs by definition.
+ *
+ * Mounted AFTER `authenticate` so req.userType / req.userRole are set.
+ */
+function requireStaffWrite(_req: Request, _res: Response, next: NextFunction): void {
+  if (_req.userType === 'client') {
+    // Pretend the surface doesn't exist rather than 403 — same posture
+    // as practice-access.ts. Clients shouldn't even know it's there.
+    throw AppError.notFound('Feature not available');
+  }
+  if (_req.userRole === 'readonly') {
+    throw AppError.forbidden('Insufficient role for bulk import.', 'IMPORT_FORBIDDEN');
+  }
+  next();
+}
+
 export const importsRouter = Router();
 importsRouter.use(authenticate);
-importsRouter.use(requireSuperAdmin);
+importsRouter.use(requireStaffWrite);
 importsRouter.use(companyContext);
 
 // ── POST /imports/upload ──────────────────────────────────────────
