@@ -229,6 +229,11 @@ export interface TransactionFilters {
   contactId?: string;
   accountId?: string;
   tagId?: string;
+  /** Filter by transactions.source ('accounting_power_import' /
+   *  'quickbooks_online_import' / 'trial_balance_import' / etc.). The
+   *  bulk-import success links navigate here so the operator lands on
+   *  the rows just posted instead of the unfiltered list. */
+  source?: string;
   startDate?: string;
   endDate?: string;
   search?: string;

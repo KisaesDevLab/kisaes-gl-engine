@@ -659,6 +659,13 @@
       "when": 1776880000000,
       "tag": "0093_firm_tag_templates",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1776890000000,
+      "tag": "0094_import_sessions",
+      "breakpoints": true
     }
   ]
 }

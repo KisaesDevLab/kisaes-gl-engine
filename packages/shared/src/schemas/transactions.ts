@@ -139,6 +139,12 @@ export const transactionFiltersSchema = z.object({
   contactId: z.string().uuid().optional(),
   accountId: z.string().uuid().optional(),
   tagId: z.string().uuid().optional(),
+  /** Filter by transactions.source — the bulk-import success-link
+   *  surface uses this to navigate to "transactions I just imported"
+   *  via tags like 'accounting_power_import' / 'trial_balance_import'.
+   *  Restricted to a sane character set so it can't be used to inject
+   *  arbitrary strings — the source values are short enum-ish keys. */
+  source: z.string().regex(/^[a-zA-Z0-9_-]{1,40}$/).optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional(),
   search: z.string().optional(),

@@ -601,6 +601,13 @@ export async function listTransactions(tenantId: string, filters: {
   // ADR 0XX §5.2 — header-level tag filter semantics: keep the
   // transaction if *any* of its journal_lines carries this tag.
   tagId?: string;
+  /**
+   * Filter by transactions.source — used by the bulk-import success
+   * links to navigate to "the transactions I just imported" via tags
+   * like 'accounting_power_import' / 'quickbooks_online_import' /
+   * 'trial_balance_import'. Indexed (idx_txn_source) so this is cheap.
+   */
+  source?: string;
   search?: string; limit?: number; offset?: number;
 }, companyId?: string) {
   const conditions = [eq(transactions.tenantId, tenantId)];
@@ -609,6 +616,7 @@ export async function listTransactions(tenantId: string, filters: {
   if (filters.txnType) conditions.push(eq(transactions.txnType, filters.txnType));
   if (filters.status) conditions.push(eq(transactions.status, filters.status));
   if (filters.contactId) conditions.push(eq(transactions.contactId, filters.contactId));
+  if (filters.source) conditions.push(eq(transactions.source, filters.source));
   if (filters.startDate) conditions.push(sql`${transactions.txnDate} >= ${filters.startDate}`);
   if (filters.endDate) conditions.push(sql`${transactions.txnDate} <= ${filters.endDate}`);
   if (filters.accountId) {

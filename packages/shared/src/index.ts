@@ -33,6 +33,7 @@ export * from './types/report-settings.js';
 export * from './types/firms.js';
 export * from './types/firm-tag-templates.js';
 export * from './types/recurring-doc-request.js';
+export * from './types/imports.js';
 
 // Schemas
 export * from './schemas/auth.js';
@@ -66,6 +67,7 @@ export * from './schemas/payroll.js';
 export * from './schemas/stripe.js';
 export * from './schemas/tailscale.js';
 export * from './schemas/report-settings.js';
+export * from './schemas/imports.js';
 
 // Constants
 export * from './constants/coa-templates.js';
@@ -77,6 +79,7 @@ export * from './constants/classification-thresholds.js';
 export * from './constants/match-scoring.js';
 export * from './constants/conditional-rules.js';
 export * from './constants/review-checks.js';
+export * from './constants/imports.js';
 
 // Utils
 export * from './utils/money.js';

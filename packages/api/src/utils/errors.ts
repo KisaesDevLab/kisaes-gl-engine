@@ -41,6 +41,10 @@ export class AppError extends Error {
     return new AppError(409, message, code, details);
   }
 
+  static unprocessableEntity(message: string, code?: string, details?: Record<string, unknown>) {
+    return new AppError(422, message, code, details);
+  }
+
   static internal(message: string = 'Internal server error') {
     return new AppError(500, message, 'INTERNAL_ERROR');
   }
