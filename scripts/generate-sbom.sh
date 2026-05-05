@@ -24,11 +24,26 @@ pass()  { echo -e "${GREEN}  ✔ $*${RESET}"; }
 
 info "Generating CycloneDX SBOM…"
 cd "$ROOT"
+# --ignore-npm-errors: cyclonedx-npm runs `npm ls --json --long --all`
+# under the hood. On Node 24 (npm 11+) `npm ls` exits 1 with
+# ELSPROBLEMS for transitive `invalid:` entries from our overrides
+# block (e.g., unzipper / esbuild pinned for security sweeps don't
+# match a transitive's declared range). The deps are correct — npm 11
+# just flags any version-range mismatch as ELSPROBLEMS where npm 10
+# tolerated them. Without this flag, the SBOM step never produces an
+# artifact and the docker-publish workflow's `needs: license-check`
+# gate skips every downstream job — meaning no GHCR image gets
+# published from main.
+#
+# Stderr is no longer hidden — earlier `2>/dev/null` made the same
+# failure invisible for days because the script reported only "exit
+# 254" with no context, forcing a Docker-on-Node-24 reproduction to
+# unearth the actual `npm ls` error.
 npx --yes @cyclonedx/cyclonedx-npm \
+  --ignore-npm-errors \
   --output-file "$SBOM" \
   --output-format JSON \
-  --spec-version 1.5 \
-  2>/dev/null
+  --spec-version 1.5
 
 pass "SBOM written to scripts/sbom.cdx.json ($(wc -c < "$SBOM" | tr -d ' ') bytes)"
 
