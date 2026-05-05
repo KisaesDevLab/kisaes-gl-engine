@@ -110,13 +110,21 @@ export async function getAuthMethods(email?: string) {
   // means "no widget on the login page", which aligns with the
   // server-side verifier's skip-on-disabled path.
   let turnstileSiteKey: string | null = null;
+  let registrationEnabled = true;
   try {
     const { getSetting } = await import('./admin.service.js');
     const { SystemSettingsKeys } = await import('../constants/system-settings-keys.js');
-    const dbValue = await getSetting(SystemSettingsKeys.TURNSTILE_SITE_KEY);
-    if (dbValue && dbValue !== 'disabled') turnstileSiteKey = dbValue;
+    const [siteKeyValue, registrationValue] = await Promise.all([
+      getSetting(SystemSettingsKeys.TURNSTILE_SITE_KEY),
+      getSetting(SystemSettingsKeys.REGISTRATION_ENABLED),
+    ]);
+    if (siteKeyValue && siteKeyValue !== 'disabled') turnstileSiteKey = siteKeyValue;
+    // Default ON when the row is absent so existing installs keep their
+    // current open-registration behavior. Only an explicit 'false'
+    // disables sign-up.
+    if (registrationValue === 'false') registrationEnabled = false;
   } catch {
-    // DB unreachable — fall through to env.
+    // DB unreachable — fall through to env / defaults.
   }
   if (!turnstileSiteKey) {
     const rawSiteKey = process.env['TURNSTILE_SITE_KEY'];
@@ -135,6 +143,11 @@ export async function getAuthMethods(email?: string) {
     userHasPasskeys: false,
     userPreferredMethod: 'password' as string,
     turnstileSiteKey,
+    // Surfaced so LoginPage can hide the "Don't have an account? Sign up"
+    // link when an admin has disabled public registration. Server-side
+    // enforcement still happens in POST /api/v1/auth/register — this
+    // field only governs the UI affordance.
+    registrationEnabled,
   };
 
   if (!email) return base;
@@ -143,6 +156,26 @@ export async function getAuthMethods(email?: string) {
   // registered. The result is intentionally discarded — see note above.
   await db.query.users.findFirst({ where: eq(users.email, email.trim().toLowerCase()) });
   return base;
+}
+
+// ─── Public registration toggle ────────────────────────────────
+
+/**
+ * Whether public sign-up via /api/v1/auth/register is allowed. Reads
+ * the `registration_enabled` setting from system_settings; defaults
+ * `true` when the row is absent or when the DB is unreachable so that
+ * upgrades and degraded-DB scenarios don't accidentally lock anyone
+ * out of registering. Only an explicit `'false'` value disables it.
+ */
+export async function isRegistrationEnabled(): Promise<boolean> {
+  try {
+    const { getSetting } = await import('./admin.service.js');
+    const { SystemSettingsKeys } = await import('../constants/system-settings-keys.js');
+    const value = await getSetting(SystemSettingsKeys.REGISTRATION_ENABLED);
+    return value !== 'false';
+  } catch {
+    return true;
+  }
 }
 
 // ─── Helper to get passwordless config ─────────────────────────

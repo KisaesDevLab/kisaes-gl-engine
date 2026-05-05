@@ -13,6 +13,7 @@ import { users } from '../db/schema/index.js';
 import rateLimit from 'express-rate-limit';
 import { setRefreshCookie, clearRefreshCookie, readRefreshCookie } from '../utils/refresh-cookie.js';
 import { requireTurnstile } from '../utils/turnstile.js';
+import { isRegistrationEnabled } from '../services/auth-availability.service.js';
 import { getRateLimitStore } from '../utils/rate-limit-store.js';
 
 // Per-IP limiter — the existing loose bound (10 requests / minute from
@@ -85,7 +86,33 @@ const forgotPasswordEmailLimiter = rateLimit({
 
 export const authRouter = Router();
 
-authRouter.post('/register', authLimiter, requireTurnstile(), validate(registerSchema), async (req, res) => {
+// Guard public sign-up. When a super-admin has flipped the
+// `registration_enabled` system setting to `'false'`, refuse the
+// request before we hit Turnstile / schema validation / the auth
+// service. Runs before requireTurnstile so disabled-mode doesn't burn
+// a Turnstile token on a request we're going to refuse anyway. The
+// LoginPage and RegisterPage SPAs hide the affordance, but the
+// server-side check is the security boundary — any client (curl,
+// scripted attacker, an older SPA build still rendering the link) is
+// stopped here.
+async function requireRegistrationEnabled(
+  _req: import('express').Request,
+  res: import('express').Response,
+  next: import('express').NextFunction,
+) {
+  if (!(await isRegistrationEnabled())) {
+    res.status(403).json({
+      error: {
+        message: 'Public sign-up is disabled. Contact your administrator to request an account.',
+        code: 'REGISTRATION_DISABLED',
+      },
+    });
+    return;
+  }
+  next();
+}
+
+authRouter.post('/register', authLimiter, requireRegistrationEnabled, requireTurnstile(), validate(registerSchema), async (req, res) => {
   const result = await authService.register(req.body);
   setRefreshCookie(res, result.tokens.refreshToken);
   res.status(201).json({

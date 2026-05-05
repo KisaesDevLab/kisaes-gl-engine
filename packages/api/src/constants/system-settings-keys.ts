@@ -28,6 +28,23 @@ export const SystemSettingsKeys = {
    */
   TURNSTILE_SITE_KEY: 'turnstile_site_key',
   TURNSTILE_SECRET_KEY: 'turnstile_secret_key',
+  /**
+   * Whether public sign-up via POST /api/v1/auth/register is allowed.
+   * Default `'true'` (preserves the open-registration behavior the app
+   * shipped with). When set to `'false'`, the API rejects /register
+   * with 403 REGISTRATION_DISABLED and the LoginPage hides the "Don't
+   * have an account? Sign up" link.
+   *
+   * Note: the first-run flow (POST /api/setup/install) is unaffected —
+   * that endpoint creates the bootstrap admin via a separate router and
+   * doesn't consult this setting. So an operator can safely flip this
+   * off on a fresh install before any admin exists; the wizard still
+   * works.
+   *
+   * Stored as the literal strings `'true'` / `'false'` to match the
+   * other settings in this k/v table.
+   */
+  REGISTRATION_ENABLED: 'registration_enabled',
 } as const;
 
 export type SystemSettingsKey = (typeof SystemSettingsKeys)[keyof typeof SystemSettingsKeys];

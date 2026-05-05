@@ -163,6 +163,42 @@ adminRouter.put('/tunnel-config', async (req, res) => {
   res.json({ saved: true });
 });
 
+// ─── Public sign-up toggle ─────────────────────────────────────
+// Super-admin-only switch that controls whether anyone-on-the-internet
+// can hit POST /api/v1/auth/register and create a new tenant. Default
+// is enabled (the app shipped with open registration); this exists for
+// firms that want to lock the door once their users are provisioned.
+//
+// The setting is consumed in two places:
+//   - `getAuthMethods()` exposes it on /api/v1/auth/methods so the
+//     LoginPage hides the "Sign up" link
+//   - `requireRegistrationEnabled` in routes/auth.routes.ts enforces
+//     the 403 server-side, which is the actual security boundary
+adminRouter.get('/registration-config', async (_req, res) => {
+  const value = await adminService.getSetting(SystemSettingsKeys.REGISTRATION_ENABLED);
+  // Absent row → default ON, matching the existing open-registration
+  // behavior. Only the literal `'false'` string disables it.
+  res.json({ registrationEnabled: value !== 'false' });
+});
+
+adminRouter.put('/registration-config', async (req, res) => {
+  const enabled = req.body?.registrationEnabled;
+  if (typeof enabled !== 'boolean') {
+    res.status(400).json({
+      error: {
+        message: 'registrationEnabled must be a boolean.',
+        code: 'BAD_REQUEST',
+      },
+    });
+    return;
+  }
+  await adminService.setSetting(
+    SystemSettingsKeys.REGISTRATION_ENABLED,
+    enabled ? 'true' : 'false',
+  );
+  res.json({ saved: true, registrationEnabled: enabled });
+});
+
 // ─── Staff IP Allowlist (Phase 6) ──────────────────────────────
 // Super-admin only. The allowlist is ignored at request time unless
 // STAFF_IP_ALLOWLIST_ENFORCED=1 — CRUD works either way so operators
