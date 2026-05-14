@@ -90,8 +90,11 @@ export async function issueSession(payload: JwtPayload): Promise<AuthTokens> {
 }
 
 async function createSession(userId: string, refreshToken: string): Promise<void> {
-  const expiresAt = new Date();
-  expiresAt.setDate(expiresAt.getDate() + 7); // 7 days
+  // 7 days from now, computed as an exact 7-day offset rather than via
+  // `setDate(getDate() + 7)` which is TZ-sensitive during DST transitions.
+  // Using millisecond arithmetic gives a true UTC offset regardless of
+  // the container's local TZ.
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
   await db.insert(sessions).values({
     userId,
@@ -552,9 +555,14 @@ export async function inviteUser(tenantId: string, input: { email: string; displ
     }
     await auditLog(tenantId, 'create', 'user_access', existing.id, null, { email: existing.email, role }, undefined);
 
-    // Send access granted email
+    // Send access granted email. Fire-and-forget — failing to send the
+    // notification mustn't block the grant. Log so an admin can see if
+    // SMTP is broken and follow up with the user manually.
     const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
-    systemEmail.sendAccessGrantedEmail(existing.email, tenant?.name || 'Company').catch(() => {});
+    systemEmail.sendAccessGrantedEmail(existing.email, tenant?.name || 'Company').catch((err) => {
+      // eslint-disable-next-line no-console
+      console.warn(`[auth.service] access-granted email to ${existing.email} failed:`, err?.message ?? err);
+    });
 
     return { user: existing, temporaryPassword: null, existingUser: true };
   }
@@ -576,9 +584,14 @@ export async function inviteUser(tenantId: string, input: { email: string; displ
   await db.insert(userTenantAccess).values({ userId: user.id, tenantId, role });
   await auditLog(tenantId, 'create', 'user', user.id, null, { email: user.email, role }, undefined);
 
-  // Send invite email with temporary credentials
+  // Send invite email with temporary credentials. Fire-and-forget but
+  // log on failure — temporaryPassword is returned to the caller so the
+  // admin can hand it off manually if email isn't reaching the user.
   const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
-  systemEmail.sendInviteEmail(user.email, input.displayName, tenant?.name || 'Company', temporaryPassword).catch(() => {});
+  systemEmail.sendInviteEmail(user.email, input.displayName, tenant?.name || 'Company', temporaryPassword).catch((err) => {
+    // eslint-disable-next-line no-console
+    console.warn(`[auth.service] invite email to ${user.email} failed:`, err?.message ?? err);
+  });
 
   return { user, temporaryPassword, existingUser: false };
 }

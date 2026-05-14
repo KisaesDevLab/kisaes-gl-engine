@@ -35,14 +35,18 @@ const createSchema = z.object({
 
 portalQuestionsRouter.get('/', async (req, res) => {
   const q = req.query as Record<string, string | undefined>;
-  const list = await svc.listForBookkeeper(req.tenantId, {
+  const result = await svc.listForBookkeeper(req.tenantId, {
     status: (q['status'] as 'open' | 'viewed' | 'responded' | 'resolved' | 'unresolved' | 'all' | undefined),
     companyId: q['companyId'],
     assignedContactId: q['contactId'],
     transactionId: q['transactionId'],
     closePeriod: q['closePeriod'],
+    limit: q['limit'] ? Number(q['limit']) : undefined,
+    offset: q['offset'] ? Number(q['offset']) : undefined,
   });
-  res.json({ questions: list });
+  // Preserve legacy `{ questions }` shape alongside new pagination meta
+  // so existing frontend hooks keep working.
+  res.json({ questions: result.data, total: result.total, limit: result.limit, offset: result.offset });
 });
 
 portalQuestionsRouter.get('/pending-batches', async (req, res) => {

@@ -6,6 +6,7 @@ import { eq, and } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { invoiceTemplates } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { auditLog } from '../middleware/audit.js';
 
 export async function list(tenantId: string) {
   return db.select().from(invoiceTemplates).where(eq(invoiceTemplates.tenantId, tenantId));
@@ -22,7 +23,7 @@ export async function create(tenantId: string, input: {
   name: string; logoUrl?: string; accentColor?: string;
   showShipTo?: boolean; showPoNumber?: boolean; showTerms?: boolean;
   footerText?: string; isDefault?: boolean;
-}) {
+}, userId?: string) {
   // If setting as default, unset other defaults
   if (input.isDefault) {
     await db.update(invoiceTemplates)
@@ -35,6 +36,9 @@ export async function create(tenantId: string, input: {
     ...input,
   }).returning();
 
+  if (template) {
+    await auditLog(tenantId, 'create', 'invoice_template', template.id, null, template, userId);
+  }
   return template;
 }
 
@@ -42,7 +46,11 @@ export async function update(tenantId: string, id: string, input: {
   name?: string; logoUrl?: string | null; accentColor?: string;
   showShipTo?: boolean; showPoNumber?: boolean; showTerms?: boolean;
   footerText?: string | null; isDefault?: boolean;
-}) {
+}, userId?: string) {
+  const before = await db.query.invoiceTemplates.findFirst({
+    where: and(eq(invoiceTemplates.tenantId, tenantId), eq(invoiceTemplates.id, id)),
+  });
+
   if (input.isDefault) {
     await db.update(invoiceTemplates)
       .set({ isDefault: false })
@@ -55,12 +63,19 @@ export async function update(tenantId: string, id: string, input: {
     .returning();
 
   if (!updated) throw AppError.notFound('Invoice template not found');
+  await auditLog(tenantId, 'update', 'invoice_template', updated.id, before ?? null, updated, userId);
   return updated;
 }
 
-export async function remove(tenantId: string, id: string) {
+export async function remove(tenantId: string, id: string, userId?: string) {
+  const before = await db.query.invoiceTemplates.findFirst({
+    where: and(eq(invoiceTemplates.tenantId, tenantId), eq(invoiceTemplates.id, id)),
+  });
   await db.delete(invoiceTemplates)
     .where(and(eq(invoiceTemplates.tenantId, tenantId), eq(invoiceTemplates.id, id)));
+  if (before) {
+    await auditLog(tenantId, 'delete', 'invoice_template', id, before, null, userId);
+  }
 }
 
 export async function seedDefault(tenantId: string) {

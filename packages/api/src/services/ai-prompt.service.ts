@@ -24,10 +24,16 @@ export async function listPrompts() {
   return db.select().from(aiPromptTemplates).orderBy(aiPromptTemplates.taskType, aiPromptTemplates.version);
 }
 
-export async function createPrompt(input: { taskType: string; provider?: string | null; systemPrompt: string; userPromptTemplate: string; outputSchema?: any; notes?: string }) {
-  // Get next version
+// outputSchema is a JSON-Schema-style descriptor for the LLM response.
+// Shape varies by provider and template; storing the JSONB blob as-is
+// is intentional. `unknown` over `any` keeps consumers honest.
+export async function createPrompt(input: { taskType: string; provider?: string | null; systemPrompt: string; userPromptTemplate: string; outputSchema?: unknown; notes?: string }) {
+  // Get next version. The `undefined` cast here suppresses a Drizzle
+  // overload that can't pick the correct condition when `provider` is
+  // missing — semantically still correct: no provider filter means
+  // match-any.
   const existing = await db.select().from(aiPromptTemplates)
-    .where(and(eq(aiPromptTemplates.taskType, input.taskType), input.provider ? eq(aiPromptTemplates.provider, input.provider) : undefined as any));
+    .where(and(eq(aiPromptTemplates.taskType, input.taskType), input.provider ? eq(aiPromptTemplates.provider, input.provider) : undefined));
   const nextVersion = existing.length > 0 ? Math.max(...existing.map((e) => e.version)) + 1 : 1;
 
   // Deactivate previous versions

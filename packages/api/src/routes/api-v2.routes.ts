@@ -427,24 +427,26 @@ apiV2Router.get('/checks/print-queue', async (req, res) => {
 // ─── Recurring Transactions ─────────────────────────────────────
 
 apiV2Router.get('/recurring', async (req, res) => {
-  const schedules = await recurringService.list(req.tenantId);
-  res.json({ schedules });
+  const limit = req.query['limit'] ? Number(req.query['limit']) : undefined;
+  const offset = req.query['offset'] ? Number(req.query['offset']) : undefined;
+  const result = await recurringService.list(req.tenantId, { limit, offset });
+  res.json({ schedules: result.data, total: result.total, limit: result.limit, offset: result.offset });
 });
 
 apiV2Router.post('/recurring', async (req, res) => {
   const { templateTransactionId, ...schedule } = req.body;
   if (!templateTransactionId) { res.status(400).json({ error: { message: 'templateTransactionId is required' } }); return; }
-  const sched = await recurringService.create(req.tenantId, templateTransactionId, schedule);
+  const sched = await recurringService.create(req.tenantId, templateTransactionId, schedule, req.userId);
   res.status(201).json({ schedule: sched });
 });
 
 apiV2Router.put('/recurring/:id', async (req, res) => {
-  const sched = await recurringService.update(req.tenantId, req.params['id']!, req.body);
+  const sched = await recurringService.update(req.tenantId, req.params['id']!, req.body, req.userId);
   res.json({ schedule: sched });
 });
 
 apiV2Router.delete('/recurring/:id', async (req, res) => {
-  await recurringService.deactivate(req.tenantId, req.params['id']!);
+  await recurringService.deactivate(req.tenantId, req.params['id']!, req.userId);
   res.json({ message: 'Deactivated' });
 });
 
@@ -472,10 +474,11 @@ apiV2Router.get('/budgets/:id/lines', async (req, res) => {
 
 apiV2Router.get('/budgets/:id/vs-actual', async (req, res) => {
   const { start_date, end_date } = req.query as Record<string, string>;
+  // UTC year so default period bounds don't drift across server TZs.
   const today = new Date();
   const data = await budgetService.buildBudgetVsActual(
     req.tenantId, req.params['id']!,
-    start_date || `${today.getFullYear()}-01-01`,
+    start_date || `${today.getUTCFullYear()}-01-01`,
     end_date || today.toISOString().split('T')[0]!,
   );
   res.json(data);
@@ -517,12 +520,16 @@ apiV2Router.get('/dashboard/action-items', async (req, res) => {
 // ─── Tags ───────────────────────────────────────────────────────
 
 apiV2Router.get('/tags', async (req, res) => {
-  const tags = await tagsService.list(req.tenantId, {
+  const limit = req.query['limit'] ? Number(req.query['limit']) : undefined;
+  const offset = req.query['offset'] ? Number(req.query['offset']) : undefined;
+  const result = await tagsService.list(req.tenantId, {
     groupId: req.query['group_id'] as string,
     isActive: req.query['is_active'] === 'true' ? true : req.query['is_active'] === 'false' ? false : undefined,
     search: req.query['search'] as string,
+    limit,
+    offset,
   });
-  res.json({ tags });
+  res.json({ tags: result.data, total: result.total, limit: result.limit, offset: result.offset });
 });
 
 apiV2Router.get('/tags/groups', async (req, res) => {
@@ -531,7 +538,7 @@ apiV2Router.get('/tags/groups', async (req, res) => {
 });
 
 apiV2Router.post('/tags', async (req, res) => {
-  const tag = await tagsService.create(req.tenantId, createTagSchema.parse(req.body));
+  const tag = await tagsService.create(req.tenantId, createTagSchema.parse(req.body), req.userId);
   res.status(201).json({ tag });
 });
 
@@ -627,7 +634,7 @@ function v2TagFilter(req: { query: Record<string, unknown> }): string | null {
 apiV2Router.get('/reports/trial-balance', async (req, res) => {
   const { start_date, end_date } = req.query as Record<string, string>;
   const today = new Date().toISOString().split('T')[0]!;
-  const year = new Date().getFullYear();
+  const year = new Date().getUTCFullYear();
   const scope = req.query['scope'] === 'consolidated' ? null : req.companyId;
   const data = await reportService.buildTrialBalance(req.tenantId, start_date || `${year}-01-01`, end_date || today, scope, v2TagFilter(req));
   res.json(data);
@@ -636,7 +643,7 @@ apiV2Router.get('/reports/trial-balance', async (req, res) => {
 apiV2Router.get('/reports/profit-loss', async (req, res) => {
   const { start_date, end_date, basis } = req.query as Record<string, string>;
   const today = new Date().toISOString().split('T')[0]!;
-  const year = new Date().getFullYear();
+  const year = new Date().getUTCFullYear();
   const scope = req.query['scope'] === 'consolidated' ? null : req.companyId;
   const data = await reportService.buildProfitAndLoss(req.tenantId, start_date || `${year}-01-01`, end_date || today, (basis as any) || 'accrual', scope, v2TagFilter(req));
   res.json(data);
@@ -653,7 +660,7 @@ apiV2Router.get('/reports/balance-sheet', async (req, res) => {
 apiV2Router.get('/reports/cash-flow', async (req, res) => {
   const { start_date, end_date } = req.query as Record<string, string>;
   const today = new Date().toISOString().split('T')[0]!;
-  const year = new Date().getFullYear();
+  const year = new Date().getUTCFullYear();
   const scope = req.query['scope'] === 'consolidated' ? null : req.companyId;
   const data = await reportService.buildCashFlowStatement(req.tenantId, start_date || `${year}-01-01`, end_date || today, scope, v2TagFilter(req));
   res.json(data);
@@ -662,7 +669,7 @@ apiV2Router.get('/reports/cash-flow', async (req, res) => {
 apiV2Router.get('/reports/general-ledger', async (req, res) => {
   const { start_date, end_date } = req.query as Record<string, string>;
   const today = new Date().toISOString().split('T')[0]!;
-  const year = new Date().getFullYear();
+  const year = new Date().getUTCFullYear();
   const scope = req.query['scope'] === 'consolidated' ? null : req.companyId;
   const data = await reportService.buildGeneralLedger(req.tenantId, start_date || `${year}-01-01`, end_date || today, scope, v2TagFilter(req));
   res.json(data);
@@ -678,7 +685,7 @@ apiV2Router.get('/reports/ar-aging', async (req, res) => {
 apiV2Router.get('/reports/expense-by-vendor', async (req, res) => {
   const { start_date, end_date } = req.query as Record<string, string>;
   const today = new Date().toISOString().split('T')[0]!;
-  const year = new Date().getFullYear();
+  const year = new Date().getUTCFullYear();
   const scope = req.query['scope'] === 'consolidated' ? null : req.companyId;
   const data = await reportService.buildExpenseByVendor(req.tenantId, start_date || `${year}-01-01`, end_date || today, scope, v2TagFilter(req));
   res.json(data);
@@ -687,7 +694,7 @@ apiV2Router.get('/reports/expense-by-vendor', async (req, res) => {
 apiV2Router.get('/reports/expense-by-category', async (req, res) => {
   const { start_date, end_date } = req.query as Record<string, string>;
   const today = new Date().toISOString().split('T')[0]!;
-  const year = new Date().getFullYear();
+  const year = new Date().getUTCFullYear();
   const scope = req.query['scope'] === 'consolidated' ? null : req.companyId;
   const data = await reportService.buildExpenseByCategory(req.tenantId, start_date || `${year}-01-01`, end_date || today, scope, v2TagFilter(req));
   res.json(data);
@@ -715,7 +722,7 @@ apiV2Router.get('/reports/1099-vendor-summary', async (req, res) => {
 apiV2Router.get('/reports/sales-tax-liability', async (req, res) => {
   const { start_date, end_date } = req.query as Record<string, string>;
   const today = new Date().toISOString().split('T')[0]!;
-  const year = new Date().getFullYear();
+  const year = new Date().getUTCFullYear();
   const scope = req.query['scope'] === 'consolidated' ? null : req.companyId;
   const data = await reportService.buildSalesTaxLiability(req.tenantId, start_date || `${year}-01-01`, end_date || today, scope);
   res.json(data);

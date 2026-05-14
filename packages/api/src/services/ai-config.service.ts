@@ -3,6 +3,7 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { eq } from 'drizzle-orm';
+import type { AiConfigUpdateInput } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { aiConfig } from '../db/schema/index.js';
 import { encrypt } from '../utils/encryption.js';
@@ -76,9 +77,12 @@ export async function getRawConfig() {
   return getOrCreateConfig();
 }
 
-export async function updateConfig(input: any, userId?: string) {
+export async function updateConfig(input: AiConfigUpdateInput, userId?: string) {
   const config = await getOrCreateConfig();
-  const updates: any = { updatedAt: new Date() };
+  // Use Drizzle's `$inferInsert` partial so the updates object is typed
+  // against the actual aiConfig column shape. Dot-notation accesses
+  // work because we're no longer hiding behind `Record<string, unknown>`.
+  const updates: Partial<typeof aiConfig.$inferInsert> = { updatedAt: new Date() };
 
   // Snapshot the data-flow-relevant fields BEFORE applying updates so
   // we can detect loosening changes and bump disclosure_version.
@@ -101,14 +105,27 @@ export async function updateConfig(input: any, userId?: string) {
   if (input.documentClassificationProvider !== undefined) updates.documentClassificationProvider = input.documentClassificationProvider;
   if (input.documentClassificationModel !== undefined) updates.documentClassificationModel = input.documentClassificationModel;
   if (input.fallbackChain) updates.fallbackChain = input.fallbackChain;
-  if (input.anthropicApiKey !== undefined) updates.anthropicApiKeyEncrypted = input.anthropicApiKey ? encrypt(input.anthropicApiKey) : null;
-  if (input.openaiApiKey !== undefined) updates.openaiApiKeyEncrypted = input.openaiApiKey ? encrypt(input.openaiApiKey) : null;
-  if (input.geminiApiKey !== undefined) updates.geminiApiKeyEncrypted = input.geminiApiKey ? encrypt(input.geminiApiKey) : null;
+  // Credential fields use a 3-state sentinel:
+  //   undefined / missing  → no change (form re-save without re-typing)
+  //   ''                   → no change (defensive — frontend often defaults '')
+  //   null                 → explicit clear (admin wants to remove the key)
+  //   non-empty string     → encrypt and store
+  // The GET endpoint never round-trips these (returns `has*Key` booleans
+  // only), so a blank form value must NEVER be interpreted as "clear" or
+  // every unrelated save would wipe the stored keys. Admins who want to
+  // clear an existing key must explicitly send `null`.
+  if (input.anthropicApiKey === null) updates.anthropicApiKeyEncrypted = null;
+  else if (input.anthropicApiKey) updates.anthropicApiKeyEncrypted = encrypt(input.anthropicApiKey);
+  if (input.openaiApiKey === null) updates.openaiApiKeyEncrypted = null;
+  else if (input.openaiApiKey) updates.openaiApiKeyEncrypted = encrypt(input.openaiApiKey);
+  if (input.geminiApiKey === null) updates.geminiApiKeyEncrypted = null;
+  else if (input.geminiApiKey) updates.geminiApiKeyEncrypted = encrypt(input.geminiApiKey);
   if (input.ollamaBaseUrl !== undefined) {
     if (input.ollamaBaseUrl) assertExternalUrlSafe(input.ollamaBaseUrl, 'Ollama base URL');
     updates.ollamaBaseUrl = input.ollamaBaseUrl || null;
   }
-  if (input.glmOcrApiKey !== undefined) updates.glmOcrApiKeyEncrypted = input.glmOcrApiKey ? encrypt(input.glmOcrApiKey) : null;
+  if (input.glmOcrApiKey === null) updates.glmOcrApiKeyEncrypted = null;
+  else if (input.glmOcrApiKey) updates.glmOcrApiKeyEncrypted = encrypt(input.glmOcrApiKey);
   if (input.glmOcrBaseUrl !== undefined) {
     if (input.glmOcrBaseUrl) assertExternalUrlSafe(input.glmOcrBaseUrl, 'GLM-OCR base URL');
     updates.glmOcrBaseUrl = input.glmOcrBaseUrl || null;
@@ -116,7 +133,8 @@ export async function updateConfig(input: any, userId?: string) {
   // Generic OpenAI-compatible provider. assertExternalUrlSafe blocks
   // SSRF (link-local, metadata endpoints) the same way it does for the
   // Ollama / GLM-OCR URLs.
-  if (input.openaiCompatApiKey !== undefined) updates.openaiCompatApiKeyEncrypted = input.openaiCompatApiKey ? encrypt(input.openaiCompatApiKey) : null;
+  if (input.openaiCompatApiKey === null) updates.openaiCompatApiKeyEncrypted = null;
+  else if (input.openaiCompatApiKey) updates.openaiCompatApiKeyEncrypted = encrypt(input.openaiCompatApiKey);
   if (input.openaiCompatBaseUrl !== undefined) {
     if (input.openaiCompatBaseUrl) assertExternalUrlSafe(input.openaiCompatBaseUrl, 'OpenAI-compat base URL');
     updates.openaiCompatBaseUrl = input.openaiCompatBaseUrl || null;

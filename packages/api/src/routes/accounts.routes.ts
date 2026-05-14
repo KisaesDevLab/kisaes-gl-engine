@@ -76,18 +76,35 @@ function safeMoneyFilter(raw: string | undefined): string | undefined {
 
 accountsRouter.get('/:id/register', async (req, res) => {
   const q = req.query as Record<string, string>;
+  // Narrow query-string casts to specific union types so the service
+  // gets a typed value instead of an `any`. Invalid strings collapse to
+  // undefined (the service treats undefined as "no filter"). The literal
+  // sets here must match the registerService.getRegister signature.
+  const reconciledOptions = ['all', 'cleared', 'reconciled', 'uncleared'] as const;
+  type ReconciledFilter = (typeof reconciledOptions)[number];
+  const reconciled: ReconciledFilter | undefined =
+    (reconciledOptions as readonly string[]).includes(q['reconciled'] ?? '')
+      ? (q['reconciled'] as ReconciledFilter)
+      : undefined;
+  const sortByOptions = ['type', 'date', 'amount', 'ref_no'] as const;
+  type SortBy = (typeof sortByOptions)[number];
+  const sortBy: SortBy | undefined = (sortByOptions as readonly string[]).includes(q['sort_by'] ?? '')
+    ? (q['sort_by'] as SortBy)
+    : undefined;
+  const sortDir: 'asc' | 'desc' | undefined =
+    q['sort_dir'] === 'asc' || q['sort_dir'] === 'desc' ? q['sort_dir'] : undefined;
   const result = await registerService.getRegister(req.tenantId, req.params['id']!, {
     startDate: q['start_date'],
     endDate: q['end_date'],
     txnType: q['txn_type'],
     payee: q['payee'],
     search: q['search'],
-    reconciled: q['reconciled'] as any,
+    reconciled,
     minAmount: safeMoneyFilter(q['min_amount']),
     maxAmount: safeMoneyFilter(q['max_amount']),
     includeVoid: q['include_void'] === 'true',
-    sortBy: q['sort_by'] as any,
-    sortDir: q['sort_dir'] as any,
+    sortBy,
+    sortDir,
     page: q['page'] ? parseInt(q['page']) : undefined,
     perPage: q['per_page'] ? parseInt(q['per_page']) : undefined,
   });

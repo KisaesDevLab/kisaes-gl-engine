@@ -253,34 +253,41 @@ export async function recordPayment(tenantId: string, invoiceId: string, input: 
   const newPaid = currentPaid.plus(paymentAmount);
   const newBalance = invoiceTotal.minus(newPaid);
 
-  // Create payment transaction
-  const payment = await ledger.postTransaction(tenantId, {
-    txnType: 'customer_payment',
-    txnDate: input.txnDate,
-    contactId: invoice.contactId || undefined,
-    memo: input.memo || `Payment for invoice ${invoice.txnNumber || invoice.id}`,
-    total: input.amount,
-    appliedToInvoiceId: invoiceId,
-    lines: [
-      { accountId: input.depositToAccountId, debit: input.amount, credit: '0' },
-      { accountId: arAccountId, debit: '0', credit: input.amount },
-    ],
-  }, userId, companyId);
-
-  // Update invoice — tolerance of 1¢ matches the rest of the money
-  // paths. `Math.max(0, ...)` replaced with a Decimal clamp.
+  // Both writes — the payment ledger post AND the invoice-header update
+  // — run in a single outer transaction. postTransaction accepts our tx
+  // and reuses it instead of opening its own, so a mid-flight crash
+  // rolls back BOTH or COMMITS BOTH atomically. The prior implementation
+  // committed the payment first and then performed a separate UPDATE;
+  // a crash in the gap left the invoice header stale (amountPaid /
+  // balanceDue / invoiceStatus out of sync with the journal).
   const tolerance = new Decimal('0.01');
   const invoiceStatus = newBalance.lessThanOrEqualTo(tolerance) ? 'paid' : 'partial';
   const clampedBalance = newBalance.isNegative() ? new Decimal('0') : newBalance;
-  await db.update(transactions).set({
-    amountPaid: newPaid.toFixed(4),
-    balanceDue: clampedBalance.toFixed(4),
-    invoiceStatus,
-    paidAt: invoiceStatus === 'paid' ? new Date() : null,
-    updatedAt: new Date(),
-  }).where(eq(transactions.id, invoiceId));
 
-  return payment;
+  return await db.transaction(async (tx) => {
+    const payment = await ledger.postTransaction(tenantId, {
+      txnType: 'customer_payment',
+      txnDate: input.txnDate,
+      contactId: invoice.contactId || undefined,
+      memo: input.memo || `Payment for invoice ${invoice.txnNumber || invoice.id}`,
+      total: input.amount,
+      appliedToInvoiceId: invoiceId,
+      lines: [
+        { accountId: input.depositToAccountId, debit: input.amount, credit: '0' },
+        { accountId: arAccountId, debit: '0', credit: input.amount },
+      ],
+    }, userId, companyId, tx);
+
+    await tx.update(transactions).set({
+      amountPaid: newPaid.toFixed(4),
+      balanceDue: clampedBalance.toFixed(4),
+      invoiceStatus,
+      paidAt: invoiceStatus === 'paid' ? new Date() : null,
+      updatedAt: new Date(),
+    }).where(eq(transactions.id, invoiceId));
+
+    return payment;
+  });
 }
 
 export async function voidInvoice(tenantId: string, invoiceId: string, reason: string, userId?: string) {

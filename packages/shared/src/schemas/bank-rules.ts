@@ -26,3 +26,25 @@ export const createBankRuleSchema = z.object({
 export const updateBankRuleSchema = createBankRuleSchema.partial().extend({
   isActive: z.boolean().optional(),
 });
+
+// Body for POST /bank-rules/reorder — the UI reorders the rule priority
+// list and sends the new top-down order.
+export const bankRulesReorderSchema = z.object({
+  orderedIds: z.array(z.string().uuid()).min(1).max(2000),
+});
+export type BankRulesReorderInput = z.infer<typeof bankRulesReorderSchema>;
+
+// Body for POST /bank-rules/test — operator paste-tests a single feed
+// description + amount against the tenant's active rule set.
+export const bankRulesTestSchema = z.object({
+  description: z.string().min(1).max(2000),
+  amount: z.union([z.number(), z.string()]),
+});
+export type BankRulesTestInput = z.infer<typeof bankRulesTestSchema>;
+
+// Body for POST /bank-rules/:id/submit-global — optional note explaining
+// why this rule should be promoted to the global library.
+export const bankRulesSubmitGlobalSchema = z.object({
+  note: z.string().max(2000).optional(),
+});
+export type BankRulesSubmitGlobalInput = z.infer<typeof bankRulesSubmitGlobalSchema>;

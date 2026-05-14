@@ -20,3 +20,19 @@ export const updateItemSchema = z.object({
   isTaxable: z.boolean().optional(),
   isActive: z.boolean().optional(),
 });
+
+// CSV-import body for POST /items/import. The frontend reads the CSV
+// client-side, parses each row into a partial item, and sends the array.
+// `unitPrice` arrives as a string (decimal) since CSV values are textual.
+export const itemsImportRowSchema = z.object({
+  name: z.string().min(1).max(255),
+  description: z.string().max(2000).optional(),
+  unitPrice: z.string().max(40).optional(),
+  incomeAccountName: z.string().max(255).optional(),
+  isTaxable: z.boolean().optional(),
+});
+
+export const itemsImportSchema = z.object({
+  items: z.array(itemsImportRowSchema).min(1).max(10_000),
+});
+export type ItemsImportInput = z.infer<typeof itemsImportSchema>;

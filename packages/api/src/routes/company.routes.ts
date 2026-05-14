@@ -6,7 +6,14 @@ import { Router } from 'express';
 import multer from 'multer';
 import path from 'path';
 import crypto from 'crypto';
-import { updateCompanySchema, updateCompanySettingsSchema } from '@kis-books/shared';
+import {
+  updateCompanySchema,
+  updateCompanySettingsSchema,
+  createCompanySchema,
+  companySmtpUpdateSchema,
+  companySmtpTestSchema,
+  inviteUserSchema,
+} from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
@@ -68,16 +75,22 @@ function verifyLogoMagicBytes(filePath: string, mime: string): void {
 export const companyRouter = Router();
 
 companyRouter.use(authenticate);
-companyRouter.use(companyContext);
 
-// List all companies for the tenant
+// List all companies for the tenant. Registered BEFORE companyContext on
+// purpose: this endpoint is tenant-scoped, not company-scoped, and the
+// frontend calls it to recover from a stale X-Company-Id stored in
+// localStorage. If we ran companyContext here, a stale id would 403 this
+// request, the CompanyProvider's reconciliation block would never run,
+// and the sidebar would be permanently stuck on "Select Company".
 companyRouter.get('/list', async (req, res) => {
   const companiesList = await companyService.listCompanies(req.tenantId, req.userId);
   res.json({ companies: companiesList });
 });
 
+companyRouter.use(companyContext);
+
 // Create additional company
-companyRouter.post('/create', async (req, res) => {
+companyRouter.post('/create', validate(createCompanySchema), async (req, res) => {
   const company = await companyService.createAdditionalCompany(req.tenantId, req.body);
   res.status(201).json({ company });
 });
@@ -130,12 +143,12 @@ companyRouter.get('/smtp', async (req, res) => {
   res.json(smtp);
 });
 
-companyRouter.put('/smtp', async (req, res) => {
+companyRouter.put('/smtp', validate(companySmtpUpdateSchema), async (req, res) => {
   await companyService.updateSmtpSettings(req.tenantId, req.companyId, req.body, req.userId);
   res.json({ message: 'SMTP settings saved' });
 });
 
-companyRouter.post('/smtp/test', async (req, res) => {
+companyRouter.post('/smtp/test', validate(companySmtpTestSchema), async (req, res) => {
   const result = await testSmtpConnection(req.body, req.body.testEmail);
   res.json(result);
 });
@@ -156,19 +169,10 @@ companyRouter.get('/users', async (req, res) => {
   res.json({ users: sanitized });
 });
 
-companyRouter.post('/invite-user', async (req, res) => {
+companyRouter.post('/invite-user', validate(inviteUserSchema), async (req, res) => {
   if (req.userRole !== 'owner') throw AppError.forbidden('Only owners can invite users');
   const { email, displayName, role } = req.body;
-  if (!email || !displayName) {
-    res.status(400).json({ error: { message: 'Email and display name are required' } });
-    return;
-  }
-  const validRoles = ['accountant', 'bookkeeper'];
-  if (role && !validRoles.includes(role)) {
-    res.status(400).json({ error: { message: `Role must be one of: ${validRoles.join(', ')}` } });
-    return;
-  }
-  const result = await authService.inviteUser(req.tenantId, { email, displayName: displayName || email, role: role || 'accountant' });
+  const result = await authService.inviteUser(req.tenantId, { email, displayName, role: role || 'accountant' });
   res.status(201).json({
     user: { id: result.user.id, email: result.user.email, displayName: result.user.displayName, role: result.existingUser ? role : result.user.role },
     temporaryPassword: result.temporaryPassword,

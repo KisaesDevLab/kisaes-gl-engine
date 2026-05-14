@@ -14,16 +14,22 @@ tagsRouter.use(authenticate);
 // ─── Tags ────────────────────────────────────────────────────────
 
 tagsRouter.get('/', async (req, res) => {
-  const tags = await tagsService.list(req.tenantId, {
+  const limit = req.query['limit'] ? Number(req.query['limit']) : undefined;
+  const offset = req.query['offset'] ? Number(req.query['offset']) : undefined;
+  const result = await tagsService.list(req.tenantId, {
     groupId: req.query['group_id'] as string,
     isActive: req.query['is_active'] === 'true' ? true : req.query['is_active'] === 'false' ? false : undefined,
     search: req.query['search'] as string,
+    limit,
+    offset,
   });
-  res.json({ tags });
+  // Legacy `{ tags }` shape preserved alongside new pagination metadata
+  // so existing frontend callers don't break.
+  res.json({ tags: result.data, total: result.total, limit: result.limit, offset: result.offset });
 });
 
 tagsRouter.post('/', validate(createTagSchema), async (req, res) => {
-  const tag = await tagsService.create(req.tenantId, req.body);
+  const tag = await tagsService.create(req.tenantId, req.body, req.userId);
   res.status(201).json({ tag });
 });
 
@@ -64,12 +70,12 @@ tagsRouter.get('/:id/usage', async (req, res) => {
 });
 
 tagsRouter.put('/:id', validate(updateTagSchema), async (req, res) => {
-  const tag = await tagsService.update(req.tenantId, req.params['id']!, req.body);
+  const tag = await tagsService.update(req.tenantId, req.params['id']!, req.body, req.userId);
   res.json({ tag });
 });
 
 tagsRouter.delete('/:id', async (req, res) => {
-  await tagsService.remove(req.tenantId, req.params['id']!);
+  await tagsService.remove(req.tenantId, req.params['id']!, req.userId);
   res.json({ message: 'Tag deleted' });
 });
 

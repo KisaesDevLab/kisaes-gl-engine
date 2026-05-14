@@ -6,11 +6,21 @@ import { eq, and, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { budgets, budgetLines, accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { auditLog } from '../middleware/audit.js';
 import * as reportService from './report.service.js';
 import { env } from '../config/env.js';
 
-export async function list(tenantId: string) {
-  return db.select().from(budgets).where(eq(budgets.tenantId, tenantId)).orderBy(sql`${budgets.fiscalYear} DESC`);
+export async function list(tenantId: string, opts?: { limit?: number; offset?: number }) {
+  const where = eq(budgets.tenantId, tenantId);
+  const limit = Math.min(Math.max(opts?.limit ?? 100, 1), 500);
+  const offset = Math.max(opts?.offset ?? 0, 0);
+
+  const data = await db.select().from(budgets).where(where)
+    .orderBy(sql`${budgets.fiscalYear} DESC`)
+    .limit(limit).offset(offset);
+
+  const totalRows = await db.select({ total: sql<number>`COUNT(*)::int` }).from(budgets).where(where);
+  return { data, total: totalRows[0]?.total ?? 0, limit, offset };
 }
 
 export async function getById(tenantId: string, id: string) {
@@ -30,7 +40,7 @@ export interface CreateBudgetInput {
   fiscalYearStart?: string | null;
 }
 
-export async function create(tenantId: string, input: CreateBudgetInput) {
+export async function create(tenantId: string, input: CreateBudgetInput, userId?: string) {
   const existing = await db.query.budgets.findFirst({
     where: and(eq(budgets.tenantId, tenantId), eq(budgets.fiscalYear, input.fiscalYear)),
   });
@@ -51,6 +61,7 @@ export async function create(tenantId: string, input: CreateBudgetInput) {
     status: input.status ?? 'active',
     fiscalYearStart,
   }).returning();
+  if (budget) await auditLog(tenantId, 'create', 'budget', budget.id, null, budget, userId);
   return budget;
 }
 
@@ -62,28 +73,35 @@ export interface UpdateBudgetInput {
   status?: 'draft' | 'active' | 'archived';
 }
 
-export async function update(tenantId: string, id: string, input: UpdateBudgetInput) {
+export async function update(tenantId: string, id: string, input: UpdateBudgetInput, userId?: string) {
+  const before = await db.query.budgets.findFirst({ where: and(eq(budgets.tenantId, tenantId), eq(budgets.id, id)) });
   const [updated] = await db.update(budgets).set({ ...input, updatedAt: new Date() })
     .where(and(eq(budgets.tenantId, tenantId), eq(budgets.id, id))).returning();
   if (!updated) throw AppError.notFound('Budget not found');
+  await auditLog(tenantId, 'update', 'budget', updated.id, before ?? null, updated, userId);
   return updated;
 }
 
-export async function remove(tenantId: string, id: string) {
+export async function remove(tenantId: string, id: string, userId?: string) {
   // `budget_lines` has no tenant_id column — it's scoped transitively
   // via `budget_id → budgets.tenant_id`. We verify ownership before
   // deleting the lines so a malformed id can't wipe another tenant's
   // budget lines, and we wrap both deletes in a transaction so a
   // partial failure doesn't leave dangling lines.
+  let removedBudget: typeof budgets.$inferSelect | undefined;
   await db.transaction(async (tx) => {
     const budget = await tx.query.budgets.findFirst({
       where: and(eq(budgets.tenantId, tenantId), eq(budgets.id, id)),
     });
     if (!budget) throw AppError.notFound('Budget not found');
+    removedBudget = budget;
 
     await tx.delete(budgetLines).where(eq(budgetLines.budgetId, id));
     await tx.delete(budgets).where(and(eq(budgets.tenantId, tenantId), eq(budgets.id, id)));
   });
+  if (removedBudget) {
+    await auditLog(tenantId, 'delete', 'budget', id, removedBudget, null, userId);
+  }
 }
 
 export async function getLines(tenantId: string, budgetId: string) {
@@ -118,7 +136,14 @@ export async function updateLines(tenantId: string, budgetId: string, lines: Arr
     };
 
     if (existing) {
-      await db.update(budgetLines).set(values).where(eq(budgetLines.id, existing.id));
+      // budgetLines has no own tenantId column — tenancy is inherited
+      // via budgetId. Verified at line 106 (getById throws if budget
+      // doesn't belong to tenant) and re-asserted here so the mutation
+      // can't touch a row from another budget if `existing.id` ever
+      // came from elsewhere.
+      await db.update(budgetLines)
+        .set(values)
+        .where(and(eq(budgetLines.budgetId, budgetId), eq(budgetLines.id, existing.id)));
     } else {
       await db.insert(budgetLines).values({ budgetId, accountId: line.accountId, ...values });
     }

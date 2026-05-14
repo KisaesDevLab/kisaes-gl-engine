@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright 2026 Kisaes LLC
+# Licensed under the PolyForm Internal Use License 1.0.0.
+# You may not distribute this software. See LICENSE for terms.
 # scripts/check-license-headers.sh [file1 file2 ...]
 # Fails if any source file is missing the PolyForm Internal Use license header.
 # Without arguments: scans every source file under packages/ (full audit mode).

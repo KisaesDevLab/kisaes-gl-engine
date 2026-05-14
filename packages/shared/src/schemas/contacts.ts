@@ -79,3 +79,27 @@ export const mergeContactsSchema = z.object({
   sourceId: z.string().uuid(),
   targetId: z.string().uuid(),
 });
+
+// CSV-import body for POST /contacts/import. Rows arrive as partial
+// records; the service resolves displayName + contactType per row.
+export const contactsImportRowSchema = z.object({
+  displayName: z.string().min(1).max(255),
+  companyName: z.string().max(255).optional(),
+  firstName: z.string().max(100).optional(),
+  lastName: z.string().max(100).optional(),
+  email: z.string().email().max(255).optional().or(z.literal('')),
+  phone: z.string().max(30).optional(),
+  billingLine1: z.string().max(255).optional(),
+  billingCity: z.string().max(100).optional(),
+  billingState: z.string().max(50).optional(),
+  billingZip: z.string().max(20).optional(),
+  billingCountry: z.string().max(3).optional(),
+  taxId: z.string().max(30).optional(),
+  notes: z.string().max(4000).optional(),
+});
+
+export const contactsImportSchema = z.object({
+  contacts: z.array(contactsImportRowSchema).min(1).max(10_000),
+  contactType: z.enum(contactTypes).optional(),
+});
+export type ContactsImportInput = z.infer<typeof contactsImportSchema>;

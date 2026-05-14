@@ -6,6 +6,7 @@ import { eq, and, lte, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { recurringSchedules, transactions, journalLines, accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
 import * as billService from './bill.service.js';
 import { incCounter, recordSchedulerTick } from '../utils/metrics.js';
@@ -13,21 +14,26 @@ import { log } from '../utils/logger.js';
 import { withSchedulerLock } from '../utils/scheduler-lock.js';
 
 function calculateNextOccurrence(current: string, frequency: string, interval: number): string {
+  // Date arithmetic uses UTC getters/setters so the schedule advances by
+  // calendar days/months in UTC regardless of the container's local TZ.
+  // Without this, a container in non-UTC TZ would drift schedules by up
+  // to 24h every time it crossed a DST boundary or a tenant in a
+  // different TZ rolled the date.
   const d = new Date(current);
   switch (frequency) {
-    case 'daily': d.setDate(d.getDate() + interval); break;
-    case 'weekly': d.setDate(d.getDate() + 7 * interval); break;
-    case 'monthly': d.setMonth(d.getMonth() + interval); break;
-    case 'quarterly': d.setMonth(d.getMonth() + 3 * interval); break;
-    case 'annually': d.setFullYear(d.getFullYear() + interval); break;
-    default: d.setMonth(d.getMonth() + interval);
+    case 'daily': d.setUTCDate(d.getUTCDate() + interval); break;
+    case 'weekly': d.setUTCDate(d.getUTCDate() + 7 * interval); break;
+    case 'monthly': d.setUTCMonth(d.getUTCMonth() + interval); break;
+    case 'quarterly': d.setUTCMonth(d.getUTCMonth() + 3 * interval); break;
+    case 'annually': d.setUTCFullYear(d.getUTCFullYear() + interval); break;
+    default: d.setUTCMonth(d.getUTCMonth() + interval);
   }
   return d.toISOString().split('T')[0]!;
 }
 
 export async function create(tenantId: string, templateTransactionId: string, schedule: {
   frequency: string; intervalValue?: number; mode?: string; startDate: string; endDate?: string;
-}) {
+}, userId?: string) {
   const [sched] = await db.insert(recurringSchedules).values({
     tenantId,
     templateTransactionId,
@@ -40,17 +46,25 @@ export async function create(tenantId: string, templateTransactionId: string, sc
     isActive: true,
   }).returning();
 
+  if (sched) await auditLog(tenantId, 'create', 'recurring_schedule', sched.id, null, sched, userId);
   return sched;
 }
 
-export async function list(tenantId: string, limit = 500) {
+export async function list(tenantId: string, opts: { limit?: number; offset?: number } = {}) {
   // Cap the result set to avoid shipping an unbounded list to the UI. 500 is
   // well past what any real bookkeeper has; the few operators who cross it
-  // can filter via scheduling-frequency in a future iteration.
-  return db.select().from(recurringSchedules)
-    .where(and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.isActive, true)))
+  // can paginate with `offset` or filter via scheduling-frequency.
+  const where = and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.isActive, true));
+  const limit = Math.min(Math.max(opts.limit ?? 200, 1), 500);
+  const offset = Math.max(opts.offset ?? 0, 0);
+
+  const data = await db.select().from(recurringSchedules).where(where)
     .orderBy(recurringSchedules.nextOccurrence)
-    .limit(limit);
+    .limit(limit).offset(offset);
+
+  const totalRows = await db.select({ total: sql<number>`COUNT(*)::int` })
+    .from(recurringSchedules).where(where);
+  return { data, total: totalRows[0]?.total ?? 0, limit, offset };
 }
 
 export async function getById(tenantId: string, id: string) {
@@ -63,19 +77,29 @@ export async function getById(tenantId: string, id: string) {
 
 export async function update(tenantId: string, id: string, input: {
   frequency?: string; intervalValue?: number; mode?: string; endDate?: string | null;
-}) {
+}, userId?: string) {
+  const before = await db.query.recurringSchedules.findFirst({
+    where: and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id)),
+  });
   const [updated] = await db.update(recurringSchedules)
     .set({ ...input, updatedAt: new Date() })
     .where(and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id)))
     .returning();
   if (!updated) throw AppError.notFound('Recurring schedule not found');
+  await auditLog(tenantId, 'update', 'recurring_schedule', updated.id, before ?? null, updated, userId);
   return updated;
 }
 
-export async function deactivate(tenantId: string, id: string) {
+export async function deactivate(tenantId: string, id: string, userId?: string) {
+  const before = await db.query.recurringSchedules.findFirst({
+    where: and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id)),
+  });
   await db.update(recurringSchedules)
     .set({ isActive: false, updatedAt: new Date() })
     .where(and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id)));
+  if (before) {
+    await auditLog(tenantId, 'update', 'recurring_schedule', id, before, { ...before, isActive: false }, userId);
+  }
 }
 
 export async function postNext(tenantId: string, scheduleId: string) {

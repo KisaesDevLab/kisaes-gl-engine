@@ -7,6 +7,7 @@ import type { CreateBankRuleInput, UpdateBankRuleInput } from '@kis-books/shared
 import { db } from '../db/index.js';
 import { bankRules, accounts, contacts, globalRuleSubmissions } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { auditLog } from '../middleware/audit.js';
 // 3-tier rules plan, Phase 4 — vendor find-or-create lives in
 // rule-symbol-resolution.service.ts now so the legacy and the
 // conditional-rules pipeline use ONE implementation.
@@ -14,9 +15,20 @@ import { findOrCreateContact } from './rule-symbol-resolution.service.js';
 
 // ─── Tenant Rules (existing) ────────────────────────────────────
 
-export async function list(tenantId: string) {
-  return db.select().from(bankRules).where(and(eq(bankRules.tenantId, tenantId), eq(bankRules.isGlobal, false)))
-    .orderBy(sql`${bankRules.priority} DESC`, bankRules.name);
+export async function list(tenantId: string, opts?: { limit?: number; offset?: number }) {
+  const where = and(eq(bankRules.tenantId, tenantId), eq(bankRules.isGlobal, false));
+  const limit = Math.min(Math.max(opts?.limit ?? 200, 1), 500);
+  const offset = Math.max(opts?.offset ?? 0, 0);
+
+  const data = await db.select().from(bankRules).where(where)
+    .orderBy(sql`${bankRules.priority} DESC`, bankRules.name)
+    .limit(limit).offset(offset);
+
+  const totalRows = await db.select({ total: sql<number>`COUNT(*)::int` })
+    .from(bankRules).where(where);
+  const total = totalRows[0]?.total ?? 0;
+
+  return { data, total, limit, offset };
 }
 
 export async function getById(tenantId: string, id: string) {
@@ -25,20 +37,25 @@ export async function getById(tenantId: string, id: string) {
   return rule;
 }
 
-export async function create(tenantId: string, input: CreateBankRuleInput) {
+export async function create(tenantId: string, input: CreateBankRuleInput, userId?: string) {
   const [rule] = await db.insert(bankRules).values({ tenantId, isGlobal: false, ...input }).returning();
+  if (rule) await auditLog(tenantId, 'create', 'bank_rule', rule.id, null, rule, userId);
   return rule;
 }
 
-export async function update(tenantId: string, id: string, input: UpdateBankRuleInput) {
+export async function update(tenantId: string, id: string, input: UpdateBankRuleInput, userId?: string) {
+  const before = await db.query.bankRules.findFirst({ where: and(eq(bankRules.tenantId, tenantId), eq(bankRules.id, id)) });
   const [updated] = await db.update(bankRules).set({ ...input, updatedAt: new Date() })
     .where(and(eq(bankRules.tenantId, tenantId), eq(bankRules.id, id))).returning();
   if (!updated) throw AppError.notFound('Bank rule not found');
+  await auditLog(tenantId, 'update', 'bank_rule', updated.id, before ?? null, updated, userId);
   return updated;
 }
 
-export async function remove(tenantId: string, id: string) {
+export async function remove(tenantId: string, id: string, userId?: string) {
+  const before = await db.query.bankRules.findFirst({ where: and(eq(bankRules.tenantId, tenantId), eq(bankRules.id, id)) });
   await db.delete(bankRules).where(and(eq(bankRules.tenantId, tenantId), eq(bankRules.id, id)));
+  if (before) await auditLog(tenantId, 'delete', 'bank_rule', id, before, null, userId);
 }
 
 export async function reorder(tenantId: string, orderedIds: string[]) {
@@ -134,7 +151,20 @@ async function fuzzyMatchAccount(tenantId: string, accountName: string): Promise
 
 // ─── Rule Evaluation ────────────────────────────────────────────
 
-function matchesConditions(rule: any, desc: string, direction: string, absAmount: number, bankAccountId?: string): boolean {
+// Minimal contract — only the fields evaluateRules actually reads.
+// Both tenant `bankRules` rows and the older global-firm shape match
+// these, so widening past this would be premature coupling.
+interface RuleCondition {
+  applyTo: string;
+  bankAccountId?: string | null;
+  descriptionContains?: string | null;
+  descriptionExact?: string | null;
+  amountEquals?: string | null;
+  amountMin?: string | null;
+  amountMax?: string | null;
+}
+
+function matchesConditions(rule: RuleCondition, desc: string, direction: string, absAmount: number, bankAccountId?: string): boolean {
   if (rule.applyTo !== 'both' && rule.applyTo !== direction) return false;
   if (rule.bankAccountId && rule.bankAccountId !== bankAccountId) return false;
   if (rule.descriptionContains && !desc.includes(rule.descriptionContains.toLowerCase())) return false;

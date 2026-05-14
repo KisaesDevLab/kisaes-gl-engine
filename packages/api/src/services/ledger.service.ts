@@ -6,7 +6,7 @@ import { eq, and, sql, lte, count, inArray } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import type { JournalLineInput, TxnType, TxnStatus } from '@kis-books/shared';
-import { db, type DbOrTx } from '../db/index.js';
+import { db, type DbOrTx, type Tx } from '../db/index.js';
 import { transactions, journalLines, accounts, companies, contacts, reconciliations, reconciliationLines, bankFeedItems, transactionTags, items } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -208,7 +208,22 @@ interface PostTransactionInput {
 
 export { PostTransactionInput };
 
-export async function postTransaction(tenantId: string, input: PostTransactionInput, userId?: string, companyId?: string) {
+export async function postTransaction(
+  tenantId: string,
+  input: PostTransactionInput,
+  userId?: string,
+  companyId?: string,
+  // Optional outer transaction. When provided, postTransaction runs all
+  // its writes against `outerTx` instead of opening its own — letting
+  // higher-level operations (invoice.recordPayment, bill payment, etc.)
+  // commit the ledger post together with their own header updates in a
+  // single atomic transaction. Without this, a crash between the ledger
+  // commit and the caller's follow-up write leaves stored state torn.
+  // Postgres doesn't support nested transactions natively (only
+  // savepoints), so callers MUST pass `outerTx` rather than starting
+  // their own and calling this unsupplied.
+  outerTx?: Tx,
+) {
   // Validate debits = credits BEFORE opening a database transaction —
   // there's no point holding a tx open while we add up two numbers in
   // memory, and a fast-fail on bad input avoids unnecessary lock churn.
@@ -234,7 +249,7 @@ export async function postTransaction(tenantId: string, input: PostTransactionIn
   // audit log in a single database transaction. Without this, a crash or
   // error between any two of these steps leaves torn state — a transaction
   // missing its lines, or lines whose accounts.balance was never updated.
-  return await db.transaction(async (tx) => {
+  const inner = async (tx: Tx) => {
     await checkLockDate(tx, tenantId, input.txnDate);
     await assertAccountsInScope(
       tx,
@@ -319,7 +334,12 @@ export async function postTransaction(tenantId: string, input: PostTransactionIn
     await auditLog(tenantId, 'create', 'transaction', txn.id, null, { txnType: txn.txnType, total: input.total }, userId, tx);
 
     return { ...txn, lines };
-  });
+  };
+
+  // Reuse the outer tx if one was passed in (caller is already inside a
+  // transaction), otherwise open our own.
+  if (outerTx) return await inner(outerTx);
+  return await db.transaction(inner);
 }
 
 export async function voidTransaction(tenantId: string, txnId: string, reason: string, userId?: string) {

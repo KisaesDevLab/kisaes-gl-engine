@@ -13,13 +13,15 @@ export const aiConfigUpdateSchema = z.object({
   documentClassificationProvider: z.string().nullable().optional(),
   documentClassificationModel: z.string().nullable().optional(),
   fallbackChain: z.array(z.string()).optional(),
-  anthropicApiKey: z.string().optional(),
-  openaiApiKey: z.string().optional(),
-  geminiApiKey: z.string().optional(),
+  // Credential fields use 3-state sentinel: null = clear, '' = no
+  // change, non-empty = set. nullish() accepts both null and undefined.
+  anthropicApiKey: z.string().nullish(),
+  openaiApiKey: z.string().nullish(),
+  geminiApiKey: z.string().nullish(),
   ollamaBaseUrl: z.string().optional(),
-  glmOcrApiKey: z.string().optional(),
+  glmOcrApiKey: z.string().nullish(),
   glmOcrBaseUrl: z.string().optional(),
-  openaiCompatApiKey: z.string().optional(),
+  openaiCompatApiKey: z.string().nullish(),
   openaiCompatBaseUrl: z.string().optional(),
   openaiCompatModel: z.string().nullable().optional(),
   autoCategorizeOnImport: z.boolean().optional(),
@@ -30,7 +32,14 @@ export const aiConfigUpdateSchema = z.object({
   monthlyBudgetLimit: z.number().nullable().optional(),
   piiProtectionLevel: z.enum(['strict', 'standard', 'permissive']).optional(),
   cloudVisionEnabled: z.boolean().optional(),
+  // Chat support fields (tier-2 consent flow, see AI_CHAT_SUPPORT_PLAN).
+  chatSupportEnabled: z.boolean().optional(),
+  chatProvider: z.string().nullable().optional(),
+  chatModel: z.string().nullable().optional(),
+  chatMaxHistory: z.number().int().min(0).max(100).optional(),
+  chatDataAccessLevel: z.enum(['none', 'metadata', 'redacted', 'full']).optional(),
 });
+export type AiConfigUpdateInput = z.infer<typeof aiConfigUpdateSchema>;
 
 export const aiCategorizeSchema = z.object({
   feedItemId: z.string().uuid(),

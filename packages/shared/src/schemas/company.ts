@@ -50,3 +50,46 @@ export const updateCompanySettingsSchema = z.object({
   // see AI_CHAT_SUPPORT_PLAN.md §8.1).
   chatSupportEnabled: z.boolean().optional(),
 });
+
+// Additional company under the same tenant. Used by `/company/create`.
+export const createCompanySchema = z.object({
+  businessName: z.string().min(1).max(255),
+  entityType: z.enum(entityTypes).optional(),
+  industry: z.string().max(100).optional(),
+  // Free-form text identifying which COA template to seed from.
+  businessType: z.string().max(100).optional(),
+});
+export type CreateCompanyInput = z.infer<typeof createCompanySchema>;
+
+// Per-company SMTP. Credential field uses the 3-state sentinel: null =
+// clear, '' or omitted = no change, non-empty = set. Matches the system
+// SMTP schema's behavior.
+export const companySmtpUpdateSchema = z.object({
+  smtpHost: z.string().min(1).max(255),
+  smtpPort: z.number().int().min(1).max(65535),
+  smtpUser: z.string().max(255).optional().default(''),
+  smtpPass: z.string().max(512).nullish(),
+  smtpFrom: z.string().email().max(255),
+});
+export type CompanySmtpUpdateInput = z.infer<typeof companySmtpUpdateSchema>;
+
+// SMTP test request — same fields as the update plus an optional test
+// recipient.
+export const companySmtpTestSchema = z.object({
+  host: z.string().min(1).max(255),
+  port: z.number().int().min(1).max(65535),
+  username: z.string().max(255).optional(),
+  password: z.string().max(512).optional(),
+  from: z.string().email().max(255),
+  testEmail: z.string().email().max(255).optional(),
+});
+export type CompanySmtpTestInput = z.infer<typeof companySmtpTestSchema>;
+
+// Invite teammate to the tenant. Roles allowed via this endpoint exclude
+// 'owner' — owners are minted only via tenant creation.
+export const inviteUserSchema = z.object({
+  email: z.string().email().max(320),
+  displayName: z.string().min(1).max(255),
+  role: z.enum(['accountant', 'bookkeeper']).optional(),
+});
+export type InviteUserInput = z.infer<typeof inviteUserSchema>;

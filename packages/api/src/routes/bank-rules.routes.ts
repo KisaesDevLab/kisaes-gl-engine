@@ -3,7 +3,13 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { Router } from 'express';
-import { createBankRuleSchema, updateBankRuleSchema } from '@kis-books/shared';
+import {
+  createBankRuleSchema,
+  updateBankRuleSchema,
+  bankRulesReorderSchema,
+  bankRulesTestSchema,
+  bankRulesSubmitGlobalSchema,
+} from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import * as bankRulesService from '../services/bank-rules.service.js';
@@ -12,12 +18,17 @@ export const bankRulesRouter = Router();
 bankRulesRouter.use(authenticate);
 
 bankRulesRouter.get('/', async (req, res) => {
-  const rules = await bankRulesService.list(req.tenantId);
-  res.json({ rules });
+  const limit = req.query['limit'] ? Number(req.query['limit']) : undefined;
+  const offset = req.query['offset'] ? Number(req.query['offset']) : undefined;
+  const result = await bankRulesService.list(req.tenantId, { limit, offset });
+  // Backwards-compat: legacy callers expected `{ rules }`; new pagination
+  // shape adds `total`, `limit`, `offset`. Keep both for now so existing
+  // hooks don't break.
+  res.json({ rules: result.data, total: result.total, limit: result.limit, offset: result.offset });
 });
 
 bankRulesRouter.post('/', validate(createBankRuleSchema), async (req, res) => {
-  const rule = await bankRulesService.create(req.tenantId, req.body);
+  const rule = await bankRulesService.create(req.tenantId, req.body, req.userId);
   res.status(201).json({ rule });
 });
 
@@ -27,12 +38,12 @@ bankRulesRouter.get('/:id', async (req, res) => {
 });
 
 bankRulesRouter.put('/:id', validate(updateBankRuleSchema), async (req, res) => {
-  const rule = await bankRulesService.update(req.tenantId, req.params['id']!, req.body);
+  const rule = await bankRulesService.update(req.tenantId, req.params['id']!, req.body, req.userId);
   res.json({ rule });
 });
 
 bankRulesRouter.delete('/:id', async (req, res) => {
-  await bankRulesService.remove(req.tenantId, req.params['id']!);
+  await bankRulesService.remove(req.tenantId, req.params['id']!, req.userId);
   res.json({ message: 'Rule deleted' });
 });
 

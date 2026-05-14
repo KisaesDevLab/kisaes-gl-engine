@@ -113,16 +113,10 @@ export async function createQuestion(
 }
 
 // Bookkeeper-side list. Filters: status, companyId, contactId, transactionId.
-export async function listForBookkeeper(
-  tenantId: string,
-  opts: {
-    status?: 'open' | 'viewed' | 'responded' | 'resolved' | 'unresolved' | 'all';
-    companyId?: string;
-    assignedContactId?: string;
-    transactionId?: string;
-    closePeriod?: string;
-  } = {},
-): Promise<Array<{
+// Returns paginated envelope `{ data, total, limit, offset }` so the UI can
+// page through busy practice tenants instead of being capped at the hard
+// 200-item ceiling the prior version applied.
+export interface BookkeeperQuestion {
   id: string;
   companyId: string;
   companyName: string;
@@ -136,7 +130,20 @@ export async function listForBookkeeper(
   respondedAt: Date | null;
   closePeriod: string | null;
   messageCount: number;
-}>> {
+}
+
+export async function listForBookkeeper(
+  tenantId: string,
+  opts: {
+    status?: 'open' | 'viewed' | 'responded' | 'resolved' | 'unresolved' | 'all';
+    companyId?: string;
+    assignedContactId?: string;
+    transactionId?: string;
+    closePeriod?: string;
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<{ data: BookkeeperQuestion[]; total: number; limit: number; offset: number }> {
   const filters: ReturnType<typeof eq>[] = [eq(portalQuestions.tenantId, tenantId)];
   if (opts.status === 'unresolved') {
     filters.push(sql`${portalQuestions.status} != 'resolved'` as unknown as ReturnType<typeof eq>);
@@ -147,6 +154,10 @@ export async function listForBookkeeper(
   if (opts.assignedContactId) filters.push(eq(portalQuestions.assignedContactId, opts.assignedContactId));
   if (opts.transactionId) filters.push(eq(portalQuestions.transactionId, opts.transactionId));
   if (opts.closePeriod) filters.push(eq(portalQuestions.currentClosePeriod, opts.closePeriod));
+
+  const where = and(...filters);
+  const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+  const offset = Math.max(opts.offset ?? 0, 0);
 
   const rows = await db
     .select({
@@ -166,11 +177,18 @@ export async function listForBookkeeper(
     .from(portalQuestions)
     .innerJoin(companies, eq(portalQuestions.companyId, companies.id))
     .leftJoin(portalContacts, eq(portalQuestions.assignedContactId, portalContacts.id))
-    .where(and(...filters))
+    .where(where)
     .orderBy(desc(portalQuestions.createdAt))
-    .limit(200);
+    .limit(limit).offset(offset);
 
-  if (rows.length === 0) return [];
+  // Total ignores limit/offset so the UI can show "page X of Y".
+  const totalRows = await db.select({ total: sql<number>`COUNT(*)::int` })
+    .from(portalQuestions)
+    .innerJoin(companies, eq(portalQuestions.companyId, companies.id))
+    .where(where);
+  const total = totalRows[0]?.total ?? 0;
+
+  if (rows.length === 0) return { data: [], total, limit, offset };
 
   const counts = await db
     .select({
@@ -182,7 +200,12 @@ export async function listForBookkeeper(
     .groupBy(portalQuestionMessages.questionId);
 
   const countMap = new Map(counts.map((c) => [c.questionId, Number(c.n)]));
-  return rows.map((r) => ({ ...r, messageCount: countMap.get(r.id) ?? 0 }));
+  return {
+    data: rows.map((r) => ({ ...r, messageCount: countMap.get(r.id) ?? 0 })),
+    total,
+    limit,
+    offset,
+  };
 }
 
 // Detail load. Includes message thread.

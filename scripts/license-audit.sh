@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Kisaes LLC
+# Licensed under the PolyForm Internal Use License 1.0.0.
+# You may not distribute this software. See LICENSE for terms.
 # =============================================================================
 # license-audit.sh — Automated license compliance audit for Vibe MyBooks
 # License: PolyForm Internal Use 1.0.0 (SEE LICENSE IN LICENSE)

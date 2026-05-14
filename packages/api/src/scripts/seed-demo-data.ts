@@ -29,7 +29,10 @@ async function main() {
   if (!firstUser) {
     throw new Error('No users exist yet. Run the first-run setup wizard first.');
   }
-  console.log(`Attaching demo tenant to user: ${firstUser.email}`);
+  // Don't log the user's email — dev/CI logs often end up in
+  // aggregators and even a test address is PII for compliance review.
+  // The user id prefix is enough to disambiguate during debugging.
+  console.log(`Attaching demo tenant to user id ${firstUser.id.slice(0, 8)}…`);
 
   const result = await createDemoTenant(firstUser.id, {
     log: (line) => console.log(`  ${line}`),

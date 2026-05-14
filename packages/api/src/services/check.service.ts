@@ -66,33 +66,38 @@ export async function createCheck(tenantId: string, input: WriteCheckInput, user
     printStatus = 'hand_written';
   }
 
-  const txn = await ledger.postTransaction(tenantId, {
-    txnType: 'expense',
-    txnDate: input.txnDate,
-    contactId: input.contactId,
-    memo: input.memo,
-    total: input.amount,
-    lines: journalLines,
-  }, userId, companyId);
+  // Wrap the ledger post + check-specific header update + tag inserts
+  // in a single transaction so a mid-flight failure rolls everything
+  // back. Without this, a crash between the ledger commit and the
+  // check-fields UPDATE would leave a transaction posted that lacks a
+  // check number — orphaned check-allocation that's hard to reconcile.
+  const txn = await db.transaction(async (tx) => {
+    const t = await ledger.postTransaction(tenantId, {
+      txnType: 'expense',
+      txnDate: input.txnDate,
+      contactId: input.contactId,
+      memo: input.memo,
+      total: input.amount,
+      lines: journalLines,
+    }, userId, companyId, tx);
 
-  // Update with check-specific fields. Tenant_id in WHERE for defense in
-  // depth (CLAUDE.md rule #17), even though `txn` was returned from
-  // ledger.postTransaction which already scoped by tenant.
-  await db.update(transactions).set({
-    checkNumber,
-    printStatus,
-    payeeNameOnCheck: input.payeeNameOnCheck,
-    payeeAddress: input.payeeAddress || null,
-    printedMemo: input.printedMemo || null,
-  }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txn.id)));
+    // Tenant_id in WHERE for defense in depth (CLAUDE.md rule #17).
+    await tx.update(transactions).set({
+      checkNumber,
+      printStatus,
+      payeeNameOnCheck: input.payeeNameOnCheck,
+      payeeAddress: input.payeeAddress || null,
+      printedMemo: input.printedMemo || null,
+    }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, t.id)));
 
-  // Apply tags if provided
-  if (input.tagIds && input.tagIds.length > 0) {
-    const { transactionTags } = await import('../db/schema/index.js');
-    for (const tagId of input.tagIds) {
-      await db.insert(transactionTags).values({ transactionId: txn.id, tagId, tenantId }).onConflictDoNothing();
+    if (input.tagIds && input.tagIds.length > 0) {
+      const { transactionTags } = await import('../db/schema/index.js');
+      for (const tagId of input.tagIds) {
+        await tx.insert(transactionTags).values({ transactionId: t.id, tagId, tenantId }).onConflictDoNothing();
+      }
     }
-  }
+    return t;
+  });
 
   return { ...txn, checkNumber, printStatus, payeeNameOnCheck: input.payeeNameOnCheck };
 }

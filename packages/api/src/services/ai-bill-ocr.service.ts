@@ -100,7 +100,9 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
     throw AppError.badRequest('Bill OCR requires an image or PDF attachment');
   }
 
-  await db.update(attachments).set({ ocrStatus: 'processing' }).where(eq(attachments.id, attachmentId));
+  await db.update(attachments)
+    .set({ ocrStatus: 'processing' })
+    .where(and(eq(attachments.tenantId, tenantId), eq(attachments.id, attachmentId)));
 
   const job = await orchestrator.createJob(tenantId, 'ocr_invoice', 'attachment', attachmentId);
 
@@ -228,7 +230,7 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
       ocrDate: ocrResult.billDate,
       ocrTotal: ocrResult.total,
       ocrTax: ocrResult.tax,
-    }).where(eq(attachments.id, attachmentId));
+    }).where(and(eq(attachments.tenantId, tenantId), eq(attachments.id, attachmentId)));
 
     await orchestrator.completeJob(
       job.id,
@@ -268,7 +270,9 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
 
     return { ...ocrResult, contactId, defaultExpenseAccountId };
   } catch (err: any) {
-    await db.update(attachments).set({ ocrStatus: 'failed' }).where(eq(attachments.id, attachmentId));
+    await db.update(attachments)
+      .set({ ocrStatus: 'failed' })
+      .where(and(eq(attachments.tenantId, tenantId), eq(attachments.id, attachmentId)));
     await orchestrator.failJob(job.id, err.message);
     throw err;
   }

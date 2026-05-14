@@ -435,12 +435,12 @@ adminRouter.get('/users/:id/company-access', async (req, res) => {
 });
 
 adminRouter.post('/users/:id/exclude-company', validate(adminCompanyAccessSchema), async (req, res) => {
-  await adminService.excludeCompanyFromAccountant(req.params['id']!, req.body.companyId);
+  await adminService.excludeCompanyFromAccountant(req.params['id']!, req.body.companyId, req.userId);
   res.json({ message: 'Company excluded' });
 });
 
 adminRouter.post('/users/:id/include-company', validate(adminCompanyAccessSchema), async (req, res) => {
-  await adminService.includeCompanyForAccountant(req.params['id']!, req.body.companyId);
+  await adminService.includeCompanyForAccountant(req.params['id']!, req.body.companyId, req.userId);
   res.json({ message: 'Company included' });
 });
 
@@ -945,7 +945,7 @@ adminRouter.put('/coa-templates/:slug', validate(updateCoaTemplateSchema), async
 });
 
 adminRouter.delete('/coa-templates/:slug', async (req, res) => {
-  await coaTemplatesService.remove(req.params['slug']!);
+  await coaTemplatesService.remove(req.params['slug']!, req.tenantId, req.userId);
   res.json({ message: 'Template deleted' });
 });
 

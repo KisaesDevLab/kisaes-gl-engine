@@ -50,7 +50,12 @@ export const adminSmtpSettingsSchema = z.object({
   smtpHost: z.string().min(1).max(255),
   smtpPort: z.number().int().min(1).max(65535),
   smtpUser: z.string().max(255).optional().default(''),
-  smtpPass: z.string().max(512).optional().default(''),
+  // Credential field uses the 3-state sentinel: `null` clears the stored
+  // password, '' or omitted means "no change", non-empty is set. The GET
+  // endpoint scrubs the password so the form is blank on every reload —
+  // empty string can NEVER be treated as "wipe" or every unrelated save
+  // would destroy outbound mail auth.
+  smtpPass: z.string().max(512).nullish(),
   smtpFrom: z.string().email().max(255),
 });
 export type AdminSmtpSettingsInput = z.infer<typeof adminSmtpSettingsSchema>;
@@ -70,16 +75,26 @@ export type AdminApplicationSettingsInput = z.infer<typeof adminApplicationSetti
 
 // ─── TFA config payloads ───────────────────────────────────────
 
+// Field names below mirror the DB column names in `tfa_config` and the
+// shape the TfaConfigPage form actually sends. An earlier version of
+// this schema used a `tfa*` prefix on every config field (tfaCodeLength,
+// tfaCodeExpirySeconds, etc.) that didn't exist anywhere else in the
+// codebase — combined with `.strict()`, every admin TFA save returned
+// HTTP 400 with no UI feedback. Same pattern as the SMS save bug from
+// the textlinksms migration.
 export const adminTfaConfigSchema = z.object({
-  tfaGloballyEnabled: z.boolean().optional(),
-  tfaRequiredForAllUsers: z.boolean().optional(),
-  tfaRequiredForAdmins: z.boolean().optional(),
-  tfaSmsEnabled: z.boolean().optional(),
-  tfaEmailEnabled: z.boolean().optional(),
-  tfaTotpEnabled: z.boolean().optional(),
-  tfaPasskeyEnabled: z.boolean().optional(),
+  isEnabled: z.boolean().optional(),
+  allowedMethods: z.array(z.string().max(40)).optional(),
+  trustDeviceEnabled: z.boolean().optional(),
+  trustDeviceDurationDays: z.number().int().min(0).max(365).optional(),
+  codeExpirySeconds: z.number().int().min(30).max(3600).optional(),
+  codeLength: z.number().int().min(4).max(10).optional(),
+  maxAttempts: z.number().int().min(1).max(10).optional(),
+  lockoutDurationMinutes: z.number().int().min(1).max(1440).optional(),
   passkeysEnabled: z.boolean().optional(),
   magicLinkEnabled: z.boolean().optional(),
+  magicLinkExpiryMinutes: z.number().int().min(1).max(1440).optional(),
+  magicLinkMaxAttempts: z.number().int().min(1).max(20).optional(),
   smsProvider: z.string().max(50).nullish(),
   smsTwilioAccountSid: z.string().max(255).nullish(),
   smsTwilioAuthToken: z.string().max(512).nullish(),
@@ -90,12 +105,9 @@ export const adminTfaConfigSchema = z.object({
   smsAwsRegion: z.string().max(50).nullish(),
   smsAwsAccessKeyId: z.string().max(255).nullish(),
   smsAwsSecretAccessKey: z.string().max(512).nullish(),
+  smsTextlinkApiKey: z.string().max(512).nullish(),
+  smsTextlinkServiceName: z.string().max(120).nullish(),
   smsSenderId: z.string().max(32).nullish(),
-  tfaCodeLength: z.number().int().min(4).max(10).optional(),
-  tfaCodeExpirySeconds: z.number().int().min(30).max(3600).optional(),
-  tfaMaxAttempts: z.number().int().min(1).max(10).optional(),
-  tfaLockoutMinutes: z.number().int().min(1).max(1440).optional(),
-  tfaTrustDeviceDays: z.number().int().min(0).max(365).optional(),
 }).strict();
 export type AdminTfaConfigInput = z.infer<typeof adminTfaConfigSchema>;
 
@@ -131,14 +143,27 @@ export type AdminMcpConfigInput = z.infer<typeof adminMcpConfigSchema>;
 
 // ─── Plaid config ──────────────────────────────────────────────
 
+// Field names mirror the DB columns in `plaid_config` and the shape
+// the PlaidConfigPage form actually sends. A previous version of this
+// schema used `plaid*`-prefixed names (plaidEnv, plaidClientId, etc.)
+// that didn't match the frontend or the service layer — every admin
+// Plaid save returned HTTP 400 silently. Same SMS-bug pattern.
+//
+// Credential fields use a 3-state sentinel: `null` clears the stored
+// value, an empty string or missing field leaves it untouched, and a
+// non-empty string is encrypted-and-stored. `nullish()` accepts both
+// null and undefined; the service distinguishes between them.
 export const adminPlaidConfigSchema = z.object({
-  isEnabled: z.boolean().optional(),
-  plaidEnv: z.enum(['sandbox', 'development', 'production']).optional(),
-  plaidClientId: z.string().max(255).nullish(),
-  plaidSecret: z.string().max(512).nullish(),
-  plaidWebhookUrl: z.string().max(500).nullish(),
-  plaidProducts: z.array(z.string().max(50)).optional(),
-  plaidCountryCodes: z.array(z.string().length(2)).optional(),
+  environment: z.enum(['sandbox', 'development', 'production']).optional(),
+  clientId: z.string().max(255).nullish(),
+  secretSandbox: z.string().max(512).nullish(),
+  secretProduction: z.string().max(512).nullish(),
+  webhookUrl: z.string().max(500).nullish(),
+  defaultProducts: z.array(z.string().max(50)).optional(),
+  defaultCountryCodes: z.array(z.string().length(2)).optional(),
+  defaultLanguage: z.string().max(10).optional(),
+  maxHistoricalDays: z.number().int().min(1).max(730).optional(),
+  isActive: z.boolean().optional(),
 }).strict();
 export type AdminPlaidConfigInput = z.infer<typeof adminPlaidConfigSchema>;
 

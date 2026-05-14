@@ -283,7 +283,7 @@ export async function createInstance(
   // new tenant with no posted txns).
   if (layoutSnapshot.length > 0) {
     try {
-      await computeInstancePlaceholder(tenantId, row.id, bookkeeperUserId);
+      await computeInstance(tenantId, row.id, bookkeeperUserId);
     } catch {
       // swallow — caller can still hit Recompute manually
     }
@@ -351,7 +351,7 @@ export async function updateInstance(
   // so the Preview shows fresh numbers immediately.
   if (templateChanged || input.periodStart !== undefined || input.periodEnd !== undefined) {
     try {
-      await computeInstancePlaceholder(tenantId, id, bookkeeperUserId);
+      await computeInstance(tenantId, id, bookkeeperUserId);
     } catch {
       // swallow — Preview's Recompute button is still available
     }
@@ -417,7 +417,7 @@ export async function generateInstance(
 // the period, and writes the formatted strings into
 // dataSnapshotJsonb.kpis. Manual KPI overrides + ai_summary +
 // per-block text overrides set previously are preserved.
-export async function computeInstancePlaceholder(
+export async function computeInstance(
   tenantId: string,
   id: string,
   bookkeeperUserId: string,

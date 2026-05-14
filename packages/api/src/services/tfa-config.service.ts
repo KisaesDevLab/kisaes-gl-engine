@@ -18,6 +18,9 @@ export interface TfaSystemConfig {
   lockoutDurationMinutes: number;
   smsProvider: string | null;
   smsConfigured: boolean;
+  hasSmsTwilioAccountSid: boolean;
+  hasSmsTwilioAuthToken: boolean;
+  hasSmsTextlinkApiKey: boolean;
 }
 
 async function getOrCreateConfig() {
@@ -43,6 +46,11 @@ export async function getConfig(): Promise<TfaSystemConfig> {
     lockoutDurationMinutes: config.lockoutDurationMinutes ?? 15,
     smsProvider: config.smsProvider || null,
     smsConfigured: !!(config.smsProvider && (config.smsTwilioAccountSid || config.smsTextlinkApiKey)),
+    // Per-credential "has stored value" flags so the UI can render a
+    // Clear button next to each field without round-tripping secrets.
+    hasSmsTwilioAccountSid: !!config.smsTwilioAccountSid,
+    hasSmsTwilioAuthToken: !!config.smsTwilioAuthToken,
+    hasSmsTextlinkApiKey: !!config.smsTextlinkApiKey,
   };
 }
 
@@ -74,10 +82,17 @@ export async function updateConfig(input: Partial<{
   if (input.maxAttempts !== undefined) updates.maxAttempts = input.maxAttempts;
   if (input.lockoutDurationMinutes !== undefined) updates.lockoutDurationMinutes = input.lockoutDurationMinutes;
   if (input.smsProvider !== undefined) updates.smsProvider = input.smsProvider || null;
-  if (input.smsTwilioAccountSid !== undefined) updates.smsTwilioAccountSid = input.smsTwilioAccountSid ? encrypt(input.smsTwilioAccountSid) : null;
-  if (input.smsTwilioAuthToken !== undefined) updates.smsTwilioAuthToken = input.smsTwilioAuthToken ? encrypt(input.smsTwilioAuthToken) : null;
+  // SMS credentials use the 3-state sentinel: null = explicit clear,
+  // '' or undefined = no change, non-empty = encrypt+store. The GET
+  // endpoint returns only provider name (no secrets) so blank fields
+  // arriving from the form must NOT wipe stored creds.
+  if (input.smsTwilioAccountSid === null) updates.smsTwilioAccountSid = null;
+  else if (input.smsTwilioAccountSid) updates.smsTwilioAccountSid = encrypt(input.smsTwilioAccountSid);
+  if (input.smsTwilioAuthToken === null) updates.smsTwilioAuthToken = null;
+  else if (input.smsTwilioAuthToken) updates.smsTwilioAuthToken = encrypt(input.smsTwilioAuthToken);
   if (input.smsTwilioFromNumber !== undefined) updates.smsTwilioFromNumber = input.smsTwilioFromNumber;
-  if (input.smsTextlinkApiKey !== undefined) updates.smsTextlinkApiKey = input.smsTextlinkApiKey ? encrypt(input.smsTextlinkApiKey) : null;
+  if (input.smsTextlinkApiKey === null) updates.smsTextlinkApiKey = null;
+  else if (input.smsTextlinkApiKey) updates.smsTextlinkApiKey = encrypt(input.smsTextlinkApiKey);
   if (input.smsTextlinkServiceName !== undefined) updates.smsTextlinkServiceName = input.smsTextlinkServiceName;
   // Passwordless
   if ((input as any).passkeysEnabled !== undefined) updates.passkeysEnabled = (input as any).passkeysEnabled;

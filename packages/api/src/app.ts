@@ -418,11 +418,11 @@ app.use('/api/v1/auth/passkeys', passkeyRouter);
 // which login UI to surface; writing an arbitrary string there wouldn't
 // grant privilege but would silently disable login hints for the user.
 import { authenticate as authMw } from './middleware/auth.js';
-app.put('/api/v1/users/me/login-preference', authMw, async (req: any, res: any) => {
+app.put('/api/v1/users/me/login-preference', authMw, async (req, res) => {
   const { eq } = await import('drizzle-orm');
   const { db } = await import('./db/index.js');
   const { users } = await import('./db/schema/index.js');
-  const updates: any = { updatedAt: new Date() };
+  const updates: Partial<typeof users.$inferInsert> = { updatedAt: new Date() };
   const ALLOWED_METHODS = new Set(['password', 'magic_link', 'passkey']);
   if (req.body.preferredLoginMethod !== undefined) {
     if (!ALLOWED_METHODS.has(String(req.body.preferredLoginMethod))) {

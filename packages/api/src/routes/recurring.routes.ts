@@ -10,23 +10,25 @@ export const recurringRouter = Router();
 recurringRouter.use(authenticate);
 
 recurringRouter.get('/', async (req, res) => {
-  const schedules = await recurringService.list(req.tenantId);
-  res.json({ schedules });
+  const limit = req.query['limit'] ? Number(req.query['limit']) : undefined;
+  const offset = req.query['offset'] ? Number(req.query['offset']) : undefined;
+  const result = await recurringService.list(req.tenantId, { limit, offset });
+  res.json({ schedules: result.data, total: result.total, limit: result.limit, offset: result.offset });
 });
 
 recurringRouter.post('/', async (req, res) => {
   const { templateTransactionId, ...schedule } = req.body;
-  const sched = await recurringService.create(req.tenantId, templateTransactionId, schedule);
+  const sched = await recurringService.create(req.tenantId, templateTransactionId, schedule, req.userId);
   res.status(201).json({ schedule: sched });
 });
 
 recurringRouter.put('/:id', async (req, res) => {
-  const sched = await recurringService.update(req.tenantId, req.params['id']!, req.body);
+  const sched = await recurringService.update(req.tenantId, req.params['id']!, req.body, req.userId);
   res.json({ schedule: sched });
 });
 
 recurringRouter.delete('/:id', async (req, res) => {
-  await recurringService.deactivate(req.tenantId, req.params['id']!);
+  await recurringService.deactivate(req.tenantId, req.params['id']!, req.userId);
   res.json({ message: 'Deactivated' });
 });
 

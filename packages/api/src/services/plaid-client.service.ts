@@ -38,9 +38,11 @@ export async function getConfig() {
 
 export async function updateConfig(input: {
   environment?: string;
-  clientId?: string;
-  secretSandbox?: string;
-  secretProduction?: string;
+  // Credential 3-state sentinel: null = clear, '' / undefined = no change,
+  // non-empty = set. Marked nullable to make the API surface explicit.
+  clientId?: string | null;
+  secretSandbox?: string | null;
+  secretProduction?: string | null;
   webhookUrl?: string;
   defaultProducts?: string[];
   defaultCountryCodes?: string[];
@@ -52,9 +54,16 @@ export async function updateConfig(input: {
   const updates: any = { updatedAt: new Date() };
 
   if (input.environment !== undefined) updates.environment = input.environment;
-  if (input.clientId !== undefined) updates.clientIdEncrypted = input.clientId ? encrypt(input.clientId) : null;
-  if (input.secretSandbox !== undefined) updates.secretSandboxEncrypted = input.secretSandbox ? encrypt(input.secretSandbox) : null;
-  if (input.secretProduction !== undefined) updates.secretProductionEncrypted = input.secretProduction ? encrypt(input.secretProduction) : null;
+  // Credentials use a 3-state sentinel: null = explicit clear, '' or
+  // undefined = no change, non-empty = set. The GET endpoint returns
+  // only has*Secret booleans so the frontend form is blank on every
+  // load; admins must send null explicitly to clear a stored value.
+  if (input.clientId === null) updates.clientIdEncrypted = null;
+  else if (input.clientId) updates.clientIdEncrypted = encrypt(input.clientId);
+  if (input.secretSandbox === null) updates.secretSandboxEncrypted = null;
+  else if (input.secretSandbox) updates.secretSandboxEncrypted = encrypt(input.secretSandbox);
+  if (input.secretProduction === null) updates.secretProductionEncrypted = null;
+  else if (input.secretProduction) updates.secretProductionEncrypted = encrypt(input.secretProduction);
   if (input.webhookUrl !== undefined) updates.webhookUrl = input.webhookUrl || null;
   if (input.defaultProducts) updates.defaultProducts = input.defaultProducts.join(',');
   if (input.defaultCountryCodes) updates.defaultCountryCodes = input.defaultCountryCodes.join(',');

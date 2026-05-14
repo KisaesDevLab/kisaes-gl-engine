@@ -10,12 +10,16 @@ export const budgetsRouter = Router();
 budgetsRouter.use(authenticate);
 
 budgetsRouter.get('/', async (req, res) => {
-  const budgets = await budgetService.list(req.tenantId);
-  res.json({ budgets });
+  const limit = req.query['limit'] ? Number(req.query['limit']) : undefined;
+  const offset = req.query['offset'] ? Number(req.query['offset']) : undefined;
+  const result = await budgetService.list(req.tenantId, { limit, offset });
+  // Legacy shape `{ budgets }` preserved for existing callers; new
+  // pagination metadata added alongside.
+  res.json({ budgets: result.data, total: result.total, limit: result.limit, offset: result.offset });
 });
 
 budgetsRouter.post('/', async (req, res) => {
-  const budget = await budgetService.create(req.tenantId, req.body);
+  const budget = await budgetService.create(req.tenantId, req.body, req.userId);
   res.status(201).json({ budget });
 });
 
@@ -25,12 +29,12 @@ budgetsRouter.get('/:id', async (req, res) => {
 });
 
 budgetsRouter.put('/:id', async (req, res) => {
-  const budget = await budgetService.update(req.tenantId, req.params['id']!, req.body);
+  const budget = await budgetService.update(req.tenantId, req.params['id']!, req.body, req.userId);
   res.json({ budget });
 });
 
 budgetsRouter.delete('/:id', async (req, res) => {
-  await budgetService.remove(req.tenantId, req.params['id']!);
+  await budgetService.remove(req.tenantId, req.params['id']!, req.userId);
   res.json({ message: 'Budget deleted' });
 });
 
@@ -80,9 +84,32 @@ budgetsRouter.get('/:id/vs-actual', async (req, res) => {
       { key: 'variance', label: '$ Variance' },
       { key: 'pct', label: '% Variance' },
     ];
-    const rows: any[] = [];
+    // Row shape used by both PDF export and the HTML table generator
+    // downstream. Includes the index signature because the HTML helper
+    // does dynamic key lookups against the `columns` map above; without
+    // it TS complains on `row[col.key]` access in the body builder.
+    interface VarianceRow {
+      _section?: boolean;
+      _total?: boolean;
+      account: string;
+      budget: string;
+      actual: string;
+      variance: string;
+      pct: string;
+      [key: string]: unknown;
+    }
+    interface VarianceDetail {
+      accountName: string;
+      budget: number | string;
+      actual: number | string;
+      varianceDollar: number | string;
+      // The aggregator emits `null` when the budget is zero (% is
+      // undefined in that case); the formatter handles null safely.
+      variancePercent: number | string | null;
+    }
+    const rows: VarianceRow[] = [];
     const section = (label: string) => rows.push({ _section: true, account: label, budget: '', actual: '', variance: '', pct: '' });
-    const detailRow = (r: any) => rows.push({
+    const detailRow = (r: VarianceDetail) => rows.push({
       account: r.accountName,
       budget: fmtN(r.budget),
       actual: fmtN(r.actual),

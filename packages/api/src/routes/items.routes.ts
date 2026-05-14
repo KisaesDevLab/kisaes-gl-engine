@@ -3,7 +3,7 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { Router } from 'express';
-import { createItemSchema, updateItemSchema } from '@kis-books/shared';
+import { createItemSchema, updateItemSchema, itemsImportSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import * as itemsService from '../services/items.service.js';
@@ -34,7 +34,7 @@ itemsRouter.get('/export', async (req, res) => {
   res.send(csv);
 });
 
-itemsRouter.post('/import', async (req, res) => {
+itemsRouter.post('/import', validate(itemsImportSchema), async (req, res) => {
   const result = await itemsService.importFromCsv(req.tenantId, req.body.items);
   res.status(201).json({ imported: result.length });
 });

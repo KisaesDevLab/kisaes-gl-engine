@@ -29,6 +29,18 @@ const webdavConfigSchema = z.object({
   remotePath: z.string().max(1024).default('/'),
 }).strict();
 
+// `EmailConfig` in remote-backup.service.ts matches these field names.
+// `max_size_mb` is snake_case here because the service interface also
+// uses snake_case for this field; renaming would be a larger refactor.
+const emailConfigSchema = z.object({
+  recipient: z.string().email().max(320),
+  max_size_mb: z.coerce.number().int().positive().max(50).default(25),
+}).strict();
+
+// S3 / MinIO / R2 / DigitalOcean Spaces backup destination. `endpoint`
+// is optional — leave blank for AWS, set for S3-compatible providers.
+// `forcePathStyle` defaults true when `endpoint` is set (the standard
+// MinIO / non-AWS pattern).
 const s3ConfigSchema = z.object({
   endpoint: z.string().url().optional(),
   region: z.string().max(50).default('us-east-1'),
@@ -41,19 +53,23 @@ const s3ConfigSchema = z.object({
 
 const remoteBackupConfigSchema = z.object({
   enabled: z.boolean().default(false),
-  destination: z.enum(['sftp', 'webdav', 's3']).default('sftp'),
+  // Destinations must match the service-layer switch in
+  // remote-backup.service.ts.
+  destination: z.enum(['sftp', 'webdav', 'email', 's3']).default('sftp'),
   schedule: z.enum(['daily', 'weekly', 'monthly']).default('weekly'),
   retention_count: z.coerce.number().int().positive().max(1000).default(10),
   passphrase: z.string().optional(),
   sftp: sftpConfigSchema.optional(),
   webdav: webdavConfigSchema.optional(),
+  email: emailConfigSchema.optional(),
   s3: s3ConfigSchema.optional(),
 });
 
 const testConnectionSchema = z.object({
-  destination: z.enum(['sftp', 'webdav', 's3']),
+  destination: z.enum(['sftp', 'webdav', 'email', 's3']),
   sftp: sftpConfigSchema.optional(),
   webdav: webdavConfigSchema.optional(),
+  email: emailConfigSchema.optional(),
   s3: s3ConfigSchema.optional(),
 });
 
@@ -102,6 +118,7 @@ remoteBackupRouter.put('/config', async (req, res) => {
   const destConfig: Record<string, unknown> = {};
   if (input.sftp) destConfig['sftp'] = input.sftp;
   if (input.webdav) destConfig['webdav'] = input.webdav;
+  if (input.email) destConfig['email'] = input.email;
   if (input.s3) destConfig['s3'] = input.s3;
 
   await remoteBackupService.updateRemoteBackupConfig(

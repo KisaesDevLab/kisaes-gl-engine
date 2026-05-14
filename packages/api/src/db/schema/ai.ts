@@ -129,7 +129,10 @@ export const aiJobs = pgTable('ai_jobs', {
   // Cost tracking
   inputTokens: integer('input_tokens'),
   outputTokens: integer('output_tokens'),
-  estimatedCost: decimal('estimated_cost', { precision: 10, scale: 6 }),
+  // Widened from (10, 6) to (19, 4) in migration 0095 — CLAUDE.md
+  // rule #11. The old precision overflowed once cumulative cost passed
+  // ~$10k for a tenant; (19, 4) matches every other money column.
+  estimatedCost: decimal('estimated_cost', { precision: 19, scale: 4 }),
   // Timing
   processingStartedAt: timestamp('processing_started_at', { withTimezone: true }),
   processingCompletedAt: timestamp('processing_completed_at', { withTimezone: true }),
@@ -156,7 +159,8 @@ export const aiUsageLog = pgTable('ai_usage_log', {
   jobType: varchar('job_type', { length: 50 }).notNull(),
   inputTokens: integer('input_tokens').default(0),
   outputTokens: integer('output_tokens').default(0),
-  estimatedCost: decimal('estimated_cost', { precision: 10, scale: 6 }).default('0'),
+  // Widened from (10, 6) to (19, 4) in migration 0095 — see ai_jobs comment.
+  estimatedCost: decimal('estimated_cost', { precision: 19, scale: 4 }).default('0'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
   tenantMonthIdx: index('idx_aul_tenant_month').on(table.tenantId, table.createdAt),

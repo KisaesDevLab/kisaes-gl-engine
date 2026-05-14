@@ -11,6 +11,7 @@ import * as ledger from './ledger.service.js';
 import { cleanBankDescription } from '../utils/bank-name-cleaner.js';
 import { cleanNameViaRules } from './bank-rules.service.js';
 import { updateLearning } from './categorization-ai.service.js';
+import { assertTagsInTenant } from './tags.service.js';
 
 /**
  * Verify a client-supplied `bankConnectionId` belongs to the caller's
@@ -263,36 +264,50 @@ export async function categorize(tenantId: string, feedItemId: string, input: Ca
       credit: isExpense ? amount.toFixed(4) : '0',
     };
 
-    const txn = await ledger.postTransaction(tenantId, {
-      txnType: isExpense ? 'expense' : 'deposit',
-      txnDate: item.feedDate,
-      contactId: input.contactId || (item.suggestedContactId ?? undefined),
-      memo: input.memo || (item.category as string) || item.description || undefined,
-      total: amount.toFixed(4),
-      source: 'bank_feed',
-      sourceId: item.id,
-      // ADR 0XY §3.3 — bank-feed categorization stamps the rule-
-      // provided (or user-provided) tag on the user-facing expense or
-      // revenue line. The cash-account leg stays untagged because it
-      // isn't a segment-relevant posting. Phase 4 split actions
-      // produce one user line per split + the single cash line.
-      lines: isExpense ? [...userLines, cashLine] : [cashLine, ...userLines],
-    }, userId, companyId);
+    // Atomicity: ledger post + bank-feed-item status update must
+    // commit together. A crash between the two would leave the
+    // transaction posted but the feed item still 'categorizing',
+    // so the user would see a pending row that's actually already
+    // a journal entry — confusing and hard to reconcile.
+    const txn = await db.transaction(async (tx) => {
+      const t = await ledger.postTransaction(tenantId, {
+        txnType: isExpense ? 'expense' : 'deposit',
+        txnDate: item.feedDate,
+        contactId: input.contactId || (item.suggestedContactId ?? undefined),
+        memo: input.memo || (item.category as string) || item.description || undefined,
+        total: amount.toFixed(4),
+        source: 'bank_feed',
+        sourceId: item.id,
+        // ADR 0XY §3.3 — bank-feed categorization stamps the rule-
+        // provided (or user-provided) tag on the user-facing expense or
+        // revenue line. The cash-account leg stays untagged because it
+        // isn't a segment-relevant posting. Phase 4 split actions
+        // produce one user line per split + the single cash line.
+        lines: isExpense ? [...userLines, cashLine] : [cashLine, ...userLines],
+      }, userId, companyId, tx);
 
-    await db.update(bankFeedItems).set({
-      status: 'categorized',
-      matchedTransactionId: txn.id,
-      updatedAt: new Date(),
-    }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
+      await tx.update(bankFeedItems).set({
+        status: 'categorized',
+        matchedTransactionId: t.id,
+        updatedAt: new Date(),
+      }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
+      return t;
+    });
 
-    // Update categorization learning history
+    // Update categorization learning history. Fire-and-forget — the
+    // user's transaction has already posted; this only feeds the model's
+    // future suggestions. Log so a regression on the learning subsystem
+    // doesn't go silent.
     updateLearning(
       tenantId,
       item.originalDescription || item.description || '',
       input.accountId,
       input.contactId || null,
       true,
-    ).catch(() => {});
+    ).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.warn(`[bank-feed] updateLearning failed for tenant ${tenantId}:`, err?.message ?? err);
+    });
 
     return txn;
   } catch (err) {
@@ -484,6 +499,10 @@ export async function bulkCategorize(tenantId: string, feedItemIds: string[], ac
 // tag onto every journal_line of each matched transaction and syncs
 // the transaction_tags junction when TAGS_SPLIT_LEVEL_V2 is on.
 export async function bulkSetTag(tenantId: string, feedItemIds: string[], tagId: string | null) {
+  // Cross-tenant guard: a client could otherwise know another tenant's
+  // tag UUID and stamp it onto their own journal lines. Validate once
+  // up front so the loop below doesn't repeat the check per item.
+  if (tagId) await assertTagsInTenant(tenantId, [tagId]);
   let updated = 0;
   const failures: Array<{ id: string; error: string }> = [];
   for (const id of feedItemIds) {
@@ -495,24 +514,32 @@ export async function bulkSetTag(tenantId: string, feedItemIds: string[], tagId:
         failures.push({ id, error: 'no converted transaction to tag' });
         continue;
       }
-      await db.update(journalLines).set({ tagId })
-        .where(and(
-          eq(journalLines.tenantId, tenantId),
-          eq(journalLines.transactionId, item.matchedTransactionId),
-        ));
-      if (tagId) {
-        await db.insert(transactionTagsTable).values({
-          tenantId,
-          companyId: item.companyId,
-          transactionId: item.matchedTransactionId,
-          tagId,
-        }).onConflictDoNothing();
-      } else {
-        await db.delete(transactionTagsTable).where(and(
-          eq(transactionTagsTable.tenantId, tenantId),
-          eq(transactionTagsTable.transactionId, item.matchedTransactionId),
-        ));
-      }
+      // Wrap the journal_lines update + transaction_tags sync in a
+      // single per-item transaction so a mid-flight failure can't leave
+      // journal_lines.tagId stamped while transaction_tags is stale (or
+      // vice versa). Per-item rather than around the whole batch keeps
+      // partial-progress visibility — the failures[] result still
+      // identifies which item didn't apply.
+      await db.transaction(async (tx) => {
+        await tx.update(journalLines).set({ tagId })
+          .where(and(
+            eq(journalLines.tenantId, tenantId),
+            eq(journalLines.transactionId, item.matchedTransactionId!),
+          ));
+        if (tagId) {
+          await tx.insert(transactionTagsTable).values({
+            tenantId,
+            companyId: item.companyId,
+            transactionId: item.matchedTransactionId!,
+            tagId,
+          }).onConflictDoNothing();
+        } else {
+          await tx.delete(transactionTagsTable).where(and(
+            eq(transactionTagsTable.tenantId, tenantId),
+            eq(transactionTagsTable.transactionId, item.matchedTransactionId!),
+          ));
+        }
+      });
       updated++;
     } catch (err: any) {
       failures.push({ id, error: err?.message || 'unknown error' });
@@ -708,7 +735,14 @@ export async function runCategorizationPipeline(tenantId: string, items: any[]) 
     }
   }
   if (pendingIds.length > 0) {
-    await categorizationService.suggestForBatch(tenantId, pendingIds).catch(() => {});
+    // AI batch suggestions — best-effort. If the categorizer is down or
+    // mis-configured, the feed still imports correctly without auto
+    // suggestions; users can still categorize manually. Log so the
+    // outage is visible to operators.
+    await categorizationService.suggestForBatch(tenantId, pendingIds).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.warn(`[bank-feed] AI batch suggest failed for tenant ${tenantId}:`, err?.message ?? err);
+    });
   }
 
   // Phase 3 — potential-match detection. Runs after rules + AI

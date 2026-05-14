@@ -257,16 +257,20 @@ export async function buildBalanceSheet(
   // Automatic year-end closing: split into Retained Earnings (prior years) + Current Year Net Income
   const fyStartMonth = await getFiscalYearStart(tenantId, companyId);
 
-  // Compute current fiscal year start date
-  const asOf = new Date(asOfDate);
-  let currentFYStartYear = asOf.getFullYear();
-  if (asOf.getMonth() + 1 < fyStartMonth) currentFYStartYear--;
+  // Compute current fiscal year start date. UTC getters so the
+  // boundary is stable regardless of the container's local TZ — the
+  // asOfDate string is a calendar day ('YYYY-MM-DD') that Postgres
+  // stores TZ-naive, and we want the boundary computed against that
+  // same calendar day.
+  const asOf = new Date(asOfDate + 'T00:00:00Z');
+  let currentFYStartYear = asOf.getUTCFullYear();
+  if (asOf.getUTCMonth() + 1 < fyStartMonth) currentFYStartYear--;
   const currentFYStart = `${currentFYStartYear}-${String(fyStartMonth).padStart(2, '0')}-01`;
 
   // Retained Earnings = net income for all completed fiscal years (before current FY start)
   const retainedPL = await buildProfitAndLoss(tenantId, '1900-01-01', (() => {
-    const d = new Date(currentFYStart);
-    d.setDate(d.getDate() - 1);
+    const d = new Date(currentFYStart + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() - 1);
     return d.toISOString().split('T')[0]!;
   })(), basis, companyId, tagId);
   if (retainedPL.netIncome !== 0) {
@@ -337,13 +341,18 @@ export async function buildARAgingSummary(
   `);
 
   const buckets = { current: 0, days1to30: 0, days31to60: 0, days61to90: 0, over90: 0 };
-  const asOf = new Date(asOfDate);
+  // Anchor both endpoints to UTC midnight so the aging-bucket math
+  // doesn't shift by ±a few hours depending on the container's local TZ.
+  // The DB stores due_date/txn_date as calendar dates (no TZ); appending
+  // 'T00:00:00Z' parses them at UTC midnight consistently.
+  const asOf = new Date(asOfDate + 'T00:00:00Z');
   const details: any[] = [];
 
   for (const row of rows.rows as any[]) {
     const balance = num(row.balance_due || row.total || '0');
     if (balance <= 0) continue;
-    const dueDate = new Date(row.due_date || row.txn_date);
+    const dueStr = row.due_date || row.txn_date;
+    const dueDate = new Date(typeof dueStr === 'string' ? dueStr + 'T00:00:00Z' : dueStr);
     const daysOverdue = Math.floor((asOf.getTime() - dueDate.getTime()) / 86400000);
 
     let bucket: string;

@@ -17,7 +17,7 @@ async function computeBudgetPerformance(tenantId: string) {
   const today = new Date();
   const year = today.getFullYear();
   const budgetsList = await budgetService.list(tenantId);
-  const activeBudget = budgetsList.find((b) => b.fiscalYear === year && b.isActive);
+  const activeBudget = budgetsList.data.find((b) => b.fiscalYear === year && b.isActive);
   if (!activeBudget) return null;
 
   const mtdStart = `${year}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
@@ -193,7 +193,7 @@ dashboardRouter.get('/budget-performance', async (req, res) => {
 
   // Find active budget for current year
   const budgetsList = await budgetService.list(req.tenantId);
-  const activeBudget = budgetsList.find((b) => b.fiscalYear === year && b.isActive);
+  const activeBudget = budgetsList.data.find((b) => b.fiscalYear === year && b.isActive);
   if (!activeBudget) {
     res.json(null);
     return;

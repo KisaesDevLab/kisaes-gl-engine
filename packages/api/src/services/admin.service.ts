@@ -521,8 +521,11 @@ export async function getAccountantCompanyAccess(userId: string) {
  * admin UI could insert an exclusion row whose user and company
  * belong to unrelated tenants — `listCompanies` would silently filter
  * against the wrong row and future audits would be very confusing.
+ *
+ * Returns the shared tenantId so callers can use it for audit logging
+ * without a second lookup.
  */
-async function assertUserAndCompanySameTenant(userId: string, companyId: string): Promise<void> {
+async function assertUserAndCompanySameTenant(userId: string, companyId: string): Promise<string> {
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   if (!user) throw AppError.notFound('User not found');
 
@@ -535,19 +538,41 @@ async function assertUserAndCompanySameTenant(userId: string, companyId: string)
       'TENANT_MISMATCH',
     );
   }
+  return user.tenantId;
 }
 
-export async function excludeCompanyFromAccountant(userId: string, companyId: string) {
-  await assertUserAndCompanySameTenant(userId, companyId);
+export async function excludeCompanyFromAccountant(userId: string, companyId: string, actingUserId?: string) {
+  const tenantId = await assertUserAndCompanySameTenant(userId, companyId);
   await db.insert(accountantCompanyExclusions)
     .values({ userId, companyId })
     .onConflictDoNothing();
+  // Permission mutation — must be auditable. The composite (userId,
+  // companyId) is the natural entity key; pass it as `entityId` joined
+  // for forensic readability.
+  await auditLog(
+    tenantId,
+    'create',
+    'accountant_company_exclusion',
+    `${userId}:${companyId}`,
+    null,
+    { userId, companyId },
+    actingUserId,
+  );
 }
 
-export async function includeCompanyForAccountant(userId: string, companyId: string) {
-  await assertUserAndCompanySameTenant(userId, companyId);
+export async function includeCompanyForAccountant(userId: string, companyId: string, actingUserId?: string) {
+  const tenantId = await assertUserAndCompanySameTenant(userId, companyId);
   await db.delete(accountantCompanyExclusions)
     .where(and(eq(accountantCompanyExclusions.userId, userId), eq(accountantCompanyExclusions.companyId, companyId)));
+  await auditLog(
+    tenantId,
+    'delete',
+    'accountant_company_exclusion',
+    `${userId}:${companyId}`,
+    { userId, companyId },
+    null,
+    actingUserId,
+  );
 }
 
 // ─── System Settings (DB-backed) ─────────────────────────────────
@@ -591,13 +616,21 @@ export async function saveSmtpSettings(input: {
   smtpHost: string;
   smtpPort: number;
   smtpUser: string;
-  smtpPass: string;
+  smtpPass?: string | null;
   smtpFrom: string;
 }) {
   await setSetting('smtp_host', input.smtpHost);
   await setSetting('smtp_port', String(input.smtpPort));
   await setSetting('smtp_user', input.smtpUser);
-  await setSetting('smtp_pass', input.smtpPass);
+  // 3-state sentinel for the password: null clears the stored value,
+  // '' or undefined preserves it, a non-empty string sets it. Form
+  // re-saves should NOT wipe credentials just because the password
+  // field rendered blank.
+  if (input.smtpPass === null) {
+    await setSetting('smtp_pass', '');
+  } else if (input.smtpPass) {
+    await setSetting('smtp_pass', input.smtpPass);
+  }
   await setSetting('smtp_from', input.smtpFrom);
 }
 
@@ -609,6 +642,9 @@ export async function getGlobalSettings() {
     smtpFrom: smtp.smtpFrom,
     smtpUser: smtp.smtpUser,
     smtpConfigured: !!smtp.smtpHost,
+    // `passwordConfigured` lets the UI render a "Clear stored password"
+    // button conditionally — the actual password never round-trips.
+    smtpPasswordConfigured: !!smtp.smtpPass,
     smtpSource: smtp.source,
     backupDir: process.env['BACKUP_DIR'] || '/data/backups',
     uploadDir: process.env['UPLOAD_DIR'] || '/data/uploads',

@@ -68,6 +68,7 @@ export * from './schemas/stripe.js';
 export * from './schemas/tailscale.js';
 export * from './schemas/report-settings.js';
 export * from './schemas/imports.js';
+export * from './schemas/batch.js';
 
 // Constants
 export * from './constants/coa-templates.js';

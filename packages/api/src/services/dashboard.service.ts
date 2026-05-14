@@ -9,18 +9,22 @@ import { transactions, journalLines, accounts, bankFeedItems, reconciliations } 
 async function getFiscalYearStart(tenantId: string): Promise<string> {
   const result = await db.execute(sql`SELECT fiscal_year_start_month FROM companies WHERE tenant_id = ${tenantId} LIMIT 1`);
   const fyStartMonth = (result.rows as any[])[0]?.fiscal_year_start_month || 1;
+  // UTC getters so the fiscal-year boundary doesn't shift around when
+  // the API container's local TZ differs from the tenant's. Reports
+  // compare against `txn_date` (calendar-day stored as date), which is
+  // UTC by definition in Postgres.
   const now = new Date();
-  let year = now.getFullYear();
+  let year = now.getUTCFullYear();
   // If we haven't reached the FY start month yet this calendar year, FY started last year
-  if (now.getMonth() + 1 < fyStartMonth) year--;
+  if (now.getUTCMonth() + 1 < fyStartMonth) year--;
   return `${year}-${String(fyStartMonth).padStart(2, '0')}-01`;
 }
 
 export async function getFinancialSnapshot(tenantId: string) {
   const now = new Date();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const month = String(now.getUTCMonth() + 1).padStart(2, '0');
   const ytdStart = await getFiscalYearStart(tenantId);
-  const mtdStart = `${now.getFullYear()}-${month}-01`;
+  const mtdStart = `${now.getUTCFullYear()}-${month}-01`;
   const today = now.toISOString().split('T')[0]!;
 
   async function getPL(start: string, end: string) {
@@ -57,11 +61,13 @@ export async function getRevExpTrend(tenantId: string, months: number = 6) {
   const now = new Date();
 
   for (let i = months - 1; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const start = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
-    const endD = new Date(d.getFullYear(), d.getMonth() + 1, 0);
-    const end = `${endD.getFullYear()}-${String(endD.getMonth() + 1).padStart(2, '0')}-${String(endD.getDate()).padStart(2, '0')}`;
-    const label = d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
+    // Build month buckets in UTC so the trend doesn't shift by a day
+    // when the container's local TZ differs from UTC.
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+    const start = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-01`;
+    const endD = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0));
+    const end = `${endD.getUTCFullYear()}-${String(endD.getUTCMonth() + 1).padStart(2, '0')}-${String(endD.getUTCDate()).padStart(2, '0')}`;
+    const label = d.toLocaleDateString('en-US', { month: 'short', year: '2-digit', timeZone: 'UTC' });
 
     const rows = await db.execute(sql`
       SELECT a.account_type,

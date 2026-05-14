@@ -164,7 +164,7 @@ portalReportsRouter.post('/instances/:id/generate', validate(generateSchema), as
 // evaluator against the company's books. Manual overrides set via
 // /patch survive recompute.
 portalReportsRouter.post('/instances/:id/compute', async (req, res) => {
-  const result = await svc.computeInstancePlaceholder(req.tenantId, req.params['id']!, req.userId);
+  const result = await svc.computeInstance(req.tenantId, req.params['id']!, req.userId);
   res.json(result);
 });
 

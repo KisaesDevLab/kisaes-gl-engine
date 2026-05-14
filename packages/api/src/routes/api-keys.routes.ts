@@ -8,6 +8,7 @@ import { eq, and } from 'drizzle-orm';
 import { authenticate } from '../middleware/auth.js';
 import { db } from '../db/index.js';
 import { apiKeys } from '../db/schema/index.js';
+import { auditLog } from '../middleware/audit.js';
 
 export const apiKeysRouter = Router();
 apiKeysRouter.use(authenticate);
@@ -97,6 +98,12 @@ apiKeysRouter.post('/', async (req, res) => {
     expiresAt: expiresAt ? new Date(expiresAt) : null,
   }).returning();
 
+  // Audit only the metadata — never log keyHash/rawKey.
+  if (record) {
+    await auditLog(req.tenantId, 'create', 'api_key', record.id, null,
+      { name: record.name, role: record.role, keyPrefix, scopes: scopesToStore }, req.userId);
+  }
+
   // Return the full key ONCE — it cannot be retrieved again
   res.status(201).json({
     key: {
@@ -114,6 +121,9 @@ apiKeysRouter.post('/', async (req, res) => {
 // Update API key
 apiKeysRouter.put('/:id', async (req, res) => {
   const { name, isActive } = req.body;
+  const before = await db.query.apiKeys.findFirst({
+    where: and(eq(apiKeys.id, req.params['id']!), eq(apiKeys.tenantId, req.tenantId)),
+  });
   const [updated] = await db.update(apiKeys)
     .set({
       ...(name !== undefined ? { name } : {}),
@@ -126,13 +136,24 @@ apiKeysRouter.put('/:id', async (req, res) => {
     res.status(404).json({ error: { message: 'API key not found' } });
     return;
   }
+  await auditLog(req.tenantId, 'update', 'api_key', updated.id,
+    before ? { name: before.name, isActive: before.isActive } : null,
+    { name: updated.name, isActive: updated.isActive }, req.userId);
   res.json({ key: { id: updated.id, name: updated.name, isActive: updated.isActive } });
 });
 
 // Revoke API key
 apiKeysRouter.delete('/:id', async (req, res) => {
+  const before = await db.query.apiKeys.findFirst({
+    where: and(eq(apiKeys.id, req.params['id']!), eq(apiKeys.tenantId, req.tenantId)),
+  });
   await db.update(apiKeys)
     .set({ isActive: false })
     .where(and(eq(apiKeys.id, req.params['id']!), eq(apiKeys.tenantId, req.tenantId)));
+  if (before) {
+    await auditLog(req.tenantId, 'update', 'api_key', req.params['id']!,
+      { name: before.name, isActive: before.isActive },
+      { name: before.name, isActive: false, action: 'revoke' }, req.userId);
+  }
   res.json({ message: 'API key revoked' });
 });

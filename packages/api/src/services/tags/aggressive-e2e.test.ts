@@ -461,7 +461,7 @@ describe('aggressive tags e2e', () => {
       await mkTag(tenantB, 'B1');
 
       const aTags = await tagsService.list(tenantA);
-      const names = aTags.map((t) => t.name);
+      const names = aTags.data.map((t) => t.name);
       expect(names).toContain('A1');
       expect(names).toContain('A2');
       expect(names).not.toContain('B1');

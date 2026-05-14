@@ -244,7 +244,13 @@ export async function saveBatch(
     }
 
     const amount = String(row.amount || '0');
-    let txn: any;
+    // Each service returns a different concrete transaction-record type;
+    // they all share the `id` + `txnNumber` shape we read below. Use
+    // the minimal contract so callers stay loosely coupled to the
+    // service return signatures. `undefined` initial — not all switch
+    // cases below assign, and the post-switch `if (txn)` skips unset
+    // rows.
+    let txn: { id: string; txnNumber: string | null } | undefined;
 
     switch (txnType) {
       case 'expense':

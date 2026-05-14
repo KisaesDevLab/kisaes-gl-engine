@@ -16,6 +16,7 @@ import {
 import { db } from '../db/index.js';
 import { coaTemplatesTable, accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { auditLog } from '../middleware/audit.js';
 
 type DbCoaTemplate = typeof coaTemplatesTable.$inferSelect;
 
@@ -244,7 +245,7 @@ export async function setHidden(slug: string, hidden: boolean): Promise<CoaTempl
   return rowToTemplate(row);
 }
 
-export async function remove(slug: string): Promise<void> {
+export async function remove(slug: string, actingTenantId?: string, actingUserId?: string): Promise<void> {
   const existing = await db.query.coaTemplatesTable.findFirst({
     where: eq(coaTemplatesTable.slug, slug),
   });
@@ -255,6 +256,18 @@ export async function remove(slug: string): Promise<void> {
     throw AppError.badRequest('Built-in templates cannot be deleted', 'TEMPLATE_BUILTIN');
   }
   await db.delete(coaTemplatesTable).where(eq(coaTemplatesTable.slug, slug));
+
+  // COA templates are system-level (not tenant-scoped). The audit_log
+  // table requires a tenantId, so we log against the super-admin's home
+  // tenant — captures "this super-admin in this firm deleted this
+  // system template". Better than no audit at all; a proper system-wide
+  // audit log is a future refactor.
+  if (actingTenantId) {
+    await auditLog(actingTenantId, 'delete', 'coa_template', existing.id, existing, null, actingUserId);
+  } else {
+    // eslint-disable-next-line no-console
+    console.warn(`[coa-templates] removed template ${slug} (id=${existing.id}) without acting-tenant context — audit log skipped.`);
+  }
 }
 
 /**

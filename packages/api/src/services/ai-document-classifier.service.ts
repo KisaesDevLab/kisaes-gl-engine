@@ -142,6 +142,12 @@ export async function classifyDocument(tenantId: string, attachmentId: string): 
             model: 'local/keywords',
             provider: 'local',
             durationMs: 0,
+            // Local keyword classification doesn't actually call a
+            // provider, so the CompletionResult fields beyond the ones
+            // above don't apply. Cast keeps the shape compatible with
+            // the downstream union without inventing fake values for
+            // text/parsed/etc.
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
           } as any;
         } else {
           const snippet = extraction.text.slice(0, 500);

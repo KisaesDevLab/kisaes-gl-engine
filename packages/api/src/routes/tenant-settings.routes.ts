@@ -20,7 +20,7 @@ tenantSettingsRouter.get('/report', async (req, res) => {
 });
 
 tenantSettingsRouter.put('/report', validate(updateTenantReportSettingsSchema), async (req, res) => {
-  const next = await service.updateSettings(req.tenantId, req.body);
+  const next = await service.updateSettings(req.tenantId, req.body, req.userId);
   res.json({
     plLabels: next.plLabels ?? {},
     resolvedPLLabels: resolvePLLabels(next.plLabels),

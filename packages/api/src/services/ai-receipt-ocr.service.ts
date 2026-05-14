@@ -54,7 +54,9 @@ export async function processReceipt(tenantId: string, attachmentId: string) {
   }
   const mimeType = attachment.mimeType || 'image/jpeg';
 
-  await db.update(attachments).set({ ocrStatus: 'processing' }).where(eq(attachments.id, attachmentId));
+  await db.update(attachments)
+    .set({ ocrStatus: 'processing' })
+    .where(and(eq(attachments.tenantId, tenantId), eq(attachments.id, attachmentId)));
 
   const job = await orchestrator.createJob(tenantId, 'ocr_receipt', 'attachment', attachmentId);
 
@@ -196,7 +198,9 @@ export async function processReceipt(tenantId: string, attachmentId: string) {
       qualityWarnings,
     };
   } catch (err: any) {
-    await db.update(attachments).set({ ocrStatus: 'failed' }).where(eq(attachments.id, attachmentId));
+    await db.update(attachments)
+      .set({ ocrStatus: 'failed' })
+      .where(and(eq(attachments.tenantId, tenantId), eq(attachments.id, attachmentId)));
     await orchestrator.failJob(job.id, err.message);
     throw err;
   }

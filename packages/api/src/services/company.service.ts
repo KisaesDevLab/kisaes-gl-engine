@@ -142,7 +142,11 @@ export async function getSmtpSettings(tenantId: string, companyId?: string) {
     smtpHost: company.smtpHost || '',
     smtpPort: company.smtpPort || 587,
     smtpUser: company.smtpUser || '',
-    smtpPass: company.smtpPass || '',
+    // Never return the stored password — it's encryption-at-rest only.
+    // The frontend treats an empty value as "leave alone" on save. A
+    // `passwordConfigured` boolean lets the UI render a placeholder.
+    smtpPass: '',
+    passwordConfigured: !!company.smtpPass,
     smtpFrom: company.smtpFrom || company.email || '',
     configured: !!company.smtpHost,
   };
@@ -151,21 +155,30 @@ export async function getSmtpSettings(tenantId: string, companyId?: string) {
 export async function updateSmtpSettings(
   tenantId: string,
   companyId: string,
-  input: { smtpHost: string; smtpPort: number; smtpUser: string; smtpPass: string; smtpFrom: string },
+  input: { smtpHost: string; smtpPort: number; smtpUser: string; smtpPass?: string | null; smtpFrom: string },
   userId?: string,
 ) {
   const existing = await getCompany(tenantId, companyId);
 
+  // smtpPass uses 3-state sentinel: null = explicit clear, '' or
+  // undefined = no change, non-empty = set. The GET endpoint scrubs the
+  // password so an empty form value must never overwrite the stored one.
+  const updates: Record<string, unknown> = {
+    smtpHost: input.smtpHost,
+    smtpPort: input.smtpPort,
+    smtpUser: input.smtpUser,
+    smtpFrom: input.smtpFrom,
+    updatedAt: new Date(),
+  };
+  if (input.smtpPass === null) {
+    updates['smtpPass'] = null;
+  } else if (input.smtpPass) {
+    updates['smtpPass'] = input.smtpPass;
+  }
+
   const [updated] = await db
     .update(companies)
-    .set({
-      smtpHost: input.smtpHost,
-      smtpPort: input.smtpPort,
-      smtpUser: input.smtpUser,
-      smtpPass: input.smtpPass,
-      smtpFrom: input.smtpFrom,
-      updatedAt: new Date(),
-    })
+    .set(updates)
     .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)))
     .returning();
 

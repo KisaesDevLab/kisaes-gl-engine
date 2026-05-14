@@ -34,13 +34,24 @@ interface EmailConfig {
   max_size_mb: number;
 }
 
+interface S3Config {
+  endpoint?: string;
+  region: string;
+  bucket: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  prefix: string;
+  forcePathStyle?: boolean;
+}
+
 interface RemoteBackupConfig {
-  destination: 'sftp' | 'webdav' | 'email';
+  destination: 'sftp' | 'webdav' | 'email' | 's3';
   schedule: 'daily' | 'weekly' | 'monthly';
   retention_count: number;
   sftp?: SftpConfig;
   webdav?: WebDavConfig;
   email?: EmailConfig;
+  s3?: S3Config;
 }
 
 /**
@@ -54,6 +65,8 @@ export async function testConnection(config: RemoteBackupConfig): Promise<{ succ
       return testWebDavConnection(config.webdav!);
     case 'email':
       return testEmailConnection(config.email!);
+    case 's3':
+      return testS3Connection(config.s3!);
     default:
       return { success: false, message: `Unknown destination: ${config.destination}` };
   }
@@ -145,8 +158,58 @@ export async function uploadBackup(
       return uploadWebDav(backupFilePath, fileName, config.webdav!);
     case 'email':
       return uploadEmail(backupFilePath, fileName, fileSize, config.email!);
+    case 's3':
+      return uploadS3(backupFilePath, fileName, config.s3!);
     default:
       return { success: false, message: `Unknown destination: ${config.destination}` };
+  }
+}
+
+async function testS3Connection(config: S3Config): Promise<{ success: boolean; message: string }> {
+  // Validate endpoint URL (custom endpoints — MinIO, R2, etc.) — link-
+  // local and metadata-service IPs are SSRF risks if the operator
+  // accidentally points the backup at one.
+  try {
+    if (config.endpoint) assertExternalUrlSafe(config.endpoint, 'S3 endpoint');
+    const { S3Client, HeadBucketCommand } = await import('@aws-sdk/client-s3');
+    const client = new S3Client({
+      region: config.region || 'us-east-1',
+      endpoint: config.endpoint || undefined,
+      credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey },
+      forcePathStyle: config.forcePathStyle ?? !!config.endpoint,
+    });
+    await client.send(new HeadBucketCommand({ Bucket: config.bucket }));
+    return { success: true, message: `S3 bucket "${config.bucket}" reachable.` };
+  } catch (err) {
+    return { success: false, message: `S3 connection failed: ${err instanceof Error ? err.message : 'Unknown error'}` };
+  }
+}
+
+async function uploadS3(
+  filePath: string,
+  fileName: string,
+  config: S3Config,
+): Promise<{ success: boolean; message: string; size?: number }> {
+  try {
+    if (config.endpoint) assertExternalUrlSafe(config.endpoint, 'S3 endpoint');
+    const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
+    const client = new S3Client({
+      region: config.region || 'us-east-1',
+      endpoint: config.endpoint || undefined,
+      credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey },
+      forcePathStyle: config.forcePathStyle ?? !!config.endpoint,
+    });
+    const body = fs.readFileSync(filePath);
+    const key = config.prefix ? `${config.prefix.replace(/\/+$/, '')}/${fileName}` : fileName;
+    await client.send(new PutObjectCommand({
+      Bucket: config.bucket,
+      Key: key,
+      Body: body,
+      ContentType: 'application/octet-stream',
+    }));
+    return { success: true, message: `Uploaded to s3://${config.bucket}/${key}`, size: body.length };
+  } catch (err) {
+    return { success: false, message: `S3 upload failed: ${err instanceof Error ? err.message : 'Unknown error'}` };
   }
 }
 
@@ -269,7 +332,45 @@ export async function applyRetention(
     return { deleted: 0 };
   }
 
+  if (config.destination === 's3' && config.s3) {
+    return applyS3Retention(config.s3, keepCount);
+  }
+
   return { deleted: 0 };
+}
+
+async function applyS3Retention(config: S3Config, keepCount: number): Promise<{ deleted: number }> {
+  try {
+    if (config.endpoint) assertExternalUrlSafe(config.endpoint, 'S3 endpoint');
+    const { S3Client, ListObjectsV2Command, DeleteObjectCommand } = await import('@aws-sdk/client-s3');
+    const client = new S3Client({
+      region: config.region || 'us-east-1',
+      endpoint: config.endpoint || undefined,
+      credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey },
+      forcePathStyle: config.forcePathStyle ?? !!config.endpoint,
+    });
+    const prefix = config.prefix ? config.prefix.replace(/\/+$/, '') + '/' : '';
+    const listResult = await client.send(new ListObjectsV2Command({
+      Bucket: config.bucket,
+      Prefix: prefix,
+      MaxKeys: 1000,
+    }));
+    const objects = (listResult.Contents || [])
+      .filter((o) => o.Key && (o.Key.endsWith('.vmb') || o.Key.endsWith('.vmx')))
+      .sort((a, b) => (b.LastModified?.getTime() ?? 0) - (a.LastModified?.getTime() ?? 0));
+
+    let deleted = 0;
+    for (const obj of objects.slice(keepCount)) {
+      if (!obj.Key) continue;
+      await client.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: obj.Key }));
+      deleted++;
+    }
+    return { deleted };
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[remote-backup] S3 retention failed:', err instanceof Error ? err.message : err);
+    return { deleted: 0 };
+  }
 }
 
 async function applySftpRetention(config: SftpConfig, keepCount: number): Promise<{ deleted: number }> {

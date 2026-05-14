@@ -1,4 +1,8 @@
 #!/bin/bash
+# Copyright 2026 Kisaes LLC
+# Licensed under the PolyForm Internal Use License 1.0.0.
+# You may not distribute this software. See LICENSE for terms.
+#
 # scripts/add-license-header.sh
 # Adds the PolyForm Internal Use license header to source files that are missing it.
 
@@ -37,23 +41,31 @@ pick_header() {
   esac
 }
 
+# Roots to scan. `packages` is the bulk; `scripts` and `e2e` are also
+# part of the source tree per CLAUDE.md rule #27 — the earlier script
+# only covered packages/, leaving 19 files uncovered for months.
+SCAN_ROOTS=(packages scripts e2e)
+
 for ext in "${!EXT_STYLE[@]}"; do
   style="${EXT_STYLE[$ext]}"
   HEADER=$(pick_header "$style")
-  while IFS= read -r file; do
-    if ! head -5 "$file" | grep -q "$HEADER_PATTERN"; then
-      if [[ "$style" == "hash" ]] && head -1 "$file" | grep -q "^#!"; then
-        # Preserve shebang; insert header after line 1
-        shebang=$(head -1 "$file")
-        rest=$(tail -n +2 "$file")
-        { echo "$shebang"; echo "$HEADER"; echo "$rest"; } > "$file.tmp" && mv "$file.tmp" "$file"
-      else
-        { echo "$HEADER"; cat "$file"; } > "$file.tmp" && mv "$file.tmp" "$file"
+  for root in "${SCAN_ROOTS[@]}"; do
+    [[ -d "$root" ]] || continue
+    while IFS= read -r file; do
+      if ! head -5 "$file" | grep -q "$HEADER_PATTERN"; then
+        if [[ "$style" == "hash" ]] && head -1 "$file" | grep -q "^#!"; then
+          # Preserve shebang; insert header after line 1
+          shebang=$(head -1 "$file")
+          rest=$(tail -n +2 "$file")
+          { echo "$shebang"; echo "$HEADER"; echo "$rest"; } > "$file.tmp" && mv "$file.tmp" "$file"
+        else
+          { echo "$HEADER"; cat "$file"; } > "$file.tmp" && mv "$file.tmp" "$file"
+        fi
+        echo "Added header: $file"
+        ADDED=$((ADDED + 1))
       fi
-      echo "Added header: $file"
-      ADDED=$((ADDED + 1))
-    fi
-  done < <(eval "find packages -name '*.$ext' $EXCLUDE_ARGS -type f")
+    done < <(eval "find $root -name '*.$ext' $EXCLUDE_ARGS -type f")
+  done
 done
 
 if [ $ADDED -eq 0 ]; then

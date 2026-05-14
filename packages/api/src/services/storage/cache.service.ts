@@ -52,7 +52,9 @@ export async function ensureLocal(tenantId: string, attachmentId: string): Promi
 
   // Update attachment record
   const expiresAt = new Date(Date.now() + CACHE_TTL_HOURS * 60 * 60 * 1000);
-  await db.update(attachments).set({ localCachePath: cachePath, cacheExpiresAt: expiresAt }).where(eq(attachments.id, attachmentId));
+  await db.update(attachments)
+    .set({ localCachePath: cachePath, cacheExpiresAt: expiresAt })
+    .where(and(eq(attachments.tenantId, tenantId), eq(attachments.id, attachmentId)));
 
   return cachePath;
 }
@@ -61,7 +63,14 @@ export async function ensureLocal(tenantId: string, attachmentId: string): Promi
  * Evict expired cache files
  */
 export async function evictExpired(): Promise<number> {
-  const expired = await db.select({ id: attachments.id, localCachePath: attachments.localCachePath })
+  // Cron-style cleanup runs cross-tenant on purpose, but each UPDATE still
+  // scopes by (tenantId, id) so a future change to the cron loop can't
+  // accidentally touch another row even if id collisions ever occurred.
+  const expired = await db.select({
+    id: attachments.id,
+    tenantId: attachments.tenantId,
+    localCachePath: attachments.localCachePath,
+  })
     .from(attachments)
     .where(and(lt(attachments.cacheExpiresAt, new Date())));
 
@@ -70,7 +79,9 @@ export async function evictExpired(): Promise<number> {
     if (item.localCachePath && fs.existsSync(item.localCachePath)) {
       try { fs.unlinkSync(item.localCachePath); evicted++; } catch { /* ignore */ }
     }
-    await db.update(attachments).set({ localCachePath: null, cacheExpiresAt: null }).where(eq(attachments.id, item.id));
+    await db.update(attachments)
+      .set({ localCachePath: null, cacheExpiresAt: null })
+      .where(and(eq(attachments.tenantId, item.tenantId), eq(attachments.id, item.id)));
   }
   return evicted;
 }

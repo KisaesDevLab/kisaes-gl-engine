@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Kisaes LLC
+# Licensed under the PolyForm Internal Use License 1.0.0.
+# You may not distribute this software. See LICENSE for terms.
 # =============================================================================
 # generate-sbom.sh — Produce a CycloneDX SBOM and a flat license inventory
 #                    for Vibe MyBooks.

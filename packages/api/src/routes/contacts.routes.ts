@@ -3,7 +3,7 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { Router } from 'express';
-import { createContactSchema, updateContactSchema, contactFiltersSchema, mergeContactsSchema } from '@kis-books/shared';
+import { createContactSchema, updateContactSchema, contactFiltersSchema, mergeContactsSchema, contactsImportSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import * as contactsService from '../services/contacts.service.js';
@@ -30,7 +30,7 @@ contactsRouter.get('/export', async (req, res) => {
   res.send(csv);
 });
 
-contactsRouter.post('/import', async (req, res) => {
+contactsRouter.post('/import', validate(contactsImportSchema), async (req, res) => {
   const result = await contactsService.importFromCsv(
     req.tenantId,
     req.body.contacts,

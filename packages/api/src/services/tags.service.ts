@@ -7,6 +7,7 @@ import type { CreateTagInput, UpdateTagInput, TagFilters } from '@kis-books/shar
 import { db } from '../db/index.js';
 import { tags, tagGroups, transactionTags, savedReportFilters, transactions, journalLines, items, contacts, budgets, bankRules } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { auditLog } from '../middleware/audit.js';
 
 // Defense-in-depth tenant checks for transaction-tag mutations. Without
 // these, a caller who knows (or guesses) a txn/tag UUID from another
@@ -20,7 +21,7 @@ async function assertTransactionInTenant(tenantId: string, transactionId: string
   if (row.length === 0) throw AppError.notFound('Transaction not found');
 }
 
-async function assertTagsInTenant(tenantId: string, tagIds: string[]): Promise<void> {
+export async function assertTagsInTenant(tenantId: string, tagIds: string[]): Promise<void> {
   if (tagIds.length === 0) return;
   const unique = [...new Set(tagIds)];
   const rows = await db.select({ id: tags.id }).from(tags)
@@ -32,14 +33,23 @@ async function assertTagsInTenant(tenantId: string, tagIds: string[]): Promise<v
 
 // ─── Tag CRUD ────────────────────────────────────────────────────
 
-export async function list(tenantId: string, filters?: TagFilters) {
+export async function list(tenantId: string, filters?: TagFilters & { limit?: number; offset?: number }) {
   const conditions = [eq(tags.tenantId, tenantId)];
   if (filters?.groupId) conditions.push(eq(tags.groupId, filters.groupId));
   if (filters?.isActive !== undefined) conditions.push(eq(tags.isActive, filters.isActive));
   if (filters?.search) conditions.push(ilike(tags.name, `%${filters.search}%`));
+  const where = and(...conditions);
 
-  return db.select().from(tags).where(and(...conditions))
-    .orderBy(tags.sortOrder, tags.name);
+  const limit = Math.min(Math.max(filters?.limit ?? 200, 1), 500);
+  const offset = Math.max(filters?.offset ?? 0, 0);
+
+  const data = await db.select().from(tags).where(where)
+    .orderBy(tags.sortOrder, tags.name)
+    .limit(limit).offset(offset);
+
+  const totalRows = await db.select({ total: sql<number>`COUNT(*)::int` })
+    .from(tags).where(where);
+  return { data, total: totalRows[0]?.total ?? 0, limit, offset };
 }
 
 export async function getById(tenantId: string, id: string) {
@@ -50,7 +60,7 @@ export async function getById(tenantId: string, id: string) {
   return tag;
 }
 
-export async function create(tenantId: string, input: CreateTagInput) {
+export async function create(tenantId: string, input: CreateTagInput, userId?: string) {
   // Check unique name
   const existing = await db.query.tags.findFirst({
     where: and(eq(tags.tenantId, tenantId), eq(tags.name, input.name)),
@@ -64,10 +74,11 @@ export async function create(tenantId: string, input: CreateTagInput) {
     groupId: input.groupId || null,
     description: input.description || null,
   }).returning();
+  if (tag) await auditLog(tenantId, 'create', 'tag', tag.id, null, tag, userId);
   return tag;
 }
 
-export async function update(tenantId: string, id: string, input: UpdateTagInput) {
+export async function update(tenantId: string, id: string, input: UpdateTagInput, userId?: string) {
   if (input.name) {
     const existing = await db.query.tags.findFirst({
       where: and(eq(tags.tenantId, tenantId), eq(tags.name, input.name)),
@@ -75,11 +86,13 @@ export async function update(tenantId: string, id: string, input: UpdateTagInput
     if (existing && existing.id !== id) throw AppError.conflict('A tag with this name already exists');
   }
 
+  const before = await db.query.tags.findFirst({ where: and(eq(tags.tenantId, tenantId), eq(tags.id, id)) });
   const [updated] = await db.update(tags)
     .set({ ...input, updatedAt: new Date() })
     .where(and(eq(tags.tenantId, tenantId), eq(tags.id, id)))
     .returning();
   if (!updated) throw AppError.notFound('Tag not found');
+  await auditLog(tenantId, 'update', 'tag', updated.id, before ?? null, updated, userId);
   return updated;
 }
 
@@ -165,7 +178,7 @@ export async function getUsage(tenantId: string, tagId: string): Promise<TagUsag
   };
 }
 
-export async function remove(tenantId: string, id: string) {
+export async function remove(tenantId: string, id: string, userId?: string) {
   // Surface a structured 409 before the raw FK violation hits, so the UI
   // can show "this tag is used by N transactions / M budgets / …" and
   // offer reassignment / merge instead of failing with an opaque
@@ -184,6 +197,7 @@ export async function remove(tenantId: string, id: string) {
   // and the delete.
   await db.delete(transactionTags).where(and(eq(transactionTags.tenantId, tenantId), eq(transactionTags.tagId, id)));
   await db.delete(tags).where(and(eq(tags.tenantId, tenantId), eq(tags.id, id)));
+  await auditLog(tenantId, 'delete', 'tag', id, tag, null, userId);
 }
 
 export async function merge(tenantId: string, sourceId: string, targetId: string) {
@@ -228,11 +242,14 @@ export async function getUsageSummary(tenantId: string) {
 
 export async function listGroups(tenantId: string) {
   const groups = await db.select().from(tagGroups).where(eq(tagGroups.tenantId, tenantId)).orderBy(tagGroups.sortOrder, tagGroups.name);
-  const allTags = await list(tenantId, { isActive: true });
+  // list() now returns a paginated envelope — pull the .data array.
+  // Passing limit: 500 caps the per-tenant tag count; tenants near the
+  // ceiling are rare and would need group filtering at the UI level.
+  const allTags = await list(tenantId, { isActive: true, limit: 500 });
 
   return groups.map((g) => ({
     ...g,
-    tags: allTags.filter((t) => t.groupId === g.id),
+    tags: allTags.data.filter((t) => t.groupId === g.id),
   }));
 }
 

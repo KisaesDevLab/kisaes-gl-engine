@@ -143,7 +143,11 @@ backupRouter.get('/remote/history', async (_req, res) => {
 });
 
 backupRouter.get('/remote/download/*', async (req, res) => {
-  const key = (req.params as any)[0] as string;
+  // Express attaches splat path captures as the '0' key on params; the
+  // type definitions don't reflect this, so a narrow cast is the
+  // least-bad option. Keeping the cast scoped to one line documents the
+  // intent vs sprinkling `any` throughout the handler.
+  const key = (req.params as Record<string, string | undefined>)['0'];
   if (!key) { res.status(400).json({ error: { message: 'Key is required' } }); return; }
   try {
     const data = await backupService.downloadRemoteBackup(key);

@@ -11,6 +11,7 @@ import {
 } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { tenants } from '../db/schema/index.js';
+import { auditLog } from '../middleware/audit.js';
 
 export async function getSettings(tenantId: string): Promise<TenantReportSettings> {
   const [row] = await db
@@ -36,6 +37,7 @@ export async function getPLLabels(tenantId: string): Promise<PLSectionLabels> {
 export async function updateSettings(
   tenantId: string,
   input: UpdateTenantReportSettingsInput,
+  userId?: string,
 ): Promise<TenantReportSettings> {
   const existing = await getSettings(tenantId);
   const next: TenantReportSettings = {
@@ -43,5 +45,6 @@ export async function updateSettings(
     ...(input.plLabels !== undefined ? { plLabels: input.plLabels } : {}),
   };
   await db.update(tenants).set({ reportSettings: next }).where(eq(tenants.id, tenantId));
+  await auditLog(tenantId, 'update', 'tenant_report_settings', tenantId, existing, next, userId);
   return next;
 }
