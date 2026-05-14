@@ -11,6 +11,10 @@ import * as aiConfigService from './ai-config.service.js';
 import * as orchestrator from './ai-orchestrator.service.js';
 import { sanitize, sanitizeStatementHeader } from './pii-sanitizer.service.js';
 import { extractLocally } from './local-ocr.service.js';
+import { unwrapParsedResult } from './ai-providers/json-utils.js';
+
+const unwrapParsed = (result: Parameters<typeof unwrapParsedResult>[0]) =>
+  unwrapParsedResult(result, 'statement parsing');
 
 export interface StatementTransaction {
   date: string;
@@ -50,8 +54,12 @@ export async function parseStatement(tenantId: string, attachmentId: string) {
     fileBuffer = fs.readFileSync(localPath);
   } catch {
     const filePath = attachment.filePath;
-    if (!filePath || !fs.existsSync(filePath)) throw AppError.notFound('Attachment file not found');
-    fileBuffer = fs.readFileSync(filePath);
+    if (!filePath) throw AppError.notFound('Attachment file not found');
+    try {
+      fileBuffer = fs.readFileSync(filePath);
+    } catch {
+      throw AppError.notFound('Attachment file not found');
+    }
   }
   const mimeType = attachment.mimeType || 'image/jpeg';
 
@@ -84,7 +92,7 @@ export async function parseStatement(tenantId: string, attachmentId: string) {
         maxTokens: 4096,
         responseFormat: 'json',
       });
-      parsed = result.parsed || {};
+      parsed = unwrapParsed(result);
 
       // GLM-OCR returns a Markdown table, not JSON. Chain through a
       // text structurer that can turn the table into the expected
@@ -105,7 +113,11 @@ export async function parseStatement(tenantId: string, attachmentId: string) {
             maxTokens: 4096,
             responseFormat: 'json',
           });
-          parsed = second.parsed || safeJsonParse(second.text) || { raw_text: result.text };
+          // Secondary structurer parse failures are non-fatal — the raw
+          // OCR text is preserved for the user. The warning surfaces in
+          // the job metadata so admins can debug.
+          parsed = (second.parsed as Record<string, unknown> | undefined) ?? { raw_text: result.text };
+          if (second.parseError) qualityWarnings.push('glm_ocr_chain_parse_failed');
           extractionSource = `glm_ocr_local_chained_${structurer.name}`;
           qualityWarnings.push('glm_ocr_chained');
         } else {
@@ -130,7 +142,7 @@ export async function parseStatement(tenantId: string, attachmentId: string) {
           maxTokens: 4096,
           responseFormat: 'json',
         });
-        parsed = result.parsed || {};
+        parsed = unwrapParsed(result);
         qualityWarnings.push('cloud_vision_used');
         extractionSource = 'cloud_vision_permissive';
       } else {
@@ -163,7 +175,7 @@ export async function parseStatement(tenantId: string, attachmentId: string) {
           maxTokens: 4096,
           responseFormat: 'json',
         });
-        parsed = result.parsed || {};
+        parsed = unwrapParsed(result);
       }
     }
 
@@ -200,15 +212,8 @@ export async function parseStatement(tenantId: string, attachmentId: string) {
 
 const statementSystemPrompt = `You are a bank statement parser. Extract all transactions from the bank statement. Return JSON: { "transactions": [{"date": "YYYY-MM-DD", "description": "...", "amount": "0.00", "type": "debit"|"credit", "balance": "0.00"}], "account_number_masked": "****1234", "statement_period": {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}, "opening_balance": "0.00", "closing_balance": "0.00", "confidence": 0.0-1.0 }`;
 
-// Best-effort JSON extraction from a text-model response. Shared pattern
-// with ai-receipt-ocr and ai-bill-ocr.
-function safeJsonParse(text: string): Record<string, unknown> | null {
-  if (!text) return null;
-  try { return JSON.parse(text) as Record<string, unknown>; } catch { /* continue */ }
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) return null;
-  try { return JSON.parse(match[0]) as Record<string, unknown>; } catch { return null; }
-}
+// Pull `parsed` off a CompletionResult, or throw `ai_parse_failed`. See
+// ai-receipt-ocr.service.unwrapParsed for the rationale.
 
 export async function importStatementTransactions(tenantId: string, bankConnectionId: string, transactions: StatementTransaction[]) {
   const { importStatementItems } = await import('./bank-feed.service.js');

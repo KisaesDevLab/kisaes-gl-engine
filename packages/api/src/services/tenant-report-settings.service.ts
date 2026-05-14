@@ -5,7 +5,11 @@
 import { eq } from 'drizzle-orm';
 import {
   resolvePLLabels,
+  resolveBSLabels,
+  resolveCFLabels,
   type PLSectionLabels,
+  type BSSectionLabels,
+  type CFSectionLabels,
   type TenantReportSettings,
   type UpdateTenantReportSettingsInput,
 } from '@kis-books/shared';
@@ -26,13 +30,28 @@ export async function getPLLabels(tenantId: string): Promise<PLSectionLabels> {
   return resolvePLLabels(settings.plLabels);
 }
 
+export async function getBSLabels(tenantId: string): Promise<BSSectionLabels> {
+  const settings = await getSettings(tenantId);
+  return resolveBSLabels(settings.bsLabels);
+}
+
+export async function getCFLabels(tenantId: string): Promise<CFSectionLabels> {
+  const settings = await getSettings(tenantId);
+  return resolveCFLabels(settings.cfLabels);
+}
+
+export async function getReportFooter(tenantId: string): Promise<string> {
+  const settings = await getSettings(tenantId);
+  return (settings.reportFooter ?? '').trim();
+}
+
 /**
- * Replace-semantics update. When `plLabels` is present in the input, it
- * REPLACES the stored object entirely — including clearing fields that
- * were previously customized but aren't in the new payload. This matches
- * the Settings UI, which sends only the fields still differing from
- * defaults so the "Reset to defaults" flow actually reverts. An absent
- * `plLabels` key (vs. an empty object) leaves existing labels untouched.
+ * Replace-semantics update. Each label group (plLabels/bsLabels/cfLabels)
+ * is REPLACED entirely when present in the input — including clearing
+ * previously-customized fields not in the new payload — so the Settings
+ * UI's "Reset to defaults" flow actually reverts. An absent key vs. an
+ * empty object leaves existing labels untouched. reportFooter follows
+ * the same rule: present-but-empty clears, absent leaves alone.
  */
 export async function updateSettings(
   tenantId: string,
@@ -43,6 +62,9 @@ export async function updateSettings(
   const next: TenantReportSettings = {
     ...existing,
     ...(input.plLabels !== undefined ? { plLabels: input.plLabels } : {}),
+    ...(input.bsLabels !== undefined ? { bsLabels: input.bsLabels } : {}),
+    ...(input.cfLabels !== undefined ? { cfLabels: input.cfLabels } : {}),
+    ...(input.reportFooter !== undefined ? { reportFooter: input.reportFooter } : {}),
   };
   await db.update(tenants).set({ reportSettings: next }).where(eq(tenants.id, tenantId));
   await auditLog(tenantId, 'update', 'tenant_report_settings', tenantId, existing, next, userId);

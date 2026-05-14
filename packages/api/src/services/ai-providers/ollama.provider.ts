@@ -3,6 +3,7 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import type { AiProvider, CompletionParams, VisionParams, CompletionResult } from './ai-provider.interface.js';
+import { extractJsonForResult } from './json-utils.js';
 
 export class OllamaProvider implements AiProvider {
   name = 'ollama';
@@ -30,6 +31,7 @@ export class OllamaProvider implements AiProvider {
         stream: false,
         options: { temperature: params.temperature ?? 0.1 },
       }),
+      signal: params.signal,
     });
 
     if (!response.ok) {
@@ -41,13 +43,10 @@ export class OllamaProvider implements AiProvider {
 
     const data = await response.json() as any;
     const text = data.message?.content || '';
-    let parsed: any;
-    if (params.responseFormat === 'json') {
-      try { parsed = JSON.parse(text); } catch { /* ignore */ }
-    }
+    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat);
 
     return {
-      text, parsed,
+      text, parsed, parseError,
       inputTokens: data.prompt_eval_count || 0,
       outputTokens: data.eval_count || 0,
       model: this.model, provider: this.name, durationMs: Date.now() - start,
@@ -68,6 +67,7 @@ export class OllamaProvider implements AiProvider {
         format: params.responseFormat === 'json' ? 'json' : undefined,
         stream: false,
       }),
+      signal: params.signal,
     });
 
     if (!response.ok) {
@@ -79,22 +79,19 @@ export class OllamaProvider implements AiProvider {
 
     const data = await response.json() as any;
     const text = data.message?.content || '';
-    let parsed: any;
-    if (params.responseFormat === 'json') {
-      try { parsed = JSON.parse(text); } catch { /* ignore */ }
-    }
+    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat);
 
     return {
-      text, parsed,
+      text, parsed, parseError,
       inputTokens: data.prompt_eval_count || 0,
       outputTokens: data.eval_count || 0,
       model: this.model, provider: this.name, durationMs: Date.now() - start,
     };
   }
 
-  async testConnection() {
+  async testConnection(signal?: AbortSignal) {
     try {
-      const response = await fetch(`${this.baseUrl}/api/tags`);
+      const response = await fetch(`${this.baseUrl}/api/tags`, { signal });
       const data = await response.json() as any;
       const models = (data.models || []).map((m: any) => m.name).join(', ');
       return { success: true, modelInfo: `Available models: ${models || 'none'}` };

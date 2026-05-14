@@ -50,7 +50,14 @@ export function toReportHtml(
   companyName: string,
   dateLabel: string,
   tableHtml: string,
+  footer?: string,
 ): string {
+  // Footer: rendered below the table at small caption size. Multi-line
+  // text (newlines from the textarea) is preserved by escaping then
+  // converting \n → <br>. Empty/whitespace = no block at all.
+  const footerHtml = footer && footer.trim().length > 0
+    ? `<div class="report-footer">${escapeHtml(footer).replace(/\n/g, '<br>')}</div>`
+    : '';
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><style>
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;padding:30px;font-size:12px;color:#111}
@@ -61,6 +68,7 @@ export function toReportHtml(
   td{padding:5px 8px;border-bottom:1px solid #e5e7eb;font-size:11px}
   .amount{text-align:right;font-variant-numeric:tabular-nums}
   .total-row{font-weight:bold;border-top:2px solid #111}
+  .report-footer{margin-top:24px;padding-top:12px;border-top:1px solid #d1d5db;font-size:10px;color:#4b5563;white-space:pre-wrap;line-height:1.5}
   @media print{body{padding:0}}
 </style></head>
 <body>
@@ -68,6 +76,7 @@ export function toReportHtml(
   <div style="font-size:16px;font-weight:600;margin-bottom:2px">${escapeHtml(title)}</div>
   <div class="meta">${escapeHtml(dateLabel)}</div>
   ${tableHtml}
+  ${footerHtml}
 </body></html>`;
 }
 

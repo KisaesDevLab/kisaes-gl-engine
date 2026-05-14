@@ -3,6 +3,7 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import type { AiProvider, CompletionParams, VisionParams, CompletionResult } from './ai-provider.interface.js';
+import { extractJsonForResult } from './json-utils.js';
 
 // Generic OpenAI-compatible provider.
 //
@@ -55,7 +56,8 @@ export class OpenAiCompatProvider implements AiProvider {
     // endpoint both accept `response_format: { type: 'json_object' }`
     // as of current versions; servers that don't recognise it ignore
     // it rather than erroring. If the server lacks JSON mode the caller
-    // still gets text in `result.text` and can `safeJsonParse` it.
+    // still gets text in `result.text` and `extractJsonForResult` runs
+    // the robust extractor over it before populating `parsed`.
     if (params.responseFormat === 'json') {
       body['response_format'] = { type: 'json_object' };
     }
@@ -64,6 +66,7 @@ export class OpenAiCompatProvider implements AiProvider {
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify(body),
+      signal: params.signal,
     });
 
     if (!response.ok) {
@@ -80,14 +83,12 @@ export class OpenAiCompatProvider implements AiProvider {
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
     const text = data.choices?.[0]?.message?.content || '';
-    let parsed: Record<string, unknown> | undefined;
-    if (params.responseFormat === 'json') {
-      try { parsed = JSON.parse(text) as Record<string, unknown>; } catch { /* fall through */ }
-    }
+    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat);
 
     return {
       text,
       parsed,
+      parseError,
       inputTokens: data.usage?.prompt_tokens || 0,
       outputTokens: data.usage?.completion_tokens || 0,
       model: this.model,
@@ -128,6 +129,7 @@ export class OpenAiCompatProvider implements AiProvider {
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify(body),
+      signal: params.signal,
     });
 
     if (!response.ok) {
@@ -144,14 +146,12 @@ export class OpenAiCompatProvider implements AiProvider {
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
     const text = data.choices?.[0]?.message?.content || '';
-    let parsed: Record<string, unknown> | undefined;
-    if (params.responseFormat === 'json') {
-      try { parsed = JSON.parse(text) as Record<string, unknown>; } catch { /* fall through */ }
-    }
+    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat);
 
     return {
       text,
       parsed,
+      parseError,
       inputTokens: data.usage?.prompt_tokens || 0,
       outputTokens: data.usage?.completion_tokens || 0,
       model: this.model,
@@ -160,13 +160,13 @@ export class OpenAiCompatProvider implements AiProvider {
     };
   }
 
-  async testConnection() {
+  async testConnection(signal?: AbortSignal) {
     try {
-      const response = await fetch(`${this.baseUrl}/v1/models`, { headers: this.headers() });
+      const response = await fetch(`${this.baseUrl}/v1/models`, { headers: this.headers(), signal });
       if (!response.ok) {
         // Some servers (notably a few llama.cpp builds) don't serve
         // /v1/models but do serve /health — fall back to that signal.
-        const healthResp = await fetch(`${this.baseUrl}/health`).catch(() => null);
+        const healthResp = await fetch(`${this.baseUrl}/health`, { signal }).catch(() => null);
         if (healthResp && healthResp.ok) {
           return { success: true, modelInfo: `OpenAI-compat server reachable at ${this.baseUrl} (no /v1/models)` };
         }

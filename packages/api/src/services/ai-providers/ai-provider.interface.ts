@@ -8,6 +8,9 @@ export interface CompletionParams {
   temperature?: number;
   maxTokens?: number;
   responseFormat?: 'json' | 'text';
+  /** Optional abort signal — providers thread this into the underlying
+   *  SDK / fetch call so socket teardown actually happens on timeout. */
+  signal?: AbortSignal;
 }
 
 export interface VisionParams extends CompletionParams {
@@ -17,6 +20,11 @@ export interface VisionParams extends CompletionParams {
 export interface CompletionResult {
   text: string;
   parsed?: any;
+  /** Populated when `responseFormat: 'json'` was requested but the model
+   *  response could not be parsed as JSON (even after `safeJsonExtract`
+   *  stripped fences and scanned for balanced braces). Holds a short
+   *  excerpt of the raw text so callers can surface actionable errors. */
+  parseError?: string;
   inputTokens: number;
   outputTokens: number;
   model: string;
@@ -29,6 +37,6 @@ export interface AiProvider {
   supportsVision: boolean;
   complete(params: CompletionParams): Promise<CompletionResult>;
   completeWithImage(params: VisionParams): Promise<CompletionResult>;
-  testConnection(): Promise<{ success: boolean; error?: string; modelInfo?: string }>;
+  testConnection(signal?: AbortSignal): Promise<{ success: boolean; error?: string; modelInfo?: string }>;
   estimateCost(inputTokens: number, outputTokens: number): number;
 }

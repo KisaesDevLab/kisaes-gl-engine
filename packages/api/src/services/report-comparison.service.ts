@@ -123,6 +123,7 @@ export async function buildComparativePL(
     return {
       title: 'Profit and Loss (Comparative)', comparisonMode: compareMode,
       labels: plResults[0]?.labels,
+      footer: plResults[0]?.footer ?? '',
       columns, rows,
       totalRevenue: revTotals,
       totalCogs: cogsTotals,
@@ -188,6 +189,7 @@ export async function buildComparativePL(
   return {
     title: 'Profit and Loss (Comparative)', comparisonMode: compareMode,
     labels: currentPL.labels,
+    footer: currentPL.footer,
     columns, rows,
     totalRevenue: varRow(currentPL.totalRevenue, priorPL.totalRevenue),
     totalCogs: varRow(currentPL.totalCogs, priorPL.totalCogs),
@@ -245,6 +247,8 @@ export async function buildComparativeBS(
 
   return {
     title: 'Balance Sheet (Comparative)', comparisonMode: compareMode, columns,
+    labels: currentBS.labels,
+    footer: currentBS.footer,
     assets: mergeSection(currentBS.assets, priorBS.assets),
     liabilities: mergeSection(currentBS.liabilities, priorBS.liabilities),
     equity: mergeSection(currentBS.equity, priorBS.equity),

@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import type { AiConfigUpdateInput } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { aiConfig } from '../db/schema/index.js';
@@ -29,9 +29,20 @@ async function getOrCreateConfig() {
   return config;
 }
 
+export interface ProviderTestRecord {
+  /** ISO 8601 timestamp of the most recent /admin/test/:provider call. */
+  verifiedAt: string;
+  success: boolean;
+  modelInfo?: string;
+  error?: string;
+}
+
+export type ProviderTestHistory = Record<string, ProviderTestRecord>;
+
 export async function getConfig() {
   const config = await getOrCreateConfig();
   return {
+    providerTestHistory: (config.providerTestHistory as ProviderTestHistory) || {},
     isEnabled: config.isEnabled || false,
     categorizationProvider: config.categorizationProvider,
     categorizationModel: config.categorizationModel,
@@ -176,9 +187,204 @@ export async function updateConfig(input: AiConfigUpdateInput, userId?: string) 
   return getConfig();
 }
 
-export async function testProvider(providerName: string) {
+// Hard ceiling for `Test connection` from the admin UI. 15 s is long
+// enough for cold-start cloud providers but short enough that a
+// misconfigured base URL doesn't hang the admin's browser. The
+// AbortSignal threads into both fetch- and SDK-backed providers so the
+// underlying socket / SDK request is cancelled, not just orphaned. On
+// timeout we resolve to a structured `success: false` rather than throw,
+// matching the shape every other testConnection failure already uses.
+const TEST_PROVIDER_TIMEOUT_MS = 15_000;
+
+/**
+ * Persist the most recent test result for a single provider so the
+ * admin UI can render "Last verified <relative time>" without ever
+ * pinging upstream on page load.
+ *
+ * Race-safety: PostgreSQL `jsonb_set` atomically merges the single
+ * provider key into the existing object. A naive read-modify-write
+ * (which earlier versions of this function used) would silently drop
+ * one of two concurrent admin test results — both threads would read
+ * the same prior snapshot, only the last write would land.
+ */
+async function recordTestResult(
+  providerName: string,
+  result: { success: boolean; modelInfo?: string; error?: string },
+): Promise<void> {
+  const cfg = await getOrCreateConfig();
+  const record: ProviderTestRecord = {
+    verifiedAt: new Date().toISOString(),
+    success: result.success,
+    ...(result.modelInfo ? { modelInfo: result.modelInfo } : {}),
+    ...(result.error ? { error: result.error } : {}),
+  };
+  // `jsonb_set(target, path, value, create_if_missing=true)` — path is a
+  // text[] of the keys to descend. Top-level set: `{providerName}`.
+  // We pass the record as a parameter and let Postgres cast it to jsonb;
+  // both the path array and the value are bind-parameterized so this is
+  // safe against injection even though providerName comes from user input.
+  await db.execute(sql`
+    UPDATE ai_config
+       SET provider_test_history =
+             jsonb_set(
+               COALESCE(provider_test_history, '{}'::jsonb),
+               ARRAY[${providerName}]::text[],
+               ${JSON.stringify(record)}::jsonb,
+               true
+             )
+     WHERE id = ${cfg.id}
+  `);
+}
+
+export interface TestProviderResult {
+  success: boolean;
+  error?: string;
+  modelInfo?: string;
+}
+
+export async function testProvider(providerName: string): Promise<TestProviderResult> {
   const config = await getRawConfig();
   const { getProvider } = await import('./ai-providers/index.js');
-  const provider = getProvider(providerName, config);
-  return provider.testConnection();
+  const { abortableTimeout, TimeoutError } = await import('../utils/retry.js');
+  let provider;
+  try {
+    provider = getProvider(providerName, config);
+  } catch (err) {
+    const result: TestProviderResult = { success: false, error: err instanceof Error ? err.message : String(err) };
+    await recordTestResult(providerName, result);
+    return result;
+  }
+  const { signal, cancel } = abortableTimeout(TEST_PROVIDER_TIMEOUT_MS);
+  let result: TestProviderResult;
+  try {
+    result = await provider.testConnection(signal);
+  } catch (err) {
+    // Abort/timeout detection. Different SDKs name abort errors
+    // differently:
+    //   - Native DOMException: name 'AbortError'
+    //   - OpenAI SDK v4+:      throws APIUserAbortError, name 'APIUserAbortError'
+    //   - Anthropic SDK:       passes through DOMException name
+    //   - Our outer race:      our TimeoutError class
+    // A name-substring match catches all of them without a brittle
+    // exhaustive class list. Reflecting all as the same "timed out"
+    // message keeps admin UX consistent — they don't need to know
+    // which SDK was hit.
+    const name = (err as { name?: string } | undefined)?.name ?? '';
+    const isAbort = err instanceof TimeoutError || name.toLowerCase().includes('abort');
+    result = isAbort
+      ? { success: false, error: `Test timed out after ${TEST_PROVIDER_TIMEOUT_MS / 1000}s — provider did not respond` }
+      : { success: false, error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    cancel();
+  }
+  await recordTestResult(providerName, result);
+  return result;
+}
+
+export interface SelfTestRow {
+  task: 'categorization' | 'ocr' | 'document_classification' | 'chat';
+  provider: string | null;
+  success: boolean;
+  error?: string;
+  modelInfo?: string;
+  /** Wall-clock latency of the testConnection call in milliseconds.
+   *  null when the row was skipped (no provider configured for that task). */
+  latencyMs: number | null;
+  skipped?: boolean;
+  skipReason?: string;
+}
+
+/**
+ * Run `testConnection` for every task that has a provider assigned,
+ * returning a matrix the admin UI renders as a status table. Read-only.
+ *
+ * Distinct providers are tested in parallel; multiple tasks pointing
+ * at the same provider share a single ping (admins setting categorize +
+ * ocr to anthropic shouldn't pay 2× upstream). Worst case is one
+ * TEST_PROVIDER_TIMEOUT_MS for the slowest provider (~15s) instead of
+ * the sum of all task budgets.
+ */
+export async function testAll(): Promise<{ rows: SelfTestRow[]; runAt: string }> {
+  const config = await getConfig();
+  const tasks: Array<{ task: SelfTestRow['task']; provider: string | null | undefined }> = [
+    { task: 'categorization', provider: config.categorizationProvider },
+    { task: 'ocr', provider: config.ocrProvider || config.categorizationProvider },
+    { task: 'document_classification', provider: config.documentClassificationProvider || config.categorizationProvider },
+    { task: 'chat', provider: config.chatProvider },
+  ];
+
+  const distinctProviders = Array.from(new Set(tasks.map((t) => t.provider).filter((p): p is string => !!p)));
+  const startTimes = new Map<string, number>(distinctProviders.map((p) => [p, Date.now()]));
+  const settled = await Promise.all(
+    distinctProviders.map(async (provider) => ({ provider, result: await testProvider(provider) })),
+  );
+  const resultByProvider = new Map(settled.map(({ provider, result }) => [provider, result]));
+  const latencyByProvider = new Map(
+    settled.map(({ provider }) => [provider, Date.now() - (startTimes.get(provider) ?? Date.now())]),
+  );
+
+  const rows: SelfTestRow[] = tasks.map(({ task, provider }) => {
+    if (!provider) {
+      return { task, provider: null, success: false, latencyMs: null, skipped: true, skipReason: 'no_provider_configured' };
+    }
+    const result = resultByProvider.get(provider)!;
+    return {
+      task,
+      provider,
+      success: result.success,
+      ...(result.error ? { error: result.error } : {}),
+      ...(result.modelInfo ? { modelInfo: result.modelInfo } : {}),
+      latencyMs: latencyByProvider.get(provider) ?? null,
+    };
+  });
+  return { rows, runAt: new Date().toISOString() };
+}
+
+/**
+ * Read-only diagnostics view for company owners (non-admin). Returns
+ * the subset of the self-test history relevant to "will this task work
+ * for me right now?" — pulled straight from the persisted
+ * provider_test_history so we never trigger an upstream call from a
+ * non-admin endpoint (no rate-limit / SSRF surface). When a provider
+ * hasn't been verified recently, `staleSeconds` is null.
+ *
+ * Distinct from `testAll()` (admin-only, does ping upstream). The
+ * diagnostic matrix here is the "is the system healthy for my company"
+ * view; running a fresh check is admin-only by design.
+ */
+export interface DiagnosticsRow {
+  task: 'categorization' | 'ocr' | 'document_classification' | 'chat';
+  provider: string | null;
+  status: 'configured' | 'not_configured' | 'untested' | 'ok' | 'failed';
+  lastVerifiedAt?: string;
+  modelInfo?: string;
+  error?: string;
+}
+
+export async function getDiagnostics(): Promise<{
+  systemEnabled: boolean;
+  rows: DiagnosticsRow[];
+}> {
+  const config = await getConfig();
+  const history = config.providerTestHistory;
+  const taskMap: Array<{ task: DiagnosticsRow['task']; provider: string | null | undefined }> = [
+    { task: 'categorization', provider: config.categorizationProvider },
+    { task: 'ocr', provider: config.ocrProvider || config.categorizationProvider },
+    { task: 'document_classification', provider: config.documentClassificationProvider || config.categorizationProvider },
+    { task: 'chat', provider: config.chatProvider },
+  ];
+  const rows: DiagnosticsRow[] = taskMap.map(({ task, provider }) => {
+    if (!provider) return { task, provider: null, status: 'not_configured' };
+    const record = history[provider];
+    if (!record) return { task, provider, status: 'untested' };
+    return {
+      task,
+      provider,
+      status: record.success ? 'ok' : 'failed',
+      lastVerifiedAt: record.verifiedAt,
+      ...(record.modelInfo ? { modelInfo: record.modelInfo } : {}),
+      ...(record.error ? { error: record.error } : {}),
+    };
+  });
+  return { systemEnabled: config.isEnabled, rows };
 }

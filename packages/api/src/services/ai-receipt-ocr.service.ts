@@ -11,6 +11,10 @@ import * as aiConfigService from './ai-config.service.js';
 import * as orchestrator from './ai-orchestrator.service.js';
 import { sanitize } from './pii-sanitizer.service.js';
 import { extractLocally } from './local-ocr.service.js';
+import { unwrapParsedResult } from './ai-providers/json-utils.js';
+
+const unwrapParsed = (result: Parameters<typeof unwrapParsedResult>[0]) =>
+  unwrapParsedResult(result, 'receipt extraction');
 
 /**
  * Two-layer receipt OCR (see Build Plans/AI_PII_PROTECTION_ADDENDUM.md §Task 2):
@@ -49,8 +53,12 @@ export async function processReceipt(tenantId: string, attachmentId: string) {
     imageBuffer = fs.readFileSync(localPath);
   } catch {
     const filePath = attachment.filePath;
-    if (!filePath || !fs.existsSync(filePath)) throw AppError.notFound('Attachment file not found');
-    imageBuffer = fs.readFileSync(filePath);
+    if (!filePath) throw AppError.notFound('Attachment file not found');
+    try {
+      imageBuffer = fs.readFileSync(filePath);
+    } catch {
+      throw AppError.notFound('Attachment file not found');
+    }
   }
   const mimeType = attachment.mimeType || 'image/jpeg';
 
@@ -84,7 +92,7 @@ export async function processReceipt(tenantId: string, attachmentId: string) {
         maxTokens: 1024,
         responseFormat: 'json',
       });
-      parsed = result.parsed || {};
+      parsed = unwrapParsed(result);
 
       // GLM-OCR is a vision-to-text model only — it returns raw OCR
       // text, not structured JSON. Chain its output through a text
@@ -106,7 +114,12 @@ export async function processReceipt(tenantId: string, attachmentId: string) {
             maxTokens: 1024,
             responseFormat: 'json',
           });
-          parsed = second.parsed || safeJsonParse(second.text) || { raw_text: result.text };
+          // Secondary structurer's parseError is non-fatal: if it can't
+          // produce structured JSON we still have the raw OCR text from
+          // the primary call, which is more useful to the user than a
+          // hard failure. Surface the warning so the admin sees it.
+          parsed = (second.parsed as Record<string, unknown> | undefined) ?? { raw_text: result.text };
+          if (second.parseError) qualityWarnings.push('glm_ocr_chain_parse_failed');
           extractionSource = `glm_ocr_local_chained_${structurer.name}`;
           qualityWarnings.push('glm_ocr_chained');
         } else {
@@ -135,7 +148,7 @@ export async function processReceipt(tenantId: string, attachmentId: string) {
           maxTokens: 1024,
           responseFormat: 'json',
         });
-        parsed = result.parsed || {};
+        parsed = unwrapParsed(result);
         qualityWarnings.push('cloud_vision_used');
         extractionSource = 'cloud_vision_permissive';
       } else {
@@ -157,7 +170,7 @@ export async function processReceipt(tenantId: string, attachmentId: string) {
           maxTokens: 1024,
           responseFormat: 'json',
         });
-        parsed = result.parsed || {};
+        parsed = unwrapParsed(result);
       }
     }
 
@@ -186,6 +199,12 @@ export async function processReceipt(tenantId: string, attachmentId: string) {
       contactId = contact?.id || null;
     }
 
+    // When GLM-OCR ran without a downstream text structurer the parsed
+    // shape is `{ raw_text }` only — no vendor/date/total. Surface that
+    // as a distinct `status: 'ocr_only'` so the UI can render the raw
+    // text in a textarea (instead of an empty form) and prompt the
+    // admin to add a text LLM.
+    const status: 'ok' | 'ocr_only' = parsed.raw_text && !parsed.vendor ? 'ocr_only' : 'ok';
     return {
       vendor: parsed.vendor,
       date: parsed.date,
@@ -196,6 +215,8 @@ export async function processReceipt(tenantId: string, attachmentId: string) {
       confidence,
       contactId,
       qualityWarnings,
+      status,
+      ...(status === 'ocr_only' ? { rawText: parsed.raw_text } : {}),
     };
   } catch (err: any) {
     await db.update(attachments)
@@ -208,13 +229,3 @@ export async function processReceipt(tenantId: string, attachmentId: string) {
 
 const receiptSystemPrompt = `You are a receipt OCR assistant. Extract structured data from the receipt. Return JSON only: { "vendor": "...", "date": "YYYY-MM-DD", "total": "0.00", "tax": "0.00", "line_items": [{"description": "...", "amount": "0.00", "quantity": 1}], "payment_method": "...", "confidence": 0.0-1.0 }`;
 
-// Safe JSON parse: text LLMs sometimes wrap JSON in prose or fences.
-// Best-effort extraction of the first {...} block — on failure returns
-// null so the caller can fall back to raw_text.
-function safeJsonParse(text: string): Record<string, unknown> | null {
-  if (!text) return null;
-  try { return JSON.parse(text) as Record<string, unknown>; } catch { /* continue */ }
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) return null;
-  try { return JSON.parse(match[0]) as Record<string, unknown>; } catch { return null; }
-}

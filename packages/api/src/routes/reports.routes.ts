@@ -199,21 +199,25 @@ function extractDataAndColumns(reportData: any): { rows: any[]; columns: ExportC
 
     // Comparative Balance Sheet
     if (reportData.assets && reportData.totalAssets) {
+      const BS = reportData.labels as import('@kis-books/shared').BSSectionLabels | undefined;
+      const assetsLabel = BS?.assets || 'Assets';
+      const liabilitiesLabel = BS?.liabilities || 'Liabilities';
+      const equityLabel = BS?.equity || 'Equity';
       const mapBSRow = (r: any) => {
         const row: any = { account: r.name };
         (r.values || []).forEach((v: any, i: number) => { row[reportData.columns[i]?.label || `Col${i}`] = fmtNum(v); });
         return row;
       };
       rows.length = 0;
-      rows.push({ account: '--- ASSETS ---' });
+      rows.push({ account: `--- ${assetsLabel.toUpperCase()} ---` });
       rows.push(...reportData.assets.map(mapBSRow));
-      rows.push(totalRow('Total Assets', reportData.totalAssets));
-      rows.push({ account: '--- LIABILITIES ---' });
+      rows.push(totalRow(`Total ${assetsLabel}`, reportData.totalAssets));
+      rows.push({ account: `--- ${liabilitiesLabel.toUpperCase()} ---` });
       rows.push(...reportData.liabilities.map(mapBSRow));
-      rows.push(totalRow('Total Liabilities', reportData.totalLiabilities));
-      rows.push({ account: '--- EQUITY ---' });
+      rows.push(totalRow(`Total ${liabilitiesLabel}`, reportData.totalLiabilities));
+      rows.push({ account: `--- ${equityLabel.toUpperCase()} ---` });
       rows.push(...(reportData.equity || []).map(mapBSRow));
-      rows.push(totalRow('Total Equity', reportData.totalEquity));
+      rows.push(totalRow(`Total ${equityLabel}`, reportData.totalEquity));
     }
 
     return { rows, columns: cols };
@@ -291,24 +295,29 @@ function extractDataAndColumns(reportData: any): { rows: any[]; columns: ExportC
 
   // ─── Balance Sheet (standard — has assets + liabilities + equity arrays) ───
   if (reportData.assets && reportData.liabilities && !reportData.columns) {
+    const BS = reportData.labels as import('@kis-books/shared').BSSectionLabels | undefined;
+    const assetsLabel = BS?.assets || 'Assets';
+    const liabilitiesLabel = BS?.liabilities || 'Liabilities';
+    const equityLabel = BS?.equity || 'Equity';
+    const totalLELabel = BS?.totalLiabilitiesAndEquity || 'Total Liabilities & Equity';
     const columns: ExportColumn[] = [
       { key: 'account', label: 'Account' },
       { key: 'balance', label: 'Balance', align: 'right' },
     ];
     const rows: any[] = [];
-    rows.push({ account: '--- ASSETS ---', balance: '' });
+    rows.push({ account: `--- ${assetsLabel.toUpperCase()} ---`, balance: '' });
     for (const a of reportData.assets) rows.push({ account: a.accountNumber ? `${a.accountNumber} — ${a.name}` : a.name, balance: fmtNum(Math.abs(a.balance)) });
-    rows.push({ account: 'Total Assets', balance: fmtNum(reportData.totalAssets) });
+    rows.push({ _total: true, account: `Total ${assetsLabel}`, balance: fmtNum(reportData.totalAssets) });
     rows.push({ account: '', balance: '' });
-    rows.push({ account: '--- LIABILITIES ---', balance: '' });
+    rows.push({ account: `--- ${liabilitiesLabel.toUpperCase()} ---`, balance: '' });
     for (const l of reportData.liabilities) rows.push({ account: l.accountNumber ? `${l.accountNumber} — ${l.name}` : l.name, balance: fmtNum(Math.abs(l.balance)) });
-    rows.push({ account: 'Total Liabilities', balance: fmtNum(reportData.totalLiabilities) });
+    rows.push({ _total: true, account: `Total ${liabilitiesLabel}`, balance: fmtNum(reportData.totalLiabilities) });
     rows.push({ account: '', balance: '' });
-    rows.push({ account: '--- EQUITY ---', balance: '' });
+    rows.push({ account: `--- ${equityLabel.toUpperCase()} ---`, balance: '' });
     for (const e of (reportData.equity || [])) rows.push({ account: e.accountNumber ? `${e.accountNumber} — ${e.name}` : e.name, balance: fmtNum(Math.abs(e.balance)) });
-    rows.push({ account: 'Total Equity', balance: fmtNum(reportData.totalEquity) });
+    rows.push({ _total: true, account: `Total ${equityLabel}`, balance: fmtNum(reportData.totalEquity) });
     rows.push({ account: '', balance: '' });
-    rows.push({ account: 'TOTAL LIABILITIES & EQUITY', balance: fmtNum(reportData.totalLiabilitiesAndEquity) });
+    rows.push({ _total: true, account: totalLELabel.toUpperCase(), balance: fmtNum(reportData.totalLiabilitiesAndEquity) });
     return { rows, columns };
   }
 
@@ -397,12 +406,13 @@ function extractDataAndColumns(reportData: any): { rows: any[]; columns: ExportC
 
   // ─── Cash Flow (scalar values) ───
   if (reportData.operatingActivities !== undefined || reportData.netChange !== undefined) {
+    const CF = reportData.labels as import('@kis-books/shared').CFSectionLabels | undefined;
     const columns: ExportColumn[] = [{ key: 'label', label: 'Item' }, { key: 'amount', label: 'Amount', align: 'right' }];
     const rows: any[] = [];
-    if (reportData.operatingActivities !== undefined) rows.push({ label: 'Operating Activities', amount: fmtNum(reportData.operatingActivities) });
-    if (reportData.investingActivities !== undefined) rows.push({ label: 'Investing Activities', amount: fmtNum(reportData.investingActivities) });
-    if (reportData.financingActivities !== undefined) rows.push({ label: 'Financing Activities', amount: fmtNum(reportData.financingActivities) });
-    if (reportData.netChange !== undefined) rows.push({ label: 'Net Change in Cash', amount: fmtNum(reportData.netChange) });
+    if (reportData.operatingActivities !== undefined) rows.push({ label: CF?.operatingActivities || 'Operating Activities', amount: fmtNum(reportData.operatingActivities) });
+    if (reportData.investingActivities !== undefined) rows.push({ label: CF?.investingActivities || 'Investing Activities', amount: fmtNum(reportData.investingActivities) });
+    if (reportData.financingActivities !== undefined) rows.push({ label: CF?.financingActivities || 'Financing Activities', amount: fmtNum(reportData.financingActivities) });
+    if (reportData.netChange !== undefined) rows.push({ _total: true, label: CF?.netChange || 'Net Change in Cash', amount: fmtNum(reportData.netChange) });
     if (reportData.beginningCash !== undefined) rows.push({ label: 'Beginning Cash', amount: fmtNum(reportData.beginningCash) });
     if (reportData.endingCash !== undefined) rows.push({ label: 'Ending Cash', amount: fmtNum(reportData.endingCash) });
     return { rows, columns };
@@ -571,10 +581,23 @@ function buildHtmlTable(rows: ExportRow[], columns: ExportColumn[]): string {
 
 // Helper: respond with json, csv, or pdf
 async function respond(res: any, reportData: any, format: string | undefined) {
+  // Footer is only set by the three financial-statement builders (P&L,
+  // Balance Sheet, Cash Flow). For other reports it's empty/undefined,
+  // which both renderers treat as "no footer".
+  const footer: string = typeof reportData.footer === 'string' ? reportData.footer : '';
+
   if (format === 'csv') {
     const { rows, columns } = extractDataAndColumns(reportData);
     if (!rows.length) { res.status(404).json({ error: { message: 'No data to export' } }); return; }
-    const csv = exportService.toCsv(rows, columns);
+    let csv = exportService.toCsv(rows, columns);
+    if (footer.trim().length > 0) {
+      // Append the footer as plain free-text lines after the table. Each
+      // line is wrapped in the first column so spreadsheet tools display
+      // it as a value, not as a malformed extra column.
+      const padCols = columns.length > 1 ? ',' + Array(columns.length - 1).fill('""').join(',') : '';
+      const escaped = footer.split(/\r?\n/).map((line) => `"${line.replace(/"/g, '""')}"${padCols}`);
+      csv = csv + '\n' + escaped.join('\n');
+    }
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="${(reportData.title || 'report').replace(/\s+/g, '_')}.csv"`);
     return res.send(csv);
@@ -609,7 +632,7 @@ async function respond(res: any, reportData: any, format: string | undefined) {
     const isWideReport = Array.isArray(reportData.accounts) && reportData.accounts[0]?.lines !== undefined;
     const orientation: 'portrait' | 'landscape' = isWideReport ? 'landscape' : 'portrait';
 
-    const html = exportService.toReportHtml(reportData.title || 'Report', companyName, dateLabel, tableHtml);
+    const html = exportService.toReportHtml(reportData.title || 'Report', companyName, dateLabel, tableHtml, footer);
     const pdf = await exportService.toPdf(html, { orientation });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${(reportData.title || 'report').replace(/\s+/g, '_')}.pdf"`);

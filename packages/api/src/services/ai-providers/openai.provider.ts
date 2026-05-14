@@ -4,6 +4,7 @@
 
 import OpenAI from 'openai';
 import type { AiProvider, CompletionParams, VisionParams, CompletionResult } from './ai-provider.interface.js';
+import { extractJsonForResult } from './json-utils.js';
 
 export class OpenAiProvider implements AiProvider {
   name = 'openai';
@@ -27,16 +28,13 @@ export class OpenAiProvider implements AiProvider {
         { role: 'system', content: params.systemPrompt },
         { role: 'user', content: params.userPrompt },
       ],
-    });
+    }, { signal: params.signal });
 
     const text = response.choices[0]?.message?.content || '';
-    let parsed: any;
-    if (params.responseFormat === 'json') {
-      try { parsed = JSON.parse(text); } catch { /* ignore */ }
-    }
+    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat);
 
     return {
-      text, parsed,
+      text, parsed, parseError,
       inputTokens: response.usage?.prompt_tokens || 0,
       outputTokens: response.usage?.completion_tokens || 0,
       model: this.model, provider: this.name, durationMs: Date.now() - start,
@@ -58,28 +56,25 @@ export class OpenAiProvider implements AiProvider {
         { role: 'system', content: params.systemPrompt },
         { role: 'user', content },
       ],
-    });
+    }, { signal: params.signal });
 
     const text = response.choices[0]?.message?.content || '';
-    let parsed: any;
-    if (params.responseFormat === 'json') {
-      try { parsed = JSON.parse(text); } catch { /* ignore */ }
-    }
+    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat);
 
     return {
-      text, parsed,
+      text, parsed, parseError,
       inputTokens: response.usage?.prompt_tokens || 0,
       outputTokens: response.usage?.completion_tokens || 0,
       model: this.model, provider: this.name, durationMs: Date.now() - start,
     };
   }
 
-  async testConnection() {
+  async testConnection(signal?: AbortSignal) {
     try {
       await this.client.chat.completions.create({
         model: this.model, max_tokens: 10,
         messages: [{ role: 'user', content: 'ping' }],
-      });
+      }, { signal });
       return { success: true, modelInfo: this.model };
     } catch (err: any) {
       return { success: false, error: err.message };

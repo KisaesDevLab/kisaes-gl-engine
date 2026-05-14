@@ -11,6 +11,10 @@ import * as aiConfigService from './ai-config.service.js';
 import * as orchestrator from './ai-orchestrator.service.js';
 import { sanitize } from './pii-sanitizer.service.js';
 import { extractLocally } from './local-ocr.service.js';
+import { unwrapParsedResult } from './ai-providers/json-utils.js';
+
+const unwrapParsed = (result: Parameters<typeof unwrapParsedResult>[0]) =>
+  unwrapParsedResult(result, 'bill extraction');
 
 /**
  * Bill OCR — extracts vendor invoice data from an uploaded image or PDF
@@ -45,6 +49,12 @@ export interface BillOcrResult {
   contactId: string | null;
   defaultExpenseAccountId: string | null;
   qualityWarnings: string[];
+  /** 'ok' for fully-structured extraction; 'ocr_only' when GLM-OCR ran
+   *  without a downstream text structurer — the form should render
+   *  `rawText` in a textarea and prompt the user to enter fields manually. */
+  status?: 'ok' | 'ocr_only';
+  /** Populated only when `status === 'ocr_only'`. */
+  rawText?: string;
 }
 
 const billSystemPrompt = `You are a vendor invoice / bill OCR assistant. Extract the structured data and return JSON ONLY in this exact schema:
@@ -90,8 +100,12 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
     fileBuffer = fs.readFileSync(localPath);
   } catch {
     const filePath = attachment.filePath;
-    if (!filePath || !fs.existsSync(filePath)) throw AppError.notFound('Attachment file not found');
-    fileBuffer = fs.readFileSync(filePath);
+    if (!filePath) throw AppError.notFound('Attachment file not found');
+    try {
+      fileBuffer = fs.readFileSync(filePath);
+    } catch {
+      throw AppError.notFound('Attachment file not found');
+    }
   }
   const mimeType = attachment.mimeType || 'image/jpeg';
 
@@ -129,7 +143,7 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
         maxTokens: 2048,
         responseFormat: 'json',
       });
-      parsed = result.parsed || {};
+      parsed = unwrapParsed(result);
 
       // GLM-OCR returns raw OCR text; chain through a text model for
       // structured invoice fields. See ai-receipt-ocr.service for the
@@ -149,7 +163,11 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
             maxTokens: 2048,
             responseFormat: 'json',
           });
-          parsed = second.parsed || safeJsonParse(second.text) || { raw_text: result.text };
+          // Same fallback policy as the receipt OCR chain: a secondary
+          // parse failure is non-fatal — the user still sees the raw
+          // OCR text which they can paste into the form manually.
+          parsed = (second.parsed as Record<string, unknown> | undefined) ?? { raw_text: result.text };
+          if (second.parseError) qualityWarnings.push('glm_ocr_chain_parse_failed');
           extractionSource = `glm_ocr_local_chained_${structurer.name}`;
           qualityWarnings.push('glm_ocr_chained');
         } else {
@@ -174,7 +192,7 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
           maxTokens: 2048,
           responseFormat: 'json',
         });
-        parsed = result.parsed || {};
+        parsed = unwrapParsed(result);
         qualityWarnings.push('cloud_vision_used');
         extractionSource = 'cloud_vision_permissive';
       } else {
@@ -195,7 +213,7 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
           maxTokens: 2048,
           responseFormat: 'json',
         });
-        parsed = result.parsed || {};
+        parsed = unwrapParsed(result);
       }
     }
 
@@ -268,7 +286,18 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
       if (!acct) defaultExpenseAccountId = null;
     }
 
-    return { ...ocrResult, contactId, defaultExpenseAccountId };
+    // GLM-OCR-only-without-text-structurer path: vendor/total are null
+    // but raw_text is populated. Tagging this lets the bill-upload UI
+    // render the raw text instead of an empty bill form. Mirrors the
+    // matching `ocr_only` path in ai-receipt-ocr.service.
+    const status: 'ok' | 'ocr_only' = (parsed as any).raw_text && !ocrResult.vendor ? 'ocr_only' : 'ok';
+    return {
+      ...ocrResult,
+      contactId,
+      defaultExpenseAccountId,
+      status,
+      ...(status === 'ocr_only' ? { rawText: (parsed as any).raw_text as string } : {}),
+    };
   } catch (err: any) {
     await db.update(attachments)
       .set({ ocrStatus: 'failed' })
@@ -278,13 +307,7 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
   }
 }
 
-// Shared with ai-receipt-ocr: best-effort JSON extraction from a
-// text-model response (strips prose / code fences). Returns null so the
-// caller can fall back to raw_text when parsing fails.
-function safeJsonParse(text: string): Record<string, unknown> | null {
-  if (!text) return null;
-  try { return JSON.parse(text) as Record<string, unknown>; } catch { /* continue */ }
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) return null;
-  try { return JSON.parse(match[0]) as Record<string, unknown>; } catch { return null; }
-}
+// Pull `parsed` off a CompletionResult, or throw `ai_parse_failed`. See
+// ai-receipt-ocr.service.unwrapParsed for the full rationale — the short
+// version is that silently coercing missing JSON to `{}` produces empty
+// bill-entry forms and the user can't tell the upload failed.

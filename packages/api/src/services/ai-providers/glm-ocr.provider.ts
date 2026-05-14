@@ -7,16 +7,28 @@ import type { AiProvider, CompletionParams, VisionParams, CompletionResult } fro
 // GLM-OCR provider.
 //
 // Local mode talks to the Vibe-GLM-OCR appliance
-// (github.com/KisaesDevLab/Vibe-GLM-OCR) — a llama.cpp server serving the
-// GLM-OCR GGUF model over an OpenAI-compatible `/v1/chat/completions`
-// endpoint. The earlier version of this file called Ollama endpoints
-// (`/api/chat`, `/api/tags`), which produced 404s against the appliance.
+// (github.com/KisaesDevLab/Vibe-GLM-OCR) — a llama.cpp server (NOT
+// Ollama) running the GLM-OCR GGUF over an OpenAI-shape API. The
+// appliance README is the source of truth for the request/response
+// contract this provider implements. Specifically:
 //
-// GLM-OCR is a pure vision-to-text model: it responds to two specific
-// prompts — `Text Recognition:` (general extraction) and
-// `Table Recognition:` (structured Markdown/HTML tables) — and returns
-// raw OCR text, not structured JSON. The service layer is responsible
-// for any downstream JSON structuring.
+//   - Endpoint:   POST /v1/chat/completions   (standard OAI shape)
+//   - Health:     GET  /health                returns {"status":"ok"}
+//   - Auth:       optional Bearer via OCR_API_KEY env var on the appliance
+//   - Model:      literal string "GLM-OCR" (single-purpose server)
+//   - Temp:       0.02 (any higher hallucinates digits — non-negotiable
+//                       per appliance README's note on financial OCR)
+//   - Default port: 8090
+//
+// The model is vision-only: it responds to exactly two directive prompts
+// ("Text Recognition:" / "Table Recognition:") and returns raw OCR text
+// or a Markdown table — never structured JSON. Downstream JSON shaping
+// is the service layer's job via `pickTextStructurer` (see ai-receipt-
+// ocr.service / ai-bill-ocr.service / ai-statement-parser.service).
+//
+// Earlier versions of this file targeted Ollama endpoints (/api/chat,
+// /api/tags) which 404 against the appliance — kept here as a
+// historical note in case anyone hits the same trap.
 export class GlmOcrProvider implements AiProvider {
   name: string;
   supportsVision = true;
@@ -74,6 +86,7 @@ export class GlmOcrProvider implements AiProvider {
         model: 'glm-ocr',
         content: [{ type: 'image', image_url: { url: `data:${image.mimeType};base64,${image.base64}` } }],
       }),
+      signal: params.signal,
     });
 
     if (!response.ok) {
@@ -132,6 +145,7 @@ export class GlmOcrProvider implements AiProvider {
         temperature: 0.02,
         stream: false,
       }),
+      signal: params.signal,
     });
 
     if (!response.ok) {
@@ -153,13 +167,14 @@ export class GlmOcrProvider implements AiProvider {
     };
   }
 
-  async testConnection() {
+  async testConnection(signal?: AbortSignal) {
     try {
       if (this.mode === 'cloud') {
         const response = await fetch('https://api.z.ai/api/paas/v4/layout_parsing', {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${this.apiKeyOrUrl}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ model: 'glm-ocr', content: [] }),
+          signal,
         });
         return { success: response.status !== 401 && response.status !== 403, modelInfo: 'GLM-OCR Cloud' };
       } else {
@@ -168,7 +183,7 @@ export class GlmOcrProvider implements AiProvider {
         const baseUrl = this.apiKeyOrUrl.replace(/\/$/, '');
         const headers: Record<string, string> = {};
         if (this.localApiKey) headers['Authorization'] = `Bearer ${this.localApiKey}`;
-        const response = await fetch(`${baseUrl}/health`, { headers });
+        const response = await fetch(`${baseUrl}/health`, { headers, signal });
         if (!response.ok) {
           return { success: false, error: `Health check failed: ${response.status}` };
         }

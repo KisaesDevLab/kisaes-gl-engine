@@ -24,8 +24,46 @@ export const DEFAULT_PL_LABELS: PLSectionLabels = {
   netIncome: 'Net Income',
 };
 
+export interface BSSectionLabels {
+  assets: string;
+  liabilities: string;
+  equity: string;
+  totalLiabilitiesAndEquity: string;
+}
+
+export const DEFAULT_BS_LABELS: BSSectionLabels = {
+  assets: 'Assets',
+  liabilities: 'Liabilities',
+  equity: 'Equity',
+  totalLiabilitiesAndEquity: 'Total Liabilities & Equity',
+};
+
+export interface CFSectionLabels {
+  operatingActivities: string;
+  investingActivities: string;
+  financingActivities: string;
+  netChange: string;
+}
+
+export const DEFAULT_CF_LABELS: CFSectionLabels = {
+  operatingActivities: 'Operating Activities',
+  investingActivities: 'Investing Activities',
+  financingActivities: 'Financing Activities',
+  netChange: 'Net Change in Cash',
+};
+
+// Maximum length the UI accepts (and the Zod schema enforces) for the
+// optional footer text shown at the bottom of the 3 financial-statement
+// reports. Mirrors a typical CPA disclaimer / "Prepared by …" footnote.
+export const REPORT_FOOTER_MAX_LENGTH = 500;
+
 export interface TenantReportSettings {
   plLabels?: Partial<PLSectionLabels>;
+  bsLabels?: Partial<BSSectionLabels>;
+  cfLabels?: Partial<CFSectionLabels>;
+  /** Optional footer text shown at the bottom of P&L, Balance Sheet, and
+   *  Cash Flow reports (on-screen, CSV, and PDF). Empty/absent = no footer. */
+  reportFooter?: string;
 }
 
 /**
@@ -38,6 +76,30 @@ export function resolvePLLabels(custom?: Partial<PLSectionLabels> | null): PLSec
   const out = { ...DEFAULT_PL_LABELS };
   if (!custom) return out;
   for (const key of Object.keys(out) as (keyof PLSectionLabels)[]) {
+    const value = custom[key];
+    if (typeof value === 'string' && value.trim().length > 0) {
+      out[key] = value.trim();
+    }
+  }
+  return out;
+}
+
+export function resolveBSLabels(custom?: Partial<BSSectionLabels> | null): BSSectionLabels {
+  const out = { ...DEFAULT_BS_LABELS };
+  if (!custom) return out;
+  for (const key of Object.keys(out) as (keyof BSSectionLabels)[]) {
+    const value = custom[key];
+    if (typeof value === 'string' && value.trim().length > 0) {
+      out[key] = value.trim();
+    }
+  }
+  return out;
+}
+
+export function resolveCFLabels(custom?: Partial<CFSectionLabels> | null): CFSectionLabels {
+  const out = { ...DEFAULT_CF_LABELS };
+  if (!custom) return out;
+  for (const key of Object.keys(out) as (keyof CFSectionLabels)[]) {
     const value = custom[key];
     if (typeof value === 'string' && value.trim().length > 0) {
       out[key] = value.trim();

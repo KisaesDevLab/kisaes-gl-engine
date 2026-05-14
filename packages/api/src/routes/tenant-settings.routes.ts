@@ -3,7 +3,12 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { Router } from 'express';
-import { updateTenantReportSettingsSchema, resolvePLLabels } from '@kis-books/shared';
+import {
+  updateTenantReportSettingsSchema,
+  resolvePLLabels,
+  resolveBSLabels,
+  resolveCFLabels,
+} from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import * as service from '../services/tenant-report-settings.service.js';
@@ -11,18 +16,24 @@ import * as service from '../services/tenant-report-settings.service.js';
 export const tenantSettingsRouter = Router();
 tenantSettingsRouter.use(authenticate);
 
+function shape(settings: Awaited<ReturnType<typeof service.getSettings>>) {
+  return {
+    plLabels: settings.plLabels ?? {},
+    bsLabels: settings.bsLabels ?? {},
+    cfLabels: settings.cfLabels ?? {},
+    reportFooter: settings.reportFooter ?? '',
+    resolvedPLLabels: resolvePLLabels(settings.plLabels),
+    resolvedBSLabels: resolveBSLabels(settings.bsLabels),
+    resolvedCFLabels: resolveCFLabels(settings.cfLabels),
+  };
+}
+
 tenantSettingsRouter.get('/report', async (req, res) => {
   const settings = await service.getSettings(req.tenantId);
-  res.json({
-    plLabels: settings.plLabels ?? {},
-    resolvedPLLabels: resolvePLLabels(settings.plLabels),
-  });
+  res.json(shape(settings));
 });
 
 tenantSettingsRouter.put('/report', validate(updateTenantReportSettingsSchema), async (req, res) => {
   const next = await service.updateSettings(req.tenantId, req.body, req.userId);
-  res.json({
-    plLabels: next.plLabels ?? {},
-    resolvedPLLabels: resolvePLLabels(next.plLabels),
-  });
+  res.json(shape(next));
 });

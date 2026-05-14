@@ -4,7 +4,15 @@
 
 import { GoogleGenAI } from '@google/genai';
 import type { AiProvider, CompletionParams, VisionParams, CompletionResult } from './ai-provider.interface.js';
+import { extractJsonForResult } from './json-utils.js';
 
+// Note on cancellation: @google/genai (as of the version pinned in
+// package.json) does not expose a documented `AbortSignal` option on
+// generateContent. We rely on the outer `withTimeout` race in
+// executeWithFallback / testProvider to unblock callers; the underlying
+// request may continue in the background until it completes or the SDK
+// hits its own timeout. If the SDK adds signal support later, thread
+// `params.signal` through here.
 export class GeminiProvider implements AiProvider {
   name = 'gemini';
   supportsVision = true;
@@ -29,13 +37,10 @@ export class GeminiProvider implements AiProvider {
     });
 
     const text = response.text || '';
-    let parsed: any;
-    if (params.responseFormat === 'json') {
-      try { parsed = JSON.parse(text); } catch { /* ignore */ }
-    }
+    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat);
 
     return {
-      text, parsed,
+      text, parsed, parseError,
       inputTokens: response.usageMetadata?.promptTokenCount || 0,
       outputTokens: response.usageMetadata?.candidatesTokenCount || 0,
       model: this.model, provider: this.name, durationMs: Date.now() - start,
@@ -56,20 +61,17 @@ export class GeminiProvider implements AiProvider {
     });
 
     const text = response.text || '';
-    let parsed: any;
-    if (params.responseFormat === 'json') {
-      try { parsed = JSON.parse(text); } catch { /* ignore */ }
-    }
+    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat);
 
     return {
-      text, parsed,
+      text, parsed, parseError,
       inputTokens: response.usageMetadata?.promptTokenCount || 0,
       outputTokens: response.usageMetadata?.candidatesTokenCount || 0,
       model: this.model, provider: this.name, durationMs: Date.now() - start,
     };
   }
 
-  async testConnection() {
+  async testConnection(_signal?: AbortSignal) {
     try {
       await this.client.models.generateContent({
         model: this.model,
@@ -83,6 +85,22 @@ export class GeminiProvider implements AiProvider {
   }
 
   estimateCost(inputTokens: number, outputTokens: number): number {
-    return (inputTokens / 1_000_000) * 0.075 + (outputTokens / 1_000_000) * 0.3;
+    // Per-model pricing keyed off this.model. Defaults to Flash rates if
+    // the configured model isn't in the table — Flash is the cheapest of
+    // the current Gemini tier, so this errs toward under-counting cost
+    // when the table is stale rather than over-blocking on budget. Bump
+    // the table when new models ship.
+    const k = this.model.toLowerCase();
+    let inPerM: number;
+    let outPerM: number;
+    if (k.includes('2.5-pro') || k.includes('1.5-pro')) {
+      inPerM = 1.25; outPerM = 5.0;
+    } else if (k.includes('2.0-flash')) {
+      inPerM = 0.10; outPerM = 0.40;
+    } else {
+      // gemini-2.5-flash, gemini-1.5-flash, and unknown → flash pricing
+      inPerM = 0.075; outPerM = 0.30;
+    }
+    return (inputTokens / 1_000_000) * inPerM + (outputTokens / 1_000_000) * outPerM;
   }
 }

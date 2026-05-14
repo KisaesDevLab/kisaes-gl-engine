@@ -55,6 +55,11 @@ export const aiConfig = pgTable('ai_config', {
   adminDisclosureAcceptedAt: timestamp('admin_disclosure_accepted_at', { withTimezone: true }),
   adminDisclosureAcceptedBy: uuid('admin_disclosure_accepted_by'),
   disclosureVersion: integer('disclosure_version').notNull().default(1),
+  // Per-provider test result history: most recent /admin/test/:provider
+  // outcome keyed by provider name. Lets the admin UI render "Last
+  // verified <relative time>" without re-pinging the upstream on every
+  // page load. See migration 0096.
+  providerTestHistory: jsonb('provider_test_history').notNull().default('{}'),
   // Metadata
   configuredBy: uuid('configured_by'),
   configuredAt: timestamp('configured_at', { withTimezone: true }),

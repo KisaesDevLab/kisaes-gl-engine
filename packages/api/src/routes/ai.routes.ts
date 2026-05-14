@@ -29,6 +29,7 @@ import * as aiOrchestrator from '../services/ai-orchestrator.service.js';
 import * as aiPrompt from '../services/ai-prompt.service.js';
 import * as aiConsent from '../services/ai-consent.service.js';
 import { AppError } from '../utils/errors.js';
+import { log } from '../utils/logger.js';
 import { db } from '../db/index.js';
 import { companies } from '../db/schema/index.js';
 import { eq, and } from 'drizzle-orm';
@@ -53,6 +54,29 @@ const aiProcessingLimiter = rateLimit({
   },
 });
 
+// Tighter rate limit for the admin test endpoint. testProvider hits
+// real upstream APIs (Anthropic, OpenAI, etc.) with a "ping" message —
+// a hostile or compromised super-admin session could otherwise exhaust
+// the per-key quota on the configured upstream. 10/minute per user is
+// enough for an admin manually checking provider status while bounding
+// the worst case.
+//
+// Keyed on userId (not tenant) per the plan's risk callout — super
+// admin actions are global, and tenants don't apply here.
+const aiAdminTestLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => (req as any).userId || req.ip || 'anonymous',
+  message: {
+    error: {
+      message: 'Too many provider test requests — wait a moment before retrying',
+      code: 'AI_RATE_LIMIT',
+    },
+  },
+});
+
 // ─── Admin — AI Configuration ──────────────────────────────────
 
 aiRouter.get('/admin/config', authenticate, requireSuperAdmin, async (req, res) => {
@@ -65,8 +89,32 @@ aiRouter.put('/admin/config', authenticate, requireSuperAdmin, validate(aiConfig
   res.json(config);
 });
 
-aiRouter.post('/admin/test/:provider', authenticate, requireSuperAdmin, async (req, res) => {
-  const result = await aiConfigService.testProvider(req.params['provider']!);
+// Read-only self-test action: runs testConnection for every task that
+// has a provider configured. Reuses aiAdminTestLimiter so a stuck admin
+// browser hitting "Run self-test" 11 times in a minute can't burn
+// upstream quotas; each call internally does up to 4 testProvider runs.
+aiRouter.post('/admin/test-all', authenticate, requireSuperAdmin, aiAdminTestLimiter, async (req, res) => {
+  const result = await aiConfigService.testAll();
+  log.warn({
+    component: 'ai',
+    event: 'ai_self_test_all',
+    userId: req.userId, ip: req.ip, at: result.runAt,
+    summary: result.rows.map((r) => ({ task: r.task, provider: r.provider, success: r.success, skipped: r.skipped })),
+  });
+  res.json(result);
+});
+
+aiRouter.post('/admin/test/:provider', authenticate, requireSuperAdmin, aiAdminTestLimiter, async (req, res) => {
+  const provider = req.params['provider']!;
+  const result = await aiConfigService.testProvider(provider);
+  // audit_log is tenant-scoped and doesn't fit a super-admin action;
+  // a structured warn keeps the trail grep-able from operator logs.
+  log.warn({
+    component: 'ai',
+    event: 'ai_provider_test',
+    provider, success: result.success, error: result.error,
+    userId: req.userId, ip: req.ip,
+  });
   res.json(result);
 });
 
@@ -130,8 +178,14 @@ aiRouter.delete('/admin/prompts/:id', authenticate, requireSuperAdmin, async (re
 // ─── Processing — Categorization ───────────────────────────────
 
 aiRouter.post('/categorize', authenticate, aiProcessingLimiter, validate(aiCategorizeSchema), async (req, res) => {
+  // categorize() throws AppError on AI failure; null is reserved for
+  // the "no description, nothing to categorize" case.
   const result = await aiCategorization.categorize(req.tenantId, req.body.feedItemId);
-  res.json(result || { error: 'Unable to categorize' });
+  if (result) {
+    res.json(result);
+    return;
+  }
+  res.json({ accountId: null, reason: 'no_description' });
 });
 
 aiRouter.post('/categorize/batch', authenticate, aiProcessingLimiter, validate(aiBatchCategorizeSchema), async (req, res) => {
@@ -183,6 +237,33 @@ aiRouter.post('/classify', authenticate, aiProcessingLimiter, validate(aiClassif
 // details. The frontend uses this to decide whether to show the
 // bill-OCR drop zone, receipt camera button, bank-statement AI
 // importer, etc.
+// Non-admin diagnostics view. Returns the latest cached test result
+// per task→provider so a company owner can self-diagnose ("which AI
+// features will work for me right now?") without contacting the super
+// admin. Read-only — does NOT ping upstream. The admin can refresh the
+// matrix with `POST /admin/test-all` from System Settings.
+//
+// Non-super-admins get a sanitized view (no `error` / `modelInfo`)
+// because upstream error messages can leak keys, IPs, or other internal
+// detail.
+aiRouter.get('/diagnostics', authenticate, async (req, res) => {
+  const result = await aiConfigService.getDiagnostics();
+  if (req.isSuperAdmin) {
+    res.json(result);
+    return;
+  }
+  const sanitized = {
+    ...result,
+    rows: result.rows.map((row) => {
+      // Keep status/task/provider/lastVerifiedAt — those are informational.
+      // Drop `error` and `modelInfo` which can leak provider-internal data.
+      const { error: _error, modelInfo: _modelInfo, ...safe } = row;
+      return safe;
+    }),
+  };
+  res.json(sanitized);
+});
+
 aiRouter.get('/status', authenticate, async (_req, res) => {
   const config = await aiConfigService.getConfig();
   const hasAnyProvider =

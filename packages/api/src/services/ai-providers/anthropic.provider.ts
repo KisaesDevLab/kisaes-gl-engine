@@ -4,6 +4,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import type { AiProvider, CompletionParams, VisionParams, CompletionResult } from './ai-provider.interface.js';
+import { extractJsonForResult } from './json-utils.js';
 
 export class AnthropicProvider implements AiProvider {
   name = 'anthropic';
@@ -23,17 +24,15 @@ export class AnthropicProvider implements AiProvider {
       max_tokens: params.maxTokens || 1024,
       system: params.systemPrompt,
       messages: [{ role: 'user', content: params.userPrompt }],
-    });
+    }, { signal: params.signal });
 
     const text = response.content[0]?.type === 'text' ? response.content[0].text : '';
-    let parsed: any;
-    if (params.responseFormat === 'json') {
-      try { parsed = JSON.parse(text); } catch { /* ignore parse errors */ }
-    }
+    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat);
 
     return {
       text,
       parsed,
+      parseError,
       inputTokens: response.usage.input_tokens,
       outputTokens: response.usage.output_tokens,
       model: this.model,
@@ -55,28 +54,25 @@ export class AnthropicProvider implements AiProvider {
       max_tokens: params.maxTokens || 2048,
       system: params.systemPrompt,
       messages: [{ role: 'user', content }],
-    });
+    }, { signal: params.signal });
 
     const text = response.content[0]?.type === 'text' ? response.content[0].text : '';
-    let parsed: any;
-    if (params.responseFormat === 'json') {
-      try { parsed = JSON.parse(text); } catch { /* ignore */ }
-    }
+    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat);
 
     return {
-      text, parsed,
+      text, parsed, parseError,
       inputTokens: response.usage.input_tokens,
       outputTokens: response.usage.output_tokens,
       model: this.model, provider: this.name, durationMs: Date.now() - start,
     };
   }
 
-  async testConnection() {
+  async testConnection(signal?: AbortSignal) {
     try {
       await this.client.messages.create({
         model: this.model, max_tokens: 10,
         messages: [{ role: 'user', content: 'ping' }],
-      });
+      }, { signal });
       return { success: true, modelInfo: this.model };
     } catch (err: any) {
       return { success: false, error: err.message };
@@ -88,3 +84,4 @@ export class AnthropicProvider implements AiProvider {
     return (inputTokens / 1_000_000) * 3 + (outputTokens / 1_000_000) * 15;
   }
 }
+

@@ -5,10 +5,21 @@
 import { eq, and, sql, lte, gte, between, count, or, ne } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
-import { type PLSectionLabels, isDebitNormal as isDebitNormalShared, COST_TYPES } from '@kis-books/shared';
+import {
+  type PLSectionLabels,
+  type BSSectionLabels,
+  type CFSectionLabels,
+  isDebitNormal as isDebitNormalShared,
+  COST_TYPES,
+} from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { transactions, journalLines, accounts, contacts } from '../db/schema/index.js';
-import { getPLLabels } from './tenant-report-settings.service.js';
+import {
+  getPLLabels,
+  getBSLabels,
+  getCFLabels,
+  getReportFooter,
+} from './tenant-report-settings.service.js';
 
 // Money parsers. Reports expose `number` to the UI, but every SUM /
 // DIFFERENCE runs through Decimal so aggregating hundreds of rows
@@ -62,6 +73,7 @@ export interface PLResult {
   endDate: string;
   basis: Basis;
   labels: PLSectionLabels;
+  footer: string;
   revenue: PLEntry[];
   totalRevenue: number;
   cogs: PLEntry[];
@@ -169,12 +181,16 @@ export async function buildProfitAndLoss(
   const netIncome =
     totalRevenue + totalOtherRevenue - totalCogs - totalExpenses - totalOtherExpenses;
 
-  const labels = await getPLLabels(tenantId);
+  const [labels, footer] = await Promise.all([
+    getPLLabels(tenantId),
+    getReportFooter(tenantId),
+  ]);
 
   return {
     title: 'Profit and Loss',
     startDate, endDate, basis,
     labels,
+    footer,
     revenue, totalRevenue,
     cogs, totalCogs,
     expenses, totalExpenses,
@@ -285,8 +301,15 @@ export async function buildBalanceSheet(
     totalEquity += currentPL.netIncome;
   }
 
+  const [labels, footer] = await Promise.all([
+    getBSLabels(tenantId),
+    getReportFooter(tenantId),
+  ]);
+
   return {
     title: 'Balance Sheet', asOfDate, basis,
+    labels,
+    footer,
     assets, totalAssets,
     liabilities, totalLiabilities,
     equity, totalEquity,
@@ -304,8 +327,14 @@ export async function buildCashFlowStatement(
   tagId: string | null = null,
 ) {
   const pl = await buildProfitAndLoss(tenantId, startDate, endDate, 'accrual', companyId, tagId);
+  const [labels, footer] = await Promise.all([
+    getCFLabels(tenantId),
+    getReportFooter(tenantId),
+  ]);
   return {
     title: 'Cash Flow Statement', startDate, endDate,
+    labels,
+    footer,
     operatingActivities: pl.netIncome,
     investingActivities: 0,
     financingActivities: 0,

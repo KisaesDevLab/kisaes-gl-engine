@@ -51,9 +51,25 @@ export async function categorize(tenantId: string, feedItemId: string) {
     return { accountId: history.accountId, contactId: history.contactId, contactName, confidence: 0.95, matchType: 'history' as const };
   }
 
-  // Layer 3: AI categorization
+  // Layer 3: AI categorization. From this point on, the caller is
+  // depending on AI to produce a suggestion — silent `null` returns from
+  // here are exactly the "AI fails with no visible error" symptom the
+  // user reported. Each failure mode below throws AppError.badRequest
+  // with a stable `code` so the React Query onError handler can render a
+  // specific toast (see useAi.useAiCategorize).
   const config = await aiConfigService.getConfig();
-  if (!config.isEnabled || !config.categorizationProvider) return null;
+  if (!config.isEnabled) {
+    throw AppError.badRequest(
+      'AI processing is not enabled. An administrator must enable it in System Settings → AI.',
+      'ai_disabled_globally',
+    );
+  }
+  if (!config.categorizationProvider) {
+    throw AppError.badRequest(
+      'No categorization provider is configured. An administrator must pick one in System Settings → AI → Tasks.',
+      'ai_no_provider_configured',
+    );
+  }
 
   // Get tenant's COA
   const coaAccounts = await db.select({ id: accounts.id, name: accounts.name, accountNumber: accounts.accountNumber, accountType: accounts.accountType })
@@ -116,6 +132,17 @@ export async function categorize(tenantId: string, feedItemId: string) {
       responseFormat: 'json',
     }, rawConfig, config.fallbackChain, config.categorizationProvider || undefined, config.categorizationModel || undefined);
 
+    // Surface model refusals / prose-only replies as a typed error so
+    // the UI can render "AI returned non-JSON" instead of silently
+    // suggesting nothing.
+    if (result.parseError) {
+      await orchestrator.failJob(job.id, result.parseError);
+      throw AppError.badRequest(
+        `AI returned non-JSON for categorization (${result.provider}). ${result.parseError}`,
+        'ai_parse_failed',
+      );
+    }
+
     const parsed = result.parsed || {};
     const confidence = parsed.confidence || 0.5;
 
@@ -161,8 +188,22 @@ export async function categorize(tenantId: string, feedItemId: string) {
       matchType: 'ai' as const,
     };
   } catch (err: any) {
-    await orchestrator.failJob(job.id, err.message);
-    return null;
+    // Don't double-fail the job if we already failed it above (parse
+    // error path), and don't shadow an AppError we deliberately threw.
+    if (!(err instanceof AppError)) {
+      await orchestrator.failJob(job.id, err.message);
+      // Prefer the typed `code` set by executeWithFallback (e.g.
+      // `ai_all_providers_failed`); fall back to generic `ai_provider_failed`
+      // for any non-fallback path that throws raw.
+      const code = (err && typeof err === 'object' && typeof err.code === 'string')
+        ? err.code as string
+        : 'ai_provider_failed';
+      throw AppError.badRequest(
+        `AI categorization failed: ${err?.message ?? String(err)}`,
+        code,
+      );
+    }
+    throw err;
   }
 }
 
@@ -229,11 +270,88 @@ export async function recordUserDecision(tenantId: string, feedItemId: string, a
   }
 }
 
-export async function batchCategorize(tenantId: string, feedItemIds: string[]) {
-  const results = [];
-  for (const id of feedItemIds) {
-    const result = await categorize(tenantId, id);
-    results.push({ feedItemId: id, result });
+// Number of concurrent categorize() calls per batch chunk. Bounded so a
+// large batch can't blow past the orchestrator's per-process job
+// semaphore or the upstream provider's per-key concurrency limit.
+const BATCH_CHUNK_SIZE = 5;
+
+// If this many consecutive items fail with the same error code, the
+// batch aborts the remaining items. The threshold protects against
+// "every single item burns a paid API call to a known-broken provider"
+// while still tolerating intermittent failures in the noisy middle.
+const CONSECUTIVE_FAIL_THRESHOLD = 3;
+
+export interface BatchCategorizeRow {
+  feedItemId: string;
+  result?: Awaited<ReturnType<typeof categorize>>;
+  error?: {
+    code: string;
+    message: string;
+  };
+  /** Set when the batch aborted before reaching this item due to
+   *  repeated same-code failures. The UI shows these in a separate
+   *  "skipped" bucket so the user knows they weren't even attempted. */
+  skipped?: boolean;
+}
+
+export async function batchCategorize(
+  tenantId: string,
+  feedItemIds: string[],
+): Promise<BatchCategorizeRow[]> {
+  const results: BatchCategorizeRow[] = [];
+  // Track the tail of consecutive same-code failures so we can short-
+  // circuit on a systemic outage (all providers down, budget exceeded,
+  // disclosure invalidated mid-batch, etc.) without burning API calls.
+  let consecutiveFailCode: string | null = null;
+  let consecutiveFailCount = 0;
+  let aborted = false;
+
+  const runOne = async (id: string): Promise<BatchCategorizeRow> => {
+    try {
+      const result = await categorize(tenantId, id);
+      return { feedItemId: id, result };
+    } catch (err: any) {
+      const code: string =
+        err instanceof AppError && err.code ? err.code : 'ai_categorization_failed';
+      const message: string = err?.message || String(err);
+      return { feedItemId: id, error: { code, message } };
+    }
+  };
+
+  for (let i = 0; i < feedItemIds.length; i += BATCH_CHUNK_SIZE) {
+    if (aborted) {
+      // Tag the rest as skipped so the UI can render them with a
+      // distinct "not attempted" treatment instead of a hard failure.
+      for (const id of feedItemIds.slice(i)) {
+        results.push({ feedItemId: id, skipped: true });
+      }
+      break;
+    }
+    const chunk = feedItemIds.slice(i, i + BATCH_CHUNK_SIZE);
+    const settled = await Promise.allSettled(chunk.map(runOne));
+    for (const s of settled) {
+      // `runOne` itself never throws, but Promise.allSettled requires
+      // we type-narrow the result anyway.
+      const row: BatchCategorizeRow = s.status === 'fulfilled'
+        ? s.value
+        : { feedItemId: 'unknown', error: { code: 'unexpected', message: String(s.reason) } };
+      results.push(row);
+
+      if (row.error) {
+        if (row.error.code === consecutiveFailCode) {
+          consecutiveFailCount++;
+        } else {
+          consecutiveFailCode = row.error.code;
+          consecutiveFailCount = 1;
+        }
+        if (consecutiveFailCount >= CONSECUTIVE_FAIL_THRESHOLD) {
+          aborted = true;
+        }
+      } else {
+        consecutiveFailCode = null;
+        consecutiveFailCount = 0;
+      }
+    }
   }
   return results;
 }

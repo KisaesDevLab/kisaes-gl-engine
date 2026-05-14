@@ -673,6 +673,13 @@
       "when": 1776900000000,
       "tag": "0095_ai_cost_decimal_19_4",
       "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1776910000000,
+      "tag": "0096_ai_provider_test_history",
+      "breakpoints": true
     }
   ]
 }
