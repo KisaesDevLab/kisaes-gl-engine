@@ -73,9 +73,8 @@ describe('AI Categorization Service', () => {
   beforeEach(async () => { await cleanDb(); });
   afterEach(async () => { await cleanDb(); });
 
-  it('should return null when AI is disabled', async () => {
+  it('should throw ai_disabled_globally when AI is disabled', async () => {
     const { user } = await createTestUser();
-    // Create a feed item manually
     const [item] = await db.insert(bankFeedItems).values({
       tenantId: user.tenantId,
       bankConnectionId: '00000000-0000-0000-0000-000000000000',
@@ -85,8 +84,8 @@ describe('AI Categorization Service', () => {
       status: 'pending',
     }).returning();
 
-    const result = await aiCategorization.categorize(user.tenantId, item!.id);
-    expect(result).toBeNull(); // AI not enabled
+    await expect(aiCategorization.categorize(user.tenantId, item!.id))
+      .rejects.toMatchObject({ statusCode: 400, code: 'ai_disabled_globally' });
   });
 
   it('should use history when confirmed 3+ times', async () => {

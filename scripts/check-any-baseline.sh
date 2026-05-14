@@ -23,7 +23,7 @@ set -u
 # Pre-cleanup api was 361 / web was 3, but ~6 of those were comment matches;
 # real type-annotation count is below that. Don't bump these without
 # auditing the diff first.
-BASELINE_API=345
+BASELINE_API=342
 BASELINE_WEB=1
 BASELINE_WORKER=0
 
