@@ -14,6 +14,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { tenants } from './auth.js';
 import { portalContacts } from './portal-contacts.js';
+import { portalIdentities } from './portal-identities.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 9 — magic-link auth +
 // session storage for the portal. Distinct from staff JWT auth:
@@ -41,6 +42,10 @@ export const portalContactSessions = pgTable('portal_contact_sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
   contactId: uuid('contact_id').notNull().references(() => portalContacts.id, { onDelete: 'cascade' }),
+  // PORTAL_IDENTITY_LINKING_V1 — when non-null, the session belongs to
+  // a master identity. The /switch endpoint requires this and rejects
+  // any target contact whose identity_id differs (or is null).
+  identityId: uuid('identity_id').references(() => portalIdentities.id, { onDelete: 'cascade' }),
   // SHA-256 of the cookie value. The cookie sets a random 32-byte token;
   // we compare hashes server-side so a DB read of this table never reveals
   // a usable cookie.
@@ -53,6 +58,7 @@ export const portalContactSessions = pgTable('portal_contact_sessions', {
 }, (table) => ({
   hashIdx: uniqueIndex('uq_portal_sessions_hash').on(table.tokenHash),
   contactIdx: index('idx_portal_sessions_contact').on(table.contactId, table.lastActivityAt),
+  identityIdx: index('idx_portal_sessions_identity').on(table.identityId),
 }));
 
 export const portalPasswords = pgTable('portal_passwords', {

@@ -34,6 +34,7 @@ export * from './feature-flags.js';
 export * from './practice-classification.js';
 export * from './conditional-rules.js';
 export * from './review-checks.js';
+export * from './portal-identities.js';
 export * from './portal-contacts.js';
 export * from './portal-auth.js';
 export * from './portal-questions.js';

@@ -13,6 +13,11 @@ import {
 } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import {
+  getIdentityByEmail,
+  isLinkingEnabled,
+  linkContactToIdentity,
+} from './portal-identity.service.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 8 — bookkeeper-side
 // portal-contact CRUD + per-company portal settings. The portal
@@ -204,7 +209,7 @@ export async function createContact(
     );
   }
 
-  return db.transaction(async (tx) => {
+  const created = await db.transaction(async (tx) => {
     const inserted = await tx
       .insert(portalContacts)
       .values({
@@ -235,6 +240,28 @@ export async function createContact(
     await auditLog(tenantId, 'create', 'portal_contact', row.id, null, { email, companies: companyIds }, actorUserId);
     return { id: row.id };
   });
+
+  // PORTAL_IDENTITY_LINKING_V1 — auto-link to an existing identity by
+  // email. Runs OUTSIDE the transaction by design: if the link fails
+  // (e.g., audit-log write hiccups), the contact still exists as a
+  // valid unlinked row that will auto-link on its next visit through
+  // setPassword. Failure here must not roll back the contact create.
+  if (isLinkingEnabled()) {
+    try {
+      const identity = await getIdentityByEmail(email);
+      if (identity) {
+        await linkContactToIdentity(created.id, identity.id, actorUserId);
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[portal-contact.createContact] auto-link failed; contact remains unlinked',
+        { contactId: created.id, error: err },
+      );
+    }
+  }
+
+  return created;
 }
 
 export async function updateContact(

@@ -17,6 +17,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { tenants } from './auth.js';
 import { companies } from './company.js';
+import { portalIdentities } from './portal-identities.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 8 — Client Portal contact
 // management. Portal contacts are the firm's *clients' people* who
@@ -34,11 +35,18 @@ export const portalContacts = pgTable('portal_contacts', {
   // active | paused | deleted (soft-delete marker)
   status: varchar('status', { length: 20 }).notNull().default('active'),
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+  // PORTAL_IDENTITY_LINKING_V1 — nullable FK to portal_identities.
+  // Non-null means this contact authenticates via the master identity's
+  // password and is reachable via the in-portal firm switcher.
+  // ON DELETE SET NULL: deleting the identity row falls back to legacy
+  // per-contact auth (the portal_passwords row stays valid).
+  identityId: uuid('identity_id').references(() => portalIdentities.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   tenantEmailIdx: uniqueIndex('uq_portal_contacts_tenant_email').on(table.tenantId, table.email),
   tenantStatusIdx: index('idx_portal_contacts_tenant_status').on(table.tenantId, table.status),
+  identityIdx: index('idx_portal_contacts_identity').on(table.identityId),
 }));
 
 export const portalContactCompanies = pgTable('portal_contact_companies', {

@@ -20,6 +20,13 @@ declare global {
         sessionId: string;
         contactId: string;
         tenantId: string;
+        /** PORTAL_IDENTITY_LINKING_V1 — non-null when this session was
+         *  minted for a contact bound to a master identity. The
+         *  /portal/auth/switch endpoint requires this to be present;
+         *  the linked-contacts list resolves siblings via it. Preview
+         *  sessions never carry an identity (staff impersonation is
+         *  staff-authenticated, not identity-authenticated). */
+        identityId: string | null;
         email: string;
         firstName: string | null;
         lastName: string | null;
@@ -78,6 +85,11 @@ export async function portalAuthenticate(
         sessionId: `preview:${payload.previewSessionId}`,
         contactId: payload.contactId,
         tenantId: payload.tenantId,
+        // Preview is staff-authenticated impersonation; no identity.
+        // Returning null here keeps the switcher hidden during preview
+        // and ensures /switch refuses preview sessions (its first
+        // check is identity_id != null).
+        identityId: null,
         email: contact.email,
         firstName: contact.firstName,
         lastName: contact.lastName,
@@ -102,6 +114,7 @@ export async function portalAuthenticate(
       sessionId: session.sessionId,
       contactId: session.contactId,
       tenantId: session.tenantId,
+      identityId: session.identityId,
       email: session.contact.email,
       firstName: session.contact.firstName,
       lastName: session.contact.lastName,

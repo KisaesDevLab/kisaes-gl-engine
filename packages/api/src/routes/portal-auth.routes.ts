@@ -189,6 +189,100 @@ portalAuthRouter.post(
   },
 );
 
+// PORTAL_IDENTITY_LINKING_V1 — the switcher.
+//
+// linked-contacts returns the list of sibling firm-contacts an
+// identity can switch to. Empty array when the session has no
+// identity (unlinked contact, preview session, or flag off) — the
+// frontend hides the switcher in that case.
+portalAuthRouter.get(
+  '/auth/linked-contacts',
+  portalAuthenticate,
+  async (req, res) => {
+    if (!req.portalContact) throw AppError.unauthorized('No portal session');
+    if (!req.portalContact.identityId) {
+      res.json({ contacts: [] });
+      return;
+    }
+    const { listLinkedContacts } = await import(
+      '../services/portal-identity.service.js'
+    );
+    const contacts = await listLinkedContacts(req.portalContact.identityId);
+    res.json({ contacts });
+  },
+);
+
+// Rate-limit the switch endpoint independently. 30/min per identity
+// is comfortable for a human ("oh, wrong firm, switch back") but
+// defeats any automated scraping of cross-tenant data by replaying
+// the cookie against every contact id.
+const switchLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: getRateLimitStore('portal-auth-switch'),
+  message: { error: { message: 'Too many switch requests. Slow down.' } },
+});
+
+const switchSchema = z.object({
+  targetContactId: z.string().uuid(),
+});
+
+portalAuthRouter.post(
+  '/auth/switch',
+  switchLimiter,
+  portalAuthenticate,
+  validate(switchSchema),
+  async (req, res) => {
+    if (!req.portalContact) throw AppError.unauthorized('No portal session');
+    if (req.portalContact.isPreview) {
+      // Preview sessions don't carry an identity and must not be
+      // able to switch — defense in depth (switchToContact already
+      // refuses null-identity sessions).
+      throw AppError.forbidden('Action disabled in preview mode', 'PREVIEW_READ_ONLY');
+    }
+    const cookieHeader = req.headers.cookie ?? '';
+    const match = cookieHeader
+      .split(';')
+      .map((s) => s.trim())
+      .find((c) => c.startsWith(`${PORTAL_SESSION_COOKIE}=`));
+    const currentToken = match
+      ? decodeURIComponent(match.slice(PORTAL_SESSION_COOKIE.length + 1))
+      : '';
+    if (!currentToken) throw AppError.unauthorized('No portal session', 'NO_SESSION');
+
+    const session = await portalAuth.switchToContact({
+      currentSessionToken: currentToken,
+      targetContactId: (req.body as { targetContactId: string }).targetContactId,
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+
+    // Rotate the cookie. Same shape as verify/password-login — keep
+    // the three paths consistent so the cookie semantics live in one
+    // place mentally.
+    const maxAgeSec = Math.max(0, Math.floor((session.expiresAt.getTime() - Date.now()) / 1000));
+    const cookieParts = [
+      `${PORTAL_SESSION_COOKIE}=${encodeURIComponent(session.sessionToken)}`,
+      'Path=/',
+      'HttpOnly',
+      'SameSite=Lax',
+      `Max-Age=${maxAgeSec}`,
+    ];
+    if (resolvedSecure()) cookieParts.push('Secure');
+    appendSetCookie(res, cookieParts.join('; '));
+
+    res.json({
+      ok: true,
+      contactId: session.contactId,
+      tenantId: session.tenantId,
+      expiresAt: session.expiresAt.toISOString(),
+      companies: session.companies,
+    });
+  },
+);
+
 portalAuthRouter.post('/auth/logout', async (req, res) => {
   const cookieHeader = req.headers.cookie ?? '';
   const match = cookieHeader

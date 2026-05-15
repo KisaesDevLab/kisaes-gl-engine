@@ -22,6 +22,13 @@ import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
 import { getSmtpSettings } from './admin.service.js';
 import { auditLog } from '../middleware/audit.js';
+import {
+  findOrCreateIdentity,
+  getIdentityByEmail,
+  isLinkingEnabled,
+  linkContactToIdentity,
+  verifyPassword as verifyIdentityPassword,
+} from './portal-identity.service.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 9 — magic-link auth +
 // portal session lifecycle. Distinct from staff JWT auth.
@@ -221,6 +228,13 @@ export async function verifyMagicLink(args: {
     await tx.insert(portalContactSessions).values({
       tenantId: link.tenantId,
       contactId: contact.id,
+      // PORTAL_IDENTITY_LINKING_V1 — a magic-link login on a contact
+      // that already has identity_id (set by setPassword in some
+      // earlier session, or by auto-link on invite) propagates that
+      // identity into the new session so the switcher works without
+      // a re-login. Unlinked contacts leave this null and the
+      // switcher hides.
+      identityId: isLinkingEnabled() ? contact.identityId ?? null : null,
       tokenHash: sessionHash,
       expiresAt,
       ipAddress: args.ipAddress ?? null,
@@ -262,6 +276,11 @@ export async function setPassword(contactId: string, password: string): Promise<
     throw AppError.badRequest('Password must be at least 8 characters', 'WEAK_PASSWORD');
   }
   const hash = await bcrypt.hash(password, BCRYPT_COST);
+
+  // Always write the legacy per-contact row first. This is the source
+  // of truth for unlinked contacts and the fallback that survives an
+  // un-flagging of PORTAL_IDENTITY_LINKING_V1 — without it, flipping
+  // the flag off would leave linked contacts without a usable password.
   await db
     .insert(portalPasswords)
     .values({ contactId, bcryptHash: hash, active: true })
@@ -269,6 +288,45 @@ export async function setPassword(contactId: string, password: string): Promise<
       target: portalPasswords.contactId,
       set: { bcryptHash: hash, setAt: new Date(), active: true },
     });
+
+  // PORTAL_IDENTITY_LINKING_V1 — promote (or bind to) a master
+  // identity. The caller is in the "set my password" flow which is
+  // reached only via a verified magic link, so we mark
+  // email_verified_at on identity creation.
+  if (!isLinkingEnabled()) return;
+
+  const contact = await db.query.portalContacts.findFirst({
+    where: eq(portalContacts.id, contactId),
+  });
+  if (!contact) return;
+
+  const existing = await getIdentityByEmail(contact.email);
+  if (existing) {
+    // Identity exists — bind the contact, but DO NOT overwrite the
+    // identity's password. A user setting a password at firm B should
+    // not silently rotate their firm-A credential. The legacy
+    // portal_passwords row written above is what their new password
+    // call uses against firm B only.
+    //
+    // Future enhancement: surface a UI hint "you already have an
+    // account; use that password to sign in here" — covered in a
+    // follow-up plan.
+    if (contact.identityId !== existing.id) {
+      await linkContactToIdentity(contactId, existing.id);
+    }
+    return;
+  }
+
+  // No identity yet — mint one with this password and bind the
+  // contact.
+  const identity = await findOrCreateIdentity({
+    email: contact.email,
+    bcryptHash: hash,
+    emailVerified: true,
+  });
+  if (contact.identityId !== identity.id) {
+    await linkContactToIdentity(contactId, identity.id);
+  }
 }
 
 export async function loginWithPassword(args: {
@@ -286,14 +344,32 @@ export async function loginWithPassword(args: {
   if (!contact || contact.status !== 'active') {
     throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDS');
   }
-  const pw = await db.query.portalPasswords.findFirst({
-    where: eq(portalPasswords.contactId, contact.id),
-  });
-  if (!pw || !pw.active) {
-    throw AppError.unauthorized('No password set — request a magic link instead', 'NO_PASSWORD');
+
+  // PORTAL_IDENTITY_LINKING_V1 — when the contact is linked to a
+  // master identity, authenticate against the identity's hash and
+  // lockout counter. Identity-side bookkeeping (failed attempts,
+  // locked_until, last_login_at) is owned by verifyIdentityPassword.
+  // Legacy unlinked contacts still authenticate against the
+  // per-contact portal_passwords row; un-flagging the feature reverts
+  // every linked contact back to that path because setPassword keeps
+  // both hashes in sync.
+  let authedViaIdentity = false;
+  if (isLinkingEnabled() && contact.identityId) {
+    const identityRow = await verifyIdentityPassword(contact.identityId, args.password);
+    if (!identityRow) {
+      throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDS');
+    }
+    authedViaIdentity = true;
+  } else {
+    const pw = await db.query.portalPasswords.findFirst({
+      where: eq(portalPasswords.contactId, contact.id),
+    });
+    if (!pw || !pw.active) {
+      throw AppError.unauthorized('No password set — request a magic link instead', 'NO_PASSWORD');
+    }
+    const ok = await bcrypt.compare(args.password, pw.bcryptHash);
+    if (!ok) throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDS');
   }
-  const ok = await bcrypt.compare(args.password, pw.bcryptHash);
-  if (!ok) throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDS');
 
   const sessionToken = generateToken();
   const sessionHash = sha256Hex(sessionToken);
@@ -303,6 +379,11 @@ export async function loginWithPassword(args: {
     await tx.insert(portalContactSessions).values({
       tenantId: contact.tenantId,
       contactId: contact.id,
+      // Stamp the session with identity_id when we authed via the
+      // identity row. The switcher's /switch endpoint requires this
+      // to be non-null; a null identityId session means the contact
+      // is unlinked and the switcher hides itself in the UI.
+      identityId: authedViaIdentity ? contact.identityId : null,
       tokenHash: sessionHash,
       expiresAt,
       ipAddress: args.ipAddress ?? null,
@@ -337,6 +418,10 @@ export async function resolveSession(sessionToken: string): Promise<{
   sessionId: string;
   contactId: string;
   tenantId: string;
+  // PORTAL_IDENTITY_LINKING_V1 — non-null when the session was
+  // minted for a linked contact. /portal/auth/switch requires this
+  // to be present; the switcher in the UI hides itself otherwise.
+  identityId: string | null;
   expiresAt: Date;
   contact: {
     id: string;
@@ -378,6 +463,7 @@ export async function resolveSession(sessionToken: string): Promise<{
     sessionId: session.id,
     contactId: session.contactId,
     tenantId: session.tenantId,
+    identityId: session.identityId ?? null,
     expiresAt: session.expiresAt,
     contact: {
       id: contact.id,
@@ -386,6 +472,114 @@ export async function resolveSession(sessionToken: string): Promise<{
       lastName: contact.lastName,
     },
   };
+}
+
+/**
+ * PORTAL_IDENTITY_LINKING_V1 — atomic session swap for the firm
+ * switcher. Validates the current session belongs to an identity AND
+ * the target contact shares that identity, then revokes the current
+ * session and mints a new one. Returns the new session token (the
+ * route handler is responsible for setting the cookie).
+ *
+ * **Authorization is the highest-risk surface in this feature.** A
+ * missed check here is horizontal escalation between firms. Two
+ * defenses:
+ *   1. current session must have a non-null identity_id;
+ *   2. target contact's identity_id must equal that identity_id AND
+ *      its status must be 'active'.
+ * Both are enforced inside the transaction to close TOCTOU windows.
+ */
+export async function switchToContact(args: {
+  currentSessionToken: string;
+  targetContactId: string;
+  ipAddress?: string;
+  userAgent?: string;
+}): Promise<VerifiedSession> {
+  if (!isLinkingEnabled()) {
+    throw AppError.notFound('Endpoint not available');
+  }
+  const currentHash = sha256Hex(args.currentSessionToken);
+  const session = await db.query.portalContactSessions.findFirst({
+    where: eq(portalContactSessions.tokenHash, currentHash),
+  });
+  if (!session) throw AppError.unauthorized('Portal session not found', 'NO_SESSION');
+  if (session.expiresAt.getTime() < Date.now()) {
+    throw AppError.unauthorized('Portal session expired', 'SESSION_EXPIRED');
+  }
+  if (!session.identityId) {
+    // Defense against switching from an unlinked legacy session.
+    throw AppError.forbidden('This session cannot be switched', 'SESSION_NOT_LINKED');
+  }
+
+  const target = await db.query.portalContacts.findFirst({
+    where: eq(portalContacts.id, args.targetContactId),
+  });
+  if (!target || target.status !== 'active') {
+    // Same generic error for both not-found and inactive to avoid
+    // probing.
+    throw AppError.forbidden('Target contact not available', 'TARGET_UNAVAILABLE');
+  }
+  if (target.identityId !== session.identityId) {
+    // The critical authz check — different identity OR null identity
+    // means the target does not belong to this human. Throw the same
+    // generic error.
+    throw AppError.forbidden('Target contact not available', 'TARGET_UNAVAILABLE');
+  }
+
+  const newToken = generateToken();
+  const newHash = sha256Hex(newToken);
+  const expiresAt = new Date(Date.now() + SESSION_TTL_HOURS * 60 * 60 * 1000);
+
+  return db.transaction(async (tx) => {
+    // Revoke the current session by deleting it. Deletion (vs.
+    // updating expiry) makes the swap visible to the cron purge job
+    // and ensures any in-flight request holding the old cookie hash
+    // fails on the next resolveSession call.
+    await tx
+      .delete(portalContactSessions)
+      .where(eq(portalContactSessions.id, session.id));
+
+    await tx.insert(portalContactSessions).values({
+      tenantId: target.tenantId,
+      contactId: target.id,
+      identityId: session.identityId,
+      tokenHash: newHash,
+      expiresAt,
+      ipAddress: args.ipAddress ?? null,
+      userAgent: args.userAgent ?? null,
+    });
+    await tx
+      .update(portalContacts)
+      .set({ lastSeenAt: new Date() })
+      .where(eq(portalContacts.id, target.id));
+
+    await auditLog(
+      target.tenantId,
+      'update',
+      'portal_contact_session',
+      session.id,
+      { fromContactId: session.contactId, fromTenantId: session.tenantId },
+      { toContactId: target.id, toTenantId: target.tenantId },
+    );
+
+    const cos = await tx
+      .select({
+        companyId: portalContactCompanies.companyId,
+        companyName: companies.businessName,
+        role: portalContactCompanies.role,
+      })
+      .from(portalContactCompanies)
+      .innerJoin(companies, eq(portalContactCompanies.companyId, companies.id))
+      .where(eq(portalContactCompanies.contactId, target.id));
+
+    return {
+      sessionToken: newToken,
+      contactId: target.id,
+      tenantId: target.tenantId,
+      expiresAt,
+      companies: cos,
+    };
+  });
 }
 
 export async function logout(sessionToken: string): Promise<void> {

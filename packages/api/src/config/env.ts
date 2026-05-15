@@ -75,6 +75,24 @@ const envSchema = z.object({
     .optional()
     .transform((v) => v === 'true' || v === '1')
     .default('false'),
+  // Portal account-linking layer. When on:
+  //   - createContact probes portal_identities by email and auto-links
+  //     the new portal_contacts row when a match exists.
+  //   - Set-password mints/binds an identity and the password-login path
+  //     authenticates against portal_identities.password_hash for
+  //     linked contacts (legacy portal_passwords still serves unlinked
+  //     contacts).
+  //   - GET /portal/auth/linked-contacts and POST /portal/auth/switch
+  //     are exposed; the PortalFirmSwitcher renders when the session
+  //     carries an identity_id with >1 linked contact.
+  // When off, all of the above short-circuit — schema columns exist but
+  // are never populated. Default off so the migration can ship images
+  // before the feature is enabled per appliance.
+  PORTAL_IDENTITY_LINKING_V1: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true' || v === '1')
+    .default('false'),
   // CLOUDFLARE_TUNNEL_PLAN Phase 6 — staff IP allowlist. "1" enforces.
   STAFF_IP_ALLOWLIST_ENFORCED: z.enum(['0', '1']).optional().default('0'),
   // CLOUDFLARE_TUNNEL_PLAN Phase 7 — Stripe webhook IP allowlist. "1" enforces.

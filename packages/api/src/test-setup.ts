@@ -17,3 +17,11 @@ process.env['ENCRYPTION_KEY'] =
 process.env['PLAID_ENCRYPTION_KEY'] =
   process.env['PLAID_ENCRYPTION_KEY'] || 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6a7b8c9d0e1f2a3b4c5d6a7b8c9d0e1f2';
 process.env['NODE_ENV'] = 'test';
+// PORTAL_IDENTITY_LINKING_V1 — flag is off in production but the
+// test suite exercises both flag-on (identity auto-link, switcher
+// authz) and explicit flag-off branches. Set it on globally here so
+// the env config parses with the flag enabled; the existing
+// non-identity tests do not seed identity rows so the flag is a
+// no-op for them, and the few tests that need the flag off can
+// stub it back via vi.stubEnv inside the test body.
+process.env['PORTAL_IDENTITY_LINKING_V1'] = 'true';
