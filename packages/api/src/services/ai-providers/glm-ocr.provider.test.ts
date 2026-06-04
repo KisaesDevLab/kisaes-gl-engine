@@ -206,6 +206,36 @@ describe('GlmOcrProvider — local appliance contract', () => {
     ).rejects.toThrow(/GLM-OCR local error: 400 context overflow/);
   });
 
+  it('cloud testConnection: 200 is healthy', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
+    const provider = new GlmOcrProvider('cloud', 'cloud-key');
+    expect((await provider.testConnection()).success).toBe(true);
+  });
+
+  it('cloud testConnection: 401/403 reports auth failure (key rejected)', async () => {
+    for (const status of [401, 403]) {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('no', { status }));
+      const provider = new GlmOcrProvider('cloud', 'bad-key');
+      const result = await provider.testConnection();
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/Authentication failed/);
+      vi.restoreAllMocks();
+    }
+  });
+
+  // Regression: the old `status !== 401 && status !== 403` check reported a
+  // wrong endpoint (404) or a dead service (5xx) as a HEALTHY connection.
+  it('cloud testConnection: 404 / 5xx must NOT report success (fail closed)', async () => {
+    for (const status of [404, 500, 502]) {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('boom', { status }));
+      const provider = new GlmOcrProvider('cloud', 'cloud-key');
+      const result = await provider.testConnection();
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(String(status));
+      vi.restoreAllMocks();
+    }
+  });
+
   it('strips trailing slash on baseUrl so /v1/chat/completions URL stays clean', async () => {
     let capturedUrl = '';
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {

@@ -248,9 +248,21 @@ export async function verifyAuthentication(response: AuthenticationResponseJSON)
     throw AppError.unauthorized('Passkey verification failed.');
   }
 
+  // Clone detection: the WebAuthn signature counter exists specifically to
+  // catch a cloned authenticator, which replays a counter that hasn't
+  // advanced past the stored value. @simplewebauthn does NOT enforce this —
+  // it returns newCounter and leaves the policy to us. Fail closed on a
+  // non-advancing counter. Authenticators that don't implement a counter
+  // report 0 forever (newCounter === 0); that legitimate case stays allowed.
+  const { newCounter } = verification.authenticationInfo;
+  const storedCounter = pk.counter || 0;
+  if (newCounter !== 0 && newCounter <= storedCounter) {
+    throw AppError.unauthorized('Passkey verification failed.');
+  }
+
   // Update counter and last used
   await db.update(passkeys).set({
-    counter: verification.authenticationInfo.newCounter,
+    counter: newCounter,
     lastUsedAt: new Date(),
   }).where(eq(passkeys.id, pk.id));
 

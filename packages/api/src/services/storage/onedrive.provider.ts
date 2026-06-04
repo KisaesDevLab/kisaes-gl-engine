@@ -39,7 +39,11 @@ export class OneDriveProvider implements StorageProvider {
   }
 
   async delete(key: string): Promise<void> {
-    await fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${key}`, { method: 'DELETE', headers: this.headers() });
+    const res = await fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${key}`, { method: 'DELETE', headers: this.headers() });
+    // Graph returns 204 on success and 404 when the item is already gone
+    // (idempotent). Surface any other non-2xx so callers don't drop a
+    // backup's manifest entry for a file that still exists remotely.
+    if (!res.ok && res.status !== 404) throw new Error(`OneDrive delete failed: ${res.status}`);
   }
 
   async exists(key: string): Promise<boolean> {

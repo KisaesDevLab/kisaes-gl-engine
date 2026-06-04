@@ -47,7 +47,11 @@ export class GoogleDriveProvider implements StorageProvider {
   }
 
   async delete(key: string): Promise<void> {
-    await fetch(`https://www.googleapis.com/drive/v3/files/${key}`, { method: 'DELETE', headers: this.headers() });
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${key}`, { method: 'DELETE', headers: this.headers() });
+    // Drive returns 204 on success and 404 when the file is already gone
+    // (idempotent). Surface any other non-2xx so callers don't drop a
+    // backup's manifest entry for a file that still exists remotely.
+    if (!res.ok && res.status !== 404) throw new Error(`Google Drive delete failed: ${res.status}`);
   }
 
   async exists(key: string): Promise<boolean> {

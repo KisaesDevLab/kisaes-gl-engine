@@ -5,6 +5,7 @@
 import { eq, and } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { plaidItems, plaidWebhookLog } from '../db/schema/index.js';
+import { log } from '../utils/logger.js';
 
 export async function handleWebhook(body: any) {
   const { webhook_type, webhook_code, item_id } = body;
@@ -34,7 +35,17 @@ export async function handleWebhook(body: any) {
           const { syncItem } = await import('./plaid-sync.service.js');
           try {
             await syncItem(item.id);
-          } catch { /* logged by syncItem */ }
+          } catch (err) {
+            // syncItem records lastSyncError on the row but emits no log line
+            // and rethrows; without this a webhook-driven sync failure leaves
+            // zero operator-visible signal. Don't log the access_token.
+            log.error({
+              component: 'plaid-webhook',
+              event: 'sync_failed',
+              itemId: item.id,
+              message: err instanceof Error ? err.message : String(err),
+            });
+          }
           break;
 
         case 'INITIAL_UPDATE':

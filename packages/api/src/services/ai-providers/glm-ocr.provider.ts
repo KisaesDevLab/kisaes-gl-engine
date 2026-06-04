@@ -176,7 +176,18 @@ export class GlmOcrProvider implements AiProvider {
           body: JSON.stringify({ model: 'glm-ocr', content: [] }),
           signal,
         });
-        return { success: response.status !== 401 && response.status !== 403, modelInfo: 'GLM-OCR Cloud' };
+        // 401/403 = key rejected. The probe POSTs an empty `content`, so a
+        // valid key may legitimately get a 4xx validation error — that still
+        // proves the endpoint+key work. But a 404 (wrong endpoint) or 5xx
+        // (service down) must NOT report success, which the old
+        // `status !== 401 && status !== 403` check wrongly did.
+        if (response.status === 401 || response.status === 403) {
+          return { success: false, error: `Authentication failed: ${response.status}` };
+        }
+        if (response.status === 404 || response.status >= 500) {
+          return { success: false, error: `GLM-OCR Cloud returned ${response.status}` };
+        }
+        return { success: true, modelInfo: 'GLM-OCR Cloud' };
       } else {
         // Vibe-GLM-OCR exposes `/health` when the model is loaded. This is
         // the canonical readiness signal per the appliance README.

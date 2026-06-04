@@ -7,6 +7,7 @@ import { eq, and } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { attachments } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { log } from '../utils/logger.js';
 import * as aiConfigService from './ai-config.service.js';
 import * as orchestrator from './ai-orchestrator.service.js';
 import { sanitize } from './pii-sanitizer.service.js';
@@ -180,6 +181,20 @@ export async function classifyDocument(tenantId: string, attachmentId: string): 
     return { type: docType, confidence };
   } catch (err: any) {
     await orchestrator.failJob(job.id, err.message);
+    // Expected, caller-actionable failures (consent not granted, AI budget
+    // exceeded, cloud vision disabled) are AppErrors — let them surface so
+    // the caller sees the real status instead of every failure silently
+    // collapsing to "other" and routing the document nowhere.
+    if (err instanceof AppError) throw err;
+    // Genuine model/parse failure: classification is best-effort, so fall
+    // back to "other" — but LOG it so the failure is observable rather than
+    // invisibly treating the document as unclassified.
+    log.error({
+      component: 'ai-document-classifier',
+      event: 'classify_failed',
+      attachmentId,
+      message: err instanceof Error ? err.message : String(err),
+    });
     return { type: 'other', confidence: 0 };
   }
 }

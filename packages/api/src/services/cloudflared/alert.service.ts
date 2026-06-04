@@ -58,6 +58,7 @@ function thresholdMs(): number {
  */
 export async function pollOnce(now: number = Date.now()): Promise<{ alerted: boolean; reason?: string }> {
   const started = Date.now();
+  try {
   const result = (await withSchedulerLock('cloudflared-alerter', async () => {
     const status = await getCloudflaredStatus();
 
@@ -105,8 +106,21 @@ export async function pollOnce(now: number = Date.now()): Promise<{ alerted: boo
     log.warn({ component: 'cloudflared-alerter', event: 'tunnel_alert', downForSeconds: Math.floor(downFor / 1000), reason });
     return { alerted: true, reason };
   })) ?? { alerted: false };
-  recordSchedulerTick('cloudflared_alerter', Date.now() - started, 'ok');
-  return result;
+    recordSchedulerTick('cloudflared_alerter', Date.now() - started, 'ok');
+    return result;
+  } catch (err) {
+    // The advisory-lock acquire and auditLog can reject if Postgres is
+    // briefly down. Without this, pollOnce (launched as `void pollOnce()`)
+    // throws an unhandled rejection AND skips recordSchedulerTick, making a
+    // DB-down cycle invisible to metrics — unlike every other scheduler.
+    log.error({
+      component: 'cloudflared-alerter',
+      event: 'cycle_error',
+      message: err instanceof Error ? err.message : String(err),
+    });
+    recordSchedulerTick('cloudflared_alerter', Date.now() - started, 'error');
+    return { alerted: false };
+  }
 }
 
 let timer: ReturnType<typeof setInterval> | null = null;

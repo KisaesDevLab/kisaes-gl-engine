@@ -92,6 +92,12 @@ export class OllamaProvider implements AiProvider {
   async testConnection(signal?: AbortSignal) {
     try {
       const response = await fetch(`${this.baseUrl}/api/tags`, { signal });
+      // Mirror complete(): a reachable-but-wrong endpoint (404/500) must not
+      // report "connected". Without this guard a misconfigured base URL whose
+      // body happens to parse as JSON returns success.
+      if (!response.ok) {
+        return { success: false, error: `Ollama returned ${response.status}` };
+      }
       const data = await response.json() as any;
       const models = (data.models || []).map((m: any) => m.name).join(', ');
       return { success: true, modelInfo: `Available models: ${models || 'none'}` };

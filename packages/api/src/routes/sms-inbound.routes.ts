@@ -9,6 +9,7 @@ import { db } from '../db/index.js';
 import { reminderSends } from '../db/schema/index.js';
 import * as smsSuppression from '../services/sms-suppression.service.js';
 import * as tfaConfigService from '../services/tfa-config.service.js';
+import { log } from '../utils/logger.js';
 
 // DOC_REQUEST_SMS_V1 — inbound SMS webhooks. Two providers wired:
 //   POST /api/sms/inbound/twilio          — message webhook (STOP/START)
@@ -129,18 +130,31 @@ function verifyTwilioSignature(req: express.Request): boolean {
 }
 
 let cachedTwilioAuthToken: string | null | undefined;
+let twilioAuthTokenLoading = false;
 function getCachedTwilioAuthToken(): string | null {
   if (cachedTwilioAuthToken !== undefined) return cachedTwilioAuthToken;
   // Initial fetch is async, so we kick it off and gate the very
   // first request through the slow path. Subsequent requests use the
   // cache. A short-circuit returning null on the first request is
   // safer than blocking — Twilio retries on 4xx.
+  if (twilioAuthTokenLoading) return null; // a load is already in flight
+  twilioAuthTokenLoading = true;
   void (async () => {
     try {
       const cfg = await tfaConfigService.getRawConfig();
       cachedTwilioAuthToken = cfg.smsTwilioAuthToken ?? null;
-    } catch {
-      cachedTwilioAuthToken = null;
+    } catch (err) {
+      // Do NOT cache the failure. Leaving the cache unset lets the next
+      // inbound webhook retry the load; caching null here would reject
+      // EVERY Twilio request (STOP/START compliance included) for the
+      // entire process lifetime if the first load hit a transient DB error.
+      log.error({
+        component: 'sms-inbound',
+        event: 'twilio_authtoken_load_failed',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      twilioAuthTokenLoading = false;
     }
   })();
   return null;

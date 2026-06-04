@@ -8,6 +8,7 @@ import crypto from 'crypto';
 import { sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { AppError } from '../utils/errors.js';
+import { log } from '../utils/logger.js';
 import { auditLog } from '../middleware/audit.js';
 import {
   encryptWithPassphrase,
@@ -707,19 +708,24 @@ export async function purgeExpiredRemoteBackups(config: GfsRetentionConfig): Pro
 
   const provider = await getSystemRemoteProvider();
   let deleted = 0;
+  // Track keys we ACTUALLY deleted, not the keys we intended to delete.
+  // A provider.delete() that throws (now that OneDrive/Drive surface non-2xx)
+  // must leave the manifest entry intact — otherwise a backup that still
+  // exists remotely is dropped from tracking and silently orphaned.
+  const deletedKeys = new Set<string>();
   for (const entry of toDelete) {
     try {
       if (provider) await provider.delete(entry.key);
+      deletedKeys.add(entry.key);
       deleted++;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
-      console.error(`[Backup] Failed to purge remote backup ${entry.key}: ${msg}`);
+      log.error({ component: 'backup', event: 'remote_purge_failed', key: entry.key, message: msg });
     }
   }
 
-  if (deleted > 0) {
-    const deleteKeys = new Set(toDelete.map((e) => e.key));
-    const updated = manifest.filter((e) => !deleteKeys.has(e.key));
+  if (deletedKeys.size > 0) {
+    const updated = manifest.filter((e) => !deletedKeys.has(e.key));
     await saveManifest(updated);
   }
 

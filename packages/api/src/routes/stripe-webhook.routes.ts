@@ -6,6 +6,8 @@ import { Router } from 'express';
 import express from 'express';
 import * as stripeService from '../services/stripe.service.js';
 import { stripeIpAllowlist } from '../utils/stripe-ip-allowlist.js';
+import { AppError } from '../utils/errors.js';
+import { log } from '../utils/logger.js';
 
 export const stripeWebhookRouter = Router();
 
@@ -21,11 +23,30 @@ async function dispatch(rawBody: Buffer, signature: string, companyId: string, r
   try {
     await stripeService.handleWebhookEvent(rawBody, signature, companyId);
     res.status(200).json({ received: true });
-  } catch (err: any) {
-    // Stripe retries on non-2xx, which we don't want for application-level
-    // errors. Log internally; return 200. Signature failures end up here too.
-    console.error('[Stripe Webhook] Error:', err.message);
-    res.status(200).json({ received: true });
+  } catch (err: unknown) {
+    // Distinguish EXPECTED, terminal outcomes from UNEXPECTED, transient ones.
+    // Expected = an AppError with a 4xx status (bad signature, company not
+    // configured, malformed event): retrying won't change the result and a
+    // non-2xx would just make Stripe hammer us, so ack with 200 — but LOG it
+    // so a misconfigured webhook secret is observable rather than invisible.
+    // Unexpected = anything else (DB outage, decrypt failure, downstream
+    // throw): returning 200 here would drop a real event forever, so return
+    // 5xx and let Stripe's retry pick it up once we recover.
+    const expected = err instanceof AppError && err.statusCode >= 400 && err.statusCode < 500;
+    const message = err instanceof Error ? err.message : String(err);
+    if (expected) {
+      log.warn({
+        component: 'stripe-webhook',
+        event: 'event_rejected',
+        companyId,
+        code: (err as AppError).code,
+        status: (err as AppError).statusCode,
+      });
+      res.status(200).json({ received: true });
+      return;
+    }
+    log.error({ component: 'stripe-webhook', event: 'handler_failed', companyId, message });
+    res.status(500).json({ error: { message: 'Webhook processing failed' } });
   }
 }
 

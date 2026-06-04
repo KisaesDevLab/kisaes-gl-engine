@@ -16,6 +16,7 @@ import * as attachmentService from '../services/attachment.service.js';
 import * as ocrService from '../services/ocr.service.js';
 import { parseLimit, parseOffset } from '../utils/pagination.js';
 import { consumeDownloadToken } from '../utils/download-token.js';
+import { log } from '../utils/logger.js';
 
 const ALLOWED_MIME_TYPES = [
   'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/tiff', 'image/bmp',
@@ -204,9 +205,18 @@ attachmentsRouter.post('/', upload.single('file'), async (req, res) => {
     req.userId,
   );
 
-  // Auto-trigger OCR for receipt images
+  // Auto-trigger OCR for receipt images. Fire-and-forget by design (the
+  // upload response must not block on OCR), but a swallowed empty catch hid
+  // failures in processReceipt's pre-try DB writes entirely — log them.
   if (req.file.mimetype.startsWith('image/')) {
-    ocrService.processReceipt(req.tenantId, attachment!.id).catch(() => {});
+    ocrService.processReceipt(req.tenantId, attachment!.id).catch((err) => {
+      log.error({
+        component: 'attachments',
+        event: 'ocr_dispatch_failed',
+        attachmentId: attachment!.id,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    });
   }
 
   res.status(201).json({ attachment });

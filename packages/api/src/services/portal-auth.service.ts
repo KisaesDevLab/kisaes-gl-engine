@@ -721,7 +721,12 @@ export async function startPreview(args: {
 
 export function verifyPreviewToken(token: string): PreviewTokenPayload {
   try {
-    return jwt.verify(token, env.JWT_SECRET) as PreviewTokenPayload;
+    // Pin HS256 to match every other jwt.verify site in the codebase
+    // (auth.ts, staff-ip-allowlist.ts, tfa.service.ts, attachments.routes.ts).
+    // A preview token grants staff impersonation of a client portal, so this
+    // is the wrong place to be the lone unpinned verify — fail closed against
+    // any future algorithm-confusion footgun.
+    return jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as PreviewTokenPayload;
   } catch {
     throw AppError.unauthorized('Preview token invalid or expired', 'PREVIEW_TOKEN_INVALID');
   }

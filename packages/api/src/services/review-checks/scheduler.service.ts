@@ -7,6 +7,7 @@ import { RUN_THROTTLE_HOURS } from '@kis-books/shared';
 import { db } from '../../db/index.js';
 import { tenants, companies } from '../../db/schema/index.js';
 import { withSchedulerLock } from '../../utils/scheduler-lock.js';
+import { log } from '../../utils/logger.js';
 import * as orchestrator from './orchestrator.service.js';
 
 // Phase 6 §6.5 — scheduler that ticks every 30 min and
@@ -43,7 +44,9 @@ export function stopCheckScheduler(): void {
   }
 }
 
-async function runTick(): Promise<void> {
+// Exported for the failure-path test (per-company isolation). Not part of
+// the public scheduler API — startCheckScheduler/stopCheckScheduler are.
+export async function runTick(): Promise<void> {
   await withSchedulerLock(LOCK_NAME, async () => {
     // For every active tenant, sweep its companies. The
     // throttle check skips (tenant, company) pairs that ran
@@ -56,11 +59,24 @@ async function runTick(): Promise<void> {
         .from(companies)
         .where(eq(companies.tenantId, t.id));
       for (const c of companyRows) {
-        const lastCompleted = await orchestrator.lastRunCompletedAt(t.id, c.id);
-        if (lastCompleted && Date.now() - lastCompleted.getTime() < RUN_THROTTLE_HOURS * 60 * 60 * 1000) {
-          continue;
+        // Per-company isolation: one company's failure must not abort the
+        // sweep for every later (tenant, company) pair this tick. Catch,
+        // log, and continue — matching recurring.service.ts's per-item loop.
+        try {
+          const lastCompleted = await orchestrator.lastRunCompletedAt(t.id, c.id);
+          if (lastCompleted && Date.now() - lastCompleted.getTime() < RUN_THROTTLE_HOURS * 60 * 60 * 1000) {
+            continue;
+          }
+          await orchestrator.runForCompany(t.id, c.id);
+        } catch (err) {
+          log.error({
+            component: 'review-checks',
+            event: 'company_failed',
+            tenantId: t.id,
+            companyId: c.id,
+            message: err instanceof Error ? err.message : String(err),
+          });
         }
-        await orchestrator.runForCompany(t.id, c.id);
       }
     }
   });
