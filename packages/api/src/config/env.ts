@@ -99,6 +99,17 @@ const envSchema = z.object({
   STRIPE_WEBHOOK_IP_ALLOWLIST_ENFORCED: z.enum(['0', '1']).optional().default('0'),
   // CLOUDFLARE_TUNNEL_PLAN Phase 4 — opt-in Redis-backed rate limit store.
   RATE_LIMIT_REDIS: z.enum(['0', '1']).optional().default('0'),
+  // Ollama tuning (self-hosted AI). keep_alive controls how long Ollama
+  // keeps the model resident after a request — longer = warm model = no
+  // multi-second reload between bursts (e.g. batch categorization), at the
+  // cost of holding the model in RAM. Default 30m; set "0" to unload
+  // immediately or "-1" to keep loaded indefinitely.
+  OLLAMA_KEEP_ALIVE: z.string().default('30m'),
+  // Optional context-window override (num_ctx) for Ollama requests. Unset
+  // = use the model's default. Raise it when the Chart-of-Accounts +
+  // vendor + tag lists in a categorization prompt would otherwise be
+  // silently truncated; note a larger context costs more memory.
+  OLLAMA_NUM_CTX: z.coerce.number().int().positive().optional(),
   // CLOUDFLARE_TUNNEL_PLAN Phase 1 — disable HIBP breach lookup (tests/offline).
   HIBP_DISABLED: z.enum(['0', '1']).optional().default('0'),
   // Configurable HIBP client timeout (ms). Slow networks may need >3000.

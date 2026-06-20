@@ -3,7 +3,7 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import fs from 'fs';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, ilike } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { attachments, contacts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -166,10 +166,18 @@ export async function processReceipt(tenantId: string, attachmentId: string) {
 
     let contactId: string | null = null;
     if (parsed.vendor) {
-      const contact = await db.query.contacts.findFirst({
+      // Two-tier match (mirrors ai-bill-ocr): exact, then case-insensitive
+      // ilike. OCR vendor strings are lossy ("STARBUCKS COFFEE CO" vs
+      // "Starbucks"); strict exact matching alone silently drops the link.
+      const exact = await db.query.contacts.findFirst({
         where: and(eq(contacts.tenantId, tenantId), eq(contacts.displayName, parsed.vendor)),
       });
-      contactId = contact?.id || null;
+      const matched = exact ?? (await db
+        .select()
+        .from(contacts)
+        .where(and(eq(contacts.tenantId, tenantId), ilike(contacts.displayName, parsed.vendor)))
+        .limit(1))[0];
+      contactId = matched?.id ?? null;
     }
 
     // If OCR yielded only raw text (parsed.raw_text, no vendor/date/total),

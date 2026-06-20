@@ -4,6 +4,7 @@
 
 import type { AiProvider, CompletionParams, VisionParams, CompletionResult } from './ai-provider.interface.js';
 import { extractJsonForResult } from './json-utils.js';
+import { env } from '../../config/env.js';
 
 export class OllamaProvider implements AiProvider {
   name = 'ollama';
@@ -14,6 +15,21 @@ export class OllamaProvider implements AiProvider {
   constructor(baseUrl: string = 'http://localhost:11434', model: string = 'llama3.2') {
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.model = model;
+  }
+
+  // Shared request tuning for both text and vision calls:
+  //  - keep_alive keeps the model resident between requests (no cold
+  //    reload on the next call); OLLAMA_KEEP_ALIVE tunes it.
+  //  - num_predict caps output tokens — this is how the per-function
+  //    maxTokens setting reaches Ollama (the /api/chat body ignores a
+  //    top-level max_tokens).
+  //  - num_ctx (optional, OLLAMA_NUM_CTX) widens the context window so a
+  //    long COA/vendor/tag prompt isn't silently truncated.
+  private requestExtras(params: CompletionParams): { keep_alive: string; options: Record<string, unknown> } {
+    const options: Record<string, unknown> = { temperature: params.temperature ?? 0.1 };
+    if (params.maxTokens) options['num_predict'] = params.maxTokens;
+    if (env.OLLAMA_NUM_CTX) options['num_ctx'] = env.OLLAMA_NUM_CTX;
+    return { keep_alive: env.OLLAMA_KEEP_ALIVE, options };
   }
 
   async complete(params: CompletionParams): Promise<CompletionResult> {
@@ -35,7 +51,7 @@ export class OllamaProvider implements AiProvider {
         // `content` failure mode seen on the OpenAI-compat /v1 path. Omit
         // when unset so non-thinking models keep their default behaviour.
         ...(params.thinking ? { think: params.thinking === 'on' } : {}),
-        options: { temperature: params.temperature ?? 0.1 },
+        ...this.requestExtras(params),
       }),
       signal: params.signal,
     });
@@ -73,6 +89,7 @@ export class OllamaProvider implements AiProvider {
         format: params.responseFormat === 'json' ? 'json' : undefined,
         stream: false,
         ...(params.thinking ? { think: params.thinking === 'on' } : {}),
+        ...this.requestExtras(params),
       }),
       signal: params.signal,
     });

@@ -5,6 +5,30 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { OllamaProvider } from './ollama.provider.js';
 
+describe('OllamaProvider.complete — request tuning (keep_alive / num_predict)', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('sends keep_alive and threads maxTokens to options.num_predict', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ message: { content: '{"ok":true}' }, prompt_eval_count: 1, eval_count: 1 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    await new OllamaProvider('http://localhost:11434', 'qwen').complete({
+      systemPrompt: 'sys',
+      userPrompt: 'usr',
+      maxTokens: 512,
+      temperature: 0.1,
+      responseFormat: 'json',
+    });
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.keep_alive).toBeTruthy();
+    expect(body.options.num_predict).toBe(512);
+    expect(body.options.temperature).toBe(0.1);
+  });
+});
+
 describe('OllamaProvider.testConnection — fail-closed on non-ok', () => {
   afterEach(() => vi.restoreAllMocks());
 
