@@ -15,9 +15,11 @@
 // advisory lock at the call site so the API and worker processes can both
 // boot it without double-purging.
 //
-// Retention is configured through the admin settings KV store:
-//   ai_jobs_retention_days   (default 90)   — 0 / negative disables
-//   chat_retention_days      (default 365)  — 0 / negative disables
+// Retention is OPT-IN: both horizons default to 0 (disabled), so a fresh
+// install never deletes AI history until an admin explicitly sets a
+// positive day count. Configured through the admin settings KV store:
+//   ai_jobs_retention_days   (default 0 = disabled) — set >0 to enable
+//   chat_retention_days      (default 0 = disabled) — set >0 to enable
 //
 // ai_usage_log is intentionally NOT purged here — it's the cost/usage
 // ledger (tokens + cost only, no prompt/reply content) and is expected to
@@ -34,8 +36,10 @@ const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 60 minutes
 const INITIAL_DELAY_MS = 5 * 60 * 1000; // 5 minutes after boot
 const RUN_EVERY_MS = 24 * 60 * 60 * 1000; // purge at most once per day
 
-const DEFAULT_AI_JOBS_RETENTION_DAYS = 90;
-const DEFAULT_CHAT_RETENTION_DAYS = 365;
+// Opt-in: 0 = disabled. An admin enables purging by setting
+// ai_jobs_retention_days / chat_retention_days to a positive value.
+const DEFAULT_AI_JOBS_RETENTION_DAYS = 0;
+const DEFAULT_CHAT_RETENTION_DAYS = 0;
 
 function cutoffFor(retentionDays: number): Date {
   return new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
