@@ -24,6 +24,12 @@ WORKDIR /app
 # (musl libc). Install Chromium from apk and tell Puppeteer to use it
 # instead of downloading its own. The font packages are required for
 # Chromium to render text — without them PDFs render as empty boxes.
+#
+# poppler-utils provides `pdftoppm`, used by the document-extraction
+# worker (services/extraction/pdf-render.service.ts) to rasterize PDF
+# pages to PNGs for the local Qwen vision model. Both the `api` and
+# `worker` services build from this image, so it ships in both even
+# though only the worker's doc-render processor invokes it.
 RUN apk add --no-cache \
     chromium \
     nss \
@@ -33,6 +39,7 @@ RUN apk add --no-cache \
     ca-certificates \
     ttf-freefont \
     font-noto-emoji \
+    poppler-utils \
     su-exec
 ENV PUPPETEER_SKIP_DOWNLOAD=true \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser

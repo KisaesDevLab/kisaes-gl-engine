@@ -30,8 +30,25 @@ const SEVEN_DAYS_SECONDS = 7 * 24 * 60 * 60;
 // Resolve the final Path value once. env.COOKIE_PATH is normalized to
 // '/' or '/<prefix>' (no trailing slash), so concatenation with the
 // fixed sub-path always produces a single leading slash.
+//
+// Hardening: when COOKIE_PATH is left at the '/' default, derive the prefix
+// from PUBLIC_URL's path instead. In a sub-pathed deployment (e.g.
+// https://host/mybooks) the browser POSTs /auth/refresh to
+// /mybooks/api/v1/auth/refresh, so the cookie Path MUST include /mybooks to
+// be sent back. Previously COOKIE_PATH had to be set by hand to match the
+// web's VITE_BASE_PATH; a mismatch dropped the refresh cookie and logged
+// users out every ~15 minutes. Deriving from PUBLIC_URL removes that footgun
+// while an explicit COOKIE_PATH still wins when an operator needs to override.
 function resolvedCookiePath(): string {
-  const prefix = env.COOKIE_PATH === '/' ? '' : env.COOKIE_PATH;
+  let prefix = env.COOKIE_PATH === '/' ? '' : env.COOKIE_PATH;
+  if (!prefix) {
+    try {
+      const fromPublicUrl = new URL(env.PUBLIC_URL).pathname.replace(/\/+$/, '');
+      if (fromPublicUrl && fromPublicUrl !== '/') prefix = fromPublicUrl;
+    } catch {
+      // PUBLIC_URL is URL-validated in config/env.ts; this catch is defensive.
+    }
+  }
   return `${prefix}${COOKIE_SUB_PATH}`;
 }
 

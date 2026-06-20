@@ -687,6 +687,20 @@
       "when": 1776920000000,
       "tag": "0097_portal_identity_linking",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1776930000000,
+      "tag": "0098_document_extraction",
+      "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1776940000000,
+      "tag": "0099_journal_line_contact",
+      "breakpoints": true
     }
   ]
 }

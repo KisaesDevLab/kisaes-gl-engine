@@ -34,6 +34,7 @@ export * from './types/firms.js';
 export * from './types/firm-tag-templates.js';
 export * from './types/recurring-doc-request.js';
 export * from './types/imports.js';
+export * from './types/extraction.js';
 
 // Schemas
 export * from './schemas/auth.js';
@@ -54,7 +55,6 @@ export * from './schemas/preferences.js';
 export * from './schemas/items.js';
 export * from './schemas/payments.js';
 export * from './schemas/checks.js';
-export * from './schemas/bank-rules.js';
 export * from './schemas/tfa.js';
 export * from './schemas/passwordless.js';
 export * from './schemas/plaid.js';
@@ -69,6 +69,7 @@ export * from './schemas/tailscale.js';
 export * from './schemas/report-settings.js';
 export * from './schemas/imports.js';
 export * from './schemas/batch.js';
+export * from './schemas/extraction.js';
 
 // Constants
 export * from './constants/coa-templates.js';

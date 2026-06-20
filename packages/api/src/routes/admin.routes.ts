@@ -13,7 +13,6 @@ import * as adminService from '../services/admin.service.js';
 import * as authService from '../services/auth.service.js';
 import { testSmtpConnection, withSetupLock } from '../services/setup.service.js';
 import * as tfaConfigService from '../services/tfa-config.service.js';
-import * as bankRulesService from '../services/bank-rules.service.js';
 import { encrypt, decrypt } from '../utils/encryption.js';
 import * as coaTemplatesService from '../services/coa-templates.service.js';
 import { db } from '../db/index.js';
@@ -45,8 +44,6 @@ import {
   updateCoaTemplateSchema,
   cloneCoaTemplateFromTenantSchema,
   importCoaTemplateSchema,
-  createBankRuleSchema,
-  updateBankRuleSchema,
   adminResetPasswordSchema,
   adminToggleTenantAccessSchema,
   adminSetRoleSchema,
@@ -479,44 +476,6 @@ adminRouter.post('/tfa/sms-test', validate(adminTfaSmsTestSchema), async (req, r
 adminRouter.get('/tfa/stats', async (req, res) => {
   const stats = await tfaConfigService.getTfaStats();
   res.json(stats);
-});
-
-// ─── Global Bank Rules ──────────────────────────────────────────
-
-adminRouter.get('/bank-rules', async (req, res) => {
-  const rules = await bankRulesService.listGlobal();
-  res.json({ rules });
-});
-
-adminRouter.post('/bank-rules', validate(createBankRuleSchema), async (req, res) => {
-  const rule = await bankRulesService.createGlobal(req.body);
-  res.status(201).json({ rule });
-});
-
-adminRouter.put('/bank-rules/:id', validate(updateBankRuleSchema), async (req, res) => {
-  const rule = await bankRulesService.updateGlobal(req.params['id']!, req.body);
-  res.json({ rule });
-});
-
-adminRouter.delete('/bank-rules/:id', async (req, res) => {
-  await bankRulesService.removeGlobal(req.params['id']!);
-  res.json({ message: 'Global rule deleted' });
-});
-
-adminRouter.get('/bank-rule-submissions', async (req, res) => {
-  const status = req.query['status'] as string | undefined;
-  const submissions = await bankRulesService.listSubmissions(status);
-  res.json({ submissions });
-});
-
-adminRouter.post('/bank-rule-submissions/:id/approve', async (req, res) => {
-  const rule = await bankRulesService.approveSubmission(req.params['id']!);
-  res.json({ message: 'Submission approved', rule });
-});
-
-adminRouter.post('/bank-rule-submissions/:id/reject', async (req, res) => {
-  await bankRulesService.rejectSubmission(req.params['id']!);
-  res.json({ message: 'Submission rejected' });
 });
 
 // ─── Create Client Tenant ───────────────────────────────────────

@@ -12,6 +12,14 @@ export const bankFeedFiltersSchema = z.object({
   startDate: z.string().optional(),
   endDate: z.string().optional(),
   search: z.string().optional(),
+  // Convenience toggle: when true, show only actionable (pending) items by
+  // excluding matched/categorized/excluded. A specific `status` filter, when
+  // set, takes precedence in the service query. Accepts the string 'true'
+  // (how it arrives as a query param) or a real boolean.
+  actionableOnly: z
+    .union([z.boolean(), z.enum(['true', 'false'])])
+    .optional()
+    .transform((v) => v === true || v === 'true'),
   limit: z.coerce.number().int().min(1).max(500).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });

@@ -5,7 +5,7 @@
 import { eq, and, sql, lte, count, inArray } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
-import type { JournalLineInput, TxnType, TxnStatus } from '@kis-books/shared';
+import type { JournalLineInput, TxnType, TxnStatus, BulkUpdateTransactionsInput, BulkUpdateTransactionsResult } from '@kis-books/shared';
 import { db, type DbOrTx, type Tx } from '../db/index.js';
 import { transactions, journalLines, accounts, companies, contacts, reconciliations, reconciliationLines, bankFeedItems, transactionTags, items } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -313,6 +313,7 @@ export async function postTransaction(
       taxRate: line.taxRate || '0',
       taxAmount: line.taxAmount || '0',
       lineOrder: i,
+      contactId: line.contactId ?? null,
       tagId: resolveDefaultTag({
         explicitUserTagId: line.tagId,
         bankRuleTagId: line.bankRuleTagId ?? undefined,
@@ -531,6 +532,7 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
       taxRate: line.taxRate || '0',
       taxAmount: line.taxAmount || '0',
       lineOrder: i,
+      contactId: line.contactId ?? null,
       tagId: resolveDefaultTag({
         explicitUserTagId: line.tagId,
         bankRuleTagId: line.bankRuleTagId ?? undefined,
@@ -608,6 +610,7 @@ export async function getTransaction(tenantId: string, txnId: string) {
     taxAmount: journalLines.taxAmount,
     lineOrder: journalLines.lineOrder,
     tagId: journalLines.tagId,
+    contactId: journalLines.contactId,
   }).from(journalLines)
     .leftJoin(accounts, eq(journalLines.accountId, accounts.id))
     .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)))
@@ -685,6 +688,18 @@ export async function listTransactions(tenantId: string, filters: {
           AND jl.tenant_id = ${tenantId}
           AND jl.tag_id IS NOT NULL
       )`,
+      // Category column: distinct names of the P&L (category) accounts on
+      // this transaction's lines — the income/expense side, excluding the
+      // bank/AR/AP/equity "money" accounts. One element → single category;
+      // two+ → rendered as "— Split —"; null → "—".
+      lineCategories: sql<string[] | null>`(
+        SELECT array_agg(DISTINCT a2.name ORDER BY a2.name)
+        FROM journal_lines jl3
+        JOIN accounts a2 ON a2.id = jl3.account_id
+        WHERE jl3.transaction_id = ${transactions.id}
+          AND jl3.tenant_id = ${tenantId}
+          AND a2.account_type IN ('revenue','other_revenue','cogs','expense','other_expense')
+      )`,
     }).from(transactions)
       .leftJoin(contacts, eq(transactions.contactId, contacts.id))
       .leftJoin(bankFeedItems, and(
@@ -750,4 +765,144 @@ export async function validateBalance(tenantId: string): Promise<{ valid: boolea
     totalCredits: Number(totalCredits.toFixed(4)),
     difference: Number(difference.toFixed(4)),
   };
+}
+
+// P&L (category) account types — the income/expense side a transaction is
+// "categorized" to, excluding the bank / AR / AP / equity money accounts.
+const CATEGORY_ACCOUNT_TYPES = ['revenue', 'other_revenue', 'cogs', 'expense', 'other_expense'];
+
+/**
+ * Bulk-edit Payee / Category / Tag across many transactions from the list
+ * view. Atomic — the whole batch commits or rolls back together. Invariants:
+ *   - Payee (transactions.contact_id) is header-level — always safe to set.
+ *   - Tag sets journal_lines.tag_id on every line, then re-syncs the
+ *     transaction_tags junction (no-op when TAGS_SPLIT_LEVEL_V2 is off).
+ *   - Category re-points the transaction's SINGLE P&L line to a new account
+ *     and moves the denormalised accounts.balance to match. Split
+ *     transactions (0 or >1 category lines) are skipped, never collapsed.
+ *   - Void, lock-dated, and reconciled (cleared in a completed rec)
+ *     transactions are skipped for line-touching changes.
+ * Returns counts so the UI can report "N updated, M skipped (splits, etc.)".
+ */
+export async function bulkUpdateTransactions(
+  tenantId: string,
+  input: BulkUpdateTransactionsInput,
+  userId?: string,
+  companyId?: string,
+): Promise<BulkUpdateTransactionsResult> {
+  const { txnIds, setPayeeContactId, setCategoryAccountId, setTagId } = input;
+  const touchesLines = setCategoryAccountId !== undefined || setTagId !== undefined;
+  const skipped: Array<{ id: string; reason: string }> = [];
+  let updated = 0;
+
+  return await db.transaction(async (tx) => {
+    // Validate targets once up front — a bad account/contact id should 400
+    // the whole batch rather than silently no-op per transaction.
+    if (setCategoryAccountId !== undefined) {
+      await assertAccountsInScope(tx, tenantId, companyId ?? null, [setCategoryAccountId]);
+    }
+    if (setPayeeContactId) {
+      const [contact] = await tx.select({ id: contacts.id })
+        .from(contacts)
+        .where(and(eq(contacts.tenantId, tenantId), eq(contacts.id, setPayeeContactId)))
+        .limit(1);
+      if (!contact) throw AppError.badRequest('Payee contact does not belong to this tenant');
+    }
+
+    // Tenant-wide lock date — loaded once.
+    const lockResult = await tx.execute(sql`SELECT lock_date FROM companies WHERE tenant_id = ${tenantId} LIMIT 1`);
+    const lockDate = (lockResult.rows as Array<{ lock_date: string | null }>)[0]?.lock_date ?? null;
+
+    for (const txnId of txnIds) {
+      const conds = [eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)];
+      if (companyId) conds.push(eq(transactions.companyId, companyId));
+      const [txn] = await tx.select().from(transactions).where(and(...conds)).for('update').limit(1);
+
+      if (!txn) { skipped.push({ id: txnId, reason: 'not_found' }); continue; }
+      if (txn.status === 'void') { skipped.push({ id: txnId, reason: 'void' }); continue; }
+      if (lockDate && txn.txnDate <= lockDate) { skipped.push({ id: txnId, reason: 'locked' }); continue; }
+
+      if (touchesLines) {
+        const cleared = await tx.execute(sql`
+          SELECT 1 FROM ${reconciliationLines} rl
+          JOIN ${reconciliations} r ON r.id = rl.reconciliation_id
+          JOIN ${journalLines} jl ON jl.id = rl.journal_line_id
+          WHERE r.tenant_id = ${tenantId} AND r.status = 'complete'
+            AND rl.is_cleared = true AND jl.transaction_id = ${txnId}
+          LIMIT 1`);
+        if ((cleared.rows as unknown[]).length > 0) { skipped.push({ id: txnId, reason: 'reconciled' }); continue; }
+      }
+
+      let changed = false;
+
+      // Payee — header-level, always applicable.
+      if (setPayeeContactId !== undefined) {
+        await tx.update(transactions)
+          .set({ contactId: setPayeeContactId, updatedAt: new Date() })
+          .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)));
+        changed = true;
+      }
+
+      // Category — only when there's exactly one P&L line to move.
+      if (setCategoryAccountId !== undefined) {
+        const catLines = await tx.select({
+          id: journalLines.id, accountId: journalLines.accountId,
+          debit: journalLines.debit, credit: journalLines.credit,
+        })
+          .from(journalLines)
+          .innerJoin(accounts, eq(journalLines.accountId, accounts.id))
+          .where(and(
+            eq(journalLines.tenantId, tenantId),
+            eq(journalLines.transactionId, txnId),
+            inArray(accounts.accountType, CATEGORY_ACCOUNT_TYPES),
+          ));
+
+        if (catLines.length === 1) {
+          const line = catLines[0]!;
+          if (line.accountId !== setCategoryAccountId) {
+            if (txn.status === 'posted') {
+              // Move the denormalised balance: reverse the line off its old
+              // account, apply it to the new one. Amounts are unchanged so the
+              // trial balance still balances; only the per-account split moves.
+              await updateAccountBalances(tx, tenantId, [{ accountId: line.accountId, debit: line.credit, credit: line.debit }]);
+              await updateAccountBalances(tx, tenantId, [{ accountId: setCategoryAccountId, debit: line.debit, credit: line.credit }]);
+            }
+            await tx.update(journalLines)
+              .set({ accountId: setCategoryAccountId })
+              .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.id, line.id)));
+          }
+          changed = true;
+        } else if (setPayeeContactId === undefined && setTagId === undefined) {
+          // Category was the sole requested change and this isn't a single-
+          // category transaction — skip it so the caller can report it.
+          skipped.push({ id: txnId, reason: catLines.length === 0 ? 'no_category_line' : 'split' });
+          continue;
+        }
+        // else: payee/tag still apply below; the category just didn't move.
+      }
+
+      // Tag — set on every line, then re-sync the junction surface.
+      if (setTagId !== undefined) {
+        await tx.update(journalLines)
+          .set({ tagId: setTagId })
+          .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)));
+        await syncTransactionTagsFromLines(tx, tenantId, txn.companyId ?? null, txnId, [{ tagId: setTagId }]);
+        changed = true;
+      }
+
+      if (changed) {
+        updated++;
+        await auditLog(tenantId, 'update', 'transaction', txnId, null, {
+          bulk: true,
+          ...(setPayeeContactId !== undefined ? { contactId: setPayeeContactId } : {}),
+          ...(setCategoryAccountId !== undefined ? { categoryAccountId: setCategoryAccountId } : {}),
+          ...(setTagId !== undefined ? { tagId: setTagId } : {}),
+        }, userId, tx);
+      } else {
+        skipped.push({ id: txnId, reason: 'no_change' });
+      }
+    }
+
+    return { updated, skipped };
+  });
 }

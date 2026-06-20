@@ -3,6 +3,7 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { eq, and, sql, count, gte, lte } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import type { BankFeedFilters, CategorizeInput, CsvColumnMapping } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { bankFeedItems, bankConnections, accounts, transactions, journalLines, transactionTags as transactionTagsTable } from '../db/schema/index.js';
@@ -29,7 +30,14 @@ async function assertConnectionInTenant(tenantId: string, bankConnectionId: stri
 
 export async function list(tenantId: string, filters: BankFeedFilters) {
   const conditions = [eq(bankFeedItems.tenantId, tenantId)];
-  if (filters.status) conditions.push(eq(bankFeedItems.status, filters.status));
+  if (filters.status) {
+    // An explicit single-status filter takes precedence over actionableOnly.
+    conditions.push(eq(bankFeedItems.status, filters.status));
+  } else if (filters.actionableOnly) {
+    // "Hide processed" — exclude items that have already been handled,
+    // leaving the actionable (pending) work to do.
+    conditions.push(sql`${bankFeedItems.status} NOT IN ('matched', 'categorized', 'excluded')`);
+  }
   if (filters.bankConnectionId) conditions.push(eq(bankFeedItems.bankConnectionId, filters.bankConnectionId));
   if (filters.startDate) conditions.push(sql`${bankFeedItems.feedDate} >= ${filters.startDate}`);
   if (filters.endDate) conditions.push(sql`${bankFeedItems.feedDate} <= ${filters.endDate}`);
@@ -39,6 +47,10 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
   }
 
   const where = and(...conditions);
+
+  // Separate alias for the suggested GL account so it doesn't collide with the
+  // bank-account join (which resolves the connection's own account).
+  const suggestedAccount = alias(accounts, 'suggested_account');
 
   const [data, total] = await Promise.all([
     db.select({
@@ -60,9 +72,11 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
       updatedAt: bankFeedItems.updatedAt,
       bankAccountName: accounts.name,
       institutionName: bankConnections.institutionName,
+      suggestedAccountName: suggestedAccount.name,
     }).from(bankFeedItems)
       .leftJoin(bankConnections, eq(bankFeedItems.bankConnectionId, bankConnections.id))
       .leftJoin(accounts, eq(bankConnections.accountId, accounts.id))
+      .leftJoin(suggestedAccount, eq(bankFeedItems.suggestedAccountId, suggestedAccount.id))
       .where(where)
       .orderBy(sql`${bankFeedItems.feedDate} DESC`)
       .limit(filters.limit ?? 50)

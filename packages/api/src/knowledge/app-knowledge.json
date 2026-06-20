@@ -282,11 +282,11 @@
     },
     {
       "id": "banking-rules",
-      "path": "/banking/rules",
-      "component": "BankRulesPage",
+      "path": "/practice/rules",
+      "component": "RulesPage",
       "sourceFile": null,
-      "title": "Bank Rules",
-      "section": "Banking",
+      "title": "Rules",
+      "section": "Practice",
       "actions": []
     },
     {

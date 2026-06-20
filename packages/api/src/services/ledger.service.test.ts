@@ -229,6 +229,55 @@ describe('Ledger Service', () => {
     });
   });
 
+  describe('bulkUpdateTransactions', () => {
+    it('moves the single category line to a new account and shifts balances', async () => {
+      const travel = await accountsService.create(tenantId, { name: 'Travel', accountType: 'expense', accountNumber: '6100' });
+      const txn = await ledger.postTransaction(tenantId, {
+        txnType: 'expense',
+        txnDate: '2026-04-01',
+        lines: [
+          { accountId: expenseAccountId, debit: '50.00', credit: '0' },
+          { accountId: cashAccountId, debit: '0', credit: '50.00' },
+        ],
+      });
+
+      const res = await ledger.bulkUpdateTransactions(tenantId, { txnIds: [txn.id], setCategoryAccountId: travel.id });
+      expect(res.updated).toBe(1);
+      expect(res.skipped).toHaveLength(0);
+
+      // Old category zeroed, new category holds the amount, bank untouched.
+      expect(parseFloat((await accountsService.getById(tenantId, expenseAccountId)).balance ?? '0')).toBe(0);
+      expect(parseFloat((await accountsService.getById(tenantId, travel.id)).balance ?? '0')).toBe(50);
+      expect(parseFloat((await accountsService.getById(tenantId, cashAccountId)).balance ?? '0')).toBe(-50);
+
+      const reread = await ledger.getTransaction(tenantId, txn.id);
+      expect(reread.lines.some((l) => l.accountId === travel.id)).toBe(true);
+      expect((await ledger.validateBalance(tenantId)).valid).toBe(true);
+    });
+
+    it('skips a split transaction when only a category change is requested', async () => {
+      const travel = await accountsService.create(tenantId, { name: 'Travel2', accountType: 'expense', accountNumber: '6200' });
+      const txn = await ledger.postTransaction(tenantId, {
+        txnType: 'expense',
+        txnDate: '2026-04-01',
+        lines: [
+          { accountId: expenseAccountId, debit: '30.00', credit: '0' },
+          { accountId: travel.id, debit: '70.00', credit: '0' },
+          { accountId: cashAccountId, debit: '0', credit: '100.00' },
+        ],
+      });
+
+      const res = await ledger.bulkUpdateTransactions(tenantId, { txnIds: [txn.id], setCategoryAccountId: revenueAccountId });
+      expect(res.updated).toBe(0);
+      expect(res.skipped).toEqual([{ id: txn.id, reason: 'split' }]);
+
+      // Nothing moved.
+      expect(parseFloat((await accountsService.getById(tenantId, expenseAccountId)).balance ?? '0')).toBe(30);
+      expect(parseFloat((await accountsService.getById(tenantId, travel.id)).balance ?? '0')).toBe(70);
+      expect(parseFloat((await accountsService.getById(tenantId, revenueAccountId)).balance ?? '0')).toBe(0);
+    });
+  });
+
   describe('getAccountBalance', () => {
     it('should calculate balance from journal lines', async () => {
       await ledger.postTransaction(tenantId, {

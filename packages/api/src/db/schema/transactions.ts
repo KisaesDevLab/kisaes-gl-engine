@@ -113,6 +113,9 @@ export const journalLines = pgTable('journal_lines', {
   lineOrder: integer('line_order').default(0),
   // ADR 0XX: split-level tag. FK declared in migration 0059 (ON DELETE RESTRICT).
   tagId: uuid('tag_id'),
+  // Per-line payee ("Received From"). Added in migration 0099. No FK (mirrors
+  // transactions.contact_id), tenant-scoped via the composite index below.
+  contactId: uuid('contact_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
   transactionIdx: index('idx_jl_transaction').on(table.transactionId),
@@ -120,6 +123,7 @@ export const journalLines = pgTable('journal_lines', {
   tenantIdx: index('idx_jl_tenant').on(table.tenantId),
   tagIdx: index('idx_journal_lines_tag_id').on(table.tagId),
   tenantTagIdx: index('idx_journal_lines_tenant_tag').on(table.tenantId, table.tagId),
+  contactIdx: index('idx_jl_contact').on(table.tenantId, table.contactId),
 }));
 
 export const tagGroups = pgTable('tag_groups', {

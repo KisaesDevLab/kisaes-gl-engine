@@ -2,118 +2,23 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-import { eq, and, sql, isNull } from 'drizzle-orm';
-import type { CreateBankRuleInput, UpdateBankRuleInput } from '@kis-books/shared';
+import { eq, and, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { bankRules, accounts, contacts, globalRuleSubmissions } from '../db/schema/index.js';
-import { AppError } from '../utils/errors.js';
-import { auditLog } from '../middleware/audit.js';
+import { bankRules, accounts } from '../db/schema/index.js';
 // 3-tier rules plan, Phase 4 — vendor find-or-create lives in
 // rule-symbol-resolution.service.ts now so the legacy and the
 // conditional-rules pipeline use ONE implementation.
 import { findOrCreateContact } from './rule-symbol-resolution.service.js';
 
-// ─── Tenant Rules (existing) ────────────────────────────────────
-
-export async function list(tenantId: string, opts?: { limit?: number; offset?: number }) {
-  const where = and(eq(bankRules.tenantId, tenantId), eq(bankRules.isGlobal, false));
-  const limit = Math.min(Math.max(opts?.limit ?? 200, 1), 500);
-  const offset = Math.max(opts?.offset ?? 0, 0);
-
-  const data = await db.select().from(bankRules).where(where)
-    .orderBy(sql`${bankRules.priority} DESC`, bankRules.name)
-    .limit(limit).offset(offset);
-
-  const totalRows = await db.select({ total: sql<number>`COUNT(*)::int` })
-    .from(bankRules).where(where);
-  const total = totalRows[0]?.total ?? 0;
-
-  return { data, total, limit, offset };
-}
-
-export async function getById(tenantId: string, id: string) {
-  const rule = await db.query.bankRules.findFirst({ where: and(eq(bankRules.tenantId, tenantId), eq(bankRules.id, id)) });
-  if (!rule) throw AppError.notFound('Bank rule not found');
-  return rule;
-}
-
-export async function create(tenantId: string, input: CreateBankRuleInput, userId?: string) {
-  const [rule] = await db.insert(bankRules).values({ tenantId, isGlobal: false, ...input }).returning();
-  if (rule) await auditLog(tenantId, 'create', 'bank_rule', rule.id, null, rule, userId);
-  return rule;
-}
-
-export async function update(tenantId: string, id: string, input: UpdateBankRuleInput, userId?: string) {
-  const before = await db.query.bankRules.findFirst({ where: and(eq(bankRules.tenantId, tenantId), eq(bankRules.id, id)) });
-  const [updated] = await db.update(bankRules).set({ ...input, updatedAt: new Date() })
-    .where(and(eq(bankRules.tenantId, tenantId), eq(bankRules.id, id))).returning();
-  if (!updated) throw AppError.notFound('Bank rule not found');
-  await auditLog(tenantId, 'update', 'bank_rule', updated.id, before ?? null, updated, userId);
-  return updated;
-}
-
-export async function remove(tenantId: string, id: string, userId?: string) {
-  const before = await db.query.bankRules.findFirst({ where: and(eq(bankRules.tenantId, tenantId), eq(bankRules.id, id)) });
-  await db.delete(bankRules).where(and(eq(bankRules.tenantId, tenantId), eq(bankRules.id, id)));
-  if (before) await auditLog(tenantId, 'delete', 'bank_rule', id, before, null, userId);
-}
-
-export async function reorder(tenantId: string, orderedIds: string[]) {
-  for (let i = 0; i < orderedIds.length; i++) {
-    await db.update(bankRules).set({ priority: orderedIds.length - i })
-      .where(and(eq(bankRules.tenantId, tenantId), eq(bankRules.id, orderedIds[i]!)));
-  }
-}
-
-// ─── Global Rules (super admin) ─────────────────────────────────
-
-export async function listGlobal() {
-  return db.select().from(bankRules).where(eq(bankRules.isGlobal, true))
-    .orderBy(sql`${bankRules.priority} DESC`, bankRules.name);
-}
-
-export async function getGlobalById(id: string) {
-  const rule = await db.query.bankRules.findFirst({ where: and(eq(bankRules.id, id), eq(bankRules.isGlobal, true)) });
-  if (!rule) throw AppError.notFound('Global bank rule not found');
-  return rule;
-}
-
-export async function createGlobal(input: {
-  name: string; priority?: number; applyTo?: string;
-  descriptionContains?: string; descriptionExact?: string;
-  amountEquals?: string; amountMin?: string; amountMax?: string;
-  assignAccountName?: string; assignContactName?: string;
-  assignMemo?: string; autoConfirm?: boolean;
-}) {
-  const [rule] = await db.insert(bankRules).values({
-    tenantId: null,
-    isGlobal: true,
-    name: input.name,
-    priority: input.priority ?? 0,
-    applyTo: input.applyTo || 'both',
-    descriptionContains: input.descriptionContains || null,
-    descriptionExact: input.descriptionExact || null,
-    amountEquals: input.amountEquals || null,
-    amountMin: input.amountMin || null,
-    amountMax: input.amountMax || null,
-    assignAccountName: input.assignAccountName || null,
-    assignContactName: input.assignContactName || null,
-    assignMemo: input.assignMemo || null,
-    autoConfirm: input.autoConfirm ?? false,
-  }).returning();
-  return rule;
-}
-
-export async function updateGlobal(id: string, input: Record<string, any>) {
-  const [updated] = await db.update(bankRules).set({ ...input, updatedAt: new Date() })
-    .where(and(eq(bankRules.id, id), eq(bankRules.isGlobal, true))).returning();
-  if (!updated) throw AppError.notFound('Global bank rule not found');
-  return updated;
-}
-
-export async function removeGlobal(id: string) {
-  await db.delete(bankRules).where(and(eq(bankRules.id, id), eq(bankRules.isGlobal, true)));
-}
+// ─── Bank-rule firing engine ────────────────────────────────────
+//
+// The authoring UI + CRUD/global-submission API for legacy bank rules
+// has been retired in favour of Conditional Rules (Practice → Rules).
+// What remains here is the *firing* engine: evaluateRules() and
+// cleanNameViaRules() are still called by bank-feed.service.ts on every
+// import so existing rows in the `bank_rules` table keep categorizing
+// and cleaning transactions. The tables and migration tooling are kept
+// (additive-only DB policy); only the authoring surface is gone.
 
 // ─── Fuzzy Matching ─────────────────────────────────────────────
 
@@ -253,99 +158,6 @@ export async function evaluateRules(tenantId: string, feedItem: { description: s
   }
 
   return { matched: false };
-}
-
-// Test a rule against sample data
-export async function testRule(tenantId: string, ruleId: string, description: string, amount: number) {
-  const result = await evaluateRules(tenantId, { description, amount });
-  return { wouldMatch: result.matched && result.ruleId === ruleId };
-}
-
-// ─── Global Rule Submissions ────────────────────────────────────
-
-export async function submitRuleForGlobal(userId: string, email: string, tenantId: string, ruleId: string, note?: string) {
-  const rule = await db.query.bankRules.findFirst({ where: and(eq(bankRules.id, ruleId), eq(bankRules.tenantId, tenantId)) });
-  if (!rule) throw AppError.notFound('Rule not found');
-
-  // Get account name from the assigned account (if any)
-  let accountName: string | null = null;
-  if (rule.assignAccountId) {
-    const acct = await db.query.accounts.findFirst({
-      where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, rule.assignAccountId)),
-    });
-    accountName = acct?.name || null;
-  }
-
-  // Get contact name (if any)
-  let contactName: string | null = null;
-  if (rule.assignContactId) {
-    const contact = await db.query.contacts.findFirst({
-      where: and(eq(contacts.tenantId, tenantId), eq(contacts.id, rule.assignContactId)),
-    });
-    contactName = contact?.displayName || null;
-  }
-
-  const [submission] = await db.insert(globalRuleSubmissions).values({
-    submittedByUserId: userId,
-    submittedByEmail: email,
-    sourceTenantId: tenantId,
-    sourceRuleId: ruleId,
-    name: rule.name,
-    applyTo: rule.applyTo,
-    descriptionContains: rule.descriptionContains,
-    descriptionExact: rule.descriptionExact,
-    amountEquals: rule.amountEquals,
-    amountMin: rule.amountMin,
-    amountMax: rule.amountMax,
-    assignAccountName: accountName || rule.assignAccountName,
-    assignContactName: contactName || rule.assignContactName,
-    assignMemo: rule.assignMemo,
-    autoConfirm: rule.autoConfirm,
-    note: note || null,
-  }).returning();
-
-  return submission;
-}
-
-export async function listSubmissions(status?: string) {
-  if (status) {
-    return db.select().from(globalRuleSubmissions)
-      .where(eq(globalRuleSubmissions.status, status))
-      .orderBy(sql`${globalRuleSubmissions.createdAt} DESC`);
-  }
-  return db.select().from(globalRuleSubmissions)
-    .orderBy(sql`${globalRuleSubmissions.createdAt} DESC`);
-}
-
-export async function approveSubmission(submissionId: string) {
-  const submission = await db.query.globalRuleSubmissions.findFirst({ where: eq(globalRuleSubmissions.id, submissionId) });
-  if (!submission) throw AppError.notFound('Submission not found');
-  if (submission.status !== 'pending') throw AppError.badRequest('Submission already reviewed');
-
-  // Create global rule from submission
-  const rule = await createGlobal({
-    name: submission.name,
-    applyTo: submission.applyTo,
-    descriptionContains: submission.descriptionContains || undefined,
-    descriptionExact: submission.descriptionExact || undefined,
-    amountEquals: submission.amountEquals || undefined,
-    amountMin: submission.amountMin || undefined,
-    amountMax: submission.amountMax || undefined,
-    assignAccountName: submission.assignAccountName || undefined,
-    assignContactName: submission.assignContactName || undefined,
-    assignMemo: submission.assignMemo || undefined,
-    autoConfirm: submission.autoConfirm || false,
-  });
-
-  await db.update(globalRuleSubmissions).set({ status: 'approved', reviewedAt: new Date() })
-    .where(eq(globalRuleSubmissions.id, submissionId));
-
-  return rule;
-}
-
-export async function rejectSubmission(submissionId: string) {
-  await db.update(globalRuleSubmissions).set({ status: 'rejected', reviewedAt: new Date() })
-    .where(eq(globalRuleSubmissions.id, submissionId));
 }
 
 // ─── Name Cleaning via Rules ────────────────────────────────────

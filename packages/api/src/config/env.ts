@@ -250,6 +250,40 @@ const envSchema = z.object({
       const lower = v.toLowerCase();
       return lower !== 'false' && lower !== '0' && lower !== 'no' && lower !== 'off';
     }),
+  // ── Local document-extraction module (Qwen3.5 vision via Ollama) ──
+  // Per-appliance gate for the document-extraction surface. Follows the
+  // env-flag pattern of PORTAL_IDENTITY_LINKING_V1 / TAGS_SPLIT_LEVEL_V2
+  // rather than tenant_feature_flags: that table is coupled to the
+  // Practice sidebar (migration 0065 seed rows + App.tsx route guards),
+  // and this is a backend module with no sidebar surface. Default off so
+  // images can ship before the feature is enabled on an appliance.
+  DOCUMENT_EXTRACTION_V1: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true' || v === '1')
+    .default('false'),
+  // Rasterization DPI for PDF→PNG page rendering (poppler `pdftoppm -r`).
+  // 200 balances legibility for the vision model against image-prefill
+  // cost; dense multi-column statements may warrant 300.
+  EXTRACTION_RENDER_DPI: z.coerce.number().int().positive().default(200),
+  // Render pages in grayscale (`pdftoppm -gray`). Smaller images / faster
+  // prefill; default false keeps colour cues (e.g. red debit amounts).
+  EXTRACTION_RENDER_GRAYSCALE: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true' || v === '1')
+    .default('false'),
+  // Ollama model tag, passed as the openai_compat model override. Lets an
+  // operator swap to qwen3.5:27b (escalation) or a future qwen3.6 vision
+  // model without a code change.
+  EXTRACTION_MODEL_TAG: z.string().default('qwen3.5:35b-a3b'),
+  // Page/row confidence floor. At or below this, the whole document is
+  // routed to the review queue instead of auto-posting — the CPA-critical
+  // human-in-the-loop gate.
+  EXTRACTION_CONFIDENCE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.85),
+  // Max concurrent vision calls in the extract worker. 35B-A3B is fast but
+  // image prefill is heavy — start conservative (1–2) and tune per box.
+  EXTRACTION_EXTRACT_CONCURRENCY: z.coerce.number().int().positive().default(2),
 });
 
 export type Env = z.infer<typeof envSchema>;

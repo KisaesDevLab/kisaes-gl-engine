@@ -7,6 +7,7 @@ import {
   createJournalEntrySchema, createExpenseSchema, createTransferSchema,
   createDepositSchema, createCashSaleSchema, createCreditMemoSchema,
   createCustomerRefundSchema, voidTransactionSchema, transactionFiltersSchema,
+  bulkUpdateTransactionsSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
@@ -30,6 +31,14 @@ transactionsRouter.use(companyContext);
 transactionsRouter.get('/', async (req, res) => {
   const filters = transactionFiltersSchema.parse(req.query);
   const result = await ledger.listTransactions(req.tenantId, filters, req.companyId);
+  res.json(result);
+});
+
+// Bulk-edit Payee / Category / Tag across selected transactions from the
+// list view. Static path declared before the '/:id' routes so it isn't
+// captured as an id.
+transactionsRouter.post('/bulk-update', validate(bulkUpdateTransactionsSchema), async (req, res) => {
+  const result = await ledger.bulkUpdateTransactions(req.tenantId, req.body, req.userId, req.companyId);
   res.json(result);
 });
 

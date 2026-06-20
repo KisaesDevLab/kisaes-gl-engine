@@ -63,6 +63,9 @@ const depositLineSchema = z.object({
   amount: z.string().min(1),
   description: z.string().optional(),
   tagId: z.string().uuid().nullable().optional(),
+  // Per-line payee ("Received From"). Null means explicitly none; undefined
+  // means the caller isn't sending one. Persisted on journal_lines.contact_id.
+  contactId: z.string().uuid().nullable().optional(),
 });
 
 export const createDepositSchema = z.object({
@@ -151,5 +154,26 @@ export const transactionFiltersSchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
+
+// Bulk edit on the transactions list: change Payee, Category, and/or Tag
+// across the selected transactions. At least one mutation must be supplied.
+//   - setPayeeContactId: null clears the payee; a uuid assigns it.
+//   - setCategoryAccountId: re-points the (single) category line's account.
+//     Only applied to single-category transactions server-side; splits skip.
+//   - setTagId: null clears, a uuid sets the tag on the transaction's lines.
+export const bulkUpdateTransactionsSchema = z
+  .object({
+    txnIds: z.array(z.string().uuid()).min(1).max(500),
+    setPayeeContactId: z.string().uuid().nullable().optional(),
+    setCategoryAccountId: z.string().uuid().optional(),
+    setTagId: z.string().uuid().nullable().optional(),
+  })
+  .refine(
+    (v) =>
+      v.setPayeeContactId !== undefined ||
+      v.setCategoryAccountId !== undefined ||
+      v.setTagId !== undefined,
+    { message: 'Specify at least one of payee, category, or tag to change.' },
+  );
 
 // Tag schemas moved to schemas/tags.ts

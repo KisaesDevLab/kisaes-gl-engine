@@ -56,6 +56,9 @@ export interface BankFeedFilters {
   startDate?: string;
   endDate?: string;
   search?: string;
+  // When true, restrict the feed to actionable (pending) items by excluding
+  // matched/categorized/excluded. A specific `status` filter takes precedence.
+  actionableOnly?: boolean;
   limit?: number;
   offset?: number;
 }

@@ -20,6 +20,7 @@ function buildDepositPayload(input: CreateDepositInput) {
       credit: line.amount,
       description: line.description,
       tagId: line.tagId,
+      contactId: line.contactId,
     };
   });
 

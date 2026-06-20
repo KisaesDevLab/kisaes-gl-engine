@@ -38,6 +38,8 @@ export interface JournalLine {
   lineOrder: number;
   // ADR 0XX split-level tag. Null when untagged.
   tagId: string | null;
+  // Per-line payee ("Received From"). Null when none.
+  contactId: string | null;
   createdAt: string;
   // Denormalised display helpers populated by list endpoints.
   accountName?: string | null;
@@ -102,6 +104,8 @@ export interface JournalLineInput {
   // null means "explicitly untagged." The ledger service persists whichever
   // the caller passes; if neither is set the column is stored as NULL.
   tagId?: string | null;
+  // Per-line payee ("Received From"). Persisted on journal_lines.contact_id.
+  contactId?: string | null;
   // ADR 0XY §3.2 — when the line references an item, the ledger service
   // batch-loads items.default_tag_id and feeds it into the resolver so
   // item-default resolution runs server-side. Persisted on the journal
@@ -156,8 +160,26 @@ export interface CreateDepositInput {
     amount: string;
     description?: string;
     tagId?: string | null;
+    // Per-line payee ("Received From").
+    contactId?: string | null;
   }>;
   memo?: string;
+}
+
+export interface BulkUpdateTransactionsInput {
+  txnIds: string[];
+  /** Null clears the payee; a contact id assigns it. */
+  setPayeeContactId?: string | null;
+  /** Re-points the single category line's account (split txns are skipped). */
+  setCategoryAccountId?: string;
+  /** Null clears the tag; a tag id sets it on the transaction's lines. */
+  setTagId?: string | null;
+}
+
+export interface BulkUpdateTransactionsResult {
+  updated: number;
+  /** Transactions left untouched, with the reason (split, void, locked…). */
+  skipped: Array<{ id: string; reason: string }>;
 }
 
 export interface CreateCashSaleInput {

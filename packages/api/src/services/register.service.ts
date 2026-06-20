@@ -39,6 +39,8 @@ interface RegisterLine {
   contactId: string | null;
   accountName: string | null;
   accountId: string | null;
+  categoryName: string | null;
+  categoryAccountId: string | null;
   memo: string | null;
   payment: number | null;
   deposit: number | null;
@@ -173,12 +175,33 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
       t.contact_id,
       c.display_name AS payee_name,
       rl.is_cleared,
-      r.status AS recon_status
+      r.status AS recon_status,
+      cat.category_name,
+      cat.category_account_id
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id
     LEFT JOIN contacts c ON c.id = t.contact_id AND c.tenant_id = ${tenantId}
     LEFT JOIN reconciliation_lines rl ON rl.journal_line_id = jl.id
     LEFT JOIN reconciliations r ON r.id = rl.reconciliation_id
+    -- Resolve the "other side" account(s) for the transaction. If exactly one
+    -- distinct account other than the one being viewed, show its name/id.
+    -- If more than one, it's a split. Scoped to tenant throughout.
+    LEFT JOIN LATERAL (
+      SELECT
+        CASE
+          WHEN COUNT(DISTINCT oa.id) > 1 THEN '— Split —'
+          ELSE MIN(oa.name)
+        END AS category_name,
+        CASE
+          WHEN COUNT(DISTINCT oa.id) = 1 THEN MIN(oa.id::text)
+          ELSE NULL
+        END AS category_account_id
+      FROM journal_lines ojl
+      JOIN accounts oa ON oa.id = ojl.account_id AND oa.tenant_id = ${tenantId}
+      WHERE ojl.transaction_id = jl.transaction_id
+        AND ojl.tenant_id = ${tenantId}
+        AND ojl.account_id <> ${accountId}
+    ) cat ON true
     WHERE ${whereClause}
     ORDER BY ${orderClause}
     LIMIT ${perPage} OFFSET ${offset}
@@ -252,9 +275,15 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
       reconciliationStatus = 'cleared';
     }
 
-    // Get the "other side" account name — we'd need another query for this
-    // For now, use line_description or memo
-    const otherAccountName = row.line_description || null;
+    // The real "other side" account, resolved via the lateral join above.
+    // A transaction with >1 distinct other-side account is a split.
+    const categoryName: string | null = row.category_name ?? null;
+    const categoryAccountId: string | null = row.category_account_id ?? null;
+
+    // Payee fallback: prefer the contact display name, then fall back to a
+    // human-readable label for imported rows that have no linked contact
+    // (transaction memo, then the journal line description).
+    const payeeName: string | null = row.payee_name ?? row.memo ?? row.line_description ?? null;
 
     return {
       lineId: row.line_id,
@@ -262,10 +291,12 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
       txnType: row.txn_type,
       txnNumber: row.txn_number,
       txnDate: row.txn_date,
-      payeeName: row.payee_name,
+      payeeName,
       contactId: row.contact_id,
-      accountName: otherAccountName,
-      accountId: null, // would need join to get the "other side" account
+      accountName: categoryName,
+      accountId: categoryAccountId,
+      categoryName,
+      categoryAccountId,
       memo: row.memo,
       payment,
       deposit,
