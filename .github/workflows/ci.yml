@@ -111,6 +111,15 @@ jobs:
     runs-on: ubuntu-latest
     needs: typecheck
     continue-on-error: true
+    # Bounds the job well under GitHub's 6h max-execution kill. A hung
+    # `playwright install` (CDN stalls after the Chromium download with no
+    # client-side timeout) previously ran the full 6h, and because that
+    # hard cancellation isn't a step "failure" it propagated past
+    # continue-on-error and marked the whole run `cancelled`. A timeout-
+    # minutes cap is a normal job timeout that continue-on-error DOES
+    # absorb, so a flaky e2e leaves the run green on typecheck + test.
+    # A healthy run is ~10-15 min; 25 leaves headroom for a cold image build.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
       - name: Set up Node
@@ -120,14 +129,17 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci --ignore-scripts
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
       - name: Synthesize CI-only .env
         # docker-compose.yml interpolates ${ENCRYPTION_KEY:?...} etc. and
         # also references `env_file: .env` on api + worker. Both the
         # interpolation and the env_file need to be satisfied; writing a
         # real .env file covers both. Values are throwaway — the test DB
         # is torn down with the runner.
+        #
+        # Written BEFORE the Playwright install so the always()-run teardown
+        # below can always `docker compose down` — if the install step
+        # times out, compose still needs .env to interpolate or teardown
+        # errors with "POSTGRES_PASSWORD is missing".
         run: |
           cat > .env <<EOF
           POSTGRES_USER=kisbooks
@@ -139,6 +151,13 @@ jobs:
           NODE_ENV=test
           CORS_ORIGIN=http://localhost:5173
           EOF
+      - name: Install Playwright browsers
+        # Step-level cap on the exact operation that hangs: the download
+        # reaches 100% then stalls on a follow-on artifact fetch from
+        # cdn.playwright.dev with no built-in timeout. Fail fast here (8 min)
+        # rather than leaning on the job-level cap.
+        timeout-minutes: 8
+        run: npx playwright install --with-deps chromium
       - name: Bring up stack
         # Only the services the e2e suite needs — tailscale would try to
         # register against a tailnet and is irrelevant to the bookkeeping
