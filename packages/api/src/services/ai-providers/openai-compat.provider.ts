@@ -7,17 +7,14 @@ import { extractJsonForResult } from './json-utils.js';
 
 // Generic OpenAI-compatible provider.
 //
-// Ollama (via `/v1`), llama.cpp server, LM Studio, vLLM, and the
-// Vibe-GLM-OCR appliance all expose the same `/v1/chat/completions`
-// endpoint with roughly the same request / response shape. This
-// provider is the shared path: give it a base URL + model name (and
-// optionally an API key) and it talks to any of them.
+// Ollama (via `/v1`), llama.cpp server, LM Studio, and vLLM all expose
+// the same `/v1/chat/completions` endpoint with roughly the same request /
+// response shape. This provider is the shared path: give it a base URL +
+// model name (and optionally an API key) and it talks to any of them.
 //
-// The existing dedicated providers (OllamaProvider on `/api/chat`,
-// GlmOcrProvider with GLM-OCR's directive prompts) remain because they
-// expose protocol quirks this generic path can't abstract over
-// (Ollama's `format:'json'` flag, GLM-OCR's fixed Text/Table
-// Recognition prompts, etc.).
+// The dedicated OllamaProvider (on `/api/chat`) remains because it exposes
+// protocol quirks this generic path can't abstract over (Ollama's
+// `format:'json'` flag, the native `think` toggle, etc.).
 export class OpenAiCompatProvider implements AiProvider {
   name = 'openai_compat';
   supportsVision = true; // depends on the served model; we try

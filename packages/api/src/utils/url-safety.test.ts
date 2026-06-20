@@ -46,7 +46,7 @@ describe('assertExternalUrlSafe — allowPrivate (self-hosted AI endpoints)', ()
   });
 
   it('accepts Docker-network short names and .local hostnames', () => {
-    expect(() => assertExternalUrlSafe('http://glm-ocr:8090', 'GLM-OCR', allow)).not.toThrow();
+    expect(() => assertExternalUrlSafe('http://ollama:11434', 'Ollama', allow)).not.toThrow();
     expect(() => assertExternalUrlSafe('http://mybooks.local:11434', 'Ollama', allow)).not.toThrow();
   });
 

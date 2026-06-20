@@ -207,7 +207,6 @@ describe('pii-sanitizer', () => {
   describe('pickMode', () => {
     it('self-hosted providers bypass sanitization', () => {
       expect(pickMode('ollama', 'ocr_statement')).toBe('none');
-      expect(pickMode('glm_ocr_local', 'ocr_receipt')).toBe('none');
     });
     it('cloud statement = strict', () => {
       expect(pickMode('anthropic', 'ocr_statement')).toBe('strict');

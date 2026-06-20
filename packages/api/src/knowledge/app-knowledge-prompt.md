@@ -623,7 +623,7 @@ features are available. Go to **Admin → AI Processing →** to set up.
 - OpenAI (GPT-4o, GPT-4o-mini)
 - Google Gemini (Gemini 2.5 Flash, Pro)
 - Ollama (self-hosted models — no API key required)
-- GLM-OCR (Cloud and Local)
+- OpenAI-compatible (self-hosted: llama.cpp, LM Studio, vLLM)
 
 ### AI Transaction Categorization
 When bank feed items are imported (via Plaid or CSV), AI can automatically assign expense

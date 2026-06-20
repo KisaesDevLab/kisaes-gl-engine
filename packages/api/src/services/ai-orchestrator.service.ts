@@ -49,7 +49,7 @@ function consentReasonMessage(reason: string | undefined): string {
 // Docker/Compose-style short DNS name). Anything else — including any
 // https://public.cloud/... URL — is treated as cloud so the PII sanitizer
 // still engages.
-const ALWAYS_SELF_HOSTED = new Set(['ollama', 'glm_ocr_local']);
+const ALWAYS_SELF_HOSTED = new Set(['ollama']);
 
 function isLocalUrl(raw: string | null | undefined): boolean {
   if (!raw) return false;
@@ -116,7 +116,7 @@ export async function assertCloudVisionAllowed(providerName: string): Promise<vo
   const level = raw.piiProtectionLevel || 'strict';
   if (cloudVisionEnabled && level === 'permissive') return;
   throw AppError.badRequest(
-    'Cloud vision is disabled by PII protection settings. Enable GLM-OCR or Ollama for local image processing, or ask your administrator to switch the system to Permissive mode with cloud vision enabled.',
+    'Cloud vision is disabled by PII protection settings. Use a self-hosted provider (Ollama) for local image processing, or ask your administrator to switch the system to Permissive mode with cloud vision enabled.',
   );
 }
 

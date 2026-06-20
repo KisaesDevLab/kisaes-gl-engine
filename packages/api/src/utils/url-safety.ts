@@ -66,7 +66,7 @@ export interface UrlSafetyOptions {
   /**
    * Allow loopback + RFC-1918 private + IPv6 ULA targets. Set for fields
    * whose purpose is to point at a self-hosted box on the operator's own
-   * network — the Ollama / GLM-OCR / OpenAI-compatible AI endpoints. The
+   * network — the Ollama / OpenAI-compatible AI endpoints. The
    * cloud-metadata endpoint (169.254.169.254 / metadata.*) stays blocked
    * regardless, since it is never a legitimate target.
    */

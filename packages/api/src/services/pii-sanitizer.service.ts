@@ -246,7 +246,7 @@ export function pickMode(
     | 'judgment_review',
   isSelfHosted?: boolean,
 ): SanitizerMode {
-  const alwaysLocal = providerName === 'ollama' || providerName === 'glm_ocr_local';
+  const alwaysLocal = providerName === 'ollama';
   const resolvedSelfHosted = alwaysLocal || isSelfHosted === true;
   if (resolvedSelfHosted) return 'none';
   switch (task) {

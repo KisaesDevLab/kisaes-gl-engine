@@ -46,8 +46,6 @@ export const aiConfigUpdateSchema = z.object({
   openaiApiKey: z.string().nullish(),
   geminiApiKey: z.string().nullish(),
   ollamaBaseUrl: z.string().optional(),
-  glmOcrApiKey: z.string().nullish(),
-  glmOcrBaseUrl: z.string().optional(),
   openaiCompatApiKey: z.string().nullish(),
   openaiCompatBaseUrl: z.string().optional(),
   openaiCompatModel: z.string().nullable().optional(),

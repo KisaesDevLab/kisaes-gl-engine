@@ -58,8 +58,6 @@ export async function getConfig() {
     hasOpenaiKey: !!config.openaiApiKeyEncrypted,
     hasGeminiKey: !!config.geminiApiKeyEncrypted,
     ollamaBaseUrl: config.ollamaBaseUrl,
-    hasGlmOcrKey: !!config.glmOcrApiKeyEncrypted,
-    glmOcrBaseUrl: config.glmOcrBaseUrl,
     // Generic OpenAI-compatible server — Ollama /v1, llama.cpp, LM
     // Studio, vLLM, etc. Key returned as a boolean flag; plaintext
     // round-trips via the write path only.
@@ -143,13 +141,6 @@ export async function updateConfig(input: AiConfigUpdateInput, userId?: string) 
     // localhost) is a valid target. Metadata endpoints stay blocked.
     if (input.ollamaBaseUrl) assertExternalUrlSafe(input.ollamaBaseUrl, 'Ollama base URL', { allowPrivate: true });
     updates.ollamaBaseUrl = input.ollamaBaseUrl || null;
-  }
-  if (input.glmOcrApiKey === null) updates.glmOcrApiKeyEncrypted = null;
-  else if (input.glmOcrApiKey) updates.glmOcrApiKeyEncrypted = encrypt(input.glmOcrApiKey);
-  if (input.glmOcrBaseUrl !== undefined) {
-    // Self-hosted GLM-OCR sidecar — LAN / Docker-network / localhost target.
-    if (input.glmOcrBaseUrl) assertExternalUrlSafe(input.glmOcrBaseUrl, 'GLM-OCR base URL', { allowPrivate: true });
-    updates.glmOcrBaseUrl = input.glmOcrBaseUrl || null;
   }
   // Generic OpenAI-compatible provider — Ollama /v1, llama.cpp, etc.
   // allowPrivate lets it reach a self-hosted box on the LAN (e.g. an

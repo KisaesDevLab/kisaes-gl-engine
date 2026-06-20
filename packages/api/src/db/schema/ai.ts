@@ -22,6 +22,10 @@ export const aiConfig = pgTable('ai_config', {
   openaiApiKeyEncrypted: text('openai_api_key_encrypted'),
   geminiApiKeyEncrypted: text('gemini_api_key_encrypted'),
   ollamaBaseUrl: varchar('ollama_base_url', { length: 500 }),
+  // DEPRECATED: GLM-OCR was removed from the app. These columns are
+  // retained (additive-migration policy, CLAUDE.md #13) but are no longer
+  // read or written by any code path. Safe to drop in a future deliberate
+  // non-additive migration if desired.
   glmOcrApiKeyEncrypted: text('glm_ocr_api_key_encrypted'),
   glmOcrBaseUrl: varchar('glm_ocr_base_url', { length: 500 }),
   // Generic OpenAI-compatible local/remote server (Ollama /v1,

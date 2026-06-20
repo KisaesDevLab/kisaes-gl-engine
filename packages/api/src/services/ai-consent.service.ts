@@ -61,7 +61,7 @@ By enabling AI processing for this Vibe MyBooks installation, you acknowledge:
 - Aggregate financial data, balances, or reports
 - User passwords or authentication credentials
 
-**When using self-hosted models (Ollama / GLM-OCR local):**
+**When using self-hosted models (Ollama):**
 - No data leaves your server. All processing is local.
 
 **You can disable AI processing at any time.** Disabling does not affect existing transactions or bookkeeping data.`;
@@ -69,7 +69,7 @@ By enabling AI processing for this Vibe MyBooks installation, you acknowledge:
 // The list of providers currently considered "self-hosted" — data does
 // not leave the server for these. Keep in sync with
 // ai-orchestrator.service isSelfHostedProvider().
-const SELF_HOSTED = new Set(['ollama', 'glm_ocr_local']);
+const SELF_HOSTED = new Set(['ollama']);
 
 function isSelfHosted(providerName: string | null | undefined): boolean {
   return !!providerName && SELF_HOSTED.has(providerName);
@@ -308,8 +308,6 @@ function providerLabel(p: string | null): string {
     case 'openai': return 'OpenAI';
     case 'gemini': return 'Google Gemini';
     case 'ollama': return 'Ollama (self-hosted)';
-    case 'glm_ocr_local': return 'GLM-OCR (self-hosted)';
-    case 'glm_ocr_cloud': return 'GLM-OCR Cloud';
     default: return p;
   }
 }

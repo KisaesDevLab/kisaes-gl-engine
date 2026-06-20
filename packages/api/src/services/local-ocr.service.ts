@@ -11,7 +11,7 @@
 //      invoices): pdf-parse extracts the text layer. Zero AI cost, zero
 //      PII exposure, near-100% accuracy.
 //   2. Images and scanned PDFs: Tesseract.js runs WASM-based OCR
-//      locally. Lower quality than GLM-OCR but keeps data on-server.
+//      locally. Lower quality than a cloud vision model but keeps data on-server.
 //
 // Dependencies (pdf-parse, tesseract.js) are loaded with dynamic import
 // so the rest of the API starts up even if the OCR libs fail to load in

@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-export type AiProviderName = 'anthropic' | 'openai' | 'gemini' | 'ollama' | 'glm_ocr_cloud' | 'glm_ocr_local' | 'openai_compat';
+export type AiProviderName = 'anthropic' | 'openai' | 'gemini' | 'ollama' | 'openai_compat';
 export type AiJobType = 'categorize' | 'ocr_receipt' | 'ocr_statement' | 'ocr_invoice' | 'classify_document';
 export type AiJobStatus = 'pending' | 'processing' | 'complete' | 'failed' | 'cancelled';
 
@@ -46,8 +46,6 @@ export interface AiSystemConfig {
   hasOpenaiKey: boolean;
   hasGeminiKey: boolean;
   ollamaBaseUrl: string | null;
-  hasGlmOcrKey: boolean;
-  glmOcrBaseUrl: string | null;
   autoCategorizeOnImport: boolean;
   autoOcrOnUpload: boolean;
   categorizationConfidenceThreshold: number;
