@@ -63,7 +63,7 @@ export const aiConfig = pgTable('ai_config', {
   // Per-function AI settings, keyed by function name (categorization |
   // ocr | document_classification | chat). Each value is a partial
   // TaskOption (maxTokens, temperature, thinking, timeoutMs,
-  // fallbackChain, enabled, threshold, autoTrigger, promptOverride,
+  // fallbackChain, enabled, threshold, autoTrigger,
   // piiLevel) where any absent/null key means "use the built-in default".
   // See Build Plans/AI_FUNCTION_SETTINGS_PLAN.md and migration 0100.
   taskOptions: jsonb('task_options').notNull().default('{}'),
@@ -189,6 +189,12 @@ export const aiPromptTemplates = pgTable('ai_prompt_templates', {
   userPromptTemplate: text('user_prompt_template').notNull(),
   outputSchema: jsonb('output_schema'),
   isActive: boolean('is_active').default(true),
+  // True only for prompts an admin explicitly authored/edited. Seeded
+  // defaults stay false. The runtime consumption path
+  // (getCustomSystemPrompt) reads ONLY is_custom rows, so a task service
+  // falls back to its built-in hardcoded prompt until an admin customizes
+  // it — guaranteeing no behaviour change on upgrade. See migration 0101.
+  isCustom: boolean('is_custom').notNull().default(false),
   notes: text('notes'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),

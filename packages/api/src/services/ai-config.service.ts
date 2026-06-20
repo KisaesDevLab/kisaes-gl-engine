@@ -21,11 +21,13 @@ async function getOrCreateConfig() {
       disclosureVersion: 1,
     }).returning();
     config = created!;
-    // Seed default prompt templates on first config creation
-    try {
-      const { seedDefaultPrompts } = await import('./ai-prompt.service.js');
-      await seedDefaultPrompts();
-    } catch { /* seed is best-effort */ }
+    // NOTE: we deliberately no longer seed simplistic default prompt
+    // templates here. The real per-function defaults live as hardcoded
+    // strings in each task service and are the runtime fallback; the
+    // prompt editor surfaces them via GET /ai/admin/prompts/defaults.
+    // Seeding short generic placeholders only created misleading
+    // "defaults" that didn't match what actually runs. See
+    // AI_FUNCTION_SETTINGS_PLAN / Mechanism B wiring.
   }
   return config;
 }

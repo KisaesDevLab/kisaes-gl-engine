@@ -6,7 +6,7 @@
 -- One additive JSONB column keyed by function name
 -- (categorization | ocr | document_classification | chat). Each value
 -- holds optional overrides: maxTokens, temperature, thinking ('on'|'off'),
--- timeoutMs, fallbackChain, enabled, threshold, autoTrigger, promptOverride,
+-- timeoutMs, fallbackChain, enabled, threshold, autoTrigger,
 -- piiLevel. Every key is optional; an absent/null value means "use the
 -- existing built-in behaviour", so the default '{}' is a no-op for all
 -- existing installs (no backfill required). Additive per CLAUDE.md rule 13.

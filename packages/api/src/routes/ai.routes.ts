@@ -180,6 +180,13 @@ aiRouter.get('/admin/prompts', authenticate, requireSuperAdmin, async (req, res)
   res.json({ prompts });
 });
 
+// The task types whose system prompt can be customized (drives the admin
+// prompt-editor dropdown). Each function falls back to its built-in
+// prompt until an admin saves a custom one for that taskType.
+aiRouter.get('/admin/prompts/task-types', authenticate, requireSuperAdmin, async (_req, res) => {
+  res.json({ taskTypes: aiPrompt.CUSTOMIZABLE_TASK_TYPES });
+});
+
 aiRouter.post('/admin/prompts', authenticate, requireSuperAdmin, validate(aiPromptTemplateSchema), async (req, res) => {
   const prompt = await aiPrompt.createPrompt(req.body);
   res.status(201).json(prompt);

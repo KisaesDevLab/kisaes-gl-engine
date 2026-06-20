@@ -708,6 +708,13 @@
       "when": 1776950000000,
       "tag": "0100_ai_task_options",
       "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1776960000000,
+      "tag": "0101_ai_prompt_is_custom",
+      "breakpoints": true
     }
   ]
 }

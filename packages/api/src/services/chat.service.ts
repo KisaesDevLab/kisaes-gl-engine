@@ -12,6 +12,7 @@ import {
 } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as aiConfigService from './ai-config.service.js';
+import * as aiPrompt from './ai-prompt.service.js';
 import { executeWithFallback, getProvider } from './ai-providers/index.js';
 import type { CompletionParams, CompletionResult } from './ai-providers/index.js';
 import { getKnowledgePrompt } from './chat-knowledge.service.js';
@@ -232,8 +233,12 @@ export async function sendMessage(
     conversationId = conv.id;
   }
 
-  // 2. Build the system prompt
-  const systemPrompt = buildSystemPrompt(config.chatDataAccessLevel);
+  // 2. Build the system prompt. Per-function prompt customization
+  // (Mechanism B): an admin override replaces the default knowledge-base
+  // persona; the data-access policy is always appended (it's a safety
+  // boundary, not persona). Falls back to the built-in persona otherwise.
+  const chatCustomBase = await aiPrompt.getCustomSystemPrompt('chat', preferredProvider);
+  const systemPrompt = buildSystemPrompt(config.chatDataAccessLevel, chatCustomBase);
 
   // 3. Build the user-side prompt: history + screen context + new message
   const history = await loadHistory(tenantId, conversationId, config.chatMaxHistory);
@@ -351,8 +356,10 @@ export async function sendMessage(
 
 // ─── Prompt construction helpers ───────────────────────────────
 
-function buildSystemPrompt(dataAccessLevel: 'none' | 'contextual' | 'full'): string {
-  const knowledge = getKnowledgePrompt();
+function buildSystemPrompt(dataAccessLevel: 'none' | 'contextual' | 'full', customBase?: string | null): string {
+  // customBase (admin override) replaces the default knowledge persona;
+  // the access policy below is always appended regardless.
+  const knowledge = customBase ?? getKnowledgePrompt();
 
   const accessPolicy = (() => {
     switch (dataAccessLevel) {

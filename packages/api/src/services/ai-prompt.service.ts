@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-import { eq, and } from 'drizzle-orm';
+import { eq, and, isNull } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { aiPromptTemplates } from '../db/schema/index.js';
 
@@ -18,6 +18,52 @@ export async function getActivePrompt(taskType: string, provider?: string | null
   return db.query.aiPromptTemplates.findFirst({
     where: and(eq(aiPromptTemplates.taskType, taskType), eq(aiPromptTemplates.isActive, true)),
   });
+}
+
+// The task types whose system prompt an admin may override, with the
+// human label + the per-function key they map to. Drives the admin
+// prompt-editor UI and validates the defaults endpoint.
+export const CUSTOMIZABLE_TASK_TYPES = [
+  { taskType: 'categorize', label: 'Categorization' },
+  { taskType: 'ocr_receipt', label: 'OCR — Receipts' },
+  { taskType: 'ocr_invoice', label: 'OCR — Bills / Invoices' },
+  { taskType: 'ocr_statement', label: 'OCR — Bank Statements' },
+  { taskType: 'classify_document', label: 'Document Classification' },
+  { taskType: 'chat', label: 'Chat Assistant' },
+] as const;
+
+/**
+ * Runtime consumption path for per-function prompt customization
+ * (Mechanism B). Returns the admin-authored system prompt for a task,
+ * or null when none exists — in which case the caller MUST fall back to
+ * its built-in hardcoded prompt. Only `is_custom = true` rows are
+ * returned, so system-seeded defaults never silently change behaviour.
+ * Provider-specific override wins over the generic (provider = NULL) one.
+ */
+export async function getCustomSystemPrompt(taskType: string, provider?: string | null): Promise<string | null> {
+  if (provider) {
+    const specific = await db.query.aiPromptTemplates.findFirst({
+      where: and(
+        eq(aiPromptTemplates.taskType, taskType),
+        eq(aiPromptTemplates.provider, provider),
+        eq(aiPromptTemplates.isActive, true),
+        eq(aiPromptTemplates.isCustom, true),
+      ),
+    });
+    if (specific) return specific.systemPrompt;
+  }
+  // Generic = provider-agnostic (provider IS NULL). A provider-specific
+  // override must not leak to other providers, so we don't match any-provider
+  // here.
+  const generic = await db.query.aiPromptTemplates.findFirst({
+    where: and(
+      eq(aiPromptTemplates.taskType, taskType),
+      isNull(aiPromptTemplates.provider),
+      eq(aiPromptTemplates.isActive, true),
+      eq(aiPromptTemplates.isCustom, true),
+    ),
+  });
+  return generic ? generic.systemPrompt : null;
 }
 
 export async function listPrompts() {
@@ -50,6 +96,8 @@ export async function createPrompt(input: { taskType: string; provider?: string 
     outputSchema: input.outputSchema || null,
     notes: input.notes || null,
     isActive: true,
+    // Admin-authored via the API → consumed at runtime.
+    isCustom: true,
   }).returning();
 
   return prompt;
@@ -57,8 +105,10 @@ export async function createPrompt(input: { taskType: string; provider?: string 
 
 export async function updatePrompt(id: string, input: { systemPrompt?: string; userPromptTemplate?: string; outputSchema?: any; notes?: string; isActive?: boolean }) {
   const updates: any = { updatedAt: new Date() };
-  if (input.systemPrompt !== undefined) updates.systemPrompt = input.systemPrompt;
-  if (input.userPromptTemplate !== undefined) updates.userPromptTemplate = input.userPromptTemplate;
+  // Editing prompt content promotes a (possibly seeded) row to a custom
+  // one so the runtime starts consuming it.
+  if (input.systemPrompt !== undefined) { updates.systemPrompt = input.systemPrompt; updates.isCustom = true; }
+  if (input.userPromptTemplate !== undefined) { updates.userPromptTemplate = input.userPromptTemplate; updates.isCustom = true; }
   if (input.outputSchema !== undefined) updates.outputSchema = input.outputSchema;
   if (input.notes !== undefined) updates.notes = input.notes;
   if (input.isActive !== undefined) updates.isActive = input.isActive;

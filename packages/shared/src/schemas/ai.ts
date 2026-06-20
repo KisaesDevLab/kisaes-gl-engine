@@ -18,7 +18,6 @@ export const taskOptionSchema = z
     enabled: z.boolean().nullable().optional(),
     threshold: z.number().min(0).max(1).nullable().optional(),
     autoTrigger: z.boolean().nullable().optional(),
-    promptOverride: z.string().max(8000).nullable().optional(),
     piiLevel: z.enum(['strict', 'standard', 'permissive']).nullable().optional(),
   })
   .strict();

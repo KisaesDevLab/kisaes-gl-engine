@@ -28,7 +28,6 @@ export interface TaskOption {
   enabled?: boolean | null;
   threshold?: number | null;
   autoTrigger?: boolean | null;
-  promptOverride?: string | null;
   piiLevel?: PiiProtectionLevel | null;
 }
 

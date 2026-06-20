@@ -46,6 +46,11 @@ vi.mock('./ai-config.service.js', () => ({
   resolveTaskParams: () => ({ maxTokens: 128, temperature: 0.1 }),
 }));
 
+// Mechanism B: the classifier now resolves a custom prompt before the
+// getRawConfig call under test. Stub it to "no custom prompt" so the
+// built-in default is used and the failure paths still fire on getRawConfig.
+vi.mock('./ai-prompt.service.js', () => ({ getCustomSystemPrompt: async () => null }));
+
 vi.mock('./ai-orchestrator.service.js', () => ({
   createJob: async () => ({ id: 'job1' }),
   failJob: async () => undefined,
