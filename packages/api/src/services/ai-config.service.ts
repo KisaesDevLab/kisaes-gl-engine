@@ -132,22 +132,26 @@ export async function updateConfig(input: AiConfigUpdateInput, userId?: string) 
   if (input.geminiApiKey === null) updates.geminiApiKeyEncrypted = null;
   else if (input.geminiApiKey) updates.geminiApiKeyEncrypted = encrypt(input.geminiApiKey);
   if (input.ollamaBaseUrl !== undefined) {
-    if (input.ollamaBaseUrl) assertExternalUrlSafe(input.ollamaBaseUrl, 'Ollama base URL');
+    // Self-hosted AI: allowPrivate so a LAN box (192.168.x.x / 10.x /
+    // localhost) is a valid target. Metadata endpoints stay blocked.
+    if (input.ollamaBaseUrl) assertExternalUrlSafe(input.ollamaBaseUrl, 'Ollama base URL', { allowPrivate: true });
     updates.ollamaBaseUrl = input.ollamaBaseUrl || null;
   }
   if (input.glmOcrApiKey === null) updates.glmOcrApiKeyEncrypted = null;
   else if (input.glmOcrApiKey) updates.glmOcrApiKeyEncrypted = encrypt(input.glmOcrApiKey);
   if (input.glmOcrBaseUrl !== undefined) {
-    if (input.glmOcrBaseUrl) assertExternalUrlSafe(input.glmOcrBaseUrl, 'GLM-OCR base URL');
+    // Self-hosted GLM-OCR sidecar — LAN / Docker-network / localhost target.
+    if (input.glmOcrBaseUrl) assertExternalUrlSafe(input.glmOcrBaseUrl, 'GLM-OCR base URL', { allowPrivate: true });
     updates.glmOcrBaseUrl = input.glmOcrBaseUrl || null;
   }
-  // Generic OpenAI-compatible provider. assertExternalUrlSafe blocks
-  // SSRF (link-local, metadata endpoints) the same way it does for the
-  // Ollama / GLM-OCR URLs.
+  // Generic OpenAI-compatible provider — Ollama /v1, llama.cpp, etc.
+  // allowPrivate lets it reach a self-hosted box on the LAN (e.g. an
+  // Ollama server at http://192.168.x.x:11434); the metadata endpoint
+  // (169.254.169.254 / metadata.*) stays blocked.
   if (input.openaiCompatApiKey === null) updates.openaiCompatApiKeyEncrypted = null;
   else if (input.openaiCompatApiKey) updates.openaiCompatApiKeyEncrypted = encrypt(input.openaiCompatApiKey);
   if (input.openaiCompatBaseUrl !== undefined) {
-    if (input.openaiCompatBaseUrl) assertExternalUrlSafe(input.openaiCompatBaseUrl, 'OpenAI-compat base URL');
+    if (input.openaiCompatBaseUrl) assertExternalUrlSafe(input.openaiCompatBaseUrl, 'OpenAI-compat base URL', { allowPrivate: true });
     updates.openaiCompatBaseUrl = input.openaiCompatBaseUrl || null;
   }
   if (input.openaiCompatModel !== undefined) updates.openaiCompatModel = input.openaiCompatModel || null;

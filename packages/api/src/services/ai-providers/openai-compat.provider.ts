@@ -26,7 +26,12 @@ export class OpenAiCompatProvider implements AiProvider {
   private apiKey: string | undefined;
 
   constructor(baseUrl: string, model: string = 'llama3.2', apiKey?: string) {
-    this.baseUrl = baseUrl.replace(/\/$/, '');
+    // Normalise to the server root. We append `/v1/chat/completions` and
+    // `/v1/models` ourselves, but Ollama's docs present the endpoint WITH
+    // the `/v1` suffix, so admins naturally paste `http://host:11434/v1`.
+    // Strip a trailing slash and a trailing `/v1` segment so that input
+    // doesn't become `/v1/v1/chat/completions` (a 404).
+    this.baseUrl = baseUrl.replace(/\/+$/, '').replace(/\/v1$/i, '');
     this.model = model;
     this.apiKey = apiKey;
   }
