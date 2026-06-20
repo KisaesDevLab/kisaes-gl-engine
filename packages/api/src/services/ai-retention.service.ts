@@ -95,8 +95,9 @@ async function runRetentionCycle(): Promise<void> {
     }
     log.info({ component: 'ai-retention', event: 'cycle_complete', jobsPurged, chatPurged, aiJobsDays, chatDays, durationMs });
     recordSchedulerTick('ai-retention', durationMs, 'ok');
-  } catch (err: any) {
-    log.error({ component: 'ai-retention', event: 'cycle_error', message: err.message, durationMs: Date.now() - started });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error({ component: 'ai-retention', event: 'cycle_error', message, durationMs: Date.now() - started });
     recordSchedulerTick('ai-retention', Date.now() - started, 'error');
   }
 }
