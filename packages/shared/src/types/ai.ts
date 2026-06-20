@@ -2,9 +2,37 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-export type AiProviderName = 'anthropic' | 'openai' | 'gemini' | 'ollama' | 'glm_ocr_cloud' | 'glm_ocr_local';
+export type AiProviderName = 'anthropic' | 'openai' | 'gemini' | 'ollama' | 'glm_ocr_cloud' | 'glm_ocr_local' | 'openai_compat';
 export type AiJobType = 'categorize' | 'ocr_receipt' | 'ocr_statement' | 'ocr_invoice' | 'classify_document';
 export type AiJobStatus = 'pending' | 'processing' | 'complete' | 'failed' | 'cancelled';
+
+// The four configurable AI functions ("tasks"). OCR is an umbrella over
+// receipt/bill/statement parsing (each keeps its own built-in token
+// default; the per-function override acts as a ceiling). See
+// Build Plans/AI_FUNCTION_SETTINGS_PLAN.md.
+export const AI_FUNCTION_KEYS = ['categorization', 'ocr', 'document_classification', 'chat'] as const;
+export type AiFunctionKey = (typeof AI_FUNCTION_KEYS)[number];
+
+export type AiThinkingMode = 'on' | 'off';
+export type PiiProtectionLevel = 'strict' | 'standard' | 'permissive';
+
+// Per-function settings overlay. Every field is an optional override;
+// `null`/absent = "use the built-in default" (no behaviour change). Stored
+// in ai_config.task_options as JSONB keyed by AiFunctionKey.
+export interface TaskOption {
+  maxTokens?: number | null;
+  temperature?: number | null;
+  thinking?: AiThinkingMode | null;
+  timeoutMs?: number | null;
+  fallbackChain?: string[] | null;
+  enabled?: boolean | null;
+  threshold?: number | null;
+  autoTrigger?: boolean | null;
+  promptOverride?: string | null;
+  piiLevel?: PiiProtectionLevel | null;
+}
+
+export type TaskOptions = Partial<Record<AiFunctionKey, TaskOption>>;
 
 export interface AiSystemConfig {
   isEnabled: boolean;
@@ -27,6 +55,7 @@ export interface AiSystemConfig {
   maxConcurrentJobs: number;
   trackUsage: boolean;
   monthlyBudgetLimit: number | null;
+  taskOptions: TaskOptions;
 }
 
 export interface AiJob {
@@ -86,6 +115,7 @@ export interface CompletionParams {
   temperature?: number;
   maxTokens?: number;
   responseFormat?: 'json' | 'text';
+  thinking?: AiThinkingMode;
 }
 
 export interface VisionParams extends CompletionParams {

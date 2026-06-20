@@ -240,12 +240,17 @@ export async function sendMessage(
   const userPrompt = buildUserPrompt(history, input.context, input.message);
 
   // 4. Call the AI provider
+  // Per-function settings (AI_FUNCTION_SETTINGS_PLAN.md): resolved
+  // maxTokens/temperature/thinking + per-function timeout/fallback.
+  const chatParams = aiConfigService.resolveTaskParams(config, 'chat', { maxTokens: 1024, temperature: 0.4 });
+  const chatExec = aiConfigService.resolveTaskExec(config, 'chat');
   const params: CompletionParams = {
     systemPrompt,
     userPrompt,
-    temperature: 0.4,
-    maxTokens: 1024,
+    temperature: chatParams.temperature,
+    maxTokens: chatParams.maxTokens,
     responseFormat: 'text',
+    ...(chatParams.thinking ? { thinking: chatParams.thinking } : {}),
   };
 
   let result: CompletionResult;
@@ -253,9 +258,10 @@ export async function sendMessage(
     result = await executeWithFallback(
       params,
       rawConfig,
-      config.fallbackChain,
+      chatExec.fallbackChain,
       preferredProvider,
       preferredModel,
+      chatExec.timeoutMs ? { timeoutMs: chatExec.timeoutMs } : undefined,
     );
   } catch (err: any) {
     throw AppError.internal(`Chat AI request failed: ${err.message || 'unknown error'}`);

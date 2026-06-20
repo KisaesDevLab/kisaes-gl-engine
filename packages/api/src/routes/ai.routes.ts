@@ -118,6 +118,26 @@ aiRouter.post('/admin/test/:provider', authenticate, requireSuperAdmin, aiAdminT
   res.json(result);
 });
 
+// Real end-to-end test for a single function ("task"). Runs an actual
+// JSON completion through the function's resolved provider + options +
+// thinking + timeout + fallback chain, unlike test/:provider which only
+// checks reachability. Surfaces the per-provider error detail.
+const AI_FUNCTION_KEYS = ['categorization', 'ocr', 'document_classification', 'chat'] as const;
+aiRouter.post('/admin/test-function/:fn', authenticate, requireSuperAdmin, aiAdminTestLimiter, async (req, res) => {
+  const fn = req.params['fn'] as (typeof AI_FUNCTION_KEYS)[number];
+  if (!AI_FUNCTION_KEYS.includes(fn)) {
+    return res.status(400).json({ error: `Unknown function. Expected one of: ${AI_FUNCTION_KEYS.join(', ')}` });
+  }
+  const result = await aiConfigService.testFunction(fn);
+  log.warn({
+    component: 'ai',
+    event: 'ai_function_test',
+    fn, provider: result.provider, success: result.success, error: result.error,
+    userId: req.userId, ip: req.ip,
+  });
+  return res.json(result);
+});
+
 // ─── Admin — System AI Disclosure (Tier 1) ─────────────────────
 //
 // The super admin must accept this before ai_config.is_enabled can

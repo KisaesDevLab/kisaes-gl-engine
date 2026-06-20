@@ -66,6 +66,15 @@ export class OpenAiCompatProvider implements AiProvider {
     if (params.responseFormat === 'json') {
       body['response_format'] = { type: 'json_object' };
     }
+    // Best-effort thinking suppression for reasoning models behind an
+    // OpenAI-compatible endpoint. Reliability varies by backend: Ollama's
+    // /v1 ignores it (and returns empty `content` for thinking models —
+    // use the native Ollama provider for guaranteed suppression), while
+    // some vLLM / llama.cpp builds honour chat_template_kwargs. Omitted
+    // when unset so default behaviour is unchanged.
+    if (params.thinking) {
+      body['chat_template_kwargs'] = { enable_thinking: params.thinking === 'on' };
+    }
 
     const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
       method: 'POST',
@@ -128,6 +137,15 @@ export class OpenAiCompatProvider implements AiProvider {
     if (params.maxTokens) body['max_tokens'] = params.maxTokens;
     if (params.responseFormat === 'json') {
       body['response_format'] = { type: 'json_object' };
+    }
+    // Best-effort thinking suppression for reasoning models behind an
+    // OpenAI-compatible endpoint. Reliability varies by backend: Ollama's
+    // /v1 ignores it (and returns empty `content` for thinking models —
+    // use the native Ollama provider for guaranteed suppression), while
+    // some vLLM / llama.cpp builds honour chat_template_kwargs. Omitted
+    // when unset so default behaviour is unchanged.
+    if (params.thinking) {
+      body['chat_template_kwargs'] = { enable_thinking: params.thinking === 'on' };
     }
 
     const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {

@@ -60,6 +60,13 @@ export const aiConfig = pgTable('ai_config', {
   // verified <relative time>" without re-pinging the upstream on every
   // page load. See migration 0096.
   providerTestHistory: jsonb('provider_test_history').notNull().default('{}'),
+  // Per-function AI settings, keyed by function name (categorization |
+  // ocr | document_classification | chat). Each value is a partial
+  // TaskOption (maxTokens, temperature, thinking, timeoutMs,
+  // fallbackChain, enabled, threshold, autoTrigger, promptOverride,
+  // piiLevel) where any absent/null key means "use the built-in default".
+  // See Build Plans/AI_FUNCTION_SETTINGS_PLAN.md and migration 0100.
+  taskOptions: jsonb('task_options').notNull().default('{}'),
   // Metadata
   configuredBy: uuid('configured_by'),
   configuredAt: timestamp('configured_at', { withTimezone: true }),

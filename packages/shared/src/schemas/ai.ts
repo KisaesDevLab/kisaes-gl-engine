@@ -4,6 +4,34 @@
 
 import { z } from 'zod';
 
+// Per-function settings overlay (AI_FUNCTION_SETTINGS_PLAN.md §3). Every
+// field is an optional, nullable override — `null`/absent = "use the
+// built-in default". `.strict()` rejects unknown keys so typos surface
+// instead of silently no-op'ing.
+export const taskOptionSchema = z
+  .object({
+    maxTokens: z.number().int().positive().max(200000).nullable().optional(),
+    temperature: z.number().min(0).max(2).nullable().optional(),
+    thinking: z.enum(['on', 'off']).nullable().optional(),
+    timeoutMs: z.number().int().min(1000).max(600000).nullable().optional(),
+    fallbackChain: z.array(z.string()).nullable().optional(),
+    enabled: z.boolean().nullable().optional(),
+    threshold: z.number().min(0).max(1).nullable().optional(),
+    autoTrigger: z.boolean().nullable().optional(),
+    promptOverride: z.string().max(8000).nullable().optional(),
+    piiLevel: z.enum(['strict', 'standard', 'permissive']).nullable().optional(),
+  })
+  .strict();
+
+export const taskOptionsSchema = z
+  .object({
+    categorization: taskOptionSchema.optional(),
+    ocr: taskOptionSchema.optional(),
+    document_classification: taskOptionSchema.optional(),
+    chat: taskOptionSchema.optional(),
+  })
+  .strict();
+
 export const aiConfigUpdateSchema = z.object({
   isEnabled: z.boolean().optional(),
   categorizationProvider: z.string().nullable().optional(),
@@ -38,8 +66,13 @@ export const aiConfigUpdateSchema = z.object({
   chatModel: z.string().nullable().optional(),
   chatMaxHistory: z.number().int().min(0).max(100).optional(),
   chatDataAccessLevel: z.enum(['none', 'metadata', 'redacted', 'full']).optional(),
+  // Per-function settings. Partial deep-merge in the service so a partial
+  // update (one function, one key) doesn't wipe the rest.
+  taskOptions: taskOptionsSchema.optional(),
 });
 export type AiConfigUpdateInput = z.infer<typeof aiConfigUpdateSchema>;
+export type TaskOptionInput = z.infer<typeof taskOptionSchema>;
+export type TaskOptionsInput = z.infer<typeof taskOptionsSchema>;
 
 export const aiCategorizeSchema = z.object({
   feedItemId: z.string().uuid(),

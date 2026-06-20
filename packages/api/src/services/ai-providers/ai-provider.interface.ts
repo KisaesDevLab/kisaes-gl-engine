@@ -11,6 +11,13 @@ export interface CompletionParams {
   /** Optional abort signal — providers thread this into the underlying
    *  SDK / fetch call so socket teardown actually happens on timeout. */
   signal?: AbortSignal;
+  /** Per-function "thinking"/reasoning preference. Provider-specific and
+   *  capability-aware: each provider translates it (Ollama `think:false`,
+   *  Gemini `thinkingBudget:0`, etc.) and silently no-ops where the
+   *  provider/model doesn't support a thinking toggle. `undefined` =
+   *  provider default (current behaviour). See
+   *  Build Plans/AI_FUNCTION_SETTINGS_PLAN.md §5. */
+  thinking?: 'on' | 'off';
 }
 
 export interface VisionParams extends CompletionParams {

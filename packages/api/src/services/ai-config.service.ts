@@ -3,13 +3,14 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { eq, sql } from 'drizzle-orm';
-import type { AiConfigUpdateInput } from '@kis-books/shared';
+import type { AiConfigUpdateInput, AiFunctionKey, TaskOptions } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { aiConfig } from '../db/schema/index.js';
 import { encrypt } from '../utils/encryption.js';
 import { assertExternalUrlSafe } from '../utils/url-safety.js';
 import { AppError } from '../utils/errors.js';
 import * as aiConsent from './ai-consent.service.js';
+import { resolveTaskParams, resolveTaskExec } from './ai-task-options.js';
 
 async function getOrCreateConfig() {
   let config = await db.query.aiConfig.findFirst();
@@ -69,6 +70,10 @@ export async function getConfig() {
     maxConcurrentJobs: config.maxConcurrentJobs || 5,
     trackUsage: config.trackUsage ?? true,
     monthlyBudgetLimit: config.monthlyBudgetLimit ? parseFloat(config.monthlyBudgetLimit) : null,
+    // Per-function settings overlay (AI_FUNCTION_SETTINGS_PLAN.md).
+    // Stored as JSONB keyed by function; absent/null keys resolve to the
+    // built-in default at call time via resolveTaskParams/resolveTaskExec.
+    taskOptions: (config.taskOptions as TaskOptions) || {},
     // Chat support (see AI_CHAT_SUPPORT_PLAN.md §2.1)
     chatSupportEnabled: config.chatSupportEnabled ?? false,
     chatProvider: config.chatProvider,
@@ -177,6 +182,19 @@ export async function updateConfig(input: AiConfigUpdateInput, userId?: string) 
     updates.piiProtectionLevel = lvl;
   }
   if (input.cloudVisionEnabled !== undefined) updates.cloudVisionEnabled = !!input.cloudVisionEnabled;
+  // Per-function settings: deep-merge per function so a partial update
+  // (one function, one key) doesn't wipe the other functions' settings.
+  // A key set to null is preserved as null (meaning "use the default"),
+  // which is how the UI clears an override.
+  if (input.taskOptions) {
+    const existing = (config.taskOptions as TaskOptions) || {};
+    const merged: TaskOptions = { ...existing };
+    for (const key of Object.keys(input.taskOptions) as AiFunctionKey[]) {
+      const incoming = input.taskOptions[key];
+      if (incoming) merged[key] = { ...(existing[key] || {}), ...incoming };
+    }
+    updates.taskOptions = merged;
+  }
   if (userId) { updates.configuredBy = userId; updates.configuredAt = new Date(); }
 
   await db.update(aiConfig).set(updates).where(eq(aiConfig.id, config.id));
@@ -391,4 +409,107 @@ export async function getDiagnostics(): Promise<{
     };
   });
   return { systemEnabled: config.isEnabled, rows };
+}
+
+// ─── Per-function settings resolution ──────────────────────────────
+// Pure resolvers live in ./ai-task-options.js (dependency-free, unit
+// tested). Re-exported here so call sites keep using
+// `aiConfigService.resolveTaskParams(...)`.
+export { resolveTaskParams, resolveTaskExec } from './ai-task-options.js';
+export type { ResolvedTaskParams, ResolvedTaskExec } from './ai-task-options.js';
+
+export interface TestFunctionResult {
+  success: boolean;
+  provider: string | null;
+  error?: string;
+  modelInfo?: string;
+  durationMs: number;
+}
+
+// Per-function test maxTokens — mirrors each function's real built-in
+// default so the round-trip behaves like production (a thinking model
+// starved of tokens would falsely "fail" the test).
+const TEST_FN_MAX_TOKENS: Record<AiFunctionKey, number> = {
+  categorization: 320,
+  ocr: 1024,
+  document_classification: 128,
+  chat: 256,
+};
+
+/**
+ * Real, end-to-end per-function test. Unlike `testProvider` (which only
+ * pings reachability, e.g. Ollama's /api/tags), this runs an actual JSON
+ * completion through the function's resolved provider + options + thinking
+ * + timeout + fallback chain, and asserts non-empty parseable output.
+ *
+ * This is the check that catches the failure class behind
+ * `ai_all_providers_failed`: a thinking model on the OpenAI-compat /v1
+ * path returns empty `content`, which a reachability ping never sees.
+ * On failure it surfaces the per-provider error detail (`providerErrors`)
+ * that the user-facing toast otherwise discards.
+ */
+export async function testFunction(fn: AiFunctionKey): Promise<TestFunctionResult> {
+  const config = await getConfig();
+  const rawConfig = await getRawConfig();
+
+  const providerByFn: Record<AiFunctionKey, string | null> = {
+    categorization: config.categorizationProvider,
+    ocr: config.ocrProvider || config.categorizationProvider,
+    document_classification: config.documentClassificationProvider || config.categorizationProvider,
+    chat: config.chatProvider || config.categorizationProvider,
+  };
+  const modelByFn: Record<AiFunctionKey, string | undefined> = {
+    categorization: config.categorizationModel || undefined,
+    ocr: config.ocrModel || undefined,
+    document_classification: config.documentClassificationModel || undefined,
+    chat: config.chatModel || undefined,
+  };
+
+  const provider = providerByFn[fn];
+  const start = Date.now();
+  if (!provider) {
+    return { success: false, provider: null, durationMs: 0, error: 'No provider configured for this function' };
+  }
+
+  const tp = resolveTaskParams(config, fn, { maxTokens: TEST_FN_MAX_TOKENS[fn], temperature: 0.1 });
+  const exec = resolveTaskExec(config, fn);
+  const { executeWithFallback } = await import('./ai-providers/index.js');
+
+  try {
+    const result = await executeWithFallback(
+      {
+        systemPrompt: 'You are a connectivity test harness. Reply with strict JSON only, no prose.',
+        userPrompt: 'Return exactly {"ok":true} and nothing else.',
+        temperature: tp.temperature,
+        maxTokens: tp.maxTokens,
+        responseFormat: 'json',
+        ...(tp.thinking ? { thinking: tp.thinking } : {}),
+      },
+      rawConfig,
+      exec.fallbackChain,
+      provider,
+      modelByFn[fn],
+      exec.timeoutMs ? { timeoutMs: exec.timeoutMs } : undefined,
+    );
+    const durationMs = Date.now() - start;
+    const empty = !result.parsed && !result.text.trim();
+    if (result.parseError || empty) {
+      return {
+        success: false,
+        provider,
+        durationMs,
+        error: result.parseError
+          ? `${result.provider} returned non-JSON: ${result.parseError}`
+          : `${result.provider} returned empty content (a thinking model on an OpenAI-compatible /v1 endpoint does this — use the native Ollama provider, or turn thinking off)`,
+      };
+    }
+    return { success: true, provider, durationMs, modelInfo: `${result.provider} / ${result.model}` };
+  } catch (err) {
+    const durationMs = Date.now() - start;
+    const e = err as { providerErrors?: string[]; message?: string };
+    const detail = Array.isArray(e.providerErrors) && e.providerErrors.length > 0
+      ? e.providerErrors.join('; ')
+      : (e.message ?? String(err));
+    return { success: false, provider, durationMs, error: detail };
+  }
 }

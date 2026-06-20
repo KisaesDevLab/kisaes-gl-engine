@@ -29,6 +29,12 @@ export class OllamaProvider implements AiProvider {
         ],
         format: params.responseFormat === 'json' ? 'json' : undefined,
         stream: false,
+        // Thinking toggle. Ollama's native /api/chat accepts `think`
+        // (boolean) for reasoning-capable models — `false` suppresses the
+        // chain-of-thought entirely, which is faster and avoids the empty
+        // `content` failure mode seen on the OpenAI-compat /v1 path. Omit
+        // when unset so non-thinking models keep their default behaviour.
+        ...(params.thinking ? { think: params.thinking === 'on' } : {}),
         options: { temperature: params.temperature ?? 0.1 },
       }),
       signal: params.signal,
@@ -66,6 +72,7 @@ export class OllamaProvider implements AiProvider {
         ],
         format: params.responseFormat === 'json' ? 'json' : undefined,
         stream: false,
+        ...(params.thinking ? { think: params.thinking === 'on' } : {}),
       }),
       signal: params.signal,
     });
