@@ -701,6 +701,13 @@
       "when": 1776940000000,
       "tag": "0099_journal_line_contact",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1776950000000,
+      "tag": "0100_ai_task_options",
+      "breakpoints": true
     }
   ]
 }
