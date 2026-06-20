@@ -39,6 +39,11 @@ vi.mock('./ai-config.service.js', () => ({
     documentClassificationModel: null,
   }),
   getRawConfig: (...a: unknown[]) => mocks.getRawConfig(...a),
+  // classifyDocument resolves per-function token/temperature/thinking via
+  // this helper before the getRawConfig call under test. Stub it to the
+  // classifier's built-in defaults so the failure paths below still fire
+  // on getRawConfig as intended.
+  resolveTaskParams: () => ({ maxTokens: 128, temperature: 0.1 }),
 }));
 
 vi.mock('./ai-orchestrator.service.js', () => ({

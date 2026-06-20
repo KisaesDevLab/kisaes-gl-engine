@@ -12,6 +12,7 @@ import { startFingerprintScheduler } from './services/db-fingerprint.service.js'
 import { startCloudflaredAlerter, stopCloudflaredAlerter } from './services/cloudflared/alert.service.js';
 import { startBackupVerifier, stopBackupVerifier } from './services/backup-verify.service.js';
 import { startRecurringDocRequestScheduler, stopRecurringDocRequestScheduler } from './services/recurring-doc-request-scheduler.service.js';
+import { startAiRetentionScheduler, stopAiRetentionScheduler } from './services/ai-retention.service.js';
 import * as coaTemplatesService from './services/coa-templates.service.js';
 import { seedPayrollTemplates } from './services/payroll-templates.seed.js';
 import type { Server } from 'http';
@@ -44,6 +45,7 @@ function installShutdownHandlers(server: Server): void {
     stopCloudflaredAlerter();
     stopBackupVerifier();
     stopRecurringDocRequestScheduler();
+    stopAiRetentionScheduler();
     try {
       await pool.end();
       console.log('[shutdown] DB pool closed, exiting cleanly');
@@ -159,6 +161,9 @@ async function start() {
     // Advisory-locked so the worker container can also run it without
     // double-firing.
     startRecurringDocRequestScheduler();
+    // AI data retention purge (ai_jobs + old chat). Advisory-locked so
+    // the worker container can also boot it without double-purging.
+    startAiRetentionScheduler();
   });
   installShutdownHandlers(server);
 }
