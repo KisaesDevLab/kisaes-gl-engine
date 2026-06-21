@@ -28,6 +28,8 @@ Return ONLY a JSON object of this exact shape:
 
 {
   "page_confidence": <0.0-1.0, your confidence the page was legible>,
+  "opening_balance": <number or null>,
+  "closing_balance": <number or null>,
   "transactions": [
     {
       "date": "YYYY-MM-DD",
@@ -43,6 +45,9 @@ Return ONLY a JSON object of this exact shape:
 Rules:
 - Use null for any field you cannot read; never guess.
 - amount is always positive; direction is in "type".
+- opening_balance / closing_balance: the statement's beginning and ending
+  balance from the header/summary, ONLY on the page where each is printed;
+  use null on pages where it is not shown. Do NOT include them as transactions.
 - Do not include headers, summaries, opening/closing balances, or totals as transactions.
 - If the page is not a bank statement, return {"page_confidence": 0, "transactions": []}.`;
 

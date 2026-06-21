@@ -113,6 +113,10 @@ export interface CompletionParams {
   maxTokens?: number;
   responseFormat?: 'json' | 'text';
   thinking?: AiThinkingMode;
+  /** Per-call Ollama context-window override (num_ctx). Falls back to
+   *  OLLAMA_NUM_CTX when unset. Vision/extraction calls set this to fit a
+   *  full-page image that would otherwise overflow the model's default. */
+  numCtx?: number;
 }
 
 export interface VisionParams extends CompletionParams {

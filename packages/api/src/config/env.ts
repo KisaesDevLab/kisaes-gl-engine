@@ -288,6 +288,25 @@ const envSchema = z.object({
   // operator swap to qwen3.5:27b (escalation) or a future qwen3.6 vision
   // model without a code change.
   EXTRACTION_MODEL_TAG: z.string().default('qwen3.5:35b-a3b'),
+  // Route the extraction vision call through Ollama's NATIVE /api/chat
+  // instead of the OpenAI-compatible /v1. Native is required for thinking
+  // models (Qwen3.5): /v1 returns empty `content` (reasoning is split out),
+  // and only native exposes num_ctx / keep_alive / think. Default on — the
+  // default model tag is an Ollama model. Set false for llama.cpp/vLLM
+  // backends behind the openai_compat base URL.
+  EXTRACTION_OLLAMA_NATIVE: z.string().optional().transform((v) => v !== 'false' && v !== '0').default('true'),
+  // Thinking for extraction. On (default) helps the model reason about
+  // dense statement tables (column/row alignment) at a latency cost; set
+  // 'off' to roughly halve per-page latency. Only effective on the native
+  // endpoint (above).
+  EXTRACTION_THINKING: z.enum(['on', 'off']).default('on'),
+  // Output-token cap per page (num_predict). 4096 truncates dense statement
+  // pages (100+ transactions) mid-JSON; 8192 gives headroom.
+  EXTRACTION_MAX_TOKENS: z.coerce.number().int().positive().default(8192),
+  // Context window (num_ctx) for the extraction call — must fit a full-page
+  // image's vision tokens + prompt + output, or the model can't see the
+  // whole page. Native endpoint only.
+  EXTRACTION_NUM_CTX: z.coerce.number().int().positive().default(8192),
   // Page/row confidence floor. At or below this, the whole document is
   // routed to the review queue instead of auto-posting — the CPA-critical
   // human-in-the-loop gate.

@@ -121,4 +121,28 @@ describe('checkCrossPageConsistency', () => {
   it('is a no-op for non-bank docTypes', () => {
     expect(checkCrossPageConsistency('invoice', [{}])).toEqual([]);
   });
+
+  it('flags opening + net != closing (statement-level reconciliation)', () => {
+    // opening 100, +50 credit, -30 debit → should close at 120, not 200.
+    const reasons = checkCrossPageConsistency('bank_statement', [
+      { opening_balance: 100, transactions: [{ date: '2026-01-01', description: 'a', amount: 50, type: 'credit' }] },
+      { closing_balance: 200, transactions: [{ date: '2026-01-02', description: 'b', amount: 30, type: 'debit' }] },
+    ]);
+    expect(reasons).toContain('bank_opening_closing_mismatch');
+  });
+
+  it('passes a reconciled statement (opening + net == closing)', () => {
+    const reasons = checkCrossPageConsistency('bank_statement', [
+      { opening_balance: 100, transactions: [{ date: '2026-01-01', description: 'a', amount: 50, type: 'credit' }] },
+      { closing_balance: 120, transactions: [{ date: '2026-01-02', description: 'b', amount: 30, type: 'debit' }] },
+    ]);
+    expect(reasons).not.toContain('bank_opening_closing_mismatch');
+  });
+
+  it('skips reconciliation when header balances are absent', () => {
+    const reasons = checkCrossPageConsistency('bank_statement', [
+      { transactions: [{ date: '2026-01-01', description: 'a', amount: 50, type: 'credit' }] },
+    ]);
+    expect(reasons).not.toContain('bank_opening_closing_mismatch');
+  });
 });

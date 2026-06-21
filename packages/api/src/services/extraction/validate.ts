@@ -167,5 +167,23 @@ export function checkCrossPageConsistency(docType: DocType, payloads: unknown[])
       break;
     }
   }
+
+  // Statement-level reconciliation: opening + net(transactions) == closing.
+  // The strongest single correctness signal — a wrong/missed transaction
+  // makes the books not balance. Only runs when the model captured both
+  // header balances (first non-null opening, last non-null closing across
+  // pages); skipped otherwise so statements without visible headers aren't
+  // falsely flagged.
+  const pages = payloads.filter((p): p is Record<string, unknown> => !!p && typeof p === 'object');
+  const opening = pages.map((p) => num(p['opening_balance'])).find((v) => v !== null) ?? null;
+  const closing = [...pages].reverse().map((p) => num(p['closing_balance'])).find((v) => v !== null) ?? null;
+  if (opening !== null && closing !== null) {
+    const net = allTxns.reduce((acc, t) => {
+      const amount = num(t['amount']);
+      if (amount === null || (t['type'] !== 'debit' && t['type'] !== 'credit')) return acc;
+      return acc + (t['type'] === 'credit' ? amount : -amount);
+    }, 0);
+    if (Math.abs(opening + net - closing) > MONEY_TOLERANCE) reasons.push('bank_opening_closing_mismatch');
+  }
   return reasons;
 }

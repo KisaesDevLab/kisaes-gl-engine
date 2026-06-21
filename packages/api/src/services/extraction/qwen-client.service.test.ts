@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   hasCredentials: vi.fn(),
   completeWithImage: vi.fn(),
   testConnection: vi.fn(),
+  ollamaCtor: vi.fn(),
 }));
 
 vi.mock('../ai-config.service.js', () => ({
@@ -30,6 +31,25 @@ vi.mock('../ai-orchestrator.service.js', () => ({
 vi.mock('../ai-providers/index.js', () => ({
   getProvider: (...a: unknown[]) => mocks.getProvider(...a),
   hasCredentials: (...a: unknown[]) => mocks.hasCredentials(...a),
+}));
+
+// EXTRACTION_OLLAMA_NATIVE defaults on, so the wrapper constructs a native
+// OllamaProvider — mock the class so it delegates to the same fakes and so we
+// can assert the base URL (with /v1 stripped) it was built with.
+vi.mock('../ai-providers/ollama.provider.js', () => ({
+  OllamaProvider: class {
+    name = 'ollama';
+    supportsVision = true;
+    constructor(baseUrl: string, model: string) {
+      mocks.ollamaCtor(baseUrl, model);
+    }
+    completeWithImage(...a: unknown[]) {
+      return mocks.completeWithImage(...a);
+    }
+    testConnection(...a: unknown[]) {
+      return mocks.testConnection(...a);
+    }
+  },
 }));
 
 import { extractImage, healthCheck } from './qwen-client.service.js';
@@ -73,6 +93,24 @@ describe('qwen-client.extractImage', () => {
     expect(callArgs['temperature']).toBe(0);
     expect(callArgs['responseFormat']).toBe('json');
     expect(callArgs['images']).toEqual([{ base64: 'QUJD', mimeType: 'image/png' }]);
+  });
+
+  it('routes through the native Ollama endpoint (strips /v1) with num_ctx + thinking', async () => {
+    mocks.getRawConfig.mockResolvedValue({ openaiCompatBaseUrl: 'http://ollama:11434/v1', openaiCompatModel: null });
+    mocks.completeWithImage.mockResolvedValue({
+      text: '{}', parsed: {}, parseError: undefined, model: 'qwen3.5:35b-a3b', durationMs: 1,
+    });
+
+    await extractImage({ base64: 'QUJD', mimeType: 'image/png', systemPrompt: 'sys', userPrompt: 'extract' });
+
+    // Native provider built from the base URL with the trailing /v1 removed.
+    expect(mocks.ollamaCtor).toHaveBeenCalledWith('http://ollama:11434', 'qwen3.5:35b-a3b');
+    // openai_compat factory NOT used on the native path.
+    expect(mocks.getProvider).not.toHaveBeenCalled();
+    const callArgs = mocks.completeWithImage.mock.calls[0]![0] as Record<string, unknown>;
+    expect(callArgs['numCtx']).toBeGreaterThan(0);
+    expect(callArgs['thinking']).toBeDefined();
+    expect(callArgs['maxTokens']).toBeGreaterThanOrEqual(4096);
   });
 
   it('throws an actionable AppError when the endpoint is not configured', async () => {

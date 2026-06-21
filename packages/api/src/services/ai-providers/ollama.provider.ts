@@ -28,7 +28,8 @@ export class OllamaProvider implements AiProvider {
   private requestExtras(params: CompletionParams): { keep_alive: string; options: Record<string, unknown> } {
     const options: Record<string, unknown> = { temperature: params.temperature ?? 0.1 };
     if (params.maxTokens) options['num_predict'] = params.maxTokens;
-    if (env.OLLAMA_NUM_CTX) options['num_ctx'] = env.OLLAMA_NUM_CTX;
+    const numCtx = params.numCtx ?? env.OLLAMA_NUM_CTX;
+    if (numCtx) options['num_ctx'] = numCtx;
     return { keep_alive: env.OLLAMA_KEEP_ALIVE, options };
   }
 

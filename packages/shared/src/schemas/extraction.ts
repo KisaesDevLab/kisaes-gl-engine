@@ -68,6 +68,12 @@ const bankTxnSchema = z.object({
 export const bankStatementResultSchema = z.object({
   page_confidence: confidenceSchema,
   transactions: z.array(bankTxnSchema).default([]),
+  // Statement-level balances, captured only on the page(s) where the
+  // header/summary is visible (null elsewhere). Used at finalize to
+  // reconcile opening + net(transactions) == closing across the whole
+  // statement. Optional so existing pages without them still validate.
+  opening_balance: extractedNumber.optional(),
+  closing_balance: extractedNumber.optional(),
 });
 
 const invoiceLineSchema = z.object({

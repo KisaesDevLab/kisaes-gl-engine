@@ -18,6 +18,10 @@ export interface CompletionParams {
    *  provider default (current behaviour). See
    *  Build Plans/AI_FUNCTION_SETTINGS_PLAN.md §5. */
   thinking?: 'on' | 'off';
+  /** Per-call Ollama context-window override (num_ctx); falls back to
+   *  OLLAMA_NUM_CTX. Vision/extraction calls set this so a full-page image
+   *  doesn't overflow the model's small default context. */
+  numCtx?: number;
 }
 
 export interface VisionParams extends CompletionParams {
