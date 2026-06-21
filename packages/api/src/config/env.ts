@@ -277,12 +277,15 @@ const envSchema = z.object({
   // on bank-statement PDFs (self-hosted vision only), correlate them to the
   // "CHECK ####" transactions, and stamp the payee so reports show the real
   // vendor. Gates the per-page rasterization + the `checks[]` extraction in
-  // the statement parser and the match/attach in the importer. Default off.
+  // the statement parser and the match/attach in the importer. Default ON —
+  // this is now the standard self-hosted statement path (per-page
+  // rasterization also fixes whole-buffer PDF parsing); set to 'false' to
+  // fall back to the previous single-call behavior.
   STATEMENT_CHECK_PAYEE_V1: z
     .string()
     .optional()
-    .transform((v) => v === 'true' || v === '1')
-    .default('false'),
+    .transform((v) => v === 'false' || v === '0' ? false : true)
+    .default('true'),
   // Rasterization DPI for PDF→PNG page rendering (poppler `pdftoppm -r`).
   // 200 balances legibility for the vision model against image-prefill
   // cost; dense multi-column statements may warrant 300.
