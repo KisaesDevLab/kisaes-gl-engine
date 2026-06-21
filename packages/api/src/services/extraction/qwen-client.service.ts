@@ -144,7 +144,7 @@ export async function healthCheck(): Promise<ExtractionHealth> {
   const config = await aiConfigService.getRawConfig();
   const baseUrl = config.openaiCompatBaseUrl ?? null;
   const opt = resolveExtractionOptions(config);
-  const modelTag = opt.modelTag || config.openaiCompatModel || 'qwen3.5:35b-a3b';
+  const modelTag = opt.modelTag || config.openaiCompatModel || 'minicpm-v4.5:latest';
   if (!baseUrl) {
     return { ok: false, modelTag, baseUrl: null, error: 'OpenAI-compatible base URL not configured' };
   }

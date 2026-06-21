@@ -71,6 +71,10 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
       suggestedAccountId: bankFeedItems.suggestedAccountId,
       suggestedContactId: bankFeedItems.suggestedContactId,
       confidenceScore: bankFeedItems.confidenceScore,
+      // STATEMENT_CHECK_PAYEE_V1 — surfaced in the UI so the payee read off a
+      // check image is visible/confirmable before posting.
+      payeeNameOnCheck: bankFeedItems.payeeNameOnCheck,
+      checkNumber: bankFeedItems.checkNumber,
       createdAt: bankFeedItems.createdAt,
       updatedAt: bankFeedItems.updatedAt,
       bankAccountName: accounts.name,

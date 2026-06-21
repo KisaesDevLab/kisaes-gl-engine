@@ -104,8 +104,9 @@ describe('qwen-client.extractImage', () => {
 
     await extractImage({ base64: 'QUJD', mimeType: 'image/png', systemPrompt: 'sys', userPrompt: 'extract' });
 
-    // Native provider built from the base URL with the trailing /v1 removed.
-    expect(mocks.ollamaCtor).toHaveBeenCalledWith('http://ollama:11434', 'qwen3.5:35b-a3b');
+    // Native provider built from the base URL with the trailing /v1 removed,
+    // using the default extraction model (EXTRACTION_MODEL_TAG → MiniCPM-V).
+    expect(mocks.ollamaCtor).toHaveBeenCalledWith('http://ollama:11434', 'minicpm-v4.5:latest');
     // openai_compat factory NOT used on the native path.
     expect(mocks.getProvider).not.toHaveBeenCalled();
     const callArgs = mocks.completeWithImage.mock.calls[0]![0] as Record<string, unknown>;

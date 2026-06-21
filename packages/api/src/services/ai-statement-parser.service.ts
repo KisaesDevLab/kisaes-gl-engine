@@ -14,6 +14,7 @@ import * as orchestrator from './ai-orchestrator.service.js';
 import { sanitize, sanitizeStatementHeader } from './pii-sanitizer.service.js';
 import { extractLocally } from './local-ocr.service.js';
 import { unwrapParsedResult } from './ai-providers/json-utils.js';
+import { completeVisionWithFallback } from './ai-vision-fallback.js';
 import { renderPdfToPngPages, isRenderablePdf } from './extraction/pdf-render.service.js';
 
 const unwrapParsed = (result: Parameters<typeof unwrapParsedResult>[0]) =>
@@ -138,7 +139,8 @@ export async function parseStatement(tenantId: string, attachmentId: string) {
     let parsed: any;
 
     if (orchestrator.isSelfHostedProvider(ocrProvider, { openaiCompatBaseUrl: rawConfig.openaiCompatBaseUrl })) {
-      const provider = getProvider(ocrProvider, rawConfig, config.ocrModel || undefined);
+      // Self-hosted vision: default to the dedicated OCR model (MiniCPM-V).
+      const primaryModel = config.ocrModel || env.OCR_VISION_MODEL;
       // STATEMENT_CHECK_PAYEE_V1: also ask the model to read check-image
       // thumbnails. Self-hosted vision only — never on cloud (the check face
       // carries signatures/account numbers). PDFs are rasterized per page so
@@ -166,12 +168,12 @@ export async function parseStatement(tenantId: string, attachmentId: string) {
         let outputTokens = 0;
         let durationMs = 0;
         for (const page of pages) {
-          const r = await provider.completeWithImage({
+          const r = await completeVisionWithFallback({
             systemPrompt: sysPrompt,
             userPrompt,
             images: [{ base64: page.data.toString('base64'), mimeType: page.mimeType }],
             ...visionParams,
-          });
+          }, { rawConfig, ocrProvider, primaryModel, task: 'ocr_statement' });
           result = r;
           perPage.push(unwrapParsed(r) as Record<string, unknown>);
           inputTokens += r.inputTokens ?? 0;
@@ -183,12 +185,12 @@ export async function parseStatement(tenantId: string, attachmentId: string) {
         if (result) result = { ...result, inputTokens, outputTokens, durationMs };
       } else {
         const base64 = fileBuffer.toString('base64');
-        result = await provider.completeWithImage({
+        result = await completeVisionWithFallback({
           systemPrompt: sysPrompt,
           userPrompt,
           images: [{ base64, mimeType }],
           ...visionParams,
-        });
+        }, { rawConfig, ocrProvider, primaryModel, task: 'ocr_statement' });
         parsed = unwrapParsed(result);
       }
       extractionSource = 'self_hosted_vision';

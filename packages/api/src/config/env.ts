@@ -297,10 +297,21 @@ const envSchema = z.object({
     .optional()
     .transform((v) => v === 'true' || v === '1')
     .default('false'),
+  // Default model for self-hosted IMAGE OCR (receipts, bills, statements +
+  // checks, document classification) when the admin leaves the OCR model
+  // blank. MiniCPM-V 4.5 is a dedicated vision/OCR model — far better at
+  // small artifacts like check thumbnails than the general thinking model.
+  // Only applied on self-hosted providers; cloud OCR keeps its own model.
+  OCR_VISION_MODEL: z.string().default('minicpm-v4.5:latest'),
+  // Local fallback model for image OCR: if the primary (OCR_VISION_MODEL,
+  // MiniCPM-V) fails or returns unparseable output, the vision call retries
+  // on this model — also on the self-hosted endpoint — before any cloud
+  // fallback. See ai-vision-fallback.completeVisionWithFallback.
+  OCR_FALLBACK_MODEL: z.string().default('qwen3.5:35b-a3b'),
   // Ollama model tag, passed as the openai_compat model override. Lets an
-  // operator swap to qwen3.5:27b (escalation) or a future qwen3.6 vision
-  // model without a code change.
-  EXTRACTION_MODEL_TAG: z.string().default('qwen3.5:35b-a3b'),
+  // operator swap to qwen3.5:35b-a3b or another vision model without a code
+  // change. Defaults to MiniCPM-V 4.5 (the dedicated OCR model).
+  EXTRACTION_MODEL_TAG: z.string().default('minicpm-v4.5:latest'),
   // Route the extraction vision call through Ollama's NATIVE /api/chat
   // instead of the OpenAI-compatible /v1. Native is required for thinking
   // models (Qwen3.5): /v1 returns empty `content` (reasoning is split out),

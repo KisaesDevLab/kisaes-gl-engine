@@ -7,12 +7,14 @@ import { eq, and } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { attachments } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { env } from '../config/env.js';
 import { log } from '../utils/logger.js';
 import * as aiConfigService from './ai-config.service.js';
 import * as aiPrompt from './ai-prompt.service.js';
 import * as orchestrator from './ai-orchestrator.service.js';
 import { sanitize } from './pii-sanitizer.service.js';
 import { extractLocally } from './local-ocr.service.js';
+import { completeVisionWithFallback } from './ai-vision-fallback.js';
 
 export type DocumentType = 'receipt' | 'invoice' | 'bank_statement' | 'tax_form' | 'other';
 
@@ -98,9 +100,9 @@ export async function classifyDocument(tenantId: string, attachmentId: string): 
     let confidence: number;
 
     if (orchestrator.isSelfHostedProvider(provider, { openaiCompatBaseUrl: rawConfig.openaiCompatBaseUrl })) {
-      const aiProvider = gp(provider, rawConfig, config.documentClassificationModel || undefined);
+      // Self-hosted vision: default to the dedicated OCR model (MiniCPM-V).
       const base64 = fileBuffer.toString('base64');
-      result = await aiProvider.completeWithImage({
+      result = await completeVisionWithFallback({
         systemPrompt: customPrompt ?? classifierSystemPrompt,
         userPrompt: 'What type of financial document is this? Classify it.',
         images: [{ base64, mimeType }],
@@ -109,7 +111,7 @@ export async function classifyDocument(tenantId: string, attachmentId: string): 
         ...(taskParams.thinking ? { thinking: taskParams.thinking } : {}),
         ...(taskParams.numCtx ? { numCtx: taskParams.numCtx } : {}),
         responseFormat: 'json',
-      });
+      }, { rawConfig, ocrProvider: provider, primaryModel: config.documentClassificationModel || env.OCR_VISION_MODEL, task: 'classify_document' });
       parsed = result.parsed || {};
       docType = (['receipt', 'invoice', 'bank_statement', 'tax_form'].includes(parsed.type) ? parsed.type : 'other') as DocumentType;
       confidence = parsed.confidence || 0.5;

@@ -7,12 +7,14 @@ import { eq, and, ilike } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { attachments, contacts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { env } from '../config/env.js';
 import * as aiConfigService from './ai-config.service.js';
 import * as aiPrompt from './ai-prompt.service.js';
 import * as orchestrator from './ai-orchestrator.service.js';
 import { sanitize } from './pii-sanitizer.service.js';
 import { extractLocally } from './local-ocr.service.js';
 import { unwrapParsedResult } from './ai-providers/json-utils.js';
+import { completeVisionWithFallback } from './ai-vision-fallback.js';
 
 const unwrapParsed = (result: Parameters<typeof unwrapParsedResult>[0]) =>
   unwrapParsedResult(result, 'receipt extraction');
@@ -87,10 +89,10 @@ export async function processReceipt(tenantId: string, attachmentId: string) {
     let parsed: any;
 
     if (orchestrator.isSelfHostedProvider(ocrProvider, { openaiCompatBaseUrl: rawConfig.openaiCompatBaseUrl })) {
-      // Self-hosted path: image stays local.
-      const provider = getProvider(ocrProvider, rawConfig, config.ocrModel || undefined);
+      // Self-hosted path: image stays local. Default to the dedicated OCR
+      // vision model (MiniCPM-V) when no OCR model is explicitly configured.
       const base64 = imageBuffer.toString('base64');
-      result = await provider.completeWithImage({
+      result = await completeVisionWithFallback({
         systemPrompt: customPrompt ?? receiptSystemPrompt,
         userPrompt: 'Extract all information from this receipt. Return valid JSON.',
         images: [{ base64, mimeType }],
@@ -99,7 +101,7 @@ export async function processReceipt(tenantId: string, attachmentId: string) {
         ...(taskParams.thinking ? { thinking: taskParams.thinking } : {}),
         ...(taskParams.numCtx ? { numCtx: taskParams.numCtx } : {}),
         responseFormat: 'json',
-      });
+      }, { rawConfig, ocrProvider, primaryModel: config.ocrModel || env.OCR_VISION_MODEL, task: 'ocr_receipt' });
       parsed = unwrapParsed(result);
       extractionSource = 'self_hosted_vision';
     } else {

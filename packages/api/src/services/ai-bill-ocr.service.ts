@@ -7,12 +7,14 @@ import { eq, and, ilike } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { attachments, contacts, accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { env } from '../config/env.js';
 import * as aiConfigService from './ai-config.service.js';
 import * as aiPrompt from './ai-prompt.service.js';
 import * as orchestrator from './ai-orchestrator.service.js';
 import { sanitize } from './pii-sanitizer.service.js';
 import { extractLocally } from './local-ocr.service.js';
 import { unwrapParsedResult } from './ai-providers/json-utils.js';
+import { completeVisionWithFallback } from './ai-vision-fallback.js';
 
 const unwrapParsed = (result: Parameters<typeof unwrapParsedResult>[0]) =>
   unwrapParsedResult(result, 'bill extraction');
@@ -139,9 +141,9 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
     let parsed: any;
 
     if (orchestrator.isSelfHostedProvider(ocrProvider, { openaiCompatBaseUrl: rawConfig.openaiCompatBaseUrl })) {
-      const provider = getProvider(ocrProvider, rawConfig, config.ocrModel || undefined);
+      // Self-hosted vision: default to the dedicated OCR model (MiniCPM-V).
       const base64 = fileBuffer.toString('base64');
-      result = await provider.completeWithImage({
+      result = await completeVisionWithFallback({
         systemPrompt: customPrompt ?? billSystemPrompt,
         userPrompt: 'Extract all fields from this vendor invoice. Return valid JSON matching the schema exactly.',
         images: [{ base64, mimeType }],
@@ -150,7 +152,7 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
         ...(taskParams.thinking ? { thinking: taskParams.thinking } : {}),
         ...(taskParams.numCtx ? { numCtx: taskParams.numCtx } : {}),
         responseFormat: 'json',
-      });
+      }, { rawConfig, ocrProvider, primaryModel: config.ocrModel || env.OCR_VISION_MODEL, task: 'ocr_invoice' });
       parsed = unwrapParsed(result);
       extractionSource = 'self_hosted_vision';
     } else {

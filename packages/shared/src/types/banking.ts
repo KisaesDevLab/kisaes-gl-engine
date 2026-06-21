@@ -48,6 +48,10 @@ export interface BankFeedItem {
   originalDescription?: string | null;
   suggestedAccountName?: string | null;
   matchType?: 'rule' | 'ai' | 'manual' | string | null;
+  // STATEMENT_CHECK_PAYEE_V1 — payee read off a check-image thumbnail and the
+  // parsed check number; shown in the UI so they're visible/confirmable.
+  payeeNameOnCheck?: string | null;
+  checkNumber?: number | null;
 }
 
 export interface BankFeedFilters {
