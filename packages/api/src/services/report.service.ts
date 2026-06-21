@@ -479,7 +479,11 @@ export async function buildExpenseByVendor(
 ) {
   const tagClause = tagId ? sql`AND jl.tag_id = ${tagId}` : sql``;
   const rows = await db.execute(sql`
-    SELECT c.id as contact_id, COALESCE(c.display_name, 'Uncategorized') as vendor_name,
+    SELECT c.id as contact_id,
+      -- STATEMENT_CHECK_PAYEE_V1 — fall back to the payee read off the check
+      -- image when no contact matched, so checks roll up under the real payee
+      -- instead of "Uncategorized". Label/grouping only; SUM is unchanged.
+      COALESCE(c.display_name, t.payee_name_on_check, 'Uncategorized') as vendor_name,
       SUM(jl.debit) as total
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
@@ -490,7 +494,8 @@ export async function buildExpenseByVendor(
       AND jl.debit > 0
       AND ${companyFilter(companyId)}
       ${tagClause}
-    GROUP BY c.id, c.display_name ORDER BY total DESC
+    GROUP BY COALESCE(c.id::text, t.payee_name_on_check), c.id, c.display_name, t.payee_name_on_check
+    ORDER BY total DESC
   `);
 
   return { title: 'Expenses by Vendor', startDate, endDate, data: rows.rows };
@@ -675,9 +680,14 @@ export async function buildCheckRegister(
 
   const rows = await db.execute(sql`
     SELECT t.id, t.txn_type, t.txn_number, t.txn_date, t.memo,
+      t.check_number,
+      -- STATEMENT_CHECK_PAYEE_V1 — payee for the check: linked contact, else
+      -- the name read off the check image.
+      COALESCE(c.display_name, t.payee_name_on_check) AS payee,
       jl.debit, jl.credit
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id
+    LEFT JOIN contacts c ON c.id = t.contact_id AND c.tenant_id = ${tenantId}
     WHERE ${sql.join(conditions, sql` AND `)}
     ORDER BY t.txn_date DESC, t.created_at DESC
   `);
@@ -840,7 +850,9 @@ export async function buildGeneralLedger(
       t.txn_type,
       t.txn_number,
       t.memo AS txn_memo,
-      c.display_name AS contact_name
+      -- STATEMENT_CHECK_PAYEE_V1 — show the check-image payee when no
+      -- contact is linked (e.g. statement-imported checks).
+      COALESCE(c.display_name, t.payee_name_on_check) AS contact_name
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id
     LEFT JOIN contacts c ON c.id = t.contact_id
@@ -1111,7 +1123,8 @@ export async function buildTransactionList(tenantId: string, filters?: {
 
   const rows = await db.execute(sql`
     SELECT t.id, t.txn_type, t.txn_number, t.txn_date, t.total, t.memo, t.status,
-      c.display_name as contact_name,
+      -- STATEMENT_CHECK_PAYEE_V1 — fall back to the check-image payee.
+      COALESCE(c.display_name, t.payee_name_on_check) as contact_name,
       -- ADR 0XX 6.3 — comma-separated list of tag names on the txns
       -- journal lines, exported as the line_tag column. Distinct so
       -- multi-tag headers show "Project A, Project B" once each.

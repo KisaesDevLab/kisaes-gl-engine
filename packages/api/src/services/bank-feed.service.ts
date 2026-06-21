@@ -6,13 +6,16 @@ import { eq, and, sql, count, gte, lte } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import type { BankFeedFilters, CategorizeInput, CsvColumnMapping } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { bankFeedItems, bankConnections, accounts, transactions, journalLines, transactionTags as transactionTagsTable } from '../db/schema/index.js';
+import { bankFeedItems, bankConnections, accounts, transactions, journalLines, contacts, transactionTags as transactionTagsTable } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
 import { cleanBankDescription } from '../utils/bank-name-cleaner.js';
+import { parseCheckNumber } from '../utils/check-number.js';
+import { matchByName } from './ai-name-match.js';
 import { cleanNameViaRules } from './bank-rules.service.js';
 import { updateLearning } from './categorization-ai.service.js';
 import { assertTagsInTenant } from './tags.service.js';
+import type { StatementCheckImage } from './ai-statement-parser.service.js';
 
 /**
  * Verify a client-supplied `bankConnectionId` belongs to the caller's
@@ -299,6 +302,17 @@ export async function categorize(tenantId: string, feedItemId: string, input: Ca
         // produce one user line per split + the single cash line.
         lines: isExpense ? [...userLines, cashLine] : [cashLine, ...userLines],
       }, userId, companyId, tx);
+
+      // STATEMENT_CHECK_PAYEE_V1 — stamp the parsed check number and the
+      // payee read off the check image onto the posted transaction (mirrors
+      // write-check). Metadata only — no journal lines change. Reports fall
+      // back to payee_name_on_check when no contact matched.
+      if (item.checkNumber != null || item.payeeNameOnCheck) {
+        await tx.update(transactions).set({
+          checkNumber: item.checkNumber ?? undefined,
+          payeeNameOnCheck: item.payeeNameOnCheck ?? undefined,
+        }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, t.id)));
+      }
 
       await tx.update(bankFeedItems).set({
         status: 'categorized',
@@ -592,13 +606,84 @@ export async function bulkExclude(tenantId: string, feedItemIds: string[]) {
  * Each step can produce a clean name. The first step that succeeds wins.
  * Steps 3 & 4 also set suggestedAccountId/suggestedContactId on the feed item.
  */
+/**
+ * STATEMENT_CHECK_PAYEE_V1 — correlate payees read off check-image
+ * thumbnails to their "CHECK ####" feed items. Match by check number, then
+ * confirm by amount (within a cent). On a match we always stage the read
+ * payee on `payee_name_on_check` (report fallback + audit); when it resolves
+ * to a unique existing contact we also set `suggested_contact_id` so the
+ * posted transaction gets a real `contact_id` (auto-apply on exact match).
+ * Never creates contacts.
+ */
+async function applyCheckImagePayees(
+  tenantId: string,
+  items: Array<typeof bankFeedItems.$inferSelect>,
+  checks: StatementCheckImage[],
+) {
+  const candidates = items.filter((it) => it.checkNumber != null);
+  if (candidates.length === 0) return;
+
+  const byNumber = new Map<number, StatementCheckImage[]>();
+  for (const c of checks) {
+    const n = Number.parseInt(c.checkNumber, 10);
+    if (!Number.isFinite(n)) continue;
+    const arr = byNumber.get(n) ?? [];
+    arr.push(c);
+    byNumber.set(n, arr);
+  }
+  if (byNumber.size === 0) return;
+
+  const tenantContacts = await db.query.contacts.findMany({
+    where: eq(contacts.tenantId, tenantId),
+    columns: { id: true, displayName: true },
+  });
+
+  for (const item of candidates) {
+    const num = item.checkNumber as number;
+    const matches = byNumber.get(num);
+    if (!matches || matches.length === 0) continue;
+    const feedAmount = Math.abs(parseFloat(String(item.amount || '0')));
+    // Confirm by amount within a cent; if a check thumbnail had no readable
+    // amount, fall back to number-only when it's the sole check with that #.
+    const match =
+      matches.find((c) => c.amount != null && Math.abs(Math.abs(parseFloat(c.amount)) - feedAmount) <= 0.01) ??
+      (matches.length === 1 ? matches[0] : undefined);
+    if (!match) continue;
+    const payee = match.payee.trim();
+    if (!payee) continue;
+
+    const contact = matchByName(tenantContacts, (c) => c.displayName, payee);
+    const update: Partial<typeof bankFeedItems.$inferInsert> = {
+      payeeNameOnCheck: payee.slice(0, 255),
+      updatedAt: new Date(),
+    };
+    if (contact) {
+      update.suggestedContactId = contact.id;
+      update.matchType = 'check_image';
+      update.confidenceScore = '0.95';
+    }
+    await db.update(bankFeedItems).set(update)
+      .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, item.id)));
+    // Mirror onto the in-memory row so the cleansing pipeline below sees it.
+    item.payeeNameOnCheck = update.payeeNameOnCheck ?? null;
+    if (contact) item.suggestedContactId = contact.id;
+  }
+}
+
 async function runCleansingPipeline(tenantId: string, items: any[]) {
   for (const item of items) {
     const raw = item.originalDescription || item.description || '';
     let cleanedName: string | null = null;
 
+    // STATEMENT_CHECK_PAYEE_V1 — a payee read off the check image is the
+    // most reliable name; use it as the description and skip the AI guess
+    // (which can't derive a vendor from "CHECK ####" anyway).
+    if (item.payeeNameOnCheck) {
+      cleanedName = item.payeeNameOnCheck;
+    }
+
     // Step 1 & 2: Tenant rules, then global rules
-    cleanedName = await cleanNameViaRules(tenantId, raw);
+    if (!cleanedName) cleanedName = await cleanNameViaRules(tenantId, raw);
 
     // Step 3 & 4: Categorization history + AI (also sets suggestions on the feed item)
     if (!cleanedName) {
@@ -992,6 +1077,7 @@ export async function importStatementItems(
   tenantId: string,
   bankConnectionId: string,
   transactions: Array<{ date: string; description: string; amount: string; type?: string }>,
+  checks: StatementCheckImage[] = [],
 ) {
   await assertConnectionInTenant(tenantId, bankConnectionId);
   const items: Array<typeof bankFeedItems.$inferInsert> = transactions.map((txn) => ({
@@ -1001,6 +1087,9 @@ export async function importStatementItems(
     description: txn.description,
     originalDescription: txn.description,
     amount: txn.amount,
+    // STATEMENT_CHECK_PAYEE_V1 — parse the check number now so we can
+    // correlate it to a check-image payee below (no-op when absent).
+    checkNumber: parseCheckNumber(txn.description),
     status: 'pending' as const,
   }));
 
@@ -1021,6 +1110,11 @@ export async function importStatementItems(
   if (dedupedStmt.length === 0) return { imported: 0, skipped: transactions.length };
 
   const insertedStmt = await db.insert(bankFeedItems).values(dedupedStmt).returning();
+
+  // STATEMENT_CHECK_PAYEE_V1 — correlate check-image payees to the
+  // "CHECK ####" feed items and stage the payee (+ contact on a unique
+  // match) BEFORE cleansing/categorization, so the check-derived payee wins.
+  if (checks.length > 0) await applyCheckImagePayees(tenantId, insertedStmt, checks);
 
   // Run full cleansing pipeline (rules → history → AI → basic cleaning)
   await runCleansingPipeline(tenantId, insertedStmt);

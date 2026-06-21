@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-import { pgTable, uuid, varchar, text, decimal, boolean, date, timestamp, index, uniqueIndex, jsonb } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, decimal, boolean, date, timestamp, index, uniqueIndex, jsonb, integer } from 'drizzle-orm/pg-core';
 
 export const bankConnections = pgTable('bank_connections', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -43,6 +43,12 @@ export const bankFeedItems = pgTable('bank_feed_items', {
   suggestedTagId: uuid('suggested_tag_id'),
   confidenceScore: decimal('confidence_score', { precision: 3, scale: 2 }),
   matchType: varchar('match_type', { length: 20 }),
+  // STATEMENT_CHECK_PAYEE_V1 — check number parsed from a "CHECK ####"
+  // description, and the payee read off the check-image thumbnail on the
+  // statement. Both are stamped onto the posted transaction at categorize
+  // time so reports show the real payee. See migration 0104.
+  checkNumber: integer('check_number'),
+  payeeNameOnCheck: varchar('payee_name_on_check', { length: 255 }),
   // Phase 4 — when a conditional rule's `skip_ai` action fires
   // for this item, the AI categorizer batch step skips it.
   skipAi: boolean('skip_ai').notNull().default(false),

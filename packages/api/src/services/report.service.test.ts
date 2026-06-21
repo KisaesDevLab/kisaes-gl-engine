@@ -3,6 +3,7 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   tenants, users, sessions, accounts, companies, auditLog, contacts,
@@ -193,5 +194,60 @@ describe('Report Service — Extended P&L', () => {
     const bs = await reportService.buildBalanceSheet(tenantId, '2026-12-31');
     // A = L + E must hold
     expect(Math.abs(bs.totalAssets - bs.totalLiabilitiesAndEquity)).toBeLessThan(0.0001);
+  });
+});
+
+describe('Report Service — check-image payee fallback (STATEMENT_CHECK_PAYEE_V1)', () => {
+  beforeEach(async () => {
+    await cleanDb();
+    tenantId = await createTenant('checkpayee-test');
+  });
+  afterEach(async () => {
+    await cleanDb();
+  });
+
+  it('expenses-by-vendor falls back to payee_name_on_check, and totals are unchanged', async () => {
+    const cash = await mkAccount('Cash', 'asset', '1000');
+    const exp = await mkAccount('Repairs', 'expense', '6200');
+
+    // A statement-imported check: payee read off the image, no linked contact.
+    const checkTxn = await post('CHECK 1051', [{ id: exp.id, amount: '250.00' }], [{ id: cash.id, amount: '250.00' }]);
+    await db.update(transactions)
+      .set({ payeeNameOnCheck: 'ACME Plumbing LLC', checkNumber: 1051 })
+      .where(eq(transactions.id, checkTxn.id));
+
+    // A plain uncategorized expense (no contact, no payee).
+    await post('Misc', [{ id: exp.id, amount: '40.00' }], [{ id: cash.id, amount: '40.00' }]);
+
+    const rep = await reportService.buildExpenseByVendor(tenantId, PERIOD_START, PERIOD_END);
+    const rows = rep.data as Array<{ vendor_name: string; total: string }>;
+    const byName = Object.fromEntries(rows.map((r) => [r.vendor_name, Number(r.total)]));
+
+    // Fallback: the check rolls up under the read payee, not "Uncategorized".
+    expect(byName['ACME Plumbing LLC']).toBe(250);
+    expect(byName['Uncategorized']).toBe(40);
+    // Cent-parity: the grand total equals the posted expense total ($290),
+    // i.e. the label/grouping change moved nothing between buckets.
+    const grand = rows.reduce((s, r) => s + Number(r.total), 0);
+    expect(grand).toBe(290);
+  });
+
+  it('a contact still wins over the check-image payee', async () => {
+    const cash = await mkAccount('Cash', 'asset', '1000');
+    const exp = await mkAccount('Repairs', 'expense', '6200');
+    const [vendor] = await db.insert(contacts).values({
+      tenantId, displayName: 'Acme Plumbing', contactType: 'vendor',
+    }).returning();
+
+    const checkTxn = await post('CHECK 1052', [{ id: exp.id, amount: '99.00' }], [{ id: cash.id, amount: '99.00' }]);
+    await db.update(transactions)
+      .set({ contactId: vendor!.id, payeeNameOnCheck: 'STALE NAME', checkNumber: 1052 })
+      .where(eq(transactions.id, checkTxn.id));
+
+    const rep = await reportService.buildExpenseByVendor(tenantId, PERIOD_START, PERIOD_END);
+    const rows = rep.data as Array<{ vendor_name: string; total: string }>;
+    const byName = Object.fromEntries(rows.map((r) => [r.vendor_name, Number(r.total)]));
+    expect(byName['Acme Plumbing']).toBe(99);
+    expect(byName['STALE NAME']).toBeUndefined();
   });
 });

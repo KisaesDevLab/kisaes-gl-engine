@@ -273,6 +273,16 @@ const envSchema = z.object({
     .optional()
     .transform((v) => v === 'true' || v === '1')
     .default('false'),
+  // STATEMENT_CHECK_PAYEE_V1 — read payee names from check-image thumbnails
+  // on bank-statement PDFs (self-hosted vision only), correlate them to the
+  // "CHECK ####" transactions, and stamp the payee so reports show the real
+  // vendor. Gates the per-page rasterization + the `checks[]` extraction in
+  // the statement parser and the match/attach in the importer. Default off.
+  STATEMENT_CHECK_PAYEE_V1: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true' || v === '1')
+    .default('false'),
   // Rasterization DPI for PDF→PNG page rendering (poppler `pdftoppm -r`).
   // 200 balances legibility for the vision model against image-prefill
   // cost; dense multi-column statements may warrant 300.

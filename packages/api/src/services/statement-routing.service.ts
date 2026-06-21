@@ -193,6 +193,7 @@ export async function importStatementForReceipt(
   try {
     const statementParser = await import('./ai-statement-parser.service.js');
     const parsed = await statementParser.parseStatement(tenantId, shadowId);
+    const rawChecks = (parsed as { checks?: import('./ai-statement-parser.service.js').StatementCheckImage[] } | undefined)?.checks ?? [];
     const rawTxns = (parsed as { transactions?: unknown } | undefined)?.transactions ?? [];
     const txns = (Array.isArray(rawTxns) ? rawTxns : []) as Array<{
       date?: string;
@@ -220,7 +221,7 @@ export async function importStatementForReceipt(
       }));
 
     const importer = await import('./bank-feed.service.js');
-    const inserted = await importer.importStatementItems(tenantId, bankConnectionId, cleaned);
+    const inserted = await importer.importStatementItems(tenantId, bankConnectionId, cleaned, rawChecks);
     const importedCount = Array.isArray(inserted) ? inserted.length : ((inserted as { imported?: number }).imported ?? 0);
 
     await db
