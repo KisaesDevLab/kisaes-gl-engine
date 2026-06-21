@@ -67,6 +67,8 @@ export const aiConfigUpdateSchema = z.object({
   openaiCompatApiKey: z.string().nullish(),
   openaiCompatBaseUrl: z.string().optional(),
   openaiCompatModel: z.string().nullable().optional(),
+  // How the openai_compat endpoint is driven (Ollama native vs /v1).
+  openaiCompatMode: z.enum(['auto', 'native', 'compat']).optional(),
   autoCategorizeOnImport: z.boolean().optional(),
   autoOcrOnUpload: z.boolean().optional(),
   categorizationConfidenceThreshold: z.number().min(0).max(1).optional(),

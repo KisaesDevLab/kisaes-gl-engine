@@ -24,22 +24,12 @@ import { AppError } from '../../utils/errors.js';
 import { abortableTimeout, TimeoutError } from '../../utils/retry.js';
 import * as aiConfigService from '../ai-config.service.js';
 import * as orchestrator from '../ai-orchestrator.service.js';
-import { getProvider, hasCredentials } from '../ai-providers/index.js';
+import { getProvider, hasCredentials, nativeOllamaBaseUrl } from '../ai-providers/index.js';
 import { OllamaProvider } from '../ai-providers/ollama.provider.js';
 import type { AiProvider } from '../ai-providers/ai-provider.interface.js';
 import { resolveExtractionOptions } from './options.js';
 
 const PROVIDER_NAME = 'openai_compat';
-
-// The extraction endpoint is configured as the openai_compat base URL, but
-// for Ollama we hit the NATIVE /api/chat instead of /v1 (see
-// EXTRACTION_OLLAMA_NATIVE): /v1 returns empty content for thinking models
-// like Qwen3.5, and only the native endpoint accepts num_ctx / keep_alive /
-// think. Strip a trailing /v1 so the OllamaProvider (which appends
-// /api/chat itself) points at the server root.
-function nativeOllamaBaseUrl(openaiCompatBaseUrl: string): string {
-  return openaiCompatBaseUrl.replace(/\/+$/, '').replace(/\/v1$/i, '');
-}
 
 // Vision prefill on a 35B model with a 200–300 DPI page image is heavy; a
 // single page can legitimately take a minute or more on a CPU/edge box.

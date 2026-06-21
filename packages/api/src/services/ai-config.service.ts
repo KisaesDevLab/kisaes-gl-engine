@@ -63,6 +63,7 @@ export async function getConfig() {
     // round-trips via the write path only.
     openaiCompatBaseUrl: config.openaiCompatBaseUrl,
     openaiCompatModel: config.openaiCompatModel,
+    openaiCompatMode: (config.openaiCompatMode as 'auto' | 'native' | 'compat') || 'auto',
     hasOpenaiCompatKey: !!config.openaiCompatApiKeyEncrypted,
     autoCategorizeOnImport: config.autoCategorizeOnImport ?? true,
     autoOcrOnUpload: config.autoOcrOnUpload ?? true,
@@ -156,6 +157,7 @@ export async function updateConfig(input: AiConfigUpdateInput, userId?: string) 
     updates.openaiCompatBaseUrl = input.openaiCompatBaseUrl || null;
   }
   if (input.openaiCompatModel !== undefined) updates.openaiCompatModel = input.openaiCompatModel || null;
+  if (input.openaiCompatMode !== undefined) updates.openaiCompatMode = input.openaiCompatMode;
   if (input.autoCategorizeOnImport !== undefined) updates.autoCategorizeOnImport = input.autoCategorizeOnImport;
   if (input.autoOcrOnUpload !== undefined) updates.autoOcrOnUpload = input.autoOcrOnUpload;
   if (input.categorizationConfidenceThreshold !== undefined) updates.categorizationConfidenceThreshold = String(input.categorizationConfidenceThreshold);

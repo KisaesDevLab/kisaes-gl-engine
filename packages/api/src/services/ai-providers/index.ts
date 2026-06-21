@@ -22,6 +22,29 @@ interface AiConfigRow {
   openaiCompatBaseUrl?: string | null;
   openaiCompatApiKeyEncrypted?: string | null;
   openaiCompatModel?: string | null;
+  // 'auto' (default) | 'native' | 'compat'. Controls whether the
+  // openai_compat endpoint is driven via Ollama's native /api/chat (the
+  // "right method" — correct for thinking models, supports num_ctx /
+  // keep_alive / think) or the OpenAI-compatible /v1 path. See
+  // resolveOllamaNative.
+  openaiCompatMode?: string | null;
+}
+
+// Normalise an Ollama base URL to the server root: the OllamaProvider
+// appends /api/chat itself, so strip a trailing slash and a trailing /v1
+// (admins commonly paste the /v1 form they use for the openai_compat slot).
+export function nativeOllamaBaseUrl(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/, '').replace(/\/v1$/i, '');
+}
+
+// Decide whether an openai_compat endpoint should be driven natively.
+// 'auto' detects Ollama by its default port (:11434) or an "ollama"
+// hostname — so an Ollama box auto-uses /api/chat (fixing empty content on
+// thinking models) while vLLM/llama.cpp on other ports stay on /v1.
+export function resolveOllamaNative(baseUrl: string, mode?: string | null): boolean {
+  if (mode === 'native') return true;
+  if (mode === 'compat') return false;
+  return /:11434(\b|\/|$)/.test(baseUrl) || /\bollama\b/i.test(baseUrl);
 }
 
 export function getProvider(providerName: string, config: AiConfigRow, model?: string): AiProvider {
@@ -44,8 +67,16 @@ export function getProvider(providerName: string, config: AiConfigRow, model?: s
       // llama3.2 — a common Ollama model; callers can override via
       // the optional `model` argument), optional bearer API key.
       if (!config.openaiCompatBaseUrl) throw new Error('OpenAI-compat base URL not configured');
-      const apiKey = config.openaiCompatApiKeyEncrypted ? decrypt(config.openaiCompatApiKeyEncrypted) : undefined;
       const effectiveModel = model || config.openaiCompatModel || 'llama3.2';
+      // When the endpoint is Ollama, drive it natively (/api/chat). This is
+      // the correct method for Ollama-served models — especially thinking
+      // models like Qwen3.5, which return empty `content` on the /v1 path —
+      // and it unlocks num_ctx / keep_alive / think. Non-Ollama backends
+      // (vLLM, llama.cpp, LM Studio) keep using /v1.
+      if (resolveOllamaNative(config.openaiCompatBaseUrl, config.openaiCompatMode)) {
+        return new OllamaProvider(nativeOllamaBaseUrl(config.openaiCompatBaseUrl), effectiveModel);
+      }
+      const apiKey = config.openaiCompatApiKeyEncrypted ? decrypt(config.openaiCompatApiKeyEncrypted) : undefined;
       return new OpenAiCompatProvider(config.openaiCompatBaseUrl, effectiveModel, apiKey);
     }
     default:

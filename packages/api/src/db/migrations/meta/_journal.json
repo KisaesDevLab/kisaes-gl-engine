@@ -722,6 +722,13 @@
       "when": 1776970000000,
       "tag": "0102_ai_extraction_options",
       "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1776980000000,
+      "tag": "0103_ai_openai_compat_mode",
+      "breakpoints": true
     }
   ]
 }

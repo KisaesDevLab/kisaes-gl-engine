@@ -35,6 +35,10 @@ export const aiConfig = pgTable('ai_config', {
   openaiCompatBaseUrl: varchar('openai_compat_base_url', { length: 500 }),
   openaiCompatApiKeyEncrypted: text('openai_compat_api_key_encrypted'),
   openaiCompatModel: varchar('openai_compat_model', { length: 100 }),
+  // How to drive the openai_compat endpoint: 'auto' (detect Ollama →
+  // native /api/chat, else /v1) | 'native' | 'compat'. See migration 0103
+  // and resolveOllamaNative in ai-providers/index.
+  openaiCompatMode: varchar('openai_compat_mode', { length: 20 }).notNull().default('auto'),
   // Processing settings
   autoCategorizeOnImport: boolean('auto_categorize_on_import').default(true),
   autoOcrOnUpload: boolean('auto_ocr_on_upload').default(true),

@@ -31,6 +31,7 @@ vi.mock('../ai-orchestrator.service.js', () => ({
 vi.mock('../ai-providers/index.js', () => ({
   getProvider: (...a: unknown[]) => mocks.getProvider(...a),
   hasCredentials: (...a: unknown[]) => mocks.hasCredentials(...a),
+  nativeOllamaBaseUrl: (u: string) => u.replace(/\/+$/, '').replace(/\/v1$/i, ''),
 }));
 
 // EXTRACTION_OLLAMA_NATIVE defaults on, so the wrapper constructs a native
