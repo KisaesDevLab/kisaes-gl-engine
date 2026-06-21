@@ -148,6 +148,7 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
         temperature: taskParams.temperature,
         maxTokens: taskParams.maxTokens,
         ...(taskParams.thinking ? { thinking: taskParams.thinking } : {}),
+        ...(taskParams.numCtx ? { numCtx: taskParams.numCtx } : {}),
         responseFormat: 'json',
       });
       parsed = unwrapParsed(result);
@@ -165,6 +166,7 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
           temperature: taskParams.temperature,
           maxTokens: taskParams.maxTokens,
           ...(taskParams.thinking ? { thinking: taskParams.thinking } : {}),
+          ...(taskParams.numCtx ? { numCtx: taskParams.numCtx } : {}),
           responseFormat: 'json',
         });
         parsed = unwrapParsed(result);
@@ -187,6 +189,7 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
           temperature: taskParams.temperature,
           maxTokens: taskParams.maxTokens,
           ...(taskParams.thinking ? { thinking: taskParams.thinking } : {}),
+          ...(taskParams.numCtx ? { numCtx: taskParams.numCtx } : {}),
           responseFormat: 'json',
         });
         parsed = unwrapParsed(result);

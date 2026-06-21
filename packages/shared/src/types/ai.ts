@@ -29,9 +29,23 @@ export interface TaskOption {
   threshold?: number | null;
   autoTrigger?: boolean | null;
   piiLevel?: PiiProtectionLevel | null;
+  numCtx?: number | null;
 }
 
 export type TaskOptions = Partial<Record<AiFunctionKey, TaskOption>>;
+
+// Admin overrides for the local document-extraction pipeline (Ollama/Qwen).
+// null/absent = use the EXTRACTION_* env default.
+export interface ExtractionOptions {
+  maxTokens?: number | null;
+  numCtx?: number | null;
+  thinking?: AiThinkingMode | null;
+  ollamaNative?: boolean | null;
+  modelTag?: string | null;
+  renderDpi?: number | null;
+  grayscale?: boolean | null;
+  confidenceThreshold?: number | null;
+}
 
 export interface AiSystemConfig {
   isEnabled: boolean;

@@ -19,6 +19,24 @@ export const taskOptionSchema = z
     threshold: z.number().min(0).max(1).nullable().optional(),
     autoTrigger: z.boolean().nullable().optional(),
     piiLevel: z.enum(['strict', 'standard', 'permissive']).nullable().optional(),
+    // Ollama context-window override (num_ctx) for this function. null/absent
+    // = use OLLAMA_NUM_CTX / model default.
+    numCtx: z.number().int().min(512).max(1000000).nullable().optional(),
+  })
+  .strict();
+
+// Admin overrides for the local document-extraction pipeline. Every field is
+// optional; null/absent = use the EXTRACTION_* env default.
+export const extractionOptionsSchema = z
+  .object({
+    maxTokens: z.number().int().positive().max(200000).nullable().optional(),
+    numCtx: z.number().int().min(512).max(1000000).nullable().optional(),
+    thinking: z.enum(['on', 'off']).nullable().optional(),
+    ollamaNative: z.boolean().nullable().optional(),
+    modelTag: z.string().max(200).nullable().optional(),
+    renderDpi: z.number().int().min(72).max(600).nullable().optional(),
+    grayscale: z.boolean().nullable().optional(),
+    confidenceThreshold: z.number().min(0).max(1).nullable().optional(),
   })
   .strict();
 
@@ -66,10 +84,13 @@ export const aiConfigUpdateSchema = z.object({
   // Per-function settings. Partial deep-merge in the service so a partial
   // update (one function, one key) doesn't wipe the rest.
   taskOptions: taskOptionsSchema.optional(),
+  // Document-extraction overrides (deep-merged in the service).
+  extractionOptions: extractionOptionsSchema.optional(),
 });
 export type AiConfigUpdateInput = z.infer<typeof aiConfigUpdateSchema>;
 export type TaskOptionInput = z.infer<typeof taskOptionSchema>;
 export type TaskOptionsInput = z.infer<typeof taskOptionsSchema>;
+export type ExtractionOptionsInput = z.infer<typeof extractionOptionsSchema>;
 
 export const aiCategorizeSchema = z.object({
   feedItemId: z.string().uuid(),

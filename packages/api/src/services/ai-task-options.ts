@@ -17,6 +17,7 @@ export interface ResolvedTaskParams {
   maxTokens: number;
   temperature: number;
   thinking?: 'on' | 'off';
+  numCtx?: number;
 }
 
 export interface ResolvedTaskExec {
@@ -33,9 +34,10 @@ export function resolveTaskParams(
   return {
     maxTokens: opt.maxTokens ?? defaults.maxTokens,
     temperature: opt.temperature ?? defaults.temperature,
-    // Only include `thinking` when explicitly set so providers can tell
-    // "unset" (provider default) from an explicit on/off.
+    // Only include `thinking` / `numCtx` when explicitly set so providers
+    // can tell "unset" (provider/env default) from an explicit value.
     ...(opt.thinking ? { thinking: opt.thinking } : {}),
+    ...(opt.numCtx ? { numCtx: opt.numCtx } : {}),
   };
 }
 

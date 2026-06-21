@@ -97,6 +97,7 @@ export async function processReceipt(tenantId: string, attachmentId: string) {
         temperature: taskParams.temperature,
         maxTokens: taskParams.maxTokens,
         ...(taskParams.thinking ? { thinking: taskParams.thinking } : {}),
+        ...(taskParams.numCtx ? { numCtx: taskParams.numCtx } : {}),
         responseFormat: 'json',
       });
       parsed = unwrapParsed(result);
@@ -118,6 +119,7 @@ export async function processReceipt(tenantId: string, attachmentId: string) {
           temperature: taskParams.temperature,
           maxTokens: taskParams.maxTokens,
           ...(taskParams.thinking ? { thinking: taskParams.thinking } : {}),
+          ...(taskParams.numCtx ? { numCtx: taskParams.numCtx } : {}),
           responseFormat: 'json',
         });
         parsed = unwrapParsed(result);
@@ -141,6 +143,7 @@ export async function processReceipt(tenantId: string, attachmentId: string) {
           temperature: taskParams.temperature,
           maxTokens: taskParams.maxTokens,
           ...(taskParams.thinking ? { thinking: taskParams.thinking } : {}),
+          ...(taskParams.numCtx ? { numCtx: taskParams.numCtx } : {}),
           responseFormat: 'json',
         });
         parsed = unwrapParsed(result);

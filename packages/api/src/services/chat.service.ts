@@ -256,6 +256,7 @@ export async function sendMessage(
     maxTokens: chatParams.maxTokens,
     responseFormat: 'text',
     ...(chatParams.thinking ? { thinking: chatParams.thinking } : {}),
+    ...(chatParams.numCtx ? { numCtx: chatParams.numCtx } : {}),
   };
 
   let result: CompletionResult;

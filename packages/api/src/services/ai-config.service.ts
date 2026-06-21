@@ -3,7 +3,7 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { eq, sql } from 'drizzle-orm';
-import type { AiConfigUpdateInput, AiFunctionKey, TaskOptions } from '@kis-books/shared';
+import type { AiConfigUpdateInput, AiFunctionKey, TaskOptions, ExtractionOptions } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { aiConfig } from '../db/schema/index.js';
 import { encrypt } from '../utils/encryption.js';
@@ -74,6 +74,9 @@ export async function getConfig() {
     // Stored as JSONB keyed by function; absent/null keys resolve to the
     // built-in default at call time via resolveTaskParams/resolveTaskExec.
     taskOptions: (config.taskOptions as TaskOptions) || {},
+    // Document-extraction overrides (Ollama/Qwen). Absent keys fall back to
+    // EXTRACTION_* env defaults at call time (resolveExtractionOptions).
+    extractionOptions: (config.extractionOptions as ExtractionOptions) || {},
     // Chat support (see AI_CHAT_SUPPORT_PLAN.md §2.1)
     chatSupportEnabled: config.chatSupportEnabled ?? false,
     chatProvider: config.chatProvider,
@@ -187,6 +190,12 @@ export async function updateConfig(input: AiConfigUpdateInput, userId?: string) 
       if (incoming) merged[key] = { ...(existing[key] || {}), ...incoming };
     }
     updates.taskOptions = merged;
+  }
+  // Document-extraction overrides — shallow-merge so a partial update keeps
+  // the unspecified keys. A key set to null means "use the env default".
+  if (input.extractionOptions) {
+    const existing = (config.extractionOptions as ExtractionOptions) || {};
+    updates.extractionOptions = { ...existing, ...input.extractionOptions };
   }
   if (userId) { updates.configuredBy = userId; updates.configuredAt = new Date(); }
 

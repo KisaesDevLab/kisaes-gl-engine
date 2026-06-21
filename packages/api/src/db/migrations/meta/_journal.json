@@ -715,6 +715,13 @@
       "when": 1776960000000,
       "tag": "0101_ai_prompt_is_custom",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1776970000000,
+      "tag": "0102_ai_extraction_options",
+      "breakpoints": true
     }
   ]
 }

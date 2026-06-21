@@ -25,6 +25,7 @@ import * as storage from './storage.service.js';
 import { renderToPages } from './pdf-render.service.js';
 import { extractImage } from './qwen-client.service.js';
 import { buildSchemaInstruction, EXTRACTION_SYSTEM_PROMPT } from './prompts.js';
+import { getResolvedExtractionOptions } from './options.js';
 import { validateExtractedPage, checkCrossPageConsistency } from './validate.js';
 import { enqueueRender, enqueueExtract } from './queue.js';
 
@@ -172,11 +173,12 @@ export async function processRender(tenantId: string, jobId: string): Promise<vo
   const original = await storage.loadBytes(tenantId, job.storageKey);
   const mimeType = storage.mimeFromStorageKey(job.storageKey);
 
+  const renderOpts = await getResolvedExtractionOptions();
   let pages;
   try {
     pages = await renderToPages(original, mimeType, {
-      dpi: env.EXTRACTION_RENDER_DPI,
-      grayscale: env.EXTRACTION_RENDER_GRAYSCALE,
+      dpi: renderOpts.renderDpi,
+      grayscale: renderOpts.grayscale,
     });
   } catch (err) {
     if (err instanceof AppError) {
@@ -248,8 +250,9 @@ export async function processExtractPage(tenantId: string, jobId: string, pageNo
     throw err; // transient model/network error — BullMQ retries
   }
 
+  const { confidenceThreshold } = await getResolvedExtractionOptions();
   const validation = validateExtractedPage(docType, extraction.parsed, {
-    threshold: env.EXTRACTION_CONFIDENCE_THRESHOLD,
+    threshold: confidenceThreshold,
     parseError: extraction.parseError,
   });
 

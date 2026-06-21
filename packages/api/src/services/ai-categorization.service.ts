@@ -147,6 +147,7 @@ export async function categorize(tenantId: string, feedItemId: string) {
       maxTokens: catParams.maxTokens,
       responseFormat: 'json',
       ...(catParams.thinking ? { thinking: catParams.thinking } : {}),
+      ...(catParams.numCtx ? { numCtx: catParams.numCtx } : {}),
     }, rawConfig, catExec.fallbackChain, config.categorizationProvider || undefined, config.categorizationModel || undefined, catExec.timeoutMs ? { timeoutMs: catExec.timeoutMs } : undefined);
 
     // Surface model refusals / prose-only replies as a typed error so

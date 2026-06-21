@@ -71,6 +71,9 @@ export const aiConfig = pgTable('ai_config', {
   // piiLevel) where any absent/null key means "use the built-in default".
   // See Build Plans/AI_FUNCTION_SETTINGS_PLAN.md and migration 0100.
   taskOptions: jsonb('task_options').notNull().default('{}'),
+  // Admin overrides for the local document-extraction pipeline (Ollama/Qwen).
+  // Optional keys fall back to EXTRACTION_* env defaults. See migration 0102.
+  extractionOptions: jsonb('extraction_options').notNull().default('{}'),
   // Metadata
   configuredBy: uuid('configured_by'),
   configuredAt: timestamp('configured_at', { withTimezone: true }),

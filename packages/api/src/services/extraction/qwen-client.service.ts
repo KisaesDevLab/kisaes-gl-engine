@@ -20,7 +20,6 @@
 // `EXTRACTION_MODEL_TAG`, default `qwen3.5:35b-a3b`) so an operator can swap
 // to a larger/newer vision model without touching code.
 
-import { env } from '../../config/env.js';
 import { AppError } from '../../utils/errors.js';
 import { abortableTimeout, TimeoutError } from '../../utils/retry.js';
 import * as aiConfigService from '../ai-config.service.js';
@@ -28,6 +27,7 @@ import * as orchestrator from '../ai-orchestrator.service.js';
 import { getProvider, hasCredentials } from '../ai-providers/index.js';
 import { OllamaProvider } from '../ai-providers/ollama.provider.js';
 import type { AiProvider } from '../ai-providers/ai-provider.interface.js';
+import { resolveExtractionOptions } from './options.js';
 
 const PROVIDER_NAME = 'openai_compat';
 
@@ -77,7 +77,7 @@ export interface ExtractImageResult {
  * Throws an actionable AppError when the endpoint isn't configured, and
  * propagates the cloud-vision guard's error when the endpoint is non-local.
  */
-async function resolveProvider(modelTag?: string): Promise<AiProvider> {
+async function resolveProvider(modelTag?: string): Promise<{ provider: AiProvider; opt: ReturnType<typeof resolveExtractionOptions> }> {
   const config = await aiConfigService.getRawConfig();
   if (!hasCredentials(PROVIDER_NAME, config)) {
     throw AppError.badRequest(
@@ -90,14 +90,15 @@ async function resolveProvider(modelTag?: string): Promise<AiProvider> {
   // .local / Docker short name) and THROWS for any public URL, turning the
   // no-third-party-disclosure guarantee into an enforced precondition.
   await orchestrator.assertCloudVisionAllowed(PROVIDER_NAME);
-  const tag = modelTag ?? env.EXTRACTION_MODEL_TAG;
+  const opt = resolveExtractionOptions(config);
+  const tag = modelTag ?? opt.modelTag;
   // Native Ollama path (default): fixes empty-content on thinking models and
   // unlocks num_ctx / keep_alive / think. Falls back to the generic
   // openai_compat /v1 provider for non-Ollama backends.
-  if (env.EXTRACTION_OLLAMA_NATIVE && config.openaiCompatBaseUrl) {
-    return new OllamaProvider(nativeOllamaBaseUrl(config.openaiCompatBaseUrl), tag);
-  }
-  return getProvider(PROVIDER_NAME, config, tag);
+  const provider = opt.ollamaNative && config.openaiCompatBaseUrl
+    ? new OllamaProvider(nativeOllamaBaseUrl(config.openaiCompatBaseUrl), tag)
+    : getProvider(PROVIDER_NAME, config, tag);
+  return { provider, opt };
 }
 
 /**
@@ -106,7 +107,7 @@ async function resolveProvider(modelTag?: string): Promise<AiProvider> {
  * Callers Zod-validate `parsed` downstream — never trust it here.
  */
 export async function extractImage(input: ExtractImageInput): Promise<ExtractImageResult> {
-  const provider = await resolveProvider(input.modelTag);
+  const { provider, opt } = await resolveProvider(input.modelTag);
   const { signal, cancel } = abortableTimeout(DEFAULT_CALL_TIMEOUT_MS);
   try {
     const result = await provider.completeWithImage({
@@ -114,11 +115,11 @@ export async function extractImage(input: ExtractImageInput): Promise<ExtractIma
       userPrompt: input.userPrompt,
       images: [{ base64: input.base64, mimeType: input.mimeType }],
       temperature: 0,
-      maxTokens: input.maxTokens ?? env.EXTRACTION_MAX_TOKENS,
+      maxTokens: input.maxTokens ?? opt.maxTokens,
       // num_ctx + thinking take effect on the native Ollama provider;
       // the openai_compat fallback ignores num_ctx and best-efforts think.
-      numCtx: env.EXTRACTION_NUM_CTX,
-      thinking: env.EXTRACTION_THINKING,
+      numCtx: opt.numCtx,
+      thinking: opt.thinking,
       responseFormat: 'json',
       signal,
     });
@@ -152,11 +153,12 @@ export interface ExtractionHealth {
 export async function healthCheck(): Promise<ExtractionHealth> {
   const config = await aiConfigService.getRawConfig();
   const baseUrl = config.openaiCompatBaseUrl ?? null;
-  const modelTag = env.EXTRACTION_MODEL_TAG || config.openaiCompatModel || 'qwen3.5:35b-a3b';
+  const opt = resolveExtractionOptions(config);
+  const modelTag = opt.modelTag || config.openaiCompatModel || 'qwen3.5:35b-a3b';
   if (!baseUrl) {
     return { ok: false, modelTag, baseUrl: null, error: 'OpenAI-compatible base URL not configured' };
   }
-  const provider = env.EXTRACTION_OLLAMA_NATIVE
+  const provider = opt.ollamaNative
     ? new OllamaProvider(nativeOllamaBaseUrl(baseUrl), modelTag)
     : getProvider(PROVIDER_NAME, config, modelTag);
   const { signal, cancel } = abortableTimeout(HEALTH_TIMEOUT_MS);
