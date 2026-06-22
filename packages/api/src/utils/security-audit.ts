@@ -27,7 +27,7 @@ const windows = new Map<string, WindowState>();
 
 export interface SecurityEvent {
   /** Identifies the subsystem reporting the event. */
-  component: 'hibp' | 'turnstile' | 'rate_limit_redis' | 'staff_ip_allowlist' | 'stripe_ip_allowlist';
+  component: 'hibp' | 'turnstile' | 'rate_limit_redis' | 'passkey_challenge_redis' | 'staff_ip_allowlist' | 'stripe_ip_allowlist';
   /** Why the fail-open path was taken (e.g., 'timeout', 'network_error'). */
   reason: string;
   /** Freeform payload — included in audit after_data. */

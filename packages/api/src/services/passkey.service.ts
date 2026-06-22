@@ -18,6 +18,12 @@ import { passkeys, users } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import {
+  storeRegistrationChallenge,
+  consumeRegistrationChallenge,
+  storeAuthenticationChallenge,
+  consumeAuthenticationChallenge,
+} from './passkey-challenge-store.js';
 
 // ─── RP Configuration ──────────────────────────────────────────
 //
@@ -53,55 +59,14 @@ export function getRpOrigin(): string {
   return env.PUBLIC_URL;
 }
 
-// ─── Challenge Storage (in-memory with TTL) ────────────────────
+// ─── Challenge Storage ─────────────────────────────────────────
 //
-// Registration challenges are keyed by userId because the caller is already
-// authenticated — only the user who requested registration may complete it.
-//
-// Authentication challenges cannot be keyed by userId (passkey sign-in is
-// optionally usernameless/discoverable). Instead, we key them by the
-// challenge bytes themselves and require the client to echo that exact
-// challenge back inside the signed clientDataJSON. Previously, the verify
-// path iterated the map and accepted the first unexpired auth challenge it
-// found, which meant a challenge issued for one pending sign-in could be
-// consumed by a concurrent attacker's verify call — breaking the single-use
-// guarantee WebAuthn depends on.
-
-const CHALLENGE_TTL_MS = 5 * 60 * 1000;
-const challengeStore = new Map<string, { challenge: string; expires: number }>();
-
-function storeRegistrationChallenge(userId: string, challenge: string): void {
-  challengeStore.set(`reg:${userId}`, { challenge, expires: Date.now() + CHALLENGE_TTL_MS });
-}
-
-function consumeRegistrationChallenge(userId: string): string | null {
-  const key = `reg:${userId}`;
-  const entry = challengeStore.get(key);
-  challengeStore.delete(key);
-  if (!entry || Date.now() > entry.expires) return null;
-  return entry.challenge;
-}
-
-function storeAuthenticationChallenge(challenge: string): void {
-  challengeStore.set(`auth:${challenge}`, { challenge, expires: Date.now() + CHALLENGE_TTL_MS });
-}
-
-function consumeAuthenticationChallenge(challenge: string): boolean {
-  const key = `auth:${challenge}`;
-  const entry = challengeStore.get(key);
-  challengeStore.delete(key);
-  if (!entry || Date.now() > entry.expires) return false;
-  return entry.challenge === challenge;
-}
-
-// Opportunistic sweep so the in-memory map doesn't grow unbounded if some
-// challenges are never consumed (e.g., user abandons the flow).
-function sweepExpiredChallenges(): void {
-  const now = Date.now();
-  for (const [key, val] of challengeStore.entries()) {
-    if (now > val.expires) challengeStore.delete(key);
-  }
-}
+// Challenge persistence (store + single-use consume) lives in
+// ./passkey-challenge-store, which is Redis-backed with an in-memory
+// fallback so the single-use guarantee holds across replicas. The single-
+// use semantics it provides are what WebAuthn depends on: a challenge
+// issued for one pending sign-in can be consumed exactly once, closing the
+// race where a concurrent verify could claim someone else's challenge.
 
 function extractChallengeFromResponse(clientDataJSONBase64Url: string): string | null {
   try {
@@ -147,12 +112,12 @@ export async function getRegistrationOptions(userId: string) {
     attestationType: 'none',
   });
 
-  storeRegistrationChallenge(userId, options.challenge);
+  await storeRegistrationChallenge(userId, options.challenge);
   return options;
 }
 
 export async function verifyRegistration(userId: string, response: RegistrationResponseJSON, deviceName?: string) {
-  const expectedChallenge = consumeRegistrationChallenge(userId);
+  const expectedChallenge = await consumeRegistrationChallenge(userId);
   if (!expectedChallenge) throw AppError.badRequest('Challenge expired or not found. Please try again.');
 
   const verification = await verifyRegistrationResponse({
@@ -207,8 +172,7 @@ export async function getAuthenticationOptions(email?: string) {
     userVerification: 'required',
   });
 
-  sweepExpiredChallenges();
-  storeAuthenticationChallenge(options.challenge);
+  await storeAuthenticationChallenge(options.challenge);
   return options;
 }
 
@@ -227,7 +191,7 @@ export async function verifyAuthentication(response: AuthenticationResponseJSON)
   // issued for one sign-in be claimed by a concurrent attacker's request.
   const echoedChallenge = extractChallengeFromResponse(response.response.clientDataJSON);
   if (!echoedChallenge) throw AppError.badRequest('Malformed passkey response.');
-  if (!consumeAuthenticationChallenge(echoedChallenge)) {
+  if (!(await consumeAuthenticationChallenge(echoedChallenge))) {
     throw AppError.badRequest('Challenge expired or already used. Please try again.');
   }
 

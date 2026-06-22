@@ -2,6 +2,8 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
+import { afterAll } from 'vitest';
+
 // Use a separate test database to avoid wiping dev data
 process.env['DATABASE_URL'] = process.env['DATABASE_URL'] || 'postgresql://kisbooks:kisbooks@localhost:5434/kisbooks_test';
 process.env['REDIS_URL'] = process.env['REDIS_URL'] || 'redis://localhost:6379';
@@ -25,3 +27,13 @@ process.env['NODE_ENV'] = 'test';
 // no-op for them, and the few tests that need the flag off can
 // stub it back via vi.stubEnv inside the test body.
 process.env['PORTAL_IDENTITY_LINKING_V1'] = 'true';
+
+// The passkey challenge store lazily opens a shared ioredis client. In the
+// airgapped suite there is no Redis, so it falls back to its in-memory map
+// but still leaves a reconnecting socket around. Close it after each test
+// file (globals are enabled in vitest.config) so Vitest exits cleanly; the
+// next file that touches it just re-creates the client lazily.
+afterAll(async () => {
+  const { closePasskeyChallengeStore } = await import('./services/passkey-challenge-store.js');
+  await closePasskeyChallengeStore();
+});
