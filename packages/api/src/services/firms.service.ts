@@ -58,6 +58,13 @@ export async function getById(id: string): Promise<Firm> {
   return mapRow(row);
 }
 
+// Slug lookup — returns null when absent. Used by appliance-firm
+// provisioning to resolve the singleton firm without throwing.
+export async function getBySlug(slug: string): Promise<Firm | null> {
+  const row = await db.query.firms.findFirst({ where: eq(firms.slug, slug) });
+  return row ? mapRow(row) : null;
+}
+
 // Returns firms the given user has any membership in (via
 // firm_users), regardless of `firm_role`. Used by the firm-list
 // page to render the user's firm switcher. Super-admins call

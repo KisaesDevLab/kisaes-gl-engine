@@ -16,6 +16,7 @@ import { env } from '../config/env.js';
 import * as accountsService from './accounts.service.js';
 import * as adminService from './admin.service.js';
 import { seedDefaultsForNewTenant as seedFeatureFlags } from './feature-flags.service.js';
+import { joinApplianceFirm } from './firm-provisioning.service.js';
 import {
   createSentinel,
   readSentinelHeader,
@@ -590,6 +591,12 @@ export async function createAdminUser(input: { email: string; password: string; 
   // First-run setup creates the bootstrap tenant; Practice flags
   // are on by default so the operator can see them immediately.
   await seedFeatureFlags(tenant.id);
+
+  // Create the appliance firm and make the first-run admin its
+  // firm_admin, then assign this bootstrap tenant to it. This is the
+  // natural place the singleton appliance firm comes into existence;
+  // every later tenant joins the same firm.
+  await joinApplianceFirm(tenant.id, user.id);
 
   return { tenantId: tenant.id, userId: user.id };
 }

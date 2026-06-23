@@ -121,14 +121,18 @@ export async function setFlag(
 // invoke this BEFORE the migration seed would have applied, i.e. in
 // the creation transaction, when only the newly-created tenant's
 // row would exist.
-// 3-tier rules plan, Phase 2 — flags that should default OFF for
-// new tenants. Every other PRACTICE_FEATURE_FLAG defaults ON.
+// Flags that should default OFF for new tenants. Every other
+// PRACTICE_FEATURE_FLAG defaults ON.
+//
+// RULES_TIERED_V1 (the 3-tier Mine/Firm/Global conditional-rules
+// model) now ships ON by default — the tiered rules surface is the
+// intended experience for new tenants, so it is intentionally NOT
+// in this set anymore.
 //
 // Exported so the test suite can derive expected per-flag defaults
 // without duplicating the list (drift between this set and the test's
 // expectations was the source of CI failures #25067536004 etc.).
 export const FLAGS_DEFAULT_OFF_FOR_NEW_TENANTS: ReadonlySet<string> = new Set([
-  'RULES_TIERED_V1',
   'RECURRING_DOC_REQUESTS_V1',
   'DOC_REQUEST_SMS_V1',
   'RECURRING_CRON_V1',
