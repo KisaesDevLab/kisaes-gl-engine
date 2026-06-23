@@ -3,29 +3,34 @@
 // You may not distribute this software. See LICENSE for terms.
 
 /**
- * Appliance-firm context backfill.
+ * Tiered-rules enablement backfill for EXISTING tenants.
  *
- * Auto-provisioning (firm-provisioning.service.ts) only fires on
- * NEW tenant creation. Tenants that pre-date the feature have no
- * firm assignment, so the 3-tier conditional-rules UI (Mine / Firm
- * / Global) stays hidden for them. This script joins every existing
- * tenant to the singleton appliance firm and makes each tenant's
- * owner a firm_admin, so the tiered UI lights up everywhere.
+ * Two things gate the 3-tier conditional-rules UI (Mine / Firm /
+ * Global) and neither is retroactive on its own:
+ *   1. RULES_TIERED_V1 — now defaults ON for NEW tenants only;
+ *      pre-existing tenants keep their stored (disabled) value.
+ *   2. Firm context — auto-provisioning (firm-provisioning.service)
+ *      only fires on NEW tenant creation.
  *
- * Idempotent: safe to run repeatedly. Already-managed tenants and
- * existing memberships are skipped (no duplicate firms, memberships,
- * or active assignments).
+ * For every existing tenant this script therefore (a) enables
+ * RULES_TIERED_V1 and (b) joins the tenant to the singleton
+ * appliance firm, making its owner a firm_admin — so the tiered UI
+ * lights up everywhere without per-tenant clicking or raw SQL.
  *
- * Usage:
+ * Idempotent: safe to run repeatedly. Already-enabled flags,
+ * already-managed tenants, and existing memberships are no-ops.
+ *
+ * Usage (in the deployed appliance):
+ *   docker compose exec -T api npm run backfill:firm-context
+ *   # or directly:
  *   docker compose exec -T api npx tsx packages/api/src/scripts/backfill-firm-context.ts
- *   # or, locally with DATABASE_URL set:
- *   npm --workspace @kis-books/api run backfill:firm-context
  */
 
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { tenants, userTenantAccess } from '../db/schema/index.js';
 import * as tenantFirmAssignmentService from '../services/tenant-firm-assignment.service.js';
+import * as featureFlagsService from '../services/feature-flags.service.js';
 import { joinApplianceFirm } from '../services/firm-provisioning.service.js';
 
 // Resolve the user we attribute the tenant's firm membership to:
@@ -53,7 +58,7 @@ async function main(): Promise<void> {
   const allTenants = await db.select({ id: tenants.id, name: tenants.name }).from(tenants);
   const banner = '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━';
   console.log(banner);
-  console.log('  Appliance-firm context backfill');
+  console.log('  Tiered-rules backfill (enable flag + firm context)');
   console.log(`  Tenants found: ${allTenants.length}`);
   console.log(banner);
 
@@ -69,12 +74,15 @@ async function main(): Promise<void> {
       skipped++;
       continue;
     }
+    // (a) enable the tiered-rules flag for this existing tenant.
+    await featureFlagsService.setFlag(t.id, 'RULES_TIERED_V1', { enabled: true, rolloutPercent: 100 });
+    // (b) provision firm context (owner → firm_admin, tenant joined).
     await joinApplianceFirm(t.id, ownerUserId);
     if (existing) {
-      console.log(`  • ${t.name} (${t.id.slice(0, 8)}…) — already managed; ensured owner membership`);
+      console.log(`  • ${t.name} (${t.id.slice(0, 8)}…) — flag on; already managed; ensured owner membership`);
       alreadyManaged++;
     } else {
-      console.log(`  ✓ ${t.name} (${t.id.slice(0, 8)}…) — joined appliance firm (owner=firm_admin)`);
+      console.log(`  ✓ ${t.name} (${t.id.slice(0, 8)}…) — flag on; joined appliance firm (owner=firm_admin)`);
       joined++;
     }
   }
