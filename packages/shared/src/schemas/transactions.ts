@@ -151,6 +151,10 @@ export const transactionFiltersSchema = z.object({
   startDate: z.string().optional(),
   endDate: z.string().optional(),
   search: z.string().optional(),
+  // Column sort for the transactions list. Whitelisted keys map to real
+  // columns server-side; default is date desc.
+  sortBy: z.enum(['date', 'type', 'number', 'payee', 'memo', 'category', 'amount', 'status']).optional(),
+  sortDir: z.enum(['asc', 'desc']).optional(),
   limit: z.coerce.number().int().min(1).max(500).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
