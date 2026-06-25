@@ -41,6 +41,12 @@ import { ocrPages, type OcrPageInput } from './extraction/glm-ocr.client.js';
 import { reconcileGoldenRule, repairPass, findSuspectRows } from './extraction/reconcile.service.js';
 import { centsToAmountString, isCreditCardType, mapSignedCentsToFeed } from './extraction/statement-map.js';
 
+// Output-token cap for the whole-statement Stage-2 extraction. Larger than the
+// per-page doc-extract cap (EXTRACTION_MAX_TOKENS) because one call transcribes
+// the entire statement; 16384 avoids truncating 150+ row statements mid-JSON
+// and crosses Anthropic's non-streaming → streaming threshold.
+const STATEMENT_STAGE2_MAX_TOKENS = 16384;
+
 const unwrapParsed = (result: Parameters<typeof unwrapParsedResult>[0]) =>
   unwrapParsedResult(result, 'statement parsing');
 
@@ -302,8 +308,11 @@ async function executePipeline(
   const config = await aiConfigService.getConfig();
   if (!config.isEnabled) throw AppError.badRequest('AI processing is not enabled');
   // Stage-2 (markdown → JSON) is a text task; tune for a full-statement output.
+  // A whole statement is transcribed in ONE call, so it needs far more output
+  // headroom than a single doc-extract page — 16384 avoids truncating large
+  // (150+ row) statements mid-JSON and crosses Anthropic's streaming threshold.
   const taskParams = aiConfigService.resolveTaskParams(config, 'ocr', {
-    maxTokens: env.EXTRACTION_MAX_TOKENS,
+    maxTokens: STATEMENT_STAGE2_MAX_TOKENS,
     temperature: 0,
   });
 

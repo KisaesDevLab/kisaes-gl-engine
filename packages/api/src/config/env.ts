@@ -324,11 +324,11 @@ const envSchema = z.object({
   // 'off' to roughly halve per-page latency. Only effective on the native
   // endpoint (above).
   EXTRACTION_THINKING: z.enum(['on', 'off']).default('on'),
-  // Output-token cap (num_predict). 4096 truncates dense statement pages (100+
-  // transactions) mid-JSON; 8192 still truncates large multi-page statements
-  // and sits exactly on the Anthropic non-streaming limit. 16384 gives headroom
-  // AND crosses the streaming threshold so big statements don't get truncated.
-  EXTRACTION_MAX_TOKENS: z.coerce.number().int().positive().default(16384),
+  // Output-token cap per page (num_predict) for the doc-extract pipeline. 4096
+  // truncates dense statement pages (100+ transactions) mid-JSON; 8192 gives
+  // headroom. (The whole-statement Stage-2 extraction uses its own larger cap —
+  // see STATEMENT_STAGE2_MAX_TOKENS in ai-statement-parser.)
+  EXTRACTION_MAX_TOKENS: z.coerce.number().int().positive().default(8192),
   // Context window (num_ctx) for the extraction call — must fit a full-page
   // image's vision tokens + prompt + output, or the model can't see the
   // whole page. Native endpoint only.
