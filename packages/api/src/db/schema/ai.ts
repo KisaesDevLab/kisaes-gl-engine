@@ -22,12 +22,28 @@ export const aiConfig = pgTable('ai_config', {
   openaiApiKeyEncrypted: text('openai_api_key_encrypted'),
   geminiApiKeyEncrypted: text('gemini_api_key_encrypted'),
   ollamaBaseUrl: varchar('ollama_base_url', { length: 500 }),
-  // DEPRECATED: GLM-OCR was removed from the app. These columns are
-  // retained (additive-migration policy, CLAUDE.md #13) but are no longer
-  // read or written by any code path. Safe to drop in a future deliberate
-  // non-additive migration if desired.
+  // GLM-OCR engine (statement-import redesign). A dedicated llama.cpp
+  // llama-server hosting the GLM-OCR multimodal model, used as the OCR stage of
+  // the detect -> OCR -> extract -> reconcile statement pipeline. Configured
+  // with its OWN base URL (separate from ollama/openai_compat), an optional
+  // bearer key, and engine tuning. Falls back to the GLM_OCR_* env defaults
+  // when a field is left blank. (These first two columns predate the prior
+  // removal of GLM-OCR and are now revived; see migration 0105.)
   glmOcrApiKeyEncrypted: text('glm_ocr_api_key_encrypted'),
   glmOcrBaseUrl: varchar('glm_ocr_base_url', { length: 500 }),
+  glmOcrEnabled: boolean('glm_ocr_enabled').notNull().default(false),
+  glmOcrModel: varchar('glm_ocr_model', { length: 100 }),
+  glmOcrPrompt: varchar('glm_ocr_prompt', { length: 200 }),
+  glmOcrTimeoutMs: integer('glm_ocr_timeout_ms'),
+  glmOcrConcurrency: integer('glm_ocr_concurrency'),
+  // Pipeline knobs, admin-editable. Null → fall back to STATEMENT_FORCE_OCR /
+  // EXTRACTION_RENDER_DPI env defaults at resolve time.
+  glmOcrForceOcr: boolean('glm_ocr_force_ocr').notNull().default(false),
+  glmOcrRenderDpi: integer('glm_ocr_render_dpi'),
+  // Stage-2 extraction LLM (OCR markdown → JSON): 'local' (configured
+  // self-hosted text model) or 'anthropic' (cloud, sanitized text only).
+  statementExtractionProvider: varchar('statement_extraction_provider', { length: 20 }).notNull().default('local'),
+  statementExtractionModel: varchar('statement_extraction_model', { length: 100 }),
   // Generic OpenAI-compatible local/remote server (Ollama /v1,
   // llama.cpp server, LM Studio, vLLM, etc.). Configured with a base
   // URL, a default model, and an optional API key (some servers

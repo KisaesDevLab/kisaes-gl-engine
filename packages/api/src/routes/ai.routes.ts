@@ -118,6 +118,18 @@ aiRouter.post('/admin/test/:provider', authenticate, requireSuperAdmin, aiAdminT
   res.json(result);
 });
 
+// Test the GLM-OCR statement engine: /health probe + a 1-page sample OCR.
+aiRouter.post('/admin/test-glm-ocr', authenticate, requireSuperAdmin, aiAdminTestLimiter, async (req, res) => {
+  const result = await aiConfigService.testGlmOcr();
+  log.warn({
+    component: 'ai',
+    event: 'ai_glm_ocr_test',
+    success: result.success, error: result.error,
+    userId: req.userId, ip: req.ip,
+  });
+  res.json(result);
+});
+
 // Real end-to-end test for a single function ("task"). Runs an actual
 // JSON completion through the function's resolved provider + options +
 // thinking + timeout + fallback chain, unlike test/:provider which only

@@ -19,10 +19,7 @@ export type PiiType =
   | 'credit_card'
   | 'phone'
   | 'email'
-  | 'address'
-  | 'payment_app_name';
-
-const PAYMENT_APP_KEYWORDS = ['VENMO', 'ZELLE', 'PAYPAL', 'CASHAPP', 'CASH APP'];
+  | 'address';
 
 // Regex library. Each pattern produces a match on text that is PII of the
 // matching type. Contextual patterns (account / routing) require a keyword
@@ -43,8 +40,13 @@ const patterns = {
   // Credit cards: 13–19 digits with optional internal spaces or dashes,
   // in groups of 4. Matches Visa, MC, Amex (15-digit), Discover shapes.
   creditCard: /\b(?:\d[ -]?){12,18}\d\b/g,
-  // Phone numbers. Covers 10-digit US phone shapes; intentionally loose.
-  phone: /\b(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b/g,
+  // Phone numbers. Requires either a parenthesized area code OR explicit
+  // separators between the 3-3-4 groups, so a bare 10-digit run (transaction
+  // reference / trace / confirmation numbers — common in statement memos) is
+  // NOT treated as a phone. Real phones on documents are almost always
+  // formatted; this trades a rare bare-10-digit phone for far fewer false
+  // positives on reference numbers.
+  phone: /(?:\+?1[\s.-]?)?\(\d{3}\)[\s.-]?\d{3}[\s.-]?\d{4}\b|\b(?:\+?1[\s.-]?)?\d{3}[\s.-]\d{3}[\s.-]\d{4}\b/g,
   email: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
   // Mailing address: street number + up to 80 chars of street name +
   // suffix. Bounded character class (`[\w\s.'-]{1,80}`) prevents
@@ -76,18 +78,6 @@ function isLikelyCreditCard(digits: string): boolean {
     alt = !alt;
   }
   return sum % 10 === 0;
-}
-
-// Pre-compiled regex for payment-app name masking. Built once at module
-// load from PAYMENT_APP_KEYWORDS to avoid regex construction per call.
-const PAYMENT_NAME_RE = new RegExp(
-  `\\b(${PAYMENT_APP_KEYWORDS.map((k) => k.replace(/\s+/g, '\\s+')).join('|')})\\b(?:\\s+(?:PAYMENT|TRANSFER|FROM|TO|SEND|RECEIVED))*\\s+((?:[A-Z][A-Z'.-]{1,}\\s?){1,5})`,
-  'g'
-);
-
-function maskPaymentAppNames(text: string): string {
-  PAYMENT_NAME_RE.lastIndex = 0;
-  return text.replace(PAYMENT_NAME_RE, (_m, keyword, _rest) => `${keyword} [NAME_REDACTED]`);
 }
 
 function maskCreditCards(text: string): string {
@@ -143,8 +133,10 @@ export function sanitize(input: string | null | undefined, mode: SanitizerMode):
     // This is preservation, not redaction — don't flag it as detected.
   }
 
-  // Minimal mode: only SSN, EIN, and payment-app name masking (used for
-  // transaction descriptions on categorization).
+  // Minimal mode: only SSN and EIN (used for transaction descriptions on
+  // categorization). Payee/merchant names are deliberately NOT redacted —
+  // they are not treated as PII and are needed for categorization and
+  // statement extraction.
   if (patterns.ssn.test(text)) detected.add('ssn');
   patterns.ssn.lastIndex = 0;
   text = text.replace(patterns.ssn, '[SSN_REDACTED]');
@@ -152,10 +144,6 @@ export function sanitize(input: string | null | undefined, mode: SanitizerMode):
   if (patterns.ein.test(text)) detected.add('ein');
   patterns.ein.lastIndex = 0;
   text = text.replace(patterns.ein, '[EIN_REDACTED]');
-
-  const afterPaymentNames = maskPaymentAppNames(text);
-  if (afterPaymentNames !== text) detected.add('payment_app_name');
-  text = afterPaymentNames;
 
   if (mode === 'minimal') {
     return { text, detected: [...detected] };
@@ -215,8 +203,8 @@ export function sanitizeStatementHeader(input: string | null | undefined): Sanit
 
 /**
  * Single bank-feed description sanitizer. Used by the categorization
- * pipeline: strips SSN/EIN and payment-app personal names while keeping
- * merchant names, amounts, and dates intact.
+ * pipeline: strips SSN/EIN while keeping merchant/payee names, amounts, and
+ * dates intact (payee names are not treated as PII).
  */
 export function sanitizeTransactionDescription(input: string | null | undefined): SanitizeResult {
   return sanitize(input, 'minimal');
@@ -258,8 +246,7 @@ export function pickMode(
     case 'categorize':
     case 'classify_document':
     // Vendor enrichment and judgment review only need the merchant
-    // descriptor — no SSN/EIN risk in either, so 'minimal' (mask
-    // names after VENMO/ZELLE/PAYPAL/CASHAPP) matches categorization.
+    // descriptor, so 'minimal' (SSN/EIN only) matches categorization.
     case 'enrich_vendor':
     case 'judgment_review':
       return 'minimal';

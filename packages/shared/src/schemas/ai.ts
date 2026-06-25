@@ -69,6 +69,20 @@ export const aiConfigUpdateSchema = z.object({
   openaiCompatModel: z.string().nullable().optional(),
   // How the openai_compat endpoint is driven (Ollama native vs /v1).
   openaiCompatMode: z.enum(['auto', 'native', 'compat']).optional(),
+  // GLM-OCR engine (statement-import redesign). Dedicated llama.cpp OCR
+  // server with its own base URL + tuning. apiKey uses the 3-state sentinel.
+  glmOcrEnabled: z.boolean().optional(),
+  glmOcrBaseUrl: z.string().optional(),
+  glmOcrApiKey: z.string().nullish(),
+  glmOcrModel: z.string().nullable().optional(),
+  glmOcrPrompt: z.string().nullable().optional(),
+  glmOcrTimeoutMs: z.number().int().min(1000).max(600_000).nullable().optional(),
+  glmOcrConcurrency: z.number().int().min(1).max(16).nullable().optional(),
+  glmOcrForceOcr: z.boolean().optional(),
+  glmOcrRenderDpi: z.number().int().min(72).max(600).nullable().optional(),
+  // Stage-2 extraction LLM: self-hosted ('local') or cloud ('anthropic').
+  statementExtractionProvider: z.enum(['local', 'anthropic']).optional(),
+  statementExtractionModel: z.string().nullable().optional(),
   autoCategorizeOnImport: z.boolean().optional(),
   autoOcrOnUpload: z.boolean().optional(),
   categorizationConfidenceThreshold: z.number().min(0).max(1).optional(),

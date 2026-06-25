@@ -1090,7 +1090,14 @@ export async function importStatementItems(
     feedDate: txn.date,
     description: txn.description,
     originalDescription: txn.description,
-    amount: txn.amount,
+    // Statement parsers hand us a positive magnitude + a debit/credit `type`.
+    // Persist the SIGNED amount so the bank feed matches the OFX/CSV
+    // convention (positive = spend / money out; negative = money in). `credit`
+    // (deposit, money in) → negative; everything else (debit/spend) → positive.
+    amount: (txn.type === 'credit'
+      ? -Math.abs(parseFloat(txn.amount))
+      : Math.abs(parseFloat(txn.amount))
+    ).toFixed(4),
     // STATEMENT_CHECK_PAYEE_V1 — parse the check number now so we can
     // correlate it to a check-image payee below (no-op when absent).
     checkNumber: parseCheckNumber(txn.description),

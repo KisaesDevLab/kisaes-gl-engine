@@ -6,8 +6,9 @@ import { eq, sql } from 'drizzle-orm';
 import type { AiConfigUpdateInput, AiFunctionKey, TaskOptions, ExtractionOptions } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { aiConfig } from '../db/schema/index.js';
-import { encrypt } from '../utils/encryption.js';
+import { encrypt, decrypt } from '../utils/encryption.js';
 import { assertExternalUrlSafe } from '../utils/url-safety.js';
+import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
 import * as aiConsent from './ai-consent.service.js';
 import { resolveTaskParams, resolveTaskExec } from './ai-task-options.js';
@@ -65,6 +66,20 @@ export async function getConfig() {
     openaiCompatModel: config.openaiCompatModel,
     openaiCompatMode: (config.openaiCompatMode as 'auto' | 'native' | 'compat') || 'auto',
     hasOpenaiCompatKey: !!config.openaiCompatApiKeyEncrypted,
+    // GLM-OCR engine (statement-import redesign). Key returned as a boolean
+    // flag only; null/blank fields fall back to GLM_OCR_* env at resolve time.
+    glmOcrEnabled: !!config.glmOcrEnabled,
+    glmOcrBaseUrl: config.glmOcrBaseUrl,
+    glmOcrModel: config.glmOcrModel,
+    glmOcrPrompt: config.glmOcrPrompt,
+    glmOcrTimeoutMs: config.glmOcrTimeoutMs,
+    glmOcrConcurrency: config.glmOcrConcurrency,
+    glmOcrForceOcr: !!config.glmOcrForceOcr,
+    glmOcrRenderDpi: config.glmOcrRenderDpi,
+    hasGlmOcrKey: !!config.glmOcrApiKeyEncrypted,
+    // Stage-2 statement extraction LLM.
+    statementExtractionProvider: (config.statementExtractionProvider as 'local' | 'anthropic') || 'local',
+    statementExtractionModel: config.statementExtractionModel,
     autoCategorizeOnImport: config.autoCategorizeOnImport ?? true,
     autoOcrOnUpload: config.autoOcrOnUpload ?? true,
     categorizationConfidenceThreshold: parseFloat(config.categorizationConfidenceThreshold || '0.70'),
@@ -95,6 +110,53 @@ export async function getConfig() {
 
 export async function getRawConfig() {
   return getOrCreateConfig();
+}
+
+export interface ResolvedGlmOcrConfig {
+  /** True only when the engine is enabled AND a base URL resolves. */
+  enabled: boolean;
+  baseUrl: string;
+  model: string;
+  prompt: string;
+  timeoutMs: number;
+  concurrency: number;
+  apiKey: string | null;
+  /** Force OCR even for text-layer PDFs (ai_config → STATEMENT_FORCE_OCR env). */
+  forceOcr: boolean;
+  /** Rasterization DPI for the OCR path (ai_config → EXTRACTION_RENDER_DPI env). */
+  renderDpi: number;
+}
+
+/**
+ * Resolve the GLM-OCR engine config for the statement pipeline and the admin
+ * Test-connection route. Precedence: ai_config value → GLM_OCR_* env default.
+ * The bearer key is decrypted here (never returned by getConfig). `enabled` is
+ * the gate the statement parser checks before taking the OCR path.
+ */
+export async function resolveGlmOcrConfig(): Promise<ResolvedGlmOcrConfig> {
+  const config = await getOrCreateConfig();
+  const baseUrl = (config.glmOcrBaseUrl || env.GLM_OCR_BASE_URL || '').trim();
+  let apiKey: string | null = null;
+  if (config.glmOcrApiKeyEncrypted) {
+    try {
+      apiKey = decrypt(config.glmOcrApiKeyEncrypted);
+    } catch {
+      apiKey = null;
+    }
+  }
+  return {
+    enabled: !!config.glmOcrEnabled && baseUrl.length > 0,
+    baseUrl,
+    model: config.glmOcrModel || env.GLM_OCR_MODEL,
+    prompt: config.glmOcrPrompt || env.GLM_OCR_PROMPT,
+    timeoutMs: config.glmOcrTimeoutMs ?? env.GLM_OCR_TIMEOUT_MS,
+    concurrency: config.glmOcrConcurrency ?? env.GLM_OCR_CONCURRENCY,
+    apiKey,
+    // glmOcrForceOcr is a NOT NULL boolean (default false); OR with the env
+    // flag so either source can force OCR.
+    forceOcr: !!config.glmOcrForceOcr || env.STATEMENT_FORCE_OCR,
+    renderDpi: config.glmOcrRenderDpi ?? env.EXTRACTION_RENDER_DPI,
+  };
 }
 
 export async function updateConfig(input: AiConfigUpdateInput, userId?: string) {
@@ -158,6 +220,24 @@ export async function updateConfig(input: AiConfigUpdateInput, userId?: string) 
   }
   if (input.openaiCompatModel !== undefined) updates.openaiCompatModel = input.openaiCompatModel || null;
   if (input.openaiCompatMode !== undefined) updates.openaiCompatMode = input.openaiCompatMode;
+  // GLM-OCR engine. Same 3-state credential sentinel; allowPrivate so the
+  // llama.cpp box can live on the LAN. Empty base URL clears it (disables the
+  // engine path until reconfigured).
+  if (input.glmOcrEnabled !== undefined) updates.glmOcrEnabled = !!input.glmOcrEnabled;
+  if (input.glmOcrApiKey === null) updates.glmOcrApiKeyEncrypted = null;
+  else if (input.glmOcrApiKey) updates.glmOcrApiKeyEncrypted = encrypt(input.glmOcrApiKey);
+  if (input.glmOcrBaseUrl !== undefined) {
+    if (input.glmOcrBaseUrl) assertExternalUrlSafe(input.glmOcrBaseUrl, 'GLM-OCR base URL', { allowPrivate: true });
+    updates.glmOcrBaseUrl = input.glmOcrBaseUrl || null;
+  }
+  if (input.glmOcrModel !== undefined) updates.glmOcrModel = input.glmOcrModel || null;
+  if (input.glmOcrPrompt !== undefined) updates.glmOcrPrompt = input.glmOcrPrompt || null;
+  if (input.glmOcrTimeoutMs !== undefined) updates.glmOcrTimeoutMs = input.glmOcrTimeoutMs ?? null;
+  if (input.glmOcrConcurrency !== undefined) updates.glmOcrConcurrency = input.glmOcrConcurrency ?? null;
+  if (input.glmOcrForceOcr !== undefined) updates.glmOcrForceOcr = !!input.glmOcrForceOcr;
+  if (input.glmOcrRenderDpi !== undefined) updates.glmOcrRenderDpi = input.glmOcrRenderDpi ?? null;
+  if (input.statementExtractionProvider !== undefined) updates.statementExtractionProvider = input.statementExtractionProvider;
+  if (input.statementExtractionModel !== undefined) updates.statementExtractionModel = input.statementExtractionModel || null;
   if (input.autoCategorizeOnImport !== undefined) updates.autoCategorizeOnImport = input.autoCategorizeOnImport;
   if (input.autoOcrOnUpload !== undefined) updates.autoOcrOnUpload = input.autoOcrOnUpload;
   if (input.categorizationConfidenceThreshold !== undefined) updates.categorizationConfidenceThreshold = String(input.categorizationConfidenceThreshold);
@@ -266,6 +346,51 @@ export interface TestProviderResult {
   success: boolean;
   error?: string;
   modelInfo?: string;
+}
+
+// 1×1 PNG — enough for a reachability + model-responds check without shipping a
+// fixture. The OCR content will be empty/garbage; we only assert no transport
+// or contract error came back.
+const TINY_PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+
+/**
+ * Test the GLM-OCR engine: probe /health, then run a 1-page sample OCR to
+ * confirm the chat endpoint and model respond. Records the outcome under the
+ * 'glm_ocr' key in provider_test_history so the admin UI shows "Last verified".
+ */
+export async function testGlmOcr(): Promise<TestProviderResult> {
+  const glm = await resolveGlmOcrConfig();
+  if (!glm.baseUrl) {
+    const result: TestProviderResult = { success: false, error: 'GLM-OCR base URL is not set' };
+    await recordTestResult('glm_ocr', result);
+    return result;
+  }
+  const { probeGlmOcrHealth, sampleOcr } = await import('./extraction/glm-ocr.client.js');
+  const cfg = {
+    baseUrl: glm.baseUrl,
+    model: glm.model,
+    prompt: glm.prompt,
+    timeoutMs: Math.min(glm.timeoutMs, 30_000),
+    concurrency: 1,
+    apiKey: glm.apiKey,
+  };
+  let result: TestProviderResult;
+  try {
+    const health = await probeGlmOcrHealth(cfg);
+    const sample = await sampleOcr(cfg, { data: Buffer.from(TINY_PNG_BASE64, 'base64'), mimeType: 'image/png' });
+    result = {
+      success: true,
+      modelInfo:
+        `Reachable at ${glm.baseUrl} (model '${glm.model}'). ` +
+        `health=${health.ok ? 'ok' : `down(${health.status ?? health.detail ?? '?'})`}, ` +
+        `sample chars=${sample.markdown.length}`,
+    };
+  } catch (err) {
+    result = { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+  await recordTestResult('glm_ocr', result);
+  return result;
 }
 
 export async function testProvider(providerName: string): Promise<TestProviderResult> {
