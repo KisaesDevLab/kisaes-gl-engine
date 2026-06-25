@@ -202,16 +202,13 @@ export function resolveExtractProvider(
   const selfHosted = candidates.find((p) =>
     orchestrator.isSelfHostedProvider(p, { openaiCompatBaseUrl: rawConfig.openaiCompatBaseUrl }),
   );
+  // Default local extraction to ollama (the appliance's bundled local LLM at
+  // localhost:11434 when no base URL is set). A genuinely-unreachable engine
+  // surfaces a clear error from the provider call (e.g. the ollama 404 names the
+  // missing model) rather than being pre-empted here — pre-empting would break
+  // appliances that run ollama on the default port without an explicit URL.
   const providerName = selfHosted ?? (rawConfig.openaiCompatBaseUrl ? 'openai_compat' : 'ollama');
   const model = config.statementExtractionModel || config.ocrModel || undefined;
-  // Guard the silent localhost-Ollama fallback: if 'local' resolved to ollama
-  // but nothing local is actually configured, fail with a clear message rather
-  // than a confusing ECONNREFUSED to localhost:11434 after the upload.
-  if (sel === 'local' && providerName === 'ollama' && !selfHosted && !rawConfig.ollamaBaseUrl) {
-    throw AppError.badRequest(
-      'No statement-extraction provider is configured. Set the Statement Extraction LLM (or an OCR / categorization provider) in Admin → AI.',
-    );
-  }
   return { providerName, model };
 }
 
