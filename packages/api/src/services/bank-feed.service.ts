@@ -915,11 +915,51 @@ export async function bulkRecleanse(tenantId: string, feedItemIds: string[]) {
   return { cleansed: items.length };
 }
 
+export interface ImportDateRange {
+  start?: string | null; // YYYY-MM-DD inclusive
+  end?: string | null; // YYYY-MM-DD inclusive
+}
+
+// Parse a date string (ISO YYYY-MM-DD, US M/D/YYYY, or anything Date.parse
+// handles) to a UTC day timestamp for range comparison. Returns null when
+// unparseable so the caller can choose not to silently drop the row.
+function parseDayMs(s: string): number | null {
+  const trimmed = s.trim();
+  let m = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return Date.UTC(+m[1]!, +m[2]! - 1, +m[3]!);
+  m = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (m) {
+    let y = +m[3]!;
+    if (y < 100) y += 2000;
+    return Date.UTC(y, +m[1]! - 1, +m[2]!);
+  }
+  const t = Date.parse(trimmed);
+  return Number.isNaN(t) ? null : t;
+}
+
+// True if `feedDate` falls within the (inclusive) range. An empty range admits
+// everything; an unparseable row date is admitted rather than silently dropped.
+function withinRange(feedDate: string, range?: ImportDateRange): boolean {
+  if (!range || (!range.start && !range.end)) return true;
+  const t = parseDayMs(feedDate);
+  if (t === null) return true;
+  if (range.start) {
+    const s = parseDayMs(range.start);
+    if (s !== null && t < s) return false;
+  }
+  if (range.end) {
+    const e = parseDayMs(range.end);
+    if (e !== null && t > e) return false;
+  }
+  return true;
+}
+
 export async function importFromCsv(
   tenantId: string,
   bankConnectionId: string,
   csvText: string,
   mapping: CsvColumnMapping,
+  dateRange?: ImportDateRange,
 ) {
   await assertConnectionInTenant(tenantId, bankConnectionId);
   // Byte ceiling: a single 50MB line would sail past the row-count check
@@ -958,6 +998,7 @@ export async function importFromCsv(
     }
 
     if (!dateStr || amount === 0) continue;
+    if (!withinRange(dateStr, dateRange)) continue;
 
     items.push({
       tenantId,
@@ -1000,7 +1041,7 @@ export async function importFromCsv(
   return inserted;
 }
 
-export async function importFromOfx(tenantId: string, bankConnectionId: string, ofxContent: string) {
+export async function importFromOfx(tenantId: string, bankConnectionId: string, ofxContent: string, dateRange?: ImportDateRange) {
   await assertConnectionInTenant(tenantId, bankConnectionId);
   // Simple OFX/QFX parser — extract STMTTRN elements
   const txnRegex = /<STMTTRN>([\s\S]*?)<\/STMTTRN>/gi;
@@ -1023,6 +1064,7 @@ export async function importFromOfx(tenantId: string, bankConnectionId: string, 
 
     // Parse OFX date format: YYYYMMDD or YYYYMMDDHHMMSS
     const feedDate = `${dateRaw.slice(0, 4)}-${dateRaw.slice(4, 6)}-${dateRaw.slice(6, 8)}`;
+    if (!withinRange(feedDate, dateRange)) continue;
 
     items.push({
       tenantId,
