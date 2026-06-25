@@ -674,7 +674,7 @@ async function applyCheckImagePayees(
   }
 }
 
-async function runCleansingPipeline(tenantId: string, items: any[]) {
+export async function runCleansingPipeline(tenantId: string, items: any[]) {
   for (const item of items) {
     const raw = item.originalDescription || item.description || '';
     let cleanedName: string | null = null;

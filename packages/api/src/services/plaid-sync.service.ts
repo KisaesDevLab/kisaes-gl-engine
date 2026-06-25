@@ -8,11 +8,16 @@ import { plaidItems, plaidAccounts, plaidAccountMappings, bankFeedItems } from '
 import { decrypt } from '../utils/encryption.js';
 import { retryWithBackoff } from '../utils/retry.js';
 import * as plaidClient from './plaid-client.service.js';
+import * as bankConnectionService from './bank-connection.service.js';
 
 interface RoutingEntry {
   tenantId: string;
   coaAccountId: string;
   syncStartDate: string | null;
+  // The bankConnections row (provider 'plaid') that backs this Plaid account.
+  // Feed display, categorization, and posting all resolve the bank account
+  // through it — same model as file imports.
+  connectionId: string;
 }
 
 export async function syncItem(itemId: string) {
@@ -52,10 +57,21 @@ export async function syncItem(itemId: string) {
       where: and(eq(plaidAccountMappings.plaidAccountId, acct.id), eq(plaidAccountMappings.isSyncEnabled, true)),
     });
     if (mapping) {
+      const connectionId = await bankConnectionService.getOrCreatePlaidConnection(
+        mapping.tenantId,
+        mapping.mappedAccountId,
+        acct.plaidAccountId,
+        {
+          institutionName: [item.institutionName, acct.name].filter(Boolean).join(' — ') || 'Plaid',
+          providerItemId: item.plaidItemId,
+          mask: acct.mask,
+        },
+      );
       routingMap.set(acct.plaidAccountId, {
         tenantId: mapping.tenantId,
         coaAccountId: mapping.mappedAccountId,
         syncStartDate: mapping.syncStartDate,
+        connectionId,
       });
     }
   }
@@ -69,7 +85,7 @@ export async function syncItem(itemId: string) {
     );
 
     let addedCount = 0, modifiedCount = 0, removedCount = 0;
-    const addedByTenant = new Map<string, string[]>(); // tenantId → feedItemIds
+    const addedRowsByTenant = new Map<string, Array<typeof bankFeedItems.$inferSelect>>(); // tenantId → inserted rows
 
     // Process added transactions — route to correct tenant
     for (const txn of added) {
@@ -86,31 +102,35 @@ export async function syncItem(itemId: string) {
 
       const [inserted] = await db.insert(bankFeedItems).values({
         tenantId: route.tenantId,
-        bankConnectionId: itemId,
+        // The bank connection that maps to the GL bank account — NOT the Plaid
+        // item id. This is what lets the feed show the account, the
+        // categorization pipeline suggest an expense account, and posting
+        // resolve the bank account to debit/credit.
+        bankConnectionId: route.connectionId,
         providerTransactionId: txn.transaction_id,
         feedDate: txn.date,
         description: txn.name || txn.merchant_name || '',
         amount: String(Math.abs(txn.amount)),
+        // Plaid's own category is a search hint only; the CATEGORY column shows
+        // the suggested GL account, which the categorization pipeline fills.
         category: txn.personal_finance_category?.primary || txn.category?.[0] || null,
-        suggestedAccountId: route.coaAccountId,
         status: 'pending',
       }).returning();
 
-      if (!addedByTenant.has(route.tenantId)) addedByTenant.set(route.tenantId, []);
-      addedByTenant.get(route.tenantId)!.push(inserted!.id);
+      if (!addedRowsByTenant.has(route.tenantId)) addedRowsByTenant.set(route.tenantId, []);
+      addedRowsByTenant.get(route.tenantId)!.push(inserted!);
       addedCount++;
     }
 
-    // Auto-categorize per tenant
-    for (const [tenantId, feedItemIds] of addedByTenant) {
+    // Run the SAME cleansing + categorization pipelines as file imports, so
+    // Plaid items get a cleaned description, a suggested EXPENSE account
+    // (the CATEGORY column / rules / AI), and a matchable classification state.
+    for (const [tid, rows] of addedRowsByTenant) {
       try {
-        const { getConfig } = await import('./ai-config.service.js');
-        const aiConfig = await getConfig();
-        if (aiConfig.isEnabled && aiConfig.autoCategorizeOnImport) {
-          const { batchCategorize } = await import('./ai-categorization.service.js');
-          await batchCategorize(tenantId, feedItemIds);
-        }
-      } catch { /* categorization is best-effort */ }
+        const { runCleansingPipeline, runCategorizationPipeline } = await import('./bank-feed.service.js');
+        await runCleansingPipeline(tid, rows);
+        await runCategorizationPipeline(tid, rows);
+      } catch { /* pipelines are best-effort */ }
     }
 
     // Process modified transactions
