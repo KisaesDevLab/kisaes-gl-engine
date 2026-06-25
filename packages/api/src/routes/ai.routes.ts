@@ -321,6 +321,25 @@ aiRouter.get('/parse/statement/:jobId/progress', authenticate, async (req, res) 
   res.end();
 });
 
+// Plain JSON status snapshot for a statement parse job. The browser polls this
+// (proxy-safe everywhere, unlike SSE which a reverse proxy may buffer). Returns
+// the final result on the terminal `complete` snapshot.
+aiRouter.get('/parse/statement/:jobId/status', authenticate, async (req, res) => {
+  const job = await aiOrchestrator.getJobForTenant(req.tenantId, String(req.params['jobId']));
+  if (!job) {
+    res.status(404).json({ error: { message: 'Job not found', code: 'NOT_FOUND' } });
+    return;
+  }
+  const isTerminal = ['complete', 'failed', 'cancelled'].includes(job.status ?? '');
+  res.json({
+    status: job.status,
+    stage: job.stage,
+    confidence: job.confidenceScore != null ? Number(job.confidenceScore) : null,
+    error: job.errorMessage ?? null,
+    result: isTerminal && job.status === 'complete' ? job.outputData : null,
+  });
+});
+
 aiRouter.post('/parse/statement/import', authenticate, aiProcessingLimiter, validate(aiImportStatementSchema), async (req, res) => {
   // Resolve the target connection: an explicit bankConnectionId, or find-or-
   // create the manual connection for the chosen GL account (same pattern the
