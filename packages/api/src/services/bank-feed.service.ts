@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-import { eq, and, sql, count, gte, lte } from 'drizzle-orm';
+import { eq, and, sql, count, gte, lte, inArray } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import type { BankFeedFilters, CategorizeInput, CsvColumnMapping } from '@kis-books/shared';
 import { db } from '../db/index.js';
@@ -530,6 +530,23 @@ export async function bulkCategorize(tenantId: string, feedItemIds: string[], ac
 // transaction (status in 'categorized' or 'matched'). Stamps the given
 // tag onto every journal_line of each matched transaction and syncs
 // the transaction_tags junction when TAGS_SPLIT_LEVEL_V2 is on.
+// Bank Feed bulk "set name": overwrite the (cleaned) description shown in the
+// NAME column for the selected items — useful for normalizing a batch of cryptic
+// bank descriptors to one human-readable payee/name. Tenant-scoped; the raw
+// originalDescription is preserved.
+export async function bulkSetName(tenantId: string, feedItemIds: string[], name: string) {
+  const trimmed = name.trim().slice(0, 500);
+  if (!trimmed || feedItemIds.length === 0) return { updated: 0 };
+  const updatedRows = await db.update(bankFeedItems)
+    .set({ description: trimmed, updatedAt: new Date() })
+    .where(and(
+      eq(bankFeedItems.tenantId, tenantId),
+      inArray(bankFeedItems.id, feedItemIds),
+    ))
+    .returning({ id: bankFeedItems.id });
+  return { updated: updatedRows.length };
+}
+
 export async function bulkSetTag(tenantId: string, feedItemIds: string[], tagId: string | null) {
   // Cross-tenant guard: a client could otherwise know another tenant's
   // tag UUID and stamp it onto their own journal lines. Validate once

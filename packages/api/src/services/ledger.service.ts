@@ -710,7 +710,13 @@ export async function listTransactions(tenantId: string, filters: {
       .orderBy(sql`${transactions.txnDate} DESC`, sql`${transactions.createdAt} DESC`)
       .limit(filters.limit ?? 50)
       .offset(filters.offset ?? 0),
-    db.select({ count: count() }).from(transactions).where(where),
+    // Must mirror the data query's contacts join: the `search` filter
+    // references contacts.displayName, so without this join the count query
+    // throws ("missing FROM-clause entry for table contacts") and the whole
+    // list 500s whenever a search term is present.
+    db.select({ count: count() }).from(transactions)
+      .leftJoin(contacts, eq(transactions.contactId, contacts.id))
+      .where(where),
   ]);
 
   return { data, total: total[0]?.count ?? 0 };
