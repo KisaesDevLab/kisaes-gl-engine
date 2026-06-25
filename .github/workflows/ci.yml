@@ -160,27 +160,26 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ steps.pw.outputs.version }}
+      - name: Install Playwright system deps
+        # apt-based, reliable; separate from the flaky browser CDN download so a
+        # browser-cache hit still gets its system libraries.
+        timeout-minutes: 5
+        run: npx playwright install-deps chromium
       - name: Install Playwright browsers
-        # cdn.playwright.dev reaches 100% then stalls on a follow-on artifact
-        # fetch with no built-in timeout, so this download has flaked for
-        # several consecutive runs. Two mitigations:
-        #   1. Cache ~/.cache/ms-playwright keyed on the Playwright version, so
-        #      once it succeeds, later runs restore the binaries and skip the
-        #      CDN entirely (only the apt system deps need reinstalling — those
-        #      aren't cacheable across runners).
-        #   2. On a cache miss, retry the download a few times to ride out a
-        #      transient stall, all inside a 10-min step cap.
+        # cdn.playwright.dev reaches 100% then *stalls* on a follow-on artifact
+        # fetch with no client-side timeout — it hangs rather than failing, so a
+        # bare retry loop never fires (the first attempt eats the whole budget).
+        # Cap EACH attempt with `timeout` so a stall is killed and the next
+        # attempt actually runs; one of them usually gets past the stall. On a
+        # cache hit the binaries are already restored, so this is a fast no-op.
+        if: steps.pw-cache.outputs.cache-hit != 'true'
         timeout-minutes: 10
         run: |
-          if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
-            echo "Browser cache hit — installing system deps only."
-            npx playwright install-deps chromium
-          else
-            for i in 1 2 3; do
-              npx playwright install --with-deps chromium && break
-              echo "playwright install attempt $i failed; retrying in 15s"; sleep 15
-            done
-          fi
+          for i in 1 2 3; do
+            timeout 180 npx playwright install chromium && exit 0
+            echo "playwright browser install attempt $i stalled/failed; retrying in 10s"; sleep 10
+          done
+          echo "playwright browser install did not complete after 3 attempts"; exit 1
       - name: Bring up stack
         # Only the services the e2e suite needs — tailscale would try to
         # register against a tailnet and is irrelevant to the bookkeeping
