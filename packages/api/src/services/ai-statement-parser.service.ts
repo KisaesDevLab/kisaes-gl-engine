@@ -198,6 +198,14 @@ export function resolveExtractProvider(
   );
   const providerName = selfHosted ?? (rawConfig.openaiCompatBaseUrl ? 'openai_compat' : 'ollama');
   const model = config.statementExtractionModel || config.ocrModel || undefined;
+  // Guard the silent localhost-Ollama fallback: if 'local' resolved to ollama
+  // but nothing local is actually configured, fail with a clear message rather
+  // than a confusing ECONNREFUSED to localhost:11434 after the upload.
+  if (sel === 'local' && providerName === 'ollama' && !selfHosted && !rawConfig.ollamaBaseUrl) {
+    throw AppError.badRequest(
+      'No statement-extraction provider is configured. Set the Statement Extraction LLM (or an OCR / categorization provider) in Admin → AI.',
+    );
+  }
   return { providerName, model };
 }
 
@@ -337,8 +345,16 @@ async function executePipeline(
     qualityWarnings,
     () => orchestrator.setStage(jobId, 'ocr'),
   );
-  if (markdown.trim().length === 0) {
-    throw AppError.unprocessableEntity('No text could be extracted from the statement', 'STATEMENT_EMPTY');
+  // Strip the structural "# Page N" markers before deciding the result is
+  // empty. An all-empty OCR (unreachable/misconfigured engine, undecodable
+  // image, blank scan) still leaves those headers, which would otherwise pass
+  // this guard and feed the LLM nothing → a silent zero-transaction "success".
+  const contentOnly = markdown.replace(/^#\s*Page\s+\d+\s*$/gim, '').trim();
+  if (contentOnly.length === 0) {
+    throw AppError.unprocessableEntity(
+      'No text could be read from the statement. If it is a scanned image, confirm GLM-OCR is enabled and reachable (Admin → AI), or import a CSV/OFX export instead.',
+      'STATEMENT_EMPTY',
+    );
   }
 
   // ── Stage 2: markdown → structured JSON via the text LLM ─────────────

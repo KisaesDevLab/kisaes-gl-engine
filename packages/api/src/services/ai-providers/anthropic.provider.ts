@@ -12,7 +12,7 @@ export class AnthropicProvider implements AiProvider {
   private client: Anthropic;
   private model: string;
 
-  constructor(apiKey: string, model: string = 'claude-sonnet-4-20250514') {
+  constructor(apiKey: string, model: string = 'claude-sonnet-4-6') {
     this.client = new Anthropic({ apiKey });
     this.model = model;
   }
@@ -26,10 +26,22 @@ export class AnthropicProvider implements AiProvider {
     body: Anthropic.Messages.MessageCreateParamsNonStreaming,
     signal?: AbortSignal,
   ): Promise<Anthropic.Messages.Message> {
-    if ((body.max_tokens ?? 0) > 8192) {
-      return this.client.messages.stream(body, { signal }).finalMessage();
+    try {
+      if ((body.max_tokens ?? 0) > 8192) {
+        return await this.client.messages.stream(body, { signal }).finalMessage();
+      }
+      return await this.client.messages.create(body, { signal });
+    } catch (err) {
+      // A 404 means the configured model id is wrong/retired — turn the SDK's
+      // cryptic error into an actionable one (this otherwise terminal-fails a
+      // statement parse with an opaque message).
+      const e = err as { status?: number; statusCode?: number; message?: string };
+      const status = e?.status ?? e?.statusCode;
+      if (status === 404 || /not_found/i.test(e?.message ?? '')) {
+        throw new Error(`Anthropic model '${body.model}' was not found (404). Pick a valid model in Admin → AI.`);
+      }
+      throw err;
     }
-    return this.client.messages.create(body, { signal });
   }
 
   async complete(params: CompletionParams): Promise<CompletionResult> {
