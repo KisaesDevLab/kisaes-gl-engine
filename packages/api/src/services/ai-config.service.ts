@@ -348,16 +348,12 @@ export interface TestProviderResult {
   modelInfo?: string;
 }
 
-// 1×1 PNG — enough for a reachability + model-responds check without shipping a
-// fixture. The OCR content will be empty/garbage; we only assert no transport
-// or contract error came back.
-const TINY_PNG_BASE64 =
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
-
 /**
- * Test the GLM-OCR engine: probe /health, then run a 1-page sample OCR to
- * confirm the chat endpoint and model respond. Records the outcome under the
- * 'glm_ocr' key in provider_test_history so the admin UI shows "Last verified".
+ * Test the GLM-OCR engine via /health + /v1/models. We deliberately do NOT run
+ * a sample OCR: llama-server rejects a tiny placeholder image with HTTP 400
+ * ("Failed to load image"), which is a false negative — the server and model
+ * are fine. Reachability + the model appearing in the catalog is the right
+ * signal. Records the outcome under 'glm_ocr' in provider_test_history.
  */
 export async function testGlmOcr(): Promise<TestProviderResult> {
   const glm = await resolveGlmOcrConfig();
@@ -366,31 +362,76 @@ export async function testGlmOcr(): Promise<TestProviderResult> {
     await recordTestResult('glm_ocr', result);
     return result;
   }
-  const { probeGlmOcrHealth, sampleOcr } = await import('./extraction/glm-ocr.client.js');
-  const cfg = {
-    baseUrl: glm.baseUrl,
-    model: glm.model,
-    prompt: glm.prompt,
-    timeoutMs: Math.min(glm.timeoutMs, 30_000),
-    concurrency: 1,
-    apiKey: glm.apiKey,
-  };
+  const { probeGlmOcrHealth, probeGlmOcrModels } = await import('./extraction/glm-ocr.client.js');
+  const cfg = { baseUrl: glm.baseUrl, apiKey: glm.apiKey };
   let result: TestProviderResult;
   try {
     const health = await probeGlmOcrHealth(cfg);
-    const sample = await sampleOcr(cfg, { data: Buffer.from(TINY_PNG_BASE64, 'base64'), mimeType: 'image/png' });
-    result = {
-      success: true,
-      modelInfo:
-        `Reachable at ${glm.baseUrl} (model '${glm.model}'). ` +
-        `health=${health.ok ? 'ok' : `down(${health.status ?? health.detail ?? '?'})`}, ` +
-        `sample chars=${sample.markdown.length}`,
-    };
+    let models: string[] = [];
+    let modelsError: string | undefined;
+    try {
+      models = await probeGlmOcrModels(cfg);
+    } catch (err) {
+      modelsError = err instanceof Error ? err.message : String(err);
+    }
+    if (!health.ok && models.length === 0) {
+      result = {
+        success: false,
+        error: `GLM-OCR not reachable at ${glm.baseUrl} (health ${health.status ?? health.detail ?? '?'}${modelsError ? `; models: ${modelsError}` : ''})`,
+      };
+    } else {
+      const hasModel = models.length === 0 || models.includes(glm.model);
+      result = {
+        success: true,
+        modelInfo:
+          `Reachable at ${glm.baseUrl}. health=${health.ok ? 'ok' : '?'}; ` +
+          `models=${models.join(', ') || 'n/a'}` +
+          (!hasModel ? ` (configured '${glm.model}' NOT in catalog)` : ''),
+      };
+    }
   } catch (err) {
     result = { success: false, error: err instanceof Error ? err.message : String(err) };
   }
   await recordTestResult('glm_ocr', result);
   return result;
+}
+
+export interface ProviderModelsResult {
+  models: string[];
+  error?: string;
+}
+
+/** List available models for a provider, for the settings model dropdowns. */
+export async function listProviderModels(providerName: string): Promise<ProviderModelsResult> {
+  const config = await getRawConfig();
+  try {
+    const { getProvider } = await import('./ai-providers/index.js');
+    const provider = getProvider(providerName, config);
+    if (typeof provider.listModels !== 'function') return { models: [] };
+    const { abortableTimeout } = await import('../utils/retry.js');
+    const { signal, cancel } = abortableTimeout(12_000);
+    try {
+      const models = await provider.listModels(signal);
+      return { models };
+    } finally {
+      cancel();
+    }
+  } catch (err) {
+    return { models: [], error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** List models advertised by the configured GLM-OCR llama-server. */
+export async function listGlmOcrModels(): Promise<ProviderModelsResult> {
+  const glm = await resolveGlmOcrConfig();
+  if (!glm.baseUrl) return { models: [], error: 'GLM-OCR base URL is not set' };
+  try {
+    const { probeGlmOcrModels } = await import('./extraction/glm-ocr.client.js');
+    const models = await probeGlmOcrModels({ baseUrl: glm.baseUrl, apiKey: glm.apiKey });
+    return { models };
+  } catch (err) {
+    return { models: [], error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 export async function testProvider(providerName: string): Promise<TestProviderResult> {

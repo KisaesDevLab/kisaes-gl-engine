@@ -131,5 +131,12 @@ export class OllamaProvider implements AiProvider {
     }
   }
 
+  async listModels(signal?: AbortSignal): Promise<string[]> {
+    const response = await fetch(`${this.baseUrl}/api/tags`, { signal });
+    if (!response.ok) throw new Error(`Ollama returned ${response.status}`);
+    const data = (await response.json()) as { models?: Array<{ name?: string }> };
+    return (data.models ?? []).map((m) => m.name ?? '').filter(Boolean).sort();
+  }
+
   estimateCost(): number { return 0; } // self-hosted, free
 }

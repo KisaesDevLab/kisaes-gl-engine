@@ -314,6 +314,30 @@ export const ocrPages = async (
 
 // ── Health / version probes (admin "Test connection") ──────────────────────
 
+// List the model ids the GLM-OCR llama-server advertises (GET /v1/models).
+// llama-server returns both an OpenAI-shaped `data[].id` and a native
+// `models[].name`; prefer the former, fall back to the latter.
+export const probeGlmOcrModels = async (cfg: GlmOcrConfig): Promise<string[]> => {
+  const resolved = resolveConfig(cfg);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+  try {
+    const headers: Record<string, string> = {};
+    if (resolved.apiKey) headers['authorization'] = `Bearer ${resolved.apiKey}`;
+    const res = await resolved.fetcher(`${resolved.baseUrl}/v1/models`, { headers, signal: controller.signal });
+    if (!res.ok) throw new GlmOcrError(`GLM-OCR /v1/models → HTTP ${res.status}`, res.status);
+    const body = (await res.json()) as {
+      data?: Array<{ id?: string }>;
+      models?: Array<{ name?: string }>;
+    };
+    const ids = (body.data ?? []).map((m) => m.id ?? '').filter(Boolean);
+    if (ids.length) return ids;
+    return (body.models ?? []).map((m) => m.name ?? '').filter(Boolean);
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
 export const probeGlmOcrHealth = async (
   cfg: GlmOcrConfig,
 ): Promise<{ ok: boolean; status?: number; detail?: string }> => {

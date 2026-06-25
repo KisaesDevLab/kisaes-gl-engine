@@ -119,7 +119,20 @@ aiRouter.post('/admin/test/:provider', authenticate, requireSuperAdmin, aiAdminT
   res.json(result);
 });
 
-// Test the GLM-OCR statement engine: /health probe + a 1-page sample OCR.
+// Available models for a provider, for the settings model dropdowns. Returns
+// { models, error? } — an empty list (not a 500) when the provider can't be
+// reached so the UI can fall back to free-text.
+aiRouter.get('/admin/models/:provider', authenticate, requireSuperAdmin, async (req, res) => {
+  const result = await aiConfigService.listProviderModels(String(req.params['provider']));
+  res.json(result);
+});
+
+aiRouter.get('/admin/glm-ocr/models', authenticate, requireSuperAdmin, async (_req, res) => {
+  const result = await aiConfigService.listGlmOcrModels();
+  res.json(result);
+});
+
+// Test the GLM-OCR statement engine: /health + /v1/models (no sample image).
 aiRouter.post('/admin/test-glm-ocr', authenticate, requireSuperAdmin, aiAdminTestLimiter, async (req, res) => {
   const result = await aiConfigService.testGlmOcr();
   log.warn({

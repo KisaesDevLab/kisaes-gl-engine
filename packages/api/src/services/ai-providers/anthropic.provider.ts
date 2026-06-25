@@ -75,8 +75,29 @@ export class AnthropicProvider implements AiProvider {
       }, { signal });
       return { success: true, modelInfo: this.model };
     } catch (err: any) {
+      // A 404 "model not found" means the KEY is valid but the configured
+      // model id is wrong/stale (a very common footgun). Confirm the key by
+      // listing models and report valid choices instead of a hard failure.
+      const status = err?.status ?? err?.statusCode;
+      const notFound = status === 404 || /not_found|model:.*not.*found/i.test(err?.message ?? '');
+      if (notFound) {
+        try {
+          const models = await this.listModels(signal);
+          if (models.length > 0) {
+            return {
+              success: true,
+              modelInfo: `Key valid — but model '${this.model}' was not found. Available: ${models.slice(0, 6).join(', ')}`,
+            };
+          }
+        } catch { /* fall through to the original error */ }
+      }
       return { success: false, error: err.message };
     }
+  }
+
+  async listModels(signal?: AbortSignal): Promise<string[]> {
+    const page = await this.client.models.list({ limit: 100 }, { signal });
+    return page.data.map((m) => m.id);
   }
 
   estimateCost(inputTokens: number, outputTokens: number): number {

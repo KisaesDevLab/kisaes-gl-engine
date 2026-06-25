@@ -50,4 +50,8 @@ export interface AiProvider {
   completeWithImage(params: VisionParams): Promise<CompletionResult>;
   testConnection(signal?: AbortSignal): Promise<{ success: boolean; error?: string; modelInfo?: string }>;
   estimateCost(inputTokens: number, outputTokens: number): number;
+  /** List the model ids available to this provider's credentials/endpoint, for
+   *  populating the model dropdowns in AI settings. Optional — providers that
+   *  can't enumerate models omit it (callers fall back to free-text). */
+  listModels?(signal?: AbortSignal): Promise<string[]>;
 }
