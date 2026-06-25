@@ -73,6 +73,12 @@ const COMPANY_UPDATABLE_FIELDS = [
   'currency',
   'dateFormat',
   'categoryFilterMode',
+  // These are edited on the Preferences page and returned by getSettings but
+  // were missing from the allowlist, so updateCompany silently dropped them —
+  // the toggles/fields appeared not to save.
+  'defaultLineEntryMode',
+  'lockDate',
+  'chatSupportEnabled',
 ] as const;
 
 export async function updateCompany(tenantId: string, companyId: string, input: UpdateCompanyInput, userId?: string) {
@@ -133,6 +139,7 @@ export async function getSettings(tenantId: string, companyId?: string) {
     categoryFilterMode: company.categoryFilterMode || 'by_type',
     defaultLineEntryMode: company.defaultLineEntryMode || 'category',
     lockDate: company.lockDate || null,
+    chatSupportEnabled: company.chatSupportEnabled ?? false,
   };
 }
 
