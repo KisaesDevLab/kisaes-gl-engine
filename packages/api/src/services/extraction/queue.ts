@@ -21,6 +21,13 @@ type RedisClient = InstanceType<typeof Redis>;
 
 export const DOC_RENDER_QUEUE = 'doc-render';
 export const DOC_EXTRACT_QUEUE = 'doc-extract';
+export const STATEMENT_PARSE_QUEUE = 'statement-parse';
+
+export interface StatementParseJobData {
+  jobId: string;
+  tenantId: string;
+  attachmentId: string;
+}
 
 export interface RenderJobData {
   jobId: string;
@@ -58,8 +65,18 @@ const DEFAULT_JOB_OPTIONS: JobsOptions = {
   removeOnFail: 5_000,
 };
 
+// Statement parse is ONE expensive unit of work (multi-page OCR + an LLM call)
+// tracked by its own ai_jobs row, and re-running it would re-do the OCR and
+// double the AI spend — so no auto-retry (attempts: 1).
+const STATEMENT_PARSE_JOB_OPTIONS: JobsOptions = {
+  attempts: 1,
+  removeOnComplete: 500,
+  removeOnFail: 1_000,
+};
+
 let renderQueue: Queue<RenderJobData> | null = null;
 let extractQueue: Queue<ExtractJobData> | null = null;
+let statementParseQueue: Queue<StatementParseJobData> | null = null;
 
 function getRenderQueue(): Queue<RenderJobData> {
   if (!renderQueue) {
@@ -81,6 +98,21 @@ function getExtractQueue(): Queue<ExtractJobData> {
   return extractQueue;
 }
 
+function getStatementParseQueue(): Queue<StatementParseJobData> {
+  if (!statementParseQueue) {
+    statementParseQueue = new Queue<StatementParseJobData>(STATEMENT_PARSE_QUEUE, {
+      connection: getSharedConnection() as ConnectionOptions,
+      defaultJobOptions: STATEMENT_PARSE_JOB_OPTIONS,
+    });
+  }
+  return statementParseQueue;
+}
+
+/** Enqueue a statement parse. jobId as the BullMQ job id makes it idempotent. */
+export async function enqueueStatementParse(data: StatementParseJobData): Promise<void> {
+  await getStatementParseQueue().add('parse', data, { jobId: `stmt:${data.jobId}` });
+}
+
 /** Enqueue the render step for a freshly-created job. */
 export async function enqueueRender(data: RenderJobData): Promise<void> {
   // jobId as the BullMQ job id makes the enqueue idempotent — re-enqueuing
@@ -100,9 +132,11 @@ export async function closeQueues(): Promise<void> {
   await Promise.all([
     renderQueue?.close(),
     extractQueue?.close(),
+    statementParseQueue?.close(),
   ]);
   renderQueue = null;
   extractQueue = null;
+  statementParseQueue = null;
   if (sharedConnection) {
     await sharedConnection.quit().catch(() => undefined);
     sharedConnection = null;

@@ -340,6 +340,9 @@ const envSchema = z.object({
   // Max concurrent vision calls in the extract worker. 35B-A3B is fast but
   // image prefill is heavy — start conservative (1–2) and tune per box.
   EXTRACTION_EXTRACT_CONCURRENCY: z.coerce.number().int().positive().default(2),
+  // Max concurrent statement parses in the worker. Each is a multi-page OCR +
+  // an LLM call, so keep it low to avoid hammering the OCR/LLM engine.
+  STATEMENT_PARSE_CONCURRENCY: z.coerce.number().int().positive().default(2),
   // ── GLM-OCR engine (statement-import redesign) ──────────────────────────
   // GLM-OCR runs on its OWN llama.cpp llama-server (OpenAI-compatible chat
   // API), separate from the main Ollama/openai_compat endpoint. These env

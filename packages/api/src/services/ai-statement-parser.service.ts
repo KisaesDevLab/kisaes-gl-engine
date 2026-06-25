@@ -552,16 +552,45 @@ export async function startStatementParse(
   // createJob validates AI-enabled + consent + budget synchronously.
   const job = await orchestrator.createJob(tenantId, 'ocr_statement', 'attachment', attachmentId);
   await orchestrator.setStage(job.id, 'queued');
-  void (async () => {
-    try {
-      await executePipeline(tenantId, attachmentId, job.id);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log.warn({ component: 'ai-statement-parser', event: 'parse_failed', attachmentId, jobId: job.id, message });
-      await orchestrator.failJobTerminal(job.id, message);
-    }
-  })();
+  // Hand the heavy detect→OCR→extract→reconcile pipeline to the WORKER via
+  // BullMQ so it survives an API restart/redeploy (no more orphaned 'processing'
+  // rows) and is concurrency-capped. If the queue is unreachable (Redis down /
+  // no worker process), fall back to running it in-process so a minimal
+  // single-container deployment still works.
+  try {
+    const { enqueueStatementParse } = await import('./extraction/queue.js');
+    await enqueueStatementParse({ jobId: job.id, tenantId, attachmentId });
+  } catch (err) {
+    log.warn({
+      component: 'ai-statement-parser',
+      event: 'enqueue_failed_inprocess_fallback',
+      jobId: job.id,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    void runStatementParseJob(tenantId, attachmentId, job.id).catch(() => undefined);
+  }
   return { jobId: job.id };
+}
+
+/**
+ * Run a statement-parse job to completion, recording a terminal failure on the
+ * ai_jobs row if the pipeline throws. This is the unit of work executed by the
+ * BullMQ worker (and the in-process fallback in startStatementParse). Rethrows
+ * so BullMQ also records the failure for observability.
+ */
+export async function runStatementParseJob(
+  tenantId: string,
+  attachmentId: string,
+  jobId: string,
+): Promise<void> {
+  try {
+    await executePipeline(tenantId, attachmentId, jobId);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn({ component: 'ai-statement-parser', event: 'parse_failed', attachmentId, jobId, message });
+    await orchestrator.failJobTerminal(jobId, message);
+    throw err;
+  }
 }
 
 export async function importStatementTransactions(
