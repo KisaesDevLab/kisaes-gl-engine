@@ -58,7 +58,13 @@ export class OllamaProvider implements AiProvider {
     });
 
     if (!response.ok) {
-      const err: any = new Error(`Ollama error: ${response.status} ${response.statusText}`);
+      // A 404 from /api/chat almost always means the model isn't pulled on this
+      // server — name it so the fix is obvious (and it's the #1 fallback-chain
+      // footgun: a model id valid for a cloud provider isn't on Ollama).
+      const detail = response.status === 404
+        ? `model '${this.model}' not found on the Ollama server — run \`ollama pull ${this.model}\` or choose an installed model`
+        : `${response.status} ${response.statusText}`;
+      const err: any = new Error(`Ollama error: ${detail}`);
       err.status = response.status;
       err.headers = Object.fromEntries(response.headers.entries());
       throw err;

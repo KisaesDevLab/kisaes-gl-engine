@@ -17,14 +17,29 @@ export class AnthropicProvider implements AiProvider {
     this.model = model;
   }
 
+  // The SDK rejects a NON-streaming request whose max_tokens is large enough
+  // that the response could exceed the server's 10-minute limit ("Streaming is
+  // required for operations that may take longer than 10 minutes"). Above a
+  // safe threshold we stream and accumulate the final message; small requests
+  // keep the simpler non-streaming path.
+  private async send(
+    body: Anthropic.Messages.MessageCreateParamsNonStreaming,
+    signal?: AbortSignal,
+  ): Promise<Anthropic.Messages.Message> {
+    if ((body.max_tokens ?? 0) > 8192) {
+      return this.client.messages.stream(body, { signal }).finalMessage();
+    }
+    return this.client.messages.create(body, { signal });
+  }
+
   async complete(params: CompletionParams): Promise<CompletionResult> {
     const start = Date.now();
-    const response = await this.client.messages.create({
+    const response = await this.send({
       model: this.model,
       max_tokens: params.maxTokens || 1024,
       system: params.systemPrompt,
       messages: [{ role: 'user', content: params.userPrompt }],
-    }, { signal: params.signal });
+    }, params.signal);
 
     const text = response.content[0]?.type === 'text' ? response.content[0].text : '';
     const { parsed, parseError } = extractJsonForResult(text, params.responseFormat);
@@ -49,12 +64,12 @@ export class AnthropicProvider implements AiProvider {
     }));
     content.push({ type: 'text', text: params.userPrompt });
 
-    const response = await this.client.messages.create({
+    const response = await this.send({
       model: this.model,
       max_tokens: params.maxTokens || 2048,
       system: params.systemPrompt,
       messages: [{ role: 'user', content }],
-    }, { signal: params.signal });
+    }, params.signal);
 
     const text = response.content[0]?.type === 'text' ? response.content[0].text : '';
     const { parsed, parseError } = extractJsonForResult(text, params.responseFormat);
