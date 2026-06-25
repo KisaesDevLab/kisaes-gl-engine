@@ -66,6 +66,29 @@ export async function createManualConnection(tenantId: string, accountId: string
   return conn;
 }
 
+/**
+ * Find the manual bank connection for an account, creating one if needed. Used
+ * by importers (CSV/OFX and AI statement parse) so a statement maps to the
+ * chosen GL account without the caller juggling connection ids. Returns the
+ * connection's id.
+ */
+export async function getOrCreateManualConnection(
+  tenantId: string,
+  accountId: string,
+  institutionName: string,
+): Promise<{ id: string; accountId: string }> {
+  const existing = await list(tenantId);
+  const found = existing.find((c) => c.accountId === accountId);
+  if (found) return { id: found.id, accountId: found.accountId };
+  const created = await createManualConnection(tenantId, accountId, institutionName);
+  if (created) return { id: created.id, accountId: created.accountId };
+  // Lost a create race — re-read.
+  const after = await list(tenantId);
+  const reFound = after.find((c) => c.accountId === accountId);
+  if (reFound) return { id: reFound.id, accountId: reFound.accountId };
+  throw AppError.internal('Failed to create bank connection for account');
+}
+
 export async function disconnect(tenantId: string, id: string) {
   await db.update(bankConnections)
     .set({ syncStatus: 'disconnected', updatedAt: new Date() })

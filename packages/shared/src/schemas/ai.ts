@@ -157,20 +157,27 @@ export const aiParseStatementSchema = z.object({
 // Import transactions from a previously-parsed statement. The
 // `transactions` array is capped to keep the downstream insert loop
 // bounded.
-export const aiImportStatementSchema = z.object({
-  bankConnectionId: z.string().uuid(),
-  transactions: z
-    .array(
-      z.object({
-        date: z.string().min(1).max(20),
-        description: z.string().max(500),
-        amount: z.string().max(30),
-        type: z.string().max(20).optional(),
-      }),
-    )
-    .min(1)
-    .max(5000),
-});
+export const aiImportStatementSchema = z
+  .object({
+    // Either target an existing connection directly, or pass the GL accountId
+    // and let the importer find-or-create the manual connection for it.
+    bankConnectionId: z.string().uuid().optional(),
+    accountId: z.string().uuid().optional(),
+    transactions: z
+      .array(
+        z.object({
+          date: z.string().min(1).max(20),
+          description: z.string().max(500),
+          amount: z.string().max(30),
+          type: z.string().max(20).optional(),
+        }),
+      )
+      .min(1)
+      .max(5000),
+  })
+  .refine((d) => !!d.bankConnectionId || !!d.accountId, {
+    message: 'accountId or bankConnectionId is required',
+  });
 
 // Per-company AI task toggles. Used by PATCH /ai/consent/:companyId/tasks.
 export const aiTaskTogglesSchema = z.object({

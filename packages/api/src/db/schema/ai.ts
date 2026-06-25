@@ -151,6 +151,10 @@ export const aiJobs = pgTable('ai_jobs', {
   tenantId: uuid('tenant_id').notNull(),
   jobType: varchar('job_type', { length: 50 }).notNull(), // categorize | ocr_receipt | ocr_statement | ocr_invoice | classify_document
   status: varchar('status', { length: 20 }).default('pending'), // pending | processing | complete | failed | cancelled
+  // Fine-grained progress within a processing job, surfaced over the SSE
+  // progress stream (statement import: queued | detecting | ocr | extracting |
+  // reconciling | done | failed). Null for jobs that don't report stages.
+  stage: varchar('stage', { length: 20 }),
   // Provider used
   provider: varchar('provider', { length: 30 }),
   model: varchar('model', { length: 100 }),

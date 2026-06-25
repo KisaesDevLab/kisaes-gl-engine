@@ -207,6 +207,39 @@ export async function processJob(jobId: string) {
   return job;
 }
 
+// Mark a job as actively processing and stamp its first stage. Used by the
+// async statement pipeline so the SSE progress stream sees movement.
+export async function markProcessing(jobId: string, stage: string) {
+  await db.update(aiJobs)
+    .set({ status: 'processing', stage, processingStartedAt: new Date(), updatedAt: new Date() })
+    .where(eq(aiJobs.id, jobId));
+}
+
+// Advance the fine-grained progress stage (mirrors the converter's setStatus).
+export async function setStage(jobId: string, stage: string, patch: Record<string, unknown> = {}) {
+  await db.update(aiJobs)
+    .set({ stage, updatedAt: new Date(), ...patch })
+    .where(eq(aiJobs.id, jobId));
+}
+
+// Terminal failure (no retry). The statement pipeline runs in-process with no
+// dispatcher to pick a re-queued job back up, so failures must be terminal —
+// unlike failJob(), which re-queues to 'pending' until maxRetries.
+export async function failJobTerminal(jobId: string, error: string) {
+  await db.update(aiJobs)
+    .set({ status: 'failed', stage: 'failed', errorMessage: error, processingCompletedAt: new Date(), updatedAt: new Date() })
+    .where(eq(aiJobs.id, jobId));
+}
+
+// Tenant-scoped job lookup for the progress (SSE) endpoint. Scoping by
+// tenantId here keeps the user-facing :jobId path from reading another
+// tenant's job (the worker-internal helpers above are jobId-only by design).
+export async function getJobForTenant(tenantId: string, jobId: string) {
+  return db.query.aiJobs.findFirst({
+    where: and(eq(aiJobs.tenantId, tenantId), eq(aiJobs.id, jobId)),
+  });
+}
+
 /**
  * Attach PII/quality metadata to the stored outputData for this job.
  * Callers pass the sanitizer's detected PII types and any quality
