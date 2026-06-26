@@ -39,14 +39,36 @@ const SEVEN_DAYS_SECONDS = 7 * 24 * 60 * 60;
 // web's VITE_BASE_PATH; a mismatch dropped the refresh cookie and logged
 // users out every ~15 minutes. Deriving from PUBLIC_URL removes that footgun
 // while an explicit COOKIE_PATH still wins when an operator needs to override.
-function resolvedCookiePath(): string {
+// The web sends its mount prefix (import.meta.env.BASE_URL) as `X-App-Base` on
+// auth requests. On an appliance that strips the prefix before the API sees the
+// request, this header is the ONLY reliable signal of the sub-path — so the
+// refresh cookie's Path is correct with ZERO operator config. The value flows
+// into a Set-Cookie Path, so validate it strictly (reject anything that could
+// inject cookie attributes via ';', CR/LF, or odd characters).
+function headerPrefix(req?: Request): string | null {
+  const raw = req?.headers?.['x-app-base'];
+  const val = Array.isArray(raw) ? raw[0] : raw;
+  if (val === undefined) return null;
+  if (val === '' || val === '/') return ''; // genuine root mount
+  if (val.length > 128 || !/^\/[A-Za-z0-9_\-./]*$/.test(val)) return null; // invalid → ignore
+  return val.replace(/\/+$/, '');
+}
+
+// Precedence: explicit COOKIE_PATH override > web-supplied X-App-Base (zero
+// config) > PUBLIC_URL path > root.
+function resolvedCookiePath(req?: Request): string {
   let prefix = env.COOKIE_PATH === '/' ? '' : env.COOKIE_PATH;
   if (!prefix) {
-    try {
-      const fromPublicUrl = new URL(env.PUBLIC_URL).pathname.replace(/\/+$/, '');
-      if (fromPublicUrl && fromPublicUrl !== '/') prefix = fromPublicUrl;
-    } catch {
-      // PUBLIC_URL is URL-validated in config/env.ts; this catch is defensive.
+    const hp = headerPrefix(req);
+    if (hp !== null) {
+      prefix = hp; // web base wins; '' means genuine root
+    } else {
+      try {
+        const fromPublicUrl = new URL(env.PUBLIC_URL).pathname.replace(/\/+$/, '');
+        if (fromPublicUrl && fromPublicUrl !== '/') prefix = fromPublicUrl;
+      } catch {
+        // PUBLIC_URL is URL-validated in config/env.ts; this catch is defensive.
+      }
     }
   }
   return `${prefix}${COOKIE_SUB_PATH}`;
@@ -57,7 +79,7 @@ export function setRefreshCookie(res: Response, refreshToken: string): void {
     `${REFRESH_COOKIE_NAME}=${refreshToken}`,
     'HttpOnly',
     'SameSite=Lax',
-    `Path=${resolvedCookiePath()}`,
+    `Path=${resolvedCookiePath(res.req)}`,
     `Max-Age=${SEVEN_DAYS_SECONDS}`,
   ];
   if (resolvedSecure()) parts.push('Secure');
@@ -69,7 +91,7 @@ export function clearRefreshCookie(res: Response): void {
     `${REFRESH_COOKIE_NAME}=`,
     'HttpOnly',
     'SameSite=Lax',
-    `Path=${resolvedCookiePath()}`,
+    `Path=${resolvedCookiePath(res.req)}`,
     'Max-Age=0',
   ];
   if (resolvedSecure()) parts.push('Secure');
