@@ -850,7 +850,10 @@ export async function runCategorizationPipeline(tenantId: string, items: any[]) 
     const current = await db.query.bankFeedItems.findFirst({
       where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, item.id)),
     });
-    if (current && current.status === 'pending' && !current.skipAi) {
+    // Skip rows that already carry a suggestion (e.g. statement import carried
+    // the review's previewed account) — don't recompute/overwrite it, and don't
+    // spend tokens. Rules + match detection above still ran for every row.
+    if (current && current.status === 'pending' && !current.skipAi && !current.suggestedAccountId) {
       pendingIds.push(item.id);
     }
   }
@@ -1147,57 +1150,76 @@ export async function importFromOfx(tenantId: string, bankConnectionId: string, 
 export async function importStatementItems(
   tenantId: string,
   bankConnectionId: string,
-  transactions: Array<{ date: string; description: string; amount: string; type?: string }>,
+  transactions: Array<{
+    date: string; description: string; amount: string; type?: string;
+    // Carried from the review preview (cleaned vendor name + chosen category/tag).
+    cleanedName?: string | null; suggestedAccountId?: string | null; tagId?: string | null;
+  }>,
   checks: StatementCheckImage[] = [],
 ) {
   await assertConnectionInTenant(tenantId, bankConnectionId);
-  const items: Array<typeof bankFeedItems.$inferInsert> = transactions.map((txn) => ({
-    tenantId,
-    bankConnectionId,
-    feedDate: txn.date,
-    description: txn.description,
-    originalDescription: txn.description,
-    // Statement parsers hand us a positive magnitude + a debit/credit `type`.
-    // Persist the SIGNED amount so the bank feed matches the OFX/CSV
-    // convention (positive = spend / money out; negative = money in). `credit`
-    // (deposit, money in) → negative; everything else (debit/spend) → positive.
-    amount: (txn.type === 'credit'
-      ? -Math.abs(parseFloat(txn.amount))
-      : Math.abs(parseFloat(txn.amount))
-    ).toFixed(4),
-    // STATEMENT_CHECK_PAYEE_V1 — parse the check number now so we can
-    // correlate it to a check-image payee below (no-op when absent).
-    checkNumber: parseCheckNumber(txn.description),
-    status: 'pending' as const,
-  }));
+  // Track which rows carried a cleaned name so cleansing doesn't overwrite it.
+  const prepared = transactions.map((txn) => {
+    const cleaned = txn.cleanedName?.trim() || '';
+    return {
+      carriedClean: cleaned.length > 0,
+      row: {
+        tenantId,
+        bankConnectionId,
+        feedDate: txn.date,
+        // Carried cleaned name becomes the displayed description; the raw stays
+        // in originalDescription (and drives dedup) so re-imports still dedupe.
+        description: cleaned || txn.description,
+        originalDescription: txn.description,
+        // Statement parsers hand us a positive magnitude + a debit/credit `type`.
+        // Persist the SIGNED amount so the bank feed matches the OFX/CSV
+        // convention (positive = spend / money out; negative = money in). `credit`
+        // (deposit, money in) → negative; everything else (debit/spend) → positive.
+        amount: (txn.type === 'credit'
+          ? -Math.abs(parseFloat(txn.amount))
+          : Math.abs(parseFloat(txn.amount))
+        ).toFixed(4),
+        checkNumber: parseCheckNumber(txn.description),
+        status: 'pending' as const,
+        // Carried category/tag from the review → shown in the feed; the AI step
+        // skips rows that already have suggestedAccountId (see runCategorizationPipeline).
+        suggestedAccountId: txn.suggestedAccountId ?? null,
+        suggestedTagId: txn.tagId ?? null,
+        matchType: txn.suggestedAccountId ? ('ai' as const) : null,
+      } satisfies typeof bankFeedItems.$inferInsert,
+    };
+  });
 
   // Duplicate detection
-  const dedupedStmt = [];
-  for (const item of items) {
+  const dedupedPrepared: typeof prepared = [];
+  for (const p of prepared) {
     const existing = await db.query.bankFeedItems.findFirst({
       where: and(
         eq(bankFeedItems.tenantId, tenantId),
-        sql`${bankFeedItems.feedDate} = ${item.feedDate}`,
-        sql`${bankFeedItems.amount} = ${item.amount}`,
-        sql`${bankFeedItems.originalDescription} = ${item.originalDescription}`,
+        sql`${bankFeedItems.feedDate} = ${p.row.feedDate}`,
+        sql`${bankFeedItems.amount} = ${p.row.amount}`,
+        sql`${bankFeedItems.originalDescription} = ${p.row.originalDescription}`,
       ),
     });
-    if (!existing) dedupedStmt.push(item);
+    if (!existing) dedupedPrepared.push(p);
   }
 
-  if (dedupedStmt.length === 0) return { imported: 0, skipped: transactions.length };
+  if (dedupedPrepared.length === 0) return { imported: 0, skipped: transactions.length };
 
-  const insertedStmt = await db.insert(bankFeedItems).values(dedupedStmt).returning();
+  const insertedStmt = await db.insert(bankFeedItems).values(dedupedPrepared.map((p) => p.row)).returning();
 
   // STATEMENT_CHECK_PAYEE_V1 — correlate check-image payees to the
   // "CHECK ####" feed items and stage the payee (+ contact on a unique
   // match) BEFORE cleansing/categorization, so the check-derived payee wins.
   if (checks.length > 0) await applyCheckImagePayees(tenantId, insertedStmt, checks);
 
-  // Run full cleansing pipeline (rules → history → AI → basic cleaning)
-  await runCleansingPipeline(tenantId, insertedStmt);
+  // Cleansing only for rows that did NOT carry a cleaned name from the review
+  // (carried names are authoritative — don't let rules overwrite them).
+  const freshForCleansing = insertedStmt.filter((_, i) => !dedupedPrepared[i]!.carriedClean);
+  if (freshForCleansing.length > 0) await runCleansingPipeline(tenantId, freshForCleansing);
 
-  // Run categorization pipeline (rules autoConfirm + AI suggestions)
+  // Categorization pipeline runs for ALL rows (rules + match detection); its AI
+  // step skips rows that already carry a suggestedAccountId.
   await runCategorizationPipeline(tenantId, insertedStmt);
 
   return { imported: insertedStmt.length, skipped: transactions.length - insertedStmt.length };

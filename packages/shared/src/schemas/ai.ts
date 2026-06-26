@@ -182,6 +182,12 @@ export const aiImportStatementSchema = z
           description: z.string().max(500),
           amount: z.string().max(30),
           type: z.string().max(20).optional(),
+          // Carried from the review preview so the feed matches what the user
+          // saw/approved: cleaned vendor name + chosen category/tag. When
+          // present, import uses them and skips re-cleansing/re-categorizing.
+          cleanedName: z.string().max(255).nullable().optional(),
+          suggestedAccountId: z.string().uuid().nullable().optional(),
+          tagId: z.string().uuid().nullable().optional(),
         }),
       )
       .min(1)
