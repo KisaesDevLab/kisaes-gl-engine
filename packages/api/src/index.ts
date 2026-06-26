@@ -15,6 +15,7 @@ import { startRecurringDocRequestScheduler, stopRecurringDocRequestScheduler } f
 import { startAiRetentionScheduler, stopAiRetentionScheduler } from './services/ai-retention.service.js';
 import * as coaTemplatesService from './services/coa-templates.service.js';
 import { seedPayrollTemplates } from './services/payroll-templates.seed.js';
+import { seedDefaultPrompts } from './services/ai-prompt.service.js';
 import type { Server } from 'http';
 
 // Graceful shutdown deadline. After SIGTERM we stop accepting new
@@ -141,6 +142,15 @@ async function start() {
     await seedPayrollTemplates();
   } catch (err) {
     console.error('Failed to seed payroll templates:', err);
+  }
+
+  // Seed default AI prompt templates so the prompt editor isn't empty on a
+  // fresh install (idempotent — skips any task type that already has an active
+  // row, so it never clobbers admin customizations).
+  try {
+    await seedDefaultPrompts();
+  } catch (err) {
+    console.error('Failed to seed default AI prompts:', err);
   }
 
   // Start server

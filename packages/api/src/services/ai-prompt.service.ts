@@ -148,6 +148,16 @@ const DEFAULT_PROMPTS = [
     systemPrompt: 'You are a document classifier. Identify the type of financial document in the image. Return valid JSON only.',
     userPromptTemplate: 'What type of financial document is this? Classify it.\n\nReturn JSON: { "type": "receipt"|"invoice"|"bank_statement"|"tax_form"|"other", "confidence": 0.0-1.0, "reason": "..." }',
   },
+  {
+    taskType: 'ocr_invoice',
+    systemPrompt: 'You are a vendor invoice / bill OCR assistant. Extract the structured data from the bill. Return valid JSON only.',
+    userPromptTemplate: 'Extract the bill details.\n\nReturn JSON: { "vendor": "...", "vendor_invoice_number": "...", "bill_date": "YYYY-MM-DD", "due_date": "YYYY-MM-DD", "payment_terms": "net_30", "subtotal": "0.00", "tax": "0.00", "total": "0.00", "line_items": [{"description": "...", "amount": "0.00", "quantity": "1"}], "confidence": 0.0-1.0 }',
+  },
+  {
+    taskType: 'chat',
+    systemPrompt: 'You are a helpful assistant for Vibe MyBooks, a bookkeeping app. Answer questions about using the app and general accounting concepts. Be concise and accurate; never invent figures from the user’s books.',
+    userPromptTemplate: '{{message}}',
+  },
 ];
 
 export async function seedDefaultPrompts() {
