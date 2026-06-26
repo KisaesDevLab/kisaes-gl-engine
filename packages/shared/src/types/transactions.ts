@@ -14,7 +14,8 @@ export type TxnType =
   | 'customer_refund'
   | 'bill'
   | 'vendor_credit'
-  | 'bill_payment';
+  | 'bill_payment'
+  | 'daily_sales';
 
 export type TxnStatus = 'draft' | 'posted' | 'void';
 
