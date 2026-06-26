@@ -195,6 +195,22 @@ export async function undo(tenantId: string, reconciliationId: string) {
       .limit(1);
 
     if (!recon) throw AppError.notFound('Reconciliation not found');
+    if (recon.status !== 'complete') throw AppError.badRequest('Only a completed reconciliation can be undone.');
+
+    // Only the MOST RECENT completed reconciliation for this account may be
+    // undone — undoing an older period would corrupt the beginning-balance
+    // chain of every reconciliation completed after it.
+    const [latestComplete] = await tx.select({ id: reconciliations.id }).from(reconciliations)
+      .where(and(
+        eq(reconciliations.tenantId, tenantId),
+        eq(reconciliations.accountId, recon.accountId),
+        eq(reconciliations.status, 'complete'),
+      ))
+      .orderBy(sql`${reconciliations.statementDate} DESC`)
+      .limit(1);
+    if (!latestComplete || latestComplete.id !== reconciliationId) {
+      throw AppError.badRequest('Only the most recent completed reconciliation can be undone — undo newer periods first.');
+    }
 
     await tx.update(reconciliations).set({
       status: 'in_progress',
