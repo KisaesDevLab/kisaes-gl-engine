@@ -116,6 +116,15 @@ export const aiBatchCategorizeSchema = z.object({
   feedItemIds: z.array(z.string().uuid()).min(1).max(100),
 });
 
+// Dry-run categorization for not-yet-imported rows (statement review preview).
+// Transient transactions, so no feed-item ids — just description + amount.
+export const aiCategorizePreviewSchema = z.object({
+  transactions: z
+    .array(z.object({ description: z.string().max(500), amount: z.union([z.string(), z.number()]) }))
+    .min(1)
+    .max(300),
+});
+
 export const aiOcrSchema = z.object({
   attachmentId: z.string().uuid(),
 });

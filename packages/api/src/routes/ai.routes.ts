@@ -8,6 +8,7 @@ import {
   aiConfigUpdateSchema,
   aiCategorizeSchema,
   aiBatchCategorizeSchema,
+  aiCategorizePreviewSchema,
   aiCategorizeAcceptSchema,
   aiOcrSchema,
   aiClassifySchema,
@@ -244,6 +245,13 @@ aiRouter.post('/categorize', authenticate, aiProcessingLimiter, validate(aiCateg
 aiRouter.post('/categorize/batch', authenticate, aiProcessingLimiter, validate(aiBatchCategorizeSchema), async (req, res) => {
   const results = await aiCategorization.batchCategorize(req.tenantId, req.body.feedItemIds);
   res.json({ results });
+});
+
+// Dry-run categorization for transient rows (statement review preview). Returns
+// per-row suggestions without touching the bank feed.
+aiRouter.post('/categorize/preview', authenticate, aiProcessingLimiter, validate(aiCategorizePreviewSchema), async (req, res) => {
+  const rows = await aiCategorization.previewCategorize(req.tenantId, req.body.transactions);
+  res.json({ rows });
 });
 
 aiRouter.post('/categorize/accept', authenticate, validate(aiCategorizeAcceptSchema), async (req, res) => {
