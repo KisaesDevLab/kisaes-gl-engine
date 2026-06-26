@@ -405,6 +405,7 @@ export interface CategorizePreviewRow {
   cleanedName: string | null;
   suggestedAccountId: string | null;
   suggestedAccountName: string | null;
+  tagId: string | null;
   tagName: string | null;
   confidence: number | null;
   error?: string;
@@ -452,7 +453,7 @@ export async function previewCategorize(
   const catCustomPrompt = await aiPrompt.getCustomSystemPrompt('categorize', config.categorizationProvider || undefined);
 
   const runOne = async (txn: { description: string; amount: string | number }, index: number): Promise<CategorizePreviewRow> => {
-    const empty: CategorizePreviewRow = { index, cleanedName: null, suggestedAccountId: null, suggestedAccountName: null, tagName: null, confidence: null };
+    const empty: CategorizePreviewRow = { index, cleanedName: null, suggestedAccountId: null, suggestedAccountName: null, tagId: null, tagName: null, confidence: null };
     try {
       const safeDescription = sanitize(stripCtl(txn.description), piiMode).text;
       const result = await executeWithFallback({
@@ -476,6 +477,7 @@ export async function previewCategorize(
         cleanedName: matchedVendor?.displayName || (parsed.vendor_name ? String(parsed.vendor_name) : null),
         suggestedAccountId: matchedAccount?.id || null,
         suggestedAccountName: matchedAccount?.name || (parsed.account_name ? String(parsed.account_name) : null),
+        tagId: matchedTag?.id || null,
         tagName: matchedTag?.name || null,
         confidence,
       };

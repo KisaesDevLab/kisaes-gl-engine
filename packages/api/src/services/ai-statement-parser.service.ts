@@ -685,7 +685,9 @@ export async function runStatementParseJob(
 export async function importStatementTransactions(
   tenantId: string,
   bankConnectionId: string,
-  transactions: StatementTransaction[],
+  transactions: Array<StatementTransaction & {
+    cleanedName?: string | null; suggestedAccountId?: string | null; tagId?: string | null;
+  }>,
   checks: StatementCheckImage[] = [],
 ) {
   const { importStatementItems } = await import('./bank-feed.service.js');
