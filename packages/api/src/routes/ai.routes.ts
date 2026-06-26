@@ -26,6 +26,7 @@ import * as aiReceiptOcr from '../services/ai-receipt-ocr.service.js';
 import * as aiStatementParser from '../services/ai-statement-parser.service.js';
 import * as aiDocClassifier from '../services/ai-document-classifier.service.js';
 import * as aiOrchestrator from '../services/ai-orchestrator.service.js';
+import * as bankConnectionService from '../services/bank-connection.service.js';
 import * as aiPrompt from '../services/ai-prompt.service.js';
 import * as aiConsent from '../services/ai-consent.service.js';
 import { AppError } from '../utils/errors.js';
@@ -113,6 +114,31 @@ aiRouter.post('/admin/test/:provider', authenticate, requireSuperAdmin, aiAdminT
     component: 'ai',
     event: 'ai_provider_test',
     provider, success: result.success, error: result.error,
+    userId: req.userId, ip: req.ip,
+  });
+  res.json(result);
+});
+
+// Available models for a provider, for the settings model dropdowns. Returns
+// { models, error? } — an empty list (not a 500) when the provider can't be
+// reached so the UI can fall back to free-text.
+aiRouter.get('/admin/models/:provider', authenticate, requireSuperAdmin, async (req, res) => {
+  const result = await aiConfigService.listProviderModels(String(req.params['provider']));
+  res.json(result);
+});
+
+aiRouter.get('/admin/glm-ocr/models', authenticate, requireSuperAdmin, async (_req, res) => {
+  const result = await aiConfigService.listGlmOcrModels();
+  res.json(result);
+});
+
+// Test the GLM-OCR statement engine: /health + /v1/models (no sample image).
+aiRouter.post('/admin/test-glm-ocr', authenticate, requireSuperAdmin, aiAdminTestLimiter, async (req, res) => {
+  const result = await aiConfigService.testGlmOcr();
+  log.warn({
+    component: 'ai',
+    event: 'ai_glm_ocr_test',
+    success: result.success, error: result.error,
     userId: req.userId, ip: req.ip,
   });
   res.json(result);
@@ -237,14 +263,113 @@ aiRouter.post('/ocr/receipt', authenticate, aiProcessingLimiter, validate(aiOcrS
 
 // ─── Processing — Statement Parsing ────────────────────────────
 
+// Kick off an async parse and return the job id immediately. The browser then
+// follows /parse/statement/:jobId/progress (SSE) for staged progress and the
+// final result, rather than holding this request open for a slow multi-page
+// OCR. Validation/consent/budget errors still surface synchronously here.
 aiRouter.post('/parse/statement', authenticate, aiProcessingLimiter, validate(aiParseStatementSchema), async (req, res) => {
-  const result = await aiStatementParser.parseStatement(req.tenantId, req.body.attachmentId);
-  res.json(result);
+  const { jobId } = await aiStatementParser.startStatementParse(req.tenantId, req.body.attachmentId);
+  res.status(202).json({ jobId });
+});
+
+// SSE progress stream for a statement parse job. Emits a status snapshot every
+// 1.5s while the job advances through its stages, a heartbeat comment when
+// unchanged, and a final snapshot (with `result`) on completion — then closes.
+// Matches the transaction-converter's /:id/progress design.
+aiRouter.get('/parse/statement/:jobId/progress', authenticate, async (req, res) => {
+  const jobId = String(req.params['jobId']);
+  const initial = await aiOrchestrator.getJobForTenant(req.tenantId, jobId);
+  if (!initial) {
+    res.status(404).json({ error: { message: 'Job not found', code: 'NOT_FOUND' } });
+    return;
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  // `no-transform` makes the global compression middleware skip this response
+  // (otherwise it buffers and SSE never flushes); `X-Accel-Buffering: no`
+  // does the same for an nginx reverse proxy.
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  const TERMINAL = new Set(['complete', 'failed', 'cancelled']);
+  const MAX_DURATION_MS = 30 * 60_000;
+  const startedAt = Date.now();
+  let cancelled = false;
+  req.on('close', () => { cancelled = true; });
+
+  // Up-front heartbeat so proxies don't kill the connection before the first event.
+  res.write(': heartbeat\n\n');
+
+  let lastSerialized = '';
+  while (!cancelled && Date.now() - startedAt < MAX_DURATION_MS) {
+    const row = await aiOrchestrator.getJobForTenant(req.tenantId, jobId);
+    if (!row) {
+      res.write(`event: error\ndata: ${JSON.stringify({ message: 'job not found' })}\n\n`);
+      break;
+    }
+    const isTerminal = TERMINAL.has(row.status ?? '');
+    const snapshot = {
+      status: row.status,
+      stage: row.stage,
+      confidence: row.confidenceScore != null ? Number(row.confidenceScore) : null,
+      error: row.errorMessage ?? null,
+      // Only ship the (potentially large) result payload once, on success.
+      result: isTerminal && row.status === 'complete' ? row.outputData : null,
+    };
+    const serialized = JSON.stringify(snapshot);
+    if (serialized !== lastSerialized) {
+      res.write(`data: ${serialized}\n\n`);
+      lastSerialized = serialized;
+    } else {
+      res.write(`: heartbeat\n\n`);
+    }
+    if (isTerminal) break;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  if (!cancelled && Date.now() - startedAt >= MAX_DURATION_MS) {
+    res.write(`event: timeout\ndata: ${JSON.stringify({ message: 'progress stream timed out — reconnect to resume' })}\n\n`);
+  }
+  res.end();
+});
+
+// Plain JSON status snapshot for a statement parse job. The browser polls this
+// (proxy-safe everywhere, unlike SSE which a reverse proxy may buffer). Returns
+// the final result on the terminal `complete` snapshot.
+aiRouter.get('/parse/statement/:jobId/status', authenticate, async (req, res) => {
+  const job = await aiOrchestrator.getJobForTenant(req.tenantId, String(req.params['jobId']));
+  if (!job) {
+    res.status(404).json({ error: { message: 'Job not found', code: 'NOT_FOUND' } });
+    return;
+  }
+  const isTerminal = ['complete', 'failed', 'cancelled'].includes(job.status ?? '');
+  res.json({
+    status: job.status,
+    stage: job.stage,
+    confidence: job.confidenceScore != null ? Number(job.confidenceScore) : null,
+    error: job.errorMessage ?? null,
+    result: isTerminal && job.status === 'complete' ? job.outputData : null,
+  });
 });
 
 aiRouter.post('/parse/statement/import', authenticate, aiProcessingLimiter, validate(aiImportStatementSchema), async (req, res) => {
+  // Resolve the target connection: an explicit bankConnectionId, or find-or-
+  // create the manual connection for the chosen GL account (same pattern the
+  // CSV/OFX importer uses) so statement rows land under that account.
+  let connectionId: string | undefined = req.body.bankConnectionId;
+  if (!connectionId && req.body.accountId) {
+    const conn = await bankConnectionService.getOrCreateManualConnection(
+      req.tenantId, req.body.accountId, 'Statement Import',
+    );
+    connectionId = conn.id;
+  }
+  if (!connectionId) {
+    res.status(400).json({ error: { message: 'accountId or bankConnectionId is required', code: 'VALIDATION_ERROR' } });
+    return;
+  }
   const result = await aiStatementParser.importStatementTransactions(
-    req.tenantId, req.body.bankConnectionId, req.body.transactions,
+    req.tenantId, connectionId, req.body.transactions,
   );
   res.json(result);
 });

@@ -208,6 +208,13 @@ export class OpenAiCompatProvider implements AiProvider {
     }
   }
 
+  async listModels(signal?: AbortSignal): Promise<string[]> {
+    const response = await fetch(`${this.baseUrl}/v1/models`, { headers: this.headers(), signal });
+    if (!response.ok) throw new Error(`/v1/models returned ${response.status}`);
+    const data = (await response.json()) as { data?: Array<{ id?: string }> };
+    return (data.data ?? []).map((m) => m.id ?? '').filter(Boolean).sort();
+  }
+
   // Self-hosted by convention. If the admin points this provider at a
   // paid hosted endpoint (e.g. a cloud OpenAI-compatible proxy), they
   // can track costs externally; we don't try to model per-provider

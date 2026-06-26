@@ -151,13 +151,35 @@ jobs:
           NODE_ENV=test
           CORS_ORIGIN=http://localhost:5173
           EOF
+      - name: Resolve Playwright version
+        id: pw
+        run: echo "version=$(npx playwright --version | sed 's/Version //')" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ steps.pw.outputs.version }}
+      - name: Install Playwright system deps
+        # apt-based, reliable; separate from the flaky browser CDN download so a
+        # browser-cache hit still gets its system libraries.
+        timeout-minutes: 5
+        run: npx playwright install-deps chromium
       - name: Install Playwright browsers
-        # Step-level cap on the exact operation that hangs: the download
-        # reaches 100% then stalls on a follow-on artifact fetch from
-        # cdn.playwright.dev with no built-in timeout. Fail fast here (8 min)
-        # rather than leaning on the job-level cap.
-        timeout-minutes: 8
-        run: npx playwright install --with-deps chromium
+        # cdn.playwright.dev reaches 100% then *stalls* on a follow-on artifact
+        # fetch with no client-side timeout — it hangs rather than failing, so a
+        # bare retry loop never fires (the first attempt eats the whole budget).
+        # Cap EACH attempt with `timeout` so a stall is killed and the next
+        # attempt actually runs; one of them usually gets past the stall. On a
+        # cache hit the binaries are already restored, so this is a fast no-op.
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 10
+        run: |
+          for i in 1 2 3; do
+            timeout 180 npx playwright install chromium && exit 0
+            echo "playwright browser install attempt $i stalled/failed; retrying in 10s"; sleep 10
+          done
+          echo "playwright browser install did not complete after 3 attempts"; exit 1
       - name: Bring up stack
         # Only the services the e2e suite needs — tailscale would try to
         # register against a tailnet and is irrelevant to the bookkeeping

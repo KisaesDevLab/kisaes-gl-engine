@@ -81,6 +81,11 @@ export class OpenAiProvider implements AiProvider {
     }
   }
 
+  async listModels(signal?: AbortSignal): Promise<string[]> {
+    const res = await this.client.models.list({ signal });
+    return res.data.map((m) => m.id).sort();
+  }
+
   estimateCost(inputTokens: number, outputTokens: number): number {
     return (inputTokens / 1_000_000) * 0.15 + (outputTokens / 1_000_000) * 0.6;
   }

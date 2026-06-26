@@ -12,6 +12,7 @@
     "test": "vitest run",
     "migrate": "tsx src/migrate.ts",
     "seed:coa": "tsx src/db/seeds/coa.ts",
+    "backfill:firm-context": "tsx src/scripts/backfill-firm-context.ts",
     "generate-knowledge": "tsx src/scripts/generate-knowledge.ts"
   },
   "dependencies": {
@@ -47,6 +48,7 @@
     "openai": "^6.33.0",
     "otplib": "^13.4.0",
     "pdf-parse": "^1.1.1",
+    "pdfjs-dist": "^4.7.76",
     "pg": "^8.12.0",
     "plaid": "^41.4.0",
     "puppeteer": "^24.40.0",

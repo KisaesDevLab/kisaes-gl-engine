@@ -324,8 +324,10 @@ const envSchema = z.object({
   // 'off' to roughly halve per-page latency. Only effective on the native
   // endpoint (above).
   EXTRACTION_THINKING: z.enum(['on', 'off']).default('on'),
-  // Output-token cap per page (num_predict). 4096 truncates dense statement
-  // pages (100+ transactions) mid-JSON; 8192 gives headroom.
+  // Output-token cap per page (num_predict) for the doc-extract pipeline. 4096
+  // truncates dense statement pages (100+ transactions) mid-JSON; 8192 gives
+  // headroom. (The whole-statement Stage-2 extraction uses its own larger cap —
+  // see STATEMENT_STAGE2_MAX_TOKENS in ai-statement-parser.)
   EXTRACTION_MAX_TOKENS: z.coerce.number().int().positive().default(8192),
   // Context window (num_ctx) for the extraction call — must fit a full-page
   // image's vision tokens + prompt + output, or the model can't see the
@@ -338,6 +340,32 @@ const envSchema = z.object({
   // Max concurrent vision calls in the extract worker. 35B-A3B is fast but
   // image prefill is heavy — start conservative (1–2) and tune per box.
   EXTRACTION_EXTRACT_CONCURRENCY: z.coerce.number().int().positive().default(2),
+  // Max concurrent statement parses in the worker. Each is a multi-page OCR +
+  // an LLM call, so keep it low to avoid hammering the OCR/LLM engine.
+  STATEMENT_PARSE_CONCURRENCY: z.coerce.number().int().positive().default(2),
+  // ── GLM-OCR engine (statement-import redesign) ──────────────────────────
+  // GLM-OCR runs on its OWN llama.cpp llama-server (OpenAI-compatible chat
+  // API), separate from the main Ollama/openai_compat endpoint. These env
+  // values are the fallback when the ai_config row leaves a GLM-OCR field
+  // blank; the admin UI overrides them per-appliance. Base URL empty by
+  // default — the statement pipeline only uses GLM-OCR when it's configured
+  // (and ai_config.glmOcrEnabled is on).
+  GLM_OCR_BASE_URL: z.string().default(''),
+  GLM_OCR_MODEL: z.string().default('glm-ocr'),
+  // "OCR:" is the recommended transcription cue; "Table Recognition:" forces
+  // structured markdown tables (better for pure tabular statements).
+  GLM_OCR_PROMPT: z.string().default('OCR:'),
+  // 120s gives ~2× headroom over GLM-OCR's published CPU inference time
+  // (40–60s/page). Operators on GPU can drop this to ~30000.
+  GLM_OCR_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+  GLM_OCR_CONCURRENCY: z.coerce.number().int().positive().default(2),
+  // Force the OCR path even when a text layer is present — useful when a
+  // text-layer PDF has corrupt/garbled glyph mappings and OCR reads cleaner.
+  STATEMENT_FORCE_OCR: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true' || v === '1')
+    .default('false'),
 });
 
 export type Env = z.infer<typeof envSchema>;

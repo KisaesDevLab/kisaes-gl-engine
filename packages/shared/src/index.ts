@@ -70,6 +70,7 @@ export * from './schemas/report-settings.js';
 export * from './schemas/imports.js';
 export * from './schemas/batch.js';
 export * from './schemas/extraction.js';
+export * from './schemas/statement-extraction.js';
 
 // Constants
 export * from './constants/coa-templates.js';

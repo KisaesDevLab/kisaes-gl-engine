@@ -18,10 +18,27 @@ export class GeminiProvider implements AiProvider {
   supportsVision = true;
   private client: GoogleGenAI;
   private model: string;
+  private apiKey: string;
 
   constructor(apiKey: string, model: string = 'gemini-2.5-flash') {
     this.client = new GoogleGenAI({ apiKey });
     this.model = model;
+    this.apiKey = apiKey;
+  }
+
+  async listModels(signal?: AbortSignal): Promise<string[]> {
+    // REST list is more stable across SDK versions than the pager; keep only
+    // models that support generateContent and strip the "models/" prefix.
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(this.apiKey)}&pageSize=200`,
+      { signal },
+    );
+    if (!res.ok) throw new Error(`Gemini models list returned ${res.status}`);
+    const data = (await res.json()) as { models?: Array<{ name?: string; supportedGenerationMethods?: string[] }> };
+    return (data.models ?? [])
+      .filter((m) => (m.supportedGenerationMethods ?? []).includes('generateContent'))
+      .map((m) => (m.name ?? '').replace(/^models\//, ''))
+      .filter(Boolean);
   }
 
   async complete(params: CompletionParams): Promise<CompletionResult> {

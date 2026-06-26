@@ -183,6 +183,21 @@ portalReportsRouter.patch(
   },
 );
 
+// Full per-instance layout editing — replace this draft instance's block
+// layout (add/remove/reorder/configure), like the template editor but scoped
+// to one instance. Published/archived instances are locked by the service.
+const instanceLayoutSchema = z.object({
+  layout: z.array(z.record(z.unknown())),
+});
+portalReportsRouter.patch(
+  '/instances/:id/layout',
+  validate(instanceLayoutSchema),
+  async (req, res) => {
+    const result = await svc.updateInstanceLayout(req.tenantId, req.params['id']!, req.userId, req.body.layout);
+    res.json(result);
+  },
+);
+
 const statusSchema = z.object({
   status: z.enum(['draft', 'review', 'published', 'archived']),
 });

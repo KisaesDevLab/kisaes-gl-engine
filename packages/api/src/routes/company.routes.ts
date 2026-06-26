@@ -133,7 +133,10 @@ companyRouter.put('/settings', validate(updateCompanySettingsSchema), async (req
       defaultSalesTaxRate: company.defaultSalesTaxRate,
       currency: company.currency,
       dateFormat: company.dateFormat,
+      categoryFilterMode: company.categoryFilterMode,
+      defaultLineEntryMode: company.defaultLineEntryMode,
       lockDate: company.lockDate,
+      chatSupportEnabled: company.chatSupportEnabled,
     },
   });
 });

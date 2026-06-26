@@ -631,7 +631,10 @@ export async function listTransactions(tenantId: string, filters: {
    * 'trial_balance_import'. Indexed (idx_txn_source) so this is cheap.
    */
   source?: string;
-  search?: string; limit?: number; offset?: number;
+  search?: string;
+  sortBy?: 'date' | 'type' | 'number' | 'payee' | 'memo' | 'category' | 'amount' | 'status';
+  sortDir?: 'asc' | 'desc';
+  limit?: number; offset?: number;
 }, companyId?: string) {
   const conditions = [eq(transactions.tenantId, tenantId)];
   if (companyId) conditions.push(eq(transactions.companyId, companyId));
@@ -653,6 +656,32 @@ export async function listTransactions(tenantId: string, filters: {
   }
 
   const where = and(...conditions);
+
+  // Column sort. Whitelisted keys → a concrete SQL expression; everything else
+  // falls back to date. CATEGORY sorts on the first P&L account name via the
+  // same correlated subquery the SELECT uses. A stable createdAt tiebreaker
+  // keeps pagination deterministic.
+  const dir = filters.sortDir === 'asc' ? sql`ASC` : sql`DESC`;
+  const sortExpr = (() => {
+    switch (filters.sortBy) {
+      case 'type': return sql`${transactions.txnType}`;
+      case 'number': return sql`${transactions.txnNumber}`;
+      case 'payee': return sql`${contacts.displayName}`;
+      case 'memo': return sql`${transactions.memo}`;
+      case 'amount': return sql`${transactions.total}`;
+      case 'status': return sql`${transactions.status}`;
+      case 'category': return sql`(
+        SELECT min(a2.name) FROM journal_lines jl4
+        JOIN accounts a2 ON a2.id = jl4.account_id
+        WHERE jl4.transaction_id = ${transactions.id}
+          AND jl4.tenant_id = ${tenantId}
+          AND a2.account_type IN ('revenue','other_revenue','cogs','expense','other_expense')
+      )`;
+      case 'date':
+      default: return sql`${transactions.txnDate}`;
+    }
+  })();
+  const orderBy = sql`${sortExpr} ${dir} NULLS LAST, ${transactions.createdAt} DESC`;
 
   const [data, total] = await Promise.all([
     db.select({
@@ -707,10 +736,16 @@ export async function listTransactions(tenantId: string, filters: {
         sql`${transactions.sourceId} = ${bankFeedItems.id}::text`,
       ))
       .where(where)
-      .orderBy(sql`${transactions.txnDate} DESC`, sql`${transactions.createdAt} DESC`)
+      .orderBy(orderBy)
       .limit(filters.limit ?? 50)
       .offset(filters.offset ?? 0),
-    db.select({ count: count() }).from(transactions).where(where),
+    // Must mirror the data query's contacts join: the `search` filter
+    // references contacts.displayName, so without this join the count query
+    // throws ("missing FROM-clause entry for table contacts") and the whole
+    // list 500s whenever a search term is present.
+    db.select({ count: count() }).from(transactions)
+      .leftJoin(contacts, eq(transactions.contactId, contacts.id))
+      .where(where),
   ]);
 
   return { data, total: total[0]?.count ?? 0 };

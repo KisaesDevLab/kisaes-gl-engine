@@ -58,7 +58,13 @@ export class OllamaProvider implements AiProvider {
     });
 
     if (!response.ok) {
-      const err: any = new Error(`Ollama error: ${response.status} ${response.statusText}`);
+      // A 404 from /api/chat almost always means the model isn't pulled on this
+      // server — name it so the fix is obvious (and it's the #1 fallback-chain
+      // footgun: a model id valid for a cloud provider isn't on Ollama).
+      const detail = response.status === 404
+        ? `model '${this.model}' not found on the Ollama server — run \`ollama pull ${this.model}\` or choose an installed model`
+        : `${response.status} ${response.statusText}`;
+      const err: any = new Error(`Ollama error: ${detail}`);
       err.status = response.status;
       err.headers = Object.fromEntries(response.headers.entries());
       throw err;
@@ -129,6 +135,13 @@ export class OllamaProvider implements AiProvider {
     } catch (err: any) {
       return { success: false, error: err.message || 'Cannot connect to Ollama' };
     }
+  }
+
+  async listModels(signal?: AbortSignal): Promise<string[]> {
+    const response = await fetch(`${this.baseUrl}/api/tags`, { signal });
+    if (!response.ok) throw new Error(`Ollama returned ${response.status}`);
+    const data = (await response.json()) as { models?: Array<{ name?: string }> };
+    return (data.models ?? []).map((m) => m.name ?? '').filter(Boolean).sort();
   }
 
   estimateCost(): number { return 0; } // self-hosted, free

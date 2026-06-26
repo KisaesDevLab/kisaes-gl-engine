@@ -358,6 +358,33 @@ export async function updateInstance(
   }
 }
 
+// Full per-instance layout editing (block add/remove/reorder/configure),
+// mirroring template creation but scoped to ONE draft instance. The layout is
+// stored as the instance's own snapshot, so editing it here does NOT touch the
+// template or any other instance. Published/archived reports are locked.
+export async function updateInstanceLayout(
+  tenantId: string,
+  id: string,
+  bookkeeperUserId: string,
+  layout: unknown[],
+): Promise<{ instance: Awaited<ReturnType<typeof getInstance>> }> {
+  const before = await getInstance(tenantId, id);
+  if (before.status === 'published' || before.status === 'archived') {
+    throw AppError.badRequest(
+      'Published or archived reports cannot be edited. Use Duplicate to start a new draft version.',
+      'PUBLISHED_LOCKED',
+    );
+  }
+  await db.update(reportInstances)
+    .set({ layoutSnapshotJsonb: layout as never })
+    .where(and(eq(reportInstances.tenantId, tenantId), eq(reportInstances.id, id)));
+  await auditLog(
+    tenantId, 'update', 'report_instance', id,
+    { layout: before.layoutSnapshotJsonb }, { layout }, bookkeeperUserId,
+  );
+  return { instance: await getInstance(tenantId, id) };
+}
+
 export async function deleteInstance(
   tenantId: string,
   id: string,

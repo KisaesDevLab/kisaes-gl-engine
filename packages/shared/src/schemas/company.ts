@@ -45,6 +45,9 @@ export const updateCompanySettingsSchema = z.object({
   currency: z.string().length(3).optional(),
   dateFormat: z.string().max(20).optional(),
   categoryFilterMode: z.enum(categoryFilterModes).optional(),
+  // Default line-entry mode for entry forms — edited on Preferences; was absent
+  // here so Zod stripped it before it could be saved.
+  defaultLineEntryMode: z.enum(['category', 'item']).optional(),
   lockDate: z.string().nullable().optional(),
   // Per-company AI chat assistant opt-in (tier 2 of two-tier consent —
   // see AI_CHAT_SUPPORT_PLAN.md §8.1).

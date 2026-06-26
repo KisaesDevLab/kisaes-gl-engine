@@ -73,23 +73,32 @@ describe('pii-sanitizer', () => {
     });
   });
 
-  describe('payment-app personal names', () => {
-    it('redacts names after VENMO', () => {
-      const { text, detected } = sanitize('VENMO PAYMENT JOHN SMITH $50', 'minimal');
-      expect(text).toContain('[NAME_REDACTED]');
-      expect(text).toContain('$50');
-      expect(text).not.toContain('JOHN SMITH');
-      expect(detected).toContain('payment_app_name');
+  describe('payee names are NOT PII (preserved in every mode)', () => {
+    it('keeps the payee after VENMO/ZELLE/CASH APP', () => {
+      for (const mode of ['minimal', 'standard', 'strict'] as const) {
+        expect(sanitize('VENMO PAYMENT JOHN SMITH $50', mode).text).toContain('JOHN SMITH');
+        expect(sanitize('ZELLE TO JANE DOE', mode).text).toContain('JANE DOE');
+        expect(sanitize('CASH APP PAYMENT ALICE WONDERLAND', mode).text).toContain('ALICE WONDERLAND');
+      }
     });
-    it('redacts names after ZELLE', () => {
-      const { text } = sanitize('ZELLE TO JANE DOE', 'minimal');
-      expect(text).toContain('[NAME_REDACTED]');
-      expect(text).not.toContain('JANE DOE');
+    it('keeps business payees and amounts intact', () => {
+      const { text, detected } = sanitize('ZELLE PAYMENT TO ACME PLUMBING LLC  -350.00', 'strict');
+      expect(text).toContain('ACME PLUMBING LLC');
+      expect(text).toContain('-350.00');
+      expect(detected).not.toContain('payment_app_name' as never);
     });
-    it('redacts names after CASH APP', () => {
-      const { text } = sanitize('CASH APP PAYMENT ALICE WONDERLAND', 'minimal');
-      expect(text).toContain('[NAME_REDACTED]');
-      expect(text).not.toContain('ALICE');
+  });
+
+  describe('phone — only formatted numbers, not bare reference runs', () => {
+    it('redacts a formatted phone (separators / parens)', () => {
+      expect(sanitize('CALL 800-555-1234', 'standard').text).toContain('[PHONE_REDACTED]');
+      expect(sanitize('CALL (800) 555-1234', 'standard').text).toContain('[PHONE_REDACTED]');
+      expect(sanitize('CALL 800.555.1234', 'standard').detected).toContain('phone');
+    });
+    it('does NOT redact a bare 10-digit reference number', () => {
+      const { text } = sanitize('ACH CREDIT REF 1234567890 PAYROLL', 'standard');
+      expect(text).toContain('1234567890');
+      expect(text).not.toContain('[PHONE_REDACTED]');
     });
   });
 
@@ -195,12 +204,12 @@ describe('pii-sanitizer', () => {
     });
 
     it('handles very long input without excessive latency', () => {
-      const longInput = 'VENMO PAYMENT JOHN SMITH $50 '.repeat(500);
+      const longInput = 'SSN 123-45-6789 ACME CORP $50 '.repeat(500);
       const start = performance.now();
       const { text } = sanitize(longInput, 'strict');
       const elapsed = performance.now() - start;
       expect(elapsed).toBeLessThan(500);
-      expect(text).toContain('[NAME_REDACTED]');
+      expect(text).toContain('[SSN_REDACTED]');
     });
   });
 

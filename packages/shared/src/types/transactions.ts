@@ -259,6 +259,8 @@ export interface TransactionFilters {
   startDate?: string;
   endDate?: string;
   search?: string;
+  sortBy?: 'date' | 'type' | 'number' | 'payee' | 'memo' | 'category' | 'amount' | 'status';
+  sortDir?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
 }

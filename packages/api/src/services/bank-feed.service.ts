@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-import { eq, and, sql, count, gte, lte } from 'drizzle-orm';
+import { eq, and, sql, count, gte, lte, inArray } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import type { BankFeedFilters, CategorizeInput, CsvColumnMapping } from '@kis-books/shared';
 import { db } from '../db/index.js';
@@ -530,6 +530,23 @@ export async function bulkCategorize(tenantId: string, feedItemIds: string[], ac
 // transaction (status in 'categorized' or 'matched'). Stamps the given
 // tag onto every journal_line of each matched transaction and syncs
 // the transaction_tags junction when TAGS_SPLIT_LEVEL_V2 is on.
+// Bank Feed bulk "set name": overwrite the (cleaned) description shown in the
+// NAME column for the selected items — useful for normalizing a batch of cryptic
+// bank descriptors to one human-readable payee/name. Tenant-scoped; the raw
+// originalDescription is preserved.
+export async function bulkSetName(tenantId: string, feedItemIds: string[], name: string) {
+  const trimmed = name.trim().slice(0, 500);
+  if (!trimmed || feedItemIds.length === 0) return { updated: 0 };
+  const updatedRows = await db.update(bankFeedItems)
+    .set({ description: trimmed, updatedAt: new Date() })
+    .where(and(
+      eq(bankFeedItems.tenantId, tenantId),
+      inArray(bankFeedItems.id, feedItemIds),
+    ))
+    .returning({ id: bankFeedItems.id });
+  return { updated: updatedRows.length };
+}
+
 export async function bulkSetTag(tenantId: string, feedItemIds: string[], tagId: string | null) {
   // Cross-tenant guard: a client could otherwise know another tenant's
   // tag UUID and stamp it onto their own journal lines. Validate once
@@ -674,7 +691,7 @@ async function applyCheckImagePayees(
   }
 }
 
-async function runCleansingPipeline(tenantId: string, items: any[]) {
+export async function runCleansingPipeline(tenantId: string, items: any[]) {
   for (const item of items) {
     const raw = item.originalDescription || item.description || '';
     let cleanedName: string | null = null;
@@ -915,11 +932,51 @@ export async function bulkRecleanse(tenantId: string, feedItemIds: string[]) {
   return { cleansed: items.length };
 }
 
+export interface ImportDateRange {
+  start?: string | null; // YYYY-MM-DD inclusive
+  end?: string | null; // YYYY-MM-DD inclusive
+}
+
+// Parse a date string (ISO YYYY-MM-DD, US M/D/YYYY, or anything Date.parse
+// handles) to a UTC day timestamp for range comparison. Returns null when
+// unparseable so the caller can choose not to silently drop the row.
+function parseDayMs(s: string): number | null {
+  const trimmed = s.trim();
+  let m = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return Date.UTC(+m[1]!, +m[2]! - 1, +m[3]!);
+  m = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (m) {
+    let y = +m[3]!;
+    if (y < 100) y += 2000;
+    return Date.UTC(y, +m[1]! - 1, +m[2]!);
+  }
+  const t = Date.parse(trimmed);
+  return Number.isNaN(t) ? null : t;
+}
+
+// True if `feedDate` falls within the (inclusive) range. An empty range admits
+// everything; an unparseable row date is admitted rather than silently dropped.
+function withinRange(feedDate: string, range?: ImportDateRange): boolean {
+  if (!range || (!range.start && !range.end)) return true;
+  const t = parseDayMs(feedDate);
+  if (t === null) return true;
+  if (range.start) {
+    const s = parseDayMs(range.start);
+    if (s !== null && t < s) return false;
+  }
+  if (range.end) {
+    const e = parseDayMs(range.end);
+    if (e !== null && t > e) return false;
+  }
+  return true;
+}
+
 export async function importFromCsv(
   tenantId: string,
   bankConnectionId: string,
   csvText: string,
   mapping: CsvColumnMapping,
+  dateRange?: ImportDateRange,
 ) {
   await assertConnectionInTenant(tenantId, bankConnectionId);
   // Byte ceiling: a single 50MB line would sail past the row-count check
@@ -958,6 +1015,7 @@ export async function importFromCsv(
     }
 
     if (!dateStr || amount === 0) continue;
+    if (!withinRange(dateStr, dateRange)) continue;
 
     items.push({
       tenantId,
@@ -1000,7 +1058,7 @@ export async function importFromCsv(
   return inserted;
 }
 
-export async function importFromOfx(tenantId: string, bankConnectionId: string, ofxContent: string) {
+export async function importFromOfx(tenantId: string, bankConnectionId: string, ofxContent: string, dateRange?: ImportDateRange) {
   await assertConnectionInTenant(tenantId, bankConnectionId);
   // Simple OFX/QFX parser — extract STMTTRN elements
   const txnRegex = /<STMTTRN>([\s\S]*?)<\/STMTTRN>/gi;
@@ -1023,6 +1081,7 @@ export async function importFromOfx(tenantId: string, bankConnectionId: string, 
 
     // Parse OFX date format: YYYYMMDD or YYYYMMDDHHMMSS
     const feedDate = `${dateRaw.slice(0, 4)}-${dateRaw.slice(4, 6)}-${dateRaw.slice(6, 8)}`;
+    if (!withinRange(feedDate, dateRange)) continue;
 
     items.push({
       tenantId,
@@ -1090,7 +1149,14 @@ export async function importStatementItems(
     feedDate: txn.date,
     description: txn.description,
     originalDescription: txn.description,
-    amount: txn.amount,
+    // Statement parsers hand us a positive magnitude + a debit/credit `type`.
+    // Persist the SIGNED amount so the bank feed matches the OFX/CSV
+    // convention (positive = spend / money out; negative = money in). `credit`
+    // (deposit, money in) → negative; everything else (debit/spend) → positive.
+    amount: (txn.type === 'credit'
+      ? -Math.abs(parseFloat(txn.amount))
+      : Math.abs(parseFloat(txn.amount))
+    ).toFixed(4),
     // STATEMENT_CHECK_PAYEE_V1 — parse the check number now so we can
     // correlate it to a check-image payee below (no-op when absent).
     checkNumber: parseCheckNumber(txn.description),

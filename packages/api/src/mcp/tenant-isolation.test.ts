@@ -39,6 +39,7 @@ async function cleanDb() {
     plaid_account_mappings, plaid_accounts, plaid_items, bank_connections,
     attachments,
     transactions, contacts, tags, tag_groups, api_keys, mcp_request_log, sessions,
+    tenant_firm_assignments, firm_users, firms,
     accounts, companies, users, tenants
     CASCADE`);
 }

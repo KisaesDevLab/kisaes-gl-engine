@@ -69,6 +69,20 @@ export const aiConfigUpdateSchema = z.object({
   openaiCompatModel: z.string().nullable().optional(),
   // How the openai_compat endpoint is driven (Ollama native vs /v1).
   openaiCompatMode: z.enum(['auto', 'native', 'compat']).optional(),
+  // GLM-OCR engine (statement-import redesign). Dedicated llama.cpp OCR
+  // server with its own base URL + tuning. apiKey uses the 3-state sentinel.
+  glmOcrEnabled: z.boolean().optional(),
+  glmOcrBaseUrl: z.string().optional(),
+  glmOcrApiKey: z.string().nullish(),
+  glmOcrModel: z.string().nullable().optional(),
+  glmOcrPrompt: z.string().nullable().optional(),
+  glmOcrTimeoutMs: z.number().int().min(1000).max(600_000).nullable().optional(),
+  glmOcrConcurrency: z.number().int().min(1).max(16).nullable().optional(),
+  glmOcrForceOcr: z.boolean().optional(),
+  glmOcrRenderDpi: z.number().int().min(72).max(600).nullable().optional(),
+  // Stage-2 extraction LLM: self-hosted ('local') or cloud ('anthropic').
+  statementExtractionProvider: z.enum(['local', 'anthropic']).optional(),
+  statementExtractionModel: z.string().nullable().optional(),
   autoCategorizeOnImport: z.boolean().optional(),
   autoOcrOnUpload: z.boolean().optional(),
   categorizationConfidenceThreshold: z.number().min(0).max(1).optional(),
@@ -143,20 +157,27 @@ export const aiParseStatementSchema = z.object({
 // Import transactions from a previously-parsed statement. The
 // `transactions` array is capped to keep the downstream insert loop
 // bounded.
-export const aiImportStatementSchema = z.object({
-  bankConnectionId: z.string().uuid(),
-  transactions: z
-    .array(
-      z.object({
-        date: z.string().min(1).max(20),
-        description: z.string().max(500),
-        amount: z.string().max(30),
-        type: z.string().max(20).optional(),
-      }),
-    )
-    .min(1)
-    .max(5000),
-});
+export const aiImportStatementSchema = z
+  .object({
+    // Either target an existing connection directly, or pass the GL accountId
+    // and let the importer find-or-create the manual connection for it.
+    bankConnectionId: z.string().uuid().optional(),
+    accountId: z.string().uuid().optional(),
+    transactions: z
+      .array(
+        z.object({
+          date: z.string().min(1).max(20),
+          description: z.string().max(500),
+          amount: z.string().max(30),
+          type: z.string().max(20).optional(),
+        }),
+      )
+      .min(1)
+      .max(5000),
+  })
+  .refine((d) => !!d.bankConnectionId || !!d.accountId, {
+    message: 'accountId or bankConnectionId is required',
+  });
 
 // Per-company AI task toggles. Used by PATCH /ai/consent/:companyId/tasks.
 export const aiTaskTogglesSchema = z.object({

@@ -164,3 +164,20 @@ export async function addCreatorAsAdmin(firmId: string, userId: string): Promise
     firmRole: 'firm_admin',
   });
 }
+
+// Idempotent membership upsert keyed by the (firm_id, user_id)
+// unique index. Unlike addCreatorAsAdmin this never throws on a
+// duplicate, and it does NOT overwrite an existing row's role —
+// re-provisioning a tenant must not silently downgrade or upgrade a
+// member who was already granted a specific firm role. Used by
+// appliance-firm auto-provisioning and the backfill script.
+export async function ensureMembership(
+  firmId: string,
+  userId: string,
+  firmRole: FirmRole = 'firm_admin',
+): Promise<void> {
+  await db
+    .insert(firmUsers)
+    .values({ firmId, userId, firmRole })
+    .onConflictDoNothing({ target: [firmUsers.firmId, firmUsers.userId] });
+}

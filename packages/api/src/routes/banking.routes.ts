@@ -107,6 +107,21 @@ bankingRouter.post('/feed/bulk-categorize', validate(bulkCategorizeSchema), asyn
   res.json(result);
 });
 
+// Bank Feed bulk "set name": overwrite the displayed description for selected items.
+bankingRouter.post('/feed/bulk-set-name', async (req, res) => {
+  const { feedItemIds, name } = req.body as { feedItemIds?: string[]; name?: string };
+  if (!Array.isArray(feedItemIds) || feedItemIds.length === 0) {
+    res.status(400).json({ error: { message: 'feedItemIds array required' } });
+    return;
+  }
+  if (typeof name !== 'string' || !name.trim()) {
+    res.status(400).json({ error: { message: 'name required' } });
+    return;
+  }
+  const result = await bankFeedService.bulkSetName(req.tenantId, feedItemIds, name);
+  res.json(result);
+});
+
 // ADR 0XX §7 — Bank Feed bulk "set tag" on already-categorized feed items.
 bankingRouter.post('/feed/bulk-set-tag', async (req, res) => {
   const { feedItemIds, tagId } = req.body as { feedItemIds?: string[]; tagId?: string | null };
@@ -175,11 +190,26 @@ bankingRouter.post('/feed/import', upload.single('file'), async (req, res) => {
   const content = req.file.buffer.toString('utf-8');
   const ext = req.file.originalname.toLowerCase();
 
+  // Optional import date range (YYYY-MM-DD). Rows outside [startDate, endDate]
+  // are skipped. Either bound may be omitted; a bad format is rejected.
+  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+  const { startDate, endDate } = req.body as { startDate?: unknown; endDate?: unknown };
+  for (const [k, v] of [['startDate', startDate], ['endDate', endDate]] as const) {
+    if (v !== undefined && v !== '' && !(typeof v === 'string' && dateRe.test(v))) {
+      res.status(400).json({ error: { message: `${k} must be YYYY-MM-DD`, code: 'VALIDATION_ERROR' } });
+      return;
+    }
+  }
+  const dateRange = {
+    start: typeof startDate === 'string' && startDate ? startDate : null,
+    end: typeof endDate === 'string' && endDate ? endDate : null,
+  };
+
   let items;
   if (ext.endsWith('.ofx') || ext.endsWith('.qfx')) {
-    items = await bankFeedService.importFromOfx(req.tenantId, conn.id, content);
+    items = await bankFeedService.importFromOfx(req.tenantId, conn.id, content, dateRange);
   } else {
-    items = await bankFeedService.importFromCsv(req.tenantId, conn.id, content, parsedMapping);
+    items = await bankFeedService.importFromCsv(req.tenantId, conn.id, content, parsedMapping, dateRange);
   }
 
   // Cleansing + categorization pipelines are now handled inside the service

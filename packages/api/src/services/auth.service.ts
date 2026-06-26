@@ -17,6 +17,7 @@ import { seedFromTemplate } from './accounts.service.js';
 import * as systemEmail from './system-email.service.js';
 import { checkPasswordBreached } from '../utils/hibp.js';
 import { seedDefaultsForNewTenant as seedFeatureFlags } from './feature-flags.service.js';
+import { joinApplianceFirm } from './firm-provisioning.service.js';
 
 // Cap per CLOUDFLARE_TUNNEL_PLAN Phase 3: max 3 concurrent sessions per
 // user. Oldest refresh token is revoked when the limit is exceeded —
@@ -138,6 +139,10 @@ export async function createClientTenant(creatorUserId: string, input: { company
     role: 'accountant',
   }).onConflictDoNothing();
 
+  // Auto-join the appliance firm so the tiered conditional-rules UI
+  // resolves for the creator on this tenant. Idempotent.
+  await joinApplianceFirm(tenant.id, creatorUserId);
+
   return { tenantId: tenant.id, companyId: company?.id || '', tenantName: tenant.name };
 }
 
@@ -196,6 +201,10 @@ export async function register(input: RegisterInput): Promise<{ user: typeof use
 
   // Create tenant access record
   await db.insert(userTenantAccess).values({ userId: user.id, tenantId: tenant.id, role: 'owner' });
+
+  // Auto-join the appliance firm (owner → firm_admin) so the tiered
+  // conditional-rules UI is available by default. Idempotent.
+  await joinApplianceFirm(tenant.id, user.id);
 
   // Generate tokens
   const jwtPayload: JwtPayload = { userId: user.id, tenantId: tenant.id, role: user.role, isSuperAdmin: user.isSuperAdmin || false };

@@ -9,6 +9,16 @@
 export const FIRM_ROLES = ['firm_admin', 'firm_staff', 'firm_readonly'] as const;
 export type FirmRole = typeof FIRM_ROLES[number];
 
+// The self-hosted appliance hosts firm-wide (global) conditional
+// rules through a single "appliance firm" that every tenant on the
+// box auto-joins. It is a SINGLETON identified by this reserved
+// slug — firms.slug is UNIQUE, so the slug alone guarantees one and
+// only one appliance firm. Provisioning (`ensureApplianceFirm`)
+// creates it on demand; the name is editable later via firm
+// settings without affecting the slug-keyed identity.
+export const APPLIANCE_FIRM_SLUG = 'default-practice';
+export const APPLIANCE_FIRM_NAME = 'Default Practice';
+
 export interface Firm {
   id: string;
   name: string;
