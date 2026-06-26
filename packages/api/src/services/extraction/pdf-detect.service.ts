@@ -59,8 +59,13 @@ const TEXT_AVG_CHAR_THRESHOLD = 100;
 const PER_PAGE_HAS_TEXT_THRESHOLD = 30;
 
 const loadPdfFromBuffer = async (buffer: Buffer): Promise<PdfDocumentProxy> => {
+  // pdf.js TRANSFERS (detaches) the ArrayBuffer it's given. Passing a view over
+  // the caller's buffer (buffer.buffer) detaches the caller's data, so the next
+  // pdf.js/render pass on the same fileBuffer throws "Cannot perform Construct
+  // on a detached ArrayBuffer". `new Uint8Array(buffer)` makes a fresh COPY
+  // (TypedArray-from-TypedArray copies), so pdf.js detaches the copy instead.
   const task = getDocument({
-    data: new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength),
+    data: new Uint8Array(buffer),
     isEvalSupported: false,
     useSystemFonts: false,
   });
