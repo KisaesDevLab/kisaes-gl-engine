@@ -172,6 +172,9 @@ export const aiImportStatementSchema = z
     // and let the importer find-or-create the manual connection for it.
     bankConnectionId: z.string().uuid().optional(),
     accountId: z.string().uuid().optional(),
+    // Set when importing from a saved statement parse job (resume flow) so the
+    // server can mark that job imported in the Statement Imports history.
+    jobId: z.string().uuid().optional(),
     transactions: z
       .array(
         z.object({

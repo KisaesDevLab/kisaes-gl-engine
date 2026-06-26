@@ -757,6 +757,13 @@
       "when": 1777020000000,
       "tag": "0107_plaid_feed_connection_backfill",
       "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1777030000000,
+      "tag": "0108_ai_job_imported_at",
+      "breakpoints": true
     }
   ]
 }
