@@ -56,7 +56,17 @@ export function getRpId(): string {
 }
 
 export function getRpOrigin(): string {
-  return env.PUBLIC_URL;
+  // WebAuthn origins are scheme+host(+port) with NO path — the browser always
+  // echoes a path-less origin (e.g. https://vibe.cpa2web.app). Returning
+  // PUBLIC_URL verbatim breaks verification when PUBLIC_URL carries a sub-path
+  // (e.g. https://host/mybooks): expectedOrigin would include /mybooks and never
+  // match. Normalize to the origin so passkeys work whether or not PUBLIC_URL
+  // has a path.
+  try {
+    return new URL(env.PUBLIC_URL).origin;
+  } catch {
+    return env.PUBLIC_URL;
+  }
 }
 
 // ─── Challenge Storage ─────────────────────────────────────────

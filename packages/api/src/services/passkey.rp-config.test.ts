@@ -55,10 +55,10 @@ describe('passkey rpId / rpOrigin resolution', () => {
     expect(getRpId()).toBe('localhost');
   });
 
-  it('rpOrigin returns PUBLIC_URL verbatim (full origin)', async () => {
+  it('rpOrigin returns the PATH-LESS origin of PUBLIC_URL (WebAuthn origins carry no path)', async () => {
     process.env['PUBLIC_URL'] = 'https://vibe.local/mybooks';
     const { getRpOrigin } = await import('./passkey.service.js');
-    expect(getRpOrigin()).toBe('https://vibe.local/mybooks');
+    expect(getRpOrigin()).toBe('https://vibe.local');
   });
 
   it('rpOrigin uses Zod-default PUBLIC_URL when env is unset', async () => {
