@@ -161,6 +161,29 @@ const DEFAULT_PROMPTS = [
 ];
 
 export async function seedDefaultPrompts() {
+  // Source each default SYSTEM prompt from the SAME constant the task service
+  // falls back to at runtime, so the editor shows exactly what the app uses
+  // (CPA-grade; the bank-statement one is ported from Vibe-Transaction-Convertor).
+  // Dynamic import avoids a static cycle — the task services statically import
+  // THIS module for getCustomSystemPrompt; by seed time (startup) they're loaded.
+  const runtimeSystemPrompts: Record<string, string> = {};
+  try {
+    const [cat, rec, bill, cls, stmt] = await Promise.all([
+      import('./ai-categorization.service.js'),
+      import('./ai-receipt-ocr.service.js'),
+      import('./ai-bill-ocr.service.js'),
+      import('./ai-document-classifier.service.js'),
+      import('./ai-statement-parser.service.js'),
+    ]);
+    runtimeSystemPrompts['categorize'] = cat.categorizeSystemPrompt;
+    runtimeSystemPrompts['ocr_receipt'] = rec.receiptSystemPrompt;
+    runtimeSystemPrompts['ocr_invoice'] = bill.billSystemPrompt;
+    runtimeSystemPrompts['classify_document'] = cls.classifierSystemPrompt;
+    runtimeSystemPrompts['ocr_statement'] = stmt.stage2SystemPrompt;
+  } catch {
+    // If a module can't be loaded, fall back to the literal defaults below.
+  }
+
   for (const prompt of DEFAULT_PROMPTS) {
     const existing = await db.query.aiPromptTemplates.findFirst({
       where: and(eq(aiPromptTemplates.taskType, prompt.taskType), eq(aiPromptTemplates.isActive, true)),
@@ -170,7 +193,7 @@ export async function seedDefaultPrompts() {
     await db.insert(aiPromptTemplates).values({
       taskType: prompt.taskType,
       version: 1,
-      systemPrompt: prompt.systemPrompt,
+      systemPrompt: runtimeSystemPrompts[prompt.taskType] ?? prompt.systemPrompt,
       userPromptTemplate: prompt.userPromptTemplate,
       isActive: true,
       notes: 'Default prompt',

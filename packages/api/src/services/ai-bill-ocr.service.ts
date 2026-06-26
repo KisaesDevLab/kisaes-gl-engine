@@ -60,7 +60,7 @@ export interface BillOcrResult {
   rawText?: string;
 }
 
-const billSystemPrompt = `You are a vendor invoice / bill OCR assistant. Extract the structured data and return JSON ONLY in this exact schema:
+export const billSystemPrompt = `You are a vendor invoice / bill OCR assistant. Extract the structured data and return JSON ONLY in this exact schema:
 {
   "vendor": "string | null",
   "vendor_invoice_number": "string | null",

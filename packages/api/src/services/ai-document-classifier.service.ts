@@ -213,7 +213,7 @@ export async function classifyDocument(tenantId: string, attachmentId: string): 
   }
 }
 
-const classifierSystemPrompt = `You are a financial-document classifier. Identify the type of ONE uploaded document from its text and layout.
+export const classifierSystemPrompt = `You are a financial-document classifier. Identify the type of ONE uploaded document from its text and layout.
 
 Return JSON only (no markdown, no commentary):
 { "type": "receipt"|"invoice"|"bank_statement"|"tax_form"|"other", "confidence": 0.0-1.0, "reason": "<brief evidence>" }
