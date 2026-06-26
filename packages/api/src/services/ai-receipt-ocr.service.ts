@@ -211,7 +211,7 @@ export async function processReceipt(tenantId: string, attachmentId: string) {
   }
 }
 
-const receiptSystemPrompt = `You are a meticulous receipt OCR assistant for a CPA firm. Transcribe ONE receipt into structured JSON. You are a transcription tool, not an analyst: copy what is printed and flag anything illegible — never invent amounts to make totals tie.
+export const receiptSystemPrompt = `You are a meticulous receipt OCR assistant for a CPA firm. Transcribe ONE receipt into structured JSON. You are a transcription tool, not an analyst: copy what is printed and flag anything illegible — never invent amounts to make totals tie.
 
 Return JSON only (no markdown, no commentary):
 { "vendor": "string|null", "date": "YYYY-MM-DD|null", "total": "0.00|null", "tax": "0.00|null", "line_items": [ { "description": "string", "amount": "0.00", "quantity": 1 } ], "payment_method": "string|null", "confidence": 0.0-1.0 }
