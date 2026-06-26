@@ -8,6 +8,15 @@ import { eq, and, lt } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { attachments } from '../../db/schema/index.js';
 import { getProviderForTenant } from './storage-provider.factory.js';
+import { env } from '../../config/env.js';
+
+// Resolve the DB-stored logical filePath ("/uploads/attachments/<tenant>/<uuid>")
+// to the real absolute path under UPLOAD_DIR. Mirrors attachment.service's
+// resolveUploadPath — returning the raw "/uploads/..." path makes callers'
+// fs.readFileSync look at the filesystem root and fail with "file not found".
+function resolveLocalPath(filePath: string): string {
+  return path.resolve(env.UPLOAD_DIR, filePath.replace(/^\/uploads\//, ''));
+}
 
 const CACHE_DIR = process.env['STORAGE_CACHE_DIR'] || '/data/cache';
 const CACHE_TTL_HOURS = parseInt(process.env['STORAGE_CACHE_TTL_HOURS'] || '24');
@@ -28,7 +37,7 @@ export async function ensureLocal(tenantId: string, attachmentId: string): Promi
 
   // If local provider or already cached
   if (attachment.storageProvider === 'local' && attachment.filePath) {
-    return attachment.filePath;
+    return resolveLocalPath(attachment.filePath);
   }
 
   if (attachment.localCachePath && attachment.cacheExpiresAt && new Date() < new Date(attachment.cacheExpiresAt)) {

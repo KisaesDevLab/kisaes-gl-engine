@@ -60,8 +60,19 @@ export const adminSmtpSettingsSchema = z.object({
 });
 export type AdminSmtpSettingsInput = z.infer<typeof adminSmtpSettingsSchema>;
 
-export const adminSmtpTestSchema = adminSmtpSettingsSchema.extend({
-  testEmail: z.string().email().max(255),
+// The TEST endpoint validates the connection params the way the tester actually
+// uses them: short field names (host/port/username/password/from) matching both
+// the admin form's request body AND testSmtpConnection()'s SmtpConfig — NOT the
+// smtp-prefixed *save* schema above. (Reusing the save schema caused
+// "smtpHost: Required" because the form sends `host`.) testEmail is optional —
+// without it the tester only verifies the connection.
+export const adminSmtpTestSchema = z.object({
+  host: z.string().min(1).max(255),
+  port: z.coerce.number().int().min(1).max(65535),
+  username: z.string().max(255).optional().default(''),
+  password: z.string().max(512).nullish(),
+  from: z.string().email().max(255),
+  testEmail: z.string().email().max(255).optional(),
 });
 export type AdminSmtpTestInput = z.infer<typeof adminSmtpTestSchema>;
 
