@@ -855,14 +855,22 @@ export async function runCategorizationPipeline(tenantId: string, items: any[]) 
     }
   }
   if (pendingIds.length > 0) {
-    // AI batch suggestions — best-effort. If the categorizer is down or
-    // mis-configured, the feed still imports correctly without auto
-    // suggestions; users can still categorize manually. Log so the
-    // outage is visible to operators.
-    await categorizationService.suggestForBatch(tenantId, pendingIds).catch((err) => {
-      // eslint-disable-next-line no-console
-      console.warn(`[bank-feed] AI batch suggest failed for tenant ${tenantId}:`, err?.message ?? err);
-    });
+    // Honor the "Auto-categorize bank feed transactions" setting
+    // (ai_config.autoCategorizeOnImport, default on). This pipeline runs for
+    // EVERY import path — CSV/OFX, Plaid sync, AND bank-statement import — so
+    // gating here makes the setting apply uniformly (incl. statement imports).
+    const { getConfig } = await import('./ai-config.service.js');
+    const aiCfg = await getConfig().catch(() => null);
+    if (aiCfg?.autoCategorizeOnImport ?? true) {
+      // AI batch suggestions — best-effort. If the categorizer is down or
+      // mis-configured, the feed still imports correctly without auto
+      // suggestions; users can still categorize manually. Log so the
+      // outage is visible to operators.
+      await categorizationService.suggestForBatch(tenantId, pendingIds).catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn(`[bank-feed] AI batch suggest failed for tenant ${tenantId}:`, err?.message ?? err);
+      });
+    }
   }
 
   // Phase 3 — potential-match detection. Runs after rules + AI
