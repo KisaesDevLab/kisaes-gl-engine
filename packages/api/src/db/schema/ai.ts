@@ -186,6 +186,9 @@ export const aiJobs = pgTable('ai_jobs', {
   maxRetries: integer('max_retries').default(3),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+  // Statement Imports history: set when a parsed statement's transactions were
+  // imported into the bank feed (null = parsed, pending review). See 0108.
+  importedAt: timestamp('imported_at', { withTimezone: true }),
 }, (table) => ({
   tenantIdx: index('idx_aij_tenant').on(table.tenantId),
   statusIdx: index('idx_aij_status').on(table.tenantId, table.status),

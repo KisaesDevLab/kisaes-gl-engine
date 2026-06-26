@@ -379,7 +379,33 @@ aiRouter.post('/parse/statement/import', authenticate, aiProcessingLimiter, vali
   const result = await aiStatementParser.importStatementTransactions(
     req.tenantId, connectionId, req.body.transactions,
   );
+  // Resume support: when the import came from a saved statement parse job, mark
+  // it imported so the Statement Imports list shows it as done (not pending).
+  if (req.body.jobId) {
+    await aiStatementParser.markStatementJobImported(req.tenantId, req.body.jobId);
+  }
   res.json(result);
+});
+
+// ─── Statement Imports history (list / resume / delete) ─────────
+// Surfaces persisted statement parses so a user can upload a batch and work the
+// imports over multiple sessions. NOTE: registered with the literal "jobs"
+// segment, distinct from /parse/statement/:jobId/{progress,status}.
+aiRouter.get('/parse/statement/jobs', authenticate, async (req, res) => {
+  const limit = req.query['limit'] ? Number(req.query['limit']) : undefined;
+  const offset = req.query['offset'] ? Number(req.query['offset']) : undefined;
+  const data = await aiStatementParser.listStatementJobs(req.tenantId, { limit, offset });
+  res.json(data);
+});
+
+aiRouter.get('/parse/statement/jobs/:jobId', authenticate, async (req, res) => {
+  const data = await aiStatementParser.getStatementJobResult(req.tenantId, String(req.params['jobId']));
+  res.json(data);
+});
+
+aiRouter.delete('/parse/statement/jobs/:jobId', authenticate, async (req, res) => {
+  await aiStatementParser.deleteStatementJob(req.tenantId, String(req.params['jobId']));
+  res.json({ deleted: true });
 });
 
 // ─── Processing — Document Classification ──────────────────────

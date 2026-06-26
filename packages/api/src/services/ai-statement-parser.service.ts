@@ -23,10 +23,10 @@
 // unchanged except for the sign fix in the importer.
 
 import fs from 'fs';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, desc, sql } from 'drizzle-orm';
 import { StatementExtractionResult } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { attachments } from '../db/schema/index.js';
+import { attachments, aiJobs } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { env } from '../config/env.js';
 import { log } from '../utils/logger.js';
@@ -690,4 +690,99 @@ export async function importStatementTransactions(
 ) {
   const { importStatementItems } = await import('./bank-feed.service.js');
   return importStatementItems(tenantId, bankConnectionId, transactions, checks);
+}
+
+// ─── Statement Imports history ──────────────────────────────────────
+//
+// Statement parses are stored as ai_jobs (job_type='ocr_statement',
+// input_id=attachmentId) with the extracted result in output_data. These
+// helpers surface that history so a user can upload a batch, leave, and resume
+// the un-imported statements later (the data already survives — there was just
+// no list/resume UI). `imported_at` separates pending-review from done.
+
+export interface StatementJobSummary {
+  jobId: string;
+  attachmentId: string | null;
+  fileName: string;
+  status: string;
+  stage: string | null;
+  createdAt: Date | null;
+  importedAt: Date | null;
+  transactionCount: number;
+  error: string | null;
+}
+
+function statementTxnCount(outputData: unknown): number {
+  if (
+    outputData && typeof outputData === 'object' &&
+    Array.isArray((outputData as { transactions?: unknown }).transactions)
+  ) {
+    return (outputData as { transactions: unknown[] }).transactions.length;
+  }
+  return 0;
+}
+
+export async function listStatementJobs(
+  tenantId: string,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<{ jobs: StatementJobSummary[]; total: number }> {
+  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+  const offset = Math.max(opts.offset ?? 0, 0);
+  const where = and(eq(aiJobs.tenantId, tenantId), eq(aiJobs.jobType, 'ocr_statement'));
+  const rows = await db.select({
+    jobId: aiJobs.id,
+    attachmentId: aiJobs.inputId,
+    status: aiJobs.status,
+    stage: aiJobs.stage,
+    createdAt: aiJobs.createdAt,
+    importedAt: aiJobs.importedAt,
+    errorMessage: aiJobs.errorMessage,
+    outputData: aiJobs.outputData,
+    fileName: attachments.fileName,
+  })
+    .from(aiJobs)
+    .leftJoin(attachments, eq(attachments.id, aiJobs.inputId))
+    .where(where)
+    .orderBy(desc(aiJobs.createdAt))
+    .limit(limit)
+    .offset(offset);
+  const [countRow] = await db.select({ count: sql<number>`count(*)::int` }).from(aiJobs).where(where);
+  return {
+    total: Number(countRow?.count ?? 0),
+    jobs: rows.map((r) => ({
+      jobId: r.jobId,
+      attachmentId: r.attachmentId,
+      fileName: r.fileName ?? 'statement',
+      status: r.status ?? 'pending',
+      stage: r.stage ?? null,
+      createdAt: r.createdAt,
+      importedAt: r.importedAt,
+      transactionCount: statementTxnCount(r.outputData),
+      error: r.errorMessage ?? null,
+    })),
+  };
+}
+
+export async function getStatementJobResult(tenantId: string, jobId: string) {
+  const job = await db.query.aiJobs.findFirst({
+    where: and(eq(aiJobs.tenantId, tenantId), eq(aiJobs.id, jobId), eq(aiJobs.jobType, 'ocr_statement')),
+  });
+  if (!job) throw AppError.notFound('Statement parse job not found');
+  return {
+    jobId: job.id,
+    attachmentId: job.inputId,
+    status: job.status,
+    importedAt: job.importedAt,
+    result: job.outputData ?? null,
+  };
+}
+
+export async function markStatementJobImported(tenantId: string, jobId: string): Promise<void> {
+  await db.update(aiJobs).set({ importedAt: new Date() })
+    .where(and(eq(aiJobs.tenantId, tenantId), eq(aiJobs.id, jobId), eq(aiJobs.jobType, 'ocr_statement')));
+}
+
+export async function deleteStatementJob(tenantId: string, jobId: string): Promise<void> {
+  await db.delete(aiJobs)
+    .where(and(eq(aiJobs.tenantId, tenantId), eq(aiJobs.id, jobId), eq(aiJobs.jobType, 'ocr_statement')));
 }
