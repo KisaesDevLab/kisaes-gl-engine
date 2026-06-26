@@ -566,6 +566,12 @@ export async function startStatementParse(
   try {
     const { enqueueStatementParse } = await import('./extraction/queue.js');
     await enqueueStatementParse({ jobId: job.id, tenantId, attachmentId });
+    // Watchdog: enqueuing succeeds even when no worker is consuming the queue
+    // (worker container down / on an older image without the statement-parse
+    // worker). The job would then sit 'pending' forever and the upload spinner
+    // would spin indefinitely. If no worker claims it within the grace window,
+    // process it in-process so the upload always reaches a terminal state.
+    scheduleStatementParseWatchdog(tenantId, attachmentId, job.id);
   } catch (err) {
     log.warn({
       component: 'ai-statement-parser',
@@ -576,6 +582,37 @@ export async function startStatementParse(
     void runStatementParseJob(tenantId, attachmentId, job.id).catch(() => undefined);
   }
   return { jobId: job.id };
+}
+
+// Grace period before the API takes over a statement-parse job no worker has
+// claimed. A healthy worker flips the job to 'processing' within a second or
+// two, so in the normal case the watchdog finds it already claimed and no-ops.
+const STATEMENT_PARSE_WATCHDOG_MS = 30_000;
+
+function scheduleStatementParseWatchdog(tenantId: string, attachmentId: string, jobId: string): void {
+  const timer = setTimeout(() => {
+    void (async () => {
+      try {
+        const job = await orchestrator.getJobForTenant(tenantId, jobId);
+        // Still 'pending' ⇒ no worker ever picked it up. runStatementParseJob
+        // atomically re-checks via claimPendingJob, so a worker grabbing it in
+        // the same instant still can't double-run.
+        if (job && job.status === 'pending') {
+          log.warn({
+            component: 'ai-statement-parser',
+            event: 'watchdog_inprocess_fallback',
+            jobId,
+            message: 'No worker claimed the statement-parse job within the grace window; processing in-process.',
+          });
+          await runStatementParseJob(tenantId, attachmentId, jobId);
+        }
+      } catch {
+        // Best-effort — runStatementParseJob already records any terminal failure.
+      }
+    })();
+  }, STATEMENT_PARSE_WATCHDOG_MS);
+  // Don't keep the event loop alive on shutdown for a pending watchdog.
+  timer.unref?.();
 }
 
 /**
@@ -589,6 +626,10 @@ export async function runStatementParseJob(
   attachmentId: string,
   jobId: string,
 ): Promise<void> {
+  // Atomically claim the job before doing any work. Only the caller that flips
+  // pending→processing proceeds; a concurrent worker/watchdog (or a worker
+  // re-picking an already-finished queue job) claims nothing and returns.
+  if (!(await orchestrator.claimPendingJob(jobId))) return;
   try {
     await executePipeline(tenantId, attachmentId, jobId);
   } catch (err) {

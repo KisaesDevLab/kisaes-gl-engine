@@ -215,6 +215,20 @@ export async function markProcessing(jobId: string, stage: string) {
     .where(eq(aiJobs.id, jobId));
 }
 
+// Atomically take ownership of a job: flip 'pending' → 'processing' only if no
+// one else has. Returns true if THIS caller won the claim. This is the single
+// mutual-exclusion point for the statement pipeline — the BullMQ worker, the
+// enqueue-failure in-process fallback, and the no-worker watchdog all claim
+// before running, so exactly one processes a given statement (and a worker
+// re-picking an already-finished queue job claims nothing and no-ops).
+export async function claimPendingJob(jobId: string): Promise<boolean> {
+  const claimed = await db.update(aiJobs)
+    .set({ status: 'processing', processingStartedAt: new Date(), updatedAt: new Date() })
+    .where(and(eq(aiJobs.id, jobId), eq(aiJobs.status, 'pending')))
+    .returning({ id: aiJobs.id });
+  return claimed.length > 0;
+}
+
 // Advance the fine-grained progress stage (mirrors the converter's setStatus).
 export async function setStage(jobId: string, stage: string, patch: Record<string, unknown> = {}) {
   await db.update(aiJobs)
