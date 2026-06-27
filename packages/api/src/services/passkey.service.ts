@@ -108,19 +108,27 @@ export async function getRegistrationOptions(userId: string) {
     transports: (p.transports?.split(',') || []) as any[],
   }));
 
-  const options = await generateRegistrationOptions({
-    rpName: 'Vibe MyBooks',
-    rpID: getRpId(),
-    userID: new TextEncoder().encode(userId),
-    userName: user.email,
-    userDisplayName: user.displayName || user.email,
-    excludeCredentials,
-    authenticatorSelection: {
-      userVerification: 'required',
-      residentKey: 'preferred',
-    },
-    attestationType: 'none',
-  });
+  let options;
+  try {
+    options = await generateRegistrationOptions({
+      rpName: 'Vibe MyBooks',
+      rpID: getRpId(),
+      userID: new TextEncoder().encode(userId),
+      userName: user.email,
+      userDisplayName: user.displayName || user.email,
+      excludeCredentials,
+      authenticatorSelection: {
+        userVerification: 'required',
+        residentKey: 'preferred',
+      },
+      attestationType: 'none',
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    // eslint-disable-next-line no-console
+    console.warn(`[passkey] generate registration options failed (rpId=${getRpId()}): ${detail}`);
+    throw AppError.badRequest(`Could not start passkey registration: ${detail}`, 'passkey_options_failed');
+  }
 
   await storeRegistrationChallenge(userId, options.challenge);
   return options;
@@ -130,12 +138,24 @@ export async function verifyRegistration(userId: string, response: RegistrationR
   const expectedChallenge = await consumeRegistrationChallenge(userId);
   if (!expectedChallenge) throw AppError.badRequest('Challenge expired or not found. Please try again.');
 
-  const verification = await verifyRegistrationResponse({
-    response,
-    expectedChallenge,
-    expectedOrigin: getRpOrigin(),
-    expectedRPID: getRpId(),
-  });
+  let verification;
+  try {
+    verification = await verifyRegistrationResponse({
+      response,
+      expectedChallenge,
+      expectedOrigin: getRpOrigin(),
+      expectedRPID: getRpId(),
+    });
+  } catch (err) {
+    // @simplewebauthn THROWS (not returns verified:false) on an origin / rpID /
+    // type mismatch. Surface the real reason instead of a generic 500 — it's
+    // almost always a PUBLIC_URL / WEBAUTHN_RP_ID that doesn't match the URL the
+    // browser is actually on (expected vs got is in the message).
+    const detail = err instanceof Error ? err.message : String(err);
+    // eslint-disable-next-line no-console
+    console.warn(`[passkey] registration verify failed (rpId=${getRpId()} rpOrigin=${getRpOrigin()}): ${detail}`);
+    throw AppError.badRequest(`Passkey could not be verified: ${detail}`, 'passkey_verify_failed');
+  }
 
   if (!verification.verified || !verification.registrationInfo) {
     throw AppError.badRequest('Passkey registration failed. Please try again.');
