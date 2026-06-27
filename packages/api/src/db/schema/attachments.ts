@@ -44,6 +44,9 @@ export const recurringSchedules = pgTable('recurring_schedules', {
   nextOccurrence: date('next_occurrence').notNull(),
   lastPostedAt: timestamp('last_posted_at', { withTimezone: true }),
   isActive: boolean('is_active').default(true),
+  // Archive a paused (is_active=false) plan to hide it from the active list
+  // without deleting it. Null = not archived. See migration 0110.
+  archivedAt: timestamp('archived_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 });

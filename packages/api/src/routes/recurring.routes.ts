@@ -36,3 +36,13 @@ recurringRouter.post('/:id/post-now', async (req, res) => {
   const txn = await recurringService.postNext(req.tenantId, req.params['id']!);
   res.status(201).json({ transaction: txn });
 });
+
+recurringRouter.post('/:id/archive', async (req, res) => {
+  const schedule = await recurringService.archive(req.tenantId, req.params['id']!, req.userId);
+  res.json({ schedule });
+});
+
+recurringRouter.post('/:id/unarchive', async (req, res) => {
+  const schedule = await recurringService.unarchive(req.tenantId, req.params['id']!, req.userId);
+  res.json({ schedule });
+});

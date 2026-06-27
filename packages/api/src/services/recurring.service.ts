@@ -54,7 +54,10 @@ export async function list(tenantId: string, opts: { limit?: number; offset?: nu
   // Cap the result set to avoid shipping an unbounded list to the UI. 500 is
   // well past what any real bookkeeper has; the few operators who cross it
   // can paginate with `offset` or filter via scheduling-frequency.
-  const where = and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.isActive, true));
+  // Return ALL statuses (active, paused, archived) so the UI can filter/sort
+  // them — paused plans were previously invisible. The scheduler uses its own
+  // isActive query (processAllDue), so this only affects the management list.
+  const where = eq(recurringSchedules.tenantId, tenantId);
   const limit = Math.min(Math.max(opts.limit ?? 200, 1), 500);
   const offset = Math.max(opts.offset ?? 0, 0);
 
@@ -100,6 +103,30 @@ export async function deactivate(tenantId: string, id: string, userId?: string) 
   if (before) {
     await auditLog(tenantId, 'update', 'recurring_schedule', id, before, { ...before, isActive: false }, userId);
   }
+}
+
+// Archive a PAUSED plan (hide from the active list without deleting it). Only a
+// paused (is_active=false) plan may be archived — active plans must be stopped
+// first, mirroring how the UI gates the action.
+export async function archive(tenantId: string, id: string, userId?: string) {
+  const before = await getById(tenantId, id);
+  if (before.isActive) throw AppError.badRequest('Stop (pause) the plan before archiving it.');
+  const [updated] = await db.update(recurringSchedules)
+    .set({ archivedAt: new Date(), updatedAt: new Date() })
+    .where(and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id)))
+    .returning();
+  await auditLog(tenantId, 'update', 'recurring_schedule', id, before, updated ?? null, userId);
+  return updated;
+}
+
+export async function unarchive(tenantId: string, id: string, userId?: string) {
+  const before = await getById(tenantId, id);
+  const [updated] = await db.update(recurringSchedules)
+    .set({ archivedAt: null, updatedAt: new Date() })
+    .where(and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id)))
+    .returning();
+  await auditLog(tenantId, 'update', 'recurring_schedule', id, before, updated ?? null, userId);
+  return updated;
 }
 
 export async function postNext(tenantId: string, scheduleId: string) {
