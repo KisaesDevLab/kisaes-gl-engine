@@ -3,12 +3,15 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { eq, and, lte, sql } from 'drizzle-orm';
+import DecimalLib from 'decimal.js';
+const Decimal = DecimalLib.default || DecimalLib;
 import { db } from '../db/index.js';
 import { recurringSchedules, transactions, journalLines, accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
 import * as billService from './bill.service.js';
+import * as invoiceService from './invoice.service.js';
 import { incCounter, recordSchedulerTick } from '../utils/metrics.js';
 import { log } from '../utils/logger.js';
 import { withSchedulerLock } from '../utils/scheduler-lock.js';
@@ -207,6 +210,48 @@ export async function postNext(tenantId: string, scheduleId: string) {
       vendorInvoiceNumber: template.vendorInvoiceNumber || undefined,
       memo: template.memo || undefined,
       lines: expenseLines,
+    }, undefined, template.companyId || undefined);
+  } else if (template.txnType === 'invoice') {
+    // Invoices need a real invoice document (number, status, due date, balance
+    // due, line items) — route through invoice.service.createInvoice so each
+    // occurrence is a first-class, sendable/collectible invoice, not just GL
+    // lines. Reconstruct the line items from the template's REVENUE lines (the
+    // credit side, excluding the A/R and Sales-Tax-Payable system postings);
+    // createInvoice recomputes tax + AR and assigns a fresh number/due date.
+    const [arAccount, taxAccount] = await Promise.all([
+      db.query.accounts.findFirst({ where: and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'accounts_receivable')) }),
+      db.query.accounts.findFirst({ where: and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'sales_tax_payable')) }),
+    ]);
+    const revenueLines = template.lines
+      .filter((l) => parseFloat(l.credit) > 0
+        && l.accountId !== arAccount?.id
+        && l.accountId !== taxAccount?.id)
+      .map((l) => {
+        // Preserve quantity when present and derive unitPrice so qty*price ==
+        // the original line total exactly; otherwise fall back to qty 1 @ total.
+        const credit = new Decimal(l.credit);
+        const qty = l.quantity && new Decimal(l.quantity).greaterThan(0) ? new Decimal(l.quantity) : null;
+        return {
+          accountId: l.accountId,
+          description: l.description || undefined,
+          quantity: qty ? l.quantity! : '1',
+          unitPrice: qty ? credit.div(qty).toFixed(4) : credit.toFixed(4),
+          isTaxable: l.isTaxable ?? false,
+          taxRate: l.taxRate ?? '0',
+          tagId: l.tagId ?? null,
+        };
+      });
+
+    if (revenueLines.length === 0) {
+      throw AppError.internal('Recurring invoice template has no revenue lines');
+    }
+
+    txn = await invoiceService.createInvoice(tenantId, {
+      contactId: template.contactId || '',
+      txnDate: sched.nextOccurrence,
+      paymentTerms: template.paymentTerms || undefined,
+      memo: template.memo || undefined,
+      lines: revenueLines,
     }, undefined, template.companyId || undefined);
   } else {
     // Generic clone path for other transaction types.
