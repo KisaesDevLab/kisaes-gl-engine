@@ -771,6 +771,13 @@
       "when": 1777040000000,
       "tag": "0109_daily_sales",
       "breakpoints": true
+    },
+    {
+      "idx": 110,
+      "version": "7",
+      "when": 1777050000000,
+      "tag": "0110_recurring_archived_at",
+      "breakpoints": true
     }
   ]
 }
