@@ -296,12 +296,19 @@ authRouter.get('/me', authenticate, async (req, res) => {
   const accessibleTenants = await authService.getAccessibleTenants(req.userId);
   const adminService = await import('../services/admin.service.js');
   const branding = await adminService.getBranding();
+  // Effective permission map so the UI gates identically to the server.
+  // Resolved from role (+ template/overrides for bookkeepers).
+  const permissionService = await import('../services/permission.service.js');
+  const permissions = await permissionService.getEffectivePermissions(
+    req.tenantId, req.userId, req.userRole, req.userType, !!req.isSuperAdmin,
+  );
   res.json({
     user: sanitizeUser(user),
     companies: companiesList,
     accessibleTenants,
     activeTenantId: req.tenantId,
     branding,
+    permissions,
   });
 });
 

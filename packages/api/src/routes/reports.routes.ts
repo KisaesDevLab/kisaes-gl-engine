@@ -4,6 +4,7 @@
 
 import { Router, type Request } from 'express';
 import { authenticate } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { expensiveOpLimiter } from '../middleware/expensive-op-limiter.js';
 import * as reportService from '../services/report.service.js';
@@ -29,6 +30,7 @@ export const REPORT_SCHEMA_VERSION = '2';
 export const reportsRouter = Router();
 reportsRouter.use(authenticate);
 reportsRouter.use(companyContext);
+reportsRouter.use(requirePermission('reports', 'read'));
 reportsRouter.use(expensiveOpLimiter);
 reportsRouter.use((_req, res, next) => {
   res.setHeader('X-Report-Schema-Version', REPORT_SCHEMA_VERSION);

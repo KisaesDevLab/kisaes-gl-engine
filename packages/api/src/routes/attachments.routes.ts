@@ -8,6 +8,7 @@ import jwt from 'jsonwebtoken';
 import { eq, and, sql, count } from 'drizzle-orm';
 import type { JwtPayload } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { requireResource } from '../middleware/permission.js';
 import { auditLog } from '../middleware/audit.js';
 import { env } from '../config/env.js';
 import { db } from '../db/index.js';
@@ -176,6 +177,7 @@ attachmentsRouter.get('/:id/download', async (req, res) => {
 });
 
 attachmentsRouter.use(authenticate);
+attachmentsRouter.use(requireResource('attachments'));
 
 attachmentsRouter.post('/', upload.single('file'), async (req, res) => {
   if (!req.file) { res.status(400).json({ error: { message: 'No file uploaded' } }); return; }

@@ -10,11 +10,13 @@ import {
   resolveCFLabels,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
 import * as service from '../services/tenant-report-settings.service.js';
 
 export const tenantSettingsRouter = Router();
 tenantSettingsRouter.use(authenticate);
+tenantSettingsRouter.use(requireResource('company_settings'));
 
 function shape(settings: Awaited<ReturnType<typeof service.getSettings>>) {
   return {

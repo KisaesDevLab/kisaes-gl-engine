@@ -4,10 +4,12 @@
 
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
+import { requireResource } from '../middleware/permission.js';
 import * as budgetService from '../services/budget.service.js';
 
 export const budgetsRouter = Router();
 budgetsRouter.use(authenticate);
+budgetsRouter.use(requireResource('budgets'));
 
 budgetsRouter.get('/', async (req, res) => {
   const limit = req.query['limit'] ? Number(req.query['limit']) : undefined;

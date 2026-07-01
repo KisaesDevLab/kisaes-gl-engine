@@ -5,6 +5,7 @@
 import { Router } from 'express';
 import { createBillSchema, billFiltersSchema, payableBillsQuerySchema, voidTransactionSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as billService from '../services/bill.service.js';
@@ -14,6 +15,7 @@ import * as attachmentService from '../services/attachment.service.js';
 export const billsRouter = Router();
 billsRouter.use(authenticate);
 billsRouter.use(companyContext);
+billsRouter.use(requireResource('bills'));
 
 billsRouter.get('/', async (req, res) => {
   const filters = billFiltersSchema.parse(req.query);

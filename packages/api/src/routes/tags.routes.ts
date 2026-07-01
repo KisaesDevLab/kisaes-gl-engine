@@ -5,11 +5,13 @@
 import { Router } from 'express';
 import { createTagSchema, updateTagSchema, mergeTagsSchema, createTagGroupSchema, updateTagGroupSchema, transactionTagsSchema, bulkTagSchema, createSavedFilterSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
 import * as tagsService from '../services/tags.service.js';
 
 export const tagsRouter = Router();
 tagsRouter.use(authenticate);
+tagsRouter.use(requireResource('tags'));
 
 // ─── Tags ────────────────────────────────────────────────────────
 

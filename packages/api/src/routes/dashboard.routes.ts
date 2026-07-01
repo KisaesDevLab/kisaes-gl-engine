@@ -4,11 +4,13 @@
 
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/permission.js';
 import * as dashboardService from '../services/dashboard.service.js';
 import * as budgetService from '../services/budget.service.js';
 
 export const dashboardRouter = Router();
 dashboardRouter.use(authenticate);
+dashboardRouter.use(requirePermission('dashboard', 'read'));
 
 // Build the budget-performance panel. Extracted into a helper so the
 // single-request /summary endpoint can call the same code path as the

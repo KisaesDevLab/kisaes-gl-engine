@@ -7,6 +7,9 @@ import rateLimit from 'express-rate-limit';
 import { authenticate } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
 import { auditLog } from '../middleware/audit.js';
+import { resolvePermissionsForRequest } from '../middleware/permission.js';
+import { AppError } from '../utils/errors.js';
+import { can, type ResourceKey, type PermissionAction } from '@kis-books/shared';
 import * as authService from '../services/auth.service.js';
 import * as companyService from '../services/company.service.js';
 import * as reportService from '../services/report.service.js';
@@ -74,6 +77,54 @@ const userLimiter = rateLimit({
 
 apiV2Router.use(userLimiter);
 apiV2Router.use(companyContext);
+
+// Uniform permission enforcement for the whole v2 surface so an
+// API-key caller is held to the same per-member permissions as the
+// web UI. Maps the leading path segment to a resource in the shared
+// catalog and infers read/write from the HTTP method. Self-scoped
+// segments (me/tenants) and anything unmapped are left to their own
+// handlers. Read-only resources are always checked as 'read' so a
+// report/dashboard POST isn't misclassified as a write.
+const V2_SEGMENT_TO_RESOURCE: Record<string, ResourceKey> = {
+  accounts: 'accounts',
+  contacts: 'contacts',
+  items: 'items',
+  transactions: 'transactions',
+  expenses: 'transactions',
+  deposits: 'transactions',
+  transfers: 'transactions',
+  'journal-entries': 'transactions',
+  'cash-sales': 'transactions',
+  invoices: 'invoices',
+  payments: 'receive_payment',
+  estimates: 'estimates',
+  bills: 'bills',
+  'bill-payments': 'pay_bills',
+  'vendor-credits': 'vendor_credits',
+  checks: 'checks',
+  recurring: 'recurring',
+  budgets: 'budgets',
+  dashboard: 'dashboard',
+  tags: 'tags',
+  banking: 'banking',
+  attachments: 'attachments',
+  reports: 'reports',
+};
+const V2_READ_ONLY = new Set<ResourceKey>(['reports', 'dashboard', 'audit_log']);
+
+apiV2Router.use(async (req, _res, next) => {
+  const segment = req.path.split('/')[1] ?? '';
+  const resource = V2_SEGMENT_TO_RESOURCE[segment];
+  if (!resource) { next(); return; }
+  const action: PermissionAction = V2_READ_ONLY.has(resource)
+    ? 'read'
+    : (req.method === 'GET' || req.method === 'HEAD' ? 'read' : 'update');
+  const perms = await resolvePermissionsForRequest(req);
+  if (!can(perms, resource, action)) {
+    throw AppError.forbidden('You do not have permission for this feature', 'PERMISSION_DENIED');
+  }
+  next();
+});
 
 // ─── Auth & Context ─────────────────────────────────────────────
 

@@ -10,6 +10,7 @@ import {
   bulkUpdateTransactionsSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as ledger from '../services/ledger.service.js';
@@ -27,6 +28,7 @@ import * as attachmentService from '../services/attachment.service.js';
 export const transactionsRouter = Router();
 transactionsRouter.use(authenticate);
 transactionsRouter.use(companyContext);
+transactionsRouter.use(requireResource('transactions'));
 
 transactionsRouter.get('/', async (req, res) => {
   const filters = transactionFiltersSchema.parse(req.query);

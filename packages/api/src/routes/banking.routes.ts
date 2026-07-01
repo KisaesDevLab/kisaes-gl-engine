@@ -11,6 +11,7 @@ import {
   createManualConnectionSchema, updateFeedItemSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as bankConnectionService from '../services/bank-connection.service.js';
@@ -22,6 +23,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 export const bankingRouter = Router();
 bankingRouter.use(authenticate);
 bankingRouter.use(companyContext);
+bankingRouter.use(requireResource('banking'));
 
 // ─── Bank Connections ────────────────────────────────────────────
 

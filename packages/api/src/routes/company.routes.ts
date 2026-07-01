@@ -13,12 +13,16 @@ import {
   companySmtpUpdateSchema,
   companySmtpTestSchema,
   inviteUserSchema,
+  createPermissionTemplateSchema,
+  updatePermissionTemplateSchema,
+  setUserPermissionsSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as companyService from '../services/company.service.js';
 import * as authService from '../services/auth.service.js';
+import * as permissionService from '../services/permission.service.js';
 import { testSmtpConnection } from '../services/setup.service.js';
 import { AppError } from '../utils/errors.js';
 import { env } from '../config/env.js';
@@ -194,6 +198,51 @@ companyRouter.post('/users/:userId/reactivate', async (req, res) => {
   if (req.userRole !== 'owner') throw AppError.forbidden('Only owners can manage users');
   await authService.reactivateUser(req.tenantId, req.params['userId']!);
   res.json({ message: 'User reactivated' });
+});
+
+// ─── Permission Templates & Per-User Permissions ────────────
+// Owner-gated. Templates are named, reusable access sets; per-user
+// permissions assign a template + overrides. Only `bookkeeper` users
+// consult these at enforcement time (see permission.service).
+
+function assertOwner(req: import('express').Request) {
+  if (req.userRole !== 'owner') throw AppError.forbidden('Only owners can manage permissions');
+}
+
+companyRouter.get('/permission-templates', async (req, res) => {
+  assertOwner(req);
+  const templates = await permissionService.listTemplates(req.tenantId);
+  res.json({ templates });
+});
+
+companyRouter.post('/permission-templates', validate(createPermissionTemplateSchema), async (req, res) => {
+  assertOwner(req);
+  const template = await permissionService.createTemplate(req.tenantId, req.body, req.userId);
+  res.status(201).json({ template });
+});
+
+companyRouter.put('/permission-templates/:id', validate(updatePermissionTemplateSchema), async (req, res) => {
+  assertOwner(req);
+  const template = await permissionService.updateTemplate(req.tenantId, req.params['id']!, req.body, req.userId);
+  res.json({ template });
+});
+
+companyRouter.delete('/permission-templates/:id', async (req, res) => {
+  assertOwner(req);
+  await permissionService.deleteTemplate(req.tenantId, req.params['id']!, req.userId);
+  res.json({ message: 'Template deleted' });
+});
+
+companyRouter.get('/users/:userId/permissions', async (req, res) => {
+  assertOwner(req);
+  const row = await permissionService.getUserPermissionRow(req.tenantId, req.params['userId']!);
+  res.json({ permissions: row });
+});
+
+companyRouter.put('/users/:userId/permissions', validate(setUserPermissionsSchema), async (req, res) => {
+  assertOwner(req);
+  const row = await permissionService.setUserPermissions(req.tenantId, req.params['userId']!, req.body, req.userId);
+  res.json({ permissions: row });
 });
 
 // ── Stripe Settings ──

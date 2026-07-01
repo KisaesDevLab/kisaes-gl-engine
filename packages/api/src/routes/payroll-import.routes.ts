@@ -6,6 +6,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import multer from 'multer';
 import { authenticate } from '../middleware/auth.js';
+import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import {
@@ -104,6 +105,7 @@ const upload = multer({
 export const payrollImportRouter = Router();
 payrollImportRouter.use(authenticate);
 payrollImportRouter.use(companyContext);
+payrollImportRouter.use(requireResource('payroll_import'));
 
 // ── Upload ──
 payrollImportRouter.post('/upload',

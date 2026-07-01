@@ -5,12 +5,14 @@
 import { Router } from 'express';
 import { createItemSchema, updateItemSchema, itemsImportSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
 import * as itemsService from '../services/items.service.js';
 import { parseLimit, parseOffset } from '../utils/pagination.js';
 
 export const itemsRouter = Router();
 itemsRouter.use(authenticate);
+itemsRouter.use(requireResource('items'));
 
 itemsRouter.get('/', async (req, res) => {
   const result = await itemsService.list(req.tenantId, {

@@ -4,10 +4,12 @@
 
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
+import { requireResource } from '../middleware/permission.js';
 import * as recurringService from '../services/recurring.service.js';
 
 export const recurringRouter = Router();
 recurringRouter.use(authenticate);
+recurringRouter.use(requireResource('recurring'));
 
 recurringRouter.get('/', async (req, res) => {
   const limit = req.query['limit'] ? Number(req.query['limit']) : undefined;

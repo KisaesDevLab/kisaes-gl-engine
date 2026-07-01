@@ -4,6 +4,7 @@
 
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/permission.js';
 import { db } from '../db/index.js';
 import { sql, count } from 'drizzle-orm';
 import { auditLog } from '../db/schema/index.js';
@@ -11,6 +12,7 @@ import { toCsvRow } from '../services/export.service.js';
 
 export const auditRouter = Router();
 auditRouter.use(authenticate);
+auditRouter.use(requirePermission('audit_log', 'read'));
 
 auditRouter.get('/', async (req, res) => {
   const { entity_type, action, start_date, end_date, search, limit: limitStr, offset: offsetStr } = req.query as Record<string, string>;
