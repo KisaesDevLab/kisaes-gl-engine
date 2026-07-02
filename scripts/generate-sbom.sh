@@ -42,11 +42,31 @@ cd "$ROOT"
 # failure invisible for days because the script reported only "exit
 # 254" with no context, forcing a Docker-on-Node-24 reproduction to
 # unearth the actual `npm ls` error.
-npx --yes @cyclonedx/cyclonedx-npm \
+#
+# Belt-and-suspenders (v0.9.25 release fix): even WITH
+# --ignore-npm-errors, some cyclonedx-npm / npm 11 pairings still
+# propagate `npm ls`'s non-zero ELSPROBLEMS exit through the CLI —
+# which under `set -e` aborts the whole license-check job and skips
+# every downstream docker-publish job (no GHCR image ships). The SBOM
+# is still written correctly in that case, so we assert on the
+# ARTIFACT (present + valid JSON), not the exit code. The tool is
+# pinned so an unrelated `npx @latest` bump can't reintroduce the
+# regression.
+set +e
+npx --yes @cyclonedx/cyclonedx-npm@5.0.0 \
   --ignore-npm-errors \
   --output-file "$SBOM" \
   --output-format JSON \
   --spec-version 1.5
+CDX_EXIT=$?
+set -e
+if [[ ! -s "$SBOM" ]] || ! node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$SBOM" >/dev/null 2>&1; then
+  echo "SBOM generation did not produce valid JSON (cyclonedx exit ${CDX_EXIT})" >&2
+  exit 1
+fi
+if [[ "$CDX_EXIT" -ne 0 ]]; then
+  info "cyclonedx exited ${CDX_EXIT} (benign npm ls ELSPROBLEMS from overrides) — SBOM written OK"
+fi
 
 pass "SBOM written to scripts/sbom.cdx.json ($(wc -c < "$SBOM" | tr -d ' ') bytes)"
 
@@ -54,10 +74,19 @@ info "Generating flat license inventory…"
 # Note: --production is omitted because workspaces root has no dependencies;
 # the CycloneDX SBOM is the authoritative "shipped" set. The inventory here
 # lists everything resolved under node_modules (prod + dev) for diffing.
+# Same resilience as the SBOM step: validate the produced JSON rather than
+# trusting the exit code, so a benign npm-tree warning can't fail the job.
+set +e
 npx --yes license-checker \
   --json \
   --excludePrivatePackages \
   > "$INVENTORY"
+LC_EXIT=$?
+set -e
+if [[ ! -s "$INVENTORY" ]] || ! node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$INVENTORY" >/dev/null 2>&1; then
+  echo "license inventory did not produce valid JSON (license-checker exit ${LC_EXIT})" >&2
+  exit 1
+fi
 
 PKG_COUNT=$(INV_PATH="$INVENTORY" node -e 'console.log(Object.keys(require(process.env.INV_PATH)).length)' 2>/dev/null || echo "?")
 pass "Inventory written to scripts/license-inventory.json ($PKG_COUNT packages)"
