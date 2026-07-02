@@ -23,15 +23,27 @@ export interface WriteCheckInput {
   tagIds?: string[];
 }
 
+// Single source of truth for the selectable check print layouts. The
+// Zod enum (schemas/checks.ts), the TS union below, and both frontend
+// selectors all derive from this, so adding a layout is a one-line
+// change here plus a render branch in pdf.service.renderCheckHtml.
+export const CHECK_LAYOUTS = [
+  { value: 'voucher', label: 'Check on Top', description: 'Check at the top of the page, voucher stub below (standard business check).' },
+  { value: 'check_middle', label: 'Check in Middle', description: 'Check in the center of the page with stubs above and below.' },
+  { value: 'z_fold', label: 'Z-Fold Pressure Seal', description: 'Z-fold self-mailer (8.5×11) — check in the middle panel with remittance stubs above/below. For blank pressure-seal stock (e.g. blue Z-fold).' },
+] as const;
+export type CheckLayout = typeof CHECK_LAYOUTS[number]['value'];
+export const CHECK_LAYOUT_VALUES = CHECK_LAYOUTS.map((l) => l.value) as [CheckLayout, ...CheckLayout[]];
+
 export interface PrintCheckInput {
   bankAccountId: string;
   checkIds: string[];
   startingCheckNumber: number;
-  format: 'voucher' | 'check_middle';
+  format: CheckLayout;
 }
 
 export interface CheckSettings {
-  format: 'voucher' | 'check_middle';
+  format: CheckLayout;
   bankName: string;
   bankAddress: string;
   routingNumber: string;

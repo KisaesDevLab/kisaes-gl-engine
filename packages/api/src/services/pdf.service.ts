@@ -557,6 +557,102 @@ function renderCheckHtml(checks: CheckData[], format: string): string {
      // of the CSS context (e.g. "0px;background:url(javascript:...)").
     const safeOffsetX = Number.isFinite(c.offsetX) ? Number(c.offsetX) : 0;
     const safeOffsetY = Number.isFinite(c.offsetY) ? Number(c.offsetY) : 0;
+
+    // ── Z-Fold pressure-seal self-mailer (8.5x11) ──────────────────
+    // Blue Z-fold stock (e.g. governmentformsandsupplies pszblx): one
+    // sheet folds in a Z into three panels split by folds at 3.667in and
+    // 7.333in. The check coupon lives in the MIDDLE panel (tear perfs at
+    // ~4.06in and ~6.83in, so a ~2.77in-tall face — shorter than the
+    // standard 3.5in face, hence its own compact layout). Voucher /
+    // remittance stubs fill the top and bottom panels. Designed for BLANK
+    // stock: the whole face incl. the MICR line is printed. Fold guides
+    // are faint dashed lines so operators can verify alignment; nudge with
+    // the X/Y alignment offsets after a test print.
+    if (format === 'z_fold') {
+      return `
+    <div class="check" style="height:${checkHeight};position:relative;page-break-after:always;margin-left:${safeOffsetX}px;margin-top:${safeOffsetY}px">
+      <div style="position:absolute;top:3.667in;left:0.15in;right:0.15in;border-top:1px dashed #dcdcdc"></div>
+      <div style="position:absolute;top:7.333in;left:0.15in;right:0.15in;border-top:1px dashed #dcdcdc"></div>
+
+      <!-- Top voucher panel -->
+      ${c.printVoucherStub ? `
+        <div style="position:absolute;top:0.3in;left:0;right:0;height:3.15in;padding:0.25in 0.3in;font-size:9px;overflow:hidden">
+          ${stubHtml}
+        </div>
+      ` : ''}
+
+      <!-- Middle check coupon (~2.77in tall) -->
+      <div style="position:absolute;top:4.0625in;left:0;right:0;height:2.771in">
+        ${c.printCompanyInfo ? `
+          <div style="position:absolute;top:0.1in;left:0.3in;font-size:8.5px;line-height:1.25">
+            <div style="font-weight:700;font-size:10px">${esc(c.company.name)}</div>
+            ${c.company.address ? `<div>${esc(c.company.address)}</div>` : ''}
+            ${c.company.phone ? `<div>${esc(c.company.phone)}</div>` : ''}
+          </div>
+        ` : ''}
+        ${c.printCheckNumber ? `
+          <div style="position:absolute;top:0.1in;right:0.5in;font-size:10px;font-weight:700">
+            ${c.checkNumber ? `No. ${esc(String(c.checkNumber))}` : ''}
+          </div>
+        ` : ''}
+        <div style="position:absolute;top:0.5in;right:0.5in;font-size:10px">
+          ${c.printDateLine ? `<span style="color:#666;font-size:8px">DATE</span>` : ''}
+          <span style="margin-left:6px;${c.printDateLine ? 'border-bottom:1px solid #000;' : ''}padding:0 10px">${esc(c.date)}</span>
+        </div>
+        <div style="position:absolute;top:0.85in;left:0.3in;right:1.6in;font-size:10px">
+          ${c.printPayeeLine ? `<div style="font-size:7px;color:#666;margin-bottom:2px">PAY TO THE ORDER OF</div>` : ''}
+          <div style="${c.printPayeeLine ? 'border-bottom:1px solid #000;' : ''}padding-bottom:2px;font-size:12px;font-weight:600;min-height:16px">
+            ${esc(c.payeeName)}
+          </div>
+        </div>
+        <div style="position:absolute;top:0.82in;right:0.3in;width:1.2in;text-align:center">
+          <div style="${c.printAmountBox ? 'border:2px solid #000;' : ''}padding:3px 6px;font-size:13px;font-weight:700;font-family:monospace">
+            $${esc(c.amount)}
+          </div>
+        </div>
+        ${c.printAmountWords ? `
+          <div style="position:absolute;top:1.3in;left:0.3in;right:0.5in;font-size:9.5px">
+            <div style="border-bottom:1px solid #000;padding-bottom:2px;min-height:15px">
+              ${esc(c.amountInWords)}
+              <span style="float:right;font-weight:700">DOLLARS</span>
+            </div>
+          </div>
+        ` : ''}
+        ${c.printBankInfo ? `
+          <div style="position:absolute;top:1.68in;left:0.3in;font-size:7.5px;line-height:1.25;color:#444">
+            ${c.bank.name ? `<div>${esc(c.bank.name)}</div>` : ''}
+            ${c.bank.address ? `<div>${esc(c.bank.address)}</div>` : ''}
+          </div>
+        ` : ''}
+        <div style="position:absolute;bottom:0.42in;left:0.3in;width:3in;font-size:9px">
+          ${c.printMemoLine ? `<div style="font-size:7px;color:#666;margin-bottom:2px">MEMO</div>` : ''}
+          <div style="${c.printMemoLine ? 'border-bottom:1px solid #000;' : ''}padding-bottom:2px;min-height:13px">
+            ${esc(c.memo)}
+          </div>
+        </div>
+        ${c.printSignatureLine ? `
+          <div style="position:absolute;bottom:0.42in;right:0.3in;width:2.4in;font-size:9px;text-align:right">
+            <div style="border-bottom:1px solid #000;min-height:13px"></div>
+            <div style="font-size:6.5px;color:#666;margin-top:2px">AUTHORIZED SIGNATURE</div>
+          </div>
+        ` : ''}
+        ${c.printMicrLine ? `
+          <div style="position:absolute;bottom:0.12in;left:0.5in;right:0.5in;font-family:'MICR','Courier New',monospace;font-size:12px;letter-spacing:2px;color:#333;text-align:center">
+            ${c.bank.routing ? `⑆${esc(c.bank.routing)}⑆` : ''} ${c.bank.account ? `⑈${esc(c.bank.account)}⑈` : ''} ${c.checkNumber ? `⑆${esc(String(c.checkNumber).padStart(4, '0'))}⑆` : ''}
+          </div>
+        ` : ''}
+      </div>
+
+      <!-- Bottom voucher panel -->
+      ${c.printVoucherStub ? `
+        <div style="position:absolute;top:7.5in;left:0;right:0;height:3.15in;padding:0.25in 0.3in;font-size:9px;overflow:hidden">
+          ${stubHtml}
+        </div>
+      ` : ''}
+    </div>
+  `;
+    }
+
     return `
     <div class="check" style="height:${checkHeight};position:relative;page-break-after:always;margin-left:${safeOffsetX}px;margin-top:${safeOffsetY}px">
       <!-- Top stub (check_middle format only) -->
