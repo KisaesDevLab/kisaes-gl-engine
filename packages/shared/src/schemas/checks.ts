@@ -3,6 +3,7 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { z } from 'zod';
+import { CHECK_LAYOUT_VALUES } from '../types/checks.js';
 
 export const writeCheckSchema = z.object({
   bankAccountId: z.string().uuid(),
@@ -29,11 +30,11 @@ export const printCheckSchema = z.object({
   bankAccountId: z.string().uuid(),
   checkIds: z.array(z.string().uuid()).min(1),
   startingCheckNumber: z.number().int().min(1),
-  format: z.enum(['voucher', 'check_middle']),
+  format: z.enum(CHECK_LAYOUT_VALUES),
 });
 
 export const checkSettingsSchema = z.object({
-  format: z.enum(['voucher', 'check_middle']).optional(),
+  format: z.enum(CHECK_LAYOUT_VALUES).optional(),
   bankName: z.string().optional(),
   bankAddress: z.string().optional(),
   routingNumber: z.string().max(9).optional(),
