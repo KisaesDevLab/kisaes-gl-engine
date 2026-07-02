@@ -35,6 +35,7 @@ export * from './types/firm-tag-templates.js';
 export * from './types/recurring-doc-request.js';
 export * from './types/imports.js';
 export * from './types/extraction.js';
+export * from './types/permissions.js';
 
 // Schemas
 export * from './schemas/auth.js';
@@ -72,6 +73,7 @@ export * from './schemas/batch.js';
 export * from './schemas/extraction.js';
 export * from './schemas/statement-extraction.js';
 export * from './schemas/daily-sales.js';
+export * from './schemas/permissions.js';
 
 // Constants
 export * from './constants/coa-templates.js';
@@ -85,9 +87,11 @@ export * from './constants/match-scoring.js';
 export * from './constants/conditional-rules.js';
 export * from './constants/review-checks.js';
 export * from './constants/imports.js';
+export * from './constants/permissions.js';
 
 // Utils
 export * from './utils/money.js';
 export * from './utils/dates.js';
 export * from './utils/number-to-words.js';
 export * from './utils/account-types.js';
+export * from './utils/permissions.js';

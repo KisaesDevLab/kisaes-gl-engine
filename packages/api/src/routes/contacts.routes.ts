@@ -5,12 +5,14 @@
 import { Router } from 'express';
 import { createContactSchema, updateContactSchema, contactFiltersSchema, mergeContactsSchema, contactsImportSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
 import * as contactsService from '../services/contacts.service.js';
 import { parseLimit, parseOffset } from '../utils/pagination.js';
 
 export const contactsRouter = Router();
 contactsRouter.use(authenticate);
+contactsRouter.use(requireResource('contacts'));
 
 contactsRouter.get('/', async (req, res) => {
   const filters = contactFiltersSchema.parse(req.query);

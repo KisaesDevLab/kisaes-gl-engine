@@ -5,6 +5,7 @@
 import { Router } from 'express';
 import { writeCheckSchema, printCheckSchema, checkSettingsSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as checkService from '../services/check.service.js';
@@ -17,6 +18,7 @@ import { companies } from '../db/schema/index.js';
 export const checksRouter = Router();
 checksRouter.use(authenticate);
 checksRouter.use(companyContext);
+checksRouter.use(requireResource('checks'));
 
 checksRouter.post('/', validate(writeCheckSchema), async (req, res) => {
   const check = await checkService.createCheck(req.tenantId, req.body, req.userId, req.companyId);

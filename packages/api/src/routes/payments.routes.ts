@@ -5,6 +5,7 @@
 import { Router } from 'express';
 import { receivePaymentSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as paymentService from '../services/payment.service.js';
@@ -12,6 +13,7 @@ import * as paymentService from '../services/payment.service.js';
 export const paymentsRouter = Router();
 paymentsRouter.use(authenticate);
 paymentsRouter.use(companyContext);
+paymentsRouter.use(requireResource('receive_payment'));
 
 paymentsRouter.post('/receive', validate(receivePaymentSchema), async (req, res) => {
   const payment = await paymentService.receivePayment(req.tenantId, req.body, req.userId, req.companyId);

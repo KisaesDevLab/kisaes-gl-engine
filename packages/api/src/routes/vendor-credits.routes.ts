@@ -5,6 +5,7 @@
 import { Router } from 'express';
 import { createVendorCreditSchema, voidTransactionSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as vendorCreditService from '../services/vendor-credit.service.js';
@@ -12,6 +13,7 @@ import * as vendorCreditService from '../services/vendor-credit.service.js';
 export const vendorCreditsRouter = Router();
 vendorCreditsRouter.use(authenticate);
 vendorCreditsRouter.use(companyContext);
+vendorCreditsRouter.use(requireResource('vendor_credits'));
 
 vendorCreditsRouter.get('/', async (req, res) => {
   const result = await vendorCreditService.listVendorCredits(req.tenantId, {

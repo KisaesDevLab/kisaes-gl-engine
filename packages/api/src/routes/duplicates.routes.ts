@@ -4,10 +4,12 @@
 
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
+import { requireResource } from '../middleware/permission.js';
 import * as duplicateService from '../services/duplicate-detection.service.js';
 
 export const duplicatesRouter = Router();
 duplicatesRouter.use(authenticate);
+duplicatesRouter.use(requireResource('duplicates'));
 
 duplicatesRouter.get('/', async (req, res) => {
   const startDate = (req.query['start_date'] as string) || (() => { const d = new Date(); d.setMonth(d.getMonth() - 3); return d.toISOString().split('T')[0]!; })();

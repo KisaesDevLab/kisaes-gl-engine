@@ -6,6 +6,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { batchValidateSchema, batchSaveSchema, batchParseCsvSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as batchService from '../services/batch.service.js';
@@ -15,6 +16,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 export const batchRouter = Router();
 batchRouter.use(authenticate);
 batchRouter.use(companyContext);
+batchRouter.use(requireResource('batch_entry'));
 
 batchRouter.post('/validate', validate(batchValidateSchema), async (req, res) => {
   const { txn_type, context_account_id, rows } = req.body;

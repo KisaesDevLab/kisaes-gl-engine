@@ -5,6 +5,7 @@
 import { Router } from 'express';
 import { createInvoiceSchema, recordPaymentSchema, voidTransactionSchema, transactionFiltersSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as invoiceService from '../services/invoice.service.js';
@@ -15,6 +16,7 @@ import * as emailService from '../services/email.service.js';
 export const invoicesRouter = Router();
 invoicesRouter.use(authenticate);
 invoicesRouter.use(companyContext);
+invoicesRouter.use(requireResource('invoices'));
 
 invoicesRouter.get('/', async (req, res) => {
   const filters = transactionFiltersSchema.parse(req.query);

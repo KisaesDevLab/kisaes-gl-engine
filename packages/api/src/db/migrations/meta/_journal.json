@@ -778,6 +778,13 @@
       "when": 1777050000000,
       "tag": "0110_recurring_archived_at",
       "breakpoints": true
+    },
+    {
+      "idx": 111,
+      "version": "7",
+      "when": 1777060000000,
+      "tag": "0111_user_permissions",
+      "breakpoints": true
     }
   ]
 }

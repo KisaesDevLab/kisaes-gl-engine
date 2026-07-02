@@ -49,3 +49,4 @@ export * from './firm-tag-templates.js';
 export * from './imports.js';
 export * from './extraction.js';
 export * from './daily-sales.js';
+export * from './permissions.js';

@@ -11,6 +11,7 @@ import {
   chatAdminConfigSchema,
 } from '@kis-books/shared';
 import { authenticate, requireSuperAdmin } from '../middleware/auth.js';
+import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
 import * as chatService from '../services/chat.service.js';
 import * as aiConfigService from '../services/ai-config.service.js';
@@ -19,6 +20,7 @@ import { generateKnowledge } from '../services/chat-knowledge-generator.js';
 
 export const chatRouter = Router();
 chatRouter.use(authenticate);
+chatRouter.use(requireResource('ai_chat'));
 
 // Per-user rate limit for chat messages. Chat hits a paid LLM with
 // each call, so uncapped access is a direct billing attack vector.

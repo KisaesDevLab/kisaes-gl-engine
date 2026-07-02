@@ -13,6 +13,7 @@ import {
   dailySalesEntriesFilterSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as service from '../services/daily-sales.service.js';
@@ -20,6 +21,7 @@ import * as service from '../services/daily-sales.service.js';
 export const dailySalesRouter = Router();
 dailySalesRouter.use(authenticate);
 dailySalesRouter.use(companyContext);
+dailySalesRouter.use(requireResource('daily_sales'));
 
 // ── Templates ──
 dailySalesRouter.get('/templates', async (req, res) => {

@@ -5,6 +5,7 @@
 import { Router } from 'express';
 import { createAccountSchema, updateAccountSchema, accountFiltersSchema, mergeAccountsSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
 import * as accountsService from '../services/accounts.service.js';
 import * as registerService from '../services/register.service.js';
@@ -12,6 +13,7 @@ import { parseLimit, parseOffset } from '../utils/pagination.js';
 
 export const accountsRouter = Router();
 accountsRouter.use(authenticate);
+accountsRouter.use(requireResource('accounts'));
 
 accountsRouter.get('/', async (req, res) => {
   const filters = accountFiltersSchema.parse(req.query);
