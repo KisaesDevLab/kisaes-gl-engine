@@ -52,6 +52,8 @@ cd "$ROOT"
 # ARTIFACT (present + valid JSON), not the exit code. The tool is
 # pinned so an unrelated `npx @latest` bump can't reintroduce the
 # regression.
+is_valid_json() { node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$1" >/dev/null 2>&1; }
+
 set +e
 npx --yes @cyclonedx/cyclonedx-npm@5.0.0 \
   --ignore-npm-errors \
@@ -60,12 +62,21 @@ npx --yes @cyclonedx/cyclonedx-npm@5.0.0 \
   --spec-version 1.5
 CDX_EXIT=$?
 set -e
-if [[ ! -s "$SBOM" ]] || ! node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$SBOM" >/dev/null 2>&1; then
-  echo "SBOM generation did not produce valid JSON (cyclonedx exit ${CDX_EXIT})" >&2
-  exit 1
+
+if [[ ! -s "$SBOM" ]] || ! is_valid_json "$SBOM"; then
+  # cyclonedx-npm shells `npm ls --json --all`, which on the CI runner's
+  # npm emits UNPARSEABLE output under ELSPROBLEMS (our intentional
+  # `invalid:` overrides — unzipper/esbuild), so --ignore-npm-errors
+  # can't save it and NO SBOM is written. That broke the v0.9.25 release
+  # (license-check gates docker-publish). Fall back to deriving the SBOM
+  # straight from package-lock.json — no npm ls, npm-version independent.
+  info "cyclonedx-npm produced no valid SBOM (exit ${CDX_EXIT}); deriving from package-lock.json"
+  SBOM_OUT="$SBOM" node scripts/lockfile-sbom.mjs
 fi
-if [[ "$CDX_EXIT" -ne 0 ]]; then
-  info "cyclonedx exited ${CDX_EXIT} (benign npm ls ELSPROBLEMS from overrides) — SBOM written OK"
+
+if [[ ! -s "$SBOM" ]] || ! is_valid_json "$SBOM"; then
+  echo "SBOM generation failed: neither cyclonedx nor the lockfile fallback produced valid JSON" >&2
+  exit 1
 fi
 
 pass "SBOM written to scripts/sbom.cdx.json ($(wc -c < "$SBOM" | tr -d ' ') bytes)"
