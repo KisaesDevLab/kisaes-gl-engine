@@ -65,6 +65,129 @@ export async function getFiscalYearStart(tenantId: string, companyId: string | n
   return (row.rows as any[])[0]?.fiscal_year_start_month ?? 1;
 }
 
+// ─── CASH-BASIS ENGINE ───────────────────────────────────────────
+//
+// True cash basis via a VIRTUAL LEDGER (QBO-style payment allocation).
+// The old implementation filtered to "transactions that touched cash"
+// and aggregated those transactions' own P&L legs — so invoice revenue
+// collected through a separate payment (Dr cash / Cr AR, no revenue
+// leg) never appeared, paid bills left AP with an abnormal balance on
+// the cash BS, and the cash BS could unbalance.
+//
+// The virtual ledger rewrites the posted journal per these rules; every
+// group below is internally balanced, so any report built from it
+// balances by construction:
+//
+//   1. AR/AP DOCUMENTS (invoice, bill, credit_memo, vendor_credit) are
+//      excluded entirely — accrual-only constructs.
+//   2. All other transactions pass through as-is (cash sales, direct
+//      expenses, card charges, transfers, deposits, JEs …), EXCEPT that
+//      a payment's AR leg (customer_payment) / AP leg (bill_payment) is
+//      reduced to its UNAPPLIED remainder. The applied portion is
+//      replaced by rule 3; the unapplied remainder stays on AR/AP so
+//      customer pre-payments remain visible and the sheet still ties.
+//   3. For each payment APPLICATION (payment → document, amount), the
+//      paid document's non-AR/AP lines are emitted at the PAYMENT's
+//      date, scaled by amount / document total. A $1,000 invoice
+//      (Cr revenue 900 / Cr tax 100) paid $500 in December recognizes
+//      Cr revenue 450 + Cr tax 50 in December.
+//
+// AR applications come from payment_applications plus the legacy
+// single-invoice link (transactions.applied_to_invoice_id, used by
+// invoice.recordPayment and Stripe). AP applications come from
+// bill_payment_applications, whose amounts are the CASH portion per
+// bill — vendor-credit-settled portions are correctly never recognized
+// (no cash moved).
+function cashBasisLinesWith(
+  tenantId: string,
+  startDate: string | null,
+  endDate: string,
+  companyId: string | null,
+) {
+  const dateCondT = startDate
+    ? sql`t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}`
+    : sql`t.txn_date <= ${endDate}`;
+  const dateCondPay = startDate
+    ? sql`pay.txn_date >= ${startDate} AND pay.txn_date <= ${endDate}`
+    : sql`pay.txn_date <= ${endDate}`;
+  const companyT = companyId ? sql`t.company_id = ${companyId}` : sql`TRUE`;
+  const companyPay = companyId ? sql`pay.company_id = ${companyId}` : sql`TRUE`;
+
+  return sql`
+    ar_apps AS (
+      SELECT pa.payment_id, pa.invoice_id, pa.amount::numeric AS amount
+      FROM payment_applications pa
+      WHERE pa.tenant_id = ${tenantId}
+      UNION ALL
+      SELECT tp.id, tp.applied_to_invoice_id, tp.total::numeric
+      FROM transactions tp
+      WHERE tp.tenant_id = ${tenantId} AND tp.txn_type = 'customer_payment'
+        AND tp.applied_to_invoice_id IS NOT NULL AND tp.total IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM payment_applications pa2
+          WHERE pa2.tenant_id = ${tenantId} AND pa2.payment_id = tp.id
+        )
+    ),
+    cb_lines AS (
+      -- Rule 2: pass-through, with payment AR/AP legs reduced to the
+      -- unapplied remainder.
+      SELECT jl.account_id, jl.tag_id,
+        CASE WHEN t.txn_type = 'bill_payment' AND a.detail_type = 'accounts_payable'
+             THEN GREATEST(jl.debit::numeric - COALESCE(bp.applied, 0), 0)
+             ELSE jl.debit::numeric END AS debit,
+        CASE WHEN t.txn_type = 'customer_payment' AND a.detail_type = 'accounts_receivable'
+             THEN GREATEST(jl.credit::numeric - COALESCE(arp.applied, 0), 0)
+             ELSE jl.credit::numeric END AS credit
+      FROM transactions t
+      JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.tenant_id = ${tenantId}
+        AND jl.is_void_reversal = false
+      JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = ${tenantId}
+      LEFT JOIN (
+        SELECT payment_id, SUM(amount) AS applied FROM ar_apps GROUP BY payment_id
+      ) arp ON arp.payment_id = t.id
+      LEFT JOIN (
+        SELECT payment_id, SUM(amount::numeric) AS applied
+        FROM bill_payment_applications WHERE tenant_id = ${tenantId} GROUP BY payment_id
+      ) bp ON bp.payment_id = t.id
+      WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
+        AND ${dateCondT} AND ${companyT}
+        AND t.txn_type NOT IN ('invoice', 'bill', 'credit_memo', 'vendor_credit')
+
+      UNION ALL
+
+      -- Rule 3 (AR): scaled invoice distributions at the payment date.
+      SELECT il.account_id, il.tag_id,
+        il.debit::numeric  * app.amount / NULLIF(inv.total::numeric, 0) AS debit,
+        il.credit::numeric * app.amount / NULLIF(inv.total::numeric, 0) AS credit
+      FROM ar_apps app
+      JOIN transactions pay ON pay.id = app.payment_id AND pay.tenant_id = ${tenantId}
+        AND pay.status = 'posted' AND ${dateCondPay} AND ${companyPay}
+      JOIN transactions inv ON inv.id = app.invoice_id AND inv.tenant_id = ${tenantId}
+        AND inv.status = 'posted' AND NULLIF(inv.total::numeric, 0) IS NOT NULL
+      JOIN journal_lines il ON il.transaction_id = inv.id AND il.tenant_id = ${tenantId}
+        AND il.is_void_reversal = false
+      JOIN accounts ia ON ia.id = il.account_id AND ia.tenant_id = ${tenantId}
+      WHERE ia.detail_type IS DISTINCT FROM 'accounts_receivable'
+
+      UNION ALL
+
+      -- Rule 3 (AP): scaled bill distributions at the payment date.
+      SELECT bl.account_id, bl.tag_id,
+        bl.debit::numeric  * app.amount::numeric / NULLIF(bill.total::numeric, 0) AS debit,
+        bl.credit::numeric * app.amount::numeric / NULLIF(bill.total::numeric, 0) AS credit
+      FROM bill_payment_applications app
+      JOIN transactions pay ON pay.id = app.payment_id AND pay.tenant_id = ${tenantId}
+        AND pay.status = 'posted' AND ${dateCondPay} AND ${companyPay}
+      JOIN transactions bill ON bill.id = app.bill_id AND bill.tenant_id = ${tenantId}
+        AND bill.status = 'posted' AND NULLIF(bill.total::numeric, 0) IS NOT NULL
+      JOIN journal_lines bl ON bl.transaction_id = bill.id AND bl.tenant_id = ${tenantId}
+        AND bl.is_void_reversal = false
+      JOIN accounts ba ON ba.id = bl.account_id AND ba.tenant_id = ${tenantId}
+      WHERE app.tenant_id = ${tenantId}
+        AND ba.detail_type IS DISTINCT FROM 'accounts_payable'
+    )`;
+}
+
 // ─── FINANCIAL STATEMENTS ────────────────────────────────────────
 
 export interface PLEntry { accountId: string; name: string; accountNumber: string | null; amount: number }
@@ -102,61 +225,47 @@ export async function buildProfitAndLoss(
   // to the extent their matching lines total nonzero.
   tagId: string | null = null,
 ): Promise<PLResult> {
-  // Cash basis: only recognize revenue when cash is received, only recognize
-  // expenses when cash is paid. The implementation uses the cash-hitting
-  // transactions themselves (payments, expenses, cash sales, bill payments,
-  // transfers, deposits) and derives the matching revenue/expense side from
-  // the counter-leg on the same transaction. Invoices posted but unpaid do
-  // not appear, bills entered but unpaid do not appear. This matches the
-  // standard IRS §448 definition.
-  //
-  // Accrual: include every posted txn whose txn_date is in range. (The
-  // existing query.)
+  // Cash basis: revenue recognized when cash is received, expenses when
+  // cash is paid — implemented by the virtual cash-basis ledger (see
+  // cashBasisLinesWith above), which allocates payment applications
+  // across the paid document's distribution lines at the payment date.
+  // Accrual: every posted txn in range, straight from journal_lines.
   const companyCond = companyId ? sql`company_id = ${companyId}` : sql`TRUE`;
-  const txnSelector = basis === 'cash'
-    ? sql`
-      SELECT DISTINCT t.id FROM transactions t
-      JOIN journal_lines cash_jl
-        ON cash_jl.transaction_id = t.id AND cash_jl.tenant_id = ${tenantId}
-      JOIN accounts cash_a
-        ON cash_a.id = cash_jl.account_id AND cash_a.tenant_id = ${tenantId}
-       AND (
-         (cash_a.account_type = 'asset'
-          AND cash_a.detail_type IN ('checking', 'savings', 'cash', 'petty_cash', 'undeposited_funds'))
-         -- Credit cards are LIABILITY accounts in every seed template;
-         -- the old asset-only predicate could never match them, so
-         -- card-charged expenses were invisible to cash-basis reports.
-         -- Cash-basis taxpayers deduct card charges when charged, so a
-         -- credit-card leg counts as a cash event regardless of type.
-         OR cash_a.detail_type = 'credit_card'
-       )
-      WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
-        AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
-        AND ${companyCond}
-    `
-    : sql`
-      SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
-      AND txn_date >= ${startDate} AND txn_date <= ${endDate}
-      AND ${companyCond}
-    `;
 
   // Line-level tag filter (ADR 0XX §5.1): when present, restrict the
-  // aggregated journal_lines to those tagged with the given tag_id.
-  // Evaluated as an inline conjunct on the LEFT JOIN so accounts with
-  // no matching tagged activity still appear with zero totals.
+  // aggregated lines to those tagged with the given tag_id. Virtual
+  // cash-basis lines inherit the source line's tag, so the same clause
+  // applies to both bases.
   const tagJoinClause = tagId ? sql` AND jl.tag_id = ${tagId}` : sql``;
 
-  const rows = await db.execute(sql`
-    SELECT a.id, a.account_number, a.name, a.account_type, a.detail_type,
-      COALESCE(SUM(jl.debit), 0) as total_debit,
-      COALESCE(SUM(jl.credit), 0) as total_credit
-    FROM accounts a
-    LEFT JOIN journal_lines jl ON jl.account_id = a.id AND jl.tenant_id = ${tenantId}
-      AND jl.transaction_id IN (${txnSelector})${tagJoinClause}
-    WHERE a.tenant_id = ${tenantId}
-      AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense')
-    GROUP BY a.id ORDER BY a.account_number, a.name
-  `);
+  const rows = basis === 'cash'
+    ? await db.execute(sql`
+        WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
+        SELECT a.id, a.account_number, a.name, a.account_type, a.detail_type,
+          COALESCE(SUM(jl.debit), 0) as total_debit,
+          COALESCE(SUM(jl.credit), 0) as total_credit
+        FROM accounts a
+        LEFT JOIN cb_lines jl ON jl.account_id = a.id${tagJoinClause}
+        WHERE a.tenant_id = ${tenantId}
+          AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense')
+        GROUP BY a.id, a.account_number, a.name, a.account_type, a.detail_type
+        ORDER BY a.account_number, a.name
+      `)
+    : await db.execute(sql`
+        SELECT a.id, a.account_number, a.name, a.account_type, a.detail_type,
+          COALESCE(SUM(jl.debit), 0) as total_debit,
+          COALESCE(SUM(jl.credit), 0) as total_credit
+        FROM accounts a
+        LEFT JOIN journal_lines jl ON jl.account_id = a.id AND jl.tenant_id = ${tenantId}
+          AND jl.transaction_id IN (
+            SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
+            AND txn_date >= ${startDate} AND txn_date <= ${endDate}
+            AND ${companyCond}
+          )${tagJoinClause}
+        WHERE a.tenant_id = ${tenantId}
+          AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense')
+        GROUP BY a.id ORDER BY a.account_number, a.name
+      `);
 
   const revenue: PLEntry[] = [];
   const cogs: PLEntry[] = [];
@@ -235,52 +344,42 @@ export async function buildBalanceSheet(
   tagId: string | null = null,
 ) {
   const tagClause = tagId ? sql` AND jl.tag_id = ${tagId}` : sql``;
-  // Cash basis balance sheet: exclude AR (money owed to us, not yet received)
-  // and AP (money we owe, not yet paid). Those are accrual-only constructs.
-  // Assets and liabilities that represent *already-completed* cash events stay.
-  //
-  // We implement this by restricting the txn set the same way P&L does — cash
-  // basis sees only transactions that moved cash, accrual sees every posted
-  // txn. AR/AP accounts then show zero balance because invoices/bills without
-  // matching payment don't appear in the cash-basis txn set at all.
+  // Cash basis balance sheet: built from the virtual cash-basis ledger
+  // (cashBasisLinesWith). AR/AP documents drop out entirely, payment
+  // AR/AP legs are replaced by scaled document distributions, so:
+  //   - AR/AP show zero except unapplied payment remainders (customer
+  //     pre-payments), which is the honest cash-basis picture;
+  //   - every virtual group is balanced, so A = L + E holds by
+  //     construction (the old txn-set filter could unbalance the sheet
+  //     because it kept the payment's AR leg but not the invoice).
   const companyCond = companyId ? sql`company_id = ${companyId}` : sql`TRUE`;
-  const txnSelector = basis === 'cash'
-    ? sql`
-      SELECT DISTINCT t.id FROM transactions t
-      JOIN journal_lines cash_jl
-        ON cash_jl.transaction_id = t.id AND cash_jl.tenant_id = ${tenantId}
-      JOIN accounts cash_a
-        ON cash_a.id = cash_jl.account_id AND cash_a.tenant_id = ${tenantId}
-       AND (
-         (cash_a.account_type = 'asset'
-          AND cash_a.detail_type IN ('checking', 'savings', 'cash', 'petty_cash', 'undeposited_funds'))
-         -- Credit cards are LIABILITY accounts in every seed template;
-         -- the old asset-only predicate could never match them, so
-         -- card-charged expenses were invisible to cash-basis reports.
-         -- Cash-basis taxpayers deduct card charges when charged, so a
-         -- credit-card leg counts as a cash event regardless of type.
-         OR cash_a.detail_type = 'credit_card'
-       )
-      WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
-        AND t.txn_date <= ${asOfDate}
-        AND ${companyCond}
-    `
-    : sql`
-      SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
-      AND txn_date <= ${asOfDate}
-      AND ${companyCond}
-    `;
 
-  const rows = await db.execute(sql`
-    SELECT a.id, a.account_number, a.name, a.account_type, a.detail_type, a.system_tag,
-      COALESCE(SUM(jl.debit), 0) as total_debit,
-      COALESCE(SUM(jl.credit), 0) as total_credit
-    FROM accounts a
-    LEFT JOIN journal_lines jl ON jl.account_id = a.id AND jl.tenant_id = ${tenantId}
-      AND jl.transaction_id IN (${txnSelector})${tagClause}
-    WHERE a.tenant_id = ${tenantId} AND a.account_type IN ('asset', 'liability', 'equity')
-    GROUP BY a.id ORDER BY a.account_number, a.name
-  `);
+  const rows = basis === 'cash'
+    ? await db.execute(sql`
+        WITH ${cashBasisLinesWith(tenantId, null, asOfDate, companyId)}
+        SELECT a.id, a.account_number, a.name, a.account_type, a.detail_type, a.system_tag,
+          COALESCE(SUM(jl.debit), 0) as total_debit,
+          COALESCE(SUM(jl.credit), 0) as total_credit
+        FROM accounts a
+        LEFT JOIN cb_lines jl ON jl.account_id = a.id${tagClause}
+        WHERE a.tenant_id = ${tenantId} AND a.account_type IN ('asset', 'liability', 'equity')
+        GROUP BY a.id, a.account_number, a.name, a.account_type, a.detail_type, a.system_tag
+        ORDER BY a.account_number, a.name
+      `)
+    : await db.execute(sql`
+        SELECT a.id, a.account_number, a.name, a.account_type, a.detail_type, a.system_tag,
+          COALESCE(SUM(jl.debit), 0) as total_debit,
+          COALESCE(SUM(jl.credit), 0) as total_credit
+        FROM accounts a
+        LEFT JOIN journal_lines jl ON jl.account_id = a.id AND jl.tenant_id = ${tenantId}
+          AND jl.transaction_id IN (
+            SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
+            AND txn_date <= ${asOfDate}
+            AND ${companyCond}
+          )${tagClause}
+        WHERE a.tenant_id = ${tenantId} AND a.account_type IN ('asset', 'liability', 'equity')
+        GROUP BY a.id ORDER BY a.account_number, a.name
+      `);
 
   type BSEntry = { accountId: string | null; name: string; accountNumber: string | null; balance: number };
   const assets: BSEntry[] = [];
