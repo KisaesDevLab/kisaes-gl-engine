@@ -61,6 +61,30 @@ export const ACCOUNT_TYPES: AccountType[] = [
   'revenue', 'cogs', 'expense', 'other_revenue', 'other_expense',
 ];
 
+// One option in a detail-type dropdown: built-ins come from DETAIL_TYPES
+// below (isCustom: false, id: null); tenant-defined ones come from the
+// tenant_detail_types table (isCustom: true, id set).
+export interface DetailTypeOption {
+  value: string;
+  label: string;
+  isCustom: boolean;
+  id: string | null;
+}
+
+// GET /tenant-settings/detail-types response: merged builtin + custom
+// options per account type.
+export type MergedDetailTypes = Record<AccountType, DetailTypeOption[]>;
+
+export interface CustomDetailType {
+  id: string;
+  tenantId: string;
+  accountType: AccountType;
+  value: string;
+  label: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export const DETAIL_TYPES: Record<AccountType, string[]> = {
   asset: ['bank', 'accounts_receivable', 'other_current_asset', 'fixed_asset', 'other_asset'],
   liability: ['accounts_payable', 'credit_card', 'other_current_liability', 'long_term_liability'],

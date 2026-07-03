@@ -55,3 +55,13 @@ export const bulkUpdateAccountsSchema = z.object({
   })).min(1).max(500),
 });
 export type BulkUpdateAccountsInput = z.infer<typeof bulkUpdateAccountsSchema>;
+
+// Tenant-defined custom detail types (Settings → Detail Types). `value`
+// is the snake_case slug stored on accounts.detail_type; `label` is the
+// display name shown in dropdowns and grouped reports.
+export const createDetailTypeSchema = z.object({
+  accountType: z.enum(accountTypes),
+  value: z.string().regex(/^[a-z0-9_]{2,50}$/, 'Use 2-50 lowercase letters, digits, or underscores'),
+  label: z.string().min(1, 'Label is required').max(100),
+});
+export type CreateDetailTypeInput = z.infer<typeof createDetailTypeSchema>;

@@ -799,6 +799,13 @@
       "when": 1777080000000,
       "tag": "0113_firm_integrations_tax1099",
       "breakpoints": true
+    },
+    {
+      "idx": 114,
+      "version": "7",
+      "when": 1777090000000,
+      "tag": "0114_tenant_detail_types",
+      "breakpoints": true
     }
   ]
 }
