@@ -85,6 +85,18 @@ reconciliations, items, tags, dashboard.
 audited (tool, company, sanitized parameters, status, duration) —
 view under **Admin → MCP Audit Log**.
 
+### Tax1099.com E-Filing (Firms)
+Firms can e-file 1099s with the IRS through Tax1099.com (Zenwork). A firm admin
+configures the integration under **Firm → Settings** — enter the Tax1099 API
+credentials (stored encrypted), choose sandbox or production, and use
+**Test Connection** to verify before saving.
+
+Once enabled, submit filings from the **E-file with Tax1099** panel in the
+**1099 Center**. Only super-admins, firm admins, or accountants can submit.
+Each submission is tracked with the provider's reference number, and you can
+refresh its status from the same panel. Vendors missing a TIN or address are
+skipped and listed in the submission result so you can fix them and resubmit.
+
 ### OAuth 2.0
 Vibe MyBooks supports OAuth 2.0 for third-party application authentication
 (authorization code flow). Third-party apps redirect users to a consent

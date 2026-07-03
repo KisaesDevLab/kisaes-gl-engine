@@ -35,3 +35,14 @@ Go to **Print Checks →** to see all checks queued for printing.
 Check print settings (check layout, starting check number, alignment) can be configured
 under **Settings → Check Print Settings →**. A test print option lets you verify
 alignment before printing real checks.
+
+**Check Layouts:**
+- **Check on Top** — check at the top of the page, voucher stub below (standard
+  business check stock).
+- **Check in Middle** — check in the center of the page with stubs above and below.
+- **Z-Fold Pressure Seal** — for 8.5×11 pressure-seal self-mailer stock (e.g. blue
+  Z-fold forms). The check prints in the middle panel with remittance stubs above
+  and below, positioned for the Z-fold creases at 3.667" and 7.333". When printing
+  on blank stock, the MICR line (routing, account, check number) is printed too.
+  Fold guides help you verify positioning, and the X/Y alignment offsets fine-tune
+  placement for your printer.

@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-04-16T02:43:17.429Z",
+  "generatedAt": "2026-07-03T15:50:31.660Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -16,16 +16,79 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 42687
+    "totalBytes": 49957
   },
   "screens": [
     {
       "id": "pay",
       "path": "/pay/:token",
       "component": "PublicInvoicePage",
-      "sourceFile": "packages/web/src/features/public/PublicInvoicePage.tsx",
+      "sourceFile": null,
       "title": "Public Invoice",
       "section": "Pay",
+      "actions": []
+    },
+    {
+      "id": "w9",
+      "path": "/w9/:token",
+      "component": "W9SubmitPage",
+      "sourceFile": null,
+      "title": "W9Submit",
+      "section": "W9",
+      "actions": []
+    },
+    {
+      "id": "portal-login",
+      "path": "/portal/login",
+      "component": "PortalLoginPage",
+      "sourceFile": null,
+      "title": "Portal Login",
+      "section": "Portal",
+      "actions": []
+    },
+    {
+      "id": "portal-auth-verify",
+      "path": "/portal/auth/verify",
+      "component": "PortalVerifyPage",
+      "sourceFile": null,
+      "title": "Portal Verify",
+      "section": "Portal",
+      "actions": []
+    },
+    {
+      "id": "questions",
+      "path": "questions",
+      "component": "PortalQuestionsListPage",
+      "sourceFile": null,
+      "title": "Portal Questions List",
+      "section": "Questions",
+      "actions": []
+    },
+    {
+      "id": "questions",
+      "path": "questions/:id",
+      "component": "PortalQuestionDetailPage",
+      "sourceFile": null,
+      "title": "Portal Question Detail",
+      "section": "Questions",
+      "actions": []
+    },
+    {
+      "id": "capture",
+      "path": "capture",
+      "component": "PortalCapturePage",
+      "sourceFile": null,
+      "title": "Portal Capture",
+      "section": "Capture",
+      "actions": []
+    },
+    {
+      "id": "financials",
+      "path": "financials",
+      "component": "PortalFinancialsPage",
+      "sourceFile": null,
+      "title": "Portal Financials",
+      "section": "Financials",
       "actions": []
     },
     {
@@ -263,6 +326,51 @@
       "actions": []
     },
     {
+      "id": "banking-statement-imports",
+      "path": "/banking/statement-imports",
+      "component": "StatementImportsPage",
+      "sourceFile": null,
+      "title": "Statement Imports",
+      "section": "Banking",
+      "actions": []
+    },
+    {
+      "id": "daily-sales",
+      "path": "/daily-sales",
+      "component": "DailySalesEntriesPage",
+      "sourceFile": null,
+      "title": "Daily Sales Entries",
+      "section": "Daily sales",
+      "actions": []
+    },
+    {
+      "id": "daily-sales-templates",
+      "path": "/daily-sales/templates",
+      "component": "DailySalesTemplatesPage",
+      "sourceFile": null,
+      "title": "Daily Sales Templates",
+      "section": "Daily sales",
+      "actions": []
+    },
+    {
+      "id": "daily-sales-new",
+      "path": "/daily-sales/new",
+      "component": "DailySalesEntryPage",
+      "sourceFile": null,
+      "title": "Daily Sales Entry",
+      "section": "Daily sales",
+      "actions": []
+    },
+    {
+      "id": "daily-sales-entries",
+      "path": "/daily-sales/entries/:id",
+      "component": "DailySalesEntryPage",
+      "sourceFile": null,
+      "title": "Daily Sales Entry",
+      "section": "Daily sales",
+      "actions": []
+    },
+    {
       "id": "banking-reconcile",
       "path": "/banking/reconcile",
       "component": "ReconciliationPage",
@@ -282,11 +390,11 @@
     },
     {
       "id": "banking-rules",
-      "path": "/practice/rules",
-      "component": "RulesPage",
+      "path": "/banking/rules",
+      "component": "Navigate",
       "sourceFile": null,
-      "title": "Rules",
-      "section": "Practice",
+      "title": "Navigate",
+      "section": "Banking",
       "actions": []
     },
     {
@@ -308,57 +416,12 @@
       "actions": []
     },
     {
-      "id": "receive-payment",
-      "path": "/receive-payment",
-      "component": "ReceivePaymentPage",
-      "sourceFile": null,
-      "title": "Receive Payment",
-      "section": "Receive payment",
-      "actions": []
-    },
-    {
       "id": "banking-deposit",
       "path": "/banking/deposit",
       "component": "BankDepositPage",
       "sourceFile": null,
       "title": "Bank Deposit",
       "section": "Banking",
-      "actions": []
-    },
-    {
-      "id": "invoices",
-      "path": "/invoices",
-      "component": "InvoiceListPage",
-      "sourceFile": null,
-      "title": "Invoice List",
-      "section": "Sales",
-      "actions": []
-    },
-    {
-      "id": "invoices-new",
-      "path": "/invoices/new",
-      "component": "InvoiceForm",
-      "sourceFile": null,
-      "title": "Invoice",
-      "section": "Sales",
-      "actions": []
-    },
-    {
-      "id": "invoices",
-      "path": "/invoices/:id",
-      "component": "InvoiceDetailPage",
-      "sourceFile": null,
-      "title": "Invoice Detail",
-      "section": "Sales",
-      "actions": []
-    },
-    {
-      "id": "invoices-edit",
-      "path": "/invoices/:id/edit",
-      "component": "InvoiceForm",
-      "sourceFile": null,
-      "title": "Invoice",
-      "section": "Sales",
       "actions": []
     },
     {
@@ -470,6 +533,15 @@
       "actions": []
     },
     {
+      "id": "budgets-vs-actuals",
+      "path": "/budgets/vs-actuals",
+      "component": "BudgetVsActualsPage",
+      "sourceFile": null,
+      "title": "Budget Vs Actuals",
+      "section": "Budgeting",
+      "actions": []
+    },
+    {
       "id": "reports",
       "path": "/reports",
       "component": "ReportsPage",
@@ -499,9 +571,9 @@
     {
       "id": "reports-cash-flow",
       "path": "/reports/cash-flow",
-      "component": "GenericReport",
+      "component": "CashFlowReport",
       "sourceFile": null,
-      "title": "Cash Flow Statement",
+      "title": "Cash Flow",
       "section": "Reports",
       "actions": []
     },
@@ -575,6 +647,33 @@
       "sourceFile": null,
       "title": "Vendor Balance Summary",
       "section": "Reports",
+      "actions": []
+    },
+    {
+      "id": "reports-sales-by-customer",
+      "path": "/reports/sales-by-customer",
+      "component": "GenericReport",
+      "sourceFile": null,
+      "title": "Sales by Customer",
+      "section": "Reports",
+      "actions": []
+    },
+    {
+      "id": "reports-sales-by-item",
+      "path": "/reports/sales-by-item",
+      "component": "GenericReport",
+      "sourceFile": null,
+      "title": "Sales by Item",
+      "section": "Reports",
+      "actions": []
+    },
+    {
+      "id": "__dev-split-row-v2",
+      "path": "/__dev/split-row-v2",
+      "component": "SplitRowV2GalleryPage",
+      "sourceFile": null,
+      "title": "Split Row V2Gallery",
+      "section": "__dev",
       "actions": []
     },
     {
@@ -848,6 +947,15 @@
       "actions": []
     },
     {
+      "id": "settings-ai-diagnostics",
+      "path": "/settings/ai/diagnostics",
+      "component": "AiDiagnosticsPage",
+      "sourceFile": null,
+      "title": "Ai Diagnostics",
+      "section": "Settings",
+      "actions": []
+    },
+    {
       "id": "settings-report-labels",
       "path": "/settings/report-labels",
       "component": "ReportLabelsPage",
@@ -965,6 +1073,69 @@
       "actions": []
     },
     {
+      "id": "practice",
+      "path": "/practice",
+      "component": "Navigate",
+      "sourceFile": null,
+      "title": "Navigate",
+      "section": "Practice",
+      "actions": []
+    },
+    {
+      "id": "firm",
+      "path": "/firm",
+      "component": "FirmListPage",
+      "sourceFile": null,
+      "title": "Firm List",
+      "section": "Firm",
+      "actions": []
+    },
+    {
+      "id": "firm",
+      "path": "/firm/:firmId",
+      "component": "Navigate",
+      "sourceFile": null,
+      "title": "Navigate",
+      "section": "Firm",
+      "actions": []
+    },
+    {
+      "id": "firm-staff",
+      "path": "/firm/:firmId/staff",
+      "component": "FirmStaffPage",
+      "sourceFile": null,
+      "title": "Firm Staff",
+      "section": "Firm",
+      "actions": []
+    },
+    {
+      "id": "firm-tenants",
+      "path": "/firm/:firmId/tenants",
+      "component": "FirmTenantsPage",
+      "sourceFile": null,
+      "title": "Firm Tenants",
+      "section": "Firm",
+      "actions": []
+    },
+    {
+      "id": "firm-rules",
+      "path": "/firm/:firmId/rules",
+      "component": "FirmRulesPage",
+      "sourceFile": null,
+      "title": "Firm Rules",
+      "section": "Firm",
+      "actions": []
+    },
+    {
+      "id": "firm-settings",
+      "path": "/firm/:firmId/settings",
+      "component": "FirmSettingsPage",
+      "sourceFile": null,
+      "title": "Firm Settings",
+      "section": "Firm",
+      "actions": []
+    },
+    {
       "id": "*",
       "path": "*",
       "component": "NotFoundPage",
@@ -1027,14 +1198,20 @@
     "\"How do I connect my bank account?\"",
     "\"What file types can I attach to transactions?\"",
     "\"How does AI categorization work?\"",
+    "Cash vs. Accrual Basis",
+    "Fiscal-Year Date Presets",
     "Two-Factor Authentication (2FA)",
     "Passkeys (Passwordless Login)",
     "Magic Links",
     "Team & User Management",
+    "Per-Member Permissions",
+    "Company Access Control",
+    "Bulk Import (Data Migration)",
     "Recurring Transactions",
     "Products & Services (Items)",
     "Duplicate Detection",
     "Account Register",
+    "Chart of Accounts Bulk Edit",
     "Budgets",
     "Managing Multiple Companies",
     "Backup & Restore",
@@ -1042,6 +1219,8 @@
     "Data Export",
     "Opening Balances",
     "Payroll Import",
+    "Daily Balance Validation",
+    "Admin Tenant Tools",
     "Email (SMTP) Configuration",
     "AI Processing Overview",
     "AI Transaction Categorization",
@@ -1056,6 +1235,7 @@
     "API Keys",
     "Plaid Bank Connections",
     "MCP Server (AI Assistant Integration)",
+    "Tax1099.com E-Filing (Firms)",
     "OAuth 2.0"
   ]
 }

@@ -31,8 +31,9 @@ Pay Bills screen. Applying a credit reduces the cash you owe on the bill.
 
 ### Lock Date
 A date set by the company owner that prevents anyone from posting, editing, or
-voiding transactions on or before that date. Used to "close the books" for a
-period after taxes are filed. Found under **Settings → Closing Date**.
+voiding transactions on or before that date — including bill payments. Used to
+"close the books" for a period after taxes are filed. Each company has its own
+lock date. Found under **Settings → Closing Date**.
 
 ### Chart of Accounts (COA)
 The list of accounts the company uses to categorize money — Bank, AR, Inventory,
@@ -103,7 +104,9 @@ accuracy.
 
 ### Fiscal Year
 The 12-month period your company uses for financial reporting. May or may not align
-with the calendar year. Set under **Settings → Preferences →**.
+with the calendar year. Set under **Settings → Preferences →**. Changing the fiscal
+year start re-partitions Retained Earnings vs. Net Income on historical Balance
+Sheets and Trial Balances — the app shows a warning before you save.
 
 ### Cash Sale
 A transaction that records a sale and immediate payment in one step (no invoice or

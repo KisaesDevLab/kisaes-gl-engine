@@ -56,8 +56,10 @@ Excel. You can export transactions, contacts, chart of accounts, and other data.
 
 ### Opening Balances
 If you're migrating from another system, enter your opening balances under
-**Settings → Opening Balances →**. This sets the starting account balances as of your
-go-live date so your reports are accurate from day one.
+**Settings → Opening Balances →**. This sets the starting account balances so your
+reports are accurate from day one. Choose the **As-of date** — the effective date
+the opening journal entry posts at, typically the first day of your fiscal year —
+rather than the date you happen to enter the balances.
 
 ### Payroll Import
 Import payroll data from your payroll provider under **Payroll Import** (if available
@@ -74,6 +76,28 @@ in the sidebar).
 
 The system auto-detects your payroll provider and shows a confidence percentage. Duplicate
 file detection warns you if the same file was already imported.
+
+### Daily Balance Validation
+A background job verifies every account's running balance against the general ledger
+once a day and repairs any drift it finds. Repairs are recorded in the audit log.
+No user action is needed — this keeps the balances shown in the app consistent with
+the underlying journal lines.
+
+### Admin Tenant Tools
+Administrators can service a client tenant from **Admin → Tenants →** (open the
+tenant's detail page):
+
+- **Apply COA template** — seed the chart of accounts from a template. Only
+  available while the tenant's chart of accounts is empty.
+- **Delete chart of accounts** — remove all accounts. Only available before any
+  transactions exist.
+- **Delete all transactions** — a books reset: removes every transaction and journal
+  line but keeps the chart of accounts, contacts, users, and settings. Bank-feed
+  items reset to pending and all account balances reset to zero. Requires typing a
+  confirmation phrase.
+- **Create with required accounts only** — when creating a new client tenant, skip
+  the full COA template and seed just the system accounts, so the client can import
+  their own chart of accounts.
 
 ### Email (SMTP) Configuration
 Configure outgoing email under **Settings → Email Settings →**. Enter your SMTP host,

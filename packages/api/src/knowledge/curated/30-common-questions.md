@@ -27,9 +27,12 @@ number; use **New Expense** for everything else (debit card swipes, ACH
 withdrawals, cash payments).
 
 ### "I voided a bill but the journal entries are still there"
-That's normal and correct. Voiding never deletes journal lines — instead it
-posts a reversing entry that cancels out the original. This keeps the audit
-trail intact. The bill is marked void and won't show up in reports.
+That's normal and correct. Voiding never deletes journal lines — instead,
+reversing journal lines are stored on the voided transaction itself, so the
+General Ledger keeps the complete audit record (the original lines plus their
+reversals net to zero). The document view is unchanged; the bill is marked void
+and won't affect report totals. Voiding a transaction dated on or before the
+company's lock date is blocked.
 
 ### "How do I edit a paid bill?"
 You can change the expense line allocation (which accounts the money was charged

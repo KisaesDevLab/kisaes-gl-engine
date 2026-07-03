@@ -16,6 +16,18 @@ it from **Transactions → Batch Entry →**.
 The columns change depending on the type. For example, Expenses show Date, Ref No, Payee,
 Account, Memo, Amount. Journal Entries show Date, Ref No, Account, Name, Memo, Debit, Credit.
 
+### Bulk Import (Data Migration)
+**Bulk Import →** (sidebar) migrates bookkeeping data from another system via CSV or
+XLSX file — chart of accounts, contacts, trial balance, or GL transactions. Formats
+from Accounting Power and QuickBooks Online are recognized.
+
+1. **Upload** — pick the file, the data kind, and the source system. The server
+   parses and validates it.
+2. **Preview** — every parsed row is shown (up to 5,000), with any validation errors
+   flagged and an explicit count of how many rows will import on commit.
+3. **Commit** — posts the data. If there are errors, fix the file and re-upload
+   before committing.
+
 ### Recurring Transactions
 Turn any transaction into a recurring schedule by clicking **Make Recurring** on the
 transaction detail page.
@@ -54,6 +66,13 @@ The register view is an inline ledger for any account. Go to **Chart of Accounts
 then click the register icon next to an account (or click the account name). It shows
 every transaction that hits that account in date order, with running balance.
 
+### Chart of Accounts Bulk Edit
+Click **Bulk Edit** on **Chart of Accounts →** to edit many accounts at once in an
+inline table. Change account number, name, type, and detail type directly in the
+grid — only the rows you actually changed are saved. Swapping two account numbers is
+supported. System accounts keep their type locked, though you can still rename or
+renumber them.
+
 ### Tags
 Tags let you label transactions for cross-cutting reporting (projects, departments,
 locations, properties). Manage tags under **Settings → Tags →**.
@@ -82,5 +101,9 @@ Helpful shortcuts:
 - **Fill from Actuals** — fills with last year's actual amounts.
 - **Adjust %** — increase or decrease all budget amounts by a percentage.
 - **Hide Zero** — filter out accounts with no budget entered.
+
+Budgets anchor to the company's fiscal year: the editor's monthly columns run in
+fiscal month order (e.g., Jul–Jun for a July fiscal year start), and Budget vs.
+Actual prorates budget amounts to the reporting window you select.
 
 Run **Reports → Budget vs. Actual →** to compare your budget against actual results.

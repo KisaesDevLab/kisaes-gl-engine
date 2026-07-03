@@ -81,8 +81,9 @@ Pay Bills screen. Applying a credit reduces the cash you owe on the bill.
 
 ### Lock Date
 A date set by the company owner that prevents anyone from posting, editing, or
-voiding transactions on or before that date. Used to "close the books" for a
-period after taxes are filed. Found under **Settings → Closing Date**.
+voiding transactions on or before that date — including bill payments. Used to
+"close the books" for a period after taxes are filed. Each company has its own
+lock date. Found under **Settings → Closing Date**.
 
 ### Chart of Accounts (COA)
 The list of accounts the company uses to categorize money — Bank, AR, Inventory,
@@ -153,7 +154,9 @@ accuracy.
 
 ### Fiscal Year
 The 12-month period your company uses for financial reporting. May or may not align
-with the calendar year. Set under **Settings → Preferences →**.
+with the calendar year. Set under **Settings → Preferences →**. Changing the fiscal
+year start re-partitions Retained Earnings vs. Net Income on historical Balance
+Sheets and Trial Balances — the app shows a warning before you save.
 
 ### Cash Sale
 A transaction that records a sale and immediate payment in one step (no invoice or
@@ -217,7 +220,9 @@ foreign currency conversion, or a bill paid for slightly more than its total.
 1. **Reconcile** every bank account through the period end.
 2. **Run reports** (P&L, Balance Sheet, Trial Balance) and review for anomalies.
 3. **Set the Lock Date** under **Settings → Closing Date** to prevent further
-   edits to the closed period.
+   edits to the closed period. The lock date is per-company and blocks posting,
+   editing, and voiding transactions — including bill payments — dated on or
+   before it.
 4. Vibe MyBooks automatically rolls revenue/expense balances into Retained Earnings
    each fiscal year — there are no manual closing entries.
 
@@ -250,9 +255,12 @@ number; use **New Expense** for everything else (debit card swipes, ACH
 withdrawals, cash payments).
 
 ### "I voided a bill but the journal entries are still there"
-That's normal and correct. Voiding never deletes journal lines — instead it
-posts a reversing entry that cancels out the original. This keeps the audit
-trail intact. The bill is marked void and won't show up in reports.
+That's normal and correct. Voiding never deletes journal lines — instead,
+reversing journal lines are stored on the voided transaction itself, so the
+General Ledger keeps the complete audit record (the original lines plus their
+reversals net to zero). The document view is unchanged; the bill is marked void
+and won't affect report totals. Voiding a transaction dated on or before the
+company's lock date is blocked.
 
 ### "How do I edit a paid bill?"
 You can change the expense line allocation (which accounts the money was charged
@@ -322,8 +330,9 @@ the category in the Bank Feed. An administrator must enable AI under
   you made money.
 - **Balance Sheet** — assets, liabilities, and equity as of a specific date.
   Tells you what you own and what you owe.
-- **Cash Flow Statement** — how cash moved in and out (operating, investing,
-  financing).
+- **Cash Flow Statement** — a direct-method statement of how cash moved in and
+  out, with each cash movement classified as operating, investing, or financing
+  based on the actual accounts involved.
 - **AR Aging Summary** — what customers owe you, broken down by how long
   it's been outstanding (Current, 1-30, 31-60, 61-90, 90+ days).
 - **AP Aging Summary** — what you owe vendors, same age buckets.
@@ -334,6 +343,8 @@ the category in the Bank Feed. An administrator must enable AI under
 - **Budget vs. Actual** — compares your budget to what actually happened in
   each account for a given period.
 - **1099 Preparation** — totals paid to each 1099-eligible vendor in a year.
+  Totals count actual cash disbursements (bill payments, expenses, checks) —
+  entering a bill alone doesn't double-count.
 - **Sales Tax Liability** — sales tax you've collected and owe to the
   taxing authority.
 - **Taxable Sales Summary** — total taxable sales for a period, broken down
@@ -357,6 +368,26 @@ the category in the Bank Feed. An administrator must enable AI under
 - **Transaction List** — all transactions for a period in date order.
 - **Journal Entries Report** — all journal entries for a period.
 - **Budget Overview** — summary view of all budget lines for a fiscal year.
+
+### Cash vs. Accrual Basis
+The P&L and Balance Sheet can be run on an accrual or cash basis. On the cash
+basis:
+
+- Invoice revenue and bill expenses are recognized on the **payment date**, not
+  the invoice or bill date. Partial payments are prorated across the document's
+  lines, including sales tax.
+- Unpaid invoices and unpaid bills are excluded entirely.
+- Credit-card charges count as cash events — the expense is recognized when the
+  card is charged, not when the card balance is paid off.
+- The cash-basis Balance Sheet always balances. AR and AP show only unapplied
+  payment remainders (e.g., a customer prepayment not yet applied to an invoice).
+
+### Fiscal-Year Date Presets
+Report date pickers include **This Fiscal Year** and **Last Fiscal Year** presets
+that follow the company's fiscal year start (set under **Settings → Preferences →**),
+so companies with a non-January fiscal year can select the right period in one
+click. **Budget vs. Actual** prorates budget amounts to whatever reporting window
+you select.
 
 ## Error Resolution
 
@@ -441,6 +472,29 @@ an email with a link to set up their account. Each user can have different roles
 levels per company. Use **Admin → All Users →** (admin only) to manage users across the
 entire system.
 
+### Per-Member Permissions
+Owners can fine-tune what each **bookkeeper** can see and do under
+**Settings → Team →**. Access is set per feature (Invoices, Bills, Banking, Reports,
+Chart of Accounts, etc.) at one of three levels: **none** (hidden), **view**
+(read-only), or **full** (read and write).
+
+- Only the bookkeeper role is customizable. Owners and accountants always have full
+  access; read-only users always have view access everywhere.
+- A bookkeeper with no custom permissions keeps full access, so existing team members
+  are unaffected until you restrict them.
+- **Permission Templates** (button at the top of the Team page) define reusable
+  permission sets — e.g., an "AR Clerk" template with full access to Invoices and
+  Receive Payment and view access elsewhere. Assign a template to a bookkeeper, then
+  optionally override individual features via the **Permissions** action on their row.
+- Permissions are enforced by the server on every feature, not just hidden from the
+  menu — restricted screens and API calls are blocked.
+
+### Company Access Control
+For tenants with multiple companies, administrators can limit which companies an
+accountant or bookkeeper can see. Under **Admin → All Users →**, the **Company Access**
+action lists every company with a Has Access / Excluded toggle. Excluded companies
+disappear from that user's company switcher and cannot be opened.
+
 ## Advanced Features
 
 ### Batch Entry
@@ -458,6 +512,18 @@ it from **Transactions → Batch Entry →**.
 
 The columns change depending on the type. For example, Expenses show Date, Ref No, Payee,
 Account, Memo, Amount. Journal Entries show Date, Ref No, Account, Name, Memo, Debit, Credit.
+
+### Bulk Import (Data Migration)
+**Bulk Import →** (sidebar) migrates bookkeeping data from another system via CSV or
+XLSX file — chart of accounts, contacts, trial balance, or GL transactions. Formats
+from Accounting Power and QuickBooks Online are recognized.
+
+1. **Upload** — pick the file, the data kind, and the source system. The server
+   parses and validates it.
+2. **Preview** — every parsed row is shown (up to 5,000), with any validation errors
+   flagged and an explicit count of how many rows will import on commit.
+3. **Commit** — posts the data. If there are errors, fix the file and re-upload
+   before committing.
 
 ### Recurring Transactions
 Turn any transaction into a recurring schedule by clicking **Make Recurring** on the
@@ -497,6 +563,13 @@ The register view is an inline ledger for any account. Go to **Chart of Accounts
 then click the register icon next to an account (or click the account name). It shows
 every transaction that hits that account in date order, with running balance.
 
+### Chart of Accounts Bulk Edit
+Click **Bulk Edit** on **Chart of Accounts →** to edit many accounts at once in an
+inline table. Change account number, name, type, and detail type directly in the
+grid — only the rows you actually changed are saved. Swapping two account numbers is
+supported. System accounts keep their type locked, though you can still rename or
+renumber them.
+
 ### Tags
 Tags let you label transactions for cross-cutting reporting (projects, departments,
 locations, properties). Manage tags under **Settings → Tags →**.
@@ -525,6 +598,10 @@ Helpful shortcuts:
 - **Fill from Actuals** — fills with last year's actual amounts.
 - **Adjust %** — increase or decrease all budget amounts by a percentage.
 - **Hide Zero** — filter out accounts with no budget entered.
+
+Budgets anchor to the company's fiscal year: the editor's monthly columns run in
+fiscal month order (e.g., Jul–Jun for a July fiscal year start), and Budget vs.
+Actual prorates budget amounts to the reporting window you select.
 
 Run **Reports → Budget vs. Actual →** to compare your budget against actual results.
 
@@ -586,8 +663,10 @@ Excel. You can export transactions, contacts, chart of accounts, and other data.
 
 ### Opening Balances
 If you're migrating from another system, enter your opening balances under
-**Settings → Opening Balances →**. This sets the starting account balances as of your
-go-live date so your reports are accurate from day one.
+**Settings → Opening Balances →**. This sets the starting account balances so your
+reports are accurate from day one. Choose the **As-of date** — the effective date
+the opening journal entry posts at, typically the first day of your fiscal year —
+rather than the date you happen to enter the balances.
 
 ### Payroll Import
 Import payroll data from your payroll provider under **Payroll Import** (if available
@@ -604,6 +683,28 @@ in the sidebar).
 
 The system auto-detects your payroll provider and shows a confidence percentage. Duplicate
 file detection warns you if the same file was already imported.
+
+### Daily Balance Validation
+A background job verifies every account's running balance against the general ledger
+once a day and repairs any drift it finds. Repairs are recorded in the audit log.
+No user action is needed — this keeps the balances shown in the app consistent with
+the underlying journal lines.
+
+### Admin Tenant Tools
+Administrators can service a client tenant from **Admin → Tenants →** (open the
+tenant's detail page):
+
+- **Apply COA template** — seed the chart of accounts from a template. Only
+  available while the tenant's chart of accounts is empty.
+- **Delete chart of accounts** — remove all accounts. Only available before any
+  transactions exist.
+- **Delete all transactions** — a books reset: removes every transaction and journal
+  line but keeps the chart of accounts, contacts, users, and settings. Bank-feed
+  items reset to pending and all account balances reset to zero. Requires typing a
+  confirmation phrase.
+- **Create with required accounts only** — when creating a new client tenant, skip
+  the full COA template and seed just the system accounts, so the client can import
+  their own chart of accounts.
 
 ### Email (SMTP) Configuration
 Configure outgoing email under **Settings → Email Settings →**. Enter your SMTP host,
@@ -725,6 +826,17 @@ Check print settings (check layout, starting check number, alignment) can be con
 under **Settings → Check Print Settings →**. A test print option lets you verify
 alignment before printing real checks.
 
+**Check Layouts:**
+- **Check on Top** — check at the top of the page, voucher stub below (standard
+  business check stock).
+- **Check in Middle** — check in the center of the page with stubs above and below.
+- **Z-Fold Pressure Seal** — for 8.5×11 pressure-seal self-mailer stock (e.g. blue
+  Z-fold forms). The check prints in the middle panel with remittance stubs above
+  and below, positioned for the Z-fold creases at 3.667" and 7.333". When printing
+  on blank stock, the MICR line (routing, account, check number) is printed too.
+  Fold guides help you verify positioning, and the X/Y alignment offsets fine-tune
+  placement for your printer.
+
 ## API & Integrations
 
 ### REST API (v2)
@@ -812,6 +924,18 @@ reconciliations, items, tags, dashboard.
 audited (tool, company, sanitized parameters, status, duration) —
 view under **Admin → MCP Audit Log**.
 
+### Tax1099.com E-Filing (Firms)
+Firms can e-file 1099s with the IRS through Tax1099.com (Zenwork). A firm admin
+configures the integration under **Firm → Settings** — enter the Tax1099 API
+credentials (stored encrypted), choose sandbox or production, and use
+**Test Connection** to verify before saving.
+
+Once enabled, submit filings from the **E-file with Tax1099** panel in the
+**1099 Center**. Only super-admins, firm admins, or accountants can submit.
+Each submission is tracked with the provider's reference number, and you can
+refresh its status from the same panel. Vendors missing a TIN or address are
+skipped and listed in the submission result so you can fix them and resubmit.
+
 ### OAuth 2.0
 Vibe MyBooks supports OAuth 2.0 for third-party application authentication
 (authorization code flow). Third-party apps redirect users to a consent
@@ -834,17 +958,11 @@ The following screens exist in the application. Use these names and paths when d
 - **Bank Connections** (`/banking`)
 - **Bank Feed** (`/banking/feed`)
 - **Statement Upload** (`/banking/statement-upload`)
+- **Statement Imports** (`/banking/statement-imports`)
 - **Reconciliation** (`/banking/reconcile`)
 - **Reconciliation History** (`/banking/reconciliation-history`)
-- **Bank Rules** (`/banking/rules`)
+- **Navigate** (`/banking/rules`)
 - **Bank Deposit** (`/banking/deposit`)
-
-### Sales
-
-- **Invoice List** (`/invoices`)
-- **Invoice** (`/invoices/new`)
-- **Invoice Detail** (`/invoices/:id`)
-- **Invoice** (`/invoices/:id/edit`)
 
 ### Expenses
 
@@ -889,13 +1007,14 @@ The following screens exist in the application. Use these names and paths when d
 ### Budgeting
 
 - **Budget Editor** (`/budgets`)
+- **Budget Vs Actuals** (`/budgets/vs-actuals`)
 
 ### Reports
 
 - **Reports** (`/reports`)
 - **Profit And Loss** (`/reports/profit-loss`)
 - **Balance Sheet** (`/reports/balance-sheet`)
-- **Cash Flow Statement** (`/reports/cash-flow`)
+- **Cash Flow** (`/reports/cash-flow`)
 - **AR Aging Summary** (`/reports/ar-aging-summary`)
 - **AR Aging Detail** (`/reports/ar-aging-detail`)
 - **Customer Balance Summary** (`/reports/customer-balance-summary`)
@@ -904,6 +1023,8 @@ The following screens exist in the application. Use these names and paths when d
 - **Expenses by Vendor** (`/reports/expense-by-vendor`)
 - **Expenses by Category** (`/reports/expense-by-category`)
 - **Vendor Balance Summary** (`/reports/vendor-balance-summary`)
+- **Sales by Customer** (`/reports/sales-by-customer`)
+- **Sales by Item** (`/reports/sales-by-item`)
 - **AP Aging Summary** (`/reports/ap-aging-summary`)
 - **AP Aging Detail** (`/reports/ap-aging-detail`)
 - **Unpaid Bills** (`/reports/unpaid-bills`)
@@ -940,6 +1061,7 @@ The following screens exist in the application. Use these names and paths when d
 - **Preferences** (`/settings/preferences`)
 - **Email Settings** (`/settings/email`)
 - **Company Ai Settings** (`/settings/ai`)
+- **Ai Diagnostics** (`/settings/ai/diagnostics`)
 - **Report Labels** (`/settings/report-labels`)
 - **Stripe Settings** (`/settings/online-payments`)
 - **Team** (`/settings/team`)
@@ -950,6 +1072,10 @@ The following screens exist in the application. Use these names and paths when d
 - **Payroll Account Mapping** (`/settings/payroll-accounts`)
 - **Settings** (`/settings`)
 
+### __dev
+
+- **Split Row V2Gallery** (`/__dev/split-row-v2`)
+
 ### *
 
 - **Not Found** (`*`)
@@ -958,9 +1084,33 @@ The following screens exist in the application. Use these names and paths when d
 
 - **Attachment Library** (`/attachments`)
 
+### Capture
+
+- **Portal Capture** (`capture`)
+
+### Daily sales
+
+- **Daily Sales Entries** (`/daily-sales`)
+- **Daily Sales Templates** (`/daily-sales/templates`)
+- **Daily Sales Entry** (`/daily-sales/new`)
+- **Daily Sales Entry** (`/daily-sales/entries/:id`)
+
 ### Duplicates
 
 - **Duplicate Review** (`/duplicates`)
+
+### Financials
+
+- **Portal Financials** (`financials`)
+
+### Firm
+
+- **Firm List** (`/firm`)
+- **Navigate** (`/firm/:firmId`)
+- **Firm Staff** (`/firm/:firmId/staff`)
+- **Firm Tenants** (`/firm/:firmId/tenants`)
+- **Firm Rules** (`/firm/:firmId/rules`)
+- **Firm Settings** (`/firm/:firmId/settings`)
 
 ### Help
 
@@ -980,10 +1130,24 @@ The following screens exist in the application. Use these names and paths when d
 - **Payroll Import** (`/payroll/import`)
 - **Payroll History** (`/payroll/imports`)
 
-### Receive payment
+### Portal
 
-- **Receive Payment** (`/receive-payment`)
+- **Portal Login** (`/portal/login`)
+- **Portal Verify** (`/portal/auth/verify`)
+
+### Practice
+
+- **Navigate** (`/practice`)
+
+### Questions
+
+- **Portal Questions List** (`questions`)
+- **Portal Question Detail** (`questions/:id`)
 
 ### Recurring
 
 - **Recurring List** (`/recurring`)
+
+### W9
+
+- **W9Submit** (`/w9/:token`)

@@ -44,3 +44,26 @@ Company owners can invite other users under **Settings → Team →**. Invited u
 an email with a link to set up their account. Each user can have different roles and access
 levels per company. Use **Admin → All Users →** (admin only) to manage users across the
 entire system.
+
+### Per-Member Permissions
+Owners can fine-tune what each **bookkeeper** can see and do under
+**Settings → Team →**. Access is set per feature (Invoices, Bills, Banking, Reports,
+Chart of Accounts, etc.) at one of three levels: **none** (hidden), **view**
+(read-only), or **full** (read and write).
+
+- Only the bookkeeper role is customizable. Owners and accountants always have full
+  access; read-only users always have view access everywhere.
+- A bookkeeper with no custom permissions keeps full access, so existing team members
+  are unaffected until you restrict them.
+- **Permission Templates** (button at the top of the Team page) define reusable
+  permission sets — e.g., an "AR Clerk" template with full access to Invoices and
+  Receive Payment and view access elsewhere. Assign a template to a bookkeeper, then
+  optionally override individual features via the **Permissions** action on their row.
+- Permissions are enforced by the server on every feature, not just hidden from the
+  menu — restricted screens and API calls are blocked.
+
+### Company Access Control
+For tenants with multiple companies, administrators can limit which companies an
+accountant or bookkeeper can see. Under **Admin → All Users →**, the **Company Access**
+action lists every company with a Has Access / Excluded toggle. Excluded companies
+disappear from that user's company switcher and cannot be opened.

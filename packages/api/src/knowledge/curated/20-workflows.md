@@ -56,6 +56,8 @@ foreign currency conversion, or a bill paid for slightly more than its total.
 1. **Reconcile** every bank account through the period end.
 2. **Run reports** (P&L, Balance Sheet, Trial Balance) and review for anomalies.
 3. **Set the Lock Date** under **Settings → Closing Date** to prevent further
-   edits to the closed period.
+   edits to the closed period. The lock date is per-company and blocks posting,
+   editing, and voiding transactions — including bill payments — dated on or
+   before it.
 4. Vibe MyBooks automatically rolls revenue/expense balances into Retained Earnings
    each fiscal year — there are no manual closing entries.
