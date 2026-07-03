@@ -19,7 +19,19 @@ import * as accountsService from './accounts.service.js';
 import * as contactsService from './contacts.service.js';
 import * as ledger from './ledger.service.js';
 
-export async function importOpeningBalances(tenantId: string, balances: Array<{ accountName?: string; accountNumber?: string; accountId?: string; balance: string }>, companyId?: string) {
+export async function importOpeningBalances(
+  tenantId: string,
+  balances: Array<{ accountName?: string; accountNumber?: string; accountId?: string; balance: string }>,
+  companyId?: string,
+  // Effective date of the opening balances. Books that start on
+  // 2026-01-01 but get imported on 2026-03-15 must date the JE at the
+  // start date — the old behavior (always "today") made every report
+  // dated before the import day silently miss the opening balances.
+  asOfDate?: string,
+) {
+  if (asOfDate && !/^\d{4}-\d{2}-\d{2}$/.test(asOfDate)) {
+    throw AppError.badRequest('asOfDate must be YYYY-MM-DD');
+  }
   // Resolve account names/numbers to IDs
   const allAccounts = await db.select().from(accounts).where(eq(accounts.tenantId, tenantId));
 
@@ -72,11 +84,12 @@ export async function importOpeningBalances(tenantId: string, balances: Array<{ 
   if (!openingBalancesAccount) throw AppError.internal('Opening Balances equity account not found');
 
   const difference = totalDebits.minus(totalCredits);
-  // 0.01 cents — anything inside 1¢ is float-tolerance noise from the
-  // user's input data, not our arithmetic. The decimal accumulator is
-  // exact, but legitimate input data sometimes only has 2-decimal
-  // precision and the user's expected tie isn't at the 4th place.
-  if (difference.abs().greaterThan('0.01')) {
+  // Offset any imbalance beyond postTransaction's own 0.0001 tolerance.
+  // The previous 0.01 threshold left a gap: a difference between 0.0001
+  // and 0.01 got no offset line, then postTransaction rejected the JE as
+  // unbalanced — the "tolerance" was unreachable and the import just
+  // errored.
+  if (difference.abs().greaterThan('0.0001')) {
     if (difference.greaterThan(0)) {
       resolvedLines.push({ accountId: openingBalancesAccount.id, debit: '0', credit: difference.toFixed(4), description: 'Opening balance offset' });
     } else {
@@ -84,10 +97,11 @@ export async function importOpeningBalances(tenantId: string, balances: Array<{ 
     }
   }
 
-  // Post as a journal entry
+  // Post as a journal entry at the caller-supplied as-of date (defaults
+  // to today for backward compatibility).
   const txn = await ledger.postTransaction(tenantId, {
     txnType: 'journal_entry',
-    txnDate: new Date().toISOString().split('T')[0]!,
+    txnDate: asOfDate || new Date().toISOString().split('T')[0]!,
     memo: 'Opening balances import',
     lines: resolvedLines,
   }, undefined, companyId);
