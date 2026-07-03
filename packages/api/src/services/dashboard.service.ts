@@ -7,7 +7,7 @@ import { db } from '../db/index.js';
 import { transactions, journalLines, accounts, bankFeedItems, reconciliations } from '../db/schema/index.js';
 
 async function getFiscalYearStart(tenantId: string): Promise<string> {
-  const result = await db.execute(sql`SELECT fiscal_year_start_month FROM companies WHERE tenant_id = ${tenantId} LIMIT 1`);
+  const result = await db.execute(sql`SELECT fiscal_year_start_month FROM companies WHERE tenant_id = ${tenantId} ORDER BY created_at LIMIT 1`);
   const fyStartMonth = (result.rows as any[])[0]?.fiscal_year_start_month || 1;
   // UTC getters so the fiscal-year boundary doesn't shift around when
   // the API container's local TZ differs from the tenant's. Reports
@@ -43,8 +43,15 @@ export async function getFinancialSnapshot(tenantId: string) {
 
     let revenue = 0, expenses = 0;
     for (const row of rows.rows as any[]) {
-      const amt = Math.abs(parseFloat(row.total_credit) - parseFloat(row.total_debit));
-      if (row.account_type === 'revenue' || row.account_type === 'other_revenue') revenue += amt;
+      // Signed, normal-balance convention (matches report.service): income
+      // is credit - debit, costs are debit - credit. Abnormal balances
+      // (refund-heavy revenue, rebated expenses) reduce their bucket
+      // instead of inflating it via Math.abs.
+      const isIncome = row.account_type === 'revenue' || row.account_type === 'other_revenue';
+      const amt = isIncome
+        ? parseFloat(row.total_credit) - parseFloat(row.total_debit)
+        : parseFloat(row.total_debit) - parseFloat(row.total_credit);
+      if (isIncome) revenue += amt;
       else expenses += amt;
     }
     return { revenue, expenses, netIncome: revenue - expenses };
@@ -84,8 +91,15 @@ export async function getRevExpTrend(tenantId: string, months: number = 6) {
 
     let revenue = 0, expenses = 0;
     for (const row of rows.rows as any[]) {
-      const amt = Math.abs(parseFloat(row.total_credit) - parseFloat(row.total_debit));
-      if (row.account_type === 'revenue' || row.account_type === 'other_revenue') revenue += amt;
+      // Signed, normal-balance convention (matches report.service): income
+      // is credit - debit, costs are debit - credit. Abnormal balances
+      // (refund-heavy revenue, rebated expenses) reduce their bucket
+      // instead of inflating it via Math.abs.
+      const isIncome = row.account_type === 'revenue' || row.account_type === 'other_revenue';
+      const amt = isIncome
+        ? parseFloat(row.total_credit) - parseFloat(row.total_debit)
+        : parseFloat(row.total_debit) - parseFloat(row.total_credit);
+      if (isIncome) revenue += amt;
       else expenses += amt;
     }
     data.push({ month: label, revenue, expenses });

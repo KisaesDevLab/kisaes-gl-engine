@@ -36,13 +36,16 @@ exportRouter.get('/full/:fileName', async (req, res) => {
 
 // Opening balances import
 exportRouter.post('/opening-balances', upload.single('file'), async (req, res) => {
+  // Optional effective date for the opening JE (multer parses form
+  // fields into req.body, so both branches read the same way).
+  const asOfDate = typeof req.body?.asOfDate === 'string' && req.body.asOfDate ? req.body.asOfDate : undefined;
   if (req.file) {
     const csvText = req.file.buffer.toString('utf-8');
     const balances = await importService.parseOpeningBalancesCsv(csvText);
-    const result = await importService.importOpeningBalances(req.tenantId, balances, req.companyId);
+    const result = await importService.importOpeningBalances(req.tenantId, balances, req.companyId, asOfDate);
     res.status(201).json(result);
   } else if (req.body.balances) {
-    const result = await importService.importOpeningBalances(req.tenantId, req.body.balances, req.companyId);
+    const result = await importService.importOpeningBalances(req.tenantId, req.body.balances, req.companyId, asOfDate);
     res.status(201).json(result);
   } else {
     res.status(400).json({ error: { message: 'No file or balances provided' } });

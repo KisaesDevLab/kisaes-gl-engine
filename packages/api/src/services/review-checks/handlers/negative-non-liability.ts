@@ -7,11 +7,13 @@ import type { FindingDraft } from '@kis-books/shared';
 import { db } from '../../../db/index.js';
 import type { CheckHandler } from './index.js';
 
-// `negative_non_liability` — accounts with negative balances
-// where a negative balance is unusual. Asset accounts going
-// negative typically indicate over-applied payments or
-// double-entry mistakes. Revenue/expense accounts negative
-// usually indicate posting reversal issues.
+// `negative_non_liability` — accounts carrying an ABNORMAL balance for
+// their type. accounts.balance is stored debit−credit for every type,
+// so a HEALTHY revenue account is negative in this column (invoice: CR
+// revenue). The previous version flagged `balance < 0` for revenue too,
+// which fired on every revenue account with any sales. Abnormal means:
+//   debit-normal (asset, expense, cogs, other_expense): balance < 0
+//   credit-normal income (revenue, other_revenue):      balance > 0
 export const handler: CheckHandler = async (tenantId, companyId): Promise<FindingDraft[]> => {
   const companyClause = companyId
     ? sql`AND company_id = ${companyId}`
@@ -23,8 +25,10 @@ export const handler: CheckHandler = async (tenantId, companyId): Promise<Findin
     WHERE tenant_id = ${tenantId}
       ${companyClause}
       AND is_active = TRUE
-      AND balance::NUMERIC < 0
-      AND account_type IN ('asset', 'expense', 'revenue', 'cogs', 'other_expense')
+      AND (
+        (account_type IN ('asset', 'expense', 'cogs', 'other_expense') AND balance::NUMERIC < 0)
+        OR (account_type IN ('revenue', 'other_revenue') AND balance::NUMERIC > 0)
+      )
     LIMIT 200
   `);
 
@@ -36,9 +40,9 @@ export const handler: CheckHandler = async (tenantId, companyId): Promise<Findin
       accountType: r.account_type,
       balance: r.balance,
       // Per-account dedupe — re-fires on next run only if the
-      // negative balance persists.
+      // abnormal balance persists.
       dedupe_key: `account:${r.id}`,
-      reason: `${r.account_type} account "${r.name}" has negative balance ${r.balance}.`,
+      reason: `${r.account_type} account "${r.name}" has an abnormal balance (${r.balance}).`,
     },
   }));
 };

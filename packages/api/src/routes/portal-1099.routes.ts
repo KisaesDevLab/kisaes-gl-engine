@@ -165,6 +165,34 @@ portal1099Router.post('/export', validate(exportSchema), async (req, res) => {
   res.json(result);
 });
 
+// ─── Tax1099.com e-filing ─────────────────────────────────────────
+// Submission is restricted server-side to super-admins, the managing
+// firm's firm_admins, and tenant accountants (spec: "only submitted by
+// either the admin or an accountant"). Credentials live on the FIRM
+// (see /firms/:firmId/integrations/tax1099).
+
+portal1099Router.get('/efile/context', async (req, res) => {
+  const { getEfileContext } = await import('../services/tax1099.service.js');
+  res.json(await getEfileContext(req.tenantId, {
+    userId: req.userId, userRole: req.userRole, isSuperAdmin: !!req.isSuperAdmin,
+  }));
+});
+
+portal1099Router.post('/efile/submit', async (req, res) => {
+  const { submit1099FilingSchema } = await import('@kis-books/shared');
+  const parsed = submit1099FilingSchema.parse(req.body);
+  const { submitFilings } = await import('../services/tax1099.service.js');
+  const result = await submitFilings(req.tenantId, {
+    userId: req.userId, userRole: req.userRole, isSuperAdmin: !!req.isSuperAdmin,
+  }, parsed);
+  res.status(201).json(result);
+});
+
+portal1099Router.post('/filings/:filingId/refresh-status', async (req, res) => {
+  const { refreshFilingStatus } = await import('../services/tax1099.service.js');
+  res.json(await refreshFilingStatus(req.tenantId, req.params['filingId']!));
+});
+
 portal1099Router.get('/filings', async (req, res) => {
   const list = await svc.listFilings(req.tenantId);
   res.json({ filings: list });

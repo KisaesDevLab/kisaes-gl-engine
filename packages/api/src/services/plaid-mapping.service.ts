@@ -54,14 +54,13 @@ export async function assignAccountToCompany(plaidAccountId: string, tenantId: s
     mappedByName: user?.displayName || null,
   }).returning();
 
-  // Update COA balance from Plaid balance. The `accounts` table is
-  // tenant-scoped, so we bind the UPDATE to the caller's tenant for
-  // defense in depth (CLAUDE.md #17).
-  const pa = await db.query.plaidAccounts.findFirst({ where: eq(plaidAccounts.id, plaidAccountId) });
-  if (pa?.currentBalance) {
-    await db.update(accounts).set({ balance: pa.currentBalance })
-      .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, coaAccountId)));
-  }
+  // NOTE: we deliberately do NOT copy the bank's reported balance onto
+  // accounts.balance. That column is the GL running balance —
+  // SUM(debit−credit) over posted journal lines (CLAUDE.md rule 24) —
+  // and overwriting it with the bank's number permanently desynced it
+  // from the ledger (outstanding checks alone make the two differ).
+  // The bank balance lives on plaid_accounts.current_balance; anything
+  // that wants "what the bank says" should read it from there.
 
   return mapping;
 }

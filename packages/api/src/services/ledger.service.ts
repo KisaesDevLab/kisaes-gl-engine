@@ -139,7 +139,9 @@ async function syncTransactionTagsFromLines(
  * account UUID belonging to tenant B — the lines would land with tenantId=A
  * but the foreign-key reference corrupts tenant B's balance denormalization.
  */
-async function assertAccountsInScope(
+// Exported so divergent posting paths (bill payments) can apply the
+// same tenant/company account-scope guard as postTransaction.
+export async function assertAccountsInScope(
   executor: DbOrTx,
   tenantId: string,
   companyId: string | null | undefined,
@@ -167,10 +169,29 @@ async function assertAccountsInScope(
   }
 }
 
-async function checkLockDate(executor: DbOrTx, tenantId: string, txnDate: string) {
-  const result = await executor.execute(sql`
-    SELECT lock_date FROM companies WHERE tenant_id = ${tenantId} LIMIT 1
-  `);
+// Company-scoped lock check. The previous version selected an ARBITRARY
+// company row (`LIMIT 1`, no ORDER BY), so in a multi-company tenant
+// whichever row Postgres returned first governed every company — a
+// locked year could be silently editable (or an unlocked company
+// over-blocked), and the answer could flip with the query plan. Now:
+// with a companyId we check that company's lock; without one we apply
+// the STRICTEST lock across the tenant (deterministic, and a scope-less
+// posting can't sneak under any company's close).
+// Exported so posting paths that can't route through postTransaction
+// (bill payments) enforce the same policy.
+export async function checkLockDate(
+  executor: DbOrTx,
+  tenantId: string,
+  txnDate: string,
+  companyId?: string | null,
+) {
+  const result = companyId
+    ? await executor.execute(sql`
+        SELECT lock_date FROM companies WHERE tenant_id = ${tenantId} AND id = ${companyId}
+      `)
+    : await executor.execute(sql`
+        SELECT MAX(lock_date) AS lock_date FROM companies WHERE tenant_id = ${tenantId}
+      `);
   const lockDate = (result.rows as any[])[0]?.lock_date;
   if (lockDate && txnDate <= lockDate) {
     throw AppError.badRequest(`Cannot create or modify transactions on or before the lock date (${lockDate}). Adjust the lock date in Settings to make changes.`);
@@ -250,7 +271,7 @@ export async function postTransaction(
   // error between any two of these steps leaves torn state — a transaction
   // missing its lines, or lines whose accounts.balance was never updated.
   const inner = async (tx: Tx) => {
-    await checkLockDate(tx, tenantId, input.txnDate);
+    await checkLockDate(tx, tenantId, input.txnDate, companyId ?? null);
     await assertAccountsInScope(
       tx,
       tenantId,
@@ -360,8 +381,8 @@ export async function voidTransaction(tenantId: string, txnId: string, reason: s
     if (!txn) throw AppError.notFound('Transaction not found');
     if (txn.status === 'void') throw AppError.badRequest('Transaction is already void');
 
-    // Check lock date against the transaction's date
-    await checkLockDate(tx, tenantId, txn.txnDate);
+    // Check lock date against the transaction's date (company-scoped)
+    await checkLockDate(tx, tenantId, txn.txnDate, txn.companyId);
 
     // Mirror updateTransaction's reconciliation guard: a transaction
     // whose lines are cleared in a COMPLETED bank rec must not be
@@ -402,14 +423,37 @@ export async function voidTransaction(tenantId: string, txnId: string, reason: s
       invoiceStatus: txn.txnType === 'invoice' ? 'void' : txn.invoiceStatus,
     }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)));
 
-    // Create reversing journal lines (swap debits and credits)
+    // Create reversing journal lines (swap debits and credits) and
+    // PERSIST them on the voided transaction (CLAUDE.md rule #23 —
+    // never delete journal_lines; the reversal is part of the audit
+    // record). Previously these lines were built only in memory to
+    // adjust the denormalized balances and were never inserted, so the
+    // DB held no evidence of the reversal. Reports filter
+    // status='posted', so lines attached to the void-status header
+    // don't affect any report — but SUM(debit−credit) over ALL lines
+    // now nets to zero per voided transaction, and the transaction
+    // detail view shows exactly what the void did.
     if (originalLines.length > 0) {
+      const maxOrder = originalLines.reduce((m, l) => Math.max(m, l.lineOrder ?? 0), 0);
       const reversingLines = originalLines.map((line) => ({
         accountId: line.accountId,
         debit: line.credit,
         credit: line.debit,
         description: `Void: ${line.description || ''}`.trim(),
       }));
+
+      await tx.insert(journalLines).values(originalLines.map((line, i) => ({
+        tenantId,
+        companyId: line.companyId,
+        transactionId: txnId,
+        accountId: line.accountId,
+        debit: line.credit,
+        credit: line.debit,
+        description: `Void: ${line.description || ''}`.trim(),
+        tagId: line.tagId,
+        lineOrder: maxOrder + 1 + i,
+        isVoidReversal: true,
+      })));
 
       // Reverse account balances
       await updateAccountBalances(tx, tenantId, reversingLines);
@@ -445,9 +489,9 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
     if (!existing) throw AppError.notFound('Transaction not found');
     if (existing.status === 'void') throw AppError.badRequest('Cannot update a void transaction');
 
-    // Check lock date for both old and new dates
-    await checkLockDate(tx, tenantId, existing.txnDate);
-    await checkLockDate(tx, tenantId, input.txnDate);
+    // Check lock date for both old and new dates (company-scoped)
+    await checkLockDate(tx, tenantId, existing.txnDate, existing.companyId);
+    await checkLockDate(tx, tenantId, input.txnDate, companyId ?? existing.companyId ?? null);
 
     // Validate the new lines' account ownership inside this tenant/company.
     await assertAccountsInScope(
@@ -613,7 +657,14 @@ export async function getTransaction(tenantId: string, txnId: string) {
     contactId: journalLines.contactId,
   }).from(journalLines)
     .leftJoin(accounts, eq(journalLines.accountId, accounts.id))
-    .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)))
+    // Exclude the persisted void-reversal rows (rule 23) so the detail
+    // view keeps showing the document as entered; the reversal is a GL
+    // artifact, visible in ledger exports.
+    .where(and(
+      eq(journalLines.tenantId, tenantId),
+      eq(journalLines.transactionId, txnId),
+      eq(journalLines.isVoidReversal, false),
+    ))
     .orderBy(journalLines.lineOrder);
 
   return { ...txn, lines };
@@ -757,9 +808,17 @@ export async function getAccountBalance(tenantId: string, accountId: string, asO
     eq(journalLines.accountId, accountId),
   ];
 
+  // Always restrict to POSTED transactions. Without a date bound this
+  // used to sum every line — drafts, voids, and (now that rule 23
+  // persists them) void-reversal lines — none of which belong in a
+  // balance.
   if (asOfDate) {
     conditions.push(sql`${journalLines.transactionId} IN (
       SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND txn_date <= ${asOfDate} AND status = 'posted'
+    )`);
+  } else {
+    conditions.push(sql`${journalLines.transactionId} IN (
+      SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
     )`);
   }
 
@@ -844,9 +903,18 @@ export async function bulkUpdateTransactions(
       if (!contact) throw AppError.badRequest('Payee contact does not belong to this tenant');
     }
 
-    // Tenant-wide lock date — loaded once.
-    const lockResult = await tx.execute(sql`SELECT lock_date FROM companies WHERE tenant_id = ${tenantId} LIMIT 1`);
-    const lockDate = (lockResult.rows as Array<{ lock_date: string | null }>)[0]?.lock_date ?? null;
+    // Per-company lock dates — loaded once. Each transaction is checked
+    // against ITS company's lock; scope-less transactions fall back to
+    // the strictest lock in the tenant (matches checkLockDate policy —
+    // the old single-arbitrary-row load let one company's rows govern
+    // every company in a multi-company tenant).
+    const lockResult = await tx.execute(sql`SELECT id, lock_date FROM companies WHERE tenant_id = ${tenantId}`);
+    const lockByCompany = new Map<string, string | null>();
+    let maxLock: string | null = null;
+    for (const row of lockResult.rows as Array<{ id: string; lock_date: string | null }>) {
+      lockByCompany.set(row.id, row.lock_date);
+      if (row.lock_date && (!maxLock || row.lock_date > maxLock)) maxLock = row.lock_date;
+    }
 
     for (const txnId of txnIds) {
       const conds = [eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)];
@@ -855,6 +923,7 @@ export async function bulkUpdateTransactions(
 
       if (!txn) { skipped.push({ id: txnId, reason: 'not_found' }); continue; }
       if (txn.status === 'void') { skipped.push({ id: txnId, reason: 'void' }); continue; }
+      const lockDate = txn.companyId ? (lockByCompany.get(txn.companyId) ?? null) : maxLock;
       if (lockDate && txn.txnDate <= lockDate) { skipped.push({ id: txnId, reason: 'locked' }); continue; }
 
       if (touchesLines) {

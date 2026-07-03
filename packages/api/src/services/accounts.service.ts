@@ -2,8 +2,8 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-import { eq, and, ilike, sql, count } from 'drizzle-orm';
-import type { CreateAccountInput, UpdateAccountInput, AccountFilters } from '@kis-books/shared';
+import { eq, and, ilike, sql, count, inArray } from 'drizzle-orm';
+import type { CreateAccountInput, UpdateAccountInput, AccountFilters, BulkUpdateAccountsInput } from '@kis-books/shared';
 import { COA_TEMPLATES } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { accounts } from '../db/schema/index.js';
@@ -130,6 +130,110 @@ export async function update(tenantId: string, id: string, input: UpdateAccountI
   return updated;
 }
 
+/**
+ * Bulk inline edit from the COA Bulk Edit table. Applies the same
+ * protections as the single-account update() (system accounts keep their
+ * type; isSystem/balance are not editable — the schema only admits
+ * number/name/type/detail), plus batch-level uniqueness checks on
+ * account numbers.
+ *
+ * Number swaps (A↔B) are supported: inside the transaction, all edited
+ * rows whose number changes are first set to NULL, then the new numbers
+ * are applied — otherwise the (tenant_id, account_number) unique index
+ * rejects the first UPDATE of a swap before the second frees the value.
+ * Audit rows are written with the tx executor so they commit atomically
+ * with the change (or roll back with it).
+ */
+export async function bulkUpdate(tenantId: string, input: BulkUpdateAccountsInput, userId?: string) {
+  const { updates } = input;
+
+  // Reject duplicate targets — two edits to the same account would make
+  // the result order-dependent.
+  const ids = updates.map((u) => u.id);
+  if (new Set(ids).size !== ids.length) {
+    throw AppError.badRequest('Duplicate account ids in bulk update');
+  }
+
+  const existing = await db.select().from(accounts)
+    .where(and(eq(accounts.tenantId, tenantId), inArray(accounts.id, ids)));
+  const byId = new Map(existing.map((a) => [a.id, a]));
+  const missing = ids.filter((id) => !byId.has(id));
+  if (missing.length > 0) {
+    throw AppError.notFound(`Account(s) not found: ${missing.join(', ')}`);
+  }
+
+  // Per-account guards + compute each account's FINAL number for the
+  // uniqueness checks below (undefined = unchanged).
+  const finalNumbers = new Map<string, string | null>();
+  for (const u of updates) {
+    const acct = byId.get(u.id)!;
+    if (acct.isSystem && u.accountType && u.accountType !== acct.accountType) {
+      throw AppError.badRequest(`Cannot change the type of system account "${acct.name}"`);
+    }
+    const finalNumber = u.accountNumber !== undefined ? (u.accountNumber || null) : acct.accountNumber;
+    finalNumbers.set(u.id, finalNumber);
+  }
+
+  // Uniqueness within the batch…
+  const seen = new Map<string, string>();
+  for (const [id, num] of finalNumbers) {
+    if (!num) continue;
+    const holder = seen.get(num);
+    if (holder) {
+      throw AppError.conflict(`Account number ${num} assigned to more than one account in this edit`, 'ACCOUNT_NUMBER_EXISTS');
+    }
+    seen.set(num, id);
+  }
+  // …and against tenant accounts NOT part of this batch.
+  const claimed = [...seen.keys()];
+  if (claimed.length > 0) {
+    const outside = await db.select({ id: accounts.id, accountNumber: accounts.accountNumber })
+      .from(accounts)
+      .where(and(eq(accounts.tenantId, tenantId), inArray(accounts.accountNumber, claimed)));
+    for (const o of outside) {
+      if (!byId.has(o.id)) {
+        throw AppError.conflict(`Account number ${o.accountNumber} already exists`, 'ACCOUNT_NUMBER_EXISTS');
+      }
+    }
+  }
+
+  const updated = await db.transaction(async (tx) => {
+    // Phase 1: free the numbers of every edited row whose number changes,
+    // so renumber shuffles/swaps can't trip the unique index mid-flight.
+    const renumbered = updates.filter((u) => {
+      const acct = byId.get(u.id)!;
+      return u.accountNumber !== undefined && (u.accountNumber || null) !== acct.accountNumber;
+    });
+    if (renumbered.length > 0) {
+      await tx.update(accounts)
+        .set({ accountNumber: null })
+        .where(and(eq(accounts.tenantId, tenantId), inArray(accounts.id, renumbered.map((u) => u.id))));
+    }
+
+    // Phase 2: apply each edit and audit it atomically.
+    const results = [];
+    for (const u of updates) {
+      const before = byId.get(u.id)!;
+      const [after] = await tx.update(accounts)
+        .set({
+          ...(u.name !== undefined ? { name: u.name } : {}),
+          ...(u.accountType !== undefined ? { accountType: u.accountType } : {}),
+          ...(u.detailType !== undefined ? { detailType: u.detailType || null } : {}),
+          ...(u.accountNumber !== undefined ? { accountNumber: u.accountNumber || null } : {}),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, u.id)))
+        .returning();
+      if (!after) throw AppError.internal(`Failed to update account ${u.id}`);
+      await auditLog(tenantId, 'update', 'account', u.id, before, after, userId, tx);
+      results.push(after);
+    }
+    return results;
+  });
+
+  return updated;
+}
+
 export async function deactivate(tenantId: string, id: string, userId?: string) {
   const existing = await getById(tenantId, id);
 
@@ -151,7 +255,12 @@ export async function deactivate(tenantId: string, id: string, userId?: string) 
   return updated;
 }
 
-export async function seedFromTemplate(tenantId: string, templateName: string = 'default', companyId?: string) {
+export async function seedFromTemplate(
+  tenantId: string,
+  templateName: string = 'default',
+  companyId?: string,
+  options: { systemOnly?: boolean } = {},
+) {
   // DB-first: super admins can edit templates at runtime via /admin/coa-templates,
   // and those edits live in the coa_templates table. Fall back to the static
   // BUSINESS_TEMPLATES constant for legacy aliases (`default`/`service`/etc.)
@@ -165,7 +274,14 @@ export async function seedFromTemplate(tenantId: string, templateName: string = 
     throw AppError.badRequest(`Unknown template: ${templateName}`);
   }
 
-  const values = template.map((t) => ({
+  // `systemOnly` seeds just the required accounts (A/R, A/P, Payments
+  // Clearing, Sales Tax Payable, Opening Balances, Retained Earnings,
+  // Cash, …) — the ones services look up by systemTag — and skips the
+  // rest of the business-type template. Used when a tenant is created
+  // with "don't create the full chart of accounts".
+  const source = options.systemOnly ? template.filter((t) => t.isSystem) : template;
+
+  const values = source.map((t) => ({
     tenantId,
     companyId: companyId || null,
     accountNumber: t.accountNumber,

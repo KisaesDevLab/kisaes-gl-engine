@@ -915,14 +915,22 @@ export async function importAsNewTenant(
   // 13. Import budgets
   for (const budget of payload.budgets || []) {
     const newId = remap(budget['id'] as string)!;
+    // Carry the ADR-0XW columns through the restore — dropping them
+    // silently turned a tag-scoped fiscal budget into an untagged
+    // calendar budget on the destination appliance.
     await db.execute(sql`
       INSERT INTO budgets (
-        id, tenant_id, company_id, name, fiscal_year, status
+        id, tenant_id, company_id, name, fiscal_year, status,
+        fiscal_year_start, tag_id, period_type, description
       ) VALUES (
         ${newId}, ${tenantId}, ${companyId},
         ${budget['name'] as string},
         ${(budget['fiscal_year'] as number) || new Date().getFullYear()},
-        ${(budget['status'] as string) || 'active'}
+        ${(budget['status'] as string) || 'active'},
+        ${(budget['fiscal_year_start'] as string) || `${(budget['fiscal_year'] as number) || new Date().getFullYear()}-01-01`},
+        ${budget['tag_id'] ? remap(budget['tag_id'] as string) : null},
+        ${(budget['period_type'] as string) || 'monthly'},
+        ${(budget['description'] as string) || null}
       )
     `);
     counts.budgets++;

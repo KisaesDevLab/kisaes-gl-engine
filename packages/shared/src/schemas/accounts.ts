@@ -40,3 +40,18 @@ export const mergeAccountsSchema = z.object({
   sourceId: z.string().uuid(),
   targetId: z.string().uuid(),
 });
+
+// Bulk inline edit from the COA "Bulk Edit" table. Each entry targets one
+// account; only the editable columns are accepted (number/name/type/detail).
+// Capped at 500 — matches the list endpoint's max page size, so one bulk
+// save can cover everything the table can display.
+export const bulkUpdateAccountsSchema = z.object({
+  updates: z.array(z.object({
+    id: z.string().uuid(),
+    accountNumber: z.string().max(20).nullish(),
+    name: z.string().min(1).max(255).optional(),
+    accountType: z.enum(accountTypes).optional(),
+    detailType: z.string().max(100).nullish(),
+  })).min(1).max(500),
+});
+export type BulkUpdateAccountsInput = z.infer<typeof bulkUpdateAccountsSchema>;

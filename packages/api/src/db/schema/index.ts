@@ -50,3 +50,4 @@ export * from './imports.js';
 export * from './extraction.js';
 export * from './daily-sales.js';
 export * from './permissions.js';
+export * from './firm-integrations.js';

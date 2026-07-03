@@ -29,35 +29,46 @@ function getPriorPeriodRange(startDate: string, endDate: string): DateRange {
   };
 }
 
-function getPriorYearRange(startDate: string, endDate: string): DateRange {
-  const start = new Date(startDate);
-  const end = new Date(endDate);
-  start.setFullYear(start.getFullYear() - 1);
-  end.setFullYear(end.getFullYear() - 1);
-  return {
-    startDate: start.toISOString().split('T')[0]!,
-    endDate: end.toISOString().split('T')[0]!,
-    label: formatLabel(start, end),
-  };
+// Shift a YYYY-MM-DD string by whole years with pure string math —
+// no Date round-trip, so no TZ drift, and Feb 29 clamps to Feb 28
+// instead of rolling into March.
+function shiftYearStr(d: string, delta: number): string {
+  const y = parseInt(d.slice(0, 4), 10) + delta;
+  let md = d.slice(5);
+  const isLeap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+  if (md === '02-29' && !isLeap) md = '02-28';
+  return `${y}-${md}`;
 }
 
-function getMultiPeriodRanges(endDate: string, periods: number, periodType: PeriodType): DateRange[] {
+function getPriorYearRange(startDate: string, endDate: string): DateRange {
+  const s = shiftYearStr(startDate, -1);
+  const e = shiftYearStr(endDate, -1);
+  return { startDate: s, endDate: e, label: formatLabelStr(s, e) };
+}
+
+// All arithmetic in UTC. The previous local-getter version shifted
+// boundary dates by a day (or a whole column) whenever the container
+// TZ differed from UTC. `fyStartMonth` makes the 'year' columns FISCAL
+// years — a July-FY company's "last 3 years" P&L used to split each
+// fiscal year across two calendar-year columns.
+function getMultiPeriodRanges(endDate: string, periods: number, periodType: PeriodType, fyStartMonth: number = 1): DateRange[] {
   const ranges: DateRange[] = [];
-  const end = new Date(endDate);
+  const end = new Date(endDate + 'T00:00:00Z');
 
   for (let i = periods - 1; i >= 0; i--) {
     let pStart: Date, pEnd: Date;
     if (periodType === 'month') {
-      pStart = new Date(end.getFullYear(), end.getMonth() - i, 1);
-      pEnd = new Date(end.getFullYear(), end.getMonth() - i + 1, 0);
+      pStart = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - i, 1));
+      pEnd = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - i + 1, 0));
     } else if (periodType === 'quarter') {
-      const qEnd = new Date(end.getFullYear(), end.getMonth() - i * 3 + 1, 0);
-      const qStart = new Date(qEnd.getFullYear(), qEnd.getMonth() - 2, 1);
-      pStart = qStart;
-      pEnd = qEnd;
+      pEnd = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - i * 3 + 1, 0));
+      pStart = new Date(Date.UTC(pEnd.getUTCFullYear(), pEnd.getUTCMonth() - 2, 1));
     } else {
-      pStart = new Date(end.getFullYear() - i, 0, 1);
-      pEnd = new Date(end.getFullYear() - i, 11, 31);
+      // Fiscal year containing endDate, walked back i years.
+      let fyY = end.getUTCFullYear();
+      if (end.getUTCMonth() + 1 < fyStartMonth) fyY--;
+      pStart = new Date(Date.UTC(fyY - i, fyStartMonth - 1, 1));
+      pEnd = new Date(Date.UTC(fyY - i + 1, fyStartMonth - 1, 0));
     }
     ranges.push({
       startDate: pStart.toISOString().split('T')[0]!,
@@ -70,10 +81,15 @@ function getMultiPeriodRanges(endDate: string, periods: number, periodType: Peri
 
 function formatLabel(start: Date, end: Date): string {
   const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  if (start.getMonth() === end.getMonth() && start.getFullYear() === end.getFullYear()) {
-    return `${monthNames[start.getMonth()]} ${start.getFullYear()}`;
+  // UTC getters — these Dates are always UTC-midnight calendar days.
+  if (start.getUTCMonth() === end.getUTCMonth() && start.getUTCFullYear() === end.getUTCFullYear()) {
+    return `${monthNames[start.getUTCMonth()]} ${start.getUTCFullYear()}`;
   }
-  return `${monthNames[start.getMonth()]} – ${monthNames[end.getMonth()]} ${end.getFullYear()}`;
+  return `${monthNames[start.getUTCMonth()]} – ${monthNames[end.getUTCMonth()]} ${end.getUTCFullYear()}`;
+}
+
+function formatLabelStr(startDate: string, endDate: string): string {
+  return formatLabel(new Date(startDate + 'T00:00:00Z'), new Date(endDate + 'T00:00:00Z'));
 }
 
 export async function buildComparativePL(
@@ -82,7 +98,10 @@ export async function buildComparativePL(
   companyId: string | null = null,
 ) {
   if (compareMode === 'multi_period') {
-    const ranges = getMultiPeriodRanges(endDate, periods, periodType);
+    const fyStartMonth = periodType === 'year'
+      ? await reportService.getFiscalYearStart(tenantId, companyId)
+      : 1;
+    const ranges = getMultiPeriodRanges(endDate, periods, periodType, fyStartMonth);
     const columns = ranges.map((r) => ({ label: r.label, startDate: r.startDate, endDate: r.endDate }));
     columns.push({ label: 'Total', startDate: '', endDate: '' });
 
@@ -208,12 +227,14 @@ export async function buildComparativeBS(
   let priorDate: string;
 
   if (compareMode === 'previous_year') {
-    const d = new Date(asOfDate);
-    d.setFullYear(d.getFullYear() - 1);
-    priorDate = d.toISOString().split('T')[0]!;
+    // String year-shift: TZ-proof and Feb-29-safe.
+    priorDate = shiftYearStr(asOfDate, -1);
   } else {
-    const d = new Date(asOfDate);
-    d.setMonth(d.getMonth() - 1);
+    // UTC month-shift so the boundary day can't drift in non-UTC
+    // containers. (setUTCMonth on day-31 clamps forward like setMonth —
+    // acceptable for a comparative as-of column.)
+    const d = new Date(asOfDate + 'T00:00:00Z');
+    d.setUTCMonth(d.getUTCMonth() - 1);
     priorDate = d.toISOString().split('T')[0]!;
   }
 

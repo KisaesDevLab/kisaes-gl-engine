@@ -3,7 +3,7 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { Router } from 'express';
-import { createAccountSchema, updateAccountSchema, accountFiltersSchema, mergeAccountsSchema } from '@kis-books/shared';
+import { createAccountSchema, updateAccountSchema, accountFiltersSchema, mergeAccountsSchema, bulkUpdateAccountsSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
@@ -41,6 +41,13 @@ accountsRouter.post('/import', async (req, res) => {
 accountsRouter.post('/merge', validate(mergeAccountsSchema), async (req, res) => {
   const result = await accountsService.merge(req.tenantId, req.body.sourceId, req.body.targetId, req.userId);
   res.json({ account: result });
+});
+
+// Bulk inline edit (COA Bulk Edit table). Registered before the
+// parameterized routes below so "bulk" is never captured as an :id.
+accountsRouter.put('/bulk', validate(bulkUpdateAccountsSchema), async (req, res) => {
+  const updated = await accountsService.bulkUpdate(req.tenantId, req.body, req.userId);
+  res.json({ updated: updated.length, accounts: updated });
 });
 
 accountsRouter.get('/:id', async (req, res) => {

@@ -80,9 +80,12 @@ export async function ytdTotals(
         sql`${transactions.contactId} IS NOT NULL`,
         gte(transactions.txnDate, yearStart),
         lte(transactions.txnDate, yearEnd),
-        // 1099-relevant txn types: bills, expense-classed transactions,
-        // and bill payments. Refunds and transfers excluded.
-        inArray(transactions.txnType, ['bill', 'bill_payment', 'expense', 'check']),
+        // 1099-relevant txn types: actual CASH disbursements only —
+        // bill payments, direct expenses, checks. 'bill' is excluded:
+        // it's the accrual document, and counting the bill AND its
+        // bill_payment double-counted every paid bill (a $1,000 bill
+        // reported $2,000). Matches report.service.build1099VendorSummary.
+        inArray(transactions.txnType, ['bill_payment', 'expense', 'check']),
         // Drafts are not yet money out the door — exclude them.
         eq(transactions.status, 'posted'),
         sql`${transactions.voidedAt} IS NULL`,

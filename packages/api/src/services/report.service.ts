@@ -54,13 +54,138 @@ function companyFilter(companyId: string | null, alias: string = 't') {
   return sql`t.company_id = ${companyId}`;
 }
 
-async function getFiscalYearStart(tenantId: string, companyId: string | null): Promise<number> {
+// Exported so report-comparison can build fiscal-aware year columns
+// from the same source of truth.
+export async function getFiscalYearStart(tenantId: string, companyId: string | null): Promise<number> {
   if (companyId) {
     const row = await db.execute(sql`SELECT fiscal_year_start_month FROM companies WHERE id = ${companyId}`);
     return (row.rows as any[])[0]?.fiscal_year_start_month ?? 1;
   }
   const row = await db.execute(sql`SELECT fiscal_year_start_month FROM companies WHERE tenant_id = ${tenantId} ORDER BY created_at LIMIT 1`);
   return (row.rows as any[])[0]?.fiscal_year_start_month ?? 1;
+}
+
+// ─── CASH-BASIS ENGINE ───────────────────────────────────────────
+//
+// True cash basis via a VIRTUAL LEDGER (QBO-style payment allocation).
+// The old implementation filtered to "transactions that touched cash"
+// and aggregated those transactions' own P&L legs — so invoice revenue
+// collected through a separate payment (Dr cash / Cr AR, no revenue
+// leg) never appeared, paid bills left AP with an abnormal balance on
+// the cash BS, and the cash BS could unbalance.
+//
+// The virtual ledger rewrites the posted journal per these rules; every
+// group below is internally balanced, so any report built from it
+// balances by construction:
+//
+//   1. AR/AP DOCUMENTS (invoice, bill, credit_memo, vendor_credit) are
+//      excluded entirely — accrual-only constructs.
+//   2. All other transactions pass through as-is (cash sales, direct
+//      expenses, card charges, transfers, deposits, JEs …), EXCEPT that
+//      a payment's AR leg (customer_payment) / AP leg (bill_payment) is
+//      reduced to its UNAPPLIED remainder. The applied portion is
+//      replaced by rule 3; the unapplied remainder stays on AR/AP so
+//      customer pre-payments remain visible and the sheet still ties.
+//   3. For each payment APPLICATION (payment → document, amount), the
+//      paid document's non-AR/AP lines are emitted at the PAYMENT's
+//      date, scaled by amount / document total. A $1,000 invoice
+//      (Cr revenue 900 / Cr tax 100) paid $500 in December recognizes
+//      Cr revenue 450 + Cr tax 50 in December.
+//
+// AR applications come from payment_applications plus the legacy
+// single-invoice link (transactions.applied_to_invoice_id, used by
+// invoice.recordPayment and Stripe). AP applications come from
+// bill_payment_applications, whose amounts are the CASH portion per
+// bill — vendor-credit-settled portions are correctly never recognized
+// (no cash moved).
+function cashBasisLinesWith(
+  tenantId: string,
+  startDate: string | null,
+  endDate: string,
+  companyId: string | null,
+) {
+  const dateCondT = startDate
+    ? sql`t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}`
+    : sql`t.txn_date <= ${endDate}`;
+  const dateCondPay = startDate
+    ? sql`pay.txn_date >= ${startDate} AND pay.txn_date <= ${endDate}`
+    : sql`pay.txn_date <= ${endDate}`;
+  const companyT = companyId ? sql`t.company_id = ${companyId}` : sql`TRUE`;
+  const companyPay = companyId ? sql`pay.company_id = ${companyId}` : sql`TRUE`;
+
+  return sql`
+    ar_apps AS (
+      SELECT pa.payment_id, pa.invoice_id, pa.amount::numeric AS amount
+      FROM payment_applications pa
+      WHERE pa.tenant_id = ${tenantId}
+      UNION ALL
+      SELECT tp.id, tp.applied_to_invoice_id, tp.total::numeric
+      FROM transactions tp
+      WHERE tp.tenant_id = ${tenantId} AND tp.txn_type = 'customer_payment'
+        AND tp.applied_to_invoice_id IS NOT NULL AND tp.total IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM payment_applications pa2
+          WHERE pa2.tenant_id = ${tenantId} AND pa2.payment_id = tp.id
+        )
+    ),
+    cb_lines AS (
+      -- Rule 2: pass-through, with payment AR/AP legs reduced to the
+      -- unapplied remainder.
+      SELECT jl.account_id, jl.tag_id,
+        CASE WHEN t.txn_type = 'bill_payment' AND a.detail_type = 'accounts_payable'
+             THEN GREATEST(jl.debit::numeric - COALESCE(bp.applied, 0), 0)
+             ELSE jl.debit::numeric END AS debit,
+        CASE WHEN t.txn_type = 'customer_payment' AND a.detail_type = 'accounts_receivable'
+             THEN GREATEST(jl.credit::numeric - COALESCE(arp.applied, 0), 0)
+             ELSE jl.credit::numeric END AS credit
+      FROM transactions t
+      JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.tenant_id = ${tenantId}
+        AND jl.is_void_reversal = false
+      JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = ${tenantId}
+      LEFT JOIN (
+        SELECT payment_id, SUM(amount) AS applied FROM ar_apps GROUP BY payment_id
+      ) arp ON arp.payment_id = t.id
+      LEFT JOIN (
+        SELECT payment_id, SUM(amount::numeric) AS applied
+        FROM bill_payment_applications WHERE tenant_id = ${tenantId} GROUP BY payment_id
+      ) bp ON bp.payment_id = t.id
+      WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
+        AND ${dateCondT} AND ${companyT}
+        AND t.txn_type NOT IN ('invoice', 'bill', 'credit_memo', 'vendor_credit')
+
+      UNION ALL
+
+      -- Rule 3 (AR): scaled invoice distributions at the payment date.
+      SELECT il.account_id, il.tag_id,
+        il.debit::numeric  * app.amount / NULLIF(inv.total::numeric, 0) AS debit,
+        il.credit::numeric * app.amount / NULLIF(inv.total::numeric, 0) AS credit
+      FROM ar_apps app
+      JOIN transactions pay ON pay.id = app.payment_id AND pay.tenant_id = ${tenantId}
+        AND pay.status = 'posted' AND ${dateCondPay} AND ${companyPay}
+      JOIN transactions inv ON inv.id = app.invoice_id AND inv.tenant_id = ${tenantId}
+        AND inv.status = 'posted' AND NULLIF(inv.total::numeric, 0) IS NOT NULL
+      JOIN journal_lines il ON il.transaction_id = inv.id AND il.tenant_id = ${tenantId}
+        AND il.is_void_reversal = false
+      JOIN accounts ia ON ia.id = il.account_id AND ia.tenant_id = ${tenantId}
+      WHERE ia.detail_type IS DISTINCT FROM 'accounts_receivable'
+
+      UNION ALL
+
+      -- Rule 3 (AP): scaled bill distributions at the payment date.
+      SELECT bl.account_id, bl.tag_id,
+        bl.debit::numeric  * app.amount::numeric / NULLIF(bill.total::numeric, 0) AS debit,
+        bl.credit::numeric * app.amount::numeric / NULLIF(bill.total::numeric, 0) AS credit
+      FROM bill_payment_applications app
+      JOIN transactions pay ON pay.id = app.payment_id AND pay.tenant_id = ${tenantId}
+        AND pay.status = 'posted' AND ${dateCondPay} AND ${companyPay}
+      JOIN transactions bill ON bill.id = app.bill_id AND bill.tenant_id = ${tenantId}
+        AND bill.status = 'posted' AND NULLIF(bill.total::numeric, 0) IS NOT NULL
+      JOIN journal_lines bl ON bl.transaction_id = bill.id AND bl.tenant_id = ${tenantId}
+        AND bl.is_void_reversal = false
+      JOIN accounts ba ON ba.id = bl.account_id AND ba.tenant_id = ${tenantId}
+      WHERE app.tenant_id = ${tenantId}
+        AND ba.detail_type IS DISTINCT FROM 'accounts_payable'
+    )`;
 }
 
 // ─── FINANCIAL STATEMENTS ────────────────────────────────────────
@@ -100,53 +225,47 @@ export async function buildProfitAndLoss(
   // to the extent their matching lines total nonzero.
   tagId: string | null = null,
 ): Promise<PLResult> {
-  // Cash basis: only recognize revenue when cash is received, only recognize
-  // expenses when cash is paid. The implementation uses the cash-hitting
-  // transactions themselves (payments, expenses, cash sales, bill payments,
-  // transfers, deposits) and derives the matching revenue/expense side from
-  // the counter-leg on the same transaction. Invoices posted but unpaid do
-  // not appear, bills entered but unpaid do not appear. This matches the
-  // standard IRS §448 definition.
-  //
-  // Accrual: include every posted txn whose txn_date is in range. (The
-  // existing query.)
+  // Cash basis: revenue recognized when cash is received, expenses when
+  // cash is paid — implemented by the virtual cash-basis ledger (see
+  // cashBasisLinesWith above), which allocates payment applications
+  // across the paid document's distribution lines at the payment date.
+  // Accrual: every posted txn in range, straight from journal_lines.
   const companyCond = companyId ? sql`company_id = ${companyId}` : sql`TRUE`;
-  const txnSelector = basis === 'cash'
-    ? sql`
-      SELECT DISTINCT t.id FROM transactions t
-      JOIN journal_lines cash_jl
-        ON cash_jl.transaction_id = t.id AND cash_jl.tenant_id = ${tenantId}
-      JOIN accounts cash_a
-        ON cash_a.id = cash_jl.account_id AND cash_a.tenant_id = ${tenantId}
-       AND cash_a.account_type = 'asset'
-       AND cash_a.detail_type IN ('checking', 'savings', 'cash', 'petty_cash', 'undeposited_funds', 'credit_card')
-      WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
-        AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
-        AND ${companyCond}
-    `
-    : sql`
-      SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
-      AND txn_date >= ${startDate} AND txn_date <= ${endDate}
-      AND ${companyCond}
-    `;
 
   // Line-level tag filter (ADR 0XX §5.1): when present, restrict the
-  // aggregated journal_lines to those tagged with the given tag_id.
-  // Evaluated as an inline conjunct on the LEFT JOIN so accounts with
-  // no matching tagged activity still appear with zero totals.
+  // aggregated lines to those tagged with the given tag_id. Virtual
+  // cash-basis lines inherit the source line's tag, so the same clause
+  // applies to both bases.
   const tagJoinClause = tagId ? sql` AND jl.tag_id = ${tagId}` : sql``;
 
-  const rows = await db.execute(sql`
-    SELECT a.id, a.account_number, a.name, a.account_type, a.detail_type,
-      COALESCE(SUM(jl.debit), 0) as total_debit,
-      COALESCE(SUM(jl.credit), 0) as total_credit
-    FROM accounts a
-    LEFT JOIN journal_lines jl ON jl.account_id = a.id AND jl.tenant_id = ${tenantId}
-      AND jl.transaction_id IN (${txnSelector})${tagJoinClause}
-    WHERE a.tenant_id = ${tenantId}
-      AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense')
-    GROUP BY a.id ORDER BY a.account_number, a.name
-  `);
+  const rows = basis === 'cash'
+    ? await db.execute(sql`
+        WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
+        SELECT a.id, a.account_number, a.name, a.account_type, a.detail_type,
+          COALESCE(SUM(jl.debit), 0) as total_debit,
+          COALESCE(SUM(jl.credit), 0) as total_credit
+        FROM accounts a
+        LEFT JOIN cb_lines jl ON jl.account_id = a.id${tagJoinClause}
+        WHERE a.tenant_id = ${tenantId}
+          AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense')
+        GROUP BY a.id, a.account_number, a.name, a.account_type, a.detail_type
+        ORDER BY a.account_number, a.name
+      `)
+    : await db.execute(sql`
+        SELECT a.id, a.account_number, a.name, a.account_type, a.detail_type,
+          COALESCE(SUM(jl.debit), 0) as total_debit,
+          COALESCE(SUM(jl.credit), 0) as total_credit
+        FROM accounts a
+        LEFT JOIN journal_lines jl ON jl.account_id = a.id AND jl.tenant_id = ${tenantId}
+          AND jl.transaction_id IN (
+            SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
+            AND txn_date >= ${startDate} AND txn_date <= ${endDate}
+            AND ${companyCond}
+          )${tagJoinClause}
+        WHERE a.tenant_id = ${tenantId}
+          AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense')
+        GROUP BY a.id ORDER BY a.account_number, a.name
+      `);
 
   const revenue: PLEntry[] = [];
   const cogs: PLEntry[] = [];
@@ -160,7 +279,18 @@ export async function buildProfitAndLoss(
   let totalOtherExpenses = 0;
 
   for (const row of rows.rows as any[]) {
-    const amount = Math.abs(sub(row.total_credit, row.total_debit));
+    // SIGNED, normal-balance convention: income accounts report
+    // credit − debit; cost accounts report debit − credit. An account
+    // running an ABNORMAL balance (refund-heavy revenue account, an
+    // expense account with net rebates) comes out negative and correctly
+    // REDUCES its section. The previous per-account Math.abs() flipped
+    // such balances positive, inflating net income — and since the BS/TB
+    // retained-earnings rows are derived from this net income, the error
+    // propagated into equity and broke A = L + E.
+    const isIncome = row.account_type === 'revenue' || row.account_type === 'other_revenue';
+    const amount = isIncome
+      ? sub(row.total_credit, row.total_debit)
+      : sub(row.total_debit, row.total_credit);
     if (amount === 0) continue;
     const entry: PLEntry = { accountId: row.id, name: row.name, accountNumber: row.account_number, amount };
     switch (row.account_type) {
@@ -214,44 +344,42 @@ export async function buildBalanceSheet(
   tagId: string | null = null,
 ) {
   const tagClause = tagId ? sql` AND jl.tag_id = ${tagId}` : sql``;
-  // Cash basis balance sheet: exclude AR (money owed to us, not yet received)
-  // and AP (money we owe, not yet paid). Those are accrual-only constructs.
-  // Assets and liabilities that represent *already-completed* cash events stay.
-  //
-  // We implement this by restricting the txn set the same way P&L does — cash
-  // basis sees only transactions that moved cash, accrual sees every posted
-  // txn. AR/AP accounts then show zero balance because invoices/bills without
-  // matching payment don't appear in the cash-basis txn set at all.
+  // Cash basis balance sheet: built from the virtual cash-basis ledger
+  // (cashBasisLinesWith). AR/AP documents drop out entirely, payment
+  // AR/AP legs are replaced by scaled document distributions, so:
+  //   - AR/AP show zero except unapplied payment remainders (customer
+  //     pre-payments), which is the honest cash-basis picture;
+  //   - every virtual group is balanced, so A = L + E holds by
+  //     construction (the old txn-set filter could unbalance the sheet
+  //     because it kept the payment's AR leg but not the invoice).
   const companyCond = companyId ? sql`company_id = ${companyId}` : sql`TRUE`;
-  const txnSelector = basis === 'cash'
-    ? sql`
-      SELECT DISTINCT t.id FROM transactions t
-      JOIN journal_lines cash_jl
-        ON cash_jl.transaction_id = t.id AND cash_jl.tenant_id = ${tenantId}
-      JOIN accounts cash_a
-        ON cash_a.id = cash_jl.account_id AND cash_a.tenant_id = ${tenantId}
-       AND cash_a.account_type = 'asset'
-       AND cash_a.detail_type IN ('checking', 'savings', 'cash', 'petty_cash', 'undeposited_funds', 'credit_card')
-      WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
-        AND t.txn_date <= ${asOfDate}
-        AND ${companyCond}
-    `
-    : sql`
-      SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
-      AND txn_date <= ${asOfDate}
-      AND ${companyCond}
-    `;
 
-  const rows = await db.execute(sql`
-    SELECT a.id, a.account_number, a.name, a.account_type, a.detail_type, a.system_tag,
-      COALESCE(SUM(jl.debit), 0) as total_debit,
-      COALESCE(SUM(jl.credit), 0) as total_credit
-    FROM accounts a
-    LEFT JOIN journal_lines jl ON jl.account_id = a.id AND jl.tenant_id = ${tenantId}
-      AND jl.transaction_id IN (${txnSelector})${tagClause}
-    WHERE a.tenant_id = ${tenantId} AND a.account_type IN ('asset', 'liability', 'equity')
-    GROUP BY a.id ORDER BY a.account_number, a.name
-  `);
+  const rows = basis === 'cash'
+    ? await db.execute(sql`
+        WITH ${cashBasisLinesWith(tenantId, null, asOfDate, companyId)}
+        SELECT a.id, a.account_number, a.name, a.account_type, a.detail_type, a.system_tag,
+          COALESCE(SUM(jl.debit), 0) as total_debit,
+          COALESCE(SUM(jl.credit), 0) as total_credit
+        FROM accounts a
+        LEFT JOIN cb_lines jl ON jl.account_id = a.id${tagClause}
+        WHERE a.tenant_id = ${tenantId} AND a.account_type IN ('asset', 'liability', 'equity')
+        GROUP BY a.id, a.account_number, a.name, a.account_type, a.detail_type, a.system_tag
+        ORDER BY a.account_number, a.name
+      `)
+    : await db.execute(sql`
+        SELECT a.id, a.account_number, a.name, a.account_type, a.detail_type, a.system_tag,
+          COALESCE(SUM(jl.debit), 0) as total_debit,
+          COALESCE(SUM(jl.credit), 0) as total_credit
+        FROM accounts a
+        LEFT JOIN journal_lines jl ON jl.account_id = a.id AND jl.tenant_id = ${tenantId}
+          AND jl.transaction_id IN (
+            SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
+            AND txn_date <= ${asOfDate}
+            AND ${companyCond}
+          )${tagClause}
+        WHERE a.tenant_id = ${tenantId} AND a.account_type IN ('asset', 'liability', 'equity')
+        GROUP BY a.id ORDER BY a.account_number, a.name
+      `);
 
   type BSEntry = { accountId: string | null; name: string; accountNumber: string | null; balance: number };
   const assets: BSEntry[] = [];
@@ -260,14 +388,31 @@ export async function buildBalanceSheet(
   let totalAssets = 0, totalLiabilities = 0, totalEquity = 0;
 
   for (const row of rows.rows as any[]) {
-    // Skip the Retained Earnings system account — we compute it dynamically below
-    if (row.system_tag === 'retained_earnings') continue;
-    const balance = sub(row.total_debit, row.total_credit);
-    if (balance === 0) continue;
-    const entry: BSEntry = { accountId: row.id, name: row.name, accountNumber: row.account_number, balance };
-    if (row.account_type === 'asset') { assets.push(entry); totalAssets += balance; }
-    else if (row.account_type === 'liability') { liabilities.push(entry); totalLiabilities += Math.abs(balance); }
-    else { equity.push(entry); totalEquity += Math.abs(balance); }
+    // NOTE: the Retained Earnings system account is intentionally
+    // INCLUDED here at its posted balance. The dynamic rows below add
+    // income that hasn't been closed into it; if an operator posts a
+    // textbook closing entry (Dr income / Cr Retained Earnings), the
+    // income side nets out of the P&L-derived rows and the posted RE
+    // balance carries it instead — the identity holds either way.
+    // (Previously this row was skipped entirely, so any posting to RE
+    // silently vanished from the BS while its counter-leg remained.)
+    const raw = sub(row.total_debit, row.total_credit);
+    if (raw === 0) continue;
+    if (row.account_type === 'asset') {
+      assets.push({ accountId: row.id, name: row.name, accountNumber: row.account_number, balance: raw });
+      totalAssets += raw;
+    } else {
+      // SIGNED accumulation in natural (credit-positive) convention:
+      // a normal liability/equity balance is positive; a contra balance
+      // (overpaid credit card, Owner Withdraw draws) is negative and
+      // correctly REDUCES the section. The previous Math.abs() added
+      // contra balances as positives, unbalancing the sheet by twice
+      // the contra amount.
+      const balance = -raw;
+      const entry: BSEntry = { accountId: row.id, name: row.name, accountNumber: row.account_number, balance };
+      if (row.account_type === 'liability') { liabilities.push(entry); totalLiabilities += balance; }
+      else { equity.push(entry); totalEquity += balance; }
+    }
   }
 
   // Automatic year-end closing: split into Retained Earnings (prior years) + Current Year Net Income
@@ -326,6 +471,62 @@ export async function buildCashFlowStatement(
   // drives the cash-flow calc.
   tagId: string | null = null,
 ) {
+  // DIRECT METHOD from actual cash movements. The previous version was
+  // a stub (operating = accrual net income, investing/financing = 0,
+  // netChange = net income) whose "net change in cash" matched real
+  // cash movement only for a business with no AR/AP/loans/draws.
+  //
+  // Here: net change = SUM(debit − credit) over the period's journal
+  // lines on CASH accounts (checking/savings/cash/petty cash/
+  // undeposited funds) — exact by construction. Each cash-moving
+  // transaction is classified by its counter-legs:
+  //   any fixed-asset leg                  → investing
+  //   any equity or long-term-debt leg     → financing
+  //   everything else (P&L, AR/AP, taxes)  → operating
+  // Transfers between two cash accounts net to zero and drop out.
+  const companyCond = companyId ? sql`t.company_id = ${companyId}` : sql`TRUE`;
+  const tagExistsClause = tagId
+    ? sql` AND EXISTS (SELECT 1 FROM journal_lines jlt WHERE jlt.transaction_id = t.id AND jlt.tenant_id = ${tenantId} AND jlt.tag_id = ${tagId})`
+    : sql``;
+
+  const rows = await db.execute(sql`
+    WITH cash_accounts AS (
+      SELECT id FROM accounts
+      WHERE tenant_id = ${tenantId} AND account_type = 'asset'
+        AND detail_type IN ('checking', 'savings', 'cash', 'petty_cash', 'undeposited_funds')
+    ),
+    txn_cash AS (
+      SELECT t.id, SUM(jl.debit - jl.credit) AS cash_delta
+      FROM transactions t
+      JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.tenant_id = ${tenantId}
+      WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
+        AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
+        AND ${companyCond}
+        AND jl.account_id IN (SELECT id FROM cash_accounts)
+        ${tagExistsClause}
+      GROUP BY t.id
+      HAVING SUM(jl.debit - jl.credit) <> 0
+    )
+    SELECT tc.id, tc.cash_delta,
+      BOOL_OR(a.detail_type = 'fixed_asset') AS touches_investing,
+      BOOL_OR(a.account_type = 'equity' OR a.detail_type IN ('long_term_liability', 'line_of_credit')) AS touches_financing
+    FROM txn_cash tc
+    JOIN journal_lines jl ON jl.transaction_id = tc.id AND jl.tenant_id = ${tenantId}
+      AND jl.account_id NOT IN (SELECT id FROM cash_accounts)
+    JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = ${tenantId}
+    GROUP BY tc.id, tc.cash_delta
+  `);
+
+  let operating = new Decimal(0);
+  let investing = new Decimal(0);
+  let financing = new Decimal(0);
+  for (const r of rows.rows as any[]) {
+    const delta = new Decimal(r.cash_delta || 0);
+    if (r.touches_investing) investing = investing.plus(delta);
+    else if (r.touches_financing) financing = financing.plus(delta);
+    else operating = operating.plus(delta);
+  }
+
   const pl = await buildProfitAndLoss(tenantId, startDate, endDate, 'accrual', companyId, tagId);
   const [labels, footer] = await Promise.all([
     getCFLabels(tenantId),
@@ -335,10 +536,12 @@ export async function buildCashFlowStatement(
     title: 'Cash Flow Statement', startDate, endDate,
     labels,
     footer,
-    operatingActivities: pl.netIncome,
-    investingActivities: 0,
-    financingActivities: 0,
-    netChange: pl.netIncome,
+    // Kept for context alongside the cash sections.
+    netIncome: pl.netIncome,
+    operatingActivities: Number(operating.toFixed(4)),
+    investingActivities: Number(investing.toFixed(4)),
+    financingActivities: Number(financing.toFixed(4)),
+    netChange: Number(operating.plus(investing).plus(financing).toFixed(4)),
   };
 }
 
@@ -728,12 +931,16 @@ export async function build1099VendorSummary(tenantId: string, year: string, com
   const startDate = `${year}-01-01`;
   const endDate = `${year}-12-31`;
 
+  // 1099 is CASH-basis: count actual disbursements (bill payments,
+  // direct expenses, checks) — NOT 'bill' documents (that's accrual and
+  // double-counts once the bill is paid). This matches the portal 1099
+  // center's txn-type set so the two surfaces agree.
   const rows = await db.execute(sql`
     SELECT c.id, c.display_name, c.tax_id,
       COALESCE(SUM(CAST(t.total AS DECIMAL)), 0) as total_paid
     FROM contacts c
     JOIN transactions t ON t.contact_id = c.id AND t.tenant_id = ${tenantId}
-      AND t.txn_type = 'expense' AND t.status = 'posted'
+      AND t.txn_type IN ('bill_payment', 'expense', 'check') AND t.status = 'posted'
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
       AND ${companyFilter(companyId)}
     WHERE c.tenant_id = ${tenantId} AND c.is_1099_eligible = true
@@ -776,9 +983,13 @@ export async function buildGeneralLedger(
   // Evaluated as an inline conjunct. Empty sql`` is a no-op append.
   const tagClause = tagId ? sql` AND jl.tag_id = ${tagId}` : sql``;
   const fyStartMonth = await getFiscalYearStart(tenantId, companyId);
-  const startDt = new Date(startDate);
-  let fyStartYear = startDt.getFullYear();
-  if (startDt.getMonth() + 1 < fyStartMonth) fyStartYear--;
+  // UTC getters — same pattern as buildBalanceSheet. Local getters on a
+  // UTC-parsed 'YYYY-MM-DD' shift the day west of UTC, which flipped the
+  // fiscal year for boundary dates (e.g. a July-1 report in TZ=UTC−5
+  // computed the PREVIOUS fiscal year's start).
+  const startDt = new Date(startDate + 'T00:00:00Z');
+  let fyStartYear = startDt.getUTCFullYear();
+  if (startDt.getUTCMonth() + 1 < fyStartMonth) fyStartYear--;
   const fyStart = `${fyStartYear}-${String(fyStartMonth).padStart(2, '0')}-01`;
 
   // 1. All accounts (so we can include accounts that have beginning
@@ -1009,10 +1220,12 @@ export async function buildTrialBalance(
 ) {
   const fyStartMonth = await getFiscalYearStart(tenantId, companyId);
 
-  // Compute current fiscal year start based on the report end date
-  const endDt = new Date(endDate);
-  let fyStartYear = endDt.getFullYear();
-  if (endDt.getMonth() + 1 < fyStartMonth) fyStartYear--;
+  // Compute current fiscal year start based on the report end date.
+  // UTC getters — see the identical note in buildGeneralLedger; local
+  // getters flipped the fiscal year for boundary dates west of UTC.
+  const endDt = new Date(endDate + 'T00:00:00Z');
+  let fyStartYear = endDt.getUTCFullYear();
+  if (endDt.getUTCMonth() + 1 < fyStartMonth) fyStartYear--;
   const fyStart = `${fyStartYear}-${String(fyStartMonth).padStart(2, '0')}-01`;
   const tagExistsClause = tagId
     ? sql` AND EXISTS (SELECT 1 FROM journal_lines jl2 WHERE jl2.transaction_id = transactions.id AND jl2.tenant_id = ${tenantId} AND jl2.tag_id = ${tagId})`
@@ -1062,7 +1275,12 @@ export async function buildTrialBalance(
     td = td.plus(d);
     tc = tc.plus(c);
     return { ...r, total_debit: d, total_credit: c };
-  });
+  })
+    // The HAVING above keeps accounts with LIFETIME activity; an income
+    // account whose activity is entirely in prior fiscal years passes it
+    // but nets to 0.00/0.00 after the fiscal-YTD CASE — drop those
+    // cosmetic rows.
+    .filter((r) => r.total_debit !== 0 || r.total_credit !== 0);
   // Kept mutable because the Retained Earnings injection below still
   // needs to add reDebit/reCredit to the running totals.
   let totalDebits = Number(td.toFixed(4));
@@ -1080,16 +1298,22 @@ export async function buildTrialBalance(
   // tenant trips this; the fix is an EXISTS-semantic prior-year P&L
   // variant. Captured in tags-v2 followups.
   if (fyStart > '1900-01-02') {
-    const priorEndDate = new Date(fyStart);
-    priorEndDate.setDate(priorEndDate.getDate() - 1);
+    // UTC arithmetic so the day-before subtraction can't drift across a
+    // month boundary in a non-UTC container.
+    const priorEndDate = new Date(fyStart + 'T00:00:00Z');
+    priorEndDate.setUTCDate(priorEndDate.getUTCDate() - 1);
     const priorEnd = priorEndDate.toISOString().split('T')[0]!;
     const retainedPL = await buildProfitAndLoss(tenantId, '1900-01-01', priorEnd, 'accrual', companyId, tagId);
     if (retainedPL.netIncome !== 0) {
-      // Retained earnings is a credit-balance equity account
+      // Retained earnings is a credit-balance equity account. Numbered
+      // 30120 to sort beside the posted Retained Earnings account (the
+      // seeds use 30120; the old '3900' sorted it away from equity), and
+      // labeled "(Prior Years)" so the virtual row is distinguishable
+      // from the real account when closing entries have been posted.
       const reDebit = retainedPL.netIncome < 0 ? Math.abs(retainedPL.netIncome) : 0;
       const reCredit = retainedPL.netIncome > 0 ? retainedPL.netIncome : 0;
       data.push({
-        id: null, account_number: '3900', name: 'Retained Earnings', account_type: 'equity',
+        id: null, account_number: '30120', name: 'Retained Earnings (Prior Years)', account_type: 'equity',
         total_debit: reDebit, total_credit: reCredit,
       });
       totalDebits = Number(new Decimal(totalDebits).plus(reDebit).toFixed(4));

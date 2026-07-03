@@ -17,16 +17,30 @@ dashboardRouter.use(requirePermission('dashboard', 'read'));
 // legacy /budget-performance endpoint.
 async function computeBudgetPerformance(tenantId: string) {
   const today = new Date();
-  const year = today.getFullYear();
+  const todayStr = today.toISOString().split('T')[0]!;
   const budgetsList = await budgetService.list(tenantId);
-  const activeBudget = budgetsList.data.find((b) => b.fiscalYear === year && b.isActive);
+  // Active budget = the one whose FISCAL WINDOW contains today (the old
+  // `fiscalYear === calendar year` pick broke for non-January fiscal
+  // years, where FY2026 spans two calendar years).
+  const activeBudget = budgetsList.data.find((b) => {
+    if (!b.isActive) return false;
+    const fyStart = String((b as any).fiscalYearStart ?? `${b.fiscalYear}-01-01`).slice(0, 10);
+    const fyEndYear = parseInt(fyStart.slice(0, 4), 10) + 1;
+    const fyEnd = `${fyEndYear}${fyStart.slice(4)}`;
+    return fyStart <= todayStr && todayStr < fyEnd;
+  });
   if (!activeBudget) return null;
 
-  const mtdStart = `${year}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
-  const mtdEnd = today.toISOString().split('T')[0]!;
+  const year = today.getUTCFullYear();
+  const mtdStart = `${year}-${String(today.getUTCMonth() + 1).padStart(2, '0')}-01`;
+  const mtdEnd = todayStr;
   const mtdData = await budgetService.buildBudgetVsActual(tenantId, activeBudget.id, mtdStart, mtdEnd);
 
-  const ytdStart = `${year}-01-01`;
+  // Fiscal YTD — from the budget's own fiscal year start, not Jan 1.
+  // buildBudgetVsActual prorates the budget to this window, so YTD
+  // actuals compare against the elapsed months' budget instead of the
+  // full-year number.
+  const ytdStart = String((activeBudget as any).fiscalYearStart ?? `${activeBudget.fiscalYear}-01-01`).slice(0, 10);
   const ytdData = await budgetService.buildBudgetVsActual(tenantId, activeBudget.id, ytdStart, mtdEnd);
 
   return {
@@ -190,46 +204,9 @@ dashboardRouter.get('/action-items', async (req, res) => {
 });
 
 dashboardRouter.get('/budget-performance', async (req, res) => {
-  const today = new Date();
-  const year = today.getFullYear();
-
-  // Find active budget for current year
-  const budgetsList = await budgetService.list(req.tenantId);
-  const activeBudget = budgetsList.data.find((b) => b.fiscalYear === year && b.isActive);
-  if (!activeBudget) {
-    res.json(null);
-    return;
-  }
-
-  // MTD
-  const mtdStart = `${year}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
-  const mtdEnd = today.toISOString().split('T')[0]!;
-  const mtdData = await budgetService.buildBudgetVsActual(req.tenantId, activeBudget.id, mtdStart, mtdEnd);
-
-  // YTD
-  const ytdStart = `${year}-01-01`;
-  const ytdData = await budgetService.buildBudgetVsActual(req.tenantId, activeBudget.id, ytdStart, mtdEnd);
-
-  res.json({
-    budgetName: activeBudget.name,
-    budgetId: activeBudget.id,
-    mtd: {
-      revenueBudget: mtdData.totalRevenueBudget,
-      revenueActual: mtdData.totalRevenueActual,
-      expenseBudget: mtdData.totalExpenseBudget,
-      expenseActual: mtdData.totalExpenseActual,
-      netBudget: mtdData.netIncomeBudget,
-      netActual: mtdData.netIncomeActual,
-    },
-    ytd: {
-      revenueBudget: ytdData.totalRevenueBudget,
-      revenueActual: ytdData.totalRevenueActual,
-      expenseBudget: ytdData.totalExpenseBudget,
-      expenseActual: ytdData.totalExpenseActual,
-      netBudget: ytdData.netIncomeBudget,
-      netActual: ytdData.netIncomeActual,
-    },
-  });
+  // Same code path as /summary — fiscal-window budget selection,
+  // fiscal YTD window, prorated budget comparison.
+  res.json(await computeBudgetPerformance(req.tenantId));
 });
 
 dashboardRouter.get('/banking-health', async (req, res) => {

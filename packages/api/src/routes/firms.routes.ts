@@ -77,6 +77,28 @@ firmsRouter.get('/:firmId', async (req, res) => {
   res.json(firm);
 });
 
+// ─── Tax1099 e-filing integration (firm-level, admin-managed) ────
+// Credentials are stored encrypted per firm; reads expose has*
+// booleans only. Gated to firm admins (super-admins bypass via
+// resolveFirmFromPath).
+
+firmsRouter.get('/:firmId/integrations/tax1099', requireFirmAdmin, async (req, res) => {
+  const { getTax1099Settings } = await import('../services/firm-integrations.service.js');
+  res.json(await getTax1099Settings(req.firmId!));
+});
+
+firmsRouter.put('/:firmId/integrations/tax1099', requireFirmAdmin, async (req, res) => {
+  const { tax1099SettingsSchema } = await import('@kis-books/shared');
+  const parsed = tax1099SettingsSchema.parse(req.body);
+  const { saveTax1099Settings } = await import('../services/firm-integrations.service.js');
+  res.json(await saveTax1099Settings(req.firmId!, parsed, req.userId));
+});
+
+firmsRouter.post('/:firmId/integrations/tax1099/test', requireFirmAdmin, async (req, res) => {
+  const { testConnection } = await import('../services/tax1099.service.js');
+  res.json(await testConnection(req.firmId!));
+});
+
 firmsRouter.patch(
   '/:firmId',
   requireFirmAdmin,

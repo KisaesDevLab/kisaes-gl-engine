@@ -174,10 +174,11 @@ export async function postNext(tenantId: string, scheduleId: string) {
     );
   }
 
+  let txn;
+  try {
   // Get template transaction
   const template = await ledger.getTransaction(tenantId, sched.templateTransactionId);
 
-  let txn;
   if (template.txnType === 'bill') {
     // Bills need bill-specific fields (bill_status, due_date, balance_due,
     // bill number) — route through bill.service.createBill so all those
@@ -272,6 +273,28 @@ export async function postNext(tenantId: string, scheduleId: string) {
       total: template.total || undefined,
       lines,
     }, undefined, template.companyId || undefined);
+  }
+
+  } catch (err) {
+    // The claim advanced next_occurrence BEFORE posting (double-post
+    // protection). If the post then fails — most commonly a lock date
+    // covering the occurrence — the occurrence used to be silently lost
+    // forever. Since nothing was posted, roll the claim back (guarded on
+    // next_occurrence still being our advanced value so we never stomp a
+    // concurrent manual fix) and rethrow; the next scheduler cycle
+    // retries, and the failure stays visible in processAllDue's log.
+    try {
+      await db.update(recurringSchedules)
+        .set({ nextOccurrence: claimedOccurrence, isActive: true, updatedAt: new Date() })
+        .where(and(
+          eq(recurringSchedules.tenantId, tenantId),
+          eq(recurringSchedules.id, scheduleId),
+          eq(recurringSchedules.nextOccurrence, nextOcc),
+        ));
+    } catch (revertErr) {
+      console.error(`[Recurring] Failed to roll back claim for schedule ${scheduleId}:`, revertErr);
+    }
+    throw err;
   }
 
   // Schedule was already claimed + advanced at the top of this function.

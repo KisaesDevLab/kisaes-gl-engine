@@ -226,13 +226,21 @@ export async function deleteTenant(
     // delete from each. Skips tenants/users/user_tenant_access because
     // those need special handling above (FK from users.tenant_id, and
     // we already dropped the access rows).
+    // Join information_schema.tables and filter to BASE TABLE — otherwise
+    // VIEWS that expose a tenant_id column (e.g. conditional_rule_stats,
+    // an aggregate view with GROUP BY) get matched too, and `DELETE FROM
+    // <view>` fails with "cannot delete from view" (SQLSTATE 55000),
+    // aborting the whole transaction and 500-ing the delete.
     const tablesResult = await tx.execute(sql`
-      SELECT table_name
-      FROM information_schema.columns
-      WHERE column_name = 'tenant_id'
-        AND table_schema = 'public'
-        AND table_name NOT IN ('tenants', 'users', 'user_tenant_access')
-      ORDER BY table_name
+      SELECT c.table_name
+      FROM information_schema.columns c
+      JOIN information_schema.tables t
+        ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+      WHERE c.column_name = 'tenant_id'
+        AND c.table_schema = 'public'
+        AND t.table_type = 'BASE TABLE'
+        AND c.table_name NOT IN ('tenants', 'users', 'user_tenant_access')
+      ORDER BY c.table_name
     `);
 
     for (const row of tablesResult.rows as { table_name: string }[]) {
@@ -270,6 +278,43 @@ export async function deleteTenant(
     tenantName: tenant.name,
     usersReassigned: reassignments.length,
   };
+}
+
+/**
+ * Delete a tenant's entire chart of accounts — allowed ONLY when the
+ * tenant has recorded no transactions. Intended for correcting a wrong
+ * COA template on a freshly-provisioned tenant before any activity:
+ * delete, then re-seed from the right template. Refuses once any
+ * transaction exists, because journal_lines reference account_id and
+ * dropping accounts would orphan posted history and corrupt reports.
+ */
+export async function deleteChartOfAccounts(
+  tenantId: string,
+  actingUserId?: string,
+): Promise<{ deleted: true; tenantId: string; accountsDeleted: number }> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tenantId)) {
+    throw AppError.badRequest('Invalid tenant id format');
+  }
+  const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
+  if (!tenant) throw AppError.notFound('Tenant not found');
+
+  const [txn] = await db.select({ c: count() }).from(transactions).where(eq(transactions.tenantId, tenantId));
+  const txnCount = Number(txn?.c ?? 0);
+  if (txnCount > 0) {
+    throw AppError.badRequest(
+      `Cannot delete the chart of accounts: this tenant has ${txnCount} transaction(s). ` +
+      `The chart of accounts can only be deleted before any transactions are recorded.`,
+      'COA_HAS_TRANSACTIONS',
+    );
+  }
+
+  const [existing] = await db.select({ c: count() }).from(accounts).where(eq(accounts.tenantId, tenantId));
+  const accountsDeleted = Number(existing?.c ?? 0);
+
+  await db.delete(accounts).where(eq(accounts.tenantId, tenantId));
+  await auditLog(tenantId, 'delete', 'chart_of_accounts', tenantId, { accountsDeleted }, null, actingUserId);
+
+  return { deleted: true, tenantId, accountsDeleted };
 }
 
 // ─── User Management ─────────────────────────────────────────────
