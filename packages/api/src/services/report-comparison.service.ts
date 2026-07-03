@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
+import { formatDetailTypeLabel } from '@kis-books/shared';
 import * as reportService from './report.service.js';
 
 type CompareMode = 'previous_period' | 'previous_year' | 'ytd_vs_prior_ytd' | 'multi_period';
@@ -14,6 +15,79 @@ function computeVariance(current: number, prior: number): { dollarChange: number
   const dollarChange = current - prior;
   const percentChange = prior === 0 ? null : (dollarChange / Math.abs(prior)) * 100;
   return { dollarChange, percentChange };
+}
+
+// ─── Detail-type grouping for comparative reports ────────────────
+//
+// Same option as the standard reports (?group_by=detail_type), same
+// additive-only contract: the existing comparative shapes are untouched
+// and a `groups` field is added per section, each group carrying its
+// member rows plus a per-column subtotal row.
+
+// One group of comparative rows sharing a detail type. `values` is the
+// group's subtotal for EVERY column — plain sums for period columns,
+// re-derived variance / % variance for the change columns (summing
+// per-row percentages would be nonsense).
+export interface ComparativeDetailTypeGroup<T> {
+  detailType: string | null;
+  label: string;
+  rows: T[];
+  values: Array<number | null>;
+}
+
+type ComparativeColumn = { label: string; type?: string };
+
+// Subtotal a set of comparative rows column-by-column with the same
+// variance semantics used for account rows and section totals:
+//   - plain columns: sum of the member rows' values
+//   - 'variance': current-sum − prior-sum (columns 0 and 1)
+//   - 'percent_variance': computeVariance(currentSum, priorSum) — null
+//     when the prior sum is zero, matching account-row behavior.
+function subtotalValues(rows: Array<{ values: Array<number | null> }>, columns: ComparativeColumn[]): Array<number | null> {
+  const sums = columns.map((col, i) => {
+    if (col.type === 'variance' || col.type === 'percent_variance') return 0;
+    return rows.reduce((acc, r) => acc + (r.values[i] ?? 0), 0);
+  });
+  const out: Array<number | null> = [...sums];
+  for (let i = 0; i < columns.length; i++) {
+    const col = columns[i];
+    if (col?.type === 'variance') {
+      out[i] = (sums[0] ?? 0) - (sums[1] ?? 0);
+    } else if (col?.type === 'percent_variance') {
+      out[i] = computeVariance(sums[0] ?? 0, sums[1] ?? 0).percentChange;
+    }
+  }
+  return out;
+}
+
+// Group comparative rows by detailType in order of first occurrence
+// (null → 'Other'). Rows flagged `calculated` (the BS's computed
+// Retained Earnings / Net Income rows) land in a dedicated trailing
+// 'Equity (Calculated)' group.
+function groupComparativeRows<T extends { detailType?: string | null; values: Array<number | null> }>(
+  rows: T[],
+  columns: ComparativeColumn[],
+  isCalculated: (row: T) => boolean = () => false,
+): Array<ComparativeDetailTypeGroup<T>> {
+  const groups = new Map<string, ComparativeDetailTypeGroup<T>>();
+  const calculated: T[] = [];
+  for (const row of rows) {
+    if (isCalculated(row)) { calculated.push(row); continue; }
+    const dt = row.detailType ?? null;
+    const key = dt ?? '__other__';
+    let group = groups.get(key);
+    if (!group) {
+      group = { detailType: dt, label: formatDetailTypeLabel(dt), rows: [], values: [] };
+      groups.set(key, group);
+    }
+    group.rows.push(row);
+  }
+  const out = Array.from(groups.values());
+  if (calculated.length > 0) {
+    out.push({ detailType: null, label: 'Equity (Calculated)', rows: calculated, values: [] });
+  }
+  for (const g of out) g.values = subtotalValues(g.rows, columns);
+  return out;
 }
 
 function getPriorPeriodRange(startDate: string, endDate: string): DateRange {
@@ -96,7 +170,11 @@ export async function buildComparativePL(
   tenantId: string, startDate: string, endDate: string, basis: Basis,
   compareMode: CompareMode, periods: number = 6, periodType: PeriodType = 'month',
   companyId: string | null = null,
+  // Optional grouping mode (?group_by=detail_type) -- additive `groups`
+  // field per section; existing comparative shape untouched.
+  groupBy: reportService.ReportGroupBy | null = null,
 ) {
+  const grouped = groupBy === 'detail_type';
   if (compareMode === 'multi_period') {
     const fyStartMonth = periodType === 'year'
       ? await reportService.getFiscalYearStart(tenantId, companyId)
@@ -106,20 +184,20 @@ export async function buildComparativePL(
     columns.push({ label: 'Total', startDate: '', endDate: '' });
 
     // Get P&L for each period
-    const plResults = await Promise.all(ranges.map((r) => reportService.buildProfitAndLoss(tenantId, r.startDate, r.endDate, basis, companyId)));
+    const plResults = await Promise.all(ranges.map((r) => reportService.buildProfitAndLoss(tenantId, r.startDate, r.endDate, basis, companyId, null, groupBy)));
 
     type PLType = 'revenue' | 'cogs' | 'expense' | 'other_revenue' | 'other_expense';
     const sectionKey: Record<PLType, 'revenue' | 'cogs' | 'expenses' | 'otherRevenue' | 'otherExpenses'> = {
       revenue: 'revenue', cogs: 'cogs', expense: 'expenses',
       other_revenue: 'otherRevenue', other_expense: 'otherExpenses',
     };
-    const accountMap = new Map<string, { accountId: string; name: string; accountNumber: string | null; type: PLType }>();
+    const accountMap = new Map<string, { accountId: string; name: string; accountNumber: string | null; type: PLType; detailType: string | null }>();
     for (const pl of plResults) {
-      for (const r of pl.revenue) accountMap.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'revenue' });
-      for (const r of pl.cogs) accountMap.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'cogs' });
-      for (const r of pl.expenses) accountMap.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'expense' });
-      for (const r of pl.otherRevenue) accountMap.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_revenue' });
-      for (const r of pl.otherExpenses) accountMap.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_expense' });
+      for (const r of pl.revenue) accountMap.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'revenue', detailType: r.detailType ?? null });
+      for (const r of pl.cogs) accountMap.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'cogs', detailType: r.detailType ?? null });
+      for (const r of pl.expenses) accountMap.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'expense', detailType: r.detailType ?? null });
+      for (const r of pl.otherRevenue) accountMap.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_revenue', detailType: r.detailType ?? null });
+      for (const r of pl.otherExpenses) accountMap.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_expense', detailType: r.detailType ?? null });
     }
 
     const rows = [...accountMap.values()].map((acct) => {
@@ -128,8 +206,25 @@ export async function buildComparativePL(
         return items.find((i) => i.name === acct.name)?.amount || 0;
       });
       values.push(values.reduce((a, b) => a + b, 0)); // Total column
-      return { accountId: acct.accountId, account: acct.name, accountNumber: acct.accountNumber, accountType: acct.type, values };
+      return {
+        accountId: acct.accountId, account: acct.name, accountNumber: acct.accountNumber,
+        accountType: acct.type, values,
+        ...(grouped ? { detailType: acct.detailType } : {}),
+      };
     });
+
+    // Grouped mode: per-section detail-type groups with per-column
+    // subtotal rows (all plain sums here -- multi-period columns carry
+    // no variance columns; the trailing Total column sums like any other).
+    const plGroups = grouped
+      ? {
+          revenue: groupComparativeRows(rows.filter((r) => r.accountType === 'revenue'), columns),
+          cogs: groupComparativeRows(rows.filter((r) => r.accountType === 'cogs'), columns),
+          expenses: groupComparativeRows(rows.filter((r) => r.accountType === 'expense'), columns),
+          otherRevenue: groupComparativeRows(rows.filter((r) => r.accountType === 'other_revenue'), columns),
+          otherExpenses: groupComparativeRows(rows.filter((r) => r.accountType === 'other_expense'), columns),
+        }
+      : undefined;
 
     const withTotal = (vals: number[]) => { vals.push(vals.reduce((a, b) => a + b, 0)); return vals; };
     const revTotals = withTotal(plResults.map((pl) => pl.totalRevenue));
@@ -150,11 +245,12 @@ export async function buildComparativePL(
       totalOtherRevenue: otherRevTotals,
       totalOtherExpenses: otherExpTotals,
       netIncome: netTotals,
+      ...(plGroups ? { groupBy: 'detail_type' as const, groups: plGroups } : {}),
     };
   }
 
   // Two-column comparison modes
-  const currentPL = await reportService.buildProfitAndLoss(tenantId, startDate, endDate, basis, companyId);
+  const currentPL = await reportService.buildProfitAndLoss(tenantId, startDate, endDate, basis, companyId, null, groupBy);
   let priorRange: DateRange;
 
   if (compareMode === 'previous_year') {
@@ -165,7 +261,7 @@ export async function buildComparativePL(
     priorRange = getPriorPeriodRange(startDate, endDate);
   }
 
-  const priorPL = await reportService.buildProfitAndLoss(tenantId, priorRange.startDate, priorRange.endDate, basis, companyId);
+  const priorPL = await reportService.buildProfitAndLoss(tenantId, priorRange.startDate, priorRange.endDate, basis, companyId, null, groupBy);
 
   const columns = [
     { label: formatLabel(new Date(startDate), new Date(endDate)), startDate, endDate },
@@ -175,13 +271,13 @@ export async function buildComparativePL(
   ];
 
   type PLType = 'revenue' | 'cogs' | 'expense' | 'other_revenue' | 'other_expense';
-  const allAccounts = new Map<string, { accountId: string; name: string; accountNumber: string | null; type: PLType }>();
+  const allAccounts = new Map<string, { accountId: string; name: string; accountNumber: string | null; type: PLType; detailType: string | null }>();
   const collect = (pl: any) => {
-    for (const r of pl.revenue) allAccounts.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'revenue' });
-    for (const r of pl.cogs) allAccounts.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'cogs' });
-    for (const r of pl.expenses) allAccounts.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'expense' });
-    for (const r of pl.otherRevenue) allAccounts.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_revenue' });
-    for (const r of pl.otherExpenses) allAccounts.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_expense' });
+    for (const r of pl.revenue) allAccounts.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'revenue', detailType: r.detailType ?? null });
+    for (const r of pl.cogs) allAccounts.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'cogs', detailType: r.detailType ?? null });
+    for (const r of pl.expenses) allAccounts.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'expense', detailType: r.detailType ?? null });
+    for (const r of pl.otherRevenue) allAccounts.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_revenue', detailType: r.detailType ?? null });
+    for (const r of pl.otherExpenses) allAccounts.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_expense', detailType: r.detailType ?? null });
   };
   collect(currentPL);
   collect(priorPL);
@@ -197,8 +293,25 @@ export async function buildComparativePL(
     const current = currentItems.find((i) => i.name === acct.name)?.amount || 0;
     const prior = priorItems.find((i) => i.name === acct.name)?.amount || 0;
     const v = computeVariance(current, prior);
-    return { accountId: acct.accountId, account: acct.name, accountNumber: acct.accountNumber, accountType: acct.type, values: [current, prior, v.dollarChange, v.percentChange] };
+    return {
+      accountId: acct.accountId, account: acct.name, accountNumber: acct.accountNumber,
+      accountType: acct.type, values: [current, prior, v.dollarChange, v.percentChange],
+      ...(grouped ? { detailType: acct.detailType } : {}),
+    };
   });
+
+  // Grouped mode: per-section detail-type groups. Subtotal rows carry
+  // values for every column -- current/prior sums with the $ / % change
+  // re-derived from those sums (same semantics as account rows).
+  const plGroups = grouped
+    ? {
+        revenue: groupComparativeRows(rows.filter((r) => r.accountType === 'revenue'), columns),
+        cogs: groupComparativeRows(rows.filter((r) => r.accountType === 'cogs'), columns),
+        expenses: groupComparativeRows(rows.filter((r) => r.accountType === 'expense'), columns),
+        otherRevenue: groupComparativeRows(rows.filter((r) => r.accountType === 'other_revenue'), columns),
+        otherExpenses: groupComparativeRows(rows.filter((r) => r.accountType === 'other_expense'), columns),
+      }
+    : undefined;
 
   const varRow = (cur: number, pr: number) => {
     const v = computeVariance(cur, pr);
@@ -216,14 +329,19 @@ export async function buildComparativePL(
     totalOtherRevenue: varRow(currentPL.totalOtherRevenue, priorPL.totalOtherRevenue),
     totalOtherExpenses: varRow(currentPL.totalOtherExpenses, priorPL.totalOtherExpenses),
     netIncome: varRow(currentPL.netIncome, priorPL.netIncome),
+    ...(plGroups ? { groupBy: 'detail_type' as const, groups: plGroups } : {}),
   };
 }
 
 export async function buildComparativeBS(
   tenantId: string, asOfDate: string, basis: Basis, compareMode: CompareMode,
   companyId: string | null = null,
+  // Optional grouping mode (?group_by=detail_type) -- additive `groups`
+  // field per section; existing comparative shape untouched.
+  groupBy: reportService.ReportGroupBy | null = null,
 ) {
-  const currentBS = await reportService.buildBalanceSheet(tenantId, asOfDate, basis, companyId);
+  const grouped = groupBy === 'detail_type';
+  const currentBS = await reportService.buildBalanceSheet(tenantId, asOfDate, basis, companyId, null, groupBy);
   let priorDate: string;
 
   if (compareMode === 'previous_year') {
@@ -238,7 +356,7 @@ export async function buildComparativeBS(
     priorDate = d.toISOString().split('T')[0]!;
   }
 
-  const priorBS = await reportService.buildBalanceSheet(tenantId, priorDate, basis, companyId);
+  const priorBS = await reportService.buildBalanceSheet(tenantId, priorDate, basis, companyId, null, groupBy);
 
   // Per-column asOfDate lets the web's QuickZoom drill-down build the right
   // transaction filter for each period. Variance columns carry no date.
@@ -249,7 +367,7 @@ export async function buildComparativeBS(
     { label: '% Change', type: 'percent_variance' },
   ];
 
-  type BSRow = { accountId: string | null; name: string; accountNumber: string | null; balance: number };
+  type BSRow = { accountId: string | null; name: string; accountNumber: string | null; balance: number; detailType?: string | null };
   function mergeSection(current: BSRow[], prior: BSRow[]) {
     const names = new Set([...current.map((c) => c.name), ...prior.map((p) => p.name)]);
     return [...names].map((name) => {
@@ -261,18 +379,36 @@ export async function buildComparativeBS(
       return {
         accountId: cur?.accountId ?? pri?.accountId ?? null,
         name,
-        values: [curBal, priBal, v.dollarChange, v.percentChange],
+        values: [curBal, priBal, v.dollarChange, v.percentChange] as Array<number | null>,
+        // Present only in grouped mode (the underlying BS entries carry
+        // detailType only when built with groupBy).
+        ...(grouped ? { detailType: (cur?.detailType ?? pri?.detailType) ?? null } : {}),
       };
     });
   }
+
+  const mergedAssets = mergeSection(currentBS.assets, priorBS.assets);
+  const mergedLiabilities = mergeSection(currentBS.liabilities, priorBS.liabilities);
+  const mergedEquity = mergeSection(currentBS.equity, priorBS.equity);
+
+  // Grouped mode: detail-type groups per section; the computed rows
+  // (accountId null: Retained Earnings (Prior Years) / Net Income
+  // (Current Year)) land in a trailing 'Equity (Calculated)' group.
+  const bsGroups = grouped
+    ? {
+        assets: groupComparativeRows(mergedAssets, columns),
+        liabilities: groupComparativeRows(mergedLiabilities, columns),
+        equity: groupComparativeRows(mergedEquity, columns, (r) => r.accountId === null),
+      }
+    : undefined;
 
   return {
     title: 'Balance Sheet (Comparative)', comparisonMode: compareMode, columns,
     labels: currentBS.labels,
     footer: currentBS.footer,
-    assets: mergeSection(currentBS.assets, priorBS.assets),
-    liabilities: mergeSection(currentBS.liabilities, priorBS.liabilities),
-    equity: mergeSection(currentBS.equity, priorBS.equity),
+    assets: mergedAssets,
+    liabilities: mergedLiabilities,
+    equity: mergedEquity,
     totalAssets: [currentBS.totalAssets, priorBS.totalAssets, ...Object.values(computeVariance(currentBS.totalAssets, priorBS.totalAssets))],
     totalLiabilities: [currentBS.totalLiabilities, priorBS.totalLiabilities, ...Object.values(computeVariance(currentBS.totalLiabilities, priorBS.totalLiabilities))],
     totalEquity: [currentBS.totalEquity, priorBS.totalEquity, ...Object.values(computeVariance(currentBS.totalEquity, priorBS.totalEquity))],
@@ -284,5 +420,6 @@ export async function buildComparativeBS(
       priorBS.totalLiabilitiesAndEquity,
       ...Object.values(computeVariance(currentBS.totalLiabilitiesAndEquity, priorBS.totalLiabilitiesAndEquity)),
     ],
+    ...(bsGroups ? { groupBy: 'detail_type' as const, groups: bsGroups } : {}),
   };
 }

@@ -104,12 +104,31 @@ type ExportRow = Record<string, unknown> & {
   _summary?: boolean;
   _total?: boolean;
   _label?: string;
+  // First-column indentation in the rendered PDF/HTML table (grouped
+  // display mode). Stripped from CSV like the other underscore flags.
+  _indent?: boolean;
 };
 
-// Build structured export rows that match on-screen display
-function extractDataAndColumns(reportData: any): { rows: any[]; columns: ExportColumn[] } {
-  // ─── Comparative reports (have columns + rows with values arrays) ───
-  if (reportData.columns && reportData.rows && Array.isArray(reportData.columns)) {
+// Structural shapes for the grouped-export helpers (standard +
+// comparative detail-type groups). The report payloads themselves are
+// still `any` (legacy), but the new grouping paths are typed.
+type ExportPLEntry = { accountNumber?: string | null; name: string; amount: number; detailType?: string | null };
+type ExportBSEntry = { accountId?: string | null; accountNumber?: string | null; name: string; balance: number; detailType?: string | null };
+type ExportCompRow = { account?: string; name?: string; accountNumber?: string | null; values?: Array<number | null> };
+type ExportCompGroup = { label: string; rows: ExportCompRow[]; values: Array<number | null> };
+
+// Build structured export rows that match on-screen display.
+// Exported for tests: lets the suite assert on the export layout (CSV
+// rows and PDF HTML) without launching Puppeteer.
+export function extractDataAndColumns(reportData: any): { rows: any[]; columns: ExportColumn[] } {
+  // ─── Comparative reports (have columns + per-column values) ───
+  // The comparative P&L carries a flat `rows` array; the comparative
+  // BALANCE SHEET carries assets/liabilities/equity sections with
+  // array-valued totals and no `rows` key — the old `&& reportData.rows`
+  // gate silently dropped it into the generic (empty) path, so every
+  // comparative BS CSV/PDF exported as "No data".
+  const isComparativeBS = !!reportData.assets && Array.isArray(reportData.totalAssets);
+  if (reportData.columns && Array.isArray(reportData.columns) && (reportData.rows || isComparativeBS)) {
     const cols: ExportColumn[] = [
       { key: 'account', label: 'Account' },
       ...reportData.columns.map((c: any) => ({ key: c.label, label: c.label, align: 'right' as const })),
@@ -117,7 +136,7 @@ function extractDataAndColumns(reportData: any): { rows: any[]; columns: ExportC
 
     const rows: any[] = [];
 
-    const rowsByType = (t: string) => reportData.rows.filter((r: any) => r.accountType === t);
+    const rowsByType = (t: string) => (reportData.rows || []).filter((r: any) => r.accountType === t);
     const revenueRows = rowsByType('revenue');
     const cogsRows = rowsByType('cogs');
     const expenseRows = rowsByType('expense');
@@ -136,6 +155,31 @@ function extractDataAndColumns(reportData: any): { rows: any[]; columns: ExportC
       const row: any = { _total: true, account: label };
       (values || []).forEach((v: any, i: number) => { row[reportData.columns[i]?.label || `Col${i}`] = fmtNum(v); });
       return row;
+    };
+
+    // Detail-type grouping / condensed display (?group_by=detail_type
+    // [+ ?display=condensed]). The comparative builders return additive
+    // per-section `groups`; here we mirror the on-screen presentation:
+    // grouped = group header + indented member rows + per-column
+    // subtotal row; condensed = only the subtotal rows.
+    const condensed = reportData.display === 'condensed';
+    const cmpGroups = reportData.groups as undefined | Record<string, ExportCompGroup[]>;
+    const groupSubtotalRow = (label: string, values: Array<number | null>) => {
+      const row: Record<string, unknown> = { _summary: true, account: label };
+      (values || []).forEach((v, i) => { row[reportData.columns[i]?.label || `Col${i}`] = fmtNum(v); });
+      return row;
+    };
+    const pushSectionRows = (
+      sectionRows: ExportCompRow[],
+      groupsForSection?: ExportCompGroup[],
+    ) => {
+      if (!groupsForSection) { rows.push(...sectionRows.map(mapRow)); return; }
+      for (const g of groupsForSection) {
+        if (condensed) { rows.push(groupSubtotalRow(g.label, g.values)); continue; }
+        rows.push({ _section: true, _label: g.label, account: g.label });
+        for (const r of g.rows) rows.push({ ...mapRow(r), _indent: true });
+        rows.push(groupSubtotalRow(`Total ${g.label}`, g.values));
+      }
     };
     // Build a subtotal row "a − b" across all period columns. Handles
     // comparative report column shapes (current / prior / $ change /
@@ -176,18 +220,18 @@ function extractDataAndColumns(reportData: any): { rows: any[]; columns: ExportC
 
     if (revenueRows.length) {
       rows.push({ account: `--- ${revenueLabel.toUpperCase()} ---` });
-      rows.push(...revenueRows.map(mapRow));
+      pushSectionRows(revenueRows, cmpGroups?.['revenue']);
       if (reportData.totalRevenue) rows.push(totalRow(`Total ${revenueLabel}`, reportData.totalRevenue));
     }
     if (hasCogs) {
       rows.push({ account: `--- ${cogsLabel.toUpperCase()} ---` });
-      rows.push(...cogsRows.map(mapRow));
+      pushSectionRows(cogsRows, cmpGroups?.['cogs']);
       if (reportData.totalCogs) rows.push(totalRow(`Total ${cogsLabel}`, reportData.totalCogs));
       rows.push(totalRow(grossProfitLabel, zipSubtract(reportData.totalRevenue, reportData.totalCogs)));
     }
     if (expenseRows.length) {
       rows.push({ account: `--- ${expensesLabel.toUpperCase()} ---` });
-      rows.push(...expenseRows.map(mapRow));
+      pushSectionRows(expenseRows, cmpGroups?.['expenses']);
       if (reportData.totalExpenses) rows.push(totalRow(`Total ${expensesLabel}`, reportData.totalExpenses));
     }
     if (showOperatingIncome) {
@@ -196,12 +240,12 @@ function extractDataAndColumns(reportData: any): { rows: any[]; columns: ExportC
     }
     if (hasOtherRev) {
       rows.push({ account: `--- ${otherRevenueLabel.toUpperCase()} ---` });
-      rows.push(...otherRevenueRows.map(mapRow));
+      pushSectionRows(otherRevenueRows, cmpGroups?.['otherRevenue']);
       if (reportData.totalOtherRevenue) rows.push(totalRow(`Total ${otherRevenueLabel}`, reportData.totalOtherRevenue));
     }
     if (hasOtherExp) {
       rows.push({ account: `--- ${otherExpensesLabel.toUpperCase()} ---` });
-      rows.push(...otherExpenseRows.map(mapRow));
+      pushSectionRows(otherExpenseRows, cmpGroups?.['otherExpenses']);
       if (reportData.totalOtherExpenses) rows.push(totalRow(`Total ${otherExpensesLabel}`, reportData.totalOtherExpenses));
     }
     if (reportData.netIncome) rows.push(totalRow(netIncomeLabel, reportData.netIncome));
@@ -212,20 +256,15 @@ function extractDataAndColumns(reportData: any): { rows: any[]; columns: ExportC
       const assetsLabel = BS?.assets || 'Assets';
       const liabilitiesLabel = BS?.liabilities || 'Liabilities';
       const equityLabel = BS?.equity || 'Equity';
-      const mapBSRow = (r: any) => {
-        const row: any = { account: r.name };
-        (r.values || []).forEach((v: any, i: number) => { row[reportData.columns[i]?.label || `Col${i}`] = fmtNum(v); });
-        return row;
-      };
       rows.length = 0;
       rows.push({ account: `--- ${assetsLabel.toUpperCase()} ---` });
-      rows.push(...reportData.assets.map(mapBSRow));
+      pushSectionRows(reportData.assets, cmpGroups?.['assets']);
       rows.push(totalRow(`Total ${assetsLabel}`, reportData.totalAssets));
       rows.push({ account: `--- ${liabilitiesLabel.toUpperCase()} ---` });
-      rows.push(...reportData.liabilities.map(mapBSRow));
+      pushSectionRows(reportData.liabilities, cmpGroups?.['liabilities']);
       rows.push(totalRow(`Total ${liabilitiesLabel}`, reportData.totalLiabilities));
       rows.push({ account: `--- ${equityLabel.toUpperCase()} ---` });
-      rows.push(...(reportData.equity || []).map(mapBSRow));
+      pushSectionRows(reportData.equity || [], cmpGroups?.['equity']);
       rows.push(totalRow(`Total ${equityLabel}`, reportData.totalEquity));
       // Closing grand total — mirrors the standard BS export.
       if (reportData.totalLiabilitiesAndEquity) {
@@ -239,23 +278,50 @@ function extractDataAndColumns(reportData: any): { rows: any[]; columns: ExportC
 
   // ─── P&L (standard — has revenue + expenses arrays) ───
   if (reportData.revenue && reportData.expenses && !reportData.columns) {
-    // Grouped mode (?group_by=detail_type): the export stays flat but
-    // gains a Detail Type column — the simplest shape that round-trips
-    // cleanly into a spreadsheet pivot.
+    // Grouped mode (?group_by=detail_type): mirrors the on-screen
+    // presentation — group header rows, indented member accounts, and a
+    // subtotal row per group (condensed = subtotal rows only) — and
+    // keeps a Detail Type column so the CSV still pivots cleanly.
+    // ?show_pct=1 adds the on-screen "% of Revenue" column.
     const grouped = reportData.groupBy === 'detail_type';
+    const condensed = reportData.display === 'condensed';
+    const showPct = reportData.showPct === true;
+    const totalRev = Number(reportData.totalRevenue) || 0;
+    const pctOf = (amount: number): string => {
+      if (!showPct) return '';
+      if (totalRev === 0) return '\u2014';
+      return `${((amount / totalRev) * 100).toFixed(1)}%`;
+    };
     const columns: ExportColumn[] = [
       { key: 'account', label: 'Account' },
       ...(grouped ? [{ key: 'detail_type', label: 'Detail Type' }] : []),
       { key: 'amount', label: 'Amount', align: 'right' },
+      ...(showPct ? [{ key: 'pct', label: '% of Revenue', align: 'right' as const }] : []),
     ];
     const rows: any[] = [];
-    const line = (account: string, amount: any = '') => rows.push({ account, detail_type: '', amount });
-    const totalLine = (account: string, amount: any = '') => rows.push({ _total: true, account, detail_type: '', amount });
-    const accountLine = (entry: any) => rows.push({
+    const line = (account: string, amount: any = '') => rows.push({ account, detail_type: '', amount, pct: '' });
+    const totalLine = (account: string, amount: any = '', pct: string = '') => rows.push({ _total: true, account, detail_type: '', amount, pct });
+    const accountRow = (entry: ExportPLEntry) => ({
       account: entry.accountNumber ? `${entry.accountNumber} — ${entry.name}` : entry.name,
       detail_type: grouped ? fmtDetailType(entry.detailType) : '',
       amount: fmtNum(entry.amount),
+      pct: pctOf(entry.amount),
     });
+    const accountLine = (entry: ExportPLEntry) => rows.push(accountRow(entry));
+    // Emit one section's account rows honoring the display mode.
+    type PLGroupShape = { label: string; entries: ExportPLEntry[]; subtotal: number };
+    const emitEntries = (entries: ExportPLEntry[], groupsForSection?: PLGroupShape[]) => {
+      if (!grouped || !groupsForSection) { for (const e of entries) accountLine(e); return; }
+      for (const g of groupsForSection) {
+        if (condensed) {
+          rows.push({ _summary: true, account: g.label, detail_type: '', amount: fmtNum(g.subtotal), pct: pctOf(g.subtotal) });
+          continue;
+        }
+        rows.push({ _section: true, _label: g.label, account: g.label, detail_type: '', amount: '', pct: '' });
+        for (const e of g.entries) rows.push({ ...accountRow(e), _indent: true });
+        rows.push({ _summary: true, account: `Total ${g.label}`, detail_type: '', amount: fmtNum(g.subtotal), pct: pctOf(g.subtotal) });
+      }
+    };
 
     const hasCogs = (reportData.cogs?.length ?? 0) > 0;
     const hasOtherRev = (reportData.otherRevenue?.length ?? 0) > 0;
@@ -273,43 +339,43 @@ function extractDataAndColumns(reportData: any): { rows: any[]; columns: ExportC
     const netIncomeLabel = L?.netIncome || 'Net Income';
 
     line(`--- ${revenueLabel.toUpperCase()} ---`);
-    for (const r of reportData.revenue) accountLine(r);
-    totalLine(`Total ${revenueLabel}`, fmtNum(reportData.totalRevenue));
+    emitEntries(reportData.revenue, reportData.groups?.revenue);
+    totalLine(`Total ${revenueLabel}`, fmtNum(reportData.totalRevenue), pctOf(totalRev));
     line('');
 
     if (hasCogs) {
       line(`--- ${cogsLabel.toUpperCase()} ---`);
-      for (const r of reportData.cogs) accountLine(r);
-      totalLine(`Total ${cogsLabel}`, fmtNum(reportData.totalCogs));
-      totalLine(grossProfitLabel, fmtNum(reportData.grossProfit ?? 0));
+      emitEntries(reportData.cogs, reportData.groups?.cogs);
+      totalLine(`Total ${cogsLabel}`, fmtNum(reportData.totalCogs), pctOf(Number(reportData.totalCogs) || 0));
+      totalLine(grossProfitLabel, fmtNum(reportData.grossProfit ?? 0), pctOf(Number(reportData.grossProfit ?? 0)));
       line('');
     }
 
     line(`--- ${expensesLabel.toUpperCase()} ---`);
-    for (const e of reportData.expenses) accountLine(e);
-    totalLine(`Total ${expensesLabel}`, fmtNum(reportData.totalExpenses));
+    emitEntries(reportData.expenses, reportData.groups?.expenses);
+    totalLine(`Total ${expensesLabel}`, fmtNum(reportData.totalExpenses), pctOf(Number(reportData.totalExpenses) || 0));
     line('');
 
     if (showOperatingIncome) {
-      totalLine(operatingIncomeLabel, fmtNum(reportData.operatingIncome ?? 0));
+      totalLine(operatingIncomeLabel, fmtNum(reportData.operatingIncome ?? 0), pctOf(Number(reportData.operatingIncome ?? 0)));
       line('');
     }
 
     if (hasOtherRev) {
       line(`--- ${otherRevenueLabel.toUpperCase()} ---`);
-      for (const r of reportData.otherRevenue) accountLine(r);
-      totalLine(`Total ${otherRevenueLabel}`, fmtNum(reportData.totalOtherRevenue));
+      emitEntries(reportData.otherRevenue, reportData.groups?.otherRevenue);
+      totalLine(`Total ${otherRevenueLabel}`, fmtNum(reportData.totalOtherRevenue), pctOf(Number(reportData.totalOtherRevenue) || 0));
       line('');
     }
 
     if (hasOtherExp) {
       line(`--- ${otherExpensesLabel.toUpperCase()} ---`);
-      for (const r of reportData.otherExpenses) accountLine(r);
-      totalLine(`Total ${otherExpensesLabel}`, fmtNum(reportData.totalOtherExpenses));
+      emitEntries(reportData.otherExpenses, reportData.groups?.otherExpenses);
+      totalLine(`Total ${otherExpensesLabel}`, fmtNum(reportData.totalOtherExpenses), pctOf(Number(reportData.totalOtherExpenses) || 0));
       line('');
     }
 
-    totalLine(netIncomeLabel.toUpperCase(), fmtNum(reportData.netIncome));
+    totalLine(netIncomeLabel.toUpperCase(), fmtNum(reportData.netIncome), pctOf(Number(reportData.netIncome) || 0));
     return { rows, columns };
   }
 
@@ -335,16 +401,38 @@ function extractDataAndColumns(reportData: any): { rows: any[]; columns: ExportC
       return fmtDetailType(e.detailType);
     };
     const rows: any[] = [];
+    const condensed = reportData.display === 'condensed';
+    const accountRowBS = (e: ExportBSEntry) => ({
+      account: e.accountNumber ? `${e.accountNumber} — ${e.name}` : e.name,
+      detail_type: dtFor(e),
+      balance: fmtNum(Math.abs(e.balance)),
+    });
+    // Emit one section honoring the display mode: detail = flat account
+    // rows; grouped = group header + indented members + subtotal row;
+    // condensed = only the group subtotal rows.
+    type BSGroupShape = { label: string; entries: ExportBSEntry[]; subtotal: number };
+    const emitBSSection = (entries: ExportBSEntry[], groupsForSection?: BSGroupShape[]) => {
+      if (!grouped || !groupsForSection) { for (const e of entries) rows.push(accountRowBS(e)); return; }
+      for (const g of groupsForSection) {
+        if (condensed) {
+          rows.push({ _summary: true, account: g.label, detail_type: '', balance: fmtNum(g.subtotal) });
+          continue;
+        }
+        rows.push({ _section: true, _label: g.label, account: g.label, detail_type: '', balance: '' });
+        for (const e of g.entries) rows.push({ ...accountRowBS(e), _indent: true });
+        rows.push({ _summary: true, account: `Total ${g.label}`, detail_type: '', balance: fmtNum(g.subtotal) });
+      }
+    };
     rows.push({ account: `--- ${assetsLabel.toUpperCase()} ---`, detail_type: '', balance: '' });
-    for (const a of reportData.assets) rows.push({ account: a.accountNumber ? `${a.accountNumber} — ${a.name}` : a.name, detail_type: dtFor(a), balance: fmtNum(Math.abs(a.balance)) });
+    emitBSSection(reportData.assets, reportData.groups?.assets);
     rows.push({ _total: true, account: `Total ${assetsLabel}`, detail_type: '', balance: fmtNum(reportData.totalAssets) });
     rows.push({ account: '', detail_type: '', balance: '' });
     rows.push({ account: `--- ${liabilitiesLabel.toUpperCase()} ---`, detail_type: '', balance: '' });
-    for (const l of reportData.liabilities) rows.push({ account: l.accountNumber ? `${l.accountNumber} — ${l.name}` : l.name, detail_type: dtFor(l), balance: fmtNum(Math.abs(l.balance)) });
+    emitBSSection(reportData.liabilities, reportData.groups?.liabilities);
     rows.push({ _total: true, account: `Total ${liabilitiesLabel}`, detail_type: '', balance: fmtNum(reportData.totalLiabilities) });
     rows.push({ account: '', detail_type: '', balance: '' });
     rows.push({ account: `--- ${equityLabel.toUpperCase()} ---`, detail_type: '', balance: '' });
-    for (const e of (reportData.equity || [])) rows.push({ account: e.accountNumber ? `${e.accountNumber} — ${e.name}` : e.name, detail_type: dtFor(e), balance: fmtNum(Math.abs(e.balance)) });
+    emitBSSection(reportData.equity || [], reportData.groups?.equity);
     rows.push({ _total: true, account: `Total ${equityLabel}`, detail_type: '', balance: fmtNum(reportData.totalEquity) });
     rows.push({ account: '', detail_type: '', balance: '' });
     rows.push({ _total: true, account: totalLELabel.toUpperCase(), detail_type: '', balance: fmtNum(reportData.totalLiabilitiesAndEquity) });
@@ -546,7 +634,7 @@ function extractDataAndColumns(reportData: any): { rows: any[]; columns: ExportC
   return { rows, columns };
 }
 
-function buildHtmlTable(rows: ExportRow[], columns: ExportColumn[]): string {
+export function buildHtmlTable(rows: ExportRow[], columns: ExportColumn[]): string {
   if (!rows.length) return '<p>No data</p>';
 
   // Per-column width style attribute. Columns without an explicit width
@@ -583,17 +671,22 @@ function buildHtmlTable(rows: ExportRow[], columns: ExportColumn[]): string {
     const isLegacyTotal = row._total === true
       || (typeof firstVal === 'string' && (firstVal.startsWith('Total') || firstVal.startsWith('TOTAL') || firstVal === 'NET INCOME'));
 
-    const cells = columns.map((c) => {
+    const cells = columns.map((c, idx) => {
       let val = row[c.key];
       if (typeof val === 'string' && val.startsWith('---')) val = val.replace(/^---\s*|\s*---$/g, '');
       const isNum = typeof val === 'number';
       // Apply `.amount` if the column declares right-alignment OR the
       // value is a JS number (legacy auto-detect for older report shapes).
       const cls = (c.align === 'right' || isNum) ? ' class="amount"' : '';
+      // Merge width + grouped-mode indentation into one style attribute.
+      const styles: string[] = [];
+      if (c.width) styles.push(`width:${c.width}`);
+      if (idx === 0 && row._indent) styles.push('padding-left:22px');
+      const styleAttr = styles.length ? ` style="${styles.join(';')}"` : '';
       const rendered = val === null || val === undefined
         ? ''
         : isNum ? fmtNum(val) : exportService.escapeHtml(val);
-      return `<td${cls}${widthStyle(c)}>${rendered}</td>`;
+      return `<td${cls}${styleAttr}>${rendered}</td>`;
     }).join('');
 
     // Explicit summary row marker (per-account beginning / ending /
@@ -686,6 +779,14 @@ function readGroupBy(req: { query: Record<string, unknown> }): 'detail_type' | n
   return req.query['group_by'] === 'detail_type' ? 'detail_type' : null;
 }
 
+// Display mode for exports: ?display=condensed collapses grouped
+// sections to their subtotal rows only (used with group_by=detail_type
+// so PDFs/CSVs mirror the on-screen condensed view). Rides along on the
+// JSON response too (additive) where the client simply ignores it.
+function readDisplay(req: { query: Record<string, unknown> }): 'condensed' | null {
+  return req.query['display'] === 'condensed' ? 'condensed' : null;
+}
+
 // Financial Statements
 reportsRouter.get('/profit-loss', async (req, res) => {
   const { start_date, end_date, basis, format, compare, periods, period_type } = req.query as Record<string, string>;
@@ -696,6 +797,10 @@ reportsRouter.get('/profit-loss', async (req, res) => {
   const companyId = resolveCompanyScope(req);
   const tagId = readTagFilter(req);
 
+  const display = readDisplay(req);
+  // ?show_pct=1 mirrors the on-screen "% of Revenue" toggle into the
+  // standard P&L export (PDF/CSV gain the column).
+  const showPct = req.query['show_pct'] === '1' || req.query['show_pct'] === 'true';
   if (compare) {
     const data = await comparisonService.buildComparativePL(
       req.tenantId, sd, ed, b,
@@ -703,11 +808,12 @@ reportsRouter.get('/profit-loss', async (req, res) => {
       parseInt(periods || '6'),
       (period_type as any) || 'month',
       companyId,
+      readGroupBy(req),
     );
-    await respond(res, data, format);
+    await respond(res, { ...data, ...(display ? { display } : {}) }, format);
   } else {
     const data = await reportService.buildProfitAndLoss(req.tenantId, sd, ed, b, companyId, tagId, readGroupBy(req));
-    await respond(res, data, format);
+    await respond(res, { ...data, ...(display ? { display } : {}), ...(showPct ? { showPct: true } : {}) }, format);
   }
 });
 
@@ -715,6 +821,7 @@ reportsRouter.get('/balance-sheet', async (req, res) => {
   const { as_of_date, basis, format, compare } = req.query as Record<string, string>;
   const companyId = resolveCompanyScope(req);
   const tagId = readTagFilter(req);
+  const display = readDisplay(req);
   if (compare) {
     const data = await comparisonService.buildComparativeBS(
       req.tenantId,
@@ -722,8 +829,9 @@ reportsRouter.get('/balance-sheet', async (req, res) => {
       (basis as 'cash' | 'accrual') || 'accrual',
       compare as any,
       companyId,
+      readGroupBy(req),
     );
-    await respond(res, data, format);
+    await respond(res, { ...data, ...(display ? { display } : {}) }, format);
     return;
   }
   const data = await reportService.buildBalanceSheet(
@@ -734,7 +842,7 @@ reportsRouter.get('/balance-sheet', async (req, res) => {
     tagId,
     readGroupBy(req),
   );
-  await respond(res, data, format);
+  await respond(res, { ...data, ...(display ? { display } : {}) }, format);
 });
 
 reportsRouter.get('/cash-flow', async (req, res) => {

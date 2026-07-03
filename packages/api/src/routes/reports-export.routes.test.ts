@@ -17,13 +17,15 @@ import { sql } from 'drizzle-orm';
 import { db, pool } from '../db/index.js';
 import * as authService from '../services/auth.service.js';
 import * as ledger from '../services/ledger.service.js';
-import { reportsRouter } from './reports.routes.js';
+import { reportsRouter, extractDataAndColumns, buildHtmlTable } from './reports.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
 
 let server: Server | null = null;
 let port = 0;
 let token = '';
 let tenantId = '';
+let revenueName = '';
+let expenseName = '';
 
 const testEmail = `reports-export-${Date.now()}@example.com`;
 
@@ -106,6 +108,8 @@ beforeAll(async () => {
       || allAccounts.find((a) => a.accountType === 'asset')!;
     const revenue = allAccounts.find((a) => a.accountType === 'revenue')!;
     const expense = allAccounts.find((a) => a.accountType === 'expense')!;
+    revenueName = revenue.name;
+    expenseName = expense.name;
 
     const post = (date: string, memo: string, lines: Array<{ accountId: string; debit: string; credit: string }>) =>
       ledger.postTransaction(tenantId, { txnType: 'journal_entry', txnDate: date, memo, lines }, undefined, companyId);
@@ -239,5 +243,116 @@ describe('group_by=detail_type (P&L / Balance Sheet)', () => {
     // Ungrouped CSV keeps the original two-column layout.
     const plPlain = await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31&format=csv');
     expect(plPlain.body).toContain('"Account","Amount"');
+  });
+});
+
+describe('comparative grouping + condensed / export presentation', () => {
+  it('comparative P&L grouped: per-group subtotals carry values for every column', async () => {
+    const r = await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31&compare=previous_year&group_by=detail_type');
+    expect(r.status).toBe(200);
+    const data = JSON.parse(r.body);
+    expect(data.groupBy).toBe('detail_type');
+    expect(data.groups).toBeDefined();
+    // Existing comparative shape untouched.
+    expect(Array.isArray(data.rows)).toBe(true);
+    expect(data.columns.length).toBe(4);
+
+    for (const section of ['revenue', 'expenses'] as const) {
+      const groups = data.groups[section] as Array<{ label: string; rows: Array<{ values: Array<number | null> }>; values: Array<number | null> }>;
+      for (const g of groups) {
+        // Period columns (0 = current, 1 = prior) are plain sums of the
+        // member rows; the change columns are re-derived from the sums.
+        for (const colIdx of [0, 1]) {
+          const sum = g.rows.reduce((a, row) => a + (row.values[colIdx] ?? 0), 0);
+          expect(g.values[colIdx]).toBeCloseTo(sum, 4);
+        }
+        expect(g.values[2]).toBeCloseTo((g.values[0] ?? 0) - (g.values[1] ?? 0), 4);
+        const prior = g.values[1] ?? 0;
+        if (prior === 0) expect(g.values[3]).toBeNull();
+        else expect(g.values[3]).toBeCloseTo((((g.values[0] ?? 0) - prior) / Math.abs(prior)) * 100, 4);
+      }
+      // Group subtotals foot to the section totals, column for column.
+      for (const colIdx of [0, 1]) {
+        const total = groups.reduce((a, g) => a + (g.values[colIdx] ?? 0), 0);
+        const sectionTotals = section === 'revenue' ? data.totalRevenue : data.totalExpenses;
+        expect(total).toBeCloseTo(sectionTotals[colIdx] ?? 0, 4);
+      }
+    }
+  });
+
+  it('comparative BS grouped: Equity (Calculated) group + column-wise footing', async () => {
+    const r = await get('/balance-sheet?as_of_date=2026-12-31&compare=previous_year&group_by=detail_type');
+    expect(r.status).toBe(200);
+    const data = JSON.parse(r.body);
+    expect(data.groups).toBeDefined();
+    const calc = data.groups.equity.find((g: { label: string }) => g.label === 'Equity (Calculated)');
+    expect(calc).toBeDefined();
+    // Asset groups foot to Total Assets for both period columns.
+    for (const colIdx of [0, 1]) {
+      const sum = data.groups.assets.reduce((a: number, g: { values: Array<number | null> }) => a + (g.values[colIdx] ?? 0), 0);
+      expect(sum).toBeCloseTo(data.totalAssets[colIdx] ?? 0, 4);
+    }
+  });
+
+  it('comparative CSV honors grouped and condensed display modes', async () => {
+    const grouped = await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31&compare=previous_year&group_by=detail_type&format=csv');
+    expect(grouped.status).toBe(200);
+    expect(grouped.body).toContain(revenueName);      // account rows present
+    expect(grouped.body).toContain('"Total ');        // group subtotal rows
+
+    const condensed = await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31&compare=previous_year&group_by=detail_type&display=condensed&format=csv');
+    expect(condensed.status).toBe(200);
+    expect(condensed.body).not.toContain(revenueName); // no account rows
+    expect(condensed.body).toContain('Total Revenue'); // section totals stay
+  });
+
+  it('standard condensed CSV drops account rows but keeps group + section totals', async () => {
+    const r = await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31&group_by=detail_type&display=condensed&format=csv');
+    expect(r.status).toBe(200);
+    expect(r.body).not.toContain(revenueName);
+    expect(r.body).not.toContain(expenseName);
+    expect(r.body).toContain('Total Revenue');
+    expect(r.body).toContain('NET INCOME');
+  });
+
+  it('standard P&L CSV can mirror the %-of-Revenue column (?show_pct=1)', async () => {
+    const r = await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31&show_pct=1&format=csv');
+    expect(r.status).toBe(200);
+    expect(r.body).toContain('% of Revenue');
+    expect(r.body).toContain('"100.0%"');
+  });
+
+  it('comparative BS CSV exports rows (pre-existing "No data" gate bug)', async () => {
+    // Before the gate fix, the comparative BS (which has no `rows` key)
+    // fell through to the generic path and exported 404 "No data".
+    const r = await get('/balance-sheet?as_of_date=2026-12-31&compare=previous_year&format=csv');
+    expect(r.status).toBe(200);
+    expect(r.contentType).toContain('text/csv');
+    expect(r.body).toContain('Total Assets');
+    expect(r.body).toContain('TOTAL LIABILITIES & EQUITY');
+  });
+
+  it('PDF HTML mirrors the on-screen presentation for grouped and condensed', async () => {
+    // Assert on the export HTML directly (extractDataAndColumns +
+    // buildHtmlTable are exactly what the PDF pipeline feeds Puppeteer)
+    // so the test does not need a Chromium install.
+    const groupedData = JSON.parse((await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31&group_by=detail_type')).body);
+    const g = extractDataAndColumns(groupedData);
+    const groupedHtml = buildHtmlTable(g.rows, g.columns);
+    expect(groupedHtml).toContain(revenueName);          // member accounts
+    expect(groupedHtml).toContain('padding-left:22px');  // indented under group headers
+    expect(groupedHtml).toContain('Total ');             // group subtotal rows
+
+    const condensedData = JSON.parse((await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31&group_by=detail_type&display=condensed')).body);
+    const c = extractDataAndColumns({ ...condensedData, display: 'condensed' });
+    const condensedHtml = buildHtmlTable(c.rows, c.columns);
+    expect(condensedHtml).not.toContain(revenueName);    // subtotals only
+    expect(condensedHtml).toContain('NET INCOME');
+
+    // Comparative BS grouped HTML carries the calculated-equity group label.
+    const cbs = JSON.parse((await get('/balance-sheet?as_of_date=2026-12-31&compare=previous_year&group_by=detail_type')).body);
+    const b = extractDataAndColumns(cbs);
+    const bsHtml = buildHtmlTable(b.rows, b.columns);
+    expect(bsHtml).toContain('Equity (Calculated)');
   });
 });
