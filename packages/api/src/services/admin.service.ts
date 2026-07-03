@@ -317,6 +317,110 @@ export async function deleteChartOfAccounts(
   return { deleted: true, tenantId, accountsDeleted };
 }
 
+/**
+ * Delete EVERY transaction for a tenant — a books reset that keeps the
+ * chart of accounts, contacts, companies, users, and settings intact.
+ * Super-admin only (router-level guard) with a type-to-confirm UI.
+ *
+ * Wipes, in one atomic transaction:
+ *   - transaction_tags, journal_lines, transactions
+ *   - payment / bill-payment / vendor-credit applications, deposit lines
+ *   - reconciliations + reconciliation_lines (they reference the
+ *     deleted journal lines)
+ *   - recurring schedules (their templates ARE transactions)
+ * Resets (not deletes):
+ *   - bank_feed_items that were matched/added → back to 'pending' so
+ *     the bank data survives and can be re-categorized
+ *   - daily_sales_entries → unlink posted JE, back to 'draft'
+ *   - accounts.balance → 0 (no posted lines remain; rule 24 holds)
+ */
+export async function deleteAllTransactions(
+  tenantId: string,
+  actingUserId?: string,
+): Promise<{ deleted: true; tenantId: string; transactionsDeleted: number }> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tenantId)) {
+    throw AppError.badRequest('Invalid tenant id format');
+  }
+  const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
+  if (!tenant) throw AppError.notFound('Tenant not found');
+
+  const [txn] = await db.select({ c: count() }).from(transactions).where(eq(transactions.tenantId, tenantId));
+  const transactionsDeleted = Number(txn?.c ?? 0);
+  if (transactionsDeleted === 0) {
+    return { deleted: true, tenantId, transactionsDeleted: 0 };
+  }
+
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`DELETE FROM transaction_tags WHERE tenant_id = ${tenantId}`);
+    await tx.execute(sql`DELETE FROM reconciliation_lines WHERE reconciliation_id IN (SELECT id FROM reconciliations WHERE tenant_id = ${tenantId})`);
+    await tx.execute(sql`DELETE FROM reconciliations WHERE tenant_id = ${tenantId}`);
+    await tx.execute(sql`DELETE FROM payment_applications WHERE tenant_id = ${tenantId}`);
+    await tx.execute(sql`DELETE FROM bill_payment_applications WHERE tenant_id = ${tenantId}`);
+    await tx.execute(sql`DELETE FROM vendor_credit_applications WHERE tenant_id = ${tenantId}`);
+    // deposit_lines has no tenant_id — scope through the parent deposit.
+    await tx.execute(sql`DELETE FROM deposit_lines WHERE deposit_id IN (SELECT id FROM transactions WHERE tenant_id = ${tenantId})`);
+    await tx.execute(sql`DELETE FROM recurring_schedules WHERE tenant_id = ${tenantId}`);
+    await tx.execute(sql`
+      UPDATE daily_sales_entries
+      SET transaction_id = NULL, status = 'draft', posted_at = NULL
+      WHERE tenant_id = ${tenantId} AND transaction_id IS NOT NULL
+    `);
+    await tx.execute(sql`
+      UPDATE bank_feed_items
+      SET matched_transaction_id = NULL, status = 'pending', match_type = NULL
+      WHERE tenant_id = ${tenantId} AND matched_transaction_id IS NOT NULL
+    `);
+    await tx.execute(sql`DELETE FROM journal_lines WHERE tenant_id = ${tenantId}`);
+    await tx.execute(sql`DELETE FROM transactions WHERE tenant_id = ${tenantId}`);
+    // No posted lines remain → every account's running balance is zero.
+    await tx.execute(sql`UPDATE accounts SET balance = 0, updated_at = now() WHERE tenant_id = ${tenantId}`);
+  });
+
+  await auditLog(tenantId, 'delete', 'all_transactions', tenantId,
+    { transactionsDeleted, tenantName: tenant.name }, null, actingUserId);
+
+  return { deleted: true, tenantId, transactionsDeleted };
+}
+
+/**
+ * Apply a chart-of-accounts template to a tenant. Only valid when the
+ * tenant currently has ZERO accounts — the intended flow for fixing a
+ * wrong template is: delete the chart of accounts (guarded on zero
+ * transactions), then apply the right template here. Template slugs
+ * resolve DB-first (runtime-editable coa_templates) with the static
+ * BUSINESS_TEMPLATES fallback, exactly like tenant creation.
+ */
+export async function applyCoaTemplate(
+  tenantId: string,
+  templateSlug: string,
+  actingUserId?: string,
+): Promise<{ applied: true; tenantId: string; templateSlug: string; accountsCreated: number }> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tenantId)) {
+    throw AppError.badRequest('Invalid tenant id format');
+  }
+  const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
+  if (!tenant) throw AppError.notFound('Tenant not found');
+
+  const [existing] = await db.select({ c: count() }).from(accounts).where(eq(accounts.tenantId, tenantId));
+  if (Number(existing?.c ?? 0) > 0) {
+    throw AppError.badRequest(
+      `This tenant already has ${existing!.c} accounts. Delete the chart of accounts first ` +
+      `(only possible before any transactions are recorded), then apply the template.`,
+      'COA_NOT_EMPTY',
+    );
+  }
+
+  const accountsService = await import('./accounts.service.js');
+  await accountsService.seedFromTemplate(tenantId, templateSlug);
+
+  const [after] = await db.select({ c: count() }).from(accounts).where(eq(accounts.tenantId, tenantId));
+  const accountsCreated = Number(after?.c ?? 0);
+  await auditLog(tenantId, 'create', 'coa_template_applied', tenantId,
+    null, { templateSlug, accountsCreated }, actingUserId);
+
+  return { applied: true, tenantId, templateSlug, accountsCreated };
+}
+
 // ─── User Management ─────────────────────────────────────────────
 
 export async function listAllUsers() {

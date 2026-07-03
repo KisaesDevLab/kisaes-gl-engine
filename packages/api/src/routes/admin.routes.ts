@@ -300,6 +300,23 @@ adminRouter.delete('/tenants/:id/chart-of-accounts', async (req, res) => {
   res.json({ message: 'Chart of accounts deleted', ...result });
 });
 
+// Delete every transaction for a tenant (books reset) — keeps COA,
+// contacts, companies, users, settings; resets bank-feed matches and
+// account balances. Destructive; type-to-confirm in the UI.
+adminRouter.delete('/tenants/:id/transactions', async (req, res) => {
+  const result = await adminService.deleteAllTransactions(req.params['id']!, req.userId);
+  res.json({ message: 'All transactions deleted', ...result });
+});
+
+// Apply a COA template to a tenant with an EMPTY chart of accounts
+// (delete-COA first if a wrong template was seeded).
+adminRouter.post('/tenants/:id/apply-coa-template', async (req, res) => {
+  const { z } = await import('zod');
+  const { templateSlug } = z.object({ templateSlug: z.string().min(1).max(100) }).parse(req.body);
+  const result = await adminService.applyCoaTemplate(req.params['id']!, templateSlug, req.userId);
+  res.status(201).json({ message: 'Chart of accounts template applied', ...result });
+});
+
 // ─── User Management ────────────────────────────────────────────
 
 adminRouter.get('/users', async (req, res) => {
