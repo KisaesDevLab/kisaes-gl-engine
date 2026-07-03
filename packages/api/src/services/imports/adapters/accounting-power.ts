@@ -310,6 +310,13 @@ export function parseGl(buf: Buffer): { entries: CanonicalGlEntry[]; errors: Imp
     const originalLines = lines.filter((l) => !VOID_MEMO_RE.test(l.memo));
 
     const buildEntry = (group: RawGlLine[], isVoidReversal: boolean): CanonicalGlEntry | null => {
+      // Accounting Power exports include zero-amount rows (0.00 debit AND
+      // 0.00 credit) — placeholder/memo rows, and sometimes entirely-zero
+      // entries. They contribute nothing to the ledger, and the posting
+      // layer rejects a transaction whose totals are both zero ("must
+      // have non-zero amounts"), which failed the whole import. Drop the
+      // zero lines; if the entire entry is zero, skip it silently.
+      group = group.filter((l) => parseFloat(l.debit) !== 0 || parseFloat(l.credit) !== 0);
       if (group.length === 0) return null;
       const first = group[0]!;
       const iso = toIsoDate(first.date);

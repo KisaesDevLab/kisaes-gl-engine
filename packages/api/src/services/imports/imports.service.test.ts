@@ -210,6 +210,38 @@ describe('Imports Service', () => {
     });
   });
 
+  describe('Accounting Power GL with zero-amount lines', () => {
+    // AP exports emit placeholder rows with 0.00 in BOTH columns, and
+    // occasionally an entirely-zero entry. These used to fail the whole
+    // import at commit ("Transaction must have non-zero amounts").
+    const csv = `Journal, Date, Reference, Description, Account, Account Name, Debit Amount, Credit Amount, Memo, Department, Updated by
+"GJ","01/05/2025","9001","Sale","1000","Cash",250.0000,0.0000,"","","u1"
+"GJ","01/05/2025","9001","Sale","4000","Sales",0.0000,250.0000,"","","u1"
+"GJ","01/05/2025","9001","Sale","4000","Sales",0.0000,0.0000,"placeholder","","u1"
+"GJ","01/06/2025","9002","Zero memo entry","1000","Cash",0.0000,0.0000,"","","u1"
+"GJ","01/06/2025","9002","Zero memo entry","4000","Sales",0.0000,0.0000,"","","u1"
+`;
+
+    it('drops zero lines, skips all-zero entries, and commits', async () => {
+      await db.insert(accounts).values([
+        { tenantId, companyId, accountNumber: '1000', name: 'Cash', accountType: 'asset' },
+        { tenantId, companyId, accountNumber: '4000', name: 'Sales', accountType: 'revenue' },
+      ]);
+      const out = await importsService.createSession({
+        tenantId, companyId, userId,
+        file: fileFromText('gl-zero.csv', csv),
+        kind: 'gl_transactions',
+        sourceSystem: 'accounting_power',
+        options: {},
+      });
+      // Only the real JE survives; the all-zero entry is skipped.
+      expect(out.preview.jeGroupCount).toBe(1);
+      expect(out.validationErrors).toHaveLength(0);
+      const commit = await importsService.commitSession(tenantId, companyId, userId, out.session.id);
+      expect(commit.result.created).toBe(1);
+    });
+  });
+
   describe('Accounting Power GL with inline void', () => {
     // Original JE 7080: cash → AP for 100. Then a VOID with reversed
     // signs and "Check Voided" memo. Adapter should split into two JEs
