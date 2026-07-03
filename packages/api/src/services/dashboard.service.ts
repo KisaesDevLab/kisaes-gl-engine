@@ -43,8 +43,15 @@ export async function getFinancialSnapshot(tenantId: string) {
 
     let revenue = 0, expenses = 0;
     for (const row of rows.rows as any[]) {
-      const amt = Math.abs(parseFloat(row.total_credit) - parseFloat(row.total_debit));
-      if (row.account_type === 'revenue' || row.account_type === 'other_revenue') revenue += amt;
+      // Signed, normal-balance convention (matches report.service): income
+      // is credit - debit, costs are debit - credit. Abnormal balances
+      // (refund-heavy revenue, rebated expenses) reduce their bucket
+      // instead of inflating it via Math.abs.
+      const isIncome = row.account_type === 'revenue' || row.account_type === 'other_revenue';
+      const amt = isIncome
+        ? parseFloat(row.total_credit) - parseFloat(row.total_debit)
+        : parseFloat(row.total_debit) - parseFloat(row.total_credit);
+      if (isIncome) revenue += amt;
       else expenses += amt;
     }
     return { revenue, expenses, netIncome: revenue - expenses };
@@ -84,8 +91,15 @@ export async function getRevExpTrend(tenantId: string, months: number = 6) {
 
     let revenue = 0, expenses = 0;
     for (const row of rows.rows as any[]) {
-      const amt = Math.abs(parseFloat(row.total_credit) - parseFloat(row.total_debit));
-      if (row.account_type === 'revenue' || row.account_type === 'other_revenue') revenue += amt;
+      // Signed, normal-balance convention (matches report.service): income
+      // is credit - debit, costs are debit - credit. Abnormal balances
+      // (refund-heavy revenue, rebated expenses) reduce their bucket
+      // instead of inflating it via Math.abs.
+      const isIncome = row.account_type === 'revenue' || row.account_type === 'other_revenue';
+      const amt = isIncome
+        ? parseFloat(row.total_credit) - parseFloat(row.total_debit)
+        : parseFloat(row.total_debit) - parseFloat(row.total_credit);
+      if (isIncome) revenue += amt;
       else expenses += amt;
     }
     data.push({ month: label, revenue, expenses });

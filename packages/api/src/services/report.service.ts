@@ -160,7 +160,18 @@ export async function buildProfitAndLoss(
   let totalOtherExpenses = 0;
 
   for (const row of rows.rows as any[]) {
-    const amount = Math.abs(sub(row.total_credit, row.total_debit));
+    // SIGNED, normal-balance convention: income accounts report
+    // credit − debit; cost accounts report debit − credit. An account
+    // running an ABNORMAL balance (refund-heavy revenue account, an
+    // expense account with net rebates) comes out negative and correctly
+    // REDUCES its section. The previous per-account Math.abs() flipped
+    // such balances positive, inflating net income — and since the BS/TB
+    // retained-earnings rows are derived from this net income, the error
+    // propagated into equity and broke A = L + E.
+    const isIncome = row.account_type === 'revenue' || row.account_type === 'other_revenue';
+    const amount = isIncome
+      ? sub(row.total_credit, row.total_debit)
+      : sub(row.total_debit, row.total_credit);
     if (amount === 0) continue;
     const entry: PLEntry = { accountId: row.id, name: row.name, accountNumber: row.account_number, amount };
     switch (row.account_type) {
@@ -260,14 +271,31 @@ export async function buildBalanceSheet(
   let totalAssets = 0, totalLiabilities = 0, totalEquity = 0;
 
   for (const row of rows.rows as any[]) {
-    // Skip the Retained Earnings system account — we compute it dynamically below
-    if (row.system_tag === 'retained_earnings') continue;
-    const balance = sub(row.total_debit, row.total_credit);
-    if (balance === 0) continue;
-    const entry: BSEntry = { accountId: row.id, name: row.name, accountNumber: row.account_number, balance };
-    if (row.account_type === 'asset') { assets.push(entry); totalAssets += balance; }
-    else if (row.account_type === 'liability') { liabilities.push(entry); totalLiabilities += Math.abs(balance); }
-    else { equity.push(entry); totalEquity += Math.abs(balance); }
+    // NOTE: the Retained Earnings system account is intentionally
+    // INCLUDED here at its posted balance. The dynamic rows below add
+    // income that hasn't been closed into it; if an operator posts a
+    // textbook closing entry (Dr income / Cr Retained Earnings), the
+    // income side nets out of the P&L-derived rows and the posted RE
+    // balance carries it instead — the identity holds either way.
+    // (Previously this row was skipped entirely, so any posting to RE
+    // silently vanished from the BS while its counter-leg remained.)
+    const raw = sub(row.total_debit, row.total_credit);
+    if (raw === 0) continue;
+    if (row.account_type === 'asset') {
+      assets.push({ accountId: row.id, name: row.name, accountNumber: row.account_number, balance: raw });
+      totalAssets += raw;
+    } else {
+      // SIGNED accumulation in natural (credit-positive) convention:
+      // a normal liability/equity balance is positive; a contra balance
+      // (overpaid credit card, Owner Withdraw draws) is negative and
+      // correctly REDUCES the section. The previous Math.abs() added
+      // contra balances as positives, unbalancing the sheet by twice
+      // the contra amount.
+      const balance = -raw;
+      const entry: BSEntry = { accountId: row.id, name: row.name, accountNumber: row.account_number, balance };
+      if (row.account_type === 'liability') { liabilities.push(entry); totalLiabilities += balance; }
+      else { equity.push(entry); totalEquity += balance; }
+    }
   }
 
   // Automatic year-end closing: split into Retained Earnings (prior years) + Current Year Net Income
@@ -776,9 +804,13 @@ export async function buildGeneralLedger(
   // Evaluated as an inline conjunct. Empty sql`` is a no-op append.
   const tagClause = tagId ? sql` AND jl.tag_id = ${tagId}` : sql``;
   const fyStartMonth = await getFiscalYearStart(tenantId, companyId);
-  const startDt = new Date(startDate);
-  let fyStartYear = startDt.getFullYear();
-  if (startDt.getMonth() + 1 < fyStartMonth) fyStartYear--;
+  // UTC getters — same pattern as buildBalanceSheet. Local getters on a
+  // UTC-parsed 'YYYY-MM-DD' shift the day west of UTC, which flipped the
+  // fiscal year for boundary dates (e.g. a July-1 report in TZ=UTC−5
+  // computed the PREVIOUS fiscal year's start).
+  const startDt = new Date(startDate + 'T00:00:00Z');
+  let fyStartYear = startDt.getUTCFullYear();
+  if (startDt.getUTCMonth() + 1 < fyStartMonth) fyStartYear--;
   const fyStart = `${fyStartYear}-${String(fyStartMonth).padStart(2, '0')}-01`;
 
   // 1. All accounts (so we can include accounts that have beginning
@@ -1009,10 +1041,12 @@ export async function buildTrialBalance(
 ) {
   const fyStartMonth = await getFiscalYearStart(tenantId, companyId);
 
-  // Compute current fiscal year start based on the report end date
-  const endDt = new Date(endDate);
-  let fyStartYear = endDt.getFullYear();
-  if (endDt.getMonth() + 1 < fyStartMonth) fyStartYear--;
+  // Compute current fiscal year start based on the report end date.
+  // UTC getters — see the identical note in buildGeneralLedger; local
+  // getters flipped the fiscal year for boundary dates west of UTC.
+  const endDt = new Date(endDate + 'T00:00:00Z');
+  let fyStartYear = endDt.getUTCFullYear();
+  if (endDt.getUTCMonth() + 1 < fyStartMonth) fyStartYear--;
   const fyStart = `${fyStartYear}-${String(fyStartMonth).padStart(2, '0')}-01`;
   const tagExistsClause = tagId
     ? sql` AND EXISTS (SELECT 1 FROM journal_lines jl2 WHERE jl2.transaction_id = transactions.id AND jl2.tenant_id = ${tenantId} AND jl2.tag_id = ${tagId})`
@@ -1062,7 +1096,12 @@ export async function buildTrialBalance(
     td = td.plus(d);
     tc = tc.plus(c);
     return { ...r, total_debit: d, total_credit: c };
-  });
+  })
+    // The HAVING above keeps accounts with LIFETIME activity; an income
+    // account whose activity is entirely in prior fiscal years passes it
+    // but nets to 0.00/0.00 after the fiscal-YTD CASE — drop those
+    // cosmetic rows.
+    .filter((r) => r.total_debit !== 0 || r.total_credit !== 0);
   // Kept mutable because the Retained Earnings injection below still
   // needs to add reDebit/reCredit to the running totals.
   let totalDebits = Number(td.toFixed(4));
@@ -1080,16 +1119,22 @@ export async function buildTrialBalance(
   // tenant trips this; the fix is an EXISTS-semantic prior-year P&L
   // variant. Captured in tags-v2 followups.
   if (fyStart > '1900-01-02') {
-    const priorEndDate = new Date(fyStart);
-    priorEndDate.setDate(priorEndDate.getDate() - 1);
+    // UTC arithmetic so the day-before subtraction can't drift across a
+    // month boundary in a non-UTC container.
+    const priorEndDate = new Date(fyStart + 'T00:00:00Z');
+    priorEndDate.setUTCDate(priorEndDate.getUTCDate() - 1);
     const priorEnd = priorEndDate.toISOString().split('T')[0]!;
     const retainedPL = await buildProfitAndLoss(tenantId, '1900-01-01', priorEnd, 'accrual', companyId, tagId);
     if (retainedPL.netIncome !== 0) {
-      // Retained earnings is a credit-balance equity account
+      // Retained earnings is a credit-balance equity account. Numbered
+      // 30120 to sort beside the posted Retained Earnings account (the
+      // seeds use 30120; the old '3900' sorted it away from equity), and
+      // labeled "(Prior Years)" so the virtual row is distinguishable
+      // from the real account when closing entries have been posted.
       const reDebit = retainedPL.netIncome < 0 ? Math.abs(retainedPL.netIncome) : 0;
       const reCredit = retainedPL.netIncome > 0 ? retainedPL.netIncome : 0;
       data.push({
-        id: null, account_number: '3900', name: 'Retained Earnings', account_type: 'equity',
+        id: null, account_number: '30120', name: 'Retained Earnings (Prior Years)', account_type: 'equity',
         total_debit: reDebit, total_credit: reCredit,
       });
       totalDebits = Number(new Decimal(totalDebits).plus(reDebit).toFixed(4));
