@@ -486,6 +486,14 @@ export async function resolveBlock(
           return { type: 'trial_balance', data: await tbSummary(args) };
         case 'bank_balances':
           return { type: 'bank_balances', data: await bankBalances(args) };
+        // The A/R / A/P aging embeds reuse the data-block resolvers —
+        // same payload type, so every renderer handles them already.
+        // (These options were in the embed dropdown since Phase 16 but
+        // never had resolvers; they always returned an error payload.)
+        case 'ar_aging':
+          return { type: 'ar_aging', data: await arAging(args) };
+        case 'ap_aging':
+          return { type: 'ap_aging', data: await apAging(args) };
         default:
           return { type: name, error: `Unknown report embed: ${name}` };
       }

@@ -286,6 +286,22 @@ describe('report embeds', () => {
     expect((cashBs.data as { assets: number }).assets).toBeCloseTo(0, 2);
   });
 
+  it('ar_aging / ap_aging resolve as report embeds (dropdown options that predate their resolvers)', async () => {
+    const ar = await mk('Accounts Receivable', 'asset', '1100', 'accounts_receivable');
+    const rev = await mk('Sales', 'revenue', '4000', 'service');
+    await post('invoice', [
+      { accountId: ar.id, debit: '750', credit: '0' },
+      { accountId: rev.id, debit: '0', credit: '750' },
+    ], '2026-05-01', 'invoice');
+
+    for (const key of ['ar_aging', 'ap_aging']) {
+      const payload = await resolveBlock({ type: 'report', key }, args());
+      expect(payload.error).toBeUndefined();
+      expect(payload.type).toBe(key);
+      expect(payload.data).toBeDefined();
+    }
+  });
+
   it('still reports unknown names as errors', async () => {
     const payload = await resolveBlock({ type: 'report', key: 'nonexistent_report' }, args());
     expect(payload.error).toMatch(/Unknown report embed/);
