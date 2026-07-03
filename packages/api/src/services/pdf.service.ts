@@ -73,7 +73,13 @@ async function gatherInvoiceData(tenantId: string, invoiceId: string): Promise<I
   }
 
   const lines = await db.select().from(journalLines)
-    .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, invoiceId)))
+    // Void-reversal rows (rule 23) are GL artifacts — a voided invoice's
+    // PDF should render the document as issued, not doubled lines.
+    .where(and(
+      eq(journalLines.tenantId, tenantId),
+      eq(journalLines.transactionId, invoiceId),
+      eq(journalLines.isVoidReversal, false),
+    ))
     .orderBy(journalLines.lineOrder);
 
   // Get account names for revenue lines (credit side)

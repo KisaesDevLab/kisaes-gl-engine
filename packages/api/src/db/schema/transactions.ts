@@ -116,6 +116,9 @@ export const journalLines = pgTable('journal_lines', {
   // Per-line payee ("Received From"). Added in migration 0099. No FK (mirrors
   // transactions.contact_id), tenant-scoped via the composite index below.
   contactId: uuid('contact_id'),
+  // True on the reversing lines persisted by voidTransaction (rule 23,
+  // migration 0112). Document views filter these out; the GL keeps them.
+  isVoidReversal: boolean('is_void_reversal').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
   transactionIdx: index('idx_jl_transaction').on(table.transactionId),

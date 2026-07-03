@@ -14,10 +14,13 @@ import {
   accounts,
   billPaymentApplications,
   vendorCreditApplications,
+  reconciliations,
+  reconciliationLines,
 } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as billService from './bill.service.js';
+import { checkLockDate, assertAccountsInScope } from './ledger.service.js';
 
 // Precision tolerance for float-style leftover comparisons. Decimal.js
 // already avoids the rounding issues that `parseFloat` produced here;
@@ -105,6 +108,13 @@ export async function payBills(tenantId: string, input: PayBillsInput, userId?: 
   const creditIds = (input.credits || []).map((c) => c.creditId);
 
   return await db.transaction(async (tx) => {
+    // Same guards postTransaction applies — this path posts to the GL
+    // directly (header + lines + balances) and used to skip both,
+    // letting a bill payment land in a locked prior year or credit a
+    // bank account outside the caller's tenant/company scope.
+    await checkLockDate(tx, tenantId, input.txnDate, companyId ?? null);
+    await assertAccountsInScope(tx, tenantId, companyId ?? null, [input.bankAccountId]);
+
     // Lock the bills + credits for the duration of the transaction
     const lockedBills = await tx.select().from(transactions)
       .where(and(
@@ -444,9 +454,55 @@ export async function voidBillPayment(tenantId: string, paymentId: string, reaso
     if (!payment) throw AppError.notFound('Bill payment not found');
     if (payment.status === 'void') throw AppError.badRequest('Bill payment is already void');
 
+    // Same guards as ledger.voidTransaction — this custom void path used
+    // to skip both, so a bill payment in a LOCKED prior year could be
+    // voided (silently changing closed-year Cash/AP), and voiding a
+    // payment cleared in a completed bank rec left the rec unreconcilable.
+    await checkLockDate(tx, tenantId, payment.txnDate, payment.companyId);
+    const clearedInCompleted = await tx.execute(sql`
+      SELECT 1
+      FROM ${reconciliationLines} rl
+      JOIN ${reconciliations} r ON r.id = rl.reconciliation_id
+      JOIN ${journalLines} jl ON jl.id = rl.journal_line_id
+      WHERE r.tenant_id = ${tenantId}
+        AND r.status = 'complete'
+        AND rl.is_cleared = true
+        AND jl.transaction_id = ${paymentId}
+      LIMIT 1
+    `);
+    if ((clearedInCompleted.rows as unknown[]).length > 0) {
+      throw AppError.badRequest(
+        'Cannot void a bill payment whose lines are cleared in a completed bank reconciliation. ' +
+          'Undo the reconciliation first, then void and post a correcting entry.',
+      );
+    }
+
     // Reverse the journal entries
     const originalLines = await tx.select().from(journalLines)
-      .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, paymentId)));
+      .where(and(
+        eq(journalLines.tenantId, tenantId),
+        eq(journalLines.transactionId, paymentId),
+        eq(journalLines.isVoidReversal, false),
+      ));
+
+    // Persist the reversing lines (rule 23) — same convention as
+    // ledger.voidTransaction: attached to the voided header, marked
+    // is_void_reversal so document views skip them.
+    if (originalLines.length > 0) {
+      const maxOrder = originalLines.reduce((m, l) => Math.max(m, l.lineOrder ?? 0), 0);
+      await tx.insert(journalLines).values(originalLines.map((line, i) => ({
+        tenantId,
+        companyId: line.companyId,
+        transactionId: paymentId,
+        accountId: line.accountId,
+        debit: line.credit,
+        credit: line.debit,
+        description: `Void: ${line.description || ''}`.trim(),
+        tagId: line.tagId,
+        lineOrder: maxOrder + 1 + i,
+        isVoidReversal: true,
+      })));
+    }
 
     for (const line of originalLines) {
       // Reversed: was debit/credit → becomes credit-minus-debit.
