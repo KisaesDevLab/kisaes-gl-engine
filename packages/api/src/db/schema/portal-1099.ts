@@ -121,6 +121,15 @@ export const annual1099Filings = pgTable('annual_1099_filings', {
   // operator to enter vendors manually in that case.
   detailsJson: jsonb('details_json'),
   notes: text('notes'),
+  // E-file submission tracking (migration 0113). Populated when the
+  // filing was submitted through a provider API (export_format
+  // 'tax1099') rather than exported as CSV. submission_status:
+  // submitted | accepted | rejected | error.
+  submissionStatus: varchar('submission_status', { length: 20 }),
+  providerReference: varchar('provider_reference', { length: 120 }),
+  submittedAt: timestamp('submitted_at', { withTimezone: true }),
+  statusMessage: text('status_message'),
+  firmId: uuid('firm_id'),
 }, (table) => ({
   yearIdx: index('idx_annual_1099_filings_year').on(table.tenantId, table.taxYear),
 }));

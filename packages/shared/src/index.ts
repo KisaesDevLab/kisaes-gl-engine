@@ -74,6 +74,7 @@ export * from './schemas/extraction.js';
 export * from './schemas/statement-extraction.js';
 export * from './schemas/daily-sales.js';
 export * from './schemas/permissions.js';
+export * from './schemas/firm-integrations.js';
 
 // Constants
 export * from './constants/coa-templates.js';
