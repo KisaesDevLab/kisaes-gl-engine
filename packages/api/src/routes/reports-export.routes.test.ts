@@ -174,3 +174,70 @@ describe('report CSV exports (route-level, ?format=csv)', () => {
   });
 });
 
+describe('group_by=detail_type (P&L / Balance Sheet)', () => {
+  it('P&L default response has no groups key (shape unchanged)', async () => {
+    const r = await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31');
+    expect(r.status).toBe(200);
+    const data = JSON.parse(r.body);
+    expect(data.groups).toBeUndefined();
+    expect(data.groupBy).toBeUndefined();
+    expect(data.revenue[0].detailType).toBeUndefined();
+  });
+
+  it('P&L grouped response adds groups + entry detailType, totals unchanged', async () => {
+    const base = JSON.parse((await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31')).body);
+    const r = await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31&group_by=detail_type');
+    expect(r.status).toBe(200);
+    const data = JSON.parse(r.body);
+    expect(data.groupBy).toBe('detail_type');
+    expect(data.groups).toBeDefined();
+    // Totals must not shift when grouping is requested.
+    expect(data.totalRevenue).toBe(base.totalRevenue);
+    expect(data.totalExpenses).toBe(base.totalExpenses);
+    expect(data.netIncome).toBe(base.netIncome);
+    // Entries carry detailType; groups subtotal to the section total.
+    for (const entry of data.revenue) expect('detailType' in entry).toBe(true);
+    const revSubtotals = data.groups.revenue.reduce((s: number, g: { subtotal: number }) => s + g.subtotal, 0);
+    expect(revSubtotals).toBeCloseTo(data.totalRevenue, 4);
+    const expSubtotals = data.groups.expenses.reduce((s: number, g: { subtotal: number }) => s + g.subtotal, 0);
+    expect(expSubtotals).toBeCloseTo(data.totalExpenses, 4);
+    // Labels are humanized ('service' → 'Service', null → 'Other').
+    for (const g of data.groups.revenue) {
+      expect(typeof g.label).toBe('string');
+      expect(g.label.length).toBeGreaterThan(0);
+      expect(g.label).not.toMatch(/_/);
+    }
+  });
+
+  it('Balance Sheet grouped response puts computed rows under Equity (Calculated)', async () => {
+    const base = JSON.parse((await get('/balance-sheet?as_of_date=2026-12-31')).body);
+    const r = await get('/balance-sheet?as_of_date=2026-12-31&group_by=detail_type');
+    expect(r.status).toBe(200);
+    const data = JSON.parse(r.body);
+    expect(data.groupBy).toBe('detail_type');
+    expect(data.totalAssets).toBe(base.totalAssets);
+    expect(data.totalEquity).toBe(base.totalEquity);
+    expect(data.totalLiabilitiesAndEquity).toBe(base.totalLiabilitiesAndEquity);
+    const calc = data.groups.equity.find((g: { label: string }) => g.label === 'Equity (Calculated)');
+    expect(calc).toBeDefined();
+    const names = calc.entries.map((e: { name: string }) => e.name);
+    expect(names).toContain('Retained Earnings (Prior Years)');
+    expect(names).toContain('Net Income (Current Year)');
+    // Asset group subtotals foot to Total Assets.
+    const assetSubtotals = data.groups.assets.reduce((s: number, g: { subtotal: number }) => s + g.subtotal, 0);
+    expect(assetSubtotals).toBeCloseTo(data.totalAssets, 4);
+  });
+
+  it('grouped CSV export includes a Detail Type column (P&L and BS)', async () => {
+    const pl = await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31&group_by=detail_type&format=csv');
+    expect(pl.status).toBe(200);
+    expect(pl.body).toContain('"Account","Detail Type","Amount"');
+    const bs = await get('/balance-sheet?as_of_date=2026-12-31&group_by=detail_type&format=csv');
+    expect(bs.status).toBe(200);
+    expect(bs.body).toContain('"Account","Detail Type","Balance"');
+    expect(bs.body).toContain('Equity (Calculated)');
+    // Ungrouped CSV keeps the original two-column layout.
+    const plPlain = await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31&format=csv');
+    expect(plPlain.body).toContain('"Account","Amount"');
+  });
+});

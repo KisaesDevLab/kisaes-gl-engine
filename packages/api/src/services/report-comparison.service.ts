@@ -276,5 +276,13 @@ export async function buildComparativeBS(
     totalAssets: [currentBS.totalAssets, priorBS.totalAssets, ...Object.values(computeVariance(currentBS.totalAssets, priorBS.totalAssets))],
     totalLiabilities: [currentBS.totalLiabilities, priorBS.totalLiabilities, ...Object.values(computeVariance(currentBS.totalLiabilities, priorBS.totalLiabilities))],
     totalEquity: [currentBS.totalEquity, priorBS.totalEquity, ...Object.values(computeVariance(currentBS.totalEquity, priorBS.totalEquity))],
+    // Grand total (equals Total Assets when the books balance). Was
+    // missing entirely, so the comparative view had no closing
+    // "Total Liabilities & Equity" row.
+    totalLiabilitiesAndEquity: [
+      currentBS.totalLiabilitiesAndEquity,
+      priorBS.totalLiabilitiesAndEquity,
+      ...Object.values(computeVariance(currentBS.totalLiabilitiesAndEquity, priorBS.totalLiabilitiesAndEquity)),
+    ],
   };
 }

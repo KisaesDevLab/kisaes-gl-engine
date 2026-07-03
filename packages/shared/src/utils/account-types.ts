@@ -52,3 +52,18 @@ const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = {
 export function formatAccountTypeLabel(t: AccountType | string): string {
   return ACCOUNT_TYPE_LABELS[t as AccountType] ?? t;
 }
+
+/**
+ * Humanize a snake_case detail type slug for display:
+ * 'accounts_receivable' → 'Accounts Receivable'. A null/empty detail
+ * type renders as 'Other' — used by the group-by-detail-type report
+ * mode for accounts that never had a detail type assigned.
+ */
+export function formatDetailTypeLabel(detailType: string | null | undefined): string {
+  if (!detailType) return 'Other';
+  return detailType
+    .split('_')
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+}

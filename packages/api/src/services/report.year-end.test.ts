@@ -140,6 +140,42 @@ describe('Balance Sheet identity (A = L + E)', () => {
     const reRow = bs.equity.find((e: any) => e.accountId === re.id);
     expect(reRow?.balance).toBeCloseTo(50000, 2);
   });
+
+  it('returns totalLiabilitiesAndEquity = totalLiabilities + totalEquity (closing entry + contra equity)', async () => {
+    const cash = await mkAccount('Cash', 'asset', '1000');
+    const sales = await mkAccount('Sales', 'revenue', '4000');
+    const loan = await mkAccount('Bank Loan', 'liability', '25000');
+    const draw = await mkAccount('Owner Withdraw', 'equity', '30170');
+    const re = await mkSystemRE();
+
+    // Prior-year income closed into system RE, a loan, and a contra-equity draw.
+    await post('Income', [{ id: cash.id, amount: '50000.00' }], [{ id: sales.id, amount: '50000.00' }], '2025-08-01');
+    await post('Closing entry', [{ id: sales.id, amount: '50000.00' }], [{ id: re.id, amount: '50000.00' }], '2025-12-31');
+    await post('Loan received', [{ id: cash.id, amount: '8000.00' }], [{ id: loan.id, amount: '8000.00' }], '2026-02-01');
+    await post('Draw', [{ id: draw.id, amount: '10000.00' }], [{ id: cash.id, amount: '10000.00' }], '2026-05-01');
+
+    const bs = await reportService.buildBalanceSheet(tenantId, '2026-06-30');
+    expect(bs.totalLiabilitiesAndEquity).toBeDefined();
+    expect(bs.totalLiabilitiesAndEquity).toBeCloseTo(bs.totalLiabilities + bs.totalEquity, 4);
+    // And the sheet balances: A = L + E = 50k + 8k − 10k = 48k.
+    expect(bs.totalLiabilitiesAndEquity).toBeCloseTo(48000, 2);
+    expect(bs.totalAssets).toBeCloseTo(bs.totalLiabilitiesAndEquity, 2);
+  });
+
+  it('comparative BS carries a totalLiabilitiesAndEquity row', async () => {
+    const cash = await mkAccount('Cash', 'asset', '1000');
+    const sales = await mkAccount('Sales', 'revenue', '4000');
+    await post('Income', [{ id: cash.id, amount: '1000.00' }], [{ id: sales.id, amount: '1000.00' }], '2026-01-15');
+
+    const comparisonService = await import('./report-comparison.service.js');
+    const cbs = await comparisonService.buildComparativeBS(tenantId, '2026-06-30', 'accrual', 'previous_year');
+    expect(Array.isArray(cbs.totalLiabilitiesAndEquity)).toBe(true);
+    // Column 0 = current as-of: 1,000 of equity (net income), no liabilities.
+    expect(cbs.totalLiabilitiesAndEquity[0]).toBeCloseTo(1000, 2);
+    // Grand total must equal Total Assets column-for-column (books balance).
+    expect(cbs.totalLiabilitiesAndEquity[0]).toBeCloseTo(cbs.totalAssets[0] as number, 2);
+    expect(cbs.totalLiabilitiesAndEquity[1]).toBeCloseTo(cbs.totalAssets[1] as number, 2);
+  });
 });
 
 describe('Trial Balance across fiscal-year boundary', () => {

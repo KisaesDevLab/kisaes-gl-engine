@@ -3,6 +3,7 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { Router, type Request } from 'express';
+import { formatDetailTypeLabel } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
@@ -47,6 +48,12 @@ function resolveCompanyScope(req: Request): string | null {
 function fmtNum(n: any): string {
   const v = parseFloat(n);
   return isNaN(v) ? '' : v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// Humanized detail type for the grouped P&L / BS export column.
+// 'accounts_receivable' → 'Accounts Receivable'; null → 'Other'.
+function fmtDetailType(dt: string | null | undefined): string {
+  return formatDetailTypeLabel(dt);
 }
 
 // Friendly transaction type abbreviations used in CSV / PDF exports.
@@ -220,6 +227,11 @@ function extractDataAndColumns(reportData: any): { rows: any[]; columns: ExportC
       rows.push({ account: `--- ${equityLabel.toUpperCase()} ---` });
       rows.push(...(reportData.equity || []).map(mapBSRow));
       rows.push(totalRow(`Total ${equityLabel}`, reportData.totalEquity));
+      // Closing grand total — mirrors the standard BS export.
+      if (reportData.totalLiabilitiesAndEquity) {
+        const totalLELabel = BS?.totalLiabilitiesAndEquity || 'Total Liabilities & Equity';
+        rows.push(totalRow(totalLELabel.toUpperCase(), reportData.totalLiabilitiesAndEquity));
+      }
     }
 
     return { rows, columns: cols };
@@ -227,17 +239,23 @@ function extractDataAndColumns(reportData: any): { rows: any[]; columns: ExportC
 
   // ─── P&L (standard — has revenue + expenses arrays) ───
   if (reportData.revenue && reportData.expenses && !reportData.columns) {
+    // Grouped mode (?group_by=detail_type): the export stays flat but
+    // gains a Detail Type column — the simplest shape that round-trips
+    // cleanly into a spreadsheet pivot.
+    const grouped = reportData.groupBy === 'detail_type';
     const columns: ExportColumn[] = [
       { key: 'account', label: 'Account' },
+      ...(grouped ? [{ key: 'detail_type', label: 'Detail Type' }] : []),
       { key: 'amount', label: 'Amount', align: 'right' },
     ];
     const rows: any[] = [];
-    const line = (account: string, amount: any = '') => rows.push({ account, amount });
-    const totalLine = (account: string, amount: any = '') => rows.push({ _total: true, account, amount });
-    const accountLine = (entry: any) => line(
-      entry.accountNumber ? `${entry.accountNumber} — ${entry.name}` : entry.name,
-      fmtNum(entry.amount),
-    );
+    const line = (account: string, amount: any = '') => rows.push({ account, detail_type: '', amount });
+    const totalLine = (account: string, amount: any = '') => rows.push({ _total: true, account, detail_type: '', amount });
+    const accountLine = (entry: any) => rows.push({
+      account: entry.accountNumber ? `${entry.accountNumber} — ${entry.name}` : entry.name,
+      detail_type: grouped ? fmtDetailType(entry.detailType) : '',
+      amount: fmtNum(entry.amount),
+    });
 
     const hasCogs = (reportData.cogs?.length ?? 0) > 0;
     const hasOtherRev = (reportData.otherRevenue?.length ?? 0) > 0;
@@ -302,24 +320,34 @@ function extractDataAndColumns(reportData: any): { rows: any[]; columns: ExportC
     const liabilitiesLabel = BS?.liabilities || 'Liabilities';
     const equityLabel = BS?.equity || 'Equity';
     const totalLELabel = BS?.totalLiabilitiesAndEquity || 'Total Liabilities & Equity';
+    const grouped = reportData.groupBy === 'detail_type';
     const columns: ExportColumn[] = [
       { key: 'account', label: 'Account' },
+      ...(grouped ? [{ key: 'detail_type', label: 'Detail Type' }] : []),
       { key: 'balance', label: 'Balance', align: 'right' },
     ];
+    // Computed equity rows (Retained Earnings (Prior Years) / Net Income
+    // (Current Year)) have no account, so in grouped mode they label as
+    // 'Equity (Calculated)' rather than 'Other'.
+    const dtFor = (e: { accountId?: string | null; detailType?: string | null }): string => {
+      if (!grouped) return '';
+      if (e.accountId === null || e.accountId === undefined) return 'Equity (Calculated)';
+      return fmtDetailType(e.detailType);
+    };
     const rows: any[] = [];
-    rows.push({ account: `--- ${assetsLabel.toUpperCase()} ---`, balance: '' });
-    for (const a of reportData.assets) rows.push({ account: a.accountNumber ? `${a.accountNumber} — ${a.name}` : a.name, balance: fmtNum(Math.abs(a.balance)) });
-    rows.push({ _total: true, account: `Total ${assetsLabel}`, balance: fmtNum(reportData.totalAssets) });
-    rows.push({ account: '', balance: '' });
-    rows.push({ account: `--- ${liabilitiesLabel.toUpperCase()} ---`, balance: '' });
-    for (const l of reportData.liabilities) rows.push({ account: l.accountNumber ? `${l.accountNumber} — ${l.name}` : l.name, balance: fmtNum(Math.abs(l.balance)) });
-    rows.push({ _total: true, account: `Total ${liabilitiesLabel}`, balance: fmtNum(reportData.totalLiabilities) });
-    rows.push({ account: '', balance: '' });
-    rows.push({ account: `--- ${equityLabel.toUpperCase()} ---`, balance: '' });
-    for (const e of (reportData.equity || [])) rows.push({ account: e.accountNumber ? `${e.accountNumber} — ${e.name}` : e.name, balance: fmtNum(Math.abs(e.balance)) });
-    rows.push({ _total: true, account: `Total ${equityLabel}`, balance: fmtNum(reportData.totalEquity) });
-    rows.push({ account: '', balance: '' });
-    rows.push({ _total: true, account: totalLELabel.toUpperCase(), balance: fmtNum(reportData.totalLiabilitiesAndEquity) });
+    rows.push({ account: `--- ${assetsLabel.toUpperCase()} ---`, detail_type: '', balance: '' });
+    for (const a of reportData.assets) rows.push({ account: a.accountNumber ? `${a.accountNumber} — ${a.name}` : a.name, detail_type: dtFor(a), balance: fmtNum(Math.abs(a.balance)) });
+    rows.push({ _total: true, account: `Total ${assetsLabel}`, detail_type: '', balance: fmtNum(reportData.totalAssets) });
+    rows.push({ account: '', detail_type: '', balance: '' });
+    rows.push({ account: `--- ${liabilitiesLabel.toUpperCase()} ---`, detail_type: '', balance: '' });
+    for (const l of reportData.liabilities) rows.push({ account: l.accountNumber ? `${l.accountNumber} — ${l.name}` : l.name, detail_type: dtFor(l), balance: fmtNum(Math.abs(l.balance)) });
+    rows.push({ _total: true, account: `Total ${liabilitiesLabel}`, detail_type: '', balance: fmtNum(reportData.totalLiabilities) });
+    rows.push({ account: '', detail_type: '', balance: '' });
+    rows.push({ account: `--- ${equityLabel.toUpperCase()} ---`, detail_type: '', balance: '' });
+    for (const e of (reportData.equity || [])) rows.push({ account: e.accountNumber ? `${e.accountNumber} — ${e.name}` : e.name, detail_type: dtFor(e), balance: fmtNum(Math.abs(e.balance)) });
+    rows.push({ _total: true, account: `Total ${equityLabel}`, detail_type: '', balance: fmtNum(reportData.totalEquity) });
+    rows.push({ account: '', detail_type: '', balance: '' });
+    rows.push({ _total: true, account: totalLELabel.toUpperCase(), detail_type: '', balance: fmtNum(reportData.totalLiabilitiesAndEquity) });
     return { rows, columns };
   }
 
@@ -652,6 +680,12 @@ function readTagFilter(req: { query: Record<string, unknown> }): string | null {
   return raw;
 }
 
+// Optional grouping mode for P&L / Balance Sheet: ?group_by=detail_type.
+// Anything else (absent, empty, unknown value) means "no grouping".
+function readGroupBy(req: { query: Record<string, unknown> }): 'detail_type' | null {
+  return req.query['group_by'] === 'detail_type' ? 'detail_type' : null;
+}
+
 // Financial Statements
 reportsRouter.get('/profit-loss', async (req, res) => {
   const { start_date, end_date, basis, format, compare, periods, period_type } = req.query as Record<string, string>;
@@ -672,7 +706,7 @@ reportsRouter.get('/profit-loss', async (req, res) => {
     );
     await respond(res, data, format);
   } else {
-    const data = await reportService.buildProfitAndLoss(req.tenantId, sd, ed, b, companyId, tagId);
+    const data = await reportService.buildProfitAndLoss(req.tenantId, sd, ed, b, companyId, tagId, readGroupBy(req));
     await respond(res, data, format);
   }
 });
@@ -698,6 +732,7 @@ reportsRouter.get('/balance-sheet', async (req, res) => {
     (basis as 'cash' | 'accrual') || 'accrual',
     companyId,
     tagId,
+    readGroupBy(req),
   );
   await respond(res, data, format);
 });

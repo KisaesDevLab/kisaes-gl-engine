@@ -11,6 +11,7 @@ import {
   type CFSectionLabels,
   isDebitNormal as isDebitNormalShared,
   COST_TYPES,
+  formatDetailTypeLabel,
 } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { transactions, journalLines, accounts, contacts } from '../db/schema/index.js';
@@ -190,7 +191,62 @@ function cashBasisLinesWith(
 
 // ─── FINANCIAL STATEMENTS ────────────────────────────────────────
 
-export interface PLEntry { accountId: string; name: string; accountNumber: string | null; amount: number }
+export interface PLEntry {
+  accountId: string;
+  name: string;
+  accountNumber: string | null;
+  amount: number;
+  // Present only when the report was built with groupBy: 'detail_type'.
+  // Additive so the default response shape is unchanged for existing
+  // consumers (PDF, comparative, portal blocks, MCP).
+  detailType?: string | null;
+}
+
+// One group per distinct detail type within a report section, produced
+// when the caller asks for groupBy: 'detail_type'. `label` is the
+// humanized detail type ('accounts_receivable' → 'Accounts Receivable');
+// a null detail type groups under 'Other'.
+export interface DetailTypeGroup<T> {
+  detailType: string | null;
+  label: string;
+  entries: T[];
+  subtotal: number;
+}
+
+export type ReportGroupBy = 'detail_type';
+
+// Group a section's entries by their detailType, preserving the
+// account-number ordering of the underlying entries (groups appear in
+// order of first occurrence; a trailing null-detail group labels as
+// 'Other'). Subtotals accumulate through Decimal like every other
+// report aggregate.
+function groupByDetailType<T extends { detailType?: string | null }>(
+  entries: T[],
+  amountOf: (e: T) => number,
+): Array<DetailTypeGroup<T>> {
+  const groups = new Map<string, DetailTypeGroup<T> & { subtotalDec: InstanceType<typeof Decimal> }>();
+  for (const entry of entries) {
+    const dt = entry.detailType ?? null;
+    const key = dt ?? '__other__';
+    let group = groups.get(key);
+    if (!group) {
+      group = {
+        detailType: dt,
+        label: formatDetailTypeLabel(dt),
+        entries: [],
+        subtotal: 0,
+        subtotalDec: new Decimal(0),
+      };
+      groups.set(key, group);
+    }
+    group.entries.push(entry);
+    group.subtotalDec = group.subtotalDec.plus(amountOf(entry));
+  }
+  return Array.from(groups.values()).map(({ subtotalDec, ...g }) => ({
+    ...g,
+    subtotal: Number(subtotalDec.toFixed(4)),
+  }));
+}
 
 export interface PLResult {
   title: string;
@@ -212,6 +268,15 @@ export interface PLResult {
   grossProfit: number | null;
   operatingIncome: number | null;
   netIncome: number;
+  // Additive fields — present only when built with groupBy: 'detail_type'.
+  groupBy?: ReportGroupBy;
+  groups?: {
+    revenue: Array<DetailTypeGroup<PLEntry>>;
+    cogs: Array<DetailTypeGroup<PLEntry>>;
+    expenses: Array<DetailTypeGroup<PLEntry>>;
+    otherRevenue: Array<DetailTypeGroup<PLEntry>>;
+    otherExpenses: Array<DetailTypeGroup<PLEntry>>;
+  };
 }
 
 export async function buildProfitAndLoss(
@@ -224,6 +289,10 @@ export async function buildProfitAndLoss(
   // only those journal_lines carrying that tag. Transactions appear only
   // to the extent their matching lines total nonzero.
   tagId: string | null = null,
+  // Optional grouping mode (?group_by=detail_type). Adds detailType to
+  // each entry plus per-section `groups` — additive only; the default
+  // (ungrouped) response shape is untouched.
+  groupBy: ReportGroupBy | null = null,
 ): Promise<PLResult> {
   // Cash basis: revenue recognized when cash is received, expenses when
   // cash is paid — implemented by the virtual cash-basis ledger (see
@@ -237,6 +306,7 @@ export async function buildProfitAndLoss(
   // cash-basis lines inherit the source line's tag, so the same clause
   // applies to both bases.
   const tagJoinClause = tagId ? sql` AND jl.tag_id = ${tagId}` : sql``;
+  const grouped = groupBy === 'detail_type';
 
   const rows = basis === 'cash'
     ? await db.execute(sql`
@@ -292,7 +362,13 @@ export async function buildProfitAndLoss(
       ? sub(row.total_credit, row.total_debit)
       : sub(row.total_debit, row.total_credit);
     if (amount === 0) continue;
-    const entry: PLEntry = { accountId: row.id, name: row.name, accountNumber: row.account_number, amount };
+    const entry: PLEntry = {
+      accountId: row.id,
+      name: row.name,
+      accountNumber: row.account_number,
+      amount,
+      ...(grouped ? { detailType: (row.detail_type as string | null) ?? null } : {}),
+    };
     switch (row.account_type) {
       case 'revenue': revenue.push(entry); totalRevenue += amount; break;
       case 'cogs': cogs.push(entry); totalCogs += amount; break;
@@ -329,6 +405,18 @@ export async function buildProfitAndLoss(
     grossProfit,
     operatingIncome,
     netIncome,
+    ...(grouped
+      ? {
+          groupBy: 'detail_type' as const,
+          groups: {
+            revenue: groupByDetailType(revenue, (e) => e.amount),
+            cogs: groupByDetailType(cogs, (e) => e.amount),
+            expenses: groupByDetailType(expenses, (e) => e.amount),
+            otherRevenue: groupByDetailType(otherRevenue, (e) => e.amount),
+            otherExpenses: groupByDetailType(otherExpenses, (e) => e.amount),
+          },
+        }
+      : {}),
   };
 }
 
@@ -342,8 +430,12 @@ export async function buildBalanceSheet(
   // retained-earnings injection further down uses the same filter by
   // passing tagId to buildProfitAndLoss.
   tagId: string | null = null,
+  // Optional grouping mode (?group_by=detail_type) — additive fields
+  // only; see buildProfitAndLoss.
+  groupBy: ReportGroupBy | null = null,
 ) {
   const tagClause = tagId ? sql` AND jl.tag_id = ${tagId}` : sql``;
+  const grouped = groupBy === 'detail_type';
   // Cash basis balance sheet: built from the virtual cash-basis ledger
   // (cashBasisLinesWith). AR/AP documents drop out entirely, payment
   // AR/AP legs are replaced by scaled document distributions, so:
@@ -381,10 +473,14 @@ export async function buildBalanceSheet(
         GROUP BY a.id ORDER BY a.account_number, a.name
       `);
 
-  type BSEntry = { accountId: string | null; name: string; accountNumber: string | null; balance: number };
+  type BSEntry = { accountId: string | null; name: string; accountNumber: string | null; balance: number; detailType?: string | null };
   const assets: BSEntry[] = [];
   const liabilities: BSEntry[] = [];
   const equity: BSEntry[] = [];
+  // The computed rows (Retained Earnings (Prior Years), Net Income
+  // (Current Year)) have no account/detail type; in grouped mode they
+  // render under a dedicated 'Equity (Calculated)' group.
+  const calculatedEquity: BSEntry[] = [];
   let totalAssets = 0, totalLiabilities = 0, totalEquity = 0;
 
   for (const row of rows.rows as any[]) {
@@ -398,8 +494,9 @@ export async function buildBalanceSheet(
     // silently vanished from the BS while its counter-leg remained.)
     const raw = sub(row.total_debit, row.total_credit);
     if (raw === 0) continue;
+    const detail = grouped ? { detailType: (row.detail_type as string | null) ?? null } : {};
     if (row.account_type === 'asset') {
-      assets.push({ accountId: row.id, name: row.name, accountNumber: row.account_number, balance: raw });
+      assets.push({ accountId: row.id, name: row.name, accountNumber: row.account_number, balance: raw, ...detail });
       totalAssets += raw;
     } else {
       // SIGNED accumulation in natural (credit-positive) convention:
@@ -409,7 +506,7 @@ export async function buildBalanceSheet(
       // contra balances as positives, unbalancing the sheet by twice
       // the contra amount.
       const balance = -raw;
-      const entry: BSEntry = { accountId: row.id, name: row.name, accountNumber: row.account_number, balance };
+      const entry: BSEntry = { accountId: row.id, name: row.name, accountNumber: row.account_number, balance, ...detail };
       if (row.account_type === 'liability') { liabilities.push(entry); totalLiabilities += balance; }
       else { equity.push(entry); totalEquity += balance; }
     }
@@ -435,14 +532,18 @@ export async function buildBalanceSheet(
     return d.toISOString().split('T')[0]!;
   })(), basis, companyId, tagId);
   if (retainedPL.netIncome !== 0) {
-    equity.push({ accountId: null, name: 'Retained Earnings (Prior Years)', accountNumber: null, balance: retainedPL.netIncome });
+    const row: BSEntry = { accountId: null, name: 'Retained Earnings (Prior Years)', accountNumber: null, balance: retainedPL.netIncome };
+    equity.push(row);
+    calculatedEquity.push(row);
     totalEquity += retainedPL.netIncome;
   }
 
   // Current year net income
   const currentPL = await buildProfitAndLoss(tenantId, currentFYStart, asOfDate, basis, companyId, tagId);
   if (currentPL.netIncome !== 0) {
-    equity.push({ accountId: null, name: 'Net Income (Current Year)', accountNumber: null, balance: currentPL.netIncome });
+    const row: BSEntry = { accountId: null, name: 'Net Income (Current Year)', accountNumber: null, balance: currentPL.netIncome };
+    equity.push(row);
+    calculatedEquity.push(row);
     totalEquity += currentPL.netIncome;
   }
 
@@ -459,6 +560,32 @@ export async function buildBalanceSheet(
     liabilities, totalLiabilities,
     equity, totalEquity,
     totalLiabilitiesAndEquity: totalLiabilities + totalEquity,
+    ...(grouped
+      ? {
+          groupBy: 'detail_type' as const,
+          groups: {
+            assets: groupByDetailType(assets, (e) => e.balance),
+            liabilities: groupByDetailType(liabilities, (e) => e.balance),
+            equity: [
+              // Real equity accounts group by their detail type…
+              ...groupByDetailType(equity.filter((e) => e.accountId !== null), (e) => e.balance),
+              // …the computed rows land in a dedicated trailing group.
+              ...(calculatedEquity.length > 0
+                ? [{
+                    detailType: null,
+                    label: 'Equity (Calculated)',
+                    entries: calculatedEquity,
+                    subtotal: Number(
+                      calculatedEquity
+                        .reduce((d, e) => d.plus(e.balance), new Decimal(0))
+                        .toFixed(4),
+                    ),
+                  }]
+                : []),
+            ],
+          },
+        }
+      : {}),
   };
 }
 
