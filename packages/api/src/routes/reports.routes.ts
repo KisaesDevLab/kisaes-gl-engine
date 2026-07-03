@@ -129,10 +129,35 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
   // comparative BS CSV/PDF exported as "No data".
   const isComparativeBS = !!reportData.assets && Array.isArray(reportData.totalAssets);
   if (reportData.columns && Array.isArray(reportData.columns) && (reportData.rows || isComparativeBS)) {
+    // ?show_pct=1 on a comparative P&L: each period column gains a
+    // companion "% of Revenue" column (common-size — the amount over
+    // THAT period's total revenue). Variance / % change columns are
+    // ratios already and get no companion. Not applicable to the BS.
+    const showCmpPct = reportData.showPct === true && !isComparativeBS;
+    const isPeriodCol = (c: { label: string; type?: string } | undefined) =>
+      c?.type !== 'variance' && c?.type !== 'percent_variance';
+    const pctKeyFor = (c: { label: string; type?: string }) => `${c.label} %`;
+    const pctOfColumn = (v: unknown, i: number): string => {
+      const rev = Number(reportData.totalRevenue?.[i]) || 0;
+      if (rev === 0) return '—';
+      return `${(((Number(v) || 0) / rev) * 100).toFixed(1)}%`;
+    };
     const cols: ExportColumn[] = [
       { key: 'account', label: 'Account' },
-      ...reportData.columns.map((c: any) => ({ key: c.label, label: c.label, align: 'right' as const })),
+      ...reportData.columns.flatMap((c: any) => [
+        { key: c.label, label: c.label, align: 'right' as const },
+        ...(showCmpPct && isPeriodCol(c)
+          ? [{ key: pctKeyFor(c), label: pctKeyFor(c), align: 'right' as const }]
+          : []),
+      ]),
     ];
+    const fillPct = (row: Record<string, unknown>, values: Array<unknown>) => {
+      if (!showCmpPct) return;
+      (values || []).forEach((v, i) => {
+        const c = reportData.columns[i];
+        if (c && isPeriodCol(c)) row[pctKeyFor(c)] = pctOfColumn(v, i);
+      });
+    };
 
     const rows: any[] = [];
 
@@ -149,11 +174,13 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
     const mapRow = (r: any) => {
       const row: any = { account: r.accountNumber ? `${r.accountNumber} — ${r.account || r.name}` : (r.account || r.name) };
       (r.values || []).forEach((v: any, i: number) => { row[reportData.columns[i]?.label || `Col${i}`] = fmtNum(v); });
+      fillPct(row, r.values || []);
       return row;
     };
     const totalRow = (label: string, values: any[]) => {
       const row: any = { _total: true, account: label };
       (values || []).forEach((v: any, i: number) => { row[reportData.columns[i]?.label || `Col${i}`] = fmtNum(v); });
+      fillPct(row, values || []);
       return row;
     };
 
@@ -167,6 +194,7 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
     const groupSubtotalRow = (label: string, values: Array<number | null>) => {
       const row: Record<string, unknown> = { _summary: true, account: label };
       (values || []).forEach((v, i) => { row[reportData.columns[i]?.label || `Col${i}`] = fmtNum(v); });
+      fillPct(row, values || []);
       return row;
     };
     const pushSectionRows = (
@@ -810,7 +838,7 @@ reportsRouter.get('/profit-loss', async (req, res) => {
       companyId,
       readGroupBy(req),
     );
-    await respond(res, { ...data, ...(display ? { display } : {}) }, format);
+    await respond(res, { ...data, ...(display ? { display } : {}), ...(showPct ? { showPct: true } : {}) }, format);
   } else {
     const data = await reportService.buildProfitAndLoss(req.tenantId, sd, ed, b, companyId, tagId, readGroupBy(req));
     await respond(res, { ...data, ...(display ? { display } : {}), ...(showPct ? { showPct: true } : {}) }, format);

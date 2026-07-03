@@ -322,6 +322,23 @@ describe('comparative grouping + condensed / export presentation', () => {
     expect(r.body).toContain('"100.0%"');
   });
 
+  it('comparative P&L CSV gains a companion % column per period (?show_pct=1)', async () => {
+    const r = await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31&compare=previous_year&show_pct=1&format=csv');
+    expect(r.status).toBe(200);
+    const header = r.body.split('\n')[0]!;
+    // One "<period label> %" header per period column; variance / % change
+    // columns are ratios already and must NOT get a companion.
+    expect((header.match(/ %"/g) || []).length).toBe(2);
+    expect(header).not.toContain('$ Change %');
+    expect(header).not.toContain('% Change %');
+    // Common-size: the Total Revenue row reads 100.0% in a period column.
+    expect(r.body).toContain('"100.0%"');
+
+    // Without the flag the comparative export shape is unchanged.
+    const plain = await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31&compare=previous_year&format=csv');
+    expect((plain.body.split('\n')[0]!.match(/ %"/g) || []).length).toBe(0);
+  });
+
   it('comparative BS CSV exports rows (pre-existing "No data" gate bug)', async () => {
     // Before the gate fix, the comparative BS (which has no `rows` key)
     // fell through to the generic path and exported 404 "No data".
