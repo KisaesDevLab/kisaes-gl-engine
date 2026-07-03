@@ -808,9 +808,17 @@ export async function getAccountBalance(tenantId: string, accountId: string, asO
     eq(journalLines.accountId, accountId),
   ];
 
+  // Always restrict to POSTED transactions. Without a date bound this
+  // used to sum every line — drafts, voids, and (now that rule 23
+  // persists them) void-reversal lines — none of which belong in a
+  // balance.
   if (asOfDate) {
     conditions.push(sql`${journalLines.transactionId} IN (
       SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND txn_date <= ${asOfDate} AND status = 'posted'
+    )`);
+  } else {
+    conditions.push(sql`${journalLines.transactionId} IN (
+      SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
     )`);
   }
 
