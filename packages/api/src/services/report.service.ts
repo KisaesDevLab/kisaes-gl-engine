@@ -120,8 +120,16 @@ export async function buildProfitAndLoss(
         ON cash_jl.transaction_id = t.id AND cash_jl.tenant_id = ${tenantId}
       JOIN accounts cash_a
         ON cash_a.id = cash_jl.account_id AND cash_a.tenant_id = ${tenantId}
-       AND cash_a.account_type = 'asset'
-       AND cash_a.detail_type IN ('checking', 'savings', 'cash', 'petty_cash', 'undeposited_funds', 'credit_card')
+       AND (
+         (cash_a.account_type = 'asset'
+          AND cash_a.detail_type IN ('checking', 'savings', 'cash', 'petty_cash', 'undeposited_funds'))
+         -- Credit cards are LIABILITY accounts in every seed template;
+         -- the old asset-only predicate could never match them, so
+         -- card-charged expenses were invisible to cash-basis reports.
+         -- Cash-basis taxpayers deduct card charges when charged, so a
+         -- credit-card leg counts as a cash event regardless of type.
+         OR cash_a.detail_type = 'credit_card'
+       )
       WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
         AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
         AND ${companyCond}
@@ -243,8 +251,16 @@ export async function buildBalanceSheet(
         ON cash_jl.transaction_id = t.id AND cash_jl.tenant_id = ${tenantId}
       JOIN accounts cash_a
         ON cash_a.id = cash_jl.account_id AND cash_a.tenant_id = ${tenantId}
-       AND cash_a.account_type = 'asset'
-       AND cash_a.detail_type IN ('checking', 'savings', 'cash', 'petty_cash', 'undeposited_funds', 'credit_card')
+       AND (
+         (cash_a.account_type = 'asset'
+          AND cash_a.detail_type IN ('checking', 'savings', 'cash', 'petty_cash', 'undeposited_funds'))
+         -- Credit cards are LIABILITY accounts in every seed template;
+         -- the old asset-only predicate could never match them, so
+         -- card-charged expenses were invisible to cash-basis reports.
+         -- Cash-basis taxpayers deduct card charges when charged, so a
+         -- credit-card leg counts as a cash event regardless of type.
+         OR cash_a.detail_type = 'credit_card'
+       )
       WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
         AND t.txn_date <= ${asOfDate}
         AND ${companyCond}
@@ -356,6 +372,62 @@ export async function buildCashFlowStatement(
   // drives the cash-flow calc.
   tagId: string | null = null,
 ) {
+  // DIRECT METHOD from actual cash movements. The previous version was
+  // a stub (operating = accrual net income, investing/financing = 0,
+  // netChange = net income) whose "net change in cash" matched real
+  // cash movement only for a business with no AR/AP/loans/draws.
+  //
+  // Here: net change = SUM(debit − credit) over the period's journal
+  // lines on CASH accounts (checking/savings/cash/petty cash/
+  // undeposited funds) — exact by construction. Each cash-moving
+  // transaction is classified by its counter-legs:
+  //   any fixed-asset leg                  → investing
+  //   any equity or long-term-debt leg     → financing
+  //   everything else (P&L, AR/AP, taxes)  → operating
+  // Transfers between two cash accounts net to zero and drop out.
+  const companyCond = companyId ? sql`t.company_id = ${companyId}` : sql`TRUE`;
+  const tagExistsClause = tagId
+    ? sql` AND EXISTS (SELECT 1 FROM journal_lines jlt WHERE jlt.transaction_id = t.id AND jlt.tenant_id = ${tenantId} AND jlt.tag_id = ${tagId})`
+    : sql``;
+
+  const rows = await db.execute(sql`
+    WITH cash_accounts AS (
+      SELECT id FROM accounts
+      WHERE tenant_id = ${tenantId} AND account_type = 'asset'
+        AND detail_type IN ('checking', 'savings', 'cash', 'petty_cash', 'undeposited_funds')
+    ),
+    txn_cash AS (
+      SELECT t.id, SUM(jl.debit - jl.credit) AS cash_delta
+      FROM transactions t
+      JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.tenant_id = ${tenantId}
+      WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
+        AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
+        AND ${companyCond}
+        AND jl.account_id IN (SELECT id FROM cash_accounts)
+        ${tagExistsClause}
+      GROUP BY t.id
+      HAVING SUM(jl.debit - jl.credit) <> 0
+    )
+    SELECT tc.id, tc.cash_delta,
+      BOOL_OR(a.detail_type = 'fixed_asset') AS touches_investing,
+      BOOL_OR(a.account_type = 'equity' OR a.detail_type IN ('long_term_liability', 'line_of_credit')) AS touches_financing
+    FROM txn_cash tc
+    JOIN journal_lines jl ON jl.transaction_id = tc.id AND jl.tenant_id = ${tenantId}
+      AND jl.account_id NOT IN (SELECT id FROM cash_accounts)
+    JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = ${tenantId}
+    GROUP BY tc.id, tc.cash_delta
+  `);
+
+  let operating = new Decimal(0);
+  let investing = new Decimal(0);
+  let financing = new Decimal(0);
+  for (const r of rows.rows as any[]) {
+    const delta = new Decimal(r.cash_delta || 0);
+    if (r.touches_investing) investing = investing.plus(delta);
+    else if (r.touches_financing) financing = financing.plus(delta);
+    else operating = operating.plus(delta);
+  }
+
   const pl = await buildProfitAndLoss(tenantId, startDate, endDate, 'accrual', companyId, tagId);
   const [labels, footer] = await Promise.all([
     getCFLabels(tenantId),
@@ -365,10 +437,12 @@ export async function buildCashFlowStatement(
     title: 'Cash Flow Statement', startDate, endDate,
     labels,
     footer,
-    operatingActivities: pl.netIncome,
-    investingActivities: 0,
-    financingActivities: 0,
-    netChange: pl.netIncome,
+    // Kept for context alongside the cash sections.
+    netIncome: pl.netIncome,
+    operatingActivities: Number(operating.toFixed(4)),
+    investingActivities: Number(investing.toFixed(4)),
+    financingActivities: Number(financing.toFixed(4)),
+    netChange: Number(operating.plus(investing).plus(financing).toFixed(4)),
   };
 }
 
@@ -758,12 +832,16 @@ export async function build1099VendorSummary(tenantId: string, year: string, com
   const startDate = `${year}-01-01`;
   const endDate = `${year}-12-31`;
 
+  // 1099 is CASH-basis: count actual disbursements (bill payments,
+  // direct expenses, checks) — NOT 'bill' documents (that's accrual and
+  // double-counts once the bill is paid). This matches the portal 1099
+  // center's txn-type set so the two surfaces agree.
   const rows = await db.execute(sql`
     SELECT c.id, c.display_name, c.tax_id,
       COALESCE(SUM(CAST(t.total AS DECIMAL)), 0) as total_paid
     FROM contacts c
     JOIN transactions t ON t.contact_id = c.id AND t.tenant_id = ${tenantId}
-      AND t.txn_type = 'expense' AND t.status = 'posted'
+      AND t.txn_type IN ('bill_payment', 'expense', 'check') AND t.status = 'posted'
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
       AND ${companyFilter(companyId)}
     WHERE c.tenant_id = ${tenantId} AND c.is_1099_eligible = true
