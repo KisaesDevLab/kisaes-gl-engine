@@ -481,6 +481,98 @@ ${noPrior}
 <table class="data"><thead><tr><th></th><th>Current</th><th>Prior YR</th><th>Δ</th></tr></thead>
 <tbody>${tbody}</tbody></table></section>`;
     }
+    case 'revenue_trend_12m':
+    case 'expense_trend_12m':
+    case 'cash_balance_trend': {
+      const pts = (payload.data as Array<{ month: string; label: string; amount: number }>) ?? [];
+      const heading =
+        payload.type === 'revenue_trend_12m'
+          ? 'Revenue Trend (12 Months)'
+          : payload.type === 'expense_trend_12m'
+            ? 'Expense Trend (12 Months)'
+            : 'Cash Balance Trend (12 Months)';
+      if (pts.length === 0) {
+        return `<section class="section"><h2>${heading}</h2><p class="meta">No data.</p></section>`;
+      }
+      const color =
+        payload.type === 'expense_trend_12m'
+          ? '#f59e0b'
+          : payload.type === 'cash_balance_trend'
+            ? '#0ea5e9'
+            : '#4f46e5';
+      const chart = svgBarChart({
+        categories: pts.map((p) => p.label),
+        series: [{ name: 'Amount', color, values: pts.map((p) => p.amount) }],
+      });
+      return `<section class="section"><h2>${heading}</h2><div class="chart">${chart}</div></section>`;
+    }
+    case 'cash_flow': {
+      const c = payload.data as
+        | { netIncome: number; operating: number; investing: number; financing: number; netChange: number }
+        | null
+        | undefined;
+      if (!c) {
+        return `<section class="section"><h2>Cash Flow</h2><p class="meta">No data.</p></section>`;
+      }
+      return `<section class="section"><h2>Cash Flow</h2>
+<table class="data"><tbody>
+<tr><td>Operating Activities</td><td class="num">${escapeHtml(fmtMoneyPdf(c.operating))}</td></tr>
+<tr><td>Investing Activities</td><td class="num">${escapeHtml(fmtMoneyPdf(c.investing))}</td></tr>
+<tr><td>Financing Activities</td><td class="num">${escapeHtml(fmtMoneyPdf(c.financing))}</td></tr>
+<tr class="total"><td>Net Change in Cash</td><td class="num strong">${escapeHtml(fmtMoneyPdf(c.netChange))}</td></tr>
+</tbody></table></section>`;
+    }
+    case 'trial_balance': {
+      const t = payload.data as
+        | {
+            rows: Array<{ account: string; debit: number; credit: number }>;
+            totalDebits: number;
+            totalCredits: number;
+            truncated: boolean;
+          }
+        | null
+        | undefined;
+      if (!t || t.rows.length === 0) {
+        return `<section class="section"><h2>Trial Balance</h2><p class="meta">No data.</p></section>`;
+      }
+      const tbody = t.rows
+        .map(
+          (r) =>
+            `<tr><td>${escapeHtml(r.account)}</td><td class="num">${r.debit !== 0 ? escapeHtml(fmtMoneyPdf(r.debit)) : ''}</td><td class="num">${r.credit !== 0 ? escapeHtml(fmtMoneyPdf(r.credit)) : ''}</td></tr>`,
+        )
+        .join('');
+      const note = t.truncated
+        ? `<p class="meta">Showing the first ${t.rows.length} accounts.</p>`
+        : '';
+      return `<section class="section"><h2>Trial Balance</h2>
+<table class="data"><thead><tr><th>Account</th><th>Debit</th><th>Credit</th></tr></thead>
+<tbody>${tbody}
+<tr class="total"><td>Totals</td><td class="num strong">${escapeHtml(fmtMoneyPdf(t.totalDebits))}</td><td class="num strong">${escapeHtml(fmtMoneyPdf(t.totalCredits))}</td></tr>
+</tbody></table>${note}</section>`;
+    }
+    case 'bank_balances': {
+      const b = payload.data as
+        | {
+            asOfDate: string;
+            accounts: Array<{ name: string; balance: number; isInactive: boolean }>;
+            totalBalance: number;
+          }
+        | null
+        | undefined;
+      if (!b || b.accounts.length === 0) {
+        return `<section class="section"><h2>Bank Account Balances</h2><p class="meta">No bank accounts.</p></section>`;
+      }
+      const tbody = b.accounts
+        .map(
+          (a) =>
+            `<tr><td>${escapeHtml(a.name)}</td><td class="num">${escapeHtml(fmtMoneyPdf(a.balance))}</td></tr>`,
+        )
+        .join('');
+      return `<section class="section"><h2>Bank Account Balances</h2>
+<table class="data"><tbody>${tbody}
+<tr class="total"><td>Total</td><td class="num strong">${escapeHtml(fmtMoneyPdf(b.totalBalance))}</td></tr>
+</tbody></table></section>`;
+    }
     default:
       return `<section class="section"><h2>${escapeHtml(friendly)}</h2><p class="meta">Block "${escapeHtml(payload.type)}" not yet supported in PDF.</p></section>`;
   }

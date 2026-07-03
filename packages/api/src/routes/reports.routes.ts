@@ -1179,6 +1179,33 @@ reportsRouter.get('/transaction-list-by-vendor', async (req, res) => {
 });
 
 // Banking
+reportsRouter.get('/bank-balances', async (req, res) => {
+  const { as_of_date, format } = req.query as Record<string, string>;
+  const data = await reportService.buildBankBalances(
+    req.tenantId,
+    as_of_date || new Date().toISOString().split('T')[0]!,
+    resolveCompanyScope(req),
+  );
+  // Export rows mirror the on-screen table: one row per bank account
+  // plus a TOTAL row. Right-aligned numbers are formatted by
+  // extractDataAndColumns (fmtNum) like every other report export.
+  const exportRows = [
+    ...data.accounts.map((a) => ({
+      account: a.accountNumber ? `${a.accountNumber} · ${a.name}` : a.name,
+      balance: a.balance,
+    })),
+    { account: 'TOTAL', balance: data.totalBalance },
+  ];
+  await respond(res, {
+    ...data,
+    data: exportRows,
+    _exportColumns: [
+      { key: 'account', label: 'Account' },
+      { key: 'balance', label: 'Balance', align: 'right' },
+    ],
+  }, format);
+});
+
 reportsRouter.get('/bank-reconciliation-summary', async (req, res) => {
   const data = await reportService.buildBankReconciliationSummary(req.tenantId, (req.query['account_id'] as string) || '', resolveCompanyScope(req));
   await respond(res, data, req.query['format'] as string);

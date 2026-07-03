@@ -229,6 +229,25 @@ portalReportsRouter.post('/instances/:id/comments', validate(commentSchema), asy
   res.status(201).json(result);
 });
 
+// ── AI summary generate ─────────────────────────────────────────
+// Generate an executive summary from the company's books via the
+// configured AI provider. Draft instances only; the text is returned
+// for review (and saved to report_ai_summaries), not auto-inserted
+// into the data snapshot.
+
+const aiSummaryGenerateSchema = z.object({
+  prompt: z.string().max(4000).optional(),
+  blockRef: z.string().max(80).optional(),
+});
+portalReportsRouter.post(
+  '/instances/:id/ai-summary/generate',
+  validate(aiSummaryGenerateSchema),
+  async (req, res) => {
+    const result = await svc.generateAiSummary(req.tenantId, req.params['id']!, req.userId, req.body);
+    res.status(201).json(result);
+  },
+);
+
 // ── AI summary save ─────────────────────────────────────────────
 
 const aiSummarySchema = z.object({

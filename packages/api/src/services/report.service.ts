@@ -964,6 +964,84 @@ export async function buildTransactionListByVendor(tenantId: string, vendorId: s
 
 // ─── BANKING ─────────────────────────────────────────────────────
 
+// Bank detail-type vocabulary. The default COA template uses the
+// umbrella 'bank' for checking/savings accounts; the QBO-style import
+// path uses the more specific 'checking'/'savings'. Both vocabularies
+// exist in production data (see BANK_DETAIL_TYPES in
+// portal-report-evaluator.service.ts), so the report accepts either.
+export const BANK_ACCOUNT_DETAIL_TYPES = ['bank', 'checking', 'savings'];
+
+// Bank Account Balances — as-of balance per bank account. Same accrual
+// as-of pattern as buildBalanceSheet (bank accounts are cash accounts,
+// so there's no cash/accrual distinction and no `basis` param).
+// Active bank accounts always appear (even at $0); inactive accounts
+// appear only while they still carry a nonzero as-of balance and are
+// flagged with an " (inactive)" name suffix + isInactive field.
+export async function buildBankBalances(
+  tenantId: string,
+  asOfDate: string,
+  companyId: string | null = null,
+) {
+  const companyCond = companyId ? sql`company_id = ${companyId}` : sql`TRUE`;
+  const detailList = sql.join(BANK_ACCOUNT_DETAIL_TYPES.map((d) => sql`${d}`), sql`, `);
+
+  const rows = await db.execute(sql`
+    SELECT a.id, a.account_number, a.name, a.is_active,
+      COALESCE(SUM(jl.debit), 0) as total_debit,
+      COALESCE(SUM(jl.credit), 0) as total_credit
+    FROM accounts a
+    LEFT JOIN journal_lines jl ON jl.account_id = a.id AND jl.tenant_id = ${tenantId}
+      AND jl.transaction_id IN (
+        SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
+        AND txn_date <= ${asOfDate}
+        AND ${companyCond}
+      )
+    WHERE a.tenant_id = ${tenantId} AND a.account_type = 'asset'
+      AND a.detail_type IN (${detailList})
+    GROUP BY a.id
+    ORDER BY a.account_number, a.name
+  `);
+
+  type BankBalanceEntry = {
+    accountId: string;
+    accountNumber: string | null;
+    name: string;
+    balance: number;
+    isInactive: boolean;
+  };
+  const entries: BankBalanceEntry[] = [];
+  let total = new Decimal(0);
+  for (const row of rows.rows as Array<{
+    id: string;
+    account_number: string | null;
+    name: string;
+    is_active: boolean | null;
+    total_debit: string | number | null;
+    total_credit: string | number | null;
+  }>) {
+    const balance = sub(row.total_debit, row.total_credit);
+    const isInactive = row.is_active === false;
+    if (isInactive && balance === 0) continue;
+    entries.push({
+      accountId: row.id,
+      accountNumber: row.account_number,
+      name: isInactive ? `${row.name} (inactive)` : row.name,
+      balance,
+      isInactive,
+    });
+    total = total.plus(balance);
+  }
+
+  const footer = await getReportFooter(tenantId);
+  return {
+    title: 'Bank Account Balances',
+    asOfDate,
+    footer,
+    accounts: entries,
+    totalBalance: Number(total.toFixed(4)),
+  };
+}
+
 export async function buildBankReconciliationSummary(tenantId: string, accountId: string, companyId: string | null = null) {
   return { title: 'Bank Reconciliation Summary', accountId, data: [] };
 }

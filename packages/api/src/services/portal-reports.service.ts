@@ -12,9 +12,13 @@ import {
   kpiDefinitions,
   companies,
   portalContactCompanies,
+  aiUsageLog,
 } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import * as aiConfigService from './ai-config.service.js';
+import { executeWithFallback, getProvider } from './ai-providers/index.js';
+import type { CompletionResult } from './ai-providers/index.js';
 import { getProviderForTenant } from './storage/storage-provider.factory.js';
 import { htmlToPdf, reportHtmlTemplate } from './portal-pdf.service.js';
 import {
@@ -924,6 +928,201 @@ export async function saveAiSummary(
   const row = inserted[0];
   if (!row) throw AppError.badRequest('Insert failed');
   return { id: row.id };
+}
+
+// ── AI summary generation ────────────────────────────────────────
+//
+// Generates an executive summary for a draft instance, grounded in the
+// company's actual figures for the report period (evaluator metrics +
+// any KPIs already computed into the data snapshot). Provider selection
+// mirrors chat.service: the chat provider wins, falling back to the
+// categorization provider so generation works out of the box for any
+// tenant with AI configured. The generated text is persisted through
+// saveAiSummary (upsert by instance+blockRef) and returned to the
+// caller for inline editing — the bookkeeper always reviews before it
+// lands in the snapshot.
+
+export interface GenerateAiSummaryInput {
+  /** Optional author instructions appended to the built-in prompt. */
+  prompt?: string;
+  /** Block the summary belongs to ('' / undefined = the instance-level ai_summary). */
+  blockRef?: string;
+}
+
+export interface GenerateAiSummaryResult {
+  id: string;
+  text: string;
+  modelUsed: string;
+  provider: string;
+}
+
+function fmtUsd(n: number): string {
+  if (!Number.isFinite(n)) return '—';
+  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+}
+
+export async function generateAiSummary(
+  tenantId: string,
+  instanceId: string,
+  bookkeeperUserId: string,
+  input: GenerateAiSummaryInput = {},
+): Promise<GenerateAiSummaryResult> {
+  const inst = await getInstance(tenantId, instanceId);
+  if (inst.status === 'published') {
+    throw AppError.badRequest(
+      'Published reports cannot be edited. Duplicate to a new draft first.',
+      'PUBLISHED_LOCKED',
+    );
+  }
+
+  const config = await aiConfigService.getConfig();
+  if (!config.isEnabled) {
+    throw AppError.badRequest('AI processing is not enabled. Contact your administrator.');
+  }
+  const rawConfig = await aiConfigService.getRawConfig();
+  const preferredProvider = config.chatProvider || config.categorizationProvider || undefined;
+  const preferredModel = config.chatModel || undefined;
+  if (!preferredProvider) {
+    throw AppError.badRequest(
+      'No AI provider is configured. Ask an administrator to set one in Admin → AI Processing.',
+    );
+  }
+
+  const co = await db.query.companies.findFirst({
+    where: and(eq(companies.tenantId, tenantId), eq(companies.id, inst.companyId)),
+  });
+
+  // Ground the summary in the books: period P&L + as-of balance-sheet
+  // metrics from the evaluator, plus whatever KPIs the layout already
+  // computed into the snapshot (including manual overrides).
+  const triad = await gatherTriad(tenantId, inst.companyId, inst.periodStart, inst.periodEnd);
+  const m = triad.current;
+  const figureLines = [
+    `Revenue: ${fmtUsd(m.revenue)}`,
+    `Cost of goods sold: ${fmtUsd(m.cogs)}`,
+    `Gross profit: ${fmtUsd(m.grossProfit)}`,
+    `Operating expense: ${fmtUsd(m.operatingExpense)}`,
+    `Net income: ${fmtUsd(m.netIncome)}`,
+    `Cash on hand (period end): ${fmtUsd(m.cash)}`,
+    `Accounts receivable (period end): ${fmtUsd(m.accountsReceivable)}`,
+    `Accounts payable (period end): ${fmtUsd(m.accountsPayable)}`,
+  ];
+  if (triad.priorYear) {
+    figureLines.push(
+      `Prior-year same period — revenue: ${fmtUsd(triad.priorYear.revenue)}, net income: ${fmtUsd(triad.priorYear.netIncome)}`,
+    );
+  }
+
+  const snapshot =
+    typeof inst.dataSnapshotJsonb === 'object' && inst.dataSnapshotJsonb
+      ? (inst.dataSnapshotJsonb as Record<string, unknown>)
+      : {};
+  const kpis = (snapshot['kpis'] as Record<string, string> | undefined) ?? {};
+  const kpiNames = (snapshot['kpi_names'] as Record<string, string> | undefined) ?? {};
+  const kpiLines = Object.entries(kpis)
+    .slice(0, 40)
+    .map(([k, v]) => `- ${kpiNames[k] ?? k.replace(/_/g, ' ')}: ${v}`);
+
+  const systemPrompt =
+    'You are a financial report writer at a bookkeeping practice preparing a client-facing ' +
+    'advisory report. Write in clear, plain business English for a small-business owner. ' +
+    'Ground every statement strictly in the figures provided — never invent, extrapolate, or ' +
+    'guess numbers that are not given. Do not give tax or legal advice. Return only the ' +
+    'summary text itself: no headings, no markdown, no preamble.';
+
+  const userPrompt = [
+    `Company: ${co?.businessName ?? 'the company'}`,
+    `Report period: ${inst.periodStart} to ${inst.periodEnd}`,
+    '',
+    'Key figures for the period:',
+    ...figureLines,
+    ...(kpiLines.length > 0 ? ['', 'Computed KPIs:', ...kpiLines] : []),
+    '',
+    'Write a concise executive summary (2–3 short paragraphs) of the period: overall ' +
+      'performance, profitability, and cash position, noting anything a business owner ' +
+      'should pay attention to.',
+    ...(input.prompt?.trim()
+      ? ['', 'Author instructions (follow these while staying grounded in the figures above):', input.prompt.trim()]
+      : []),
+  ].join('\n');
+
+  // Per-function settings: reuse the 'chat' function key — this is the
+  // same free-text generation surface, and it inherits the admin's
+  // chat token/temperature/timeout/fallback tuning.
+  const params = aiConfigService.resolveTaskParams(config, 'chat', { maxTokens: 1024, temperature: 0.4 });
+  const exec = aiConfigService.resolveTaskExec(config, 'chat');
+
+  let result: CompletionResult;
+  try {
+    result = await executeWithFallback(
+      {
+        systemPrompt,
+        userPrompt,
+        temperature: params.temperature,
+        maxTokens: params.maxTokens,
+        responseFormat: 'text',
+        ...(params.thinking ? { thinking: params.thinking } : {}),
+        ...(params.numCtx ? { numCtx: params.numCtx } : {}),
+      },
+      rawConfig,
+      exec.fallbackChain,
+      preferredProvider,
+      preferredModel,
+      exec.timeoutMs ? { timeoutMs: exec.timeoutMs } : undefined,
+    );
+  } catch (err) {
+    throw AppError.internal(
+      `AI summary generation failed: ${err instanceof Error ? err.message : 'unknown error'}`,
+    );
+  }
+
+  const text = (result.text || '').trim();
+  if (!text) {
+    throw AppError.internal('AI returned an empty summary. Try again or adjust the prompt.');
+  }
+
+  const saved = await saveAiSummary(tenantId, instanceId, text, result.model, input.blockRef);
+
+  // Cost tracking — best-effort, mirrors chat.service.
+  try {
+    let cost = 0;
+    try {
+      const provider = getProvider(result.provider, rawConfig, result.model);
+      cost = provider.estimateCost(result.inputTokens, result.outputTokens);
+    } catch {
+      // estimateCost failure is non-fatal
+    }
+    await db.insert(aiUsageLog).values({
+      tenantId,
+      provider: result.provider,
+      model: result.model,
+      jobType: 'report_summary',
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      estimatedCost: String(cost),
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[portal-reports] Failed to log AI usage:', err);
+  }
+
+  await auditLog(
+    tenantId,
+    'create',
+    'report_ai_summary',
+    saved.id,
+    null,
+    {
+      instanceId,
+      blockRef: input.blockRef ?? null,
+      customPrompt: !!input.prompt?.trim(),
+      provider: result.provider,
+      model: result.model,
+    },
+    bookkeeperUserId,
+  );
+
+  return { id: saved.id, text, modelUsed: result.model, provider: result.provider };
 }
 
 // Duplicate an instance — used for "I want a new version after
