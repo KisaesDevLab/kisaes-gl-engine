@@ -54,7 +54,9 @@ function companyFilter(companyId: string | null, alias: string = 't') {
   return sql`t.company_id = ${companyId}`;
 }
 
-async function getFiscalYearStart(tenantId: string, companyId: string | null): Promise<number> {
+// Exported so report-comparison can build fiscal-aware year columns
+// from the same source of truth.
+export async function getFiscalYearStart(tenantId: string, companyId: string | null): Promise<number> {
   if (companyId) {
     const row = await db.execute(sql`SELECT fiscal_year_start_month FROM companies WHERE id = ${companyId}`);
     return (row.rows as any[])[0]?.fiscal_year_start_month ?? 1;

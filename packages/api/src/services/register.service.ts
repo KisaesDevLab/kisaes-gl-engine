@@ -373,7 +373,9 @@ export async function getRegisterSummary(tenantId: string, accountId: string) {
 
   // Transaction count this period (current month)
   const now = new Date();
-  const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+  // UTC getters — local getters shifted the month boundary by a day in
+  // non-UTC containers (same class of bug as the report FY boundaries).
+  const monthStart = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-01`;
   const txnCountResult = await db.execute(sql`
     SELECT COUNT(*) as cnt FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id

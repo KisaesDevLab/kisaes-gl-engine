@@ -46,10 +46,22 @@ export async function create(tenantId: string, input: CreateBudgetInput, userId?
   });
   if (existing) throw AppError.conflict('A budget for this fiscal year already exists');
 
-  // Derive fiscal_year_start if caller didn't supply one. Matches the
-  // migration 0061 backfill: Jan 1 of the integer fiscal year.
-  const fiscalYearStart =
-    input.fiscalYearStart ?? `${input.fiscalYear}-01-01`;
+  // Derive fiscal_year_start from the COMPANY's fiscal year when the
+  // caller didn't supply one. The old default (Jan 1 of the integer
+  // year) made every budget a calendar-year budget even for July-FY
+  // companies, so Budget vs. Actuals compared against a different
+  // 12-month window than the P&L. Budget "FY N" starts in calendar
+  // year N at the company's fiscal start month — the same convention
+  // fillFromActuals already used for its prior-year window.
+  let fiscalYearStart = input.fiscalYearStart ?? null;
+  if (!fiscalYearStart) {
+    const fyRow = await db.execute(sql`
+      SELECT fiscal_year_start_month FROM companies
+      WHERE tenant_id = ${tenantId} ORDER BY created_at LIMIT 1
+    `);
+    const fyMonth = Number((fyRow.rows as any[])[0]?.fiscal_year_start_month || 1);
+    fiscalYearStart = `${input.fiscalYear}-${String(fyMonth).padStart(2, '0')}-01`;
+  }
 
   const [budget] = await db.insert(budgets).values({
     tenantId,
@@ -175,7 +187,11 @@ export async function fillFromActuals(tenantId: string, budgetId: string) {
       const month = ((fyStartMonth - 1 + m) % 12) + 1;
       const year = fyStartMonth > 1 && month < fyStartMonth ? priorYear + 1 : priorYear;
       const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
-      const endDate = new Date(year, month, 0).toISOString().split('T')[0]!;
+      // UTC month-end: the local-time version shifted to the PRIOR day
+      // when serialized in a UTC+N container, silently dropping every
+      // month's last day from the seeded actuals.
+      const endD = new Date(Date.UTC(year, month, 0));
+      const endDate = endD.toISOString().split('T')[0]!;
 
       const result = await db.execute(sql`
         SELECT COALESCE(SUM(jl.debit), 0) as total_debit, COALESCE(SUM(jl.credit), 0) as total_credit
@@ -186,7 +202,12 @@ export async function fillFromActuals(tenantId: string, budgetId: string) {
           ${budgetTagId ? sql`AND jl.tag_id = ${budgetTagId}` : sql``}
       `);
       const row = (result.rows as any[])[0] || { total_debit: '0', total_credit: '0' };
-      const amount = Math.abs(parseFloat(row.total_credit) - parseFloat(row.total_debit));
+      // Signed, normal-balance convention (matches the P&L the budget is
+      // later compared against): income credit−debit, costs debit−credit.
+      const isIncome = account.accountType === 'revenue' || account.accountType === 'other_revenue';
+      const amount = isIncome
+        ? parseFloat(row.total_credit) - parseFloat(row.total_debit)
+        : parseFloat(row.total_debit) - parseFloat(row.total_credit);
       monthlyAmounts.push(amount.toFixed(4));
     }
 
@@ -252,8 +273,26 @@ export async function buildBudgetVsActual(tenantId: string, budgetId: string, st
     other_expense: pl.otherExpenses,
   };
 
+  // Prorate the budget to the requested range: only budget months whose
+  // calendar window overlaps [startDate, endDate] count. The old version
+  // summed all 12 months regardless, so the dashboard compared one
+  // month of actuals against the FULL-YEAR budget (every account showed
+  // a huge "unfavorable" variance by construction). Budget month m maps
+  // to the m-th calendar month after the budget's fiscal_year_start.
+  const fyStartStr = String((budget as any).fiscalYearStart ?? `${budget.fiscalYear}-01-01`).slice(0, 10);
+  const fyY = parseInt(fyStartStr.slice(0, 4), 10);
+  const fyM = parseInt(fyStartStr.slice(5, 7), 10) || 1;
+  const includedMonths: number[] = [];
+  for (let m = 0; m < 12; m++) {
+    const y = fyY + Math.floor((fyM - 1 + m) / 12);
+    const mo = ((fyM - 1 + m) % 12) + 1;
+    const mStart = `${y}-${String(mo).padStart(2, '0')}-01`;
+    const mEnd = new Date(Date.UTC(y, mo, 0)).toISOString().split('T')[0]!;
+    if (mStart <= endDate && mEnd >= startDate) includedMonths.push(m + 1);
+  }
+
   function buildRow(line: any) {
-    const monthTotal = [1,2,3,4,5,6,7,8,9,10,11,12].reduce((s, m) => s + parseFloat(line[`month_${m}`] || '0'), 0);
+    const monthTotal = includedMonths.reduce((s, m) => s + parseFloat(line[`month_${m}`] || '0'), 0);
     const plItems = plItemsByType[line.account_type] ?? [];
     const actual = plItems.find((i: any) => i.name === line.account_name)?.amount || 0;
     const varianceDollar = actual - monthTotal;

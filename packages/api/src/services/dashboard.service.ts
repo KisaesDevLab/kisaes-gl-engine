@@ -7,7 +7,7 @@ import { db } from '../db/index.js';
 import { transactions, journalLines, accounts, bankFeedItems, reconciliations } from '../db/schema/index.js';
 
 async function getFiscalYearStart(tenantId: string): Promise<string> {
-  const result = await db.execute(sql`SELECT fiscal_year_start_month FROM companies WHERE tenant_id = ${tenantId} LIMIT 1`);
+  const result = await db.execute(sql`SELECT fiscal_year_start_month FROM companies WHERE tenant_id = ${tenantId} ORDER BY created_at LIMIT 1`);
   const fyStartMonth = (result.rows as any[])[0]?.fiscal_year_start_month || 1;
   // UTC getters so the fiscal-year boundary doesn't shift around when
   // the API container's local TZ differs from the tenant's. Reports
