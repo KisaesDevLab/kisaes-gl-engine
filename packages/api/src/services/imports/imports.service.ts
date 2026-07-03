@@ -150,6 +150,14 @@ function toSessionDto(row: SessionRowDb): ImportSession {
   };
 }
 
+// Max rows returned in the preview. The commit path imports every parsed
+// row regardless — this only bounds how many the operator can eyeball in
+// the review table. Raised from 50 (which surprised operators into
+// thinking only 50 rows would import) to a value that shows all rows for
+// any realistic CPA import while still capping a pathological 100k-row GL
+// file so the preview response/DOM stays sane.
+const MAX_PREVIEW_ROWS = 5000;
+
 function buildPreview(
   kind: ImportKind,
   parsed: unknown,
@@ -163,7 +171,7 @@ function buildPreview(
     return {
       totalRows: entries.length,
       errorCount,
-      sampleRows: entries.slice(0, 50),
+      sampleRows: entries.slice(0, MAX_PREVIEW_ROWS),
       jeGroupCount: entries.length,
       voidEntryCount: entries.filter((e) => e.isVoidReversal).length,
     };
@@ -179,7 +187,7 @@ function buildPreview(
     return {
       totalRows: rows.length,
       errorCount,
-      sampleRows: rows.slice(0, 50),
+      sampleRows: rows.slice(0, MAX_PREVIEW_ROWS),
       reportDate: reportDate ?? options?.tbReportDate ?? undefined,
       tbColumn: options?.tbColumn,
       totalDebit: totalDebit.toFixed(4),
@@ -190,7 +198,7 @@ function buildPreview(
   return {
     totalRows: rows.length,
     errorCount,
-    sampleRows: rows.slice(0, 50),
+    sampleRows: rows.slice(0, MAX_PREVIEW_ROWS),
   };
 }
 
