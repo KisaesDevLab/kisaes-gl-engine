@@ -291,6 +291,15 @@ adminRouter.delete('/tenants/:id', async (req, res) => {
   res.json({ message: 'Tenant deleted', ...result });
 });
 
+// Delete a tenant's entire chart of accounts — only when it has no
+// transactions yet (see deleteChartOfAccounts). Lets an operator fix a
+// wrong COA template on a fresh tenant, then re-seed. Super-admin gated
+// by the router-level requireSuperAdmin.
+adminRouter.delete('/tenants/:id/chart-of-accounts', async (req, res) => {
+  const result = await adminService.deleteChartOfAccounts(req.params['id']!, req.userId);
+  res.json({ message: 'Chart of accounts deleted', ...result });
+});
+
 // ─── User Management ────────────────────────────────────────────
 
 adminRouter.get('/users', async (req, res) => {

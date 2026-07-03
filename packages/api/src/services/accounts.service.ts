@@ -151,7 +151,12 @@ export async function deactivate(tenantId: string, id: string, userId?: string) 
   return updated;
 }
 
-export async function seedFromTemplate(tenantId: string, templateName: string = 'default', companyId?: string) {
+export async function seedFromTemplate(
+  tenantId: string,
+  templateName: string = 'default',
+  companyId?: string,
+  options: { systemOnly?: boolean } = {},
+) {
   // DB-first: super admins can edit templates at runtime via /admin/coa-templates,
   // and those edits live in the coa_templates table. Fall back to the static
   // BUSINESS_TEMPLATES constant for legacy aliases (`default`/`service`/etc.)
@@ -165,7 +170,14 @@ export async function seedFromTemplate(tenantId: string, templateName: string = 
     throw AppError.badRequest(`Unknown template: ${templateName}`);
   }
 
-  const values = template.map((t) => ({
+  // `systemOnly` seeds just the required accounts (A/R, A/P, Payments
+  // Clearing, Sales Tax Payable, Opening Balances, Retained Earnings,
+  // Cash, …) — the ones services look up by systemTag — and skips the
+  // rest of the business-type template. Used when a tenant is created
+  // with "don't create the full chart of accounts".
+  const source = options.systemOnly ? template.filter((t) => t.isSystem) : template;
+
+  const values = source.map((t) => ({
     tenantId,
     companyId: companyId || null,
     accountNumber: t.accountNumber,

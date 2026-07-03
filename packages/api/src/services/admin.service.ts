@@ -280,6 +280,43 @@ export async function deleteTenant(
   };
 }
 
+/**
+ * Delete a tenant's entire chart of accounts — allowed ONLY when the
+ * tenant has recorded no transactions. Intended for correcting a wrong
+ * COA template on a freshly-provisioned tenant before any activity:
+ * delete, then re-seed from the right template. Refuses once any
+ * transaction exists, because journal_lines reference account_id and
+ * dropping accounts would orphan posted history and corrupt reports.
+ */
+export async function deleteChartOfAccounts(
+  tenantId: string,
+  actingUserId?: string,
+): Promise<{ deleted: true; tenantId: string; accountsDeleted: number }> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tenantId)) {
+    throw AppError.badRequest('Invalid tenant id format');
+  }
+  const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
+  if (!tenant) throw AppError.notFound('Tenant not found');
+
+  const [txn] = await db.select({ c: count() }).from(transactions).where(eq(transactions.tenantId, tenantId));
+  const txnCount = Number(txn?.c ?? 0);
+  if (txnCount > 0) {
+    throw AppError.badRequest(
+      `Cannot delete the chart of accounts: this tenant has ${txnCount} transaction(s). ` +
+      `The chart of accounts can only be deleted before any transactions are recorded.`,
+      'COA_HAS_TRANSACTIONS',
+    );
+  }
+
+  const [existing] = await db.select({ c: count() }).from(accounts).where(eq(accounts.tenantId, tenantId));
+  const accountsDeleted = Number(existing?.c ?? 0);
+
+  await db.delete(accounts).where(eq(accounts.tenantId, tenantId));
+  await auditLog(tenantId, 'delete', 'chart_of_accounts', tenantId, { accountsDeleted }, null, actingUserId);
+
+  return { deleted: true, tenantId, accountsDeleted };
+}
+
 // ─── User Management ─────────────────────────────────────────────
 
 export async function listAllUsers() {

@@ -110,7 +110,7 @@ async function createSession(userId: string, refreshToken: string): Promise<void
   await trimOldestSessions(userId);
 }
 
-export async function createClientTenant(creatorUserId: string, input: { companyName: string; industry?: string; entityType?: string; businessType?: string }): Promise<{ tenantId: string; companyId: string; tenantName: string }> {
+export async function createClientTenant(creatorUserId: string, input: { companyName: string; industry?: string; entityType?: string; businessType?: string; systemAccountsOnly?: boolean }): Promise<{ tenantId: string; companyId: string; tenantName: string }> {
   // Create a new tenant
   const [tenant] = await db.insert(tenants).values({
     name: input.companyName,
@@ -118,9 +118,12 @@ export async function createClientTenant(creatorUserId: string, input: { company
   }).returning();
   if (!tenant) throw AppError.internal('Failed to create tenant');
 
-  // Create company and seed COA
+  // Create company and seed COA. When systemAccountsOnly is set, seed
+  // just the required system accounts (A/R, A/P, Payments Clearing, Sales
+  // Tax Payable, Opening Balances, Retained Earnings, Cash) so the tenant
+  // still functions, and skip the rest of the business-type template.
   await createCompanyForTenant(tenant.id, input.companyName);
-  await seedFromTemplate(tenant.id, input.businessType || 'default');
+  await seedFromTemplate(tenant.id, input.businessType || 'default', undefined, { systemOnly: !!input.systemAccountsOnly });
 
   // New-tenant default: Practice flags turned ON. The build plan
   // distinguishes pre-Phase-1 tenants (migration seeds disabled)
