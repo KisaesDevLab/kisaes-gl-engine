@@ -226,6 +226,16 @@ async function dispatchParse(
       const { entries, errors } = ap.parseGl(buf);
       return { parsed: entries, errors, reportDate: null, rowCount: entries.length };
     }
+    if (kind === 'contacts') {
+      if (!options.contactKind) {
+        throw AppError.badRequest(
+          'Accounting Power contacts upload requires options.contactKind = "customer" | "vendor".',
+          'IMPORT_CONTACT_KIND_REQUIRED',
+        );
+      }
+      const { rows, errors } = ap.parseContacts(buf, options.contactKind);
+      return { parsed: rows, errors, reportDate: null, rowCount: rows.length };
+    }
     if (kind === 'trial_balance') {
       if (!options.tbColumn) {
         throw AppError.badRequest(
@@ -942,6 +952,9 @@ async function commitContacts(
       phone: r.phone ?? null,
       billingLine1: r.billingAddress ? r.billingAddress.split('\n')[0] : null,
       shippingLine1: r.shippingAddress ? r.shippingAddress.split('\n')[0] : null,
+          // Accounting Power vendor exports carry a 1099 flag — preserve it
+      // so eligibility doesn't have to be re-marked by hand post-import.
+      is1099Eligible: (r as { is1099Eligible?: boolean }).is1099Eligible ?? false,
     });
     created++;
   }

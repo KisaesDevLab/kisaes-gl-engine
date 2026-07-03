@@ -210,6 +210,42 @@ describe('Imports Service', () => {
     });
   });
 
+  describe('Accounting Power vendor contacts', () => {
+    // Real AP vendor export shape: leading-space headers, quoted fields,
+    // embedded newlines inside quoted addresses, True/False 1099 flag.
+    const csv = ` Vendor #, Name, Address 1, Address 2, City, State, Zip, Telephone, Fax, Email,1099, W-9, Active,Terms, Account, Dept Code
+"","3 Way Construction","11646 Farm Road 2030","","Monett","MO","65708",,,"",True,False,True,,6390,""
+"","Barry County Youth Camp","Barry County Youth Camp
+Cythia Martin","","Monett","MO","65708",,,"",False,False,True,Net 15,5920,""
+"","Shane Shaffer","27348 Cimarron Dr","","Eagle Rock","MO","65641",,,"shaffereleven@gmail.com",False,False,True,,6390,""
+`;
+
+    it('imports AP vendors with 1099 flag and multi-line addresses', async () => {
+      const out = await importsService.createSession({
+        tenantId, companyId, userId,
+        file: fileFromText('vendors.csv', csv),
+        kind: 'contacts',
+        sourceSystem: 'accounting_power',
+        options: { contactKind: 'vendor' },
+      });
+      expect(out.validationErrors).toHaveLength(0);
+      expect(out.preview.totalRows).toBe(3);
+
+      const commit = await importsService.commitSession(tenantId, companyId, userId, out.session.id);
+      expect(commit.result.created).toBe(3);
+
+      const rows = await db.select().from(contacts).where(eq(contacts.tenantId, tenantId));
+      const threeWay = rows.find((r) => r.displayName === '3 Way Construction');
+      expect(threeWay?.is1099Eligible).toBe(true);
+      expect(threeWay?.contactType).toBe('vendor');
+      const camp = rows.find((r) => r.displayName === 'Barry County Youth Camp');
+      expect(camp?.is1099Eligible).toBe(false);
+      expect(camp?.billingLine1).toContain('Barry County Youth Camp');
+      const shane = rows.find((r) => r.displayName === 'Shane Shaffer');
+      expect(shane?.email).toBe('shaffereleven@gmail.com');
+    });
+  });
+
   describe('Accounting Power GL with zero-amount lines', () => {
     // AP exports emit placeholder rows with 0.00 in BOTH columns, and
     // occasionally an entirely-zero entry. These used to fail the whole

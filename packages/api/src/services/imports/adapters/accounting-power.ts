@@ -22,6 +22,7 @@ import {
   type TbColumnChoice,
 } from '@kis-books/shared';
 import { parseCsvText } from '../../payroll-parse.service.js';
+import type { CanonicalContactRow, ContactKind } from '@kis-books/shared';
 
 // ── Shared helpers ────────────────────────────────────────────────
 
@@ -365,4 +366,68 @@ export function parseGl(buf: Buffer): { entries: CanonicalGlEntry[]; errors: Imp
   }
 
   return { entries, errors };
+}
+
+// ── Contacts (Vendors / Customers) ────────────────────────────────
+//
+// Accounting Power DOES export vendors (Reports → Vendor List → CSV):
+//   Vendor #, Name, Address 1, Address 2, City, State, Zip, Telephone,
+//   Fax, Email, 1099, W-9, Active, Terms, Account, Dept Code
+// (headers carry leading spaces; fields are quoted and may contain
+// embedded newlines). The customer export mirrors it with "Customer #".
+// Only the fields the canonical row supports are mapped; 1099=True is
+// surfaced via the is1099Eligible flag so eligibility survives import.
+export function parseContacts(
+  buf: Buffer,
+  kind: ContactKind,
+): { rows: Array<CanonicalContactRow & { is1099Eligible?: boolean }>; errors: ImportValidationError[] } {
+  const rows: Array<CanonicalContactRow & { is1099Eligible?: boolean }> = [];
+  const errors: ImportValidationError[] = [];
+  const grid = parseCsvText(bufferToText(buf));
+  if (grid.length === 0) {
+    errors.push({ rowNumber: 0, code: 'IMPORT_HEADER_NOT_FOUND', message: 'Empty file.' });
+    return { rows, errors };
+  }
+  const header = grid[0]!;
+  const colIdx = (label: string) =>
+    header.findIndex((c) => c.trim().toLowerCase() === label.toLowerCase());
+  const iName = colIdx('Name');
+  if (iName === -1) {
+    errors.push({
+      rowNumber: 0,
+      code: 'IMPORT_HEADER_NOT_FOUND',
+      message: 'Could not find a "Name" column. Export the vendor/customer list from Accounting Power as CSV and upload it unmodified.',
+    });
+    return { rows, errors };
+  }
+  const iAddr1 = colIdx('Address 1');
+  const iAddr2 = colIdx('Address 2');
+  const iCity = colIdx('City');
+  const iState = colIdx('State');
+  const iZip = colIdx('Zip');
+  const iPhone = colIdx('Telephone');
+  const iEmail = colIdx('Email');
+  const i1099 = colIdx('1099');
+
+  const cell = (r: string[], i: number) => (i === -1 ? '' : (r[i] ?? '').replace(/\r?\n/g, ' ').trim());
+
+  for (let i = 1; i < grid.length; i++) {
+    const r = grid[i]!;
+    const displayName = cell(r, iName);
+    if (!displayName) continue; // blank/trailing rows
+
+    const cityStZip = [cell(r, iCity), cell(r, iState), cell(r, iZip)].filter(Boolean).join(' ');
+    const billingAddress = [cell(r, iAddr1), cell(r, iAddr2), cityStZip].filter(Boolean).join(', ');
+
+    rows.push({
+      rowNumber: i + 1,
+      displayName,
+      contactType: kind,
+      email: cell(r, iEmail) || undefined,
+      phone: cell(r, iPhone) || undefined,
+      billingAddress: billingAddress || undefined,
+      is1099Eligible: /^true$/i.test(cell(r, i1099)) || undefined,
+    });
+  }
+  return { rows, errors };
 }
