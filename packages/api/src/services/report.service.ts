@@ -520,7 +520,7 @@ export async function buildCashFlowStatement(
   let operating = new Decimal(0);
   let investing = new Decimal(0);
   let financing = new Decimal(0);
-  for (const r of rows.rows as any[]) {
+  for (const r of rows.rows as Array<{ cash_delta: string | null; touches_investing: boolean; touches_financing: boolean }>) {
     const delta = new Decimal(r.cash_delta || 0);
     if (r.touches_investing) investing = investing.plus(delta);
     else if (r.touches_financing) financing = financing.plus(delta);

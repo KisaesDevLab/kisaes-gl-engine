@@ -59,7 +59,7 @@ export async function create(tenantId: string, input: CreateBudgetInput, userId?
       SELECT fiscal_year_start_month FROM companies
       WHERE tenant_id = ${tenantId} ORDER BY created_at LIMIT 1
     `);
-    const fyMonth = Number((fyRow.rows as any[])[0]?.fiscal_year_start_month || 1);
+    const fyMonth = Number((fyRow.rows as Array<{ fiscal_year_start_month: number | null }>)[0]?.fiscal_year_start_month || 1);
     fiscalYearStart = `${input.fiscalYear}-${String(fyMonth).padStart(2, '0')}-01`;
   }
 
@@ -279,7 +279,7 @@ export async function buildBudgetVsActual(tenantId: string, budgetId: string, st
   // month of actuals against the FULL-YEAR budget (every account showed
   // a huge "unfavorable" variance by construction). Budget month m maps
   // to the m-th calendar month after the budget's fiscal_year_start.
-  const fyStartStr = String((budget as any).fiscalYearStart ?? `${budget.fiscalYear}-01-01`).slice(0, 10);
+  const fyStartStr = String((budget as { fiscalYearStart?: string | null }).fiscalYearStart ?? `${budget.fiscalYear}-01-01`).slice(0, 10);
   const fyY = parseInt(fyStartStr.slice(0, 4), 10);
   const fyM = parseInt(fyStartStr.slice(5, 7), 10) || 1;
   const includedMonths: number[] = [];

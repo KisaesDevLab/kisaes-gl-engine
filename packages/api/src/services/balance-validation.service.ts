@@ -46,7 +46,7 @@ export async function validateTenantBalances(
       AND a.balance::numeric IS DISTINCT FROM COALESCE(s.total, 0)
   `);
 
-  const drifts: BalanceDrift[] = (drifted.rows as any[]).map((r) => ({
+  const drifts: BalanceDrift[] = (drifted.rows as Array<{ id: string; name: string; stored: string; actual: string }>).map((r) => ({
     accountId: r.id,
     accountName: r.name,
     storedBalance: r.stored,

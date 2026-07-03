@@ -24,7 +24,7 @@ async function computeBudgetPerformance(tenantId: string) {
   // years, where FY2026 spans two calendar years).
   const activeBudget = budgetsList.data.find((b) => {
     if (!b.isActive) return false;
-    const fyStart = String((b as any).fiscalYearStart ?? `${b.fiscalYear}-01-01`).slice(0, 10);
+    const fyStart = String((b as { fiscalYearStart?: string | null }).fiscalYearStart ?? `${b.fiscalYear}-01-01`).slice(0, 10);
     const fyEndYear = parseInt(fyStart.slice(0, 4), 10) + 1;
     const fyEnd = `${fyEndYear}${fyStart.slice(4)}`;
     return fyStart <= todayStr && todayStr < fyEnd;
@@ -40,7 +40,7 @@ async function computeBudgetPerformance(tenantId: string) {
   // buildBudgetVsActual prorates the budget to this window, so YTD
   // actuals compare against the elapsed months' budget instead of the
   // full-year number.
-  const ytdStart = String((activeBudget as any).fiscalYearStart ?? `${activeBudget.fiscalYear}-01-01`).slice(0, 10);
+  const ytdStart = String((activeBudget as { fiscalYearStart?: string | null }).fiscalYearStart ?? `${activeBudget.fiscalYear}-01-01`).slice(0, 10);
   const ytdData = await budgetService.buildBudgetVsActual(tenantId, activeBudget.id, ytdStart, mtdEnd);
 
   return {

@@ -76,7 +76,9 @@ function baseUrl(creds: Tax1099Credentials): string {
   return (creds.baseUrlOverride || DEFAULT_BASE_URLS[creds.environment]).replace(/\/+$/, '');
 }
 
-async function httpJson(url: string, init: RequestInit): Promise<any> {
+type JsonBody = Record<string, unknown> | null;
+
+async function httpJson(url: string, init: RequestInit): Promise<JsonBody> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   let res: Response;
@@ -91,10 +93,10 @@ async function httpJson(url: string, init: RequestInit): Promise<any> {
     clearTimeout(timer);
   }
   const text = await res.text();
-  let body: any = null;
-  try { body = text ? JSON.parse(text) : null; } catch { body = { raw: text?.slice(0, 500) }; }
+  let body: JsonBody = null;
+  try { body = text ? (JSON.parse(text) as JsonBody) : null; } catch { body = { raw: text?.slice(0, 500) }; }
   if (!res.ok) {
-    const msg = body?.message || body?.error || body?.raw || `HTTP ${res.status}`;
+    const msg = body?.['message'] || body?.['error'] || body?.['raw'] || `HTTP ${res.status}`;
     throw AppError.badRequest(`Tax1099 API error: ${msg}`, 'TAX1099_API_ERROR');
   }
   return body;
@@ -110,7 +112,7 @@ export async function createSession(creds: Tax1099Credentials): Promise<Tax1099S
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ apiKey: creds.apiKey, userName: creds.username, password: creds.password }),
   });
-  const token = body?.token ?? body?.sessionToken ?? body?.access_token;
+  const token = body?.['token'] ?? body?.['sessionToken'] ?? body?.['access_token'];
   if (!token) {
     throw AppError.badRequest('Tax1099 session response did not include a token', 'TAX1099_NO_TOKEN');
   }
@@ -132,7 +134,7 @@ export async function submitForms(
       recipients: input.recipients,
     }),
   });
-  const ref = body?.referenceId ?? body?.submissionId ?? body?.id;
+  const ref = body?.['referenceId'] ?? body?.['submissionId'] ?? body?.['id'];
   if (!ref) {
     throw AppError.badRequest('Tax1099 submit response did not include a submission reference', 'TAX1099_NO_REFERENCE');
   }
@@ -148,7 +150,7 @@ export async function checkStatus(
     method: 'GET',
     headers: { Authorization: `Bearer ${session.token}` },
   });
-  const status = String(body?.status ?? 'unknown').toLowerCase();
-  const message = body?.message ? String(body.message) : null;
+  const status = String(body?.['status'] ?? 'unknown').toLowerCase();
+  const message = body?.['message'] ? String(body['message']) : null;
   return { status, message, raw: body };
 }
