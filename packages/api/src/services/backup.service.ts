@@ -18,6 +18,7 @@ import {
 import { getSetting, setSetting } from './admin.service.js';
 import { decrypt as decryptField } from '../utils/encryption.js';
 import type { StorageProvider } from './storage/storage-provider.interface.js';
+import { tenantStorageKey } from './storage/storage-keys.js';
 
 const BACKUP_DIR = process.env['BACKUP_DIR'] || '/data/backups';
 const APP_VERSION = '0.3.0';
@@ -592,7 +593,10 @@ export async function uploadBackupToRemote(
   if (!provider) return { success: false, error: 'No remote provider configured' };
 
   try {
-    const key = `backups/${tenantId}/${fileName}`;
+    // Tenant-rooted key ('_system' for system backups). Old manifest
+    // entries keep their legacy backups/{tenantId}/... keys — download,
+    // delete, and GFS purge all operate on the key stored per entry.
+    const key = tenantStorageKey(tenantId, 'backups', fileName);
     await provider.upload(key, data, {
       fileName,
       mimeType: 'application/octet-stream',

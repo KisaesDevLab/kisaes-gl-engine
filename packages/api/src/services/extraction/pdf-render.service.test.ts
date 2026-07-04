@@ -44,10 +44,13 @@ describe('renderToPages dispatch', () => {
 });
 
 describe('extraction storage keys', () => {
-  it('builds tenant-scoped original and page keys', () => {
-    expect(originalKey('t1', 'j1', '.pdf')).toBe('documents/t1/j1/original.pdf');
-    expect(pageKey('t1', 'j1', 3)).toBe('documents/t1/j1/page-3.png');
-    expect(pageKey('t1', 'j1', 1, '.jpg')).toBe('documents/t1/j1/page-1.jpg');
+  it('builds tenant-rooted original and page keys', () => {
+    // Tenant-rooted layout: {tenantId}/documents/{jobId}/... — the
+    // builder validates the tenant id, so use a real UUID.
+    const t = '5b0c2f9e-1d3a-4b6c-8e7f-9a0b1c2d3e4f';
+    expect(originalKey(t, 'j1', '.pdf')).toBe(`${t}/documents/j1/original.pdf`);
+    expect(pageKey(t, 'j1', 3)).toBe(`${t}/documents/j1/page-3.png`);
+    expect(pageKey(t, 'j1', 1, '.jpg')).toBe(`${t}/documents/j1/page-1.jpg`);
   });
 
   it('maps MIME types to extensions', () => {

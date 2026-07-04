@@ -14,6 +14,7 @@ import {
 } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { getProviderForTenant } from './storage/storage-provider.factory.js';
+import { tenantStorageKey } from './storage/storage-keys.js';
 import { auditLog } from '../middleware/audit.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 18 — Receipt Inbox.
@@ -80,7 +81,11 @@ export async function uploadReceipt(input: UploadInput): Promise<{
   }
 
   const provider = await getProviderForTenant(input.tenantId);
-  const storageKey = `receipts/${input.tenantId}/${crypto.randomUUID()}-${input.filename.replace(/[^A-Za-z0-9._-]/g, '_')}`;
+  const storageKey = tenantStorageKey(
+    input.tenantId,
+    'receipts',
+    `${crypto.randomUUID()}-${input.filename.replace(/[^A-Za-z0-9._-]/g, '_')}`,
+  );
   await provider.upload(storageKey, input.buffer, {
     fileName: input.filename,
     mimeType: input.mimeType,

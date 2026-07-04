@@ -10,12 +10,14 @@ import { db } from '../db/index.js';
 import { attachments } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
+import { tenantStorageKey } from './storage/storage-keys.js';
 
 function ensureDir(dir: string) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-// Resolves a filePath (stored in the DB as "/uploads/attachments/<tenant>/<uuid>.ext")
+// Resolves a filePath (stored in the DB as "/uploads/<tenant>/attachments/<uuid>.ext",
+// or "/uploads/attachments/<tenant>/<uuid>.ext" for pre-layout-change rows)
 // to an absolute path under UPLOAD_DIR and refuses anything that escapes the
 // root via "..", symlinks, or absolute overrides. The DB value is considered
 // trusted today, but these defenses are cheap and protect against any future
@@ -42,7 +44,7 @@ export async function upload(
 
   const ext = path.extname(file.originalname);
   const uuid = crypto.randomUUID();
-  const storageKey = `attachments/${tenantId}/${uuid}${ext}`;
+  const storageKey = tenantStorageKey(tenantId, 'attachments', `${uuid}${ext}`);
 
   // Upload via storage provider (local or cloud)
   let providerFileId: string | undefined;
@@ -56,16 +58,18 @@ export async function upload(
     });
     providerFileId = result.providerFileId;
   } catch {
-    // Fallback to direct local write if provider resolution fails
-    const dir = path.join(env.UPLOAD_DIR, 'attachments', tenantId);
-    ensureDir(dir);
-    fs.writeFileSync(path.join(dir, `${uuid}${ext}`), file.buffer);
+    // Fallback to direct local write if provider resolution fails.
+    // Mirror LocalProvider's layout (UPLOAD_DIR/<storageKey>) so the
+    // stored key resolves the same file either way.
+    const fallbackPath = path.join(env.UPLOAD_DIR, storageKey);
+    ensureDir(path.dirname(fallbackPath));
+    fs.writeFileSync(fallbackPath, file.buffer);
   }
 
   const [attachment] = await db.insert(attachments).values({
     tenantId,
     fileName: file.originalname,
-    filePath: `/uploads/attachments/${tenantId}/${uuid}${ext}`,
+    filePath: `/uploads/${storageKey}`,
     fileSize: file.size,
     mimeType: file.mimetype,
     attachableType,

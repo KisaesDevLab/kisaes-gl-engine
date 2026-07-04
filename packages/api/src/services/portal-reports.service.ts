@@ -21,6 +21,7 @@ import * as aiConfigService from './ai-config.service.js';
 import { executeWithFallback, getProvider } from './ai-providers/index.js';
 import type { CompletionResult } from './ai-providers/index.js';
 import { getProviderForTenant } from './storage/storage-provider.factory.js';
+import { tenantStorageKey } from './storage/storage-keys.js';
 import { htmlToPdf, reportHtmlTemplate } from './portal-pdf.service.js';
 import {
   gatherTriad,
@@ -921,7 +922,7 @@ export async function setStatus(
       });
       const pdfBuf = await htmlToPdf(html);
       const provider = await getProviderForTenant(tenantId);
-      const key = `reports/${tenantId}/${id}-v${nextVersion}.pdf`;
+      const key = tenantStorageKey(tenantId, 'reports', `${id}-v${nextVersion}.pdf`);
       await provider.upload(key, pdfBuf, {
         fileName: `report-${nextVersion}.pdf`,
         mimeType: 'application/pdf',

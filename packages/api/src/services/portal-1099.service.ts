@@ -21,6 +21,7 @@ import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { getSmtpSettings } from './admin.service.js';
 import { getProviderForTenant } from './storage/storage-provider.factory.js';
+import { tenantStorageKey } from './storage/storage-keys.js';
 import { htmlToPdf, w9HtmlTemplate } from './portal-pdf.service.js';
 import { CSV_HEADER, buildCsvLine, maskTin } from './portal-1099.csv.js';
 import {
@@ -1209,7 +1210,7 @@ export async function completeW9(input: CompleteW9Input): Promise<{ ok: true }> 
     });
     const pdfBuf = await htmlToPdf(html);
     const provider = await getProviderForTenant(req.tenantId);
-    const storageKey = `w9/${req.tenantId}/${req.contactId}-${signedAt.getTime()}.pdf`;
+    const storageKey = tenantStorageKey(req.tenantId, 'w9', `${req.contactId}-${signedAt.getTime()}.pdf`);
     const upload = await provider.upload(storageKey, pdfBuf, {
       fileName: 'W-9.pdf',
       mimeType: 'application/pdf',

@@ -9,6 +9,7 @@ import { sql, eq, and, gte, lte } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import { tenantStorageKey } from './storage/storage-keys.js';
 import {
   encryptWithPassphrase,
   decryptWithPassphrase,
@@ -274,8 +275,14 @@ export async function exportTenant(
     for (const att of attachments_meta) {
       const filePath = att['file_path'] as string;
       if (!filePath) continue;
-      // Try both absolute path and relative-to-upload-dir
-      const candidates = [filePath, path.join(UPLOAD_DIR, filePath)];
+      // Try the absolute path, the "/uploads/..."-prefixed logical path
+      // (how attachment.service stores provider-written files), and a
+      // plain relative-to-upload-dir path.
+      const candidates = [
+        filePath,
+        path.join(UPLOAD_DIR, filePath.replace(/^\/uploads\//, '')),
+        path.join(UPLOAD_DIR, filePath),
+      ];
       for (const candidate of candidates) {
         try {
           if (fs.existsSync(candidate)) {
@@ -1054,7 +1061,9 @@ export async function importAsNewTenant(
 
   // 16b. Import attachment files (write to disk)
   const UPLOAD_DIR = process.env['UPLOAD_DIR'] || '/data/uploads';
-  const tenantUploadDir = path.join(UPLOAD_DIR, tenantId);
+  // Tenant-rooted layout: imported files are NEW writes, so they land
+  // under {tenantId}/attachments/ like every other new attachment.
+  const tenantUploadDir = path.join(UPLOAD_DIR, tenantId, 'attachments');
   if ((payload.attachment_files || []).length > 0) {
     ensureDir(tenantUploadDir);
   }
@@ -1072,23 +1081,27 @@ export async function importAsNewTenant(
       const ext = path.extname(originalName);
       const destFileName = `${newId}${ext}`;
       const destPath = path.join(tenantUploadDir, destFileName);
+      const storageKey = tenantStorageKey(tenantId, 'attachments', destFileName);
 
       fs.writeFileSync(destPath, Buffer.from(af['data'] as string, 'base64'));
 
-      // Insert attachment record
+      // Insert attachment record. file_path/storage_key use the same
+      // logical layout as attachment.service so downloads resolve via
+      // the standard provider path.
       await db.execute(sql`
         INSERT INTO attachments (
           id, tenant_id, company_id, file_name, file_path, file_size, mime_type,
-          attachable_type, attachable_id, storage_provider
+          attachable_type, attachable_id, storage_provider, storage_key
         ) VALUES (
           ${newId}, ${tenantId}, ${companyId},
           ${originalName},
-          ${destPath},
+          ${`/uploads/${storageKey}`},
           ${(meta['file_size'] as number) || 0},
           ${(meta['mime_type'] as string) || 'application/octet-stream'},
           ${(meta['attachable_type'] as string) || 'transaction'},
           ${remap(meta['attachable_id'] as string | null) || newId},
-          ${'local'}
+          ${'local'},
+          ${storageKey}
         )
       `);
       counts.attachments++;

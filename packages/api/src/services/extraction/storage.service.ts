@@ -7,20 +7,22 @@
 // originals and rendered page images follow the same storage policy as
 // every other tenant artefact.
 //
-// Key layout (tenant-scoped):
-//   documents/{tenantId}/{jobId}/original{ext}   — the uploaded file
-//   documents/{tenantId}/{jobId}/page-{n}.png    — each rendered page image
+// Key layout (tenant-rooted; legacy rows may still reference the old
+// documents/{tenantId}/... layout and are always read via their stored keys):
+//   {tenantId}/documents/{jobId}/original{ext}   — the uploaded file
+//   {tenantId}/documents/{jobId}/page-{n}.png    — each rendered page image
 
 import path from 'node:path';
 import { getProviderForTenant } from '../storage/storage-provider.factory.js';
+import { tenantStorageKey } from '../storage/storage-keys.js';
 import type { RenderedPage } from './pdf-render.service.js';
 
 export function originalKey(tenantId: string, jobId: string, ext: string): string {
-  return `documents/${tenantId}/${jobId}/original${ext}`;
+  return tenantStorageKey(tenantId, 'documents', jobId, `original${ext}`);
 }
 
 export function pageKey(tenantId: string, jobId: string, pageNo: number, ext = '.png'): string {
-  return `documents/${tenantId}/${jobId}/page-${pageNo}${ext}`;
+  return tenantStorageKey(tenantId, 'documents', jobId, `page-${pageNo}${ext}`);
 }
 
 /** Map a MIME type to a file extension for storage keys. */
