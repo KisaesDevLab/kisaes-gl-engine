@@ -10,6 +10,7 @@ import { db } from '../db/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { tenantStorageKey } from './storage/storage-keys.js';
+import { getProviderForTenant } from './storage/storage-provider.factory.js';
 import {
   encryptWithPassphrase,
   decryptWithPassphrase,
@@ -283,15 +284,33 @@ export async function exportTenant(
         path.join(UPLOAD_DIR, filePath.replace(/^\/uploads\//, '')),
         path.join(UPLOAD_DIR, filePath),
       ];
+      let bundled = false;
       for (const candidate of candidates) {
         try {
           if (fs.existsSync(candidate)) {
             const data = fs.readFileSync(candidate);
             attachment_files.push({ id: att['id'] as string, data: data.toString('base64') });
+            bundled = true;
             break;
           }
         } catch {
           // Skip unreadable files
+        }
+      }
+      // Not on local disk — the file lives on the tenant's (or system
+      // default) cloud provider (e.g. B2). Without this, cloud-stored
+      // attachments were silently omitted from exports and lost on
+      // export→import.
+      if (!bundled) {
+        const storageKey = (att['storage_key'] as string | null) || null;
+        if (storageKey) {
+          try {
+            const provider = await getProviderForTenant(tenantId);
+            const data = await provider.download(storageKey);
+            attachment_files.push({ id: att['id'] as string, data: data.toString('base64') });
+          } catch (err) {
+            console.warn(`[tenant-export] Attachment ${att['id']} not bundled (provider download failed): ${err instanceof Error ? err.message : err}`);
+          }
         }
       }
     }

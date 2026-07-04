@@ -137,9 +137,23 @@ backupRouter.post('/passphrase-strength', (req, res) => {
 
 // ─── Remote Backup Endpoints ─────────────────────────────────────
 
-backupRouter.get('/remote/history', async (_req, res) => {
+// Tenant isolation (rule 17): these routes were authenticate-only, so
+// any tenant user could list/download/delete ANY tenant's (encrypted)
+// remote backups by key. Access now requires the manifest entry (or,
+// for keys missing from the manifest, the key's tenant prefix in either
+// the legacy or tenant-rooted layout) to match the caller's tenant;
+// super admins retain full access including '_system' backups.
+async function canAccessRemoteKey(req: { tenantId: string; isSuperAdmin: boolean }, key: string): Promise<boolean> {
+  if (req.isSuperAdmin) return true;
+  const entry = (await backupService.listRemoteBackups()).find((e) => e.key === key);
+  if (entry) return entry.tenantId === req.tenantId;
+  return key.startsWith(`${req.tenantId}/`) || key.startsWith(`backups/${req.tenantId}/`);
+}
+
+backupRouter.get('/remote/history', async (req, res) => {
   const entries = await backupService.listRemoteBackups();
-  res.json({ backups: entries });
+  const visible = req.isSuperAdmin ? entries : entries.filter((e) => e.tenantId === req.tenantId);
+  res.json({ backups: visible });
 });
 
 backupRouter.get('/remote/download/*', async (req, res) => {
@@ -149,6 +163,10 @@ backupRouter.get('/remote/download/*', async (req, res) => {
   // intent vs sprinkling `any` throughout the handler.
   const key = (req.params as Record<string, string | undefined>)['0'];
   if (!key) { res.status(400).json({ error: { message: 'Key is required' } }); return; }
+  if (!(await canAccessRemoteKey(req, key))) {
+    res.status(403).json({ error: { message: 'Access denied' } });
+    return;
+  }
   try {
     const data = await backupService.downloadRemoteBackup(key);
     const fileName = key.split('/').pop() || 'backup.kbk';
@@ -163,6 +181,10 @@ backupRouter.get('/remote/download/*', async (req, res) => {
 backupRouter.delete('/remote/*', async (req, res) => {
   const key = (req.params as any)[0] as string;
   if (!key) { res.status(400).json({ error: { message: 'Key is required' } }); return; }
+  if (!(await canAccessRemoteKey(req, key))) {
+    res.status(403).json({ error: { message: 'Access denied' } });
+    return;
+  }
   try {
     await backupService.deleteRemoteBackup(key);
     res.json({ message: 'Remote backup deleted' });
