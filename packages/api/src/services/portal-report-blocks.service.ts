@@ -2,9 +2,11 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-import { sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
+import { tags } from '../db/schema/index.js';
 import * as reportSvc from './report.service.js';
+import * as budgetSvc from './budget.service.js';
 import { gatherTriad, type PeriodTriad } from './portal-report-evaluator.service.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 16.6 — visual data blocks.
@@ -33,10 +35,54 @@ export interface PlSummary {
   netIncome: number;
 }
 
+// Section subtotals for the richer Balance Sheet embed. Additive —
+// older snapshots without `sections` still render the three totals.
+export interface BsSections {
+  currentAssets: number;
+  fixedAssets: number;
+  otherAssets: number;
+  currentLiabilities: number;
+  longTermLiabilities: number;
+}
+
 export interface BsSummary {
   assets: number;
   liabilities: number;
   equity: number;
+  sections?: BsSections;
+}
+
+// Budget vs. Actual data block (F1) — slim per-line rows + totals.
+export interface BudgetVsActualRow {
+  account: string;
+  budgeted: number;
+  actual: number;
+  variance: number;
+  variancePct: number | null;
+}
+
+export interface BudgetVsActualSummary {
+  budgetName: string;
+  fiscalYear: number;
+  rows: BudgetVsActualRow[];
+  totals: { budgeted: number; actual: number; variance: number };
+  truncated: boolean;
+}
+
+// Tag-segment block (F2) — one per-tag P&L summary row per segment.
+export interface TagSegmentRow {
+  tagId: string;
+  tagName: string;
+  revenue: number;
+  expenses: number;
+  netIncome: number;
+}
+
+// Sales Tax Liability embed (F5) — the service reports period totals
+// (no per-agency breakdown is modeled yet).
+export interface SalesTaxSummary {
+  totalSales: number;
+  totalTax: number;
 }
 
 export interface PlVsPriorYear {
@@ -216,13 +262,171 @@ async function plSummary(args: ResolverArgs, basis: EmbedBasis = 'accrual'): Pro
   };
 }
 
+// Detail-type classification for the Balance Sheet embed sections.
+// Both the default-COA umbrella vocabulary ('bank') and the QBO-style
+// specific one ('checking'/'savings') appear in production data.
+// Unknown (incl. tenant-defined custom) detail types fall to the
+// "other assets" / "long-term liabilities" catch-alls.
+const BS_CURRENT_ASSET_DETAIL_TYPES = new Set([
+  'bank', 'checking', 'savings', 'cash', 'petty_cash', 'undeposited_funds',
+  'accounts_receivable', 'inventory', 'prepaid_expense', 'other_current_asset',
+]);
+const BS_FIXED_ASSET_DETAIL_TYPES = new Set(['fixed_asset', 'accumulated_depreciation']);
+const BS_CURRENT_LIABILITY_DETAIL_TYPES = new Set([
+  'accounts_payable', 'credit_card', 'sales_tax_payable', 'payroll_payable',
+  'other_current_liability',
+]);
+
 async function bsSummary(args: ResolverArgs, basis: EmbedBasis = 'accrual'): Promise<BsSummary> {
-  const r = await reportSvc.buildBalanceSheet(args.tenantId, args.endDate, basis, args.companyId);
+  // groupBy detail_type gives per-detail subtotals in one pass, so the
+  // section rollups don't need extra balance queries.
+  const r = await reportSvc.buildBalanceSheet(
+    args.tenantId,
+    args.endDate,
+    basis,
+    args.companyId,
+    null,
+    'detail_type',
+  );
+  const sections: BsSections = {
+    currentAssets: 0,
+    fixedAssets: 0,
+    otherAssets: 0,
+    currentLiabilities: 0,
+    longTermLiabilities: 0,
+  };
+  type Group = { detailType: string | null; subtotal: number };
+  for (const g of ((r.groups?.assets ?? []) as Group[])) {
+    if (g.detailType && BS_CURRENT_ASSET_DETAIL_TYPES.has(g.detailType)) {
+      sections.currentAssets += g.subtotal;
+    } else if (g.detailType && BS_FIXED_ASSET_DETAIL_TYPES.has(g.detailType)) {
+      sections.fixedAssets += g.subtotal;
+    } else {
+      sections.otherAssets += g.subtotal;
+    }
+  }
+  for (const g of ((r.groups?.liabilities ?? []) as Group[])) {
+    if (g.detailType && BS_CURRENT_LIABILITY_DETAIL_TYPES.has(g.detailType)) {
+      sections.currentLiabilities += g.subtotal;
+    } else {
+      sections.longTermLiabilities += g.subtotal;
+    }
+  }
   return {
     assets: r.totalAssets,
     liabilities: r.totalLiabilities,
     equity: r.totalEquity,
+    sections,
   };
+}
+
+// Budget vs. Actual (F1) — slims buildBudgetVsActual to per-line
+// budget/actual/variance rows, capped like the trial-balance embed.
+const BVA_EMBED_MAX_ROWS = 40;
+async function budgetVsActual(
+  args: ResolverArgs,
+  budgetId: string,
+): Promise<BudgetVsActualSummary> {
+  const r = await budgetSvc.buildBudgetVsActual(
+    args.tenantId,
+    budgetId,
+    args.startDate,
+    args.endDate,
+    args.companyId,
+  );
+  type BvaLine = {
+    accountName: string;
+    accountNumber: string | null;
+    budget: number;
+    actual: number;
+    varianceDollar: number;
+    variancePercent: number | null;
+  };
+  const all = [
+    ...(r.revenue as BvaLine[]),
+    ...(r.cogs as BvaLine[]),
+    ...(r.expenses as BvaLine[]),
+    ...(r.otherRevenue as BvaLine[]),
+    ...(r.otherExpenses as BvaLine[]),
+  ];
+  const rows = all.slice(0, BVA_EMBED_MAX_ROWS).map((line) => ({
+    account: line.accountNumber ? `${line.accountNumber} · ${line.accountName}` : line.accountName,
+    budgeted: line.budget,
+    actual: line.actual,
+    variance: line.varianceDollar,
+    variancePct: line.variancePercent,
+  }));
+  return {
+    budgetName: r.budgetName,
+    fiscalYear: r.fiscalYear,
+    rows,
+    totals: {
+      budgeted: r.netIncomeBudget,
+      actual: r.netIncomeActual,
+      variance: r.netIncomeActual - r.netIncomeBudget,
+    },
+    truncated: all.length > BVA_EMBED_MAX_ROWS,
+  };
+}
+
+// Tag segments (F2) — one accrual P&L per tag (line-level tag filter),
+// summarized to revenue / expenses / net income. Tag names resolve
+// tenant-scoped; ids that don't belong to the tenant are dropped.
+const TAG_SEGMENT_MAX_TAGS = 10;
+async function tagSegments(args: ResolverArgs, tagIds: string[]): Promise<TagSegmentRow[]> {
+  const ids = tagIds.slice(0, TAG_SEGMENT_MAX_TAGS);
+  const nameRows = await db
+    .select({ id: tags.id, name: tags.name })
+    .from(tags)
+    .where(and(eq(tags.tenantId, args.tenantId), inArray(tags.id, ids)));
+  const nameById = new Map(nameRows.map((t) => [t.id, t.name]));
+  const rows: TagSegmentRow[] = [];
+  for (const tagId of ids) {
+    const tagName = nameById.get(tagId);
+    if (!tagName) continue; // deleted or foreign-tenant id
+    const pl = await reportSvc.buildProfitAndLoss(
+      args.tenantId,
+      args.startDate,
+      args.endDate,
+      'accrual',
+      args.companyId,
+      tagId,
+    );
+    rows.push({
+      tagId,
+      tagName,
+      revenue: pl.totalRevenue + pl.totalOtherRevenue,
+      expenses: pl.totalCogs + pl.totalExpenses + pl.totalOtherExpenses,
+      netIncome: pl.netIncome,
+    });
+  }
+  return rows;
+}
+
+// Expense by Category (F4) — reuses the summary mode of the report.
+async function expenseByCategory(args: ResolverArgs, topN: number): Promise<TopRow[]> {
+  const r = await reportSvc.buildExpenseByCategory(
+    args.tenantId,
+    args.startDate,
+    args.endDate,
+    args.companyId,
+  );
+  const rows = (r.data as Array<{ category: string; total: string | number }>).map((row) => ({
+    name: row.category,
+    amount: Number(row.total ?? 0),
+  }));
+  return rows.slice(0, topN);
+}
+
+// Sales Tax Liability embed (F5).
+async function salesTaxSummary(args: ResolverArgs): Promise<SalesTaxSummary> {
+  const r = await reportSvc.buildSalesTaxLiability(
+    args.tenantId,
+    args.startDate,
+    args.endDate,
+    args.companyId,
+  );
+  return { totalSales: r.totalSales, totalTax: r.totalTax };
 }
 
 // Cash flow embed — the cash-flow statement is direct-method (built
@@ -347,6 +551,64 @@ async function plTrend12m(args: ResolverArgs, kind: 'revenue' | 'expense'): Prom
   return w.months.map((mo) => ({ month: mo, label: monthLabel(mo), amount: byMonth.get(mo) ?? 0 }));
 }
 
+// Net income per month. Income is signed credit−debit and costs
+// debit−credit (P&L convention), so net income = Σ income − Σ costs
+// = Σ (credit − debit) across ALL P&L account types in one sum.
+async function netIncomeTrend12m(args: ResolverArgs): Promise<TrendPoint[]> {
+  const w = trendWindow(args.endDate);
+  const companyCond = args.companyId ? sql`AND t.company_id = ${args.companyId}` : sql``;
+  const rows = await db.execute(sql`
+    SELECT to_char(date_trunc('month', t.txn_date), 'YYYY-MM') AS month,
+      COALESCE(SUM(jl.credit - jl.debit), 0) AS amount
+    FROM journal_lines jl
+    JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${args.tenantId}
+    JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = ${args.tenantId}
+    WHERE jl.tenant_id = ${args.tenantId}
+      AND t.status = 'posted'
+      AND t.txn_date >= ${w.startDate} AND t.txn_date <= ${w.endDate}
+      AND a.account_type IN ('revenue', 'other_revenue', 'cogs', 'expense', 'other_expense')
+      ${companyCond}
+    GROUP BY 1
+  `);
+  const byMonth = new Map<string, number>();
+  for (const row of rows.rows as Array<{ month: string; amount: string | number | null }>) {
+    byMonth.set(row.month, Number(row.amount ?? 0));
+  }
+  return w.months.map((mo) => ({ month: mo, label: monthLabel(mo), amount: byMonth.get(mo) ?? 0 }));
+}
+
+// Gross margin % per month — (revenue − cogs) / revenue, null-safe to
+// 0 when a month has no revenue. Amounts are percentage points
+// (e.g. 42.5), NOT dollars; renderers label the axis accordingly.
+async function grossMarginTrend12m(args: ResolverArgs): Promise<TrendPoint[]> {
+  const w = trendWindow(args.endDate);
+  const companyCond = args.companyId ? sql`AND t.company_id = ${args.companyId}` : sql``;
+  const rows = await db.execute(sql`
+    SELECT to_char(date_trunc('month', t.txn_date), 'YYYY-MM') AS month,
+      COALESCE(SUM(CASE WHEN a.account_type IN ('revenue', 'other_revenue')
+        THEN jl.credit - jl.debit ELSE 0 END), 0) AS revenue,
+      COALESCE(SUM(CASE WHEN a.account_type = 'cogs'
+        THEN jl.debit - jl.credit ELSE 0 END), 0) AS cogs
+    FROM journal_lines jl
+    JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${args.tenantId}
+    JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = ${args.tenantId}
+    WHERE jl.tenant_id = ${args.tenantId}
+      AND t.status = 'posted'
+      AND t.txn_date >= ${w.startDate} AND t.txn_date <= ${w.endDate}
+      AND a.account_type IN ('revenue', 'other_revenue', 'cogs')
+      ${companyCond}
+    GROUP BY 1
+  `);
+  const byMonth = new Map<string, number>();
+  for (const row of rows.rows as Array<{ month: string; revenue: string | number | null; cogs: string | number | null }>) {
+    const rev = Number(row.revenue ?? 0);
+    const cogs = Number(row.cogs ?? 0);
+    const pct = rev === 0 ? 0 : ((rev - cogs) / rev) * 100;
+    byMonth.set(row.month, Math.round(pct * 10) / 10);
+  }
+  return w.months.map((mo) => ({ month: mo, label: monthLabel(mo), amount: byMonth.get(mo) ?? 0 }));
+}
+
 // Month-END total balance across all bank accounts for the same 12
 // months — cumulative as of each month end. One query buckets all
 // journal-line activity ('opening' = everything before the window),
@@ -411,9 +673,9 @@ async function plVsPriorYear(args: ResolverArgs): Promise<PlVsPriorYear> {
   };
 }
 
-// Resolve a `block`/`chart`/`report` block to a renderable payload.
-// Unknown names get { error } so the renderer can show a helpful
-// message instead of nothing.
+// Resolve a `block`/`chart`/`report`/`tag-segment` block to a
+// renderable payload. Unknown names get { error } so the renderer can
+// show a helpful message instead of nothing.
 export async function resolveBlock(
   block: Record<string, unknown>,
   args: ResolverArgs,
@@ -444,9 +706,40 @@ export async function resolveBlock(
           return { type: 'pl_bar', data: await plSummary(args) };
         case 'bank_balances':
           return { type: 'bank_balances', data: await bankBalances(args) };
+        case 'expense_by_category':
+          return { type: 'expense_by_category', data: await expenseByCategory(args, topN) };
+        case 'budget_vs_actual': {
+          const budgetId = typeof block['budgetId'] === 'string' ? block['budgetId'] : '';
+          if (!budgetId) {
+            return {
+              type: 'budget_vs_actual',
+              error: 'No budget selected — pick one in the layout editor.',
+            };
+          }
+          return { type: 'budget_vs_actual', data: await budgetVsActual(args, budgetId) };
+        }
         default:
           return { type, error: `Unknown block: ${name}` };
       }
+    }
+    if (type === 'tag-segment') {
+      const tagIds = Array.isArray(block['tags'])
+        ? (block['tags'] as unknown[]).filter((t): t is string => typeof t === 'string')
+        : [];
+      if (tagIds.length === 0) {
+        return {
+          type: 'tag_segments',
+          error: 'No tags selected — pick tags in the layout editor.',
+        };
+      }
+      const rows = await tagSegments(args, tagIds);
+      if (rows.length === 0) {
+        return {
+          type: 'tag_segments',
+          error: 'The selected tags no longer exist — re-pick them in the layout editor.',
+        };
+      }
+      return { type: 'tag_segments', data: rows };
     }
     if (type === 'chart') {
       switch (name) {
@@ -458,6 +751,10 @@ export async function resolveBlock(
           return { type: 'expense_trend_12m', data: await plTrend12m(args, 'expense') };
         case 'cash_balance_trend':
           return { type: 'cash_balance_trend', data: await cashBalanceTrend(args) };
+        case 'net_income_trend_12m':
+          return { type: 'net_income_trend_12m', data: await netIncomeTrend12m(args) };
+        case 'gross_margin_trend_12m':
+          return { type: 'gross_margin_trend_12m', data: await grossMarginTrend12m(args) };
         default:
           return { type: name, error: `Unknown chart: ${name}` };
       }
@@ -482,6 +779,8 @@ export async function resolveBlock(
           return { type: 'ar_aging', data: await arAging(args) };
         case 'ap_aging':
           return { type: 'ap_aging', data: await apAging(args) };
+        case 'sales_tax':
+          return { type: 'sales_tax', data: await salesTaxSummary(args) };
         default:
           return { type: name, error: `Unknown report embed: ${name}` };
       }

@@ -353,19 +353,22 @@ ${legendItems}
 </svg>`;
 }
 
-interface PdfBlockPayload {
+export interface PdfBlockPayload {
   type: string;
   data?: unknown;
   error?: string;
 }
 
-function renderBlockPdf(block: Record<string, unknown>, payload: PdfBlockPayload | undefined): string {
+// Exported for the render-parity test — every payload type resolveBlock
+// can emit must produce real HTML here (no "not yet supported").
+export function renderBlockPdf(block: Record<string, unknown>, payload: PdfBlockPayload | undefined): string {
   const blockType = String(block['type'] ?? '');
   const name =
     (block['name'] as string | undefined) ??
     (block['report'] as string | undefined) ??
     (block['key'] as string | undefined) ??
-    '';
+    // tag-segment blocks carry no name key — label them by type.
+    (blockType === 'tag-segment' ? 'tag segments' : '');
   const friendly = name.replace(/_/g, ' ');
 
   if (!payload) {
@@ -475,15 +478,109 @@ function renderBlockPdf(block: Record<string, unknown>, payload: PdfBlockPayload
 </tbody></table></section>`;
     }
     case 'balance_sheet': {
-      const b = payload.data as { assets: number; liabilities: number; equity: number } | null | undefined;
+      const b = payload.data as
+        | {
+            assets: number;
+            liabilities: number;
+            equity: number;
+            sections?: {
+              currentAssets: number;
+              fixedAssets: number;
+              otherAssets: number;
+              currentLiabilities: number;
+              longTermLiabilities: number;
+            };
+          }
+        | null
+        | undefined;
       if (!b) {
         return `<section class="section"><h2>Balance Sheet</h2><p class="meta">No data.</p></section>`;
       }
+      const sub = (label: string, v: number) =>
+        `<tr><td class="indent">${escapeHtml(label)}</td><td class="num">${escapeHtml(fmtMoneyPdf(v))}</td></tr>`;
+      const s = b.sections;
+      const assetRows = s
+        ? sub('Current Assets', s.currentAssets) + sub('Fixed Assets', s.fixedAssets) + sub('Other Assets', s.otherAssets)
+        : '';
+      const liabRows = s
+        ? sub('Current Liabilities', s.currentLiabilities) + sub('Long-Term Liabilities', s.longTermLiabilities)
+        : '';
       return `<section class="section"><h2>Balance Sheet</h2>
 <table class="data"><tbody>
 <tr><td>Total Assets</td><td class="num strong">${escapeHtml(fmtMoneyPdf(b.assets))}</td></tr>
+${assetRows}
 <tr><td>Total Liabilities</td><td class="num">${escapeHtml(fmtMoneyPdf(b.liabilities))}</td></tr>
+${liabRows}
 <tr><td>Total Equity</td><td class="num">${escapeHtml(fmtMoneyPdf(b.equity))}</td></tr>
+</tbody></table></section>`;
+    }
+    case 'budget_vs_actual': {
+      const d = payload.data as
+        | {
+            budgetName: string;
+            rows: Array<{ account: string; budgeted: number; actual: number; variance: number; variancePct: number | null }>;
+            totals: { budgeted: number; actual: number; variance: number };
+            truncated: boolean;
+          }
+        | null
+        | undefined;
+      if (!d || d.rows.length === 0) {
+        return `<section class="section"><h2>Budget vs. Actual</h2><p class="meta">No budgeted activity in this period.</p></section>`;
+      }
+      const varCell = (v: number) =>
+        `<td class="num${v < 0 ? ' neg' : ''}">${escapeHtml(fmtMoneyPdf(v))}</td>`;
+      const tbody = d.rows
+        .map(
+          (r) =>
+            `<tr><td>${escapeHtml(r.account)}</td><td class="num">${escapeHtml(fmtMoneyPdf(r.budgeted))}</td><td class="num">${escapeHtml(fmtMoneyPdf(r.actual))}</td>${varCell(r.variance)}</tr>`,
+        )
+        .join('');
+      const note = d.truncated
+        ? `<p class="meta">Showing the first ${d.rows.length} budget lines.</p>`
+        : '';
+      return `<section class="section"><h2>Budget vs. Actual — ${escapeHtml(d.budgetName)}</h2>
+<table class="data"><thead><tr><th>Account</th><th>Budget</th><th>Actual</th><th>Variance</th></tr></thead>
+<tbody>${tbody}
+<tr class="total"><td>Net Income</td><td class="num strong">${escapeHtml(fmtMoneyPdf(d.totals.budgeted))}</td><td class="num strong">${escapeHtml(fmtMoneyPdf(d.totals.actual))}</td>${varCell(d.totals.variance)}</tr>
+</tbody></table>${note}</section>`;
+    }
+    case 'tag_segments': {
+      const rows = (payload.data as Array<{ tagId: string; tagName: string; revenue: number; expenses: number; netIncome: number }>) ?? [];
+      if (rows.length === 0) {
+        return `<section class="section"><h2>Tag Segments</h2><p class="meta">No activity in this period.</p></section>`;
+      }
+      const tbody = rows
+        .map(
+          (r) =>
+            `<tr><td>${escapeHtml(r.tagName)}</td><td class="num">${escapeHtml(fmtMoneyPdf(r.revenue))}</td><td class="num">${escapeHtml(fmtMoneyPdf(r.expenses))}</td><td class="num${r.netIncome < 0 ? ' neg' : ''}">${escapeHtml(fmtMoneyPdf(r.netIncome))}</td></tr>`,
+        )
+        .join('');
+      return `<section class="section"><h2>Tag Segments</h2>
+<table class="data"><thead><tr><th>Segment</th><th>Revenue</th><th>Expenses</th><th>Net Income</th></tr></thead>
+<tbody>${tbody}</tbody></table></section>`;
+    }
+    case 'expense_by_category': {
+      const rows = (payload.data as Array<{ name: string; amount: number }>) ?? [];
+      if (rows.length === 0) {
+        return `<section class="section"><h2>Expenses by Category</h2><p class="meta">No activity in this period.</p></section>`;
+      }
+      const tbody = rows
+        .map(
+          (r) =>
+            `<tr><td>${escapeHtml(r.name)}</td><td class="num">${escapeHtml(fmtMoneyPdf(r.amount))}</td></tr>`,
+        )
+        .join('');
+      return `<section class="section"><h2>Expenses by Category</h2><table class="data"><tbody>${tbody}</tbody></table></section>`;
+    }
+    case 'sales_tax': {
+      const s = payload.data as { totalSales: number; totalTax: number } | null | undefined;
+      if (!s) {
+        return `<section class="section"><h2>Sales Tax Liability</h2><p class="meta">No data.</p></section>`;
+      }
+      return `<section class="section"><h2>Sales Tax Liability</h2>
+<table class="data"><tbody>
+<tr><td>Taxable Sales</td><td class="num">${escapeHtml(fmtMoneyPdf(s.totalSales))}</td></tr>
+<tr class="total"><td>Sales Tax Collected</td><td class="num strong">${escapeHtml(fmtMoneyPdf(s.totalTax))}</td></tr>
 </tbody></table></section>`;
     }
     case 'pl_vs_prior_year': {
@@ -547,14 +644,17 @@ ${noPrior}
     }
     case 'revenue_trend_12m':
     case 'expense_trend_12m':
-    case 'cash_balance_trend': {
+    case 'cash_balance_trend':
+    case 'net_income_trend_12m': {
       const pts = (payload.data as Array<{ month: string; label: string; amount: number }>) ?? [];
       const heading =
         payload.type === 'revenue_trend_12m'
           ? 'Revenue Trend (12 Months)'
           : payload.type === 'expense_trend_12m'
             ? 'Expense Trend (12 Months)'
-            : 'Cash Balance Trend (12 Months)';
+            : payload.type === 'net_income_trend_12m'
+              ? 'Net Income Trend (12 Months)'
+              : 'Cash Balance Trend (12 Months)';
       if (pts.length === 0) {
         return `<section class="section"><h2>${heading}</h2><p class="meta">No data.</p></section>`;
       }
@@ -563,12 +663,32 @@ ${noPrior}
           ? '#f59e0b'
           : payload.type === 'cash_balance_trend'
             ? '#0ea5e9'
-            : '#4f46e5';
+            : payload.type === 'net_income_trend_12m'
+              ? '#16a34a'
+              : '#4f46e5';
       const chart = svgBarChart({
         categories: pts.map((p) => p.label),
         series: [{ name: 'Amount', color, values: pts.map((p) => p.amount) }],
       });
       return `<section class="section"><h2>${heading}</h2><div class="chart">${chart}</div></section>`;
+    }
+    case 'gross_margin_trend_12m': {
+      // Percent-per-month series — svgBarChart's axis labels are
+      // currency-formatted, so this renders as a compact month/% table
+      // instead of fighting the chart helper.
+      const pts = (payload.data as Array<{ month: string; label: string; amount: number }>) ?? [];
+      if (pts.length === 0) {
+        return `<section class="section"><h2>Gross Margin % Trend (12 Months)</h2><p class="meta">No data.</p></section>`;
+      }
+      const tbody = pts
+        .map(
+          (p) =>
+            `<tr><td>${escapeHtml(p.label)}</td><td class="num">${escapeHtml(`${p.amount.toFixed(1)}%`)}</td></tr>`,
+        )
+        .join('');
+      return `<section class="section"><h2>Gross Margin % Trend (12 Months)</h2>
+<table class="data"><thead><tr><th>Month</th><th>Gross Margin</th></tr></thead>
+<tbody>${tbody}</tbody></table></section>`;
     }
     case 'cash_flow': {
       const c = payload.data as
@@ -584,6 +704,7 @@ ${noPrior}
 <tr><td>Investing Activities</td><td class="num">${escapeHtml(fmtMoneyPdf(c.investing))}</td></tr>
 <tr><td>Financing Activities</td><td class="num">${escapeHtml(fmtMoneyPdf(c.financing))}</td></tr>
 <tr class="total"><td>Net Change in Cash</td><td class="num strong">${escapeHtml(fmtMoneyPdf(c.netChange))}</td></tr>
+<tr><td class="meta">Net Income (accrual)</td><td class="num meta">${escapeHtml(fmtMoneyPdf(c.netIncome))}</td></tr>
 </tbody></table></section>`;
     }
     case 'trial_balance': {
@@ -659,6 +780,7 @@ export function reportHtmlTemplate(d: ReportPdfData): string {
 
   const dataKpis = (d.data['kpis'] as Record<string, unknown>) ?? {};
   const kpiNames = (d.data['kpi_names'] as Record<string, string>) ?? {};
+  const kpiStatus = (d.data['kpi_status'] as Record<string, string>) ?? {};
   const aiSummary = typeof d.data['ai_summary'] === 'string' ? String(d.data['ai_summary']) : '';
   const textOverrides = (d.data['text_overrides'] as Record<string, string>) ?? {};
   const blockData = (d.data['blocks'] as Record<string, PdfBlockPayload>) ?? {};
@@ -668,11 +790,20 @@ export function reportHtmlTemplate(d: ReportPdfData): string {
       const t = block['type'] as string;
       if (t === 'kpi-row') {
         const kpis = (block['kpis'] as string[]) ?? [];
+        if (kpis.length === 0) {
+          // Parity with the builder preview's empty-row hint.
+          return `<section class="section"><p class="meta">No KPIs selected.</p></section>`;
+        }
         const cells = kpis
           .map((k) => {
             const v = dataKpis[k];
             const label = kpiNames[k] ?? k.replace(/_/g, ' ');
-            return `<div class="kpi"><div class="k">${escapeHtml(label)}</div><div class="v">${escapeHtml(v == null ? '—' : String(v))}</div></div>`;
+            const status = kpiStatus[k];
+            const dot =
+              status === 'green' || status === 'amber' || status === 'red'
+                ? `<span class="dot dot-${status}"></span>`
+                : '';
+            return `<div class="kpi"><div class="k">${escapeHtml(label)}</div><div class="v">${dot}${escapeHtml(v == null ? '—' : String(v))}</div></div>`;
           })
           .join('');
         return `<section class="section"><div class="kpi-row">${cells}</div></section>`;
@@ -689,7 +820,7 @@ export function reportHtmlTemplate(d: ReportPdfData): string {
         if (!aiSummary) return '';
         return `<section class="section"><h2>Narrative</h2><p>${escapeHtml(aiSummary)}</p></section>`;
       }
-      if (t === 'block' || t === 'chart' || t === 'report') {
+      if (t === 'block' || t === 'chart' || t === 'report' || t === 'tag-segment') {
         const payloadKey =
           (block['id'] as string | undefined) ??
           (block['name'] as string | undefined) ??
@@ -705,10 +836,6 @@ export function reportHtmlTemplate(d: ReportPdfData): string {
         const src = block['src'] as string;
         if (!src) return '';
         return `<section class="section"><img src="${escapeHtml(src)}" style="max-width:100%"/></section>`;
-      }
-      if (t === 'tag-segment') {
-        const tags = ((block['tags'] as string[]) ?? []).length;
-        return `<section class="section"><h2>Tag segment</h2><p class="meta">${tags} tag${tags === 1 ? '' : 's'} included.</p></section>`;
       }
       return '';
     })
@@ -741,6 +868,12 @@ table.aging th:first-child,table.aging td:first-child{text-align:left}
 .strong{font-weight:600}
 tr.total td{border-top:2px solid #999;font-weight:700}
 .delta{color:#555;font-size:9pt}
+.indent{padding-left:18px;color:#555;font-size:9pt}
+.neg{color:#dc2626}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:middle}
+.dot-green{background:#16a34a}
+.dot-amber{background:#d97706}
+.dot-red{background:#dc2626}
 footer{margin-top:24px;padding-top:8px;border-top:1px solid #ddd;color:#666;font-size:8pt}
 </style></head><body>
 ${(logoUrl || headerText) ? `<div class="brand">${logoUrl ? `<img src="${escapeHtml(logoUrl)}"/>` : ''}<span class="firm-text">${escapeHtml(headerText || '')}</span></div>` : ''}

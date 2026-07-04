@@ -54,13 +54,23 @@ const formulaSchema = z.unknown().superRefine((val, ctx) => {
   }
 });
 
+// F7 — KPI target thresholds. Compared against the RAW numeric value
+// by the evaluator; null clears a previously-set target.
+const thresholdSchema = z
+  .object({
+    direction: z.enum(['above_is_good', 'below_is_good']),
+    green: z.number().finite(),
+    amber: z.number().finite(),
+  })
+  .nullable();
+
 const customKpiSchema = z.object({
   key: z.string().regex(/^[a-z][a-z0-9_]{0,79}$/),
   name: z.string().min(1).max(200),
   category: z.string().max(40).optional(),
   format: z.enum(['currency', 'percent', 'ratio', 'days']),
   formula: formulaSchema,
-  threshold: z.unknown().optional(),
+  threshold: thresholdSchema.optional(),
 });
 const customKpiPatchSchema = customKpiSchema.partial();
 

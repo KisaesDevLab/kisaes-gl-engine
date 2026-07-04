@@ -28,6 +28,8 @@ import {
   daysDenominator,
   computeStockKpis,
   evaluateAst,
+  parseKpiThreshold,
+  computeKpiStatus,
   type AstNode,
   type EvalContext,
 } from './portal-report-evaluator.service.js';
@@ -261,6 +263,12 @@ const baseMetrics = {
   inventory: 150,
   currentAssets: 6050,
   currentLiabilities: 300,
+  totalAssets: 8050,
+  totalLiabilities: 300,
+  equity: 7750,
+  fixedAssets: 2000,
+  interestExpense: 0,
+  depreciationAmortization: 0,
   periodDays: 30,
 };
 
@@ -292,6 +300,147 @@ describe('M6 — days-KPI denominator fallback is a single shared rule', () => {
     );
     expect(out['ap_days']).toBe('—');
     expect(out['inventory_days']).toBe('—');
+  });
+});
+
+// ── Wave 2 additions ─────────────────────────────────────────────
+
+describe('F8 — balance-sheet metrics in gatherMetrics', () => {
+  it('exposes totalAssets/totalLiabilities/equity/fixedAssets from the books', async () => {
+    const cash = await mk('Checking', 'asset', '1000', 'bank');
+    const truck = await mk('Vehicles', 'asset', '1500', 'fixed_asset');
+    const ap = await mk('Accounts Payable', 'liability', '2000', 'accounts_payable');
+    const rev = await mk('Sales', 'revenue', '4000', 'service');
+    const exp = await mk('Supplies', 'expense', '6000', 'office_supplies');
+
+    await post('sale', [
+      { accountId: cash.id, debit: '1000', credit: '0' },
+      { accountId: rev.id, debit: '0', credit: '1000' },
+    ], '2026-05-01');
+    await post('truck', [
+      { accountId: truck.id, debit: '600', credit: '0' },
+      { accountId: cash.id, debit: '0', credit: '600' },
+    ], '2026-05-02');
+    await post('bill', [
+      { accountId: exp.id, debit: '200', credit: '0' },
+      { accountId: ap.id, debit: '0', credit: '200' },
+    ], '2026-05-03');
+
+    const m = await gatherMetrics(tenantId, null, '2026-04-01', '2026-06-30');
+    expect(m.totalAssets).toBeCloseTo(1000, 2); // 400 cash + 600 truck
+    expect(m.totalLiabilities).toBeCloseTo(200, 2);
+    // Equity = current-year net income (1000 − 200) via buildBalanceSheet.
+    expect(m.equity).toBeCloseTo(800, 2);
+    expect(m.fixedAssets).toBeCloseTo(600, 2);
+    expect(m.totalAssets).toBeCloseTo(m.totalLiabilities + m.equity, 2);
+  });
+
+  it('F9 — sums interest + D&A add-backs and computes EBITDA = NI + interest + D&A', async () => {
+    const cash = await mk('Checking', 'asset', '1000', 'bank');
+    const truck = await mk('Vehicles', 'asset', '1500', 'fixed_asset');
+    const rev = await mk('Sales', 'revenue', '4000', 'service');
+    const interest = await mk('Interest Expense', 'other_expense', '7000', 'interest_expense');
+    const depreciation = await mk('Depreciation', 'other_expense', '7100', 'depreciation');
+
+    await post('sale', [
+      { accountId: cash.id, debit: '1000', credit: '0' },
+      { accountId: rev.id, debit: '0', credit: '1000' },
+    ], '2026-05-01');
+    await post('loan interest', [
+      { accountId: interest.id, debit: '100', credit: '0' },
+      { accountId: cash.id, debit: '0', credit: '100' },
+    ], '2026-05-02');
+    await post('monthly depreciation', [
+      { accountId: depreciation.id, debit: '50', credit: '0' },
+      { accountId: truck.id, debit: '0', credit: '50' },
+    ], '2026-05-03');
+
+    const m = await gatherMetrics(tenantId, null, '2026-04-01', '2026-06-30');
+    expect(m.interestExpense).toBeCloseTo(100, 2);
+    expect(m.depreciationAmortization).toBeCloseTo(50, 2);
+    expect(m.netIncome).toBeCloseTo(850, 2);
+
+    const out = computeStockKpis(m, ['ebitda']);
+    expect(out['ebitda']).toBe('$1,000'); // 850 + 100 + 50
+  });
+});
+
+describe('F8 — new stock KPIs', () => {
+  it('working_capital = current assets − current liabilities (money)', () => {
+    const out = computeStockKpis({ ...baseMetrics }, ['working_capital']);
+    expect(out['working_capital']).toBe('$5,750');
+  });
+
+  it('debt_to_equity = total liabilities / equity, null-safe', () => {
+    const out = computeStockKpis(
+      { ...baseMetrics, totalLiabilities: 3875, equity: 7750 },
+      ['debt_to_equity'],
+    );
+    expect(out['debt_to_equity']).toBe('0.50');
+    const div0 = computeStockKpis({ ...baseMetrics, equity: 0 }, ['debt_to_equity']);
+    expect(div0['debt_to_equity']).toBe('—');
+  });
+
+  it('net_income_mom / net_income_yoy mirror the revenue growth KPIs', () => {
+    const triad = {
+      current: { ...baseMetrics }, // netIncome 6000
+      priorMonth: { ...baseMetrics, netIncome: 4000 },
+      priorYear: { ...baseMetrics, netIncome: -2000 },
+    };
+    const out = computeStockKpis(triad, ['net_income_mom', 'net_income_yoy']);
+    expect(out['net_income_mom']).toBe('50.0%');
+    // Prior-year loss: divide by |prior| so improvement reads positive.
+    expect(out['net_income_yoy']).toBe('400.0%');
+    // No prior data → em dash.
+    const solo = computeStockKpis({ ...baseMetrics }, ['net_income_mom', 'net_income_yoy']);
+    expect(solo['net_income_mom']).toBe('—');
+    expect(solo['net_income_yoy']).toBe('—');
+  });
+});
+
+describe('F7 — KPI target thresholds', () => {
+  it('parseKpiThreshold accepts valid shapes and rejects garbage', () => {
+    expect(parseKpiThreshold({ direction: 'above_is_good', green: 0.4, amber: 0.25 })).toEqual({
+      direction: 'above_is_good',
+      green: 0.4,
+      amber: 0.25,
+    });
+    expect(parseKpiThreshold(null)).toBeNull();
+    expect(parseKpiThreshold('nope')).toBeNull();
+    expect(parseKpiThreshold({ direction: 'sideways', green: 1, amber: 2 })).toBeNull();
+    expect(parseKpiThreshold({ direction: 'above_is_good', green: 'x', amber: 2 })).toBeNull();
+  });
+
+  it('computeKpiStatus honors direction and returns null for non-finite values', () => {
+    const above = { direction: 'above_is_good' as const, green: 0.4, amber: 0.25 };
+    expect(computeKpiStatus(0.5, above)).toBe('green');
+    expect(computeKpiStatus(0.4, above)).toBe('green');
+    expect(computeKpiStatus(0.3, above)).toBe('amber');
+    expect(computeKpiStatus(0.1, above)).toBe('red');
+
+    const below = { direction: 'below_is_good' as const, green: 30, amber: 45 };
+    expect(computeKpiStatus(25, below)).toBe('green');
+    expect(computeKpiStatus(40, below)).toBe('amber');
+    expect(computeKpiStatus(60, below)).toBe('red');
+
+    expect(computeKpiStatus(Number.NaN, above)).toBeNull();
+    expect(computeKpiStatus(Number.POSITIVE_INFINITY, below)).toBeNull();
+  });
+});
+
+describe('F8 — formula metrics resolve balance-sheet values', () => {
+  it('metric nodes for total_assets/total_liabilities/equity/fixed_assets evaluate', () => {
+    const ctx: EvalContext = {
+      current: { ...baseMetrics },
+      resolvedKpis: {},
+    };
+    const metric = (value: string): AstNode => ({ kind: 'metric', value });
+    expect(evaluateAst(metric('total_assets'), ctx)).toBe(8050);
+    expect(evaluateAst(metric('total_liabilities'), ctx)).toBe(300);
+    expect(evaluateAst(metric('equity'), ctx)).toBe(7750);
+    expect(evaluateAst(metric('fixed_assets'), ctx)).toBe(2000);
+    expect(evaluateAst(metric('interest_expense'), ctx)).toBe(0);
+    expect(evaluateAst(metric('depreciation_amortization'), ctx)).toBe(0);
   });
 });
 

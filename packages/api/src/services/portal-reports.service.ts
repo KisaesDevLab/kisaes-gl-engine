@@ -28,7 +28,10 @@ import {
   evaluateAst,
   formatKpiValue,
   daysDenominator,
+  parseKpiThreshold,
+  computeKpiStatus,
   type AstNode,
+  type KpiStatus,
 } from './portal-report-evaluator.service.js';
 import { resolveBlock } from './portal-report-blocks.service.js';
 
@@ -48,6 +51,8 @@ export const STOCK_KPI_CATALOG = [
     formula: { op: 'div', a: { type: 'category', value: 'cash' }, b: { type: 'avg_monthly_burn' } } },
   { key: 'days_cash_on_hand', name: 'Days Cash on Hand', category: 'liquidity', format: 'days',
     formula: { op: 'div', a: { type: 'category', value: 'cash' }, b: { type: 'avg_daily_expense' } } },
+  { key: 'working_capital', name: 'Working Capital', category: 'liquidity', format: 'currency',
+    formula: { op: 'sub', a: { type: 'category', value: 'current_asset' }, b: { type: 'category', value: 'current_liability' } } },
   { key: 'bank_balance', name: 'Bank Balance (period end)', category: 'liquidity', format: 'currency',
     formula: { type: 'bank_balance' } },
   { key: 'cash_balance', name: 'Cash on Hand (period end)', category: 'liquidity', format: 'currency',
@@ -59,8 +64,14 @@ export const STOCK_KPI_CATALOG = [
     formula: { op: 'div', a: { type: 'operating_income' }, b: { type: 'revenue' } } },
   { key: 'net_margin_pct', name: 'Net Margin %', category: 'profitability', format: 'percent',
     formula: { op: 'div', a: { type: 'net_income' }, b: { type: 'revenue' } } },
-  { key: 'ebitda', name: 'EBITDA', category: 'profitability', format: 'currency',
+  // EBITDA = net income + interest + depreciation & amortization
+  // (add-backs from period activity on interest_expense/depreciation/
+  // amortization detail-typed cost accounts).
+  { key: 'ebitda', name: 'EBITDA (NI + interest + D&A)', category: 'profitability', format: 'currency',
     formula: { type: 'ebitda' } },
+  // Leverage
+  { key: 'debt_to_equity', name: 'Debt-to-Equity', category: 'leverage', format: 'ratio',
+    formula: { op: 'div', a: { type: 'total_liabilities' }, b: { type: 'equity' } } },
   // Efficiency
   { key: 'ar_days', name: 'A/R Days', category: 'efficiency', format: 'days',
     formula: { op: 'mul', a: { op: 'div', a: { type: 'ar_balance' }, b: { type: 'revenue' } }, b: { type: 'period_days' } } },
@@ -77,6 +88,10 @@ export const STOCK_KPI_CATALOG = [
     formula: { op: 'pct_change', current: { type: 'revenue' }, prior: { type: 'revenue', period: 'prior_year' } } },
   { key: 'expense_yoy', name: 'Expense YoY %', category: 'growth', format: 'percent',
     formula: { op: 'pct_change', current: { type: 'expense' }, prior: { type: 'expense', period: 'prior_year' } } },
+  { key: 'net_income_mom', name: 'Net Income MoM %', category: 'growth', format: 'percent',
+    formula: { op: 'pct_change', current: { type: 'net_income' }, prior: { type: 'net_income', period: 'prior_month' } } },
+  { key: 'net_income_yoy', name: 'Net Income YoY %', category: 'growth', format: 'percent',
+    formula: { op: 'pct_change', current: { type: 'net_income' }, prior: { type: 'net_income', period: 'prior_year' } } },
 ] as const;
 
 // 16.11 — stock report templates. Three preset layouts loaded by
@@ -517,6 +532,9 @@ export async function computeInstance(
   }
 
   let computed: Record<string, string> = {};
+  // Red/amber/green status per KPI key (F7) — only present for custom
+  // KPIs whose definition carries a threshold. Additive snapshot field.
+  const kpiStatus: Record<string, KpiStatus> = {};
   let metricsAvailable = true;
   let evalError: string | null = null;
   // Triad is shared between the KPI evaluator and the block resolver
@@ -577,6 +595,13 @@ export async function computeInstance(
           });
           computed[k] = formatKpiValue(raw, def.format as 'currency' | 'percent' | 'ratio' | 'days');
           resolvedKpis[k] = raw;
+          // Target thresholds compare against the RAW numeric value —
+          // the formatted string is display-only.
+          const threshold = parseKpiThreshold(def.thresholdJsonb);
+          if (threshold) {
+            const status = computeKpiStatus(raw, threshold);
+            if (status) kpiStatus[k] = status;
+          }
         }
       }
     } catch (err) {
@@ -595,7 +620,7 @@ export async function computeInstance(
   const blockResults: Record<string, unknown> = {};
   for (const block of layout) {
     const t = block['type'];
-    if (t === 'block' || t === 'chart' || t === 'report') {
+    if (t === 'block' || t === 'chart' || t === 'report' || t === 'tag-segment') {
       const blockId =
         (block['id'] as string | undefined) ??
         (block['name'] as string | undefined) ??
@@ -654,6 +679,7 @@ export async function computeInstance(
     ...existingData,
     kpis,
     kpi_names: kpiNames,
+    kpi_status: kpiStatus,
     blocks: blockResults,
   };
   if (!('ai_summary' in data)) {
@@ -1427,6 +1453,8 @@ export interface CatalogEntry {
   formula: unknown;
   source: 'stock' | 'custom';
   id?: string; // present only for custom (so the editor can update/delete)
+  // Custom only — the red/amber/green target (F7); null when unset.
+  threshold?: unknown;
 }
 
 export async function getCatalog(tenantId: string): Promise<CatalogEntry[]> {
@@ -1447,6 +1475,7 @@ export async function getCatalog(tenantId: string): Promise<CatalogEntry[]> {
     format: c.format as 'currency' | 'percent' | 'ratio' | 'days',
     formula: c.formulaJsonb,
     source: 'custom' as const,
+    threshold: c.thresholdJsonb ?? null,
   }));
   return [...stock, ...customEntries];
 }

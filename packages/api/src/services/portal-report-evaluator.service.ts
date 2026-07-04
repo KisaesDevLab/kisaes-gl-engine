@@ -26,6 +26,16 @@ interface PeriodMetrics {
   inventory: number;
   currentAssets: number;
   currentLiabilities: number;
+  // Full balance-sheet totals (as-of period end) — sourced from
+  // buildBalanceSheet so retained-earnings math matches the statement.
+  totalAssets: number;
+  totalLiabilities: number;
+  equity: number;
+  fixedAssets: number;
+  // EBITDA add-backs — period activity on expense accounts whose
+  // detail_type marks them as interest / depreciation / amortization.
+  interestExpense: number;
+  depreciationAmortization: number;
   // Period bounds
   periodDays: number;
 }
@@ -68,6 +78,13 @@ const CURRENT_LIABILITY_DETAIL_TYPES = [
   'payroll_payable',
   'other_current_liability',
 ];
+
+// Detail types whose period expense is added back for EBITDA. The
+// built-in COA files these under other_expense (see packages/shared
+// DETAIL_TYPES), but a tenant may have created them as plain expense
+// accounts, so we match on detail_type across every cost account type.
+const INTEREST_DETAIL_TYPES = ['interest_expense'];
+const DA_DETAIL_TYPES = ['depreciation', 'amortization'];
 
 function dayDiff(start: string, end: string): number {
   const s = new Date(`${start}T00:00:00Z`).getTime();
@@ -152,6 +169,37 @@ async function balanceByDetailType(
   return accountType === 'asset' ? dr - cr : cr - dr;
 }
 
+// Period activity (debit − credit) on cost accounts with the given
+// detail types — the EBITDA add-back amounts. Mirrors the P&L's
+// posted/date/company filters so the add-backs reconcile with the
+// net income they're added to.
+async function costActivityByDetailType(
+  tenantId: string,
+  companyId: string | null,
+  startDate: string,
+  endDate: string,
+  detailTypes: string[],
+): Promise<number> {
+  if (detailTypes.length === 0) return 0;
+  const companyCond = companyId ? sql`company_id = ${companyId}` : sql`TRUE`;
+  const detailList = sql.join(detailTypes.map((d) => sql`${d}`), sql`, `);
+  const result = await db.execute(sql`
+    SELECT COALESCE(SUM(jl.debit - jl.credit), 0) AS amount
+    FROM journal_lines jl
+    JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = ${tenantId}
+    WHERE jl.tenant_id = ${tenantId}
+      AND a.account_type IN ('cogs', 'expense', 'other_expense')
+      AND a.detail_type IN (${detailList})
+      AND jl.transaction_id IN (
+        SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
+        AND txn_date >= ${startDate} AND txn_date <= ${endDate}
+        AND ${companyCond}
+      )
+  `);
+  const row = (result.rows as Array<{ amount: string | number | null }>)[0];
+  return Number(row?.amount ?? 0);
+}
+
 export async function gatherMetrics(
   tenantId: string,
   companyId: string | null,
@@ -171,8 +219,13 @@ export async function gatherMetrics(
 
   const periodDays = dayDiff(startDate, endDate);
 
-  // Balance-sheet figures as of the period end.
-  const [cash, bankBalance, ar, ap, inventory, currentAssets, currentLiabilities] = await Promise.all([
+  // Balance-sheet figures as of the period end. The full-statement
+  // totals come from buildBalanceSheet so the equity figure carries the
+  // computed retained-earnings / current-year-income rows.
+  const [
+    cash, bankBalance, ar, ap, inventory, currentAssets, currentLiabilities,
+    fixedAssets, bs, interestExpense, depreciationAmortization,
+  ] = await Promise.all([
     balanceByDetailType(tenantId, companyId, endDate, 'asset', CASH_DETAIL_TYPES),
     balanceByDetailType(tenantId, companyId, endDate, 'asset', BANK_DETAIL_TYPES),
     balanceByDetailType(tenantId, companyId, endDate, 'asset', ['accounts_receivable']),
@@ -180,6 +233,10 @@ export async function gatherMetrics(
     balanceByDetailType(tenantId, companyId, endDate, 'asset', ['inventory']),
     balanceByDetailType(tenantId, companyId, endDate, 'asset', CURRENT_ASSET_DETAIL_TYPES),
     balanceByDetailType(tenantId, companyId, endDate, 'liability', CURRENT_LIABILITY_DETAIL_TYPES),
+    balanceByDetailType(tenantId, companyId, endDate, 'asset', ['fixed_asset']),
+    reportSvc.buildBalanceSheet(tenantId, endDate, 'accrual', companyId),
+    costActivityByDetailType(tenantId, companyId, startDate, endDate, INTEREST_DETAIL_TYPES),
+    costActivityByDetailType(tenantId, companyId, startDate, endDate, DA_DETAIL_TYPES),
   ]);
 
   return {
@@ -197,6 +254,12 @@ export async function gatherMetrics(
     inventory,
     currentAssets,
     currentLiabilities,
+    totalAssets: bs.totalAssets,
+    totalLiabilities: bs.totalLiabilities,
+    equity: bs.totalEquity,
+    fixedAssets,
+    interestExpense,
+    depreciationAmortization,
     periodDays,
   };
 }
@@ -343,12 +406,20 @@ function metricValue(m: PeriodMetrics, name: string): number {
     case 'avg_daily_expense': return m.operatingExpense / m.periodDays;
     case 'operating_income': return m.operatingIncome;
     case 'net_income': return m.netIncome;
-    case 'ebitda': return m.operatingIncome; // approximation; same as stock
+    // Net income + interest + depreciation & amortization — same math
+    // as the stock EBITDA KPI.
+    case 'ebitda': return m.netIncome + m.interestExpense + m.depreciationAmortization;
     case 'ar_balance': return m.accountsReceivable;
     case 'ap_balance': return m.accountsPayable;
     case 'inventory_balance': return m.inventory;
     case 'bank_balance': return m.bankBalance;
     case 'cash_balance': return m.cash;
+    case 'total_assets': return m.totalAssets;
+    case 'total_liabilities': return m.totalLiabilities;
+    case 'equity': return m.equity;
+    case 'fixed_assets': return m.fixedAssets;
+    case 'interest_expense': return m.interestExpense;
+    case 'depreciation_amortization': return m.depreciationAmortization;
     default: return 0;
   }
 }
@@ -458,10 +529,16 @@ function computeOne(key: string, triad: PeriodTriad): string {
     case 'net_margin_pct':
       return fmtPercent(safeDiv(m.netIncome, m.revenue));
     case 'ebitda':
-      // Approximation — without depreciation/interest detail, we
-      // expose operating income as the proxy. Bookkeepers can
-      // override the value inline if they have a separate calc.
-      return fmtCurrency(m.operatingIncome);
+      // Net income + interest + depreciation & amortization. The
+      // add-backs come from period activity on cost accounts whose
+      // detail_type is interest_expense / depreciation / amortization
+      // (tax add-back detail is not modeled, so this is EBITDA to the
+      // extent income tax expense isn't booked as an expense account).
+      return fmtCurrency(m.netIncome + m.interestExpense + m.depreciationAmortization);
+    case 'working_capital':
+      return fmtCurrency(m.currentAssets - m.currentLiabilities);
+    case 'debt_to_equity':
+      return fmtRatio(safeDiv(m.totalLiabilities, m.equity));
     case 'bank_balance':
       return fmtCurrency(m.bankBalance);
     case 'cash_balance':
@@ -510,7 +587,61 @@ function computeOne(key: string, triad: PeriodTriad): string {
       if (prior === 0) return '—';
       return fmtPercent((m.operatingExpense - prior) / prior);
     }
+    case 'net_income_mom': {
+      if (!triad.priorMonth) return '—';
+      const prior = triad.priorMonth.netIncome;
+      if (prior === 0) return '—';
+      // Net income can be negative — divide by |prior| so "improved
+      // from a loss" reads positive (mirrors the PDF Δ% convention).
+      return fmtPercent((m.netIncome - prior) / Math.abs(prior));
+    }
+    case 'net_income_yoy': {
+      if (!triad.priorYear) return '—';
+      const prior = triad.priorYear.netIncome;
+      if (prior === 0) return '—';
+      return fmtPercent((m.netIncome - prior) / Math.abs(prior));
+    }
     default:
       return '—';
   }
+}
+
+// ── KPI target thresholds (F7) ──────────────────────────────────
+//
+// Stored on kpi_definitions.threshold_jsonb as
+//   { direction: 'above_is_good' | 'below_is_good', green: n, amber: n }
+// and compared against the RAW numeric KPI value. Snapshot carries the
+// resulting status alongside the formatted value (data.kpi_status).
+
+export interface KpiThreshold {
+  direction: 'above_is_good' | 'below_is_good';
+  green: number;
+  amber: number;
+}
+
+export type KpiStatus = 'green' | 'amber' | 'red';
+
+// Defensive parse — threshold_jsonb is caller-supplied JSON; anything
+// malformed reads as "no threshold" rather than throwing mid-compute.
+export function parseKpiThreshold(raw: unknown): KpiThreshold | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const t = raw as Record<string, unknown>;
+  const direction = t['direction'];
+  const green = Number(t['green']);
+  const amber = Number(t['amber']);
+  if (direction !== 'above_is_good' && direction !== 'below_is_good') return null;
+  if (!Number.isFinite(green) || !Number.isFinite(amber)) return null;
+  return { direction, green, amber };
+}
+
+export function computeKpiStatus(value: number, threshold: KpiThreshold): KpiStatus | null {
+  if (!Number.isFinite(value)) return null;
+  if (threshold.direction === 'below_is_good') {
+    if (value <= threshold.green) return 'green';
+    if (value <= threshold.amber) return 'amber';
+    return 'red';
+  }
+  if (value >= threshold.green) return 'green';
+  if (value >= threshold.amber) return 'amber';
+  return 'red';
 }

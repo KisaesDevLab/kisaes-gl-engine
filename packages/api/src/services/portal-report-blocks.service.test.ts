@@ -14,19 +14,33 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { db } from '../db/index.js';
 import {
   tenants, users, sessions, accounts, companies, auditLog, contacts,
-  transactions, journalLines, tags, transactionTags,
+  transactions, journalLines, tags, transactionTags, budgets, budgetLines,
 } from '../db/schema/index.js';
 import type { TxnType } from '@kis-books/shared';
 import * as ledger from './ledger.service.js';
-import { resolveBlock, type TrendPoint, type CfSummary, type TbSummary, type BankBalancesSummary } from './portal-report-blocks.service.js';
+import * as budgetSvc from './budget.service.js';
+import {
+  resolveBlock,
+  type TrendPoint,
+  type CfSummary,
+  type TbSummary,
+  type BankBalancesSummary,
+  type BudgetVsActualSummary,
+  type TagSegmentRow,
+  type TopRow,
+  type BsSummary,
+  type SalesTaxSummary,
+} from './portal-report-blocks.service.js';
 
 let tenantId: string;
 
 async function cleanDb() {
+  await db.delete(budgetLines);
+  await db.delete(budgets);
   await db.delete(transactionTags);
-  await db.delete(tags);
   await db.delete(journalLines);
   await db.delete(transactions);
+  await db.delete(tags);
   await db.delete(auditLog);
   await db.delete(contacts);
   await db.delete(accounts);
@@ -43,7 +57,7 @@ async function mk(name: string, accountType: string, accountNumber: string, deta
 
 async function post(
   memo: string,
-  lines: Array<{ accountId: string; debit: string; credit: string }>,
+  lines: Array<{ accountId: string; debit: string; credit: string; tagId?: string }>,
   date: string,
   txnType: TxnType = 'journal_entry',
   companyId?: string,
@@ -307,5 +321,278 @@ describe('report embeds', () => {
     expect(payload.error).toMatch(/Unknown report embed/);
     const chart = await resolveBlock({ type: 'chart', name: 'nonexistent_chart' }, args());
     expect(chart.error).toMatch(/Unknown chart/);
+  });
+});
+
+// ── Wave 2 additions ─────────────────────────────────────────────
+
+describe('budget_vs_actual block (F1)', () => {
+  it('returns per-line budget/actual/variance rows prorated to the period', async () => {
+    const cash = await mk('Checking', 'asset', '1000', 'bank');
+    const rev = await mk('Sales', 'revenue', '4000', 'service');
+
+    // No companies rows → fiscalYearStart defaults to 2026-01-01, so
+    // budget months 4/5/6 overlap the Apr-1 → Jun-15 report period.
+    const budget = await budgetSvc.create(tenantId, { name: 'FY26 Plan', fiscalYear: 2026 });
+    await budgetSvc.updateLines(tenantId, budget!.id, [
+      { accountId: rev.id, month4: '1000', month5: '1000', month6: '1000' },
+    ]);
+
+    await post('may sale', [
+      { accountId: cash.id, debit: '2500', credit: '0' },
+      { accountId: rev.id, debit: '0', credit: '2500' },
+    ], '2026-05-10');
+
+    const payload = await resolveBlock(
+      { type: 'block', name: 'budget_vs_actual', budgetId: budget!.id },
+      args(),
+    );
+    expect(payload.error).toBeUndefined();
+    expect(payload.type).toBe('budget_vs_actual');
+    const d = payload.data as BudgetVsActualSummary;
+    expect(d.budgetName).toBe('FY26 Plan');
+    const row = d.rows.find((r) => r.account.includes('Sales'));
+    expect(row).toBeDefined();
+    expect(row!.budgeted).toBeCloseTo(3000, 2);
+    expect(row!.actual).toBeCloseTo(2500, 2);
+    expect(row!.variance).toBeCloseTo(-500, 2);
+    expect(row!.variancePct).toBeCloseTo(-16.67, 1);
+    expect(d.totals.budgeted).toBeCloseTo(3000, 2);
+    expect(d.totals.actual).toBeCloseTo(2500, 2);
+    expect(d.totals.variance).toBeCloseTo(-500, 2);
+    expect(d.truncated).toBe(false);
+  });
+
+  it('returns an error payload when no budget is configured or the budget is missing', async () => {
+    const missing = await resolveBlock({ type: 'block', name: 'budget_vs_actual' }, args());
+    expect(missing.type).toBe('budget_vs_actual');
+    expect(missing.error).toMatch(/No budget selected/i);
+
+    const gone = await resolveBlock(
+      { type: 'block', name: 'budget_vs_actual', budgetId: '00000000-0000-4000-8000-000000000000' },
+      args(),
+    );
+    expect(gone.error).toMatch(/not found/i);
+  });
+});
+
+describe('tag-segment block (F2)', () => {
+  it('returns a per-tag P&L summary row for each selected tag', async () => {
+    const cash = await mk('Checking', 'asset', '1000', 'bank');
+    const rev = await mk('Sales', 'revenue', '4000', 'service');
+    const rent = await mk('Rent', 'expense', '6000', 'rent');
+    const [tagA] = await db.insert(tags).values({ tenantId, name: 'Location A' }).returning();
+    const [tagB] = await db.insert(tags).values({ tenantId, name: 'Location B' }).returning();
+
+    await post('a sale', [
+      { accountId: cash.id, debit: '1000', credit: '0' },
+      { accountId: rev.id, debit: '0', credit: '1000', tagId: tagA!.id },
+    ], '2026-05-01');
+    await post('b sale', [
+      { accountId: cash.id, debit: '500', credit: '0' },
+      { accountId: rev.id, debit: '0', credit: '500', tagId: tagB!.id },
+    ], '2026-05-02');
+    await post('b rent', [
+      { accountId: rent.id, debit: '200', credit: '0', tagId: tagB!.id },
+      { accountId: cash.id, debit: '0', credit: '200' },
+    ], '2026-05-03');
+
+    const payload = await resolveBlock(
+      { type: 'tag-segment', tags: [tagA!.id, tagB!.id] },
+      args(),
+    );
+    expect(payload.error).toBeUndefined();
+    expect(payload.type).toBe('tag_segments');
+    const rows = payload.data as TagSegmentRow[];
+    expect(rows).toHaveLength(2);
+    const a = rows.find((r) => r.tagName === 'Location A')!;
+    const b = rows.find((r) => r.tagName === 'Location B')!;
+    expect(a.revenue).toBeCloseTo(1000, 2);
+    expect(a.expenses).toBeCloseTo(0, 2);
+    expect(a.netIncome).toBeCloseTo(1000, 2);
+    expect(b.revenue).toBeCloseTo(500, 2);
+    expect(b.expenses).toBeCloseTo(200, 2);
+    expect(b.netIncome).toBeCloseTo(300, 2);
+  });
+
+  it('errors when no tags are configured, and drops foreign/deleted tag ids', async () => {
+    const empty = await resolveBlock({ type: 'tag-segment', tags: [] }, args());
+    expect(empty.type).toBe('tag_segments');
+    expect(empty.error).toMatch(/No tags selected/i);
+
+    const gone = await resolveBlock(
+      { type: 'tag-segment', tags: ['00000000-0000-4000-8000-000000000000'] },
+      args(),
+    );
+    expect(gone.error).toMatch(/no longer exist/i);
+  });
+});
+
+describe('net income + gross margin trends (F3)', () => {
+  it('net_income_trend_12m buckets revenue minus costs per month', async () => {
+    const cash = await mk('Checking', 'asset', '1000', 'bank');
+    const rev = await mk('Sales', 'revenue', '4000', 'service');
+    const rent = await mk('Rent', 'expense', '6000', 'rent');
+
+    await post('jan sale', [
+      { accountId: cash.id, debit: '1000', credit: '0' },
+      { accountId: rev.id, debit: '0', credit: '1000' },
+    ], '2026-01-10');
+    await post('jan rent', [
+      { accountId: rent.id, debit: '400', credit: '0' },
+      { accountId: cash.id, debit: '0', credit: '400' },
+    ], '2026-01-20');
+
+    const payload = await resolveBlock({ type: 'chart', name: 'net_income_trend_12m' }, args());
+    expect(payload.error).toBeUndefined();
+    const points = payload.data as TrendPoint[];
+    expect(points).toHaveLength(12);
+    const byMonth = new Map(points.map((p) => [p.month, p.amount]));
+    expect(byMonth.get('2026-01')).toBeCloseTo(600, 2);
+    expect(byMonth.get('2026-02')).toBe(0);
+  });
+
+  it('gross_margin_trend_12m returns (rev − cogs)/rev as percent, 0 when a month has no revenue', async () => {
+    const cash = await mk('Checking', 'asset', '1000', 'bank');
+    const rev = await mk('Sales', 'revenue', '4000', 'service');
+    const cogs = await mk('Materials', 'cogs', '5000', 'cost_of_goods_sold');
+    const rent = await mk('Rent', 'expense', '6000', 'rent');
+
+    await post('mar sale', [
+      { accountId: cash.id, debit: '1000', credit: '0' },
+      { accountId: rev.id, debit: '0', credit: '1000' },
+    ], '2026-03-05');
+    await post('mar materials', [
+      { accountId: cogs.id, debit: '250', credit: '0' },
+      { accountId: cash.id, debit: '0', credit: '250' },
+    ], '2026-03-06');
+    // Feb has expense only — margin must be 0, not NaN/-Inf.
+    await post('feb rent', [
+      { accountId: rent.id, debit: '100', credit: '0' },
+      { accountId: cash.id, debit: '0', credit: '100' },
+    ], '2026-02-10');
+
+    const payload = await resolveBlock({ type: 'chart', name: 'gross_margin_trend_12m' }, args());
+    expect(payload.error).toBeUndefined();
+    const byMonth = new Map((payload.data as TrendPoint[]).map((p) => [p.month, p.amount]));
+    expect(byMonth.get('2026-03')).toBeCloseTo(75.0, 1);
+    expect(byMonth.get('2026-02')).toBe(0);
+    expect(byMonth.get('2026-04')).toBe(0);
+  });
+});
+
+describe('expense_by_category block (F4)', () => {
+  it('returns top-N categories sorted by spend', async () => {
+    const cash = await mk('Checking', 'asset', '1000', 'bank');
+    const rent = await mk('Rent', 'expense', '6000', 'rent');
+    const ads = await mk('Advertising', 'expense', '6100', 'advertising');
+    const meals = await mk('Meals', 'expense', '6200', 'meals_entertainment');
+
+    for (const [account, amount] of [
+      [rent, '900'],
+      [ads, '500'],
+      [meals, '100'],
+    ] as const) {
+      await post(`spend ${account.name}`, [
+        { accountId: account.id, debit: amount, credit: '0' },
+        { accountId: cash.id, debit: '0', credit: amount },
+      ], '2026-05-05');
+    }
+
+    const payload = await resolveBlock(
+      { type: 'block', name: 'expense_by_category', topN: 2 },
+      args(),
+    );
+    expect(payload.error).toBeUndefined();
+    expect(payload.type).toBe('expense_by_category');
+    const rows = payload.data as TopRow[];
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.name).toBe('Rent');
+    expect(rows[0]!.amount).toBeCloseTo(900, 2);
+    expect(rows[1]!.name).toBe('Advertising');
+    expect(rows[1]!.amount).toBeCloseTo(500, 2);
+  });
+});
+
+describe('sales_tax embed (F5)', () => {
+  it('sums taxable sales and tax collected for the period', async () => {
+    await db.insert(transactions).values({
+      tenantId,
+      txnType: 'invoice',
+      txnDate: '2026-05-01',
+      status: 'posted',
+      subtotal: '100',
+      taxAmount: '8.25',
+      total: '108.25',
+    });
+    await db.insert(transactions).values({
+      tenantId,
+      txnType: 'cash_sale',
+      txnDate: '2026-05-02',
+      status: 'posted',
+      subtotal: '50',
+      taxAmount: '4',
+      total: '54',
+    });
+    // Outside the period — excluded.
+    await db.insert(transactions).values({
+      tenantId,
+      txnType: 'invoice',
+      txnDate: '2026-07-01',
+      status: 'posted',
+      subtotal: '999',
+      taxAmount: '99',
+      total: '1098',
+    });
+
+    const payload = await resolveBlock({ type: 'report', key: 'sales_tax' }, args());
+    expect(payload.error).toBeUndefined();
+    expect(payload.type).toBe('sales_tax');
+    const s = payload.data as SalesTaxSummary;
+    expect(s.totalSales).toBeCloseTo(150, 2);
+    expect(s.totalTax).toBeCloseTo(12.25, 2);
+  });
+});
+
+describe('balance_sheet embed sections (F10)', () => {
+  it('adds current/fixed/other asset and current/long-term liability subtotals', async () => {
+    const cash = await mk('Checking', 'asset', '1000', 'bank');
+    const truck = await mk('Vehicles', 'asset', '1500', 'fixed_asset');
+    const deposits = await mk('Security Deposits', 'asset', '1800', 'other_asset');
+    const ap = await mk('Accounts Payable', 'liability', '2000', 'accounts_payable');
+    const loan = await mk('Bank Loan', 'liability', '2700', 'long_term_liability');
+    const rev = await mk('Sales', 'revenue', '4000', 'service');
+    const exp = await mk('Supplies', 'expense', '6000', 'office_supplies');
+
+    await post('sale', [
+      { accountId: cash.id, debit: '5000', credit: '0' },
+      { accountId: rev.id, debit: '0', credit: '5000' },
+    ], '2026-05-01');
+    await post('buy truck with loan', [
+      { accountId: truck.id, debit: '3000', credit: '0' },
+      { accountId: loan.id, debit: '0', credit: '3000' },
+    ], '2026-05-02');
+    await post('deposit', [
+      { accountId: deposits.id, debit: '400', credit: '0' },
+      { accountId: cash.id, debit: '0', credit: '400' },
+    ], '2026-05-03');
+    await post('bill', [
+      { accountId: exp.id, debit: '250', credit: '0' },
+      { accountId: ap.id, debit: '0', credit: '250' },
+    ], '2026-05-04');
+
+    const payload = await resolveBlock({ type: 'report', key: 'balance_sheet' }, args());
+    expect(payload.error).toBeUndefined();
+    const b = payload.data as BsSummary;
+    expect(b.sections).toBeDefined();
+    const s = b.sections!;
+    expect(s.currentAssets).toBeCloseTo(4600, 2); // 5000 − 400 in checking
+    expect(s.fixedAssets).toBeCloseTo(3000, 2);
+    expect(s.otherAssets).toBeCloseTo(400, 2);
+    expect(s.currentLiabilities).toBeCloseTo(250, 2);
+    expect(s.longTermLiabilities).toBeCloseTo(3000, 2);
+    // Sections tie to the statement totals.
+    expect(s.currentAssets + s.fixedAssets + s.otherAssets).toBeCloseTo(b.assets, 2);
+    expect(s.currentLiabilities + s.longTermLiabilities).toBeCloseTo(b.liabilities, 2);
   });
 });
