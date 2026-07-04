@@ -187,18 +187,6 @@ async function apAging(args: ResolverArgs): Promise<AgingBuckets> {
   return buckets;
 }
 
-function plSummaryFromMetrics(m: ResolverArgs['triad'] extends infer T ? T : never): PlSummary {
-  // unused — replaced inline below; kept for type clarity
-  return {
-    revenue: 0,
-    cogs: 0,
-    grossProfit: 0,
-    operatingExpense: 0,
-    netIncome: 0,
-  };
-}
-void plSummaryFromMetrics;
-
 async function plSummary(args: ResolverArgs, basis: EmbedBasis = 'accrual'): Promise<PlSummary> {
   if (basis === 'cash') {
     // The shared triad is accrual-only — a cash-basis embed goes

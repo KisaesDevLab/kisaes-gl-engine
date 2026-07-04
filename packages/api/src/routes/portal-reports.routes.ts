@@ -5,6 +5,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../utils/errors.js';
 import * as svc from '../services/portal-reports.service.js';
@@ -20,6 +21,13 @@ portalReportsRouter.use((req, _res, next) => {
   }
   next();
 });
+// Per-member permission enforcement (mirrors reports.routes): a member
+// whose template denies `reports` must not reach the Report Builder at
+// all — reads OR writes. `reports` is a read-only resource in the
+// permission matrix (levels cap at 'view'), so 'read' is the correct
+// requirement for every method here; write protection stays with the
+// role gates above (client 404, readonly 403 on non-GET).
+portalReportsRouter.use(requirePermission('reports', 'read'));
 
 // ── KPI library (stock + custom) ───────────────────────────────
 
@@ -28,12 +36,30 @@ portalReportsRouter.get('/kpis', async (req, res) => {
   res.json({ kpis });
 });
 
+// Cap the serialized size of caller-supplied formula ASTs; the depth
+// guard in evaluateAst covers nesting, this covers sheer bulk.
+const formulaSchema = z.unknown().superRefine((val, ctx) => {
+  let json: string | undefined;
+  try {
+    json = JSON.stringify(val);
+  } catch {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Formula must be JSON-serializable' });
+    return;
+  }
+  if (json !== undefined && json.length > 20_000) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Formula JSON too large (max 20,000 characters)',
+    });
+  }
+});
+
 const customKpiSchema = z.object({
   key: z.string().regex(/^[a-z][a-z0-9_]{0,79}$/),
   name: z.string().min(1).max(200),
   category: z.string().max(40).optional(),
   format: z.enum(['currency', 'percent', 'ratio', 'days']),
-  formula: z.unknown(),
+  formula: formulaSchema,
   threshold: z.unknown().optional(),
 });
 const customKpiPatchSchema = customKpiSchema.partial();
@@ -63,7 +89,7 @@ portalReportsRouter.delete('/custom-kpis/:id', async (req, res) => {
 const createTemplateSchema = z.object({
   name: z.string().min(1).max(200),
   description: z.string().max(2000).optional(),
-  layout: z.array(z.unknown()).optional(),
+  layout: z.array(z.unknown()).max(100).optional(),
   theme: z.record(z.unknown()).optional(),
   defaultPeriod: z.string().max(20).optional(),
   isPracticeTemplate: z.boolean().optional(),
@@ -187,7 +213,7 @@ portalReportsRouter.patch(
 // layout (add/remove/reorder/configure), like the template editor but scoped
 // to one instance. Published/archived instances are locked by the service.
 const instanceLayoutSchema = z.object({
-  layout: z.array(z.record(z.unknown())),
+  layout: z.array(z.record(z.unknown())).max(100),
 });
 portalReportsRouter.patch(
   '/instances/:id/layout',

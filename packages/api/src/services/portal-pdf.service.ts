@@ -13,22 +13,72 @@ let browserPromise: Promise<Browser> | null = null;
 
 async function getBrowser(): Promise<Browser> {
   if (!browserPromise) {
-    browserPromise = puppeteer.launch({
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-      ],
-    });
+    browserPromise = puppeteer
+      .launch({
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+        ],
+      })
+      .then((browser) => {
+        // If Chromium dies (OOM kill, crash), drop the cached promise so
+        // the next render relaunches instead of failing forever.
+        browser.on('disconnected', () => {
+          browserPromise = null;
+        });
+        return browser;
+      })
+      .catch((err) => {
+        // A failed launch must not be cached — otherwise every later
+        // PDF request rejects with the same stale error until restart.
+        browserPromise = null;
+        throw err;
+      });
   }
   return browserPromise;
+}
+
+// SSRF guard for the rendered page's subresource fetches (logo/image
+// URLs come from tenant-editable theme JSON). Only http(s) to
+// non-link-local hosts is allowed; cloud metadata endpoints are the
+// concrete target here. data:/about: stay allowed so setContent and
+// inline images keep working.
+function isBlockedHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'metadata.google.internal' || host === 'metadata.goog') return true;
+  if (host.startsWith('169.254.')) return true; // IPv4 link-local (AWS/GCP/Azure metadata)
+  if (host.startsWith('fe80:')) return true; // IPv6 link-local
+  if (host === 'fd00:ec2::254') return true; // AWS IMDSv2 IPv6
+  return false;
 }
 
 export async function htmlToPdf(html: string): Promise<Buffer> {
   const browser = await getBrowser();
   const page = await browser.newPage();
   try {
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      try {
+        const url = new URL(req.url());
+        if (url.protocol === 'about:' || url.protocol === 'data:') {
+          void req.continue();
+          return;
+        }
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+          void req.abort();
+          return;
+        }
+        if (isBlockedHost(url.hostname)) {
+          void req.abort();
+          return;
+        }
+        void req.continue();
+      } catch {
+        void req.abort();
+      }
+    });
     await page.setContent(html, { waitUntil: 'networkidle0' });
     const pdf = await page.pdf({
       format: 'letter',
@@ -148,6 +198,16 @@ export interface ReportPdfData {
 function safeColor(value: unknown, fallback: string): string {
   if (typeof value !== 'string') return fallback;
   return /^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/.test(value) ? value : fallback;
+}
+
+// The theme font lands inside a single-quoted CSS font-family value in
+// a <style> block, so it must never carry quotes, semicolons, braces,
+// or markup — a hostile value would otherwise be raw CSS/HTML
+// injection into the rendered (Puppeteer-executed) document. Letters,
+// digits, spaces, and hyphens cover every real font family name.
+function safeFont(value: unknown, fallback: string): string {
+  if (typeof value !== 'string') return fallback;
+  return /^[A-Za-z0-9 -]{1,60}$/.test(value) ? value : fallback;
 }
 
 function fmtMoneyPdf(n: number): string {
@@ -312,7 +372,11 @@ function renderBlockPdf(block: Record<string, unknown>, payload: PdfBlockPayload
     return `<section class="section"><h2>${escapeHtml(friendly)}</h2><p class="meta">No data computed.</p></section>`;
   }
   if (payload.error) {
-    return `<section class="section"><h2>${escapeHtml(friendly)}</h2><p class="meta">${escapeHtml(payload.error)}</p></section>`;
+    // Never print the raw error message — compute errors can carry
+    // internal details (SQL fragments, stack text) that must not land
+    // in a client-facing artifact. The publish response surfaces the
+    // affected blocks to the bookkeeper via `warnings`.
+    return `<section class="section"><h2>${escapeHtml(friendly)}</h2><p class="meta">Section unavailable.</p></section>`;
   }
 
   switch (payload.type) {
@@ -582,9 +646,7 @@ export function reportHtmlTemplate(d: ReportPdfData): string {
   const theme = d.theme ?? {};
   const primary = safeColor(theme['primaryColor'], '#4f46e5');
   const secondary = safeColor(theme['secondaryColor'], '#0ea5e9');
-  const font = typeof theme['font'] === 'string' && theme['font']
-    ? String(theme['font'])
-    : 'Helvetica Neue';
+  const font = safeFont(theme['font'], 'Helvetica Neue');
   const headerText = typeof theme['headerText'] === 'string' ? String(theme['headerText']) : '';
   const footerText =
     typeof theme['footerText'] === 'string' && theme['footerText']

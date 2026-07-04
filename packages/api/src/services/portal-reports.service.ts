@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
+import { createHash } from 'crypto';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
@@ -26,6 +27,7 @@ import {
   computeStockKpis,
   evaluateAst,
   formatKpiValue,
+  daysDenominator,
   type AstNode,
 } from './portal-report-evaluator.service.js';
 import { resolveBlock } from './portal-report-blocks.service.js';
@@ -373,12 +375,7 @@ export async function updateInstanceLayout(
   layout: unknown[],
 ): Promise<{ instance: Awaited<ReturnType<typeof getInstance>> }> {
   const before = await getInstance(tenantId, id);
-  if (before.status === 'published' || before.status === 'archived') {
-    throw AppError.badRequest(
-      'Published or archived reports cannot be edited. Use Duplicate to start a new draft version.',
-      'PUBLISHED_LOCKED',
-    );
-  }
+  assertSnapshotEditable(before.status);
   await db.update(reportInstances)
     .set({ layoutSnapshotJsonb: layout as never })
     .where(and(eq(reportInstances.tenantId, tenantId), eq(reportInstances.id, id)));
@@ -393,16 +390,30 @@ export async function deleteInstance(
   tenantId: string,
   id: string,
   bookkeeperUserId: string,
-  force: boolean = false,
+  // Kept for API compatibility; force no longer bypasses the published
+  // guard — a published report is the client-facing record and must be
+  // archived, never hard-deleted (a delete would cascade comments and
+  // AI summaries and orphan the PDF artifact).
+  _force: boolean = false,
 ): Promise<void> {
   const before = await getInstance(tenantId, id);
-  // Soft guard: published reports archive instead of delete unless
-  // the bookkeeper explicitly forces (separate confirmation in the UI).
-  if (before.status === 'published' && !force) {
+  if (before.status === 'published') {
     throw AppError.badRequest(
-      'Published reports cannot be deleted without confirmation. Archive instead, or pass force=true.',
+      'Published reports cannot be deleted. Archive the report instead (Status → Archived), then Duplicate if you need a new version.',
       'PUBLISHED_LOCKED',
     );
+  }
+  // Best-effort blob cleanup so a hard delete doesn't orphan the stored
+  // PDF (e.g. an archived instance that had been published). Storage
+  // failures never block the row delete.
+  if (before.pdfUrl) {
+    try {
+      const provider = await getProviderForTenant(tenantId);
+      await provider.delete(before.pdfUrl);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[portal-reports] Failed to delete PDF blob during instance delete:', err);
+    }
   }
   await db.delete(reportInstances).where(eq(reportInstances.id, id));
   await auditLog(tenantId, 'delete', 'report_instance', id, before, null, bookkeeperUserId);
@@ -426,6 +437,25 @@ export async function getInstance(tenantId: string, id: string) {
   return inst;
 }
 
+// One lock surface for every snapshot-mutating entry point
+// (generateInstance, computeInstance, patchSnapshot, generateAiSummary,
+// updateInstanceLayout): published AND archived instances are immutable.
+// The bookkeeper duplicates to revise.
+function assertSnapshotEditable(status: string): void {
+  if (status === 'published' || status === 'archived') {
+    throw AppError.badRequest(
+      'Published or archived reports cannot be edited. Use Duplicate to start a new version.',
+      'PUBLISHED_LOCKED',
+    );
+  }
+}
+
+// Short content digest for audit rows — lets an auditor see whether the
+// snapshot VALUES changed, not just which keys were touched.
+function snapshotDigest(v: unknown): string {
+  return createHash('sha256').update(JSON.stringify(v ?? null)).digest('hex').slice(0, 16);
+}
+
 // 17.1 — generate (snapshot data). The actual KPI evaluator is a
 // separate concern — this endpoint stores whatever data the caller
 // has computed (or an empty object). Phase 17 wires PDF rendering.
@@ -436,11 +466,29 @@ export async function generateInstance(
   data: Record<string, unknown>,
 ): Promise<void> {
   const before = await getInstance(tenantId, id);
+  assertSnapshotEditable(before.status);
+  const beforeData =
+    typeof before.dataSnapshotJsonb === 'object' && before.dataSnapshotJsonb
+      ? (before.dataSnapshotJsonb as Record<string, unknown>)
+      : {};
   await db
     .update(reportInstances)
     .set({ dataSnapshotJsonb: data as never })
     .where(eq(reportInstances.id, id));
-  await auditLog(tenantId, 'update', 'report_instance_data', id, before, { keys: Object.keys(data) }, bookkeeperUserId);
+  await auditLog(
+    tenantId,
+    'update',
+    'report_instance_data',
+    id,
+    before,
+    {
+      beforeKeys: Object.keys(beforeData),
+      afterKeys: Object.keys(data),
+      beforeDigest: snapshotDigest(beforeData),
+      afterDigest: snapshotDigest(data),
+    },
+    bookkeeperUserId,
+  );
 }
 
 // Compute a real data snapshot from the company's books. Walks the
@@ -454,12 +502,7 @@ export async function computeInstance(
   bookkeeperUserId: string,
 ): Promise<{ keys: string[]; metricsAvailable: boolean; error: string | null }> {
   const before = await getInstance(tenantId, id);
-  if (before.status === 'published') {
-    throw AppError.badRequest(
-      'Published reports cannot be recomputed. Use Duplicate to start a new version.',
-      'PUBLISHED_LOCKED',
-    );
-  }
+  assertSnapshotEditable(before.status);
   const layout = Array.isArray(before.layoutSnapshotJsonb)
     ? (before.layoutSnapshotJsonb as Array<Record<string, unknown>>)
     : [];
@@ -509,12 +552,16 @@ export async function computeInstance(
         resolvedKpis['net_margin_pct'] = m.revenue === 0 ? NaN : m.netIncome / m.revenue;
         resolvedKpis['current_ratio'] = m.currentLiabilities === 0 ? NaN : m.currentAssets / m.currentLiabilities;
         resolvedKpis['ar_days'] = m.revenue === 0 ? NaN : (m.accountsReceivable / m.revenue) * m.periodDays;
-        resolvedKpis['ap_days'] = m.cogs > 0
-          ? (m.accountsPayable / m.cogs) * m.periodDays
-          : NaN;
-        resolvedKpis['inventory_days'] = m.cogs > 0
-          ? (m.inventory / m.cogs) * m.periodDays
-          : NaN;
+        // Same COGS→opex fallback rule as the stock evaluator
+        // (daysDenominator) so a custom KPI referencing ap_days /
+        // inventory_days sees the same number the KPI tile shows.
+        const daysDenom = daysDenominator(m.cogs, m.operatingExpense);
+        resolvedKpis['ap_days'] = daysDenom === 0
+          ? NaN
+          : (m.accountsPayable / daysDenom) * m.periodDays;
+        resolvedKpis['inventory_days'] = daysDenom === 0
+          ? NaN
+          : (m.inventory / daysDenom) * m.periodDays;
 
         for (const k of customKeys) {
           const def = customDefs.find((d) => d.key === k);
@@ -645,12 +692,7 @@ export async function patchSnapshot(
   input: PatchSnapshotInput,
 ): Promise<{ data: Record<string, unknown> }> {
   const before = await getInstance(tenantId, id);
-  if (before.status === 'published') {
-    throw AppError.badRequest(
-      'Published reports cannot be edited. Archive and re-publish.',
-      'PUBLISHED_LOCKED',
-    );
-  }
+  assertSnapshotEditable(before.status);
   const existing =
     typeof before.dataSnapshotJsonb === 'object' && before.dataSnapshotJsonb
       ? { ...(before.dataSnapshotJsonb as Record<string, unknown>) }
@@ -703,6 +745,62 @@ export interface SetStatusResult {
   pdfRendered: boolean;
   pdfError: string | null;
   version: number;
+  /** Present when publishing a snapshot that contains errored blocks —
+   *  one entry per affected block so the bookkeeper can fix + republish.
+   *  Publish is NOT blocked; the PDF renders those sections as
+   *  "Section unavailable." */
+  warnings?: string[];
+}
+
+// Explicit status machine. Anything not listed is rejected — in
+// particular published→draft and archived→draft: a published report is
+// the client-facing record, so revisions go through Duplicate.
+const ALLOWED_STATUS_TRANSITIONS: Record<string, readonly string[]> = {
+  draft: ['review', 'published'],
+  review: ['draft', 'published'],
+  published: ['archived'],
+  archived: ['published'], // republish (bumps version)
+};
+
+// Collect human-readable labels for snapshot blocks that carry an
+// error payload (compute failed for that block).
+function erroredBlockLabels(inst: { layoutSnapshotJsonb: unknown; dataSnapshotJsonb: unknown }): string[] {
+  const snapshot =
+    typeof inst.dataSnapshotJsonb === 'object' && inst.dataSnapshotJsonb
+      ? (inst.dataSnapshotJsonb as Record<string, unknown>)
+      : {};
+  const blocks = (snapshot['blocks'] as Record<string, { error?: unknown } | undefined>) ?? {};
+  const layout = Array.isArray(inst.layoutSnapshotJsonb)
+    ? (inst.layoutSnapshotJsonb as Array<Record<string, unknown>>)
+    : [];
+  const labels: string[] = [];
+  const seen = new Set<string>();
+  for (const block of layout) {
+    const blockId =
+      (block['id'] as string | undefined) ??
+      (block['name'] as string | undefined) ??
+      (block['report'] as string | undefined) ??
+      (block['key'] as string | undefined) ??
+      'unknown';
+    const payload = blocks[blockId];
+    if (payload && typeof payload === 'object' && payload.error && !seen.has(blockId)) {
+      seen.add(blockId);
+      const label =
+        (block['name'] as string | undefined) ??
+        (block['report'] as string | undefined) ??
+        (block['key'] as string | undefined) ??
+        blockId;
+      labels.push(label.replace(/_/g, ' '));
+    }
+  }
+  // Blocks in the snapshot but no longer in the layout (defensive).
+  for (const [blockId, payload] of Object.entries(blocks)) {
+    if (payload && typeof payload === 'object' && payload.error && !seen.has(blockId)) {
+      seen.add(blockId);
+      labels.push(blockId.replace(/_/g, ' '));
+    }
+  }
+  return labels;
 }
 
 export async function setStatus(
@@ -721,20 +819,49 @@ export async function setStatus(
   let pdfRendered = false;
   let pdfError: string | null = null;
   let nextVersion = before.version;
+  let warnings: string[] | undefined;
 
-  // Refuse the no-op transition that would otherwise re-stamp publishedAt.
-  if (before.status === status) {
+  // Same-status calls are no-ops (don't re-stamp publishedAt) with ONE
+  // exception: published→published with no stored PDF retries the
+  // publish-time render that previously failed. The retry keeps the
+  // original publishedAt and does NOT bump the version.
+  const isPdfRetry =
+    before.status === 'published' && status === 'published' && !before.pdfUrl;
+  if (before.status === status && !isPdfRetry) {
     return { ok: true, pdfRendered: false, pdfError: null, version: before.version };
+  }
+  if (
+    before.status !== status &&
+    !(ALLOWED_STATUS_TRANSITIONS[before.status] ?? []).includes(status)
+  ) {
+    const hint =
+      before.status === 'published' || before.status === 'archived'
+        ? ' Use Duplicate to start a new draft version.'
+        : '';
+    throw AppError.badRequest(
+      `A ${before.status} report cannot move to ${status}.${hint}`,
+      'INVALID_STATUS_TRANSITION',
+    );
   }
 
   if (status === 'published') {
-    patch.publishedAt = new Date();
-    // If this is a republish (archived → published), bump the version
-    // so the new artifact is distinct from the prior one.
-    if (before.publishedAt) {
-      nextVersion = before.version + 1;
-      patch.version = nextVersion;
+    let publishedAt: Date;
+    if (isPdfRetry) {
+      publishedAt = before.publishedAt ?? new Date();
+    } else {
+      publishedAt = new Date();
+      patch.publishedAt = publishedAt;
+      // If this is a republish (archived → published), bump the version
+      // so the new artifact is distinct from the prior one.
+      if (before.publishedAt) {
+        nextVersion = before.version + 1;
+        patch.version = nextVersion;
+      }
     }
+    // Surface (but do not block on) blocks whose compute failed — the
+    // PDF and portal render those sections as unavailable.
+    const errored = erroredBlockLabels(before);
+    if (errored.length > 0) warnings = errored;
     // Render PDF every publish (first or re-publish). The artifact
     // freezes the *current* layoutSnapshot + dataSnapshot, so the
     // bookkeeper's edits land in the file the client downloads.
@@ -763,7 +890,7 @@ export async function setStatus(
           typeof before.dataSnapshotJsonb === 'object' && before.dataSnapshotJsonb
             ? (before.dataSnapshotJsonb as Record<string, unknown>)
             : {},
-        publishedAt: patch.publishedAt!,
+        publishedAt,
         theme,
       });
       const pdfBuf = await htmlToPdf(html);
@@ -791,10 +918,16 @@ export async function setStatus(
     'report_instance_status',
     id,
     before,
-    { ...patch, pdfRendered, pdfError },
+    { ...patch, pdfRendered, pdfError, ...(warnings ? { warnings } : {}) },
     bookkeeperUserId,
   );
-  return { ok: true, pdfRendered, pdfError, version: nextVersion };
+  return {
+    ok: true,
+    pdfRendered,
+    pdfError,
+    version: nextVersion,
+    ...(warnings ? { warnings } : {}),
+  };
 }
 
 // 17.2 comments — tenant-scoped via the parent instance lookup so a
@@ -968,12 +1101,7 @@ export async function generateAiSummary(
   input: GenerateAiSummaryInput = {},
 ): Promise<GenerateAiSummaryResult> {
   const inst = await getInstance(tenantId, instanceId);
-  if (inst.status === 'published') {
-    throw AppError.badRequest(
-      'Published reports cannot be edited. Duplicate to a new draft first.',
-      'PUBLISHED_LOCKED',
-    );
-  }
+  assertSnapshotEditable(inst.status);
 
   const config = await aiConfigService.getConfig();
   if (!config.isEnabled) {

@@ -82,12 +82,20 @@ function shiftDate(date: string, opts: { years?: number; months?: number }): str
   const y = parseInt(yStr ?? '1970', 10) + (opts.years ?? 0);
   const m = parseInt(mStr ?? '1', 10) - 1 + (opts.months ?? 0);
   const d = parseInt(dStr ?? '1', 10);
-  // Normalize through Date so month overflow handles correctly.
-  const dt = new Date(Date.UTC(y, m, d));
-  // Clamp day-of-month if the target month is shorter (e.g. Feb 30).
-  const isoMonth = String(dt.getUTCMonth() + 1).padStart(2, '0');
-  const isoDay = String(dt.getUTCDate()).padStart(2, '0');
-  return `${dt.getUTCFullYear()}-${isoMonth}-${isoDay}`;
+  // Normalize the month index first (day 1 can never overflow), then
+  // CLAMP the day to the target month's length. Constructing
+  // Date.UTC(y, m, 31) directly would let a 30-day (or Feb) target
+  // month roll into the following month — e.g. prior-month of Mar 31
+  // becoming Mar 3 — which makes MoM/YoY windows overlap the current
+  // period.
+  const firstOfMonth = new Date(Date.UTC(y, m, 1));
+  const ty = firstOfMonth.getUTCFullYear();
+  const tm = firstOfMonth.getUTCMonth();
+  const lastDay = new Date(Date.UTC(ty, tm + 1, 0)).getUTCDate();
+  const day = Math.min(d, lastDay);
+  const isoMonth = String(tm + 1).padStart(2, '0');
+  const isoDay = String(day).padStart(2, '0');
+  return `${ty}-${isoMonth}-${isoDay}`;
 }
 
 export function priorMonthWindow(start: string, end: string): { start: string; end: string } {
@@ -112,20 +120,26 @@ async function balanceByDetailType(
   detailTypes: string[],
 ): Promise<number> {
   if (detailTypes.length === 0) return 0;
-  const companyCond = companyId ? sql`AND t.company_id = ${companyId}` : sql``;
+  const companyCond = companyId ? sql`company_id = ${companyId}` : sql`TRUE`;
   // Build the IN-list as a comma-separated set of bound parameters —
   // sql.join is the Drizzle-idiomatic way to do this and avoids the
   // record-vs-array cast problem you hit with `= ANY(::text[])`.
   const detailList = sql.join(detailTypes.map((d) => sql`${d}`), sql`, `);
+  // The transaction filters (status/date/company) MUST live on the
+  // journal_lines join itself — mirroring report.service's
+  // buildBalanceSheet. A separate LEFT JOIN transactions with these
+  // conditions in its ON clause is a no-op filter: every journal line
+  // still sums, including drafts, voids, future-dated activity, and
+  // other companies' books.
   const result = await db.execute(sql`
     SELECT COALESCE(SUM(jl.debit), 0) AS dr, COALESCE(SUM(jl.credit), 0) AS cr
     FROM accounts a
     LEFT JOIN journal_lines jl ON jl.account_id = a.id AND jl.tenant_id = ${tenantId}
-    LEFT JOIN transactions t ON t.id = jl.transaction_id
-      AND t.tenant_id = ${tenantId}
-      AND t.status = 'posted'
-      AND t.txn_date <= ${asOfDate}
-      ${companyCond}
+      AND jl.transaction_id IN (
+        SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
+        AND txn_date <= ${asOfDate}
+        AND ${companyCond}
+      )
     WHERE a.tenant_id = ${tenantId}
       AND a.account_type = ${accountType}
       AND a.detail_type IN (${detailList})
@@ -209,6 +223,15 @@ function fmtDays(n: number): string {
 }
 function safeDiv(a: number, b: number): number {
   return b === 0 ? NaN : a / b;
+}
+
+// Single source of truth for the denominator of the "days" KPIs
+// (ap_days, inventory_days, cash_conversion_cycle): use COGS when the
+// period has any, otherwise fall back to operating expense. Exported
+// so the custom-KPI pre-resolution in portal-reports.service applies
+// the exact same rule — the two used to drift (NaN vs. opex vs. 1).
+export function daysDenominator(cogs: number, operatingExpense: number): number {
+  return cogs > 0 ? cogs : operatingExpense;
 }
 
 export interface PeriodTriad {
@@ -330,7 +353,16 @@ function metricValue(m: PeriodMetrics, name: string): number {
   }
 }
 
-export function evaluateAst(node: AstNode | undefined | null, ctx: EvalContext): number {
+// Recursion ceiling for formula ASTs. Custom-KPI formulas are stored
+// as caller-supplied JSON — without a depth guard a deeply nested (or
+// adversarial) formula can blow the JS stack. 32 levels is far beyond
+// any formula the builder UI produces.
+const MAX_AST_DEPTH = 32;
+
+export function evaluateAst(node: AstNode | undefined | null, ctx: EvalContext, depth = 0): number {
+  if (depth > MAX_AST_DEPTH) {
+    throw new Error(`KPI formula is nested too deeply (max ${MAX_AST_DEPTH} levels)`);
+  }
   if (!node || typeof node !== 'object') return 0;
   // FormulaBuilder shape: kind+left/right
   if (node.kind === 'literal') {
@@ -338,8 +370,8 @@ export function evaluateAst(node: AstNode | undefined | null, ctx: EvalContext):
     return Number.isFinite(n) ? n : 0;
   }
   if (node.kind === 'op') {
-    const a = evaluateAst(node.left, ctx);
-    const b = evaluateAst(node.right, ctx);
+    const a = evaluateAst(node.left, ctx, depth + 1);
+    const b = evaluateAst(node.right, ctx, depth + 1);
     switch (node.op) {
       case '+': return a + b;
       case '-': return a - b;
@@ -364,8 +396,8 @@ export function evaluateAst(node: AstNode | undefined | null, ctx: EvalContext):
   // { type: 'category', value: '...' } — preserved so a stock entry
   // can be evaluated by the same walker if needed.
   if (node.op && (node.a || node.b)) {
-    const left = evaluateAst(node.a, ctx);
-    const right = evaluateAst(node.b, ctx);
+    const left = evaluateAst(node.a, ctx, depth + 1);
+    const right = evaluateAst(node.b, ctx, depth + 1);
     switch (node.op) {
       case 'div': return right === 0 ? NaN : left / right;
       case 'sub': return left - right;
@@ -451,13 +483,13 @@ function computeOne(key: string, triad: PeriodTriad): string {
     case 'ar_days':
       return fmtDays(safeDiv(m.accountsReceivable, m.revenue) * m.periodDays);
     case 'ap_days':
-      return fmtDays(safeDiv(m.accountsPayable, m.cogs > 0 ? m.cogs : m.operatingExpense) * m.periodDays);
+      return fmtDays(safeDiv(m.accountsPayable, daysDenominator(m.cogs, m.operatingExpense)) * m.periodDays);
     case 'inventory_days':
-      return fmtDays(safeDiv(m.inventory, m.cogs > 0 ? m.cogs : 1) * m.periodDays);
+      return fmtDays(safeDiv(m.inventory, daysDenominator(m.cogs, m.operatingExpense)) * m.periodDays);
     case 'cash_conversion_cycle': {
       const arDays = safeDiv(m.accountsReceivable, m.revenue) * m.periodDays;
-      const apDays = safeDiv(m.accountsPayable, m.cogs > 0 ? m.cogs : m.operatingExpense) * m.periodDays;
-      const invDays = safeDiv(m.inventory, m.cogs > 0 ? m.cogs : 1) * m.periodDays;
+      const apDays = safeDiv(m.accountsPayable, daysDenominator(m.cogs, m.operatingExpense)) * m.periodDays;
+      const invDays = safeDiv(m.inventory, daysDenominator(m.cogs, m.operatingExpense)) * m.periodDays;
       return fmtDays(arDays + invDays - apDays);
     }
     case 'revenue_mom': {
