@@ -510,10 +510,26 @@ async function getSystemRemoteProvider(): Promise<StorageProvider | null> {
         prefix: (config['prefix'] as string) || 'backups/',
       });
     }
+    case 'b2': {
+      if (!config['bucket'] || !config['keyId'] || !config['endpoint']) return null;
+      const { B2Provider } = await import('./storage/b2.provider.js');
+      return new B2Provider({
+        bucket: config['bucket'] as string,
+        endpoint: config['endpoint'] as string,
+        keyId: config['keyId'] as string,
+        applicationKey: config['application_key_encrypted'] ? decryptField(config['application_key_encrypted'] as string) : '',
+        region: (config['region'] as string) || undefined,
+        prefix: (config['prefix'] as string) || 'backups/',
+      });
+    }
     default:
       return null;
   }
 }
+
+// Exposed for tests — asserts provider construction (e.g. the 'b2'
+// case) without any network calls. Not part of the public API.
+export { getSystemRemoteProvider as __getSystemRemoteProviderForTests };
 
 // ─── Remote Backup Manifest ──────────────────────────────────────
 

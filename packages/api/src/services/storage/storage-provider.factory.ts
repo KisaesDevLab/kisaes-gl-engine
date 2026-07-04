@@ -6,12 +6,15 @@ import { eq, and } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { storageProviders } from '../../db/schema/index.js';
 import { decrypt } from '../../utils/encryption.js';
+import { env } from '../../config/env.js';
 import type { StorageProvider } from './storage-provider.interface.js';
 import { LocalProvider } from './local.provider.js';
 import { DropboxProvider } from './dropbox.provider.js';
 import { GoogleDriveProvider } from './google-drive.provider.js';
 import { OneDriveProvider } from './onedrive.provider.js';
 import { S3Provider } from './s3.provider.js';
+import { B2Provider } from './b2.provider.js';
+import { LocalFallbackProvider } from './local-fallback.provider.js';
 import { ensureFreshAccessToken } from './oauth-refresh.js';
 
 // Cache provider instances per tenant. Capped + periodic sweep so that an
@@ -51,9 +54,12 @@ export async function getProviderForTenant(tenantId: string): Promise<StoragePro
     where: and(eq(storageProviders.tenantId, tenantId), eq(storageProviders.isActive, true)),
   });
 
-  // Default to local
+  // No tenant-level provider configured — fall back to the SYSTEM-level
+  // default (super-admin setting; 'local' when unset, preserving the
+  // original behavior). Tenants with their own active row are never
+  // affected by the system setting.
   if (!record) {
-    const provider = new LocalProvider();
+    const provider = await getSystemStorageProvider();
     providerCache.set(tenantId, { provider, expiresAt: Date.now() + CACHE_TTL });
     return provider;
   }
@@ -103,6 +109,17 @@ export async function getProviderForTenant(tenantId: string): Promise<StoragePro
         prefix: config['prefix'],
       });
       break;
+    case 'b2':
+      if (!config['bucket'] || !config['keyId'] || !config['endpoint']) throw new Error('Backblaze B2 configuration incomplete');
+      provider = new B2Provider({
+        bucket: config['bucket'],
+        endpoint: config['endpoint'],
+        keyId: config['keyId'],
+        applicationKey: config['applicationKey'] ? decrypt(config['applicationKey']) : '',
+        region: config['region'],
+        prefix: config['prefix'],
+      });
+      break;
     default:
       provider = new LocalProvider();
   }
@@ -113,4 +130,95 @@ export async function getProviderForTenant(tenantId: string): Promise<StoragePro
 
 export function invalidateProviderCache(tenantId: string) {
   providerCache.delete(tenantId);
+}
+
+// ─── System-level default provider ───────────────────────────────
+//
+// Resolution order:
+//   1. STORAGE_SYSTEM_PROVIDER env var (deploy-time override for
+//      headless installs) with its B2_* companion vars
+//   2. DB-backed system_settings (storage_system_provider /
+//      storage_system_config, managed from the admin panel)
+//   3. LocalProvider (the historical default)
+//
+// Non-local system providers are wrapped in LocalFallbackProvider so
+// files uploaded before the switch keep downloading from local disk
+// until the tenant runs a storage migration.
+
+let systemProviderCache: { provider: StorageProvider; expiresAt: number } | null = null;
+
+async function resolveSystemStorageProvider(): Promise<StorageProvider> {
+  // 1. Deploy-time env override
+  if (env.STORAGE_SYSTEM_PROVIDER === 'local') return new LocalProvider();
+  if (env.STORAGE_SYSTEM_PROVIDER === 'b2') {
+    if (env.B2_BUCKET && env.B2_ENDPOINT && env.B2_KEY_ID && env.B2_APPLICATION_KEY) {
+      return new LocalFallbackProvider(new B2Provider({
+        bucket: env.B2_BUCKET,
+        endpoint: env.B2_ENDPOINT,
+        keyId: env.B2_KEY_ID,
+        applicationKey: env.B2_APPLICATION_KEY,
+        region: env.B2_REGION,
+        prefix: env.B2_PREFIX,
+      }));
+    }
+    console.warn('[storage] STORAGE_SYSTEM_PROVIDER=b2 set but B2_ENDPOINT/B2_BUCKET/B2_KEY_ID/B2_APPLICATION_KEY incomplete — falling back to the DB setting');
+  }
+
+  // 2. DB-backed admin setting. Dynamic import to keep the factory free
+  // of a static dependency on the (large) admin service module.
+  const { getSystemStorageConfig } = await import('../admin.service.js');
+  const cfg = await getSystemStorageConfig();
+  let config: Record<string, unknown> = {};
+  try {
+    config = JSON.parse(cfg.storageSystemConfig) as Record<string, unknown>;
+  } catch { /* empty/corrupt config → treated as unset */ }
+
+  switch (cfg.storageSystemProvider) {
+    case 'b2':
+      if (!config['bucket'] || !config['keyId'] || !config['endpoint']) return new LocalProvider();
+      return new LocalFallbackProvider(new B2Provider({
+        bucket: config['bucket'] as string,
+        endpoint: config['endpoint'] as string,
+        keyId: config['keyId'] as string,
+        applicationKey: config['application_key_encrypted'] ? decrypt(config['application_key_encrypted'] as string) : '',
+        region: (config['region'] as string) || undefined,
+        prefix: (config['prefix'] as string) || undefined,
+      }));
+    case 's3':
+      if (!config['bucket'] || !config['accessKeyId']) return new LocalProvider();
+      return new LocalFallbackProvider(new S3Provider({
+        bucket: config['bucket'] as string,
+        region: (config['region'] as string) || undefined,
+        endpoint: (config['endpoint'] as string) || undefined,
+        accessKeyId: config['accessKeyId'] as string,
+        secretAccessKey: config['secret_access_key_encrypted'] ? decrypt(config['secret_access_key_encrypted'] as string) : '',
+        prefix: (config['prefix'] as string) || undefined,
+      }));
+    default:
+      return new LocalProvider();
+  }
+}
+
+/**
+ * The system-default storage provider — what a tenant WITHOUT their own
+ * configured provider resolves to. Cached for CACHE_TTL like tenant
+ * providers.
+ */
+export async function getSystemStorageProvider(): Promise<StorageProvider> {
+  if (systemProviderCache && Date.now() < systemProviderCache.expiresAt) {
+    return systemProviderCache.provider;
+  }
+  const provider = await resolveSystemStorageProvider();
+  systemProviderCache = { provider, expiresAt: Date.now() + CACHE_TTL };
+  return provider;
+}
+
+/**
+ * Invalidate the system-default provider. Clears the whole per-tenant
+ * cache too: every tenant without their own row cached the old system
+ * default under their tenantId.
+ */
+export function invalidateSystemProviderCache(): void {
+  systemProviderCache = null;
+  providerCache.clear();
 }

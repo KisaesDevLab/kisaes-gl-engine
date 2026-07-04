@@ -641,12 +641,14 @@ adminRouter.get('/backup/remote-config', async (req, res) => {
     delete safeConfig['secret_access_key_encrypted'];
     delete safeConfig['app_secret_encrypted'];
     delete safeConfig['client_secret_encrypted'];
+    delete safeConfig['application_key_encrypted'];
     // Indicate which secrets are present
     if (parsed['access_token_encrypted']) safeConfig['hasAccessToken'] = true;
     if (parsed['refresh_token_encrypted']) safeConfig['hasRefreshToken'] = true;
     if (parsed['secret_access_key_encrypted']) safeConfig['hasSecretAccessKey'] = true;
     if (parsed['app_secret_encrypted']) safeConfig['hasAppSecret'] = true;
     if (parsed['client_secret_encrypted']) safeConfig['hasClientSecret'] = true;
+    if (parsed['application_key_encrypted']) safeConfig['hasApplicationKey'] = true;
   } catch { /* empty config is fine */ }
 
   res.json({
@@ -680,6 +682,14 @@ adminRouter.put('/backup/remote-config', async (req, res) => {
         configToStore['endpoint'] = pc.endpoint || '';
         configToStore['accessKeyId'] = pc.accessKeyId || '';
         if (pc.secretAccessKey) configToStore['secret_access_key_encrypted'] = encrypt(pc.secretAccessKey);
+        configToStore['prefix'] = pc.prefix || 'backups/';
+        break;
+      case 'b2':
+        configToStore['bucket'] = pc.bucket || '';
+        configToStore['endpoint'] = pc.endpoint || '';
+        configToStore['keyId'] = pc.keyId || '';
+        if (pc.applicationKey) configToStore['application_key_encrypted'] = encrypt(pc.applicationKey);
+        configToStore['region'] = pc.region || '';
         configToStore['prefix'] = pc.prefix || 'backups/';
         break;
       case 'dropbox':
@@ -760,6 +770,21 @@ adminRouter.post('/backup/remote-test', async (req, res) => {
         });
         break;
       }
+      case 'b2': {
+        if (!parsed['bucket'] || !parsed['keyId'] || !parsed['endpoint']) {
+          res.status(400).json({ error: { message: 'Backblaze B2 not fully configured' } }); return;
+        }
+        const { B2Provider } = await import('../services/storage/b2.provider.js');
+        storageProvider = new B2Provider({
+          bucket: parsed['bucket'],
+          endpoint: parsed['endpoint'],
+          keyId: parsed['keyId'],
+          applicationKey: parsed['application_key_encrypted'] ? decrypt(parsed['application_key_encrypted']) : '',
+          region: parsed['region'] || undefined,
+          prefix: parsed['prefix'],
+        });
+        break;
+      }
       default:
         res.status(400).json({ error: { message: 'No remote provider configured' } }); return;
     }
@@ -768,6 +793,123 @@ adminRouter.post('/backup/remote-test', async (req, res) => {
     res.json(health);
   } catch (err: any) {
     res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+// ─── System File Storage Config ──────────────────────────────────
+//
+// System-level default for FILE storage (attachments, receipts, report
+// PDFs). Applies to every tenant that has not configured their own
+// provider under Settings > File Storage; tenants with their own
+// provider are unaffected. Secrets follow the backup-remote pattern:
+// encrypted at rest, never round-tripped (has* flags only), omitted
+// secrets preserved on re-save.
+
+const SYSTEM_STORAGE_PROVIDERS = ['local', 'b2', 's3'];
+
+adminRouter.get('/storage/system-config', async (_req, res) => {
+  const config = await adminService.getSystemStorageConfig();
+  let safeConfig: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(config.storageSystemConfig) as Record<string, unknown>;
+    safeConfig = { ...parsed };
+    delete safeConfig['application_key_encrypted'];
+    delete safeConfig['secret_access_key_encrypted'];
+    if (parsed['application_key_encrypted']) safeConfig['hasApplicationKey'] = true;
+    if (parsed['secret_access_key_encrypted']) safeConfig['hasSecretAccessKey'] = true;
+  } catch { /* empty config is fine */ }
+
+  res.json({
+    storageSystemProvider: config.storageSystemProvider,
+    storageSystemConfig: JSON.stringify(safeConfig),
+    // Surface the deploy-time env override so the UI can explain why
+    // edits here won't take effect until the env var is removed.
+    envOverrideActive: !!env.STORAGE_SYSTEM_PROVIDER,
+    envOverrideProvider: env.STORAGE_SYSTEM_PROVIDER ?? null,
+  });
+});
+
+adminRouter.put('/storage/system-config', async (req, res) => {
+  const provider = req.body.storageSystemProvider;
+  if (!SYSTEM_STORAGE_PROVIDERS.includes(provider)) {
+    res.status(400).json({ error: { message: `storageSystemProvider must be one of: ${SYSTEM_STORAGE_PROVIDERS.join(', ')}` } });
+    return;
+  }
+
+  const input: Partial<adminService.SystemStorageConfig> = { storageSystemProvider: provider };
+
+  if (req.body.providerConfig) {
+    const pc = req.body.providerConfig as Record<string, string | undefined>;
+    const configToStore: Record<string, unknown> = {};
+
+    switch (provider) {
+      case 'b2':
+        configToStore['bucket'] = pc['bucket'] || '';
+        configToStore['endpoint'] = pc['endpoint'] || '';
+        configToStore['keyId'] = pc['keyId'] || '';
+        if (pc['applicationKey']) configToStore['application_key_encrypted'] = encrypt(pc['applicationKey']);
+        configToStore['region'] = pc['region'] || '';
+        configToStore['prefix'] = pc['prefix'] || '';
+        break;
+      case 's3':
+        configToStore['bucket'] = pc['bucket'] || '';
+        configToStore['region'] = pc['region'] || 'us-east-1';
+        configToStore['endpoint'] = pc['endpoint'] || '';
+        configToStore['accessKeyId'] = pc['accessKeyId'] || '';
+        if (pc['secretAccessKey']) configToStore['secret_access_key_encrypted'] = encrypt(pc['secretAccessKey']);
+        configToStore['prefix'] = pc['prefix'] || '';
+        break;
+    }
+
+    // Merge with existing config so omitted secrets are preserved
+    try {
+      const existing = JSON.parse((await adminService.getSystemStorageConfig()).storageSystemConfig);
+      input.storageSystemConfig = JSON.stringify({ ...existing, ...configToStore });
+    } catch {
+      input.storageSystemConfig = JSON.stringify(configToStore);
+    }
+  }
+
+  await adminService.saveSystemStorageConfig(input);
+
+  // Tenants without their own provider cached the old system default —
+  // drop it so the new setting takes effect immediately.
+  const { invalidateSystemProviderCache } = await import('../services/storage/storage-provider.factory.js');
+  invalidateSystemProviderCache();
+
+  res.json({ message: 'System storage config saved' });
+});
+
+adminRouter.post('/storage/system-test', async (_req, res) => {
+  try {
+    // Test exactly what tenants will resolve to (env override included).
+    const { getSystemStorageProvider, invalidateSystemProviderCache } = await import('../services/storage/storage-provider.factory.js');
+    invalidateSystemProviderCache();
+    const provider = await getSystemStorageProvider();
+
+    const health = await provider.checkHealth();
+    if (health.status === 'error') {
+      res.json({ ...health, provider: provider.name, probe: 'skipped' });
+      return;
+    }
+
+    // Live round-trip probe: put/get/delete a tiny object so we verify
+    // write + read + delete permissions, not just bucket visibility.
+    const probeKey = `_vibe_health/${crypto.randomUUID()}.txt`;
+    const payload = Buffer.from('vibe-mybooks system storage probe');
+    try {
+      await provider.upload(probeKey, payload, { fileName: 'probe.txt', mimeType: 'text/plain', sizeBytes: payload.length });
+      const echoed = await provider.download(probeKey);
+      if (!echoed.equals(payload)) throw new Error('Probe read-back mismatch');
+      await provider.delete(probeKey);
+      res.json({ ...health, provider: provider.name, probe: 'ok' });
+    } catch (probeErr) {
+      const message = probeErr instanceof Error ? probeErr.message : 'Probe failed';
+      res.json({ status: 'error', latencyMs: health.latencyMs, error: message, provider: provider.name, probe: 'failed' });
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    res.status(500).json({ error: { message } });
   }
 });
 

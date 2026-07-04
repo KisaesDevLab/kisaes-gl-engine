@@ -3,6 +3,7 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { Router } from 'express';
+import type { Request, Response } from 'express';
 import crypto from 'crypto';
 import { eq, and } from 'drizzle-orm';
 import { authenticate } from '../middleware/auth.js';
@@ -60,15 +61,31 @@ async function getTenantProviderRecord(tenantId: string, provider: string) {
 
 storageRouter.get('/', async (req, res) => {
   const providers = await db.select().from(storageProviders).where(eq(storageProviders.tenantId, req.tenantId));
-  const activeProvider = providers.find((p) => p.isActive) || { provider: 'local', isActive: true, healthStatus: 'healthy' };
+
+  // Which system-level default applies when this tenant hasn't picked a
+  // provider (super-admin setting; 'local' when unset).
+  let systemDefault = 'local';
+  try {
+    const { getSystemStorageProvider } = await import('../services/storage/storage-provider.factory.js');
+    systemDefault = (await getSystemStorageProvider()).name;
+  } catch { /* fall back to 'local' if resolution fails */ }
+
+  const activeRecord = providers.find((p) => p.isActive);
+  const activeProvider = activeRecord || {
+    provider: systemDefault,
+    isActive: true,
+    healthStatus: systemDefault === 'local' ? 'healthy' : 'unknown',
+    isSystemDefault: true,
+  };
 
   // All providers always available — each tenant configures their own credentials
-  const available = ['local', 'dropbox', 'google_drive', 'onedrive', 's3'];
+  const available = ['local', 'dropbox', 'google_drive', 'onedrive', 's3', 'b2'];
 
   // Build per-provider status: has the tenant saved OAuth app credentials?
   const providerStatus: Record<string, { configured: boolean; connected: boolean }> = {
     local: { configured: true, connected: true },
     s3: { configured: true, connected: false },
+    b2: { configured: true, connected: false },
     dropbox: { configured: false, connected: false },
     google_drive: { configured: false, connected: false },
     onedrive: { configured: false, connected: false },
@@ -80,6 +97,8 @@ storageRouter.get('/', async (req, res) => {
 
     if (p.provider === 's3') {
       providerStatus['s3'] = { configured: true, connected: !!config['bucket'] };
+    } else if (p.provider === 'b2') {
+      providerStatus['b2'] = { configured: true, connected: !!config['bucket'] };
     } else if (p.provider === 'dropbox') {
       providerStatus['dropbox'] = { configured: !!config['app_key'], connected: hasOAuthTokens };
     } else if (p.provider === 'google_drive') {
@@ -94,6 +113,7 @@ storageRouter.get('/', async (req, res) => {
     providers: providers.map((p) => ({ ...p, accessTokenEncrypted: undefined, refreshTokenEncrypted: undefined })),
     available,
     providerStatus,
+    systemDefault,
   });
 });
 
@@ -108,6 +128,10 @@ storageRouter.post('/configure/:provider', async (req, res) => {
   if (provider === 's3') {
     // S3 has its own flow below — redirect there for backwards compat
     return configureS3(req, res);
+  }
+  if (provider === 'b2') {
+    // Backblaze B2 is credential-based (no OAuth) like S3
+    return configureB2(req, res);
   }
 
   let configToStore: Record<string, string> = {};
@@ -350,6 +374,50 @@ async function configureS3(req: any, res: any) {
 }
 
 storageRouter.post('/configure/s3', configureS3);
+
+// ─── Backblaze B2 configuration (no OAuth) ─────────────────────
+//
+// B2 speaks the S3 API; the form vocabulary differs (keyID /
+// applicationKey / endpoint required). Mirrors configureS3: live
+// health check before saving, applicationKey encrypted at rest.
+
+async function configureB2(req: Request, res: Response) {
+  const { keyId, applicationKey, bucket, endpoint, region, prefix } = req.body as Record<string, string | undefined>;
+
+  if (!bucket || !endpoint || !keyId || !applicationKey) {
+    res.status(400).json({ error: { message: 'bucket, endpoint, keyId, and applicationKey are required' } });
+    return;
+  }
+
+  // Test connection
+  try {
+    const { B2Provider } = await import('../services/storage/b2.provider.js');
+    const provider = new B2Provider({ bucket, endpoint, keyId, applicationKey, region, prefix });
+    const health = await provider.checkHealth();
+    if (health.status === 'error') { res.status(400).json({ error: { message: `Backblaze B2 connection failed: ${health.error}` } }); return; }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Backblaze B2 connection failed';
+    res.status(400).json({ error: { message } }); return;
+  }
+
+  const config = { bucket, endpoint, keyId, applicationKey: encrypt(applicationKey), region: region || '', prefix: prefix || '' };
+
+  const existing = await getTenantProviderRecord(req.tenantId, 'b2');
+
+  if (existing) {
+    await db.update(storageProviders).set({ config, healthStatus: 'healthy', updatedAt: new Date() }).where(eq(storageProviders.id, existing.id));
+  } else {
+    await db.insert(storageProviders).values({
+      tenantId: req.tenantId, provider: 'b2', isActive: false, config,
+      healthStatus: 'healthy', displayName: 'Backblaze B2', connectedBy: req.userId,
+    });
+  }
+
+  invalidateProviderCache(req.tenantId);
+  res.json({ connected: true });
+}
+
+storageRouter.post('/configure/b2', configureB2);
 
 // ─── Set active provider ──────────────────────────────────────
 

@@ -919,3 +919,31 @@ export async function saveBackupRemoteConfig(input: Partial<BackupRemoteConfig>)
   if (input.backupRemoteRetentionYearly !== undefined) await setSetting('backup_remote_retention_yearly', input.backupRemoteRetentionYearly);
   if (input.backupLastRun !== undefined) await setSetting('backup_last_run', input.backupLastRun);
 }
+
+// ─── System File Storage Config ──────────────────────────────────
+//
+// System-level (super-admin) file-storage default. Tenants that have
+// NOT configured their own storage provider resolve to this; tenants
+// with their own active storage_providers row are unaffected. Same
+// key/value + encrypted-JSON shape as the backup remote config above.
+
+export interface SystemStorageConfig {
+  /** 'local' | 'b2' | 's3' */
+  storageSystemProvider: string;
+  /** JSON string; secrets stored encrypted (application_key_encrypted / secret_access_key_encrypted) */
+  storageSystemConfig: string;
+}
+
+export async function getSystemStorageConfig(): Promise<SystemStorageConfig> {
+  const provider = await getSetting('storage_system_provider');
+  const config = await getSetting('storage_system_config');
+  return {
+    storageSystemProvider: provider ?? 'local',
+    storageSystemConfig: config ?? '{}',
+  };
+}
+
+export async function saveSystemStorageConfig(input: Partial<SystemStorageConfig>): Promise<void> {
+  if (input.storageSystemProvider !== undefined) await setSetting('storage_system_provider', input.storageSystemProvider);
+  if (input.storageSystemConfig !== undefined) await setSetting('storage_system_config', input.storageSystemConfig);
+}

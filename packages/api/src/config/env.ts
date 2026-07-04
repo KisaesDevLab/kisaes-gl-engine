@@ -52,6 +52,22 @@ const envSchema = z.object({
   SMTP_FROM: z.string().default('noreply@example.com'),
   UPLOAD_DIR: z.string().default('/data/uploads'),
   MAX_FILE_SIZE_MB: z.coerce.number().default(10),
+  // System-level file-storage override (deploy-time). When set, takes
+  // precedence over the DB-backed admin setting (Admin > System > File
+  // Storage) for tenants that haven't configured their own provider.
+  // 'b2' requires the four B2_* companion vars below; if incomplete,
+  // resolution falls back to the DB setting. S3-compatible targets are
+  // configured through the admin UI (no env form).
+  STORAGE_SYSTEM_PROVIDER: z.enum(['local', 'b2']).optional(),
+  // Backblaze B2 (S3-compatible) credentials for the env override.
+  // Endpoint is the full https URL, e.g. https://s3.us-west-004.backblazeb2.com
+  B2_ENDPOINT: z.string().optional(),
+  B2_BUCKET: z.string().optional(),
+  B2_KEY_ID: z.string().optional(),
+  B2_APPLICATION_KEY: z.string().optional(),
+  // Optional; derived from the endpoint when unset.
+  B2_REGION: z.string().optional(),
+  B2_PREFIX: z.string().optional(),
   BCRYPT_ROUNDS: z.coerce.number().default(12),
   TAILSCALE_SOCKET_PATH: z.string().default('/var/run/tailscale/tailscaled.sock'),
   TS_HOSTNAME: z.string().optional(),

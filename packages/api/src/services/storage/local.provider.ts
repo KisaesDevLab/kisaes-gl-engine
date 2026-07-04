@@ -53,8 +53,12 @@ export class LocalProvider implements StorageProvider {
   async checkHealth(): Promise<HealthResult> {
     const start = Date.now();
     try {
-      this.ensureDir(path.join(this.basePath, '.health'));
       const testFile = path.join(this.basePath, '.health', 'test');
+      // ensureDir creates dirname(arg) — pass the file path so the
+      // .health directory itself gets created (previously the arg was
+      // the .health dir, so only basePath was created and the write
+      // below failed with ENOENT on any fresh basePath).
+      this.ensureDir(testFile);
       fs.writeFileSync(testFile, 'ok');
       fs.unlinkSync(testFile);
       return { status: 'healthy', latencyMs: Date.now() - start };
