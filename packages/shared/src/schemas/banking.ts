@@ -34,10 +34,25 @@ export const matchSchema = z.object({
   transactionId: z.string().uuid(),
 });
 
+// Start a reconciliation either manually (accountId + statementDate +
+// statementEndingBalance) or from a stored bank statement (statementId —
+// the server derives account, statement date, and ending balance from the
+// bank_statements row and links the reconciliation back to it).
 export const startReconciliationSchema = z.object({
-  accountId: z.string().uuid(),
-  statementDate: z.string().min(1),
-  statementEndingBalance: z.string().min(1),
+  accountId: z.string().uuid().optional(),
+  statementDate: z.string().min(1).optional(),
+  statementEndingBalance: z.string().min(1).optional(),
+  statementId: z.string().uuid().optional(),
+}).refine(
+  (d) => !!d.statementId || (!!d.accountId && !!d.statementDate && !!d.statementEndingBalance),
+  { message: 'Provide statementId, or accountId + statementDate + statementEndingBalance' },
+);
+
+// GET /banking/statements list filters (query params).
+export const bankStatementFiltersSchema = z.object({
+  accountId: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
 });
 
 export const updateReconciliationLinesSchema = z.object({

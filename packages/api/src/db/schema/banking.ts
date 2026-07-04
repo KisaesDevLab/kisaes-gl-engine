@@ -56,6 +56,10 @@ export const bankFeedItems = pgTable('bank_feed_items', {
   // this JSONB carries the per-split config that the categorize
   // path consumes to post N journal_lines instead of 2.
   splitsConfig: jsonb('splits_config'),
+  // Statement-driven reconciliation (migration 0115): which bank_statements
+  // row this item was imported from. Lets auto-clear trace statement rows to
+  // their posted journal lines. FK ON DELETE SET NULL in SQL.
+  statementId: uuid('statement_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
@@ -89,3 +93,37 @@ export const reconciliationLines = pgTable('reconciliation_lines', {
   isCleared: boolean('is_cleared').default(false),
   clearedAt: timestamp('cleared_at', { withTimezone: true }),
 });
+
+// Statement-driven reconciliation (migration 0115): parsed bank statements
+// as first-class records. Captured on statement import (from the ai_jobs
+// parse result), backfilled from historical completed 'ocr_statement' jobs,
+// and linked to the reconciliation they seed. FKs (accounts / attachments /
+// ai_jobs / reconciliations, ON DELETE SET NULL where nullable) are declared
+// in the SQL migration, matching the file's existing style.
+export const bankStatements = pgTable('bank_statements', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull(),
+  companyId: uuid('company_id'),
+  accountId: uuid('account_id').notNull(),
+  attachmentId: uuid('attachment_id'),
+  aiJobId: uuid('ai_job_id'),
+  periodStart: date('period_start'),
+  periodEnd: date('period_end').notNull(),
+  openingBalance: decimal('opening_balance', { precision: 19, scale: 4 }),
+  closingBalance: decimal('closing_balance', { precision: 19, scale: 4 }).notNull(),
+  maskedAccountNumber: varchar('masked_account_number', { length: 50 }),
+  institutionName: varchar('institution_name', { length: 255 }),
+  // Extraction type_hint: CHECKING | SAVINGS | CREDITCARD | LINEOFCREDIT | ...
+  statementType: varchar('statement_type', { length: 30 }),
+  // Golden-Rule (opening + Σ = closing) arithmetic check from the parse:
+  // 'verified' | 'discrepancy' | 'unknown' (balances missing / skipped).
+  goldenRuleStatus: varchar('golden_rule_status', { length: 20 }).default('unknown'),
+  goldenRuleDelta: decimal('golden_rule_delta', { precision: 19, scale: 4 }),
+  reconciliationId: uuid('reconciliation_id'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+}, (table) => ({
+  tenantAccountIdx: index('idx_bank_statements_tenant_account').on(table.tenantId, table.accountId, table.periodEnd),
+  aiJobIdx: index('idx_bank_statements_ai_job').on(table.aiJobId),
+  reconciliationIdx: index('idx_bank_statements_reconciliation').on(table.reconciliationId),
+}));

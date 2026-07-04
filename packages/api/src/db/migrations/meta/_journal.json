@@ -806,6 +806,13 @@
       "when": 1777090000000,
       "tag": "0114_tenant_detail_types",
       "breakpoints": true
+    },
+    {
+      "idx": 115,
+      "version": "7",
+      "when": 1777100000000,
+      "tag": "0115_bank_statements",
+      "breakpoints": true
     }
   ]
 }

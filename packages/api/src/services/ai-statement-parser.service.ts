@@ -295,6 +295,11 @@ export interface StatementParseResult {
   statementPeriod: { start?: string; end?: string } | null;
   openingBalance: string | null;
   closingBalance: string | null;
+  // Statement-driven reconciliation: institution + account-type metadata
+  // captured onto the bank_statements record at import time. Nullable —
+  // older persisted job outputs predate these fields.
+  institutionName: string | null;
+  accountTypeHint: string | null;
   confidence: number;
   qualityWarnings: string[];
   extractionSource: string;
@@ -541,6 +546,8 @@ async function executePipeline(
     statementPeriod: period,
     openingBalance: opening != null ? (opening / 100).toFixed(2) : null,
     closingBalance: closing != null ? (closing / 100).toFixed(2) : null,
+    institutionName: parsed.institution.name ?? null,
+    accountTypeHint: parsed.account.type_hint ?? null,
     confidence,
     qualityWarnings,
     extractionSource,
@@ -689,9 +696,11 @@ export async function importStatementTransactions(
     cleanedName?: string | null; suggestedAccountId?: string | null; tagId?: string | null;
   }>,
   checks: StatementCheckImage[] = [],
+  // bank_statements linkage — stamps every imported feed item (0115).
+  statementId: string | null = null,
 ) {
   const { importStatementItems } = await import('./bank-feed.service.js');
-  return importStatementItems(tenantId, bankConnectionId, transactions, checks);
+  return importStatementItems(tenantId, bankConnectionId, transactions, checks, statementId);
 }
 
 // ─── Statement Imports history ──────────────────────────────────────

@@ -1305,7 +1305,91 @@ reportsRouter.get('/bank-balances', async (req, res) => {
 
 reportsRouter.get('/bank-reconciliation-summary', async (req, res) => {
   const data = await reportService.buildBankReconciliationSummary(req.tenantId, (req.query['account_id'] as string) || '', resolveCompanyScope(req));
-  await respond(res, data, req.query['format'] as string);
+  // Export mirrors the on-screen shape: the per-account summary table,
+  // then a stale-outstanding-checks section (legacy '---' section marker —
+  // rendered as a full-width band in PDF and a label row in CSV).
+  const exportRows: Array<Record<string, unknown>> = data.accounts.map((a) => ({
+    account: a.accountNumber ? `${a.accountNumber} · ${a.name}` : a.name,
+    last_reconciled: a.lastReconciledDate ?? '',
+    reconciled_balance: a.lastReconciledBalance,
+    latest_statement: a.latestStatementEnd ?? '',
+    gap_months: a.statementGapCount,
+    uncleared_items: a.unclearedCount,
+    oldest_uncleared: a.oldestUnclearedDate ?? '',
+  }));
+  if (data.staleChecks.length > 0) {
+    exportRows.push({ account: '--- Stale Outstanding Checks (older than 90 days) ---' });
+    for (const c of data.staleChecks) {
+      exportRows.push({
+        account: c.accountName,
+        last_reconciled: c.txnDate,
+        latest_statement: `Check #${c.checkNumber ?? '?'}${c.payee ? ` — ${c.payee}` : ''}`,
+        reconciled_balance: c.amount,
+      });
+    }
+  }
+  await respond(res, {
+    ...data,
+    data: exportRows,
+    _exportColumns: [
+      { key: 'account', label: 'Account' },
+      { key: 'last_reconciled', label: 'Last Reconciled / Check Date' },
+      { key: 'reconciled_balance', label: 'Balance / Amount', align: 'right' },
+      { key: 'latest_statement', label: 'Latest Statement / Check' },
+      // No `align: right` on count columns — right-aligned export cells run
+      // through fmtNum, which would render the integer counts as "1.00".
+      { key: 'gap_months', label: 'Missing Months' },
+      { key: 'uncleared_items', label: 'Uncleared Items' },
+      { key: 'oldest_uncleared', label: 'Oldest Uncleared' },
+    ],
+  }, req.query['format'] as string);
+});
+
+// Completed-reconciliation detail report. Requires ?reconciliation_id= —
+// linked from the Reconciliation History page (not the reports landing
+// page, which has no reconciliation picker).
+reportsRouter.get('/reconciliation-detail', async (req, res) => {
+  const reconciliationId = req.query['reconciliation_id'] as string | undefined;
+  if (!reconciliationId) {
+    res.status(400).json({ error: { message: 'reconciliation_id is required', code: 'VALIDATION_ERROR' } });
+    return;
+  }
+  const data = await reportService.buildReconciliationDetail(req.tenantId, reconciliationId);
+  const lineRow = (l: typeof data.cleared[number]) => ({
+    txn_date: l.txnDate,
+    txn_type: l.txnType,
+    txn_number: l.txnNumber ?? '',
+    description: l.description ?? '',
+    payment: l.payment,
+    deposit: l.deposit,
+  });
+  const exportRows: Array<Record<string, unknown>> = [
+    { txn_date: `--- Cleared Transactions (${data.cleared.length}) ---` },
+    ...data.cleared.map(lineRow),
+    {
+      txn_date: 'Total Cleared', payment: data.totals.clearedPayments, deposit: data.totals.clearedDeposits, _total: true,
+    },
+    { txn_date: `--- Uncleared as of ${data.reconciliation.statementDate} (${data.uncleared.length}) ---` },
+    ...data.uncleared.map(lineRow),
+    {
+      txn_date: 'Total Uncleared', payment: data.totals.unclearedPayments, deposit: data.totals.unclearedDeposits, _total: true,
+    },
+  ];
+  await respond(res, {
+    ...data,
+    // ASCII-only title: it feeds the Content-Disposition filename, where a
+    // non-Latin-1 character (em dash) makes res.setHeader throw.
+    title: `Reconciliation Detail - ${data.reconciliation.accountName} ${data.reconciliation.statementDate}`,
+    data: exportRows,
+    _exportColumns: [
+      { key: 'txn_date', label: 'Date' },
+      { key: 'txn_type', label: 'Type' },
+      { key: 'txn_number', label: 'Number' },
+      { key: 'description', label: 'Description' },
+      { key: 'payment', label: 'Payment', align: 'right' },
+      { key: 'deposit', label: 'Deposit', align: 'right' },
+    ],
+  }, req.query['format'] as string);
 });
 
 reportsRouter.get('/deposit-detail', async (req, res) => {

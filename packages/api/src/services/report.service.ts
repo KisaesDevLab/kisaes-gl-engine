@@ -21,6 +21,7 @@ import {
   getCFLabels,
   getReportFooter,
 } from './tenant-report-settings.service.js';
+import { missingMonthsBetween } from './bank-statements.service.js';
 
 // Money parsers. Reports expose `number` to the UI, but every SUM /
 // DIFFERENCE runs through Decimal so aggregating hundreds of rows
@@ -1210,8 +1211,247 @@ export async function buildBankBalances(
   };
 }
 
+export interface ReconSummaryAccountRow {
+  accountId: string;
+  accountNumber: string | null;
+  name: string;
+  lastReconciledDate: string | null;
+  lastReconciledBalance: number | null;
+  latestStatementEnd: string | null;
+  statementCount: number;
+  statementGapCount: number;
+  unclearedCount: number;
+  oldestUnclearedDate: string | null;
+  staleCheckCount: number;
+}
+
+export interface ReconSummaryStaleCheck {
+  accountId: string;
+  accountName: string;
+  txnDate: string;
+  checkNumber: string | null;
+  payee: string | null;
+  amount: number;
+}
+
+// Bank Reconciliation Summary — per bank account: last completed
+// reconciliation, latest statement on file, statement coverage gaps,
+// uncleared posted journal lines (count + oldest date), and a stale
+// outstanding-checks sub-list (uncleared check payments older than 90
+// days). Uses the same uncleared derivation as reconciliation start():
+// posted lines on the account not cleared by any COMPLETED reconciliation.
 export async function buildBankReconciliationSummary(tenantId: string, accountId: string, companyId: string | null = null) {
-  return { title: 'Bank Reconciliation Summary', accountId, data: [] };
+  const detailList = sql.join(BANK_ACCOUNT_DETAIL_TYPES.map((d) => sql`${d}`), sql`, `);
+  const accountCond = accountId ? sql`AND a.id = ${accountId}` : sql``;
+
+  const accountRows = await db.execute(sql`
+    SELECT a.id, a.account_number, a.name
+    FROM accounts a
+    WHERE a.tenant_id = ${tenantId} AND a.account_type = 'asset'
+      AND a.detail_type IN (${detailList}) AND a.is_active = true
+      ${accountCond}
+    ORDER BY a.account_number, a.name
+  `);
+  const bankAccounts = accountRows.rows as Array<{ id: string; account_number: string | null; name: string }>;
+  if (bankAccounts.length === 0) {
+    return { title: 'Bank Reconciliation Summary', accounts: [] as ReconSummaryAccountRow[], staleChecks: [] as ReconSummaryStaleCheck[] };
+  }
+  const idList = sql.join(bankAccounts.map((a) => sql`${a.id}::uuid`), sql`, `);
+
+  // Last completed reconciliation per account.
+  const recRows = await db.execute(sql`
+    SELECT DISTINCT ON (account_id) account_id, statement_date, statement_ending_balance
+    FROM reconciliations
+    WHERE tenant_id = ${tenantId} AND status = 'complete' AND account_id IN (${idList})
+    ORDER BY account_id, statement_date DESC
+  `);
+  const lastRecByAccount = new Map(
+    (recRows.rows as Array<{ account_id: string; statement_date: string; statement_ending_balance: string }>)
+      .map((r) => [r.account_id, r]),
+  );
+
+  // Statements per account (for latest + gap computation).
+  const stmtRows = await db.execute(sql`
+    SELECT account_id, period_end FROM bank_statements
+    WHERE tenant_id = ${tenantId} AND account_id IN (${idList})
+  `);
+  const stmtsByAccount = new Map<string, string[]>();
+  for (const r of stmtRows.rows as Array<{ account_id: string; period_end: string }>) {
+    const list = stmtsByAccount.get(r.account_id) ?? [];
+    list.push(r.period_end);
+    stmtsByAccount.set(r.account_id, list);
+  }
+
+  // Uncleared posted lines per account (same derivation as recon start).
+  const unclearedCond = sql`
+    t.status = 'posted' AND ${companyFilter(companyId)}
+    AND jl.id NOT IN (
+      SELECT rl.journal_line_id FROM reconciliation_lines rl
+      JOIN reconciliations r ON r.id = rl.reconciliation_id
+      WHERE r.tenant_id = ${tenantId} AND r.status = 'complete' AND rl.is_cleared = true
+    )
+  `;
+  const unclearedRows = await db.execute(sql`
+    SELECT jl.account_id, count(*)::int AS uncleared_count, min(t.txn_date) AS oldest_date
+    FROM journal_lines jl
+    JOIN transactions t ON t.id = jl.transaction_id
+    WHERE jl.tenant_id = ${tenantId} AND jl.account_id IN (${idList}) AND ${unclearedCond}
+    GROUP BY jl.account_id
+  `);
+  const unclearedByAccount = new Map(
+    (unclearedRows.rows as Array<{ account_id: string; uncleared_count: number; oldest_date: string }>)
+      .map((r) => [r.account_id, r]),
+  );
+
+  // Stale outstanding checks: uncleared check payments (credit on the bank
+  // account, transaction carries a check number or is a printed check)
+  // older than 90 days.
+  const staleRows = await db.execute(sql`
+    SELECT jl.account_id, a.name AS account_name, t.txn_date, t.check_number, t.txn_number,
+      COALESCE(c.display_name, t.payee_name_on_check) AS payee, jl.credit
+    FROM journal_lines jl
+    JOIN transactions t ON t.id = jl.transaction_id
+    JOIN accounts a ON a.id = jl.account_id
+    LEFT JOIN contacts c ON c.id = t.contact_id
+    WHERE jl.tenant_id = ${tenantId} AND jl.account_id IN (${idList})
+      AND jl.credit > 0 AND t.check_number IS NOT NULL
+      AND t.txn_date < (CURRENT_DATE - INTERVAL '90 days')
+      AND ${unclearedCond}
+    ORDER BY t.txn_date ASC
+  `);
+  const staleChecks: ReconSummaryStaleCheck[] = (staleRows.rows as Array<{
+    account_id: string; account_name: string; txn_date: string;
+    check_number: number | string | null; txn_number: string | null;
+    payee: string | null; credit: string;
+  }>).map((r) => ({
+    accountId: r.account_id,
+    accountName: r.account_name,
+    txnDate: r.txn_date,
+    checkNumber: r.check_number != null ? String(r.check_number) : r.txn_number,
+    payee: r.payee,
+    amount: num(r.credit),
+  }));
+  const staleCountByAccount = new Map<string, number>();
+  for (const s of staleChecks) {
+    staleCountByAccount.set(s.accountId, (staleCountByAccount.get(s.accountId) ?? 0) + 1);
+  }
+
+  const accountsOut: ReconSummaryAccountRow[] = bankAccounts.map((a) => {
+    const rec = lastRecByAccount.get(a.id);
+    const ends = stmtsByAccount.get(a.id) ?? [];
+    const uncleared = unclearedByAccount.get(a.id);
+    return {
+      accountId: a.id,
+      accountNumber: a.account_number,
+      name: a.name,
+      lastReconciledDate: rec?.statement_date ?? null,
+      lastReconciledBalance: rec ? num(rec.statement_ending_balance) : null,
+      latestStatementEnd: ends.length ? [...ends].sort().pop()! : null,
+      statementCount: ends.length,
+      statementGapCount: missingMonthsBetween(ends).length,
+      unclearedCount: uncleared?.uncleared_count ?? 0,
+      oldestUnclearedDate: uncleared?.oldest_date ?? null,
+      staleCheckCount: staleCountByAccount.get(a.id) ?? 0,
+    };
+  });
+
+  const footer = await getReportFooter(tenantId);
+  return { title: 'Bank Reconciliation Summary', footer, accounts: accountsOut, staleChecks };
+}
+
+// Completed-reconciliation detail: header (account, dates, balances,
+// completed by, linked statement), cleared lines, uncleared-as-of-
+// statement-date lines, and totals.
+export async function buildReconciliationDetail(tenantId: string, reconciliationId: string) {
+  const recRows = await db.execute(sql`
+    SELECT r.*, a.name AS account_name, a.account_number, u.display_name AS completed_by_name, u.email AS completed_by_email
+    FROM reconciliations r
+    JOIN accounts a ON a.id = r.account_id
+    LEFT JOIN users u ON u.id = r.completed_by
+    WHERE r.tenant_id = ${tenantId} AND r.id = ${reconciliationId}
+    LIMIT 1
+  `);
+  const rec = (recRows.rows as Array<Record<string, unknown>>)[0];
+  if (!rec) {
+    const { AppError } = await import('../utils/errors.js');
+    throw AppError.notFound('Reconciliation not found');
+  }
+
+  const stmtRows = await db.execute(sql`
+    SELECT bs.id, bs.period_start, bs.period_end, bs.attachment_id, att.file_name,
+      bs.institution_name, bs.masked_account_number
+    FROM bank_statements bs
+    LEFT JOIN attachments att ON att.id = bs.attachment_id
+    WHERE bs.tenant_id = ${tenantId} AND bs.reconciliation_id = ${reconciliationId}
+    LIMIT 1
+  `);
+  const stmt = (stmtRows.rows as Array<Record<string, unknown>>)[0] ?? null;
+
+  const lineRows = await db.execute(sql`
+    SELECT rl.is_cleared, rl.cleared_at, jl.debit, jl.credit, jl.description,
+      t.txn_date, t.txn_type, t.txn_number, t.check_number, t.memo
+    FROM reconciliation_lines rl
+    JOIN journal_lines jl ON jl.id = rl.journal_line_id
+    JOIN transactions t ON t.id = jl.transaction_id
+    WHERE rl.reconciliation_id = ${reconciliationId}
+    ORDER BY t.txn_date, t.created_at
+  `);
+  interface LineRow {
+    is_cleared: boolean; cleared_at: Date | null; debit: string; credit: string;
+    description: string | null; txn_date: string; txn_type: string;
+    txn_number: string | null; check_number: number | null; memo: string | null;
+  }
+  const allLines = lineRows.rows as unknown as LineRow[];
+  const mapLine = (l: LineRow) => ({
+    txnDate: l.txn_date,
+    txnType: l.txn_type,
+    txnNumber: l.check_number != null ? String(l.check_number) : l.txn_number,
+    description: l.description || l.memo || null,
+    payment: num(l.credit) > 0 ? num(l.credit) : null,
+    deposit: num(l.debit) > 0 ? num(l.debit) : null,
+  });
+  const cleared = allLines.filter((l) => l.is_cleared).map(mapLine);
+  const uncleared = allLines.filter((l) => !l.is_cleared).map(mapLine);
+
+  const sumOf = (rows: ReturnType<typeof mapLine>[], key: 'payment' | 'deposit') =>
+    Number(rows.reduce((acc, r) => acc.plus(r[key] ?? 0), new Decimal(0)).toFixed(4));
+
+  const footer = await getReportFooter(tenantId);
+  return {
+    title: 'Reconciliation Detail',
+    footer,
+    reconciliation: {
+      id: String(rec['id']),
+      accountId: String(rec['account_id']),
+      accountName: String(rec['account_name']),
+      accountNumber: (rec['account_number'] as string | null) ?? null,
+      statementDate: String(rec['statement_date']),
+      beginningBalance: num(rec['beginning_balance'] as string),
+      statementEndingBalance: num(rec['statement_ending_balance'] as string),
+      clearedBalance: rec['cleared_balance'] != null ? num(rec['cleared_balance'] as string) : null,
+      difference: rec['difference'] != null ? num(rec['difference'] as string) : null,
+      status: String(rec['status']),
+      completedAt: (rec['completed_at'] as Date | null) ?? null,
+      completedBy: (rec['completed_by_name'] as string | null) || (rec['completed_by_email'] as string | null) || null,
+    },
+    statement: stmt ? {
+      id: String(stmt['id']),
+      periodStart: (stmt['period_start'] as string | null) ?? null,
+      periodEnd: String(stmt['period_end']),
+      attachmentId: (stmt['attachment_id'] as string | null) ?? null,
+      fileName: (stmt['file_name'] as string | null) ?? null,
+      institutionName: (stmt['institution_name'] as string | null) ?? null,
+      maskedAccountNumber: (stmt['masked_account_number'] as string | null) ?? null,
+    } : null,
+    cleared,
+    uncleared,
+    totals: {
+      clearedPayments: sumOf(cleared, 'payment'),
+      clearedDeposits: sumOf(cleared, 'deposit'),
+      unclearedPayments: sumOf(uncleared, 'payment'),
+      unclearedDeposits: sumOf(uncleared, 'deposit'),
+    },
+  };
 }
 
 export async function buildDepositDetail(tenantId: string, dateRange?: DateRange, companyId: string | null = null) {

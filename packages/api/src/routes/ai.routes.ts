@@ -28,6 +28,7 @@ import * as aiStatementParser from '../services/ai-statement-parser.service.js';
 import * as aiDocClassifier from '../services/ai-document-classifier.service.js';
 import * as aiOrchestrator from '../services/ai-orchestrator.service.js';
 import * as bankConnectionService from '../services/bank-connection.service.js';
+import * as bankStatementsService from '../services/bank-statements.service.js';
 import * as aiPrompt from '../services/ai-prompt.service.js';
 import * as aiConsent from '../services/ai-consent.service.js';
 import { AppError } from '../utils/errors.js';
@@ -376,15 +377,39 @@ aiRouter.post('/parse/statement/import', authenticate, aiProcessingLimiter, vali
     res.status(400).json({ error: { message: 'accountId or bankConnectionId is required', code: 'VALIDATION_ERROR' } });
     return;
   }
+  // Statement-driven reconciliation: capture the bank_statements record from
+  // the parse job's persisted result (period, balances, masked number,
+  // institution, Golden-Rule status) so it can seed reconciliations later.
+  // Best-effort — a capture failure must never block the import itself.
+  let capture: Awaited<ReturnType<typeof bankStatementsService.captureStatementOnImport>> = null;
+  if (req.body.jobId) {
+    try {
+      capture = await bankStatementsService.captureStatementOnImport(req.tenantId, {
+        jobId: req.body.jobId,
+        accountId: req.body.accountId ?? null,
+        bankConnectionId: req.body.bankConnectionId ?? null,
+        userId: req.userId,
+      });
+    } catch (err) {
+      log.warn({
+        component: 'ai-routes', event: 'statement_capture_failed', jobId: req.body.jobId,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
   const result = await aiStatementParser.importStatementTransactions(
-    req.tenantId, connectionId, req.body.transactions,
+    req.tenantId, connectionId, req.body.transactions, [], capture?.statement.id ?? null,
   );
   // Resume support: when the import came from a saved statement parse job, mark
   // it imported so the Statement Imports list shows it as done (not pending).
   if (req.body.jobId) {
     await aiStatementParser.markStatementJobImported(req.tenantId, req.body.jobId);
   }
-  res.json(result);
+  res.json({
+    ...result,
+    ...(capture?.statement ? { statementId: capture.statement.id } : {}),
+    ...(capture?.duplicateWarning ? { duplicateWarning: capture.duplicateWarning } : {}),
+  });
 });
 
 // ─── Statement Imports history (list / resume / delete) ─────────

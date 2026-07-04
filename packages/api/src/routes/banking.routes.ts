@@ -8,7 +8,7 @@ import {
   bankFeedFiltersSchema, categorizeSchema, matchSchema,
   startReconciliationSchema, updateReconciliationLinesSchema, bankImportSchema,
   bulkApproveSchema, bulkCategorizeSchema, bulkExcludeSchema, bulkRecleanseSchema,
-  createManualConnectionSchema, updateFeedItemSchema,
+  createManualConnectionSchema, updateFeedItemSchema, bankStatementFiltersSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
@@ -17,6 +17,7 @@ import { validate } from '../middleware/validate.js';
 import * as bankConnectionService from '../services/bank-connection.service.js';
 import * as bankFeedService from '../services/bank-feed.service.js';
 import * as reconciliationService from '../services/reconciliation.service.js';
+import * as bankStatementsService from '../services/bank-statements.service.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -219,6 +220,36 @@ bankingRouter.post('/feed/import', upload.single('file'), async (req, res) => {
   res.status(201).json({ imported: items.length, items });
 });
 
+// ─── Bank Statements (statement-driven reconciliation) ───────────
+
+bankingRouter.get('/statements', async (req, res) => {
+  const filters = bankStatementFiltersSchema.parse({
+    accountId: req.query['account_id'] || undefined,
+    limit: req.query['limit'] || undefined,
+    offset: req.query['offset'] || undefined,
+  });
+  // Lazy, idempotent backfill of statement records from historical
+  // completed parse jobs (at most one scan per tenant per process).
+  await bankStatementsService.ensureBackfill(req.tenantId);
+  const result = await bankStatementsService.listStatements(req.tenantId, filters);
+  res.json(result);
+});
+
+// Account auto-suggest for the statement upload flow: given the parsed
+// masked account number, return the account the most recent statement with
+// the same masked number was imported into.
+bankingRouter.get('/statements/suggest-account', async (req, res) => {
+  const masked = String(req.query['masked'] ?? '');
+  const suggestion = masked ? await bankStatementsService.suggestAccountForMasked(req.tenantId, masked) : null;
+  res.json({ suggestion });
+});
+
+// Explicit backfill trigger (the statements list also runs it lazily).
+bankingRouter.post('/statements/backfill', async (req, res) => {
+  const result = await bankStatementsService.backfillBankStatements(req.tenantId);
+  res.json(result);
+});
+
 // ─── Reconciliation ──────────────────────────────────────────────
 
 bankingRouter.get('/reconciliations', async (req, res) => {
@@ -227,8 +258,17 @@ bankingRouter.get('/reconciliations', async (req, res) => {
 });
 
 bankingRouter.post('/reconciliations', validate(startReconciliationSchema), async (req, res) => {
-  const recon = await reconciliationService.start(req.tenantId, req.body.accountId, req.body.statementDate, req.body.statementEndingBalance);
+  const recon = await reconciliationService.start(
+    req.tenantId, req.body.accountId, req.body.statementDate, req.body.statementEndingBalance,
+    { statementId: req.body.statementId },
+  );
   res.status(201).json({ reconciliation: recon });
+});
+
+// Auto-clear the linked statement's transactions on the worksheet.
+bankingRouter.post('/reconciliations/:id/auto-clear-statement', async (req, res) => {
+  const result = await reconciliationService.autoClearStatement(req.tenantId, req.params['id']!, req.userId);
+  res.json(result);
 });
 
 bankingRouter.get('/reconciliations/:id', async (req, res) => {

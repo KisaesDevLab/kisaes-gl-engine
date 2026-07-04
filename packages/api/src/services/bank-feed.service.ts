@@ -1156,6 +1156,9 @@ export async function importStatementItems(
     cleanedName?: string | null; suggestedAccountId?: string | null; tagId?: string | null;
   }>,
   checks: StatementCheckImage[] = [],
+  // Statement-driven reconciliation: stamp each imported item with the
+  // bank_statements row it came from (migration 0115).
+  statementId: string | null = null,
 ) {
   await assertConnectionInTenant(tenantId, bankConnectionId);
   // Track which rows carried a cleaned name so cleansing doesn't overwrite it.
@@ -1166,6 +1169,7 @@ export async function importStatementItems(
       row: {
         tenantId,
         bankConnectionId,
+        statementId,
         feedDate: txn.date,
         // Carried cleaned name becomes the displayed description; the raw stays
         // in originalDescription (and drives dedup) so re-imports still dedupe.

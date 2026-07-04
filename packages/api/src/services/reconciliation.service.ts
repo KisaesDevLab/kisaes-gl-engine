@@ -6,10 +6,64 @@ import { eq, and, sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import { db } from '../db/index.js';
-import { reconciliations, reconciliationLines, journalLines, transactions, accounts } from '../db/schema/index.js';
+import { reconciliations, reconciliationLines, journalLines, transactions, accounts, bankStatements } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { auditLog } from '../middleware/audit.js';
 
-export async function start(tenantId: string, accountId: string, statementDate: string, statementEndingBalance: string) {
+export interface ContinuityWarning {
+  expected: number; // prior completed reconciliation's ending balance
+  actual: number;   // statement's opening balance
+  delta: number;
+}
+
+// Statement opening balance vs the prior completed reconciliation's ending
+// balance (the same derivation start() uses for beginningBalance). A
+// mismatch means cleared transactions were changed/deleted since the last
+// reconciliation — surfaced as a warning, never a block.
+function continuityOf(
+  statementOpening: string | null,
+  priorEnding: string | null | undefined,
+): ContinuityWarning | null {
+  if (statementOpening == null || priorEnding == null) return null;
+  const expected = parseFloat(priorEnding);
+  const actual = parseFloat(statementOpening);
+  const delta = Number(new Decimal(actual).minus(expected).toFixed(4));
+  return Math.abs(delta) > 0.005 ? { expected, actual, delta } : null;
+}
+
+export async function start(
+  tenantId: string,
+  accountId: string | undefined,
+  statementDate: string | undefined,
+  statementEndingBalance: string | undefined,
+  opts: { statementId?: string } = {},
+) {
+  // Statement-driven start: derive account / date / ending balance from the
+  // stored bank_statements row, then link the reconciliation back to it.
+  let statement: typeof bankStatements.$inferSelect | null = null;
+  if (opts.statementId) {
+    statement = await db.query.bankStatements.findFirst({
+      where: and(eq(bankStatements.tenantId, tenantId), eq(bankStatements.id, opts.statementId)),
+    }) ?? null;
+    if (!statement) throw AppError.notFound('Bank statement not found');
+    if (statement.reconciliationId) {
+      const linked = await db.query.reconciliations.findFirst({
+        where: and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, statement.reconciliationId)),
+      });
+      if (linked) {
+        throw AppError.conflict(
+          `This statement is already linked to a ${linked.status === 'complete' ? 'completed' : 'in-progress'} reconciliation.`,
+          'STATEMENT_ALREADY_RECONCILED',
+        );
+      }
+    }
+    accountId = statement.accountId;
+    statementDate = statement.periodEnd;
+    statementEndingBalance = statement.closingBalance;
+  }
+  if (!accountId || !statementDate || !statementEndingBalance) {
+    throw AppError.badRequest('accountId, statementDate and statementEndingBalance are required');
+  }
   // Refuse to start a second reconciliation on an account that already
   // has one in progress. Two users opening the bank rec screen at the
   // same moment would otherwise create two parallel "in_progress"
@@ -31,17 +85,21 @@ export async function start(tenantId: string, accountId: string, statementDate: 
     );
   }
 
-  // Get beginning balance (cleared balance from last reconciliation, or 0)
+  // Get beginning balance (cleared balance from last reconciliation, or 0).
+  // Ordered by statement date DESC so the MOST RECENT completed
+  // reconciliation's ending balance chains forward (findFirst without an
+  // order returned an arbitrary row once an account had several).
   const lastRecon = await db.query.reconciliations.findFirst({
     where: and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.accountId, accountId), eq(reconciliations.status, 'complete')),
+    orderBy: (r, { desc }) => desc(r.statementDate),
   });
   const beginningBalance = lastRecon?.statementEndingBalance || '0';
 
   // Create the reconciliation header + load uncleared lines in one tx
   // so a partial failure doesn't leave a reconciliation row with no
   // lines to reconcile against.
-  return await db.transaction(async (tx) => {
-    const [recon] = await tx.insert(reconciliations).values({
+  const recon = await db.transaction(async (tx) => {
+    const [created] = await tx.insert(reconciliations).values({
       tenantId,
       accountId,
       statementDate,
@@ -50,7 +108,7 @@ export async function start(tenantId: string, accountId: string, statementDate: 
       status: 'in_progress',
     }).returning();
 
-    if (!recon) throw AppError.internal('Failed to create reconciliation');
+    if (!created) throw AppError.internal('Failed to create reconciliation');
 
     const unclearedLines = await tx.execute(sql`
       SELECT jl.id FROM journal_lines jl
@@ -68,15 +126,31 @@ export async function start(tenantId: string, accountId: string, statementDate: 
     if ((unclearedLines.rows as any[]).length > 0) {
       await tx.insert(reconciliationLines).values(
         (unclearedLines.rows as any[]).map((row: any) => ({
-          reconciliationId: recon.id,
+          reconciliationId: created.id,
           journalLineId: row.id,
           isCleared: false,
         })),
       );
     }
 
-    return recon;
+    // Link the driving statement to its reconciliation.
+    if (statement) {
+      await tx.update(bankStatements).set({
+        reconciliationId: created.id,
+        updatedAt: new Date(),
+      }).where(and(eq(bankStatements.tenantId, tenantId), eq(bankStatements.id, statement.id)));
+    }
+
+    return created;
   });
+
+  // Opening-balance continuity check (statement-driven starts only) —
+  // informational, never blocking.
+  const continuityWarning = statement
+    ? continuityOf(statement.openingBalance, lastRecon?.statementEndingBalance)
+    : null;
+
+  return { ...recon, statementId: statement?.id ?? null, continuityWarning };
 }
 
 export async function getReconciliation(tenantId: string, reconciliationId: string) {
@@ -109,7 +183,114 @@ export async function getReconciliation(tenantId: string, reconciliationId: stri
   const clearedTotal = Number(cleared.toFixed(4));
   const difference = Number(new Decimal(recon.statementEndingBalance).minus(cleared).toFixed(4));
 
-  return { ...recon, lines: lines.rows, clearedBalance: clearedTotal, difference };
+  // Statement linkage (statement-driven reconciliation): the driving
+  // statement, plus the opening-balance continuity warning so the
+  // worksheet can surface it on every load (not just at start).
+  const statement = await db.query.bankStatements.findFirst({
+    where: and(eq(bankStatements.tenantId, tenantId), eq(bankStatements.reconciliationId, reconciliationId)),
+  });
+  let continuityWarning: ContinuityWarning | null = null;
+  if (statement) {
+    const prior = await db.query.reconciliations.findFirst({
+      where: and(
+        eq(reconciliations.tenantId, tenantId),
+        eq(reconciliations.accountId, recon.accountId),
+        eq(reconciliations.status, 'complete'),
+        sql`${reconciliations.statementDate} < ${recon.statementDate}`,
+      ),
+      orderBy: (r, { desc }) => desc(r.statementDate),
+    });
+    continuityWarning = continuityOf(statement.openingBalance, prior?.statementEndingBalance);
+  }
+
+  return {
+    ...recon,
+    lines: lines.rows,
+    clearedBalance: clearedTotal,
+    difference,
+    statement: statement ?? null,
+    continuityWarning,
+  };
+}
+
+/**
+ * Auto-clear the linked statement's transactions on a reconciliation
+ * worksheet. Traces the statement's bank_feed_items (matched OR
+ * categorized — both stamp matchedTransactionId) to that transaction's
+ * journal lines on the reconciliation account, and marks the matching
+ * reconciliation_lines cleared. Row-locked like updateLines so concurrent
+ * toggles/completes serialize.
+ *
+ * Returns per-item counts: cleared (newly cleared), alreadyCleared,
+ * unmatched (no posted transaction, or its journal line isn't on this
+ * worksheet — e.g. dated after the statement date).
+ */
+export async function autoClearStatement(tenantId: string, reconciliationId: string, userId?: string) {
+  return await db.transaction(async (tx) => {
+    const [recon] = await tx.select().from(reconciliations)
+      .where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)))
+      .for('update')
+      .limit(1);
+    if (!recon) throw AppError.notFound('Reconciliation not found');
+    if (recon.status === 'complete') throw AppError.badRequest('Reconciliation is already complete');
+
+    const [statement] = await tx.select().from(bankStatements)
+      .where(and(eq(bankStatements.tenantId, tenantId), eq(bankStatements.reconciliationId, reconciliationId)))
+      .limit(1);
+    if (!statement) throw AppError.badRequest('This reconciliation is not linked to a bank statement.');
+
+    // One row per (feed item × its bank-account journal line on this
+    // worksheet). LEFT JOINs keep items with no posted transaction / no
+    // worksheet line so they can be counted as unmatched.
+    const rows = await tx.execute(sql`
+      SELECT bfi.id AS item_id, rl.id AS rec_line_id, rl.is_cleared
+      FROM bank_feed_items bfi
+      LEFT JOIN journal_lines jl ON jl.transaction_id = bfi.matched_transaction_id
+        AND jl.tenant_id = ${tenantId} AND jl.account_id = ${recon.accountId}
+      LEFT JOIN reconciliation_lines rl ON rl.journal_line_id = jl.id
+        AND rl.reconciliation_id = ${reconciliationId}
+      WHERE bfi.tenant_id = ${tenantId} AND bfi.statement_id = ${statement.id}
+    `);
+
+    // Aggregate per feed item: an item counts as cleared if ANY of its
+    // worksheet lines gets newly cleared.
+    const perItem = new Map<string, { toClear: string[]; already: number; matched: boolean }>();
+    for (const r of rows.rows as Array<{ item_id: string; rec_line_id: string | null; is_cleared: boolean | null }>) {
+      const entry = perItem.get(r.item_id) ?? { toClear: [], already: 0, matched: false };
+      if (r.rec_line_id) {
+        entry.matched = true;
+        if (r.is_cleared) entry.already += 1;
+        else entry.toClear.push(r.rec_line_id);
+      }
+      perItem.set(r.item_id, entry);
+    }
+
+    let cleared = 0;
+    let alreadyCleared = 0;
+    let unmatched = 0;
+    const lineIdsToClear: string[] = [];
+    for (const entry of perItem.values()) {
+      if (!entry.matched) { unmatched += 1; continue; }
+      if (entry.toClear.length > 0) { cleared += 1; lineIdsToClear.push(...entry.toClear); }
+      else alreadyCleared += 1;
+    }
+
+    if (lineIdsToClear.length > 0) {
+      const idList = sql.join(lineIdsToClear.map((id) => sql`${id}::uuid`), sql`, `);
+      await tx.execute(sql`
+        UPDATE reconciliation_lines SET is_cleared = true, cleared_at = now()
+        WHERE id IN (${idList})
+      `);
+    }
+
+    await auditLog(
+      tenantId, 'update', 'reconciliation', reconciliationId,
+      null, { autoClearStatement: { statementId: statement.id, cleared, alreadyCleared, unmatched } },
+      userId, tx,
+    );
+
+    return { cleared, alreadyCleared, unmatched };
+  });
 }
 
 export async function updateLines(tenantId: string, reconciliationId: string, lineUpdates: Array<{ journalLineId: string; isCleared: boolean }>) {

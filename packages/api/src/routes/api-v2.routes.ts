@@ -644,8 +644,10 @@ apiV2Router.get('/banking/reconciliations', async (req, res) => {
 });
 
 apiV2Router.post('/banking/reconciliations', async (req, res) => {
-  const { accountId, statementDate, statementEndingBalance } = startReconciliationSchema.parse(req.body);
-  const recon = await reconciliationService.start(req.tenantId, accountId, statementDate, statementEndingBalance);
+  const { accountId, statementDate, statementEndingBalance, statementId } = startReconciliationSchema.parse(req.body);
+  const recon = await reconciliationService.start(
+    req.tenantId, accountId, statementDate, statementEndingBalance, { statementId },
+  );
   res.status(201).json({ reconciliation: recon });
 });
 
