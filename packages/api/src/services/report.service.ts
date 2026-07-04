@@ -831,14 +831,60 @@ export async function buildExpenseByVendor(
   return { title: 'Expenses by Vendor', startDate, endDate, data: rows.rows };
 }
 
+// Line shape for the detail (GL-style) mode of Expenses by Category.
+export interface ExpenseCategoryDetailLine {
+  lineId: string;
+  transactionId: string;
+  date: string;
+  txnType: string;
+  txnNumber: string | null;
+  contactName: string | null;
+  memo: string;
+  debit: number;
+  credit: number;
+  // Running period total for the account (starts at 0, accumulates
+  // debit − credit through Decimal like the General Ledger).
+  balance: number;
+}
+
+export interface ExpenseCategoryGroup {
+  accountId: string;
+  accountNumber: string | null;
+  name: string;
+  accountType: string;
+  lines: ExpenseCategoryDetailLine[];
+  totalDebits: number;
+  totalCredits: number;
+  // Net: totalDebits − totalCredits (expense refunds reduce the group).
+  subtotal: number;
+}
+
 export async function buildExpenseByCategory(
   tenantId: string,
   startDate: string,
   endDate: string,
   companyId: string | null = null,
   tagId: string | null = null,
+  // Optional multi-account filter. Ids are "validated" by the
+  // account-type-filtered join itself: a foreign-tenant or non-expense
+  // id simply matches nothing. Empty/undefined = no filter. Applies to
+  // BOTH summary and detail modes.
+  accountIds: string[] | null = null,
+  // detail=true additionally returns GL-style per-account transaction
+  // `groups` + `grandTotal`. The summary `data` array keeps its exact
+  // shape and SUM(jl.debit) semantics either way so api-v2 / MCP
+  // callers are untouched.
+  detail = false,
 ) {
   const tagClause = tagId ? sql`AND jl.tag_id = ${tagId}` : sql``;
+  const hasIdFilter = !!accountIds && accountIds.length > 0;
+  // colRef is a code-controlled constant ('a.id' / 'id'), never user
+  // input; the ids themselves are bound parameters.
+  const idFilter = (colRef: string) =>
+    hasIdFilter
+      ? sql`AND ${sql.raw(colRef)} IN (${sql.join(accountIds!.map((id) => sql`${id}`), sql`, `)})`
+      : sql``;
+
   const rows = await db.execute(sql`
     SELECT a.id as account_id, a.name as category, a.account_number, a.account_type,
       SUM(jl.debit) as total
@@ -850,10 +896,132 @@ export async function buildExpenseByCategory(
       AND jl.debit > 0
       AND ${companyFilter(companyId)}
       ${tagClause}
+      ${idFilter('a.id')}
     GROUP BY a.id ORDER BY total DESC
   `);
 
-  return { title: 'Expenses by Category', startDate, endDate, data: rows.rows };
+  const summary = { title: 'Expenses by Category', startDate, endDate, data: rows.rows };
+  if (!detail) return summary;
+
+  // ─── Detail mode — GL-style per-account sections ────────────────
+  // Accounts first (tenant + expense-type scoped) so an explicitly
+  // selected account with zero period activity still gets an empty
+  // section — a user filtering to 3 accounts should see all 3.
+  const acctResult = await db.execute(sql`
+    SELECT id, account_number, name, account_type
+    FROM accounts
+    WHERE tenant_id = ${tenantId}
+      AND account_type IN ('cogs', 'expense', 'other_expense')
+      ${idFilter('id')}
+    ORDER BY
+      CASE account_type WHEN 'cogs' THEN 1 WHEN 'expense' THEN 2 ELSE 3 END,
+      account_number NULLS LAST,
+      name
+  `);
+
+  // ONE query for every account's lines (mirrors buildGeneralLedger's
+  // period-activity query restricted to expense-type accounts). Unlike
+  // the summary, credits are included so refunds show and the subtotal
+  // nets them out.
+  const linesResult = await db.execute(sql`
+    SELECT
+      jl.id AS line_id,
+      jl.account_id,
+      jl.debit,
+      jl.credit,
+      jl.description AS line_description,
+      t.id AS transaction_id,
+      t.txn_date,
+      t.txn_type,
+      t.txn_number,
+      t.memo AS txn_memo,
+      -- STATEMENT_CHECK_PAYEE_V1 — show the check-image payee when no
+      -- contact is linked (same as the General Ledger).
+      COALESCE(c.display_name, t.payee_name_on_check) AS contact_name
+    FROM journal_lines jl
+    JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
+    JOIN accounts a ON a.id = jl.account_id AND a.account_type IN ('cogs', 'expense', 'other_expense')
+    LEFT JOIN contacts c ON c.id = t.contact_id AND c.tenant_id = ${tenantId}
+    WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
+      AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
+      AND ${companyFilter(companyId)}
+      ${tagClause}
+      ${idFilter('a.id')}
+    ORDER BY jl.account_id, t.txn_date, t.created_at, jl.line_order
+  `);
+
+  type DetailAcctRow = { id: string; account_number: string | null; name: string; account_type: string };
+  type DetailLineRow = {
+    line_id: string;
+    account_id: string;
+    debit: string;
+    credit: string;
+    line_description: string | null;
+    transaction_id: string;
+    txn_date: string;
+    txn_type: string;
+    txn_number: string | null;
+    txn_memo: string | null;
+    contact_name: string | null;
+  };
+
+  const linesByAccount = new Map<string, DetailLineRow[]>();
+  for (const line of linesResult.rows as unknown as DetailLineRow[]) {
+    const arr = linesByAccount.get(line.account_id) || [];
+    arr.push(line);
+    linesByAccount.set(line.account_id, arr);
+  }
+
+  let grandTotal = 0;
+  const groups: ExpenseCategoryGroup[] = [];
+  for (const acct of acctResult.rows as unknown as DetailAcctRow[]) {
+    const periodLines = linesByAccount.get(acct.id) || [];
+    // Zero-activity accounts only appear when explicitly selected;
+    // otherwise they're noise on the report.
+    if (periodLines.length === 0 && !hasIdFilter) continue;
+
+    let running = 0;
+    let totalDebits = 0;
+    let totalCredits = 0;
+    const reportLines: ExpenseCategoryDetailLine[] = periodLines.map((line) => {
+      const debit = num(line.debit);
+      const credit = num(line.credit);
+      // Running balance accumulates through many lines — go through
+      // Decimal on every add (same rationale as the GL) so the column
+      // stays exact to the cent.
+      running = Number(new Decimal(running).plus(debit).minus(credit).toFixed(4));
+      totalDebits = Number(new Decimal(totalDebits).plus(debit).toFixed(4));
+      totalCredits = Number(new Decimal(totalCredits).plus(credit).toFixed(4));
+      return {
+        lineId: line.line_id,
+        transactionId: line.transaction_id,
+        date: line.txn_date,
+        txnType: line.txn_type,
+        txnNumber: line.txn_number,
+        contactName: line.contact_name,
+        // Prefer the per-line description, fall back to the txn memo.
+        memo: line.line_description || line.txn_memo || '',
+        debit,
+        credit,
+        balance: running,
+      };
+    });
+
+    const subtotal = sub(totalDebits, totalCredits);
+    grandTotal = Number(new Decimal(grandTotal).plus(subtotal).toFixed(4));
+    groups.push({
+      accountId: acct.id,
+      accountNumber: acct.account_number,
+      name: acct.name,
+      accountType: acct.account_type,
+      lines: reportLines,
+      totalDebits,
+      totalCredits,
+      subtotal,
+    });
+  }
+
+  return { ...summary, groups, grandTotal };
 }
 
 // ─── SALES ────────────────────────────────────────────────────────

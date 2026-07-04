@@ -117,6 +117,17 @@ type ExportBSEntry = { accountId?: string | null; accountNumber?: string | null;
 type ExportCompRow = { account?: string; name?: string; accountNumber?: string | null; values?: Array<number | null> };
 type ExportCompGroup = { label: string; rows: ExportCompRow[]; values: Array<number | null> };
 
+// Expenses by Category detail-mode export shapes (mirrors the
+// ExpenseCategoryGroup / ExpenseCategoryDetailLine service types).
+type ExportExpCatLine = {
+  date: string; txnType: string; txnNumber: string | null; contactName: string | null;
+  memo: string; debit: number; credit: number; balance: number;
+};
+type ExportExpCatGroup = {
+  accountNumber: string | null; name: string; lines: ExportExpCatLine[];
+  totalDebits: number; totalCredits: number; subtotal: number;
+};
+
 // Build structured export rows that match on-screen display.
 // Exported for tests: lets the suite assert on the export layout (CSV
 // rows and PDF HTML) without launching Puppeteer.
@@ -550,6 +561,57 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
     return { rows, columns };
   }
 
+  // ─── Expenses by Category — detail mode (account groups with GL-style
+  // transaction lines). Detected by the array-valued `groups` +
+  // `grandTotal` pair, which no other report shape carries (the P&L/BS
+  // `groups` is an object keyed by section). Mirrors the on-screen
+  // sectioned view: account header band, transaction lines, per-account
+  // subtotal, grand TOTAL.
+  if (Array.isArray(reportData.groups) && reportData.grandTotal !== undefined) {
+    const columns: ExportColumn[] = [
+      { key: 'date', label: 'Date', width: '72px' },
+      { key: 'type', label: 'Type', width: '52px' },
+      { key: 'ref', label: 'Number', width: '64px' },
+      { key: 'name', label: 'Name', width: '160px' },
+      { key: 'memo', label: 'Memo' },
+      { key: 'debit', label: 'Debit', align: 'right', width: '92px' },
+      { key: 'credit', label: 'Credit', align: 'right', width: '92px' },
+      { key: 'balance', label: 'Balance', align: 'right', width: '100px' },
+    ];
+    const blank = { date: '', type: '', ref: '', name: '', memo: '', debit: '', credit: '', balance: '' };
+    const rows: ExportRow[] = [];
+    for (const group of reportData.groups as ExportExpCatGroup[]) {
+      const label = group.accountNumber ? `${group.accountNumber} — ${group.name}` : group.name;
+      // Section header spans the table in PDF; the label also lands in
+      // the Memo column so CSV (column-oriented) still shows it.
+      rows.push({ ...blank, _section: true, _label: label, memo: label });
+      for (const line of group.lines) {
+        rows.push({
+          date: line.date,
+          type: fmtTxnType(line.txnType),
+          ref: line.txnNumber || '',
+          name: line.contactName || '',
+          memo: line.memo || '',
+          debit: line.debit ? fmtNum(line.debit) : '',
+          credit: line.credit ? fmtNum(line.credit) : '',
+          balance: fmtNum(line.balance),
+        });
+      }
+      rows.push({
+        ...blank,
+        _summary: true,
+        memo: `Total ${label}`,
+        debit: fmtNum(group.totalDebits),
+        credit: fmtNum(group.totalCredits),
+        balance: fmtNum(group.subtotal),
+      });
+      // Spacer row between accounts
+      rows.push({ ...blank });
+    }
+    rows.push({ ...blank, _total: true, memo: 'TOTAL', balance: fmtNum(reportData.grandTotal) });
+    return { rows, columns };
+  }
+
   // ─── Cash Flow (scalar values) ───
   if (reportData.operatingActivities !== undefined || reportData.netChange !== undefined) {
     const CF = reportData.labels as import('@kis-books/shared').CFSectionLabels | undefined;
@@ -780,7 +842,9 @@ async function respond(res: any, reportData: any, format: string | undefined) {
     // The General Ledger has 8 columns (Date / Type / Ref / Name /
     // Description / Debit / Credit / Balance) which won't fit on portrait
     // letter at a readable font size.
-    const isWideReport = Array.isArray(reportData.accounts) && reportData.accounts[0]?.lines !== undefined;
+    const isWideReport = (Array.isArray(reportData.accounts) && reportData.accounts[0]?.lines !== undefined)
+      // Expenses by Category detail mode shares the GL's 8-column layout.
+      || (Array.isArray(reportData.groups) && reportData.grandTotal !== undefined);
     const orientation: 'portrait' | 'landscape' = isWideReport ? 'landscape' : 'portrait';
 
     const html = exportService.toReportHtml(reportData.title || 'Report', companyName, dateLabel, tableHtml, footer);
@@ -799,6 +863,18 @@ function readTagFilter(req: { query: Record<string, unknown> }): string | null {
   const raw = (req.query['tag_id'] ?? req.query['tagId']) as string | undefined;
   if (!raw || typeof raw !== 'string' || raw.trim() === '') return null;
   return raw;
+}
+
+// Multi-account filter: ?account_ids=<uuid>,<uuid>,... (comma-separated).
+// Malformed entries are dropped rather than 400ing — the SQL join
+// re-validates tenant ownership + account type anyway, so a bad id can
+// never widen the result set. Empty after filtering = no filter.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function readAccountIds(req: { query: Record<string, unknown> }): string[] | null {
+  const raw = req.query['account_ids'];
+  if (!raw || typeof raw !== 'string') return null;
+  const ids = raw.split(',').map((s) => s.trim()).filter((s) => UUID_RE.test(s));
+  return ids.length > 0 ? ids : null;
 }
 
 // Optional grouping mode for P&L / Balance Sheet: ?group_by=detail_type.
@@ -1115,7 +1191,28 @@ reportsRouter.get('/expense-by-vendor', async (req, res) => {
 reportsRouter.get('/expense-by-category', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
   const today = new Date();
-  const data = await reportService.buildExpenseByCategory(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!, resolveCompanyScope(req), readTagFilter(req));
+  // ?display=detail switches to the GL-style per-account view (groups +
+  // grandTotal ride along in the JSON; exports mirror the sectioned
+  // screen). The DEFAULT (no display param) stays summary-shaped for
+  // api-v2 / MCP / older clients — additive-param precedent, same as
+  // group_by / display=condensed elsewhere.
+  const detail = req.query['display'] === 'detail';
+  const data = await reportService.buildExpenseByCategory(
+    req.tenantId,
+    start_date || `${today.getFullYear()}-01-01`,
+    end_date || today.toISOString().split('T')[0]!,
+    resolveCompanyScope(req),
+    readTagFilter(req),
+    readAccountIds(req),
+    detail,
+  );
+  if (detail) {
+    // Detail exports are flattened by the dedicated groups+grandTotal
+    // branch in extractDataAndColumns (section headers, transaction
+    // lines, per-account subtotals, grand TOTAL) — no _exportColumns.
+    await respond(res, data, format);
+    return;
+  }
   await respond(res, { ...data, _exportColumns: [
     { key: 'account_number', label: '#' },
     { key: 'category', label: 'Category' },
