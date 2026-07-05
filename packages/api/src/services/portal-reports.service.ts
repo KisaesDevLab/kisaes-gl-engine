@@ -1193,7 +1193,7 @@ export async function generateAiSummary(
     ...figureLines,
     ...(kpiLines.length > 0 ? ['', 'Computed KPIs:', ...kpiLines] : []),
     '',
-    'Write a concise executive summary (2–3 short paragraphs) of the period: overall ' +
+    'Provide a 100 word summary of the financials for the period: overall ' +
       'performance, profitability, and cash position, noting anything a business owner ' +
       'should pay attention to.',
     ...(input.prompt?.trim()

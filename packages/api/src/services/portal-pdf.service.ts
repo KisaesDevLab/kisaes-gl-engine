@@ -818,7 +818,10 @@ export function reportHtmlTemplate(d: ReportPdfData): string {
       }
       if (t === 'ai_summary') {
         if (!aiSummary) return '';
-        return `<section class="section"><h2>Narrative</h2><p>${escapeHtml(aiSummary)}</p></section>`;
+        // .notes carries white-space:pre-wrap so multi-paragraph summaries
+        // keep their line breaks in the client PDF (review finding M4 —
+        // preview and portal already render pre-wrap).
+        return `<section class="section"><h2>Summary</h2><div class="notes">${escapeHtml(aiSummary)}</div></section>`;
       }
       if (t === 'block' || t === 'chart' || t === 'report' || t === 'tag-segment') {
         const payloadKey =

@@ -158,7 +158,7 @@ describe('generateAiSummary', () => {
     const result = await svc.generateAiSummary(tenantId, id, userId, { blockRef: 'blk-1' });
     expect(result.text).toBe('Second draft.');
     // No custom prompt this time — the default instructions still apply.
-    expect(spy2.mock.calls[0]![0].userPrompt).toContain('executive summary');
+    expect(spy2.mock.calls[0]![0].userPrompt).toContain('100 word summary of the financials');
     expect(spy2.mock.calls[0]![0].userPrompt).not.toContain('Author instructions');
 
     const rows = await db.select().from(reportAiSummaries)
