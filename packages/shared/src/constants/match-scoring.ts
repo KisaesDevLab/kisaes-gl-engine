@@ -101,3 +101,37 @@ export const STATEMENT_MATCH_SUGGEST_THRESHOLD = 0.6;
 
 // Cap on candidates returned/persisted per statement line.
 export const STATEMENT_MATCH_MAX_CANDIDATES = 3;
+
+// ─── Statement Match Engine (wave 2): grouped matches ───────────
+//
+// One statement line ↔ many worksheet lines (a deposit clearing several
+// receipts) and many statement lines ↔ one worksheet line (one booked
+// monthly total vs N individual bank charges). Grouped matches are
+// SUGGEST-ONLY — never auto-cleared — and a confirmed set must sum
+// EXACTLY to the cent.
+
+// Tighter date window than singles: grouped deposits are near-dated.
+// Candidate ledger lines must fall within
+// [statementLineDate - ledgerBeforeBankDays, statementLineDate + ledgerAfterBankDays]
+// (and the mirror of that for many-to-one, anchored on the ledger date).
+export const STATEMENT_MATCH_GROUP_DATE_WINDOW = {
+  ledgerBeforeBankDays: 30,
+  ledgerAfterBankDays: 3,
+} as const;
+
+// Subset-sum bounds: candidate pool capped at the N nearest-dated
+// lines; subsets of 2..5 members; DFS node budget so a pathological
+// pool can never stall a request.
+export const STATEMENT_MATCH_GROUP_POOL_CAP = 40;
+export const STATEMENT_MATCH_GROUP_MIN_SIZE = 2;
+export const STATEMENT_MATCH_GROUP_MAX_SIZE = 5;
+export const STATEMENT_MATCH_GROUP_MAX_EXPANSIONS = 200_000;
+
+// One-to-many ambiguity: when 2+ distinct minimal sets exist, return up
+// to this many for the picker (never auto — groups are suggest-only).
+export const STATEMENT_MATCH_GROUP_MAX_SETS = 3;
+
+// Many-to-one is stricter: member statement lines must be dated within
+// this many days of each other, and the suggestion is only emitted when
+// EXACTLY ONE set exists (ambiguous → skipped and counted).
+export const STATEMENT_MATCH_GROUP_MEMBER_SPAN_DAYS = 7;

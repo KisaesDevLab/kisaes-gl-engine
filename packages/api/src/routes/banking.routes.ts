@@ -9,7 +9,7 @@ import {
   startReconciliationSchema, updateReconciliationLinesSchema, bankImportSchema,
   bulkApproveSchema, bulkCategorizeSchema, bulkExcludeSchema, bulkRecleanseSchema,
   createManualConnectionSchema, updateFeedItemSchema, bankStatementFiltersSchema,
-  confirmStatementLineSchema,
+  confirmStatementLineSchema, createFromStatementLineSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
@@ -286,12 +286,38 @@ bankingRouter.get('/reconciliations/:id/statement-matches', async (req, res) => 
 });
 
 // Confirm a suggested (or explicitly chosen) worksheet journal line for a
-// statement line — clears the worksheet line.
+// statement line — clears the worksheet line. Wave 2 grouped forms:
+// journalLineIds (2..5) confirms a one-statement-line ↔ many-worksheet-lines
+// set; journalLineId + memberStatementLineIds confirms a many-statement-
+// lines ↔ one-worksheet-line set from the primary line.
 bankingRouter.post('/statement-lines/:lineId/confirm', validate(confirmStatementLineSchema), async (req, res) => {
-  const line = await statementMatchService.confirmStatementLine(
-    req.tenantId, req.params['lineId']!, req.body.journalLineId, req.userId,
-  );
+  const { journalLineId, journalLineIds, memberStatementLineIds } = req.body as {
+    journalLineId?: string; journalLineIds?: string[]; memberStatementLineIds?: string[];
+  };
+  let line;
+  if (journalLineIds) {
+    line = await statementMatchService.confirmStatementLineGroup(
+      req.tenantId, req.params['lineId']!, journalLineIds, req.userId,
+    );
+  } else if (memberStatementLineIds) {
+    line = await statementMatchService.confirmStatementLineManyToOne(
+      req.tenantId, req.params['lineId']!, journalLineId!, memberStatementLineIds, req.userId,
+    );
+  } else {
+    line = await statementMatchService.confirmStatementLine(
+      req.tenantId, req.params['lineId']!, journalLineId!, req.userId,
+    );
+  }
   res.json({ line });
+});
+
+// Wave 2 Feature B: create a posted transaction from an unmatched statement
+// line ("Add to books"), clear it on the worksheet, and confirm the line.
+bankingRouter.post('/statement-lines/:lineId/create-transaction', validate(createFromStatementLineSchema), async (req, res) => {
+  const result = await statementMatchService.createTransactionFromStatementLine(
+    req.tenantId, req.params['lineId']!, req.body, req.userId, req.companyId,
+  );
+  res.status(201).json(result);
 });
 
 // Reject a suggestion (worksheet line untouched).

@@ -336,15 +336,35 @@ export async function updateLines(tenantId: string, reconciliationId: string, li
     // Statement Match Engine (wave 1): un-clearing a worksheet line that an
     // auto/confirmed statement-line match had cleared must also reset that
     // statement line, or the match table and the worksheet drift apart.
+    // Wave 2: a confirmed GROUP match records only its primary journal line
+    // in matched_journal_line_id — the full set lives in
+    // score_breakdown.group.journalLineIds, so un-clearing ANY member must
+    // reset the statement line too.
     const unclearedJlIds = lineUpdates.filter((u) => !u.isCleared).map((u) => u.journalLineId);
     if (unclearedJlIds.length > 0) {
       const idList = sql.join(unclearedJlIds.map((id) => sql`${id}::uuid`), sql`, `);
-      await tx.execute(sql`
+      const textList = sql.join(unclearedJlIds.map((id) => sql`${id}::text`), sql`, `);
+      const reset = await tx.execute(sql`
         UPDATE bank_statement_lines
         SET match_status = 'unmatched', matched_journal_line_id = NULL, updated_at = now()
-        WHERE tenant_id = ${tenantId} AND matched_journal_line_id IN (${idList})
+        WHERE tenant_id = ${tenantId}
           AND match_status IN ('auto', 'confirmed')
+          AND (matched_journal_line_id IN (${idList})
+            OR jsonb_exists_any(COALESCE(score_breakdown->'group'->'journalLineIds', '[]'::jsonb), ARRAY[${textList}]))
+        RETURNING id
       `);
+      // Wave 2 many-to-one: member statement lines carry a back-pointer to
+      // their primary — when the primary resets, reset the members with it.
+      const resetIds = (reset.rows as Array<{ id: string }>).map((r) => r.id);
+      if (resetIds.length > 0) {
+        const primaryList = sql.join(resetIds.map((id) => sql`${id}`), sql`, `);
+        await tx.execute(sql`
+          UPDATE bank_statement_lines
+          SET match_status = 'unmatched', matched_journal_line_id = NULL, updated_at = now()
+          WHERE tenant_id = ${tenantId} AND match_status = 'confirmed'
+            AND score_breakdown->'group'->>'primaryStatementLineId' IN (${primaryList})
+        `);
+      }
     }
   });
 

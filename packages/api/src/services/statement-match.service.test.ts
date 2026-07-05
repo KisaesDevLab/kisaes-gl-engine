@@ -534,6 +534,461 @@ describe('Statement Match Engine', () => {
     });
   });
 
+  // ─── Wave 2: grouped matches ─────────────────────────────────────
+
+  describe('wave 2 — A1: one statement line ↔ many worksheet lines', () => {
+    it('suggests (never auto-clears) an exact-sum set of 3 receipts for one deposit', async () => {
+      await postBank({ date: '2026-04-05', amount: '10.00', memo: 'RECEIPT ALPHA', direction: 'in' });
+      await postBank({ date: '2026-04-06', amount: '20.00', memo: 'RECEIPT BRAVO', direction: 'in' });
+      await postBank({ date: '2026-04-07', amount: '30.00', memo: 'RECEIPT CHARLIE', direction: 'in' });
+      const { statementId, reconId } = await captureAndStart({
+        transactions: [{ date: '2026-04-07', description: 'BRANCH DEPOSIT', amount: '60.00', type: 'credit' }],
+      });
+
+      const result = await statementMatch.matchStatement(tenantId, reconId, { apply: true });
+      expect(result.autoCleared).toBe(0);
+      expect(result.suggestions.length).toBe(1);
+      const s = result.suggestions[0]!;
+      expect(s.candidates.length).toBe(0);
+      expect(s.groupCandidates?.length).toBe(1);
+      const g = s.groupCandidates![0]!;
+      expect(g.kind).toBe('one_to_many');
+      expect(g.journalLines.length).toBe(3);
+      expect(parseFloat(g.sum)).toBe(60);
+      expect(g.dateSpanDays).toBe(2);
+      // Every member is accounted for by the suggestion — no outstanding.
+      expect(result.outstandingCount).toBe(0);
+
+      // SUGGEST-only: worksheet untouched; persisted as 'suggested' with a
+      // NULL matched_journal_line_id (set only on confirm).
+      const worksheet = await worksheetOf(reconId);
+      expect(worksheet.every((l) => !l.is_cleared)).toBe(true);
+      const lines = await statementLinesOf(statementId);
+      expect(lines[0]!.matchStatus).toBe('suggested');
+      expect(lines[0]!.matchedJournalLineId).toBeNull();
+      const breakdown = lines[0]!.scoreBreakdown as { groupCandidates: Array<{ kind: string; journalLines: unknown[] }> };
+      expect(breakdown.groupCandidates.length).toBe(1);
+      expect(breakdown.groupCandidates[0]!.journalLines.length).toBe(3);
+
+      // Persisted view (reload) carries the group.
+      const view = await statementMatch.getStatementMatches(tenantId, reconId);
+      expect(view.suggestions.length).toBe(1);
+      expect(view.suggestions[0]!.groupCandidates?.length).toBe(1);
+      expect(view.outstandingCount).toBe(0);
+    });
+
+    it('a set off by a cent is NOT suggested — exact sum only', async () => {
+      await postBank({ date: '2026-04-05', amount: '10.00', memo: 'RECEIPT ALPHA', direction: 'in' });
+      await postBank({ date: '2026-04-06', amount: '20.00', memo: 'RECEIPT BRAVO', direction: 'in' });
+      await postBank({ date: '2026-04-07', amount: '30.00', memo: 'RECEIPT CHARLIE', direction: 'in' });
+      const { reconId } = await captureAndStart({
+        transactions: [{ date: '2026-04-07', description: 'BRANCH DEPOSIT', amount: '60.01', type: 'credit' }],
+      });
+      const result = await statementMatch.matchStatement(tenantId, reconId, { apply: true });
+      expect(result.suggestions.length).toBe(0);
+      expect(result.unmatchedLines.length).toBe(1);
+    });
+
+    it('two distinct minimal sets → both returned for the picker (up to 3), never auto', async () => {
+      await postBank({ date: '2026-04-05', amount: '10.00', memo: 'PAY TEN', direction: 'out' });
+      await postBank({ date: '2026-04-06', amount: '20.00', memo: 'PAY TWENTY', direction: 'out' });
+      await postBank({ date: '2026-04-07', amount: '30.00', memo: 'PAY THIRTY', direction: 'out' });
+      await postBank({ date: '2026-04-08', amount: '40.00', memo: 'PAY FORTY', direction: 'out' });
+      const { reconId } = await captureAndStart({
+        transactions: [{ date: '2026-04-08', description: 'COMBINED CHARGE', amount: '50.00', type: 'debit' }],
+      });
+      const result = await statementMatch.matchStatement(tenantId, reconId, { apply: true });
+      expect(result.autoCleared).toBe(0);
+      expect(result.suggestions.length).toBe(1);
+      const sets = result.suggestions[0]!.groupCandidates!;
+      expect(sets.length).toBe(2);
+      expect(sets.length).toBeLessThanOrEqual(3);
+      for (const g of sets) {
+        expect(g.journalLines.length).toBe(2);
+        expect(parseFloat(g.sum)).toBe(-50);
+      }
+      const worksheet = await worksheetOf(reconId);
+      expect(worksheet.every((l) => !l.is_cleared)).toBe(true);
+    });
+
+    it('subset size is capped at 5 members — six $10 lines never sum a $60 deposit', async () => {
+      for (let i = 0; i < 6; i++) {
+        await postBank({ date: '2026-04-05', amount: '10.00', memo: `RECEIPT ${i}`, direction: 'in' });
+      }
+      const { reconId } = await captureAndStart({
+        transactions: [{ date: '2026-04-06', description: 'BRANCH DEPOSIT', amount: '60.00', type: 'credit' }],
+      });
+      const result = await statementMatch.matchStatement(tenantId, reconId, { apply: true });
+      expect(result.suggestions.length).toBe(0);
+      expect(result.unmatchedLines.length).toBe(1);
+    });
+  });
+
+  describe('wave 2 — subset-sum bounds (pure helpers)', () => {
+    const mkWsRow = (id: string, date: string, amount: string, dir: 'in' | 'out') => ({
+      rec_line_id: `rl-${id}`,
+      journal_line_id: id,
+      is_cleared: false,
+      debit: dir === 'in' ? amount : '0',
+      credit: dir === 'in' ? '0' : amount,
+      line_description: null,
+      transaction_id: `t-${id}`,
+      txn_date: date,
+      txn_type: 'journal_entry',
+      txn_number: null,
+      memo: null,
+      check_number: null,
+      payee_name_on_check: null,
+      contact_name: null,
+    });
+
+    const isoDaysBefore = (iso: string, days: number): string => {
+      const d = new Date(iso + 'T00:00:00Z');
+      d.setUTCDate(d.getUTCDate() - days);
+      return d.toISOString().slice(0, 10);
+    };
+
+    it('buildGroupPool caps the pool at the 40 nearest-dated candidates', () => {
+      // 45 candidates inside the 30-day window (3 per day over 15 days) —
+      // only the 40 nearest-dated survive the cap.
+      const rows = [];
+      let n = 0;
+      for (let day = 1; day <= 15; day++) {
+        for (let k = 0; k < 3; k++) {
+          n += 1;
+          rows.push(mkWsRow(`jl-${String(n).padStart(2, '0')}`, isoDaysBefore('2026-04-30', day), '1.00', 'in'));
+        }
+      }
+      const pool = statementMatch._internal.buildGroupPool(
+        { amount: '100.0000', lineDate: '2026-04-30' },
+        rows,
+        new Set<string>(),
+      );
+      expect(pool.length).toBe(40);
+      // Nearest-dated first: the farthest-dated candidates are dropped.
+      expect(pool[0]!.absDays).toBe(1);
+      expect(Math.max(...pool.map((p) => p.absDays))).toBe(14);
+
+      // Beyond the [−30, +3] group window nothing qualifies at all.
+      const far = [mkWsRow('jl-far', isoDaysBefore('2026-04-30', 45), '1.00', 'in')];
+      expect(statementMatch._internal.buildGroupPool(
+        { amount: '100.0000', lineDate: '2026-04-30' }, far, new Set<string>(),
+      ).length).toBe(0);
+    });
+
+    it('findExactSumSets honors maxSets and the member date-span constraint', () => {
+      const item = (id: string, cents: number, date: string) => ({ id, cents, date, absDays: 0 });
+      // Many distinct pairs summing 100 — capped at maxSets.
+      const pool = [
+        item('a', 40, '2026-04-01'), item('b', 60, '2026-04-02'),
+        item('c', 30, '2026-04-03'), item('d', 70, '2026-04-04'),
+        item('e', 20, '2026-04-05'), item('f', 80, '2026-04-06'),
+        item('g', 10, '2026-04-07'), item('h', 90, '2026-04-08'),
+      ];
+      const capped = statementMatch._internal.findExactSumSets(100, pool, {
+        minSize: 2, maxSize: 5, maxSets: 3, maxExpansions: 10_000, minimalOnly: true,
+      });
+      expect(capped.length).toBe(3);
+      for (const set of capped) expect(set.length).toBe(2);
+
+      // Span constraint: a pair dated 20 days apart is rejected at 7 days.
+      const spanPool = [item('x', 40, '2026-04-01'), item('y', 60, '2026-04-21')];
+      const spanned = statementMatch._internal.findExactSumSets(100, spanPool, {
+        minSize: 2, maxSize: 5, maxSets: 3, maxExpansions: 10_000, minimalOnly: false, maxSpanDays: 7,
+      });
+      expect(spanned.length).toBe(0);
+    });
+  });
+
+  describe('wave 2 — A2: many statement lines ↔ one worksheet line', () => {
+    it('exactly one set → suggestion attached to the first member, others referenced (not double-listed)', async () => {
+      // Books recorded one monthly total; the bank shows 4 individual charges.
+      await postBank({ date: '2026-04-05', amount: '100.00', memo: 'MONTHLY SAAS TOTAL', direction: 'out' });
+      const { statementId, reconId } = await captureAndStart({
+        transactions: [
+          { date: '2026-04-05', description: 'SAAS CHARGE 1', amount: '25.00', type: 'debit' },
+          { date: '2026-04-06', description: 'SAAS CHARGE 2', amount: '25.00', type: 'debit' },
+          { date: '2026-04-07', description: 'SAAS CHARGE 3', amount: '25.00', type: 'debit' },
+          { date: '2026-04-08', description: 'SAAS CHARGE 4', amount: '25.00', type: 'debit' },
+        ],
+      });
+
+      const result = await statementMatch.matchStatement(tenantId, reconId, { apply: true });
+      expect(result.autoCleared).toBe(0);
+      expect(result.skippedAmbiguousGroups).toBe(0);
+      expect(result.suggestions.length).toBe(1);
+      const s = result.suggestions[0]!;
+      // Attached to the FIRST (earliest-dated) statement line.
+      expect(s.statementLine.description).toBe('SAAS CHARGE 1');
+      const g = s.groupCandidates![0]!;
+      expect(g.kind).toBe('many_to_one');
+      expect(g.journalLines.length).toBe(1);
+      expect(g.memberStatementLines.length).toBe(4);
+      expect(parseFloat(g.sum)).toBe(-100);
+      // Members are referenced through the suggestion, not double-listed.
+      expect(result.unmatchedLines.length).toBe(0);
+      expect(result.outstandingCount).toBe(0);
+
+      // Persisted view mirrors that.
+      const view = await statementMatch.getStatementMatches(tenantId, reconId);
+      expect(view.suggestions.length).toBe(1);
+      expect(view.suggestions[0]!.groupCandidates?.[0]?.kind).toBe('many_to_one');
+      expect(view.unmatchedLines.length).toBe(0);
+      expect(view.counts.suggested).toBe(1);
+      expect(view.counts.unmatched).toBe(3); // members stay 'unmatched' in the DB
+      const lines = await statementLinesOf(statementId);
+      const primary = lines.find((l) => l.description === 'SAAS CHARGE 1')!;
+      expect(primary.matchStatus).toBe('suggested');
+      expect(primary.matchedJournalLineId).toBeNull();
+    });
+
+    it('two possible sets → skipped and counted, nothing suggested', async () => {
+      await postBank({ date: '2026-04-05', amount: '50.00', memo: 'COMBINED TOTAL', direction: 'out' });
+      const { reconId } = await captureAndStart({
+        transactions: [
+          { date: '2026-04-05', description: 'PART A', amount: '20.00', type: 'debit' },
+          { date: '2026-04-06', description: 'PART B', amount: '20.00', type: 'debit' },
+          { date: '2026-04-07', description: 'PART C', amount: '30.00', type: 'debit' },
+        ],
+      });
+      const result = await statementMatch.matchStatement(tenantId, reconId, { apply: true });
+      expect(result.suggestions.length).toBe(0);
+      expect(result.skippedAmbiguousGroups).toBe(1);
+      expect(result.unmatchedLines.length).toBe(3);
+    });
+  });
+
+  describe('wave 2 — grouped confirm', () => {
+    async function a1Setup() {
+      await postBank({ date: '2026-04-05', amount: '10.00', memo: 'RECEIPT ALPHA', direction: 'in' });
+      await postBank({ date: '2026-04-06', amount: '20.00', memo: 'RECEIPT BRAVO', direction: 'in' });
+      await postBank({ date: '2026-04-07', amount: '30.00', memo: 'RECEIPT CHARLIE', direction: 'in' });
+      const { statementId, reconId } = await captureAndStart({
+        transactions: [{ date: '2026-04-07', description: 'BRANCH DEPOSIT', amount: '60.00', type: 'credit' }],
+      });
+      const result = await statementMatch.matchStatement(tenantId, reconId, { apply: true });
+      const s = result.suggestions[0]!;
+      const jlIds = s.groupCandidates![0]!.journalLines.map((j) => j.journalLineId);
+      return { statementId, reconId, statementLineId: s.statementLine.id, jlIds };
+    }
+
+    it('confirming a set clears ALL members and records the full group', async () => {
+      const { statementId, reconId, statementLineId, jlIds } = await a1Setup();
+      const line = await statementMatch.confirmStatementLineGroup(tenantId, statementLineId, jlIds);
+      expect(line.matchStatus).toBe('confirmed');
+
+      const worksheet = await worksheetOf(reconId);
+      for (const jl of jlIds) {
+        expect(worksheet.find((w) => w.journal_line_id === jl)!.is_cleared).toBe(true);
+      }
+      const lines = await statementLinesOf(statementId);
+      expect(lines[0]!.matchStatus).toBe('confirmed');
+      expect(lines[0]!.matchedJournalLineId).toBe(jlIds[0]); // primary = first
+      const breakdown = lines[0]!.scoreBreakdown as { group: { kind: string; journalLineIds: string[] } };
+      expect(breakdown.group.kind).toBe('one_to_many');
+      expect(breakdown.group.journalLineIds).toEqual(jlIds);
+    });
+
+    it('409 when the set does not sum exactly to the cent', async () => {
+      const { statementLineId, jlIds } = await a1Setup();
+      await expect(
+        statementMatch.confirmStatementLineGroup(tenantId, statementLineId, jlIds.slice(0, 2)),
+      ).rejects.toThrow(/sum exactly/i);
+    });
+
+    it('409 when a member journal line is already claimed by another statement line', async () => {
+      // Two statement lines: the $60 deposit and a $20 line that could claim
+      // RECEIPT BRAVO singly. No engine run — drive the confirms directly.
+      await postBank({ date: '2026-04-05', amount: '10.00', memo: 'RECEIPT ALPHA', direction: 'in' });
+      await postBank({ date: '2026-04-06', amount: '20.00', memo: 'RECEIPT BRAVO', direction: 'in' });
+      await postBank({ date: '2026-04-07', amount: '30.00', memo: 'RECEIPT CHARLIE', direction: 'in' });
+      const { statementId, reconId } = await captureAndStart({
+        transactions: [
+          { date: '2026-04-07', description: 'BRANCH DEPOSIT', amount: '60.00', type: 'credit' },
+          { date: '2026-04-06', description: 'LONE DEPOSIT', amount: '20.00', type: 'credit' },
+        ],
+      });
+      const worksheet = await worksheetOf(reconId);
+      const jlOf = (amount: number) => worksheet.find((w) => parseFloat(w.debit) === amount)!.journal_line_id;
+      const lines = await statementLinesOf(statementId);
+      const line60 = lines.find((l) => parseFloat(l.amount) === 60)!;
+      const line20 = lines.find((l) => parseFloat(l.amount) === 20)!;
+
+      // Group-confirm the $60 set, then try to single-confirm a member.
+      await statementMatch.confirmStatementLineGroup(tenantId, line60.id, [jlOf(10), jlOf(20), jlOf(30)]);
+      await expect(
+        statementMatch.confirmStatementLine(tenantId, line20.id, jlOf(20)),
+      ).rejects.toThrow(/already matched/i);
+    });
+
+    it('un-clearing ANY group member resets the statement line', async () => {
+      const { statementId, reconId, statementLineId, jlIds } = await a1Setup();
+      await statementMatch.confirmStatementLineGroup(tenantId, statementLineId, jlIds);
+
+      // Un-clear the SECOND member (not the primary matched_journal_line_id).
+      await reconciliation.updateLines(tenantId, reconId, [{ journalLineId: jlIds[1]!, isCleared: false }]);
+      const lines = await statementLinesOf(statementId);
+      expect(lines[0]!.matchStatus).toBe('unmatched');
+      expect(lines[0]!.matchedJournalLineId).toBeNull();
+    });
+
+    it('many-to-one confirm clears the one worksheet line, marks ALL members confirmed, and un-clearing resets them all', async () => {
+      await postBank({ date: '2026-04-05', amount: '100.00', memo: 'MONTHLY SAAS TOTAL', direction: 'out' });
+      const { statementId, reconId } = await captureAndStart({
+        transactions: [
+          { date: '2026-04-05', description: 'SAAS CHARGE 1', amount: '25.00', type: 'debit' },
+          { date: '2026-04-06', description: 'SAAS CHARGE 2', amount: '25.00', type: 'debit' },
+          { date: '2026-04-07', description: 'SAAS CHARGE 3', amount: '25.00', type: 'debit' },
+          { date: '2026-04-08', description: 'SAAS CHARGE 4', amount: '25.00', type: 'debit' },
+        ],
+      });
+      const result = await statementMatch.matchStatement(tenantId, reconId, { apply: true });
+      const s = result.suggestions[0]!;
+      const g = s.groupCandidates![0]!;
+      const jlId = g.journalLines[0]!.journalLineId;
+      const memberIds = g.memberStatementLines.filter((m) => m.id !== s.statementLine.id).map((m) => m.id);
+
+      const line = await statementMatch.confirmStatementLineManyToOne(tenantId, s.statementLine.id, jlId, memberIds);
+      expect(line.matchStatus).toBe('confirmed');
+      const worksheet = await worksheetOf(reconId);
+      expect(worksheet.find((w) => w.journal_line_id === jlId)!.is_cleared).toBe(true);
+      let lines = await statementLinesOf(statementId);
+      expect(lines.every((l) => l.matchStatus === 'confirmed')).toBe(true);
+      const primary = lines.find((l) => l.id === s.statementLine.id)!;
+      expect(primary.matchedJournalLineId).toBe(jlId);
+      for (const m of lines.filter((l) => l.id !== s.statementLine.id)) {
+        expect(m.matchedJournalLineId).toBeNull();
+        const bd = m.scoreBreakdown as { group: { kind: string; primaryStatementLineId: string } };
+        expect(bd.group.kind).toBe('many_to_one_member');
+        expect(bd.group.primaryStatementLineId).toBe(s.statementLine.id);
+      }
+
+      // Un-clearing the one worksheet line resets primary AND members.
+      await reconciliation.updateLines(tenantId, reconId, [{ journalLineId: jlId, isCleared: false }]);
+      lines = await statementLinesOf(statementId);
+      expect(lines.every((l) => l.matchStatus === 'unmatched' && l.matchedJournalLineId == null)).toBe(true);
+    });
+
+    it('many-to-one confirm 409s when the sum is off by a cent', async () => {
+      await postBank({ date: '2026-04-05', amount: '100.00', memo: 'MONTHLY SAAS TOTAL', direction: 'out' });
+      const { statementId, reconId } = await captureAndStart({
+        transactions: [
+          { date: '2026-04-05', description: 'SAAS CHARGE 1', amount: '25.00', type: 'debit' },
+          { date: '2026-04-06', description: 'SAAS CHARGE 2', amount: '25.00', type: 'debit' },
+          { date: '2026-04-07', description: 'SAAS CHARGE 3', amount: '25.00', type: 'debit' },
+        ],
+      });
+      // 3 × $25 = $75 ≠ $100 — must 409.
+      const lines = await statementLinesOf(statementId);
+      const [first, ...rest] = lines;
+      const worksheet = await worksheetOf(reconId);
+      const jlId = worksheet[0]!.journal_line_id;
+      await expect(
+        statementMatch.confirmStatementLineManyToOne(tenantId, first!.id, jlId, rest.map((l) => l.id)),
+      ).rejects.toThrow(/sum exactly/i);
+    });
+  });
+
+  // ─── Wave 2 Feature B: create transaction from a statement line ──
+
+  describe('wave 2 — create transaction from a statement line (Add to books)', () => {
+    it('posts a balanced expense via the ledger, carries check/payee, clears it mid-session, confirms the line', async () => {
+      const { statementId, reconId } = await captureAndStart({
+        transactions: [{ date: '2026-04-09', description: 'CHECK 0042', amount: '42.50', type: 'debit' }],
+        checks: [{ checkNumber: '0042', payee: 'Window Cleaning Co', amount: '42.50' }],
+      });
+      const [line] = await statementLinesOf(statementId);
+
+      const res = await statementMatch.createTransactionFromStatementLine(
+        tenantId, line!.id, { accountId: expenseAccountId, memo: 'Window cleaning' },
+      );
+      expect(res.line.matchStatus).toBe('confirmed');
+
+      // Balanced double-entry through the standard posting path.
+      const jls = await db.select().from(journalLines)
+        .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, res.transactionId)));
+      expect(jls.length).toBe(2);
+      const bankLeg = jls.find((l) => l.accountId === bankAccountId)!;
+      const expenseLeg = jls.find((l) => l.accountId === expenseAccountId)!;
+      expect(parseFloat(bankLeg.credit)).toBe(42.5);
+      expect(parseFloat(bankLeg.debit)).toBe(0);
+      expect(parseFloat(expenseLeg.debit)).toBe(42.5);
+
+      const [txn] = await db.select().from(transactions).where(eq(transactions.id, res.transactionId));
+      expect(txn!.txnType).toBe('expense');
+      expect(txn!.txnDate).toBe('2026-04-09');
+      expect(txn!.checkNumber).toBe(42);
+      expect(txn!.payeeNameOnCheck).toBe('Window Cleaning Co');
+      expect(txn!.source).toBe('statement_line');
+      expect(txn!.memo).toBe('Window cleaning');
+
+      // The new bank journal line appears CLEARED on the in-progress
+      // worksheet (reconciliation_line inserted mid-session).
+      const worksheet = await worksheetOf(reconId);
+      const wsRow = worksheet.find((w) => w.journal_line_id === bankLeg.id);
+      expect(wsRow?.is_cleared).toBe(true);
+
+      // Statement line confirmed against the new bank journal line.
+      const lines = await statementLinesOf(statementId);
+      expect(lines[0]!.matchStatus).toBe('confirmed');
+      expect(lines[0]!.matchedJournalLineId).toBe(bankLeg.id);
+
+      // The wave-1 un-clear hook covers created lines too.
+      await reconciliation.updateLines(tenantId, reconId, [{ journalLineId: bankLeg.id, isCleared: false }]);
+      expect((await statementLinesOf(statementId))[0]!.matchStatus).toBe('unmatched');
+    });
+
+    it('posts a deposit for money-in lines', async () => {
+      const { statementId } = await captureAndStart({
+        transactions: [{ date: '2026-04-10', description: 'STRIPE PAYOUT', amount: '150.00', type: 'credit' }],
+      });
+      const [line] = await statementLinesOf(statementId);
+      const res = await statementMatch.createTransactionFromStatementLine(
+        tenantId, line!.id, { accountId: revenueAccountId },
+      );
+      const [txn] = await db.select().from(transactions).where(eq(transactions.id, res.transactionId));
+      expect(txn!.txnType).toBe('deposit');
+      const jls = await db.select().from(journalLines)
+        .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, res.transactionId)));
+      const bankLeg = jls.find((l) => l.accountId === bankAccountId)!;
+      expect(parseFloat(bankLeg.debit)).toBe(150);
+    });
+
+    it('surfaces the ledger lock-date rejection and leaves the statement line untouched', async () => {
+      await db.insert(companies).values({ tenantId, businessName: 'Lock Co', lockDate: '2026-12-31' });
+      const { statementId } = await captureAndStart({
+        transactions: [{ date: '2026-04-09', description: 'LOCKED SPEND', amount: '10.00', type: 'debit' }],
+      });
+      const [line] = await statementLinesOf(statementId);
+      await expect(
+        statementMatch.createTransactionFromStatementLine(tenantId, line!.id, { accountId: expenseAccountId }),
+      ).rejects.toThrow(/lock date/i);
+      const lines = await statementLinesOf(statementId);
+      expect(lines[0]!.matchStatus).toBe('unmatched');
+      expect(lines[0]!.matchedJournalLineId).toBeNull();
+    });
+
+    it('refuses an already-matched line and the bank account itself as the category', async () => {
+      await postBank({ date: '2026-04-03', amount: '50.00', memo: 'COFFEE BARN PURCHASE', direction: 'out' });
+      const { statementId, reconId } = await captureAndStart({
+        transactions: [
+          { date: '2026-04-03', description: 'COFFEE BARN PURCHASE', amount: '50.00', type: 'debit' },
+          { date: '2026-04-04', description: 'MYSTERY FEE', amount: '5.00', type: 'debit' },
+        ],
+      });
+      await statementMatch.matchStatement(tenantId, reconId, { apply: true });
+      const lines = await statementLinesOf(statementId);
+      const matched = lines.find((l) => l.matchStatus === 'auto')!;
+      const unmatched = lines.find((l) => l.matchStatus === 'unmatched')!;
+      await expect(
+        statementMatch.createTransactionFromStatementLine(tenantId, matched.id, { accountId: expenseAccountId }),
+      ).rejects.toThrow(/already matched/i);
+      await expect(
+        statementMatch.createTransactionFromStatementLine(tenantId, unmatched.id, { accountId: bankAccountId }),
+      ).rejects.toThrow(/not the bank account/i);
+    });
+  });
+
   describe('backfillStatementLines', () => {
     it('populates lines for statements captured before 0116 and is idempotent', async () => {
       const { job } = await mkStatementJob({

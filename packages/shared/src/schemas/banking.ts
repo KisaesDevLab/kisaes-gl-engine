@@ -64,8 +64,30 @@ export const updateReconciliationLinesSchema = z.object({
 
 // Statement Match Engine wave 1: confirm a suggested (or manually chosen)
 // worksheet journal line for a statement line.
+// Wave 2 grouped matches extend the same route:
+//   - journalLineIds (2..5): one statement line ↔ many worksheet lines.
+//   - journalLineId + memberStatementLineIds (1..4): many statement lines
+//     ↔ one worksheet line, confirmed from the primary (first) statement
+//     line with the other member statement lines listed.
 export const confirmStatementLineSchema = z.object({
-  journalLineId: z.string().uuid(),
+  journalLineId: z.string().uuid().optional(),
+  journalLineIds: z.array(z.string().uuid()).min(2).max(5).optional(),
+  memberStatementLineIds: z.array(z.string().uuid()).min(1).max(4).optional(),
+})
+  .refine((d) => !!d.journalLineId !== !!d.journalLineIds, {
+    message: 'Provide either journalLineId or journalLineIds (not both)',
+  })
+  .refine((d) => !d.memberStatementLineIds || !!d.journalLineId, {
+    message: 'memberStatementLineIds requires a single journalLineId',
+  });
+
+// Statement Match Engine wave 2: create a posted transaction directly from
+// an unmatched statement line ("Add to books"). Date and amount come from
+// the statement line; accountId is the expense/income category account.
+export const createFromStatementLineSchema = z.object({
+  accountId: z.string().uuid(),
+  contactId: z.string().uuid().optional(),
+  memo: z.string().max(500).optional(),
 });
 
 export const bankImportSchema = z.object({
