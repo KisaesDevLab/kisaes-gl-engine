@@ -175,6 +175,12 @@ export const aiImportStatementSchema = z
     // Set when importing from a saved statement parse job (resume flow) so the
     // server can mark that job imported in the Statement Imports history.
     jobId: z.string().uuid().optional(),
+    // Statement Match Engine wave 1: 'bank_feed' (default — import rows as
+    // bank feed items) or 'reconcile_only' (books already entered manually or
+    // via a live bank feed: capture the bank_statements record + statement
+    // lines for reconciliation matching, import NO feed items). Requires a
+    // jobId — the statement record is captured from the parse job's output.
+    importMode: z.enum(['bank_feed', 'reconcile_only']).default('bank_feed'),
     transactions: z
       .array(
         z.object({
@@ -195,6 +201,9 @@ export const aiImportStatementSchema = z
   })
   .refine((d) => !!d.bankConnectionId || !!d.accountId, {
     message: 'accountId or bankConnectionId is required',
+  })
+  .refine((d) => d.importMode !== 'reconcile_only' || !!d.jobId, {
+    message: 'reconcile_only import requires the jobId of the statement parse',
   });
 
 // Per-company AI task toggles. Used by PATCH /ai/consent/:companyId/tasks.

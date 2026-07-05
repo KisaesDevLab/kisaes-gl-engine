@@ -49,3 +49,55 @@ export const MAX_MATCH_CANDIDATES = 3;
 // points of each other trigger the "duplicate-possible" UI banner
 // per build plan §3.5.
 export const DUPLICATE_WARNING_DELTA = 0.05;
+
+// ─── Statement Match Engine (wave 1) ───────────────────────────
+//
+// Separate constants from the bank-feed pipeline above (which stays
+// untouched): statement matching has a hard exact-amount
+// precondition, so amount carries more weight and the date window is
+// asymmetric (a ledger entry is written before the bank clears it —
+// checks can clear months later, but a bank line rarely precedes the
+// books by more than a couple of days).
+
+// Composite weights for statement-line vs worksheet-line scoring.
+// Amount is a precondition (exact to the cent, or ≤1% for
+// suggest-only near matches), so its component is 1.0 or the
+// near-match score below.
+export const STATEMENT_MATCH_WEIGHTS = {
+  amount: 0.55,
+  date: 0.25,
+  name: 0.2,
+} as const;
+
+// Asymmetric candidate window, anchored ledger-before-bank: the
+// candidate's ledger txn_date must fall within
+// [statementLineDate - LEDGER_BEFORE days, statementLineDate + LEDGER_AFTER days].
+export const STATEMENT_MATCH_DATE_WINDOW = {
+  ledgerBeforeBankDays: 90,
+  ledgerAfterBankDays: 3,
+} as const;
+
+// Date score bands over |txn_date - statement line date| in days.
+// Evaluated in order; beyond the last band the floor score applies
+// (the 90-day window already bounds candidacy).
+export const STATEMENT_MATCH_DATE_BANDS: ReadonlyArray<{ days: number; score: number }> = [
+  { days: 2, score: 1.0 },
+  { days: 7, score: 0.85 },
+  { days: 30, score: 0.6 },
+];
+export const STATEMENT_MATCH_DATE_FLOOR_SCORE = 0.4;
+
+// Near-amount (pool B) tolerance: ≤ this fraction of the statement
+// amount → SUGGEST-only candidate flagged with the amount delta.
+export const STATEMENT_MATCH_NEAR_AMOUNT_PCT = 0.01;
+// Amount component used for pool-B candidates (pool A is 1.0).
+export const STATEMENT_MATCH_NEAR_AMOUNT_SCORE = 0.85;
+
+// AUTO tier: exact amount AND unambiguous AND (check number exact OR
+// composite ≥ this). SUGGEST tier: composite ≥ the suggest floor, or
+// ambiguous exact amounts, or a pool-B near match.
+export const STATEMENT_MATCH_AUTO_THRESHOLD = 0.9;
+export const STATEMENT_MATCH_SUGGEST_THRESHOLD = 0.6;
+
+// Cap on candidates returned/persisted per statement line.
+export const STATEMENT_MATCH_MAX_CANDIDATES = 3;

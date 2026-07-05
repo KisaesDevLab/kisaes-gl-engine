@@ -9,6 +9,7 @@ import {
   startReconciliationSchema, updateReconciliationLinesSchema, bankImportSchema,
   bulkApproveSchema, bulkCategorizeSchema, bulkExcludeSchema, bulkRecleanseSchema,
   createManualConnectionSchema, updateFeedItemSchema, bankStatementFiltersSchema,
+  confirmStatementLineSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
@@ -18,6 +19,7 @@ import * as bankConnectionService from '../services/bank-connection.service.js';
 import * as bankFeedService from '../services/bank-feed.service.js';
 import * as reconciliationService from '../services/reconciliation.service.js';
 import * as bankStatementsService from '../services/bank-statements.service.js';
+import * as statementMatchService from '../services/statement-match.service.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -263,6 +265,39 @@ bankingRouter.post('/reconciliations', validate(startReconciliationSchema), asyn
     { statementId: req.body.statementId },
   );
   res.status(201).json({ reconciliation: recon });
+});
+
+// ─── Statement Match Engine (wave 1) ─────────────────────────────
+
+// Run the scored matcher against the linked statement's lines and apply:
+// AUTO matches clear their worksheet lines; SUGGEST matches persist for the
+// picker; the response carries suggestions / unmatched / outstanding.
+bankingRouter.post('/reconciliations/:id/match-statement', async (req, res) => {
+  const result = await statementMatchService.matchStatement(
+    req.tenantId, req.params['id']!, { apply: true, userId: req.userId },
+  );
+  res.json(result);
+});
+
+// Persisted match state for the worksheet (render after reload).
+bankingRouter.get('/reconciliations/:id/statement-matches', async (req, res) => {
+  const result = await statementMatchService.getStatementMatches(req.tenantId, req.params['id']!);
+  res.json(result);
+});
+
+// Confirm a suggested (or explicitly chosen) worksheet journal line for a
+// statement line — clears the worksheet line.
+bankingRouter.post('/statement-lines/:lineId/confirm', validate(confirmStatementLineSchema), async (req, res) => {
+  const line = await statementMatchService.confirmStatementLine(
+    req.tenantId, req.params['lineId']!, req.body.journalLineId, req.userId,
+  );
+  res.json({ line });
+});
+
+// Reject a suggestion (worksheet line untouched).
+bankingRouter.post('/statement-lines/:lineId/reject', async (req, res) => {
+  const line = await statementMatchService.rejectStatementLine(req.tenantId, req.params['lineId']!, req.userId);
+  res.json({ line });
 });
 
 // Auto-clear the linked statement's transactions on the worksheet.

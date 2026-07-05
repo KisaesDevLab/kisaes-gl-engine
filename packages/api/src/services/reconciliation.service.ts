@@ -159,14 +159,18 @@ export async function getReconciliation(tenantId: string, reconciliationId: stri
   });
   if (!recon) throw AppError.notFound('Reconciliation not found');
 
-  // Get lines with transaction details
+  // Get lines with transaction details. Check number / payee / contact are
+  // additive fields consumed by the Statement Match Engine UI (wave 1).
   const lines = await db.execute(sql`
     SELECT rl.id, rl.journal_line_id, rl.is_cleared, rl.cleared_at,
       jl.debit, jl.credit, jl.description,
-      t.txn_date, t.txn_type, t.txn_number, t.memo
+      t.txn_date, t.txn_type, t.txn_number, t.memo,
+      t.check_number, t.payee_name_on_check, t.contact_id,
+      c.display_name AS contact_name
     FROM reconciliation_lines rl
     JOIN journal_lines jl ON jl.id = rl.journal_line_id
     JOIN transactions t ON t.id = jl.transaction_id
+    LEFT JOIN contacts c ON c.id = t.contact_id
     WHERE rl.reconciliation_id = ${reconciliationId}
     ORDER BY t.txn_date, t.created_at
   `);
@@ -203,12 +207,23 @@ export async function getReconciliation(tenantId: string, reconciliationId: stri
     continuityWarning = continuityOf(statement.openingBalance, prior?.statementEndingBalance);
   }
 
+  // Statement Match Engine (wave 1): how many stored statement lines exist —
+  // the UI shows the "Match statement" button only when there are lines.
+  let statementLineCount = 0;
+  if (statement) {
+    const cnt = await db.execute(sql`
+      SELECT count(*)::int AS count FROM bank_statement_lines
+      WHERE tenant_id = ${tenantId} AND statement_id = ${statement.id}
+    `);
+    statementLineCount = Number((cnt.rows as Array<{ count: number }>)[0]?.count ?? 0);
+  }
+
   return {
     ...recon,
     lines: lines.rows,
     clearedBalance: clearedTotal,
     difference,
-    statement: statement ?? null,
+    statement: statement ? { ...statement, lineCount: statementLineCount } : null,
     continuityWarning,
   };
 }
@@ -317,6 +332,20 @@ export async function updateLines(tenantId: string, reconciliationId: string, li
         eq(reconciliationLines.journalLineId, update.journalLineId),
       ));
     }
+
+    // Statement Match Engine (wave 1): un-clearing a worksheet line that an
+    // auto/confirmed statement-line match had cleared must also reset that
+    // statement line, or the match table and the worksheet drift apart.
+    const unclearedJlIds = lineUpdates.filter((u) => !u.isCleared).map((u) => u.journalLineId);
+    if (unclearedJlIds.length > 0) {
+      const idList = sql.join(unclearedJlIds.map((id) => sql`${id}::uuid`), sql`, `);
+      await tx.execute(sql`
+        UPDATE bank_statement_lines
+        SET match_status = 'unmatched', matched_journal_line_id = NULL, updated_at = now()
+        WHERE tenant_id = ${tenantId} AND matched_journal_line_id IN (${idList})
+          AND match_status IN ('auto', 'confirmed')
+      `);
+    }
   });
 
   return getReconciliation(tenantId, reconciliationId);
@@ -405,6 +434,18 @@ export async function undo(tenantId: string, reconciliationId: string) {
       isCleared: false,
       clearedAt: null,
     }).where(eq(reconciliationLines.reconciliationId, reconciliationId));
+
+    // Statement Match Engine (wave 1): the undo un-clears every worksheet
+    // line, so any auto/confirmed statement-line matches for this
+    // reconciliation's statement must reset too.
+    await tx.execute(sql`
+      UPDATE bank_statement_lines bsl
+      SET match_status = 'unmatched', matched_journal_line_id = NULL, updated_at = now()
+      FROM bank_statements bs
+      WHERE bs.id = bsl.statement_id AND bs.reconciliation_id = ${reconciliationId}
+        AND bsl.tenant_id = ${tenantId}
+        AND bsl.match_status IN ('auto', 'confirmed')
+    `);
   });
 }
 

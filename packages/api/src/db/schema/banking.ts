@@ -127,3 +127,32 @@ export const bankStatements = pgTable('bank_statements', {
   aiJobIdx: index('idx_bank_statements_ai_job').on(table.aiJobId),
   reconciliationIdx: index('idx_bank_statements_reconciliation').on(table.reconciliationId),
 }));
+
+// Statement Match Engine wave 1 (migration 0116): each parsed statement
+// transaction as a first-class line, scored against reconciliation worksheet
+// journal lines. `amount` is SIGNED in normalized statement orientation —
+// money INTO the GL account (deposit / card payment) positive, money OUT
+// (spend / charge) negative; it equals `jl.debit - jl.credit` of the matching
+// journal line on the reconciliation account. FKs (statement CASCADE,
+// journal line SET NULL) declared in the SQL migration.
+export const bankStatementLines = pgTable('bank_statement_lines', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull(),
+  statementId: uuid('statement_id').notNull(),
+  lineDate: date('line_date').notNull(),
+  description: text('description'),
+  amount: decimal('amount', { precision: 19, scale: 4 }).notNull(),
+  checkNumber: varchar('check_number', { length: 40 }),
+  payee: varchar('payee', { length: 255 }),
+  runningBalance: decimal('running_balance', { precision: 19, scale: 4 }),
+  // 'unmatched' | 'auto' | 'suggested' | 'confirmed' | 'rejected'
+  matchStatus: varchar('match_status', { length: 20 }).notNull().default('unmatched'),
+  matchedJournalLineId: uuid('matched_journal_line_id'),
+  matchScore: decimal('match_score', { precision: 6, scale: 4 }),
+  scoreBreakdown: jsonb('score_breakdown'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+}, (table) => ({
+  tenantStatementIdx: index('idx_bsl_tenant_statement').on(table.tenantId, table.statementId),
+  tenantMatchedJlIdx: index('idx_bsl_tenant_matched_jl').on(table.tenantId, table.matchedJournalLineId),
+}));

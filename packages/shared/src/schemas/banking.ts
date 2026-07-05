@@ -62,6 +62,12 @@ export const updateReconciliationLinesSchema = z.object({
   })),
 });
 
+// Statement Match Engine wave 1: confirm a suggested (or manually chosen)
+// worksheet journal line for a statement line.
+export const confirmStatementLineSchema = z.object({
+  journalLineId: z.string().uuid(),
+});
+
 export const bankImportSchema = z.object({
   accountId: z.string().uuid(),
   mapping: z.object({

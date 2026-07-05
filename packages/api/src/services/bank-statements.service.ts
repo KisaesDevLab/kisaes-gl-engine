@@ -16,11 +16,12 @@
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
-  bankStatements, bankFeedItems, bankConnections, reconciliations, accounts, aiJobs,
+  bankStatements, bankStatementLines, bankFeedItems, bankConnections, reconciliations, accounts, aiJobs,
 } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { log } from '../utils/logger.js';
+import { parseCheckNumber } from '../utils/check-number.js';
 
 // Subset of StatementParseResult (ai-statement-parser.service.ts) that the
 // capture path reads off ai_jobs.output_data. Kept structural so old job
@@ -34,7 +35,10 @@ export interface StatementParseMetadata {
   institutionName?: string | null;
   accountTypeHint?: string | null;
   reconciliation?: { status?: string; deltaCents?: number } | null;
-  transactions?: Array<{ date: string; description: string; amount: string; type?: string }>;
+  transactions?: Array<{ date: string; description: string; amount: string; type?: string; balance?: string }>;
+  // Check-image payees (STATEMENT_CHECK_PAYEE_V1) — checkNumber preserves
+  // leading zeros; amount is a positive magnitude string.
+  checks?: Array<{ checkNumber: string; payee: string; amount?: string }>;
 }
 
 export type BankStatement = typeof bankStatements.$inferSelect;
@@ -46,6 +50,79 @@ function toDecimalString(value: string | null | undefined): string | null {
   if (value == null) return null;
   const n = parseFloat(String(value).replace(/[$,]/g, ''));
   return Number.isFinite(n) ? n.toFixed(4) : null;
+}
+
+// ─── Statement lines (Statement Match Engine wave 1, migration 0116) ─
+//
+// SIGN ORIENTATION (verified against the whole chain — keep consistent):
+//   * Parse output (StatementParseResult.transactions): POSITIVE magnitude +
+//     type; 'credit' = money in, 'debit' = money out/spend. Credit-card
+//     charge/payment signs were already normalized to this convention by
+//     mapSignedCentsToFeed at extraction time.
+//   * bank_feed_items.amount: spend POSITIVE, money-in NEGATIVE
+//     (importStatementItems).
+//   * journal_lines on the reconciliation GL account: money in = debit > 0
+//     (asset account; on a credit-card liability a payment also debits it).
+//   * bank_statement_lines.amount (this table): money in POSITIVE, money out
+//     NEGATIVE — so a statement line's amount equals `jl.debit - jl.credit`
+//     of its matching journal line, and equals -bank_feed_items.amount.
+export function signedStatementAmount(amount: string, type?: string): string | null {
+  const n = Math.abs(parseFloat(String(amount).replace(/[$,]/g, '')));
+  if (!Number.isFinite(n)) return null;
+  return (type === 'credit' ? n : -n).toFixed(4);
+}
+
+/**
+ * Insert bank_statement_lines for a captured statement from its parse
+ * metadata. Idempotent per statement: a statement that already has ANY lines
+ * is skipped (parse output is immutable, so partial line sets can't occur).
+ * Returns the number of lines inserted.
+ */
+export async function insertStatementLines(
+  tenantId: string,
+  statementId: string,
+  meta: StatementParseMetadata,
+): Promise<number> {
+  const txns = Array.isArray(meta.transactions) ? meta.transactions : [];
+  if (txns.length === 0) return 0;
+
+  const existing = await db.execute(sql`
+    SELECT 1 FROM bank_statement_lines
+    WHERE tenant_id = ${tenantId} AND statement_id = ${statementId} LIMIT 1
+  `);
+  if ((existing.rows as unknown[]).length > 0) return 0;
+
+  // Check-image payees keyed by numeric check number (checkNumber strings
+  // may carry leading zeros — "0042" and 42 are the same check).
+  const checksByNumber = new Map<number, { checkNumber: string; payee: string }>();
+  for (const c of meta.checks ?? []) {
+    const n = Number.parseInt(String(c.checkNumber), 10);
+    if (Number.isFinite(n) && n > 0) checksByNumber.set(n, { checkNumber: String(c.checkNumber), payee: c.payee });
+  }
+
+  const rows: Array<typeof bankStatementLines.$inferInsert> = [];
+  for (const t of txns) {
+    const amount = signedStatementAmount(t.amount, t.type);
+    if (!amount || !t.date || !DATE_RE.test(t.date)) continue;
+    const parsedCheck = parseCheckNumber(t.description);
+    const checkImage = parsedCheck != null ? checksByNumber.get(parsedCheck) : undefined;
+    rows.push({
+      tenantId,
+      statementId,
+      lineDate: t.date,
+      description: t.description ?? null,
+      amount,
+      // Prefer the check-image number (preserves leading zeros) over the
+      // one parsed out of the description.
+      checkNumber: checkImage?.checkNumber ?? (parsedCheck != null ? String(parsedCheck) : null),
+      payee: checkImage?.payee?.slice(0, 255) ?? null,
+      runningBalance: toDecimalString(t.balance),
+      matchStatus: 'unmatched',
+    });
+  }
+  if (rows.length === 0) return 0;
+  await db.insert(bankStatementLines).values(rows);
+  return rows.length;
 }
 
 function goldenRuleOf(meta: StatementParseMetadata): { status: string; delta: string | null } {
@@ -79,11 +156,16 @@ export async function captureStatementOnImport(
   if (!job || !job.outputData || typeof job.outputData !== 'object') return null;
 
   // Idempotency: an existing row for this parse job wins (a re-import of the
-  // same statement must not create a second statement record).
+  // same statement must not create a second statement record). Lines are
+  // still (idempotently) ensured — statements captured before migration 0116
+  // gain their lines on the next import touch.
   const existingForJob = await db.query.bankStatements.findFirst({
     where: and(eq(bankStatements.tenantId, tenantId), eq(bankStatements.aiJobId, job.id)),
   });
-  if (existingForJob) return { statement: existingForJob };
+  if (existingForJob) {
+    await insertStatementLines(tenantId, existingForJob.id, job.outputData as StatementParseMetadata);
+    return { statement: existingForJob };
+  }
 
   const meta = job.outputData as StatementParseMetadata;
   const periodEnd = meta.statementPeriod?.end && DATE_RE.test(meta.statementPeriod.end) ? meta.statementPeriod.end : null;
@@ -136,6 +218,10 @@ export async function captureStatementOnImport(
     goldenRuleDelta: golden.delta,
   }).returning();
   if (!statement) throw AppError.internal('Failed to create bank statement record');
+
+  // Statement Match Engine wave 1: persist each parsed transaction as a
+  // bank_statement_lines row (both import modes).
+  await insertStatementLines(tenantId, statement.id, meta);
 
   await auditLog(tenantId, 'create', 'bank_statement', statement.id, null, statement, opts.userId);
 
@@ -447,6 +533,7 @@ export async function backfillBankStatements(tenantId: string): Promise<Backfill
     }).returning();
     if (!statement) continue;
     result.created += 1;
+    await insertStatementLines(tenantId, statement.id, meta);
     await auditLog(tenantId, 'create', 'bank_statement', statement.id, null, { ...statement, backfilled: true });
 
     // Stamp the statement's imported feed items (needed by readiness counts
@@ -476,6 +563,67 @@ export async function backfillBankStatements(tenantId: string): Promise<Backfill
   return result;
 }
 
+/**
+ * Backfill bank_statement_lines for statements captured BEFORE migration
+ * 0116 (they have an ai_job with parse output but no lines). Idempotent —
+ * insertStatementLines skips statements that already have lines, and the
+ * query only selects statements with zero lines. Returns per-run counts.
+ */
+export async function backfillStatementLines(
+  tenantId: string,
+): Promise<{ examined: number; statementsPopulated: number; linesCreated: number }> {
+  const result = { examined: 0, statementsPopulated: 0, linesCreated: 0 };
+  const rows = await db.execute(sql`
+    SELECT bs.id, j.output_data
+    FROM bank_statements bs
+    JOIN ai_jobs j ON j.id = bs.ai_job_id
+    WHERE bs.tenant_id = ${tenantId} AND j.output_data IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM bank_statement_lines bsl WHERE bsl.statement_id = bs.id
+      )
+  `);
+  for (const row of rows.rows as Array<{ id: string; output_data: unknown }>) {
+    result.examined += 1;
+    const created = await insertStatementLines(tenantId, row.id, (row.output_data ?? {}) as StatementParseMetadata);
+    if (created > 0) {
+      result.statementsPopulated += 1;
+      result.linesCreated += created;
+    }
+  }
+  return result;
+}
+
+// ─── Reconciliation-only import (Statement Match Engine wave 1) ──────
+//
+// For books kept manually or via a live Plaid feed: the transactions are
+// already entered, so importing statement rows into the bank feed would
+// only create duplicates. Instead, capture the bank_statements record +
+// bank_statement_lines (for the match engine) and import NOTHING into the
+// feed.
+export async function importReconcileOnly(
+  tenantId: string,
+  opts: { jobId: string; accountId?: string | null; bankConnectionId?: string | null; userId?: string },
+): Promise<{ statementId: string; lineCount: number; duplicateWarning?: string }> {
+  const capture = await captureStatementOnImport(tenantId, opts);
+  if (!capture) {
+    throw AppError.unprocessableEntity(
+      'A reconciliation record could not be created from this parse — the statement period end, closing balance, ' +
+        'or target account is missing. Re-parse the statement or import it into the bank feed instead.',
+      'STATEMENT_CAPTURE_INCOMPLETE',
+    );
+  }
+  const countRes = await db.execute(sql`
+    SELECT count(*)::int AS count FROM bank_statement_lines
+    WHERE tenant_id = ${tenantId} AND statement_id = ${capture.statement.id}
+  `);
+  const lineCount = Number((countRes.rows as Array<{ count: number }>)[0]?.count ?? 0);
+  return {
+    statementId: capture.statement.id,
+    lineCount,
+    ...(capture.duplicateWarning ? { duplicateWarning: capture.duplicateWarning } : {}),
+  };
+}
+
 // Lazy backfill guard: run at most once per tenant per process (the
 // function itself is idempotent, this just avoids re-scanning ai_jobs on
 // every statements-list request).
@@ -488,6 +636,12 @@ export async function ensureBackfill(tenantId: string): Promise<void> {
     const result = await backfillBankStatements(tenantId);
     if (result.examined > 0) {
       log.info({ component: 'bank-statements', event: 'backfill', tenantId, ...result });
+    }
+    // Statement Match Engine wave 1: statements captured before migration
+    // 0116 get their lines from the persisted parse output.
+    const lines = await backfillStatementLines(tenantId);
+    if (lines.examined > 0) {
+      log.info({ component: 'bank-statements', event: 'backfill_lines', tenantId, ...lines });
     }
   } catch (err) {
     // Never let a backfill failure break the statements list.

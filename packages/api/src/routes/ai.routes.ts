@@ -363,6 +363,28 @@ aiRouter.get('/parse/statement/:jobId/status', authenticate, async (req, res) =>
 });
 
 aiRouter.post('/parse/statement/import', authenticate, aiProcessingLimiter, validate(aiImportStatementSchema), async (req, res) => {
+  // Reconciliation-only mode (Statement Match Engine wave 1): the books are
+  // already entered (manual entry / live bank feed), so create the
+  // bank_statements record + bank_statement_lines for matching and import
+  // NOTHING into the bank feed. The Zod schema guarantees jobId is present.
+  if (req.body.importMode === 'reconcile_only') {
+    const result = await bankStatementsService.importReconcileOnly(req.tenantId, {
+      jobId: req.body.jobId,
+      accountId: req.body.accountId ?? null,
+      bankConnectionId: req.body.bankConnectionId ?? null,
+      userId: req.userId,
+    });
+    await aiStatementParser.markStatementJobImported(req.tenantId, req.body.jobId);
+    res.json({
+      imported: 0,
+      skipped: 0,
+      reconcileOnly: true,
+      statementId: result.statementId,
+      lineCount: result.lineCount,
+      ...(result.duplicateWarning ? { duplicateWarning: result.duplicateWarning } : {}),
+    });
+    return;
+  }
   // Resolve the target connection: an explicit bankConnectionId, or find-or-
   // create the manual connection for the chosen GL account (same pattern the
   // CSV/OFX importer uses) so statement rows land under that account.
