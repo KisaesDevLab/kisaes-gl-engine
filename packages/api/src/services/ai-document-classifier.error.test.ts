@@ -44,6 +44,9 @@ vi.mock('./ai-config.service.js', () => ({
   // classifier's built-in defaults so the failure paths below still fire
   // on getRawConfig as intended.
   resolveTaskParams: () => ({ maxTokens: 128, temperature: 0.1 }),
+  // classifyDocument also checks the per-function "Enable this function"
+  // toggle via resolveTaskExec; keep it enabled here.
+  resolveTaskExec: () => ({ fallbackChain: [], enabled: true }),
 }));
 
 // Mechanism B: the classifier now resolves a custom prompt before the

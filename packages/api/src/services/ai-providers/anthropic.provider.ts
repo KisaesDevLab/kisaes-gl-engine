@@ -38,7 +38,14 @@ export class AnthropicProvider implements AiProvider {
       const e = err as { status?: number; statusCode?: number; message?: string };
       const status = e?.status ?? e?.statusCode;
       if (status === 404 || /not_found/i.test(e?.message ?? '')) {
-        throw new Error(`Anthropic model '${body.model}' was not found (404). Pick a valid model in Admin → AI.`);
+        const wrapped: Error & { status?: number } = new Error(
+          `Anthropic model '${body.model}' was not found (404). Pick a valid model in Admin → AI.`,
+        );
+        // Preserve the HTTP status on the re-wrapped error so
+        // retryWithBackoff's don't-retry-4xx rule still short-circuits —
+        // without it a bad model id burns the full retry/backoff budget.
+        wrapped.status = status ?? 404;
+        throw wrapped;
       }
       throw err;
     }
@@ -103,20 +110,22 @@ export class AnthropicProvider implements AiProvider {
       return { success: true, modelInfo: this.model };
     } catch (err: any) {
       // A 404 "model not found" means the KEY is valid but the configured
-      // model id is wrong/stale (a very common footgun). Confirm the key by
-      // listing models and report valid choices instead of a hard failure.
+      // model id is wrong/stale (a very common footgun). That is still a
+      // FAILURE — production calls with this model will 404 — so report
+      // success:false, but confirm the key by listing models and name valid
+      // choices so the admin can fix the model id rather than the key.
       const status = err?.status ?? err?.statusCode;
       const notFound = status === 404 || /not_found|model:.*not.*found/i.test(err?.message ?? '');
       if (notFound) {
+        let available = '';
         try {
           const models = await this.listModels(signal);
-          if (models.length > 0) {
-            return {
-              success: true,
-              modelInfo: `Key valid — but model '${this.model}' was not found. Available: ${models.slice(0, 6).join(', ')}`,
-            };
-          }
-        } catch { /* fall through to the original error */ }
+          if (models.length > 0) available = ` Available: ${models.slice(0, 6).join(', ')}`;
+        } catch { /* key may not even be valid for listing — omit the hint */ }
+        return {
+          success: false,
+          error: `API key valid, but model '${this.model}' was not found.${available}`,
+        };
       }
       return { success: false, error: err.message };
     }

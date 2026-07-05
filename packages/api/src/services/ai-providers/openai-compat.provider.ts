@@ -197,11 +197,21 @@ export class OpenAiCompatProvider implements AiProvider {
       const configured = this.model;
       const hasConfigured = models.includes(configured);
       const list = models.slice(0, 10).join(', ') || 'none';
+      // Honest-test contract: a reachable server whose catalog does NOT
+      // include the configured model will 404 every real completion — that
+      // is a failure, not a footnote. Only enforce when the server actually
+      // advertises a catalog (some proxies return an empty list).
+      if (models.length > 0 && !hasConfigured) {
+        return {
+          success: false,
+          error: `Server reachable, but configured model '${configured}' was not found in the catalog. Available: ${list}`,
+        };
+      }
       return {
         success: true,
-        modelInfo: hasConfigured
-          ? `Configured model '${configured}' is available. Other models: ${list}`
-          : `Configured model '${configured}' NOT in server catalog. Available: ${list}`,
+        modelInfo: models.length === 0
+          ? `Server reachable at ${this.baseUrl} (empty model catalog)`
+          : `Configured model '${configured}' is available. Other models: ${list}`,
       };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };

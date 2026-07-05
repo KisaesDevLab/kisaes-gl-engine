@@ -185,7 +185,24 @@ export async function executeWithFallback(
         const provider = getProvider(preferredProvider, config, preferredModel);
         return await attempt(provider, params, timeoutMs);
       } catch (err: any) {
-        recordError(preferredProvider, err);
+        // Name the model in the error so the aggregate distinguishes "the
+        // provider is down" from "this specific model id failed".
+        recordError(
+          preferredModel ? `${preferredProvider} (model ${preferredModel})` : preferredProvider,
+          err,
+        );
+      }
+      // A stale per-function model override (e.g. a retired model id left
+      // over from a local-Ollama era) must not strand an otherwise-healthy
+      // provider: retry the SAME provider once with its default model
+      // before walking the fallback chain.
+      if (preferredModel) {
+        try {
+          const provider = getProvider(preferredProvider, config);
+          return await attempt(provider, params, timeoutMs);
+        } catch (err) {
+          recordError(`${preferredProvider} (default model)`, err);
+        }
       }
     }
   }
@@ -205,6 +222,12 @@ export async function executeWithFallback(
       continue;
     }
   }
+
+  // Server logs must ALWAYS carry the per-provider detail, even when a
+  // caller catches this error and re-shapes it into a generic message —
+  // otherwise `ai_all_providers_failed` masks the real cause.
+  // eslint-disable-next-line no-console
+  console.warn('[ai] all providers failed:', errors.join('; '));
 
   // Typed error so callers can route on `code` rather than regex-match
   // the message. Carries the per-provider error list as a property for

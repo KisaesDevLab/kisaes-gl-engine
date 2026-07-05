@@ -216,6 +216,15 @@ export async function sendMessage(
       'No chat AI provider is configured. Ask an administrator to set one in Admin → AI Processing → Chat.',
     );
   }
+  // Per-function kill switch (taskOptions.chat.enabled) — checked before
+  // any conversation rows are created so a disabled function has no side
+  // effects.
+  if (!aiConfigService.resolveTaskExec(config, 'chat').enabled) {
+    throw AppError.badRequest(
+      'Chat is disabled in Admin → AI (Chat → "Enable this function").',
+      'ai_function_disabled',
+    );
+  }
 
   // 1. Conversation
   let conversationId = input.conversationId || null;

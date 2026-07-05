@@ -434,13 +434,56 @@ export async function listGlmOcrModels(): Promise<ProviderModelsResult> {
   }
 }
 
+/**
+ * Distinct models configured for the functions assigned to `providerName` —
+ * the `*_model` column of every function whose `*_provider` column (after
+ * the same fallbacks the runtime applies: ocr/doc-classification/chat fall
+ * back to the categorization provider) names this provider. Order follows
+ * the function list, so the first entry is what the provider most likely
+ * runs in production.
+ */
+function configuredModelsForProvider(
+  config: {
+    categorizationProvider: string | null;
+    categorizationModel: string | null;
+    ocrProvider: string | null;
+    ocrModel: string | null;
+    documentClassificationProvider: string | null;
+    documentClassificationModel: string | null;
+    chatProvider: string | null;
+    chatModel: string | null;
+  },
+  providerName: string,
+): string[] {
+  const assignments: Array<{ provider: string | null; model: string | null }> = [
+    { provider: config.categorizationProvider, model: config.categorizationModel },
+    { provider: config.ocrProvider || config.categorizationProvider, model: config.ocrModel },
+    {
+      provider: config.documentClassificationProvider || config.categorizationProvider,
+      model: config.documentClassificationModel,
+    },
+    { provider: config.chatProvider, model: config.chatModel },
+  ];
+  const models: string[] = [];
+  for (const a of assignments) {
+    if (a.provider === providerName && a.model && !models.includes(a.model)) models.push(a.model);
+  }
+  return models;
+}
+
 export async function testProvider(providerName: string): Promise<TestProviderResult> {
   const config = await getRawConfig();
   const { getProvider } = await import('./ai-providers/index.js');
   const { abortableTimeout, TimeoutError } = await import('../utils/retry.js');
+  // Test the model this provider is ACTUALLY configured to run (the
+  // *_model columns of the functions assigned to it), not the provider's
+  // hardcoded default — a green badge must mean the real production call
+  // path works. Several distinct models: test the first and name the rest;
+  // none configured: keep the provider default.
+  const configuredModels = configuredModelsForProvider(config, providerName);
   let provider;
   try {
-    provider = getProvider(providerName, config);
+    provider = getProvider(providerName, config, configuredModels[0]);
   } catch (err) {
     const result: TestProviderResult = { success: false, error: err instanceof Error ? err.message : String(err) };
     await recordTestResult(providerName, result);
@@ -450,6 +493,13 @@ export async function testProvider(providerName: string): Promise<TestProviderRe
   let result: TestProviderResult;
   try {
     result = await provider.testConnection(signal);
+    if (result.success && configuredModels.length > 1) {
+      const others = configuredModels.slice(1).join(', ');
+      result = {
+        ...result,
+        modelInfo: `${result.modelInfo ? `${result.modelInfo} — ` : ''}also configured for this provider (untested): ${others}`,
+      };
+    }
   } catch (err) {
     // Abort/timeout detection. Different SDKs name abort errors
     // differently:
@@ -673,7 +723,11 @@ export async function testFunction(fn: AiFunctionKey): Promise<TestFunctionResul
           : `${result.provider} returned empty content (a thinking model on an OpenAI-compatible /v1 endpoint does this — use the native Ollama provider, or turn thinking off)`,
       };
     }
-    return { success: true, provider, durationMs, modelInfo: `${result.provider} / ${result.model}` };
+    // The test deliberately runs even when the function is disabled (an
+    // admin diagnosing config wants connectivity truth), but the result
+    // must say production calls won't run.
+    const disabledNote = exec.enabled ? '' : ' — note: this function is currently DISABLED in Admin → AI, so production calls will not run';
+    return { success: true, provider, durationMs, modelInfo: `${result.provider} / ${result.model}${disabledNote}` };
   } catch (err) {
     const durationMs = Date.now() - start;
     const e = err as { providerErrors?: string[]; message?: string };

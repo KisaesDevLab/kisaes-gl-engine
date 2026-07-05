@@ -1206,6 +1206,13 @@ export async function generateAiSummary(
   // chat token/temperature/timeout/fallback tuning.
   const params = aiConfigService.resolveTaskParams(config, 'chat', { maxTokens: 1024, temperature: 0.4 });
   const exec = aiConfigService.resolveTaskExec(config, 'chat');
+  // Per-function kill switch — AI summaries ride the chat function key.
+  if (!exec.enabled) {
+    throw AppError.badRequest(
+      'AI summaries are disabled in Admin → AI (Chat → "Enable this function").',
+      'ai_function_disabled',
+    );
+  }
 
   let result: CompletionResult;
   try {

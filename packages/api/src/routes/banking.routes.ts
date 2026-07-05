@@ -210,16 +210,13 @@ bankingRouter.post('/feed/import', upload.single('file'), async (req, res) => {
     end: typeof endDate === 'string' && endDate ? endDate : null,
   };
 
-  let items;
-  if (ext.endsWith('.ofx') || ext.endsWith('.qfx')) {
-    items = await bankFeedService.importFromOfx(req.tenantId, conn.id, content, dateRange);
-  } else {
-    items = await bankFeedService.importFromCsv(req.tenantId, conn.id, content, parsedMapping, dateRange);
-  }
+  const result = (ext.endsWith('.ofx') || ext.endsWith('.qfx'))
+    ? await bankFeedService.importFromOfx(req.tenantId, conn.id, content, dateRange)
+    : await bankFeedService.importFromCsv(req.tenantId, conn.id, content, parsedMapping, dateRange);
 
-  // Cleansing + categorization pipelines are now handled inside the service
-
-  res.status(201).json({ imported: items.length, items });
+  // Cleansing + categorization pipelines are handled inside the service;
+  // `cleansing` (additive) reports whether the AI cleanup step degraded.
+  res.status(201).json({ imported: result.items.length, items: result.items, cleansing: result.cleansing });
 });
 
 // ─── Bank Statements (statement-driven reconciliation) ───────────

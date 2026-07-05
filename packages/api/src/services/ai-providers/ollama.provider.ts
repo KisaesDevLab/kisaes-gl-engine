@@ -130,8 +130,23 @@ export class OllamaProvider implements AiProvider {
         return { success: false, error: `Ollama returned ${response.status}` };
       }
       const data = await response.json() as any;
-      const models = (data.models || []).map((m: any) => m.name).join(', ');
-      return { success: true, modelInfo: `Available models: ${models || 'none'}` };
+      const names: string[] = (data.models || []).map((m: any) => String(m.name ?? '')).filter(Boolean);
+      const models = names.join(', ');
+      // Honest-test contract: reachability alone isn't success — the model
+      // this provider is configured to run must actually be installed, or
+      // every real call will 404. Ollama tags carry a ":latest"/variant
+      // suffix, so accept an exact match, the ":latest" form, or a bare-name
+      // prefix match.
+      const installed = names.some(
+        (n) => n === this.model || n === `${this.model}:latest` || n.split(':')[0] === this.model,
+      );
+      if (!installed) {
+        return {
+          success: false,
+          error: `Ollama reachable, but model '${this.model}' is not installed — run \`ollama pull ${this.model}\` or pick an installed model. Installed: ${models || 'none'}`,
+        };
+      }
+      return { success: true, modelInfo: `Model '${this.model}' is installed. Available models: ${models || 'none'}` };
     } catch (err: any) {
       return { success: false, error: err.message || 'Cannot connect to Ollama' };
     }

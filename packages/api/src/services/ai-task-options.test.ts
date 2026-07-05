@@ -51,17 +51,18 @@ describe('resolveTaskExec', () => {
   it('uses the global fallback chain when no per-function override exists', () => {
     expect(resolveTaskExec({ taskOptions: {}, fallbackChain: global }, 'categorization')).toEqual({
       fallbackChain: global,
+      enabled: true,
     });
   });
 
   it('uses a per-function fallback chain override when non-empty', () => {
     const config = { taskOptions: { categorization: { fallbackChain: ['ollama'] } }, fallbackChain: global };
-    expect(resolveTaskExec(config, 'categorization')).toEqual({ fallbackChain: ['ollama'] });
+    expect(resolveTaskExec(config, 'categorization')).toEqual({ fallbackChain: ['ollama'], enabled: true });
   });
 
   it('ignores an empty per-function fallback chain (falls back to global)', () => {
     const config = { taskOptions: { categorization: { fallbackChain: [] } }, fallbackChain: global };
-    expect(resolveTaskExec(config, 'categorization')).toEqual({ fallbackChain: global });
+    expect(resolveTaskExec(config, 'categorization')).toEqual({ fallbackChain: global, enabled: true });
   });
 
   it('includes timeoutMs only when overridden', () => {
@@ -69,9 +70,23 @@ describe('resolveTaskExec', () => {
       { taskOptions: { chat: { timeoutMs: 120000 } }, fallbackChain: global },
       'chat',
     );
-    expect(withTimeout).toEqual({ timeoutMs: 120000, fallbackChain: global });
+    expect(withTimeout).toEqual({ timeoutMs: 120000, fallbackChain: global, enabled: true });
 
     const without = resolveTaskExec({ taskOptions: {}, fallbackChain: global }, 'chat');
     expect(without).not.toHaveProperty('timeoutMs');
+  });
+
+  it('resolves the "Enable this function" toggle (default true, null = default, false = disabled)', () => {
+    expect(resolveTaskExec({ taskOptions: {}, fallbackChain: global }, 'categorization').enabled).toBe(true);
+    expect(
+      resolveTaskExec({ taskOptions: { categorization: { enabled: null } }, fallbackChain: global }, 'categorization').enabled,
+    ).toBe(true);
+    expect(
+      resolveTaskExec({ taskOptions: { categorization: { enabled: false } }, fallbackChain: global }, 'categorization').enabled,
+    ).toBe(false);
+    // Per-function isolation: disabling one function leaves the others on.
+    expect(
+      resolveTaskExec({ taskOptions: { categorization: { enabled: false } }, fallbackChain: global }, 'chat').enabled,
+    ).toBe(true);
   });
 });

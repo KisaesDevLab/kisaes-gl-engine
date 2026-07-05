@@ -97,6 +97,13 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
       'AI processing is not enabled. An administrator must enable it in System Settings → AI before bill OCR can run.',
     );
   }
+  // Per-function kill switch (taskOptions.ocr.enabled).
+  if (!aiConfigService.resolveTaskExec(config, 'ocr').enabled) {
+    throw AppError.badRequest(
+      'Bill OCR is disabled in Admin → AI (OCR → "Enable this function").',
+      'ai_function_disabled',
+    );
+  }
 
   let fileBuffer: Buffer;
   try {

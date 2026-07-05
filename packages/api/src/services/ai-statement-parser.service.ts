@@ -326,6 +326,14 @@ async function executePipeline(
 
   const config = await aiConfigService.getConfig();
   if (!config.isEnabled) throw AppError.badRequest('AI processing is not enabled');
+  // Per-function kill switch — statement parsing runs under the OCR
+  // function key (taskOptions.ocr.enabled).
+  if (!aiConfigService.resolveTaskExec(config, 'ocr').enabled) {
+    throw AppError.badRequest(
+      'Statement parsing is disabled in Admin → AI (OCR → "Enable this function").',
+      'ai_function_disabled',
+    );
+  }
   // Stage-2 (markdown → JSON) is a text task; tune for a full-statement output.
   // A whole statement is transcribed in ONE call, so it needs far more output
   // headroom than a single doc-extract page — 16384 avoids truncating large

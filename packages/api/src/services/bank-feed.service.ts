@@ -691,8 +691,51 @@ async function applyCheckImagePayees(
   }
 }
 
-export async function runCleansingPipeline(tenantId: string, items: any[]) {
+/** Outcome accounting for one runCleansingPipeline() invocation, surfaced
+ *  additively on every import/re-cleanse response so an AI outage is
+ *  visible instead of silently degrading to regex-only cleaning. */
+export interface CleansingAggregate {
+  /** Items that went through the pipeline. */
+  processed: number;
+  /** Items whose clean name came from the AI/history step. */
+  aiCleansed: number;
+  /** Items whose AI step threw — or was skipped after repeated failures. */
+  aiFailed: number;
+  /** Items whose AI step was skipped because AI is deliberately off
+   *  (globally disabled, no provider, or the function's "Enable this
+   *  function" toggle) — deterministic cleaning still ran. */
+  disabled: number;
+  /** First AI failure message, for operator-facing surfaces. */
+  firstError?: string;
+}
+
+export function emptyCleansingAggregate(): CleansingAggregate {
+  return { processed: 0, aiCleansed: 0, aiFailed: 0, disabled: 0 };
+}
+
+// Mirrors CONSECUTIVE_FAIL_THRESHOLD in ai-categorization.service.ts:
+// after this many consecutive AI failures in a single pipeline run, the
+// AI step is skipped for the remaining items (each skip counts toward
+// aiFailed) so a dead provider doesn't burn a call per imported row.
+const CLEANSE_CONSECUTIVE_FAIL_THRESHOLD = 3;
+
+// Error codes that mean the AI step is DELIBERATELY unavailable — an admin
+// state, not an outage. Counted as `disabled` (silent skip) so non-AI
+// installs don't see "AI cleanup unavailable" warnings on every import.
+const CLEANSE_DISABLED_CODES = new Set([
+  'ai_disabled_globally',
+  'ai_no_provider_configured',
+  'ai_function_disabled',
+]);
+
+export async function runCleansingPipeline(tenantId: string, items: any[]): Promise<CleansingAggregate> {
+  const agg = emptyCleansingAggregate();
+  let consecutiveAiFailures = 0;
+  let aiShortCircuited = false;
+  let aiDisabled = false;
+
   for (const item of items) {
+    agg.processed++;
     const raw = item.originalDescription || item.description || '';
     let cleanedName: string | null = null;
 
@@ -708,20 +751,39 @@ export async function runCleansingPipeline(tenantId: string, items: any[]) {
 
     // Step 3 & 4: Categorization history + AI (also sets suggestions on the feed item)
     if (!cleanedName) {
-      try {
-        const { getConfig } = await import('./ai-config.service.js');
-        const config = await getConfig();
-
-        // Try categorization history first (inside categorize())
-        // Then AI if enabled — categorize() returns vendor_name from AI
-        const { categorize: aiCategorize } = await import('./ai-categorization.service.js');
-        const result = await aiCategorize(tenantId, item.id);
-
-        if (result?.contactName) {
-          cleanedName = result.contactName;
+      if (aiDisabled) {
+        // A previous item already established that AI is deliberately off
+        // for this run — skip silently (deterministic cleaning still runs).
+        agg.disabled++;
+      } else if (aiShortCircuited) {
+        agg.aiFailed++;
+      } else {
+        try {
+          // Try categorization history first (inside categorize())
+          // Then AI if enabled — categorize() returns vendor_name from AI
+          const { categorize: aiCategorize } = await import('./ai-categorization.service.js');
+          const result = await aiCategorize(tenantId, item.id);
+          consecutiveAiFailures = 0;
+          if (result?.contactName) {
+            cleanedName = result.contactName;
+            agg.aiCleansed++;
+          }
+        } catch (err) {
+          const e = err as { code?: string; message?: string };
+          const msg = e?.message ?? String(err);
+          if (e?.code && CLEANSE_DISABLED_CODES.has(e.code)) {
+            // Deliberate admin state — count separately and stop attempting.
+            aiDisabled = true;
+            agg.disabled++;
+          } else {
+            agg.aiFailed++;
+            if (!agg.firstError) agg.firstError = msg;
+            // eslint-disable-next-line no-console
+            console.warn(`[cleanse] AI step failed for item ${item.id}: ${msg}`);
+            consecutiveAiFailures++;
+            if (consecutiveAiFailures >= CLEANSE_CONSECUTIVE_FAIL_THRESHOLD) aiShortCircuited = true;
+          }
         }
-      } catch {
-        // AI/history is best-effort
       }
     }
 
@@ -737,6 +799,7 @@ export async function runCleansingPipeline(tenantId: string, items: any[]) {
       (item as any).description = cleanedName;
     }
   }
+  return agg;
 }
 
 /**
@@ -939,8 +1002,8 @@ export async function bulkRecleanse(tenantId: string, feedItemIds: string[]) {
     });
     if (item) items.push(item);
   }
-  await runCleansingPipeline(tenantId, items);
-  return { cleansed: items.length };
+  const cleansing = await runCleansingPipeline(tenantId, items);
+  return { cleansed: items.length, cleansing };
 }
 
 export interface ImportDateRange {
@@ -1056,17 +1119,17 @@ export async function importFromCsv(
     if (!existing) deduped.push(item);
   }
 
-  if (deduped.length === 0) return [];
+  if (deduped.length === 0) return { items: [], cleansing: emptyCleansingAggregate() };
 
   const inserted = await db.insert(bankFeedItems).values(deduped).returning();
 
   // Run full cleansing pipeline on each item
-  await runCleansingPipeline(tenantId, inserted);
+  const cleansing = await runCleansingPipeline(tenantId, inserted);
 
   // Run categorization pipeline (rules autoConfirm + AI suggestions)
   await runCategorizationPipeline(tenantId, inserted);
 
-  return inserted;
+  return { items: inserted, cleansing };
 }
 
 export async function importFromOfx(tenantId: string, bankConnectionId: string, ofxContent: string, dateRange?: ImportDateRange) {
@@ -1134,17 +1197,17 @@ export async function importFromOfx(tenantId: string, bankConnectionId: string, 
     dedupedOfx.push(item);
   }
 
-  if (dedupedOfx.length === 0) return [];
+  if (dedupedOfx.length === 0) return { items: [], cleansing: emptyCleansingAggregate() };
 
   const insertedOfx = await db.insert(bankFeedItems).values(dedupedOfx).returning();
 
   // Run full cleansing pipeline on each item
-  await runCleansingPipeline(tenantId, insertedOfx);
+  const cleansing = await runCleansingPipeline(tenantId, insertedOfx);
 
   // Run categorization pipeline (rules autoConfirm + AI suggestions)
   await runCategorizationPipeline(tenantId, insertedOfx);
 
-  return insertedOfx;
+  return { items: insertedOfx, cleansing };
 }
 
 export async function importStatementItems(
@@ -1208,7 +1271,9 @@ export async function importStatementItems(
     if (!existing) dedupedPrepared.push(p);
   }
 
-  if (dedupedPrepared.length === 0) return { imported: 0, skipped: transactions.length };
+  if (dedupedPrepared.length === 0) {
+    return { imported: 0, skipped: transactions.length, cleansing: emptyCleansingAggregate() };
+  }
 
   const insertedStmt = await db.insert(bankFeedItems).values(dedupedPrepared.map((p) => p.row)).returning();
 
@@ -1220,12 +1285,14 @@ export async function importStatementItems(
   // Cleansing only for rows that did NOT carry a cleaned name from the review
   // (carried names are authoritative — don't let rules overwrite them).
   const freshForCleansing = insertedStmt.filter((_, i) => !dedupedPrepared[i]!.carriedClean);
-  if (freshForCleansing.length > 0) await runCleansingPipeline(tenantId, freshForCleansing);
+  const cleansing = freshForCleansing.length > 0
+    ? await runCleansingPipeline(tenantId, freshForCleansing)
+    : emptyCleansingAggregate();
 
   // Categorization pipeline runs for ALL rows (rules + match detection); its AI
   // step skips rows that already carry a suggestedAccountId.
   await runCategorizationPipeline(tenantId, insertedStmt);
 
-  return { imported: insertedStmt.length, skipped: transactions.length - insertedStmt.length };
+  return { imported: insertedStmt.length, skipped: transactions.length - insertedStmt.length, cleansing };
 }
 

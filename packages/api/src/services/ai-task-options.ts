@@ -23,6 +23,9 @@ export interface ResolvedTaskParams {
 export interface ResolvedTaskExec {
   timeoutMs?: number;
   fallbackChain: string[];
+  /** Admin "Enable this function" toggle (taskOptions.<fn>.enabled).
+   *  Absent/null resolves to true so the toggle is a no-op until used. */
+  enabled: boolean;
 }
 
 export function resolveTaskParams(
@@ -49,5 +52,6 @@ export function resolveTaskExec(
   return {
     ...(opt.timeoutMs ? { timeoutMs: opt.timeoutMs } : {}),
     fallbackChain: opt.fallbackChain && opt.fallbackChain.length > 0 ? opt.fallbackChain : config.fallbackChain,
+    enabled: opt.enabled ?? true,
   };
 }

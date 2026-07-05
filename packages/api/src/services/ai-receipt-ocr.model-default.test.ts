@@ -44,6 +44,9 @@ vi.mock('./ai-config.service.js', () => ({
   getConfig: async () => ({ isEnabled: true, ocrProvider: 'openai_compat', categorizationProvider: 'openai_compat', ocrModel: null }),
   getRawConfig: async () => ({ openaiCompatBaseUrl: 'http://192.168.68.105:11434' }),
   resolveTaskParams: () => ({ maxTokens: 1024, temperature: 0.1 }),
+  // processReceipt also checks the per-function "Enable this function"
+  // toggle via resolveTaskExec; keep it enabled here.
+  resolveTaskExec: () => ({ fallbackChain: [], enabled: true }),
 }));
 
 vi.mock('./ai-orchestrator.service.js', () => ({

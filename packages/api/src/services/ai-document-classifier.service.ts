@@ -67,6 +67,12 @@ export async function classifyDocument(tenantId: string, attachmentId: string): 
   // Per-function AI settings (AI_FUNCTION_SETTINGS_PLAN.md).
   const taskParams = aiConfigService.resolveTaskParams(config, 'document_classification', { maxTokens: 128, temperature: 0.1 });
   if (!config.isEnabled) return { type: 'other', confidence: 0 };
+  // Per-function kill switch (taskOptions.document_classification.enabled).
+  // Classification is best-effort everywhere it's called, so the disabled
+  // state mirrors the global-disabled behaviour: a neutral "other" result.
+  if (!aiConfigService.resolveTaskExec(config, 'document_classification').enabled) {
+    return { type: 'other', confidence: 0 };
+  }
 
   let fileBuffer: Buffer;
   try {

@@ -90,6 +90,13 @@ export async function categorize(tenantId: string, feedItemId: string) {
       'ai_no_provider_configured',
     );
   }
+  // Per-function kill switch (taskOptions.categorization.enabled).
+  if (!aiConfigService.resolveTaskExec(config, 'categorization').enabled) {
+    throw AppError.badRequest(
+      'This AI function is disabled in Admin → AI (Categorization → "Enable this function").',
+      'ai_function_disabled',
+    );
+  }
 
   // Get tenant's COA
   const coaAccounts = await db.select({ id: accounts.id, name: accounts.name, accountNumber: accounts.accountNumber, accountType: accounts.accountType })
@@ -429,6 +436,13 @@ export async function previewCategorize(
     throw AppError.badRequest(
       'No categorization provider is configured. An administrator must pick one in System Settings → AI → Tasks.',
       'ai_no_provider_configured',
+    );
+  }
+  // Per-function kill switch (taskOptions.categorization.enabled).
+  if (!aiConfigService.resolveTaskExec(config, 'categorization').enabled) {
+    throw AppError.badRequest(
+      'This AI function is disabled in Admin → AI (Categorization → "Enable this function").',
+      'ai_function_disabled',
     );
   }
 

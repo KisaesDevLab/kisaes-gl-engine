@@ -9,6 +9,7 @@ import { decrypt } from '../utils/encryption.js';
 import { retryWithBackoff } from '../utils/retry.js';
 import * as plaidClient from './plaid-client.service.js';
 import * as bankConnectionService from './bank-connection.service.js';
+import type { CleansingAggregate } from './bank-feed.service.js';
 
 interface RoutingEntry {
   tenantId: string;
@@ -110,7 +111,18 @@ export async function syncItem(itemId: string) {
         providerTransactionId: txn.transaction_id,
         feedDate: txn.date,
         description: txn.name || txn.merchant_name || '',
-        amount: String(Math.abs(txn.amount)),
+        // Sign mapping: Plaid's convention is positive = money OUT
+        // (debit/spend), negative = money IN (deposit/refund) — exactly the
+        // signed convention bank_feed_items uses everywhere else (CSV
+        // debit−credit, OFX negated, statement credit→negative; see
+        // bank-feed.service categorize(): amount > 0 ⇒ expense, < 0 ⇒
+        // deposit). So Plaid's signed value maps through DIRECTLY. Never
+        // Math.abs() it — that turned every deposit into a spend.
+        amount: String(txn.amount),
+        // Raw provider descriptor — dedup and categorization learning key
+        // off originalDescription, and the cleansing pipeline preserves it
+        // while rewriting `description`.
+        originalDescription: txn.name || txn.merchant_name || null,
         // Plaid's own category is a search hint only; the CATEGORY column shows
         // the suggested GL account, which the categorization pipeline fills.
         category: txn.personal_finance_category?.primary || txn.category?.[0] || null,
@@ -125,12 +137,35 @@ export async function syncItem(itemId: string) {
     // Run the SAME cleansing + categorization pipelines as file imports, so
     // Plaid items get a cleaned description, a suggested EXPENSE account
     // (the CATEGORY column / rules / AI), and a matchable classification state.
+    // The per-tenant cleansing aggregates are summed and carried on the sync
+    // result so callers/logs can see when the AI cleanup step degraded.
+    const cleansing: CleansingAggregate = { processed: 0, aiCleansed: 0, aiFailed: 0, disabled: 0 };
     for (const [tid, rows] of addedRowsByTenant) {
       try {
         const { runCleansingPipeline, runCategorizationPipeline } = await import('./bank-feed.service.js');
-        await runCleansingPipeline(tid, rows);
+        const agg = await runCleansingPipeline(tid, rows);
+        cleansing.processed += agg.processed;
+        cleansing.aiCleansed += agg.aiCleansed;
+        cleansing.aiFailed += agg.aiFailed;
+        cleansing.disabled += agg.disabled;
+        if (!cleansing.firstError && agg.firstError) cleansing.firstError = agg.firstError;
         await runCategorizationPipeline(tid, rows);
-      } catch { /* pipelines are best-effort */ }
+      } catch (err) {
+        // Pipelines are best-effort — the feed items are already inserted —
+        // but a failure must be visible to operators, not swallowed.
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[plaid-sync] cleansing/categorization pipeline failed for tenant ${tid}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+    if (cleansing.aiFailed > 0) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[plaid-sync] AI cleanup unavailable for ${cleansing.aiFailed} of ${cleansing.processed} item(s)` +
+        ` (item ${itemId}): ${cleansing.firstError ?? 'unknown error'}`,
+      );
     }
 
     // Process modified transactions
@@ -146,7 +181,9 @@ export async function syncItem(itemId: string) {
       await db.update(bankFeedItems).set({
         feedDate: txn.date,
         description: txn.name || txn.merchant_name || '',
-        amount: String(Math.abs(txn.amount)),
+        originalDescription: txn.name || txn.merchant_name || null,
+        // Same signed convention as the insert path — never Math.abs().
+        amount: String(txn.amount),
       }).where(eq(bankFeedItems.id, feedItem.id));
       modifiedCount++;
     }
@@ -204,7 +241,7 @@ export async function syncItem(itemId: string) {
       }
     } catch { /* balance refresh is best-effort */ }
 
-    return { added: addedCount, modified: modifiedCount, removed: removedCount };
+    return { added: addedCount, modified: modifiedCount, removed: removedCount, cleansing };
   } catch (err: any) {
     await db.update(plaidItems).set({
       lastSyncAt: new Date(), lastSyncStatus: 'error', lastSyncError: err.message || 'Sync failed', updatedAt: new Date(),

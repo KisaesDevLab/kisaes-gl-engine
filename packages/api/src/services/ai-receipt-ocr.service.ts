@@ -50,6 +50,13 @@ export async function processReceipt(tenantId: string, attachmentId: string) {
   // Per-function AI settings (AI_FUNCTION_SETTINGS_PLAN.md).
   const taskParams = aiConfigService.resolveTaskParams(config, 'ocr', { maxTokens: 1024, temperature: 0.1 });
   if (!config.isEnabled) throw AppError.badRequest('AI processing is not enabled');
+  // Per-function kill switch (taskOptions.ocr.enabled).
+  if (!aiConfigService.resolveTaskExec(config, 'ocr').enabled) {
+    throw AppError.badRequest(
+      'Receipt OCR is disabled in Admin → AI (OCR → "Enable this function").',
+      'ai_function_disabled',
+    );
+  }
 
   let imageBuffer: Buffer;
   try {

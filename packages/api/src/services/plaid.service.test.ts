@@ -2,16 +2,49 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { db } from '../db/index.js';
-import { tenants, users, sessions, companies, accounts, plaidConfig, plaidItems, plaidAccounts, plaidAccountMappings, plaidItemActivity, plaidWebhookLog } from '../db/schema/index.js';
+import {
+  tenants, users, sessions, companies, accounts, plaidConfig, plaidItems, plaidAccounts,
+  plaidAccountMappings, plaidItemActivity, plaidWebhookLog,
+  bankFeedItems, bankConnections, bankStatementLines, bankStatements,
+} from '../db/schema/index.js';
 import { auditLog } from '../db/schema/index.js';
 import * as authService from './auth.service.js';
 import * as plaidClientService from './plaid-client.service.js';
 import * as plaidMappingService from './plaid-mapping.service.js';
 import * as plaidWebhookService from './plaid-webhook.service.js';
+import * as plaidSyncService from './plaid-sync.service.js';
 import { encrypt, decrypt } from '../utils/encryption.js';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, asc } from 'drizzle-orm';
+
+// syncItem's upstream calls are mocked (partial module mock — the config
+// service functions stay real); the bank-feed pipelines are mocked so sync
+// tests exercise routing/insert semantics without the full cleansing stack.
+const syncMocks = vi.hoisted(() => ({
+  syncTransactions: vi.fn(),
+  getBalances: vi.fn(),
+  runCleansingPipeline: vi.fn(),
+  runCategorizationPipeline: vi.fn(),
+}));
+
+vi.mock('./plaid-client.service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./plaid-client.service.js')>();
+  return {
+    ...actual,
+    syncTransactions: (...args: unknown[]) => syncMocks.syncTransactions(...args),
+    getBalances: (...args: unknown[]) => syncMocks.getBalances(...args),
+  };
+});
+
+vi.mock('./bank-feed.service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./bank-feed.service.js')>();
+  return {
+    ...actual,
+    runCleansingPipeline: (...args: unknown[]) => syncMocks.runCleansingPipeline(...args),
+    runCategorizationPipeline: (...args: unknown[]) => syncMocks.runCategorizationPipeline(...args),
+  };
+});
 
 async function cleanDb() {
   await db.delete(plaidWebhookLog);
@@ -21,6 +54,13 @@ async function cleanDb() {
   await db.delete(plaidItems);
   await db.delete(plaidConfig);
   await db.delete(auditLog);
+  // Known FK-pollution fix: bank_feed_items / bank_statement_lines /
+  // bank_statements / bank_connections rows reference accounts, so they must
+  // go before the accounts delete or it fails and leaks rows across files.
+  await db.delete(bankFeedItems);
+  await db.delete(bankStatementLines);
+  await db.delete(bankStatements);
+  await db.delete(bankConnections);
   await db.delete(accounts);
   await db.delete(companies);
   await db.delete(sessions);
@@ -223,5 +263,141 @@ describe('Plaid Webhook Service (System-Scoped)', () => {
       where: eq(plaidItems.plaidItemId, 'revoked-item'),
     });
     expect(item!.itemStatus).toBe('revoked');
+  });
+});
+
+describe('Plaid Sync — sign convention + originalDescription (F5)', () => {
+  beforeEach(async () => {
+    await cleanDb();
+    syncMocks.syncTransactions.mockReset();
+    syncMocks.getBalances.mockReset().mockResolvedValue([]);
+    syncMocks.runCleansingPipeline.mockReset().mockResolvedValue({
+      processed: 0, aiCleansed: 0, aiFailed: 0, disabled: 0,
+    });
+    syncMocks.runCategorizationPipeline.mockReset().mockResolvedValue(undefined);
+  });
+  afterEach(async () => { await cleanDb(); });
+
+  async function setupMappedItem() {
+    const { user } = await createTestUser();
+    const bankAccount = await db.query.accounts.findFirst({
+      where: and(eq(accounts.tenantId, user.tenantId), eq(accounts.detailType, 'bank')),
+    });
+    expect(bankAccount).toBeDefined();
+
+    const [item] = await db.insert(plaidItems).values({
+      plaidItemId: 'sync-sign-item',
+      accessTokenEncrypted: encrypt('access-token'),
+      institutionName: 'Sign Test Bank',
+      createdBy: user.id,
+    }).returning();
+
+    const [pa] = await db.insert(plaidAccounts).values({
+      plaidItemId: item!.id,
+      plaidAccountId: 'acct-sign',
+      name: 'Sign Checking',
+      accountType: 'depository',
+      mask: '4242',
+    }).returning();
+
+    await db.insert(plaidAccountMappings).values({
+      plaidAccountId: pa!.id,
+      tenantId: user.tenantId,
+      mappedAccountId: bankAccount!.id,
+      isSyncEnabled: true,
+      mappedBy: user.id,
+    });
+
+    return { user, item: item!, pa: pa! };
+  }
+
+  it('preserves the Plaid sign in both directions and sets originalDescription', async () => {
+    const { user, item } = await setupMappedItem();
+
+    // Plaid convention: positive = money OUT (spend), negative = money IN.
+    syncMocks.syncTransactions.mockResolvedValue({
+      added: [
+        {
+          transaction_id: 'txn-out', account_id: 'acct-sign', date: '2026-06-01',
+          name: 'COFFEE SHOP #42', merchant_name: 'Coffee Shop', amount: 25.5,
+          personal_finance_category: { primary: 'FOOD_AND_DRINK' },
+        },
+        {
+          transaction_id: 'txn-in', account_id: 'acct-sign', date: '2026-06-02',
+          name: 'PAYROLL DEPOSIT ACME', amount: -1500,
+        },
+      ],
+      modified: [], removed: [], nextCursor: 'cursor-1',
+    });
+
+    const result = await plaidSyncService.syncItem(item.id);
+    expect(result.added).toBe(2);
+
+    const rows = await db.select().from(bankFeedItems)
+      .where(eq(bankFeedItems.tenantId, user.tenantId))
+      .orderBy(asc(bankFeedItems.feedDate));
+    expect(rows).toHaveLength(2);
+
+    const spend = rows.find((r) => r.providerTransactionId === 'txn-out')!;
+    const deposit = rows.find((r) => r.providerTransactionId === 'txn-in')!;
+    // Money out stays positive (app convention: positive = spend)…
+    expect(parseFloat(spend.amount)).toBeCloseTo(25.5, 4);
+    // …and money in stays NEGATIVE — Math.abs() here was the sign bug.
+    expect(parseFloat(deposit.amount)).toBeCloseTo(-1500, 4);
+    // originalDescription is populated (dedup + learning key off it).
+    expect(spend.originalDescription).toBe('COFFEE SHOP #42');
+    expect(deposit.originalDescription).toBe('PAYROLL DEPOSIT ACME');
+  });
+
+  it('carries the cleansing aggregate on the sync result', async () => {
+    const { item } = await setupMappedItem();
+    syncMocks.syncTransactions.mockResolvedValue({
+      added: [
+        { transaction_id: 'txn-1', account_id: 'acct-sign', date: '2026-06-01', name: 'VENDOR X', amount: 10 },
+      ],
+      modified: [], removed: [], nextCursor: 'cursor-1',
+    });
+    syncMocks.runCleansingPipeline.mockResolvedValue({
+      processed: 1, aiCleansed: 0, aiFailed: 1, disabled: 0, firstError: 'llm down',
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await plaidSyncService.syncItem(item.id);
+
+    expect(result.cleansing).toMatchObject({ processed: 1, aiFailed: 1, firstError: 'llm down' });
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('[plaid-sync] AI cleanup unavailable'))).toBe(true);
+    warnSpy.mockRestore();
+  });
+
+  it('modified transactions keep the signed amount too (no Math.abs)', async () => {
+    const { user, item } = await setupMappedItem();
+
+    syncMocks.syncTransactions.mockResolvedValue({
+      added: [
+        { transaction_id: 'txn-mod', account_id: 'acct-sign', date: '2026-06-01', name: 'REFUND PENDING', amount: -20 },
+      ],
+      modified: [], removed: [], nextCursor: 'cursor-1',
+    });
+    await plaidSyncService.syncItem(item.id);
+
+    // Second sync run delivers the same transaction as `modified` with an
+    // updated (still negative) amount. Clear the 30s claim debounce first.
+    await db.update(plaidItems).set({ lastSyncAt: new Date(Date.now() - 60_000) })
+      .where(eq(plaidItems.id, item.id));
+    syncMocks.syncTransactions.mockResolvedValue({
+      added: [],
+      modified: [
+        { transaction_id: 'txn-mod', account_id: 'acct-sign', date: '2026-06-03', name: 'REFUND POSTED', amount: -22.75 },
+      ],
+      removed: [], nextCursor: 'cursor-2',
+    });
+    const result = await plaidSyncService.syncItem(item.id);
+    expect(result.modified).toBe(1);
+
+    const row = await db.query.bankFeedItems.findFirst({
+      where: and(eq(bankFeedItems.tenantId, user.tenantId), eq(bankFeedItems.providerTransactionId, 'txn-mod')),
+    });
+    expect(parseFloat(row!.amount)).toBeCloseTo(-22.75, 4);
+    expect(row!.originalDescription).toBe('REFUND POSTED');
   });
 });
