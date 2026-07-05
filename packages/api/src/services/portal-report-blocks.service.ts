@@ -460,13 +460,15 @@ async function tbSummary(args: ResolverArgs): Promise<TbSummary> {
   const all = r.data as Array<{
     account_number: string | null;
     name: string;
-    total_debit: number;
-    total_credit: number;
+    // Netted single-column TB shape (proper trial-balance format) —
+    // exactly one of debit/credit is nonzero per row.
+    debit: number;
+    credit: number;
   }>;
   const rows = all.slice(0, TB_EMBED_MAX_ROWS).map((row) => ({
     account: row.account_number ? `${row.account_number} · ${row.name}` : row.name,
-    debit: Number(row.total_debit ?? 0),
-    credit: Number(row.total_credit ?? 0),
+    debit: Number(row.debit ?? 0),
+    credit: Number(row.credit ?? 0),
   }));
   return {
     rows,

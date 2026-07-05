@@ -4,6 +4,7 @@
 
 import { formatDetailTypeLabel } from '@kis-books/shared';
 import * as reportService from './report.service.js';
+import { getCustomDetailTypeRanks, orderDetailTypeGroups } from './detail-types.service.js';
 
 type CompareMode = 'previous_period' | 'previous_year' | 'ytd_vs_prior_ytd' | 'multi_period';
 type PeriodType = 'month' | 'quarter' | 'year';
@@ -216,13 +217,16 @@ export async function buildComparativePL(
     // Grouped mode: per-section detail-type groups with per-column
     // subtotal rows (all plain sums here -- multi-period columns carry
     // no variance columns; the trailing Total column sums like any other).
-    const plGroups = grouped
+    // Custom detail types follow the tenant's presentation order —
+    // same shared helper as the standard P&L/BS builders.
+    const ranks = grouped ? await getCustomDetailTypeRanks(tenantId) : null;
+    const plGroups = grouped && ranks
       ? {
-          revenue: groupComparativeRows(rows.filter((r) => r.accountType === 'revenue'), columns),
-          cogs: groupComparativeRows(rows.filter((r) => r.accountType === 'cogs'), columns),
-          expenses: groupComparativeRows(rows.filter((r) => r.accountType === 'expense'), columns),
-          otherRevenue: groupComparativeRows(rows.filter((r) => r.accountType === 'other_revenue'), columns),
-          otherExpenses: groupComparativeRows(rows.filter((r) => r.accountType === 'other_expense'), columns),
+          revenue: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'revenue'), columns), ranks, 'revenue'),
+          cogs: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'cogs'), columns), ranks, 'cogs'),
+          expenses: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'expense'), columns), ranks, 'expense'),
+          otherRevenue: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'other_revenue'), columns), ranks, 'other_revenue'),
+          otherExpenses: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'other_expense'), columns), ranks, 'other_expense'),
         }
       : undefined;
 
@@ -302,14 +306,16 @@ export async function buildComparativePL(
 
   // Grouped mode: per-section detail-type groups. Subtotal rows carry
   // values for every column -- current/prior sums with the $ / % change
-  // re-derived from those sums (same semantics as account rows).
-  const plGroups = grouped
+  // re-derived from those sums (same semantics as account rows). Custom
+  // detail types follow the tenant's presentation order (shared helper).
+  const ranks = grouped ? await getCustomDetailTypeRanks(tenantId) : null;
+  const plGroups = grouped && ranks
     ? {
-        revenue: groupComparativeRows(rows.filter((r) => r.accountType === 'revenue'), columns),
-        cogs: groupComparativeRows(rows.filter((r) => r.accountType === 'cogs'), columns),
-        expenses: groupComparativeRows(rows.filter((r) => r.accountType === 'expense'), columns),
-        otherRevenue: groupComparativeRows(rows.filter((r) => r.accountType === 'other_revenue'), columns),
-        otherExpenses: groupComparativeRows(rows.filter((r) => r.accountType === 'other_expense'), columns),
+        revenue: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'revenue'), columns), ranks, 'revenue'),
+        cogs: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'cogs'), columns), ranks, 'cogs'),
+        expenses: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'expense'), columns), ranks, 'expense'),
+        otherRevenue: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'other_revenue'), columns), ranks, 'other_revenue'),
+        otherExpenses: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'other_expense'), columns), ranks, 'other_expense'),
       }
     : undefined;
 
@@ -394,11 +400,14 @@ export async function buildComparativeBS(
   // Grouped mode: detail-type groups per section; the computed rows
   // (accountId null: Retained Earnings (Prior Years) / Net Income
   // (Current Year)) land in a trailing 'Equity (Calculated)' group.
-  const bsGroups = grouped
+  // Custom detail types follow the tenant's presentation order; null-
+  // detail groups (incl. the calculated one) stay trailing.
+  const ranks = grouped ? await getCustomDetailTypeRanks(tenantId) : null;
+  const bsGroups = grouped && ranks
     ? {
-        assets: groupComparativeRows(mergedAssets, columns),
-        liabilities: groupComparativeRows(mergedLiabilities, columns),
-        equity: groupComparativeRows(mergedEquity, columns, (r) => r.accountId === null),
+        assets: orderDetailTypeGroups(groupComparativeRows(mergedAssets, columns), ranks, 'asset'),
+        liabilities: orderDetailTypeGroups(groupComparativeRows(mergedLiabilities, columns), ranks, 'liability'),
+        equity: orderDetailTypeGroups(groupComparativeRows(mergedEquity, columns, (r) => r.accountId === null), ranks, 'equity'),
       }
     : undefined;
 

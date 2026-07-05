@@ -146,10 +146,78 @@ describe('report CSV exports (route-level, ?format=csv)', () => {
     expect(r.body).toContain('"#","Account","Type","Debit","Credit"');
     expect(r.body).toContain('Retained Earnings (Prior Years)');
     expect(r.body).toContain('TOTALS');
-    // Totals: debits = credits = 5000 (prior bank) + 1200 (current bank)
-    // + 300 (expense)… TB shows bank cumulative 5900 debit, expense 300,
-    // revenue 1200 credit, RE 5000 credit → 6200 each side.
+    // Netted TB totals: debit side = bank 5,900 (6,200 dr − 300 cr)
+    // + expense 300; credit side = revenue 1,200 + virtual RE 5,000
+    // → 6,200 each side.
     expect(r.body).toContain('"6,200.00"');
+    expect(r.body).toContain('"5,900.00"');
+  });
+
+  it('trial balance JSON uses proper netted format (one column per account)', async () => {
+    const r = await get('/trial-balance?start_date=2026-01-01&end_date=2026-12-31');
+    expect(r.status).toBe(200);
+    const data = JSON.parse(r.body);
+    type TbRow = { name: string; debit: number; credit: number; total_debit: number; total_credit: number };
+    const rows = data.data as TbRow[];
+
+    // Net-credit account (revenue) shows ONLY in the credit column.
+    const rev = rows.find((x) => x.name === revenueName)!;
+    expect(rev.credit).toBeCloseTo(1200, 2);
+    expect(rev.debit).toBe(0);
+
+    // Mixed-activity bank account nets to a single debit figure
+    // (6,200 dr − 300 cr = 5,900), while the legacy gross-activity
+    // fields stay available for API compatibility.
+    const bank = rows.find((x) => x.total_debit === 6200)!;
+    expect(bank).toBeDefined();
+    expect(bank.debit).toBeCloseTo(5900, 2);
+    expect(bank.credit).toBe(0);
+    expect(bank.total_credit).toBeCloseTo(300, 2);
+
+    // Virtual Retained Earnings row still injected, netted credit-side.
+    const re = rows.find((x) => x.name === 'Retained Earnings (Prior Years)')!;
+    expect(re.credit).toBeCloseTo(5000, 2);
+    expect(re.debit).toBe(0);
+
+    // Totals are the netted column sums — and they tie.
+    expect(data.totalDebits).toBeCloseTo(6200, 2);
+    expect(data.totalCredits).toBeCloseTo(6200, 2);
+  });
+
+  it('account activity summary returns gross debits/credits + signed net', async () => {
+    const r = await get('/account-activity-summary?start_date=2026-01-01&end_date=2026-12-31');
+    expect(r.status).toBe(200);
+    const data = JSON.parse(r.body);
+    type ActRow = { name: string; total_debit: number; total_credit: number; net: number };
+    const rows = data.data as ActRow[];
+
+    // Plain period activity: BOTH columns populated for the bank
+    // (1,200 in, 300 out — the 2025 posting is outside the range).
+    const bank = rows.find((x) => x.total_debit === 1200 && x.total_credit === 300)!;
+    expect(bank).toBeDefined();
+    expect(bank.net).toBeCloseTo(900, 2);
+
+    // Net is SIGNED: a credit-heavy account goes negative.
+    const rev = rows.find((x) => x.name === revenueName)!;
+    expect(rev.total_credit).toBeCloseTo(1200, 2);
+    expect(rev.net).toBeCloseTo(-1200, 2);
+
+    // No virtual RE row on an activity report.
+    expect(rows.some((x) => x.name === 'Retained Earnings (Prior Years)')).toBe(false);
+
+    // Activity totals tie (posted entries balance) and net sums to zero.
+    expect(data.totalDebits).toBeCloseTo(1500, 2);
+    expect(data.totalCredits).toBeCloseTo(1500, 2);
+    expect(data.totalNet).toBeCloseTo(0, 2);
+  });
+
+  it('account activity summary exports CSV with a TOTALS row', async () => {
+    const r = await get('/account-activity-summary?start_date=2026-01-01&end_date=2026-12-31&format=csv');
+    expect(r.status).toBe(200);
+    expect(r.contentType).toContain('text/csv');
+    expect(r.body).toContain('"#","Account","Type","Total Debits","Total Credits","Net"');
+    expect(r.body).toContain('TOTALS');
+    expect(r.body).toContain('"1,500.00"');
   });
 
   it('trial balance CSV neutralizes null ids and never leaks internal keys', async () => {

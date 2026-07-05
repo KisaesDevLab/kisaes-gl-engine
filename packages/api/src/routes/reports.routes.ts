@@ -708,16 +708,20 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
     return formatted;
   });
 
-  // Append totals if present
+  // Append totals if present. The Trial Balance uses netted `debit` /
+  // `credit` columns; the Account Activity Summary keeps the gross
+  // `total_debit` / `total_credit` activity columns plus a signed `net`.
   if (reportData.totalDebits !== undefined) {
     const totalRow: any = {};
     columns.forEach((c) => { totalRow[c.key] = ''; });
     const nameCol = columns.find((c) => c.key === 'name' || c.key === 'account_number');
     if (nameCol) totalRow[nameCol.key] = 'TOTALS';
-    const debitCol = columns.find((c) => c.key === 'total_debit');
-    const creditCol = columns.find((c) => c.key === 'total_credit');
+    const debitCol = columns.find((c) => c.key === 'total_debit' || c.key === 'debit');
+    const creditCol = columns.find((c) => c.key === 'total_credit' || c.key === 'credit');
+    const netCol = columns.find((c) => c.key === 'net');
     if (debitCol) totalRow[debitCol.key] = fmtNum(reportData.totalDebits);
     if (creditCol) totalRow[creditCol.key] = fmtNum(reportData.totalCredits);
+    if (netCol && reportData.totalNet !== undefined) totalRow[netCol.key] = fmtNum(reportData.totalNet);
     rows = [...rows, totalRow];
   }
 
@@ -1497,8 +1501,35 @@ reportsRouter.get('/trial-balance', async (req, res) => {
     { key: 'account_number', label: '#' },
     { key: 'name', label: 'Account' },
     { key: 'account_type', label: 'Type' },
-    { key: 'total_debit', label: 'Debit', align: 'right' },
-    { key: 'total_credit', label: 'Credit', align: 'right' },
+    // Proper TB format: each account's NET balance in exactly one
+    // column (rows also carry gross total_debit/total_credit for
+    // API compatibility — see buildTrialBalance).
+    { key: 'debit', label: 'Debit', align: 'right' },
+    { key: 'credit', label: 'Credit', align: 'right' },
+  ]}, format);
+});
+
+// Account Activity Summary — per-account gross debits/credits for the
+// period plus a signed Net column. Preserves the activity-sums view the
+// Trial Balance had before it moved to netted single-column format.
+reportsRouter.get('/account-activity-summary', async (req, res) => {
+  const { start_date, end_date, format } = req.query as Record<string, string>;
+  const today = new Date().toISOString().split('T')[0]!;
+  const year = new Date().getFullYear();
+  const data = await reportService.buildAccountActivitySummary(
+    req.tenantId,
+    start_date || `${year}-01-01`,
+    end_date || today,
+    resolveCompanyScope(req),
+    readTagFilter(req),
+  );
+  await respond(res, { ...data, _exportColumns: [
+    { key: 'account_number', label: '#' },
+    { key: 'name', label: 'Account' },
+    { key: 'account_type', label: 'Type' },
+    { key: 'total_debit', label: 'Total Debits', align: 'right' },
+    { key: 'total_credit', label: 'Total Credits', align: 'right' },
+    { key: 'net', label: 'Net', align: 'right' },
   ]}, format);
 });
 

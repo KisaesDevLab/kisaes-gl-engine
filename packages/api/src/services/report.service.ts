@@ -22,6 +22,7 @@ import {
   getReportFooter,
 } from './tenant-report-settings.service.js';
 import { missingMonthsBetween } from './bank-statements.service.js';
+import { getCustomDetailTypeRanks, orderDetailTypeGroups } from './detail-types.service.js';
 
 // Money parsers. Reports expose `number` to the UI, but every SUM /
 // DIFFERENCE runs through Decimal so aggregating hundreds of rows
@@ -407,16 +408,23 @@ export async function buildProfitAndLoss(
     operatingIncome,
     netIncome,
     ...(grouped
-      ? {
-          groupBy: 'detail_type' as const,
-          groups: {
-            revenue: groupByDetailType(revenue, (e) => e.amount),
-            cogs: groupByDetailType(cogs, (e) => e.amount),
-            expenses: groupByDetailType(expenses, (e) => e.amount),
-            otherRevenue: groupByDetailType(otherRevenue, (e) => e.amount),
-            otherExpenses: groupByDetailType(otherExpenses, (e) => e.amount),
-          },
-        }
+      ? await (async () => {
+          // Presentation order for custom detail types (Settings →
+          // Detail Types): stock groups keep first-occurrence order,
+          // custom groups follow by tenant sort_order, null-detail
+          // ('Other') trails. See orderDetailTypeGroups.
+          const ranks = await getCustomDetailTypeRanks(tenantId);
+          return {
+            groupBy: 'detail_type' as const,
+            groups: {
+              revenue: orderDetailTypeGroups(groupByDetailType(revenue, (e) => e.amount), ranks, 'revenue'),
+              cogs: orderDetailTypeGroups(groupByDetailType(cogs, (e) => e.amount), ranks, 'cogs'),
+              expenses: orderDetailTypeGroups(groupByDetailType(expenses, (e) => e.amount), ranks, 'expense'),
+              otherRevenue: orderDetailTypeGroups(groupByDetailType(otherRevenue, (e) => e.amount), ranks, 'other_revenue'),
+              otherExpenses: orderDetailTypeGroups(groupByDetailType(otherExpenses, (e) => e.amount), ranks, 'other_expense'),
+            },
+          };
+        })()
       : {}),
   };
 }
@@ -562,30 +570,36 @@ export async function buildBalanceSheet(
     equity, totalEquity,
     totalLiabilitiesAndEquity: totalLiabilities + totalEquity,
     ...(grouped
-      ? {
-          groupBy: 'detail_type' as const,
-          groups: {
-            assets: groupByDetailType(assets, (e) => e.balance),
-            liabilities: groupByDetailType(liabilities, (e) => e.balance),
-            equity: [
-              // Real equity accounts group by their detail type…
-              ...groupByDetailType(equity.filter((e) => e.accountId !== null), (e) => e.balance),
-              // …the computed rows land in a dedicated trailing group.
-              ...(calculatedEquity.length > 0
-                ? [{
-                    detailType: null,
-                    label: 'Equity (Calculated)',
-                    entries: calculatedEquity,
-                    subtotal: Number(
-                      calculatedEquity
-                        .reduce((d, e) => d.plus(e.balance), new Decimal(0))
-                        .toFixed(4),
-                    ),
-                  }]
-                : []),
-            ],
-          },
-        }
+      ? await (async () => {
+          // Same custom detail-type presentation ordering as the P&L —
+          // stock first-occurrence, custom by sort_order, null trailing
+          // (which keeps 'Equity (Calculated)' last).
+          const ranks = await getCustomDetailTypeRanks(tenantId);
+          return {
+            groupBy: 'detail_type' as const,
+            groups: {
+              assets: orderDetailTypeGroups(groupByDetailType(assets, (e) => e.balance), ranks, 'asset'),
+              liabilities: orderDetailTypeGroups(groupByDetailType(liabilities, (e) => e.balance), ranks, 'liability'),
+              equity: orderDetailTypeGroups([
+                // Real equity accounts group by their detail type…
+                ...groupByDetailType(equity.filter((e) => e.accountId !== null), (e) => e.balance),
+                // …the computed rows land in a dedicated trailing group.
+                ...(calculatedEquity.length > 0
+                  ? [{
+                      detailType: null,
+                      label: 'Equity (Calculated)',
+                      entries: calculatedEquity,
+                      subtotal: Number(
+                        calculatedEquity
+                          .reduce((d, e) => d.plus(e.balance), new Decimal(0))
+                          .toFixed(4),
+                      ),
+                    }]
+                  : []),
+              ], ranks, 'equity'),
+            },
+          };
+        })()
       : {}),
   };
 }
@@ -1877,23 +1891,40 @@ export async function buildTrialBalance(
     ORDER BY a.account_number, a.name
   `);
 
-  // Trial balance totals must tie out to the penny for every user.
-  // Accumulate through Decimal so the "totalDebits === totalCredits"
-  // check at the bottom of the report isn't off by fractional cents.
+  // Proper trial-balance presentation: each account shows its NET
+  // balance in exactly ONE column — `debit` when the account nets to a
+  // debit balance, `credit` (absolute value) when it nets to a credit
+  // balance. The gross activity sums stay on the row as `total_debit` /
+  // `total_credit` for API compatibility (api-v2 documents them in
+  // swagger), but every first-party surface (screen, CSV/PDF export)
+  // renders the netted columns. Accounts whose activity nets to zero
+  // are omitted — a zero-balance row is noise on a trial balance.
+  //
+  // Totals must tie out to the penny for every user. Accumulate through
+  // Decimal so "totalDebits === totalCredits" isn't off by fractional
+  // cents.
   let td = new Decimal('0');
   let tc = new Decimal('0');
   const data = (rows.rows as any[]).map(r => {
     const d = num(r.total_debit);
     const c = num(r.total_credit);
-    td = td.plus(d);
-    tc = tc.plus(c);
-    return { ...r, total_debit: d, total_credit: c };
+    const net = sub(d, c);
+    return {
+      ...r,
+      total_debit: d,
+      total_credit: c,
+      debit: net > 0 ? net : 0,
+      credit: net < 0 ? Math.abs(net) : 0,
+    };
   })
-    // The HAVING above keeps accounts with LIFETIME activity; an income
-    // account whose activity is entirely in prior fiscal years passes it
-    // but nets to 0.00/0.00 after the fiscal-YTD CASE — drop those
-    // cosmetic rows.
-    .filter((r) => r.total_debit !== 0 || r.total_credit !== 0);
+    // The HAVING above keeps accounts with LIFETIME activity; drop rows
+    // that net to zero after the fiscal-YTD CASE and debit/credit netting
+    // (fully-offset accounts, prior-fiscal-year-only income accounts).
+    .filter((r) => r.debit !== 0 || r.credit !== 0);
+  for (const r of data) {
+    td = td.plus(r.debit);
+    tc = tc.plus(r.credit);
+  }
   // Kept mutable because the Retained Earnings injection below still
   // needs to add reDebit/reCredit to the running totals.
   let totalDebits = Number(td.toFixed(4));
@@ -1928,6 +1959,7 @@ export async function buildTrialBalance(
       data.push({
         id: null, account_number: '30120', name: 'Retained Earnings (Prior Years)', account_type: 'equity',
         total_debit: reDebit, total_credit: reCredit,
+        debit: reDebit, credit: reCredit,
       });
       totalDebits = Number(new Decimal(totalDebits).plus(reDebit).toFixed(4));
       totalCredits = Number(new Decimal(totalCredits).plus(reCredit).toFixed(4));
@@ -1942,6 +1974,82 @@ export async function buildTrialBalance(
   });
 
   return { title: 'Trial Balance', startDate, endDate, data, totalDebits, totalCredits };
+}
+
+// Account Activity Summary — per-account TOTAL DEBITS and TOTAL CREDITS
+// for the period, plus a signed Net column (debits − credits). This
+// preserves the presentation the Trial Balance had before it moved to
+// proper netted single-column format.
+//
+// Unlike the Trial Balance, this is a plain ACTIVITY report: it sums
+// journal-line debits/credits for ALL account types strictly within the
+// start..end date range — no cumulative-through-end-date treatment for
+// balance sheet accounts and no fiscal-YTD reset for income accounts.
+// (The TB's hybrid window answers "what does each account's balance net
+// to"; this report answers "how much moved through each account".)
+export async function buildAccountActivitySummary(
+  tenantId: string,
+  startDate: string,
+  endDate: string,
+  companyId: string | null = null,
+  // Same transaction-level EXISTS tag semantic as the Trial Balance:
+  // include every line of any transaction that has at least one line
+  // carrying the tag, so both sides of a tagged entry stay visible.
+  tagId: string | null = null,
+) {
+  const tagExistsClause = tagId
+    ? sql` AND EXISTS (SELECT 1 FROM journal_lines jl2 WHERE jl2.transaction_id = transactions.id AND jl2.tenant_id = ${tenantId} AND jl2.tag_id = ${tagId})`
+    : sql``;
+
+  const rows = await db.execute(sql`
+    SELECT a.id, a.account_number, a.name, a.account_type,
+      COALESCE(SUM(jl.debit), 0) as total_debit,
+      COALESCE(SUM(jl.credit), 0) as total_credit
+    FROM accounts a
+    LEFT JOIN journal_lines jl ON jl.account_id = a.id AND jl.tenant_id = ${tenantId}
+      AND jl.transaction_id IN (
+        SELECT id FROM transactions
+        WHERE tenant_id = ${tenantId} AND status = 'posted'
+        AND txn_date >= ${startDate} AND txn_date <= ${endDate}
+        AND ${companyId ? sql`company_id = ${companyId}` : sql`TRUE`}
+        ${tagExistsClause}
+      )
+    WHERE a.tenant_id = ${tenantId}
+    GROUP BY a.id
+    HAVING COALESCE(SUM(jl.debit), 0) > 0 OR COALESCE(SUM(jl.credit), 0) > 0
+    ORDER BY a.account_number, a.name
+  `);
+
+  // Decimal accumulation so the TOTAL row ties to the row sums exactly.
+  type ActivityRow = {
+    id: string;
+    account_number: string | null;
+    name: string;
+    account_type: string;
+    total_debit: string;
+    total_credit: string;
+  };
+  let td = new Decimal('0');
+  let tc = new Decimal('0');
+  const data = (rows.rows as unknown as ActivityRow[]).map((r) => {
+    const d = num(r.total_debit);
+    const c = num(r.total_credit);
+    td = td.plus(d);
+    tc = tc.plus(c);
+    return { ...r, total_debit: d, total_credit: c, net: sub(d, c) };
+  });
+  const totalDebits = Number(td.toFixed(4));
+  const totalCredits = Number(tc.toFixed(4));
+
+  return {
+    title: 'Account Activity Summary',
+    startDate,
+    endDate,
+    data,
+    totalDebits,
+    totalCredits,
+    totalNet: Number(td.minus(tc).toFixed(4)),
+  };
 }
 
 export async function buildTransactionList(tenantId: string, filters?: {

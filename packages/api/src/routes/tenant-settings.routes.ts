@@ -6,6 +6,7 @@ import { Router } from 'express';
 import {
   updateTenantReportSettingsSchema,
   createDetailTypeSchema,
+  updateDetailTypeSchema,
   resolvePLLabels,
   resolveBSLabels,
   resolveCFLabels,
@@ -60,6 +61,14 @@ tenantSettingsRouter.get('/detail-types', async (req, res) => {
 tenantSettingsRouter.post('/detail-types', validate(createDetailTypeSchema), async (req, res) => {
   const created = await detailTypesService.create(req.tenantId, req.body, req.userId);
   res.status(201).json(created);
+});
+
+// Rename / reorder. `sortOrder` drives presentation order in the merged
+// dropdown list and in detail-type-grouped reports (P&L/BS, comparative,
+// condensed display, CSV/PDF exports). `value` is immutable.
+tenantSettingsRouter.patch('/detail-types/:id', validate(updateDetailTypeSchema), async (req, res) => {
+  const updated = await detailTypesService.update(req.tenantId, req.params['id']!, req.body, req.userId);
+  res.json(updated);
 });
 
 tenantSettingsRouter.delete('/detail-types/:id', async (req, res) => {

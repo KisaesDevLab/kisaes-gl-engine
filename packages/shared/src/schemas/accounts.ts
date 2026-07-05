@@ -63,5 +63,16 @@ export const createDetailTypeSchema = z.object({
   accountType: z.enum(accountTypes),
   value: z.string().regex(/^[a-z0-9_]{2,50}$/, 'Use 2-50 lowercase letters, digits, or underscores'),
   label: z.string().min(1, 'Label is required').max(100),
+  // Optional explicit presentation order; omitted = end of the list
+  // (NULL sorts after every explicitly ordered type).
+  sortOrder: z.number().int().min(0).optional(),
 });
 export type CreateDetailTypeInput = z.infer<typeof createDetailTypeSchema>;
+
+// PATCH /tenant-settings/detail-types/:id — label rename and/or
+// presentation reorder. `value` is immutable (stored on accounts).
+export const updateDetailTypeSchema = z.object({
+  label: z.string().min(1, 'Label is required').max(100).optional(),
+  sortOrder: z.number().int().min(0).nullable().optional(),
+});
+export type UpdateDetailTypeInput = z.infer<typeof updateDetailTypeSchema>;

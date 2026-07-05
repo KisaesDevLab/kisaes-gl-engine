@@ -194,10 +194,13 @@ describe('Trial Balance across fiscal-year boundary', () => {
     const tb = await reportService.buildTrialBalance(tenantId, '2026-01-01', '2026-06-30');
     expect(tb.totalDebits).toBeCloseTo(tb.totalCredits, 2);
     // Virtual prior-years RE row = prior net income NOT yet closed: 100−30−20 = 50
+    // (netted `credit` column — proper TB format shows one side per row)
     const virtual = tb.data.find((r: any) => r.name === 'Retained Earnings (Prior Years)');
-    expect(virtual?.total_credit).toBeCloseTo(50, 2);
+    expect(virtual?.credit).toBeCloseTo(50, 2);
+    expect(virtual?.debit).toBeCloseTo(0, 2);
     // Posted RE account row carries the closed 20
     const posted = tb.data.find((r: any) => r.id === re.id);
-    expect(posted?.total_credit).toBeCloseTo(20, 2);
+    expect(posted?.credit).toBeCloseTo(20, 2);
+    expect(posted?.debit).toBeCloseTo(0, 2);
   });
 });

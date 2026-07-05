@@ -178,6 +178,59 @@ describe('custom detail types', () => {
     expect(list.json.detailTypes.expense.some((o: any) => o.value === 'drone_maintenance')).toBe(false);
   });
 
+  it('PATCH persists sortOrder and label; listing follows presentation order', async () => {
+    const a = await req('POST', '/detail-types', {
+      accountType: 'cogs', value: 'alpha_costs', label: 'Alpha Costs',
+    });
+    const b = await req('POST', '/detail-types', {
+      accountType: 'cogs', value: 'beta_costs', label: 'Beta Costs',
+    });
+    const c = await req('POST', '/detail-types', {
+      accountType: 'cogs', value: 'gamma_costs', label: 'Gamma Costs',
+    });
+    expect(a.status).toBe(201);
+    expect(b.status).toBe(201);
+    expect(c.status).toBe(201);
+    // No sortOrder yet → NULL, presentation order falls back to label.
+    expect(a.json.sortOrder).toBeNull();
+
+    // Reorder: gamma (0), alpha (1), beta (2).
+    for (const [id, sortOrder] of [[c.json.id, 0], [a.json.id, 1], [b.json.id, 2]] as const) {
+      const r = await req('PATCH', `/detail-types/${id}`, { sortOrder });
+      expect(r.status).toBe(200);
+      expect(r.json.sortOrder).toBe(sortOrder);
+    }
+
+    const list = await req('GET', '/detail-types');
+    const cogsCustom = (list.json.custom as Array<{ value: string; accountType: string }>)
+      .filter((d) => d.accountType === 'cogs')
+      .map((d) => d.value);
+    expect(cogsCustom).toEqual(['gamma_costs', 'alpha_costs', 'beta_costs']);
+    // Merged dropdown list mirrors the same order after the built-ins.
+    const mergedCogs = (list.json.detailTypes.cogs as Array<{ value: string; isCustom: boolean }>)
+      .filter((o) => o.isCustom)
+      .map((o) => o.value);
+    expect(mergedCogs).toEqual(['gamma_costs', 'alpha_costs', 'beta_costs']);
+
+    // Label rename via the same route; value stays immutable.
+    const renamed = await req('PATCH', `/detail-types/${a.json.id}`, { label: 'Alpha Costs (renamed)' });
+    expect(renamed.status).toBe(200);
+    expect(renamed.json.label).toBe('Alpha Costs (renamed)');
+    expect(renamed.json.value).toBe('alpha_costs');
+
+    // Zod guards: negative sortOrder rejected.
+    const bad = await req('PATCH', `/detail-types/${a.json.id}`, { sortOrder: -1 });
+    expect(bad.status).toBe(400);
+
+    // Tenant isolation: another tenant cannot PATCH my rows.
+    const foreign = await req('PATCH', `/detail-types/${a.json.id}`, { sortOrder: 9 }, otherToken);
+    expect(foreign.status).toBe(404);
+
+    for (const id of [a.json.id, b.json.id, c.json.id]) {
+      await req('DELETE', `/detail-types/${id}`);
+    }
+  });
+
   it('is tenant-isolated: other tenants cannot see or delete custom types', async () => {
     const mine = await req('POST', '/detail-types', {
       accountType: 'revenue', value: 'consulting_income', label: 'Consulting Income',

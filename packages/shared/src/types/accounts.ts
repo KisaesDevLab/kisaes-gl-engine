@@ -81,6 +81,9 @@ export interface CustomDetailType {
   accountType: AccountType;
   value: string;
   label: string;
+  // Presentation order within the account type. null = unpositioned —
+  // sorts after explicitly ordered types, tie-break by label.
+  sortOrder: number | null;
   createdAt: string;
   updatedAt: string;
 }
