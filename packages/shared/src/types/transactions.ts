@@ -62,6 +62,13 @@ export interface Transaction {
   subtotal: string | null;
   taxAmount: string;
   total: string | null;
+  /**
+   * List-endpoint display amount: `total` with a server-side fallback to
+   * the transaction's journal-line magnitude (sum of debits) when total
+   * is NULL — journal entries, transfers, and GL-imported entries carry
+   * no document total. Present on list responses only.
+   */
+  displayTotal?: string | null;
   amountPaid: string;
   balanceDue: string | null;
   invoiceStatus: InvoiceStatus | null;

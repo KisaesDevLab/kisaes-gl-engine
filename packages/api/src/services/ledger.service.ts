@@ -719,7 +719,14 @@ export async function listTransactions(tenantId: string, filters: {
       case 'number': return sql`${transactions.txnNumber}`;
       case 'payee': return sql`${contacts.displayName}`;
       case 'memo': return sql`${transactions.memo}`;
-      case 'amount': return sql`${transactions.total}`;
+      // Same COALESCE as the displayTotal select — NULL-total JEs and
+      // transfers sort by their journal-line magnitude instead of
+      // clumping at the end.
+      case 'amount': return sql`COALESCE(${transactions.total}, (
+        SELECT SUM(jl6.debit) FROM journal_lines jl6
+        WHERE jl6.transaction_id = ${transactions.id}
+          AND jl6.tenant_id = ${tenantId}
+      ))`;
       case 'status': return sql`${transactions.status}`;
       case 'category': return sql`(
         SELECT min(a2.name) FROM journal_lines jl4
@@ -749,6 +756,16 @@ export async function listTransactions(tenantId: string, filters: {
       subtotal: transactions.subtotal,
       taxAmount: transactions.taxAmount,
       total: transactions.total,
+      // Amount column fallback: `total` is caller-supplied and NULL for
+      // journal entries, transfers, and GL-imported entries (they have
+      // no document total). The transaction's magnitude is the sum of
+      // its debit legs (= sum of credits by rule 22), so the list can
+      // always show an amount.
+      displayTotal: sql<string | null>`COALESCE(${transactions.total}, (
+        SELECT SUM(jl5.debit) FROM journal_lines jl5
+        WHERE jl5.transaction_id = ${transactions.id}
+          AND jl5.tenant_id = ${tenantId}
+      ))`,
       amountPaid: transactions.amountPaid,
       balanceDue: transactions.balanceDue,
       invoiceStatus: transactions.invoiceStatus,
