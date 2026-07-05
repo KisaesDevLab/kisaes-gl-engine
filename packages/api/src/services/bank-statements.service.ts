@@ -313,7 +313,7 @@ export async function listStatements(
   const accountCond = opts.accountId ? sql`AND bs.account_id = ${opts.accountId}` : sql``;
 
   const rows = await db.execute(sql`
-    SELECT bs.*, a.name AS account_name, a.account_number,
+    SELECT bs.*, a.name AS account_name, a.account_number, a.account_type,
       att.file_name,
       r.status AS rec_status,
       (SELECT count(*)::int FROM bank_feed_items bfi
@@ -352,6 +352,7 @@ export async function listStatements(
 
   interface RawRow {
     id: string; account_id: string; account_name: string; account_number: string | null;
+    account_type: string;
     attachment_id: string | null; file_name: string | null;
     period_start: string | null; period_end: string;
     opening_balance: string | null; closing_balance: string;
@@ -373,7 +374,12 @@ export async function listStatements(
     let continuityWarning: BankStatementListRow['continuityWarning'] = null;
     if (status === 'not_reconciled' && r.opening_balance != null && ctx?.lastEnding != null) {
       const expected = parseFloat(ctx.lastEnding);
-      const actual = parseFloat(r.opening_balance);
+      // Liability statements print balances positive-owed; the stored
+      // reconciliation balances are GL-oriented (credit-normal ⇒ negative),
+      // so flip the statement side before comparing — same convention as
+      // reconciliation.start() / glOrientedStatementBalance.
+      const printed = parseFloat(r.opening_balance);
+      const actual = r.account_type === 'liability' ? -printed : printed;
       const delta = Number((actual - expected).toFixed(4));
       if (Math.abs(delta) > 0.005) continuityWarning = { expected, actual, delta };
     }

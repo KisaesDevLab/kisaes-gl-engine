@@ -20,6 +20,20 @@ export interface ContinuityWarning {
 // balance (the same derivation start() uses for beginningBalance). A
 // mismatch means cleared transactions were changed/deleted since the last
 // reconciliation — surfaced as a warning, never a block.
+// Bank statements print liability balances (credit cards, lines of credit)
+// as positive amounts OWED, but on the books a liability is credit-normal:
+// the reconciliation's cleared-balance arithmetic (beginning + Σ(debit −
+// credit)) produces the NEGATIVE of the printed figure. Flip statement
+// balances into GL orientation for liability accounts so a statement-driven
+// reconciliation can actually tie out; asset accounts pass through.
+export function glOrientedStatementBalance(
+  value: string | null,
+  accountType: string | null | undefined,
+): string | null {
+  if (value == null) return null;
+  return accountType === 'liability' ? new Decimal(value).negated().toFixed(4) : value;
+}
+
 function continuityOf(
   statementOpening: string | null,
   priorEnding: string | null | undefined,
@@ -41,6 +55,7 @@ export async function start(
   // Statement-driven start: derive account / date / ending balance from the
   // stored bank_statements row, then link the reconciliation back to it.
   let statement: typeof bankStatements.$inferSelect | null = null;
+  let statementAccountType: string | null = null;
   if (opts.statementId) {
     statement = await db.query.bankStatements.findFirst({
       where: and(eq(bankStatements.tenantId, tenantId), eq(bankStatements.id, opts.statementId)),
@@ -57,9 +72,16 @@ export async function start(
         );
       }
     }
+    // Liability statements (credit cards / LOCs) print balances as positive
+    // amounts owed — flip them into GL orientation or the reconciliation
+    // can never reach a $0.00 difference (see glOrientedStatementBalance).
+    const stmtAccount = await db.query.accounts.findFirst({
+      where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, statement.accountId)),
+    });
+    statementAccountType = stmtAccount?.accountType ?? null;
     accountId = statement.accountId;
     statementDate = statement.periodEnd;
-    statementEndingBalance = statement.closingBalance;
+    statementEndingBalance = glOrientedStatementBalance(statement.closingBalance, statementAccountType) ?? undefined;
   }
   if (!accountId || !statementDate || !statementEndingBalance) {
     throw AppError.badRequest('accountId, statementDate and statementEndingBalance are required');
@@ -147,7 +169,10 @@ export async function start(
   // Opening-balance continuity check (statement-driven starts only) —
   // informational, never blocking.
   const continuityWarning = statement
-    ? continuityOf(statement.openingBalance, lastRecon?.statementEndingBalance)
+    ? continuityOf(
+        glOrientedStatementBalance(statement.openingBalance, statementAccountType),
+        lastRecon?.statementEndingBalance,
+      )
     : null;
 
   return { ...recon, statementId: statement?.id ?? null, continuityWarning };
@@ -204,7 +229,15 @@ export async function getReconciliation(tenantId: string, reconciliationId: stri
       ),
       orderBy: (r, { desc }) => desc(r.statementDate),
     });
-    continuityWarning = continuityOf(statement.openingBalance, prior?.statementEndingBalance);
+    // Liability statement balances print positive-owed — compare in GL
+    // orientation (same convention as the stored reconciliation balances).
+    const acct = await db.query.accounts.findFirst({
+      where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, recon.accountId)),
+    });
+    continuityWarning = continuityOf(
+      glOrientedStatementBalance(statement.openingBalance, acct?.accountType),
+      prior?.statementEndingBalance,
+    );
   }
 
   // Statement Match Engine (wave 1): how many stored statement lines exist —
@@ -344,10 +377,23 @@ export async function updateLines(tenantId: string, reconciliationId: string, li
     if (unclearedJlIds.length > 0) {
       const idList = sql.join(unclearedJlIds.map((id) => sql`${id}::uuid`), sql`, `);
       const textList = sql.join(unclearedJlIds.map((id) => sql`${id}::text`), sql`, `);
+      // Scoped to THIS reconciliation's linked statement: matches for these
+      // journal lines can only have been made from it, and an unscoped
+      // update would let arbitrary journalLineIds in the request body reset
+      // statement lines of OTHER reconciliations (same tenant) whose
+      // worksheets remain cleared — drifting the two apart. Score +
+      // breakdown are cleared with the status: a reset line's persisted
+      // tier ('auto'/'confirmed', possibly with a stale group) no longer
+      // describes anything real.
       const reset = await tx.execute(sql`
         UPDATE bank_statement_lines
-        SET match_status = 'unmatched', matched_journal_line_id = NULL, updated_at = now()
+        SET match_status = 'unmatched', matched_journal_line_id = NULL,
+            match_score = NULL, score_breakdown = NULL, updated_at = now()
         WHERE tenant_id = ${tenantId}
+          AND statement_id IN (
+            SELECT id FROM bank_statements
+            WHERE tenant_id = ${tenantId} AND reconciliation_id = ${reconciliationId}
+          )
           AND match_status IN ('auto', 'confirmed')
           AND (matched_journal_line_id IN (${idList})
             OR jsonb_exists_any(COALESCE(score_breakdown->'group'->'journalLineIds', '[]'::jsonb), ARRAY[${textList}]))
@@ -360,7 +406,8 @@ export async function updateLines(tenantId: string, reconciliationId: string, li
         const primaryList = sql.join(resetIds.map((id) => sql`${id}`), sql`, `);
         await tx.execute(sql`
           UPDATE bank_statement_lines
-          SET match_status = 'unmatched', matched_journal_line_id = NULL, updated_at = now()
+          SET match_status = 'unmatched', matched_journal_line_id = NULL,
+              match_score = NULL, score_breakdown = NULL, updated_at = now()
           WHERE tenant_id = ${tenantId} AND match_status = 'confirmed'
             AND score_breakdown->'group'->>'primaryStatementLineId' IN (${primaryList})
         `);
@@ -460,7 +507,8 @@ export async function undo(tenantId: string, reconciliationId: string) {
     // reconciliation's statement must reset too.
     await tx.execute(sql`
       UPDATE bank_statement_lines bsl
-      SET match_status = 'unmatched', matched_journal_line_id = NULL, updated_at = now()
+      SET match_status = 'unmatched', matched_journal_line_id = NULL,
+          match_score = NULL, score_breakdown = NULL, updated_at = now()
       FROM bank_statements bs
       WHERE bs.id = bsl.statement_id AND bs.reconciliation_id = ${reconciliationId}
         AND bsl.tenant_id = ${tenantId}

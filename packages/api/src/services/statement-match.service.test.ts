@@ -85,6 +85,7 @@ async function mkStatementJob(opts: {
   closingBalance?: string;
   transactions?: JobTxn[];
   checks?: JobCheck[];
+  accountTypeHint?: string;
 }) {
   const [attachment] = await db.insert(attachments).values({
     tenantId,
@@ -107,7 +108,7 @@ async function mkStatementJob(opts: {
       openingBalance: opts.openingBalance ?? '0.00',
       closingBalance: opts.closingBalance ?? '100.00',
       institutionName: 'Test Bank',
-      accountTypeHint: 'CHECKING',
+      accountTypeHint: opts.accountTypeHint ?? 'CHECKING',
       confidence: 0.95,
       qualityWarnings: [],
       extractionSource: 'text_layer',
@@ -121,9 +122,11 @@ async function mkStatementJob(opts: {
 
 // Capture the statement (creates bank_statement_lines) + start its
 // reconciliation. Returns { statementId, reconId }.
-async function captureAndStart(opts: Parameters<typeof mkStatementJob>[0]) {
+async function captureAndStart(opts: Parameters<typeof mkStatementJob>[0] & { accountId?: string }) {
   const { job } = await mkStatementJob(opts);
-  const capture = await bankStatementsService.captureStatementOnImport(tenantId, { jobId: job.id, accountId: bankAccountId });
+  const capture = await bankStatementsService.captureStatementOnImport(
+    tenantId, { jobId: job.id, accountId: opts.accountId ?? bankAccountId },
+  );
   const recon = await reconciliation.start(tenantId, undefined, undefined, undefined, { statementId: capture!.statement.id });
   return { statementId: capture!.statement.id, reconId: recon.id, jobId: job.id };
 }
@@ -986,6 +989,274 @@ describe('Statement Match Engine', () => {
       await expect(
         statementMatch.createTransactionFromStatementLine(tenantId, unmatched.id, { accountId: bankAccountId }),
       ).rejects.toThrow(/not the bank account/i);
+    });
+  });
+
+  // ─── QA hardening regressions ─────────────────────────────────────
+
+  describe('credit-card (liability) statements end-to-end', () => {
+    // Card statements print balances positive-owed; the books are
+    // credit-normal. Charges must match card-credit journal lines, payments
+    // card-debit lines, the one-click start must flip the printed balances
+    // into GL orientation so the reconciliation can tie out, and continuity
+    // must not false-alarm across periods.
+    async function setupCard() {
+      const card = await accountsService.create(tenantId, { name: 'Visa', accountType: 'liability', accountNumber: '2100' });
+      // Charge $50 on the card (expense debit / card credit).
+      await ledger.postTransaction(tenantId, {
+        txnType: 'expense', txnDate: '2026-04-03', memo: 'CLOUD HOSTING CHARGE',
+        lines: [
+          { accountId: expenseAccountId, debit: '50.00', credit: '0' },
+          { accountId: card.id, debit: '0', credit: '50.00' },
+        ],
+      });
+      // Pay $30 to the card from checking (card debit / bank credit).
+      await ledger.postTransaction(tenantId, {
+        txnType: 'journal_entry', txnDate: '2026-04-20', memo: 'PAYMENT THANK YOU',
+        lines: [
+          { accountId: card.id, debit: '30.00', credit: '0' },
+          { accountId: bankAccountId, debit: '0', credit: '30.00' },
+        ],
+      });
+      return card;
+    }
+
+    it('one-click start flips printed balances to GL orientation, the engine matches both directions, and the rec completes', async () => {
+      const card = await setupCard();
+      const { statementId, reconId } = await captureAndStart({
+        accountId: card.id,
+        accountTypeHint: 'CREDITCARD',
+        openingBalance: '0.00',
+        closingBalance: '20.00', // printed: $20 owed (50 charged − 30 paid)
+        transactions: [
+          // Parser-normalized feed convention: charge (spend) = debit,
+          // payment (money in) = credit — mapSignedCentsToFeed already
+          // inverted the raw credit-card signs at extraction time.
+          { date: '2026-04-03', description: 'CLOUD HOSTING CHARGE', amount: '50.00', type: 'debit' },
+          { date: '2026-04-20', description: 'PAYMENT THANK YOU', amount: '30.00', type: 'credit' },
+        ],
+      });
+
+      // Statement-driven start stores the GL-oriented ending balance.
+      const recon = await reconciliation.getReconciliation(tenantId, reconId);
+      expect(parseFloat(String(recon.statementEndingBalance))).toBe(-20);
+      expect(recon.continuityWarning).toBeNull(); // no prior rec — nothing to disagree with
+
+      const result = await statementMatch.matchStatement(tenantId, reconId, { apply: true });
+      expect(result.autoCleared).toBe(2);
+      const lines = await statementLinesOf(statementId);
+      const worksheet = await worksheetOf(reconId);
+      const charge = lines.find((l) => parseFloat(l.amount) === -50)!;
+      const chargeJl = worksheet.find((w) => w.journal_line_id === charge.matchedJournalLineId)!;
+      expect(parseFloat(chargeJl.credit)).toBe(50); // spend = CREDIT on the card account
+      const payment = lines.find((l) => parseFloat(l.amount) === 30)!;
+      const paymentJl = worksheet.find((w) => w.journal_line_id === payment.matchedJournalLineId)!;
+      expect(parseFloat(paymentJl.debit)).toBe(30); // payment = DEBIT on the card account
+
+      // Cleared −50 + 30 = −20 == GL-oriented ending balance ⇒ completes.
+      await reconciliation.complete(tenantId, reconId);
+      const done = await reconciliation.getReconciliation(tenantId, reconId);
+      expect(done.status).toBe('complete');
+    });
+
+    it('continuity across card periods compares in GL orientation (no false warning; real breaks still warn)', async () => {
+      const card = await setupCard();
+      const { reconId } = await captureAndStart({
+        accountId: card.id,
+        accountTypeHint: 'CREDITCARD',
+        openingBalance: '0.00',
+        closingBalance: '20.00',
+        transactions: [
+          { date: '2026-04-03', description: 'CLOUD HOSTING CHARGE', amount: '50.00', type: 'debit' },
+          { date: '2026-04-20', description: 'PAYMENT THANK YOU', amount: '30.00', type: 'credit' },
+        ],
+      });
+      await statementMatch.matchStatement(tenantId, reconId, { apply: true });
+      await reconciliation.complete(tenantId, reconId);
+
+      // May: printed opening $20 owed — chains cleanly off the completed
+      // April rec (ending −20 in GL orientation). Before the orientation
+      // fix this false-alarmed with a delta of 2× the balance.
+      const { job } = await mkStatementJob({
+        periodStart: '2026-05-01', periodEnd: '2026-05-31',
+        accountTypeHint: 'CREDITCARD',
+        openingBalance: '20.00', closingBalance: '20.00',
+        transactions: [{ date: '2026-05-05', description: 'NO ACTIVITY MARKER', amount: '1.00', type: 'debit' }],
+      });
+      const capture = await bankStatementsService.captureStatementOnImport(tenantId, { jobId: job.id, accountId: card.id });
+      const list = await bankStatementsService.listStatements(tenantId, { accountId: card.id });
+      const mayRow = list.statements.find((s) => s.id === capture!.statement.id)!;
+      expect(mayRow.continuityWarning).toBeNull();
+
+      const started = await reconciliation.start(tenantId, undefined, undefined, undefined, { statementId: capture!.statement.id });
+      expect(started.continuityWarning).toBeNull();
+      expect(parseFloat(String(started.statementEndingBalance))).toBe(-20);
+
+      // A REAL break (printed opening $25 ≠ $20 owed) still warns, with the
+      // delta computed in GL orientation.
+      const { job: badJob } = await mkStatementJob({
+        periodStart: '2026-06-01', periodEnd: '2026-06-30',
+        accountTypeHint: 'CREDITCARD',
+        openingBalance: '25.00', closingBalance: '25.00',
+        transactions: [{ date: '2026-06-05', description: 'MARKER', amount: '1.00', type: 'debit' }],
+      });
+      const badCapture = await bankStatementsService.captureStatementOnImport(tenantId, { jobId: badJob.id, accountId: card.id });
+      const list2 = await bankStatementsService.listStatements(tenantId, { accountId: card.id });
+      const juneRow = list2.statements.find((s) => s.id === badCapture!.statement.id)!;
+      expect(juneRow.continuityWarning).not.toBeNull();
+      expect(juneRow.continuityWarning!.delta).toBeCloseTo(-5, 2); // −25 actual vs −20 expected
+    });
+  });
+
+  describe('un-clear reset scoping (updateLines)', () => {
+    it('does NOT reset another reconciliation\'s statement line when its journal line id is passed to a different rec', async () => {
+      // Rec 1 on the checking account with an auto-matched line.
+      await postBank({ date: '2026-04-03', amount: '50.00', memo: 'COFFEE BARN PURCHASE', direction: 'out' });
+      const { statementId: stmt1, reconId: rec1 } = await captureAndStart({
+        transactions: [{ date: '2026-04-03', description: 'COFFEE BARN PURCHASE', amount: '50.00', type: 'debit' }],
+      });
+      await statementMatch.matchStatement(tenantId, rec1, { apply: true });
+      const [line1] = await statementLinesOf(stmt1);
+      expect(line1!.matchStatus).toBe('auto');
+      const claimedJl = line1!.matchedJournalLineId!;
+
+      // Rec 2 on a DIFFERENT account, in progress at the same time.
+      const savings = await accountsService.create(tenantId, { name: 'Savings', accountType: 'asset', accountNumber: '1020' });
+      const { reconId: rec2 } = await captureAndStart({
+        accountId: savings.id,
+        transactions: [{ date: '2026-04-10', description: 'INTEREST', amount: '1.00', type: 'credit' }],
+      });
+
+      // A request against rec 2 naming rec 1's journal line must not touch
+      // rec 1's statement line (the reconciliation_lines update itself
+      // no-ops — the line isn't on rec 2's worksheet).
+      await reconciliation.updateLines(tenantId, rec2, [{ journalLineId: claimedJl, isCleared: false }]);
+      const [after] = await statementLinesOf(stmt1);
+      expect(after!.matchStatus).toBe('auto');
+      expect(after!.matchedJournalLineId).toBe(claimedJl);
+      const ws1 = await worksheetOf(rec1);
+      expect(ws1.find((w) => w.journal_line_id === claimedJl)!.is_cleared).toBe(true);
+
+      // The legitimate un-clear on rec 1 still resets it — and clears the
+      // stale score/breakdown with the status.
+      await reconciliation.updateLines(tenantId, rec1, [{ journalLineId: claimedJl, isCleared: false }]);
+      const [reset] = await statementLinesOf(stmt1);
+      expect(reset!.matchStatus).toBe('unmatched');
+      expect(reset!.matchedJournalLineId).toBeNull();
+      expect(reset!.matchScore).toBeNull();
+      expect(reset!.scoreBreakdown).toBeNull();
+    });
+  });
+
+  describe('completed-reconciliation guards + undo reset', () => {
+    // Books: $100 deposit (auto single) + $10/$20 receipts (confirmed A1
+    // group vs a $30 statement deposit). Cleared 130 == closing 130.
+    async function completeWithMixedMatches() {
+      await postBank({ date: '2026-04-05', amount: '100.00', memo: 'BIG DEPOSIT', direction: 'in' });
+      await postBank({ date: '2026-04-06', amount: '10.00', memo: 'RECEIPT ALPHA', direction: 'in' });
+      await postBank({ date: '2026-04-07', amount: '20.00', memo: 'RECEIPT BRAVO', direction: 'in' });
+      const { statementId, reconId } = await captureAndStart({
+        closingBalance: '130.00',
+        transactions: [
+          { date: '2026-04-05', description: 'BIG DEPOSIT', amount: '100.00', type: 'credit' },
+          { date: '2026-04-07', description: 'BRANCH DEPOSIT', amount: '30.00', type: 'credit' },
+          { date: '2026-04-08', description: 'MYSTERY FEE', amount: '5.00', type: 'debit' },
+        ],
+      });
+      const result = await statementMatch.matchStatement(tenantId, reconId, { apply: true });
+      expect(result.autoCleared).toBe(1);
+      const grouped = result.suggestions.find((s) => s.groupCandidates?.length)!;
+      await statementMatch.confirmStatementLineGroup(
+        tenantId, grouped.statementLine.id,
+        grouped.groupCandidates![0]!.journalLines.map((j) => j.journalLineId),
+      );
+      await reconciliation.complete(tenantId, reconId);
+      return { statementId, reconId };
+    }
+
+    it('reject, create-transaction and match-statement are all blocked on a completed reconciliation', async () => {
+      const { statementId, reconId } = await completeWithMixedMatches();
+      const lines = await statementLinesOf(statementId);
+      const unmatched = lines.find((l) => l.matchStatus === 'unmatched')!;
+
+      await expect(statementMatch.rejectStatementLine(tenantId, unmatched.id))
+        .rejects.toThrow(/already complete/i);
+      await expect(
+        statementMatch.createTransactionFromStatementLine(tenantId, unmatched.id, { accountId: expenseAccountId }),
+      ).rejects.toThrow(/already complete/i);
+      await expect(statementMatch.matchStatement(tenantId, reconId, { apply: true }))
+        .rejects.toThrow(/already complete/i);
+      await expect(statementMatch.confirmStatementLine(tenantId, unmatched.id, '00000000-0000-0000-0000-000000000009'))
+        .rejects.toThrow(/already complete/i);
+    });
+
+    it('undo resets every auto/confirmed statement line — including group primaries — and clears score/breakdown', async () => {
+      const { statementId, reconId } = await completeWithMixedMatches();
+      await reconciliation.undo(tenantId, reconId);
+
+      const lines = await statementLinesOf(statementId);
+      for (const l of lines.filter((x) => x.description !== 'MYSTERY FEE')) {
+        expect(l.matchStatus).toBe('unmatched');
+        expect(l.matchedJournalLineId).toBeNull();
+        expect(l.matchScore).toBeNull();
+        expect(l.scoreBreakdown).toBeNull();
+      }
+      const worksheet = await worksheetOf(reconId);
+      expect(worksheet.every((w) => !w.is_cleared)).toBe(true);
+
+      // A fresh run over the undone rec re-matches from scratch.
+      const rerun = await statementMatch.matchStatement(tenantId, reconId, { apply: true });
+      expect(rerun.autoCleared).toBe(1);
+      expect(rerun.skippedLines).toBe(0);
+    });
+  });
+
+  describe('statement lines dated outside the period (parser noise)', () => {
+    it('create-transaction refuses a line dated after the statement date', async () => {
+      const { statementId } = await captureAndStart({
+        periodEnd: '2026-04-30',
+        transactions: [
+          { date: '2026-05-15', description: 'NOISE FUTURE ROW', amount: '10.00', type: 'debit' },
+        ],
+      });
+      const [line] = await statementLinesOf(statementId);
+      await expect(
+        statementMatch.createTransactionFromStatementLine(tenantId, line!.id, { accountId: expenseAccountId }),
+      ).rejects.toThrow(/after the statement date/i);
+      expect((await statementLinesOf(statementId))[0]!.matchStatus).toBe('unmatched');
+    });
+  });
+
+  describe('tenant isolation', () => {
+    it('another tenant\'s ids 404 on match, confirm, reject, create and the persisted view', async () => {
+      await postBank({ date: '2026-04-03', amount: '50.00', memo: 'COFFEE BARN PURCHASE', direction: 'out' });
+      const { statementId, reconId } = await captureAndStart({
+        transactions: [{ date: '2026-04-03', description: 'COFFEE BARN PURCHASE', amount: '50.00', type: 'debit' }],
+      });
+      const [line] = await statementLinesOf(statementId);
+      const worksheet = await worksheetOf(reconId);
+      const jlId = worksheet[0]!.journal_line_id;
+
+      const [intruder] = await db.insert(tenants).values({
+        name: 'Intruder', slug: 'intruder-' + Date.now(),
+      }).returning();
+      const otherTenant = intruder!.id;
+
+      await expect(statementMatch.matchStatement(otherTenant, reconId, { apply: true }))
+        .rejects.toThrow(/not found/i);
+      await expect(statementMatch.getStatementMatches(otherTenant, reconId))
+        .rejects.toThrow(/not found/i);
+      await expect(statementMatch.confirmStatementLine(otherTenant, line!.id, jlId))
+        .rejects.toThrow(/not found/i);
+      await expect(statementMatch.rejectStatementLine(otherTenant, line!.id))
+        .rejects.toThrow(/not found/i);
+      await expect(statementMatch.createTransactionFromStatementLine(otherTenant, line!.id, { accountId: expenseAccountId }))
+        .rejects.toThrow(/not found/i);
+      await expect(reconciliation.updateLines(otherTenant, reconId, [{ journalLineId: jlId, isCleared: false }]))
+        .rejects.toThrow(/not found/i);
+
+      // Nothing changed for the real tenant.
+      expect((await statementLinesOf(statementId))[0]!.matchStatus).toBe('unmatched');
     });
   });
 

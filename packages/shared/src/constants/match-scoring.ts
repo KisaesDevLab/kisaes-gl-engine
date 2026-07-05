@@ -127,6 +127,14 @@ export const STATEMENT_MATCH_GROUP_MIN_SIZE = 2;
 export const STATEMENT_MATCH_GROUP_MAX_SIZE = 5;
 export const STATEMENT_MATCH_GROUP_MAX_EXPANSIONS = 200_000;
 
+// Global budget across ALL group searches (A1 + A2 combined) in one
+// matchStatement run. The per-call budget above bounds a single
+// pathological pool, but a large worksheet can run hundreds of searches —
+// without a shared cap the worst case is hundreds × 200k expansions in one
+// request. When the shared budget runs out the remaining group searches
+// are skipped (logged; singles are unaffected).
+export const STATEMENT_MATCH_GROUP_MAX_EXPANSIONS_TOTAL = 1_000_000;
+
 // One-to-many ambiguity: when 2+ distinct minimal sets exist, return up
 // to this many for the picker (never auto — groups are suggest-only).
 export const STATEMENT_MATCH_GROUP_MAX_SETS = 3;

@@ -47,12 +47,14 @@ import {
   STATEMENT_MATCH_GROUP_MIN_SIZE,
   STATEMENT_MATCH_GROUP_MAX_SIZE,
   STATEMENT_MATCH_GROUP_MAX_EXPANSIONS,
+  STATEMENT_MATCH_GROUP_MAX_EXPANSIONS_TOTAL,
   STATEMENT_MATCH_GROUP_MAX_SETS,
   STATEMENT_MATCH_GROUP_MEMBER_SPAN_DAYS,
 } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { reconciliations, reconciliationLines, bankStatements, bankStatementLines, transactions } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { log } from '../utils/logger.js';
 import { auditLog } from '../middleware/audit.js';
 import { nameSimilarityFuzzy } from '../utils/string-similarity.js';
 import * as ledger from './ledger.service.js';
@@ -251,7 +253,11 @@ function scoreCandidates(
   unavailableJournalLineIds: ReadonlySet<string>,
 ): StatementMatchCandidate[] {
   const lineCents = toCents(line.amount);
-  const stmtCheck = line.checkNumber != null ? Number.parseInt(line.checkNumber, 10) : null;
+  // A non-numeric parsed check number (defensive — capture normally stores
+  // digits) must NOT NaN-disqualify every candidate that carries a check
+  // number: treat it as absent instead.
+  const stmtCheckRaw = line.checkNumber != null ? Number.parseInt(line.checkNumber, 10) : Number.NaN;
+  const stmtCheck = Number.isFinite(stmtCheckRaw) ? stmtCheckRaw : null;
   const out: StatementMatchCandidate[] = [];
 
   for (const row of worksheet) {
@@ -369,10 +375,18 @@ function findExactSumSets<T extends SumPoolItem>(
     maxExpansions: number;
     minimalOnly: boolean;
     maxSpanDays?: number;
+    /**
+     * Optional SHARED budget across many calls (one matchStatement run makes
+     * one call per unmatched line / unaccounted worksheet row). Decremented
+     * in place; when it runs out this call — and every later call handed the
+     * same object — stops immediately.
+     */
+    budget?: { remaining: number };
   },
 ): T[][] {
   const out: T[][] = [];
   if (targetCents <= 0 || pool.length < opts.minSize) return out;
+  if (opts.budget && opts.budget.remaining <= 0) return out;
   const n = pool.length;
   // suffixMax[i] = the largest cents value in pool[i..] — prune bound.
   const suffixMax: number[] = new Array<number>(n + 1).fill(0);
@@ -384,6 +398,7 @@ function findExactSumSets<T extends SumPoolItem>(
     // Returns true to abort the whole size-k search (budget or maxSets hit).
     const dfs = (start: number, sum: number): boolean => {
       if (++expansions > opts.maxExpansions) return true;
+      if (opts.budget && --opts.budget.remaining < 0) return true;
       const slotsLeft = k - chosen.length;
       if (slotsLeft === 0) {
         if (sum === targetCents) {
@@ -417,6 +432,7 @@ function findExactSumSets<T extends SumPoolItem>(
     if (opts.minimalOnly && out.length > 0) break; // minimal size found
     if (aborted && out.length >= opts.maxSets) break;
     if (expansions > opts.maxExpansions) break;
+    if (opts.budget && opts.budget.remaining <= 0) break;
   }
   return out;
 }
@@ -504,6 +520,7 @@ function findOneToManySets(
   line: StatementLineRow,
   worksheet: WorksheetRow[],
   unavailableJournalLineIds: ReadonlySet<string>,
+  budget?: { remaining: number },
 ): StatementGroupCandidate[] {
   const pool = buildGroupPool(line, worksheet, unavailableJournalLineIds);
   const sets = findExactSumSets(Math.abs(toCents(line.amount)), pool, {
@@ -512,6 +529,7 @@ function findOneToManySets(
     maxSets: STATEMENT_MATCH_GROUP_MAX_SETS,
     maxExpansions: STATEMENT_MATCH_GROUP_MAX_EXPANSIONS,
     minimalOnly: true,
+    ...(budget ? { budget } : {}),
   });
   return sets.map((set) => {
     const rows = set
@@ -732,6 +750,23 @@ export async function matchStatement(
     // ── Pass 3 (wave 2): grouped matches — SUGGEST-only, never auto ──
     let skippedAmbiguousGroups = 0;
 
+    // One shared expansion budget for EVERY subset-sum search in this run
+    // (A1 + A2). The per-call budget bounds one pathological pool; this
+    // bounds the whole request. Exhaustion skips the remaining group
+    // searches only — singles / autos above are unaffected.
+    const groupBudget = { remaining: STATEMENT_MATCH_GROUP_MAX_EXPANSIONS_TOTAL };
+    let groupBudgetLogged = false;
+    const noteBudgetExhausted = () => {
+      if (groupBudget.remaining > 0 || groupBudgetLogged) return false;
+      groupBudgetLogged = true;
+      log.warn({
+        component: 'statement-match', event: 'group_budget_exhausted',
+        tenantId, reconciliationId,
+        message: 'Shared subset-sum budget exhausted — remaining grouped-match searches skipped.',
+      });
+      return true;
+    };
+
     // Journal lines off the table for grouping: already claimed, plus the
     // ones this run is about to auto-clear.
     const groupUnavailable = new Set<string>(claimed);
@@ -744,7 +779,8 @@ export async function matchStatement(
     // worksheet lines. Multiple minimal sets → all returned for the picker.
     for (const o of outcomes) {
       if (o.tier !== 'unmatched') continue;
-      const sets = findOneToManySets(o.line, worksheet, groupUnavailable);
+      if (noteBudgetExhausted()) break;
+      const sets = findOneToManySets(o.line, worksheet, groupUnavailable, groupBudget);
       if (sets.length > 0) {
         o.tier = 'suggested';
         o.groupCandidates = sets;
@@ -771,6 +807,7 @@ export async function matchStatement(
     const consumedStmt = new Set<string>();
     for (const row of worksheet) {
       if (row.is_cleared || a2Accounted.has(row.journal_line_id)) continue;
+      if (noteBudgetExhausted()) break;
       const rowCents = toCents(row.debit) - toCents(row.credit);
       if (rowCents === 0) continue;
       const sign = Math.sign(rowCents);
@@ -801,6 +838,7 @@ export async function matchStatement(
         maxExpansions: STATEMENT_MATCH_GROUP_MAX_EXPANSIONS,
         minimalOnly: false,
         maxSpanDays: STATEMENT_MATCH_GROUP_MEMBER_SPAN_DAYS,
+        budget: groupBudget,
       });
       if (sets.length === 0) continue;
       if (sets.length > 1) {
@@ -1074,27 +1112,13 @@ export async function confirmStatementLine(
   userId?: string,
 ): Promise<StatementLineSummary> {
   return await db.transaction(async (tx) => {
-    const [line] = await tx.select().from(bankStatementLines)
-      .where(and(eq(bankStatementLines.tenantId, tenantId), eq(bankStatementLines.id, statementLineId)))
-      .for('update')
-      .limit(1);
-    if (!line) throw AppError.notFound('Statement line not found');
+    // Reconciliation lock first, then the line lock (shared helper) — same
+    // order as matchStatement / updateLines / undo, so concurrent confirms
+    // of the same journal line serialize instead of double-claiming it.
+    const { line, recon } = await lockLineAndReconciliation(tx, tenantId, statementLineId);
     if (line.matchStatus === 'confirmed' || line.matchStatus === 'auto') {
       throw AppError.conflict('This statement line is already matched. Un-clear it from the worksheet first.', 'STATEMENT_LINE_ALREADY_MATCHED');
     }
-
-    const [statement] = await tx.select().from(bankStatements)
-      .where(and(eq(bankStatements.tenantId, tenantId), eq(bankStatements.id, line.statementId)))
-      .limit(1);
-    if (!statement?.reconciliationId) {
-      throw AppError.badRequest('This statement is not linked to a reconciliation — start one from the statement first.');
-    }
-    const [recon] = await tx.select().from(reconciliations)
-      .where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, statement.reconciliationId)))
-      .for('update')
-      .limit(1);
-    if (!recon) throw AppError.notFound('Reconciliation not found');
-    if (recon.status === 'complete') throw AppError.badRequest('Reconciliation is already complete');
 
     // The journal line must be on this reconciliation's worksheet (any
     // worksheet line may be chosen explicitly, not just persisted candidates).
@@ -1137,11 +1161,12 @@ export async function rejectStatementLine(
   userId?: string,
 ): Promise<StatementLineSummary> {
   return await db.transaction(async (tx) => {
-    const [line] = await tx.select().from(bankStatementLines)
-      .where(and(eq(bankStatementLines.tenantId, tenantId), eq(bankStatementLines.id, statementLineId)))
-      .for('update')
-      .limit(1);
-    if (!line) throw AppError.notFound('Statement line not found');
+    // Same lock order + status guards as confirm: a completed
+    // reconciliation's match state is frozen (undo it first), and taking
+    // the reconciliation lock serializes rejects against a concurrent
+    // matchStatement apply that would otherwise overwrite the rejection
+    // with a stale 'suggested'.
+    const { line } = await lockLineAndReconciliation(tx, tenantId, statementLineId);
     if (line.matchStatus === 'confirmed' || line.matchStatus === 'auto') {
       // A cleared match is undone from the worksheet (un-clearing resets the
       // statement line) — rejecting here would leave the worksheet cleared
@@ -1168,21 +1193,30 @@ export async function rejectStatementLine(
 
 // ─── Wave 2: grouped confirm ───────────────────────────────────────
 
-// Shared prologue for the confirm/create flows: lock the statement line,
-// resolve + lock its reconciliation, and refuse when it's complete.
+// Shared prologue for the confirm/reject/create flows: resolve + lock the
+// reconciliation, then lock the statement line, and refuse when the
+// reconciliation is complete.
+//
+// LOCK ORDER — reconciliation FIRST, statement line second. Every other
+// writer (matchStatement, updateLines' reset hook, undo) takes the
+// reconciliation row lock before touching bank_statement_lines rows;
+// locking the line first here would be a classic lock-order inversion and
+// a live deadlock window against a concurrent matchStatement apply. The
+// line is therefore peeked WITHOUT a lock (statement_id is immutable, so
+// the reconciliation it resolves to can't change underneath us) and
+// re-read FOR UPDATE only after the reconciliation lock is held.
 async function lockLineAndReconciliation(
   tx: Tx,
   tenantId: string,
   statementLineId: string,
 ): Promise<{ line: StatementLineRow; recon: typeof reconciliations.$inferSelect }> {
-  const [line] = await tx.select().from(bankStatementLines)
+  const [peek] = await tx.select().from(bankStatementLines)
     .where(and(eq(bankStatementLines.tenantId, tenantId), eq(bankStatementLines.id, statementLineId)))
-    .for('update')
     .limit(1);
-  if (!line) throw AppError.notFound('Statement line not found');
+  if (!peek) throw AppError.notFound('Statement line not found');
 
   const [statement] = await tx.select().from(bankStatements)
-    .where(and(eq(bankStatements.tenantId, tenantId), eq(bankStatements.id, line.statementId)))
+    .where(and(eq(bankStatements.tenantId, tenantId), eq(bankStatements.id, peek.statementId)))
     .limit(1);
   if (!statement?.reconciliationId) {
     throw AppError.badRequest('This statement is not linked to a reconciliation — start one from the statement first.');
@@ -1193,6 +1227,13 @@ async function lockLineAndReconciliation(
     .limit(1);
   if (!recon) throw AppError.notFound('Reconciliation not found');
   if (recon.status === 'complete') throw AppError.badRequest('Reconciliation is already complete');
+
+  // Re-read under the reconciliation lock — the authoritative row state.
+  const [line] = await tx.select().from(bankStatementLines)
+    .where(and(eq(bankStatementLines.tenantId, tenantId), eq(bankStatementLines.id, statementLineId)))
+    .for('update')
+    .limit(1);
+  if (!line) throw AppError.notFound('Statement line not found');
   return { line, recon };
 }
 
@@ -1441,6 +1482,16 @@ export async function createTransactionFromStatementLine(
     if (cents === 0) throw AppError.badRequest('This statement line has a zero amount — nothing to post.');
     if (input.accountId === recon.accountId) {
       throw AppError.badRequest('Choose an income or expense category account — not the bank account being reconciled.');
+    }
+    // Worksheet invariant: start() only pulls journal lines dated on or
+    // before the statement date. A statement line dated AFTER it is parser
+    // noise (or the wrong statement) — posting it would force-clear a
+    // transaction the worksheet could never legitimately contain.
+    if (line.lineDate > recon.statementDate) {
+      throw AppError.badRequest(
+        `This statement line is dated ${line.lineDate} — after the statement date ${recon.statementDate}. ` +
+        'Check the parsed date; a transaction outside the statement period cannot be added to this reconciliation.',
+      );
     }
 
     const isMoneyIn = cents > 0;
