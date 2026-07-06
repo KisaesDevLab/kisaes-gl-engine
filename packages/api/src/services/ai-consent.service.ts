@@ -41,6 +41,38 @@ const ALL_TASK_KEYS: AiTaskKey[] = [
   'report_summary',
 ];
 
+// ─── Core-on-accept vs sensitive-opt-in split (H6/H7) ──────────────
+//
+// H7's intent is that a company's data isn't sent to AI without THAT
+// company's consent. Accepting the company disclosure IS that consent —
+// the disclosure text explicitly describes sending sanitized transaction
+// descriptions, OCR-extracted text, statement text, and the chart of
+// accounts to the provider. So accepting must ENABLE the standard
+// transaction/document processing tasks it covers; leaving them at their
+// `false` default (the H7 remediation's regression) meant an accepted
+// company still had every per-task gate closed, so categorization and the
+// bank-feed cleansing pipeline were silently blocked with ai_consent_blocked.
+//
+// These are the tasks turned ON when a company accepts the disclosure.
+export const CORE_TASKS_ON_ACCEPT: AiTaskKey[] = [
+  'categorization',
+  'receipt_ocr',
+  'statement_parsing',
+  'document_classification',
+];
+
+// The more sensitive tasks stay OPT-IN even after accepting the disclosure —
+// the owner must enable each explicitly in Company Settings → AI Processing.
+// report_summary sends summarized report FIGURES (revenue/expenses/net
+// income/KPIs); H6 deliberately keeps a stricter gate on those numbers than
+// on per-transaction descriptions. judgment_review / enrich_vendor are
+// likewise higher-touch and not covered by the "core processing" acceptance.
+export const SENSITIVE_TASKS_OPT_IN: AiTaskKey[] = [
+  'enrich_vendor',
+  'judgment_review',
+  'report_summary',
+];
+
 // Keep this text in the service so disclosure generation can be audited
 // and version-bumped centrally. If the wording changes, increment
 // SYSTEM_DISCLOSURE_TEXT_VERSION below — consent is re-required when
@@ -367,8 +399,20 @@ export async function acceptCompanyDisclosure(tenantId: string, companyId: strin
 
   const version = cfg.disclosureVersion ?? 1;
   const now = new Date();
+
+  // FIX 1 (H7 regression): accepting the disclosure IS this company's consent
+  // for the core processing tasks, so enable them here. Merge onto the
+  // existing toggles so a previously-enabled SENSITIVE task (report_summary
+  // etc.) is preserved, and the sensitive set is never auto-enabled — it
+  // stays opt-in (H6). Scoping is unchanged: this only touches THIS company's
+  // row, so accepting for company A never enables company B.
+  const beforeTasks = (before.aiEnabledTasks as Record<AiTaskKey, boolean>) || { ...DEFAULT_TASK_TOGGLES };
+  const nextTasks: Record<AiTaskKey, boolean> = { ...DEFAULT_TASK_TOGGLES, ...beforeTasks };
+  for (const t of CORE_TASKS_ON_ACCEPT) nextTasks[t] = true;
+
   await db.update(companies).set({
     aiEnabled: true,
+    aiEnabledTasks: nextTasks,
     aiDisclosureAcceptedAt: now,
     aiDisclosureAcceptedBy: userId,
     aiDisclosureVersion: version,
@@ -380,8 +424,8 @@ export async function acceptCompanyDisclosure(tenantId: string, companyId: strin
     'update',
     'company_ai_consent_accepted',
     companyId,
-    { aiEnabled: before.aiEnabled, version: before.aiDisclosureVersion },
-    { aiEnabled: true, version },
+    { aiEnabled: before.aiEnabled, version: before.aiDisclosureVersion, tasks: before.aiEnabledTasks },
+    { aiEnabled: true, version, tasks: nextTasks },
     userId,
   );
 

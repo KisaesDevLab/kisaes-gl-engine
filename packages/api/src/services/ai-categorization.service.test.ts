@@ -259,6 +259,62 @@ describe('ai-categorization.service', () => {
       expect((err as Error).message).toMatch(/truncated at the max-token limit/);
       expect(parseMocks.reply).toHaveBeenCalledTimes(1);
     });
+
+    it('FIX 5: a clean, confident COA match returns status "suggested"', async () => {
+      parseMocks.reply.mockReturnValue({ text: GOOD_JSON });
+      const id = await makeFeedItem('STAPLES 00123');
+
+      const result = await aiCategorization.categorize(tenantId, id);
+
+      expect(result).toMatchObject({ status: 'suggested', accountId: officeSuppliesId });
+    });
+
+    it('FIX 5: no COA match returns status "no_confident_match" (200, not an error) and persists nothing', async () => {
+      // A valid-JSON reply whose account_name matches NO account in the COA →
+      // an honest "reviewed, nothing confident", not a broken button.
+      parseMocks.reply.mockReturnValue({
+        text: '{"account_name":"Zznonexistent Ledger Account","vendor_name":"X","memo":"m","tag_name":null,"confidence":0.95}',
+      });
+      const id = await makeFeedItem('MYSTERY MERCHANT 001');
+
+      const result = await aiCategorization.categorize(tenantId, id);
+
+      expect(result).toMatchObject({ status: 'no_confident_match', accountId: null });
+      const stored = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, id) });
+      expect(stored!.suggestedAccountId).toBeNull();
+    });
+  });
+
+  describe('FIX 4 — enumeratePendingWithoutSuggestion', () => {
+    it('returns every pending-without-suggestion id, excluding suggested and non-pending rows', async () => {
+      const a = await makeFeedItem('A vendor');
+      const b = await makeFeedItem('B vendor');
+      // Pending but already has a suggestion → excluded.
+      const withSug = await makeFeedItem('C vendor');
+      await db.update(bankFeedItems).set({ suggestedAccountId: cashAccountId }).where(eq(bankFeedItems.id, withSug));
+      // Not pending → excluded.
+      const done = await makeFeedItem('D vendor');
+      await db.update(bankFeedItems).set({ status: 'categorized' }).where(eq(bankFeedItems.id, done));
+
+      const ids = await aiCategorization.enumeratePendingWithoutSuggestion(tenantId);
+      expect([...ids].sort()).toEqual([a, b].sort());
+    });
+
+    it('scopes to a bank connection when one is given', async () => {
+      const a = await makeFeedItem('A vendor');
+      const [conn2] = await db.insert(bankConnections).values({
+        tenantId, companyId, accountId: cashAccountId, institutionName: 'Bank 2',
+      }).returning();
+      const [other] = await db.insert(bankFeedItems).values({
+        tenantId, bankConnectionId: conn2!.id, companyId,
+        providerTransactionId: `ext-other-${Date.now()}`,
+        feedDate: '2026-05-01', amount: '9.00', description: 'other', status: 'pending',
+      }).returning();
+
+      const ids = await aiCategorization.enumeratePendingWithoutSuggestion(tenantId, connectionId);
+      expect(ids).toContain(a);
+      expect(ids).not.toContain(other!.id);
+    });
   });
 
   describe('batchCategorize resilience', () => {

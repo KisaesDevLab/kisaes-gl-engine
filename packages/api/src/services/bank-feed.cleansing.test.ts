@@ -159,25 +159,46 @@ describe('runCleansingPipeline — aggregate accounting', () => {
     expect(stored!.description).toBeTruthy();
   });
 
-  it('short-circuits the AI step after 3 consecutive failures (skips counted as aiFailed)', async () => {
-    catMock.categorize.mockRejectedValue(new Error('dead provider'));
+  it('FIX 3: short-circuits ONLY on a genuine provider outage, after 5 consecutive outages', async () => {
+    // ai_all_providers_failed = every provider in the chain is down. That's an
+    // infrastructure outage, so it accumulates toward the run-abandon.
+    catMock.categorize.mockRejectedValue(
+      AppError.badRequest('Every provider failed', 'ai_all_providers_failed'),
+    );
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const items = await insertItems(5);
+    const items = await insertItems(7);
 
     const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
 
-    // Only the first 3 items actually hit the LLM; the remaining 2 skip.
-    expect(catMock.categorize).toHaveBeenCalledTimes(3);
-    expect(agg.aiFailed).toBe(5);
+    // First 5 hit the LLM (threshold), the remaining 2 skip.
+    expect(catMock.categorize).toHaveBeenCalledTimes(5);
+    expect(agg.aiFailed).toBe(7);
   });
 
-  it('a success resets the consecutive-failure counter', async () => {
+  it('FIX 3: a per-row parse failure NEVER trips the outage short-circuit (every row still tried)', async () => {
+    // ai_parse_failed = a reachable model returned a bad-shape reply. It's
+    // item-specific, so it must not abandon the rest of the run — even for
+    // many consecutive rows.
+    catMock.categorize.mockRejectedValue(
+      AppError.badRequest('AI returned non-JSON (ollama / m). bad', 'ai_parse_failed'),
+    );
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const items = await insertItems(7);
+
+    const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
+
+    // All 7 attempted despite 7 consecutive parse failures — no short-circuit.
+    expect(catMock.categorize).toHaveBeenCalledTimes(7);
+    expect(agg.aiFailed).toBe(7);
+  });
+
+  it('FIX 3: an outage streak below the threshold, broken by a success, resets the counter', async () => {
     let call = 0;
     catMock.categorize.mockImplementation(() => {
       call++;
-      // fail, fail, succeed, fail, fail → never 3 consecutive.
-      if (call === 3) return Promise.resolve({ contactName: 'Vendor' });
-      return Promise.reject(new Error('flaky'));
+      // outage, outage, succeed, outage, outage → never 5 consecutive.
+      if (call === 3) return Promise.resolve({ contactName: 'Vendor', contactId: '11111111-1111-1111-1111-111111111111' });
+      return Promise.reject(AppError.badRequest('down', 'ai_all_providers_failed'));
     });
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const items = await insertItems(5);
@@ -187,6 +208,23 @@ describe('runCleansingPipeline — aggregate accounting', () => {
     expect(catMock.categorize).toHaveBeenCalledTimes(5);
     expect(agg.aiFailed).toBe(4);
     expect(agg.aiCleansed).toBe(1);
+  });
+
+  it('FIX 3: consent-off (ai_consent_blocked) is a CLEAN full-run skip (disabled), not a failure', async () => {
+    catMock.categorize.mockRejectedValue(
+      AppError.badRequest('This company has not opted in to AI processing.', 'ai_consent_blocked'),
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const items = await insertItems(4);
+
+    const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
+
+    expect(agg).toMatchObject({ processed: 4, disabled: 4, aiFailed: 0, aiCleansed: 0 });
+    expect(agg.firstError).toBeUndefined();
+    // Only the first item probes; the deliberate consent state persists.
+    expect(catMock.categorize).toHaveBeenCalledTimes(1);
+    // Not an outage — no warning noise.
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('[cleanse]'))).toBe(false);
   });
 
   it('counts disabled-function skips as `disabled` (silent) and stops calling the LLM', async () => {

@@ -3,7 +3,7 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { randomUUID } from 'crypto';
-import { eq, and, sql, ilike } from 'drizzle-orm';
+import { eq, and, sql, ilike, isNull } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { bankFeedItems, bankConnections, accounts, contacts, categorizationHistory, tags } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -98,7 +98,7 @@ export async function categorize(tenantId: string, feedItemId: string) {
 
   // Layer 1: Bank Rules (handled elsewhere — check if already suggested)
   if (item.suggestedAccountId && item.confidenceScore && parseFloat(item.confidenceScore) >= 0.9) {
-    return { accountId: item.suggestedAccountId, confidence: parseFloat(item.confidenceScore), matchType: 'rule' as const };
+    return { status: 'suggested' as const, accountId: item.suggestedAccountId, confidence: parseFloat(item.confidenceScore), matchType: 'rule' as const };
   }
 
   // Layer 2: Categorization history — trusted only past the confirmation
@@ -127,7 +127,7 @@ export async function categorize(tenantId: string, feedItemId: string) {
       contactName = contact?.displayName || null;
     }
 
-    return { accountId: history.accountId, contactId: history.contactId, contactName, confidence: 0.95, matchType: 'history' as const };
+    return { status: 'suggested' as const, accountId: history.accountId, contactId: history.contactId, contactName, confidence: 0.95, matchType: 'history' as const };
   }
 
   // Layer 3: AI categorization. From this point on, the caller is
@@ -299,9 +299,15 @@ export async function categorize(tenantId: string, feedItemId: string) {
       ? (matchByName(tagRows, (t) => t.name, String(parsed.tag_name)) ?? null)
       : null;
 
-    if (matchedAccount && confidence >= config.categorizationConfidenceThreshold) {
+    // FIX 5: distinguish a real suggestion from a legitimate no-match. The AI
+    // DID run (the job completed, tokens were spent) but either matched no COA
+    // account or scored below the confidence threshold — that's an honest
+    // "reviewed, nothing confident" outcome, not a broken button. Only persist
+    // a suggestion in the `suggested` case; surface the status either way.
+    const suggested = !!(matchedAccount && confidence >= config.categorizationConfidenceThreshold);
+    if (suggested) {
       await db.update(bankFeedItems).set({
-        suggestedAccountId: matchedAccount.id,
+        suggestedAccountId: matchedAccount!.id,
         suggestedContactId: matchedVendor?.id || null,
         // ADR 0XY §3.4 — persist the AI's tag suggestion so the categorize
         // drawer can show it pre-selected without another LLM round-trip.
@@ -320,6 +326,7 @@ export async function categorize(tenantId: string, feedItemId: string) {
     );
 
     return {
+      status: suggested ? ('suggested' as const) : ('no_confident_match' as const),
       accountId: matchedAccount?.id || null,
       accountName: parsed.account_name,
       contactId: matchedVendor?.id || null,
@@ -449,6 +456,33 @@ export interface BatchCategorizeRow {
    *  repeated same-code failures. The UI shows these in a separate
    *  "skipped" bucket so the user knows they weren't even attempted. */
   skipped?: boolean;
+}
+
+// FIX 4: server-side enumeration of every pending feed item that still has no
+// suggested account, so the bulk "AI Categorize" action covers the whole
+// dataset instead of just the page the client loaded. Capped so a giant
+// backlog can't be turned into one unbounded batch of paid calls in a single
+// request — re-running picks up the rest (categorized items leave 'pending').
+const BATCH_ALL_PENDING_MAX = 1000;
+
+export async function enumeratePendingWithoutSuggestion(
+  tenantId: string,
+  bankConnectionId?: string | null,
+): Promise<string[]> {
+  const conditions = [
+    eq(bankFeedItems.tenantId, tenantId),
+    eq(bankFeedItems.status, 'pending'),
+    isNull(bankFeedItems.suggestedAccountId),
+  ];
+  if (bankConnectionId) {
+    conditions.push(eq(bankFeedItems.bankConnectionId, bankConnectionId));
+  }
+  const rows = await db.select({ id: bankFeedItems.id })
+    .from(bankFeedItems)
+    .where(and(...conditions))
+    .orderBy(bankFeedItems.id)
+    .limit(BATCH_ALL_PENDING_MAX);
+  return rows.map((r) => r.id);
 }
 
 export async function batchCategorize(

@@ -112,9 +112,18 @@ export const aiCategorizeSchema = z.object({
   feedItemId: z.string().uuid(),
 });
 
+// Bulk categorize: EITHER an explicit id list (from the selection UI) OR
+// allPending (optionally scoped to one bank connection), which the server
+// expands to every pending-without-suggestion feed item so the action isn't
+// silently limited to the visible page. Exactly one selector must be present.
 export const aiBatchCategorizeSchema = z.object({
-  feedItemIds: z.array(z.string().uuid()).min(1).max(100),
-});
+  feedItemIds: z.array(z.string().uuid()).min(1).max(500).optional(),
+  allPending: z.boolean().optional(),
+  bankConnectionId: z.string().uuid().optional(),
+}).refine(
+  (v) => (v.feedItemIds !== undefined) !== (v.allPending === true),
+  { message: 'Provide exactly one of feedItemIds or allPending' },
+);
 
 // Dry-run categorization for not-yet-imported rows (statement review preview).
 // Transient transactions, so no feed-item ids — just description + amount.
@@ -207,11 +216,18 @@ export const aiImportStatementSchema = z
   });
 
 // Per-company AI task toggles. Used by PATCH /ai/consent/:companyId/tasks.
+// NOTE: every AiTaskKey the Company Settings → AI Processing page exposes
+// MUST appear here — z.object() strips unknown keys, so a missing key made
+// its checkbox a no-op (report_summary could never be toggled on before it
+// was added here).
 export const aiTaskTogglesSchema = z.object({
   categorization: z.boolean().optional(),
   receipt_ocr: z.boolean().optional(),
   statement_parsing: z.boolean().optional(),
   document_classification: z.boolean().optional(),
+  enrich_vendor: z.boolean().optional(),
+  judgment_review: z.boolean().optional(),
+  report_summary: z.boolean().optional(),
 });
 
 // Admin prompt template mutations.

@@ -195,13 +195,16 @@ describe('ai-consent service', () => {
       ).rejects.toThrow(/has not opted in|company/i);
     });
 
-    it('blocks job when task is disabled even though company is opted in', async () => {
+    it('blocks a SENSITIVE task (judgment_review) that accepting the disclosure does NOT auto-enable', async () => {
       await aiConsent.acceptSystemDisclosure(userId);
       await aiConfigService.updateConfig({ isEnabled: true, categorizationProvider: 'anthropic' });
       await aiConsent.acceptCompanyDisclosure(tenantId, companyId, userId);
-      // Do NOT toggle categorization on.
+      // FIX 1: accepting enables the CORE tasks (categorize now allowed), but
+      // the sensitive judgment_review stays opt-in → still blocked.
+      const catJob = await aiOrchestrator.createJob(tenantId, 'categorize', 'bank_feed_item', '00000000-0000-0000-0000-000000000000');
+      expect(catJob.status).toBe('pending');
       await expect(
-        aiOrchestrator.createJob(tenantId, 'categorize', 'bank_feed_item', '00000000-0000-0000-0000-000000000000'),
+        aiOrchestrator.createJob(tenantId, 'judgment_review', 'transaction', '00000000-0000-0000-0000-000000000000'),
       ).rejects.toThrow(/task is disabled/i);
     });
 
@@ -231,20 +234,76 @@ describe('ai-consent service', () => {
   });
 
   describe('per-task isolation', () => {
-    it('enabling receipt_ocr does not enable categorization', async () => {
+    it('accepting enables the CORE tasks but leaves SENSITIVE ones off (isolation preserved)', async () => {
       await aiConsent.acceptSystemDisclosure(userId);
       await aiConfigService.updateConfig({ isEnabled: true, categorizationProvider: 'anthropic', ocrProvider: 'anthropic' });
       await aiConsent.acceptCompanyDisclosure(tenantId, companyId, userId);
-      await aiConsent.setCompanyTaskToggles(tenantId, companyId, { receipt_ocr: true }, userId);
 
-      // Categorization still disabled → blocked.
+      // FIX 1: the core processing tasks are on after accept…
+      const catJob = await aiOrchestrator.createJob(tenantId, 'categorize', 'bank_feed_item', '00000000-0000-0000-0000-000000000000');
+      expect(catJob.status).toBe('pending');
+      const ocrJob = await aiOrchestrator.createJob(tenantId, 'ocr_receipt', 'attachment', '00000000-0000-0000-0000-000000000000');
+      expect(ocrJob.status).toBe('pending');
+
+      // …but a sensitive task (enrich_vendor) stays off until explicitly enabled.
       await expect(
-        aiOrchestrator.createJob(tenantId, 'categorize', 'bank_feed_item', '00000000-0000-0000-0000-000000000000'),
+        aiOrchestrator.createJob(tenantId, 'enrich_vendor', 'contact', '00000000-0000-0000-0000-000000000000'),
       ).rejects.toThrow(/task is disabled/i);
+    });
+  });
 
-      // Receipt OCR task allowed.
-      const job = await aiOrchestrator.createJob(tenantId, 'ocr_receipt', 'attachment', '00000000-0000-0000-0000-000000000000');
-      expect(job.status).toBe('pending');
+  describe('FIX 1 — consent-on-accept (core vs sensitive split; H6/H7)', () => {
+    async function enableSystemAndAccept() {
+      await aiConsent.acceptSystemDisclosure(userId);
+      await aiConfigService.updateConfig({ isEnabled: true, categorizationProvider: 'anthropic', ocrProvider: 'anthropic' });
+      await aiConsent.acceptCompanyDisclosure(tenantId, companyId, userId);
+    }
+
+    it('accepting the disclosure grants the four CORE task consents', async () => {
+      await enableSystemAndAccept();
+      for (const task of ['categorization', 'receipt_ocr', 'statement_parsing', 'document_classification'] as aiConsent.AiTaskKey[]) {
+        const check = await aiConsent.checkTenantTaskConsent(tenantId, task, companyId);
+        expect(check.allowed).toBe(true);
+      }
+    });
+
+    it('report_summary (and the other sensitive tasks) stay OFF until explicitly enabled (H6)', async () => {
+      await enableSystemAndAccept();
+      for (const task of ['report_summary', 'judgment_review', 'enrich_vendor'] as aiConsent.AiTaskKey[]) {
+        const check = await aiConsent.checkTenantTaskConsent(tenantId, task, companyId);
+        expect(check.allowed).toBe(false);
+        expect(check.reason).toBe('task_disabled');
+      }
+
+      // The owner opts report_summary in explicitly → now allowed.
+      await aiConsent.setCompanyTaskToggles(tenantId, companyId, { report_summary: true }, userId);
+      const after = await aiConsent.checkTenantTaskConsent(tenantId, 'report_summary', companyId);
+      expect(after.allowed).toBe(true);
+    });
+
+    it('turning categorization back off after accept is honored (granular control intact)', async () => {
+      await enableSystemAndAccept();
+      await aiConsent.setCompanyTaskToggles(tenantId, companyId, { categorization: false }, userId);
+      const check = await aiConsent.checkTenantTaskConsent(tenantId, 'categorization', companyId);
+      expect(check.allowed).toBe(false);
+      expect(check.reason).toBe('task_disabled');
+    });
+
+    it('H7 isolation: accepting for company A does NOT enable company B', async () => {
+      await aiConsent.acceptSystemDisclosure(userId);
+      await aiConfigService.updateConfig({ isEnabled: true, categorizationProvider: 'anthropic' });
+      // Second company in the SAME tenant.
+      const [companyB] = await db.insert(companies).values({
+        tenantId, businessName: 'Company B',
+      }).returning();
+
+      await aiConsent.acceptCompanyDisclosure(tenantId, companyId, userId);
+
+      const a = await aiConsent.checkTenantTaskConsent(tenantId, 'categorization', companyId);
+      const b = await aiConsent.checkTenantTaskConsent(tenantId, 'categorization', companyB!.id);
+      expect(a.allowed).toBe(true);
+      expect(b.allowed).toBe(false);
+      expect(b.reason).toBe('company_not_opted_in');
     });
   });
 

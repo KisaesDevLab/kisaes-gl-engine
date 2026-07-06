@@ -740,11 +740,13 @@ export function emptyCleansingAggregate(): CleansingAggregate {
   return { processed: 0, aiCleansed: 0, aiFailed: 0, disabled: 0 };
 }
 
-// Mirrors CONSECUTIVE_FAIL_THRESHOLD in ai-categorization.service.ts:
-// after this many consecutive AI failures in a single pipeline run, the
-// AI step is skipped for the remaining items (each skip counts toward
-// aiFailed) so a dead provider doesn't burn a call per imported row.
-const CLEANSE_CONSECUTIVE_FAIL_THRESHOLD = 3;
+// FIX 3: the run-abandoning short-circuit trips only on a genuine provider
+// OUTAGE (every provider down, or a timeout), so one flaky/dead provider
+// doesn't burn a paid call per imported row. A per-row parse failure or a
+// low-confidence/no-match result is item-specific — the next row may well
+// succeed — so it must NOT count toward this threshold. Raised modestly from
+// 3 now that only true outages accumulate toward it.
+const CLEANSE_CONSECUTIVE_FAIL_THRESHOLD = 5;
 
 // Error codes that mean the AI step is DELIBERATELY unavailable — an admin
 // state, not an outage. Counted as `disabled` (silent skip) so non-AI
@@ -753,11 +755,27 @@ const CLEANSE_DISABLED_CODES = new Set([
   'ai_disabled_globally',
   'ai_no_provider_configured',
   'ai_function_disabled',
-  // LOW: a company that hasn't opted in (or whose consent is stale) is a
-  // deliberate state, not a provider outage — bucket it as `disabled` (silent)
-  // instead of conflating it with real AI failures. createJob throws this code.
+  // A company that hasn't opted in / enabled the task (or whose consent is
+  // stale) is a deliberate state, not a provider outage — bucket it as
+  // `disabled` (silent) and treat it as a CLEAN full-run skip (aiDisabled),
+  // never as a "failure". createJob throws this code (ai_consent_blocked).
   'ai_consent_blocked',
 ]);
+
+// Error codes that mean a genuine INFRASTRUCTURE outage — every provider in
+// the chain failed, or the call timed out. Only these accumulate toward the
+// consecutive-failure short-circuit. ai_parse_failed (a bad-shape reply from
+// an otherwise-reachable model) is deliberately absent: it's a per-row miss.
+const CLEANSE_OUTAGE_CODES = new Set([
+  'ai_all_providers_failed',
+  'ai_provider_failed',
+]);
+
+function isCleanseOutage(e: { code?: string; message?: string }): boolean {
+  if (e.code && CLEANSE_OUTAGE_CODES.has(e.code)) return true;
+  const m = (e.message ?? '').toLowerCase();
+  return m.includes('timeout') || m.includes('timed out') || m.includes('etimedout');
+}
 
 export async function runCleansingPipeline(tenantId: string, items: any[]): Promise<CleansingAggregate> {
   const agg = emptyCleansingAggregate();
@@ -828,7 +846,9 @@ export async function runCleansingPipeline(tenantId: string, items: any[]): Prom
           const e = err as { code?: string; message?: string };
           const msg = e?.message ?? String(err);
           if (e?.code && CLEANSE_DISABLED_CODES.has(e.code)) {
-            // Deliberate admin state — count separately and stop attempting.
+            // Deliberate off-state (globally disabled / no provider / function
+            // toggled off / consent not granted). Not a failure — bucket as
+            // `disabled` and treat the whole rest of the run as a clean skip.
             aiDisabled = true;
             agg.disabled++;
           } else {
@@ -836,8 +856,17 @@ export async function runCleansingPipeline(tenantId: string, items: any[]): Prom
             if (!agg.firstError) agg.firstError = msg;
             // eslint-disable-next-line no-console
             console.warn(`[cleanse] AI step failed for item ${item.id}: ${msg}`);
-            consecutiveAiFailures++;
-            if (consecutiveAiFailures >= CLEANSE_CONSECUTIVE_FAIL_THRESHOLD) aiShortCircuited = true;
+            // Only a genuine provider OUTAGE accumulates toward the
+            // run-abandoning short-circuit. A per-row parse failure (or any
+            // other item-specific error) is counted as aiFailed but does NOT
+            // trip it — and resets the streak so a lone outage between good
+            // rows can't strand the tail of the import.
+            if (isCleanseOutage(e)) {
+              consecutiveAiFailures++;
+              if (consecutiveAiFailures >= CLEANSE_CONSECUTIVE_FAIL_THRESHOLD) aiShortCircuited = true;
+            } else {
+              consecutiveAiFailures = 0;
+            }
           }
         }
       }

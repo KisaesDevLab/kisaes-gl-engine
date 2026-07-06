@@ -235,17 +235,29 @@ aiRouter.delete('/admin/prompts/:id', authenticate, requireSuperAdmin, async (re
 
 aiRouter.post('/categorize', authenticate, aiProcessingLimiter, validate(aiCategorizeSchema), async (req, res) => {
   // categorize() throws AppError on AI failure; null is reserved for
-  // the "no description, nothing to categorize" case.
+  // the "no description, nothing to categorize" case. FIX 5: the result now
+  // carries a discriminated `status` ('suggested' | 'no_confident_match') so
+  // the UI can tell a real suggestion from an honest no-match; the
+  // no-description case is surfaced as its own status here.
   const result = await aiCategorization.categorize(req.tenantId, req.body.feedItemId);
   if (result) {
     res.json(result);
     return;
   }
-  res.json({ accountId: null, reason: 'no_description' });
+  res.json({ status: 'no_description', accountId: null, reason: 'no_description' });
 });
 
 aiRouter.post('/categorize/batch', authenticate, aiProcessingLimiter, validate(aiBatchCategorizeSchema), async (req, res) => {
-  const results = await aiCategorization.batchCategorize(req.tenantId, req.body.feedItemIds);
+  // FIX 4: either an explicit id list OR allPending (optionally scoped to one
+  // bank connection), enumerated server-side so the bulk action covers every
+  // pending-without-suggestion row, not just the page the client can see.
+  const { feedItemIds, allPending, bankConnectionId } = req.body as {
+    feedItemIds?: string[]; allPending?: boolean; bankConnectionId?: string;
+  };
+  const ids = allPending
+    ? await aiCategorization.enumeratePendingWithoutSuggestion(req.tenantId, bankConnectionId)
+    : feedItemIds ?? [];
+  const results = await aiCategorization.batchCategorize(req.tenantId, ids);
   res.json({ results });
 });
 
