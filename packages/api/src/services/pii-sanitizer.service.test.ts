@@ -73,19 +73,43 @@ describe('pii-sanitizer', () => {
     });
   });
 
-  describe('payee names are NOT PII (preserved in every mode)', () => {
-    it('keeps the payee after VENMO/ZELLE/CASH APP', () => {
+  describe('P2P personal names ARE redacted in every sanitizing mode (disclosure promise)', () => {
+    // These are the disclosure's own examples: "personal names in
+    // Venmo/Zelle/PayPal/Cash App entries are redacted before sending".
+    it('redacts the personal name after VENMO/ZELLE/CASH APP/PAYPAL', () => {
       for (const mode of ['minimal', 'standard', 'strict'] as const) {
-        expect(sanitize('VENMO PAYMENT JOHN SMITH $50', mode).text).toContain('JOHN SMITH');
-        expect(sanitize('ZELLE TO JANE DOE', mode).text).toContain('JANE DOE');
-        expect(sanitize('CASH APP PAYMENT ALICE WONDERLAND', mode).text).toContain('ALICE WONDERLAND');
+        const venmo = sanitize('VENMO PAYMENT JOHN SMITH $50', mode);
+        expect(venmo.text).toBe('VENMO PAYMENT [NAME] $50');
+        expect(venmo.detected).toContain('p2p_name');
+
+        expect(sanitize('ZELLE TO JANE DOE', mode).text).toBe('ZELLE TO [NAME]');
+        expect(sanitize('CASH APP PAYMENT ALICE WONDERLAND', mode).text).toBe('CASH APP PAYMENT [NAME]');
+        expect(sanitize('PAYPAL TRANSFER FROM MARY JOHNSON', mode).text).toBe('PAYPAL TRANSFER FROM [NAME]');
       }
     });
-    it('keeps business payees and amounts intact', () => {
+    it('keeps amounts and the P2P marker/connector words intact', () => {
+      const { text } = sanitize('VENMO PAYMENT JOHN SMITH $50', 'minimal');
+      expect(text).toContain('VENMO PAYMENT');
+      expect(text).toContain('$50');
+      expect(text).not.toContain('JOHN SMITH');
+    });
+    it('keeps business payees after a P2P marker (conservative guard)', () => {
       const { text, detected } = sanitize('ZELLE PAYMENT TO ACME PLUMBING LLC  -350.00', 'strict');
       expect(text).toContain('ACME PLUMBING LLC');
       expect(text).toContain('-350.00');
-      expect(detected).not.toContain('payment_app_name' as never);
+      expect(detected).not.toContain('p2p_name');
+    });
+    it('does not touch single-word PayPal merchant descriptors', () => {
+      const { text } = sanitize('PAYPAL *NETFLIX', 'minimal');
+      expect(text).toContain('NETFLIX');
+    });
+    it('does not touch ordinary merchant descriptors without a P2P marker', () => {
+      const { text, detected } = sanitize('STARBUCKS STORE 123 JOHN SMITH BLVD', 'minimal');
+      expect(text).toContain('STARBUCKS');
+      expect(detected).not.toContain('p2p_name');
+    });
+    it('mode none is still a pass-through', () => {
+      expect(sanitize('VENMO PAYMENT JOHN SMITH', 'none').text).toBe('VENMO PAYMENT JOHN SMITH');
     });
   });
 

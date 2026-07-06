@@ -28,7 +28,8 @@ export type AiTaskKey =
   | 'statement_parsing'
   | 'document_classification'
   | 'enrich_vendor'
-  | 'judgment_review';
+  | 'judgment_review'
+  | 'report_summary';
 
 const ALL_TASK_KEYS: AiTaskKey[] = [
   'categorization',
@@ -37,6 +38,7 @@ const ALL_TASK_KEYS: AiTaskKey[] = [
   'document_classification',
   'enrich_vendor',
   'judgment_review',
+  'report_summary',
 ];
 
 // Keep this text in the service so disclosure generation can be audited
@@ -44,7 +46,7 @@ const ALL_TASK_KEYS: AiTaskKey[] = [
 // SYSTEM_DISCLOSURE_TEXT_VERSION below — consent is re-required when
 // this version moves forward (separate axis from ai_config.disclosure_
 // version, which tracks data-flow-affecting config changes).
-export const SYSTEM_DISCLOSURE_TEXT_VERSION = 1;
+export const SYSTEM_DISCLOSURE_TEXT_VERSION = 2;
 
 const SYSTEM_DISCLOSURE_MARKDOWN = `# AI Processing Data Disclosure
 
@@ -54,11 +56,12 @@ By enabling AI processing for this Vibe MyBooks installation, you acknowledge:
 - Sanitized transaction descriptions from bank feeds (personal names in Venmo/Zelle/PayPal/Cash App entries are redacted before sending)
 - Text extracted from uploaded receipts, invoices, and bank statements (sanitized based on your PII protection level)
 - Your chart of accounts names (used for categorization context)
+- Summarized report figures for a report period (revenue, expenses, net income, cash and A/R-A/P positions, and computed KPIs) — only when a bookkeeper generates an AI report summary, and only for companies that enabled that task
 
 **What data is NEVER sent to external services:**
 - Complete bank account numbers, routing numbers, or SSN/EIN
 - Raw document images (unless you explicitly enable cloud vision in Permissive mode)
-- Aggregate financial data, balances, or reports
+- Aggregate financial data, balances, or reports — except the summarized report figures described above when the AI report-summary task is used
 - User passwords or authentication credentials
 
 **When using self-hosted models (Ollama):**
@@ -265,9 +268,7 @@ export async function getCompanyDisclosure(tenantId: string, companyId: string):
   const systemVersion = cfg?.disclosureVersion ?? 1;
   const pii = (cfg?.piiProtectionLevel ?? 'strict') as string;
 
-  const tasks = (company.aiEnabledTasks as Record<AiTaskKey, boolean>) || {
-    categorization: false, receipt_ocr: false, statement_parsing: false, document_classification: false,
-  };
+  const tasks = (company.aiEnabledTasks as Record<AiTaskKey, boolean>) || { ...DEFAULT_TASK_TOGGLES };
 
   const text = renderCompanyDisclosure({
     companyName: company.businessName,
@@ -335,6 +336,7 @@ function renderCompanyDisclosure(args: {
     `- Sanitized transaction descriptions, amounts, and dates`,
     `- OCR-extracted text (never raw images, unless PII protection is set to Permissive and cloud vision is explicitly enabled)`,
     `- Your chart of accounts names`,
+    `- Summarized report figures and KPIs for a report period, when your bookkeeper generates an AI report summary (only if that task is enabled below)`,
     ``,
     `**What is never sent:**`,
     `- Complete bank account numbers, routing numbers, SSN/EIN`,
@@ -389,7 +391,7 @@ export async function revokeCompanyConsent(tenantId: string, companyId: string, 
 
   await db.update(companies).set({
     aiEnabled: false,
-    aiEnabledTasks: { categorization: false, receipt_ocr: false, statement_parsing: false, document_classification: false },
+    aiEnabledTasks: { ...DEFAULT_TASK_TOGGLES },
     aiDisclosureAcceptedAt: null,
     aiDisclosureAcceptedBy: null,
     aiDisclosureVersion: null,
@@ -418,9 +420,7 @@ export async function setCompanyTaskToggles(
   if (!company) throw AppError.notFound('Company not found');
   if (!company.aiEnabled) throw AppError.badRequest('Company has not opted in to AI processing.');
 
-  const before = (company.aiEnabledTasks as Record<AiTaskKey, boolean>) || {
-    categorization: false, receipt_ocr: false, statement_parsing: false, document_classification: false,
-  };
+  const before = (company.aiEnabledTasks as Record<AiTaskKey, boolean>) || { ...DEFAULT_TASK_TOGGLES };
   const next: Record<AiTaskKey, boolean> = { ...before };
   for (const key of ALL_TASK_KEYS) {
     if (toggles[key] !== undefined) next[key] = !!toggles[key];
@@ -453,14 +453,24 @@ export interface ConsentCheckResult {
 }
 
 /**
- * Per-tenant consent gate for a given task. Follows the chat.service
- * pattern: "is there at least one company in this tenant with AI
- * enabled, consent current, and this task toggled on?"
+ * Consent gate for a given task.
  *
- * Returns the first matching company's id on success so the caller
- * can record which company's consent authorized the job.
+ * With `companyId` (preferred — every surface that knows which company's
+ * data is being sent MUST pass it): THAT specific company must have AI
+ * enabled, current consent, and the task toggled on. One company's opt-in
+ * no longer unlocks AI over a sibling company's data.
+ *
+ * Without `companyId` (genuinely tenant-level surfaces only — e.g. data
+ * that is not company-scoped): falls back to the historical "is there at
+ * least one company in this tenant with AI enabled, consent current, and
+ * this task toggled on?" check, and returns the first matching company's
+ * id so the caller can record which company's consent authorized the job.
  */
-export async function checkTenantTaskConsent(tenantId: string, task: AiTaskKey): Promise<ConsentCheckResult> {
+export async function checkTenantTaskConsent(
+  tenantId: string,
+  task: AiTaskKey,
+  companyId?: string | null,
+): Promise<ConsentCheckResult> {
   const cfg = await db.query.aiConfig.findFirst();
   if (!cfg?.isEnabled) return { allowed: false, reason: 'system_disabled' };
   if (!cfg.adminDisclosureAcceptedAt) return { allowed: false, reason: 'system_disclosure_not_accepted' };
@@ -474,7 +484,11 @@ export async function checkTenantTaskConsent(tenantId: string, task: AiTaskKey):
     version: companies.aiDisclosureVersion,
     tasks: companies.aiEnabledTasks,
   }).from(companies)
-    .where(and(eq(companies.tenantId, tenantId), eq(companies.aiEnabled, true)));
+    .where(and(
+      eq(companies.tenantId, tenantId),
+      eq(companies.aiEnabled, true),
+      ...(companyId ? [eq(companies.id, companyId)] : []),
+    ));
 
   if (rows.length === 0) return { allowed: false, reason: 'company_not_opted_in' };
 
@@ -547,6 +561,7 @@ export const DEFAULT_TASK_TOGGLES: Record<AiTaskKey, boolean> = {
   document_classification: false,
   enrich_vendor: false,
   judgment_review: false,
+  report_summary: false,
 };
 
 // Exposed for ai-config.service so it can compose in a transaction.

@@ -18,6 +18,8 @@ import {
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as aiConfigService from './ai-config.service.js';
+import { checkTenantTaskConsent } from './ai-consent.service.js';
+import { consentReasonMessage } from './ai-orchestrator.service.js';
 import { executeWithFallback, getProvider } from './ai-providers/index.js';
 import type { CompletionResult } from './ai-providers/index.js';
 import { getProviderForTenant } from './storage/storage-provider.factory.js';
@@ -1134,6 +1136,19 @@ export async function generateAiSummary(
   if (!config.isEnabled) {
     throw AppError.badRequest('AI processing is not enabled. Contact your administrator.');
   }
+
+  // Consent gate (H6): the summary sends THIS company's report figures to
+  // the AI provider, so the instance's company must have consented and
+  // enabled the 'report_summary' task — the system disclosure documents
+  // exactly this data flow.
+  const consent = await checkTenantTaskConsent(tenantId, 'report_summary', inst.companyId);
+  if (!consent.allowed) {
+    throw AppError.badRequest(
+      `AI report summaries are not available for this company. ${consentReasonMessage(consent.reason)}`,
+      'ai_consent_blocked',
+    );
+  }
+
   const rawConfig = await aiConfigService.getRawConfig();
   const preferredProvider = config.chatProvider || config.categorizationProvider || undefined;
   const preferredModel = config.chatModel || undefined;

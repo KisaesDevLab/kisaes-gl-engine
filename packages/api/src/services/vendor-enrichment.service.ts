@@ -78,6 +78,9 @@ export async function fetchFromAI(tenantId: string, description: string): Promis
 
   // Consent gate. Returns null instead of throwing so panel renders
   // the "unavailable" state cleanly when the tenant has not opted in.
+  // Vendor descriptors come from tenant-scoped contacts with no company
+  // affiliation, so this surface genuinely has no companyId — the
+  // tenant-any consent check is intentional here (H7).
   const consent = await checkTenantTaskConsent(tenantId, 'enrich_vendor');
   if (!consent.allowed) return null;
 

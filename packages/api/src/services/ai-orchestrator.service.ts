@@ -22,7 +22,7 @@ export type AiTask =
   | 'enrich_vendor'
   | 'judgment_review';
 
-function consentReasonMessage(reason: string | undefined): string {
+export function consentReasonMessage(reason: string | undefined): string {
   switch (reason) {
     case 'system_disabled':
       return 'AI processing is not enabled. Contact your administrator.';
@@ -138,6 +138,9 @@ export function resetConcurrencyLimit() { _semaphore = null; }
 // semantic from the company owner's point of view.
 const JOB_TO_TASK: Record<string, AiTaskKey> = {
   categorize: 'categorization',
+  // Dry-run preview batches ride the categorization consent toggle — same
+  // data (transaction descriptions) to the same provider.
+  categorization_preview: 'categorization',
   ocr_receipt: 'receipt_ocr',
   ocr_invoice: 'receipt_ocr',
   ocr_statement: 'statement_parsing',
@@ -146,7 +149,17 @@ const JOB_TO_TASK: Record<string, AiTaskKey> = {
   judgment_review: 'judgment_review',
 };
 
-export async function createJob(tenantId: string, jobType: string, inputType: string, inputId: string, inputData?: any) {
+export async function createJob(
+  tenantId: string,
+  jobType: string,
+  inputType: string,
+  inputId: string,
+  inputData?: any,
+  // The company whose data this job sends out. Callers that know it MUST
+  // pass it so consent is checked against that specific company; null/absent
+  // falls back to tenant-any consent (see checkTenantTaskConsent).
+  companyId?: string | null,
+) {
   const config = await aiConfigService.getConfig();
   if (!config.isEnabled) throw AppError.badRequest('AI processing is not enabled. Contact your administrator.');
 
@@ -155,7 +168,7 @@ export async function createJob(tenantId: string, jobType: string, inputType: st
   // it here lets the consent service own the whole policy.
   const task = JOB_TO_TASK[jobType];
   if (task) {
-    const check = await checkTenantTaskConsent(tenantId, task);
+    const check = await checkTenantTaskConsent(tenantId, task, companyId ?? null);
     if (!check.allowed) {
       throw AppError.badRequest(consentReasonMessage(check.reason));
     }

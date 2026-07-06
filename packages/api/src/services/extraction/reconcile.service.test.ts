@@ -48,16 +48,57 @@ describe('repairPass', () => {
     const fix = repairPass(txs, -50_00n);
     expect(fix).not.toBeNull();
     expect(fix!.transactions[0]!.amountCents).toBe(-25_00n);
-    expect(fix!.fixDescription).toContain('flip-sign');
+    expect(fix!.fixDescription).toContain('flipped sign');
   });
 
-  it('drops a duplicate row whose amount equals the delta', () => {
-    const txs = [{ amountCents: 5_00n, description: 'real' }, { amountCents: -12_34n, description: 'dup' }];
+  // H2: the drop rule may only discard a row that is INDEPENDENTLY implicated
+  // (suspect running balance, low row confidence, or an exact duplicate).
+  // A row that merely matches the delta arithmetically is NOT dropped —
+  // silently deleting clean data to force reconciliation is worse than
+  // reporting the discrepancy.
+  it('does NOT drop a clean row that only matches the delta arithmetically', () => {
+    const txs = [{ amountCents: 5_00n, description: 'real' }, { amountCents: -12_34n, description: 'also real' }];
+    expect(repairPass(txs, 12_34n)).toBeNull();
+  });
+
+  it('drops an exact duplicate row (same amount + description + date) whose amount equals the delta', () => {
+    const txs = [
+      { amountCents: -12_34n, description: 'ACME', postedDate: '2026-01-05' },
+      { amountCents: -12_34n, description: 'ACME', postedDate: '2026-01-05' },
+    ];
+    const fix = repairPass(txs, 12_34n);
+    expect(fix).not.toBeNull();
+    expect(fix!.transactions).toHaveLength(1);
+    expect(fix!.fixDescription).toContain('duplicate');
+  });
+
+  it('drops a row flagged suspect by the running-balance check', () => {
+    const txs = [{ amountCents: 5_00n, description: 'real' }, { amountCents: -12_34n, description: 'phantom' }];
+    const fix = repairPass(txs, 12_34n, { suspectIndexes: new Set([1]) });
+    expect(fix).not.toBeNull();
+    expect(fix!.transactions).toHaveLength(1);
+    expect(fix!.transactions[0]!.description).toBe('real');
+    expect(fix!.fixDescription).toContain('suspect');
+  });
+
+  it('drops a low-confidence phantom row that closes the delta', () => {
+    const txs = [
+      { amountCents: 5_00n, description: 'real', rowConfidence: 0.95 },
+      { amountCents: -12_34n, description: 'phantom', rowConfidence: 0.3 },
+    ];
     const fix = repairPass(txs, 12_34n);
     expect(fix).not.toBeNull();
     expect(fix!.transactions).toHaveLength(1);
     expect(fix!.transactions[0]!.description).toBe('real');
-    expect(fix!.fixDescription).toContain('drop');
+    expect(fix!.fixDescription).toContain('confidence');
+  });
+
+  it('does NOT drop a high-confidence non-duplicate row even when it matches the delta', () => {
+    const txs = [
+      { amountCents: 5_00n, description: 'real', rowConfidence: 0.9 },
+      { amountCents: -12_34n, description: 'also real', rowConfidence: 0.9 },
+    ];
+    expect(repairPass(txs, 12_34n)).toBeNull();
   });
 
   it('returns null when no safe single-row fix exists', () => {

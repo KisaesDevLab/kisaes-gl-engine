@@ -88,7 +88,11 @@ export async function classifyDocument(tenantId: string, attachmentId: string): 
   }
   const mimeType = attachment.mimeType || 'image/jpeg';
 
-  const job = await orchestrator.createJob(tenantId, 'classify_document', 'attachment', attachmentId);
+  // Consent is scoped to the attachment's company when known (H7).
+  const job = await orchestrator.createJob(
+    tenantId, 'classify_document', 'attachment', attachmentId, undefined,
+    attachment.companyId ?? null,
+  );
 
   try {
     const rawConfig = await aiConfigService.getRawConfig();

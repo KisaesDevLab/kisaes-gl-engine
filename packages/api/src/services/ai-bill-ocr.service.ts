@@ -130,7 +130,11 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
     .set({ ocrStatus: 'processing' })
     .where(and(eq(attachments.tenantId, tenantId), eq(attachments.id, attachmentId)));
 
-  const job = await orchestrator.createJob(tenantId, 'ocr_invoice', 'attachment', attachmentId);
+  // Consent is scoped to the attachment's company when known (H7).
+  const job = await orchestrator.createJob(
+    tenantId, 'ocr_invoice', 'attachment', attachmentId, undefined,
+    attachment.companyId ?? null,
+  );
 
   try {
     const rawConfig = await aiConfigService.getRawConfig();

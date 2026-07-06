@@ -13,6 +13,7 @@ import {
   recurringDocumentRequests,
 } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { log } from '../utils/logger.js';
 import { auditLog } from '../middleware/audit.js';
 
 // STATEMENT_AUTO_IMPORT_V1 — when a portal contact uploads in
@@ -28,6 +29,46 @@ import { auditLog } from '../middleware/audit.js';
 //      it to the CPA for a manual pick. We never silently guess.
 
 export type StatementDocumentType = 'bank_statement' | 'cc_statement';
+
+// Quality gate for the UNATTENDED (portal auto-import) path. A parse may
+// only flow straight into bank_feed_items when it is provably clean:
+// Golden-Rule verified, NOT mutated by the repair pass, no suspect rows,
+// and at/above this confidence. Anything else is held for staff review —
+// the parse job stays visible on the Statement Processing page ("Pending
+// review" → Review & import) and the receipt goes to 'awaits_routing' in
+// the receipts inbox. The interactive staff upload flow is unaffected
+// (staff always see the review screen there).
+export const STATEMENT_AUTO_IMPORT_MIN_CONFIDENCE = 0.7;
+
+interface QualityGateResult {
+  ok: boolean;
+  reasons: string[];
+}
+
+// Exported for tests. Evaluates a parse result against the auto-import gate.
+export function evaluateStatementQuality(parsed: {
+  confidence?: number;
+  reconciliation?: { status?: string; repaired?: boolean; fixDescription?: string } | null;
+  suspectRows?: Array<{ index: number }> | null;
+}): QualityGateResult {
+  const reasons: string[] = [];
+  const rec = parsed.reconciliation;
+  if (rec?.status !== 'verified') {
+    reasons.push(`reconciliation ${rec?.status ?? 'missing'} (not verified)`);
+  }
+  if (rec?.repaired) {
+    reasons.push(`repair pass altered extracted data (${rec.fixDescription ?? 'unspecified fix'})`);
+  }
+  const confidence = typeof parsed.confidence === 'number' ? parsed.confidence : 0;
+  if (confidence < STATEMENT_AUTO_IMPORT_MIN_CONFIDENCE) {
+    reasons.push(`confidence ${confidence} below ${STATEMENT_AUTO_IMPORT_MIN_CONFIDENCE}`);
+  }
+  const suspectCount = parsed.suspectRows?.length ?? 0;
+  if (suspectCount > 0) {
+    reasons.push(`${suspectCount} suspect row(s) (running-balance breaks)`);
+  }
+  return { ok: reasons.length === 0, reasons };
+}
 
 export function isStatementDocumentType(type: string): type is StatementDocumentType {
   return type === 'bank_statement' || type === 'cc_statement';
@@ -159,6 +200,12 @@ export async function importStatementForReceipt(
   receiptId: string,
   documentRequestId: string | null,
   bankConnectionId: string,
+  opts: {
+    /** Set by the CPA's explicit manual-route action: a human chose to
+     *  import this specific statement, so the unattended quality gate is
+     *  skipped (the action is audit-logged with the decision). */
+    bypassQualityGate?: boolean;
+  } = {},
 ): Promise<RouteResult> {
   const receipt = await db.query.portalReceipts.findFirst({
     where: and(
@@ -206,6 +253,46 @@ export async function importStatementForReceipt(
         .update(portalReceipts)
         .set({ status: 'awaits_routing', updatedAt: new Date() })
         .where(eq(portalReceipts.id, receiptId));
+      return { status: 'awaits_routing', bankConnectionId };
+    }
+
+    // Unattended quality gate (STATEMENT_AUTO_IMPORT_V1 hardening): nobody
+    // reviews a portal auto-import before it lands in the books, so it must
+    // clear the gate — verified reconciliation, no repair-pass mutation,
+    // no suspect rows, confidence ≥ STATEMENT_AUTO_IMPORT_MIN_CONFIDENCE.
+    // On failure we do NOT import: the parse job (already 'complete' with
+    // its outputData) surfaces on the Statement Processing page as
+    // "Pending review" for a staff-reviewed import, and the receipt parks
+    // at 'awaits_routing' in the receipts inbox with the reasons audited.
+    const gate = evaluateStatementQuality(
+      parsed as Parameters<typeof evaluateStatementQuality>[0],
+    );
+    if (!opts.bypassQualityGate && !gate.ok) {
+      await db
+        .update(portalReceipts)
+        .set({ status: 'awaits_routing', updatedAt: new Date() })
+        .where(eq(portalReceipts.id, receiptId));
+      await auditLog(
+        tenantId,
+        'update',
+        'portal_receipt',
+        receiptId,
+        null,
+        {
+          event: 'statement_quality_hold',
+          message: `Statement parse held for review — not auto-imported: ${gate.reasons.join('; ')}`,
+          reasons: gate.reasons,
+          bankConnectionId,
+          rawCount: txns.length,
+        },
+      );
+      log.warn({
+        component: 'statement-routing',
+        event: 'statement_quality_hold',
+        receiptId,
+        bankConnectionId,
+        reasons: gate.reasons,
+      });
       return { status: 'awaits_routing', bankConnectionId };
     }
 
@@ -304,6 +391,10 @@ export async function manualRouteStatement(
     receiptId,
     docReq?.id ?? null,
     bankConnectionId,
+    // Explicit staff decision — the bookkeeper picked this connection and
+    // asked for the import, so the unattended quality gate doesn't apply.
+    // The action (and who took it) is audit-logged below.
+    { bypassQualityGate: true },
   );
   await auditLog(
     tenantId,

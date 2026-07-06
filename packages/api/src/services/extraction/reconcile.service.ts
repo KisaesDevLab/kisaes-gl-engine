@@ -110,16 +110,44 @@ export const reconcileGoldenRule = (input: ReconcileInput): ReconcileResult => {
 //
 // Repair rules (in order):
 //   1. If flipping exactly one transaction's sign closes delta exactly, flip it.
-//   2. If delta == amount of exactly one transaction, drop it (likely a
-//      duplicate header/footer line picked up as a transaction).
+//   2. If delta == amount of exactly one transaction AND that row is
+//      independently implicated — flagged suspect by the running-balance check,
+//      extracted with low row confidence, or an exact duplicate (same
+//      date + amount + description) of another row — drop it. A row that
+//      merely happens to match the delta arithmetically is NOT dropped;
+//      silently discarding clean data to force reconciliation is worse than
+//      reporting the discrepancy for human review.
 export interface RepairCandidate<T extends { amountCents: bigint }> {
   transactions: T[];
   fixDescription: string;
 }
 
-export const repairPass = <T extends { amountCents: bigint; description?: string }>(
+// Row-confidence bar for the drop rule: a row the extractor itself scored
+// below this is a plausible OCR phantom and may be dropped when it closes the
+// Golden-Rule delta exactly. Rows at/above the bar need independent evidence
+// (suspect flag or duplicate) before they can be dropped.
+export const REPAIR_DROP_CONFIDENCE_BAR = 0.7;
+
+export interface RepairOptions {
+  /** Pre-repair indexes flagged by findSuspectRows (running-balance breaks). */
+  suspectIndexes?: Set<number>;
+  /** Override for REPAIR_DROP_CONFIDENCE_BAR. */
+  dropConfidenceBar?: number;
+}
+
+export const repairPass = <
+  T extends {
+    amountCents: bigint;
+    description?: string;
+    /** ISO posted date — used for the duplicate-row drop guard. */
+    postedDate?: string;
+    /** Extractor's per-row confidence (0-1) — used for the drop guard. */
+    rowConfidence?: number | null;
+  },
+>(
   txs: T[],
   delta: bigint,
+  opts: RepairOptions = {},
 ): RepairCandidate<T> | null => {
   if (delta === 0n) return null;
 
@@ -131,19 +159,39 @@ export const repairPass = <T extends { amountCents: bigint; description?: string
       const next = txs.map((t, j) => (j === i ? { ...t, amountCents: -tx.amountCents } : t));
       return {
         transactions: next,
-        fixDescription: `flip-sign on row ${i} (${tx.description ?? 'n/a'})`,
+        fixDescription: `flipped sign on row ${i} (${tx.description ?? 'n/a'})`,
       };
     }
   }
+
+  const dropBar = opts.dropConfidenceBar ?? REPAIR_DROP_CONFIDENCE_BAR;
+  const isDuplicateOfAnother = (tx: T, i: number): boolean =>
+    txs.some(
+      (o, j) =>
+        j !== i &&
+        o.amountCents === tx.amountCents &&
+        (o.description ?? '') === (tx.description ?? '') &&
+        (o.postedDate ?? '') === (tx.postedDate ?? ''),
+    );
+  const dropReason = (tx: T, i: number): string | null => {
+    if (opts.suspectIndexes?.has(i)) return 'suspect running balance';
+    if (tx.rowConfidence != null && tx.rowConfidence < dropBar) {
+      return `row confidence ${tx.rowConfidence} < ${dropBar}`;
+    }
+    if (isDuplicateOfAnother(tx, i)) return 'duplicate of another row';
+    return null;
+  };
 
   // After dropping txs[i] with amount a:  new_delta = delta + a
   for (let i = 0; i < txs.length; i += 1) {
     const tx = txs[i]!;
     if (delta + tx.amountCents === 0n) {
+      const reason = dropReason(tx, i);
+      if (!reason) continue; // arithmetic match alone is not enough to discard data
       const next = txs.filter((_, j) => j !== i);
       return {
         transactions: next,
-        fixDescription: `drop row ${i} (${tx.description ?? 'n/a'})`,
+        fixDescription: `dropped row ${i} (${tx.description ?? 'n/a'}; ${reason})`,
       };
     }
   }

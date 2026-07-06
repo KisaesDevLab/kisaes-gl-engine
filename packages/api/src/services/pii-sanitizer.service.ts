@@ -19,7 +19,8 @@ export type PiiType =
   | 'credit_card'
   | 'phone'
   | 'email'
-  | 'address';
+  | 'address'
+  | 'p2p_name';
 
 // Regex library. Each pattern produces a match on text that is PII of the
 // matching type. Contextual patterns (account / routing) require a keyword
@@ -58,7 +59,33 @@ const patterns = {
   // collapse the "ending in" preamble to a canonical form.
   cardLast4Preamble:
     /\b(?:ending\s+in|last\s*4|ending|xxxx|x{4,})[-\s]*(\d{4})\b/gi,
+  // P2P payment descriptors followed by a personal-name segment. The system
+  // disclosure promises "personal names in Venmo/Zelle/PayPal/Cash App
+  // entries are redacted before sending" — this pattern is what makes that
+  // true. Deliberately conservative: it only fires on a P2P marker
+  // (optionally followed by connector words like PAYMENT/TO/FROM) and then
+  // 2-4 purely alphabetic words. Single-word merchants ("PAYPAL *NETFLIX")
+  // and business names (guard below) are left intact for categorization.
+  p2pName:
+    /\b(VENMO|ZELLE|CASH\s?APP|CASHAPP|PAYPAL)\b((?:[\s*:.-]+(?:PAYMENT|PAYMT|PMT|TRANSFER|XFER|TO|FROM|SENT|RECEIVED|CASHOUT|P2P|DES|INST))*)[\s*:.-]+([A-Za-z][A-Za-z'.-]*(?:\s+[A-Za-z][A-Za-z'.-]*){1,3})/gi,
 };
+
+// Business-entity tokens that mark the segment after a P2P descriptor as a
+// merchant/company name rather than a personal name — those stay intact.
+const p2pBusinessGuard =
+  /\b(LLC|L\.L\.C\.?|INC|INCORPORATED|CORP|CORPORATION|LTD|LIMITED|COMPANY|CO\.|SERVICES?|GROUP|ENTERPRISES?|BANK|STORE|SHOP)\b/i;
+
+function maskP2pNames(text: string): string {
+  return text.replace(
+    patterns.p2pName,
+    (match, _marker: string, _connectors: string, name: string) => {
+      if (p2pBusinessGuard.test(name)) return match;
+      // Preserve the marker + connector words (useful categorization signal),
+      // redact only the personal-name segment.
+      return match.replace(name, '[NAME]');
+    },
+  );
+}
 
 // Passes Luhn (mod-10) check. Reduces false positives on arbitrary long
 // digit runs (order IDs, reference numbers).
@@ -133,10 +160,11 @@ export function sanitize(input: string | null | undefined, mode: SanitizerMode):
     // This is preservation, not redaction — don't flag it as detected.
   }
 
-  // Minimal mode: only SSN and EIN (used for transaction descriptions on
-  // categorization). Payee/merchant names are deliberately NOT redacted —
-  // they are not treated as PII and are needed for categorization and
-  // statement extraction.
+  // Minimal mode: SSN, EIN, and personal names after P2P descriptors
+  // (VENMO/ZELLE/CASH APP/PAYPAL — the disclosure's explicit promise).
+  // Ordinary merchant/payee names are deliberately NOT redacted — they are
+  // not treated as PII and are needed for categorization and statement
+  // extraction.
   if (patterns.ssn.test(text)) detected.add('ssn');
   patterns.ssn.lastIndex = 0;
   text = text.replace(patterns.ssn, '[SSN_REDACTED]');
@@ -144,6 +172,10 @@ export function sanitize(input: string | null | undefined, mode: SanitizerMode):
   if (patterns.ein.test(text)) detected.add('ein');
   patterns.ein.lastIndex = 0;
   text = text.replace(patterns.ein, '[EIN_REDACTED]');
+
+  const beforeP2p = text;
+  text = maskP2pNames(text);
+  if (text !== beforeP2p) detected.add('p2p_name');
 
   if (mode === 'minimal') {
     return { text, detected: [...detected] };
@@ -203,8 +235,9 @@ export function sanitizeStatementHeader(input: string | null | undefined): Sanit
 
 /**
  * Single bank-feed description sanitizer. Used by the categorization
- * pipeline: strips SSN/EIN while keeping merchant/payee names, amounts, and
- * dates intact (payee names are not treated as PII).
+ * pipeline: strips SSN/EIN and personal names after P2P descriptors
+ * (Venmo/Zelle/Cash App/PayPal) while keeping merchant names, amounts, and
+ * dates intact (ordinary merchant names are not treated as PII).
  */
 export function sanitizeTransactionDescription(input: string | null | undefined): SanitizeResult {
   return sanitize(input, 'minimal');

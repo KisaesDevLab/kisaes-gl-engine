@@ -60,13 +60,14 @@ export interface SendMessageResult {
  * uses this same check via /chat/status to decide whether to render
  * the floating button).
  *
- * The "any company in the tenant has it enabled" check is intentionally
- * permissive — Vibe MyBooks's tenants can have multiple companies, and a
- * user moving between them shouldn't lose chat access just because they
- * switched companies. Per-company enforcement happens via the active
- * company id passed in context.
+ * Company scoping (H7): when `companyId` is provided (the active company
+ * from the companyContext middleware), THAT specific company must have
+ * chat_support_enabled — one company's opt-in no longer unlocks chat while
+ * the user is working in a sibling company that hasn't consented. Without
+ * a companyId (genuinely company-less surfaces) the historical "any
+ * company in the tenant" check applies.
  */
-export async function isChatAvailable(tenantId: string): Promise<{
+export async function isChatAvailable(tenantId: string, companyId?: string | null): Promise<{
   enabled: boolean;
   systemEnabled: boolean;
   companyEnabled: boolean;
@@ -87,7 +88,11 @@ export async function isChatAvailable(tenantId: string): Promise<{
   }
 
   const enabledCompanies = await db.select({ id: companies.id }).from(companies)
-    .where(and(eq(companies.tenantId, tenantId), eq(companies.chatSupportEnabled, true)))
+    .where(and(
+      eq(companies.tenantId, tenantId),
+      eq(companies.chatSupportEnabled, true),
+      ...(companyId ? [eq(companies.id, companyId)] : []),
+    ))
     .limit(1);
   const companyEnabled = enabledCompanies.length > 0;
 
@@ -96,15 +101,17 @@ export async function isChatAvailable(tenantId: string): Promise<{
       enabled: false,
       systemEnabled: true,
       companyEnabled: false,
-      reason: 'Chat support is not enabled for any company in this tenant. Enable it in Company Settings.',
+      reason: companyId
+        ? 'Chat support is not enabled for this company. Enable it in Company Settings.'
+        : 'Chat support is not enabled for any company in this tenant. Enable it in Company Settings.',
     };
   }
 
   return { enabled: true, systemEnabled: true, companyEnabled: true };
 }
 
-async function requireChatEnabled(tenantId: string): Promise<void> {
-  const status = await isChatAvailable(tenantId);
+async function requireChatEnabled(tenantId: string, companyId?: string | null): Promise<void> {
+  const status = await isChatAvailable(tenantId, companyId);
   if (!status.enabled) {
     throw AppError.forbidden(status.reason || 'Chat support is not available', 'CHAT_DISABLED');
   }
@@ -142,8 +149,8 @@ export async function getConversation(tenantId: string, userId: string, conversa
   return { ...conv, messages };
 }
 
-export async function createConversation(tenantId: string, userId: string, title?: string) {
-  await requireChatEnabled(tenantId);
+export async function createConversation(tenantId: string, userId: string, title?: string, companyId?: string | null) {
+  await requireChatEnabled(tenantId, companyId);
   const [conv] = await db.insert(chatConversations).values({
     tenantId,
     userId,
@@ -196,8 +203,11 @@ export async function sendMessage(
   tenantId: string,
   userId: string,
   input: SendMessageInput,
+  // Active company from the request context (companyContext middleware) —
+  // chat consent is enforced against THIS company when provided (H7).
+  companyId?: string | null,
 ): Promise<SendMessageResult> {
-  await requireChatEnabled(tenantId);
+  await requireChatEnabled(tenantId, companyId);
 
   if (!input.message || !input.message.trim()) {
     throw AppError.badRequest('Message content is required');
@@ -238,7 +248,7 @@ export async function sendMessage(
     });
     if (!existing) throw AppError.notFound('Conversation not found');
   } else {
-    const conv = await createConversation(tenantId, userId, deriveTitle(input.message));
+    const conv = await createConversation(tenantId, userId, deriveTitle(input.message), companyId);
     conversationId = conv.id;
   }
 

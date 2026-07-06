@@ -20,6 +20,7 @@ import {
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireSuperAdmin } from '../middleware/auth.js';
+import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as aiConfigService from '../services/ai-config.service.js';
 import * as aiCategorization from '../services/ai-categorization.service.js';
@@ -249,9 +250,11 @@ aiRouter.post('/categorize/batch', authenticate, aiProcessingLimiter, validate(a
 });
 
 // Dry-run categorization for transient rows (statement review preview). Returns
-// per-row suggestions without touching the bank feed.
-aiRouter.post('/categorize/preview', authenticate, aiProcessingLimiter, validate(aiCategorizePreviewSchema), async (req, res) => {
-  const rows = await aiCategorization.previewCategorize(req.tenantId, req.body.transactions);
+// per-row suggestions without touching the bank feed. Runs under the same
+// governance as /categorize: consent (scoped to the active company via
+// companyContext), monthly budget, and usage logging.
+aiRouter.post('/categorize/preview', authenticate, companyContext, aiProcessingLimiter, validate(aiCategorizePreviewSchema), async (req, res) => {
+  const rows = await aiCategorization.previewCategorize(req.tenantId, req.body.transactions, req.companyId);
   res.json({ rows });
 });
 

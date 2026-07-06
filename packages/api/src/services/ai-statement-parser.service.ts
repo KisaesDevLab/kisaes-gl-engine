@@ -457,12 +457,18 @@ async function executePipeline(
     amountCents: bigint;
     runningBalanceCents?: bigint | null;
     description?: string;
+    postedDate?: string;
+    rowConfidence?: number | null;
     src: (typeof parsed.transactions)[number];
   }
   let recTxns: RecTxn[] = parsed.transactions.map((t) => ({
     amountCents: BigInt(t.amount_cents),
     runningBalanceCents: t.running_balance_cents != null ? BigInt(t.running_balance_cents) : null,
     description: t.description,
+    // Repair-pass drop guards: posted date (duplicate detection) and the
+    // extractor's per-row confidence (low-confidence phantom detection).
+    postedDate: t.posted_date,
+    rowConfidence: t.confidence,
     src: t,
   }));
 
@@ -483,11 +489,22 @@ async function executePipeline(
       transactions: recTxns,
     });
     if (rec.status === 'discrepancy') {
-      const repaired = repairPass(recTxns, rec.deltaCents);
+      // Pre-repair suspect set: rows whose printed running balance breaks the
+      // chain. The repair pass may only DROP a row that is suspect, low
+      // row-confidence, or a duplicate — never a clean row that merely
+      // matches the delta arithmetically.
+      const preRepairSuspects = new Set(
+        findSuspectRows(BigInt(opening), recTxns).map((s) => s.index),
+      );
+      const repaired = repairPass(recTxns, rec.deltaCents, { suspectIndexes: preRepairSuspects });
       if (repaired) {
         recTxns = repaired.transactions;
         reconciliation.repaired = true;
         reconciliation.fixDescription = repaired.fixDescription;
+        // A repair silently changed extracted data — say so, loudly and
+        // specifically, so the review UI and the auto-import quality gate
+        // both see exactly what was altered.
+        qualityWarnings.push(`repaired: ${repaired.fixDescription}`);
         rec = reconcileGoldenRule({
           openingBalanceCents: BigInt(opening),
           closingBalanceCents: BigInt(closing),
@@ -536,9 +553,12 @@ async function executePipeline(
     }));
 
   // Confidence: prefer the model's statement-level value; floor it below the
-  // review threshold whenever reconciliation didn't pass (soft gate).
+  // review threshold whenever reconciliation didn't pass (soft gate) — OR
+  // whenever the repair pass mutated the data to make it pass. A repaired
+  // statement only reconciles because we changed a row, so it must land in
+  // review with the same weight as an open discrepancy.
   let confidence = parsed.confidence ?? 0.5;
-  if (reconciliation.status === 'discrepancy') {
+  if (reconciliation.status === 'discrepancy' || reconciliation.repaired) {
     confidence = Math.min(confidence, env.EXTRACTION_CONFIDENCE_THRESHOLD - 0.01);
   }
 
@@ -587,7 +607,15 @@ async function executePipeline(
  * classifier and statement-routing shadow import.
  */
 export async function parseStatement(tenantId: string, attachmentId: string): Promise<StatementParseResult> {
-  const job = await orchestrator.createJob(tenantId, 'ocr_statement', 'attachment', attachmentId);
+  // Consent is scoped to the attachment's company when known (H7).
+  const att = await db.query.attachments.findFirst({
+    where: and(eq(attachments.tenantId, tenantId), eq(attachments.id, attachmentId)),
+    columns: { companyId: true },
+  });
+  const job = await orchestrator.createJob(
+    tenantId, 'ocr_statement', 'attachment', attachmentId, undefined,
+    att?.companyId ?? null,
+  );
   try {
     return await executePipeline(tenantId, attachmentId, job.id);
   } catch (err) {
@@ -612,8 +640,12 @@ export async function startStatementParse(
     where: and(eq(attachments.tenantId, tenantId), eq(attachments.id, attachmentId)),
   });
   if (!attachment) throw AppError.notFound('Attachment not found');
-  // createJob validates AI-enabled + consent + budget synchronously.
-  const job = await orchestrator.createJob(tenantId, 'ocr_statement', 'attachment', attachmentId);
+  // createJob validates AI-enabled + consent (scoped to the attachment's
+  // company when known — H7) + budget synchronously.
+  const job = await orchestrator.createJob(
+    tenantId, 'ocr_statement', 'attachment', attachmentId, undefined,
+    attachment.companyId ?? null,
+  );
   await orchestrator.setStage(job.id, 'queued');
   // Hand the heavy detect→OCR→extract→reconcile pipeline to the WORKER via
   // BullMQ so it survives an API restart/redeploy (no more orphaned 'processing'

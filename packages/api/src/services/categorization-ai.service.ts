@@ -10,8 +10,15 @@ import { cleanBankDescription } from '../utils/bank-name-cleaner.js';
 /**
  * Normalize a payee description into a lookup pattern.
  * Per AI_PROCESSING_PLAN.md §3.4: "lowercase, trim, remove transaction-specific suffixes (order numbers, dates)"
+ *
+ * This is THE canonical categorization_history key derivation. Both writers
+ * (updateLearning here and recordUserDecision in ai-categorization.service)
+ * and both readers derive keys with this function over
+ * `originalDescription || description`; legacy rows keyed by the old raw
+ * `description.toLowerCase().trim()` form are handled by a dual-read
+ * (read both keys, write the normalized one) — no migration needed.
  */
-function normalizePayeePattern(description: string): string {
+export function normalizePayeePattern(description: string): string {
   // First apply the same cleaning as import
   let pattern = cleanBankDescription(description);
   // Then lowercase for matching

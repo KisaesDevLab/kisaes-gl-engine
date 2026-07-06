@@ -11,6 +11,7 @@ import {
   chatAdminConfigSchema,
 } from '@kis-books/shared';
 import { authenticate, requireSuperAdmin } from '../middleware/auth.js';
+import { companyContext } from '../middleware/company.js';
 import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
 import * as chatService from '../services/chat.service.js';
@@ -52,8 +53,10 @@ const conversationIdSchema = z.string().uuid();
  * the floating action button. Returns booleans only — no AI keys or
  * provider details — so this is safe for any authenticated user.
  */
-chatRouter.get('/status', async (req, res) => {
-  const status = await chatService.isChatAvailable(req.tenantId);
+chatRouter.get('/status', companyContext, async (req, res) => {
+  // Scoped to the ACTIVE company (X-Company-Id) so the chat button only
+  // renders where the company being worked on has opted in (H7).
+  const status = await chatService.isChatAvailable(req.tenantId, req.companyId);
   res.json(status);
 });
 
@@ -66,12 +69,14 @@ chatRouter.get('/status', async (req, res) => {
  * If `conversationId` is omitted, a new conversation is created
  * (auto-titled from the first message).
  */
-chatRouter.post('/message', chatMessageLimiter, validate(chatSendMessageSchema), async (req, res) => {
+chatRouter.post('/message', companyContext, chatMessageLimiter, validate(chatSendMessageSchema), async (req, res) => {
+  // The active company (X-Company-Id) must have chat enabled — a sibling
+  // company's opt-in no longer authorizes chat over this company's screens.
   const result = await chatService.sendMessage(req.tenantId, req.userId, {
     conversationId: req.body.conversationId || null,
     message: req.body.message,
     context: req.body.context,
-  });
+  }, req.companyId);
   res.json(result);
 });
 

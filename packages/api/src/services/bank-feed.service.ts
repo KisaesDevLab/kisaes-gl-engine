@@ -791,9 +791,25 @@ export async function runCleansingPipeline(tenantId: string, items: any[]): Prom
           const { categorize: aiCategorize } = await import('./ai-categorization.service.js');
           const result = await aiCategorize(tenantId, item.id);
           consecutiveAiFailures = 0;
-          if (result?.contactName) {
-            cleanedName = result.contactName;
-            agg.aiCleansed++;
+          if (result && 'contactName' in result && result.contactName) {
+            if (result.contactId) {
+              // VALIDATED path: the name was resolved to a real tenant
+              // contact (history hit or matchByName) — its display name is
+              // trusted as-is.
+              cleanedName = String(result.contactName).slice(0, 255);
+            } else {
+              // UNVALIDATED path: raw model text. Never write it into
+              // `description` verbatim — normalize it through the same
+              // deterministic cleaner as the regex fallback, cap the
+              // length, and only keep it when it's a plausible name
+              // (non-empty, has letters). Otherwise fall through to the
+              // regex-cleaned original below.
+              const aiCleaned = cleanBankDescription(String(result.contactName)).slice(0, 255).trim();
+              if (aiCleaned.length >= 2 && /[a-z]/i.test(aiCleaned)) {
+                cleanedName = aiCleaned;
+              }
+            }
+            if (cleanedName) agg.aiCleansed++;
           }
         } catch (err) {
           const e = err as { code?: string; message?: string };

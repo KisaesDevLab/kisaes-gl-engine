@@ -12,7 +12,24 @@ import * as aiCategorization from './ai-categorization.service.js';
 import * as aiPrompt from './ai-prompt.service.js';
 import * as aiOrchestrator from './ai-orchestrator.service.js';
 import * as aiConsent from './ai-consent.service.js';
+import { evaluateStatementQuality } from './statement-routing.service.js';
 import { eq, and } from 'drizzle-orm';
+
+// Enable AI at the system level and opt `companyId` in to `task` with a
+// current disclosure version. Mirrors the setup used by the budget test.
+async function enableAiForCompany(userId: string, tenantId: string, companyId: string, task: string) {
+  await aiConsent.acceptSystemDisclosure(userId);
+  await aiConfigService.updateConfig({ isEnabled: true, monthlyBudgetLimit: 100 });
+  const cfg = await aiConfigService.getRawConfig();
+  const currentVersion = cfg.disclosureVersion ?? 1;
+  await db.update(companies).set({
+    aiEnabled: true,
+    aiDisclosureAcceptedAt: new Date(),
+    aiDisclosureAcceptedBy: userId,
+    aiDisclosureVersion: currentVersion,
+    aiEnabledTasks: { [task]: true },
+  }).where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)));
+}
 
 async function cleanDb() {
   await db.delete(aiUsageLog);
@@ -142,18 +159,21 @@ describe('AI Categorization Service', () => {
       status: 'pending',
     }).returning();
 
-    // Record user accepting
+    // Record user accepting. The history row is keyed by the CANONICAL
+    // normalizePayeePattern form ("NEW VENDOR LLC" → "new vendor") — M12
+    // pattern-key unification.
     await aiCategorization.recordUserDecision(user.tenantId, item!.id, expenseAccount.id, null, true, false);
 
     const history = await db.query.categorizationHistory.findFirst({
-      where: and(eq(categorizationHistory.tenantId, user.tenantId), eq(categorizationHistory.payeePattern, 'new vendor llc')),
+      where: and(eq(categorizationHistory.tenantId, user.tenantId), eq(categorizationHistory.payeePattern, 'new vendor')),
     });
     expect(history).toBeTruthy();
     expect(history!.timesConfirmed).toBe(1);
+    expect(history!.timesOverridden).toBe(0);
     expect(history!.accountId).toBe(expenseAccount.id);
   });
 
-  it('should increment override count on override', async () => {
+  it('re-confirming the SAME learned account (even as "modified") increments confirmations', async () => {
     const { user } = await createTestUser();
     const expenseAccount = await db.query.accounts.findFirst({
       where: and(eq(accounts.tenantId, user.tenantId), eq(accounts.accountType, 'expense')),
@@ -169,16 +189,122 @@ describe('AI Categorization Service', () => {
       status: 'pending',
     }).returning();
 
-    // First: record initial decision
+    // First: record initial decision, then a "modified" decision that lands
+    // on the SAME account — the learned mapping was right, so it counts as a
+    // confirmation, not an override.
     await aiCategorization.recordUserDecision(user.tenantId, item!.id, expenseAccount.id, null, true, false);
-    // Then: record override
     await aiCategorization.recordUserDecision(user.tenantId, item!.id, expenseAccount.id, null, false, true);
 
     const history = await db.query.categorizationHistory.findFirst({
       where: and(eq(categorizationHistory.tenantId, user.tenantId), eq(categorizationHistory.payeePattern, 'override test')),
     });
+    expect(history!.timesConfirmed).toBe(2);
+    expect(history!.timesOverridden).toBe(0);
+  });
+
+  it('H8: a decision that CHANGES the learned account resets confirmations to 1 and counts the override', async () => {
+    const { user } = await createTestUser();
+    const expenseAccounts = await db.query.accounts.findMany({
+      where: and(eq(accounts.tenantId, user.tenantId), eq(accounts.accountType, 'expense')),
+      limit: 2,
+    });
+    if (expenseAccounts.length < 2) return;
+    const [accountA, accountB] = expenseAccounts;
+
+    // Learned mapping with heavy confirmation weight on account A.
+    await db.insert(categorizationHistory).values({
+      tenantId: user.tenantId,
+      payeePattern: 'reset test vendor',
+      accountId: accountA!.id,
+      timesConfirmed: 12,
+      timesOverridden: 0,
+    });
+    const [item] = await db.insert(bankFeedItems).values({
+      tenantId: user.tenantId,
+      bankConnectionId: '00000000-0000-0000-0000-000000000000',
+      feedDate: '2026-01-15',
+      description: 'RESET TEST VENDOR',
+      amount: '50.00',
+      status: 'pending',
+    }).returning();
+
+    // The user corrects the pattern to account B. The 12 confirmations
+    // belonged to account A — B starts at exactly one confirmation
+    // (poisoning guard: one correction must not inherit A's trust).
+    await aiCategorization.recordUserDecision(user.tenantId, item!.id, accountB!.id, null, true, true);
+
+    const history = await db.query.categorizationHistory.findFirst({
+      where: and(eq(categorizationHistory.tenantId, user.tenantId), eq(categorizationHistory.payeePattern, 'reset test vendor')),
+    });
+    expect(history!.accountId).toBe(accountB!.id);
     expect(history!.timesConfirmed).toBe(1);
     expect(history!.timesOverridden).toBe(1);
+  });
+
+  it('H8: recordUserDecision dual-reads a legacy-keyed row and re-keys it to the normalized pattern', async () => {
+    const { user } = await createTestUser();
+    const expenseAccount = await db.query.accounts.findFirst({
+      where: and(eq(accounts.tenantId, user.tenantId), eq(accounts.accountType, 'expense')),
+    });
+    if (!expenseAccount) return;
+
+    // Legacy row keyed the OLD way: raw description lowercased, suffixes
+    // kept ("legacy vendor llc" vs normalized "legacy vendor").
+    await db.insert(categorizationHistory).values({
+      tenantId: user.tenantId,
+      payeePattern: 'legacy vendor llc',
+      accountId: expenseAccount.id,
+      timesConfirmed: 4,
+      timesOverridden: 0,
+    });
+    const [item] = await db.insert(bankFeedItems).values({
+      tenantId: user.tenantId,
+      bankConnectionId: '00000000-0000-0000-0000-000000000000',
+      feedDate: '2026-01-15',
+      description: 'LEGACY VENDOR LLC',
+      amount: '25.00',
+      status: 'pending',
+    }).returning();
+
+    await aiCategorization.recordUserDecision(user.tenantId, item!.id, expenseAccount.id, null, true, false);
+
+    // One row, migrated to the normalized key, confirmations accumulated.
+    const rows = await db.query.categorizationHistory.findMany({
+      where: eq(categorizationHistory.tenantId, user.tenantId),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.payeePattern).toBe('legacy vendor');
+    expect(rows[0]!.timesConfirmed).toBe(5);
+  });
+
+  it('H8: layer-2 history is NOT used when the override rate is 20%+ (guard parity with suggestCategorization)', async () => {
+    const { user } = await createTestUser();
+    const expenseAccount = await db.query.accounts.findFirst({
+      where: and(eq(accounts.tenantId, user.tenantId), eq(accounts.accountType, 'expense')),
+    });
+    if (!expenseAccount) return;
+
+    // Confirmed 4 times but overridden 2 (rate 1/3 ≥ 20%) — must NOT
+    // auto-suggest from history any more. With AI unreachable past layer 2,
+    // categorize() surfaces the AI-disabled error instead of a history hit.
+    await db.insert(categorizationHistory).values({
+      tenantId: user.tenantId,
+      payeePattern: 'flaky vendor',
+      accountId: expenseAccount.id,
+      timesConfirmed: 4,
+      timesOverridden: 2,
+    });
+    const [item] = await db.insert(bankFeedItems).values({
+      tenantId: user.tenantId,
+      bankConnectionId: '00000000-0000-0000-0000-000000000000',
+      feedDate: '2026-01-15',
+      description: 'FLAKY VENDOR',
+      amount: '10.00',
+      status: 'pending',
+    }).returning();
+
+    await expect(aiCategorization.categorize(user.tenantId, item!.id))
+      .rejects.toMatchObject({ code: 'ai_disabled_globally' });
   });
 });
 
@@ -250,5 +376,115 @@ describe('AI Orchestrator — Budget Check', () => {
 
     await expect(aiOrchestrator.createJob(user.tenantId, 'categorize', 'bank_feed_item', '00000000-0000-0000-0000-000000000000'))
       .rejects.toThrow(/budget exceeded/);
+  });
+});
+
+describe('H1 — statement auto-import quality gate', () => {
+  const clean = {
+    confidence: 0.9,
+    reconciliation: { status: 'verified', repaired: false },
+    suspectRows: [],
+  };
+
+  it('passes a clean, verified, high-confidence, un-repaired parse', () => {
+    const gate = evaluateStatementQuality(clean);
+    expect(gate.ok).toBe(true);
+    expect(gate.reasons).toHaveLength(0);
+  });
+
+  it('holds when reconciliation is not verified', () => {
+    const gate = evaluateStatementQuality({ ...clean, reconciliation: { status: 'discrepancy', repaired: false } });
+    expect(gate.ok).toBe(false);
+    expect(gate.reasons.join(' ')).toMatch(/not verified/);
+  });
+
+  it('holds when the repair pass altered the data', () => {
+    const gate = evaluateStatementQuality({
+      ...clean,
+      reconciliation: { status: 'verified', repaired: true, fixDescription: 'dropped row 3' },
+    });
+    expect(gate.ok).toBe(false);
+    expect(gate.reasons.join(' ')).toMatch(/repair pass altered/);
+  });
+
+  it('holds when confidence is below the 0.7 floor', () => {
+    const gate = evaluateStatementQuality({ ...clean, confidence: 0.69 });
+    expect(gate.ok).toBe(false);
+    expect(gate.reasons.join(' ')).toMatch(/below 0.7/);
+  });
+
+  it('holds when there are suspect rows', () => {
+    const gate = evaluateStatementQuality({ ...clean, suspectRows: [{ index: 2 }] });
+    expect(gate.ok).toBe(false);
+    expect(gate.reasons.join(' ')).toMatch(/suspect row/);
+  });
+
+  it('accumulates every failing reason', () => {
+    const gate = evaluateStatementQuality({
+      confidence: 0.1,
+      reconciliation: { status: 'discrepancy', repaired: true, fixDescription: 'x' },
+      suspectRows: [{ index: 0 }],
+    });
+    expect(gate.ok).toBe(false);
+    expect(gate.reasons.length).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe('H4 — previewCategorize governance (not a side door)', () => {
+  beforeEach(async () => { await cleanDb(); });
+  afterEach(async () => { await cleanDb(); });
+
+  it('rejects with ai_disabled_globally when AI is off system-wide', async () => {
+    await createTestUser();
+    await expect(
+      aiCategorization.previewCategorize('00000000-0000-0000-0000-000000000000', [
+        { description: 'STARBUCKS', amount: '5.00' },
+      ]),
+    ).rejects.toMatchObject({ code: 'ai_disabled_globally' });
+  });
+
+  it('returns [] without touching config for an empty batch', async () => {
+    const rows = await aiCategorization.previewCategorize('00000000-0000-0000-0000-000000000000', []);
+    expect(rows).toEqual([]);
+  });
+});
+
+describe('H7 — consent is scoped to the specific company', () => {
+  beforeEach(async () => { await cleanDb(); });
+  afterEach(async () => { await cleanDb(); });
+
+  it('allows the opted-in company, blocks a sibling, and tenant-any still resolves', async () => {
+    const { user } = await createTestUser();
+    const companyA = await db.query.companies.findFirst({ where: eq(companies.tenantId, user.tenantId) });
+    const [companyB] = await db.insert(companies).values({
+      tenantId: user.tenantId,
+      businessName: 'Sibling Co',
+    }).returning();
+
+    await enableAiForCompany(user.id, user.tenantId, companyA!.id, 'categorization');
+
+    // The opted-in company passes.
+    const a = await aiConsent.checkTenantTaskConsent(user.tenantId, 'categorization', companyA!.id);
+    expect(a.allowed).toBe(true);
+    expect(a.companyId).toBe(companyA!.id);
+
+    // The sibling that never consented is blocked even though a tenant
+    // sibling did opt in — this is the H7 fix.
+    const b = await aiConsent.checkTenantTaskConsent(user.tenantId, 'categorization', companyB!.id);
+    expect(b.allowed).toBe(false);
+
+    // Tenant-any (no companyId) still finds the one opted-in company.
+    const any = await aiConsent.checkTenantTaskConsent(user.tenantId, 'categorization');
+    expect(any.allowed).toBe(true);
+    expect(any.companyId).toBe(companyA!.id);
+  });
+
+  it('blocks a task the company did not toggle on even when another task is enabled', async () => {
+    const { user } = await createTestUser();
+    const companyA = await db.query.companies.findFirst({ where: eq(companies.tenantId, user.tenantId) });
+    await enableAiForCompany(user.id, user.tenantId, companyA!.id, 'categorization');
+
+    const res = await aiConsent.checkTenantTaskConsent(user.tenantId, 'report_summary', companyA!.id);
+    expect(res.allowed).toBe(false);
   });
 });

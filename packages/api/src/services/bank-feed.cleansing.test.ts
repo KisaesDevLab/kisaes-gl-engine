@@ -94,8 +94,13 @@ describe('runCleansingPipeline — aggregate accounting', () => {
     await cleanDb();
   });
 
-  it('counts AI-cleansed items and rewrites their description', async () => {
-    catMock.categorize.mockResolvedValue({ contactName: 'Clean Vendor Inc' });
+  it('counts AI-cleansed items and rewrites their description (validated contact → verbatim)', async () => {
+    // H3 VALIDATED path: categorize() resolved the name to a real tenant
+    // contact (contactId present), so its display name is trusted as-is.
+    catMock.categorize.mockResolvedValue({
+      contactName: 'Clean Vendor Inc',
+      contactId: '11111111-1111-1111-1111-111111111111',
+    });
     const items = await insertItems(2);
 
     const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
@@ -104,6 +109,37 @@ describe('runCleansingPipeline — aggregate accounting', () => {
     expect(agg.firstError).toBeUndefined();
     const stored = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, items[0]!.id) });
     expect(stored!.description).toBe('Clean Vendor Inc');
+  });
+
+  it('H3: UNVALIDATED raw model text is normalized through the regex cleaner, never written verbatim', async () => {
+    // No contactId → the name is raw model output. It must be run through
+    // the same deterministic cleaner as the regex fallback (which strips
+    // corporate suffixes like "Inc"), never written into `description`
+    // verbatim, and never junkier than the regex path.
+    catMock.categorize.mockResolvedValue({ contactName: 'Clean Vendor Inc' });
+    const items = await insertItems(1);
+
+    const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
+
+    expect(agg).toMatchObject({ processed: 1, aiFailed: 0, disabled: 0 });
+    const stored = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, items[0]!.id) });
+    // cleanBankDescription('Clean Vendor Inc') strips the corporate suffix.
+    expect(stored!.description).toBe('Clean Vendor');
+    // originalDescription is never touched by cleansing.
+    expect(stored!.originalDescription).toBe(items[0]!.originalDescription);
+  });
+
+  it('H3: junk raw model text (no letters) falls back to the regex-cleaned original, not the model text', async () => {
+    // A garbage model "name" must not overwrite the description — the code
+    // keeps the regex-cleaned original instead.
+    catMock.categorize.mockResolvedValue({ contactName: '###   ' });
+    const items = await insertItems(1);
+
+    const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
+
+    expect(agg.aiFailed).toBe(0);
+    const stored = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, items[0]!.id) });
+    expect(stored!.description).not.toContain('#');
   });
 
   it('counts AI failures, captures firstError, logs a warning, and still imports with regex cleaning', async () => {

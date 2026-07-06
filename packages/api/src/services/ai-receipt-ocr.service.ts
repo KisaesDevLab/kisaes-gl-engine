@@ -78,7 +78,11 @@ export async function processReceipt(tenantId: string, attachmentId: string) {
     .set({ ocrStatus: 'processing' })
     .where(and(eq(attachments.tenantId, tenantId), eq(attachments.id, attachmentId)));
 
-  const job = await orchestrator.createJob(tenantId, 'ocr_receipt', 'attachment', attachmentId);
+  // Consent is scoped to the attachment's company when known (H7).
+  const job = await orchestrator.createJob(
+    tenantId, 'ocr_receipt', 'attachment', attachmentId, undefined,
+    attachment.companyId ?? null,
+  );
 
   try {
     const rawConfig = await aiConfigService.getRawConfig();

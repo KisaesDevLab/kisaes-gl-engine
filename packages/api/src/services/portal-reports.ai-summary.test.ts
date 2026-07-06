@@ -78,6 +78,16 @@ async function enableAi() {
     chatModel: 'claude-test',
     anthropicApiKey: 'sk-test-fake-key',
   });
+  // H6: generateAiSummary is now consent-gated — the instance's company must
+  // have opted in to the 'report_summary' task with a current disclosure.
+  const cfg = await aiConfigService.getRawConfig();
+  await db.update(companies).set({
+    aiEnabled: true,
+    aiDisclosureAcceptedAt: new Date(),
+    aiDisclosureAcceptedBy: userId,
+    aiDisclosureVersion: cfg.disclosureVersion ?? 1,
+    aiEnabledTasks: { report_summary: true },
+  }).where(eq(companies.id, companyId));
 }
 
 async function makeInstance(): Promise<string> {
@@ -105,6 +115,23 @@ describe('generateAiSummary', () => {
     await expect(
       svc.generateAiSummary(tenantId, id, userId),
     ).rejects.toThrow(/AI processing is not enabled/i);
+  });
+
+  it('H6: rejects when the company has not opted in to the report_summary task', async () => {
+    // System AI is on, but the company never enabled the report_summary
+    // task — its report figures must not be sent to the provider.
+    await aiConfigService.updateConfig({
+      isEnabled: true,
+      chatProvider: 'anthropic',
+      chatModel: 'claude-test',
+      anthropicApiKey: 'sk-test-fake-key',
+    });
+    const id = await makeInstance();
+    const spy = mockProvider('should never run');
+    await expect(
+      svc.generateAiSummary(tenantId, id, userId),
+    ).rejects.toMatchObject({ code: 'ai_consent_blocked' });
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it('generates grounded text, persists it, and logs usage', async () => {

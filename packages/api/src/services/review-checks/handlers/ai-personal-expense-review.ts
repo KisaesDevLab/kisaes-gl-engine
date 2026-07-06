@@ -47,7 +47,9 @@ export const handler: CheckHandler = async (tenantId, companyId, params): Promis
   if (!config.isEnabled) return [];
   const provider = config.categorizationProvider;
   if (!provider) return [];
-  const consent = await checkTenantTaskConsent(tenantId, 'judgment_review');
+  // Company-scoped consent when the run targets a specific company (H7);
+  // a tenant-wide run (companyId null) keeps the tenant-any check.
+  const consent = await checkTenantTaskConsent(tenantId, 'judgment_review', companyId ?? null);
   if (!consent.allowed) return [];
   const rawConfig = await aiConfigService.getRawConfig();
 
@@ -107,6 +109,7 @@ export const handler: CheckHandler = async (tenantId, companyId, params): Promis
         'transaction',
         r.id,
         { total: r.total, txnDate: r.txn_date },
+        companyId ?? null,
       );
     } catch {
       // Consent or budget rejection in the middle of a batch —
