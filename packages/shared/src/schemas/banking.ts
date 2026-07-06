@@ -20,6 +20,8 @@ export const bankFeedFiltersSchema = z.object({
     .union([z.boolean(), z.enum(['true', 'false'])])
     .optional()
     .transform((v) => v === true || v === 'true'),
+  sortBy: z.enum(['feedDate', 'description', 'category', 'status', 'amount']).optional(),
+  sortDir: z.enum(['asc', 'desc']).optional(),
   limit: z.coerce.number().int().min(1).max(500).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });

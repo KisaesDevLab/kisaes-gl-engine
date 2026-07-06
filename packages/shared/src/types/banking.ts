@@ -63,6 +63,10 @@ export interface BankFeedFilters {
   // When true, restrict the feed to actionable (pending) items by excluding
   // matched/categorized/excluded. A specific `status` filter takes precedence.
   actionableOnly?: boolean;
+  // Server-side column sort — the list paginates, so ordering must happen
+  // in SQL, not on the loaded page.
+  sortBy?: 'feedDate' | 'description' | 'category' | 'status' | 'amount';
+  sortDir?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
 }

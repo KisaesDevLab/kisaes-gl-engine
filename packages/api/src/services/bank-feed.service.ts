@@ -55,6 +55,23 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
   // bank-account join (which resolves the connection's own account).
   const suggestedAccount = alias(accounts, 'suggested_account');
 
+  // Server-side column sort. The page paginates, so sorting must happen
+  // here — the old client-side sort only ordered the visible page.
+  // Whitelisted keys → concrete SQL; anything else falls back to date.
+  // A stable createdAt/id tiebreaker keeps pagination deterministic.
+  const dir = filters.sortDir === 'asc' ? sql`ASC` : sql`DESC`;
+  const sortExpr = (() => {
+    switch (filters.sortBy) {
+      case 'description': return sql`${bankFeedItems.description}`;
+      case 'category': return sql`${suggestedAccount.name}`;
+      case 'status': return sql`${bankFeedItems.status}`;
+      case 'amount': return sql`CAST(${bankFeedItems.amount} AS DECIMAL)`;
+      case 'feedDate':
+      default: return sql`${bankFeedItems.feedDate}`;
+    }
+  })();
+  const orderBy = sql`${sortExpr} ${dir} NULLS LAST, ${bankFeedItems.createdAt} DESC, ${bankFeedItems.id}`;
+
   const [data, total] = await Promise.all([
     db.select({
       id: bankFeedItems.id,
@@ -85,7 +102,7 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
       .leftJoin(accounts, eq(bankConnections.accountId, accounts.id))
       .leftJoin(suggestedAccount, eq(bankFeedItems.suggestedAccountId, suggestedAccount.id))
       .where(where)
-      .orderBy(sql`${bankFeedItems.feedDate} DESC`)
+      .orderBy(orderBy)
       .limit(filters.limit ?? 50)
       .offset(filters.offset ?? 0),
     db.select({ count: count() }).from(bankFeedItems).where(where),
