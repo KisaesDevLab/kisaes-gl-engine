@@ -264,7 +264,14 @@ export async function categorize(tenantId: string, feedItemId: string) {
         truncated: result.truncated ?? false,
         detail: result.parseError,
       });
-      await orchestrator.failJob(job.id, result.parseError);
+      // M8: the model DID respond (it just wasn't JSON), so tokens were spent —
+      // hand them to failJob so the per-tenant budget gate sees the cost.
+      await orchestrator.failJob(job.id, result.parseError, {
+        provider: result.provider,
+        model: result.model,
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+      });
       throw AppError.badRequest(
         `AI returned non-JSON for categorization (${who}). ${result.parseError}`,
         'ai_parse_failed',

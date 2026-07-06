@@ -14,10 +14,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
-  tenants, users, sessions, companies, accounts, auditLog,
+  tenants, users, sessions, companies, accounts, auditLog, aiConfig,
   bankConnections, bankFeedItems, transactionClassificationState,
 } from '../db/schema/index.js';
 import * as authService from './auth.service.js';
+import * as aiConfigService from './ai-config.service.js';
 import { AppError } from '../utils/errors.js';
 
 const catMock = vi.hoisted(() => ({ categorize: vi.fn() }));
@@ -34,6 +35,7 @@ let tenantId: string;
 let connectionId: string;
 
 async function cleanDb() {
+  await db.delete(aiConfig);
   await db.delete(transactionClassificationState);
   await db.delete(bankFeedItems);
   await db.delete(bankConnections);
@@ -214,6 +216,35 @@ describe('runCleansingPipeline — aggregate accounting', () => {
 
     expect(agg.disabled).toBe(3);
     expect(agg.aiFailed).toBe(0);
+  });
+
+  it('M1: skips the per-row LLM step entirely when autoCategorizeOnImport is off, but still cleans deterministically', async () => {
+    // Turn off the master "Auto-categorize on import" switch.
+    await aiConfigService.updateConfig({ autoCategorizeOnImport: false });
+    // If the gate leaks, this would resolve and be counted as aiCleansed.
+    catMock.categorize.mockResolvedValue({ contactName: 'Should Not Be Used', contactId: null });
+    const items = await insertItems(3);
+
+    const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
+
+    // LLM never invoked; every row bucketed as `disabled` (deliberate off state).
+    expect(catMock.categorize).not.toHaveBeenCalled();
+    expect(agg).toMatchObject({ processed: 3, disabled: 3, aiCleansed: 0, aiFailed: 0 });
+    // Deterministic (regex) cleaning still ran → each row keeps a description.
+    const stored = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, items[0]!.id) });
+    expect(stored!.description).toBeTruthy();
+  });
+
+  it('M1: still runs the LLM step when autoCategorizeOnImport is on (default)', async () => {
+    await aiConfigService.updateConfig({ autoCategorizeOnImport: true });
+    catMock.categorize.mockResolvedValue({ contactName: 'Clean Vendor', contactId: '11111111-1111-1111-1111-111111111111' });
+    const items = await insertItems(2);
+
+    const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
+
+    expect(catMock.categorize).toHaveBeenCalledTimes(2);
+    expect(agg.aiCleansed).toBe(2);
+    expect(agg.disabled).toBe(0);
   });
 });
 

@@ -556,7 +556,19 @@ aiRouter.get('/consent/:companyId/disclosure', authenticate, async (req, res) =>
   res.json(d);
 });
 
+// M14: accepting, revoking, or re-scoping a company's AI disclosure is a
+// binding data-sharing decision — gate it to the company owner, the same way
+// payment-settings mutations are owner-only (company.routes). Without this any
+// tenant member (bookkeeper, read-only) could opt a company in to (or out of)
+// external AI processing.
+function requireOwner(req: { userRole?: string }): void {
+  if (req.userRole !== 'owner') {
+    throw AppError.forbidden('Only owners can change AI processing consent', 'PERMISSION_DENIED');
+  }
+}
+
 aiRouter.post('/consent/:companyId/accept', authenticate, async (req, res) => {
+  requireOwner(req);
   const companyId = req.params['companyId']!;
   await assertCompanyInTenant(req.tenantId, companyId);
   const d = await aiConsent.acceptCompanyDisclosure(req.tenantId, companyId, req.userId!);
@@ -564,6 +576,7 @@ aiRouter.post('/consent/:companyId/accept', authenticate, async (req, res) => {
 });
 
 aiRouter.post('/consent/:companyId/revoke', authenticate, async (req, res) => {
+  requireOwner(req);
   const companyId = req.params['companyId']!;
   await assertCompanyInTenant(req.tenantId, companyId);
   await aiConsent.revokeCompanyConsent(req.tenantId, companyId, req.userId!);
@@ -571,6 +584,7 @@ aiRouter.post('/consent/:companyId/revoke', authenticate, async (req, res) => {
 });
 
 aiRouter.patch('/consent/:companyId/tasks', authenticate, validate(aiTaskTogglesSchema), async (req, res) => {
+  requireOwner(req);
   const companyId = req.params['companyId']!;
   await assertCompanyInTenant(req.tenantId, companyId);
   const toggles = req.body as Partial<Record<aiConsent.AiTaskKey, boolean>>;

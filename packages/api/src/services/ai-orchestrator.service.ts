@@ -72,7 +72,16 @@ function isLocalUrl(raw: string | null | undefined): boolean {
     if (/^10\./.test(host)) return true;
     if (/^192\.168\./.test(host)) return true;
     if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true;
-    // Docker/Compose short names (no dots) and IPv6 link-local fe80::/10
+    // Docker/Compose short names (no dots) and IPv6 link-local fe80::/10.
+    // NOTE (accepted risk): ANY dotless hostname is treated as self-hosted, so
+    // an admin who points openai_compat at a bare public name (e.g.
+    // `http://exfil`) would skip PII sanitization. This is deliberate — the
+    // appliance's own compose config uses arbitrary short service names
+    // (`ollama`, `llm`, …) chosen by the operator, and there is no reliable
+    // allowlist of "safe" bare names. The URL is admin-set (a trusted config
+    // surface, not user input), so the exposure is admin-misconfiguration, not
+    // privilege escalation. Tightening to an allowlist would break legitimate
+    // self-hosted deployments; left as-is intentionally.
     if (!host.includes('.') && !host.includes(':')) return true;
     if (host.startsWith('fe80:')) return true;
     return false;
@@ -170,11 +179,18 @@ export async function createJob(
   if (task) {
     const check = await checkTenantTaskConsent(tenantId, task, companyId ?? null);
     if (!check.allowed) {
-      throw AppError.badRequest(consentReasonMessage(check.reason));
+      // Stable `code` so callers can distinguish a deliberate consent/opt-in
+      // state from a provider outage. The bank-feed cleansing pipeline uses
+      // this to bucket the skip as `disabled` (silent) rather than `aiFailed`.
+      throw AppError.badRequest(consentReasonMessage(check.reason), 'ai_consent_blocked');
     }
   }
 
-  // Budget check
+  // Budget check. NOTE: this limit is enforced PER-TENANT — the SUM below is
+  // scoped to `tenant_id = ${tenantId}`, so each tenant may independently
+  // spend up to `monthlyBudgetLimit`. This is deliberate (a self-hosted
+  // appliance is usually single-tenant, and a shared install shouldn't let one
+  // busy tenant starve the others). It is NOT a global cap across all tenants.
   if (config.monthlyBudgetLimit != null) {
     const monthStart = new Date();
     monthStart.setDate(1);
@@ -325,18 +341,74 @@ export async function completeJob(jobId: string, result: CompletionResult, outpu
   }
 }
 
-export async function failJob(jobId: string, error: string) {
+// Usage a caller can hand to failJob so a token-burning failure (a full
+// completion that then failed to parse, a mis-pinned model, etc.) is still
+// accounted against the monthly budget. Omitted fields fall back to whatever
+// the job row already recorded, else a zero-cost marker.
+export interface FailJobUsage {
+  provider?: string | null;
+  model?: string | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+}
+
+export async function failJob(jobId: string, error: string, usage?: FailJobUsage) {
   const job = await db.query.aiJobs.findFirst({ where: eq(aiJobs.id, jobId) });
   if (!job) return;
 
   const retryCount = (job.retryCount || 0) + 1;
-  if (retryCount < (job.maxRetries || 3)) {
-    await db.update(aiJobs).set({ status: 'pending', retryCount, errorMessage: error, updatedAt: new Date() }).where(eq(aiJobs.id, jobId));
-  } else {
-    await db.update(aiJobs).set({ status: 'failed', retryCount, errorMessage: error, processingCompletedAt: new Date(), updatedAt: new Date() }).where(eq(aiJobs.id, jobId));
-  }
+  // Terminal failure. There is NO dispatcher polling 'pending' AI jobs (see the
+  // module header — only backup/recurring schedulers run), so re-queueing a
+  // failed job to 'pending' left a permanent zombie row nothing ever retried.
+  // Mark every failure terminal, matching failJobTerminal (statement pipeline).
+  // retryCount is still incremented for observability.
+  await db.update(aiJobs).set({
+    status: 'failed', retryCount, errorMessage: error,
+    processingCompletedAt: new Date(), updatedAt: new Date(),
+  }).where(eq(aiJobs.id, jobId));
+
+  // M8: a failed call still consumed tokens whenever the provider actually
+  // responded (parse failure after a full completion, a mis-pinned model that
+  // billed before erroring, etc.). Log usage so the per-tenant monthly-budget
+  // gate — which SUMs ai_usage_log.estimated_cost — isn't blind to that spend.
+  // ai_usage_log has no status column, so this is an ordinary cost row; when we
+  // can't attribute a provider/model it's a zero-cost marker keyed to the job's
+  // tenant + jobType. Never let usage logging mask the original failure.
+  try {
+    const provider = usage?.provider ?? job.provider ?? 'unknown';
+    const model = usage?.model ?? job.model ?? 'unknown';
+    const inputTokens = usage?.inputTokens ?? job.inputTokens ?? 0;
+    const outputTokens = usage?.outputTokens ?? job.outputTokens ?? 0;
+    let estimatedCost = '0';
+    if ((inputTokens || outputTokens) && provider !== 'unknown') {
+      try {
+        const rawConfig = await aiConfigService.getRawConfig();
+        estimatedCost = String(getProvider(provider, rawConfig, model).estimateCost(inputTokens, outputTokens));
+      } catch { /* unknown/pseudo provider → cost stays 0 */ }
+    }
+    await db.insert(aiUsageLog).values({
+      tenantId: job.tenantId,
+      provider: String(provider).slice(0, 30),
+      model: String(model).slice(0, 100),
+      jobType: job.jobType,
+      inputTokens,
+      outputTokens,
+      estimatedCost,
+    });
+  } catch { /* usage logging is best-effort — swallow */ }
 }
 
+/**
+ * Direct provider call for callers that already own governance (consent,
+ * budget, usage logging) or are internal test harnesses.
+ *
+ * WARNING: this is UNGOVERNED. Unlike createJob(), it does NOT check tenant
+ * consent, does NOT enforce the monthly budget, and does NOT write an
+ * ai_usage_log row — the `tenantId` argument is accepted for interface
+ * symmetry but only used to scope the concurrency semaphore's config load.
+ * Route user-triggered work through createJob()/completeJob() instead; reserve
+ * this for paths that have already passed the gates.
+ */
 export async function executeCompletion(tenantId: string, params: CompletionParams): Promise<CompletionResult> {
   const sem = await getSemaphore();
   return sem.run(async () => {

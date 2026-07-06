@@ -36,16 +36,36 @@ describe('getCustomSystemPrompt', () => {
     expect(await getCustomSystemPrompt(TT)).toBeNull();
   });
 
-  it('returns the admin-authored (is_custom=true) prompt', async () => {
+  it('returns the admin-authored (is_custom=true) prompt with the safety clauses appended (M6)', async () => {
     await createPrompt({ taskType: TT, systemPrompt: 'CUSTOM PROMPT', userPromptTemplate: 'y' });
-    expect(await getCustomSystemPrompt(TT)).toBe('CUSTOM PROMPT');
+    const out = await getCustomSystemPrompt(TT);
+    // M6: a non-chat custom prompt keeps the admin body but always gains the
+    // non-negotiable safety floor (injection guard + no-invention).
+    expect(out).toContain('CUSTOM PROMPT');
+    expect(out!.startsWith('CUSTOM PROMPT')).toBe(true);
+    expect(out).toMatch(/NON-NEGOTIABLE SAFETY RULES/);
+    expect(out).toMatch(/never as instructions/i);
+  });
+
+  it('does NOT append the JSON safety clauses to the chat task (prose output)', async () => {
+    // Use a provider-scoped custom chat row and clean up by id so we never
+    // touch any seeded 'chat' default in the shared test DB.
+    const created = await createPrompt({ taskType: 'chat', provider: 'ollama', systemPrompt: 'CHAT PERSONA', userPromptTemplate: 'y' });
+    try {
+      const out = await getCustomSystemPrompt('chat', 'ollama');
+      expect(out).toBe('CHAT PERSONA');
+    } finally {
+      await db.delete(aiPromptTemplates).where(eq(aiPromptTemplates.id, created!.id));
+    }
   });
 
   it('prefers a provider-specific custom prompt over the generic one', async () => {
     await createPrompt({ taskType: TT2, systemPrompt: 'GENERIC', userPromptTemplate: 'y' });
     await createPrompt({ taskType: TT2, provider: 'ollama', systemPrompt: 'OLLAMA-SPECIFIC', userPromptTemplate: 'y' });
-    expect(await getCustomSystemPrompt(TT2, 'ollama')).toBe('OLLAMA-SPECIFIC');
+    expect(await getCustomSystemPrompt(TT2, 'ollama')).toContain('OLLAMA-SPECIFIC');
     // A provider with no specific row falls back to the generic custom prompt.
-    expect(await getCustomSystemPrompt(TT2, 'anthropic')).toBe('GENERIC');
+    const anth = await getCustomSystemPrompt(TT2, 'anthropic');
+    expect(anth).toContain('GENERIC');
+    expect(anth).not.toContain('OLLAMA-SPECIFIC');
   });
 });

@@ -98,7 +98,11 @@ export async function suggestCategorization(tenantId: string, feedItemId: string
     return { accountId: row.account_id, contactId: row.contact_id, confidence: 1.0, matchType: 'exact' };
   }
 
-  // Fuzzy match — check if description contains a known vendor name
+  // Fuzzy match — check if description contains a known vendor name.
+  // LOW: require the contact name to be at least 3 chars before it qualifies
+  // for a substring match. A 1-2 char display name (e.g. an initials contact
+  // "Al", or a stray "A") matched as `%A%` against nearly every descriptor and
+  // stamped a bogus 0.80-confidence suggestion.
   const fuzzyMatch = await db.execute(sql`
     SELECT t.contact_id, jl.account_id, c.display_name
     FROM transactions t
@@ -106,6 +110,7 @@ export async function suggestCategorization(tenantId: string, feedItemId: string
     JOIN accounts a ON a.id = jl.account_id AND a.account_type IN ('cogs', 'expense', 'other_expense')
     JOIN contacts c ON c.id = t.contact_id
     WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
+      AND char_length(c.display_name) >= 3
       AND (${cleanedDesc} LIKE '%' || LOWER(c.display_name) || '%'
            OR ${rawDesc} LIKE '%' || LOWER(c.display_name) || '%')
     ORDER BY t.txn_date DESC LIMIT 1

@@ -753,13 +753,26 @@ const CLEANSE_DISABLED_CODES = new Set([
   'ai_disabled_globally',
   'ai_no_provider_configured',
   'ai_function_disabled',
+  // LOW: a company that hasn't opted in (or whose consent is stale) is a
+  // deliberate state, not a provider outage — bucket it as `disabled` (silent)
+  // instead of conflating it with real AI failures. createJob throws this code.
+  'ai_consent_blocked',
 ]);
 
 export async function runCleansingPipeline(tenantId: string, items: any[]): Promise<CleansingAggregate> {
   const agg = emptyCleansingAggregate();
   let consecutiveAiFailures = 0;
   let aiShortCircuited = false;
-  let aiDisabled = false;
+
+  // M1: the per-row LLM cleansing step (categorize()) is a real paid AI call,
+  // so it must honor the same "Auto-categorize bank feed transactions on
+  // import" master switch (ai_config.autoCategorizeOnImport) that already gates
+  // the local suggestForBatch step. When the toggle is off, skip the LLM step
+  // entirely (counted as `disabled`) — deterministic rules + regex cleaning
+  // still run so every row lands with a usable description.
+  const { getConfig } = await import('./ai-config.service.js');
+  const aiCfg = await getConfig().catch(() => null);
+  let aiDisabled = !(aiCfg?.autoCategorizeOnImport ?? true);
 
   for (const item of items) {
     agg.processed++;

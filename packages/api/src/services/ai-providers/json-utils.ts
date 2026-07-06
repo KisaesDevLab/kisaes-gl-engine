@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
+import type { ZodType } from 'zod';
 import { AppError } from '../../utils/errors.js';
 import { log } from '../../utils/logger.js';
 
@@ -147,6 +148,33 @@ export function unwrapParsedResult(
     return result.parsed as Record<string, any>;
   }
   return {};
+}
+
+/**
+ * Validate a model's parsed output against a Zod schema before it is used to
+ * write the database (M5). On failure it throws the same typed
+ * `ai_parse_failed` AppError the non-JSON path uses, so a structurally-wrong
+ * model reply fails honestly instead of writing a partial/`any` record.
+ *
+ * `taskLabel` flavors the error (e.g. "receipt extraction"); the full Zod
+ * issue list always goes to the server log for diagnosis.
+ */
+export function validateModelOutput<T>(schema: ZodType<T>, value: unknown, taskLabel: string): T {
+  const result = schema.safeParse(value);
+  if (result.success) return result.data;
+  const issues = result.error.issues
+    .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
+    .join('; ');
+  log.warn({
+    component: 'ai-json',
+    event: 'ai_output_schema_invalid',
+    task: taskLabel,
+    detail: issues,
+  });
+  throw AppError.badRequest(
+    `AI ${taskLabel} output failed validation: ${issues}`,
+    'ai_parse_failed',
+  );
 }
 
 /**

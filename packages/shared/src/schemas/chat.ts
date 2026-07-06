@@ -6,15 +6,36 @@ import { z } from 'zod';
 
 // ─── Chat context (attached to each /chat/message call) ───────
 
+// M13(b): per-value size cap for form_fields. Values are interpolated into the
+// LLM prompt as JSON, so an unbounded value is both a token-cost and a
+// prompt-bloat / injection-surface risk. Reject any single value whose JSON
+// serialization exceeds 2 KB (and any non-serializable value); the number of
+// keys is separately capped below and the service also slices to 20.
+const FORM_FIELD_MAX_JSON = 2048;
+const formFieldValueSchema = z.unknown().refine(
+  (v) => {
+    if (v === null || v === undefined) return true;
+    try {
+      return JSON.stringify(v).length <= FORM_FIELD_MAX_JSON;
+    } catch {
+      return false;
+    }
+  },
+  { message: `form field value too large (max ${FORM_FIELD_MAX_JSON} chars serialized)` },
+);
+
 export const chatContextSchema = z.object({
   current_screen: z.string().max(100).optional(),
   current_path: z.string().max(500).optional(),
   entity_type: z.string().max(50).optional(),
   entity_id: z.string().max(100).optional(),
   entity_summary: z.string().max(1000).optional(),
-  // Arbitrary form fields keyed by name. Capped to prevent a huge
-  // payload being forwarded into the LLM prompt.
-  form_fields: z.record(z.unknown()).optional(),
+  // Arbitrary form fields keyed by name. Each value is size-capped (above) and
+  // the whole map is capped to 50 keys to bound the payload forwarded to the
+  // LLM prompt.
+  form_fields: z.record(formFieldValueSchema)
+    .refine((r) => Object.keys(r).length <= 50, { message: 'too many form fields (max 50)' })
+    .optional(),
   form_errors: z.array(z.string().max(500)).max(50).optional(),
   enabled_features: z.array(z.string().max(50)).max(50).optional(),
 }).passthrough();

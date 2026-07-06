@@ -192,6 +192,10 @@ export function changeRequiresReconsent(prev: DataFlowSnapshot, next: DataFlowSn
     ['categorization', prev.categorizationProvider, next.categorizationProvider],
     ['ocr', prev.ocrProvider, next.ocrProvider],
     ['document_classification', prev.documentClassificationProvider, next.documentClassificationProvider],
+    // M11: chatProvider is snapshotted in DataFlowSnapshot but was omitted here,
+    // so pointing chat at a new/different cloud provider never re-triggered
+    // company consent even though the disclosure names the chat provider.
+    ['chat', prev.chatProvider, next.chatProvider],
   ];
   for (const [task, a, b] of pairs) {
     if (a === b) continue;

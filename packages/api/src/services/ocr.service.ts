@@ -6,6 +6,16 @@ import { db } from '../db/index.js';
 import { attachments } from '../db/schema/index.js';
 import { eq, and } from 'drizzle-orm';
 
+// LOW (deferred, review finding): this is a legacy STUB. It stamps
+// ocrStatus='complete' with null fields and reads process.env.ANTHROPIC_API_KEY
+// directly, and can race the real governed pipeline (ai-receipt-ocr.service).
+// It is still wired into attachments.routes (auto-fire on image upload + the
+// POST /:id/ocr endpoint), so removing it or repointing it at the real
+// consent/PII-gated pipeline is a routing behaviour change that needs a product
+// decision (auto-running real cloud OCR on every upload has cost + consent
+// implications). Left in place and flagged rather than changed under a LOW
+// remediation. Do NOT extend this stub; new work should call
+// ai-receipt-ocr.service.processReceipt through the orchestrator.
 export async function processReceipt(tenantId: string, attachmentId: string) {
   const attachment = await db.query.attachments.findFirst({
     where: and(eq(attachments.tenantId, tenantId), eq(attachments.id, attachmentId)),

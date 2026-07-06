@@ -24,6 +24,7 @@ import type { VisionParams, CompletionResult } from './ai-providers/ai-provider.
 import * as orchestrator from './ai-orchestrator.service.js';
 import { env } from '../config/env.js';
 import { log } from '../utils/logger.js';
+import { withTimeout } from '../utils/retry.js';
 
 type RawConfig = Parameters<typeof getProvider>[1];
 
@@ -35,6 +36,11 @@ export interface VisionFallbackCtx {
   primaryModel: string;
   /** For logs/audit (e.g. 'ocr_receipt'). */
   task?: string;
+  /** M3: per-function wall-clock budget (resolveTaskExec(...).timeoutMs). Each
+   *  attempt is raced against this so a stalled local vision model can't hang
+   *  the request indefinitely; on timeout the chain fails over to the next
+   *  attempt. Absent → no wall-clock cap (unchanged behaviour). */
+  timeoutMs?: number;
 }
 
 interface Attempt {
@@ -83,7 +89,13 @@ export async function completeVisionWithFallback(
     const attempt = attempts[i]!;
     try {
       const provider = attempt.build();
-      const result = await provider.completeWithImage(params);
+      // M3: race each attempt against the per-function timeout when set. A
+      // TimeoutError is treated like any other attempt failure → fail over.
+      const call = provider.completeWithImage(params);
+      if (ctx.timeoutMs) call.catch(() => { /* swallow late rejection after timeout */ });
+      const result = ctx.timeoutMs
+        ? await withTimeout(call, ctx.timeoutMs, `vision.completeWithImage(${attempt.label})`)
+        : await call;
       if (!result.parseError) {
         if (i > 0) {
           log.warn({

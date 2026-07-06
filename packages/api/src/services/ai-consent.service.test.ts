@@ -119,6 +119,23 @@ describe('ai-consent service', () => {
       const next = { ...base, ocrProvider: null };
       expect(aiConsent.changeRequiresReconsent(prev, next)).toBeNull();
     });
+
+    it('M11: setting a cloud chatProvider where there was none: bumps', () => {
+      const next = { ...base, chatProvider: 'anthropic' };
+      expect(aiConsent.changeRequiresReconsent(base, next)).toMatch(/chat_provider_added_cloud/);
+    });
+
+    it('M11: switching chatProvider cloud A → cloud B: bumps', () => {
+      const prev = { ...base, chatProvider: 'anthropic' };
+      const next = { ...base, chatProvider: 'openai' };
+      expect(aiConsent.changeRequiresReconsent(prev, next)).toMatch(/chat_provider_cloud_switch/);
+    });
+
+    it('M11: clearing chatProvider (cloud → none): no bump', () => {
+      const prev = { ...base, chatProvider: 'anthropic' };
+      const next = { ...base, chatProvider: null };
+      expect(aiConsent.changeRequiresReconsent(prev, next)).toBeNull();
+    });
   });
 
   describe('invalidateCompanyConsent integration via updateConfig', () => {
