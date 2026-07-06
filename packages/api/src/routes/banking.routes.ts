@@ -8,6 +8,7 @@ import {
   bankFeedFiltersSchema, categorizeSchema, matchSchema,
   startReconciliationSchema, updateReconciliationLinesSchema, bankImportSchema,
   bulkApproveSchema, bulkCategorizeSchema, bulkExcludeSchema, bulkRecleanseSchema,
+  bulkReprocessRulesSchema,
   createManualConnectionSchema, updateFeedItemSchema, bankStatementFiltersSchema,
   confirmStatementLineSchema, createFromStatementLineSchema,
 } from '@kis-books/shared';
@@ -140,6 +141,20 @@ bankingRouter.post('/feed/bulk-set-tag', async (req, res) => {
 
 bankingRouter.post('/feed/bulk-recleanse', validate(bulkRecleanseSchema), async (req, res) => {
   const result = await bankFeedService.bulkRecleanse(req.tenantId, req.body.feedItemIds);
+  res.json(result);
+});
+
+// "Reprocess Rules" — re-run the rules stages (conditional + legacy bank
+// rules; NOT the AI or potential-match stages) over pending feed items so
+// a rule created after import applies to the backlog.
+bankingRouter.post('/feed/bulk-reprocess-rules', validate(bulkReprocessRulesSchema), async (req, res) => {
+  const { feedItemIds, allPending, bankConnectionId } = req.body;
+  const result = await bankFeedService.reprocessRules(
+    req.tenantId,
+    { feedItemIds, allPending, bankConnectionId },
+    req.userId,
+    req.companyId,
+  );
   res.json(result);
 });
 

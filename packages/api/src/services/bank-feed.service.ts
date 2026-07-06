@@ -8,6 +8,7 @@ import type { BankFeedFilters, CategorizeInput, CsvColumnMapping } from '@kis-bo
 import { db } from '../db/index.js';
 import { bankFeedItems, bankConnections, accounts, transactions, journalLines, contacts, transactionTags as transactionTagsTable } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
 import { cleanBankDescription } from '../utils/bank-name-cleaner.js';
 import { parseCheckNumber } from '../utils/check-number.js';
@@ -828,40 +829,63 @@ export async function runCleansingPipeline(tenantId: string, items: any[]): Prom
   return agg;
 }
 
+/** Outcome of the two RULES stages (conditional rules → legacy bank
+ *  rules). Shared by the import-time categorization pipeline and the
+ *  bank-feed "Reprocess Rules" bulk action so rule semantics can never
+ *  drift between the two entry points. */
+interface RulesStagesOutcome {
+  /** Ids of items that were still 'pending' when rule evaluation ran. */
+  processedIds: string[];
+  /** itemId → rule attribution (first conditional fire wins; a legacy
+   *  match otherwise). The pipeline feeds this into the
+   *  classification-state upsert so Bucket 2 can render "grouped by
+   *  rule"; a rule that doesn't auto-confirm still gets attributed. */
+  ruleFiredByItem: Map<string, { ruleId: string | null }>;
+  /** Items where a Phase-4 conditional rule fired without
+   *  continue_after_match — legacy bank-rule eval was skipped for
+   *  these (build plan §4.5). */
+  conditionalShortCircuited: Set<string>;
+  /** Items posted to the ledger via a legacy autoConfirm rule. */
+  autoCategorizedIds: string[];
+  /** Per-item autoConfirm posting failures. categorize() reverts the
+   *  claim on failure, so these items stay pending and retryable. */
+  failures: Array<{ id: string; error: string }>;
+}
+
 /**
- * Post-import categorization pipeline:
- *   1. Bank rules with autoConfirm → auto-categorize matching items
- *   2. AI suggestions on remaining pending items
+ * The RULES stages of categorization, in build-plan order:
+ *   1. Phase-4 conditional rules engine — stages suggestedAccountId /
+ *      suggestedContactId / suggestedTagId / memo / skip_ai /
+ *      splits_config on the feed item. A rule that fires without
+ *      continue_after_match short-circuits stage 2 for that item.
+ *   2. Legacy bank rules — a match records attribution; a match with
+ *      autoConfirm + assignAccountId posts the item via categorize().
+ *
+ * Runs at import time (inside runCategorizationPipeline) and again on
+ * demand via reprocessRules(). Items no rule matches are left untouched.
  */
-export async function runCategorizationPipeline(tenantId: string, items: any[]) {
+async function runRulesStages(
+  tenantId: string,
+  items: Array<{ id: string }>,
+  opts: { userId?: string; companyId?: string } = {},
+): Promise<RulesStagesOutcome> {
   const bankRulesService = await import('./bank-rules.service.js');
-  const categorizationService = await import('./categorization-ai.service.js');
-  const classificationStateService = await import('./practice-classification.service.js');
   const conditionalRulesApply = await import('./conditional-rules-apply.service.js');
 
-  // Per-item rule lookup. A rule that fires here needs to record
-  // its id on the state row so Bucket 2 can render "grouped by
-  // rule" in Phase 2b. Rules that don't auto-confirm still
-  // produce a state row with bucket='rule' so a bookkeeper can
-  // see the rule attribution without the transaction being
-  // auto-posted.
+  const processedIds: string[] = [];
   const ruleFiredByItem = new Map<string, { ruleId: string | null }>();
-  // Tracks items where a Phase-4 conditional rule fired without
-  // continue_after_match — those skip the legacy bank-rule eval
-  // entirely (build plan §4.5).
   const conditionalShortCircuited = new Set<string>();
+  const autoCategorizedIds: string[] = [];
+  const failures: Array<{ id: string; error: string }> = [];
 
-  // Phase 4 — conditional rules engine. Runs BEFORE legacy bank
-  // rules per build plan §4.5. Conditional rules can stage
-  // suggestedAccountId / suggestedContactId / suggestedTagId /
-  // memo / skip_ai / splits_config on the feed item before the
-  // legacy evaluator runs. If a conditional rule fires without
-  // continue_after_match, we mark the item to skip legacy rules.
+  // Stage 1 — conditional rules engine. Runs BEFORE legacy bank
+  // rules per build plan §4.5.
   for (const item of items) {
     const current = await db.query.bankFeedItems.findFirst({
       where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, item.id)),
     });
     if (!current || current.status !== 'pending') continue;
+    processedIds.push(item.id);
     try {
       // Resolve the bank-connection's GL account so the Phase-4
       // condition field `account_source_id` tests against the
@@ -880,12 +904,12 @@ export async function runCategorizationPipeline(tenantId: string, items: any[]) 
         amount: current.amount,
         feedDate: current.feedDate,
         bankConnectionAccountId: conn?.accountId ?? current.bankConnectionId,
-      });
+      }, { currentUserId: opts.userId ?? null });
       if (result.shortCircuitedLegacyRules) {
         conditionalShortCircuited.add(item.id);
       }
       // Stash the conditional rule attribution so the
-      // classification-state upsert below records it. The first
+      // classification-state upsert records it. The first
       // fire wins for attribution (lowest priority); stacked
       // continue_after_match fires don't overwrite.
       if (result.fires.length > 0) {
@@ -895,14 +919,15 @@ export async function runCategorizationPipeline(tenantId: string, items: any[]) 
         }
       }
     } catch (err) {
-      // Engine failures shouldn't abort the pipeline.
+      // Engine failures shouldn't abort the run.
       console.warn(
-        `[runCategorizationPipeline] conditional-rules apply failed for item ${item.id}:`,
+        `[runRulesStages] conditional-rules apply failed for item ${item.id}:`,
         err instanceof Error ? err.message : String(err),
       );
     }
   }
 
+  // Stage 2 — legacy bank rules (+ autoConfirm posting).
   for (const item of items) {
     if (conditionalShortCircuited.has(item.id)) continue;
     const current = await db.query.bankFeedItems.findFirst({
@@ -919,15 +944,43 @@ export async function runCategorizationPipeline(tenantId: string, items: any[]) 
       ruleFiredByItem.set(item.id, { ruleId: ruleResult.ruleId ?? null });
     }
     if (ruleResult.matched && ruleResult.autoConfirm && ruleResult.assignAccountId) {
-      await categorize(tenantId, item.id, {
-        accountId: ruleResult.assignAccountId,
-        contactId: ruleResult.assignContactId || undefined,
-        memo: ruleResult.assignMemo || undefined,
-        // ADR 0XY §3.3 — rule-assigned tag propagates to the new txn.
-        tagId: ruleResult.assignTagId ?? undefined,
-      });
+      try {
+        await categorize(tenantId, item.id, {
+          accountId: ruleResult.assignAccountId,
+          contactId: ruleResult.assignContactId || undefined,
+          memo: ruleResult.assignMemo || undefined,
+          // ADR 0XY §3.3 — rule-assigned tag propagates to the new txn.
+          tagId: ruleResult.assignTagId ?? undefined,
+        }, opts.userId, opts.companyId);
+        autoCategorizedIds.push(item.id);
+      } catch (err) {
+        // A single bad posting (deleted account, unbalanced ledger
+        // guard, concurrent claim) must not abort the rest of the
+        // batch. categorize() reverts the claim so the item stays
+        // pending and can be retried.
+        const msg = err instanceof Error ? err.message : String(err);
+        failures.push({ id: item.id, error: msg });
+        console.warn(`[runRulesStages] autoConfirm categorize failed for item ${item.id}: ${msg}`);
+      }
     }
   }
+
+  return { processedIds, ruleFiredByItem, conditionalShortCircuited, autoCategorizedIds, failures };
+}
+
+/**
+ * Post-import categorization pipeline:
+ *   1. Bank rules with autoConfirm → auto-categorize matching items
+ *   2. AI suggestions on remaining pending items
+ */
+export async function runCategorizationPipeline(tenantId: string, items: any[]) {
+  const categorizationService = await import('./categorization-ai.service.js');
+  const classificationStateService = await import('./practice-classification.service.js');
+
+  // RULES stages — conditional rules, then legacy bank rules (with
+  // autoConfirm posting). Shared with reprocessRules() so the "run the
+  // rules again later" bulk action can never drift from import behavior.
+  const { ruleFiredByItem } = await runRulesStages(tenantId, items);
 
   // AI suggestions on remaining pending items.
   // Phase 4 — items with skip_ai=true (set by a conditional
@@ -1030,6 +1083,157 @@ export async function bulkRecleanse(tenantId: string, feedItemIds: string[]) {
   }
   const cleansing = await runCleansingPipeline(tenantId, items);
   return { cleansed: items.length, cleansing };
+}
+
+// ─── Reprocess Rules (bulk) ────────────────────────────────────────
+
+export interface ReprocessRulesSelector {
+  /** Explicit selection. Validated against tenant + 'pending' status;
+   *  non-pending / unknown ids are silently skipped. */
+  feedItemIds?: string[];
+  /** Re-run rules over every pending feed item for the tenant. */
+  allPending?: boolean;
+  /** Optional connection scope for the allPending path. */
+  bankConnectionId?: string;
+}
+
+export interface ReprocessRulesResult {
+  /** Pending items rule evaluation actually ran over. */
+  processed: number;
+  /** Items at least one rule (conditional or legacy) matched. */
+  matched: number;
+  /** Matched items posted to the ledger via a legacy autoConfirm rule. */
+  autoCategorized: number;
+  /** Matched items whose suggestion fields / rule attribution were
+   *  refreshed but that stay pending for review. */
+  suggestionsUpdated: number;
+  /** Processed items no rule matched — left exactly as they were
+   *  (existing AI suggestions preserved). */
+  untouched: number;
+}
+
+const REPROCESS_BATCH_SIZE = 500;
+// Sanity ceiling for the allPending path — a backlog past this is a
+// data problem to look at, not something to chew through in one
+// request. The loop just stops there; re-running picks up the rest
+// (auto-categorized items leave 'pending', so progress is monotonic).
+const REPROCESS_MAX_ITEMS = 10_000;
+
+/**
+ * "Reprocess Rules" bulk action — re-runs ONLY the rules stages
+ * (conditional rules, then legacy bank rules) over pending feed items,
+ * so a rule created after import applies to the backlog. Deliberately
+ * skips the AI-suggestion and potential-match stages: a matching rule
+ * refreshes the suggestion fields exactly as at import (autoConfirm
+ * rules post via categorize()); items no rule matches keep whatever
+ * suggestion they already have.
+ */
+export async function reprocessRules(
+  tenantId: string,
+  selector: ReprocessRulesSelector,
+  userId?: string,
+  companyId?: string,
+): Promise<ReprocessRulesResult> {
+  const hasIds = Array.isArray(selector.feedItemIds) && selector.feedItemIds.length > 0;
+  if (hasIds === (selector.allPending === true)) {
+    throw AppError.badRequest('Provide exactly one of feedItemIds or allPending');
+  }
+  if (hasIds && selector.feedItemIds!.length > REPROCESS_BATCH_SIZE) {
+    // The route schema already caps at 500; re-check here so direct
+    // service callers can't serialize thousands of queries either.
+    throw AppError.badRequest(`Reprocess rules is limited to ${REPROCESS_BATCH_SIZE} explicit items per request`);
+  }
+  if (selector.bankConnectionId) {
+    await assertConnectionInTenant(tenantId, selector.bankConnectionId);
+  }
+
+  const classificationStateService = await import('./practice-classification.service.js');
+
+  let processed = 0;
+  let matched = 0;
+  let autoCategorized = 0;
+
+  const processBatch = async (batch: Array<{ id: string }>) => {
+    const outcome = await runRulesStages(tenantId, batch, { userId, companyId });
+    processed += outcome.processedIds.length;
+    matched += outcome.ruleFiredByItem.size;
+    autoCategorized += outcome.autoCategorizedIds.length;
+    // Refresh the classification-state row for items a rule matched so
+    // the bucket UI reflects the new attribution (mirrors the pipeline;
+    // best-effort — the state table is an augmentation, not the source
+    // of truth). Untouched items keep their existing state row.
+    for (const [itemId, fired] of outcome.ruleFiredByItem) {
+      try {
+        await classificationStateService.upsertStateForFeedItem(tenantId, itemId, {
+          matchedRuleId: fired.ruleId,
+        });
+      } catch (err) {
+        console.warn(
+          `[reprocessRules] classification-state upsert failed for item ${itemId}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+  };
+
+  if (hasIds) {
+    // Tenant scoping + pending filter in one query; anything that
+    // doesn't survive the WHERE is silently skipped by design.
+    const rows = await db.select({ id: bankFeedItems.id })
+      .from(bankFeedItems)
+      .where(and(
+        eq(bankFeedItems.tenantId, tenantId),
+        inArray(bankFeedItems.id, selector.feedItemIds!),
+        eq(bankFeedItems.status, 'pending'),
+      ));
+    await processBatch(rows);
+  } else {
+    // All-pending path: keyset-paginate by id so rows auto-categorized
+    // mid-run (status flips off 'pending') can't shift the window.
+    let lastId: string | null = null;
+    let fetched = 0;
+    for (;;) {
+      const conditions = [
+        eq(bankFeedItems.tenantId, tenantId),
+        eq(bankFeedItems.status, 'pending'),
+      ];
+      if (selector.bankConnectionId) {
+        conditions.push(eq(bankFeedItems.bankConnectionId, selector.bankConnectionId));
+      }
+      if (lastId) conditions.push(sql`${bankFeedItems.id} > ${lastId}`);
+      const batch: Array<{ id: string }> = await db.select({ id: bankFeedItems.id })
+        .from(bankFeedItems)
+        .where(and(...conditions))
+        .orderBy(bankFeedItems.id)
+        .limit(REPROCESS_BATCH_SIZE);
+      if (batch.length === 0) break;
+      await processBatch(batch);
+      lastId = batch[batch.length - 1]!.id;
+      fetched += batch.length;
+      if (fetched >= REPROCESS_MAX_ITEMS) break;
+    }
+  }
+
+  const result: ReprocessRulesResult = {
+    processed,
+    matched,
+    autoCategorized,
+    suggestionsUpdated: matched - autoCategorized,
+    untouched: processed - matched,
+  };
+
+  // One summary audit entry for the whole action (per-item effects are
+  // already audited by categorize→postTransaction and the conditional
+  // rules' own fire audit).
+  await auditLog(tenantId, 'update', 'bank_feed', null, null, {
+    action: 'reprocess_rules',
+    selector: hasIds
+      ? { feedItemIds: selector.feedItemIds!.length }
+      : { allPending: true, bankConnectionId: selector.bankConnectionId ?? null },
+    ...result,
+  }, userId);
+
+  return result;
 }
 
 export interface ImportDateRange {

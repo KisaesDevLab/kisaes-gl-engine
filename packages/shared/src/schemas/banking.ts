@@ -134,6 +134,19 @@ export const bulkRecleanseSchema = z.object({
   feedItemIds: z.array(z.string().uuid()).min(1).max(500),
 });
 
+// "Reprocess Rules" — re-run the rules stages over pending feed items.
+// Exactly one selector: an explicit id list OR allPending (optionally
+// scoped to one bank connection). The service batches the allPending
+// path internally, so it takes no id array (and no 500 cap).
+export const bulkReprocessRulesSchema = z.object({
+  feedItemIds: z.array(z.string().uuid()).min(1).max(500).optional(),
+  allPending: z.boolean().optional(),
+  bankConnectionId: z.string().uuid().optional(),
+}).refine(
+  (v) => (v.feedItemIds !== undefined) !== (v.allPending === true),
+  { message: 'Provide exactly one of feedItemIds or allPending' },
+);
+
 // Manual bank connections created from the UI ("CSV import" path).
 export const createManualConnectionSchema = z.object({
   accountId: z.string().uuid(),
