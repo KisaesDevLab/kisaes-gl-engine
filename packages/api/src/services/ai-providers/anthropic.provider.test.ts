@@ -97,3 +97,64 @@ describe('AnthropicProvider.send — 404 re-wrap keeps err.status (retry hygiene
     expect(caught!.status).toBe(404);
   });
 });
+
+describe('AnthropicProvider.complete — JSON format pinning + truncation honesty', () => {
+  function okResponse(overrides: Record<string, unknown> = {}) {
+    return {
+      content: [{ type: 'text', text: '{"ok":true}' }],
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 1, output_tokens: 1 },
+      ...overrides,
+    };
+  }
+
+  it('appends the JSON-only instruction to the system prompt when responseFormat is json', async () => {
+    const create = vi.fn().mockResolvedValue(okResponse());
+    const provider = providerWith('claude-good', { messages: { create }, models: { list: vi.fn() } });
+
+    await provider.complete({ systemPrompt: 'Base prompt.', userPrompt: 'u', responseFormat: 'json' });
+
+    const body = create.mock.calls[0]![0] as { system: string };
+    expect(body.system).toMatch(/^Base prompt\./);
+    expect(body.system).toContain('ONLY the JSON');
+    expect(body.system).toContain('no markdown code fences');
+  });
+
+  it('leaves the system prompt untouched for text responses', async () => {
+    const create = vi.fn().mockResolvedValue(okResponse());
+    const provider = providerWith('claude-good', { messages: { create }, models: { list: vi.fn() } });
+
+    await provider.complete({ systemPrompt: 'Base prompt.', userPrompt: 'u', responseFormat: 'text' });
+
+    const body = create.mock.calls[0]![0] as { system: string };
+    expect(body.system).toBe('Base prompt.');
+  });
+
+  it('reads the text block even when a thinking block comes first', async () => {
+    const create = vi.fn().mockResolvedValue(okResponse({
+      content: [
+        { type: 'thinking', thinking: 'hmm…' },
+        { type: 'text', text: '{"account_name":"Meals"}' },
+      ],
+    }));
+    const provider = providerWith('claude-good', { messages: { create }, models: { list: vi.fn() } });
+
+    const result = await provider.complete({ systemPrompt: 's', userPrompt: 'u', responseFormat: 'json' });
+
+    expect(result.parsed).toEqual({ account_name: 'Meals' });
+    expect(result.parseError).toBeUndefined();
+  });
+
+  it('surfaces stop_reason max_tokens as a truncation error, not "non-JSON"', async () => {
+    const create = vi.fn().mockResolvedValue(okResponse({
+      content: [{ type: 'text', text: '{"transactions":[{"date":' }],
+      stop_reason: 'max_tokens',
+    }));
+    const provider = providerWith('claude-good', { messages: { create }, models: { list: vi.fn() } });
+
+    const result = await provider.complete({ systemPrompt: 's', userPrompt: 'u', responseFormat: 'json' });
+
+    expect(result.truncated).toBe(true);
+    expect(result.parseError).toMatch(/truncated at the max-token limit/);
+  });
+});

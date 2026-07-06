@@ -6,6 +6,13 @@ import { GoogleGenAI } from '@google/genai';
 import type { AiProvider, CompletionParams, VisionParams, CompletionResult } from './ai-provider.interface.js';
 import { extractJsonForResult } from './json-utils.js';
 
+// Token-limit stop detection: the SDK surfaces the finish reason on the
+// first candidate. Structural typing keeps this resilient across SDK
+// versions (the enum name moved between releases).
+function isMaxTokensStop(response: { candidates?: Array<{ finishReason?: unknown }> }): boolean {
+  return String(response.candidates?.[0]?.finishReason ?? '') === 'MAX_TOKENS';
+}
+
 // Note on cancellation: @google/genai (as of the version pinned in
 // package.json) does not expose a documented `AbortSignal` option on
 // generateContent. We rely on the outer `withTimeout` race in
@@ -54,10 +61,11 @@ export class GeminiProvider implements AiProvider {
     });
 
     const text = response.text || '';
-    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat);
+    const truncated = isMaxTokensStop(response);
+    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat, { truncated });
 
     return {
-      text, parsed, parseError,
+      text, parsed, parseError, truncated,
       inputTokens: response.usageMetadata?.promptTokenCount || 0,
       outputTokens: response.usageMetadata?.candidatesTokenCount || 0,
       model: this.model, provider: this.name, durationMs: Date.now() - start,
@@ -74,14 +82,21 @@ export class GeminiProvider implements AiProvider {
     const response = await this.client.models.generateContent({
       model: this.model,
       contents: [{ role: 'user', parts }],
-      config: { maxOutputTokens: params.maxTokens || 2048, temperature: params.temperature ?? 0.1 },
+      config: {
+        maxOutputTokens: params.maxTokens || 2048,
+        temperature: params.temperature ?? 0.1,
+        // Native JSON mode was previously only set on the text path;
+        // vision OCR calls request responseFormat 'json' too.
+        responseMimeType: params.responseFormat === 'json' ? 'application/json' : undefined,
+      },
     });
 
     const text = response.text || '';
-    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat);
+    const truncated = isMaxTokensStop(response);
+    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat, { truncated });
 
     return {
-      text, parsed, parseError,
+      text, parsed, parseError, truncated,
       inputTokens: response.usageMetadata?.promptTokenCount || 0,
       outputTokens: response.usageMetadata?.candidatesTokenCount || 0,
       model: this.model, provider: this.name, durationMs: Date.now() - start,

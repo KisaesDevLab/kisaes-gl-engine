@@ -238,3 +238,51 @@ export async function executeWithFallback(
   aggErr.providerErrors = errors;
   throw aggErr;
 }
+
+/**
+ * Corrective follow-up appended to the user prompt on a parse-failure
+ * retry. Exported so tests can assert the retry actually carried it.
+ */
+export const JSON_CORRECTIVE_SUFFIX =
+  '\n\nIMPORTANT: Your previous reply was not valid JSON. Respond again with ONLY the JSON — ' +
+  'no markdown code fences, no <think> blocks, no explanations before or after.';
+
+/**
+ * `executeWithFallback` + one corrective retry when the reply wasn't
+ * parseable JSON. Cheap insurance for small JSON tasks (categorization):
+ * a model that rambled once usually complies when told its previous
+ * reply was rejected.
+ *
+ *  - No retry when the response was TRUNCATED — the same maxTokens would
+ *    truncate again; the caller should surface "raise max tokens".
+ *  - A transport failure during the retry returns the FIRST result (it
+ *    at least carries the diagnostic parseError) instead of throwing a
+ *    fresh, less-specific error.
+ *  - If the retry also fails to parse, the first result is returned so
+ *    the surfaced excerpt reflects the model's unprompted behaviour.
+ */
+export async function executeJsonWithRetry(
+  params: CompletionParams,
+  config: AiConfigRow,
+  fallbackChain: string[],
+  preferredProvider?: string,
+  preferredModel?: string,
+  options?: { timeoutMs?: number },
+): Promise<CompletionResult> {
+  const first = await executeWithFallback(params, config, fallbackChain, preferredProvider, preferredModel, options);
+  if (!first.parseError || first.truncated) return first;
+
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[ai] non-JSON reply from ${first.provider}/${first.model}; retrying once with a corrective instruction. Detail: ${first.parseError}`,
+  );
+  try {
+    const second = await executeWithFallback(
+      { ...params, userPrompt: params.userPrompt + JSON_CORRECTIVE_SUFFIX },
+      config, fallbackChain, preferredProvider, preferredModel, options,
+    );
+    return second.parseError ? first : second;
+  } catch {
+    return first;
+  }
+}

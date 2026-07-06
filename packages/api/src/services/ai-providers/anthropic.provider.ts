@@ -6,6 +6,30 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { AiProvider, CompletionParams, VisionParams, CompletionResult } from './ai-provider.interface.js';
 import { extractJsonForResult } from './json-utils.js';
 
+// The Messages API has no server-side JSON mode, so `responseFormat:
+// 'json'` is enforced by instruction: pin the output format at the END of
+// the system prompt (the position models weight most for format
+// directives). Task prompts already ask for JSON; this suffix hardens
+// custom/admin-authored prompts that forget to.
+const JSON_FORMAT_SUFFIX =
+  '\n\nOutput format: respond with ONLY the JSON value — no markdown code fences, no preamble, no commentary.';
+
+function systemFor(params: CompletionParams): string {
+  return params.responseFormat === 'json'
+    ? params.systemPrompt + JSON_FORMAT_SUFFIX
+    : params.systemPrompt;
+}
+
+// Join all text blocks rather than assuming content[0] is text — an
+// extended-thinking model puts a `thinking` block first, which the old
+// `content[0]?.type === 'text'` check read as an empty response.
+function textOf(response: Anthropic.Messages.Message): string {
+  return response.content
+    .filter((b): b is Extract<Anthropic.Messages.ContentBlock, { type: 'text' }> => b.type === 'text')
+    .map((b) => b.text)
+    .join('');
+}
+
 export class AnthropicProvider implements AiProvider {
   name = 'anthropic';
   supportsVision = true;
@@ -56,17 +80,19 @@ export class AnthropicProvider implements AiProvider {
     const response = await this.send({
       model: this.model,
       max_tokens: params.maxTokens || 1024,
-      system: params.systemPrompt,
+      system: systemFor(params),
       messages: [{ role: 'user', content: params.userPrompt }],
     }, params.signal);
 
-    const text = response.content[0]?.type === 'text' ? response.content[0].text : '';
-    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat);
+    const text = textOf(response);
+    const truncated = response.stop_reason === 'max_tokens';
+    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat, { truncated });
 
     return {
       text,
       parsed,
       parseError,
+      truncated,
       inputTokens: response.usage.input_tokens,
       outputTokens: response.usage.output_tokens,
       model: this.model,
@@ -86,15 +112,16 @@ export class AnthropicProvider implements AiProvider {
     const response = await this.send({
       model: this.model,
       max_tokens: params.maxTokens || 2048,
-      system: params.systemPrompt,
+      system: systemFor(params),
       messages: [{ role: 'user', content }],
     }, params.signal);
 
-    const text = response.content[0]?.type === 'text' ? response.content[0].text : '';
-    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat);
+    const text = textOf(response);
+    const truncated = response.stop_reason === 'max_tokens';
+    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat, { truncated });
 
     return {
-      text, parsed, parseError,
+      text, parsed, parseError, truncated,
       inputTokens: response.usage.input_tokens,
       outputTokens: response.usage.output_tokens,
       model: this.model, provider: this.name, durationMs: Date.now() - start,

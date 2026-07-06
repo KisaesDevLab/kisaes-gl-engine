@@ -31,10 +31,13 @@ export class OpenAiProvider implements AiProvider {
     }, { signal: params.signal });
 
     const text = response.choices[0]?.message?.content || '';
-    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat);
+    // finish_reason 'length' = output hit max_tokens; a JSON body cut
+    // mid-object must error as "truncated", not "non-JSON".
+    const truncated = response.choices[0]?.finish_reason === 'length';
+    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat, { truncated });
 
     return {
-      text, parsed, parseError,
+      text, parsed, parseError, truncated,
       inputTokens: response.usage?.prompt_tokens || 0,
       outputTokens: response.usage?.completion_tokens || 0,
       model: this.model, provider: this.name, durationMs: Date.now() - start,
@@ -52,6 +55,9 @@ export class OpenAiProvider implements AiProvider {
       model: this.model,
       max_tokens: params.maxTokens || 2048,
       temperature: params.temperature ?? 0.1,
+      // JSON mode was previously only set on the text path; vision OCR
+      // calls request responseFormat 'json' too and deserve the same pin.
+      response_format: params.responseFormat === 'json' ? { type: 'json_object' } : undefined,
       messages: [
         { role: 'system', content: params.systemPrompt },
         { role: 'user', content },
@@ -59,10 +65,11 @@ export class OpenAiProvider implements AiProvider {
     }, { signal: params.signal });
 
     const text = response.choices[0]?.message?.content || '';
-    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat);
+    const truncated = response.choices[0]?.finish_reason === 'length';
+    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat, { truncated });
 
     return {
-      text, parsed, parseError,
+      text, parsed, parseError, truncated,
       inputTokens: response.usage?.prompt_tokens || 0,
       outputTokens: response.usage?.completion_tokens || 0,
       model: this.model, provider: this.name, durationMs: Date.now() - start,

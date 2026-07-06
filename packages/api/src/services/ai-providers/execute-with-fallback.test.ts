@@ -16,10 +16,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  anthropic: vi.fn<(model: string) => Promise<unknown>>(),
-  openai: vi.fn<(model: string) => Promise<unknown>>(),
-  gemini: vi.fn<(model: string) => Promise<unknown>>(),
-  ollama: vi.fn<(model: string) => Promise<unknown>>(),
+  anthropic: vi.fn<(model: string, params?: unknown) => Promise<unknown>>(),
+  openai: vi.fn<(model: string, params?: unknown) => Promise<unknown>>(),
+  gemini: vi.fn<(model: string, params?: unknown) => Promise<unknown>>(),
+  ollama: vi.fn<(model: string, params?: unknown) => Promise<unknown>>(),
 }));
 
 vi.mock('../../utils/encryption.js', () => ({
@@ -32,7 +32,7 @@ vi.mock('./anthropic.provider.js', () => ({
     name = 'anthropic';
     private model: string;
     constructor(_apiKey: string, model: string = 'claude-default') { this.model = model; }
-    complete() { return mocks.anthropic(this.model); }
+    complete(params?: unknown) { return mocks.anthropic(this.model, params); }
   },
 }));
 vi.mock('./openai.provider.js', () => ({
@@ -60,7 +60,7 @@ vi.mock('./ollama.provider.js', () => ({
   },
 }));
 
-import { executeWithFallback } from './index.js';
+import { executeWithFallback, executeJsonWithRetry, JSON_CORRECTIVE_SUFFIX } from './index.js';
 
 interface AggregateError extends Error {
   code?: string;
@@ -189,5 +189,81 @@ describe('executeWithFallback', () => {
 
     expect(err.message).toContain('All AI providers failed.');
     expect(err.message).toContain('anthropic: boom');
+  });
+});
+
+describe('executeJsonWithRetry — one corrective retry on parse failure', () => {
+  beforeEach(() => {
+    mocks.anthropic.mockReset();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  function nonJson(model: string) {
+    return Promise.resolve({
+      text: 'Sure! The category is Meals.',
+      parseError: 'Model returned non-JSON: Sure! The category is Meals.',
+      inputTokens: 1, outputTokens: 1, model, provider: 'anthropic', durationMs: 1,
+    });
+  }
+
+  it('passes a clean result through with a single attempt', async () => {
+    mocks.anthropic.mockImplementation((model) => ok('anthropic', model));
+
+    const result = await executeJsonWithRetry(PARAMS, CONFIG, ['anthropic'], 'anthropic');
+
+    expect(result.parsed).toEqual({ ok: true });
+    expect(mocks.anthropic).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries ONCE with the corrective suffix and returns the recovered JSON', async () => {
+    mocks.anthropic
+      .mockImplementationOnce((model) => nonJson(model))
+      .mockImplementationOnce((model) => ok('anthropic', model));
+
+    const result = await executeJsonWithRetry(PARAMS, CONFIG, ['anthropic'], 'anthropic');
+
+    expect(result.parsed).toEqual({ ok: true });
+    expect(mocks.anthropic).toHaveBeenCalledTimes(2);
+    const retryParams = mocks.anthropic.mock.calls[1]![1] as { userPrompt: string };
+    expect(retryParams.userPrompt).toBe(PARAMS.userPrompt + JSON_CORRECTIVE_SUFFIX);
+    // The first attempt was NOT polluted by the corrective suffix.
+    const firstParams = mocks.anthropic.mock.calls[0]![1] as { userPrompt: string };
+    expect(firstParams.userPrompt).toBe(PARAMS.userPrompt);
+  });
+
+  it('returns the FIRST failure when the retry is also unparseable', async () => {
+    mocks.anthropic.mockImplementation((model) => nonJson(model));
+
+    const result = await executeJsonWithRetry(PARAMS, CONFIG, ['anthropic'], 'anthropic');
+
+    expect(result.parseError).toContain('Model returned non-JSON');
+    expect(mocks.anthropic).toHaveBeenCalledTimes(2);
+  });
+
+  it('does NOT retry a truncated response (same budget would truncate again)', async () => {
+    mocks.anthropic.mockResolvedValue({
+      text: '{"cut":',
+      parseError: 'Model response was truncated at the max-token limit before the JSON completed',
+      truncated: true,
+      inputTokens: 1, outputTokens: 1, model: 'claude-default', provider: 'anthropic', durationMs: 1,
+    });
+
+    const result = await executeJsonWithRetry(PARAMS, CONFIG, ['anthropic'], 'anthropic');
+
+    expect(result.truncated).toBe(true);
+    expect(result.parseError).toContain('truncated');
+    expect(mocks.anthropic).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the first (diagnostic) result when the retry throws', async () => {
+    mocks.anthropic
+      .mockImplementationOnce((model) => nonJson(model))
+      .mockImplementationOnce(() => Promise.reject(err404('now down')));
+
+    const result = await executeJsonWithRetry(PARAMS, CONFIG, ['anthropic'], 'anthropic');
+
+    expect(result.parseError).toContain('Model returned non-JSON');
   });
 });

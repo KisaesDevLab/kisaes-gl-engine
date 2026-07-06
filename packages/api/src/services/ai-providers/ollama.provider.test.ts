@@ -29,6 +29,54 @@ describe('OllamaProvider.complete — request tuning (keep_alive / num_predict)'
   });
 });
 
+describe('OllamaProvider.complete — truncation + thinking salvage', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function mockChat(body: Record<string, unknown>) {
+    return vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    );
+  }
+
+  it('flags done_reason length as truncated and says "raise max tokens", not "non-JSON"', async () => {
+    mockChat({ message: { content: '{"transactions":[{"date":' }, done_reason: 'length', prompt_eval_count: 1, eval_count: 320 });
+    const result = await new OllamaProvider('http://localhost:11434', 'qwen3').complete({
+      systemPrompt: 's', userPrompt: 'u', responseFormat: 'json',
+    });
+    expect(result.truncated).toBe(true);
+    expect(result.parseError).toMatch(/truncated at the max-token limit/);
+    expect(result.parseError).not.toMatch(/^Model returned non-JSON/);
+  });
+
+  it('a normal stop is not truncated', async () => {
+    mockChat({ message: { content: '{"ok":true}' }, done_reason: 'stop', prompt_eval_count: 1, eval_count: 5 });
+    const result = await new OllamaProvider().complete({ systemPrompt: 's', userPrompt: 'u', responseFormat: 'json' });
+    expect(result.truncated).toBe(false);
+    expect(result.parsed).toEqual({ ok: true });
+  });
+
+  it('salvages JSON from message.thinking when content is empty (leaky reasoning template)', async () => {
+    mockChat({
+      message: { content: '', thinking: 'Let me work this out… the answer is {"account_name":"Meals"}' },
+      done_reason: 'stop', prompt_eval_count: 1, eval_count: 50,
+    });
+    const result = await new OllamaProvider('http://localhost:11434', 'qwen3').complete({
+      systemPrompt: 's', userPrompt: 'u', responseFormat: 'json',
+    });
+    expect(result.parsed).toEqual({ account_name: 'Meals' });
+    expect(result.parseError).toBeUndefined();
+  });
+
+  it('strips inline <think> blocks from content', async () => {
+    mockChat({
+      message: { content: '<think>coffee → meals {maybe: this}</think>{"account_name":"Meals"}' },
+      done_reason: 'stop', prompt_eval_count: 1, eval_count: 50,
+    });
+    const result = await new OllamaProvider().complete({ systemPrompt: 's', userPrompt: 'u', responseFormat: 'json' });
+    expect(result.parsed).toEqual({ account_name: 'Meals' });
+  });
+});
+
 describe('OllamaProvider.testConnection — fail-closed on non-ok', () => {
   afterEach(() => vi.restoreAllMocks());
 

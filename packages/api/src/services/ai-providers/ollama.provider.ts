@@ -6,6 +6,16 @@ import type { AiProvider, CompletionParams, VisionParams, CompletionResult } fro
 import { extractJsonForResult } from './json-utils.js';
 import { env } from '../../config/env.js';
 
+// Minimal structural type for a non-streaming /api/chat response.
+// `thinking` is populated for reasoning models when think is enabled;
+// broken templates sometimes leak the entire answer there.
+interface OllamaChatResponse {
+  message?: { content?: string; thinking?: string };
+  done_reason?: string;
+  prompt_eval_count?: number;
+  eval_count?: number;
+}
+
 export class OllamaProvider implements AiProvider {
   name = 'ollama';
   supportsVision = true; // depends on model, but we attempt it
@@ -70,12 +80,26 @@ export class OllamaProvider implements AiProvider {
       throw err;
     }
 
-    const data = await response.json() as any;
+    const data = await response.json() as OllamaChatResponse;
+    return this.buildResult(data, params, start);
+  }
+
+  // Shared response mapping for text + vision:
+  //  - done_reason 'length' = the reply hit num_predict; a JSON body cut
+  //    mid-object must surface as "truncated (raise max tokens)", not
+  //    "non-JSON".
+  //  - When `content` is empty but the model emitted a separate
+  //    `thinking` field (reasoning models with think enabled), salvage
+  //    the JSON from the thinking text rather than failing on an empty
+  //    response — some templates leak the entire answer there.
+  private buildResult(data: OllamaChatResponse, params: CompletionParams, start: number): CompletionResult {
     const text = data.message?.content || '';
-    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat);
+    const truncated = data.done_reason === 'length';
+    const extractionSource = text || data.message?.thinking || '';
+    const { parsed, parseError } = extractJsonForResult(extractionSource, params.responseFormat, { truncated });
 
     return {
-      text, parsed, parseError,
+      text, parsed, parseError, truncated,
       inputTokens: data.prompt_eval_count || 0,
       outputTokens: data.eval_count || 0,
       model: this.model, provider: this.name, durationMs: Date.now() - start,
@@ -108,16 +132,8 @@ export class OllamaProvider implements AiProvider {
       throw err;
     }
 
-    const data = await response.json() as any;
-    const text = data.message?.content || '';
-    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat);
-
-    return {
-      text, parsed, parseError,
-      inputTokens: data.prompt_eval_count || 0,
-      outputTokens: data.eval_count || 0,
-      model: this.model, provider: this.name, durationMs: Date.now() - start,
-    };
+    const data = await response.json() as OllamaChatResponse;
+    return this.buildResult(data, params, start);
   }
 
   async testConnection(signal?: AbortSignal) {

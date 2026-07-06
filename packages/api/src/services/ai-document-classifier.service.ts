@@ -64,8 +64,10 @@ export async function classifyDocument(tenantId: string, attachmentId: string): 
   if (!attachment) throw AppError.notFound('Attachment not found');
 
   const config = await aiConfigService.getConfig();
-  // Per-function AI settings (AI_FUNCTION_SETTINGS_PLAN.md).
-  const taskParams = aiConfigService.resolveTaskParams(config, 'document_classification', { maxTokens: 128, temperature: 0.1 });
+  // Per-function AI settings (AI_FUNCTION_SETTINGS_PLAN.md). 256 output
+  // tokens: the classification JSON is tiny (~50 tokens) but wordy models
+  // pad it — a truncated reply used to surface as "non-JSON".
+  const taskParams = aiConfigService.resolveTaskParams(config, 'document_classification', { maxTokens: 256, temperature: 0.1 });
   if (!config.isEnabled) return { type: 'other', confidence: 0 };
   // Per-function kill switch (taskOptions.document_classification.enabled).
   // Classification is best-effort everywhere it's called, so the disabled

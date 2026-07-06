@@ -33,9 +33,16 @@ export interface CompletionResult {
   parsed?: any;
   /** Populated when `responseFormat: 'json'` was requested but the model
    *  response could not be parsed as JSON (even after `safeJsonExtract`
-   *  stripped fences and scanned for balanced braces). Holds a short
-   *  excerpt of the raw text so callers can surface actionable errors. */
+   *  stripped fences/reasoning blocks and scanned for balanced braces).
+   *  Holds a short excerpt of the raw text so callers can surface
+   *  actionable errors. */
   parseError?: string;
+  /** True when the upstream reported a token-limit stop (Anthropic
+   *  `stop_reason: 'max_tokens'`, OpenAI-style `finish_reason: 'length'`,
+   *  Ollama `done_reason: 'length'`, Gemini `MAX_TOKENS`). Callers use
+   *  this to (a) render "raise max tokens" instead of "non-JSON" and
+   *  (b) skip parse-retries that would truncate again. */
+  truncated?: boolean;
   inputTokens: number;
   outputTokens: number;
   model: string;

@@ -650,9 +650,9 @@ export interface TestFunctionResult {
 // default so the round-trip behaves like production (a thinking model
 // starved of tokens would falsely "fail" the test).
 const TEST_FN_MAX_TOKENS: Record<AiFunctionKey, number> = {
-  categorization: 320,
+  categorization: 512,
   ocr: 1024,
-  document_classification: 128,
+  document_classification: 256,
   chat: 256,
 };
 

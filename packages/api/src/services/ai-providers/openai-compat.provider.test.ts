@@ -86,3 +86,51 @@ describe('OpenAiCompatProvider — base URL normalisation', () => {
     expect(headers['Authorization']).toBe('Bearer secret-token');
   });
 });
+
+describe('OpenAiCompatProvider — truncation + reasoning-channel salvage', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function mockChatBody(body: Record<string, unknown>) {
+    return vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    );
+  }
+
+  it('flags finish_reason length as truncated with the "raise max tokens" error', async () => {
+    mockChatBody({ choices: [{ message: { content: '{"cut":' }, finish_reason: 'length' }], usage: {} });
+    const result = await new OpenAiCompatProvider('http://ollama:11434').complete({
+      systemPrompt: 's', userPrompt: 'u', responseFormat: 'json',
+    });
+    expect(result.truncated).toBe(true);
+    expect(result.parseError).toMatch(/truncated at the max-token limit/);
+  });
+
+  it('salvages JSON from reasoning_content when content is empty (thinking model on /v1)', async () => {
+    mockChatBody({
+      choices: [{ message: { content: '', reasoning_content: 'thinking… final: {"ok":true}' }, finish_reason: 'stop' }],
+      usage: {},
+    });
+    const result = await new OpenAiCompatProvider('http://ollama:11434').complete({
+      systemPrompt: 's', userPrompt: 'u', responseFormat: 'json',
+    });
+    expect(result.parsed).toEqual({ ok: true });
+    expect(result.parseError).toBeUndefined();
+  });
+
+  it('reports empty response when BOTH content and reasoning are empty', async () => {
+    mockChatBody({ choices: [{ message: { content: '' }, finish_reason: 'stop' }], usage: {} });
+    const result = await new OpenAiCompatProvider('http://ollama:11434').complete({
+      systemPrompt: 's', userPrompt: 'u', responseFormat: 'json',
+    });
+    expect(result.parseError).toBe('Model returned empty response');
+  });
+
+  it('still requests OpenAI JSON mode for responseFormat json', async () => {
+    const fetchSpy = mockChatBody({ choices: [{ message: { content: '{"ok":true}' }, finish_reason: 'stop' }], usage: {} });
+    await new OpenAiCompatProvider('http://ollama:11434').complete({
+      systemPrompt: 's', userPrompt: 'u', responseFormat: 'json',
+    });
+    const body = JSON.parse(callInit(fetchSpy).body as string);
+    expect(body.response_format).toEqual({ type: 'json_object' });
+  });
+});

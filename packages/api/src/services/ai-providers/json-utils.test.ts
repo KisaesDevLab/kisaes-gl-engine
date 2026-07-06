@@ -3,7 +3,7 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { describe, it, expect } from 'vitest';
-import { safeJsonExtract } from './json-utils.js';
+import { safeJsonExtract, extractJsonForResult, stripReasoningBlocks } from './json-utils.js';
 
 describe('safeJsonExtract', () => {
   it('parses bare JSON object', () => {
@@ -102,5 +102,110 @@ describe('safeJsonExtract', () => {
     expect(result).toBeDefined();
     expect(result!['k0']).toBe(0);
     expect(result!['k4999']).toBe(4999);
+  });
+
+  // ── Thinking-model output (<think> blocks) ─────────────────────────
+  // Ollama/openai_compat thinking models (qwen3 et al.) emit their
+  // chain-of-thought inline when the serving layer doesn't split it out.
+
+  it('strips a closed <think> block before the JSON', () => {
+    const input = `<think>The user paid Starbucks, so coffee → Meals.</think>\n{"account_name":"Meals","confidence":0.9}`;
+    expect(safeJsonExtract(input)).toEqual({ account_name: 'Meals', confidence: 0.9 });
+  });
+
+  it('strips a <think> block whose reasoning contains pseudo-JSON braces', () => {
+    // The braces inside the think block are NOT valid JSON ({a: 1} is
+    // JS, not JSON) — the old single-candidate scanner died on them.
+    const input = `<think>maybe {a: 1}? or perhaps {b: [2}...</think>{"real":true}`;
+    expect(safeJsonExtract(input)).toEqual({ real: true });
+  });
+
+  it('handles an UNCLOSED <think> tag followed by JSON (broken template)', () => {
+    const input = `<think>draft {a: 1} more thoughts {"real":true}`;
+    expect(safeJsonExtract(input)).toEqual({ real: true });
+  });
+
+  it('returns undefined for a think-only response (all budget spent reasoning)', () => {
+    expect(safeJsonExtract('<think>hmm, let me consider the vendor…')).toBeUndefined();
+  });
+
+  it('strips <thinking> and <reasoning> variants too', () => {
+    expect(safeJsonExtract('<thinking>…</thinking>{"a":1}')).toEqual({ a: 1 });
+    expect(safeJsonExtract('<reasoning>…</reasoning>[1,2]')).toEqual([1, 2]);
+  });
+
+  it('handles think block + fenced JSON answer', () => {
+    const input = '<think>ok</think>\n```json\n{"a":1}\n```';
+    expect(safeJsonExtract(input)).toEqual({ a: 1 });
+  });
+
+  it('does NOT mangle a valid JSON string that contains "<think>"', () => {
+    // Fast path parses the whole body before the reasoning stripper runs.
+    const input = '{"memo":"model said <think>hi</think> to me"}';
+    expect(safeJsonExtract(input)).toEqual({ memo: 'model said <think>hi</think> to me' });
+  });
+
+  it('skips balanced-but-unparseable candidates and finds the real JSON', () => {
+    const input = 'Consider {not: valid} first. The answer: {"valid":true}';
+    expect(safeJsonExtract(input)).toEqual({ valid: true });
+  });
+
+  it('returns undefined for JSON truncated mid-object even with a think preamble', () => {
+    const input = '<think>ok</think>{"transactions":[{"date":"2026-01-01","amount":';
+    expect(safeJsonExtract(input)).toBeUndefined();
+  });
+});
+
+describe('stripReasoningBlocks', () => {
+  it('removes closed blocks wholesale and orphan tags individually', () => {
+    expect(stripReasoningBlocks('<think>a</think>x').trim()).toBe('x');
+    expect(stripReasoningBlocks('<think>a x').replace(/\s+/g, ' ').trim()).toBe('a x');
+    expect(stripReasoningBlocks('a</think> x').replace(/\s+/g, ' ').trim()).toBe('a x');
+  });
+});
+
+describe('extractJsonForResult', () => {
+  it('returns parsed for valid JSON and no parseError', () => {
+    expect(extractJsonForResult('{"a":1}', 'json')).toEqual({ parsed: { a: 1 } });
+  });
+
+  it('is a no-op for responseFormat text', () => {
+    expect(extractJsonForResult('prose', 'text')).toEqual({});
+  });
+
+  it('reports non-JSON with a short excerpt', () => {
+    const { parsed, parseError } = extractJsonForResult('I cannot help with that.', 'json');
+    expect(parsed).toBeUndefined();
+    expect(parseError).toMatch(/^Model returned non-JSON: I cannot help/);
+  });
+
+  it('reports an empty response distinctly', () => {
+    expect(extractJsonForResult('', 'json').parseError).toBe('Model returned empty response');
+  });
+
+  it('reports TRUNCATION (not "non-JSON") when the provider hit the token limit', () => {
+    const cut = '{"transactions":[{"date":"2026-01-01","amount":';
+    const { parseError } = extractJsonForResult(cut, 'json', { truncated: true });
+    expect(parseError).toMatch(/truncated at the max-token limit/);
+    expect(parseError).toMatch(/raise this function's max tokens/);
+    expect(parseError).not.toMatch(/^Model returned non-JSON/);
+  });
+
+  it('truncated + empty content still explains the token limit', () => {
+    const { parseError } = extractJsonForResult('', 'json', { truncated: true });
+    expect(parseError).toMatch(/truncated at the max-token limit/);
+    expect(parseError).not.toContain('Partial output');
+  });
+
+  it('a truncated response that still parsed cleanly is NOT an error', () => {
+    // e.g. the model finished the JSON then got cut mid-apology.
+    const { parsed, parseError } = extractJsonForResult('{"a":1}\nAlso', 'json', { truncated: true });
+    expect(parsed).toEqual({ a: 1 });
+    expect(parseError).toBeUndefined();
+  });
+
+  it('strips control characters from the excerpt', () => {
+    const { parseError } = extractJsonForResult('bad\x00\x01reply', 'json');
+    expect(parseError).toBe('Model returned non-JSON: bad reply');
   });
 });

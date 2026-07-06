@@ -5,6 +5,19 @@
 import type { AiProvider, CompletionParams, VisionParams, CompletionResult } from './ai-provider.interface.js';
 import { extractJsonForResult } from './json-utils.js';
 
+// Minimal structural type for a /v1/chat/completions response. Reasoning
+// backends (vLLM with a reasoning parser, some Ollama /v1 builds, DeepSeek-
+// style servers) put the chain-of-thought in `reasoning_content` (or
+// `reasoning`) — and broken templates sometimes leak the ENTIRE answer
+// there, leaving `content` empty.
+interface ChatCompletionResponse {
+  choices?: Array<{
+    message?: { content?: string; reasoning_content?: string; reasoning?: string };
+    finish_reason?: string;
+  }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
+}
+
 // Generic OpenAI-compatible provider.
 //
 // Ollama (via `/v1`), llama.cpp server, LM Studio, and vLLM all expose
@@ -89,17 +102,31 @@ export class OpenAiCompatProvider implements AiProvider {
       throw err;
     }
 
-    const data = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-      usage?: { prompt_tokens?: number; completion_tokens?: number };
-    };
-    const text = data.choices?.[0]?.message?.content || '';
-    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat);
+    const data = (await response.json()) as ChatCompletionResponse;
+    return this.buildResult(data, params, start);
+  }
+
+  // Shared response mapping for text + vision:
+  //  - finish_reason 'length' = output hit max_tokens; a JSON body cut
+  //    mid-object must surface as "truncated (raise max tokens)", not
+  //    "non-JSON".
+  //  - Empty `content` with a populated reasoning field (thinking model
+  //    whose template leaks the answer into the reasoning channel):
+  //    salvage the JSON from the reasoning text instead of failing with
+  //    "empty response".
+  private buildResult(data: ChatCompletionResponse, params: CompletionParams, start: number): CompletionResult {
+    const choice = data.choices?.[0];
+    const text = choice?.message?.content || '';
+    const truncated = choice?.finish_reason === 'length';
+    const extractionSource =
+      text || choice?.message?.reasoning_content || choice?.message?.reasoning || '';
+    const { parsed, parseError } = extractJsonForResult(extractionSource, params.responseFormat, { truncated });
 
     return {
       text,
       parsed,
       parseError,
+      truncated,
       inputTokens: data.usage?.prompt_tokens || 0,
       outputTokens: data.usage?.completion_tokens || 0,
       model: this.model,
@@ -161,23 +188,8 @@ export class OpenAiCompatProvider implements AiProvider {
       throw err;
     }
 
-    const data = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-      usage?: { prompt_tokens?: number; completion_tokens?: number };
-    };
-    const text = data.choices?.[0]?.message?.content || '';
-    const { parsed, parseError } = extractJsonForResult(text, params.responseFormat);
-
-    return {
-      text,
-      parsed,
-      parseError,
-      inputTokens: data.usage?.prompt_tokens || 0,
-      outputTokens: data.usage?.completion_tokens || 0,
-      model: this.model,
-      provider: this.name,
-      durationMs: Date.now() - start,
-    };
+    const data = (await response.json()) as ChatCompletionResponse;
+    return this.buildResult(data, params, start);
   }
 
   async testConnection(signal?: AbortSignal) {
