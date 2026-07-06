@@ -7,7 +7,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import type { JwtPayload } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { tenants, users, sessions, companies, transactions, accounts, contacts, systemSettings, accountantCompanyExclusions, userTenantAccess } from '../db/schema/index.js';
+import { tenants, users, sessions, companies, transactions, accounts, contacts, systemSettings, accountantCompanyExclusions, userTenantAccess, plaidItems, plaidAccounts } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -96,6 +96,95 @@ export async function enableTenant(tenantId: string, actingUserId?: string) {
 
   await db.update(users).set({ isActive: true }).where(eq(users.tenantId, tenantId));
   await auditLog(tenantId, 'update', 'tenant', tenantId, { isActive: false }, { isActive: true }, actingUserId);
+}
+
+/**
+ * Before a tenant is hard-deleted, deprovision any Plaid Items that this
+ * tenant is the SOLE consumer of.
+ *
+ * plaid_items / plaid_accounts are system-scoped (no tenant_id, no FK
+ * cascade — migration 0031). deleteTenant's dynamic sweep deletes this
+ * tenant's tenant-scoped `plaid_account_mappings` rows but leaves the
+ * parent Item live and BILLABLE on Plaid forever. This function calls
+ * Plaid's itemRemove for every Item that, once this tenant's mappings are
+ * gone, would have NO remaining consumer in any other tenant — mirroring
+ * plaid-connection.deleteConnection's soft-delete (accounts deactivated,
+ * item marked removed, token wiped). Returns the count actually removed.
+ *
+ * Ordering: this MUST run BEFORE the destructive sweep (it needs the
+ * mappings + access tokens, which the sweep deletes) and BEFORE the DB
+ * transaction (a Plaid network hiccup must never leave a half-deleted
+ * tenant).
+ *
+ * Failure tolerance (differs from deleteConnection, which aborts on a
+ * Plaid error): a Plaid API failure here must NOT block the tenant
+ * deletion — the tenant delete is the bigger operation. On failure we
+ * loud-log and leave the Item row INTACT and NOT-removed, so a super
+ * admin can find and retry it from the connections page. Marking it
+ * removed locally would hide a still-live, still-billable Item from the
+ * manual-cleanup path. Only a SUCCESSFUL itemRemove marks the row removed.
+ */
+async function deprovisionOrphanedPlaidItems(
+  tenantId: string,
+  actingUserId: string,
+): Promise<number> {
+  // 1. Distinct parent Plaid Items this tenant maps accounts into.
+  const itemRows = await db.execute(sql`
+    SELECT DISTINCT pa.plaid_item_id AS item_id
+    FROM plaid_account_mappings pam
+    JOIN plaid_accounts pa ON pa.id = pam.plaid_account_id
+    WHERE pam.tenant_id = ${tenantId}
+  `);
+  const itemIds = (itemRows.rows as { item_id: string }[]).map((r) => r.item_id);
+  if (itemIds.length === 0) return 0;
+
+  // Dynamic imports mirror the pattern used elsewhere in this file and keep
+  // the Plaid SDK out of admin.service's static import graph (avoids any
+  // circular-import surprise via plaid-client.service).
+  const plaidClient = await import('./plaid-client.service.js');
+  const { decrypt } = await import('../utils/encryption.js');
+
+  let deprovisioned = 0;
+  for (const itemId of itemIds) {
+    // 2. Does ANY other tenant still consume this Item? If so, leave it —
+    // it's still legitimately in use (and legitimately billable).
+    const otherRows = await db.execute(sql`
+      SELECT 1
+      FROM plaid_account_mappings pam
+      JOIN plaid_accounts pa ON pa.id = pam.plaid_account_id
+      WHERE pa.plaid_item_id = ${itemId} AND pam.tenant_id <> ${tenantId}
+      LIMIT 1
+    `);
+    if (otherRows.rows.length > 0) continue;
+
+    const item = await db.query.plaidItems.findFirst({ where: eq(plaidItems.id, itemId) });
+    // Already removed / token wiped → nothing left to deprovision.
+    if (!item || item.itemStatus === 'removed' || item.accessTokenEncrypted === 'REMOVED') continue;
+
+    // 3. Deprovision on Plaid, then mirror deleteConnection's soft-delete.
+    try {
+      const accessToken = decrypt(item.accessTokenEncrypted);
+      await plaidClient.removeItem(accessToken);
+      // Only reached on a SUCCESSFUL removal — safe to mark removed now.
+      await db.update(plaidAccounts).set({ isActive: false }).where(eq(plaidAccounts.plaidItemId, item.id));
+      await db.update(plaidItems).set({
+        itemStatus: 'removed',
+        removedAt: new Date(),
+        removedBy: actingUserId,
+        accessTokenEncrypted: 'REMOVED',
+        updatedAt: new Date(),
+      }).where(eq(plaidItems.id, item.id));
+      deprovisioned++;
+    } catch (err) {
+      // Item is STILL LIVE on Plaid — do NOT mark it removed. Loud-log so
+      // it's findable/retryable via the connections page.
+      console.error(
+        `[deleteTenant] Plaid itemRemove failed for item ${item.id} — MANUAL DEPROVISION NEEDED:`,
+        err,
+      );
+    }
+  }
+  return deprovisioned;
 }
 
 /**
@@ -208,6 +297,13 @@ export async function deleteTenant(
     homeUserCount: homeUsers.length,
   };
 
+  // 3.5. Deprovision Plaid Items this tenant is the SOLE consumer of, so a
+  // deleted tenant never leaves an orphaned, still-billable Plaid Item.
+  // Done BEFORE the sweep (needs the mappings + tokens it would delete) and
+  // BEFORE the transaction (a Plaid hiccup must not half-delete the tenant).
+  // Failures are tolerated inside the helper — they never block the delete.
+  const plaidItemsDeprovisioned = await deprovisionOrphanedPlaidItems(tenantId, deletingUserId);
+
   // 4. Atomic deletion.
   await db.transaction(async (tx) => {
     // 4a. Re-home each user to one of their other accessible tenants.
@@ -269,7 +365,7 @@ export async function deleteTenant(
   // home users — re-fetch to get the post-reassignment value.
   const deleter = await db.query.users.findFirst({ where: eq(users.id, deletingUserId) });
   if (deleter) {
-    await auditLog(deleter.tenantId, 'delete', 'tenant', tenantId, beforeSnapshot, null, deletingUserId);
+    await auditLog(deleter.tenantId, 'delete', 'tenant', tenantId, { ...beforeSnapshot, plaidItemsDeprovisioned }, null, deletingUserId);
   }
 
   return {

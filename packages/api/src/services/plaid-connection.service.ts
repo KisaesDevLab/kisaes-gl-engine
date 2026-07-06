@@ -109,6 +109,26 @@ export async function createConnection(userId: string, publicToken: string, meta
 
   // New connection
   const { accessToken, itemId } = await plaidClient.exchangePublicToken(publicToken);
+
+  // Institution-level dedup (checkExistingInstitution above) is skipped when
+  // Link metadata carries no institution_id, so a re-link of an already-
+  // connected login could fall through to here and mint a SECOND Item. The
+  // UNIQUE plaid_item_id constraint catches an identical item_id, but only as
+  // a raw DB error. Guard it explicitly for a clear message. (A genuinely new
+  // item_id for the same login with no institution_id still can't be deduped —
+  // there's no key to match on; forceNew bypasses this intentionally.)
+  if (!metadata.forceNew) {
+    const dupe = await db.query.plaidItems.findFirst({
+      where: and(eq(plaidItems.plaidItemId, itemId), sql`removed_at IS NULL`),
+    });
+    if (dupe) {
+      throw AppError.badRequest(
+        'This bank connection already exists. Use the existing connection instead of linking it again.',
+        'PLAID_ITEM_EXISTS',
+      );
+    }
+  }
+
   const plaidAccountList = await plaidClient.getAccounts(accessToken);
 
   const [item] = await db.insert(plaidItems).values({
