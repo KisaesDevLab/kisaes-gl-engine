@@ -2,13 +2,18 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-// First-ever coverage for the bank-feed cleansing pipeline:
+// Coverage for the bank-feed cleansing pipeline after batching:
 //   - aggregate accounting (processed / aiCleansed / aiFailed / disabled)
-//   - the 3-consecutive-failures short-circuit (mirrors
-//     CONSECUTIVE_FAIL_THRESHOLD in ai-categorization.service.ts)
-//   - disabled-function codes skip silently as `disabled`, not `aiFailed`
-//   - an AI outage no longer disappears into a bare catch — items still
-//     import with deterministic (regex) cleaning and the aggregate says so.
+//   - the LLM step now runs ONCE per company-chunked batch (not once per row)
+//   - validated vs. unvalidated name handling is preserved
+//   - disabled/consent codes bucket as `disabled` (silent), errors as
+//     `aiFailed`, and the batch's own outage short-circuit surfaces as
+//     `skipped` (counted as aiFailed by the pipeline).
+//
+// The batched engine (categorizeFeedItemsBatch) and rules/history precedence
+// (resolvePreAiLayers) are mocked here so these tests exercise ONLY the
+// pipeline's bucketing/apply logic; the real engine is covered in
+// ai-categorization.service.test.ts.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
@@ -19,20 +24,34 @@ import {
 } from '../db/schema/index.js';
 import * as authService from './auth.service.js';
 import * as aiConfigService from './ai-config.service.js';
-import { AppError } from '../utils/errors.js';
 
-const catMock = vi.hoisted(() => ({ categorize: vi.fn() }));
+const catMock = vi.hoisted(() => ({
+  resolvePreAiLayers: vi.fn(),
+  categorizeFeedItemsBatch: vi.fn(),
+}));
 
-// runCleansingPipeline dynamically imports categorize() for its AI step —
+// runCleansingPipeline dynamically imports these from ai-categorization —
 // vitest's module registry intercepts dynamic imports too.
 vi.mock('./ai-categorization.service.js', () => ({
-  categorize: (...args: unknown[]) => catMock.categorize(...args),
+  resolvePreAiLayers: (...args: unknown[]) => catMock.resolvePreAiLayers(...args),
+  categorizeFeedItemsBatch: (...args: unknown[]) => catMock.categorizeFeedItemsBatch(...args),
 }));
 
 import * as bankFeedService from './bank-feed.service.js';
 
 let tenantId: string;
 let connectionId: string;
+
+// Build the per-item result Map the batched engine returns, keyed by the ids
+// the pipeline passes in, using a single template result for every item.
+type ItemResult = {
+  outcome?: { status: string; contactName: string | null; contactId: string | null };
+  error?: { code: string; message: string; outage: boolean };
+  skipped?: boolean;
+};
+function mapResult(result: ItemResult) {
+  return async (_tenantId: string, ids: string[]) => new Map(ids.map((id) => [id, result]));
+}
 
 async function cleanDb() {
   await db.delete(aiConfig);
@@ -85,10 +104,11 @@ async function insertItems(count: number): Promise<Array<typeof bankFeedItems.$i
   return db.insert(bankFeedItems).values(rows).returning();
 }
 
-describe('runCleansingPipeline — aggregate accounting', () => {
+describe('runCleansingPipeline — aggregate accounting (batched)', () => {
   beforeEach(async () => {
     await cleanDb();
-    catMock.categorize.mockReset();
+    catMock.resolvePreAiLayers.mockReset().mockResolvedValue(null); // no rule/history hit
+    catMock.categorizeFeedItemsBatch.mockReset();
     await setup();
   });
   afterEach(async () => {
@@ -96,13 +116,24 @@ describe('runCleansingPipeline — aggregate accounting', () => {
     await cleanDb();
   });
 
+  it('runs the LLM step ONCE per batch (not once per row) and passes every candidate id', async () => {
+    catMock.categorizeFeedItemsBatch.mockImplementation(
+      mapResult({ outcome: { status: 'suggested', contactName: 'Clean Vendor Inc', contactId: '11111111-1111-1111-1111-111111111111' } }),
+    );
+    const items = await insertItems(6);
+
+    await bankFeedService.runCleansingPipeline(tenantId, items);
+
+    // The whole batch is ONE call to the engine, regardless of row count.
+    expect(catMock.categorizeFeedItemsBatch).toHaveBeenCalledTimes(1);
+    const passedIds = catMock.categorizeFeedItemsBatch.mock.calls[0]![1] as string[];
+    expect([...passedIds].sort()).toEqual(items.map((i) => i.id).sort());
+  });
+
   it('counts AI-cleansed items and rewrites their description (validated contact → verbatim)', async () => {
-    // H3 VALIDATED path: categorize() resolved the name to a real tenant
-    // contact (contactId present), so its display name is trusted as-is.
-    catMock.categorize.mockResolvedValue({
-      contactName: 'Clean Vendor Inc',
-      contactId: '11111111-1111-1111-1111-111111111111',
-    });
+    catMock.categorizeFeedItemsBatch.mockImplementation(
+      mapResult({ outcome: { status: 'suggested', contactName: 'Clean Vendor Inc', contactId: '11111111-1111-1111-1111-111111111111' } }),
+    );
     const items = await insertItems(2);
 
     const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
@@ -113,12 +144,10 @@ describe('runCleansingPipeline — aggregate accounting', () => {
     expect(stored!.description).toBe('Clean Vendor Inc');
   });
 
-  it('H3: UNVALIDATED raw model text is normalized through the regex cleaner, never written verbatim', async () => {
-    // No contactId → the name is raw model output. It must be run through
-    // the same deterministic cleaner as the regex fallback (which strips
-    // corporate suffixes like "Inc"), never written into `description`
-    // verbatim, and never junkier than the regex path.
-    catMock.categorize.mockResolvedValue({ contactName: 'Clean Vendor Inc' });
+  it('UNVALIDATED raw model text is normalized through the regex cleaner, never written verbatim', async () => {
+    catMock.categorizeFeedItemsBatch.mockImplementation(
+      mapResult({ outcome: { status: 'suggested', contactName: 'Clean Vendor Inc', contactId: null } }),
+    );
     const items = await insertItems(1);
 
     const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
@@ -127,14 +156,13 @@ describe('runCleansingPipeline — aggregate accounting', () => {
     const stored = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, items[0]!.id) });
     // cleanBankDescription('Clean Vendor Inc') strips the corporate suffix.
     expect(stored!.description).toBe('Clean Vendor');
-    // originalDescription is never touched by cleansing.
     expect(stored!.originalDescription).toBe(items[0]!.originalDescription);
   });
 
-  it('H3: junk raw model text (no letters) falls back to the regex-cleaned original, not the model text', async () => {
-    // A garbage model "name" must not overwrite the description — the code
-    // keeps the regex-cleaned original instead.
-    catMock.categorize.mockResolvedValue({ contactName: '###   ' });
+  it('junk raw model text (no letters) falls back to the regex-cleaned original', async () => {
+    catMock.categorizeFeedItemsBatch.mockImplementation(
+      mapResult({ outcome: { status: 'suggested', contactName: '###   ', contactId: null } }),
+    );
     const items = await insertItems(1);
 
     const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
@@ -145,7 +173,9 @@ describe('runCleansingPipeline — aggregate accounting', () => {
   });
 
   it('counts AI failures, captures firstError, logs a warning, and still imports with regex cleaning', async () => {
-    catMock.categorize.mockRejectedValue(new Error('provider exploded'));
+    catMock.categorizeFeedItemsBatch.mockImplementation(
+      mapResult({ error: { code: 'ai_provider_failed', message: 'provider exploded', outage: true } }),
+    );
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const items = await insertItems(2);
 
@@ -154,142 +184,108 @@ describe('runCleansingPipeline — aggregate accounting', () => {
     expect(agg).toMatchObject({ processed: 2, aiFailed: 2, aiCleansed: 0, disabled: 0 });
     expect(agg.firstError).toBe('provider exploded');
     expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('[cleanse] AI step failed for item'))).toBe(true);
-    // Deterministic cleaning still ran — the item keeps a usable description.
     const stored = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, items[0]!.id) });
     expect(stored!.description).toBeTruthy();
   });
 
-  it('FIX 3: short-circuits ONLY on a genuine provider outage, after 5 consecutive outages', async () => {
-    // ai_all_providers_failed = every provider in the chain is down. That's an
-    // infrastructure outage, so it accumulates toward the run-abandon.
-    catMock.categorize.mockRejectedValue(
-      AppError.badRequest('Every provider failed', 'ai_all_providers_failed'),
+  it('a per-item parse failure counts as aiFailed (item-specific, not disabled)', async () => {
+    catMock.categorizeFeedItemsBatch.mockImplementation(
+      mapResult({ error: { code: 'ai_parse_failed', message: 'AI returned non-JSON', outage: false } }),
     );
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const items = await insertItems(7);
-
-    const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
-
-    // First 5 hit the LLM (threshold), the remaining 2 skip.
-    expect(catMock.categorize).toHaveBeenCalledTimes(5);
-    expect(agg.aiFailed).toBe(7);
-  });
-
-  it('FIX 3: a per-row parse failure NEVER trips the outage short-circuit (every row still tried)', async () => {
-    // ai_parse_failed = a reachable model returned a bad-shape reply. It's
-    // item-specific, so it must not abandon the rest of the run — even for
-    // many consecutive rows.
-    catMock.categorize.mockRejectedValue(
-      AppError.badRequest('AI returned non-JSON (ollama / m). bad', 'ai_parse_failed'),
-    );
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const items = await insertItems(7);
-
-    const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
-
-    // All 7 attempted despite 7 consecutive parse failures — no short-circuit.
-    expect(catMock.categorize).toHaveBeenCalledTimes(7);
-    expect(agg.aiFailed).toBe(7);
-  });
-
-  it('FIX 3: an outage streak below the threshold, broken by a success, resets the counter', async () => {
-    let call = 0;
-    catMock.categorize.mockImplementation(() => {
-      call++;
-      // outage, outage, succeed, outage, outage → never 5 consecutive.
-      if (call === 3) return Promise.resolve({ contactName: 'Vendor', contactId: '11111111-1111-1111-1111-111111111111' });
-      return Promise.reject(AppError.badRequest('down', 'ai_all_providers_failed'));
-    });
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const items = await insertItems(5);
-
-    const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
-
-    expect(catMock.categorize).toHaveBeenCalledTimes(5);
-    expect(agg.aiFailed).toBe(4);
-    expect(agg.aiCleansed).toBe(1);
-  });
-
-  it('FIX 3: consent-off (ai_consent_blocked) is a CLEAN full-run skip (disabled), not a failure', async () => {
-    catMock.categorize.mockRejectedValue(
-      AppError.badRequest('This company has not opted in to AI processing.', 'ai_consent_blocked'),
-    );
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const items = await insertItems(4);
-
-    const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
-
-    expect(agg).toMatchObject({ processed: 4, disabled: 4, aiFailed: 0, aiCleansed: 0 });
-    expect(agg.firstError).toBeUndefined();
-    // Only the first item probes; the deliberate consent state persists.
-    expect(catMock.categorize).toHaveBeenCalledTimes(1);
-    // Not an outage — no warning noise.
-    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('[cleanse]'))).toBe(false);
-  });
-
-  it('counts disabled-function skips as `disabled` (silent) and stops calling the LLM', async () => {
-    catMock.categorize.mockRejectedValue(
-      AppError.badRequest('This AI function is disabled in Admin → AI', 'ai_function_disabled'),
-    );
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const items = await insertItems(4);
-
-    const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
-
-    expect(agg).toMatchObject({ processed: 4, disabled: 4, aiFailed: 0, aiCleansed: 0 });
-    expect(agg.firstError).toBeUndefined();
-    // Only the first item probes; the deliberate-disabled state persists.
-    expect(catMock.categorize).toHaveBeenCalledTimes(1);
-    // Disabled is an admin state, not an outage — no warning noise.
-    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('[cleanse]'))).toBe(false);
-  });
-
-  it('treats ai_disabled_globally / ai_no_provider_configured the same way (non-AI installs stay quiet)', async () => {
-    catMock.categorize.mockRejectedValue(
-      AppError.badRequest('AI processing is not enabled.', 'ai_disabled_globally'),
-    );
     const items = await insertItems(3);
 
     const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
 
-    expect(agg.disabled).toBe(3);
-    expect(agg.aiFailed).toBe(0);
+    expect(agg).toMatchObject({ processed: 3, aiFailed: 3, disabled: 0 });
   });
 
-  it('M1: skips the per-row LLM step entirely when autoCategorizeOnImport is off, but still cleans deterministically', async () => {
-    // Turn off the master "Auto-categorize on import" switch.
+  it('items the batch abandoned via its outage short-circuit (skipped) count as aiFailed', async () => {
+    catMock.categorizeFeedItemsBatch.mockImplementation(mapResult({ skipped: true }));
+    const items = await insertItems(3);
+
+    const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
+
+    expect(agg).toMatchObject({ processed: 3, aiFailed: 3, aiCleansed: 0, disabled: 0 });
+  });
+
+  it('consent-off (ai_consent_blocked) is a CLEAN skip (disabled), not a failure', async () => {
+    catMock.categorizeFeedItemsBatch.mockImplementation(
+      mapResult({ error: { code: 'ai_consent_blocked', message: 'This company has not opted in.', outage: false } }),
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const items = await insertItems(4);
+
+    const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
+
+    expect(agg).toMatchObject({ processed: 4, disabled: 4, aiFailed: 0, aiCleansed: 0 });
+    expect(agg.firstError).toBeUndefined();
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('[cleanse]'))).toBe(false);
+  });
+
+  it('function-disabled and globally-disabled codes bucket as `disabled` (silent)', async () => {
+    for (const code of ['ai_function_disabled', 'ai_disabled_globally', 'ai_no_provider_configured']) {
+      catMock.categorizeFeedItemsBatch.mockImplementation(
+        mapResult({ error: { code, message: code, outage: false } }),
+      );
+      const items = await insertItems(3);
+      const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
+      expect(agg.disabled).toBe(3);
+      expect(agg.aiFailed).toBe(0);
+      await db.delete(bankFeedItems);
+    }
+  });
+
+  it('M1: skips the LLM step entirely when autoCategorizeOnImport is off, but still cleans deterministically', async () => {
     await aiConfigService.updateConfig({ autoCategorizeOnImport: false });
-    // If the gate leaks, this would resolve and be counted as aiCleansed.
-    catMock.categorize.mockResolvedValue({ contactName: 'Should Not Be Used', contactId: null });
     const items = await insertItems(3);
 
     const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
 
-    // LLM never invoked; every row bucketed as `disabled` (deliberate off state).
-    expect(catMock.categorize).not.toHaveBeenCalled();
+    // The batched engine is never invoked; every row is bucketed as `disabled`.
+    expect(catMock.categorizeFeedItemsBatch).not.toHaveBeenCalled();
     expect(agg).toMatchObject({ processed: 3, disabled: 3, aiCleansed: 0, aiFailed: 0 });
-    // Deterministic (regex) cleaning still ran → each row keeps a description.
     const stored = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, items[0]!.id) });
     expect(stored!.description).toBeTruthy();
   });
 
   it('M1: still runs the LLM step when autoCategorizeOnImport is on (default)', async () => {
     await aiConfigService.updateConfig({ autoCategorizeOnImport: true });
-    catMock.categorize.mockResolvedValue({ contactName: 'Clean Vendor', contactId: '11111111-1111-1111-1111-111111111111' });
+    catMock.categorizeFeedItemsBatch.mockImplementation(
+      mapResult({ outcome: { status: 'suggested', contactName: 'Clean Vendor', contactId: '11111111-1111-1111-1111-111111111111' } }),
+    );
     const items = await insertItems(2);
 
     const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
 
-    expect(catMock.categorize).toHaveBeenCalledTimes(2);
+    expect(catMock.categorizeFeedItemsBatch).toHaveBeenCalledTimes(1);
     expect(agg.aiCleansed).toBe(2);
     expect(agg.disabled).toBe(0);
+  });
+
+  it('honors a rules/history hit (resolvePreAiLayers) and never sends those rows to the LLM', async () => {
+    // resolvePreAiLayers resolves a validated contact for every item → no
+    // item becomes an LLM candidate, so the batched engine is not called.
+    catMock.resolvePreAiLayers.mockResolvedValue({
+      status: 'suggested', accountId: 'acct', contactId: '11111111-1111-1111-1111-111111111111',
+      contactName: 'History Vendor', confidence: 0.95, matchType: 'history',
+    });
+    const items = await insertItems(2);
+
+    const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
+
+    expect(catMock.categorizeFeedItemsBatch).not.toHaveBeenCalled();
+    expect(agg.aiCleansed).toBe(2);
+    const stored = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, items[0]!.id) });
+    expect(stored!.description).toBe('History Vendor');
   });
 });
 
 describe('importFromCsv — cleansing failures no longer break or silently degrade the import', () => {
   beforeEach(async () => {
     await cleanDb();
-    catMock.categorize.mockReset();
+    catMock.resolvePreAiLayers.mockReset().mockResolvedValue(null);
+    catMock.categorizeFeedItemsBatch.mockReset();
     await setup();
   });
   afterEach(async () => {
@@ -297,8 +293,10 @@ describe('importFromCsv — cleansing failures no longer break or silently degra
     await cleanDb();
   });
 
-  it('imports every row with regex cleaning and reports the aggregate when the LLM throws', async () => {
-    catMock.categorize.mockRejectedValue(new Error('LLM unreachable'));
+  it('imports every row with regex cleaning and reports the aggregate when the LLM fails', async () => {
+    catMock.categorizeFeedItemsBatch.mockImplementation(
+      mapResult({ error: { code: 'ai_provider_failed', message: 'LLM unreachable', outage: true } }),
+    );
     vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const csv = [
@@ -315,7 +313,6 @@ describe('importFromCsv — cleansing failures no longer break or silently degra
     expect(result.cleansing.processed).toBe(2);
     expect(result.cleansing.aiFailed).toBe(2);
     expect(result.cleansing.firstError).toBe('LLM unreachable');
-    // Rows really landed, pending, with a description.
     const stored = await db.query.bankFeedItems.findMany({ where: eq(bankFeedItems.tenantId, tenantId) });
     expect(stored).toHaveLength(2);
     for (const row of stored) {

@@ -26,6 +26,28 @@ export interface ResolvedTaskExec {
   /** Admin "Enable this function" toggle (taskOptions.<fn>.enabled).
    *  Absent/null resolves to true so the toggle is a no-op until used. */
   enabled: boolean;
+  /** Batched categorization chunk size (categorization function). Always
+   *  present and clamped into [1, 50]; unset resolves to the default 15.
+   *  Meaningful only for categorization — other functions carry the default
+   *  and ignore it. */
+  batchSize: number;
+}
+
+// Batched AI categorization defaults/bounds. Default 15 balances the
+// per-call context-token savings against prompt size; 1 reproduces the
+// historical per-transaction behaviour.
+export const DEFAULT_CATEGORIZATION_BATCH_SIZE = 15;
+export const MIN_CATEGORIZATION_BATCH_SIZE = 1;
+export const MAX_CATEGORIZATION_BATCH_SIZE = 50;
+
+/** Clamp a (possibly stale/garbage) taskOptions.batchSize into the valid
+ *  range, defaulting when unset. A bad value must never break chunking. */
+export function clampBatchSize(v: number | null | undefined): number {
+  if (v == null || !Number.isFinite(v)) return DEFAULT_CATEGORIZATION_BATCH_SIZE;
+  const n = Math.floor(v);
+  if (n < MIN_CATEGORIZATION_BATCH_SIZE) return MIN_CATEGORIZATION_BATCH_SIZE;
+  if (n > MAX_CATEGORIZATION_BATCH_SIZE) return MAX_CATEGORIZATION_BATCH_SIZE;
+  return n;
 }
 
 export function resolveTaskParams(
@@ -53,5 +75,6 @@ export function resolveTaskExec(
     ...(opt.timeoutMs ? { timeoutMs: opt.timeoutMs } : {}),
     fallbackChain: opt.fallbackChain && opt.fallbackChain.length > 0 ? opt.fallbackChain : config.fallbackChain,
     enabled: opt.enabled ?? true,
+    batchSize: clampBatchSize(opt.batchSize),
   };
 }

@@ -30,6 +30,10 @@ export interface TaskOption {
   autoTrigger?: boolean | null;
   piiLevel?: PiiProtectionLevel | null;
   numCtx?: number | null;
+  // Batched AI categorization: how many bank-feed transactions to send in a
+  // single AI request (categorization only). null/absent = built-in default
+  // (15). 1 = today's per-transaction behaviour. Bounds 1–50.
+  batchSize?: number | null;
 }
 
 export type TaskOptions = Partial<Record<AiFunctionKey, TaskOption>>;

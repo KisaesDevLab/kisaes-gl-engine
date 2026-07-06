@@ -22,6 +22,10 @@ export const taskOptionSchema = z
     // Ollama context-window override (num_ctx) for this function. null/absent
     // = use OLLAMA_NUM_CTX / model default.
     numCtx: z.number().int().min(512).max(1000000).nullable().optional(),
+    // Batched categorization: transactions per AI request (categorization
+    // function only). null/absent = default 15; 1 = per-transaction. The
+    // resolver additionally clamps stale JSONB values into [1, 50].
+    batchSize: z.number().int().min(1).max(50).nullable().optional(),
   })
   .strict();
 

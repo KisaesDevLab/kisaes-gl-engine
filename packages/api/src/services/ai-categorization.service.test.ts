@@ -318,24 +318,189 @@ describe('ai-categorization.service', () => {
   });
 
   describe('batchCategorize resilience', () => {
-    it('returns per-item rows when AI is disabled — no abort on first failure', async () => {
-      // AI is off → every item will throw ai_disabled_globally. Without
-      // Without per-item resilience the first throw would propagate
-      // and we'd lose visibility into the rest.
+    it('returns per-item rows when AI is globally disabled — no throw, every item errored', async () => {
+      // AI is off → the batch governance gate fails once and stamps every item
+      // with ai_disabled_globally (a deliberate off-state, not an outage).
       const ids = await Promise.all(
         Array.from({ length: 5 }, (_, i) => makeFeedItem(`merchant-${i}`)),
       );
       const results = await aiCategorization.batchCategorize(tenantId, ids);
-      // The threshold is 3 consecutive same-code failures → at most
-      // 3 items processed before abort; remaining are 'skipped'.
       expect(results).toHaveLength(5);
       const errored = results.filter((r) => r.error);
-      const skipped = results.filter((r) => r.skipped);
-      expect(errored.length).toBeGreaterThanOrEqual(3);
-      expect(errored[0]!.error!.code).toBe('ai_disabled_globally');
-      // Once the consecutive-fail threshold trips, the rest get the
-      // 'skipped' tag so the UI can render them distinctly.
-      expect(skipped.length + errored.length).toBe(5);
+      expect(errored).toHaveLength(5);
+      expect(errored.every((r) => r.error!.code === 'ai_disabled_globally')).toBe(true);
+    });
+  });
+
+  // ── Batched LLM categorization (N transactions per API call) ────────
+  describe('batched categorization (categorizeFeedItemsBatch)', () => {
+    let officeSuppliesId: string;
+
+    const arrayEntry = (index: number, account = 'ZZ Parse Test Expense', vendor = 'Staples', confidence = 0.9) =>
+      `{"index":${index},"account_name":"${account}","vendor_name":"${vendor}","memo":"m","tag_name":null,"confidence":${confidence}}`;
+
+    async function enableAiWithBatchSize(batchSize: number) {
+      await db.insert(aiConfig).values({
+        isEnabled: true,
+        categorizationProvider: 'ollama',
+        fallbackChain: ['ollama'],
+        adminDisclosureAcceptedAt: new Date(),
+        adminDisclosureAcceptedBy: userId,
+        taskOptions: { categorization: { fallbackChain: ['ollama'], batchSize } },
+      });
+      await db.update(companies).set({
+        aiEnabled: true, aiDisclosureVersion: 1, aiEnabledTasks: { categorization: true },
+      }).where(eq(companies.id, companyId));
+      const office = await accountsService.create(tenantId, {
+        name: 'ZZ Parse Test Expense', accountType: 'expense', accountNumber: '6990',
+      });
+      officeSuppliesId = office.id;
+    }
+
+    beforeEach(() => {
+      parseMocks.reply.mockReset();
+    });
+
+    it('sends N=3 transactions in ONE provider call and maps every result by index', async () => {
+      await enableAiWithBatchSize(15);
+      parseMocks.reply.mockReturnValue({
+        text: `[${arrayEntry(0)},${arrayEntry(1)},${arrayEntry(2)}]`,
+      });
+      const ids = await Promise.all([
+        makeFeedItem('STAPLES 001'), makeFeedItem('STAPLES 002'), makeFeedItem('STAPLES 003'),
+      ]);
+
+      const results = await aiCategorization.categorizeFeedItemsBatch(tenantId, ids);
+
+      // ONE provider call for the whole batch (the headline assertion).
+      expect(parseMocks.reply).toHaveBeenCalledTimes(1);
+      // ONE ai_usage_log row for the batch call.
+      const usage = await db.select().from(aiUsageLog);
+      expect(usage).toHaveLength(1);
+      // All three mapped + persisted to the same COA account.
+      for (const id of ids) {
+        expect(results.get(id)?.outcome?.accountId).toBe(officeSuppliesId);
+        const stored = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, id) });
+        expect(stored!.suggestedAccountId).toBe(officeSuppliesId);
+      }
+    });
+
+    it('does not persist a hallucinated account name (name validation still applies)', async () => {
+      await enableAiWithBatchSize(15);
+      parseMocks.reply.mockReturnValue({
+        // index 0 real account, index 1 hallucinated (no COA match).
+        text: `[${arrayEntry(0)},{"index":1,"account_name":"Zznonexistent Ledger","vendor_name":"X","memo":"m","tag_name":null,"confidence":0.99}]`,
+      });
+      const [good, bad] = await Promise.all([makeFeedItem('STAPLES 001'), makeFeedItem('MYSTERY 002')]);
+
+      const results = await aiCategorization.categorizeFeedItemsBatch(tenantId, [good!, bad!]);
+
+      expect(results.get(good!)?.outcome?.accountId).toBe(officeSuppliesId);
+      expect(results.get(bad!)?.outcome?.status).toBe('no_confident_match');
+      expect(results.get(bad!)?.outcome?.accountId).toBeNull();
+      const storedBad = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, bad!) });
+      expect(storedBad!.suggestedAccountId).toBeNull();
+    });
+
+    it('a short array applies the entries it has, leaves missing indexes pending + counted, and later batches still run', async () => {
+      // batchSize 2 → two batches over three items. First batch returns only
+      // index 0 (index 1 dropped); second batch is valid.
+      await enableAiWithBatchSize(2);
+      parseMocks.reply
+        .mockReturnValueOnce({ text: `[${arrayEntry(0)}]` })       // batch 1: index 1 missing
+        .mockReturnValueOnce({ text: `[${arrayEntry(0)}]` });      // batch 2 (single item at its index 0)
+      const ids = await Promise.all([
+        makeFeedItem('STAPLES 001'), makeFeedItem('STAPLES 002'), makeFeedItem('STAPLES 003'),
+      ]);
+
+      const results = await aiCategorization.categorizeFeedItemsBatch(tenantId, ids);
+
+      // Two provider calls (one per batch) — the second batch was NOT abandoned.
+      expect(parseMocks.reply).toHaveBeenCalledTimes(2);
+      // Batch 1 index 0 applied; index 1 left pending + counted as a per-index miss.
+      expect(results.get(ids[0]!)?.outcome?.accountId).toBe(officeSuppliesId);
+      expect(results.get(ids[1]!)?.error?.code).toBe('ai_no_result_for_index');
+      const storedMissing = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, ids[1]!) });
+      expect(storedMissing!.suggestedAccountId).toBeNull();
+      // Batch 2 (third item) still ran and mapped.
+      expect(results.get(ids[2]!)?.outcome?.accountId).toBe(officeSuppliesId);
+    });
+
+    it('a whole-batch parse failure leaves items pending but does not abandon the next batch', async () => {
+      await enableAiWithBatchSize(2);
+      parseMocks.reply
+        .mockReturnValueOnce({ text: 'I could not produce JSON, sorry.' }) // batch 1: unparseable (twice via retry)
+        .mockReturnValueOnce({ text: 'still prose' })
+        .mockReturnValueOnce({ text: `[${arrayEntry(0)}]` });               // batch 2: valid
+      const ids = await Promise.all([
+        makeFeedItem('STAPLES 001'), makeFeedItem('STAPLES 002'), makeFeedItem('STAPLES 003'),
+      ]);
+
+      const results = await aiCategorization.categorizeFeedItemsBatch(tenantId, ids);
+
+      expect(results.get(ids[0]!)?.error?.code).toBe('ai_parse_failed');
+      expect(results.get(ids[1]!)?.error?.code).toBe('ai_parse_failed');
+      // Next batch still processed.
+      expect(results.get(ids[2]!)?.outcome?.accountId).toBe(officeSuppliesId);
+    });
+
+    it('batchSize=1 falls back to the single-transaction path (one call per item)', async () => {
+      await enableAiWithBatchSize(1);
+      parseMocks.reply.mockReturnValue({ text: arrayEntry(0).replace('"index":0,', '') });
+      const ids = await Promise.all([makeFeedItem('STAPLES 001'), makeFeedItem('STAPLES 002')]);
+
+      const results = await aiCategorization.categorizeFeedItemsBatch(tenantId, ids);
+
+      // One provider call PER item (the single path), not one for the pair.
+      expect(parseMocks.reply).toHaveBeenCalledTimes(2);
+      expect(results.get(ids[0]!)?.outcome?.accountId).toBe(officeSuppliesId);
+      expect(results.get(ids[1]!)?.outcome?.accountId).toBe(officeSuppliesId);
+    });
+
+    it('abandons the run after consecutive OUTAGE batches (short-circuit at batch granularity)', async () => {
+      // batchSize 2 over 12 same-company items → 6 batches. Every provider
+      // call throws (infra outage → ai_all_providers_failed). After 5
+      // consecutive outage batches the 6th is skipped, not attempted.
+      await enableAiWithBatchSize(2);
+      parseMocks.reply.mockImplementation(() => { throw new Error('connection refused'); });
+      const ids: string[] = [];
+      for (let i = 0; i < 12; i++) ids.push(await makeFeedItem(`OUTAGE ${i}`));
+
+      const results = await aiCategorization.categorizeFeedItemsBatch(tenantId, ids);
+
+      const outaged = ids.filter((id) => results.get(id)?.error?.outage);
+      const skipped = ids.filter((id) => results.get(id)?.skipped);
+      expect(outaged).toHaveLength(10); // 5 batches × 2 items attempted
+      expect(skipped).toHaveLength(2);  // 6th batch abandoned
+    });
+
+    it('chunks by company: an un-consented company is blocked while the consented one succeeds', async () => {
+      await enableAiWithBatchSize(15);
+      // Second company WITHOUT AI opt-in → its batch fails company-scoped consent.
+      const [company2] = await db.insert(companies).values({
+        tenantId, businessName: 'No-Consent Co',
+      }).returning();
+      const [conn2] = await db.insert(bankConnections).values({
+        tenantId, companyId: company2!.id, accountId: cashAccountId, institutionName: 'Bank 2',
+      }).returning();
+      const makeItemFor = async (companyIdArg: string, connId: string, desc: string) => {
+        const [item] = await db.insert(bankFeedItems).values({
+          tenantId, bankConnectionId: connId, companyId: companyIdArg,
+          providerTransactionId: `ext-${Date.now()}-${Math.random()}`,
+          feedDate: '2026-05-01', amount: '50.00', description: desc, status: 'pending',
+        }).returning();
+        return item!.id;
+      };
+      const c1Item = await makeItemFor(companyId, connectionId, 'STAPLES C1');
+      const c2Item = await makeItemFor(company2!.id, conn2!.id, 'STAPLES C2');
+      parseMocks.reply.mockReturnValue({ text: `[${arrayEntry(0)}]` });
+
+      const results = await aiCategorization.categorizeFeedItemsBatch(tenantId, [c1Item, c2Item]);
+
+      // Only the consented company's batch reached the provider.
+      expect(parseMocks.reply).toHaveBeenCalledTimes(1);
+      expect(results.get(c1Item)?.outcome?.accountId).toBe(officeSuppliesId);
+      expect(results.get(c2Item)?.error?.code).toBe('ai_consent_blocked');
     });
   });
 });

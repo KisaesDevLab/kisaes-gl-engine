@@ -51,6 +51,26 @@ describe('aiConfigService.testAll', () => {
   });
 });
 
+describe('taskOptions.categorization.batchSize persistence', () => {
+  beforeEach(resetConfig);
+  afterEach(resetConfig);
+
+  it('round-trips a batchSize override through updateConfig → getConfig → resolveTaskExec', async () => {
+    await aiConfigService.updateConfig({
+      taskOptions: { categorization: { batchSize: 25 } },
+    });
+    const cfg = await aiConfigService.getConfig();
+    expect(cfg.taskOptions.categorization?.batchSize).toBe(25);
+    expect(aiConfigService.resolveTaskExec(cfg, 'categorization').batchSize).toBe(25);
+  });
+
+  it('defaults to 15 when no batchSize override is stored', async () => {
+    await aiConfigService.updateConfig({ categorizationProvider: 'ollama' });
+    const cfg = await aiConfigService.getConfig();
+    expect(aiConfigService.resolveTaskExec(cfg, 'categorization').batchSize).toBe(15);
+  });
+});
+
 // testProvider failure modes (timeout, 401, ECONNREFUSED) exercised
 // against a stubbed fetch. HTTP 429 from the express rate-limiter is
 // left to manual verification.

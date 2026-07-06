@@ -771,148 +771,148 @@ export function emptyCleansingAggregate(): CleansingAggregate {
   return { processed: 0, aiCleansed: 0, aiFailed: 0, disabled: 0 };
 }
 
-// FIX 3: the run-abandoning short-circuit trips only on a genuine provider
-// OUTAGE (every provider down, or a timeout), so one flaky/dead provider
-// doesn't burn a paid call per imported row. A per-row parse failure or a
-// low-confidence/no-match result is item-specific — the next row may well
-// succeed — so it must NOT count toward this threshold. Raised modestly from
-// 3 now that only true outages accumulate toward it.
-const CLEANSE_CONSECUTIVE_FAIL_THRESHOLD = 5;
-
 // Error codes that mean the AI step is DELIBERATELY unavailable — an admin
 // state, not an outage. Counted as `disabled` (silent skip) so non-AI
-// installs don't see "AI cleanup unavailable" warnings on every import.
+// installs don't see "AI cleanup unavailable" warnings on every import. The
+// consecutive-OUTAGE short-circuit itself now lives in the batched engine
+// (categorizeFeedItemsBatch), at batch granularity (FIX 3).
 const CLEANSE_DISABLED_CODES = new Set([
   'ai_disabled_globally',
   'ai_no_provider_configured',
   'ai_function_disabled',
   // A company that hasn't opted in / enabled the task (or whose consent is
   // stale) is a deliberate state, not a provider outage — bucket it as
-  // `disabled` (silent) and treat it as a CLEAN full-run skip (aiDisabled),
-  // never as a "failure". createJob throws this code (ai_consent_blocked).
+  // `disabled` (silent), never as a "failure". createJob throws this code
+  // (ai_consent_blocked).
   'ai_consent_blocked',
 ]);
 
-// Error codes that mean a genuine INFRASTRUCTURE outage — every provider in
-// the chain failed, or the call timed out. Only these accumulate toward the
-// consecutive-failure short-circuit. ai_parse_failed (a bad-shape reply from
-// an otherwise-reachable model) is deliberately absent: it's a per-row miss.
-const CLEANSE_OUTAGE_CODES = new Set([
-  'ai_all_providers_failed',
-  'ai_provider_failed',
-]);
-
-function isCleanseOutage(e: { code?: string; message?: string }): boolean {
-  if (e.code && CLEANSE_OUTAGE_CODES.has(e.code)) return true;
-  const m = (e.message ?? '').toLowerCase();
-  return m.includes('timeout') || m.includes('timed out') || m.includes('etimedout');
+// Apply an AI/history contact name to a feed item description, mirroring the
+// single path's validated/unvalidated handling. Returns the name to write, or
+// null when the (unvalidated) model text isn't a plausible name.
+function applyCleanseContactName(contactName: string, contactId: string | null | undefined): string | null {
+  if (contactId) {
+    // VALIDATED: resolved to a real tenant contact — trusted as-is.
+    return String(contactName).slice(0, 255);
+  }
+  // UNVALIDATED raw model text: never written verbatim — normalize through the
+  // same deterministic cleaner as the regex fallback and keep only a plausible
+  // name (has letters). Otherwise the caller falls back to the regex-cleaned
+  // original.
+  const aiCleaned = cleanBankDescription(String(contactName)).slice(0, 255).trim();
+  if (aiCleaned.length >= 2 && /[a-z]/i.test(aiCleaned)) return aiCleaned;
+  return null;
 }
 
 export async function runCleansingPipeline(tenantId: string, items: any[]): Promise<CleansingAggregate> {
   const agg = emptyCleansingAggregate();
-  let consecutiveAiFailures = 0;
-  let aiShortCircuited = false;
 
-  // M1: the per-row LLM cleansing step (categorize()) is a real paid AI call,
-  // so it must honor the same "Auto-categorize bank feed transactions on
-  // import" master switch (ai_config.autoCategorizeOnImport) that already gates
-  // the local suggestForBatch step. When the toggle is off, skip the LLM step
-  // entirely (counted as `disabled`) — deterministic rules + regex cleaning
-  // still run so every row lands with a usable description.
+  // M1: the LLM cleansing step is a real paid AI call, so it honors the
+  // "Auto-categorize bank feed transactions on import" master switch
+  // (ai_config.autoCategorizeOnImport). When off, skip the LLM entirely
+  // (counted as `disabled`) — deterministic rules + regex cleaning still run.
   const { getConfig } = await import('./ai-config.service.js');
   const aiCfg = await getConfig().catch(() => null);
-  let aiDisabled = !(aiCfg?.autoCategorizeOnImport ?? true);
+  const aiDisabled = !(aiCfg?.autoCategorizeOnImport ?? true);
 
+  const { resolvePreAiLayers, categorizeFeedItemsBatch } = await import('./ai-categorization.service.js');
+
+  // The fields the cleansing pipeline reads/writes on each feed item. The
+  // callers pass full bankFeedItems rows (typed `any[]` at the boundary);
+  // narrowing here keeps the pipeline body free of `any`.
+  type CleanseItem = {
+    id: string;
+    description: string | null;
+    originalDescription: string | null;
+    payeeNameOnCheck?: string | null;
+    suggestedAccountId: string | null;
+    confidenceScore: string | null;
+  };
+  interface Stash { item: CleanseItem; raw: string; cleanedName: string | null; wouldNeedLlm: boolean; }
+  const stash: Stash[] = [];
+
+  // ── Pass 1: deterministic naming + rules/history precedence (per item) ──
+  // check-image → tenant/global rules → rule/history. Only items still
+  // without a name AND without a rule/history hit become LLM candidates —
+  // the LLM step (Pass 2) is what batches.
   for (const item of items) {
     agg.processed++;
     const raw = item.originalDescription || item.description || '';
     let cleanedName: string | null = null;
 
-    // STATEMENT_CHECK_PAYEE_V1 — a payee read off the check image is the
-    // most reliable name; use it as the description and skip the AI guess
-    // (which can't derive a vendor from "CHECK ####" anyway).
-    if (item.payeeNameOnCheck) {
-      cleanedName = item.payeeNameOnCheck;
-    }
+    // STATEMENT_CHECK_PAYEE_V1 — a payee read off the check image is the most
+    // reliable name; use it and skip the AI guess.
+    if (item.payeeNameOnCheck) cleanedName = item.payeeNameOnCheck;
 
-    // Step 1 & 2: Tenant rules, then global rules
+    // Tenant rules, then global rules.
     if (!cleanedName) cleanedName = await cleanNameViaRules(tenantId, raw);
 
-    // Step 3 & 4: Categorization history + AI (also sets suggestions on the feed item)
+    let wouldNeedLlm = false;
     if (!cleanedName) {
+      // Rules (Layer 1) + trusted history (Layer 2) — deterministic, persists
+      // any hit. Runs regardless of the AI master switch (it's not an AI cost).
+      const pre = await resolvePreAiLayers(tenantId, item).catch(() => null);
+      if (pre && pre.contactName) {
+        const applied = applyCleanseContactName(pre.contactName, pre.contactId);
+        if (applied) { cleanedName = applied; agg.aiCleansed++; }
+      } else if (!pre) {
+        // No deterministic/history name → an LLM candidate.
+        wouldNeedLlm = true;
+      }
+      // pre resolved without a contactName (e.g. a rule hit) → regex fallback,
+      // never the LLM (matches the historical Layer-1 behavior).
+    }
+    stash.push({ item, raw, cleanedName, wouldNeedLlm });
+  }
+
+  // ── Batch: ONE LLM call per company-chunked batch of `batchSize` ──
+  // (vs. one call per row). Governance, the array mapping, and the
+  // consecutive-OUTAGE short-circuit (now at batch granularity) all live in
+  // categorizeFeedItemsBatch. Skipped entirely when the master switch is off.
+  const llmIds = aiDisabled ? [] : stash.filter((s) => s.wouldNeedLlm).map((s) => s.item.id);
+  const llmResults = llmIds.length > 0
+    ? await categorizeFeedItemsBatch(tenantId, llmIds, aiCfg ? { config: aiCfg } : undefined)
+    : new Map();
+
+  // ── Pass 2: apply LLM results, regex fallback, and write descriptions ──
+  for (const s of stash) {
+    let cleanedName = s.cleanedName;
+    if (!cleanedName && s.wouldNeedLlm) {
       if (aiDisabled) {
-        // A previous item already established that AI is deliberately off
-        // for this run — skip silently (deterministic cleaning still runs).
+        // Master switch off — LLM deliberately skipped (deterministic clean).
         agg.disabled++;
-      } else if (aiShortCircuited) {
-        agg.aiFailed++;
       } else {
-        try {
-          // Try categorization history first (inside categorize())
-          // Then AI if enabled — categorize() returns vendor_name from AI
-          const { categorize: aiCategorize } = await import('./ai-categorization.service.js');
-          const result = await aiCategorize(tenantId, item.id);
-          consecutiveAiFailures = 0;
-          if (result && 'contactName' in result && result.contactName) {
-            if (result.contactId) {
-              // VALIDATED path: the name was resolved to a real tenant
-              // contact (history hit or matchByName) — its display name is
-              // trusted as-is.
-              cleanedName = String(result.contactName).slice(0, 255);
-            } else {
-              // UNVALIDATED path: raw model text. Never write it into
-              // `description` verbatim — normalize it through the same
-              // deterministic cleaner as the regex fallback, cap the
-              // length, and only keep it when it's a plausible name
-              // (non-empty, has letters). Otherwise fall through to the
-              // regex-cleaned original below.
-              const aiCleaned = cleanBankDescription(String(result.contactName)).slice(0, 255).trim();
-              if (aiCleaned.length >= 2 && /[a-z]/i.test(aiCleaned)) {
-                cleanedName = aiCleaned;
-              }
-            }
-            if (cleanedName) agg.aiCleansed++;
-          }
-        } catch (err) {
-          const e = err as { code?: string; message?: string };
-          const msg = e?.message ?? String(err);
-          if (e?.code && CLEANSE_DISABLED_CODES.has(e.code)) {
+        const r = llmResults.get(s.item.id);
+        if (r?.outcome && r.outcome.contactName) {
+          const applied = applyCleanseContactName(r.outcome.contactName, r.outcome.contactId);
+          if (applied) { cleanedName = applied; agg.aiCleansed++; }
+        } else if (r?.error) {
+          if (CLEANSE_DISABLED_CODES.has(r.error.code)) {
             // Deliberate off-state (globally disabled / no provider / function
-            // toggled off / consent not granted). Not a failure — bucket as
-            // `disabled` and treat the whole rest of the run as a clean skip.
-            aiDisabled = true;
+            // toggled off / consent not granted) — silent skip, not a failure.
             agg.disabled++;
           } else {
             agg.aiFailed++;
-            if (!agg.firstError) agg.firstError = msg;
+            if (!agg.firstError) agg.firstError = r.error.message;
             // eslint-disable-next-line no-console
-            console.warn(`[cleanse] AI step failed for item ${item.id}: ${msg}`);
-            // Only a genuine provider OUTAGE accumulates toward the
-            // run-abandoning short-circuit. A per-row parse failure (or any
-            // other item-specific error) is counted as aiFailed but does NOT
-            // trip it — and resets the streak so a lone outage between good
-            // rows can't strand the tail of the import.
-            if (isCleanseOutage(e)) {
-              consecutiveAiFailures++;
-              if (consecutiveAiFailures >= CLEANSE_CONSECUTIVE_FAIL_THRESHOLD) aiShortCircuited = true;
-            } else {
-              consecutiveAiFailures = 0;
-            }
+            console.warn(`[cleanse] AI step failed for item ${s.item.id}: ${r.error.message}`);
           }
+        } else if (r?.skipped) {
+          // The batch covering this item was abandoned by the outage
+          // short-circuit — count as a failure (it wasn't cleansed).
+          agg.aiFailed++;
         }
+        // r?.outcome without a usable name (no_confident_match) → regex below.
       }
     }
 
-    // Step 5: Basic cleaning (last resort)
-    if (!cleanedName) {
-      cleanedName = cleanBankDescription(raw);
-    }
+    // Basic cleaning (last resort).
+    if (!cleanedName) cleanedName = cleanBankDescription(s.raw);
 
-    // Update the description if it changed
-    if (cleanedName && cleanedName !== item.description) {
+    if (cleanedName && cleanedName !== s.item.description) {
       await db.update(bankFeedItems).set({ description: cleanedName, updatedAt: new Date() })
-        .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, item.id)));
-      (item as any).description = cleanedName;
+        .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, s.item.id)));
+      s.item.description = cleanedName;
     }
   }
   return agg;
