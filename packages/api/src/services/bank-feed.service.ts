@@ -6,7 +6,7 @@ import { eq, and, sql, count, gte, lte, inArray } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import type { BankFeedFilters, CategorizeInput, CsvColumnMapping } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { bankFeedItems, bankConnections, accounts, transactions, journalLines, contacts, transactionTags as transactionTagsTable } from '../db/schema/index.js';
+import { bankFeedItems, bankConnections, accounts, transactions, journalLines, contacts, tags, transactionTags as transactionTagsTable } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
@@ -55,6 +55,10 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
   // Separate alias for the suggested GL account so it doesn't collide with the
   // bank-account join (which resolves the connection's own account).
   const suggestedAccount = alias(accounts, 'suggested_account');
+  // Alias for the rule-staged suggested tag (bank_feed_items.suggested_tag_id →
+  // tags.name) so a pending item can surface a "suggested" tag pill before it
+  // is categorized.
+  const suggestedTag = alias(tags, 'suggested_tag');
 
   // Server-side column sort. The page paginates, so sorting must happen
   // here — the old client-side sort only ordered the visible page.
@@ -99,10 +103,28 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
       bankAccountName: accounts.name,
       institutionName: bankConnections.institutionName,
       suggestedAccountName: suggestedAccount.name,
+      // Rule-staged suggested tag (shown as a "suggested" pill on pending
+      // rows so a rule-set tag is visible before the user categorizes).
+      suggestedTagId: bankFeedItems.suggestedTagId,
+      suggestedTagName: suggestedTag.name,
+      // ADR 0XX §4.1 — for a CATEGORIZED/MATCHED item, the distinct tag
+      // names actually applied on the matched transaction's journal lines.
+      // Null when the item has no matched transaction or every line is
+      // untagged; one element when uniform; two+ when mixed. Mirrors the
+      // transaction-list lineTags idiom (ledger.service.ts).
+      lineTags: sql<string[] | null>`(
+        SELECT array_agg(DISTINCT lt.name ORDER BY lt.name)
+        FROM journal_lines jl
+        JOIN tags lt ON lt.id = jl.tag_id
+        WHERE jl.transaction_id = ${bankFeedItems.matchedTransactionId}
+          AND jl.tenant_id = ${tenantId}
+          AND jl.tag_id IS NOT NULL
+      )`,
     }).from(bankFeedItems)
       .leftJoin(bankConnections, eq(bankFeedItems.bankConnectionId, bankConnections.id))
       .leftJoin(accounts, eq(bankConnections.accountId, accounts.id))
       .leftJoin(suggestedAccount, eq(bankFeedItems.suggestedAccountId, suggestedAccount.id))
+      .leftJoin(suggestedTag, eq(bankFeedItems.suggestedTagId, suggestedTag.id))
       .where(where)
       .orderBy(orderBy)
       .limit(filters.limit ?? 50)
@@ -297,7 +319,10 @@ export async function categorize(tenantId: string, feedItemId: string, input: Ca
         debit: isExpense ? amount.toFixed(4) : '0',
         credit: isExpense ? '0' : amount.toFixed(4),
         description: item.description || undefined,
-        tagId: input.tagId ?? undefined,
+        // An explicit user pick wins; otherwise fall back to a rule-staged
+        // suggested tag so the rule→categorize handoff actually posts the
+        // tag the rule assigned (previously it was silently dropped).
+        tagId: input.tagId ?? item.suggestedTagId ?? undefined,
       });
     }
 

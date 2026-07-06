@@ -55,6 +55,15 @@ export interface BankFeedItem {
   // Feed-item memo (migration 0118): Plaid seeds it with the bank's raw
   // payee text; user edits persist; categorize stamps it on the txn.
   memo?: string | null;
+  // Rule-staged suggested tag (bank_feed_items.suggested_tag_id) and its
+  // resolved name — surfaced on the feed so a rule-set tag is visible on a
+  // PENDING item as a "suggested" pill before it's categorized.
+  suggestedTagId?: string | null;
+  suggestedTagName?: string | null;
+  // For a CATEGORIZED/MATCHED item, the distinct tag names actually applied
+  // on the matched transaction's journal lines (ADR 0XX §4.1). Null when
+  // untagged / not yet posted; one element when uniform; two+ when mixed.
+  lineTags?: string[] | null;
 }
 
 export interface BankFeedFilters {

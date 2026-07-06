@@ -30,6 +30,11 @@ export const categorizeSchema = z.object({
   accountId: z.string().uuid(),
   contactId: z.string().uuid().optional(),
   memo: z.string().optional(),
+  // ADR 0XY §6 — tag stamped on the categorized transaction's user-side
+  // journal line. Zod strips unknown keys, so without this field a tag
+  // picked in the categorize drawer never reached the service. Null means
+  // explicitly untagged; omitted falls back to the item's suggested tag.
+  tagId: z.string().uuid().nullable().optional(),
 });
 
 export const matchSchema = z.object({
