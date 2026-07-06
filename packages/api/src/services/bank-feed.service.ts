@@ -319,10 +319,16 @@ export async function categorize(tenantId: string, feedItemId: string, input: Ca
         debit: isExpense ? amount.toFixed(4) : '0',
         credit: isExpense ? '0' : amount.toFixed(4),
         description: item.description || undefined,
-        // An explicit user pick wins; otherwise fall back to a rule-staged
-        // suggested tag so the rule→categorize handoff actually posts the
-        // tag the rule assigned (previously it was silently dropped).
-        tagId: input.tagId ?? item.suggestedTagId ?? undefined,
+        // Tag resolution distinguishes three caller intents:
+        //   - key absent (undefined): no explicit choice → fall back to the
+        //     rule-staged suggested tag so the rule→categorize handoff posts
+        //     it (bulk/auto-confirm and "accept as-is" paths).
+        //   - explicit null: the user cleared the picker → post UNTAGGED,
+        //     honoring the override (must NOT resurrect the suggestion).
+        //   - explicit id: that tag wins.
+        tagId: input.tagId === undefined
+          ? (item.suggestedTagId ?? undefined)
+          : (input.tagId ?? undefined),
       });
     }
 

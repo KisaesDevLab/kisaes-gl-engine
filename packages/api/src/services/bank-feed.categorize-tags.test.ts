@@ -144,6 +144,16 @@ describe('bank-feed categorize — tagging', () => {
     );
     expect(await userLineTagId(txn.id)).toBe(tagId);
   });
+
+  it('an explicit null tag posts UNTAGGED, honoring a cleared picker over the suggestion', async () => {
+    // The categorize row seeds its picker from suggestedTagId; clearing it
+    // sends tagId: null, which must NOT resurrect the suggested tag.
+    const item = await insertPendingItem({ suggestedTagId });
+    const txn = await bankFeedService.categorize(
+      tenantId, item.id, { accountId: expenseAccountId, tagId: null }, userId,
+    );
+    expect(await userLineTagId(txn.id)).toBeNull();
+  });
 });
 
 describe('bank-feed list — tag fields', () => {
