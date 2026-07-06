@@ -7,6 +7,7 @@ import { db } from '../db/index.js';
 import { plaidItems, plaidAccounts, plaidAccountMappings, bankFeedItems } from '../db/schema/index.js';
 import { decrypt } from '../utils/encryption.js';
 import { retryWithBackoff } from '../utils/retry.js';
+import { parseCheckNumber } from '../utils/check-number.js';
 import * as plaidClient from './plaid-client.service.js';
 import * as bankConnectionService from './bank-connection.service.js';
 import type { CleansingAggregate } from './bank-feed.service.js';
@@ -121,15 +122,22 @@ export async function syncItem(itemId: string) {
         amount: String(txn.amount),
         // Raw provider descriptor — dedup and categorization learning key
         // off originalDescription, and the cleansing pipeline preserves it
-        // while rewriting `description`.
-        originalDescription: txn.name || txn.merchant_name || null,
+        // while rewriting `description`. Plaid's original_description is
+        // the bank's truly-raw text (requires include_original_description
+        // on the sync request); `name` is Plaid-cleaned.
+        originalDescription: txn.original_description || txn.name || txn.merchant_name || null,
+        // The bank's raw payee text (checks/ACH). Displays in the review
+        // panel's memo and flows onto the posted transaction.
+        memo: txn.payment_meta?.payee || null,
         // Plaid's own category is a search hint only; the CATEGORY column shows
         // the suggested GL account, which the categorization pipeline fills.
         category: txn.personal_finance_category?.primary || txn.category?.[0] || null,
         // Plaid supplies the check number as a string; the column is an
         // integer. Non-numeric values (rare bank quirks) are dropped
-        // rather than imported as NaN.
-        checkNumber: txn.check_number ? Number.parseInt(txn.check_number, 10) || null : null,
+        // rather than imported as NaN. When Plaid omits it, parse the
+        // descriptor ("CHECK 1234") like every other import method.
+        checkNumber: (txn.check_number ? Number.parseInt(txn.check_number, 10) || null : null)
+          ?? parseCheckNumber(txn.original_description || txn.name),
         status: 'pending',
       }).returning();
 
@@ -185,10 +193,12 @@ export async function syncItem(itemId: string) {
       await db.update(bankFeedItems).set({
         feedDate: txn.date,
         description: txn.name || txn.merchant_name || '',
-        originalDescription: txn.name || txn.merchant_name || null,
+        originalDescription: txn.original_description || txn.name || txn.merchant_name || null,
         // Same signed convention as the insert path — never Math.abs().
         amount: String(txn.amount),
-        checkNumber: txn.check_number ? Number.parseInt(txn.check_number, 10) || null : null,
+        checkNumber: (txn.check_number ? Number.parseInt(txn.check_number, 10) || null : null)
+          ?? parseCheckNumber(txn.original_description || txn.name),
+        memo: txn.payment_meta?.payee || null,
       }).where(eq(bankFeedItems.id, feedItem.id));
       modifiedCount++;
     }

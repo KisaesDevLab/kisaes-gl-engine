@@ -174,6 +174,10 @@ export async function syncTransactions(accessToken: string, cursor?: string | nu
     const response = await client.transactionsSync({
       access_token: accessToken,
       cursor: nextCursor,
+      // Ask Plaid for the bank's raw, unparsed descriptor alongside its
+      // cleaned `name` — it feeds originalDescription (dedup/learning)
+      // and, with payment_meta.payee, the feed-item memo.
+      options: { include_original_description: true },
     });
 
     allAdded.push(...response.data.added);

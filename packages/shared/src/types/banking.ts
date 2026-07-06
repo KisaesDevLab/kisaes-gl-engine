@@ -52,6 +52,9 @@ export interface BankFeedItem {
   // parsed check number; shown in the UI so they're visible/confirmable.
   payeeNameOnCheck?: string | null;
   checkNumber?: number | null;
+  // Feed-item memo (migration 0118): Plaid seeds it with the bank's raw
+  // payee text; user edits persist; categorize stamps it on the txn.
+  memo?: string | null;
 }
 
 export interface BankFeedFilters {
@@ -118,4 +121,7 @@ export interface CsvColumnMapping {
   amount: number;
   debitColumn?: number;
   creditColumn?: number;
+  // Optional check-number column; when absent the importer parses the
+  // check number from the description ("CHECK 1234", ...).
+  checkNumber?: number;
 }

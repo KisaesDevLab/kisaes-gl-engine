@@ -100,6 +100,7 @@ export const bankImportSchema = z.object({
     amount: z.number().int().min(0),
     debitColumn: z.number().int().min(0).optional(),
     creditColumn: z.number().int().min(0).optional(),
+    checkNumber: z.number().int().min(0).optional(),
   }),
 });
 

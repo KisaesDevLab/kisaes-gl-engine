@@ -92,6 +92,7 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
       // check image is visible/confirmable before posting.
       payeeNameOnCheck: bankFeedItems.payeeNameOnCheck,
       checkNumber: bankFeedItems.checkNumber,
+      memo: bankFeedItems.memo,
       createdAt: bankFeedItems.createdAt,
       updatedAt: bankFeedItems.updatedAt,
       bankAccountName: accounts.name,
@@ -122,10 +123,10 @@ export async function updateFeedItem(tenantId: string, feedItemId: string, input
   const updates: Record<string, any> = { updatedAt: new Date() };
   if (input.feedDate !== undefined) updates['feedDate'] = input.feedDate;
   if (input.description !== undefined) updates['description'] = input.description;
-  // NOTE: bank_feed_items has no memo column — the review panel's memo
-  // only reaches the books via categorize(), which stamps it on the
-  // posted transaction. The previous `updates['memo']` write here was
-  // silently dropped by the ORM.
+  // Real column as of migration 0118 — Plaid seeds it with the bank's
+  // raw payee text; review-panel edits persist here and categorize()
+  // stamps it onto the posted transaction.
+  if (input.memo !== undefined) updates['memo'] = input.memo || null;
   if (input.contactId !== undefined) updates['suggestedContactId'] = input.contactId || null;
 
   await db.update(bankFeedItems).set(updates)
@@ -315,7 +316,12 @@ export async function categorize(tenantId: string, feedItemId: string, input: Ca
         txnType: isExpense ? 'expense' : 'deposit',
         txnDate: item.feedDate,
         contactId: input.contactId || (item.suggestedContactId ?? undefined),
-        memo: input.memo || (item.category as string) || item.description || undefined,
+        // Memo chain: explicit input → the feed item's memo (Plaid's raw
+        // payee text / review-panel edit) → description. The provider
+        // category hint ("FOOD_AND_DRINK") deliberately dropped out of
+        // this chain — it leaked classification codes into the books on
+        // every bulk approve.
+        memo: input.memo || (item.memo as string | null) || item.description || undefined,
         total: amount.toFixed(4),
         source: 'bank_feed',
         sourceId: item.id,
@@ -1111,6 +1117,14 @@ export async function importFromCsv(
     if (!dateStr || amount === 0) continue;
     if (!withinRange(dateStr, dateRange)) continue;
 
+    // Check number: an explicitly mapped column wins; otherwise parse it
+    // from the description ("CHECK 1234", "CHK #1234", ...) the same way
+    // the statement import does — every import method must land check
+    // numbers in bank_feed_items.check_number.
+    const mappedCheck = mapping.checkNumber !== undefined
+      ? Number.parseInt(cols[mapping.checkNumber] || '', 10) || null
+      : null;
+
     items.push({
       tenantId,
       bankConnectionId,
@@ -1118,6 +1132,7 @@ export async function importFromCsv(
       description: description, // raw — will be cleaned after insert
       originalDescription: description,
       amount: amount.toFixed(4),
+      checkNumber: mappedCheck ?? parseCheckNumber(description),
       status: 'pending',
     });
   }
@@ -1171,9 +1186,12 @@ export async function importFromOfx(tenantId: string, bankConnectionId: string, 
     const name = getTag('NAME') || getTag('MEMO');
     const fitid = getTag('FITID');
     // OFX carries the check number as its own CHECKNUM tag; non-numeric
-    // values are dropped rather than imported as NaN.
+    // values are dropped rather than imported as NaN. When the tag is
+    // absent, fall back to parsing the description like statement/CSV
+    // imports do.
     const checkNumRaw = getTag('CHECKNUM');
-    const checkNumber = checkNumRaw ? Number.parseInt(checkNumRaw, 10) || null : null;
+    const checkNumber = (checkNumRaw ? Number.parseInt(checkNumRaw, 10) || null : null)
+      ?? parseCheckNumber(name);
 
     if (!dateRaw || isNaN(amount)) continue;
 

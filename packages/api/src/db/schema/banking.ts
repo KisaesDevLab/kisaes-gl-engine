@@ -49,6 +49,10 @@ export const bankFeedItems = pgTable('bank_feed_items', {
   // time so reports show the real payee. See migration 0104.
   checkNumber: integer('check_number'),
   payeeNameOnCheck: varchar('payee_name_on_check', { length: 255 }),
+  // Migration 0118 — feed-item memo. Plaid sync seeds it with the bank's
+  // raw payee text (payment_meta.payee); the review panel edits it; the
+  // categorize path stamps it onto the posted transaction.
+  memo: text('memo'),
   // Phase 4 — when a conditional rule's `skip_ai` action fires
   // for this item, the AI categorizer batch step skips it.
   skipAi: boolean('skip_ai').notNull().default(false),
