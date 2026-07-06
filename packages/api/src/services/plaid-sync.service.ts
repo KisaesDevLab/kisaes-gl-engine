@@ -265,6 +265,38 @@ export async function syncItem(itemId: string) {
   }
 }
 
+// Full re-import: reset the sync cursor so Plaid's transactionsSync
+// replays the account's ENTIRE available history, then sync immediately.
+// The normal sync cursor advances past delivered transactions and Plaid
+// never resends them — so after deleting feed items/transactions locally
+// (e.g. the admin date-range delete), a plain re-sync imports nothing.
+// This is the escape hatch: dedup on providerTransactionId still prevents
+// duplicates for rows that survived, while previously-deleted rows come
+// back. Tenant-scoped: the item must have a mapping owned by the tenant.
+export async function resetAndResyncItem(itemId: string, tenantId: string) {
+  const owned = await db
+    .select({ id: plaidAccountMappings.id })
+    .from(plaidAccountMappings)
+    .innerJoin(plaidAccounts, eq(plaidAccounts.id, plaidAccountMappings.plaidAccountId))
+    .where(and(
+      eq(plaidAccountMappings.tenantId, tenantId),
+      eq(plaidAccounts.plaidItemId, itemId),
+    ))
+    .limit(1);
+  if (owned.length === 0) {
+    const { AppError } = await import('../utils/errors.js');
+    throw AppError.notFound('Plaid connection not found for this tenant');
+  }
+
+  // Clear the cursor (full replay) and last_sync_at (so the immediate
+  // syncItem below isn't turned away by the 30-second debounce claim).
+  await db.update(plaidItems)
+    .set({ syncCursor: null, lastSyncAt: null, updatedAt: new Date() })
+    .where(eq(plaidItems.id, itemId));
+
+  return syncItem(itemId);
+}
+
 export async function syncAllItems() {
   const items = await db.select().from(plaidItems)
     .where(and(eq(plaidItems.itemStatus, 'active'), sql`removed_at IS NULL`));

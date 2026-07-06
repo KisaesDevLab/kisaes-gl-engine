@@ -173,6 +173,15 @@ plaidRouter.post('/items/:id/sync', authenticate, async (req, res) => {
   res.json(result);
 });
 
+// Full re-import — reset the Plaid cursor and replay all available
+// history. Needed after deleting transactions/feed items locally, since
+// a normal sync won't re-fetch already-delivered transactions.
+plaidRouter.post('/items/:id/resync', authenticate, async (req, res) => {
+  await plaidConnection.assertCanAccessItem(req.userId, req.params['id']!);
+  const result = await plaidSync.resetAndResyncItem(req.params['id']!, req.tenantId);
+  res.json(result);
+});
+
 plaidRouter.get('/items/:id/sync-history', authenticate, async (req, res) => {
   await plaidConnection.assertCanAccessItem(req.userId, req.params['id']!);
   const { db } = await import('../db/index.js');

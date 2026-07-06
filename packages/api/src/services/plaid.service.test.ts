@@ -208,6 +208,62 @@ describe('Plaid Mapping Service (Cross-Company)', () => {
   });
 });
 
+describe('Plaid full re-import (resetAndResyncItem)', () => {
+  beforeEach(async () => { await cleanDb(); syncMocks.syncTransactions.mockReset(); syncMocks.getBalances.mockReset(); });
+  afterEach(async () => { await cleanDb(); });
+
+  it('clears the sync cursor so Plaid replays full history, then syncs', async () => {
+    const { user } = await createTestUser();
+    const bankAccount = await db.query.accounts.findFirst({
+      where: and(eq(accounts.tenantId, user.tenantId), eq(accounts.detailType, 'bank')),
+    });
+    if (!bankAccount) return;
+
+    // Item with a NON-null cursor (as if it had already synced past the
+    // now-deleted transactions) + a mapping owned by the tenant.
+    const [item] = await db.insert(plaidItems).values({
+      plaidItemId: 'resync-item', accessTokenEncrypted: encrypt('tok'),
+      createdBy: user.id, syncCursor: 'CURSOR_PAST_DELETED_TXNS',
+    }).returning();
+    const [pa] = await db.insert(plaidAccounts).values({
+      plaidItemId: item!.id, plaidAccountId: 'resync-acct', accountType: 'depository', mask: '4444',
+    }).returning();
+    await plaidMappingService.assignAccountToCompany(pa!.id, user.tenantId, bankAccount.id, null, user.id);
+
+    // Plaid replays from a null cursor: assert the cursor passed to
+    // syncTransactions is null/undefined (full replay), not the old value.
+    syncMocks.syncTransactions.mockResolvedValue({ added: [], modified: [], removed: [], nextCursor: 'NEW' });
+    syncMocks.getBalances.mockResolvedValue([]);
+
+    await plaidSyncService.resetAndResyncItem(item!.id, user.tenantId);
+
+    expect(syncMocks.syncTransactions).toHaveBeenCalled();
+    const cursorArg = syncMocks.syncTransactions.mock.calls[0]![1];
+    expect(cursorArg == null).toBe(true); // null/undefined → Plaid full replay
+  });
+
+  it('is tenant-scoped: another tenant cannot reset the cursor', async () => {
+    const { user } = await createTestUser();
+    const [item] = await db.insert(plaidItems).values({
+      plaidItemId: 'resync-scoped', accessTokenEncrypted: encrypt('tok'), createdBy: user.id, syncCursor: 'C',
+    }).returning();
+    const [pa] = await db.insert(plaidAccounts).values({
+      plaidItemId: item!.id, plaidAccountId: 'scoped-acct', accountType: 'depository', mask: '5555',
+    }).returning();
+    const bankAccount = await db.query.accounts.findFirst({
+      where: and(eq(accounts.tenantId, user.tenantId), eq(accounts.detailType, 'bank')),
+    });
+    if (bankAccount) await plaidMappingService.assignAccountToCompany(pa!.id, user.tenantId, bankAccount.id, null, user.id);
+
+    await expect(plaidSyncService.resetAndResyncItem(item!.id, '00000000-0000-0000-0000-000000000000'))
+      .rejects.toThrow(/not found/i);
+    // Cursor untouched for the wrong tenant.
+    const after = await db.query.plaidItems.findFirst({ where: eq(plaidItems.id, item!.id) });
+    expect(after!.syncCursor).toBe('C');
+    expect(syncMocks.syncTransactions).not.toHaveBeenCalled();
+  });
+});
+
 describe('Plaid Webhook Service (System-Scoped)', () => {
   beforeEach(async () => { await cleanDb(); });
   afterEach(async () => { await cleanDb(); });
