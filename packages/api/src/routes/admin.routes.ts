@@ -308,6 +308,33 @@ adminRouter.delete('/tenants/:id/transactions', async (req, res) => {
   res.json({ message: 'All transactions deleted', ...result });
 });
 
+// Preview what a date-range transaction delete would remove — read-only
+// count used by the confirm dialog. Same super-admin gate as the delete.
+adminRouter.get('/tenants/:id/transactions-range-count', async (req, res) => {
+  const { z } = await import('zod');
+  const { startDate, endDate } = z.object({
+    startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  }).parse(req.query);
+  const result = await adminService.previewTransactionsInDateRange(req.params['id']!, startDate, endDate);
+  res.json(result);
+});
+
+// Delete a tenant's transactions dated in [startDate, endDate] — a
+// surgical, date-scoped books edit. Also purges bank-feed items by
+// feed_date and DELETES reconciliations whose statement_date falls in
+// range; account balances are recomputed from surviving lines.
+// Destructive; type-to-confirm + preview in the UI.
+adminRouter.post('/tenants/:id/delete-transactions-range', async (req, res) => {
+  const { z } = await import('zod');
+  const { startDate, endDate } = z.object({
+    startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'startDate must be YYYY-MM-DD'),
+    endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'endDate must be YYYY-MM-DD'),
+  }).parse(req.body);
+  const result = await adminService.deleteTransactionsInDateRange(req.params['id']!, startDate, endDate, req.userId);
+  res.json({ message: 'Transactions in date range deleted', ...result });
+});
+
 // Apply a COA template to a tenant with an EMPTY chart of accounts
 // (delete-COA first if a wrong template was seeded).
 adminRouter.post('/tenants/:id/apply-coa-template', async (req, res) => {

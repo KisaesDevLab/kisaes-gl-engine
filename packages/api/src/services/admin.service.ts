@@ -382,6 +382,211 @@ export async function deleteAllTransactions(
   return { deleted: true, tenantId, transactionsDeleted };
 }
 
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Shared validation for the date-range transaction tools: tenant-id
+ * format, tenant existence, well-formed YYYY-MM-DD dates, and
+ * start <= end. Returns the tenant row so callers can reuse its name in
+ * audit entries without a second lookup.
+ */
+async function validateTenantAndRange(tenantId: string, startDate: string, endDate: string) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tenantId)) {
+    throw AppError.badRequest('Invalid tenant id format');
+  }
+  if (!DATE_RE.test(startDate) || !DATE_RE.test(endDate)) {
+    throw AppError.badRequest('startDate and endDate must be YYYY-MM-DD', 'BAD_DATE_FORMAT');
+  }
+  // ISO dates sort lexicographically, so a string compare is a correct
+  // chronological compare here.
+  if (startDate > endDate) {
+    throw AppError.badRequest('startDate must be on or before endDate', 'BAD_DATE_RANGE');
+  }
+  const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
+  if (!tenant) throw AppError.notFound('Tenant not found');
+  return tenant;
+}
+
+/**
+ * Count what deleteTransactionsInDateRange would remove, without
+ * touching anything. Powers the admin confirm dialog's "this will
+ * delete N transactions, M feed items, R reconciliations" preview.
+ */
+export async function previewTransactionsInDateRange(
+  tenantId: string,
+  startDate: string,
+  endDate: string,
+): Promise<{ transactionsToDelete: number; feedItemsToDelete: number; reconciliationsToDelete: number }> {
+  await validateTenantAndRange(tenantId, startDate, endDate);
+
+  const counts = await db.execute(sql`
+    SELECT
+      (SELECT COUNT(*) FROM transactions
+        WHERE tenant_id = ${tenantId} AND txn_date BETWEEN ${startDate}::date AND ${endDate}::date) AS txns,
+      (SELECT COUNT(*) FROM bank_feed_items
+        WHERE tenant_id = ${tenantId} AND feed_date BETWEEN ${startDate}::date AND ${endDate}::date) AS feed,
+      (SELECT COUNT(*) FROM reconciliations
+        WHERE tenant_id = ${tenantId} AND statement_date BETWEEN ${startDate}::date AND ${endDate}::date) AS recs
+  `);
+  const row = (counts.rows as { txns: string; feed: string; recs: string }[])[0]!;
+  return {
+    transactionsToDelete: Number(row.txns ?? 0),
+    feedItemsToDelete: Number(row.feed ?? 0),
+    reconciliationsToDelete: Number(row.recs ?? 0),
+  };
+}
+
+/**
+ * Delete every transaction whose `txn_date` falls in [startDate,
+ * endDate] for one tenant — a surgical, date-scoped counterpart to
+ * deleteAllTransactions. Super-admin only (router guard) with a
+ * type-to-confirm + preview UI.
+ *
+ * The critical difference from the whole-tenant reset is that every
+ * dependent cleanup is SCOPED to the target transactions (or, for
+ * reconciliations and bank-feed items, to the range), never tenant-
+ * wide — deleting Q1 must not touch Q2's applications, deposits, or
+ * recurring templates.
+ *
+ * Confirmed semantics (from the feature request):
+ *   - Reconciliations whose statement_date is in the range are DELETED
+ *     (with their lines); bank_statements.reconciliation_id pointing at
+ *     them is nulled (its FK is ON DELETE SET NULL, but we null it
+ *     explicitly for defense in depth). A reconciliation OUTSIDE the
+ *     range that happened to clear an in-range journal line keeps
+ *     existing — only its now-orphaned lines are removed.
+ *   - Bank-feed items are purged by `feed_date` in the range. Feed
+ *     items OUTSIDE the range that were matched to a deleted (target)
+ *     transaction are reset to pending so no dangling match remains.
+ *   - daily_sales_entries posted to a target transaction are unlinked
+ *     back to 'draft'. recurring_schedules are TEMPLATES, not dated
+ *     transactions, so they are left intact (unlike the full reset).
+ *   - Account balances are RECOMPUTED (not zeroed) from the surviving
+ *     posted/void journal lines, matching the debit-minus-credit
+ *     convention the ledger service maintains on post/void.
+ */
+export async function deleteTransactionsInDateRange(
+  tenantId: string,
+  startDate: string,
+  endDate: string,
+  actingUserId?: string,
+): Promise<{
+  deleted: true;
+  tenantId: string;
+  startDate: string;
+  endDate: string;
+  transactionsDeleted: number;
+  feedItemsDeleted: number;
+  reconciliationsDeleted: number;
+}> {
+  const tenant = await validateTenantAndRange(tenantId, startDate, endDate);
+
+  const { transactionsToDelete, feedItemsToDelete, reconciliationsToDelete } =
+    await previewTransactionsInDateRange(tenantId, startDate, endDate);
+
+  // No-op guard: nothing dated in range and no feed rows to purge. We
+  // still bail even if an in-range reconciliation exists with no
+  // transactions — a reconciliation cannot be meaningful without any
+  // dated activity, and this matches the confirmed no-op condition.
+  if (transactionsToDelete === 0 && feedItemsToDelete === 0) {
+    return {
+      deleted: true, tenantId, startDate, endDate,
+      transactionsDeleted: 0, feedItemsDeleted: 0, reconciliationsDeleted: 0,
+    };
+  }
+
+  await db.transaction(async (tx) => {
+    // Reusable subqueries. Each embedding re-emits its bound params, so
+    // they are safe to reference multiple times.
+    const targetTxns = sql`SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND txn_date BETWEEN ${startDate}::date AND ${endDate}::date`;
+    const targetJournalLines = sql`SELECT id FROM journal_lines WHERE tenant_id = ${tenantId} AND transaction_id IN (${targetTxns})`;
+    const inRangeRecs = sql`SELECT id FROM reconciliations WHERE tenant_id = ${tenantId} AND statement_date BETWEEN ${startDate}::date AND ${endDate}::date`;
+
+    // 1. transaction_tags for target txns (scoped by both tenant + txn).
+    await tx.execute(sql`DELETE FROM transaction_tags WHERE tenant_id = ${tenantId} AND transaction_id IN (${targetTxns})`);
+
+    // 2. reconciliation_lines that reference a deleted journal line —
+    // covers in-range recs AND out-of-range recs that cleared an
+    // in-range line (the latter keep their reconciliation).
+    await tx.execute(sql`DELETE FROM reconciliation_lines WHERE journal_line_id IN (${targetJournalLines})`);
+    // 3. remaining lines of the in-range recs (may reference lines
+    // outside the range that this rec cleared — they go with the rec).
+    await tx.execute(sql`DELETE FROM reconciliation_lines WHERE reconciliation_id IN (${inRangeRecs})`);
+    // 4. detach bank_statements from the recs about to be deleted.
+    await tx.execute(sql`UPDATE bank_statements SET reconciliation_id = NULL, updated_at = now() WHERE tenant_id = ${tenantId} AND reconciliation_id IN (${inRangeRecs})`);
+    // 5. the in-range reconciliations themselves.
+    await tx.execute(sql`DELETE FROM reconciliations WHERE tenant_id = ${tenantId} AND statement_date BETWEEN ${startDate}::date AND ${endDate}::date`);
+
+    // 6-8. Applications link two transactions; a row must go if EITHER
+    // side is being deleted, otherwise it dangles on the surviving side.
+    await tx.execute(sql`DELETE FROM payment_applications WHERE tenant_id = ${tenantId} AND (payment_id IN (${targetTxns}) OR invoice_id IN (${targetTxns}))`);
+    await tx.execute(sql`DELETE FROM bill_payment_applications WHERE tenant_id = ${tenantId} AND (payment_id IN (${targetTxns}) OR bill_id IN (${targetTxns}))`);
+    await tx.execute(sql`DELETE FROM vendor_credit_applications WHERE tenant_id = ${tenantId} AND (payment_id IN (${targetTxns}) OR credit_id IN (${targetTxns}) OR bill_id IN (${targetTxns}))`);
+
+    // 9. deposit_lines link a deposit txn to a source txn (both are
+    // transactions) — same either-side rule. deposit_lines has no
+    // tenant_id, so scope purely through the target-txn set.
+    await tx.execute(sql`DELETE FROM deposit_lines WHERE deposit_id IN (${targetTxns}) OR source_transaction_id IN (${targetTxns})`);
+
+    // 10. daily_sales_entries posted to a target txn → back to draft.
+    await tx.execute(sql`
+      UPDATE daily_sales_entries
+      SET transaction_id = NULL, status = 'draft', posted_at = NULL, updated_at = now()
+      WHERE tenant_id = ${tenantId} AND transaction_id IN (${targetTxns})
+    `);
+
+    // 11. Purge feed items by feed_date in range.
+    await tx.execute(sql`DELETE FROM bank_feed_items WHERE tenant_id = ${tenantId} AND feed_date BETWEEN ${startDate}::date AND ${endDate}::date`);
+    // 12. Surviving (out-of-range) feed items matched to a deleted txn →
+    // reset to pending so no dangling match_transaction_id remains.
+    await tx.execute(sql`
+      UPDATE bank_feed_items
+      SET matched_transaction_id = NULL, status = 'pending', match_type = NULL, updated_at = now()
+      WHERE tenant_id = ${tenantId} AND matched_transaction_id IN (${targetTxns})
+    `);
+    // NOTE: bank_statement_lines.matched_journal_line_id is ON DELETE
+    // SET NULL (migration 0116), so the journal_line delete below clears
+    // those references automatically — no explicit handling needed.
+
+    // 13. journal_lines then 14. transactions.
+    await tx.execute(sql`DELETE FROM journal_lines WHERE tenant_id = ${tenantId} AND transaction_id IN (${targetTxns})`);
+    await tx.execute(sql`DELETE FROM transactions WHERE tenant_id = ${tenantId} AND txn_date BETWEEN ${startDate}::date AND ${endDate}::date`);
+
+    // 15. Recompute every account's denormalized balance from the
+    // surviving journal lines. The ledger service maintains
+    // accounts.balance as SUM(debit - credit) over posted lines, and
+    // void adds swapped-side reversal lines (so a voided txn nets to
+    // zero). Draft txns never touched the balance, so they are excluded.
+    await tx.execute(sql`
+      UPDATE accounts a
+      SET balance = COALESCE((
+        SELECT SUM(jl.debit - jl.credit)
+        FROM journal_lines jl
+        JOIN transactions t ON t.id = jl.transaction_id
+        WHERE jl.account_id = a.id
+          AND jl.tenant_id = ${tenantId}
+          AND t.status IN ('posted', 'void')
+      ), 0),
+      updated_at = now()
+      WHERE a.tenant_id = ${tenantId}
+    `);
+  });
+
+  await auditLog(tenantId, 'delete', 'transactions_date_range', tenantId, null, {
+    startDate, endDate, tenantName: tenant.name,
+    transactionsDeleted: transactionsToDelete,
+    feedItemsDeleted: feedItemsToDelete,
+    reconciliationsDeleted: reconciliationsToDelete,
+  }, actingUserId);
+
+  return {
+    deleted: true, tenantId, startDate, endDate,
+    transactionsDeleted: transactionsToDelete,
+    feedItemsDeleted: feedItemsToDelete,
+    reconciliationsDeleted: reconciliationsToDelete,
+  };
+}
+
 /**
  * Apply a chart-of-accounts template to a tenant. Only valid when the
  * tenant currently has ZERO accounts — the intended flow for fixing a
