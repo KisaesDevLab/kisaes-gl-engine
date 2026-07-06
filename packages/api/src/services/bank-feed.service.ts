@@ -122,7 +122,10 @@ export async function updateFeedItem(tenantId: string, feedItemId: string, input
   const updates: Record<string, any> = { updatedAt: new Date() };
   if (input.feedDate !== undefined) updates['feedDate'] = input.feedDate;
   if (input.description !== undefined) updates['description'] = input.description;
-  if (input.memo !== undefined) updates['memo'] = input.memo;
+  // NOTE: bank_feed_items has no memo column — the review panel's memo
+  // only reaches the books via categorize(), which stamps it on the
+  // posted transaction. The previous `updates['memo']` write here was
+  // silently dropped by the ORM.
   if (input.contactId !== undefined) updates['suggestedContactId'] = input.contactId || null;
 
   await db.update(bankFeedItems).set(updates)
@@ -1167,6 +1170,10 @@ export async function importFromOfx(tenantId: string, bankConnectionId: string, 
     const amount = parseFloat(getTag('TRNAMT'));
     const name = getTag('NAME') || getTag('MEMO');
     const fitid = getTag('FITID');
+    // OFX carries the check number as its own CHECKNUM tag; non-numeric
+    // values are dropped rather than imported as NaN.
+    const checkNumRaw = getTag('CHECKNUM');
+    const checkNumber = checkNumRaw ? Number.parseInt(checkNumRaw, 10) || null : null;
 
     if (!dateRaw || isNaN(amount)) continue;
 
@@ -1182,6 +1189,7 @@ export async function importFromOfx(tenantId: string, bankConnectionId: string, 
       description: name, // raw — will be cleaned after insert
       originalDescription: name,
       amount: (-amount).toFixed(4), // OFX: negative = spend, but we want positive = spend
+      checkNumber,
       status: 'pending',
     });
   }

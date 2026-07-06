@@ -126,6 +126,10 @@ export async function syncItem(itemId: string) {
         // Plaid's own category is a search hint only; the CATEGORY column shows
         // the suggested GL account, which the categorization pipeline fills.
         category: txn.personal_finance_category?.primary || txn.category?.[0] || null,
+        // Plaid supplies the check number as a string; the column is an
+        // integer. Non-numeric values (rare bank quirks) are dropped
+        // rather than imported as NaN.
+        checkNumber: txn.check_number ? Number.parseInt(txn.check_number, 10) || null : null,
         status: 'pending',
       }).returning();
 
@@ -184,6 +188,7 @@ export async function syncItem(itemId: string) {
         originalDescription: txn.name || txn.merchant_name || null,
         // Same signed convention as the insert path — never Math.abs().
         amount: String(txn.amount),
+        checkNumber: txn.check_number ? Number.parseInt(txn.check_number, 10) || null : null,
       }).where(eq(bankFeedItems.id, feedItem.id));
       modifiedCount++;
     }
