@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
@@ -1352,6 +1352,126 @@ export async function downloadInstancePdf(
   const inst = await getInstance(tenantId, id);
   if (!inst.pdfUrl) return null;
   const provider = await getProviderForTenant(tenantId);
+  const buffer = await provider.download(inst.pdfUrl);
+  const filename = `report-v${inst.version}-${inst.periodEnd}.pdf`;
+  return { buffer, filename };
+}
+
+// ── Anonymous share links for published reports ─────────────────
+// A firm publishes a report and wants a URL it can paste to a client
+// who then views it WITHOUT logging in. The token is a 160-bit
+// base64url bearer credential (mirrors the public-invoice token). Only
+// PUBLISHED instances resolve; archiving a report makes the link stop
+// resolving. The public lookups take no tenant/auth and never leak the
+// tenantId or sibling instances.
+
+// Render payload for the anonymous public report page. Deliberately
+// minimal: the frozen layout + data snapshot the viewer renders, plus
+// company display name + period + version. No tenantId, no other
+// instances, no internal identifiers.
+export interface PublicReportPayload {
+  layout: unknown[];
+  data: Record<string, unknown>;
+  companyName: string;
+  periodStart: string;
+  periodEnd: string;
+  version: number;
+  publishedAt: string | null;
+  hasPdf: boolean;
+}
+
+// Idempotent mint. Requires the instance to be PUBLISHED — you only
+// share the client-facing record, not drafts. Tenant-scoped: getInstance
+// 404s for another tenant's id.
+export async function generateReportShareToken(
+  tenantId: string,
+  instanceId: string,
+  bookkeeperUserId?: string,
+): Promise<string> {
+  const inst = await getInstance(tenantId, instanceId);
+  if (inst.status !== 'published') {
+    throw AppError.badRequest(
+      'Only published reports can be shared. Publish the report first.',
+      'REPORT_NOT_PUBLISHED',
+    );
+  }
+  // Idempotent: return the existing token if one was already minted.
+  if (inst.shareToken) return inst.shareToken;
+
+  // 20 bytes → 27-char base64url token (160-bit entropy). Anyone with
+  // this token can view the published report, so it must be well past
+  // the range where online brute force is feasible under the public
+  // router's rate limit.
+  const token = randomBytes(20).toString('base64url');
+  await db
+    .update(reportInstances)
+    .set({ shareToken: token })
+    .where(and(eq(reportInstances.tenantId, tenantId), eq(reportInstances.id, instanceId)));
+
+  // Audit: the link grants anonymous read access to the report.
+  await auditLog(
+    tenantId,
+    'create',
+    'report_share_link',
+    instanceId,
+    null,
+    { via: 'generate_report_share_link' },
+    bookkeeperUserId,
+  );
+  return token;
+}
+
+// PUBLIC lookup — no tenant/auth. Resolves ONLY published instances.
+// If not found OR status !== 'published' (archived/draft/review) → 404.
+// This is the security gate: archiving a published report (published →
+// archived) makes the link stop resolving.
+export async function getPublishedReportByShareToken(token: string): Promise<PublicReportPayload> {
+  if (!token || token.length < 10 || token.length > 64) {
+    throw AppError.notFound('Report not found');
+  }
+  const inst = await db.query.reportInstances.findFirst({
+    where: eq(reportInstances.shareToken, token),
+  });
+  if (!inst || inst.status !== 'published') {
+    throw AppError.notFound('Report not found');
+  }
+  const co = await db.query.companies.findFirst({
+    where: eq(companies.id, inst.companyId),
+  });
+  return {
+    layout: Array.isArray(inst.layoutSnapshotJsonb)
+      ? (inst.layoutSnapshotJsonb as unknown[])
+      : [],
+    data:
+      typeof inst.dataSnapshotJsonb === 'object' && inst.dataSnapshotJsonb
+        ? (inst.dataSnapshotJsonb as Record<string, unknown>)
+        : {},
+    companyName: co?.businessName ?? '—',
+    periodStart: inst.periodStart,
+    periodEnd: inst.periodEnd,
+    version: inst.version,
+    publishedAt: inst.publishedAt ? inst.publishedAt.toISOString() : null,
+    hasPdf: !!inst.pdfUrl,
+  };
+}
+
+// PUBLIC PDF stream by share token. Same published-only gate as above.
+// Returns null when the instance has no stored PDF (published but the
+// render failed); the route turns that into a 404.
+export async function downloadPublishedReportPdfByShareToken(
+  token: string,
+): Promise<{ buffer: Buffer; filename: string } | null> {
+  if (!token || token.length < 10 || token.length > 64) {
+    throw AppError.notFound('Report not found');
+  }
+  const inst = await db.query.reportInstances.findFirst({
+    where: eq(reportInstances.shareToken, token),
+  });
+  if (!inst || inst.status !== 'published') {
+    throw AppError.notFound('Report not found');
+  }
+  if (!inst.pdfUrl) return null;
+  const provider = await getProviderForTenant(inst.tenantId);
   const buffer = await provider.download(inst.pdfUrl);
   const filename = `report-v${inst.version}-${inst.periodEnd}.pdf`;
   return { buffer, filename };

@@ -242,6 +242,20 @@ portalReportsRouter.post('/instances/:id/status', validate(statusSchema), async 
   res.json(result);
 });
 
+// Mint (idempotent) an anonymous share link for a PUBLISHED instance.
+// Returns an absolute URL a bookkeeper can paste to a client, who views
+// the report without logging in. The service rejects non-published
+// instances. Readonly members are already blocked from non-GET here.
+const idParamSchema = z.object({ id: z.string().uuid() });
+portalReportsRouter.post('/instances/:id/share-link', async (req, res) => {
+  const params = idParamSchema.safeParse(req.params);
+  if (!params.success) throw AppError.badRequest('Invalid report id');
+  const { baseUrlFor } = await import('../utils/base-url.js');
+  const token = await svc.generateReportShareToken(req.tenantId, params.data.id, req.userId);
+  const url = `${baseUrlFor(req)}/reports/view/${token}`;
+  res.json({ url });
+});
+
 // ── Comments ────────────────────────────────────────────────────
 
 const commentSchema = z.object({

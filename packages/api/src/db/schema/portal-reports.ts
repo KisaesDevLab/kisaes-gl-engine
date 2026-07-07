@@ -55,6 +55,11 @@ export const reportInstances = pgTable('report_instances', {
   dataSnapshotJsonb: jsonb('data_snapshot_jsonb').notNull().default({}),
   pdfUrl: text('pdf_url'),
   version: integer('version').notNull().default(1),
+  // Anonymous copy-paste share link token (160-bit base64url bearer
+  // credential). Set on demand for published instances; resolves the
+  // report without auth but only while status='published' (see
+  // getPublishedReportByShareToken). Mirrors transactions.public_token.
+  shareToken: varchar('share_token', { length: 64 }),
   createdBy: uuid('created_by').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   publishedAt: timestamp('published_at', { withTimezone: true }),
@@ -62,6 +67,7 @@ export const reportInstances = pgTable('report_instances', {
   tenantCompanyIdx: index('idx_report_instances_tenant_company').on(table.tenantId, table.companyId),
   statusIdx: index('idx_report_instances_status').on(table.tenantId, table.status),
   publishedIdx: index('idx_report_instances_published').on(table.companyId, table.publishedAt),
+  shareTokenIdx: index('idx_report_instances_share_token').on(table.shareToken),
 }));
 
 export const kpiDefinitions = pgTable('kpi_definitions', {
