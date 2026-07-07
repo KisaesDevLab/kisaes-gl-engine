@@ -328,3 +328,37 @@ describe('bank-feed autoConfirm rule — still posts immediately (unchanged)', (
     expect(await txnCountForItem(item.id)).toBe(1);
   });
 });
+
+describe('bank-feed bulkSetTag() — tags not-yet-posted items', () => {
+  it('stages the tag on an assigned item so approve carries it onto the ledger', async () => {
+    const item = await insertPendingItem();
+    // Stage a category with no tag (status → 'assigned', not posted).
+    await bankFeedService.assign(tenantId, item.id, { accountId: expenseAccountId }, userId);
+
+    // Bulk-set a tag on the not-yet-posted item — previously a silent skip.
+    const res = await bankFeedService.bulkSetTag(tenantId, [item.id], contactlessTagId);
+    expect(res.updated).toBe(1);
+    expect(res.failures).toHaveLength(0);
+
+    const staged = await db.query.bankFeedItems.findFirst({
+      where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, item.id)),
+    });
+    expect(staged!.assignedTagId).toBe(contactlessTagId);
+
+    // Approving posts the staged tag onto the transaction's journal lines.
+    await bankFeedService.approve(tenantId, item.id, userId, companyId);
+    const posted = await db.query.bankFeedItems.findFirst({
+      where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, item.id)),
+    });
+    const lines = await db.select().from(journalLines)
+      .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, posted!.matchedTransactionId!)));
+    expect(lines.some((l) => l.tagId === contactlessTagId)).toBe(true);
+  });
+
+  it('reports a failure for an item that is neither posted nor stageable', async () => {
+    const item = await insertPendingItem({ status: 'excluded' });
+    const res = await bankFeedService.bulkSetTag(tenantId, [item.id], contactlessTagId);
+    expect(res.updated).toBe(0);
+    expect(res.failures).toHaveLength(1);
+  });
+});

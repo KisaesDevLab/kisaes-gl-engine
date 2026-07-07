@@ -14,6 +14,12 @@ export const transactions = pgTable('transactions', {
   txnDate: date('txn_date').notNull(),
   dueDate: date('due_date'),
   status: varchar('status', { length: 20 }).default('posted').notNull(),
+  // Reporting basis: which report bases this transaction affects. 'both'
+  // (default) shows on cash AND accrual reports; 'cash' only on cash-basis
+  // reports; 'accrual' only on accrual. Lets a manual journal entry (e.g. a
+  // depreciation / accrual adjusting entry) be excluded from the other basis.
+  // Non-JE transactions stay 'both', preserving existing report behavior.
+  basis: varchar('basis', { length: 10 }).default('both').notNull(),
   contactId: uuid('contact_id'),
   memo: text('memo'),
   internalNotes: text('internal_notes'),

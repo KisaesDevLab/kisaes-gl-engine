@@ -86,6 +86,19 @@ export async function start(
   if (!accountId || !statementDate || !statementEndingBalance) {
     throw AppError.badRequest('accountId, statementDate and statementEndingBalance are required');
   }
+  // Manual start (no driving statement): orient a liability's entered
+  // balance the same way a statement-driven start does, so a user can type
+  // the credit-card statement balance as printed (a positive amount owed)
+  // and still tie out against the credit-normal GL balance. Asset balances
+  // pass through unchanged.
+  if (!opts.statementId) {
+    const acct = await db.query.accounts.findFirst({
+      where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, accountId)),
+    });
+    statementAccountType = acct?.accountType ?? null;
+    statementEndingBalance =
+      glOrientedStatementBalance(statementEndingBalance, statementAccountType) ?? statementEndingBalance;
+  }
   // Refuse to start a second reconciliation on an account that already
   // has one in progress. Two users opening the bank rec screen at the
   // same moment would otherwise create two parallel "in_progress"

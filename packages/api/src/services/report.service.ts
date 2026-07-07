@@ -153,6 +153,7 @@ function cashBasisLinesWith(
         FROM bill_payment_applications WHERE tenant_id = ${tenantId} GROUP BY payment_id
       ) bp ON bp.payment_id = t.id
       WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
+        AND t.basis <> 'accrual'  -- basis: exclude accrual-only entries from cash-basis reports
         AND ${dateCondT} AND ${companyT}
         AND t.txn_type NOT IN ('invoice', 'bill', 'credit_memo', 'vendor_credit')
 
@@ -331,6 +332,7 @@ export async function buildProfitAndLoss(
         LEFT JOIN journal_lines jl ON jl.account_id = a.id AND jl.tenant_id = ${tenantId}
           AND jl.transaction_id IN (
             SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
+            AND basis <> 'cash'  -- basis: exclude cash-only entries from accrual reports
             AND txn_date >= ${startDate} AND txn_date <= ${endDate}
             AND ${companyCond}
           )${tagJoinClause}
@@ -475,6 +477,7 @@ export async function buildBalanceSheet(
         LEFT JOIN journal_lines jl ON jl.account_id = a.id AND jl.tenant_id = ${tenantId}
           AND jl.transaction_id IN (
             SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
+            AND basis <> 'cash'  -- basis: exclude cash-only entries from accrual reports
             AND txn_date <= ${asOfDate}
             AND ${companyCond}
           )${tagClause}
@@ -642,6 +645,7 @@ export async function buildCashFlowStatement(
       FROM transactions t
       JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.tenant_id = ${tenantId}
       WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
+        AND t.basis <> 'cash'  -- basis: keep the direct-method cash flow consistent with the accrual P&L it reconciles to
         AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
         AND ${companyCond}
         AND jl.account_id IN (SELECT id FROM cash_accounts)
@@ -835,6 +839,7 @@ export async function buildExpenseByVendor(
     JOIN accounts a ON a.id = jl.account_id AND a.account_type IN ('cogs', 'expense', 'other_expense')
     LEFT JOIN contacts c ON c.id = t.contact_id AND c.tenant_id = ${tenantId}
     WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
+      AND t.basis <> 'cash'  -- basis: exclude cash-only entries from accrual reports
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
       AND jl.debit > 0
       AND ${companyFilter(companyId)}
@@ -907,6 +912,7 @@ export async function buildExpenseByCategory(
     JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
     JOIN accounts a ON a.id = jl.account_id AND a.account_type IN ('cogs', 'expense', 'other_expense')
     WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
+      AND t.basis <> 'cash'  -- basis: exclude cash-only entries from accrual reports
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
       AND jl.debit > 0
       AND ${companyFilter(companyId)}
@@ -958,6 +964,7 @@ export async function buildExpenseByCategory(
     JOIN accounts a ON a.id = jl.account_id AND a.account_type IN ('cogs', 'expense', 'other_expense')
     LEFT JOIN contacts c ON c.id = t.contact_id AND c.tenant_id = ${tenantId}
     WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
+      AND t.basis <> 'cash'  -- basis: exclude cash-only entries from accrual reports
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
       AND ${companyFilter(companyId)}
       ${tagClause}
@@ -1176,6 +1183,7 @@ export async function buildBankBalances(
     LEFT JOIN journal_lines jl ON jl.account_id = a.id AND jl.tenant_id = ${tenantId}
       AND jl.transaction_id IN (
         SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
+        AND basis <> 'cash'  -- basis: bank balances stay consistent with the accrual balance sheet
         AND txn_date <= ${asOfDate}
         AND ${companyCond}
       )
@@ -1663,6 +1671,7 @@ export async function buildGeneralLedger(
       AND jl.transaction_id IN (
         SELECT id FROM transactions
         WHERE tenant_id = ${tenantId} AND status = 'posted' AND txn_date < ${startDate}
+        AND basis <> 'cash'  -- basis: exclude cash-only entries from the accrual ledger
         AND ${companyId ? sql`company_id = ${companyId}` : sql`TRUE`}
       )${tagClause}
     LEFT JOIN transactions t
@@ -1697,6 +1706,7 @@ export async function buildGeneralLedger(
     LEFT JOIN tags tag ON tag.id = jl.tag_id AND tag.tenant_id = ${tenantId}
     WHERE jl.tenant_id = ${tenantId}
       AND t.status = 'posted'
+      AND t.basis <> 'cash'  -- basis: exclude cash-only entries from the accrual ledger
       AND t.txn_date >= ${startDate}
       AND t.txn_date <= ${endDate}
       AND ${companyFilter(companyId)}${tagClause}
@@ -1881,6 +1891,7 @@ export async function buildTrialBalance(
       AND jl.transaction_id IN (
         SELECT id FROM transactions
         WHERE tenant_id = ${tenantId} AND status = 'posted' AND txn_date <= ${endDate}
+        AND basis <> 'cash'  -- basis: exclude cash-only entries from the accrual trial balance
         AND ${companyId ? sql`company_id = ${companyId}` : sql`TRUE`}
         ${tagExistsClause}
       )
@@ -2010,6 +2021,7 @@ export async function buildAccountActivitySummary(
       AND jl.transaction_id IN (
         SELECT id FROM transactions
         WHERE tenant_id = ${tenantId} AND status = 'posted'
+        AND basis <> 'cash'  -- basis: exclude cash-only entries from the accrual activity summary
         AND txn_date >= ${startDate} AND txn_date <= ${endDate}
         AND ${companyId ? sql`company_id = ${companyId}` : sql`TRUE`}
         ${tagExistsClause}

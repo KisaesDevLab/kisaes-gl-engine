@@ -30,6 +30,9 @@ const journalLineInputSchema = z.object({
 export const createJournalEntrySchema = z.object({
   txnDate: z.string().min(1),
   memo: z.string().optional(),
+  // Which report bases this entry affects. Default 'both' preserves prior
+  // behavior (appears on cash- and accrual-basis reports alike).
+  basis: z.enum(['cash', 'accrual', 'both']).default('both'),
   lines: z.array(journalLineInputSchema).min(2, 'At least 2 lines required').max(MAX_LINES),
 });
 

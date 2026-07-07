@@ -198,7 +198,8 @@ export async function fillFromActuals(tenantId: string, budgetId: string) {
         FROM journal_lines jl
         JOIN transactions t ON t.id = jl.transaction_id
         WHERE jl.tenant_id = ${tenantId} AND jl.account_id = ${account.id}
-          AND t.status = 'posted' AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
+          AND t.status = 'posted' AND t.basis <> 'cash'
+          AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
           ${budgetTagId ? sql`AND jl.tag_id = ${budgetTagId}` : sql``}
       `);
       const row = (result.rows as any[])[0] || { total_debit: '0', total_credit: '0' };
@@ -421,6 +422,7 @@ export async function runTagScopedBudgetVsActuals(
     CROSS JOIN params p
     WHERE jl.tenant_id = ${tenantId}
       AND t.status = 'posted'
+      AND t.basis <> 'cash'
       AND t.txn_date >= p.fy_start
       AND t.txn_date <  p.fy_end
       AND jl.account_id = ANY(${sql.raw(`ARRAY[${accountIds.map((id) => `'${id}'`).join(',')}]::uuid[]`)})

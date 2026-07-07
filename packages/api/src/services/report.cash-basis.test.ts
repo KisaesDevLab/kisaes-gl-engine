@@ -187,3 +187,31 @@ describe('cash-basis pass-through', () => {
     expect(accPl.totalExpenses).toBeCloseTo(200, 2);
   });
 });
+
+describe('per-transaction basis flag', () => {
+  it('routes journal entries to the right basis; default both appears on both', async () => {
+    // Accrual-only adjusting entry (e.g. depreciation) — must NOT hit cash.
+    await post('journal_entry', '2026-07-10', [
+      { accountId: exp.id, debit: '300', credit: '0' },
+      { accountId: cash.id, debit: '0', credit: '300' },
+    ], { basis: 'accrual' });
+    // Cash-only entry — must NOT hit accrual.
+    await post('journal_entry', '2026-07-11', [
+      { accountId: exp.id, debit: '50', credit: '0' },
+      { accountId: cash.id, debit: '0', credit: '50' },
+    ], { basis: 'cash' });
+    // Default (both) — appears on both bases.
+    await post('journal_entry', '2026-07-12', [
+      { accountId: exp.id, debit: '20', credit: '0' },
+      { accountId: cash.id, debit: '0', credit: '20' },
+    ]);
+
+    const accrual = await reportService.buildProfitAndLoss(tenantId, '2026-07-01', '2026-07-31', 'accrual');
+    // 300 (accrual-only) + 20 (both); the 50 cash-only entry is excluded.
+    expect(accrual.totalExpenses).toBeCloseTo(320, 2);
+
+    const cash_ = await reportService.buildProfitAndLoss(tenantId, '2026-07-01', '2026-07-31', 'cash');
+    // 50 (cash-only) + 20 (both); the 300 accrual-only entry is excluded.
+    expect(cash_.totalExpenses).toBeCloseTo(70, 2);
+  });
+});

@@ -83,14 +83,15 @@ const envSchema = z.object({
     .transform((v) => v === 'true' || v === '1')
     .default('false'),
   // ADR 0XW feature flag. Gates tag-scoped Budget vs. Actuals behavior.
-  // When off, tag_id is still written on budget rows by the service
-  // layer but report endpoints ignore the scope and return company-wide
-  // actuals — matching pre-ADR behavior.
+  // Now on by default (the feature is complete and tested); set
+  // TAG_BUDGETS_V1=false to fall back to company-wide actuals that ignore
+  // a budget's tag scope. When off, tag_id is still written on budget rows
+  // by the service layer but report endpoints ignore the scope.
   TAG_BUDGETS_V1: z
     .string()
     .optional()
-    .transform((v) => v === 'true' || v === '1')
-    .default('false'),
+    .transform((v) => v !== 'false' && v !== '0')
+    .default('true'),
   // Portal account-linking layer. When on:
   //   - createContact probes portal_identities by email and auto-links
   //     the new portal_contacts row when a match exists.

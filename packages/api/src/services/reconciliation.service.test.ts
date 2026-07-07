@@ -171,6 +171,34 @@ describe('Reconciliation Service', () => {
       const recon2 = await reconciliation.start(tenantId, bankAccountId, '2026-05-31', '150.00');
       expect(recon2.status).toBe('in_progress');
     });
+
+    it('orients a liability (credit card) manual ending balance into GL sign so it ties out', async () => {
+      // A credit card is credit-normal: a $200 charge credits the liability
+      // (GL balance -200). The statement prints "$200.00" owed as a positive
+      // number, so the manual start must flip it to -200 to tie out.
+      const card = await accountsService.create(tenantId, { name: 'Visa', accountType: 'liability', accountNumber: '2100' });
+      const charge = await ledger.postTransaction(tenantId, {
+        txnType: 'journal_entry',
+        txnDate: '2026-04-10',
+        memo: 'Card charge 200',
+        lines: [
+          { accountId: expenseAccountId, debit: '200.00', credit: '0' },
+          { accountId: card.id, debit: '0', credit: '200.00' },
+        ],
+      });
+
+      // User types the printed balance owed (positive) — stored GL-oriented.
+      const recon = await reconciliation.start(tenantId, card.id, '2026-04-30', '200.00');
+      expect(recon.statementEndingBalance).toBe('-200.0000');
+
+      // Clearing the charge drives the difference to exactly $0.00.
+      const cardLine = await db.query.journalLines.findFirst({
+        where: (jl, { and: a, eq: e }) => a(e(jl.transactionId, charge.id), e(jl.accountId, card.id)),
+      });
+      await reconciliation.updateLines(tenantId, recon.id, [{ journalLineId: cardLine!.id, isCleared: true }]);
+      const loaded = await reconciliation.getReconciliation(tenantId, recon.id);
+      expect(loaded.difference).toBe(0);
+    });
   });
 
   describe('getReconciliation', () => {

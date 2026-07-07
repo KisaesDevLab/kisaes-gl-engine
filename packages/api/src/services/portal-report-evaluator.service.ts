@@ -154,6 +154,7 @@ async function balanceByDetailType(
     LEFT JOIN journal_lines jl ON jl.account_id = a.id AND jl.tenant_id = ${tenantId}
       AND jl.transaction_id IN (
         SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
+        AND basis <> 'cash'
         AND txn_date <= ${asOfDate}
         AND ${companyCond}
       )
@@ -192,6 +193,7 @@ async function costActivityByDetailType(
       AND a.detail_type IN (${detailList})
       AND jl.transaction_id IN (
         SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
+        AND basis <> 'cash'
         AND txn_date >= ${startDate} AND txn_date <= ${endDate}
         AND ${companyCond}
       )

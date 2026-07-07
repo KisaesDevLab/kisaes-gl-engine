@@ -204,6 +204,9 @@ interface PostTransactionInput {
   txnNumber?: string;
   dueDate?: string;
   status?: TxnStatus;
+  // Reporting basis: 'both' (default), 'cash', or 'accrual'. Only meaningful
+  // for manual journal entries today; all other txns pass 'both'.
+  basis?: 'cash' | 'accrual' | 'both';
   contactId?: string;
   memo?: string;
   internalNotes?: string;
@@ -288,6 +291,7 @@ export async function postTransaction(
       txnDate: input.txnDate,
       dueDate: input.dueDate || null,
       status: input.status || 'posted',
+      basis: input.basis || 'both',
       contactId: input.contactId || null,
       memo: input.memo || null,
       internalNotes: input.internalNotes || null,
@@ -545,6 +549,8 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
     await tx.update(transactions).set({
       txnDate: input.txnDate,
       dueDate: input.dueDate || null,
+      // Editable on a JE edit; other callers omit basis so it's left as 'both'.
+      ...(input.basis ? { basis: input.basis } : {}),
       contactId: input.contactId || null,
       memo: input.memo || null,
       subtotal: input.subtotal || null,

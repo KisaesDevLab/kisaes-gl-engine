@@ -10,6 +10,7 @@ function buildJournalEntryPayload(input: CreateJournalEntryInput) {
     txnType: 'journal_entry' as const,
     txnDate: input.txnDate,
     memo: input.memo,
+    basis: input.basis ?? 'both',
     lines: input.lines,
   };
 }

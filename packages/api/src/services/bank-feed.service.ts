@@ -862,10 +862,27 @@ export async function bulkSetTag(tenantId: string, feedItemIds: string[], tagId:
       const item = await db.query.bankFeedItems.findFirst({
         where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, id)),
       });
-      if (!item || !item.matchedTransactionId) {
-        failures.push({ id, error: 'no converted transaction to tag' });
+      if (!item) {
+        failures.push({ id, error: 'feed item not found' });
         continue;
       }
+      if (!item.matchedTransactionId) {
+        // Not yet posted. Stage the tag on the feed item so it carries into
+        // the ledger when the item is approved/posted (approve reads
+        // assigned_tag_id — see postAssignment/approve). Previously these
+        // items were silently skipped, so bulk-tagging pending/assigned
+        // rows appeared to do nothing.
+        if (item.status !== 'pending' && item.status !== 'assigned') {
+          failures.push({ id, error: `cannot tag item in status ${item.status}` });
+          continue;
+        }
+        await db.update(bankFeedItems)
+          .set({ assignedTagId: tagId, updatedAt: new Date() })
+          .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, id)));
+        updated++;
+        continue;
+      }
+      // Already posted — retag the transaction's journal lines directly.
       // Wrap the journal_lines update + transaction_tags sync in a
       // single per-item transaction so a mid-flight failure can't leave
       // journal_lines.tagId stamped while transaction_tags is stale (or

@@ -55,6 +55,8 @@ export interface Transaction {
   txnDate: string;
   dueDate: string | null;
   status: TxnStatus;
+  // Reporting basis: 'both' (default), 'cash', or 'accrual'.
+  basis?: 'cash' | 'accrual' | 'both';
   contactId: string | null;
   memo: string | null;
   internalNotes: string | null;
@@ -129,6 +131,9 @@ export interface JournalLineInput {
 export interface CreateJournalEntryInput {
   txnDate: string;
   memo?: string;
+  // Which report bases this entry affects: 'both' (default), 'cash', or
+  // 'accrual'. Excludes the entry from the other basis's reports.
+  basis?: 'cash' | 'accrual' | 'both';
   lines: JournalLineInput[];
 }
 

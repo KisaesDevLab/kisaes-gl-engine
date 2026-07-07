@@ -869,6 +869,13 @@
       "when": 1777230000000,
       "tag": "0123_report_packs",
       "breakpoints": true
+    },
+    {
+      "idx": 124,
+      "version": "7",
+      "when": 1777240000000,
+      "tag": "0124_transaction_basis",
+      "breakpoints": true
     }
   ]
 }

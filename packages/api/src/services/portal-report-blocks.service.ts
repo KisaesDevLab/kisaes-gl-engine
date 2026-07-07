@@ -541,6 +541,7 @@ async function plTrend12m(args: ResolverArgs, kind: 'revenue' | 'expense'): Prom
     JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = ${args.tenantId}
     WHERE jl.tenant_id = ${args.tenantId}
       AND t.status = 'posted'
+      AND t.basis <> 'cash'
       AND t.txn_date >= ${w.startDate} AND t.txn_date <= ${w.endDate}
       AND ${typeCond}
       ${companyCond}
@@ -567,6 +568,7 @@ async function netIncomeTrend12m(args: ResolverArgs): Promise<TrendPoint[]> {
     JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = ${args.tenantId}
     WHERE jl.tenant_id = ${args.tenantId}
       AND t.status = 'posted'
+      AND t.basis <> 'cash'
       AND t.txn_date >= ${w.startDate} AND t.txn_date <= ${w.endDate}
       AND a.account_type IN ('revenue', 'other_revenue', 'cogs', 'expense', 'other_expense')
       ${companyCond}
@@ -596,6 +598,7 @@ async function grossMarginTrend12m(args: ResolverArgs): Promise<TrendPoint[]> {
     JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = ${args.tenantId}
     WHERE jl.tenant_id = ${args.tenantId}
       AND t.status = 'posted'
+      AND t.basis <> 'cash'
       AND t.txn_date >= ${w.startDate} AND t.txn_date <= ${w.endDate}
       AND a.account_type IN ('revenue', 'other_revenue', 'cogs')
       ${companyCond}
@@ -631,6 +634,7 @@ async function cashBalanceTrend(args: ResolverArgs): Promise<TrendPoint[]> {
     JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = ${args.tenantId}
     WHERE jl.tenant_id = ${args.tenantId}
       AND t.status = 'posted'
+      AND t.basis <> 'cash'
       AND t.txn_date <= ${w.endDate}
       AND a.account_type = 'asset'
       AND a.detail_type IN (${detailList})
