@@ -90,6 +90,13 @@ export const updateReconciliationLinesSchema = z.object({
   })),
 });
 
+// PATCH /banking/reconciliations/:id — edit header fields on an in-progress
+// reconciliation. Currently just the statement ending balance (the figure the
+// worksheet ties out against); enforced server-side to in_progress only.
+export const updateReconciliationSchema = z.object({
+  statementEndingBalance: z.string().min(1),
+});
+
 // Statement Match Engine wave 1: confirm a suggested (or manually chosen)
 // worksheet journal line for a statement line.
 // Wave 2 grouped matches extend the same route:

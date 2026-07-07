@@ -522,3 +522,90 @@ export async function getHistory(tenantId: string, accountId: string) {
     .where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.accountId, accountId)))
     .orderBy(sql`${reconciliations.statementDate} DESC`);
 }
+
+// Edit header fields on an in-progress reconciliation. Today that's just the
+// statement ending balance — the figure the cleared balance ties out against.
+// Same lock/guard pattern as updateLines/complete: lock FOR UPDATE and refuse
+// once the reconciliation is complete (a completed period's ending balance is
+// the immutable anchor for the next period's beginning balance). The updated
+// value feeds straight into getReconciliation's difference recompute.
+export async function updateHeader(
+  tenantId: string,
+  reconciliationId: string,
+  input: { statementEndingBalance: string },
+  userId?: string,
+) {
+  let before: string | null = null;
+  await db.transaction(async (tx) => {
+    const [recon] = await tx.select().from(reconciliations)
+      .where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)))
+      .for('update')
+      .limit(1);
+
+    if (!recon) throw AppError.notFound('Reconciliation not found');
+    if (recon.status === 'complete') throw AppError.badRequest('Reconciliation is already complete');
+    before = recon.statementEndingBalance;
+
+    await tx.update(reconciliations).set({
+      statementEndingBalance: input.statementEndingBalance,
+      updatedAt: new Date(),
+    }).where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)));
+  });
+
+  await auditLog(
+    tenantId,
+    'update',
+    'reconciliation',
+    reconciliationId,
+    { statementEndingBalance: before },
+    { statementEndingBalance: input.statementEndingBalance },
+    userId,
+  );
+
+  return getReconciliation(tenantId, reconciliationId);
+}
+
+// Cancel (discard) an in-progress reconciliation so the account is free to
+// start a fresh one. An in-progress reconciliation posts nothing to the ledger
+// — it only tracks which lines are cleared — so a hard delete has no accounting
+// impact. Completed reconciliations cannot be canceled (use undo instead); they
+// anchor the next period's beginning balance.
+//
+// Teardown mirrors undo(): reset any auto/confirmed statement-line matches and
+// unlink the driving statement so it can be reconciled again, then delete the
+// worksheet lines and the header.
+export async function cancel(tenantId: string, reconciliationId: string, userId?: string) {
+  await db.transaction(async (tx) => {
+    const [recon] = await tx.select().from(reconciliations)
+      .where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)))
+      .for('update')
+      .limit(1);
+
+    if (!recon) throw AppError.notFound('Reconciliation not found');
+    if (recon.status === 'complete') {
+      throw AppError.badRequest('A completed reconciliation cannot be canceled — use Undo instead.');
+    }
+
+    // Reset statement lines this reconciliation had matched (same as undo).
+    await tx.execute(sql`
+      UPDATE bank_statement_lines bsl
+      SET match_status = 'unmatched', matched_journal_line_id = NULL,
+          match_score = NULL, score_breakdown = NULL, updated_at = now()
+      FROM bank_statements bs
+      WHERE bs.id = bsl.statement_id AND bs.reconciliation_id = ${reconciliationId}
+        AND bsl.tenant_id = ${tenantId}
+        AND bsl.match_status IN ('auto', 'confirmed')
+    `);
+
+    // Unlink the driving statement so it returns to the "reconcile" pool.
+    await tx.update(bankStatements)
+      .set({ reconciliationId: null })
+      .where(and(eq(bankStatements.tenantId, tenantId), eq(bankStatements.reconciliationId, reconciliationId)));
+
+    // Delete worksheet lines, then the header.
+    await tx.delete(reconciliationLines).where(eq(reconciliationLines.reconciliationId, reconciliationId));
+    await tx.delete(reconciliations).where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)));
+  });
+
+  await auditLog(tenantId, 'delete', 'reconciliation', reconciliationId, null, null, userId);
+}

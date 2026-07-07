@@ -6,7 +6,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import {
   bankFeedFiltersSchema, categorizeSchema, matchSchema, assignSchema, bulkAssignSchema,
-  startReconciliationSchema, updateReconciliationLinesSchema, bankImportSchema,
+  startReconciliationSchema, updateReconciliationLinesSchema, updateReconciliationSchema, bankImportSchema,
   bulkApproveSchema, bulkCategorizeSchema, bulkExcludeSchema, bulkRecleanseSchema,
   bulkReprocessRulesSchema,
   createManualConnectionSchema, updateFeedItemSchema, bankStatementFiltersSchema,
@@ -372,9 +372,21 @@ bankingRouter.get('/reconciliations/:id', async (req, res) => {
   res.json({ reconciliation: recon });
 });
 
+// Edit header fields (statement ending balance) on an in-progress rec.
+bankingRouter.patch('/reconciliations/:id', validate(updateReconciliationSchema), async (req, res) => {
+  const recon = await reconciliationService.updateHeader(req.tenantId, req.params['id']!, req.body, req.userId);
+  res.json({ reconciliation: recon });
+});
+
 bankingRouter.put('/reconciliations/:id/lines', validate(updateReconciliationLinesSchema), async (req, res) => {
   const recon = await reconciliationService.updateLines(req.tenantId, req.params['id']!, req.body.lines);
   res.json({ reconciliation: recon });
+});
+
+// Cancel (discard) an in-progress rec so the account can start fresh.
+bankingRouter.post('/reconciliations/:id/cancel', async (req, res) => {
+  await reconciliationService.cancel(req.tenantId, req.params['id']!, req.userId);
+  res.json({ message: 'Reconciliation canceled' });
 });
 
 bankingRouter.post('/reconciliations/:id/complete', async (req, res) => {

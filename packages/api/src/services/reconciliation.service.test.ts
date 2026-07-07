@@ -448,6 +448,83 @@ describe('Reconciliation Service', () => {
       expect(history.length).toBe(0);
     });
   });
+
+  describe('updateHeader', () => {
+    it('updates the statement ending balance and recomputes the difference', async () => {
+      await postDeposit('100.00', '2026-04-01');
+      const recon = await reconciliation.start(tenantId, bankAccountId, '2026-04-30', '70.00');
+      // Before: statement 70 vs 0 cleared → difference 70.
+      let view = await reconciliation.getReconciliation(tenantId, recon.id);
+      expect(view.difference).toBe(70);
+
+      await reconciliation.updateHeader(tenantId, recon.id, { statementEndingBalance: '120.00' });
+      view = await reconciliation.getReconciliation(tenantId, recon.id);
+      expect(parseFloat(view.statementEndingBalance)).toBe(120);
+      expect(view.difference).toBe(120);
+    });
+
+    it('writes an audit row capturing the before/after balance', async () => {
+      await postDeposit('100.00', '2026-04-01');
+      const recon = await reconciliation.start(tenantId, bankAccountId, '2026-04-30', '70.00');
+      await reconciliation.updateHeader(tenantId, recon.id, { statementEndingBalance: '80.00' });
+      const rows = await db.select().from(auditLog).where(
+        (await import('drizzle-orm')).eq(auditLog.entityId, recon.id),
+      );
+      expect(rows.some((r) => r.entityType === 'reconciliation' && r.action === 'update')).toBe(true);
+    });
+
+    it('rejects editing the balance of a completed reconciliation', async () => {
+      await postDeposit('100.00', '2026-04-01');
+      const recon = await reconciliation.start(tenantId, bankAccountId, '2026-04-30', '100.00');
+      const lineIds = (await db.query.reconciliationLines.findMany({
+        where: (rl, { eq: e }) => e(rl.reconciliationId, recon.id),
+      })).map((l) => l.journalLineId);
+      await reconciliation.updateLines(tenantId, recon.id, lineIds.map((id) => ({ journalLineId: id, isCleared: true })));
+      await reconciliation.complete(tenantId, recon.id);
+
+      await expect(
+        reconciliation.updateHeader(tenantId, recon.id, { statementEndingBalance: '999.00' }),
+      ).rejects.toThrow('already complete');
+    });
+  });
+
+  describe('cancel', () => {
+    it('deletes the in-progress reconciliation and its lines', async () => {
+      await postDeposit('100.00', '2026-04-01');
+      const recon = await reconciliation.start(tenantId, bankAccountId, '2026-04-30', '100.00');
+
+      await reconciliation.cancel(tenantId, recon.id);
+
+      const { eq: e } = await import('drizzle-orm');
+      const headers = await db.select().from(reconciliations).where(e(reconciliations.id, recon.id));
+      expect(headers.length).toBe(0);
+      const lines = await db.select().from(reconciliationLines).where(e(reconciliationLines.reconciliationId, recon.id));
+      expect(lines.length).toBe(0);
+    });
+
+    it('frees the account to start a fresh reconciliation', async () => {
+      await postDeposit('100.00', '2026-04-01');
+      const recon = await reconciliation.start(tenantId, bankAccountId, '2026-04-30', '100.00');
+      await reconciliation.cancel(tenantId, recon.id);
+
+      // The start guard should no longer fire.
+      const recon2 = await reconciliation.start(tenantId, bankAccountId, '2026-04-30', '100.00');
+      expect(recon2.status).toBe('in_progress');
+      expect(recon2.id).not.toBe(recon.id);
+    });
+
+    it('refuses to cancel a completed reconciliation', async () => {
+      await postDeposit('100.00', '2026-04-01');
+      const recon = await reconciliation.start(tenantId, bankAccountId, '2026-04-30', '100.00');
+      const lineIds = (await db.query.reconciliationLines.findMany({
+        where: (rl, { eq: e }) => e(rl.reconciliationId, recon.id),
+      })).map((l) => l.journalLineId);
+      await reconciliation.updateLines(tenantId, recon.id, lineIds.map((id) => ({ journalLineId: id, isCleared: true })));
+      await reconciliation.complete(tenantId, recon.id);
+
+      await expect(reconciliation.cancel(tenantId, recon.id)).rejects.toThrow('cannot be canceled');
+    });
+  });
 });
 
 // Helper: return the txn_id of the most recent transaction for the
