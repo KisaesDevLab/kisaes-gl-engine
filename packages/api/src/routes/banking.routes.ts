@@ -361,6 +361,17 @@ bankingRouter.post('/statement-lines/:lineId/reject', async (req, res) => {
   res.json({ line });
 });
 
+// Exclude an OCR-error / non-transaction statement line (hides it from the
+// "not in your books" list and from re-matching). Restore = /unexclude.
+bankingRouter.post('/statement-lines/:lineId/exclude', async (req, res) => {
+  const line = await statementMatchService.setStatementLineExcluded(req.tenantId, req.params['lineId']!, true, req.userId);
+  res.json({ line });
+});
+bankingRouter.post('/statement-lines/:lineId/unexclude', async (req, res) => {
+  const line = await statementMatchService.setStatementLineExcluded(req.tenantId, req.params['lineId']!, false, req.userId);
+  res.json({ line });
+});
+
 // Auto-clear the linked statement's transactions on the worksheet.
 bankingRouter.post('/reconciliations/:id/auto-clear-statement', async (req, res) => {
   const result = await reconciliationService.autoClearStatement(req.tenantId, req.params['id']!, req.userId);

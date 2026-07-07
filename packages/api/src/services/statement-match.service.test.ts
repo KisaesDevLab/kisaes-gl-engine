@@ -452,6 +452,42 @@ describe('Statement Match Engine', () => {
     });
   });
 
+  describe('exclude (OCR-error / non-transaction lines)', () => {
+    it('excludes a line from the not-in-books list + re-match, and restores it', async () => {
+      // A statement line with no matching book transaction stays unmatched.
+      const { statementId, reconId } = await captureAndStart({
+        transactions: [{ date: '2026-04-02', description: 'CHECK 9999', amount: '162.50', type: 'debit' }],
+      });
+      await statementMatch.matchStatement(tenantId, reconId, { apply: true });
+      const lineId = (await statementLinesOf(statementId))[0]!.id;
+
+      // Before: it's in the "not in your books" list.
+      let view = await statementMatch.getStatementMatches(tenantId, reconId);
+      expect(view.unmatchedLines.some((l) => l.id === lineId)).toBe(true);
+      expect(view.excludedLines.length).toBe(0);
+
+      // Exclude → drops out of unmatched, into excludedLines, counts.excluded=1.
+      const excluded = await statementMatch.setStatementLineExcluded(tenantId, lineId, true);
+      expect(excluded.matchStatus).toBe('excluded');
+      view = await statementMatch.getStatementMatches(tenantId, reconId);
+      expect(view.unmatchedLines.some((l) => l.id === lineId)).toBe(false);
+      expect(view.excludedLines.some((l) => l.id === lineId)).toBe(true);
+      expect(view.counts.excluded).toBe(1);
+
+      // A re-run skips the excluded line (stays excluded).
+      const rerun = await statementMatch.matchStatement(tenantId, reconId, { apply: true });
+      expect(rerun.skippedLines).toBe(1);
+      expect((await statementLinesOf(statementId))[0]!.matchStatus).toBe('excluded');
+
+      // Restore → back to unmatched, out of excludedLines.
+      const restored = await statementMatch.setStatementLineExcluded(tenantId, lineId, false);
+      expect(restored.matchStatus).toBe('unmatched');
+      view = await statementMatch.getStatementMatches(tenantId, reconId);
+      expect(view.unmatchedLines.some((l) => l.id === lineId)).toBe(true);
+      expect(view.excludedLines.length).toBe(0);
+    });
+  });
+
   describe('un-clearing resets the statement line', () => {
     it('updateLines(isCleared=false) flips an auto-matched line back to unmatched', async () => {
       await postBank({ date: '2026-04-03', amount: '50.00', memo: 'COFFEE BARN PURCHASE', direction: 'out' });

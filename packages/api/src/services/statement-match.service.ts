@@ -674,7 +674,9 @@ export async function matchStatement(
     for (const line of stmtLines) {
       // Re-runs never touch resolved lines; rejected lines stay rejected
       // (re-scoring would just resurrect the suggestion the user dismissed).
-      if (line.matchStatus === 'auto' || line.matchStatus === 'confirmed' || line.matchStatus === 'rejected') {
+      // Excluded lines are OCR errors the operator hid — never re-match them.
+      if (line.matchStatus === 'auto' || line.matchStatus === 'confirmed'
+        || line.matchStatus === 'rejected' || line.matchStatus === 'excluded') {
         skippedLines += 1;
         continue;
       }
@@ -1005,9 +1007,12 @@ export async function matchStatement(
 
 export interface StatementMatchesView {
   statementId: string;
-  counts: { auto: number; confirmed: number; suggested: number; unmatched: number; rejected: number };
+  counts: { auto: number; confirmed: number; suggested: number; unmatched: number; rejected: number; excluded: number };
   suggestions: StatementMatchSuggestion[];
   unmatchedLines: StatementLineSummary[];
+  // OCR-error / non-transaction lines the operator hid — surfaced separately
+  // so the UI can list + restore them, but kept out of unmatchedLines.
+  excludedLines: StatementLineSummary[];
   outstandingCount: number;
 }
 
@@ -1027,9 +1032,10 @@ export async function getStatementMatches(
   const lines = await loadStatementLines(db, tenantId, statement.id);
   const worksheet = await loadWorksheet(db, tenantId, reconciliationId);
 
-  const counts = { auto: 0, confirmed: 0, suggested: 0, unmatched: 0, rejected: 0 };
+  const counts = { auto: 0, confirmed: 0, suggested: 0, unmatched: 0, rejected: 0, excluded: 0 };
   const suggestions: StatementMatchSuggestion[] = [];
   const unmatchedLines: StatementLineSummary[] = [];
+  const excludedLines: StatementLineSummary[] = [];
   const accountedJl = new Set<string>();
 
   // Wave 2: statement lines referenced as non-primary members of a
@@ -1043,6 +1049,7 @@ export async function getStatementMatches(
       case 'confirmed': counts.confirmed += 1; break;
       case 'suggested': counts.suggested += 1; break;
       case 'rejected': counts.rejected += 1; break;
+      case 'excluded': counts.excluded += 1; break;
       default: counts.unmatched += 1; break;
     }
     if (line.matchedJournalLineId) accountedJl.add(line.matchedJournalLineId);
@@ -1064,6 +1071,8 @@ export async function getStatementMatches(
       });
     } else if (line.matchStatus === 'unmatched' || line.matchStatus === 'rejected') {
       unmatchedLines.push(summaryOf(line));
+    } else if (line.matchStatus === 'excluded') {
+      excludedLines.push(summaryOf(line));
     }
   }
   const visibleUnmatched = unmatchedLines.filter((l) => !a2MemberLineIds.has(l.id));
@@ -1073,7 +1082,7 @@ export async function getStatementMatches(
     if (!row.is_cleared && !accountedJl.has(row.journal_line_id)) outstandingCount += 1;
   }
 
-  return { statementId: statement.id, counts, suggestions, unmatchedLines: visibleUnmatched, outstandingCount };
+  return { statementId: statement.id, counts, suggestions, unmatchedLines: visibleUnmatched, excludedLines, outstandingCount };
 }
 
 // ─── Confirm / reject ──────────────────────────────────────────────
@@ -1188,6 +1197,39 @@ export async function rejectStatementLine(
     );
 
     return { ...summaryOf(line), matchStatus: 'rejected' };
+  });
+}
+
+/**
+ * Exclude (or restore) a statement line the operator has judged an OCR error /
+ * non-transaction (e.g. a "Balance Summary" $0.00 row). Excluded lines drop
+ * out of the "on the statement, not in your books" list and are never
+ * re-matched, so they stop distorting the reconciliation. Reversible.
+ */
+export async function setStatementLineExcluded(
+  tenantId: string,
+  statementLineId: string,
+  excluded: boolean,
+  userId?: string,
+): Promise<StatementLineSummary> {
+  return await db.transaction(async (tx) => {
+    const { line } = await lockLineAndReconciliation(tx, tenantId, statementLineId);
+    if (line.matchStatus === 'confirmed' || line.matchStatus === 'auto') {
+      throw AppError.badRequest('This line is already matched and cleared — un-clear it on the worksheet instead.');
+    }
+    const target = excluded ? 'excluded' : 'unmatched';
+    await tx.execute(sql`
+      UPDATE bank_statement_lines
+      SET match_status = ${target}, matched_journal_line_id = NULL, updated_at = now()
+      WHERE id = ${statementLineId} AND tenant_id = ${tenantId}
+    `);
+    await auditLog(
+      tenantId, 'update', 'bank_statement_line', statementLineId,
+      { matchStatus: line.matchStatus },
+      { matchStatus: target },
+      userId, tx,
+    );
+    return { ...summaryOf(line), matchStatus: target };
   });
 }
 
