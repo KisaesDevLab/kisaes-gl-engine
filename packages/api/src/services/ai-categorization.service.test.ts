@@ -14,6 +14,7 @@ import * as accountsService from './accounts.service.js';
 import * as aiConfigService from './ai-config.service.js';
 import * as aiConsent from './ai-consent.service.js';
 import * as aiCategorization from './ai-categorization.service.js';
+import * as bankFeedService from './bank-feed.service.js';
 
 // ── Mocked Ollama provider for the parse-path suite ────────────────
 // The class runs the REAL extractJsonForResult over whatever raw text the
@@ -269,6 +270,83 @@ describe('ai-categorization.service', () => {
       expect(result).toMatchObject({ status: 'suggested', accountId: officeSuppliesId });
     });
 
+    it('FIX 1: resolves account_ref to the exact account by reference index (primary path)', async () => {
+      const ctx = await aiCategorization.buildCategorizationContext(tenantId, 50);
+      const ref = ctx.refAccounts.findIndex((a) => a.id === officeSuppliesId) + 1;
+      expect(ref).toBeGreaterThan(0); // officeSupplies is on the money-out side
+      parseMocks.reply.mockReturnValue({
+        text: `{"account_ref":${ref},"vendor_name":"Staples","memo":"m","tag_name":null,"confidence":0.9}`,
+      });
+      const id = await makeFeedItem('STAPLES REF');
+
+      const result = await aiCategorization.categorize(tenantId, id);
+
+      expect(result).toMatchObject({ status: 'suggested', accountId: officeSuppliesId, lowConfidence: false });
+    });
+
+    it('FIX 1: an out-of-range account_ref yields no suggestion (counted, nothing persisted)', async () => {
+      parseMocks.reply.mockReturnValue({
+        text: '{"account_ref":99999,"vendor_name":"X","memo":"m","tag_name":null,"confidence":0.95}',
+      });
+      const id = await makeFeedItem('MYSTERY REF');
+
+      const result = await aiCategorization.categorize(tenantId, id);
+
+      expect(result).toMatchObject({ status: 'no_confident_match', accountId: null });
+      const stored = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, id) });
+      expect(stored!.suggestedAccountId).toBeNull();
+    });
+
+    it('FIX 1: account_ref wins over a wrong/synonym account_name (name ignored when ref present)', async () => {
+      const ctx = await aiCategorization.buildCategorizationContext(tenantId, 50);
+      const ref = ctx.refAccounts.findIndex((a) => a.id === officeSuppliesId) + 1;
+      parseMocks.reply.mockReturnValue({
+        text: `{"account_ref":${ref},"account_name":"Totally Different Synonym","vendor_name":"X","memo":"m","tag_name":null,"confidence":0.8}`,
+      });
+      const id = await makeFeedItem('STAPLES SYN');
+
+      const result = await aiCategorization.categorize(tenantId, id);
+
+      expect(result?.accountId).toBe(officeSuppliesId);
+    });
+
+    it('FIX 1 fallback: a name echoing the account NUMBER still resolves (the case that used to drop)', async () => {
+      // No account_ref (old cached prompt) + the model prefixed the account
+      // NAME with its number. Hardened matchByName strips "6990 " and matches.
+      parseMocks.reply.mockReturnValue({
+        text: '{"account_name":"6990 ZZ Parse Test Expense","vendor_name":"X","memo":"m","tag_name":null,"confidence":0.85}',
+      });
+      const id = await makeFeedItem('STAPLES NUMECHO');
+
+      const result = await aiCategorization.categorize(tenantId, id);
+
+      expect(result?.accountId).toBe(officeSuppliesId);
+    });
+
+    it('FIX 2: a below-threshold valid match is PERSISTED as a low-confidence suggestion (not nulled) and is NOT auto-post-eligible', async () => {
+      const ctx = await aiCategorization.buildCategorizationContext(tenantId, 50);
+      const ref = ctx.refAccounts.findIndex((a) => a.id === officeSuppliesId) + 1;
+      parseMocks.reply.mockReturnValue({
+        text: `{"account_ref":${ref},"vendor_name":"X","memo":"m","tag_name":null,"confidence":0.3}`,
+      });
+      const id = await makeFeedItem('AMBIGUOUS LOW');
+
+      const result = await aiCategorization.categorize(tenantId, id);
+
+      // Surfaced for review, not suppressed to null.
+      expect(result).toMatchObject({ status: 'suggested', accountId: officeSuppliesId, lowConfidence: true });
+      const stored = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, id) });
+      expect(stored!.suggestedAccountId).toBe(officeSuppliesId);
+      expect(parseFloat(stored!.confidenceScore!)).toBeCloseTo(0.3);
+
+      // But it must NOT auto-post: bulkApprove skips it (default threshold 0.5).
+      const approveResult = await bankFeedService.bulkApprove(tenantId, [id]);
+      expect(approveResult.approved).toBe(0);
+      expect(approveResult.skippedLowConfidence).toBe(1);
+      const still = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, id) });
+      expect(still!.status).toBe('pending');
+    });
+
     it('FIX 5: no COA match returns status "no_confident_match" (200, not an error) and persists nothing', async () => {
       // A valid-JSON reply whose account_name matches NO account in the COA →
       // an honest "reviewed, nothing confident", not a broken button.
@@ -359,6 +437,23 @@ describe('ai-categorization.service', () => {
 
     beforeEach(() => {
       parseMocks.reply.mockReset();
+    });
+
+    it('FIX 1 (batch): maps a per-index account_ref to the right account', async () => {
+      await enableAiWithBatchSize(15);
+      // Batch context is built without an amount (mixed signs) → full COA.
+      const ctx = await aiCategorization.buildCategorizationContext(tenantId);
+      const ref = ctx.refAccounts.findIndex((a) => a.id === officeSuppliesId) + 1;
+      parseMocks.reply.mockReturnValue({
+        text: `[{"index":0,"account_ref":${ref},"vendor_name":"Staples","memo":"m","tag_name":null,"confidence":0.9}]`,
+      });
+      const id = await makeFeedItem('STAPLES BATCHREF');
+
+      const results = await aiCategorization.categorizeFeedItemsBatch(tenantId, [id]);
+
+      expect(results.get(id)?.outcome?.accountId).toBe(officeSuppliesId);
+      const stored = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, id) });
+      expect(stored!.suggestedAccountId).toBe(officeSuppliesId);
     });
 
     it('sends N=3 transactions in ONE provider call and maps every result by index', async () => {
@@ -502,5 +597,72 @@ describe('ai-categorization.service', () => {
       expect(results.get(c1Item)?.outcome?.accountId).toBe(officeSuppliesId);
       expect(results.get(c2Item)?.error?.code).toBe('ai_consent_blocked');
     });
+  });
+});
+
+// ── Pure helpers (no DB) — FIX 1 ref resolution + FIX 3 sign filter ──
+describe('offerAccountsForAmount (FIX 3 — sign filter)', () => {
+  const coa = [
+    { id: 'e', name: 'Office Supplies', accountType: 'expense' },
+    { id: 'c', name: 'COGS', accountType: 'cogs' },
+    { id: 'oe', name: 'Bank Fees', accountType: 'other_expense' },
+    { id: 'r', name: 'Sales Revenue', accountType: 'revenue' },
+    { id: 'or', name: 'Interest Income', accountType: 'other_revenue' },
+    { id: 'l', name: 'Credit Card', accountType: 'liability' },
+    { id: 'a', name: 'Checking', accountType: 'asset' },
+    { id: 'd', name: "Owner's Draw", accountType: 'equity' },
+  ];
+
+  it('money-OUT (positive amount) offers expense/cogs/other_expense + asset + safety, not revenue/liability', () => {
+    const ids = aiCategorization.offerAccountsForAmount(coa, 50).map((a) => a.id);
+    expect(ids).toEqual(expect.arrayContaining(['e', 'c', 'oe', 'a', 'd'])); // 'd' via the safety set (Owner's Draw)
+    expect(ids).not.toContain('r');
+    expect(ids).not.toContain('or');
+    expect(ids).not.toContain('l');
+  });
+
+  it('money-IN (negative amount) offers revenue/other_revenue + asset/liability + safety, not expense', () => {
+    const ids = aiCategorization.offerAccountsForAmount(coa, -50).map((a) => a.id);
+    expect(ids).toEqual(expect.arrayContaining(['r', 'or', 'l', 'a', 'd']));
+    expect(ids).not.toContain('e');
+    expect(ids).not.toContain('c');
+    expect(ids).not.toContain('oe');
+  });
+
+  it('falls back to the full COA when filtering would leave too few (<5)', () => {
+    const tiny = [
+      { id: 'r', name: 'Sales', accountType: 'revenue' },
+      { id: 'e', name: 'Rent', accountType: 'expense' },
+    ];
+    // money-out would keep only 'e' (1 < 5) → full list returned instead.
+    expect(aiCategorization.offerAccountsForAmount(tiny, 50).map((a) => a.id)).toEqual(['r', 'e']);
+  });
+
+  it('no direction signal (amount 0 / undefined) offers the full list', () => {
+    expect(aiCategorization.offerAccountsForAmount(coa, 0)).toHaveLength(coa.length);
+    expect(aiCategorization.offerAccountsForAmount(coa)).toHaveLength(coa.length);
+  });
+});
+
+describe('resolveAccountRef (FIX 1 — index resolution, bounds-checked)', () => {
+  const refs = [
+    { id: 'a', name: 'A', accountType: 'expense' },
+    { id: 'b', name: 'B', accountType: 'expense' },
+    { id: 'c', name: 'C', accountType: 'expense' },
+  ];
+
+  it('resolves a 1-based number, "[n]" bracket, and numeric alike', () => {
+    expect(aiCategorization.resolveAccountRef(refs, 2)?.id).toBe('b');
+    expect(aiCategorization.resolveAccountRef(refs, '2')?.id).toBe('b');
+    expect(aiCategorization.resolveAccountRef(refs, '[3]')?.id).toBe('c');
+    expect(aiCategorization.resolveAccountRef(refs, '[1] Whatever Name')?.id).toBe('a');
+  });
+
+  it('returns undefined for out-of-range / non-numeric / null / undefined', () => {
+    expect(aiCategorization.resolveAccountRef(refs, 0)).toBeUndefined();
+    expect(aiCategorization.resolveAccountRef(refs, 4)).toBeUndefined();
+    expect(aiCategorization.resolveAccountRef(refs, 'none')).toBeUndefined();
+    expect(aiCategorization.resolveAccountRef(refs, null)).toBeUndefined();
+    expect(aiCategorization.resolveAccountRef(refs, undefined)).toBeUndefined();
   });
 });

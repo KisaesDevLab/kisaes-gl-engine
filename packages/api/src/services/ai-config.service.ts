@@ -82,7 +82,8 @@ export async function getConfig() {
     statementExtractionModel: config.statementExtractionModel,
     autoCategorizeOnImport: config.autoCategorizeOnImport ?? true,
     autoOcrOnUpload: config.autoOcrOnUpload ?? true,
-    categorizationConfidenceThreshold: parseFloat(config.categorizationConfidenceThreshold || '0.70'),
+    // FIX 5: parse fallback for a null column matches the schema default (0.50).
+    categorizationConfidenceThreshold: parseFloat(config.categorizationConfidenceThreshold || '0.50'),
     maxConcurrentJobs: config.maxConcurrentJobs || 5,
     trackUsage: config.trackUsage ?? true,
     monthlyBudgetLimit: config.monthlyBudgetLimit ? parseFloat(config.monthlyBudgetLimit) : null,

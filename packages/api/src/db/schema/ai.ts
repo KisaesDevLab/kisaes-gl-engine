@@ -58,7 +58,11 @@ export const aiConfig = pgTable('ai_config', {
   // Processing settings
   autoCategorizeOnImport: boolean('auto_categorize_on_import').default(true),
   autoOcrOnUpload: boolean('auto_ocr_on_upload').default(true),
-  categorizationConfidenceThreshold: decimal('categorization_confidence_threshold', { precision: 3, scale: 2 }).default('0.70'),
+  // FIX 5: default lowered 0.70 → 0.50. With below-threshold suggestions now
+  // surfaced for review (not nulled), the threshold mainly gates autoConfirm
+  // eligibility; 0.50 is a better cut for that. Additive default — existing
+  // tenant rows keep their stored value; only new/unset rows get 0.50.
+  categorizationConfidenceThreshold: decimal('categorization_confidence_threshold', { precision: 3, scale: 2 }).default('0.50'),
   maxConcurrentJobs: integer('max_concurrent_jobs').default(5),
   // Cost tracking
   trackUsage: boolean('track_usage').default(true),

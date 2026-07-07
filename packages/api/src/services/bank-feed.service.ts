@@ -542,11 +542,19 @@ export async function bulkApprove(tenantId: string, feedItemIds: string[]) {
   if (feedItemIds.length > MAX_BATCH) {
     throw AppError.badRequest(`Bulk approve is limited to ${MAX_BATCH} items per request`);
   }
-  // Wrap each item in try/catch so a single bad row (already
-  // claimed, deleted, missing suggestion, ledger-post failure) can't
-  // abort the whole batch. Returns per-item failures for the caller
-  // to surface.
+  // FIX 2: below-threshold AI suggestions are now surfaced (persisted) for
+  // review rather than nulled — so "approve" can no longer post on the mere
+  // PRESENCE of a suggestion, or it would auto-post low-confidence guesses a
+  // user swept in with "select all". Gate on confidence >= threshold; a
+  // deterministic rule/history hit (0.90/0.95) always clears it. Items below
+  // threshold are skipped (not posted) and reported so they can be reviewed
+  // individually. A missing confidence score is treated as eligible
+  // (manual/legacy suggestions carry no AI confidence).
+  const { getConfig } = await import('./ai-config.service.js');
+  const threshold = (await getConfig().catch(() => null))?.categorizationConfidenceThreshold ?? 0.5;
+
   let approved = 0;
+  let skippedLowConfidence = 0;
   const failures: Array<{ id: string; error: string }> = [];
   for (const id of feedItemIds) {
     try {
@@ -554,6 +562,11 @@ export async function bulkApprove(tenantId: string, feedItemIds: string[]) {
         where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, id)),
       });
       if (item && item.status === 'pending' && item.suggestedAccountId) {
+        const score = item.confidenceScore != null ? parseFloat(item.confidenceScore) : null;
+        if (score != null && score < threshold) {
+          skippedLowConfidence++;
+          continue;
+        }
         await categorize(tenantId, id, { accountId: item.suggestedAccountId, contactId: item.suggestedContactId || undefined });
         approved++;
       }
@@ -561,7 +574,7 @@ export async function bulkApprove(tenantId: string, feedItemIds: string[]) {
       failures.push({ id, error: err?.message || 'unknown error' });
     }
   }
-  return { approved, failures };
+  return { approved, skippedLowConfidence, failures };
 }
 
 export async function bulkCategorize(tenantId: string, feedItemIds: string[], accountId: string, contactId?: string, memo?: string, tagId?: string | null, userId?: string, companyId?: string) {
