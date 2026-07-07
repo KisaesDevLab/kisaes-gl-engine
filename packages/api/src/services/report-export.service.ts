@@ -80,6 +80,55 @@ export function toReportHtml(
 </body></html>`;
 }
 
+export interface ReportPackSectionOptions {
+  title: string;
+  companyName: string;
+  dateLabel: string;
+  tableHtml: string;
+  footer?: string;
+  /** Insert a hard page break before this section (all but the first). */
+  pageBreakBefore?: boolean;
+}
+
+/**
+ * Render ONE report-pack section to a standalone HTML document. Shares the
+ * exact stylesheet + chrome of `toReportHtml` (company header, title, date
+ * label, footer) but adds a `page-break-before` rule so the processor can
+ * emit each section on its own page(s). The processor renders each section
+ * to its own single-orientation PDF, then pdf-lib merges them — so
+ * `toReportHtml`/`toPdf` stay unchanged for the existing single-report path.
+ */
+export function buildReportPackSectionHtml(opts: ReportPackSectionOptions): string {
+  const { title, companyName, dateLabel, tableHtml, footer, pageBreakBefore } = opts;
+  const footerHtml = footer && footer.trim().length > 0
+    ? `<div class="report-footer">${escapeHtml(footer).replace(/\n/g, '<br>')}</div>`
+    : '';
+  const breakStyle = pageBreakBefore ? 'page-break-before:always;' : '';
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;padding:30px;font-size:12px;color:#111}
+  h1{font-size:20px;margin:0 0 4px}
+  .meta{color:#666;margin-bottom:20px;font-size:11px}
+  table{width:100%;border-collapse:collapse}
+  th{background:#f3f4f6;padding:6px 8px;text-align:left;font-size:10px;text-transform:uppercase;border-bottom:2px solid #d1d5db}
+  td{padding:5px 8px;border-bottom:1px solid #e5e7eb;font-size:11px}
+  .amount{text-align:right;font-variant-numeric:tabular-nums}
+  .total-row{font-weight:bold;border-top:2px solid #111}
+  .report-footer{margin-top:24px;padding-top:12px;border-top:1px solid #d1d5db;font-size:10px;color:#4b5563;white-space:pre-wrap;line-height:1.5}
+  .section{${breakStyle}}
+  @media print{body{padding:0}}
+</style></head>
+<body>
+  <div class="section">
+    <h1>${escapeHtml(companyName)}</h1>
+    <div style="font-size:16px;font-weight:600;margin-bottom:2px">${escapeHtml(title)}</div>
+    <div class="meta">${escapeHtml(dateLabel)}</div>
+    ${tableHtml}
+    ${footerHtml}
+  </div>
+</body></html>`;
+}
+
 export interface ToPdfOptions {
   /** Page orientation. Defaults to portrait. Use 'landscape' for wide
    * reports like the General Ledger that need extra horizontal room. */

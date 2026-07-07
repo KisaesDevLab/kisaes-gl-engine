@@ -23,6 +23,7 @@ import { billPaymentsRouter } from './routes/bill-payments.routes.js';
 import { estimatesRouter } from './routes/estimates.routes.js';
 import { tagsRouter } from './routes/tags.routes.js';
 import { reportsRouter } from './routes/reports.routes.js';
+import { reportPacksRouter } from './routes/report-packs.routes.js';
 import { bankingRouter } from './routes/banking.routes.js';
 import { dashboardRouter } from './routes/dashboard.routes.js';
 import { attachmentsRouter } from './routes/attachments.routes.js';
@@ -394,6 +395,9 @@ app.use('/api/v1/vendor-credits', vendorCreditsRouter);
 app.use('/api/v1/bill-payments', billPaymentsRouter);
 app.use('/api/v1/estimates', estimatesRouter);
 app.use('/api/v1/tags', tagsRouter);
+// Report Packs share the /reports base; mount BEFORE reportsRouter so the
+// pack sub-paths (/catalog, /packs*) resolve via their own middleware chain.
+app.use('/api/v1/reports', reportPacksRouter);
 app.use('/api/v1/reports', reportsRouter);
 app.use('/api/v1/banking', bankingRouter);
 app.use('/api/v1/dashboard', dashboardRouter);

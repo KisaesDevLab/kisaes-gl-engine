@@ -22,11 +22,17 @@ type RedisClient = InstanceType<typeof Redis>;
 export const DOC_RENDER_QUEUE = 'doc-render';
 export const DOC_EXTRACT_QUEUE = 'doc-extract';
 export const STATEMENT_PARSE_QUEUE = 'statement-parse';
+export const REPORT_PACK_QUEUE = 'report-pack';
 
 export interface StatementParseJobData {
   jobId: string;
   tenantId: string;
   attachmentId: string;
+}
+
+export interface ReportPackJobData {
+  runId: string;
+  tenantId: string;
 }
 
 export interface RenderJobData {
@@ -74,9 +80,19 @@ const STATEMENT_PARSE_JOB_OPTIONS: JobsOptions = {
   removeOnFail: 1_000,
 };
 
+// A pack render is ONE expensive unit (N Puppeteer renders + a merge +
+// upload) tracked by its own report_pack_runs row. Re-running would re-do
+// every section and re-upload — so no auto-retry (attempts: 1).
+const REPORT_PACK_JOB_OPTIONS: JobsOptions = {
+  attempts: 1,
+  removeOnComplete: 500,
+  removeOnFail: 1_000,
+};
+
 let renderQueue: Queue<RenderJobData> | null = null;
 let extractQueue: Queue<ExtractJobData> | null = null;
 let statementParseQueue: Queue<StatementParseJobData> | null = null;
+let reportPackQueue: Queue<ReportPackJobData> | null = null;
 
 function getRenderQueue(): Queue<RenderJobData> {
   if (!renderQueue) {
@@ -108,9 +124,24 @@ function getStatementParseQueue(): Queue<StatementParseJobData> {
   return statementParseQueue;
 }
 
+function getReportPackQueue(): Queue<ReportPackJobData> {
+  if (!reportPackQueue) {
+    reportPackQueue = new Queue<ReportPackJobData>(REPORT_PACK_QUEUE, {
+      connection: getSharedConnection() as ConnectionOptions,
+      defaultJobOptions: REPORT_PACK_JOB_OPTIONS,
+    });
+  }
+  return reportPackQueue;
+}
+
 /** Enqueue a statement parse. jobId as the BullMQ job id makes it idempotent. */
 export async function enqueueStatementParse(data: StatementParseJobData): Promise<void> {
   await getStatementParseQueue().add('parse', data, { jobId: `stmt:${data.jobId}` });
+}
+
+/** Enqueue a report-pack render. runId as the BullMQ job id makes it idempotent. */
+export async function enqueueReportPack(data: ReportPackJobData): Promise<void> {
+  await getReportPackQueue().add('render', data, { jobId: `pack:${data.runId}` });
 }
 
 /** Enqueue the render step for a freshly-created job. */
@@ -133,10 +164,12 @@ export async function closeQueues(): Promise<void> {
     renderQueue?.close(),
     extractQueue?.close(),
     statementParseQueue?.close(),
+    reportPackQueue?.close(),
   ]);
   renderQueue = null;
   extractQueue = null;
   statementParseQueue = null;
+  reportPackQueue = null;
   if (sharedConnection) {
     await sharedConnection.quit().catch(() => undefined);
     sharedConnection = null;
