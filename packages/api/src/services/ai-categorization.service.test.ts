@@ -323,7 +323,7 @@ describe('ai-categorization.service', () => {
       expect(result?.accountId).toBe(officeSuppliesId);
     });
 
-    it('FIX 2: a below-threshold valid match is PERSISTED as a low-confidence suggestion (not nulled) and is NOT auto-post-eligible', async () => {
+    it('FIX 2: a below-threshold valid match is PERSISTED as a low-confidence suggestion (not nulled); the AI step never auto-posts, but explicit bulk Approve commits it', async () => {
       const ctx = await aiCategorization.buildCategorizationContext(tenantId, 50);
       const ref = ctx.refAccounts.findIndex((a) => a.id === officeSuppliesId) + 1;
       parseMocks.reply.mockReturnValue({
@@ -338,15 +338,23 @@ describe('ai-categorization.service', () => {
       const stored = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, id) });
       expect(stored!.suggestedAccountId).toBe(officeSuppliesId);
       expect(parseFloat(stored!.confidenceScore!)).toBeCloseTo(0.3);
+      // The genuine safety invariant: the AI SUGGESTION step itself must NOT
+      // post — the item stays pending with only a suggestion, regardless of
+      // confidence. (Nothing AI-driven auto-posts; only explicit user action
+      // or a deterministic autoConfirm RULE posts.)
+      expect(stored!.status).toBe('pending');
+      expect(stored!.matchedTransactionId).toBeNull();
 
-      // But it must NOT auto-post. Under the two-phase workflow, bulkApprove
-      // only posts STAGED ('assigned') items, so a merely-suggested pending
-      // item is skipped outright (never posted, regardless of confidence).
+      // Explicit bulk Approve, however, IS a deliberate user action on a
+      // hand-selected row — selecting a suggestion and approving it commits
+      // it, low confidence or not (the "Review" pill was the review). This is
+      // the intended two-phase behavior: suggest → user approves → post.
       const approveResult = await bankFeedService.bulkApprove(tenantId, [id]);
-      expect(approveResult.approved).toBe(0);
-      expect(approveResult.skipped).toBe(1);
+      expect(approveResult.approved).toBe(1);
+      expect(approveResult.skipped).toBe(0);
       const still = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, id) });
-      expect(still!.status).toBe('pending');
+      expect(still!.status).toBe('categorized');
+      expect(still!.matchedTransactionId).toBeTruthy();
     });
 
     it('FIX 5: no COA match returns status "no_confident_match" (200, not an error) and persists nothing', async () => {
