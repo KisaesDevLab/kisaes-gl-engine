@@ -329,6 +329,38 @@ describe('Ledger Service', () => {
       const anyRow = (unfiltered.data as Array<{ accountDebit: string | null; accountCredit: string | null }>)[0]!;
       expect(anyRow.accountDebit).toBeNull();
       expect(anyRow.accountCredit).toBeNull();
+
+      // Grand totals. Unfiltered amount = 100 + 40 magnitudes.
+      expect(parseFloat(unfiltered.totals.amount)).toBe(140);
+      // Filtered by Cash: total debit 100, total credit 40.
+      expect(parseFloat(filtered.totals.debit)).toBe(100);
+      expect(parseFloat(filtered.totals.credit)).toBe(40);
+    });
+
+    it('excludes void transactions from the grand totals', async () => {
+      const keep = await ledger.postTransaction(tenantId, {
+        txnType: 'journal_entry', txnDate: '2026-04-01', memo: 'Keep',
+        lines: [
+          { accountId: cashAccountId, debit: '100.00', credit: '0' },
+          { accountId: revenueAccountId, debit: '0', credit: '100.00' },
+        ],
+      });
+      const gone = await ledger.postTransaction(tenantId, {
+        txnType: 'journal_entry', txnDate: '2026-04-02', memo: 'To void',
+        lines: [
+          { accountId: cashAccountId, debit: '250.00', credit: '0' },
+          { accountId: revenueAccountId, debit: '0', credit: '250.00' },
+        ],
+      });
+      await ledger.voidTransaction(tenantId, gone.id, 'test void');
+
+      // Amount total counts only the non-void $100 (the voided $250 is out).
+      const unfiltered = await ledger.listTransactions(tenantId, {});
+      expect(parseFloat(unfiltered.totals.amount)).toBe(100);
+      // Cash-filtered debit total also excludes the void.
+      const filtered = await ledger.listTransactions(tenantId, { accountId: cashAccountId });
+      expect(parseFloat(filtered.totals.debit)).toBe(100);
+      void keep;
     });
   });
 });

@@ -741,7 +741,7 @@ export async function listTransactions(tenantId: string, filters: {
   })();
   const orderBy = sql`${sortExpr} ${dir} NULLS LAST, ${transactions.createdAt} DESC`;
 
-  const [data, total] = await Promise.all([
+  const [data, total, totalsRow] = await Promise.all([
     db.select({
       id: transactions.id,
       tenantId: transactions.tenantId,
@@ -828,9 +828,37 @@ export async function listTransactions(tenantId: string, filters: {
     db.select({ count: count() }).from(transactions)
       .leftJoin(contacts, eq(transactions.contactId, contacts.id))
       .where(where),
+    // Grand totals across the WHOLE filtered set (not just the page), so the
+    // list can show a footer total. Void transactions are excluded — they net
+    // to zero and display as 0. `amount` mirrors displayTotal; debit/credit are
+    // the filtered account's legs (0 when no account filter).
+    db.select({
+      amount: sql<string>`COALESCE(SUM(COALESCE(${transactions.total}, (
+        SELECT SUM(jlt.debit) FROM journal_lines jlt
+        WHERE jlt.transaction_id = ${transactions.id} AND jlt.tenant_id = ${tenantId}
+      ))), 0)`,
+      debit: filters.accountId
+        ? sql<string>`COALESCE(SUM((SELECT SUM(jld.debit) FROM journal_lines jld
+            WHERE jld.transaction_id = ${transactions.id} AND jld.tenant_id = ${tenantId} AND jld.account_id = ${filters.accountId})), 0)`
+        : sql<string>`'0'`,
+      credit: filters.accountId
+        ? sql<string>`COALESCE(SUM((SELECT SUM(jlc.credit) FROM journal_lines jlc
+            WHERE jlc.transaction_id = ${transactions.id} AND jlc.tenant_id = ${tenantId} AND jlc.account_id = ${filters.accountId})), 0)`
+        : sql<string>`'0'`,
+    }).from(transactions)
+      .leftJoin(contacts, eq(transactions.contactId, contacts.id))
+      .where(and(where, sql`${transactions.status} <> 'void'`)),
   ]);
 
-  return { data, total: total[0]?.count ?? 0 };
+  return {
+    data,
+    total: total[0]?.count ?? 0,
+    totals: {
+      amount: totalsRow[0]?.amount ?? '0',
+      debit: totalsRow[0]?.debit ?? '0',
+      credit: totalsRow[0]?.credit ?? '0',
+    },
+  };
 }
 
 export async function getAccountBalance(tenantId: string, accountId: string, asOfDate?: string) {
