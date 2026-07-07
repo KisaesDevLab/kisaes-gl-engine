@@ -59,6 +59,10 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
   // tags.name) so a pending item can surface a "suggested" tag pill before it
   // is categorized.
   const suggestedTag = alias(tags, 'suggested_tag');
+  // Aliases for the STAGED assignment (two-phase workflow, migration 0119) so
+  // an 'assigned' row can render its human-chosen category/tag before posting.
+  const assignedAccount = alias(accounts, 'assigned_account');
+  const assignedTag = alias(tags, 'assigned_tag');
 
   // Server-side column sort. The page paginates, so sorting must happen
   // here — the old client-side sort only ordered the visible page.
@@ -107,6 +111,15 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
       // rows so a rule-set tag is visible before the user categorizes).
       suggestedTagId: bankFeedItems.suggestedTagId,
       suggestedTagName: suggestedTag.name,
+      // Staged assignment (migration 0119) — the human-chosen category on an
+      // 'assigned' item, awaiting approval. assignedAccountName/assignedTagName
+      // are the joined display names.
+      assignedAccountId: bankFeedItems.assignedAccountId,
+      assignedAccountName: assignedAccount.name,
+      assignedContactId: bankFeedItems.assignedContactId,
+      assignedTagId: bankFeedItems.assignedTagId,
+      assignedTagName: assignedTag.name,
+      assignedMemo: bankFeedItems.assignedMemo,
       // ADR 0XX §4.1 — for a CATEGORIZED/MATCHED item, the distinct tag
       // names actually applied on the matched transaction's journal lines.
       // Null when the item has no matched transaction or every line is
@@ -125,6 +138,8 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
       .leftJoin(accounts, eq(bankConnections.accountId, accounts.id))
       .leftJoin(suggestedAccount, eq(bankFeedItems.suggestedAccountId, suggestedAccount.id))
       .leftJoin(suggestedTag, eq(bankFeedItems.suggestedTagId, suggestedTag.id))
+      .leftJoin(assignedAccount, eq(bankFeedItems.assignedAccountId, assignedAccount.id))
+      .leftJoin(assignedTag, eq(bankFeedItems.assignedTagId, assignedTag.id))
       .where(where)
       .orderBy(orderBy)
       .limit(filters.limit ?? 50)
@@ -223,19 +238,168 @@ export async function checkPayrollOverlap(
     }));
 }
 
+// Phase 4 conditional split_by_* action: a JSONB blob staged on the feed
+// item that expands into N user-facing journal lines at post time (the cash
+// leg stays a single line so the bank account stays simple).
+type FeedSplitsConfig =
+  | { kind: 'percentage'; splits: Array<{ accountId: string; percent: number; tagId: string | null; memo: string | null }> }
+  | { kind: 'fixed'; splits: Array<{ accountId: string; amount: string; tagId: string | null; memo: string | null }> }
+  | null;
+
+// The fully-resolved values postAssignment posts. The caller has already
+// resolved the tag (an explicit id, or null for untagged — the
+// undefined→suggestedTagId fallback lives in categorize()), the contact, and
+// the memo, so this helper never guesses.
+interface PostAssignmentValues {
+  accountId: string;
+  contactId?: string | null;
+  tagId?: string | null;
+  memo?: string | null;
+  splitsConfig?: FeedSplitsConfig;
+}
+
+/**
+ * Shared posting body for BOTH the direct-post path (categorize(), used by
+ * autoConfirm legacy rules + bulkCategorize) and the two-phase approve()
+ * path. Builds the user + cash journal lines, posts the ledger transaction,
+ * transitions the feed item to 'categorized' + stamps matchedTransactionId,
+ * and feeds categorization learning.
+ *
+ * The CALLER owns the atomic status claim (pending/assigned → 'categorizing')
+ * and its revert on failure; this helper only runs the ledger post + final
+ * status flip together in one DB transaction (a crash between them would
+ * leave a posted transaction with the feed item stuck 'categorizing').
+ */
+async function postAssignment(
+  tenantId: string,
+  feedItemId: string,
+  item: typeof bankFeedItems.$inferSelect,
+  values: PostAssignmentValues,
+  userId?: string,
+  companyId?: string,
+) {
+  // Determine if this is an expense (positive amount = money out) or deposit
+  // (negative = money in).
+  const amount = Math.abs(parseFloat(item.amount));
+  const isExpense = parseFloat(item.amount) > 0;
+
+  // Get the bank account from the connection. Tenant-scoped via a join on
+  // accounts.tenant_id for defense in depth (CLAUDE.md rule #17).
+  const conn = await db.query.bankConnections.findFirst({
+    where: eq(bankConnections.id, item.bankConnectionId),
+  });
+  if (!conn) throw AppError.notFound('Bank connection not found');
+  const connAccount = await db.query.accounts.findFirst({
+    where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, conn.accountId)),
+  });
+  if (!connAccount) {
+    throw AppError.notFound('Bank connection does not belong to this tenant');
+  }
+
+  const splitsConfig = values.splitsConfig ?? null;
+  const userLines: Array<{ accountId: string; debit: string; credit: string; description?: string; tagId?: string }> = [];
+  if (splitsConfig && splitsConfig.splits.length > 0) {
+    const totalCents = Math.round(amount * 100);
+    let allocatedCents = 0;
+    for (let i = 0; i < splitsConfig.splits.length; i++) {
+      const s = splitsConfig.splits[i]!;
+      let lineCents: number;
+      if (splitsConfig.kind === 'percentage') {
+        lineCents = i === splitsConfig.splits.length - 1
+          ? totalCents - allocatedCents
+          : Math.round((totalCents * (s as { percent: number }).percent) / 100);
+      } else {
+        lineCents = Math.round(parseFloat((s as { amount: string }).amount) * 100);
+      }
+      allocatedCents += lineCents;
+      const lineAmt = (lineCents / 100).toFixed(4);
+      userLines.push({
+        accountId: s.accountId,
+        debit: isExpense ? lineAmt : '0',
+        credit: isExpense ? '0' : lineAmt,
+        description: s.memo ?? item.description ?? undefined,
+        tagId: s.tagId ?? values.tagId ?? undefined,
+      });
+    }
+  } else {
+    userLines.push({
+      accountId: values.accountId,
+      debit: isExpense ? amount.toFixed(4) : '0',
+      credit: isExpense ? '0' : amount.toFixed(4),
+      description: item.description || undefined,
+      // The tag is already resolved by the caller (id or null).
+      tagId: values.tagId ?? undefined,
+    });
+  }
+
+  const cashLine = {
+    accountId: conn.accountId,
+    debit: isExpense ? '0' : amount.toFixed(4),
+    credit: isExpense ? amount.toFixed(4) : '0',
+  };
+
+  const txn = await db.transaction(async (tx) => {
+    const t = await ledger.postTransaction(tenantId, {
+      txnType: isExpense ? 'expense' : 'deposit',
+      txnDate: item.feedDate,
+      contactId: values.contactId || undefined,
+      // Memo chain resolved by the caller; item.description is the final
+      // fallback. The provider category hint ("FOOD_AND_DRINK") deliberately
+      // stays out of this chain — it leaked classification codes into the
+      // books on every bulk approve.
+      memo: values.memo || item.description || undefined,
+      total: amount.toFixed(4),
+      source: 'bank_feed',
+      sourceId: item.id,
+      // ADR 0XY §3.3 — the tag stamps on the user-facing expense/revenue
+      // line(s); the cash-account leg stays untagged (not segment-relevant).
+      lines: isExpense ? [...userLines, cashLine] : [cashLine, ...userLines],
+    }, userId, companyId, tx);
+
+    // STATEMENT_CHECK_PAYEE_V1 — stamp the parsed check number and the payee
+    // read off the check image onto the posted transaction (metadata only).
+    if (item.checkNumber != null || item.payeeNameOnCheck) {
+      await tx.update(transactions).set({
+        checkNumber: item.checkNumber ?? undefined,
+        payeeNameOnCheck: item.payeeNameOnCheck ?? undefined,
+      }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, t.id)));
+    }
+
+    await tx.update(bankFeedItems).set({
+      status: 'categorized',
+      matchedTransactionId: t.id,
+      updatedAt: new Date(),
+    }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
+    return t;
+  });
+
+  // Update categorization learning history. Fire-and-forget — the
+  // transaction has already posted; this only feeds future suggestions.
+  updateLearning(
+    tenantId,
+    item.originalDescription || item.description || '',
+    values.accountId,
+    values.contactId || null,
+    true,
+  ).catch((err) => {
+    // eslint-disable-next-line no-console
+    console.warn(`[bank-feed] updateLearning failed for tenant ${tenantId}:`, err?.message ?? err);
+  });
+
+  return txn;
+}
+
+/**
+ * DIRECT-POST path. Posts a feed item to the ledger the moment a category is
+ * chosen. Retained for the callers that post-on-match BY DESIGN — legacy
+ * autoConfirm bank rules and conditional split rules in runRulesStages, plus
+ * bulkCategorize. The interactive UI now stages via assign()/approve()
+ * instead of calling this.
+ */
 export async function categorize(tenantId: string, feedItemId: string, input: CategorizeInput, userId?: string, companyId?: string) {
-  // Atomic claim: flip the feed item from 'pending' to 'categorizing'
-  // in one UPDATE. Two concurrent categorize calls (double-clicks,
-  // retries, two users opening the same item) serialize here — only
-  // one of them gets a row back from the UPDATE, the other gets an
-  // empty result and throws cleanly. Previously there was no guard at
-  // all, so both calls would post duplicate ledger transactions for
-  // the same feed item.
-  //
-  // The intermediate 'categorizing' state is a claim marker. On
-  // success we transition it to 'categorized'; on failure in the
-  // posting step below we revert it back to 'pending' so the user can
-  // retry.
+  // Atomic claim: flip the feed item from 'pending' to 'categorizing' in one
+  // UPDATE. Two concurrent categorize calls serialize here — only one gets a
+  // row back, the other throws cleanly (no duplicate ledger posts).
   const [claimed] = await db.update(bankFeedItems)
     .set({ status: 'categorizing', updatedAt: new Date() })
     .where(and(
@@ -246,8 +410,6 @@ export async function categorize(tenantId: string, feedItemId: string, input: Ca
     .returning();
 
   if (!claimed) {
-    // Either the item doesn't exist, belongs to another tenant, or
-    // has already been categorized/matched/claimed by another call.
     const existing = await db.query.bankFeedItems.findFirst({
       where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)),
     });
@@ -261,151 +423,170 @@ export async function categorize(tenantId: string, feedItemId: string, input: Ca
   const item = claimed;
 
   try {
-    // Determine if this is an expense (positive amount = money out) or deposit (negative = money in)
-    const amount = Math.abs(parseFloat(item.amount));
-    const isExpense = parseFloat(item.amount) > 0;
+    const splitsConfig = item.splitsConfig as FeedSplitsConfig;
+    // Tag resolution distinguishes three caller intents:
+    //   - key absent (undefined): no explicit choice → fall back to the
+    //     rule-staged suggested tag (rule→categorize / "accept as-is").
+    //   - explicit null: user cleared the picker → post UNTAGGED.
+    //   - explicit id: that tag wins.
+    const resolvedTagId = input.tagId === undefined
+      ? (item.suggestedTagId ?? null)
+      : (input.tagId ?? null);
 
-    // Get the bank account from the connection.
-    // Tenant-scoped via a join on accounts.tenant_id for defense in
-    // depth — connection.id is already known-good (came from `item`),
-    // but this keeps CLAUDE.md rule #17 honest.
-    const conn = await db.query.bankConnections.findFirst({
-      where: eq(bankConnections.id, item.bankConnectionId),
-    });
-    if (!conn) throw AppError.notFound('Bank connection not found');
-    const connAccount = await db.query.accounts.findFirst({
-      where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, conn.accountId)),
-    });
-    if (!connAccount) {
-      throw AppError.notFound('Bank connection does not belong to this tenant');
-    }
-
-    // Phase 4 — when a conditional rule's split_by_* action
-    // staged a splits_config blob, post N user-facing journal
-    // lines instead of the standard one. The cash-leg is still
-    // a single line so the bank account stays simple.
-    const splitsConfig = item.splitsConfig as
-      | { kind: 'percentage'; splits: Array<{ accountId: string; percent: number; tagId: string | null; memo: string | null }> }
-      | { kind: 'fixed'; splits: Array<{ accountId: string; amount: string; tagId: string | null; memo: string | null }> }
-      | null;
-
-    const userLines: Array<{ accountId: string; debit: string; credit: string; description?: string; tagId?: string }> = [];
-    if (splitsConfig && splitsConfig.splits.length > 0) {
-      const totalCents = Math.round(amount * 100);
-      let allocatedCents = 0;
-      for (let i = 0; i < splitsConfig.splits.length; i++) {
-        const s = splitsConfig.splits[i]!;
-        let lineCents: number;
-        if (splitsConfig.kind === 'percentage') {
-          lineCents = i === splitsConfig.splits.length - 1
-            ? totalCents - allocatedCents
-            : Math.round((totalCents * (s as { percent: number }).percent) / 100);
-        } else {
-          lineCents = Math.round(parseFloat((s as { amount: string }).amount) * 100);
-        }
-        allocatedCents += lineCents;
-        const lineAmt = (lineCents / 100).toFixed(4);
-        userLines.push({
-          accountId: s.accountId,
-          debit: isExpense ? lineAmt : '0',
-          credit: isExpense ? '0' : lineAmt,
-          description: s.memo ?? item.description ?? undefined,
-          tagId: s.tagId ?? input.tagId ?? undefined,
-        });
-      }
-    } else {
-      userLines.push({
-        accountId: input.accountId,
-        debit: isExpense ? amount.toFixed(4) : '0',
-        credit: isExpense ? '0' : amount.toFixed(4),
-        description: item.description || undefined,
-        // Tag resolution distinguishes three caller intents:
-        //   - key absent (undefined): no explicit choice → fall back to the
-        //     rule-staged suggested tag so the rule→categorize handoff posts
-        //     it (bulk/auto-confirm and "accept as-is" paths).
-        //   - explicit null: the user cleared the picker → post UNTAGGED,
-        //     honoring the override (must NOT resurrect the suggestion).
-        //   - explicit id: that tag wins.
-        tagId: input.tagId === undefined
-          ? (item.suggestedTagId ?? undefined)
-          : (input.tagId ?? undefined),
-      });
-    }
-
-    const cashLine = {
-      accountId: conn.accountId,
-      debit: isExpense ? '0' : amount.toFixed(4),
-      credit: isExpense ? amount.toFixed(4) : '0',
-    };
-
-    // Atomicity: ledger post + bank-feed-item status update must
-    // commit together. A crash between the two would leave the
-    // transaction posted but the feed item still 'categorizing',
-    // so the user would see a pending row that's actually already
-    // a journal entry — confusing and hard to reconcile.
-    const txn = await db.transaction(async (tx) => {
-      const t = await ledger.postTransaction(tenantId, {
-        txnType: isExpense ? 'expense' : 'deposit',
-        txnDate: item.feedDate,
-        contactId: input.contactId || (item.suggestedContactId ?? undefined),
-        // Memo chain: explicit input → the feed item's memo (Plaid's raw
-        // payee text / review-panel edit) → description. The provider
-        // category hint ("FOOD_AND_DRINK") deliberately dropped out of
-        // this chain — it leaked classification codes into the books on
-        // every bulk approve.
-        memo: input.memo || (item.memo as string | null) || item.description || undefined,
-        total: amount.toFixed(4),
-        source: 'bank_feed',
-        sourceId: item.id,
-        // ADR 0XY §3.3 — bank-feed categorization stamps the rule-
-        // provided (or user-provided) tag on the user-facing expense or
-        // revenue line. The cash-account leg stays untagged because it
-        // isn't a segment-relevant posting. Phase 4 split actions
-        // produce one user line per split + the single cash line.
-        lines: isExpense ? [...userLines, cashLine] : [cashLine, ...userLines],
-      }, userId, companyId, tx);
-
-      // STATEMENT_CHECK_PAYEE_V1 — stamp the parsed check number and the
-      // payee read off the check image onto the posted transaction (mirrors
-      // write-check). Metadata only — no journal lines change. Reports fall
-      // back to payee_name_on_check when no contact matched.
-      if (item.checkNumber != null || item.payeeNameOnCheck) {
-        await tx.update(transactions).set({
-          checkNumber: item.checkNumber ?? undefined,
-          payeeNameOnCheck: item.payeeNameOnCheck ?? undefined,
-        }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, t.id)));
-      }
-
-      await tx.update(bankFeedItems).set({
-        status: 'categorized',
-        matchedTransactionId: t.id,
-        updatedAt: new Date(),
-      }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
-      return t;
-    });
-
-    // Update categorization learning history. Fire-and-forget — the
-    // user's transaction has already posted; this only feeds the model's
-    // future suggestions. Log so a regression on the learning subsystem
-    // doesn't go silent.
-    updateLearning(
-      tenantId,
-      item.originalDescription || item.description || '',
-      input.accountId,
-      input.contactId || null,
-      true,
-    ).catch((err) => {
-      // eslint-disable-next-line no-console
-      console.warn(`[bank-feed] updateLearning failed for tenant ${tenantId}:`, err?.message ?? err);
-    });
-
-    return txn;
+    return await postAssignment(tenantId, feedItemId, item, {
+      accountId: input.accountId,
+      contactId: input.contactId || (item.suggestedContactId ?? undefined),
+      tagId: resolvedTagId,
+      memo: input.memo || (item.memo as string | null) || item.description || undefined,
+      splitsConfig,
+    }, userId, companyId);
   } catch (err) {
-    // Revert the claim so the user can retry. Only revert if we still
-    // own the claim (status === 'categorizing'); if something else has
-    // changed the status, leave it alone.
+    // Revert the claim so the user can retry (only if we still own it).
     await db.update(bankFeedItems).set({
       status: 'pending',
+      updatedAt: new Date(),
+    }).where(and(
+      eq(bankFeedItems.tenantId, tenantId),
+      eq(bankFeedItems.id, feedItemId),
+      eq(bankFeedItems.status, 'categorizing'),
+    ));
+    throw err;
+  }
+}
+
+// ── Two-phase workflow: ASSIGN (stage) then APPROVE (post) ──
+
+export interface AssignInput {
+  accountId: string;
+  contactId?: string | null;
+  tagId?: string | null;
+  memo?: string | null;
+}
+
+/**
+ * ASSIGN — stage a category on a feed item WITHOUT posting to the ledger.
+ * Persists the chosen account/contact/tag/memo in the assigned_* columns and
+ * transitions pending → 'assigned' (an actionable, "ready to approve" state).
+ * Re-assigning an already-'assigned' item overwrites the staged values;
+ * anything already posted/handled (categorized/matched/excluded) is rejected.
+ * NO postTransaction, NO matchedTransactionId — that only happens on approve.
+ */
+export async function assign(tenantId: string, feedItemId: string, input: AssignInput, userId?: string) {
+  // Validate the target category account is a real account in this tenant.
+  const account = await db.query.accounts.findFirst({
+    where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, input.accountId)),
+  });
+  if (!account) throw AppError.badRequest('Assigned account not found in this tenant');
+
+  // Optional contact / tag — tenant-scoped when provided.
+  if (input.contactId) {
+    const contact = await db.query.contacts.findFirst({
+      where: and(eq(contacts.tenantId, tenantId), eq(contacts.id, input.contactId)),
+    });
+    if (!contact) throw AppError.badRequest('Assigned contact not found in this tenant');
+  }
+  if (input.tagId) await assertTagsInTenant(tenantId, [input.tagId]);
+
+  const item = await db.query.bankFeedItems.findFirst({
+    where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)),
+  });
+  if (!item) throw AppError.notFound('Bank feed item not found');
+  // Only a fresh (pending) or already-staged (assigned) item can be assigned.
+  // categorized/matched are already posted; excluded is not applicable.
+  if (item.status !== 'pending' && item.status !== 'assigned') {
+    throw AppError.badRequest(
+      `Bank feed item cannot be assigned (current status: ${item.status}). ` +
+      `It may already be posted or excluded.`,
+    );
+  }
+
+  const [updated] = await db.update(bankFeedItems)
+    .set({
+      assignedAccountId: input.accountId,
+      assignedContactId: input.contactId ?? null,
+      assignedTagId: input.tagId ?? null,
+      assignedMemo: input.memo ?? null,
+      assignedBy: userId ?? null,
+      assignedAt: new Date(),
+      status: 'assigned',
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(bankFeedItems.tenantId, tenantId),
+      eq(bankFeedItems.id, feedItemId),
+      // Guard against a concurrent approve/exclude between the read and write.
+      sql`${bankFeedItems.status} IN ('pending', 'assigned')`,
+    ))
+    .returning();
+
+  if (!updated) {
+    throw AppError.badRequest('Bank feed item changed state; reload and try again.');
+  }
+
+  await auditLog(tenantId, 'update', 'bank_feed', feedItemId, item, updated, userId);
+  return updated;
+}
+
+/**
+ * APPROVE — post a previously-staged ('assigned') feed item to the ledger
+ * using its assigned_* values. Transitions assigned → 'categorized' and
+ * stamps matchedTransactionId. Requires status 'assigned' with an
+ * assigned_account_id; otherwise rejects with a clear error. Lock dates are
+ * enforced by the underlying ledger post.
+ */
+export async function approve(tenantId: string, feedItemId: string, userId?: string, companyId?: string) {
+  // Atomic claim assigned → 'categorizing' (same anti-double-post guard as
+  // categorize). Only one concurrent approve wins.
+  const [claimed] = await db.update(bankFeedItems)
+    .set({ status: 'categorizing', updatedAt: new Date() })
+    .where(and(
+      eq(bankFeedItems.tenantId, tenantId),
+      eq(bankFeedItems.id, feedItemId),
+      eq(bankFeedItems.status, 'assigned'),
+    ))
+    .returning();
+
+  if (!claimed) {
+    const existing = await db.query.bankFeedItems.findFirst({
+      where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)),
+    });
+    if (!existing) throw AppError.notFound('Bank feed item not found');
+    throw AppError.badRequest(
+      `Bank feed item is not assigned (current status: ${existing.status}). ` +
+      `Assign a category before approving.`,
+    );
+  }
+
+  const item = claimed;
+
+  // Defensive: assign() always sets assigned_account_id, but guard anyway so
+  // a hand-edited row can't post an empty category.
+  if (!item.assignedAccountId) {
+    await db.update(bankFeedItems).set({ status: 'assigned', updatedAt: new Date() })
+      .where(and(
+        eq(bankFeedItems.tenantId, tenantId),
+        eq(bankFeedItems.id, feedItemId),
+        eq(bankFeedItems.status, 'categorizing'),
+      ));
+    throw AppError.badRequest('No staged category to approve. Assign an account first.');
+  }
+
+  try {
+    const splitsConfig = item.splitsConfig as FeedSplitsConfig;
+    return await postAssignment(tenantId, feedItemId, item, {
+      accountId: item.assignedAccountId,
+      contactId: item.assignedContactId ?? undefined,
+      // Approve posts the tag exactly as staged (explicit id or null — no
+      // suggested-tag fallback; the user already made the choice at assign).
+      tagId: item.assignedTagId ?? null,
+      memo: (item.assignedMemo as string | null) || (item.memo as string | null) || item.description || undefined,
+      splitsConfig,
+    }, userId, companyId);
+  } catch (err) {
+    // Revert the claim back to 'assigned' so the staged values survive and
+    // the user can retry (e.g. after a lock-date fix).
+    await db.update(bankFeedItems).set({
+      status: 'assigned',
       updatedAt: new Date(),
     }).where(and(
       eq(bankFeedItems.tenantId, tenantId),
@@ -531,50 +712,84 @@ export async function exclude(tenantId: string, feedItemId: string) {
   }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
 }
 
-export async function bulkApprove(tenantId: string, feedItemIds: string[]) {
+/**
+ * BULK APPROVE — post every 'assigned' item in the selection to the ledger
+ * using its STAGED assigned_* values (via approve()). This REPLACES the old
+ * behavior, which posted 'pending' items on their AI suggestedAccountId; the
+ * two-phase workflow means approval only ever posts what a human staged.
+ *
+ * Items not in status 'assigned' (pending/categorized/matched/excluded, or
+ * missing) are skipped, never posted. Per-item try/catch keeps one failure
+ * (e.g. a lock-date rejection) from aborting the batch.
+ */
+export async function bulkApprove(tenantId: string, feedItemIds: string[], userId?: string, companyId?: string) {
   if (!Array.isArray(feedItemIds)) {
     throw AppError.badRequest('feedItemIds must be an array');
   }
-  // Cap the batch size — without this the sequential loop below makes one
-  // DB query per id, letting a caller serialize thousands of queries on a
-  // single request and lock up the event loop.
+  // Cap the batch size — the sequential loop makes one DB round-trip per id;
+  // an uncapped input serializes thousands of ledger posts on one request.
   const MAX_BATCH = 500;
   if (feedItemIds.length > MAX_BATCH) {
     throw AppError.badRequest(`Bulk approve is limited to ${MAX_BATCH} items per request`);
   }
-  // FIX 2: below-threshold AI suggestions are now surfaced (persisted) for
-  // review rather than nulled — so "approve" can no longer post on the mere
-  // PRESENCE of a suggestion, or it would auto-post low-confidence guesses a
-  // user swept in with "select all". Gate on confidence >= threshold; a
-  // deterministic rule/history hit (0.90/0.95) always clears it. Items below
-  // threshold are skipped (not posted) and reported so they can be reviewed
-  // individually. A missing confidence score is treated as eligible
-  // (manual/legacy suggestions carry no AI confidence).
-  const { getConfig } = await import('./ai-config.service.js');
-  const threshold = (await getConfig().catch(() => null))?.categorizationConfidenceThreshold ?? 0.5;
 
   let approved = 0;
-  let skippedLowConfidence = 0;
+  let skipped = 0;
   const failures: Array<{ id: string; error: string }> = [];
   for (const id of feedItemIds) {
     try {
       const item = await db.query.bankFeedItems.findFirst({
         where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, id)),
       });
-      if (item && item.status === 'pending' && item.suggestedAccountId) {
-        const score = item.confidenceScore != null ? parseFloat(item.confidenceScore) : null;
-        if (score != null && score < threshold) {
-          skippedLowConfidence++;
-          continue;
-        }
-        await categorize(tenantId, id, { accountId: item.suggestedAccountId, contactId: item.suggestedContactId || undefined });
+      if (item && item.status === 'assigned') {
+        await approve(tenantId, id, userId, companyId);
         approved++;
+      } else {
+        // Not staged (pending/posted/excluded/missing) → skip, don't post.
+        skipped++;
       }
     } catch (err: any) {
       failures.push({ id, error: err?.message || 'unknown error' });
     }
   }
-  return { approved, skippedLowConfidence, failures };
+  return { approved, skipped, failed: failures.length, failures };
+}
+
+/**
+ * BULK ASSIGN — stage the SAME assignment (account/contact/tag/memo) across
+ * many pending/assigned items. Powers the toolbar "Categorize" action, which
+ * now STAGES rather than posts. Reuses assign() per item so validation and
+ * audit logging stay identical to the single-item path; per-item try/catch
+ * keeps one bad item from aborting the batch.
+ */
+export async function bulkAssign(tenantId: string, feedItemIds: string[], input: AssignInput, userId?: string) {
+  if (!Array.isArray(feedItemIds)) {
+    throw AppError.badRequest('feedItemIds must be an array');
+  }
+  const MAX_BATCH = 500;
+  if (feedItemIds.length > MAX_BATCH) {
+    throw AppError.badRequest(`Bulk assign is limited to ${MAX_BATCH} items per request`);
+  }
+
+  let assigned = 0;
+  let skipped = 0;
+  const failures: Array<{ id: string; error: string }> = [];
+  for (const id of feedItemIds) {
+    try {
+      const item = await db.query.bankFeedItems.findFirst({
+        where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, id)),
+      });
+      if (item && (item.status === 'pending' || item.status === 'assigned')) {
+        await assign(tenantId, id, input, userId);
+        assigned++;
+      } else {
+        skipped++;
+      }
+    } catch (err) {
+      failures.push({ id, error: err instanceof Error ? err.message : 'unknown error' });
+    }
+  }
+  return { assigned, skipped, failed: failures.length, failures };
 }
 
 export async function bulkCategorize(tenantId: string, feedItemIds: string[], accountId: string, contactId?: string, memo?: string, tagId?: string | null, userId?: string, companyId?: string) {

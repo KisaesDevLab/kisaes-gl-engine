@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 
-const bankFeedStatuses = ['pending', 'matched', 'categorized', 'excluded'] as const;
+const bankFeedStatuses = ['pending', 'assigned', 'matched', 'categorized', 'excluded'] as const;
 
 export const bankFeedFiltersSchema = z.object({
   status: z.enum(bankFeedStatuses).optional(),
@@ -39,6 +39,27 @@ export const categorizeSchema = z.object({
 
 export const matchSchema = z.object({
   transactionId: z.string().uuid(),
+});
+
+// Two-phase workflow (migration 0119) — ASSIGN stages a category on a feed
+// item WITHOUT posting. accountId is required (it's the category to post on
+// approval); contact / tag / memo are optional. Nullable so a re-assign can
+// clear a previously staged contact/tag.
+export const assignSchema = z.object({
+  accountId: z.string().uuid(),
+  contactId: z.string().uuid().nullable().optional(),
+  tagId: z.string().uuid().nullable().optional(),
+  memo: z.string().max(500).nullable().optional(),
+});
+
+// Bulk ASSIGN — stage the SAME assignment across many pending/assigned items
+// (the toolbar "Categorize" action, which now STAGES rather than posts).
+export const bulkAssignSchema = z.object({
+  feedItemIds: z.array(z.string().uuid()).min(1).max(500),
+  accountId: z.string().uuid(),
+  contactId: z.string().uuid().nullable().optional(),
+  tagId: z.string().uuid().nullable().optional(),
+  memo: z.string().max(500).nullable().optional(),
 });
 
 // Start a reconciliation either manually (accountId + statementDate +

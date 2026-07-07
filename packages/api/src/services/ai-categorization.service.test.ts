@@ -339,10 +339,12 @@ describe('ai-categorization.service', () => {
       expect(stored!.suggestedAccountId).toBe(officeSuppliesId);
       expect(parseFloat(stored!.confidenceScore!)).toBeCloseTo(0.3);
 
-      // But it must NOT auto-post: bulkApprove skips it (default threshold 0.5).
+      // But it must NOT auto-post. Under the two-phase workflow, bulkApprove
+      // only posts STAGED ('assigned') items, so a merely-suggested pending
+      // item is skipped outright (never posted, regardless of confidence).
       const approveResult = await bankFeedService.bulkApprove(tenantId, [id]);
       expect(approveResult.approved).toBe(0);
-      expect(approveResult.skippedLowConfidence).toBe(1);
+      expect(approveResult.skipped).toBe(1);
       const still = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, id) });
       expect(still!.status).toBe('pending');
     });

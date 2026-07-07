@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import {
-  bankFeedFiltersSchema, categorizeSchema, matchSchema,
+  bankFeedFiltersSchema, categorizeSchema, matchSchema, assignSchema, bulkAssignSchema,
   startReconciliationSchema, updateReconciliationLinesSchema, bankImportSchema,
   bulkApproveSchema, bulkCategorizeSchema, bulkExcludeSchema, bulkRecleanseSchema,
   bulkReprocessRulesSchema,
@@ -87,6 +87,18 @@ bankingRouter.put('/feed/:id/categorize', validate(categorizeSchema), async (req
   res.json({ transaction: txn });
 });
 
+// Two-phase workflow: ASSIGN stages a category (no ledger post); APPROVE
+// posts the staged assignment.
+bankingRouter.put('/feed/:id/assign', validate(assignSchema), async (req, res) => {
+  const item = await bankFeedService.assign(req.tenantId, req.params['id']!, req.body, req.userId);
+  res.json({ item });
+});
+
+bankingRouter.post('/feed/:id/approve', async (req, res) => {
+  const txn = await bankFeedService.approve(req.tenantId, req.params['id']!, req.userId, req.companyId);
+  res.json({ transaction: txn });
+});
+
 bankingRouter.put('/feed/:id/match', validate(matchSchema), async (req, res) => {
   await bankFeedService.match(req.tenantId, req.params['id']!, req.body.transactionId);
   res.json({ message: 'Matched' });
@@ -103,7 +115,18 @@ bankingRouter.put('/feed/:id/exclude', async (req, res) => {
 });
 
 bankingRouter.post('/feed/bulk-approve', validate(bulkApproveSchema), async (req, res) => {
-  const result = await bankFeedService.bulkApprove(req.tenantId, req.body.feedItemIds);
+  // Now posts STAGED ('assigned') items (two-phase workflow); items not yet
+  // assigned are skipped, never posted.
+  const result = await bankFeedService.bulkApprove(req.tenantId, req.body.feedItemIds, req.userId, req.companyId);
+  res.json(result);
+});
+
+// Bulk ASSIGN — stage the same category across many pending/assigned items.
+bankingRouter.post('/feed/bulk-assign', validate(bulkAssignSchema), async (req, res) => {
+  const { feedItemIds, accountId, contactId, tagId, memo } = req.body;
+  const result = await bankFeedService.bulkAssign(
+    req.tenantId, feedItemIds, { accountId, contactId, tagId, memo }, req.userId,
+  );
   res.json(result);
 });
 

@@ -2,7 +2,10 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-export type BankFeedStatus = 'pending' | 'matched' | 'categorized' | 'excluded';
+// 'assigned' — a category has been STAGED on the item (assigned_* columns)
+// but NOT yet posted to the ledger. It stays actionable ("ready to approve")
+// until approval flips it to 'categorized'. See migration 0119.
+export type BankFeedStatus = 'pending' | 'assigned' | 'matched' | 'categorized' | 'excluded';
 export type SyncStatus = 'active' | 'error' | 'disconnected';
 export type ReconciliationStatus = 'in_progress' | 'complete';
 
@@ -55,6 +58,16 @@ export interface BankFeedItem {
   // Feed-item memo (migration 0118): Plaid seeds it with the bank's raw
   // payee text; user edits persist; categorize stamps it on the txn.
   memo?: string | null;
+  // Two-phase workflow (migration 0119): the STAGED assignment on an
+  // 'assigned' item — the human-chosen category awaiting approval. Distinct
+  // from suggested* (AI guess) and lineTags (posted). assignedAccountName /
+  // assignedTagName are joined display names on list responses.
+  assignedAccountId?: string | null;
+  assignedAccountName?: string | null;
+  assignedContactId?: string | null;
+  assignedTagId?: string | null;
+  assignedTagName?: string | null;
+  assignedMemo?: string | null;
   // Rule-staged suggested tag (bank_feed_items.suggested_tag_id) and its
   // resolved name — surfaced on the feed so a rule-set tag is visible on a
   // PENDING item as a "suggested" pill before it's categorized.

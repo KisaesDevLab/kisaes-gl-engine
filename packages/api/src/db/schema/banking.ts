@@ -53,6 +53,16 @@ export const bankFeedItems = pgTable('bank_feed_items', {
   // raw payee text (payment_meta.payee); the review panel edits it; the
   // categorize path stamps it onto the posted transaction.
   memo: text('memo'),
+  // Migration 0119 — two-phase workflow. ASSIGN stages the human-chosen
+  // category here (status → 'assigned') WITHOUT posting; APPROVE reads these
+  // columns and posts the ledger transaction. Distinct from suggested_* (the
+  // AI/rule guess) and matched_transaction_id (the posted result).
+  assignedAccountId: uuid('assigned_account_id'),
+  assignedContactId: uuid('assigned_contact_id'),
+  assignedTagId: uuid('assigned_tag_id'),
+  assignedMemo: text('assigned_memo'),
+  assignedBy: uuid('assigned_by'),
+  assignedAt: timestamp('assigned_at', { withTimezone: true }),
   // Phase 4 — when a conditional rule's `skip_ai` action fires
   // for this item, the AI categorizer batch step skips it.
   skipAi: boolean('skip_ai').notNull().default(false),
