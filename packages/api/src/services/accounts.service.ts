@@ -281,16 +281,36 @@ export async function seedFromTemplate(
   // with "don't create the full chart of accounts".
   const source = options.systemOnly ? template.filter((t) => t.isSystem) : template;
 
-  const values = source.map((t) => ({
-    tenantId,
-    companyId: companyId || null,
-    accountNumber: t.accountNumber,
-    name: t.name,
-    accountType: t.accountType,
-    detailType: t.detailType,
-    isSystem: t.isSystem,
-    systemTag: t.systemTag,
-  }));
+  // Skip any template row whose account number already exists for this
+  // tenant. On a fresh tenant this is a no-op (nothing exists yet); after a
+  // COA delete+reapply it skips the preserved system accounts so we neither
+  // collide on the (tenant_id, account_number) unique index nor create a
+  // duplicate "Payments Clearing" / A/R / A/P. Account numbers are unique
+  // per tenant regardless of company, so the check is tenant-scoped.
+  const existingRows = await db
+    .select({ accountNumber: accounts.accountNumber })
+    .from(accounts)
+    .where(eq(accounts.tenantId, tenantId));
+  const existingNumbers = new Set(
+    existingRows.map((r) => r.accountNumber).filter((n): n is string => !!n),
+  );
+
+  const values = source
+    // Rows without an account number can't collide (NULLs are distinct in a
+    // Postgres unique index), so they always seed.
+    .filter((t) => !t.accountNumber || !existingNumbers.has(t.accountNumber))
+    .map((t) => ({
+      tenantId,
+      companyId: companyId || null,
+      accountNumber: t.accountNumber,
+      name: t.name,
+      accountType: t.accountType,
+      detailType: t.detailType,
+      isSystem: t.isSystem,
+      systemTag: t.systemTag,
+    }));
+
+  if (values.length === 0) return;
 
   // Wrap in a db.transaction so a partial failure (e.g., a unique
   // constraint collision on (tenant_id, account_number) caused by a

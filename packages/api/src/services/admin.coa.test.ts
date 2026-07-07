@@ -5,15 +5,18 @@
 // Covers the two COA admin features:
 //   1. seedFromTemplate({ systemOnly }) seeds ONLY the required system
 //      accounts (skips the rest of the business-type template).
-//   2. deleteChartOfAccounts removes all accounts, but only when the
-//      tenant has zero transactions.
+//   2. deleteChartOfAccounts removes only NON-system accounts (rule #25
+//      protects system accounts), and only when the tenant has zero
+//      transactions.
+//   3. delete + applyCoaTemplate re-seeds without duplicating the preserved
+//      system accounts.
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { tenants, accounts, transactions } from '../db/schema/index.js';
 import { seedFromTemplate } from './accounts.service.js';
-import { deleteChartOfAccounts } from './admin.service.js';
+import { deleteChartOfAccounts, applyCoaTemplate } from './admin.service.js';
 
 let tenantId = '';
 
@@ -55,13 +58,23 @@ describe('seedFromTemplate systemOnly', () => {
 });
 
 describe('deleteChartOfAccounts', () => {
-  it('deletes all accounts when the tenant has no transactions', async () => {
+  it('deletes non-system accounts but preserves system accounts', async () => {
     const id = await newTenant();
     await seedFromTemplate(id, 'default');
+    const before = await db.select().from(accounts).where(eq(accounts.tenantId, id));
+    const systemBefore = before.filter((a) => a.isSystem === true).length;
+    const nonSystemBefore = before.filter((a) => a.isSystem !== true).length;
+    expect(systemBefore).toBeGreaterThan(0);
+    expect(nonSystemBefore).toBeGreaterThan(0);
+
     const result = await deleteChartOfAccounts(id, undefined);
-    expect(result.accountsDeleted).toBeGreaterThan(0);
-    const rows = await db.select().from(accounts).where(eq(accounts.tenantId, id));
-    expect(rows.length).toBe(0);
+    expect(result.accountsDeleted).toBe(nonSystemBefore);
+    expect(result.systemAccountsKept).toBe(systemBefore);
+
+    const after = await db.select().from(accounts).where(eq(accounts.tenantId, id));
+    // Only system accounts remain, and every one of them survived.
+    expect(after.length).toBe(systemBefore);
+    expect(after.every((a) => a.isSystem === true)).toBe(true);
   });
 
   it('refuses when the tenant has transactions', async () => {
@@ -72,5 +85,37 @@ describe('deleteChartOfAccounts', () => {
     // accounts untouched
     const rows = await db.select().from(accounts).where(eq(accounts.tenantId, id));
     expect(rows.length).toBeGreaterThan(0);
+  });
+
+  it('delete + applyCoaTemplate re-seeds without duplicating system accounts', async () => {
+    const id = await newTenant();
+    await seedFromTemplate(id, 'default');
+    await deleteChartOfAccounts(id, undefined);
+
+    // System accounts remain; the swap must succeed (guard counts only
+    // non-system) and must NOT create a second copy of any system account.
+    await applyCoaTemplate(id, 'default', undefined);
+
+    const after = await db.select().from(accounts).where(eq(accounts.tenantId, id));
+    const systemRows = after.filter((a) => a.isSystem === true);
+    // Exactly one system account per systemTag — no duplicates.
+    const tags = systemRows.map((a) => a.systemTag);
+    expect(new Set(tags).size).toBe(tags.length);
+    // And no duplicate account numbers across the whole re-seeded chart.
+    const numbers = after.map((a) => a.accountNumber).filter(Boolean);
+    expect(new Set(numbers).size).toBe(numbers.length);
+    expect(after.some((a) => a.isSystem !== true)).toBe(true);
+  });
+
+  it('is idempotent on the non-system count — a second delete removes nothing', async () => {
+    const id = await newTenant();
+    await seedFromTemplate(id, 'default');
+    await deleteChartOfAccounts(id, undefined);
+    const second = await deleteChartOfAccounts(id, undefined);
+    expect(second.accountsDeleted).toBe(0);
+    // Guard: never accidentally delete a system account.
+    const sys = await db.select().from(accounts)
+      .where(and(eq(accounts.tenantId, id), eq(accounts.isSystem, true)));
+    expect(sys.length).toBeGreaterThan(0);
   });
 });

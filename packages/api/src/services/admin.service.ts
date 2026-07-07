@@ -70,6 +70,9 @@ export async function getTenantDetail(tenantId: string) {
     SELECT
       (SELECT COUNT(*) FROM transactions WHERE tenant_id = ${tenantId}) as transactions,
       (SELECT COUNT(*) FROM accounts WHERE tenant_id = ${tenantId}) as accounts,
+      -- Non-system accounts drive the "delete COA" / "apply template" flow:
+      -- delete preserves system accounts, so re-templating is gated on this.
+      (SELECT COUNT(*) FROM accounts WHERE tenant_id = ${tenantId} AND is_system IS NOT TRUE) as non_system_accounts,
       (SELECT COUNT(*) FROM contacts WHERE tenant_id = ${tenantId}) as contacts
   `);
 
@@ -377,17 +380,25 @@ export async function deleteTenant(
 }
 
 /**
- * Delete a tenant's entire chart of accounts — allowed ONLY when the
- * tenant has recorded no transactions. Intended for correcting a wrong
- * COA template on a freshly-provisioned tenant before any activity:
- * delete, then re-seed from the right template. Refuses once any
- * transaction exists, because journal_lines reference account_id and
- * dropping accounts would orphan posted history and corrupt reports.
+ * Delete a tenant's chart of accounts — allowed ONLY when the tenant has
+ * recorded no transactions. Intended for correcting a wrong COA template on
+ * a freshly-provisioned tenant before any activity: delete, then re-seed
+ * from the right template. Refuses once any transaction exists, because
+ * journal_lines reference account_id and dropping accounts would orphan
+ * posted history and corrupt reports.
+ *
+ * Deletes ONLY non-system accounts. System accounts (Payments Clearing,
+ * A/R, A/P, Opening Balances, Retained Earnings, …) are looked up by
+ * `systemTag` throughout the app and are protected by rule #25 — deleting
+ * them would break bank mappings, default-account settings, and the ledger
+ * services that resolve them. Preserving them also means a business-type
+ * template can be swapped without destroying the required accounts;
+ * applyCoaTemplate re-seeds only the non-system rows on top.
  */
 export async function deleteChartOfAccounts(
   tenantId: string,
   actingUserId?: string,
-): Promise<{ deleted: true; tenantId: string; accountsDeleted: number }> {
+): Promise<{ deleted: true; tenantId: string; accountsDeleted: number; systemAccountsKept: number }> {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tenantId)) {
     throw AppError.badRequest('Invalid tenant id format');
   }
@@ -404,13 +415,18 @@ export async function deleteChartOfAccounts(
     );
   }
 
-  const [existing] = await db.select({ c: count() }).from(accounts).where(eq(accounts.tenantId, tenantId));
-  const accountsDeleted = Number(existing?.c ?? 0);
+  // `is_system` is nullable (default false); treat NULL as non-system.
+  const nonSystem = and(eq(accounts.tenantId, tenantId), sql`${accounts.isSystem} IS NOT TRUE`);
+  const [toDelete] = await db.select({ c: count() }).from(accounts).where(nonSystem);
+  const [kept] = await db.select({ c: count() }).from(accounts)
+    .where(and(eq(accounts.tenantId, tenantId), eq(accounts.isSystem, true)));
+  const accountsDeleted = Number(toDelete?.c ?? 0);
+  const systemAccountsKept = Number(kept?.c ?? 0);
 
-  await db.delete(accounts).where(eq(accounts.tenantId, tenantId));
-  await auditLog(tenantId, 'delete', 'chart_of_accounts', tenantId, { accountsDeleted }, null, actingUserId);
+  await db.delete(accounts).where(nonSystem);
+  await auditLog(tenantId, 'delete', 'chart_of_accounts', tenantId, { accountsDeleted, systemAccountsKept }, null, actingUserId);
 
-  return { deleted: true, tenantId, accountsDeleted };
+  return { deleted: true, tenantId, accountsDeleted, systemAccountsKept };
 }
 
 /**
@@ -702,10 +718,16 @@ export async function applyCoaTemplate(
   const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
   if (!tenant) throw AppError.notFound('Tenant not found');
 
-  const [existing] = await db.select({ c: count() }).from(accounts).where(eq(accounts.tenantId, tenantId));
+  // Only NON-system accounts block re-templating: deleteChartOfAccounts
+  // preserves system accounts, so a swap flow legitimately runs with them
+  // still present. seedFromTemplate skips any template row whose account
+  // number already exists (the preserved system accounts), so they aren't
+  // duplicated.
+  const [existing] = await db.select({ c: count() }).from(accounts)
+    .where(and(eq(accounts.tenantId, tenantId), sql`${accounts.isSystem} IS NOT TRUE`));
   if (Number(existing?.c ?? 0) > 0) {
     throw AppError.badRequest(
-      `This tenant already has ${existing!.c} accounts. Delete the chart of accounts first ` +
+      `This tenant already has ${existing!.c} non-system accounts. Delete the chart of accounts first ` +
       `(only possible before any transactions are recorded), then apply the template.`,
       'COA_NOT_EMPTY',
     );
