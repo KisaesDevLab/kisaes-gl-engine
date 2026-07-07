@@ -2,10 +2,10 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-import { eq, and, notInArray } from 'drizzle-orm';
+import { eq, and, notInArray, count } from 'drizzle-orm';
 import type { UpdateCompanyInput } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { companies, accountantCompanyExclusions } from '../db/schema/index.js';
+import { companies, accountantCompanyExclusions, transactions, bankFeedItems, bankConnections } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 
@@ -237,4 +237,58 @@ export async function createAdditionalCompany(tenantId: string, input: { busines
   if (!company) throw AppError.internal('Failed to create company');
 
   return company;
+}
+
+// Delete an additional company from a tenant. Safe because companies within a
+// tenant SHARE one tenant-scoped chart of accounts (see createAdditionalCompany
+// note), so an unused company owns nothing to cascade. Refuses when the company
+// has any real activity (transactions, bank feed items, or bank connections) so
+// deleting it can never orphan ledger/banking history — the operator is told to
+// clear that first. A tenant must always keep at least one company.
+export async function deleteCompany(tenantId: string, companyId: string, userId?: string) {
+  const company = await db.query.companies.findFirst({
+    where: and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)),
+  });
+  if (!company) throw AppError.notFound('Company not found');
+
+  const [companyCountRow] = await db.select({ c: count() }).from(companies)
+    .where(eq(companies.tenantId, tenantId));
+  if (Number(companyCountRow?.c ?? 0) <= 1) {
+    throw AppError.badRequest(
+      'A tenant must keep at least one company. Create another company before deleting this one.',
+      'LAST_COMPANY',
+    );
+  }
+
+  const [txnRow] = await db.select({ c: count() }).from(transactions)
+    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.companyId, companyId)));
+  if (Number(txnRow?.c ?? 0) > 0) {
+    throw AppError.badRequest(
+      `This company has ${txnRow!.c} transaction(s). Void or reassign them before deleting the company.`,
+      'COMPANY_HAS_TRANSACTIONS',
+    );
+  }
+
+  const [feedRow] = await db.select({ c: count() }).from(bankFeedItems)
+    .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.companyId, companyId)));
+  if (Number(feedRow?.c ?? 0) > 0) {
+    throw AppError.badRequest(
+      'This company has bank feed items. Clear them before deleting the company.',
+      'COMPANY_HAS_DATA',
+    );
+  }
+
+  const [connRow] = await db.select({ c: count() }).from(bankConnections)
+    .where(and(eq(bankConnections.tenantId, tenantId), eq(bankConnections.companyId, companyId)));
+  if (Number(connRow?.c ?? 0) > 0) {
+    throw AppError.badRequest(
+      'This company has bank connections. Disconnect them before deleting the company.',
+      'COMPANY_HAS_DATA',
+    );
+  }
+
+  await db.delete(companies).where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)));
+  await auditLog(tenantId, 'delete', 'company', companyId, { businessName: company.businessName }, null, userId);
+
+  return { deleted: true, companyId };
 }

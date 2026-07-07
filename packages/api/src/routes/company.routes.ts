@@ -268,3 +268,12 @@ companyRouter.delete('/stripe', async (req, res) => {
   await removeStripeConfig(req.tenantId, req.companyId);
   res.json({ message: 'Stripe configuration removed', onlinePaymentsEnabled: false });
 });
+
+// Delete an additional company. Registered last so the '/:id' param route does
+// not shadow the named routes above. Owner-only; guarded server-side against
+// deleting the last company or one with real activity.
+companyRouter.delete('/:id', async (req, res) => {
+  if (req.userRole !== 'owner') throw AppError.forbidden('Only owners can delete companies');
+  const result = await companyService.deleteCompany(req.tenantId, req.params['id']!, req.userId);
+  res.json(result);
+});
