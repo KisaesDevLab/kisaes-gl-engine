@@ -713,14 +713,17 @@ export async function exclude(tenantId: string, feedItemId: string) {
 }
 
 /**
- * BULK APPROVE — post every 'assigned' item in the selection to the ledger
- * using its STAGED assigned_* values (via approve()). This REPLACES the old
- * behavior, which posted 'pending' items on their AI suggestedAccountId; the
- * two-phase workflow means approval only ever posts what a human staged.
+ * BULK APPROVE — commit every selected item that HAS a category to post:
+ *   - 'assigned' items → post their staged assigned_* values (via approve()).
+ *   - 'pending' items with an AI/rule suggestedAccountId → post that
+ *     suggestion (via categorize()). This is the explicit "accept and
+ *     commit these" action, so it posts regardless of confidence — the
+ *     user hand-selected the rows and clicked Approve.
  *
- * Items not in status 'assigned' (pending/categorized/matched/excluded, or
- * missing) are skipped, never posted. Per-item try/catch keeps one failure
- * (e.g. a lock-date rejection) from aborting the batch.
+ * Skipped (never posted): pending WITHOUT a suggestion (nothing to post),
+ * and already-processed rows (categorized/matched/excluded, or missing).
+ * Per-item try/catch keeps one failure (e.g. a lock-date rejection) from
+ * aborting the batch.
  */
 export async function bulkApprove(tenantId: string, feedItemIds: string[], userId?: string, companyId?: string) {
   if (!Array.isArray(feedItemIds)) {
@@ -741,11 +744,25 @@ export async function bulkApprove(tenantId: string, feedItemIds: string[], userI
       const item = await db.query.bankFeedItems.findFirst({
         where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, id)),
       });
-      if (item && item.status === 'assigned') {
+      if (!item) { skipped++; continue; }
+      if (item.status === 'assigned') {
+        // Post the staged assignment.
         await approve(tenantId, id, userId, companyId);
         approved++;
+      } else if (item.status === 'pending' && item.suggestedAccountId) {
+        // Post the AI/rule suggestion. Bulk Approve is an EXPLICIT user
+        // action on hand-selected rows, so it commits any selected item
+        // that has a category to post — no confidence gate here (that
+        // gate is for unattended auto-approval, not this deliberate one).
+        // A pending item with no suggestion has nothing to post → skip.
+        await categorize(tenantId, id, {
+          accountId: item.suggestedAccountId,
+          contactId: item.suggestedContactId ?? undefined,
+          tagId: item.suggestedTagId ?? undefined,
+        }, userId, companyId);
+        approved++;
       } else {
-        // Not staged (pending/posted/excluded/missing) → skip, don't post.
+        // pending-without-suggestion / already posted / excluded / matched.
         skipped++;
       }
     } catch (err: any) {

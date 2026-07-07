@@ -236,24 +236,36 @@ describe('bank-feed approve() — posts the staged assignment', () => {
   });
 });
 
-describe('bank-feed bulkApprove() — posts only staged items', () => {
-  it('approves assigned items and skips pending/others', async () => {
+describe('bank-feed bulkApprove() — posts staged + suggested selections', () => {
+  it('approves assigned items and pending items with a suggestion; skips pending with none', async () => {
+    // (a) staged/assigned item → posts staged value.
     const staged = await insertPendingItem({ description: 'ZZQX STAGED' });
     await bankFeedService.assign(tenantId, staged.id, { accountId: expenseAccountId }, userId);
-    const pending = await insertPendingItem({ description: 'ZZQX PENDING' });
+    // (b) pending item WITH an AI/rule suggestion → posts the suggestion.
+    const suggested = await insertPendingItem({ description: 'ZZQX SUGGESTED', suggestedAccountId: expenseAccountId });
+    // (c) pending item with NO suggestion → nothing to post → skipped.
+    const bare = await insertPendingItem({ description: 'ZZQX BARE' });
 
-    const result = await bankFeedService.bulkApprove(tenantId, [staged.id, pending.id], userId, companyId);
-    expect(result.approved).toBe(1);
-    expect(result.skipped).toBe(1);
+    const result = await bankFeedService.bulkApprove(tenantId, [staged.id, suggested.id, bare.id], userId, companyId);
+    expect(result.approved).toBe(2); // staged + suggested
+    expect(result.skipped).toBe(1);  // bare
     expect(result.failed).toBe(0);
 
     const stagedAfter = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, staged.id) });
     expect(stagedAfter!.status).toBe('categorized');
     expect(stagedAfter!.matchedTransactionId).toBeTruthy();
 
-    const pendingAfter = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, pending.id) });
-    expect(pendingAfter!.status).toBe('pending');
-    expect(await txnCountForItem(pending.id)).toBe(0);
+    // The pending+suggestion item is now POSTED via its suggestion (the
+    // regression fix: bulk Approve used to silently skip these).
+    const suggestedAfter = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, suggested.id) });
+    expect(suggestedAfter!.status).toBe('categorized');
+    expect(suggestedAfter!.matchedTransactionId).toBeTruthy();
+    expect(await txnCountForItem(suggested.id)).toBe(1);
+
+    // The bare pending item is untouched.
+    const bareAfter = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, bare.id) });
+    expect(bareAfter!.status).toBe('pending');
+    expect(await txnCountForItem(bare.id)).toBe(0);
   });
 });
 
