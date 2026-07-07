@@ -12,6 +12,7 @@ import {
 import { auditLog } from '../db/schema/index.js';
 import * as authService from './auth.service.js';
 import * as plaidClientService from './plaid-client.service.js';
+import * as plaidConnectionService from './plaid-connection.service.js';
 import * as plaidMappingService from './plaid-mapping.service.js';
 import * as plaidWebhookService from './plaid-webhook.service.js';
 import * as plaidSyncService from './plaid-sync.service.js';
@@ -261,6 +262,93 @@ describe('Plaid full re-import (resetAndResyncItem)', () => {
     const after = await db.query.plaidItems.findFirst({ where: eq(plaidItems.id, item!.id) });
     expect(after!.syncCursor).toBe('C');
     expect(syncMocks.syncTransactions).not.toHaveBeenCalled();
+  });
+});
+
+describe('detectAccountsConnectedElsewhere (cross-tenant duplicate warning)', () => {
+  beforeEach(async () => { await cleanDb(); });
+  afterEach(async () => { await cleanDb(); });
+
+  // Seed a plaid item + account mapped to a DIFFERENT tenant than the caller.
+  async function seedOtherTenantAccount(callerUserId: string, opts: {
+    persistentAccountId?: string | null; mask: string; subtype: string; institutionId: string;
+  }) {
+    const [tenantA] = await db.insert(tenants).values({
+      name: 'Other Tenant', slug: 'other-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+    }).returning();
+    const [acctA] = await db.insert(accounts).values({
+      tenantId: tenantA!.id, name: 'A Checking', accountType: 'asset', detailType: 'bank',
+    }).returning();
+    const [itemA] = await db.insert(plaidItems).values({
+      plaidItemId: 'other-item-' + Math.random().toString(36).slice(2, 8),
+      accessTokenEncrypted: encrypt('tok'),
+      plaidInstitutionId: opts.institutionId,
+      createdBy: callerUserId,
+    }).returning();
+    const [paA] = await db.insert(plaidAccounts).values({
+      plaidItemId: itemA!.id,
+      plaidAccountId: 'other-acct-' + Math.random().toString(36).slice(2, 8),
+      persistentAccountId: opts.persistentAccountId ?? null,
+      accountType: 'depository', accountSubtype: opts.subtype, mask: opts.mask,
+    }).returning();
+    await db.insert(plaidAccountMappings).values({
+      plaidAccountId: paA!.id, tenantId: tenantA!.id, mappedAccountId: acctA!.id,
+      isSyncEnabled: true, mappedBy: callerUserId,
+    });
+    return { tenantA: tenantA!, paA: paA! };
+  }
+
+  it('detects a match in another tenant by persistent_account_id', async () => {
+    const { user } = await createTestUser();
+    await seedOtherTenantAccount(user.id, { persistentAccountId: 'PERSIST-1', mask: '9999', subtype: 'checking', institutionId: 'ins_1' });
+
+    const hit = await plaidConnectionService.detectAccountsConnectedElsewhere(user.id, 'ins_1', [
+      { persistent_account_id: 'PERSIST-1', mask: '9999', subtype: 'checking' },
+    ]);
+    expect(hit).toBe(true);
+  });
+
+  it('falls back to institution + mask + subtype when persistent id is absent', async () => {
+    const { user } = await createTestUser();
+    await seedOtherTenantAccount(user.id, { persistentAccountId: null, mask: '9999', subtype: 'checking', institutionId: 'ins_1' });
+
+    const hit = await plaidConnectionService.detectAccountsConnectedElsewhere(user.id, 'ins_1', [
+      { persistent_account_id: null, mask: '9999', subtype: 'checking' },
+    ]);
+    expect(hit).toBe(true);
+  });
+
+  it('returns false when the only match is in the caller\'s OWN tenant', async () => {
+    const { user } = await createTestUser();
+    const bankAccount = await db.query.accounts.findFirst({
+      where: and(eq(accounts.tenantId, user.tenantId), eq(accounts.detailType, 'bank')),
+    });
+    if (!bankAccount) return;
+    const [item] = await db.insert(plaidItems).values({
+      plaidItemId: 'self-item', accessTokenEncrypted: encrypt('tok'), plaidInstitutionId: 'ins_1', createdBy: user.id,
+    }).returning();
+    const [pa] = await db.insert(plaidAccounts).values({
+      plaidItemId: item!.id, plaidAccountId: 'self-acct', persistentAccountId: 'PERSIST-SELF',
+      accountType: 'depository', accountSubtype: 'checking', mask: '9999',
+    }).returning();
+    await db.insert(plaidAccountMappings).values({
+      plaidAccountId: pa!.id, tenantId: user.tenantId, mappedAccountId: bankAccount.id, isSyncEnabled: true, mappedBy: user.id,
+    });
+
+    const self = await plaidConnectionService.detectAccountsConnectedElsewhere(user.id, 'ins_1', [
+      { persistent_account_id: 'PERSIST-SELF', mask: '9999', subtype: 'checking' },
+    ]);
+    expect(self).toBe(false);
+  });
+
+  it('returns false for an account not connected anywhere', async () => {
+    const { user } = await createTestUser();
+    await seedOtherTenantAccount(user.id, { persistentAccountId: 'PERSIST-1', mask: '9999', subtype: 'checking', institutionId: 'ins_1' });
+
+    const miss = await plaidConnectionService.detectAccountsConnectedElsewhere(user.id, 'ins_2', [
+      { persistent_account_id: 'PERSIST-UNKNOWN', mask: '0000', subtype: 'savings' },
+    ]);
+    expect(miss).toBe(false);
   });
 });
 

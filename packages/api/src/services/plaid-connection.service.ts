@@ -42,6 +42,55 @@ export async function getVisibleAccounts(userId: string, plaidItemId: string) {
   return { accounts: visible, hiddenAccountCount: hiddenCount };
 }
 
+// ─── Cross-tenant duplicate detection ──────────────────────────
+// Privacy-safe: returns only WHETHER the same real bank account is already
+// connected + mapped under a tenant the user has no access to — never the
+// other tenant's identity. Mirrors the sole-consumer probe in admin.service
+// and the count-only disclosure of getVisibleAccounts. Used to WARN (not
+// block) that re-linking may double Plaid billing / duplicate imports.
+//
+// The stable cross-Item key is persistent_account_id — a fresh Link mints new
+// plaid_item_id / account_id, so those never match a prior connection of the
+// same real account. When Plaid omits it we fall back to
+// institution_id + mask + account_subtype.
+export async function detectAccountsConnectedElsewhere(
+  userId: string,
+  institutionId: string | null | undefined,
+  plaidAccountList: Array<{ persistent_account_id?: string | null; mask?: string | null; subtype?: string | null }>,
+): Promise<boolean> {
+  const userTenants = await getUserAdminTenants(userId);
+  if (userTenants.length === 0) return false;
+  const tenantList = sql.join(userTenants.map((t) => sql`${t}`), sql`, `);
+
+  for (const acct of plaidAccountList) {
+    const persistent = acct.persistent_account_id || null;
+    const mask = acct.mask || null;
+    const subtype = acct.subtype || null;
+    // No usable key for this account → can't detect (don't false-positive).
+    if (!persistent && !(institutionId && mask && subtype)) continue;
+
+    const rows = await db.execute(sql`
+      SELECT 1
+      FROM plaid_accounts pa
+      JOIN plaid_account_mappings pam ON pam.plaid_account_id = pa.id
+      JOIN plaid_items pi ON pi.id = pa.plaid_item_id
+      WHERE pam.tenant_id NOT IN (${tenantList})
+        AND pi.removed_at IS NULL
+        AND (
+          (${persistent}::text IS NOT NULL AND pa.persistent_account_id = ${persistent})
+          OR (${persistent}::text IS NULL
+              AND ${institutionId ?? null}::text IS NOT NULL
+              AND pi.plaid_institution_id = ${institutionId ?? null}
+              AND pa.mask = ${mask}
+              AND pa.account_subtype = ${subtype})
+        )
+      LIMIT 1
+    `);
+    if (rows.rows.length > 0) return true;
+  }
+  return false;
+}
+
 async function getUserAdminTenants(userId: string): Promise<string[]> {
   const { users, userTenantAccess } = await import('../db/schema/index.js');
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
@@ -159,7 +208,16 @@ export async function createConnection(userId: string, publicToken: string, meta
 
   await logActivity(item!.id, null, 'item_created', userId, user?.displayName || null, { institutionName: metadata.institutionName });
 
-  return { item: item!, accounts, isExisting: false };
+  // Warn (never block) if one of these accounts is already connected under a
+  // tenant the user can't see — connecting it again double-bills Plaid and
+  // duplicates the feed. Name-hidden by design (boolean only).
+  const connectedElsewhere = await detectAccountsConnectedElsewhere(
+    userId,
+    metadata.institutionId,
+    plaidAccountList,
+  );
+
+  return { item: item!, accounts, isExisting: false, connectedElsewhere };
 }
 
 // ─── Item Queries ──────────────────────────────────────────────
