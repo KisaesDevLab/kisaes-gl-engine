@@ -5,9 +5,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // Stub the BullMQ enqueue so createRun doesn't open a Redis socket.
-const enqueueSpy = vi.fn(async () => undefined);
+const enqueueSpy = vi.fn(async (_data: { runId: string; tenantId: string }) => undefined);
 vi.mock('./extraction/queue.js', () => ({
-  enqueueReportPack: (...args: unknown[]) => enqueueSpy(...args),
+  enqueueReportPack: (data: { runId: string; tenantId: string }) => enqueueSpy(data),
 }));
 
 import { db } from '../db/index.js';
