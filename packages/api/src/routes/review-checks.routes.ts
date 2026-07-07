@@ -50,7 +50,11 @@ reviewChecksRouter.get('/registry', async (_req, res) => {
 // (category='judgment') are NOT run by this route — see
 // /run-ai-judgment for that.
 reviewChecksRouter.post('/run', validate(runChecksSchema), async (req, res) => {
-  const { companyId } = req.body as { companyId?: string };
+  const { companyId, periodStart, periodEnd } = req.body as {
+    companyId?: string;
+    periodStart?: string;
+    periodEnd?: string;
+  };
   if (companyId) {
     // Tenant-isolation: confirm the company belongs to the caller's
     // tenant before running checks against it. Without this, a
@@ -64,9 +68,10 @@ reviewChecksRouter.post('/run', validate(runChecksSchema), async (req, res) => {
       throw AppError.notFound('Company not found');
     }
   }
+  const runOptions = { periodStart, periodEnd };
   const results = companyId
-    ? [await orchestrator.runForCompany(req.tenantId, companyId, req.userId)]
-    : await orchestrator.runForTenant(req.tenantId, req.userId);
+    ? [await orchestrator.runForCompany(req.tenantId, companyId, req.userId, runOptions)]
+    : await orchestrator.runForTenant(req.tenantId, req.userId, runOptions);
 
   await auditLog(
     req.tenantId,
@@ -74,7 +79,7 @@ reviewChecksRouter.post('/run', validate(runChecksSchema), async (req, res) => {
     'check_run',
     null,
     null,
-    { companyId: companyId ?? null, runs: results.length },
+    { companyId: companyId ?? null, periodStart: periodStart ?? null, periodEnd: periodEnd ?? null, runs: results.length },
     req.userId,
   );
   res.json({ runs: results });
@@ -149,6 +154,8 @@ reviewChecksRouter.get('/findings', async (req, res) => {
     severity: req.query['severity'],
     checkKey: req.query['checkKey'],
     companyId: req.query['companyId'],
+    periodStart: req.query['periodStart'],
+    periodEnd: req.query['periodEnd'],
     cursor: req.query['cursor'],
     limit: req.query['limit'],
   });

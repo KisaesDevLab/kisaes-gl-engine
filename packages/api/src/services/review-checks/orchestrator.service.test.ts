@@ -20,6 +20,7 @@ import {
 } from '../../db/schema/index.js';
 import * as orchestrator from './orchestrator.service.js';
 import * as suppressionsService from './suppressions.service.js';
+import * as findingsService from './findings.service.js';
 
 let tenantId: string;
 let companyId: string;
@@ -76,6 +77,25 @@ async function seedHighDollarTxn(total: string) {
     status: 'posted',
   });
 }
+
+// Seed a high-dollar expense on a specific date and return its id, so
+// period-scoping tests can assert which transactions get flagged.
+async function seedHighDollarTxnOn(txnDate: string, total = '15000.0000'): Promise<string> {
+  const [t] = await db.insert(transactions).values({
+    tenantId, companyId,
+    txnType: 'expense',
+    txnDate,
+    total,
+    contactId,
+    status: 'posted',
+  }).returning({ id: transactions.id });
+  return t!.id;
+}
+
+// July 2026 window, matching ClosePeriodSelector semantics:
+// periodStart inclusive, periodEnd exclusive (first-of-next-month).
+const JULY = { periodStart: '2026-07-01T00:00:00.000Z', periodEnd: '2026-08-01T00:00:00.000Z' };
+const APRIL = { periodStart: '2026-04-01T00:00:00.000Z', periodEnd: '2026-05-01T00:00:00.000Z' };
 
 describe('orchestrator.runForCompany', () => {
   it('writes a check_runs row + counts findings', async () => {
@@ -174,6 +194,90 @@ describe('orchestrator.runForCompany', () => {
     } finally {
       await db.delete(tenants).where(eq(tenants.id, otherTenant!.id));
     }
+  });
+});
+
+describe('orchestrator period-scoping', () => {
+  it('flags only in-period transactions for a transaction-based check', async () => {
+    const julyTxn = await seedHighDollarTxnOn('2026-07-15');
+    const aprilTxn = await seedHighDollarTxnOn('2026-04-15');
+
+    await orchestrator.runForCompany(tenantId, companyId, undefined, JULY);
+
+    const flagged = await db
+      .select()
+      .from(findings)
+      .where(eq(findings.tenantId, tenantId));
+    const materiality = flagged.filter((f) => f.checkKey === 'transaction_above_materiality');
+    const flaggedTxnIds = materiality.map((f) => f.transactionId);
+    expect(flaggedTxnIds).toContain(julyTxn);
+    expect(flaggedTxnIds).not.toContain(aprilTxn);
+  });
+
+  it('stamps inserted findings with the run period_start / period_end', async () => {
+    const julyTxn = await seedHighDollarTxnOn('2026-07-15');
+    await orchestrator.runForCompany(tenantId, companyId, undefined, JULY);
+
+    const [f] = await db
+      .select()
+      .from(findings)
+      .where(eq(findings.transactionId, julyTxn));
+    expect(f).toBeDefined();
+    // date columns come back as 'YYYY-MM-DD' strings.
+    expect(f!.periodStart).toBe('2026-07-01');
+    expect(f!.periodEnd).toBe('2026-08-01');
+  });
+
+  it('records the period on the check_runs row', async () => {
+    await seedHighDollarTxnOn('2026-07-15');
+    await orchestrator.runForCompany(tenantId, companyId, undefined, JULY);
+    const [run] = await db.select().from(checkRuns).where(eq(checkRuns.tenantId, tenantId));
+    expect(run!.periodStart).toBe('2026-07-01');
+    expect(run!.periodEnd).toBe('2026-08-01');
+  });
+
+  it('leaves an all-time run unscoped (period columns null, flags every date)', async () => {
+    const julyTxn = await seedHighDollarTxnOn('2026-07-15');
+    const aprilTxn = await seedHighDollarTxnOn('2026-04-15');
+    await orchestrator.runForCompany(tenantId, companyId);
+
+    const flagged = await db
+      .select()
+      .from(findings)
+      .where(eq(findings.tenantId, tenantId));
+    const materiality = flagged.filter((f) => f.checkKey === 'transaction_above_materiality');
+    const flaggedTxnIds = materiality.map((f) => f.transactionId);
+    expect(flaggedTxnIds).toContain(julyTxn);
+    expect(flaggedTxnIds).toContain(aprilTxn);
+    expect(materiality[0]!.periodStart).toBeNull();
+  });
+
+  it('findings list filtered by period returns only that period\'s findings', async () => {
+    const julyTxn = await seedHighDollarTxnOn('2026-07-15');
+    const aprilTxn = await seedHighDollarTxnOn('2026-04-15');
+
+    // Two scoped runs — one per month — so each transaction is
+    // flagged and stamped with its own period.
+    await orchestrator.runForCompany(tenantId, companyId, undefined, JULY);
+    await orchestrator.runForCompany(tenantId, companyId, undefined, APRIL);
+
+    const julyList = await findingsService.list(tenantId, {
+      checkKey: 'transaction_above_materiality',
+      periodStart: JULY.periodStart,
+      periodEnd: JULY.periodEnd,
+    });
+    const julyIds = julyList.rows.map((r) => r.transactionId);
+    expect(julyIds).toContain(julyTxn);
+    expect(julyIds).not.toContain(aprilTxn);
+
+    const aprilList = await findingsService.list(tenantId, {
+      checkKey: 'transaction_above_materiality',
+      periodStart: APRIL.periodStart,
+      periodEnd: APRIL.periodEnd,
+    });
+    const aprilIds = aprilList.rows.map((r) => r.transactionId);
+    expect(aprilIds).toContain(aprilTxn);
+    expect(aprilIds).not.toContain(julyTxn);
   });
 });
 

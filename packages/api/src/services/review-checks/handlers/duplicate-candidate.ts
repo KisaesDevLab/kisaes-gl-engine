@@ -6,6 +6,7 @@ import { sql } from 'drizzle-orm';
 import type { FindingDraft } from '@kis-books/shared';
 import { db } from '../../../db/index.js';
 import type { CheckHandler } from './index.js';
+import { periodDateClause } from './period.js';
 
 // `duplicate_candidate` — two transactions in the same window
 // with the same vendor + same total. Both halves of the pair
@@ -15,6 +16,9 @@ export const handler: CheckHandler = async (tenantId, companyId, params): Promis
   const companyClause = companyId
     ? sql`AND t1.company_id = ${companyId} AND t2.company_id = ${companyId}`
     : sql``;
+  // Both halves of a candidate pair must fall inside the period.
+  const period1Clause = periodDateClause(params, 't1.txn_date');
+  const period2Clause = periodDateClause(params, 't2.txn_date');
 
   const result = await db.execute<{
     a_id: string; b_id: string; contact_id: string; total: string;
@@ -34,6 +38,8 @@ export const handler: CheckHandler = async (tenantId, companyId, params): Promis
       AND ABS(EXTRACT(EPOCH FROM (t1.txn_date::TIMESTAMP - t2.txn_date::TIMESTAMP))) <= ${windowDays * 24 * 3600}
     WHERE t1.tenant_id = ${tenantId}
       ${companyClause}
+      ${period1Clause}
+      ${period2Clause}
       AND t1.contact_id IS NOT NULL
       AND t1.status = 'posted'
       AND t2.status = 'posted'

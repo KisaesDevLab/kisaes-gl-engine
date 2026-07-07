@@ -6,6 +6,7 @@ import { sql } from 'drizzle-orm';
 import type { FindingDraft } from '@kis-books/shared';
 import { db } from '../../../db/index.js';
 import type { CheckHandler } from './index.js';
+import { periodDateClause } from './period.js';
 
 // `missing_attachment_above_threshold` — expense/bill above the
 // threshold with no attachment row referencing it. Threshold is
@@ -15,12 +16,14 @@ export const handler: CheckHandler = async (tenantId, companyId, params): Promis
   const companyClause = companyId
     ? sql`AND t.company_id = ${companyId}`
     : sql``;
+  const periodClause = periodDateClause(params, 't.txn_date');
 
   const result = await db.execute<{ id: string; total: string; txn_type: string }>(sql`
     SELECT t.id, t.total, t.txn_type
     FROM transactions t
     WHERE t.tenant_id = ${tenantId}
       ${companyClause}
+      ${periodClause}
       AND t.txn_type IN ('expense', 'bill')
       AND t.status = 'posted'
       AND t.total >= ${threshold}

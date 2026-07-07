@@ -6,15 +6,21 @@ import { sql } from 'drizzle-orm';
 import type { FindingDraft } from '@kis-books/shared';
 import { db } from '../../../db/index.js';
 import type { CheckHandler } from './index.js';
+import { periodDateClause, hasPeriod } from './period.js';
 
 // `weekend_holiday_posting` — flag transactions dated on a
 // Saturday or Sunday. Holiday calendar deferred per plan §D7
 // (would need per-jurisdiction calendar data); v1 catches the
 // most common case (weekend posting).
-export const handler: CheckHandler = async (tenantId, companyId): Promise<FindingDraft[]> => {
+export const handler: CheckHandler = async (tenantId, companyId, params): Promise<FindingDraft[]> => {
   const companyClause = companyId
     ? sql`AND company_id = ${companyId}`
     : sql``;
+  // When a close period is supplied, bound to it; otherwise keep the
+  // all-time behavior's 90-day recency guard.
+  const dateClause = hasPeriod(params)
+    ? periodDateClause(params, 'txn_date')
+    : sql`AND txn_date >= now() - INTERVAL '90 days'`;
 
   // EXTRACT(DOW FROM date) — 0=Sunday..6=Saturday in Postgres.
   const result = await db.execute<{ id: string; txn_date: string; total: string; txn_type: string }>(sql`
@@ -24,7 +30,7 @@ export const handler: CheckHandler = async (tenantId, companyId): Promise<Findin
       ${companyClause}
       AND status = 'posted'
       AND EXTRACT(DOW FROM txn_date) IN (0, 6)
-      AND txn_date >= now() - INTERVAL '90 days'
+      ${dateClause}
     LIMIT 500
   `);
 

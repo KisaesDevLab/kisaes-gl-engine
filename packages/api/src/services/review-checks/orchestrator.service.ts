@@ -39,6 +39,23 @@ export interface RunResult {
 // /run-ai-judgment route sets it to true.
 export interface RunOptions {
   includeAiHandlers?: boolean;
+  // Optional close-period window scoping this run. ISO date/timestamp
+  // bounds — periodStart inclusive, periodEnd exclusive
+  // (first-of-next-month) per ClosePeriodSelector. When present the
+  // run is stamped with the window, the window is injected into every
+  // handler's params (transaction-based checks bound their query to
+  // it), and every finding created is stamped with it. Omitting the
+  // bounds runs all-time (the nightly scheduler passes neither).
+  periodStart?: string;
+  periodEnd?: string;
+}
+
+// Normalize an ISO date/timestamp bound to a `date`-column-friendly
+// 'YYYY-MM-DD' string. Accepts either a full ISO timestamp (as the
+// frontend sends) or a bare date. Returns null for absent bounds.
+function toDateBound(v: string | undefined): string | null {
+  if (!v) return null;
+  return v.slice(0, 10);
 }
 
 export async function runForCompany(
@@ -74,9 +91,12 @@ async function runForCompanyLocked(
   userId?: string,
   options: RunOptions = {},
 ): Promise<RunResult> {
+  const periodStart = toDateBound(options.periodStart);
+  const periodEnd = toDateBound(options.periodEnd);
+
   const [run] = await db
     .insert(checkRuns)
-    .values({ tenantId, companyId })
+    .values({ tenantId, companyId, periodStart, periodEnd })
     .returning({ id: checkRuns.id });
   const runId = run!.id;
 
@@ -116,7 +136,9 @@ async function runForCompanyLocked(
       let drafts: FindingDraft[];
       try {
         const params = await registry.resolveParams(tenantId, companyId, entry);
-        drafts = await handler(tenantId, companyId, params);
+        // Inject the run's period window so transaction-based
+        // handlers can bound their query to the close period.
+        drafts = await handler(tenantId, companyId, { ...params, periodStart, periodEnd });
       } catch (err) {
         // Per-handler failures shouldn't kill the run.
         console.warn(
@@ -137,6 +159,7 @@ async function runForCompanyLocked(
         capped,
         defaultSeverityByCheck,
         userId,
+        { periodStart, periodEnd },
       );
       findingsCreated += result.inserted;
     }

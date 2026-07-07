@@ -6,9 +6,15 @@ import { z } from 'zod';
 import { FINDING_SEVERITIES, FINDING_STATUSES } from '../constants/review-checks.js';
 
 // POST /run — body either empty (run for all companies in
-// tenant) or scoped to a specific company.
+// tenant) or scoped to a specific company. `periodStart` /
+// `periodEnd` optionally scope the run to a close period
+// (ISO date/timestamp bounds; periodEnd is exclusive
+// first-of-next-month per ClosePeriodSelector). Omitting them
+// runs all-time, preserving the nightly scheduler's behavior.
 export const runChecksSchema = z.object({
   companyId: z.string().uuid().optional(),
+  periodStart: z.string().optional(),
+  periodEnd: z.string().optional(),
 });
 export type RunChecksInput = z.infer<typeof runChecksSchema>;
 
@@ -24,6 +30,11 @@ export const findingsListQuerySchema = z.object({
   severity: z.enum(FINDING_SEVERITIES).optional(),
   checkKey: z.string().optional(),
   companyId: z.string().uuid().optional(),
+  // Scope the list to a close period. Findings stamped with a run
+  // period inside [periodStart, periodEnd) are returned; when omitted
+  // the list is unscoped (all periods, matching prior behavior).
+  periodStart: z.string().optional(),
+  periodEnd: z.string().optional(),
   cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });

@@ -848,6 +848,13 @@
       "when": 1777200000000,
       "tag": "0120_rule_suggestion_dismissals",
       "breakpoints": true
+    },
+    {
+      "idx": 121,
+      "version": "7",
+      "when": 1777210000000,
+      "tag": "0121_review_checks_period",
+      "breakpoints": true
     }
   ]
 }

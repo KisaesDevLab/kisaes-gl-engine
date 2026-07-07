@@ -4,13 +4,27 @@
 
 import type { FindingDraft } from '@kis-books/shared';
 
+// Params a handler receives: the resolved registry/override params
+// (arbitrary keys) plus the optional close-period window the
+// orchestrator injects for the current run. Period bounds are ISO
+// date/timestamp strings; periodEnd is exclusive
+// (first-of-next-month) per ClosePeriodSelector. Both null/absent =
+// all-time. Handlers that flag transactions by txn_date bound their
+// query to [periodStart, periodEnd) when present; period-agnostic
+// (current-state) handlers simply ignore them.
+export interface CheckParams {
+  [key: string]: unknown;
+  periodStart?: string | null;
+  periodEnd?: string | null;
+}
+
 // All handlers share this signature per plan §D3. Pure data
 // readers — no writes; the orchestrator owns the dedupe and
 // persistence step.
 export type CheckHandler = (
   tenantId: string,
   companyId: string | null,
-  params: Record<string, unknown>,
+  params: CheckParams,
 ) => Promise<FindingDraft[]>;
 
 import { handler as parentAccountPosting } from './parent-account-posting.js';

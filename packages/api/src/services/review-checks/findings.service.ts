@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-import { aliasedTable, and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
+import { aliasedTable, and, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm';
 import type { Finding, FindingDraft, FindingSeverity, FindingStatus } from '@kis-books/shared';
 import { FINDING_SEVERITIES, FINDING_STATUSES } from '@kis-books/shared';
 import { db } from '../../db/index.js';
@@ -34,6 +34,10 @@ export async function bulkInsert(
   drafts: FindingDraft[],
   defaultSeverityByCheck: Record<string, FindingSeverity>,
   userId?: string,
+  // Close-period window this batch belongs to (from the run). Stamped
+  // onto every inserted finding so the Findings list can filter by
+  // period. Null bounds (all-time run) leave the columns null.
+  period?: { periodStart: string | null; periodEnd: string | null },
 ): Promise<BulkInsertResult> {
   if (drafts.length === 0) return { inserted: 0, duplicates: 0 };
 
@@ -79,6 +83,8 @@ export async function bulkInsert(
     vendorId: k.draft.vendorId ?? null,
     severity: (k.draft.severity ?? defaultSeverityByCheck[k.draft.checkKey] ?? 'med') as FindingSeverity,
     payload: k.draft.payload,
+    periodStart: period?.periodStart ?? null,
+    periodEnd: period?.periodEnd ?? null,
   }));
 
   const inserted = await db.insert(findings).values(rows).returning({ id: findings.id });
@@ -126,6 +132,12 @@ export interface FindingsListInput {
   severity?: FindingSeverity;
   checkKey?: string;
   companyId?: string;
+  // Scope to a close period. Findings whose stamped period_start falls
+  // in [periodStart, periodEnd) are returned. periodEnd is exclusive
+  // (first-of-next-month) per ClosePeriodSelector. Pre-migration
+  // findings with a null period_start are excluded from a scoped view.
+  periodStart?: string;
+  periodEnd?: string;
   cursor?: string;
   limit?: number;
 }
@@ -140,6 +152,13 @@ export async function list(
   if (input.severity) conditions.push(eq(findings.severity, input.severity));
   if (input.checkKey) conditions.push(eq(findings.checkKey, input.checkKey));
   if (input.companyId) conditions.push(eq(findings.companyId, input.companyId));
+  // Period scope: findings stamped with a run period inside
+  // [periodStart, periodEnd). Bounds are normalized to date-only so the
+  // date column comparison is deterministic regardless of any time part
+  // the caller sends. Exclusive upper bound keeps a month's window from
+  // bleeding into the next month's first-of-month stamp.
+  if (input.periodStart) conditions.push(gte(findings.periodStart, input.periodStart.slice(0, 10)));
+  if (input.periodEnd) conditions.push(lt(findings.periodStart, input.periodEnd.slice(0, 10)));
   // Strict less-than so the cursor seam doesn't repeat a row.
   if (input.cursor) conditions.push(lt(findings.createdAt, new Date(input.cursor)));
 

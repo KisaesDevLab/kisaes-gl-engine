@@ -11,6 +11,7 @@ import {
   integer,
   jsonb,
   timestamp,
+  date,
   index,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
@@ -40,6 +41,11 @@ export const checkRuns = pgTable('check_runs', {
   companyId: uuid('company_id'),
   startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
   completedAt: timestamp('completed_at', { withTimezone: true }),
+  // Period window this run targeted (migration 0121). Null = all-time.
+  // period_start inclusive, period_end exclusive (first-of-next-month),
+  // matching ClosePeriodSelector.
+  periodStart: date('period_start'),
+  periodEnd: date('period_end'),
   checksExecuted: integer('checks_executed').notNull().default(0),
   findingsCreated: integer('findings_created').notNull().default(0),
   truncated: boolean('truncated').notNull().default(false),
@@ -59,6 +65,11 @@ export const findings = pgTable('findings', {
   status: varchar('status', { length: 20 }).notNull().default('open'),
   assignedTo: uuid('assigned_to'),
   payload: jsonb('payload'),
+  // Period window stamped from the run that produced this finding
+  // (migration 0121). Null = all-time. Powers the period-scoped
+  // Findings list filter. period_start inclusive, period_end exclusive.
+  periodStart: date('period_start'),
+  periodEnd: date('period_end'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   resolvedAt: timestamp('resolved_at', { withTimezone: true }),
   resolutionNote: text('resolution_note'),
@@ -66,6 +77,7 @@ export const findings = pgTable('findings', {
   tenantStatusIdx: index('idx_findings_tenant_status').on(table.tenantId, table.status),
   tenantCheckIdx: index('idx_findings_tenant_check').on(table.tenantId, table.checkKey),
   tenantCompanyIdx: index('idx_findings_tenant_company').on(table.tenantId, table.companyId),
+  tenantPeriodIdx: index('idx_findings_tenant_period').on(table.tenantId, table.periodStart),
 }));
 
 export const findingEvents = pgTable('finding_events', {

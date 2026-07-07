@@ -6,6 +6,7 @@ import { sql } from 'drizzle-orm';
 import type { FindingDraft } from '@kis-books/shared';
 import { db } from '../../../db/index.js';
 import type { CheckHandler } from './index.js';
+import { periodDateClause } from './period.js';
 
 // `transaction_above_materiality` — single transaction at or
 // above the materiality threshold. Default $10,000; per-tenant
@@ -15,12 +16,14 @@ export const handler: CheckHandler = async (tenantId, companyId, params): Promis
   const companyClause = companyId
     ? sql`AND company_id = ${companyId}`
     : sql``;
+  const periodClause = periodDateClause(params, 'txn_date');
 
   const result = await db.execute<{ id: string; total: string; txn_type: string; txn_date: string }>(sql`
     SELECT id, total, txn_type, txn_date
     FROM transactions
     WHERE tenant_id = ${tenantId}
       ${companyClause}
+      ${periodClause}
       AND status = 'posted'
       AND total >= ${threshold}
     LIMIT 500
