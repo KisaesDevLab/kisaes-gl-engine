@@ -766,6 +766,20 @@ export async function listTransactions(tenantId: string, filters: {
         WHERE jl5.transaction_id = ${transactions.id}
           AND jl5.tenant_id = ${tenantId}
       ))`,
+      // When the list is filtered to a specific account, expose that account's
+      // debit and credit totals per transaction so the UI can render a
+      // GL/register-style Debit | Credit split (from THIS account's
+      // perspective). NULL when no account filter is active.
+      accountDebit: filters.accountId
+        ? sql<string | null>`(SELECT SUM(jl7.debit) FROM journal_lines jl7
+            WHERE jl7.transaction_id = ${transactions.id}
+              AND jl7.tenant_id = ${tenantId} AND jl7.account_id = ${filters.accountId})`
+        : sql<string | null>`NULL`,
+      accountCredit: filters.accountId
+        ? sql<string | null>`(SELECT SUM(jl8.credit) FROM journal_lines jl8
+            WHERE jl8.transaction_id = ${transactions.id}
+              AND jl8.tenant_id = ${tenantId} AND jl8.account_id = ${filters.accountId})`
+        : sql<string | null>`NULL`,
       amountPaid: transactions.amountPaid,
       balanceDue: transactions.balanceDue,
       invoiceStatus: transactions.invoiceStatus,

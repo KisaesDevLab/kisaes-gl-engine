@@ -295,4 +295,40 @@ describe('Ledger Service', () => {
       expect(balance.balance).toBe(500);
     });
   });
+
+  describe('listTransactions account filter (Debit/Credit split)', () => {
+    it('returns per-account debit and credit only when filtered by an account', async () => {
+      // Deposit: $100 DEBIT to Cash. Payment: $40 CREDIT to Cash.
+      const deposit = await ledger.postTransaction(tenantId, {
+        txnType: 'journal_entry', txnDate: '2026-04-01', memo: 'Deposit',
+        lines: [
+          { accountId: cashAccountId, debit: '100.00', credit: '0' },
+          { accountId: revenueAccountId, debit: '0', credit: '100.00' },
+        ],
+      });
+      const payment = await ledger.postTransaction(tenantId, {
+        txnType: 'journal_entry', txnDate: '2026-04-02', memo: 'Payment',
+        lines: [
+          { accountId: expenseAccountId, debit: '40.00', credit: '0' },
+          { accountId: cashAccountId, debit: '0', credit: '40.00' },
+        ],
+      });
+
+      // Filtered by Cash → each row carries Cash's debit/credit.
+      const filtered = await ledger.listTransactions(tenantId, { accountId: cashAccountId });
+      const rows = filtered.data as Array<{ id: string; accountDebit: string | null; accountCredit: string | null }>;
+      const dep = rows.find((r) => r.id === deposit.id)!;
+      const pay = rows.find((r) => r.id === payment.id)!;
+      expect(parseFloat(dep.accountDebit ?? '0')).toBe(100);
+      expect(parseFloat(dep.accountCredit ?? '0')).toBe(0);
+      expect(parseFloat(pay.accountDebit ?? '0')).toBe(0);
+      expect(parseFloat(pay.accountCredit ?? '0')).toBe(40);
+
+      // Unfiltered → the split columns are null (UI shows the magnitude).
+      const unfiltered = await ledger.listTransactions(tenantId, {});
+      const anyRow = (unfiltered.data as Array<{ accountDebit: string | null; accountCredit: string | null }>)[0]!;
+      expect(anyRow.accountDebit).toBeNull();
+      expect(anyRow.accountCredit).toBeNull();
+    });
+  });
 });
