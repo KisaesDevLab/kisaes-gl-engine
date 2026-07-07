@@ -598,16 +598,99 @@ adminRouter.post('/plaid/test', async (req, res) => {
 });
 
 adminRouter.get('/plaid/connections', async (req, res) => {
-  const { plaidItems, plaidAccounts } = await import('../db/schema/index.js');
-  const { sql: sqlTag } = await import('drizzle-orm');
+  const { plaidItems, plaidAccounts, plaidAccountMappings, accounts, tenants } = await import('../db/schema/index.js');
+  const { sql: sqlTag, inArray, eq: eqOp } = await import('drizzle-orm');
   const { db: database } = await import('../db/index.js');
   const items = await database.select().from(plaidItems).where(sqlTag`removed_at IS NULL`);
   const result = [];
   for (const item of items) {
-    const accounts = await database.select().from(plaidAccounts).where(eq(plaidAccounts.plaidItemId, item.id));
-    result.push({ ...item, accounts, accessTokenEncrypted: undefined });
+    const accts = await database.select().from(plaidAccounts).where(eq(plaidAccounts.plaidItemId, item.id));
+    const acctIds = accts.map((a) => a.id);
+    // Plaid items/accounts are system-scoped (no tenant_id). The tenant
+    // association lives on plaid_account_mappings — join it (with the tenant
+    // name and mapped GL account) so the monitor can show which tenant each
+    // account feeds and a correct per-connection "mapped" count.
+    const maps = acctIds.length
+      ? await database.select({
+          plaidAccountId: plaidAccountMappings.plaidAccountId,
+          tenantId: plaidAccountMappings.tenantId,
+          tenantName: tenants.name,
+          mappedAccountId: plaidAccountMappings.mappedAccountId,
+          coaName: accounts.name,
+          coaNumber: accounts.accountNumber,
+          syncEnabled: plaidAccountMappings.isSyncEnabled,
+          mappedByName: plaidAccountMappings.mappedByName,
+        })
+        .from(plaidAccountMappings)
+        .leftJoin(tenants, eqOp(tenants.id, plaidAccountMappings.tenantId))
+        .leftJoin(accounts, eqOp(accounts.id, plaidAccountMappings.mappedAccountId))
+        .where(inArray(plaidAccountMappings.plaidAccountId, acctIds))
+      : [];
+    const byAcct = new Map(maps.map((m) => [m.plaidAccountId, m]));
+    const enriched = accts.map((a) => {
+      const m = byAcct.get(a.id);
+      return {
+        id: a.id,
+        name: a.name,
+        mask: a.mask,
+        accountType: a.accountType,
+        isActive: a.isActive,
+        isMapped: !!m,
+        tenantId: m?.tenantId ?? null,
+        tenantName: m?.tenantName ?? null,
+        mappedAccountId: m?.mappedAccountId ?? null,
+        mappedAccountName: m ? `${m.coaNumber ? m.coaNumber + ' · ' : ''}${m.coaName ?? ''}`.trim() : null,
+        syncEnabled: m?.syncEnabled ?? null,
+      };
+    });
+    const mappedTenantNames = [...new Set(enriched.filter((a) => a.tenantName).map((a) => a.tenantName as string))];
+    result.push({ ...item, accessTokenEncrypted: undefined, accounts: enriched, mappedTenantNames });
   }
   res.json({ connections: result });
+});
+
+// Tenants list for the mapping picker (id + name only).
+adminRouter.get('/plaid/tenants', async (_req, res) => {
+  const list = await adminService.listTenants();
+  res.json({ tenants: list.map((t) => ({ id: t.id, name: t.name })) });
+});
+
+// Mappable GL accounts (bank / credit card / current asset-liability) for a
+// chosen tenant, so an admin can pick the destination account when mapping.
+adminRouter.get('/plaid/tenant-accounts', async (req, res) => {
+  const tenantId = req.query['tenantId'] as string | undefined;
+  if (!tenantId) { res.status(400).json({ error: { message: 'tenantId is required' } }); return; }
+  const { accounts } = await import('../db/schema/index.js');
+  const { and: andOp, eq: eqOp, inArray } = await import('drizzle-orm');
+  const { db: database } = await import('../db/index.js');
+  const rows = await database.select({
+    id: accounts.id, name: accounts.name, accountNumber: accounts.accountNumber, detailType: accounts.detailType,
+  }).from(accounts).where(andOp(
+    eqOp(accounts.tenantId, tenantId),
+    eqOp(accounts.isActive, true),
+    inArray(accounts.detailType, ['bank', 'credit_card', 'other_current_asset', 'other_current_liability']),
+  ));
+  res.json({ accounts: rows });
+});
+
+// Map a Plaid account into a tenant's GL account (super-admin, cross-tenant).
+// Reuses the same service the per-tenant banking flow uses, so the one
+// bank-account → one company invariant and attribution are preserved.
+adminRouter.post('/plaid/accounts/:plaidAccountId/map', async (req, res) => {
+  const plaidMapping = await import('../services/plaid-mapping.service.js');
+  const { tenantId, coaAccountId, syncStartDate } = req.body as { tenantId?: string; coaAccountId?: string; syncStartDate?: string | null };
+  if (!tenantId || !coaAccountId) { res.status(400).json({ error: { message: 'tenantId and coaAccountId are required' } }); return; }
+  const mapping = await plaidMapping.assignAccountToCompany(req.params['plaidAccountId']!, tenantId, coaAccountId, syncStartDate ?? null, req.userId);
+  res.status(201).json(mapping);
+});
+
+// Unmap a Plaid account from a tenant.
+adminRouter.post('/plaid/accounts/:plaidAccountId/unmap', async (req, res) => {
+  const plaidMapping = await import('../services/plaid-mapping.service.js');
+  const { tenantId } = req.body as { tenantId?: string };
+  if (!tenantId) { res.status(400).json({ error: { message: 'tenantId is required' } }); return; }
+  const result = await plaidMapping.unmapAccount(req.params['plaidAccountId']!, tenantId);
+  res.json(result);
 });
 
 adminRouter.get('/plaid/stats', async (req, res) => {
