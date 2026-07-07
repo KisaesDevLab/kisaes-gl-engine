@@ -42,6 +42,7 @@ export * from './portal-templates.js';
 export * from './portal-reminders.js';
 export * from './portal-1099.js';
 export * from './portal-reports.js';
+export * from './report-packs.js';
 export * from './portal-receipts.js';
 export * from './recurring-doc-requests.js';
 export * from './firms.js';
