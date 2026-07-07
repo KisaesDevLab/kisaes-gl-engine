@@ -24,7 +24,7 @@
 
 import fs from 'fs';
 import { eq, and, desc, sql } from 'drizzle-orm';
-import { StatementExtractionResult } from '@kis-books/shared';
+import { StatementExtractionResult, StatementExtractionTransaction } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { attachments, aiJobs } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -40,6 +40,49 @@ import { analyzePdf, routePdf, extractTextLayer } from './extraction/pdf-detect.
 import { ocrPages, type OcrPageInput } from './extraction/glm-ocr.client.js';
 import { reconcileGoldenRule, repairPass, findSuspectRows } from './extraction/reconcile.service.js';
 import { centsToAmountString, isCreditCardType, mapSignedCentsToFeed } from './extraction/statement-map.js';
+
+// The extraction schema requires every transaction to have an integer
+// amount_cents and notes ≤ 2000 chars. Models occasionally violate this —
+// emitting a row with amount_cents:null (a running-balance-only line, a section
+// header, or a cell it couldn't read) or an over-long notes — which would fail
+// the whole parse and lose the entire (otherwise good) statement. Sanitize the
+// raw model JSON first: coerce numeric-string amounts, DROP rows with no
+// readable amount (surfaced in notes for review), and truncate notes. Keeps the
+// LLM-facing JSON Schema strict while making ingestion resilient.
+export function sanitizeExtraction(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object') return raw;
+  const obj = raw as Record<string, unknown>;
+  let dropped = 0;
+  if (Array.isArray(obj['transactions'])) {
+    const kept: unknown[] = [];
+    for (const t of obj['transactions'] as unknown[]) {
+      // Salvage a numeric-string amount ("−12345", "12,345") before validating.
+      if (t && typeof t === 'object') {
+        const row = t as Record<string, unknown>;
+        const amt = row['amount_cents'];
+        if (typeof amt === 'number' && Number.isFinite(amt)) {
+          row['amount_cents'] = Math.trunc(amt);
+        } else if (typeof amt === 'string') {
+          const n = Number(amt.replace(/[,\s]/g, ''));
+          if (amt.trim() !== '' && Number.isFinite(n)) row['amount_cents'] = Math.trunc(n);
+        }
+      }
+      // Drop any row that can't validate on its own (no readable amount, bad
+      // date, over-long description, …) rather than failing the whole
+      // statement.
+      if (StatementExtractionTransaction.safeParse(t).success) kept.push(t);
+      else dropped++;
+    }
+    obj['transactions'] = kept;
+  }
+  let notes = typeof obj['notes'] === 'string' ? obj['notes'] : '';
+  if (dropped > 0) {
+    const msg = `[${dropped} unreadable row(s) were skipped during import — verify the statement total.]`;
+    notes = notes ? `${msg} ${notes}` : msg;
+  }
+  obj['notes'] = notes ? notes.slice(0, 2000) : (obj['notes'] ?? null);
+  return obj;
+}
 
 // Output-token cap for the whole-statement Stage-2 extraction. Larger than the
 // per-page doc-extract cap (EXTRACTION_MAX_TOKENS) because one call transcribes
@@ -454,7 +497,7 @@ async function executePipeline(
     }
     throw err;
   }
-  const parsed = StatementExtractionResult.parse(unwrapParsed(result));
+  const parsed = StatementExtractionResult.parse(sanitizeExtraction(unwrapParsed(result)));
 
   // ── Stage 3: reconcile (Golden Rule) + repair ──────────────────────
   await orchestrator.setStage(jobId, 'reconciling');
