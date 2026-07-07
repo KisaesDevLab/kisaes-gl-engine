@@ -90,6 +90,9 @@ export * from './constants/review-checks.js';
 export * from './constants/imports.js';
 export * from './constants/permissions.js';
 
+// Reports
+export * from './reports/registry.js';
+
 // Utils
 export * from './utils/money.js';
 export * from './utils/dates.js';
