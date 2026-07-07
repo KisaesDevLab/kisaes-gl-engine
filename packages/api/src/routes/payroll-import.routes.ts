@@ -142,7 +142,13 @@ payrollImportRouter.post('/upload',
     }
     const result = await importService.uploadPayrollFile(
       req.tenantId,
-      opts.companyId || undefined,
+      // Fall back to the company resolved by the companyContext middleware
+      // (req.companyId). The raw multipart upload doesn't send X-Company-Id,
+      // so opts.companyId is usually absent — without this fallback the
+      // session is created with company_id = null and saveDescriptionMap
+      // later 400s ("Session must have a company"), which silently blocks the
+      // Payroll Relief (Mode B) mapping step.
+      opts.companyId || req.companyId || undefined,
       { buffer: mainFile.buffer, originalname: mainFile.originalname },
       companionFile ? { buffer: companionFile.buffer, originalname: companionFile.originalname } : undefined,
       {

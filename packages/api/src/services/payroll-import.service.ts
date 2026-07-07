@@ -486,7 +486,11 @@ export async function getDescriptionMap(tenantId: string, sessionId: string) {
     const raw = row.rawData as Record<string, string>;
     // Use provider-specific column names
     const descCol = columnConfig.descriptionColumn;
-    const desc = raw[descCol] || raw[descCol.toLowerCase()] || raw['Description'] || raw['description'] || '';
+    // Trim to match parseGLEntries (payroll-modeb.service), which trims the
+    // description before looking it up in the saved map. Without this, a
+    // source value with surrounding whitespace would save under a padded key
+    // and fail the "unmapped descriptions" check at posting time.
+    const desc = (raw[descCol] || raw[descCol.toLowerCase()] || raw['Description'] || raw['description'] || '').trim();
     if (!desc) continue;
 
     let debit = 0;
