@@ -153,6 +153,9 @@ export interface ImportCommitResult {
   updated?: number;
   /** GL only — non-zero when the file contained inline-void groups. */
   voidsReversed?: number;
+  /** GL only — imported transactions whose description matched an existing
+   *  vendor name and were assigned that vendor as the payee. */
+  vendorsMatched?: number;
   /** Set when commit threw partway. The UI surfaces this verbatim;
    *  combined with `created` it tells the operator how much landed before
    *  the failure so they can decide whether to roll back manually or

@@ -369,6 +369,62 @@ Cythia Martin","","Monett","MO","65708",,,"",False,False,True,Net 15,5920,""
       expect(out.preview.jeGroupCount).toBe(1);
       expect(out.preview.voidEntryCount).toBe(0);
     });
+
+    it('matches a GL description to an existing vendor (case-insensitive) and sets the payee', async () => {
+      await db.insert(accounts).values([
+        { tenantId, companyId, accountNumber: '1000', name: 'Cash', accountType: 'asset' },
+        { tenantId, companyId, accountNumber: '6000', name: 'Office expense', accountType: 'expense' },
+      ]);
+      const [vendor] = await db.insert(contacts).values({
+        tenantId, companyId, displayName: 'Acme Supplies', contactType: 'vendor', isActive: true,
+      }).returning();
+
+      // Description differs in case/punctuation from the vendor name.
+      const csv = `Journal, Date, Reference, Description, Account, Account Name, Debit Amount, Credit Amount, Memo, Department, Updated by
+"GJ","03/01/2025","V-1","ACME SUPPLIES","6000","Office expense",100.0000,0.0000,"","","u1"
+"GJ","03/01/2025","V-1","ACME SUPPLIES","1000","Cash",0.0000,100.0000,"","","u1"
+`;
+      const out = await importsService.createSession({
+        tenantId, companyId, userId,
+        file: fileFromText('gl-vendor.csv', csv),
+        kind: 'gl_transactions',
+        sourceSystem: 'accounting_power',
+        options: {},
+      });
+      const commit = await importsService.commitSession(tenantId, companyId, userId, out.session.id);
+      expect(commit.result.created).toBe(1);
+      expect(commit.result.vendorsMatched).toBe(1);
+
+      const txns = await db.select().from(transactions).where(eq(transactions.tenantId, tenantId));
+      expect(txns.length).toBe(1);
+      expect(txns[0]!.contactId).toBe(vendor!.id);
+    });
+
+    it('leaves the payee blank when the description matches no vendor', async () => {
+      await db.insert(accounts).values([
+        { tenantId, companyId, accountNumber: '1000', name: 'Cash', accountType: 'asset' },
+        { tenantId, companyId, accountNumber: '6000', name: 'Office expense', accountType: 'expense' },
+      ]);
+      await db.insert(contacts).values({
+        tenantId, companyId, displayName: 'Acme Supplies', contactType: 'vendor', isActive: true,
+      });
+      const csv = `Journal, Date, Reference, Description, Account, Account Name, Debit Amount, Credit Amount, Memo, Department, Updated by
+"GJ","03/02/2025","N-1","Some unrelated memo line","6000","Office expense",25.0000,0.0000,"","","u1"
+"GJ","03/02/2025","N-1","Some unrelated memo line","1000","Cash",0.0000,25.0000,"","","u1"
+`;
+      const out = await importsService.createSession({
+        tenantId, companyId, userId,
+        file: fileFromText('gl-novendor.csv', csv),
+        kind: 'gl_transactions',
+        sourceSystem: 'accounting_power',
+        options: {},
+      });
+      const commit = await importsService.commitSession(tenantId, companyId, userId, out.session.id);
+      expect(commit.result.vendorsMatched).toBe(0);
+      const txns = await db.select().from(transactions).where(eq(transactions.tenantId, tenantId));
+      expect(txns.length).toBe(1);
+      expect(txns[0]!.contactId).toBeNull();
+    });
   });
 
   // ── QuickBooks Online ───────────────────────────────────────────

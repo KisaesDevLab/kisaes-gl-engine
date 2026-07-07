@@ -18,6 +18,7 @@ import {
   transactions,
   companies,
 } from '../../db/schema/index.js';
+import { normalizeLoose } from '../ai-name-match.js';
 import {
   IMPORT_SOURCE_TAGS,
   type CanonicalCoaRow,
@@ -1108,6 +1109,31 @@ async function commitGl(
     byName.set(a.name.toLowerCase(), a.id);
   }
 
+  // Match each entry's imported "Description" (e.name) to an existing vendor
+  // contact so imported GL transactions carry a payee. Deliberately
+  // conservative: descriptions are frequently full memos, so we match ONLY
+  // when the description equals a vendor name (case/punctuation-insensitive) —
+  // never a substring, since a wrong payee is worse than a blank one. Scoped
+  // to vendor/both contacts; a name shared by two active vendors is marked
+  // ambiguous (null) and skipped. Never creates a contact.
+  const vendorRows = await db
+    .select({ id: contacts.id, displayName: contacts.displayName })
+    .from(contacts)
+    .where(
+      and(
+        eq(contacts.tenantId, tenantId),
+        or(eq(contacts.contactType, 'vendor'), eq(contacts.contactType, 'both')),
+        eq(contacts.isActive, true),
+      ),
+    );
+  const vendorByName = new Map<string, string | null>();
+  for (const v of vendorRows) {
+    const key = normalizeLoose(v.displayName ?? '');
+    if (!key) continue;
+    vendorByName.set(key, vendorByName.has(key) ? null : v.id);
+  }
+  let vendorsMatched = 0;
+
   for (let idx = 0; idx < entries.length; idx++) {
     const e = entries[idx]!;
     const variant = e.isVoidReversal ? 'V' : 'O';
@@ -1142,6 +1168,11 @@ async function commitGl(
     const memoPrefix = e.isVoidReversal ? `[VOID-${e.sourceCode}]` : `[${e.sourceCode}]`;
     const memo = `${memoPrefix} ${e.memo ?? e.name ?? ''}`.trim();
 
+    // Resolve a vendor from the description (exact normalized equality only).
+    const matchKey = normalizeLoose(e.name ?? '');
+    const matchedContactId = matchKey ? (vendorByName.get(matchKey) ?? null) : null;
+    if (matchedContactId) vendorsMatched++;
+
     try {
       await postTransaction(
         tenantId,
@@ -1150,6 +1181,7 @@ async function commitGl(
           txnDate: e.date,
           txnNumber: e.reference,
           memo,
+          contactId: matchedContactId ?? undefined,
           source: sourceTag,
           sourceId,
           lines,
@@ -1169,5 +1201,5 @@ async function commitGl(
     created++;
     if (e.isVoidReversal) voidsReversed++;
   }
-  return { created, skipped, voidsReversed };
+  return { created, skipped, voidsReversed, vendorsMatched };
 }
