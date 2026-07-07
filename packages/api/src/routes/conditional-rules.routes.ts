@@ -129,6 +129,34 @@ conditionalRulesRouter.get('/suggestions', async (req, res) => {
   res.json({ suggestions });
 });
 
+// Permanently dismiss a computed suggestion. Suggestions have no id, so
+// the client identifies one by its (payeePattern, accountId) tuple. Also
+// registered BEFORE `:id`. Idempotent server-side.
+const dismissSuggestionSchema = z.object({
+  payeePattern: z.string().min(1).max(255),
+  accountId: z.string().uuid(),
+});
+conditionalRulesRouter.post(
+  '/suggestions/dismiss',
+  validate(dismissSuggestionSchema),
+  async (req, res) => {
+    const { payeePattern, accountId } = req.body as z.infer<typeof dismissSuggestionSchema>;
+    await suggestionsService.dismissSuggestion(req.tenantId, payeePattern, accountId, req.userId);
+    // entity_id is uuid-typed; use the target account and carry the pattern
+    // in the payload.
+    await auditLog(
+      req.tenantId,
+      'create',
+      'rule_suggestion_dismissal',
+      accountId,
+      null,
+      { payeePattern, accountId },
+      req.userId,
+    );
+    res.status(204).send();
+  },
+);
+
 // Phase 5b §5.5 — recent feed items the sandbox dropdown lists.
 conditionalRulesRouter.get('/sandbox/recent-samples', async (req, res) => {
   const samples = await sandboxService.recentFeedItemsForPicker(req.tenantId);

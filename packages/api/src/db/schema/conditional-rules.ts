@@ -11,6 +11,7 @@ import {
   jsonb,
   timestamp,
   index,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { tenants } from './auth.js';
 
@@ -101,4 +102,27 @@ export const conditionalRuleAudit = pgTable('conditional_rule_audit', {
   effectiveFirmId: uuid('effective_firm_id'),
 }, (table) => ({
   tenantRuleIdx: index('idx_cra_tenant_rule').on(table.tenantId, table.ruleId, table.matchedAt),
+}));
+
+// Rule suggestions (see rule-suggestions.service) are computed on demand from
+// categorization_history — they have no persisted row of their own, so a
+// suggestion's only identity is the tuple (tenant, payee pattern, target
+// account). To let a bookkeeper permanently dismiss a suggestion we persist a
+// suppression record keyed on that tuple and filter the detection query
+// against it. Mirrors `duplicate_dismissals`. `payee_pattern` is stored
+// lower-cased so dismissal matching is case-insensitive, consistent with the
+// existing rule-overlap de-dup in detectSuggestions.
+export const ruleSuggestionDismissals = pgTable('rule_suggestion_dismissals', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
+  payeePattern: varchar('payee_pattern', { length: 255 }).notNull(),
+  accountId: uuid('account_id').notNull(),
+  dismissedBy: uuid('dismissed_by'),
+  dismissedAt: timestamp('dismissed_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  uniqueSuggestion: uniqueIndex('idx_rsd_suggestion').on(
+    table.tenantId,
+    table.payeePattern,
+    table.accountId,
+  ),
 }));

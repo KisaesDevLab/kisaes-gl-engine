@@ -23,6 +23,8 @@ import {
   firms,
   firmUsers,
   tenantFirmAssignments,
+  categorizationHistory,
+  ruleSuggestionDismissals,
 } from '../db/schema/index.js';
 import { conditionalRulesRouter } from './conditional-rules.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
@@ -114,6 +116,8 @@ async function seedUser(tId: string, role: string) {
 async function cleanDb() {
   for (const id of [tenantId, otherTenantId].filter(Boolean)) {
     await db.delete(auditLogTable).where(eq(auditLogTable.tenantId, id));
+    await db.delete(ruleSuggestionDismissals).where(eq(ruleSuggestionDismissals.tenantId, id));
+    await db.delete(categorizationHistory).where(eq(categorizationHistory.tenantId, id));
     await db.delete(conditionalRuleAudit).where(eq(conditionalRuleAudit.tenantId, id));
     await db.delete(conditionalRules).where(eq(conditionalRules.tenantId, id));
     // 3-tier rules plan, Phase 2 — Phase 2 tests create
@@ -447,6 +451,109 @@ describe('Phase 5b — sandbox / suggestions / import-export', () => {
     expect(status).toBe(400);
     const list = await request('GET', '/api/v1/practice/conditional-rules', undefined, bookkeeperToken);
     expect(list.json.rules).toHaveLength(0);
+  });
+});
+
+// Phase 5b §5.7 — dismissible suggestions. Suggestions are computed
+// on demand from categorization_history and carry no id, so a dismissal
+// is persisted as a (payeePattern, accountId) suppression row that the
+// detection query filters against.
+describe('POST /suggestions/dismiss', () => {
+  const SUGG_ACCOUNT = '00000000-0000-0000-0000-0000000000aa';
+
+  // Seed a categorization_history row that clears the detection
+  // thresholds (timesConfirmed >= 5, override rate < 10%), so a
+  // suggestion surfaces for this tenant.
+  async function seedSuggestion(pattern: string, tId = tenantId) {
+    await db.insert(categorizationHistory).values({
+      tenantId: tId,
+      payeePattern: pattern,
+      accountId: SUGG_ACCOUNT,
+      timesConfirmed: 6,
+      timesOverridden: 0,
+    });
+  }
+
+  it('a seeded pattern surfaces, then drops out after dismissal', async () => {
+    await seedSuggestion('STARBUCKS');
+    const before = await request('GET', '/api/v1/practice/conditional-rules/suggestions', undefined, bookkeeperToken);
+    expect(before.status).toBe(200);
+    expect(before.json.suggestions.some((s: { payeePattern: string }) => s.payeePattern === 'STARBUCKS')).toBe(true);
+
+    const dismiss = await request(
+      'POST',
+      '/api/v1/practice/conditional-rules/suggestions/dismiss',
+      { payeePattern: 'STARBUCKS', accountId: SUGG_ACCOUNT },
+      bookkeeperToken,
+    );
+    expect(dismiss.status).toBe(204);
+
+    const after = await request('GET', '/api/v1/practice/conditional-rules/suggestions', undefined, bookkeeperToken);
+    expect(after.json.suggestions.some((s: { payeePattern: string }) => s.payeePattern === 'STARBUCKS')).toBe(false);
+  });
+
+  it('dismissal is case-insensitive on the pattern', async () => {
+    await seedSuggestion('COSTCO WHOLESALE');
+    // Dismiss with different casing than the stored pattern.
+    const dismiss = await request(
+      'POST',
+      '/api/v1/practice/conditional-rules/suggestions/dismiss',
+      { payeePattern: 'costco wholesale', accountId: SUGG_ACCOUNT },
+      bookkeeperToken,
+    );
+    expect(dismiss.status).toBe(204);
+    const after = await request('GET', '/api/v1/practice/conditional-rules/suggestions', undefined, bookkeeperToken);
+    expect(after.json.suggestions.some((s: { payeePattern: string }) => s.payeePattern === 'COSTCO WHOLESALE')).toBe(false);
+  });
+
+  it('is idempotent — a repeat dismissal still returns 204', async () => {
+    await seedSuggestion('SHELL OIL');
+    const first = await request('POST', '/api/v1/practice/conditional-rules/suggestions/dismiss', { payeePattern: 'SHELL OIL', accountId: SUGG_ACCOUNT }, bookkeeperToken);
+    expect(first.status).toBe(204);
+    const second = await request('POST', '/api/v1/practice/conditional-rules/suggestions/dismiss', { payeePattern: 'SHELL OIL', accountId: SUGG_ACCOUNT }, bookkeeperToken);
+    expect(second.status).toBe(204);
+  });
+
+  it('dismissal is scoped per tenant', async () => {
+    otherTenantId = await seedTenantWithFlagOn();
+    const otherToken = (await seedUser(otherTenantId, 'bookkeeper')).token;
+    await seedSuggestion('UBER', tenantId);
+    await seedSuggestion('UBER', otherTenantId);
+    // Dismiss in the primary tenant only.
+    await request('POST', '/api/v1/practice/conditional-rules/suggestions/dismiss', { payeePattern: 'UBER', accountId: SUGG_ACCOUNT }, bookkeeperToken);
+    const other = await request('GET', '/api/v1/practice/conditional-rules/suggestions', undefined, otherToken);
+    // The other tenant's identical suggestion is untouched.
+    expect(other.json.suggestions.some((s: { payeePattern: string }) => s.payeePattern === 'UBER')).toBe(true);
+  });
+
+  it('records an audit row on dismiss', async () => {
+    await seedSuggestion('DELTA AIR');
+    await request('POST', '/api/v1/practice/conditional-rules/suggestions/dismiss', { payeePattern: 'DELTA AIR', accountId: SUGG_ACCOUNT }, bookkeeperToken);
+    const rows = await db
+      .select()
+      .from(auditLogTable)
+      .where(eq(auditLogTable.tenantId, tenantId));
+    expect(rows.some((r) => r.entityType === 'rule_suggestion_dismissal')).toBe(true);
+  });
+
+  it('rejects a malformed body with 400 (accountId not a uuid)', async () => {
+    const { status } = await request(
+      'POST',
+      '/api/v1/practice/conditional-rules/suggestions/dismiss',
+      { payeePattern: 'X', accountId: 'not-a-uuid' },
+      bookkeeperToken,
+    );
+    expect(status).toBe(400);
+  });
+
+  it('403 for readonly role', async () => {
+    const { status } = await request(
+      'POST',
+      '/api/v1/practice/conditional-rules/suggestions/dismiss',
+      { payeePattern: 'X', accountId: SUGG_ACCOUNT },
+      readonlyToken,
+    );
+    expect(status).toBe(403);
   });
 });
 

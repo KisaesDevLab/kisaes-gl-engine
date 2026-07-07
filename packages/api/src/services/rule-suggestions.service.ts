@@ -4,7 +4,12 @@
 
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { categorizationHistory, accounts, conditionalRules } from '../db/schema/index.js';
+import {
+  categorizationHistory,
+  accounts,
+  conditionalRules,
+  ruleSuggestionDismissals,
+} from '../db/schema/index.js';
 
 // Phase 5b §5.7 — auto-suggest. Scans the categorization
 // learning layer for high-confidence patterns the bookkeeper
@@ -110,5 +115,48 @@ export async function detectSuggestions(tenantId: string): Promise<RuleSuggestio
     }
   }
 
-  return suggestions.filter((s) => !existingPatterns.has(s.payeePattern.toLowerCase()));
+  // Drop any suggestion the bookkeeper has explicitly dismissed.
+  // Suggestions have no persisted identity, so dismissals are keyed
+  // on the (payee pattern, account) tuple; payee_pattern is stored
+  // lower-cased, so match case-insensitively (same convention as the
+  // existing-rule overlap filter above).
+  const dismissed = await db
+    .select({
+      payeePattern: ruleSuggestionDismissals.payeePattern,
+      accountId: ruleSuggestionDismissals.accountId,
+    })
+    .from(ruleSuggestionDismissals)
+    .where(eq(ruleSuggestionDismissals.tenantId, tenantId));
+  const dismissedKeys = new Set<string>(
+    dismissed.map((d) => `${d.payeePattern.toLowerCase()}|${d.accountId}`),
+  );
+
+  return suggestions.filter(
+    (s) =>
+      !existingPatterns.has(s.payeePattern.toLowerCase()) &&
+      !dismissedKeys.has(`${s.payeePattern.toLowerCase()}|${s.accountId}`),
+  );
+}
+
+// Permanently suppress a rule suggestion. Because suggestions are
+// computed on demand and carry no id, we persist a suppression row
+// keyed on (tenant, payee pattern, account); detectSuggestions filters
+// against it. Idempotent — a repeat dismissal is a no-op via the unique
+// index. payee_pattern is normalized to lower-case for case-insensitive
+// matching.
+export async function dismissSuggestion(
+  tenantId: string,
+  payeePattern: string,
+  accountId: string,
+  userId?: string,
+): Promise<void> {
+  await db
+    .insert(ruleSuggestionDismissals)
+    .values({
+      tenantId,
+      payeePattern: payeePattern.toLowerCase(),
+      accountId,
+      dismissedBy: userId || null,
+    })
+    .onConflictDoNothing();
 }
