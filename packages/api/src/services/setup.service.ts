@@ -193,9 +193,18 @@ export async function getSetupStatus(): Promise<SetupStatus> {
   // setupComplete = true so the route guard rejects destructive calls.
   // The UI separately sees statusCheckFailed = true and can tell the
   // operator to wait for the DB.
+  //
+  // `hasAdminUser` alone is sufficient: a real user can only exist because
+  // /initialize already ran, so a populated database is "set up and running"
+  // even if the .env / marker live on a volume this process can't see. This
+  // stops an already-configured appliance from ever showing the first-run
+  // wizard just because envFileExists probed false. (setupComplete = true is
+  // the locked/safe direction — it only ever blocks provisioning, never opens
+  // it.)
   const setupComplete =
     statusCheckFailed ||
-    (envFileExists && databaseReachable && databaseInitialized && hasAdminUser);
+    hasAdminUser ||
+    (envFileExists && databaseReachable && databaseInitialized);
 
   return {
     envFileExists,
