@@ -178,6 +178,48 @@ export async function start(
   return { ...recon, statementId: statement?.id ?? null, continuityWarning };
 }
 
+// Pull transactions posted AFTER the reconciliation was started into the
+// worksheet. start() snapshots the uncleared lines at start time, so a
+// transaction the user adds mid-reconciliation (a "missing" one they just
+// entered) has no reconciliation_line and never appears. This adds a
+// worksheet row for every posted, on-or-before-statement-date line for the
+// account that isn't already on this worksheet and isn't cleared in a prior
+// completed reconciliation — the same eligibility rule start() uses.
+export async function refreshLines(tenantId: string, reconciliationId: string): Promise<{ added: number }> {
+  return await db.transaction(async (tx) => {
+    const [recon] = await tx.select().from(reconciliations)
+      .where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)))
+      .for('update')
+      .limit(1);
+    if (!recon) throw AppError.notFound('Reconciliation not found');
+    if (recon.status === 'complete') throw AppError.badRequest('Reconciliation is already complete');
+
+    const newLines = await tx.execute(sql`
+      SELECT jl.id FROM journal_lines jl
+      JOIN transactions t ON t.id = jl.transaction_id
+      WHERE jl.tenant_id = ${tenantId} AND jl.account_id = ${recon.accountId}
+        AND t.status = 'posted' AND t.txn_date <= ${recon.statementDate}
+        AND jl.id NOT IN (
+          SELECT rl.journal_line_id FROM reconciliation_lines rl
+          WHERE rl.reconciliation_id = ${reconciliationId}
+        )
+        AND jl.id NOT IN (
+          SELECT rl.journal_line_id FROM reconciliation_lines rl
+          JOIN reconciliations r ON r.id = rl.reconciliation_id
+          WHERE r.tenant_id = ${tenantId} AND r.account_id = ${recon.accountId}
+            AND r.status = 'complete' AND rl.is_cleared = true
+        )
+    `);
+    const rows = newLines.rows as Array<{ id: string }>;
+    if (rows.length > 0) {
+      await tx.insert(reconciliationLines).values(
+        rows.map((r) => ({ reconciliationId, journalLineId: r.id, isCleared: false })),
+      );
+    }
+    return { added: rows.length };
+  });
+}
+
 export async function getReconciliation(tenantId: string, reconciliationId: string) {
   const recon = await db.query.reconciliations.findFirst({
     where: and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)),

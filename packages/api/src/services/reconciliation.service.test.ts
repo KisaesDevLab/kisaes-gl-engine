@@ -488,6 +488,52 @@ describe('Reconciliation Service', () => {
     });
   });
 
+  describe('refreshLines', () => {
+    it('pulls in a transaction added after the reconciliation was started', async () => {
+      await postDeposit('100.00', '2026-04-01');
+      const recon = await reconciliation.start(tenantId, bankAccountId, '2026-04-30', '300.00');
+      const before = await db.query.reconciliationLines.findMany({
+        where: (rl, { eq: e }) => e(rl.reconciliationId, recon.id),
+      });
+      expect(before.length).toBe(1);
+
+      // A "missing" transaction entered after start, dated within the period.
+      await postDeposit('200.00', '2026-04-15');
+      const result = await reconciliation.refreshLines(tenantId, recon.id);
+      expect(result.added).toBe(1);
+
+      const after = await db.query.reconciliationLines.findMany({
+        where: (rl, { eq: e }) => e(rl.reconciliationId, recon.id),
+      });
+      expect(after.length).toBe(2);
+    });
+
+    it('does not pull in transactions dated after the statement date, and is idempotent', async () => {
+      await postDeposit('100.00', '2026-04-01');
+      const recon = await reconciliation.start(tenantId, bankAccountId, '2026-04-30', '100.00');
+      // Dated in May — outside the statement period.
+      await postDeposit('999.00', '2026-05-10');
+
+      const first = await reconciliation.refreshLines(tenantId, recon.id);
+      expect(first.added).toBe(0);
+      // Re-running adds nothing new.
+      const second = await reconciliation.refreshLines(tenantId, recon.id);
+      expect(second.added).toBe(0);
+    });
+
+    it('refuses to refresh a completed reconciliation', async () => {
+      await postDeposit('100.00', '2026-04-01');
+      const recon = await reconciliation.start(tenantId, bankAccountId, '2026-04-30', '100.00');
+      const lineIds = (await db.query.reconciliationLines.findMany({
+        where: (rl, { eq: e }) => e(rl.reconciliationId, recon.id),
+      })).map((l) => l.journalLineId);
+      await reconciliation.updateLines(tenantId, recon.id, lineIds.map((id) => ({ journalLineId: id, isCleared: true })));
+      await reconciliation.complete(tenantId, recon.id);
+
+      await expect(reconciliation.refreshLines(tenantId, recon.id)).rejects.toThrow(/already complete/i);
+    });
+  });
+
   describe('cancel', () => {
     it('deletes the in-progress reconciliation and its lines', async () => {
       await postDeposit('100.00', '2026-04-01');

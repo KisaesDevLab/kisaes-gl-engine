@@ -389,6 +389,12 @@ bankingRouter.post('/reconciliations/:id/cancel', async (req, res) => {
   res.json({ message: 'Reconciliation canceled' });
 });
 
+// Pull transactions added after start into the worksheet.
+bankingRouter.post('/reconciliations/:id/refresh', async (req, res) => {
+  const result = await reconciliationService.refreshLines(req.tenantId, req.params['id']!);
+  res.json(result);
+});
+
 bankingRouter.post('/reconciliations/:id/complete', async (req, res) => {
   await reconciliationService.complete(req.tenantId, req.params['id']!, req.userId);
   res.json({ message: 'Reconciliation complete' });
