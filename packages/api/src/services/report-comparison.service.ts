@@ -205,17 +205,17 @@ export async function buildComparativePL(
     };
     const accountMap = new Map<string, { accountId: string; name: string; accountNumber: string | null; type: PLType; detailType: string | null }>();
     for (const pl of plResults) {
-      for (const r of pl.revenue) accountMap.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'revenue', detailType: r.detailType ?? null });
-      for (const r of pl.cogs) accountMap.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'cogs', detailType: r.detailType ?? null });
-      for (const r of pl.expenses) accountMap.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'expense', detailType: r.detailType ?? null });
-      for (const r of pl.otherRevenue) accountMap.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_revenue', detailType: r.detailType ?? null });
-      for (const r of pl.otherExpenses) accountMap.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_expense', detailType: r.detailType ?? null });
+      for (const r of pl.revenue) accountMap.set(r.accountId ?? r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'revenue', detailType: r.detailType ?? null });
+      for (const r of pl.cogs) accountMap.set(r.accountId ?? r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'cogs', detailType: r.detailType ?? null });
+      for (const r of pl.expenses) accountMap.set(r.accountId ?? r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'expense', detailType: r.detailType ?? null });
+      for (const r of pl.otherRevenue) accountMap.set(r.accountId ?? r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_revenue', detailType: r.detailType ?? null });
+      for (const r of pl.otherExpenses) accountMap.set(r.accountId ?? r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_expense', detailType: r.detailType ?? null });
     }
 
     const rows = [...accountMap.values()].map((acct) => {
       const values = plResults.map((pl) => {
-        const items = (pl as any)[sectionKey[acct.type]] as Array<{ name: string; amount: number }>;
-        return items.find((i) => i.name === acct.name)?.amount || 0;
+        const items = (pl as any)[sectionKey[acct.type]] as Array<{ accountId: string; name: string; amount: number }>;
+        return items.find((i) => i.accountId === acct.accountId)?.amount || 0;
       });
       values.push(values.reduce((a, b) => a + b, 0)); // Total column
       return {
@@ -288,11 +288,11 @@ export async function buildComparativePL(
   type PLType = 'revenue' | 'cogs' | 'expense' | 'other_revenue' | 'other_expense';
   const allAccounts = new Map<string, { accountId: string; name: string; accountNumber: string | null; type: PLType; detailType: string | null }>();
   const collect = (pl: any) => {
-    for (const r of pl.revenue) allAccounts.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'revenue', detailType: r.detailType ?? null });
-    for (const r of pl.cogs) allAccounts.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'cogs', detailType: r.detailType ?? null });
-    for (const r of pl.expenses) allAccounts.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'expense', detailType: r.detailType ?? null });
-    for (const r of pl.otherRevenue) allAccounts.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_revenue', detailType: r.detailType ?? null });
-    for (const r of pl.otherExpenses) allAccounts.set(r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_expense', detailType: r.detailType ?? null });
+    for (const r of pl.revenue) allAccounts.set(r.accountId ?? r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'revenue', detailType: r.detailType ?? null });
+    for (const r of pl.cogs) allAccounts.set(r.accountId ?? r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'cogs', detailType: r.detailType ?? null });
+    for (const r of pl.expenses) allAccounts.set(r.accountId ?? r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'expense', detailType: r.detailType ?? null });
+    for (const r of pl.otherRevenue) allAccounts.set(r.accountId ?? r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_revenue', detailType: r.detailType ?? null });
+    for (const r of pl.otherExpenses) allAccounts.set(r.accountId ?? r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_expense', detailType: r.detailType ?? null });
   };
   collect(currentPL);
   collect(priorPL);
@@ -303,10 +303,10 @@ export async function buildComparativePL(
   };
 
   const rows = [...allAccounts.values()].map((acct) => {
-    const currentItems = (currentPL as any)[sectionKey[acct.type]] as Array<{ name: string; amount: number }>;
-    const priorItems = (priorPL as any)[sectionKey[acct.type]] as Array<{ name: string; amount: number }>;
-    const current = currentItems.find((i) => i.name === acct.name)?.amount || 0;
-    const prior = priorItems.find((i) => i.name === acct.name)?.amount || 0;
+    const currentItems = (currentPL as any)[sectionKey[acct.type]] as Array<{ accountId: string; name: string; amount: number }>;
+    const priorItems = (priorPL as any)[sectionKey[acct.type]] as Array<{ accountId: string; name: string; amount: number }>;
+    const current = currentItems.find((i) => i.accountId === acct.accountId)?.amount || 0;
+    const prior = priorItems.find((i) => i.accountId === acct.accountId)?.amount || 0;
     const v = computeVariance(current, prior, favSign(acct.type));
     return {
       accountId: acct.accountId, account: acct.name, accountNumber: acct.accountNumber,
@@ -387,17 +387,29 @@ export async function buildComparativeBS(
   ];
 
   type BSRow = { accountId: string | null; name: string; accountNumber: string | null; balance: number; detailType?: string | null };
+  // Key by accountId, NOT name: account names aren't unique (only numbers are),
+  // so name-keying collapsed two same-named accounts into one row and hid the
+  // second account's prior-period amount when it had no current balance.
+  // Calculated rows (Retained Earnings / Net Income) have no accountId → key by
+  // name, which is unique for them. Current-period order first, then any
+  // account that exists only in the prior period.
   function mergeSection(current: BSRow[], prior: BSRow[]) {
-    const names = new Set([...current.map((c) => c.name), ...prior.map((p) => p.name)]);
-    return [...names].map((name) => {
-      const cur = current.find((c) => c.name === name);
-      const pri = prior.find((p) => p.name === name);
+    const keyOf = (r: BSRow) => r.accountId ?? `name:${r.name}`;
+    const curByKey = new Map<string, BSRow>();
+    const priByKey = new Map<string, BSRow>();
+    const order: string[] = [];
+    for (const c of current) { const k = keyOf(c); if (!curByKey.has(k)) { curByKey.set(k, c); order.push(k); } }
+    for (const p of prior) { const k = keyOf(p); if (!priByKey.has(k)) { priByKey.set(k, p); if (!curByKey.has(k)) order.push(k); } }
+    return order.map((k) => {
+      const cur = curByKey.get(k);
+      const pri = priByKey.get(k);
       const curBal = cur?.balance || 0;
       const priBal = pri?.balance || 0;
       const v = computeVariance(curBal, priBal);
       return {
         accountId: cur?.accountId ?? pri?.accountId ?? null,
-        name,
+        name: cur?.name ?? pri?.name ?? '',
+        accountNumber: cur?.accountNumber ?? pri?.accountNumber ?? null,
         values: [curBal, priBal, v.dollarChange, v.percentChange] as Array<number | null>,
         // Present only in grouped mode (the underlying BS entries carry
         // detailType only when built with groupBy).
