@@ -409,7 +409,13 @@ async function executePipeline(
   const mimeType = attachment.mimeType || 'application/pdf';
 
   const rawConfig = await aiConfigService.getRawConfig();
-  const glm = await aiConfigService.resolveGlmOcrConfig();
+  const glmBase = await aiConfigService.resolveGlmOcrConfig();
+  // Per-upload "Force OCR" (checkbox) — persisted on the job's inputData.
+  // OR it onto the admin-level glm.forceOcr so routePdf skips the text-layer
+  // fast path and OCRs every page (useful when a PDF's embedded text is wrong).
+  const parseJob = await orchestrator.getJobForTenant(tenantId, jobId);
+  const forceOcr = glmBase.forceOcr || (parseJob?.inputData as { forceOcr?: boolean } | null)?.forceOcr === true;
+  const glm = forceOcr === glmBase.forceOcr ? glmBase : { ...glmBase, forceOcr };
   const qualityWarnings: string[] = [];
 
   // Stage-2 extraction LLM: admin-selected local vs Anthropic.
@@ -684,6 +690,7 @@ export async function parseStatement(tenantId: string, attachmentId: string): Pr
 export async function startStatementParse(
   tenantId: string,
   attachmentId: string,
+  opts: { forceOcr?: boolean } = {},
 ): Promise<{ jobId: string }> {
   const attachment = await db.query.attachments.findFirst({
     where: and(eq(attachments.tenantId, tenantId), eq(attachments.id, attachmentId)),
@@ -691,8 +698,12 @@ export async function startStatementParse(
   if (!attachment) throw AppError.notFound('Attachment not found');
   // createJob validates AI-enabled + consent (scoped to the attachment's
   // company when known — H7) + budget synchronously.
+  // "Force OCR" (upload-page checkbox) is persisted in the job's inputData so
+  // the pipeline honors it whether it runs in the worker or the in-process
+  // watchdog fallback — both re-load the job by id.
   const job = await orchestrator.createJob(
-    tenantId, 'ocr_statement', 'attachment', attachmentId, undefined,
+    tenantId, 'ocr_statement', 'attachment', attachmentId,
+    opts.forceOcr ? { forceOcr: true } : undefined,
     attachment.companyId ?? null,
   );
   await orchestrator.setStage(job.id, 'queued');

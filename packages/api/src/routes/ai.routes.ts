@@ -292,7 +292,7 @@ aiRouter.post('/ocr/receipt', authenticate, aiProcessingLimiter, validate(aiOcrS
 // final result, rather than holding this request open for a slow multi-page
 // OCR. Validation/consent/budget errors still surface synchronously here.
 aiRouter.post('/parse/statement', authenticate, aiProcessingLimiter, validate(aiParseStatementSchema), async (req, res) => {
-  const { jobId } = await aiStatementParser.startStatementParse(req.tenantId, req.body.attachmentId);
+  const { jobId } = await aiStatementParser.startStatementParse(req.tenantId, req.body.attachmentId, { forceOcr: req.body.forceOcr === true });
   res.status(202).json({ jobId });
 });
 

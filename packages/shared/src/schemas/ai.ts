@@ -174,6 +174,9 @@ export const aiCategorizeAcceptSchema = z.object({
 // Parse a bank statement attachment via AI.
 export const aiParseStatementSchema = z.object({
   attachmentId: z.string().uuid(),
+  // "Force OCR" (upload-page checkbox): skip the embedded-text fast path and
+  // OCR every page — for PDFs whose text layer is missing or wrong.
+  forceOcr: z.boolean().optional(),
 });
 
 // Import transactions from a previously-parsed statement. The
