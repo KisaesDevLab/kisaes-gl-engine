@@ -2091,23 +2091,29 @@ export async function buildTransactionList(tenantId: string, filters?: {
     conditions.push(sql`EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = t.id AND jl.tenant_id = ${tenantId} AND jl.tag_id = ${filters.tagId})`);
   }
 
+  // One row per journal LINE (not per transaction), so a split shows each of
+  // its lines with its account instead of a single "Split" row. `amount` is
+  // signed to the accounting convention: debits positive, credits negative.
+  // Void transactions are already excluded (status = 'posted' above); the
+  // is_void_reversal filter drops the reversing lines the voider persisted.
   const rows = await db.execute(sql`
-    SELECT t.id, t.txn_type, t.txn_number, t.txn_date, t.total, t.memo, t.status,
+    SELECT t.id, t.txn_type, t.txn_number, t.txn_date, t.memo, t.status,
       -- STATEMENT_CHECK_PAYEE_V1 — fall back to the check-image payee.
       COALESCE(c.display_name, t.payee_name_on_check) as contact_name,
-      -- ADR 0XX 6.3 — comma-separated list of tag names on the txns
-      -- journal lines, exported as the line_tag column. Distinct so
-      -- multi-tag headers show "Project A, Project B" once each.
-      (
-        SELECT string_agg(DISTINCT tg.name, ', ' ORDER BY tg.name)
-        FROM journal_lines jl
-        JOIN tags tg ON tg.id = jl.tag_id AND tg.tenant_id = ${tenantId}
-        WHERE jl.transaction_id = t.id AND jl.tenant_id = ${tenantId}
-      ) AS line_tag
+      a.account_number, a.name AS account_name,
+      CASE WHEN a.account_number IS NOT NULL AND a.account_number <> ''
+           THEN a.account_number || ' · ' || a.name ELSE a.name END AS account,
+      jl.debit, jl.credit,
+      (jl.debit::numeric - jl.credit::numeric) AS amount,
+      jl.description AS line_description,
+      tg.name AS line_tag
     FROM transactions t
+    JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.tenant_id = ${tenantId} AND jl.is_void_reversal = false
+    JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = ${tenantId}
     LEFT JOIN contacts c ON c.id = t.contact_id AND c.tenant_id = ${tenantId}
+    LEFT JOIN tags tg ON tg.id = jl.tag_id AND tg.tenant_id = ${tenantId}
     WHERE ${sql.join(conditions, sql` AND `)}
-    ORDER BY t.txn_date DESC, t.created_at DESC
+    ORDER BY t.txn_date DESC, t.created_at DESC, jl.line_order
   `);
 
   return { title: 'Transaction List', data: rows.rows };

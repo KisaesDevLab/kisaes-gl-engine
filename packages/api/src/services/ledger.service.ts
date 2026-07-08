@@ -510,8 +510,8 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
     // would silently decouple the reconciliation's cleared total from the
     // actual line amounts, which is an audit-trail integrity break that
     // isn't recoverable without re-doing the reconciliation.
-    const clearedInCompleted = await tx.execute(sql`
-      SELECT 1
+    const clearedRows = await tx.execute(sql`
+      SELECT DISTINCT jl.id AS journal_line_id
       FROM ${reconciliationLines} rl
       JOIN ${reconciliations} r ON r.id = rl.reconciliation_id
       JOIN ${journalLines} jl ON jl.id = rl.journal_line_id
@@ -519,13 +519,126 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
         AND r.status = 'complete'
         AND rl.is_cleared = true
         AND jl.transaction_id = ${txnId}
-      LIMIT 1
     `);
-    if ((clearedInCompleted.rows as unknown[]).length > 0) {
-      throw AppError.badRequest(
-        'Cannot edit a transaction that is part of a completed bank reconciliation. ' +
-          'Undo the reconciliation first, or void this transaction and post a correcting entry.',
-      );
+    const clearedLineIds = new Set((clearedRows.rows as Array<{ journal_line_id: string }>).map((r) => r.journal_line_id));
+
+    if (clearedLineIds.size > 0) {
+      // Reconciled transaction. The reconciliation cleared this txn's
+      // balance-sheet line(s) (the bank / credit-card account). Those lines
+      // must NOT change — their amount is the reconciled total, and their
+      // journal_line ids are referenced by reconciliation_lines (no FK, so a
+      // delete/recreate would leave dangling references and corrupt the rec).
+      // The OTHER (income/expense) lines don't touch the reconciled balance,
+      // so the user may recategorize / split / re-tag them freely — as long as
+      // the balance-sheet lines and the date stay put.
+      const existingLines = await tx.select().from(journalLines)
+        .where(and(
+          eq(journalLines.tenantId, tenantId),
+          eq(journalLines.transactionId, txnId),
+          eq(journalLines.isVoidReversal, false),
+        ));
+      const acctIds = Array.from(new Set([...existingLines.map((l) => l.accountId), ...input.lines.map((l) => l.accountId)]));
+      const acctRows = acctIds.length
+        ? await tx.select({ id: accounts.id, accountType: accounts.accountType })
+            .from(accounts).where(and(eq(accounts.tenantId, tenantId), inArray(accounts.id, acctIds)))
+        : [];
+      const typeOf = new Map(acctRows.map((a) => [a.id, a.accountType]));
+      const isBalanceSheet = (accountId: string) => {
+        const t = typeOf.get(accountId);
+        return t === 'asset' || t === 'liability' || t === 'equity';
+      };
+      const keyOf = (accountId: string, debit?: string | null, credit?: string | null) =>
+        `${accountId}|${new Decimal(debit || '0').toFixed(4)}|${new Decimal(credit || '0').toFixed(4)}`;
+
+      const existingBS = existingLines.filter((l) => isBalanceSheet(l.accountId));
+      const existingPL = existingLines.filter((l) => !isBalanceSheet(l.accountId));
+
+      // Match each existing balance-sheet line to an UNCHANGED input line.
+      const inputPool = new Map<string, Array<{ idx: number; line: (typeof input.lines)[number] }>>();
+      input.lines.forEach((line, idx) => {
+        const k = keyOf(line.accountId, line.debit, line.credit);
+        const b = inputPool.get(k) ?? []; b.push({ idx, line }); inputPool.set(k, b);
+      });
+      const preservedIdx = new Set<number>();
+      const bsPairs: Array<{ lineId: string; input: (typeof input.lines)[number] }> = [];
+      let ok = existing.txnDate === input.txnDate;
+      if (ok) {
+        for (const bs of existingBS) {
+          const match = inputPool.get(keyOf(bs.accountId, bs.debit, bs.credit))?.shift();
+          if (!match) { ok = false; break; }
+          preservedIdx.add(match.idx);
+          bsPairs.push({ lineId: bs.id, input: match.line });
+        }
+      }
+      // Remaining input lines replace the P&L side; none may be a balance-sheet
+      // account (that would add/alter the reconciled side).
+      const newPLLines = ok ? input.lines.filter((_, idx) => !preservedIdx.has(idx)) : [];
+      if (ok && newPLLines.some((l) => isBalanceSheet(l.accountId))) ok = false;
+
+      if (!ok) {
+        throw AppError.badRequest(
+          'This transaction is part of a completed bank reconciliation, so its reconciled (balance-sheet) line and date can’t change. ' +
+            'You can still recategorize or re-tag the income/expense lines. To change the reconciled amount, undo the reconciliation, or void and re-post.',
+        );
+      }
+
+      const [contactDefaultTagId, itemDefaultTagMap] = await Promise.all([
+        loadContactDefaultTagId(tx, tenantId, input.contactId),
+        loadItemDefaultTagMap(tx, tenantId, input.lines),
+      ]);
+      const tagFor = (inLine: (typeof input.lines)[number]) => resolveDefaultTag({
+        explicitUserTagId: inLine.tagId,
+        bankRuleTagId: inLine.bankRuleTagId ?? undefined,
+        aiSuggestedTagId: inLine.aiSuggestedTagId ?? undefined,
+        itemDefaultTagId: inLine.itemId ? itemDefaultTagMap.get(inLine.itemId) ?? null : undefined,
+        contactDefaultTagId,
+      });
+
+      // 1. Preserve balance-sheet lines: update tag/description IN PLACE (no
+      //    amount/account change → reconciliation references untouched).
+      for (const { lineId, input: inLine } of bsPairs) {
+        await tx.update(journalLines).set({ tagId: tagFor(inLine), description: inLine.description || null })
+          .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.id, lineId)));
+      }
+      // 2. Replace P&L lines: reverse old balances, delete, insert new, apply.
+      if (existingPL.length > 0) {
+        await updateAccountBalances(tx, tenantId, existingPL.map((l) => ({ accountId: l.accountId, debit: l.credit, credit: l.debit })));
+        await tx.delete(journalLines).where(and(
+          eq(journalLines.tenantId, tenantId),
+          inArray(journalLines.id, existingPL.map((l) => l.id)),
+        ));
+      }
+      const newPLValues = newPLLines.map((line, i) => ({
+        tenantId, companyId: companyId || null, transactionId: txnId,
+        accountId: line.accountId, debit: line.debit || '0', credit: line.credit || '0',
+        description: line.description || null, itemId: line.itemId || null,
+        quantity: line.quantity || null, unitPrice: line.unitPrice || null,
+        isTaxable: line.isTaxable || false, taxRate: line.taxRate || '0', taxAmount: line.taxAmount || '0',
+        lineOrder: existingBS.length + i, contactId: line.contactId ?? null, tagId: tagFor(line),
+      }));
+      if (newPLValues.length > 0) {
+        await tx.insert(journalLines).values(newPLValues);
+        await updateAccountBalances(tx, tenantId, newPLLines);
+      }
+      // 3. Ledger-neutral header fields (memo / contact / basis).
+      await tx.update(transactions).set({
+        memo: input.memo || null,
+        contactId: input.contactId || null,
+        ...(input.basis ? { basis: input.basis } : {}),
+        updatedAt: new Date(),
+      }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)));
+      // 4. Rebuild transaction_tags from the full (preserved + new) line set.
+      const fullValues = [
+        ...bsPairs.map(({ input: inLine }) => ({ accountId: inLine.accountId, tagId: tagFor(inLine) })),
+        ...newPLValues,
+      ];
+      await syncTransactionTagsFromLines(tx, tenantId, existing.companyId ?? null, txnId, fullValues);
+      await auditLog(tenantId, 'update', 'transaction', txnId, existing, { reconciledPartialEdit: true }, userId, tx);
+      const refreshed = await tx.select().from(journalLines)
+        .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)));
+      const [updatedTxn] = await tx.select().from(transactions)
+        .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId))).limit(1);
+      return { ...updatedTxn, lines: refreshed };
     }
 
     // Get original lines and reverse their balances

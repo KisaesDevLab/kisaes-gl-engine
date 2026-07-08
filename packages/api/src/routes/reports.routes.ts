@@ -1542,9 +1542,11 @@ reportsRouter.get('/transaction-list', async (req, res) => {
     { key: 'txn_type', label: 'Type' },
     { key: 'txn_number', label: 'Number' },
     { key: 'contact_name', label: 'Contact' },
-    { key: 'total', label: 'Amount', align: 'right' },
+    { key: 'account', label: 'Account' },
+    // Signed to the accounting convention: debits positive, credits negative.
+    { key: 'amount', label: 'Amount', align: 'right' },
     { key: 'memo', label: 'Memo' },
-    // ADR 0XX §6.3 — line-level tag aggregation on the export row.
+    // Per-line tag.
     { key: 'line_tag', label: 'Tag' },
   ]}, format);
 });
@@ -1552,10 +1554,13 @@ reportsRouter.get('/transaction-list', async (req, res) => {
 reportsRouter.get('/journal-entry-report', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
   const data = await reportService.buildJournalEntryReport(req.tenantId, { startDate: start_date, endDate: end_date }, resolveCompanyScope(req), readTagFilter(req));
-  await respond(res, { ...data, _exportColumns: [
+  // One row per journal line so every debit/credit of each entry is shown.
+  await respond(res, { ...data, title: 'Journal Entry Report', _exportColumns: [
     { key: 'txn_date', label: 'Date' },
     { key: 'txn_number', label: 'Number' },
-    { key: 'total', label: 'Amount', align: 'right' },
+    { key: 'account', label: 'Account' },
+    { key: 'debit', label: 'Debit', align: 'right' },
+    { key: 'credit', label: 'Credit', align: 'right' },
     { key: 'memo', label: 'Memo' },
   ]}, format);
 });

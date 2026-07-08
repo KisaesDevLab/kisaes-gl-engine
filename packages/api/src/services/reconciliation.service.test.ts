@@ -40,8 +40,10 @@ async function cleanDb(): Promise<void> {
   await db.delete(reconciliationLines);
   await db.delete(reconciliations);
   await db.delete(transactionTags);
-  await db.delete(tags);
+  // journal_lines.tag_id references tags with ON DELETE RESTRICT, so lines
+  // must go before tags (a tagged line otherwise blocks the tags delete).
   await db.delete(journalLines);
+  await db.delete(tags);
   await db.delete(transactions);
   await db.delete(auditLog);
   await db.delete(contacts);
@@ -597,6 +599,67 @@ describe('Reconciliation Service', () => {
       await reconciliation.complete(tenantId, recon.id);
 
       await expect(reconciliation.cancel(tenantId, recon.id)).rejects.toThrow('cannot be canceled');
+    });
+  });
+
+  describe('editing a reconciled transaction', () => {
+    async function reconciledDeposit(): Promise<string> {
+      const txnId = await postDeposit('100.00', '2026-04-01');
+      const recon = await reconciliation.start(tenantId, bankAccountId, '2026-04-30', '100.00');
+      const bankLineIds = await getBankLineIds(txnId);
+      await reconciliation.updateLines(tenantId, recon.id, bankLineIds.map((id) => ({ journalLineId: id, isCleared: true })));
+      await reconciliation.complete(tenantId, recon.id);
+      return txnId;
+    }
+
+    it('blocks changing the reconciled (balance-sheet) amount', async () => {
+      const txnId = await reconciledDeposit();
+      await expect(ledger.updateTransaction(tenantId, txnId, {
+        txnType: 'journal_entry', txnDate: '2026-04-01',
+        lines: [
+          { accountId: bankAccountId, debit: '150.00', credit: '0' },
+          { accountId: revenueAccountId, debit: '0', credit: '150.00' },
+        ],
+      } as never)).rejects.toThrow(/reconcil|balance-sheet/i);
+    });
+
+    it('allows recategorizing the P&L line and re-tagging, preserving the reconciled line + balances', async () => {
+      const { sql } = await import('drizzle-orm');
+      const txnId = await reconciledDeposit();
+      const revenue2 = await accountsService.create(tenantId, { name: 'Other Income', accountType: 'revenue', accountNumber: '4100' });
+      const [tag] = await db.insert(tags).values({ tenantId, name: 'Project Z' }).returning();
+
+      const before = await db.query.journalLines.findMany({
+        where: (jl, { and: a, eq: e }) => a(e(jl.transactionId, txnId), e(jl.tenantId, tenantId)),
+      });
+      const bankLineId = before.find((l) => l.accountId === bankAccountId)!.id;
+
+      await ledger.updateTransaction(tenantId, txnId, {
+        txnType: 'journal_entry', txnDate: '2026-04-01',
+        lines: [
+          { accountId: bankAccountId, debit: '100.00', credit: '0', tagId: tag!.id }, // reconciled — unchanged amount, new tag
+          { accountId: revenue2.id, debit: '0', credit: '100.00' },                   // recategorized P&L
+        ],
+      } as never);
+
+      const after = await db.query.journalLines.findMany({
+        where: (jl, { and: a, eq: e }) => a(e(jl.transactionId, txnId), e(jl.tenantId, tenantId)),
+      });
+      const bankAfter = after.find((l) => l.accountId === bankAccountId)!;
+      expect(bankAfter.id).toBe(bankLineId); // reconciled line id preserved
+      expect(bankAfter.tagId).toBe(tag!.id); // tag applied in place
+      expect(after.some((l) => l.accountId === revenue2.id && parseFloat(l.credit) === 100)).toBe(true);
+      expect(after.some((l) => l.accountId === revenueAccountId)).toBe(false);
+
+      const bankAcct = await db.query.accounts.findFirst({ where: (a, { eq: e }) => e(a.id, bankAccountId) });
+      const rev1 = await db.query.accounts.findFirst({ where: (a, { eq: e }) => e(a.id, revenueAccountId) });
+      const rev2 = await db.query.accounts.findFirst({ where: (a, { eq: e }) => e(a.id, revenue2.id) });
+      expect(parseFloat(bankAcct!.balance)).toBeCloseTo(100, 2);
+      expect(parseFloat(rev1!.balance)).toBeCloseTo(0, 2);
+      expect(parseFloat(rev2!.balance)).toBeCloseTo(-100, 2);
+
+      const rl = await db.execute(sql`SELECT rl.journal_line_id FROM reconciliation_lines rl JOIN reconciliations r ON r.id = rl.reconciliation_id WHERE r.tenant_id = ${tenantId} AND rl.is_cleared = true`);
+      expect((rl.rows as Array<{ journal_line_id: string }>).some((r) => r.journal_line_id === bankLineId)).toBe(true);
     });
   });
 });
