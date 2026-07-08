@@ -21,15 +21,48 @@ export async function checkExistingInstitution(institutionId: string) {
 
 // ─── Visibility Filtering ──────────────────────────────────────
 
-export async function getVisibleAccounts(userId: string, plaidItemId: string) {
-  const userTenants = await getUserAdminTenants(userId);
+// `scopeTenantId` narrows the view to a single workspace (the active client):
+// only accounts mapped to THAT tenant are shown, plus the item's still-
+// unassigned accounts — but only when the item is already used by that tenant,
+// so a client's Banking screen never surfaces an item belonging entirely to a
+// different client. Omit it for the user-wide view (mapping discovery, MCP),
+// which shows accounts across every tenant the user can access.
+export async function getVisibleAccounts(userId: string, plaidItemId: string, scopeTenantId?: string) {
   const allAccounts = await db.select().from(plaidAccounts).where(and(eq(plaidAccounts.plaidItemId, plaidItemId), eq(plaidAccounts.isActive, true)));
+
+  // One mapping lookup per account, reused below.
+  const mappingByAccount = new Map<string, typeof plaidAccountMappings.$inferSelect>();
+  for (const acct of allAccounts) {
+    const m = await db.query.plaidAccountMappings.findFirst({ where: eq(plaidAccountMappings.plaidAccountId, acct.id) });
+    if (m) mappingByAccount.set(acct.id, m);
+  }
 
   const visible = [];
   let hiddenCount = 0;
 
+  if (scopeTenantId) {
+    // Only relevant if this item is already used by the scoped tenant — then
+    // its unassigned accounts are mappable here; otherwise the item is another
+    // client's and stays hidden entirely.
+    const itemUsedHere = [...mappingByAccount.values()].some((m) => m.tenantId === scopeTenantId);
+    for (const acct of allAccounts) {
+      const mapping = mappingByAccount.get(acct.id) ?? null;
+      if (mapping) {
+        if (mapping.tenantId === scopeTenantId) visible.push({ ...acct, mapping });
+        else hiddenCount++;
+      } else if (itemUsedHere) {
+        visible.push({ ...acct, mapping: null });
+      } else {
+        hiddenCount++;
+      }
+    }
+    return { accounts: visible, hiddenAccountCount: hiddenCount };
+  }
+
+  // User-wide view: any of the user's tenants, plus every unassigned account.
+  const userTenants = await getUserAdminTenants(userId);
   for (const acct of allAccounts) {
-    const mapping = await db.query.plaidAccountMappings.findFirst({ where: eq(plaidAccountMappings.plaidAccountId, acct.id) });
+    const mapping = mappingByAccount.get(acct.id) ?? null;
     if (!mapping) {
       visible.push({ ...acct, mapping: null }); // unassigned → visible
     } else if (userTenants.includes(mapping.tenantId)) {
@@ -222,16 +255,21 @@ export async function createConnection(userId: string, publicToken: string, meta
 
 // ─── Item Queries ──────────────────────────────────────────────
 
-export async function getItemsForUser(userId: string) {
-  const userTenants = await getUserAdminTenants(userId);
-  // Find items that have at least one mapping to user's tenants, or were created by user, or have unassigned accounts
+// `scopeTenantId` (the active client) restricts the list to Plaid items with
+// at least one account visible to THAT tenant — so a client's Bank Connections
+// screen shows only its own connections, not every client the user can access.
+// Omitted for the user-wide view (MCP), which also includes items the user
+// created even if not yet mapped anywhere.
+export async function getItemsForUser(userId: string, scopeTenantId?: string) {
   const allItems = await db.select().from(plaidItems).where(sql`removed_at IS NULL`);
 
   const result = [];
   for (const item of allItems) {
-    const { accounts, hiddenAccountCount } = await getVisibleAccounts(userId, item.id);
-    // User can see this item if they have visible accounts or are the creator
-    if (accounts.length > 0 || item.createdBy === userId) {
+    const { accounts, hiddenAccountCount } = await getVisibleAccounts(userId, item.id, scopeTenantId);
+    const include = scopeTenantId
+      ? accounts.length > 0
+      : accounts.length > 0 || item.createdBy === userId;
+    if (include) {
       result.push({ ...item, accounts, hiddenAccountCount, accessTokenEncrypted: undefined });
     }
   }

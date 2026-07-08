@@ -80,7 +80,9 @@ plaidRouter.get('/check-institution', authenticate, async (req, res) => {
 // ─── Items (Filtered by User Visibility) ──────────────────────
 
 plaidRouter.get('/items', authenticate, async (req, res) => {
-  const items = await plaidConnection.getItemsForUser(req.userId);
+  // Scope to the active client (tenant) so a workspace's Bank Connections
+  // screen shows only its own Plaid items, not every client the user can reach.
+  const items = await plaidConnection.getItemsForUser(req.userId, req.tenantId);
   res.json({ items });
 });
 
