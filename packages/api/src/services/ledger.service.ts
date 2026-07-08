@@ -1062,7 +1062,7 @@ export async function bulkUpdateTransactions(
   userId?: string,
   companyId?: string,
 ): Promise<BulkUpdateTransactionsResult> {
-  const { txnIds, setPayeeContactId, setCategoryAccountId, setTagId } = input;
+  const { txnIds, setPayeeContactId, setCategoryAccountId, setTagId, tagAccountId } = input;
   const skipped: Array<{ id: string; reason: string }> = [];
   let updated = 0;
 
@@ -1162,13 +1162,30 @@ export async function bulkUpdateTransactions(
         // else: payee/tag still apply below; the category just didn't move.
       }
 
-      // Tag — set on every line, then re-sync the junction surface.
+      // Tag — set (uuid) or clear (null). Scoped to the viewed account's
+      // line(s) when tagAccountId is given, so a split / journal entry only
+      // tags the account the operator is looking at rather than every line.
       if (setTagId !== undefined) {
-        await tx.update(journalLines)
+        const tagConds = [eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)];
+        if (tagAccountId) tagConds.push(eq(journalLines.accountId, tagAccountId));
+        const touched = await tx.update(journalLines)
           .set({ tagId: setTagId })
-          .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)));
-        await syncTransactionTagsFromLines(tx, tenantId, txn.companyId ?? null, txnId, [{ tagId: setTagId }]);
-        changed = true;
+          .where(and(...tagConds))
+          .returning({ id: journalLines.id });
+        if (touched.length > 0) {
+          // Re-sync the header junction from the ACTUAL per-line tags — with
+          // account scoping the lines can now carry mixed tags, so we can't
+          // assume the whole transaction collapses to the single set tag.
+          const postLines = await tx.select({ tagId: journalLines.tagId })
+            .from(journalLines)
+            .where(and(
+              eq(journalLines.tenantId, tenantId),
+              eq(journalLines.transactionId, txnId),
+              eq(journalLines.isVoidReversal, false),
+            ));
+          await syncTransactionTagsFromLines(tx, tenantId, txn.companyId ?? null, txnId, postLines);
+          changed = true;
+        }
       }
 
       if (changed) {

@@ -168,12 +168,15 @@ export const transactionFiltersSchema = z.object({
 //   - setCategoryAccountId: re-points the (single) category line's account.
 //     Only applied to single-category transactions server-side; splits skip.
 //   - setTagId: null clears, a uuid sets the tag on the transaction's lines.
+//   - tagAccountId: scopes a setTagId change to lines on this account only
+//     (e.g. the filtered account), so a JE/split only tags the viewed line.
 export const bulkUpdateTransactionsSchema = z
   .object({
     txnIds: z.array(z.string().uuid()).min(1).max(500),
     setPayeeContactId: z.string().uuid().nullable().optional(),
     setCategoryAccountId: z.string().uuid().optional(),
     setTagId: z.string().uuid().nullable().optional(),
+    tagAccountId: z.string().uuid().optional(),
   })
   .refine(
     (v) =>

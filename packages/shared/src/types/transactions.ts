@@ -187,6 +187,13 @@ export interface BulkUpdateTransactionsInput {
   setCategoryAccountId?: string;
   /** Null clears the tag; a tag id sets it on the transaction's lines. */
   setTagId?: string | null;
+  /**
+   * Scopes a setTagId change (set OR clear) to journal lines on this account
+   * only — e.g. the account the list is filtered by. Without it the tag
+   * applies to every line, which is wrong for a split / journal entry where
+   * only the viewed account's line should carry the tag.
+   */
+  tagAccountId?: string;
 }
 
 export interface BulkUpdateTransactionsResult {
