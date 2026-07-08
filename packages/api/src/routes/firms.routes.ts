@@ -261,6 +261,19 @@ firmsRouter.get('/:firmId/tenants', async (req, res) => {
   res.json({ assignments });
 });
 
+// Tenants the caller may assign to this firm — powers a searchable picker in
+// place of a raw Tenant-UUID field. Scoped to what the caller has authority to
+// assign (super-admin sees all; others see tenants they own / are accountant
+// on), minus tenants already assigned to this firm.
+firmsRouter.get('/:firmId/assignable-tenants', requireFirmAdmin, async (req, res) => {
+  const tenants = await tenantFirmAssignmentService.listAssignableTenants(
+    req.firmId!,
+    req.userId,
+    req.isSuperAdmin,
+  );
+  res.json({ tenants });
+});
+
 // Assign a tenant to this firm. Requires:
 //   - firm_admin on this firm (covered by requireFirmAdmin)
 //   - accountant or owner role on the target tenant via

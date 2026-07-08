@@ -33,6 +33,16 @@ export const adminToggleTenantAccessSchema = z.object({
 });
 export type AdminToggleTenantAccessInput = z.infer<typeof adminToggleTenantAccessSchema>;
 
+// Grant (or reactivate) an existing user's access to a tenant with a role.
+// Used by the admin tenant-detail "add firm user" flow and the admin user
+// "tenant access" manager. Distinct from adminToggleTenantAccessSchema, which
+// only flips is_active on a row that already exists.
+export const adminGrantTenantAccessSchema = z.object({
+  tenantId: z.string().uuid(),
+  role: z.enum(adminCreateUserRoles).default('accountant'),
+});
+export type AdminGrantTenantAccessInput = z.infer<typeof adminGrantTenantAccessSchema>;
+
 export const adminRoles = ['owner', 'accountant', 'bookkeeper'] as const;
 export const adminSetRoleSchema = z.object({
   role: z.enum(adminRoles),

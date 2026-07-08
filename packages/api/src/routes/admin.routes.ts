@@ -46,6 +46,7 @@ import {
   importCoaTemplateSchema,
   adminResetPasswordSchema,
   adminToggleTenantAccessSchema,
+  adminGrantTenantAccessSchema,
   adminSetRoleSchema,
   adminCompanyAccessSchema,
   adminSmtpSettingsSchema,
@@ -484,6 +485,27 @@ adminRouter.post('/users/:id/toggle-super-admin', async (req, res) => {
 adminRouter.post('/users/:id/toggle-tenant-access', validate(adminToggleTenantAccessSchema), async (req, res) => {
   const result = await adminService.toggleTenantAccess(req.params['id']!, req.body.tenantId, req.userId);
   res.json(result);
+});
+
+// Every tenant a user can reach (active or revoked) — the admin "manage a
+// user's tenant access" view.
+adminRouter.get('/users/:id/tenant-access', async (req, res) => {
+  const access = await adminService.listUserTenantAccess(req.params['id']!);
+  res.json({ access });
+});
+
+// Grant (or reactivate) a user's access to a tenant with a role. Backs both
+// the tenant-detail "add firm user" flow and the user "add tenant" flow.
+adminRouter.post('/users/:id/grant-tenant-access', validate(adminGrantTenantAccessSchema), async (req, res) => {
+  const result = await adminService.grantTenantAccess(req.params['id']!, req.body.tenantId, req.body.role, req.userId);
+  res.json(result);
+});
+
+// Firm-member users (across all firms) — candidate list for adding a firm
+// user to a tenant.
+adminRouter.get('/firm-users', async (_req, res) => {
+  const users = await adminService.listFirmUsers();
+  res.json({ users });
 });
 
 adminRouter.post('/users/:id/set-role', validate(adminSetRoleSchema), async (req, res) => {

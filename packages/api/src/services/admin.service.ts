@@ -932,6 +932,81 @@ export async function toggleTenantAccess(userId: string, tenantId: string, actin
   return { isActive: newActive };
 }
 
+// Grant (or reactivate) an existing user's access to a tenant with a role.
+// Idempotent: if an active row with the same role exists it's a no-op; a
+// deactivated or differently-roled row is reactivated/updated. Unlike
+// toggleTenantAccess this creates the row when none exists — the "add" half of
+// admin tenant/user access management.
+export async function grantTenantAccess(
+  userId: string,
+  tenantId: string,
+  role: string,
+  actingUserId?: string,
+) {
+  const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+  if (!user) throw AppError.notFound('User not found');
+  const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
+  if (!tenant) throw AppError.notFound('Tenant not found');
+
+  const existing = await db.query.userTenantAccess.findFirst({
+    where: and(eq(userTenantAccess.userId, userId), eq(userTenantAccess.tenantId, tenantId)),
+  });
+  if (existing) {
+    if (existing.isActive && existing.role === role) {
+      return { granted: false, alreadyActive: true, role };
+    }
+    await db.update(userTenantAccess).set({ isActive: true, role })
+      .where(eq(userTenantAccess.id, existing.id));
+    await auditLog(tenantId, 'update', 'user_tenant_access', userId,
+      { isActive: existing.isActive, role: existing.role }, { isActive: true, role }, actingUserId);
+    return { granted: true, reactivated: true, role };
+  }
+  await db.insert(userTenantAccess).values({ userId, tenantId, role, isActive: true });
+  await auditLog(tenantId, 'create', 'user_tenant_access', userId, null, { tenantId, role }, actingUserId);
+  return { granted: true, reactivated: false, role };
+}
+
+// Every tenant a user can reach (active or revoked), with role — powers the
+// admin "monitor & manage a user's tenant access" view.
+export async function listUserTenantAccess(userId: string) {
+  const rows = await db.execute(sql`
+    SELECT uta.tenant_id, t.name AS tenant_name, uta.role, uta.is_active, uta.last_accessed_at
+    FROM user_tenant_access uta
+    JOIN tenants t ON t.id = uta.tenant_id
+    WHERE uta.user_id = ${userId}
+    ORDER BY t.name
+  `);
+  return (rows.rows as Array<{ tenant_id: string; tenant_name: string; role: string; is_active: boolean; last_accessed_at: string | null }>).map((r) => ({
+    tenantId: r.tenant_id,
+    tenantName: r.tenant_name,
+    role: r.role,
+    isActive: r.is_active,
+    lastAccessedAt: r.last_accessed_at,
+  }));
+}
+
+// Distinct users who are active members of any firm, with the firm(s) they
+// belong to — the candidate list for "add a firm user to this tenant".
+export async function listFirmUsers() {
+  const rows = await db.execute(sql`
+    SELECT u.id, u.email, u.display_name, u.is_active,
+      array_agg(DISTINCT f.name) FILTER (WHERE f.name IS NOT NULL) AS firm_names
+    FROM firm_users fu
+    JOIN users u ON u.id = fu.user_id
+    JOIN firms f ON f.id = fu.firm_id
+    WHERE fu.is_active = true
+    GROUP BY u.id, u.email, u.display_name, u.is_active
+    ORDER BY u.email
+  `);
+  return (rows.rows as Array<{ id: string; email: string; display_name: string | null; is_active: boolean; firm_names: string[] | null }>).map((r) => ({
+    id: r.id,
+    email: r.email,
+    displayName: r.display_name,
+    isActive: r.is_active,
+    firmNames: r.firm_names ?? [],
+  }));
+}
+
 export async function toggleSuperAdmin(userId: string, actingUserId?: string) {
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   if (!user) throw AppError.notFound('User not found');

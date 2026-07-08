@@ -2,14 +2,14 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import type {
   AssignTenantToFirmInput,
   TenantFirmAssignment,
   TenantFirmAssignmentWithTenant,
 } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { tenantFirmAssignments, tenants } from '../db/schema/index.js';
+import { tenantFirmAssignments, tenants, userTenantAccess } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 
 // 3-tier rules plan, Phase 1 — tenant ↔ firm assignment service.
@@ -43,6 +43,40 @@ export async function getActiveForTenant(
     ),
   });
   return row ? mapRow(row) : null;
+}
+
+// Tenants the caller can assign to this firm, for a searchable picker instead
+// of a raw-UUID field. Excludes tenants already actively assigned to this firm.
+// A super-admin sees every tenant; anyone else sees only tenants they're
+// owner/accountant on — the same authority the assign endpoint enforces, so
+// the list never offers a tenant the assign would then reject.
+export async function listAssignableTenants(
+  firmId: string,
+  callerUserId: string,
+  isSuperAdmin: boolean,
+): Promise<Array<{ tenantId: string; name: string; slug: string }>> {
+  const assigned = await db
+    .select({ tenantId: tenantFirmAssignments.tenantId })
+    .from(tenantFirmAssignments)
+    .where(and(eq(tenantFirmAssignments.firmId, firmId), eq(tenantFirmAssignments.isActive, true)));
+  const assignedSet = new Set(assigned.map((a) => a.tenantId));
+
+  const rows = isSuperAdmin
+    ? await db.select({ id: tenants.id, name: tenants.name, slug: tenants.slug })
+        .from(tenants).orderBy(tenants.name)
+    : await db.select({ id: tenants.id, name: tenants.name, slug: tenants.slug })
+        .from(userTenantAccess)
+        .innerJoin(tenants, eq(tenants.id, userTenantAccess.tenantId))
+        .where(and(
+          eq(userTenantAccess.userId, callerUserId),
+          eq(userTenantAccess.isActive, true),
+          inArray(userTenantAccess.role, ['owner', 'accountant']),
+        ))
+        .orderBy(tenants.name);
+
+  return rows
+    .filter((r) => !assignedSet.has(r.id))
+    .map((r) => ({ tenantId: r.id, name: r.name, slug: r.slug }));
 }
 
 export async function listForFirm(firmId: string): Promise<TenantFirmAssignmentWithTenant[]> {
