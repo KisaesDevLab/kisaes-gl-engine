@@ -801,6 +801,9 @@ export async function listTransactions(tenantId: string, filters: {
    * 'trial_balance_import'. Indexed (idx_txn_source) so this is cheap.
    */
   source?: string;
+  /** Report-basis lens: 'cash' keeps transactions.basis in (both,cash);
+   *  'accrual' keeps (both,accrual). Mirrors report inclusion per-transaction. */
+  basis?: 'cash' | 'accrual';
   search?: string;
   sortBy?: 'date' | 'type' | 'number' | 'payee' | 'memo' | 'category' | 'amount' | 'status';
   sortDir?: 'asc' | 'desc';
@@ -813,6 +816,11 @@ export async function listTransactions(tenantId: string, filters: {
   if (filters.status) conditions.push(eq(transactions.status, filters.status));
   if (filters.contactId) conditions.push(eq(transactions.contactId, filters.contactId));
   if (filters.source) conditions.push(eq(transactions.source, filters.source));
+  // Report-basis lens: keep transactions whose basis flag affects the chosen
+  // basis. 'both' shows on either; a basis-specific adjusting entry only shows
+  // on its own basis. Mirrors report inclusion (report.service basis filter).
+  if (filters.basis === 'cash') conditions.push(sql`${transactions.basis} IN ('both', 'cash')`);
+  else if (filters.basis === 'accrual') conditions.push(sql`${transactions.basis} IN ('both', 'accrual')`);
   if (filters.startDate) conditions.push(sql`${transactions.txnDate} >= ${filters.startDate}`);
   if (filters.endDate) conditions.push(sql`${transactions.txnDate} <= ${filters.endDate}`);
   if (filters.accountId) {

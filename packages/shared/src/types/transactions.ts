@@ -276,6 +276,10 @@ export interface TransactionFilters {
    *  bulk-import success links navigate here so the operator lands on
    *  the rows just posted instead of the unfiltered list. */
   source?: string;
+  /** Report-basis lens: 'cash' keeps transactions that affect cash-basis
+   *  reports (basis in both/cash); 'accrual' keeps both/accrual. Omitted =
+   *  all. Mirrors the reports' basis at the transaction level. */
+  basis?: 'cash' | 'accrual';
   startDate?: string;
   endDate?: string;
   search?: string;

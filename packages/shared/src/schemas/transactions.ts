@@ -151,6 +151,9 @@ export const transactionFiltersSchema = z.object({
    *  Restricted to a sane character set so it can't be used to inject
    *  arbitrary strings — the source values are short enum-ish keys. */
   source: z.string().regex(/^[a-zA-Z0-9_-]{1,40}$/).optional(),
+  // Report-basis lens for the list: 'cash' → transactions.basis in (both,cash);
+  // 'accrual' → (both,accrual). Omitted shows all bases.
+  basis: z.enum(['cash', 'accrual']).optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional(),
   search: z.string().optional(),
