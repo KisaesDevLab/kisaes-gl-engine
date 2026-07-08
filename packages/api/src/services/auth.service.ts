@@ -225,16 +225,17 @@ export async function register(input: RegisterInput): Promise<{ user: typeof use
 
 export async function getAccessibleTenants(userId: string) {
   const rows = await db.execute(sql`
-    SELECT uta.tenant_id, uta.role, uta.is_active, t.name as tenant_name
+    SELECT uta.tenant_id, uta.role, uta.is_active, uta.last_accessed_at, t.name as tenant_name
     FROM user_tenant_access uta
     JOIN tenants t ON t.id = uta.tenant_id
     WHERE uta.user_id = ${userId} AND uta.is_active = true
-    ORDER BY t.name
+    ORDER BY uta.last_accessed_at DESC NULLS LAST, t.name
   `);
   return (rows.rows as any[]).map((r) => ({
     tenantId: r.tenant_id,
     tenantName: r.tenant_name,
     role: r.role,
+    lastAccessedAt: r.last_accessed_at ? new Date(r.last_accessed_at).toISOString() : null,
   }));
 }
 
@@ -379,6 +380,11 @@ export async function switchTenant(userId: string, targetTenantId: string, prior
       refreshTokenHash: hashToken(refreshToken),
       expiresAt,
     });
+    // Mark this tenant as most-recently-accessed for the switcher's "recent"
+    // ordering. No-ops for a super-admin with no explicit access row.
+    await tx.update(userTenantAccess)
+      .set({ lastAccessedAt: new Date() })
+      .where(and(eq(userTenantAccess.userId, userId), eq(userTenantAccess.tenantId, targetTenantId)));
   });
 
   // Enforce the per-user session cap. The `priorRefreshToken` branch
