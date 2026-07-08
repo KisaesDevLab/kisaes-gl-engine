@@ -654,9 +654,9 @@ describe('Reconciliation Service', () => {
       const bankAcct = await db.query.accounts.findFirst({ where: (a, { eq: e }) => e(a.id, bankAccountId) });
       const rev1 = await db.query.accounts.findFirst({ where: (a, { eq: e }) => e(a.id, revenueAccountId) });
       const rev2 = await db.query.accounts.findFirst({ where: (a, { eq: e }) => e(a.id, revenue2.id) });
-      expect(parseFloat(bankAcct!.balance)).toBeCloseTo(100, 2);
-      expect(parseFloat(rev1!.balance)).toBeCloseTo(0, 2);
-      expect(parseFloat(rev2!.balance)).toBeCloseTo(-100, 2);
+      expect(parseFloat(bankAcct!.balance ?? '0')).toBeCloseTo(100, 2);
+      expect(parseFloat(rev1!.balance ?? '0')).toBeCloseTo(0, 2);
+      expect(parseFloat(rev2!.balance ?? '0')).toBeCloseTo(-100, 2);
 
       const rl = await db.execute(sql`SELECT rl.journal_line_id FROM reconciliation_lines rl JOIN reconciliations r ON r.id = rl.reconciliation_id WHERE r.tenant_id = ${tenantId} AND rl.is_cleared = true`);
       expect((rl.rows as Array<{ journal_line_id: string }>).some((r) => r.journal_line_id === bankLineId)).toBe(true);
