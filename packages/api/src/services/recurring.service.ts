@@ -16,7 +16,7 @@ import { incCounter, recordSchedulerTick } from '../utils/metrics.js';
 import { log } from '../utils/logger.js';
 import { withSchedulerLock } from '../utils/scheduler-lock.js';
 
-function calculateNextOccurrence(current: string, frequency: string, interval: number): string {
+export function calculateNextOccurrence(current: string, frequency: string, interval: number): string {
   // Date arithmetic uses UTC getters/setters so the schedule advances by
   // calendar days/months in UTC regardless of the container's local TZ.
   // Without this, a container in non-UTC TZ would drift schedules by up
@@ -26,6 +26,19 @@ function calculateNextOccurrence(current: string, frequency: string, interval: n
   switch (frequency) {
     case 'daily': d.setUTCDate(d.getUTCDate() + interval); break;
     case 'weekly': d.setUTCDate(d.getUTCDate() + 7 * interval); break;
+    // Bi-weekly = every two weeks. `interval` still multiplies (interval 2 =
+    // every 4 weeks) so it composes like the other cadences.
+    case 'biweekly': d.setUTCDate(d.getUTCDate() + 14 * interval); break;
+    // Semi-monthly = twice a month on the 1st and the 15th (the standard
+    // interpretation). It ignores `interval` — it's inherently twice monthly.
+    // From any date: on/after the 15th → the 1st of next month; otherwise the
+    // 15th of the current month. Using the 1st/15th anchors keeps every date
+    // valid (no month-length overflow) and converges after the first posting,
+    // which always lands on the user-chosen start date.
+    case 'semimonthly':
+      if (d.getUTCDate() >= 15) d.setUTCMonth(d.getUTCMonth() + 1, 1);
+      else d.setUTCDate(15);
+      break;
     case 'monthly': d.setUTCMonth(d.getUTCMonth() + interval); break;
     case 'quarterly': d.setUTCMonth(d.getUTCMonth() + 3 * interval); break;
     case 'annually': d.setUTCFullYear(d.getUTCFullYear() + interval); break;
