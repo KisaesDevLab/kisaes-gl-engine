@@ -360,8 +360,17 @@ export interface PdfBlockPayload {
 }
 
 // Exported for the render-parity test — every payload type resolveBlock
-// can emit must produce real HTML here (no "not yet supported").
+// can emit must produce real HTML here (no "not yet supported"). A block may
+// carry an operator-chosen `title` that overrides the default section heading.
 export function renderBlockPdf(block: Record<string, unknown>, payload: PdfBlockPayload | undefined): string {
+  const html = renderBlockPdfBody(block, payload);
+  const customTitle = String(block['title'] ?? '').trim();
+  if (!customTitle) return html;
+  // Every section opens with its heading as the first <h2>; swap in the title.
+  return html.replace(/<h2>[\s\S]*?<\/h2>/, `<h2>${escapeHtml(customTitle)}</h2>`);
+}
+
+function renderBlockPdfBody(block: Record<string, unknown>, payload: PdfBlockPayload | undefined): string {
   const blockType = String(block['type'] ?? '');
   const name =
     (block['name'] as string | undefined) ??

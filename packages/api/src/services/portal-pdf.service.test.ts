@@ -183,6 +183,19 @@ describe('renderBlockPdf — parity across every payload type', () => {
     );
     expect(cf).toContain('Net Income (accrual)');
   });
+
+  it('a block title overrides the default section heading (and is HTML-escaped)', () => {
+    const bs = PAYLOAD_FIXTURES.find((f) => f.payload.type === 'balance_sheet')!.payload;
+    const html = renderBlockPdf({ type: 'report', key: 'balance_sheet', title: 'Financial Position <b>Q3</b>' }, bs);
+    expect(html).toContain('<h2>Financial Position &lt;b&gt;Q3&lt;/b&gt;</h2>');
+    expect(html).not.toContain('<h2>Balance Sheet</h2>'); // default heading replaced
+    expect(html).toContain('Current Assets'); // body preserved
+  });
+
+  it('leaves the default heading when no title is set', () => {
+    const bs = PAYLOAD_FIXTURES.find((f) => f.payload.type === 'balance_sheet')!.payload;
+    expect(renderBlockPdf({ type: 'report', key: 'balance_sheet' }, bs)).toContain('<h2>Balance Sheet</h2>');
+  });
 });
 
 describe('reportHtmlTemplate — kpi-row parity + status dots', () => {
