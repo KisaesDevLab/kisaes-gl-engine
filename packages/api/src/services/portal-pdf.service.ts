@@ -464,50 +464,67 @@ function renderBlockPdfBody(block: Record<string, unknown>, payload: PdfBlockPay
     }
     case 'profit_loss': {
       // profit_loss = report-embed block — keep as a structured table.
-      const p = payload.data as
-        | {
-            revenue: number;
-            cogs: number;
-            grossProfit: number;
-            operatingExpense: number;
-            netIncome: number;
-          }
-        | null
-        | undefined;
+      type PlFig = { revenue: number; cogs: number; grossProfit: number; operatingExpense: number; netIncome: number };
+      const p = payload.data as (PlFig & { prior?: PlFig; compareLabel?: string }) | null | undefined;
       if (!p) {
         return `<section class="section"><h2>Profit &amp; Loss</h2><p class="meta">No data.</p></section>`;
       }
-      return `<section class="section"><h2>Profit &amp; Loss</h2>
-<table class="data"><tbody>
-<tr><td>Revenue</td><td class="num">${escapeHtml(fmtMoneyPdf(p.revenue))}</td></tr>
-<tr><td>COGS</td><td class="num">${escapeHtml(fmtMoneyPdf(p.cogs))}</td></tr>
-<tr><td>Gross Profit</td><td class="num strong">${escapeHtml(fmtMoneyPdf(p.grossProfit))}</td></tr>
-<tr><td>Operating Expense</td><td class="num">${escapeHtml(fmtMoneyPdf(p.operatingExpense))}</td></tr>
-<tr class="total"><td>Net Income</td><td class="num strong">${escapeHtml(fmtMoneyPdf(p.netIncome))}</td></tr>
-</tbody></table></section>`;
+      const lines: Array<{ label: string; k: keyof PlFig; cls: string; total: boolean }> = [
+        { label: 'Revenue', k: 'revenue', cls: 'num', total: false },
+        { label: 'COGS', k: 'cogs', cls: 'num', total: false },
+        { label: 'Gross Profit', k: 'grossProfit', cls: 'num strong', total: false },
+        { label: 'Operating Expense', k: 'operatingExpense', cls: 'num', total: false },
+        { label: 'Net Income', k: 'netIncome', cls: 'num strong', total: true },
+      ];
+      if (p.prior) {
+        const head = `<tr><th></th><th class="num">Current</th><th class="num">${escapeHtml(p.compareLabel ?? 'Prior')}</th><th class="num">Change</th></tr>`;
+        const body = lines.map(({ label, k, cls, total }) => {
+          const cur = p[k]; const prv = p.prior![k]; const chg = cur - prv;
+          return `<tr class="${total ? 'total' : ''}"><td>${label}</td><td class="${cls}">${escapeHtml(fmtMoneyPdf(cur))}</td><td class="${cls}">${escapeHtml(fmtMoneyPdf(prv))}</td><td class="${cls}">${escapeHtml(fmtMoneyPdf(chg))}</td></tr>`;
+        }).join('');
+        return `<section class="section"><h2>Profit &amp; Loss</h2><table class="data"><thead>${head}</thead><tbody>${body}</tbody></table></section>`;
+      }
+      const body = lines.map(({ label, k, cls, total }) =>
+        `<tr class="${total ? 'total' : ''}"><td>${label}</td><td class="${cls}">${escapeHtml(fmtMoneyPdf(p[k]))}</td></tr>`,
+      ).join('');
+      return `<section class="section"><h2>Profit &amp; Loss</h2><table class="data"><tbody>${body}</tbody></table></section>`;
     }
     case 'balance_sheet': {
+      type BsFig = {
+        assets: number; liabilities: number; equity: number;
+        sections?: { currentAssets: number; fixedAssets: number; otherAssets: number; currentLiabilities: number; longTermLiabilities: number };
+      };
       const b = payload.data as
-        | {
-            assets: number;
-            liabilities: number;
-            equity: number;
-            sections?: {
-              currentAssets: number;
-              fixedAssets: number;
-              otherAssets: number;
-              currentLiabilities: number;
-              longTermLiabilities: number;
-            };
-          }
+        | (BsFig & { prior?: BsFig; compareLabel?: string })
         | null
         | undefined;
       if (!b) {
         return `<section class="section"><h2>Balance Sheet</h2><p class="meta">No data.</p></section>`;
       }
+      const s = b.sections;
+      if (b.prior) {
+        const ps = b.prior.sections;
+        const head = `<tr><th></th><th class="num">Current</th><th class="num">${escapeHtml(b.compareLabel ?? 'Prior')}</th><th class="num">Change</th></tr>`;
+        const row3 = (label: string, cur: number, prv: number, o?: { strong?: boolean; indent?: boolean }) => {
+          const cls = o?.strong ? 'num strong' : 'num';
+          return `<tr><td class="${o?.indent ? 'indent' : ''}">${escapeHtml(label)}</td><td class="${cls}">${escapeHtml(fmtMoneyPdf(cur))}</td><td class="${cls}">${escapeHtml(fmtMoneyPdf(prv))}</td><td class="${cls}">${escapeHtml(fmtMoneyPdf(cur - prv))}</td></tr>`;
+        };
+        const assetRows = s && ps
+          ? row3('Current Assets', s.currentAssets, ps.currentAssets, { indent: true }) + row3('Fixed Assets', s.fixedAssets, ps.fixedAssets, { indent: true }) + row3('Other Assets', s.otherAssets, ps.otherAssets, { indent: true })
+          : '';
+        const liabRows = s && ps
+          ? row3('Current Liabilities', s.currentLiabilities, ps.currentLiabilities, { indent: true }) + row3('Long-Term Liabilities', s.longTermLiabilities, ps.longTermLiabilities, { indent: true })
+          : '';
+        return `<section class="section"><h2>Balance Sheet</h2><table class="data"><thead>${head}</thead><tbody>
+${row3('Total Assets', b.assets, b.prior.assets, { strong: true })}
+${assetRows}
+${row3('Total Liabilities', b.liabilities, b.prior.liabilities)}
+${liabRows}
+${row3('Total Equity', b.equity, b.prior.equity)}
+</tbody></table></section>`;
+      }
       const sub = (label: string, v: number) =>
         `<tr><td class="indent">${escapeHtml(label)}</td><td class="num">${escapeHtml(fmtMoneyPdf(v))}</td></tr>`;
-      const s = b.sections;
       const assetRows = s
         ? sub('Current Assets', s.currentAssets) + sub('Fixed Assets', s.fixedAssets) + sub('Other Assets', s.otherAssets)
         : '';

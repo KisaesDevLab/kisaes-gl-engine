@@ -196,6 +196,36 @@ describe('renderBlockPdf — parity across every payload type', () => {
     const bs = PAYLOAD_FIXTURES.find((f) => f.payload.type === 'balance_sheet')!.payload;
     expect(renderBlockPdf({ type: 'report', key: 'balance_sheet' }, bs)).toContain('<h2>Balance Sheet</h2>');
   });
+
+  it('P&L comparison renders Current / Prior / Change columns', () => {
+    const html = renderBlockPdf(
+      { type: 'report', key: 'profit_loss', compare: 'previous_year' },
+      { type: 'profit_loss', data: {
+        revenue: 1200, cogs: 400, grossProfit: 800, operatingExpense: 300, netIncome: 500,
+        prior: { revenue: 1000, cogs: 350, grossProfit: 650, operatingExpense: 250, netIncome: 400 },
+        compareLabel: 'Prior year',
+      } },
+    );
+    expect(html).toContain('<th class="num">Current</th>');
+    expect(html).toContain('<th class="num">Prior year</th>');
+    expect(html).toContain('<th class="num">Change</th>');
+    // Net income change 500 - 400 = 100.
+    expect(html).toContain('100');
+  });
+
+  it('Balance Sheet comparison renders prior + change for totals', () => {
+    const html = renderBlockPdf(
+      { type: 'report', key: 'balance_sheet', compare: 'previous_period' },
+      { type: 'balance_sheet', data: {
+        assets: 5000, liabilities: 2000, equity: 3000,
+        prior: { assets: 4000, liabilities: 1800, equity: 2200 },
+        compareLabel: 'Prior period',
+      } },
+    );
+    expect(html).toContain('<th class="num">Prior period</th>');
+    expect(html).toContain('Total Assets');
+    expect(html).toContain('1,000'); // assets change 5000 - 4000
+  });
 });
 
 describe('reportHtmlTemplate — kpi-row parity + status dots', () => {

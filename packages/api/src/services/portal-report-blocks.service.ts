@@ -27,12 +27,20 @@ export interface AgingBuckets {
   total: number;
 }
 
-export interface PlSummary {
+export interface PlSummaryFigures {
   revenue: number;
   cogs: number;
   grossProfit: number;
   operatingExpense: number;
   netIncome: number;
+}
+
+export interface PlSummary extends PlSummaryFigures {
+  // Optional comparison: a report-embed block can request a prior period; when
+  // present the renderer adds Prior / Change columns. `compareLabel` names the
+  // prior column ('Prior year' / 'Prior period').
+  prior?: PlSummaryFigures;
+  compareLabel?: string;
 }
 
 // Section subtotals for the richer Balance Sheet embed. Additive —
@@ -45,11 +53,46 @@ export interface BsSections {
   longTermLiabilities: number;
 }
 
-export interface BsSummary {
+export interface BsFigures {
   assets: number;
   liabilities: number;
   equity: number;
   sections?: BsSections;
+}
+
+export interface BsSummary extends BsFigures {
+  prior?: BsFigures;
+  compareLabel?: string;
+}
+
+export type EmbedCompareMode = 'previous_period' | 'previous_year';
+
+// Whole-year string math (no Date round-trip → no TZ drift; Feb 29 clamps).
+function shiftYearStr(d: string, delta: number): string {
+  const y = parseInt(d.slice(0, 4), 10) + delta;
+  let md = d.slice(5);
+  const isLeap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+  if (md === '02-29' && !isLeap) md = '02-28';
+  return `${y}-${md}`;
+}
+
+function priorPlRange(startDate: string, endDate: string, mode: EmbedCompareMode): { start: string; end: string; label: string } {
+  if (mode === 'previous_year') {
+    return { start: shiftYearStr(startDate, -1), end: shiftYearStr(endDate, -1), label: 'Prior year' };
+  }
+  const start = new Date(startDate + 'T00:00:00Z');
+  const end = new Date(endDate + 'T00:00:00Z');
+  const durationMs = end.getTime() - start.getTime();
+  const priorEnd = new Date(start.getTime() - 86400000); // day before the period start
+  const priorStart = new Date(priorEnd.getTime() - durationMs);
+  return { start: priorStart.toISOString().split('T')[0]!, end: priorEnd.toISOString().split('T')[0]!, label: 'Prior period' };
+}
+
+function priorBsAsOf(startDate: string, endDate: string, mode: EmbedCompareMode): { asOf: string; label: string } {
+  if (mode === 'previous_year') return { asOf: shiftYearStr(endDate, -1), label: 'Prior year' };
+  const d = new Date(startDate + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - 1); // prior-period end = day before the current period start
+  return { asOf: d.toISOString().split('T')[0]!, label: 'Prior period' };
 }
 
 // Budget vs. Actual data block (F1) — slim per-line rows + totals.
@@ -233,33 +276,37 @@ async function apAging(args: ResolverArgs): Promise<AgingBuckets> {
   return buckets;
 }
 
-async function plSummary(args: ResolverArgs, basis: EmbedBasis = 'accrual'): Promise<PlSummary> {
+async function plFiguresForRange(args: ResolverArgs, start: string, end: string, basis: EmbedBasis): Promise<PlSummaryFigures> {
+  const pl = await reportSvc.buildProfitAndLoss(args.tenantId, start, end, basis, args.companyId);
+  return {
+    revenue: pl.totalRevenue,
+    cogs: pl.totalCogs,
+    grossProfit: pl.grossProfit ?? pl.totalRevenue - pl.totalCogs,
+    operatingExpense: pl.totalExpenses,
+    netIncome: pl.netIncome,
+  };
+}
+
+async function plSummary(args: ResolverArgs, basis: EmbedBasis = 'accrual', compare?: EmbedCompareMode): Promise<PlSummary> {
+  let current: PlSummaryFigures;
   if (basis === 'cash') {
     // The shared triad is accrual-only — a cash-basis embed goes
     // straight to the P&L builder's virtual cash ledger.
-    const pl = await reportSvc.buildProfitAndLoss(
-      args.tenantId,
-      args.startDate,
-      args.endDate,
-      'cash',
-      args.companyId,
-    );
-    return {
-      revenue: pl.totalRevenue,
-      cogs: pl.totalCogs,
-      grossProfit: pl.grossProfit ?? pl.totalRevenue - pl.totalCogs,
-      operatingExpense: pl.totalExpenses,
-      netIncome: pl.netIncome,
+    current = await plFiguresForRange(args, args.startDate, args.endDate, 'cash');
+  } else {
+    const triad = args.triad ?? (await gatherTriad(args.tenantId, args.companyId, args.startDate, args.endDate));
+    current = {
+      revenue: triad.current.revenue,
+      cogs: triad.current.cogs,
+      grossProfit: triad.current.grossProfit,
+      operatingExpense: triad.current.operatingExpense,
+      netIncome: triad.current.netIncome,
     };
   }
-  const triad = args.triad ?? (await gatherTriad(args.tenantId, args.companyId, args.startDate, args.endDate));
-  return {
-    revenue: triad.current.revenue,
-    cogs: triad.current.cogs,
-    grossProfit: triad.current.grossProfit,
-    operatingExpense: triad.current.operatingExpense,
-    netIncome: triad.current.netIncome,
-  };
+  if (!compare) return current;
+  const r = priorPlRange(args.startDate, args.endDate, compare);
+  const prior = await plFiguresForRange(args, r.start, r.end, basis);
+  return { ...current, prior, compareLabel: r.label };
 }
 
 // Detail-type classification for the Balance Sheet embed sections.
@@ -277,12 +324,20 @@ const BS_CURRENT_LIABILITY_DETAIL_TYPES = new Set([
   'other_current_liability',
 ]);
 
-async function bsSummary(args: ResolverArgs, basis: EmbedBasis = 'accrual'): Promise<BsSummary> {
+async function bsSummary(args: ResolverArgs, basis: EmbedBasis = 'accrual', compare?: EmbedCompareMode): Promise<BsSummary> {
+  const current = await bsFiguresForDate(args, args.endDate, basis);
+  if (!compare) return current;
+  const p = priorBsAsOf(args.startDate, args.endDate, compare);
+  const prior = await bsFiguresForDate(args, p.asOf, basis);
+  return { ...current, prior, compareLabel: p.label };
+}
+
+async function bsFiguresForDate(args: ResolverArgs, asOf: string, basis: EmbedBasis): Promise<BsFigures> {
   // groupBy detail_type gives per-detail subtotals in one pass, so the
   // section rollups don't need extra balance queries.
   const r = await reportSvc.buildBalanceSheet(
     args.tenantId,
-    args.endDate,
+    asOf,
     basis,
     args.companyId,
     null,
@@ -696,6 +751,9 @@ export async function resolveBlock(
   // Optional accounting basis on report-embed blocks. Default accrual —
   // absent/unknown values keep the historical behavior.
   const basis: EmbedBasis = block['basis'] === 'cash' ? 'cash' : 'accrual';
+  // Optional comparison on the P&L / Balance Sheet embeds.
+  const compare: EmbedCompareMode | undefined =
+    block['compare'] === 'previous_period' || block['compare'] === 'previous_year' ? block['compare'] : undefined;
 
   try {
     if (type === 'block') {
@@ -768,9 +826,9 @@ export async function resolveBlock(
     if (type === 'report') {
       switch (name) {
         case 'profit_loss':
-          return { type: 'profit_loss', data: await plSummary(args, basis) };
+          return { type: 'profit_loss', data: await plSummary(args, basis, compare) };
         case 'balance_sheet':
-          return { type: 'balance_sheet', data: await bsSummary(args, basis) };
+          return { type: 'balance_sheet', data: await bsSummary(args, basis, compare) };
         case 'cash_flow':
           return { type: 'cash_flow', data: await cfSummary(args) };
         case 'trial_balance':
