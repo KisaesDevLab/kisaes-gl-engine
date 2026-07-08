@@ -35,6 +35,9 @@ export const recurringSchedules = pgTable('recurring_schedules', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull(),
   companyId: uuid('company_id'),
+  // Optional friendly name for the schedule (e.g. "Monthly rent"). Falls back
+  // to the template transaction's memo/number in the UI when unset.
+  name: varchar('name', { length: 255 }),
   templateTransactionId: uuid('template_transaction_id').notNull(),
   frequency: varchar('frequency', { length: 20 }).notNull(),
   intervalValue: integer('interval_value').default(1),

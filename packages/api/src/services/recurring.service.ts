@@ -35,10 +35,11 @@ function calculateNextOccurrence(current: string, frequency: string, interval: n
 }
 
 export async function create(tenantId: string, templateTransactionId: string, schedule: {
-  frequency: string; intervalValue?: number; mode?: string; startDate: string; endDate?: string;
+  frequency: string; intervalValue?: number; mode?: string; startDate: string; endDate?: string; name?: string;
 }, userId?: string) {
   const [sched] = await db.insert(recurringSchedules).values({
     tenantId,
+    name: schedule.name?.trim() || null,
     templateTransactionId,
     frequency: schedule.frequency,
     intervalValue: schedule.intervalValue || 1,
@@ -82,13 +83,20 @@ export async function getById(tenantId: string, id: string) {
 }
 
 export async function update(tenantId: string, id: string, input: {
-  frequency?: string; intervalValue?: number; mode?: string; endDate?: string | null;
+  name?: string | null; frequency?: string; intervalValue?: number; mode?: string;
+  startDate?: string; endDate?: string | null;
 }, userId?: string) {
   const before = await db.query.recurringSchedules.findFirst({
     where: and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id)),
   });
+  if (!before) throw AppError.notFound('Recurring schedule not found');
+  const patch: Record<string, unknown> = { ...input, updatedAt: new Date() };
+  if (input.name !== undefined) patch['name'] = (typeof input.name === 'string' && input.name.trim()) || null;
+  // Moving the start date before anything has posted drags nextOccurrence with
+  // it (otherwise the next run would still fire on the old start date).
+  if (input.startDate && !before.lastPostedAt) patch['nextOccurrence'] = input.startDate;
   const [updated] = await db.update(recurringSchedules)
-    .set({ ...input, updatedAt: new Date() })
+    .set(patch)
     .where(and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id)))
     .returning();
   if (!updated) throw AppError.notFound('Recurring schedule not found');
