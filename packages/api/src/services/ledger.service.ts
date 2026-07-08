@@ -1063,7 +1063,6 @@ export async function bulkUpdateTransactions(
   companyId?: string,
 ): Promise<BulkUpdateTransactionsResult> {
   const { txnIds, setPayeeContactId, setCategoryAccountId, setTagId } = input;
-  const touchesLines = setCategoryAccountId !== undefined || setTagId !== undefined;
   const skipped: Array<{ id: string; reason: string }> = [];
   let updated = 0;
 
@@ -1104,17 +1103,17 @@ export async function bulkUpdateTransactions(
       const lockDate = txn.companyId ? (lockByCompany.get(txn.companyId) ?? null) : maxLock;
       if (lockDate && txn.txnDate <= lockDate) { skipped.push({ id: txnId, reason: 'locked' }); continue; }
 
-      if (touchesLines) {
-        const cleared = await tx.execute(sql`
-          SELECT 1 FROM ${reconciliationLines} rl
-          JOIN ${reconciliations} r ON r.id = rl.reconciliation_id
-          JOIN ${journalLines} jl ON jl.id = rl.journal_line_id
-          WHERE r.tenant_id = ${tenantId} AND r.status = 'complete'
-            AND rl.is_cleared = true AND jl.transaction_id = ${txnId}
-          LIMIT 1`);
-        if ((cleared.rows as unknown[]).length > 0) { skipped.push({ id: txnId, reason: 'reconciled' }); continue; }
-      }
-
+      // Reconciled transactions are intentionally NOT skipped here. A completed
+      // reconciliation only ever clears a txn's balance-sheet (bank / credit-
+      // card) line, and every bulk operation below is neutral to that cleared
+      // line: a tag change is ledger-neutral, a category move only ever
+      // relocates a P&L line (CATEGORY_ACCOUNT_TYPES — never the cleared
+      // balance-sheet line), and a payee change is header-level. So the
+      // reconciled total, the cleared-line amounts, and the journal_line ids
+      // that reconciliation_lines references all stay put. This matches the
+      // single-edit policy in updateTransaction ("you can still recategorize or
+      // re-tag the income/expense lines"); the previous blanket skip wrongly
+      // blocked ledger-neutral tag edits on reconciled rows.
       let changed = false;
 
       // Payee — header-level, always applicable.
