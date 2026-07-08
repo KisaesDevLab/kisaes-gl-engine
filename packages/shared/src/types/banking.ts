@@ -77,6 +77,12 @@ export interface BankFeedItem {
   // on the matched transaction's journal lines (ADR 0XX §4.1). Null when
   // untagged / not yet posted; one element when uniform; two+ when mixed.
   lineTags?: string[] | null;
+  // Count of already-posted ledger transactions that this PENDING item likely
+  // corresponds to (same bank account, ±5 days, matching amount, not yet
+  // matched to another feed item). Lets the feed surface a "Match" indicator so
+  // in-system transactions (e.g. checks written in the ledger) aren't duplicated.
+  // 0 for non-pending / already-matched rows.
+  matchCandidateCount?: number;
 }
 
 export interface BankFeedFilters {

@@ -133,6 +133,37 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
           AND jl.tenant_id = ${tenantId}
           AND jl.tag_id IS NOT NULL
       )`,
+      // Count of already-posted ledger transactions this PENDING item likely
+      // duplicates — mirrors findMatchCandidates() so a "Match" indicator can
+      // flag rows (e.g. checks written in-system) that already exist in the
+      // ledger. Guarded by a CASE so it only runs for actionable rows; 0 for
+      // matched/categorized/excluded/assigned or amount-zero items.
+      matchCandidateCount: sql<number>`(
+        CASE WHEN ${bankFeedItems.status} = 'pending'
+              AND ${bankFeedItems.matchedTransactionId} IS NULL
+              AND ${bankFeedItems.bankConnectionId} IS NOT NULL
+              AND CAST(${bankFeedItems.amount} AS DECIMAL) <> 0
+        THEN COALESCE((
+          SELECT COUNT(*)::int FROM transactions mt
+          WHERE mt.tenant_id = ${tenantId}
+            AND mt.status = 'posted'
+            AND mt.txn_date >= (${bankFeedItems.feedDate}::date - INTERVAL '5 days')
+            AND mt.txn_date <= (${bankFeedItems.feedDate}::date + INTERVAL '5 days')
+            AND ABS(CAST(mt.total AS DECIMAL) - ABS(CAST(${bankFeedItems.amount} AS DECIMAL))) < 0.01
+            AND mt.txn_type IN ('bill_payment', 'expense', 'deposit', 'transfer')
+            AND EXISTS (
+              SELECT 1 FROM journal_lines jl2
+              WHERE jl2.transaction_id = mt.id
+                AND jl2.tenant_id = ${tenantId}
+                AND jl2.account_id = ${accounts.id}
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM bank_feed_items bfi2
+              WHERE bfi2.tenant_id = ${tenantId}
+                AND bfi2.matched_transaction_id = mt.id
+            )
+        ), 0) ELSE 0 END
+      )`,
     }).from(bankFeedItems)
       .leftJoin(bankConnections, eq(bankFeedItems.bankConnectionId, bankConnections.id))
       .leftJoin(accounts, eq(bankConnections.accountId, accounts.id))
