@@ -379,6 +379,88 @@ export async function deleteTenant(
   };
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Hard-delete a single company from a tenant: permanently removes every
+ * company-scoped row (transactions, journal lines, invoices, bills, banking,
+ * company-scoped accounts/contacts, etc.) and then the company itself. The
+ * tenant, its users, and any OTHER companies are untouched.
+ *
+ * Mirrors deleteTenant's dynamic sweep but scoped to company_id. company_id is
+ * a globally-unique UUID that always references companies.id, and we verify the
+ * company belongs to the tenant up front, so a bare `WHERE company_id = ?` can
+ * never touch another tenant's rows. Refuses to delete the tenant's only
+ * company (a tenant needs at least one). IRREVERSIBLE.
+ */
+export async function deleteCompany(tenantId: string, companyId: string, actingUserId?: string) {
+  if (!UUID_RE.test(tenantId) || !UUID_RE.test(companyId)) {
+    throw AppError.badRequest('Invalid id format');
+  }
+  const company = await db.query.companies.findFirst({
+    where: and(eq(companies.id, companyId), eq(companies.tenantId, tenantId)),
+  });
+  if (!company) throw AppError.notFound('Company not found in this tenant');
+
+  const companyCountRows = await db.select({ c: count() }).from(companies).where(eq(companies.tenantId, tenantId));
+  const companyCount = companyCountRows[0]?.c ?? 0;
+  if (companyCount <= 1) {
+    throw AppError.badRequest("Cannot delete a tenant's only company. Delete the tenant instead.");
+  }
+
+  const rowsDeleted = await db.transaction(async (tx) => {
+    const tablesResult = await tx.execute(sql`
+      SELECT c.table_name
+      FROM information_schema.columns c
+      JOIN information_schema.tables t
+        ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+      WHERE c.column_name = 'company_id'
+        AND c.table_schema = 'public'
+        AND t.table_type = 'BASE TABLE'
+        AND c.table_name <> 'companies'
+      ORDER BY c.table_name
+    `);
+    let total = 0;
+    for (const row of tablesResult.rows as { table_name: string }[]) {
+      const tableName = row.table_name;
+      if (!/^[a-z_][a-z0-9_]*$/.test(tableName)) {
+        throw new Error(`Refusing to delete from suspicious table: ${tableName}`);
+      }
+      const res = await tx.execute(sql`DELETE FROM ${sql.identifier(tableName)} WHERE company_id = ${companyId}`);
+      total += res.rowCount ?? 0;
+    }
+    await tx.delete(companies).where(and(eq(companies.id, companyId), eq(companies.tenantId, tenantId)));
+    return total;
+  });
+
+  await auditLog(tenantId, 'delete', 'company', companyId,
+    { id: company.id, name: company.businessName, rowsDeleted }, null, actingUserId);
+  return { deleted: true, companyId, companyName: company.businessName, rowsDeleted };
+}
+
+/**
+ * Purge a tenant's payroll import history (record-only). Removes every
+ * payroll_import_session and its child rows (rows / errors / column mappings /
+ * check-register rows). Posted sessions' journal entries are intentionally
+ * LEFT in the ledger — this only cleans up the import-history records, not the
+ * accounting. IRREVERSIBLE.
+ */
+export async function deletePayrollImportHistory(tenantId: string, actingUserId?: string) {
+  if (!UUID_RE.test(tenantId)) throw AppError.badRequest('Invalid tenant id format');
+  const sessionCount = await db.transaction(async (tx) => {
+    const countRes = await tx.execute(sql`SELECT count(*)::int AS c FROM payroll_import_sessions WHERE tenant_id = ${tenantId}`);
+    const n = (countRes.rows[0] as { c: number }).c;
+    const childTables = ['payroll_import_rows', 'payroll_import_errors', 'payroll_import_column_mappings', 'payroll_check_register_rows'];
+    for (const tbl of childTables) {
+      await tx.execute(sql`DELETE FROM ${sql.identifier(tbl)} WHERE session_id IN (SELECT id FROM payroll_import_sessions WHERE tenant_id = ${tenantId})`);
+    }
+    await tx.execute(sql`DELETE FROM payroll_import_sessions WHERE tenant_id = ${tenantId}`);
+    return n;
+  });
+  await auditLog(tenantId, 'delete', 'payroll_import_history', tenantId, { sessionCount }, null, actingUserId);
+  return { deleted: true, sessionCount };
+}
+
 /**
  * Delete a tenant's chart of accounts — allowed ONLY when the tenant has
  * recorded no transactions. Intended for correcting a wrong COA template on

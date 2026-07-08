@@ -101,11 +101,20 @@ describe('reportPackItemOptionsSchema', () => {
   it('accepts a valid options object', () => {
     const parsed = reportPackItemOptionsSchema.parse({
       basis: 'cash',
+      compare: true,
       tagId: '11111111-1111-4111-8111-111111111111',
       groupBy: 'detail_type',
       showPct: true,
     });
     expect(parsed.basis).toBe('cash');
+    expect(parsed.compare).toBe(true);
+  });
+
+  it('exposes compare on the comparative-capable reports', () => {
+    expect(getReportDef('profit-loss')?.options.compare).toBe(true);
+    expect(getReportDef('balance-sheet')?.options.compare).toBe(true);
+    // Non-comparative reports do not offer it.
+    expect(getReportDef('cash-flow')?.options.compare).toBeUndefined();
   });
 
   it('accepts an empty object', () => {

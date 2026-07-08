@@ -308,6 +308,20 @@ adminRouter.delete('/tenants/:id/transactions', async (req, res) => {
   res.json({ message: 'All transactions deleted', ...result });
 });
 
+// Hard-delete a single company (and all its company-scoped data) from a
+// tenant. Irreversible; the tenant and its other companies are untouched.
+adminRouter.delete('/tenants/:id/companies/:companyId', async (req, res) => {
+  const result = await adminService.deleteCompany(req.params['id']!, req.params['companyId']!, req.userId);
+  res.json({ message: 'Company deleted', ...result });
+});
+
+// Purge a tenant's payroll import history (record-only — posted journal
+// entries are left in the ledger).
+adminRouter.delete('/tenants/:id/payroll-import-history', async (req, res) => {
+  const result = await adminService.deletePayrollImportHistory(req.params['id']!, req.userId);
+  res.json({ message: 'Payroll import history deleted', ...result });
+});
+
 // Preview what a date-range transaction delete would remove — read-only
 // count used by the confirm dialog. Same super-admin gate as the delete.
 adminRouter.get('/tenants/:id/transactions-range-count', async (req, res) => {

@@ -57,7 +57,7 @@ export const REPORT_CATALOG: ReportDef[] = [
     endpoint: 'profit-loss',
     temporal: 'date-range',
     orientation: 'portrait',
-    options: { basis: true, tagFilter: true, groupBy: true, showPct: true },
+    options: { basis: true, compare: true, tagFilter: true, groupBy: true, showPct: true },
   },
   {
     id: 'balance-sheet',
@@ -66,7 +66,7 @@ export const REPORT_CATALOG: ReportDef[] = [
     endpoint: 'balance-sheet',
     temporal: 'as-of',
     orientation: 'portrait',
-    options: { basis: true, tagFilter: true, groupBy: true },
+    options: { basis: true, compare: true, tagFilter: true, groupBy: true },
   },
   {
     id: 'cash-flow',
@@ -227,6 +227,7 @@ export function resolveReportDates(
 export const reportPackItemOptionsSchema = z
   .object({
     basis: z.enum(['accrual', 'cash']).optional(),
+    compare: z.boolean().optional(),
     tagId: z.string().uuid().nullable().optional(),
     groupBy: z.enum(['detail_type']).nullable().optional(),
     showPct: z.boolean().optional(),

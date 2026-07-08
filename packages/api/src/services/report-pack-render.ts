@@ -15,6 +15,7 @@
 import { getReportDef } from '@kis-books/shared';
 import * as reportService from './report.service.js';
 import * as apReportService from './ap-report.service.js';
+import * as comparisonService from './report-comparison.service.js';
 import { extractDataAndColumns, buildHtmlTable } from '../routes/reports.routes.js';
 
 /** Query-shaped params from resolveReportDates (start_date/end_date/as_of_date). */
@@ -25,6 +26,9 @@ export interface PackRenderOpts {
   tagId: string | null;
   groupBy: 'detail_type' | null;
   showPct?: boolean;
+  // When true, render the comparative variant (P&L / Balance Sheet vs. the
+  // prior period) — mirrors the standalone report's ?compare=previous_period.
+  compare?: boolean;
 }
 
 type Renderer = (
@@ -96,13 +100,25 @@ function shapeArAgingForPdf(data: ArAgingSummaryData): unknown {
 
 export const REPORT_PACK_RENDERERS: Record<string, Renderer> = {
   'profit-loss': async (tenantId, companyId, params, opts) => {
-    const data = await reportService.buildProfitAndLoss(
-      tenantId, params['start_date']!, params['end_date']!, opts.basis, companyId, opts.tagId, opts.groupBy,
-    );
+    // Comparative mode mirrors the standalone route's ?compare=previous_period
+    // path (buildComparativePL doesn't take a tag filter, same as the route).
+    const data = opts.compare
+      ? await comparisonService.buildComparativePL(
+          tenantId, params['start_date']!, params['end_date']!, opts.basis,
+          'previous_period', 6, 'month', companyId, opts.groupBy,
+        )
+      : await reportService.buildProfitAndLoss(
+          tenantId, params['start_date']!, params['end_date']!, opts.basis, companyId, opts.tagId, opts.groupBy,
+        );
     return opts.showPct ? { ...data, showPct: true } : data;
   },
 
   'balance-sheet': async (tenantId, companyId, params, opts) => {
+    if (opts.compare) {
+      return comparisonService.buildComparativeBS(
+        tenantId, params['as_of_date']!, opts.basis, 'previous_period', companyId, opts.groupBy,
+      );
+    }
     return reportService.buildBalanceSheet(
       tenantId, params['as_of_date']!, opts.basis, companyId, opts.tagId, opts.groupBy,
     );
