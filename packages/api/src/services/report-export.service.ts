@@ -27,9 +27,11 @@ export function escapeHtml(s: unknown): string {
  */
 function neutralizeFormula(s: string): string {
   if (/^[=+@]/.test(s)) return `'${s}`;
-  // Lone '-' followed by a letter/digit (e.g. -SUM(...), -1+1) — but not
-  // our "---" section banners.
-  if (/^-[A-Za-z0-9]/.test(s)) return `'${s}`;
+  // Lone '-' followed by a letter/digit (e.g. -SUM(...), -1+1) is a formula —
+  // but a genuine negative number (-1, -1.50, -1,234.56) must export AS a
+  // number, not text, and "---" section banners are cosmetic. So neutralize a
+  // leading '-alnum' only when it isn't a plain negative number.
+  if (/^-[A-Za-z0-9]/.test(s) && !/^-\d[\d,]*(\.\d+)?$/.test(s)) return `'${s}`;
   return s;
 }
 
