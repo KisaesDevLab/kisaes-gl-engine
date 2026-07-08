@@ -3,7 +3,7 @@
 // You may not distribute this software. See LICENSE for terms.
 
 import { z } from 'zod';
-import { FIRM_ROLES } from '../types/firms.js';
+import { FIRM_ROLES, TENANT_ACCESS_ROLES } from '../types/firms.js';
 
 // 3-tier rules plan, Phase 1 — firms foundation zod schemas.
 // Reuses the legacy slug rule (lowercase letters/digits/hyphens
@@ -56,3 +56,18 @@ export const assignTenantToFirmSchema = z.object({
   force: z.boolean().optional().default(false),
 });
 export type AssignTenantToFirmInput = z.infer<typeof assignTenantToFirmSchema>;
+
+export const tenantAccessRoleSchema = z.enum(TENANT_ACCESS_ROLES);
+
+// Desired per-tenant access for one firm staffer across the firm's managed
+// tenants. The set is authoritative for the firm's tenants only: a tenant
+// present here is granted (or re-roled); a managed tenant absent here is
+// revoked. Tenants outside the firm are rejected server-side, so a firm admin
+// can never touch a user's direct (non-firm) access.
+export const setStaffTenantAccessSchema = z.object({
+  access: z.array(z.object({
+    tenantId: z.string().uuid(),
+    role: tenantAccessRoleSchema.default('accountant'),
+  })),
+});
+export type SetStaffTenantAccessInput = z.infer<typeof setStaffTenantAccessSchema>;

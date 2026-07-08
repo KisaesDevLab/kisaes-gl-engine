@@ -61,3 +61,20 @@ export interface TenantFirmAssignmentWithTenant extends TenantFirmAssignment {
   tenantName: string;
   tenantSlug: string;
 }
+
+// Per-tenant access roles a firm staffer can be granted on a managed tenant.
+// Mirrors user_tenant_access.role (and admin.ts adminCreateUserRoles).
+export const TENANT_ACCESS_ROLES = ['owner', 'accountant', 'bookkeeper', 'readonly'] as const;
+export type TenantAccessRole = typeof TENANT_ACCESS_ROLES[number];
+
+// One row in the firm-staff "tenant access" matrix: a tenant the firm manages
+// plus whether (and with what role) the staffer can operate on it. Firm
+// membership does NOT grant tenant access on its own — this is the UX that
+// writes the per-tenant `user_tenant_access` grants across the firm's clients.
+export interface StaffTenantAccessRow {
+  tenantId: string;
+  tenantName: string;
+  tenantSlug: string;
+  hasAccess: boolean;
+  role: TenantAccessRole | null;
+}

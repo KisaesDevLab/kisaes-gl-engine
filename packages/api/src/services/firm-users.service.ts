@@ -2,16 +2,19 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import type {
   FirmRole,
   FirmUser,
   FirmUserWithProfile,
   InviteFirmUserInput,
+  SetStaffTenantAccessInput,
+  StaffTenantAccessRow,
+  TenantAccessRole,
   UpdateFirmUserInput,
 } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { firmUsers, users } from '../db/schema/index.js';
+import { firmUsers, tenantFirmAssignments, tenants, userTenantAccess, users } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 
 // 3-tier rules plan, Phase 1 — firm membership service.
@@ -163,6 +166,128 @@ export async function addCreatorAsAdmin(firmId: string, userId: string): Promise
     userId,
     firmRole: 'firm_admin',
   });
+}
+
+// ─── Per-tenant access for firm staff ────────────────────────
+//
+// Firm membership is orthogonal to per-tenant access: a staffer only operates
+// on a client's books once a `user_tenant_access` row exists. These helpers
+// are the UX that grants those rows in bulk across the firm's managed tenants,
+// so a firm admin doesn't have to invite the same person from each client's
+// Team page one at a time.
+
+// Resolve a firm_users row id to its underlying user id, asserting the row
+// belongs to THIS firm. Guarantees a firm admin can only manage members of
+// their own firm.
+async function resolveFirmStaffUserId(firmId: string, firmUserId: string): Promise<string> {
+  const row = await db.query.firmUsers.findFirst({
+    where: and(eq(firmUsers.firmId, firmId), eq(firmUsers.id, firmUserId)),
+  });
+  if (!row) throw AppError.notFound('Firm membership not found');
+  return row.userId;
+}
+
+// The firm's ACTIVE managed tenants joined with this staffer's per-tenant
+// access. Powers the firm-staff "tenant access" matrix.
+export async function listTenantAccessForStaff(
+  firmId: string,
+  firmUserId: string,
+): Promise<StaffTenantAccessRow[]> {
+  const userId = await resolveFirmStaffUserId(firmId, firmUserId);
+  const rows = await db
+    .select({
+      tenantId: tenantFirmAssignments.tenantId,
+      tenantName: tenants.name,
+      tenantSlug: tenants.slug,
+      accessActive: userTenantAccess.isActive,
+      role: userTenantAccess.role,
+    })
+    .from(tenantFirmAssignments)
+    .innerJoin(tenants, eq(tenants.id, tenantFirmAssignments.tenantId))
+    .leftJoin(
+      userTenantAccess,
+      and(
+        eq(userTenantAccess.tenantId, tenantFirmAssignments.tenantId),
+        eq(userTenantAccess.userId, userId),
+      ),
+    )
+    .where(and(eq(tenantFirmAssignments.firmId, firmId), eq(tenantFirmAssignments.isActive, true)))
+    .orderBy(tenants.name);
+  return rows.map((r) => ({
+    tenantId: r.tenantId,
+    tenantName: r.tenantName,
+    tenantSlug: r.tenantSlug,
+    hasAccess: r.accessActive === true,
+    role: r.accessActive === true ? (r.role as TenantAccessRole) : null,
+  }));
+}
+
+// Set a staffer's access across the firm's managed tenants. The request is
+// authoritative for the firm's tenants only: a managed tenant in `access` is
+// granted/re-roled; a managed tenant absent from `access` is revoked (soft —
+// is_active=false). Tenants outside the firm are rejected, so this can never
+// grant access to, or revoke, the user's direct (non-firm) tenants.
+export async function setTenantAccessForStaff(
+  firmId: string,
+  firmUserId: string,
+  input: SetStaffTenantAccessInput,
+): Promise<StaffTenantAccessRow[]> {
+  const userId = await resolveFirmStaffUserId(firmId, firmUserId);
+
+  const managed = await db
+    .select({ tenantId: tenantFirmAssignments.tenantId })
+    .from(tenantFirmAssignments)
+    .where(and(eq(tenantFirmAssignments.firmId, firmId), eq(tenantFirmAssignments.isActive, true)));
+  const managedIds = new Set(managed.map((m) => m.tenantId));
+
+  const desired = new Map<string, TenantAccessRole>();
+  for (const a of input.access) {
+    if (!managedIds.has(a.tenantId)) {
+      throw AppError.badRequest(
+        `Tenant ${a.tenantId} is not managed by this firm`,
+        'TENANT_NOT_MANAGED_BY_FIRM',
+      );
+    }
+    desired.set(a.tenantId, a.role);
+  }
+
+  if (managedIds.size > 0) {
+    await db.transaction(async (tx) => {
+      const current = await tx
+        .select()
+        .from(userTenantAccess)
+        .where(and(
+          eq(userTenantAccess.userId, userId),
+          inArray(userTenantAccess.tenantId, [...managedIds]),
+        ));
+      const currentByTenant = new Map(current.map((c) => [c.tenantId, c]));
+
+      // Grant / reactivate / re-role.
+      for (const [tenantId, role] of desired) {
+        const existing = currentByTenant.get(tenantId);
+        if (existing) {
+          if (!existing.isActive || existing.role !== role) {
+            await tx.update(userTenantAccess)
+              .set({ isActive: true, role })
+              .where(eq(userTenantAccess.id, existing.id));
+          }
+        } else {
+          await tx.insert(userTenantAccess).values({ userId, tenantId, role });
+        }
+      }
+
+      // Revoke any managed tenant that is currently active but not desired.
+      for (const c of current) {
+        if (c.isActive && !desired.has(c.tenantId)) {
+          await tx.update(userTenantAccess)
+            .set({ isActive: false })
+            .where(eq(userTenantAccess.id, c.id));
+        }
+      }
+    });
+  }
+
+  return listTenantAccessForStaff(firmId, firmUserId);
 }
 
 // Idempotent membership upsert keyed by the (firm_id, user_id)

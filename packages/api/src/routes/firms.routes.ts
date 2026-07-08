@@ -9,6 +9,7 @@ import {
   createFirmSchema,
   createFirmTagTemplateSchema,
   inviteFirmUserSchema,
+  setStaffTenantAccessSchema,
   updateFirmSchema,
   updateFirmTagTemplateSchema,
   updateFirmUserSchema,
@@ -210,6 +211,46 @@ firmsRouter.delete(
       req.userId,
     );
     res.json({ deleted: true });
+  },
+);
+
+// ─── Firm-staff per-tenant access ────────────────────────────
+// The firm's managed tenants joined with a staffer's user_tenant_access, and
+// a bulk grant/revoke across them. firm_admin only. The service rejects any
+// tenant outside the firm, so this can't touch a user's direct tenant access.
+
+firmsRouter.get(
+  '/:firmId/users/:firmUserId/tenant-access',
+  requireFirmAdmin,
+  async (req, res) => {
+    const access = await firmUsersService.listTenantAccessForStaff(
+      req.firmId!,
+      req.params['firmUserId']!,
+    );
+    res.json({ access });
+  },
+);
+
+firmsRouter.put(
+  '/:firmId/users/:firmUserId/tenant-access',
+  requireFirmAdmin,
+  validate(setStaffTenantAccessSchema),
+  async (req, res) => {
+    const access = await firmUsersService.setTenantAccessForStaff(
+      req.firmId!,
+      req.params['firmUserId']!,
+      req.body,
+    );
+    await auditLog(
+      req.tenantId,
+      'update',
+      'user_tenant_access',
+      req.params['firmUserId']!,
+      null,
+      { firmId: req.firmId, access: req.body.access },
+      req.userId,
+    );
+    res.json({ access });
   },
 );
 
