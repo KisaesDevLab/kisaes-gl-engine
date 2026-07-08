@@ -1649,8 +1649,11 @@ export async function buildGeneralLedger(
         WHEN 'liability' THEN 2
         WHEN 'equity' THEN 3
         WHEN 'revenue' THEN 4
-        WHEN 'expense' THEN 5
-        ELSE 6
+        WHEN 'cogs' THEN 5
+        WHEN 'expense' THEN 6
+        WHEN 'other_revenue' THEN 7
+        WHEN 'other_expense' THEN 8
+        ELSE 9
       END,
       account_number NULLS LAST,
       name

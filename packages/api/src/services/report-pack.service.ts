@@ -264,7 +264,26 @@ export async function createRun(
     status: 'queued',
     progress: 0,
   }).returning();
-  await enqueueReportPack({ runId: run!.id, tenantId });
+  // Generation runs in the background worker (Redis-backed queue). If the
+  // queue can't be reached — the worker and/or Redis service isn't running —
+  // fail with a clear, actionable message and mark the run failed, instead of
+  // surfacing an opaque "Internal server error".
+  try {
+    await enqueueReportPack({ runId: run!.id, tenantId });
+  } catch (err) {
+    await db.update(reportPackRuns)
+      .set({
+        status: 'failed',
+        errorJson: { message: 'Could not queue report pack generation — the background worker/Redis is not reachable.' },
+        finishedAt: new Date(),
+      })
+      .where(eq(reportPackRuns.id, run!.id));
+    throw new AppError(
+      503,
+      'Report pack generation is unavailable — the background worker and Redis must be running. Check that the "worker" and "redis" services are up.',
+      'PACK_QUEUE_UNAVAILABLE',
+    );
+  }
   await auditLog(tenantId, 'create', 'report_pack_run', run!.id, null, run, userId);
   return run!;
 }

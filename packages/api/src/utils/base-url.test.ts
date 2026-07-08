@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { Request } from 'express';
-import { baseUrlFor, firstConfiguredOrigin } from './base-url.js';
+import { baseUrlFor, firstConfiguredOrigin, appBasePath } from './base-url.js';
 
 // Build a minimal Request-shaped object that `baseUrlFor` will read.
 function mockReq(opts: {
@@ -61,5 +61,23 @@ describe('firstConfiguredOrigin', () => {
     const out = firstConfiguredOrigin();
     expect(out).toMatch(/^https?:\/\//);
     expect(out).not.toMatch(/\/$/);
+  });
+});
+
+describe('appBasePath (multi-app sub-path)', () => {
+  it('is empty in single-app mode (test env PUBLIC_URL has no path)', () => {
+    // Guards the backward-compatible case: baseUrlFor stays origin-only.
+    expect(appBasePath()).toBe('');
+  });
+
+  it('derives the sub-path baseUrlFor appends from a PUBLIC_URL', () => {
+    // env is frozen at import, so assert the pure transform the helper uses —
+    // this is exactly why a share link at the origin root 404s when the app
+    // is served under /mybooks.
+    const derive = (u: string) => new URL(u).pathname.replace(/\/+$/, '');
+    expect(derive('https://vibe.cpa2web.app/mybooks')).toBe('/mybooks');
+    expect(derive('https://vibe.cpa2web.app/mybooks/')).toBe('/mybooks');
+    expect(derive('https://vibe.cpa2web.app/')).toBe('');
+    expect(derive('https://vibe.cpa2web.app')).toBe('');
   });
 });

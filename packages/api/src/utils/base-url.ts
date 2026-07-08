@@ -25,8 +25,25 @@ import { env } from '../config/env.js';
 export function baseUrlFor(req: Request): string {
   const proto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim() ?? req.protocol;
   const host = (req.headers['x-forwarded-host'] as string | undefined) ?? req.headers.host;
-  if (host) return `${proto}://${host}`.replace(/\/$/, '');
+  if (host) return `${proto}://${host}${appBasePath()}`.replace(/\/$/, '');
   return firstConfiguredOrigin();
+}
+
+/**
+ * The app's base sub-path (e.g. `/mybooks`), derived from PUBLIC_URL. Empty in
+ * single-app mode. baseUrlFor reads the ORIGIN from the request (so multi-
+ * origin appliances get the right host) but must still append this path — the
+ * SPA and API are served UNDER it, so a link built from origin-only (e.g.
+ * `https://host/reports/view/<token>`) 404s when the app lives at
+ * `https://host/mybooks/`.
+ */
+export function appBasePath(): string {
+  try {
+    const p = new URL(env.PUBLIC_URL).pathname.replace(/\/+$/, '');
+    return p === '' ? '' : p;
+  } catch {
+    return '';
+  }
 }
 
 /**
