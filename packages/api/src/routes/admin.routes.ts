@@ -47,6 +47,7 @@ import {
   adminResetPasswordSchema,
   adminToggleTenantAccessSchema,
   adminGrantTenantAccessSchema,
+  adminDesignateRetainedEarningsSchema,
   adminSetRoleSchema,
   adminCompanyAccessSchema,
   adminSmtpSettingsSchema,
@@ -271,6 +272,16 @@ adminRouter.get('/tenants', async (req, res) => {
 adminRouter.get('/tenants/:id', async (req, res) => {
   const detail = await adminService.getTenantDetail(req.params['id']!);
   res.json(detail);
+});
+
+// System Retained Earnings — the current designation + equity accounts to pick
+// from, and a POST to (re)designate one when the system RE account was deleted.
+adminRouter.get('/tenants/:id/retained-earnings', async (req, res) => {
+  res.json(await adminService.getRetainedEarningsInfo(req.params['id']!));
+});
+
+adminRouter.post('/tenants/:id/retained-earnings', validate(adminDesignateRetainedEarningsSchema), async (req, res) => {
+  res.json(await adminService.designateRetainedEarnings(req.params['id']!, req.body.accountId, req.userId));
 });
 
 adminRouter.post('/tenants/:id/disable', async (req, res) => {

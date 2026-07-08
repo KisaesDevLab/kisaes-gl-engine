@@ -43,6 +43,14 @@ export const adminGrantTenantAccessSchema = z.object({
 });
 export type AdminGrantTenantAccessInput = z.infer<typeof adminGrantTenantAccessSchema>;
 
+// Designate an equity account as the tenant's system Retained Earnings — used
+// to repair a tenant whose system RE account was deleted (the balance sheet
+// then falls back to the calculated Retained Earnings rows).
+export const adminDesignateRetainedEarningsSchema = z.object({
+  accountId: z.string().uuid(),
+});
+export type AdminDesignateRetainedEarningsInput = z.infer<typeof adminDesignateRetainedEarningsSchema>;
+
 export const adminRoles = ['owner', 'accountant', 'bookkeeper'] as const;
 export const adminSetRoleSchema = z.object({
   role: z.enum(adminRoles),

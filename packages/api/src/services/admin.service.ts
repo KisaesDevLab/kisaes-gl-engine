@@ -985,6 +985,66 @@ export async function listUserTenantAccess(userId: string) {
   }));
 }
 
+// ─── System Retained Earnings repair ───────────────────────────
+//
+// The system Retained Earnings account is identified by
+// system_tag = 'retained_earnings'. If it gets deleted, the balance sheet
+// falls back to the CALCULATED Retained Earnings rows and closing entries /
+// system-account protections lose their target. These let a super-admin
+// re-designate an equity account as the system RE.
+
+const RETAINED_EARNINGS_TAG = 'retained_earnings';
+
+export async function getRetainedEarningsInfo(tenantId: string) {
+  const equityAccounts = await db
+    .select({
+      id: accounts.id,
+      name: accounts.name,
+      accountNumber: accounts.accountNumber,
+      systemTag: accounts.systemTag,
+      isSystem: accounts.isSystem,
+    })
+    .from(accounts)
+    .where(and(eq(accounts.tenantId, tenantId), eq(accounts.accountType, 'equity')))
+    .orderBy(accounts.accountNumber, accounts.name);
+  const current = equityAccounts.find((a) => a.systemTag === RETAINED_EARNINGS_TAG) ?? null;
+  return { current, equityAccounts };
+}
+
+// Tag an equity account as the system Retained Earnings. Reassigns cleanly: any
+// other account already holding the tag is cleared first so there's exactly one
+// system RE per tenant. Sets isSystem (rule #25 protection) and the canonical
+// retained_earnings detail type.
+export async function designateRetainedEarnings(tenantId: string, accountId: string, actingUserId?: string) {
+  const account = await db.query.accounts.findFirst({
+    where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, accountId)),
+  });
+  if (!account) throw AppError.notFound('Account not found');
+  if (account.accountType !== 'equity') {
+    throw AppError.badRequest('Retained Earnings must be an equity account', 'RE_NOT_EQUITY');
+  }
+
+  const existing = await db.select({ id: accounts.id }).from(accounts)
+    .where(and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, RETAINED_EARNINGS_TAG)));
+
+  await db.transaction(async (tx) => {
+    for (const e of existing) {
+      if (e.id !== accountId) {
+        await tx.update(accounts).set({ systemTag: null, isSystem: false }).where(eq(accounts.id, e.id));
+      }
+    }
+    await tx.update(accounts)
+      .set({ systemTag: RETAINED_EARNINGS_TAG, isSystem: true, detailType: RETAINED_EARNINGS_TAG })
+      .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, accountId)));
+  });
+
+  await auditLog(tenantId, 'update', 'account', accountId,
+    { systemTag: account.systemTag, isSystem: account.isSystem, detailType: account.detailType },
+    { systemTag: RETAINED_EARNINGS_TAG, isSystem: true, detailType: RETAINED_EARNINGS_TAG }, actingUserId);
+
+  return getRetainedEarningsInfo(tenantId);
+}
+
 // Distinct users who are active members of any firm, with the firm(s) they
 // belong to — the candidate list for "add a firm user to this tenant".
 export async function listFirmUsers() {
