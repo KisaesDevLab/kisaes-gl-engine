@@ -12,11 +12,21 @@ type Basis = 'accrual' | 'cash';
 
 interface DateRange { startDate: string; endDate: string; label: string }
 
-function computeVariance(current: number, prior: number): { dollarChange: number; percentChange: number | null } {
-  const dollarChange = current - prior;
+// `favorabilitySign` flips the change columns for cost sections so the $/%
+// change represents impact on net income, not a raw delta: spending MORE reads
+// as a negative (unfavorable) change and spending LESS as positive. Revenue
+// passes +1 (raw). With this, green = helped profit / red = hurt profit for
+// every row, and the section changes sum to the (raw) net-income change.
+function computeVariance(current: number, prior: number, favorabilitySign: 1 | -1 = 1): { dollarChange: number; percentChange: number | null } {
+  const dollarChange = favorabilitySign * (current - prior);
   const percentChange = prior === 0 ? null : (dollarChange / Math.abs(prior)) * 100;
   return { dollarChange, percentChange };
 }
+
+// P&L cost sections (COGS + operating + other expense) flip; revenue stays raw.
+// Balance-sheet comparatives never pass a sign, so they keep the +1 default.
+type PLAcctType = 'revenue' | 'cogs' | 'expense' | 'other_revenue' | 'other_expense';
+const favSign = (t: PLAcctType): 1 | -1 => (t === 'cogs' || t === 'expense' || t === 'other_expense' ? -1 : 1);
 
 // ─── Detail-type grouping for comparative reports ────────────────
 //
@@ -44,7 +54,7 @@ type ComparativeColumn = { label: string; type?: string };
 //   - 'variance': current-sum − prior-sum (columns 0 and 1)
 //   - 'percent_variance': computeVariance(currentSum, priorSum) — null
 //     when the prior sum is zero, matching account-row behavior.
-function subtotalValues(rows: Array<{ values: Array<number | null> }>, columns: ComparativeColumn[]): Array<number | null> {
+function subtotalValues(rows: Array<{ values: Array<number | null> }>, columns: ComparativeColumn[], favorabilitySign: 1 | -1 = 1): Array<number | null> {
   const sums = columns.map((col, i) => {
     if (col.type === 'variance' || col.type === 'percent_variance') return 0;
     return rows.reduce((acc, r) => acc + (r.values[i] ?? 0), 0);
@@ -53,9 +63,9 @@ function subtotalValues(rows: Array<{ values: Array<number | null> }>, columns: 
   for (let i = 0; i < columns.length; i++) {
     const col = columns[i];
     if (col?.type === 'variance') {
-      out[i] = (sums[0] ?? 0) - (sums[1] ?? 0);
+      out[i] = favorabilitySign * ((sums[0] ?? 0) - (sums[1] ?? 0));
     } else if (col?.type === 'percent_variance') {
-      out[i] = computeVariance(sums[0] ?? 0, sums[1] ?? 0).percentChange;
+      out[i] = computeVariance(sums[0] ?? 0, sums[1] ?? 0, favorabilitySign).percentChange;
     }
   }
   return out;
@@ -69,6 +79,7 @@ function groupComparativeRows<T extends { detailType?: string | null; values: Ar
   rows: T[],
   columns: ComparativeColumn[],
   isCalculated: (row: T) => boolean = () => false,
+  favorabilitySign: 1 | -1 = 1,
 ): Array<ComparativeDetailTypeGroup<T>> {
   const groups = new Map<string, ComparativeDetailTypeGroup<T>>();
   const calculated: T[] = [];
@@ -87,7 +98,7 @@ function groupComparativeRows<T extends { detailType?: string | null; values: Ar
   if (calculated.length > 0) {
     out.push({ detailType: null, label: 'Equity (Calculated)', rows: calculated, values: [] });
   }
-  for (const g of out) g.values = subtotalValues(g.rows, columns);
+  for (const g of out) g.values = subtotalValues(g.rows, columns, favorabilitySign);
   return out;
 }
 
@@ -296,7 +307,7 @@ export async function buildComparativePL(
     const priorItems = (priorPL as any)[sectionKey[acct.type]] as Array<{ name: string; amount: number }>;
     const current = currentItems.find((i) => i.name === acct.name)?.amount || 0;
     const prior = priorItems.find((i) => i.name === acct.name)?.amount || 0;
-    const v = computeVariance(current, prior);
+    const v = computeVariance(current, prior, favSign(acct.type));
     return {
       accountId: acct.accountId, account: acct.name, accountNumber: acct.accountNumber,
       accountType: acct.type, values: [current, prior, v.dollarChange, v.percentChange],
@@ -311,16 +322,18 @@ export async function buildComparativePL(
   const ranks = grouped ? await getCustomDetailTypeRanks(tenantId) : null;
   const plGroups = grouped && ranks
     ? {
-        revenue: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'revenue'), columns), ranks, 'revenue'),
-        cogs: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'cogs'), columns), ranks, 'cogs'),
-        expenses: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'expense'), columns), ranks, 'expense'),
-        otherRevenue: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'other_revenue'), columns), ranks, 'other_revenue'),
-        otherExpenses: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'other_expense'), columns), ranks, 'other_expense'),
+        revenue: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'revenue'), columns, undefined, favSign('revenue')), ranks, 'revenue'),
+        cogs: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'cogs'), columns, undefined, favSign('cogs')), ranks, 'cogs'),
+        expenses: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'expense'), columns, undefined, favSign('expense')), ranks, 'expense'),
+        otherRevenue: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'other_revenue'), columns, undefined, favSign('other_revenue')), ranks, 'other_revenue'),
+        otherExpenses: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'other_expense'), columns, undefined, favSign('other_expense')), ranks, 'other_expense'),
       }
     : undefined;
 
-  const varRow = (cur: number, pr: number) => {
-    const v = computeVariance(cur, pr);
+  // Section totals mirror account-row favorability: cost totals flip, revenue
+  // and net income stay raw (net income up is always favorable).
+  const varRow = (cur: number, pr: number, favorabilitySign: 1 | -1 = 1) => {
+    const v = computeVariance(cur, pr, favorabilitySign);
     return [cur, pr, v.dollarChange, v.percentChange];
   };
 
@@ -329,11 +342,11 @@ export async function buildComparativePL(
     labels: currentPL.labels,
     footer: currentPL.footer,
     columns, rows,
-    totalRevenue: varRow(currentPL.totalRevenue, priorPL.totalRevenue),
-    totalCogs: varRow(currentPL.totalCogs, priorPL.totalCogs),
-    totalExpenses: varRow(currentPL.totalExpenses, priorPL.totalExpenses),
-    totalOtherRevenue: varRow(currentPL.totalOtherRevenue, priorPL.totalOtherRevenue),
-    totalOtherExpenses: varRow(currentPL.totalOtherExpenses, priorPL.totalOtherExpenses),
+    totalRevenue: varRow(currentPL.totalRevenue, priorPL.totalRevenue, favSign('revenue')),
+    totalCogs: varRow(currentPL.totalCogs, priorPL.totalCogs, favSign('cogs')),
+    totalExpenses: varRow(currentPL.totalExpenses, priorPL.totalExpenses, favSign('expense')),
+    totalOtherRevenue: varRow(currentPL.totalOtherRevenue, priorPL.totalOtherRevenue, favSign('other_revenue')),
+    totalOtherExpenses: varRow(currentPL.totalOtherExpenses, priorPL.totalOtherExpenses, favSign('other_expense')),
     netIncome: varRow(currentPL.netIncome, priorPL.netIncome),
     ...(plGroups ? { groupBy: 'detail_type' as const, groups: plGroups } : {}),
   };

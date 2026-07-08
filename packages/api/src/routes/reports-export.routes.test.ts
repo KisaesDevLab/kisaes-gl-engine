@@ -326,6 +326,9 @@ describe('comparative grouping + condensed / export presentation', () => {
     expect(data.columns.length).toBe(4);
 
     for (const section of ['revenue', 'expenses'] as const) {
+      // Cost sections flip the change columns (favorability): spending more is
+      // a negative change. Revenue stays raw. Amount columns (0,1) never flip.
+      const sign = section === 'expenses' ? -1 : 1;
       const groups = data.groups[section] as Array<{ label: string; rows: Array<{ values: Array<number | null> }>; values: Array<number | null> }>;
       for (const g of groups) {
         // Period columns (0 = current, 1 = prior) are plain sums of the
@@ -334,10 +337,10 @@ describe('comparative grouping + condensed / export presentation', () => {
           const sum = g.rows.reduce((a, row) => a + (row.values[colIdx] ?? 0), 0);
           expect(g.values[colIdx]).toBeCloseTo(sum, 4);
         }
-        expect(g.values[2]).toBeCloseTo((g.values[0] ?? 0) - (g.values[1] ?? 0), 4);
+        expect(g.values[2]).toBeCloseTo(sign * ((g.values[0] ?? 0) - (g.values[1] ?? 0)), 4);
         const prior = g.values[1] ?? 0;
         if (prior === 0) expect(g.values[3]).toBeNull();
-        else expect(g.values[3]).toBeCloseTo((((g.values[0] ?? 0) - prior) / Math.abs(prior)) * 100, 4);
+        else expect(g.values[3]).toBeCloseTo(sign * (((g.values[0] ?? 0) - prior) / Math.abs(prior)) * 100, 4);
       }
       // Group subtotals foot to the section totals, column for column.
       for (const colIdx of [0, 1]) {
