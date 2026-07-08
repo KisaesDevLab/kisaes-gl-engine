@@ -92,29 +92,17 @@ tenantExportRouter.get('/download/:fileName', async (req, res) => {
 
 // ─── IMPORT ────────────────────────────────────────────────
 
-// Validate/preview an import file (upload + decrypt, no import yet)
-tenantExportRouter.post('/import/validate', upload.single('file'), async (req, res) => {
+// Single-phase import: upload the .vmx + passphrase, pick "new" or "merge",
+// and it validates + imports in one call. Handles both the v2 streamed package
+// and legacy v1 single-file exports (format is sniffed server-side).
+tenantExportRouter.post('/import', upload.single('file'), async (req, res) => {
   if (!req.file) {
     res.status(400).json({ error: { message: 'No file uploaded' } });
     return;
   }
-
-  const passphrase = req.body?.passphrase;
+  const { passphrase, mode, company_name, assign_users, target_company_id } = req.body;
   if (!passphrase) {
     res.status(400).json({ error: { message: 'Passphrase is required' } });
-    return;
-  }
-
-  const preview = await tenantExportService.previewImport(req.file.buffer, passphrase);
-  res.json(preview);
-});
-
-// Execute import as new company
-tenantExportRouter.post('/import', async (req, res) => {
-  const { validation_token, mode, company_name, assign_users, target_company_id } = req.body;
-
-  if (!validation_token) {
-    res.status(400).json({ error: { message: 'Validation token is required' } });
     return;
   }
 
@@ -124,31 +112,26 @@ tenantExportRouter.post('/import', async (req, res) => {
       return;
     }
     await assertUserMayMergeIntoTenant(req.userId, target_company_id, req.isSuperAdmin);
-    const result = await tenantExportService.importMergeIntoTenant(
-      validation_token,
-      target_company_id,
-      req.userId,
+    const result = await tenantExportService.importMergeFromFile(
+      req.file.buffer, passphrase, target_company_id, req.userId,
     );
     res.status(201).json(result);
     return;
   }
 
-  // Default: import as new company
+  // Default: import as a new company.
   const name = company_name || 'Imported Company';
-  const users = assign_users || [req.userId];
+  const users = assign_users
+    ? (Array.isArray(assign_users) ? assign_users : [assign_users])
+    : [req.userId];
   const jobId = crypto.randomUUID();
-
-  const result = await tenantExportService.importAsNewTenant(
-    validation_token,
-    name,
-    users,
-    req.userId,
-    jobId,
+  const result = await tenantExportService.importNewTenantFromFile(
+    req.file.buffer, passphrase, name, users, req.userId, jobId,
   );
   res.status(201).json({ ...result, job_id: jobId });
 });
 
-// Get import progress
+// Get import progress (long new-tenant imports report via job id).
 tenantExportRouter.get('/import/status/:jobId', (req, res) => {
   const progress = getImportProgress(req.params['jobId']!);
   if (!progress) {
@@ -156,18 +139,4 @@ tenantExportRouter.get('/import/status/:jobId', (req, res) => {
     return;
   }
   res.json(progress);
-});
-
-// Get merge preview
-tenantExportRouter.post('/import/merge-preview', async (req, res) => {
-  const { validation_token, target_tenant_id } = req.body;
-
-  if (!validation_token || !target_tenant_id) {
-    res.status(400).json({ error: { message: 'validation_token and target_tenant_id are required' } });
-    return;
-  }
-
-  await assertUserMayMergeIntoTenant(req.userId, target_tenant_id, req.isSuperAdmin);
-  const preview = await tenantExportService.getMergePreview(validation_token, target_tenant_id);
-  res.json(preview);
 });

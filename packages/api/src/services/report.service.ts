@@ -1160,6 +1160,10 @@ export async function buildTransactionListByVendor(tenantId: string, vendorId: s
 // exist in production data (see BANK_DETAIL_TYPES in
 // portal-report-evaluator.service.ts), so the report accepts either.
 export const BANK_ACCOUNT_DETAIL_TYPES = ['bank', 'checking', 'savings'];
+// Liability accounts that are reconciled like a bank account (credit-card and
+// line-of-credit statements). Included in the Bank Reconciliation Summary so
+// card reconciliations show alongside bank accounts.
+export const RECONCILABLE_LIABILITY_DETAIL_TYPES = ['credit_card', 'line_of_credit'];
 
 // Bank Account Balances — as-of balance per bank account. Same accrual
 // as-of pattern as buildBalanceSheet (bank accounts are cash accounts,
@@ -1263,14 +1267,20 @@ export interface ReconSummaryStaleCheck {
 // days). Uses the same uncleared derivation as reconciliation start():
 // posted lines on the account not cleared by any COMPLETED reconciliation.
 export async function buildBankReconciliationSummary(tenantId: string, accountId: string, companyId: string | null = null) {
-  const detailList = sql.join(BANK_ACCOUNT_DETAIL_TYPES.map((d) => sql`${d}`), sql`, `);
+  const bankDetailList = sql.join(BANK_ACCOUNT_DETAIL_TYPES.map((d) => sql`${d}`), sql`, `);
+  const creditDetailList = sql.join(RECONCILABLE_LIABILITY_DETAIL_TYPES.map((d) => sql`${d}`), sql`, `);
   const accountCond = accountId ? sql`AND a.id = ${accountId}` : sql``;
 
+  // Reconcilable accounts: asset bank/checking/savings accounts and liability
+  // credit-card / line-of-credit accounts (reconciled the same way).
   const accountRows = await db.execute(sql`
     SELECT a.id, a.account_number, a.name
     FROM accounts a
-    WHERE a.tenant_id = ${tenantId} AND a.account_type = 'asset'
-      AND a.detail_type IN (${detailList}) AND a.is_active = true
+    WHERE a.tenant_id = ${tenantId} AND a.is_active = true
+      AND (
+        (a.account_type = 'asset' AND a.detail_type IN (${bankDetailList}))
+        OR (a.account_type = 'liability' AND a.detail_type IN (${creditDetailList}))
+      )
       ${accountCond}
     ORDER BY a.account_number, a.name
   `);

@@ -17,6 +17,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.82.0",
+    "archiver": "^5.3.2",
+    "unzipper": "^0.12.3",
     "@aws-sdk/client-s3": "^3.1024.0",
     "@aws-sdk/s3-request-presigner": "^3.1024.0",
     "@azure/msal-node": "^5.1.2",

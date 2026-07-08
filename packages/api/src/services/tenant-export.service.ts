@@ -12,11 +12,16 @@ import { auditLog } from '../middleware/audit.js';
 import { tenantStorageKey } from './storage/storage-keys.js';
 import { getProviderForTenant } from './storage/storage-provider.factory.js';
 import {
-  encryptWithPassphrase,
   decryptWithPassphrase,
   generateChecksum,
   detectEncryptionMethod,
 } from './portable-encryption.service.js';
+import {
+  writeTenantPackage,
+  readTenantPackage,
+  isPackageFormat,
+  type PackageAttachment,
+} from './vmx-package.js';
 // Types defined locally to avoid build-order issues with shared package
 interface TenantExportPreview {
   company_name: string;
@@ -269,53 +274,6 @@ export async function exportTenant(
       a['attachable_type'] !== 'transaction' || txnIds.has(a['attachable_id'] as string));
   }
 
-  // Bundle attachment binary files as base64
-  const attachment_files: Array<{ id: string; data: string }> = [];
-  if (includeAttachments) {
-    const UPLOAD_DIR = process.env['UPLOAD_DIR'] || '/data/uploads';
-    for (const att of attachments_meta) {
-      const filePath = att['file_path'] as string;
-      if (!filePath) continue;
-      // Try the absolute path, the "/uploads/..."-prefixed logical path
-      // (how attachment.service stores provider-written files), and a
-      // plain relative-to-upload-dir path.
-      const candidates = [
-        filePath,
-        path.join(UPLOAD_DIR, filePath.replace(/^\/uploads\//, '')),
-        path.join(UPLOAD_DIR, filePath),
-      ];
-      let bundled = false;
-      for (const candidate of candidates) {
-        try {
-          if (fs.existsSync(candidate)) {
-            const data = fs.readFileSync(candidate);
-            attachment_files.push({ id: att['id'] as string, data: data.toString('base64') });
-            bundled = true;
-            break;
-          }
-        } catch {
-          // Skip unreadable files
-        }
-      }
-      // Not on local disk — the file lives on the tenant's (or system
-      // default) cloud provider (e.g. B2). Without this, cloud-stored
-      // attachments were silently omitted from exports and lost on
-      // export→import.
-      if (!bundled) {
-        const storageKey = (att['storage_key'] as string | null) || null;
-        if (storageKey) {
-          try {
-            const provider = await getProviderForTenant(tenantId);
-            const data = await provider.download(storageKey);
-            attachment_files.push({ id: att['id'] as string, data: data.toString('base64') });
-          } catch (err) {
-            console.warn(`[tenant-export] Attachment ${att['id']} not bundled (provider download failed): ${err instanceof Error ? err.message : err}`);
-          }
-        }
-      }
-    }
-  }
-
   // Saved report filters
   const saved_report_filters = await queryTable('saved_report_filters', tenantId);
 
@@ -344,7 +302,10 @@ export async function exportTenant(
     categorization_history,
     audit_trail,
     attachments_meta,
-    attachment_files,
+    // v2: attachment binaries are written as separate encrypted package
+    // entries (streamed one file at a time), not base64-inlined here. This
+    // avoids building one giant JSON string (which crashed on real data).
+    attachment_files: [],
     saved_report_filters,
   };
 
@@ -366,11 +327,11 @@ export async function exportTenant(
   // Build metadata
   payload.metadata = {
     export_type: 'tenant',
-    version: '1.0.0',
+    version: '2.0.0',
     source_version: APP_VERSION,
     created_at: new Date().toISOString(),
     created_by: userId || 'unknown',
-    encryption_method: 'passphrase_pbkdf2_aes256gcm',
+    encryption_method: 'passphrase_pbkdf2_aes256gcm_package',
     company_name: companyName,
     fiscal_year_start: company['fiscal_year_start_month'] || 1,
     transaction_count: transactions.length,
@@ -382,33 +343,71 @@ export async function exportTenant(
   // Generate human-readable export summary
   payload.export_summary = generateExportSummary(companyName, counts, dateRange);
 
-  const contentBuffer = Buffer.from(JSON.stringify(payload));
-  payload.metadata['checksum'] = generateChecksum(contentBuffer);
-  const finalContent = Buffer.from(JSON.stringify(payload));
+  // Checksum over the data payload (attachment binaries are separately
+  // GCM-authenticated in their own package entries).
+  payload.metadata['checksum'] = generateChecksum(Buffer.from(JSON.stringify(payload)));
 
-  // Encrypt
-  const encrypted = encryptWithPassphrase(finalContent, passphrase);
-
-  // Write file
   const safeName = companyName.replace(/[^a-zA-Z0-9-_]/g, '-').substring(0, 50).toLowerCase();
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
   const fileName = `${safeName}-export-${timestamp}.vmx`;
   const exportDir = path.join(EXPORT_DIR, tenantId, 'exports');
   ensureDir(exportDir);
   const filePath = path.join(exportDir, fileName);
-  fs.writeFileSync(filePath, encrypted);
+
+  // Stream attachment binaries one file at a time: local disk first (the
+  // absolute path, the "/uploads/"-logical path, then a plain relative path),
+  // otherwise the tenant/system cloud provider. Missing files are skipped.
+  async function* attachmentSource(): AsyncGenerator<PackageAttachment> {
+    if (!includeAttachments) return;
+    const UPLOAD_DIR = process.env['UPLOAD_DIR'] || '/data/uploads';
+    let provider: Awaited<ReturnType<typeof getProviderForTenant>> | null = null;
+    for (const att of attachments_meta) {
+      const id = att['id'] as string;
+      const fp = att['file_path'] as string | null;
+      let buf: Buffer | null = null;
+      if (fp) {
+        const candidates = [fp, path.join(UPLOAD_DIR, fp.replace(/^\/uploads\//, '')), path.join(UPLOAD_DIR, fp)];
+        for (const candidate of candidates) {
+          try { if (fs.existsSync(candidate)) { buf = fs.readFileSync(candidate); break; } } catch { /* skip unreadable */ }
+        }
+      }
+      if (!buf) {
+        const storageKey = (att['storage_key'] as string | null) || null;
+        if (storageKey) {
+          try {
+            if (!provider) provider = await getProviderForTenant(tenantId);
+            buf = await provider.download(storageKey);
+          } catch (err) {
+            console.warn(`[tenant-export] Attachment ${id} not bundled (download failed): ${err instanceof Error ? err.message : err}`);
+          }
+        }
+      }
+      if (buf) yield { id, buffer: buf };
+    }
+  }
+
+  // Write the encrypted, streamed package (.vmx v2).
+  const { size } = await writeTenantPackage(filePath, passphrase, payload, attachmentSource(), {
+    company_name: companyName,
+    source_version: APP_VERSION,
+    created_at: new Date().toISOString(),
+    counts,
+    date_range: dateRange || null,
+  });
 
   await auditLog(
     tenantId,
     'create',
     'tenant_export',
-    fileName,
+    // entity_id is a UUID column; an export has no entity UUID, so pass null
+    // (the file name is captured in the audit payload below).
     null,
-    { fileName, size: encrypted.length, counts, dateRange },
+    null,
+    { fileName, size, counts, dateRange },
     userId,
   );
 
-  return { fileName, size: encrypted.length, counts };
+  return { fileName, size, counts };
 }
 
 /**
@@ -436,7 +435,7 @@ export async function downloadExport(
     throw AppError.notFound('Export file not found');
   }
 
-  await auditLog(tenantId, 'update', 'tenant_export_downloaded', fileName, null, { fileName }, userId);
+  await auditLog(tenantId, 'update', 'tenant_export_downloaded', null, null, { fileName }, userId);
   return fs.readFileSync(filePath);
 }
 
@@ -525,25 +524,82 @@ export async function previewImport(
   };
 }
 
+// Read an uploaded export file into a normalized { payload, attachments } pair,
+// transparently handling both the v2 streamed package (a ZIP starting with the
+// PK magic) and the legacy v1 single-encrypted-JSON format (base64 attachment
+// blobs inlined in the payload).
+async function readImportSource(
+  fileBuffer: Buffer,
+  passphrase: string,
+): Promise<{ payload: ExportPayload; attachments: () => AsyncGenerator<PackageAttachment> }> {
+  if (isPackageFormat(fileBuffer)) {
+    const pkg = await readTenantPackage(fileBuffer, passphrase);
+    return { payload: pkg.data as ExportPayload, attachments: () => pkg.attachments() };
+  }
+  // Legacy v1 single-file format.
+  if (detectEncryptionMethod(fileBuffer) !== 'passphrase') {
+    throw AppError.badRequest('This file does not appear to be a Vibe MyBooks export (.vmx).');
+  }
+  let decrypted: Buffer;
+  try {
+    decrypted = decryptWithPassphrase(fileBuffer, passphrase);
+  } catch {
+    throw AppError.badRequest('Incorrect passphrase');
+  }
+  let payload: ExportPayload;
+  try {
+    payload = JSON.parse(decrypted.toString('utf8')) as ExportPayload;
+  } catch {
+    throw AppError.badRequest('Invalid export file: could not parse contents');
+  }
+  async function* legacyAttachments(): AsyncGenerator<PackageAttachment> {
+    for (const af of payload.attachment_files || []) {
+      yield { id: af.id, buffer: Buffer.from(af.data, 'base64') };
+    }
+  }
+  return { payload, attachments: legacyAttachments };
+}
+
 /**
- * Import a validated export as a new tenant.
+ * Single-phase import as a NEW tenant: read the uploaded file (v2 package or
+ * legacy v1) and import it in one call, streaming attachments.
  */
-export async function importAsNewTenant(
-  validationToken: string,
+export async function importNewTenantFromFile(
+  fileBuffer: Buffer,
+  passphrase: string,
   companyName: string,
   assignUserIds: string[],
   userId?: string,
   jobId?: string,
 ): Promise<ImportResult> {
-  const cached = validationCache.get(validationToken);
-  if (!cached || cached.expiresAt < Date.now()) {
-    validationCache.delete(validationToken);
-    throw AppError.badRequest('Validation token expired. Please re-upload and validate the file.');
-  }
+  const { payload, attachments } = await readImportSource(fileBuffer, passphrase);
+  return importAsNewTenant(payload, attachments(), companyName, assignUserIds, userId, jobId);
+}
 
-  const payload = cached.data;
-  validationCache.delete(validationToken); // single use
+/**
+ * Single-phase MERGE import into an existing tenant.
+ */
+export async function importMergeFromFile(
+  fileBuffer: Buffer,
+  passphrase: string,
+  targetTenantId: string,
+  userId?: string,
+): Promise<ImportResult> {
+  const { payload } = await readImportSource(fileBuffer, passphrase);
+  return importMergeIntoTenant(payload, targetTenantId, userId);
+}
 
+/**
+ * Import a validated export as a new tenant.
+ */
+export async function importAsNewTenant(
+  payload: ExportPayload,
+  attachments: AsyncIterable<PackageAttachment>,
+  companyName: string,
+  assignUserIds: string[],
+  userId?: string,
+  jobId?: string,
+): Promise<ImportResult> {
   // ID remapping table
   const idMap = new Map<string, string>();
   function remap(oldId: string | null | undefined): string | null {
@@ -1076,19 +1132,18 @@ export async function importAsNewTenant(
     `);
   }
 
-  if (jobId) updateProgress(jid, 'Importing attachments', 85, `${(payload.attachment_files || []).length} files`);
+  if (jobId) updateProgress(jid, 'Importing attachments', 85, `${(payload.attachments_meta || []).length} files`);
 
-  // 16b. Import attachment files (write to disk)
+  // 16b. Import attachment files, streamed one at a time from the package
+  // (v2). For legacy v1 files the caller feeds the base64 blobs through the
+  // same iterable. Imported files are NEW writes, so they land under
+  // {tenantId}/attachments/ like every other new attachment.
   const UPLOAD_DIR = process.env['UPLOAD_DIR'] || '/data/uploads';
-  // Tenant-rooted layout: imported files are NEW writes, so they land
-  // under {tenantId}/attachments/ like every other new attachment.
   const tenantUploadDir = path.join(UPLOAD_DIR, tenantId, 'attachments');
-  if ((payload.attachment_files || []).length > 0) {
-    ensureDir(tenantUploadDir);
-  }
-  for (const af of payload.attachment_files || []) {
+  ensureDir(tenantUploadDir);
+  for await (const af of attachments) {
     try {
-      const oldId = af['id'] as string;
+      const oldId = af.id;
       const newId = remap(oldId);
       if (!newId) continue;
 
@@ -1102,7 +1157,7 @@ export async function importAsNewTenant(
       const destPath = path.join(tenantUploadDir, destFileName);
       const storageKey = tenantStorageKey(tenantId, 'attachments', destFileName);
 
-      fs.writeFileSync(destPath, Buffer.from(af['data'] as string, 'base64'));
+      fs.writeFileSync(destPath, af.buffer);
 
       // Insert attachment record. file_path/storage_key use the same
       // logical layout as attachment.service so downloads resolve via
@@ -1176,18 +1231,10 @@ export async function importAsNewTenant(
  * Import and merge into an existing tenant.
  */
 export async function importMergeIntoTenant(
-  validationToken: string,
+  payload: ExportPayload,
   targetTenantId: string,
   userId?: string,
 ): Promise<ImportResult> {
-  const cached = validationCache.get(validationToken);
-  if (!cached || cached.expiresAt < Date.now()) {
-    validationCache.delete(validationToken);
-    throw AppError.badRequest('Validation token expired. Please re-upload and validate the file.');
-  }
-
-  const payload = cached.data;
-  validationCache.delete(validationToken);
 
   // Validate target tenant exists
   const tenantResult = await db.execute(

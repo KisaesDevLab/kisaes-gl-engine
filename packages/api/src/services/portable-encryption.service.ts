@@ -51,6 +51,42 @@ function deriveKey(passphrase: string, salt: Buffer, version: number): Buffer {
   return crypto.pbkdf2Sync(passphrase, salt, iterations, KEY_LENGTH, 'sha512');
 }
 
+// ─── Per-entry helpers for the v2 streamed package (.vmx) ──────────
+// A single key is derived once from the passphrase + a per-package salt
+// (stored in the package's plaintext manifest — a salt is not a secret).
+// Each package entry (the data payload and every attachment file) is then
+// encrypted independently with its own random IV, so a large export can be
+// written and read one file at a time without ever base64-inflating the whole
+// thing into a single JSON string (which hits Node's ~512MB string limit).
+
+export const PACKAGE_SALT_LENGTH = SALT_LENGTH;
+
+/** Derive the package key from a passphrase + the manifest's salt (v2 KDF). */
+export function derivePackageKey(passphrase: string, salt: Buffer): Buffer {
+  return deriveKey(passphrase, salt, FORMAT_VERSION_LATEST);
+}
+
+/** Encrypt one package entry: [IV(12)][authTag(16)][ciphertext]. */
+export function encryptEntry(key: Buffer, plain: Buffer): Buffer {
+  const iv = crypto.randomBytes(IV_LENGTH);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const ciphertext = Buffer.concat([cipher.update(plain), cipher.final()]);
+  return Buffer.concat([iv, cipher.getAuthTag(), ciphertext]);
+}
+
+/** Decrypt one package entry produced by encryptEntry. Throws on wrong key/tamper. */
+export function decryptEntry(key: Buffer, blob: Buffer): Buffer {
+  if (blob.length < IV_LENGTH + AUTH_TAG_LENGTH) {
+    throw new Error('Encrypted entry is too small');
+  }
+  const iv = blob.subarray(0, IV_LENGTH);
+  const authTag = blob.subarray(IV_LENGTH, IV_LENGTH + AUTH_TAG_LENGTH);
+  const ciphertext = blob.subarray(IV_LENGTH + AUTH_TAG_LENGTH);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(authTag);
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+}
+
 /**
  * Encrypt data with a user-provided passphrase using PBKDF2 + AES-256-GCM.
  *
