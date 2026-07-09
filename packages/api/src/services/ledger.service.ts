@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-import { eq, and, sql, lte, count, inArray } from 'drizzle-orm';
+import { eq, and, or, sql, lte, count, inArray, notInArray, isNull } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import type { JournalLineInput, TxnType, TxnStatus, BulkUpdateTransactionsInput, BulkUpdateTransactionsResult } from '@kis-books/shared';
@@ -1060,9 +1060,25 @@ export async function validateBalance(tenantId: string): Promise<{ valid: boolea
   };
 }
 
-// P&L (category) account types — the income/expense side a transaction is
-// "categorized" to, excluding the bank / AR / AP / equity money accounts.
-const CATEGORY_ACCOUNT_TYPES = ['revenue', 'other_revenue', 'cogs', 'expense', 'other_expense'];
+// A "category" account is any account that is NOT the transaction's own
+// money / control side. The money/control accounts — bank, A/R, A/P, credit
+// cards, Payments Clearing / Undeposited Funds, and the auto-managed Sales
+// Tax Payable — are the cash side of an entry, never the category. Defining
+// "category" by EXCLUSION (rather than whitelisting P&L account types) lets a
+// deposit/payment whose offset is equity (owner draw), a loan, a fixed asset,
+// etc. be recategorized in bulk. Kept in sync with the Category-column filter
+// used in listTransactions.
+const NON_CATEGORY_DETAIL_TYPES = ['bank', 'accounts_receivable', 'accounts_payable', 'credit_card'];
+const NON_CATEGORY_SYSTEM_TAGS = ['payments_clearing', 'undeposited_funds', 'sales_tax_payable'];
+
+// Drizzle condition (over a query that joins `accounts`) selecting category
+// lines — i.e. lines whose account is not a money/control account.
+function categoryLineAccountCond() {
+  return and(
+    or(isNull(accounts.detailType), notInArray(accounts.detailType, NON_CATEGORY_DETAIL_TYPES)),
+    or(isNull(accounts.systemTag), notInArray(accounts.systemTag, NON_CATEGORY_SYSTEM_TAGS)),
+  );
+}
 
 /**
  * Bulk-edit Payee / Category / Tag across many transactions from the list
@@ -1125,11 +1141,12 @@ export async function bulkUpdateTransactions(
       if (lockDate && txn.txnDate <= lockDate) { skipped.push({ id: txnId, reason: 'locked' }); continue; }
 
       // Reconciled transactions are intentionally NOT skipped here. A completed
-      // reconciliation only ever clears a txn's balance-sheet (bank / credit-
-      // card) line, and every bulk operation below is neutral to that cleared
-      // line: a tag change is ledger-neutral, a category move only ever
-      // relocates a P&L line (CATEGORY_ACCOUNT_TYPES — never the cleared
-      // balance-sheet line), and a payee change is header-level. So the
+      // reconciliation only ever clears a txn's bank / credit-card line, and
+      // every bulk operation below is neutral to that cleared line: a tag
+      // change is ledger-neutral, a category move only ever relocates a
+      // category line (bank / A/R / A/P / credit-card / clearing accounts are
+      // excluded — so never the cleared line), and a payee change is
+      // header-level. So the
       // reconciled total, the cleared-line amounts, and the journal_line ids
       // that reconciliation_lines references all stay put. This matches the
       // single-edit policy in updateTransaction ("you can still recategorize or
@@ -1156,7 +1173,7 @@ export async function bulkUpdateTransactions(
           .where(and(
             eq(journalLines.tenantId, tenantId),
             eq(journalLines.transactionId, txnId),
-            inArray(accounts.accountType, CATEGORY_ACCOUNT_TYPES),
+            categoryLineAccountCond(),
           ));
 
         if (catLines.length === 1) {

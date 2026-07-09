@@ -35,7 +35,10 @@ async function setupAccounts() {
   }).returning();
   tenantId = tenant!.id;
 
-  const cash = await accountsService.create(tenantId, { name: 'Cash', accountType: 'asset', accountNumber: '1000' });
+  // detailType mirrors the COA template: the "category" test excludes the
+  // money/control side by bank / A/R detail type, so these must be set (as
+  // they always are in a real chart of accounts).
+  const cash = await accountsService.create(tenantId, { name: 'Cash', accountType: 'asset', detailType: 'bank', accountNumber: '1000' });
   cashAccountId = cash.id;
 
   const revenue = await accountsService.create(tenantId, { name: 'Revenue', accountType: 'revenue', accountNumber: '4000' });
@@ -44,7 +47,7 @@ async function setupAccounts() {
   const expense = await accountsService.create(tenantId, { name: 'Office Supplies', accountType: 'expense', accountNumber: '6000' });
   expenseAccountId = expense.id;
 
-  const ar = await accountsService.create(tenantId, { name: 'Accounts Receivable', accountType: 'asset', accountNumber: '1100' });
+  const ar = await accountsService.create(tenantId, { name: 'Accounts Receivable', accountType: 'asset', detailType: 'accounts_receivable', accountNumber: '1100' });
   arAccountId = ar.id;
 }
 
@@ -252,6 +255,31 @@ describe('Ledger Service', () => {
 
       const reread = await ledger.getTransaction(tenantId, txn.id);
       expect(reread.lines.some((l) => l.accountId === travel.id)).toBe(true);
+      expect((await ledger.validateBalance(tenantId)).valid).toBe(true);
+    });
+
+    it('recategorizes a deposit whose offset is a non-P&L account (equity)', async () => {
+      // Deposit: Cash (bank) debit, Owner's Capital (equity) credit. The
+      // equity line is the single category line — it must be recategorizable
+      // even though it isn't a P&L account.
+      const equity = await accountsService.create(tenantId, { name: "Owner's Capital", accountType: 'equity', detailType: 'owners_equity', accountNumber: '3010' });
+      const txn = await ledger.postTransaction(tenantId, {
+        txnType: 'deposit',
+        txnDate: '2026-05-01',
+        lines: [
+          { accountId: cashAccountId, debit: '1300.00', credit: '0' },
+          { accountId: equity.id, debit: '0', credit: '1300.00' },
+        ],
+      });
+
+      const res = await ledger.bulkUpdateTransactions(tenantId, { txnIds: [txn.id], setCategoryAccountId: revenueAccountId });
+      expect(res.updated).toBe(1);
+      expect(res.skipped).toHaveLength(0);
+
+      const reread = await ledger.getTransaction(tenantId, txn.id);
+      expect(reread.lines.some((l) => l.accountId === revenueAccountId)).toBe(true);
+      expect(reread.lines.some((l) => l.accountId === equity.id)).toBe(false);
+      expect(reread.lines.some((l) => l.accountId === cashAccountId)).toBe(true); // bank untouched
       expect((await ledger.validateBalance(tenantId)).valid).toBe(true);
     });
 
