@@ -167,6 +167,40 @@ describe('Batch Service', () => {
     });
   });
 
+  describe('suggestAccountForContact', () => {
+    it('returns the contact configured default expense account first', async () => {
+      const [vendor] = await db.insert(contacts).values({
+        tenantId, contactType: 'vendor', displayName: 'Preferred Vendor',
+        defaultExpenseAccountId: expenseAccountId,
+      }).returning();
+      const res = await batchService.suggestAccountForContact(tenantId, vendor!.id);
+      expect(res.accountId).toBe(expenseAccountId);
+      expect(res.source).toBe('default');
+    });
+
+    it('falls back to the most recently used category account', async () => {
+      const [vendor] = await db.insert(contacts).values({
+        tenantId, contactType: 'vendor', displayName: 'Historic Vendor',
+      }).returning();
+      await batchService.saveBatch(tenantId, 'expense', bankAccountId, [
+        { rowNumber: 1, date: '2026-04-01', contactName: 'Historic Vendor', accountName: 'Office Supplies', amount: 75 },
+      ], { autoCreateContacts: false });
+      const res = await batchService.suggestAccountForContact(tenantId, vendor!.id);
+      // The bank (asset) leg is excluded; only the expense category remains.
+      expect(res.accountId).toBe(expenseAccountId);
+      expect(res.source).toBe('recent');
+    });
+
+    it('returns null when there is neither a default nor any history', async () => {
+      const [vendor] = await db.insert(contacts).values({
+        tenantId, contactType: 'vendor', displayName: 'Fresh Vendor',
+      }).returning();
+      const res = await batchService.suggestAccountForContact(tenantId, vendor!.id);
+      expect(res.accountId).toBeNull();
+      expect(res.source).toBeNull();
+    });
+  });
+
   describe('fuzzy matching', () => {
     it('should exact-match contact', async () => {
       const result = await batchService.resolveContactByName(tenantId, 'Office Depot');

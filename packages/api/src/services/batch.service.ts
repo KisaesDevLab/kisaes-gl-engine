@@ -2,9 +2,9 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
-import { eq, and, sql, ilike } from 'drizzle-orm';
+import { eq, and, sql, ilike, inArray, desc } from 'drizzle-orm';
 import { db, pool } from '../db/index.js';
-import { accounts, contacts } from '../db/schema/index.js';
+import { accounts, contacts, transactions, journalLines } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as expenseService from './expense.service.js';
@@ -67,6 +67,56 @@ export async function resolveAccountByName(tenantId: string, name: string) {
     .limit(3);
 
   return { match: null, suggestions: fuzzyRows, isExact: false };
+}
+
+// ─── Account autofill for a selected contact ─────────────────────
+// P&L (category) account types — the "Account" column on a batch line
+// posts to one of these. Balance-sheet types (asset/liability/equity)
+// are the cash / AR / AP / clearing side of the entry and must never be
+// suggested as the category.
+const CATEGORY_ACCOUNT_TYPES = ['revenue', 'cogs', 'expense', 'other_revenue', 'other_expense'];
+
+export type SuggestedAccountSource = 'default' | 'recent';
+
+// Suggest the category account to prefill when a contact is picked on a
+// batch line: (1) the contact's configured default expense account, else
+// (2) the most-recently-used category account from a prior transaction
+// with that contact. Returns null when neither is available.
+export async function suggestAccountForContact(
+  tenantId: string,
+  contactId: string,
+): Promise<{ accountId: string | null; source: SuggestedAccountSource | null }> {
+  if (!contactId) return { accountId: null, source: null };
+
+  const contact = await db.query.contacts.findFirst({
+    where: and(eq(contacts.tenantId, tenantId), eq(contacts.id, contactId)),
+  });
+  if (!contact) return { accountId: null, source: null };
+
+  // 1. Configured default wins.
+  if (contact.defaultExpenseAccountId) {
+    return { accountId: contact.defaultExpenseAccountId, source: 'default' };
+  }
+
+  // 2. Most recent category account posted on a transaction for this
+  //    contact. Ordered by transaction date, then insertion order.
+  const rows = await db
+    .select({ accountId: journalLines.accountId })
+    .from(transactions)
+    .innerJoin(journalLines, eq(journalLines.transactionId, transactions.id))
+    .innerJoin(accounts, eq(accounts.id, journalLines.accountId))
+    .where(and(
+      eq(transactions.tenantId, tenantId),
+      eq(transactions.contactId, contactId),
+      inArray(accounts.accountType, CATEGORY_ACCOUNT_TYPES),
+      eq(accounts.isActive, true),
+    ))
+    .orderBy(desc(transactions.txnDate), desc(transactions.createdAt))
+    .limit(1);
+
+  return rows[0]?.accountId
+    ? { accountId: rows[0].accountId, source: 'recent' }
+    : { accountId: null, source: null };
 }
 
 // ─── Validation ──────────────────────────────────────────────────

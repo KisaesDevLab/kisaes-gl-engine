@@ -34,6 +34,15 @@ batchRouter.post('/save', validate(batchSaveSchema), async (req, res) => {
   res.status(201).json(result);
 });
 
+// Suggest the category account to prefill when a contact is picked on a
+// batch line (contact default → most-recently-used category account).
+batchRouter.get('/suggest-account', async (req, res) => {
+  const contactId = typeof req.query['contact_id'] === 'string' ? req.query['contact_id'] : '';
+  if (!contactId) { res.status(400).json({ error: { message: 'contact_id is required' } }); return; }
+  const result = await batchService.suggestAccountForContact(req.tenantId, contactId);
+  res.json(result);
+});
+
 // `parse-csv` is multipart — validate() can't pre-validate multipart
 // bodies before multer parses them, so validate the remaining form
 // fields after the file is loaded.
