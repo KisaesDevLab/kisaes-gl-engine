@@ -231,7 +231,10 @@ describe('report CSV exports (route-level, ?format=csv)', () => {
     const r = await get('/balance-sheet?as_of_date=2026-12-31&format=csv');
     expect(r.status).toBe(200);
     expect(r.contentType).toContain('text/csv');
-    expect(r.body).toContain('Retained Earnings (Prior Years)');
+    // Prior-years retained earnings folds into the designated system RE account
+    // line (QBO-style), so there's no separate "(Prior Years)" row.
+    expect(r.body).toContain('Retained Earnings');
+    expect(r.body).not.toContain('Retained Earnings (Prior Years)');
     expect(r.body).toContain('Net Income (Current Year)');
     expect(r.body).toContain('TOTAL LIABILITIES & EQUITY');
   });
@@ -293,7 +296,9 @@ describe('group_by=detail_type (P&L / Balance Sheet)', () => {
     const calc = data.groups.equity.find((g: { label: string }) => g.label === 'Equity (Calculated)');
     expect(calc).toBeDefined();
     const names = calc.entries.map((e: { name: string }) => e.name);
-    expect(names).toContain('Retained Earnings (Prior Years)');
+    // Prior-years RE folds into the designated account (a real 'Retained
+    // Earnings' detail group), so only Net Income (Current Year) is calculated.
+    expect(names).not.toContain('Retained Earnings (Prior Years)');
     expect(names).toContain('Net Income (Current Year)');
     // Asset group subtotals foot to Total Assets.
     const assetSubtotals = data.groups.assets.reduce((s: number, g: { subtotal: number }) => s + g.subtotal, 0);

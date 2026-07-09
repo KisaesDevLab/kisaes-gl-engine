@@ -493,6 +493,9 @@ export async function buildBalanceSheet(
   // (Current Year)) have no account/detail type; in grouped mode they
   // render under a dedicated 'Equity (Calculated)' group.
   const calculatedEquity: BSEntry[] = [];
+  // The designated system Retained Earnings account (systemTag), captured so
+  // the prior-years retained earnings folds into its single line below.
+  let reEntry: BSEntry | null = null;
   let totalAssets = 0, totalLiabilities = 0, totalEquity = 0;
 
   for (const row of rows.rows as any[]) {
@@ -505,7 +508,10 @@ export async function buildBalanceSheet(
     // (Previously this row was skipped entirely, so any posting to RE
     // silently vanished from the BS while its counter-leg remained.)
     const raw = sub(row.total_debit, row.total_credit);
-    if (raw === 0) continue;
+    const isRetainedEarnings = row.system_tag === 'retained_earnings' && row.account_type === 'equity';
+    // Keep the designated RE account even at a $0 posted balance so the
+    // prior-years retained earnings can fold into its line below.
+    if (raw === 0 && !isRetainedEarnings) continue;
     const detail = grouped ? { detailType: (row.detail_type as string | null) ?? null } : {};
     if (row.account_type === 'asset') {
       assets.push({ accountId: row.id, name: row.name, accountNumber: row.account_number, balance: raw, ...detail });
@@ -520,7 +526,7 @@ export async function buildBalanceSheet(
       const balance = -raw;
       const entry: BSEntry = { accountId: row.id, name: row.name, accountNumber: row.account_number, balance, ...detail };
       if (row.account_type === 'liability') { liabilities.push(entry); totalLiabilities += balance; }
-      else { equity.push(entry); totalEquity += balance; }
+      else { equity.push(entry); totalEquity += balance; if (isRetainedEarnings) reEntry = entry; }
     }
   }
 
@@ -543,7 +549,23 @@ export async function buildBalanceSheet(
     d.setUTCDate(d.getUTCDate() - 1);
     return d.toISOString().split('T')[0]!;
   })(), basis, companyId, tagId);
-  if (retainedPL.netIncome !== 0) {
+  // Prior-years retained earnings. When a system Retained Earnings account is
+  // designated (systemTag='retained_earnings'), FOLD the accumulated prior-year
+  // net income into that account's line — one "Retained Earnings" line = posted
+  // balance + prior-year net income (QBO-style). Otherwise keep the separate
+  // calculated "Retained Earnings (Prior Years)" row so the sheet still balances.
+  if (reEntry) {
+    if (retainedPL.netIncome !== 0) {
+      reEntry.balance += retainedPL.netIncome;
+      totalEquity += retainedPL.netIncome;
+    }
+    // A fully-zero RE line (no posted balance and no prior income) is noise —
+    // drop it, matching the $0 skip applied to every other account.
+    if (reEntry.balance === 0) {
+      const i = equity.indexOf(reEntry);
+      if (i >= 0) equity.splice(i, 1);
+    }
+  } else if (retainedPL.netIncome !== 0) {
     const row: BSEntry = { accountId: null, name: 'Retained Earnings (Prior Years)', accountNumber: null, balance: retainedPL.netIncome };
     equity.push(row);
     calculatedEquity.push(row);
