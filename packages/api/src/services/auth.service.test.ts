@@ -5,12 +5,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import jwt from 'jsonwebtoken';
 import { db, pool } from '../db/index.js';
-import { tenants, users, sessions, companies, accounts } from '../db/schema/index.js';
+import { tenants, users, sessions, companies, accounts, userTenantAccess } from '../db/schema/index.js';
 import { auditLog } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import * as authService from './auth.service.js';
 import type { JwtPayload } from '@kis-books/shared';
-import { sql } from 'drizzle-orm';
+import { sql, eq, and } from 'drizzle-orm';
 
 async function cleanDb() {
   await db.delete(auditLog);
@@ -209,6 +209,41 @@ describe('Auth Service', () => {
 
       // Try to use the same token again (it was rotated)
       await expect(authService.refresh(registerResult.tokens.refreshToken)).rejects.toThrow('Invalid refresh token');
+    });
+
+    it('preserves a switched tenant across refresh (does not revert to home)', async () => {
+      const reg = await authService.register({
+        email: 'test@example.com', password: 'password123', displayName: 'Test User', companyName: 'Home Co',
+      });
+      const [tenantB] = await db.insert(tenants).values({ name: 'Tenant B', slug: 'tenant-b-' + Date.now() }).returning();
+      await db.insert(userTenantAccess).values({ userId: reg.user.id, tenantId: tenantB!.id, role: 'bookkeeper', isActive: true });
+
+      const switched = await authService.switchTenant(reg.user.id, tenantB!.id, reg.tokens.refreshToken);
+      expect((jwt.verify(switched.accessToken, env.JWT_SECRET) as JwtPayload).tenantId).toBe(tenantB!.id);
+
+      // The bug: an expired access token refreshed mid-session used to
+      // re-mint against the user's HOME tenant, silently switching them.
+      const refreshed = await authService.refresh(switched.refreshToken);
+      const payload = jwt.verify(refreshed.accessToken, env.JWT_SECRET) as JwtPayload;
+      expect(payload.tenantId).toBe(tenantB!.id);
+      expect(payload.role).toBe('bookkeeper');
+    });
+
+    it('reverts to home tenant on refresh when switched-tenant access was revoked', async () => {
+      const reg = await authService.register({
+        email: 'test@example.com', password: 'password123', displayName: 'Test User', companyName: 'Home Co',
+      });
+      const [tenantB] = await db.insert(tenants).values({ name: 'Tenant B', slug: 'tenant-b-' + Date.now() }).returning();
+      await db.insert(userTenantAccess).values({ userId: reg.user.id, tenantId: tenantB!.id, role: 'bookkeeper', isActive: true });
+      const switched = await authService.switchTenant(reg.user.id, tenantB!.id, reg.tokens.refreshToken);
+
+      // Access to B is revoked after the switch.
+      await db.update(userTenantAccess).set({ isActive: false })
+        .where(and(eq(userTenantAccess.userId, reg.user.id), eq(userTenantAccess.tenantId, tenantB!.id)));
+
+      const refreshed = await authService.refresh(switched.refreshToken);
+      const payload = jwt.verify(refreshed.accessToken, env.JWT_SECRET) as JwtPayload;
+      expect(payload.tenantId).toBe(reg.user.tenantId); // fell back home
     });
   });
 

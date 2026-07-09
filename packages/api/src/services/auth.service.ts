@@ -86,11 +86,15 @@ function hashToken(token: string): string {
 export async function issueSession(payload: JwtPayload): Promise<AuthTokens> {
   const accessToken = generateAccessToken(payload);
   const refreshToken = generateRefreshToken();
-  await createSession(payload.userId, refreshToken);
+  await createSession(payload.userId, refreshToken, { tenantId: payload.tenantId, role: payload.role });
   return { accessToken, refreshToken };
 }
 
-async function createSession(userId: string, refreshToken: string): Promise<void> {
+async function createSession(
+  userId: string,
+  refreshToken: string,
+  context?: { tenantId?: string | null; role?: string | null },
+): Promise<void> {
   // 7 days from now, computed as an exact 7-day offset rather than via
   // `setDate(getDate() + 7)` which is TZ-sensitive during DST transitions.
   // Using millisecond arithmetic gives a true UTC offset regardless of
@@ -101,6 +105,10 @@ async function createSession(userId: string, refreshToken: string): Promise<void
     userId,
     refreshTokenHash: hashToken(refreshToken),
     expiresAt,
+    // Persist the operating tenant/role so refresh() re-mints the access
+    // token against the same context instead of the user's home tenant.
+    tenantId: context?.tenantId ?? null,
+    role: context?.role ?? null,
   });
 
   // Running the trim AFTER the insert keeps the new session the most-
@@ -213,7 +221,7 @@ export async function register(input: RegisterInput): Promise<{ user: typeof use
   const jwtPayload: JwtPayload = { userId: user.id, tenantId: tenant.id, role: user.role, isSuperAdmin: user.isSuperAdmin || false };
   const accessToken = generateAccessToken(jwtPayload);
   const refreshToken = generateRefreshToken();
-  await createSession(user.id, refreshToken);
+  await createSession(user.id, refreshToken, { tenantId: tenant.id, role: user.role });
 
   await auditLog(tenant.id, 'create', 'user', user.id, null, { email: user.email }, user.id);
 
@@ -335,7 +343,7 @@ export async function login(input: LoginInput): Promise<{ user: typeof users.$in
   const jwtPayload: JwtPayload = { userId: user.id, tenantId, role, isSuperAdmin: user.isSuperAdmin || false };
   const accessToken = generateAccessToken(jwtPayload);
   const refreshToken = generateRefreshToken();
-  await createSession(user.id, refreshToken);
+  await createSession(user.id, refreshToken, { tenantId, role });
 
   await auditLog(tenantId, 'login', 'user', user.id, null, null, user.id);
 
@@ -379,6 +387,10 @@ export async function switchTenant(userId: string, targetTenantId: string, prior
       userId: user.id,
       refreshTokenHash: hashToken(refreshToken),
       expiresAt,
+      // Bind the session to the switched-into tenant/role so a later token
+      // refresh preserves the switch instead of reverting to the home tenant.
+      tenantId: targetTenantId,
+      role,
     });
     // Mark this tenant as most-recently-accessed for the switcher's "recent"
     // ordering. No-ops for a super-admin with no explicit access row.
@@ -455,10 +467,33 @@ export async function refresh(refreshToken: string): Promise<AuthTokens> {
     throw AppError.unauthorized('User not found or deactivated');
   }
 
-  const jwtPayload: JwtPayload = { userId: user.id, tenantId: user.tenantId, role: user.role, isSuperAdmin: user.isSuperAdmin || false };
+  // Preserve the tenant/role the session was operating under, so an expired
+  // access token refreshed mid-session doesn't silently revert a tenant
+  // switch (the root cause of "it switched tenants on me and wiped my
+  // inputs"). Pre-migration sessions have no stored context — fall back to
+  // the user's home tenant/role.
+  let effectiveTenantId = session.tenantId ?? user.tenantId;
+  let effectiveRole = session.role ?? user.role;
+
+  // If the session is scoped to a non-home tenant, re-verify the user still
+  // has active access before re-issuing — revoked access must not keep
+  // refreshing into it. Super-admins retain cross-tenant access.
+  if (effectiveTenantId !== user.tenantId && !user.isSuperAdmin) {
+    const access = await db.query.userTenantAccess.findFirst({
+      where: and(eq(userTenantAccess.userId, user.id), eq(userTenantAccess.tenantId, effectiveTenantId)),
+    });
+    if (!access || !access.isActive) {
+      effectiveTenantId = user.tenantId;
+      effectiveRole = user.role;
+    } else {
+      effectiveRole = access.role || effectiveRole;
+    }
+  }
+
+  const jwtPayload: JwtPayload = { userId: user.id, tenantId: effectiveTenantId, role: effectiveRole, isSuperAdmin: user.isSuperAdmin || false };
   const newAccessToken = generateAccessToken(jwtPayload);
   const newRefreshToken = generateRefreshToken();
-  await createSession(user.id, newRefreshToken);
+  await createSession(user.id, newRefreshToken, { tenantId: effectiveTenantId, role: effectiveRole });
 
   return { accessToken: newAccessToken, refreshToken: newRefreshToken };
 }

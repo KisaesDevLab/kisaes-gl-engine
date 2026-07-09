@@ -890,6 +890,13 @@
       "when": 1777260000000,
       "tag": "0126_recurring_name",
       "breakpoints": true
+    },
+    {
+      "idx": 127,
+      "version": "7",
+      "when": 1777263600000,
+      "tag": "0127_sessions_tenant_context",
+      "breakpoints": true
     }
   ]
 }

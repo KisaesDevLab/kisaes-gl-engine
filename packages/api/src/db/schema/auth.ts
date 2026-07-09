@@ -73,5 +73,11 @@ export const sessions = pgTable('sessions', {
   userId: uuid('user_id').notNull().references(() => users.id),
   refreshTokenHash: varchar('refresh_token_hash', { length: 255 }).notNull().unique(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  // The tenant/role this session is operating under, so token refresh
+  // preserves a mid-session tenant switch instead of reverting to the
+  // user's home tenant. Nullable: pre-migration sessions fall back to the
+  // user's home tenant/role at refresh time.
+  tenantId: uuid('tenant_id'),
+  role: varchar('role', { length: 20 }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
