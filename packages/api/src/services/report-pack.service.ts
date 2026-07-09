@@ -25,6 +25,10 @@ import { tenantStorageKey } from './storage/storage-keys.js';
 // Transient PDF artifacts live for 60 minutes after a successful render.
 const ARTIFACT_TTL_MS = 60 * 60 * 1000;
 
+// How long to wait for the Redis queue to accept a job before falling back to
+// inline generation. A healthy local Redis enqueues in well under this.
+const ENQUEUE_TIMEOUT_MS = 2500;
+
 export interface PackItemInput {
   reportId: string;
   options?: ReportPackItemOptions;
@@ -43,6 +47,7 @@ export interface CreatePackInput {
   coverPage?: boolean;
   toc?: boolean;
   pageNumbers?: boolean;
+  pageFooter?: string | null;
   filenameTemplate?: string;
   onError?: 'skip' | 'fail';
   items: PackItemInput[];
@@ -128,6 +133,7 @@ function packValues(companyId: string, input: CreatePackInput) {
     coverPage: input.coverPage ?? true,
     toc: input.toc ?? true,
     pageNumbers: input.pageNumbers ?? true,
+    pageFooter: (input.pageFooter && input.pageFooter.trim()) ? input.pageFooter.trim() : null,
     filenameTemplate: input.filenameTemplate ?? '{pack}-{date}',
     onError: input.onError ?? 'skip',
   };
@@ -206,6 +212,7 @@ export async function duplicatePack(
     coverPage: source.coverPage,
     toc: source.toc,
     pageNumbers: source.pageNumbers,
+    pageFooter: source.pageFooter,
     filenameTemplate: source.filenameTemplate,
     onError: source.onError,
   }).returning();
@@ -264,25 +271,35 @@ export async function createRun(
     status: 'queued',
     progress: 0,
   }).returning();
-  // Generation runs in the background worker (Redis-backed queue). If the
-  // queue can't be reached — the worker and/or Redis service isn't running —
-  // fail with a clear, actionable message and mark the run failed, instead of
-  // surfacing an opaque "Internal server error".
+  // Prefer the background worker (Redis-backed queue) so the heavy multi-render
+  // stays off the request path. But appliance deployments may not run a
+  // separate worker/Redis — if the queue can't be reached within a short
+  // window, fall back to generating inline in THIS API process (fire-and-
+  // forget; the client polls run status) so the run still completes instead of
+  // dead-ending on "worker/Redis unavailable".
+  let queued = false;
   try {
-    await enqueueReportPack({ runId: run!.id, tenantId });
+    await Promise.race([
+      enqueueReportPack({ runId: run!.id, tenantId }),
+      new Promise((_, reject) => {
+        const t = setTimeout(() => reject(new Error('enqueue timeout')), ENQUEUE_TIMEOUT_MS);
+        t.unref?.();
+      }),
+    ]);
+    queued = true;
   } catch (err) {
-    await db.update(reportPackRuns)
-      .set({
-        status: 'failed',
-        errorJson: { message: 'Could not queue report pack generation — the background worker/Redis is not reachable.' },
-        finishedAt: new Date(),
-      })
-      .where(eq(reportPackRuns.id, run!.id));
-    throw new AppError(
-      503,
-      'Report pack generation is unavailable — the background worker and Redis must be running. Check that the "worker" and "redis" services are up.',
-      'PACK_QUEUE_UNAVAILABLE',
-    );
+    console.warn(`[report-pack] queue unavailable for run ${run!.id}; generating inline:`, err instanceof Error ? err.message : err);
+  }
+  if (!queued) {
+    void (async () => {
+      try {
+        const { generateReportPackRun } = await import('./report-pack-generate.service.js');
+        await generateReportPackRun(run!.id);
+      } catch (genErr) {
+        // generateReportPackRun marks the run failed on throw; log for ops.
+        console.error(`[report-pack] inline generation failed for run ${run!.id}:`, genErr);
+      }
+    })();
   }
   await auditLog(tenantId, 'create', 'report_pack_run', run!.id, null, run, userId);
   return run!;

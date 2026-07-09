@@ -897,6 +897,13 @@
       "when": 1777263600000,
       "tag": "0127_sessions_tenant_context",
       "breakpoints": true
+    },
+    {
+      "idx": 128,
+      "version": "7",
+      "when": 1777267200000,
+      "tag": "0128_report_pack_page_footer",
+      "breakpoints": true
     }
   ]
 }

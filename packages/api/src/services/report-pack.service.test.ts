@@ -73,6 +73,13 @@ describe('report-pack.service', () => {
     expect(pack.items[1]!.sortOrder).toBe(1);
   });
 
+  it('persists a per-page footer (trimmed; blank → null)', async () => {
+    const withFooter = await packService.createPack(tenantId, companyId, USER_ID, baseInput({ pageFooter: '  Confidential — Board Use Only  ' }));
+    expect(withFooter.pageFooter).toBe('Confidential — Board Use Only');
+    const blank = await packService.createPack(tenantId, companyId, USER_ID, baseInput({ name: 'NoFooter', pageFooter: '   ' }));
+    expect(blank.pageFooter).toBeNull();
+  });
+
   it('rejects an unknown report id', async () => {
     await expect(
       packService.createPack(tenantId, companyId, USER_ID, baseInput({ items: [{ reportId: 'not-real' }] })),

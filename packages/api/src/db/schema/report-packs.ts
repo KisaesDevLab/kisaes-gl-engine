@@ -49,6 +49,9 @@ export const reportPacks = pgTable('report_packs', {
   coverPage: boolean('cover_page').notNull().default(true),
   toc: boolean('toc').notNull().default(true),
   pageNumbers: boolean('page_numbers').notNull().default(true),
+  // Optional per-page footer text printed on every page of the generated PDF.
+  // Overrides the tenant's default report footer for this pack when set.
+  pageFooter: varchar('page_footer', { length: 500 }),
   filenameTemplate: varchar('filename_template', { length: 255 }).notNull().default('{pack}-{date}'),
   // 'skip' → record the failed section and continue (final status 'partial');
   // 'fail' → abort the whole run on the first section error.

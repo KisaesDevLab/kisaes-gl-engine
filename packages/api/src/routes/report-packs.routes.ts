@@ -50,6 +50,7 @@ const packBodySchema = z.object({
   coverPage: z.boolean().optional(),
   toc: z.boolean().optional(),
   pageNumbers: z.boolean().optional(),
+  pageFooter: z.string().max(500).nullable().optional(),
   filenameTemplate: z.string().max(255).optional(),
   onError: z.enum(['skip', 'fail']).optional(),
   items: z.array(packItemSchema).max(30),
