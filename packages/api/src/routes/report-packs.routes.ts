@@ -23,6 +23,7 @@ import { requirePermission } from '../middleware/permission.js';
 import { expensiveOpLimiter } from '../middleware/expensive-op-limiter.js';
 import { validate } from '../middleware/validate.js';
 import * as packService from '../services/report-pack.service.js';
+import { getReportPackQueueHealth } from '../services/extraction/queue.js';
 import { REPORT_CATALOG } from '@kis-books/shared';
 
 export const reportPacksRouter = Router();
@@ -76,6 +77,14 @@ reportPacksRouter.get('/packs', readPerm, async (req, res) => {
 reportPacksRouter.post('/packs', readPerm, validate(packBodySchema), async (req, res) => {
   const pack = await packService.createPack(req.tenantId, req.companyId, req.userId, req.body);
   res.status(201).json(pack);
+});
+
+// Background-worker health (declared before '/packs/:id' so it isn't captured
+// as a pack id). Reports whether Redis + a report-pack worker are reachable;
+// when they aren't, packs still generate inline in the API.
+reportPacksRouter.get('/packs/worker-health', readPerm, async (_req, res) => {
+  const health = await getReportPackQueueHealth();
+  res.json(health);
 });
 
 reportPacksRouter.get('/packs/:id', readPerm, async (req, res) => {

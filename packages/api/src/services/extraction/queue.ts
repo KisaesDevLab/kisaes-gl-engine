@@ -144,6 +144,28 @@ export async function enqueueReportPack(data: ReportPackJobData): Promise<void> 
   await getReportPackQueue().add('render', data, { jobId: `pack:${data.runId}` });
 }
 
+// Report-pack background health for the UI: whether Redis is reachable and
+// whether at least one worker is consuming the queue. When the worker is
+// absent, createRun still generates inline in the API — this just surfaces
+// that the dedicated worker isn't running. Bounded so a dead Redis can't hang
+// the request.
+export async function getReportPackQueueHealth(
+  timeoutMs = 2000,
+): Promise<{ redisReachable: boolean; workerRunning: boolean }> {
+  try {
+    const workers = await Promise.race([
+      getReportPackQueue().getWorkers(),
+      new Promise<never>((_, reject) => {
+        const t = setTimeout(() => reject(new Error('health timeout')), timeoutMs);
+        t.unref?.();
+      }),
+    ]);
+    return { redisReachable: true, workerRunning: Array.isArray(workers) && workers.length > 0 };
+  } catch {
+    return { redisReachable: false, workerRunning: false };
+  }
+}
+
 /** Enqueue the render step for a freshly-created job. */
 export async function enqueueRender(data: RenderJobData): Promise<void> {
   // jobId as the BullMQ job id makes the enqueue idempotent — re-enqueuing
