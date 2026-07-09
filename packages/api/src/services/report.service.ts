@@ -883,9 +883,26 @@ export async function buildExpenseByVendor(
   // expense accounts the vendor was paid to + a vendor total. The flat
   // `data` summary is unchanged either way (api-v2 / MCP / older clients).
   detail = false,
+  basis: Basis = 'accrual',
 ) {
   const tagClause = tagId ? sql`AND jl.tag_id = ${tagId}` : sql``;
-  const rows = await db.execute(sql`
+  const cbTag = tagId ? sql`AND cb.tag_id = ${tagId}` : sql``;
+  // Cash basis groups by the PAYMENT's contact (cb.txn_contact_id); the
+  // check-image payee fallback is accrual-only.
+  const rows = basis === 'cash'
+    ? await db.execute(sql`
+        WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
+        SELECT c.id as contact_id,
+          COALESCE(c.display_name, 'Uncategorized') as vendor_name,
+          SUM(cb.debit) as total
+        FROM cb_lines cb
+        JOIN accounts a ON a.id = cb.account_id AND a.account_type IN ('cogs', 'expense', 'other_expense')
+        LEFT JOIN contacts c ON c.id = cb.txn_contact_id AND c.tenant_id = ${tenantId}
+        WHERE a.tenant_id = ${tenantId} AND cb.debit > 0 ${cbTag}
+        GROUP BY c.id, c.display_name
+        ORDER BY total DESC
+      `)
+    : await db.execute(sql`
     SELECT c.id as contact_id,
       -- STATEMENT_CHECK_PAYEE_V1 — fall back to the payee read off the check
       -- image when no contact matched, so checks roll up under the real payee
@@ -911,7 +928,22 @@ export async function buildExpenseByVendor(
 
   // Detail — one row per (vendor, account). Vendors ordered by their total
   // (matches the summary); accounts within a vendor by descending total.
-  const detailRows = await db.execute(sql`
+  const detailRows = basis === 'cash'
+    ? await db.execute(sql`
+        WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
+        SELECT
+          COALESCE(c.id::text, 'uncategorized') AS vendor_key,
+          c.id AS contact_id,
+          COALESCE(c.display_name, 'Uncategorized') AS vendor_name,
+          a.id AS account_id, a.account_number, a.name AS account_name,
+          SUM(cb.debit) AS total
+        FROM cb_lines cb
+        JOIN accounts a ON a.id = cb.account_id AND a.account_type IN ('cogs', 'expense', 'other_expense')
+        LEFT JOIN contacts c ON c.id = cb.txn_contact_id AND c.tenant_id = ${tenantId}
+        WHERE a.tenant_id = ${tenantId} AND cb.debit > 0 ${cbTag}
+        GROUP BY vendor_key, c.id, vendor_name, a.id, a.account_number, a.name
+      `)
+    : await db.execute(sql`
     SELECT
       COALESCE(c.id::text, t.payee_name_on_check) AS vendor_key,
       c.id AS contact_id,
@@ -1003,6 +1035,7 @@ export async function buildExpenseByCategory(
   // shape and SUM(jl.debit) semantics either way so api-v2 / MCP
   // callers are untouched.
   detail = false,
+  basis: Basis = 'accrual',
 ) {
   const tagClause = tagId ? sql`AND jl.tag_id = ${tagId}` : sql``;
   const hasIdFilter = !!accountIds && accountIds.length > 0;
@@ -1012,8 +1045,23 @@ export async function buildExpenseByCategory(
     hasIdFilter
       ? sql`AND ${sql.raw(colRef)} IN (${sql.join(accountIds!.map((id) => sql`${id}`), sql`, `)})`
       : sql``;
+  // Cash-basis filters over the virtual ledger (cb_lines).
+  const cbTag = tagId ? sql`AND cb.tag_id = ${tagId}` : sql``;
+  const cbId = hasIdFilter
+    ? sql`AND cb.account_id IN (${sql.join(accountIds!.map((id) => sql`${id}`), sql`, `)})`
+    : sql``;
 
-  const rows = await db.execute(sql`
+  const rows = basis === 'cash'
+    ? await db.execute(sql`
+        WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
+        SELECT a.id as account_id, a.name as category, a.account_number, a.account_type,
+          SUM(cb.debit) as total
+        FROM cb_lines cb
+        JOIN accounts a ON a.id = cb.account_id AND a.account_type IN ('cogs', 'expense', 'other_expense')
+        WHERE a.tenant_id = ${tenantId} AND cb.debit > 0 ${cbTag} ${cbId}
+        GROUP BY a.id ORDER BY total DESC
+      `)
+    : await db.execute(sql`
     SELECT a.id as account_id, a.name as category, a.account_number, a.account_type,
       SUM(jl.debit) as total
     FROM journal_lines jl
@@ -1052,7 +1100,23 @@ export async function buildExpenseByCategory(
   // period-activity query restricted to expense-type accounts). Unlike
   // the summary, credits are included so refunds show and the subtotal
   // nets them out.
-  const linesResult = await db.execute(sql`
+  const linesResult = basis === 'cash'
+    ? await db.execute(sql`
+        WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
+        SELECT
+          (row_number() OVER (ORDER BY cb.account_id, cb.txn_date, cb.line_order))::text AS line_id,
+          cb.account_id, cb.debit, cb.credit,
+          cb.description AS line_description,
+          cb.transaction_id, cb.txn_date, cb.txn_type, cb.txn_number,
+          cb.memo AS txn_memo,
+          c.display_name AS contact_name
+        FROM cb_lines cb
+        JOIN accounts a ON a.id = cb.account_id AND a.account_type IN ('cogs', 'expense', 'other_expense')
+        LEFT JOIN contacts c ON c.id = cb.txn_contact_id AND c.tenant_id = ${tenantId}
+        WHERE a.tenant_id = ${tenantId} AND (cb.debit <> 0 OR cb.credit <> 0) ${cbTag} ${cbId}
+        ORDER BY cb.account_id, cb.txn_date, cb.line_order
+      `)
+    : await db.execute(sql`
     SELECT
       jl.id AS line_id,
       jl.account_id,
@@ -1174,6 +1238,9 @@ export interface AccountDetailReportOpts {
   // ending balance tie to the Balance Sheet. P&L groups leave this off — they
   // reset to 0 each period.
   carryForward?: boolean;
+  // Cash basis sources from the virtual cash-basis ledger (recognition at
+  // payment dates); accrual (default) reads the posted journal.
+  basis?: Basis;
 }
 
 export async function buildAccountDetailReport(
@@ -1203,7 +1270,26 @@ export async function buildAccountDetailReport(
   // other_revenue), falling back after any unlisted type.
   const typeOrderCase = sql.join(accountTypes.map((t, i) => sql`WHEN ${t} THEN ${i}`), sql` `);
 
-  const rows = await db.execute(sql`
+  // Cash-basis variants: source from the virtual cash-basis ledger (cb_lines),
+  // which already scopes the date range + company. Same tag / account filters.
+  const basis = opts.basis ?? 'accrual';
+  const cbSideCol = sql.raw(creditNormal ? 'cb.credit' : 'cb.debit');
+  const cbTag = tagId ? sql`AND cb.tag_id = ${tagId}` : sql``;
+  const cbId = hasIdFilter
+    ? sql`AND cb.account_id IN (${sql.join(accountIds!.map((id) => sql`${id}`), sql`, `)})`
+    : sql``;
+
+  const rows = basis === 'cash'
+    ? await db.execute(sql`
+        WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
+        SELECT a.id as account_id, a.name as category, a.account_number, a.account_type,
+          SUM(${cbSideCol}) as total
+        FROM cb_lines cb
+        JOIN accounts a ON a.id = cb.account_id AND a.account_type IN (${typeList})
+        WHERE a.tenant_id = ${tenantId} AND ${cbSideCol} > 0 ${cbTag} ${cbId}
+        GROUP BY a.id ORDER BY total DESC
+      `)
+    : await db.execute(sql`
     SELECT a.id as account_id, a.name as category, a.account_number, a.account_type,
       SUM(${sideCol}) as total
     FROM journal_lines jl
@@ -1234,7 +1320,23 @@ export async function buildAccountDetailReport(
       name
   `);
 
-  const linesResult = await db.execute(sql`
+  const linesResult = basis === 'cash'
+    ? await db.execute(sql`
+        WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
+        SELECT
+          (row_number() OVER (ORDER BY cb.account_id, cb.txn_date, cb.line_order))::text AS line_id,
+          cb.account_id, cb.debit, cb.credit,
+          cb.description AS line_description,
+          cb.transaction_id, cb.txn_date, cb.txn_type, cb.txn_number,
+          cb.memo AS txn_memo,
+          c.display_name AS contact_name
+        FROM cb_lines cb
+        JOIN accounts a ON a.id = cb.account_id AND a.account_type IN (${typeList})
+        LEFT JOIN contacts c ON c.id = cb.txn_contact_id AND c.tenant_id = ${tenantId}
+        WHERE a.tenant_id = ${tenantId} AND (cb.debit <> 0 OR cb.credit <> 0) ${cbTag} ${cbId}
+        ORDER BY cb.account_id, cb.txn_date, cb.line_order
+      `)
+    : await db.execute(sql`
     SELECT
       jl.id AS line_id,
       jl.account_id,
@@ -1279,7 +1381,21 @@ export async function buildAccountDetailReport(
   // period query so filters stay consistent.
   const beginByAccount = new Map<string, number>();
   if (carryForward) {
-    const beginRows = await db.execute(sql`
+    // Day before the period start — the cash-basis ledger's date window is
+    // inclusive, so this gives all recognition strictly before the period.
+    const dayBefore = new Date(new Date(startDate + 'T00:00:00Z').getTime() - 86400000).toISOString().split('T')[0]!;
+    const beginRows = basis === 'cash'
+      ? await db.execute(sql`
+          WITH ${cashBasisLinesWith(tenantId, null, dayBefore, companyId)}
+          SELECT cb.account_id,
+            COALESCE(SUM(cb.debit), 0) AS begin_debit,
+            COALESCE(SUM(cb.credit), 0) AS begin_credit
+          FROM cb_lines cb
+          JOIN accounts a ON a.id = cb.account_id AND a.account_type IN (${typeList})
+          WHERE a.tenant_id = ${tenantId} ${cbTag} ${cbId}
+          GROUP BY cb.account_id
+        `)
+      : await db.execute(sql`
       SELECT jl.account_id,
         COALESCE(SUM(jl.debit), 0) AS begin_debit,
         COALESCE(SUM(jl.credit), 0) AS begin_credit
@@ -1370,9 +1486,25 @@ export async function buildSalesByCustomer(
   endDate: string,
   companyId: string | null = null,
   tagId: string | null = null,
+  basis: Basis = 'accrual',
 ) {
   const tagClause = tagId ? sql`AND jl.tag_id = ${tagId}` : sql``;
-  const rows = await db.execute(sql`
+  const cbTag = tagId ? sql`AND cb.tag_id = ${tagId}` : sql``;
+  // Cash basis recognizes revenue when the customer pays (cb_lines Rule 3 for
+  // invoices at payment; cash sales pass through) grouped by the payment's
+  // contact. Accrual counts sale-document revenue by the document's contact.
+  const rows = basis === 'cash'
+    ? await db.execute(sql`
+        WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
+        SELECT c.id as contact_id, COALESCE(c.display_name, 'Uncategorized') as customer_name,
+          SUM(cb.credit) as total
+        FROM cb_lines cb
+        JOIN accounts a ON a.id = cb.account_id AND a.account_type IN ('revenue', 'other_revenue')
+        LEFT JOIN contacts c ON c.id = cb.txn_contact_id AND c.tenant_id = ${tenantId}
+        WHERE a.tenant_id = ${tenantId} AND cb.credit > 0 ${cbTag}
+        GROUP BY c.id, c.display_name ORDER BY total DESC
+      `)
+    : await db.execute(sql`
     SELECT c.id as contact_id, COALESCE(c.display_name, 'Uncategorized') as customer_name,
       SUM(jl.credit) as total
     FROM journal_lines jl
@@ -1402,9 +1534,27 @@ export async function buildSalesByItem(
   endDate: string,
   companyId: string | null = null,
   tagId: string | null = null,
+  basis: Basis = 'accrual',
 ) {
   const tagClause = tagId ? sql`AND jl.tag_id = ${tagId}` : sql``;
-  const rows = await db.execute(sql`
+  const cbTag = tagId ? sql`AND cb.tag_id = ${tagId}` : sql``;
+  const rows = basis === 'cash'
+    ? await db.execute(sql`
+        WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
+        SELECT
+          cb.item_id,
+          COALESCE(i.name, 'Uncategorized') as item_name,
+          COALESCE(i.sku, '') as item_sku,
+          SUM(cb.credit) as total,
+          COUNT(DISTINCT cb.transaction_id)::int as txn_count
+        FROM cb_lines cb
+        JOIN accounts a ON a.id = cb.account_id AND a.account_type IN ('revenue', 'other_revenue')
+        LEFT JOIN items i ON i.id = cb.item_id AND i.tenant_id = ${tenantId}
+        WHERE a.tenant_id = ${tenantId} AND cb.credit > 0 ${cbTag}
+        GROUP BY cb.item_id, i.name, i.sku
+        ORDER BY total DESC
+      `)
+    : await db.execute(sql`
     SELECT
       jl.item_id,
       COALESCE(i.name, 'Uncategorized') as item_name,
@@ -1934,9 +2084,14 @@ export async function buildGeneralLedger(
   // carrying that tag contribute to beginning balances and period
   // activity, so the ledger reads as the segment's standalone book.
   tagId: string | null = null,
+  basis: Basis = 'accrual',
 ) {
   // Evaluated as an inline conjunct. Empty sql`` is a no-op append.
   const tagClause = tagId ? sql` AND jl.tag_id = ${tagId}` : sql``;
+  const cbTag = tagId ? sql` AND cb.tag_id = ${tagId}` : sql``;
+  // Day before the period start for the cash-basis beginning-balance window
+  // (cb_lines' date range is inclusive).
+  const dayBeforeStart = new Date(new Date(startDate + 'T00:00:00Z').getTime() - 86400000).toISOString().split('T')[0]!;
   const fyStartMonth = await getFiscalYearStart(tenantId, companyId);
   // UTC getters — same pattern as buildBalanceSheet. Local getters on a
   // UTC-parsed 'YYYY-MM-DD' shift the day west of UTC, which flipped the
@@ -1972,7 +2127,24 @@ export async function buildGeneralLedger(
   // 2. Beginning balances (per account) — debit-side and credit-side sums
   //    of all activity strictly before the report startDate. For income
   //    statement accounts, only count activity from the fiscal year start.
-  const beginResult = await db.execute(sql`
+  const beginResult = basis === 'cash'
+    ? await db.execute(sql`
+        WITH ${cashBasisLinesWith(tenantId, null, dayBeforeStart, companyId)}
+        SELECT a.id,
+          COALESCE(SUM(
+            CASE WHEN a.account_type IN ('asset','liability','equity') THEN cb.debit
+                 WHEN cb.txn_date >= ${fyStart} THEN cb.debit ELSE 0 END
+          ), 0) AS begin_debit,
+          COALESCE(SUM(
+            CASE WHEN a.account_type IN ('asset','liability','equity') THEN cb.credit
+                 WHEN cb.txn_date >= ${fyStart} THEN cb.credit ELSE 0 END
+          ), 0) AS begin_credit
+        FROM accounts a
+        LEFT JOIN cb_lines cb ON cb.account_id = a.id${cbTag}
+        WHERE a.tenant_id = ${tenantId}
+        GROUP BY a.id
+      `)
+    : await db.execute(sql`
     SELECT a.id,
       COALESCE(SUM(
         CASE
@@ -2004,7 +2176,24 @@ export async function buildGeneralLedger(
   `);
 
   // 3. Period activity (all journal lines in [startDate, endDate])
-  const linesResult = await db.execute(sql`
+  const linesResult = basis === 'cash'
+    ? await db.execute(sql`
+        WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
+        SELECT
+          (row_number() OVER (ORDER BY cb.account_id, cb.txn_date, cb.line_order))::text AS line_id,
+          cb.account_id, cb.debit, cb.credit,
+          cb.description AS line_description, cb.line_order,
+          cb.tag_id AS line_tag_id, tag.name AS line_tag_name,
+          cb.transaction_id, cb.txn_date, cb.txn_type, cb.txn_number,
+          cb.memo AS txn_memo,
+          c.display_name AS contact_name
+        FROM cb_lines cb
+        LEFT JOIN contacts c ON c.id = cb.txn_contact_id AND c.tenant_id = ${tenantId}
+        LEFT JOIN tags tag ON tag.id = cb.tag_id AND tag.tenant_id = ${tenantId}
+        WHERE (cb.debit <> 0 OR cb.credit <> 0)${cbTag}
+        ORDER BY cb.account_id, cb.txn_date, cb.line_order
+      `)
+    : await db.execute(sql`
     SELECT
       jl.id AS line_id,
       jl.account_id,
@@ -2177,6 +2366,7 @@ export async function buildTrialBalance(
   // while still narrowing the report to transactions the tag actually
   // touched.
   tagId: string | null = null,
+  basis: Basis = 'accrual',
 ) {
   const fyStartMonth = await getFiscalYearStart(tenantId, companyId);
 
@@ -2195,7 +2385,30 @@ export async function buildTrialBalance(
   // For income statement accounts (revenue, expense): show balance only from fiscal year start through end date
   // This implements virtual year-end closing — revenue/expense reset at fiscal year boundaries
 
-  const rows = await db.execute(sql`
+  // Cash basis reads the virtual cash-basis ledger (already scoped to
+  // <= endDate); the fiscal-year cutoff for P&L accounts uses each line's
+  // recognition date (cb.txn_date). Accrual reads the posted journal.
+  const cashTagClause = tagId ? sql`AND cb.tag_id = ${tagId}` : sql``;
+  const rows = basis === 'cash'
+    ? await db.execute(sql`
+        WITH ${cashBasisLinesWith(tenantId, null, endDate, companyId)}
+        SELECT a.id, a.account_number, a.name, a.account_type,
+          COALESCE(SUM(
+            CASE WHEN a.account_type IN ('asset', 'liability', 'equity')
+              THEN cb.debit ELSE CASE WHEN cb.txn_date >= ${fyStart} THEN cb.debit ELSE 0 END END
+          ), 0) as total_debit,
+          COALESCE(SUM(
+            CASE WHEN a.account_type IN ('asset', 'liability', 'equity')
+              THEN cb.credit ELSE CASE WHEN cb.txn_date >= ${fyStart} THEN cb.credit ELSE 0 END END
+          ), 0) as total_credit
+        FROM accounts a
+        LEFT JOIN cb_lines cb ON cb.account_id = a.id ${cashTagClause}
+        WHERE a.tenant_id = ${tenantId}
+        GROUP BY a.id
+        HAVING COALESCE(SUM(cb.debit), 0) > 0 OR COALESCE(SUM(cb.credit), 0) > 0
+        ORDER BY a.account_number, a.name
+      `)
+    : await db.execute(sql`
     SELECT a.id, a.account_number, a.name, a.account_type,
       COALESCE(SUM(
         CASE WHEN a.account_type IN ('asset', 'liability', 'equity')

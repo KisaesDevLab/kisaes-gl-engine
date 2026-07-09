@@ -915,6 +915,11 @@ function readTagFilter(req: { query: Record<string, unknown> }): string | null {
   return raw;
 }
 
+// ?basis=cash | accrual (default accrual). Anything else falls back to accrual.
+function readBasis(req: { query: Record<string, unknown> }): 'cash' | 'accrual' {
+  return req.query['basis'] === 'cash' ? 'cash' : 'accrual';
+}
+
 // Multi-account filter: ?account_ids=<uuid>,<uuid>,... (comma-separated).
 // Malformed entries are dropped rather than 400ing — the SQL join
 // re-validates tenant ownership + account type anyway, so a bad id can
@@ -1238,7 +1243,7 @@ reportsRouter.get('/expense-by-vendor', async (req, res) => {
     req.tenantId,
     start_date || `${today.getFullYear()}-01-01`,
     end_date || today.toISOString().split('T')[0]!,
-    resolveCompanyScope(req), readTagFilter(req), detail,
+    resolveCompanyScope(req), readTagFilter(req), detail, readBasis(req),
   );
   if (detail) {
     // Detail exports flatten via the vendorGroups branch in
@@ -1275,6 +1280,7 @@ function accountDetailReportRoute(
         accountIds: readAccountIds(req),
         detail,
         carryForward: cfg.carryForward ?? false,
+        basis: readBasis(req),
       },
     );
     if (detail) { await respond(res, data, format); return; }
@@ -1309,6 +1315,7 @@ reportsRouter.get('/expense-by-category', async (req, res) => {
     readTagFilter(req),
     readAccountIds(req),
     detail,
+    readBasis(req),
   );
   if (detail) {
     // Detail exports are flattened by the dedicated groups+grandTotal
@@ -1334,6 +1341,7 @@ reportsRouter.get('/sales-by-customer', async (req, res) => {
     end_date || today.toISOString().split('T')[0]!,
     resolveCompanyScope(req),
     readTagFilter(req),
+    readBasis(req),
   );
   await respond(res, { ...data, _exportColumns: [
     { key: 'customer_name', label: 'Customer' },
@@ -1350,6 +1358,7 @@ reportsRouter.get('/sales-by-item', async (req, res) => {
     end_date || today.toISOString().split('T')[0]!,
     resolveCompanyScope(req),
     readTagFilter(req),
+    readBasis(req),
   );
   await respond(res, { ...data, _exportColumns: [
     { key: 'item_sku', label: 'SKU' },
@@ -1582,7 +1591,7 @@ reportsRouter.get('/vendor-1099-summary', async (req, res) => {
 reportsRouter.get('/general-ledger', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
   const today = new Date();
-  const data = await reportService.buildGeneralLedger(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!, resolveCompanyScope(req), readTagFilter(req));
+  const data = await reportService.buildGeneralLedger(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!, resolveCompanyScope(req), readTagFilter(req), readBasis(req));
   await respond(res, data, format);
 });
 
@@ -1596,6 +1605,7 @@ reportsRouter.get('/trial-balance', async (req, res) => {
     end_date || as_of_date || today,
     resolveCompanyScope(req),
     readTagFilter(req),
+    readBasis(req),
   );
   await respond(res, { ...data, _exportColumns: [
     { key: 'account_number', label: '#' },
@@ -1636,7 +1646,7 @@ reportsRouter.get('/account-activity-summary', async (req, res) => {
 reportsRouter.get('/transaction-list', async (req, res) => {
   const { start_date, end_date, txn_type, account_id, format } = req.query as Record<string, string>;
   const tagId = readTagFilter(req);
-  const data = await reportService.buildTransactionList(req.tenantId, { startDate: start_date, endDate: end_date, txnType: txn_type, accountId: account_id, ...(tagId ? { tagId } : {}) }, resolveCompanyScope(req));
+  const data = await reportService.buildTransactionList(req.tenantId, { startDate: start_date, endDate: end_date, txnType: txn_type, accountId: account_id, ...(tagId ? { tagId } : {}), basis: readBasis(req) }, resolveCompanyScope(req));
   // One row per journal line: mark the first line of each transaction so the
   // PDF draws a thicker rule between transactions. Wide 8-column layout →
   // landscape.
