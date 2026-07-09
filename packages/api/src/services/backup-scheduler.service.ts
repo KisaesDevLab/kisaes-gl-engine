@@ -8,6 +8,7 @@ import { getSetting, setSetting } from './admin.service.js';
 import { decrypt as decryptField } from '../utils/encryption.js';
 import {
   createBackup,
+  createSystemBackup,
   purgeExpiredLocalBackups,
   purgeExpiredRemoteBackups,
   type GfsRetentionConfig,
@@ -70,6 +71,17 @@ async function runBackupCycle(): Promise<void> {
     }
 
     console.log(`[Backup Scheduler] Backups complete: ${successCount} OK, ${errorCount} failed`);
+
+    // Also create a full SYSTEM backup (all tenants/users/config + the
+    // recovery files + attachment FILES) so the automated backup is genuinely
+    // restorable on a new server — a per-tenant backup alone can't rebuild the
+    // installation (no users/tenants/config) and carries no attachment files.
+    try {
+      const sys = await createSystemBackup(passphrase, undefined, { includeAttachments: true });
+      console.log(`[Backup Scheduler] System backup created: ${sys.fileName} (${sys.size} bytes)`);
+    } catch (err) {
+      console.error(`[Backup Scheduler] System backup failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     // Purge expired local backups
     const localRetentionStr = await getSetting('backup_local_retention_days');

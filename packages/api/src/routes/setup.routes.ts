@@ -399,8 +399,17 @@ setupRouter.post('/restore/validate', upload.single('file'), async (req, res) =>
 
   try {
     const { smartDecrypt } = await import('../services/portable-encryption.service.js');
-    const { data, method } = smartDecrypt(req.file.buffer, passphrase);
-    const content = JSON.parse(data.toString());
+    const { isPackageFormat, readTenantPackage } = await import('../services/vmx-package.js');
+    let content;
+    let method: 'passphrase' | 'server_key' = 'passphrase';
+    if (isPackageFormat(req.file.buffer)) {
+      const pkg = await readTenantPackage(req.file.buffer, passphrase);
+      content = pkg.data;
+    } else {
+      const decrypted = smartDecrypt(req.file.buffer, passphrase);
+      content = JSON.parse(decrypted.data.toString());
+      method = decrypted.method;
+    }
     const metadata = content.metadata ?? {};
 
     // Determine what's in the backup
@@ -468,9 +477,23 @@ setupRouter.post('/restore/execute', upload.single('file'), async (req, res) => 
         throw new Error('Tenants appeared between pre-check and lock acquisition');
       }
 
+      // A .vmx package (ZIP) carries the DB dump plus attachment files; a
+      // legacy .vmb/.kbk is a single encrypted JSON blob. Detect and read the
+      // right one; `content` is the same DB payload either way.
       const { smartDecrypt } = await import('../services/portable-encryption.service.js');
-      const { data } = smartDecrypt(req.file!.buffer, passphrase);
-      const content = JSON.parse(data.toString());
+      const { isPackageFormat, readTenantPackage } = await import('../services/vmx-package.js');
+      // `content` is the decrypted DB payload (evolving-any, exactly as the
+      // original JSON.parse path — rows are re-inserted via parameterized SQL).
+      let content;
+      let packageAttachments: (() => AsyncGenerator<{ id: string; buffer: Buffer }>) | null = null;
+      if (isPackageFormat(req.file!.buffer)) {
+        const pkg = await readTenantPackage(req.file!.buffer, passphrase);
+        content = pkg.data;
+        packageAttachments = () => pkg.attachments();
+      } else {
+        const { data } = smartDecrypt(req.file!.buffer, passphrase);
+        content = JSON.parse(data.toString());
+      }
       const metadata = content.metadata ?? {};
       const isSystem = metadata.backup_type === 'system' || metadata.format === 'kis-books-system-v1';
 
@@ -539,6 +562,36 @@ setupRouter.post('/restore/execute', upload.single('file'), async (req, res) => 
             if (restored.has(tableName) || !rows || rows.length === 0) continue;
             await restoreTableRows(db, tableName, rows);
           }
+        }
+
+        // Restore attachment FILES (present only in .vmx packages). Map each
+        // bundled file id to its tenant + storage key from the restored
+        // attachment rows, then write the blob back through that tenant's
+        // storage provider so receipts/documents survive the restore.
+        if (packageAttachments) {
+          const idToTarget = new Map<string, { tenantId: string; storageKey: string }>();
+          for (const [tid, tables] of Object.entries(content.tenant_data || {})) {
+            for (const att of ((tables as Record<string, Array<Record<string, unknown>>>)['attachments'] || [])) {
+              const sk = (att['storage_key'] as string | null) || null;
+              if (sk) idToTarget.set(att['id'] as string, { tenantId: tid, storageKey: sk });
+            }
+          }
+          const { getProviderForTenant } = await import('../services/storage/storage-provider.factory.js');
+          const providerByTenant = new Map<string, Awaited<ReturnType<typeof getProviderForTenant>>>();
+          let restoredFiles = 0;
+          for await (const { id, buffer } of packageAttachments()) {
+            const target = idToTarget.get(id);
+            if (!target) continue;
+            try {
+              let provider = providerByTenant.get(target.tenantId);
+              if (!provider) { provider = await getProviderForTenant(target.tenantId); providerByTenant.set(target.tenantId, provider); }
+              await provider.upload(target.storageKey, buffer, { fileName: id, mimeType: 'application/octet-stream', sizeBytes: buffer.length });
+              restoredFiles++;
+            } catch (err) {
+              console.error(`[restore] attachment ${id} write-back failed:`, err instanceof Error ? err.message : err);
+            }
+          }
+          console.log(`[restore] restored ${restoredFiles} attachment file(s) from package`);
         }
 
         // Write the installation sentinel after a successful system restore.

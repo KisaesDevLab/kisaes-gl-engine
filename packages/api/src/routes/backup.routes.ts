@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
+import fs from 'fs';
 import { Router } from 'express';
 import multer from 'multer';
 import { authenticate, requireSuperAdmin } from '../middleware/auth.js';
@@ -84,7 +85,7 @@ backupRouter.post('/system', requireSuperAdmin, async (req, res) => {
     return;
   }
 
-  const result = await backupService.createSystemBackup(passphrase, req.userId);
+  const result = await backupService.createSystemBackup(passphrase, req.userId, { includeAttachments: true });
   res.status(201).json(result);
 });
 
@@ -104,11 +105,13 @@ backupRouter.post('/system/download', requireSuperAdmin, async (req, res) => {
     res.status(400).json({ error: { message: strength.message } });
     return;
   }
-  const result = await backupService.createSystemBackup(passphrase, req.userId);
-  const data = await backupService.readSystemBackup(result.fileName);
+  const result = await backupService.createSystemBackup(passphrase, req.userId, { includeAttachments: true });
+  // Stream the file (an attachments-included .vmx can be large) rather than
+  // buffering it into memory.
+  const filePath = backupService.resolveSystemBackupPath(result.fileName);
   res.setHeader('Content-Type', 'application/octet-stream');
   res.setHeader('Content-Disposition', encodeContentDisposition(result.fileName));
-  res.send(data);
+  fs.createReadStream(filePath).pipe(res);
 });
 
 // List backups

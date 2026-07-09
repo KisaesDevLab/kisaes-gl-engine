@@ -19,14 +19,22 @@ import { getSetting, setSetting } from './admin.service.js';
 import { decrypt as decryptField } from '../utils/encryption.js';
 import type { StorageProvider } from './storage/storage-provider.interface.js';
 import { tenantStorageKey } from './storage/storage-keys.js';
+import { getProviderForTenant } from './storage/storage-provider.factory.js';
+import { writeTenantPackage, type PackageAttachment } from './vmx-package.js';
 
 const BACKUP_DIR = process.env['BACKUP_DIR'] || '/data/backups';
 const APP_VERSION = '0.3.0';
 
+// Cap on total attachment bytes bundled into a system backup, so a very large
+// attachment store can't produce a runaway archive. Attachments beyond the cap
+// are skipped and recorded in the package manifest + audit log (never silently).
+const MAX_SYSTEM_BACKUP_ATTACHMENT_BYTES =
+  Number(process.env['BACKUP_MAX_ATTACHMENT_BYTES']) || 10 * 1024 * 1024 * 1024; // 10 GB
+
 // Whitelist for backup filenames. Prevents path traversal via `../`,
 // absolute paths, or shell metacharacters landing in `path.join`. Any
 // filename passed to download/delete must match this regex exactly.
-const BACKUP_FILENAME_RE = /^kis-books-backup-[A-Za-z0-9._-]+\.(kbk|vmb)$/;
+const BACKUP_FILENAME_RE = /^kis-books-backup-[A-Za-z0-9._-]+\.(kbk|vmb|vmx)$/;
 
 function ensureDir(dir: string) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -176,6 +184,7 @@ export async function createBackup(
 export async function createSystemBackup(
   passphrase: string,
   userId?: string,
+  opts?: { includeAttachments?: boolean },
 ): Promise<{ backupId: string; fileName: string; size: number }> {
   const backupId = crypto.randomUUID();
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -299,6 +308,92 @@ export async function createSystemBackup(
     installation_files: installationFiles,
   };
 
+  // ─── Attachments-included path: a streamed, per-file-encrypted .vmx package
+  // (ZIP) whose data.json.enc is the DB dump above and whose attachments/<id>
+  // entries are the actual receipt/document files. This makes the system
+  // backup genuinely restorable (rows + files) without base64-inflating every
+  // blob into one JSON string. Files stream one at a time, capped by total
+  // bytes; skips are recorded, never silent.
+  if (opts?.includeAttachments) {
+    metadata.checksum = generateChecksum(Buffer.from(JSON.stringify(contentObj)));
+    const fileName = `kis-books-backup-${timestamp}.vmx`;
+    assertSafeFileName(fileName);
+    const filePath = path.join(dir, fileName);
+
+    const skipped: Array<{ id: string; reason: string }> = [];
+    let bundledBytes = 0;
+    let bundledCount = 0;
+    async function* attachmentSource(): AsyncGenerator<PackageAttachment> {
+      const uploadDir = process.env['UPLOAD_DIR'] || '/data/uploads';
+      const providerByTenant = new Map<string, StorageProvider>();
+      for (const tenant of allTenants as { id: string }[]) {
+        const atts = (tenantData[tenant.id]?.['attachments'] || []) as Record<string, unknown>[];
+        for (const att of atts) {
+          const id = att['id'] as string;
+          const fp = (att['file_path'] as string | null) || null;
+          const storageKey = (att['storage_key'] as string | null) || null;
+          if (!fp && !storageKey) continue; // metadata-only row, nothing to bundle
+          let buf: Buffer | null = null;
+          if (fp) {
+            const candidates = [fp, path.join(uploadDir, fp.replace(/^\/uploads\//, '')), path.join(uploadDir, fp)];
+            for (const c of candidates) { try { if (fs.existsSync(c)) { buf = fs.readFileSync(c); break; } } catch { /* skip unreadable */ } }
+          }
+          if (!buf && storageKey) {
+            try {
+              let provider = providerByTenant.get(tenant.id);
+              if (!provider) { provider = await getProviderForTenant(tenant.id); providerByTenant.set(tenant.id, provider); }
+              buf = await provider.download(storageKey);
+            } catch (err) {
+              skipped.push({ id, reason: `download failed: ${err instanceof Error ? err.message : String(err)}` });
+            }
+          }
+          if (!buf) { skipped.push({ id, reason: 'file not found' }); continue; }
+          if (bundledBytes + buf.length > MAX_SYSTEM_BACKUP_ATTACHMENT_BYTES) {
+            skipped.push({ id, reason: 'total size cap reached' });
+            continue;
+          }
+          bundledBytes += buf.length;
+          bundledCount += 1;
+          yield { id, buffer: buf };
+        }
+      }
+    }
+
+    const { size } = await writeTenantPackage(filePath, passphrase, { ...contentObj, metadata }, attachmentSource(), {
+      backup_type: 'system',
+      source_version: APP_VERSION,
+      created_at: new Date().toISOString(),
+      tenant_count: allTenants.length,
+      includes_attachments: true,
+    });
+
+    if (skipped.length > 0) {
+      console.warn(`[Backup] System backup ${fileName}: bundled ${bundledCount} attachment(s) (${bundledBytes} bytes), skipped ${skipped.length}.`);
+    }
+
+    // Upload to remote only when small enough to hold in memory safely; a very
+    // large package stays local (operator copies it off-machine per the DR
+    // guidance) rather than risk OOM re-reading it for the upload.
+    const REMOTE_UPLOAD_MAX = 500 * 1024 * 1024;
+    if (size <= REMOTE_UPLOAD_MAX) {
+      const fileBuf = fs.readFileSync(filePath);
+      uploadBackupToRemote(fileName, fileBuf, '_system').catch((err) => {
+        console.error('[Backup] Remote upload of system backup failed (non-fatal):', err.message);
+      });
+    } else {
+      console.warn(`[Backup] System backup ${fileName} is ${size} bytes — kept local only (exceeds remote-upload memory limit).`);
+    }
+
+    const firstTenantId = (allTenants[0] as { id: string } | undefined)?.id || 'system';
+    await auditLog(firstTenantId, 'create', 'system_backup', backupId, null, {
+      fileName, size, tenantCount: allTenants.length, userCount: allUsers.length,
+      transactionCount: totalTransactions,
+      attachmentsBundled: bundledCount, attachmentsSkipped: skipped.length, attachmentBytes: bundledBytes,
+    }, userId);
+
+    return { backupId, fileName, size };
+  }
+
   const contentBuffer = Buffer.from(JSON.stringify(contentObj));
   metadata.checksum = generateChecksum(contentBuffer);
   const finalContent = Buffer.from(JSON.stringify({
@@ -362,12 +457,19 @@ export async function listBackups(tenantId: string) {
 // stream it directly. System backups live outside the tenant dirs, so the
 // tenant-scoped downloadBackup can't reach them.
 export async function readSystemBackup(fileName: string): Promise<Buffer> {
+  return fs.readFileSync(resolveSystemBackupPath(fileName));
+}
+
+// Validated absolute path to a system backup file, so callers can STREAM it
+// (an attachments-included .vmx can be large — reading it fully into memory to
+// send would risk OOM).
+export function resolveSystemBackupPath(fileName: string): string {
   assertSafeFileName(fileName);
   const base = path.resolve(path.join(BACKUP_DIR, '_system'));
   const filePath = path.resolve(path.join(base, fileName));
   if (!filePath.startsWith(base + path.sep)) throw AppError.badRequest('Invalid backup file path');
   if (!fs.existsSync(filePath)) throw AppError.notFound('System backup file not found');
-  return fs.readFileSync(filePath);
+  return filePath;
 }
 
 export async function downloadBackup(tenantId: string, fileName: string, userId?: string): Promise<Buffer> {
