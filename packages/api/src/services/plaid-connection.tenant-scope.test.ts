@@ -99,19 +99,25 @@ const names = (items: Awaited<ReturnType<typeof getItemsForUser>>) => items.map(
 const acctNames = (item: { accounts: Array<{ name: string | null }> }) => item.accounts.map((a) => a.name).sort();
 
 describe('getItemsForUser tenant scoping', () => {
-  it('client A sees only its own item + that item’s unassigned accounts', async () => {
+  it('does not surface a cross-tenant item’s unassigned accounts to client A', async () => {
     const items = await getItemsForUser(userId, tenantA);
     expect(names(items)).toEqual(['U.S. Bank']); // Other Bank (client B only) is hidden
 
     const us = items.find((i) => i.institutionName === 'U.S. Bank')!;
-    expect(acctNames(us)).toEqual(['a1', 'a3']); // a2 (mapped to B) hidden, a3 unassigned shown
-    expect(us.hiddenAccountCount).toBe(1);
+    // SECURITY: the U.S. Bank item also carries a mapping owned by tenant B
+    // (a2→B), so it spans two clients. a2 (mapped to B) AND a3 (unassigned)
+    // are both hidden — an unassigned account on a multi-tenant item can't be
+    // safely attributed to A, so it must not appear as mappable here.
+    expect(acctNames(us)).toEqual(['a1']);
+    expect(us.hiddenAccountCount).toBe(2);
   });
 
-  it('client B sees its own accounts on both items', async () => {
+  it('client B sees only its mapped account on the shared item; its own item stays whole', async () => {
     const items = await getItemsForUser(userId, tenantB);
     expect(names(items)).toEqual(['Other Bank', 'U.S. Bank']);
-    expect(acctNames(items.find((i) => i.institutionName === 'U.S. Bank')!)).toEqual(['a2', 'a3']);
+    // U.S. Bank is shared with A (a1→A) → its unassigned a3 is hidden from B too.
+    expect(acctNames(items.find((i) => i.institutionName === 'U.S. Bank')!)).toEqual(['a2']);
+    // Other Bank belongs to B alone → its unassigned b2 remains mappable.
     expect(acctNames(items.find((i) => i.institutionName === 'Other Bank')!)).toEqual(['b1', 'b2']);
   });
 

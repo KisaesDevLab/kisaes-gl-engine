@@ -41,16 +41,25 @@ export async function getVisibleAccounts(userId: string, plaidItemId: string, sc
   let hiddenCount = 0;
 
   if (scopeTenantId) {
-    // Only relevant if this item is already used by the scoped tenant — then
-    // its unassigned accounts are mappable here; otherwise the item is another
-    // client's and stays hidden entirely.
-    const itemUsedHere = [...mappingByAccount.values()].some((m) => m.tenantId === scopeTenantId);
+    const mappings = [...mappingByAccount.values()];
+    // The item's unassigned accounts are mappable here only if this tenant
+    // already uses the item...
+    const itemUsedHere = mappings.some((m) => m.tenantId === scopeTenantId);
+    // ...AND the item carries no mapping owned by a DIFFERENT tenant. SECURITY:
+    // an item with mappings across more than one tenant spans multiple clients
+    // (e.g. two separate bank logins that happen to share an institution and
+    // were wrongly fused). Its unassigned accounts can't be safely attributed
+    // to this tenant, so surfacing them leaked another client's accounts as
+    // "mappable here". Mapped accounts owned by other tenants were already
+    // hidden; this closes the unassigned-account bleed too.
+    const hasOtherTenantMapping = mappings.some((m) => m.tenantId !== scopeTenantId);
+    const canShowUnassigned = itemUsedHere && !hasOtherTenantMapping;
     for (const acct of allAccounts) {
       const mapping = mappingByAccount.get(acct.id) ?? null;
       if (mapping) {
         if (mapping.tenantId === scopeTenantId) visible.push({ ...acct, mapping });
         else hiddenCount++;
-      } else if (itemUsedHere) {
+      } else if (canShowUnassigned) {
         visible.push({ ...acct, mapping: null });
       } else {
         hiddenCount++;
@@ -148,26 +157,27 @@ export async function createConnection(userId: string, publicToken: string, meta
   const { users } = await import('../db/schema/index.js');
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
 
-  // Check for existing institution (skip if forceNew)
-  const existing = !metadata.forceNew && metadata.institutionId ? await checkExistingInstitution(metadata.institutionId) : null;
+  // Exchange the (single-use) public token up front so we can dedup on the
+  // real Plaid ITEM id — the login itself.
+  //
+  // SECURITY: we previously deduped on institution_id and, on a mismatched
+  // item_id, "replaced and transferred" the token. That fused two DIFFERENT
+  // logins at the same bank (e.g. two clients who both bank at U.S. Bank) into
+  // one shared Item, exposing one tenant's accounts to the other. An Item is a
+  // single login; only the SAME item_id (a genuine re-auth of that login) may
+  // reuse an existing connection. A different login is always a NEW, separate
+  // connection — never merged.
+  const { accessToken, itemId } = await plaidClient.exchangePublicToken(publicToken);
+  const plaidAccountList = await plaidClient.getAccounts(accessToken);
+
+  const existing = !metadata.forceNew
+    ? await db.query.plaidItems.findFirst({ where: and(eq(plaidItems.plaidItemId, itemId), sql`removed_at IS NULL`) })
+    : null;
 
   if (existing) {
-    // Same institution already connected — update access token + add any new accounts
-    const accessToken = decrypt(existing.accessTokenEncrypted);
-    const { accessToken: newToken, itemId: newItemId } = await plaidClient.exchangePublicToken(publicToken);
-
-    if (newItemId === existing.plaidItemId) {
-      // Same Item — just update the access token
-      await db.update(plaidItems).set({ accessTokenEncrypted: encrypt(newToken), updatedAt: new Date() }).where(eq(plaidItems.id, existing.id));
-    } else {
-      // Different Item for same institution — replace and transfer
-      await db.update(plaidItems).set({ accessTokenEncrypted: encrypt(newToken), plaidItemId: newItemId, updatedAt: new Date() }).where(eq(plaidItems.id, existing.id));
-      // Remove the duplicate from Plaid
-      try { await plaidClient.removeItem(accessToken); } catch { /* old token may already be invalid */ }
-    }
-
-    // Add any new accounts
-    const plaidAccountList = await plaidClient.getAccounts(newToken);
+    // Same login re-authorized — refresh the token and add any genuinely new
+    // accounts. Never touches other logins' items.
+    await db.update(plaidItems).set({ accessTokenEncrypted: encrypt(accessToken), updatedAt: new Date() }).where(eq(plaidItems.id, existing.id));
     for (const pa of plaidAccountList) {
       const existingAcct = await db.query.plaidAccounts.findFirst({ where: eq(plaidAccounts.plaidAccountId, pa.account_id) });
       if (!existingAcct) {
@@ -183,35 +193,9 @@ export async function createConnection(userId: string, publicToken: string, meta
         });
       }
     }
-
     await logActivity(existing.id, null, 'item_reauthorized', userId, user?.displayName || null, { institutionName: metadata.institutionName });
-
     return { item: existing, isExisting: true };
   }
-
-  // New connection
-  const { accessToken, itemId } = await plaidClient.exchangePublicToken(publicToken);
-
-  // Institution-level dedup (checkExistingInstitution above) is skipped when
-  // Link metadata carries no institution_id, so a re-link of an already-
-  // connected login could fall through to here and mint a SECOND Item. The
-  // UNIQUE plaid_item_id constraint catches an identical item_id, but only as
-  // a raw DB error. Guard it explicitly for a clear message. (A genuinely new
-  // item_id for the same login with no institution_id still can't be deduped —
-  // there's no key to match on; forceNew bypasses this intentionally.)
-  if (!metadata.forceNew) {
-    const dupe = await db.query.plaidItems.findFirst({
-      where: and(eq(plaidItems.plaidItemId, itemId), sql`removed_at IS NULL`),
-    });
-    if (dupe) {
-      throw AppError.badRequest(
-        'This bank connection already exists. Use the existing connection instead of linking it again.',
-        'PLAID_ITEM_EXISTS',
-      );
-    }
-  }
-
-  const plaidAccountList = await plaidClient.getAccounts(accessToken);
 
   const [item] = await db.insert(plaidItems).values({
     plaidItemId: itemId,

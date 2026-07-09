@@ -70,11 +70,18 @@ plaidRouter.get('/check-institution', authenticate, async (req, res) => {
   const institutionId = req.query['institutionId'] as string;
   const existing = await plaidConnection.checkExistingInstitution(institutionId);
   if (existing) {
-    const { accounts, hiddenAccountCount } = await plaidConnection.getVisibleAccounts(req.userId, existing.id);
-    res.json({ exists: true, item: { ...existing, accessTokenEncrypted: undefined }, accounts, hiddenAccountCount });
-  } else {
-    res.json({ exists: false });
+    // Scope to the ACTIVE tenant: only report the connection as existing if
+    // THIS tenant already has visible accounts on it. Otherwise the item
+    // belongs to another client (same bank, different login) and must not be
+    // surfaced here — the pre-connect check previously returned that other
+    // tenant's accounts (unscoped getVisibleAccounts).
+    const { accounts, hiddenAccountCount } = await plaidConnection.getVisibleAccounts(req.userId, existing.id, req.tenantId);
+    if (accounts.length > 0) {
+      res.json({ exists: true, item: { ...existing, accessTokenEncrypted: undefined }, accounts, hiddenAccountCount });
+      return;
+    }
   }
+  res.json({ exists: false });
 });
 
 // ─── Items (Filtered by User Visibility) ──────────────────────
