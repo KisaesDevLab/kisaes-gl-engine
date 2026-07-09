@@ -88,6 +88,29 @@ backupRouter.post('/system', requireSuperAdmin, async (req, res) => {
   res.status(201).json(result);
 });
 
+// One-click disaster-recovery bundle: create a full system backup and STREAM it
+// back in the same request, so the operator gets the encrypted .vmb (all
+// tenants/users/config + the /data/.sentinel and /data/.env.recovery recovery
+// files) without a second download step that can't reach the _system dir.
+// Super-admin only; the bundle is passphrase-encrypted (it holds every secret).
+backupRouter.post('/system/download', requireSuperAdmin, async (req, res) => {
+  const { passphrase } = req.body;
+  if (!passphrase || typeof passphrase !== 'string') {
+    res.status(400).json({ error: { message: 'Passphrase is required' } });
+    return;
+  }
+  const strength = validatePassphraseStrength(passphrase);
+  if (!strength.valid) {
+    res.status(400).json({ error: { message: strength.message } });
+    return;
+  }
+  const result = await backupService.createSystemBackup(passphrase, req.userId);
+  const data = await backupService.readSystemBackup(result.fileName);
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Disposition', encodeContentDisposition(result.fileName));
+  res.send(data);
+});
+
 // List backups
 backupRouter.get('/history', async (req, res) => {
   const backups = await backupService.listBackups(req.tenantId);

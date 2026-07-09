@@ -358,6 +358,18 @@ export async function listBackups(tenantId: string) {
   });
 }
 
+// Read a just-created system (_system) backup so the DR-bundle endpoint can
+// stream it directly. System backups live outside the tenant dirs, so the
+// tenant-scoped downloadBackup can't reach them.
+export async function readSystemBackup(fileName: string): Promise<Buffer> {
+  assertSafeFileName(fileName);
+  const base = path.resolve(path.join(BACKUP_DIR, '_system'));
+  const filePath = path.resolve(path.join(base, fileName));
+  if (!filePath.startsWith(base + path.sep)) throw AppError.badRequest('Invalid backup file path');
+  if (!fs.existsSync(filePath)) throw AppError.notFound('System backup file not found');
+  return fs.readFileSync(filePath);
+}
+
 export async function downloadBackup(tenantId: string, fileName: string, userId?: string): Promise<Buffer> {
   const filePath = resolveBackupPath(tenantId, fileName);
   if (!fs.existsSync(filePath)) throw AppError.notFound('Backup file not found');
