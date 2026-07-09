@@ -126,6 +126,7 @@ type ExportExpCatLine = {
 type ExportExpCatGroup = {
   accountNumber: string | null; name: string; lines: ExportExpCatLine[];
   totalDebits: number; totalCredits: number; subtotal: number;
+  beginningBalance?: number; endingBalance?: number;
 };
 
 // Expenses by Vendor detail-mode export shape (vendor → per-account totals).
@@ -614,6 +615,10 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
       // Section header spans the table in PDF; the label also lands in
       // the Memo column so CSV (column-oriented) still shows it.
       rows.push({ ...blank, _section: true, _label: label, memo: label });
+      // Carry-forward reports open each section with the beginning balance.
+      if (group.beginningBalance !== undefined) {
+        rows.push({ ...blank, memo: 'Beginning Balance', balance: fmtNum(group.beginningBalance) });
+      }
       for (const line of group.lines) {
         rows.push({
           date: line.date,
@@ -629,10 +634,11 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
       rows.push({
         ...blank,
         _summary: true,
-        memo: `Total ${label}`,
+        // Carry-forward: the section closes on the ending balance.
+        memo: group.endingBalance !== undefined ? `Ending Balance ${label}` : `Total ${label}`,
         debit: fmtNum(group.totalDebits),
         credit: fmtNum(group.totalCredits),
-        balance: fmtNum(group.subtotal),
+        balance: fmtNum(group.endingBalance ?? group.subtotal),
       });
       // Spacer row between accounts
       rows.push({ ...blank });
@@ -1239,7 +1245,7 @@ reportsRouter.get('/expense-by-vendor', async (req, res) => {
 // (and summary) as Expenses by Category, for the other account-type groups.
 function accountDetailReportRoute(
   path: string,
-  cfg: { title: string; accountTypes: string[]; normalSide: 'debit' | 'credit'; summaryLabel: string },
+  cfg: { title: string; accountTypes: string[]; normalSide: 'debit' | 'credit'; summaryLabel: string; carryForward?: boolean },
 ) {
   reportsRouter.get(path, async (req, res) => {
     const { start_date, end_date, format } = req.query as Record<string, string>;
@@ -1257,6 +1263,7 @@ function accountDetailReportRoute(
         tagId: readTagFilter(req),
         accountIds: readAccountIds(req),
         detail,
+        carryForward: cfg.carryForward ?? false,
       },
     );
     if (detail) { await respond(res, data, format); return; }
@@ -1267,10 +1274,12 @@ function accountDetailReportRoute(
     ]}, format);
   });
 }
+// Revenues reset each period (P&L); the balance-sheet groups carry a
+// beginning balance forward so the running balance ties to the Balance Sheet.
 accountDetailReportRoute('/revenue-by-category', { title: 'Revenues by Category', accountTypes: ['revenue', 'other_revenue'], normalSide: 'credit', summaryLabel: 'Category' });
-accountDetailReportRoute('/assets-by-account', { title: 'Assets by Account', accountTypes: ['asset'], normalSide: 'debit', summaryLabel: 'Account' });
-accountDetailReportRoute('/liabilities-by-account', { title: 'Liabilities by Account', accountTypes: ['liability'], normalSide: 'credit', summaryLabel: 'Account' });
-accountDetailReportRoute('/equity-by-account', { title: 'Equity by Account', accountTypes: ['equity'], normalSide: 'credit', summaryLabel: 'Account' });
+accountDetailReportRoute('/assets-by-account', { title: 'Assets by Account', accountTypes: ['asset'], normalSide: 'debit', summaryLabel: 'Account', carryForward: true });
+accountDetailReportRoute('/liabilities-by-account', { title: 'Liabilities by Account', accountTypes: ['liability'], normalSide: 'credit', summaryLabel: 'Account', carryForward: true });
+accountDetailReportRoute('/equity-by-account', { title: 'Equity by Account', accountTypes: ['equity'], normalSide: 'credit', summaryLabel: 'Account', carryForward: true });
 
 reportsRouter.get('/expense-by-category', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;

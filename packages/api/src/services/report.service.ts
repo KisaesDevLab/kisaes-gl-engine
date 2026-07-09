@@ -971,6 +971,11 @@ export interface ExpenseCategoryGroup {
   totalCredits: number;
   // Net: totalDebits − totalCredits (expense refunds reduce the group).
   subtotal: number;
+  // Carry-forward (balance-sheet detail reports only): the account's natural
+  // balance from all activity before the period start, and beginning + the
+  // period net. Undefined for P&L-style reports that reset each period.
+  beginningBalance?: number;
+  endingBalance?: number;
 }
 
 export async function buildExpenseByCategory(
@@ -1155,6 +1160,11 @@ export interface AccountDetailReportOpts {
   tagId?: string | null;
   accountIds?: string[] | null;
   detail?: boolean;
+  // Balance-sheet groups (asset/liability/equity) carry a beginning balance
+  // forward from all prior activity so the running balance and per-account
+  // ending balance tie to the Balance Sheet. P&L groups leave this off — they
+  // reset to 0 each period.
+  carryForward?: boolean;
 }
 
 export async function buildAccountDetailReport(
@@ -1168,6 +1178,7 @@ export async function buildAccountDetailReport(
   const tagId = opts.tagId ?? null;
   const accountIds = opts.accountIds ?? null;
   const detail = opts.detail ?? false;
+  const carryForward = opts.carryForward ?? false;
 
   const creditNormal = normalSide === 'credit';
   const tagClause = tagId ? sql`AND jl.tag_id = ${tagId}` : sql``;
@@ -1254,13 +1265,42 @@ export async function buildAccountDetailReport(
     linesByAccount.set(line.account_id, arr);
   }
 
+  // Carry-forward opening balance per account: the natural balance of all
+  // posted (accrual) activity BEFORE the period start. Same scoping as the
+  // period query so filters stay consistent.
+  const beginByAccount = new Map<string, number>();
+  if (carryForward) {
+    const beginRows = await db.execute(sql`
+      SELECT jl.account_id,
+        COALESCE(SUM(jl.debit), 0) AS begin_debit,
+        COALESCE(SUM(jl.credit), 0) AS begin_credit
+      FROM journal_lines jl
+      JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
+      JOIN accounts a ON a.id = jl.account_id AND a.account_type IN (${typeList})
+      WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
+        AND t.basis <> 'cash'
+        AND t.txn_date < ${startDate}
+        AND ${companyFilter(companyId)}
+        ${tagClause}
+        ${idFilter('a.id')}
+      GROUP BY jl.account_id
+    `);
+    for (const r of beginRows.rows as unknown as { account_id: string; begin_debit: string; begin_credit: string }[]) {
+      const bal = creditNormal ? sub(num(r.begin_credit), num(r.begin_debit)) : sub(num(r.begin_debit), num(r.begin_credit));
+      beginByAccount.set(r.account_id, bal);
+    }
+  }
+
   let grandTotal = 0;
   const groups: ExpenseCategoryGroup[] = [];
   for (const acct of acctResult.rows as unknown as DetailAcctRow[]) {
     const periodLines = linesByAccount.get(acct.id) || [];
-    if (periodLines.length === 0 && !hasIdFilter) continue;
+    const beginningBalance = beginByAccount.get(acct.id) || 0;
+    // Skip only accounts with no period activity AND (for carry-forward) no
+    // opening balance — unless the account was explicitly selected.
+    if (periodLines.length === 0 && !hasIdFilter && (!carryForward || Math.abs(beginningBalance) < 0.005)) continue;
 
-    let running = 0;
+    let running = carryForward ? beginningBalance : 0;
     let totalDebits = 0;
     let totalCredits = 0;
     const reportLines: ExpenseCategoryDetailLine[] = periodLines.map((line) => {
@@ -1287,7 +1327,10 @@ export async function buildAccountDetailReport(
     });
 
     const subtotal = creditNormal ? sub(totalCredits, totalDebits) : sub(totalDebits, totalCredits);
-    grandTotal = Number(new Decimal(grandTotal).plus(subtotal).toFixed(4));
+    const endingBalance = carryForward ? Number(new Decimal(beginningBalance).plus(subtotal).toFixed(4)) : undefined;
+    // Grand total ties to the Balance Sheet (sum of ending balances) for
+    // carry-forward reports; P&L-style reports total the period net.
+    grandTotal = Number(new Decimal(grandTotal).plus(carryForward ? endingBalance! : subtotal).toFixed(4));
     groups.push({
       accountId: acct.id,
       accountNumber: acct.account_number,
@@ -1297,6 +1340,7 @@ export async function buildAccountDetailReport(
       totalDebits,
       totalCredits,
       subtotal,
+      ...(carryForward ? { beginningBalance, endingBalance } : {}),
     });
   }
 

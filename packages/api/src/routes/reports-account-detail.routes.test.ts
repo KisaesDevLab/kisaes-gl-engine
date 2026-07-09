@@ -104,6 +104,9 @@ beforeAll(async () => {
   await post('2026-04-01', [{ accountId: cash.id, debit: '2000.00', credit: '0' }, { accountId: loan.id, debit: '0', credit: '2000.00' }]);
   // Asset purchase: equipment debit, cash credit.
   await post('2026-05-01', [{ accountId: equipment.id, debit: '800.00', credit: '0' }, { accountId: cash.id, debit: '0', credit: '800.00' }]);
+  // PRIOR-PERIOD equity contribution (2025) — carried forward as the
+  // beginning balance on the 2026 Equity report, not shown as a period line.
+  await post('2025-06-01', [{ accountId: cash.id, debit: '1000.00', credit: '0' }, { accountId: equity.id, debit: '0', credit: '1000.00' }]);
   // Expenses to the vendor across two accounts (for vendor detail).
   await post('2026-06-01', [{ accountId: advertising.id, debit: '300.00', credit: '0' }, { accountId: cash.id, debit: '0', credit: '300.00' }], vendor!.id);
   await post('2026-06-10', [{ accountId: contractors.id, debit: '700.00', credit: '0' }, { accountId: cash.id, debit: '0', credit: '700.00' }], vendor!.id);
@@ -155,6 +158,25 @@ describe('GET /reports/assets-by-account & liabilities & equity', () => {
     const cap = eq.groups.find((g: { name: string }) => g.name === "Owner's Capital");
     expect(cap.subtotal).toBeCloseTo(500, 4);
     expect(eq.title).toBe('Equity by Account');
+  });
+
+  it('balance-sheet groups carry a beginning balance forward; revenues do not', async () => {
+    // Equity: 2025 contribution ($1,000) is the beginning balance; 2026
+    // contribution ($500) is the period net; ending = $1,500.
+    const eq = JSON.parse((await get(`/equity-by-account?${RANGE}&display=detail`)).body);
+    const cap = eq.groups.find((g: { name: string }) => g.name === "Owner's Capital");
+    expect(cap.beginningBalance).toBeCloseTo(1000, 4);
+    expect(cap.subtotal).toBeCloseTo(500, 4);
+    expect(cap.endingBalance).toBeCloseTo(1500, 4);
+    // Running balance starts at the opening, not 0.
+    expect(cap.lines[0].balance).toBeCloseTo(1500, 4);
+    // Grand total ties to the ending balances.
+    expect(eq.grandTotal).toBeCloseTo(1500, 4);
+
+    // Revenues reset each period — no carry-forward fields.
+    const rev = JSON.parse((await get(`/revenue-by-category?${RANGE}&display=detail`)).body);
+    expect(rev.groups[0].beginningBalance).toBeUndefined();
+    expect(rev.groups[0].endingBalance).toBeUndefined();
   });
 
   it('detail CSV export mirrors the screen (reuses the GL-style branch)', async () => {
