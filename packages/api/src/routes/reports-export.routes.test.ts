@@ -459,4 +459,19 @@ describe('comparative grouping + condensed / export presentation', () => {
     const bsHtml = buildHtmlTable(b.rows, b.columns);
     expect(bsHtml).toContain('Equity (Calculated)');
   });
+
+  it('Transaction List hints landscape and rules between transaction groups', async () => {
+    const data = JSON.parse((await get('/transaction-list?start_date=2026-01-01&end_date=2026-12-31')).body);
+    expect(data._landscape).toBe(true);
+    const rows = data.data as Array<{ id: string; _groupStart?: boolean }>;
+    expect(rows.length).toBeGreaterThan(2);
+    expect(rows[0]!._groupStart).toBeFalsy(); // first row never a boundary
+    // A boundary appears exactly when the transaction id changes.
+    for (let i = 1; i < rows.length; i++) {
+      expect(!!rows[i]!._groupStart).toBe(rows[i]!.id !== rows[i - 1]!.id);
+    }
+    // The thicker group rule renders in the PDF HTML.
+    const html = buildHtmlTable(extractDataAndColumns(data).rows, extractDataAndColumns(data).columns);
+    expect(html).toContain('border-top:2px solid #9ca3af');
+  });
 });

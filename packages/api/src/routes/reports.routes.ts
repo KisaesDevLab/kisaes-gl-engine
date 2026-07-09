@@ -104,6 +104,10 @@ type ExportRow = Record<string, unknown> & {
   _summary?: boolean;
   _total?: boolean;
   _label?: string;
+  // First row of a new transaction group — gets a thicker top rule so the
+  // PDF visually separates one transaction (which may span several lines)
+  // from the next. Ignored in CSV.
+  _groupStart?: boolean;
   // First-column indentation in the rendered PDF/HTML table (grouped
   // display mode). Stripped from CSV like the other underscore flags.
   _indent?: boolean;
@@ -740,6 +744,9 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
         formatted[col.key] = val;
       }
     }
+    // Carry rendering directives through the column projection (the
+    // transaction-group boundary rule renders off `_groupStart`).
+    if (row._groupStart) formatted._groupStart = true;
     return formatted;
   });
 
@@ -826,6 +833,8 @@ export function buildHtmlTable(rows: ExportRow[], columns: ExportColumn[]): stri
     // that haven't been migrated to explicit row metadata.
     if (isLegacySection) return `<tr style="background:#f3f4f6;font-weight:600">${cells}</tr>`;
     if (isLegacyTotal) return `<tr class="total-row" style="font-weight:700;border-top:2px solid #111">${cells}</tr>`;
+    // Thicker rule at the start of each transaction group.
+    if (row._groupStart) return `<tr style="border-top:2px solid #9ca3af">${cells}</tr>`;
     return `<tr>${cells}</tr>`;
   }).join('');
   return `<table><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`;
@@ -883,7 +892,9 @@ async function respond(res: any, reportData: any, format: string | undefined) {
     // letter at a readable font size.
     const isWideReport = (Array.isArray(reportData.accounts) && reportData.accounts[0]?.lines !== undefined)
       // Expenses by Category detail mode shares the GL's 8-column layout.
-      || (Array.isArray(reportData.groups) && reportData.grandTotal !== undefined);
+      || (Array.isArray(reportData.groups) && reportData.grandTotal !== undefined)
+      // Explicit hint for wide column layouts (e.g. the Transaction List).
+      || reportData._landscape === true;
     const orientation: 'portrait' | 'landscape' = isWideReport ? 'landscape' : 'portrait';
 
     const html = exportService.toReportHtml(reportData.title || 'Report', companyName, dateLabel, tableHtml, footer);
@@ -1626,7 +1637,14 @@ reportsRouter.get('/transaction-list', async (req, res) => {
   const { start_date, end_date, txn_type, account_id, format } = req.query as Record<string, string>;
   const tagId = readTagFilter(req);
   const data = await reportService.buildTransactionList(req.tenantId, { startDate: start_date, endDate: end_date, txnType: txn_type, accountId: account_id, ...(tagId ? { tagId } : {}) }, resolveCompanyScope(req));
-  await respond(res, { ...data, _exportColumns: [
+  // One row per journal line: mark the first line of each transaction so the
+  // PDF draws a thicker rule between transactions. Wide 8-column layout →
+  // landscape.
+  const listRows = (data.data as Array<{ id?: string }>).map((r, i, arr) => ({
+    ...r,
+    _groupStart: i > 0 && r.id !== arr[i - 1]!.id,
+  }));
+  await respond(res, { ...data, data: listRows, _landscape: true, _exportColumns: [
     { key: 'txn_date', label: 'Date' },
     { key: 'txn_type', label: 'Type' },
     { key: 'txn_number', label: 'Number' },

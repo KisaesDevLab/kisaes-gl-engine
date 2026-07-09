@@ -178,6 +178,34 @@ export const REPORT_PACK_RENDERERS: Record<string, Renderer> = {
       ],
     };
   },
+
+  'transaction-list': async (tenantId, companyId, params, opts) => {
+    const data = await reportService.buildTransactionList(
+      tenantId,
+      { startDate: params['start_date']!, endDate: params['end_date']!, ...(opts.tagId ? { tagId: opts.tagId } : {}) },
+      companyId,
+    );
+    // Mirror the /transaction-list route: mark each transaction's first line
+    // so the PDF rules between transactions (landscape comes from the catalog).
+    const listRows = (data.data as Array<{ id?: string }>).map((r, i, arr) => ({
+      ...r,
+      _groupStart: i > 0 && r.id !== arr[i - 1]!.id,
+    }));
+    return {
+      ...data,
+      data: listRows,
+      _exportColumns: [
+        { key: 'txn_date', label: 'Date' },
+        { key: 'txn_type', label: 'Type' },
+        { key: 'txn_number', label: 'Number' },
+        { key: 'contact_name', label: 'Contact' },
+        { key: 'account', label: 'Account' },
+        { key: 'amount', label: 'Amount', align: 'right' },
+        { key: 'memo', label: 'Memo' },
+        { key: 'line_tag', label: 'Tag' },
+      ],
+    };
+  },
 };
 
 /**

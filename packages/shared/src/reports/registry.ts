@@ -122,6 +122,15 @@ export const REPORT_CATALOG: ReportDef[] = [
     orientation: 'portrait',
     options: { tagFilter: true },
   },
+  {
+    id: 'transaction-list',
+    label: 'Transaction List',
+    group: 'Detail',
+    endpoint: 'transaction-list',
+    temporal: 'date-range',
+    orientation: 'landscape',
+    options: { tagFilter: true },
+  },
 ];
 
 /** Fast lookup by report id. */
