@@ -132,7 +132,7 @@ export const REPORT_PACK_RENDERERS: Record<string, Renderer> = {
 
   'trial-balance': async (tenantId, companyId, params, opts) => {
     const data = await reportService.buildTrialBalance(
-      tenantId, params['start_date']!, params['end_date']!, companyId, opts.tagId,
+      tenantId, params['start_date']!, params['end_date']!, companyId, opts.tagId, opts.basis,
     );
     return {
       ...data,
@@ -148,7 +148,7 @@ export const REPORT_PACK_RENDERERS: Record<string, Renderer> = {
 
   'general-ledger': async (tenantId, companyId, params, opts) => {
     return reportService.buildGeneralLedger(
-      tenantId, params['start_date']!, params['end_date']!, companyId, opts.tagId,
+      tenantId, params['start_date']!, params['end_date']!, companyId, opts.tagId, opts.basis,
     );
   },
 
@@ -167,7 +167,7 @@ export const REPORT_PACK_RENDERERS: Record<string, Renderer> = {
 
   'expense-by-category': async (tenantId, companyId, params, opts) => {
     const data = await reportService.buildExpenseByCategory(
-      tenantId, params['start_date']!, params['end_date']!, companyId, opts.tagId, null, false,
+      tenantId, params['start_date']!, params['end_date']!, companyId, opts.tagId, null, false, opts.basis,
     );
     return {
       ...data,
@@ -182,7 +182,7 @@ export const REPORT_PACK_RENDERERS: Record<string, Renderer> = {
   'transaction-list': async (tenantId, companyId, params, opts) => {
     const data = await reportService.buildTransactionList(
       tenantId,
-      { startDate: params['start_date']!, endDate: params['end_date']!, ...(opts.tagId ? { tagId: opts.tagId } : {}) },
+      { startDate: params['start_date']!, endDate: params['end_date']!, ...(opts.tagId ? { tagId: opts.tagId } : {}), basis: opts.basis },
       companyId,
     );
     // Mirror the /transaction-list route: mark each transaction's first line

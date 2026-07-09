@@ -215,3 +215,47 @@ describe('per-transaction basis flag', () => {
     expect(cash_.totalExpenses).toBeCloseTo(70, 2);
   });
 });
+
+describe('cash-basis — the newly-converted reports recognize at payment and tie', () => {
+  it('Expenses by Category / Sales by Customer / Trial Balance / Transaction List follow cash recognition', async () => {
+    // Bill in Nov ($400), paid Dec.
+    const bill = await post('bill', '2026-11-08', [
+      { accountId: exp.id, debit: '400', credit: '0' },
+      { accountId: ap.id, debit: '0', credit: '400' },
+    ], { total: '400' });
+    const billPay = await post('bill_payment', '2026-12-20', [
+      { accountId: ap.id, debit: '400', credit: '0' },
+      { accountId: cash.id, debit: '0', credit: '400' },
+    ]);
+    await db.insert(billPaymentApplications).values({ tenantId, paymentId: billPay.id, billId: bill.id, amount: '400' });
+
+    // Invoice in Nov ($1,000 revenue), paid Dec.
+    const inv = await post('invoice', '2026-11-05', [
+      { accountId: ar.id, debit: '1000', credit: '0' },
+      { accountId: rev.id, debit: '0', credit: '1000' },
+    ], { total: '1000' });
+    const pay = await post('customer_payment', '2026-12-10', [
+      { accountId: cash.id, debit: '1000', credit: '0' },
+      { accountId: ar.id, debit: '0', credit: '1000' },
+    ], { total: '1000' });
+    await db.insert(paymentApplications).values({ tenantId, paymentId: pay.id, invoiceId: inv.id, amount: '1000' });
+
+    // Expenses by Category — cash: nothing in Nov, $400 recognized in Dec.
+    const ecNov = await reportService.buildExpenseByCategory(tenantId, '2026-11-01', '2026-11-30', null, null, null, false, 'cash') as unknown as { data: unknown[] };
+    expect(ecNov.data.length).toBe(0);
+    const ecDec = await reportService.buildExpenseByCategory(tenantId, '2026-12-01', '2026-12-31', null, null, null, false, 'cash') as unknown as { data: Array<{ total: string }> };
+    expect(Number(ecDec.data[0]!.total)).toBeCloseTo(400, 2);
+
+    // Sales by Customer — cash: $1,000 revenue recognized in Dec.
+    const scDec = await reportService.buildSalesByCustomer(tenantId, '2026-12-01', '2026-12-31', null, null, 'cash') as unknown as { data: Array<{ total: string }> };
+    expect(scDec.data.reduce((s, r) => s + Number(r.total), 0)).toBeCloseTo(1000, 2);
+
+    // Trial Balance — cash: debits must equal credits (a balanced book).
+    const tb = await reportService.buildTrialBalance(tenantId, '2026-01-01', '2026-12-31', null, null, 'cash');
+    expect(tb.totalDebits).toBeCloseTo(tb.totalCredits, 2);
+
+    // Transaction List — cash: the recognized lines land in Dec.
+    const tl = await reportService.buildTransactionList(tenantId, { startDate: '2026-12-01', endDate: '2026-12-31', basis: 'cash' });
+    expect(tl.data.length).toBeGreaterThan(0);
+  });
+});
