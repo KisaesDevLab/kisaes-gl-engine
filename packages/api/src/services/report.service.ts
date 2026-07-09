@@ -142,6 +142,9 @@ function cashBasisLinesWith(
       -- Rule 2: pass-through, with payment AR/AP legs reduced to the
       -- unapplied remainder.
       SELECT jl.account_id, jl.tag_id,
+        t.id AS transaction_id, t.txn_date, t.txn_type, t.txn_number, t.memo,
+        t.contact_id AS txn_contact_id, jl.contact_id AS line_contact_id,
+        jl.description, jl.item_id, jl.line_order,
         CASE WHEN t.txn_type = 'bill_payment' AND a.detail_type = 'accounts_payable'
              THEN GREATEST(jl.debit::numeric - COALESCE(bp.applied, 0), 0)
              ELSE jl.debit::numeric END AS debit,
@@ -168,6 +171,9 @@ function cashBasisLinesWith(
 
       -- Rule 3 (AR): scaled invoice distributions at the payment date.
       SELECT il.account_id, il.tag_id,
+        pay.id AS transaction_id, pay.txn_date, pay.txn_type, pay.txn_number, pay.memo,
+        pay.contact_id AS txn_contact_id, il.contact_id AS line_contact_id,
+        il.description, il.item_id, il.line_order,
         il.debit::numeric  * app.amount / NULLIF(inv.total::numeric, 0) AS debit,
         il.credit::numeric * app.amount / NULLIF(inv.total::numeric, 0) AS credit
       FROM ar_apps app
@@ -184,6 +190,9 @@ function cashBasisLinesWith(
 
       -- Rule 3 (AP): scaled bill distributions at the payment date.
       SELECT bl.account_id, bl.tag_id,
+        pay.id AS transaction_id, pay.txn_date, pay.txn_type, pay.txn_number, pay.memo,
+        pay.contact_id AS txn_contact_id, bl.contact_id AS line_contact_id,
+        bl.description, bl.item_id, bl.line_order,
         bl.debit::numeric  * app.amount::numeric / NULLIF(bill.total::numeric, 0) AS debit,
         bl.credit::numeric * app.amount::numeric / NULLIF(bill.total::numeric, 0) AS credit
       FROM bill_payment_applications app
@@ -2383,8 +2392,39 @@ export async function buildTransactionList(tenantId: string, filters?: {
   // ADR 0XX §5.2 — header-level tag filter: keep the transaction when
   // any of its journal_lines carries this tag.
   tagId?: string;
+  basis?: Basis;
 }, companyId: string | null = null) {
-  const conditions = [sql`t.tenant_id = ${tenantId}`, sql`t.status = 'posted'`, companyFilter(companyId)];
+  // Cash basis: list the virtual cash-basis ledger (income/expense recognition
+  // moved to payment dates), one row per cash-basis line. Accrual: the posted
+  // journal (excluding cash-only entries).
+  if (filters?.basis === 'cash') {
+    const end = filters?.endDate || new Date().toISOString().split('T')[0]!;
+    const start = filters?.startDate || null;
+    const typeCond = filters?.txnType ? sql`AND cb.txn_type = ${filters.txnType}` : sql``;
+    const acctCond = filters?.accountId ? sql`AND cb.account_id = ${filters.accountId}` : sql``;
+    const tagCond = filters?.tagId ? sql`AND cb.tag_id = ${filters.tagId}` : sql``;
+    const cashRows = await db.execute(sql`
+      WITH ${cashBasisLinesWith(tenantId, start, end, companyId)}
+      SELECT cb.transaction_id AS id, cb.txn_type, cb.txn_number, cb.txn_date, cb.memo, 'posted' AS status,
+        c.display_name AS contact_name,
+        a.account_number, a.name AS account_name,
+        CASE WHEN a.account_number IS NOT NULL AND a.account_number <> ''
+             THEN a.account_number || ' · ' || a.name ELSE a.name END AS account,
+        cb.debit, cb.credit,
+        (cb.debit::numeric - cb.credit::numeric) AS amount,
+        cb.description AS line_description,
+        tg.name AS line_tag
+      FROM cb_lines cb
+      JOIN accounts a ON a.id = cb.account_id AND a.tenant_id = ${tenantId}
+      LEFT JOIN contacts c ON c.id = cb.txn_contact_id AND c.tenant_id = ${tenantId}
+      LEFT JOIN tags tg ON tg.id = cb.tag_id AND tg.tenant_id = ${tenantId}
+      WHERE (cb.debit <> 0 OR cb.credit <> 0) ${typeCond} ${acctCond} ${tagCond}
+      ORDER BY cb.txn_date DESC, cb.transaction_id, cb.line_order
+    `);
+    return { title: 'Transaction List', data: cashRows.rows };
+  }
+
+  const conditions = [sql`t.tenant_id = ${tenantId}`, sql`t.status = 'posted'`, companyFilter(companyId), sql`t.basis <> 'cash'`];
   if (filters?.startDate) conditions.push(sql`t.txn_date >= ${filters.startDate}`);
   if (filters?.endDate) conditions.push(sql`t.txn_date <= ${filters.endDate}`);
   if (filters?.txnType) conditions.push(sql`t.txn_type = ${filters.txnType}`);
