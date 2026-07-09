@@ -848,12 +848,32 @@ export async function buildInvoiceList(
 
 // ─── EXPENSES ────────────────────────────────────────────────────
 
+// Per-account row nested under a vendor in the detail view.
+export interface ExpenseVendorAccountRow {
+  accountId: string;
+  accountNumber: string | null;
+  name: string;
+  total: number;
+}
+
+// A vendor with the accounts it was paid to and the vendor total.
+export interface ExpenseVendorGroup {
+  contactId: string | null;
+  vendorName: string;
+  accounts: ExpenseVendorAccountRow[];
+  total: number;
+}
+
 export async function buildExpenseByVendor(
   tenantId: string,
   startDate: string,
   endDate: string,
   companyId: string | null = null,
   tagId: string | null = null,
+  // detail=true additionally returns per-vendor `groups`, each listing the
+  // expense accounts the vendor was paid to + a vendor total. The flat
+  // `data` summary is unchanged either way (api-v2 / MCP / older clients).
+  detail = false,
 ) {
   const tagClause = tagId ? sql`AND jl.tag_id = ${tagId}` : sql``;
   const rows = await db.execute(sql`
@@ -877,7 +897,52 @@ export async function buildExpenseByVendor(
     ORDER BY total DESC
   `);
 
-  return { title: 'Expenses by Vendor', startDate, endDate, data: rows.rows };
+  const summary = { title: 'Expenses by Vendor', startDate, endDate, data: rows.rows };
+  if (!detail) return summary;
+
+  // Detail — one row per (vendor, account). Vendors ordered by their total
+  // (matches the summary); accounts within a vendor by descending total.
+  const detailRows = await db.execute(sql`
+    SELECT
+      COALESCE(c.id::text, t.payee_name_on_check) AS vendor_key,
+      c.id AS contact_id,
+      COALESCE(c.display_name, t.payee_name_on_check, 'Uncategorized') AS vendor_name,
+      a.id AS account_id, a.account_number, a.name AS account_name,
+      SUM(jl.debit) AS total
+    FROM journal_lines jl
+    JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
+    JOIN accounts a ON a.id = jl.account_id AND a.account_type IN ('cogs', 'expense', 'other_expense')
+    LEFT JOIN contacts c ON c.id = t.contact_id AND c.tenant_id = ${tenantId}
+    WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
+      AND t.basis <> 'cash'
+      AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
+      AND jl.debit > 0
+      AND ${companyFilter(companyId)}
+      ${tagClause}
+    GROUP BY vendor_key, c.id, vendor_name, a.id, a.account_number, a.name
+  `);
+
+  type VRow = {
+    vendor_key: string | null; contact_id: string | null; vendor_name: string;
+    account_id: string; account_number: string | null; account_name: string; total: string;
+  };
+  const byVendor = new Map<string, ExpenseVendorGroup>();
+  for (const r of detailRows.rows as unknown as VRow[]) {
+    const key = r.vendor_key ?? r.vendor_name;
+    let g = byVendor.get(key);
+    if (!g) {
+      g = { contactId: r.contact_id, vendorName: r.vendor_name, accounts: [], total: 0 };
+      byVendor.set(key, g);
+    }
+    const total = num(r.total);
+    g.accounts.push({ accountId: r.account_id, accountNumber: r.account_number, name: r.account_name, total });
+    g.total = Number(new Decimal(g.total).plus(total).toFixed(4));
+  }
+  const groups = [...byVendor.values()]
+    .map((g) => ({ ...g, accounts: g.accounts.sort((a, b) => b.total - a.total) }))
+    .sort((a, b) => b.total - a.total);
+
+  return { ...summary, groups };
 }
 
 // Line shape for the detail (GL-style) mode of Expenses by Category.
@@ -1059,6 +1124,169 @@ export async function buildExpenseByCategory(
     });
 
     const subtotal = sub(totalDebits, totalCredits);
+    grandTotal = Number(new Decimal(grandTotal).plus(subtotal).toFixed(4));
+    groups.push({
+      accountId: acct.id,
+      accountNumber: acct.account_number,
+      name: acct.name,
+      accountType: acct.account_type,
+      lines: reportLines,
+      totalDebits,
+      totalCredits,
+      subtotal,
+    });
+  }
+
+  return { ...summary, groups, grandTotal };
+}
+
+// ─── Generic "<Group> by Account" detail report ──────────────────
+// Same shape and GL-style detail as Expenses by Category, but for any
+// account-type group (Revenues, Assets, Liabilities, Equity). `normalSide`
+// controls the summary total column and the sign of the running balance /
+// subtotal: debit-normal groups (assets) accumulate debit − credit;
+// credit-normal groups (revenue, liabilities, equity) accumulate
+// credit − debit so their natural balance reads positive.
+export interface AccountDetailReportOpts {
+  title: string;
+  accountTypes: string[];
+  normalSide: 'debit' | 'credit';
+  companyId?: string | null;
+  tagId?: string | null;
+  accountIds?: string[] | null;
+  detail?: boolean;
+}
+
+export async function buildAccountDetailReport(
+  tenantId: string,
+  startDate: string,
+  endDate: string,
+  opts: AccountDetailReportOpts,
+) {
+  const { title, accountTypes, normalSide } = opts;
+  const companyId = opts.companyId ?? null;
+  const tagId = opts.tagId ?? null;
+  const accountIds = opts.accountIds ?? null;
+  const detail = opts.detail ?? false;
+
+  const creditNormal = normalSide === 'credit';
+  const tagClause = tagId ? sql`AND jl.tag_id = ${tagId}` : sql``;
+  const hasIdFilter = !!accountIds && accountIds.length > 0;
+  const idFilter = (colRef: string) =>
+    hasIdFilter
+      ? sql`AND ${sql.raw(colRef)} IN (${sql.join(accountIds!.map((id) => sql`${id}`), sql`, `)})`
+      : sql``;
+  // accountTypes / normalSide are code-controlled constants, never user input.
+  const typeList = sql.join(accountTypes.map((t) => sql`${t}`), sql`, `);
+  const sideCol = sql.raw(creditNormal ? 'jl.credit' : 'jl.debit');
+  // Section order follows the given accountTypes order (e.g. revenue before
+  // other_revenue), falling back after any unlisted type.
+  const typeOrderCase = sql.join(accountTypes.map((t, i) => sql`WHEN ${t} THEN ${i}`), sql` `);
+
+  const rows = await db.execute(sql`
+    SELECT a.id as account_id, a.name as category, a.account_number, a.account_type,
+      SUM(${sideCol}) as total
+    FROM journal_lines jl
+    JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
+    JOIN accounts a ON a.id = jl.account_id AND a.account_type IN (${typeList})
+    WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
+      AND t.basis <> 'cash'
+      AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
+      AND ${sideCol} > 0
+      AND ${companyFilter(companyId)}
+      ${tagClause}
+      ${idFilter('a.id')}
+    GROUP BY a.id ORDER BY total DESC
+  `);
+
+  const summary = { title, startDate, endDate, data: rows.rows };
+  if (!detail) return summary;
+
+  const acctResult = await db.execute(sql`
+    SELECT id, account_number, name, account_type
+    FROM accounts
+    WHERE tenant_id = ${tenantId}
+      AND account_type IN (${typeList})
+      ${idFilter('id')}
+    ORDER BY
+      CASE account_type ${typeOrderCase} ELSE 99 END,
+      account_number NULLS LAST,
+      name
+  `);
+
+  const linesResult = await db.execute(sql`
+    SELECT
+      jl.id AS line_id,
+      jl.account_id,
+      jl.debit,
+      jl.credit,
+      jl.description AS line_description,
+      t.id AS transaction_id,
+      t.txn_date,
+      t.txn_type,
+      t.txn_number,
+      t.memo AS txn_memo,
+      COALESCE(c.display_name, t.payee_name_on_check) AS contact_name
+    FROM journal_lines jl
+    JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
+    JOIN accounts a ON a.id = jl.account_id AND a.account_type IN (${typeList})
+    LEFT JOIN contacts c ON c.id = t.contact_id AND c.tenant_id = ${tenantId}
+    WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
+      AND t.basis <> 'cash'
+      AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
+      AND ${companyFilter(companyId)}
+      ${tagClause}
+      ${idFilter('a.id')}
+    ORDER BY jl.account_id, t.txn_date, t.created_at, jl.line_order
+  `);
+
+  type DetailAcctRow = { id: string; account_number: string | null; name: string; account_type: string };
+  type DetailLineRow = {
+    line_id: string; account_id: string; debit: string; credit: string;
+    line_description: string | null; transaction_id: string; txn_date: string;
+    txn_type: string; txn_number: string | null; txn_memo: string | null; contact_name: string | null;
+  };
+
+  const linesByAccount = new Map<string, DetailLineRow[]>();
+  for (const line of linesResult.rows as unknown as DetailLineRow[]) {
+    const arr = linesByAccount.get(line.account_id) || [];
+    arr.push(line);
+    linesByAccount.set(line.account_id, arr);
+  }
+
+  let grandTotal = 0;
+  const groups: ExpenseCategoryGroup[] = [];
+  for (const acct of acctResult.rows as unknown as DetailAcctRow[]) {
+    const periodLines = linesByAccount.get(acct.id) || [];
+    if (periodLines.length === 0 && !hasIdFilter) continue;
+
+    let running = 0;
+    let totalDebits = 0;
+    let totalCredits = 0;
+    const reportLines: ExpenseCategoryDetailLine[] = periodLines.map((line) => {
+      const debit = num(line.debit);
+      const credit = num(line.credit);
+      // Credit-normal groups read positive when credits exceed debits.
+      running = creditNormal
+        ? Number(new Decimal(running).plus(credit).minus(debit).toFixed(4))
+        : Number(new Decimal(running).plus(debit).minus(credit).toFixed(4));
+      totalDebits = Number(new Decimal(totalDebits).plus(debit).toFixed(4));
+      totalCredits = Number(new Decimal(totalCredits).plus(credit).toFixed(4));
+      return {
+        lineId: line.line_id,
+        transactionId: line.transaction_id,
+        date: line.txn_date,
+        txnType: line.txn_type,
+        txnNumber: line.txn_number,
+        contactName: line.contact_name,
+        memo: line.line_description || line.txn_memo || '',
+        debit,
+        credit,
+        balance: running,
+      };
+    });
+
+    const subtotal = creditNormal ? sub(totalCredits, totalDebits) : sub(totalDebits, totalCredits);
     grandTotal = Number(new Decimal(grandTotal).plus(subtotal).toFixed(4));
     groups.push({
       accountId: acct.id,

@@ -128,6 +128,13 @@ type ExportExpCatGroup = {
   totalDebits: number; totalCredits: number; subtotal: number;
 };
 
+// Expenses by Vendor detail-mode export shape (vendor → per-account totals).
+type ExportVendorGroup = {
+  vendorName: string;
+  accounts: Array<{ accountNumber: string | null; name: string; total: number }>;
+  total: number;
+};
+
 // Build structured export rows that match on-screen display.
 // Exported for tests: lets the suite assert on the export layout (CSV
 // rows and PDF HTML) without launching Puppeteer.
@@ -557,6 +564,28 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
 
       // Spacer row between accounts
       rows.push({ date: '', type: '', ref: '', name: '', description: '', debit: '', credit: '', balance: '' });
+    }
+    return { rows, columns };
+  }
+
+  // ─── Expenses by Vendor — detail mode (vendor → per-account totals).
+  // Detected by array-valued `groups` whose entries carry `accounts`
+  // (distinct from the category detail's `lines` + `grandTotal`).
+  if (Array.isArray(reportData.groups) && reportData.groups.length > 0
+      && Array.isArray((reportData.groups[0] as { accounts?: unknown }).accounts)) {
+    const columns: ExportColumn[] = [
+      { key: 'account_number', label: '#', width: '72px' },
+      { key: 'name', label: 'Account' },
+      { key: 'total', label: 'Total', align: 'right', width: '120px' },
+    ];
+    const rows: ExportRow[] = [];
+    for (const g of reportData.groups as ExportVendorGroup[]) {
+      rows.push({ account_number: '', name: g.vendorName, total: '', _section: true, _label: g.vendorName });
+      for (const a of g.accounts) {
+        rows.push({ account_number: a.accountNumber || '', name: a.name, total: fmtNum(a.total) });
+      }
+      rows.push({ account_number: '', name: `Total ${g.vendorName}`, total: fmtNum(g.total), _summary: true });
+      rows.push({ account_number: '', name: '', total: '' });
     }
     return { rows, columns };
   }
@@ -1185,12 +1214,63 @@ reportsRouter.get('/invoice-list', async (req, res) => {
 reportsRouter.get('/expense-by-vendor', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
   const today = new Date();
-  const data = await reportService.buildExpenseByVendor(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!, resolveCompanyScope(req), readTagFilter(req));
+  // ?display=detail expands each vendor into per-account totals + a vendor
+  // total; the default stays the flat vendor→total summary.
+  const detail = req.query['display'] === 'detail';
+  const data = await reportService.buildExpenseByVendor(
+    req.tenantId,
+    start_date || `${today.getFullYear()}-01-01`,
+    end_date || today.toISOString().split('T')[0]!,
+    resolveCompanyScope(req), readTagFilter(req), detail,
+  );
+  if (detail) {
+    // Detail exports flatten via the vendorGroups branch in
+    // extractDataAndColumns (vendor header, account rows, vendor subtotal).
+    await respond(res, data, format);
+    return;
+  }
   await respond(res, { ...data, _exportColumns: [
     { key: 'vendor_name', label: 'Vendor' },
     { key: 'total', label: 'Total', align: 'right' },
   ]}, format);
 });
+
+// Revenues / Assets / Liabilities / Equity by account — same GL-style detail
+// (and summary) as Expenses by Category, for the other account-type groups.
+function accountDetailReportRoute(
+  path: string,
+  cfg: { title: string; accountTypes: string[]; normalSide: 'debit' | 'credit'; summaryLabel: string },
+) {
+  reportsRouter.get(path, async (req, res) => {
+    const { start_date, end_date, format } = req.query as Record<string, string>;
+    const today = new Date();
+    const detail = req.query['display'] === 'detail';
+    const data = await reportService.buildAccountDetailReport(
+      req.tenantId,
+      start_date || `${today.getFullYear()}-01-01`,
+      end_date || today.toISOString().split('T')[0]!,
+      {
+        title: cfg.title,
+        accountTypes: cfg.accountTypes,
+        normalSide: cfg.normalSide,
+        companyId: resolveCompanyScope(req),
+        tagId: readTagFilter(req),
+        accountIds: readAccountIds(req),
+        detail,
+      },
+    );
+    if (detail) { await respond(res, data, format); return; }
+    await respond(res, { ...data, _exportColumns: [
+      { key: 'account_number', label: '#' },
+      { key: 'category', label: cfg.summaryLabel },
+      { key: 'total', label: 'Total', align: 'right' },
+    ]}, format);
+  });
+}
+accountDetailReportRoute('/revenue-by-category', { title: 'Revenues by Category', accountTypes: ['revenue', 'other_revenue'], normalSide: 'credit', summaryLabel: 'Category' });
+accountDetailReportRoute('/assets-by-account', { title: 'Assets by Account', accountTypes: ['asset'], normalSide: 'debit', summaryLabel: 'Account' });
+accountDetailReportRoute('/liabilities-by-account', { title: 'Liabilities by Account', accountTypes: ['liability'], normalSide: 'credit', summaryLabel: 'Account' });
+accountDetailReportRoute('/equity-by-account', { title: 'Equity by Account', accountTypes: ['equity'], normalSide: 'credit', summaryLabel: 'Account' });
 
 reportsRouter.get('/expense-by-category', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
