@@ -250,7 +250,7 @@ export async function buildComparativePL(
     const netTotals = withTotal(plResults.map((pl) => pl.netIncome));
 
     return {
-      title: 'Profit and Loss (Comparative)', comparisonMode: compareMode,
+      title: 'Profit and Loss (Comparative)' + reportService.basisTitleSuffix(basis), comparisonMode: compareMode,
       labels: plResults[0]?.labels,
       footer: plResults[0]?.footer ?? '',
       columns, rows,
@@ -338,7 +338,7 @@ export async function buildComparativePL(
   };
 
   return {
-    title: 'Profit and Loss (Comparative)', comparisonMode: compareMode,
+    title: 'Profit and Loss (Comparative)' + reportService.basisTitleSuffix(basis), comparisonMode: compareMode,
     labels: currentPL.labels,
     footer: currentPL.footer,
     columns, rows,
@@ -437,7 +437,7 @@ export async function buildComparativeBS(
     : undefined;
 
   return {
-    title: 'Balance Sheet (Comparative)', comparisonMode: compareMode, columns,
+    title: 'Balance Sheet (Comparative)' + reportService.basisTitleSuffix(basis), comparisonMode: compareMode, columns,
     labels: currentBS.labels,
     footer: currentBS.footer,
     assets: mergedAssets,

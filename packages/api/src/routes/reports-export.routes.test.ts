@@ -239,6 +239,17 @@ describe('report CSV exports (route-level, ?format=csv)', () => {
     expect(r.body).toContain('TOTAL LIABILITIES & EQUITY');
   });
 
+  it('P&L and Balance Sheet titles carry the accounting basis', async () => {
+    const acc = JSON.parse((await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31')).body);
+    expect(acc.title).toBe('Profit and Loss - Accrual Basis');
+    const cash = JSON.parse((await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31&basis=cash')).body);
+    expect(cash.title).toBe('Profit and Loss - Cash Basis');
+    const bs = JSON.parse((await get('/balance-sheet?as_of_date=2026-12-31')).body);
+    expect(bs.title).toBe('Balance Sheet - Accrual Basis');
+    const cmp = JSON.parse((await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31&compare=previous_year')).body);
+    expect(cmp.title).toBe('Profit and Loss (Comparative) - Accrual Basis');
+  });
+
   it('profit and loss exports CSV with section totals', async () => {
     const r = await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31&format=csv');
     expect(r.status).toBe(200);

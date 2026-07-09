@@ -37,6 +37,13 @@ function sub(a: string | number | null | undefined, b: string | number | null | 
 
 type Basis = 'accrual' | 'cash';
 
+// Report-title basis suffix — QBO-style "Accrual Basis" / "Cash Basis" so an
+// exported statement states the basis it was run on (shown in the export
+// header + filename). Appended to the P&L / Balance Sheet report titles.
+export function basisTitleSuffix(basis: string): string {
+  return ` - ${basis === 'cash' ? 'Cash Basis' : 'Accrual Basis'}`;
+}
+
 interface DateRange { startDate?: string; endDate?: string }
 
 // Helper: get posted txn filter
@@ -397,7 +404,7 @@ export async function buildProfitAndLoss(
   ]);
 
   return {
-    title: 'Profit and Loss',
+    title: 'Profit and Loss' + basisTitleSuffix(basis),
     startDate, endDate, basis,
     labels,
     footer,
@@ -587,7 +594,7 @@ export async function buildBalanceSheet(
   ]);
 
   return {
-    title: 'Balance Sheet', asOfDate, basis,
+    title: 'Balance Sheet' + basisTitleSuffix(basis), asOfDate, basis,
     labels,
     footer,
     assets, totalAssets,

@@ -19,6 +19,11 @@ export const expensiveOpLimiter = rateLimit({
   max: 30,
   standardHeaders: true,
   legacyHeaders: false,
+  // Route tests mount the whole reports router and fire dozens of report
+  // requests from one user inside a single sub-5s window; the limiter would
+  // 429 the tail and surface as spurious "No data" exports. No test exercises
+  // the limit itself, so bypass it under NODE_ENV=test. Production/dev unaffected.
+  skip: () => process.env['NODE_ENV'] === 'test',
   keyGenerator: (req) => (req as { userId?: string }).userId || req.ip || 'anonymous',
   message: {
     error: {
