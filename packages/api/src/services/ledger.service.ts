@@ -835,10 +835,22 @@ export async function listTransactions(tenantId: string, filters: {
 
   const where = and(...conditions);
 
+  // Category column predicate. The "category" is the account the money moved
+  // to/from — everything EXCEPT the transaction's own cash / clearing /
+  // control side. So instead of whitelisting P&L account types (which hid
+  // deposits/payments whose offset is a loan, equity draw, fixed asset, etc.
+  // — they showed a bare "—"), we exclude only the money/clearing accounts:
+  // bank, A/R, A/P, credit cards, Payments Clearing / Undeposited Funds, and
+  // the auto-managed Sales Tax Payable. `a2` is the joined accounts alias in
+  // both the SELECT and the sort subquery below.
+  const categoryAccountFilter = sql`
+    COALESCE(a2.detail_type, '') NOT IN ('bank','accounts_receivable','accounts_payable','credit_card')
+    AND COALESCE(a2.system_tag, '') NOT IN ('payments_clearing','undeposited_funds','sales_tax_payable')`;
+
   // Column sort. Whitelisted keys → a concrete SQL expression; everything else
-  // falls back to date. CATEGORY sorts on the first P&L account name via the
-  // same correlated subquery the SELECT uses. A stable createdAt tiebreaker
-  // keeps pagination deterministic.
+  // falls back to date. CATEGORY sorts on the first category account name via
+  // the same correlated subquery the SELECT uses. A stable createdAt
+  // tiebreaker keeps pagination deterministic.
   const dir = filters.sortDir === 'asc' ? sql`ASC` : sql`DESC`;
   const sortExpr = (() => {
     switch (filters.sortBy) {
@@ -860,7 +872,7 @@ export async function listTransactions(tenantId: string, filters: {
         JOIN accounts a2 ON a2.id = jl4.account_id
         WHERE jl4.transaction_id = ${transactions.id}
           AND jl4.tenant_id = ${tenantId}
-          AND a2.account_type IN ('revenue','other_revenue','cogs','expense','other_expense')
+          AND ${categoryAccountFilter}
       )`;
       case 'date':
       default: return sql`${transactions.txnDate}`;
@@ -926,9 +938,10 @@ export async function listTransactions(tenantId: string, filters: {
           AND jl.tenant_id = ${tenantId}
           AND jl.tag_id IS NOT NULL
       )`,
-      // Category column: distinct names of the P&L (category) accounts on
-      // this transaction's lines — the income/expense side, excluding the
-      // bank/AR/AP/equity "money" accounts. One element → single category;
+      // Category column: distinct names of the "category" accounts on this
+      // transaction's lines — the account(s) the money moved to/from,
+      // excluding the transaction's own bank / A/R / A/P / credit-card /
+      // clearing / sales-tax control side. One element → single category;
       // two+ → rendered as "— Split —"; null → "—".
       lineCategories: sql<string[] | null>`(
         SELECT array_agg(DISTINCT a2.name ORDER BY a2.name)
@@ -936,7 +949,7 @@ export async function listTransactions(tenantId: string, filters: {
         JOIN accounts a2 ON a2.id = jl3.account_id
         WHERE jl3.transaction_id = ${transactions.id}
           AND jl3.tenant_id = ${tenantId}
-          AND a2.account_type IN ('revenue','other_revenue','cogs','expense','other_expense')
+          AND ${categoryAccountFilter}
       )`,
     }).from(transactions)
       .leftJoin(contacts, eq(transactions.contactId, contacts.id))
