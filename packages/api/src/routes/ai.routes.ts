@@ -573,9 +573,13 @@ aiRouter.get('/consent/:companyId/disclosure', authenticate, async (req, res) =>
 // payment-settings mutations are owner-only (company.routes). Without this any
 // tenant member (bookkeeper, read-only) could opt a company in to (or out of)
 // external AI processing.
-function requireOwner(req: { userRole?: string }): void {
-  if (req.userRole !== 'owner') {
-    throw AppError.forbidden('Only owners can change AI processing consent', 'PERMISSION_DENIED');
+function requireOwner(req: { userRole?: string; isSuperAdmin?: boolean }): void {
+  // Super-admins run the installation (they accept the system disclosure and
+  // configure providers) and can already impersonate an owner, so exempt them —
+  // otherwise a practice/appliance operator who isn't the literal company owner
+  // gets a silent 403 and "Accept and enable" appears to do nothing.
+  if (req.userRole !== 'owner' && !req.isSuperAdmin) {
+    throw AppError.forbidden('Only the company owner or a super-admin can change AI processing consent', 'PERMISSION_DENIED');
   }
 }
 

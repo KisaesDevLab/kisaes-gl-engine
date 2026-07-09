@@ -26,6 +26,7 @@ let tenantId = '';
 let companyId = '';
 let ownerId = '';
 let bookkeeperId = '';
+let superAdminId = '';
 
 function tokenFor(userId: string, role: string) {
   return jwt.sign({ userId, tenantId, role, isSuperAdmin: false }, process.env['JWT_SECRET']!, { expiresIn: '5m' });
@@ -77,6 +78,11 @@ beforeEach(async () => {
     displayName: 'Bookkeeper', role: 'bookkeeper', isActive: true,
   }).returning();
   bookkeeperId = bk!.id;
+  const [sa] = await db.insert(users).values({
+    tenantId, email: `sa-${Date.now()}@example.com`, passwordHash: 'x',
+    displayName: 'Super', role: 'bookkeeper', isActive: true, isSuperAdmin: true,
+  }).returning();
+  superAdminId = sa!.id;
 
   const app = express();
   app.use(express.json());
@@ -107,6 +113,16 @@ describe('AI consent endpoints — owner-only (M14)', () => {
     // Owner clears requireOwner; the request then fails downstream because AI
     // isn't enabled system-wide — a 400, NOT the 403 the gate would produce.
     const res = await request('POST', `/api/v1/ai/consent/${companyId}/accept`, tokenFor(ownerId, 'owner'));
+    expect(res.status).not.toBe(403);
+    expect(res.status).toBe(400);
+  });
+
+  it('super-admin (non-owner role) passes the role gate', async () => {
+    // The appliance operator isn't necessarily the literal company owner; a
+    // super-admin is exempted so "Accept and enable" isn't a silent 403.
+    // isSuperAdmin is read from the DB user (not the token), so use a real
+    // super-admin account with a non-owner tenant role.
+    const res = await request('POST', `/api/v1/ai/consent/${companyId}/accept`, tokenFor(superAdminId, 'bookkeeper'));
     expect(res.status).not.toBe(403);
     expect(res.status).toBe(400);
   });
