@@ -467,26 +467,35 @@ export async function refresh(refreshToken: string): Promise<AuthTokens> {
     throw AppError.unauthorized('User not found or deactivated');
   }
 
-  // Preserve the tenant/role the session was operating under, so an expired
+  // Preserve the TENANT the session was operating under, so an expired
   // access token refreshed mid-session doesn't silently revert a tenant
   // switch (the root cause of "it switched tenants on me and wiped my
   // inputs"). Pre-migration sessions have no stored context — fall back to
-  // the user's home tenant/role.
+  // the user's home tenant.
   let effectiveTenantId = session.tenantId ?? user.tenantId;
-  let effectiveRole = session.role ?? user.role;
+
+  // SECURITY: the ROLE is always re-derived from CURRENT database state,
+  // never from the stored session row. Trusting session.role let a demoted
+  // user keep their old role indefinitely — every refresh re-minted (and
+  // re-persisted) the stale role. Home tenant → users.role; switched tenant
+  // → the (re-verified) userTenantAccess.role.
+  let effectiveRole = user.role;
 
   // If the session is scoped to a non-home tenant, re-verify the user still
   // has active access before re-issuing — revoked access must not keep
   // refreshing into it. Super-admins retain cross-tenant access.
-  if (effectiveTenantId !== user.tenantId && !user.isSuperAdmin) {
+  if (effectiveTenantId !== user.tenantId) {
     const access = await db.query.userTenantAccess.findFirst({
       where: and(eq(userTenantAccess.userId, user.id), eq(userTenantAccess.tenantId, effectiveTenantId)),
     });
-    if (!access || !access.isActive) {
+    if (access?.isActive) {
+      effectiveRole = access.role || user.role;
+    } else if (user.isSuperAdmin) {
+      // Super-admins keep cross-tenant scope without an access row.
+      effectiveRole = session.role ?? user.role;
+    } else {
       effectiveTenantId = user.tenantId;
       effectiveRole = user.role;
-    } else {
-      effectiveRole = access.role || effectiveRole;
     }
   }
 

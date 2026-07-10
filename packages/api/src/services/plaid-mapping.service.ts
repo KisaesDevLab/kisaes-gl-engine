@@ -13,6 +13,18 @@ export async function assignAccountToCompany(plaidAccountId: string, tenantId: s
   const { users } = await import('../db/schema/index.js');
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
 
+  // SECURITY: the caller must be allowed to operate on the Plaid ITEM this
+  // account belongs to (creator, mapped-tenant member, or super-admin).
+  // Without this, any authenticated user who learned an unmapped Plaid
+  // account's UUID could map another client's bank account into their own
+  // tenant and pull its transactions through sync (IDOR).
+  const plaidAccount = await db.query.plaidAccounts.findFirst({
+    where: eq(plaidAccounts.id, plaidAccountId),
+  });
+  if (!plaidAccount) throw AppError.notFound('Bank account not found');
+  const { assertCanAccessItem } = await import('./plaid-connection.service.js');
+  await assertCanAccessItem(userId, plaidAccount.plaidItemId);
+
   // Validate COA account
   const coaAccount = await db.query.accounts.findFirst({
     where: and(eq(accounts.id, coaAccountId), eq(accounts.tenantId, tenantId)),

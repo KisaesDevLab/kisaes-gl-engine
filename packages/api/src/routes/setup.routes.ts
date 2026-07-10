@@ -2,6 +2,9 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // You may not distribute this software. See LICENSE for terms.
 
+import fs from 'fs';
+import path from 'path';
+import crypto from 'crypto';
 import { Router } from 'express';
 import multer from 'multer';
 import rateLimit from 'express-rate-limit';
@@ -15,7 +18,35 @@ import {
 import { getSetting as dbGetSetting } from '../services/admin.service.js';
 import { SystemSettingsKeys } from '../constants/system-settings-keys.js';
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 * 1024 } }); // 2 GB
+// Restore uploads go to DISK, not memory: an attachments-included .vmx system
+// backup can be many GB (createSystemBackup caps attachments at 10 GB), and
+// buffering that in RAM either OOMs the process or (with the old 2 GB limit)
+// makes large backups structurally unrestorable. The .vmx reader streams from
+// the file path; legacy .vmb blobs (DB-only, small) are read into a buffer.
+const RESTORE_UPLOAD_DIR = path.join(process.env['UPLOAD_DIR'] || '/data/uploads', '.restore-tmp');
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      fs.mkdirSync(RESTORE_UPLOAD_DIR, { recursive: true });
+      cb(null, RESTORE_UPLOAD_DIR);
+    },
+    filename: (_req, _file, cb) => cb(null, `restore-${crypto.randomUUID()}`),
+  }),
+  limits: { fileSize: 12 * 1024 * 1024 * 1024 }, // 12 GB — above the .vmx attachment cap
+});
+
+// Read an uploaded restore file: sniff the 4-byte ZIP magic from disk, and
+// load the full buffer only for the legacy .vmb path.
+function isZipFile(filePath: string): boolean {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const head = Buffer.alloc(4);
+    fs.readSync(fd, head, 0, 4, 0);
+    return head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
 
 // Rate-limit the pre-setup endpoints: they're unauthenticated (by design —
 // the first-run wizard has to be reachable before any user exists) and a
@@ -397,16 +428,20 @@ setupRouter.post('/restore/validate', upload.single('file'), async (req, res) =>
     return;
   }
 
+  const uploadedPath = req.file.path;
   try {
     const { smartDecrypt } = await import('../services/portable-encryption.service.js');
-    const { isPackageFormat, readTenantPackage } = await import('../services/vmx-package.js');
+    const { readTenantPackage } = await import('../services/vmx-package.js');
     let content;
     let method: 'passphrase' | 'server_key' = 'passphrase';
-    if (isPackageFormat(req.file.buffer)) {
-      const pkg = await readTenantPackage(req.file.buffer, passphrase);
+    if (isZipFile(uploadedPath)) {
+      // .vmx package — readTenantPackage streams entries from the file path
+      // (no whole-file buffering; the data payload is small).
+      const pkg = await readTenantPackage(uploadedPath, passphrase);
       content = pkg.data;
     } else {
-      const decrypted = smartDecrypt(req.file.buffer, passphrase);
+      // Legacy .vmb — a single encrypted JSON blob (DB-only, small).
+      const decrypted = smartDecrypt(fs.readFileSync(uploadedPath), passphrase);
       content = JSON.parse(decrypted.data.toString());
       method = decrypted.method;
     }
@@ -431,6 +466,8 @@ setupRouter.post('/restore/validate', upload.single('file'), async (req, res) =>
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Validation failed';
     res.status(400).json({ error: { message: msg } });
+  } finally {
+    try { fs.unlinkSync(uploadedPath); } catch { /* already gone */ }
   }
 });
 
@@ -479,19 +516,21 @@ setupRouter.post('/restore/execute', upload.single('file'), async (req, res) => 
 
       // A .vmx package (ZIP) carries the DB dump plus attachment files; a
       // legacy .vmb/.kbk is a single encrypted JSON blob. Detect and read the
-      // right one; `content` is the same DB payload either way.
+      // right one; `content` is the same DB payload either way. The .vmx is
+      // read from its DISK path (streamed entries — a multi-GB package never
+      // fully buffers); only the small legacy blob is loaded whole.
       const { smartDecrypt } = await import('../services/portable-encryption.service.js');
-      const { isPackageFormat, readTenantPackage } = await import('../services/vmx-package.js');
+      const { readTenantPackage } = await import('../services/vmx-package.js');
       // `content` is the decrypted DB payload (evolving-any, exactly as the
       // original JSON.parse path — rows are re-inserted via parameterized SQL).
       let content;
       let packageAttachments: (() => AsyncGenerator<{ id: string; buffer: Buffer }>) | null = null;
-      if (isPackageFormat(req.file!.buffer)) {
-        const pkg = await readTenantPackage(req.file!.buffer, passphrase);
+      if (isZipFile(req.file!.path)) {
+        const pkg = await readTenantPackage(req.file!.path, passphrase);
         content = pkg.data;
         packageAttachments = () => pkg.attachments();
       } else {
-        const { data } = smartDecrypt(req.file!.buffer, passphrase);
+        const { data } = smartDecrypt(fs.readFileSync(req.file!.path), passphrase);
         content = JSON.parse(data.toString());
       }
       const metadata = content.metadata ?? {};
@@ -573,7 +612,11 @@ setupRouter.post('/restore/execute', upload.single('file'), async (req, res) => 
           for (const [tid, tables] of Object.entries(content.tenant_data || {})) {
             for (const att of ((tables as Record<string, Array<Record<string, unknown>>>)['attachments'] || [])) {
               const sk = (att['storage_key'] as string | null) || null;
-              if (sk) idToTarget.set(att['id'] as string, { tenantId: tid, storageKey: sk });
+              // Fall back to file_path for legacy rows whose storage_key was
+              // never backfilled — the bundled file must not be silently
+              // dropped on restore.
+              const key = sk || ((att['file_path'] as string | null) || null);
+              if (key) idToTarget.set(att['id'] as string, { tenantId: tid, storageKey: key });
             }
           }
           const { getProviderForTenant } = await import('../services/storage/storage-provider.factory.js');
@@ -749,6 +792,10 @@ setupRouter.post('/restore/execute', upload.single('file'), async (req, res) => 
       msg.includes('tenant information') ? 400 :
       500;
     res.status(status).json({ error: { message: msg } });
+  } finally {
+    // The uploaded backup landed on disk (multer diskStorage) — always
+    // remove it, success or failure.
+    try { fs.unlinkSync(req.file.path); } catch { /* already gone */ }
   }
 });
 

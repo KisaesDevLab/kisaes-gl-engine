@@ -11,7 +11,7 @@
 // worker's BullMQ job (the normal path) OR inline in the API when the queue
 // is unreachable (appliance deployments without a separate worker/Redis).
 
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import puppeteer, { type Browser } from 'puppeteer';
 import { sql } from 'drizzle-orm';
@@ -116,8 +116,19 @@ export async function generateReportPackRun(runId: string): Promise<void> {
     .where(eq(reportPackItems.packId, pack.id))
     .orderBy(asc(reportPackItems.sortOrder));
 
-  await db.update(reportPackRuns).set({ status: 'running', startedAt: new Date() })
-    .where(eq(reportPackRuns.id, runId));
+  // Atomically CLAIM the run. createRun's enqueue-timeout fallback can race
+  // the worker (a slow-but-successful enqueue after the timeout fires both
+  // the inline generator and the queued job) — without this compare-and-swap
+  // two Chromium renders would fight over the same run row and artifact key.
+  // 'failed' stays claimable so a queued retry after a failure still runs.
+  const claimed = await db.update(reportPackRuns)
+    .set({ status: 'running', startedAt: new Date() })
+    .where(and(eq(reportPackRuns.id, runId), inArray(reportPackRuns.status, ['queued', 'failed'])))
+    .returning({ id: reportPackRuns.id });
+  if (claimed.length === 0) {
+    console.log(`[report-pack] run ${runId} already claimed by another generator — skipping`);
+    return;
+  }
 
   const companyRow = await db.execute(
     sql`SELECT business_name FROM companies WHERE id = ${run.companyId}`,

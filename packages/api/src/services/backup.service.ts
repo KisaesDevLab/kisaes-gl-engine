@@ -373,7 +373,9 @@ export async function createSystemBackup(
 
     // Upload to remote only when small enough to hold in memory safely; a very
     // large package stays local (operator copies it off-machine per the DR
-    // guidance) rather than risk OOM re-reading it for the upload.
+    // guidance) rather than risk OOM re-reading it for the upload. When the
+    // full package exceeds the cap, we still ship the DB-only .vmb off-site —
+    // a host loss must never take every restorable copy with it.
     const REMOTE_UPLOAD_MAX = 500 * 1024 * 1024;
     if (size <= REMOTE_UPLOAD_MAX) {
       const fileBuf = fs.readFileSync(filePath);
@@ -381,7 +383,17 @@ export async function createSystemBackup(
         console.error('[Backup] Remote upload of system backup failed (non-fatal):', err.message);
       });
     } else {
-      console.warn(`[Backup] System backup ${fileName} is ${size} bytes — kept local only (exceeds remote-upload memory limit).`);
+      console.warn(`[Backup] System backup ${fileName} is ${size} bytes — full package kept local; uploading DB-only .vmb off-site instead.`);
+      try {
+        const dbOnly = encryptWithPassphrase(Buffer.from(JSON.stringify({ ...contentObj, metadata })), passphrase);
+        const vmbName = fileName.replace(/\.vmx$/, '.vmb');
+        fs.writeFileSync(path.join(dir, vmbName), dbOnly);
+        uploadBackupToRemote(vmbName, dbOnly, '_system').catch((err) => {
+          console.error('[Backup] Remote upload of DB-only system backup failed (non-fatal):', err.message);
+        });
+      } catch (err) {
+        console.error('[Backup] DB-only fallback backup failed (non-fatal):', err instanceof Error ? err.message : err);
+      }
     }
 
     const firstTenantId = (allTenants[0] as { id: string } | undefined)?.id || 'system';
@@ -718,7 +730,11 @@ export async function uploadBackupToRemote(
     });
 
     const manifest = await getManifest();
-    const tiers = computeBackupTiers(new Date(), manifest);
+    // Tiers are computed against THIS tenant's (or _system's) own uploads.
+    // A global manifest let whichever backup uploaded first in a cycle claim
+    // the weekly/monthly/yearly tiers for the whole installation — leaving
+    // the system DR bundle (uploaded last) on the shortest 'daily' retention.
+    const tiers = computeBackupTiers(new Date(), manifest.filter((e) => e.tenantId === tenantId));
     manifest.push({
       key,
       fileName,
@@ -777,7 +793,10 @@ export async function purgeExpiredLocalBackups(retentionDays: number): Promise<n
     } catch { continue; }
 
     for (const file of fs.readdirSync(tenantDir)) {
-      if (!file.endsWith('.kbk') && !file.endsWith('.vmb')) continue;
+      // .vmx = attachments-included system packages — they're the largest
+      // files in BACKUP_DIR and MUST be purged or the scheduler fills the
+      // disk (one multi-GB package per cycle).
+      if (!file.endsWith('.kbk') && !file.endsWith('.vmb') && !file.endsWith('.vmx')) continue;
       const filePath = path.join(tenantDir, file);
       try {
         const fstat = fs.statSync(filePath);

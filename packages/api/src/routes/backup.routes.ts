@@ -107,11 +107,20 @@ backupRouter.post('/system/download', requireSuperAdmin, async (req, res) => {
   }
   const result = await backupService.createSystemBackup(passphrase, req.userId, { includeAttachments: true });
   // Stream the file (an attachments-included .vmx can be large) rather than
-  // buffering it into memory.
+  // buffering it into memory. Stream errors (file removed mid-stream, disk
+  // read error) and client disconnects must tear the stream down — an
+  // unhandled ReadStream 'error' would otherwise crash the process.
   const filePath = backupService.resolveSystemBackupPath(result.fileName);
   res.setHeader('Content-Type', 'application/octet-stream');
   res.setHeader('Content-Disposition', encodeContentDisposition(result.fileName));
-  fs.createReadStream(filePath).pipe(res);
+  const stream = fs.createReadStream(filePath);
+  stream.on('error', (err) => {
+    console.error('[Backup] DR bundle stream failed:', err.message);
+    if (!res.headersSent) res.status(500).json({ error: { message: 'Backup stream failed' } });
+    else res.destroy();
+  });
+  res.on('close', () => stream.destroy());
+  stream.pipe(res);
 });
 
 // List backups

@@ -194,7 +194,8 @@ export async function createConnection(userId: string, publicToken: string, meta
       }
     }
     await logActivity(existing.id, null, 'item_reauthorized', userId, user?.displayName || null, { institutionName: metadata.institutionName });
-    return { item: existing, isExisting: true };
+    // Never return the encrypted access token (or rely on the client to drop it).
+    return { item: { ...existing, accessTokenEncrypted: undefined }, isExisting: true };
   }
 
   const [item] = await db.insert(plaidItems).values({
@@ -234,7 +235,7 @@ export async function createConnection(userId: string, publicToken: string, meta
     plaidAccountList,
   );
 
-  return { item: item!, accounts, isExisting: false, connectedElsewhere };
+  return { item: { ...item!, accessTokenEncrypted: undefined }, accounts, isExisting: false, connectedElsewhere };
 }
 
 // ─── Item Queries ──────────────────────────────────────────────
@@ -267,15 +268,16 @@ export async function getItemDetail(userId: string, itemId: string) {
   const { accounts, hiddenAccountCount } = await getVisibleAccounts(userId, itemId);
 
   // Visibility check: the caller may only see this item if they created
-  // it, or have a mapping to at least one of its accounts, or are a
-  // super admin. Without this gate any authenticated user could
-  // enumerate every Plaid item in the database by UUID and pull
-  // institution metadata (see security review §2).
+  // it, or have a MAPPING to at least one of its accounts, or are a
+  // super admin. Merely-visible unassigned accounts do NOT grant access —
+  // they're visible to any user in the user-wide view, so counting them
+  // would let any authenticated user enumerate items by UUID and pull
+  // institution metadata + creator PII (see security review §2).
   const { users } = await import('../db/schema/index.js');
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   const isSuperAdmin = !!user?.isSuperAdmin;
   const isCreator = item.createdBy === userId;
-  if (!isSuperAdmin && !isCreator && accounts.length === 0) {
+  if (!isSuperAdmin && !isCreator && !accounts.some((a) => a.mapping)) {
     throw AppError.notFound('Connection not found');
   }
 
@@ -301,8 +303,12 @@ export async function assertCanAccessItem(userId: string, itemId: string): Promi
   if (user?.isSuperAdmin) return;
   if (item.createdBy === userId) return;
 
+  // SECURITY: access requires an account MAPPED into one of the user's
+  // tenants — not merely a visible unassigned account. Unassigned accounts
+  // are visible to any user in the user-wide view, so counting them let any
+  // authenticated user pass this gate for any item that had one.
   const { accounts } = await getVisibleAccounts(userId, itemId);
-  if (accounts.length === 0) {
+  if (!accounts.some((a) => a.mapping)) {
     throw AppError.notFound('Connection not found');
   }
 }

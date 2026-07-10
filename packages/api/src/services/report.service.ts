@@ -1502,6 +1502,11 @@ export async function buildSalesByCustomer(
         JOIN accounts a ON a.id = cb.account_id AND a.account_type IN ('revenue', 'other_revenue')
         LEFT JOIN contacts c ON c.id = cb.txn_contact_id AND c.tenant_id = ${tenantId}
         WHERE a.tenant_id = ${tenantId} AND cb.credit > 0 ${cbTag}
+          -- Sale documents + the payments their revenue re-emits at
+          -- (cb_lines rule 3 stamps the PAYMENT's txn_type). Without this,
+          -- cash-basis "Sales" would count revenue credits from deposits and
+          -- journal entries — semantically broader than the accrual report.
+          AND cb.txn_type IN ('invoice', 'cash_sale', 'credit_memo', 'customer_payment')
         GROUP BY c.id, c.display_name ORDER BY total DESC
       `)
     : await db.execute(sql`
@@ -1551,6 +1556,8 @@ export async function buildSalesByItem(
         JOIN accounts a ON a.id = cb.account_id AND a.account_type IN ('revenue', 'other_revenue')
         LEFT JOIN items i ON i.id = cb.item_id AND i.tenant_id = ${tenantId}
         WHERE a.tenant_id = ${tenantId} AND cb.credit > 0 ${cbTag}
+          -- Same sale-document restriction as Sales by Customer (see note there).
+          AND cb.txn_type IN ('invoice', 'cash_sale', 'credit_memo', 'customer_payment')
         GROUP BY cb.item_id, i.name, i.sku
         ORDER BY total DESC
       `)
@@ -2641,6 +2648,9 @@ export async function buildTransactionList(tenantId: string, filters?: {
   if (filters?.startDate) conditions.push(sql`t.txn_date >= ${filters.startDate}`);
   if (filters?.endDate) conditions.push(sql`t.txn_date <= ${filters.endDate}`);
   if (filters?.txnType) conditions.push(sql`t.txn_type = ${filters.txnType}`);
+  // Line-level account filter (the cash branch honors it; accrual silently
+  // ignored it, so ?account_id returned every account's lines).
+  if (filters?.accountId) conditions.push(sql`jl.account_id = ${filters.accountId}`);
   if (filters?.tagId) {
     conditions.push(sql`EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = t.id AND jl.tenant_id = ${tenantId} AND jl.tag_id = ${filters.tagId})`);
   }

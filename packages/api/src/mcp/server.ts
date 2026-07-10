@@ -385,6 +385,11 @@ registerTool('get_bank_connections', 'List Plaid bank connections', { company_id
 
 registerTool('sync_bank_connection', 'Trigger manual bank sync', { company_id: 'string?', connection_id: 'string' }, async (p, auth) => {
   checkScope(auth, 'banking');
+  // Same ownership gate as the HTTP route (/items/:id/sync) — an arbitrary
+  // connection UUID must not let a banking-scoped token sync another
+  // client's item.
+  const { assertCanAccessItem } = await import('../services/plaid-connection.service.js');
+  await assertCanAccessItem(auth.userId, p.connection_id);
   const { syncItem } = await import('../services/plaid-sync.service.js');
   return syncItem(p.connection_id);
 });

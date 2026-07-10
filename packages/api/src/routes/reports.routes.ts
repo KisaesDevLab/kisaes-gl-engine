@@ -952,7 +952,7 @@ reportsRouter.get('/profit-loss', async (req, res) => {
   const today = new Date();
   const sd = start_date || `${today.getFullYear()}-01-01`;
   const ed = end_date || today.toISOString().split('T')[0]!;
-  const b = (basis as 'cash' | 'accrual') || 'accrual';
+  const b = readBasis(req);
   const companyId = resolveCompanyScope(req);
   const tagId = readTagFilter(req);
 
@@ -985,7 +985,7 @@ reportsRouter.get('/balance-sheet', async (req, res) => {
     const data = await comparisonService.buildComparativeBS(
       req.tenantId,
       as_of_date || new Date().toISOString().split('T')[0]!,
-      (basis as 'cash' | 'accrual') || 'accrual',
+      readBasis(req),
       compare as any,
       companyId,
       readGroupBy(req),
@@ -996,7 +996,7 @@ reportsRouter.get('/balance-sheet', async (req, res) => {
   const data = await reportService.buildBalanceSheet(
     req.tenantId,
     as_of_date || new Date().toISOString().split('T')[0]!,
-    (basis as 'cash' | 'accrual') || 'accrual',
+    readBasis(req),
     companyId,
     tagId,
     readGroupBy(req),

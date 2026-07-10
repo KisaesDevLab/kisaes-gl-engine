@@ -229,6 +229,24 @@ describe('Auth Service', () => {
       expect(payload.role).toBe('bookkeeper');
     });
 
+    it('re-reads the CURRENT role on refresh — a demotion is not survivable (SECURITY)', async () => {
+      const reg = await authService.register({
+        email: 'test@example.com', password: 'password123', displayName: 'Test User', companyName: 'Home Co',
+      });
+      // Session was minted with role 'owner'. Admin demotes the user.
+      await db.update(users).set({ role: 'readonly' }).where(eq(users.id, reg.user.id));
+
+      const refreshed = await authService.refresh(reg.tokens.refreshToken);
+      const payload = jwt.verify(refreshed.accessToken, env.JWT_SECRET) as JwtPayload;
+      // The stale session.role ('owner') must NOT be re-minted.
+      expect(payload.role).toBe('readonly');
+
+      // And the demotion sticks across a second refresh (the new session row
+      // must not have re-persisted the stale role either).
+      const again = await authService.refresh(refreshed.refreshToken);
+      expect((jwt.verify(again.accessToken, env.JWT_SECRET) as JwtPayload).role).toBe('readonly');
+    });
+
     it('reverts to home tenant on refresh when switched-tenant access was revoked', async () => {
       const reg = await authService.register({
         email: 'test@example.com', password: 'password123', displayName: 'Test User', companyName: 'Home Co',
