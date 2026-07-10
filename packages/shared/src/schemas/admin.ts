@@ -192,6 +192,8 @@ export const adminPlaidConfigSchema = z.object({
   defaultCountryCodes: z.array(z.string().length(2)).optional(),
   defaultLanguage: z.string().max(10).optional(),
   maxHistoricalDays: z.number().int().min(1).max(730).optional(),
+  // Automatic sync interval in hours: 0 disables, null = use server default.
+  autoSyncHours: z.number().int().min(0).max(168).nullable().optional(),
   isActive: z.boolean().optional(),
 }).strict();
 export type AdminPlaidConfigInput = z.infer<typeof adminPlaidConfigSchema>;

@@ -32,6 +32,7 @@ export async function getConfig() {
     defaultCountryCodes: (config.defaultCountryCodes || 'US').split(',').filter(Boolean),
     defaultLanguage: config.defaultLanguage || 'en',
     maxHistoricalDays: config.maxHistoricalDays || 90,
+    autoSyncHours: config.autoSyncHours ?? null,
     isActive: config.isActive ?? true,
   };
 }
@@ -48,6 +49,7 @@ export async function updateConfig(input: {
   defaultCountryCodes?: string[];
   defaultLanguage?: string;
   maxHistoricalDays?: number;
+  autoSyncHours?: number | null;
   isActive?: boolean;
 }, userId?: string) {
   const config = await getOrCreateConfig();
@@ -69,6 +71,7 @@ export async function updateConfig(input: {
   if (input.defaultCountryCodes) updates.defaultCountryCodes = input.defaultCountryCodes.join(',');
   if (input.defaultLanguage !== undefined) updates.defaultLanguage = input.defaultLanguage;
   if (input.maxHistoricalDays !== undefined) updates.maxHistoricalDays = input.maxHistoricalDays;
+  if (input.autoSyncHours !== undefined) updates.autoSyncHours = input.autoSyncHours;
   if (input.isActive !== undefined) updates.isActive = input.isActive;
   if (userId) { updates.configuredBy = userId; updates.configuredAt = new Date(); }
 

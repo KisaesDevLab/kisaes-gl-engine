@@ -21,7 +21,19 @@ import { recordSchedulerTick } from '../utils/metrics.js';
 const CHECK_INTERVAL_MS = 30 * 60 * 1000; // check every 30 minutes
 const INITIAL_DELAY_MS = 3 * 60 * 1000;   // 3 minutes after boot
 
-function autoSyncHours(): number {
+// Effective interval: Admin UI (plaid_config.auto_sync_hours) wins; the
+// PLAID_AUTO_SYNC_HOURS env var is only a deployment-level default; built-in
+// fallback 6h. 0 disables.
+async function autoSyncHours(): Promise<number> {
+  try {
+    const row = await db.execute<{ auto_sync_hours: number | null }>(
+      sql`SELECT auto_sync_hours FROM plaid_config LIMIT 1`,
+    );
+    const fromDb = (row.rows[0] as { auto_sync_hours: number | null } | undefined)?.auto_sync_hours;
+    if (fromDb !== null && fromDb !== undefined && Number.isFinite(Number(fromDb)) && Number(fromDb) >= 0) {
+      return Number(fromDb);
+    }
+  } catch { /* table may not exist yet on first boot — fall through */ }
   const raw = Number(process.env['PLAID_AUTO_SYNC_HOURS']);
   if (Number.isFinite(raw) && raw >= 0) return raw;
   return 6;
@@ -29,7 +41,7 @@ function autoSyncHours(): number {
 
 export async function runPlaidSyncCycle(): Promise<void> {
   const started = Date.now();
-  const hours = autoSyncHours();
+  const hours = await autoSyncHours();
   if (hours === 0) {
     recordSchedulerTick('plaid-sync', Date.now() - started, 'skipped');
     return;
@@ -87,7 +99,7 @@ let intervalHandle: NodeJS.Timeout | null = null;
 let timeoutHandle: NodeJS.Timeout | null = null;
 
 export function startPlaidSyncScheduler(): void {
-  console.log(`[Plaid Sync Scheduler] Registered (checks every 30 min, stale threshold ${autoSyncHours()}h, first check in 3 min)`);
+  console.log('[Plaid Sync Scheduler] Registered (checks every 30 min, threshold from Admin → Plaid, first check in 3 min)');
   const lockedRun = async () => {
     const { withSchedulerLock } = await import('../utils/scheduler-lock.js');
     await withSchedulerLock('plaid-sync-scheduler', runPlaidSyncCycle);

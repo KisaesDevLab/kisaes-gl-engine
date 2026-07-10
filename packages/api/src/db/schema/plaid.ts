@@ -16,6 +16,8 @@ export const plaidConfig = pgTable('plaid_config', {
   defaultCountryCodes: text('default_country_codes').default('US'),
   defaultLanguage: varchar('default_language', { length: 5 }).default('en'),
   maxHistoricalDays: integer('max_historical_days').default(90),
+  // Automatic sync interval in hours (Admin UI). NULL = env/default; 0 = off.
+  autoSyncHours: integer('auto_sync_hours'),
   isActive: boolean('is_active').default(true),
   configuredBy: uuid('configured_by'),
   configuredAt: timestamp('configured_at', { withTimezone: true }),

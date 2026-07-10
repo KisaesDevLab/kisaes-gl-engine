@@ -911,6 +911,13 @@
       "when": 1777270800000,
       "tag": "0129_plaid_connection_health_check",
       "breakpoints": true
+    },
+    {
+      "idx": 130,
+      "version": "7",
+      "when": 1777274400000,
+      "tag": "0130_plaid_auto_sync_hours",
+      "breakpoints": true
     }
   ]
 }
