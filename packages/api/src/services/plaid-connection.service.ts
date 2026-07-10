@@ -191,11 +191,29 @@ export async function createConnection(userId: string, publicToken: string, meta
   // reuse an existing connection. A different login is always a NEW, separate
   // connection — never merged.
   const { accessToken, itemId } = await plaidClient.exchangePublicToken(publicToken);
-  const plaidAccountList = await plaidClient.getAccounts(accessToken);
 
   const existing = !metadata.forceNew
     ? await db.query.plaidItems.findFirst({ where: and(eq(plaidItems.plaidItemId, itemId), sql`removed_at IS NULL`) })
     : null;
+
+  // ORPHAN GUARD: the public token is single-use and already spent. If
+  // anything between here and a successful DB insert fails on a NEW
+  // connection, the Item would exist at Plaid (billing) with no local row
+  // holding its access token — invisible and unrevokable in-app. Compensate
+  // by removing the Item at Plaid before rethrowing. Re-auth failures skip
+  // this: the token belongs to an existing, still-tracked item.
+  try {
+    return await createConnectionInner();
+  } catch (err) {
+    if (!existing) {
+      try { await plaidClient.removeItem(accessToken); } catch { /* best effort */ }
+      console.error('[plaid] connect failed after token exchange — removed the orphaned Item at Plaid');
+    }
+    throw err;
+  }
+
+  async function createConnectionInner() {
+  const plaidAccountList = await plaidClient.getAccounts(accessToken);
 
   if (existing) {
     // Same login re-authorized — refresh the token and add any genuinely new
@@ -259,6 +277,7 @@ export async function createConnection(userId: string, publicToken: string, meta
   );
 
   return { item: { ...item!, accessTokenEncrypted: undefined }, accounts, isExisting: false, connectedElsewhere };
+  } // end createConnectionInner
 }
 
 // ─── Item Queries ──────────────────────────────────────────────
@@ -473,6 +492,53 @@ export async function deleteConnection(plaidItemId: string, deletePendingItems: 
   for (const tenantId of affectedTenants) {
     await auditLog(tenantId, 'delete', 'plaid_connection_deleted', plaidItemId, null, { institutionName: item.institutionName }, userId);
   }
+}
+
+// Super-admin escape hatch: remove the connection LOCALLY without calling
+// Plaid. Exists for connections whose access token can no longer be used —
+// e.g. after a cross-host restore with a different ENCRYPTION_KEY the token
+// can't be decrypted, so the normal Plaid-first deletion can never succeed
+// and the item becomes an undeletable zombie. The caller is warned that the
+// Item may still be live (and billing) at Plaid and must be revoked from the
+// Plaid dashboard.
+export async function forceRemoveConnection(plaidItemId: string, userId: string) {
+  const { users } = await import('../db/schema/index.js');
+  const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+  if (!user?.isSuperAdmin) throw AppError.forbidden('Only a super-admin can force-remove a connection');
+
+  const item = await db.query.plaidItems.findFirst({ where: eq(plaidItems.id, plaidItemId) });
+  if (!item) throw AppError.notFound('Connection not found');
+
+  // Best-effort Plaid revoke — if the token still decrypts and Plaid answers,
+  // take the clean path; otherwise proceed locally regardless.
+  let plaidRevoked = false;
+  try {
+    const accessToken = decrypt(item.accessTokenEncrypted);
+    await plaidClient.removeItem(accessToken);
+    plaidRevoked = true;
+  } catch {
+    console.warn(`[plaid] force-remove ${plaidItemId}: could not revoke at Plaid — local removal only. Revoke the item from the Plaid dashboard.`);
+  }
+
+  const allMappings = await getAllMappingsForItem(plaidItemId);
+  const affectedTenants = [...new Set(allMappings.map((m) => m.tenantId))];
+  for (const m of allMappings) {
+    await db.delete(plaidAccountMappings)
+      .where(and(eq(plaidAccountMappings.tenantId, m.tenantId), eq(plaidAccountMappings.id, m.id)));
+  }
+  await db.update(plaidAccounts).set({ isActive: false }).where(eq(plaidAccounts.plaidItemId, plaidItemId));
+  await db.update(plaidItems).set({
+    itemStatus: 'removed', removedAt: new Date(), removedBy: userId, removedByName: user.displayName || null,
+    accessTokenEncrypted: 'REMOVED', updatedAt: new Date(),
+  }).where(eq(plaidItems.id, plaidItemId));
+
+  await logActivity(plaidItemId, null, 'item_force_removed', userId, user.displayName || null, {
+    plaidRevoked, affectedCompanies: affectedTenants.length,
+  });
+  for (const tenantId of affectedTenants) {
+    await auditLog(tenantId, 'delete', 'plaid_connection_force_removed', plaidItemId, null, { institutionName: item.institutionName, plaidRevoked }, userId);
+  }
+  return { plaidRevoked };
 }
 
 // ─── Connection Management ─────────────────────────────────────

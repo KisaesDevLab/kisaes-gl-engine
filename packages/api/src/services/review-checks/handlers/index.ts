@@ -42,6 +42,7 @@ import { handler as vendor1099ThresholdNoW9 } from './vendor-1099-threshold-no-w
 import { handler as missingRequiredCustomer } from './missing-required-customer.js';
 import { handler as receiptAmountMismatch } from './receipt-amount-mismatch.js';
 import { handler as aiPersonalExpenseReview } from './ai-personal-expense-review.js';
+import { handler as plaidConnectionHealth } from './plaid-connection-health.js';
 
 // Map check_registry.handler_name → handler function. The
 // orchestrator iterates registry entries and looks each up
@@ -62,4 +63,5 @@ export const HANDLERS: Record<string, CheckHandler> = {
   missing_required_customer: missingRequiredCustomer,
   receipt_amount_mismatch: receiptAmountMismatch,
   ai_personal_expense_review: aiPersonalExpenseReview,
+  plaid_connection_health: plaidConnectionHealth,
 };

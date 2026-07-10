@@ -740,6 +740,16 @@ adminRouter.post('/plaid/accounts/:plaidAccountId/unmap', async (req, res) => {
   res.json(result);
 });
 
+// Force-remove: local-only deletion for connections whose access token can't
+// be used (e.g. cross-host restore with a different ENCRYPTION_KEY blocks the
+// normal Plaid-first delete forever). Tries Plaid best-effort; proceeds
+// locally regardless. Super-admin (router-wide requireSuperAdmin).
+adminRouter.delete('/plaid/connections/:id/force', async (req, res) => {
+  const plaidConnection = await import('../services/plaid-connection.service.js');
+  const result = await plaidConnection.forceRemoveConnection(req.params['id']!, req.userId);
+  res.json({ removed: true, ...result });
+});
+
 adminRouter.get('/plaid/stats', async (req, res) => {
   const { plaidItems, plaidAccounts } = await import('../db/schema/index.js');
   const { sql: sqlTag } = await import('drizzle-orm');

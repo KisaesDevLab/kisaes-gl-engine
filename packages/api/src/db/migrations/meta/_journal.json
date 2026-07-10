@@ -904,6 +904,13 @@
       "when": 1777267200000,
       "tag": "0128_report_pack_page_footer",
       "breakpoints": true
+    },
+    {
+      "idx": 129,
+      "version": "7",
+      "when": 1777270800000,
+      "tag": "0129_plaid_connection_health_check",
+      "breakpoints": true
     }
   ]
 }
