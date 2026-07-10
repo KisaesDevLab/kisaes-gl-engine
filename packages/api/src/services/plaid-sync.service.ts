@@ -229,12 +229,18 @@ export async function syncItem(itemId: string) {
       }
     }
 
-    // Update sync cursor and status
+    // Update sync cursor and status. A successful transactionsSync proves the
+    // credentials work, so also self-heal any error status — webhook-less
+    // installs never receive Plaid's LOGIN_REPAIRED webhook and would
+    // otherwise show "login required" forever after a Fix Now repair.
     await db.update(plaidItems).set({
       syncCursor: nextCursor,
       lastSyncAt: new Date(),
       lastSyncStatus: 'success',
       lastSyncError: null,
+      itemStatus: 'active',
+      errorCode: null,
+      errorMessage: null,
       updatedAt: new Date(),
     }).where(eq(plaidItems.id, itemId));
 
@@ -261,6 +267,27 @@ export async function syncItem(itemId: string) {
     await db.update(plaidItems).set({
       lastSyncAt: new Date(), lastSyncStatus: 'error', lastSyncError: err.message || 'Sync failed', updatedAt: new Date(),
     }).where(eq(plaidItems.id, itemId));
+
+    // Credential/consent failures flip the item into an error status and
+    // notify the mapped tenants' owners — once, on the transition. Webhook-
+    // less installs (the auto-sync scheduler path) otherwise never learn the
+    // login broke.
+    const plaidCode: string | undefined = err?.response?.data?.error_code;
+    const credentialCodes = ['ITEM_LOGIN_REQUIRED', 'PENDING_EXPIRATION', 'USER_PERMISSION_REVOKED', 'ITEM_NOT_FOUND', 'ACCESS_NOT_GRANTED'];
+    if (plaidCode && credentialCodes.includes(plaidCode)) {
+      const wasHealthy = !item.itemStatus || item.itemStatus === 'active';
+      await db.update(plaidItems).set({
+        itemStatus: plaidCode === 'ITEM_LOGIN_REQUIRED' ? 'login_required' : 'error',
+        errorCode: plaidCode,
+        errorMessage: err?.response?.data?.error_message || err.message || null,
+        updatedAt: new Date(),
+      }).where(eq(plaidItems.id, itemId));
+      if (wasHealthy) {
+        const { sendConnectionErrorNotice } = await import('./email.service.js');
+        sendConnectionErrorNotice(itemId, item.institutionName, err?.response?.data?.error_message || plaidCode)
+          .catch((e) => console.warn('[plaid-sync] error notice failed:', e instanceof Error ? e.message : e));
+      }
+    }
     throw err;
   }
 }

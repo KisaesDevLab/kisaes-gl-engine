@@ -123,6 +123,55 @@ async function getInvoiceEmailData(tenantId: string, invoiceId: string) {
 // future maintenance doesn't drift on two implementations that look the
 // same from the outside.
 
+// Notify the owners of every tenant mapped to a Plaid item that the bank
+// connection broke (credentials expired, institution error). Sent only on the
+// TRANSITION into an error state (callers guard), so repeat webhooks don't
+// spam. Best-effort per tenant: one tenant's missing SMTP config must not
+// block another's notice.
+export async function sendConnectionErrorNotice(
+  plaidItemId: string,
+  institutionName: string | null,
+  errorMessage: string | null,
+): Promise<void> {
+  const { plaidAccounts, plaidAccountMappings, users } = await import('../db/schema/index.js');
+  const { inArray } = await import('drizzle-orm');
+
+  const itemAccounts = await db.select({ id: plaidAccounts.id }).from(plaidAccounts)
+    .where(eq(plaidAccounts.plaidItemId, plaidItemId));
+  if (itemAccounts.length === 0) return;
+  const mappings = await db.select({ tenantId: plaidAccountMappings.tenantId }).from(plaidAccountMappings)
+    .where(inArray(plaidAccountMappings.plaidAccountId, itemAccounts.map((a) => a.id)));
+  const tenantIds = [...new Set(mappings.map((m) => m.tenantId))];
+
+  const bank = institutionName || 'Your bank';
+  for (const tenantId of tenantIds) {
+    try {
+      const owners = await db.select({ email: users.email, displayName: users.displayName }).from(users)
+        .where(and(eq(users.tenantId, tenantId), eq(users.role, 'owner'), eq(users.isActive, true)));
+      if (owners.length === 0) continue;
+      const { from, transport } = await createTransport(tenantId);
+      for (const owner of owners) {
+        await transport.sendMail({
+          from,
+          to: owner.email,
+          subject: safeSubject`Action needed: ${bank} connection stopped syncing`,
+          text: `Hi ${owner.displayName || ''},
+
+Your bank connection to ${bank} has stopped syncing${errorMessage ? `:
+
+  ${errorMessage}` : '.'}
+
+New transactions will not be imported until it is repaired. Open Banking → Bank Connections and click "Fix Now" to re-authenticate.
+
+— Vibe MyBooks`,
+        });
+      }
+    } catch (err) {
+      console.warn(`[email] connection-error notice for tenant ${tenantId} not sent:`, err instanceof Error ? err.message : err);
+    }
+  }
+}
+
 export async function sendPaymentReminder(tenantId: string, invoiceId: string, baseUrl?: string) {
   const { txn, companyId, companyName, customerEmail, customerName } = await getInvoiceEmailData(tenantId, invoiceId);
   if (!customerEmail) return;

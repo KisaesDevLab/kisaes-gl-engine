@@ -63,14 +63,24 @@ export async function handleWebhook(body: any) {
 
     case 'ITEM': {
       switch (webhook_code) {
-        case 'ERROR':
+        case 'ERROR': {
+          const wasHealthy = !item.itemStatus || item.itemStatus === 'active';
           await db.update(plaidItems).set({
             itemStatus: body.error?.error_code === 'ITEM_LOGIN_REQUIRED' ? 'login_required' : 'error',
             errorCode: body.error?.error_code || null,
             errorMessage: body.error?.error_message || null,
             updatedAt: new Date(),
           }).where(eq(plaidItems.id, item.id));
+          // Email the mapped tenants' owners — only on the TRANSITION into an
+          // error state, so Plaid's repeated ERROR webhooks for the same
+          // outage don't spam.
+          if (wasHealthy) {
+            const { sendConnectionErrorNotice } = await import('./email.service.js');
+            sendConnectionErrorNotice(item.id, item.institutionName, body.error?.error_message || body.error?.error_code || null)
+              .catch((err) => console.warn('[plaid-webhook] error notice failed:', err instanceof Error ? err.message : err));
+          }
           break;
+        }
 
         case 'LOGIN_REPAIRED':
           await db.update(plaidItems).set({
