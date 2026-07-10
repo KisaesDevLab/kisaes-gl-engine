@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Internal Use License 1.0.0.
--- You may not distribute this software. See LICENSE for terms.
+-- Licensed under the PolyForm Small Business License 1.0.0.
+-- Free for small businesses; see LICENSE for terms.
 --
 -- STATEMENT_AUTO_IMPORT_V1 — when a portal contact uploads in
 -- response to a doc_request whose document_type is bank_statement

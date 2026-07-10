@@ -1,23 +1,23 @@
 #!/bin/bash
 # Copyright 2026 Kisaes LLC
-# Licensed under the PolyForm Internal Use License 1.0.0.
-# You may not distribute this software. See LICENSE for terms.
+# Licensed under the PolyForm Small Business License 1.0.0.
+# Free for small businesses; see LICENSE for terms.
 #
 # scripts/add-license-header.sh
-# Adds the PolyForm Internal Use license header to source files that are missing it.
+# Adds the PolyForm Small Business license header to source files that are missing it.
 
-HEADER_PATTERN="Licensed under the PolyForm Internal Use License"
+HEADER_PATTERN="Licensed under the PolyForm Small Business License"
 HEADER_SLASH='// Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Internal Use License 1.0.0.
-// You may not distribute this software. See LICENSE for terms.
+// Licensed under the PolyForm Small Business License 1.0.0.
+// Free for small businesses; see LICENSE for terms.
 '
 HEADER_DASH='-- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Internal Use License 1.0.0.
--- You may not distribute this software. See LICENSE for terms.
+-- Licensed under the PolyForm Small Business License 1.0.0.
+-- Free for small businesses; see LICENSE for terms.
 '
 HEADER_HASH='# Copyright 2026 Kisaes LLC
-# Licensed under the PolyForm Internal Use License 1.0.0.
-# You may not distribute this software. See LICENSE for terms.
+# Licensed under the PolyForm Small Business License 1.0.0.
+# Free for small businesses; see LICENSE for terms.
 '
 # ext:comment-style pairs
 declare -A EXT_STYLE=(

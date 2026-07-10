@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Internal Use License 1.0.0.
--- You may not distribute this software. See LICENSE for terms.
+-- Licensed under the PolyForm Small Business License 1.0.0.
+-- Free for small businesses; see LICENSE for terms.
 --
 -- Rolling back is destructive if any rows have a NULL email — those
 -- would need to be backfilled with a placeholder before re-applying

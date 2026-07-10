@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Internal Use License 1.0.0.
--- You may not distribute this software. See LICENSE for terms.
+-- Licensed under the PolyForm Small Business License 1.0.0.
+-- Free for small businesses; see LICENSE for terms.
 --
 -- ADR 0XX §7.2 — lift recurring-template header tags down to each
 -- template's journal_lines. Migration 0059 already did this for every

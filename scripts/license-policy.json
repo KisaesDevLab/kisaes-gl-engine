@@ -1,8 +1,8 @@
 {
-  "_comment": "Machine-readable license policy for Vibe MyBooks (PolyForm Internal Use License 1.0.0).",
+  "_comment": "Machine-readable license policy for Vibe MyBooks (PolyForm Small Business License 1.0.0).",
   "_updated": "2026-04-06",
 
-  "projectLicense": "PolyForm-Internal-Use-1.0.0",
+  "projectLicense": "PolyForm-Small-Business-1.0.0",
   "projectLicenseSpdx": "SEE LICENSE IN LICENSE",
 
   "allowed": [
@@ -108,7 +108,7 @@
     "licenseFile": {
       "required": true,
       "path": "LICENSE",
-      "status": "PRESENT — full PolyForm Internal Use License 1.0.0 text with licensor preamble"
+      "status": "PRESENT — full PolyForm Small Business License 1.0.0 text with licensor preamble"
     },
     "noticeFile": {
       "required": true,
@@ -118,11 +118,11 @@
     "sourceHeaders": {
       "required": true,
       "status": "ENFORCED — All first-party source files carry the PolyForm header; check-license-headers.sh runs in CI and as a pre-commit hook.",
-      "note": "PolyForm Internal Use requires that licensing notices not be removed or obscured where present. Extensions covered: .ts, .tsx, .js, .jsx, .mjs, .cjs, .sql, .sh, .py."
+      "note": "PolyForm Small Business requires that licensing notices not be removed or obscured where present. Extensions covered: .ts, .tsx, .js, .jsx, .mjs, .cjs, .sql, .sh, .py."
     },
     "noDistribution": {
       "required": true,
-      "status": "ENFORCED — PolyForm Internal Use prohibits distribution of the software",
+      "status": "ENFORCED — PolyForm Small Business prohibits distribution of the software",
       "note": "Distribution restriction is a core term of the license."
     }
   }

@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Internal Use License 1.0.0.
--- You may not distribute this software. See LICENSE for terms.
+-- Licensed under the PolyForm Small Business License 1.0.0.
+-- Free for small businesses; see LICENSE for terms.
 ALTER TABLE "transactions" ADD COLUMN IF NOT EXISTS "source" varchar(30);
 --> statement-breakpoint
 ALTER TABLE "transactions" ADD COLUMN IF NOT EXISTS "source_id" varchar(100);

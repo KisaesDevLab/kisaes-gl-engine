@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Internal Use License 1.0.0.
-// You may not distribute this software. See LICENSE for terms.
+// Licensed under the PolyForm Small Business License 1.0.0.
+// Free for small businesses; see LICENSE for terms.
 
 export type ThemeMode = 'light' | 'dark' | 'system';
 export type FontScaleLevel = 1 | 2 | 3 | 4 | 5 | 6 | 7;

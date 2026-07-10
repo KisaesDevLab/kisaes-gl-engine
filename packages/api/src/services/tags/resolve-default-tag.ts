@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Internal Use License 1.0.0.
-// You may not distribute this software. See LICENSE for terms.
+// Licensed under the PolyForm Small Business License 1.0.0.
+// Free for small businesses; see LICENSE for terms.
 //
 // ADR 0XY §2 — single pure resolver for the default-tag precedence chain.
 // Keep it synchronous and free of DB access: callers pre-load the four

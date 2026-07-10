@@ -1,13 +1,13 @@
 #!/bin/bash
 # Copyright 2026 Kisaes LLC
-# Licensed under the PolyForm Internal Use License 1.0.0.
-# You may not distribute this software. See LICENSE for terms.
+# Licensed under the PolyForm Small Business License 1.0.0.
+# Free for small businesses; see LICENSE for terms.
 # scripts/check-license-headers.sh [file1 file2 ...]
-# Fails if any source file is missing the PolyForm Internal Use license header.
+# Fails if any source file is missing the PolyForm Small Business license header.
 # Without arguments: scans every source file under packages/ (full audit mode).
 # With arguments: scans only the supplied files (lint-staged / CI diff mode).
 
-HEADER_PATTERN="Licensed under the PolyForm Internal Use License"
+HEADER_PATTERN="Licensed under the PolyForm Small Business License"
 EXTENSIONS=("ts" "tsx" "js" "jsx" "mjs" "cjs" "sql" "sh" "py")
 EXCLUDE_DIRS=("node_modules" ".git" "dist" "build" ".next" "coverage" ".vite")
 MISSING=0

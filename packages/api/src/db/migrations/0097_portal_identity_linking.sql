@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Internal Use License 1.0.0.
--- You may not distribute this software. See LICENSE for terms.
+-- Licensed under the PolyForm Small Business License 1.0.0.
+-- Free for small businesses; see LICENSE for terms.
 --
 -- PORTAL_IDENTITY_LINKING_V1 — master-identity layer above
 -- per-tenant portal_contacts so one human (same email) can be a

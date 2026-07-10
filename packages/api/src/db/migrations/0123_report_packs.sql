@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Internal Use License 1.0.0.
--- You may not distribute this software. See LICENSE for terms.
+-- Licensed under the PolyForm Small Business License 1.0.0.
+-- Free for small businesses; see LICENSE for terms.
 -- Report Packs — bulk multi-report combined PDF. A pack is a saved
 -- definition (which reports + defaults + chrome); a run is one async
 -- render producing a transient PDF artifact with an expires_at.

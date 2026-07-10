@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Internal Use License 1.0.0.
--- You may not distribute this software. See LICENSE for terms.
+-- Licensed under the PolyForm Small Business License 1.0.0.
+-- Free for small businesses; see LICENSE for terms.
 --
 -- VIBE_MYBOOKS_PRACTICE_BUILD_PLAN — 1099 account mapping.
 -- Each Chart-of-Accounts expense account can be associated with

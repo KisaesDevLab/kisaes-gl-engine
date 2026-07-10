@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Internal Use License 1.0.0.
--- You may not distribute this software. See LICENSE for terms.
+-- Licensed under the PolyForm Small Business License 1.0.0.
+-- Free for small businesses; see LICENSE for terms.
 
 -- STATEMENT_CHECK_PAYEE_V1: carry a payee read from a check-image thumbnail
 -- on a bank statement through the import → categorize path. The parsed check

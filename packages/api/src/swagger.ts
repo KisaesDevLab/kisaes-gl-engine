@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Internal Use License 1.0.0.
-// You may not distribute this software. See LICENSE for terms.
+// Licensed under the PolyForm Small Business License 1.0.0.
+// Free for small businesses; see LICENSE for terms.
 
 export const swaggerSpec = {
   openapi: '3.0.3',
@@ -9,7 +9,7 @@ export const swaggerSpec = {
     version: '2.0.0',
     description: 'Public API for Vibe MyBooks — a self-hosted bookkeeping application. Supports API key and JWT authentication.',
     contact: { name: 'Kisaes LLC' },
-    license: { name: 'PolyForm Internal Use License 1.0.0', url: 'https://polyformproject.org/licenses/internal-use/1.0.0' },
+    license: { name: 'PolyForm Small Business License 1.0.0', url: 'https://polyformproject.org/licenses/small-business/1.0.0' },
   },
   servers: [
     { url: '/api/v2', description: 'API v2' },

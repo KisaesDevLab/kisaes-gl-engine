@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Internal Use License 1.0.0.
-// You may not distribute this software. See LICENSE for terms.
+// Licensed under the PolyForm Small Business License 1.0.0.
+// Free for small businesses; see LICENSE for terms.
 
 // testConnection honesty + retry-hygiene coverage for the Anthropic provider:
 //   - a model-404 is a FAILURE (red badge) that names the stale model, not a

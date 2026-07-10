@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Internal Use License 1.0.0.
-// You may not distribute this software. See LICENSE for terms.
+// Licensed under the PolyForm Small Business License 1.0.0.
+// Free for small businesses; see LICENSE for terms.
 //
 // Pure-function tests for the shared money helpers. These back the
 // decimal(19,4) invariant from CLAUDE.md rule #11 — every minor-unit

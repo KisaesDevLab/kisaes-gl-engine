@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Internal Use License 1.0.0.
-// You may not distribute this software. See LICENSE for terms.
+// Licensed under the PolyForm Small Business License 1.0.0.
+// Free for small businesses; see LICENSE for terms.
 
 // LOW: the fuzzy vendor match (`description LIKE '%name%'`) now requires the
 // contact name to be at least 3 chars. A 1-2 char name matched almost every

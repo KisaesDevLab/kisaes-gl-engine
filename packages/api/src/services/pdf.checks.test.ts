@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Internal Use License 1.0.0.
-// You may not distribute this software. See LICENSE for terms.
+// Licensed under the PolyForm Small Business License 1.0.0.
+// Free for small businesses; see LICENSE for terms.
 //
 // Guards the check print layouts rendered by pdf.service. Focus is the
 // z_fold (Z-Fold pressure-seal) layout: the check coupon must sit in the

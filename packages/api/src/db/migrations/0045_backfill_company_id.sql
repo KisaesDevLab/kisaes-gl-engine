@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Internal Use License 1.0.0.
--- You may not distribute this software. See LICENSE for terms.
+-- Licensed under the PolyForm Small Business License 1.0.0.
+-- Free for small businesses; see LICENSE for terms.
 -- Backfill company_id on all tables where it is NULL.
 -- Assigns to the oldest company per tenant (correct for the common case
 -- where a tenant starts with one company and adds more later).

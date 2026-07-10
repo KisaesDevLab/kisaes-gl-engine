@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Internal Use License 1.0.0.
--- You may not distribute this software. See LICENSE for terms.
+-- Licensed under the PolyForm Small Business License 1.0.0.
+-- Free for small businesses; see LICENSE for terms.
 -- Anonymous copy-paste share links for published financial reports.
 -- Mirrors the public-invoice token (0047): a 160-bit bearer token stored
 -- on the instance, resolvable without auth but ONLY while published.

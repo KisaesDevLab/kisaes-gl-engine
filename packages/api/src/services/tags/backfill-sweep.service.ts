@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Internal Use License 1.0.0.
-// You may not distribute this software. See LICENSE for terms.
+// Licensed under the PolyForm Small Business License 1.0.0.
+// Free for small businesses; see LICENSE for terms.
 //
 // Build-plan Phase 3 — chunked split-level-tag backfill for the big
 // tables. Migration 0059 ran the `journal_lines` backfill as a single

@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Internal Use License 1.0.0.
--- You may not distribute this software. See LICENSE for terms.
+-- Licensed under the PolyForm Small Business License 1.0.0.
+-- Free for small businesses; see LICENSE for terms.
 -- Remote backup configuration columns on companies table
 ALTER TABLE "companies" ADD COLUMN IF NOT EXISTS "remote_backup_enabled" boolean DEFAULT false;
 ALTER TABLE "companies" ADD COLUMN IF NOT EXISTS "remote_backup_destination" varchar(30);

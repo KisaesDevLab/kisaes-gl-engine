@@ -10,7 +10,7 @@ LABEL org.opencontainers.image.source="https://github.com/KisaesDevLab/Vibe-MyBo
       org.opencontainers.image.title="Vibe MyBooks API" \
       org.opencontainers.image.description="Vibe MyBooks REST API and BullMQ worker (same image, different CMD)" \
       org.opencontainers.image.vendor="Kisaes LLC" \
-      org.opencontainers.image.licenses="PolyForm-Internal-Use-1.0.0"
+      org.opencontainers.image.licenses="PolyForm-Small-Business-1.0.0"
 
 WORKDIR /app
 

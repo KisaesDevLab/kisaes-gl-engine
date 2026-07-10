@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Internal Use License 1.0.0.
-// You may not distribute this software. See LICENSE for terms.
+// Licensed under the PolyForm Small Business License 1.0.0.
+// Free for small businesses; see LICENSE for terms.
 
 // M8: a failed AI call still logs to ai_usage_log so the per-tenant monthly
 // budget gate isn't blind to tokens burned by a failure (e.g. a full

@@ -1,5 +1,5 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Internal Use License 1.0.0.
+-- Licensed under the PolyForm Small Business License 1.0.0.
 -- migration-policy: non-additive-exception
 --
 -- 3-tier rules plan, Phase 2 — scope columns on conditional_rules.

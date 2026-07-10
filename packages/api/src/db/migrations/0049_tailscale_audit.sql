@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Internal Use License 1.0.0.
--- You may not distribute this software. See LICENSE for terms.
+-- Licensed under the PolyForm Small Business License 1.0.0.
+-- Free for small businesses; see LICENSE for terms.
 -- Immutable audit trail for Tailscale admin actions.
 -- Separate from audit_log because Tailscale is a platform-level concern
 -- (no tenant scoping) and audit_log.tenant_id is NOT NULL.
