@@ -161,7 +161,7 @@ plaidRouter.put('/accounts/:id/sync-toggle', authenticate, validate(syncToggleSc
 });
 
 plaidRouter.get('/accounts/:id/suggestions', authenticate, async (req, res) => {
-  const suggestions = await plaidMapping.autoSuggestMapping(req.tenantId, req.params['id']!);
+  const suggestions = await plaidMapping.autoSuggestMapping(req.tenantId, req.params['id']!, req.userId);
   res.json({ suggestions });
 });
 

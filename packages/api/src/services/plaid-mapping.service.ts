@@ -22,8 +22,29 @@ export async function assignAccountToCompany(plaidAccountId: string, tenantId: s
     where: eq(plaidAccounts.id, plaidAccountId),
   });
   if (!plaidAccount) throw AppError.notFound('Bank account not found');
-  const { assertCanAccessItem } = await import('./plaid-connection.service.js');
+  const { assertCanAccessItem, getUserAdminTenants } = await import('./plaid-connection.service.js');
   await assertCanAccessItem(userId, plaidAccount.plaidItemId);
+
+  // SECURITY: when the item is shared with a tenant OUTSIDE the caller's
+  // orbit (a super-admin mapped one of its accounts to this tenant), the
+  // caller must not self-extend the share to the item's other unassigned
+  // accounts — only a super-admin may map accounts on a cross-tenant item
+  // (via the Plaid monitor).
+  if (!user?.isSuperAdmin) {
+    const siblingAccounts = await db.select({ id: plaidAccounts.id }).from(plaidAccounts)
+      .where(eq(plaidAccounts.plaidItemId, plaidAccount.plaidItemId));
+    const siblingIds = siblingAccounts.map((a) => a.id);
+    const itemMappings = siblingIds.length > 0
+      ? await db.query.plaidAccountMappings.findMany({
+          where: (pam, { inArray: inArr }) => inArr(pam.plaidAccountId, siblingIds),
+        })
+      : [];
+    const userTenants = await getUserAdminTenants(userId);
+    const hasForeignMapping = itemMappings.some((m) => !userTenants.includes(m.tenantId));
+    if (hasForeignMapping) {
+      throw AppError.forbidden('This connection is shared with another client — only a super-admin can map its remaining accounts (Admin → Plaid monitor).');
+    }
+  }
 
   // Validate COA account
   const coaAccount = await db.query.accounts.findFirst({
@@ -146,7 +167,15 @@ export async function toggleSync(plaidAccountId: string, tenantId: string, enabl
 
 // ─── Auto-Suggest COA Account ──────────────────────────────────
 
-export async function autoSuggestMapping(tenantId: string, plaidAccountId: string) {
+export async function autoSuggestMapping(tenantId: string, plaidAccountId: string, userId?: string) {
+  // Gate on item access when the caller is known, so this endpoint can't be
+  // used to existence-probe foreign plaid-account UUIDs.
+  if (userId) {
+    const pa = await db.query.plaidAccounts.findFirst({ where: eq(plaidAccounts.id, plaidAccountId) });
+    if (!pa) throw AppError.notFound('Bank account not found');
+    const { assertCanAccessItem } = await import('./plaid-connection.service.js');
+    await assertCanAccessItem(userId, pa.plaidItemId);
+  }
   const pa = await db.query.plaidAccounts.findFirst({ where: eq(plaidAccounts.id, plaidAccountId) });
   if (!pa) throw AppError.notFound('Plaid account not found');
 

@@ -133,4 +133,53 @@ describe('getItemsForUser tenant scoping', () => {
     expect(names(items)).toEqual(['Other Bank', 'U.S. Bank']);
     expect(acctNames(items.find((i) => i.institutionName === 'U.S. Bank')!)).toEqual(['a1', 'a2', 'a3']);
   });
+
+  it('a foreign user sees NOTHING of another tenant\'s items in the user-wide view (SECURITY)', async () => {
+    // Outsider: belongs only to a fresh tenant C — no access to A or B, did
+    // not create any item.
+    const tenantC = await seedTenant('client-c');
+    const [outsider] = await db.insert(users).values({
+      tenantId: tenantC, email: `out-${sfx()}@example.com`, passwordHash: 'x'.repeat(60), role: 'owner', displayName: 'Out',
+    }).returning();
+    await db.insert(userTenantAccess).values({ userId: outsider!.id, tenantId: tenantC, role: 'owner', isActive: true });
+
+    // A fully UNMAPPED item created by the A/B user — previously its
+    // unassigned accounts were visible to EVERY user system-wide.
+    const item3 = await seedItem('Fresh Bank');
+    await seedPlaidAccount(item3, 'f1');
+
+    const items = await getItemsForUser(outsider!.id);
+    // No mapped access, not the creator, shares no tenant with the creator:
+    // the outsider sees no items at all — not the partially-mapped U.S. Bank,
+    // not Other Bank, and not the fresh unmapped connection.
+    expect(items).toHaveLength(0);
+
+    // Cleanup the extra rows this test created.
+    await db.delete(plaidAccounts).where(eq(plaidAccounts.plaidItemId, item3));
+    await db.delete(plaidItems).where(eq(plaidItems.id, item3));
+    await db.delete(userTenantAccess).where(eq(userTenantAccess.userId, outsider!.id));
+    await db.delete(users).where(eq(users.id, outsider!.id));
+    await db.delete(tenants).where(eq(tenants.id, tenantC));
+  });
+
+  it('a teammate of the connecting user CAN see their unmapped item (mapping handoff)', async () => {
+    // Colleague in tenant A (shares a tenant with the creator).
+    const [mate] = await db.insert(users).values({
+      tenantId: tenantA, email: `mate-${sfx()}@example.com`, passwordHash: 'x'.repeat(60), role: 'accountant', displayName: 'Mate',
+    }).returning();
+    await db.insert(userTenantAccess).values({ userId: mate!.id, tenantId: tenantA, role: 'accountant', isActive: true });
+
+    const item3 = await seedItem('Fresh Bank');
+    await seedPlaidAccount(item3, 'f1');
+
+    const items = await getItemsForUser(mate!.id);
+    const fresh = items.find((i) => i.institutionName === 'Fresh Bank');
+    expect(fresh).toBeDefined();
+    expect(acctNames(fresh!)).toEqual(['f1']);
+
+    await db.delete(plaidAccounts).where(eq(plaidAccounts.plaidItemId, item3));
+    await db.delete(plaidItems).where(eq(plaidItems.id, item3));
+    await db.delete(userTenantAccess).where(eq(userTenantAccess.userId, mate!.id));
+    await db.delete(users).where(eq(users.id, mate!.id));
+  });
 });

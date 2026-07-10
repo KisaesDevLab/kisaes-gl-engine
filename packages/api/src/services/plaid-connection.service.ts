@@ -68,12 +68,35 @@ export async function getVisibleAccounts(userId: string, plaidItemId: string, sc
     return { accounts: visible, hiddenAccountCount: hiddenCount };
   }
 
-  // User-wide view: any of the user's tenants, plus every unassigned account.
+  // User-wide view: accounts mapped to any of the user's tenants, plus the
+  // item's unassigned accounts — but ONLY when the item belongs to the user's
+  // orbit. SECURITY: unassigned accounts were previously visible to EVERY
+  // user system-wide, so any tenant could see another tenant's
+  // freshly-connected (not-yet-mapped) institution, its account names/masks/
+  // balances, and the creator's name/email (reachable via MCP
+  // get_bank_connections). An item's unassigned accounts are now shown only
+  // when:
+  //   - the caller created the item, OR shares a tenant with its creator
+  //     (the connecting user's team can finish mapping), OR one of the
+  //     caller's tenants already has a mapping on it (a sanctioned share),
+  //   - AND no OTHER tenant holds a mapping on it (a cross-tenant item's
+  //     unassigned accounts can't be attributed — super-admin maps those
+  //     from the Plaid monitor).
   const userTenants = await getUserAdminTenants(userId);
+  const mappings = [...mappingByAccount.values()];
+  const item = await db.query.plaidItems.findFirst({ where: eq(plaidItems.id, plaidItemId) });
+  const isCreator = !!item?.createdBy && item.createdBy === userId;
+  const creatorTenants = item?.createdBy && !isCreator ? await getUserAdminTenants(item.createdBy) : [];
+  const sharesTenantWithCreator = isCreator || creatorTenants.some((t) => userTenants.includes(t));
+  const itemUsedByUser = mappings.some((m) => userTenants.includes(m.tenantId));
+  const hasForeignMapping = mappings.some((m) => !userTenants.includes(m.tenantId));
+  const showUnassigned = !hasForeignMapping && (sharesTenantWithCreator || itemUsedByUser);
+
   for (const acct of allAccounts) {
     const mapping = mappingByAccount.get(acct.id) ?? null;
     if (!mapping) {
-      visible.push({ ...acct, mapping: null }); // unassigned → visible
+      if (showUnassigned) visible.push({ ...acct, mapping: null });
+      else hiddenCount++;
     } else if (userTenants.includes(mapping.tenantId)) {
       visible.push({ ...acct, mapping }); // user's company → visible
     } else {
@@ -304,13 +327,21 @@ export async function assertCanAccessItem(userId: string, itemId: string): Promi
   if (item.createdBy === userId) return;
 
   // SECURITY: access requires an account MAPPED into one of the user's
-  // tenants — not merely a visible unassigned account. Unassigned accounts
-  // are visible to any user in the user-wide view, so counting them let any
-  // authenticated user pass this gate for any item that had one.
+  // tenants — not merely a visible unassigned account (counting those let
+  // any authenticated user pass this gate). One carve-out: a fully UNMAPPED
+  // item is operable by the connecting user's teammates (they share a
+  // tenant with the creator) so a colleague can finish mapping or delete an
+  // abandoned link.
   const { accounts } = await getVisibleAccounts(userId, itemId);
-  if (!accounts.some((a) => a.mapping)) {
-    throw AppError.notFound('Connection not found');
+  if (accounts.some((a) => a.mapping)) return;
+
+  const allMappings = await getAllMappingsForItem(itemId);
+  if (allMappings.length === 0 && item.createdBy) {
+    const userTenants = await getUserAdminTenants(userId);
+    const creatorTenants = await getUserAdminTenants(item.createdBy);
+    if (creatorTenants.some((t) => userTenants.includes(t))) return;
   }
+  throw AppError.notFound('Connection not found');
 }
 
 // ─── Tier 1: Unmap Company ─────────────────────────────────────
@@ -358,24 +389,48 @@ export async function deleteConnection(plaidItemId: string, deletePendingItems: 
   const { users } = await import('../db/schema/index.js');
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
 
-  // Permission check
+  // Permission check: super-admin, the connecting user, or an admin of ALL
+  // tenants the item's accounts are mapped into. For an UNMAPPED item the
+  // affected-tenant list is empty — `every()` over an empty list is
+  // vacuously true, which previously let ANY authenticated user delete
+  // another client's freshly-connected (not-yet-mapped) bank. An unmapped
+  // item may only be deleted by its creator, a super-admin, or a user who
+  // shares a tenant with the creator.
   const isSuperAdmin = user?.isSuperAdmin;
   const isCreator = item.createdBy === userId;
   if (!isSuperAdmin && !isCreator) {
-    // Check if user is admin of ALL affected companies
     const userTenants = await getUserAdminTenants(userId);
     const allMappings = await getAllMappingsForItem(plaidItemId);
     const affectedTenants = [...new Set(allMappings.map((m) => m.tenantId))];
-    const hasAccessToAll = affectedTenants.every((t) => userTenants.includes(t));
-    if (!hasAccessToAll) throw AppError.forbidden('You must be admin of all affected companies to delete this connection');
+    if (affectedTenants.length === 0) {
+      const creatorTenants = item.createdBy ? await getUserAdminTenants(item.createdBy) : [];
+      const sharesTenantWithCreator = creatorTenants.some((t) => userTenants.includes(t));
+      if (!sharesTenantWithCreator) {
+        throw AppError.forbidden('Only the user who connected this bank (or their team) can delete an unmapped connection');
+      }
+    } else {
+      const hasAccessToAll = affectedTenants.every((t) => userTenants.includes(t));
+      if (!hasAccessToAll) throw AppError.forbidden('You must be admin of all affected companies to delete this connection');
+    }
   }
 
-  // 1. Call Plaid /item/remove
+  // 1. Revoke at PLAID FIRST and require confirmation before touching our
+  // records: `itemRemove` resolving without error IS Plaid's confirmation
+  // (HTTP 200 = item removed and billing stopped). Any Plaid failure aborts —
+  // we never delete locally while the item may still be live (and billing)
+  // at Plaid. The one exception: Plaid reporting the item already
+  // gone (ITEM_NOT_FOUND / INVALID_ACCESS_TOKEN after a prior removal)
+  // counts as confirmed-removed, otherwise a connection that died on
+  // Plaid's side could never be cleaned up here.
   try {
     const accessToken = decrypt(item.accessTokenEncrypted);
     await plaidClient.removeItem(accessToken);
   } catch (err: any) {
-    throw AppError.internal(`Could not reach Plaid to revoke connection: ${err.message}`);
+    const plaidCode = err?.response?.data?.error_code;
+    if (plaidCode !== 'ITEM_NOT_FOUND' && plaidCode !== 'INVALID_ACCESS_TOKEN') {
+      throw AppError.internal(`Plaid did not confirm the removal — the connection was NOT deleted. (${err.message})`);
+    }
+    console.warn(`[plaid] item ${plaidItemId} already gone at Plaid (${plaidCode}) — proceeding with local removal`);
   }
 
   // 2. Get all affected tenants for notifications
