@@ -157,15 +157,16 @@ describe('review-checks routes — gates', () => {
 });
 
 describe('GET /registry', () => {
-  it('lists the 15 stock checks (Phase 6 + receipt mismatch + AI judgment)', async () => {
+  it('lists the 16 stock checks (Phase 6 + receipt mismatch + AI judgment + plaid health)', async () => {
     const { status, json } = await request('GET', '/api/v1/practice/checks/registry', undefined, bookkeeperToken);
     expect(status).toBe(200);
     // 13 from migration 0068 + receipt_amount_mismatch (0084) +
-    // ai_personal_expense_review (0087).
-    expect(json.checks.length).toBe(15);
+    // ai_personal_expense_review (0087) + plaid_connection_health (0129).
+    expect(json.checks.length).toBe(16);
     expect(json.checks.find((c: { checkKey: string }) => c.checkKey === 'transaction_above_materiality')).toBeDefined();
     expect(json.checks.find((c: { checkKey: string }) => c.checkKey === 'receipt_amount_mismatch')).toBeDefined();
     expect(json.checks.find((c: { checkKey: string }) => c.checkKey === 'ai_personal_expense_review')).toBeDefined();
+    expect(json.checks.find((c: { checkKey: string }) => c.checkKey === 'plaid_connection_health')).toBeDefined();
   });
 });
 
