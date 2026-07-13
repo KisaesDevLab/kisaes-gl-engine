@@ -765,13 +765,28 @@ ${noPrior}
       const b = payload.data as
         | {
             asOfDate: string;
-            accounts: Array<{ name: string; balance: number; isInactive: boolean }>;
+            accounts: Array<{ name: string; balance: number; isInactive: boolean; priorBalance?: number }>;
             totalBalance: number;
+            prior?: { asOfDate: string; totalBalance: number };
+            compareLabel?: string;
           }
         | null
         | undefined;
       if (!b || b.accounts.length === 0) {
         return `<section class="section"><h2>Bank Account Balances</h2><p class="meta">No bank accounts.</p></section>`;
+      }
+      if (b.prior) {
+        const head = `<tr><th></th><th class="num">Current</th><th class="num">${escapeHtml(b.compareLabel ?? 'Prior')}</th><th class="num">Change</th></tr>`;
+        const tbody = b.accounts
+          .map((a) => {
+            const prv = a.priorBalance ?? 0;
+            return `<tr><td>${escapeHtml(a.name)}</td><td class="num">${escapeHtml(fmtMoneyPdf(a.balance))}</td><td class="num">${escapeHtml(fmtMoneyPdf(prv))}</td><td class="num">${escapeHtml(fmtMoneyPdf(a.balance - prv))}</td></tr>`;
+          })
+          .join('');
+        return `<section class="section"><h2>Bank Account Balances</h2>
+<table class="data"><thead>${head}</thead><tbody>${tbody}
+<tr class="total"><td>Total</td><td class="num strong">${escapeHtml(fmtMoneyPdf(b.totalBalance))}</td><td class="num strong">${escapeHtml(fmtMoneyPdf(b.prior.totalBalance))}</td><td class="num strong">${escapeHtml(fmtMoneyPdf(b.totalBalance - b.prior.totalBalance))}</td></tr>
+</tbody></table></section>`;
       }
       const tbody = b.accounts
         .map(

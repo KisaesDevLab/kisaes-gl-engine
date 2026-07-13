@@ -226,6 +226,36 @@ describe('renderBlockPdf — parity across every payload type', () => {
     expect(html).toContain('Total Assets');
     expect(html).toContain('1,000'); // assets change 5000 - 4000
   });
+
+  it('Bank balances comparison renders per-account prior + change columns', () => {
+    const html = renderBlockPdf(
+      { type: 'report', key: 'bank_balances', compare: 'previous_year' },
+      { type: 'bank_balances', data: {
+        asOfDate: '2026-06-30',
+        accounts: [{ name: 'Checking', balance: 500, isInactive: false, priorBalance: 300 }],
+        totalBalance: 500,
+        prior: { asOfDate: '2025-06-30', totalBalance: 300 },
+        compareLabel: 'Prior year',
+      } },
+    );
+    expect(html).toContain('<th class="num">Current</th>');
+    expect(html).toContain('<th class="num">Prior year</th>');
+    expect(html).toContain('<th class="num">Change</th>');
+    expect(html).toContain('Checking');
+    expect(html).toContain('200'); // change 500 - 300
+  });
+
+  it('Bank balances without prior keeps the single-column layout', () => {
+    const html = renderBlockPdf(
+      { type: 'block', name: 'bank_balances' },
+      { type: 'bank_balances', data: {
+        asOfDate: '2026-06-30',
+        accounts: [{ name: 'Checking', balance: 500, isInactive: false }],
+        totalBalance: 500,
+      } },
+    );
+    expect(html).not.toContain('<th class="num">Change</th>');
+  });
 });
 
 describe('reportHtmlTemplate — kpi-row parity + status dots', () => {

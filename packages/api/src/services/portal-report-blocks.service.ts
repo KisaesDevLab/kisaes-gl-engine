@@ -163,8 +163,14 @@ export interface TbSummary {
 
 export interface BankBalancesSummary {
   asOfDate: string;
-  accounts: Array<{ name: string; balance: number; isInactive: boolean }>;
+  // `priorBalance` appears on every account when a comparison is requested
+  // (accounts are merged across both as-of dates; a side with no data is 0).
+  accounts: Array<{ name: string; balance: number; isInactive: boolean; priorBalance?: number }>;
   totalBalance: number;
+  // Optional comparison, mirroring the Balance Sheet embed: a prior as-of
+  // snapshot plus the label naming it ('Prior year' / 'Prior period').
+  prior?: { asOfDate: string; totalBalance: number };
+  compareLabel?: string;
 }
 
 export type EmbedBasis = 'accrual' | 'cash';
@@ -534,17 +540,45 @@ async function tbSummary(args: ResolverArgs): Promise<TbSummary> {
 }
 
 // Bank balances (embed + data block) — per-account as-of-periodEnd
-// balance + total, straight from the Feature-1 report builder.
-async function bankBalances(args: ResolverArgs): Promise<BankBalancesSummary> {
+// balance + total, straight from the Feature-1 report builder. Balances
+// are an as-of snapshot, so comparison follows the Balance Sheet
+// semantics (`priorBsAsOf`), not the P&L range shift.
+async function bankBalances(args: ResolverArgs, compare?: EmbedCompareMode): Promise<BankBalancesSummary> {
+  const label = (a: { accountNumber: string | null; name: string }) =>
+    a.accountNumber ? `${a.accountNumber} · ${a.name}` : a.name;
   const r = await reportSvc.buildBankBalances(args.tenantId, args.endDate, args.companyId);
-  return {
+  const current: BankBalancesSummary = {
     asOfDate: r.asOfDate,
     accounts: r.accounts.map((a) => ({
-      name: a.accountNumber ? `${a.accountNumber} · ${a.name}` : a.name,
+      name: label(a),
       balance: a.balance,
       isInactive: a.isInactive,
     })),
     totalBalance: r.totalBalance,
+  };
+  if (!compare) return current;
+  const p = priorBsAsOf(args.startDate, args.endDate, compare);
+  const pr = await reportSvc.buildBankBalances(args.tenantId, p.asOf, args.companyId);
+  // Merge by account id — the builder drops inactive zero-balance
+  // accounts, so an account can appear on only one side; the missing
+  // side reads as 0.
+  const priorById = new Map(pr.accounts.map((a) => [a.accountId, a.balance]));
+  const currentIds = new Set(r.accounts.map((a) => a.accountId));
+  const accounts = r.accounts.map((a) => ({
+    name: label(a),
+    balance: a.balance,
+    isInactive: a.isInactive,
+    priorBalance: priorById.get(a.accountId) ?? 0,
+  }));
+  for (const a of pr.accounts) {
+    if (currentIds.has(a.accountId)) continue;
+    accounts.push({ name: label(a), balance: 0, isInactive: a.isInactive, priorBalance: a.balance });
+  }
+  return {
+    ...current,
+    accounts,
+    prior: { asOfDate: pr.asOfDate, totalBalance: pr.totalBalance },
+    compareLabel: p.label,
   };
 }
 
@@ -769,7 +803,7 @@ export async function resolveBlock(
         case 'pl_bar':
           return { type: 'pl_bar', data: await plSummary(args) };
         case 'bank_balances':
-          return { type: 'bank_balances', data: await bankBalances(args) };
+          return { type: 'bank_balances', data: await bankBalances(args, compare) };
         case 'expense_by_category':
           return { type: 'expense_by_category', data: await expenseByCategory(args, topN) };
         case 'budget_vs_actual': {
@@ -834,7 +868,7 @@ export async function resolveBlock(
         case 'trial_balance':
           return { type: 'trial_balance', data: await tbSummary(args) };
         case 'bank_balances':
-          return { type: 'bank_balances', data: await bankBalances(args) };
+          return { type: 'bank_balances', data: await bankBalances(args, compare) };
         // The A/R / A/P aging embeds reuse the data-block resolvers —
         // same payload type, so every renderer handles them already.
         // (These options were in the embed dropdown since Phase 16 but

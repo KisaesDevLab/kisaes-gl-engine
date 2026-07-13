@@ -83,4 +83,43 @@ describe('report embed comparison', () => {
     expect(d.compareLabel).toBe('Prior year');
     expect(d.assets).not.toBeCloseTo(d.prior!.assets, 2);
   });
+
+  it('bank_balances compare=previous_year attaches per-account prior balances', async () => {
+    const p = await resolveBlock({ type: 'report', key: 'bank_balances', compare: 'previous_year' }, { ...args, tenantId });
+    expect(p.type).toBe('bank_balances');
+    const d = p.data as {
+      accounts: Array<{ balance: number; priorBalance?: number }>;
+      totalBalance: number;
+      prior?: { asOfDate: string; totalBalance: number };
+      compareLabel?: string;
+    };
+    // Cumulative: 2026-12-31 = 1000-400+1200-500 = 1300; 2025-12-31 = 600.
+    expect(d.totalBalance).toBeCloseTo(1300, 2);
+    expect(d.prior?.totalBalance).toBeCloseTo(600, 2);
+    expect(d.prior?.asOfDate).toBe('2025-12-31');
+    expect(d.compareLabel).toBe('Prior year');
+    const bank = d.accounts.find((a) => a.balance !== 0)!;
+    expect(bank.priorBalance).toBeCloseTo(600, 2);
+  });
+
+  it('bank_balances compare=previous_period uses the day before the period start', async () => {
+    const p = await resolveBlock({ type: 'report', key: 'bank_balances', compare: 'previous_period' }, { ...args, tenantId });
+    const d = p.data as { prior?: { asOfDate: string; totalBalance: number }; compareLabel?: string };
+    expect(d.prior?.asOfDate).toBe('2025-12-31');
+    expect(d.prior?.totalBalance).toBeCloseTo(600, 2);
+    expect(d.compareLabel).toBe('Prior period');
+  });
+
+  it('bank_balances data block honors compare too', async () => {
+    const p = await resolveBlock({ type: 'block', name: 'bank_balances', compare: 'previous_year' }, { ...args, tenantId });
+    const d = p.data as { prior?: { totalBalance: number } };
+    expect(d.prior?.totalBalance).toBeCloseTo(600, 2);
+  });
+
+  it('bank_balances without compare keeps the unchanged shape', async () => {
+    const p = await resolveBlock({ type: 'report', key: 'bank_balances' }, { ...args, tenantId });
+    const d = p.data as { prior?: unknown; accounts: Array<{ priorBalance?: number }> };
+    expect(d.prior).toBeUndefined();
+    expect(d.accounts.every((a) => a.priorBalance === undefined)).toBe(true);
+  });
 });
