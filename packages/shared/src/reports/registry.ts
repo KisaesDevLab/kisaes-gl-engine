@@ -30,7 +30,13 @@ export interface ReportOptionSpec {
   tagFilter?: boolean;
   groupBy?: boolean;
   showPct?: boolean;
+  // Comparison modes this report supports (mirrors the standalone report's
+  // Compare selector). Present only when `compare` is true.
+  compareModes?: ReportCompareMode[];
 }
+
+// Compare modes shared by the standalone reports and report-pack items.
+export type ReportCompareMode = 'previous_period' | 'previous_year' | 'multi_period';
 
 export interface ReportDef {
   /** Stable slug — equals the API endpoint segment (e.g. 'profit-loss'). */
@@ -57,7 +63,7 @@ export const REPORT_CATALOG: ReportDef[] = [
     endpoint: 'profit-loss',
     temporal: 'date-range',
     orientation: 'portrait',
-    options: { basis: true, compare: true, tagFilter: true, groupBy: true, showPct: true },
+    options: { basis: true, compare: true, compareModes: ['previous_period', 'previous_year', 'multi_period'], tagFilter: true, groupBy: true, showPct: true },
   },
   {
     id: 'balance-sheet',
@@ -66,7 +72,7 @@ export const REPORT_CATALOG: ReportDef[] = [
     endpoint: 'balance-sheet',
     temporal: 'as-of',
     orientation: 'portrait',
-    options: { basis: true, compare: true, tagFilter: true, groupBy: true },
+    options: { basis: true, compare: true, compareModes: ['previous_period', 'previous_year'], tagFilter: true, groupBy: true },
   },
   {
     id: 'cash-flow',
@@ -236,7 +242,9 @@ export function resolveReportDates(
 export const reportPackItemOptionsSchema = z
   .object({
     basis: z.enum(['accrual', 'cash']).optional(),
-    compare: z.boolean().optional(),
+    // Legacy packs stored `compare: true` (= previous period); new packs store
+    // the mode, mirroring the standalone report's Compare selector.
+    compare: z.union([z.boolean(), z.enum(['previous_period', 'previous_year', 'multi_period'])]).optional(),
     tagId: z.string().uuid().nullable().optional(),
     groupBy: z.enum(['detail_type']).nullable().optional(),
     showPct: z.boolean().optional(),

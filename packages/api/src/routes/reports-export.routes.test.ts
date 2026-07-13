@@ -239,6 +239,20 @@ describe('report CSV exports (route-level, ?format=csv)', () => {
     expect(r.body).toContain('TOTAL LIABILITIES & EQUITY');
   });
 
+  it('?account_numbers=0 drops account numbers from export labels (screen toggle parity)', async () => {
+    // The seeded COA gives every account a number, composed into export
+    // labels as "<number> — <name>". With the toggle off, only the name
+    // must appear.
+    const withNums = await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31&format=csv');
+    expect(withNums.body).toMatch(new RegExp(`\\d+ — ${revenueName}`));
+    const without = await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31&format=csv&account_numbers=0');
+    expect(without.body).toContain(revenueName);
+    expect(without.body).not.toMatch(new RegExp(`\\d+ — ${revenueName}`));
+    // Balance Sheet honors it too.
+    const bs = await get('/balance-sheet?as_of_date=2026-12-31&format=csv&account_numbers=0');
+    expect(bs.body).not.toMatch(/\d+ — /);
+  });
+
   it('P&L and Balance Sheet titles carry the accounting basis', async () => {
     const acc = JSON.parse((await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31')).body);
     expect(acc.title).toBe('Profit and Loss - Accrual Basis');

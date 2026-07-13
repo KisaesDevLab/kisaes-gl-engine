@@ -144,6 +144,10 @@ type ExportVendorGroup = {
 // Exported for tests: lets the suite assert on the export layout (CSV
 // rows and PDF HTML) without launching Puppeteer.
 export function extractDataAndColumns(reportData: any): { rows: any[]; columns: ExportColumn[] } {
+  // Mirrors the on-screen "Account #" toggle (P&L / Balance Sheet / General
+  // Ledger). When the caller exported with account numbers hidden, drop them
+  // from the composed labels so the PDF/CSV matches the screen.
+  const hideAcctNums = reportData._hideAccountNumbers === true;
   // ─── Comparative reports (have columns + per-column values) ───
   // The comparative P&L carries a flat `rows` array; the comparative
   // BALANCE SHEET carries assets/liabilities/equity sections with
@@ -195,7 +199,7 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
       L?.[k] || fallback;
 
     const mapRow = (r: any) => {
-      const row: any = { account: r.accountNumber ? `${r.accountNumber} — ${r.account || r.name}` : (r.account || r.name) };
+      const row: any = { account: r.accountNumber && !hideAcctNums ? `${r.accountNumber} — ${r.account || r.name}` : (r.account || r.name) };
       (r.values || []).forEach((v: any, i: number) => { row[reportData.columns[i]?.label || `Col${i}`] = fmtNum(v); });
       fillPct(row, r.values || []);
       return row;
@@ -353,7 +357,7 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
     const line = (account: string, amount: any = '') => rows.push({ account, detail_type: '', amount, pct: '' });
     const totalLine = (account: string, amount: any = '', pct: string = '') => rows.push({ _total: true, account, detail_type: '', amount, pct });
     const accountRow = (entry: ExportPLEntry) => ({
-      account: entry.accountNumber ? `${entry.accountNumber} — ${entry.name}` : entry.name,
+      account: entry.accountNumber && !hideAcctNums ? `${entry.accountNumber} — ${entry.name}` : entry.name,
       detail_type: grouped ? fmtDetailType(entry.detailType) : '',
       amount: fmtNum(entry.amount),
       pct: pctOf(entry.amount),
@@ -454,7 +458,7 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
     const rows: any[] = [];
     const condensed = reportData.display === 'condensed';
     const accountRowBS = (e: ExportBSEntry) => ({
-      account: e.accountNumber ? `${e.accountNumber} — ${e.name}` : e.name,
+      account: e.accountNumber && !hideAcctNums ? `${e.accountNumber} — ${e.name}` : e.name,
       detail_type: dtFor(e),
       balance: fmtNum(Math.abs(e.balance)),
     });
@@ -509,7 +513,7 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
     ];
     const rows: ExportRow[] = [];
     for (const acct of reportData.accounts as any[]) {
-      const acctLabel = `${acct.accountNumber || ''} ${acct.name}`.trim();
+      const acctLabel = `${!hideAcctNums && acct.accountNumber ? acct.accountNumber : ''} ${acct.name}`.trim();
       const sectionLabel = `${acctLabel} (${acct.accountType})`;
 
       // Section header: spans the full table via colspan in PDF, and
@@ -920,6 +924,12 @@ function readBasis(req: { query: Record<string, unknown> }): 'cash' | 'accrual' 
   return req.query['basis'] === 'cash' ? 'cash' : 'accrual';
 }
 
+// ?account_numbers=0 mirrors the on-screen "Account #" toggle into exports —
+// the PDF/CSV drops account numbers from labels to match the screen.
+function readHideAcctNums(req: { query: Record<string, unknown> }): { _hideAccountNumbers?: true } {
+  return req.query['account_numbers'] === '0' ? { _hideAccountNumbers: true } : {};
+}
+
 // Multi-account filter: ?account_ids=<uuid>,<uuid>,... (comma-separated).
 // Malformed entries are dropped rather than 400ing — the SQL join
 // re-validates tenant ownership + account type anyway, so a bad id can
@@ -969,10 +979,10 @@ reportsRouter.get('/profit-loss', async (req, res) => {
       companyId,
       readGroupBy(req),
     );
-    await respond(res, { ...data, ...(display ? { display } : {}), ...(showPct ? { showPct: true } : {}) }, format);
+    await respond(res, { ...data, ...(display ? { display } : {}), ...(showPct ? { showPct: true } : {}), ...readHideAcctNums(req) }, format);
   } else {
     const data = await reportService.buildProfitAndLoss(req.tenantId, sd, ed, b, companyId, tagId, readGroupBy(req));
-    await respond(res, { ...data, ...(display ? { display } : {}), ...(showPct ? { showPct: true } : {}) }, format);
+    await respond(res, { ...data, ...(display ? { display } : {}), ...(showPct ? { showPct: true } : {}), ...readHideAcctNums(req) }, format);
   }
 });
 
@@ -990,7 +1000,7 @@ reportsRouter.get('/balance-sheet', async (req, res) => {
       companyId,
       readGroupBy(req),
     );
-    await respond(res, { ...data, ...(display ? { display } : {}) }, format);
+    await respond(res, { ...data, ...(display ? { display } : {}), ...readHideAcctNums(req) }, format);
     return;
   }
   const data = await reportService.buildBalanceSheet(
@@ -1001,7 +1011,7 @@ reportsRouter.get('/balance-sheet', async (req, res) => {
     tagId,
     readGroupBy(req),
   );
-  await respond(res, { ...data, ...(display ? { display } : {}) }, format);
+  await respond(res, { ...data, ...(display ? { display } : {}), ...readHideAcctNums(req) }, format);
 });
 
 reportsRouter.get('/cash-flow', async (req, res) => {
@@ -1592,7 +1602,7 @@ reportsRouter.get('/general-ledger', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
   const today = new Date();
   const data = await reportService.buildGeneralLedger(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!, resolveCompanyScope(req), readTagFilter(req), readBasis(req));
-  await respond(res, data, format);
+  await respond(res, { ...data, ...readHideAcctNums(req) }, format);
 });
 
 reportsRouter.get('/trial-balance', async (req, res) => {

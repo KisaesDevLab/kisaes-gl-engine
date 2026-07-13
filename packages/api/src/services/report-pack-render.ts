@@ -26,9 +26,16 @@ export interface PackRenderOpts {
   tagId: string | null;
   groupBy: 'detail_type' | null;
   showPct?: boolean;
-  // When true, render the comparative variant (P&L / Balance Sheet vs. the
-  // prior period) — mirrors the standalone report's ?compare=previous_period.
-  compare?: boolean;
+  // Comparison mode, mirroring the standalone report's Compare selector.
+  // Legacy packs stored `true` (= previous_period); new packs store the mode.
+  compare?: boolean | 'previous_period' | 'previous_year' | 'multi_period';
+}
+
+// Normalize the legacy boolean form to a mode ('previous_period'), or null.
+function compareModeOf(opts: PackRenderOpts): 'previous_period' | 'previous_year' | 'multi_period' | null {
+  if (opts.compare === true) return 'previous_period';
+  if (opts.compare === 'previous_period' || opts.compare === 'previous_year' || opts.compare === 'multi_period') return opts.compare;
+  return null;
 }
 
 type Renderer = (
@@ -100,12 +107,15 @@ function shapeArAgingForPdf(data: ArAgingSummaryData): unknown {
 
 export const REPORT_PACK_RENDERERS: Record<string, Renderer> = {
   'profit-loss': async (tenantId, companyId, params, opts) => {
-    // Comparative mode mirrors the standalone route's ?compare=previous_period
-    // path (buildComparativePL doesn't take a tag filter, same as the route).
-    const data = opts.compare
+    // Comparative mode mirrors the standalone report's Compare selector
+    // (previous period / previous year / multi-period trend, same 6-month
+    // default the screen uses). buildComparativePL doesn't take a tag
+    // filter, same as the standalone route.
+    const mode = compareModeOf(opts);
+    const data = mode
       ? await comparisonService.buildComparativePL(
           tenantId, params['start_date']!, params['end_date']!, opts.basis,
-          'previous_period', 6, 'month', companyId, opts.groupBy,
+          mode, 6, 'month', companyId, opts.groupBy,
         )
       : await reportService.buildProfitAndLoss(
           tenantId, params['start_date']!, params['end_date']!, opts.basis, companyId, opts.tagId, opts.groupBy,
@@ -114,9 +124,13 @@ export const REPORT_PACK_RENDERERS: Record<string, Renderer> = {
   },
 
   'balance-sheet': async (tenantId, companyId, params, opts) => {
-    if (opts.compare) {
+    // The Balance Sheet supports previous period / previous year (no
+    // multi-period trend — same as the standalone report's selector).
+    const mode = compareModeOf(opts);
+    if (mode) {
       return comparisonService.buildComparativeBS(
-        tenantId, params['as_of_date']!, opts.basis, 'previous_period', companyId, opts.groupBy,
+        tenantId, params['as_of_date']!, opts.basis,
+        mode === 'multi_period' ? 'previous_period' : mode, companyId, opts.groupBy,
       );
     }
     return reportService.buildBalanceSheet(
