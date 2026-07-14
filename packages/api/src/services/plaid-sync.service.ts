@@ -22,7 +22,17 @@ interface RoutingEntry {
   connectionId: string;
 }
 
-export async function syncItem(itemId: string) {
+export interface SyncItemOptions {
+  /** Ask Plaid to poll the institution NOW before syncing. sync only
+   *  returns data Plaid has already pulled, and webhook-less installs
+   *  can go stale — "the bank shows it but sync returns nothing".
+   *  Billable per-call on some plans: human-initiated syncs only. */
+  refresh?: boolean;
+  /** How long to give Plaid after the refresh before syncing (tests: 0). */
+  refreshWaitMs?: number;
+}
+
+export async function syncItem(itemId: string, opts: SyncItemOptions = {}) {
   const item = await db.query.plaidItems.findFirst({ where: eq(plaidItems.id, itemId) });
   if (!item || item.itemStatus === 'removed') return { added: 0, modified: 0, removed: 0 };
 
@@ -48,45 +58,68 @@ export async function syncItem(itemId: string) {
     return { added: 0, modified: 0, removed: 0, skipped: true };
   }
 
-  const accessToken = decrypt(item.accessTokenEncrypted);
-
-  // Build routing map: plaid_account_id → { tenant, coa, syncStartDate }
-  const itemAccounts = await db.select().from(plaidAccounts).where(and(eq(plaidAccounts.plaidItemId, itemId), eq(plaidAccounts.isActive, true)));
-  const routingMap = new Map<string, RoutingEntry>();
-
-  for (const acct of itemAccounts) {
-    const mapping = await db.query.plaidAccountMappings.findFirst({
-      where: and(eq(plaidAccountMappings.plaidAccountId, acct.id), eq(plaidAccountMappings.isSyncEnabled, true)),
-    });
-    if (mapping) {
-      const connectionId = await bankConnectionService.getOrCreatePlaidConnection(
-        mapping.tenantId,
-        mapping.mappedAccountId,
-        acct.plaidAccountId,
-        {
-          institutionName: [item.institutionName, acct.name].filter(Boolean).join(' — ') || 'Plaid',
-          providerItemId: item.plaidItemId,
-          mask: acct.mask,
-        },
-      );
-      routingMap.set(acct.plaidAccountId, {
-        tenantId: mapping.tenantId,
-        coaAccountId: mapping.mappedAccountId,
-        syncStartDate: mapping.syncStartDate,
-        connectionId,
-      });
-    }
-  }
-
-  if (routingMap.size === 0) return { added: 0, modified: 0, removed: 0 };
-
   try {
+    // Decrypt + routing INSIDE the try so a failure here (e.g. the
+    // ENCRYPTION_KEY changed after a restore, or a connection-row
+    // creation error) records lastSyncStatus='error' like any other
+    // sync failure instead of bypassing the bookkeeping entirely.
+    const accessToken = decrypt(item.accessTokenEncrypted);
+
+    // Build routing map: plaid_account_id → { tenant, coa, syncStartDate }
+    const itemAccounts = await db.select().from(plaidAccounts).where(and(eq(plaidAccounts.plaidItemId, itemId), eq(plaidAccounts.isActive, true)));
+    const routingMap = new Map<string, RoutingEntry>();
+
+    for (const acct of itemAccounts) {
+      const mapping = await db.query.plaidAccountMappings.findFirst({
+        where: and(eq(plaidAccountMappings.plaidAccountId, acct.id), eq(plaidAccountMappings.isSyncEnabled, true)),
+      });
+      if (mapping) {
+        const connectionId = await bankConnectionService.getOrCreatePlaidConnection(
+          mapping.tenantId,
+          mapping.mappedAccountId,
+          acct.plaidAccountId,
+          {
+            institutionName: [item.institutionName, acct.name].filter(Boolean).join(' — ') || 'Plaid',
+            providerItemId: item.plaidItemId,
+            mask: acct.mask,
+          },
+        );
+        routingMap.set(acct.plaidAccountId, {
+          tenantId: mapping.tenantId,
+          coaAccountId: mapping.mappedAccountId,
+          syncStartDate: mapping.syncStartDate,
+          connectionId,
+        });
+      }
+    }
+
+    if (routingMap.size === 0) return { added: 0, modified: 0, removed: 0 };
+
+    // Human-initiated syncs ask Plaid to poll the bank first. Best-effort:
+    // not every plan includes transactionsRefresh, and a failure here must
+    // not block the normal cursor sync.
+    let refreshRequested = false;
+    if (opts.refresh) {
+      try {
+        await plaidClient.refreshTransactions(accessToken);
+        refreshRequested = true;
+        // Give Plaid a beat to pull from the institution; anything it
+        // hasn't finished by then arrives on the next (scheduled or
+        // manual) sync.
+        const wait = opts.refreshWaitMs ?? 4000;
+        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[plaid-sync] transactionsRefresh unavailable:', e instanceof Error ? e.message : String(e));
+      }
+    }
+
     const { added, modified, removed, nextCursor } = await retryWithBackoff(
       () => plaidClient.syncTransactions(accessToken, item.syncCursor),
       { maxRetries: 3, baseDelayMs: 2000 },
     );
 
-    let addedCount = 0, modifiedCount = 0, removedCount = 0;
+    let addedCount = 0, modifiedCount = 0, removedCount = 0, skippedByStartDate = 0;
     const addedRowsByTenant = new Map<string, Array<typeof bankFeedItems.$inferSelect>>(); // tenantId → inserted rows
 
     // Process added transactions — route to correct tenant
@@ -94,8 +127,11 @@ export async function syncItem(itemId: string) {
       const route = routingMap.get(txn.account_id);
       if (!route) continue; // unmapped account
 
-      // Sync start date filter
-      if (route.syncStartDate && txn.date < route.syncStartDate) continue;
+      // Sync start date filter. Counted, not silent: the cursor advances
+      // past these, so a normal sync can never fetch them again — the
+      // operator needs to know they were skipped (Full re-import is the
+      // recovery path after widening the sync start date).
+      if (route.syncStartDate && txn.date < route.syncStartDate) { skippedByStartDate++; continue; }
 
       // Dedup
       const existing = await db.select({ id: bankFeedItems.id }).from(bankFeedItems)
@@ -262,7 +298,11 @@ export async function syncItem(itemId: string) {
       }
     } catch { /* balance refresh is best-effort */ }
 
-    return { added: addedCount, modified: modifiedCount, removed: removedCount, cleansing };
+    if (skippedByStartDate > 0) {
+      // eslint-disable-next-line no-console
+      console.warn(`[plaid-sync] item ${itemId}: ${skippedByStartDate} transaction(s) skipped (dated before the mapping's sync start date)`);
+    }
+    return { added: addedCount, modified: modifiedCount, removed: removedCount, skippedByStartDate, refreshRequested, cleansing };
   } catch (err: any) {
     await db.update(plaidItems).set({
       lastSyncAt: new Date(), lastSyncStatus: 'error', lastSyncError: err.message || 'Sync failed', updatedAt: new Date(),
@@ -300,7 +340,7 @@ export async function syncItem(itemId: string) {
 // This is the escape hatch: dedup on providerTransactionId still prevents
 // duplicates for rows that survived, while previously-deleted rows come
 // back. Tenant-scoped: the item must have a mapping owned by the tenant.
-export async function resetAndResyncItem(itemId: string, tenantId: string) {
+export async function resetAndResyncItem(itemId: string, tenantId: string, opts: SyncItemOptions = {}) {
   const owned = await db
     .select({ id: plaidAccountMappings.id })
     .from(plaidAccountMappings)
@@ -321,7 +361,7 @@ export async function resetAndResyncItem(itemId: string, tenantId: string) {
     .set({ syncCursor: null, lastSyncAt: null, updatedAt: new Date() })
     .where(eq(plaidItems.id, itemId));
 
-  return syncItem(itemId);
+  return syncItem(itemId, opts);
 }
 
 export async function syncAllItems() {

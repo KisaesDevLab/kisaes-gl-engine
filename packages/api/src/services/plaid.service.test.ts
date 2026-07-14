@@ -25,6 +25,7 @@ import { eq, and, asc, inArray } from 'drizzle-orm';
 const syncMocks = vi.hoisted(() => ({
   syncTransactions: vi.fn(),
   getBalances: vi.fn(),
+  refreshTransactions: vi.fn(),
   runCleansingPipeline: vi.fn(),
   runCategorizationPipeline: vi.fn(),
 }));
@@ -35,6 +36,7 @@ vi.mock('./plaid-client.service.js', async (importOriginal) => {
     ...actual,
     syncTransactions: (...args: unknown[]) => syncMocks.syncTransactions(...args),
     getBalances: (...args: unknown[]) => syncMocks.getBalances(...args),
+    refreshTransactions: (...args: unknown[]) => syncMocks.refreshTransactions(...args),
   };
 });
 
@@ -287,6 +289,75 @@ describe('Plaid full re-import (resetAndResyncItem)', () => {
     const after = await db.query.plaidItems.findFirst({ where: eq(plaidItems.id, item!.id) });
     expect(after!.syncCursor).toBe('C');
     expect(syncMocks.syncTransactions).not.toHaveBeenCalled();
+  });
+});
+
+describe('manual sync freshness + sync-start-date visibility', () => {
+  beforeEach(async () => {
+    await cleanDb();
+    syncMocks.syncTransactions.mockReset();
+    syncMocks.getBalances.mockReset();
+    syncMocks.refreshTransactions.mockReset();
+    syncMocks.runCleansingPipeline.mockResolvedValue({ processed: 0, aiCleansed: 0, aiFailed: 0, disabled: 0 });
+    syncMocks.runCategorizationPipeline.mockResolvedValue(undefined);
+  });
+  afterEach(async () => { await cleanDb(); });
+
+  async function seedMappedItem(syncStartDate: string | null = null) {
+    const { user } = await createTestUser();
+    const bankAccount = await db.query.accounts.findFirst({
+      where: and(eq(accounts.tenantId, user.tenantId), eq(accounts.detailType, 'bank')),
+    });
+    const [item] = await db.insert(plaidItems).values({
+      plaidItemId: 'fresh-item-' + Date.now(), accessTokenEncrypted: encrypt('tok'), createdBy: user.id,
+    }).returning();
+    const [pa] = await db.insert(plaidAccounts).values({
+      plaidItemId: item!.id, plaidAccountId: 'fresh-acct', accountType: 'depository', mask: '9999',
+    }).returning();
+    await plaidMappingService.assignAccountToCompany(pa!.id, user.tenantId, bankAccount!.id, syncStartDate, user.id);
+    return { item: item!, user };
+  }
+
+  it('refresh option asks Plaid to poll the institution BEFORE syncing', async () => {
+    const { item } = await seedMappedItem();
+    syncMocks.refreshTransactions.mockResolvedValue(undefined);
+    syncMocks.syncTransactions.mockResolvedValue({ added: [], modified: [], removed: [], nextCursor: 'N1' });
+    syncMocks.getBalances.mockResolvedValue([]);
+
+    const result = await plaidSyncService.syncItem(item.id, { refresh: true, refreshWaitMs: 0 });
+
+    expect(syncMocks.refreshTransactions).toHaveBeenCalledTimes(1);
+    expect(result.refreshRequested).toBe(true);
+    const refreshOrder = syncMocks.refreshTransactions.mock.invocationCallOrder[0]!;
+    const syncOrder = syncMocks.syncTransactions.mock.invocationCallOrder[0]!;
+    expect(refreshOrder).toBeLessThan(syncOrder);
+  });
+
+  it('a failed refresh never blocks the normal cursor sync', async () => {
+    const { item } = await seedMappedItem();
+    syncMocks.refreshTransactions.mockRejectedValue(new Error('PRODUCT_NOT_ENABLED'));
+    syncMocks.syncTransactions.mockResolvedValue({ added: [], modified: [], removed: [], nextCursor: 'N2' });
+    syncMocks.getBalances.mockResolvedValue([]);
+
+    const result = await plaidSyncService.syncItem(item.id, { refresh: true, refreshWaitMs: 0 });
+    expect(result.refreshRequested).toBe(false);
+    expect(syncMocks.syncTransactions).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts transactions skipped by the sync start date instead of dropping them silently', async () => {
+    const { item } = await seedMappedItem('2026-07-01');
+    syncMocks.syncTransactions.mockResolvedValue({
+      added: [
+        { transaction_id: 'old-1', account_id: 'fresh-acct', date: '2026-06-15', name: 'OLD CHARGE', amount: 10 },
+        { transaction_id: 'new-1', account_id: 'fresh-acct', date: '2026-07-10', name: 'NEW CHARGE', amount: 20 },
+      ],
+      modified: [], removed: [], nextCursor: 'N3',
+    });
+    syncMocks.getBalances.mockResolvedValue([]);
+
+    const result = await plaidSyncService.syncItem(item.id);
+    expect(result.added).toBe(1);
+    expect(result.skippedByStartDate).toBe(1);
   });
 });
 

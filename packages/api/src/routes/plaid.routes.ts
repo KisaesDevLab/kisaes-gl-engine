@@ -178,7 +178,11 @@ plaidRouter.post('/accounts/:id/create-and-map', authenticate, validate(
 
 plaidRouter.post('/items/:id/sync', authenticate, async (req, res) => {
   await plaidConnection.assertCanAccessItem(req.userId, req.params['id']!);
-  const result = await plaidSync.syncItem(req.params['id']!);
+  // Manual sync = a human asking "check the bank NOW" — request an
+  // on-demand Plaid refresh first. (The scheduler and webhook paths
+  // call syncItem directly and stay cursor-only: refresh bills per
+  // call on some plans.)
+  const result = await plaidSync.syncItem(req.params['id']!, { refresh: true });
   res.json(result);
 });
 
@@ -187,7 +191,7 @@ plaidRouter.post('/items/:id/sync', authenticate, async (req, res) => {
 // a normal sync won't re-fetch already-delivered transactions.
 plaidRouter.post('/items/:id/resync', authenticate, async (req, res) => {
   await plaidConnection.assertCanAccessItem(req.userId, req.params['id']!);
-  const result = await plaidSync.resetAndResyncItem(req.params['id']!, req.tenantId);
+  const result = await plaidSync.resetAndResyncItem(req.params['id']!, req.tenantId, { refresh: true });
   res.json(result);
 });
 

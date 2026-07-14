@@ -193,6 +193,19 @@ export async function syncTransactions(accessToken: string, cursor?: string | nu
   return { added: allAdded, modified: allModified, removed: allRemoved, nextCursor };
 }
 
+// On-demand freshness. /transactions/sync only returns what Plaid has
+// ALREADY pulled from the institution — and webhook-less self-hosted
+// installs can't hear SYNC_UPDATES_AVAILABLE, while Plaid's own polling
+// cadence degrades on items without webhooks. Net effect: the bank's
+// online statement shows transactions but sync keeps returning nothing.
+// transactionsRefresh asks Plaid to poll the bank NOW; the refreshed
+// data arrives in a subsequent sync. Billable per-call on some plans, so
+// callers gate it to human-initiated syncs.
+export async function refreshTransactions(accessToken: string): Promise<void> {
+  const client = await getClient();
+  await client.transactionsRefresh({ access_token: accessToken });
+}
+
 export async function getBalances(accessToken: string, accountIds?: string[]) {
   const client = await getClient();
   const response = await client.accountsBalanceGet({
