@@ -9,7 +9,6 @@ import { db } from '../../db/index.js';
 import {
   tenants,
   users,
-  sessions,
   accounts,
   companies,
   contacts,
@@ -27,19 +26,25 @@ let tenantId: string;
 let companyId: string;
 let userId: string;
 
+// Tenant-SCOPED cleanup. The previous version deleted every row of
+// every table, which nuked concurrently-running suites' data — and
+// blew up on FKs those suites hold (e.g. bank_statements → accounts),
+// failing this whole file whenever another test happened to have
+// in-flight rows. Only ever touch our own tenant.
 async function cleanDb() {
-  await db.delete(importSessions);
-  await db.delete(transactionTags);
-  await db.delete(tags);
-  await db.delete(journalLines);
-  await db.delete(transactions);
-  await db.delete(auditLog);
-  await db.delete(contacts);
-  await db.delete(accounts);
-  await db.delete(companies);
-  await db.delete(sessions);
-  await db.delete(users);
-  await db.delete(tenants);
+  if (!tenantId) return;
+  await db.delete(importSessions).where(eq(importSessions.tenantId, tenantId));
+  await db.delete(transactionTags).where(eq(transactionTags.tenantId, tenantId));
+  await db.delete(tags).where(eq(tags.tenantId, tenantId));
+  await db.delete(journalLines).where(eq(journalLines.tenantId, tenantId));
+  await db.delete(transactions).where(eq(transactions.tenantId, tenantId));
+  await db.delete(auditLog).where(eq(auditLog.tenantId, tenantId));
+  await db.delete(contacts).where(eq(contacts.tenantId, tenantId));
+  await db.delete(accounts).where(eq(accounts.tenantId, tenantId));
+  await db.delete(companies).where(eq(companies.tenantId, tenantId));
+  await db.delete(users).where(eq(users.tenantId, tenantId));
+  await db.delete(tenants).where(eq(tenants.id, tenantId));
+  tenantId = '';
 }
 
 async function bootstrap() {
