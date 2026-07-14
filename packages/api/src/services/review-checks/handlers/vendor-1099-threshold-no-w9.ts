@@ -6,6 +6,7 @@ import { sql } from 'drizzle-orm';
 import type { FindingDraft } from '@kis-books/shared';
 import { db } from '../../../db/index.js';
 import type { CheckHandler } from './index.js';
+import { money, summaryLine } from './present.js';
 
 // `vendor_1099_threshold_no_w9` — vendors paid ≥$600 YTD with
 // no tax_id on file. Phase 12 (1099 Center) will add the W-9
@@ -46,10 +47,12 @@ export const handler: CheckHandler = async (tenantId, companyId, params): Promis
     checkKey: 'vendor_1099_threshold_no_w9',
     vendorId: r.contact_id,
     payload: {
+      summary: summaryLine(r.display_name, `${money(r.total_paid)} paid this year`),
       vendorName: r.display_name,
       totalPaidYTD: r.total_paid,
       threshold,
-      reason: `Vendor "${r.display_name}" paid $${r.total_paid} YTD with no W-9 / tax ID on file.`,
+      reason: `"${r.display_name}" has been paid ${money(r.total_paid)} this year — over the ${money(threshold)} 1099 reporting floor — and there is no tax ID / W-9 on file.`,
+      suggestion: 'Request a W-9 from the vendor now and record the tax ID on the vendor record. January 1099-NEC filing requires it, and chasing W-9s after year-end is much harder. If the vendor is a corporation and exempt, record the exclusion in the 1099 Center so this stops flagging.',
     },
   }));
 };

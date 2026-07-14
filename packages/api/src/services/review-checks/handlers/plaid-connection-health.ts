@@ -6,6 +6,7 @@ import { sql } from 'drizzle-orm';
 import type { FindingDraft } from '@kis-books/shared';
 import { db } from '../../../db/index.js';
 import type { CheckHandler } from './index.js';
+import { summaryLine } from './present.js';
 
 // `plaid_connection_health` — a bank connection feeding THIS tenant is
 // broken or stale. Item status/error badges on the Banking screen are
@@ -43,22 +44,28 @@ export const handler: CheckHandler = async (tenantId, _companyId, params): Promi
     error_code: string | null; error_message: string | null; last_sync_at: string | null;
   }>).map((r) => {
     const broken = (r.item_status && r.item_status !== 'active') || r.error_code;
+    const name = r.institution_name || 'Unknown institution';
     const reason = broken
-      ? `Bank connection "${r.institution_name || 'Unknown'}" needs attention (${r.error_code || r.item_status}) — transactions are not syncing.`
-      : `Bank connection "${r.institution_name || 'Unknown'}" has not synced in over ${staleDays} days.`;
+      ? `Bank connection "${name}" needs attention (${r.error_code || r.item_status}) — transactions are not syncing.`
+      : `Bank connection "${name}" has not synced in over ${staleDays} days.`;
+    const suggestion = broken
+      ? 'Reconnect the bank from Banking → Connections (the "Fix" button re-runs the bank login). Until it is fixed, no transactions are importing and the books are falling behind — categorize the backlog once it reconnects.'
+      : 'Trigger a manual sync from Banking → Connections. If it stays stale, reconnect the bank; a quiet feed can also just mean no account activity, but verify rather than assume.';
     return {
       checkKey: 'plaid_connection_health',
       payload: {
-        plaidItemId: r.id,
+        summary: summaryLine(name, broken ? (r.error_code || r.item_status) : `no sync in ${staleDays}+ days`),
         institutionName: r.institution_name,
         itemStatus: r.item_status,
         errorCode: r.error_code,
         errorMessage: r.error_message,
         lastSyncAt: r.last_sync_at,
+        reason,
+        suggestion,
+        plaidItemId: r.id,
         // One finding per (item, broken-vs-stale) state so recovery + a new
         // failure re-raises rather than deduping against the old finding.
         dedupe_key: `plaid_item:${r.id}:${broken ? (r.error_code || r.item_status) : 'stale'}`,
-        reason,
       },
     };
   });

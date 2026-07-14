@@ -7,6 +7,7 @@ import type { FindingDraft } from '@kis-books/shared';
 import { db } from '../../../db/index.js';
 import type { CheckHandler } from './index.js';
 import { periodDateClause } from './period.js';
+import { money, summaryLine } from './present.js';
 
 // `missing_required_customer` — invoice or customer-payment
 // transaction with no contact_id. The build plan asked for
@@ -36,10 +37,12 @@ export const handler: CheckHandler = async (tenantId, companyId, params): Promis
     checkKey: 'missing_required_customer',
     transactionId: r.id,
     payload: {
+      summary: summaryLine(r.txn_date, r.txn_type.replace('_', ' '), money(r.total)),
       txnType: r.txn_type,
       total: r.total,
       txnDate: r.txn_date,
-      reason: `${r.txn_type} requires a customer but contact_id is null.`,
+      reason: `This ${r.txn_type.replace('_', ' ')} has no customer on it — invoices and customer payments should always name who owes or paid.`,
+      suggestion: 'Open the transaction and select the customer. Without it, A/R aging, customer statements, and income-by-customer reports are all missing this activity.',
     },
   }));
 };

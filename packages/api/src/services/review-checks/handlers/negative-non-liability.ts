@@ -6,6 +6,7 @@ import { sql } from 'drizzle-orm';
 import type { FindingDraft } from '@kis-books/shared';
 import { db } from '../../../db/index.js';
 import type { CheckHandler } from './index.js';
+import { money, summaryLine } from './present.js';
 
 // `negative_non_liability` — accounts carrying an ABNORMAL balance for
 // their type. accounts.balance is stored debit−credit for every type,
@@ -32,17 +33,22 @@ export const handler: CheckHandler = async (tenantId, companyId): Promise<Findin
     LIMIT 200
   `);
 
-  return (result.rows as Array<{ id: string; name: string; account_type: string; balance: string }>).map((r) => ({
-    checkKey: 'negative_non_liability',
-    payload: {
-      accountId: r.id,
-      accountName: r.name,
-      accountType: r.account_type,
-      balance: r.balance,
-      // Per-account dedupe — re-fires on next run only if the
-      // abnormal balance persists.
-      dedupe_key: `account:${r.id}`,
-      reason: `${r.account_type} account "${r.name}" has an abnormal balance (${r.balance}).`,
-    },
-  }));
+  return (result.rows as Array<{ id: string; name: string; account_type: string; balance: string }>).map((r) => {
+    const debitNormal = ['asset', 'expense', 'cogs', 'other_expense'].includes(r.account_type);
+    return {
+      checkKey: 'negative_non_liability',
+      payload: {
+        summary: summaryLine(r.name, `${r.account_type} account`, `balance ${money(r.balance)}`),
+        accountName: r.name,
+        accountType: r.account_type,
+        balance: r.balance,
+        reason: `A ${r.account_type} account normally carries a ${debitNormal ? 'debit (positive)' : 'credit'} balance, but "${r.name}" is currently ${money(r.balance)} — the wrong direction for its type.`,
+        suggestion: 'Open the account register and look for the entry that flipped it: the usual causes are a swapped debit/credit, a payment or refund coded to the wrong account, or a missing offsetting entry. Correct the miscoded entry rather than adjusting the balance.',
+        accountId: r.id,
+        // Per-account dedupe — re-fires on next run only if the
+        // abnormal balance persists.
+        dedupe_key: `account:${r.id}`,
+      },
+    };
+  });
 };

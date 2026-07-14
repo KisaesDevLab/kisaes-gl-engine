@@ -6,6 +6,7 @@ import { sql } from 'drizzle-orm';
 import type { FindingDraft } from '@kis-books/shared';
 import { db } from '../../../db/index.js';
 import type { CheckHandler } from './index.js';
+import { money, summaryLine } from './present.js';
 
 // `uncategorized_stale` — bank-feed item still in `pending`
 // status N days after ingestion. Default 14 days.
@@ -28,15 +29,17 @@ export const handler: CheckHandler = async (tenantId, companyId, params): Promis
   return (result.rows as Array<{ id: string; description: string | null; amount: string; feed_date: string }>).map((r) => ({
     checkKey: 'uncategorized_stale',
     payload: {
-      bankFeedItemId: r.id,
+      summary: summaryLine(r.feed_date, r.description, money(r.amount)),
       description: r.description,
       amount: r.amount,
       feedDate: r.feed_date,
       olderThanDays,
+      reason: `This bank line has been sitting uncategorized for more than ${olderThanDays} days.`,
+      suggestion: 'Categorize it (or exclude it if it is not business activity) on the Bank Feed page. Uncategorized bank lines mean the books are missing real activity, so reports understate income or expenses and reconciliation will not tie.',
+      bankFeedItemId: r.id,
       // Use the feed item id as dedupe key — there's no
       // matching transaction yet for this finding shape.
       dedupe_key: `bank_feed_item:${r.id}`,
-      reason: `Bank-feed item pending for >${olderThanDays} days.`,
     },
   }));
 };

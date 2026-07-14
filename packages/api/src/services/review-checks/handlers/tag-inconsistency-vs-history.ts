@@ -6,6 +6,7 @@ import { sql } from 'drizzle-orm';
 import type { FindingDraft } from '@kis-books/shared';
 import { db } from '../../../db/index.js';
 import type { CheckHandler } from './index.js';
+import { money, summaryLine } from './present.js';
 
 // `tag_inconsistency_vs_history` — find a journal_line whose
 // (account_id, tag_id) combination is rare for that vendor
@@ -62,10 +63,19 @@ export const handler: CheckHandler = async (tenantId, companyId): Promise<Findin
       jl.account_id,
       jl.tag_id AS used_tag_id,
       d.dominant_tag_id,
-      d.share AS dominant_tag_share
+      d.share AS dominant_tag_share,
+      t.txn_date, t.total,
+      vc.display_name AS vendor_name,
+      a.name AS account_name,
+      ut.name AS used_tag_name,
+      et.name AS expected_tag_name
     FROM transactions t
     JOIN journal_lines jl ON jl.transaction_id = t.id
     JOIN dominant_tags d ON d.contact_id = t.contact_id AND d.account_id = jl.account_id
+    LEFT JOIN contacts vc ON vc.id = t.contact_id
+    LEFT JOIN accounts a ON a.id = jl.account_id
+    LEFT JOIN tags ut ON ut.id = jl.tag_id
+    LEFT JOIN tags et ON et.id = d.dominant_tag_id
     WHERE t.tenant_id = ${tenantId}
       ${companyClause}
       AND t.created_at >= now() - INTERVAL '30 days'
@@ -78,17 +88,32 @@ export const handler: CheckHandler = async (tenantId, companyId): Promise<Findin
     transaction_id: string; journal_line_id: string; contact_id: string;
     account_id: string; used_tag_id: string | null;
     dominant_tag_id: string | null; dominant_tag_share: number;
-  }>).map((r) => ({
-    checkKey: 'tag_inconsistency_vs_history',
-    transactionId: r.transaction_id,
-    vendorId: r.contact_id,
-    payload: {
-      journalLineId: r.journal_line_id,
-      accountId: r.account_id,
-      usedTagId: r.used_tag_id,
-      expectedTagId: r.dominant_tag_id,
-      dominantShare: Number(r.dominant_tag_share),
-      reason: `Tag differs from vendor's dominant tag for this account (${Math.round(Number(r.dominant_tag_share) * 100)}% historical share).`,
-    },
-  }));
+    txn_date: string; total: string; vendor_name: string | null;
+    account_name: string | null; used_tag_name: string | null; expected_tag_name: string | null;
+  }>).map((r) => {
+    const sharePct = Math.round(Number(r.dominant_tag_share) * 100);
+    return {
+      checkKey: 'tag_inconsistency_vs_history',
+      transactionId: r.transaction_id,
+      vendorId: r.contact_id,
+      payload: {
+        summary: summaryLine(r.txn_date, r.vendor_name, money(r.total), r.account_name),
+        vendorName: r.vendor_name,
+        accountName: r.account_name,
+        usedTag: r.used_tag_name ?? '(no tag)',
+        expectedTag: r.expected_tag_name,
+        dominantShare: Number(r.dominant_tag_share),
+        reason: r.expected_tag_name
+          ? `${sharePct}% of this vendor's history on "${r.account_name ?? 'this account'}" is tagged "${r.expected_tag_name}", but this entry is tagged "${r.used_tag_name ?? 'nothing'}".`
+          : `This entry's tag differs from the vendor's dominant tag for this account (${sharePct}% historical share).`,
+        suggestion: r.expected_tag_name
+          ? `If this was a miscode, change the tag to "${r.expected_tag_name}" so tag reports stay consistent. If the different tag is intentional (a one-off project or location), resolve with a note explaining it.`
+          : 'If this was a miscode, retag the line to match the vendor’s usual tag; if intentional, resolve with a note.',
+        journalLineId: r.journal_line_id,
+        accountId: r.account_id,
+        usedTagId: r.used_tag_id,
+        expectedTagId: r.dominant_tag_id,
+      },
+    };
+  });
 };

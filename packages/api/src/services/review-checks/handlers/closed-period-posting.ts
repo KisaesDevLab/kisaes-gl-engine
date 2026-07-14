@@ -6,6 +6,7 @@ import { sql } from 'drizzle-orm';
 import type { FindingDraft } from '@kis-books/shared';
 import { db } from '../../../db/index.js';
 import type { CheckHandler } from './index.js';
+import { money, summaryLine } from './present.js';
 
 // `closed_period_posting` — transactions dated INSIDE a company's
 // closed period (txn_date <= companies.lock_date) that were created
@@ -23,10 +24,13 @@ export const handler: CheckHandler = async (tenantId, companyId): Promise<Findin
 
   const result = await db.execute<{
     id: string; txn_type: string; txn_date: string; created_at: string; lock_date: string; memo: string | null;
+    total: string | null; payee: string | null;
   }>(sql`
-    SELECT t.id, t.txn_type, t.txn_date, t.created_at, c.lock_date, t.memo
+    SELECT t.id, t.txn_type, t.txn_date, t.created_at, c.lock_date, t.memo, t.total,
+      ct.display_name AS payee
     FROM transactions t
     JOIN companies c ON c.id = t.company_id AND c.tenant_id = t.tenant_id
+    LEFT JOIN contacts ct ON ct.id = t.contact_id
     WHERE t.tenant_id = ${tenantId}
       ${companyClause}
       AND c.lock_date IS NOT NULL
@@ -39,16 +43,21 @@ export const handler: CheckHandler = async (tenantId, companyId): Promise<Findin
 
   return (result.rows as Array<{
     id: string; txn_type: string; txn_date: string; created_at: string; lock_date: string; memo: string | null;
+    total: string | null; payee: string | null;
   }>).map((r) => ({
     checkKey: 'closed_period_posting',
+    // Top-level transactionId so the drawer's "Open transaction"
+    // deep link renders (was payload-only before).
+    transactionId: r.id,
     payload: {
-      transactionId: r.id,
+      summary: summaryLine(r.txn_date, r.payee ?? r.txn_type, r.total != null ? money(r.total) : null),
       txnType: r.txn_type,
       txnDate: r.txn_date,
       createdAt: r.created_at,
       lockDate: r.lock_date,
+      reason: `This ${r.txn_type} is dated ${r.txn_date} — inside the closed period ending ${r.lock_date} — but was entered on ${String(r.created_at).slice(0, 10)}, after the books were closed.`,
+      suggestion: 'Entries added to a closed period change statements that may already be filed or issued. Verify the closed period still ties to what was reported; if this entry changed it, reverse it and repost the activity in the open period (or have the CPA reopen and re-close deliberately).',
       dedupe_key: `txn:${r.id}`,
-      reason: `${r.txn_type} dated ${r.txn_date} (inside the closed period ending ${r.lock_date}) was created ${String(r.created_at).slice(0, 10)}, after the close.`,
     },
   }));
 };

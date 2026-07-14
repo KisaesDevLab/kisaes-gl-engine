@@ -164,6 +164,13 @@ describe('missing_attachment_above_threshold', () => {
     await seedTransaction({ txnType: 'expense', total: '100.0000', txnDate: '2026-04-15' });
     const drafts = await HANDLERS['missing_attachment_above_threshold']!(tenantId, companyId, { thresholdAmount: 75 });
     expect(drafts).toHaveLength(1);
+    // Reviewer-facing payload contract: a one-line summary of the
+    // record, a plain-language reason, and a suggested action.
+    const p = drafts[0]!.payload as Record<string, unknown>;
+    expect(String(p['summary'])).toContain('2026-04-15');
+    expect(String(p['summary'])).toContain('$100.00');
+    expect(String(p['reason'])).toMatch(/no receipt or bill copy/i);
+    expect(String(p['suggestion'])).toMatch(/attach/i);
   });
 
   it('does not flag expenses below the threshold', async () => {

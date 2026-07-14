@@ -11,6 +11,7 @@ import { sanitize } from '../../pii-sanitizer.service.js';
 import { checkTenantTaskConsent } from '../../ai-consent.service.js';
 import { executeWithFallback } from '../../ai-providers/index.js';
 import type { CheckHandler } from './index.js';
+import { money, summaryLine } from './present.js';
 
 // `ai_personal_expense_review` — uses the AI orchestrator to flag
 // posted expenses that look personal rather than business. The
@@ -158,9 +159,13 @@ export const handler: CheckHandler = async (tenantId, companyId, params): Promis
           transactionId: r.id,
           vendorId: r.contact_id ?? null,
           payload: {
+            summary: summaryLine(r.txn_date, r.contact_name, money(r.total)),
             label,
             confidence,
-            reason,
+            reason: reason
+              ? `AI review: ${reason}`
+              : 'The AI reviewer judged this expense as likely personal rather than business.',
+            suggestion: "If it is personal, recode it to owner's draw / shareholder distribution (or have the owner reimburse the business) — personal spending in expense accounts overstates deductions. If it is a legitimate business expense, resolve with a short note stating the business purpose.",
             total: r.total,
             txnDate: r.txn_date,
             vendorName: r.contact_name ?? null,

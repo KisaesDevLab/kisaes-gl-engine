@@ -6,6 +6,7 @@ import { sql } from 'drizzle-orm';
 import type { FindingDraft } from '@kis-books/shared';
 import { db } from '../../../db/index.js';
 import type { CheckHandler } from './index.js';
+import { money, summaryLine } from './present.js';
 
 // `receipt_amount_mismatch` — surfaces bank-feed items whose
 // attached receipt's OCR-extracted total differs from the bank
@@ -76,8 +77,11 @@ export const handler: CheckHandler = async (tenantId, companyId, params): Promis
       transactionId: null,
       vendorId: null,
       payload: {
-        bankFeedItemId: r.bank_feed_item_id,
-        attachmentId: r.attachment_id,
+        summary: summaryLine(
+          r.ocr_date,
+          r.ocr_vendor ?? r.description,
+          `receipt ${money(receiptAmt)} vs bank ${money(bankAmt)}`,
+        ),
         bankAmount: bankAmt,
         receiptTotal: receiptAmt,
         variance,
@@ -86,8 +90,11 @@ export const handler: CheckHandler = async (tenantId, companyId, params): Promis
         description: r.description,
         toleranceDollars,
         tolerancePercent,
+        reason: `The attached receipt reads ${money(receiptAmt)} but the bank charged ${money(bankAmt)} — a difference of ${money(variance)}.`,
+        suggestion: 'Compare the receipt to the bank line. A tip, shipping, or tax difference can be legitimate — note it and resolve. If the wrong receipt is attached or the OCR misread the total, fix the attachment so the documentation matches the charge.',
+        bankFeedItemId: r.bank_feed_item_id,
+        attachmentId: r.attachment_id,
         dedupe_key: `attachment:${r.attachment_id}`,
-        reason: `Receipt total ${receiptAmt.toFixed(2)} differs from bank amount ${bankAmt.toFixed(2)} by ${variance.toFixed(2)}.`,
       },
     };
   });
