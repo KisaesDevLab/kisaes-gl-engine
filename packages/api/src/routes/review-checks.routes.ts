@@ -26,6 +26,7 @@ import * as orchestrator from '../services/review-checks/orchestrator.service.js
 import * as registry from '../services/review-checks/registry.service.js';
 import * as findingsService from '../services/review-checks/findings.service.js';
 import * as suppressions from '../services/review-checks/suppressions.service.js';
+import * as closeChecklist from '../services/review-checks/close-checklist.service.js';
 
 export const reviewChecksRouter = Router();
 
@@ -338,4 +339,52 @@ reviewChecksRouter.delete('/overrides/:checkKey', async (req, res) => {
     req.userId,
   );
   res.json({ deleted: true });
+});
+
+// ── Close checklist ─────────────────────────────────────────────
+// The ordered month-end workflow: derived task states (reconciliation
+// coverage, bank-feed backlog, open findings) + manual sign-offs.
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+function readChecklistScope(q: Record<string, unknown>): { companyId: string | null; periodStart: string; periodEnd: string } {
+  const companyId = typeof q['companyId'] === 'string' && q['companyId'] ? (q['companyId'] as string) : null;
+  const periodStart = String(q['periodStart'] ?? '').slice(0, 10);
+  const periodEnd = String(q['periodEnd'] ?? '').slice(0, 10);
+  if (!ISO_DATE.test(periodStart) || !ISO_DATE.test(periodEnd)) {
+    throw AppError.badRequest('periodStart and periodEnd (YYYY-MM-DD) are required');
+  }
+  return { companyId, periodStart, periodEnd };
+}
+
+// GET /checklist?companyId=&periodStart=&periodEnd= — derived tasks +
+// sign-off state for the period.
+reviewChecksRouter.get('/checklist', async (req, res) => {
+  const { companyId, periodStart, periodEnd } = readChecklistScope(req.query as Record<string, unknown>);
+  const tasks = await closeChecklist.getCloseChecklist(req.tenantId, companyId, periodStart, periodEnd);
+  res.json({ tasks });
+});
+
+const checklistTaskSchema = z.object({
+  companyId: z.string().uuid().nullish(),
+  periodStart: z.string().regex(ISO_DATE),
+  taskKey: z.string().min(1).max(120),
+  note: z.string().max(2000).nullish(),
+});
+
+// POST /checklist/complete — manual sign-off (also usable to accept an
+// auto task that can't be satisfied in-app, with a note saying why).
+reviewChecksRouter.post('/checklist/complete', validate(checklistTaskSchema), async (req, res) => {
+  const { companyId, periodStart, taskKey, note } = req.body as z.infer<typeof checklistTaskSchema>;
+  await closeChecklist.completeChecklistTask(req.tenantId, companyId ?? null, periodStart, taskKey, note ?? null, req.userId);
+  await auditLog(req.tenantId, 'update', 'close_checklist_task', null, null, { periodStart, taskKey, companyId: companyId ?? null, done: true }, req.userId);
+  res.json({ completed: true });
+});
+
+// POST /checklist/reopen — withdraw a manual sign-off.
+reviewChecksRouter.post('/checklist/reopen', validate(checklistTaskSchema.omit({ note: true })), async (req, res) => {
+  const { companyId, periodStart, taskKey } = req.body as z.infer<typeof checklistTaskSchema>;
+  await closeChecklist.reopenChecklistTask(req.tenantId, companyId ?? null, periodStart, taskKey);
+  await auditLog(req.tenantId, 'update', 'close_checklist_task', null, null, { periodStart, taskKey, companyId: companyId ?? null, done: false }, req.userId);
+  res.json({ reopened: true });
 });

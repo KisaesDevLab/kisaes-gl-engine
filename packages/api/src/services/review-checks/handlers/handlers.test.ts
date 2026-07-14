@@ -497,6 +497,151 @@ describe('receipt_amount_mismatch', () => {
   });
 });
 
+// ─── expense_without_payee ────────────────────────────────────
+
+describe('expense_without_payee', () => {
+  it('flags a posted expense with no contact', async () => {
+    await seedTransaction({ txnType: 'expense', total: '80.0000', txnDate: '2026-04-15', contactId: null });
+    const drafts = await HANDLERS['expense_without_payee']!(tenantId, companyId, {});
+    expect(drafts).toHaveLength(1);
+    const p = drafts[0]!.payload as Record<string, unknown>;
+    expect(String(p['suggestion'])).toMatch(/assign the vendor/i);
+  });
+
+  it('does not flag an expense that has a payee', async () => {
+    await seedTransaction({ txnType: 'expense', total: '80.0000', txnDate: '2026-04-15' });
+    const drafts = await HANDLERS['expense_without_payee']!(tenantId, companyId, {});
+    expect(drafts).toEqual([]);
+  });
+});
+
+// ─── journal_entry_without_attachment ─────────────────────────
+
+describe('journal_entry_without_attachment', () => {
+  it('flags a JE with no attachment', async () => {
+    const txn = await seedTransaction({ txnType: 'journal_entry', total: '500.0000', txnDate: '2026-04-15', contactId: null });
+    const drafts = await HANDLERS['journal_entry_without_attachment']!(tenantId, companyId, {});
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0]?.transactionId).toBe(txn.id);
+  });
+
+  it('does not flag a JE with support attached', async () => {
+    const txn = await seedTransaction({ txnType: 'journal_entry', total: '500.0000', txnDate: '2026-04-15', contactId: null });
+    await db.insert(attachments).values({
+      tenantId, companyId,
+      fileName: 'schedule.pdf', filePath: '/uploads/s.pdf',
+      attachableType: 'transaction', attachableId: txn.id,
+    });
+    const drafts = await HANDLERS['journal_entry_without_attachment']!(tenantId, companyId, {});
+    expect(drafts).toEqual([]);
+  });
+
+  it('respects the amount threshold', async () => {
+    await seedTransaction({ txnType: 'journal_entry', total: '50.0000', txnDate: '2026-04-15', contactId: null });
+    const drafts = await HANDLERS['journal_entry_without_attachment']!(tenantId, companyId, { thresholdAmount: 100 });
+    expect(drafts).toEqual([]);
+  });
+});
+
+// ─── new_entities_review ──────────────────────────────────────
+
+describe('new_entities_review', () => {
+  it('flags contacts and accounts created inside the period', async () => {
+    // The fixture's contact + accounts were created "now", inside July 2026.
+    const drafts = await HANDLERS['new_entities_review']!(tenantId, companyId, {
+      periodStart: '2026-07-01', periodEnd: '2026-08-01',
+    });
+    const names = drafts.map((d) => (d.payload as Record<string, unknown>)['entityName']);
+    expect(names).toContain('Acme Corp');
+    expect(names).toContain('Office Supplies');
+  });
+
+  it('does not flag entities created outside the period', async () => {
+    const drafts = await HANDLERS['new_entities_review']!(tenantId, companyId, {
+      periodStart: '2020-01-01', periodEnd: '2020-02-01',
+    });
+    expect(drafts).toEqual([]);
+  });
+});
+
+// ─── duplicate_entity_names ───────────────────────────────────
+
+describe('duplicate_entity_names', () => {
+  it('flags two contacts whose names differ only by punctuation/case', async () => {
+    await db.insert(contacts).values({ tenantId, displayName: 'ACME Corp.', contactType: 'vendor' });
+    const drafts = await HANDLERS['duplicate_entity_names']!(tenantId, null, {});
+    expect(drafts).toHaveLength(1);
+    const p = drafts[0]!.payload as Record<string, unknown>;
+    expect([p['nameA'], p['nameB']].sort()).toEqual(['ACME Corp.', 'Acme Corp']);
+  });
+
+  it('does not flag distinct names', async () => {
+    await db.insert(contacts).values({ tenantId, displayName: 'Globex LLC', contactType: 'vendor' });
+    const drafts = await HANDLERS['duplicate_entity_names']!(tenantId, null, {});
+    expect(drafts).toEqual([]);
+  });
+});
+
+// ─── flux_variance ────────────────────────────────────────────
+
+describe('flux_variance', () => {
+  async function seedMonthlyExpense(month: string, amount: string) {
+    const txn = await seedTransaction({ txnType: 'expense', total: amount, txnDate: `${month}-10` });
+    await db.insert(journalLines).values([
+      { tenantId, companyId, transactionId: txn.id, accountId: expenseAccountId, debit: amount, credit: '0' },
+    ]);
+  }
+
+  it('flags an account whose period activity jumps from its trailing average', async () => {
+    await seedMonthlyExpense('2026-03', '100.0000');
+    await seedMonthlyExpense('2026-04', '100.0000');
+    await seedMonthlyExpense('2026-05', '100.0000');
+    await seedMonthlyExpense('2026-06', '1000.0000'); // 10x jump
+    const drafts = await HANDLERS['flux_variance']!(tenantId, companyId, {
+      periodStart: '2026-06-01', periodEnd: '2026-07-01',
+    });
+    expect(drafts).toHaveLength(1);
+    const p = drafts[0]!.payload as Record<string, unknown>;
+    expect(p['accountName']).toBe('Office Supplies');
+    expect(String(p['reason'])).toMatch(/up \d+%/);
+  });
+
+  it('stays quiet when activity matches the trailing average', async () => {
+    await seedMonthlyExpense('2026-03', '100.0000');
+    await seedMonthlyExpense('2026-04', '100.0000');
+    await seedMonthlyExpense('2026-05', '100.0000');
+    await seedMonthlyExpense('2026-06', '105.0000');
+    const drafts = await HANDLERS['flux_variance']!(tenantId, companyId, {
+      periodStart: '2026-06-01', periodEnd: '2026-07-01',
+    });
+    expect(drafts).toEqual([]);
+  });
+
+  it('returns nothing without a close period', async () => {
+    const drafts = await HANDLERS['flux_variance']!(tenantId, companyId, {});
+    expect(drafts).toEqual([]);
+  });
+});
+
+// ─── account_inconsistency_vs_history / posted_into_reconciled_range ──
+// Smoke: both depend on aged created_at fixtures (history windows,
+// completed reconciliations) that are exercised in service-level tests;
+// here we ensure they run clean on an empty tenant.
+
+describe('account_inconsistency_vs_history (smoke)', () => {
+  it('returns empty for an empty tenant', async () => {
+    const drafts = await HANDLERS['account_inconsistency_vs_history']!(tenantId, companyId, {});
+    expect(drafts).toEqual([]);
+  });
+});
+
+describe('posted_into_reconciled_range (smoke)', () => {
+  it('returns empty when no completed reconciliations exist', async () => {
+    const drafts = await HANDLERS['posted_into_reconciled_range']!(tenantId, companyId, {});
+    expect(drafts).toEqual([]);
+  });
+});
+
 // Touch unused vars to silence the lint without changing the
 // fixture surface. The id is stashed for handlers that need a
 // revenue account in future tests.

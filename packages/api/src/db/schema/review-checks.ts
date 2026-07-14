@@ -106,6 +106,24 @@ export const checkSuppressions = pgTable('check_suppressions', {
   tenantCheckIdx: index('idx_suppressions_tenant_check').on(table.tenantId, table.checkKey),
 }));
 
+// Close-checklist sign-offs (migration 0133). Rows exist only for the
+// HUMAN acts — manual completions with optional notes; the checklist's
+// derived task states (reconciliations, bank-feed backlog, findings)
+// are computed live by close-checklist.service.
+export const closeChecklistSignoffs = pgTable('close_checklist_signoffs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
+  companyId: uuid('company_id'),
+  periodStart: date('period_start').notNull(),
+  taskKey: varchar('task_key', { length: 120 }).notNull(),
+  note: text('note'),
+  completedBy: uuid('completed_by'),
+  completedAt: timestamp('completed_at', { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  tenantPeriodIdx: index('idx_close_checklist_tenant_period').on(table.tenantId, table.periodStart),
+}));
+
 export const checkParamsOverrides = pgTable('check_params_overrides', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),

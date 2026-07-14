@@ -925,6 +925,20 @@
       "when": 1783975000000,
       "tag": "0131_check_registry_descriptions",
       "breakpoints": true
+    },
+    {
+      "idx": 132,
+      "version": "7",
+      "when": 1784000000000,
+      "tag": "0132_double_parity_checks",
+      "breakpoints": true
+    },
+    {
+      "idx": 133,
+      "version": "7",
+      "when": 1784000100000,
+      "tag": "0133_close_checklist",
+      "breakpoints": true
     }
   ]
 }

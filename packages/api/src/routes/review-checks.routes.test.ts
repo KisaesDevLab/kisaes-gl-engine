@@ -157,16 +157,26 @@ describe('review-checks routes — gates', () => {
 });
 
 describe('GET /registry', () => {
-  it('lists the 16 stock checks (Phase 6 + receipt mismatch + AI judgment + plaid health)', async () => {
+  it('lists the 23 stock checks (Phase 6 + additions through the Double-parity set)', async () => {
     const { status, json } = await request('GET', '/api/v1/practice/checks/registry', undefined, bookkeeperToken);
     expect(status).toBe(200);
     // 13 from migration 0068 + receipt_amount_mismatch (0084) +
-    // ai_personal_expense_review (0087) + plaid_connection_health (0129).
-    expect(json.checks.length).toBe(16);
-    expect(json.checks.find((c: { checkKey: string }) => c.checkKey === 'transaction_above_materiality')).toBeDefined();
-    expect(json.checks.find((c: { checkKey: string }) => c.checkKey === 'receipt_amount_mismatch')).toBeDefined();
-    expect(json.checks.find((c: { checkKey: string }) => c.checkKey === 'ai_personal_expense_review')).toBeDefined();
-    expect(json.checks.find((c: { checkKey: string }) => c.checkKey === 'plaid_connection_health')).toBeDefined();
+    // ai_personal_expense_review (0087) + plaid_connection_health (0129) +
+    // 7 Double-parity checks (0132).
+    expect(json.checks.length).toBe(23);
+    const has = (key: string) =>
+      expect(json.checks.find((c: { checkKey: string }) => c.checkKey === key), key).toBeDefined();
+    has('transaction_above_materiality');
+    has('receipt_amount_mismatch');
+    has('ai_personal_expense_review');
+    has('plaid_connection_health');
+    has('expense_without_payee');
+    has('account_inconsistency_vs_history');
+    has('journal_entry_without_attachment');
+    has('new_entities_review');
+    has('posted_into_reconciled_range');
+    has('flux_variance');
+    has('duplicate_entity_names');
   });
 });
 
@@ -401,5 +411,60 @@ describe('GET /findings-summary', () => {
     expect(json.total).toBeGreaterThanOrEqual(1);
     expect(json.byStatus.open).toBeGreaterThanOrEqual(1);
     expect(typeof json.bySeverity.high).toBe('number');
+  });
+});
+
+describe('close checklist', () => {
+  const PERIOD = 'periodStart=2026-06-01&periodEnd=2026-07-01';
+
+  it('derives the standard tasks and honors manual sign-off + reopen', async () => {
+    const list1 = await request('GET', `/api/v1/practice/checks/checklist?${PERIOD}`, undefined, bookkeeperToken);
+    expect(list1.status).toBe(200);
+    const keys = list1.json.tasks.map((t: { key: string }) => t.key);
+    expect(keys).toContain('bank_feed');
+    expect(keys).toContain('findings');
+    expect(keys).toContain('final_review');
+    const finalTask = list1.json.tasks.find((t: { key: string }) => t.key === 'final_review');
+    expect(finalTask.done).toBe(false);
+    expect(finalTask.auto).toBe(false);
+
+    // Sign off the final review with a note…
+    const done = await request('POST', '/api/v1/practice/checks/checklist/complete', {
+      periodStart: '2026-06-01', taskKey: 'final_review', note: 'Statements reviewed, all tie.',
+    }, bookkeeperToken);
+    expect(done.status).toBe(200);
+    const list2 = await request('GET', `/api/v1/practice/checks/checklist?${PERIOD}`, undefined, bookkeeperToken);
+    const signed = list2.json.tasks.find((t: { key: string }) => t.key === 'final_review');
+    expect(signed.done).toBe(true);
+    expect(signed.manuallyCompleted).toBe(true);
+    expect(signed.note).toBe('Statements reviewed, all tie.');
+
+    // …then withdraw it.
+    const undo = await request('POST', '/api/v1/practice/checks/checklist/reopen', {
+      periodStart: '2026-06-01', taskKey: 'final_review',
+    }, bookkeeperToken);
+    expect(undo.status).toBe(200);
+    const list3 = await request('GET', `/api/v1/practice/checks/checklist?${PERIOD}`, undefined, bookkeeperToken);
+    expect(list3.json.tasks.find((t: { key: string }) => t.key === 'final_review').done).toBe(false);
+  });
+
+  it('creates a reconciliation task per bank account and reflects backlog counts', async () => {
+    const [c] = await db.insert(companies).values({ tenantId, businessName: 'Checklist Co' }).returning();
+    const [bank] = await db.insert(accounts).values({
+      tenantId, companyId: c!.id, name: 'Operating Checking', accountType: 'asset',
+      detailType: 'checking', accountNumber: '1000', balance: '0',
+    }).returning();
+    const url = `/api/v1/practice/checks/checklist?companyId=${c!.id}&${PERIOD}`;
+    const { status, json } = await request('GET', url, undefined, bookkeeperToken);
+    expect(status).toBe(200);
+    const rec = json.tasks.find((t: { key: string }) => t.key === `reconcile:${bank!.id}`);
+    expect(rec).toBeDefined();
+    expect(rec.done).toBe(false);
+    expect(rec.detail).toBe('Never reconciled');
+  });
+
+  it('rejects a checklist request without a period', async () => {
+    const { status } = await request('GET', '/api/v1/practice/checks/checklist', undefined, bookkeeperToken);
+    expect(status).toBe(400);
   });
 });

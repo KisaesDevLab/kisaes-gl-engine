@@ -43,6 +43,13 @@ import { handler as missingRequiredCustomer } from './missing-required-customer.
 import { handler as receiptAmountMismatch } from './receipt-amount-mismatch.js';
 import { handler as aiPersonalExpenseReview } from './ai-personal-expense-review.js';
 import { handler as plaidConnectionHealth } from './plaid-connection-health.js';
+import { handler as expenseWithoutPayee } from './expense-without-payee.js';
+import { handler as accountInconsistencyVsHistory } from './account-inconsistency-vs-history.js';
+import { handler as journalEntryWithoutAttachment } from './journal-entry-without-attachment.js';
+import { handler as newEntitiesReview } from './new-entities-review.js';
+import { handler as postedIntoReconciledRange } from './posted-into-reconciled-range.js';
+import { handler as fluxVariance } from './flux-variance.js';
+import { handler as duplicateEntityNames } from './duplicate-entity-names.js';
 
 // Map check_registry.handler_name → handler function. The
 // orchestrator iterates registry entries and looks each up
@@ -64,4 +71,11 @@ export const HANDLERS: Record<string, CheckHandler> = {
   receipt_amount_mismatch: receiptAmountMismatch,
   ai_personal_expense_review: aiPersonalExpenseReview,
   plaid_connection_health: plaidConnectionHealth,
+  expense_without_payee: expenseWithoutPayee,
+  account_inconsistency_vs_history: accountInconsistencyVsHistory,
+  journal_entry_without_attachment: journalEntryWithoutAttachment,
+  new_entities_review: newEntitiesReview,
+  posted_into_reconciled_range: postedIntoReconciledRange,
+  flux_variance: fluxVariance,
+  duplicate_entity_names: duplicateEntityNames,
 };
