@@ -112,15 +112,18 @@ async function main(): Promise<void> {
     return;
   }
 
-  // --- Phase B: license enforcement (vibe-distribution-plan D6) -------
+  // --- Phase B: license check (vibe-distribution-plan D6, softened) ---
   // Runs after preflight so migrations / sentinel are healthy first
   // — a license error is a different operator-facing problem than
   // "install hasn't completed". Skipped in NODE_ENV=development|test
-  // and when DISABLE_LICENSE_CHECK=1 (CI default). Failure exits
-  // cleanly with a structured log line rather than starting the
-  // diagnostic app: that app is for installation-state issues
-  // (CRC / orphan sentinel / etc.), and surfacing a license expiry
-  // there would be misleading.
+  // and when DISABLE_LICENSE_CHECK=1 (CI default).
+  //
+  // WARN-ONLY since the PolyForm Small Business relicense (v0.9.95):
+  // the product is free for small businesses, so a missing/expired
+  // commercial token must never block the boot — it logs a loud
+  // warning with the exact fix steps and the API starts anyway.
+  // Commercial-tier enforcement, if it returns, belongs at the
+  // feature level, not the boot gate.
   const { checkLicense, formatLicenseResult } = await import('./startup/license-check.js');
   const { log } = await import('./utils/logger.js');
   const license = checkLicense();
@@ -153,26 +156,15 @@ async function main(): Promise<void> {
         'License token signature is invalid. Verify LICENSE_PUBLIC_KEY matches the issuer that signed LICENSE_TOKEN. ' +
         'Re-fetch both via the installer if unsure.';
     }
-    log.fatal({
+    log.warn({
       component: 'bootstrap',
-      event: 'license_check_failed',
+      event: 'license_check_warning',
       status: license.status,
-      message: `License check failed (${license.status}). The API will not start. ${nextSteps}`,
+      message: `License check did not pass (${license.status}). Starting anyway — small-business use is free under the PolyForm Small Business license. ${nextSteps}`,
     });
-    // Close the DB pool that env.ts/preflight opened so the process
-    // exits without dangling Postgres connections that the operator
-    // would later see in `pg_stat_activity` until idle-timeout.
-    try {
-      const { pool } = await import('./db/index.js');
-      await pool.end();
-    } catch {
-      // Best-effort — never block exit on cleanup. The process is
-      // about to die anyway and the OS will reap the FD.
-    }
-    process.exit(1);
   }
 
-  // 'ok' or 'fresh-install' — normal startup.
+  // Normal startup — license issues warn, never block.
   await import('./index.js');
 }
 
