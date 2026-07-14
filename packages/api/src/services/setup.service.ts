@@ -201,10 +201,23 @@ export async function getSetupStatus(): Promise<SetupStatus> {
   // wizard just because envFileExists probed false. (setupComplete = true is
   // the locked/safe direction — it only ever blocks provisioning, never opens
   // it.)
-  const setupComplete =
-    statusCheckFailed ||
-    hasAdminUser ||
-    (envFileExists && databaseReachable && databaseInitialized);
+  //
+  // Deliberately NOT part of this test: `envFileExists && databaseReachable
+  // && databaseInitialized`. On the Docker appliance both are true before
+  // setup has ever run — install.sh pre-generates JWT_SECRET into .env (so
+  // envFileExists is true) and docker-entrypoint auto-runs migrations on
+  // first boot (so the `tenants` table exists and databaseInitialized is
+  // true). Including that clause therefore reported setupComplete = true on
+  // a pristine install with zero users, which hid the first-run wizard and
+  // made the guard below 403 every setup endpoint — an unrecoverable
+  // deadlock: no account to log in with, and no way to create one.
+  //
+  // "Already configured" is proven by the persistent marker (short-circuit
+  // #1 above) or by hasAdminUser — never by schema/secrets that the
+  // appliance ships by default. A failed users probe cannot masquerade as
+  // "no users" either: the inner catch sets statusCheckFailed, which still
+  // locks the endpoints.
+  const setupComplete = statusCheckFailed || hasAdminUser;
 
   return {
     envFileExists,
