@@ -408,6 +408,12 @@ export function parseContacts(
   const iPhone = colIdx('Telephone');
   const iEmail = colIdx('Email');
   const i1099 = colIdx('1099');
+  // Vendor exports carry the vendor's default expense account
+  // ("Account" — a COA number or name). Captured raw here; commit
+  // resolves it against the tenant's chart so the vendor keeps its
+  // default category through the migration. Vendors only — on the
+  // customer export the column isn't an expense default.
+  const iAccount = kind === 'vendor' ? colIdx('Account') : -1;
 
   const cell = (r: string[], i: number) => (i === -1 ? '' : (r[i] ?? '').replace(/\r?\n/g, ' ').trim());
 
@@ -427,6 +433,7 @@ export function parseContacts(
       phone: cell(r, iPhone) || undefined,
       billingAddress: billingAddress || undefined,
       is1099Eligible: /^true$/i.test(cell(r, i1099)) || undefined,
+      defaultExpenseAccountRaw: cell(r, iAccount) || undefined,
     });
   }
   return { rows, errors };

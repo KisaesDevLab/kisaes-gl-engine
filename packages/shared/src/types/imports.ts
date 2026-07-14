@@ -50,6 +50,10 @@ export interface CanonicalContactRow {
   /** Single-line address; commit splits into billing/shipping line1 if present. */
   billingAddress?: string;
   shippingAddress?: string;
+  /** Vendor default expense account as exported by the source system
+   *  (account number or name, e.g. Accounting Power's "Account" column).
+   *  Commit resolves it against the tenant's chart of accounts. */
+  defaultExpenseAccountRaw?: string;
 }
 
 export interface CanonicalTrialBalanceRow {
@@ -156,6 +160,9 @@ export interface ImportCommitResult {
   /** GL only — imported transactions whose description matched an existing
    *  vendor name and were assigned that vendor as the payee. */
   vendorsMatched?: number;
+  /** Contacts only — vendors whose source default-expense account was
+   *  resolved against the chart of accounts and linked. */
+  accountsLinked?: number;
   /** Set when commit threw partway. The UI surfaces this verbatim;
    *  combined with `created` it tells the operator how much landed before
    *  the failure so they can decide whether to roll back manually or

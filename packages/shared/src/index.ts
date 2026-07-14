@@ -73,6 +73,7 @@ export * from './schemas/batch.js';
 export * from './schemas/extraction.js';
 export * from './schemas/statement-extraction.js';
 export * from './schemas/daily-sales.js';
+export * from './schemas/je-templates.js';
 export * from './schemas/permissions.js';
 export * from './schemas/firm-integrations.js';
 

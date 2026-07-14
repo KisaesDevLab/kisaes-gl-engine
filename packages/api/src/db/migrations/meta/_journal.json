@@ -939,6 +939,13 @@
       "when": 1784000100000,
       "tag": "0133_close_checklist",
       "breakpoints": true
+    },
+    {
+      "idx": 134,
+      "version": "7",
+      "when": 1784100000000,
+      "tag": "0134_je_templates",
+      "breakpoints": true
     }
   ]
 }

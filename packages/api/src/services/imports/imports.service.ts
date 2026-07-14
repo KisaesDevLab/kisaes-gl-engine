@@ -919,6 +919,40 @@ async function commitContacts(
 ): Promise<ImportCommitResult> {
   let created = 0;
   let skipped = 0;
+  let accountsLinked = 0;
+
+  // Resolve source default-expense accounts ("Account" column on the
+  // Accounting Power vendor export) against the tenant's chart:
+  // exact account-number match first, then case-insensitive name.
+  // Name collisions prefer expense-type accounts (that's what a
+  // vendor default is). COA is imported before vendors in a
+  // migration, so numbers usually line up; unmatched values are
+  // simply not linked — never a commit failure.
+  const needsAccounts = rows.some((r) => r.defaultExpenseAccountRaw);
+  const byNumber = new Map<string, string>();
+  const byName = new Map<string, { id: string; isExpense: boolean }>();
+  if (needsAccounts) {
+    const coa = await db
+      .select({ id: accounts.id, accountNumber: accounts.accountNumber, name: accounts.name, accountType: accounts.accountType })
+      .from(accounts)
+      .where(eq(accounts.tenantId, tenantId));
+    for (const a of coa) {
+      if (a.accountNumber) byNumber.set(a.accountNumber.trim(), a.id);
+      const key = a.name.trim().toLowerCase();
+      const isExpense = ['expense', 'cogs', 'other_expense'].includes(a.accountType);
+      const existing = byName.get(key);
+      if (!existing || (isExpense && !existing.isExpense)) {
+        byName.set(key, { id: a.id, isExpense });
+      }
+    }
+  }
+  const resolveAccount = (raw: string | undefined): string | null => {
+    if (!raw) return null;
+    const v = raw.trim();
+    if (!v) return null;
+    return byNumber.get(v) ?? byName.get(v.toLowerCase())?.id ?? null;
+  };
+
   // No unique index on contacts so dedup programmatically: existing
   // (tenant, contact_type, lower-trimmed(display_name)) → skip.
   // Normalize once, key once, so a CSV with both "Acme Corp" and
@@ -944,6 +978,9 @@ async function commitContacts(
       continue;
     }
     seen.add(key);
+    const defaultExpenseAccountId =
+      r.contactType === 'vendor' ? resolveAccount(r.defaultExpenseAccountRaw) : null;
+    if (defaultExpenseAccountId) accountsLinked++;
     await db.insert(contacts).values({
       tenantId,
       companyId,
@@ -956,10 +993,14 @@ async function commitContacts(
           // Accounting Power vendor exports carry a 1099 flag — preserve it
       // so eligibility doesn't have to be re-marked by hand post-import.
       is1099Eligible: (r as { is1099Eligible?: boolean }).is1099Eligible ?? false,
+      // Source vendor's default expense category, resolved against the
+      // COA — keeps expense-form prefill / batch entry / bill OCR warm
+      // from day one instead of starting cold.
+      defaultExpenseAccountId,
     });
     created++;
   }
-  return { created, skipped };
+  return { created, skipped, accountsLinked };
 }
 
 async function commitTrialBalance(

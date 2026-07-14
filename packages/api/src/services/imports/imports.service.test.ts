@@ -244,6 +244,33 @@ Cythia Martin","","Monett","MO","65708",,,"",False,False,True,Net 15,5920,""
       const shane = rows.find((r) => r.displayName === 'Shane Shaffer');
       expect(shane?.email).toBe('shaffereleven@gmail.com');
     });
+
+    it('links the AP "Account" column to the vendor default expense account', async () => {
+      // COA is imported before vendors in a migration — seed the 6390
+      // account; 5920 is deliberately absent so its vendor stays
+      // unlinked (never a failure).
+      const [exp6390] = await db.insert(accounts).values([
+        { tenantId, companyId, accountNumber: '6390', name: 'Repairs & Maintenance', accountType: 'expense' },
+      ]).returning();
+
+      const out = await importsService.createSession({
+        tenantId, companyId, userId,
+        file: fileFromText('vendors.csv', csv),
+        kind: 'contacts',
+        sourceSystem: 'accounting_power',
+        options: { contactKind: 'vendor' },
+      });
+      const commit = await importsService.commitSession(tenantId, companyId, userId, out.session.id);
+      expect(commit.result.created).toBe(3);
+      // 3 Way Construction (6390) + Shane Shaffer (6390) resolve; the
+      // camp's 5920 has no COA match.
+      expect(commit.result.accountsLinked).toBe(2);
+
+      const rows = await db.select().from(contacts).where(eq(contacts.tenantId, tenantId));
+      expect(rows.find((r) => r.displayName === '3 Way Construction')?.defaultExpenseAccountId).toBe(exp6390!.id);
+      expect(rows.find((r) => r.displayName === 'Shane Shaffer')?.defaultExpenseAccountId).toBe(exp6390!.id);
+      expect(rows.find((r) => r.displayName === 'Barry County Youth Camp')?.defaultExpenseAccountId).toBeNull();
+    });
   });
 
   describe('Accounting Power GL with zero-amount lines', () => {
