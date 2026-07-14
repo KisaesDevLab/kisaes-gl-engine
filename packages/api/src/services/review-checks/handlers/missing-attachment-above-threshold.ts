@@ -32,7 +32,11 @@ export const handler: CheckHandler = async (tenantId, companyId, params): Promis
       AND NOT EXISTS (
         SELECT 1 FROM attachments a
         WHERE a.tenant_id = ${tenantId}
-          AND a.attachable_type = 'transaction'
+          -- Attachments are stored under the transaction's txn_type
+          -- ('expense', 'bill', …), not the literal 'transaction' —
+          -- that value was a legacy bug converted away in migration
+          -- 0037. Accept both so stragglers still count as support.
+          AND a.attachable_type IN (t.txn_type, 'transaction')
           AND a.attachable_id = t.id
       )
     LIMIT 1000

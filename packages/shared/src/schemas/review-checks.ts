@@ -11,10 +11,15 @@ import { FINDING_SEVERITIES, FINDING_STATUSES } from '../constants/review-checks
 // (ISO date/timestamp bounds; periodEnd is exclusive
 // first-of-next-month per ClosePeriodSelector). Omitting them
 // runs all-time, preserving the nightly scheduler's behavior.
+// Bounds must LEAD with a calendar date (bare YYYY-MM-DD or a full ISO
+// timestamp) — the orchestrator writes the date part into the
+// check_runs date columns, so an arbitrary string would surface as a
+// raw Postgres cast error (500) instead of a 400.
+const isoDateish = /^\d{4}-\d{2}-\d{2}(T.*)?$/;
 export const runChecksSchema = z.object({
   companyId: z.string().uuid().optional(),
-  periodStart: z.string().optional(),
-  periodEnd: z.string().optional(),
+  periodStart: z.string().regex(isoDateish, 'Must be an ISO date').optional(),
+  periodEnd: z.string().regex(isoDateish, 'Must be an ISO date').optional(),
 });
 export type RunChecksInput = z.infer<typeof runChecksSchema>;
 

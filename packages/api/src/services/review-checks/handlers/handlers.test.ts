@@ -179,7 +179,22 @@ describe('missing_attachment_above_threshold', () => {
     expect(drafts).toEqual([]);
   });
 
-  it('does not flag when attachment exists', async () => {
+  it('does not flag when attachment exists (stored under the txn_type, the app convention)', async () => {
+    const txn = await seedTransaction({ txnType: 'expense', total: '100.0000', txnDate: '2026-04-15' });
+    await db.insert(attachments).values({
+      tenantId, companyId,
+      fileName: 'receipt.pdf', filePath: '/uploads/x.pdf',
+      // The app stores transaction attachments under the txn_type
+      // ('expense'), NOT the literal 'transaction' — the check must
+      // recognize the real convention or it false-positives on every
+      // documented transaction.
+      attachableType: 'expense', attachableId: txn.id,
+    });
+    const drafts = await HANDLERS['missing_attachment_above_threshold']!(tenantId, companyId, { thresholdAmount: 75 });
+    expect(drafts).toEqual([]);
+  });
+
+  it('also accepts the legacy attachable_type=transaction value', async () => {
     const txn = await seedTransaction({ txnType: 'expense', total: '100.0000', txnDate: '2026-04-15' });
     await db.insert(attachments).values({
       tenantId, companyId,
@@ -525,12 +540,12 @@ describe('journal_entry_without_attachment', () => {
     expect(drafts[0]?.transactionId).toBe(txn.id);
   });
 
-  it('does not flag a JE with support attached', async () => {
+  it('does not flag a JE with support attached (stored as journal_entry, the app convention)', async () => {
     const txn = await seedTransaction({ txnType: 'journal_entry', total: '500.0000', txnDate: '2026-04-15', contactId: null });
     await db.insert(attachments).values({
       tenantId, companyId,
       fileName: 'schedule.pdf', filePath: '/uploads/s.pdf',
-      attachableType: 'transaction', attachableId: txn.id,
+      attachableType: 'journal_entry', attachableId: txn.id,
     });
     const drafts = await HANDLERS['journal_entry_without_attachment']!(tenantId, companyId, {});
     expect(drafts).toEqual([]);

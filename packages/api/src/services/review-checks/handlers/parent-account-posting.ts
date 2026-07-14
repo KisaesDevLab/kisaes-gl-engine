@@ -26,7 +26,10 @@ export const handler: CheckHandler = async (tenantId, companyId): Promise<Findin
       t.txn_date, t.total, t.txn_type, c.display_name AS payee
     FROM journal_lines jl
     JOIN accounts a ON a.id = jl.account_id
-    LEFT JOIN transactions t ON t.id = jl.transaction_id
+    -- INNER join + posted filter: voided transactions keep their lines
+    -- by design, but their effect is reversed — flagging them tells the
+    -- bookkeeper to "recode" a dead entry.
+    JOIN transactions t ON t.id = jl.transaction_id AND t.status = 'posted'
     LEFT JOIN contacts c ON c.id = t.contact_id
     WHERE jl.tenant_id = ${tenantId}
       ${companyClause}

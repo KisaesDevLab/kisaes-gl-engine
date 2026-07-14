@@ -34,7 +34,10 @@ export const handler: CheckHandler = async (tenantId, companyId, params): Promis
       AND NOT EXISTS (
         SELECT 1 FROM attachments a
         WHERE a.tenant_id = ${tenantId}
-          AND a.attachable_type = 'transaction'
+          -- JE attachments are stored with attachable_type =
+          -- 'journal_entry' (the txn_type convention); 'transaction'
+          -- is the legacy value migration 0037 converted away.
+          AND a.attachable_type IN ('journal_entry', 'transaction')
           AND a.attachable_id = t.id
       )
     LIMIT 500

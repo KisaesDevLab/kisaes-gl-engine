@@ -346,13 +346,38 @@ reviewChecksRouter.delete('/overrides/:checkKey', async (req, res) => {
 // coverage, bank-feed backlog, open findings) + manual sign-offs.
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Task keys are machine-generated: 'reconcile:<accountId>' or one of
+// the fixed workflow keys. Rejecting free text keeps the sign-off
+// table bounded to rows the checklist can actually display.
+const TASK_KEY_RE = /^(reconcile:[0-9a-f-]{36}|bank_feed|findings|final_review)$/i;
+
+function isRealDate(d: string): boolean {
+  const parsed = new Date(`${d}T00:00:00Z`);
+  return !isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === d;
+}
+
+// Tenant-isolation: a client-supplied companyId must belong to the
+// caller's tenant (same standard as POST /run above).
+async function assertCompanyInTenant(tenantId: string, companyId: string | null): Promise<void> {
+  if (!companyId) return;
+  const exists = await db
+    .select({ id: companies.id })
+    .from(companies)
+    .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)))
+    .limit(1);
+  if (exists.length === 0) throw AppError.notFound('Company not found');
+}
 
 function readChecklistScope(q: Record<string, unknown>): { companyId: string | null; periodStart: string; periodEnd: string } {
   const companyId = typeof q['companyId'] === 'string' && q['companyId'] ? (q['companyId'] as string) : null;
+  if (companyId && !UUID_RE.test(companyId)) {
+    throw AppError.badRequest('companyId must be a UUID');
+  }
   const periodStart = String(q['periodStart'] ?? '').slice(0, 10);
   const periodEnd = String(q['periodEnd'] ?? '').slice(0, 10);
-  if (!ISO_DATE.test(periodStart) || !ISO_DATE.test(periodEnd)) {
-    throw AppError.badRequest('periodStart and periodEnd (YYYY-MM-DD) are required');
+  if (!ISO_DATE.test(periodStart) || !ISO_DATE.test(periodEnd) || !isRealDate(periodStart) || !isRealDate(periodEnd)) {
+    throw AppError.badRequest('periodStart and periodEnd (valid YYYY-MM-DD) are required');
   }
   return { companyId, periodStart, periodEnd };
 }
@@ -361,6 +386,7 @@ function readChecklistScope(q: Record<string, unknown>): { companyId: string | n
 // sign-off state for the period.
 reviewChecksRouter.get('/checklist', async (req, res) => {
   const { companyId, periodStart, periodEnd } = readChecklistScope(req.query as Record<string, unknown>);
+  await assertCompanyInTenant(req.tenantId, companyId);
   const tasks = await closeChecklist.getCloseChecklist(req.tenantId, companyId, periodStart, periodEnd);
   res.json({ tasks });
 });
@@ -368,7 +394,7 @@ reviewChecksRouter.get('/checklist', async (req, res) => {
 const checklistTaskSchema = z.object({
   companyId: z.string().uuid().nullish(),
   periodStart: z.string().regex(ISO_DATE),
-  taskKey: z.string().min(1).max(120),
+  taskKey: z.string().regex(TASK_KEY_RE, 'Unknown checklist task'),
   note: z.string().max(2000).nullish(),
 });
 
@@ -376,15 +402,23 @@ const checklistTaskSchema = z.object({
 // auto task that can't be satisfied in-app, with a note saying why).
 reviewChecksRouter.post('/checklist/complete', validate(checklistTaskSchema), async (req, res) => {
   const { companyId, periodStart, taskKey, note } = req.body as z.infer<typeof checklistTaskSchema>;
+  if (!isRealDate(periodStart)) throw AppError.badRequest('periodStart must be a valid date');
+  await assertCompanyInTenant(req.tenantId, companyId ?? null);
+  // Re-signing replaces an existing sign-off — capture the prior state
+  // so the audit trail shows whose acceptance was overwritten.
+  const before = await closeChecklist.getSignoff(req.tenantId, companyId ?? null, periodStart, taskKey);
   await closeChecklist.completeChecklistTask(req.tenantId, companyId ?? null, periodStart, taskKey, note ?? null, req.userId);
-  await auditLog(req.tenantId, 'update', 'close_checklist_task', null, null, { periodStart, taskKey, companyId: companyId ?? null, done: true }, req.userId);
+  await auditLog(req.tenantId, 'update', 'close_checklist_task', null, before, { periodStart, taskKey, companyId: companyId ?? null, done: true, note: note ?? null }, req.userId);
   res.json({ completed: true });
 });
 
 // POST /checklist/reopen — withdraw a manual sign-off.
 reviewChecksRouter.post('/checklist/reopen', validate(checklistTaskSchema.omit({ note: true })), async (req, res) => {
   const { companyId, periodStart, taskKey } = req.body as z.infer<typeof checklistTaskSchema>;
+  if (!isRealDate(periodStart)) throw AppError.badRequest('periodStart must be a valid date');
+  await assertCompanyInTenant(req.tenantId, companyId ?? null);
+  const before = await closeChecklist.getSignoff(req.tenantId, companyId ?? null, periodStart, taskKey);
   await closeChecklist.reopenChecklistTask(req.tenantId, companyId ?? null, periodStart, taskKey);
-  await auditLog(req.tenantId, 'update', 'close_checklist_task', null, null, { periodStart, taskKey, companyId: companyId ?? null, done: false }, req.userId);
+  await auditLog(req.tenantId, 'update', 'close_checklist_task', null, before, { periodStart, taskKey, companyId: companyId ?? null, done: false }, req.userId);
   res.json({ reopened: true });
 });

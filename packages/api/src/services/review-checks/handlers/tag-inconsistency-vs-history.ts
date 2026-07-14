@@ -38,6 +38,7 @@ export const handler: CheckHandler = async (tenantId, companyId): Promise<Findin
       WHERE t.tenant_id = ${tenantId}
         ${companyClause}
         AND t.contact_id IS NOT NULL
+        AND t.status = 'posted'  -- voided txns keep their lines; don't let them shape the baseline
         AND t.created_at < now() - INTERVAL '7 days'  -- exclude very recent so dominant is stable
       GROUP BY t.contact_id, jl.account_id, jl.tag_id
     ),
@@ -78,6 +79,7 @@ export const handler: CheckHandler = async (tenantId, companyId): Promise<Findin
     LEFT JOIN tags et ON et.id = d.dominant_tag_id
     WHERE t.tenant_id = ${tenantId}
       ${companyClause}
+      AND t.status = 'posted'
       AND t.created_at >= now() - INTERVAL '30 days'
       AND d.share >= 0.8
       AND (jl.tag_id IS DISTINCT FROM d.dominant_tag_id)
@@ -113,6 +115,10 @@ export const handler: CheckHandler = async (tenantId, companyId): Promise<Findin
         accountId: r.account_id,
         usedTagId: r.used_tag_id,
         expectedTagId: r.dominant_tag_id,
+        // Line-level dedupe — without it, two inconsistent lines on one
+        // transaction collapse to a single finding key (and duplicate
+        // within a run, since bulkInsert only dedupes against the DB).
+        dedupe_key: `line:${r.journal_line_id}`,
       },
     };
   });

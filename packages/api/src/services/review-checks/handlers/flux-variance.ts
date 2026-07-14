@@ -44,15 +44,24 @@ export const handler: CheckHandler = async (tenantId, companyId, params: CheckPa
         AND t.txn_date < ${end}::date
       GROUP BY jl.account_id, date_trunc('month', t.txn_date)
     ),
+    -- Align to month boundaries: a mid-month periodStart would leak
+    -- the period's own month into the baseline and empty the current
+    -- side. History is months strictly BEFORE the period's first
+    -- month; the current side AVERAGES per month so a multi-month
+    -- close window yields exactly one row per account (the dedupe
+    -- key is per account+period).
     hist AS (
       SELECT account_id, AVG(net) AS avg_net, COUNT(*) AS months
       FROM monthly
-      WHERE month < ${start}::date
+      WHERE month < date_trunc('month', ${start}::date)::date
       GROUP BY account_id
       HAVING COUNT(*) >= 3
     ),
     cur AS (
-      SELECT account_id, net FROM monthly WHERE month >= ${start}::date
+      SELECT account_id, AVG(net) AS net
+      FROM monthly
+      WHERE month >= date_trunc('month', ${start}::date)::date
+      GROUP BY account_id
     )
     SELECT h.account_id, a.name AS account_name, a.account_type,
       c.net AS current_net, h.avg_net, h.months

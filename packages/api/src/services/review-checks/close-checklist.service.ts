@@ -149,6 +149,30 @@ export async function getCloseChecklist(
   return tasks;
 }
 
+export interface ChecklistSignoff {
+  taskKey: string;
+  note: string | null;
+  completedBy: string | null;
+  completedAt: string;
+}
+
+/** The current sign-off row (if any) — used for audit before-state. */
+export async function getSignoff(
+  tenantId: string,
+  companyId: string | null,
+  periodStart: string,
+  taskKey: string,
+): Promise<ChecklistSignoff | null> {
+  const [row] = await db.select().from(closeChecklistSignoffs).where(and(
+    eq(closeChecklistSignoffs.tenantId, tenantId),
+    companyId ? eq(closeChecklistSignoffs.companyId, companyId) : isNull(closeChecklistSignoffs.companyId),
+    eq(closeChecklistSignoffs.periodStart, periodStart),
+    eq(closeChecklistSignoffs.taskKey, taskKey),
+  )).limit(1);
+  if (!row) return null;
+  return { taskKey: row.taskKey, note: row.note, completedBy: row.completedBy, completedAt: String(row.completedAt) };
+}
+
 export async function completeChecklistTask(
   tenantId: string,
   companyId: string | null,
@@ -157,25 +181,15 @@ export async function completeChecklistTask(
   note: string | null,
   userId?: string,
 ): Promise<void> {
-  // Upsert semantics via delete+insert — the unique index is
-  // expression-based (COALESCE) so ON CONFLICT needs the expression;
-  // two statements inside a transaction keep it simple.
-  await db.transaction(async (tx) => {
-    await tx.delete(closeChecklistSignoffs).where(and(
-      eq(closeChecklistSignoffs.tenantId, tenantId),
-      companyId ? eq(closeChecklistSignoffs.companyId, companyId) : isNull(closeChecklistSignoffs.companyId),
-      eq(closeChecklistSignoffs.periodStart, periodStart),
-      eq(closeChecklistSignoffs.taskKey, taskKey),
-    ));
-    await tx.insert(closeChecklistSignoffs).values({
-      tenantId,
-      companyId,
-      periodStart,
-      taskKey,
-      note,
-      completedBy: userId ?? null,
-    });
-  });
+  // True upsert against the expression-based unique index (COALESCE on
+  // the nullable company) — a delete+insert pair races itself when two
+  // reviewers sign off the same task concurrently.
+  await db.execute(sql`
+    INSERT INTO close_checklist_signoffs (tenant_id, company_id, period_start, task_key, note, completed_by)
+    VALUES (${tenantId}, ${companyId}, ${periodStart}, ${taskKey}, ${note}, ${userId ?? null})
+    ON CONFLICT (tenant_id, COALESCE(company_id, '00000000-0000-0000-0000-000000000000'::uuid), period_start, task_key)
+    DO UPDATE SET note = EXCLUDED.note, completed_by = EXCLUDED.completed_by, completed_at = now()
+  `);
 }
 
 export async function reopenChecklistTask(

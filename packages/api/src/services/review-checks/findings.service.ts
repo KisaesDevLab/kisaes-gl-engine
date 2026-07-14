@@ -159,8 +159,27 @@ export async function list(
   // bleeding into the next month's first-of-month stamp.
   if (input.periodStart) conditions.push(gte(findings.periodStart, input.periodStart.slice(0, 10)));
   if (input.periodEnd) conditions.push(lt(findings.periodStart, input.periodEnd.slice(0, 10)));
-  // Strict less-than so the cursor seam doesn't repeat a row.
-  if (input.cursor) conditions.push(lt(findings.createdAt, new Date(input.cursor)));
+  // Composite keyset cursor "createdAtISO|id" matching the
+  // (created_at DESC, id DESC) sort. A created_at-only cursor loses
+  // every row sharing the boundary timestamp — and one bulkInsert
+  // stamps its whole batch with a single now(), so a run inserting
+  // more findings than the page size made the tail unreachable.
+  // created_at is compared at millisecond precision (the ISO cursor's
+  // resolution) via date_trunc so Postgres microseconds don't wedge
+  // the seam. Legacy cursors without an id part degrade to the old
+  // timestamp-only behavior.
+  if (input.cursor) {
+    const [ts, cursorId] = input.cursor.split('|');
+    const cursorDate = new Date(ts!);
+    if (cursorId) {
+      conditions.push(sql`(
+        date_trunc('milliseconds', ${findings.createdAt}) < ${cursorDate}
+        OR (date_trunc('milliseconds', ${findings.createdAt}) = ${cursorDate} AND ${findings.id} < ${cursorId}::uuid)
+      )`);
+    } else {
+      conditions.push(lt(findings.createdAt, cursorDate));
+    }
+  }
 
   // Left-join the underlying transaction + its contact and the
   // standalone vendor reference so the Findings table can show a
@@ -192,9 +211,10 @@ export async function list(
 
   const hasMore = rows.length > limit;
   const page = hasMore ? rows.slice(0, limit) : rows;
+  const last = page[page.length - 1];
   return {
     rows: page.map(mapJoinedRow),
-    nextCursor: hasMore ? page[page.length - 1]!.f.createdAt.toISOString() : null,
+    nextCursor: hasMore && last ? `${last.f.createdAt.toISOString()}|${last.f.id}` : null,
   };
 }
 
