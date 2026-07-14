@@ -112,59 +112,11 @@ async function main(): Promise<void> {
     return;
   }
 
-  // --- Phase B: license check (vibe-distribution-plan D6, softened) ---
-  // Runs after preflight so migrations / sentinel are healthy first
-  // — a license error is a different operator-facing problem than
-  // "install hasn't completed". Skipped in NODE_ENV=development|test
-  // and when DISABLE_LICENSE_CHECK=1 (CI default).
-  //
-  // WARN-ONLY since the PolyForm Small Business relicense (v0.9.95):
-  // the product is free for small businesses, so a missing/expired
-  // commercial token must never block the boot — it logs a loud
-  // warning with the exact fix steps and the API starts anyway.
-  // Commercial-tier enforcement, if it returns, belongs at the
-  // feature level, not the boot gate.
-  const { checkLicense, formatLicenseResult } = await import('./startup/license-check.js');
-  const { log } = await import('./utils/logger.js');
-  const license = checkLicense();
-  log.info({
-    component: 'bootstrap',
-    event: 'license_check',
-    status: license.status,
-    message: formatLicenseResult(license),
-  });
-  if (license.status !== 'ok' && license.status !== 'skipped') {
-    // Concrete next steps depend on the failure shape so an operator
-    // upgrading from a pre-D6 version without a license token isn't
-    // left at a dead-end. See vibe-distribution-plan §licensing.
-    let nextSteps: string;
-    if (license.status === 'missing') {
-      nextSteps =
-        'For production: run `vibe install --license-token <token>` or set LICENSE_TOKEN + LICENSE_PUBLIC_KEY in .env. ' +
-        'For local dev: set DISABLE_LICENSE_CHECK=1 in .env (or use NODE_ENV=development). ' +
-        'For tokens, contact licensing@kisaes.com.';
-    } else if (license.status === 'expired') {
-      nextSteps =
-        'Renew the license at https://licensing.kisaes.com or contact licensing@kisaes.com. ' +
-        'If the host clock is wrong, fix NTP — LICENSE_CLOCK_TOLERANCE_SECONDS controls grace (default 60s).';
-    } else if (license.status === 'not-yet-valid') {
-      nextSteps =
-        'Token is dated for the future. Verify host clock against NTP, or wait until the nbf time. ' +
-        'LICENSE_CLOCK_TOLERANCE_SECONDS controls grace (default 60s).';
-    } else {
-      nextSteps =
-        'License token signature is invalid. Verify LICENSE_PUBLIC_KEY matches the issuer that signed LICENSE_TOKEN. ' +
-        'Re-fetch both via the installer if unsure.';
-    }
-    log.warn({
-      component: 'bootstrap',
-      event: 'license_check_warning',
-      status: license.status,
-      message: `License check did not pass (${license.status}). Starting anyway — small-business use is free under the PolyForm Small Business license. ${nextSteps}`,
-    });
-  }
-
-  // Normal startup — license issues warn, never block.
+  // NOTE: the D6 boot-time license-token check was removed entirely
+  // (v0.9.111). It predated the PolyForm Small Business relicense —
+  // the product is free for small businesses, and the check's only
+  // real-world effect was failed installs. Commercial-tier
+  // enforcement, if it ever returns, gates features, not boot.
   await import('./index.js');
 }
 

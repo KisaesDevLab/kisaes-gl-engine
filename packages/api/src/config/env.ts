@@ -221,33 +221,11 @@ const envSchema = z.object({
   // Must match the host the browser is on at registration / sign-in
   // time, or the WebAuthn API will refuse the credential.
   WEBAUTHN_RP_ID: z.string().optional(),
-  // License-token plumbing (vibe-distribution-plan D6). Single-app
-  // installs and CI run with DISABLE_LICENSE_CHECK=1; production
-  // appliances boot with both LICENSE_PUBLIC_KEY (PEM) and
-  // LICENSE_TOKEN (RS256 JWT issued by licensing.kisaes.com).
-  LICENSE_PUBLIC_KEY: z.string().optional(),
-  LICENSE_TOKEN: z.string().optional(),
-  // Accept the common boolean-string forms in addition to '0'/'1' so
-  // operators can write DISABLE_LICENSE_CHECK=true and not hit a
-  // cryptic Zod enum failure at boot. Normalizes to '0'|'1'.
-  DISABLE_LICENSE_CHECK: z
-    .string()
-    .optional()
-    .default('0')
-    .transform((v) => {
-      const lower = v.toLowerCase();
-      if (lower === '1' || lower === 'true' || lower === 'yes' || lower === 'on') return '1';
-      return '0';
-    }),
-  // Audience / issuer are env-driven so staging environments can
-  // point at a mock licensing server without recompiling. Defaults
-  // match the production licensing service.
-  LICENSE_AUDIENCE: z.string().default('vibe-mybooks'),
-  LICENSE_ISSUER: z.string().default('licensing.kisaes.com'),
-  // Clock-skew tolerance in seconds passed to jwt.verify. Default
-  // 60s covers normal NTP drift; ops on islanded networks may need
-  // higher. Setting 0 reverts to strict.
-  LICENSE_CLOCK_TOLERANCE_SECONDS: z.coerce.number().int().nonnegative().default(60),
+  // The D6 boot-time license-token check was removed (v0.9.111) —
+  // PolyForm Small Business is free for small businesses and the gate
+  // only produced failed installs. Any LICENSE_* / DISABLE_LICENSE_CHECK
+  // values still present in operator .env files are simply ignored
+  // (unknown keys are stripped by this schema).
   // vibe-mybooks-compatibility-addendum §3.4. Standalone keeps
   // auto-migrate on (default) so the existing first-boot story is
   // unchanged. Appliance mode sets MIGRATIONS_AUTO=false and runs
