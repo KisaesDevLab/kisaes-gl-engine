@@ -13,7 +13,7 @@ import * as aiPrompt from './ai-prompt.service.js';
 import * as aiOrchestrator from './ai-orchestrator.service.js';
 import * as aiConsent from './ai-consent.service.js';
 import { evaluateStatementQuality } from './statement-routing.service.js';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 
 // Enable AI at the system level and opt `companyId` in to `task` with a
 // current disclosure version. Mirrors the setup used by the budget test.
@@ -31,19 +31,38 @@ async function enableAiForCompany(userId: string, tenantId: string, companyId: s
   }).where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)));
 }
 
+// Tenant-scoped cleanup — only ever touch this file's own tenant(s) so
+// concurrently-running suites' data survives. The file registers with a
+// fixed email, so discover the tenant(s) it created via that email
+// (covers leftovers from a previous crashed run too).
 async function cleanDb() {
-  await db.delete(aiUsageLog);
-  await db.delete(aiJobs);
+  const owned = await db
+    .select({ tenantId: users.tenantId })
+    .from(users)
+    .where(eq(users.email, 'ai-test@example.com'));
+  const tenantIds = [...new Set(owned.map((r) => r.tenantId))];
+  if (tenantIds.length > 0) {
+    await db.delete(aiUsageLog).where(inArray(aiUsageLog.tenantId, tenantIds));
+    await db.delete(aiJobs).where(inArray(aiJobs.tenantId, tenantIds));
+  }
+  // global table — no tenant column; suites share it by design
   await db.delete(aiPromptTemplates);
-  await db.delete(categorizationHistory);
-  await db.delete(bankFeedItems);
+  if (tenantIds.length > 0) {
+    await db.delete(categorizationHistory).where(inArray(categorizationHistory.tenantId, tenantIds));
+    await db.delete(bankFeedItems).where(inArray(bankFeedItems.tenantId, tenantIds));
+  }
+  // global table — no tenant column; suites share it by design
   await db.delete(aiConfig);
-  await db.delete(auditLog);
-  await db.delete(accounts);
-  await db.delete(companies);
-  await db.delete(sessions);
-  await db.delete(users);
-  await db.delete(tenants);
+  if (tenantIds.length > 0) {
+    await db.delete(auditLog).where(inArray(auditLog.tenantId, tenantIds));
+    await db.delete(accounts).where(inArray(accounts.tenantId, tenantIds));
+    await db.delete(companies).where(inArray(companies.tenantId, tenantIds));
+    await db.delete(sessions).where(
+      inArray(sessions.userId, db.select({ id: users.id }).from(users).where(inArray(users.tenantId, tenantIds))),
+    );
+    await db.delete(users).where(inArray(users.tenantId, tenantIds));
+    await db.delete(tenants).where(inArray(tenants.id, tenantIds));
+  }
 }
 
 async function createTestUser() {

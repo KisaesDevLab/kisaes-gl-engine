@@ -11,7 +11,7 @@
 // or with cents stuck outside any of {paid, partial} status.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   tenants,
@@ -40,20 +40,30 @@ let clearingAccountId: string;
 let revenueAccountId: string;
 let customerId: string;
 
+// Tenant-scoped cleanup — unscoped deletes would nuke concurrently-
+// running suites' data (and trip over their FKs). Only touch our tenant.
 async function cleanDb(): Promise<void> {
-  await db.delete(depositLines);
-  await db.delete(paymentApplications);
-  await db.delete(transactionTags);
-  await db.delete(tags);
-  await db.delete(journalLines);
-  await db.delete(transactions);
-  await db.delete(auditLog);
-  await db.delete(contacts);
-  await db.delete(accounts);
-  await db.delete(companies);
-  await db.delete(sessions);
-  await db.delete(users);
-  await db.delete(tenants);
+  if (!tenantId) return;
+  // deposit_lines has no tenant column — key it off this tenant's deposits
+  await db.delete(depositLines).where(
+    inArray(depositLines.depositId, db.select({ id: transactions.id }).from(transactions).where(eq(transactions.tenantId, tenantId))),
+  );
+  await db.delete(paymentApplications).where(eq(paymentApplications.tenantId, tenantId));
+  await db.delete(transactionTags).where(eq(transactionTags.tenantId, tenantId));
+  await db.delete(tags).where(eq(tags.tenantId, tenantId));
+  await db.delete(journalLines).where(eq(journalLines.tenantId, tenantId));
+  await db.delete(transactions).where(eq(transactions.tenantId, tenantId));
+  await db.delete(auditLog).where(eq(auditLog.tenantId, tenantId));
+  await db.delete(contacts).where(eq(contacts.tenantId, tenantId));
+  await db.delete(accounts).where(eq(accounts.tenantId, tenantId));
+  await db.delete(companies).where(eq(companies.tenantId, tenantId));
+  // sessions has no tenant column — key it off this tenant's users
+  await db.delete(sessions).where(
+    inArray(sessions.userId, db.select({ id: users.id }).from(users).where(eq(users.tenantId, tenantId))),
+  );
+  await db.delete(users).where(eq(users.tenantId, tenantId));
+  await db.delete(tenants).where(eq(tenants.id, tenantId));
+  tenantId = '';
 }
 
 async function setup(): Promise<void> {

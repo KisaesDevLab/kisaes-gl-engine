@@ -16,7 +16,7 @@
 //   - auto-clear: matched + categorized items cleared, unmatched counted
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   tenants, users, sessions, accounts, companies, auditLog, contacts,
@@ -36,25 +36,35 @@ let bankAccountId: string;
 let revenueAccountId: string;
 let expenseAccountId: string;
 
+// Tenant-SCOPED cleanup — unscoped deletes nuke concurrently-running
+// suites' data and die on their FKs. Only ever touch our own tenant.
 async function cleanDb(): Promise<void> {
-  await db.delete(bankFeedItems);
-  await db.delete(bankStatements);
-  await db.delete(bankConnections);
-  await db.delete(reconciliationLines);
-  await db.delete(reconciliations);
-  await db.delete(aiJobs);
-  await db.delete(attachments);
-  await db.delete(transactionTags);
-  await db.delete(tags);
-  await db.delete(journalLines);
-  await db.delete(transactions);
-  await db.delete(auditLog);
-  await db.delete(contacts);
-  await db.delete(accounts);
-  await db.delete(companies);
-  await db.delete(sessions);
-  await db.delete(users);
-  await db.delete(tenants);
+  if (!tenantId) return;
+  await db.delete(bankFeedItems).where(eq(bankFeedItems.tenantId, tenantId));
+  await db.delete(bankStatements).where(eq(bankStatements.tenantId, tenantId));
+  await db.delete(bankConnections).where(eq(bankConnections.tenantId, tenantId));
+  // reconciliation_lines has no tenant_id — scope through this tenant's reconciliations.
+  await db.delete(reconciliationLines).where(
+    inArray(reconciliationLines.reconciliationId, db.select({ id: reconciliations.id }).from(reconciliations).where(eq(reconciliations.tenantId, tenantId))),
+  );
+  await db.delete(reconciliations).where(eq(reconciliations.tenantId, tenantId));
+  await db.delete(aiJobs).where(eq(aiJobs.tenantId, tenantId));
+  await db.delete(attachments).where(eq(attachments.tenantId, tenantId));
+  await db.delete(transactionTags).where(eq(transactionTags.tenantId, tenantId));
+  await db.delete(tags).where(eq(tags.tenantId, tenantId));
+  await db.delete(journalLines).where(eq(journalLines.tenantId, tenantId));
+  await db.delete(transactions).where(eq(transactions.tenantId, tenantId));
+  await db.delete(auditLog).where(eq(auditLog.tenantId, tenantId));
+  await db.delete(contacts).where(eq(contacts.tenantId, tenantId));
+  await db.delete(accounts).where(eq(accounts.tenantId, tenantId));
+  await db.delete(companies).where(eq(companies.tenantId, tenantId));
+  // sessions has no tenant_id — scope through this tenant's users.
+  await db.delete(sessions).where(
+    inArray(sessions.userId, db.select({ id: users.id }).from(users).where(eq(users.tenantId, tenantId))),
+  );
+  await db.delete(users).where(eq(users.tenantId, tenantId));
+  await db.delete(tenants).where(eq(tenants.id, tenantId));
+  tenantId = '';
 }
 
 async function setup(): Promise<void> {

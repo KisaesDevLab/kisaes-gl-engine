@@ -17,7 +17,7 @@ import * as plaidMappingService from './plaid-mapping.service.js';
 import * as plaidWebhookService from './plaid-webhook.service.js';
 import * as plaidSyncService from './plaid-sync.service.js';
 import { encrypt, decrypt } from '../utils/encryption.js';
-import { eq, and, asc } from 'drizzle-orm';
+import { eq, and, asc, inArray } from 'drizzle-orm';
 
 // syncItem's upstream calls are mocked (partial module mock — the config
 // service functions stay real); the bank-feed pipelines are mocked so sync
@@ -47,26 +47,51 @@ vi.mock('./bank-feed.service.js', async (importOriginal) => {
   };
 });
 
+// Plaid item_id strings this suite passes to handleWebhook — used to scope
+// the webhook-log cleanup (other suites also write plaid_webhook_log rows).
+const WEBHOOK_ITEM_IDS = ['nonexistent-item', 'webhook-test-item', 'revoked-item'];
+
+// Scoped cleanup — this suite registers its user under a fixed email; the
+// system-scoped Plaid rows are chased from that user (items.createdBy →
+// accounts → mappings), and the mapping rows additionally reveal the extra
+// tenants seeded by the cross-tenant tests. Unscoped deletes here used to
+// nuke concurrently-running suites' data.
 async function cleanDb() {
-  await db.delete(plaidWebhookLog);
-  await db.delete(plaidItemActivity);
-  await db.delete(plaidAccountMappings);
-  await db.delete(plaidAccounts);
-  await db.delete(plaidItems);
-  await db.delete(plaidConfig);
-  await db.delete(auditLog);
+  const testUsers = await db
+    .select({ id: users.id, tenantId: users.tenantId })
+    .from(users)
+    .where(eq(users.email, 'plaid-test@example.com'));
+  const userIds = testUsers.map((u) => u.id);
+  const itemIds = userIds.length
+    ? (await db.select({ id: plaidItems.id }).from(plaidItems).where(inArray(plaidItems.createdBy, userIds))).map((r) => r.id)
+    : [];
+  const plaidAccountIds = itemIds.length
+    ? (await db.select({ id: plaidAccounts.id }).from(plaidAccounts).where(inArray(plaidAccounts.plaidItemId, itemIds))).map((r) => r.id)
+    : [];
+  const mappingTenantIds = plaidAccountIds.length
+    ? (await db.select({ tenantId: plaidAccountMappings.tenantId }).from(plaidAccountMappings).where(inArray(plaidAccountMappings.plaidAccountId, plaidAccountIds))).map((r) => r.tenantId)
+    : [];
+  const tenantIds = [...new Set([...testUsers.map((u) => u.tenantId), ...mappingTenantIds])];
+
+  await db.delete(plaidWebhookLog).where(inArray(plaidWebhookLog.plaidItemId, WEBHOOK_ITEM_IDS));
+  await db.delete(plaidItemActivity).where(inArray(plaidItemActivity.plaidItemId, itemIds));
+  await db.delete(plaidAccountMappings).where(inArray(plaidAccountMappings.plaidAccountId, plaidAccountIds));
+  await db.delete(plaidAccounts).where(inArray(plaidAccounts.id, plaidAccountIds));
+  await db.delete(plaidItems).where(inArray(plaidItems.id, itemIds));
+  await db.delete(plaidConfig); // global table — no tenant column; suites share it by design
+  await db.delete(auditLog).where(inArray(auditLog.tenantId, tenantIds));
   // Known FK-pollution fix: bank_feed_items / bank_statement_lines /
   // bank_statements / bank_connections rows reference accounts, so they must
   // go before the accounts delete or it fails and leaks rows across files.
-  await db.delete(bankFeedItems);
-  await db.delete(bankStatementLines);
-  await db.delete(bankStatements);
-  await db.delete(bankConnections);
-  await db.delete(accounts);
-  await db.delete(companies);
-  await db.delete(sessions);
-  await db.delete(users);
-  await db.delete(tenants);
+  await db.delete(bankFeedItems).where(inArray(bankFeedItems.tenantId, tenantIds));
+  await db.delete(bankStatementLines).where(inArray(bankStatementLines.tenantId, tenantIds));
+  await db.delete(bankStatements).where(inArray(bankStatements.tenantId, tenantIds));
+  await db.delete(bankConnections).where(inArray(bankConnections.tenantId, tenantIds));
+  await db.delete(accounts).where(inArray(accounts.tenantId, tenantIds));
+  await db.delete(companies).where(inArray(companies.tenantId, tenantIds));
+  await db.delete(sessions).where(inArray(sessions.userId, userIds));
+  await db.delete(users).where(inArray(users.tenantId, tenantIds));
+  await db.delete(tenants).where(inArray(tenants.id, tenantIds));
 }
 
 async function createTestUser() {

@@ -10,15 +10,35 @@ import { auditLog } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import * as authService from './auth.service.js';
 import type { JwtPayload } from '@kis-books/shared';
-import { sql, eq, and } from 'drizzle-orm';
+import { sql, eq, and, inArray, like } from 'drizzle-orm';
 
+// Every email this file registers with — register() creates one tenant
+// per call, so these locate the tenants the file owns.
+const TEST_EMAILS = ['test@example.com', 'session-cap@example.com', 'lockout@example.com'];
+
+// Tenant-scoped cleanup — only ever touch this file's own tenants so
+// concurrently-running suites' data survives. Tenants are discovered via
+// the fixed registration emails (covers leftovers from a previous crashed
+// run too) plus the directly-inserted 'tenant-b-*' switch-target tenants.
 async function cleanDb() {
-  await db.delete(auditLog);
-  await db.delete(accounts);
-  await db.delete(companies);
-  await db.delete(sessions);
-  await db.delete(users);
-  await db.delete(tenants);
+  const owned = await db
+    .select({ id: users.tenantId })
+    .from(users)
+    .where(inArray(users.email, TEST_EMAILS));
+  const switchTargets = await db
+    .select({ id: tenants.id })
+    .from(tenants)
+    .where(like(tenants.slug, 'tenant-b-%'));
+  const tenantIds = [...new Set([...owned, ...switchTargets].map((r) => r.id))];
+  if (tenantIds.length === 0) return;
+  await db.delete(auditLog).where(inArray(auditLog.tenantId, tenantIds));
+  await db.delete(accounts).where(inArray(accounts.tenantId, tenantIds));
+  await db.delete(companies).where(inArray(companies.tenantId, tenantIds));
+  await db.delete(sessions).where(
+    inArray(sessions.userId, db.select({ id: users.id }).from(users).where(inArray(users.tenantId, tenantIds))),
+  );
+  await db.delete(users).where(inArray(users.tenantId, tenantIds));
+  await db.delete(tenants).where(inArray(tenants.id, tenantIds));
 }
 
 describe('Auth Service', () => {

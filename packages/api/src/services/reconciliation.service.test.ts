@@ -11,6 +11,7 @@
 // an inconsistent state that only shows up on the next month's rec.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   tenants,
@@ -36,22 +37,33 @@ let bankAccountId: string;
 let revenueAccountId: string;
 let expenseAccountId: string;
 
+// Tenant-scoped cleanup — unscoped deletes would nuke concurrently-
+// running suites' data (and trip over their FKs). Only touch our tenant.
 async function cleanDb(): Promise<void> {
-  await db.delete(reconciliationLines);
-  await db.delete(reconciliations);
-  await db.delete(transactionTags);
+  if (!tenantId) return;
+  // reconciliation_lines has no tenant column — key it off this
+  // tenant's reconciliations.
+  await db.delete(reconciliationLines).where(
+    inArray(reconciliationLines.reconciliationId, db.select({ id: reconciliations.id }).from(reconciliations).where(eq(reconciliations.tenantId, tenantId))),
+  );
+  await db.delete(reconciliations).where(eq(reconciliations.tenantId, tenantId));
+  await db.delete(transactionTags).where(eq(transactionTags.tenantId, tenantId));
   // journal_lines.tag_id references tags with ON DELETE RESTRICT, so lines
   // must go before tags (a tagged line otherwise blocks the tags delete).
-  await db.delete(journalLines);
-  await db.delete(tags);
-  await db.delete(transactions);
-  await db.delete(auditLog);
-  await db.delete(contacts);
-  await db.delete(accounts);
-  await db.delete(companies);
-  await db.delete(sessions);
-  await db.delete(users);
-  await db.delete(tenants);
+  await db.delete(journalLines).where(eq(journalLines.tenantId, tenantId));
+  await db.delete(tags).where(eq(tags.tenantId, tenantId));
+  await db.delete(transactions).where(eq(transactions.tenantId, tenantId));
+  await db.delete(auditLog).where(eq(auditLog.tenantId, tenantId));
+  await db.delete(contacts).where(eq(contacts.tenantId, tenantId));
+  await db.delete(accounts).where(eq(accounts.tenantId, tenantId));
+  await db.delete(companies).where(eq(companies.tenantId, tenantId));
+  // sessions has no tenant column — key it off this tenant's users
+  await db.delete(sessions).where(
+    inArray(sessions.userId, db.select({ id: users.id }).from(users).where(eq(users.tenantId, tenantId))),
+  );
+  await db.delete(users).where(eq(users.tenantId, tenantId));
+  await db.delete(tenants).where(eq(tenants.id, tenantId));
+  tenantId = '';
 }
 
 async function setupAccounts(): Promise<void> {

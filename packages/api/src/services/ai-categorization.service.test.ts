@@ -3,7 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   tenants, users, sessions, accounts, companies, contacts,
@@ -59,20 +59,36 @@ let companyId: string;
 let cashAccountId: string;
 let connectionId: string;
 
+// Tenant-scoped cleanup — only ever touch this file's own tenant(s) so
+// concurrently-running suites' data survives. The file registers with a
+// fixed email, so discover the tenant(s) it created via that email
+// (covers leftovers from a previous crashed run too).
 async function cleanDb() {
-  await db.delete(aiUsageLog);
-  await db.delete(aiJobs);
-  await db.delete(bankFeedItems);
-  await db.delete(bankConnections);
-  await db.delete(contacts);
-  await db.delete(accounts);
-  await db.delete(companies);
-  await db.delete(sessions);
+  const owned = await db
+    .select({ tenantId: users.tenantId })
+    .from(users)
+    .where(eq(users.email, 'cat-test@example.com'));
+  const tenantIds = [...new Set(owned.map((r) => r.tenantId))];
+  if (tenantIds.length > 0) {
+    await db.delete(aiUsageLog).where(inArray(aiUsageLog.tenantId, tenantIds));
+    await db.delete(aiJobs).where(inArray(aiJobs.tenantId, tenantIds));
+    await db.delete(bankFeedItems).where(inArray(bankFeedItems.tenantId, tenantIds));
+    await db.delete(bankConnections).where(inArray(bankConnections.tenantId, tenantIds));
+    await db.delete(contacts).where(inArray(contacts.tenantId, tenantIds));
+    await db.delete(accounts).where(inArray(accounts.tenantId, tenantIds));
+    await db.delete(companies).where(inArray(companies.tenantId, tenantIds));
+    await db.delete(sessions).where(
+      inArray(sessions.userId, db.select({ id: users.id }).from(users).where(inArray(users.tenantId, tenantIds))),
+    );
+  }
   // ai_config references users.id via admin_disclosure_accepted_by, so
   // we must drop the config before deleting users.
+  // global table — no tenant column; suites share it by design
   await db.delete(aiConfig);
-  await db.delete(users);
-  await db.delete(tenants);
+  if (tenantIds.length > 0) {
+    await db.delete(users).where(inArray(users.tenantId, tenantIds));
+    await db.delete(tenants).where(inArray(tenants.id, tenantIds));
+  }
 }
 
 async function makeFeedItem(description: string): Promise<string> {

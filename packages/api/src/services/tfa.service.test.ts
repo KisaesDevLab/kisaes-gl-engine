@@ -4,6 +4,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import bcrypt from 'bcrypt';
+import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { tenants, users, sessions, companies, accounts, tfaConfig, tfaCodes, tfaTrustedDevices } from '../db/schema/index.js';
 import { auditLog } from '../db/schema/index.js';
@@ -12,16 +13,40 @@ import * as tfaService from './tfa.service.js';
 import * as tfaEnrollment from './tfa-enrollment.service.js';
 import * as tfaConfigService from './tfa-config.service.js';
 
+// Every fixture user in this file is registered with this fixed email
+// (see createTestUser); cleanup scopes to the user/tenant rows that
+// email owns instead of truncating shared tables, so concurrently
+// running suites keep their data.
+const TEST_EMAIL = 'tfa-test@example.com';
+
 async function cleanDb() {
-  await db.delete(tfaTrustedDevices);
-  await db.delete(tfaCodes);
+  const testUsers = await db
+    .select({ id: users.id, tenantId: users.tenantId })
+    .from(users)
+    .where(eq(users.email, TEST_EMAIL));
+  const userIds = testUsers.map((u) => u.id);
+  const tenantIds = testUsers.map((u) => u.tenantId);
+
+  if (userIds.length > 0) {
+    // tfa_codes / tfa_trusted_devices have no tenant_id — keyed by user_id.
+    await db.delete(tfaTrustedDevices).where(inArray(tfaTrustedDevices.userId, userIds));
+    await db.delete(tfaCodes).where(inArray(tfaCodes.userId, userIds));
+  }
+  // global table — no tenant column; suites share it by design
   await db.delete(tfaConfig);
-  await db.delete(auditLog);
-  await db.delete(accounts);
-  await db.delete(companies);
-  await db.delete(sessions);
-  await db.delete(users);
-  await db.delete(tenants);
+  if (tenantIds.length > 0) {
+    await db.delete(auditLog).where(inArray(auditLog.tenantId, tenantIds));
+    await db.delete(accounts).where(inArray(accounts.tenantId, tenantIds));
+    await db.delete(companies).where(inArray(companies.tenantId, tenantIds));
+  }
+  if (userIds.length > 0) {
+    // sessions has no tenant_id — keyed by user_id.
+    await db.delete(sessions).where(inArray(sessions.userId, userIds));
+  }
+  if (tenantIds.length > 0) {
+    await db.delete(users).where(inArray(users.tenantId, tenantIds));
+    await db.delete(tenants).where(inArray(tenants.id, tenantIds));
+  }
 }
 
 async function createTestUser() {

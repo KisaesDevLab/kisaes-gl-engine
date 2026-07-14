@@ -6,7 +6,7 @@
 // %/_ escaped so a hallucinated "%" vendor can't wildcard-match every contact.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { eq, and, ilike } from 'drizzle-orm';
+import { eq, and, ilike, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { tenants, users, sessions, companies, contacts } from '../db/schema/index.js';
 import * as authService from '../services/auth.service.js';
@@ -27,12 +27,19 @@ describe('escapeLike — unit', () => {
 describe('escapeLike — ILIKE behaviour against Postgres', () => {
   let tenantId: string;
 
+  // Tenant-scoped cleanup — unscoped deletes would nuke concurrently
+  // running suites' rows on the shared test DB. Only touch our tenant.
   async function cleanDb() {
-    await db.delete(contacts);
-    await db.delete(companies);
-    await db.delete(sessions);
-    await db.delete(users);
-    await db.delete(tenants);
+    if (!tenantId) return;
+    await db.delete(contacts).where(eq(contacts.tenantId, tenantId));
+    await db.delete(companies).where(eq(companies.tenantId, tenantId));
+    // sessions has no tenant_id — scope through this tenant's users.
+    await db.delete(sessions).where(
+      inArray(sessions.userId, db.select({ id: users.id }).from(users).where(eq(users.tenantId, tenantId))),
+    );
+    await db.delete(users).where(eq(users.tenantId, tenantId));
+    await db.delete(tenants).where(eq(tenants.id, tenantId));
+    tenantId = '';
   }
 
   beforeEach(async () => {

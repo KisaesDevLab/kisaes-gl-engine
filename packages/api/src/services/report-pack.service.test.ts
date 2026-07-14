@@ -3,6 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { eq, inArray } from 'drizzle-orm';
 
 // Stub the BullMQ enqueue so createRun doesn't open a Redis socket.
 const enqueueSpy = vi.fn(async (_data: { runId: string; tenantId: string }) => undefined);
@@ -20,15 +21,25 @@ import * as packService from './report-pack.service.js';
 let tenantId: string;
 let companyId: string;
 
+// Tenant-scoped cleanup — unscoped deletes would nuke concurrently
+// running suites' rows on the shared test DB. Only touch our tenant.
 async function cleanDb() {
-  await db.delete(reportPackRuns);
-  await db.delete(reportPackItems);
-  await db.delete(reportPacks);
-  await db.delete(auditLog);
-  await db.delete(companies);
-  await db.delete(sessions);
-  await db.delete(users);
-  await db.delete(tenants);
+  if (!tenantId) return;
+  await db.delete(reportPackRuns).where(eq(reportPackRuns.tenantId, tenantId));
+  // report_pack_items has no tenant_id — scope through the owning pack.
+  await db.delete(reportPackItems).where(
+    inArray(reportPackItems.packId, db.select({ id: reportPacks.id }).from(reportPacks).where(eq(reportPacks.tenantId, tenantId))),
+  );
+  await db.delete(reportPacks).where(eq(reportPacks.tenantId, tenantId));
+  await db.delete(auditLog).where(eq(auditLog.tenantId, tenantId));
+  await db.delete(companies).where(eq(companies.tenantId, tenantId));
+  // sessions has no tenant_id — scope through this tenant's users.
+  await db.delete(sessions).where(
+    inArray(sessions.userId, db.select({ id: users.id }).from(users).where(eq(users.tenantId, tenantId))),
+  );
+  await db.delete(users).where(eq(users.tenantId, tenantId));
+  await db.delete(tenants).where(eq(tenants.id, tenantId));
+  tenantId = '';
 }
 
 async function seed() {

@@ -35,6 +35,37 @@ export async function createCheck(tenantId: string, input: WriteCheckInput, user
 
   if (input.printLater) {
     printStatus = 'queue';
+  } else if (input.checkNumber) {
+    // Manual override — the physical checkbook is the source of truth
+    // for hand-written checks. Refuse duplicates on the same bank
+    // account (banks reject them, and a silent duplicate corrupts the
+    // register), then advance the auto counter past the manual number
+    // so the next auto-assigned check can't collide with it.
+    const dup = await db.execute(sql`
+      SELECT t.id FROM transactions t
+      JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.account_id = ${input.bankAccountId}
+      WHERE t.tenant_id = ${tenantId}
+        -- No txn_type filter: hand-written checks post as 'expense' and
+        -- printed bill payments carry check numbers too — a number is
+        -- taken if ANY non-void transaction on this bank account holds it.
+        AND t.check_number = ${input.checkNumber}
+        AND t.status <> 'void'
+      LIMIT 1
+    `);
+    if (dup.rows.length > 0) {
+      throw AppError.conflict(`Check #${input.checkNumber} already exists on this bank account.`);
+    }
+    await db.execute(sql`
+      UPDATE companies
+      SET check_settings = jsonb_set(
+        COALESCE(check_settings, '{}'::jsonb),
+        '{nextCheckNumber}',
+        to_jsonb(GREATEST(COALESCE((check_settings->>'nextCheckNumber')::int, 1001), ${input.checkNumber} + 1))
+      )
+      WHERE tenant_id = ${tenantId}
+    `);
+    checkNumber = input.checkNumber;
+    printStatus = 'hand_written';
   } else {
     // Hand-written: atomically allocate the next check number.
     //

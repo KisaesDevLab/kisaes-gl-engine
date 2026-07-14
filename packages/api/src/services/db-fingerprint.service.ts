@@ -92,10 +92,15 @@ export function readFingerprint(): DbFingerprint | null {
  * looks consistent, or a string describing the divergence if something
  * looks wrong. The caller is responsible for acting on the result.
  */
-export async function verifyFingerprint(): Promise<string | null> {
+// `liveOverride` is a test seam: the collapse checks compare against
+// DB-GLOBAL live counts, which tests can't pin while other suites run
+// in parallel against the shared DB. Production callers never pass it.
+export async function verifyFingerprint(
+  liveOverride?: Awaited<ReturnType<typeof captureFingerprint>>,
+): Promise<string | null> {
   const stored = readFingerprint();
   if (!stored) return null; // nothing to compare against
-  const live = await captureFingerprint();
+  const live = liveOverride ?? (await captureFingerprint());
 
   if (stored.installationId && live.installationId && stored.installationId !== live.installationId) {
     return `installation_id changed since last fingerprint (${stored.installationId} → ${live.installationId})`;

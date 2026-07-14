@@ -13,20 +13,30 @@ import * as tfaEnrollment from './tfa-enrollment.service.js';
 import * as magicLinkService from './magic-link.service.js';
 import * as passkeyService from './passkey.service.js';
 import * as authAvailability from './auth-availability.service.js';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 
+// Scoped cleanup — this suite registers its user under a fixed email, so
+// the tenant/user fixtures are resolved from that email instead of
+// truncating shared tables (which nuked concurrently-running suites).
 async function cleanDb() {
-  await db.delete(magicLinks);
-  await db.delete(passkeys);
-  await db.delete(tfaTrustedDevices);
-  await db.delete(tfaCodes);
-  await db.delete(tfaConfig);
-  await db.delete(auditLog);
-  await db.delete(accounts);
-  await db.delete(companies);
-  await db.delete(sessions);
-  await db.delete(users);
-  await db.delete(tenants);
+  const testUsers = await db
+    .select({ id: users.id, tenantId: users.tenantId })
+    .from(users)
+    .where(eq(users.email, 'pless-test@example.com'));
+  const userIds = testUsers.map((u) => u.id);
+  const tenantIds = [...new Set(testUsers.map((u) => u.tenantId))];
+
+  await db.delete(magicLinks).where(inArray(magicLinks.userId, userIds));
+  await db.delete(passkeys).where(inArray(passkeys.userId, userIds));
+  await db.delete(tfaTrustedDevices).where(inArray(tfaTrustedDevices.userId, userIds));
+  await db.delete(tfaCodes).where(inArray(tfaCodes.userId, userIds));
+  await db.delete(tfaConfig); // global table — no tenant column; suites share it by design
+  await db.delete(auditLog).where(inArray(auditLog.tenantId, tenantIds));
+  await db.delete(accounts).where(inArray(accounts.tenantId, tenantIds));
+  await db.delete(companies).where(inArray(companies.tenantId, tenantIds));
+  await db.delete(sessions).where(inArray(sessions.userId, userIds));
+  await db.delete(users).where(inArray(users.tenantId, tenantIds));
+  await db.delete(tenants).where(inArray(tenants.id, tenantIds));
 }
 
 async function createTestUser() {

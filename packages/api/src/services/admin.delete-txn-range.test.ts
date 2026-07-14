@@ -9,7 +9,7 @@
 // are RECOMPUTED (not zeroed) from the surviving posted/void lines.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   tenants, users, sessions, accounts, companies, auditLog as auditLogTable, contacts,
@@ -28,30 +28,48 @@ const END = '2026-02-28';
 const IN_DATE = '2026-02-15';
 const OUT_DATE = '2026-05-15';
 
+// Tenant-scoped cleanup — only ever touch this file's own tenant so
+// concurrently-running suites' data survives. Tables without a tenant_id
+// column (reconciliation_lines, deposit_lines) are scoped through their
+// tenant-owned parent rows.
 async function cleanDb() {
-  await db.delete(reconciliationLines);
-  await db.delete(bankStatements);
-  await db.delete(reconciliations);
-  await db.delete(paymentApplications);
-  await db.delete(billPaymentApplications);
-  await db.delete(vendorCreditApplications);
-  await db.delete(depositLines);
-  await db.delete(dailySalesEntries);
-  await db.delete(dailySalesTemplates);
-  await db.delete(recurringSchedules);
-  await db.delete(bankFeedItems);
-  await db.delete(bankConnections);
-  await db.delete(transactionTags);
-  await db.delete(tags);
-  await db.delete(journalLines);
-  await db.delete(transactions);
-  await db.delete(auditLogTable);
-  await db.delete(contacts);
-  await db.delete(accounts);
-  await db.delete(companies);
-  await db.delete(sessions);
-  await db.delete(users);
-  await db.delete(tenants);
+  if (!tenantId) return;
+  await db.delete(reconciliationLines).where(
+    inArray(
+      reconciliationLines.reconciliationId,
+      db.select({ id: reconciliations.id }).from(reconciliations).where(eq(reconciliations.tenantId, tenantId)),
+    ),
+  );
+  await db.delete(bankStatements).where(eq(bankStatements.tenantId, tenantId));
+  await db.delete(reconciliations).where(eq(reconciliations.tenantId, tenantId));
+  await db.delete(paymentApplications).where(eq(paymentApplications.tenantId, tenantId));
+  await db.delete(billPaymentApplications).where(eq(billPaymentApplications.tenantId, tenantId));
+  await db.delete(vendorCreditApplications).where(eq(vendorCreditApplications.tenantId, tenantId));
+  await db.delete(depositLines).where(
+    inArray(
+      depositLines.depositId,
+      db.select({ id: transactions.id }).from(transactions).where(eq(transactions.tenantId, tenantId)),
+    ),
+  );
+  await db.delete(dailySalesEntries).where(eq(dailySalesEntries.tenantId, tenantId));
+  await db.delete(dailySalesTemplates).where(eq(dailySalesTemplates.tenantId, tenantId));
+  await db.delete(recurringSchedules).where(eq(recurringSchedules.tenantId, tenantId));
+  await db.delete(bankFeedItems).where(eq(bankFeedItems.tenantId, tenantId));
+  await db.delete(bankConnections).where(eq(bankConnections.tenantId, tenantId));
+  await db.delete(transactionTags).where(eq(transactionTags.tenantId, tenantId));
+  await db.delete(tags).where(eq(tags.tenantId, tenantId));
+  await db.delete(journalLines).where(eq(journalLines.tenantId, tenantId));
+  await db.delete(transactions).where(eq(transactions.tenantId, tenantId));
+  await db.delete(auditLogTable).where(eq(auditLogTable.tenantId, tenantId));
+  await db.delete(contacts).where(eq(contacts.tenantId, tenantId));
+  await db.delete(accounts).where(eq(accounts.tenantId, tenantId));
+  await db.delete(companies).where(eq(companies.tenantId, tenantId));
+  await db.delete(sessions).where(
+    inArray(sessions.userId, db.select({ id: users.id }).from(users).where(eq(users.tenantId, tenantId))),
+  );
+  await db.delete(users).where(eq(users.tenantId, tenantId));
+  await db.delete(tenants).where(eq(tenants.id, tenantId));
+  tenantId = '';
 }
 
 beforeEach(async () => {

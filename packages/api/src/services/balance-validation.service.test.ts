@@ -7,7 +7,7 @@
 // historical Plaid balance clobber) and repairs it from the ledger.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
@@ -19,18 +19,25 @@ import { validateTenantBalances } from './balance-validation.service.js';
 
 let tenantId: string;
 
+// Tenant-SCOPED cleanup — unscoped deletes nuke concurrently-running
+// suites' data and die on their FKs. Only ever touch our own tenant.
 async function cleanDb() {
-  await db.delete(transactionTags);
-  await db.delete(tags);
-  await db.delete(journalLines);
-  await db.delete(transactions);
-  await db.delete(auditLogTable);
-  await db.delete(contacts);
-  await db.delete(accounts);
-  await db.delete(companies);
-  await db.delete(sessions);
-  await db.delete(users);
-  await db.delete(tenants);
+  if (!tenantId) return;
+  await db.delete(transactionTags).where(eq(transactionTags.tenantId, tenantId));
+  await db.delete(tags).where(eq(tags.tenantId, tenantId));
+  await db.delete(journalLines).where(eq(journalLines.tenantId, tenantId));
+  await db.delete(transactions).where(eq(transactions.tenantId, tenantId));
+  await db.delete(auditLogTable).where(eq(auditLogTable.tenantId, tenantId));
+  await db.delete(contacts).where(eq(contacts.tenantId, tenantId));
+  await db.delete(accounts).where(eq(accounts.tenantId, tenantId));
+  await db.delete(companies).where(eq(companies.tenantId, tenantId));
+  // sessions has no tenant_id — scope through this tenant's users.
+  await db.delete(sessions).where(
+    inArray(sessions.userId, db.select({ id: users.id }).from(users).where(eq(users.tenantId, tenantId))),
+  );
+  await db.delete(users).where(eq(users.tenantId, tenantId));
+  await db.delete(tenants).where(eq(tenants.id, tenantId));
+  tenantId = '';
 }
 
 beforeEach(async () => {

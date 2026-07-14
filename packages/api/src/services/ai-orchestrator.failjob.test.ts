@@ -9,7 +9,7 @@
 // with no dispatcher to pick it back up.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { tenants, users, sessions, companies, accounts, aiConfig, aiJobs, aiUsageLog } from '../db/schema/index.js';
 import * as authService from './auth.service.js';
@@ -17,15 +17,24 @@ import * as orchestrator from './ai-orchestrator.service.js';
 
 let tenantId: string;
 
+// Tenant-scoped cleanup — only ever touch this file's own tenant so
+// concurrently-running suites' data survives.
 async function cleanDb() {
-  await db.delete(aiUsageLog);
-  await db.delete(aiJobs);
+  if (tenantId) {
+    await db.delete(aiUsageLog).where(eq(aiUsageLog.tenantId, tenantId));
+    await db.delete(aiJobs).where(eq(aiJobs.tenantId, tenantId));
+  }
+  // global table — no tenant column; suites share it by design
   await db.delete(aiConfig);
-  await db.delete(accounts);
-  await db.delete(companies);
-  await db.delete(sessions);
-  await db.delete(users);
-  await db.delete(tenants);
+  if (!tenantId) return;
+  await db.delete(accounts).where(eq(accounts.tenantId, tenantId));
+  await db.delete(companies).where(eq(companies.tenantId, tenantId));
+  await db.delete(sessions).where(
+    inArray(sessions.userId, db.select({ id: users.id }).from(users).where(eq(users.tenantId, tenantId))),
+  );
+  await db.delete(users).where(eq(users.tenantId, tenantId));
+  await db.delete(tenants).where(eq(tenants.id, tenantId));
+  tenantId = '';
 }
 
 async function insertJob(overrides: Partial<typeof aiJobs.$inferInsert> = {}) {

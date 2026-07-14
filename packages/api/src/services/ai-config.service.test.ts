@@ -11,6 +11,7 @@ import * as aiConfigService from './ai-config.service.js';
 // rate limiting is left to manual verification.
 
 async function resetConfig() {
+  // global table — no tenant column; suites share it by design
   await db.delete(aiConfig);
 }
 
@@ -76,6 +77,7 @@ describe('taskOptions.categorization.batchSize persistence', () => {
 // left to manual verification.
 describe('aiConfigService.testProvider — failure modes', () => {
   beforeEach(async () => {
+    // global table — no tenant column; suites share it by design
     await db.delete(aiConfig);
     // Configure ollama so getProvider() succeeds — we override the
     // global fetch below to simulate each failure mode against the
@@ -87,6 +89,7 @@ describe('aiConfigService.testProvider — failure modes', () => {
   });
   afterEach(async () => {
     vi.restoreAllMocks();
+    // global table — no tenant column; suites share it by design
     await db.delete(aiConfig);
   });
 

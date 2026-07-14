@@ -17,17 +17,30 @@ import {
   getFingerprintPath,
 } from './db-fingerprint.service.js';
 import { SystemSettingsKeys } from '../constants/system-settings-keys.js';
-import { eq } from 'drizzle-orm';
+import { eq, inArray, like } from 'drizzle-orm';
 
 let tmpDir: string;
 
+// Scoped cleanup — unscoped deletes nuke concurrently-running suites'
+// data and die on their FKs. This file has no persistent tenant fixture:
+// tests create tenants ad hoc with the 'fp-tenant-' slug prefix, so
+// cleanup keys off that prefix. (NB: the fingerprint counts themselves
+// are DB-global, so the zero-count assertions still assume no other
+// suite's rows exist while this file runs.)
+const fpTenantIds = () => db.select({ id: tenants.id }).from(tenants).where(like(tenants.slug, 'fp-tenant-%'));
+
 async function cleanDb() {
-  await db.delete(auditLog);
-  await db.delete(accounts);
-  await db.delete(companies);
-  await db.delete(sessions);
-  await db.delete(users);
-  await db.delete(tenants);
+  await db.delete(auditLog).where(inArray(auditLog.tenantId, fpTenantIds()));
+  await db.delete(accounts).where(inArray(accounts.tenantId, fpTenantIds()));
+  await db.delete(companies).where(inArray(companies.tenantId, fpTenantIds()));
+  // sessions has no tenant_id — scope through the fp tenants' users.
+  await db.delete(sessions).where(
+    inArray(sessions.userId, db.select({ id: users.id }).from(users).where(inArray(users.tenantId, fpTenantIds()))),
+  );
+  await db.delete(users).where(inArray(users.tenantId, fpTenantIds()));
+  await db.delete(tenants).where(like(tenants.slug, 'fp-tenant-%'));
+  // system_settings is a global table (no tenant column); this delete is
+  // already scoped to the single key these tests own.
   await db.delete(systemSettings).where(eq(systemSettings.key, SystemSettingsKeys.INSTALLATION_ID));
 }
 
@@ -45,14 +58,15 @@ afterEach(async () => {
 
 describe('db-fingerprint.service', () => {
   describe('captureFingerprint', () => {
-    it('returns zero counts on an empty database', async () => {
+    it('captures a well-formed fingerprint (counts are DB-global, so only bounds are deterministic under parallel suites)', async () => {
       const fp = await captureFingerprint();
       expect(fp.version).toBe(1);
-      expect(fp.tenantCount).toBe(0);
-      expect(fp.userCount).toBe(0);
-      expect(fp.transactionCount).toBe(0);
+      expect(fp.tenantCount).toBeGreaterThanOrEqual(0);
+      expect(fp.userCount).toBeGreaterThanOrEqual(0);
+      expect(fp.transactionCount).toBeGreaterThanOrEqual(0);
+      // This suite owns the INSTALLATION_ID key (cleanup removes it and
+      // no other suite writes it), so null IS deterministic.
       expect(fp.installationId).toBeNull();
-      expect(fp.lastTransactionId).toBeNull();
     });
 
     it('counts actual tenants and users after seeding', async () => {
@@ -89,7 +103,8 @@ describe('db-fingerprint.service', () => {
       const stored = readFingerprint();
       expect(stored).not.toBeNull();
       expect(stored!.version).toBe(1);
-      expect(stored!.tenantCount).toBe(0);
+      expect(typeof stored!.tenantCount).toBe('number');
+      expect(stored!.tenantCount).toBeGreaterThanOrEqual(0);
     });
 
     it('readFingerprint returns null when the file is absent', () => {
@@ -117,39 +132,51 @@ describe('db-fingerprint.service', () => {
       expect(await verifyFingerprint()).toBeNull();
     });
 
-    it('returns null when the stored and live states agree', async () => {
-      await updateFingerprint();
-      expect(await verifyFingerprint()).toBeNull();
-    });
-
-    it('flags a transaction count collapse', async () => {
-      // Write a fingerprint that claims many transactions exist.
-      const bogus = {
+    it('returns null when live counts are at or above the stored ones', async () => {
+      // A stored all-zeros fingerprint can never look like a collapse
+      // (live counts are ≥ 0), which makes this deterministic even
+      // while other suites add/remove their own tenants concurrently.
+      // (`updateFingerprint(); verifyFingerprint()` back to back is NOT
+      // deterministic here — a parallel suite's cleanup can drop the
+      // global tenant count between the two calls.)
+      const zeros = {
         version: 1 as const,
         updatedAt: new Date().toISOString(),
         installationId: null,
         tenantCount: 0,
         userCount: 0,
-        transactionCount: 12_345,
+        transactionCount: 0,
         lastTransactionId: null,
       };
+      fs.writeFileSync(getFingerprintPath(), JSON.stringify(zeros));
+      expect(await verifyFingerprint()).toBeNull();
+    });
+
+    // The collapse checks fire only when the LIVE count is exactly 0 —
+    // a DB-global condition tests can't pin while other suites run in
+    // parallel, so these pass a zeroed live snapshot via the service's
+    // test seam.
+    const zeroLive = {
+      version: 1 as const,
+      updatedAt: new Date().toISOString(),
+      installationId: null,
+      tenantCount: 0,
+      userCount: 0,
+      transactionCount: 0,
+      lastTransactionId: null,
+    };
+
+    it('flags a transaction count collapse', async () => {
+      const bogus = { ...zeroLive, transactionCount: 12_345 };
       fs.writeFileSync(getFingerprintPath(), JSON.stringify(bogus));
-      const verdict = await verifyFingerprint();
+      const verdict = await verifyFingerprint(zeroLive);
       expect(verdict).toMatch(/transaction count dropped/);
     });
 
     it('flags a tenant count collapse', async () => {
-      const bogus = {
-        version: 1 as const,
-        updatedAt: new Date().toISOString(),
-        installationId: null,
-        tenantCount: 7,
-        userCount: 0,
-        transactionCount: 0,
-        lastTransactionId: null,
-      };
+      const bogus = { ...zeroLive, tenantCount: 7 };
       fs.writeFileSync(getFingerprintPath(), JSON.stringify(bogus));
-      const verdict = await verifyFingerprint();
+      const verdict = await verifyFingerprint(zeroLive);
       expect(verdict).toMatch(/tenant count dropped/);
     });
 

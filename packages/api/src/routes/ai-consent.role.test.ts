@@ -13,7 +13,7 @@ import http from 'http';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import jwt from 'jsonwebtoken';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { tenants, users, sessions, companies, accounts, aiConfig } from '../db/schema/index.js';
 import * as authService from '../services/auth.service.js';
@@ -52,13 +52,20 @@ function request(method: string, pathname: string, token?: string): Promise<{ st
   });
 }
 
+// Tenant-scoped cleanup — only ever touch this file's own tenant so
+// concurrently-running suites' data survives.
 async function cleanDb() {
+  // global table — no tenant column; suites share it by design
   await db.delete(aiConfig);
-  await db.delete(accounts);
-  await db.delete(companies);
-  await db.delete(sessions);
-  await db.delete(users);
-  await db.delete(tenants);
+  if (!tenantId) return;
+  await db.delete(accounts).where(eq(accounts.tenantId, tenantId));
+  await db.delete(companies).where(eq(companies.tenantId, tenantId));
+  await db.delete(sessions).where(
+    inArray(sessions.userId, db.select({ id: users.id }).from(users).where(eq(users.tenantId, tenantId))),
+  );
+  await db.delete(users).where(eq(users.tenantId, tenantId));
+  await db.delete(tenants).where(eq(tenants.id, tenantId));
+  tenantId = '';
 }
 
 beforeEach(async () => {

@@ -146,6 +146,8 @@ export interface ExpenseLineItem {
 
 export interface CreateExpenseInput {
   txnDate: string;
+  /** Free-text reference (receipt #, check #, confirmation #) → transactions.txn_number. */
+  txnNumber?: string;
   contactId?: string;
   payFromAccountId: string;
   /** Single-line expense (backward compat) */

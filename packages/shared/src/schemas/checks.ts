@@ -15,6 +15,11 @@ export const writeCheckSchema = z.object({
   printedMemo: z.string().max(255).optional(),
   memo: z.string().optional(),
   printLater: z.boolean().default(false),
+  // Manual check-number override for hand-written checks (the physical
+  // checkbook may not match the auto counter). Ignored for printLater
+  // (print assigns numbers at print time). Service enforces uniqueness
+  // per bank account and advances the auto counter past it.
+  checkNumber: z.coerce.number().int().min(1).optional(),
   lines: z.array(z.object({
     accountId: z.string().uuid(),
     description: z.string().optional(),

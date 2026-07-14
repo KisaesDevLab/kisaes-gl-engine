@@ -16,45 +16,25 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
+import { eq } from 'drizzle-orm';
 import { encryptWithPassphrase } from './portable-encryption.service.js';
 import { verifyLatestBackups, __internal } from './backup-verify.service.js';
 import { db } from '../db/index.js';
 import { auditLog as auditLogTable } from '../db/schema/audit-log.js';
-import {
-  tenants, users, sessions, accounts, companies, contacts, transactions,
-  journalLines, tags, transactionTags,
-  // Include every table that FK-references users or tenants so cleanup
-  // doesn't fail mid-way and leave downstream test files looking at
-  // partially-torn-down state. aiConfig in particular has a users FK
-  // (migration 0054) that silently blocks `DELETE FROM users`.
-  aiConfig, aiJobs, aiUsageLog, aiPromptTemplates,
-} from '../db/schema/index.js';
 
 let tmpDir: string;
 let originalBackupDir: string | undefined;
 let originalEncryptionKey: string | undefined;
 
-async function cleanAuditLog(): Promise<void> {
-  await db.delete(auditLogTable);
-}
+// The only DB rows this suite creates are the audit entries written by
+// verifyLatestBackups(); the tmp-dir fixtures ('tenant-1' etc.) are not
+// UUIDs, so the service routes them to the system tenant row. A previous
+// version of this file also wiped EVERY table of EVERY tenant here, which
+// nuked concurrently-running suites' data — only ever touch our own rows.
+const SYSTEM_TENANT_ID = '00000000-0000-0000-0000-000000000000';
 
-async function cleanOtherTables(): Promise<void> {
-  await db.delete(transactionTags);
-  await db.delete(tags);
-  await db.delete(journalLines);
-  await db.delete(transactions);
-  await db.delete(contacts);
-  await db.delete(accounts);
-  // These reference users/tenants and must be cleared first or the
-  // users/tenants deletes fail under FK and leave the DB half-torn.
-  await db.delete(aiUsageLog);
-  await db.delete(aiJobs);
-  await db.delete(aiPromptTemplates);
-  await db.delete(aiConfig);
-  await db.delete(companies);
-  await db.delete(sessions);
-  await db.delete(users);
-  await db.delete(tenants);
+async function cleanAuditLog(): Promise<void> {
+  await db.delete(auditLogTable).where(eq(auditLogTable.tenantId, SYSTEM_TENANT_ID));
 }
 
 function makeServerKeyBackup(serverKey: string, payload: object): Buffer {
@@ -71,7 +51,6 @@ function makeServerKeyBackup(serverKey: string, payload: object): Buffer {
 describe('backup-verify', () => {
   beforeEach(async () => {
     await cleanAuditLog();
-    await cleanOtherTables();
     // NB: test-global-setup sets BACKUP_DIR = /data/backups by default
     // (via the NODE_ENV=test path in config/env.ts). We point it at a
     // per-test tmp dir so we never read or write real backups.
@@ -89,7 +68,6 @@ describe('backup-verify', () => {
     if (originalEncryptionKey !== undefined) process.env['BACKUP_ENCRYPTION_KEY'] = originalEncryptionKey;
     else delete process.env['BACKUP_ENCRYPTION_KEY'];
     await cleanAuditLog();
-    await cleanOtherTables();
   });
 
   describe('header-only verification of passphrase backups', () => {

@@ -3,7 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   tenants, users, sessions, companies, accounts, aiConfig, aiJobs, aiUsageLog,
@@ -19,19 +19,39 @@ let tenantId: string;
 let userId: string;
 let companyId: string;
 
+// Tenant-scoped cleanup — only ever touch this file's own tenants so
+// concurrently-running suites' data survives. The file registers with
+// two fixed emails (the fixture tenant + the cross-tenant guard test's
+// second tenant); discover both via email so leftovers from a previous
+// crashed run are cleaned too.
 async function cleanDb() {
-  await db.delete(aiUsageLog);
-  await db.delete(aiJobs);
+  const owned = await db
+    .select({ tenantId: users.tenantId })
+    .from(users)
+    .where(inArray(users.email, ['consent-test@example.com', 'other@example.com']));
+  const tenantIds = [...new Set(owned.map((r) => r.tenantId))];
+  if (tenantIds.length > 0) {
+    await db.delete(aiUsageLog).where(inArray(aiUsageLog.tenantId, tenantIds));
+    await db.delete(aiJobs).where(inArray(aiJobs.tenantId, tenantIds));
+  }
+  // global table — no tenant column; suites share it by design
   await db.delete(aiPromptTemplates);
-  await db.delete(categorizationHistory);
-  await db.delete(bankFeedItems);
+  if (tenantIds.length > 0) {
+    await db.delete(categorizationHistory).where(inArray(categorizationHistory.tenantId, tenantIds));
+    await db.delete(bankFeedItems).where(inArray(bankFeedItems.tenantId, tenantIds));
+  }
+  // global table — no tenant column; suites share it by design
   await db.delete(aiConfig);
-  await db.delete(auditLog);
-  await db.delete(accounts);
-  await db.delete(companies);
-  await db.delete(sessions);
-  await db.delete(users);
-  await db.delete(tenants);
+  if (tenantIds.length > 0) {
+    await db.delete(auditLog).where(inArray(auditLog.tenantId, tenantIds));
+    await db.delete(accounts).where(inArray(accounts.tenantId, tenantIds));
+    await db.delete(companies).where(inArray(companies.tenantId, tenantIds));
+    await db.delete(sessions).where(
+      inArray(sessions.userId, db.select({ id: users.id }).from(users).where(inArray(users.tenantId, tenantIds))),
+    );
+    await db.delete(users).where(inArray(users.tenantId, tenantIds));
+    await db.delete(tenants).where(inArray(tenants.id, tenantIds));
+  }
 }
 
 async function setup() {

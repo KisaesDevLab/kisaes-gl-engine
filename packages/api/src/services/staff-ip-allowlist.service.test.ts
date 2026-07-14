@@ -17,6 +17,7 @@ import {
 } from './staff-ip-allowlist.service.js';
 
 async function wipe() {
+  // global table — no tenant column; suites share it by design
   await db.delete(staffIpAllowlist);
   invalidateCache();
 }

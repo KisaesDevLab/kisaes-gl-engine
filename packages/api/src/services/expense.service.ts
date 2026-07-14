@@ -33,6 +33,7 @@ function buildExpensePayload(input: CreateExpenseInput) {
   return {
     txnType: 'expense' as const,
     txnDate: input.txnDate,
+    txnNumber: input.txnNumber,
     contactId: input.contactId,
     memo: input.memo,
     total,

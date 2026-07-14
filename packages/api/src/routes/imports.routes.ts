@@ -167,6 +167,19 @@ importsRouter.post('/upload', upload.single('file'), async (req, res) => {
   res.status(201).json(out);
 });
 
+// ── GET /imports ──────────────────────────────────────────────────
+// List this company's import sessions (newest first). This is how an
+// operator gets BACK to an in-progress session — the duplicate-file
+// guard on upload says "open it and commit or delete it", and until
+// this route existed there was no way to do that. (The service
+// function and the web hook both predate the route; it was never
+// wired server-side.)
+importsRouter.get('/', async (req, res) => {
+  const q = importListQuerySchema.parse(req.query);
+  const out = await importsService.listSessions(req.tenantId, req.companyId, q);
+  res.json(out);
+});
+
 // ── GET /imports/:id ──────────────────────────────────────────────
 importsRouter.get('/:id', async (req, res) => {
   const id = req.params['id'];

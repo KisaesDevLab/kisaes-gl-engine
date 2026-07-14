@@ -38,6 +38,10 @@ export const createJournalEntrySchema = z.object({
 
 export const createExpenseSchema = z.object({
   txnDate: z.string().min(1),
+  // Free-text reference (receipt #, confirmation #, check # for a
+  // handwritten check recorded as an expense). Lands on
+  // transactions.txn_number — searchable and sortable in the list.
+  txnNumber: z.string().max(50).optional(),
   contactId: z.string().uuid().optional(),
   payFromAccountId: z.string().uuid(),
   expenseAccountId: z.string().uuid().optional(),

@@ -28,6 +28,7 @@ import * as aiConfigService from './ai-config.service.js';
 
 describe('aiConfigService.testProvider — uses the configured task model', () => {
   beforeEach(async () => {
+    // global table — no tenant column; suites share it by design
     await db.delete(aiConfig);
     mocks.getProvider.mockReset();
     mocks.getProvider.mockReturnValue({
@@ -36,6 +37,7 @@ describe('aiConfigService.testProvider — uses the configured task model', () =
   });
   afterEach(async () => {
     vi.restoreAllMocks();
+    // global table — no tenant column; suites share it by design
     await db.delete(aiConfig);
   });
 

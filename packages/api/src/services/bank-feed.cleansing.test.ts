@@ -16,7 +16,7 @@
 // ai-categorization.service.test.ts.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   tenants, users, sessions, companies, accounts, auditLog, aiConfig,
@@ -53,17 +53,26 @@ function mapResult(result: ItemResult) {
   return async (_tenantId: string, ids: string[]) => new Map(ids.map((id) => [id, result]));
 }
 
+// Tenant-SCOPED cleanup — unscoped deletes nuke concurrently-running
+// suites' data and die on their FKs. Only ever touch our own tenant.
 async function cleanDb() {
+  // global table — no tenant column; suites share it by design (and the
+  // M1 tests here rely on it being reset between tests).
   await db.delete(aiConfig);
-  await db.delete(transactionClassificationState);
-  await db.delete(bankFeedItems);
-  await db.delete(bankConnections);
-  await db.delete(auditLog);
-  await db.delete(accounts);
-  await db.delete(companies);
-  await db.delete(sessions);
-  await db.delete(users);
-  await db.delete(tenants);
+  if (!tenantId) return;
+  await db.delete(transactionClassificationState).where(eq(transactionClassificationState.tenantId, tenantId));
+  await db.delete(bankFeedItems).where(eq(bankFeedItems.tenantId, tenantId));
+  await db.delete(bankConnections).where(eq(bankConnections.tenantId, tenantId));
+  await db.delete(auditLog).where(eq(auditLog.tenantId, tenantId));
+  await db.delete(accounts).where(eq(accounts.tenantId, tenantId));
+  await db.delete(companies).where(eq(companies.tenantId, tenantId));
+  // sessions has no tenant_id — scope through this tenant's users.
+  await db.delete(sessions).where(
+    inArray(sessions.userId, db.select({ id: users.id }).from(users).where(eq(users.tenantId, tenantId))),
+  );
+  await db.delete(users).where(eq(users.tenantId, tenantId));
+  await db.delete(tenants).where(eq(tenants.id, tenantId));
+  tenantId = '';
 }
 
 async function setup() {
@@ -232,7 +241,7 @@ describe('runCleansingPipeline — aggregate accounting (batched)', () => {
       const agg = await bankFeedService.runCleansingPipeline(tenantId, items);
       expect(agg.disabled).toBe(3);
       expect(agg.aiFailed).toBe(0);
-      await db.delete(bankFeedItems);
+      await db.delete(bankFeedItems).where(eq(bankFeedItems.tenantId, tenantId));
     }
   });
 

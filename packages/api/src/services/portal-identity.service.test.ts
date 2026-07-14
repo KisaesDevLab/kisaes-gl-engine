@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, beforeAll } from 'vitest';
 import bcrypt from 'bcrypt';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   tenants,
@@ -30,14 +30,41 @@ import crypto from 'node:crypto';
 // and, critically, the cross-identity rejection in switchToContact.
 // That last test is the horizontal-escalation guard for the feature.
 
+// Every identity/contact email this suite creates. portal_identities is a
+// global (email-keyed) table and the tenants are minted per test, so the
+// cleanup resolves this suite's rows from these fixture emails instead of
+// truncating shared tables (which nuked concurrently-running suites).
+const SUITE_EMAILS = [
+  'new@example.com',
+  'reuse@example.com',
+  'found@example.com',
+  'v@example.com',
+  'bad@example.com',
+  'lock@example.com',
+  'link@example.com',
+  'filter@example.com',
+  'switch@example.com',
+  'alice@example.com',
+  'bob@example.com',
+  'legacy@example.com',
+  'target@example.com',
+];
+
 async function clean() {
-  await db.delete(auditLog);
-  await db.delete(portalMagicLinks);
-  await db.delete(portalContactSessions);
-  await db.delete(portalPasswords);
-  await db.delete(portalContacts);
-  await db.delete(portalIdentities);
-  await db.delete(tenants);
+  const contactRows = await db
+    .select({ id: portalContacts.id, tenantId: portalContacts.tenantId })
+    .from(portalContacts)
+    .where(inArray(portalContacts.email, SUITE_EMAILS));
+  const contactIds = contactRows.map((c) => c.id);
+  const tenantIds = [...new Set(contactRows.map((c) => c.tenantId))];
+
+  await db.delete(auditLog).where(inArray(auditLog.tenantId, tenantIds));
+  await db.delete(portalMagicLinks).where(inArray(portalMagicLinks.contactId, contactIds));
+  await db.delete(portalContactSessions).where(inArray(portalContactSessions.contactId, contactIds));
+  await db.delete(portalPasswords).where(inArray(portalPasswords.contactId, contactIds));
+  await db.delete(portalContacts).where(inArray(portalContacts.id, contactIds));
+  await db.delete(portalIdentities).where(inArray(portalIdentities.email, SUITE_EMAILS));
+  await db.delete(tenants).where(inArray(tenants.id, tenantIds));
 }
 
 async function mkTenant(slug: string): Promise<string> {

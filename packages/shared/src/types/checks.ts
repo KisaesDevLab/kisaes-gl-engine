@@ -14,6 +14,9 @@ export interface WriteCheckInput {
   printedMemo?: string;
   memo?: string;
   printLater: boolean;
+  /** Manual check-number override for hand-written checks; blank = the
+   *  company's auto counter. Ignored when printLater (print assigns). */
+  checkNumber?: number;
   lines: Array<{
     accountId: string;
     description?: string;

@@ -45,6 +45,7 @@ describe('staffIpAllowlist middleware', () => {
 
   beforeEach(async () => {
     delete process.env['STAFF_IP_ALLOWLIST_ENFORCED'];
+    // global table — no tenant column; suites share it by design
     await db.delete(staffIpAllowlistTable);
     invalidateCache();
   });
@@ -52,6 +53,7 @@ describe('staffIpAllowlist middleware', () => {
   afterEach(async () => {
     if (originalEnv === undefined) delete process.env['STAFF_IP_ALLOWLIST_ENFORCED'];
     else process.env['STAFF_IP_ALLOWLIST_ENFORCED'] = originalEnv;
+    // global table — no tenant column; suites share it by design
     await db.delete(staffIpAllowlistTable);
     invalidateCache();
   });
