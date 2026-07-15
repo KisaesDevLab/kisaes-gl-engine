@@ -46,7 +46,7 @@ describe('env-recovery.service', () => {
     expect(decrypted!.jwtSecret).toBe(SAMPLE_VALUES.jwtSecret);
     expect(decrypted!.databaseUrl).toBe(SAMPLE_VALUES.databaseUrl);
     expect(decrypted!.installationId).toBe('aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
-    expect(decrypted!.version).toBe(1);
+    expect(decrypted!.version).toBe(2);
   });
 
   it('returns null when the file does not exist', () => {
@@ -85,6 +85,22 @@ describe('env-recovery.service', () => {
   it('leaves no .tmp file after a successful write', () => {
     writeRecoveryFile(generateRecoveryKey(), SAMPLE_VALUES, null);
     expect(fs.existsSync(getRecoveryFilePath() + '.tmp')).toBe(false);
+  });
+
+  it('v2 files carry plaidEncryptionKey and round-trip it', () => {
+    const key = generateRecoveryKey();
+    writeRecoveryFile(key, { ...SAMPLE_VALUES, plaidEncryptionKey: 'p'.repeat(64) }, null);
+    const contents = readRecoveryFile(key);
+    expect(contents!.version).toBe(2);
+    expect(contents!.plaidEncryptionKey).toBe('p'.repeat(64));
+  });
+
+  it('files without plaidEncryptionKey still read (v1 compatibility)', () => {
+    const key = generateRecoveryKey();
+    writeRecoveryFile(key, SAMPLE_VALUES, null);
+    const contents = readRecoveryFile(key);
+    expect(contents!.plaidEncryptionKey).toBeUndefined();
+    expect(contents!.encryptionKey).toBe(SAMPLE_VALUES.encryptionKey);
   });
 
   it('getRecoveryFilePath honors DATA_DIR', () => {

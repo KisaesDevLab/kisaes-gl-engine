@@ -492,8 +492,9 @@ setupRouter.post('/restore/execute', upload.single('file'), async (req, res) => 
     return;
   }
 
-  try {
-    const result = await runGuardedSetupRestore(async () => {
+  const uploadedPath = req.file.path;
+  const run = startRestoreRun(
+    async () => {
       // A .vmx package (ZIP) carries the DB dump plus attachment files; a
       // legacy .vmb/.kbk is a single encrypted JSON blob. Detect and read the
       // right one; `content` is the same DB payload either way. The .vmx is
@@ -501,28 +502,20 @@ setupRouter.post('/restore/execute', upload.single('file'), async (req, res) => 
       // fully buffers); only the small legacy blob is loaded whole.
       const { smartDecrypt } = await import('../services/portable-encryption.service.js');
       const { readTenantPackage } = await import('../services/vmx-package.js');
-      if (isZipFile(req.file!.path)) {
-        const pkg = await readTenantPackage(req.file!.path, passphrase);
+      if (isZipFile(uploadedPath)) {
+        const pkg = await readTenantPackage(uploadedPath, passphrase);
         return { content: pkg.data as RestoreContent, packageAttachments: () => pkg.attachments() };
       }
-      const { data } = smartDecrypt(fs.readFileSync(req.file!.path), passphrase);
+      const { data } = smartDecrypt(fs.readFileSync(uploadedPath), passphrase);
       return { content: JSON.parse(data.toString()) as RestoreContent, packageAttachments: null };
-    });
-
-    res.json(result);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : 'Restore failed';
-    const status =
-      msg.includes('already in progress') ? 409 :
-      msg.includes('already exist') || msg.includes('already completed') ? 409 :
-      msg.includes('tenant information') ? 400 :
-      500;
-    res.status(status).json({ error: { message: msg } });
-  } finally {
-    // The uploaded backup landed on disk (multer diskStorage) — always
-    // remove it, success or failure.
-    try { fs.unlinkSync(req.file.path); } catch { /* already gone */ }
-  }
+    },
+    {
+      // The uploaded backup landed on disk (multer diskStorage) — remove it
+      // once the run settles (NOT in this handler: the run reads it async).
+      onSettle: () => { try { fs.unlinkSync(uploadedPath); } catch { /* already gone */ } },
+    },
+  );
+  res.status(202).json(restoreRunView(run));
 });
 
 // `content` is the decrypted DB payload (evolving-any, exactly as the
@@ -534,6 +527,102 @@ type ContentSource = () => Promise<{
   content: RestoreContent;
   packageAttachments: (() => AsyncGenerator<{ id: string; buffer: Buffer }>) | null;
 }>;
+
+// ─── Async restore runs ─────────────────────────────────────────────
+//
+// A large restore takes minutes — far past reverse-proxy request ceilings
+// (Cloudflare cuts ~100s), which used to strand the wizard on a dead spinner
+// while the restore finished invisibly (and the one-time recovery key in the
+// lost response with it). Restores now run in-process off the request: the
+// execute endpoints return a runId immediately and the wizard polls
+// GET /restore/runs/:id until the run settles. Runs live in memory — an api
+// restart mid-restore fails the poll, and the restore itself is guarded by
+// the setup lock + emptiness re-check, so a retry is always safe.
+
+interface RestoreRun {
+  id: string;
+  status: 'running' | 'complete' | 'failed';
+  startedAt: string;
+  finishedAt?: string;
+  result?: Record<string, unknown>;
+  error?: string;
+}
+
+const restoreRuns = new Map<string, RestoreRun>();
+let activeRestoreRunId: string | null = null;
+const MAX_KEPT_RUNS = 5;
+
+function restoreRunView(run: RestoreRun) {
+  return {
+    runId: run.id,
+    status: run.status,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt ?? null,
+    result: run.result ?? null,
+    error: run.error ?? null,
+  };
+}
+
+function startRestoreRun(
+  readContent: ContentSource,
+  opts: { onSuccess?: () => void; onSettle?: () => void } = {},
+): RestoreRun {
+  // Re-attach instead of double-running: a second POST while a restore is
+  // in flight (wizard reload after a proxy timeout) gets the SAME run.
+  if (activeRestoreRunId) {
+    const active = restoreRuns.get(activeRestoreRunId);
+    if (active && active.status === 'running') return active;
+  }
+
+  const run: RestoreRun = { id: crypto.randomUUID(), status: 'running', startedAt: new Date().toISOString() };
+  restoreRuns.set(run.id, run);
+  activeRestoreRunId = run.id;
+  for (const [k, v] of restoreRuns) {
+    if (restoreRuns.size <= MAX_KEPT_RUNS) break;
+    if (v.status !== 'running') restoreRuns.delete(k);
+  }
+
+  void (async () => {
+    try {
+      run.result = await runGuardedSetupRestore(readContent);
+      run.status = 'complete';
+      try { opts.onSuccess?.(); } catch { /* cleanup is best-effort */ }
+    } catch (err) {
+      run.status = 'failed';
+      run.error = err instanceof Error ? err.message : 'Restore failed';
+    } finally {
+      run.finishedAt = new Date().toISOString();
+      if (activeRestoreRunId === run.id) activeRestoreRunId = null;
+      try { opts.onSettle?.(); } catch { /* cleanup is best-effort */ }
+    }
+  })();
+
+  return run;
+}
+
+// Poll a restore run. Same setup-guard exposure as the execute endpoints —
+// the completed result carries the one-time recovery key exactly as the old
+// synchronous response did.
+setupRouter.get('/restore/runs/latest', (_req, res) => {
+  let latest: RestoreRun | null = null;
+  for (const run of restoreRuns.values()) {
+    if (!latest || run.startedAt > latest.startedAt) latest = run;
+  }
+  if (!latest) {
+    res.status(404).json({ error: { message: 'No restore runs' } });
+    return;
+  }
+  res.json(restoreRunView(latest));
+});
+
+setupRouter.get('/restore/runs/:runId', (req, res) => {
+  const run = restoreRuns.get(req.params['runId']!);
+  if (!run) {
+    res.status(404).json({ error: { message: 'Unknown restore run — it may have been lost to an api restart; retry the restore' } });
+    return;
+  }
+  res.json(restoreRunView(run));
+});
 
 /**
  * Shared core of restore-during-setup: emptiness guard, setup lock, row
@@ -697,6 +786,18 @@ async function runGuardedSetupRestore(readContent: ContentSource): Promise<Recor
             // Fall through to the new-key flow — worst case the operator
             // gets a rotated key, same as before this write-back existed.
             console.error('[restore] recovery file write-back failed, issuing new key:', err instanceof Error ? err.message : err);
+          }
+        } else if (!isSameHost && restoredInstallationFiles.envRecovery) {
+          // Cross-host: the main recovery file was just re-minted for THIS
+          // host, but PARK the source install's file alongside it. The
+          // operator can later enter their ORIGINAL recovery key to recover
+          // the source credential-encryption key and re-encrypt every
+          // restored *_encrypted credential (Admin → Security).
+          try {
+            const { writeSourceRecoveryFileRaw } = await import('../services/env-recovery.service.js');
+            writeSourceRecoveryFileRaw(Buffer.from(restoredInstallationFiles.envRecovery, 'base64'));
+          } catch (err) {
+            console.error('[restore] source recovery file parking failed (non-fatal):', err instanceof Error ? err.message : err);
           }
         }
 
@@ -1056,8 +1157,8 @@ setupRouter.post('/restore/execute-staged', async (req, res) => {
   const dir = stageDirFor(meta.backupId);
   const paths = summary.received.map((idx) => path.join(dir, `part${idx}.vmx`));
 
-  try {
-    const result = await runGuardedSetupRestore(async () => {
+  const run = startRestoreRun(
+    async () => {
       if (meta!.classic && !isZipFile(paths[0]!)) {
         const { smartDecrypt } = await import('../services/portable-encryption.service.js');
         const { data } = smartDecrypt(fs.readFileSync(paths[0]!), passphrase);
@@ -1066,24 +1167,15 @@ setupRouter.post('/restore/execute-staged', async (req, res) => {
       const { readTenantPackageMulti } = await import('../services/vmx-package.js');
       const pkg = await readTenantPackageMulti(paths, passphrase);
       return { content: pkg.data as RestoreContent, packageAttachments: () => pkg.attachments() };
-    });
-
-    // Success — the staged files have served their purpose.
-    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
-    res.json(result);
-  } catch (err) {
-    // Keep the staged files on failure so the operator can retry (e.g.
-    // re-upload one corrupted part) without re-uploading everything.
-    const msg = err instanceof Error ? err.message : 'Restore failed';
-    const status =
-      msg.includes('already in progress') ? 409 :
-      msg.includes('already exist') || msg.includes('already completed') ? 409 :
-      msg.includes('Missing part') || msg.includes('final part') ? 409 :
-      msg.includes('passphrase') || msg.includes('corrupted') ? 400 :
-      msg.includes('tenant information') ? 400 :
-      500;
-    res.status(status).json({ error: { message: msg } });
-  }
+    },
+    {
+      // Success — the staged files have served their purpose. On failure
+      // they stay so the operator can retry (e.g. re-upload one corrupted
+      // part) without re-uploading everything.
+      onSuccess: () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ } },
+    },
+  );
+  res.status(202).json(restoreRunView(run));
 });
 
 // restoreTableRows / resyncOwnedSequences moved to

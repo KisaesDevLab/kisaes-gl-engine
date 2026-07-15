@@ -137,7 +137,7 @@ export function createEnvMissingApp(ctx: EnvMissingContext): Express {
 DATABASE_URL=${contents.databaseUrl}
 JWT_SECRET=${contents.jwtSecret}
 ENCRYPTION_KEY=${contents.encryptionKey}
-
+${contents.plaidEncryptionKey ? `PLAID_ENCRYPTION_KEY=${contents.plaidEncryptionKey}\n` : ''}
 # Sensible defaults — adjust after logging in:
 NODE_ENV=production
 PORT=3001

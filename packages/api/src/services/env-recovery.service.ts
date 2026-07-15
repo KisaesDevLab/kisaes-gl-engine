@@ -28,10 +28,17 @@ export interface RecoveryEnvValues {
   encryptionKey: string;
   jwtSecret: string;
   databaseUrl: string;
+  /**
+   * v2: the credential-encryption key (utils/encryption.ts keys *_encrypted
+   * DB columns off PLAID_ENCRYPTION_KEY). Without it, a cross-host restore
+   * leaves every restored Plaid/SMS/AI/storage credential undecryptable and
+   * unrecoverable. Optional so v1 files still parse.
+   */
+  plaidEncryptionKey?: string;
 }
 
 export interface RecoveryFileContents extends RecoveryEnvValues {
-  version: 1;
+  version: 1 | 2;
   createdAt: string;
   installationId: string | null;
 }
@@ -40,8 +47,23 @@ export function getRecoveryFilePath(): string {
   return path.join(process.env['DATA_DIR'] || '/data', '.env.recovery');
 }
 
+/**
+ * Where a cross-host restore parks the SOURCE installation's recovery file.
+ * The regular path gets a freshly-keyed file for THIS host; the source copy
+ * stays available so the operator can later enter their ORIGINAL recovery
+ * key and recover the source credential-encryption key (see
+ * credential-reencrypt.service.ts).
+ */
+export function getSourceRecoveryFilePath(): string {
+  return path.join(process.env['DATA_DIR'] || '/data', '.env.recovery.source');
+}
+
 export function recoveryFileExists(): boolean {
   return fs.existsSync(getRecoveryFilePath());
+}
+
+export function sourceRecoveryFileExists(): boolean {
+  return fs.existsSync(getSourceRecoveryFilePath());
 }
 
 /**
@@ -53,12 +75,13 @@ export function writeRecoveryFile(recoveryKey: string, values: RecoveryEnvValues
   const passphrase = recoveryKeyToPassphrase(parsed);
 
   const payload: RecoveryFileContents = {
-    version: 1,
+    version: 2,
     createdAt: new Date().toISOString(),
     installationId,
     encryptionKey: values.encryptionKey,
     jwtSecret: values.jwtSecret,
     databaseUrl: values.databaseUrl,
+    ...(values.plaidEncryptionKey ? { plaidEncryptionKey: values.plaidEncryptionKey } : {}),
   };
   const plaintext = Buffer.from(JSON.stringify(payload), 'utf8');
   const encrypted = encryptWithPassphrase(plaintext, passphrase);
@@ -81,17 +104,41 @@ export function writeRecoveryFileRaw(raw: Buffer): void {
 }
 
 /**
+ * Park the SOURCE installation's recovery file (from a bundle) during a
+ * cross-host restore, where the main path gets a new key's file instead.
+ */
+export function writeSourceRecoveryFileRaw(raw: Buffer): void {
+  const magic = Buffer.from('VMBP', 'ascii');
+  if (raw.length < 64 || !raw.subarray(0, magic.length).equals(magic)) {
+    throw new Error('not a valid recovery file: VMBP header missing');
+  }
+  writeAtomicSync(getSourceRecoveryFilePath(), raw, 0o600);
+}
+
+/**
  * Read /data/.env.recovery and decrypt it with the supplied key. Returns
  * null if the file does not exist. Throws on parse / decrypt failure with a
  * clear error — the caller displays this to the operator in the EnvMissing
  * diagnostic page.
  */
 export function readRecoveryFile(recoveryKey: string): RecoveryFileContents | null {
-  if (!recoveryFileExists()) return null;
+  return readRecoveryFileAt(getRecoveryFilePath(), recoveryKey);
+}
+
+/**
+ * Read the parked SOURCE installation recovery file (cross-host restores).
+ * Decrypts with the operator's ORIGINAL recovery key.
+ */
+export function readSourceRecoveryFile(recoveryKey: string): RecoveryFileContents | null {
+  return readRecoveryFileAt(getSourceRecoveryFilePath(), recoveryKey);
+}
+
+function readRecoveryFileAt(filePath: string, recoveryKey: string): RecoveryFileContents | null {
+  if (!fs.existsSync(filePath)) return null;
   const parsed = parseRecoveryKey(recoveryKey);
   const passphrase = recoveryKeyToPassphrase(parsed);
 
-  const fileBuf = fs.readFileSync(getRecoveryFilePath());
+  const fileBuf = fs.readFileSync(filePath);
   let decrypted: Buffer;
   try {
     decrypted = decryptWithPassphrase(fileBuf, passphrase);
@@ -104,7 +151,8 @@ export function readRecoveryFile(recoveryKey: string): RecoveryFileContents | nu
   } catch {
     throw new Error('recovery file decrypted but contains invalid JSON');
   }
-  if (json.version !== 1) {
+  // v1 lacks plaidEncryptionKey; both versions carry the three core values.
+  if (json.version !== 1 && json.version !== 2) {
     throw new Error(`unsupported recovery file version ${json.version}`);
   }
   if (!json.encryptionKey || !json.jwtSecret || !json.databaseUrl) {

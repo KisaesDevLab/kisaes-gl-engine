@@ -32,7 +32,9 @@ export type SentinelAuditEvent =
   // Phase B recovery events
   | 'recovery.key_regenerated'
   | 'recovery.key_used'
-  | 'recovery.key_deleted';
+  | 'recovery.key_deleted'
+  // Cross-host credential recovery (re-encrypt *_encrypted under this host's key)
+  | 'credentials.reencrypted';
 
 export function sentinelAudit(event: SentinelAuditEvent, details: Record<string, unknown> = {}): void {
   const line = JSON.stringify({

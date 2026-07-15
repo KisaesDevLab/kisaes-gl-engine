@@ -25,7 +25,9 @@ import {
   readRecoveryFile,
   recoveryFileExists,
   deleteRecoveryFile,
+  sourceRecoveryFileExists,
 } from '../services/env-recovery.service.js';
+import { recoverCredentialEncryption } from '../services/credential-reencrypt.service.js';
 import {
   createSentinel,
   readSentinelHeader,
@@ -1334,7 +1336,41 @@ adminRouter.get('/security/status', async (_req, res) => {
     recoveryFileStale,
     staleFields,
     dbInstallationId,
+    // Cross-host restores park the source install's recovery file so the
+    // operator can recover credential encryption with their original key.
+    sourceRecoveryFileExists: sourceRecoveryFileExists(),
   });
+});
+
+/**
+ * Cross-host credential recovery: re-encrypt every stored *_encrypted
+ * credential from the SOURCE server's key to this server's key. The source
+ * key comes either from the parked source recovery file (operator enters
+ * their ORIGINAL recovery key) or as a directly-pasted PLAID_ENCRYPTION_KEY.
+ * Verify-first and transactional — a wrong key changes nothing.
+ */
+adminRouter.post('/security/credential-encryption/recover', stepUpLimiter, async (req, res) => {
+  const password = (req.body?.password ?? '').toString();
+  if (!password) {
+    res.status(400).json({ error: { message: 'current password required' } });
+    return;
+  }
+  if (!(await verifyCallerPassword(req.userId!, password))) {
+    res.status(401).json({ error: { message: 'incorrect password' } });
+    return;
+  }
+
+  const report = await recoverCredentialEncryption({
+    recoveryKey: typeof req.body?.recoveryKey === 'string' ? req.body.recoveryKey : undefined,
+    sourceKey: typeof req.body?.sourceKey === 'string' ? req.body.sourceKey : undefined,
+  });
+  sentinelAudit('credentials.reencrypted', {
+    source: 'admin-security-page',
+    origin: report.sourceKeyOrigin,
+    reencrypted: report.totals.reencrypted,
+    unreadable: report.totals.unreadable,
+  });
+  res.json(report);
 });
 
 /**
@@ -1387,7 +1423,7 @@ adminRouter.post('/security/recovery-file/refresh', stepUpLimiter, async (req, r
 
   const installationId = await getSetting(SystemSettingsKeys.INSTALLATION_ID);
   try {
-    writeRecoveryFile(recoveryKey, { encryptionKey, jwtSecret, databaseUrl }, installationId);
+    writeRecoveryFile(recoveryKey, { encryptionKey, jwtSecret, databaseUrl, ...(process.env['PLAID_ENCRYPTION_KEY'] ? { plaidEncryptionKey: process.env['PLAID_ENCRYPTION_KEY'] } : {}) }, installationId);
   } catch (err) {
     res.status(500).json({ error: { message: (err as Error).message } });
     return;
@@ -1435,7 +1471,7 @@ adminRouter.post('/security/recovery-key/regenerate', stepUpLimiter, async (req,
   const installationId = await getSetting(SystemSettingsKeys.INSTALLATION_ID);
   const newKey = generateRecoveryKey();
   try {
-    writeRecoveryFile(newKey, { encryptionKey, jwtSecret, databaseUrl }, installationId);
+    writeRecoveryFile(newKey, { encryptionKey, jwtSecret, databaseUrl, ...(process.env['PLAID_ENCRYPTION_KEY'] ? { plaidEncryptionKey: process.env['PLAID_ENCRYPTION_KEY'] } : {}) }, installationId);
   } catch (err) {
     res.status(500).json({ error: { message: (err as Error).message } });
     return;
@@ -1546,7 +1582,7 @@ adminRouter.post('/security/installation-id/rotate', stepUpLimiter, async (req, 
       newRecoveryKey = generateRecoveryKey();
       writeRecoveryFile(
         newRecoveryKey,
-        { encryptionKey, jwtSecret, databaseUrl },
+        { encryptionKey, jwtSecret, databaseUrl, ...(process.env['PLAID_ENCRYPTION_KEY'] ? { plaidEncryptionKey: process.env['PLAID_ENCRYPTION_KEY'] } : {}) },
         newInstallationId,
       );
       return { installationId: newInstallationId, recoveryKey: newRecoveryKey };

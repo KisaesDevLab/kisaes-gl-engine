@@ -690,6 +690,7 @@ export async function completeSetupSentinel(input: {
         encryptionKey: input.encryptionKey,
         jwtSecret: input.jwtSecret,
         databaseUrl: input.databaseUrl,
+        ...(process.env['PLAID_ENCRYPTION_KEY'] ? { plaidEncryptionKey: process.env['PLAID_ENCRYPTION_KEY'] } : {}),
       },
       installationId,
     );
