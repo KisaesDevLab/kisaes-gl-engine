@@ -16,10 +16,14 @@ import type { AccountType } from '../types/accounts.js';
 export const AP_TYPE_LETTER_MAP: Record<string, AccountType> = {
   A: 'asset',
   L: 'liability',
-  E: 'equity',
+  // Accounting Power exports use E for EXPENSE (not equity) and Q for
+  // equity. E was previously mapped to 'equity', silently flipping every
+  // expense account onto the balance sheet.
+  Q: 'equity',
+  E: 'expense',
   I: 'revenue',         // Income
   R: 'revenue',         // Some AP exports use R
-  X: 'expense',
+  X: 'expense',         // Older AP exports
   C: 'cogs',
 };
 

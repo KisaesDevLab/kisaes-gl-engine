@@ -139,6 +139,52 @@ describe('Imports Service', () => {
       expect(allAccts.find((a) => a.accountNumber === '4000')!.accountType).toBe('revenue');
       expect(allAccts.find((a) => a.accountNumber === '5000')!.accountType).toBe('cogs');
     });
+
+    it('maps E to EXPENSE (not equity) and Q to equity', async () => {
+      // Regression: E was mapped to 'equity', silently flipping every
+      // Accounting Power expense account onto the balance sheet.
+      const csvEQ = `Account, Description, Type, Class, Category, SubAccount Of
+"3000","Owner capital","Q","Equity","",""
+"6000","Rent expense","E","Expenses","",""
+`;
+      const out = await importsService.createSession({
+        tenantId, companyId, userId,
+        file: fileFromText('coa-eq.csv', csvEQ),
+        kind: 'coa', sourceSystem: 'accounting_power', options: {},
+      });
+      expect(out.session.errorCount).toBe(0);
+      await importsService.commitSession(tenantId, companyId, userId, out.session.id);
+      const allAccts = await db.select().from(accounts).where(eq(accounts.tenantId, tenantId));
+      expect(allAccts.find((a) => a.accountNumber === '6000')!.accountType).toBe('expense');
+      expect(allAccts.find((a) => a.accountNumber === '3000')!.accountType).toBe('equity');
+    });
+  });
+
+  describe('QuickBooks Online CoA (CSV export)', () => {
+    it('parses the QBO CSV format with account numbers and skips junk rows', async () => {
+      // QBO exports the CoA as CSV (not XLSX) with these exact columns;
+      // this format previously threw IMPORT_INVALID_FORMAT (ExcelJS on CSV).
+      const csv = `Account number,Full Name,Account type,Detail type
+11000,CASH - Operating,Bank,Checking
+20100,Cards Payable,Credit Card,Credit Card
+96000,Interest Expense,Other Expense,Other Miscellaneous Expense
+TOTAL,,,
+"Wednesday, Jul 15, 2026 09:03:29 AM GMT-7",,,
+`;
+      const out = await importsService.createSession({
+        tenantId, companyId, userId,
+        file: fileFromText('qbo-coa.csv', csv),
+        kind: 'coa', sourceSystem: 'quickbooks_online', options: {},
+      });
+      expect(out.session.errorCount).toBe(0);
+      expect(out.session.rowCount).toBe(3);
+      await importsService.commitSession(tenantId, companyId, userId, out.session.id);
+      const allAccts = await db.select().from(accounts).where(eq(accounts.tenantId, tenantId));
+      expect(allAccts).toHaveLength(3);
+      expect(allAccts.find((a) => a.name === 'CASH - Operating')!.accountType).toBe('asset');
+      expect(allAccts.find((a) => a.name === 'CASH - Operating')!.accountNumber).toBe('11000');
+      expect(allAccts.find((a) => a.name === 'Interest Expense')!.accountType).toBe('other_expense');
+    });
   });
 
   describe('Accounting Power Trial Balance', () => {
@@ -605,6 +651,33 @@ Cythia Martin","","Monett","MO","65708",,,"",False,False,True,Net 15,5920,""
       const txns = await db.select().from(transactions).where(eq(transactions.tenantId, tenantId));
       expect(txns.length).toBe(2);
       expect(txns.map((t) => t.txnDate).sort()).toEqual(['2025-01-02', '2025-01-03']);
+    });
+
+    it('skips the grand-TOTAL and trailing timestamp rows (real QBO footer)', async () => {
+      await db.insert(accounts).values([
+        { tenantId, companyId, name: 'Car Wash Checking', accountType: 'asset' },
+        { tenantId, companyId, name: 'Operating Revenue', accountType: 'revenue' },
+      ]);
+      const file = await xlsxFromGrid('journal-footer.xlsx', 'Journal', [
+        ['Test Co'],
+        ['Journal'],
+        ['All Dates'],
+        [],
+        [null, 'Date', 'Transaction Type', 'Num', 'Name', 'Memo/Description', 'Account', 'Debit', 'Credit'],
+        [null, '01/02/2025', 'Deposit', null, null, 'Sale 1', 'Car Wash Checking', 3.5, null],
+        [null, null, null, null, null, 'Sale 1', 'Operating Revenue', null, 3.5],
+        [null, null, null, null, null, null, null, 3.5, 3.5],
+        [],
+        [null, 'TOTAL', null, null, null, null, null, 3.5, 3.5],
+        [],
+        ['Wednesday, Jul 15, 2026 09:03:29 AM GMT-7 - Accrual Basis'],
+      ]);
+      const out = await importsService.createSession({
+        tenantId, companyId, userId,
+        file, kind: 'gl_transactions', sourceSystem: 'quickbooks_online', options: {},
+      });
+      expect(out.session.errorCount).toBe(0);
+      expect(out.preview.jeGroupCount).toBe(1);
     });
   });
 

@@ -21,6 +21,7 @@ import {
   type ContactKind,
   type ImportValidationError,
 } from '@kis-books/shared';
+import { parseCsvText } from '../../payroll-parse.service.js';
 
 // ── Shared helpers ────────────────────────────────────────────────
 
@@ -132,9 +133,106 @@ function cellToIsoDate(c: unknown): string | null {
 
 const QBO_COA_HEADER = ['Full name', 'Type', 'Detail type'] as const;
 
+/** ZIP magic ("PK") — an .xlsx is a ZIP; anything else from QBO is CSV. */
+const isZipBuffer = (buf: Buffer): boolean => buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4b;
+
+/**
+ * Shared CoA row shaping for both the XLSX and CSV paths: type-text
+ * mapping, Parent:Child splitting, optional account number.
+ */
+function buildCoaRow(
+  rowNumber: number,
+  fullName: string,
+  typeText: string,
+  detailType: string | undefined,
+  description: string | undefined,
+  accountNumber: string | undefined,
+  errors: ImportValidationError[],
+): CanonicalCoaRow | null {
+  const accountType = QBO_TYPE_TEXT_MAP[typeText.toLowerCase()];
+  if (!accountType) {
+    errors.push({
+      rowNumber,
+      field: 'Type',
+      code: 'IMPORT_UNKNOWN_TYPE',
+      message: `Unknown QuickBooks Type "${typeText}". Map this manually or extend QBO_TYPE_TEXT_MAP.`,
+    });
+    return null;
+  }
+  // QBO's Parent:Child convention. Split on the LAST ":" so multi-colon
+  // names like "Income:Sales:Online" produce parentName "Income:Sales".
+  let name = fullName;
+  let parentName: string | undefined;
+  const colon = fullName.lastIndexOf(':');
+  if (colon !== -1) {
+    parentName = fullName.slice(0, colon).trim();
+    name = fullName.slice(colon + 1).trim();
+  }
+  return {
+    rowNumber,
+    name,
+    accountType,
+    detailType: detailType || undefined,
+    description: description || undefined,
+    parentName,
+    ...(accountNumber ? { accountNumber } : {}),
+  };
+}
+
+/**
+ * QBO chart-of-accounts CSV export ("Account number, Full Name, Account
+ * type, Detail type"). QBO exports the CoA as CSV (reports export as
+ * XLSX); routing every QBO upload to ExcelJS made this format throw an
+ * opaque IMPORT_INVALID_FORMAT.
+ */
+function parseCoaCsv(buf: Buffer): { rows: CanonicalCoaRow[]; errors: ImportValidationError[] } {
+  const rows: CanonicalCoaRow[] = [];
+  const errors: ImportValidationError[] = [];
+  const text = buf.toString('utf8').replace(/^﻿/, '');
+  const grid = parseCsvText(text);
+  const headerRowIdx = findHeaderRow(grid, ['name', 'type']);
+  if (headerRowIdx === -1) {
+    errors.push({
+      rowNumber: 0,
+      code: 'IMPORT_HEADER_NOT_FOUND',
+      message: 'Could not locate the header row. Expected columns like: Account number, Full Name, Account type, Detail type.',
+    });
+    return { rows, errors };
+  }
+  const header = (grid[headerRowIdx] ?? []).map((c) => String(c ?? ''));
+  const iNumber = colIdxFuzzy(header, 'account number');
+  const iName = colIdxFuzzy(header, 'full name');
+  const iType = colIdxFuzzy(header, 'account type') !== -1 ? colIdxFuzzy(header, 'account type') : colIdx(header, 'type');
+  const iDetail = colIdxFuzzy(header, 'detail type');
+  const iDesc = colIdxFuzzy(header, 'description');
+
+  for (let i = headerRowIdx + 1; i < grid.length; i++) {
+    const r = grid[i] ?? [];
+    const rowNumber = i + 1;
+    const fullName = String(r[iName] ?? '').trim();
+    const typeText = String(r[iType] ?? '').trim();
+    // Title rows above / TOTAL and timestamp rows below the data carry no
+    // type text — skip them instead of erroring.
+    if (!fullName || !typeText || /^total\b/i.test(fullName)) continue;
+    const row = buildCoaRow(
+      rowNumber,
+      fullName,
+      typeText,
+      iDetail !== -1 ? String(r[iDetail] ?? '').trim() : undefined,
+      iDesc !== -1 ? String(r[iDesc] ?? '').trim() : undefined,
+      iNumber !== -1 ? String(r[iNumber] ?? '').trim() : undefined,
+      errors,
+    );
+    if (row) rows.push(row);
+  }
+  return { rows, errors };
+}
+
 export async function parseCoa(
   buf: Buffer,
 ): Promise<{ rows: CanonicalCoaRow[]; errors: ImportValidationError[] }> {
+  // QBO exports the chart of accounts as CSV; reports export as XLSX.
+  if (!isZipBuffer(buf)) return parseCoaCsv(buf);
   const rows: CanonicalCoaRow[] = [];
   const errors: ImportValidationError[] = [];
   const sheet = await loadSheet(buf);
@@ -158,47 +256,26 @@ export async function parseCoa(
   const iType = colIdx(header, 'type');
   const iDetail = colIdx(header, 'detail type');
   const iDesc = colIdx(header, 'description');
+  // Present when the QBO company has account numbers enabled.
+  const iNumber = colIdxFuzzy(header, 'account number');
 
   for (let i = headerRowIdx + 1; i < sheet.rows.length; i++) {
     const r = sheet.rows[i] ?? [];
     const rowNumber = i + 1;
     const fullName = cellToString(r[iName]).trim();
     const typeText = cellToString(r[iType]).trim();
-    if (!fullName || !typeText) continue;
+    if (!fullName || !typeText || /^total\b/i.test(fullName)) continue;
 
-    const accountType = QBO_TYPE_TEXT_MAP[typeText.toLowerCase()];
-    if (!accountType) {
-      errors.push({
-        rowNumber,
-        field: 'Type',
-        code: 'IMPORT_UNKNOWN_TYPE',
-        message: `Unknown QuickBooks Type "${typeText}". Map this manually or extend QBO_TYPE_TEXT_MAP.`,
-      });
-      continue;
-    }
-
-    // QBO's Parent:Child convention. Split on the LAST ":" so multi-
-    // colon names like "Income:Sales:Online" produce parentName
-    // "Income:Sales" (which itself must exist in the file).
-    let name = fullName;
-    let parentName: string | undefined;
-    const colon = fullName.lastIndexOf(':');
-    if (colon !== -1) {
-      parentName = fullName.slice(0, colon).trim();
-      name = fullName.slice(colon + 1).trim();
-    }
-
-    const detailType = iDetail !== -1 ? cellToString(r[iDetail]).trim() || undefined : undefined;
-    const description = iDesc !== -1 ? cellToString(r[iDesc]).trim() || undefined : undefined;
-
-    rows.push({
+    const row = buildCoaRow(
       rowNumber,
-      name,
-      accountType,
-      detailType,
-      description,
-      parentName,
-    });
+      fullName,
+      typeText,
+      iDetail !== -1 ? cellToString(r[iDetail]).trim() : undefined,
+      iDesc !== -1 ? cellToString(r[iDesc]).trim() : undefined,
+      iNumber !== -1 ? cellToString(r[iNumber]).trim() : undefined,
+      errors,
+    );
+    if (row) rows.push(row);
   }
   return { rows, errors };
 }
@@ -460,6 +537,17 @@ export async function parseGl(
     // It's the marker that the JE just ended; don't include it in the
     // group, but do close the current group (if any).
     if (!account && debit && credit && debit === credit) {
+      closeCurrent();
+      continue;
+    }
+
+    // Grand-TOTAL row at the end of the report: QBO puts the literal
+    // "TOTAL" in a leading text column (which one varies by export).
+    // Without this skip it reads as a detail-before-header error.
+    const leadingText = [cellToString(r[0]), cellToString(r[iDate]), account, txnType]
+      .map((t) => t.trim().toLowerCase())
+      .find((t) => t.length > 0);
+    if (leadingText && /^total\b/.test(leadingText)) {
       closeCurrent();
       continue;
     }
