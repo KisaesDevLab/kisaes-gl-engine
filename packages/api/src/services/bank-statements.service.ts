@@ -105,7 +105,11 @@ export async function insertStatementLines(
     const amount = signedStatementAmount(t.amount, t.type);
     if (!amount || !t.date || !DATE_RE.test(t.date)) continue;
     const parsedCheck = parseCheckNumber(t.description);
-    const checkImage = parsedCheck != null ? checksByNumber.get(parsedCheck) : undefined;
+    // Only a debit is a check — never stamp a check-image payee onto a
+    // "DEPOSIT REF #1234" credit line. signedStatementAmount here is
+    // credit-positive / debit-NEGATIVE, so money-out is the negative side.
+    const isDebit = parseFloat(amount) < 0;
+    const checkImage = parsedCheck != null && isDebit ? checksByNumber.get(parsedCheck) : undefined;
     rows.push({
       tenantId,
       statementId,

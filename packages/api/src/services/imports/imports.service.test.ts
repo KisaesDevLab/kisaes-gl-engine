@@ -695,6 +695,29 @@ Cythia Martin","","Monett","MO","65708",,,"",False,False,True,Net 15,5920,""
       expect(out.session.errorCount).toBe(0);
       expect(out.preview.jeGroupCount).toBe(1);
     });
+
+    it('does NOT treat a JE line for an account named "Total ..." as a footer', async () => {
+      await db.insert(accounts).values([
+        { tenantId, companyId, name: 'Total Car Care', accountType: 'expense' },
+        { tenantId, companyId, name: 'Operating Cash', accountType: 'asset' },
+      ]);
+      const file = await xlsxFromGrid('journal-total-acct.xlsx', 'Journal', [
+        ['Test Co'], ['Journal'], ['All Dates'], [],
+        [null, 'Date', 'Transaction Type', 'Num', 'Name', 'Memo/Description', 'Account', 'Debit', 'Credit'],
+        [null, '01/05/2025', 'Expense', null, null, 'Wash', 'Total Car Care', 10, null],
+        [null, null, null, null, null, 'Wash', 'Operating Cash', null, 10],
+        [null, null, null, null, null, null, null, 10, 10],
+      ]);
+      const out = await importsService.createSession({
+        tenantId, companyId, userId,
+        file, kind: 'gl_transactions', sourceSystem: 'quickbooks_online', options: {},
+      });
+      expect(out.session.errorCount).toBe(0);
+      expect(out.preview.jeGroupCount).toBe(1);
+      // The "Total Car Care" line must survive — the JE has both lines.
+      const commit = await importsService.commitSession(tenantId, companyId, userId, out.session.id);
+      expect(commit.result.created).toBe(1);
+    });
   });
 
   // ── Error-path coverage ────────────────────────────────────────

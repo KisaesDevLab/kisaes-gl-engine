@@ -562,8 +562,9 @@ export async function parseGl(
       const lead = [cellToString(r[0]), cellToString(r[iDate])]
         .map((t) => t.trim())
         .find((t) => t.length > 0);
-      const accountIsFooterLabel = /^total( for .+)?$/i.test(account.trim());
-      const isFooter = accountIsFooterLabel || (!account && !!lead && /^total\b/i.test(lead));
+      // Exact "TOTAL" only — a real account literally named "Total for
+      // Reserves" is a JE continuation row, not a footer.
+      const isFooter = /^total$/i.test(account.trim()) || (!account && !!lead && /^total\b/i.test(lead));
       if (isFooter) {
         closeCurrent();
         continue;

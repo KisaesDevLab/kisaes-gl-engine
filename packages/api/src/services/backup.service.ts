@@ -229,7 +229,7 @@ export async function createBackup(
   passphrase: string,
   options: { includeAttachments?: boolean } = {},
   userId?: string,
-): Promise<{ backupId: string; fileName: string; size: number }> {
+): Promise<{ backupId: string; fileName: string; size: number; warning?: string }> {
   // Validate tenantId is a UUID
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tenantId)) {
     throw AppError.badRequest('Invalid tenant id format');

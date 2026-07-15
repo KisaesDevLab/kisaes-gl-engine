@@ -28,6 +28,56 @@ import {
 
 export const PACKAGE_FORMAT_VERSION = 2;
 
+// Hard ceiling on the inflated size of ANY single package entry. Legitimate
+// entries are written with `store: true` (no compression), so this only
+// trips on a crafted deflate bomb. The ZIP central directory's declared
+// uncompressedSize is attacker-controlled and unzipper doesn't enforce it,
+// so we bound the ACTUAL bytes read off the stream instead of trusting it.
+const MAX_PACKAGE_ENTRY_BYTES = 600 * 1024 * 1024;
+
+export class PackageEntryTooLargeError extends Error {
+  constructor(path: string) {
+    super(`Package entry ${path} exceeds the maximum allowed size`);
+    this.name = 'PackageEntryTooLargeError';
+  }
+}
+
+// unzipper's File objects expose stream() at runtime, but @types/unzipper
+// omits it — describe just what we use.
+type UnzipperEntry = { path: string; buffer: () => Promise<Buffer>; stream?: () => NodeJS.ReadableStream };
+
+// Read a zip entry into a Buffer, aborting if the decompressed stream
+// exceeds MAX_PACKAGE_ENTRY_BYTES — the only real defense against a deflate
+// bomb (the declared size can lie; the byte count as we read cannot).
+async function bufferEntryBounded(
+  file: UnzipperEntry,
+  maxBytes = MAX_PACKAGE_ENTRY_BYTES,
+): Promise<Buffer> {
+  // Fall back to buffer() only if a build ever lacks stream() — the bound
+  // is the whole point, so prefer the streaming path.
+  if (typeof file.stream !== 'function') {
+    const buf = await file.buffer();
+    if (buf.length > maxBytes) throw new PackageEntryTooLargeError(file.path);
+    return buf;
+  }
+  return await new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    const stream = file.stream!();
+    stream.on('data', (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        (stream as unknown as { destroy: (e?: Error) => void }).destroy();
+        reject(new PackageEntryTooLargeError(file.path));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    stream.on('end', () => resolve(Buffer.concat(chunks)));
+    stream.on('error', reject);
+  });
+}
+
 export interface PackageAttachment {
   id: string;
   buffer: Buffer;
@@ -110,21 +160,9 @@ export async function readTenantPackage(source: string | Buffer, passphrase: str
 
   const find = (name: string) => directory.files.find((f) => f.path === name);
 
-  // Deflate-bomb guard: the ZIP directory declares each entry's inflated
-  // size BEFORE we buffer it — reject implausible manifest/data entries so
-  // a few-MB crafted upload can't inflate gigabytes into RAM (the GCM tag
-  // would only fail AFTER the allocation).
-  const MAX_ENTRY_INFLATED = 500 * 1024 * 1024;
-  const assertSaneEntry = (f: { path: string; uncompressedSize?: number }) => {
-    if ((f.uncompressedSize ?? 0) > MAX_ENTRY_INFLATED) {
-      throw new Error(`Package entry ${f.path} declares an implausible size`);
-    }
-  };
-
   const manifestFile = find('manifest.json');
   if (!manifestFile) throw new Error('Not a Vibe MyBooks package (manifest.json missing)');
-  assertSaneEntry(manifestFile);
-  const manifest = JSON.parse((await manifestFile.buffer()).toString('utf8')) as Record<string, unknown>;
+  const manifest = JSON.parse((await bufferEntryBounded(manifestFile)).toString('utf8')) as Record<string, unknown>;
   const kdf = manifest['kdf'] as { salt?: string } | undefined;
   const saltHex = kdf?.salt ?? '';
   if (!saltHex) throw new Error('Package manifest is missing its encryption salt');
@@ -132,11 +170,11 @@ export async function readTenantPackage(source: string | Buffer, passphrase: str
 
   const dataFile = find('data.json.enc');
   if (!dataFile) throw new Error('Package is missing its data payload');
-  assertSaneEntry(dataFile);
   let dataBuf: Buffer;
   try {
-    dataBuf = decryptEntry(key, await dataFile.buffer());
-  } catch {
+    dataBuf = decryptEntry(key, await bufferEntryBounded(dataFile));
+  } catch (err) {
+    if (err instanceof PackageEntryTooLargeError) throw err;
     throw new Error('Incorrect passphrase or corrupted package');
   }
   const data = JSON.parse(dataBuf.toString('utf8'));
@@ -149,7 +187,7 @@ export async function readTenantPackage(source: string | Buffer, passphrase: str
   async function* attachments(): AsyncGenerator<PackageAttachment> {
     for (const f of attachmentEntries) {
       const id = f.path.slice('attachments/'.length, -'.enc'.length);
-      const buffer = decryptEntry(key, await f.buffer());
+      const buffer = decryptEntry(key, await bufferEntryBounded(f));
       yield { id, buffer };
     }
   }
@@ -432,7 +470,7 @@ export async function peekPackageManifest(filePath: string): Promise<Record<stri
   const directory = await unzipper.Open.file(filePath);
   const manifestFile = directory.files.find((f) => f.path === 'manifest.json');
   if (!manifestFile) throw new Error('Not a Vibe MyBooks package (manifest.json missing)');
-  return JSON.parse((await manifestFile.buffer()).toString('utf8')) as Record<string, unknown>;
+  return JSON.parse((await bufferEntryBounded(manifestFile)).toString('utf8')) as Record<string, unknown>;
 }
 
 /**
@@ -459,13 +497,13 @@ export async function openAndVerifyPart(filePath: string, passphrase: string): P
   let series: Record<string, unknown> | null = null;
   if (seriesEntry) {
     const f = part.directory.files.find((x) => x.path === 'series.json.enc')!;
-    const buf = await f.buffer();
+    const buf = await bufferEntryBounded(f);
     if (sha256Hex(buf) !== seriesEntry.sha256) throw new Error('series.json.enc does not match its inventory hash');
     series = JSON.parse(decryptEntry(part.key, buf).toString('utf8')) as Record<string, unknown>;
     if (series['backupId'] !== part.inventoryBackupId) throw new Error('series backupId mismatch within part');
   }
   const manifestFile = part.directory.files.find((f) => f.path === 'manifest.json')!;
-  const manifest = JSON.parse((await manifestFile.buffer()).toString('utf8')) as Record<string, unknown>;
+  const manifest = JSON.parse((await bufferEntryBounded(manifestFile)).toString('utf8')) as Record<string, unknown>;
   return {
     multipart: { backupId: part.inventoryBackupId, partIndex: part.index },
     hasSeries: !!seriesEntry,
@@ -484,7 +522,7 @@ async function openPart(filePath: string, passphrase: string): Promise<OpenedPar
 
   const manifestFile = find('manifest.json');
   if (!manifestFile) throw new Error(`${filePath}: not a Vibe MyBooks package (manifest.json missing)`);
-  const manifest = JSON.parse((await manifestFile.buffer()).toString('utf8')) as Record<string, unknown>;
+  const manifest = JSON.parse((await bufferEntryBounded(manifestFile)).toString('utf8')) as Record<string, unknown>;
   const multipart = manifest['multipart'] as { backupId?: string; partIndex?: number } | undefined;
   if (!multipart || typeof multipart.partIndex !== 'number') return null;
 
@@ -496,7 +534,7 @@ async function openPart(filePath: string, passphrase: string): Promise<OpenedPar
   if (!invFile) throw new Error(`${filePath}: part inventory (part.json.enc) missing`);
   let invBuf: Buffer;
   try {
-    invBuf = decryptEntry(key, await invFile.buffer());
+    invBuf = decryptEntry(key, await bufferEntryBounded(invFile));
   } catch {
     throw new Error('Incorrect passphrase or corrupted package');
   }
@@ -578,7 +616,7 @@ export async function readTenantPackageMulti(paths: string[], passphrase: string
     if (!inv) continue;
     if (series) throw new Error('Multiple series descriptors found across parts');
     const f = p.directory.files.find((x) => x.path === 'series.json.enc')!;
-    const buf = await f.buffer();
+    const buf = await bufferEntryBounded(f);
     if (sha256Hex(buf) !== inv.sha256) throw new Error('series.json.enc does not match its inventory hash');
     series = JSON.parse(decryptEntry(p.key, buf).toString('utf8'));
   }
@@ -609,7 +647,7 @@ export async function readTenantPackageMulti(paths: string[], passphrase: string
     const inv = p.shaByName.get(name)!;
     const f = p.directory.files.find((x) => x.path === name);
     if (!f) throw new Error(`Part ${p.index}: missing entry ${name}`);
-    const raw = await f.buffer();
+    const raw = await bufferEntryBounded(f);
     if (raw.length !== inv.bytes || sha256Hex(raw) !== inv.sha256) {
       throw new Error(`Part ${p.index}: entry ${name} does not match its authenticated inventory (corrupted or tampered)`);
     }
@@ -692,7 +730,7 @@ export async function readTenantPackageMulti(paths: string[], passphrase: string
   }
 
   const manifestFile = first.directory.files.find((f) => f.path === 'manifest.json')!;
-  const manifest = JSON.parse((await manifestFile.buffer()).toString('utf8')) as Record<string, unknown>;
+  const manifest = JSON.parse((await bufferEntryBounded(manifestFile)).toString('utf8')) as Record<string, unknown>;
 
   return {
     manifest,

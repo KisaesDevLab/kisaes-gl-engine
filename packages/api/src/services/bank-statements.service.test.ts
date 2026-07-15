@@ -22,6 +22,7 @@ import {
   tenants, users, sessions, accounts, companies, auditLog, contacts,
   transactions, journalLines, tags, transactionTags,
   reconciliations, reconciliationLines, bankStatements, bankFeedItems,
+  bankStatementLines,
   bankConnections, aiJobs, attachments,
 } from '../db/schema/index.js';
 import * as bankStatementsService from './bank-statements.service.js';
@@ -444,6 +445,33 @@ describe('Bank Statements Service', () => {
       });
       const recon = await reconciliation.start(tenantId, bankAccountId, '2026-04-30', '10.00');
       await expect(reconciliation.autoClearStatement(tenantId, recon.id)).rejects.toThrow(/not linked/i);
+    });
+  });
+
+  describe('insertStatementLines check-image payees', () => {
+    it('stamps a check payee only on the debit check, never on a same-number deposit', async () => {
+      const { job } = await mkStatementJob({
+        transactions: [
+          { date: '2026-04-05', description: 'CHECK 1042', amount: '150.00', type: 'debit' },
+          { date: '2026-04-06', description: 'DEPOSIT REF #1042', amount: '150.00', type: 'credit' },
+        ],
+      });
+      // Inject the check-image read for check 1042.
+      await db.update(aiJobs).set({
+        outputData: {
+          ...(job.outputData as Record<string, unknown>),
+          checks: [{ checkNumber: '1042', payee: 'Acme Lawn Care', amount: '150.00' }],
+        },
+      }).where(eq(aiJobs.id, job.id));
+
+      const capture = await bankStatementsService.captureStatementOnImport(tenantId, { jobId: job.id, accountId: bankAccountId });
+      const lines = await db.select().from(bankStatementLines)
+        .where(and(eq(bankStatementLines.tenantId, tenantId), eq(bankStatementLines.statementId, capture!.statement.id)));
+
+      const check = lines.find((l) => l.description === 'CHECK 1042')!;
+      const deposit = lines.find((l) => l.description === 'DEPOSIT REF #1042')!;
+      expect(check.payee).toBe('Acme Lawn Care');
+      expect(deposit.payee).toBeNull(); // the deposit is NOT check 1042
     });
   });
 });

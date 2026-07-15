@@ -63,4 +63,23 @@ describe('vmx-package v2 container', () => {
     expect(pkg.data).toEqual(data);
     expect(pkg.attachmentIds).toEqual([]);
   });
+
+  it('aborts reading an entry that inflates past the size cap (deflate-bomb guard)', async () => {
+    // A real DEFLATE bomb: a compressed zip whose data.json.enc entry
+    // inflates far past the cap. archiver with default compression turns a
+    // highly-repetitive buffer into a tiny stored size but a huge inflated
+    // one — exactly the shape the central-directory size can't be trusted on.
+    const archiver = (await import('archiver')).default;
+    const file = tmp();
+    const out = fs.createWriteStream(file);
+    const archive = archiver('zip', { zlib: { level: 9 } }); // COMPRESSED, not stored
+    archive.pipe(out);
+    archive.append(Buffer.from(JSON.stringify({ format: 'vmx', version: 2, kdf: { salt: 'aa'.repeat(16) } })), { name: 'manifest.json' });
+    // ~1.5 GB of zeros → a few KB compressed, well past MAX_PACKAGE_ENTRY_BYTES inflated.
+    archive.append(Buffer.alloc(1536 * 1024 * 1024), { name: 'data.json.enc' });
+    await archive.finalize();
+    await new Promise((r) => out.on('close', r));
+
+    await expect(readTenantPackage(file, passphrase)).rejects.toThrow(/exceeds the maximum allowed size/i);
+  }, 60000);
 });

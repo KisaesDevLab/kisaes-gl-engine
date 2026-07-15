@@ -224,20 +224,25 @@ export async function bulkDownload(tenantId: string, attachmentIds: string[]): P
     for (const att of rows) {
       try {
         // Pre-check with the stored size so the file that would CROSS the
-        // cap is skipped before it is buffered (not after), and the queue
-        // can never overshoot by one max-size file.
+        // cap is skipped before buffering. Only when something is ALREADY in
+        // the archive — never pre-skip the first/only file on a possibly
+        // stale fileSize, or a single legitimately-requested file could be
+        // dropped for a metadata value that no longer reflects reality; the
+        // post-read backstop still bounds actual memory in that case.
         const expected = Number(att.fileSize ?? 0);
-        if (totalBytes >= BULK_DOWNLOAD_MAX_BYTES || totalBytes + expected > BULK_DOWNLOAD_MAX_BYTES) {
+        if (totalBytes > 0 && totalBytes + expected > BULK_DOWNLOAD_MAX_BYTES) {
           skipped.push({ id: att.id, fileName: att.fileName || att.id, reason: 'total size cap (1 GB) reached — download in smaller batches' });
           continue;
         }
         const bytes = await readAttachmentBytes(tenantId, att);
-        totalBytes += bytes.length;
-        if (totalBytes > BULK_DOWNLOAD_MAX_BYTES) {
-          totalBytes -= bytes.length;
+        // Post-read backstop: overflow only when something already made it in
+        // (a lone oversized file is still delivered rather than yielding an
+        // empty ZIP).
+        if (totalBytes > 0 && totalBytes + bytes.length > BULK_DOWNLOAD_MAX_BYTES) {
           skipped.push({ id: att.id, fileName: att.fileName || att.id, reason: 'total size cap (1 GB) reached — download in smaller batches' });
           continue;
         }
+        totalBytes += bytes.length;
         archive.append(bytes, { name: zipEntryName(usedNames, att.fileName) });
       } catch (err) {
         skipped.push({

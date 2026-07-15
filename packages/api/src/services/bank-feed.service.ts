@@ -993,17 +993,19 @@ async function applyCheckImagePayees(
   checks: StatementCheckImage[],
 ) {
   // Debit-side only: a check is money out, so a deposit can never receive a
-  // check payee no matter how its description parsed.
+  // check payee no matter how its description parsed. This is the single
+  // guard that prevents "DEPOSIT REF #1234" from acquiring check 1234's
+  // image payee — the check number itself stays on the row for reporting.
   const candidates = items.filter((it) => it.checkNumber != null && parseFloat(String(it.amount)) > 0);
   if (candidates.length === 0) return;
 
   const byNumber = new Map<number, StatementCheckImage[]>();
   for (const c of checks) {
-    // Feed items carry INTEGER check numbers, so a non-numeric ref like
-    // '1042A' can never legitimately match an item — parseInt would bucket
-    // it under 1042 and contaminate the real check's payee.
-    if (!/^\d+$/.test(c.checkNumber.trim())) continue;
+    // Bank check-sequence markers ('1042*', '1042A') are legitimate variants
+    // of check 1042 — parseInt buckets them onto 1042, matching the integer
+    // feed-item number. A ref with no leading digits has no valid bucket.
     const n = Number.parseInt(c.checkNumber, 10);
+    if (!Number.isFinite(n)) continue;
     if (!Number.isFinite(n)) continue;
     const arr = byNumber.get(n) ?? [];
     arr.push(c);
@@ -1881,9 +1883,12 @@ export async function importStatementItems(
           ? -Math.abs(parseFloat(txn.amount))
           : Math.abs(parseFloat(txn.amount))
         ).toFixed(4),
-        // Checks are money OUT — never stamp a check number on a deposit.
-        // "DEPOSIT REF #1234" previously acquired check 1234's image payee.
-        checkNumber: txn.type === 'credit' ? null : parseCheckNumber(txn.description),
+        // Keep the parsed check number on credit rows too — a returned/NSF
+        // check reversal is a credit that legitimately references its check.
+        // Payee CONTAMINATION (a deposit acquiring a check's image payee) is
+        // prevented at the correlation point instead (applyCheckImagePayees
+        // only stamps payees onto debit-side items).
+        checkNumber: parseCheckNumber(txn.description),
         status: 'pending' as const,
         // Carried category/tag from the review → shown in the feed; the AI step
         // skips rows that already have suggestedAccountId (see runCategorizationPipeline).
