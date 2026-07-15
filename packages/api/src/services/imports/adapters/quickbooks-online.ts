@@ -553,26 +553,24 @@ export async function parseGl(
       continue;
     }
 
-    // Footer rows: QBO puts the label in a leading text column (varies by
-    // export — sometimes the Date column, so gate on "no PARSEABLE date").
-    //  - EXACT "TOTAL" is the grand-total footer — a real account is never
-    //    named bare "TOTAL", so it's unambiguous and closes any open JE.
-    //  - "Total <something>" is ambiguous (a real account like "Total Car
-    //    Care" vs a QBO subtotal), so only treat it as a footer BETWEEN
-    //    entries (no JE open); inside an open JE it's a continuation line.
-    if (cellToIsoDate(date) === null && !txnType) {
+    // Footer rows: a grand-total / subtotal line QBO appends with the label
+    // in a leading text column (varies by export — sometimes the Date
+    // column, so gate on "no PARSEABLE date"). Only ever skipped BETWEEN
+    // entries (current === null): inside an open JE, a "Total …" row is a
+    // real continuation line for an account literally named that, and must
+    // never truncate the entry. The label must sit in a NON-account cell,
+    // OR the account cell must be exactly "TOTAL" — a real account named
+    // "Total Wine & More" appearing before a header still falls through to
+    // the IMPORT_HEADER_NOT_FOUND path rather than being dropped silently.
+    if (cellToIsoDate(date) === null && !txnType && current === null) {
       const acct = account.trim();
       const lead = [cellToString(r[0]), cellToString(r[iDate])]
         .map((t) => t.trim())
         .find((t) => t.length > 0);
-      const isExactTotal = /^total$/i.test(acct) || (!acct && !!lead && /^total$/i.test(lead));
-      const isTotalPrefix = /^total\b/i.test(acct) || (!acct && !!lead && /^total\b/i.test(lead));
-      if (isExactTotal) {
-        closeCurrent();
-        continue;
-      }
-      if (current === null && isTotalPrefix) {
-        continue; // between-entry subtotal footer; nothing open to close
+      const labelIsTotal = !acct && !!lead && /^total\b/i.test(lead);
+      const acctIsExactTotal = /^total$/i.test(acct);
+      if (labelIsTotal || acctIsExactTotal) {
+        continue; // nothing open to close; just skip the footer
       }
     }
 

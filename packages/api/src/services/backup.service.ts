@@ -107,8 +107,16 @@ async function* bundleFileSource(opts: {
   tenantData: Record<string, Record<string, unknown[]>>;
   globalTables: Record<string, unknown[]>;
   counters: BundleFileCounters;
+  /**
+   * Per-file ceiling, set ONLY for the single-package (.vmx) path whose
+   * restore reads each entry whole. The multi-part DR path SEGMENTS
+   * oversized files across parts and restores them fine, so it leaves this
+   * undefined — capping there would silently drop large attachments the
+   * prior release backed up successfully.
+   */
+  perEntryMaxBytes?: number;
 }): AsyncGenerator<PackageAttachment> {
-  const { tenantIds, tenantData, globalTables, counters } = opts;
+  const { tenantIds, tenantData, globalTables, counters, perEntryMaxBytes } = opts;
   const uploadDir = process.env['UPLOAD_DIR'] || '/data/uploads';
   const providerByTenant = new Map<string, StorageProvider>();
   const providerFor = async (tenantId: string): Promise<StorageProvider> => {
@@ -172,10 +180,11 @@ async function* bundleFileSource(opts: {
           counters.skipped.push({ id: rowId, table: entry.table, reason: 'file not found' });
           continue;
         }
-        // Per-entry restore ceiling: an attachment that would exceed the
-        // read-time package cap would produce a backup that cannot be
-        // restored — skip it (recorded), never bundle it silently.
-        if (buf.length > MAX_PACKAGE_ENTRY_BYTES - 1024 * 1024) {
+        // Per-entry restore ceiling (single-package path only — multi-part
+        // segments oversized files, so perEntryMaxBytes is left undefined
+        // there). A file too large for a whole-entry restore is skipped and
+        // recorded, never bundled into an unrestorable single-package .vmx.
+        if (perEntryMaxBytes != null && buf.length > perEntryMaxBytes) {
           counters.skipped.push({ id: rowId, table: entry.table, reason: 'file exceeds per-entry restore limit' });
           continue;
         }
@@ -212,7 +221,7 @@ async function* bundleFileSource(opts: {
             continue;
           }
         }
-        if (buf.length > MAX_PACKAGE_ENTRY_BYTES - 1024 * 1024) {
+        if (perEntryMaxBytes != null && buf.length > perEntryMaxBytes) {
           counters.skipped.push({ id: entryId, table: entry.table, reason: 'file exceeds per-entry restore limit' });
           continue;
         }
@@ -297,7 +306,7 @@ export async function createBackup(
       filePath,
       passphrase,
       { metadata, tables: dumpData },
-      bundleFileSource({ tenantIds: [tenantId], tenantData: { [tenantId]: dumpData }, globalTables: {}, counters }),
+      bundleFileSource({ tenantIds: [tenantId], tenantData: { [tenantId]: dumpData }, globalTables: {}, counters, perEntryMaxBytes: MAX_PACKAGE_ENTRY_BYTES - 1024 * 1024 }),
       {
         backup_type: 'tenant',
         source_version: APP_VERSION,
