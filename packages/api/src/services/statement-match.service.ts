@@ -1233,6 +1233,50 @@ export async function setStatementLineExcluded(
   });
 }
 
+// STATEMENT_CHECK_PAYEE_V2: manually set the payee on a statement line —
+// the reconcile-side fix for "missing checks with no payee". When the line
+// is already matched to a journal line whose transaction has no payee
+// identity yet, the payee is stamped through to the transaction too, so the
+// check register and reports pick it up immediately.
+export async function setStatementLinePayee(
+  tenantId: string,
+  statementLineId: string,
+  payee: string,
+  userId?: string,
+): Promise<{ line: StatementLineSummary; transactionUpdated: boolean }> {
+  return await db.transaction(async (tx) => {
+    const { line } = await lockLineAndReconciliation(tx, tenantId, statementLineId);
+    await tx.execute(sql`
+      UPDATE bank_statement_lines
+      SET payee = ${payee}, updated_at = now()
+      WHERE id = ${statementLineId} AND tenant_id = ${tenantId}
+    `);
+
+    let transactionUpdated = false;
+    if (line.matchedJournalLineId) {
+      const upd = await tx.execute(sql`
+        UPDATE transactions t
+        SET payee_name_on_check = ${payee}
+        FROM journal_lines jl
+        WHERE jl.id = ${line.matchedJournalLineId}
+          AND t.id = jl.transaction_id
+          AND t.tenant_id = ${tenantId}
+          AND (t.payee_name_on_check IS NULL OR t.payee_name_on_check = '')
+          AND t.contact_id IS NULL
+      `);
+      transactionUpdated = ((upd as { rowCount?: number | null }).rowCount ?? 0) > 0;
+    }
+
+    await auditLog(
+      tenantId, 'update', 'bank_statement_line', statementLineId,
+      { payee: line.payee ?? null },
+      { payee, transactionUpdated },
+      userId, tx,
+    );
+    return { line: { ...summaryOf(line), payee }, transactionUpdated };
+  });
+}
+
 // ─── Wave 2: grouped confirm ───────────────────────────────────────
 
 // Shared prologue for the confirm/reject/create flows: resolve + lock the

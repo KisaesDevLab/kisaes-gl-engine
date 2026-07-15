@@ -434,8 +434,41 @@ aiRouter.post('/parse/statement/import', authenticate, aiProcessingLimiter, vali
       });
     }
   }
+  // STATEMENT_CHECK_PAYEE_V1: forward the parse job's check-image payees so
+  // applyCheckImagePayees runs for interactively-uploaded statements too.
+  // The auto-routing path always forwarded them; this path passed [] and
+  // silently dropped every payee the OCR had already read.
+  let rawChecks: import('../services/ai-statement-parser.service.js').StatementCheckImage[] = [];
+  if (req.body.jobId) {
+    try {
+      const job = await aiStatementParser.getStatementJobResult(req.tenantId, req.body.jobId);
+      rawChecks = (job.result as { checks?: typeof rawChecks } | null)?.checks ?? [];
+    } catch (err) {
+      log.warn({
+        component: 'ai-routes', event: 'statement_checks_load_failed', jobId: req.body.jobId,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  // Preview-edited payees override the parse job's read for that check —
+  // what the user saw and approved is what the import applies.
+  const editedByNumber = new Map<string, { checkNumber: string; payee: string; amount?: string }>();
+  for (const t of req.body.transactions as Array<{ checkNumber?: string | null; checkPayee?: string | null; amount?: string }>) {
+    if (t.checkNumber && t.checkPayee?.trim()) {
+      editedByNumber.set(String(Number(t.checkNumber)), {
+        checkNumber: String(Number(t.checkNumber)),
+        payee: t.checkPayee.trim(),
+        amount: t.amount,
+      });
+    }
+  }
+  if (editedByNumber.size > 0) {
+    const merged = new Map(rawChecks.map((c) => [String(Number(c.checkNumber)), c]));
+    for (const [n, c] of editedByNumber) merged.set(n, c);
+    rawChecks = [...merged.values()];
+  }
   const result = await aiStatementParser.importStatementTransactions(
-    req.tenantId, connectionId, req.body.transactions, [], capture?.statement.id ?? null,
+    req.tenantId, connectionId, req.body.transactions, rawChecks, capture?.statement.id ?? null,
   );
   // Resume support: when the import came from a saved statement parse job, mark
   // it imported so the Statement Imports list shows it as done (not pending).

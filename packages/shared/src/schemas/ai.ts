@@ -210,6 +210,11 @@ export const aiImportStatementSchema = z
           cleanedName: z.string().max(255).nullable().optional(),
           suggestedAccountId: z.string().uuid().nullable().optional(),
           tagId: z.string().uuid().nullable().optional(),
+          // STATEMENT_CHECK_PAYEE_V2: check payee shown (and possibly edited)
+          // in the review preview. When present with checkNumber it overrides
+          // the parse job's check-image read for that check on import.
+          checkNumber: z.string().max(20).nullable().optional(),
+          checkPayee: z.string().max(255).nullable().optional(),
         }),
       )
       .min(1)

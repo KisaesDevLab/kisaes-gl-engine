@@ -40,6 +40,12 @@ import { analyzePdf, routePdf, extractTextLayer } from './extraction/pdf-detect.
 import { ocrPages, type OcrPageInput } from './extraction/glm-ocr.client.js';
 import { reconcileGoldenRule, repairPass, findSuspectRows } from './extraction/reconcile.service.js';
 import { centsToAmountString, isCreditCardType, mapSignedCentsToFeed } from './extraction/statement-map.js';
+import {
+  extractCheckCandidateImages,
+  checkPagesOf,
+  readChecksFromCandidates,
+  type CheckCandidateImage,
+} from './extraction/check-crop.service.js';
 
 // The extraction schema requires every transaction to have an integer
 // amount_cents and notes ≤ 2000 chars. Models occasionally violate this —
@@ -167,6 +173,11 @@ async function buildStatementMarkdown(
   // Invoked just before the first GLM-OCR call so the caller can advance the
   // progress stage to 'ocr' (no-op on the text-layer fast path).
   onOcrStart: () => Promise<void> = async () => {},
+  // STATEMENT_CHECK_PAYEE_V2: 1-based pages that carry check-like embedded
+  // images. On the text-layer fast path those pages ALSO get OCR'd and the
+  // OCR markdown appended below the page text, so Stage-2 sees the check
+  // payees that live only in the image grid (a pure text pass never would).
+  checkPages: number[] = [],
 ): Promise<{ markdown: string; extractionSource: string }> {
   const ocrConfig = {
     baseUrl: glm.baseUrl,
@@ -203,8 +214,41 @@ async function buildStatementMarkdown(
 
   if (method === 'text') {
     const pages = await extractTextLayer(fileBuffer);
-    const md = pages.map((p) => `# Page ${p.index + 1}\n\n${p.text}`).join('\n\n');
-    return { markdown: md, extractionSource: 'text_layer' };
+    // Check-image pages get an OCR pass appended even on the text route —
+    // the check payees exist only as pixels, invisible to the text layer.
+    // Requires GLM-OCR; when it's disabled the crop pass (vision chain) is
+    // the remaining payee source and this stays a plain text extraction.
+    const ocrByPage = new Map<number, string>();
+    if (checkPages.length > 0 && glm.enabled) {
+      await onOcrStart();
+      try {
+        const rendered = await renderPdfToPngPages(fileBuffer, { dpi: glm.renderDpi });
+        const targets = checkPages.filter((p) => p >= 1 && p <= rendered.length);
+        const out = await ocrPages(
+          targets.map((p) => ({ data: rendered[p - 1]!.data, mimeType: rendered[p - 1]!.mimeType })),
+          ocrConfig,
+        );
+        targets.forEach((p, i) => ocrByPage.set(p - 1, out[i]?.markdown ?? ''));
+        qualityWarnings.push('check_pages_ocr_appended');
+      } catch (err) {
+        // Additive only — a failed check-page OCR must never sink the parse.
+        qualityWarnings.push('check_pages_ocr_failed');
+        log.warn({
+          component: 'ai-statement-parser', event: 'check_pages_ocr_failed',
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    const md = pages
+      .map((p) => {
+        const extra = ocrByPage.get(p.index);
+        return `# Page ${p.index + 1}\n\n${p.text}${extra ? `\n\n[Check images on this page]\n\n${extra}` : ''}`;
+      })
+      .join('\n\n');
+    return {
+      markdown: md,
+      extractionSource: ocrByPage.size > 0 ? 'text_layer_plus_check_ocr' : 'text_layer',
+    };
   }
 
   // 'ocr' or 'hybrid' both need GLM-OCR for at least some pages.
@@ -428,6 +472,15 @@ async function executePipeline(
     );
   }
 
+  // STATEMENT_CHECK_PAYEE_V2: pull the check-shaped embedded images out of
+  // the PDF up front (native resolution, no bbox math — see
+  // check-crop.service.ts). Their pages get OCR appended even on the
+  // text-layer route, and the crops themselves are read after Stage-2.
+  let checkCandidates: CheckCandidateImage[] = [];
+  if (isRenderablePdf(mimeType)) {
+    checkCandidates = await extractCheckCandidateImages(fileBuffer);
+  }
+
   // ── Stage 1: detect → OCR/text → per-page markdown ──────────────────
   let markdown: string;
   let extractionSource: string;
@@ -438,6 +491,7 @@ async function executePipeline(
       glm,
       qualityWarnings,
       () => orchestrator.setStage(jobId, 'ocr'),
+      checkPagesOf(checkCandidates),
     ));
   } catch (err) {
     if (isConnError(err)) {
@@ -598,14 +652,54 @@ async function executePipeline(
     };
   });
 
-  // Check-image payees: rows that carry both a check number and a payee.
-  const checks: StatementCheckImage[] = recTxns
+  // Check-image payees, two sources merged:
+  //  (a) rows where Stage-2 co-located a check number and payee in the text;
+  //  (b) STATEMENT_CHECK_PAYEE_V2 — dedicated vision reads of the embedded
+  //      check-thumbnail crops (native resolution), which work even when the
+  //      statement's check grid is a separate section the text pass can't
+  //      associate, and on text-layer PDFs where no page OCR ran at all.
+  const rowChecks: StatementCheckImage[] = recTxns
     .filter((rt) => rt.src.check_number && rt.src.payee)
     .map((rt) => ({
       checkNumber: String(rt.src.check_number),
       payee: String(rt.src.payee),
       amount: centsToAmountString(Number(rt.amountCents)),
     }));
+
+  // Amount by check number from the parsed rows — used to backfill crop
+  // reads whose courtesy-box amount was unreadable, so the importer's
+  // check#+amount confirmation still succeeds.
+  const amountByCheckNumber = new Map<string, string>();
+  for (const rt of recTxns) {
+    if (rt.src.check_number) {
+      amountByCheckNumber.set(String(Number(rt.src.check_number)), centsToAmountString(Number(rt.amountCents)));
+    }
+  }
+
+  let cropChecks: StatementCheckImage[] = [];
+  if (checkCandidates.length > 0) {
+    const ocrProvider = config.ocrProvider || config.categorizationProvider;
+    const cropResults = await readChecksFromCandidates(checkCandidates, {
+      glm: glm.enabled
+        ? { baseUrl: glm.baseUrl, model: glm.model, timeoutMs: glm.timeoutMs, concurrency: glm.concurrency, apiKey: glm.apiKey }
+        : null,
+      vision: ocrProvider
+        ? { rawConfig, ocrProvider, primaryModel: config.ocrModel || env.OCR_VISION_MODEL, task: 'ocr_statement_checks' }
+        : null,
+    });
+    cropChecks = cropResults.map((r) => ({
+      checkNumber: r.checkNumber,
+      payee: r.payee,
+      amount: r.amount ?? amountByCheckNumber.get(r.checkNumber),
+    }));
+    if (cropChecks.length > 0) qualityWarnings.push('check_image_payees_read');
+  }
+
+  // Crop reads win on collision — they come from the actual check image,
+  // not from text-proximity inference.
+  const checksByNumber = new Map<string, StatementCheckImage>();
+  for (const c of [...rowChecks, ...cropChecks]) checksByNumber.set(c.checkNumber, c);
+  const checks: StatementCheckImage[] = [...checksByNumber.values()];
 
   // Confidence: prefer the model's statement-level value; floor it below the
   // review threshold whenever reconciliation didn't pass (soft gate) — OR

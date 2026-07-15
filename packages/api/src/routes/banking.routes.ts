@@ -21,6 +21,7 @@ import * as bankFeedService from '../services/bank-feed.service.js';
 import * as reconciliationService from '../services/reconciliation.service.js';
 import * as bankStatementsService from '../services/bank-statements.service.js';
 import * as statementMatchService from '../services/statement-match.service.js';
+import { backfillCheckPayees } from '../services/check-payee-backfill.service.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -376,6 +377,31 @@ bankingRouter.post('/statement-lines/:lineId/unexclude', async (req, res) => {
 bankingRouter.post('/reconciliations/:id/auto-clear-statement', async (req, res) => {
   const result = await reconciliationService.autoClearStatement(req.tenantId, req.params['id']!, req.userId);
   res.json(result);
+});
+
+// STATEMENT_CHECK_PAYEE_V2: manually resolve the payee on a statement line
+// (reconcile's "missing checks with no payee"). Also stamps the payee onto
+// the matched transaction when one is linked and still payee-less.
+bankingRouter.patch('/statement-lines/:lineId/payee', async (req, res) => {
+  const payee = String(req.body?.payee ?? '').trim().slice(0, 255);
+  if (!payee) {
+    res.status(400).json({ error: { message: 'payee is required', code: 'VALIDATION_ERROR' } });
+    return;
+  }
+  const result = await statementMatchService.setStatementLinePayee(
+    req.tenantId, req.params['lineId']!, payee, req.userId,
+  );
+  res.json(result);
+});
+
+// STATEMENT_CHECK_PAYEE_V2: backfill payees onto existing posted check
+// transactions (from statement lines + the payroll check register), with an
+// optional re-scan of stored statement PDFs through the check-image pass.
+bankingRouter.post('/check-payees/backfill', async (req, res) => {
+  const report = await backfillCheckPayees(
+    req.tenantId, { rescan: req.body?.rescan === true }, req.userId,
+  );
+  res.json(report);
 });
 
 bankingRouter.get('/reconciliations/:id', async (req, res) => {
