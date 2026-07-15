@@ -553,24 +553,30 @@ export async function parseGl(
       continue;
     }
 
-    // Footer rows: a grand-total / subtotal line QBO appends with the label
+    // Footer rows — grand-total / subtotal lines QBO appends with the label
     // in a leading text column (varies by export — sometimes the Date
-    // column, so gate on "no PARSEABLE date"). Only ever skipped BETWEEN
-    // entries (current === null): inside an open JE, a "Total …" row is a
-    // real continuation line for an account literally named that, and must
-    // never truncate the entry. The label must sit in a NON-account cell,
-    // OR the account cell must be exactly "TOTAL" — a real account named
-    // "Total Wine & More" appearing before a header still falls through to
-    // the IMPORT_HEADER_NOT_FOUND path rather than being dropped silently.
-    if (cellToIsoDate(date) === null && !txnType && current === null) {
+    // column, so gate on "no PARSEABLE date"). Two cases:
+    //   (a) EXACT "TOTAL" (account cell or a non-account lead cell) is the
+    //       grand-total footer. A real account is never named bare "TOTAL",
+    //       so close any open JE — this catches a grand total that lands
+    //       right after the last detail line with no per-JE-total row.
+    //   (b) "Total <x>" (subtotal) is only a footer BETWEEN entries
+    //       (current === null); inside an open JE it is a real continuation
+    //       line for an account genuinely named "Total Car Care" and must
+    //       NOT truncate the entry.
+    if (cellToIsoDate(date) === null && !txnType) {
       const acct = account.trim();
       const lead = [cellToString(r[0]), cellToString(r[iDate])]
         .map((t) => t.trim())
         .find((t) => t.length > 0);
-      const labelIsTotal = !acct && !!lead && /^total\b/i.test(lead);
-      const acctIsExactTotal = /^total$/i.test(acct);
-      if (labelIsTotal || acctIsExactTotal) {
-        continue; // nothing open to close; just skip the footer
+      const isExactTotal = /^total$/i.test(acct) || (!acct && !!lead && /^total$/i.test(lead));
+      const isTotalPrefix = /^total\b/i.test(acct) || (!acct && !!lead && /^total\b/i.test(lead));
+      if (isExactTotal) {
+        closeCurrent();
+        continue;
+      }
+      if (current === null && isTotalPrefix) {
+        continue; // between-entry subtotal footer; nothing open to close
       }
     }
 

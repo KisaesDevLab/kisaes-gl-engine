@@ -718,6 +718,32 @@ Cythia Martin","","Monett","MO","65708",,,"",False,False,True,Net 15,5920,""
       const commit = await importsService.commitSession(tenantId, companyId, userId, out.session.id);
       expect(commit.result.created).toBe(1);
     });
+
+    it('skips a between-entry "Total <group>" subtotal without erroring', async () => {
+      await db.insert(accounts).values([
+        { tenantId, companyId, name: 'Car Wash Checking', accountType: 'asset' },
+        { tenantId, companyId, name: 'Operating Revenue', accountType: 'revenue' },
+      ]);
+      const file = await xlsxFromGrid('journal-subtotal.xlsx', 'Journal', [
+        ['Test Co'], ['Journal'], ['All Dates'], [],
+        [null, 'Date', 'Transaction Type', 'Num', 'Name', 'Memo/Description', 'Account', 'Debit', 'Credit'],
+        [null, '01/02/2025', 'Deposit', null, null, 'Sale 1', 'Car Wash Checking', 3.5, null],
+        [null, null, null, null, null, 'Sale 1', 'Operating Revenue', null, 3.5],
+        [null, null, null, null, null, null, null, 3.5, 3.5], // per-JE total closes JE1
+        // Between-entry subtotal footer in the Account column (current === null):
+        [null, null, null, null, null, null, 'Total Operating Revenue', null, 3.5],
+        [null, '01/03/2025', 'Deposit', null, null, 'Sale 2', 'Car Wash Checking', 9.25, null],
+        [null, null, null, null, null, 'Sale 2', 'Operating Revenue', null, 9.25],
+        [null, null, null, null, null, null, null, 9.25, 9.25],
+        [null, 'TOTAL', null, null, null, null, null, 12.75, 12.75],
+      ]);
+      const out = await importsService.createSession({
+        tenantId, companyId, userId,
+        file, kind: 'gl_transactions', sourceSystem: 'quickbooks_online', options: {},
+      });
+      expect(out.session.errorCount).toBe(0);
+      expect(out.preview.jeGroupCount).toBe(2);
+    });
   });
 
   // ── Error-path coverage ────────────────────────────────────────

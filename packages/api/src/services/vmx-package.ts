@@ -321,9 +321,16 @@ export async function writeTenantPackageMulti(opts: {
   if (!Number.isFinite(partMaxBytes) || partMaxBytes < 1024 * 1024) {
     throw new Error('partMaxBytes must be at least 1 MiB');
   }
-  // The largest plaintext chunk that still fits a part alongside the
-  // fixed structural entries.
-  const segMaxPlain = partMaxBytes - PART_FIXED_RESERVE - ZIP_ENTRY_OVERHEAD - ENTRY_CRYPTO_OVERHEAD - 64 * 1024;
+  // The largest plaintext chunk that still fits a part alongside the fixed
+  // structural entries — AND never larger than the read-time per-entry cap
+  // (minus crypto overhead so the encrypted entry stays under it). Without
+  // the clamp, raising BACKUP_PART_MAX_MB above MAX_PACKAGE_ENTRY_BYTES
+  // would let a large attachment be written whole into a segment the
+  // reader then rejects, making the backup unrestorable.
+  const segMaxPlain = Math.min(
+    partMaxBytes - PART_FIXED_RESERVE - ZIP_ENTRY_OVERHEAD - ENTRY_CRYPTO_OVERHEAD - 64 * 1024,
+    MAX_PACKAGE_ENTRY_BYTES - ENTRY_CRYPTO_OVERHEAD - 64 * 1024,
+  );
 
   const backupId = opts.backupId ?? crypto.randomUUID();
   const parts: PartState[] = [];
