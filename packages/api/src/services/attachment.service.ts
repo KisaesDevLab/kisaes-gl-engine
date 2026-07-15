@@ -5,6 +5,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import archiver from 'archiver';
 import { eq, and, count, inArray, desc } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { attachments } from '../db/schema/index.js';
@@ -140,6 +141,104 @@ export async function download(tenantId: string, id: string) {
     if (!fs.existsSync(fullPath)) throw AppError.notFound('File not found');
     return { stream: fs.createReadStream(fullPath), attachment };
   }
+}
+
+// Fetch an attachment's raw bytes — provider-first with the same
+// direct-filesystem fallback as download() above. Kept in lockstep with
+// download(): storage key preference is providerFileId > storageKey >
+// filePath, and any provider failure falls back to UPLOAD_DIR.
+async function readAttachmentBytes(
+  tenantId: string,
+  attachment: { providerFileId: string | null; storageKey: string | null; filePath: string },
+): Promise<Buffer> {
+  try {
+    const { getProviderForTenant } = await import('./storage/storage-provider.factory.js');
+    const provider = await getProviderForTenant(tenantId);
+    const key = attachment.providerFileId || attachment.storageKey || attachment.filePath;
+    if (!key) throw new Error('No storage key');
+    return await provider.download(key);
+  } catch {
+    const fullPath = resolveUploadPath(attachment.filePath);
+    if (!fs.existsSync(fullPath)) throw AppError.notFound('File not found');
+    return fs.readFileSync(fullPath);
+  }
+}
+
+// Zip entry names must be unique or extractors silently overwrite; collide
+// on "receipt.pdf" twice and the second becomes "receipt (1).pdf".
+function zipEntryName(used: Set<string>, fileName: string | null): string {
+  // Flatten path separators — entries are plain file names, never nested.
+  const base = (fileName || 'file').replace(/[\\/]+/g, '_');
+  if (!used.has(base)) {
+    used.add(base);
+    return base;
+  }
+  const ext = path.extname(base);
+  const stem = base.slice(0, base.length - ext.length);
+  for (let n = 1; ; n++) {
+    const candidate = `${stem} (${n})${ext}`;
+    if (!used.has(candidate)) {
+      used.add(candidate);
+      return candidate;
+    }
+  }
+}
+
+export interface BulkDownloadSkipped {
+  id: string;
+  fileName: string;
+  reason: string;
+}
+
+export interface BulkDownloadResult {
+  archive: ReturnType<typeof archiver>;
+  done: Promise<{ included: number; skipped: BulkDownloadSkipped[] }>;
+}
+
+/**
+ * Build a ZIP of several attachments. Every id must belong to `tenantId`
+ * (404 otherwise, matching the single-download behavior). Returns the
+ * archiver stream (pipe it to the response before awaiting `done`) plus a
+ * `done` promise that resolves once every entry has been appended and the
+ * archive finalized. A file whose bytes can't be fetched never fails the
+ * whole zip — it's recorded in `skipped` and listed in a manifest.txt entry.
+ */
+export async function bulkDownload(tenantId: string, attachmentIds: string[]): Promise<BulkDownloadResult> {
+  const uniqueIds = Array.from(new Set(attachmentIds));
+  const rows = await db.select().from(attachments)
+    .where(and(eq(attachments.tenantId, tenantId), inArray(attachments.id, uniqueIds)));
+  if (rows.length !== uniqueIds.length) throw AppError.notFound('Attachment not found');
+
+  const archive = archiver('zip', { zlib: { level: 6 } });
+  const skipped: BulkDownloadSkipped[] = [];
+
+  const done = (async () => {
+    const usedNames = new Set<string>();
+    for (const att of rows) {
+      try {
+        const bytes = await readAttachmentBytes(tenantId, att);
+        archive.append(bytes, { name: zipEntryName(usedNames, att.fileName) });
+      } catch (err) {
+        skipped.push({
+          id: att.id,
+          fileName: att.fileName || att.id,
+          reason: err instanceof Error ? err.message : 'File could not be read',
+        });
+      }
+    }
+    if (skipped.length > 0) {
+      const lines = [
+        'Some files could not be included in this archive:',
+        '',
+        ...skipped.map((s) => `- ${s.fileName} (${s.id}): ${s.reason}`),
+      ];
+      archive.append(Buffer.from(lines.join('\n') + '\n', 'utf8'), { name: 'manifest.txt' });
+    }
+    await archive.finalize();
+    return { included: rows.length - skipped.length, skipped };
+  })();
+
+  return { archive, done };
 }
 
 export async function remove(tenantId: string, id: string) {

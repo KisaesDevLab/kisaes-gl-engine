@@ -7,7 +7,7 @@ import { auditLog as auditLogTable } from '../db/schema/audit-log.js';
 
 export async function auditLog(
   tenantId: string,
-  action: 'create' | 'update' | 'delete' | 'void' | 'login',
+  action: 'create' | 'update' | 'delete' | 'void' | 'login' | 'download',
   entityType: string,
   entityId: string | null,
   before: unknown | null,

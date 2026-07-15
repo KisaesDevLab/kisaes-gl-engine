@@ -5,10 +5,11 @@
 import { Router } from 'express';
 import multer from 'multer';
 import jwt from 'jsonwebtoken';
+import { z } from 'zod';
 import { eq, and, sql, count } from 'drizzle-orm';
 import type { JwtPayload } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
-import { requireResource } from '../middleware/permission.js';
+import { requireResource, requirePermission } from '../middleware/permission.js';
 import { auditLog } from '../middleware/audit.js';
 import { env } from '../config/env.js';
 import { db } from '../db/index.js';
@@ -174,6 +175,56 @@ attachmentsRouter.get('/:id/download', async (req, res) => {
   const safeName = (attachment.fileName || 'download').replace(/[\r\n"]/g, '_');
   res.setHeader('Content-Disposition', `${disposition}; filename="${safeName}"`);
   stream.pipe(res);
+});
+
+const bulkDownloadSchema = z.object({
+  attachmentIds: z.array(z.string().uuid()).min(1).max(200),
+});
+
+// Bulk download as a single ZIP. Declared ahead of the router-level
+// requireResource guard (which maps POST to the 'update' action) with an
+// explicit 'read' permission — downloading is semantically a read, same as
+// GET /:id/download.
+attachmentsRouter.post('/bulk-download', authenticate, requirePermission('attachments', 'read'), async (req, res) => {
+  const parsed = bulkDownloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: { message: 'attachmentIds must be an array of 1-200 attachment UUIDs' } });
+    return;
+  }
+
+  // Throws 404 before any headers are sent if any id isn't this tenant's —
+  // same behavior as the single download route's tenant-scoped lookup.
+  const { archive, done } = await attachmentService.bulkDownload(req.tenantId, parsed.data.attachmentIds);
+
+  const stamp = new Date().toISOString().slice(0, 10);
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="attachments-${stamp}.zip"`);
+  archive.on('error', (err) => {
+    log.error({
+      component: 'attachments',
+      event: 'bulk_download_stream_failed',
+      message: err instanceof Error ? err.message : String(err),
+    });
+    res.destroy(err instanceof Error ? err : new Error(String(err)));
+  });
+  archive.pipe(res);
+
+  const { included, skipped } = await done;
+
+  await auditLog(
+    req.tenantId,
+    'download',
+    'attachment',
+    null,
+    null,
+    {
+      bulk: true,
+      attachmentIds: parsed.data.attachmentIds,
+      included,
+      skipped: skipped.map((s) => ({ id: s.id, fileName: s.fileName, reason: s.reason })),
+    },
+    req.userId,
+  );
 });
 
 attachmentsRouter.use(authenticate);
