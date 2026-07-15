@@ -553,17 +553,18 @@ export async function parseGl(
       continue;
     }
 
-    // Grand-TOTAL row at the end of the report: QBO puts the literal
-    // "TOTAL" in a leading text column (which one varies by export).
-    // Only rows with NO JE signals qualify, and an account cell must be
-    // exactly "TOTAL" — a real account named "Total Car Care" is a detail
-    // row, not a footer.
-    if (!date && !txnType) {
+    // Grand-TOTAL / "Total for X" footer rows: QBO puts the label in a
+    // leading text column (varies by export — sometimes the Date column
+    // itself, so gate on "no PARSEABLE date" rather than raw truthiness).
+    // A real account named "Total Car Care" is a detail row, not a footer:
+    // the account cell only counts when it is the label itself.
+    if (cellToIsoDate(date) === null && !txnType) {
       const lead = [cellToString(r[0]), cellToString(r[iDate])]
         .map((t) => t.trim())
         .find((t) => t.length > 0);
-      const isGrandTotal = (!account && !!lead && /^total\b/i.test(lead)) || /^total$/i.test(account);
-      if (isGrandTotal) {
+      const accountIsFooterLabel = /^total( for .+)?$/i.test(account.trim());
+      const isFooter = accountIsFooterLabel || (!account && !!lead && /^total\b/i.test(lead));
+      if (isFooter) {
         closeCurrent();
         continue;
       }

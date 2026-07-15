@@ -666,13 +666,20 @@ async function executePipeline(
       amount: centsToAmountString(Number(rt.amountCents)),
     }));
 
+  // Numeric-normalize numeric check numbers ('0234' → '234'); non-numeric
+  // refs keep their raw key — Number() coercion collapsed them all to 'NaN'.
+  const checkMergeKey = (raw: string): string => {
+    const t = raw.trim();
+    return /^\d+$/.test(t) ? String(parseInt(t, 10)) : t;
+  };
+
   // Amount by check number from the parsed rows — used to backfill crop
   // reads whose courtesy-box amount was unreadable, so the importer's
   // check#+amount confirmation still succeeds.
   const amountByCheckNumber = new Map<string, string>();
   for (const rt of recTxns) {
     if (rt.src.check_number) {
-      amountByCheckNumber.set(String(Number(rt.src.check_number)), centsToAmountString(Number(rt.amountCents)));
+      amountByCheckNumber.set(checkMergeKey(String(rt.src.check_number)), centsToAmountString(Number(rt.amountCents)));
     }
   }
 
@@ -690,7 +697,7 @@ async function executePipeline(
     cropChecks = cropResults.map((r) => ({
       checkNumber: r.checkNumber,
       payee: r.payee,
-      amount: r.amount ?? amountByCheckNumber.get(r.checkNumber),
+      amount: r.amount ?? amountByCheckNumber.get(checkMergeKey(r.checkNumber)),
     }));
     if (cropChecks.length > 0) qualityWarnings.push('check_image_payees_read');
   }
@@ -699,10 +706,6 @@ async function executePipeline(
   // not from text-proximity inference. Collide on the NUMERIC value when
   // the number is numeric: Stage-2 preserves leading zeros ('0234') while
   // the crop pass normalizes ('234'), and both must be the same check.
-  const checkMergeKey = (raw: string): string => {
-    const t = raw.trim();
-    return /^\d+$/.test(t) ? String(parseInt(t, 10)) : t;
-  };
   const checksByNumber = new Map<string, StatementCheckImage>();
   for (const c of [...rowChecks, ...cropChecks]) checksByNumber.set(checkMergeKey(c.checkNumber), c);
   const checks: StatementCheckImage[] = [...checksByNumber.values()];

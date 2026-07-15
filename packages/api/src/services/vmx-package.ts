@@ -110,8 +110,20 @@ export async function readTenantPackage(source: string | Buffer, passphrase: str
 
   const find = (name: string) => directory.files.find((f) => f.path === name);
 
+  // Deflate-bomb guard: the ZIP directory declares each entry's inflated
+  // size BEFORE we buffer it — reject implausible manifest/data entries so
+  // a few-MB crafted upload can't inflate gigabytes into RAM (the GCM tag
+  // would only fail AFTER the allocation).
+  const MAX_ENTRY_INFLATED = 500 * 1024 * 1024;
+  const assertSaneEntry = (f: { path: string; uncompressedSize?: number }) => {
+    if ((f.uncompressedSize ?? 0) > MAX_ENTRY_INFLATED) {
+      throw new Error(`Package entry ${f.path} declares an implausible size`);
+    }
+  };
+
   const manifestFile = find('manifest.json');
   if (!manifestFile) throw new Error('Not a Vibe MyBooks package (manifest.json missing)');
+  assertSaneEntry(manifestFile);
   const manifest = JSON.parse((await manifestFile.buffer()).toString('utf8')) as Record<string, unknown>;
   const kdf = manifest['kdf'] as { salt?: string } | undefined;
   const saltHex = kdf?.salt ?? '';
@@ -120,6 +132,7 @@ export async function readTenantPackage(source: string | Buffer, passphrase: str
 
   const dataFile = find('data.json.enc');
   if (!dataFile) throw new Error('Package is missing its data payload');
+  assertSaneEntry(dataFile);
   let dataBuf: Buffer;
   try {
     dataBuf = decryptEntry(key, await dataFile.buffer());

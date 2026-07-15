@@ -28,7 +28,9 @@ function looksLikeBackup(buf: Buffer): boolean {
   // looks like a plain-text or document file.
   if (buf.length < MIN_SERVER_KEY_SIZE) return false;
   if (buf.subarray(0, 4).equals(Buffer.from('%PDF'))) return false;
-  if (buf.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) return false; // zip/xlsx
+  // ZIP magic is a VALID backup now: createBackup emits .vmx packages (ZIP)
+  // when attachments are included, and restoreFromBackup validates them.
+  if (buf.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) return true; // .vmx package
   if (buf.subarray(0, 2).equals(Buffer.from([0xff, 0xd8]))) return false; // jpeg
   if (buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return false; // png
   return true;

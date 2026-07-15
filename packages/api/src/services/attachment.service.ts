@@ -223,12 +223,21 @@ export async function bulkDownload(tenantId: string, attachmentIds: string[]): P
     const usedNames = new Set<string>();
     for (const att of rows) {
       try {
-        if (totalBytes >= BULK_DOWNLOAD_MAX_BYTES) {
+        // Pre-check with the stored size so the file that would CROSS the
+        // cap is skipped before it is buffered (not after), and the queue
+        // can never overshoot by one max-size file.
+        const expected = Number(att.fileSize ?? 0);
+        if (totalBytes >= BULK_DOWNLOAD_MAX_BYTES || totalBytes + expected > BULK_DOWNLOAD_MAX_BYTES) {
           skipped.push({ id: att.id, fileName: att.fileName || att.id, reason: 'total size cap (1 GB) reached — download in smaller batches' });
           continue;
         }
         const bytes = await readAttachmentBytes(tenantId, att);
         totalBytes += bytes.length;
+        if (totalBytes > BULK_DOWNLOAD_MAX_BYTES) {
+          totalBytes -= bytes.length;
+          skipped.push({ id: att.id, fileName: att.fileName || att.id, reason: 'total size cap (1 GB) reached — download in smaller batches' });
+          continue;
+        }
         archive.append(bytes, { name: zipEntryName(usedNames, att.fileName) });
       } catch (err) {
         skipped.push({

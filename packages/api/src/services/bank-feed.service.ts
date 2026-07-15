@@ -992,11 +992,17 @@ async function applyCheckImagePayees(
   items: Array<typeof bankFeedItems.$inferSelect>,
   checks: StatementCheckImage[],
 ) {
-  const candidates = items.filter((it) => it.checkNumber != null);
+  // Debit-side only: a check is money out, so a deposit can never receive a
+  // check payee no matter how its description parsed.
+  const candidates = items.filter((it) => it.checkNumber != null && parseFloat(String(it.amount)) > 0);
   if (candidates.length === 0) return;
 
   const byNumber = new Map<number, StatementCheckImage[]>();
   for (const c of checks) {
+    // Feed items carry INTEGER check numbers, so a non-numeric ref like
+    // '1042A' can never legitimately match an item — parseInt would bucket
+    // it under 1042 and contaminate the real check's payee.
+    if (!/^\d+$/.test(c.checkNumber.trim())) continue;
     const n = Number.parseInt(c.checkNumber, 10);
     if (!Number.isFinite(n)) continue;
     const arr = byNumber.get(n) ?? [];
@@ -1875,7 +1881,9 @@ export async function importStatementItems(
           ? -Math.abs(parseFloat(txn.amount))
           : Math.abs(parseFloat(txn.amount))
         ).toFixed(4),
-        checkNumber: parseCheckNumber(txn.description),
+        // Checks are money OUT — never stamp a check number on a deposit.
+        // "DEPOSIT REF #1234" previously acquired check 1234's image payee.
+        checkNumber: txn.type === 'credit' ? null : parseCheckNumber(txn.description),
         status: 'pending' as const,
         // Carried category/tag from the review → shown in the feed; the AI step
         // skips rows that already have suggestedAccountId (see runCategorizationPipeline).

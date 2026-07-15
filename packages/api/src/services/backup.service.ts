@@ -300,9 +300,12 @@ export async function createBackup(
 
     // Same remote-upload ceiling as system-backup parts: past it the file
     // stays local-only instead of readFileSync throwing (>2 GiB) or
-    // buffering a multi-GB archive in RAM.
+    // buffering a multi-GB archive in RAM. The skip is SURFACED — in the
+    // response and the audit log — so an operator with offsite backups
+    // configured never silently loses replication.
     const REMOTE_UPLOAD_MAX = 500 * 1024 * 1024;
-    if (result.size <= REMOTE_UPLOAD_MAX) {
+    const remoteSkipped = result.size > REMOTE_UPLOAD_MAX;
+    if (!remoteSkipped) {
       const fileBuf = fs.readFileSync(filePath);
       uploadBackupToRemote(fileName, fileBuf, tenantId).catch((err) => {
         console.error('[Backup] Remote upload failed (non-fatal):', err.message);
@@ -317,11 +320,22 @@ export async function createBackup(
       'backup',
       backupId,
       null,
-      { fileName, size: result.size, tableCount: tables.length, rowCount: totalRows, format: 'v3-portable-vmx', filesBundled: counters.bundledCount, filesSkipped: counters.skipped.length },
+      {
+        fileName, size: result.size, tableCount: tables.length, rowCount: totalRows,
+        format: 'v3-portable-vmx', filesBundled: counters.bundledCount, filesSkipped: counters.skipped.length,
+        remoteUpload: remoteSkipped ? 'skipped_size_cap' : 'attempted',
+      },
       userId,
     );
 
-    return { backupId, fileName, size: result.size };
+    return {
+      backupId,
+      fileName,
+      size: result.size,
+      ...(remoteSkipped
+        ? { warning: 'Backup exceeds the 500 MB remote-replication ceiling and was kept local-only — download and store it offsite manually.' }
+        : {}),
+    };
   }
 
   // Re-serialize with checksum
