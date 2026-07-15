@@ -21,6 +21,8 @@ import type { StorageProvider } from './storage/storage-provider.interface.js';
 import { tenantStorageKey } from './storage/storage-keys.js';
 import { getProviderForTenant } from './storage/storage-provider.factory.js';
 import { writeTenantPackage, writeTenantPackageMulti, type PackageAttachment } from './vmx-package.js';
+import { getSystemBackupTablePlan } from './backup-table-plan.js';
+import { FILE_EXPORT_REGISTRY, encodeFileEntryId } from './backup-file-registry.js';
 
 const BACKUP_DIR = process.env['BACKUP_DIR'] || '/data/backups';
 const APP_VERSION = '0.3.0';
@@ -77,20 +79,142 @@ function resolveBackupPath(tenantId: string, fileName: string): string {
 }
 
 /**
- * Enumerate every table in the public schema that has a `tenant_id` column.
+ * Enumerate every table in the public schema that has a `tenant_id` column,
+ * minus the explicit ephemeral exclusions (see backup-table-plan.ts).
  */
 async function getTenantScopedTables(): Promise<string[]> {
-  const res = await db.execute(sql`
-    SELECT table_name
-    FROM information_schema.columns
-    WHERE column_name = 'tenant_id'
-      AND table_schema = 'public'
-      AND table_name NOT IN ('tenants', 'users', 'user_tenant_access')
-    ORDER BY table_name
-  `);
-  return (res.rows as { table_name: string }[])
-    .map((r) => r.table_name)
-    .filter((n) => /^[a-z_][a-z0-9_]*$/.test(n));
+  return (await getSystemBackupTablePlan(db)).tenantScoped;
+}
+
+// ─── Bundle file source ──────────────────────────────────────────
+
+interface BundleFileCounters {
+  skipped: Array<{ id: string; table: string; reason: string }>;
+  bundledBytes: number;
+  bundledCount: number;
+}
+
+/**
+ * Stream every file referenced by the dumped rows, across ALL registry
+ * categories (attachments, extraction sources, portal receipts/Q&A files,
+ * payroll import files, report PDFs) — one at a time, capped by total
+ * bytes; skips recorded, never silent. attachments entries keep their
+ * historical bare-id names so older restore code can still consume them;
+ * other categories use `f:`-prefixed ids (see backup-file-registry.ts).
+ */
+async function* bundleFileSource(opts: {
+  tenantIds: string[];
+  tenantData: Record<string, Record<string, unknown[]>>;
+  globalTables: Record<string, unknown[]>;
+  counters: BundleFileCounters;
+}): AsyncGenerator<PackageAttachment> {
+  const { tenantIds, tenantData, globalTables, counters } = opts;
+  const uploadDir = process.env['UPLOAD_DIR'] || '/data/uploads';
+  const providerByTenant = new Map<string, StorageProvider>();
+  const providerFor = async (tenantId: string): Promise<StorageProvider> => {
+    let p = providerByTenant.get(tenantId);
+    if (!p) {
+      p = await getProviderForTenant(tenantId);
+      providerByTenant.set(tenantId, p);
+    }
+    return p;
+  };
+
+  // Parent hop for tables without tenant_id (portal_question_attachments).
+  const questionTenant = new Map<string, string>();
+  for (const t of tenantIds) {
+    for (const q of (tenantData[t]?.['portal_questions'] || []) as Record<string, unknown>[]) {
+      questionTenant.set(q['id'] as string, t);
+    }
+  }
+
+  const readLocal = (p: string): Buffer | null => {
+    const candidates = [p, path.join(uploadDir, p.replace(/^\/uploads\//, '')), path.join(uploadDir, p)];
+    for (const c of candidates) {
+      try {
+        if (fs.existsSync(c)) return fs.readFileSync(c);
+      } catch { /* skip unreadable */ }
+    }
+    return null;
+  };
+
+  for (const entry of FILE_EXPORT_REGISTRY) {
+    // Collect this category's rows with their owning tenant.
+    const rowsWithTenant: Array<{ row: Record<string, unknown>; tenantId: string | null }> = [];
+    if (entry.tenantColumn) {
+      for (const t of tenantIds) {
+        for (const row of (tenantData[t]?.[entry.table] || []) as Record<string, unknown>[]) {
+          rowsWithTenant.push({ row, tenantId: t });
+        }
+      }
+    } else if (entry.tenantVia) {
+      for (const row of (globalTables[entry.table] || []) as Record<string, unknown>[]) {
+        rowsWithTenant.push({ row, tenantId: questionTenant.get(row[entry.tenantVia.fkColumn] as string) ?? null });
+      }
+    }
+
+    for (const { row, tenantId } of rowsWithTenant) {
+      const rowId = row['id'] as string;
+      if (entry.table === 'attachments') {
+        // Historical dual scheme: local file_path first, provider fallback.
+        const fp = (row['file_path'] as string | null) || null;
+        const storageKey = (row['storage_key'] as string | null) || null;
+        if (!fp && !storageKey) continue; // metadata-only row
+        let buf: Buffer | null = fp ? readLocal(fp) : null;
+        if (!buf && storageKey && tenantId) {
+          try {
+            buf = await (await providerFor(tenantId)).download(storageKey);
+          } catch (err) {
+            counters.skipped.push({ id: rowId, table: entry.table, reason: `download failed: ${err instanceof Error ? err.message : String(err)}` });
+          }
+        }
+        if (!buf) {
+          counters.skipped.push({ id: rowId, table: entry.table, reason: 'file not found' });
+          continue;
+        }
+        if (counters.bundledBytes + buf.length > MAX_SYSTEM_BACKUP_ATTACHMENT_BYTES) {
+          counters.skipped.push({ id: rowId, table: entry.table, reason: 'total size cap reached' });
+          continue;
+        }
+        counters.bundledBytes += buf.length;
+        counters.bundledCount += 1;
+        yield { id: rowId, buffer: buf };
+        continue;
+      }
+
+      for (const column of entry.columns) {
+        const key = (row[column] as string | null) || null;
+        if (!key) continue;
+        const entryId = encodeFileEntryId(entry.table, rowId, column);
+        let buf: Buffer | null = null;
+        if (entry.source === 'localPath') {
+          buf = readLocal(key);
+          if (!buf) {
+            counters.skipped.push({ id: entryId, table: entry.table, reason: 'file not found' });
+            continue;
+          }
+        } else {
+          if (!tenantId) {
+            counters.skipped.push({ id: entryId, table: entry.table, reason: 'owning tenant not resolvable' });
+            continue;
+          }
+          try {
+            buf = await (await providerFor(tenantId)).download(key);
+          } catch (err) {
+            counters.skipped.push({ id: entryId, table: entry.table, reason: `download failed: ${err instanceof Error ? err.message : String(err)}` });
+            continue;
+          }
+        }
+        if (counters.bundledBytes + buf.length > MAX_SYSTEM_BACKUP_ATTACHMENT_BYTES) {
+          counters.skipped.push({ id: entryId, table: entry.table, reason: 'total size cap reached' });
+          continue;
+        }
+        counters.bundledBytes += buf.length;
+        counters.bundledCount += 1;
+        yield { id: entryId, buffer: buf };
+      }
+    }
+  }
 }
 
 // ─── Local Backup Operations ─────────────────────────────────────
@@ -149,6 +273,49 @@ export async function createBackup(
   const contentObj = { metadata, tables: dumpData };
   const contentBuffer = Buffer.from(JSON.stringify(contentObj));
   metadata.checksum = generateChecksum(contentBuffer);
+
+  // With attachments: a streamed .vmx package (rows + files). The
+  // includeAttachments option used to be accepted and silently ignored —
+  // tenant backups never carried a single file.
+  if (options.includeAttachments) {
+    const fileName = `kis-books-backup-${timestamp}.vmx`;
+    assertSafeFileName(fileName);
+    const filePath = path.join(dir, fileName);
+    const counters: BundleFileCounters = { skipped: [], bundledBytes: 0, bundledCount: 0 };
+    const result = await writeTenantPackage(
+      filePath,
+      passphrase,
+      { metadata, tables: dumpData },
+      bundleFileSource({ tenantIds: [tenantId], tenantData: { [tenantId]: dumpData }, globalTables: {}, counters }),
+      {
+        backup_type: 'tenant',
+        source_version: APP_VERSION,
+        created_at: new Date().toISOString(),
+        includes_attachments: true,
+      },
+    );
+    if (counters.skipped.length > 0) {
+      console.warn(`[Backup] Tenant backup ${fileName}: bundled ${counters.bundledCount} file(s), skipped ${counters.skipped.length}.`);
+    }
+
+    const fileBuf = fs.readFileSync(filePath);
+    uploadBackupToRemote(fileName, fileBuf, tenantId).catch((err) => {
+      console.error('[Backup] Remote upload failed (non-fatal):', err.message);
+    });
+
+    await auditLog(
+      tenantId,
+      'create',
+      'backup',
+      backupId,
+      null,
+      { fileName, size: result.size, tableCount: tables.length, rowCount: totalRows, format: 'v3-portable-vmx', filesBundled: counters.bundledCount, filesSkipped: counters.skipped.length },
+      userId,
+    );
+
+    return { backupId, fileName, size: result.size };
+  }
+
   // Re-serialize with checksum
   const finalContent = Buffer.from(JSON.stringify({ metadata, tables: dumpData }));
 
@@ -224,8 +391,9 @@ export async function createSystemBackup(
   // 3. Export user_tenant_access
   const utaResult = await db.execute(sql`SELECT * FROM user_tenant_access`);
 
-  // 4. Export per-tenant data
-  const tables = await getTenantScopedTables();
+  // 4. Export per-tenant data — every public table with a tenant_id column.
+  const plan = await getSystemBackupTablePlan(db);
+  const tables = plan.tenantScoped;
   const tenantData: Record<string, Record<string, unknown[]>> = {};
 
   for (const tenant of allTenants as { id: string }[]) {
@@ -239,24 +407,29 @@ export async function createSystemBackup(
     tenantData[tenant.id] = tData;
   }
 
-  // 5. Export system config tables (non-tenant-scoped)
-  const systemConfigTables = ['ai_config', 'system_settings'];
-  const systemConfig: Record<string, unknown[]> = {};
-  for (const tableName of systemConfigTables) {
-    try {
-      const result = await db.execute(sql`SELECT * FROM ${sql.identifier(tableName)}`);
-      // Strip sensitive API keys from config
-      systemConfig[tableName] = (result.rows as Record<string, unknown>[]).map((row) => {
-        const clean = { ...row };
-        for (const key of Object.keys(clean)) {
-          if (key.includes('api_key') || key.includes('secret') || key === 'password') {
-            delete clean[key];
-          }
-        }
-        return clean;
-      });
-    } catch {
-      // Table may not exist
+  // 5. Export every remaining table whole: system/global tables (Plaid, SMS,
+  // AI, firm integrations, OAuth grants, budget lines, …) plus the
+  // tenant_id IS NULL rows of nullable-tenant tables (global bank rules,
+  // system payroll templates). Rows go in VERBATIM — including *_encrypted
+  // credential columns — because the bundle itself is passphrase-encrypted
+  // (PBKDF2 + AES-256-GCM) and a DR restore without provider credentials is
+  // not a restore. The old export stripped anything matching
+  // api_key/secret/password and hardcoded a 2-table list, which is exactly
+  // how Plaid/SMS/AI settings vanished from every disaster recovery.
+  const globalTables: Record<string, unknown[]> = {};
+  let globalRowCount = 0;
+  for (const tableName of plan.global) {
+    const result = await db.execute(sql`SELECT * FROM ${sql.identifier(tableName)}`);
+    globalTables[tableName] = result.rows;
+    globalRowCount += result.rows.length;
+  }
+  for (const tableName of plan.nullableTenant) {
+    const result = await db.execute(
+      sql`SELECT * FROM ${sql.identifier(tableName)} WHERE tenant_id IS NULL`,
+    );
+    if (result.rows.length > 0) {
+      globalTables[tableName] = result.rows;
+      globalRowCount += result.rows.length;
     }
   }
 
@@ -273,10 +446,12 @@ export async function createSystemBackup(
     backupId,
     created_at: new Date().toISOString(),
     encryption_method: 'passphrase_pbkdf2_aes256gcm' as const,
-    format: 'kis-books-system-v1',
+    format: 'kis-books-system-v2',
     tenant_count: allTenants.length,
     user_count: allUsers.length,
     transaction_count: totalTransactions,
+    global_table_count: Object.keys(globalTables).length,
+    global_row_count: globalRowCount,
     checksum: '',
   };
 
@@ -322,7 +497,7 @@ export async function createSystemBackup(
     tenants: allTenants,
     users: allUsers,
     user_tenant_access: utaResult.rows,
-    system_config: systemConfig,
+    global_tables: globalTables,
     tenant_data: tenantData,
     installation_files: installationFiles,
   };
@@ -337,44 +512,13 @@ export async function createSystemBackup(
     metadata.checksum = generateChecksum(Buffer.from(JSON.stringify(contentObj)));
     const baseName = `kis-books-backup-${timestamp}`;
 
-    const skipped: Array<{ id: string; reason: string }> = [];
-    let bundledBytes = 0;
-    let bundledCount = 0;
-    async function* attachmentSource(): AsyncGenerator<PackageAttachment> {
-      const uploadDir = process.env['UPLOAD_DIR'] || '/data/uploads';
-      const providerByTenant = new Map<string, StorageProvider>();
-      for (const tenant of allTenants as { id: string }[]) {
-        const atts = (tenantData[tenant.id]?.['attachments'] || []) as Record<string, unknown>[];
-        for (const att of atts) {
-          const id = att['id'] as string;
-          const fp = (att['file_path'] as string | null) || null;
-          const storageKey = (att['storage_key'] as string | null) || null;
-          if (!fp && !storageKey) continue; // metadata-only row, nothing to bundle
-          let buf: Buffer | null = null;
-          if (fp) {
-            const candidates = [fp, path.join(uploadDir, fp.replace(/^\/uploads\//, '')), path.join(uploadDir, fp)];
-            for (const c of candidates) { try { if (fs.existsSync(c)) { buf = fs.readFileSync(c); break; } } catch { /* skip unreadable */ } }
-          }
-          if (!buf && storageKey) {
-            try {
-              let provider = providerByTenant.get(tenant.id);
-              if (!provider) { provider = await getProviderForTenant(tenant.id); providerByTenant.set(tenant.id, provider); }
-              buf = await provider.download(storageKey);
-            } catch (err) {
-              skipped.push({ id, reason: `download failed: ${err instanceof Error ? err.message : String(err)}` });
-            }
-          }
-          if (!buf) { skipped.push({ id, reason: 'file not found' }); continue; }
-          if (bundledBytes + buf.length > MAX_SYSTEM_BACKUP_ATTACHMENT_BYTES) {
-            skipped.push({ id, reason: 'total size cap reached' });
-            continue;
-          }
-          bundledBytes += buf.length;
-          bundledCount += 1;
-          yield { id, buffer: buf };
-        }
-      }
-    }
+    const counters: BundleFileCounters = { skipped: [], bundledBytes: 0, bundledCount: 0 };
+    const fileSource = bundleFileSource({
+      tenantIds: (allTenants as { id: string }[]).map((t) => t.id),
+      tenantData,
+      globalTables,
+      counters,
+    });
 
     // Multi-part write: every part is an independently-valid encrypted .vmx
     // bounded by the part budget, so (a) a disaster-recovery restore can
@@ -388,7 +532,7 @@ export async function createSystemBackup(
       passphrase,
       backupId,
       data: { ...contentObj, metadata },
-      attachments: attachmentSource(),
+      attachments: fileSource,
       partMaxBytes,
       manifestMeta: {
         backup_type: 'system',
@@ -400,8 +544,8 @@ export async function createSystemBackup(
     });
     for (const f of multi.files) assertSafeFileName(f.fileName);
 
-    if (skipped.length > 0) {
-      console.warn(`[Backup] System backup ${baseName}: bundled ${bundledCount} attachment(s) (${bundledBytes} bytes), skipped ${skipped.length}.`);
+    if (counters.skipped.length > 0) {
+      console.warn(`[Backup] System backup ${baseName}: bundled ${counters.bundledCount} file(s) (${counters.bundledBytes} bytes), skipped ${counters.skipped.length}:`, counters.skipped.slice(0, 10));
     }
 
     // Ship every part off-site. Parts are bounded by partMaxBytes, so unlike
@@ -426,7 +570,7 @@ export async function createSystemBackup(
       files: multi.files.map((f) => f.fileName),
       tenantCount: allTenants.length, userCount: allUsers.length,
       transactionCount: totalTransactions,
-      attachmentsBundled: bundledCount, attachmentsSkipped: skipped.length, attachmentBytes: bundledBytes,
+      attachmentsBundled: counters.bundledCount, attachmentsSkipped: counters.skipped.length, attachmentBytes: counters.bundledBytes,
     }, userId);
 
     return {
@@ -489,7 +633,7 @@ export async function listBackups(tenantId: string) {
 
   const files = fs
     .readdirSync(dir)
-    .filter((f) => f.endsWith('.kbk') || f.endsWith('.vmb'))
+    .filter((f) => f.endsWith('.kbk') || f.endsWith('.vmb') || f.endsWith('.vmx'))
     .sort()
     .reverse();
   return files.map((f) => {
@@ -498,7 +642,7 @@ export async function listBackups(tenantId: string) {
       fileName: f,
       size: stat.size,
       createdAt: stat.mtime.toISOString(),
-      format: f.endsWith('.vmb') ? 'portable' : 'legacy',
+      format: f.endsWith('.vmx') ? 'portable-package' : f.endsWith('.vmb') ? 'portable' : 'legacy',
     };
   });
 }
@@ -570,6 +714,7 @@ export async function restoreFromBackup(
       'kis-books-backup-v2-tenant-scoped',
       'kis-books-backup-v3-portable',
       'kis-books-system-v1',
+      'kis-books-system-v2',
     ];
 
     if (metadata.format && !validFormats.includes(metadata.format)) {
