@@ -553,31 +553,30 @@ export async function parseGl(
       continue;
     }
 
-    // Footer rows — grand-total / subtotal lines QBO appends with the label
-    // in a leading text column (varies by export — sometimes the Date
-    // column, so gate on "no PARSEABLE date"). Two cases:
-    //   (a) EXACT "TOTAL" (account cell or a non-account lead cell) is the
-    //       grand-total footer. A real account is never named bare "TOTAL",
-    //       so close any open JE — this catches a grand total that lands
-    //       right after the last detail line with no per-JE-total row.
-    //   (b) "Total <x>" (subtotal) is only a footer BETWEEN entries
-    //       (current === null); inside an open JE it is a real continuation
-    //       line for an account genuinely named "Total Car Care" and must
-    //       NOT truncate the entry.
-    if (cellToIsoDate(date) === null && !txnType) {
+    // Footer rows — grand-total / subtotal lines QBO appends with a "Total"
+    // label in a leading text column (varies by export — sometimes the Date
+    // column, so gate on "no PARSEABLE date"). Skipped ONLY between entries
+    // (current === null): we never touch an OPEN journal entry, so a
+    // "Total …" continuation line for an account genuinely named that (e.g.
+    // "Total Car Care") is kept and the entry is never truncated.
+    //
+    // A QBO Journal always emits a per-JE totals row (blank account, equal
+    // debit/credit — handled just below) which closes the entry before its
+    // grand TOTAL, so the grand total is always seen with no entry open.
+    //
+    // Deliberate trade-offs (both preferred over the alternative): a
+    // grand-total row in a malformed export with NO preceding per-JE-total
+    // stays in an open entry rather than truncating a real one; and a
+    // "Total X" account row appearing before any JE header is skipped
+    // rather than raising IMPORT_HEADER_NOT_FOUND — legitimate subtotal
+    // footers must not error the import.
+    if (cellToIsoDate(date) === null && !txnType && current === null) {
       const acct = account.trim();
       const lead = [cellToString(r[0]), cellToString(r[iDate])]
         .map((t) => t.trim())
         .find((t) => t.length > 0);
-      const isExactTotal = /^total$/i.test(acct) || (!acct && !!lead && /^total$/i.test(lead));
-      const isTotalPrefix = /^total\b/i.test(acct) || (!acct && !!lead && /^total\b/i.test(lead));
-      if (isExactTotal) {
-        closeCurrent();
-        continue;
-      }
-      if (current === null && isTotalPrefix) {
-        continue; // between-entry subtotal footer; nothing open to close
-      }
+      const isTotalRow = /^total\b/i.test(acct) || (!acct && !!lead && /^total\b/i.test(lead));
+      if (isTotalRow) continue;
     }
 
     // Fully blank row → close the current group.
