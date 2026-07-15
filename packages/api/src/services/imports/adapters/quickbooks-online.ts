@@ -201,7 +201,9 @@ function parseCoaCsv(buf: Buffer): { rows: CanonicalCoaRow[]; errors: ImportVali
   }
   const header = (grid[headerRowIdx] ?? []).map((c) => String(c ?? ''));
   const iNumber = colIdxFuzzy(header, 'account number');
-  const iName = colIdxFuzzy(header, 'full name');
+  // QBO emits either "Full Name" or "Account name" depending on export path.
+  let iName = colIdxFuzzy(header, 'full name');
+  if (iName === -1) iName = colIdxFuzzy(header, 'account name');
   const iType = colIdxFuzzy(header, 'account type') !== -1 ? colIdxFuzzy(header, 'account type') : colIdx(header, 'type');
   const iDetail = colIdxFuzzy(header, 'detail type');
   const iDesc = colIdxFuzzy(header, 'description');
@@ -224,6 +226,15 @@ function parseCoaCsv(buf: Buffer): { rows: CanonicalCoaRow[]; errors: ImportVali
       errors,
     );
     if (row) rows.push(row);
+  }
+  // A file with data rows that produced NOTHING is a parsing failure, not
+  // an empty chart — surface it instead of a silent zero-row session.
+  if (rows.length === 0 && errors.length === 0 && grid.length > headerRowIdx + 1) {
+    errors.push({
+      rowNumber: headerRowIdx + 1,
+      code: 'IMPORT_HEADER_NOT_FOUND',
+      message: 'No account rows were recognized. Expected a name column ("Full Name" or "Account name") and an "Account type" column.',
+    });
   }
   return { rows, errors };
 }
@@ -250,7 +261,8 @@ export async function parseCoa(
     return { rows, errors };
   }
   const header = (sheet.rows[headerRowIdx] ?? []).map((c) => cellToString(c));
-  const iName = colIdx(header, 'full name');
+  let iName = colIdx(header, 'full name');
+  if (iName === -1) iName = colIdxFuzzy(header, 'account name');
   // Exact match — 'detail type' contains 'type' so the looser fallback
   // would resolve iType to iDetail and silently mis-bucket every account.
   const iType = colIdx(header, 'type');

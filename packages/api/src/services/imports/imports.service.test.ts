@@ -185,6 +185,22 @@ TOTAL,,,
       expect(allAccts.find((a) => a.name === 'CASH - Operating')!.accountNumber).toBe('11000');
       expect(allAccts.find((a) => a.name === 'Interest Expense')!.accountType).toBe('other_expense');
     });
+
+    it('accepts the "Account name" header variant and rows without numbers', async () => {
+      // QBO emits "Account name" (not "Full Name") on some export paths;
+      // this variant previously produced a SILENT zero-row session.
+      const csv = `Account number,Account name,Account type,Detail type
+11000,CASH - Freedom,Bank,Checking
+,Reconciliation Discrepancies,Other Expense,Other Miscellaneous Expense
+`;
+      const out = await importsService.createSession({
+        tenantId, companyId, userId,
+        file: fileFromText('qbo-coa-name-variant.csv', csv),
+        kind: 'coa', sourceSystem: 'quickbooks_online', options: {},
+      });
+      expect(out.session.errorCount).toBe(0);
+      expect(out.session.rowCount).toBe(2);
+    });
   });
 
   describe('Accounting Power Trial Balance', () => {
