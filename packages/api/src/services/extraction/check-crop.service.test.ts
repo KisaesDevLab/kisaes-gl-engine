@@ -11,6 +11,7 @@ import {
   extractCheckCandidateImages,
   checkPagesOf,
   readChecksFromCandidates,
+  checkPdfimagesAvailable,
 } from './check-crop.service.js';
 
 // The GLM client memoizes responses by image hash — identical fixture PNGs
@@ -69,7 +70,13 @@ describe('pngDimensions', () => {
 });
 
 describe('extractCheckCandidateImages', () => {
-  it('keeps check-shaped embedded images and drops logos/squares', async () => {
+  it('keeps check-shaped embedded images and drops logos/squares', async (ctx) => {
+    // Same convention as pdf-render.integration.test.ts: poppler is a
+    // container-image dependency; skip on hosts without it.
+    if (!(await checkPdfimagesAvailable()).available) {
+      ctx.skip();
+      return;
+    }
     const doc = await PDFDocument.create();
     const page = doc.addPage([612, 792]);
     const check = await doc.embedPng(makePng(600, 250)); // aspect 2.4 → check-like

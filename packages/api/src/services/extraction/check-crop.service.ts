@@ -59,6 +59,24 @@ export interface CheckCropResult {
   confidence: number;
 }
 
+/**
+ * Capability probe — `pdfimages` ships with poppler-utils in the container
+ * image; dev boxes/CI runners may lack it (the crop pass then no-ops and
+ * statement parsing continues without check-image payees).
+ */
+export async function checkPdfimagesAvailable(): Promise<{ available: boolean }> {
+  try {
+    await execFileAsync(PDFIMAGES_BIN, ['-v'], { timeout: 10_000 });
+    return { available: true };
+  } catch (err) {
+    // `pdfimages -v` prints its version to stderr and exits 0 on modern
+    // poppler, but some builds exit 99 for -v; treat "ran at all" as present.
+    const code = (err as { code?: unknown }).code;
+    if (typeof code === 'number') return { available: true };
+    return { available: false };
+  }
+}
+
 /** Parse PNG dimensions straight from the IHDR chunk — no image library. */
 export function pngDimensions(buf: Buffer): { width: number; height: number } | null {
   // 8-byte signature + 4 len + "IHDR" → width at 16, height at 20 (BE).
