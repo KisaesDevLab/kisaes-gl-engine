@@ -33,7 +33,7 @@ export const PACKAGE_FORMAT_VERSION = 2;
 // trips on a crafted deflate bomb. The ZIP central directory's declared
 // uncompressedSize is attacker-controlled and unzipper doesn't enforce it,
 // so we bound the ACTUAL bytes read off the stream instead of trusting it.
-const MAX_PACKAGE_ENTRY_BYTES = 600 * 1024 * 1024;
+export const MAX_PACKAGE_ENTRY_BYTES = 600 * 1024 * 1024;
 
 export class PackageEntryTooLargeError extends Error {
   constructor(path: string) {
@@ -44,7 +44,12 @@ export class PackageEntryTooLargeError extends Error {
 
 // unzipper's File objects expose stream() at runtime, but @types/unzipper
 // omits it — describe just what we use.
-type UnzipperEntry = { path: string; buffer: () => Promise<Buffer>; stream?: () => NodeJS.ReadableStream };
+type UnzipperEntry = {
+  path: string;
+  uncompressedSize?: number;
+  buffer: () => Promise<Buffer>;
+  stream?: () => NodeJS.ReadableStream;
+};
 
 // Read a zip entry into a Buffer, aborting if the decompressed stream
 // exceeds MAX_PACKAGE_ENTRY_BYTES — the only real defense against a deflate
@@ -53,9 +58,13 @@ async function bufferEntryBounded(
   file: UnzipperEntry,
   maxBytes = MAX_PACKAGE_ENTRY_BYTES,
 ): Promise<Buffer> {
-  // Fall back to buffer() only if a build ever lacks stream() — the bound
-  // is the whole point, so prefer the streaming path.
+  // Fall back to buffer() only if a build ever lacks stream() (stream() is
+  // undocumented in @types/unzipper). The declared uncompressedSize is
+  // attacker-controlled so it's not a real bound, but on the fallback path
+  // it's a cheap first gate; buffer() then throws if the actual bytes still
+  // overflow. Fail closed — never buffer unbounded silently.
   if (typeof file.stream !== 'function') {
+    if ((file.uncompressedSize ?? 0) > maxBytes) throw new PackageEntryTooLargeError(file.path);
     const buf = await file.buffer();
     if (buf.length > maxBytes) throw new PackageEntryTooLargeError(file.path);
     return buf;
@@ -535,7 +544,8 @@ async function openPart(filePath: string, passphrase: string): Promise<OpenedPar
   let invBuf: Buffer;
   try {
     invBuf = decryptEntry(key, await bufferEntryBounded(invFile));
-  } catch {
+  } catch (err) {
+    if (err instanceof PackageEntryTooLargeError) throw err;
     throw new Error('Incorrect passphrase or corrupted package');
   }
   const inventory = JSON.parse(invBuf.toString('utf8')) as {

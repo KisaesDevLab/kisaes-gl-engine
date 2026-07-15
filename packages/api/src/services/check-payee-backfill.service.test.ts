@@ -85,4 +85,23 @@ describe('backfillCheckPayees', () => {
     const report = await backfillCheckPayees(tenantId);
     expect(report.payeesApplied).toBe(0);
   });
+
+  it('never backfills a payee onto a deposit that carries a check number (NSF reversal)', async () => {
+    // A returned/NSF-reversal DEPOSIT that references check 1234, same amount.
+    const depositId = crypto.randomUUID();
+    await db.execute(sql`
+      INSERT INTO transactions (id, tenant_id, txn_type, txn_date, total, check_number)
+      VALUES (${depositId}, ${tenantId}, 'deposit', '2026-06-10', 150.00, 1234)
+    `);
+    try {
+      await backfillCheckPayees(tenantId);
+      const row = await db.execute(sql`SELECT payee_name_on_check, contact_id FROM transactions WHERE id = ${depositId}`);
+      const r = (row.rows as Array<{ payee_name_on_check: string | null; contact_id: string | null }>)[0]!;
+      // The check's payee must NOT land on the deposit — it's money in, not check 1234.
+      expect(r.payee_name_on_check).toBeNull();
+      expect(r.contact_id).toBeNull();
+    } finally {
+      await db.execute(sql`DELETE FROM transactions WHERE id = ${depositId}`);
+    }
+  });
 });

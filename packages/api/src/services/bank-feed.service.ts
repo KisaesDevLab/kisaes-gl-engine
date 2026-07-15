@@ -1006,7 +1006,6 @@ async function applyCheckImagePayees(
     // feed-item number. A ref with no leading digits has no valid bucket.
     const n = Number.parseInt(c.checkNumber, 10);
     if (!Number.isFinite(n)) continue;
-    if (!Number.isFinite(n)) continue;
     const arr = byNumber.get(n) ?? [];
     arr.push(c);
     byNumber.set(n, arr);

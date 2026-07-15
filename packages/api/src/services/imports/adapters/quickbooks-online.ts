@@ -553,21 +553,26 @@ export async function parseGl(
       continue;
     }
 
-    // Grand-TOTAL / "Total for X" footer rows: QBO puts the label in a
-    // leading text column (varies by export — sometimes the Date column
-    // itself, so gate on "no PARSEABLE date" rather than raw truthiness).
-    // A real account named "Total Car Care" is a detail row, not a footer:
-    // the account cell only counts when it is the label itself.
+    // Footer rows: QBO puts the label in a leading text column (varies by
+    // export — sometimes the Date column, so gate on "no PARSEABLE date").
+    //  - EXACT "TOTAL" is the grand-total footer — a real account is never
+    //    named bare "TOTAL", so it's unambiguous and closes any open JE.
+    //  - "Total <something>" is ambiguous (a real account like "Total Car
+    //    Care" vs a QBO subtotal), so only treat it as a footer BETWEEN
+    //    entries (no JE open); inside an open JE it's a continuation line.
     if (cellToIsoDate(date) === null && !txnType) {
+      const acct = account.trim();
       const lead = [cellToString(r[0]), cellToString(r[iDate])]
         .map((t) => t.trim())
         .find((t) => t.length > 0);
-      // Exact "TOTAL" only — a real account literally named "Total for
-      // Reserves" is a JE continuation row, not a footer.
-      const isFooter = /^total$/i.test(account.trim()) || (!account && !!lead && /^total\b/i.test(lead));
-      if (isFooter) {
+      const isExactTotal = /^total$/i.test(acct) || (!acct && !!lead && /^total$/i.test(lead));
+      const isTotalPrefix = /^total\b/i.test(acct) || (!acct && !!lead && /^total\b/i.test(lead));
+      if (isExactTotal) {
         closeCurrent();
         continue;
+      }
+      if (current === null && isTotalPrefix) {
+        continue; // between-entry subtotal footer; nothing open to close
       }
     }
 

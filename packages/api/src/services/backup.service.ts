@@ -20,7 +20,7 @@ import { decrypt as decryptField } from '../utils/encryption.js';
 import type { StorageProvider } from './storage/storage-provider.interface.js';
 import { tenantStorageKey } from './storage/storage-keys.js';
 import { getProviderForTenant } from './storage/storage-provider.factory.js';
-import { writeTenantPackage, writeTenantPackageMulti, type PackageAttachment } from './vmx-package.js';
+import { writeTenantPackage, writeTenantPackageMulti, MAX_PACKAGE_ENTRY_BYTES, type PackageAttachment } from './vmx-package.js';
 import { getSystemBackupTablePlan } from './backup-table-plan.js';
 import { FILE_EXPORT_REGISTRY, encodeFileEntryId } from './backup-file-registry.js';
 
@@ -172,6 +172,13 @@ async function* bundleFileSource(opts: {
           counters.skipped.push({ id: rowId, table: entry.table, reason: 'file not found' });
           continue;
         }
+        // Per-entry restore ceiling: an attachment that would exceed the
+        // read-time package cap would produce a backup that cannot be
+        // restored — skip it (recorded), never bundle it silently.
+        if (buf.length > MAX_PACKAGE_ENTRY_BYTES - 1024 * 1024) {
+          counters.skipped.push({ id: rowId, table: entry.table, reason: 'file exceeds per-entry restore limit' });
+          continue;
+        }
         if (counters.bundledBytes + buf.length > MAX_SYSTEM_BACKUP_ATTACHMENT_BYTES) {
           counters.skipped.push({ id: rowId, table: entry.table, reason: 'total size cap reached' });
           continue;
@@ -204,6 +211,10 @@ async function* bundleFileSource(opts: {
             counters.skipped.push({ id: entryId, table: entry.table, reason: `download failed: ${err instanceof Error ? err.message : String(err)}` });
             continue;
           }
+        }
+        if (buf.length > MAX_PACKAGE_ENTRY_BYTES - 1024 * 1024) {
+          counters.skipped.push({ id: entryId, table: entry.table, reason: 'file exceeds per-entry restore limit' });
+          continue;
         }
         if (counters.bundledBytes + buf.length > MAX_SYSTEM_BACKUP_ATTACHMENT_BYTES) {
           counters.skipped.push({ id: entryId, table: entry.table, reason: 'total size cap reached' });
@@ -720,8 +731,15 @@ export async function restoreFromBackup(
   message: string;
 }> {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let content: any; // decrypted JSON payload — same shape the old JSON.parse path produced
+    // Only the metadata block is read for validation; type it explicitly so
+    // dot-access stays clean and no `any` leaks into the codebase.
+    interface BackupMeta {
+      format?: string; backup_type?: string; tenantId?: string; backupId?: string;
+      created_at?: string; timestamp?: string; rowCount?: number; tableCount?: number;
+      transaction_count?: number; tenant_count?: number; user_count?: number;
+      source_version?: string; appVersion?: string;
+    }
+    let content: { metadata?: BackupMeta };
     let method: 'passphrase' | 'server_key';
     const { isPackageFormat, readTenantPackage } = await import('./vmx-package.js');
     if (isPackageFormat(fileBuffer)) {
@@ -730,7 +748,7 @@ export async function restoreFromBackup(
       // encrypted data entry; attachments are not extracted here.
       if (!passphrase) throw AppError.badRequest('Passphrase is required for .vmx packages');
       const pkg = await readTenantPackage(fileBuffer, passphrase);
-      content = pkg.data;
+      content = (pkg.data ?? {}) as { metadata?: BackupMeta };
       method = 'passphrase';
     } else {
       const out = smartDecrypt(fileBuffer, passphrase);
@@ -742,9 +760,9 @@ export async function restoreFromBackup(
       if (out.data.length > 500 * 1024 * 1024) {
         throw AppError.badRequest('Backup payload exceeds size limit');
       }
-      content = JSON.parse(out.data.toString());
+      content = JSON.parse(out.data.toString()) as { metadata?: BackupMeta };
     }
-    const metadata = content.metadata ?? {};
+    const metadata: BackupMeta = content.metadata ?? {};
 
     const validFormats = [
       'kis-books-backup-v1',

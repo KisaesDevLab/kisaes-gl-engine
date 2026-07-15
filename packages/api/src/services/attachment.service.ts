@@ -218,19 +218,22 @@ export async function bulkDownload(tenantId: string, attachmentIds: string[]): P
   // Files past the cap are recorded in the manifest, never silently lost.
   const BULK_DOWNLOAD_MAX_BYTES = 1024 * 1024 * 1024; // 1 GB
   let totalBytes = 0;
+  // Count appended entries, NOT bytes — a legitimately zero-byte first file
+  // must still arm the cap for everything after it (a byte counter stays 0).
+  let appendedCount = 0;
 
   const done = (async () => {
     const usedNames = new Set<string>();
     for (const att of rows) {
       try {
         // Pre-check with the stored size so the file that would CROSS the
-        // cap is skipped before buffering. Only when something is ALREADY in
-        // the archive — never pre-skip the first/only file on a possibly
-        // stale fileSize, or a single legitimately-requested file could be
-        // dropped for a metadata value that no longer reflects reality; the
-        // post-read backstop still bounds actual memory in that case.
+        // cap is skipped before buffering. Only once something is ALREADY in
+        // the archive — never pre-skip the first file on a possibly stale
+        // fileSize, or a single legitimately-requested file could be dropped
+        // for a metadata value that no longer reflects reality; the post-read
+        // backstop still bounds actual memory in that case.
         const expected = Number(att.fileSize ?? 0);
-        if (totalBytes > 0 && totalBytes + expected > BULK_DOWNLOAD_MAX_BYTES) {
+        if (appendedCount > 0 && totalBytes + expected > BULK_DOWNLOAD_MAX_BYTES) {
           skipped.push({ id: att.id, fileName: att.fileName || att.id, reason: 'total size cap (1 GB) reached — download in smaller batches' });
           continue;
         }
@@ -238,11 +241,12 @@ export async function bulkDownload(tenantId: string, attachmentIds: string[]): P
         // Post-read backstop: overflow only when something already made it in
         // (a lone oversized file is still delivered rather than yielding an
         // empty ZIP).
-        if (totalBytes > 0 && totalBytes + bytes.length > BULK_DOWNLOAD_MAX_BYTES) {
+        if (appendedCount > 0 && totalBytes + bytes.length > BULK_DOWNLOAD_MAX_BYTES) {
           skipped.push({ id: att.id, fileName: att.fileName || att.id, reason: 'total size cap (1 GB) reached — download in smaller batches' });
           continue;
         }
         totalBytes += bytes.length;
+        appendedCount += 1;
         archive.append(bytes, { name: zipEntryName(usedNames, att.fileName) });
       } catch (err) {
         skipped.push({

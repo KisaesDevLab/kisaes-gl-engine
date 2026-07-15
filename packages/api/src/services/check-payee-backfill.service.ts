@@ -41,13 +41,20 @@ const centsOf = (v: string | number | null | undefined): number | null => {
   return Number.isFinite(n) ? Math.round(Math.abs(n) * 100) : null;
 };
 
-/** Posted check transactions with a number but no payee identity. */
+/**
+ * Posted MONEY-OUT check transactions with a number but no payee identity.
+ * A check image is a check WE wrote (money out), so only money-out types
+ * are valid targets — never a deposit that happens to carry a check number
+ * (e.g. an "NSF REF #1042" reversal), which would otherwise be stamped with
+ * the original check's payee.
+ */
 async function findTargets(tenantId: string): Promise<TargetTxn[]> {
   const res = await db.execute(sql`
     SELECT id, check_number, total, contact_id
     FROM transactions
     WHERE tenant_id = ${tenantId}
       AND check_number IS NOT NULL
+      AND txn_type IN ('check', 'expense', 'bill_payment')
       AND (payee_name_on_check IS NULL OR payee_name_on_check = '')
       AND contact_id IS NULL
       AND voided_at IS NULL
@@ -224,6 +231,10 @@ async function rescanStatements(tenantId: string): Promise<NonNullable<BackfillR
         WHERE tenant_id = ${tenantId} AND statement_id = ${s.id}
           AND check_number = ${read.checkNumber}
           AND (payee IS NULL OR payee = '')
+          -- Debit lines only: statement amounts are credit-positive /
+          -- debit-negative, so a check (money out) is the negative side.
+          -- Never stamp a check payee onto a same-number deposit line.
+          AND amount < 0
           AND (${read.amount ?? null}::numeric IS NULL OR abs(abs(amount) - abs(${read.amount ?? null}::numeric)) <= 0.01)
       `);
       result.payeesApplied += (upd as { rowCount?: number | null }).rowCount ?? 0;
