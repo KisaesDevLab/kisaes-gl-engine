@@ -696,9 +696,15 @@ async function executePipeline(
   }
 
   // Crop reads win on collision — they come from the actual check image,
-  // not from text-proximity inference.
+  // not from text-proximity inference. Collide on the NUMERIC value when
+  // the number is numeric: Stage-2 preserves leading zeros ('0234') while
+  // the crop pass normalizes ('234'), and both must be the same check.
+  const checkMergeKey = (raw: string): string => {
+    const t = raw.trim();
+    return /^\d+$/.test(t) ? String(parseInt(t, 10)) : t;
+  };
   const checksByNumber = new Map<string, StatementCheckImage>();
-  for (const c of [...rowChecks, ...cropChecks]) checksByNumber.set(c.checkNumber, c);
+  for (const c of [...rowChecks, ...cropChecks]) checksByNumber.set(checkMergeKey(c.checkNumber), c);
   const checks: StatementCheckImage[] = [...checksByNumber.values()];
 
   // Confidence: prefer the model's statement-level value; floor it below the

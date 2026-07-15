@@ -298,10 +298,18 @@ export async function createBackup(
       console.warn(`[Backup] Tenant backup ${fileName}: bundled ${counters.bundledCount} file(s), skipped ${counters.skipped.length}.`);
     }
 
-    const fileBuf = fs.readFileSync(filePath);
-    uploadBackupToRemote(fileName, fileBuf, tenantId).catch((err) => {
-      console.error('[Backup] Remote upload failed (non-fatal):', err.message);
-    });
+    // Same remote-upload ceiling as system-backup parts: past it the file
+    // stays local-only instead of readFileSync throwing (>2 GiB) or
+    // buffering a multi-GB archive in RAM.
+    const REMOTE_UPLOAD_MAX = 500 * 1024 * 1024;
+    if (result.size <= REMOTE_UPLOAD_MAX) {
+      const fileBuf = fs.readFileSync(filePath);
+      uploadBackupToRemote(fileName, fileBuf, tenantId).catch((err) => {
+        console.error('[Backup] Remote upload failed (non-fatal):', err.message);
+      });
+    } else {
+      console.warn(`[Backup] Tenant package ${fileName} is ${result.size} bytes (> ${REMOTE_UPLOAD_MAX}); kept local only.`);
+    }
 
     await auditLog(
       tenantId,
@@ -698,15 +706,30 @@ export async function restoreFromBackup(
   message: string;
 }> {
   try {
-    const { data: decrypted, method } = smartDecrypt(fileBuffer, passphrase);
-    // Reject implausibly large decrypted blobs before JSON.parse allocates
-    // another copy. AES-GCM doesn't expand its input, so a file that
-    // decrypts to >500MB was either produced by malformed tooling or a
-    // future compressed format — either way we don't want to parse it.
-    if (decrypted.length > 500 * 1024 * 1024) {
-      throw AppError.badRequest('Backup payload exceeds size limit');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let content: any; // decrypted JSON payload — same shape the old JSON.parse path produced
+    let method: 'passphrase' | 'server_key';
+    const { isPackageFormat, readTenantPackage } = await import('./vmx-package.js');
+    if (isPackageFormat(fileBuffer)) {
+      // .vmx package (ZIP) — the format createBackup emits when attachments
+      // are included and listBackups advertises. Validate by opening the
+      // encrypted data entry; attachments are not extracted here.
+      if (!passphrase) throw AppError.badRequest('Passphrase is required for .vmx packages');
+      const pkg = await readTenantPackage(fileBuffer, passphrase);
+      content = pkg.data;
+      method = 'passphrase';
+    } else {
+      const out = smartDecrypt(fileBuffer, passphrase);
+      method = out.method;
+      // Reject implausibly large decrypted blobs before JSON.parse allocates
+      // another copy. AES-GCM doesn't expand its input, so a file that
+      // decrypts to >500MB was either produced by malformed tooling or a
+      // future compressed format — either way we don't want to parse it.
+      if (out.data.length > 500 * 1024 * 1024) {
+        throw AppError.badRequest('Backup payload exceeds size limit');
+      }
+      content = JSON.parse(out.data.toString());
     }
-    const content = JSON.parse(decrypted.toString());
     const metadata = content.metadata ?? {};
 
     const validFormats = [

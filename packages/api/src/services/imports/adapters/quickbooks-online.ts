@@ -213,7 +213,7 @@ function parseCoaCsv(buf: Buffer): { rows: CanonicalCoaRow[]; errors: ImportVali
     const typeText = String(r[iType] ?? '').trim();
     // Title rows above / TOTAL and timestamp rows below the data carry no
     // type text — skip them instead of erroring.
-    if (!fullName || !typeText || /^total\b/i.test(fullName)) continue;
+    if (!fullName || !typeText || /^total$/i.test(fullName)) continue;
     const row = buildCoaRow(
       rowNumber,
       fullName,
@@ -264,7 +264,7 @@ export async function parseCoa(
     const rowNumber = i + 1;
     const fullName = cellToString(r[iName]).trim();
     const typeText = cellToString(r[iType]).trim();
-    if (!fullName || !typeText || /^total\b/i.test(fullName)) continue;
+    if (!fullName || !typeText || /^total$/i.test(fullName)) continue;
 
     const row = buildCoaRow(
       rowNumber,
@@ -543,13 +543,18 @@ export async function parseGl(
 
     // Grand-TOTAL row at the end of the report: QBO puts the literal
     // "TOTAL" in a leading text column (which one varies by export).
-    // Without this skip it reads as a detail-before-header error.
-    const leadingText = [cellToString(r[0]), cellToString(r[iDate]), account, txnType]
-      .map((t) => t.trim().toLowerCase())
-      .find((t) => t.length > 0);
-    if (leadingText && /^total\b/.test(leadingText)) {
-      closeCurrent();
-      continue;
+    // Only rows with NO JE signals qualify, and an account cell must be
+    // exactly "TOTAL" — a real account named "Total Car Care" is a detail
+    // row, not a footer.
+    if (!date && !txnType) {
+      const lead = [cellToString(r[0]), cellToString(r[iDate])]
+        .map((t) => t.trim())
+        .find((t) => t.length > 0);
+      const isGrandTotal = (!account && !!lead && /^total\b/i.test(lead)) || /^total$/i.test(account);
+      if (isGrandTotal) {
+        closeCurrent();
+        continue;
+      }
     }
 
     // Fully blank row → close the current group.

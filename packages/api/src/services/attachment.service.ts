@@ -212,11 +212,23 @@ export async function bulkDownload(tenantId: string, attachmentIds: string[]): P
   const archive = archiver('zip', { zlib: { level: 6 } });
   const skipped: BulkDownloadSkipped[] = [];
 
+  // Total-bytes ceiling: each file is buffered before appending, and
+  // archiver queues appends faster than a slow client drains them — an
+  // unbounded selection of large scans can hold GBs in RAM per request.
+  // Files past the cap are recorded in the manifest, never silently lost.
+  const BULK_DOWNLOAD_MAX_BYTES = 1024 * 1024 * 1024; // 1 GB
+  let totalBytes = 0;
+
   const done = (async () => {
     const usedNames = new Set<string>();
     for (const att of rows) {
       try {
+        if (totalBytes >= BULK_DOWNLOAD_MAX_BYTES) {
+          skipped.push({ id: att.id, fileName: att.fileName || att.id, reason: 'total size cap (1 GB) reached — download in smaller batches' });
+          continue;
+        }
         const bytes = await readAttachmentBytes(tenantId, att);
+        totalBytes += bytes.length;
         archive.append(bytes, { name: zipEntryName(usedNames, att.fileName) });
       } catch (err) {
         skipped.push({

@@ -82,10 +82,17 @@ setupRouter.use(async (req, res, next) => {
   //   - /pending-recovery-key: F22 — post-setup re-display of a still-unacknowledged
   //     recovery key, scoped to a specific installation_id
   //   - /acknowledge-recovery-key: paired with the above, clears the pending entry
+  //   - /restore/runs/*: polling a restore run — a SUCCESSFUL restore marks
+  //     setup complete before the run flips to 'complete', so without this
+  //     exemption the wizard's poll 403s at the exact moment of success and
+  //     the operator never sees the result (or the one-time recovery key).
+  //     Read-only, in-memory run metadata; the same data the execute
+  //     response used to carry synchronously.
   if (
     req.path === '/status' ||
     req.path === '/pending-recovery-key' ||
-    req.path === '/acknowledge-recovery-key'
+    req.path === '/acknowledge-recovery-key' ||
+    (req.method === 'GET' && req.path.startsWith('/restore/runs/'))
   ) {
     return next();
   }
@@ -568,10 +575,16 @@ function startRestoreRun(
   opts: { onSuccess?: () => void; onSettle?: () => void } = {},
 ): RestoreRun {
   // Re-attach instead of double-running: a second POST while a restore is
-  // in flight (wizard reload after a proxy timeout) gets the SAME run.
+  // in flight (wizard reload after a proxy timeout) gets the SAME run. The
+  // second caller's resources are NOT consumed by the active run, so its
+  // settle-cleanup fires now — otherwise every duplicate upload leaks a
+  // multi-GB file in multer's disk storage until the volume fills.
   if (activeRestoreRunId) {
     const active = restoreRuns.get(activeRestoreRunId);
-    if (active && active.status === 'running') return active;
+    if (active && active.status === 'running') {
+      try { opts.onSettle?.(); } catch { /* cleanup is best-effort */ }
+      return active;
+    }
   }
 
   const run: RestoreRun = { id: crypto.randomUUID(), status: 'running', startedAt: new Date().toISOString() };

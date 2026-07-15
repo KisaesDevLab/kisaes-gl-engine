@@ -451,19 +451,26 @@ aiRouter.post('/parse/statement/import', authenticate, aiProcessingLimiter, vali
     }
   }
   // Preview-edited payees override the parse job's read for that check —
-  // what the user saw and approved is what the import applies.
+  // what the user saw and approved is what the import applies. Keys are
+  // normalized numerically only when the number IS numeric ('0234' → '234');
+  // non-numeric check refs ('1042A') keep their raw string key — coercing
+  // through Number() collapsed all of them onto one 'NaN' entry.
+  const checkKey = (raw: string): string => {
+    const t = raw.trim();
+    return /^\d+$/.test(t) ? String(parseInt(t, 10)) : t;
+  };
   const editedByNumber = new Map<string, { checkNumber: string; payee: string; amount?: string }>();
   for (const t of req.body.transactions as Array<{ checkNumber?: string | null; checkPayee?: string | null; amount?: string }>) {
-    if (t.checkNumber && t.checkPayee?.trim()) {
-      editedByNumber.set(String(Number(t.checkNumber)), {
-        checkNumber: String(Number(t.checkNumber)),
+    if (t.checkNumber?.trim() && t.checkPayee?.trim()) {
+      editedByNumber.set(checkKey(t.checkNumber), {
+        checkNumber: t.checkNumber.trim(),
         payee: t.checkPayee.trim(),
         amount: t.amount,
       });
     }
   }
   if (editedByNumber.size > 0) {
-    const merged = new Map(rawChecks.map((c) => [String(Number(c.checkNumber)), c]));
+    const merged = new Map(rawChecks.map((c) => [checkKey(c.checkNumber), c]));
     for (const [n, c] of editedByNumber) merged.set(n, c);
     rawChecks = [...merged.values()];
   }
