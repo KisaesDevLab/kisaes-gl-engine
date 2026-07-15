@@ -17,6 +17,15 @@ import {
 } from '../services/pending-recovery-key.service.js';
 import { getSetting as dbGetSetting } from '../services/admin.service.js';
 import { SystemSettingsKeys } from '../constants/system-settings-keys.js';
+import {
+  mergeBundleSections,
+  restoreDatabaseSections,
+  resyncOwnedSequences,
+  buildRestoreChecklist,
+  writeBackBundleFiles,
+  type RestoreReport,
+  type FileRestoreReport,
+} from '../services/system-restore.service.js';
 
 // Restore uploads go to DISK, not memory: an attachments-included .vmx system
 // backup can be many GB (createSystemBackup caps attachments at 10 GB), and
@@ -562,112 +571,34 @@ async function runGuardedSetupRestore(readContent: ContentSource): Promise<Recor
 
       const { content, packageAttachments } = await readContent();
       const metadata = content.metadata ?? {};
-      const isSystem = metadata.backup_type === 'system' || metadata.format === 'kis-books-system-v1';
+      const isSystem =
+        metadata.backup_type === 'system' ||
+        metadata.format === 'kis-books-system-v1' ||
+        metadata.format === 'kis-books-system-v2';
 
       if (isSystem) {
-        // System restore: restore tenants, users, tenant data
-        // 1. Restore tenants
-        for (const tenant of (content.tenants || [])) {
-          await db.execute(sql`
-            INSERT INTO tenants (id, name, slug, created_at, updated_at)
-            VALUES (${tenant.id}, ${tenant.name}, ${tenant.slug},
-                    ${tenant.created_at || new Date().toISOString()},
-                    ${tenant.updated_at || new Date().toISOString()})
-            ON CONFLICT (id) DO NOTHING
-          `);
-        }
-
-        // 2. Restore users (with hashed passwords preserved)
-        for (const user of (content.users || [])) {
-          await db.execute(sql`
-            INSERT INTO users (id, tenant_id, email, password_hash, display_name, role,
-                              is_active, is_super_admin, tfa_enabled, tfa_methods,
-                              preferred_login_method, magic_link_enabled)
-            VALUES (${user.id}, ${user.tenant_id}, ${user.email}, ${user.password_hash},
-                    ${user.display_name || null}, ${user.role || 'owner'},
-                    ${user.is_active !== false}, ${user.is_super_admin === true},
-                    ${user.tfa_enabled === true}, ${user.tfa_methods || ''},
-                    ${user.preferred_login_method || 'password'},
-                    ${user.magic_link_enabled === true})
-            ON CONFLICT DO NOTHING
-          `);
-        }
-
-        // 3. Restore user_tenant_access
-        for (const uta of (content.user_tenant_access || [])) {
-          await db.execute(sql`
-            INSERT INTO user_tenant_access (id, user_id, tenant_id, role, is_active)
-            VALUES (${uta.id}, ${uta.user_id}, ${uta.tenant_id}, ${uta.role || 'owner'}, ${uta.is_active !== false})
-            ON CONFLICT DO NOTHING
-          `);
-        }
-
-        // 4. Restore per-tenant data
-        const tenantData = content.tenant_data || {};
-        for (const [, tables] of Object.entries(tenantData)) {
-          const tableData = tables as Record<string, Record<string, unknown>[]>;
-          // Ordered table restore (respecting foreign keys)
-          const tableOrder = [
-            'companies', 'accounts', 'contacts', 'items',
-            'tag_groups', 'tags', 'transactions', 'journal_lines',
-            'transaction_tags', 'bill_payment_applications', 'vendor_credit_applications',
-            'bank_rules', 'budgets', 'budget_lines',
-            'recurring_schedules', 'attachments', 'audit_log',
-            'saved_report_filters',
-          ];
-
-          // First restore ordered tables, then any remaining
-          const restored = new Set<string>();
-          for (const tableName of tableOrder) {
-            const rows = tableData[tableName];
-            if (!rows || rows.length === 0) continue;
-            await restoreTableRows(db, tableName, rows);
-            restored.add(tableName);
-          }
-          // Remaining tables not in the ordered list
-          for (const [tableName, rows] of Object.entries(tableData)) {
-            if (restored.has(tableName) || !rows || rows.length === 0) continue;
-            await restoreTableRows(db, tableName, rows);
-          }
-        }
+        // System restore: merge every bundle section into one table → rows[]
+        // map and hand it to the dynamic restore engine, which topo-orders by
+        // the live FK graph and retries to fixpoint. This replaces the old
+        // hardcoded INSERTs (which dropped most user/tenant columns) and the
+        // silent per-row catch{} (which hid every FK-ordering loss).
+        const sections = mergeBundleSections(content);
+        const restoreReport: RestoreReport = await restoreDatabaseSections(db, sections);
 
         // Restored rows carry their original serial ids; bring every owned
         // sequence up to date or the first post-restore write to a
         // serial-PK table (e.g. audit_log on first login) hits duplicate-key.
         await resyncOwnedSequences(db);
 
-        // Restore attachment FILES (present only in .vmx packages). Map each
-        // bundled file id to its tenant + storage key from the restored
-        // attachment rows, then write the blob back through that tenant's
-        // storage provider so receipts/documents survive the restore.
+        // Restore bundled FILES (present only in .vmx packages): receipt
+        // attachments, extraction sources, portal receipt/Q&A uploads,
+        // payroll import files, and report PDFs — each written back through
+        // the owning tenant's storage provider (or under UPLOAD_DIR for
+        // payroll local files).
+        let fileReport: FileRestoreReport | null = null;
         if (packageAttachments) {
-          const idToTarget = new Map<string, { tenantId: string; storageKey: string }>();
-          for (const [tid, tables] of Object.entries(content.tenant_data || {})) {
-            for (const att of ((tables as Record<string, Array<Record<string, unknown>>>)['attachments'] || [])) {
-              const sk = (att['storage_key'] as string | null) || null;
-              // Fall back to file_path for legacy rows whose storage_key was
-              // never backfilled — the bundled file must not be silently
-              // dropped on restore.
-              const key = sk || ((att['file_path'] as string | null) || null);
-              if (key) idToTarget.set(att['id'] as string, { tenantId: tid, storageKey: key });
-            }
-          }
-          const { getProviderForTenant } = await import('../services/storage/storage-provider.factory.js');
-          const providerByTenant = new Map<string, Awaited<ReturnType<typeof getProviderForTenant>>>();
-          let restoredFiles = 0;
-          for await (const { id, buffer } of packageAttachments()) {
-            const target = idToTarget.get(id);
-            if (!target) continue;
-            try {
-              let provider = providerByTenant.get(target.tenantId);
-              if (!provider) { provider = await getProviderForTenant(target.tenantId); providerByTenant.set(target.tenantId, provider); }
-              await provider.upload(target.storageKey, buffer, { fileName: id, mimeType: 'application/octet-stream', sizeBytes: buffer.length });
-              restoredFiles++;
-            } catch (err) {
-              console.error(`[restore] attachment ${id} write-back failed:`, err instanceof Error ? err.message : err);
-            }
-          }
-          console.log(`[restore] restored ${restoredFiles} attachment file(s) from package`);
+          fileReport = await writeBackBundleFiles(sections, packageAttachments);
+          console.log('[restore] file write-back:', JSON.stringify(fileReport));
         }
 
         // Write the installation sentinel after a successful system restore.
@@ -778,6 +709,20 @@ async function runGuardedSetupRestore(readContent: ContentSource): Promise<Recor
           );
         }
 
+        // Checklist reflects what was ACTUALLY restored — the previous
+        // hardcoded 'not configured' literals ignored the bundle entirely.
+        const checklist = await buildRestoreChecklist(db);
+
+        const warnings: string[] = [];
+        if (restoreReport.totals.failed > 0) {
+          warnings.push(
+            `${restoreReport.totals.failed} row(s) could not be restored — see tables report`,
+          );
+        }
+        if (fileReport && Object.values(fileReport.perTable).some((t) => t.failed > 0)) {
+          warnings.push('Some bundled files could not be written back — see files report');
+        }
+
         return {
           success: true,
           message: recoveryKeyPreserved
@@ -791,13 +736,18 @@ async function runGuardedSetupRestore(readContent: ContentSource): Promise<Recor
           recoveryKey: recoveryKeyPreserved ? null : sentinelResultRestore.recoveryKey,
           recoveryKeyPreserved,
           crossHostRestore: !isSameHost,
-          checklist: {
-            smtp: { status: 'warning', message: 'SMTP not configured — email features unavailable' },
-            plaid: { status: 'warning', message: 'Plaid not configured — bank feeds unavailable' },
-            ai: { status: 'warning', message: 'AI not configured — AI features unavailable' },
-            users: { status: 'ok', message: `${(content.users || []).length} user accounts restored` },
-            tenants: { status: 'ok', message: `${(content.tenants || []).length} companies restored` },
+          tables: {
+            totals: restoreReport.totals,
+            passes: restoreReport.passes,
+            failures: Object.fromEntries(
+              Object.entries(restoreReport.perTable)
+                .filter(([, s]) => s.failed > 0)
+                .map(([t, s]) => [t, { failed: s.failed, sampleErrors: s.sampleErrors }]),
+            ),
           },
+          files: fileReport,
+          warnings,
+          checklist,
         };
       } else {
         // Tenant-scoped backup restore
@@ -817,14 +767,23 @@ async function runGuardedSetupRestore(readContent: ContentSource): Promise<Recor
           `);
         }
 
+        const sections: Record<string, Record<string, unknown>[]> = {};
         for (const [tableName, rows] of Object.entries(tables)) {
-          if (!rows || !(rows as unknown[]).length) continue;
-          await restoreTableRows(db, tableName, rows as Record<string, unknown>[]);
+          if (Array.isArray(rows) && rows.length > 0) sections[tableName] = rows as Record<string, unknown>[];
         }
+        const restoreReport: RestoreReport = await restoreDatabaseSections(db, sections);
 
         // Same sequence-resync as the system branch — restored serial ids
         // leave owned sequences behind otherwise.
         await resyncOwnedSequences(db);
+
+        // Tenant .vmx packages carry attachment/upload files too; write them
+        // back (the old flow ignored them entirely on this branch).
+        let fileReport: FileRestoreReport | null = null;
+        if (packageAttachments) {
+          fileReport = await writeBackBundleFiles(sections, packageAttachments);
+          console.log('[restore] file write-back:', JSON.stringify(fileReport));
+        }
 
         // Mark initialized after successful restore. Tenant-scoped restore
         // does NOT touch the sentinel (F26): a tenant backup does not
@@ -841,16 +800,26 @@ async function runGuardedSetupRestore(readContent: ContentSource): Promise<Recor
         // flow and is tracked for Phase C cleanup.
         setupService.markInitialized({ via: 'restore/tenant', tenantId });
 
+        const checklist = await buildRestoreChecklist(db);
+        // A tenant bundle carries no user accounts — keep the actionable hint.
+        checklist['users'] = { status: 'warning', message: 'Create an admin account to access the restored data' };
+
         return {
           success: true,
           message: 'Tenant data restored',
           tenant_id: tenantId,
           row_count: metadata.rowCount,
-          checklist: {
-            smtp: { status: 'warning', message: 'SMTP not configured — email features unavailable' },
-            plaid: { status: 'warning', message: 'Plaid not configured — bank feeds unavailable' },
-            users: { status: 'warning', message: 'Create an admin account to access the restored data' },
+          tables: {
+            totals: restoreReport.totals,
+            passes: restoreReport.passes,
+            failures: Object.fromEntries(
+              Object.entries(restoreReport.perTable)
+                .filter(([, s]) => s.failed > 0)
+                .map(([t, s]) => [t, { failed: s.failed, sampleErrors: s.sampleErrors }]),
+            ),
           },
+          files: fileReport,
+          checklist,
         };
       }
   });
@@ -1117,83 +1086,6 @@ setupRouter.post('/restore/execute-staged', async (req, res) => {
   }
 });
 
-/**
- * Resync every column-owned sequence to the max of its column. Restored rows
- * arrive with their original ids, but a plain INSERT does not advance the
- * table's serial/identity sequence — so the first post-restore write to a
- * serial-PK table (audit_log on the very first login, for instance) collides
- * with a restored id and fails with duplicate-key. Iterating pg_depend covers
- * every owned sequence generically, so a future serial table cannot
- * reintroduce the bug. Idempotent; safe on tables with zero rows.
- */
-async function resyncOwnedSequences(dbInstance: typeof import('../db/index.js')['db']): Promise<void> {
-  const { sql } = await import('drizzle-orm');
-  await dbInstance.execute(sql`
-    DO $$
-    DECLARE r RECORD;
-    BEGIN
-      FOR r IN
-        -- Schema-qualify both sides: owned sequences are not limited to
-        -- public (drizzle's own __drizzle_migrations lives in the drizzle
-        -- schema), and an unqualified name would resolve via search_path.
-        SELECT seqns.nspname AS seqschema, seq.relname AS seqname,
-               tabns.nspname AS tabschema, tab.relname AS tabname,
-               attr.attname AS colname
-        FROM pg_class seq
-        JOIN pg_namespace seqns ON seqns.oid = seq.relnamespace
-        JOIN pg_depend d ON d.objid = seq.oid AND d.deptype = 'a'
-        JOIN pg_class tab ON d.refobjid = tab.oid
-        JOIN pg_namespace tabns ON tabns.oid = tab.relnamespace
-        JOIN pg_attribute attr ON attr.attrelid = tab.oid AND attr.attnum = d.refobjsubid
-        WHERE seq.relkind = 'S'
-      LOOP
-        EXECUTE format(
-          'SELECT setval(%L, GREATEST(COALESCE((SELECT MAX(%I) FROM %I.%I), 0), 1), COALESCE((SELECT MAX(%I) FROM %I.%I), 0) > 0)',
-          quote_ident(r.seqschema) || '.' || quote_ident(r.seqname),
-          r.colname, r.tabschema, r.tabname,
-          r.colname, r.tabschema, r.tabname
-        );
-      END LOOP;
-    END $$;
-  `);
-}
-
-/**
- * Restore rows into a table using raw SQL INSERT.
- * Uses column names from the first row. Skips on conflict.
- */
-async function restoreTableRows(
-  dbInstance: typeof import('../db/index.js')['db'],
-  tableName: string,
-  rows: Record<string, unknown>[],
-) {
-  if (!rows.length) return;
-  // Validate table name
-  if (!/^[a-z_][a-z0-9_]*$/.test(tableName)) return;
-
-  const { sql } = await import('drizzle-orm');
-
-  for (const row of rows) {
-    const cols = Object.keys(row).filter((k) => /^[a-z_][a-z0-9_]*$/.test(k));
-    if (cols.length === 0) continue;
-
-    const colNames = cols.map((c) => sql.identifier(c));
-    const values = cols.map((c) => {
-      const v = row[c];
-      if (v === null || v === undefined) return sql`NULL`;
-      if (typeof v === 'object') return sql`${JSON.stringify(v)}::jsonb`;
-      return sql`${String(v)}`;
-    });
-
-    try {
-      // Build: INSERT INTO table (col1, col2) VALUES (v1, v2) ON CONFLICT DO NOTHING
-      const colList = sql.join(colNames, sql`, `);
-      const valList = sql.join(values, sql`, `);
-      await dbInstance.execute(
-        sql`INSERT INTO ${sql.identifier(tableName)} (${colList}) VALUES (${valList}) ON CONFLICT DO NOTHING`,
-      );
-    } catch {
-      // Skip rows that fail (e.g., FK constraint for not-yet-restored references)
-    }
-  }
-}
+// restoreTableRows / resyncOwnedSequences moved to
+// services/system-restore.service.ts, which adds FK-aware ordering,
+// multi-pass fixpoint retry, and per-row failure reporting.
