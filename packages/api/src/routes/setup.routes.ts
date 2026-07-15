@@ -740,21 +740,56 @@ async function runGuardedSetupRestore(readContent: ContentSource): Promise<Recor
           crossHostRestore: !isSameHost,
         });
 
-        // F22: stash for wizard re-display resilience.
-        stashPendingRecoveryKey(
-          sentinelResultRestore.installationId,
-          sentinelResultRestore.recoveryKey,
-        );
+        // Same-host restore: the bundle carries the source install's
+        // .env.recovery verbatim, and on the same host the env values inside
+        // it are still correct — write it back (overwriting the fresh file
+        // completeSetupSentinel just minted) so the operator's original
+        // recovery key stays valid. Cross-host keeps rotate-on-restore: the
+        // old file would decrypt to the *source* server's secrets.
+        let recoveryKeyPreserved = false;
+        if (isSameHost && restoredInstallationFiles.envRecovery) {
+          try {
+            const { writeRecoveryFileRaw } = await import('../services/env-recovery.service.js');
+            writeRecoveryFileRaw(Buffer.from(restoredInstallationFiles.envRecovery, 'base64'));
+            recoveryKeyPreserved = true;
+            // eslint-disable-next-line no-console
+            console.log(
+              `[sentinel-audit] ${JSON.stringify({
+                ts: new Date().toISOString(),
+                kind: 'sentinel-audit',
+                event: 'recovery.file_restored_from_backup',
+                source: 'restore/execute',
+                installationId: sentinelResultRestore.installationId,
+              })}`,
+            );
+          } catch (err) {
+            // Fall through to the new-key flow — worst case the operator
+            // gets a rotated key, same as before this write-back existed.
+            console.error('[restore] recovery file write-back failed, issuing new key:', err instanceof Error ? err.message : err);
+          }
+        }
+
+        // F22: stash for wizard re-display resilience — only when a new key
+        // was actually issued and must be shown to the operator.
+        if (!recoveryKeyPreserved) {
+          stashPendingRecoveryKey(
+            sentinelResultRestore.installationId,
+            sentinelResultRestore.recoveryKey,
+          );
+        }
 
         return {
           success: true,
-          message: isSameHost
-            ? 'System restored successfully (same host detected)'
-            : 'System restored successfully (new host — new recovery key issued)',
+          message: recoveryKeyPreserved
+            ? 'System restored successfully — your existing recovery key remains valid'
+            : isSameHost
+              ? 'System restored successfully (same host detected — new recovery key issued)'
+              : 'System restored successfully (new host — new recovery key issued)',
           tenants_restored: (content.tenants || []).length,
           users_restored: (content.users || []).length,
           installationId: sentinelResultRestore.installationId,
-          recoveryKey: sentinelResultRestore.recoveryKey,
+          recoveryKey: recoveryKeyPreserved ? null : sentinelResultRestore.recoveryKey,
+          recoveryKeyPreserved,
           crossHostRestore: !isSameHost,
           checklist: {
             smtp: { status: 'warning', message: 'SMTP not configured — email features unavailable' },

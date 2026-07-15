@@ -66,6 +66,21 @@ export function writeRecoveryFile(recoveryKey: string, values: RecoveryEnvValues
 }
 
 /**
+ * Restore a previously written recovery file byte-for-byte, without knowing
+ * the recovery key that encrypts it. Used by same-host system restore: the
+ * backup bundle carries the source install's .env.recovery verbatim, and on
+ * the same host the env values inside it are still correct — writing it back
+ * keeps the operator's original recovery key valid instead of rotating it.
+ */
+export function writeRecoveryFileRaw(raw: Buffer): void {
+  const magic = Buffer.from('VMBP', 'ascii');
+  if (raw.length < 64 || !raw.subarray(0, magic.length).equals(magic)) {
+    throw new Error('not a valid recovery file: VMBP header missing');
+  }
+  writeAtomicSync(getRecoveryFilePath(), raw, 0o600);
+}
+
+/**
  * Read /data/.env.recovery and decrypt it with the supplied key. Returns
  * null if the file does not exist. Throws on parse / decrypt failure with a
  * clear error — the caller displays this to the operator in the EnvMissing

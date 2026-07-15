@@ -8,6 +8,7 @@ import os from 'os';
 import path from 'path';
 import {
   writeRecoveryFile,
+  writeRecoveryFileRaw,
   readRecoveryFile,
   recoveryFileExists,
   deleteRecoveryFile,
@@ -84,6 +85,31 @@ describe('env-recovery.service', () => {
   it('leaves no .tmp file after a successful write', () => {
     writeRecoveryFile(generateRecoveryKey(), SAMPLE_VALUES, null);
     expect(fs.existsSync(getRecoveryFilePath() + '.tmp')).toBe(false);
+  });
+
+  it('getRecoveryFilePath honors DATA_DIR', () => {
+    expect(getRecoveryFilePath()).toBe(path.join(tmpDir, '.env.recovery'));
+  });
+
+  it('writeRecoveryFileRaw round-trips: raw bytes restored elsewhere still decrypt with the original key', () => {
+    const key = generateRecoveryKey();
+    writeRecoveryFile(key, SAMPLE_VALUES, 'inst-id');
+    const raw = fs.readFileSync(getRecoveryFilePath());
+
+    // Simulate a restore: file gone (fresh container), bundle bytes written back.
+    deleteRecoveryFile();
+    expect(recoveryFileExists()).toBe(false);
+    writeRecoveryFileRaw(raw);
+
+    const decrypted = readRecoveryFile(key);
+    expect(decrypted!.encryptionKey).toBe(SAMPLE_VALUES.encryptionKey);
+    expect(decrypted!.installationId).toBe('inst-id');
+  });
+
+  it('writeRecoveryFileRaw rejects buffers without the VMBP header', () => {
+    expect(() => writeRecoveryFileRaw(Buffer.from('garbage'.repeat(20)))).toThrow(/VMBP/);
+    expect(() => writeRecoveryFileRaw(Buffer.from('VMBP'))).toThrow(/VMBP/);
+    expect(recoveryFileExists()).toBe(false);
   });
 
   it('stores only the three fields we commit to recovering', () => {
