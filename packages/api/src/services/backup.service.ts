@@ -20,7 +20,7 @@ import { decrypt as decryptField } from '../utils/encryption.js';
 import type { StorageProvider } from './storage/storage-provider.interface.js';
 import { tenantStorageKey } from './storage/storage-keys.js';
 import { getProviderForTenant } from './storage/storage-provider.factory.js';
-import { writeTenantPackage, type PackageAttachment } from './vmx-package.js';
+import { writeTenantPackage, writeTenantPackageMulti, type PackageAttachment } from './vmx-package.js';
 
 const BACKUP_DIR = process.env['BACKUP_DIR'] || '/data/backups';
 const APP_VERSION = '0.3.0';
@@ -181,11 +181,30 @@ export async function createBackup(
  * Create a full system backup (.vmb) — all tenants, users, and config.
  * For disaster recovery / cross-server restore.
  */
+/** Per-part size budget for multi-part system backups. Defaults to 90 MB so
+ *  every part clears the tightest common upload ceiling between an operator
+ *  and an appliance (Cloudflare proxies request bodies up to 100 MB on most
+ *  plans) with form-encoding headroom. Override via BACKUP_PART_MAX_MB. */
+export function systemBackupPartMaxBytes(): number {
+  const mb = Number(process.env['BACKUP_PART_MAX_MB'] || 90);
+  return (Number.isFinite(mb) && mb >= 1 ? mb : 90) * 1024 * 1024;
+}
+
+export interface SystemBackupResult {
+  backupId: string;
+  /** First part's file name — kept for backward compatibility. */
+  fileName: string;
+  /** Total bytes across all parts. */
+  size: number;
+  partCount: number;
+  files: Array<{ fileName: string; size: number; partIndex: number }>;
+}
+
 export async function createSystemBackup(
   passphrase: string,
   userId?: string,
-  opts?: { includeAttachments?: boolean },
-): Promise<{ backupId: string; fileName: string; size: number }> {
+  opts?: { includeAttachments?: boolean; partMaxBytes?: number },
+): Promise<SystemBackupResult> {
   const backupId = crypto.randomUUID();
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const dir = path.join(BACKUP_DIR, '_system');
@@ -316,9 +335,7 @@ export async function createSystemBackup(
   // bytes; skips are recorded, never silent.
   if (opts?.includeAttachments) {
     metadata.checksum = generateChecksum(Buffer.from(JSON.stringify(contentObj)));
-    const fileName = `kis-books-backup-${timestamp}.vmx`;
-    assertSafeFileName(fileName);
-    const filePath = path.join(dir, fileName);
+    const baseName = `kis-books-backup-${timestamp}`;
 
     const skipped: Array<{ id: string; reason: string }> = [];
     let bundledBytes = 0;
@@ -359,51 +376,66 @@ export async function createSystemBackup(
       }
     }
 
-    const { size } = await writeTenantPackage(filePath, passphrase, { ...contentObj, metadata }, attachmentSource(), {
-      backup_type: 'system',
-      source_version: APP_VERSION,
-      created_at: new Date().toISOString(),
-      tenant_count: allTenants.length,
-      includes_attachments: true,
+    // Multi-part write: every part is an independently-valid encrypted .vmx
+    // bounded by the part budget, so (a) a disaster-recovery restore can
+    // upload each part through proxies that cap request bodies, and (b) each
+    // part is small enough to ship off-site — a host loss never strands the
+    // only restorable copy just because the bundle grew past a size cap.
+    const partMaxBytes = opts.partMaxBytes ?? systemBackupPartMaxBytes();
+    const multi = await writeTenantPackageMulti({
+      outDir: dir,
+      baseName,
+      passphrase,
+      backupId,
+      data: { ...contentObj, metadata },
+      attachments: attachmentSource(),
+      partMaxBytes,
+      manifestMeta: {
+        backup_type: 'system',
+        source_version: APP_VERSION,
+        created_at: new Date().toISOString(),
+        tenant_count: allTenants.length,
+        includes_attachments: true,
+      },
     });
+    for (const f of multi.files) assertSafeFileName(f.fileName);
 
     if (skipped.length > 0) {
-      console.warn(`[Backup] System backup ${fileName}: bundled ${bundledCount} attachment(s) (${bundledBytes} bytes), skipped ${skipped.length}.`);
+      console.warn(`[Backup] System backup ${baseName}: bundled ${bundledCount} attachment(s) (${bundledBytes} bytes), skipped ${skipped.length}.`);
     }
 
-    // Upload to remote only when small enough to hold in memory safely; a very
-    // large package stays local (operator copies it off-machine per the DR
-    // guidance) rather than risk OOM re-reading it for the upload. When the
-    // full package exceeds the cap, we still ship the DB-only .vmb off-site —
-    // a host loss must never take every restorable copy with it.
+    // Ship every part off-site. Parts are bounded by partMaxBytes, so unlike
+    // the previous monolithic .vmx there is no "too big to upload" case at
+    // the default budget; the guard below only trips if an operator raises
+    // BACKUP_PART_MAX_MB past the in-memory upload ceiling.
     const REMOTE_UPLOAD_MAX = 500 * 1024 * 1024;
-    if (size <= REMOTE_UPLOAD_MAX) {
-      const fileBuf = fs.readFileSync(filePath);
-      uploadBackupToRemote(fileName, fileBuf, '_system').catch((err) => {
-        console.error('[Backup] Remote upload of system backup failed (non-fatal):', err.message);
-      });
-    } else {
-      console.warn(`[Backup] System backup ${fileName} is ${size} bytes — full package kept local; uploading DB-only .vmb off-site instead.`);
-      try {
-        const dbOnly = encryptWithPassphrase(Buffer.from(JSON.stringify({ ...contentObj, metadata })), passphrase);
-        const vmbName = fileName.replace(/\.vmx$/, '.vmb');
-        fs.writeFileSync(path.join(dir, vmbName), dbOnly);
-        uploadBackupToRemote(vmbName, dbOnly, '_system').catch((err) => {
-          console.error('[Backup] Remote upload of DB-only system backup failed (non-fatal):', err.message);
-        });
-      } catch (err) {
-        console.error('[Backup] DB-only fallback backup failed (non-fatal):', err instanceof Error ? err.message : err);
+    for (const f of multi.files) {
+      if (f.size > REMOTE_UPLOAD_MAX) {
+        console.warn(`[Backup] Part ${f.fileName} is ${f.size} bytes (> ${REMOTE_UPLOAD_MAX}); kept local only. Lower BACKUP_PART_MAX_MB to keep parts remotable.`);
+        continue;
       }
+      const fileBuf = fs.readFileSync(f.path);
+      uploadBackupToRemote(f.fileName, fileBuf, '_system').catch((err) => {
+        console.error(`[Backup] Remote upload of system backup part ${f.fileName} failed (non-fatal):`, err.message);
+      });
     }
 
     const firstTenantId = (allTenants[0] as { id: string } | undefined)?.id || 'system';
     await auditLog(firstTenantId, 'create', 'system_backup', backupId, null, {
-      fileName, size, tenantCount: allTenants.length, userCount: allUsers.length,
+      fileName: multi.files[0]!.fileName, size: multi.totalSize, partCount: multi.partCount,
+      files: multi.files.map((f) => f.fileName),
+      tenantCount: allTenants.length, userCount: allUsers.length,
       transactionCount: totalTransactions,
       attachmentsBundled: bundledCount, attachmentsSkipped: skipped.length, attachmentBytes: bundledBytes,
     }, userId);
 
-    return { backupId, fileName, size };
+    return {
+      backupId,
+      fileName: multi.files[0]!.fileName,
+      size: multi.totalSize,
+      partCount: multi.partCount,
+      files: multi.files.map((f) => ({ fileName: f.fileName, size: f.size, partIndex: f.partIndex })),
+    };
   }
 
   const contentBuffer = Buffer.from(JSON.stringify(contentObj));
@@ -442,7 +474,13 @@ export async function createSystemBackup(
     userId,
   );
 
-  return { backupId, fileName, size: encrypted.length };
+  return {
+    backupId,
+    fileName,
+    size: encrypted.length,
+    partCount: 1,
+    files: [{ fileName, size: encrypted.length, partIndex: 1 }],
+  };
 }
 
 export async function listBackups(tenantId: string) {

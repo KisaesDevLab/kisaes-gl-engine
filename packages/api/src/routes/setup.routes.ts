@@ -484,27 +484,73 @@ setupRouter.post('/restore/execute', upload.single('file'), async (req, res) => 
   }
 
   try {
-    const { sql } = await import('drizzle-orm');
-    const { db } = await import('../db/index.js');
+    const result = await runGuardedSetupRestore(async () => {
+      // A .vmx package (ZIP) carries the DB dump plus attachment files; a
+      // legacy .vmb/.kbk is a single encrypted JSON blob. Detect and read the
+      // right one; `content` is the same DB payload either way. The .vmx is
+      // read from its DISK path (streamed entries — a multi-GB package never
+      // fully buffers); only the small legacy blob is loaded whole.
+      const { smartDecrypt } = await import('../services/portable-encryption.service.js');
+      const { readTenantPackage } = await import('../services/vmx-package.js');
+      if (isZipFile(req.file!.path)) {
+        const pkg = await readTenantPackage(req.file!.path, passphrase);
+        return { content: pkg.data as RestoreContent, packageAttachments: () => pkg.attachments() };
+      }
+      const { data } = smartDecrypt(fs.readFileSync(req.file!.path), passphrase);
+      return { content: JSON.parse(data.toString()) as RestoreContent, packageAttachments: null };
+    });
 
-    // Refuse to merge a backup into a database that already contains
-    // tenants. Restore-during-setup is strictly a fresh-install
-    // operation — there is no safe "combine two backups" mode, and
-    // ON CONFLICT DO NOTHING would otherwise silently diverge.
-    const existingTenants = await db.execute(sql`SELECT COUNT(*) as cnt FROM tenants`);
-    const tenantCount = parseInt((existingTenants.rows as any[])[0]?.cnt || '0');
-    if (tenantCount > 0) {
-      res.status(409).json({
-        error: {
-          message:
-            `Cannot restore: ${tenantCount} tenant(s) already exist in the database. ` +
-            `Restore-from-backup is only available on a completely empty install.`,
-        },
-      });
-      return;
-    }
+    res.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Restore failed';
+    const status =
+      msg.includes('already in progress') ? 409 :
+      msg.includes('already exist') || msg.includes('already completed') ? 409 :
+      msg.includes('tenant information') ? 400 :
+      500;
+    res.status(status).json({ error: { message: msg } });
+  } finally {
+    // The uploaded backup landed on disk (multer diskStorage) — always
+    // remove it, success or failure.
+    try { fs.unlinkSync(req.file.path); } catch { /* already gone */ }
+  }
+});
 
-    const result = await setupService.withSetupLock(async () => {
+// `content` is the decrypted DB payload (evolving-any, exactly as the
+// original JSON.parse path — rows are re-inserted via parameterized SQL).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type RestoreContent = any;
+
+type ContentSource = () => Promise<{
+  content: RestoreContent;
+  packageAttachments: (() => AsyncGenerator<{ id: string; buffer: Buffer }>) | null;
+}>;
+
+/**
+ * Shared core of restore-during-setup: emptiness guard, setup lock, row
+ * re-insertion, attachment write-back, sentinel + marker finalization.
+ * Both the single-file /restore/execute path and the staged multi-part
+ * /restore/execute-staged path run through here — the only difference
+ * between them is how `readContent` produces the decrypted payload.
+ */
+async function runGuardedSetupRestore(readContent: ContentSource): Promise<Record<string, unknown>> {
+  const { sql } = await import('drizzle-orm');
+  const { db } = await import('../db/index.js');
+
+  // Refuse to merge a backup into a database that already contains
+  // tenants. Restore-during-setup is strictly a fresh-install
+  // operation — there is no safe "combine two backups" mode, and
+  // ON CONFLICT DO NOTHING would otherwise silently diverge.
+  const existingTenants = await db.execute(sql`SELECT COUNT(*) as cnt FROM tenants`);
+  const tenantCount = parseInt((existingTenants.rows as any[])[0]?.cnt || '0');
+  if (tenantCount > 0) {
+    throw new Error(
+      `Cannot restore: ${tenantCount} tenant(s) already exist in the database. ` +
+      `Restore-from-backup is only available on a completely empty install.`,
+    );
+  }
+
+  return setupService.withSetupLock(async () => {
       // Re-check under the lock.
       if (setupService.isInitialized()) {
         throw new Error('Setup already completed by another process');
@@ -514,25 +560,7 @@ setupRouter.post('/restore/execute', upload.single('file'), async (req, res) => 
         throw new Error('Tenants appeared between pre-check and lock acquisition');
       }
 
-      // A .vmx package (ZIP) carries the DB dump plus attachment files; a
-      // legacy .vmb/.kbk is a single encrypted JSON blob. Detect and read the
-      // right one; `content` is the same DB payload either way. The .vmx is
-      // read from its DISK path (streamed entries — a multi-GB package never
-      // fully buffers); only the small legacy blob is loaded whole.
-      const { smartDecrypt } = await import('../services/portable-encryption.service.js');
-      const { readTenantPackage } = await import('../services/vmx-package.js');
-      // `content` is the decrypted DB payload (evolving-any, exactly as the
-      // original JSON.parse path — rows are re-inserted via parameterized SQL).
-      let content;
-      let packageAttachments: (() => AsyncGenerator<{ id: string; buffer: Buffer }>) | null = null;
-      if (isZipFile(req.file!.path)) {
-        const pkg = await readTenantPackage(req.file!.path, passphrase);
-        content = pkg.data;
-        packageAttachments = () => pkg.attachments();
-      } else {
-        const { data } = smartDecrypt(fs.readFileSync(req.file!.path), passphrase);
-        content = JSON.parse(data.toString());
-      }
+      const { content, packageAttachments } = await readContent();
       const metadata = content.metadata ?? {};
       const isSystem = metadata.backup_type === 'system' || metadata.format === 'kis-books-system-v1';
 
@@ -602,6 +630,11 @@ setupRouter.post('/restore/execute', upload.single('file'), async (req, res) => 
             await restoreTableRows(db, tableName, rows);
           }
         }
+
+        // Restored rows carry their original serial ids; bring every owned
+        // sequence up to date or the first post-restore write to a
+        // serial-PK table (e.g. audit_log on first login) hits duplicate-key.
+        await resyncOwnedSequences(db);
 
         // Restore attachment FILES (present only in .vmx packages). Map each
         // bundled file id to its tenant + storage key from the restored
@@ -754,6 +787,10 @@ setupRouter.post('/restore/execute', upload.single('file'), async (req, res) => 
           await restoreTableRows(db, tableName, rows as Record<string, unknown>[]);
         }
 
+        // Same sequence-resync as the system branch — restored serial ids
+        // leave owned sequences behind otherwise.
+        await resyncOwnedSequences(db);
+
         // Mark initialized after successful restore. Tenant-scoped restore
         // does NOT touch the sentinel (F26): a tenant backup does not
         // represent a full installation, so generating a sentinel here
@@ -781,23 +818,310 @@ setupRouter.post('/restore/execute', upload.single('file'), async (req, res) => 
           },
         };
       }
+  });
+}
+
+// ─── Staged multi-part restore ──────────────────────────────────────
+//
+// A disaster-recovery bundle larger than the per-request upload ceiling
+// between the operator and this appliance arrives as SEVERAL .vmx part
+// files (see vmx-package.ts). Each part uploads in its own request to
+// /restore/stage, which fully validates it (passphrase, authenticated
+// inventory, ZIP contents) and parks it on disk keyed by the series'
+// backupId. Once every part is staged, /restore/execute-staged assembles
+// and cross-validates the series and runs the exact same guarded restore
+// core as the single-file path. Classic single-file .vmx/.vmb uploads
+// also work through this flow (partCount 1), so new clients need only
+// one code path.
+//
+// These endpoints sit behind the same setup guard as everything else in
+// this router: they exist only while the appliance has no admin user.
+
+const STAGE_ROOT = path.join(RESTORE_UPLOAD_DIR, 'staged');
+const STAGE_TTL_MS = 48 * 60 * 60 * 1000;
+
+interface StageMeta {
+  backupId: string;
+  classic: boolean;
+  createdAt: string;
+  updatedAt: string;
+  /** Known once the series-bearing (final) part has been staged. */
+  partCount: number | null;
+  parts: Record<string, { size: number; uploadedAt: string }>;
+}
+
+function assertStageId(backupId: string): void {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(backupId)) {
+    throw new Error('Invalid backup id');
+  }
+}
+
+function stageDirFor(backupId: string): string {
+  assertStageId(backupId);
+  return path.join(STAGE_ROOT, backupId.toLowerCase());
+}
+
+function readStageMeta(backupId: string): StageMeta | null {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(stageDirFor(backupId), 'meta.json'), 'utf8')) as StageMeta;
+  } catch {
+    return null;
+  }
+}
+
+function writeStageMeta(meta: StageMeta): void {
+  const dir = stageDirFor(meta.backupId);
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = path.join(dir, `.meta.${crypto.randomUUID()}.tmp`);
+  fs.writeFileSync(tmp, JSON.stringify(meta, null, 2));
+  fs.renameSync(tmp, path.join(dir, 'meta.json'));
+}
+
+function stageSummary(meta: StageMeta) {
+  const received = Object.keys(meta.parts).map(Number).sort((a, b) => a - b);
+  const complete =
+    meta.partCount !== null &&
+    received.length === meta.partCount &&
+    received.every((idx, i) => idx === i + 1);
+  return {
+    backupId: meta.backupId,
+    classic: meta.classic,
+    partCount: meta.partCount,
+    received,
+    complete,
+  };
+}
+
+/** Drop staged sessions that were never completed. Called opportunistically. */
+function purgeStaleStageSessions(): void {
+  try {
+    if (!fs.existsSync(STAGE_ROOT)) return;
+    for (const entry of fs.readdirSync(STAGE_ROOT)) {
+      const dir = path.join(STAGE_ROOT, entry);
+      try {
+        const st = fs.statSync(path.join(dir, 'meta.json'));
+        if (Date.now() - st.mtimeMs > STAGE_TTL_MS) fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // No meta — half-created dir; age it out by directory mtime.
+        try {
+          if (Date.now() - fs.statSync(dir).mtimeMs > STAGE_TTL_MS) {
+            fs.rmSync(dir, { recursive: true, force: true });
+          }
+        } catch { /* raced away */ }
+      }
+    }
+  } catch { /* best-effort */ }
+}
+
+// Stage one backup file (a multi-part .vmx part, or a classic single-file
+// .vmx/.vmb). The part is fully validated against the supplied passphrase
+// before it is accepted, so a corrupt or mismatched file fails THIS request
+// instead of poisoning the final restore.
+setupRouter.post('/restore/stage', upload.single('file'), async (req, res) => {
+  if (!req.file) {
+    res.status(400).json({ error: { message: 'No file uploaded' } });
+    return;
+  }
+  const passphrase = req.body?.passphrase;
+  if (!passphrase || typeof passphrase !== 'string') {
+    try { fs.unlinkSync(req.file.path); } catch { /* already gone */ }
+    res.status(400).json({ error: { message: 'Passphrase is required' } });
+    return;
+  }
+
+  purgeStaleStageSessions();
+
+  try {
+    let meta: StageMeta;
+    let partIndex = 1;
+
+    if (isZipFile(req.file.path)) {
+      const { openAndVerifyPart } = await import('../services/vmx-package.js');
+      const verified = await openAndVerifyPart(req.file.path, passphrase);
+
+      if (verified.multipart) {
+        const { backupId } = verified.multipart;
+        partIndex = verified.multipart.partIndex;
+        assertStageId(backupId);
+        const existing = readStageMeta(backupId);
+        meta = existing ?? {
+          backupId: backupId.toLowerCase(),
+          classic: false,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          partCount: null,
+          parts: {},
+        };
+        if (verified.hasSeries && verified.series) {
+          const declared = Number((verified.series as { partCount?: unknown }).partCount);
+          if (!Number.isInteger(declared) || declared < 1 || declared > 10_000) {
+            throw new Error('Backup series descriptor is malformed');
+          }
+          if (meta.partCount !== null && meta.partCount !== declared) {
+            throw new Error('Conflicting part counts across staged files');
+          }
+          meta.partCount = declared;
+        }
+        if (meta.partCount !== null && partIndex > meta.partCount) {
+          throw new Error(`Part index ${partIndex} exceeds the declared part count ${meta.partCount}`);
+        }
+        const dir = stageDirFor(meta.backupId);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.renameSync(req.file.path, path.join(dir, `part${partIndex}.vmx`));
+        meta.parts[String(partIndex)] = { size: req.file.size, uploadedAt: new Date().toISOString() };
+        meta.updatedAt = new Date().toISOString();
+        writeStageMeta(meta);
+        res.json(stageSummary(meta));
+        return;
+      }
+      // Classic single-file .vmx (openAndVerifyPart already proved the
+      // passphrase against it) — falls through to classic staging below.
+    } else {
+      // Legacy .vmb/.kbk blob: prove the passphrase before accepting.
+      const { smartDecrypt } = await import('../services/portable-encryption.service.js');
+      JSON.parse(smartDecrypt(fs.readFileSync(req.file.path), passphrase).data.toString());
+    }
+
+    // Classic (single-file) staging: mint a session id, one part, complete.
+    const backupId = crypto.randomUUID();
+    meta = {
+      backupId,
+      classic: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      partCount: 1,
+      parts: { '1': { size: req.file.size, uploadedAt: new Date().toISOString() } },
+    };
+    const dir = stageDirFor(backupId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.renameSync(req.file.path, path.join(dir, 'part1.vmx'));
+    writeStageMeta(meta);
+    res.json(stageSummary(meta));
+  } catch (err) {
+    try { fs.unlinkSync(req.file.path); } catch { /* already staged or gone */ }
+    const msg = err instanceof Error ? err.message : 'Staging failed';
+    res.status(400).json({ error: { message: msg } });
+  }
+});
+
+// Staging progress for a series — lets the wizard resume after a reload.
+setupRouter.get('/restore/stage/:backupId', (req, res) => {
+  try {
+    const meta = readStageMeta(req.params['backupId']!);
+    if (!meta) {
+      res.status(404).json({ error: { message: 'No staged backup with that id' } });
+      return;
+    }
+    res.json(stageSummary(meta));
+  } catch {
+    res.status(400).json({ error: { message: 'Invalid backup id' } });
+  }
+});
+
+// Assemble a fully-staged series and run the guarded restore core.
+setupRouter.post('/restore/execute-staged', async (req, res) => {
+  const backupId = (req.body?.backupId ?? '').toString();
+  const passphrase = req.body?.passphrase;
+  if (!passphrase || typeof passphrase !== 'string') {
+    res.status(400).json({ error: { message: 'Passphrase is required' } });
+    return;
+  }
+  let meta: StageMeta | null = null;
+  try {
+    meta = readStageMeta(backupId);
+  } catch {
+    res.status(400).json({ error: { message: 'Invalid backup id' } });
+    return;
+  }
+  if (!meta) {
+    res.status(404).json({ error: { message: 'No staged backup with that id — upload the part files first' } });
+    return;
+  }
+  const summary = stageSummary(meta);
+  if (!summary.complete) {
+    res.status(409).json({
+      error: {
+        message: meta.partCount === null
+          ? `Staged ${summary.received.length} part(s) but the final part (which declares the total) has not been uploaded yet.`
+          : `Staged ${summary.received.length} of ${meta.partCount} part(s). Upload the remaining part(s) before restoring.`,
+      },
+    });
+    return;
+  }
+
+  const dir = stageDirFor(meta.backupId);
+  const paths = summary.received.map((idx) => path.join(dir, `part${idx}.vmx`));
+
+  try {
+    const result = await runGuardedSetupRestore(async () => {
+      if (meta!.classic && !isZipFile(paths[0]!)) {
+        const { smartDecrypt } = await import('../services/portable-encryption.service.js');
+        const { data } = smartDecrypt(fs.readFileSync(paths[0]!), passphrase);
+        return { content: JSON.parse(data.toString()) as RestoreContent, packageAttachments: null };
+      }
+      const { readTenantPackageMulti } = await import('../services/vmx-package.js');
+      const pkg = await readTenantPackageMulti(paths, passphrase);
+      return { content: pkg.data as RestoreContent, packageAttachments: () => pkg.attachments() };
     });
 
+    // Success — the staged files have served their purpose.
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
     res.json(result);
   } catch (err) {
+    // Keep the staged files on failure so the operator can retry (e.g.
+    // re-upload one corrupted part) without re-uploading everything.
     const msg = err instanceof Error ? err.message : 'Restore failed';
     const status =
       msg.includes('already in progress') ? 409 :
       msg.includes('already exist') || msg.includes('already completed') ? 409 :
+      msg.includes('Missing part') || msg.includes('final part') ? 409 :
+      msg.includes('passphrase') || msg.includes('corrupted') ? 400 :
       msg.includes('tenant information') ? 400 :
       500;
     res.status(status).json({ error: { message: msg } });
-  } finally {
-    // The uploaded backup landed on disk (multer diskStorage) — always
-    // remove it, success or failure.
-    try { fs.unlinkSync(req.file.path); } catch { /* already gone */ }
   }
 });
+
+/**
+ * Resync every column-owned sequence to the max of its column. Restored rows
+ * arrive with their original ids, but a plain INSERT does not advance the
+ * table's serial/identity sequence — so the first post-restore write to a
+ * serial-PK table (audit_log on the very first login, for instance) collides
+ * with a restored id and fails with duplicate-key. Iterating pg_depend covers
+ * every owned sequence generically, so a future serial table cannot
+ * reintroduce the bug. Idempotent; safe on tables with zero rows.
+ */
+async function resyncOwnedSequences(dbInstance: typeof import('../db/index.js')['db']): Promise<void> {
+  const { sql } = await import('drizzle-orm');
+  await dbInstance.execute(sql`
+    DO $$
+    DECLARE r RECORD;
+    BEGIN
+      FOR r IN
+        -- Schema-qualify both sides: owned sequences are not limited to
+        -- public (drizzle's own __drizzle_migrations lives in the drizzle
+        -- schema), and an unqualified name would resolve via search_path.
+        SELECT seqns.nspname AS seqschema, seq.relname AS seqname,
+               tabns.nspname AS tabschema, tab.relname AS tabname,
+               attr.attname AS colname
+        FROM pg_class seq
+        JOIN pg_namespace seqns ON seqns.oid = seq.relnamespace
+        JOIN pg_depend d ON d.objid = seq.oid AND d.deptype = 'a'
+        JOIN pg_class tab ON d.refobjid = tab.oid
+        JOIN pg_namespace tabns ON tabns.oid = tab.relnamespace
+        JOIN pg_attribute attr ON attr.attrelid = tab.oid AND attr.attnum = d.refobjsubid
+        WHERE seq.relkind = 'S'
+      LOOP
+        EXECUTE format(
+          'SELECT setval(%L, GREATEST(COALESCE((SELECT MAX(%I) FROM %I.%I), 0), 1), COALESCE((SELECT MAX(%I) FROM %I.%I), 0) > 0)',
+          quote_ident(r.seqschema) || '.' || quote_ident(r.seqname),
+          r.colname, r.tabschema, r.tabname,
+          r.colname, r.tabschema, r.tabname
+        );
+      END LOOP;
+    END $$;
+  `);
+}
 
 /**
  * Restore rows into a table using raw SQL INSERT.

@@ -22,8 +22,10 @@ Manage backups under **Settings → Backup & Restore →**.
    passphrase, the backup cannot be recovered.**
 
 **Restoring a Backup:**
-1. Upload a `.vmb` (portable) or `.kbk` (legacy) file.
-2. For `.vmb` files, enter the backup passphrase.
+1. Upload a `.vmx` (system package), `.vmb` (portable), or `.kbk` (legacy) file. A
+   multi-part disaster-recovery bundle is several `.partNNofMM.vmx` files — select
+   **all of them**; every part is required.
+2. For `.vmx`/`.vmb` files, enter the backup passphrase.
 3. Type "RESTORE" to confirm.
 4. The system validates and restores the data.
 

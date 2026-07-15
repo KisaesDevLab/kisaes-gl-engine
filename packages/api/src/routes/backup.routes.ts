@@ -89,11 +89,16 @@ backupRouter.post('/system', requireSuperAdmin, async (req, res) => {
   res.status(201).json(result);
 });
 
-// One-click disaster-recovery bundle: create a full system backup and STREAM it
-// back in the same request, so the operator gets the encrypted .vmb (all
-// tenants/users/config + the /data/.sentinel and /data/.env.recovery recovery
-// files) without a second download step that can't reach the _system dir.
+// One-click disaster-recovery bundle: create a full system backup (an
+// encrypted .vmx package — all tenants/users/config + the /data/.sentinel and
+// /data/.env.recovery recovery files) and hand it back in the same request.
 // Super-admin only; the bundle is passphrase-encrypted (it holds every secret).
+//
+// The backup is written in parts bounded by BACKUP_PART_MAX_MB (default 90 MB)
+// so each file clears common proxy upload ceilings at restore time. A
+// single-part result streams directly, exactly as before; a multi-part result
+// answers with JSON listing the parts, which the client then fetches one by
+// one via GET /system/parts/:fileName below.
 backupRouter.post('/system/download', requireSuperAdmin, async (req, res) => {
   const { passphrase } = req.body;
   if (!passphrase || typeof passphrase !== 'string') {
@@ -106,6 +111,16 @@ backupRouter.post('/system/download', requireSuperAdmin, async (req, res) => {
     return;
   }
   const result = await backupService.createSystemBackup(passphrase, req.userId, { includeAttachments: true });
+  if (result.partCount > 1) {
+    res.status(201).json({
+      multiPart: true,
+      backupId: result.backupId,
+      partCount: result.partCount,
+      totalSize: result.size,
+      parts: result.files,
+    });
+    return;
+  }
   // Stream the file (an attachments-included .vmx can be large) rather than
   // buffering it into memory. Stream errors (file removed mid-stream, disk
   // read error) and client disconnects must tear the stream down — an
@@ -116,6 +131,24 @@ backupRouter.post('/system/download', requireSuperAdmin, async (req, res) => {
   const stream = fs.createReadStream(filePath);
   stream.on('error', (err) => {
     console.error('[Backup] DR bundle stream failed:', err.message);
+    if (!res.headersSent) res.status(500).json({ error: { message: 'Backup stream failed' } });
+    else res.destroy();
+  });
+  res.on('close', () => stream.destroy());
+  stream.pipe(res);
+});
+
+// Download one part of a multi-part DR bundle created by /system/download.
+// resolveSystemBackupPath enforces the strict backup-filename regex and
+// confines resolution to the _system directory, so :fileName cannot escape.
+backupRouter.get('/system/parts/:fileName', requireSuperAdmin, (req, res) => {
+  const fileName = req.params['fileName']!;
+  const filePath = backupService.resolveSystemBackupPath(fileName);
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Disposition', encodeContentDisposition(fileName));
+  const stream = fs.createReadStream(filePath);
+  stream.on('error', (err) => {
+    console.error('[Backup] DR part stream failed:', err.message);
     if (!res.headersSent) res.status(500).json({ error: { message: 'Backup stream failed' } });
     else res.destroy();
   });
