@@ -101,4 +101,8 @@ export class B2Provider implements StorageProvider {
   getUsage(): Promise<{ usedBytes: number; totalBytes: number | null }> {
     return this.inner.getUsage();
   }
+
+  listObjects(subPrefix = '', maxKeys = 1000): Promise<Array<{ key: string; size: number; lastModified: string | null }>> {
+    return this.inner.listObjects(subPrefix, maxKeys);
+  }
 }

@@ -76,4 +76,31 @@ export class S3Provider implements StorageProvider {
     // S3 doesn't have a native usage API — return 0 (could use ListObjects to calculate but expensive)
     return { usedBytes: 0, totalBytes: null };
   }
+
+  /**
+   * List objects under `subPrefix` (relative to this provider's configured
+   * prefix). Returns keys RELATIVE to the provider prefix so they round-trip
+   * back through download(). Paginates; capped to avoid unbounded responses.
+   */
+  async listObjects(subPrefix = '', maxKeys = 1000): Promise<Array<{ key: string; size: number; lastModified: string | null }>> {
+    const base = this.fullKey(subPrefix);
+    const out: Array<{ key: string; size: number; lastModified: string | null }> = [];
+    let token: string | undefined;
+    do {
+      const res = await this.client.send(new ListObjectsV2Command({
+        Bucket: this.bucket,
+        Prefix: base,
+        ContinuationToken: token,
+        MaxKeys: Math.min(1000, maxKeys - out.length),
+      }));
+      for (const o of res.Contents ?? []) {
+        if (!o.Key) continue;
+        // Strip the provider prefix so the returned key is what download() expects.
+        const rel = this.prefix && o.Key.startsWith(`${this.prefix}/`) ? o.Key.slice(this.prefix.length + 1) : o.Key;
+        out.push({ key: rel, size: o.Size ?? 0, lastModified: o.LastModified ? o.LastModified.toISOString() : null });
+      }
+      token = res.IsTruncated ? res.NextContinuationToken : undefined;
+    } while (token && out.length < maxKeys);
+    return out;
+  }
 }
