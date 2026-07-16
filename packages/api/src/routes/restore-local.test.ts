@@ -123,4 +123,25 @@ describe('assertSafeEndpoint (SSRF guard)', () => {
     expect(() => mod.assertSafeEndpoint('https://169.254.169.254/latest/meta-data')).toThrow(/not allowed/i);
     expect(() => mod.assertSafeEndpoint('not-a-url')).toThrow(/valid https/i);
   });
+
+  it('blocks the metadata IP smuggled as IPv4-mapped IPv6 or a decimal/hex integer', () => {
+    expect(() => mod.assertSafeEndpoint('https://[::ffff:169.254.169.254]/latest/meta-data')).toThrow(/not allowed/i);
+    expect(() => mod.assertSafeEndpoint('https://[::1]:9000')).toThrow(/not allowed/i);
+    expect(() => mod.assertSafeEndpoint('https://2852039166/')).toThrow(/not allowed/i);   // decimal 169.254.169.254
+    expect(() => mod.assertSafeEndpoint('https://0xA9FEA9FE/')).toThrow(/not allowed/i);    // hex 169.254.169.254
+  });
+});
+
+describe('scanLocalBundles symlink-directory safety', () => {
+  it('does not infinitely recurse or crash on a directory symlink looping to an ancestor', () => {
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'restore-loop-'));
+    put(rootDir, '_system', 'kis-books-backup-real.vmb');
+    // A directory symlink pointing back at the root (an rsync/snapshot shape).
+    try { fs.symlinkSync(rootDir, path.join(rootDir, '_system', 'loop')); } catch { fs.rmSync(rootDir, { recursive: true, force: true }); return; }
+    // Must return (not throw RangeError) and still find the real bundle once.
+    let found: ReturnType<typeof mod.scanLocalBundles>;
+    expect(() => { found = mod.scanLocalBundles('backups', rootDir); }).not.toThrow();
+    expect(found!.filter((b) => b.label === 'kis-books-backup-real.vmb')).toHaveLength(1);
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  });
 });

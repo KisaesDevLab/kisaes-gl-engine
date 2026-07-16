@@ -5,6 +5,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import net from 'node:net';
 import { Router } from 'express';
 import multer from 'multer';
 import rateLimit from 'express-rate-limit';
@@ -1235,40 +1236,50 @@ export function scanLocalBundles(rootKey: string, rootDir: string): LocalBundle[
   const series = new Map<string, { base: string; parts: Map<number, { path: string; size: number; mtime: number }>; declared: number }>();
   const singles: LocalBundle[] = [];
 
+  // Record a resolved regular file (used by both the plain and the
+  // symlinked-file paths). `full` is the on-disk path; `st` its stat.
+  const handleFile = (entry: string, full: string, st: fs.Stats) => {
+    const mp = entry.match(MULTIPART_RE);
+    if (mp) {
+      const base = path.join(path.dirname(full), mp[1]!);
+      const s = series.get(base) ?? { base, parts: new Map(), declared: parseInt(mp[3]!, 10) };
+      s.declared = parseInt(mp[3]!, 10);
+      s.parts.set(parseInt(mp[2]!, 10), { path: full, size: st.size, mtime: st.mtimeMs });
+      series.set(base, s);
+    } else if (entry.endsWith('.vmx') || entry.endsWith('.vmb')) {
+      singles.push({
+        id: `${rootKey}:${path.relative(rootDir, full)}`,
+        root: rootKey, label: entry, kind: 'single',
+        files: [full], partCount: 1, size: st.size,
+        modifiedAt: new Date(st.mtimeMs).toISOString(),
+      });
+    }
+  };
+
   const walk = (dir: string) => {
     let entries: string[];
     try { entries = fs.readdirSync(dir); } catch { return; }
     for (const entry of entries) {
       const full = path.join(dir, entry);
-      // A symlink is fine ONLY if its realpath stays inside this root — a
-      // legit backup drive is often symlink-mounted, but a link escaping the
-      // root (e.g. → /etc/passwd) must never be listed or restored.
       let lst: fs.Stats;
       try { lst = fs.lstatSync(full); } catch { continue; }
       if (lst.isSymbolicLink()) {
-        try {
-          const real = fs.realpathSync(full);
-          if (!(real + path.sep).startsWith(rootReal + path.sep) && real !== rootReal) continue;
-        } catch { continue; }
+        // A symlink is fine ONLY if its realpath stays inside this root — a
+        // legit backup drive is often symlink-mounted, but a link escaping
+        // the root (→ /etc/passwd) must never be listed or restored.
+        let real: string;
+        try { real = fs.realpathSync(full); } catch { continue; }
+        if (!(real + path.sep).startsWith(rootReal + path.sep)) continue;
+        // Follow symlinked FILES only — NEVER recurse a symlinked directory
+        // (a link to an ancestor would recurse forever / list twice).
+        let st: fs.Stats;
+        try { st = fs.statSync(full); } catch { continue; }
+        if (st.isDirectory()) continue;
+        handleFile(entry, full, st);
+        continue;
       }
-      let st: fs.Stats;
-      try { st = fs.statSync(full); } catch { continue; }
-      if (st.isDirectory()) { walk(full); continue; }
-      const mp = entry.match(MULTIPART_RE);
-      if (mp) {
-        const base = path.join(dir, mp[1]!);
-        const s = series.get(base) ?? { base, parts: new Map(), declared: parseInt(mp[3]!, 10) };
-        s.declared = parseInt(mp[3]!, 10);
-        s.parts.set(parseInt(mp[2]!, 10), { path: full, size: st.size, mtime: st.mtimeMs });
-        series.set(base, s);
-      } else if (entry.endsWith('.vmx') || entry.endsWith('.vmb')) {
-        singles.push({
-          id: `${rootKey}:${path.relative(rootDir, full)}`,
-          root: rootKey, label: entry, kind: 'single',
-          files: [full], partCount: 1, size: st.size,
-          modifiedAt: new Date(st.mtimeMs).toISOString(),
-        });
-      }
+      if (lst.isDirectory()) { walk(full); continue; }
+      handleFile(entry, full, lst); // reuse lstat (no symlink → same as stat)
     }
   };
   walk(rootDir);
@@ -1325,7 +1336,13 @@ function localContentSource(files: string[], passphrase: string): ContentSource 
 
 setupRouter.get('/restore/local/list', (_req, res) => {
   const bundles: LocalBundle[] = [];
-  for (const [key, dir] of Object.entries(RESTORE_LOCAL_ROOTS)) bundles.push(...scanLocalBundles(key, dir));
+  try {
+    for (const [key, dir] of Object.entries(RESTORE_LOCAL_ROOTS)) bundles.push(...scanLocalBundles(key, dir));
+  } catch (err) {
+    // A pathological backup dir (e.g. a symlink loop) must not 500 the
+    // whole restore browser — degrade to whatever scanned cleanly.
+    console.warn('[setup] local restore scan error:', err instanceof Error ? err.message : err);
+  }
   res.json({
     roots: Object.entries(RESTORE_LOCAL_ROOTS).map(([key, dir]) => ({ key, dir, present: fs.existsSync(dir) })),
     // Never leak absolute paths; the client restores by opaque `id`.
@@ -1355,7 +1372,7 @@ setupRouter.post('/restore/local/execute', async (req, res) => {
   // success. (The wizard resumes a reload by polling the stored runId, not by
   // re-calling execute, so this never breaks resume.)
   const active = peekActiveRestoreRun();
-  if (active) { res.status(409).json({ error: { message: 'A restore is already in progress. Wait for it to finish.', runId: active.id } }); return; }
+  if (active) { res.status(409).json({ runId: active.id, error: { message: 'A restore is already in progress. Wait for it to finish.' } }); return; }
   const run = startRestoreRun(localContentSource(bundle.files, passphrase));
   res.status(202).json(restoreRunView(run));
 });
@@ -1383,17 +1400,24 @@ export function assertSafeEndpoint(endpoint: string): void {
   try { u = new URL(endpoint); } catch { throw new Error('endpoint must be a valid https URL'); }
   if (u.protocol !== 'https:') throw new Error('endpoint must use https');
   const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, ''); // unwrap [::1]
-  if (host === 'localhost' || host === '0.0.0.0' || host === '::1') {
-    throw new Error('endpoint host is not allowed');
-  }
-  // Range checks apply ONLY to literal IPv4 addresses — never to DNS names
-  // (so "10.storage.example.com" is fine). Private RFC-1918 ranges are
-  // ALLOWED (a self-hosted LAN MinIO/S3 is a legitimate restore source);
-  // we block only loopback and the link-local / cloud-metadata range, which
-  // is the high-value SSRF target and never a real object store.
-  const isIpv4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
-  if (isIpv4 && (/^127\./.test(host) || /^169\.254\./.test(host))) {
-    throw new Error('endpoint host is not allowed');
+  const blocked = () => { throw new Error('endpoint host is not allowed'); };
+  if (host === 'localhost' || host === '0.0.0.0' || host === '::' || host === '::1') blocked();
+
+  const kind = net.isIP(host); // 4, 6, or 0 (not an IP literal)
+  if (kind === 6) {
+    // Object stores don't use loopback/link-local/unique-local IPv6, and an
+    // IPv4-mapped IPv6 (::ffff:169.254.169.254) can smuggle the metadata IP
+    // past an IPv4-only check — block them all.
+    if (host === '::1' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd') || host.includes('::ffff:') || host.includes('::')) blocked();
+  } else if (kind === 4) {
+    // RFC-1918 private is ALLOWED (legit LAN object store); block only
+    // loopback and the link-local / cloud-metadata range.
+    if (/^127\./.test(host) || /^169\.254\./.test(host)) blocked();
+  } else {
+    // Not a valid IP literal. A real endpoint is a DNS name (has letters);
+    // reject a purely-numeric host (decimal/hex/octal IP encodings like
+    // 2852039166 or 0xA9FEA9FE that the resolver would turn into an IP).
+    if (!/[a-z]/i.test(host)) blocked();
   }
 }
 
@@ -1494,7 +1518,7 @@ setupRouter.post('/restore/remote/execute', async (req, res) => {
   // One restore at a time — refuse (don't silently attach a different bundle
   // to the in-flight run) and skip a wasted multi-GB download.
   const active = peekActiveRestoreRun();
-  if (active) { res.status(409).json({ error: { message: 'A restore is already in progress. Wait for it to finish.', runId: active.id } }); return; }
+  if (active) { res.status(409).json({ runId: active.id, error: { message: 'A restore is already in progress. Wait for it to finish.' } }); return; }
 
   // Download the part(s) to a temp stage dir — STREAMED with a per-object
   // size cap so a huge object can't OOM the process — then restore.
