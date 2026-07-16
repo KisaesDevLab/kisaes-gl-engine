@@ -826,6 +826,17 @@ adminRouter.get('/backup/remote-config', async (req, res) => {
   });
 });
 
+adminRouter.put('/backup/db-schedule', async (req, res) => {
+  const allowed = ['none', 'daily', 'weekly'];
+  const value = String(req.body?.backupDbSchedule ?? '');
+  if (!allowed.includes(value)) {
+    res.status(400).json({ error: { message: `backupDbSchedule must be one of ${allowed.join(', ')}` } });
+    return;
+  }
+  await adminService.saveBackupRemoteConfig({ backupDbSchedule: value });
+  res.json({ message: 'DB-only backup schedule saved' });
+});
+
 adminRouter.put('/backup/remote-config', async (req, res) => {
   const input: Partial<adminService.BackupRemoteConfig> = {};
 
@@ -836,6 +847,15 @@ adminRouter.put('/backup/remote-config', async (req, res) => {
   if (req.body.backupRemoteRetentionWeekly !== undefined) input.backupRemoteRetentionWeekly = String(req.body.backupRemoteRetentionWeekly);
   if (req.body.backupRemoteRetentionMonthly !== undefined) input.backupRemoteRetentionMonthly = String(req.body.backupRemoteRetentionMonthly);
   if (req.body.backupRemoteRetentionYearly !== undefined) input.backupRemoteRetentionYearly = String(req.body.backupRemoteRetentionYearly);
+  if (req.body.backupDbSchedule !== undefined) input.backupDbSchedule = String(req.body.backupDbSchedule);
+  // Local mirror directory — trimmed; empty string clears it.
+  if (req.body.backupLocalMirrorDir !== undefined) input.backupLocalMirrorDir = String(req.body.backupLocalMirrorDir).trim();
+  // Scheduler passphrase — encrypted at rest (the scheduler decrypts it),
+  // written to its own top-level setting the scheduler reads. Blank/omitted
+  // leaves the existing value untouched (never wipe it by accident).
+  if (typeof req.body.scheduledPassphrase === 'string' && req.body.scheduledPassphrase.trim().length > 0) {
+    await setSetting('backup_scheduled_passphrase', encrypt(req.body.scheduledPassphrase.trim()));
+  }
 
   // Handle provider config with secret encryption
   if (req.body.providerConfig) {

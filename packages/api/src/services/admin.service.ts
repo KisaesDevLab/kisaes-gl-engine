@@ -1403,6 +1403,13 @@ export interface BackupRemoteConfig {
   backupRemoteRetentionMonthly: string;
   backupRemoteRetentionYearly: string;
   backupLastRun: string;
+  /** DB-only cadence, independent of the full-bundle backupSchedule. */
+  backupDbSchedule: string;
+  backupDbLastRun: string;
+  /** Extra local directory each backup is mirrored to (e.g. an external drive bind-mount). */
+  backupLocalMirrorDir: string;
+  /** Whether the scheduler passphrase is set (never the value). */
+  hasScheduledPassphrase: boolean;
 }
 
 const GFS_PRESETS: Record<string, { daily: string; weekly: string; monthly: string; yearly: string }> = {
@@ -1424,6 +1431,10 @@ export async function getBackupRemoteConfig(): Promise<BackupRemoteConfig> {
   const monthly = await getSetting('backup_remote_retention_monthly');
   const yearly = await getSetting('backup_remote_retention_yearly');
   const lastRun = await getSetting('backup_last_run');
+  const dbSchedule = await getSetting('backup_db_schedule');
+  const dbLastRun = await getSetting('backup_db_last_run');
+  const mirrorDir = await getSetting('backup_local_mirror_dir');
+  const scheduledPassphrase = await getSetting('backup_scheduled_passphrase');
 
   return {
     backupRemoteProvider: provider ?? 'none',
@@ -1435,6 +1446,10 @@ export async function getBackupRemoteConfig(): Promise<BackupRemoteConfig> {
     backupRemoteRetentionMonthly: monthly ?? '12',
     backupRemoteRetentionYearly: yearly ?? '7',
     backupLastRun: lastRun ?? '',
+    backupDbSchedule: dbSchedule ?? 'none',
+    backupDbLastRun: dbLastRun ?? '',
+    backupLocalMirrorDir: mirrorDir ?? '',
+    hasScheduledPassphrase: !!scheduledPassphrase,
   };
 }
 
@@ -1458,6 +1473,9 @@ export async function saveBackupRemoteConfig(input: Partial<BackupRemoteConfig>)
   if (input.backupRemoteRetentionMonthly !== undefined) await setSetting('backup_remote_retention_monthly', input.backupRemoteRetentionMonthly);
   if (input.backupRemoteRetentionYearly !== undefined) await setSetting('backup_remote_retention_yearly', input.backupRemoteRetentionYearly);
   if (input.backupLastRun !== undefined) await setSetting('backup_last_run', input.backupLastRun);
+  if (input.backupDbSchedule !== undefined) await setSetting('backup_db_schedule', input.backupDbSchedule);
+  if (input.backupDbLastRun !== undefined) await setSetting('backup_db_last_run', input.backupDbLastRun);
+  if (input.backupLocalMirrorDir !== undefined) await setSetting('backup_local_mirror_dir', input.backupLocalMirrorDir);
 }
 
 // ─── System File Storage Config ──────────────────────────────────
