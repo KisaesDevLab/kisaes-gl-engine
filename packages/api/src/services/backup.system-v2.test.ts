@@ -70,10 +70,12 @@ describe('createSystemBackup v2', () => {
     const { createSystemBackup } = await import('./backup.service.js');
     const { smartDecrypt } = await import('./portable-encryption.service.js');
 
+    const { decodeSystemDump } = await import('./system-dump-codec.js');
     const result = await createSystemBackup(PASSPHRASE);
     const filePath = path.join(tmpBackupDir, '_system', result.fileName);
     const { data } = smartDecrypt(fs.readFileSync(filePath), PASSPHRASE);
-    const content = JSON.parse(data.toString()) as {
+    // The DB-only .vmb payload is NDJSON (large-DB safe) — decode it.
+    const content = decodeSystemDump(data) as unknown as {
       metadata: Record<string, unknown>;
       global_tables: Record<string, Record<string, unknown>[]>;
       tenant_data: Record<string, Record<string, Record<string, unknown>[]>>;

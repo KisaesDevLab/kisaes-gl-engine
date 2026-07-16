@@ -461,9 +461,13 @@ setupRouter.post('/restore/validate', upload.single('file'), async (req, res) =>
       const pkg = await readTenantPackage(uploadedPath, passphrase);
       content = pkg.data;
     } else {
-      // Legacy .vmb — a single encrypted JSON blob (DB-only, small).
+      // .vmb — a single encrypted blob (DB-only). System .vmb payloads are
+      // NDJSON (large-DB safe); parse line-by-line rather than toString().
       const decrypted = smartDecrypt(fs.readFileSync(uploadedPath), passphrase);
-      content = JSON.parse(decrypted.data.toString());
+      const { isNdjsonDump, decodeSystemDump } = await import('../services/system-dump-codec.js');
+      content = isNdjsonDump(decrypted.data)
+        ? decodeSystemDump(decrypted.data)
+        : JSON.parse(decrypted.data.toString());
       method = decrypted.method;
     }
     const metadata = content.metadata ?? {};
@@ -1172,9 +1176,13 @@ setupRouter.post('/restore/stage', upload.single('file'), async (req, res) => {
       // Classic single-file .vmx (openAndVerifyPart already proved the
       // passphrase against it) — falls through to classic staging below.
     } else {
-      // Legacy .vmb/.kbk blob: prove the passphrase before accepting.
+      // .vmb/.kbk blob: prove the passphrase before accepting. smartDecrypt
+      // throws on a wrong key; a system NDJSON dump validates via its header
+      // (JSON.parse would wrongly reject it), a JSON blob must parse.
       const { smartDecrypt } = await import('../services/portable-encryption.service.js');
-      JSON.parse(smartDecrypt(fs.readFileSync(req.file.path), passphrase).data.toString());
+      const dec = smartDecrypt(fs.readFileSync(req.file.path), passphrase).data;
+      const { isNdjsonDump } = await import('../services/system-dump-codec.js');
+      if (!isNdjsonDump(dec)) JSON.parse(dec.toString());
     }
 
     // Classic (single-file) staging: mint a session id, one part, complete.
