@@ -419,10 +419,14 @@ export async function testSmtpConnection(config: SmtpConfig, testEmail?: string)
     await transport.verify();
 
     if (testEmail) {
+      const brand = await (async () => {
+        try { const { getBranding } = await import('./admin.service.js'); return (await getBranding()).appName; }
+        catch { return 'Vibe MyBooks'; }
+      })();
       await transport.sendMail({
         from: config.from,
         to: testEmail,
-        subject: 'Vibe MyBooks — SMTP Test',
+        subject: `${brand} — SMTP Test`,
         text: 'If you received this email, your SMTP configuration is working correctly.',
       });
     }

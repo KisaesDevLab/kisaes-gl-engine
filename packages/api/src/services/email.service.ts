@@ -150,6 +150,10 @@ export async function sendConnectionErrorNotice(
         .where(and(eq(users.tenantId, tenantId), eq(users.role, 'owner'), eq(users.isActive, true)));
       if (owners.length === 0) continue;
       const { from, transport } = await createTransport(tenantId);
+      const brand = await (async () => {
+        try { const { getBranding } = await import('./admin.service.js'); return (await getBranding()).appName; }
+        catch { return 'Vibe MyBooks'; }
+      })();
       for (const owner of owners) {
         await transport.sendMail({
           from,
@@ -163,7 +167,7 @@ Your bank connection to ${bank} has stopped syncing${errorMessage ? `:
 
 New transactions will not be imported until it is repaired. Open Banking → Bank Connections and click "Fix Now" to re-authenticate.
 
-— Vibe MyBooks`,
+— ${brand}`,
         });
       }
     } catch (err) {

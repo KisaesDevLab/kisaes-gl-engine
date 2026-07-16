@@ -164,10 +164,21 @@ setupRouter.get('/status', async (req, res) => {
   const hasPending =
     !!pendingRecoveryKeyForInstall && peekPendingRecoveryKey(pendingRecoveryKeyForInstall) !== null;
 
+  // White-label app name for PRE-LOGIN surfaces (login page, first-run wizard,
+  // browser tab title) that have no authenticated /auth/me to read branding
+  // from. Only the app name is exposed — it is already public branding, no
+  // secrets. Best-effort: falls back to the default if the DB is unreachable.
+  let appName = 'Vibe MyBooks';
+  try {
+    const { getBranding } = await import('../services/admin.service.js');
+    appName = (await getBranding()).appName;
+  } catch { /* DB unreachable — keep default */ }
+
   res.json({
     ...status,
     installationId,
     pendingRecoveryKey: hasPending,
+    appName,
   });
 });
 
