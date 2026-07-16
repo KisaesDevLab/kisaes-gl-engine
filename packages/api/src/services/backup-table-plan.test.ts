@@ -16,6 +16,7 @@ import {
   getAllPublicTables,
   getSystemBackupTablePlan,
   EXCLUDED_SYSTEM_BACKUP_TABLES,
+  OPTIONAL_EXTENSION_EXCLUSIONS,
 } from './backup-table-plan.js';
 
 const IDENTITY_SECTION_TABLES = ['tenants', 'users', 'user_tenant_access'];
@@ -41,7 +42,8 @@ describe('backup-table-plan', () => {
 
   it('has no stale entries in the exclude list', async () => {
     const live = new Set((await getAllPublicTables(db)).map((t) => t.table));
-    const stale = Object.keys(EXCLUDED_SYSTEM_BACKUP_TABLES).filter((t) => !live.has(t));
+    const stale = Object.keys(EXCLUDED_SYSTEM_BACKUP_TABLES)
+      .filter((t) => !live.has(t) && !OPTIONAL_EXTENSION_EXCLUSIONS.has(t));
     expect(stale, `excluded tables that no longer exist: ${stale.join(', ')}`).toEqual([]);
   });
 
