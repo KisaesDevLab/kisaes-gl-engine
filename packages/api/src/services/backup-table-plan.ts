@@ -36,7 +36,17 @@ export const EXCLUDED_SYSTEM_BACKUP_TABLES: Record<string, string> = {
   password_reset_tokens: 'One-time reset tokens; restoring reopens stale reset links.',
   oauth_authorization_codes:
     'OAuth code-exchange state with ~10-minute TTL. (oauth_clients and oauth_tokens ARE included — long-lived MCP grants DR should preserve.)',
+  spatial_ref_sys:
+    'PostGIS reference table — ~8500 fixed map-projection rows the extension pre-populates identically on every install. It is NOT user data; restoring it just collides with (or is rejected by) the extension-owned rows, which surfaced as a spurious "8500 rows failed" in the restore report. Excluded so the report reflects only real data.',
 };
+
+/**
+ * Exclusions that belong to OPTIONAL Postgres extensions (e.g. PostGIS's
+ * spatial_ref_sys): present on installs that enabled the extension, absent on
+ * others (including a bare test DB). The "no stale exclusions" guard tolerates
+ * these being absent so it still catches genuinely-renamed/dropped app tables.
+ */
+export const OPTIONAL_EXTENSION_EXCLUSIONS = new Set<string>(['spatial_ref_sys']);
 
 /**
  * tenants / users / user_tenant_access are exported as dedicated top-level
