@@ -36,6 +36,11 @@ export const FILE_EXPORT_REGISTRY: FileRegistryEntry[] = [
   // category uses the `f:` prefix, which old code skips harmlessly.
   { table: 'attachments', columns: ['storage_key', 'file_path'], source: 'provider_with_local_fallback', tenantColumn: 'tenant_id' },
   { table: 'extraction_jobs', columns: ['storage_key'], source: 'provider', tenantColumn: 'tenant_id' },
+  // Rendered page images — a distinct durable provider blob (image_ref),
+  // separate from the original document (extraction_jobs.storage_key), and an
+  // audit invariant ("never discarded"). Must be bundled or a DR restore
+  // loses them and re-extraction breaks.
+  { table: 'extraction_pages', columns: ['image_ref'], source: 'provider', tenantColumn: 'tenant_id' },
   { table: 'portal_receipts', columns: ['storage_key'], source: 'provider', tenantColumn: 'tenant_id' },
   { table: 'portal_question_attachments', columns: ['storage_key'], source: 'provider', tenantVia: { parentTable: 'portal_questions', fkColumn: 'question_id' } },
   { table: 'payroll_import_sessions', columns: ['file_path', 'companion_file_path'], source: 'localPath', tenantColumn: 'tenant_id' },

@@ -83,17 +83,21 @@ setupRouter.use(async (req, res, next) => {
   //   - /pending-recovery-key: F22 — post-setup re-display of a still-unacknowledged
   //     recovery key, scoped to a specific installation_id
   //   - /acknowledge-recovery-key: paired with the above, clears the pending entry
-  //   - /restore/runs/*: polling a restore run — a SUCCESSFUL restore marks
-  //     setup complete before the run flips to 'complete', so without this
-  //     exemption the wizard's poll 403s at the exact moment of success and
-  //     the operator never sees the result (or the one-time recovery key).
-  //     Read-only, in-memory run metadata; the same data the execute
-  //     response used to carry synchronously.
+  //   - GET /restore/runs/<uuid>: polling a SPECIFIC restore run — a
+  //     successful restore marks setup complete before the run flips to
+  //     'complete', so without this exemption the wizard's poll 403s at the
+  //     moment of success and the operator never sees the one-time recovery
+  //     key. Only the by-id form is exempt: the runId is an unguessable UUID,
+  //     so it acts as a bearer secret. /restore/runs/latest is NOT exempt —
+  //     it would hand the last run's result (incl. the recovery key) to any
+  //     unauthenticated caller with no id, post-setup.
+  const isRunByIdPoll = req.method === 'GET' &&
+    /^\/restore\/runs\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.path);
   if (
     req.path === '/status' ||
     req.path === '/pending-recovery-key' ||
     req.path === '/acknowledge-recovery-key' ||
-    (req.method === 'GET' && req.path.startsWith('/restore/runs/'))
+    isRunByIdPoll
   ) {
     return next();
   }
@@ -501,6 +505,14 @@ setupRouter.post('/restore/execute', upload.single('file'), async (req, res) => 
   }
 
   const uploadedPath = req.file.path;
+  // One restore at a time — a second (possibly different) upload while one is
+  // in flight must not silently attach to it. The wizard adopts the 409 runId.
+  const activeUpload = peekActiveRestoreRun();
+  if (activeUpload) {
+    try { fs.unlinkSync(uploadedPath); } catch { /* already gone */ }
+    res.status(409).json({ runId: activeUpload.id, error: { message: 'A restore is already in progress. Wait for it to finish.' } });
+    return;
+  }
   const run = startRestoreRun(
     async () => {
       // A .vmx package (ZIP) carries the DB dump plus attachment files; a
@@ -695,12 +707,15 @@ async function runGuardedSetupRestore(readContent: ContentSource): Promise<Recor
         // hardcoded INSERTs (which dropped most user/tenant columns) and the
         // silent per-row catch{} (which hid every FK-ordering loss).
         const sections = mergeBundleSections(content);
-        const restoreReport: RestoreReport = await restoreDatabaseSections(db, sections);
-
-        // Restored rows carry their original serial ids; bring every owned
-        // sequence up to date or the first post-restore write to a
-        // serial-PK table (e.g. audit_log on first login) hits duplicate-key.
-        await resyncOwnedSequences(db);
+        // Wrap the DB restore + sequence resync in ONE transaction: if it
+        // throws partway (e.g. a dropped connection), everything rolls back
+        // so the DB stays EMPTY and the emptiness guard permits a clean
+        // retry — a partial commit would otherwise wedge the restore forever.
+        const restoreReport: RestoreReport = await db.transaction(async (tx) => {
+          const rep = await restoreDatabaseSections(tx, sections);
+          await resyncOwnedSequences(tx);
+          return rep;
+        });
 
         // Restore bundled FILES (present only in .vmx packages): receipt
         // attachments, extraction sources, portal receipt/Q&A uploads,
@@ -895,11 +910,13 @@ async function runGuardedSetupRestore(readContent: ContentSource): Promise<Recor
         for (const [tableName, rows] of Object.entries(tables)) {
           if (Array.isArray(rows) && rows.length > 0) sections[tableName] = rows as Record<string, unknown>[];
         }
-        const restoreReport: RestoreReport = await restoreDatabaseSections(db, sections);
-
-        // Same sequence-resync as the system branch — restored serial ids
-        // leave owned sequences behind otherwise.
-        await resyncOwnedSequences(db);
+        // Transactional (same rationale as the system branch): a mid-restore
+        // throw rolls back so a retry isn't wedged by partial rows.
+        const restoreReport: RestoreReport = await db.transaction(async (tx) => {
+          const rep = await restoreDatabaseSections(tx, sections);
+          await resyncOwnedSequences(tx);
+          return rep;
+        });
 
         // Tenant .vmx packages carry attachment/upload files too; write them
         // back (the old flow ignored them entirely on this branch).
@@ -1179,6 +1196,14 @@ setupRouter.post('/restore/execute-staged', async (req, res) => {
 
   const dir = stageDirFor(meta.backupId);
   const paths = summary.received.map((idx) => path.join(dir, `part${idx}.vmx`));
+
+  // One restore at a time — don't silently attach a different staged series
+  // to an in-flight run (the wizard adopts the 409 runId and polls it).
+  const activeStaged = peekActiveRestoreRun();
+  if (activeStaged) {
+    res.status(409).json({ runId: activeStaged.id, error: { message: 'A restore is already in progress. Wait for it to finish.' } });
+    return;
+  }
 
   const run = startRestoreRun(
     async () => {

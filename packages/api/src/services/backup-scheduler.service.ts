@@ -81,26 +81,39 @@ async function runBackupCycle(): Promise<void> {
       console.log(`[Backup Scheduler] Per-tenant backups: ${successCount} OK, ${errorCount} failed`);
 
       // Full SYSTEM backup (all tenants/users/config + recovery files +
-      // attachment FILES) so the automated backup is genuinely restorable on a
-      // new server.
+      // attachment FILES) — the one that makes DR genuinely restorable.
+      // Stamp last-run ONLY when it actually succeeds, or a failure is
+      // recorded as success and no retry happens for a whole interval.
+      let systemOk = false;
       try {
         const sys = await createSystemBackup(passphrase, undefined, { includeAttachments: true });
         console.log(`[Backup Scheduler] System backup created: ${sys.fileName} (${sys.size} bytes)`);
+        systemOk = true;
       } catch (err) {
         console.error(`[Backup Scheduler] System backup failed: ${err instanceof Error ? err.message : String(err)}`);
       }
-      await setSetting('backup_last_run', new Date().toISOString());
+      if (systemOk) {
+        await setSetting('backup_last_run', new Date().toISOString());
+      } else {
+        console.warn('[Backup Scheduler] Full backup did NOT complete — last-run NOT stamped; will retry next cycle.');
+      }
     }
 
     if (dbDue) {
       console.log(`[Backup Scheduler] DB-only backup is due (schedule: ${dbSchedule})`);
+      let dbOk = false;
       try {
         const sys = await createSystemBackup(passphrase, undefined, { includeAttachments: false });
         console.log(`[Backup Scheduler] DB-only system backup created: ${sys.fileName} (${sys.size} bytes)`);
+        dbOk = true;
       } catch (err) {
         console.error(`[Backup Scheduler] DB-only system backup failed: ${err instanceof Error ? err.message : String(err)}`);
       }
-      await setSetting('backup_db_last_run', new Date().toISOString());
+      if (dbOk) {
+        await setSetting('backup_db_last_run', new Date().toISOString());
+      } else {
+        console.warn('[Backup Scheduler] DB-only backup did NOT complete — last-run NOT stamped; will retry next cycle.');
+      }
     }
 
     // Purge expired local backups (covers the mirror dir too — see

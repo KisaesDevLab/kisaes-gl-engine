@@ -111,6 +111,10 @@ describe('multi-part vmx: round trip', () => {
     for (const [id, original] of byId) {
       expect(seen.get(id)!.equals(original), `attachment ${id} restored byte-identical`).toBe(true);
     }
+
+    // A single-file read of ONE part of a genuine multi-part series must be
+    // REFUSED — restoring it alone would silently lose the other parts' data.
+    await expect(readTenantPackage(result.files[0]!.path, PASS)).rejects.toThrow(/multi-part backup/i);
   });
 
   it('produces a single classic-readable .vmx when everything fits one part', async () => {
