@@ -592,6 +592,20 @@ function peekActiveRestoreRun(): RestoreRun | null {
   return active && active.status === 'running' ? active : null;
 }
 
+// Drizzle wraps a failed query as `Failed query: <sql> params: …` and hangs the
+// real Postgres error (message + SQLSTATE + detail) off `.cause`. Surfacing only
+// `.message` left operators staring at an opaque SQL blob with no reason. Prefer
+// the pg cause's message and code so the run error says WHAT went wrong.
+function describeRestoreError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err) || 'Restore failed';
+  const cause = (err as { cause?: unknown }).cause;
+  const pg = (cause instanceof Error ? cause : err) as unknown as Record<string, unknown>;
+  const msg = (typeof pg['message'] === 'string' && pg['message']) || err.message || 'Restore failed';
+  const code = typeof pg['code'] === 'string' ? pg['code'] : undefined;
+  const detail = typeof pg['detail'] === 'string' ? pg['detail'] : undefined;
+  return [msg, code ? `[${code}]` : '', detail ? `— ${detail}` : ''].filter(Boolean).join(' ');
+}
+
 function startRestoreRun(
   readContent: ContentSource,
   opts: { onSuccess?: () => void; onSettle?: () => void } = {},
@@ -624,7 +638,10 @@ function startRestoreRun(
       try { opts.onSuccess?.(); } catch { /* cleanup is best-effort */ }
     } catch (err) {
       run.status = 'failed';
-      run.error = err instanceof Error ? err.message : 'Restore failed';
+      run.error = describeRestoreError(err);
+      // Always log the full error server-side — the run only keeps a short
+      // human string, but the stack + pg cause belong in the logs for triage.
+      console.error('[restore] run failed:', err);
     } finally {
       run.finishedAt = new Date().toISOString();
       if (activeRestoreRunId === run.id) activeRestoreRunId = null;
