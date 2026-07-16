@@ -3,7 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
-import { createContactSchema, updateContactSchema, contactFiltersSchema, mergeContactsSchema, contactsImportSchema } from '@kis-books/shared';
+import { createContactSchema, updateContactSchema, contactFiltersSchema, mergeContactsSchema, contactsImportSchema, bulkUpdateContactTypeSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
@@ -45,6 +45,13 @@ contactsRouter.post('/import', validate(contactsImportSchema), async (req, res) 
 contactsRouter.post('/merge', validate(mergeContactsSchema), async (req, res) => {
   const result = await contactsService.merge(req.tenantId, req.body.sourceId, req.body.targetId, req.userId);
   res.json({ contact: result });
+});
+
+// Bulk-change the customer/vendor/both type on the selected contacts. Placed
+// before /:id so the literal path wins over the param route.
+contactsRouter.post('/bulk-type', validate(bulkUpdateContactTypeSchema), async (req, res) => {
+  const result = await contactsService.bulkUpdateType(req.tenantId, req.body.ids, req.body.contactType, req.userId);
+  res.json(result);
 });
 
 contactsRouter.get('/:id', async (req, res) => {
