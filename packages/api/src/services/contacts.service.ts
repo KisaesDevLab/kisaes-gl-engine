@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { eq, and, sql, count, or } from 'drizzle-orm';
+import { eq, and, sql, count, or, inArray } from 'drizzle-orm';
 import type { CreateContactInput, UpdateContactInput, ContactFilters } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { contacts } from '../db/schema/index.js';
@@ -95,6 +95,25 @@ export async function update(tenantId: string, id: string, input: UpdateContactI
 
   await auditLog(tenantId, 'update', 'contact', id, existing, updated, userId);
   return updated;
+}
+
+/** Set the customer/vendor/both type on many contacts at once (tenant-scoped).
+ *  Returns the number actually updated. */
+export async function bulkUpdateType(
+  tenantId: string,
+  ids: string[],
+  contactType: 'customer' | 'vendor' | 'both',
+  userId?: string,
+): Promise<{ updated: number }> {
+  if (ids.length === 0) return { updated: 0 };
+  const rows = await db
+    .update(contacts)
+    .set({ contactType, updatedAt: new Date() })
+    .where(and(eq(contacts.tenantId, tenantId), inArray(contacts.id, ids)))
+    .returning({ id: contacts.id });
+  // One audit entry for the batch — the individual ids are in the metadata.
+  await auditLog(tenantId, 'update', 'contact', 'bulk', null, { contactType, ids: rows.map((r) => r.id) }, userId);
+  return { updated: rows.length };
 }
 
 export async function deactivate(tenantId: string, id: string, userId?: string) {

@@ -37,7 +37,7 @@ function mapRow(row: typeof firmUsers.$inferSelect): FirmUser {
 // Resolves an invite payload (userId OR email) to a user id.
 // Email lookup is case-insensitive and throws if no user exists —
 // the firm-admin UI does NOT silently auto-create users; the
-// invitee must already have a kis-books account.
+// invitee must already have a user account on this installation.
 async function resolveInviteeUserId(input: InviteFirmUserInput): Promise<string> {
   if (input.userId) {
     const u = await db.query.users.findFirst({ where: eq(users.id, input.userId) });
@@ -51,8 +51,12 @@ async function resolveInviteeUserId(input: InviteFirmUserInput): Promise<string>
     where: sql`LOWER(${users.email}) = LOWER(${input.email})`,
   });
   if (!u) {
+    const appName = await (async () => {
+      try { const { getBranding } = await import('./admin.service.js'); return (await getBranding()).appName; }
+      catch { return 'Vibe MyBooks'; }
+    })();
     throw AppError.notFound(
-      `No user found with email "${input.email}". The invitee must have a kis-books account first.`,
+      `No user found with email "${input.email}". Create their account first (Admin → Users), then invite them to the firm — the invitee must already have a ${appName} account.`,
     );
   }
   return u.id;

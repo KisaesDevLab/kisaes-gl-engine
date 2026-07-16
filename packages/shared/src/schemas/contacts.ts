@@ -80,6 +80,12 @@ export const mergeContactsSchema = z.object({
   targetId: z.string().uuid(),
 });
 
+// Bulk-set the customer/vendor/both type on many contacts at once.
+export const bulkUpdateContactTypeSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(1000),
+  contactType: z.enum(contactTypes),
+});
+
 // CSV-import body for POST /contacts/import. Rows arrive as partial
 // records; the service resolves displayName + contactType per row.
 export const contactsImportRowSchema = z.object({
