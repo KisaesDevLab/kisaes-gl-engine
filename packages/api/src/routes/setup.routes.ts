@@ -1191,6 +1191,260 @@ setupRouter.post('/restore/execute-staged', async (req, res) => {
   res.status(202).json(restoreRunView(run));
 });
 
+// ─── Restore from local disk / mounted drive ───────────────────────
+//
+// A backup that already lives on the box (BACKUP_DIR, or an external drive
+// bind-mounted at BACKUP_MIRROR_DIR) can be restored WITHOUT a
+// download-then-upload round-trip. During a true disaster recovery the DB is
+// empty, so we can't read the operator's configured mirror path from
+// settings — the roots are fixed by env/convention instead.
+
+const RESTORE_LOCAL_ROOTS: Record<string, string> = {
+  backups: process.env['BACKUP_DIR'] || '/data/backups',
+  drive: process.env['BACKUP_MIRROR_DIR'] || '/data/backup-mirror',
+};
+
+const MULTIPART_RE = /^(.*)\.part(\d+)of(\d+)\.vmx$/i;
+
+interface LocalBundle {
+  id: string;            // stable id (root + base name)
+  root: string;          // 'backups' | 'drive'
+  label: string;         // display name
+  kind: 'single' | 'multipart';
+  files: string[];       // absolute paths, part-ordered for multipart
+  partCount: number;
+  size: number;          // total bytes
+  modifiedAt: string | null;
+}
+
+/** Scan a root dir (root/<tenant|_system>/<file>) for restorable bundles.
+ *  Exported for tests. */
+export function scanLocalBundles(rootKey: string, rootDir: string): LocalBundle[] {
+  if (!fs.existsSync(rootDir)) return [];
+  const series = new Map<string, { base: string; parts: Map<number, { path: string; size: number; mtime: number }>; declared: number }>();
+  const singles: LocalBundle[] = [];
+
+  const walk = (dir: string) => {
+    let entries: string[];
+    try { entries = fs.readdirSync(dir); } catch { return; }
+    for (const entry of entries) {
+      const full = path.join(dir, entry);
+      let st: fs.Stats;
+      try { st = fs.statSync(full); } catch { continue; }
+      if (st.isDirectory()) { walk(full); continue; }
+      const mp = entry.match(MULTIPART_RE);
+      if (mp) {
+        const base = path.join(dir, mp[1]!);
+        const s = series.get(base) ?? { base, parts: new Map(), declared: parseInt(mp[3]!, 10) };
+        s.declared = parseInt(mp[3]!, 10);
+        s.parts.set(parseInt(mp[2]!, 10), { path: full, size: st.size, mtime: st.mtimeMs });
+        series.set(base, s);
+      } else if (entry.endsWith('.vmx') || entry.endsWith('.vmb')) {
+        singles.push({
+          id: `${rootKey}:${path.relative(rootDir, full)}`,
+          root: rootKey, label: entry, kind: 'single',
+          files: [full], partCount: 1, size: st.size,
+          modifiedAt: new Date(st.mtimeMs).toISOString(),
+        });
+      }
+    }
+  };
+  walk(rootDir);
+
+  const bundles: LocalBundle[] = [...singles];
+  for (const s of series.values()) {
+    const idxs = [...s.parts.keys()].sort((a, b) => a - b);
+    if (idxs.length !== s.declared || !idxs.every((n, i) => n === i + 1)) continue; // incomplete
+    bundles.push({
+      id: `${rootKey}:${path.relative(rootDir, s.base)}`,
+      root: rootKey, label: `${path.basename(s.base)} (${s.declared} parts)`, kind: 'multipart',
+      files: idxs.map((n) => s.parts.get(n)!.path),
+      partCount: s.declared,
+      size: idxs.reduce((sum, n) => sum + s.parts.get(n)!.size, 0),
+      modifiedAt: new Date(Math.max(...idxs.map((n) => s.parts.get(n)!.mtime))).toISOString(),
+    });
+  }
+  return bundles.sort((a, b) => (b.modifiedAt ?? '').localeCompare(a.modifiedAt ?? ''));
+}
+
+/** Validate every path resolves inside one of the allowed roots (anti-traversal).
+ *  Exported for tests. */
+export function assertPathsWithinRoots(paths: string[]): void {
+  const roots = Object.values(RESTORE_LOCAL_ROOTS).map((r) => path.resolve(r) + path.sep);
+  for (const p of paths) {
+    if (!roots.some((r) => path.resolve(p).startsWith(r))) {
+      throw new Error('Restore path is outside the allowed backup directories');
+    }
+  }
+}
+
+/** Build the async ContentSource for a set of local bundle files. */
+function localContentSource(files: string[], passphrase: string): ContentSource {
+  return async () => {
+    if (files.length === 1 && !isZipFile(files[0]!)) {
+      const { smartDecrypt } = await import('../services/portable-encryption.service.js');
+      const { data } = smartDecrypt(fs.readFileSync(files[0]!), passphrase);
+      return { content: JSON.parse(data.toString()) as RestoreContent, packageAttachments: null };
+    }
+    if (files.length === 1) {
+      const { readTenantPackage } = await import('../services/vmx-package.js');
+      const pkg = await readTenantPackage(files[0]!, passphrase);
+      return { content: pkg.data as RestoreContent, packageAttachments: () => pkg.attachments() };
+    }
+    const { readTenantPackageMulti } = await import('../services/vmx-package.js');
+    const pkg = await readTenantPackageMulti(files, passphrase);
+    return { content: pkg.data as RestoreContent, packageAttachments: () => pkg.attachments() };
+  };
+}
+
+setupRouter.get('/restore/local/list', (_req, res) => {
+  const bundles: LocalBundle[] = [];
+  for (const [key, dir] of Object.entries(RESTORE_LOCAL_ROOTS)) bundles.push(...scanLocalBundles(key, dir));
+  res.json({
+    roots: Object.entries(RESTORE_LOCAL_ROOTS).map(([key, dir]) => ({ key, dir, present: fs.existsSync(dir) })),
+    // Never leak absolute paths; the client restores by opaque `id`.
+    bundles: bundles.map((b) => ({ id: b.id, root: b.root, label: b.label, kind: b.kind, partCount: b.partCount, size: b.size, modifiedAt: b.modifiedAt })),
+  });
+});
+
+setupRouter.post('/restore/local/execute', async (req, res) => {
+  const id = (req.body?.id ?? '').toString();
+  const passphrase = req.body?.passphrase;
+  if (!passphrase || typeof passphrase !== 'string') {
+    res.status(400).json({ error: { message: 'Passphrase is required' } });
+    return;
+  }
+  // Re-scan and resolve `id` server-side — never trust a client-supplied path.
+  const all: LocalBundle[] = [];
+  for (const [key, dir] of Object.entries(RESTORE_LOCAL_ROOTS)) all.push(...scanLocalBundles(key, dir));
+  const bundle = all.find((b) => b.id === id);
+  if (!bundle) {
+    res.status(404).json({ error: { message: 'No local backup with that id (it may have moved or the drive is unmounted)' } });
+    return;
+  }
+  try { assertPathsWithinRoots(bundle.files); }
+  catch (err) { res.status(400).json({ error: { message: err instanceof Error ? err.message : 'Invalid path' } }); return; }
+  const run = startRestoreRun(localContentSource(bundle.files, passphrase));
+  res.status(202).json(restoreRunView(run));
+});
+
+// ─── Restore from a remote object store (B2/S3), creds entered now ──
+//
+// A wiped box has no stored B2 credentials (they were in the DB), so the
+// operator supplies them at restore time. We list/download the bundle with
+// those creds, then run the same guarded restore.
+
+interface RemoteRestoreCreds {
+  provider: 'b2' | 's3';
+  bucket: string; endpoint: string; keyId: string; applicationKey: string;
+  region?: string; prefix?: string;
+}
+
+function parseRemoteCreds(body: Record<string, unknown>): RemoteRestoreCreds {
+  const provider = String(body['provider'] ?? 'b2');
+  if (provider !== 'b2' && provider !== 's3') throw new Error('provider must be b2 or s3');
+  const bucket = String(body['bucket'] ?? '').trim();
+  const endpoint = String(body['endpoint'] ?? '').trim();
+  const keyId = String(body['keyId'] ?? '').trim();
+  const applicationKey = String(body['applicationKey'] ?? '').trim();
+  if (!bucket || !endpoint || !keyId || !applicationKey) {
+    throw new Error('bucket, endpoint, keyId, and applicationKey are required');
+  }
+  return {
+    provider, bucket, endpoint, keyId, applicationKey,
+    region: body['region'] ? String(body['region']) : undefined,
+    prefix: body['prefix'] !== undefined ? String(body['prefix']) : 'backups/',
+  };
+}
+
+async function buildRemoteProvider(c: RemoteRestoreCreds) {
+  // B2 is S3-compatible; a plain S3 endpoint works through the same wrapper.
+  const { B2Provider } = await import('../services/storage/b2.provider.js');
+  return new B2Provider({
+    bucket: c.bucket, endpoint: c.endpoint, keyId: c.keyId,
+    applicationKey: c.applicationKey, region: c.region, prefix: c.prefix,
+  });
+}
+
+setupRouter.post('/restore/remote/list', async (req, res) => {
+  let creds: RemoteRestoreCreds;
+  try { creds = parseRemoteCreds(req.body ?? {}); }
+  catch (err) { res.status(400).json({ error: { message: err instanceof Error ? err.message : 'Invalid credentials' } }); return; }
+
+  try {
+    const provider = await buildRemoteProvider(creds);
+    const objects = await provider.listObjects('', 5000);
+    const series = new Map<string, { keys: Map<number, { key: string; size: number }>; declared: number; modified: string | null }>();
+    const bundles: Array<{ id: string; label: string; keys: string[]; partCount: number; size: number; modifiedAt: string | null }> = [];
+    for (const o of objects) {
+      const name = o.key.split('/').pop() ?? o.key;
+      const mp = name.match(MULTIPART_RE);
+      if (mp) {
+        const base = `${o.key.slice(0, o.key.length - name.length)}${mp[1]}`;
+        const s = series.get(base) ?? { keys: new Map(), declared: parseInt(mp[3]!, 10), modified: o.lastModified };
+        s.declared = parseInt(mp[3]!, 10);
+        s.keys.set(parseInt(mp[2]!, 10), { key: o.key, size: o.size });
+        if (o.lastModified && (!s.modified || o.lastModified > s.modified)) s.modified = o.lastModified;
+        series.set(base, s);
+      } else if (name.endsWith('.vmx') || name.endsWith('.vmb')) {
+        bundles.push({ id: o.key, label: name, keys: [o.key], partCount: 1, size: o.size, modifiedAt: o.lastModified });
+      }
+    }
+    for (const [base, s] of series) {
+      const idxs = [...s.keys.keys()].sort((a, b) => a - b);
+      if (idxs.length !== s.declared || !idxs.every((n, i) => n === i + 1)) continue;
+      bundles.push({
+        id: base, label: `${base.split('/').pop()} (${s.declared} parts)`,
+        keys: idxs.map((n) => s.keys.get(n)!.key), partCount: s.declared,
+        size: idxs.reduce((sum, n) => sum + s.keys.get(n)!.size, 0), modifiedAt: s.modified,
+      });
+    }
+    bundles.sort((a, b) => (b.modifiedAt ?? '').localeCompare(a.modifiedAt ?? ''));
+    res.json({ bundles });
+  } catch (err) {
+    res.status(400).json({ error: { message: `Could not list backups: ${err instanceof Error ? err.message : String(err)}` } });
+  }
+});
+
+setupRouter.post('/restore/remote/execute', async (req, res) => {
+  const passphrase = req.body?.passphrase;
+  const keys: unknown = req.body?.keys;
+  if (!passphrase || typeof passphrase !== 'string') {
+    res.status(400).json({ error: { message: 'Passphrase is required' } });
+    return;
+  }
+  if (!Array.isArray(keys) || keys.length === 0 || !keys.every((k) => typeof k === 'string')) {
+    res.status(400).json({ error: { message: 'keys (the object key[s] of the bundle part[s]) are required' } });
+    return;
+  }
+  let creds: RemoteRestoreCreds;
+  try { creds = parseRemoteCreds(req.body ?? {}); }
+  catch (err) { res.status(400).json({ error: { message: err instanceof Error ? err.message : 'Invalid credentials' } }); return; }
+
+  // Download the part(s) to a temp stage dir, then restore from those files.
+  const dir = path.join(RESTORE_UPLOAD_DIR, `remote-${crypto.randomUUID()}`);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const provider = await buildRemoteProvider(creds);
+    const localFiles: string[] = [];
+    for (let i = 0; i < (keys as string[]).length; i++) {
+      const key = (keys as string[])[i]!;
+      const buf = await provider.download(key);
+      const dest = path.join(dir, `part${i + 1}.${key.endsWith('.vmb') ? 'vmb' : 'vmx'}`);
+      fs.writeFileSync(dest, buf);
+      localFiles.push(dest);
+    }
+    const run = startRestoreRun(
+      localContentSource(localFiles, passphrase),
+      { onSettle: () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ } } },
+    );
+    res.status(202).json(restoreRunView(run));
+  } catch (err) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    res.status(400).json({ error: { message: `Restore from remote failed: ${err instanceof Error ? err.message : String(err)}` } });
+  }
+});
+
 // restoreTableRows / resyncOwnedSequences moved to
 // services/system-restore.service.ts, which adds FK-aware ordering,
 // multi-pass fixpoint retry, and per-row failure reporting.
