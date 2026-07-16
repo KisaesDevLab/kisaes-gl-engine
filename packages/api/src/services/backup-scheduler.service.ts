@@ -38,6 +38,12 @@ export async function isDue(schedule: string | null, lastRunKey: string): Promis
   return Date.now() - lastRunTime >= intervalMs;
 }
 
+// Exported for tests only — one scheduler cycle, without the interval timer
+// or the cross-instance advisory lock. Not part of the public API.
+export async function __runBackupCycleForTests(): Promise<void> {
+  return runBackupCycle();
+}
+
 async function runBackupCycle(): Promise<void> {
   const started = Date.now();
   try {
@@ -66,19 +72,37 @@ async function runBackupCycle(): Promise<void> {
 
     if (fullDue) {
       console.log(`[Backup Scheduler] Full backup is due (schedule: ${fullSchedule})`);
-      const allTenants = await db.select({ id: tenants.id }).from(tenants);
-      let successCount = 0;
-      let errorCount = 0;
-      for (const tenant of allTenants) {
-        try {
-          await createBackup(tenant.id, passphrase);
-          successCount++;
-        } catch (err: any) {
-          errorCount++;
-          console.error(`[Backup Scheduler] Failed for tenant ${tenant.id}: ${err.message}`);
+
+      // Per-tenant backups are gated on their OWN last-run, not on the full
+      // cadence's `backup_last_run`. `backup_last_run` is stamped only when the
+      // SYSTEM backup succeeds (so a failed system backup retries next tick);
+      // if the per-tenant loop shared that gate, a persistently failing system
+      // backup would keep `fullDue` true and re-run every tenant backup —
+      // rewriting each .vmb, mirroring it, and re-uploading — on every hourly
+      // tick, growing the never-purged mirror without bound. Its own stamp
+      // caps the loop at once per interval regardless of system-backup outcome.
+      const tenantDue = await isDue(fullSchedule, 'backup_tenant_last_run');
+      if (tenantDue) {
+        const allTenants = await db.select({ id: tenants.id }).from(tenants);
+        let successCount = 0;
+        let errorCount = 0;
+        for (const tenant of allTenants) {
+          try {
+            await createBackup(tenant.id, passphrase);
+            successCount++;
+          } catch (err: any) {
+            errorCount++;
+            console.error(`[Backup Scheduler] Failed for tenant ${tenant.id}: ${err.message}`);
+          }
         }
+        console.log(`[Backup Scheduler] Per-tenant backups: ${successCount} OK, ${errorCount} failed`);
+        // Stamp once the loop has run this interval, regardless of individual
+        // per-tenant failures (they are logged and picked up next interval) —
+        // stamping only on zero-errors would re-run ALL tenants hourly whenever
+        // a single tenant persistently fails, the same unbounded-retry bug at
+        // tenant granularity.
+        await setSetting('backup_tenant_last_run', new Date().toISOString());
       }
-      console.log(`[Backup Scheduler] Per-tenant backups: ${successCount} OK, ${errorCount} failed`);
 
       // Full SYSTEM backup (all tenants/users/config + recovery files +
       // attachment FILES) — the one that makes DR genuinely restorable.

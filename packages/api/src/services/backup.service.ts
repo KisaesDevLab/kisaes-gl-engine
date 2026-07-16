@@ -1081,9 +1081,13 @@ export async function deleteRemoteBackup(key: string): Promise<void> {
 
   await provider.delete(key);
 
-  const manifest = await getManifest();
-  const updated = manifest.filter((e) => e.key !== key);
-  await saveManifest(updated);
+  // Mutate under the manifest lock against a fresh read so a concurrent
+  // upload append (which also holds the lock) is not lost. See
+  // purgeExpiredRemoteBackups for the same clobber hazard.
+  await withManifestLock(async () => {
+    const fresh = await getManifest();
+    await saveManifest(fresh.filter((e) => e.key !== key));
+  });
 }
 
 // ─── Local Backup Purge (N days) ─────────────────────────────────
@@ -1191,8 +1195,16 @@ export async function purgeExpiredRemoteBackups(config: GfsRetentionConfig): Pro
   }
 
   if (deletedKeys.size > 0) {
-    const updated = manifest.filter((e) => !deletedKeys.has(e.key));
-    await saveManifest(updated);
+    // Mutate under the same lock uploadBackupToRemote uses, against a FRESH
+    // read — never the stale `manifest` snapshot taken before the (slow,
+    // network) deletes above. Otherwise a fire-and-forget upload that appended
+    // its entry while we were deleting would be clobbered by writing back the
+    // pre-append snapshot, silently dropping a just-uploaded (multi-part) backup
+    // from tracking.
+    await withManifestLock(async () => {
+      const fresh = await getManifest();
+      await saveManifest(fresh.filter((e) => !deletedKeys.has(e.key)));
+    });
   }
 
   return deleted;
