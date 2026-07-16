@@ -1230,6 +1230,8 @@ interface LocalBundle {
  *  Exported for tests. */
 export function scanLocalBundles(rootKey: string, rootDir: string): LocalBundle[] {
   if (!fs.existsSync(rootDir)) return [];
+  let rootReal: string;
+  try { rootReal = fs.realpathSync(rootDir); } catch { rootReal = path.resolve(rootDir); }
   const series = new Map<string, { base: string; parts: Map<number, { path: string; size: number; mtime: number }>; declared: number }>();
   const singles: LocalBundle[] = [];
 
@@ -1238,12 +1240,19 @@ export function scanLocalBundles(rootKey: string, rootDir: string): LocalBundle[
     try { entries = fs.readdirSync(dir); } catch { return; }
     for (const entry of entries) {
       const full = path.join(dir, entry);
+      // A symlink is fine ONLY if its realpath stays inside this root — a
+      // legit backup drive is often symlink-mounted, but a link escaping the
+      // root (e.g. → /etc/passwd) must never be listed or restored.
+      let lst: fs.Stats;
+      try { lst = fs.lstatSync(full); } catch { continue; }
+      if (lst.isSymbolicLink()) {
+        try {
+          const real = fs.realpathSync(full);
+          if (!(real + path.sep).startsWith(rootReal + path.sep) && real !== rootReal) continue;
+        } catch { continue; }
+      }
       let st: fs.Stats;
-      // lstat (not stat): a symlink under a backup root must NOT be followed —
-      // it could point at an arbitrary host file that would then be fed into
-      // the restore/decrypt pipeline.
-      try { st = fs.lstatSync(full); } catch { continue; }
-      if (st.isSymbolicLink()) continue;
+      try { st = fs.statSync(full); } catch { continue; }
       if (st.isDirectory()) { walk(full); continue; }
       const mp = entry.match(MULTIPART_RE);
       if (mp) {
@@ -1341,9 +1350,12 @@ setupRouter.post('/restore/local/execute', async (req, res) => {
   }
   try { assertPathsWithinRoots(bundle.files); }
   catch (err) { res.status(400).json({ error: { message: err instanceof Error ? err.message : 'Invalid path' } }); return; }
-  // Re-attach to an in-flight restore rather than restore a DIFFERENT bundle.
+  // A restore is one-at-a-time — refuse a second, possibly-different bundle
+  // rather than silently attach it to the in-flight run and report false
+  // success. (The wizard resumes a reload by polling the stored runId, not by
+  // re-calling execute, so this never breaks resume.)
   const active = peekActiveRestoreRun();
-  if (active) { res.status(202).json(restoreRunView(active)); return; }
+  if (active) { res.status(409).json({ error: { message: 'A restore is already in progress. Wait for it to finish.', runId: active.id } }); return; }
   const run = startRestoreRun(localContentSource(bundle.files, passphrase));
   res.status(202).json(restoreRunView(run));
 });
@@ -1370,12 +1382,17 @@ export function assertSafeEndpoint(endpoint: string): void {
   let u: URL;
   try { u = new URL(endpoint); } catch { throw new Error('endpoint must be a valid https URL'); }
   if (u.protocol !== 'https:') throw new Error('endpoint must use https');
-  const host = u.hostname.toLowerCase();
-  const blockedExact = ['localhost', '0.0.0.0', '::1', '[::1]'];
-  if (blockedExact.includes(host)) throw new Error('endpoint host is not allowed');
-  // Literal IPs in private / loopback / link-local ranges.
-  if (/^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) ||
-      /^169\.254\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host)) {
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, ''); // unwrap [::1]
+  if (host === 'localhost' || host === '0.0.0.0' || host === '::1') {
+    throw new Error('endpoint host is not allowed');
+  }
+  // Range checks apply ONLY to literal IPv4 addresses — never to DNS names
+  // (so "10.storage.example.com" is fine). Private RFC-1918 ranges are
+  // ALLOWED (a self-hosted LAN MinIO/S3 is a legitimate restore source);
+  // we block only loopback and the link-local / cloud-metadata range, which
+  // is the high-value SSRF target and never a real object store.
+  const isIpv4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
+  if (isIpv4 && (/^127\./.test(host) || /^169\.254\./.test(host))) {
     throw new Error('endpoint host is not allowed');
   }
 }
@@ -1474,10 +1491,10 @@ setupRouter.post('/restore/remote/execute', async (req, res) => {
   try { creds = parseRemoteCreds(req.body ?? {}); }
   catch (err) { res.status(400).json({ error: { message: err instanceof Error ? err.message : 'Invalid credentials' } }); return; }
 
-  // Re-attach to an in-flight restore rather than download + restore a
-  // different bundle (and never do a wasted multi-GB download).
+  // One restore at a time — refuse (don't silently attach a different bundle
+  // to the in-flight run) and skip a wasted multi-GB download.
   const active = peekActiveRestoreRun();
-  if (active) { res.status(202).json(restoreRunView(active)); return; }
+  if (active) { res.status(409).json({ error: { message: 'A restore is already in progress. Wait for it to finish.', runId: active.id } }); return; }
 
   // Download the part(s) to a temp stage dir — STREAMED with a per-object
   // size cap so a huge object can't OOM the process — then restore.

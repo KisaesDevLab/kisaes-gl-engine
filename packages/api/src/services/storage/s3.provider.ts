@@ -88,12 +88,15 @@ export class S3Provider implements StorageProvider {
     const p = this.prefix.replace(/\/+$/, ''); // provider prefix, no trailing slash
     const sub = subPrefix.replace(/^\/+|\/+$/g, '');
     const base = [p, sub].filter(Boolean).join('/');
+    // Keep the trailing-slash FOLDER boundary so 'tenant1' doesn't also match
+    // 'tenant10/…'; but never emit the no-match double slash 'tenant1//'.
+    const listPrefix = base ? `${base}/` : '';
     const out: Array<{ key: string; size: number; lastModified: string | null }> = [];
     let token: string | undefined;
     do {
       const res = await this.client.send(new ListObjectsV2Command({
         Bucket: this.bucket,
-        Prefix: base,
+        Prefix: listPrefix,
         ContinuationToken: token,
         MaxKeys: Math.min(1000, maxKeys - out.length),
       }));
@@ -106,12 +109,6 @@ export class S3Provider implements StorageProvider {
       token = res.IsTruncated ? res.NextContinuationToken : undefined;
     } while (token && out.length < maxKeys);
     return out;
-  }
-
-  /** Content-Length of an object, or null if unknown. */
-  async headSize(key: string): Promise<number | null> {
-    const res = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: this.fullKey(key) }));
-    return typeof res.ContentLength === 'number' ? res.ContentLength : null;
   }
 
   /**

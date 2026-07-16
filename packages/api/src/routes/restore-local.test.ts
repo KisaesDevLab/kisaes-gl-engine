@@ -90,29 +90,37 @@ describe('assertPathsWithinRoots (anti-traversal)', () => {
     expect(() => mod.assertPathsWithinRoots([path.join(backups, '..', '..', 'etc', 'passwd')])).toThrow(/outside the allowed|does not exist/i);
   });
 
-  it('rejects a symlink inside a root that TARGETS a file outside it', () => {
-    const link = path.join(backups, '_system', 'evil.vmb');
-    fs.mkdirSync(path.dirname(link), { recursive: true });
-    try { fs.symlinkSync('/etc/hostname', link); } catch { return; } // skip if symlink unsupported
-    // realpath resolves the symlink target (/etc/hostname) → outside roots.
-    expect(() => mod.assertPathsWithinRoots([link])).toThrow(/outside the allowed/i);
-    // …and the scan skips symlinks entirely, so it never appears as a bundle.
-    const found = mod.scanLocalBundles('backups', backups);
-    expect(found.some((b) => b.label === 'evil.vmb')).toBe(false);
-    fs.unlinkSync(link);
+  it('rejects a symlink whose TARGET escapes the root, but lists one whose target stays inside', () => {
+    // Escaping symlink → not listed, and rejected by the path guard.
+    const evil = path.join(backups, '_system', 'evil.vmb');
+    fs.mkdirSync(path.dirname(evil), { recursive: true });
+    try { fs.symlinkSync('/etc/hostname', evil); } catch { return; } // skip if symlink unsupported
+    expect(() => mod.assertPathsWithinRoots([evil])).toThrow(/outside the allowed/i);
+    expect(mod.scanLocalBundles('backups', backups).some((b) => b.label === 'evil.vmb')).toBe(false);
+    fs.unlinkSync(evil);
+
+    // Legit symlink whose target is a real bundle INSIDE the root → listed.
+    const realTarget = put(backups, 'store', 'real-bundle.vmb');
+    const good = path.join(backups, '_system', 'linked.vmb');
+    fs.mkdirSync(path.dirname(good), { recursive: true });
+    fs.symlinkSync(realTarget, good);
+    expect(mod.scanLocalBundles('backups', backups).some((b) => b.label === 'linked.vmb')).toBe(true);
+    expect(() => mod.assertPathsWithinRoots([good])).not.toThrow();
+    fs.unlinkSync(good);
   });
 });
 
 describe('assertSafeEndpoint (SSRF guard)', () => {
-  it('accepts a normal https B2/S3 endpoint', () => {
+  it('accepts normal cloud + LAN https endpoints and DNS names', () => {
     expect(() => mod.assertSafeEndpoint('https://s3.us-west-004.backblazeb2.com')).not.toThrow();
+    expect(() => mod.assertSafeEndpoint('https://192.168.1.50:9000')).not.toThrow();       // LAN MinIO — allowed
+    expect(() => mod.assertSafeEndpoint('https://10.storage.example.com')).not.toThrow();   // DNS starting with 10. — allowed
   });
-  it('rejects http and internal / metadata / private targets', () => {
+  it('rejects http, loopback, and the cloud-metadata/link-local range', () => {
     expect(() => mod.assertSafeEndpoint('http://s3.us-west-004.backblazeb2.com')).toThrow(/https/i);
     expect(() => mod.assertSafeEndpoint('https://localhost:9000')).toThrow(/not allowed/i);
+    expect(() => mod.assertSafeEndpoint('https://127.0.0.1:9000')).toThrow(/not allowed/i);
     expect(() => mod.assertSafeEndpoint('https://169.254.169.254/latest/meta-data')).toThrow(/not allowed/i);
-    expect(() => mod.assertSafeEndpoint('https://10.0.0.5')).toThrow(/not allowed/i);
-    expect(() => mod.assertSafeEndpoint('https://192.168.1.10:9000')).toThrow(/not allowed/i);
     expect(() => mod.assertSafeEndpoint('not-a-url')).toThrow(/valid https/i);
   });
 });
