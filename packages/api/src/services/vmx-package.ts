@@ -90,6 +90,10 @@ async function bufferEntryBounded(
 export interface PackageAttachment {
   id: string;
   buffer: Buffer;
+  /** Set when this entry could not be decrypted/verified. The consumer records
+   *  it and moves on instead of the whole iteration throwing — one corrupt
+   *  attachment must never abort restoring the rest. `buffer` is empty then. */
+  error?: string;
 }
 
 export interface WritePackageResult {
@@ -225,8 +229,14 @@ export async function readTenantPackage(source: string | Buffer, passphrase: str
   async function* attachments(): AsyncGenerator<PackageAttachment> {
     for (const f of attachmentEntries) {
       const id = f.path.slice('attachments/'.length, -'.enc'.length);
-      const buffer = decryptEntry(key, await bufferEntryBounded(f));
-      yield { id, buffer };
+      // Yield a per-entry error marker instead of throwing: a single
+      // undecryptable/corrupt attachment must not abort restoring the rest.
+      try {
+        const buffer = decryptEntry(key, await bufferEntryBounded(f));
+        yield { id, buffer };
+      } catch (err) {
+        yield { id, buffer: Buffer.alloc(0), error: err instanceof Error ? err.message : String(err) };
+      }
     }
   }
 
