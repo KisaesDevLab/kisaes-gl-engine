@@ -3,7 +3,12 @@
 // Free for small businesses; see LICENSE for terms.
 
 import nodemailer from 'nodemailer';
-import { getSmtpSettings } from './admin.service.js';
+import { getSmtpSettings, getBranding } from './admin.service.js';
+
+/** White-label app name for email subjects/bodies (falls back to the default). */
+async function brandName(): Promise<string> {
+  try { return (await getBranding()).appName; } catch { return 'Vibe MyBooks'; }
+}
 
 /** Escape HTML special characters to prevent XSS in email templates */
 function escapeHtml(text: string): string {
@@ -56,19 +61,20 @@ export async function isConfigured(): Promise<boolean> {
 
 export async function sendPasswordResetEmail(email: string, resetToken: string, appUrl?: string): Promise<void> {
   const { from, transport } = await createTransport();
+  const name = await brandName();
   const baseUrl = appUrl || process.env['CORS_ORIGIN'] || 'http://localhost:5173';
   const resetLink = `${baseUrl}/reset-password?token=${resetToken}`;
 
   await transport.sendMail({
     from,
     to: email,
-    subject: 'Vibe MyBooks — Password Reset',
-    text: `You requested a password reset for your Vibe MyBooks account.\n\nClick the link below to set a new password:\n${resetLink}\n\nThis link expires in 1 hour.\n\nIf you didn't request this, you can safely ignore this email.`,
+    subject: `${name} — Password Reset`,
+    text: `You requested a password reset for your ${name} account.\n\nClick the link below to set a new password:\n${resetLink}\n\nThis link expires in 1 hour.\n\nIf you didn't request this, you can safely ignore this email.`,
     html: `
       <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:480px;margin:0 auto;padding:20px">
         <h2 style="color:#111827;margin-bottom:16px">Password Reset</h2>
         <p style="color:#374151;font-size:14px;line-height:1.5">
-          You requested a password reset for your Vibe MyBooks account.
+          You requested a password reset for your ${escapeHtml(name)} account.
         </p>
         <a href="${resetLink}" style="display:inline-block;margin:20px 0;padding:12px 24px;background:#2563EB;color:#fff;text-decoration:none;border-radius:8px;font-size:14px;font-weight:600">
           Reset Password
@@ -83,19 +89,20 @@ export async function sendPasswordResetEmail(email: string, resetToken: string, 
 
 export async function sendInviteEmail(email: string, inviterName: string, tenantName: string, temporaryPassword: string, appUrl?: string): Promise<void> {
   const { from, transport } = await createTransport();
+  const name = await brandName();
   const baseUrl = appUrl || process.env['CORS_ORIGIN'] || 'http://localhost:5173';
   const loginLink = `${baseUrl}/login`;
 
   await transport.sendMail({
     from,
     to: email,
-    subject: `Vibe MyBooks — You've been invited to ${safeSubjectSegment(tenantName)}`,
-    text: `${inviterName} has invited you to access "${tenantName}" on Vibe MyBooks.\n\nYour temporary login credentials:\nEmail: ${email}\nPassword: ${temporaryPassword}\n\nLog in at: ${loginLink}\n\nPlease change your password after your first login.`,
+    subject: `${name} — You've been invited to ${safeSubjectSegment(tenantName)}`,
+    text: `${inviterName} has invited you to access "${tenantName}" on ${name}.\n\nYour temporary login credentials:\nEmail: ${email}\nPassword: ${temporaryPassword}\n\nLog in at: ${loginLink}\n\nPlease change your password after your first login.`,
     html: `
       <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:480px;margin:0 auto;padding:20px">
         <h2 style="color:#111827;margin-bottom:16px">You've Been Invited</h2>
         <p style="color:#374151;font-size:14px;line-height:1.5">
-          ${escapeHtml(inviterName)} has invited you to access <strong>${escapeHtml(tenantName)}</strong> on Vibe MyBooks.
+          ${escapeHtml(inviterName)} has invited you to access <strong>${escapeHtml(tenantName)}</strong> on ${escapeHtml(name)}.
         </p>
         <div style="margin:20px 0;padding:16px;background:#F3F4F6;border-radius:8px">
           <p style="margin:0 0 8px;font-size:13px;color:#6B7280">Your temporary credentials:</p>
@@ -115,18 +122,19 @@ export async function sendInviteEmail(email: string, inviterName: string, tenant
 
 export async function sendAccessGrantedEmail(email: string, tenantName: string, appUrl?: string): Promise<void> {
   const { from, transport } = await createTransport();
+  const name = await brandName();
   const baseUrl = appUrl || process.env['CORS_ORIGIN'] || 'http://localhost:5173';
 
   await transport.sendMail({
     from,
     to: email,
-    subject: `Vibe MyBooks — Access granted to ${safeSubjectSegment(tenantName)}`,
-    text: `You've been granted access to "${tenantName}" on Vibe MyBooks.\n\nLog in with your existing credentials at: ${baseUrl}/login\n\nYou can switch to this company from the company switcher in the sidebar.`,
+    subject: `${name} — Access granted to ${safeSubjectSegment(tenantName)}`,
+    text: `You've been granted access to "${tenantName}" on ${name}.\n\nLog in with your existing credentials at: ${baseUrl}/login\n\nYou can switch to this company from the company switcher in the sidebar.`,
     html: `
       <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:480px;margin:0 auto;padding:20px">
         <h2 style="color:#111827;margin-bottom:16px">Access Granted</h2>
         <p style="color:#374151;font-size:14px;line-height:1.5">
-          You've been granted access to <strong>${escapeHtml(tenantName)}</strong> on Vibe MyBooks.
+          You've been granted access to <strong>${escapeHtml(tenantName)}</strong> on ${escapeHtml(name)}.
         </p>
         <p style="color:#374151;font-size:14px;line-height:1.5">
           Log in with your existing credentials. You can switch to this company from the company switcher in the sidebar.

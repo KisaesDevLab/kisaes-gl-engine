@@ -107,9 +107,13 @@ export async function generateAndSendCode(userId: string, method: 'email' | 'sms
   if (method === 'email') {
     destination = user.email;
     try {
+      const brand = await (async () => {
+        try { const { getBranding } = await import('./admin.service.js'); return (await getBranding()).appName; }
+        catch { return 'Vibe MyBooks'; }
+      })();
       await systemEmail.sendActionEmail({
         to: user.email,
-        subject: 'Your Vibe MyBooks verification code',
+        subject: `Your ${brand} verification code`,
         bodyText: `Your verification code is: ${code}\n\nThis code expires in ${config.codeExpirySeconds / 60} minutes.`,
       });
     } catch {
@@ -124,7 +128,11 @@ export async function generateAndSendCode(userId: string, method: 'email' | 'sms
       const { getRawConfig } = await import('./tfa-config.service.js');
       const rawConfig = await getRawConfig();
       const provider = getSmsProvider(rawConfig);
-      const result = await provider.sendCode(destination, code, 'Vibe MyBooks');
+      const smsBrand = await (async () => {
+        try { const { getBranding } = await import('./admin.service.js'); return (await getBranding()).appName; }
+        catch { return 'Vibe MyBooks'; }
+      })();
+      const result = await provider.sendCode(destination, code, smsBrand);
       if (!result.success) throw new Error(result.error || 'SMS send failed');
     } catch (err: any) {
       throw AppError.internal(`Failed to send SMS: ${err.message}`);

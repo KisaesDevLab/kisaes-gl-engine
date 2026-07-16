@@ -77,13 +77,17 @@ export async function sendMagicLink(email: string, ipAddress: string, userAgent:
   // share the same default (http://localhost:5173) for single-origin
   // standalone installs, so existing customers see no change.
   const link = `${env.PUBLIC_URL.replace(/\/$/, '')}/auth/magic?token=${token}`;
+  const name = await (async () => {
+    try { const { getBranding } = await import('./admin.service.js'); return (await getBranding()).appName; }
+    catch { return 'Vibe MyBooks'; }
+  })();
 
   try {
     await systemEmail.sendActionEmail({
       to: user.email,
-      subject: 'Log in to Vibe MyBooks',
+      subject: `Log in to ${name}`,
       bodyText: `Click the button below to log in.\n\nThis link expires in ${expiryMinutes} minutes and can only be used once.\n\nIf you didn't request this, ignore this email.`,
-      cta: { label: 'Log In to Vibe MyBooks', url: link },
+      cta: { label: `Log In to ${name}`, url: link },
     });
   } catch (err) {
     // Don't reveal user existence on email failure, but do log so an

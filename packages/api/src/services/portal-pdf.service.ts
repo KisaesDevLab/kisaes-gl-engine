@@ -813,7 +813,7 @@ export function reportHtmlTemplate(d: ReportPdfData): string {
   const footerText =
     typeof theme['footerText'] === 'string' && theme['footerText']
       ? String(theme['footerText'])
-      : 'Powered by Vibe MyBooks';
+      : 'Powered by VibeMyFirm';
   const logoUrl =
     typeof theme['brandingLogoUrl'] === 'string' && theme['brandingLogoUrl']
       ? String(theme['brandingLogoUrl'])
