@@ -18,6 +18,8 @@ import {
   type PackageAttachment,
 } from './vmx-package.js';
 
+import { encodeSystemDump } from './system-dump-codec.js';
+
 const PASS = 'correct horse battery staple 42';
 // Small budget so modest fixtures force multiple parts AND segmentation.
 const PART_MAX = 1024 * 1024; // 1 MiB (writer-enforced minimum)
@@ -285,5 +287,54 @@ describe('multi-part vmx: failure detection (nothing silently lost)', () => {
     expect(last.hasSeries).toBe(true);
     expect((last.series as { partCount: number }).partCount).toBe(files.length);
     await expect(openAndVerifyPart(files[0]!.path, 'nope')).rejects.toThrow(/passphrase|corrupted/i);
+  });
+});
+
+describe('multi-part vmx: NDJSON data payload (large-DB safe)', () => {
+  it('round-trips an NDJSON dump whose payload is SEGMENTED across parts', async () => {
+    // ~2 MiB dump vs a 1 MiB part budget forces the data payload to segment
+    // across parts — exercising reassembly AND line-parsing across segment
+    // boundaries (a line can straddle two segments).
+    const transactions = Array.from({ length: 10_000 }, (_, i) => ({
+      id: `tx-${i}`, memo: `payment ${i}\nwith newline ${'x'.repeat(120)}`, total: `${i}.00`,
+    }));
+    const content = {
+      metadata: { backup_type: 'system', format: 'kis-books-system-v2' },
+      tenants: [{ id: 't1', name: 'Firm\nName' }],
+      users: [{ id: 'u1', email: 'a@b.com' }],
+      global_tables: { coa_templates: [{ id: 'c1', slug: 'retail' }] },
+      tenant_data: { t1: { transactions } },
+    };
+    const result = await writeTenantPackageMulti({
+      outDir: dir, baseName: 'ndjson-multi', passphrase: PASS,
+      data: null, dataBuffer: encodeSystemDump(content),
+      attachments: gen([att('a1', 300 * 1024)]),
+      partMaxBytes: PART_MAX,
+    });
+    expect(result.partCount).toBeGreaterThan(1);
+
+    const pkg = await readTenantPackageMulti(result.files.map((f) => f.path), PASS);
+    const d = pkg.data as any;
+    expect(d.metadata).toEqual(content.metadata);
+    expect(d.tenants).toEqual(content.tenants);
+    expect(d.global_tables.coa_templates).toEqual(content.global_tables.coa_templates);
+    expect(d.tenant_data.t1.transactions).toHaveLength(10_000);
+    expect(d.tenant_data.t1.transactions[9_999].id).toBe('tx-9999');
+    expect(d.tenant_data.t1.transactions[9_999].memo).toContain('with newline');
+  });
+
+  it('a 1-part NDJSON backup reads back via the classic single-file reader', async () => {
+    const content = {
+      metadata: { format: 'kis-books-system-v2' },
+      tenant_data: { t1: { budgets: [{ id: 'b1', name: 'Ops' }] } },
+    };
+    const result = await writeTenantPackageMulti({
+      outDir: dir, baseName: 'ndjson-single', passphrase: PASS,
+      data: null, dataBuffer: encodeSystemDump(content),
+      attachments: gen([]), partMaxBytes: 64 * 1024 * 1024,
+    });
+    expect(result.partCount).toBe(1);
+    const pkg = await readTenantPackage(result.files[0]!.path, PASS);
+    expect((pkg.data as any).tenant_data.t1.budgets).toEqual([{ id: 'b1', name: 'Ops' }]);
   });
 });

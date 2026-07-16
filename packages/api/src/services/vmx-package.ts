@@ -19,6 +19,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import archiver from 'archiver';
 import * as unzipper from 'unzipper';
+import { isNdjsonDump, decodeSystemDump } from './system-dump-codec.js';
 import {
   PACKAGE_SALT_LENGTH,
   derivePackageKey,
@@ -210,7 +211,7 @@ export async function readTenantPackage(source: string | Buffer, passphrase: str
   if (!saltHex) throw new Error('Package manifest is missing its encryption salt');
   const key = derivePackageKey(passphrase, Buffer.from(saltHex, 'hex'));
 
-  const dataFile = find('data.json.enc');
+  const dataFile = find('data.ndjson.enc') ?? find('data.json.enc');
   if (!dataFile) throw new Error('Package is missing its data payload');
   let dataBuf: Buffer;
   try {
@@ -219,7 +220,9 @@ export async function readTenantPackage(source: string | Buffer, passphrase: str
     if (err instanceof PackageEntryTooLargeError) throw err;
     throw new Error('Incorrect passphrase or corrupted package');
   }
-  const data = JSON.parse(dataBuf.toString('utf8'));
+  // NDJSON dumps parse line-by-line from the buffer (large-DB safe); a plain
+  // .toString() on a >512 MiB buffer throws the same string-length error.
+  const data = isNdjsonDump(dataBuf) ? decodeSystemDump(dataBuf) : JSON.parse(dataBuf.toString('utf8'));
 
   const attachmentEntries = directory.files.filter(
     (f) => f.path.startsWith('attachments/') && f.path.endsWith('.enc'),
@@ -348,6 +351,12 @@ export async function writeTenantPackageMulti(opts: {
   baseName: string;
   passphrase: string;
   data: unknown;
+  /** Pre-serialized DB payload bytes. When set, stored VERBATIM as the data
+   *  entry (NDJSON, see system-dump-codec) instead of `JSON.stringify(data)` —
+   *  the only way to write a dump larger than V8's 512 MiB string cap. `data`
+   *  is then ignored for the payload. Signalled to the reader via
+   *  `manifest.dataFormat = 'ndjson'`. */
+  dataBuffer?: Buffer;
   attachments: AsyncIterable<PackageAttachment>;
   partMaxBytes: number;
   manifestMeta?: Record<string, unknown>;
@@ -355,7 +364,12 @@ export async function writeTenantPackageMulti(opts: {
    *  so audit logs and the on-disk series agree. */
   backupId?: string;
 }): Promise<WriteMultiResult> {
-  const { outDir, baseName, passphrase, data, attachments, manifestMeta = {} } = opts;
+  const { outDir, baseName, passphrase, data, attachments } = opts;
+  // Stamp the data format into every part's manifest so the reader knows to
+  // NDJSON-decode line-by-line instead of JSON.parse(buf.toString()).
+  const manifestMeta = opts.dataBuffer
+    ? { ...(opts.manifestMeta ?? {}), dataFormat: 'ndjson' }
+    : (opts.manifestMeta ?? {});
   const partMaxBytes = Math.floor(opts.partMaxBytes);
   if (!Number.isFinite(partMaxBytes) || partMaxBytes < 1024 * 1024) {
     throw new Error('partMaxBytes must be at least 1 MiB');
@@ -455,7 +469,11 @@ export async function writeTenantPackageMulti(opts: {
     }
   }
 
-  await appendPayload('data', 'data.json.enc', Buffer.from(JSON.stringify(data)));
+  await appendPayload(
+    'data',
+    opts.dataBuffer ? 'data.ndjson.enc' : 'data.json.enc',
+    opts.dataBuffer ?? Buffer.from(JSON.stringify(data)),
+  );
 
   for await (const att of attachments) {
     await appendPayload(`attachments/${att.id}`, `attachments/${att.id}.enc`, att.buffer);
@@ -715,7 +733,7 @@ export async function readTenantPackageMulti(paths: string[], passphrase: string
   let wholeData: { part: OpenedPartInternal; name: string } | null = null;
   for (const p of orderedParts) {
     for (const e of p.inventory) {
-      if (e.name === 'data.json.enc') wholeData = { part: p, name: e.name };
+      if (e.name === 'data.json.enc' || e.name === 'data.ndjson.enc') wholeData = { part: p, name: e.name };
       const seg = parseSegName(e.name);
       if (seg && seg.base === 'data') dataChunks.push({ k: seg.k, n: seg.n, part: p, name: e.name });
     }
@@ -735,7 +753,9 @@ export async function readTenantPackageMulti(paths: string[], passphrase: string
   } else {
     throw new Error('Backup is missing its data payload');
   }
-  const data = JSON.parse(dataBuf.toString('utf8'));
+  // NDJSON dumps (large-DB safe) are parsed line-by-line from the buffer;
+  // toString() on a >512 MiB buffer would itself throw the string-length error.
+  const data = isNdjsonDump(dataBuf) ? decodeSystemDump(dataBuf) : JSON.parse(dataBuf.toString('utf8'));
 
   // Attachment iteration plan: whole entries yield directly; segmented ones
   // reassemble (segments are written contiguously, so at most one attachment

@@ -21,6 +21,7 @@ import type { StorageProvider } from './storage/storage-provider.interface.js';
 import { tenantStorageKey } from './storage/storage-keys.js';
 import { getProviderForTenant } from './storage/storage-provider.factory.js';
 import { writeTenantPackage, writeTenantPackageMulti, MAX_PACKAGE_ENTRY_BYTES, type PackageAttachment } from './vmx-package.js';
+import { encodeSystemDump } from './system-dump-codec.js';
 import { getSystemBackupTablePlan } from './backup-table-plan.js';
 import { FILE_EXPORT_REGISTRY, encodeFileEntryId } from './backup-file-registry.js';
 
@@ -592,7 +593,10 @@ export async function createSystemBackup(
   // blob into one JSON string. Files stream one at a time, capped by total
   // bytes; skips are recorded, never silent.
   if (opts?.includeAttachments) {
-    metadata.checksum = generateChecksum(Buffer.from(JSON.stringify(contentObj)));
+    // Serialize the DB dump as NDJSON (row-per-line) so a multi-year firm's
+    // dump can exceed V8's 512 MiB single-string cap without a RangeError.
+    const dumpBuffer = encodeSystemDump({ ...contentObj, metadata });
+    metadata.checksum = generateChecksum(dumpBuffer);
     const baseName = `kis-books-backup-${timestamp}`;
 
     const counters: BundleFileCounters = { skipped: [], bundledBytes: 0, bundledCount: 0 };
@@ -614,7 +618,9 @@ export async function createSystemBackup(
       baseName,
       passphrase,
       backupId,
-      data: { ...contentObj, metadata },
+      // Payload comes from dataBuffer (NDJSON); `data` is unused for it.
+      data: null,
+      dataBuffer: dumpBuffer,
       attachments: fileSource,
       partMaxBytes,
       manifestMeta: {
@@ -670,12 +676,10 @@ export async function createSystemBackup(
     };
   }
 
-  const contentBuffer = Buffer.from(JSON.stringify(contentObj));
-  metadata.checksum = generateChecksum(contentBuffer);
-  const finalContent = Buffer.from(JSON.stringify({
-    ...contentObj,
-    metadata,
-  }));
+  // NDJSON dump (row-per-line) so a large DB-only backup never hits V8's
+  // 512 MiB single-string cap on write or on restore-read.
+  const finalContent = encodeSystemDump({ ...contentObj, metadata });
+  metadata.checksum = generateChecksum(finalContent);
 
   const encrypted = encryptWithPassphrase(finalContent, passphrase);
 
