@@ -88,8 +88,9 @@ describe('DR backup → restore end-to-end', () => {
     fs.rmSync(path.join(uploadDir, storageKey));
     expect((await db.execute(sql`SELECT 1 FROM accounts WHERE id = ${accountId}`)).rows).toHaveLength(0);
 
-    // 5) Restore through the real read path (rows + files).
-    const report = await restoreSvc.restoreDatabaseSections(db, sections);
+    // 5) Restore through the real read path (rows + files). Runs inside a
+    // transaction like production, so restoreTableRows' per-row savepoints apply.
+    const report = await db.transaction((tx) => restoreSvc.restoreDatabaseSections(tx, sections));
     expect(report.totals.failed).toBe(0);
     const fileReport = await restoreSvc.writeBackBundleFiles(sections, () => pkg.attachments());
 

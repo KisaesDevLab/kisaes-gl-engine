@@ -45,6 +45,17 @@ export interface RestoreReport {
 /**
  * Insert rows into one table. Column list comes from each row; conflicts
  * skip (restore never overwrites); failures are RETURNED, not swallowed.
+ *
+ * MUST run inside a transaction (restoreDatabaseSections guarantees this). Each
+ * row is inserted inside its own SAVEPOINT: a failed INSERT — an FK parent not
+ * yet restored *this pass* (normal and expected in the multi-pass fixpoint), a
+ * constraint violation, a value the current schema rejects — is rolled back to
+ * the savepoint so it poisons ONLY that row. Without the savepoint the first
+ * failure aborts the whole restore transaction and every subsequent statement
+ * dies with 25P02 "current transaction is aborted, commands ignored until end
+ * of transaction block" — turning one bad row into a flood of misleading errors
+ * and committing nothing. (This regressed when the DB restore was wrapped in a
+ * single transaction for atomic rollback; savepoints reconcile the two.)
  */
 export async function restoreTableRows(
   dbi: Db,
@@ -66,15 +77,24 @@ export async function restoreTableRows(
       return sql`${String(v)}`;
     });
 
+    await dbi.execute(sql.raw('SAVEPOINT restore_row'));
     try {
       const colList = sql.join(colNames, sql`, `);
       const valList = sql.join(values, sql`, `);
       const res = await dbi.execute(
         sql`INSERT INTO ${sql.identifier(tableName)} (${colList}) VALUES (${valList}) ON CONFLICT DO NOTHING`,
       );
+      await dbi.execute(sql.raw('RELEASE SAVEPOINT restore_row'));
       if (((res as { rowCount?: number | null }).rowCount ?? 0) > 0) out.inserted += 1;
       else out.conflicts += 1;
     } catch (err) {
+      // Undo the failed statement back to the savepoint so the transaction
+      // stays usable, then release the now-empty savepoint (reusing the fixed
+      // name each row — no savepoint accumulation).
+      try {
+        await dbi.execute(sql.raw('ROLLBACK TO SAVEPOINT restore_row'));
+        await dbi.execute(sql.raw('RELEASE SAVEPOINT restore_row'));
+      } catch { /* connection-level failure — the outer tx will surface it */ }
       out.failed.push({ row, error: err instanceof Error ? err.message : String(err) });
     }
   }
@@ -170,6 +190,10 @@ export function mergeBundleSections(content: {
  * Restore a merged `table → rows[]` map: topo-order by live FK metadata,
  * then multi-pass — each pass re-attempts only the rows that failed the
  * previous one, stopping at fixpoint or MAX_RESTORE_PASSES.
+ *
+ * MUST be called inside a transaction (both production call sites wrap it in
+ * db.transaction for atomic rollback). restoreTableRows relies on per-row
+ * SAVEPOINTs, which are only valid inside a transaction block.
  */
 export async function restoreDatabaseSections(
   dbi: Db,

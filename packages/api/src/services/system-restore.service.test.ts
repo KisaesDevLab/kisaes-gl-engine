@@ -15,6 +15,12 @@ import {
 } from './system-restore.service.js';
 import { encrypt } from '../utils/encryption.js';
 
+// Production always runs the restore inside db.transaction (setup.routes), which
+// is what makes restoreTableRows' per-row SAVEPOINTs valid. Mirror that here so
+// the tests exercise the real transaction/savepoint path.
+const restoreInTx = (sections: Record<string, Record<string, unknown>[]>) =>
+  db.transaction((tx) => restoreDatabaseSections(tx, sections));
+
 describe('topoOrderTables', () => {
   it('orders parents before children (chain)', () => {
     const { order, cyclic } = topoOrderTables(
@@ -99,7 +105,7 @@ describe('restoreDatabaseSections (integration)', () => {
 
   it('restores FK-dependent tables regardless of map order and reports stats', async () => {
     // users depends on tenants via FK; feed users FIRST to prove ordering.
-    const report = await restoreDatabaseSections(db, {
+    const report = await restoreInTx({
       users: [
         {
           id: userId,
@@ -120,7 +126,7 @@ describe('restoreDatabaseSections (integration)', () => {
   });
 
   it('reports (not swallows) rows that keep failing, without blocking others', async () => {
-    const report = await restoreDatabaseSections(db, {
+    const report = await restoreInTx({
       tenants: [{ id: tenantId, name: 'Restore Test', slug: `restore-test-${tenantId.slice(0, 8)}` }],
       users: [
         {
@@ -139,6 +145,31 @@ describe('restoreDatabaseSections (integration)', () => {
     expect(report.totals.failed).toBe(1);
   });
 
+  it('a failing row does not poison later rows in the transaction (no 25P02 cascade)', async () => {
+    const badUser = crypto.randomUUID();
+    const goodUser = crypto.randomUUID();
+    try {
+      const report = await restoreInTx({
+        tenants: [{ id: tenantId, name: 'Restore Test', slug: `restore-test-${tenantId.slice(0, 8)}` }],
+        users: [
+          // First row FAILS (dangling tenant FK). Without a per-row savepoint
+          // this aborts the transaction and the NEXT row dies with 25P02.
+          { id: badUser, tenant_id: crypto.randomUUID(), email: `bad-${badUser}@example.com`, password_hash: 'x'.repeat(20) },
+          // Second row is valid (references the restored tenant) and MUST still
+          // insert — proving the earlier failure did not cascade.
+          { id: goodUser, tenant_id: tenantId, email: `good-${goodUser}@example.com`, password_hash: 'x'.repeat(20) },
+        ],
+      });
+
+      expect(report.perTable['users']!.failed).toBe(1);
+      expect(report.perTable['users']!.inserted).toBe(1);
+      const check = await db.execute(sql`SELECT id FROM users WHERE id = ${goodUser}`);
+      expect(check.rows).toHaveLength(1);
+    } finally {
+      await db.execute(sql`DELETE FROM users WHERE id IN (${badUser}, ${goodUser})`);
+    }
+  });
+
   it('applies a v1 bundle end-to-end: exported SMTP settings reach system_settings', async () => {
     const v1Content = {
       system_config: {
@@ -148,7 +179,7 @@ describe('restoreDatabaseSections (integration)', () => {
         ],
       },
     };
-    const report = await restoreDatabaseSections(db, mergeBundleSections(v1Content));
+    const report = await restoreInTx(mergeBundleSections(v1Content));
     expect(report.totals.failed).toBe(0);
 
     const host = await db.execute(sql`SELECT value FROM system_settings WHERE key = 'smtp_host'`);
@@ -160,7 +191,7 @@ describe('restoreDatabaseSections (integration)', () => {
 
   it('checklist probes credential decryptability and flags a key mismatch', async () => {
     // Decryptable with the current PLAID_ENCRYPTION_KEY → ok.
-    await restoreDatabaseSections(db, {
+    await restoreInTx({
       plaid_config: [
         {
           id: crypto.randomUUID(),
