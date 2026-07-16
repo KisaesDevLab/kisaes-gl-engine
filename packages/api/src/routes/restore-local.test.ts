@@ -78,13 +78,41 @@ describe('scanLocalBundles', () => {
 });
 
 describe('assertPathsWithinRoots (anti-traversal)', () => {
-  it('accepts paths inside the allowed roots', () => {
-    expect(() => mod.assertPathsWithinRoots([path.join(backups, '_system', 'a.vmb')])).not.toThrow();
-    expect(() => mod.assertPathsWithinRoots([path.join(drive, '_system', 'b.vmx')])).not.toThrow();
+  it('accepts real paths inside the allowed roots', () => {
+    const a = put(backups, '_system', 'guard-a.vmb');
+    const b = put(drive, '_system', 'guard-b.vmx');
+    expect(() => mod.assertPathsWithinRoots([a])).not.toThrow();
+    expect(() => mod.assertPathsWithinRoots([b])).not.toThrow();
   });
 
   it('rejects paths outside the roots (traversal / arbitrary files)', () => {
-    expect(() => mod.assertPathsWithinRoots(['/etc/passwd'])).toThrow(/outside the allowed/i);
-    expect(() => mod.assertPathsWithinRoots([path.join(backups, '..', '..', 'etc', 'passwd')])).toThrow(/outside the allowed/i);
+    expect(() => mod.assertPathsWithinRoots(['/etc/passwd'])).toThrow(/outside the allowed|does not exist/i);
+    expect(() => mod.assertPathsWithinRoots([path.join(backups, '..', '..', 'etc', 'passwd')])).toThrow(/outside the allowed|does not exist/i);
+  });
+
+  it('rejects a symlink inside a root that TARGETS a file outside it', () => {
+    const link = path.join(backups, '_system', 'evil.vmb');
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    try { fs.symlinkSync('/etc/hostname', link); } catch { return; } // skip if symlink unsupported
+    // realpath resolves the symlink target (/etc/hostname) → outside roots.
+    expect(() => mod.assertPathsWithinRoots([link])).toThrow(/outside the allowed/i);
+    // …and the scan skips symlinks entirely, so it never appears as a bundle.
+    const found = mod.scanLocalBundles('backups', backups);
+    expect(found.some((b) => b.label === 'evil.vmb')).toBe(false);
+    fs.unlinkSync(link);
+  });
+});
+
+describe('assertSafeEndpoint (SSRF guard)', () => {
+  it('accepts a normal https B2/S3 endpoint', () => {
+    expect(() => mod.assertSafeEndpoint('https://s3.us-west-004.backblazeb2.com')).not.toThrow();
+  });
+  it('rejects http and internal / metadata / private targets', () => {
+    expect(() => mod.assertSafeEndpoint('http://s3.us-west-004.backblazeb2.com')).toThrow(/https/i);
+    expect(() => mod.assertSafeEndpoint('https://localhost:9000')).toThrow(/not allowed/i);
+    expect(() => mod.assertSafeEndpoint('https://169.254.169.254/latest/meta-data')).toThrow(/not allowed/i);
+    expect(() => mod.assertSafeEndpoint('https://10.0.0.5')).toThrow(/not allowed/i);
+    expect(() => mod.assertSafeEndpoint('https://192.168.1.10:9000')).toThrow(/not allowed/i);
+    expect(() => mod.assertSafeEndpoint('not-a-url')).toThrow(/valid https/i);
   });
 });

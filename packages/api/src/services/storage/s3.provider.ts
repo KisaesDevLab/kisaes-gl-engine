@@ -78,12 +78,16 @@ export class S3Provider implements StorageProvider {
   }
 
   /**
-   * List objects under `subPrefix` (relative to this provider's configured
-   * prefix). Returns keys RELATIVE to the provider prefix so they round-trip
-   * back through download(). Paginates; capped to avoid unbounded responses.
+   * List objects under `subPrefix`, relative to this provider's configured
+   * prefix. Returns keys RELATIVE to the provider prefix so they round-trip
+   * back through download(). Trailing slashes are normalized so a prefix of
+   * 'backups/' does not produce a no-match 'backups//' query. Paginates fully
+   * up to `maxKeys`.
    */
   async listObjects(subPrefix = '', maxKeys = 1000): Promise<Array<{ key: string; size: number; lastModified: string | null }>> {
-    const base = this.fullKey(subPrefix);
+    const p = this.prefix.replace(/\/+$/, ''); // provider prefix, no trailing slash
+    const sub = subPrefix.replace(/^\/+|\/+$/g, '');
+    const base = [p, sub].filter(Boolean).join('/');
     const out: Array<{ key: string; size: number; lastModified: string | null }> = [];
     let token: string | undefined;
     do {
@@ -96,11 +100,41 @@ export class S3Provider implements StorageProvider {
       for (const o of res.Contents ?? []) {
         if (!o.Key) continue;
         // Strip the provider prefix so the returned key is what download() expects.
-        const rel = this.prefix && o.Key.startsWith(`${this.prefix}/`) ? o.Key.slice(this.prefix.length + 1) : o.Key;
+        const rel = p && o.Key.startsWith(`${p}/`) ? o.Key.slice(p.length + 1) : o.Key;
         out.push({ key: rel, size: o.Size ?? 0, lastModified: o.LastModified ? o.LastModified.toISOString() : null });
       }
       token = res.IsTruncated ? res.NextContinuationToken : undefined;
     } while (token && out.length < maxKeys);
     return out;
+  }
+
+  /** Content-Length of an object, or null if unknown. */
+  async headSize(key: string): Promise<number | null> {
+    const res = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: this.fullKey(key) }));
+    return typeof res.ContentLength === 'number' ? res.ContentLength : null;
+  }
+
+  /**
+   * STREAM an object to a local file, aborting if it exceeds `maxBytes`.
+   * Unlike download() this never buffers the whole object in the heap — a
+   * multi-GB restore object can't OOM the process.
+   */
+  async downloadToFile(key: string, destPath: string, maxBytes: number): Promise<number> {
+    const { createWriteStream } = await import('node:fs');
+    const { pipeline } = await import('node:stream/promises');
+    const { Transform } = await import('node:stream');
+    const res = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: this.fullKey(key) }));
+    const body = res.Body as unknown as NodeJS.ReadableStream | undefined;
+    if (!body) throw new Error('Empty response from S3');
+    let total = 0;
+    const cap = new Transform({
+      transform(chunk, _enc, cb) {
+        total += chunk.length;
+        if (total > maxBytes) { cb(new Error(`Object ${key} exceeds the ${maxBytes}-byte restore limit`)); return; }
+        cb(null, chunk);
+      },
+    });
+    await pipeline(body, cap, createWriteStream(destPath));
+    return total;
   }
 }

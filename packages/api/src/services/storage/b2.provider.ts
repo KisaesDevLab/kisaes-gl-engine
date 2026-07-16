@@ -105,4 +105,12 @@ export class B2Provider implements StorageProvider {
   listObjects(subPrefix = '', maxKeys = 1000): Promise<Array<{ key: string; size: number; lastModified: string | null }>> {
     return this.inner.listObjects(subPrefix, maxKeys);
   }
+
+  headSize(key: string): Promise<number | null> {
+    return this.inner.headSize(key);
+  }
+
+  downloadToFile(key: string, destPath: string, maxBytes: number): Promise<number> {
+    return this.inner.downloadToFile(key, destPath, maxBytes);
+  }
 }

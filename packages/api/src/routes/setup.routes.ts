@@ -570,6 +570,15 @@ function restoreRunView(run: RestoreRun) {
   };
 }
 
+/** The currently-running restore, or null. Lets callers avoid expensive
+ *  prep (downloading a bundle) when a restore is already in flight, and lets
+ *  them re-attach to it rather than silently restore a DIFFERENT bundle. */
+function peekActiveRestoreRun(): RestoreRun | null {
+  if (!activeRestoreRunId) return null;
+  const active = restoreRuns.get(activeRestoreRunId);
+  return active && active.status === 'running' ? active : null;
+}
+
 function startRestoreRun(
   readContent: ContentSource,
   opts: { onSuccess?: () => void; onSettle?: () => void } = {},
@@ -1230,7 +1239,11 @@ export function scanLocalBundles(rootKey: string, rootDir: string): LocalBundle[
     for (const entry of entries) {
       const full = path.join(dir, entry);
       let st: fs.Stats;
-      try { st = fs.statSync(full); } catch { continue; }
+      // lstat (not stat): a symlink under a backup root must NOT be followed —
+      // it could point at an arbitrary host file that would then be fed into
+      // the restore/decrypt pipeline.
+      try { st = fs.lstatSync(full); } catch { continue; }
+      if (st.isSymbolicLink()) continue;
       if (st.isDirectory()) { walk(full); continue; }
       const mp = entry.match(MULTIPART_RE);
       if (mp) {
@@ -1268,11 +1281,15 @@ export function scanLocalBundles(rootKey: string, rootDir: string): LocalBundle[
 }
 
 /** Validate every path resolves inside one of the allowed roots (anti-traversal).
- *  Exported for tests. */
+ *  Uses realpath so a symlink whose TARGET escapes a root is rejected, not
+ *  just a lexical `..`. Exported for tests. */
 export function assertPathsWithinRoots(paths: string[]): void {
-  const roots = Object.values(RESTORE_LOCAL_ROOTS).map((r) => path.resolve(r) + path.sep);
+  const roots = Object.values(RESTORE_LOCAL_ROOTS)
+    .map((r) => { try { return fs.realpathSync(r) + path.sep; } catch { return path.resolve(r) + path.sep; } });
   for (const p of paths) {
-    if (!roots.some((r) => path.resolve(p).startsWith(r))) {
+    let real: string;
+    try { real = fs.realpathSync(p); } catch { throw new Error('Restore path does not exist'); }
+    if (!roots.some((r) => (real + path.sep).startsWith(r))) {
       throw new Error('Restore path is outside the allowed backup directories');
     }
   }
@@ -1324,6 +1341,9 @@ setupRouter.post('/restore/local/execute', async (req, res) => {
   }
   try { assertPathsWithinRoots(bundle.files); }
   catch (err) { res.status(400).json({ error: { message: err instanceof Error ? err.message : 'Invalid path' } }); return; }
+  // Re-attach to an in-flight restore rather than restore a DIFFERENT bundle.
+  const active = peekActiveRestoreRun();
+  if (active) { res.status(202).json(restoreRunView(active)); return; }
   const run = startRestoreRun(localContentSource(bundle.files, passphrase));
   res.status(202).json(restoreRunView(run));
 });
@@ -1340,6 +1360,26 @@ interface RemoteRestoreCreds {
   region?: string; prefix?: string;
 }
 
+// SSRF guard: these endpoints are pre-auth (first-run only) and connect to an
+// operator-supplied endpoint. Require https and reject obvious internal
+// targets (loopback, link-local/cloud-metadata, RFC-1918 literals) so a
+// network-reachable actor on an un-provisioned box can't probe internal
+// services. Full DNS-rebinding protection is out of scope for a trusted
+// first-run appliance; this blocks the easy cases.
+export function assertSafeEndpoint(endpoint: string): void {
+  let u: URL;
+  try { u = new URL(endpoint); } catch { throw new Error('endpoint must be a valid https URL'); }
+  if (u.protocol !== 'https:') throw new Error('endpoint must use https');
+  const host = u.hostname.toLowerCase();
+  const blockedExact = ['localhost', '0.0.0.0', '::1', '[::1]'];
+  if (blockedExact.includes(host)) throw new Error('endpoint host is not allowed');
+  // Literal IPs in private / loopback / link-local ranges.
+  if (/^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) ||
+      /^169\.254\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host)) {
+    throw new Error('endpoint host is not allowed');
+  }
+}
+
 function parseRemoteCreds(body: Record<string, unknown>): RemoteRestoreCreds {
   const provider = String(body['provider'] ?? 'b2');
   if (provider !== 'b2' && provider !== 's3') throw new Error('provider must be b2 or s3');
@@ -1350,6 +1390,7 @@ function parseRemoteCreds(body: Record<string, unknown>): RemoteRestoreCreds {
   if (!bucket || !endpoint || !keyId || !applicationKey) {
     throw new Error('bucket, endpoint, keyId, and applicationKey are required');
   }
+  assertSafeEndpoint(endpoint);
   return {
     provider, bucket, endpoint, keyId, applicationKey,
     region: body['region'] ? String(body['region']) : undefined,
@@ -1357,12 +1398,22 @@ function parseRemoteCreds(body: Record<string, unknown>): RemoteRestoreCreds {
   };
 }
 
+// The restore provider is built with NO prefix and operates on FULL object
+// keys — this sidesteps the double-slash prefix math entirely (list returns
+// full keys, download uses them verbatim). The operator's `prefix` is used
+// only to SCOPE the listing.
 async function buildRemoteProvider(c: RemoteRestoreCreds) {
-  // B2 is S3-compatible; a plain S3 endpoint works through the same wrapper.
+  if (c.provider === 's3') {
+    const { S3Provider } = await import('../services/storage/s3.provider.js');
+    return new S3Provider({
+      bucket: c.bucket, region: c.region, endpoint: c.endpoint,
+      accessKeyId: c.keyId, secretAccessKey: c.applicationKey, prefix: '',
+    });
+  }
   const { B2Provider } = await import('../services/storage/b2.provider.js');
   return new B2Provider({
     bucket: c.bucket, endpoint: c.endpoint, keyId: c.keyId,
-    applicationKey: c.applicationKey, region: c.region, prefix: c.prefix,
+    applicationKey: c.applicationKey, region: c.region, prefix: '',
   });
 }
 
@@ -1373,7 +1424,9 @@ setupRouter.post('/restore/remote/list', async (req, res) => {
 
   try {
     const provider = await buildRemoteProvider(creds);
-    const objects = await provider.listObjects('', 5000);
+    // Scope by the operator's prefix; list generously so a multipart bundle
+    // whose parts span a page boundary in a large bucket isn't truncated.
+    const objects = await provider.listObjects(creds.prefix ?? '', 100_000);
     const series = new Map<string, { keys: Map<number, { key: string; size: number }>; declared: number; modified: string | null }>();
     const bundles: Array<{ id: string; label: string; keys: string[]; partCount: number; size: number; modifiedAt: string | null }> = [];
     for (const o of objects) {
@@ -1421,7 +1474,14 @@ setupRouter.post('/restore/remote/execute', async (req, res) => {
   try { creds = parseRemoteCreds(req.body ?? {}); }
   catch (err) { res.status(400).json({ error: { message: err instanceof Error ? err.message : 'Invalid credentials' } }); return; }
 
-  // Download the part(s) to a temp stage dir, then restore from those files.
+  // Re-attach to an in-flight restore rather than download + restore a
+  // different bundle (and never do a wasted multi-GB download).
+  const active = peekActiveRestoreRun();
+  if (active) { res.status(202).json(restoreRunView(active)); return; }
+
+  // Download the part(s) to a temp stage dir — STREAMED with a per-object
+  // size cap so a huge object can't OOM the process — then restore.
+  const REMOTE_OBJECT_MAX = 4 * 1024 * 1024 * 1024; // 4 GB per part
   const dir = path.join(RESTORE_UPLOAD_DIR, `remote-${crypto.randomUUID()}`);
   try {
     fs.mkdirSync(dir, { recursive: true });
@@ -1429,9 +1489,8 @@ setupRouter.post('/restore/remote/execute', async (req, res) => {
     const localFiles: string[] = [];
     for (let i = 0; i < (keys as string[]).length; i++) {
       const key = (keys as string[])[i]!;
-      const buf = await provider.download(key);
       const dest = path.join(dir, `part${i + 1}.${key.endsWith('.vmb') ? 'vmb' : 'vmx'}`);
-      fs.writeFileSync(dest, buf);
+      await provider.downloadToFile(key, dest, REMOTE_OBJECT_MAX);
       localFiles.push(dest);
     }
     const run = startRestoreRun(
