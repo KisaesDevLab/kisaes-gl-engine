@@ -248,12 +248,25 @@ export async function resyncOwnedSequences(dbi: Db): Promise<void> {
         JOIN pg_attribute attr ON attr.attrelid = tab.oid AND attr.attnum = d.refobjsubid
         WHERE seq.relkind = 'S'
       LOOP
-        EXECUTE format(
-          'SELECT setval(%L, GREATEST(COALESCE((SELECT MAX(%I) FROM %I.%I), 0), 1), COALESCE((SELECT MAX(%I) FROM %I.%I), 0) > 0)',
-          quote_ident(r.seqschema) || '.' || quote_ident(r.seqname),
-          r.colname, r.tabschema, r.tabname,
-          r.colname, r.tabschema, r.tabname
-        );
+        -- Resync each sequence in its OWN subtransaction (the inner BEGIN …
+        -- EXCEPTION block). Bumping a sequence to its column's max is a
+        -- best-effort convenience so post-restore inserts don't collide with
+        -- restored ids — it must NEVER be able to abort the whole DR restore.
+        -- A single un-settable sequence (e.g. a value out of the sequence's
+        -- bounds, or a column type that can't feed setval) previously rolled
+        -- back the entire restore. Now it is logged and skipped so the rest of
+        -- the restore stands, and the WARNING names the exact culprit + reason.
+        BEGIN
+          EXECUTE format(
+            'SELECT setval(%L, GREATEST(COALESCE((SELECT MAX(%I) FROM %I.%I), 0), 1), COALESCE((SELECT MAX(%I) FROM %I.%I), 0) > 0)',
+            quote_ident(r.seqschema) || '.' || quote_ident(r.seqname),
+            r.colname, r.tabschema, r.tabname,
+            r.colname, r.tabschema, r.tabname
+          );
+        EXCEPTION WHEN OTHERS THEN
+          RAISE WARNING 'resyncOwnedSequences: skipped %.% (owned by %.%.%): % (SQLSTATE %)',
+            r.seqschema, r.seqname, r.tabschema, r.tabname, r.colname, SQLERRM, SQLSTATE;
+        END;
       END LOOP;
     END $$;
   `);

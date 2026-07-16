@@ -11,6 +11,7 @@ import {
   mergeBundleSections,
   restoreDatabaseSections,
   buildRestoreChecklist,
+  resyncOwnedSequences,
 } from './system-restore.service.js';
 import { encrypt } from '../utils/encryption.js';
 
@@ -181,5 +182,48 @@ describe('restoreDatabaseSections (integration)', () => {
     `);
     checklist = await buildRestoreChecklist(db);
     expect(checklist['encryption']!.status).toBe('warning');
+  });
+});
+
+describe('resyncOwnedSequences', () => {
+  const madeTables: string[] = [];
+  afterEach(async () => {
+    for (const t of madeTables.splice(0)) {
+      await db.execute(sql.raw(`DROP TABLE IF EXISTS ${t} CASCADE`));
+    }
+  });
+  const uniq = (p: string) => p + crypto.randomUUID().replace(/-/g, '').slice(0, 10);
+
+  it('advances an owned sequence past the max existing id', async () => {
+    const t = uniq('rzs_ok_');
+    madeTables.push(t);
+    await db.execute(sql.raw(`CREATE TABLE ${t} (id bigserial PRIMARY KEY, v int)`));
+    await db.execute(sql.raw(`INSERT INTO ${t} (id, v) VALUES (500, 1)`));
+
+    await resyncOwnedSequences(db);
+
+    const r = await db.execute(sql.raw(`SELECT nextval(pg_get_serial_sequence('${t}', 'id')) AS n`));
+    expect(Number((r.rows[0] as { n: string }).n)).toBeGreaterThan(500);
+  });
+
+  it('skips an un-settable sequence instead of aborting, and still resyncs the good ones', async () => {
+    const good = uniq('rzs_good_');
+    const bad = uniq('rzs_bad_');
+    madeTables.push(good, bad);
+    await db.execute(sql.raw(`CREATE TABLE ${good} (id bigserial PRIMARY KEY)`));
+    await db.execute(sql.raw(`INSERT INTO ${good} (id) VALUES (250)`));
+    // An owned sequence capped at MAXVALUE 5, but a column value of 999 above
+    // it — setval(seq, 999) throws "out of bounds", the class of failure that
+    // used to roll back the entire restore.
+    await db.execute(sql.raw(`CREATE TABLE ${bad} (id int PRIMARY KEY)`));
+    await db.execute(sql.raw(`CREATE SEQUENCE ${bad}_seq MAXVALUE 5 OWNED BY ${bad}.id`));
+    await db.execute(sql.raw(`INSERT INTO ${bad} (id) VALUES (999)`));
+
+    // Must NOT throw despite the un-settable sequence.
+    await expect(resyncOwnedSequences(db)).resolves.toBeUndefined();
+
+    // The good sequence was still resynced past its max.
+    const r = await db.execute(sql.raw(`SELECT nextval(pg_get_serial_sequence('${good}', 'id')) AS n`));
+    expect(Number((r.rows[0] as { n: string }).n)).toBeGreaterThan(250);
   });
 });
