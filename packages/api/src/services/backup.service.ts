@@ -44,11 +44,14 @@ function ensureDir(dir: string) {
 
 // ─── Local mirror (e.g. an external drive bind-mounted into the container) ──
 
-/** The admin-configured extra local directory, or null when unset. */
+/** The admin-configured extra local directory, or null when unset/invalid.
+ *  Must be ABSOLUTE — a relative path would resolve against the process cwd,
+ *  not the operator's mounted drive (silent no-mirror). */
 async function getMirrorDir(): Promise<string | null> {
   try {
-    const d = await getSetting('backup_local_mirror_dir');
-    return d && d.trim() ? d.trim() : null;
+    const d = (await getSetting('backup_local_mirror_dir'))?.trim();
+    if (!d || !path.isAbsolute(d)) return null;
+    return d;
   } catch {
     return null;
   }
@@ -68,8 +71,10 @@ export async function mirrorBackupFiles(absolutePaths: string[]): Promise<void> 
       const rel = path.relative(BACKUP_DIR, src);
       if (rel.startsWith('..') || path.isAbsolute(rel)) continue; // outside BACKUP_DIR — skip
       const dest = path.join(mirror, rel);
-      fs.mkdirSync(path.dirname(dest), { recursive: true });
-      fs.copyFileSync(src, dest);
+      // Async copy — a multi-GB mirror to a slow external drive must NOT
+      // block the single-threaded event loop and stall the whole API.
+      await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+      await fs.promises.copyFile(src, dest);
     } catch (err) {
       log.warn({ component: 'backup', event: 'mirror_copy_failed', src, message: err instanceof Error ? err.message : String(err) });
     }
@@ -1091,11 +1096,11 @@ function pruneBackupDir(baseDir: string, cutoff: number): number {
 export async function purgeExpiredLocalBackups(retentionDays: number): Promise<number> {
   if (retentionDays <= 0) return 0;
   const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
-  let deleted = pruneBackupDir(BACKUP_DIR, cutoff);
-  // Prune the mirror directory (external drive) under the same retention.
-  const mirror = await getMirrorDir();
-  if (mirror) deleted += pruneBackupDir(mirror, cutoff);
-  return deleted;
+  // Prune ONLY the app-owned BACKUP_DIR. The mirror directory is a
+  // deliberately durable/archival copy (e.g. an external drive) and may
+  // contain files the app didn't write — the app must never auto-delete it.
+  // Retention on the drive is the operator's to manage.
+  return pruneBackupDir(BACKUP_DIR, cutoff);
 }
 
 // ─── Remote Backup Purge (GFS) ──────────────────────────────────

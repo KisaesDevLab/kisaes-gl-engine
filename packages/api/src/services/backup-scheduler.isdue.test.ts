@@ -24,6 +24,11 @@ describe('isDue', () => {
     expect(await isDue('daily', KEY)).toBe(true);
   });
 
+  it('fails SAFE — a corrupt/unparseable last-run is treated as due', async () => {
+    await setSetting(KEY, 'not-a-date');
+    expect(await isDue('daily', KEY)).toBe(true); // must back up, not stall forever
+  });
+
   it('is false right after a run, true once the interval elapses', async () => {
     await setSetting(KEY, new Date().toISOString());
     expect(await isDue('daily', KEY)).toBe(false);

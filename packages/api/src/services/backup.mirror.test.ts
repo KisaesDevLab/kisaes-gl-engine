@@ -67,20 +67,29 @@ describe('mirrorBackupFiles', () => {
   });
 });
 
-describe('purgeExpiredLocalBackups prunes the mirror dir too', () => {
-  it('deletes aged files in both BACKUP_DIR and the mirror', async () => {
+describe('purgeExpiredLocalBackups', () => {
+  it('prunes aged files in BACKUP_DIR but NEVER touches the archival mirror', async () => {
     await admin.setSetting('backup_local_mirror_dir', mirrorDir);
     const old = Date.now() - 40 * 24 * 60 * 60 * 1000; // 40 days ago
     const a = writeBackup(backupDir, '_system', 'kis-books-backup-old-a.vmb');
-    const b = writeBackup(mirrorDir, '_system', 'kis-books-backup-old-b.vmb');
+    const mirrored = writeBackup(mirrorDir, '_system', 'kis-books-backup-old-b.vmb');
     const fresh = writeBackup(backupDir, '_system', 'kis-books-backup-fresh.vmb');
     fs.utimesSync(a, new Date(old), new Date(old));
-    fs.utimesSync(b, new Date(old), new Date(old));
+    fs.utimesSync(mirrored, new Date(old), new Date(old));
 
     const deleted = await svc.purgeExpiredLocalBackups(30);
-    expect(deleted).toBe(2);
+    // Only the app-owned BACKUP_DIR is pruned; the external/durable mirror is
+    // the operator's to manage and must never be auto-deleted.
+    expect(deleted).toBe(1);
     expect(fs.existsSync(a)).toBe(false);
-    expect(fs.existsSync(b)).toBe(false);
+    expect(fs.existsSync(mirrored)).toBe(true);
     expect(fs.existsSync(fresh)).toBe(true);
+  });
+
+  it('honors an absolute mirror path only (relative paths are ignored)', async () => {
+    await admin.setSetting('backup_local_mirror_dir', 'relative-mirror');
+    const src = writeBackup(backupDir, '_system', 'kis-books-backup-rel.vmb', 'x');
+    await svc.mirrorBackupFiles([src]); // relative dir → no-op, must not throw or write to cwd
+    expect(fs.existsSync(path.join(process.cwd(), 'relative-mirror'))).toBe(false);
   });
 });

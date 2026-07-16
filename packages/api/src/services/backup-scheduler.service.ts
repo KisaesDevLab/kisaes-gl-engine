@@ -31,7 +31,10 @@ export async function isDue(schedule: string | null, lastRunKey: string): Promis
   const intervalMs = SCHEDULE_INTERVALS[schedule];
   if (!intervalMs) return false;
   const lastRun = await getSetting(lastRunKey);
-  const lastRunTime = lastRun ? new Date(lastRun).getTime() : 0;
+  const parsed = lastRun ? new Date(lastRun).getTime() : 0;
+  // Fail SAFE: an unparseable/corrupt last-run timestamp counts as "never
+  // run" (due), so a bad value can never silently stop backups forever.
+  const lastRunTime = Number.isNaN(parsed) ? 0 : parsed;
   return Date.now() - lastRunTime >= intervalMs;
 }
 

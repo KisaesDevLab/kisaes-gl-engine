@@ -1422,19 +1422,24 @@ const GFS_PRESETS: Record<string, { daily: string; weekly: string; monthly: stri
 export { GFS_PRESETS };
 
 export async function getBackupRemoteConfig(): Promise<BackupRemoteConfig> {
-  const provider = await getSetting('backup_remote_provider');
-  const config = await getSetting('backup_remote_config');
-  const localRetention = await getSetting('backup_local_retention_days');
-  const preset = await getSetting('backup_remote_retention_preset');
-  const daily = await getSetting('backup_remote_retention_daily');
-  const weekly = await getSetting('backup_remote_retention_weekly');
-  const monthly = await getSetting('backup_remote_retention_monthly');
-  const yearly = await getSetting('backup_remote_retention_yearly');
-  const lastRun = await getSetting('backup_last_run');
-  const dbSchedule = await getSetting('backup_db_schedule');
-  const dbLastRun = await getSetting('backup_db_last_run');
-  const mirrorDir = await getSetting('backup_local_mirror_dir');
-  const scheduledPassphrase = await getSetting('backup_scheduled_passphrase');
+  const [
+    provider, config, localRetention, preset, daily, weekly, monthly, yearly,
+    lastRun, dbSchedule, dbLastRun, mirrorDir, scheduledPassphrase,
+  ] = await Promise.all([
+    getSetting('backup_remote_provider'),
+    getSetting('backup_remote_config'),
+    getSetting('backup_local_retention_days'),
+    getSetting('backup_remote_retention_preset'),
+    getSetting('backup_remote_retention_daily'),
+    getSetting('backup_remote_retention_weekly'),
+    getSetting('backup_remote_retention_monthly'),
+    getSetting('backup_remote_retention_yearly'),
+    getSetting('backup_last_run'),
+    getSetting('backup_db_schedule'),
+    getSetting('backup_db_last_run'),
+    getSetting('backup_local_mirror_dir'),
+    getSetting('backup_scheduled_passphrase'),
+  ]);
 
   return {
     backupRemoteProvider: provider ?? 'none',
