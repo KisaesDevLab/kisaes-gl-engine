@@ -134,6 +134,15 @@ export async function writeTenantPackage(
 
   let attachmentCount = 0;
   for await (const att of attachments) {
+    // Fail LOUDLY at write time if an attachment exceeds what the reader can
+    // load back (MAX_PACKAGE_ENTRY_BYTES) — otherwise this single-file
+    // package would be silently unrestorable. Callers that can segment
+    // (the multi-part writer) or pre-filter (createBackup's perEntryMaxBytes)
+    // never hit this; it's a backstop for any other caller.
+    if (att.buffer.length > MAX_PACKAGE_ENTRY_BYTES - ENTRY_CRYPTO_OVERHEAD) {
+      output.destroy();
+      throw new PackageEntryTooLargeError(`attachments/${att.id}.enc`);
+    }
     archive.append(encryptEntry(key, att.buffer), { name: `attachments/${att.id}.enc` });
     attachmentCount += 1;
   }
@@ -172,6 +181,26 @@ export async function readTenantPackage(source: string | Buffer, passphrase: str
   const manifestFile = find('manifest.json');
   if (!manifestFile) throw new Error('Not a Vibe MyBooks package (manifest.json missing)');
   const manifest = JSON.parse((await bufferEntryBounded(manifestFile)).toString('utf8')) as Record<string, unknown>;
+  // Guard: a single-file read of a genuine MULTI-PART series (>1 part) would
+  // restore only this one part's data, silently. Refuse it — the caller must
+  // assemble the full series (readTenantPackageMulti / staged restore).
+  //
+  // The per-part manifest carries `multipart` (with partIndex) but NOT the
+  // total partCount — that lives only in the encrypted `series.json.enc`,
+  // which the writer appends to the FINAL/ONLY part. So the reliable,
+  // passphrase-free distinguisher is series presence:
+  //   • 1-of-1 (everything fit one part): marker + series present → complete,
+  //     reads fine.
+  //   • non-final part of N>1: marker present, series ABSENT → partial data;
+  //     refuse it here.
+  //   • final part of N>1: marker + series present but no data.json.enc (that
+  //     lives in part 1) → falls through and fails naturally below.
+  const mp = manifest['multipart'] as { partIndex?: number } | undefined;
+  if (mp && !find('series.json.enc')) {
+    throw new Error(
+      `This is part ${mp.partIndex ?? '?'} of a multi-part backup — restore ALL parts together, not a single part.`,
+    );
+  }
   const kdf = manifest['kdf'] as { salt?: string } | undefined;
   const saltHex = kdf?.salt ?? '';
   if (!saltHex) throw new Error('Package manifest is missing its encryption salt');

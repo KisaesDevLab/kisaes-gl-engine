@@ -311,10 +311,16 @@ export async function buildRestoreChecklist(dbi: Db): Promise<Record<string, Che
   // Probe-decrypt one restored credential: verbatim *_encrypted columns are
   // only usable when this server's PLAID_ENCRYPTION_KEY matches the source
   // server's (a proper DR restore recovers it via /data/.env.recovery).
+  // Sample across several credential tables so the probe still fires when
+  // only some are configured.
+  const storage = await firstRow(dbi, sql`SELECT access_token_encrypted FROM storage_providers WHERE access_token_encrypted IS NOT NULL LIMIT 1`);
+  const firm = await firstRow(dbi, sql`SELECT api_key_encrypted FROM firm_integrations WHERE api_key_encrypted IS NOT NULL LIMIT 1`);
   const probe =
     (plaid?.['client_id_encrypted'] as string | undefined) ||
     (ai && (Object.entries(ai).find(([k, v]) => k.endsWith('_encrypted') && v)?.[1] as string | undefined)) ||
-    (sms && (Object.values(sms).find((v) => v) as string | undefined));
+    (sms && (Object.values(sms).find((v) => v) as string | undefined)) ||
+    (storage?.['access_token_encrypted'] as string | undefined) ||
+    (firm?.['api_key_encrypted'] as string | undefined);
   if (probe) {
     try {
       const { decrypt } = await import('../utils/encryption.js');
@@ -399,6 +405,8 @@ export async function writeBackBundleFiles(
       }
     }
   };
+  indexRows('extraction_pages', sections['extraction_pages'] ?? [], ['image_ref'], (r) =>
+    r['tenant_id'] ? { kind: 'provider', tenantId: r['tenant_id'] as string, key: '' } : null);
   indexRows('extraction_jobs', sections['extraction_jobs'] ?? [], ['storage_key'], (r) =>
     r['tenant_id'] ? { kind: 'provider', tenantId: r['tenant_id'] as string, key: '' } : null);
   indexRows('portal_receipts', sections['portal_receipts'] ?? [], ['storage_key'], (r) =>

@@ -637,13 +637,17 @@ export async function createSystemBackup(
     // the default budget; the guard below only trips if an operator raises
     // BACKUP_PART_MAX_MB past the in-memory upload ceiling.
     const REMOTE_UPLOAD_MAX = 500 * 1024 * 1024;
+    // Compute the GFS tiers ONCE so every part of this multi-part set shares
+    // them — otherwise only the first part earns weekly/monthly/yearly and
+    // GFS purges the siblings, leaving an unrestorable partial set.
+    const partTiers = await tiersForNewBackup('_system');
     for (const f of multi.files) {
       if (f.size > REMOTE_UPLOAD_MAX) {
         console.warn(`[Backup] Part ${f.fileName} is ${f.size} bytes (> ${REMOTE_UPLOAD_MAX}); kept local only. Lower BACKUP_PART_MAX_MB to keep parts remotable.`);
         continue;
       }
       const fileBuf = fs.readFileSync(f.path);
-      uploadBackupToRemote(f.fileName, fileBuf, '_system').catch((err) => {
+      uploadBackupToRemote(f.fileName, fileBuf, '_system', partTiers).catch((err) => {
         console.error(`[Backup] Remote upload of system backup part ${f.fileName} failed (non-fatal):`, err.message);
       });
     }
@@ -969,6 +973,25 @@ async function saveManifest(manifest: BackupManifestEntry[]): Promise<void> {
   await setSetting('backup_remote_manifest', JSON.stringify(manifest));
 }
 
+// The manifest is a single JSON blob under one settings key. Concurrent
+// uploads (e.g. every part of a multi-part backup fired at once) each do a
+// read-modify-write, so without serialization all-but-one entry is lost.
+// This in-process promise chain makes the read-modify-write atomic.
+let _manifestChain: Promise<unknown> = Promise.resolve();
+function withManifestLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = _manifestChain.then(fn, fn);
+  _manifestChain = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+/** Tiers a whole multi-part backup should share (computed once, from the
+ *  current manifest, so every part gets the same daily/weekly/monthly/yearly
+ *  retention and GFS keeps or purges the set as a unit). */
+async function tiersForNewBackup(tenantId: string): Promise<string[]> {
+  const manifest = await getManifest();
+  return computeBackupTiers(new Date(), manifest.filter((e) => e.tenantId === tenantId));
+}
+
 // ─── GFS Tier Tagging ────────────────────────────────────────────
 
 function computeBackupTiers(date: Date, existingManifest: BackupManifestEntry[]): string[] {
@@ -1004,6 +1027,10 @@ function computeBackupTiers(date: Date, existingManifest: BackupManifestEntry[])
 
 export async function uploadBackupToRemote(
   fileName: string, data: Buffer, tenantId: string,
+  // When set, ALL parts of one backup share these tiers — computing tiers
+  // per part would give only the first part the weekly/monthly/yearly tiers
+  // and let GFS purge the sibling parts, breaking the multi-part set.
+  sharedTiers?: string[],
 ): Promise<{ success: boolean; error?: string }> {
   const provider = await getSystemRemoteProvider();
   if (!provider) return { success: false, error: 'No remote provider configured' };
@@ -1019,21 +1046,15 @@ export async function uploadBackupToRemote(
       sizeBytes: data.length,
     });
 
-    const manifest = await getManifest();
-    // Tiers are computed against THIS tenant's (or _system's) own uploads.
-    // A global manifest let whichever backup uploaded first in a cycle claim
-    // the weekly/monthly/yearly tiers for the whole installation — leaving
-    // the system DR bundle (uploaded last) on the shortest 'daily' retention.
-    const tiers = computeBackupTiers(new Date(), manifest.filter((e) => e.tenantId === tenantId));
-    manifest.push({
-      key,
-      fileName,
-      size: data.length,
-      uploadedAt: new Date().toISOString(),
-      tenantId,
-      tiers,
+    // Atomic append (serialized): compute tiers under the lock against a
+    // fresh manifest read unless the caller supplied shared tiers.
+    const tiers = await withManifestLock(async () => {
+      const manifest = await getManifest();
+      const t = sharedTiers ?? computeBackupTiers(new Date(), manifest.filter((e) => e.tenantId === tenantId));
+      manifest.push({ key, fileName, size: data.length, uploadedAt: new Date().toISOString(), tenantId, tiers: t });
+      await saveManifest(manifest);
+      return t;
     });
-    await saveManifest(manifest);
 
     console.log(`[Backup] Remote upload OK: ${fileName} (tiers: ${tiers.join(', ')})`);
     return { success: true };
@@ -1060,9 +1081,13 @@ export async function deleteRemoteBackup(key: string): Promise<void> {
 
   await provider.delete(key);
 
-  const manifest = await getManifest();
-  const updated = manifest.filter((e) => e.key !== key);
-  await saveManifest(updated);
+  // Mutate under the manifest lock against a fresh read so a concurrent
+  // upload append (which also holds the lock) is not lost. See
+  // purgeExpiredRemoteBackups for the same clobber hazard.
+  await withManifestLock(async () => {
+    const fresh = await getManifest();
+    await saveManifest(fresh.filter((e) => e.key !== key));
+  });
 }
 
 // ─── Local Backup Purge (N days) ─────────────────────────────────
@@ -1170,8 +1195,16 @@ export async function purgeExpiredRemoteBackups(config: GfsRetentionConfig): Pro
   }
 
   if (deletedKeys.size > 0) {
-    const updated = manifest.filter((e) => !deletedKeys.has(e.key));
-    await saveManifest(updated);
+    // Mutate under the same lock uploadBackupToRemote uses, against a FRESH
+    // read — never the stale `manifest` snapshot taken before the (slow,
+    // network) deletes above. Otherwise a fire-and-forget upload that appended
+    // its entry while we were deleting would be clobbered by writing back the
+    // pre-append snapshot, silently dropping a just-uploaded (multi-part) backup
+    // from tracking.
+    await withManifestLock(async () => {
+      const fresh = await getManifest();
+      await saveManifest(fresh.filter((e) => !deletedKeys.has(e.key)));
+    });
   }
 
   return deleted;

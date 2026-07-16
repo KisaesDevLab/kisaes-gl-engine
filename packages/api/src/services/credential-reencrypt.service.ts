@@ -55,6 +55,17 @@ interface EncryptedColumn {
   column: string;
 }
 
+// Covers every TOP-LEVEL text/varchar `*_encrypted` column (Plaid, SMS/2FA,
+// AI keys, firm integrations, per-tenant storage OAuth tokens, …).
+//
+// KNOWN LIMITATION: ciphertext embedded inside JSON config BLOBS is not
+// re-encrypted here — specifically `system_settings` rows whose value is JSON
+// containing `application_key_encrypted`/`secret_*_encrypted`
+// (backup_remote_config, storage_system_config) and `storage_providers.config`
+// jsonb. Those are system-level integration settings the operator re-enters
+// in Admin after a cross-host restore (and, for restore-from-B2, the operator
+// supplies the backup-bucket creds fresh at restore time anyway), so they are
+// intentionally out of scope for the automatic column-level re-encryption.
 async function listEncryptedColumns(): Promise<EncryptedColumn[]> {
   const res = await db.execute(sql`
     SELECT table_name, column_name

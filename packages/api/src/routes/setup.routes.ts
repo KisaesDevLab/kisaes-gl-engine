@@ -5,6 +5,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import net from 'node:net';
 import { Router } from 'express';
 import multer from 'multer';
 import rateLimit from 'express-rate-limit';
@@ -82,17 +83,21 @@ setupRouter.use(async (req, res, next) => {
   //   - /pending-recovery-key: F22 — post-setup re-display of a still-unacknowledged
   //     recovery key, scoped to a specific installation_id
   //   - /acknowledge-recovery-key: paired with the above, clears the pending entry
-  //   - /restore/runs/*: polling a restore run — a SUCCESSFUL restore marks
-  //     setup complete before the run flips to 'complete', so without this
-  //     exemption the wizard's poll 403s at the exact moment of success and
-  //     the operator never sees the result (or the one-time recovery key).
-  //     Read-only, in-memory run metadata; the same data the execute
-  //     response used to carry synchronously.
+  //   - GET /restore/runs/<uuid>: polling a SPECIFIC restore run — a
+  //     successful restore marks setup complete before the run flips to
+  //     'complete', so without this exemption the wizard's poll 403s at the
+  //     moment of success and the operator never sees the one-time recovery
+  //     key. Only the by-id form is exempt: the runId is an unguessable UUID,
+  //     so it acts as a bearer secret. /restore/runs/latest is NOT exempt —
+  //     it would hand the last run's result (incl. the recovery key) to any
+  //     unauthenticated caller with no id, post-setup.
+  const isRunByIdPoll = req.method === 'GET' &&
+    /^\/restore\/runs\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.path);
   if (
     req.path === '/status' ||
     req.path === '/pending-recovery-key' ||
     req.path === '/acknowledge-recovery-key' ||
-    (req.method === 'GET' && req.path.startsWith('/restore/runs/'))
+    isRunByIdPoll
   ) {
     return next();
   }
@@ -500,6 +505,14 @@ setupRouter.post('/restore/execute', upload.single('file'), async (req, res) => 
   }
 
   const uploadedPath = req.file.path;
+  // One restore at a time — a second (possibly different) upload while one is
+  // in flight must not silently attach to it. The wizard adopts the 409 runId.
+  const activeUpload = peekActiveRestoreRun();
+  if (activeUpload) {
+    try { fs.unlinkSync(uploadedPath); } catch { /* already gone */ }
+    res.status(409).json({ runId: activeUpload.id, error: { message: 'A restore is already in progress. Wait for it to finish.' } });
+    return;
+  }
   const run = startRestoreRun(
     async () => {
       // A .vmx package (ZIP) carries the DB dump plus attachment files; a
@@ -568,6 +581,15 @@ function restoreRunView(run: RestoreRun) {
     result: run.result ?? null,
     error: run.error ?? null,
   };
+}
+
+/** The currently-running restore, or null. Lets callers avoid expensive
+ *  prep (downloading a bundle) when a restore is already in flight, and lets
+ *  them re-attach to it rather than silently restore a DIFFERENT bundle. */
+function peekActiveRestoreRun(): RestoreRun | null {
+  if (!activeRestoreRunId) return null;
+  const active = restoreRuns.get(activeRestoreRunId);
+  return active && active.status === 'running' ? active : null;
 }
 
 function startRestoreRun(
@@ -685,12 +707,15 @@ async function runGuardedSetupRestore(readContent: ContentSource): Promise<Recor
         // hardcoded INSERTs (which dropped most user/tenant columns) and the
         // silent per-row catch{} (which hid every FK-ordering loss).
         const sections = mergeBundleSections(content);
-        const restoreReport: RestoreReport = await restoreDatabaseSections(db, sections);
-
-        // Restored rows carry their original serial ids; bring every owned
-        // sequence up to date or the first post-restore write to a
-        // serial-PK table (e.g. audit_log on first login) hits duplicate-key.
-        await resyncOwnedSequences(db);
+        // Wrap the DB restore + sequence resync in ONE transaction: if it
+        // throws partway (e.g. a dropped connection), everything rolls back
+        // so the DB stays EMPTY and the emptiness guard permits a clean
+        // retry — a partial commit would otherwise wedge the restore forever.
+        const restoreReport: RestoreReport = await db.transaction(async (tx) => {
+          const rep = await restoreDatabaseSections(tx, sections);
+          await resyncOwnedSequences(tx);
+          return rep;
+        });
 
         // Restore bundled FILES (present only in .vmx packages): receipt
         // attachments, extraction sources, portal receipt/Q&A uploads,
@@ -885,11 +910,13 @@ async function runGuardedSetupRestore(readContent: ContentSource): Promise<Recor
         for (const [tableName, rows] of Object.entries(tables)) {
           if (Array.isArray(rows) && rows.length > 0) sections[tableName] = rows as Record<string, unknown>[];
         }
-        const restoreReport: RestoreReport = await restoreDatabaseSections(db, sections);
-
-        // Same sequence-resync as the system branch — restored serial ids
-        // leave owned sequences behind otherwise.
-        await resyncOwnedSequences(db);
+        // Transactional (same rationale as the system branch): a mid-restore
+        // throw rolls back so a retry isn't wedged by partial rows.
+        const restoreReport: RestoreReport = await db.transaction(async (tx) => {
+          const rep = await restoreDatabaseSections(tx, sections);
+          await resyncOwnedSequences(tx);
+          return rep;
+        });
 
         // Tenant .vmx packages carry attachment/upload files too; write them
         // back (the old flow ignored them entirely on this branch).
@@ -1170,6 +1197,14 @@ setupRouter.post('/restore/execute-staged', async (req, res) => {
   const dir = stageDirFor(meta.backupId);
   const paths = summary.received.map((idx) => path.join(dir, `part${idx}.vmx`));
 
+  // One restore at a time — don't silently attach a different staged series
+  // to an in-flight run (the wizard adopts the 409 runId and polls it).
+  const activeStaged = peekActiveRestoreRun();
+  if (activeStaged) {
+    res.status(409).json({ runId: activeStaged.id, error: { message: 'A restore is already in progress. Wait for it to finish.' } });
+    return;
+  }
+
   const run = startRestoreRun(
     async () => {
       if (meta!.classic && !isZipFile(paths[0]!)) {
@@ -1189,6 +1224,350 @@ setupRouter.post('/restore/execute-staged', async (req, res) => {
     },
   );
   res.status(202).json(restoreRunView(run));
+});
+
+// ─── Restore from local disk / mounted drive ───────────────────────
+//
+// A backup that already lives on the box (BACKUP_DIR, or an external drive
+// bind-mounted at BACKUP_MIRROR_DIR) can be restored WITHOUT a
+// download-then-upload round-trip. During a true disaster recovery the DB is
+// empty, so we can't read the operator's configured mirror path from
+// settings — the roots are fixed by env/convention instead.
+
+const RESTORE_LOCAL_ROOTS: Record<string, string> = {
+  backups: process.env['BACKUP_DIR'] || '/data/backups',
+  drive: process.env['BACKUP_MIRROR_DIR'] || '/data/backup-mirror',
+};
+
+const MULTIPART_RE = /^(.*)\.part(\d+)of(\d+)\.vmx$/i;
+
+interface LocalBundle {
+  id: string;            // stable id (root + base name)
+  root: string;          // 'backups' | 'drive'
+  label: string;         // display name
+  kind: 'single' | 'multipart';
+  files: string[];       // absolute paths, part-ordered for multipart
+  partCount: number;
+  size: number;          // total bytes
+  modifiedAt: string | null;
+}
+
+/** Scan a root dir (root/<tenant|_system>/<file>) for restorable bundles.
+ *  Exported for tests. */
+export function scanLocalBundles(rootKey: string, rootDir: string): LocalBundle[] {
+  if (!fs.existsSync(rootDir)) return [];
+  let rootReal: string;
+  try { rootReal = fs.realpathSync(rootDir); } catch { rootReal = path.resolve(rootDir); }
+  const series = new Map<string, { base: string; parts: Map<number, { path: string; size: number; mtime: number }>; declared: number }>();
+  const singles: LocalBundle[] = [];
+
+  // Record a resolved regular file (used by both the plain and the
+  // symlinked-file paths). `full` is the on-disk path; `st` its stat.
+  const handleFile = (entry: string, full: string, st: fs.Stats) => {
+    const mp = entry.match(MULTIPART_RE);
+    if (mp) {
+      const base = path.join(path.dirname(full), mp[1]!);
+      const s = series.get(base) ?? { base, parts: new Map(), declared: parseInt(mp[3]!, 10) };
+      s.declared = parseInt(mp[3]!, 10);
+      s.parts.set(parseInt(mp[2]!, 10), { path: full, size: st.size, mtime: st.mtimeMs });
+      series.set(base, s);
+    } else if (entry.endsWith('.vmx') || entry.endsWith('.vmb')) {
+      singles.push({
+        id: `${rootKey}:${path.relative(rootDir, full)}`,
+        root: rootKey, label: entry, kind: 'single',
+        files: [full], partCount: 1, size: st.size,
+        modifiedAt: new Date(st.mtimeMs).toISOString(),
+      });
+    }
+  };
+
+  const walk = (dir: string) => {
+    let entries: string[];
+    try { entries = fs.readdirSync(dir); } catch { return; }
+    for (const entry of entries) {
+      const full = path.join(dir, entry);
+      let lst: fs.Stats;
+      try { lst = fs.lstatSync(full); } catch { continue; }
+      if (lst.isSymbolicLink()) {
+        // A symlink is fine ONLY if its realpath stays inside this root — a
+        // legit backup drive is often symlink-mounted, but a link escaping
+        // the root (→ /etc/passwd) must never be listed or restored.
+        let real: string;
+        try { real = fs.realpathSync(full); } catch { continue; }
+        if (!(real + path.sep).startsWith(rootReal + path.sep)) continue;
+        // Follow symlinked FILES only — NEVER recurse a symlinked directory
+        // (a link to an ancestor would recurse forever / list twice).
+        let st: fs.Stats;
+        try { st = fs.statSync(full); } catch { continue; }
+        if (st.isDirectory()) continue;
+        handleFile(entry, full, st);
+        continue;
+      }
+      if (lst.isDirectory()) { walk(full); continue; }
+      handleFile(entry, full, lst); // reuse lstat (no symlink → same as stat)
+    }
+  };
+  walk(rootDir);
+
+  const bundles: LocalBundle[] = [...singles];
+  for (const s of series.values()) {
+    const idxs = [...s.parts.keys()].sort((a, b) => a - b);
+    if (idxs.length !== s.declared || !idxs.every((n, i) => n === i + 1)) continue; // incomplete
+    bundles.push({
+      id: `${rootKey}:${path.relative(rootDir, s.base)}`,
+      root: rootKey, label: `${path.basename(s.base)} (${s.declared} parts)`, kind: 'multipart',
+      files: idxs.map((n) => s.parts.get(n)!.path),
+      partCount: s.declared,
+      size: idxs.reduce((sum, n) => sum + s.parts.get(n)!.size, 0),
+      modifiedAt: new Date(Math.max(...idxs.map((n) => s.parts.get(n)!.mtime))).toISOString(),
+    });
+  }
+  return bundles.sort((a, b) => (b.modifiedAt ?? '').localeCompare(a.modifiedAt ?? ''));
+}
+
+/** Validate every path resolves inside one of the allowed roots (anti-traversal).
+ *  Uses realpath so a symlink whose TARGET escapes a root is rejected, not
+ *  just a lexical `..`. Exported for tests. */
+export function assertPathsWithinRoots(paths: string[]): void {
+  const roots = Object.values(RESTORE_LOCAL_ROOTS)
+    .map((r) => { try { return fs.realpathSync(r) + path.sep; } catch { return path.resolve(r) + path.sep; } });
+  for (const p of paths) {
+    let real: string;
+    try { real = fs.realpathSync(p); } catch { throw new Error('Restore path does not exist'); }
+    if (!roots.some((r) => (real + path.sep).startsWith(r))) {
+      throw new Error('Restore path is outside the allowed backup directories');
+    }
+  }
+}
+
+/** Build the async ContentSource for a set of local bundle files. */
+function localContentSource(files: string[], passphrase: string): ContentSource {
+  return async () => {
+    if (files.length === 1 && !isZipFile(files[0]!)) {
+      const { smartDecrypt } = await import('../services/portable-encryption.service.js');
+      const { data } = smartDecrypt(fs.readFileSync(files[0]!), passphrase);
+      return { content: JSON.parse(data.toString()) as RestoreContent, packageAttachments: null };
+    }
+    if (files.length === 1) {
+      const { readTenantPackage } = await import('../services/vmx-package.js');
+      const pkg = await readTenantPackage(files[0]!, passphrase);
+      return { content: pkg.data as RestoreContent, packageAttachments: () => pkg.attachments() };
+    }
+    const { readTenantPackageMulti } = await import('../services/vmx-package.js');
+    const pkg = await readTenantPackageMulti(files, passphrase);
+    return { content: pkg.data as RestoreContent, packageAttachments: () => pkg.attachments() };
+  };
+}
+
+setupRouter.get('/restore/local/list', (_req, res) => {
+  const bundles: LocalBundle[] = [];
+  try {
+    for (const [key, dir] of Object.entries(RESTORE_LOCAL_ROOTS)) bundles.push(...scanLocalBundles(key, dir));
+  } catch (err) {
+    // A pathological backup dir (e.g. a symlink loop) must not 500 the
+    // whole restore browser — degrade to whatever scanned cleanly.
+    console.warn('[setup] local restore scan error:', err instanceof Error ? err.message : err);
+  }
+  res.json({
+    roots: Object.entries(RESTORE_LOCAL_ROOTS).map(([key, dir]) => ({ key, dir, present: fs.existsSync(dir) })),
+    // Never leak absolute paths; the client restores by opaque `id`.
+    bundles: bundles.map((b) => ({ id: b.id, root: b.root, label: b.label, kind: b.kind, partCount: b.partCount, size: b.size, modifiedAt: b.modifiedAt })),
+  });
+});
+
+setupRouter.post('/restore/local/execute', async (req, res) => {
+  const id = (req.body?.id ?? '').toString();
+  const passphrase = req.body?.passphrase;
+  if (!passphrase || typeof passphrase !== 'string') {
+    res.status(400).json({ error: { message: 'Passphrase is required' } });
+    return;
+  }
+  // Re-scan and resolve `id` server-side — never trust a client-supplied path.
+  const all: LocalBundle[] = [];
+  for (const [key, dir] of Object.entries(RESTORE_LOCAL_ROOTS)) all.push(...scanLocalBundles(key, dir));
+  const bundle = all.find((b) => b.id === id);
+  if (!bundle) {
+    res.status(404).json({ error: { message: 'No local backup with that id (it may have moved or the drive is unmounted)' } });
+    return;
+  }
+  try { assertPathsWithinRoots(bundle.files); }
+  catch (err) { res.status(400).json({ error: { message: err instanceof Error ? err.message : 'Invalid path' } }); return; }
+  // A restore is one-at-a-time — refuse a second, possibly-different bundle
+  // rather than silently attach it to the in-flight run and report false
+  // success. (The wizard resumes a reload by polling the stored runId, not by
+  // re-calling execute, so this never breaks resume.)
+  const active = peekActiveRestoreRun();
+  if (active) { res.status(409).json({ runId: active.id, error: { message: 'A restore is already in progress. Wait for it to finish.' } }); return; }
+  const run = startRestoreRun(localContentSource(bundle.files, passphrase));
+  res.status(202).json(restoreRunView(run));
+});
+
+// ─── Restore from a remote object store (B2/S3), creds entered now ──
+//
+// A wiped box has no stored B2 credentials (they were in the DB), so the
+// operator supplies them at restore time. We list/download the bundle with
+// those creds, then run the same guarded restore.
+
+interface RemoteRestoreCreds {
+  provider: 'b2' | 's3';
+  bucket: string; endpoint: string; keyId: string; applicationKey: string;
+  region?: string; prefix?: string;
+}
+
+// SSRF guard: these endpoints are pre-auth (first-run only) and connect to an
+// operator-supplied endpoint. Require https and reject obvious internal
+// targets (loopback, link-local/cloud-metadata, RFC-1918 literals) so a
+// network-reachable actor on an un-provisioned box can't probe internal
+// services. Full DNS-rebinding protection is out of scope for a trusted
+// first-run appliance; this blocks the easy cases.
+export function assertSafeEndpoint(endpoint: string): void {
+  let u: URL;
+  try { u = new URL(endpoint); } catch { throw new Error('endpoint must be a valid https URL'); }
+  if (u.protocol !== 'https:') throw new Error('endpoint must use https');
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, ''); // unwrap [::1]
+  const blocked = () => { throw new Error('endpoint host is not allowed'); };
+  if (host === 'localhost' || host === '0.0.0.0' || host === '::' || host === '::1') blocked();
+
+  const kind = net.isIP(host); // 4, 6, or 0 (not an IP literal)
+  if (kind === 6) {
+    // Object stores don't use loopback/link-local/unique-local IPv6, and an
+    // IPv4-mapped IPv6 (::ffff:169.254.169.254) can smuggle the metadata IP
+    // past an IPv4-only check — block them all.
+    if (host === '::1' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd') || host.includes('::ffff:') || host.includes('::')) blocked();
+  } else if (kind === 4) {
+    // RFC-1918 private is ALLOWED (legit LAN object store); block only
+    // loopback and the link-local / cloud-metadata range.
+    if (/^127\./.test(host) || /^169\.254\./.test(host)) blocked();
+  } else {
+    // Not a valid IP literal. A real endpoint is a DNS name (has letters);
+    // reject a purely-numeric host (decimal/hex/octal IP encodings like
+    // 2852039166 or 0xA9FEA9FE that the resolver would turn into an IP).
+    if (!/[a-z]/i.test(host)) blocked();
+  }
+}
+
+function parseRemoteCreds(body: Record<string, unknown>): RemoteRestoreCreds {
+  const provider = String(body['provider'] ?? 'b2');
+  if (provider !== 'b2' && provider !== 's3') throw new Error('provider must be b2 or s3');
+  const bucket = String(body['bucket'] ?? '').trim();
+  const endpoint = String(body['endpoint'] ?? '').trim();
+  const keyId = String(body['keyId'] ?? '').trim();
+  const applicationKey = String(body['applicationKey'] ?? '').trim();
+  if (!bucket || !endpoint || !keyId || !applicationKey) {
+    throw new Error('bucket, endpoint, keyId, and applicationKey are required');
+  }
+  assertSafeEndpoint(endpoint);
+  return {
+    provider, bucket, endpoint, keyId, applicationKey,
+    region: body['region'] ? String(body['region']) : undefined,
+    prefix: body['prefix'] !== undefined ? String(body['prefix']) : 'backups/',
+  };
+}
+
+// The restore provider is built with NO prefix and operates on FULL object
+// keys — this sidesteps the double-slash prefix math entirely (list returns
+// full keys, download uses them verbatim). The operator's `prefix` is used
+// only to SCOPE the listing.
+async function buildRemoteProvider(c: RemoteRestoreCreds) {
+  if (c.provider === 's3') {
+    const { S3Provider } = await import('../services/storage/s3.provider.js');
+    return new S3Provider({
+      bucket: c.bucket, region: c.region, endpoint: c.endpoint,
+      accessKeyId: c.keyId, secretAccessKey: c.applicationKey, prefix: '',
+    });
+  }
+  const { B2Provider } = await import('../services/storage/b2.provider.js');
+  return new B2Provider({
+    bucket: c.bucket, endpoint: c.endpoint, keyId: c.keyId,
+    applicationKey: c.applicationKey, region: c.region, prefix: '',
+  });
+}
+
+setupRouter.post('/restore/remote/list', async (req, res) => {
+  let creds: RemoteRestoreCreds;
+  try { creds = parseRemoteCreds(req.body ?? {}); }
+  catch (err) { res.status(400).json({ error: { message: err instanceof Error ? err.message : 'Invalid credentials' } }); return; }
+
+  try {
+    const provider = await buildRemoteProvider(creds);
+    // Scope by the operator's prefix; list generously so a multipart bundle
+    // whose parts span a page boundary in a large bucket isn't truncated.
+    const objects = await provider.listObjects(creds.prefix ?? '', 100_000);
+    const series = new Map<string, { keys: Map<number, { key: string; size: number }>; declared: number; modified: string | null }>();
+    const bundles: Array<{ id: string; label: string; keys: string[]; partCount: number; size: number; modifiedAt: string | null }> = [];
+    for (const o of objects) {
+      const name = o.key.split('/').pop() ?? o.key;
+      const mp = name.match(MULTIPART_RE);
+      if (mp) {
+        const base = `${o.key.slice(0, o.key.length - name.length)}${mp[1]}`;
+        const s = series.get(base) ?? { keys: new Map(), declared: parseInt(mp[3]!, 10), modified: o.lastModified };
+        s.declared = parseInt(mp[3]!, 10);
+        s.keys.set(parseInt(mp[2]!, 10), { key: o.key, size: o.size });
+        if (o.lastModified && (!s.modified || o.lastModified > s.modified)) s.modified = o.lastModified;
+        series.set(base, s);
+      } else if (name.endsWith('.vmx') || name.endsWith('.vmb')) {
+        bundles.push({ id: o.key, label: name, keys: [o.key], partCount: 1, size: o.size, modifiedAt: o.lastModified });
+      }
+    }
+    for (const [base, s] of series) {
+      const idxs = [...s.keys.keys()].sort((a, b) => a - b);
+      if (idxs.length !== s.declared || !idxs.every((n, i) => n === i + 1)) continue;
+      bundles.push({
+        id: base, label: `${base.split('/').pop()} (${s.declared} parts)`,
+        keys: idxs.map((n) => s.keys.get(n)!.key), partCount: s.declared,
+        size: idxs.reduce((sum, n) => sum + s.keys.get(n)!.size, 0), modifiedAt: s.modified,
+      });
+    }
+    bundles.sort((a, b) => (b.modifiedAt ?? '').localeCompare(a.modifiedAt ?? ''));
+    res.json({ bundles });
+  } catch (err) {
+    res.status(400).json({ error: { message: `Could not list backups: ${err instanceof Error ? err.message : String(err)}` } });
+  }
+});
+
+setupRouter.post('/restore/remote/execute', async (req, res) => {
+  const passphrase = req.body?.passphrase;
+  const keys: unknown = req.body?.keys;
+  if (!passphrase || typeof passphrase !== 'string') {
+    res.status(400).json({ error: { message: 'Passphrase is required' } });
+    return;
+  }
+  if (!Array.isArray(keys) || keys.length === 0 || !keys.every((k) => typeof k === 'string')) {
+    res.status(400).json({ error: { message: 'keys (the object key[s] of the bundle part[s]) are required' } });
+    return;
+  }
+  let creds: RemoteRestoreCreds;
+  try { creds = parseRemoteCreds(req.body ?? {}); }
+  catch (err) { res.status(400).json({ error: { message: err instanceof Error ? err.message : 'Invalid credentials' } }); return; }
+
+  // One restore at a time — refuse (don't silently attach a different bundle
+  // to the in-flight run) and skip a wasted multi-GB download.
+  const active = peekActiveRestoreRun();
+  if (active) { res.status(409).json({ runId: active.id, error: { message: 'A restore is already in progress. Wait for it to finish.' } }); return; }
+
+  // Download the part(s) to a temp stage dir — STREAMED with a per-object
+  // size cap so a huge object can't OOM the process — then restore.
+  const REMOTE_OBJECT_MAX = 4 * 1024 * 1024 * 1024; // 4 GB per part
+  const dir = path.join(RESTORE_UPLOAD_DIR, `remote-${crypto.randomUUID()}`);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const provider = await buildRemoteProvider(creds);
+    const localFiles: string[] = [];
+    for (let i = 0; i < (keys as string[]).length; i++) {
+      const key = (keys as string[])[i]!;
+      const dest = path.join(dir, `part${i + 1}.${key.endsWith('.vmb') ? 'vmb' : 'vmx'}`);
+      await provider.downloadToFile(key, dest, REMOTE_OBJECT_MAX);
+      localFiles.push(dest);
+    }
+    const run = startRestoreRun(
+      localContentSource(localFiles, passphrase),
+      { onSettle: () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ } } },
+    );
+    res.status(202).json(restoreRunView(run));
+  } catch (err) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    res.status(400).json({ error: { message: `Restore from remote failed: ${err instanceof Error ? err.message : String(err)}` } });
+  }
 });
 
 // restoreTableRows / resyncOwnedSequences moved to
