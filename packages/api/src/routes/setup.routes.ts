@@ -462,12 +462,9 @@ setupRouter.post('/restore/validate', upload.single('file'), async (req, res) =>
       content = pkg.data;
     } else {
       // .vmb — a single encrypted blob (DB-only). System .vmb payloads are
-      // NDJSON (large-DB safe); parse line-by-line rather than toString().
+      // NDJSON (large-DB safe); decodeVmbContent sniffs + parses accordingly.
       const decrypted = smartDecrypt(fs.readFileSync(uploadedPath), passphrase);
-      const { isNdjsonDump, decodeSystemDump } = await import('../services/system-dump-codec.js');
-      content = isNdjsonDump(decrypted.data)
-        ? decodeSystemDump(decrypted.data)
-        : JSON.parse(decrypted.data.toString());
+      content = await decodeVmbContent(decrypted.data);
       method = decrypted.method;
     }
     const metadata = content.metadata ?? {};
@@ -531,7 +528,7 @@ setupRouter.post('/restore/execute', upload.single('file'), async (req, res) => 
         return { content: pkg.data as RestoreContent, packageAttachments: () => pkg.attachments() };
       }
       const { data } = smartDecrypt(fs.readFileSync(uploadedPath), passphrase);
-      return { content: JSON.parse(data.toString()) as RestoreContent, packageAttachments: null };
+      return { content: await decodeVmbContent(data), packageAttachments: null };
     },
     {
       // The uploaded backup landed on disk (multer diskStorage) — remove it
@@ -546,6 +543,16 @@ setupRouter.post('/restore/execute', upload.single('file'), async (req, res) => 
 // original JSON.parse path — rows are re-inserted via parameterized SQL).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type RestoreContent = any;
+
+// Decode a decrypted .vmb payload. A SYSTEM .vmb is now an NDJSON dump
+// (large-DB safe); a tenant/legacy .vmb is a single JSON blob. Sniff the NDJSON
+// header so no restore path ever JSON.parse()s an NDJSON buffer — that fails
+// with "Unexpected non-whitespace character after JSON" at the 2nd line. Every
+// .vmb read path MUST go through this.
+async function decodeVmbContent(data: Buffer): Promise<RestoreContent> {
+  const { isNdjsonDump, decodeSystemDump } = await import('../services/system-dump-codec.js');
+  return (isNdjsonDump(data) ? decodeSystemDump(data) : JSON.parse(data.toString())) as RestoreContent;
+}
 
 type ContentSource = () => Promise<{
   content: RestoreContent;
@@ -1268,7 +1275,7 @@ setupRouter.post('/restore/execute-staged', async (req, res) => {
       if (meta!.classic && !isZipFile(paths[0]!)) {
         const { smartDecrypt } = await import('../services/portable-encryption.service.js');
         const { data } = smartDecrypt(fs.readFileSync(paths[0]!), passphrase);
-        return { content: JSON.parse(data.toString()) as RestoreContent, packageAttachments: null };
+        return { content: await decodeVmbContent(data), packageAttachments: null };
       }
       const { readTenantPackageMulti } = await import('../services/vmx-package.js');
       const pkg = await readTenantPackageMulti(paths, passphrase);
@@ -1404,7 +1411,7 @@ function localContentSource(files: string[], passphrase: string): ContentSource 
     if (files.length === 1 && !isZipFile(files[0]!)) {
       const { smartDecrypt } = await import('../services/portable-encryption.service.js');
       const { data } = smartDecrypt(fs.readFileSync(files[0]!), passphrase);
-      return { content: JSON.parse(data.toString()) as RestoreContent, packageAttachments: null };
+      return { content: await decodeVmbContent(data), packageAttachments: null };
     }
     if (files.length === 1) {
       const { readTenantPackage } = await import('../services/vmx-package.js');
