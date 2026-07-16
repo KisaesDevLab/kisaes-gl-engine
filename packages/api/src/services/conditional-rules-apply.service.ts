@@ -50,6 +50,7 @@ export async function applyForFeedItem(
     amount: string;
     feedDate: string;
     bankConnectionAccountId: string;
+    payeeNameOnCheck?: string | null;
   },
   opts: ApplyOptions = {},
 ): Promise<ApplyResult> {
@@ -84,6 +85,7 @@ async function applyLegacy(
     amount: string;
     feedDate: string;
     bankConnectionAccountId: string;
+    payeeNameOnCheck?: string | null;
   },
 ): Promise<ApplyResult> {
   const rules = await crudService.listActiveOrderedByPriority(tenantId);
@@ -137,6 +139,7 @@ async function applyTiered(
     amount: string;
     feedDate: string;
     bankConnectionAccountId: string;
+    payeeNameOnCheck?: string | null;
   },
   currentUserId: string | null,
 ): Promise<ApplyResult> {

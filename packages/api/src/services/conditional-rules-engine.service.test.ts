@@ -372,6 +372,21 @@ describe('contextFromFeedItem', () => {
     expect(c.descriptor).toBe('Fallback');
     expect(c.amount_sign).toBe(0);
   });
+
+  it('appends the check payee to the descriptor so vendor rules fire on checks', () => {
+    // A check's raw description is only "CHECK 3301"; the extracted payee must
+    // be in the descriptor or a "descriptionContains: Cosmos Granite" rule can
+    // never match a check.
+    const c = contextFromFeedItem({
+      description: 'CHECK 3301',
+      originalDescription: 'CHECK 3301',
+      amount: '7935.95',
+      feedDate: '2026-01-28',
+      bankConnectionAccountId: 'acct-1',
+      payeeNameOnCheck: 'Cosmos Granite',
+    });
+    expect(c.descriptor).toBe('CHECK 3301 Cosmos Granite');
+  });
 });
 
 // ─── Deferred fields/actions throw ───────────────────────────

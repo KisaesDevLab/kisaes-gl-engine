@@ -1238,6 +1238,28 @@ export async function setStatementLineExcluded(
 // is already matched to a journal line whose transaction has no payee
 // identity yet, the payee is stamped through to the transaction too, so the
 // check register and reports pick it up immediately.
+/** Resolve a check payee to a contact id within the caller's transaction —
+ *  match an existing contact by name (case-insensitive), else create a vendor
+ *  contact. Returns null for a blank payee. Used so a check payee becomes a real
+ *  contact_id (fills the Payee column, feeds reports/rules), not just metadata. */
+async function resolveOrCreateContactId(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  tenantId: string,
+  payee: string,
+): Promise<string | null> {
+  const name = payee.trim().slice(0, 255);
+  if (!name) return null;
+  const found = await tx.execute(sql`
+    SELECT id FROM contacts WHERE tenant_id = ${tenantId} AND lower(display_name) = lower(${name}) LIMIT 1
+  `);
+  if ((found.rows as { id: string }[]).length > 0) return (found.rows as { id: string }[])[0]!.id;
+  const created = await tx.execute(sql`
+    INSERT INTO contacts (tenant_id, display_name, contact_type)
+    VALUES (${tenantId}, ${name}, 'vendor') RETURNING id
+  `);
+  return (created.rows as { id: string }[])[0]!.id;
+}
+
 export async function setStatementLinePayee(
   tenantId: string,
   statementLineId: string,
@@ -1265,6 +1287,23 @@ export async function setStatementLinePayee(
           AND t.contact_id IS NULL
       `);
       transactionUpdated = ((upd as { rowCount?: number | null }).rowCount ?? 0) > 0;
+      // Also give the matched check a real contact from the payee (match or
+      // create) so the Payee column fills in — previously the payee was stored
+      // as metadata only and contact_id stayed null.
+      if (transactionUpdated) {
+        const contactId = await resolveOrCreateContactId(tx, tenantId, payee);
+        if (contactId) {
+          await tx.execute(sql`
+            UPDATE transactions t
+            SET contact_id = ${contactId}
+            FROM journal_lines jl
+            WHERE jl.id = ${line.matchedJournalLineId}
+              AND t.id = jl.transaction_id
+              AND t.tenant_id = ${tenantId}
+              AND t.contact_id IS NULL
+          `);
+        }
+      }
     }
 
     await auditLog(
@@ -1594,12 +1633,18 @@ export async function createTransactionFromStatementLine(
       description: line.description ?? undefined,
     };
 
+    // When the caller didn't pick a contact, resolve one from the check payee
+    // (match or create a vendor) so the new transaction gets a real contact_id
+    // and its Payee column fills in — not just payee-name metadata.
+    const resolvedContactId = input.contactId
+      ?? (line.payee ? await resolveOrCreateContactId(tx, tenantId, line.payee) : null);
+
     // Same posting machinery as bank-feed categorize (rule 22: the ledger
     // service enforces balance; checkLockDate runs inside postTransaction).
     const txn = await ledger.postTransaction(tenantId, {
       txnType: isMoneyIn ? 'deposit' : 'expense',
       txnDate: line.lineDate,
-      contactId: input.contactId,
+      contactId: resolvedContactId ?? undefined,
       memo: input.memo || line.description || undefined,
       total: amount,
       source: 'statement_line',

@@ -35,21 +35,31 @@ function fuzzyScore(needle: string, haystack: string): number {
   return 0;
 }
 
-async function fuzzyMatchAccount(tenantId: string, accountName: string): Promise<string | null> {
-  const allAccounts = await db.select({ id: accounts.id, name: accounts.name })
+// Resolve a GLOBAL rule's target account into THIS tenant's chart. A rule's
+// account UUID belongs to the origin tenant and is meaningless here, so we key
+// on the account NAME the rule stored — but prefer the STABLE cross-tenant keys
+// first: an exact account NUMBER or system_tag match (both survive a firm
+// renaming an account) wins outright over fuzzy-name scoring.
+async function fuzzyMatchAccount(tenantId: string, target: string): Promise<string | null> {
+  const needle = target.trim().toLowerCase();
+  if (!needle) return null;
+  const allAccounts = await db
+    .select({ id: accounts.id, name: accounts.name, accountNumber: accounts.accountNumber, systemTag: accounts.systemTag })
     .from(accounts).where(and(eq(accounts.tenantId, tenantId), eq(accounts.isActive, true)));
 
-  let bestId: string | null = null;
-  let bestScore = 0;
-
+  // Exact match on a stable key → definitive.
   for (const acct of allAccounts) {
-    const score = fuzzyScore(accountName, acct.name);
-    if (score > bestScore) {
-      bestScore = score;
-      bestId = acct.id;
-    }
+    if (acct.accountNumber && acct.accountNumber.toLowerCase() === needle) return acct.id;
+    if (acct.systemTag && acct.systemTag.toLowerCase() === needle) return acct.id;
   }
 
+  // Otherwise best fuzzy name score (threshold 0.5).
+  let bestId: string | null = null;
+  let bestScore = 0;
+  for (const acct of allAccounts) {
+    const score = fuzzyScore(target, acct.name);
+    if (score > bestScore) { bestScore = score; bestId = acct.id; }
+  }
   return bestScore >= 0.5 ? bestId : null;
 }
 
@@ -123,11 +133,25 @@ export async function evaluateRules(tenantId: string, feedItem: { description: s
   for (const rule of globalRules) {
     if (!matchesConditions(rule, desc, direction, absAmount, feedItem.bankConnectionAccountId)) continue;
 
-    // Fuzzy match account name to tenant's COA
+    // Resolve the target account into THIS tenant's COA. Prefer the stored
+    // name; if the rule carried ONLY the origin tenant's account UUID (which is
+    // meaningless in another tenant and would otherwise make the rule silently
+    // assign nothing), recover a portable key from that UUID — the account's
+    // number (best) or name — since account ids are globally unique.
     let accountId: string | null = null;
-    if (rule.assignAccountName) {
-      accountId = await fuzzyMatchAccount(tenantId, rule.assignAccountName);
-      if (!accountId) continue; // Skip rule if we can't match the account
+    let target: string | null = rule.assignAccountName;
+    if (!target && rule.assignAccountId) {
+      const [origin] = await db
+        .select({ name: accounts.name, accountNumber: accounts.accountNumber })
+        .from(accounts).where(eq(accounts.id, rule.assignAccountId)).limit(1);
+      target = origin?.accountNumber || origin?.name || null;
+    }
+    if (target) {
+      accountId = await fuzzyMatchAccount(tenantId, target);
+      if (!accountId) continue; // can't map the account in this tenant → skip
+    } else {
+      console.warn(`[bank-rules] global rule ${rule.id} has no resolvable account target — skipping`);
+      continue;
     }
 
     // Find or create contact

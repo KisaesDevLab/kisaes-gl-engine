@@ -982,10 +982,10 @@ export async function bulkExclude(tenantId: string, feedItemIds: string[]) {
  * STATEMENT_CHECK_PAYEE_V1 — correlate payees read off check-image
  * thumbnails to their "CHECK ####" feed items. Match by check number, then
  * confirm by amount (within a cent). On a match we always stage the read
- * payee on `payee_name_on_check` (report fallback + audit); when it resolves
- * to a unique existing contact we also set `suggested_contact_id` so the
- * posted transaction gets a real `contact_id` (auto-apply on exact match).
- * Never creates contacts.
+ * payee on `payee_name_on_check` (report fallback + audit); resolves the payee
+ * to a contact (matching an existing one, else creating a vendor contact) and
+ * sets `suggested_contact_id` so the posted transaction gets a real
+ * `contact_id`, and the check payee also feeds the cleansed name + rule matching.
  */
 async function applyCheckImagePayees(
   tenantId: string,
@@ -1016,6 +1016,7 @@ async function applyCheckImagePayees(
     where: eq(contacts.tenantId, tenantId),
     columns: { id: true, displayName: true },
   });
+  const contactsService = await import('./contacts.service.js');
 
   for (const item of candidates) {
     const num = item.checkNumber as number;
@@ -1031,7 +1032,22 @@ async function applyCheckImagePayees(
     const payee = match.payee.trim();
     if (!payee) continue;
 
-    const contact = matchByName(tenantContacts, (c) => c.displayName, payee);
+    let contact = matchByName(tenantContacts, (c) => c.displayName, payee);
+    if (!contact) {
+      // Auto-create a vendor contact from the check payee so the Payee column
+      // fills in and later imports/rules can match it. Best-effort: a creation
+      // failure just leaves the payee as metadata (the prior behavior).
+      try {
+        const created = await contactsService.create(tenantId, {
+          displayName: payee.slice(0, 255),
+          contactType: 'vendor',
+        });
+        contact = { id: created.id, displayName: created.displayName };
+        tenantContacts.push(contact); // reuse for another check with the same payee
+      } catch (err) {
+        console.warn(`[applyCheckImagePayees] contact create failed for "${payee}":`, err instanceof Error ? err.message : err);
+      }
+    }
     const update: Partial<typeof bankFeedItems.$inferInsert> = {
       payeeNameOnCheck: payee.slice(0, 255),
       updatedAt: new Date(),
@@ -1293,6 +1309,7 @@ async function runRulesStages(
         amount: current.amount,
         feedDate: current.feedDate,
         bankConnectionAccountId: conn?.accountId ?? current.bankConnectionId,
+        payeeNameOnCheck: current.payeeNameOnCheck,
       }, { currentUserId: opts.userId ?? null });
       if (result.shortCircuitedLegacyRules) {
         conditionalShortCircuited.add(item.id);
@@ -1325,7 +1342,11 @@ async function runRulesStages(
     if (!current || current.status !== 'pending') continue;
 
     const ruleResult = await bankRulesService.evaluateRules(tenantId, {
-      description: current.description,
+      // Include the check payee so vendor-name rules match on checks (the raw
+      // description is only "CHECK 3301").
+      description: current.payeeNameOnCheck
+        ? `${current.description ?? ''} ${current.payeeNameOnCheck}`.trim()
+        : current.description,
       amount: parseFloat(current.amount),
     });
     if (ruleResult.matched) {

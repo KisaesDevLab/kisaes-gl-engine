@@ -318,8 +318,14 @@ export function contextFromFeedItem(item: {
   amount: string;
   feedDate: string;
   bankConnectionAccountId: string;
+  /** Payee read off the check image. A check's raw description is only
+   *  "CHECK 3301", so without this a vendor-name rule can never fire on a
+   *  check. Appended to the descriptor so descriptionContains-style rules match
+   *  the payee ("CHECK 3301 Cosmos Granite"). */
+  payeeNameOnCheck?: string | null;
 }): ConditionalRuleContext {
-  const desc = (item.originalDescription || item.description || '').trim();
+  const base = (item.originalDescription || item.description || '').trim();
+  const desc = item.payeeNameOnCheck ? `${base} ${item.payeeNameOnCheck}`.trim() : base;
   const amt = parseFloat(item.amount);
   const sign: -1 | 0 | 1 = amt > 0 ? 1 : amt < 0 ? -1 : 0;
   const date = item.feedDate;
