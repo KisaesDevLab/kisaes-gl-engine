@@ -534,6 +534,7 @@ setupRouter.post('/restore/execute', upload.single('file'), async (req, res) => 
       // The uploaded backup landed on disk (multer diskStorage) — remove it
       // once the run settles (NOT in this handler: the run reads it async).
       onSettle: () => { try { fs.unlinkSync(uploadedPath); } catch { /* already gone */ } },
+      recoveryKey: req.body?.recoveryKey,
     },
   );
   res.status(202).json(restoreRunView(run));
@@ -619,7 +620,7 @@ function describeRestoreError(err: unknown): string {
 
 function startRestoreRun(
   readContent: ContentSource,
-  opts: { onSuccess?: () => void; onSettle?: () => void } = {},
+  opts: { onSuccess?: () => void; onSettle?: () => void; recoveryKey?: string } = {},
 ): RestoreRun {
   // Re-attach instead of double-running: a second POST while a restore is
   // in flight (wizard reload after a proxy timeout) gets the SAME run. The
@@ -644,7 +645,7 @@ function startRestoreRun(
 
   void (async () => {
     try {
-      run.result = await runGuardedSetupRestore(readContent);
+      run.result = await runGuardedSetupRestore(readContent, opts.recoveryKey);
       run.status = 'complete';
       try { opts.onSuccess?.(); } catch { /* cleanup is best-effort */ }
     } catch (err) {
@@ -694,7 +695,12 @@ setupRouter.get('/restore/runs/:runId', (req, res) => {
  * /restore/execute-staged path run through here — the only difference
  * between them is how `readContent` produces the decrypted payload.
  */
-async function runGuardedSetupRestore(readContent: ContentSource): Promise<Record<string, unknown>> {
+async function runGuardedSetupRestore(
+  readContent: ContentSource,
+  // Operator's original recovery key, entered WITH the restore. On a cross-host
+  // restore it auto-re-encrypts the restored credentials under this box's key.
+  recoveryKey?: string,
+): Promise<Record<string, unknown>> {
   const { sql } = await import('drizzle-orm');
   const { db } = await import('../db/index.js');
 
@@ -842,6 +848,7 @@ async function runGuardedSetupRestore(readContent: ContentSource): Promise<Recor
         // recovery key stays valid. Cross-host keeps rotate-on-restore: the
         // old file would decrypt to the *source* server's secrets.
         let recoveryKeyPreserved = false;
+        let credentialRecovery: { attempted: boolean; reencrypted: number; unreadable: number; error?: string } | null = null;
         if (isSameHost && restoredInstallationFiles.envRecovery) {
           try {
             const { writeRecoveryFileRaw } = await import('../services/env-recovery.service.js');
@@ -864,15 +871,36 @@ async function runGuardedSetupRestore(readContent: ContentSource): Promise<Recor
           }
         } else if (!isSameHost && restoredInstallationFiles.envRecovery) {
           // Cross-host: the main recovery file was just re-minted for THIS
-          // host, but PARK the source install's file alongside it. The
-          // operator can later enter their ORIGINAL recovery key to recover
-          // the source credential-encryption key and re-encrypt every
-          // restored *_encrypted credential (Admin → Security).
+          // host, but PARK the source install's file alongside it so the
+          // operator's ORIGINAL recovery key can unlock the source
+          // credential-encryption key.
           try {
             const { writeSourceRecoveryFileRaw } = await import('../services/env-recovery.service.js');
             writeSourceRecoveryFileRaw(Buffer.from(restoredInstallationFiles.envRecovery, 'base64'));
           } catch (err) {
             console.error('[restore] source recovery file parking failed (non-fatal):', err instanceof Error ? err.message : err);
+          }
+
+          // Automate cross-host credential recovery IN the restore: if the
+          // operator supplied their recovery key with the restore, decrypt the
+          // just-parked source recovery file with it and re-encrypt every
+          // restored *_encrypted credential (API keys, SMTP, SMS, Plaid, …)
+          // from the source key to THIS server's key — so a DR restore comes
+          // back with WORKING credentials instead of blank fields. On a real
+          // disaster the operator has their recovery key (stored off-box), not
+          // the dead server's raw PLAID_ENCRYPTION_KEY. Best-effort: a wrong
+          // key / pre-v2 source file leaves the manual Admin → Security path.
+          if (recoveryKey && recoveryKey.trim()) {
+            try {
+              const { recoverCredentialEncryption } = await import('../services/credential-reencrypt.service.js');
+              const rep = await recoverCredentialEncryption({ recoveryKey: recoveryKey.trim() });
+              credentialRecovery = { attempted: true, reencrypted: rep.totals.reencrypted, unreadable: rep.totals.unreadable };
+              console.log(`[restore] auto credential recovery: ${rep.totals.reencrypted} re-encrypted, ${rep.totals.unreadable} unreadable`);
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              credentialRecovery = { attempted: true, reencrypted: 0, unreadable: 0, error: message };
+              console.error('[restore] auto credential recovery failed (retry in Admin → Security):', message);
+            }
           }
         }
 
@@ -922,6 +950,7 @@ async function runGuardedSetupRestore(readContent: ContentSource): Promise<Recor
           recoveryKey: recoveryKeyPreserved ? null : sentinelResultRestore.recoveryKey,
           recoveryKeyPreserved,
           crossHostRestore: !isSameHost,
+          credentialRecovery,
           tables: {
             totals: restoreReport.totals,
             passes: restoreReport.passes,
@@ -1286,6 +1315,7 @@ setupRouter.post('/restore/execute-staged', async (req, res) => {
       // they stay so the operator can retry (e.g. re-upload one corrupted
       // part) without re-uploading everything.
       onSuccess: () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ } },
+      recoveryKey: req.body?.recoveryKey,
     },
   );
   res.status(202).json(restoreRunView(run));
@@ -1463,7 +1493,7 @@ setupRouter.post('/restore/local/execute', async (req, res) => {
   // re-calling execute, so this never breaks resume.)
   const active = peekActiveRestoreRun();
   if (active) { res.status(409).json({ runId: active.id, error: { message: 'A restore is already in progress. Wait for it to finish.' } }); return; }
-  const run = startRestoreRun(localContentSource(bundle.files, passphrase));
+  const run = startRestoreRun(localContentSource(bundle.files, passphrase), { recoveryKey: req.body?.recoveryKey });
   res.status(202).json(restoreRunView(run));
 });
 
@@ -1626,7 +1656,10 @@ setupRouter.post('/restore/remote/execute', async (req, res) => {
     }
     const run = startRestoreRun(
       localContentSource(localFiles, passphrase),
-      { onSettle: () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ } } },
+      {
+        onSettle: () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ } },
+        recoveryKey: req.body?.recoveryKey,
+      },
     );
     res.status(202).json(restoreRunView(run));
   } catch (err) {
