@@ -25,27 +25,38 @@ const SCHEDULE_INTERVALS: Record<string, number> = {
   monthly: 30 * 24 * 60 * 60 * 1000,
 };
 
+/** True when `schedule` is a real cadence and `elapsed since lastRunKey` ≥ its interval. */
+export async function isDue(schedule: string | null, lastRunKey: string): Promise<boolean> {
+  if (!schedule || schedule === 'none') return false;
+  const intervalMs = SCHEDULE_INTERVALS[schedule];
+  if (!intervalMs) return false;
+  const lastRun = await getSetting(lastRunKey);
+  const parsed = lastRun ? new Date(lastRun).getTime() : 0;
+  // Fail SAFE: an unparseable/corrupt last-run timestamp counts as "never
+  // run" (due), so a bad value can never silently stop backups forever.
+  const lastRunTime = Number.isNaN(parsed) ? 0 : parsed;
+  return Date.now() - lastRunTime >= intervalMs;
+}
+
 async function runBackupCycle(): Promise<void> {
   const started = Date.now();
   try {
-    const schedule = await getSetting('backup_schedule');
-    if (!schedule || schedule === 'none') {
+    const fullSchedule = await getSetting('backup_schedule');
+    const dbSchedule = await getSetting('backup_db_schedule');
+
+    const fullDue = await isDue(fullSchedule, 'backup_last_run');
+    // DB-only cadence (independent of the full-bundle schedule): a DB-only
+    // system backup with NO attachments, so a daily cadence doesn't re-fetch
+    // every attachment from object storage each run.
+    const dbDue = await isDue(dbSchedule, 'backup_db_last_run');
+
+    if (!fullDue && !dbDue) {
       recordSchedulerTick('backup', Date.now() - started, 'skipped');
       return;
     }
 
-    const intervalMs = SCHEDULE_INTERVALS[schedule];
-    if (!intervalMs) return;
-
-    const lastRun = await getSetting('backup_last_run');
-    const lastRunTime = lastRun ? new Date(lastRun).getTime() : 0;
-    const elapsed = Date.now() - lastRunTime;
-
-    if (elapsed < intervalMs) return; // Not due yet
-
-    console.log(`[Backup Scheduler] Backup is due (schedule: ${schedule}, last run: ${lastRun || 'never'})`);
-
-    // Retrieve the stored backup passphrase (encrypted in system settings)
+    // Retrieve the stored backup passphrase (encrypted in system settings) —
+    // required for both cadences.
     const encryptedPassphrase = await getSetting('backup_scheduled_passphrase');
     if (!encryptedPassphrase) {
       console.warn('[Backup Scheduler] No backup passphrase configured. Set one in Admin → System Settings. Skipping.');
@@ -53,37 +64,47 @@ async function runBackupCycle(): Promise<void> {
     }
     const passphrase = decryptField(encryptedPassphrase);
 
-    // Get all tenant IDs
-    const allTenants = await db.select({ id: tenants.id }).from(tenants);
-    console.log(`[Backup Scheduler] Creating backups for ${allTenants.length} tenant(s)...`);
-
-    let successCount = 0;
-    let errorCount = 0;
-
-    for (const tenant of allTenants) {
-      try {
-        await createBackup(tenant.id, passphrase);
-        successCount++;
-      } catch (err: any) {
-        errorCount++;
-        console.error(`[Backup Scheduler] Failed for tenant ${tenant.id}: ${err.message}`);
+    if (fullDue) {
+      console.log(`[Backup Scheduler] Full backup is due (schedule: ${fullSchedule})`);
+      const allTenants = await db.select({ id: tenants.id }).from(tenants);
+      let successCount = 0;
+      let errorCount = 0;
+      for (const tenant of allTenants) {
+        try {
+          await createBackup(tenant.id, passphrase);
+          successCount++;
+        } catch (err: any) {
+          errorCount++;
+          console.error(`[Backup Scheduler] Failed for tenant ${tenant.id}: ${err.message}`);
+        }
       }
+      console.log(`[Backup Scheduler] Per-tenant backups: ${successCount} OK, ${errorCount} failed`);
+
+      // Full SYSTEM backup (all tenants/users/config + recovery files +
+      // attachment FILES) so the automated backup is genuinely restorable on a
+      // new server.
+      try {
+        const sys = await createSystemBackup(passphrase, undefined, { includeAttachments: true });
+        console.log(`[Backup Scheduler] System backup created: ${sys.fileName} (${sys.size} bytes)`);
+      } catch (err) {
+        console.error(`[Backup Scheduler] System backup failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      await setSetting('backup_last_run', new Date().toISOString());
     }
 
-    console.log(`[Backup Scheduler] Backups complete: ${successCount} OK, ${errorCount} failed`);
-
-    // Also create a full SYSTEM backup (all tenants/users/config + the
-    // recovery files + attachment FILES) so the automated backup is genuinely
-    // restorable on a new server — a per-tenant backup alone can't rebuild the
-    // installation (no users/tenants/config) and carries no attachment files.
-    try {
-      const sys = await createSystemBackup(passphrase, undefined, { includeAttachments: true });
-      console.log(`[Backup Scheduler] System backup created: ${sys.fileName} (${sys.size} bytes)`);
-    } catch (err) {
-      console.error(`[Backup Scheduler] System backup failed: ${err instanceof Error ? err.message : String(err)}`);
+    if (dbDue) {
+      console.log(`[Backup Scheduler] DB-only backup is due (schedule: ${dbSchedule})`);
+      try {
+        const sys = await createSystemBackup(passphrase, undefined, { includeAttachments: false });
+        console.log(`[Backup Scheduler] DB-only system backup created: ${sys.fileName} (${sys.size} bytes)`);
+      } catch (err) {
+        console.error(`[Backup Scheduler] DB-only system backup failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      await setSetting('backup_db_last_run', new Date().toISOString());
     }
 
-    // Purge expired local backups
+    // Purge expired local backups (covers the mirror dir too — see
+    // purgeExpiredLocalBackups).
     const localRetentionStr = await getSetting('backup_local_retention_days');
     const localRetentionDays = parseInt(localRetentionStr || '30') || 30;
     const localPurged = await purgeExpiredLocalBackups(localRetentionDays);
@@ -103,10 +124,8 @@ async function runBackupCycle(): Promise<void> {
       console.log(`[Backup Scheduler] Purged ${remotePurged} expired remote backup(s)`);
     }
 
-    // Mark completion
-    await setSetting('backup_last_run', new Date().toISOString());
     const durationMs = Date.now() - started;
-    log.info({ component: 'backup-scheduler', event: 'cycle_complete', durationMs, schedule });
+    log.info({ component: 'backup-scheduler', event: 'cycle_complete', durationMs, fullDue, dbDue });
     recordSchedulerTick('backup', durationMs, 'ok');
   } catch (err: any) {
     log.error({ component: 'backup-scheduler', event: 'cycle_error', message: err.message, durationMs: Date.now() - started });

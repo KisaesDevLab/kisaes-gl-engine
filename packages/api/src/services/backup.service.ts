@@ -42,6 +42,45 @@ function ensureDir(dir: string) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
+// ─── Local mirror (e.g. an external drive bind-mounted into the container) ──
+
+/** The admin-configured extra local directory, or null when unset/invalid.
+ *  Must be ABSOLUTE — a relative path would resolve against the process cwd,
+ *  not the operator's mounted drive (silent no-mirror). */
+async function getMirrorDir(): Promise<string | null> {
+  try {
+    const d = (await getSetting('backup_local_mirror_dir'))?.trim();
+    if (!d || !path.isAbsolute(d)) return null;
+    return d;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Best-effort copy of freshly-written backup files to the mirror dir,
+ * preserving each file's path RELATIVE to BACKUP_DIR (so `_system/x.vmx` →
+ * `<mirror>/_system/x.vmx`). Never throws — a mirror failure (drive
+ * unplugged, full) must not fail the backup itself; it's logged.
+ */
+export async function mirrorBackupFiles(absolutePaths: string[]): Promise<void> {
+  const mirror = await getMirrorDir();
+  if (!mirror) return;
+  for (const src of absolutePaths) {
+    try {
+      const rel = path.relative(BACKUP_DIR, src);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) continue; // outside BACKUP_DIR — skip
+      const dest = path.join(mirror, rel);
+      // Async copy — a multi-GB mirror to a slow external drive must NOT
+      // block the single-threaded event loop and stall the whole API.
+      await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+      await fs.promises.copyFile(src, dest);
+    } catch (err) {
+      log.warn({ component: 'backup', event: 'mirror_copy_failed', src, message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+}
+
 // Legacy encrypt/decrypt for backward compatibility with old .kbk files
 function legacyEncrypt(data: Buffer, key: string): Buffer {
   const iv = crypto.randomBytes(16);
@@ -333,6 +372,7 @@ export async function createBackup(
     } else {
       console.warn(`[Backup] Tenant package ${fileName} is ${result.size} bytes (> ${REMOTE_UPLOAD_MAX}); kept local only.`);
     }
+    await mirrorBackupFiles([filePath]);
 
     await auditLog(
       tenantId,
@@ -367,6 +407,7 @@ export async function createBackup(
   assertSafeFileName(fileName);
   const filePath = path.join(dir, fileName);
   fs.writeFileSync(filePath, encrypted);
+  await mirrorBackupFiles([filePath]);
 
   // Upload to remote storage (fire-and-forget)
   uploadBackupToRemote(fileName, encrypted, tenantId).catch((err) => {
@@ -585,6 +626,7 @@ export async function createSystemBackup(
       },
     });
     for (const f of multi.files) assertSafeFileName(f.fileName);
+    await mirrorBackupFiles(multi.files.map((f) => f.path));
 
     if (counters.skipped.length > 0) {
       console.warn(`[Backup] System backup ${baseName}: bundled ${counters.bundledCount} file(s) (${counters.bundledBytes} bytes), skipped ${counters.skipped.length}:`, counters.skipped.slice(0, 10));
@@ -637,6 +679,7 @@ export async function createSystemBackup(
   assertSafeFileName(fileName);
   const filePath = path.join(dir, fileName);
   fs.writeFileSync(filePath, encrypted);
+  await mirrorBackupFiles([filePath]);
 
   // Upload system backup to remote storage
   uploadBackupToRemote(fileName, encrypted, '_system').catch((err) => {
@@ -1024,38 +1067,40 @@ export async function deleteRemoteBackup(key: string): Promise<void> {
 
 // ─── Local Backup Purge (N days) ─────────────────────────────────
 
-export async function purgeExpiredLocalBackups(retentionDays: number): Promise<number> {
-  if (retentionDays <= 0) return 0;
-
-  const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+function pruneBackupDir(baseDir: string, cutoff: number): number {
+  if (!fs.existsSync(baseDir)) return 0;
   let deleted = 0;
-
-  if (!fs.existsSync(BACKUP_DIR)) return 0;
-
-  for (const entry of fs.readdirSync(BACKUP_DIR)) {
-    const tenantDir = path.join(BACKUP_DIR, entry);
+  for (const entry of fs.readdirSync(baseDir)) {
+    const tenantDir = path.join(baseDir, entry);
     try {
-      const stat = fs.statSync(tenantDir);
-      if (!stat.isDirectory()) continue;
+      if (!fs.statSync(tenantDir).isDirectory()) continue;
     } catch { continue; }
 
     for (const file of fs.readdirSync(tenantDir)) {
       // .vmx = attachments-included system packages — they're the largest
-      // files in BACKUP_DIR and MUST be purged or the scheduler fills the
-      // disk (one multi-GB package per cycle).
+      // files here and MUST be purged or the scheduler fills the disk (one
+      // multi-GB package per cycle).
       if (!file.endsWith('.kbk') && !file.endsWith('.vmb') && !file.endsWith('.vmx')) continue;
       const filePath = path.join(tenantDir, file);
       try {
-        const fstat = fs.statSync(filePath);
-        if (fstat.mtimeMs < cutoff) {
+        if (fs.statSync(filePath).mtimeMs < cutoff) {
           fs.unlinkSync(filePath);
           deleted++;
         }
       } catch { /* skip files we can't stat */ }
     }
   }
-
   return deleted;
+}
+
+export async function purgeExpiredLocalBackups(retentionDays: number): Promise<number> {
+  if (retentionDays <= 0) return 0;
+  const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  // Prune ONLY the app-owned BACKUP_DIR. The mirror directory is a
+  // deliberately durable/archival copy (e.g. an external drive) and may
+  // contain files the app didn't write — the app must never auto-delete it.
+  // Retention on the drive is the operator's to manage.
+  return pruneBackupDir(BACKUP_DIR, cutoff);
 }
 
 // ─── Remote Backup Purge (GFS) ──────────────────────────────────
