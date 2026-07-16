@@ -26,6 +26,16 @@ type Db = Pick<typeof DbType, 'execute'>;
 const MAX_RESTORE_PASSES = 10;
 const IDENT_RE = /^[a-z_][a-z0-9_]*$/;
 
+// Global reference/config tables the appliance BOOT-SEEDS with factory rows at
+// container startup, BEFORE any restore runs. The seed rows get fresh ids, so a
+// plain ON CONFLICT DO NOTHING restore would either collide on a natural key and
+// drop the firm's authoritative row (coa_templates is unique on slug — an edited
+// built-in template silently reverts to factory) or, for tables without a unique
+// key, leave BOTH the seed and the bundle row (duplicates). When the bundle
+// carries one of these tables its rows are authoritative, so the restore clears
+// the boot-seeded rows first (see restoreDatabaseSections).
+const BOOT_SEEDED_TABLES = ['coa_templates', 'payroll_provider_templates', 'ai_prompt_templates'];
+
 export interface TableRestoreStats {
   attempted: number;
   inserted: number;
@@ -202,6 +212,25 @@ export async function restoreDatabaseSections(
   const tables = Object.keys(sections).filter((t) => IDENT_RE.test(t) && (sections[t]?.length ?? 0) > 0);
   const { order, cyclic } = topoOrderTables(tables, await getPublicFkEdges(dbi));
 
+  // Boot-seeded reference tables the bundle re-supplies: clear the factory rows
+  // first so the firm's authoritative rows win instead of being dropped
+  // (coa_templates slug collision) or duplicated. Safe here — no restored child
+  // rows exist yet; each DELETE is savepoint-guarded so it can never poison the
+  // restore (an FK block just leaves the pre-existing ON CONFLICT behavior).
+  for (const t of BOOT_SEEDED_TABLES) {
+    if (!tables.includes(t)) continue;
+    await dbi.execute(sql.raw('SAVEPOINT clear_seed'));
+    try {
+      await dbi.execute(sql`DELETE FROM ${sql.identifier(t)}`);
+      await dbi.execute(sql.raw('RELEASE SAVEPOINT clear_seed'));
+    } catch {
+      try {
+        await dbi.execute(sql.raw('ROLLBACK TO SAVEPOINT clear_seed'));
+        await dbi.execute(sql.raw('RELEASE SAVEPOINT clear_seed'));
+      } catch { /* connection-level failure — the outer tx will surface it */ }
+    }
+  }
+
   const perTable: Record<string, TableRestoreStats> = {};
   for (const t of tables) {
     perTable[t] = { attempted: sections[t]!.length, inserted: 0, conflicts: 0, failed: 0, sampleErrors: [] };
@@ -372,6 +401,45 @@ export async function buildRestoreChecklist(dbi: Db): Promise<Record<string, Che
     }
   }
 
+  // jsonb-embedded credentials the column probe above misses: the OFF-SITE
+  // BACKUP and system-storage secrets live inside JSON blobs
+  // (system_settings.backup_remote_config / storage_system_config and
+  // storage_providers.config), not top-level *_encrypted columns. On a
+  // cross-host restore these silently fail to decrypt, and the very next
+  // scheduled off-site backup dies on decrypt with no warning — leaving the
+  // firm with no protection against a SECOND disaster. Probe them explicitly.
+  const jsonbCipher: string[] = [];
+  const collectEncrypted = (obj: unknown, depth = 0) => {
+    if (!obj || typeof obj !== 'object' || depth > 6) return;
+    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+      if (typeof v === 'string' && v && k.endsWith('_encrypted')) jsonbCipher.push(v);
+      else if (v && typeof v === 'object') collectEncrypted(v, depth + 1);
+    }
+  };
+  const parseMaybe = (v: unknown): unknown =>
+    typeof v === 'string' ? (() => { try { return JSON.parse(v); } catch { return null; } })() : v;
+  try {
+    const settings = await dbi.execute(
+      sql`SELECT value FROM system_settings WHERE key IN ('backup_remote_config', 'storage_system_config')`,
+    );
+    for (const r of settings.rows as { value: unknown }[]) collectEncrypted(parseMaybe(r.value));
+  } catch { /* table/rows absent */ }
+  try {
+    const providers = await dbi.execute(sql`SELECT config FROM storage_providers WHERE config IS NOT NULL`);
+    for (const r of providers.rows as { config: unknown }[]) collectEncrypted(parseMaybe(r.config));
+  } catch { /* table/column absent */ }
+  if (jsonbCipher.length > 0) {
+    const { decrypt } = await import('../utils/encryption.js');
+    const anyBroken = jsonbCipher.some((c) => { try { decrypt(c); return false; } catch { return true; } });
+    if (anyBroken) {
+      checklist['offsite_backup'] = {
+        status: 'warning',
+        message:
+          'Off-site backup / file-storage credentials were encrypted under a different key and cannot be read on this server — re-enter them in Admin → System (Remote Backup and File Storage). Until you do, scheduled off-site backups will fail.',
+      };
+    }
+  }
+
   const users = await firstRow(dbi, sql`SELECT COUNT(*)::int AS cnt FROM users`);
   const tenants = await firstRow(dbi, sql`SELECT COUNT(*)::int AS cnt FROM tenants`);
   checklist['users'] = { status: 'ok', message: `${Number(users?.['cnt'] ?? 0)} user accounts restored` };
@@ -386,6 +454,9 @@ export interface FileRestoreReport {
   perTable: Record<string, { restored: number; failed: number }>;
   unknownEntries: number;
   sampleErrors: string[];
+  /** Attachments whose bytes could not be read/decrypted/verified from the
+   *  bundle (corruption, tamper, missing segment). Counted, never fatal. */
+  readErrors: number;
 }
 
 interface FileTarget {
@@ -406,7 +477,7 @@ export async function writeBackBundleFiles(
   packageAttachments: () => AsyncGenerator<{ id: string; buffer: Buffer }>,
 ): Promise<FileRestoreReport> {
   const uploadDir = process.env['UPLOAD_DIR'] || '/data/uploads';
-  const report: FileRestoreReport = { perTable: {}, unknownEntries: 0, sampleErrors: [] };
+  const report: FileRestoreReport = { perTable: {}, unknownEntries: 0, sampleErrors: [], readErrors: 0 };
   const bump = (table: string, ok: boolean, err?: string) => {
     report.perTable[table] ??= { restored: 0, failed: 0 };
     if (ok) report.perTable[table]!.restored += 1;
@@ -468,7 +539,31 @@ export async function writeBackBundleFiles(
     return p;
   };
 
-  for await (const { id, buffer } of packageAttachments()) {
+  // Drive the generator MANUALLY so a decrypt/verify/segment failure while
+  // ADVANCING it (which happens outside a for-await body's try/catch) is caught
+  // here instead of throwing out of the whole file phase — the DB restore has
+  // already committed, so a thrown file error must not fail the run or wedge the
+  // retry. The single-file reader now yields per-entry error markers; the
+  // multi-part reader can still throw on a structural fault, in which case we
+  // record it and stop (a thrown async generator cannot be resumed).
+  const iterator = packageAttachments()[Symbol.asyncIterator]();
+  for (;;) {
+    let next: IteratorResult<{ id: string; buffer: Buffer; error?: string }>;
+    try {
+      next = await iterator.next();
+    } catch (err) {
+      report.readErrors += 1;
+      if (report.sampleErrors.length < 5) report.sampleErrors.push(err instanceof Error ? err.message : String(err));
+      break;
+    }
+    if (next.done) break;
+    const { id, buffer, error } = next.value;
+    // Per-entry read error marker (undecryptable/corrupt single attachment).
+    if (error) {
+      report.readErrors += 1;
+      if (report.sampleErrors.length < 5) report.sampleErrors.push(`${id}: ${error}`);
+      continue;
+    }
     const decoded = decodeFileEntryId(id);
     const table = decoded?.table ?? 'attachments';
     const target = decoded ? registryTargets.get(id) : attachmentTargets.get(id);

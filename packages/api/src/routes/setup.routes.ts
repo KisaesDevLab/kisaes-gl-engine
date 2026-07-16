@@ -741,7 +741,16 @@ async function runGuardedSetupRestore(readContent: ContentSource): Promise<Recor
         // payroll local files).
         let fileReport: FileRestoreReport | null = null;
         if (packageAttachments) {
-          fileReport = await writeBackBundleFiles(sections, packageAttachments);
+          try {
+            fileReport = await writeBackBundleFiles(sections, packageAttachments);
+          } catch (err) {
+            // Defensive: writeBackBundleFiles is built not to throw, but the DB
+            // restore has already COMMITTED — a file-phase throw must never fail
+            // the run or skip the sentinel/markInitialized below (which would
+            // wedge every retry). Downgrade to a reported warning.
+            console.error('[restore] file write-back threw (DB already committed):', err);
+            fileReport = { perTable: {}, unknownEntries: 0, readErrors: 1, sampleErrors: [err instanceof Error ? err.message : String(err)] };
+          }
           console.log('[restore] file write-back:', JSON.stringify(fileReport));
         }
 
@@ -869,23 +878,33 @@ async function runGuardedSetupRestore(readContent: ContentSource): Promise<Recor
         // hardcoded 'not configured' literals ignored the bundle entirely.
         const checklist = await buildRestoreChecklist(db);
 
+        const filesFailed = !!(fileReport && (Object.values(fileReport.perTable).some((t) => t.failed > 0) || fileReport.readErrors > 0));
         const warnings: string[] = [];
         if (restoreReport.totals.failed > 0) {
           warnings.push(
             `${restoreReport.totals.failed} row(s) could not be restored — see tables report`,
           );
         }
-        if (fileReport && Object.values(fileReport.perTable).some((t) => t.failed > 0)) {
+        if (filesFailed) {
           warnings.push('Some bundled files could not be written back — see files report');
         }
+        // Partial = the restore committed but something was NOT restored. The
+        // wizard MUST render this as a non-green result, never a plain success —
+        // otherwise a firm is told all data returned when rows/files were
+        // silently dropped.
+        const partial = restoreReport.totals.failed > 0 || filesFailed;
+        const okMessage = recoveryKeyPreserved
+          ? 'System restored successfully — your existing recovery key remains valid'
+          : isSameHost
+            ? 'System restored successfully (same host detected — new recovery key issued)'
+            : 'System restored successfully (new host — new recovery key issued)';
 
         return {
           success: true,
-          message: recoveryKeyPreserved
-            ? 'System restored successfully — your existing recovery key remains valid'
-            : isSameHost
-              ? 'System restored successfully (same host detected — new recovery key issued)'
-              : 'System restored successfully (new host — new recovery key issued)',
+          partial,
+          message: partial
+            ? `Restore completed with ISSUES — ${restoreReport.totals.failed} row(s)${filesFailed ? ' and some files' : ''} could NOT be restored. Review the report below before relying on this data.`
+            : okMessage,
           tenants_restored: (content.tenants || []).length,
           users_restored: (content.users || []).length,
           installationId: sentinelResultRestore.installationId,
@@ -914,22 +933,25 @@ async function runGuardedSetupRestore(readContent: ContentSource): Promise<Recor
           throw new Error('Backup does not contain tenant information');
         }
 
-        // Check if tenant already exists
-        const existing = await db.execute(sql`SELECT id FROM tenants WHERE id = ${tenantId}`);
-        if ((existing.rows as unknown[]).length === 0) {
-          await db.execute(sql`
-            INSERT INTO tenants (id, name, slug)
-            VALUES (${tenantId}, ${'Restored Company'}, ${'restored-' + tenantId.substring(0, 8)})
-          `);
-        }
-
         const sections: Record<string, Record<string, unknown>[]> = {};
         for (const [tableName, rows] of Object.entries(tables)) {
           if (Array.isArray(rows) && rows.length > 0) sections[tableName] = rows as Record<string, unknown>[];
         }
         // Transactional (same rationale as the system branch): a mid-restore
-        // throw rolls back so a retry isn't wedged by partial rows.
+        // throw rolls back so a retry isn't wedged by partial rows. The
+        // placeholder tenants row is inserted INSIDE the transaction too — a
+        // tenant-scoped bundle carries child data but not the tenants row, and
+        // if this row committed on its own (autocommit) a later failure would
+        // roll back the data but leave an orphan tenant that trips the
+        // emptiness guard and wedges every retry.
         const restoreReport: RestoreReport = await db.transaction(async (tx) => {
+          const existing = await tx.execute(sql`SELECT id FROM tenants WHERE id = ${tenantId}`);
+          if ((existing.rows as unknown[]).length === 0) {
+            await tx.execute(sql`
+              INSERT INTO tenants (id, name, slug)
+              VALUES (${tenantId}, ${'Restored Company'}, ${'restored-' + tenantId.substring(0, 8)})
+            `);
+          }
           const rep = await restoreDatabaseSections(tx, sections);
           await resyncOwnedSequences(tx);
           return rep;
@@ -939,7 +961,13 @@ async function runGuardedSetupRestore(readContent: ContentSource): Promise<Recor
         // back (the old flow ignored them entirely on this branch).
         let fileReport: FileRestoreReport | null = null;
         if (packageAttachments) {
-          fileReport = await writeBackBundleFiles(sections, packageAttachments);
+          try {
+            fileReport = await writeBackBundleFiles(sections, packageAttachments);
+          } catch (err) {
+            // Defensive (DB already committed) — see the system branch.
+            console.error('[restore] file write-back threw (DB already committed):', err);
+            fileReport = { perTable: {}, unknownEntries: 0, readErrors: 1, sampleErrors: [err instanceof Error ? err.message : String(err)] };
+          }
           console.log('[restore] file write-back:', JSON.stringify(fileReport));
         }
 
@@ -962,9 +990,14 @@ async function runGuardedSetupRestore(readContent: ContentSource): Promise<Recor
         // A tenant bundle carries no user accounts — keep the actionable hint.
         checklist['users'] = { status: 'warning', message: 'Create an admin account to access the restored data' };
 
+        const tenantFilesFailed = !!(fileReport && (Object.values(fileReport.perTable).some((t) => t.failed > 0) || fileReport.readErrors > 0));
+        const tenantPartial = restoreReport.totals.failed > 0 || tenantFilesFailed;
         return {
           success: true,
-          message: 'Tenant data restored',
+          partial: tenantPartial,
+          message: tenantPartial
+            ? `Tenant data restored with ISSUES — ${restoreReport.totals.failed} row(s)${tenantFilesFailed ? ' and some files' : ''} could NOT be restored. Review the report below before relying on this data.`
+            : 'Tenant data restored',
           tenant_id: tenantId,
           row_count: metadata.rowCount,
           tables: {
