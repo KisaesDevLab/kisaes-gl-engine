@@ -287,16 +287,25 @@ describe('round_dollar_above_threshold', () => {
 // ─── weekend_holiday_posting ─────────────────────────────────
 
 describe('weekend_holiday_posting', () => {
+  // The no-period path only looks back 90 days from now(), so
+  // hardcoded dates are a time bomb — they silently age out of the
+  // window. Seed relative to today instead: the most recent past
+  // day-of-week is always inside the guard.
+  function lastDayOfWeek(targetDow: number): string {
+    const d = new Date();
+    const back = (d.getUTCDay() - targetDow + 7) % 7 || 7;
+    d.setUTCDate(d.getUTCDate() - back);
+    return d.toISOString().slice(0, 10);
+  }
+
   it('flags Saturday postings', async () => {
-    // 2026-04-18 is a Saturday in the UTC calendar.
-    await seedTransaction({ txnType: 'expense', total: '100.0000', txnDate: '2026-04-18' });
+    await seedTransaction({ txnType: 'expense', total: '100.0000', txnDate: lastDayOfWeek(6) });
     const drafts = await HANDLERS['weekend_holiday_posting']!(tenantId, companyId, {});
     expect(drafts).toHaveLength(1);
   });
 
   it('does not flag weekday postings', async () => {
-    // 2026-04-15 is a Wednesday.
-    await seedTransaction({ txnType: 'expense', total: '100.0000', txnDate: '2026-04-15' });
+    await seedTransaction({ txnType: 'expense', total: '100.0000', txnDate: lastDayOfWeek(3) });
     const drafts = await HANDLERS['weekend_holiday_posting']!(tenantId, companyId, {});
     expect(drafts).toEqual([]);
   });
