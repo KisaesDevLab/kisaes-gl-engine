@@ -607,6 +607,17 @@ export async function parseGl(
       continue;
     }
 
+    // QBO filler line: no account and no non-zero amount — a voided
+    // check's zero line ("VOID: VOID"), a reversing-JE leg, or an empty
+    // split. cellToDecimal('0') returns '0' (truthy), so the fully-blank
+    // guard above misses these; treated as a posting they'd fail account
+    // resolution with a "?" account. They carry no accounting value (and
+    // don't affect the JE balance), so drop them — but never drop a JE
+    // header (has date + type) or a line with a real amount.
+    if (!account && !(date && txnType) && Number(debit ?? 0) === 0 && Number(credit ?? 0) === 0) {
+      continue;
+    }
+
     // Header of a new JE.
     if (date && txnType) {
       closeCurrent();
