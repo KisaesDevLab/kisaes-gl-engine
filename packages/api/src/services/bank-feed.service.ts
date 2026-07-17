@@ -63,6 +63,11 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
   // an 'assigned' row can render its human-chosen category/tag before posting.
   const assignedAccount = alias(accounts, 'assigned_account');
   const assignedTag = alias(tags, 'assigned_tag');
+  // Separate aliases for the payee/vendor contact display names so the
+  // feed's NAME column can show the resolved payee (rule- or AI-set, or
+  // human-assigned) instead of only the cleaned bank descriptor.
+  const suggestedContact = alias(contacts, 'suggested_contact');
+  const assignedContact = alias(contacts, 'assigned_contact');
 
   // Server-side column sort. The page paginates, so sorting must happen
   // here — the old client-side sort only ordered the visible page.
@@ -96,6 +101,7 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
       matchedTransactionId: bankFeedItems.matchedTransactionId,
       suggestedAccountId: bankFeedItems.suggestedAccountId,
       suggestedContactId: bankFeedItems.suggestedContactId,
+      suggestedContactName: suggestedContact.displayName,
       confidenceScore: bankFeedItems.confidenceScore,
       // STATEMENT_CHECK_PAYEE_V1 — surfaced in the UI so the payee read off a
       // check image is visible/confirmable before posting.
@@ -117,6 +123,7 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
       assignedAccountId: bankFeedItems.assignedAccountId,
       assignedAccountName: assignedAccount.name,
       assignedContactId: bankFeedItems.assignedContactId,
+      assignedContactName: assignedContact.displayName,
       assignedTagId: bankFeedItems.assignedTagId,
       assignedTagName: assignedTag.name,
       assignedMemo: bankFeedItems.assignedMemo,
@@ -171,6 +178,8 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
       .leftJoin(suggestedTag, eq(bankFeedItems.suggestedTagId, suggestedTag.id))
       .leftJoin(assignedAccount, eq(bankFeedItems.assignedAccountId, assignedAccount.id))
       .leftJoin(assignedTag, eq(bankFeedItems.assignedTagId, assignedTag.id))
+      .leftJoin(suggestedContact, eq(bankFeedItems.suggestedContactId, suggestedContact.id))
+      .leftJoin(assignedContact, eq(bankFeedItems.assignedContactId, assignedContact.id))
       .where(where)
       .orderBy(orderBy)
       .limit(filters.limit ?? 50)
