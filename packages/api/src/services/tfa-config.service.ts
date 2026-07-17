@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { eq } from 'drizzle-orm';
+import { eq, desc, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { tfaConfig } from '../db/schema/index.js';
 import { encrypt, decrypt } from '../utils/encryption.js';
@@ -24,12 +24,22 @@ export interface TfaSystemConfig {
 }
 
 async function getOrCreateConfig() {
-  let config = await db.query.tfaConfig.findFirst();
-  if (!config) {
-    const [created] = await db.insert(tfaConfig).values({}).returning();
-    config = created!;
+  // tfa_config is a singleton, but the get-or-create below can race
+  // (two concurrent first requests both see "no row" and both insert).
+  // With duplicates present, the old findFirst() had no ORDER BY, and a
+  // Postgres UPDATE relocates the written row in physical order — so
+  // every admin save wrote one row and the next read returned the OTHER,
+  // making the settings appear to revert. Read deterministically (most
+  // recent admin intent first) and self-heal by deleting the rest.
+  const rows = await db.select().from(tfaConfig).orderBy(desc(tfaConfig.updatedAt), desc(tfaConfig.createdAt));
+  if (rows.length > 1) {
+    const stale = rows.slice(1).map((r) => r.id);
+    await db.delete(tfaConfig).where(inArray(tfaConfig.id, stale));
+    console.warn(`[tfa-config] Removed ${stale.length} duplicate tfa_config row(s) (get-or-create race); kept ${rows[0]!.id}`);
   }
-  return config;
+  if (rows.length > 0) return rows[0]!;
+  const [created] = await db.insert(tfaConfig).values({}).returning();
+  return created!;
 }
 
 export async function getConfig(): Promise<TfaSystemConfig> {
