@@ -235,9 +235,9 @@ export async function register(input: RegisterInput): Promise<{ user: typeof use
         lastName: nameParts.length > 1 ? nameParts.slice(1).join(' ') : undefined,
         companies: [{ companyId: company.id, role: 'owner', financialsAccess: true }],
       }, user.id);
-    } catch (err: any) {
+    } catch (err) {
       // eslint-disable-next-line no-console
-      console.warn('[auth.service] portal-contact auto-create on signup failed:', err?.message ?? err);
+      console.warn('[auth.service] portal-contact auto-create on signup failed:', err instanceof Error ? err.message : err);
     }
   }
 
