@@ -239,6 +239,39 @@ describe('firms — collection', () => {
   });
 });
 
+describe('firms — superAdminManaged lockdown', () => {
+  // The appliance firm spans every tenant on the box; firm_admin
+  // membership there must NOT grant firm management. Only super
+  // admins manage a superAdminManaged firm.
+  it('firm_admin member of a superAdminManaged firm gets 403 on management routes', async () => {
+    const created = await request(
+      'POST',
+      '/api/v1/firms',
+      { name: 'Appliance', slug: 'managed-lockdown-test', superAdminManaged: true },
+      superAdminToken,
+    );
+    firmId = created.json.id;
+
+    // Make outsider a firm_admin member directly (simulates the
+    // legacy auto-join behavior).
+    await db.insert(firmUsers).values({ firmId, userId: outsiderUserId, firmRole: 'firm_admin', isActive: true });
+
+    // Management write → 403 FIRM_SUPER_ADMIN_MANAGED (member, so not 404).
+    const invite = await request(
+      'POST',
+      `/api/v1/firms/${firmId}/users`,
+      { email: 'someone@example.com', firmRole: 'firm_staff' },
+      outsiderToken,
+    );
+    expect(invite.status).toBe(403);
+    expect(invite.json?.error?.code ?? invite.json?.code).toBe('FIRM_SUPER_ADMIN_MANAGED');
+
+    // Super admin still manages fine.
+    const saList = await request('GET', `/api/v1/firms/${firmId}/users`, undefined, superAdminToken);
+    expect(saList.status).toBe(200);
+  });
+});
+
 describe('firms — staff management', () => {
   beforeEach(async () => {
     const created = await request(

@@ -86,6 +86,17 @@ describe('Auth Service', () => {
       expect(links).toHaveLength(1);
       expect(links[0]!.role).toBe('owner');
       expect(links[0]!.financialsAccess).toBe(true);
+
+      // Self-signup: tenant is ASSIGNED to the appliance firm (so
+      // firm/global rules apply) but the user gets NO firm membership
+      // — firm membership is what exposes the Practice/Firm staff
+      // surfaces and, historically, appliance-wide admin powers.
+      const { getActiveForTenant } = await import('./tenant-firm-assignment.service.js');
+      const { getRoleForUser } = await import('./firm-users.service.js');
+      const assignment = await getActiveForTenant(result.user.tenantId);
+      expect(assignment).not.toBeNull();
+      const firmRole = await getRoleForUser(assignment!.firmId, result.user.id);
+      expect(firmRole).toBeNull();
     });
 
     it('should reject duplicate email', async () => {

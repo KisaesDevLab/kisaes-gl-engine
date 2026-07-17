@@ -98,3 +98,28 @@ describe('firm-provisioning.joinApplianceFirm', () => {
     expect(memberships).toHaveLength(1);
   });
 });
+
+describe('firm-provisioning.assignTenantToApplianceFirm', () => {
+  it('assigns the tenant WITHOUT making the user a firm member', async () => {
+    await provisioning.assignTenantToApplianceFirm(tenantId, userId);
+
+    const assignment = await tenantFirmAssignmentService.getActiveForTenant(tenantId);
+    expect(assignment).not.toBeNull();
+
+    // The actor must NOT become a member — membership is what exposes
+    // the staff-only Practice/Firm surfaces to self-signup clients.
+    const role = await firmUsersService.getRoleForUser(assignment!.firmId, userId);
+    expect(role).toBeNull();
+  });
+
+  it('is idempotent and never reassigns an existing assignment', async () => {
+    await provisioning.assignTenantToApplianceFirm(tenantId, userId);
+    await provisioning.assignTenantToApplianceFirm(tenantId, userId);
+
+    const activeAssignments = await db
+      .select()
+      .from(tenantFirmAssignments)
+      .where(and(eq(tenantFirmAssignments.tenantId, tenantId), eq(tenantFirmAssignments.isActive, true)));
+    expect(activeAssignments).toHaveLength(1);
+  });
+});

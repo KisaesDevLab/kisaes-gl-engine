@@ -5,6 +5,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import type { FirmRole } from '@kis-books/shared';
 import { AppError } from '../utils/errors.js';
+import * as firmsService from '../services/firms.service.js';
 import * as firmUsersService from '../services/firm-users.service.js';
 import * as tenantFirmAssignmentService from '../services/tenant-firm-assignment.service.js';
 
@@ -60,9 +61,24 @@ export async function requireFirmStaffOnTenant(req: Request, _res: Response, nex
 // authoring and firm-management endpoints. Mount AFTER
 // `requireFirmStaffOnTenant` OR after a route-specific resolver
 // that has set `req.firmId`/`req.firmRole`.
-export function requireFirmAdmin(req: Request, _res: Response, next: NextFunction) {
+//
+// On a `superAdminManaged` firm (the shared appliance firm), firm
+// management is reserved for super admins regardless of firmRole.
+// Without this, any firm_admin member of the appliance firm could
+// manage a firm that spans EVERY tenant on the box — including
+// granting themselves tenant access to other tenants' books.
+export async function requireFirmAdmin(req: Request, _res: Response, next: NextFunction) {
   if (req.firmRole !== 'firm_admin') {
     throw AppError.forbidden('Firm admin role required', 'NOT_FIRM_ADMIN');
+  }
+  if (!req.isSuperAdmin && req.firmId) {
+    const firm = await firmsService.getById(req.firmId);
+    if (firm.superAdminManaged) {
+      throw AppError.forbidden(
+        'This firm is managed by the system administrator',
+        'FIRM_SUPER_ADMIN_MANAGED',
+      );
+    }
   }
   next();
 }

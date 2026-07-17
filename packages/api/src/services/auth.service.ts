@@ -17,7 +17,7 @@ import { seedFromTemplate } from './accounts.service.js';
 import * as systemEmail from './system-email.service.js';
 import { checkPasswordBreached } from '../utils/hibp.js';
 import { seedDefaultsForNewTenant as seedFeatureFlags } from './feature-flags.service.js';
-import { joinApplianceFirm } from './firm-provisioning.service.js';
+import { joinApplianceFirm, assignTenantToApplianceFirm } from './firm-provisioning.service.js';
 
 // Cap per CLOUDFLARE_TUNNEL_PLAN Phase 3: max 3 concurrent sessions per
 // user. Oldest refresh token is revoked when the limit is exceeded —
@@ -151,8 +151,10 @@ export async function createClientTenant(creatorUserId: string, input: { company
   }).onConflictDoNothing();
 
   // Auto-join the appliance firm so the tiered conditional-rules UI
-  // resolves for the creator on this tenant. Idempotent.
-  await joinApplianceFirm(tenant.id, creatorUserId);
+  // resolves for the creator on this tenant. Idempotent. firm_staff,
+  // not firm_admin: staff author tenant_firm rules but must not manage
+  // the appliance-wide firm (membership, tenant assignments, creds).
+  await joinApplianceFirm(tenant.id, creatorUserId, 'firm_staff');
 
   return { tenantId: tenant.id, companyId: company?.id || '', tenantName: tenant.name };
 }
@@ -213,9 +215,12 @@ export async function register(input: RegisterInput): Promise<{ user: typeof use
   // Create tenant access record
   await db.insert(userTenantAccess).values({ userId: user.id, tenantId: tenant.id, role: 'owner' });
 
-  // Auto-join the appliance firm (owner → firm_admin) so the tiered
-  // conditional-rules UI is available by default. Idempotent.
-  await joinApplianceFirm(tenant.id, user.id);
+  // Assign the new tenant to the appliance firm so practice staff can
+  // manage it and firm/global rules apply — but do NOT make the
+  // self-signup user a firm member. The appliance firm spans every
+  // tenant on the box; membership would expose the Practice/Firm
+  // surfaces and the firm roster/tenant list to a client.
+  await assignTenantToApplianceFirm(tenant.id, user.id);
 
   // Self-signup owners also become a client-portal contact of their own
   // company. Best-effort: a portal-side failure must not fail the signup
