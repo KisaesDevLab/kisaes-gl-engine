@@ -457,6 +457,24 @@ interface QboLineRaw {
   credit: unknown;
 }
 
+// QBO's GL/Journal exports put the account NUMBER and NAME in one cell
+// ("1000 Checking Account", "#4000 Sales"). Split the leading numeric token
+// off as the account number so it matches a numbered chart of accounts, and
+// keep the remainder as the name so a numberless CoA still matches by name.
+// A cell that is only a name ("Checking Account") or starts with digits that
+// aren't a separated number token ("401k Match") yields no number and the
+// whole cell as the name; a cell that is only a number ("1000") yields just
+// the number.
+export function splitQboAccount(raw: string): { accountNumber?: string; accountName?: string } {
+  const s = raw.trim();
+  if (!s) return {};
+  const numOnly = s.match(/^#?(\d[\d.]*)$/);
+  if (numOnly) return { accountNumber: numOnly[1] };
+  const m = s.match(/^#?(\d[\d.]*)[\s\-–—]+(.+)$/);
+  if (m) return { accountNumber: m[1], accountName: m[2]!.trim() };
+  return { accountName: s };
+}
+
 export async function parseGl(
   buf: Buffer,
 ): Promise<{ entries: CanonicalGlEntry[]; errors: ImportValidationError[] }> {
@@ -517,12 +535,16 @@ export async function parseGl(
     }
     const sourceCode =
       QBO_TXN_TYPE_LABELS[first.txnType.toLowerCase()] ?? `QBO:${first.txnType}`;
-    const lines: CanonicalGlLine[] = current.map((l) => ({
-      accountName: l.account || undefined,
-      debit: cellToDecimal(l.debit) ?? '0',
-      credit: cellToDecimal(l.credit) ?? '0',
-      memo: l.memo || undefined,
-    }));
+    const lines: CanonicalGlLine[] = current.map((l) => {
+      const acct = splitQboAccount(l.account || '');
+      return {
+        accountName: acct.accountName,
+        accountNumber: acct.accountNumber,
+        debit: cellToDecimal(l.debit) ?? '0',
+        credit: cellToDecimal(l.credit) ?? '0',
+        memo: l.memo || undefined,
+      };
+    });
     entries.push({
       rowNumber: first.rowNumber,
       date: iso,
