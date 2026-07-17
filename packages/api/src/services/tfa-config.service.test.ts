@@ -30,7 +30,7 @@ describe('tfa_config singleton self-heal', () => {
       codeLength: 8, createdAt: new Date(now - 90_000), updatedAt: new Date(now),
     });
 
-    await tfaConfigService.updateConfig({ magicLinkEnabled: true } as Parameters<typeof tfaConfigService.updateConfig>[0]);
+    await tfaConfigService.updateConfig({ magicLinkEnabled: true });
 
     const rows = await db.select().from(tfaConfig);
     expect(rows).toHaveLength(1); // duplicate deleted
@@ -43,16 +43,25 @@ describe('tfa_config singleton self-heal', () => {
   });
 
   it('passwordless toggles round-trip (save → read → save)', async () => {
-    await tfaConfigService.updateConfig({ passkeysEnabled: true, magicLinkEnabled: true } as Parameters<typeof tfaConfigService.updateConfig>[0]);
+    await tfaConfigService.updateConfig({ passkeysEnabled: true, magicLinkEnabled: true, magicLinkExpiryMinutes: 30 });
     let rows = await db.select().from(tfaConfig);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.passkeysEnabled).toBe(true);
     expect(rows[0]!.magicLinkEnabled).toBe(true);
 
-    await tfaConfigService.updateConfig({ magicLinkEnabled: false } as Parameters<typeof tfaConfigService.updateConfig>[0]);
+    // The admin GET payload must echo the passwordless fields — they used
+    // to be missing from getConfig(), so the form re-initialized its
+    // toggles to false on every load and saves appeared to revert.
+    const config = await tfaConfigService.getConfig();
+    expect(config.passkeysEnabled).toBe(true);
+    expect(config.magicLinkEnabled).toBe(true);
+    expect(config.magicLinkExpiryMinutes).toBe(30);
+
+    await tfaConfigService.updateConfig({ magicLinkEnabled: false });
     rows = await db.select().from(tfaConfig);
     expect(rows).toHaveLength(1); // still a singleton
     expect(rows[0]!.magicLinkEnabled).toBe(false);
     expect(rows[0]!.passkeysEnabled).toBe(true); // untouched field preserved
+    expect((await tfaConfigService.getConfig()).magicLinkEnabled).toBe(false);
   });
 });

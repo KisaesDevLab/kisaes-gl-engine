@@ -21,6 +21,10 @@ export interface TfaSystemConfig {
   hasSmsTwilioAccountSid: boolean;
   hasSmsTwilioAuthToken: boolean;
   hasSmsTextlinkApiKey: boolean;
+  passkeysEnabled: boolean;
+  magicLinkEnabled: boolean;
+  magicLinkExpiryMinutes: number;
+  magicLinkMaxAttempts: number;
 }
 
 async function getOrCreateConfig() {
@@ -61,6 +65,13 @@ export async function getConfig(): Promise<TfaSystemConfig> {
     hasSmsTwilioAccountSid: !!config.smsTwilioAccountSid,
     hasSmsTwilioAuthToken: !!config.smsTwilioAuthToken,
     hasSmsTextlinkApiKey: !!config.smsTextlinkApiKey,
+    // Passwordless — the PUT has always persisted these, but they were
+    // missing from this payload, so the admin form re-initialized its
+    // toggles to false on every load and saves appeared to revert.
+    passkeysEnabled: config.passkeysEnabled ?? false,
+    magicLinkEnabled: config.magicLinkEnabled ?? false,
+    magicLinkExpiryMinutes: config.magicLinkExpiryMinutes ?? 15,
+    magicLinkMaxAttempts: config.magicLinkMaxAttempts ?? 3,
   };
 }
 
@@ -79,6 +90,10 @@ export async function updateConfig(input: Partial<{
   smsTwilioFromNumber: string;
   smsTextlinkApiKey: string;
   smsTextlinkServiceName: string;
+  passkeysEnabled: boolean;
+  magicLinkEnabled: boolean;
+  magicLinkExpiryMinutes: number;
+  magicLinkMaxAttempts: number;
 }>, userId?: string) {
   const config = await getOrCreateConfig();
   const updates: any = { updatedAt: new Date() };
@@ -105,10 +120,10 @@ export async function updateConfig(input: Partial<{
   else if (input.smsTextlinkApiKey) updates.smsTextlinkApiKey = encrypt(input.smsTextlinkApiKey);
   if (input.smsTextlinkServiceName !== undefined) updates.smsTextlinkServiceName = input.smsTextlinkServiceName;
   // Passwordless
-  if ((input as any).passkeysEnabled !== undefined) updates.passkeysEnabled = (input as any).passkeysEnabled;
-  if ((input as any).magicLinkEnabled !== undefined) updates.magicLinkEnabled = (input as any).magicLinkEnabled;
-  if ((input as any).magicLinkExpiryMinutes !== undefined) updates.magicLinkExpiryMinutes = (input as any).magicLinkExpiryMinutes;
-  if ((input as any).magicLinkMaxAttempts !== undefined) updates.magicLinkMaxAttempts = (input as any).magicLinkMaxAttempts;
+  if (input.passkeysEnabled !== undefined) updates.passkeysEnabled = input.passkeysEnabled;
+  if (input.magicLinkEnabled !== undefined) updates.magicLinkEnabled = input.magicLinkEnabled;
+  if (input.magicLinkExpiryMinutes !== undefined) updates.magicLinkExpiryMinutes = input.magicLinkExpiryMinutes;
+  if (input.magicLinkMaxAttempts !== undefined) updates.magicLinkMaxAttempts = input.magicLinkMaxAttempts;
   if (userId) { updates.configuredBy = userId; updates.configuredAt = new Date(); }
   // Invalidate capabilities cache when admin changes config
   try { const { invalidateCapabilitiesCache } = await import('./auth-availability.service.js'); invalidateCapabilitiesCache(); } catch {}
