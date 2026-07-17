@@ -118,8 +118,11 @@ async function createSession(
   await trimOldestSessions(userId);
 }
 
-export async function createClientTenant(creatorUserId: string, input: { companyName: string; industry?: string; entityType?: string; businessType?: string; systemAccountsOnly?: boolean }): Promise<{ tenantId: string; companyId: string; tenantName: string }> {
-  // Create a new tenant
+/** Shared tenant provisioning: tenant row + company + COA seed + feature
+ *  flags. Access rows and firm membership are the caller's business —
+ *  that's what distinguishes a practice client tenant from a
+ *  self-service owned tenant. */
+async function provisionTenant(input: { companyName: string; businessType?: string; systemAccountsOnly?: boolean }): Promise<{ tenantId: string; companyId: string; tenantName: string }> {
   const [tenant] = await db.insert(tenants).values({
     name: input.companyName,
     slug: generateSlug(input.companyName),
@@ -142,6 +145,12 @@ export async function createClientTenant(creatorUserId: string, input: { company
 
   // Get the company that was just created
   const company = await db.query.companies.findFirst({ where: eq(companies.tenantId, tenant.id) });
+  return { tenantId: tenant.id, companyId: company?.id || '', tenantName: tenant.name };
+}
+
+export async function createClientTenant(creatorUserId: string, input: { companyName: string; industry?: string; entityType?: string; businessType?: string; systemAccountsOnly?: boolean }): Promise<{ tenantId: string; companyId: string; tenantName: string }> {
+  const provisioned = await provisionTenant(input);
+  const tenant = { id: provisioned.tenantId, name: provisioned.tenantName };
 
   // Give the creator access to this tenant as accountant
   await db.insert(userTenantAccess).values({
@@ -156,7 +165,87 @@ export async function createClientTenant(creatorUserId: string, input: { company
   // the appliance-wide firm (membership, tenant assignments, creds).
   await joinApplianceFirm(tenant.id, creatorUserId, 'firm_staff');
 
-  return { tenantId: tenant.id, companyId: company?.id || '', tenantName: tenant.name };
+  return provisioned;
+}
+
+// ─── Self-service tenant creation (non-firm users) ───────────────
+
+export interface TenantCreationEligibility {
+  /** The instance-level toggle (super-admin setting). */
+  enabled: boolean;
+  /** Whether THIS user may create a tenant right now. */
+  allowed: boolean;
+  /** Human-readable reason when !allowed. */
+  reason?: string;
+  /** Active 'owner' tenancies counted against the cap (home tenant included). */
+  used: number;
+  /** Max owned tenancies; 0 = unlimited. */
+  limit: number;
+}
+
+export async function getTenantCreationEligibility(userId: string, currentRole: string): Promise<TenantCreationEligibility> {
+  // Dynamic import matches the other settings readers in the auth path
+  // and avoids a static cycle with the (large) admin service module.
+  const { getSetting } = await import('./admin.service.js');
+  const { SystemSettingsKeys } = await import('../constants/system-settings-keys.js');
+
+  // Default OFF: only the literal 'true' enables (a new capability must
+  // not appear because a row is absent or the DB read degraded).
+  const enabled = (await getSetting(SystemSettingsKeys.SELF_SERVICE_TENANT_CREATION)) === 'true';
+  const limitRaw = await getSetting(SystemSettingsKeys.SELF_SERVICE_TENANT_LIMIT);
+  const parsedLimit = Number.parseInt(limitRaw ?? '', 10);
+  const limit = Number.isFinite(parsedLimit) && parsedLimit >= 0 ? parsedLimit : 3;
+
+  const owned = await db.select({ id: userTenantAccess.id }).from(userTenantAccess)
+    .where(and(
+      eq(userTenantAccess.userId, userId),
+      eq(userTenantAccess.role, 'owner'),
+      eq(userTenantAccess.isActive, true),
+    ));
+  const used = owned.length;
+  const base = { enabled, used, limit };
+
+  if (!enabled) return { ...base, allowed: false, reason: 'Creating additional businesses is disabled by your administrator.' };
+
+  const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+  if (!user || user.isActive === false) return { ...base, allowed: false, reason: 'Account is not active.' };
+  // Portal 'client' accounts and non-owner staff invited into someone
+  // else's books don't get to mint tenants; super-admins always may.
+  if (user.userType !== 'staff') return { ...base, allowed: false, reason: 'Portal accounts cannot create businesses.' };
+  if (currentRole !== 'owner' && !user.isSuperAdmin) {
+    return { ...base, allowed: false, reason: 'Only the owner of a business can create a new one.' };
+  }
+  if (limit !== 0 && used >= limit) {
+    return { ...base, allowed: false, reason: `You already own ${used} of ${limit} allowed businesses. Ask your administrator to raise the limit.` };
+  }
+  return { ...base, allowed: true };
+}
+
+/**
+ * "New Business (separate books)": a fully-isolated tenant owned by the
+ * creator. Unlike createClientTenant: creator role is 'owner' (not
+ * accountant) and there is NO appliance-firm join — this is the user's
+ * own books, not practice tooling. Gated by the self_service_tenant_*
+ * settings; the route relies on THIS check as the security boundary.
+ */
+export async function createOwnedTenant(creatorUserId: string, currentRole: string, input: { companyName: string; entityType?: string; businessType?: string; systemAccountsOnly?: boolean }): Promise<{ tenantId: string; companyId: string; tenantName: string }> {
+  const companyName = input.companyName?.trim();
+  if (!companyName) throw AppError.badRequest('companyName is required');
+
+  const eligibility = await getTenantCreationEligibility(creatorUserId, currentRole);
+  if (!eligibility.allowed) {
+    throw AppError.forbidden(eligibility.reason || 'You are not allowed to create a new business.');
+  }
+
+  const provisioned = await provisionTenant({ ...input, companyName });
+
+  await db.insert(userTenantAccess).values({
+    userId: creatorUserId,
+    tenantId: provisioned.tenantId,
+    role: 'owner',
+  }).onConflictDoNothing();
+
+  return provisioned;
 }
 
 export async function register(input: RegisterInput): Promise<{ user: typeof users.$inferSelect; tokens: AuthTokens }> {

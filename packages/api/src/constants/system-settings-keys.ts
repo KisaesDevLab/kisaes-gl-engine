@@ -45,6 +45,21 @@ export const SystemSettingsKeys = {
    * other settings in this k/v table.
    */
   REGISTRATION_ENABLED: 'registration_enabled',
+  /**
+   * Whether a non-firm user may create additional tenants for themselves
+   * via POST /api/v1/auth/create-tenant ("New Business (separate books)"
+   * in the company switcher). Default OFF — only the literal `'true'`
+   * enables it: unlike REGISTRATION_ENABLED this is a new capability, so
+   * absent-row and degraded-DB scenarios must not silently grant it.
+   * Staff create-client flows (/auth/create-client) are unaffected.
+   */
+  SELF_SERVICE_TENANT_CREATION: 'self_service_tenant_creation',
+  /**
+   * Cap on the TOTAL number of tenants a user may own (active 'owner'
+   * rows in user_tenant_access, so the signup home tenant counts).
+   * Stored as a decimal string; `'0'` means unlimited; absent → '3'.
+   */
+  SELF_SERVICE_TENANT_LIMIT: 'self_service_tenant_limit',
 } as const;
 
 export type SystemSettingsKey = (typeof SystemSettingsKeys)[keyof typeof SystemSettingsKeys];

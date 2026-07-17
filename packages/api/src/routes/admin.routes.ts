@@ -200,6 +200,39 @@ adminRouter.put('/registration-config', async (req, res) => {
   res.json({ saved: true, registrationEnabled: enabled });
 });
 
+// ─── Self-service tenant creation config ───────────────────────
+// Mirrors registration-config: instance toggle + per-user cap for
+// POST /auth/create-tenant ("New Business (separate books)").
+
+adminRouter.get('/tenant-creation-config', async (_req, res) => {
+  const enabled = await adminService.getSetting(SystemSettingsKeys.SELF_SERVICE_TENANT_CREATION);
+  const limitRaw = await adminService.getSetting(SystemSettingsKeys.SELF_SERVICE_TENANT_LIMIT);
+  const parsed = Number.parseInt(limitRaw ?? '', 10);
+  res.json({
+    // Default OFF — only the literal 'true' enables (new capability).
+    selfServiceTenantCreation: enabled === 'true',
+    selfServiceTenantLimit: Number.isFinite(parsed) && parsed >= 0 ? parsed : 3,
+  });
+});
+
+adminRouter.put('/tenant-creation-config', async (req, res) => {
+  const enabled = req.body?.selfServiceTenantCreation;
+  const limit = req.body?.selfServiceTenantLimit;
+  if (typeof enabled !== 'boolean') {
+    res.status(400).json({ error: { message: 'selfServiceTenantCreation must be a boolean.', code: 'BAD_REQUEST' } });
+    return;
+  }
+  if (limit !== undefined && (!Number.isInteger(limit) || limit < 0 || limit > 1000)) {
+    res.status(400).json({ error: { message: 'selfServiceTenantLimit must be an integer between 0 (unlimited) and 1000.', code: 'BAD_REQUEST' } });
+    return;
+  }
+  await adminService.setSetting(SystemSettingsKeys.SELF_SERVICE_TENANT_CREATION, enabled ? 'true' : 'false');
+  if (limit !== undefined) {
+    await adminService.setSetting(SystemSettingsKeys.SELF_SERVICE_TENANT_LIMIT, String(limit));
+  }
+  res.json({ saved: true, selfServiceTenantCreation: enabled, ...(limit !== undefined ? { selfServiceTenantLimit: limit } : {}) });
+});
+
 // ─── Staff IP Allowlist (Phase 6) ──────────────────────────────
 // Super-admin only. The allowlist is ignored at request time unless
 // STAFF_IP_ALLOWLIST_ENFORCED=1 — CRUD works either way so operators

@@ -322,6 +322,19 @@ authRouter.post('/switch-tenant', authenticate, async (req, res) => {
   res.json({ tokens: { accessToken: tokens.accessToken } });
 });
 
+// Self-service "New Business (separate books)". The service enforces the
+// full policy (instance toggle, owner-role gate, per-user cap) — this
+// route only authenticates and rate-limits. Distinct from /create-client,
+// which is the practice flow (accountant access, appliance-firm join).
+authRouter.post('/create-tenant', authLimiter, authenticate, async (req, res) => {
+  const result = await authService.createOwnedTenant(req.userId, req.userRole, req.body);
+  res.status(201).json(result);
+});
+
+authRouter.get('/create-tenant/eligibility', authenticate, async (req, res) => {
+  res.json(await authService.getTenantCreationEligibility(req.userId, req.userRole));
+});
+
 authRouter.post('/create-client', authenticate, async (req, res) => {
   // Only accountants, bookkeepers, and super admins can create client tenants
   if (req.userRole !== 'accountant' && req.userRole !== 'bookkeeper' && !req.isSuperAdmin) {
