@@ -73,6 +73,8 @@ export const companySmtpUpdateSchema = z.object({
   smtpUser: z.string().max(255).optional().default(''),
   smtpPass: z.string().max(512).nullish(),
   smtpFrom: z.string().email().max(255),
+  // Display name for the From header. Optional — blank sends the bare address.
+  smtpFromName: z.string().max(255).optional().default(''),
 });
 export type CompanySmtpUpdateInput = z.infer<typeof companySmtpUpdateSchema>;
 
@@ -84,6 +86,7 @@ export const companySmtpTestSchema = z.object({
   username: z.string().max(255).optional(),
   password: z.string().max(512).optional(),
   from: z.string().email().max(255),
+  fromName: z.string().max(255).optional(),
   testEmail: z.string().email().max(255).optional(),
 });
 export type CompanySmtpTestInput = z.infer<typeof companySmtpTestSchema>;

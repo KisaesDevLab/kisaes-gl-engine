@@ -155,6 +155,7 @@ export async function getSmtpSettings(tenantId: string, companyId?: string) {
     smtpPass: '',
     passwordConfigured: !!company.smtpPass,
     smtpFrom: company.smtpFrom || company.email || '',
+    smtpFromName: company.smtpFromName || '',
     configured: !!company.smtpHost,
   };
 }
@@ -162,7 +163,7 @@ export async function getSmtpSettings(tenantId: string, companyId?: string) {
 export async function updateSmtpSettings(
   tenantId: string,
   companyId: string,
-  input: { smtpHost: string; smtpPort: number; smtpUser: string; smtpPass?: string | null; smtpFrom: string },
+  input: { smtpHost: string; smtpPort: number; smtpUser: string; smtpPass?: string | null; smtpFrom: string; smtpFromName?: string },
   userId?: string,
 ) {
   const existing = await getCompany(tenantId, companyId);
@@ -175,6 +176,7 @@ export async function updateSmtpSettings(
     smtpPort: input.smtpPort,
     smtpUser: input.smtpUser,
     smtpFrom: input.smtpFrom,
+    smtpFromName: input.smtpFromName ?? '',
     updatedAt: new Date(),
   };
   if (input.smtpPass === null) {

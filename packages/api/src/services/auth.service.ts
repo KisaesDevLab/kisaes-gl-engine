@@ -17,7 +17,7 @@ import { seedFromTemplate } from './accounts.service.js';
 import * as systemEmail from './system-email.service.js';
 import { checkPasswordBreached } from '../utils/hibp.js';
 import { seedDefaultsForNewTenant as seedFeatureFlags } from './feature-flags.service.js';
-import { joinApplianceFirm } from './firm-provisioning.service.js';
+import { joinApplianceFirm, assignTenantToApplianceFirm } from './firm-provisioning.service.js';
 
 // Cap per CLOUDFLARE_TUNNEL_PLAN Phase 3: max 3 concurrent sessions per
 // user. Oldest refresh token is revoked when the limit is exceeded —
@@ -151,8 +151,10 @@ export async function createClientTenant(creatorUserId: string, input: { company
   }).onConflictDoNothing();
 
   // Auto-join the appliance firm so the tiered conditional-rules UI
-  // resolves for the creator on this tenant. Idempotent.
-  await joinApplianceFirm(tenant.id, creatorUserId);
+  // resolves for the creator on this tenant. Idempotent. firm_staff,
+  // not firm_admin: staff author tenant_firm rules but must not manage
+  // the appliance-wide firm (membership, tenant assignments, creds).
+  await joinApplianceFirm(tenant.id, creatorUserId, 'firm_staff');
 
   return { tenantId: tenant.id, companyId: company?.id || '', tenantName: tenant.name };
 }
@@ -204,7 +206,7 @@ export async function register(input: RegisterInput): Promise<{ user: typeof use
   }
 
   // Create company and seed COA
-  await createCompanyForTenant(tenant.id, input.companyName);
+  const company = await createCompanyForTenant(tenant.id, input.companyName);
   await seedFromTemplate(tenant.id, input.businessType || 'default');
 
   // New-tenant Practice flag seed (see createClientTenant above).
@@ -213,9 +215,31 @@ export async function register(input: RegisterInput): Promise<{ user: typeof use
   // Create tenant access record
   await db.insert(userTenantAccess).values({ userId: user.id, tenantId: tenant.id, role: 'owner' });
 
-  // Auto-join the appliance firm (owner → firm_admin) so the tiered
-  // conditional-rules UI is available by default. Idempotent.
-  await joinApplianceFirm(tenant.id, user.id);
+  // Assign the new tenant to the appliance firm so practice staff can
+  // manage it and firm/global rules apply — but do NOT make the
+  // self-signup user a firm member. The appliance firm spans every
+  // tenant on the box; membership would expose the Practice/Firm
+  // surfaces and the firm roster/tenant list to a client.
+  await assignTenantToApplianceFirm(tenant.id, user.id);
+
+  // Self-signup owners also become a client-portal contact of their own
+  // company. Best-effort: a portal-side failure must not fail the signup
+  // (the account and tenant are already committed above).
+  if (company) {
+    try {
+      const { createContact } = await import('./portal-contact.service.js');
+      const nameParts = (input.displayName || '').trim().split(/\s+/).filter(Boolean);
+      await createContact(tenant.id, {
+        email,
+        firstName: nameParts[0],
+        lastName: nameParts.length > 1 ? nameParts.slice(1).join(' ') : undefined,
+        companies: [{ companyId: company.id, role: 'owner', financialsAccess: true }],
+      }, user.id);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[auth.service] portal-contact auto-create on signup failed:', err instanceof Error ? err.message : err);
+    }
+  }
 
   // Generate tokens
   const jwtPayload: JwtPayload = { userId: user.id, tenantId: tenant.id, role: user.role, isSuperAdmin: user.isSuperAdmin || false };
@@ -595,7 +619,7 @@ export async function resetPassword(token: string, newPassword: string): Promise
   await db.delete(sessions).where(eq(sessions.userId, resetRecord.userId));
 }
 
-export async function inviteUser(tenantId: string, input: { email: string; displayName: string; role: string }): Promise<{ user: typeof users.$inferSelect; temporaryPassword: string | null; existingUser: boolean }> {
+export async function inviteUser(tenantId: string, input: { email: string; displayName: string; role: string }, inviterUserId?: string): Promise<{ user: typeof users.$inferSelect; temporaryPassword: string | null; existingUser: boolean }> {
   const role = input.role || 'accountant';
   const email = normalizeEmail(input.email);
 
@@ -649,8 +673,13 @@ export async function inviteUser(tenantId: string, input: { email: string; displ
   // Send invite email with temporary credentials. Fire-and-forget but
   // log on failure — temporaryPassword is returned to the caller so the
   // admin can hand it off manually if email isn't reaching the user.
+  // The email template reads "<inviterName> has invited you", so resolve
+  // the actual inviter — passing the invitee's own name here made the
+  // email say "Bob has invited you" to Bob.
   const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
-  systemEmail.sendInviteEmail(user.email, input.displayName, tenant?.name || 'Company', temporaryPassword).catch((err) => {
+  const inviter = inviterUserId ? await db.query.users.findFirst({ where: eq(users.id, inviterUserId) }) : null;
+  const inviterName = inviter?.displayName || inviter?.email || 'An administrator';
+  systemEmail.sendInviteEmail(user.email, inviterName, tenant?.name || 'Company', temporaryPassword).catch((err) => {
     // eslint-disable-next-line no-console
     console.warn(`[auth.service] invite email to ${user.email} failed:`, err?.message ?? err);
   });

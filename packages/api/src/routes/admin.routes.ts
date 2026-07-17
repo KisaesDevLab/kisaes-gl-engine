@@ -426,6 +426,16 @@ adminRouter.post('/users/create', validate(adminCreateUserSchema), async (req, r
       }).onConflictDoNothing();
       return u;
     });
+
+    // Welcome email with the credentials the admin just set. Fire-and-
+    // forget — the admin already has the password to hand off manually
+    // if SMTP is down, so a send failure must not fail the create.
+    const { sendAccountCreatedEmail } = await import('../services/system-email.service.js');
+    sendAccountCreatedEmail(user.email, tenant.name, password).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.warn(`[admin.routes] account-created email to ${user.email} failed:`, err?.message ?? err);
+    });
+
     res.status(201).json({ user: { id: user.id, email: user.email, displayName: user.displayName, role: user.role } });
   } catch (err: any) {
     // Unique-constraint violation on users.email — race with another

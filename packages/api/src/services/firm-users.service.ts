@@ -14,7 +14,7 @@ import type {
   UpdateFirmUserInput,
 } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { firmUsers, tenantFirmAssignments, tenants, userTenantAccess, users } from '../db/schema/index.js';
+import { firms, firmUsers, tenantFirmAssignments, tenants, userTenantAccess, users } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 
 // 3-tier rules plan, Phase 1 — firm membership service.
@@ -82,6 +82,28 @@ export async function invite(firmId: string, input: InviteFirmUserInput): Promis
     userId,
     firmRole: input.firmRole,
   }).returning();
+
+  // Notify the invitee. Fire-and-forget — a mail failure must not block
+  // the membership grant, and the invitee already has a working account.
+  void (async () => {
+    const [firm, invitee] = await Promise.all([
+      db.query.firms.findFirst({ where: eq(firms.id, firmId) }),
+      db.query.users.findFirst({ where: eq(users.id, userId) }),
+    ]);
+    if (!firm || !invitee) return;
+    const systemEmail = await import('./system-email.service.js');
+    const baseUrl = process.env['CORS_ORIGIN'] || 'http://localhost:5173';
+    await systemEmail.sendActionEmail({
+      to: invitee.email,
+      subject: `You've been added to ${firm.name}`,
+      bodyText: `You've been added to the firm "${firm.name}" as ${input.firmRole}.\nLog in with your existing credentials to access it.`,
+      cta: { label: 'Log In', url: `${baseUrl}/login` },
+    });
+  })().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.warn(`[firm-users.service] firm-invite email failed:`, err?.message ?? err);
+  });
+
   return mapRow(row!);
 }
 

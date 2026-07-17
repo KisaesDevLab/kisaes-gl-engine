@@ -26,12 +26,21 @@ function safeSubjectSegment(s: string): string {
  * Separate from the per-company email service used for invoices/reminders.
  */
 
+/**
+ * Build the From header value: `{ name, address }` when a from-name is
+ * configured (nodemailer handles RFC 5322 encoding of the display name),
+ * plain address otherwise.
+ */
+function buildFrom(address: string, name?: string): string | { name: string; address: string } {
+  return name ? { name, address } : address;
+}
+
 async function createTransport() {
   const smtp = await getSmtpSettings();
 
   if (!smtp.smtpHost) {
     return {
-      from: smtp.smtpFrom || 'noreply@kisbooks.local',
+      from: buildFrom(smtp.smtpFrom || 'noreply@kisbooks.local', smtp.smtpFromName),
       transport: {
         sendMail: async (opts: any) => {
           console.log(`[SYSTEM EMAIL STUB] To: ${opts.to}, Subject: ${opts.subject}`);
@@ -43,7 +52,7 @@ async function createTransport() {
   }
 
   return {
-    from: smtp.smtpFrom,
+    from: buildFrom(smtp.smtpFrom, smtp.smtpFromName),
     transport: nodemailer.createTransport({
       host: smtp.smtpHost,
       port: smtp.smtpPort,
@@ -108,6 +117,46 @@ export async function sendInviteEmail(email: string, inviterName: string, tenant
           <p style="margin:0 0 8px;font-size:13px;color:#6B7280">Your temporary credentials:</p>
           <p style="margin:0 0 4px;font-size:14px"><strong>Email:</strong> ${escapeHtml(email)}</p>
           <p style="margin:0;font-size:14px"><strong>Password:</strong> <code style="background:#E5E7EB;padding:2px 6px;border-radius:4px">${escapeHtml(temporaryPassword)}</code></p>
+        </div>
+        <a href="${loginLink}" style="display:inline-block;margin:8px 0 20px;padding:12px 24px;background:#2563EB;color:#fff;text-decoration:none;border-radius:8px;font-size:14px;font-weight:600">
+          Log In
+        </a>
+        <p style="color:#6B7280;font-size:12px">
+          Please change your password after your first login.
+        </p>
+      </div>
+    `,
+  });
+}
+
+/**
+ * Sent when an admin creates an account directly (Admin → Users → Create)
+ * and chose the password themselves. Mirrors the invite email's
+ * credentials block so the recipient can log in without a separate
+ * handoff; the password is admin-chosen, so we still push them to change
+ * it on first login.
+ */
+export async function sendAccountCreatedEmail(email: string, tenantName: string, password: string, appUrl?: string): Promise<void> {
+  const { from, transport } = await createTransport();
+  const name = await brandName();
+  const baseUrl = appUrl || process.env['CORS_ORIGIN'] || 'http://localhost:5173';
+  const loginLink = `${baseUrl}/login`;
+
+  await transport.sendMail({
+    from,
+    to: email,
+    subject: `${name} — Your account for ${safeSubjectSegment(tenantName)}`,
+    text: `An account has been created for you to access "${tenantName}" on ${name}.\n\nYour login credentials:\nEmail: ${email}\nPassword: ${password}\n\nLog in at: ${loginLink}\n\nPlease change your password after your first login.`,
+    html: `
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:480px;margin:0 auto;padding:20px">
+        <h2 style="color:#111827;margin-bottom:16px">Your Account Is Ready</h2>
+        <p style="color:#374151;font-size:14px;line-height:1.5">
+          An account has been created for you to access <strong>${escapeHtml(tenantName)}</strong> on ${escapeHtml(name)}.
+        </p>
+        <div style="margin:20px 0;padding:16px;background:#F3F4F6;border-radius:8px">
+          <p style="margin:0 0 8px;font-size:13px;color:#6B7280">Your credentials:</p>
+          <p style="margin:0 0 4px;font-size:14px"><strong>Email:</strong> ${escapeHtml(email)}</p>
+          <p style="margin:0;font-size:14px"><strong>Password:</strong> <code style="background:#E5E7EB;padding:2px 6px;border-radius:4px">${escapeHtml(password)}</code></p>
         </div>
         <a href="${loginLink}" style="display:inline-block;margin:8px 0 20px;padding:12px 24px;background:#2563EB;color:#fff;text-decoration:none;border-radius:8px;font-size:14px;font-weight:600">
           Log In

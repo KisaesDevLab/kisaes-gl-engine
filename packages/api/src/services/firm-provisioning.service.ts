@@ -18,10 +18,14 @@ import { AppError } from '../utils/errors.js';
 // The 3-tier conditional-rules UI (Mine / Firm / Global) only
 // surfaces when `resolveFirmContext` returns a non-null firmRole,
 // which requires (a) the tenant has an active firm assignment and
-// (b) the user is an active firm_users member. On a self-hosted
-// appliance we want this by default, so every tenant auto-joins a
-// SINGLE appliance-wide firm and every tenant owner is a firm_admin
-// of it. Global rules then span every tenant on the box.
+// (b) the user is an active firm_users member. Every tenant is
+// auto-ASSIGNED to a single appliance-wide firm so firm/global
+// rules apply to it — but firm MEMBERSHIP is reserved for actual
+// practice staff. A self-signup client must never become a member:
+// the appliance firm spans every tenant on the box, so membership
+// leaks the tenant list/staff roster, and firm_admin membership
+// historically allowed granting oneself access to other tenants'
+// books (see requireFirmAdmin's superAdminManaged lockdown).
 //
 // All functions here are idempotent and safe to call on every
 // tenant-creation path and to re-run via the backfill script.
@@ -85,5 +89,24 @@ export async function joinApplianceFirm(
     firm.id,
     { tenantId, force: false },
     ownerUserId,
+  );
+}
+
+// Assignment-only variant for SELF-SIGNUP tenants: the tenant is
+// managed by the appliance firm (so firm/global rules apply and
+// practice staff can operate on it), but the signing-up user gets
+// NO firm membership — they are a client, not practice staff.
+// Idempotent; never touches an existing assignment to another firm.
+export async function assignTenantToApplianceFirm(
+  tenantId: string,
+  actorUserId: string,
+): Promise<void> {
+  const firm = await ensureApplianceFirm(actorUserId);
+  const existing = await tenantFirmAssignmentService.getActiveForTenant(tenantId);
+  if (existing) return;
+  await tenantFirmAssignmentService.assignTenant(
+    firm.id,
+    { tenantId, force: false },
+    actorUserId,
   );
 }

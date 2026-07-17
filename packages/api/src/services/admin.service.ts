@@ -1290,6 +1290,7 @@ export async function getSmtpSettings() {
   const dbUser = await getSetting('smtp_user');
   const dbPass = await getSetting('smtp_pass');
   const dbFrom = await getSetting('smtp_from');
+  const dbFromName = await getSetting('smtp_from_name');
 
   return {
     smtpHost: dbHost ?? process.env['SMTP_HOST'] ?? '',
@@ -1297,6 +1298,7 @@ export async function getSmtpSettings() {
     smtpUser: dbUser ?? process.env['SMTP_USER'] ?? '',
     smtpPass: dbPass ?? process.env['SMTP_PASS'] ?? '',
     smtpFrom: dbFrom ?? process.env['SMTP_FROM'] ?? 'noreply@example.com',
+    smtpFromName: dbFromName ?? process.env['SMTP_FROM_NAME'] ?? '',
     source: dbHost ? 'database' : (process.env['SMTP_HOST'] ? 'env' : 'none'),
   };
 }
@@ -1307,6 +1309,7 @@ export async function saveSmtpSettings(input: {
   smtpUser: string;
   smtpPass?: string | null;
   smtpFrom: string;
+  smtpFromName?: string;
 }) {
   await setSetting('smtp_host', input.smtpHost);
   await setSetting('smtp_port', String(input.smtpPort));
@@ -1321,6 +1324,7 @@ export async function saveSmtpSettings(input: {
     await setSetting('smtp_pass', input.smtpPass);
   }
   await setSetting('smtp_from', input.smtpFrom);
+  await setSetting('smtp_from_name', input.smtpFromName ?? '');
 }
 
 export async function getGlobalSettings() {
@@ -1329,6 +1333,7 @@ export async function getGlobalSettings() {
     smtpHost: smtp.smtpHost,
     smtpPort: smtp.smtpPort,
     smtpFrom: smtp.smtpFrom,
+    smtpFromName: smtp.smtpFromName,
     smtpUser: smtp.smtpUser,
     smtpConfigured: !!smtp.smtpHost,
     // `passwordConfigured` lets the UI render a "Clear stored password"

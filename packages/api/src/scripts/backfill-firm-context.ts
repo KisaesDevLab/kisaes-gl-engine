@@ -31,7 +31,7 @@ import { db } from '../db/index.js';
 import { tenants, userTenantAccess } from '../db/schema/index.js';
 import * as tenantFirmAssignmentService from '../services/tenant-firm-assignment.service.js';
 import * as featureFlagsService from '../services/feature-flags.service.js';
-import { joinApplianceFirm } from '../services/firm-provisioning.service.js';
+import { assignTenantToApplianceFirm } from '../services/firm-provisioning.service.js';
 
 // Resolve the user we attribute the tenant's firm membership to:
 // prefer an active 'owner', else any active access row. Returns null
@@ -77,7 +77,7 @@ async function main(): Promise<void> {
     // (a) enable the tiered-rules flag for this existing tenant.
     await featureFlagsService.setFlag(t.id, 'RULES_TIERED_V1', { enabled: true, rolloutPercent: 100 });
     // (b) provision firm context (owner → firm_admin, tenant joined).
-    await joinApplianceFirm(t.id, ownerUserId);
+    await assignTenantToApplianceFirm(t.id, ownerUserId);
     if (existing) {
       console.log(`  • ${t.name} (${t.id.slice(0, 8)}…) — flag on; already managed; ensured owner membership`);
       alreadyManaged++;

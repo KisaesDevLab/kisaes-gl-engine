@@ -70,6 +70,33 @@ describe('Auth Service', () => {
       expect(payload.userId).toBe(result.user.id);
       expect(payload.tenantId).toBe(result.user.tenantId);
       expect(payload.role).toBe('owner');
+
+      // Self-signup must also create a client-portal contact linked to
+      // the tenant's company (owner role, financials access).
+      const { db } = await import('../db/index.js');
+      const { portalContacts, portalContactCompanies } = await import('../db/schema/index.js');
+      const { eq } = await import('drizzle-orm');
+      const contact = await db.query.portalContacts.findFirst({
+        where: eq(portalContacts.tenantId, result.user.tenantId),
+      });
+      expect(contact).toBeTruthy();
+      expect(contact!.email).toBe('test@example.com');
+      const links = await db.select().from(portalContactCompanies)
+        .where(eq(portalContactCompanies.contactId, contact!.id));
+      expect(links).toHaveLength(1);
+      expect(links[0]!.role).toBe('owner');
+      expect(links[0]!.financialsAccess).toBe(true);
+
+      // Self-signup: tenant is ASSIGNED to the appliance firm (so
+      // firm/global rules apply) but the user gets NO firm membership
+      // — firm membership is what exposes the Practice/Firm staff
+      // surfaces and, historically, appliance-wide admin powers.
+      const { getActiveForTenant } = await import('./tenant-firm-assignment.service.js');
+      const { getRoleForUser } = await import('./firm-users.service.js');
+      const assignment = await getActiveForTenant(result.user.tenantId);
+      expect(assignment).not.toBeNull();
+      const firmRole = await getRoleForUser(assignment!.firmId, result.user.id);
+      expect(firmRole).toBeNull();
     });
 
     it('should reject duplicate email', async () => {

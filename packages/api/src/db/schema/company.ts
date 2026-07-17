@@ -38,6 +38,7 @@ export const companies = pgTable('companies', {
   smtpUser: varchar('smtp_user', { length: 255 }),
   smtpPass: varchar('smtp_pass', { length: 500 }),
   smtpFrom: varchar('smtp_from', { length: 255 }),
+  smtpFromName: varchar('smtp_from_name', { length: 255 }),
   lockDate: date('lock_date'),
   setupComplete: boolean('setup_complete').default(false),
   mcpEnabled: boolean('mcp_enabled').default(false),
