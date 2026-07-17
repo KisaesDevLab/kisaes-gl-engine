@@ -50,6 +50,10 @@ export interface BankFeedItem {
   institutionName?: string | null;
   originalDescription?: string | null;
   suggestedAccountName?: string | null;
+  // Resolved payee/vendor display name for the suggested contact (rule- or
+  // AI-set). The feed's NAME column prefers this over the cleaned
+  // descriptor. Joined on list responses; absent on raw inserts.
+  suggestedContactName?: string | null;
   matchType?: 'rule' | 'ai' | 'manual' | string | null;
   // STATEMENT_CHECK_PAYEE_V1 — payee read off a check-image thumbnail and the
   // parsed check number; shown in the UI so they're visible/confirmable.
@@ -65,6 +69,8 @@ export interface BankFeedItem {
   assignedAccountId?: string | null;
   assignedAccountName?: string | null;
   assignedContactId?: string | null;
+  // Resolved payee/vendor display name for the human-assigned contact.
+  assignedContactName?: string | null;
   assignedTagId?: string | null;
   assignedTagName?: string | null;
   assignedMemo?: string | null;
