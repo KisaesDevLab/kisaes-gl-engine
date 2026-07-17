@@ -791,6 +791,33 @@ Cythia Martin","","Monett","MO","65708",,,"",False,False,True,Net 15,5920,""
       const commit = await importsService.commitSession(tenantId, companyId, userId, out.session.id);
       expect(commit.result.created).toBe(1);
     });
+
+    it('drops zero-amount lines with no account (QBO void/filler) instead of erroring', async () => {
+      // QBO emits filler lines with debit 0 and a blank account — voided
+      // checks ("VOID: VOID"), reversing-JE legs, empty split legs. They
+      // must be dropped, not treated as a posting to a "?" account.
+      await db.insert(accounts).values([
+        { tenantId, companyId, accountNumber: '1000', name: 'Checking', accountType: 'asset' },
+        { tenantId, companyId, accountNumber: '4000', name: 'Revenue', accountType: 'revenue' },
+      ]);
+      const file = await xlsxFromGrid('journal-filler.xlsx', 'Journal', [
+        ['Test Co'], ['Journal'], ['All Dates'], [],
+        [null, 'Date', 'Transaction Type', 'Num', 'Name', 'Memo/Description', 'Account', 'Debit', 'Credit'],
+        [null, '01/02/2025', 'Journal Entry', 'jlh', null, 'Sale 1', '1000 Checking', 3.5, null],
+        [null, null, null, null, null, 'Sale 1', '4000 Revenue', null, 3.5],
+        // Filler: blank account, debit 0 → must be dropped, not a "?" error.
+        [null, null, null, null, null, 'VOID: VOID', null, 0, null],
+        [null, null, null, null, null, null, null, 3.5, 3.5],
+      ]);
+      const out = await importsService.createSession({
+        tenantId, companyId, userId,
+        file, kind: 'gl_transactions', sourceSystem: 'quickbooks_online', options: {},
+      });
+      expect(out.session.errorCount).toBe(0);
+      expect(out.preview.jeGroupCount).toBe(1);
+      const commit = await importsService.commitSession(tenantId, companyId, userId, out.session.id);
+      expect(commit.result.created).toBe(1);
+    });
   });
 
   // ── Error-path coverage ────────────────────────────────────────
