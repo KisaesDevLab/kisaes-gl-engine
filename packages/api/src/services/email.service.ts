@@ -13,7 +13,7 @@ import { getSmtpSettings as getSystemSmtp } from './admin.service.js';
 
 async function createTransport(tenantId: string, companyId?: string) {
   // Try company-level SMTP first
-  let smtp: { smtpHost: string; smtpPort: number; smtpUser: string; smtpPass: string; smtpFrom: string };
+  let smtp: { smtpHost: string; smtpPort: number; smtpUser: string; smtpPass: string; smtpFrom: string; smtpFromName?: string };
 
   if (companyId) {
     try {
@@ -31,9 +31,13 @@ async function createTransport(tenantId: string, companyId?: string) {
     smtp = await getSystemSmtp();
   }
 
+  // nodemailer renders { name, address } as `Name <addr>` with proper
+  // RFC 5322 encoding; plain string when no display name is configured.
+  const from = smtp.smtpFromName ? { name: smtp.smtpFromName, address: smtp.smtpFrom } : smtp.smtpFrom;
+
   if (!smtp.smtpHost) {
     return {
-      from: smtp.smtpFrom,
+      from,
       transport: {
         sendMail: async (opts: { to: string; subject: string }) => {
           console.log(`[EMAIL STUB] To: ${opts.to}, Subject: ${opts.subject}`);
@@ -44,7 +48,7 @@ async function createTransport(tenantId: string, companyId?: string) {
   }
 
   return {
-    from: smtp.smtpFrom,
+    from,
     transport: nodemailer.createTransport({
       host: smtp.smtpHost,
       port: smtp.smtpPort,

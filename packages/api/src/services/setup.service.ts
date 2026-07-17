@@ -405,6 +405,7 @@ export interface SmtpConfig {
   username?: string;
   password?: string;
   from: string;
+  fromName?: string;
 }
 
 export async function testSmtpConnection(config: SmtpConfig, testEmail?: string): Promise<{ success: boolean; error?: string }> {
@@ -424,7 +425,7 @@ export async function testSmtpConnection(config: SmtpConfig, testEmail?: string)
         catch { return 'Vibe MyBooks'; }
       })();
       await transport.sendMail({
-        from: config.from,
+        from: config.fromName ? { name: config.fromName, address: config.from } : config.from,
         to: testEmail,
         subject: `${brand} — SMTP Test`,
         text: 'If you received this email, your SMTP configuration is working correctly.',

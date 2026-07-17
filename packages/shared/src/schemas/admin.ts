@@ -75,6 +75,9 @@ export const adminSmtpSettingsSchema = z.object({
   // would destroy outbound mail auth.
   smtpPass: z.string().max(512).nullish(),
   smtpFrom: z.string().email().max(255),
+  // Display name for the From header ("Vibe MyBooks <noreply@...>").
+  // Optional — blank means send with the bare address.
+  smtpFromName: z.string().max(255).optional().default(''),
 });
 export type AdminSmtpSettingsInput = z.infer<typeof adminSmtpSettingsSchema>;
 
@@ -90,6 +93,7 @@ export const adminSmtpTestSchema = z.object({
   username: z.string().max(255).optional().default(''),
   password: z.string().max(512).nullish(),
   from: z.string().email().max(255),
+  fromName: z.string().max(255).optional(),
   testEmail: z.string().email().max(255).optional(),
 });
 export type AdminSmtpTestInput = z.infer<typeof adminSmtpTestSchema>;

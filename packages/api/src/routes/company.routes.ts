@@ -179,7 +179,7 @@ companyRouter.get('/users', async (req, res) => {
 companyRouter.post('/invite-user', validate(inviteUserSchema), async (req, res) => {
   if (req.userRole !== 'owner') throw AppError.forbidden('Only owners can invite users');
   const { email, displayName, role } = req.body;
-  const result = await authService.inviteUser(req.tenantId, { email, displayName, role: role || 'accountant' });
+  const result = await authService.inviteUser(req.tenantId, { email, displayName, role: role || 'accountant' }, req.userId);
   res.status(201).json({
     user: { id: result.user.id, email: result.user.email, displayName: result.user.displayName, role: result.existingUser ? role : result.user.role },
     temporaryPassword: result.temporaryPassword,
