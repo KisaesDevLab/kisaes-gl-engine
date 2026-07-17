@@ -545,6 +545,18 @@ export async function parseGl(
         memo: l.memo || undefined,
       };
     });
+    // Skip a wholly zero-amount entry — a QBO voided transaction
+    // ("VOID: VOID" check) that nets to $0 across every line. It has no
+    // ledger effect, and postTransaction rejects an all-zero transaction
+    // ("must have non-zero amounts"), which would otherwise abort the
+    // entire commit partway through. Dropping it at parse time keeps the
+    // entry indices of the surviving entries stable relative to the
+    // non-void entries, preserving fileHash:index dedup on re-upload.
+    if (!lines.some((l) => Number(l.debit) !== 0 || Number(l.credit) !== 0)) {
+      current = null;
+      return;
+    }
+
     entries.push({
       rowNumber: first.rowNumber,
       date: iso,
