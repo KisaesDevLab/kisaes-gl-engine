@@ -25,7 +25,10 @@ import { LocalProvider } from './local.provider.js';
 export class LocalFallbackProvider implements StorageProvider {
   readonly name: string;
   readonly requiresOAuth = false;
-  private remote: StorageProvider;
+  // Public so the system storage migration can address the remote side
+  // directly — the wrapper's exists() answers true for local-only files,
+  // which is exactly the wrong signal when deciding what to copy up.
+  readonly remote: StorageProvider;
   private local: LocalProvider;
 
   constructor(remote: StorageProvider, local: LocalProvider = new LocalProvider()) {

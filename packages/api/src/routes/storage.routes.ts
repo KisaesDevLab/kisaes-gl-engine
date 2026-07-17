@@ -78,8 +78,11 @@ storageRouter.get('/', async (req, res) => {
     isSystemDefault: true,
   };
 
-  // All providers always available — each tenant configures their own credentials
-  const available = ['local', 'dropbox', 'google_drive', 'onedrive', 's3', 'b2'];
+  // When the system default is a remote provider, tenant-level local
+  // storage is disabled: hide it here and reject it in /activate.
+  const localDisabled = systemDefault !== 'local';
+  const available = ['local', 'dropbox', 'google_drive', 'onedrive', 's3', 'b2']
+    .filter((p) => p !== 'local' || !localDisabled);
 
   // Build per-provider status: has the tenant saved OAuth app credentials?
   const providerStatus: Record<string, { configured: boolean; connected: boolean }> = {
@@ -114,6 +117,7 @@ storageRouter.get('/', async (req, res) => {
     available,
     providerStatus,
     systemDefault,
+    localDisabled,
   });
 });
 
@@ -423,6 +427,20 @@ storageRouter.post('/configure/b2', configureB2);
 
 storageRouter.post('/activate', async (req, res) => {
   const { provider } = req.body;
+
+  // Tenant-level local storage is disabled while the system default is a
+  // remote provider (admin policy — see /admin/storage/system-config).
+  // Check BEFORE deactivating rows so a rejected request changes nothing.
+  if (provider === 'local') {
+    const { getSystemStorageProvider } = await import('../services/storage/storage-provider.factory.js');
+    let systemName = 'local';
+    try { systemName = (await getSystemStorageProvider()).name; } catch { /* treat as local */ }
+    if (systemName !== 'local') {
+      res.status(400).json({ error: { message: `Local storage has been disabled by your administrator — files are stored on ${systemName}.` } });
+      return;
+    }
+  }
+
   // Deactivate all
   await db.update(storageProviders).set({ isActive: false }).where(eq(storageProviders.tenantId, req.tenantId));
 

@@ -1076,6 +1076,14 @@ adminRouter.put('/storage/system-config', async (req, res) => {
 
   await adminService.saveSystemStorageConfig(input);
 
+  // With a remote system default, tenant-level local storage is disabled:
+  // deactivate any tenant rows that explicitly picked 'local' so those
+  // tenants fall through to the system default. (Tenants with their own
+  // REMOTE provider keep it — only local is locked down.)
+  if (provider !== 'local') {
+    await db.execute(sql`UPDATE storage_providers SET is_active = false WHERE provider = 'local' AND is_active = true`);
+  }
+
   // Tenants without their own provider cached the old system default —
   // drop it so the new setting takes effect immediately.
   const { invalidateSystemProviderCache } = await import('../services/storage/storage-provider.factory.js');
@@ -1115,6 +1123,48 @@ adminRouter.post('/storage/system-test', async (_req, res) => {
     const message = err instanceof Error ? err.message : 'Unknown error';
     res.status(500).json({ error: { message } });
   }
+});
+
+// ─── System Storage Migration ────────────────────────────────────
+//
+// Copies every locally-stored file blob (attachments + the rest of the
+// FILE_EXPORT_REGISTRY universe) to the system remote provider, for all
+// tenants using the system default. Idempotent — re-run after failures.
+
+adminRouter.post('/storage/system-migrate', async (_req, res) => {
+  const migration = await import('../services/system-storage-migration.service.js');
+  if (migration.isSystemMigrationRunning()) {
+    res.status(409).json({ error: { message: 'A system storage migration is already running' } });
+    return;
+  }
+  try {
+    // Resolve up-front so a local/unconfigured provider 400s here instead
+    // of surfacing as a failed background run.
+    const { getSystemStorageProvider } = await import('../services/storage/storage-provider.factory.js');
+    const provider = await getSystemStorageProvider();
+    if (provider.name === 'local') {
+      res.status(400).json({ error: { message: 'System file storage is local — configure and save a remote provider first' } });
+      return;
+    }
+  } catch (err) {
+    res.status(400).json({ error: { message: err instanceof Error ? err.message : 'System storage provider unavailable' } });
+    return;
+  }
+
+  migration.runSystemStorageMigration().catch((err) =>
+    console.error('[SystemStorageMigration] Error:', err instanceof Error ? err.message : err));
+  res.json({ started: true });
+});
+
+adminRouter.get('/storage/system-migrate/status', async (_req, res) => {
+  const migration = await import('../services/system-storage-migration.service.js');
+  res.json(await migration.getSystemMigrationStatus());
+});
+
+adminRouter.post('/storage/system-migrate/cancel', async (_req, res) => {
+  const migration = await import('../services/system-storage-migration.service.js');
+  migration.cancelSystemMigration();
+  res.json({ cancelled: true });
 });
 
 // ─── Backup Remote OAuth Flow ────────────────────────────────────

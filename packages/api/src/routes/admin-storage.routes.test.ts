@@ -17,10 +17,11 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import jwt from 'jsonwebtoken';
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { tenants, users, systemSettings } from '../db/schema/index.js';
+import { tenants, users, systemSettings, storageProviders } from '../db/schema/index.js';
 import { adminRouter } from './admin.routes.js';
+import { storageRouter } from './storage.routes.js';
 import { decrypt } from '../utils/encryption.js';
 import { __getSystemRemoteProviderForTests } from '../services/backup.service.js';
 import { invalidateSystemProviderCache } from '../services/storage/storage-provider.factory.js';
@@ -31,6 +32,7 @@ let server: Server | null = null;
 let port = 0;
 let adminToken = '';
 let staffToken = '';
+let testTenantId = '';
 
 const ADMIN_EMAIL = 'admin-storage-test@example.com';
 const STAFF_EMAIL = 'staff-storage-test@example.com';
@@ -39,6 +41,7 @@ const TENANT_SLUG = 'admin-storage-test';
 const SETTING_KEYS = [
   'storage_system_provider',
   'storage_system_config',
+  'storage_system_migration_last',
   'backup_remote_provider',
   'backup_remote_config',
 ];
@@ -47,6 +50,7 @@ async function startApp() {
   const app = express();
   app.use(express.json());
   app.use('/api/admin', adminRouter);
+  app.use('/api/settings/storage', storageRouter);
   app.use((err: Error & { statusCode?: number }, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     res.status(err.statusCode ?? 500).json({ error: { message: err.message } });
   });
@@ -95,6 +99,7 @@ function request(method: string, pathname: string, body?: unknown, token?: strin
 async function cleanDb() {
   await db.delete(systemSettings).where(inArray(systemSettings.key, SETTING_KEYS));
   await db.delete(users).where(inArray(users.email, [ADMIN_EMAIL, STAFF_EMAIL]));
+  await db.execute(sql`DELETE FROM storage_providers WHERE tenant_id IN (SELECT id FROM tenants WHERE slug = ${TENANT_SLUG})`);
   await db.delete(tenants).where(eq(tenants.slug, TENANT_SLUG));
   invalidateSystemProviderCache();
 }
@@ -111,6 +116,7 @@ beforeEach(async () => {
   process.env['UPLOAD_DIR'] = tmpDir;
 
   const [tenant] = await db.insert(tenants).values({ name: 'Storage Admin Test', slug: TENANT_SLUG }).returning();
+  testTenantId = tenant!.id;
 
   const [admin] = await db.insert(users).values({
     tenantId: tenant!.id,
@@ -303,5 +309,74 @@ describe('backup remote config — Backblaze B2', () => {
 
     const provider = await __getSystemRemoteProviderForTests();
     expect(provider).toBeNull();
+  });
+});
+
+// ─── Tenant local lockdown + system migration routes ──────────────
+
+const B2_SYSTEM_CONFIG = {
+  storageSystemProvider: 'b2',
+  providerConfig: {
+    bucket: 'sys-bucket',
+    endpoint: 'https://s3.us-west-004.backblazeb2.com',
+    keyId: 'sys-key-id',
+    applicationKey: 'sys-app-secret',
+  },
+};
+
+describe('tenant local storage lockdown (system default is remote)', () => {
+  it('saving a remote system provider deactivates active tenant local rows', async () => {
+    await db.insert(storageProviders).values({
+      tenantId: testTenantId, provider: 'local', isActive: true, config: {}, displayName: 'Local',
+    });
+
+    const { status } = await request('PUT', '/api/admin/storage/system-config', B2_SYSTEM_CONFIG, adminToken);
+    expect(status).toBe(200);
+
+    const row = await db.query.storageProviders.findFirst({
+      where: eq(storageProviders.tenantId, testTenantId),
+    });
+    expect(row?.isActive).toBe(false);
+  });
+
+  it('rejects tenant /activate local and hides local from available', async () => {
+    await request('PUT', '/api/admin/storage/system-config', B2_SYSTEM_CONFIG, adminToken);
+
+    const act = await request('POST', '/api/settings/storage/activate', { provider: 'local' }, staffToken);
+    expect(act.status).toBe(400);
+    expect((act.json['error'] as { message: string }).message).toMatch(/disabled by your administrator/);
+
+    const cfg = await request('GET', '/api/settings/storage', undefined, staffToken);
+    expect(cfg.status).toBe(200);
+    expect(cfg.json['localDisabled']).toBe(true);
+    expect(cfg.json['available']).not.toContain('local');
+  });
+
+  it('still allows local activation while the system default is local', async () => {
+    const act = await request('POST', '/api/settings/storage/activate', { provider: 'local' }, staffToken);
+    expect(act.status).toBe(200);
+
+    const cfg = await request('GET', '/api/settings/storage', undefined, staffToken);
+    expect(cfg.json['localDisabled']).toBe(false);
+    expect(cfg.json['available']).toContain('local');
+  });
+});
+
+describe('POST /storage/system-migrate', () => {
+  it('rejects when the system provider is local', async () => {
+    const { status, json } = await request('POST', '/api/admin/storage/system-migrate', undefined, adminToken);
+    expect(status).toBe(400);
+    expect((json['error'] as { message: string }).message).toMatch(/local/);
+  });
+
+  it('rejects non-super-admin users', async () => {
+    const { status } = await request('POST', '/api/admin/storage/system-migrate', undefined, staffToken);
+    expect(status).toBe(403);
+  });
+
+  it('status endpoint reports idle when nothing has run', async () => {
+    const { status, json } = await request('GET', '/api/admin/storage/system-migrate/status', undefined, adminToken);
+    expect(status).toBe(200);
+    expect(json['status']).toBe('idle');
   });
 });
