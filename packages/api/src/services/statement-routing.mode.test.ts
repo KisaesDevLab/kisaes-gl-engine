@@ -64,7 +64,10 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  const { bankConnections } = await import('../db/schema/index.js');
   await db.delete(attachments).where(eq(attachments.tenantId, tenantId));
+  await db.delete(recurringDocumentRequests).where(eq(recurringDocumentRequests.tenantId, tenantId));
+  await db.delete(bankConnections).where(eq(bankConnections.tenantId, tenantId));
   await db.execute(
     // audit rows reference nothing but block nothing — clear by tenant
     (await import('drizzle-orm')).sql`DELETE FROM audit_log WHERE tenant_id = ${tenantId}`,
@@ -157,6 +160,39 @@ describe('createRule / updateRule — routing mode consistency', () => {
     row = await db.query.recurringDocumentRequests.findFirst({ where: eq(recurringDocumentRequests.id, id) });
     expect(row?.statementRouting).toBe('statement_processing');
     expect(row?.bankConnectionId).toBeNull();
+  });
+
+  it('legacy connection-only PATCH keeps the mode in lockstep', async () => {
+    // Bind-without-mode → auto_import; clear-without-mode → inbox (an
+    // unbound auto_import would silently fall back to the heuristic).
+    const { id } = await createRule(tenantId, contactId, { ...base, contactId });
+    const { bankConnections } = await import('../db/schema/index.js');
+    const [conn] = await db.insert(bankConnections).values({
+      tenantId, companyId, accountId: crypto.randomUUID(), institutionName: 'Test Bank',
+    }).returning();
+    const connId = conn!.id;
+
+    await updateRule(tenantId, contactId, id, { bankConnectionId: connId });
+    let row = await db.query.recurringDocumentRequests.findFirst({ where: eq(recurringDocumentRequests.id, id) });
+    expect(row?.statementRouting).toBe('auto_import');
+    expect(row?.bankConnectionId).toBe(connId);
+
+    await updateRule(tenantId, contactId, id, { bankConnectionId: null });
+    row = await db.query.recurringDocumentRequests.findFirst({ where: eq(recurringDocumentRequests.id, id) });
+    expect(row?.statementRouting).toBe('inbox');
+    expect(row?.bankConnectionId).toBeNull();
+  });
+
+  it('a PATCH without routing fields leaves existing routing untouched', async () => {
+    // The UI omits statementRouting/bankConnectionId when the flag is
+    // off or the doc type has no routing — an unrelated edit must not
+    // reset the rule's configuration.
+    const { id } = await createRule(tenantId, contactId, {
+      ...base, contactId, statementRouting: 'statement_processing',
+    });
+    await updateRule(tenantId, contactId, id, { description: 'changed cadence note' });
+    const row = await db.query.recurringDocumentRequests.findFirst({ where: eq(recurringDocumentRequests.id, id) });
+    expect(row?.statementRouting).toBe('statement_processing');
   });
 
   it('accepts the new document types', async () => {

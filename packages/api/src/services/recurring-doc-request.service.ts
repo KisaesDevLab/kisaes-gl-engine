@@ -328,6 +328,14 @@ export async function updateRule(
     // A non-auto_import mode never keeps a bound connection (stale
     // bindings would silently reactivate if the mode flips back).
     if (input.statementRouting !== 'auto_import') patch.bankConnectionId = null;
+  } else if (input.bankConnectionId !== undefined) {
+    // Legacy two-state clients PATCH only bankConnectionId. Keep the
+    // mode in lockstep: clearing the binding must NOT leave the rule in
+    // 'auto_import' (an unbound auto_import falls back to the
+    // unique-company-match heuristic — the silent import this column
+    // exists to prevent), and binding one on an 'inbox' rule must not
+    // store a silently-ignored connection.
+    patch.statementRouting = input.bankConnectionId ? 'auto_import' : 'inbox';
   }
   if (input.frequency !== undefined) patch.frequency = input.frequency;
   if (input.intervalValue !== undefined) patch.intervalValue = input.intervalValue;
