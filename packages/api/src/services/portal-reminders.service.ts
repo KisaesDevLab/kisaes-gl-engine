@@ -14,9 +14,11 @@ import {
   reminderSends,
   reminderSuppressions,
   reminderTemplates,
+  tenants,
 } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { getSmtpSettings } from './admin.service.js';
+import { buildFrom } from './system-email.service.js';
 import { auditLog } from '../middleware/audit.js';
 import { escapeHtml } from './report-export.service.js';
 
@@ -32,9 +34,35 @@ interface MailerHandle {
   isStub: boolean;
 }
 
+// Canonical base for links in reminder emails: PORTAL_BASE_URL override,
+// else the appliance's PUBLIC_URL, else the dev default. PUBLIC_URL was
+// previously skipped, so appliances without the extra env var emailed
+// http://localhost:5173 links to every contact.
+function portalLinkBase(): string {
+  return (process.env['PORTAL_BASE_URL'] || process.env['PUBLIC_URL'] || 'http://localhost:5173').replace(/\/$/, '');
+}
+
+// The login link must carry the firm slug: without ?firm= the login page
+// cannot resolve the contact's tenant (appliances rarely set a portal
+// custom domain) and the magic-link request silently no-ops.
+const tenantSlugCache = new Map<string, string>();
+async function portalLoginLink(linkBase: string, tenantId: string): Promise<string> {
+  let slug = tenantSlugCache.get(tenantId);
+  if (slug === undefined) {
+    const t = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
+    slug = t?.slug ?? '';
+    tenantSlugCache.set(tenantId, slug);
+  }
+  return slug ? `${linkBase}/portal/login?firm=${encodeURIComponent(slug)}` : `${linkBase}/portal/login`;
+}
+
+// Exposed for tests — link construction only, no sends.
+export { portalLinkBase as __portalLinkBaseForTests, portalLoginLink as __portalLoginLinkForTests };
+
 async function getMailer(): Promise<MailerHandle> {
   const smtp = await getSmtpSettings();
-  const from = smtp.smtpFrom || 'noreply@example.com';
+  // Same From semantics as system emails: honor the display name.
+  const from = buildFrom(smtp.smtpFrom || 'noreply@example.com', smtp.smtpFromName || undefined);
   if (!smtp.smtpHost) {
     return {
       isStub: true,
@@ -315,7 +343,7 @@ export async function dispatch(tenantId?: string): Promise<DispatchResult> {
   const mailer = await getMailer();
   const tenantIds = Array.from(new Set(candidates.map((c) => c.tenantId)));
   const templates = await loadTemplatesByTrigger(tenantIds);
-  const linkBase = (process.env['PORTAL_BASE_URL'] || 'http://localhost:5173').replace(/\/$/, '');
+  const linkBase = portalLinkBase();
 
   let sent = 0;
   let suppressed = 0;
@@ -344,7 +372,7 @@ export async function dispatch(tenantId?: string): Promise<DispatchResult> {
     const sendId = sendRow[0]?.id;
     if (!sendId) continue;
 
-    const portalLink = `${linkBase}/portal/login`;
+    const portalLink = await portalLoginLink(linkBase, c.tenantId);
     const trackingPixel = `${linkBase}/api/portal/track/${sendId}/open.gif`;
     const trackedClick = `${linkBase}/api/portal/track/${sendId}/click?to=${encodeURIComponent(portalLink)}`;
     const firstName = c.contactFirstName ?? '';
@@ -905,8 +933,8 @@ async function sendDocRequestNotice(
   const sendId = sendRow[0]?.id;
   if (!sendId) return 'error';
 
-  const linkBase = (process.env['PORTAL_BASE_URL'] || 'http://localhost:5173').replace(/\/$/, '');
-  const portalLink = `${linkBase}/portal/login`;
+  const linkBase = portalLinkBase();
+  const portalLink = await portalLoginLink(linkBase, tenantId);
   const firstName = contactFirstName ?? '';
   const dueDateStr = dueDate ? dueDate.toISOString().slice(0, 10) : '';
 

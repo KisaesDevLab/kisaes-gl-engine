@@ -1,0 +1,135 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Small Business License 1.0.0.
+// Free for small businesses; see LICENSE for terms.
+//
+// Magic-link / portal-link hardening:
+//   - staff /send is no longer an enumeration oracle: ineligible REAL
+//     accounts get the same silent success as unknown emails (no 400)
+//   - the system-wide tfa_config.magicLinkEnabled toggle is enforced
+//     at send (silently) and verify (with a reason)
+//   - portal email base URL prefers the operator-configured PUBLIC_URL
+//     over attacker-controllable request headers
+//   - reminder links fall back to PUBLIC_URL (not localhost) and carry
+//     the ?firm= slug the portal login page needs to resolve the tenant
+
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { db } from '../db/index.js';
+import { tenants, users, magicLinks, tfaConfig } from '../db/schema/index.js';
+import { sendMagicLink, verifyMagicLink } from './magic-link.service.js';
+import { __portalLinkBaseForTests, __portalLoginLinkForTests } from './portal-reminders.service.js';
+import { resolveEmailBaseUrl } from '../routes/portal-auth.routes.js';
+
+const uniq = Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+const EMAIL = `ml-hardening-${uniq}@example.com`;
+let tenantId = '';
+let userId = '';
+
+const savedEnv: Record<string, string | undefined> = {};
+function setEnv(key: string, value: string | undefined) {
+  if (!(key in savedEnv)) savedEnv[key] = process.env[key];
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}
+
+beforeEach(async () => {
+  await db.delete(tfaConfig); // global singleton — suites share it by design
+  const [t] = await db.insert(tenants).values({ name: 'ML Hardening', slug: 'ml-hardening-' + uniq }).returning();
+  tenantId = t!.id;
+  const [u] = await db.insert(users).values({
+    tenantId, email: EMAIL, passwordHash: 'not-used', displayName: 'ML', role: 'owner',
+    magicLinkEnabled: true, tfaMethods: 'totp', tfaTotpVerified: true,
+  }).returning();
+  userId = u!.id;
+});
+
+afterEach(async () => {
+  for (const [k, v] of Object.entries(savedEnv)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  for (const k of Object.keys(savedEnv)) delete savedEnv[k];
+  await db.delete(magicLinks).where(eq(magicLinks.userId, userId));
+  await db.delete(users).where(eq(users.id, userId));
+  await db.delete(tenants).where(eq(tenants.id, tenantId));
+  await db.delete(tfaConfig);
+});
+
+async function enableSystemMagicLink(enabled: boolean) {
+  await db.insert(tfaConfig).values({ magicLinkEnabled: enabled });
+}
+
+describe('staff magic-link send — enumeration safety', () => {
+  it('eligible user with system toggle on: link row is created', async () => {
+    await enableSystemMagicLink(true);
+    const res = await sendMagicLink(EMAIL, '127.0.0.1', 'vitest');
+    expect(res.sent).toBe(true);
+    const rows = await db.select().from(magicLinks).where(eq(magicLinks.userId, userId));
+    expect(rows).toHaveLength(1);
+  });
+
+  it('user with per-user magic link OFF: silent success, no row, no 400', async () => {
+    await enableSystemMagicLink(true);
+    await db.update(users).set({ magicLinkEnabled: false }).where(eq(users.id, userId));
+    const res = await sendMagicLink(EMAIL, '127.0.0.1', 'vitest');
+    expect(res.sent).toBe(true); // indistinguishable from unknown email
+    expect(await db.select().from(magicLinks).where(eq(magicLinks.userId, userId))).toHaveLength(0);
+  });
+
+  it('user without TOTP/SMS second factor: silent success, no row', async () => {
+    await enableSystemMagicLink(true);
+    await db.update(users).set({ tfaMethods: 'email' }).where(eq(users.id, userId));
+    const res = await sendMagicLink(EMAIL, '127.0.0.1', 'vitest');
+    expect(res.sent).toBe(true);
+    expect(await db.select().from(magicLinks).where(eq(magicLinks.userId, userId))).toHaveLength(0);
+  });
+
+  it('system toggle off: silent success for an otherwise-eligible user', async () => {
+    await enableSystemMagicLink(false);
+    const res = await sendMagicLink(EMAIL, '127.0.0.1', 'vitest');
+    expect(res.sent).toBe(true);
+    expect(await db.select().from(magicLinks).where(eq(magicLinks.userId, userId))).toHaveLength(0);
+  });
+});
+
+describe('staff magic-link verify — system toggle', () => {
+  it('refuses verification while the system toggle is off', async () => {
+    await enableSystemMagicLink(false);
+    await expect(verifyMagicLink('any-token-value-here')).rejects.toThrow(/disabled by your administrator/);
+  });
+});
+
+describe('portal email base URL', () => {
+  it('prefers PUBLIC_URL over request headers (link-poisoning guard)', () => {
+    setEnv('PUBLIC_URL', 'https://mybooks.example.com/');
+    const base = resolveEmailBaseUrl(
+      { 'x-forwarded-proto': 'https', 'x-forwarded-host': 'evil.attacker.tld', host: 'evil.attacker.tld' },
+      'http',
+    );
+    expect(base).toBe('https://mybooks.example.com'); // trailing slash stripped, headers ignored
+  });
+
+  it('falls back to headers only when PUBLIC_URL is unset (dev)', () => {
+    setEnv('PUBLIC_URL', undefined);
+    const base = resolveEmailBaseUrl({ host: 'localhost:5173' }, 'http');
+    expect(base).toBe('http://localhost:5173');
+  });
+});
+
+describe('reminder portal links', () => {
+  it('base falls back PORTAL_BASE_URL → PUBLIC_URL → localhost', () => {
+    setEnv('PORTAL_BASE_URL', undefined);
+    setEnv('PUBLIC_URL', 'https://mybooks.example.com');
+    expect(__portalLinkBaseForTests()).toBe('https://mybooks.example.com');
+    setEnv('PORTAL_BASE_URL', 'https://portal.example.com/');
+    expect(__portalLinkBaseForTests()).toBe('https://portal.example.com');
+    setEnv('PORTAL_BASE_URL', undefined);
+    setEnv('PUBLIC_URL', undefined);
+    expect(__portalLinkBaseForTests()).toBe('http://localhost:5173');
+  });
+
+  it('login link carries the ?firm= slug the login page needs', async () => {
+    const link = await __portalLoginLinkForTests('https://mybooks.example.com', tenantId);
+    expect(link).toBe(`https://mybooks.example.com/portal/login?firm=${encodeURIComponent('ml-hardening-' + uniq)}`);
+  });
+});

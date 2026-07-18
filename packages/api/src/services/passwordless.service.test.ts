@@ -122,21 +122,25 @@ describe('Magic Link Service', () => {
     expect(result.sent).toBe(true);
   });
 
-  it('should reject if magic link not enabled for user', async () => {
+  it('should silently no-op (no link row) if magic link not enabled for user', async () => {
     const { user } = await createTestUser();
     await enableSystemPasswordless();
-    // User hasn't enabled magic link
-    await expect(magicLinkService.sendMagicLink('pless-test@example.com', '127.0.0.1', 'test'))
-      .rejects.toThrow(/not enabled/);
+    // User hasn't enabled magic link. A thrown 400 here was an email-
+    // enumeration oracle (unknown emails got a silent 200) — ineligible
+    // real accounts must be indistinguishable from unknown ones.
+    const result = await magicLinkService.sendMagicLink('pless-test@example.com', '127.0.0.1', 'test');
+    expect(result.sent).toBe(true);
+    expect(await db.select().from(magicLinks).where(eq(magicLinks.userId, user.id))).toHaveLength(0);
   });
 
-  it('should reject if user has no non-email 2FA', async () => {
+  it('should silently no-op (no link row) if user has no non-email 2FA', async () => {
     const { user } = await createTestUser();
     await enableSystemPasswordless();
     await db.update(users).set({ magicLinkEnabled: true }).where(eq(users.id, user.id));
-    // User has magic link enabled but no TOTP or SMS
-    await expect(magicLinkService.sendMagicLink('pless-test@example.com', '127.0.0.1', 'test'))
-      .rejects.toThrow(/authenticator app or SMS/);
+    // User has magic link enabled but no TOTP or SMS — same silent shell.
+    const result = await magicLinkService.sendMagicLink('pless-test@example.com', '127.0.0.1', 'test');
+    expect(result.sent).toBe(true);
+    expect(await db.select().from(magicLinks).where(eq(magicLinks.userId, user.id))).toHaveLength(0);
   });
 
   it('should send magic link when prerequisites met', async () => {
@@ -186,6 +190,7 @@ describe('Magic Link Service', () => {
 
   it('should reject expired magic link', async () => {
     const { user } = await createTestUser();
+    await enableSystemPasswordless(); // verify now enforces the system toggle first
     const token = crypto.randomBytes(32).toString('base64url');
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
     await db.insert(magicLinks).values({
@@ -199,6 +204,7 @@ describe('Magic Link Service', () => {
 
   it('should reject already used magic link', async () => {
     const { user } = await createTestUser();
+    await enableSystemPasswordless(); // verify now enforces the system toggle first
     const token = crypto.randomBytes(32).toString('base64url');
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
     await db.insert(magicLinks).values({

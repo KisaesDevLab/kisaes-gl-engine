@@ -21,6 +21,7 @@ import {
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
 import { getSmtpSettings } from './admin.service.js';
+import { buildFrom } from './system-email.service.js';
 import { auditLog } from '../middleware/audit.js';
 import {
   findOrCreateIdentity,
@@ -51,19 +52,22 @@ function normalizeEmail(email: string): string {
 
 async function ensureSmtpTransport(): Promise<{
   send: (to: string, subject: string, html: string, text: string) => Promise<void>;
-  from: string;
+  from: string | { name: string; address: string };
   isStub: boolean;
 }> {
   const smtp = await getSmtpSettings();
-  const from = smtp.smtpFrom || 'noreply@example.com';
+  // Honor the configured From display name (same buildFrom as system
+  // emails) — portal mail previously showed a bare address.
+  const from = buildFrom(smtp.smtpFrom || 'noreply@example.com', smtp.smtpFromName || undefined);
   if (!smtp.smtpHost) {
     return {
       from,
       isStub: true,
       send: async (to, subject, _html, text) => {
-        // No SMTP configured — log the magic-link payload so the dev
-        // operator can copy/paste the link from container logs. Phase
-        // 9 ships code-complete; live email requires SMTP_HOST set.
+        // No SMTP configured — log a preview so the dev operator can
+        // see what would have been sent. The magic-link TOKEN must be
+        // redacted: logging the full URL would let anyone with log
+        // access sign in as the contact.
         // eslint-disable-next-line no-console
         console.log(
           JSON.stringify({
@@ -73,7 +77,7 @@ async function ensureSmtpTransport(): Promise<{
             event: 'send',
             to,
             subject,
-            preview: text.slice(0, 400),
+            preview: text.slice(0, 400).replace(/token=[A-Za-z0-9_-]+/g, 'token=[redacted]'),
           }),
         );
       },

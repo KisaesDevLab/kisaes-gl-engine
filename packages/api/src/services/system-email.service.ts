@@ -31,7 +31,7 @@ function safeSubjectSegment(s: string): string {
  * configured (nodemailer handles RFC 5322 encoding of the display name),
  * plain address otherwise.
  */
-function buildFrom(address: string, name?: string): string | { name: string; address: string } {
+export function buildFrom(address: string, name?: string): string | { name: string; address: string } {
   return name ? { name, address } : address;
 }
 

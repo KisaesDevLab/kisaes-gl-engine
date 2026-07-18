@@ -41,6 +41,26 @@ const requestLinkSchema = z.object({
   tenantSlug: z.string().min(1).max(100).optional(),
 });
 
+/**
+ * Base URL for the emailed magic link: the operator-configured
+ * PUBLIC_URL when set, NEVER the request headers on a configured
+ * install. The previous X-Forwarded-Host/Host derivation let a spoofed
+ * header poison the victim's sign-in email with an attacker host
+ * carrying a REAL token (click = account takeover). Header fallback
+ * remains for dev installs where PUBLIC_URL is genuinely unset.
+ * Exported for tests.
+ */
+export function resolveEmailBaseUrl(
+  headers: Record<string, string | string[] | undefined>,
+  protocol: string,
+): string {
+  const configured = (process.env['PUBLIC_URL'] || '').replace(/\/$/, '');
+  if (configured) return configured;
+  const proto = (headers['x-forwarded-proto'] as string | undefined) ?? protocol;
+  const host = (headers['x-forwarded-host'] as string | undefined) ?? (headers['host'] as string | undefined) ?? '';
+  return `${proto}://${host}`;
+}
+
 async function resolveTenantId(
   hostHeader: string | undefined,
   tenantSlug: string | undefined,
@@ -66,11 +86,7 @@ portalAuthRouter.post(
       return;
     }
 
-    // Best-effort base URL: prefer X-Forwarded-Proto+Host (CF Tunnel)
-    // then the request's protocol+host.
-    const proto = (req.headers['x-forwarded-proto'] as string | undefined) ?? req.protocol;
-    const host = (req.headers['x-forwarded-host'] as string | undefined) ?? req.headers.host ?? '';
-    const baseUrl = `${proto}://${host}`;
+    const baseUrl = resolveEmailBaseUrl(req.headers, req.protocol);
 
     await portalAuth.requestMagicLink({
       tenantId,
@@ -86,7 +102,19 @@ const verifySchema = z.object({
   token: z.string().min(16).max(200),
 });
 
-portalAuthRouter.post('/auth/verify', validate(verifySchema), async (req, res) => {
+// Same shape as requestLinkLimiter — verify was the one unthrottled
+// public portal endpoint (256-bit tokens make brute force infeasible,
+// but there's no reason to leave it uncapped).
+const verifyLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: getRateLimitStore('portal-auth-verify'),
+  message: { error: { message: 'Too many requests. Try again later.' } },
+});
+
+portalAuthRouter.post('/auth/verify', verifyLimiter, validate(verifySchema), async (req, res) => {
   const { token } = req.body as { token: string };
   const session = await portalAuth.verifyMagicLink({
     token,

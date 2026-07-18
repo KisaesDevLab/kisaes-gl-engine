@@ -25,22 +25,29 @@ export async function sendMagicLink(email: string, ipAddress: string, userAgent:
     return { sent: true, expiresInMinutes: 15 };
   }
 
-  if (!user.magicLinkEnabled) {
-    throw AppError.badRequest('Magic link login is not enabled for this account. Enable it in your security settings.');
-  }
+  const config = await tfaConfigService.getConfig();
 
-  // Verify user has non-email 2FA (TOTP or SMS)
+  // Ineligible REAL accounts must get the same silent success as unknown
+  // emails: throwing here turned this endpoint into an email-enumeration
+  // oracle (200 for strangers, 400 with a reason for registered accounts).
+  // The reason is logged for the operator, never surfaced to the caller.
+  // This also enforces the system-wide magicLinkEnabled admin toggle,
+  // which was previously read for expiry/attempts but never checked.
   const methods = (user.tfaMethods || '').split(',').filter(Boolean);
   const hasNonEmail2fa = methods.includes('totp') || methods.includes('sms');
-  if (!hasNonEmail2fa) {
-    throw AppError.badRequest('Magic link login requires an authenticator app or SMS verification to be set up.');
+  const ineligible = !config.magicLinkEnabled ? 'system magic-link toggle is off'
+    : !user.magicLinkEnabled ? 'user has not enabled magic-link login'
+    : !hasNonEmail2fa ? 'user has no TOTP/SMS second factor'
+    : null;
+  if (ineligible) {
+    console.warn(`[magic-link] silently refusing send for ${user.id}: ${ineligible}`);
+    return { sent: true, expiresInMinutes: config.magicLinkExpiryMinutes || 15 };
   }
-
-  // Rate limit: max pending links
-  const config = await tfaConfigService.getConfig();
-  const rawConfig = await tfaConfigService.getRawConfig();
-  const maxAttempts = (rawConfig as any).magicLinkMaxAttempts || 3;
-  const expiryMinutes = (rawConfig as any).magicLinkExpiryMinutes || 15;
+  // Rate limit: max pending links. (Previously read off getRawConfig()
+  // via `as any` — that object only carries SMS fields, so both values
+  // silently fell back to their defaults; getConfig() has the real ones.)
+  const maxAttempts = config.magicLinkMaxAttempts || 3;
+  const expiryMinutes = config.magicLinkExpiryMinutes || 15;
 
   const pending = await db.select({ id: magicLinks.id, createdAt: magicLinks.createdAt }).from(magicLinks)
     .where(and(eq(magicLinks.userId, user.id), eq(magicLinks.used, false), sql`expires_at > NOW()`));
@@ -101,6 +108,14 @@ export async function sendMagicLink(email: string, ipAddress: string, userAgent:
 }
 
 export async function verifyMagicLink(token: string) {
+  // System-wide admin toggle: no new logins via magic link while off.
+  // Safe to give a real reason here — presenting a token already proves
+  // control of the mailbox, so this is not an enumeration surface.
+  const config = await tfaConfigService.getConfig();
+  if (!config.magicLinkEnabled) {
+    throw AppError.badRequest('Magic link login is disabled by your administrator.');
+  }
+
   const tokenH = hashToken(token);
 
   const link = await db.query.magicLinks.findFirst({
