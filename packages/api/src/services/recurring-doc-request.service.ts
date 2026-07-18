@@ -256,7 +256,14 @@ export async function createRule(
       cadenceDays: input.cadenceDays,
       active: input.active,
       endsAt: input.endsAt ? new Date(input.endsAt) : null,
-      bankConnectionId: input.bankConnectionId ?? null,
+      // Routing mode ↔ connection consistency: only 'auto_import' keeps a
+      // bound connection; explicit mode wins, otherwise derive from
+      // whether a connection was supplied (the old two-state behavior).
+      statementRouting: input.statementRouting ?? (input.bankConnectionId ? 'auto_import' : 'inbox'),
+      bankConnectionId:
+        (input.statementRouting ?? (input.bankConnectionId ? 'auto_import' : 'inbox')) === 'auto_import'
+          ? input.bankConnectionId ?? null
+          : null,
     })
     .returning({ id: recurringDocumentRequests.id });
   const row = inserted[0];
@@ -316,6 +323,12 @@ export async function updateRule(
   if (input.cronExpression !== undefined) patch.cronExpression = input.cronExpression;
   if (input.cronTimezone !== undefined) patch.cronTimezone = input.cronTimezone;
   if (input.bankConnectionId !== undefined) patch.bankConnectionId = input.bankConnectionId ?? null;
+  if (input.statementRouting !== undefined) {
+    patch.statementRouting = input.statementRouting;
+    // A non-auto_import mode never keeps a bound connection (stale
+    // bindings would silently reactivate if the mode flips back).
+    if (input.statementRouting !== 'auto_import') patch.bankConnectionId = null;
+  }
   if (input.frequency !== undefined) patch.frequency = input.frequency;
   if (input.intervalValue !== undefined) patch.intervalValue = input.intervalValue;
   if (input.dayOfMonth !== undefined) patch.dayOfMonth = input.dayOfMonth;
@@ -409,6 +422,7 @@ export async function listRules(tenantId: string): Promise<RecurringDocRequestSu
     active: r.active,
     endsAt: r.endsAt ? r.endsAt.toISOString() : null,
     bankConnectionId: r.bankConnectionId ?? null,
+    statementRouting: (r.statementRouting ?? 'inbox') as RecurringDocRequestSummary['statementRouting'],
     outstandingCount: outstandingByRule.get(r.id) ?? 0,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),

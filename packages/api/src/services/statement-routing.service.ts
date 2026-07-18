@@ -151,17 +151,55 @@ interface RouteInput {
 }
 
 interface RouteResult {
-  status: 'imported' | 'awaits_routing' | 'no_candidates';
+  status: 'imported' | 'awaits_routing' | 'no_candidates' | 'parsed_for_review';
   bankConnectionId?: string;
   imported?: number;
   skipped?: number;
 }
 
-// Top-level entry. Picks the connection, parses the statement, and
-// imports rows into bank_feed_items. On parse failure or no
-// candidates, leaves the receipt in a recoverable state — never
-// throws on the happy path so the upload route still returns 201.
+// Top-level entry. Honors the rule's statement_routing mode, then (for
+// auto_import) picks the connection, parses the statement, and imports
+// rows into bank_feed_items. On parse failure or no candidates, leaves
+// the receipt in a recoverable state — never throws on the happy path
+// so the upload route still returns 201.
 export async function routeStatementUpload(input: RouteInput): Promise<RouteResult> {
+  // Explicit routing mode on the rule. One-off requests (no rule) keep
+  // the historical auto_import behavior.
+  if (input.recurringId) {
+    const rule = await db.query.recurringDocumentRequests.findFirst({
+      where: and(
+        eq(recurringDocumentRequests.tenantId, input.tenantId),
+        eq(recurringDocumentRequests.id, input.recurringId),
+      ),
+    });
+    const mode = rule?.statementRouting ?? 'inbox';
+
+    if (mode === 'inbox') {
+      // Operator chose "receipts inbox, manual pick" — park it there.
+      // (Before the mode column, unbound rules could still silently
+      // auto-import via the unique-company-match heuristic, which
+      // contradicted the UI label.)
+      await db
+        .update(portalReceipts)
+        .set({ status: 'awaits_routing', updatedAt: new Date() })
+        .where(eq(portalReceipts.id, input.receiptId));
+      await auditLog(
+        input.tenantId,
+        'update',
+        'portal_receipt',
+        input.receiptId,
+        null,
+        { status: 'awaits_routing', reason: 'rule_inbox', documentType: input.documentType },
+      );
+      return { status: 'awaits_routing' };
+    }
+
+    if (mode === 'statement_processing') {
+      return parseStatementForReview(input.tenantId, input.receiptId, input.documentRequestId);
+    }
+    // mode === 'auto_import' falls through to the connection pick below.
+  }
+
   const pick = await pickBankConnectionFor(
     input.tenantId,
     input.contactId,
@@ -193,6 +231,94 @@ export async function routeStatementUpload(input: RouteInput): Promise<RouteResu
   );
 }
 
+// The statement parser operates on attachments rows. Create a shadow
+// attachment that points at the same storage_key so the existing
+// `ensureLocal` path resolves the file unchanged.
+async function createShadowStatementAttachment(
+  receipt: typeof portalReceipts.$inferSelect,
+): Promise<string> {
+  const shadowName = `statement-${receipt.id}-${receipt.filename}`.slice(0, 250);
+  const shadow = await db
+    .insert(attachments)
+    .values({
+      tenantId: receipt.tenantId,
+      companyId: receipt.companyId,
+      fileName: shadowName,
+      filePath: receipt.storageKey,
+      fileSize: receipt.sizeBytes ?? null,
+      mimeType: receipt.mimeType ?? 'application/pdf',
+      attachableType: 'portal_receipt_statement',
+      attachableId: receipt.id,
+      storageKey: receipt.storageKey,
+      storageProvider: 'inherit',
+    })
+    .returning({ id: attachments.id });
+  const shadowId = shadow[0]?.id;
+  if (!shadowId) throw AppError.internal('Failed to create shadow attachment for statement parse');
+  return shadowId;
+}
+
+// 'statement_processing' routing mode: parse the upload NOW so the parse
+// job lands on the Statement Processing page ("Pending review" → Review
+// & import), where staff pick the account at review time. No connection
+// binding, no unattended import — a human always reviews, so the
+// quality gate doesn't apply here. The document request is fulfilled
+// immediately: the contact delivered their document; what remains is
+// staff work.
+export async function parseStatementForReview(
+  tenantId: string,
+  receiptId: string,
+  documentRequestId: string | null,
+): Promise<RouteResult> {
+  const receipt = await db.query.portalReceipts.findFirst({
+    where: and(eq(portalReceipts.tenantId, tenantId), eq(portalReceipts.id, receiptId)),
+  });
+  if (!receipt) throw AppError.notFound('Receipt not found');
+
+  const shadowId = await createShadowStatementAttachment(receipt);
+
+  try {
+    const statementParser = await import('./ai-statement-parser.service.js');
+    await statementParser.parseStatement(tenantId, shadowId);
+
+    await db
+      .update(portalReceipts)
+      .set({ status: 'statement_review', documentRequestId, updatedAt: new Date() })
+      .where(eq(portalReceipts.id, receiptId));
+
+    if (documentRequestId) {
+      const recurDoc = await import('./recurring-doc-request.service.js');
+      await recurDoc.markFulfilledByReceipt(tenantId, documentRequestId, receiptId);
+    }
+
+    await auditLog(
+      tenantId,
+      'create',
+      'statement_parsed_for_review',
+      receiptId,
+      null,
+      { shadowAttachmentId: shadowId, documentRequestId },
+    );
+    return { status: 'parsed_for_review' };
+  } catch (err) {
+    // Parse failure: park in the receipts inbox so the CPA's manual
+    // pick (or retry) path still applies; the request stays pending.
+    await db
+      .update(portalReceipts)
+      .set({ status: 'awaits_routing', updatedAt: new Date() })
+      .where(eq(portalReceipts.id, receiptId));
+    await auditLog(
+      tenantId,
+      'update',
+      'portal_receipt',
+      receiptId,
+      null,
+      { event: 'statement_review_parse_failed', error: err instanceof Error ? err.message : String(err) },
+    );
+    return { status: 'awaits_routing' };
+  }
+}
+
 // The "we know which bank connection — go" path. Extracted so the
 // CPA's manual pick action can reuse it from the receipts inbox.
 export async function importStatementForReceipt(
@@ -215,27 +341,7 @@ export async function importStatementForReceipt(
   });
   if (!receipt) throw AppError.notFound('Receipt not found');
 
-  // The statement parser operates on attachments rows. Create a
-  // shadow attachment that points at the same storage_key so the
-  // existing `ensureLocal` path resolves the file unchanged.
-  const shadowName = `statement-${receipt.id}-${receipt.filename}`.slice(0, 250);
-  const shadow = await db
-    .insert(attachments)
-    .values({
-      tenantId: receipt.tenantId,
-      companyId: receipt.companyId,
-      fileName: shadowName,
-      filePath: receipt.storageKey,
-      fileSize: receipt.sizeBytes ?? null,
-      mimeType: receipt.mimeType ?? 'application/pdf',
-      attachableType: 'portal_receipt_statement',
-      attachableId: receipt.id,
-      storageKey: receipt.storageKey,
-      storageProvider: 'inherit',
-    })
-    .returning({ id: attachments.id });
-  const shadowId = shadow[0]?.id;
-  if (!shadowId) throw AppError.internal('Failed to create shadow attachment for statement parse');
+  const shadowId = await createShadowStatementAttachment(receipt);
 
   try {
     const statementParser = await import('./ai-statement-parser.service.js');

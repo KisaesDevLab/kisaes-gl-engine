@@ -69,6 +69,12 @@ export const recurringDocumentRequests = pgTable('recurring_document_requests', 
   // already have a circular-import budget); the migration creates
   // the FK constraint with ON DELETE SET NULL.
   bankConnectionId: uuid('bank_connection_id'),
+  // How statement uploads against this rule are routed:
+  // 'inbox' (receipts inbox, manual pick), 'auto_import' (bank
+  // connection → bank_feed_items), or 'statement_processing' (parse
+  // now, staff reviews/imports on the Statement Processing page).
+  // See STATEMENT_ROUTING_MODES in @kis-books/shared.
+  statementRouting: varchar('statement_routing', { length: 30 }).notNull().default('inbox'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({

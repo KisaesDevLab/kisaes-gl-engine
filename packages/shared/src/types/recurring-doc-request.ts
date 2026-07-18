@@ -14,9 +14,24 @@ export const DOCUMENT_TYPES = [
   'cc_statement',
   'payroll_report',
   'receipt_batch',
+  'sales_tax_report',
+  'accounts_receivable',
+  'inventory',
+  'accounts_payable',
+  'loan_balance',
   'other',
 ] as const;
 export type DocumentType = typeof DOCUMENT_TYPES[number];
+
+// How a statement upload that fulfils a rule gets routed
+// (bank_statement / cc_statement only; other types always land in the
+// receipts inbox):
+//   'inbox'                — receipts inbox, CPA picks manually
+//   'auto_import'          — into a bank connection's bank_feed_items
+//   'statement_processing' — parse immediately; staff reviews/imports
+//                            on the Statement Processing page
+export const STATEMENT_ROUTING_MODES = ['inbox', 'auto_import', 'statement_processing'] as const;
+export type StatementRoutingMode = typeof STATEMENT_ROUTING_MODES[number];
 
 export const RECURRING_FREQUENCIES = ['monthly', 'quarterly', 'annually'] as const;
 export type RecurringFrequency = typeof RECURRING_FREQUENCIES[number];
@@ -63,6 +78,10 @@ export const recurringDocRequestCreateSchema = z.object({
   // rule is routed into the given bank_connection's bank_feed_items
   // pipeline instead of the receipts inbox.
   bankConnectionId: z.string().uuid().nullable().optional(),
+  // Omitted → derived by the service: 'auto_import' when a
+  // bankConnectionId is given, 'inbox' otherwise (matches the old
+  // implicit behavior of the two-state UI).
+  statementRouting: z.enum(STATEMENT_ROUTING_MODES).optional(),
 });
 export type RecurringDocRequestCreateInput = z.infer<typeof recurringDocRequestCreateSchema>;
 
@@ -93,6 +112,7 @@ export interface RecurringDocRequestSummary {
   active: boolean;
   endsAt: string | null;
   bankConnectionId: string | null;
+  statementRouting: StatementRoutingMode;
   outstandingCount: number;
   createdAt: string;
   updatedAt: string;
