@@ -212,8 +212,14 @@ export async function getTenantCreationEligibility(userId: string, currentRole: 
   // Portal 'client' accounts and non-owner staff invited into someone
   // else's books don't get to mint tenants; super-admins always may.
   if (user.userType !== 'staff') return { ...base, allowed: false, reason: 'Portal accounts cannot create businesses.' };
-  if (currentRole !== 'owner' && !user.isSuperAdmin) {
-    return { ...base, allowed: false, reason: 'Only the owner of a business can create a new one.' };
+  // Ownership gate: the user must OWN at least one active tenancy
+  // (anywhere), not merely hold the 'owner' role on the tenant they
+  // happen to be switched into right now — an owner browsing a client
+  // tenant as bookkeeper must still be able to start a business.
+  // `currentRole` deliberately no longer participates in the decision.
+  void currentRole;
+  if (used === 0 && !user.isSuperAdmin) {
+    return { ...base, allowed: false, reason: 'Only a business owner can create a new business.' };
   }
   if (limit !== 0 && used >= limit) {
     return { ...base, allowed: false, reason: `You already own ${used} of ${limit} allowed businesses. Ask your administrator to raise the limit.` };
@@ -237,13 +243,39 @@ export async function createOwnedTenant(creatorUserId: string, currentRole: stri
     throw AppError.forbidden(eligibility.reason || 'You are not allowed to create a new business.');
   }
 
+  // NOTE: the cap check above is best-effort against concurrent
+  // requests (two simultaneous creates can both pass and overshoot the
+  // limit by one) — acceptable for an admin-tunable soft cap; a serialized
+  // check would need an advisory lock for a vanishingly rare overshoot.
   const provisioned = await provisionTenant({ ...input, companyName });
 
-  await db.insert(userTenantAccess).values({
-    userId: creatorUserId,
-    tenantId: provisioned.tenantId,
-    role: 'owner',
-  }).onConflictDoNothing();
+  // The access row is what makes the new tenant reachable — if this
+  // insert is lost the tenant is orphaned (only a super-admin could see
+  // it). provisionTenant's inserts aren't in one transaction with this
+  // (its seeding spans services bound to the global db handle), so
+  // retry hard and, if we still fail, surface an error naming the
+  // tenant so an operator can grant access instead of the user retrying
+  // into a pile of orphans.
+  let accessErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await db.insert(userTenantAccess).values({
+        userId: creatorUserId,
+        tenantId: provisioned.tenantId,
+        role: 'owner',
+      }).onConflictDoNothing();
+      accessErr = null;
+      break;
+    } catch (err) {
+      accessErr = err;
+    }
+  }
+  if (accessErr) {
+    console.error(`[create-tenant] tenant ${provisioned.tenantId} provisioned but owner access insert failed for user ${creatorUserId}:`, accessErr);
+    throw AppError.internal(
+      `Your business "${provisioned.tenantName}" was created but could not be linked to your account. Do NOT retry — ask your administrator to grant you access (tenant ${provisioned.tenantId}).`,
+    );
+  }
 
   return provisioned;
 }

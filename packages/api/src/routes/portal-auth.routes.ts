@@ -64,13 +64,14 @@ export function resolveEmailBaseUrl(
 async function resolveTenantId(
   hostHeader: string | undefined,
   tenantSlug: string | undefined,
-): Promise<string | null> {
+): Promise<{ tenantId: string | null; viaCustomDomain: boolean }> {
   if (tenantSlug) {
     const t = await db.query.tenants.findFirst({ where: eq(tenants.slug, tenantSlug) });
-    return t?.id ?? null;
+    return { tenantId: t?.id ?? null, viaCustomDomain: false };
   }
-  if (!hostHeader) return null;
-  return portalAuth.resolveTenantByHost(hostHeader);
+  if (!hostHeader) return { tenantId: null, viaCustomDomain: false };
+  const tenantId = await portalAuth.resolveTenantByHost(hostHeader);
+  return { tenantId, viaCustomDomain: tenantId !== null };
 }
 
 portalAuthRouter.post(
@@ -79,14 +80,23 @@ portalAuthRouter.post(
   validate(requestLinkSchema),
   async (req, res) => {
     const { email, tenantSlug } = req.body as { email: string; tenantSlug?: string };
-    const tenantId = await resolveTenantId(req.headers.host, tenantSlug);
+    const { tenantId, viaCustomDomain } = await resolveTenantId(req.headers.host, tenantSlug);
     if (!tenantId) {
       // Don't leak which firm a contact belongs to. Always return ok.
       res.json({ ok: true });
       return;
     }
 
-    const baseUrl = resolveEmailBaseUrl(req.headers, req.protocol);
+    // When the tenant was resolved via a CONFIGURED custom portal
+    // domain, the link must target that domain — it's what the contact
+    // is using, and it's allowlisted (resolveTenantByHost only matches
+    // hosts stored in portal_settings_per_practice, so this is not the
+    // spoofable free-form Host fallback that resolveEmailBaseUrl
+    // guards against). Everything else uses the trusted PUBLIC_URL.
+    const proto = (req.headers['x-forwarded-proto'] as string | undefined) ?? req.protocol;
+    const baseUrl = viaCustomDomain
+      ? `${proto}://${req.headers.host}`
+      : resolveEmailBaseUrl(req.headers, req.protocol);
 
     await portalAuth.requestMagicLink({
       tenantId,
@@ -165,7 +175,7 @@ portalAuthRouter.post(
   requestLinkLimiter,
   validate(passwordLoginSchema),
   async (req, res) => {
-    const tenantId = await resolveTenantId(req.headers.host, (req.body as { tenantSlug?: string }).tenantSlug);
+    const { tenantId } = await resolveTenantId(req.headers.host, (req.body as { tenantSlug?: string }).tenantSlug);
     if (!tenantId) {
       // Same response shape as success when tenant unknown so we don't
       // leak directory info — except no Set-Cookie, so the call still

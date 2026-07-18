@@ -92,6 +92,16 @@ describe('staff magic-link send — enumeration safety', () => {
   });
 });
 
+describe('staff magic-link send — expiry parity (no oracle via expiresInMinutes)', () => {
+  it('unknown emails answer with the CONFIGURED expiry, same as real accounts', async () => {
+    await db.insert(tfaConfig).values({ magicLinkEnabled: true, magicLinkExpiryMinutes: 30 });
+    const unknown = await sendMagicLink(`nobody-${uniq}@example.com`, '127.0.0.1', 'vitest');
+    const known = await sendMagicLink(EMAIL, '127.0.0.1', 'vitest');
+    expect(unknown.expiresInMinutes).toBe(30); // was hard-coded 15 → enumeration oracle
+    expect(known.expiresInMinutes).toBe(30);
+  });
+});
+
 describe('staff magic-link verify — system toggle', () => {
   it('refuses verification while the system toggle is off', async () => {
     await enableSystemMagicLink(false);

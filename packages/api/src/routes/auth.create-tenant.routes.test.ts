@@ -195,10 +195,22 @@ describe('self-service tenant creation — enabled', () => {
     expect(firmRows.rows).toHaveLength(0);
   });
 
-  it('refuses non-owner staff', async () => {
+  it('refuses staff who own no tenancy anywhere', async () => {
     const { status, json } = await createTenant(bookkeeperToken, 'BK Books LLC');
     expect(status).toBe(403);
     expect((json['error'] as { message: string }).message).toMatch(/owner/i);
+  });
+
+  it('allows an owner even while switched into a tenant where they are not owner', async () => {
+    // The user OWNS their home tenancy; their current JWT context is a
+    // bookkeeper role (switched into a client's books). Ownership, not
+    // the current-tenant role, is what gates creation.
+    const switchedToken = jwt.sign(
+      { userId: ownerId, tenantId: homeTenantId, role: 'bookkeeper', isSuperAdmin: false },
+      process.env['JWT_SECRET']!, { expiresIn: '5m' },
+    );
+    const { status } = await createTenant(switchedToken, 'Switched Owner Books LLC');
+    expect(status).toBe(201);
   });
 
   it('refuses a blank company name', async () => {

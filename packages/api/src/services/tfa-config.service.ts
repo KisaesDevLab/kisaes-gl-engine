@@ -37,9 +37,31 @@ async function getOrCreateConfig() {
   // recent admin intent first) and self-heal by deleting the rest.
   const rows = await db.select().from(tfaConfig).orderBy(desc(tfaConfig.updatedAt), desc(tfaConfig.createdAt));
   if (rows.length > 1) {
+    // Before deleting stale duplicates, salvage credentials the survivor
+    // lacks. The split-brain bounce means the encrypted SMS secrets may
+    // live ONLY on an older row (saved weeks ago) while the newest row
+    // carries just the latest toggle — a blind delete would permanently
+    // destroy the only copy and lock out every SMS-2FA user.
+    const survivor = rows[0]!;
+    const CREDENTIAL_FIELDS = [
+      'smsProvider', 'smsTwilioAccountSid', 'smsTwilioAuthToken', 'smsTwilioFromNumber',
+      'smsTextlinkApiKey', 'smsTextlinkServiceName',
+    ] as const;
+    const salvage: Partial<typeof tfaConfig.$inferInsert> = {};
+    for (const field of CREDENTIAL_FIELDS) {
+      if (!survivor[field]) {
+        const donor = rows.slice(1).find((r) => r[field]);
+        if (donor) salvage[field] = donor[field];
+      }
+    }
+    if (Object.keys(salvage).length > 0) {
+      await db.update(tfaConfig).set(salvage).where(eq(tfaConfig.id, survivor.id));
+      Object.assign(survivor, salvage);
+      console.warn(`[tfa-config] Salvaged ${Object.keys(salvage).join(', ')} from duplicate row(s) before healing`);
+    }
     const stale = rows.slice(1).map((r) => r.id);
     await db.delete(tfaConfig).where(inArray(tfaConfig.id, stale));
-    console.warn(`[tfa-config] Removed ${stale.length} duplicate tfa_config row(s) (get-or-create race); kept ${rows[0]!.id}`);
+    console.warn(`[tfa-config] Removed ${stale.length} duplicate tfa_config row(s) (get-or-create race); kept ${survivor.id}`);
   }
   if (rows.length > 0) return rows[0]!;
   const [created] = await db.insert(tfaConfig).values({}).returning();

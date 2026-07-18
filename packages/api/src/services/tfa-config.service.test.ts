@@ -42,6 +42,29 @@ describe('tfa_config singleton self-heal', () => {
     expect(config.codeLength).toBe(8);
   });
 
+  it('salvages credentials living only on a stale duplicate before deleting it', async () => {
+    const now = Date.now();
+    // Older row holds the ONLY copy of the SMS credentials (the
+    // split-brain bounce parked them there weeks ago)...
+    await db.insert(tfaConfig).values({
+      smsProvider: 'textlinksms', smsTextlinkApiKey: 'enc:the-only-copy', smsTextlinkServiceName: 'MyBooks',
+      createdAt: new Date(now - 120_000), updatedAt: new Date(now - 60_000),
+    });
+    // ...while the newest row carries just a recent toggle.
+    await db.insert(tfaConfig).values({
+      magicLinkEnabled: true, createdAt: new Date(now - 90_000), updatedAt: new Date(now),
+    });
+
+    await tfaConfigService.getConfig(); // triggers the self-heal
+
+    const rows = await db.select().from(tfaConfig);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.magicLinkEnabled).toBe(true); // survivor's own state kept
+    expect(rows[0]!.smsProvider).toBe('textlinksms'); // creds salvaged, not destroyed
+    expect(rows[0]!.smsTextlinkApiKey).toBe('enc:the-only-copy');
+    expect(rows[0]!.smsTextlinkServiceName).toBe('MyBooks');
+  });
+
   it('passwordless toggles round-trip (save → read → save)', async () => {
     await tfaConfigService.updateConfig({ passkeysEnabled: true, magicLinkEnabled: true, magicLinkExpiryMinutes: 30 });
     let rows = await db.select().from(tfaConfig);

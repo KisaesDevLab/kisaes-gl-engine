@@ -21,11 +21,14 @@ export async function sendMagicLink(email: string, ipAddress: string, userAgent:
   const normalized = email.trim().toLowerCase();
   const user = await db.query.users.findFirst({ where: eq(users.email, normalized) });
   // Don't reveal whether user exists — always return success-like response
-  if (!user || !user.isActive) {
-    return { sent: true, expiresInMinutes: 15 };
-  }
-
+  // Read the config FIRST so the unknown-email response carries the
+  // same configured expiry as the known-account paths — a hard-coded 15
+  // here re-opened the enumeration oracle whenever the admin set a
+  // non-default expiry (registered emails answered 30, unknown 15).
   const config = await tfaConfigService.getConfig();
+  if (!user || !user.isActive) {
+    return { sent: true, expiresInMinutes: config.magicLinkExpiryMinutes || 15 };
+  }
 
   // Ineligible REAL accounts must get the same silent success as unknown
   // emails: throwing here turned this endpoint into an email-enumeration
