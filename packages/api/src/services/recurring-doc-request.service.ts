@@ -264,6 +264,7 @@ export async function createRule(
         (input.statementRouting ?? (input.bankConnectionId ? 'auto_import' : 'inbox')) === 'auto_import'
           ? input.bankConnectionId ?? null
           : null,
+      reminderChannel: input.reminderChannel ?? 'email',
     })
     .returning({ id: recurringDocumentRequests.id });
   const row = inserted[0];
@@ -337,6 +338,7 @@ export async function updateRule(
     // store a silently-ignored connection.
     patch.statementRouting = input.bankConnectionId ? 'auto_import' : 'inbox';
   }
+  if (input.reminderChannel !== undefined) patch.reminderChannel = input.reminderChannel;
   if (input.frequency !== undefined) patch.frequency = input.frequency;
   if (input.intervalValue !== undefined) patch.intervalValue = input.intervalValue;
   if (input.dayOfMonth !== undefined) patch.dayOfMonth = input.dayOfMonth;
@@ -431,6 +433,7 @@ export async function listRules(tenantId: string): Promise<RecurringDocRequestSu
     endsAt: r.endsAt ? r.endsAt.toISOString() : null,
     bankConnectionId: r.bankConnectionId ?? null,
     statementRouting: (r.statementRouting ?? 'inbox') as RecurringDocRequestSummary['statementRouting'],
+    reminderChannel: (r.reminderChannel ?? 'email') as RecurringDocRequestSummary['reminderChannel'],
     outstandingCount: outstandingByRule.get(r.id) ?? 0,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
@@ -511,6 +514,7 @@ export async function issueOne(
       requestedAt: issuedAt,
       dueDate,
       status: 'pending',
+      reminderChannel: rule.reminderChannel ?? 'email',
     })
     .onConflictDoNothing({ target: [documentRequests.recurringId, documentRequests.periodLabel] })
     .returning({ id: documentRequests.id });

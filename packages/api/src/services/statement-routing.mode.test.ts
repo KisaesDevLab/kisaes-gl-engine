@@ -137,7 +137,7 @@ describe('createRule / updateRule — routing mode consistency', () => {
     contactId: '', documentType: 'bank_statement' as const, description: 'x',
     cadenceKind: 'frequency' as const, frequency: 'monthly' as const,
     intervalValue: 1, dayOfMonth: 3, dueDaysAfterIssue: 7,
-    cadenceDays: [3, 7, 14], active: true,
+    cadenceDays: [3, 7, 14], active: true, reminderChannel: 'email' as const,
   };
 
   it('statement_processing never stores a bound connection', async () => {

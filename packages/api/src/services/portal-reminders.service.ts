@@ -19,6 +19,7 @@ import {
 import { AppError } from '../utils/errors.js';
 import { getSmtpSettings } from './admin.service.js';
 import { buildFrom } from './system-email.service.js';
+import { isEnabled } from './feature-flags.service.js';
 import { auditLog } from '../middleware/audit.js';
 import { escapeHtml } from './report-export.service.js';
 
@@ -99,7 +100,15 @@ async function getMailer(): Promise<MailerHandle> {
 // 13.6 — engagement-based suppression check. Treats any portal
 // activity by the contact in the last 7 days, or an active explicit
 // suppression row, as "do not send".
-async function isSuppressed(contactId: string, channel: 'email' | 'sms'): Promise<boolean> {
+async function isSuppressed(
+  contactId: string,
+  channel: 'email' | 'sms',
+  // Openers announce a NEW obligation, so they skip the 7-day
+  // engagement throttle (that heuristic is for repeat nudges). Explicit
+  // STOP/opt-out suppression rows are ALWAYS honored — legal, not a
+  // throttle — regardless of this flag.
+  opts: { skipEngagementWindow?: boolean } = {},
+): Promise<boolean> {
   const now = new Date();
 
   const suppression = await db
@@ -114,6 +123,8 @@ async function isSuppressed(contactId: string, channel: 'email' | 'sms'): Promis
     )
     .limit(1);
   if (suppression.length > 0) return true;
+
+  if (opts.skipEngagementWindow) return false;
 
   const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
   const contact = await db.query.portalContacts.findFirst({
@@ -911,7 +922,8 @@ async function sendDocRequestNotice(
   maxPerWeek: number,
   channel: 'email' | 'sms',
 ): Promise<'sent' | 'suppressed' | 'capped' | 'error' | 'no_phone' | 'sms_disabled'> {
-  if (await isSuppressed(contactId, channel)) return 'suppressed';
+  // Openers skip the engagement throttle but still honor STOP opt-outs.
+  if (await isSuppressed(contactId, channel, { skipEngagementWindow: isOpener })) return 'suppressed';
   if (!isOpener && (await exceededWeeklyCap(contactId, maxPerWeek))) return 'capped';
 
   if (channel === 'sms') {
@@ -1120,17 +1132,24 @@ export async function dispatchDocRequests(tenantId?: string): Promise<DispatchRe
 
   const tenantIds = Array.from(new Set(candidates.map((c) => c.tenantId)));
   const tenantSmsMap = new Map<string, boolean>();
+  const tenantFlagMap = new Map<string, boolean>();
   if (tenantIds.length > 0) {
     const rows = await db
       .select()
       .from(portalSettingsPerPractice)
       .where(inArray(portalSettingsPerPractice.tenantId, tenantIds));
     for (const r of rows) tenantSmsMap.set(r.tenantId, r.smsOutboundEnabled);
+    // DOC_REQUEST_SMS_V1 must actually gate outbound SMS — it was
+    // previously decorative (only the tenant SMS-outbound toggle +
+    // system provider governed sends), so a tenant with the flag OFF
+    // could still send SMS. Resolve it per tenant here.
+    for (const t of tenantIds) tenantFlagMap.set(t, await isEnabled(t, 'DOC_REQUEST_SMS_V1'));
   }
 
   for (const c of candidates) {
     const tenantSmsOn = tenantSmsMap.get(c.tenantId) ?? false;
-    const smsAvailable = systemSmsConfigured && tenantSmsOn;
+    const flagOn = tenantFlagMap.get(c.tenantId) ?? false;
+    const smsAvailable = flagOn && systemSmsConfigured && tenantSmsOn;
     const channels = chooseChannelsForCandidate(
       c.channelStrategy,
       c.step,
@@ -1197,25 +1216,44 @@ export async function sendOpenerForDocRequest(
   const r = row[0];
   if (!r) return 'not_found';
   if (r.contactStatus !== 'active') return 'suppressed';
-  const result = await sendDocRequestNotice(
-    tenantId,
-    null,
-    r.d.contactId,
-    r.contactEmail,
-    r.contactPhone,
-    r.contactFirstName,
-    r.d.id,
-    r.d.description,
-    r.d.periodLabel,
-    r.d.dueDate,
-    true,
-    9999,
-    'email',
-  );
-  // Collapse channel-specific outcomes (no_phone / sms_disabled) to
-  // 'error' — the opener should never hit those because channel='email'.
-  if (result === 'no_phone' || result === 'sms_disabled') return 'error';
-  return result;
+
+  // DOC_REQUEST_SMS_V1 — the opener honors the rule's per-request
+  // reminder_channel ('email' | 'sms' | 'both'), gated by the feature
+  // flag AND live SMS availability. When SMS is requested but the flag
+  // is off or the contact has no phone / the tenant has SMS disabled,
+  // we fall back to email so the practice's request is never silently
+  // dropped — the whole point of the opener is that it always lands.
+  const wantsSms = r.d.reminderChannel === 'sms' || r.d.reminderChannel === 'both';
+  const wantsEmail = r.d.reminderChannel === 'email' || r.d.reminderChannel === 'both';
+  let smsUsable = false;
+  if (wantsSms) {
+    const flagOn = await isEnabled(tenantId, 'DOC_REQUEST_SMS_V1');
+    const tenantSms = flagOn ? await getTenantSmsSettings(tenantId) : { smsOutboundEnabled: false };
+    smsUsable = flagOn && tenantSms.smsOutboundEnabled && !!r.contactPhone;
+  }
+  // Channels to actually attempt: requested email, plus SMS when usable,
+  // plus an email fallback when SMS was the only requested channel but
+  // isn't usable.
+  const channels: ('email' | 'sms')[] = [];
+  if (wantsEmail) channels.push('email');
+  if (smsUsable) channels.push('sms');
+  if (channels.length === 0) channels.push('email'); // sms_only but unusable → email fallback
+
+  const outcomes: string[] = [];
+  for (const channel of channels) {
+    const result = await sendDocRequestNotice(
+      tenantId, null, r.d.contactId, r.contactEmail, r.contactPhone,
+      r.contactFirstName, r.d.id, r.d.description, r.d.periodLabel, r.d.dueDate,
+      true, 9999, channel,
+    );
+    outcomes.push(result);
+  }
+  // Aggregate: 'sent' if any channel delivered; 'suppressed' only if all
+  // were suppressed; otherwise 'error'. no_phone/sms_disabled shouldn't
+  // occur (smsUsable gates them) but collapse to 'error' defensively.
+  if (outcomes.includes('sent')) return 'sent';
+  if (outcomes.every((o) => o === 'suppressed')) return 'suppressed';
+  return 'error';
 }
 
 // Force a single nudge regardless of cadence. Used by the practice

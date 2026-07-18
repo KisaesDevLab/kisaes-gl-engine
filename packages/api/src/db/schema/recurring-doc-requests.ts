@@ -75,6 +75,11 @@ export const recurringDocumentRequests = pgTable('recurring_document_requests', 
   // now, staff reviews/imports on the Statement Processing page).
   // See STATEMENT_ROUTING_MODES in @kis-books/shared.
   statementRouting: varchar('statement_routing', { length: 30 }).notNull().default('inbox'),
+  // DOC_REQUEST_SMS_V1 — which channel(s) the issuance notice (opener)
+  // uses: 'email' | 'sms' | 'both'. Escalation nudges continue to
+  // follow the reminder_schedules channel strategy. Effective SMS also
+  // requires the tenant's SMS-outbound setting and a contact phone.
+  reminderChannel: varchar('reminder_channel', { length: 10 }).notNull().default('email'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
@@ -111,6 +116,8 @@ export const documentRequests = pgTable('document_requests', {
   // Soft FK (added in the migration as a column, not as a Drizzle
   // reference, to avoid a circular import with portal-receipts).
   submittedReceiptId: uuid('submitted_receipt_id'),
+  // Denormalised opener channel from the parent rule (DOC_REQUEST_SMS_V1).
+  reminderChannel: varchar('reminder_channel', { length: 10 }).notNull().default('email'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({

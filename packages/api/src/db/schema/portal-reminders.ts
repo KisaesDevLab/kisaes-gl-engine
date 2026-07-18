@@ -16,7 +16,6 @@ import {
 import { tenants } from './auth.js';
 import { companies } from './company.js';
 import { portalContacts } from './portal-contacts.js';
-import { portalQuestions } from './portal-questions.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 13 — automated reminders.
 // Four tables: schedules, individual sends, suppressions, templates.
@@ -50,7 +49,12 @@ export const reminderSends = pgTable('reminder_sends', {
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
   contactId: uuid('contact_id').notNull().references(() => portalContacts.id, { onDelete: 'cascade' }),
   // Optional — set when the reminder was about a specific question.
-  questionId: uuid('question_id').references(() => portalQuestions.id, { onDelete: 'set null' }),
+  // Polymorphic subject id — a portal_questions id for the questions
+  // reminder path, a document_requests id for doc-request opener/nudges.
+  // No FK: it can't reference two tables (migration 0138 dropped the old
+  // portal_questions FK, which was silently rejecting every doc-request
+  // send). Treated as a bare audit-trail uuid.
+  questionId: uuid('question_id'),
   channel: varchar('channel', { length: 10 }).notNull(),
   sentAt: timestamp('sent_at', { withTimezone: true }).notNull().defaultNow(),
   deliveredAt: timestamp('delivered_at', { withTimezone: true }),

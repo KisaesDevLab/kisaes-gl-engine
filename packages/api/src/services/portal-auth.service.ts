@@ -170,7 +170,18 @@ export async function requestMagicLink(args: {
   const html = `<p>${greeting}</p><p>Use the button below to sign in. The link expires in ${MAGIC_LINK_TTL_MIN} minutes and can only be used once.</p><p><a href="${link}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px">Sign in to the portal</a></p><p>Or copy and paste this URL: <code>${link}</code></p><p style="color:#888;font-size:12px">If you didn't request this, you can ignore this email.</p>`;
 
   const mailer = await ensureSmtpTransport();
-  await mailer.send(email, 'Your portal sign-in link', html, text);
+  // Swallow send failures: an unhandled throw here 500s the request,
+  // which (a) leaks contact existence — an unknown email returns ok:true
+  // while a real one 500s when SMTP is down — and (b) leaves the
+  // just-inserted magic-link row orphaned. Log it; the enumeration-safe
+  // contract is that request-link always looks the same to the caller.
+  let sent = true;
+  try {
+    await mailer.send(email, 'Your portal sign-in link', html, text);
+  } catch (err) {
+    sent = false;
+    console.error(`[portal-auth] magic-link email send failed for contact ${contact.id}:`, err instanceof Error ? err.message : err);
+  }
 
   await auditLog(
     args.tenantId,
@@ -178,10 +189,10 @@ export async function requestMagicLink(args: {
     'portal_magic_link',
     null,
     null,
-    { contactId: contact.id, email, viaStub: mailer.isStub },
+    { contactId: contact.id, email, viaStub: mailer.isStub, sent },
   );
 
-  return { ok: true, sent: true };
+  return { ok: true, sent };
 }
 
 export interface VerifiedSession {

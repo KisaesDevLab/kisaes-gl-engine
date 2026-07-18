@@ -33,6 +33,12 @@ export type DocumentType = typeof DOCUMENT_TYPES[number];
 export const STATEMENT_ROUTING_MODES = ['inbox', 'auto_import', 'statement_processing'] as const;
 export type StatementRoutingMode = typeof STATEMENT_ROUTING_MODES[number];
 
+// DOC_REQUEST_SMS_V1 — channel for the issuance notice (opener) a
+// standing request sends the contact. Escalation nudges follow the
+// reminder-schedule strategy separately.
+export const DOC_REQUEST_CHANNELS = ['email', 'sms', 'both'] as const;
+export type DocRequestChannel = typeof DOC_REQUEST_CHANNELS[number];
+
 export const RECURRING_FREQUENCIES = ['monthly', 'quarterly', 'annually'] as const;
 export type RecurringFrequency = typeof RECURRING_FREQUENCIES[number];
 
@@ -82,6 +88,9 @@ export const recurringDocRequestCreateSchema = z.object({
   // bankConnectionId is given, 'inbox' otherwise (matches the old
   // implicit behavior of the two-state UI).
   statementRouting: z.enum(STATEMENT_ROUTING_MODES).optional(),
+  // Opener channel. Defaults 'email'; 'sms'/'both' require the tenant's
+  // SMS-outbound setting + a contact phone at send time.
+  reminderChannel: z.enum(DOC_REQUEST_CHANNELS).default('email'),
 });
 export type RecurringDocRequestCreateInput = z.infer<typeof recurringDocRequestCreateSchema>;
 
@@ -113,6 +122,7 @@ export interface RecurringDocRequestSummary {
   endsAt: string | null;
   bankConnectionId: string | null;
   statementRouting: StatementRoutingMode;
+  reminderChannel: DocRequestChannel;
   outstandingCount: number;
   createdAt: string;
   updatedAt: string;
