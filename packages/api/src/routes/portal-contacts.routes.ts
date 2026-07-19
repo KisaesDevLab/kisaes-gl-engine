@@ -11,6 +11,7 @@ import * as svc from '../services/portal-contact.service.js';
 import * as portalAuth from '../services/portal-auth.service.js';
 import { PORTAL_PREVIEW_COOKIE } from '../middleware/portal-auth.js';
 import { resolvedSecure, appendSetCookie } from '../utils/cookie-secure.js';
+import { resolveEmailBaseUrl } from './portal-auth.routes.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 8 — bookkeeper-side
 // portal-contact admin endpoints. Mounted at /api/v1/practice/portal/...
@@ -91,6 +92,32 @@ portalContactsRouter.put('/contacts/:id', validate(updateContactSchema), async (
 portalContactsRouter.delete('/contacts/:id', async (req, res) => {
   await svc.softDeleteContact(req.tenantId, req.params['id']!, req.userId);
   res.json({ ok: true });
+});
+
+// Staff-initiated portal sign-in link. Reuses the public request-link
+// machinery (rate limit, prior-link invalidation, audit), so the
+// emailed link is identical to what the contact would get from the
+// login page. Enumeration safety isn't a concern here — staff already
+// see the contact — so the response can be honest about the outcome.
+portalContactsRouter.post('/contacts/:id/send-login-link', async (req, res) => {
+  const contact = await svc.getContact(req.tenantId, req.params['id']!);
+  if (contact.status !== 'active') {
+    throw AppError.badRequest('Contact must be active to receive a sign-in link');
+  }
+  // Link base mirrors the login-page flow: the firm's configured custom
+  // portal domain when set (it's what the contact uses, and it's
+  // allowlisted), otherwise the trusted PUBLIC_URL.
+  const settings = await svc.getPracticeSettings(req.tenantId);
+  const baseUrl = settings.customDomain
+    ? `https://${settings.customDomain}`
+    : resolveEmailBaseUrl(req.headers, req.protocol);
+  const result = await portalAuth.requestMagicLink({
+    tenantId: req.tenantId,
+    email: contact.email,
+    baseUrl,
+    ipAddress: req.ip,
+  });
+  res.json({ ok: true, sent: result.sent });
 });
 
 portalContactsRouter.put(

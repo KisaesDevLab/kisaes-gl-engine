@@ -3,10 +3,14 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/permission.js';
 import * as dashboardService from '../services/dashboard.service.js';
 import * as budgetService from '../services/budget.service.js';
+import * as flags from '../services/feature-flags.service.js';
+import { db } from '../db/index.js';
+import { portalQuestions, portalReceipts, documentRequests } from '../db/schema/index.js';
 
 export const dashboardRouter = Router();
 dashboardRouter.use(authenticate);
@@ -106,6 +110,45 @@ async function computeBankingHealth(tenantId: string) {
   };
 }
 
+// Portal-activity panel: client activity that's waiting on a human.
+// Three signals — questions the client has answered or asked (status
+// 'responded' means the ball is in the firm's court), reminder
+// responses sitting unprocessed in the receipts inbox, and document
+// requests past their due date. Each count is gated on its feature's
+// flag so firms without the portal features get null and no banner.
+async function computePortalActivity(tenantId: string) {
+  const [portalOn, receiptsOn, docReqOn] = await Promise.all([
+    flags.isEnabled(tenantId, 'CLIENT_PORTAL_V1'),
+    flags.isEnabled(tenantId, 'RECEIPT_PWA_V1'),
+    flags.isEnabled(tenantId, 'RECURRING_DOC_REQUESTS_V1'),
+  ]);
+  if (!portalOn && !receiptsOn && !docReqOn) return null;
+
+  const countOf = async (q: Promise<Array<{ n: number }>>) => Number((await q)[0]?.n ?? 0);
+  const [questionsAwaitingReply, receiptsToReview, docRequestsOverdue] = await Promise.all([
+    portalOn
+      ? countOf(db.select({ n: sql<number>`COUNT(*)::int` }).from(portalQuestions)
+          .where(and(eq(portalQuestions.tenantId, tenantId), eq(portalQuestions.status, 'responded'))))
+      : 0,
+    receiptsOn
+      ? countOf(db.select({ n: sql<number>`COUNT(*)::int` }).from(portalReceipts)
+          .where(and(
+            eq(portalReceipts.tenantId, tenantId),
+            inArray(portalReceipts.status, ['unmatched', 'ocr_failed']),
+          )))
+      : 0,
+    docReqOn
+      ? countOf(db.select({ n: sql<number>`COUNT(*)::int` }).from(documentRequests)
+          .where(and(
+            eq(documentRequests.tenantId, tenantId),
+            eq(documentRequests.status, 'pending'),
+            sql`${documentRequests.dueDate} IS NOT NULL AND ${documentRequests.dueDate} < NOW()`,
+          )))
+      : 0,
+  ]);
+  return { questionsAwaitingReply, receiptsToReview, docRequestsOverdue };
+}
+
 // Bundled dashboard endpoint. Previously the DashboardPage fired nine
 // separate useQuery calls on mount — nine independent HTTP round-trips,
 // nine DB connections, nine middleware chains. On a fresh load over a
@@ -121,7 +164,7 @@ dashboardRouter.get('/summary', async (req, res) => {
   const months = parseInt(req.query['months'] as string) || 6;
   const [
     snapshot, trend, cashPosition, receivables, payables,
-    actionItems, budgetPerformance, bankingHealth,
+    actionItems, budgetPerformance, bankingHealth, portalActivity,
   ] = await Promise.allSettled([
     dashboardService.getFinancialSnapshot(req.tenantId),
     dashboardService.getRevExpTrend(req.tenantId, months),
@@ -131,6 +174,7 @@ dashboardRouter.get('/summary', async (req, res) => {
     dashboardService.getActionItems(req.tenantId),
     computeBudgetPerformance(req.tenantId),
     computeBankingHealth(req.tenantId),
+    computePortalActivity(req.tenantId),
   ]);
 
   const unwrap = <T>(r: PromiseSettledResult<T>) => r.status === 'fulfilled' ? r.value : null;
@@ -149,11 +193,12 @@ dashboardRouter.get('/summary', async (req, res) => {
     errored(actionItems, 'Action items'),
     errored(budgetPerformance, 'Budget performance'),
     errored(bankingHealth, 'Banking health'),
+    errored(portalActivity, 'Portal activity'),
   ].filter((x): x is string => x !== null);
 
   // Log server-side failures so an operator looking at the logs sees the
   // underlying cause — the API response only carries the labels.
-  for (const panel of [snapshot, trend, cashPosition, receivables, payables, actionItems, budgetPerformance, bankingHealth]) {
+  for (const panel of [snapshot, trend, cashPosition, receivables, payables, actionItems, budgetPerformance, bankingHealth, portalActivity]) {
     if (panel.status === 'rejected') {
       console.warn('[dashboard/summary] panel failed:', panel.reason);
     }
@@ -168,6 +213,7 @@ dashboardRouter.get('/summary', async (req, res) => {
     actionItems: unwrap(actionItems),
     budgetPerformance: unwrap(budgetPerformance),
     bankingHealth: unwrap(bankingHealth),
+    portalActivity: unwrap(portalActivity),
     errors,
   });
 });

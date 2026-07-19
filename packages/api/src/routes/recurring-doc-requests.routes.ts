@@ -67,12 +67,32 @@ recurringDocRequestsRouter.patch(
   },
 );
 
-// "Cancel" = set active=false. The historical issued document_requests
-// rows are preserved (recurring_id stays set with ON DELETE SET NULL
-// in the schema) so the audit trail isn't lost.
+// Hard delete. Historical issued document_requests rows are preserved
+// (recurring_id FK is ON DELETE SET NULL) so the audit trail isn't
+// lost; pausing is the PATCH { active: false } path.
 recurringDocRequestsRouter.delete('/recurring-doc-requests/:id', async (req, res) => {
-  await svc.cancelRule(req.tenantId, req.userId, req.params['id']!);
+  await svc.deleteRule(req.tenantId, req.userId, req.params['id']!);
   res.json({ ok: true });
+});
+
+// "Send now" — issue the current-period request immediately and send
+// the opener. If this period's request already exists and is still
+// pending, send a forced nudge instead so the button always results in
+// outreach. Closed (received/cancelled) periods are reported back
+// without sending anything.
+recurringDocRequestsRouter.post('/recurring-doc-requests/:id/send-now', async (req, res) => {
+  const issue = await svc.issueNow(req.tenantId, req.userId, req.params['id']!);
+  if (issue.outcome === 'issued') {
+    const sendResult = await remind.sendOpenerForDocRequest(req.tenantId, issue.requestId);
+    res.json({ result: 'issued', sendResult, requestId: issue.requestId, periodLabel: issue.periodLabel });
+    return;
+  }
+  if (issue.outcome === 'already_pending') {
+    const sendResult = await remind.forceNudgeForDocRequest(req.tenantId, issue.requestId, req.userId);
+    res.json({ result: 'reminded', sendResult, requestId: issue.requestId, periodLabel: issue.periodLabel });
+    return;
+  }
+  res.json({ result: 'already_closed', status: issue.status, requestId: issue.requestId, periodLabel: issue.periodLabel });
 });
 
 const previewSchema = z.object({

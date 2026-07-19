@@ -2,13 +2,19 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { db } from '../db/index.js';
+import { tenants, portalContacts, recurringDocumentRequests, documentRequests, auditLog } from '../db/schema/index.js';
 import {
   CRON_LAST_BUSINESS_DAY,
   computeFirstIssueAt,
   computeNextIssueAt,
   cronNext,
+  deleteRule,
   isValidCronExpression,
+  issueNow,
+  issueOne,
   periodLabelFor,
 } from './recurring-doc-request.service.js';
 
@@ -183,5 +189,156 @@ describe('recurring-doc-request — calendar arithmetic', () => {
       expect(next.getUTCDate()).toBe(29);
       expect(next.getUTCDay()).toBe(5); // Friday
     });
+  });
+});
+
+// DB-backed tests for the rule row-lifecycle actions. Tenant-scoped
+// setup/teardown so concurrent suites are unaffected.
+describe('recurring-doc-request — deleteRule / issueNow (db)', () => {
+  const actorId = '00000000-0000-4000-8000-000000000001';
+  let tenantId: string;
+  let contactId: string;
+
+  beforeAll(async () => {
+    const [tenant] = await db.insert(tenants).values({
+      name: 'RDR Test Tenant',
+      slug: 'test-rdr-' + Date.now(),
+    }).returning();
+    tenantId = tenant!.id;
+    const [contact] = await db.insert(portalContacts).values({
+      tenantId,
+      email: `rdr-${Date.now()}@example.com`,
+    }).returning();
+    contactId = contact!.id;
+  });
+
+  afterAll(async () => {
+    if (!tenantId) return;
+    await db.delete(auditLog).where(eq(auditLog.tenantId, tenantId));
+    await db.delete(documentRequests).where(eq(documentRequests.tenantId, tenantId));
+    await db.delete(recurringDocumentRequests).where(eq(recurringDocumentRequests.tenantId, tenantId));
+    await db.delete(portalContacts).where(eq(portalContacts.tenantId, tenantId));
+    await db.delete(tenants).where(eq(tenants.id, tenantId));
+  });
+
+  async function mkRule(overrides: Partial<typeof recurringDocumentRequests.$inferInsert> = {}) {
+    const [rule] = await db.insert(recurringDocumentRequests).values({
+      tenantId,
+      contactId,
+      documentType: 'bank_statement',
+      description: 'test rule',
+      nextIssueAt: new Date('2099-01-03T09:00:00Z'),
+      ...overrides,
+    }).returning();
+    return rule!;
+  }
+
+  it('deleteRule removes the row and preserves issued requests with recurring_id nulled', async () => {
+    const rule = await mkRule();
+    const [issued] = await db.insert(documentRequests).values({
+      tenantId,
+      recurringId: rule.id,
+      contactId,
+      documentType: 'bank_statement',
+      description: 'test rule',
+      periodLabel: '2026-06',
+    }).returning();
+
+    await deleteRule(tenantId, actorId, rule.id);
+
+    const gone = await db.query.recurringDocumentRequests.findFirst({
+      where: eq(recurringDocumentRequests.id, rule.id),
+    });
+    expect(gone).toBeUndefined();
+    const kept = await db.query.documentRequests.findFirst({
+      where: eq(documentRequests.id, issued!.id),
+    });
+    expect(kept).toBeDefined();
+    expect(kept!.recurringId).toBeNull();
+    expect(kept!.status).toBe('pending');
+  });
+
+  it('deleteRule 404s for another tenant', async () => {
+    const rule = await mkRule();
+    const [otherTenant] = await db.insert(tenants).values({
+      name: 'Other', slug: 'test-rdr-other-' + Date.now(),
+    }).returning();
+    try {
+      await expect(deleteRule(otherTenant!.id, actorId, rule.id)).rejects.toThrow(/not found/i);
+    } finally {
+      await db.delete(tenants).where(eq(tenants.id, otherTenant!.id));
+    }
+  });
+
+  it('issueNow creates a current-period request without touching the schedule', async () => {
+    const rule = await mkRule();
+    const now = new Date('2026-06-15T12:00:00Z');
+    const result = await issueNow(tenantId, actorId, rule.id, now);
+    expect(result.outcome).toBe('issued');
+    expect(result.periodLabel).toBe(periodLabelFor(now, 'monthly'));
+
+    const req = await db.query.documentRequests.findFirst({
+      where: eq(documentRequests.id, result.requestId),
+    });
+    expect(req!.status).toBe('pending');
+    expect(req!.requestedAt.toISOString()).toBe(now.toISOString());
+    // dueDate = now + default 7 due days
+    expect(req!.dueDate!.toISOString()).toBe(new Date('2026-06-22T12:00:00Z').toISOString());
+
+    const after = await db.query.recurringDocumentRequests.findFirst({
+      where: eq(recurringDocumentRequests.id, rule.id),
+    });
+    expect(after!.nextIssueAt.toISOString()).toBe(rule.nextIssueAt.toISOString());
+    expect(after!.lastIssuedAt!.toISOString()).toBe(now.toISOString());
+  });
+
+  it('issueNow reports already_pending on a second call in the same period', async () => {
+    const rule = await mkRule();
+    const now = new Date('2026-07-10T12:00:00Z');
+    const first = await issueNow(tenantId, actorId, rule.id, now);
+    expect(first.outcome).toBe('issued');
+    const second = await issueNow(tenantId, actorId, rule.id, new Date('2026-07-11T12:00:00Z'));
+    expect(second.outcome).toBe('already_pending');
+    expect(second.requestId).toBe(first.requestId);
+  });
+
+  // Regression: uq_doc_req_recurring_period is a partial unique index —
+  // the scheduler's INSERT ... ON CONFLICT previously failed to infer it
+  // (42P10) and every issuance crashed before the first row was written.
+  it('issueOne issues a due rule and advances the schedule', async () => {
+    const due = new Date('2026-09-03T09:00:00Z');
+    const rule = await mkRule({ nextIssueAt: due, dayOfMonth: 3 });
+    const result = await issueOne(rule.id, new Date('2026-09-03T09:05:00Z'));
+    expect(result).not.toBeNull();
+    expect(result!.created).toBe(true);
+    expect(result!.periodLabel).toBe(periodLabelFor(due, 'monthly'));
+
+    const after = await db.query.recurringDocumentRequests.findFirst({
+      where: eq(recurringDocumentRequests.id, rule.id),
+    });
+    expect(after!.lastIssuedAt!.toISOString()).toBe(due.toISOString());
+    expect(after!.nextIssueAt.getTime()).toBeGreaterThan(due.getTime());
+
+    // Racing second worker: it read the rule before the first advanced
+    // next_issue_at, so it attempts the same period — the unique index
+    // makes that a clean no-op (created=false), not a crash.
+    await db.update(recurringDocumentRequests)
+      .set({ nextIssueAt: due })
+      .where(eq(recurringDocumentRequests.id, rule.id));
+    const again = await issueOne(rule.id, new Date('2026-09-03T09:10:00Z'));
+    expect(again!.created).toBe(false);
+    expect(again!.rowId).toBe(result!.rowId);
+  });
+
+  it('issueNow reports already_closed when the period request is submitted', async () => {
+    const rule = await mkRule();
+    const now = new Date('2026-08-10T12:00:00Z');
+    const first = await issueNow(tenantId, actorId, rule.id, now);
+    await db.update(documentRequests)
+      .set({ status: 'submitted', submittedAt: new Date() })
+      .where(eq(documentRequests.id, first.requestId));
+    const second = await issueNow(tenantId, actorId, rule.id, new Date('2026-08-12T12:00:00Z'));
+    expect(second.outcome).toBe('already_closed');
+    expect(second.outcome === 'already_closed' && second.status).toBe('submitted');
   });
 });

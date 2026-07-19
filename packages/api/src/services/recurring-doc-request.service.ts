@@ -356,7 +356,7 @@ export async function updateRule(
   await auditLog(tenantId, 'update', 'recurring_document_request', id, before, { ...before, ...patch }, bookkeeperUserId);
 }
 
-export async function cancelRule(
+export async function deleteRule(
   tenantId: string,
   bookkeeperUserId: string,
   id: string,
@@ -368,11 +368,93 @@ export async function cancelRule(
     ),
   });
   if (!before) throw AppError.notFound('Recurring document request not found');
+  // Hard delete. Issued document_requests keep their history — the
+  // recurring_id FK is ON DELETE SET NULL — and open ones stay pending
+  // so the contact's outstanding asks aren't silently dropped.
   await db
-    .update(recurringDocumentRequests)
-    .set({ active: false, updatedAt: new Date() })
+    .delete(recurringDocumentRequests)
     .where(eq(recurringDocumentRequests.id, id));
-  await auditLog(tenantId, 'update', 'recurring_document_request', id, before, { ...before, active: false }, bookkeeperUserId);
+  await auditLog(tenantId, 'delete', 'recurring_document_request', id, before, null, bookkeeperUserId);
+}
+
+// "Send now" — issue the current-period request immediately, regardless
+// of next_issue_at or the active flag (an explicit operator action
+// shouldn't be blocked by a paused schedule). The schedule itself is
+// untouched: when the scheduled issuance for this period later fires,
+// the (recurring_id, period_label) unique index makes it a no-op insert
+// and the rule advances as usual. The route decides what to send based
+// on the outcome: opener for a fresh row, forced nudge when this
+// period's request already exists and is still pending.
+export async function issueNow(
+  tenantId: string,
+  bookkeeperUserId: string,
+  ruleId: string,
+  now: Date = new Date(),
+): Promise<
+  | { outcome: 'issued'; requestId: string; periodLabel: string }
+  | { outcome: 'already_pending'; requestId: string; periodLabel: string }
+  | { outcome: 'already_closed'; requestId: string; periodLabel: string; status: string }
+> {
+  const rule = await db.query.recurringDocumentRequests.findFirst({
+    where: and(
+      eq(recurringDocumentRequests.tenantId, tenantId),
+      eq(recurringDocumentRequests.id, ruleId),
+    ),
+  });
+  if (!rule) throw AppError.notFound('Recurring document request not found');
+
+  const period = periodLabelFor(now, rule.frequency as RecurringFrequency);
+  const dueDate = new Date(now.getTime() + rule.dueDaysAfterIssue * 24 * 60 * 60 * 1000);
+
+  const inserted = await db
+    .insert(documentRequests)
+    .values({
+      tenantId: rule.tenantId,
+      companyId: rule.companyId,
+      recurringId: rule.id,
+      contactId: rule.contactId,
+      documentType: rule.documentType,
+      description: rule.description,
+      periodLabel: period,
+      requestedAt: now,
+      dueDate,
+      status: 'pending',
+      reminderChannel: rule.reminderChannel ?? 'email',
+    })
+    .onConflictDoNothing({
+      target: [documentRequests.recurringId, documentRequests.periodLabel],
+      // uq_doc_req_recurring_period is a PARTIAL unique index; without
+      // the matching predicate Postgres cannot infer the arbiter and the
+      // INSERT dies with 42P10 on every call, conflict or not.
+      where: sql`${documentRequests.recurringId} IS NOT NULL`,
+    })
+    .returning({ id: documentRequests.id });
+
+  const createdId = inserted[0]?.id;
+  if (createdId) {
+    await db
+      .update(recurringDocumentRequests)
+      .set({ lastIssuedAt: now, updatedAt: new Date() })
+      .where(eq(recurringDocumentRequests.id, rule.id));
+    await auditLog(
+      tenantId, 'create', 'document_request', createdId,
+      null, { recurringId: rule.id, periodLabel: period, via: 'send_now' },
+      bookkeeperUserId,
+    );
+    return { outcome: 'issued', requestId: createdId, periodLabel: period };
+  }
+
+  const existing = await db.query.documentRequests.findFirst({
+    where: and(
+      eq(documentRequests.recurringId, rule.id),
+      eq(documentRequests.periodLabel, period),
+    ),
+  });
+  if (!existing) throw AppError.badRequest('Could not issue the request — try again');
+  if (existing.status === 'pending') {
+    return { outcome: 'already_pending', requestId: existing.id, periodLabel: period };
+  }
+  return { outcome: 'already_closed', requestId: existing.id, periodLabel: period, status: existing.status };
 }
 
 export async function listRules(tenantId: string): Promise<RecurringDocRequestSummary[]> {
@@ -516,7 +598,13 @@ export async function issueOne(
       status: 'pending',
       reminderChannel: rule.reminderChannel ?? 'email',
     })
-    .onConflictDoNothing({ target: [documentRequests.recurringId, documentRequests.periodLabel] })
+    .onConflictDoNothing({
+      target: [documentRequests.recurringId, documentRequests.periodLabel],
+      // uq_doc_req_recurring_period is a PARTIAL unique index; without
+      // the matching predicate Postgres cannot infer the arbiter and the
+      // INSERT dies with 42P10 on every call, conflict or not.
+      where: sql`${documentRequests.recurringId} IS NOT NULL`,
+    })
     .returning({ id: documentRequests.id });
 
   let rowId = inserted[0]?.id;
