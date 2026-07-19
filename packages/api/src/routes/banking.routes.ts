@@ -399,7 +399,12 @@ bankingRouter.patch('/statement-lines/:lineId/payee', async (req, res) => {
 // optional re-scan of stored statement PDFs through the check-image pass.
 bankingRouter.post('/check-payees/backfill', async (req, res) => {
   const report = await backfillCheckPayees(
-    req.tenantId, { rescan: req.body?.rescan === true }, req.userId,
+    req.tenantId,
+    // Company-scoped like every sibling banking endpoint: check numbers
+    // restart at ~1001 per account, so an unscoped run can stamp one
+    // company's payees onto another company's checks.
+    { rescan: req.body?.rescan === true, companyId: req.companyId ?? null },
+    req.userId,
   );
   res.json(report);
 });

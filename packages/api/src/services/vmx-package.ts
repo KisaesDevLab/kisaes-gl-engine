@@ -639,6 +639,52 @@ async function openPart(filePath: string, passphrase: string): Promise<OpenedPar
 }
 
 /**
+ * Deep integrity check of a single part for the backup VERIFIER: prove
+ * the passphrase (inventory decrypt), the two-way ZIP↔inventory match
+ * (openPart does both), then hash-verify entry payloads one at a time
+ * up to `byteBudget` bytes so a monthly verify cycle can't be blown up
+ * by an arbitrarily large series. Classic single-file packages get the
+ * full readTenantPackage proof. Throws on any integrity failure.
+ */
+export async function verifyPartIntegrity(
+  filePath: string,
+  passphrase: string,
+  byteBudget: number,
+): Promise<{
+  multipart: { backupId: string; partIndex: number } | null;
+  hasSeries: boolean;
+  entriesTotal: number;
+  entriesChecked: number;
+  bytesChecked: number;
+}> {
+  const part = await openPart(filePath, passphrase);
+  if (part === null) {
+    await readTenantPackage(filePath, passphrase);
+    return { multipart: null, hasSeries: false, entriesTotal: 1, entriesChecked: 1, bytesChecked: 0 };
+  }
+  let bytesChecked = 0;
+  let entriesChecked = 0;
+  for (const inv of part.inventory) {
+    if (bytesChecked + inv.bytes > byteBudget) break;
+    const f = part.directory.files.find((x) => x.path === inv.name);
+    if (!f) throw new Error(`${filePath}: missing entry ${inv.name}`);
+    const raw = await bufferEntryBounded(f);
+    if (raw.length !== inv.bytes || sha256Hex(raw) !== inv.sha256) {
+      throw new Error(`${filePath}: entry ${inv.name} does not match its authenticated inventory (corrupted or truncated)`);
+    }
+    entriesChecked += 1;
+    bytesChecked += raw.length;
+  }
+  return {
+    multipart: { backupId: part.inventoryBackupId, partIndex: part.index },
+    hasSeries: part.shaByName.has('series.json.enc'),
+    entriesTotal: part.inventory.length,
+    entriesChecked,
+    bytesChecked,
+  };
+}
+
+/**
  * Open a complete multi-part series (all part files) — or a classic
  * single-file package, to which this transparently falls back — and fully
  * validate it: passphrase, per-part inventories, series completeness

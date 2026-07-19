@@ -1034,9 +1034,15 @@ async function applyCheckImagePayees(
     const feedAmount = Math.abs(parseFloat(String(item.amount || '0')));
     // Confirm by amount within a cent; if a check thumbnail had no readable
     // amount, fall back to number-only when it's the sole check with that #.
+    // A sole candidate whose READABLE amount disagrees is a different
+    // check sharing the number — never apply it (this path also
+    // auto-creates a contact at 0.95 confidence, so a wrong write here
+    // compounds).
+    const amountAgrees = (c: StatementCheckImage) =>
+      c.amount != null && Math.abs(Math.abs(parseFloat(c.amount)) - feedAmount) <= 0.01;
     const match =
-      matches.find((c) => c.amount != null && Math.abs(Math.abs(parseFloat(c.amount)) - feedAmount) <= 0.01) ??
-      (matches.length === 1 ? matches[0] : undefined);
+      matches.find(amountAgrees) ??
+      (matches.length === 1 && matches[0]!.amount == null ? matches[0] : undefined);
     if (!match) continue;
     const payee = match.payee.trim();
     if (!payee) continue;

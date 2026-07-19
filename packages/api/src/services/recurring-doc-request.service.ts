@@ -190,6 +190,20 @@ export function periodLabelFor(when: Date, frequency: RecurringFrequency): strin
   return `${y}-${m}`;
 }
 
+// Period label for a specific rule. Cron rules can fire sub-monthly
+// (weekly, weekday), so their label must carry day resolution — with
+// the calendar label a weekly cron's 2nd..4th firings of the month
+// would all collide on the (recurring_id, period_label) unique index
+// and silently vanish. Frequency rules keep the human calendar label
+// ("2026-07", "2026-Q3") the emails were designed around.
+export function periodLabelForRule(
+  rule: { cadenceKind: string | null; frequency: string },
+  when: Date,
+): string {
+  if ((rule.cadenceKind ?? 'frequency') === 'cron') return when.toISOString().slice(0, 10);
+  return periodLabelFor(when, rule.frequency as RecurringFrequency);
+}
+
 // ── recurring-rule CRUD ─────────────────────────────────────────
 
 // Verify the contact belongs to this tenant. A leaked UUID can't be
@@ -392,7 +406,7 @@ export async function issueNow(
   now: Date = new Date(),
 ): Promise<
   | { outcome: 'issued'; requestId: string; periodLabel: string }
-  | { outcome: 'already_pending'; requestId: string; periodLabel: string }
+  | { outcome: 'already_pending'; requestId: string; periodLabel: string; requestedAt: string }
   | { outcome: 'already_closed'; requestId: string; periodLabel: string; status: string }
 > {
   const rule = await db.query.recurringDocumentRequests.findFirst({
@@ -403,7 +417,7 @@ export async function issueNow(
   });
   if (!rule) throw AppError.notFound('Recurring document request not found');
 
-  const period = periodLabelFor(now, rule.frequency as RecurringFrequency);
+  const period = periodLabelForRule(rule, now);
   const dueDate = new Date(now.getTime() + rule.dueDaysAfterIssue * 24 * 60 * 60 * 1000);
 
   const inserted = await db
@@ -452,7 +466,12 @@ export async function issueNow(
   });
   if (!existing) throw AppError.badRequest('Could not issue the request — try again');
   if (existing.status === 'pending') {
-    return { outcome: 'already_pending', requestId: existing.id, periodLabel: period };
+    return {
+      outcome: 'already_pending',
+      requestId: existing.id,
+      periodLabel: period,
+      requestedAt: existing.requestedAt.toISOString(),
+    };
   }
   return { outcome: 'already_closed', requestId: existing.id, periodLabel: period, status: existing.status };
 }
@@ -577,7 +596,7 @@ export async function issueOne(
   if (rule.endsAt && rule.endsAt.getTime() <= now.getTime()) return null;
 
   const issuedAt = rule.nextIssueAt;
-  const period = periodLabelFor(issuedAt, rule.frequency as RecurringFrequency);
+  const period = periodLabelForRule(rule, issuedAt);
   const dueDate = new Date(issuedAt.getTime() + rule.dueDaysAfterIssue * 24 * 60 * 60 * 1000);
 
   // Insert with ON CONFLICT DO NOTHING on the (recurring_id, period_label)

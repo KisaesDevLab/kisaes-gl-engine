@@ -99,25 +99,36 @@ portalContactsRouter.delete('/contacts/:id', async (req, res) => {
 // emailed link is identical to what the contact would get from the
 // login page. Enumeration safety isn't a concern here — staff already
 // see the contact — so the response can be honest about the outcome.
+//
+// The link base is always the trusted PUBLIC_URL (like reminder
+// emails): verify recovers the tenant from the token, so the link
+// works regardless of portal domain setup. The customDomain setting
+// is deliberately NOT used here — it's stored unvalidated (may carry
+// a scheme, a path, or point at unwired DNS) and a malformed base
+// burns a real single-use token into a dead link while reporting
+// sent:true.
 portalContactsRouter.post('/contacts/:id/send-login-link', async (req, res) => {
   const contact = await svc.getContact(req.tenantId, req.params['id']!);
   if (contact.status !== 'active') {
     throw AppError.badRequest('Contact must be active to receive a sign-in link');
   }
-  // Link base mirrors the login-page flow: the firm's configured custom
-  // portal domain when set (it's what the contact uses, and it's
-  // allowlisted), otherwise the trusted PUBLIC_URL.
-  const settings = await svc.getPracticeSettings(req.tenantId);
-  const baseUrl = settings.customDomain
-    ? `https://${settings.customDomain}`
-    : resolveEmailBaseUrl(req.headers, req.protocol);
   const result = await portalAuth.requestMagicLink({
     tenantId: req.tenantId,
     email: contact.email,
-    baseUrl,
+    baseUrl: resolveEmailBaseUrl(req.headers, req.protocol),
     ipAddress: req.ip,
   });
-  res.json({ ok: true, sent: result.sent });
+  // The service no longer throws on the per-contact rate limit (that
+  // would be an enumeration oracle on the PUBLIC route); staff-side we
+  // can be honest about it. The limit is shared with the contact's own
+  // self-service requests — repeated staff clicks also lock the contact
+  // out of the login page for the rest of the hour, so say so.
+  if (result.rateLimited) {
+    throw AppError.tooManyRequests(
+      'This contact hit the sign-in-link limit (5/hour, shared with their own login page). Wait before sending another.',
+    );
+  }
+  res.json({ ok: true, sent: result.sent, viaStub: result.viaStub });
 });
 
 portalContactsRouter.put(

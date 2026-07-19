@@ -19,7 +19,7 @@
 //      permissive PII) Anthropic cloud vision. The crop is the privacy win:
 //      the model sees one check image, never the full statement.
 
-import { mkdtemp, writeFile, readdir, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
@@ -34,6 +34,14 @@ const execFileAsync = promisify(execFile);
 
 const PDFIMAGES_BIN = 'pdfimages';
 const EXTRACT_TIMEOUT_MS = 60_000;
+// Bomb guards: a crafted small PDF can decompress to gigabytes of PNGs
+// inside the 60s window (tmpdir is tmpfs in many container setups, so
+// that's RAM, not disk). Cap the page range pdfimages walks, skip any
+// single extracted file too large to be a check thumbnail, and stop
+// reading once a total byte budget is spent.
+const MAX_EXTRACT_PAGES = 60;
+const MAX_CANDIDATE_BYTES = 5 * 1024 * 1024;
+const MAX_TOTAL_READ_BYTES = 100 * 1024 * 1024;
 
 // Check-like geometry. US checks are ~6×2.75in (aspect ~2.2); statement
 // thumbnails keep the ratio. Logos are small/squarish; full-page scans are
@@ -106,7 +114,7 @@ export async function extractCheckCandidateImages(pdf: Buffer): Promise<CheckCan
     // soft-masks (alpha channels) pdfimages extracts alongside them. A mask
     // has the same dimensions as its check, so filtering by geometry alone
     // would send every check to the vision model twice.
-    const { stdout: listOut } = await execFileAsync(PDFIMAGES_BIN, ['-list', inputPath], {
+    const { stdout: listOut } = await execFileAsync(PDFIMAGES_BIN, ['-l', String(MAX_EXTRACT_PAGES), '-list', inputPath], {
       timeout: EXTRACT_TIMEOUT_MS,
     });
     const realImageNums = new Set<number>();
@@ -117,15 +125,21 @@ export async function extractCheckCandidateImages(pdf: Buffer): Promise<CheckCan
 
     // -p embeds the page number in the filename: prefix-PPP-NNN.png, where
     // NNN is the global image number matching `-list`'s `num` column.
-    await execFileAsync(PDFIMAGES_BIN, ['-png', '-p', inputPath, path.join(workDir, 'img')], {
+    await execFileAsync(PDFIMAGES_BIN, ['-l', String(MAX_EXTRACT_PAGES), '-png', '-p', inputPath, path.join(workDir, 'img')], {
       timeout: EXTRACT_TIMEOUT_MS,
     });
 
     const out: CheckCandidateImage[] = [];
+    let totalBytes = 0;
     for (const f of (await readdir(workDir)).sort()) {
       const m = f.match(/^img-(\d+)-(\d+)\.png$/);
       if (!m || !realImageNums.has(parseInt(m[2]!, 10))) continue;
-      const data = await readFile(path.join(workDir, f));
+      const filePath = path.join(workDir, f);
+      const st = await stat(filePath);
+      if (st.size > MAX_CANDIDATE_BYTES) continue;
+      if (totalBytes + st.size > MAX_TOTAL_READ_BYTES) break;
+      totalBytes += st.size;
+      const data = await readFile(filePath);
       const dims = pngDimensions(data);
       if (!dims || !isCheckLike(dims.width, dims.height)) continue;
       out.push({ page: parseInt(m[1]!, 10), data, ...dims });

@@ -30,6 +30,9 @@ import fs from 'fs';
 import path from 'path';
 import { auditLog } from '../middleware/audit.js';
 import { detectEncryptionMethod, smartDecrypt } from './portable-encryption.service.js';
+import { verifyPartIntegrity } from './vmx-package.js';
+import { getSetting } from './admin.service.js';
+import { decrypt as decryptField } from '../utils/encryption.js';
 import { recordSchedulerTick, incCounter } from '../utils/metrics.js';
 import { log } from '../utils/logger.js';
 import { withSchedulerLock } from '../utils/scheduler-lock.js';
@@ -55,8 +58,10 @@ export interface BackupFileVerification {
   filePath: string;
   sizeBytes: number;
   method: 'passphrase' | 'server_key';
-  /** full = decrypted + parsed JSON; header = envelope-only. */
-  depth: 'full' | 'header';
+  /** full = decrypted + parsed; deep = inventory + entry hashes proven
+   *  with the stored scheduled passphrase; header = envelope-only
+   *  (no usable passphrase — e.g. a manually-passphrased backup). */
+  depth: 'full' | 'header' | 'deep';
   ok: boolean;
   error?: string;
   metadata?: Record<string, unknown>;
@@ -85,7 +90,23 @@ function verifyPassphraseHeader(buf: Buffer): { ok: true } | { ok: false; error:
   return { ok: true };
 }
 
-async function verifyOneFile(tenantId: string, filePath: string): Promise<BackupFileVerification> {
+// The scheduled-backup passphrase, decrypted from settings. null when
+// none is configured (or decryption fails) — verification then degrades
+// to header-only for passphrase files.
+async function scheduledPassphrase(): Promise<string | null> {
+  try {
+    const enc = await getSetting('backup_scheduled_passphrase');
+    return enc ? decryptField(enc) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function verifyOneFile(
+  tenantId: string,
+  filePath: string,
+  passphrase: string | null,
+): Promise<BackupFileVerification> {
   const fileName = path.basename(filePath);
   const stat = fs.statSync(filePath);
   const buffer = fs.readFileSync(filePath);
@@ -105,6 +126,23 @@ async function verifyOneFile(tenantId: string, filePath: string): Promise<Backup
     if (method === 'passphrase') {
       const hdr = verifyPassphraseHeader(buffer);
       if (!hdr.ok) return { ...base, ok: false, error: hdr.error };
+      // Header checks pass on a file truncated anywhere past byte 77 —
+      // the GCM auth tag is only proven by decrypting. Scheduled
+      // backups use the stored passphrase, so try the real proof; a
+      // failure is ambiguous (manual backup with a different
+      // passphrase vs corruption), so it degrades to header-ok with
+      // the ambiguity recorded rather than a false alarm.
+      if (passphrase) {
+        try {
+          smartDecrypt(buffer, passphrase);
+          return { ...base, depth: 'full', ok: true };
+        } catch {
+          return {
+            ...base, ok: true,
+            metadata: { warning: 'header ok, but full decrypt failed with the scheduled passphrase — manually-passphrased backup or corruption past the header' },
+          };
+        }
+      }
       return { ...base, ok: true };
     }
 
@@ -118,24 +156,99 @@ async function verifyOneFile(tenantId: string, filePath: string): Promise<Backup
   }
 }
 
+// Byte budget for hash-proving .vmx entry payloads per verify cycle.
+const VMX_VERIFY_BYTE_BUDGET = Number(process.env['BACKUP_VERIFY_MAX_BYTES'] || 1024 * 1024 * 1024);
+
+/**
+ * Verify a multi-part .vmx series (or single .vmx): all parts named by
+ * the partNNofMM suffix are present, each part's authenticated
+ * inventory decrypts with the scheduled passphrase, entry payloads
+ * hash-match up to the byte budget, and exactly one part carries the
+ * series descriptor. Without a usable passphrase the parts' plaintext
+ * ZIP structure is the best we can check (depth 'header').
+ */
+async function verifyVmxSeries(
+  tenantId: string,
+  partPaths: string[],
+  passphrase: string | null,
+): Promise<BackupFileVerification> {
+  const first = partPaths[0]!;
+  const fileName = path.basename(first).replace(/\.part\d+of\d+\.vmx$/, '.vmx');
+  const sizeBytes = partPaths.reduce((n, p) => n + fs.statSync(p).size, 0);
+  const base: BackupFileVerification = {
+    tenantId, fileName, filePath: first, sizeBytes,
+    method: 'passphrase', depth: passphrase ? 'deep' : 'header', ok: false,
+  };
+
+  try {
+    // Completeness by filename contract: partNNofMM must yield MM
+    // distinct parts. A lone .vmx with no suffix is a 1-of-1.
+    const m = path.basename(first).match(/\.part(\d+)of(\d+)\.vmx$/);
+    const expected = m ? parseInt(m[2]!, 10) : 1;
+    if (partPaths.length !== expected) {
+      return { ...base, ok: false, error: `series incomplete: ${partPaths.length} of ${expected} parts on disk` };
+    }
+    if (!passphrase) {
+      return { ...base, ok: true, metadata: { warning: 'no scheduled passphrase stored — series completeness checked, content not proven' } };
+    }
+
+    let seriesParts = 0;
+    let entriesChecked = 0;
+    let bytesChecked = 0;
+    let entriesTotal = 0;
+    let budget = VMX_VERIFY_BYTE_BUDGET;
+    for (const p of [...partPaths].sort()) {
+      // eslint-disable-next-line no-await-in-loop -- sequential keeps peak memory at one entry.
+      const r = await verifyPartIntegrity(p, passphrase, budget);
+      if (r.hasSeries) seriesParts += 1;
+      entriesChecked += r.entriesChecked;
+      entriesTotal += r.entriesTotal;
+      bytesChecked += r.bytesChecked;
+      budget = Math.max(0, budget - r.bytesChecked);
+    }
+    if (expected > 1 && seriesParts !== 1) {
+      return { ...base, ok: false, error: `expected exactly one series descriptor across the parts, found ${seriesParts}` };
+    }
+    return {
+      ...base, ok: true,
+      metadata: { parts: partPaths.length, entriesTotal, entriesChecked, bytesChecked },
+    };
+  } catch (err) {
+    return { ...base, ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+const BACKUP_EXTS = ['.vmb', '.kbk', '.vmx'];
+
 function collectBackupPaths(): Array<{ tenantId: string; filePath: string }> {
   const root = backupDir();
   if (!fs.existsSync(root)) return [];
+  const isBackup = (f: string) => BACKUP_EXTS.some((ext) => f.endsWith(ext));
   const paths: Array<{ tenantId: string; filePath: string }> = [];
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
     // Tenant-scoped subfolders AND system-level backups at the root.
     if (entry.isDirectory()) {
       const tenantDir = path.join(root, entry.name);
       for (const f of fs.readdirSync(tenantDir)) {
-        if (f.endsWith('.vmb') || f.endsWith('.kbk')) {
+        if (isBackup(f)) {
           paths.push({ tenantId: entry.name, filePath: path.join(tenantDir, f) });
         }
       }
-    } else if (entry.isFile() && (entry.name.endsWith('.vmb') || entry.name.endsWith('.kbk'))) {
+    } else if (entry.isFile() && isBackup(entry.name)) {
       paths.push({ tenantId: SYSTEM_TENANT_ID, filePath: path.join(root, entry.name) });
     }
   }
   return paths;
+}
+
+// A backup UNIT is one restorable artifact: a single .vmb/.kbk/.vmx, or
+// ALL the parts of one multi-part .vmx series. Grouping by the name
+// with the .partNNofMM suffix stripped keeps a series together — the
+// prior per-file logic never verified .vmx at all, which meant the
+// primary DR artifact (the attachments-included system backup is
+// always .vmx) was silently skipped every cycle.
+function unitKeyOf(filePath: string): string {
+  return path.basename(filePath).replace(/\.part\d+of\d+\.vmx$/, '.vmx');
 }
 
 /**
@@ -147,24 +260,49 @@ export async function verifyLatestBackups(): Promise<VerifySummary> {
   const started = Date.now();
   const startedAt = new Date().toISOString();
   const allFiles = collectBackupPaths();
+  const passphrase = await scheduledPassphrase();
 
-  // Group by tenantId, keep the newest file per tenant.
-  const latestByTenant = new Map<string, string>();
+  // Group files into units, then keep the newest unit per tenant.
+  const units = new Map<string, { tenantId: string; paths: string[]; mtime: number }>();
   for (const f of allFiles) {
-    const existing = latestByTenant.get(f.tenantId);
-    if (!existing) {
-      latestByTenant.set(f.tenantId, f.filePath);
-      continue;
+    const key = `${f.tenantId} ${unitKeyOf(f.filePath)}`;
+    const mtime = fs.statSync(f.filePath).mtimeMs;
+    const u = units.get(key);
+    if (u) {
+      u.paths.push(f.filePath);
+      u.mtime = Math.max(u.mtime, mtime);
+    } else {
+      units.set(key, { tenantId: f.tenantId, paths: [f.filePath], mtime });
     }
-    if (fs.statSync(f.filePath).mtimeMs > fs.statSync(existing).mtimeMs) {
-      latestByTenant.set(f.tenantId, f.filePath);
-    }
+  }
+  // Newest SETTLED unit per tenant: a unit whose newest file is less
+  // than 10 minutes old may still be mid-write by the backup scheduler
+  // (the verifier holds a different advisory lock), and verifying it
+  // would false-alarm on an incomplete series. Prefer the newest unit
+  // older than the settle window; fall back to the newest regardless
+  // when it's the only one.
+  const SETTLE_MS = 10 * 60 * 1000;
+  const now = Date.now();
+  const byTenant = new Map<string, Array<{ paths: string[]; mtime: number }>>();
+  for (const u of units.values()) {
+    const list = byTenant.get(u.tenantId) ?? [];
+    list.push({ paths: u.paths, mtime: u.mtime });
+    byTenant.set(u.tenantId, list);
+  }
+  const latestByTenant = new Map<string, { paths: string[]; mtime: number }>();
+  for (const [tenantId, list] of byTenant.entries()) {
+    list.sort((a, b) => b.mtime - a.mtime);
+    const settled = list.find((u) => now - u.mtime > SETTLE_MS);
+    latestByTenant.set(tenantId, settled ?? list[0]!);
   }
 
   const results: BackupFileVerification[] = [];
-  for (const [tenantId, filePath] of latestByTenant.entries()) {
+  for (const [tenantId, unit] of latestByTenant.entries()) {
+    const isVmx = unit.paths[0]!.endsWith('.vmx');
     // eslint-disable-next-line no-await-in-loop -- verification is I/O-cheap and we want deterministic log order.
-    const r = await verifyOneFile(tenantId, filePath);
+    const r = isVmx
+      ? await verifyVmxSeries(tenantId, unit.paths, passphrase)
+      : await verifyOneFile(tenantId, unit.paths[0]!, passphrase);
     results.push(r);
     incCounter(
       'backup_verify_total',

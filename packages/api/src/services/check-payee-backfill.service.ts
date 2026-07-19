@@ -48,11 +48,12 @@ const centsOf = (v: string | number | null | undefined): number | null => {
  * (e.g. an "NSF REF #1042" reversal), which would otherwise be stamped with
  * the original check's payee.
  */
-async function findTargets(tenantId: string): Promise<TargetTxn[]> {
+async function findTargets(tenantId: string, companyId?: string | null): Promise<TargetTxn[]> {
   const res = await db.execute(sql`
     SELECT id, check_number, total, contact_id
     FROM transactions
     WHERE tenant_id = ${tenantId}
+      AND (${companyId ?? null}::uuid IS NULL OR company_id = ${companyId ?? null}::uuid)
       AND check_number IS NOT NULL
       AND txn_type IN ('check', 'expense', 'bill_payment')
       AND (payee_name_on_check IS NULL OR payee_name_on_check = '')
@@ -63,8 +64,11 @@ async function findTargets(tenantId: string): Promise<TargetTxn[]> {
   return res.rows as unknown as TargetTxn[];
 }
 
-/** check# → payee candidates from both sources, amounts in abs cents. */
-async function loadPayeeSources(tenantId: string): Promise<Map<number, Array<{ payee: string; cents: number | null; source: 'statement' | 'payroll' }>>> {
+/** check# → payee candidates from both sources, amounts in abs cents.
+ * Company-scoped when a companyId is given: check numbers restart around
+ * ~1001 in every account, so company A's register must never stamp
+ * payees onto company B's checks inside the same tenant. */
+async function loadPayeeSources(tenantId: string, companyId?: string | null): Promise<Map<number, Array<{ payee: string; cents: number | null; source: 'statement' | 'payroll' }>>> {
   const out = new Map<number, Array<{ payee: string; cents: number | null; source: 'statement' | 'payroll' }>>();
   const add = (num: number, payee: string, cents: number | null, source: 'statement' | 'payroll') => {
     if (!Number.isFinite(num) || num <= 0 || !payee.trim()) return;
@@ -72,9 +76,12 @@ async function loadPayeeSources(tenantId: string): Promise<Map<number, Array<{ p
   };
 
   const stmt = await db.execute(sql`
-    SELECT check_number, payee, amount
-    FROM bank_statement_lines
-    WHERE tenant_id = ${tenantId} AND payee IS NOT NULL AND payee <> '' AND check_number IS NOT NULL
+    SELECT l.check_number, l.payee, l.amount
+    FROM bank_statement_lines l
+    JOIN bank_statements st ON st.id = l.statement_id
+    WHERE l.tenant_id = ${tenantId}
+      AND (${companyId ?? null}::uuid IS NULL OR st.company_id = ${companyId ?? null}::uuid)
+      AND l.payee IS NOT NULL AND l.payee <> '' AND l.check_number IS NOT NULL
   `);
   for (const r of stmt.rows as Array<{ check_number: string; payee: string; amount: string }>) {
     add(Number(r.check_number), r.payee, centsOf(r.amount), 'statement');
@@ -84,7 +91,9 @@ async function loadPayeeSources(tenantId: string): Promise<Map<number, Array<{ p
     SELECT r.check_number, r.payee_name, r.amount
     FROM payroll_check_register_rows r
     JOIN payroll_import_sessions s ON s.id = r.session_id
-    WHERE s.tenant_id = ${tenantId} AND r.check_number IS NOT NULL
+    WHERE s.tenant_id = ${tenantId}
+      AND (${companyId ?? null}::uuid IS NULL OR s.company_id = ${companyId ?? null}::uuid)
+      AND r.check_number IS NOT NULL
   `);
   for (const r of payroll.rows as Array<{ check_number: string; payee_name: string; amount: string }>) {
     add(Number(r.check_number), r.payee_name, centsOf(r.amount), 'payroll');
@@ -99,11 +108,11 @@ async function loadPayeeSources(tenantId: string): Promise<Map<number, Array<{ p
  */
 export async function backfillCheckPayees(
   tenantId: string,
-  opts: { rescan?: boolean } = {},
+  opts: { rescan?: boolean; companyId?: string | null } = {},
   userId?: string,
 ): Promise<BackfillReport> {
-  const targets = await findTargets(tenantId);
-  const sources = await loadPayeeSources(tenantId);
+  const targets = await findTargets(tenantId, opts.companyId);
+  const sources = await loadPayeeSources(tenantId, opts.companyId);
   const tenantContacts = await db.query.contacts.findMany({
     where: eq(contacts.tenantId, tenantId),
     columns: { id: true, displayName: true },
@@ -128,8 +137,15 @@ export async function backfillCheckPayees(
     if (amountConfirmed.length > 0) {
       chosen = amountConfirmed[0]!;
     } else {
+      // Sole-payee fallback ONLY when no source actively contradicts:
+      // a candidate whose readable amount disagrees with the txn is a
+      // different check that happens to share the number — applying its
+      // payee anyway is a wrong-payee write, not a weak match.
+      const contradicted = candidates.some(
+        (c) => c.cents != null && txnCents != null && Math.abs(c.cents - txnCents) > 1,
+      );
       const distinctPayees = new Set(candidates.map((c) => c.payee.toLowerCase()));
-      if (distinctPayees.size === 1) chosen = candidates[0]!;
+      if (!contradicted && distinctPayees.size === 1) chosen = candidates[0]!;
     }
     if (!chosen) continue;
 
@@ -150,10 +166,10 @@ export async function backfillCheckPayees(
   }
 
   if (opts.rescan) {
-    report.rescan = await rescanStatements(tenantId);
+    report.rescan = await rescanStatements(tenantId, opts.companyId);
     if (report.rescan.payeesApplied > 0) {
       // New statement-line payees may unlock more targets — one more pass.
-      const second = await backfillCheckPayees(tenantId, {}, undefined);
+      const second = await backfillCheckPayees(tenantId, { companyId: opts.companyId }, userId);
       report.payeesApplied += second.payeesApplied;
       report.contactsLinked += second.contactsLinked;
       report.fromStatementLines += second.fromStatementLines;
@@ -173,31 +189,50 @@ const RESCAN_STATEMENT_CAP = 25;
  * write newly-read payees onto their bank_statement_lines (matched by check
  * number; amount confirmed within a cent when the crop read one).
  */
-async function rescanStatements(tenantId: string): Promise<NonNullable<BackfillReport['rescan']>> {
+async function rescanStatements(tenantId: string, companyId?: string | null): Promise<NonNullable<BackfillReport['rescan']>> {
   const { extractCheckCandidateImages, readChecksFromCandidates } = await import('./extraction/check-crop.service.js');
   const aiConfigService = await import('./ai-config.service.js');
   const { env } = await import('../config/env.js');
   const { getProviderForTenant } = await import('./storage/storage-provider.factory.js');
+  const { checkTenantTaskConsent } = await import('./ai-consent.service.js');
 
   const result = { statementsScanned: 0, checksRead: 0, payeesApplied: 0 };
 
+  const rawConfig = await aiConfigService.getRawConfig();
+  const config = await aiConfigService.getConfig();
+  // Same gates the normal statement-parse path gets via createJob: AI
+  // master switch + per-company statement_parsing consent. Without
+  // these, a company that explicitly disabled AI statement parsing
+  // could still have its stored PDFs pushed through the OCR models by
+  // anyone clicking "Backfill" with rescan on.
+  if (!config.isEnabled) return result;
+  const glm = await aiConfigService.resolveGlmOcrConfig();
+  const ocrProvider = config.ocrProvider || config.categorizationProvider;
+
   // Statements that still have payee-less check lines and a stored file.
   const stmts = await db.execute(sql`
-    SELECT DISTINCT s.id, a.storage_key, a.file_path
+    SELECT DISTINCT s.id, s.company_id, a.storage_key, a.file_path
     FROM bank_statements s
     JOIN attachments a ON a.id = s.attachment_id
     JOIN bank_statement_lines l ON l.statement_id = s.id
     WHERE s.tenant_id = ${tenantId}
+      AND (${companyId ?? null}::uuid IS NULL OR s.company_id = ${companyId ?? null}::uuid)
       AND l.check_number IS NOT NULL AND (l.payee IS NULL OR l.payee = '')
     LIMIT ${RESCAN_STATEMENT_CAP}
   `);
 
-  const rawConfig = await aiConfigService.getRawConfig();
-  const config = await aiConfigService.getConfig();
-  const glm = await aiConfigService.resolveGlmOcrConfig();
-  const ocrProvider = config.ocrProvider || config.categorizationProvider;
+  const consentByCompany = new Map<string, boolean>();
+  const companyConsent = async (cid: string | null): Promise<boolean> => {
+    const key = cid ?? '__tenant__';
+    if (!consentByCompany.has(key)) {
+      const check = await checkTenantTaskConsent(tenantId, 'statement_parsing', cid);
+      consentByCompany.set(key, check.allowed);
+    }
+    return consentByCompany.get(key)!;
+  };
 
-  for (const s of stmts.rows as Array<{ id: string; storage_key: string | null; file_path: string | null }>) {
+  for (const s of stmts.rows as Array<{ id: string; company_id: string | null; storage_key: string | null; file_path: string | null }>) {
+    if (!(await companyConsent(s.company_id))) continue;
     let pdf: Buffer | null = null;
     try {
       const provider = await getProviderForTenant(tenantId);

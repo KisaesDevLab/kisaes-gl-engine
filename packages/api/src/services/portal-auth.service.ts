@@ -112,14 +112,14 @@ export async function requestMagicLink(args: {
   email: string;
   baseUrl: string;
   ipAddress?: string;
-}): Promise<{ ok: true; sent: boolean }> {
+}): Promise<{ ok: true; sent: boolean; viaStub: boolean; rateLimited?: boolean }> {
   const email = normalizeEmail(args.email);
-  if (!email.includes('@')) return { ok: true, sent: false };
+  if (!email.includes('@')) return { ok: true, sent: false, viaStub: false };
 
   const contact = await db.query.portalContacts.findFirst({
     where: and(eq(portalContacts.tenantId, args.tenantId), eq(portalContacts.email, email)),
   });
-  if (!contact || contact.status !== 'active') return { ok: true, sent: false };
+  if (!contact || contact.status !== 'active') return { ok: true, sent: false, viaStub: false };
 
   // Rate limit window: per-email, last hour.
   const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
@@ -134,7 +134,13 @@ export async function requestMagicLink(args: {
     );
   const recentCount = Number(recent[0]?.n ?? 0);
   if (recentCount >= RATE_LIMIT_PER_HOUR) {
-    throw AppError.tooManyRequests('Too many sign-in requests. Try again later.');
+    // Do NOT throw. A 429 that only fires for emails with an existing
+    // active contact is an enumeration oracle on the public request-link
+    // endpoint (unknown emails can never hit this path) — and in the
+    // multi-tenancy loop a throw aborts remaining tenancies mid-way.
+    // Callers that can afford to be honest (the staff-initiated send)
+    // check the flag and surface their own 429.
+    return { ok: true, sent: false, viaStub: false, rateLimited: true };
   }
 
   // Invalidate every prior unconsumed link for this contact.
@@ -192,7 +198,10 @@ export async function requestMagicLink(args: {
     { contactId: contact.id, email, viaStub: mailer.isStub, sent },
   );
 
-  return { ok: true, sent };
+  // viaStub lets the staff-initiated send surface "SMTP isn't configured
+  // — nothing was actually delivered". The PUBLIC request-link route
+  // must keep ignoring it (it always answers a bare ok:true).
+  return { ok: true, sent, viaStub: mailer.isStub };
 }
 
 export interface VerifiedSession {

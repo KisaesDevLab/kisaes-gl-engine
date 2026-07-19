@@ -1368,12 +1368,17 @@ export async function getApplicationSettings() {
 export async function saveApplicationSettings(input: {
   applicationUrl: string;
   maxFileSizeMb: string;
-  backupSchedule: string;
+  backupSchedule?: string;
   appName?: string;
 }) {
   await setSetting('application_url', input.applicationUrl);
   await setSetting('max_file_size_mb', input.maxFileSizeMb);
-  await setSetting('backup_schedule', input.backupSchedule);
+  // Omitted = unchanged. Writing a default here silently disables the
+  // nightly backups whenever a client saves without having loaded the
+  // stored value first.
+  if (input.backupSchedule !== undefined) {
+    await setSetting('backup_schedule', input.backupSchedule);
+  }
   if (input.appName !== undefined) {
     // An empty string means "reset to default" — store empty so the
     // getter falls back to DEFAULT_APP_NAME on the next read.

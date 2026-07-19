@@ -91,23 +91,37 @@ portalAuthRouter.post(
     const proto = (req.headers['x-forwarded-proto'] as string | undefined) ?? req.protocol;
     const trustedBaseUrl = resolveEmailBaseUrl(req.headers, req.protocol);
 
-    if (tenantId) {
-      const baseUrl = viaCustomDomain ? `${proto}://${req.headers.host}` : trustedBaseUrl;
-      await portalAuth.requestMagicLink({ tenantId, email, baseUrl, ipAddress: req.ip });
-      res.json({ ok: true });
-      return;
-    }
-
-    // No firm context (bare /portal/login, no ?firm=, no custom domain):
-    // resolve the firm(s) FROM the email and send a sign-in link for each
-    // active tenancy. Unknown emails resolve to [] and we still answer
-    // ok:true, so this remains enumeration-safe. The emailed link always
-    // targets the trusted PUBLIC_URL, and verify recovers the tenant from
-    // the token, so a slug-less link still works.
-    const tenantIds = await portalAuth.resolveActiveContactTenants(email);
-    for (const t of tenantIds) {
-      await portalAuth.requestMagicLink({ tenantId: t, email, baseUrl: trustedBaseUrl, ipAddress: req.ip });
-    }
+    // The actual lookup + link insert + SMTP round-trip runs AFTER the
+    // response. Awaiting it here made response latency an enumeration
+    // oracle: unknown emails answered in one SELECT while known ones
+    // paid an SMTP round-trip per tenancy. Fire-and-forget keeps the
+    // observable behavior identical for every input (requestMagicLink
+    // no longer throws on its per-contact rate limit for the same
+    // reason). Failures are logged server-side by the service.
+    const ipAddress = req.ip;
+    setImmediate(() => {
+      void (async () => {
+        try {
+          if (tenantId) {
+            const baseUrl = viaCustomDomain ? `${proto}://${req.headers.host}` : trustedBaseUrl;
+            await portalAuth.requestMagicLink({ tenantId, email, baseUrl, ipAddress });
+            return;
+          }
+          // No firm context (bare /portal/login, no ?firm=, no custom
+          // domain): resolve the firm(s) FROM the email and send a
+          // sign-in link for each active tenancy. Unknown emails
+          // resolve to []. The emailed link always targets the trusted
+          // PUBLIC_URL, and verify recovers the tenant from the token,
+          // so a slug-less link still works.
+          const tenantIds = await portalAuth.resolveActiveContactTenants(email);
+          for (const t of tenantIds) {
+            await portalAuth.requestMagicLink({ tenantId: t, email, baseUrl: trustedBaseUrl, ipAddress });
+          }
+        } catch (err) {
+          console.error('[portal-auth] background request-link failed:', err instanceof Error ? err.message : err);
+        }
+      })();
+    });
     res.json({ ok: true });
   },
 );

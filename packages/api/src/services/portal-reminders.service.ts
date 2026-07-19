@@ -46,13 +46,17 @@ function portalLinkBase(): string {
 // The login link must carry the firm slug: without ?firm= the login page
 // cannot resolve the contact's tenant (appliances rarely set a portal
 // custom domain) and the magic-link request silently no-ops.
-const tenantSlugCache = new Map<string, string>();
+// 5-minute TTL: a forever-cache kept emailing dead ?firm= links after a
+// tenant slug rename until the process restarted.
+const SLUG_CACHE_TTL_MS = 5 * 60 * 1000;
+const tenantSlugCache = new Map<string, { slug: string; at: number }>();
 async function portalLoginLink(linkBase: string, tenantId: string): Promise<string> {
-  let slug = tenantSlugCache.get(tenantId);
+  const cached = tenantSlugCache.get(tenantId);
+  let slug = cached && Date.now() - cached.at < SLUG_CACHE_TTL_MS ? cached.slug : undefined;
   if (slug === undefined) {
     const t = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
     slug = t?.slug ?? '';
-    tenantSlugCache.set(tenantId, slug);
+    tenantSlugCache.set(tenantId, { slug, at: Date.now() });
   }
   return slug ? `${linkBase}/portal/login?firm=${encodeURIComponent(slug)}` : `${linkBase}/portal/login`;
 }
@@ -868,8 +872,15 @@ export async function scanDocRequestReminders(tenantId?: string): Promise<DocReq
       );
 
     for (const row of rows) {
+      // Count STEPS, not rows: a 'both'-strategy step inserts two
+      // reminder_sends rows (one per channel) within seconds. Counting
+      // raw rows made stepIdx jump by 2 per fired step, silently
+      // skipping every other cadence step. Rows of one step share the
+      // same dispatch tick, so distinct send-hours ≈ distinct steps
+      // (cadence steps are ≥ 1 day apart; forced nudges in different
+      // hours still count individually, as intended).
       const priorSends = await db
-        .select({ n: sql<number>`COUNT(*)::int` })
+        .select({ n: sql<number>`COUNT(DISTINCT date_trunc('hour', ${reminderSends.sentAt}))::int` })
         .from(reminderSends)
         .where(
           and(
@@ -1229,7 +1240,14 @@ export async function sendOpenerForDocRequest(
   if (wantsSms) {
     const flagOn = await isEnabled(tenantId, 'DOC_REQUEST_SMS_V1');
     const tenantSms = flagOn ? await getTenantSmsSettings(tenantId) : { smsOutboundEnabled: false };
-    smsUsable = flagOn && tenantSms.smsOutboundEnabled && !!r.contactPhone;
+    // Include the SYSTEM-level provider check (like dispatchDocRequests
+    // does) — without it, sms-only openers on a box with no Twilio/
+    // TextLink configured selected channels=['sms'], sendSmsLeg returned
+    // 'sms_disabled', and the email fallback below never fired: the one
+    // notification the feature exists to send went nowhere.
+    const tfaConfigService = await import('./tfa-config.service.js');
+    const rawTfa = flagOn ? await tfaConfigService.getRawConfig() : { smsProvider: null };
+    smsUsable = flagOn && !!rawTfa.smsProvider && tenantSms.smsOutboundEnabled && !!r.contactPhone;
   }
   // Channels to actually attempt: requested email, plus SMS when usable,
   // plus an email fallback when SMS was the only requested channel but
@@ -1247,6 +1265,17 @@ export async function sendOpenerForDocRequest(
       true, 9999, channel,
     );
     outcomes.push(result);
+  }
+  // The opener must always land somewhere: if every attempted channel
+  // failed at SEND time (sms-only whose Twilio call errored — the
+  // pre-checks above can't catch runtime failures) and email wasn't
+  // among the attempts, fall back to email now.
+  if (!outcomes.includes('sent') && !channels.includes('email')) {
+    outcomes.push(await sendDocRequestNotice(
+      tenantId, null, r.d.contactId, r.contactEmail, r.contactPhone,
+      r.contactFirstName, r.d.id, r.d.description, r.d.periodLabel, r.d.dueDate,
+      true, 9999, 'email',
+    ));
   }
   // Aggregate: 'sent' if any channel delivered; 'suppressed' only if all
   // were suppressed; otherwise 'error'. no_phone/sms_disabled shouldn't

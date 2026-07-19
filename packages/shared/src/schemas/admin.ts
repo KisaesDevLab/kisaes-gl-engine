@@ -101,7 +101,10 @@ export type AdminSmtpTestInput = z.infer<typeof adminSmtpTestSchema>;
 export const adminApplicationSettingsSchema = z.object({
   applicationUrl: z.string().max(255).optional().default(''),
   maxFileSizeMb: z.string().max(10).optional().default('10'),
-  backupSchedule: z.enum(['none', 'daily', 'weekly', 'monthly']).optional().default('none'),
+  // No .default() here: an omitted field must mean "leave unchanged",
+  // not "reset to none" — a client that failed to load current settings
+  // omits it rather than silently disabling scheduled backups.
+  backupSchedule: z.enum(['none', 'daily', 'weekly', 'monthly']).optional(),
   appName: z.string().max(80).optional(),
 });
 export type AdminApplicationSettingsInput = z.infer<typeof adminApplicationSettingsSchema>;

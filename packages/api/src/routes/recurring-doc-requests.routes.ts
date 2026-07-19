@@ -88,6 +88,15 @@ recurringDocRequestsRouter.post('/recurring-doc-requests/:id/send-now', async (r
     return;
   }
   if (issue.outcome === 'already_pending') {
+    // Racing the 5-minute scheduler: if this period's request was
+    // created moments ago, the scheduler just sent the opener — a
+    // forced nudge on top would double-email the contact. Report
+    // instead of sending.
+    const ageMs = Date.now() - new Date(issue.requestedAt).getTime();
+    if (ageMs < 10 * 60 * 1000) {
+      res.json({ result: 'just_issued', requestId: issue.requestId, periodLabel: issue.periodLabel });
+      return;
+    }
     const sendResult = await remind.forceNudgeForDocRequest(req.tenantId, issue.requestId, req.userId);
     res.json({ result: 'reminded', sendResult, requestId: issue.requestId, periodLabel: issue.periodLabel });
     return;

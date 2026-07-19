@@ -51,6 +51,12 @@ export function resolveRedirectTarget(to: string): URL | null {
   } catch {
     return null;
   }
+  // Opaque origins compare equal to each other ('null' === 'null').
+  // A scheme-less base like PUBLIC_URL=localhost:5173 parses as scheme
+  // "localhost:" with origin 'null' — and so does every javascript:/
+  // data:/custom-protocol target, which would then pass the equality
+  // check. Opaque on either side means no match, ever.
+  if (allowedOrigin === 'null' || target.origin === 'null') return null;
   return target.origin === allowedOrigin ? target : null;
 }
 
