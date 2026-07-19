@@ -1240,14 +1240,12 @@ export async function sendOpenerForDocRequest(
   if (wantsSms) {
     const flagOn = await isEnabled(tenantId, 'DOC_REQUEST_SMS_V1');
     const tenantSms = flagOn ? await getTenantSmsSettings(tenantId) : { smsOutboundEnabled: false };
-    // Include the SYSTEM-level provider check (like dispatchDocRequests
-    // does) — without it, sms-only openers on a box with no Twilio/
-    // TextLink configured selected channels=['sms'], sendSmsLeg returned
-    // 'sms_disabled', and the email fallback below never fired: the one
-    // notification the feature exists to send went nowhere.
-    const tfaConfigService = await import('./tfa-config.service.js');
-    const rawTfa = flagOn ? await tfaConfigService.getRawConfig() : { smsProvider: null };
-    smsUsable = flagOn && !!rawTfa.smsProvider && tenantSms.smsOutboundEnabled && !!r.contactPhone;
+    // Deliberately NO system-provider pre-check here: the SMS leg still
+    // runs on a provider-less box and records its failure row (audit
+    // trail of the attempt), and the email fallback below guarantees
+    // the opener lands anyway. Pre-filtering the channel would lose the
+    // error-row evidence that SMS is misconfigured.
+    smsUsable = flagOn && tenantSms.smsOutboundEnabled && !!r.contactPhone;
   }
   // Channels to actually attempt: requested email, plus SMS when usable,
   // plus an email fallback when SMS was the only requested channel but
@@ -1267,10 +1265,15 @@ export async function sendOpenerForDocRequest(
     outcomes.push(result);
   }
   // The opener must always land somewhere: if every attempted channel
-  // failed at SEND time (sms-only whose Twilio call errored — the
-  // pre-checks above can't catch runtime failures) and email wasn't
-  // among the attempts, fall back to email now.
-  if (!outcomes.includes('sent') && !channels.includes('email')) {
+  // FAILED (sms-only on a provider-less box, or a runtime Twilio error)
+  // and email wasn't among the attempts, fall back to email now.
+  // Suppression is not failure — a contact who texted STOP chose that,
+  // and the dispatch path deliberately doesn't route around it either.
+  if (
+    !outcomes.includes('sent') &&
+    !channels.includes('email') &&
+    !outcomes.every((o) => o === 'suppressed')
+  ) {
     outcomes.push(await sendDocRequestNotice(
       tenantId, null, r.d.contactId, r.contactEmail, r.contactPhone,
       r.contactFirstName, r.d.id, r.d.description, r.d.periodLabel, r.d.dueDate,

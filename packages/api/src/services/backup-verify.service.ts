@@ -214,7 +214,21 @@ async function verifyVmxSeries(
       metadata: { parts: partPaths.length, entriesTotal, entriesChecked, bytesChecked },
     };
   } catch (err) {
-    return { ...base, ok: false, error: err instanceof Error ? err.message : String(err) };
+    const msg = err instanceof Error ? err.message : String(err);
+    // Same ambiguity policy as the .vmb path: a decrypt failure can't
+    // distinguish "this backup was made with a different passphrase"
+    // (e.g. the operator rotated backup_scheduled_passphrase, or made
+    // a manual backup) from corruption. Hard-failing here would alarm
+    // on every verify cycle after a rotation until a new backup
+    // becomes the newest settled unit. Structural completeness was
+    // already proven above; record the ambiguity instead.
+    if (msg.includes('Incorrect passphrase')) {
+      return {
+        ...base, depth: 'header', ok: true,
+        metadata: { warning: 'series complete, but the stored scheduled passphrase does not decrypt it — rotated or manual passphrase, or corruption; content not proven' },
+      };
+    }
+    return { ...base, ok: false, error: msg };
   }
 }
 

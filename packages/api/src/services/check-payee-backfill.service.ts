@@ -53,7 +53,7 @@ async function findTargets(tenantId: string, companyId?: string | null): Promise
     SELECT id, check_number, total, contact_id
     FROM transactions
     WHERE tenant_id = ${tenantId}
-      AND (${companyId ?? null}::uuid IS NULL OR company_id = ${companyId ?? null}::uuid)
+      AND (${companyId ?? null}::uuid IS NULL OR company_id = ${companyId ?? null}::uuid OR company_id IS NULL)
       AND check_number IS NOT NULL
       AND txn_type IN ('check', 'expense', 'bill_payment')
       AND (payee_name_on_check IS NULL OR payee_name_on_check = '')
@@ -80,7 +80,7 @@ async function loadPayeeSources(tenantId: string, companyId?: string | null): Pr
     FROM bank_statement_lines l
     JOIN bank_statements st ON st.id = l.statement_id
     WHERE l.tenant_id = ${tenantId}
-      AND (${companyId ?? null}::uuid IS NULL OR st.company_id = ${companyId ?? null}::uuid)
+      AND (${companyId ?? null}::uuid IS NULL OR st.company_id = ${companyId ?? null}::uuid OR st.company_id IS NULL)
       AND l.payee IS NOT NULL AND l.payee <> '' AND l.check_number IS NOT NULL
   `);
   for (const r of stmt.rows as Array<{ check_number: string; payee: string; amount: string }>) {
@@ -92,7 +92,7 @@ async function loadPayeeSources(tenantId: string, companyId?: string | null): Pr
     FROM payroll_check_register_rows r
     JOIN payroll_import_sessions s ON s.id = r.session_id
     WHERE s.tenant_id = ${tenantId}
-      AND (${companyId ?? null}::uuid IS NULL OR s.company_id = ${companyId ?? null}::uuid)
+      AND (${companyId ?? null}::uuid IS NULL OR s.company_id = ${companyId ?? null}::uuid OR s.company_id IS NULL)
       AND r.check_number IS NOT NULL
   `);
   for (const r of payroll.rows as Array<{ check_number: string; payee_name: string; amount: string }>) {
@@ -216,7 +216,7 @@ async function rescanStatements(tenantId: string, companyId?: string | null): Pr
     JOIN attachments a ON a.id = s.attachment_id
     JOIN bank_statement_lines l ON l.statement_id = s.id
     WHERE s.tenant_id = ${tenantId}
-      AND (${companyId ?? null}::uuid IS NULL OR s.company_id = ${companyId ?? null}::uuid)
+      AND (${companyId ?? null}::uuid IS NULL OR s.company_id = ${companyId ?? null}::uuid OR s.company_id IS NULL)
       AND l.check_number IS NOT NULL AND (l.payee IS NULL OR l.payee = '')
     LIMIT ${RESCAN_STATEMENT_CAP}
   `);

@@ -65,11 +65,24 @@ export function isValidCronExpression(expr: string, timezone?: string): { ok: tr
     const parser = require('cron-parser') as typeof import('cron-parser');
     const opts = timezone ? { tz: timezone } : undefined;
     const it = parser.parseExpression(expr, opts);
-    const a = it.next().toDate();
-    const b = it.next().toDate();
-    const gapDays = (b.getTime() - a.getTime()) / (24 * 60 * 60 * 1000);
-    if (gapDays > CRON_MAX_GAP_DAYS) {
-      return { ok: false, reason: `firings are ${gapDays.toFixed(0)} days apart, which is too sparse to be intentional` };
+    // Sample several consecutive firings: too sparse (multi-year gap =
+    // probably a typo) and too dense are both rejected. Sub-daily
+    // cadences can't work here — issued requests dedupe on a
+    // day-resolution period label, so a second same-day firing would
+    // silently vanish. One document request per day is the floor.
+    const MIN_GAP_HOURS = 20;
+    let prev = it.next().toDate();
+    for (let i = 0; i < 4; i++) {
+      const next = it.next().toDate();
+      const gapMs = next.getTime() - prev.getTime();
+      const gapDays = gapMs / (24 * 60 * 60 * 1000);
+      if (gapDays > CRON_MAX_GAP_DAYS) {
+        return { ok: false, reason: `firings are ${gapDays.toFixed(0)} days apart, which is too sparse to be intentional` };
+      }
+      if (gapMs < MIN_GAP_HOURS * 60 * 60 * 1000) {
+        return { ok: false, reason: 'fires more than once a day — document requests support at most one issuance per day' };
+      }
+      prev = next;
     }
     return { ok: true };
   } catch (err) {
@@ -197,10 +210,23 @@ export function periodLabelFor(when: Date, frequency: RecurringFrequency): strin
 // and silently vanish. Frequency rules keep the human calendar label
 // ("2026-07", "2026-Q3") the emails were designed around.
 export function periodLabelForRule(
-  rule: { cadenceKind: string | null; frequency: string },
+  rule: { cadenceKind: string | null; frequency: string; cronTimezone?: string | null },
   when: Date,
 ): string {
-  if ((rule.cadenceKind ?? 'frequency') === 'cron') return when.toISOString().slice(0, 10);
+  if ((rule.cadenceKind ?? 'frequency') === 'cron') {
+    // Date in the RULE'S timezone — a 21:00 America/Los_Angeles cron
+    // fires at 04:00/05:00 UTC the next day, and a UTC-dated label
+    // would put the wrong date in the email (and shift the dedupe
+    // boundary). en-CA formats as YYYY-MM-DD.
+    try {
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: rule.cronTimezone || 'UTC',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+      }).format(when);
+    } catch {
+      return when.toISOString().slice(0, 10); // unknown tz string → UTC
+    }
+  }
   return periodLabelFor(when, rule.frequency as RecurringFrequency);
 }
 
@@ -406,7 +432,7 @@ export async function issueNow(
   now: Date = new Date(),
 ): Promise<
   | { outcome: 'issued'; requestId: string; periodLabel: string }
-  | { outcome: 'already_pending'; requestId: string; periodLabel: string; requestedAt: string }
+  | { outcome: 'already_pending'; requestId: string; periodLabel: string; createdAt: string }
   | { outcome: 'already_closed'; requestId: string; periodLabel: string; status: string }
 > {
   const rule = await db.query.recurringDocumentRequests.findFirst({
@@ -470,7 +496,11 @@ export async function issueNow(
       outcome: 'already_pending',
       requestId: existing.id,
       periodLabel: period,
-      requestedAt: existing.requestedAt.toISOString(),
+      // createdAt, NOT requestedAt: the scheduler stamps requestedAt
+      // with the SCHEDULED moment (hours/days old in the catch-up
+      // case), so the route's "just issued?" race check must look at
+      // when the row actually appeared.
+      createdAt: existing.createdAt.toISOString(),
     };
   }
   return { outcome: 'already_closed', requestId: existing.id, periodLabel: period, status: existing.status };
