@@ -780,3 +780,20 @@ export async function resolveTenantByHost(host: string): Promise<string | null> 
   });
   return row?.tenantId ?? null;
 }
+
+// Tenants where this email is an ACTIVE portal contact. Used by the
+// login page's no-firm-context path (bare /portal/login, no ?firm=,
+// no custom domain): a contact just enters their email and we send a
+// sign-in link for each firm they belong to. Returns [] for unknown
+// emails — the caller still answers ok:true, so this stays
+// enumeration-safe (no observable difference for a non-existent email).
+export async function resolveActiveContactTenants(email: string): Promise<string[]> {
+  const normalized = normalizeEmail(email);
+  if (!normalized.includes('@')) return [];
+  const rows = await db
+    .select({ tenantId: portalContacts.tenantId })
+    .from(portalContacts)
+    .where(and(eq(portalContacts.email, normalized), eq(portalContacts.status, 'active')));
+  // De-dupe defensively (one active contact per tenant is expected).
+  return Array.from(new Set(rows.map((r) => r.tenantId)));
+}

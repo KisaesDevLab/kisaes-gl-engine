@@ -81,11 +81,6 @@ portalAuthRouter.post(
   async (req, res) => {
     const { email, tenantSlug } = req.body as { email: string; tenantSlug?: string };
     const { tenantId, viaCustomDomain } = await resolveTenantId(req.headers.host, tenantSlug);
-    if (!tenantId) {
-      // Don't leak which firm a contact belongs to. Always return ok.
-      res.json({ ok: true });
-      return;
-    }
 
     // When the tenant was resolved via a CONFIGURED custom portal
     // domain, the link must target that domain — it's what the contact
@@ -94,16 +89,25 @@ portalAuthRouter.post(
     // spoofable free-form Host fallback that resolveEmailBaseUrl
     // guards against). Everything else uses the trusted PUBLIC_URL.
     const proto = (req.headers['x-forwarded-proto'] as string | undefined) ?? req.protocol;
-    const baseUrl = viaCustomDomain
-      ? `${proto}://${req.headers.host}`
-      : resolveEmailBaseUrl(req.headers, req.protocol);
+    const trustedBaseUrl = resolveEmailBaseUrl(req.headers, req.protocol);
 
-    await portalAuth.requestMagicLink({
-      tenantId,
-      email,
-      baseUrl,
-      ipAddress: req.ip,
-    });
+    if (tenantId) {
+      const baseUrl = viaCustomDomain ? `${proto}://${req.headers.host}` : trustedBaseUrl;
+      await portalAuth.requestMagicLink({ tenantId, email, baseUrl, ipAddress: req.ip });
+      res.json({ ok: true });
+      return;
+    }
+
+    // No firm context (bare /portal/login, no ?firm=, no custom domain):
+    // resolve the firm(s) FROM the email and send a sign-in link for each
+    // active tenancy. Unknown emails resolve to [] and we still answer
+    // ok:true, so this remains enumeration-safe. The emailed link always
+    // targets the trusted PUBLIC_URL, and verify recovers the tenant from
+    // the token, so a slug-less link still works.
+    const tenantIds = await portalAuth.resolveActiveContactTenants(email);
+    for (const t of tenantIds) {
+      await portalAuth.requestMagicLink({ tenantId: t, email, baseUrl: trustedBaseUrl, ipAddress: req.ip });
+    }
     res.json({ ok: true });
   },
 );
