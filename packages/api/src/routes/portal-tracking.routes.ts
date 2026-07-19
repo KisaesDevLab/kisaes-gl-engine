@@ -29,6 +29,31 @@ portalTrackingRouter.get('/track/:sendId/open.gif', async (req, res) => {
   res.send(TRANSPARENT_GIF);
 });
 
+// Open-redirect protection for the click wrapper. The allowed origin
+// must mirror portalLinkBase() in portal-reminders.service.ts exactly —
+// PORTAL_BASE_URL, else PUBLIC_URL, else the dev default — because the
+// `to` target is built from that same base. Checking PORTAL_BASE_URL
+// alone (the original code) meant appliances configured only via
+// PUBLIC_URL rejected every link in their own reminder emails with
+// "Invalid redirect target". Exported for tests.
+export function resolveRedirectTarget(to: string): URL | null {
+  const allowedBase =
+    process.env['PORTAL_BASE_URL'] || process.env['PUBLIC_URL'] || 'http://localhost:5173';
+  let allowedOrigin: string;
+  try {
+    allowedOrigin = new URL(allowedBase).origin;
+  } catch {
+    return null;
+  }
+  let target: URL;
+  try {
+    target = new URL(to);
+  } catch {
+    return null;
+  }
+  return target.origin === allowedOrigin ? target : null;
+}
+
 portalTrackingRouter.get('/track/:sendId/click', async (req, res) => {
   const to = (req.query['to'] as string | undefined) ?? '';
   try {
@@ -36,26 +61,11 @@ portalTrackingRouter.get('/track/:sendId/click', async (req, res) => {
   } catch {
     // see open.gif handler — fall through to redirect
   }
-  // Open redirect protection: only allow targets whose origin matches
-  // the firm's configured PORTAL_BASE_URL. Anything else (different
-  // host, missing scheme, javascript:, data:) is rejected so a
-  // tampered link can't turn our domain into a phishing redirector.
-  const allowedBase = process.env['PORTAL_BASE_URL'] || 'http://localhost:5173';
-  let allowedOrigin: string;
-  try {
-    allowedOrigin = new URL(allowedBase).origin;
-  } catch {
-    res.status(500).send('Tracking misconfigured');
-    return;
-  }
-  let target: URL;
-  try {
-    target = new URL(to);
-  } catch {
-    res.status(400).send('Invalid redirect target');
-    return;
-  }
-  if (target.origin !== allowedOrigin) {
+  // Anything not on the portal's own origin (different host, missing
+  // scheme, javascript:, data:) is rejected so a tampered link can't
+  // turn our domain into a phishing redirector.
+  const target = resolveRedirectTarget(to);
+  if (!target) {
     res.status(400).send('Invalid redirect target');
     return;
   }
