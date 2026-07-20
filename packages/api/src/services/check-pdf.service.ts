@@ -87,19 +87,18 @@ async function gatherCheckData(tenantId: string, checkId: string): Promise<Check
   const { numberToWords } = await import('@kis-books/shared');
 
   let payeeName = txn.payeeNameOnCheck || '';
-  // Payee mailing address for the z-fold self-mailer panel. Prefer the
-  // address stored on the txn; for bill payments fall back to the vendor
-  // contact's mailing (billing) address.
+  // Payee mailing address for the z-fold self-mailer panel. Build STRUCTURED
+  // rows so City, ST ZIP is always its own line: street / street 2 /
+  // "City, ST ZIP". A vendor contact's billing fields (bill payments) are the
+  // primary source; a freeform txn.payeeAddress is a fallback only.
   const payeeAddressLines: string[] = [];
-  const pushAddr = (line1: string | null, city: string | null, state: string | null, zip: string | null) => {
+  const pushAddr = (line1: string | null, line2: string | null, city: string | null, state: string | null, zip: string | null) => {
     if (line1) payeeAddressLines.push(line1);
-    const cityLine = [city, state].filter(Boolean).join(', ');
-    const cityZip = [cityLine, zip].filter(Boolean).join(' ');
-    if (cityZip) payeeAddressLines.push(cityZip);
+    if (line2) payeeAddressLines.push(line2);
+    const cityState = [city, state].filter(Boolean).join(', ');
+    const cityStateZip = [cityState, zip].filter(Boolean).join(' ');
+    if (cityStateZip) payeeAddressLines.push(cityStateZip);
   };
-  if (txn.payeeAddress) {
-    for (const l of String(txn.payeeAddress).split('\n').map((s) => s.trim()).filter(Boolean)) payeeAddressLines.push(l);
-  }
   let billPaymentBills: BillPaymentStubLine[] | undefined;
   let billPaymentCredits: VendorCreditStubLine[] | undefined;
   let billPaymentTotalBills: string | undefined;
@@ -112,9 +111,7 @@ async function gatherCheckData(tenantId: string, checkId: string): Promise<Check
       });
       if (vendor) {
         if (!payeeName) payeeName = vendor.displayName;
-        if (payeeAddressLines.length === 0) {
-          pushAddr(vendor.billingLine1, vendor.billingCity, vendor.billingState, vendor.billingZip);
-        }
+        pushAddr(vendor.billingLine1, vendor.billingLine2, vendor.billingCity, vendor.billingState, vendor.billingZip);
       }
     }
 
@@ -164,6 +161,12 @@ async function gatherCheckData(tenantId: string, checkId: string): Promise<Check
     const totalCredits = billPaymentCredits.reduce((s, c) => s + parseFloat(c.amount), 0);
     billPaymentTotalBills = totalBills.toFixed(2);
     billPaymentTotalCredits = totalCredits.toFixed(2);
+  }
+
+  // Fallback for non-bill-payment checks (or vendors without a structured
+  // billing address): the freeform txn.payeeAddress, split on newlines.
+  if (payeeAddressLines.length === 0 && txn.payeeAddress) {
+    for (const l of String(txn.payeeAddress).split('\n').map((s) => s.trim()).filter(Boolean)) payeeAddressLines.push(l);
   }
 
   return {
