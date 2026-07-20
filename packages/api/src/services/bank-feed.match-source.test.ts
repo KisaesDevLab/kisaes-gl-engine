@@ -153,3 +153,36 @@ describe('bank-feed list — match source + contact-match signals', () => {
     expect(total).toBe(3);
   });
 });
+
+// Bulk "Set Name" — assigns an EXISTING contact by name (match-only, never
+// creates), so the name shows in the feed and carries to the posted txn.
+describe('bank-feed bulkSetName — match existing contact only', () => {
+  it('assigns the matched contact to pending rows (case-insensitive) and moves them to assigned', async () => {
+    const a = await insertItem();
+    const b = await insertItem();
+    const res = await bankFeedService.bulkSetName(tenantId, [a.id, b.id], 'acme supplies');
+    expect(res.updated).toBe(2);
+    expect(res.matchedContactId).toBe(vendorId);
+    expect((await rowFor(a.id)).assignedContactName).toBe('Acme Supplies');
+    const row = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, a.id) });
+    expect(row!.status).toBe('assigned');
+  });
+
+  it('does nothing and reports skipped when no contact matches the typed name', async () => {
+    const a = await insertItem();
+    const res = await bankFeedService.bulkSetName(tenantId, [a.id], 'Nonexistent Vendor');
+    expect(res.updated).toBe(0);
+    expect(res.skipped).toBe(1);
+    expect(res.matchedContactId).toBeNull();
+    expect(res.noContactMatch).toBe(true);
+    expect((await rowFor(a.id)).assignedContactName ?? null).toBeNull();
+  });
+
+  it('never creates a contact for an unmatched name', async () => {
+    const a = await insertItem();
+    const before = (await db.select().from(contacts).where(eq(contacts.tenantId, tenantId))).length;
+    await bankFeedService.bulkSetName(tenantId, [a.id], 'Brand New Payee Co');
+    const after = (await db.select().from(contacts).where(eq(contacts.tenantId, tenantId))).length;
+    expect(after).toBe(before);
+  });
+});

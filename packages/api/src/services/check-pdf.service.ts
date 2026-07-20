@@ -49,6 +49,8 @@ export interface CheckData {
   amountInWords: string;
   memo: string;
   company: { name: string; address: string; city: string; phone: string };
+  /** Payee mailing address lines (for the z-fold USPS mailing panel) */
+  payeeAddressLines: string[];
   bank: { name: string; address: string; routing: string; account: string; fractional: string };
   printCompanyInfo: boolean;
   printSignatureLine: boolean;
@@ -82,17 +84,35 @@ async function gatherCheckData(tenantId: string, checkId: string): Promise<Check
   const { numberToWords } = await import('@kis-books/shared');
 
   let payeeName = txn.payeeNameOnCheck || '';
+  // Payee mailing address for the z-fold self-mailer panel. Prefer the
+  // address stored on the txn; for bill payments fall back to the vendor
+  // contact's mailing (billing) address.
+  const payeeAddressLines: string[] = [];
+  const pushAddr = (line1: string | null, city: string | null, state: string | null, zip: string | null) => {
+    if (line1) payeeAddressLines.push(line1);
+    const cityLine = [city, state].filter(Boolean).join(', ');
+    const cityZip = [cityLine, zip].filter(Boolean).join(' ');
+    if (cityZip) payeeAddressLines.push(cityZip);
+  };
+  if (txn.payeeAddress) {
+    for (const l of String(txn.payeeAddress).split('\n').map((s) => s.trim()).filter(Boolean)) payeeAddressLines.push(l);
+  }
   let billPaymentBills: BillPaymentStubLine[] | undefined;
   let billPaymentCredits: VendorCreditStubLine[] | undefined;
   let billPaymentTotalBills: string | undefined;
   let billPaymentTotalCredits: string | undefined;
 
   if (txn.txnType === 'bill_payment') {
-    if (!payeeName && txn.contactId) {
+    if (txn.contactId) {
       const vendor = await db.query.contacts.findFirst({
         where: and(eq(contacts.tenantId, tenantId), eq(contacts.id, txn.contactId)),
       });
-      if (vendor) payeeName = vendor.displayName;
+      if (vendor) {
+        if (!payeeName) payeeName = vendor.displayName;
+        if (payeeAddressLines.length === 0) {
+          pushAddr(vendor.billingLine1, vendor.billingCity, vendor.billingState, vendor.billingZip);
+        }
+      }
     }
 
     const billRows = await db.select({
@@ -156,6 +176,7 @@ async function gatherCheckData(tenantId: string, checkId: string): Promise<Check
       city: [company.city, company.state, company.zip].filter(Boolean).join(', '),
       phone: company.phone || '',
     },
+    payeeAddressLines,
     bank: {
       name: settings['bankName'] || '',
       address: settings['bankAddress'] || '',
@@ -188,6 +209,8 @@ async function gatherCheckData(tenantId: string, checkId: string): Promise<Check
 const PAGE_W = 612; // 8.5in
 const PAGE_H = 792; // 11in
 const IN = 72;
+const CM = 72 / 2.54;
+const Z_SIDE_MARGIN = 1.5 * CM; // ~42.5pt — z-fold left/right margin
 
 const BLACK = rgb(0, 0, 0);
 const GRAY = rgb(0.4, 0.4, 0.4);
@@ -221,6 +244,12 @@ function sanitize(s: string | null | undefined): string {
 function fmtMoney(amount: string): string {
   const n = parseFloat(amount || '0');
   return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// Dates are stored ISO (yyyy-mm-dd); checks print them MM-DD-YYYY.
+function fmtDate(d: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d || '');
+  return m ? `${m[2]}-${m[3]}-${m[1]}` : (d || '');
 }
 
 interface TextOpts {
@@ -278,8 +307,12 @@ function drawBox(ctx: Ctx, x: number, y: number, w: number, h: number, thickness
  * MICR line (ANSI X9.100-160-1 clear band).
  */
 function drawCheckFace(ctx: Ctx, c: CheckData, faceTopY: number, faceBottomY: number, compact: boolean): void {
-  const L = compact ? 21.6 : 18; // left margin (0.3in / 0.25in)
-  const R = PAGE_W - (compact ? 21.6 : 18);
+  // z-fold (compact) uses a wider 1.5 cm (~42.5pt) side margin per operator
+  // request; standard stock keeps its tighter 0.25in margin. The MICR line is
+  // NOT affected — it stays at its ANSI spec offset from the right edge.
+  const SIDE = compact ? Z_SIDE_MARGIN : 18;
+  const L = SIDE;
+  const R = PAGE_W - SIDE;
 
   // Company block
   if (c.printCompanyInfo) {
@@ -290,9 +323,9 @@ function drawCheckFace(ctx: Ctx, c: CheckData, faceTopY: number, faceBottomY: nu
   }
 
   // Check number + fractional routing (top right)
-  const nrX = PAGE_W - 36;
+  const nrX = compact ? R : PAGE_W - 36;
   if (c.printCheckNumber && c.checkNumber != null) {
-    drawText(ctx, `No. ${c.checkNumber}`, nrX, faceTopY - (compact ? 7.2 : 18) - 7.5, { font: ctx.fonts.bold, size: 7.5, align: 'right' });
+    drawText(ctx, `No. ${c.checkNumber}`, nrX, faceTopY - (compact ? 7.2 : 18) - 8.5, { font: ctx.fonts.bold, size: 11, align: 'right' });
   }
   if (c.printBankInfo && c.bank.fractional) {
     drawText(ctx, c.bank.fractional, nrX, faceTopY - (compact ? 7.2 : 18) - 17.5, { size: 6, color: GRAY, align: 'right' });
@@ -306,7 +339,7 @@ function drawCheckFace(ctx: Ctx, c: CheckData, faceTopY: number, faceBottomY: nu
       drawText(ctx, 'DATE', lineX1 - 6, dateY, { size: 6, color: GRAY, align: 'right' });
       drawLine(ctx, lineX1, dateY - 2.5, nrX, dateY - 2.5);
     }
-    drawText(ctx, c.date, (lineX1 + nrX) / 2, dateY, { size: compact ? 7.5 : 8.25, align: 'center' });
+    drawText(ctx, fmtDate(c.date), (lineX1 + nrX) / 2, dateY, { size: compact ? 10 : 11, align: 'center' });
   }
 
   // Payee
@@ -315,7 +348,7 @@ function drawCheckFace(ctx: Ctx, c: CheckData, faceTopY: number, faceBottomY: nu
     const labelY = faceTopY - topIn * IN - 6;
     const nameY = labelY - (compact ? 10 : 12);
     const ulY = nameY - 3;
-    const ulX2 = PAGE_W - 1.6 * IN;
+    const ulX2 = PAGE_W - (compact ? 2.1 : 1.75) * IN;
     if (c.printPayeeLine) {
       drawText(ctx, 'PAY TO THE ORDER OF', L, labelY, { size: compact ? 5.25 : 6, color: GRAY });
       drawLine(ctx, L, ulY, ulX2, ulY);
@@ -325,13 +358,14 @@ function drawCheckFace(ctx: Ctx, c: CheckData, faceTopY: number, faceBottomY: nu
 
   // Amount box
   {
-    const boxW = 1.2 * IN;
-    const boxH = compact ? 18 : 20;
-    const boxX = PAGE_W - (compact ? 0.3 : 0.25) * IN - boxW;
+    const boxW = 1.35 * IN;
+    const boxH = compact ? 22 : 24;
+    const boxX = R - boxW;
     const boxTop = faceTopY - (compact ? 0.82 : 1.3) * IN;
+    const amtSize = 13;
     if (c.printAmountBox) drawBox(ctx, boxX, boxTop - boxH, boxW, boxH, 1.5);
-    drawText(ctx, `$${fmtMoney(c.amount)}`, boxX + boxW / 2, boxTop - boxH + (boxH - 10.5) / 2 + 2, {
-      font: ctx.fonts.monoBold, size: 10.5, align: 'center', maxWidth: boxW - 6,
+    drawText(ctx, `$${fmtMoney(c.amount)}`, boxX + boxW / 2, boxTop - boxH + (boxH - amtSize) / 2 + 2.5, {
+      font: ctx.fonts.monoBold, size: amtSize, align: 'center', maxWidth: boxW - 6,
     });
   }
 
@@ -339,7 +373,7 @@ function drawCheckFace(ctx: Ctx, c: CheckData, faceTopY: number, faceBottomY: nu
   if (c.printAmountWords) {
     const ulY = faceTopY - (compact ? 1.3 : 1.85) * IN - 13;
     const textY = ulY + 3;
-    const x2 = PAGE_W - 0.5 * IN;
+    const x2 = R;
     drawLine(ctx, L, ulY, x2, ulY);
     const size = compact ? 7 : 7.5;
     const wordsW = drawText(ctx, c.amountInWords, L, textY, { size, maxWidth: x2 - L - 60 });
@@ -405,7 +439,7 @@ function drawStub(ctx: Ctx, c: CheckData, stubTopY: number, stubBottomY: number)
 
   if (!isBillPayment) {
     drawText(ctx, `Check #${checkNo}`, L, y, { font: ctx.fonts.bold, size: 7 });
-    drawText(ctx, `Date: ${c.date}`, (L + R) / 2, y, { size: 7, align: 'center' });
+    drawText(ctx, `Date: ${fmtDate(c.date)}`, (L + R) / 2, y, { size: 7, align: 'center' });
     drawText(ctx, `Amount: $${fmtMoney(c.amount)}`, R, y, { size: 7, align: 'right' });
     y -= 13;
     drawText(ctx, `Pay to: ${c.payeeName}`, L, y, { size: 7, maxWidth: R - L });
@@ -416,7 +450,7 @@ function drawStub(ctx: Ctx, c: CheckData, stubTopY: number, stubBottomY: number)
   // Bill-payment voucher: itemized bills and credits
   drawText(ctx, 'BILL PAYMENT VOUCHER', L, y, { font: ctx.fonts.bold, size: 7 });
   drawText(ctx, `Check #${checkNo}`, (L + R) / 2, y, { font: ctx.fonts.bold, size: 7, align: 'center' });
-  drawText(ctx, `Date: ${c.date}`, R, y, { size: 7, align: 'right' });
+  drawText(ctx, `Date: ${fmtDate(c.date)}`, R, y, { size: 7, align: 'right' });
   y -= 12;
   drawText(ctx, `Pay to: ${c.payeeName}`, L, y, { size: 7, maxWidth: R - L });
   y -= 13;
@@ -442,7 +476,7 @@ function drawStub(ctx: Ctx, c: CheckData, stubTopY: number, stubBottomY: number)
   for (const b of shown) {
     drawText(ctx, b.txnNumber || '', colBill, y, { size: 6.4, maxWidth: 95 });
     drawText(ctx, b.vendorInvoiceNumber || '', colInv, y, { size: 6.4, maxWidth: 100 });
-    drawText(ctx, b.txnDate, colDate, y, { size: 6.4 });
+    drawText(ctx, fmtDate(b.txnDate), colDate, y, { size: 6.4 });
     drawText(ctx, `$${fmtMoney(b.originalAmount)}`, colOrig, y, { font: ctx.fonts.mono, size: 6.4, align: 'right' });
     drawText(ctx, `$${fmtMoney(b.paidAmount)}`, colPaid, y, { font: ctx.fonts.mono, size: 6.4, align: 'right' });
     y -= 9.5;
@@ -458,7 +492,7 @@ function drawStub(ctx: Ctx, c: CheckData, stubTopY: number, stubBottomY: number)
     y -= 9.5;
     for (const cr of credits) {
       drawText(ctx, cr.txnNumber || '', colBill, y, { size: 6.4, maxWidth: 95 });
-      drawText(ctx, cr.txnDate, colInv, y, { size: 6.4 });
+      drawText(ctx, fmtDate(cr.txnDate), colInv, y, { size: 6.4 });
       drawText(ctx, cr.description || '', colDate, y, { size: 6.4, maxWidth: colOrig - colDate - 60 });
       drawText(ctx, `($${fmtMoney(cr.amount)})`, colPaid, y, { font: ctx.fonts.mono, size: 6.4, align: 'right' });
       y -= 9.5;
@@ -481,6 +515,41 @@ function drawStub(ctx: Ctx, c: CheckData, stubTopY: number, stubBottomY: number)
   drawText(ctx, `$${fmtMoney(c.amount)}`, R, y, { font: ctx.fonts.monoBold, size: 7, align: 'right' });
 }
 
+// ── USPS mailing panel (z-fold self-mailer) ──────────────────────
+//
+// The bottom panel of the z-fold becomes the outside mailing face after the
+// sheet is Z-folded and sealed. Laid out to USPS conventions: company return
+// address top-left, payee delivery address block in the center read zone,
+// uppercase, clear of the bottom 5/8". NOTE: on some pressure-seal stocks the
+// bottom panel must be printed 180°-rotated to read upright once folded —
+// verify on a test print with your stock; this renders upright.
+function drawMailingPanel(ctx: Ctx, c: CheckData, panelTopY: number, panelBottomY: number): void {
+  const L = Z_SIDE_MARGIN;
+  const up = (s: string) => sanitize(s).toUpperCase();
+
+  // Return address — top-left
+  let ry = panelTopY - 14;
+  drawText(ctx, up(c.company.name), L, ry, { font: ctx.fonts.bold, size: 7.5, maxWidth: PAGE_W / 2 });
+  if (c.company.address) { ry -= 9; drawText(ctx, up(c.company.address), L, ry, { size: 7, maxWidth: PAGE_W / 2 }); }
+
+  // Delivery address block — centered, in the USPS read zone. Keep the whole
+  // block above the bottom 5/8" clear band.
+  const cx = PAGE_W / 2;
+  const addr = c.payeeAddressLines ?? [];
+  const lines = [c.payeeName, ...addr].filter(Boolean).map(up);
+  const lineH = 13;
+  let dy = (panelTopY + panelBottomY) / 2 + 20;
+  const minBottom = panelBottomY + 0.625 * IN;
+  if (dy - lines.length * lineH < minBottom) dy = minBottom + lines.length * lineH;
+  lines.forEach((line, i) => {
+    drawText(ctx, line, cx, dy, { size: 11, align: 'center', font: i === 0 ? ctx.fonts.bold : ctx.fonts.reg, maxWidth: PAGE_W - 2 * L });
+    dy -= lineH;
+  });
+  if (addr.length === 0) {
+    drawText(ctx, '— no mailing address on file —', cx, dy, { size: 7.5, align: 'center', color: GRAY });
+  }
+}
+
 // ── Page assembly per layout ──────────────────────────────────────
 
 function drawCheckPage(page: PDFPage, fonts: Fonts, c: CheckData, format: string): void {
@@ -499,10 +568,15 @@ function drawCheckPage(page: PDFPage, fonts: Fonts, c: CheckData, format: string
 
     const couponTop = PAGE_H - 4.0625 * IN;
     const couponBottom = PAGE_H - (4.0625 + 2.771) * IN;
+    // Top panel: the AP remittance voucher (the part the payee detaches and
+    // keeps — invoice #, amount paid, credits, total).
     if (c.printVoucherStub) {
       drawStub(ctx, c, PAGE_H - 0.3 * IN, fold1 + 10);
-      drawStub(ctx, c, PAGE_H - 7.5 * IN, 0.3 * IN);
     }
+    // Bottom panel: the USPS mailing face of the pressure-seal self-mailer —
+    // company return address + payee delivery address block (NOT a duplicate
+    // voucher). Always drawn: without it the folded piece has no address.
+    drawMailingPanel(ctx, c, PAGE_H - 7.5 * IN, 0.4 * IN);
     drawCheckFace(ctx, c, couponTop, couponBottom, true);
     return;
   }
@@ -594,6 +668,7 @@ export async function generateTestCheckPdf(tenantId: string, format: string = 'v
       city: [company.city, company.state, company.zip].filter(Boolean).join(', '),
       phone: company.phone || '',
     },
+    payeeAddressLines: ['1200 Vendor Avenue, Suite 400', 'Kansas City, MO 64105'],
     bank: {
       name: settings['bankName'] || 'SAMPLE BANK',
       address: settings['bankAddress'] || '123 Bank St',

@@ -887,17 +887,94 @@ export async function bulkCategorize(tenantId: string, feedItemIds: string[], ac
 // NAME column for the selected items — useful for normalizing a batch of cryptic
 // bank descriptors to one human-readable payee/name. Tenant-scoped; the raw
 // originalDescription is preserved.
+// Bulk "Set Name" assigns a PAYEE CONTACT to the selected feed items — the
+// same thing the single-item editor does — so the name shows in the NAME
+// column (assigned contact → suggested contact → description precedence) AND
+// carries onto the posted transaction's contact_id. The previous version
+// wrote bankFeedItems.description, the lowest-precedence field, so on any row
+// that already had a suggested/assigned contact the typed name was invisible
+// and the posted transaction's payee stayed empty.
+//
+// Match-existing-only: the typed name is matched (case-insensitive, exact) to
+// an existing tenant contact. If no contact matches, nothing is created and
+// every selected row is reported as skipped — the caller surfaces that so the
+// user can create the contact (or pick it from the list) first.
 export async function bulkSetName(tenantId: string, feedItemIds: string[], name: string) {
-  const trimmed = name.trim().slice(0, 500);
-  if (!trimmed || feedItemIds.length === 0) return { updated: 0 };
-  const updatedRows = await db.update(bankFeedItems)
-    .set({ description: trimmed, updatedAt: new Date() })
-    .where(and(
-      eq(bankFeedItems.tenantId, tenantId),
-      inArray(bankFeedItems.id, feedItemIds),
-    ))
-    .returning({ id: bankFeedItems.id });
-  return { updated: updatedRows.length };
+  const trimmed = name.trim();
+  if (!trimmed || feedItemIds.length === 0) {
+    return { updated: 0, skipped: feedItemIds.length, matchedContactId: null, matchedContactName: null, failures: [] as Array<{ id: string; error: string }> };
+  }
+
+  // Resolve the name to one existing contact. Prefer an exact
+  // case-insensitive display-name match; among ties, the oldest active
+  // contact wins (deterministic). No fuzzy matching here — bulk assignment
+  // must be predictable, not a guess.
+  const match = await db.query.contacts.findFirst({
+    where: and(
+      eq(contacts.tenantId, tenantId),
+      sql`lower(${contacts.displayName}) = lower(${trimmed})`,
+    ),
+    orderBy: (c, { asc }) => [asc(c.createdAt)],
+  });
+
+  if (!match) {
+    return { updated: 0, skipped: feedItemIds.length, matchedContactId: null, matchedContactName: null, noContactMatch: true, failures: [] as Array<{ id: string; error: string }> };
+  }
+
+  const contactId = match.id;
+  let updated = 0;
+  const failures: Array<{ id: string; error: string }> = [];
+
+  for (const id of feedItemIds) {
+    try {
+      const item = await db.query.bankFeedItems.findFirst({
+        where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, id)),
+      });
+      if (!item) { failures.push({ id, error: 'feed item not found' }); continue; }
+
+      if (!item.matchedTransactionId) {
+        // Not yet posted — stage the contact on the feed item so it carries
+        // into the ledger on approve (postAssignment reads assignedContactId).
+        if (item.status !== 'pending' && item.status !== 'assigned') {
+          failures.push({ id, error: `cannot set name on item in status ${item.status}` });
+          continue;
+        }
+        await db.update(bankFeedItems)
+          .set({
+            assignedContactId: contactId,
+            status: item.status === 'pending' ? 'assigned' : item.status,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, id)));
+        updated++;
+        continue;
+      }
+
+      // Already posted — set the contact on the transaction (and its journal
+      // lines) so the posted "Name" reflects the payee. Mirror the feed row
+      // too, so the list keeps showing the assigned contact. One per-item
+      // transaction keeps txn/journal_lines/feed-row consistent.
+      await db.transaction(async (tx) => {
+        await tx.update(transactions).set({ contactId, updatedAt: new Date() })
+          .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, item.matchedTransactionId!)));
+        await tx.update(journalLines).set({ contactId })
+          .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, item.matchedTransactionId!)));
+        await tx.update(bankFeedItems).set({ assignedContactId: contactId, updatedAt: new Date() })
+          .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, id)));
+      });
+      updated++;
+    } catch (err: any) {
+      failures.push({ id, error: err?.message || 'unknown error' });
+    }
+  }
+
+  return {
+    updated,
+    skipped: feedItemIds.length - updated - failures.length,
+    matchedContactId: contactId,
+    matchedContactName: match.displayName,
+    failures,
+  };
 }
 
 export async function bulkSetTag(tenantId: string, feedItemIds: string[], tagId: string | null) {
