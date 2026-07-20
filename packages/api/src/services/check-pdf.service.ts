@@ -554,9 +554,9 @@ function drawMailingPanel(ctx: Ctx, c: CheckData, panelTopY: number, panelBottom
     ry -= 9;
   });
 
-  // Delivery ("to") address block — left-aligned, in the USPS read zone,
-  // above the bottom 5/8" clear band.
-  const deliveryX = 1.2 * IN;
+  // Delivery ("to") address block — left-aligned, indented 3" from the left
+  // edge (window-envelope position), above the bottom 5/8" clear band.
+  const deliveryX = 3 * IN;
   const addr = c.payeeAddressLines ?? [];
   const lines = [c.payeeName, ...addr].filter(Boolean).map(up);
   const lineH = 13;

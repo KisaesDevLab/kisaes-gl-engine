@@ -755,6 +755,17 @@ export async function getTransaction(tenantId: string, txnId: string) {
   });
   if (!txn) throw AppError.notFound('Transaction not found');
 
+  // Resolve the contact/vendor display name so detail views (e.g. the bill
+  // detail page) can show the name rather than just a contactId.
+  let contactName: string | null = null;
+  if (txn.contactId) {
+    const c = await db.query.contacts.findFirst({
+      where: and(eq(contacts.tenantId, tenantId), eq(contacts.id, txn.contactId)),
+      columns: { displayName: true },
+    });
+    contactName = c?.displayName ?? null;
+  }
+
   const lines = await db.select({
     id: journalLines.id,
     tenantId: journalLines.tenantId,
@@ -786,7 +797,7 @@ export async function getTransaction(tenantId: string, txnId: string) {
     ))
     .orderBy(journalLines.lineOrder);
 
-  return { ...txn, lines };
+  return { ...txn, contactName, lines };
 }
 
 export async function listTransactions(tenantId: string, filters: {
