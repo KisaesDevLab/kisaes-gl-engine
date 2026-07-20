@@ -34,6 +34,7 @@ interface RegisterLine {
   transactionId: string;
   txnType: string;
   txnNumber: string | null;
+  checkNumber: number | null;
   txnDate: string;
   payeeName: string | null;
   contactId: string | null;
@@ -169,6 +170,7 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
       jl.description AS line_description,
       t.txn_type,
       t.txn_number,
+      t.check_number,
       t.txn_date,
       t.status,
       t.memo,
@@ -290,6 +292,7 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
       transactionId: row.transaction_id,
       txnType: row.txn_type,
       txnNumber: row.txn_number,
+      checkNumber: row.check_number != null ? Number(row.check_number) : null,
       txnDate: row.txn_date,
       payeeName,
       contactId: row.contact_id,
