@@ -66,7 +66,10 @@ export interface CheckSettings {
   printVoucherStub: boolean;
   alignmentOffsetX: number;
   alignmentOffsetY: number;
+  /** Legacy company-wide next check number; the per-account map below wins. */
   nextCheckNumber: number;
+  /** Per-bank-account next check number, keyed by bank GL account id. */
+  nextCheckNumbers?: Record<string, number>;
   defaultBankAccountId: string | null;
 }
 

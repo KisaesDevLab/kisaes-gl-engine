@@ -150,3 +150,17 @@ describe('toMailRows — standard mailing formatting', () => {
       .toEqual(['PO Box 12']);
   });
 });
+
+describe('toMailRows — real prod address shapes (single comma)', () => {
+  const cases: Array<[string, string[]]> = [
+    ['PO Box 3290, Sioux City MO 51102-3290', ['PO Box 3290', 'Sioux City, MO 51102-3290']],
+    ['PO Box 497, Monett MO 65708', ['PO Box 497', 'Monett, MO 65708']],
+    ['28883 Network Place, Chicago IL 60673-1288', ['28883 Network Place', 'Chicago, IL 60673-1288']],
+  ];
+  it('splits "street, City ST ZIP" into street + City, ST ZIP', async () => {
+    const { _internal } = await import('./check-pdf.service.js');
+    for (const [input, expected] of cases) {
+      expect(_internal.toMailRows([input])).toEqual(expected);
+    }
+  });
+});

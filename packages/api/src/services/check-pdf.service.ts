@@ -268,11 +268,22 @@ function toMailRows(parts: string[]): string[] {
   // Already well-formed: a distinct street line + a bare "City, ST ZIP" tail.
   if (cleaned.length >= 2 && CSZ.test(cleaned[cleaned.length - 1]!)) return cleaned;
   const joined = cleaned.join(', ');
-  const m = joined.match(/^(.+),\s*([^,]+),\s*([A-Za-z]{2})\.?\s+(\d{5}(?:-\d{4})?)\s*$/);
-  if (!m) return cleaned; // can't confidently parse — leave as entered
-  const streetLines = m[1]!.split(',').map((s) => s.trim()).filter(Boolean);
-  const csz = `${m[2]!.trim()}, ${m[3]!.toUpperCase()} ${m[4]}`;
-  return [...streetLines, csz];
+  // Peel a trailing "<ST> <ZIP>" (state = 2 letters, zip = 5 or 5-4). Handles
+  // both "street, City, ST ZIP" and "street, City ST ZIP" (state/zip space-
+  // separated from the city, which is how many stored addresses look).
+  const tail = joined.match(/^(.*\S)\s+([A-Za-z]{2})\.?\s+(\d{5}(?:-\d{4})?)\s*$/);
+  if (!tail) return cleaned; // no US state+zip tail — leave as entered
+  const prefix = tail[1]!.replace(/,\s*$/, '').trim(); // street(s) + city
+  const state = tail[2]!.toUpperCase();
+  const zip = tail[3]!;
+  const lastComma = prefix.lastIndexOf(',');
+  // Need a comma to separate street from city; without one we can't split
+  // reliably, so leave the address as entered rather than mangle it.
+  if (lastComma === -1) return cleaned;
+  const street = prefix.slice(0, lastComma).trim();
+  const city = prefix.slice(lastComma + 1).trim();
+  const streetLines = street.split(',').map((s) => s.trim()).filter(Boolean);
+  return [...streetLines, `${city}, ${state} ${zip}`];
 }
 
 // Company address as structured rows: line1 / line2 / "City, ST ZIP".

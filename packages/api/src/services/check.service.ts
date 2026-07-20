@@ -11,6 +11,30 @@ import * as ledger from './ledger.service.js';
 import { auditLog } from '../middleware/audit.js';
 import crypto from 'crypto';
 
+// Check numbers are tracked PER BANK ACCOUNT in
+// check_settings.nextCheckNumbers keyed by the bank GL account id. This SQL
+// fragment reads a bank account's current next-number, falling back to the
+// legacy company-wide check_settings.nextCheckNumber, then 1001. Reused by
+// every allocate/advance site so the fallback stays consistent.
+function nextNumFor(bankAccountId: string) {
+  return sql`COALESCE(
+    (check_settings->'nextCheckNumbers'->>${bankAccountId})::int,
+    (check_settings->>'nextCheckNumber')::int,
+    1001
+  )`;
+}
+
+// Merge a new next-number for one bank account into
+// check_settings.nextCheckNumbers, preserving the other accounts' counters
+// (and the legacy nextCheckNumber). `value` is a jsonb expression.
+function setNextNumSql(bankAccountId: string, value: ReturnType<typeof sql>) {
+  return sql`jsonb_set(
+    COALESCE(check_settings, '{}'::jsonb),
+    '{nextCheckNumbers}',
+    COALESCE(check_settings->'nextCheckNumbers', '{}'::jsonb) || jsonb_build_object(${bankAccountId}::text, ${value})
+  )`;
+}
+
 export async function createCheck(tenantId: string, input: WriteCheckInput, userId?: string, companyId?: string) {
   // Build journal lines: DR each expense line, CR bank
   const totalAmount = input.lines.reduce((s, l) => s + parseFloat(l.amount), 0);
@@ -57,11 +81,10 @@ export async function createCheck(tenantId: string, input: WriteCheckInput, user
     }
     await db.execute(sql`
       UPDATE companies
-      SET check_settings = jsonb_set(
-        COALESCE(check_settings, '{}'::jsonb),
-        '{nextCheckNumber}',
-        to_jsonb(GREATEST(COALESCE((check_settings->>'nextCheckNumber')::int, 1001), ${input.checkNumber} + 1))
-      )
+      SET check_settings = ${setNextNumSql(
+        input.bankAccountId,
+        sql`to_jsonb(GREATEST(${nextNumFor(input.bankAccountId)}, ${input.checkNumber} + 1))`,
+      )}
       WHERE tenant_id = ${tenantId}
     `);
     checkNumber = input.checkNumber;
@@ -81,13 +104,12 @@ export async function createCheck(tenantId: string, input: WriteCheckInput, user
     // application-level locking.
     const result = await db.execute(sql`
       UPDATE companies
-      SET check_settings = jsonb_set(
-        COALESCE(check_settings, '{}'::jsonb),
-        '{nextCheckNumber}',
-        to_jsonb(COALESCE((check_settings->>'nextCheckNumber')::int, 1001) + 1)
-      )
+      SET check_settings = ${setNextNumSql(
+        input.bankAccountId,
+        sql`to_jsonb(${nextNumFor(input.bankAccountId)} + 1)`,
+      )}
       WHERE tenant_id = ${tenantId}
-      RETURNING (check_settings->>'nextCheckNumber')::int - 1 AS assigned_number
+      RETURNING (check_settings->'nextCheckNumbers'->>${input.bankAccountId})::int - 1 AS assigned_number
     `);
     const assigned = (result.rows[0] as { assigned_number: number | null } | undefined)?.assigned_number;
     if (assigned === null || assigned === undefined) {
@@ -240,14 +262,10 @@ export async function printChecks(tenantId: string, bankAccountId: string, check
     const newNext = startingNumber + checkIds.length;
     await tx.execute(sql`
       UPDATE companies
-      SET check_settings = jsonb_set(
-        COALESCE(check_settings, '{}'::jsonb),
-        '{nextCheckNumber}',
-        to_jsonb(GREATEST(
-          COALESCE((check_settings->>'nextCheckNumber')::int, 1001),
-          ${newNext}
-        ))
-      )
+      SET check_settings = ${setNextNumSql(
+        bankAccountId,
+        sql`to_jsonb(GREATEST(${nextNumFor(bankAccountId)}, ${newNext}))`,
+      )}
       WHERE tenant_id = ${tenantId}
     `);
 

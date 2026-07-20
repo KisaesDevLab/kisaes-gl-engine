@@ -95,3 +95,39 @@ describe('expense Ref no. (txn_number)', () => {
     expect(row?.txnNumber).toBe('CHK 998');
   });
 });
+
+describe('per-bank-account check numbering', () => {
+  it('keeps an independent auto counter for each bank account', async () => {
+    const [b2] = await db.insert(accounts).values({ tenantId, companyId, name: 'Savings Checking', accountType: 'asset', detailType: 'checking', accountNumber: '1001', balance: '0' }).returning();
+    const bank2 = b2!.id;
+
+    // Two auto checks on bank 1 → 1001, 1002.
+    const c1 = await checkService.createCheck(tenantId, checkInput(), undefined, companyId);
+    const c2 = await checkService.createCheck(tenantId, checkInput(), undefined, companyId);
+    expect([c1.checkNumber, c2.checkNumber]).toEqual([1001, 1002]);
+
+    // First auto check on bank 2 starts its OWN sequence at 1001 (not 1003).
+    const d1 = await checkService.createCheck(tenantId, checkInput({ bankAccountId: bank2 }), undefined, companyId);
+    expect(d1.checkNumber).toBe(1001);
+
+    // Bank 1 continues where it left off.
+    const c3 = await checkService.createCheck(tenantId, checkInput(), undefined, companyId);
+    expect(c3.checkNumber).toBe(1003);
+  });
+
+  it('printChecks advances only the printed bank account', async () => {
+    const [b2] = await db.insert(accounts).values({ tenantId, companyId, name: 'Payroll Checking', accountType: 'asset', detailType: 'checking', accountNumber: '1002', balance: '0' }).returning();
+    const bank2 = b2!.id;
+
+    const q = await checkService.createCheck(tenantId, checkInput({ printLater: true }), undefined, companyId);
+    await checkService.printChecks(tenantId, bankId, [q.id], 2500, 'voucher', undefined);
+
+    // bank 1 counter advanced to 2501; bank 2 still starts fresh at 1001.
+    const comp = await db.query.companies.findFirst({ where: eq(companies.id, companyId) });
+    const nums = (comp!.checkSettings as any).nextCheckNumbers as Record<string, number>;
+    expect(nums[bankId]).toBe(2501);
+    expect(nums[bank2]).toBeUndefined();
+    const d1 = await checkService.createCheck(tenantId, checkInput({ bankAccountId: bank2 }), undefined, companyId);
+    expect(d1.checkNumber).toBe(1001);
+  });
+});

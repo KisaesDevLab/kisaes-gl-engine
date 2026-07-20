@@ -60,5 +60,6 @@ export const checkSettingsSchema = z.object({
   alignmentOffsetX: z.number().optional(),
   alignmentOffsetY: z.number().optional(),
   nextCheckNumber: z.number().int().min(1).optional(),
+  nextCheckNumbers: z.record(z.string(), z.number().int().min(1)).optional(),
   defaultBankAccountId: z.string().uuid().nullish(),
 });
