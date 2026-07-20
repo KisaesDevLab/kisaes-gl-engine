@@ -48,7 +48,10 @@ export interface CheckData {
   amount: string;
   amountInWords: string;
   memo: string;
-  company: { name: string; address: string; city: string; phone: string };
+  // Structured company address: line1 / line2 / "City, ST ZIP" as separate
+  // rows (return-address formatting). `address` is the one-line join used in
+  // the compact check-face company block.
+  company: { name: string; address: string; line1: string; line2: string; cityStateZip: string; phone: string };
   /** Payee mailing address lines (for the z-fold USPS mailing panel) */
   payeeAddressLines: string[];
   bank: { name: string; address: string; routing: string; account: string; fractional: string };
@@ -170,12 +173,7 @@ async function gatherCheckData(tenantId: string, checkId: string): Promise<Check
     amount: parseFloat(txn.total || '0').toFixed(2),
     amountInWords: numberToWords(parseFloat(txn.total || '0')),
     memo: txn.printedMemo || txn.memo || '',
-    company: {
-      name: company.businessName,
-      address: [company.addressLine1, [company.city, company.state, company.zip].filter(Boolean).join(', ')].filter(Boolean).join(', '),
-      city: [company.city, company.state, company.zip].filter(Boolean).join(', '),
-      phone: company.phone || '',
-    },
+    company: companyAddress(company),
     payeeAddressLines,
     bank: {
       name: settings['bankName'] || '',
@@ -210,7 +208,9 @@ const PAGE_W = 612; // 8.5in
 const PAGE_H = 792; // 11in
 const IN = 72;
 const CM = 72 / 2.54;
-const Z_SIDE_MARGIN = 1.5 * CM; // ~42.5pt — z-fold left/right margin
+const MM = CM / 10;
+const Z_LEFT_MARGIN = 17 * MM;  // z-fold left margin
+const Z_RIGHT_MARGIN = 15 * MM; // z-fold right margin
 
 const BLACK = rgb(0, 0, 0);
 const GRAY = rgb(0.4, 0.4, 0.4);
@@ -250,6 +250,22 @@ function fmtMoney(amount: string): string {
 function fmtDate(d: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d || '');
   return m ? `${m[2]}-${m[3]}-${m[1]}` : (d || '');
+}
+
+// Company address as structured rows: line1 / line2 / "City, ST ZIP".
+function companyAddress(co: { businessName: string; addressLine1: string | null; addressLine2: string | null; city: string | null; state: string | null; zip: string | null; phone: string | null }) {
+  const line1 = co.addressLine1 || '';
+  const line2 = co.addressLine2 || '';
+  const cityState = [co.city, co.state].filter(Boolean).join(', ');
+  const cityStateZip = [cityState, co.zip].filter(Boolean).join(' ');
+  return {
+    name: co.businessName,
+    line1,
+    line2,
+    cityStateZip,
+    address: [line1, line2, cityStateZip].filter(Boolean).join(', '),
+    phone: co.phone || '',
+  };
 }
 
 interface TextOpts {
@@ -307,12 +323,12 @@ function drawBox(ctx: Ctx, x: number, y: number, w: number, h: number, thickness
  * MICR line (ANSI X9.100-160-1 clear band).
  */
 function drawCheckFace(ctx: Ctx, c: CheckData, faceTopY: number, faceBottomY: number, compact: boolean): void {
-  // z-fold (compact) uses a wider 1.5 cm (~42.5pt) side margin per operator
-  // request; standard stock keeps its tighter 0.25in margin. The MICR line is
-  // NOT affected — it stays at its ANSI spec offset from the right edge.
-  const SIDE = compact ? Z_SIDE_MARGIN : 18;
-  const L = SIDE;
-  const R = PAGE_W - SIDE;
+  // z-fold (compact) uses wider margins per operator request — left 17mm,
+  // right 15mm (asymmetric); standard stock keeps its tighter 0.25in margin.
+  // The MICR line is NOT affected — it stays at its ANSI spec offset from the
+  // right edge.
+  const L = compact ? Z_LEFT_MARGIN : 18;
+  const R = PAGE_W - (compact ? Z_RIGHT_MARGIN : 18);
 
   // Company block
   if (c.printCompanyInfo) {
@@ -430,9 +446,9 @@ function drawCheckFace(ctx: Ctx, c: CheckData, faceTopY: number, faceBottomY: nu
 // ── Voucher stub ──────────────────────────────────────────────────
 
 /** Draw the stub content inside the panel [stubTopY .. stubBottomY]. */
-function drawStub(ctx: Ctx, c: CheckData, stubTopY: number, stubBottomY: number): void {
-  const L = 21.6;
-  const R = PAGE_W - 21.6;
+function drawStub(ctx: Ctx, c: CheckData, stubTopY: number, stubBottomY: number, leftMargin = 21.6, rightMargin = 21.6): void {
+  const L = leftMargin;
+  const R = PAGE_W - rightMargin;
   let y = stubTopY - 28;
   const isBillPayment = !!(c.billPaymentBills && c.billPaymentBills.length > 0);
   const checkNo = c.checkNumber != null ? String(c.checkNumber) : '____';
@@ -524,29 +540,35 @@ function drawStub(ctx: Ctx, c: CheckData, stubTopY: number, stubBottomY: number)
 // bottom panel must be printed 180°-rotated to read upright once folded —
 // verify on a test print with your stock; this renders upright.
 function drawMailingPanel(ctx: Ctx, c: CheckData, panelTopY: number, panelBottomY: number): void {
-  const L = Z_SIDE_MARGIN;
+  const L = Z_LEFT_MARGIN;
+  const R = PAGE_W - Z_RIGHT_MARGIN;
   const up = (s: string) => sanitize(s).toUpperCase();
+  const drop = 10 * MM; // per operator request — lower the panel text 10mm
 
-  // Return address — top-left
-  let ry = panelTopY - 14;
-  drawText(ctx, up(c.company.name), L, ry, { font: ctx.fonts.bold, size: 7.5, maxWidth: PAGE_W / 2 });
-  if (c.company.address) { ry -= 9; drawText(ctx, up(c.company.address), L, ry, { size: 7, maxWidth: PAGE_W / 2 }); }
+  // Return address — top-left, one row per line (name / street / street 2 /
+  // City, ST ZIP).
+  let ry = panelTopY - 14 - drop;
+  const retLines = [c.company.name, c.company.line1, c.company.line2, c.company.cityStateZip].filter(Boolean).map(up);
+  retLines.forEach((line, i) => {
+    drawText(ctx, line, L, ry, { size: i === 0 ? 7.5 : 7, font: i === 0 ? ctx.fonts.bold : ctx.fonts.reg, maxWidth: PAGE_W / 2 });
+    ry -= 9;
+  });
 
-  // Delivery address block — centered, in the USPS read zone. Keep the whole
-  // block above the bottom 5/8" clear band.
-  const cx = PAGE_W / 2;
+  // Delivery ("to") address block — left-aligned, in the USPS read zone,
+  // above the bottom 5/8" clear band.
+  const deliveryX = 1.2 * IN;
   const addr = c.payeeAddressLines ?? [];
   const lines = [c.payeeName, ...addr].filter(Boolean).map(up);
   const lineH = 13;
-  let dy = (panelTopY + panelBottomY) / 2 + 20;
+  let dy = (panelTopY + panelBottomY) / 2 + 20 - drop;
   const minBottom = panelBottomY + 0.625 * IN;
   if (dy - lines.length * lineH < minBottom) dy = minBottom + lines.length * lineH;
   lines.forEach((line, i) => {
-    drawText(ctx, line, cx, dy, { size: 11, align: 'center', font: i === 0 ? ctx.fonts.bold : ctx.fonts.reg, maxWidth: PAGE_W - 2 * L });
+    drawText(ctx, line, deliveryX, dy, { size: 11, align: 'left', font: i === 0 ? ctx.fonts.bold : ctx.fonts.reg, maxWidth: R - deliveryX });
     dy -= lineH;
   });
   if (addr.length === 0) {
-    drawText(ctx, '— no mailing address on file —', cx, dy, { size: 7.5, align: 'center', color: GRAY });
+    drawText(ctx, '— no mailing address on file —', deliveryX, dy, { size: 7.5, align: 'left', color: GRAY });
   }
 }
 
@@ -571,7 +593,7 @@ function drawCheckPage(page: PDFPage, fonts: Fonts, c: CheckData, format: string
     // Top panel: the AP remittance voucher (the part the payee detaches and
     // keeps — invoice #, amount paid, credits, total).
     if (c.printVoucherStub) {
-      drawStub(ctx, c, PAGE_H - 0.3 * IN, fold1 + 10);
+      drawStub(ctx, c, PAGE_H - 0.3 * IN, fold1 + 10, Z_LEFT_MARGIN, Z_RIGHT_MARGIN);
     }
     // Bottom panel: the USPS mailing face of the pressure-seal self-mailer —
     // company return address + payee delivery address block (NOT a duplicate
@@ -662,12 +684,7 @@ export async function generateTestCheckPdf(tenantId: string, format: string = 'v
     amount: '1234.56',
     amountInWords: 'One Thousand Two Hundred Thirty-Four and 56/100',
     memo: 'Test check — alignment verification',
-    company: {
-      name: company.businessName,
-      address: [company.addressLine1, [company.city, company.state, company.zip].filter(Boolean).join(', ')].filter(Boolean).join(', '),
-      city: [company.city, company.state, company.zip].filter(Boolean).join(', '),
-      phone: company.phone || '',
-    },
+    company: companyAddress(company),
     payeeAddressLines: ['1200 Vendor Avenue, Suite 400', 'Kansas City, MO 64105'],
     bank: {
       name: settings['bankName'] || 'SAMPLE BANK',
