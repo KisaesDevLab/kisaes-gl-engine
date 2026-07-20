@@ -9,7 +9,7 @@ import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as checkService from '../services/check.service.js';
-import * as pdfService from '../services/pdf.service.js';
+import * as checkPdfService from '../services/check-pdf.service.js';
 import { parseLimit, parseOffset } from '../utils/pagination.js';
 import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
@@ -43,14 +43,23 @@ checksRouter.get('/print-queue', async (req, res) => {
 });
 
 checksRouter.post('/test-print', async (req, res) => {
-  const html = await pdfService.getTestCheckHtml(req.tenantId, req.body.format || 'voucher');
-  res.setHeader('Content-Type', 'text/html');
-  res.send(html);
+  const pdf = await checkPdfService.generateTestCheckPdf(req.tenantId, req.body.format || 'voucher');
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', 'inline; filename="test-check.pdf"');
+  res.send(pdf);
 });
 
 checksRouter.post('/render', async (req, res) => {
-  const { checkIds, format } = req.body;
-  const pdf = await pdfService.generateCheckPdf(req.tenantId, checkIds, format || 'voucher');
+  const { checkIds, format, startingCheckNumber } = req.body;
+  if (!Array.isArray(checkIds) || checkIds.length === 0) {
+    res.status(400).json({ error: 'checkIds is required' });
+    return;
+  }
+  // startingCheckNumber lets the render preview the numbers that the
+  // subsequent POST /print will assign (same checkIds order).
+  const startNum = Number.isInteger(startingCheckNumber) && startingCheckNumber > 0
+    ? startingCheckNumber : null;
+  const pdf = await checkPdfService.generateCheckPdf(req.tenantId, checkIds, format || 'voucher', startNum);
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', 'inline; filename="checks.pdf"');
   res.send(pdf);

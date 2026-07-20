@@ -87,7 +87,10 @@ backupRouter.post('/system', requireSuperAdmin, async (req, res) => {
     return;
   }
 
-  const result = await backupService.createSystemBackup(passphrase, req.userId, { includeAttachments: true });
+  const result = await backupService.createSystemBackup(passphrase, req.userId, {
+    includeAttachments: true,
+    runTrigger: 'manual',
+  });
   res.status(201).json(result);
 });
 
@@ -112,7 +115,11 @@ backupRouter.post('/system/download', requireSuperAdmin, async (req, res) => {
     res.status(400).json({ error: { message: strength.message } });
     return;
   }
-  const result = await backupService.createSystemBackup(passphrase, req.userId, { includeAttachments: true });
+  const result = await backupService.createSystemBackup(passphrase, req.userId, {
+    includeAttachments: true,
+    runTrigger: 'manual',
+    runKind: 'dr_bundle',
+  });
   if (result.partCount > 1) {
     res.status(201).json({
       multiPart: true,

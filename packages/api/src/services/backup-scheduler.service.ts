@@ -14,6 +14,7 @@ import {
   type GfsRetentionConfig,
 } from './backup.service.js';
 import { recordSchedulerTick } from '../utils/metrics.js';
+import { sweepStaleRuns } from './backup-run-log.service.js';
 import { log } from '../utils/logger.js';
 
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 60 minutes
@@ -47,6 +48,11 @@ export async function __runBackupCycleForTests(): Promise<void> {
 async function runBackupCycle(): Promise<void> {
   const started = Date.now();
   try {
+    // Backup-run log hygiene: a run whose process crashed never finished its
+    // row, so mark long-abandoned 'running' rows failed. Runs under this
+    // cycle's advisory lock; non-throwing by design.
+    await sweepStaleRuns();
+
     const fullSchedule = await getSetting('backup_schedule');
     const dbSchedule = await getSetting('backup_db_schedule');
 
@@ -88,7 +94,7 @@ async function runBackupCycle(): Promise<void> {
         let errorCount = 0;
         for (const tenant of allTenants) {
           try {
-            await createBackup(tenant.id, passphrase);
+            await createBackup(tenant.id, passphrase, { runTrigger: 'scheduled' });
             successCount++;
           } catch (err: any) {
             errorCount++;
@@ -110,7 +116,7 @@ async function runBackupCycle(): Promise<void> {
       // recorded as success and no retry happens for a whole interval.
       let systemOk = false;
       try {
-        const sys = await createSystemBackup(passphrase, undefined, { includeAttachments: true });
+        const sys = await createSystemBackup(passphrase, undefined, { includeAttachments: true, runTrigger: 'scheduled' });
         console.log(`[Backup Scheduler] System backup created: ${sys.fileName} (${sys.size} bytes)`);
         systemOk = true;
       } catch (err) {
@@ -127,7 +133,7 @@ async function runBackupCycle(): Promise<void> {
       console.log(`[Backup Scheduler] DB-only backup is due (schedule: ${dbSchedule})`);
       let dbOk = false;
       try {
-        const sys = await createSystemBackup(passphrase, undefined, { includeAttachments: false });
+        const sys = await createSystemBackup(passphrase, undefined, { includeAttachments: false, runTrigger: 'scheduled' });
         console.log(`[Backup Scheduler] DB-only system backup created: ${sys.fileName} (${sys.size} bytes)`);
         dbOk = true;
       } catch (err) {

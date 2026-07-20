@@ -62,7 +62,9 @@ describe('mirrorBackupFiles', () => {
 
   it('never throws and skips paths outside BACKUP_DIR', async () => {
     await admin.setSetting('backup_local_mirror_dir', mirrorDir);
-    await expect(svc.mirrorBackupFiles(['/etc/hostname'])).resolves.toBeUndefined();
+    // Returns the mirror result (for the backup-run log) instead of throwing;
+    // an outside-BACKUP_DIR path is skipped, not copied and not a failure.
+    await expect(svc.mirrorBackupFiles(['/etc/hostname'])).resolves.toEqual({ configured: true, copied: 0, failed: 0 });
     expect(fs.readdirSync(mirrorDir)).toHaveLength(0);
   });
 });

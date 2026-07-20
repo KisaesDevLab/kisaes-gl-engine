@@ -24,6 +24,14 @@ import { writeTenantPackage, writeTenantPackageMulti, MAX_PACKAGE_ENTRY_BYTES, t
 import { encodeSystemDump } from './system-dump-codec.js';
 import { getSystemBackupTablePlan } from './backup-table-plan.js';
 import { FILE_EXPORT_REGISTRY, encodeFileEntryId } from './backup-file-registry.js';
+import {
+  startBackupRun,
+  finishBackupRun,
+  updateRunRemote,
+  type BackupRunKind,
+  type BackupRunTrigger,
+  type DestinationResult,
+} from './backup-run-log.service.js';
 
 const BACKUP_DIR = process.env['BACKUP_DIR'] || '/data/backups';
 const APP_VERSION = '0.3.0';
@@ -58,15 +66,27 @@ async function getMirrorDir(): Promise<string | null> {
   }
 }
 
+/** Outcome of one mirrorBackupFiles call, recorded on the run-log row. */
+export interface MirrorResult {
+  /** false when no (valid) mirror dir is configured — nothing attempted. */
+  configured: boolean;
+  copied: number;
+  failed: number;
+  /** First copy error, when any. */
+  error?: string;
+}
+
 /**
  * Best-effort copy of freshly-written backup files to the mirror dir,
  * preserving each file's path RELATIVE to BACKUP_DIR (so `_system/x.vmx` →
  * `<mirror>/_system/x.vmx`). Never throws — a mirror failure (drive
- * unplugged, full) must not fail the backup itself; it's logged.
+ * unplugged, full) must not fail the backup itself; it's logged, and the
+ * returned result lets the caller record it on the backup-run log.
  */
-export async function mirrorBackupFiles(absolutePaths: string[]): Promise<void> {
+export async function mirrorBackupFiles(absolutePaths: string[]): Promise<MirrorResult> {
   const mirror = await getMirrorDir();
-  if (!mirror) return;
+  if (!mirror) return { configured: false, copied: 0, failed: 0 };
+  const result: MirrorResult = { configured: true, copied: 0, failed: 0 };
   for (const src of absolutePaths) {
     try {
       const rel = path.relative(BACKUP_DIR, src);
@@ -76,10 +96,45 @@ export async function mirrorBackupFiles(absolutePaths: string[]): Promise<void> 
       // block the single-threaded event loop and stall the whole API.
       await fs.promises.mkdir(path.dirname(dest), { recursive: true });
       await fs.promises.copyFile(src, dest);
+      result.copied += 1;
     } catch (err) {
-      log.warn({ component: 'backup', event: 'mirror_copy_failed', src, message: err instanceof Error ? err.message : String(err) });
+      const msg = err instanceof Error ? err.message : String(err);
+      result.failed += 1;
+      if (!result.error) result.error = msg;
+      log.warn({ component: 'backup', event: 'mirror_copy_failed', src, message: msg });
     }
   }
+  return result;
+}
+
+/** Map a mirror result to the run-log destination shape. */
+function mirrorDestination(m: MirrorResult): DestinationResult {
+  if (!m.configured) return { configured: false };
+  return { configured: true, ok: m.failed === 0, copied: m.copied, failed: m.failed, ...(m.error ? { error: m.error } : {}) };
+}
+
+/** Map an uploadBackupToRemote result to the run-log destination shape.
+ *  "No remote provider configured" is NOT a failure — it means the
+ *  destination doesn't exist, so it must never downgrade a run. */
+function remoteDestination(r: { success: boolean; error?: string }): DestinationResult {
+  if (r.success) return { configured: true, ok: true };
+  if (r.error === 'No remote provider configured') return { configured: false };
+  return { configured: true, ok: false, error: r.error ?? 'Unknown error' };
+}
+
+/** Destination record for an artifact intentionally kept local-only by the
+ *  remote-upload size ceiling. Only counts against the run (partial) when a
+ *  remote provider is actually configured — otherwise nothing was lost. */
+async function sizeCapRemoteDestination(): Promise<DestinationResult> {
+  let configured = false;
+  try {
+    configured = (await getSystemRemoteProvider()) !== null;
+  } catch { /* treat as unconfigured */ }
+  if (!configured) return { configured: false, skipped: 'size_cap' };
+  return {
+    configured: true, ok: false, skipped: 'size_cap',
+    error: 'Artifact exceeds the remote-replication size ceiling; kept local only',
+  };
 }
 
 // Legacy encrypt/decrypt for backward compatibility with old .kbk files
@@ -287,7 +342,7 @@ async function* bundleFileSource(opts: {
 export async function createBackup(
   tenantId: string,
   passphrase: string,
-  options: { includeAttachments?: boolean } = {},
+  options: { includeAttachments?: boolean; runTrigger?: BackupRunTrigger } = {},
   userId?: string,
 ): Promise<{ backupId: string; fileName: string; size: number; warning?: string }> {
   // Validate tenantId is a UUID
@@ -295,6 +350,31 @@ export async function createBackup(
     throw AppError.badRequest('Invalid tenant id format');
   }
 
+  // Run-log row: written at start, updated at completion — including the
+  // failure path below. Log writers never throw (see backup-run-log).
+  const runId = await startBackupRun({
+    kind: 'tenant_backup',
+    trigger: options.runTrigger ?? 'manual',
+    tenantId,
+  });
+  try {
+    return await createBackupInner(tenantId, passphrase, options, userId, runId);
+  } catch (err) {
+    await finishBackupRun(runId, {
+      status: 'failed',
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
+}
+
+async function createBackupInner(
+  tenantId: string,
+  passphrase: string,
+  options: { includeAttachments?: boolean; runTrigger?: BackupRunTrigger },
+  userId: string | undefined,
+  runId: string | null,
+): Promise<{ backupId: string; fileName: string; size: number; warning?: string }> {
   const backupId = crypto.randomUUID();
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const dir = path.join(BACKUP_DIR, tenantId);
@@ -367,13 +447,16 @@ export async function createBackup(
     const remoteSkipped = result.size > REMOTE_UPLOAD_MAX;
     if (!remoteSkipped) {
       const fileBuf = fs.readFileSync(filePath);
-      uploadBackupToRemote(fileName, fileBuf, tenantId).catch((err) => {
-        console.error('[Backup] Remote upload failed (non-fatal):', err.message);
-      });
+      uploadBackupToRemote(fileName, fileBuf, tenantId)
+        .then((r) => updateRunRemote(runId, remoteDestination(r)))
+        .catch((err) => {
+          console.error('[Backup] Remote upload failed (non-fatal):', err.message);
+        });
     } else {
       console.warn(`[Backup] Tenant package ${fileName} is ${result.size} bytes (> ${REMOTE_UPLOAD_MAX}); kept local only.`);
+      void sizeCapRemoteDestination().then((d) => updateRunRemote(runId, d)).catch(() => undefined);
     }
-    await mirrorBackupFiles([filePath]);
+    const mirrorRes = await mirrorBackupFiles([filePath]);
 
     await auditLog(
       tenantId,
@@ -388,6 +471,13 @@ export async function createBackup(
       },
       userId,
     );
+
+    await finishBackupRun(runId, {
+      status: 'success',
+      sizeBytes: result.size,
+      artifactName: fileName,
+      destinations: { local: { configured: true, ok: true }, mirror: mirrorDestination(mirrorRes) },
+    });
 
     return {
       backupId,
@@ -408,12 +498,15 @@ export async function createBackup(
   assertSafeFileName(fileName);
   const filePath = path.join(dir, fileName);
   fs.writeFileSync(filePath, encrypted);
-  await mirrorBackupFiles([filePath]);
+  const mirrorRes = await mirrorBackupFiles([filePath]);
 
-  // Upload to remote storage (fire-and-forget)
-  uploadBackupToRemote(fileName, encrypted, tenantId).catch((err) => {
-    console.error('[Backup] Remote upload failed (non-fatal):', err.message);
-  });
+  // Upload to remote storage (fire-and-forget); the run-log row picks up
+  // the result whenever it lands (success → no change, failure → partial).
+  uploadBackupToRemote(fileName, encrypted, tenantId)
+    .then((r) => updateRunRemote(runId, remoteDestination(r)))
+    .catch((err) => {
+      console.error('[Backup] Remote upload failed (non-fatal):', err.message);
+    });
 
   await auditLog(
     tenantId,
@@ -424,6 +517,13 @@ export async function createBackup(
     { fileName, size: encrypted.length, tableCount: tables.length, rowCount: totalRows, format: 'v3-portable' },
     userId,
   );
+
+  await finishBackupRun(runId, {
+    status: 'success',
+    sizeBytes: encrypted.length,
+    artifactName: fileName,
+    destinations: { local: { configured: true, ok: true }, mirror: mirrorDestination(mirrorRes) },
+  });
 
   return { backupId, fileName, size: encrypted.length };
 }
@@ -454,7 +554,34 @@ export interface SystemBackupResult {
 export async function createSystemBackup(
   passphrase: string,
   userId?: string,
-  opts?: { includeAttachments?: boolean; partMaxBytes?: number },
+  opts?: {
+    includeAttachments?: boolean;
+    partMaxBytes?: number;
+    /** Run-log attribution: how this run was started (default manual). */
+    runTrigger?: BackupRunTrigger;
+    /** Run-log kind override — the DR-bundle route passes 'dr_bundle' so a
+     *  one-click download is distinguishable from the nightly system run. */
+    runKind?: BackupRunKind;
+  },
+): Promise<SystemBackupResult> {
+  const kind: BackupRunKind = opts?.runKind ?? (opts?.includeAttachments ? 'system_backup' : 'db_backup');
+  const runId = await startBackupRun({ kind, trigger: opts?.runTrigger ?? 'manual' });
+  try {
+    return await createSystemBackupInner(passphrase, userId, opts, runId);
+  } catch (err) {
+    await finishBackupRun(runId, {
+      status: 'failed',
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
+}
+
+async function createSystemBackupInner(
+  passphrase: string,
+  userId: string | undefined,
+  opts: { includeAttachments?: boolean; partMaxBytes?: number } | undefined,
+  runId: string | null,
 ): Promise<SystemBackupResult> {
   const backupId = crypto.randomUUID();
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -632,7 +759,7 @@ export async function createSystemBackup(
       },
     });
     for (const f of multi.files) assertSafeFileName(f.fileName);
-    await mirrorBackupFiles(multi.files.map((f) => f.path));
+    const mirrorRes = await mirrorBackupFiles(multi.files.map((f) => f.path));
 
     if (counters.skipped.length > 0) {
       console.warn(`[Backup] System backup ${baseName}: bundled ${counters.bundledCount} file(s) (${counters.bundledBytes} bytes), skipped ${counters.skipped.length}:`, counters.skipped.slice(0, 10));
@@ -647,16 +774,42 @@ export async function createSystemBackup(
     // them — otherwise only the first part earns weekly/monthly/yearly and
     // GFS purges the siblings, leaving an unrestorable partial set.
     const partTiers = await tiersForNewBackup('_system');
+    // Per-part upload results roll up into ONE remote destination record on
+    // the run-log row: all parts uploaded → ok; any part failed → the run
+    // is downgraded to partial with the first error surfaced.
+    const partUploads: Array<Promise<DestinationResult>> = [];
     for (const f of multi.files) {
       if (f.size > REMOTE_UPLOAD_MAX) {
         console.warn(`[Backup] Part ${f.fileName} is ${f.size} bytes (> ${REMOTE_UPLOAD_MAX}); kept local only. Lower BACKUP_PART_MAX_MB to keep parts remotable.`);
+        partUploads.push(sizeCapRemoteDestination());
         continue;
       }
       const fileBuf = fs.readFileSync(f.path);
-      uploadBackupToRemote(f.fileName, fileBuf, '_system', partTiers).catch((err) => {
-        console.error(`[Backup] Remote upload of system backup part ${f.fileName} failed (non-fatal):`, err.message);
-      });
+      partUploads.push(
+        uploadBackupToRemote(f.fileName, fileBuf, '_system', partTiers)
+          .then(remoteDestination)
+          .catch((err) => {
+            console.error(`[Backup] Remote upload of system backup part ${f.fileName} failed (non-fatal):`, err.message);
+            return { configured: true, ok: false, error: err instanceof Error ? err.message : String(err) } satisfies DestinationResult;
+          }),
+      );
     }
+    void Promise.all(partUploads).then((results) => {
+      if (results.length === 0) return;
+      if (results.every((r) => !r.configured)) {
+        return updateRunRemote(runId, { configured: false });
+      }
+      const failures = results.filter((r) => r.configured && r.ok === false);
+      const uploaded = results.filter((r) => r.ok === true).length;
+      return updateRunRemote(runId, {
+        configured: true,
+        ok: failures.length === 0,
+        uploaded,
+        partCount: results.length,
+        ...(failures[0]?.error ? { error: failures[0].error } : {}),
+        ...(failures.some((r) => r.skipped) ? { skipped: 'size_cap' } : {}),
+      });
+    }).catch(() => undefined);
 
     const firstTenantId = (allTenants[0] as { id: string } | undefined)?.id || 'system';
     await auditLog(firstTenantId, 'create', 'system_backup', backupId, null, {
@@ -666,6 +819,18 @@ export async function createSystemBackup(
       transactionCount: totalTransactions,
       attachmentsBundled: counters.bundledCount, attachmentsSkipped: counters.skipped.length, attachmentBytes: counters.bundledBytes,
     }, userId);
+
+    await finishBackupRun(runId, {
+      status: 'success',
+      sizeBytes: multi.totalSize,
+      // Base name (no part suffix) — matches the verifier's unit naming so
+      // its later proof lands on this run row.
+      artifactName: `${baseName}.vmx`,
+      destinations: {
+        local: { configured: true, ok: true, partCount: multi.partCount },
+        mirror: mirrorDestination(mirrorRes),
+      },
+    });
 
     return {
       backupId,
@@ -687,12 +852,15 @@ export async function createSystemBackup(
   assertSafeFileName(fileName);
   const filePath = path.join(dir, fileName);
   fs.writeFileSync(filePath, encrypted);
-  await mirrorBackupFiles([filePath]);
+  const mirrorRes = await mirrorBackupFiles([filePath]);
 
-  // Upload system backup to remote storage
-  uploadBackupToRemote(fileName, encrypted, '_system').catch((err) => {
-    console.error('[Backup] Remote upload of system backup failed (non-fatal):', err.message);
-  });
+  // Upload system backup to remote storage (fire-and-forget; the result is
+  // recorded on the run-log row whenever it lands).
+  uploadBackupToRemote(fileName, encrypted, '_system')
+    .then((r) => updateRunRemote(runId, remoteDestination(r)))
+    .catch((err) => {
+      console.error('[Backup] Remote upload of system backup failed (non-fatal):', err.message);
+    });
 
   const firstTenantId = (allTenants[0] as { id: string } | undefined)?.id || 'system';
   await auditLog(
@@ -710,6 +878,13 @@ export async function createSystemBackup(
     },
     userId,
   );
+
+  await finishBackupRun(runId, {
+    status: 'success',
+    sizeBytes: encrypted.length,
+    artifactName: fileName,
+    destinations: { local: { configured: true, ok: true }, mirror: mirrorDestination(mirrorRes) },
+  });
 
   return {
     backupId,

@@ -61,6 +61,12 @@ billsRouter.post('/:id/void', validate(voidTransactionSchema), async (req, res) 
 //   3. User reviews / edits the pre-filled form and saves the bill.
 //   4. Form calls POST /bills/:id/attach-draft to relink the draft
 //      attachment(s) to the newly created bill.
+//
+// The Attachment Library's "Create bill" action reuses the same flow for an
+// EXISTING unfiled attachment: the form first adopts it into the session's
+// draft set via POST /attachments/:id/link {attachableType:'draft'},
+// then steps 2-4 run unchanged (extract-from-attachment works on any
+// tenant attachment id, and honors the same consent/PII gates).
 billsRouter.post('/extract-from-attachment/:attachmentId', async (req, res) => {
   const result = await billOcrService.extractBillFromAttachment(req.tenantId, req.params['attachmentId']!);
   res.json({ extraction: result });

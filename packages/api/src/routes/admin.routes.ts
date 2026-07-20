@@ -61,6 +61,7 @@ import {
   adminCreateUserSchema,
   adminMcpConfigSchema,
   adminPlaidConfigSchema,
+  adminAssignSystemAccountSchema,
 } from '@kis-books/shared';
 import { eq } from 'drizzle-orm';
 import { tailscaleRouter } from './tailscale.routes.js';
@@ -319,6 +320,20 @@ adminRouter.post('/tenants/:id/retained-earnings', validate(adminDesignateRetain
   res.json(await adminService.designateRetainedEarnings(req.params['id']!, req.body.accountId, req.userId));
 });
 
+// System Accounts — every system role the ledger resolves via
+// accounts.system_tag (AR, AP, sales tax, payments clearing, …), with the
+// currently-assigned account (or null), duplicate/type-mismatch flags, and
+// the tenant's account list for the assignment picker. PUT re-points a role
+// at an existing account (move semantics — the tag is cleared from any other
+// account atomically) or clears the mapping with accountId: null.
+adminRouter.get('/tenants/:id/system-accounts', async (req, res) => {
+  res.json(await adminService.getSystemAccountsInfo(req.params['id']!));
+});
+
+adminRouter.put('/tenants/:id/system-accounts/:tag', validate(adminAssignSystemAccountSchema), async (req, res) => {
+  res.json(await adminService.assignSystemAccount(req.params['id']!, req.params['tag']!, req.body.accountId, req.userId));
+});
+
 adminRouter.post('/tenants/:id/disable', async (req, res) => {
   await adminService.disableTenant(req.params['id']!, req.userId);
   res.json({ message: 'Tenant disabled' });
@@ -514,6 +529,45 @@ adminRouter.post('/backup-verify', async (_req, res) => {
     return;
   }
   res.json(summary);
+});
+
+// Backup run history — the persisted backup_runs log (one row per backup
+// execution, scheduled or manual, with per-destination outcomes and
+// verifier results). Newest first; filterable by status/kind. The summary
+// block powers the at-a-glance health header in the admin UI: last
+// success per kind + consecutive-failure streaks.
+adminRouter.get('/backup/runs', async (req, res) => {
+  const {
+    listBackupRuns, backupRunsSummary,
+    BACKUP_RUN_KINDS, BACKUP_RUN_STATUSES,
+  } = await import('../services/backup-run-log.service.js');
+
+  const limitRaw = parseInt(String(req.query['limit'] ?? '50'), 10);
+  const offsetRaw = parseInt(String(req.query['offset'] ?? '0'), 10);
+  const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : 50, 1), 200);
+  const offset = Math.max(Number.isFinite(offsetRaw) ? offsetRaw : 0, 0);
+
+  const statusParam = typeof req.query['status'] === 'string' ? req.query['status'] : undefined;
+  const kindParam = typeof req.query['kind'] === 'string' ? req.query['kind'] : undefined;
+  if (statusParam && !(BACKUP_RUN_STATUSES as string[]).includes(statusParam)) {
+    res.status(400).json({ error: { message: `status must be one of: ${BACKUP_RUN_STATUSES.join(', ')}` } });
+    return;
+  }
+  if (kindParam && !(BACKUP_RUN_KINDS as string[]).includes(kindParam)) {
+    res.status(400).json({ error: { message: `kind must be one of: ${BACKUP_RUN_KINDS.join(', ')}` } });
+    return;
+  }
+
+  const [{ runs, total }, summary] = await Promise.all([
+    listBackupRuns({
+      limit,
+      offset,
+      status: statusParam as (typeof BACKUP_RUN_STATUSES)[number] | undefined,
+      kind: kindParam as (typeof BACKUP_RUN_KINDS)[number] | undefined,
+    }),
+    backupRunsSummary(),
+  ]);
+  res.json({ runs, total, limit, offset, summary });
 });
 
 // GitHub release check — read-only, cached 5 min. Does NOT apply any

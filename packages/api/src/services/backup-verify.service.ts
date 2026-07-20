@@ -36,6 +36,7 @@ import { decrypt as decryptField } from '../utils/encryption.js';
 import { recordSchedulerTick, incCounter } from '../utils/metrics.js';
 import { log } from '../utils/logger.js';
 import { withSchedulerLock } from '../utils/scheduler-lock.js';
+import { recordVerifyOutcome } from './backup-run-log.service.js';
 
 function backupDir(): string {
   // Read lazily so tests can override via process.env.BACKUP_DIR
@@ -329,6 +330,21 @@ export async function verifyLatestBackups(): Promise<VerifySummary> {
     // still succeeds.
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const auditTenant = UUID_RE.test(tenantId) ? tenantId : SYSTEM_TENANT_ID;
+    // Stamp the outcome onto the backup_runs row that produced this
+    // artifact (matched by base file name); unmatched results (backups
+    // predating the run log) insert their own 'verify' row. Best-effort —
+    // a log-write failure must not fail the verification cycle.
+    await recordVerifyOutcome({
+      // '_system' and test-fixture directory names are not tenant UUIDs —
+      // those verifications are recorded system-wide (tenantId null).
+      tenantId: UUID_RE.test(tenantId) ? tenantId : null,
+      fileName: r.fileName,
+      ok: r.ok,
+      depth: r.depth,
+      error: r.error,
+      warning: typeof r.metadata?.['warning'] === 'string' ? (r.metadata['warning'] as string) : undefined,
+      sizeBytes: r.sizeBytes,
+    });
     await auditLog(
       auditTenant,
       'update',

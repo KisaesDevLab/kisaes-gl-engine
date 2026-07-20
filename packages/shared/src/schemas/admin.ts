@@ -51,6 +51,14 @@ export const adminDesignateRetainedEarningsSchema = z.object({
 });
 export type AdminDesignateRetainedEarningsInput = z.infer<typeof adminDesignateRetainedEarningsSchema>;
 
+// Point a system-account role (accounts.system_tag) at an existing account,
+// or clear the mapping (accountId: null). Used by the admin "System Accounts"
+// repair tool for tenants whose system accounts were deleted or mis-tagged.
+export const adminAssignSystemAccountSchema = z.object({
+  accountId: z.string().uuid().nullable(),
+});
+export type AdminAssignSystemAccountInput = z.infer<typeof adminAssignSystemAccountSchema>;
+
 export const adminRoles = ['owner', 'accountant', 'bookkeeper'] as const;
 export const adminSetRoleSchema = z.object({
   role: z.enum(adminRoles),

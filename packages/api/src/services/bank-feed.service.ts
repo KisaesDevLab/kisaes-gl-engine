@@ -42,6 +42,12 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
     // leaving the actionable (pending) work to do.
     conditions.push(sql`${bankFeedItems.status} NOT IN ('matched', 'categorized', 'excluded')`);
   }
+  if (filters.ruleOnly) {
+    // "Rules" filter — only rows a rule mapped (match_type = 'rule'), the same
+    // signal the NAME column's green "Rule" badge uses. Done in SQL so
+    // pagination/total counts reflect the constrained set.
+    conditions.push(eq(bankFeedItems.matchType, 'rule'));
+  }
   if (filters.bankConnectionId) conditions.push(eq(bankFeedItems.bankConnectionId, filters.bankConnectionId));
   if (filters.startDate) conditions.push(sql`${bankFeedItems.feedDate} >= ${filters.startDate}`);
   if (filters.endDate) conditions.push(sql`${bankFeedItems.feedDate} <= ${filters.endDate}`);
@@ -103,6 +109,10 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
       suggestedContactId: bankFeedItems.suggestedContactId,
       suggestedContactName: suggestedContact.displayName,
       confidenceScore: bankFeedItems.confidenceScore,
+      // Source of the staged suggestion ('rule' | 'history' | 'exact' | 'fuzzy'
+      // | 'check_image' | 'manual' | null). Surfaced so the feed can badge a
+      // rule-mapped row as "Rule" (green) instead of a generic confidence word.
+      matchType: bankFeedItems.matchType,
       // STATEMENT_CHECK_PAYEE_V1 — surfaced in the UI so the payee read off a
       // check image is visible/confirmable before posting.
       payeeNameOnCheck: bankFeedItems.payeeNameOnCheck,

@@ -20,6 +20,14 @@ export const bankFeedFiltersSchema = z.object({
     .union([z.boolean(), z.enum(['true', 'false'])])
     .optional()
     .transform((v) => v === true || v === 'true'),
+  // Convenience toggle: when true, show only rows a RULE mapped
+  // (match_type = 'rule'). Constrained in the service WHERE so paging/counts
+  // stay correct. Same query-param encoding as actionableOnly ('true' string
+  // or a real boolean).
+  ruleOnly: z
+    .union([z.boolean(), z.enum(['true', 'false'])])
+    .optional()
+    .transform((v) => v === true || v === 'true'),
   sortBy: z.enum(['feedDate', 'description', 'category', 'status', 'amount']).optional(),
   sortDir: z.enum(['asc', 'desc']).optional(),
   limit: z.coerce.number().int().min(1).max(500).default(50),

@@ -100,6 +100,9 @@ export interface BankFeedFilters {
   // When true, restrict the feed to actionable (pending) items by excluding
   // matched/categorized/excluded. A specific `status` filter takes precedence.
   actionableOnly?: boolean;
+  // When true, restrict the feed to rows a RULE mapped (match_type = 'rule').
+  // Filtered in the service WHERE so pagination/counts stay correct.
+  ruleOnly?: boolean;
   // Server-side column sort — the list paginates, so ordering must happen
   // in SQL, not on the loaded page.
   sortBy?: 'feedDate' | 'description' | 'category' | 'status' | 'amount';

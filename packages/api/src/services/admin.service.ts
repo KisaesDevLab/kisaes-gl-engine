@@ -5,7 +5,7 @@
 import { eq, and, ne, sql, count } from 'drizzle-orm';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
-import type { JwtPayload } from '@kis-books/shared';
+import { SYSTEM_ACCOUNT_ROLES, SYSTEM_ACCOUNT_ROLE_BY_TAG, type JwtPayload } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { tenants, users, sessions, companies, transactions, accounts, contacts, systemSettings, accountantCompanyExclusions, userTenantAccess, plaidItems, plaidAccounts } from '../db/schema/index.js';
 import { env } from '../config/env.js';
@@ -1043,6 +1043,165 @@ export async function designateRetainedEarnings(tenantId: string, accountId: str
     { systemTag: RETAINED_EARNINGS_TAG, isSystem: true, detailType: RETAINED_EARNINGS_TAG }, actingUserId);
 
   return getRetainedEarningsInfo(tenantId);
+}
+
+// ─── System Accounts repair ────────────────────────────────────
+//
+// Generalizes the Retained Earnings repair above to EVERY system role the
+// ledger resolves via accounts.system_tag (AR, AP, sales tax, payments
+// clearing, opening balances, cash, retained earnings, daily-sales roles).
+// A tenant that deleted its system accounts before delete-guards existed
+// loses those resolutions; these let a super-admin re-point each role at an
+// existing account. The role catalog (tag → label → expected type) lives in
+// @kis-books/shared (SYSTEM_ACCOUNT_ROLES) so the admin UI shares it.
+
+export interface SystemAccountAssignment {
+  id: string;
+  accountNumber: string | null;
+  name: string;
+  accountType: string;
+  detailType: string | null;
+  isActive: boolean;
+  isSystem: boolean;
+}
+
+// Per-role status: the assigned account (first match, ordered for
+// determinism), any DUPLICATES (extra accounts sharing the tag — invalid
+// state the admin should resolve), and whether the assigned account's type
+// mismatches the role's expected type.
+export async function getSystemAccountsInfo(tenantId: string) {
+  const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
+  if (!tenant) throw AppError.notFound('Tenant not found');
+
+  const rows = await db
+    .select({
+      id: accounts.id,
+      accountNumber: accounts.accountNumber,
+      name: accounts.name,
+      accountType: accounts.accountType,
+      detailType: accounts.detailType,
+      isActive: accounts.isActive,
+      isSystem: accounts.isSystem,
+      systemTag: accounts.systemTag,
+    })
+    .from(accounts)
+    .where(eq(accounts.tenantId, tenantId))
+    .orderBy(accounts.accountNumber, accounts.name);
+
+  const toAssignment = (a: (typeof rows)[number]): SystemAccountAssignment => ({
+    id: a.id,
+    accountNumber: a.accountNumber,
+    name: a.name,
+    accountType: a.accountType,
+    detailType: a.detailType,
+    isActive: a.isActive !== false,
+    isSystem: a.isSystem === true,
+  });
+
+  const roles = SYSTEM_ACCOUNT_ROLES.map((role) => {
+    const tagged = rows.filter((a) => a.systemTag === role.tag);
+    const assigned = tagged[0] ? toAssignment(tagged[0]) : null;
+    return {
+      tag: role.tag,
+      label: role.label,
+      description: role.description,
+      accountType: role.accountType,
+      required: role.required,
+      assigned,
+      // Extra accounts sharing the tag — system lookups use findFirst, so
+      // which one wins is arbitrary. Surfaced so the admin can fix it.
+      duplicates: tagged.slice(1).map(toAssignment),
+      typeMismatch: assigned !== null && assigned.accountType !== role.accountType,
+    };
+  });
+
+  // Full account list for the assignment picker (web filters by role type).
+  return { roles, accounts: rows.map((a) => ({ ...toAssignment(a), systemTag: a.systemTag })) };
+}
+
+// Point a system role at an existing account (accountId), or clear the
+// mapping entirely (accountId: null). Move semantics: any other account
+// holding the tag is cleared in the same transaction, so exactly one account
+// per tenant holds each tag afterwards. Mirrors designateRetainedEarnings
+// (kept above for its dedicated card/endpoint) and stamps the canonical
+// detail type for roles that define one.
+export async function assignSystemAccount(
+  tenantId: string,
+  tag: string,
+  accountId: string | null,
+  actingUserId?: string,
+) {
+  const role = SYSTEM_ACCOUNT_ROLE_BY_TAG[tag];
+  if (!role) throw AppError.badRequest(`Unknown system account role: ${tag}`, 'UNKNOWN_SYSTEM_TAG');
+
+  const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
+  if (!tenant) throw AppError.notFound('Tenant not found');
+
+  const holders = await db
+    .select({ id: accounts.id, name: accounts.name, isSystem: accounts.isSystem })
+    .from(accounts)
+    .where(and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, tag)));
+
+  if (accountId === null) {
+    // Clear the mapping. Also drops isSystem so the account loses
+    // system-account delete protection along with the role.
+    await db.transaction(async (tx) => {
+      for (const h of holders) {
+        await tx.update(accounts).set({ systemTag: null, isSystem: false, updatedAt: new Date() })
+          .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, h.id)));
+      }
+    });
+    // entity_id is a uuid column — log against the (first) cleared account;
+    // the role tag is captured in before/after.
+    await auditLog(tenantId, 'update', 'system_account_role', holders[0]?.id ?? null,
+      { tag, accountIds: holders.map((h) => h.id) }, { tag, accountId: null }, actingUserId);
+    return getSystemAccountsInfo(tenantId);
+  }
+
+  const account = await db.query.accounts.findFirst({
+    where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, accountId)),
+  });
+  if (!account) throw AppError.notFound('Account not found');
+  if (account.accountType !== role.accountType) {
+    throw AppError.badRequest(
+      `${role.label} must be a ${role.accountType} account (selected account is ${account.accountType})`,
+      'SYSTEM_TAG_TYPE_MISMATCH',
+    );
+  }
+  // An account can serve at most one role. Overwriting another role's tag
+  // here would silently break that role — make the admin clear it first.
+  if (account.systemTag && account.systemTag !== tag) {
+    throw AppError.badRequest(
+      `This account is already the system '${account.systemTag}' account. Clear that role first.`,
+      'ACCOUNT_ALREADY_TAGGED',
+    );
+  }
+
+  await db.transaction(async (tx) => {
+    // Move semantics: clear the tag from any other holder atomically so the
+    // (tenant, tag) mapping stays unique.
+    for (const h of holders) {
+      if (h.id !== accountId) {
+        await tx.update(accounts).set({ systemTag: null, isSystem: false, updatedAt: new Date() })
+          .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, h.id)));
+      }
+    }
+    await tx.update(accounts)
+      .set({
+        systemTag: tag,
+        isSystem: true,
+        ...(role.canonicalDetailType ? { detailType: role.canonicalDetailType } : {}),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, accountId)));
+  });
+
+  await auditLog(tenantId, 'update', 'system_account_role', accountId,
+    { tag, accountIds: holders.map((h) => h.id) },
+    { tag, accountId, isSystem: true, ...(role.canonicalDetailType ? { detailType: role.canonicalDetailType } : {}) },
+    actingUserId);
+
+  return getSystemAccountsInfo(tenantId);
 }
 
 // Distinct users who are active members of any firm, with the firm(s) they
