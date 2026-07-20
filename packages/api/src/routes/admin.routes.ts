@@ -15,6 +15,8 @@ import { testSmtpConnection, withSetupLock } from '../services/setup.service.js'
 import * as tfaConfigService from '../services/tfa-config.service.js';
 import { encrypt, decrypt } from '../utils/encryption.js';
 import * as coaTemplatesService from '../services/coa-templates.service.js';
+import * as reportLetterService from '../services/report-letter.service.js';
+import { createReportLetterSchema, updateReportLetterSchema } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import {
   generateRecoveryKey,
@@ -1429,6 +1431,35 @@ adminRouter.patch('/coa-templates/:slug/hidden', async (req, res) => {
   }
   const template = await coaTemplatesService.setHidden(req.params['slug']!, hidden);
   res.json({ template });
+});
+
+// ─── CPA report letters (SSARS 21) — system-level templates ───
+// CRUD is super-admin only (inherits the router-level requireSuperAdmin).
+// The active-letter picker used by the report-pack builder is served on the
+// tenant-facing reports router (reports:read), not here.
+adminRouter.get('/report-letters', async (_req, res) => {
+  const letters = await reportLetterService.listLetters();
+  res.json({ letters });
+});
+
+adminRouter.get('/report-letters/:id', async (req, res) => {
+  const letter = await reportLetterService.getLetter(req.params['id']!);
+  res.json({ letter });
+});
+
+adminRouter.post('/report-letters', validate(createReportLetterSchema), async (req, res) => {
+  const letter = await reportLetterService.createLetter(req.body, req.tenantId, req.userId);
+  res.status(201).json({ letter });
+});
+
+adminRouter.put('/report-letters/:id', validate(updateReportLetterSchema), async (req, res) => {
+  const letter = await reportLetterService.updateLetter(req.params['id']!, req.body, req.tenantId, req.userId);
+  res.json({ letter });
+});
+
+adminRouter.delete('/report-letters/:id', async (req, res) => {
+  await reportLetterService.deleteLetter(req.params['id']!, req.tenantId, req.userId);
+  res.json({ message: 'Letter deleted' });
 });
 
 // Import = same shape as create. Kept as a separate endpoint so the

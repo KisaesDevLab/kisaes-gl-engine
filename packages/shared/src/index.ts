@@ -76,6 +76,7 @@ export * from './schemas/daily-sales.js';
 export * from './schemas/je-templates.js';
 export * from './schemas/permissions.js';
 export * from './schemas/firm-integrations.js';
+export * from './schemas/report-letters.js';
 
 // Constants
 export * from './constants/coa-templates.js';
@@ -94,6 +95,7 @@ export * from './constants/permissions.js';
 
 // Reports
 export * from './reports/registry.js';
+export * from './reports/letter-variables.js';
 
 // Utils
 export * from './utils/money.js';

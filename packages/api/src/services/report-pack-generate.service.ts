@@ -24,6 +24,7 @@ import { db } from '../db/index.js';
 import { reportPacks, reportPackItems, reportPackRuns } from '../db/schema/index.js';
 import { REPORT_PACK_RENDERERS, renderReportSectionHtml } from './report-pack-render.js';
 import { buildReportPackSectionHtml, escapeHtml } from './report-export.service.js';
+import { getLetter, resolveLetterContent, buildLetterPageHtml } from './report-letter.service.js';
 import { getReportFooter } from './tenant-report-settings.service.js';
 import { getProviderForTenant } from './storage/storage-provider.factory.js';
 import { reportPackArtifactKey, ARTIFACT_TTL_MS } from './report-pack.service.js';
@@ -153,6 +154,37 @@ export async function generateReportPackRun(runId: string): Promise<void> {
   });
 
   try {
+    // Engagement letter (SSARS 21) — rendered FIRST, before any financial
+    // statement, so it opens the pack. Reuses the pack's date range + default
+    // basis. A missing/inactive letter is skipped silently; a render error
+    // follows the pack's onError policy like any other section.
+    if (pack.letterId) {
+      try {
+        const letter = await getLetter(pack.letterId);
+        if (letter.isActive) {
+          const basis = pack.defaultBasis === 'cash' ? 'cash' : 'accrual';
+          const { title, bodyHtml } = await resolveLetterContent(letter, run.tenantId, run.companyId, {
+            periodStart: rangeStart,
+            periodEnd: rangeEnd,
+            asOfDate,
+            basis,
+            reportDate: rangeEnd,
+          });
+          const letterHtml = buildLetterPageHtml({ title, bodyHtml, companyName, footer });
+          const bytes = await htmlToPdfBytes(browser, letterHtml, false);
+          const doc = await PDFDocument.load(bytes);
+          sections.push({ reportId: '__letter__', label: title, bytes, pageCount: doc.getPageCount(), startPage: 0 });
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (pack.onError === 'skip') {
+          failures.push({ reportId: '__letter__', message });
+        } else {
+          throw err;
+        }
+      }
+    }
+
     for (let i = 0; i < items.length; i++) {
       const item = items[i]!;
       await db.update(reportPackRuns).set({

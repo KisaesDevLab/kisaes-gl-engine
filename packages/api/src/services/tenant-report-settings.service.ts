@@ -65,6 +65,10 @@ export async function updateSettings(
     ...(input.bsLabels !== undefined ? { bsLabels: input.bsLabels } : {}),
     ...(input.cfLabels !== undefined ? { cfLabels: input.cfLabels } : {}),
     ...(input.reportFooter !== undefined ? { reportFooter: input.reportFooter } : {}),
+    ...(input.firmName !== undefined ? { firmName: input.firmName } : {}),
+    ...(input.firmCity !== undefined ? { firmCity: input.firmCity } : {}),
+    ...(input.firmState !== undefined ? { firmState: input.firmState } : {}),
+    ...(input.accountantSignature !== undefined ? { accountantSignature: input.accountantSignature } : {}),
   };
   await db.update(tenants).set({ reportSettings: next }).where(eq(tenants.id, tenantId));
   await auditLog(tenantId, 'update', 'tenant_report_settings', tenantId, existing, next, userId);

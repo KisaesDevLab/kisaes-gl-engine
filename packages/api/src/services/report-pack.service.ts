@@ -50,6 +50,8 @@ export interface CreatePackInput {
   pageFooter?: string | null;
   filenameTemplate?: string;
   onError?: 'skip' | 'fail';
+  /** Optional SSARS-21 engagement letter rendered as the first pack section. */
+  letterId?: string | null;
   items: PackItemInput[];
 }
 
@@ -136,6 +138,7 @@ function packValues(companyId: string, input: CreatePackInput) {
     pageFooter: (input.pageFooter && input.pageFooter.trim()) ? input.pageFooter.trim() : null,
     filenameTemplate: input.filenameTemplate ?? '{pack}-{date}',
     onError: input.onError ?? 'skip',
+    letterId: input.letterId ?? null,
   };
 }
 
@@ -215,6 +218,7 @@ export async function duplicatePack(
     pageFooter: source.pageFooter,
     filenameTemplate: source.filenameTemplate,
     onError: source.onError,
+    letterId: source.letterId,
   }).returning();
   if (source.items.length > 0) {
     await db.insert(reportPackItems).values(

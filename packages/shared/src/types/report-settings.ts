@@ -64,6 +64,16 @@ export interface TenantReportSettings {
   /** Optional footer text shown at the bottom of P&L, Balance Sheet, and
    *  Cash Flow reports (on-screen, CSV, and PDF). Empty/absent = no footer. */
   reportFooter?: string;
+  /** Optional CPA firm identity used by SSARS-21 engagement letters. When
+   *  absent, the letter resolver falls back to the company's businessName /
+   *  city / state. See @kis-books/shared letter-variables + report-letter
+   *  service resolveLetterVariables. */
+  firmName?: string;
+  firmCity?: string;
+  firmState?: string;
+  /** Signature line for the letter's {{accountant_signature}} variable.
+   *  Falls back to reportFooter, then firmName, when absent. */
+  accountantSignature?: string;
 }
 
 /**

@@ -56,6 +56,9 @@ export const reportPacks = pgTable('report_packs', {
   // 'skip' → record the failed section and continue (final status 'partial');
   // 'fail' → abort the whole run on the first section error.
   onError: varchar('on_error', { length: 10 }).notNull().default('skip'),
+  // Optional engagement letter (SSARS 21) rendered as the first content
+  // section of the generated pack. NULL = no letter. See report_letters.
+  letterId: uuid('letter_id'),
   createdBy: uuid('created_by').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

@@ -37,6 +37,11 @@ export const updateTenantReportSettingsSchema = z.object({
   bsLabels: bsSectionLabelsSchema.optional(),
   cfLabels: cfSectionLabelsSchema.optional(),
   reportFooter: z.string().trim().max(REPORT_FOOTER_MAX_LENGTH).optional(),
+  // Optional CPA firm identity for SSARS-21 engagement letters.
+  firmName: z.string().trim().max(200).optional(),
+  firmCity: z.string().trim().max(100).optional(),
+  firmState: z.string().trim().max(100).optional(),
+  accountantSignature: z.string().trim().max(200).optional(),
 });
 
 export type UpdateTenantReportSettingsInput = z.infer<typeof updateTenantReportSettingsSchema>;

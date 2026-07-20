@@ -23,6 +23,7 @@ import { requirePermission } from '../middleware/permission.js';
 import { expensiveOpLimiter } from '../middleware/expensive-op-limiter.js';
 import { validate } from '../middleware/validate.js';
 import * as packService from '../services/report-pack.service.js';
+import { listActiveLetters } from '../services/report-letter.service.js';
 import { getReportPackQueueHealth } from '../services/extraction/queue.js';
 import { REPORT_CATALOG } from '@kis-books/shared';
 
@@ -54,6 +55,9 @@ const packBodySchema = z.object({
   pageFooter: z.string().max(500).nullable().optional(),
   filenameTemplate: z.string().max(255).optional(),
   onError: z.enum(['skip', 'fail']).optional(),
+  // Optional engagement letter (SSARS 21) to render as the pack's first
+  // content section. null / omitted = no letter.
+  letterId: z.string().uuid().nullable().optional(),
   items: z.array(packItemSchema).max(30),
 });
 
@@ -66,6 +70,13 @@ const runBodySchema = z.object({
 // ─── Catalog ───
 reportPacksRouter.get('/catalog', readPerm, (_req, res) => {
   res.json({ catalog: REPORT_CATALOG });
+});
+
+// Active engagement letters, for the pack builder's letter picker. Read-only
+// projection (id + name + type) — the full body/CRUD lives on the admin API.
+reportPacksRouter.get('/letters', readPerm, async (_req, res) => {
+  const letters = await listActiveLetters();
+  res.json({ letters: letters.map((l) => ({ id: l.id, name: l.name, letterType: l.letterType })) });
 });
 
 // ─── Pack CRUD ───
