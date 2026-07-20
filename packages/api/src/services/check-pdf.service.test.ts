@@ -100,3 +100,28 @@ describe('generateTestCheckPdf — vector PDF output', () => {
     expect(countFillOps(pdf)).toBeLessThan(20);
   });
 });
+
+describe('drawEnvelope — #10 envelope layout', () => {
+  it('renders a 9.5x4.125in page with return + delivery address text', async () => {
+    const { PDFDocument, StandardFonts } = await import('pdf-lib');
+    const { _internal } = await import('./check-pdf.service.js');
+    const doc = await PDFDocument.create();
+    const fonts = {
+      reg: await doc.embedFont(StandardFonts.Helvetica),
+      bold: await doc.embedFont(StandardFonts.HelveticaBold),
+      mono: await doc.embedFont(StandardFonts.Courier),
+      monoBold: await doc.embedFont(StandardFonts.CourierBold),
+    };
+    const page = doc.addPage([9.5 * 72, 4.125 * 72]);
+    _internal.drawEnvelope(page, fonts as any, {
+      payeeName: 'Acme Office Supplies, LLC',
+      payeeAddressLines: ['1200 Vendor Avenue', 'Suite 400', 'Kansas City, MO 64105'],
+      company: { name: 'TBR Ventures LLC', line1: '482 Commerce Way', line2: 'Building C', cityStateZip: 'Springfield, MO 65807', address: '', phone: '' },
+    } as any);
+    const { width, height } = page.getSize();
+    expect(Math.round(width)).toBe(684);
+    expect(Math.round(height)).toBe(297);
+    const pdf = Buffer.from(await doc.save());
+    expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
+  });
+});

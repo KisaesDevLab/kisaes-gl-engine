@@ -65,6 +65,19 @@ checksRouter.post('/render', async (req, res) => {
   res.send(pdf);
 });
 
+// #10 envelopes for a batch of checks (return + payee mailing address).
+checksRouter.post('/envelopes', async (req, res) => {
+  const { checkIds } = req.body;
+  if (!Array.isArray(checkIds) || checkIds.length === 0) {
+    res.status(400).json({ error: 'checkIds is required' });
+    return;
+  }
+  const pdf = await checkPdfService.generateEnvelopePdf(req.tenantId, checkIds);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', 'inline; filename="envelopes.pdf"');
+  res.send(pdf);
+});
+
 checksRouter.post('/print', validate(printCheckSchema), async (req, res) => {
   const result = await checkService.printChecks(
     req.tenantId, req.body.bankAccountId, req.body.checkIds,

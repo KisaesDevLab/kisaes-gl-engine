@@ -214,6 +214,8 @@ const CM = 72 / 2.54;
 const MM = CM / 10;
 const Z_LEFT_MARGIN = 17 * MM;  // z-fold left margin
 const Z_RIGHT_MARGIN = 15 * MM; // z-fold right margin
+const ENV10_W = 9.5 * 72;   // #10 envelope, 9.5in wide
+const ENV10_H = 4.125 * 72; // #10 envelope, 4.125in tall
 
 const BLACK = rgb(0, 0, 0);
 const GRAY = rgb(0.4, 0.4, 0.4);
@@ -715,4 +717,57 @@ export async function generateTestCheckPdf(tenantId: string, format: string = 'v
 }
 
 /** Exported for tests. */
-export const _internal = { renderChecksPdf, drawCheckPage };
+// ── #10 window/booklet envelope PDF ───────────────────────────────
+//
+// One #10 envelope (9.5" x 4.125") per check, formatted like the z-fold
+// mailing panel: company return address top-left, payee delivery address in
+// the USPS read zone (indented, vertically centered). Printed from the
+// "Did the checks print correctly?" step so the operator can address the
+// same batch of checks.
+function drawEnvelope(page: PDFPage, fonts: Fonts, c: CheckData): void {
+  const ctx: Ctx = { page, fonts, dx: 0, dy: 0 };
+  const up = (s: string) => sanitize(s).toUpperCase();
+
+  // Return address — top-left, one row per line.
+  const rL = 0.3 * IN;
+  let ry = ENV10_H - 0.35 * IN;
+  const retLines = [c.company.name, c.company.line1, c.company.line2, c.company.cityStateZip].filter(Boolean).map(up);
+  retLines.forEach((line, i) => {
+    drawText(ctx, line, rL, ry, { size: i === 0 ? 8 : 7.5, font: i === 0 ? fonts.bold : fonts.reg, maxWidth: 3.6 * IN });
+    ry -= 10;
+  });
+
+  // Delivery address — left-aligned in the read zone, vertically centered.
+  const addr = c.payeeAddressLines ?? [];
+  const lines = [c.payeeName, ...addr].filter(Boolean).map(up);
+  const dX = 4.0 * IN;
+  const lineH = 15;
+  let dy = ENV10_H / 2 + ((lines.length - 1) * lineH) / 2;
+  lines.forEach((line, i) => {
+    drawText(ctx, line, dX, dy, { size: 11.5, align: 'left', font: i === 0 ? fonts.bold : fonts.reg, maxWidth: ENV10_W - dX - 0.5 * IN });
+    dy -= lineH;
+  });
+  if (addr.length === 0) {
+    drawText(ctx, '— no mailing address on file —', dX, dy, { size: 8, align: 'left', color: GRAY });
+  }
+}
+
+export async function generateEnvelopePdf(tenantId: string, checkIds: string[]): Promise<Buffer> {
+  const doc = await PDFDocument.create();
+  doc.setTitle('Envelopes');
+  doc.setProducer('Vibe MyBooks');
+  const fonts: Fonts = {
+    reg: await doc.embedFont(StandardFonts.Helvetica),
+    bold: await doc.embedFont(StandardFonts.HelveticaBold),
+    mono: await doc.embedFont(StandardFonts.Courier),
+    monoBold: await doc.embedFont(StandardFonts.CourierBold),
+  };
+  for (const id of checkIds) {
+    const c = await gatherCheckData(tenantId, id);
+    const page = doc.addPage([ENV10_W, ENV10_H]);
+    drawEnvelope(page, fonts, c);
+  }
+  return Buffer.from(await doc.save());
+}
+
+export const _internal = { renderChecksPdf, drawCheckPage, drawEnvelope };
