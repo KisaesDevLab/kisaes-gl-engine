@@ -177,7 +177,7 @@ async function gatherCheckData(tenantId: string, checkId: string): Promise<Check
     amountInWords: numberToWords(parseFloat(txn.total || '0')),
     memo: txn.printedMemo || txn.memo || '',
     company: companyAddress(company),
-    payeeAddressLines,
+    payeeAddressLines: toMailRows(payeeAddressLines),
     bank: {
       name: settings['bankName'] || '',
       address: settings['bankAddress'] || '',
@@ -255,6 +255,24 @@ function fmtMoney(amount: string): string {
 function fmtDate(d: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d || '');
   return m ? `${m[2]}-${m[3]}-${m[1]}` : (d || '');
+}
+
+// Normalize a payee mailing address into standard rows so "City, ST ZIP"
+// always lands on its OWN line — even when the source crammed the whole
+// address (street + city/state/zip) into a single field, which is common.
+// Idempotent for already-structured input; leaves unparseable input as-is.
+function toMailRows(parts: string[]): string[] {
+  const cleaned = parts.map((s) => s.trim()).filter(Boolean);
+  if (cleaned.length === 0) return [];
+  const CSZ = /^[^,]+,\s*[A-Za-z]{2}\.?\s+\d{5}(?:-\d{4})?$/;
+  // Already well-formed: a distinct street line + a bare "City, ST ZIP" tail.
+  if (cleaned.length >= 2 && CSZ.test(cleaned[cleaned.length - 1]!)) return cleaned;
+  const joined = cleaned.join(', ');
+  const m = joined.match(/^(.+),\s*([^,]+),\s*([A-Za-z]{2})\.?\s+(\d{5}(?:-\d{4})?)\s*$/);
+  if (!m) return cleaned; // can't confidently parse — leave as entered
+  const streetLines = m[1]!.split(',').map((s) => s.trim()).filter(Boolean);
+  const csz = `${m[2]!.trim()}, ${m[3]!.toUpperCase()} ${m[4]}`;
+  return [...streetLines, csz];
 }
 
 // Company address as structured rows: line1 / line2 / "City, ST ZIP".
@@ -770,4 +788,4 @@ export async function generateEnvelopePdf(tenantId: string, checkIds: string[]):
   return Buffer.from(await doc.save());
 }
 
-export const _internal = { renderChecksPdf, drawCheckPage, drawEnvelope };
+export const _internal = { renderChecksPdf, drawCheckPage, drawEnvelope, toMailRows };

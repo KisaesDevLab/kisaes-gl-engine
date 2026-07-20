@@ -125,3 +125,28 @@ describe('drawEnvelope — #10 envelope layout', () => {
     expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
   });
 });
+
+describe('toMailRows — standard mailing formatting', () => {
+  it('splits a single-field blob so City, ST ZIP is its own row', async () => {
+    const { _internal } = await import('./check-pdf.service.js');
+    expect(_internal.toMailRows(['123 Main St, Springfield, MO 65807']))
+      .toEqual(['123 Main St', 'Springfield, MO 65807']);
+    expect(_internal.toMailRows(['1200 Vendor Avenue, Suite 400, Kansas City, MO 64105']))
+      .toEqual(['1200 Vendor Avenue', 'Suite 400', 'Kansas City, MO 64105']);
+  });
+  it('leaves already-structured rows unchanged', async () => {
+    const { _internal } = await import('./check-pdf.service.js');
+    expect(_internal.toMailRows(['123 Main St', 'Springfield, MO 65807']))
+      .toEqual(['123 Main St', 'Springfield, MO 65807']);
+  });
+  it('handles ZIP+4 and normalizes state case', async () => {
+    const { _internal } = await import('./check-pdf.service.js');
+    expect(_internal.toMailRows(['500 Oak Rd, Austin, tx 78701-1234']))
+      .toEqual(['500 Oak Rd', 'Austin, TX 78701-1234']);
+  });
+  it('leaves an unparseable address as entered', async () => {
+    const { _internal } = await import('./check-pdf.service.js');
+    expect(_internal.toMailRows(['PO Box 12']))
+      .toEqual(['PO Box 12']);
+  });
+});
