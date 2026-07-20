@@ -27,6 +27,11 @@ function shape(settings: Awaited<ReturnType<typeof service.getSettings>>) {
     bsLabels: settings.bsLabels ?? {},
     cfLabels: settings.cfLabels ?? {},
     reportFooter: settings.reportFooter ?? '',
+    // CPA firm identity for SSARS-21 engagement letters (signature block).
+    firmName: settings.firmName ?? '',
+    firmCity: settings.firmCity ?? '',
+    firmState: settings.firmState ?? '',
+    accountantSignature: settings.accountantSignature ?? '',
     resolvedPLLabels: resolvePLLabels(settings.plLabels),
     resolvedBSLabels: resolveBSLabels(settings.bsLabels),
     resolvedCFLabels: resolveCFLabels(settings.cfLabels),
