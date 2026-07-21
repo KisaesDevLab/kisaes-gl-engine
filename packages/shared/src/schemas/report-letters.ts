@@ -25,7 +25,9 @@ export const REPORT_LETTER_TITLES: Record<ReportLetterType, string> = {
 export const createReportLetterSchema = z.object({
   name: z.string().trim().min(1).max(200),
   letterType: z.enum(REPORT_LETTER_TYPES),
-  bodyHtml: z.string().max(100_000),
+  // Generous cap: the body may inline logo/signature images as data URIs
+  // (~1.35x the source bytes). Fits a couple of ≤1 MB images plus text.
+  bodyHtml: z.string().max(4_000_000),
   isActive: z.boolean().optional(),
   sortOrder: z.number().int().optional(),
 });
