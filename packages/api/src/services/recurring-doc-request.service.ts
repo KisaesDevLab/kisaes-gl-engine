@@ -761,9 +761,11 @@ export async function listOpenRequests(
       // feature; semantically it's "trigger entity id".
       docRequestId: reminderSends.questionId,
       sendCount: sql<number>`COUNT(*)::int`,
-      lastSentAt: sql<Date | null>`MAX(${reminderSends.sentAt})`,
-      lastOpenedAt: sql<Date | null>`MAX(${reminderSends.openedAt})`,
-      lastClickedAt: sql<Date | null>`MAX(${reminderSends.clickedAt})`,
+      // Raw MAX() aggregates come back from the pg driver as strings, not
+      // Date objects (unlike typed timestamp columns) — type them honestly.
+      lastSentAt: sql<string | null>`MAX(${reminderSends.sentAt})`,
+      lastOpenedAt: sql<string | null>`MAX(${reminderSends.openedAt})`,
+      lastClickedAt: sql<string | null>`MAX(${reminderSends.clickedAt})`,
     })
     .from(reminderSends)
     .where(
@@ -774,7 +776,7 @@ export async function listOpenRequests(
     )
     .groupBy(reminderSends.questionId);
 
-  type SendAgg = { sendCount: number; lastSentAt: Date | null; lastOpenedAt: Date | null; lastClickedAt: Date | null };
+  type SendAgg = { sendCount: number; lastSentAt: string | null; lastOpenedAt: string | null; lastClickedAt: string | null };
   const sendsById = new Map<string, SendAgg>();
   for (const s of sendsAgg) {
     if (s.docRequestId) {
@@ -805,9 +807,11 @@ export async function listOpenRequests(
       status: d.status as DocRequestStatus,
       submittedAt: d.submittedAt ? d.submittedAt.toISOString() : null,
       submittedReceiptId: d.submittedReceiptId,
-      lastRemindedAt: agg?.lastSentAt ? agg.lastSentAt.toISOString() : null,
-      lastOpenedAt: agg?.lastOpenedAt ? agg.lastOpenedAt.toISOString() : null,
-      lastClickedAt: agg?.lastClickedAt ? agg.lastClickedAt.toISOString() : null,
+      // new Date() normalizes the pg timestamp string (or a Date) to ISO;
+      // guarded on truthiness so null aggregates stay null.
+      lastRemindedAt: agg?.lastSentAt ? new Date(agg.lastSentAt).toISOString() : null,
+      lastOpenedAt: agg?.lastOpenedAt ? new Date(agg.lastOpenedAt).toISOString() : null,
+      lastClickedAt: agg?.lastClickedAt ? new Date(agg.lastClickedAt).toISOString() : null,
       reminderSendCount: agg?.sendCount ?? 0,
     };
   });

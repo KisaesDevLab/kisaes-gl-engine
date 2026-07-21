@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { tenants, portalContacts, recurringDocumentRequests, documentRequests, auditLog } from '../db/schema/index.js';
+import { tenants, portalContacts, recurringDocumentRequests, documentRequests, reminderSends, auditLog } from '../db/schema/index.js';
 import {
   CRON_LAST_BUSINESS_DAY,
   computeFirstIssueAt,
@@ -15,6 +15,7 @@ import {
   isValidCronExpression,
   issueNow,
   issueOne,
+  listOpenRequests,
   periodLabelFor,
 } from './recurring-doc-request.service.js';
 
@@ -256,6 +257,33 @@ describe('recurring-doc-request — deleteRule / issueNow (db)', () => {
     expect(kept).toBeDefined();
     expect(kept!.recurringId).toBeNull();
     expect(kept!.status).toBe('pending');
+  });
+
+  it('listOpenRequests returns ISO reminder timestamps when a reminder was sent (regression: MAX() is a string, not a Date)', async () => {
+    const [req] = await db.insert(documentRequests).values({
+      tenantId,
+      contactId,
+      documentType: 'bank_statement',
+      description: 'reminded request',
+      periodLabel: '2026-07',
+      status: 'pending',
+    }).returning();
+    // A reminder send makes MAX(sent_at) non-null — the exact condition that
+    // 500'd the Open Requests tab (agg.lastSentAt.toISOString is not a function).
+    await db.insert(reminderSends).values({
+      tenantId,
+      contactId,
+      questionId: req!.id,
+      channel: 'email',
+      sentAt: new Date(),
+    });
+
+    const { items } = await listOpenRequests(tenantId, { status: 'pending' });
+    const found = items.find((i) => i.id === req!.id);
+    expect(found).toBeDefined();
+    expect(typeof found!.lastRemindedAt).toBe('string');
+    expect(() => new Date(found!.lastRemindedAt!).toISOString()).not.toThrow();
+    expect(found!.reminderSendCount).toBeGreaterThanOrEqual(1);
   });
 
   it('deleteRule 404s for another tenant', async () => {
