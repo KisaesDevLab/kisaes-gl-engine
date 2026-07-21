@@ -186,3 +186,48 @@ describe('bank-feed bulkSetName — match existing contact only', () => {
     expect(after).toBe(before);
   });
 });
+
+// Search box now matches the resolved NAME (assigned/suggested contact display
+// name) and the AMOUNT, in addition to the bank descriptor, category and memo.
+// The count query must join the contact aliases too, so `total` stays in sync.
+describe('bank-feed list — search fields (name, amount, memo)', () => {
+  it('matches by assigned contact name (case-insensitive) and total reflects it', async () => {
+    const hit = await insertItem({ assignedContactId: vendorId, description: 'RAW DESCRIPTOR A' });
+    await insertItem({ description: 'UNRELATED ROW B' }); // no contact, different text
+    const { data, total } = await bankFeedService.list(tenantId, { search: 'acme' } as never);
+    expect(total).toBe(1);
+    expect(data.map((r) => r.id)).toEqual([hit.id]);
+  });
+
+  it('matches by suggested contact name', async () => {
+    const hit = await insertItem({ suggestedContactId: vendorId, description: 'RAW DESCRIPTOR C' });
+    await insertItem({ description: 'UNRELATED ROW D' });
+    const { data, total } = await bankFeedService.list(tenantId, { search: 'Acme Supplies' } as never);
+    expect(total).toBe(1);
+    expect(data[0]!.id).toBe(hit.id);
+  });
+
+  it('matches by amount as text ("42" finds -42.0000)', async () => {
+    const hit = await insertItem({ amount: '-42.0000', description: 'NO KEYWORD HERE' });
+    await insertItem({ amount: '-1799.0000', description: 'ANOTHER ROW' });
+    const { data, total } = await bankFeedService.list(tenantId, { search: '42' } as never);
+    expect(total).toBe(1);
+    expect(data[0]!.id).toBe(hit.id);
+  });
+
+  it('matches by raw memo (the placeholder promised it)', async () => {
+    const hit = await insertItem({ memo: 'WALMART SUPERCENTER', description: 'POS 001' });
+    await insertItem({ memo: 'TARGET STORE', description: 'POS 002' });
+    const { data, total } = await bankFeedService.list(tenantId, { search: 'walmart' } as never);
+    expect(total).toBe(1);
+    expect(data[0]!.id).toBe(hit.id);
+  });
+
+  it('still matches the bank descriptor and category', async () => {
+    const byDesc = await insertItem({ description: 'STARBUCKS 1234' });
+    const { total: t1 } = await bankFeedService.list(tenantId, { search: 'starbucks' } as never);
+    expect(t1).toBe(1);
+    await bankFeedService.list(tenantId, {}); // sanity
+    expect(byDesc.id).toBeTruthy();
+  });
+});

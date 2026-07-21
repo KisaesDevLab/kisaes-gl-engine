@@ -51,9 +51,28 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
   if (filters.bankConnectionId) conditions.push(eq(bankFeedItems.bankConnectionId, filters.bankConnectionId));
   if (filters.startDate) conditions.push(sql`${bankFeedItems.feedDate} >= ${filters.startDate}`);
   if (filters.endDate) conditions.push(sql`${bankFeedItems.feedDate} <= ${filters.endDate}`);
+
+  // Separate aliases for the payee/vendor contact display names so the
+  // feed's NAME column can show the resolved payee (rule- or AI-set, or
+  // human-assigned) instead of only the cleaned bank descriptor. Declared
+  // before the search clause so it can match on the resolved NAME too.
+  const suggestedContact = alias(contacts, 'suggested_contact');
+  const assignedContact = alias(contacts, 'assigned_contact');
+
   if ((filters as any).search) {
     const term = '%' + (filters as any).search + '%';
-    conditions.push(sql`(${bankFeedItems.description} ILIKE ${term} OR ${bankFeedItems.category} ILIKE ${term})`);
+    // Search the same NAME the feed's column shows (assigned/suggested contact)
+    // and the AMOUNT (as text, so "12.50" matches "12.5000"), in addition to
+    // the bank descriptor, category and raw memo. The contact aliases must
+    // therefore be joined on BOTH the data and count queries below.
+    conditions.push(sql`(
+      ${bankFeedItems.description} ILIKE ${term}
+      OR ${bankFeedItems.category} ILIKE ${term}
+      OR ${bankFeedItems.memo} ILIKE ${term}
+      OR ${assignedContact.displayName} ILIKE ${term}
+      OR ${suggestedContact.displayName} ILIKE ${term}
+      OR CAST(${bankFeedItems.amount} AS TEXT) ILIKE ${term}
+    )`);
   }
 
   const where = and(...conditions);
@@ -69,11 +88,6 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
   // an 'assigned' row can render its human-chosen category/tag before posting.
   const assignedAccount = alias(accounts, 'assigned_account');
   const assignedTag = alias(tags, 'assigned_tag');
-  // Separate aliases for the payee/vendor contact display names so the
-  // feed's NAME column can show the resolved payee (rule- or AI-set, or
-  // human-assigned) instead of only the cleaned bank descriptor.
-  const suggestedContact = alias(contacts, 'suggested_contact');
-  const assignedContact = alias(contacts, 'assigned_contact');
 
   // Server-side column sort. The page paginates, so sorting must happen
   // here — the old client-side sort only ordered the visible page.
@@ -194,7 +208,13 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
       .orderBy(orderBy)
       .limit(filters.limit ?? 50)
       .offset(filters.offset ?? 0),
-    db.select({ count: count() }).from(bankFeedItems).where(where),
+    // The count query mirrors the data query's contact joins so a NAME search
+    // (assigned/suggested contact display name) resolves here too and the
+    // total stays consistent with the returned rows.
+    db.select({ count: count() }).from(bankFeedItems)
+      .leftJoin(suggestedContact, eq(bankFeedItems.suggestedContactId, suggestedContact.id))
+      .leftJoin(assignedContact, eq(bankFeedItems.assignedContactId, assignedContact.id))
+      .where(where),
   ]);
 
   return { data, total: total[0]?.count ?? 0 };
