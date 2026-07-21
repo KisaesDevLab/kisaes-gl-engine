@@ -278,7 +278,7 @@ describe('recurring-doc-request — deleteRule / issueNow (db)', () => {
       sentAt: new Date(),
     });
 
-    const { items } = await listOpenRequests(tenantId, { status: 'pending' });
+    const { items } = await listOpenRequests(tenantId, { status: 'pending', limit: 100, offset: 0 });
     const found = items.find((i) => i.id === req!.id);
     expect(found).toBeDefined();
     expect(typeof found!.lastRemindedAt).toBe('string');
