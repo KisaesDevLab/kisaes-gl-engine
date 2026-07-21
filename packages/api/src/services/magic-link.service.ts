@@ -11,6 +11,7 @@ import { auditLog } from '../middleware/audit.js';
 import * as systemEmail from './system-email.service.js';
 import * as tfaConfigService from './tfa-config.service.js';
 import * as tfaService from './tfa.service.js';
+import * as authService from './auth.service.js';
 import { env } from '../config/env.js';
 
 function hashToken(token: string): string {
@@ -30,20 +31,17 @@ export async function sendMagicLink(email: string, ipAddress: string, userAgent:
     return { sent: true, expiresInMinutes: config.magicLinkExpiryMinutes || 15 };
   }
 
-  // Ineligible REAL accounts must get the same silent success as unknown
-  // emails: throwing here turned this endpoint into an email-enumeration
-  // oracle (200 for strangers, 400 with a reason for registered accounts).
-  // The reason is logged for the operator, never surfaced to the caller.
-  // This also enforces the system-wide magicLinkEnabled admin toggle,
-  // which was previously read for expiry/attempts but never checked.
-  const methods = (user.tfaMethods || '').split(',').filter(Boolean);
-  const hasNonEmail2fa = methods.includes('totp') || methods.includes('sms');
-  const ineligible = !config.magicLinkEnabled ? 'system magic-link toggle is off'
-    : !user.magicLinkEnabled ? 'user has not enabled magic-link login'
-    : !hasNonEmail2fa ? 'user has no TOTP/SMS second factor'
-    : null;
-  if (ineligible) {
-    console.warn(`[magic-link] silently refusing send for ${user.id}: ${ineligible}`);
+  // Magic-link is available to any active user; the system-wide admin toggle
+  // is the only gate. (Previously a real account also had to opt in AND carry
+  // a TOTP/SMS second factor — that left the link unusable for most users, who
+  // saw "check your email" but never received one.) Users who DO have a
+  // non-email second factor still complete it on verify (step-up); users
+  // without one are logged in by the link alone. The system toggle is enforced
+  // silently so the endpoint stays enumeration-safe: an ineligible send is
+  // indistinguishable from an unknown email (same shape logged for the
+  // operator, never surfaced to the caller).
+  if (!config.magicLinkEnabled) {
+    console.warn(`[magic-link] silently refusing send for ${user.id}: system magic-link toggle is off`);
     return { sent: true, expiresInMinutes: config.magicLinkExpiryMinutes || 15 };
   }
   // Rate limit: max pending links. (Previously read off getRawConfig()
@@ -140,19 +138,36 @@ export async function verifyMagicLink(token: string) {
 
   await auditLog(user.tenantId, 'create', 'magic_link_verified', user.id, null, null, user.id);
 
-  // Return a tfa_token — magic link only proves email ownership (factor 1)
-  // Factor 2 (TOTP or SMS) is still required
-  const tfaToken = tfaService.generateTfaToken(user.id);
-
-  // Get available non-email 2FA methods
+  // Available non-email second factors (email is excluded — the link already
+  // proves email possession).
   const methods = (user.tfaMethods || '').split(',').filter(Boolean);
-  const nonEmailMethods = methods.filter((m) => m !== 'email'); // exclude email — magic link already proves email
+  const nonEmailMethods = methods.filter((m) => m !== 'email');
 
+  // No second factor configured → the link is the sole factor; issue a real
+  // session now (single-factor magic-link login). This never bypasses a second
+  // factor a user actually set up — accounts WITH TOTP/SMS fall through to the
+  // step-up flow below.
+  if (nonEmailMethods.length === 0) {
+    const accessibleTenants = await authService.getAccessibleTenants(user.id);
+    const { accessToken, refreshToken } = await authService.issueSession({
+      userId: user.id,
+      tenantId: user.tenantId,
+      role: user.role,
+      isSuperAdmin: user.isSuperAdmin || false,
+    });
+    await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
+    return { valid: true as const, loggedIn: true as const, accessToken, refreshToken, user, accessibleTenants };
+  }
+
+  // Otherwise require the second factor: magic link proves email (factor 1),
+  // TOTP/SMS is factor 2.
+  const tfaToken = tfaService.generateTfaToken(user.id);
   const emailMasked = user.email.replace(/^(.{1,2})(.*)(@.*)$/, '$1***$3');
   const phoneMasked = user.tfaPhone ? user.tfaPhone.replace(/^(.*)(.{4})$/, '***$2') : undefined;
 
   return {
-    valid: true,
+    valid: true as const,
+    loggedIn: false as const,
     tfaToken,
     availableMethods: nonEmailMethods,
     preferredMethod: user.tfaPreferredMethod && nonEmailMethods.includes(user.tfaPreferredMethod)

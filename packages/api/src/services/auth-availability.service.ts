@@ -66,10 +66,12 @@ export async function getUserAvailableMethods(userId: string) {
   const userTfaMethods = (user.tfaMethods || '').split(',').filter(Boolean);
   const passkeyCount = (await db.select({ id: passkeys.id }).from(passkeys).where(eq(passkeys.userId, userId))).length;
 
-  // Filter login methods by user state
+  // Filter login methods by user state. Magic-link is available to any active
+  // user whenever the system offers it — no per-user opt-in or second-factor
+  // prerequisite (a user WITH TOTP/SMS still completes it on verify).
   const userLoginMethods = {
     password: true,
-    magicLink: loginMethods.magicLink && user.magicLinkEnabled && userTfaMethods.some((m) => m === 'totp' || m === 'sms'),
+    magicLink: loginMethods.magicLink,
     passkey: loginMethods.passkey && passkeyCount > 0,
   };
 

@@ -35,6 +35,28 @@ magicLinkRouter.get('/verify', authLimiter, async (req, res) => {
   if (!token) { res.status(400).json({ error: { message: 'Token is required' } }); return; }
 
   const result = await magicLinkService.verifyMagicLink(token);
+
+  // Account has no non-email second factor → the link logged them straight in.
+  // Set the refresh cookie and return the same session shape as a password
+  // login. Never leak the refresh token in the JSON body.
+  if (result.loggedIn) {
+    setRefreshCookie(res, result.refreshToken);
+    const u = result.user;
+    res.json({
+      valid: true,
+      loggedIn: true,
+      user: {
+        id: u.id, tenantId: u.tenantId, email: u.email, displayName: u.displayName,
+        role: u.role, isActive: u.isActive, isSuperAdmin: u.isSuperAdmin || false,
+        lastLoginAt: u.lastLoginAt, displayPreferences: u.displayPreferences,
+        createdAt: u.createdAt, updatedAt: u.updatedAt,
+      },
+      tokens: { accessToken: result.accessToken },
+      accessibleTenants: result.accessibleTenants,
+    });
+    return;
+  }
+
   res.json(result);
 });
 

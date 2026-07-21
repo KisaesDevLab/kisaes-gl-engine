@@ -13,9 +13,10 @@
 //     the ?firm= slug the portal login page needs to resolve the tenant
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import crypto from 'crypto';
 import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { tenants, users, magicLinks, tfaConfig } from '../db/schema/index.js';
+import { tenants, users, magicLinks, tfaConfig, sessions } from '../db/schema/index.js';
 import { sendMagicLink, verifyMagicLink } from './magic-link.service.js';
 import { __portalLinkBaseForTests, __portalLoginLinkForTests } from './portal-reminders.service.js';
 import { resolveEmailBaseUrl } from '../routes/portal-auth.routes.js';
@@ -50,6 +51,10 @@ afterEach(async () => {
   }
   for (const k of Object.keys(savedEnv)) delete savedEnv[k];
   await db.delete(magicLinks).where(eq(magicLinks.userId, userId));
+  // The direct-login verify test issues a real session; clear it before the
+  // user delete or the FK blocks cleanup and leaks the tenant (slug collision
+  // on the next beforeEach).
+  await db.delete(sessions).where(eq(sessions.userId, userId));
   await db.delete(users).where(eq(users.id, userId));
   await db.delete(tenants).where(eq(tenants.id, tenantId));
   await db.delete(tfaConfig);
@@ -68,27 +73,62 @@ describe('staff magic-link send — enumeration safety', () => {
     expect(rows).toHaveLength(1);
   });
 
-  it('user with per-user magic link OFF: silent success, no row, no 400', async () => {
+  it('per-user opt-in is no longer required: a link row is still created', async () => {
+    // Magic-link is now available to any active user (system toggle is the
+    // only gate); the per-user magicLinkEnabled flag no longer blocks a send.
     await enableSystemMagicLink(true);
     await db.update(users).set({ magicLinkEnabled: false }).where(eq(users.id, userId));
     const res = await sendMagicLink(EMAIL, '127.0.0.1', 'vitest');
-    expect(res.sent).toBe(true); // indistinguishable from unknown email
-    expect(await db.select().from(magicLinks).where(eq(magicLinks.userId, userId))).toHaveLength(0);
+    expect(res.sent).toBe(true);
+    expect(await db.select().from(magicLinks).where(eq(magicLinks.userId, userId))).toHaveLength(1);
   });
 
-  it('user without TOTP/SMS second factor: silent success, no row', async () => {
+  it('no non-email second factor: a link is still created (single-factor login)', async () => {
     await enableSystemMagicLink(true);
     await db.update(users).set({ tfaMethods: 'email' }).where(eq(users.id, userId));
     const res = await sendMagicLink(EMAIL, '127.0.0.1', 'vitest');
     expect(res.sent).toBe(true);
-    expect(await db.select().from(magicLinks).where(eq(magicLinks.userId, userId))).toHaveLength(0);
+    expect(await db.select().from(magicLinks).where(eq(magicLinks.userId, userId))).toHaveLength(1);
   });
 
-  it('system toggle off: silent success for an otherwise-eligible user', async () => {
+  it('system toggle off: silent success, no row (still the master switch)', async () => {
     await enableSystemMagicLink(false);
     const res = await sendMagicLink(EMAIL, '127.0.0.1', 'vitest');
     expect(res.sent).toBe(true);
     expect(await db.select().from(magicLinks).where(eq(magicLinks.userId, userId))).toHaveLength(0);
+  });
+});
+
+describe('staff magic-link verify — second factor vs direct login', () => {
+  async function insertLink(): Promise<string> {
+    const token = crypto.randomBytes(32).toString('base64url');
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    await db.insert(magicLinks).values({
+      userId, tokenHash, expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+    });
+    return token;
+  }
+
+  it('user WITH a TOTP factor: returns a 2FA challenge, not a session', async () => {
+    await enableSystemMagicLink(true);
+    // beforeEach already gave this user tfaMethods='totp'.
+    const token = await insertLink();
+    const res = await verifyMagicLink(token) as Record<string, unknown>;
+    expect(res['loggedIn']).toBe(false);
+    expect(res['tfaToken']).toBeTruthy();
+    expect(res['accessToken']).toBeUndefined();
+    expect(res['availableMethods']).toContain('totp');
+  });
+
+  it('user WITHOUT a non-email factor: logs in directly (session, no challenge)', async () => {
+    await enableSystemMagicLink(true);
+    await db.update(users).set({ tfaMethods: 'email' }).where(eq(users.id, userId));
+    const token = await insertLink();
+    const res = await verifyMagicLink(token) as Record<string, unknown>;
+    expect(res['loggedIn']).toBe(true);
+    expect(res['accessToken']).toBeTruthy();
+    expect(res['refreshToken']).toBeTruthy();
+    expect(res['tfaToken']).toBeUndefined();
   });
 });
 

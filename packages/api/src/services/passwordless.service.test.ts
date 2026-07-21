@@ -122,25 +122,23 @@ describe('Magic Link Service', () => {
     expect(result.sent).toBe(true);
   });
 
-  it('should silently no-op (no link row) if magic link not enabled for user', async () => {
+  it('sends (creates a link row) for an active user without per-user opt-in', async () => {
     const { user } = await createTestUser();
     await enableSystemPasswordless();
-    // User hasn't enabled magic link. A thrown 400 here was an email-
-    // enumeration oracle (unknown emails got a silent 200) — ineligible
-    // real accounts must be indistinguishable from unknown ones.
+    // Per-user opt-in is no longer required — magic-link is available to any
+    // active user while the system toggle is on.
     const result = await magicLinkService.sendMagicLink('pless-test@example.com', '127.0.0.1', 'test');
     expect(result.sent).toBe(true);
-    expect(await db.select().from(magicLinks).where(eq(magicLinks.userId, user.id))).toHaveLength(0);
+    expect(await db.select().from(magicLinks).where(eq(magicLinks.userId, user.id))).toHaveLength(1);
   });
 
-  it('should silently no-op (no link row) if user has no non-email 2FA', async () => {
+  it('sends (creates a link row) even when the user has no non-email 2FA', async () => {
     const { user } = await createTestUser();
     await enableSystemPasswordless();
-    await db.update(users).set({ magicLinkEnabled: true }).where(eq(users.id, user.id));
-    // User has magic link enabled but no TOTP or SMS — same silent shell.
+    // No TOTP/SMS — the link becomes single-factor login; a row is still made.
     const result = await magicLinkService.sendMagicLink('pless-test@example.com', '127.0.0.1', 'test');
     expect(result.sent).toBe(true);
-    expect(await db.select().from(magicLinks).where(eq(magicLinks.userId, user.id))).toHaveLength(0);
+    expect(await db.select().from(magicLinks).where(eq(magicLinks.userId, user.id))).toHaveLength(1);
   });
 
   it('should send magic link when prerequisites met', async () => {
@@ -181,11 +179,13 @@ describe('Magic Link Service', () => {
       expiresAt: new Date(Date.now() + 15 * 60 * 1000),
     });
 
-    const result = await magicLinkService.verifyMagicLink(token);
-    expect(result.valid).toBe(true);
-    expect(result.tfaToken).toBeTruthy();
-    expect(result.availableMethods).toContain('totp');
-    expect(result.availableMethods).not.toContain('email'); // email excluded
+    // This user has a TOTP factor, so verify returns the 2FA challenge branch.
+    const result = await magicLinkService.verifyMagicLink(token) as Record<string, unknown>;
+    expect(result['valid']).toBe(true);
+    expect(result['loggedIn']).toBe(false);
+    expect(result['tfaToken']).toBeTruthy();
+    expect(result['availableMethods']).toContain('totp');
+    expect(result['availableMethods']).not.toContain('email'); // email excluded
   });
 
   it('should reject expired magic link', async () => {
