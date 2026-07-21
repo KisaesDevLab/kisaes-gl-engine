@@ -22,6 +22,11 @@ import * as reconciliationService from '../services/reconciliation.service.js';
 import * as bankStatementsService from '../services/bank-statements.service.js';
 import * as statementMatchService from '../services/statement-match.service.js';
 import { backfillCheckPayees } from '../services/check-payee-backfill.service.js';
+// Reuses the batch categorizer's contact→account resolver (contact default
+// → most-recently-used category account) so the feed and batch entry share
+// one source of truth. Exposed under /banking so it rides the 'banking'
+// permission the feed already requires (batch's route needs 'batch_entry').
+import { suggestAccountForContact } from '../services/batch.service.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -70,6 +75,17 @@ bankingRouter.get('/feed', async (req, res) => {
 bankingRouter.put('/feed/:id', validate(updateFeedItemSchema), async (req, res) => {
   const item = await bankFeedService.updateFeedItem(req.tenantId, req.params['id']!, req.body);
   res.json({ item });
+});
+
+// Prefill the category account when a name (contact) is picked in the feed's
+// expanded editor: the contact's configured default expense account, else the
+// most-recently-used category account from a prior transaction with that
+// contact. Returns { accountId, source } — accountId null when neither exists.
+bankingRouter.get('/feed/suggest-account', async (req, res) => {
+  const contactId = typeof req.query['contact_id'] === 'string' ? req.query['contact_id'] : '';
+  if (!contactId) { res.status(400).json({ error: { message: 'contact_id is required' } }); return; }
+  const result = await suggestAccountForContact(req.tenantId, contactId);
+  res.json(result);
 });
 
 bankingRouter.get('/feed/:id/payroll-overlap', async (req, res) => {
