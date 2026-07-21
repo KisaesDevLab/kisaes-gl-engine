@@ -3,7 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router, type Request } from 'express';
-import { formatDetailTypeLabel } from '@kis-books/shared';
+import { formatDetailTypeLabel, formatIsoUS } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
@@ -870,8 +870,8 @@ async function respond(res: any, reportData: any, format: string | undefined) {
   if (format === 'pdf') {
     const { rows, columns } = extractDataAndColumns(reportData);
     const dateLabel = reportData.startDate && reportData.endDate
-      ? `${reportData.startDate} to ${reportData.endDate}`
-      : reportData.asOfDate ? `As of ${reportData.asOfDate}` : '';
+      ? `${formatIsoUS(reportData.startDate)} to ${formatIsoUS(reportData.endDate)}`
+      : reportData.asOfDate ? `As of ${formatIsoUS(reportData.asOfDate)}` : '';
     const tableHtml = buildHtmlTable(rows, columns);
 
     let companyName = 'Company';

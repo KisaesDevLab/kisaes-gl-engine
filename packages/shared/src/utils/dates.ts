@@ -28,6 +28,17 @@ export function formatDate(
 }
 
 /**
+ * Format an ISO date (yyyy-mm-dd) as MM/DD/YYYY WITHOUT constructing a Date —
+ * so it never shifts across a timezone (new Date('2025-01-01') is UTC
+ * midnight, which local getters can read back as the previous day). Used for
+ * report date labels. Non-ISO input is returned unchanged.
+ */
+export function formatIsoUS(iso: string | null | undefined): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso ?? '');
+  return m ? `${m[2]}/${m[3]}/${m[1]}` : (iso ?? '');
+}
+
+/**
  * Get the start date of a fiscal year given the starting month and a reference date.
  */
 export function getFiscalYearStart(

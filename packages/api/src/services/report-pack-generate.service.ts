@@ -19,6 +19,7 @@ import {
   getReportDef,
   resolveReportDates,
   reportPackItemOptionsSchema,
+  formatIsoUS,
 } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { reportPacks, reportPackItems, reportPackRuns } from '../db/schema/index.js';
@@ -170,7 +171,9 @@ export async function generateReportPackRun(runId: string): Promise<void> {
             basis,
             reportDate: rangeEnd,
           });
-          const letterHtml = buildLetterPageHtml({ title, bodyHtml, companyName, footer });
+          // Footer is stamped on EVERY page after merge (below), not embedded
+          // in the flowed HTML (which only lands on the last page).
+          const letterHtml = buildLetterPageHtml({ title, bodyHtml, companyName, footer: '' });
           const bytes = await htmlToPdfBytes(browser, letterHtml, false);
           const doc = await PDFDocument.load(bytes);
           sections.push({ reportId: '__letter__', label: title, bytes, pageCount: doc.getPageCount(), startPage: 0 });
@@ -210,10 +213,10 @@ export async function generateReportPackRun(runId: string): Promise<void> {
         const reportData = await renderer(run.tenantId, run.companyId, params, opts);
         const { html: tableHtml, orientation } = renderReportSectionHtml(item.reportId, reportData);
         const dateLabel = def.temporal === 'as-of'
-          ? `As of ${params['as_of_date'] ?? asOfDate}`
-          : `${rangeStart} to ${rangeEnd}`;
+          ? `As of ${formatIsoUS(params['as_of_date'] ?? asOfDate)}`
+          : `${formatIsoUS(rangeStart)} to ${formatIsoUS(rangeEnd)}`;
         const sectionHtml = buildReportPackSectionHtml({
-          title: def.label, companyName, dateLabel, tableHtml, footer,
+          title: def.label, companyName, dateLabel, tableHtml, footer: '',
         });
         const bytes = await htmlToPdfBytes(browser, sectionHtml, orientation === 'landscape');
         const doc = await PDFDocument.load(bytes);
@@ -238,7 +241,7 @@ export async function generateReportPackRun(runId: string): Promise<void> {
 
     const merged = await PDFDocument.create();
     if (coverPages > 0) {
-      const dateLabel = `${rangeStart} to ${rangeEnd}`;
+      const dateLabel = `${formatIsoUS(rangeStart)} to ${formatIsoUS(rangeEnd)}`;
       await appendPdf(merged, await htmlToPdfBytes(browser, coverHtml(pack.name, companyName, dateLabel), false));
     }
     if (tocPages > 0) {
@@ -249,17 +252,37 @@ export async function generateReportPackRun(runId: string): Promise<void> {
 
     if (merged.getPageCount() === 0) merged.addPage();
 
-    if (pack.pageNumbers) {
+    // Stamp page numbers (right) and the footer (left) onto EVERY content
+    // page of the merged PDF — so the footer repeats on every page, not just
+    // the last page of each section (which is where a flowed-HTML footer lands).
+    const footerLines = (footer && footer.trim())
+      ? footer.trim().split('\n').map((l) => l.trim()).filter(Boolean)
+      : [];
+    if (pack.pageNumbers || footerLines.length > 0) {
       const font = await merged.embedFont(StandardFonts.Helvetica);
       const pages = merged.getPages();
       const total = pages.length;
+      const size = 8;
+      const gray = rgb(0.4, 0.4, 0.4);
       pages.forEach((page, idx) => {
         if (idx < coverPages) return;
-        const label = `Page ${idx + 1} of ${total}`;
-        const size = 8;
-        const width = font.widthOfTextAtSize(label, size);
         const { width: pw } = page.getSize();
-        page.drawText(label, { x: pw - width - 36, y: 18, size, font, color: rgb(0.4, 0.4, 0.4) });
+        if (pack.pageNumbers) {
+          const label = `Page ${idx + 1} of ${total}`;
+          const width = font.widthOfTextAtSize(label, size);
+          page.drawText(label, { x: pw - width - 36, y: 18, size, font, color: gray });
+        }
+        if (footerLines.length > 0) {
+          // Left-aligned so it never collides with the right page number;
+          // truncate to the available width; stack multiple lines upward.
+          const maxW = pw - 72 - (pack.pageNumbers ? 90 : 0);
+          footerLines.forEach((raw, li) => {
+            let text = raw;
+            while (text.length > 1 && font.widthOfTextAtSize(text, size) > maxW) text = text.slice(0, -1);
+            const y = 18 + (footerLines.length - 1 - li) * 10;
+            page.drawText(text, { x: 36, y, size, font, color: gray });
+          });
+        }
       });
     }
 
