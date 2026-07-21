@@ -131,3 +131,26 @@ describe('per-bank-account check numbering', () => {
     expect(d1.checkNumber).toBe(1001);
   });
 });
+
+describe('print-path duplicate backstop', () => {
+  it('refuses to print a check number range already used on the bank account', async () => {
+    // A hand-written check #2000 already exists on bank 1.
+    await checkService.createCheck(tenantId, checkInput({ checkNumber: 2000 }), undefined, companyId);
+    // A queued check that a stale manual starting number would print as #2000.
+    const q = await checkService.createCheck(tenantId, checkInput({ printLater: true }), undefined, companyId);
+    await expect(
+      checkService.printChecks(tenantId, bankId, [q.id], 2000, 'voucher', undefined),
+    ).rejects.toThrow(/already exists on this bank account/i);
+    // The queued check stays in the queue (transaction rolled back).
+    const row = await db.query.transactions.findFirst({ where: eq(transactions.id, q.id) });
+    expect(row?.printStatus).toBe('queue');
+  });
+
+  it('allows the same number on a DIFFERENT bank account', async () => {
+    const [b2] = await db.insert(accounts).values({ tenantId, companyId, name: 'Second Checking', accountType: 'asset', detailType: 'checking', accountNumber: '1099', balance: '0' }).returning();
+    await checkService.createCheck(tenantId, checkInput({ checkNumber: 3000 }), undefined, companyId);
+    const q = await checkService.createCheck(tenantId, checkInput({ printLater: true, bankAccountId: b2!.id }), undefined, companyId);
+    const res = await checkService.printChecks(tenantId, b2!.id, [q.id], 3000, 'voucher', undefined);
+    expect(res.checksPrinted).toBe(1);
+  });
+});

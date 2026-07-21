@@ -955,10 +955,13 @@ export async function bulkSetName(tenantId: string, feedItemIds: string[], name:
       // too, so the list keeps showing the assigned contact. One per-item
       // transaction keeps txn/journal_lines/feed-row consistent.
       await db.transaction(async (tx) => {
+        // Set the contact on the transaction HEADER only — that's where a
+        // normally-posted check/bill carries its payee; ledger.postTransaction
+        // leaves journal-line contactId null (except lines explicitly given
+        // one). Stamping every line here (incl. the bank leg) diverged from
+        // that and skewed any contact-grouped journal-line reporting.
         await tx.update(transactions).set({ contactId, updatedAt: new Date() })
           .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, item.matchedTransactionId!)));
-        await tx.update(journalLines).set({ contactId })
-          .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, item.matchedTransactionId!)));
         await tx.update(bankFeedItems).set({ assignedContactId: contactId, updatedAt: new Date() })
           .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, id)));
       });

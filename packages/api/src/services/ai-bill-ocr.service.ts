@@ -409,8 +409,21 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
     await db.update(attachments)
       .set({ ocrStatus: 'failed' })
       .where(and(eq(attachments.tenantId, tenantId), eq(attachments.id, attachmentId)));
-    await orchestrator.failJob(job.id, err.message);
-    throw err;
+    await orchestrator.failJob(job.id, err?.message);
+    // AppErrors already carry an actionable message + code — rethrow as-is.
+    // Everything else (AI provider 5xx/network errors, OCR timeouts, poppler/
+    // tesseract failures) would otherwise surface as an opaque HTTP 500
+    // "Internal server error" with no guidance. Wrap them in a clear message
+    // so the user knows to retry / check AI settings rather than seeing a
+    // generic internal error while creating a bill.
+    if (err instanceof AppError) throw err;
+    const timedOut = err?.name === 'TimeoutError';
+    throw AppError.badRequest(
+      timedOut
+        ? 'The AI took too long to read this document and timed out. Please try again; if it keeps happening, try a smaller/clearer file or raise the OCR timeout in Admin → AI.'
+        : 'The AI service could not read this document (the provider returned an error or was unreachable). Please try again in a moment; if it persists, check the AI provider settings in Admin → AI.',
+      'ai_ocr_failed',
+    );
   }
 }
 

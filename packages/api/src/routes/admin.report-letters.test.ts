@@ -110,7 +110,15 @@ describe('/admin/report-letters', () => {
     expect((await request('GET', '/api/admin/report-letters')).status).toBe(401);
   });
 
-  it('lists the seeded SSARS-21 defaults', async () => {
+  it('lists default letters (compilation + preparation)', async () => {
+    // report_letters is a shared system-level table; rather than depend on the
+    // migration seeds surviving concurrent test files, insert our own
+    // default-marked letters (isDefault can't be set via the API) and assert
+    // the endpoint returns them. The prefix cleanup removes these afterward.
+    await db.insert(reportLetters).values([
+      { name: `${NAME_PREFIX}compilation-default`, letterType: 'compilation', bodyHtml: '<p>c</p>', isDefault: true },
+      { name: `${NAME_PREFIX}preparation-default`, letterType: 'preparation', bodyHtml: '<p>p</p>', isDefault: true },
+    ]);
     const { status, json } = await request('GET', '/api/admin/report-letters', adminToken);
     expect(status).toBe(200);
     const letters = json['letters'] as Array<Record<string, unknown>>;

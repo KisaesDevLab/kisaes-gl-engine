@@ -231,6 +231,28 @@ export async function printChecks(tenantId: string, bankAccountId: string, check
   // number is left in an indeterminate state. Locking each check row
   // serializes concurrent print runs that overlap on a check id.
   return await db.transaction(async (tx) => {
+    // Server-side duplicate backstop: refuse to assign any check number in
+    // [startingNumber .. startingNumber+n-1] that a non-void transaction on
+    // THIS bank account already holds. There is no DB unique constraint on
+    // check_number (uniqueness is per bank account, resolved via the journal
+    // line), so this guard is what prevents a re-print — e.g. a stale manual
+    // starting number — from stamping duplicate serials on real checks.
+    const endNumber = startingNumber + checkIds.length - 1;
+    const clash = await tx.execute(sql`
+      SELECT t.check_number
+      FROM transactions t
+      JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.account_id = ${bankAccountId}
+      WHERE t.tenant_id = ${tenantId}
+        AND t.status <> 'void'
+        AND t.check_number BETWEEN ${startingNumber} AND ${endNumber}
+      ORDER BY t.check_number
+      LIMIT 1
+    `);
+    if (clash.rows.length > 0) {
+      const dupNum = (clash.rows[0] as { check_number: number }).check_number;
+      throw AppError.conflict(`Check #${dupNum} already exists on this bank account. Choose a starting number past the last used check.`);
+    }
+
     for (let i = 0; i < checkIds.length; i++) {
       const checkId = checkIds[i]!;
 

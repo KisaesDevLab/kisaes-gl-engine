@@ -134,7 +134,7 @@ export async function resolveLetterVariables(
   ctx: LetterRenderContext,
 ): Promise<Record<string, string>> {
   const companyRow = await db.execute(
-    sql`SELECT business_name, city, state FROM companies WHERE id = ${companyId}`,
+    sql`SELECT business_name, city, state FROM companies WHERE id = ${companyId} AND tenant_id = ${tenantId}`,
   );
   const company = (companyRow.rows as Array<{ business_name?: string; city?: string; state?: string }>)[0] ?? {};
   const settings = (await getSettings(tenantId)) as TenantReportSettings;
