@@ -8,6 +8,7 @@ import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
 import * as contactsService from '../services/contacts.service.js';
+import * as batchService from '../services/batch.service.js';
 import { parseLimit, parseOffset } from '../utils/pagination.js';
 
 export const contactsRouter = Router();
@@ -67,6 +68,17 @@ contactsRouter.put('/:id', validate(updateContactSchema), async (req, res) => {
 contactsRouter.delete('/:id', async (req, res) => {
   const contact = await contactsService.deactivate(req.tenantId, req.params['id']!, req.userId);
   res.json({ contact });
+});
+
+// Category autofill for entry forms: the account to prefill when this contact
+// is selected — the contact's configured default, else the category account
+// from its most recent transaction. Delegates to the SHARED resolver that
+// batch-entry and the bank feed also use, so behavior stays identical across
+// surfaces. Read-only; rides the `contacts` permission. Returns
+// { accountId: string | null, source: 'default' | 'recent' | null }.
+contactsRouter.get('/:id/suggest-account', async (req, res) => {
+  const result = await batchService.suggestAccountForContact(req.tenantId, req.params['id']!);
+  res.json(result);
 });
 
 contactsRouter.get('/:id/transactions', async (req, res) => {
