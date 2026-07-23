@@ -145,6 +145,19 @@ async function provisionTenant(input: { companyName: string; businessType?: stri
 
   // Get the company that was just created
   const company = await db.query.companies.findFirst({ where: eq(companies.tenantId, tenant.id) });
+
+  // Seed the default JE template(s) (e.g. Monthly Payroll). Lines resolve
+  // to the just-seeded chart by account NAME; any not found stay unmapped
+  // for staff to pick. Best-effort — a failure here must not abort tenant
+  // creation, so swallow and log.
+  try {
+    const { seedDefaultJeTemplatesForTenant } = await import('./je-templates.seed.js');
+    await seedDefaultJeTemplatesForTenant(tenant.id, company?.id);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[auth.service] default JE template seed failed:', err instanceof Error ? err.message : err);
+  }
+
   return { tenantId: tenant.id, companyId: company?.id || '', tenantName: tenant.name };
 }
 

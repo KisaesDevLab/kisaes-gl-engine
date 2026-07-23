@@ -153,6 +153,17 @@ async function start() {
     console.error('Failed to seed default AI prompts:', err);
   }
 
+  // Seed the default JE templates (Monthly Payroll) for every existing
+  // tenant (idempotent — skips any tenant that already has one, so it never
+  // clobbers operator edits). New tenants get theirs at provisioning time.
+  try {
+    const { seedDefaultJeTemplatesAllTenants } = await import('./services/je-templates.seed.js');
+    const r = await seedDefaultJeTemplatesAllTenants();
+    if (r.seeded > 0) console.log(`Seeded default JE templates for ${r.seeded}/${r.total} tenants`);
+  } catch (err) {
+    console.error('Failed to seed default JE templates:', err);
+  }
+
   // Start server
   const server = app.listen(env.PORT, () => {
     console.log(`Vibe MyBooks API listening on port ${env.PORT}`);
