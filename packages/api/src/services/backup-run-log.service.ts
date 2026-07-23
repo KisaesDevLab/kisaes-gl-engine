@@ -19,7 +19,7 @@
 //            replication does not
 //   failed   the backup itself failed; `error` carries the reason
 
-import { and, desc, eq, lt, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, getTableColumns, lt, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { backupRuns, tenants } from '../db/schema/index.js';
 import { log } from '../utils/logger.js';
@@ -262,7 +262,12 @@ export async function listBackupRuns(opts: ListBackupRunsOptions) {
   if (opts.kind) conditions.push(eq(backupRuns.kind, opts.kind));
   const where = conditions.length > 0 ? and(...conditions) : undefined;
 
-  const runs = await db.select().from(backupRuns)
+  // Left-join tenants so per-tenant runs carry a display name (NULL for
+  // system-wide runs, or when the tenant was since deleted — tenant_id is
+  // ON DELETE SET NULL).
+  const runs = await db.select({ ...getTableColumns(backupRuns), tenantName: tenants.name })
+    .from(backupRuns)
+    .leftJoin(tenants, eq(tenants.id, backupRuns.tenantId))
     .where(where)
     .orderBy(desc(backupRuns.startedAt))
     .limit(opts.limit)
