@@ -155,11 +155,11 @@ export async function listRuleExceptions(
     // money leg as (credit − debit) so a bank CREDIT (money out) comes out
     // POSITIVE. (The earlier debit−credit form inverted the sign, so a fee
     // matched the deposit rule and vice-versa — spurious exceptions.)
+    const first = txnLines[0]!;
     const signedAmount = first.feed_amount != null && first.feed_amount !== ''
       ? parseFloat(first.feed_amount)
       : sourceLines.reduce((sum, l) => sum + (parseFloat(l.credit) - parseFloat(l.debit)), 0);
     const sign: -1 | 0 | 1 = signedAmount > 0 ? 1 : signedAmount < 0 ? -1 : 0;
-    const first = txnLines[0]!;
     const descriptor = [first.feed_desc, first.contact_name, first.memo]
       .map((s) => (s ?? '').trim())
       .filter(Boolean)
