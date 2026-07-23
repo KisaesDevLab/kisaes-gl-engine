@@ -17,7 +17,7 @@ import {
 } from '@kis-books/shared';
 import { authenticate, requireSuperAdmin } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
-import { resolveFirmFromPath, requireFirmAdmin } from '../middleware/firm-access.js';
+import { resolveFirmFromPath, requireFirmAdmin, requireFirmStaff } from '../middleware/firm-access.js';
 import { auditLog } from '../middleware/audit.js';
 import { AppError } from '../utils/errors.js';
 import { db } from '../db/index.js';
@@ -83,11 +83,13 @@ firmsRouter.get('/:firmId', async (req, res) => {
 // booleans only. Gated to firm admins (super-admins bypass via
 // resolveFirmFromPath).
 
-firmsRouter.get('/:firmId/integrations/tax1099', requireFirmAdmin, async (req, res) => {
+firmsRouter.get('/:firmId/integrations/tax1099', requireFirmStaff, async (req, res) => {
   const { getTax1099Settings } = await import('../services/firm-integrations.service.js');
   res.json(await getTax1099Settings(req.firmId!));
 });
 
+// Writing the API credentials remains firm-admin/super-admin (it stores a
+// firm-wide secret) — not opened to firm staff.
 firmsRouter.put('/:firmId/integrations/tax1099', requireFirmAdmin, async (req, res) => {
   const { tax1099SettingsSchema } = await import('@kis-books/shared');
   const parsed = tax1099SettingsSchema.parse(req.body);
@@ -95,7 +97,7 @@ firmsRouter.put('/:firmId/integrations/tax1099', requireFirmAdmin, async (req, r
   res.json(await saveTax1099Settings(req.firmId!, parsed, req.userId));
 });
 
-firmsRouter.post('/:firmId/integrations/tax1099/test', requireFirmAdmin, async (req, res) => {
+firmsRouter.post('/:firmId/integrations/tax1099/test', requireFirmStaff, async (req, res) => {
   const { testConnection } = await import('../services/tax1099.service.js');
   res.json(await testConnection(req.firmId!));
 });
@@ -353,7 +355,7 @@ firmsRouter.get('/:firmId/tag-templates', async (req, res) => {
 
 firmsRouter.post(
   '/:firmId/tag-templates',
-  requireFirmAdmin,
+  requireFirmStaff,
   validate(createFirmTagTemplateSchema),
   async (req, res) => {
     const tpl = await tagTemplatesService.createTemplate(req.firmId!, req.body);
@@ -377,7 +379,7 @@ firmsRouter.get('/:firmId/tag-templates/:id', async (req, res) => {
 
 firmsRouter.patch(
   '/:firmId/tag-templates/:id',
-  requireFirmAdmin,
+  requireFirmStaff,
   validate(updateFirmTagTemplateSchema),
   async (req, res) => {
     const tpl = await tagTemplatesService.updateTemplate(
@@ -400,7 +402,7 @@ firmsRouter.patch(
 
 firmsRouter.delete(
   '/:firmId/tag-templates/:id',
-  requireFirmAdmin,
+  requireFirmStaff,
   async (req, res) => {
     const tpl = await tagTemplatesService.getTemplate(req.firmId!, req.params['id']!);
     await tagTemplatesService.deleteTemplate(req.firmId!, req.params['id']!);
@@ -425,7 +427,7 @@ firmsRouter.get('/:firmId/tag-templates/:id/bindings', async (req, res) => {
 
 firmsRouter.post(
   '/:firmId/tag-templates/:id/bindings',
-  requireFirmAdmin,
+  requireFirmStaff,
   validate(upsertTagBindingSchema),
   async (req, res) => {
     const binding = await tagTemplatesService.upsertBinding(
@@ -448,7 +450,7 @@ firmsRouter.post(
 
 firmsRouter.delete(
   '/:firmId/tag-templates/:id/bindings/:tenantId',
-  requireFirmAdmin,
+  requireFirmStaff,
   async (req, res) => {
     await tagTemplatesService.deleteBinding(
       req.firmId!,

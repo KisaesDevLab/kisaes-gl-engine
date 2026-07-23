@@ -83,6 +83,23 @@ export async function requireFirmAdmin(req: Request, _res: Response, next: NextF
   next();
 }
 
+// Firm CONFIGURATION gate: allows any active firm member with a write
+// role (`firm_admin` OR `firm_staff`), excluding `firm_readonly`. Use for
+// firm-level SETTINGS that staff manage day to day — 1099 e-file read/test,
+// tag templates — as opposed to firm ADMINISTRATION (membership, tenant-
+// access grants, identity/credentials), which stays on `requireFirmAdmin`.
+//
+// Deliberately has NO superAdminManaged lockdown: unlike requireFirmAdmin,
+// these are settings rather than box-wide administration, so trusted firm
+// staff may edit them on the shared appliance firm. Mount AFTER a resolver
+// (resolveFirmFromPath / requireFirmStaffOnTenant) that has set req.firmRole.
+export async function requireFirmStaff(req: Request, _res: Response, next: NextFunction) {
+  if (req.firmRole !== 'firm_admin' && req.firmRole !== 'firm_staff') {
+    throw AppError.forbidden('Firm staff role required', 'NOT_FIRM_STAFF');
+  }
+  next();
+}
+
 // Variant for firm-management routes that take the firmId from
 // the URL path (`/firms/:firmId/...`) rather than from the
 // tenant context. Resolves the user's role within the path-

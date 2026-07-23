@@ -32,15 +32,16 @@ practiceSettingsRouter.get('/', async (req, res) => {
   res.json({ classificationThresholds: thresholds });
 });
 
-// PUT — owner only. Mutating thresholds changes how every
-// bucket row is computed at next upsert, which is a meaningful
-// config change deserving an audit log entry.
+// PUT — any write-capable staff role (owner / accountant / bookkeeper);
+// readonly is rejected. Mutating thresholds changes how every bucket row
+// is computed at next upsert, which is a meaningful config change deserving
+// an audit log entry. (Client user_type is already blocked router-wide.)
 practiceSettingsRouter.put(
   '/',
   validate(classificationThresholdsSchema),
   async (req, res) => {
-    if (req.userRole !== 'owner') {
-      throw AppError.forbidden('Owner role required to change thresholds');
+    if (!['owner', 'accountant', 'bookkeeper'].includes(req.userRole ?? '')) {
+      throw AppError.forbidden('Insufficient role to change thresholds');
     }
     const before = await thresholdsService.getThresholds(req.tenantId);
     const after = await thresholdsService.setThresholds(req.tenantId, req.body);
