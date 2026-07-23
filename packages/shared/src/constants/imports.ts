@@ -96,6 +96,72 @@ export const QBO_TXN_TYPE_LABELS: Record<string, string> = {
 };
 
 /**
+ * QuickBooks Desktop account-list Type column → MyBooks accountType enum.
+ *
+ * QB Desktop uses singular type labels ("Other Current Asset") where QBO
+ * uses plural ("Other current assets"), so it gets its own map rather than
+ * reusing QBO_TYPE_TEXT_MAP. Match is case-insensitive; unknown values
+ * surface as IMPORT_UNKNOWN_TYPE. Fixed assets collapse to 'asset'
+ * (MyBooks has no distinct fixed-asset enum).
+ */
+export const QBD_TYPE_TEXT_MAP: Record<string, AccountType> = {
+  // Assets
+  'bank': 'asset',
+  'accounts receivable': 'asset',
+  'other current asset': 'asset',
+  'other current assets': 'asset',
+  'fixed asset': 'asset',
+  'other asset': 'asset',
+  'inventory': 'asset',
+
+  // Liabilities
+  'accounts payable': 'liability',
+  'credit card': 'liability',
+  'other current liability': 'liability',
+  'other current liabilities': 'liability',
+  'long term liability': 'liability',
+  'long-term liability': 'liability',
+
+  // Equity
+  'equity': 'equity',
+
+  // Income
+  'income': 'revenue',
+  'other income': 'other_revenue',
+
+  // COGS
+  'cost of goods sold': 'cogs',
+
+  // Expense
+  'expense': 'expense',
+  'other expense': 'other_expense',
+};
+
+/**
+ * QB Desktop Journal "Type" column → memo prefix label. The full label
+ * survives in the memo (e.g. `[QBD:Check] …`) so the original transaction
+ * shape isn't lost when everything imports as txnType='journal_entry'.
+ */
+export const QBD_TXN_TYPE_LABELS: Record<string, string> = {
+  'check': 'QBD:Check',
+  'deposit': 'QBD:Deposit',
+  'bill': 'QBD:Bill',
+  'bill pmt -check': 'QBD:Bill Payment',
+  'bill pmt -cc': 'QBD:Bill Payment',
+  'invoice': 'QBD:Invoice',
+  'payment': 'QBD:Payment',
+  'sales receipt': 'QBD:Sales Receipt',
+  'credit memo': 'QBD:Credit Memo',
+  'credit card charge': 'QBD:Credit Card Charge',
+  'credit card credit': 'QBD:Credit Card Credit',
+  'general journal': 'QBD:General Journal',
+  'transfer': 'QBD:Transfer',
+  'paycheck': 'QBD:Paycheck',
+  'liability check': 'QBD:Liability Check',
+  'sales tax payment': 'QBD:Sales Tax Payment',
+};
+
+/**
  * Accounting Power Journal column codes → memo prefix label.
  */
 export const AP_JOURNAL_LABELS: Record<string, string> = {
@@ -111,6 +177,7 @@ export const AP_JOURNAL_LABELS: Record<string, string> = {
 export const IMPORT_SOURCE_TAGS = {
   AP_GL: 'accounting_power_import',
   QBO_GL: 'quickbooks_online_import',
+  QBD_GL: 'quickbooks_desktop_import',
   TRIAL_BALANCE: 'trial_balance_import',
 } as const;
 
@@ -143,3 +210,9 @@ export const AP_GL_HEADER_REQUIRED = [
   'Debit Amount',
   'Credit Amount',
 ] as const;
+
+/** QB Desktop Account List CSV header signature. */
+export const QBD_COA_HEADER_REQUIRED = ['Account', 'Type'] as const;
+
+/** QB Desktop Journal CSV header signature. */
+export const QBD_GL_HEADER_REQUIRED = ['Trans #', 'Type', 'Date', 'Account'] as const;

@@ -39,6 +39,7 @@ import {
 import { AppError } from '../../utils/errors.js';
 import * as ap from './adapters/accounting-power.js';
 import * as qbo from './adapters/quickbooks-online.js';
+import * as qbd from './adapters/quickbooks-desktop.js';
 import { postTransaction } from '../ledger.service.js';
 import { Decimal } from 'decimal.js';
 
@@ -257,6 +258,42 @@ async function dispatchParse(
       `Accounting Power does not support kind="${kind}" in this version.`,
       'IMPORT_WRONG_KIND',
     );
+  }
+
+  // QuickBooks Desktop — all exports are CSV (ISO-8859-1). The trial
+  // balance carries its own "As of" date, so (unlike Accounting Power) no
+  // tbReportDate option is required; contacts still need contactKind.
+  if (sourceSystem === 'quickbooks_desktop') {
+    if (kind === 'coa') {
+      const { rows, errors } = qbd.parseCoa(buf);
+      return { parsed: rows, errors, reportDate: null, rowCount: rows.length };
+    }
+    if (kind === 'gl_transactions') {
+      const { entries, errors } = qbd.parseGl(buf);
+      return { parsed: entries, errors, reportDate: null, rowCount: entries.length };
+    }
+    if (kind === 'contacts') {
+      if (!options.contactKind) {
+        throw AppError.badRequest(
+          'QuickBooks Desktop contacts upload requires options.contactKind = "customer" | "vendor".',
+          'IMPORT_CONTACT_KIND_REQUIRED',
+        );
+      }
+      const { rows, errors } = qbd.parseContacts(buf, options.contactKind);
+      return { parsed: rows, errors, reportDate: null, rowCount: rows.length };
+    }
+    if (kind === 'trial_balance') {
+      const { rows, errors, reportDate } = qbd.parseTrialBalance(buf);
+      // Prefer the file's scraped "As of" date; fall back to an explicit
+      // option if the operator supplied one.
+      return {
+        parsed: rows,
+        errors,
+        reportDate: reportDate ?? options.tbReportDate ?? null,
+        rowCount: rows.length,
+      };
+    }
+    throw AppError.badRequest(`Unsupported QuickBooks Desktop kind="${kind}".`, 'IMPORT_WRONG_KIND');
   }
 
   // QuickBooks Online
@@ -1105,7 +1142,11 @@ async function commitGl(
   let voidsReversed = 0;
 
   const sourceTag =
-    sourceSystem === 'accounting_power' ? IMPORT_SOURCE_TAGS.AP_GL : IMPORT_SOURCE_TAGS.QBO_GL;
+    sourceSystem === 'accounting_power'
+      ? IMPORT_SOURCE_TAGS.AP_GL
+      : sourceSystem === 'quickbooks_desktop'
+        ? IMPORT_SOURCE_TAGS.QBD_GL
+        : IMPORT_SOURCE_TAGS.QBO_GL;
 
   // sourceId is keyed on fileHash + entry-index + void-variant. This means
   // re-uploading the SAME bytes (even after the prior session was cancelled

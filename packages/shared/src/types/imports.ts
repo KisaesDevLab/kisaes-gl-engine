@@ -11,7 +11,7 @@ import type { AccountType } from './accounts.js';
 
 export type ImportKind = 'coa' | 'contacts' | 'trial_balance' | 'gl_transactions';
 
-export type SourceSystem = 'accounting_power' | 'quickbooks_online';
+export type SourceSystem = 'accounting_power' | 'quickbooks_online' | 'quickbooks_desktop';
 
 export type ImportStatus =
   | 'uploaded'      // file persisted, parsed, validation errors recorded
