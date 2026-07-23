@@ -591,12 +591,23 @@ describe('practice-settings routes', () => {
   });
 
   describe('PUT /', () => {
-    it('403 for bookkeeper', async () => {
-      const { status } = await request(
+    it('bookkeeper (firm staff) can update thresholds', async () => {
+      const { status, json } = await request(
         'PUT',
         '/api/v1/practice/settings',
         { bucket4Floor: 0.5 },
         bookkeeperToken,
+      );
+      expect(status).toBe(200);
+      expect(json.classificationThresholds.bucket4Floor).toBe(0.5);
+    });
+
+    it('403 for readonly', async () => {
+      const { status } = await request(
+        'PUT',
+        '/api/v1/practice/settings',
+        { bucket4Floor: 0.5 },
+        readonlyToken,
       );
       expect(status).toBe(403);
     });
