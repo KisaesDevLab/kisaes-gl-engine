@@ -104,7 +104,7 @@ portalRemindersRouter.get('/stats', async (req, res) => {
 // worker scheduler tick. Scoped to the requesting tenant — must
 // never trigger sends on behalf of other firms.
 portalRemindersRouter.post('/dispatch', async (req, res) => {
-  if (req.userRole !== 'owner') throw AppError.forbidden('Owner role required');
+  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Owner role required');
   const result = await svc.dispatch(req.tenantId);
   res.json(result);
 });

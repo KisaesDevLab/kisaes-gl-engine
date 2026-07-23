@@ -63,7 +63,7 @@ apiKeysRouter.post('/', async (req, res) => {
     res.status(400).json({ error: { message: `Invalid role. Must be one of: ${validRoles.join(', ')}` } });
     return;
   }
-  if (requestedRole === 'owner' && req.userRole !== 'owner') {
+  if (requestedRole === 'owner' && req.userRole !== 'owner' && !req.isSuperAdmin) {
     res.status(403).json({ error: { message: 'Only owners can create full-access API keys' } });
     return;
   }

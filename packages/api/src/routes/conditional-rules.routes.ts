@@ -469,7 +469,7 @@ conditionalRulesRouter.delete('/:id', async (req, res) => {
     firmId: ctx.firmId,
   });
   if (before.scope === 'tenant_user') {
-    if (req.userRole !== 'owner') {
+    if (req.userRole !== 'owner' && !req.isSuperAdmin) {
       throw AppError.forbidden('Owner role required to delete tenant_user rules');
     }
   } else if (ctx.firmRole !== 'firm_admin') {

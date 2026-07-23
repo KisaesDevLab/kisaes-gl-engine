@@ -159,7 +159,7 @@ const exportSchema = z.object({
 });
 
 portal1099Router.post('/export', validate(exportSchema), async (req, res) => {
-  if (req.userRole !== 'owner') throw AppError.forbidden('Owner role required to export filings');
+  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Owner role required to export filings');
   const result = await svc.exportFiling(req.tenantId, req.userId, req.body);
   res.set('Content-Type', 'application/json');
   res.json(result);
@@ -218,7 +218,7 @@ const correctionSchema = z.object({
 });
 
 portal1099Router.post('/corrections', validate(correctionSchema), async (req, res) => {
-  if (req.userRole !== 'owner') {
+  if (req.userRole !== 'owner' && !req.isSuperAdmin) {
     throw AppError.forbidden('Owner role required to file corrections');
   }
   const result = await svc.exportCorrection(req.tenantId, req.userId, req.body);

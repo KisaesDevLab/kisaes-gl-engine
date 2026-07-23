@@ -270,7 +270,7 @@ reviewChecksRouter.get('/suppressions', async (req, res) => {
 // DELETE /suppressions/:id — remove. Owner-only because a bad
 // delete could un-mute a known-noisy check tenant-wide.
 reviewChecksRouter.delete('/suppressions/:id', async (req, res) => {
-  if (req.userRole !== 'owner') {
+  if (req.userRole !== 'owner' && !req.isSuperAdmin) {
     throw AppError.forbidden('Owner role required to delete suppressions');
   }
   await suppressions.remove(req.tenantId, req.params['id']!);
@@ -302,7 +302,7 @@ reviewChecksRouter.put(
   '/overrides/:checkKey',
   validate(setOverrideSchema),
   async (req, res) => {
-    if (req.userRole !== 'owner') {
+    if (req.userRole !== 'owner' && !req.isSuperAdmin) {
       throw AppError.forbidden('Owner role required to override check params');
     }
     const checkKey = req.params['checkKey']!;
@@ -323,7 +323,7 @@ reviewChecksRouter.put(
 // DELETE /overrides/:checkKey?companyId=… — drop an override so
 // the resolver falls back to the next layer. Owner-only.
 reviewChecksRouter.delete('/overrides/:checkKey', async (req, res) => {
-  if (req.userRole !== 'owner') {
+  if (req.userRole !== 'owner' && !req.isSuperAdmin) {
     throw AppError.forbidden('Owner role required to remove check overrides');
   }
   const checkKey = req.params['checkKey']!;

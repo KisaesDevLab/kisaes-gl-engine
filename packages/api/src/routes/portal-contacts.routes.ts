@@ -187,7 +187,7 @@ portalContactsRouter.put(
   '/settings/practice',
   validate(updatePracticeSettingsSchema),
   async (req, res) => {
-    if (req.userRole !== 'owner') {
+    if (req.userRole !== 'owner' && !req.isSuperAdmin) {
       throw AppError.forbidden('Owner role required to change portal settings');
     }
     const settings = await svc.updatePracticeSettings(req.tenantId, req.body, req.userId);

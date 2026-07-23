@@ -177,7 +177,7 @@ companyRouter.get('/users', async (req, res) => {
 });
 
 companyRouter.post('/invite-user', validate(inviteUserSchema), async (req, res) => {
-  if (req.userRole !== 'owner') throw AppError.forbidden('Only owners can invite users');
+  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can invite users');
   const { email, displayName, role } = req.body;
   const result = await authService.inviteUser(req.tenantId, { email, displayName, role: role || 'accountant' }, req.userId);
   res.status(201).json({
@@ -189,13 +189,13 @@ companyRouter.post('/invite-user', validate(inviteUserSchema), async (req, res) 
 });
 
 companyRouter.post('/users/:userId/deactivate', async (req, res) => {
-  if (req.userRole !== 'owner') throw AppError.forbidden('Only owners can manage users');
+  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can manage users');
   await authService.deactivateUser(req.tenantId, req.params['userId']!);
   res.json({ message: 'User deactivated' });
 });
 
 companyRouter.post('/users/:userId/reactivate', async (req, res) => {
-  if (req.userRole !== 'owner') throw AppError.forbidden('Only owners can manage users');
+  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can manage users');
   await authService.reactivateUser(req.tenantId, req.params['userId']!);
   res.json({ message: 'User reactivated' });
 });
@@ -206,7 +206,7 @@ companyRouter.post('/users/:userId/reactivate', async (req, res) => {
 // consult these at enforcement time (see permission.service).
 
 function assertOwner(req: import('express').Request) {
-  if (req.userRole !== 'owner') throw AppError.forbidden('Only owners can manage permissions');
+  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can manage permissions');
 }
 
 companyRouter.get('/permission-templates', async (req, res) => {
@@ -254,7 +254,7 @@ companyRouter.get('/stripe', async (req, res) => {
 });
 
 companyRouter.put('/stripe', async (req, res) => {
-  if (req.userRole !== 'owner') throw AppError.forbidden('Only owners can configure payment settings');
+  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can configure payment settings');
   const { stripeConfigSchema } = await import('@kis-books/shared');
   const parsed = stripeConfigSchema.parse(req.body);
   const { configureStripe } = await import('../services/stripe.service.js');
@@ -263,7 +263,7 @@ companyRouter.put('/stripe', async (req, res) => {
 });
 
 companyRouter.delete('/stripe', async (req, res) => {
-  if (req.userRole !== 'owner') throw AppError.forbidden('Only owners can configure payment settings');
+  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can configure payment settings');
   const { removeStripeConfig } = await import('../services/stripe.service.js');
   await removeStripeConfig(req.tenantId, req.companyId);
   res.json({ message: 'Stripe configuration removed', onlinePaymentsEnabled: false });
@@ -273,7 +273,7 @@ companyRouter.delete('/stripe', async (req, res) => {
 // not shadow the named routes above. Owner-only; guarded server-side against
 // deleting the last company or one with real activity.
 companyRouter.delete('/:id', async (req, res) => {
-  if (req.userRole !== 'owner') throw AppError.forbidden('Only owners can delete companies');
+  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can delete companies');
   const result = await companyService.deleteCompany(req.tenantId, req.params['id']!, req.userId);
   res.json(result);
 });

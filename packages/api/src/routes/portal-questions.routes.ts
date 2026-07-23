@@ -177,7 +177,7 @@ portalQuestionsRouter.post('/:id/messages/:msgId/append-to-memo', async (req, re
 // Cross-tenant orphan sweep (12.5) — admin-triggered for safety.
 // The scheduler also runs this hourly per-tenant.
 portalQuestionsRouter.post('/orphans/resolve', async (req, res) => {
-  if (req.userRole !== 'owner') throw AppError.forbidden('Owner role required');
+  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Owner role required');
   const count = await svc.resolveOrphans(req.tenantId);
   res.json({ resolvedCount: count });
 });
