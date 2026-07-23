@@ -17,6 +17,7 @@ import {
   basisOfAccountingPhrase,
   financialStatementTitles,
   formatLongDate,
+  letterFontStack,
   periodDescription,
   renderLetterBody,
   REPORT_LETTER_TITLES,
@@ -63,6 +64,8 @@ export async function createLetter(
   const [row] = await db.insert(reportLetters).values({
     name: input.name,
     letterType: input.letterType,
+    title: input.title ?? null,
+    fontFamily: input.fontFamily ?? null,
     bodyHtml: input.bodyHtml,
     isActive: input.isActive ?? true,
     isDefault: false,
@@ -83,6 +86,8 @@ export async function updateLetter(
     .set({
       ...(input.name !== undefined ? { name: input.name } : {}),
       ...(input.letterType !== undefined ? { letterType: input.letterType } : {}),
+      ...(input.title !== undefined ? { title: input.title ?? null } : {}),
+      ...(input.fontFamily !== undefined ? { fontFamily: input.fontFamily ?? null } : {}),
       ...(input.bodyHtml !== undefined ? { bodyHtml: input.bodyHtml } : {}),
       ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
       ...(input.sortOrder !== undefined ? { sortOrder: input.sortOrder } : {}),
@@ -173,19 +178,22 @@ export async function resolveLetterVariables(
 
 /**
  * Resolve a letter to its final substituted body HTML (no page chrome).
- * Returns the title (from the letter's type) and the substituted body.
+ * Returns the printed title, substituted body, and the resolved font stack.
+ * The title prefers the letter's own `title` override; a blank/null override
+ * falls back to the standard SSARS title for the type (then the letter name).
  */
 export async function resolveLetterContent(
   letter: LetterRow,
   tenantId: string,
   companyId: string,
   ctx: Omit<LetterRenderContext, 'letterType'>,
-): Promise<{ title: string; bodyHtml: string }> {
+): Promise<{ title: string; bodyHtml: string; fontStack: string }> {
   const letterType = letter.letterType as ReportLetterType;
   const values = await resolveLetterVariables(tenantId, companyId, { ...ctx, letterType });
   const bodyHtml = renderLetterBody(letter.bodyHtml, values);
-  const title = REPORT_LETTER_TITLES[letterType] ?? letter.name;
-  return { title, bodyHtml };
+  const override = letter.title && letter.title.trim();
+  const title = override || REPORT_LETTER_TITLES[letterType] || letter.name;
+  return { title, bodyHtml, fontStack: letterFontStack(letter.fontFamily) };
 }
 
 /** Escape text for the letter page wrapper (title/footer). */
@@ -207,12 +215,18 @@ export function buildLetterPageHtml(opts: {
   bodyHtml: string;
   companyName: string;
   footer?: string;
+  /** CSS font-family stack for the whole letter. Defaults to the standard stack. */
+  fontStack?: string;
 }): string {
   const footerBlock = opts.footer && opts.footer.trim()
     ? `<div class="footer">${esc(opts.footer).replace(/\n/g, '<br>')}</div>`
     : '';
+  // A blank title (super-admin cleared it) omits the heading entirely rather
+  // than printing an empty <h1>.
+  const titleBlock = opts.title && opts.title.trim() ? `<h1>${esc(opts.title)}</h1>` : '';
+  const fontStack = opts.fontStack || letterFontStack(null);
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Times New Roman',serif;margin:0;color:#111;font-size:13px;line-height:1.6}
+    body{font-family:${fontStack};margin:0;color:#111;font-size:13px;line-height:1.6}
     .page{padding:8px 0}
     .company{font-size:12px;color:#666;margin-bottom:4px}
     h1{font-size:20px;font-weight:700;margin:0 0 20px}
@@ -221,7 +235,7 @@ export function buildLetterPageHtml(opts: {
   </style></head><body>
     <div class="page">
       <div class="company">${esc(opts.companyName)}</div>
-      <h1>${esc(opts.title)}</h1>
+      ${titleBlock}
       <div class="body">${opts.bodyHtml}</div>
       ${footerBlock}
     </div>

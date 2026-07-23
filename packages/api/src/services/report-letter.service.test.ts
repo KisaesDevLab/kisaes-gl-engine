@@ -114,6 +114,32 @@ describe('resolveLetterContent + buildLetterPageHtml', () => {
     expect(page).toContain("Accountant's Compilation Report");
     expect(page).toContain('year ended December 31, 2025');
   });
+
+  it('uses the letter\'s title override and font when set', async () => {
+    const [letter] = await db.insert(reportLetters).values({
+      name: `${NAME_PREFIX}custom`,
+      letterType: 'compilation',
+      title: 'Independent Accountant’s Report',
+      fontFamily: 'times',
+      bodyHtml: '<p>Body for {{client_name}}.</p>',
+    }).returning();
+
+    const { title, fontStack } = await letterService.resolveLetterContent(letter!, tenantId, companyId, {
+      periodStart: '2025-01-01', periodEnd: '2025-12-31', basis: 'accrual',
+    });
+    expect(title).toBe('Independent Accountant’s Report');
+    expect(title).not.toBe("Accountant's Compilation Report");
+    expect(fontStack).toContain('Times New Roman');
+
+    const page = letterService.buildLetterPageHtml({ title, bodyHtml: '<p>x</p>', companyName: 'Acme', fontStack });
+    expect(page).toContain('Independent Accountant’s Report');
+    expect(page).toContain('Times New Roman');
+  });
+
+  it('omits the heading when the title is blank', () => {
+    const page = letterService.buildLetterPageHtml({ title: '', bodyHtml: '<p>x</p>', companyName: 'Acme' });
+    expect(page).not.toContain('<h1>');
+  });
 });
 
 describe('report pack letter selection', () => {

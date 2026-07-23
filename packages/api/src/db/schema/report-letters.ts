@@ -22,6 +22,12 @@ export const reportLetters = pgTable('report_letters', {
   name: text('name').notNull(),
   // compilation | preparation | review (review reserved for AR-C 90).
   letterType: varchar('letter_type', { length: 30 }).notNull(),
+  // Printed heading (<h1>) above the body. NULL/blank → the standard SSARS
+  // title for the letter's type (REPORT_LETTER_TITLES).
+  title: text('title'),
+  // Font-stack KEY (see LETTER_FONT_OPTIONS) applied to the rendered letter.
+  // NULL → the default stack.
+  fontFamily: varchar('font_family', { length: 40 }),
   // WYSIWYG body with {{variables}}; variable values are escaped at render.
   bodyHtml: text('body_html').notNull().default(''),
   isActive: boolean('is_active').notNull().default(true),

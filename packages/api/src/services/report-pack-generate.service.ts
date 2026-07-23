@@ -164,7 +164,7 @@ export async function generateReportPackRun(runId: string): Promise<void> {
         const letter = await getLetter(pack.letterId);
         if (letter.isActive) {
           const basis = pack.defaultBasis === 'cash' ? 'cash' : 'accrual';
-          const { title, bodyHtml } = await resolveLetterContent(letter, run.tenantId, run.companyId, {
+          const { title, bodyHtml, fontStack } = await resolveLetterContent(letter, run.tenantId, run.companyId, {
             periodStart: rangeStart,
             periodEnd: rangeEnd,
             asOfDate,
@@ -173,7 +173,7 @@ export async function generateReportPackRun(runId: string): Promise<void> {
           });
           // Footer is stamped on EVERY page after merge (below), not embedded
           // in the flowed HTML (which only lands on the last page).
-          const letterHtml = buildLetterPageHtml({ title, bodyHtml, companyName, footer: '' });
+          const letterHtml = buildLetterPageHtml({ title, bodyHtml, companyName, footer: '', fontStack });
           const bytes = await htmlToPdfBytes(browser, letterHtml, false);
           const doc = await PDFDocument.load(bytes);
           sections.push({ reportId: '__letter__', label: title, bytes, pageCount: doc.getPageCount(), startPage: 0 });
