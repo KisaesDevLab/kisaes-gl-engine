@@ -18,6 +18,8 @@ import { auditLog } from '../middleware/audit.js';
 import { requirePracticeAccess } from '../middleware/practice-access.js';
 import { AppError } from '../utils/errors.js';
 import * as classificationService from '../services/practice-classification.service.js';
+import * as ruleExceptionService from '../services/rule-exception.service.js';
+import * as tenantFirmAssignmentService from '../services/tenant-firm-assignment.service.js';
 import * as vendorEnrichmentService from '../services/vendor-enrichment.service.js';
 import * as portalQuestionService from '../services/portal-question.service.js';
 import * as featureFlags from '../services/feature-flags.service.js';
@@ -273,4 +275,76 @@ practiceClassificationRouter.get('/:stateId/vendor-enrichment', async (req, res)
     enrichment: cached,
     source: cached ? 'cache' : 'none',
   });
+});
+
+// ─── Rule-exception audit (Buckets → Rules) ──────────────────────
+//
+// Audits the period's POSTED transactions against the tenant's Practice Rules
+// and flags any whose booked category account differs from the rule's account.
+// Accept re-books that one transaction; Dismiss persists so it doesn't return.
+
+const ruleExceptionQuerySchema = z.object({
+  companyId: z.string().uuid().optional(),
+  periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+});
+
+async function resolveFirmId(tenantId: string): Promise<string | null> {
+  const assignment = await tenantFirmAssignmentService.getActiveForTenant(tenantId);
+  return assignment?.firmId ?? null;
+}
+
+// GET /rule-exceptions?companyId&periodStart&periodEnd
+practiceClassificationRouter.get('/rule-exceptions', async (req, res) => {
+  const parsed = ruleExceptionQuerySchema.parse({
+    companyId: req.query['companyId'],
+    periodStart: req.query['periodStart'],
+    periodEnd: req.query['periodEnd'],
+  });
+  const firmId = await resolveFirmId(req.tenantId);
+  const exceptions = await ruleExceptionService.listRuleExceptions(
+    req.tenantId,
+    parsed.companyId ?? null,
+    {
+      periodStart: parsed.periodStart,
+      periodEnd: parsed.periodEnd,
+      currentUserId: req.userId,
+      firmId,
+    },
+  );
+  res.json({ exceptions });
+});
+
+// POST /rule-exceptions/:transactionId/accept?companyId
+practiceClassificationRouter.post('/rule-exceptions/:transactionId/accept', async (req, res) => {
+  if (req.userRole === 'readonly') throw AppError.forbidden('Insufficient role');
+  const transactionId = req.params['transactionId']!;
+  const companyId = typeof req.query['companyId'] === 'string' ? req.query['companyId'] : null;
+  const firmId = await resolveFirmId(req.tenantId);
+  const result = await ruleExceptionService.acceptRuleException(
+    req.tenantId,
+    companyId,
+    req.userId,
+    firmId,
+    transactionId,
+  );
+  await auditLog(
+    req.tenantId,
+    'update',
+    'rule_exception_accept',
+    transactionId,
+    null,
+    { ruleAccountId: result.ruleAccountId },
+    req.userId,
+  );
+  res.json({ accepted: true, ...result });
+});
+
+// POST /rule-exceptions/:transactionId/dismiss   body: { ruleId? }
+practiceClassificationRouter.post('/rule-exceptions/:transactionId/dismiss', async (req, res) => {
+  if (req.userRole === 'readonly') throw AppError.forbidden('Insufficient role');
+  const transactionId = req.params['transactionId']!;
+  const ruleId = typeof req.body?.ruleId === 'string' ? req.body.ruleId : null;
+  await ruleExceptionService.dismissRuleException(req.tenantId, req.userId, transactionId, ruleId);
+  res.json({ dismissed: true });
 });

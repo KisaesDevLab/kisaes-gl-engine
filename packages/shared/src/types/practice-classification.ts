@@ -118,3 +118,26 @@ export interface BucketReceiptOcr {
   total: string | null;
   tax: string | null;
 }
+
+// Rule-exception audit row — a POSTED transaction whose booked category
+// account differs from what a Practice Rule would assign. Surfaced in Close
+// Review → Buckets → Rules with Accept (re-book to the rule's account) /
+// Dismiss actions.
+export interface RuleExceptionRow {
+  transactionId: string;
+  date: string;
+  /** Payee (contact display name), when the transaction has one. */
+  payee: string | null;
+  /** The text the rule matched against (feed descriptor / payee / memo). */
+  descriptor: string;
+  /** Signed decimal string. */
+  amount: string;
+  /** The account the transaction is currently booked to. */
+  currentAccountId: string;
+  currentAccountName: string;
+  /** The rule that flagged it and the account it would assign. */
+  ruleId: string;
+  ruleName: string;
+  ruleAccountId: string;
+  ruleAccountName: string;
+}

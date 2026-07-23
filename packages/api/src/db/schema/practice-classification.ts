@@ -54,3 +54,17 @@ export const vendorEnrichmentCache = pgTable('vendor_enrichment_cache', {
   tenantVendorUnique: uniqueIndex('vec_tenant_vendor_unique').on(table.tenantId, table.vendorKey),
   expiryIdx: index('idx_vec_expiry').on(table.tenantId, table.expiresAt),
 }));
+
+// Rule-exception audit (migration 0142). Records that a bookkeeper dismissed
+// the rule-mismatch flag on a posted transaction so it won't resurface on the
+// next Close Review → Buckets → Rules audit. One row per (tenant, transaction).
+export const ruleExceptionDismissals = pgTable('rule_exception_dismissals', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
+  transactionId: uuid('transaction_id').notNull(),
+  ruleId: uuid('rule_id'),
+  dismissedBy: uuid('dismissed_by'),
+  dismissedAt: timestamp('dismissed_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  txnUnique: uniqueIndex('idx_red_txn').on(table.tenantId, table.transactionId),
+}));
