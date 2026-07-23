@@ -43,6 +43,7 @@ interface LineRow {
   memo: string | null;
   contact_name: string | null;
   feed_desc: string | null;
+  feed_amount: string | null;
   account_id: string;
   account_name: string;
   detail_type: string | null;
@@ -79,7 +80,7 @@ export async function listRuleExceptions(
   const result = await db.execute(sql`
     SELECT t.id AS txn_id, t.txn_date::text AS txn_date, t.memo AS memo,
            c.display_name AS contact_name,
-           bfi.original_description AS feed_desc,
+           bfi.original_description AS feed_desc, bfi.amount::text AS feed_amount,
            jl.account_id AS account_id, a.name AS account_name,
            a.detail_type AS detail_type, a.system_tag AS system_tag,
            jl.debit::text AS debit, jl.credit::text AS credit
@@ -144,14 +145,19 @@ export async function listRuleExceptions(
     if (sourceLines.length === 0) continue;
 
     // account_source_id = the money/control leg the entry moved through; prefer
-    // the bank/credit-card leg. signedAmount mirrors the feed convention
-    // (negative = money out) via the source legs' net debit−credit.
+    // the bank/credit-card leg.
     const bankLike =
       sourceLines.find((l) => l.detail_type === 'bank' || l.detail_type === 'credit_card') ?? sourceLines[0]!;
-    const signedAmount = sourceLines.reduce(
-      (sum, l) => sum + (parseFloat(l.debit) - parseFloat(l.credit)),
-      0,
-    );
+    // amount_sign / amount MUST match the bank-feed convention the rules were
+    // authored against — this feed stamps money OUT as a POSITIVE amount and
+    // money IN (deposits) as NEGATIVE (see bank_feed_items.amount). For a
+    // feed-sourced txn use that exact amount; otherwise reconstruct from the
+    // money leg as (credit − debit) so a bank CREDIT (money out) comes out
+    // POSITIVE. (The earlier debit−credit form inverted the sign, so a fee
+    // matched the deposit rule and vice-versa — spurious exceptions.)
+    const signedAmount = first.feed_amount != null && first.feed_amount !== ''
+      ? parseFloat(first.feed_amount)
+      : sourceLines.reduce((sum, l) => sum + (parseFloat(l.credit) - parseFloat(l.debit)), 0);
     const sign: -1 | 0 | 1 = signedAmount > 0 ? 1 : signedAmount < 0 ? -1 : 0;
     const first = txnLines[0]!;
     const descriptor = [first.feed_desc, first.contact_name, first.memo]
