@@ -8,6 +8,7 @@ import { eq, and } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { companies, contacts, transactions, journalLines, accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import * as invoiceTemplateService from './invoice-template.service.js';
 
 interface InvoicePdfData {
   company: {
@@ -50,6 +51,7 @@ interface InvoicePdfData {
   }>;
   accentColor: string;
   footerText: string;
+  showTerms: boolean;
   documentType: 'Invoice' | 'Sales Receipt';
 }
 
@@ -63,6 +65,10 @@ async function gatherInvoiceData(tenantId: string, invoiceId: string): Promise<I
     where: eq(companies.tenantId, tenantId),
   });
   if (!company) throw AppError.internal('Company not found');
+
+  // Branding comes from the tenant's default invoice template (Settings →
+  // Invoice Template). Falls back to the built-in defaults when none is set.
+  const template = await invoiceTemplateService.getDefault(tenantId);
 
   let customer = { displayName: 'Customer', billingLine1: null as string | null, billingCity: null as string | null, billingState: null as string | null, billingZip: null as string | null, email: null as string | null };
   if (txn.contactId) {
@@ -125,8 +131,9 @@ async function gatherInvoiceData(tenantId: string, invoiceId: string): Promise<I
       invoiceStatus: txn.invoiceStatus,
     },
     lines: revenueLines,
-    accentColor: '#2563EB',
-    footerText: 'Thank you for your business!',
+    accentColor: template?.accentColor || '#2563EB',
+    footerText: template?.footerText || 'Thank you for your business!',
+    showTerms: template?.showTerms ?? true,
     documentType: txn.txnType === 'cash_sale' ? 'Sales Receipt' : 'Invoice',
   };
 }
@@ -141,7 +148,7 @@ function esc(text: string | null | undefined): string {
 }
 
 function renderInvoiceHtml(data: InvoicePdfData): string {
-  const { company: co, customer: cu, invoice: inv, lines, accentColor, footerText, documentType } = data;
+  const { company: co, customer: cu, invoice: inv, lines, accentColor, footerText, showTerms, documentType } = data;
 
   const lineRows = lines.map((l) => `
     <tr>
@@ -157,10 +164,10 @@ function renderInvoiceHtml(data: InvoicePdfData): string {
   // Lower window: ~0.5" from left, ~2.125" from top, 3.5"×1" — recipient address
   // Page margins: 0.5" all sides (set in generateInvoicePdf)
 
-  // Accent color is an internal-only string ('#2563EB'). It still goes through
-  // the same escape to keep the CSS context safe even if future code lets a
-  // tenant customize it — a hostile value like `red}body{...}` would otherwise
-  // escape the rule.
+  // Accent color is tenant-customizable (Settings → Invoice Template). It's
+  // stored hex-validated, but still goes through esc() so the CSS context
+  // stays safe regardless — a hostile value like `red}body{...}` would
+  // otherwise escape the rule.
   const accentSafe = esc(accentColor);
   const termsLabel = inv.paymentTerms ? inv.paymentTerms.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) : '';
 
@@ -219,7 +226,7 @@ function renderInvoiceHtml(data: InvoicePdfData): string {
     ${inv.txnNumber ? `<div class="detail"><strong>${esc(documentType)} #${esc(inv.txnNumber)}</strong></div>` : ''}
     <div class="detail">Date: ${esc(inv.txnDate)}</div>
     ${inv.dueDate ? `<div class="detail">Due Date: ${esc(inv.dueDate)}</div>` : ''}
-    ${inv.paymentTerms ? `<div class="detail">Terms: ${esc(termsLabel)}</div>` : ''}
+    ${showTerms && inv.paymentTerms ? `<div class="detail">Terms: ${esc(termsLabel)}</div>` : ''}
   </div>
 
   <!-- Return address — upper envelope window -->
