@@ -880,8 +880,9 @@ export async function buildExpenseByVendor(
   companyId: string | null = null,
   tagId: string | null = null,
   // detail=true additionally returns per-vendor `groups`, each listing the
-  // expense accounts the vendor was paid to + a vendor total. The flat
-  // `data` summary is unchanged either way (api-v2 / MCP / older clients).
+  // expense accounts the vendor was paid to + a vendor total. Both the flat
+  // `data` summary and the `groups` net debit − credit per (vendor, account)
+  // so wash/clearing accounts don't double-count (see the summary query).
   detail = false,
   basis: Basis = 'accrual',
 ) {
@@ -894,21 +895,25 @@ export async function buildExpenseByVendor(
         WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
         SELECT c.id as contact_id,
           COALESCE(c.display_name, 'Uncategorized') as vendor_name,
-          SUM(cb.debit) as total
+          SUM(cb.debit) - SUM(cb.credit) as total
         FROM cb_lines cb
         JOIN accounts a ON a.id = cb.account_id AND a.account_type IN ('cogs', 'expense', 'other_expense')
         LEFT JOIN contacts c ON c.id = cb.txn_contact_id AND c.tenant_id = ${tenantId}
-        WHERE a.tenant_id = ${tenantId} AND cb.debit > 0 ${cbTag}
+        WHERE a.tenant_id = ${tenantId} ${cbTag}
         GROUP BY c.id, c.display_name
+        HAVING ROUND(SUM(cb.debit) - SUM(cb.credit), 2) <> 0
         ORDER BY total DESC
       `)
     : await db.execute(sql`
     SELECT c.id as contact_id,
       -- STATEMENT_CHECK_PAYEE_V1 — fall back to the payee read off the check
       -- image when no contact matched, so checks roll up under the real payee
-      -- instead of "Uncategorized". Label/grouping only; SUM is unchanged.
+      -- instead of "Uncategorized". Label/grouping only.
       COALESCE(c.display_name, t.payee_name_on_check, 'Uncategorized') as vendor_name,
-      SUM(jl.debit) as total
+      -- Net debit − credit (matches the P&L). Summing gross debits alone
+      -- double-counts wash/clearing accounts (e.g. Payroll Clearing), whose
+      -- debits are offset by reclass credits — the credits must subtract.
+      SUM(jl.debit) - SUM(jl.credit) as total
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
     JOIN accounts a ON a.id = jl.account_id AND a.account_type IN ('cogs', 'expense', 'other_expense')
@@ -916,10 +921,10 @@ export async function buildExpenseByVendor(
     WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
       AND t.basis <> 'cash'  -- basis: exclude cash-only entries from accrual reports
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
-      AND jl.debit > 0
       AND ${companyFilter(companyId)}
       ${tagClause}
     GROUP BY COALESCE(c.id::text, t.payee_name_on_check), c.id, c.display_name, t.payee_name_on_check
+    HAVING ROUND(SUM(jl.debit) - SUM(jl.credit), 2) <> 0
     ORDER BY total DESC
   `);
 
@@ -936,12 +941,13 @@ export async function buildExpenseByVendor(
           c.id AS contact_id,
           COALESCE(c.display_name, 'Uncategorized') AS vendor_name,
           a.id AS account_id, a.account_number, a.name AS account_name,
-          SUM(cb.debit) AS total
+          SUM(cb.debit) - SUM(cb.credit) AS total
         FROM cb_lines cb
         JOIN accounts a ON a.id = cb.account_id AND a.account_type IN ('cogs', 'expense', 'other_expense')
         LEFT JOIN contacts c ON c.id = cb.txn_contact_id AND c.tenant_id = ${tenantId}
-        WHERE a.tenant_id = ${tenantId} AND cb.debit > 0 ${cbTag}
+        WHERE a.tenant_id = ${tenantId} ${cbTag}
         GROUP BY vendor_key, c.id, vendor_name, a.id, a.account_number, a.name
+        HAVING ROUND(SUM(cb.debit) - SUM(cb.credit), 2) <> 0
       `)
     : await db.execute(sql`
     SELECT
@@ -949,7 +955,7 @@ export async function buildExpenseByVendor(
       c.id AS contact_id,
       COALESCE(c.display_name, t.payee_name_on_check, 'Uncategorized') AS vendor_name,
       a.id AS account_id, a.account_number, a.name AS account_name,
-      SUM(jl.debit) AS total
+      SUM(jl.debit) - SUM(jl.credit) AS total
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
     JOIN accounts a ON a.id = jl.account_id AND a.account_type IN ('cogs', 'expense', 'other_expense')
@@ -957,10 +963,10 @@ export async function buildExpenseByVendor(
     WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
       AND t.basis <> 'cash'
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
-      AND jl.debit > 0
       AND ${companyFilter(companyId)}
       ${tagClause}
     GROUP BY vendor_key, c.id, vendor_name, a.id, a.account_number, a.name
+    HAVING ROUND(SUM(jl.debit) - SUM(jl.credit), 2) <> 0
   `);
 
   type VRow = {
@@ -1031,9 +1037,9 @@ export async function buildExpenseByCategory(
   // BOTH summary and detail modes.
   accountIds: string[] | null = null,
   // detail=true additionally returns GL-style per-account transaction
-  // `groups` + `grandTotal`. The summary `data` array keeps its exact
-  // shape and SUM(jl.debit) semantics either way so api-v2 / MCP
-  // callers are untouched.
+  // `groups` + `grandTotal`. The summary `data` array nets debit − credit
+  // per account (like the P&L) so wash/clearing accounts don't inflate the
+  // totals; api-v2 / MCP callers read the same netted `data`.
   detail = false,
   basis: Basis = 'accrual',
 ) {
@@ -1055,26 +1061,29 @@ export async function buildExpenseByCategory(
     ? await db.execute(sql`
         WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
         SELECT a.id as account_id, a.name as category, a.account_number, a.account_type,
-          SUM(cb.debit) as total
+          SUM(cb.debit) - SUM(cb.credit) as total
         FROM cb_lines cb
         JOIN accounts a ON a.id = cb.account_id AND a.account_type IN ('cogs', 'expense', 'other_expense')
-        WHERE a.tenant_id = ${tenantId} AND cb.debit > 0 ${cbTag} ${cbId}
-        GROUP BY a.id ORDER BY total DESC
+        WHERE a.tenant_id = ${tenantId} ${cbTag} ${cbId}
+        GROUP BY a.id
+        HAVING ROUND(SUM(cb.debit) - SUM(cb.credit), 2) <> 0
+        ORDER BY total DESC
       `)
     : await db.execute(sql`
     SELECT a.id as account_id, a.name as category, a.account_number, a.account_type,
-      SUM(jl.debit) as total
+      SUM(jl.debit) - SUM(jl.credit) as total
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
     JOIN accounts a ON a.id = jl.account_id AND a.account_type IN ('cogs', 'expense', 'other_expense')
     WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
       AND t.basis <> 'cash'  -- basis: exclude cash-only entries from accrual reports
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
-      AND jl.debit > 0
       AND ${companyFilter(companyId)}
       ${tagClause}
       ${idFilter('a.id')}
-    GROUP BY a.id ORDER BY total DESC
+    GROUP BY a.id
+    HAVING ROUND(SUM(jl.debit) - SUM(jl.credit), 2) <> 0
+    ORDER BY total DESC
   `);
 
   const summary = { title: 'Expenses by Category', startDate, endDate, data: rows.rows };
@@ -1202,6 +1211,10 @@ export async function buildExpenseByCategory(
     });
 
     const subtotal = sub(totalDebits, totalCredits);
+    // A wash/clearing account (equal debits and credits, e.g. Payroll
+    // Clearing) nets to zero — drop its section unless the user explicitly
+    // filtered to it, so it doesn't read as a phantom expense line.
+    if (subtotal === 0 && !hasIdFilter) continue;
     grandTotal = Number(new Decimal(grandTotal).plus(subtotal).toFixed(4));
     groups.push({
       accountId: acct.id,

@@ -258,3 +258,61 @@ describe('Report Service — check-image payee fallback (STATEMENT_CHECK_PAYEE_V
     expect(byName['STALE NAME']).toBeUndefined();
   });
 });
+
+describe('Report Service — wash/clearing account nets out of expense reports', () => {
+  beforeEach(async () => {
+    await cleanDb();
+    tenantId = await createTenant('clearing-test');
+  });
+  afterEach(async () => {
+    await cleanDb();
+  });
+
+  // A "Payroll Clearing" expense account funded and then reclassed to
+  // Salaries nets to zero. It must NOT appear as its own expense (that
+  // double-counts payroll, once as clearing + once as salaries) on either
+  // the by-vendor or by-category report — matching the P&L, which nets
+  // debit − credit and drops zero-net accounts.
+  async function seedPayrollWash() {
+    const cash = await mkAccount('Cash', 'asset', '1000');
+    const clearing = await mkAccount('Payroll Clearing', 'expense', '6799');
+    const salaries = await mkAccount('Salaries', 'expense', '6811');
+    // Fund the clearing account (debit clearing, credit cash).
+    await post('Fund payroll', [{ id: clearing.id, amount: '1000.00' }], [{ id: cash.id, amount: '1000.00' }]);
+    // Reclass out of clearing into salaries (debit salaries, credit clearing).
+    await post('Reclass payroll', [{ id: salaries.id, amount: '1000.00' }], [{ id: clearing.id, amount: '1000.00' }]);
+    return { clearing, salaries };
+  }
+
+  it('excludes the net-zero clearing account from expenses-by-vendor (summary + detail)', async () => {
+    await seedPayrollWash();
+
+    const rep = await reportService.buildExpenseByVendor(tenantId, PERIOD_START, PERIOD_END, null, null, true);
+    const rows = rep.data as Array<{ vendor_name: string; total: string }>;
+    // Only salaries remains; the whole vendor group totals $1,000, not $2,000.
+    const grand = rows.reduce((s, r) => s + Number(r.total), 0);
+    expect(grand).toBe(1000);
+
+    const groups = (rep as { groups: Array<{ vendorName: string; total: number; accounts: Array<{ name: string }> }> }).groups;
+    const uncategorized = groups.find((g) => g.vendorName === 'Uncategorized')!;
+    const acctNames = uncategorized.accounts.map((a) => a.name);
+    expect(acctNames).toContain('Salaries');
+    expect(acctNames).not.toContain('Payroll Clearing');
+    expect(uncategorized.total).toBe(1000);
+  });
+
+  it('excludes the net-zero clearing account from expenses-by-category (summary + detail)', async () => {
+    await seedPayrollWash();
+
+    const rep = await reportService.buildExpenseByCategory(tenantId, PERIOD_START, PERIOD_END, null, null, null, true);
+    const rows = rep.data as Array<{ category: string; total: string }>;
+    const cats = rows.map((r) => r.category);
+    expect(cats).toContain('Salaries');
+    expect(cats).not.toContain('Payroll Clearing');
+
+    // Detail grandTotal reflects only the real expense.
+    expect((rep as { grandTotal: number }).grandTotal).toBe(1000);
+    const sections = (rep as { groups: Array<{ name: string }> }).groups.map((g) => g.name);
+    expect(sections).not.toContain('Payroll Clearing');
+  });
+});
