@@ -103,8 +103,14 @@ export async function receivePayment(tenantId: string, input: ReceivePaymentInpu
 }
 
 export async function getOpenInvoicesForCustomer(tenantId: string, customerId: string) {
+  // Dates are cast to text in SQL so the raw driver returns clean
+  // 'YYYY-MM-DD' strings (no timezone shift from date→JS Date parsing).
   const rows = await db.execute(sql`
-    SELECT id, txn_number, txn_date, due_date, total, amount_paid, balance_due, invoice_status
+    SELECT id,
+           txn_number,
+           to_char(txn_date, 'YYYY-MM-DD') AS txn_date,
+           to_char(due_date, 'YYYY-MM-DD') AS due_date,
+           total, amount_paid, balance_due, invoice_status
     FROM transactions
     WHERE tenant_id = ${tenantId} AND txn_type = 'invoice' AND status = 'posted'
       AND contact_id = ${customerId}
@@ -112,7 +118,19 @@ export async function getOpenInvoicesForCustomer(tenantId: string, customerId: s
       AND CAST(balance_due AS DECIMAL) > 0
     ORDER BY txn_date ASC
   `);
-  return rows.rows;
+  // Map the raw snake_case columns to the camelCase shape the API contract
+  // (and the web OpenInvoice type) expects — otherwise every field reads as
+  // undefined on the client (blank invoice #, "$NaN" amount due).
+  return (rows.rows as Array<Record<string, unknown>>).map((r) => ({
+    id: r['id'] as string,
+    invoiceNumber: (r['txn_number'] as string | null) ?? '',
+    txnDate: (r['txn_date'] as string | null) ?? '',
+    dueDate: (r['due_date'] as string | null) ?? null,
+    total: String(r['total'] ?? '0'),
+    amountPaid: String(r['amount_paid'] ?? '0'),
+    balanceDue: String(r['balance_due'] ?? '0'),
+    invoiceStatus: (r['invoice_status'] as string | null) ?? null,
+  }));
 }
 
 export async function getPaymentsForInvoice(tenantId: string, invoiceId: string) {
