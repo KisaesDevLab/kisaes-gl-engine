@@ -17,6 +17,7 @@ import {
   contacts,
   transactions,
   companies,
+  tags,
 } from '../../db/schema/index.js';
 import { normalizeLoose } from '../ai-name-match.js';
 import {
@@ -40,6 +41,7 @@ import { AppError } from '../../utils/errors.js';
 import * as ap from './adapters/accounting-power.js';
 import * as qbo from './adapters/quickbooks-online.js';
 import * as qbd from './adapters/quickbooks-desktop.js';
+import * as generic from './adapters/generic.js';
 import { postTransaction } from '../ledger.service.js';
 import { Decimal } from 'decimal.js';
 
@@ -47,6 +49,39 @@ import { Decimal } from 'decimal.js';
 
 function sha256(buf: Buffer): string {
   return crypto.createHash('sha256').update(buf).digest('hex');
+}
+
+/**
+ * Resolve a set of tag names to ids, creating any that don't exist yet.
+ * Matching is case-insensitive on the existing tenant tags (tag names are
+ * unique per tenant by convention). Returns a lowercased-name → id map plus
+ * the count of tags newly created, so the import can report it. Created tags
+ * are scoped to the import's company.
+ */
+async function ensureTags(
+  tenantId: string,
+  companyId: string,
+  names: string[],
+): Promise<{ map: Map<string, string>; created: number }> {
+  const wanted = Array.from(new Set(names.map((n) => n.trim()).filter(Boolean)));
+  const map = new Map<string, string>();
+  if (wanted.length === 0) return { map, created: 0 };
+
+  const existing = await db
+    .select({ id: tags.id, name: tags.name })
+    .from(tags)
+    .where(eq(tags.tenantId, tenantId));
+  for (const t of existing) map.set(t.name.toLowerCase(), t.id);
+
+  const toCreate = wanted.filter((n) => !map.has(n.toLowerCase()));
+  if (toCreate.length > 0) {
+    const inserted = await db
+      .insert(tags)
+      .values(toCreate.map((name) => ({ tenantId, companyId, name })))
+      .returning({ id: tags.id, name: tags.name });
+    for (const t of inserted) map.set(t.name.toLowerCase(), t.id);
+  }
+  return { map, created: toCreate.length };
 }
 
 const TERMINAL_STATUSES: readonly ImportStatus[] = ['committed', 'failed', 'cancelled'];
@@ -294,6 +329,36 @@ async function dispatchParse(
       };
     }
     throw AppError.badRequest(`Unsupported QuickBooks Desktop kind="${kind}".`, 'IMPORT_WRONG_KIND');
+  }
+
+  // Generic Excel/CSV templates (our own documented column layout).
+  if (sourceSystem === 'generic') {
+    if (kind === 'coa') {
+      const { rows, errors } = await generic.parseCoa(buf);
+      return { parsed: rows, errors, reportDate: null, rowCount: rows.length };
+    }
+    if (kind === 'contacts') {
+      // contactKind is an optional per-file default; the template also has a
+      // per-row Type column, so a mixed customer/vendor file is fine.
+      const { rows, errors } = await generic.parseContacts(buf, options.contactKind);
+      return { parsed: rows, errors, reportDate: null, rowCount: rows.length };
+    }
+    if (kind === 'trial_balance') {
+      // The generic TB file carries no date; require the operator's tbReportDate.
+      if (!options.tbReportDate) {
+        throw AppError.badRequest(
+          'Generic trial balance requires a report date (options.tbReportDate).',
+          'IMPORT_BAD_DATE',
+        );
+      }
+      const { rows, errors } = await generic.parseTrialBalance(buf);
+      return { parsed: rows, errors, reportDate: options.tbReportDate, rowCount: rows.length };
+    }
+    if (kind === 'gl_transactions') {
+      const { entries, errors } = await generic.parseGl(buf);
+      return { parsed: entries, errors, reportDate: null, rowCount: entries.length };
+    }
+    throw AppError.badRequest(`Unsupported Generic import kind="${kind}".`, 'IMPORT_WRONG_KIND');
   }
 
   // QuickBooks Online
@@ -1146,7 +1211,9 @@ async function commitGl(
       ? IMPORT_SOURCE_TAGS.AP_GL
       : sourceSystem === 'quickbooks_desktop'
         ? IMPORT_SOURCE_TAGS.QBD_GL
-        : IMPORT_SOURCE_TAGS.QBO_GL;
+        : sourceSystem === 'generic'
+          ? IMPORT_SOURCE_TAGS.GENERIC_GL
+          : IMPORT_SOURCE_TAGS.QBO_GL;
 
   // sourceId is keyed on fileHash + entry-index + void-variant. This means
   // re-uploading the SAME bytes (even after the prior session was cancelled
@@ -1190,6 +1257,15 @@ async function commitGl(
     if (a.accountNumber) byNum.set(a.accountNumber, a.id);
     byName.set(a.name.toLowerCase(), a.id);
   }
+
+  // Resolve (and auto-create) every tag named across the file up front, so a
+  // single tag referenced by many rows is created once. Only the Generic
+  // importer populates line.tagName; for other sources this is a no-op.
+  const { map: tagMap, created: tagsCreated } = await ensureTags(
+    tenantId,
+    companyId,
+    entries.flatMap((e) => e.lines.map((l) => l.tagName).filter((n): n is string => !!n)),
+  );
 
   // Match each entry's imported "Description" (e.name) to an existing vendor
   // contact so imported GL transactions carry a payee. Deliberately
@@ -1244,6 +1320,7 @@ async function commitGl(
         accountId: id,
         debit: line.debit || '0',
         credit: line.credit || '0',
+        ...(line.tagName ? { tagId: tagMap.get(line.tagName.trim().toLowerCase()) } : {}),
       });
     }
 
@@ -1283,5 +1360,5 @@ async function commitGl(
     created++;
     if (e.isVoidReversal) voidsReversed++;
   }
-  return { created, skipped, voidsReversed, vendorsMatched };
+  return { created, skipped, voidsReversed, vendorsMatched, ...(tagsCreated ? { tagsCreated } : {}) };
 }

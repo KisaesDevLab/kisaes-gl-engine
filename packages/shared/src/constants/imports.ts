@@ -178,6 +178,7 @@ export const IMPORT_SOURCE_TAGS = {
   AP_GL: 'accounting_power_import',
   QBO_GL: 'quickbooks_online_import',
   QBD_GL: 'quickbooks_desktop_import',
+  GENERIC_GL: 'generic_import',
   TRIAL_BALANCE: 'trial_balance_import',
 } as const;
 

@@ -22,6 +22,7 @@ import {
 } from '@kis-books/shared';
 import { AppError } from '../utils/errors.js';
 import * as importsService from '../services/imports/imports.service.js';
+import { buildSampleWorkbook, sampleFileName } from '../services/imports/generic-templates.service.js';
 
 // Magic-byte signatures we either require (xlsx/xls) or actively reject
 // (executables). Mirrors payroll-import.routes.ts so the bulk-import
@@ -124,6 +125,20 @@ function requireStaffWrite(_req: Request, _res: Response, next: NextFunction): v
 export const importsRouter = Router();
 importsRouter.use(authenticate);
 importsRouter.use(requireStaffWrite);
+
+// ── GET /imports/sample/:kind ─────────────────────────────────────
+// Download a blank Generic import template (.xlsx) for the given kind:
+// headers + one example row + an Instructions sheet. Registered BEFORE
+// companyContext — a static template needs no company scope — and before
+// the '/:id' routes so 'sample' isn't parsed as a session id.
+importsRouter.get('/sample/:kind', async (req, res) => {
+  const kind = importKindSchema.parse(req.params['kind']);
+  const buffer = await buildSampleWorkbook(kind);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${sampleFileName(kind)}"`);
+  res.send(buffer);
+});
+
 importsRouter.use(companyContext);
 
 // ── POST /imports/upload ──────────────────────────────────────────

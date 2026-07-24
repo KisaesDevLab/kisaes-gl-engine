@@ -19,6 +19,7 @@ export const sourceSystemSchema = z.enum([
   'accounting_power',
   'quickbooks_online',
   'quickbooks_desktop',
+  'generic',
 ]);
 
 export const importStatusSchema = z.enum([

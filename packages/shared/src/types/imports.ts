@@ -11,7 +11,7 @@ import type { AccountType } from './accounts.js';
 
 export type ImportKind = 'coa' | 'contacts' | 'trial_balance' | 'gl_transactions';
 
-export type SourceSystem = 'accounting_power' | 'quickbooks_online' | 'quickbooks_desktop';
+export type SourceSystem = 'accounting_power' | 'quickbooks_online' | 'quickbooks_desktop' | 'generic';
 
 export type ImportStatus =
   | 'uploaded'      // file persisted, parsed, validation errors recorded
@@ -72,6 +72,10 @@ export interface CanonicalGlLine {
   debit: string;
   credit: string;
   memo?: string;
+  /** Tag name to apply to this posted line. Resolved (or auto-created) at
+   *  commit time and written to journal_lines.tag_id. Only the Generic
+   *  import populates this today. */
+  tagName?: string;
 }
 
 export interface CanonicalGlEntry {
@@ -163,6 +167,8 @@ export interface ImportCommitResult {
   /** Contacts only — vendors whose source default-expense account was
    *  resolved against the chart of accounts and linked. */
   accountsLinked?: number;
+  /** GL only — tags auto-created by name during a Generic transaction import. */
+  tagsCreated?: number;
   /** Set when commit threw partway. The UI surfaces this verbatim;
    *  combined with `created` it tells the operator how much landed before
    *  the failure so they can decide whether to roll back manually or
