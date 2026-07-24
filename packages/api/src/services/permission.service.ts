@@ -5,6 +5,7 @@
 import { and, eq } from 'drizzle-orm';
 import {
   resolveEffectivePermissions,
+  isCustomizablePrincipal,
   type PermissionMap,
   type EffectivePermissions,
   type CreatePermissionTemplateInput,
@@ -146,8 +147,9 @@ export async function setUserPermissions(
 // ─── Effective resolution ────────────────────────────────────
 
 // The single source of truth used by both the request guard and the
-// /auth/me payload. Only bookkeepers touch the DB; every other role
-// resolves purely from its role, so this stays cheap for the common case.
+// /auth/me payload. Only customizable principals (bookkeepers and external
+// client users) touch the DB; every other role resolves purely from its
+// role, so this stays cheap for the common case.
 export async function getEffectivePermissions(
   tenantId: string,
   userId: string,
@@ -155,9 +157,10 @@ export async function getEffectivePermissions(
   userType: 'staff' | 'client' | undefined,
   isSuperAdmin: boolean,
 ): Promise<EffectivePermissions> {
-  // Only bookkeepers consult the table; every other role (incl. client
-  // logins, which resolve by their role) is decided purely by role.
-  if (isSuperAdmin || role !== 'bookkeeper') {
+  // Only bookkeepers and external (client) users consult the table; every
+  // other staff role is decided purely by role. A client with no row still
+  // resolves by role (a client owner keeps full ledger access).
+  if (isSuperAdmin || !isCustomizablePrincipal(role, userType)) {
     return resolveEffectivePermissions({ role, userType, isSuperAdmin, hasPermissionRow: false });
   }
 

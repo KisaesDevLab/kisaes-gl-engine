@@ -64,36 +64,49 @@ function fillAll(level: AccessLevel): EffectivePermissions {
 //   super-admin / owner / accountant → full (capped per resource)
 //   readonly                         → view
 //   bookkeeper, no permission row     → full (legacy, no regression)
-//   bookkeeper, with row              → template ?? none, then overrides
+//   customizable + permission row     → template ?? none, then overrides
 //   unknown / missing role            → none (deny-by-default)
+//
+// "Customizable" principals are bookkeepers AND every external (client)
+// user — both resolve from an assigned template + overrides once a
+// `user_permissions` row exists (see isCustomizablePrincipal). Absent a
+// row they fall through to their role defaults, which preserves both the
+// legacy bookkeeper full-access behavior and a client owner's full ledger.
 export function resolveEffectivePermissions(input: ResolvePermissionsInput): EffectivePermissions {
-  const { role, isSuperAdmin, hasPermissionRow, templateMap, overrides } = input;
+  const { role, userType, isSuperAdmin, hasPermissionRow, templateMap, overrides } = input;
 
-  // Note: `userType === 'client'` is intentionally NOT forced to `none`.
-  // A `client` is a real ledger login (typically role `owner`) — only
-  // Practice routes exclude clients (requirePracticeAccess). Clients
-  // therefore resolve by their role like anyone else.
   if (isSuperAdmin) return fillAll('full');
 
+  // Template-driven path: a bookkeeper or external client user who has been
+  // given a permission row resolves entirely from template + overrides.
+  // For a client this is how an owner tailors an external user's access;
+  // the client's nominal role only supplies the pre-permission baseline
+  // (the switch below) until that row exists.
+  if (isCustomizablePrincipal(role, userType) && hasPermissionRow) {
+    const out = {} as EffectivePermissions;
+    for (const r of PERMISSION_RESOURCES) {
+      const fromTemplate = templateMap?.[r.key];
+      const fromOverride = overrides?.[r.key];
+      const level: AccessLevel = fromOverride ?? fromTemplate ?? 'none';
+      out[r.key] = cap(level, r.writable);
+    }
+    return out;
+  }
+
+  // Role defaults (no permission row, or a non-customizable principal).
+  // Note: `userType === 'client'` is intentionally NOT forced to `none`
+  // here — a client with no row resolves by role like anyone else, so a
+  // client owner keeps full ledger access.
   switch (role) {
     case 'owner':
     case 'accountant':
       return fillAll('full');
     case 'readonly':
       return fillAll('view');
-    case 'bookkeeper': {
+    case 'bookkeeper':
       // Legacy compatibility: a bookkeeper who has never been given a
       // permission row behaves exactly as today (full access).
-      if (!hasPermissionRow) return fillAll('full');
-      const out = {} as EffectivePermissions;
-      for (const r of PERMISSION_RESOURCES) {
-        const fromTemplate = templateMap?.[r.key];
-        const fromOverride = overrides?.[r.key];
-        const level: AccessLevel = fromOverride ?? fromTemplate ?? 'none';
-        out[r.key] = cap(level, r.writable);
-      }
-      return out;
-    }
+      return fillAll('full');
     default:
       return fillAll('none');
   }
@@ -103,6 +116,18 @@ export function resolveEffectivePermissions(input: ResolvePermissionsInput): Eff
 // templates/overrides? Only bookkeeper, per the locked decision.
 export function isCustomizableRole(role: string | undefined | null): boolean {
   return role === 'bookkeeper';
+}
+
+// A principal whose effective access is tailored via templates/overrides
+// rather than derived purely from role: bookkeepers, and every external
+// (client) user. Both consult the `user_permissions` table at enforcement
+// time. This is what lets an owner apply granular permissions to an
+// invited external user regardless of the nominal tenant role.
+export function isCustomizablePrincipal(
+  role: string | undefined | null,
+  userType?: 'staff' | 'client' | undefined | null,
+): boolean {
+  return role === 'bookkeeper' || userType === 'client';
 }
 
 export { getResourceDef };

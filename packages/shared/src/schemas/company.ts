@@ -93,9 +93,18 @@ export type CompanySmtpTestInput = z.infer<typeof companySmtpTestSchema>;
 
 // Invite teammate to the tenant. Roles allowed via this endpoint exclude
 // 'owner' — owners are minted only via tenant creation.
+//
+// `userType` distinguishes an internal staff teammate ('staff', the
+// default) from an external ('client') user — an outside collaborator
+// who logs into the ledger UI. External users are permission-customizable
+// regardless of role (see isCustomizablePrincipal), so the caller
+// typically invites them as 'readonly' and then applies a permission
+// template. 'readonly' is offered here for both user types as a
+// view-only baseline.
 export const inviteUserSchema = z.object({
   email: z.string().email().max(320),
   displayName: z.string().min(1).max(255),
-  role: z.enum(['accountant', 'bookkeeper']).optional(),
+  role: z.enum(['accountant', 'bookkeeper', 'readonly']).optional(),
+  userType: z.enum(['staff', 'client']).optional(),
 });
 export type InviteUserInput = z.infer<typeof inviteUserSchema>;

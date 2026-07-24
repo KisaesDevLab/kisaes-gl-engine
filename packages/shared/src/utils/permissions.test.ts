@@ -4,13 +4,14 @@
 //
 // Pure-function tests for the permission core. This is the single
 // place the role→permission policy lives, so the matrix is pinned
-// here: owner/accountant → full, readonly → view, client → none,
-// bookkeeper with no row → full (legacy, no regression), bookkeeper
-// with a row → template ?? none, then overrides. Read-only resources
-// are capped at view. can() maps CRUD verbs onto the level ladder.
+// here: owner/accountant → full, readonly → view, a client with no
+// permission row → resolves by role, bookkeeper with no row → full
+// (legacy, no regression), and any customizable principal (bookkeeper
+// or client) with a row → template ?? none, then overrides. Read-only
+// resources are capped at view. can() maps CRUD verbs onto the level ladder.
 
 import { describe, it, expect } from 'vitest';
-import { can, resolveEffectivePermissions } from './permissions.js';
+import { can, resolveEffectivePermissions, isCustomizablePrincipal } from './permissions.js';
 import { PERMISSION_RESOURCES } from '../constants/permissions.js';
 
 const everyKey = PERMISSION_RESOURCES.map((r) => r.key);
@@ -35,14 +36,54 @@ describe('resolveEffectivePermissions — role defaults', () => {
     expect(perms.invoices).toBe('full');
   });
 
-  it('client userType resolves by role (a client owner keeps full ledger access)', () => {
+  it('client userType resolves by role when it has no permission row (a client owner keeps full ledger access)', () => {
     const perms = resolveEffectivePermissions({ role: 'owner', userType: 'client' });
     expect(perms.invoices).toBe('full');
+  });
+
+  it('a readonly-baseline client with no row is view-only', () => {
+    const perms = resolveEffectivePermissions({ role: 'readonly', userType: 'client' });
+    expect(perms.invoices).toBe('view');
   });
 
   it('unknown/missing role denies by default', () => {
     expect(resolveEffectivePermissions({ role: undefined }).invoices).toBe('none');
     expect(resolveEffectivePermissions({ role: 'weird' }).invoices).toBe('none');
+  });
+});
+
+describe('resolveEffectivePermissions — external (client) users', () => {
+  it('applies template + overrides once a permission row exists, regardless of role', () => {
+    const perms = resolveEffectivePermissions({
+      role: 'readonly',
+      userType: 'client',
+      hasPermissionRow: true,
+      templateMap: { invoices: 'view', receive_payment: 'full' },
+    });
+    expect(can(perms, 'invoices', 'read')).toBe(true);
+    expect(can(perms, 'invoices', 'create')).toBe(false);
+    expect(can(perms, 'receive_payment', 'create')).toBe(true);
+    // Anything not named by the template/overrides is denied.
+    expect(perms.bills).toBe('none');
+  });
+
+  it('overrides beat the template for a client', () => {
+    const perms = resolveEffectivePermissions({
+      role: 'accountant',
+      userType: 'client',
+      hasPermissionRow: true,
+      templateMap: { bills: 'full' },
+      overrides: { bills: 'view' },
+    });
+    expect(perms.bills).toBe('view');
+  });
+
+  it('isCustomizablePrincipal covers bookkeepers and every client', () => {
+    expect(isCustomizablePrincipal('bookkeeper')).toBe(true);
+    expect(isCustomizablePrincipal('owner', 'client')).toBe(true);
+    expect(isCustomizablePrincipal('readonly', 'client')).toBe(true);
+    expect(isCustomizablePrincipal('accountant', 'staff')).toBe(false);
+    expect(isCustomizablePrincipal('owner')).toBe(false);
   });
 });
 

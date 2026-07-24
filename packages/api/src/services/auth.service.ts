@@ -753,8 +753,9 @@ export async function resetPassword(token: string, newPassword: string): Promise
   await db.delete(sessions).where(eq(sessions.userId, resetRecord.userId));
 }
 
-export async function inviteUser(tenantId: string, input: { email: string; displayName: string; role: string }, inviterUserId?: string): Promise<{ user: typeof users.$inferSelect; temporaryPassword: string | null; existingUser: boolean }> {
+export async function inviteUser(tenantId: string, input: { email: string; displayName: string; role: string; userType?: 'staff' | 'client' }, inviterUserId?: string): Promise<{ user: typeof users.$inferSelect; temporaryPassword: string | null; existingUser: boolean }> {
   const role = input.role || 'accountant';
+  const userType = input.userType === 'client' ? 'client' : 'staff';
   const email = normalizeEmail(input.email);
 
   // Check if user already exists
@@ -797,6 +798,7 @@ export async function inviteUser(tenantId: string, input: { email: string; displ
     passwordHash,
     displayName: input.displayName,
     role,
+    userType,
   }).returning();
 
   if (!user) throw AppError.internal('Failed to create user');
@@ -823,7 +825,7 @@ export async function inviteUser(tenantId: string, input: { email: string; displ
 
 export async function listTenantUsers(tenantId: string) {
   const rows = await db.execute(sql`
-    SELECT u.id, u.email, u.display_name, u.role as user_role, u.is_active as user_active,
+    SELECT u.id, u.email, u.display_name, u.role as user_role, u.user_type, u.is_active as user_active,
       u.is_super_admin, u.last_login_at, u.created_at, u.tenant_id,
       uta.role as tenant_role, uta.is_active as tenant_active
     FROM user_tenant_access uta
@@ -836,6 +838,7 @@ export async function listTenantUsers(tenantId: string) {
     email: r.email,
     displayName: r.display_name,
     role: r.tenant_role || r.user_role,
+    userType: r.user_type === 'client' ? 'client' : 'staff',
     isActive: r.tenant_active && r.user_active,
     tenantActive: r.tenant_active,
     isSuperAdmin: r.is_super_admin,

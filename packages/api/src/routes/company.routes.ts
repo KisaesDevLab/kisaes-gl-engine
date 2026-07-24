@@ -170,7 +170,7 @@ companyRouter.post('/setup-complete', async (req, res) => {
 companyRouter.get('/users', async (req, res) => {
   const users = await authService.listTenantUsers(req.tenantId);
   const sanitized = users.map((u) => ({
-    id: u.id, email: u.email, displayName: u.displayName, role: u.role,
+    id: u.id, email: u.email, displayName: u.displayName, role: u.role, userType: u.userType,
     isActive: u.isActive, lastLoginAt: u.lastLoginAt, createdAt: u.createdAt,
   }));
   res.json({ users: sanitized });
@@ -178,10 +178,19 @@ companyRouter.get('/users', async (req, res) => {
 
 companyRouter.post('/invite-user', validate(inviteUserSchema), async (req, res) => {
   if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can invite users');
-  const { email, displayName, role } = req.body;
-  const result = await authService.inviteUser(req.tenantId, { email, displayName, role: role || 'accountant' }, req.userId);
+  const { email, displayName, role, userType } = req.body;
+  // External (client) users default to a view-only baseline until the owner
+  // applies a permission template; internal staff default to accountant.
+  const resolvedRole = role || (userType === 'client' ? 'readonly' : 'accountant');
+  const result = await authService.inviteUser(req.tenantId, { email, displayName, role: resolvedRole, userType }, req.userId);
   res.status(201).json({
-    user: { id: result.user.id, email: result.user.email, displayName: result.user.displayName, role: result.existingUser ? role : result.user.role },
+    user: {
+      id: result.user.id,
+      email: result.user.email,
+      displayName: result.user.displayName,
+      role: result.existingUser ? resolvedRole : result.user.role,
+      userType: result.user.userType === 'client' ? 'client' : 'staff',
+    },
     temporaryPassword: result.temporaryPassword,
     existingUser: result.existingUser,
     message: result.existingUser ? 'Existing user granted access to this tenant' : 'New user created',
@@ -202,8 +211,8 @@ companyRouter.post('/users/:userId/reactivate', async (req, res) => {
 
 // ─── Permission Templates & Per-User Permissions ────────────
 // Owner-gated. Templates are named, reusable access sets; per-user
-// permissions assign a template + overrides. Only `bookkeeper` users
-// consult these at enforcement time (see permission.service).
+// permissions assign a template + overrides. Bookkeepers and external
+// (client) users consult these at enforcement time (see permission.service).
 
 function assertOwner(req: import('express').Request) {
   if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can manage permissions');

@@ -27,9 +27,11 @@ export const users = pgTable('users', {
   role: varchar('role', { length: 50 }).notNull().default('owner'),
   // `user_type` is orthogonal to `role` — every firm staffer uses
   // a staff role (owner/accountant/bookkeeper/readonly) and is a
-  // 'staff' user_type. 'client' is reserved for the commercial-
-  // gated non-staff app user introduced by the Practice build
-  // plan; portal contacts are not users and live elsewhere.
+  // 'staff' user_type. 'client' is an external, non-staff user
+  // invited from a tenant's Team page whose access is tailored via
+  // permission templates/overrides — a supported feature, not gated
+  // behind a commercial license. Portal contacts are not users and
+  // live elsewhere.
   userType: varchar('user_type', { length: 20 }).notNull().default('staff'),
   isActive: boolean('is_active').default(true),
   isSuperAdmin: boolean('is_super_admin').default(false),
