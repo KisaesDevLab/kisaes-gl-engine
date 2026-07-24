@@ -13,6 +13,7 @@ import {
   companySmtpUpdateSchema,
   companySmtpTestSchema,
   inviteUserSchema,
+  updateUserSchema,
   createPermissionTemplateSchema,
   updatePermissionTemplateSchema,
   setUserPermissionsSchema,
@@ -194,6 +195,21 @@ companyRouter.post('/invite-user', validate(inviteUserSchema), async (req, res) 
     temporaryPassword: result.temporaryPassword,
     existingUser: result.existingUser,
     message: result.existingUser ? 'Existing user granted access to this tenant' : 'New user created',
+  });
+});
+
+companyRouter.patch('/users/:userId', validate(updateUserSchema), async (req, res) => {
+  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can manage users');
+  const { email, displayName } = req.body;
+  const user = await authService.updateUser(req.tenantId, req.params['userId']!, { email, displayName });
+  res.json({
+    user: {
+      id: user.id,
+      email: user.email,
+      displayName: user.displayName,
+      role: user.role,
+      userType: user.userType === 'client' ? 'client' : 'staff',
+    },
   });
 });
 

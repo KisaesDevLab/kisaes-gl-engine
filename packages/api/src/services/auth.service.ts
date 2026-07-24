@@ -864,6 +864,48 @@ export async function reactivateUser(tenantId: string, userId: string) {
     .where(and(eq(userTenantAccess.userId, userId), eq(userTenantAccess.tenantId, tenantId)));
 }
 
+// Edit a team member's display name and/or login email. Scoped to the
+// caller's tenant: the target must have access to this tenant, so an owner
+// can't rename a user in someone else's book. Email is the login identity,
+// so a change is rejected if it collides with any other account.
+export async function updateUser(
+  tenantId: string,
+  userId: string,
+  input: { email?: string; displayName?: string },
+): Promise<typeof users.$inferSelect> {
+  const access = await db.query.userTenantAccess.findFirst({
+    where: and(eq(userTenantAccess.userId, userId), eq(userTenantAccess.tenantId, tenantId)),
+  });
+  if (!access) throw AppError.notFound('User access not found');
+
+  const updates: Partial<typeof users.$inferInsert> = {};
+
+  if (input.displayName !== undefined) {
+    updates.displayName = input.displayName;
+  }
+
+  if (input.email !== undefined) {
+    const email = normalizeEmail(input.email);
+    const clash = await db.query.users.findFirst({ where: eq(users.email, email) });
+    if (clash && clash.id !== userId) {
+      throw AppError.conflict('That email is already in use by another user');
+    }
+    updates.email = email;
+  }
+
+  if (Object.keys(updates).length === 0) {
+    const current = await db.query.users.findFirst({ where: eq(users.id, userId) });
+    if (!current) throw AppError.notFound('User not found');
+    return current;
+  }
+
+  const [updated] = await db.update(users).set(updates).where(eq(users.id, userId)).returning();
+  if (!updated) throw AppError.notFound('User not found');
+
+  await auditLog(tenantId, 'update', 'user', userId, null, { email: updated.email, displayName: updated.displayName }, undefined);
+  return updated;
+}
+
 export async function getMe(userId: string): Promise<typeof users.$inferSelect> {
   const user = await db.query.users.findFirst({
     where: eq(users.id, userId),
