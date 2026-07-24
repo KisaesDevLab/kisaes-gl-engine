@@ -166,7 +166,7 @@ afterAll(async () => {
 });
 
 describe('GET /reports/expense-by-category (summary — default)', () => {
-  it('keeps the legacy summary shape and SUM(debit) semantics', async () => {
+  it('nets debit − credit in the summary (refund credits reduce the total, like the P&L)', async () => {
     const r = await get(`/expense-by-category?${RANGE}`);
     expect(r.status).toBe(200);
     const data = JSON.parse(r.body);
@@ -179,8 +179,9 @@ describe('GET /reports/expense-by-category (summary — default)', () => {
     expect(data.grandTotal).toBeUndefined();
 
     const byName = Object.fromEntries(data.data.map((row: { category: string; total: string }) => [row.category, row]));
-    // Debits only — the $100 refund credit does NOT reduce the summary.
-    expect(parseFloat(byName['Rent Expense'].total)).toBeCloseTo(1500, 4);
+    // Net debit − credit: the $100 refund credit reduces Rent from 1500 to
+    // 1400 (matches the P&L; keeps wash/clearing accounts from double-counting).
+    expect(parseFloat(byName['Rent Expense'].total)).toBeCloseTo(1400, 4);
     expect(parseFloat(byName['Utilities Expense'].total)).toBeCloseTo(200, 4);
     // Revenue and zero-activity accounts never appear in the summary.
     expect(byName['Test Sales']).toBeUndefined();
@@ -202,13 +203,14 @@ describe('GET /reports/expense-by-category (summary — default)', () => {
     expect(data.data[0].category).toBe('Rent Expense');
   });
 
-  it('summary CSV export is unchanged', async () => {
+  it('summary CSV export reflects the netted total', async () => {
     const r = await get(`/expense-by-category?${RANGE}&format=csv`);
     expect(r.status).toBe(200);
     expect(r.contentType).toContain('text/csv');
     expect(r.body).toContain('"#","Category","Total"');
     expect(r.body).toContain('Rent Expense');
-    expect(r.body).toContain('"1,500.00"');
+    // Net of the $100 refund credit (1500 − 100).
+    expect(r.body).toContain('"1,400.00"');
   });
 });
 
