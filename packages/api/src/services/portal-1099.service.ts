@@ -168,6 +168,24 @@ export async function ytdTotalsByBox(
     .filter((r) => r.total > 0);
 }
 
+// 1099-reportable total per vendor: the sum of ytdTotalsByBox across every
+// form box. This is the amount that actually flows to a filing — only
+// payments booked to accounts mapped in the 1099 Account Mapping panel —
+// so it's what the 1099 Center displays and thresholds on. Contrast with
+// ytdTotals, which counts EVERY payment to a vendor regardless of account
+// and therefore over-reports (insurance, goods, merchant fees, etc.).
+export async function ytdReportableTotals(
+  tenantId: string,
+  taxYear: number,
+): Promise<Map<string, number>> {
+  const byBox = await ytdTotalsByBox(tenantId, taxYear);
+  const map = new Map<string, number>();
+  for (const r of byBox) {
+    map.set(r.contactId, (map.get(r.contactId) ?? 0) + r.total);
+  }
+  return map;
+}
+
 // 14.2 — landing summary for the bookkeeper dashboard.
 export interface SummaryData {
   eligibleVendorCount: number;
@@ -207,10 +225,13 @@ export async function summary(tenantId: string, taxYear: number): Promise<Summar
   // explicit "not in scope" decision, not a 1099 candidate.
   const inScopeIds = new Set([...eligibleIds].filter((id) => !excludedIds.has(id)));
 
-  const totals = await ytdTotals(tenantId, taxYear);
-  const eligibleTotals = totals.filter((t) => inScopeIds.has(t.contactId));
-  const ytdPaymentTotal = eligibleTotals.reduce((s, t) => s + t.total, 0);
-  const vendorsOverThreshold = eligibleTotals.filter((t) => t.total >= NEC_THRESHOLD).length;
+  // 1099-reportable (mapped-account) amounts — matches the filing export,
+  // not the vendor's total payments. A vendor paid $50k for insurance but
+  // $0 to a mapped account contributes $0 here and never trips the tile.
+  const reportable = await ytdReportableTotals(tenantId, taxYear);
+  const inScopeTotals = [...inScopeIds].map((id) => reportable.get(id) ?? 0);
+  const ytdPaymentTotal = inScopeTotals.reduce((s, t) => s + t, 0);
+  const vendorsOverThreshold = inScopeTotals.filter((t) => t >= NEC_THRESHOLD).length;
 
   let w9sMissing = 0;
   let w9sExpiring = 0;
@@ -268,8 +289,11 @@ export async function listVendors(tenantId: string, taxYear: number): Promise<Ve
       ),
     );
 
-  const totals = await ytdTotals(tenantId, taxYear);
-  const totalMap = new Map(totals.map((t) => [t.contactId, t.total]));
+  // 1099-reportable (mapped-account) total per vendor — the same figure the
+  // filing export uses. Payments booked to unmapped accounts (insurance,
+  // goods, merchant fees) do not count, so the list matches the categories
+  // mapped in the 1099 Account Mapping panel.
+  const totalMap = await ytdReportableTotals(tenantId, taxYear);
 
   const profiles = await db
     .select()
@@ -277,7 +301,8 @@ export async function listVendors(tenantId: string, taxYear: number): Promise<Ve
     .where(eq(vendor1099Profile.tenantId, tenantId));
   const profileMap = new Map(profiles.map((p) => [p.contactId, p]));
 
-  return vendors.map((v) => {
+  return vendors
+    .map((v) => {
     const total = totalMap.get(v.contactId) ?? 0;
     const profile = profileMap.get(v.contactId);
     const w9 = profile?.w9OnFile ?? false;
@@ -303,7 +328,13 @@ export async function listVendors(tenantId: string, taxYear: number): Promise<Ve
       exclusionNote: profile?.exclusionNote ?? null,
       excludedAt: profile?.excludedAt ?? null,
     };
-  });
+  })
+    // Keep vendors that have 1099-reportable (mapped-account) activity, or
+    // that are actively managed for 1099s — flagged eligible, or carrying a
+    // profile (W-9 on file, exclusion, TIN-match). Vendors with neither
+    // (e.g. an insurer or Amazon paid only from unmapped accounts) drop off
+    // so the list reflects the mapped 1099 categories, not all spend.
+    .filter((row) => row.ytdTotal > 0 || row.is1099Eligible || profileMap.has(row.contactId));
 }
 
 // 14.5 — threshold scanner. Returns the list of vendors crossing
