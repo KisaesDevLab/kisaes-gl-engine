@@ -3,6 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
+import { z } from 'zod';
 import multer from 'multer';
 import path from 'path';
 import crypto from 'crypto';
@@ -22,6 +23,7 @@ import { authenticate } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as companyService from '../services/company.service.js';
+import * as invoiceTemplateService from '../services/invoice-template.service.js';
 import * as authService from '../services/auth.service.js';
 import * as permissionService from '../services/permission.service.js';
 import { testSmtpConnection } from '../services/setup.service.js';
@@ -144,6 +146,47 @@ companyRouter.put('/settings', validate(updateCompanySettingsSchema), async (req
       chatSupportEnabled: company.chatSupportEnabled,
     },
   });
+});
+
+// ── Invoice Template (branding for generated invoices) ──
+// The invoice_templates table + service pre-existed but were never exposed
+// over HTTP, so /settings/invoice-template could not persist anything. These
+// endpoints read/update the tenant's single default template, seeding one on
+// first access so the settings page always has a row to write to.
+const invoiceTemplateUpdateSchema = z.object({
+  name: z.string().min(1).max(100).optional(),
+  accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Must be a 6-digit hex color').optional(),
+  showShipTo: z.boolean().optional(),
+  showPoNumber: z.boolean().optional(),
+  showTerms: z.boolean().optional(),
+  footerText: z.string().max(1000).nullable().optional(),
+  logoUrl: z.string().max(500).nullable().optional(),
+});
+
+async function getOrCreateDefaultTemplate(tenantId: string) {
+  let template = await invoiceTemplateService.getDefault(tenantId);
+  if (!template) {
+    await invoiceTemplateService.seedDefault(tenantId);
+    template = await invoiceTemplateService.getDefault(tenantId);
+  }
+  // Templates exist but none is flagged default (legacy data): adopt the first.
+  if (!template) {
+    const all = await invoiceTemplateService.list(tenantId);
+    template = all[0] ?? null;
+  }
+  return template;
+}
+
+companyRouter.get('/invoice-template', async (req, res) => {
+  const template = await getOrCreateDefaultTemplate(req.tenantId);
+  res.json({ template });
+});
+
+companyRouter.put('/invoice-template', validate(invoiceTemplateUpdateSchema), async (req, res) => {
+  const existing = await getOrCreateDefaultTemplate(req.tenantId);
+  if (!existing) throw AppError.badRequest('No invoice template available to update');
+  const template = await invoiceTemplateService.update(req.tenantId, existing.id, req.body, req.userId);
+  res.json({ template });
 });
 
 companyRouter.get('/smtp', async (req, res) => {

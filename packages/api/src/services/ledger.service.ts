@@ -662,6 +662,9 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
     await tx.update(transactions).set({
       txnDate: input.txnDate,
       dueDate: input.dueDate || null,
+      // Editable on an invoice edit; callers that don't pass txnNumber leave
+      // the existing number untouched (never nulled).
+      ...(input.txnNumber !== undefined ? { txnNumber: input.txnNumber } : {}),
       // Editable on a JE edit; other callers omit basis so it's left as 'both'.
       ...(input.basis ? { basis: input.basis } : {}),
       contactId: input.contactId || null,

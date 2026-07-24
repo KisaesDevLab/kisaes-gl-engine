@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, ne, sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 type Decimal = InstanceType<typeof Decimal>;
@@ -51,6 +51,26 @@ async function getNextInvoiceNumber(tenantId: string): Promise<string> {
   }
   const claimed = updated.newNext - 1;
   return `${updated.prefix || 'INV-'}${claimed}`;
+}
+
+// Guard a manually-supplied invoice number against collisions with other
+// invoices in the tenant. Only applied to caller-supplied overrides — the
+// auto counter path is already collision-safe on its own. There is no DB
+// unique index on txn_number (numbers are informational by design), so this
+// application check is what surfaces a friendly error on manual entry.
+async function assertInvoiceNumberAvailable(tenantId: string, txnNumber: string, excludeId?: string): Promise<void> {
+  const clash = await db.select({ id: transactions.id })
+    .from(transactions)
+    .where(and(
+      eq(transactions.tenantId, tenantId),
+      eq(transactions.txnType, 'invoice'),
+      eq(transactions.txnNumber, txnNumber),
+      ...(excludeId ? [ne(transactions.id, excludeId)] : []),
+    ))
+    .limit(1);
+  if (clash.length > 0) {
+    throw AppError.badRequest(`Invoice number "${txnNumber}" is already in use`);
+  }
 }
 
 async function getSystemAccount(tenantId: string, systemTag: string): Promise<string> {
@@ -111,7 +131,17 @@ export async function createInvoice(tenantId: string, input: CreateInvoiceInput,
   const defaultTaxRate = await getDefaultTaxRate(tenantId);
   const { revenueLines, subtotal, totalTax, total } = buildTaxLines(input.lines, defaultTaxRate);
 
-  const txnNumber = await getNextInvoiceNumber(tenantId);
+  // Manual override (if supplied) skips the auto counter entirely so the
+  // sequence isn't advanced by a one-off custom number; otherwise reserve
+  // the next sequential number atomically.
+  const override = input.txnNumber?.trim();
+  let txnNumber: string;
+  if (override) {
+    await assertInvoiceNumberAvailable(tenantId, override);
+    txnNumber = override;
+  } else {
+    txnNumber = await getNextInvoiceNumber(tenantId);
+  }
   const dueDate = input.dueDate || computeDueDate(input.txnDate, input.paymentTerms);
 
   const journalLines: any[] = [
@@ -151,6 +181,13 @@ export async function updateInvoice(tenantId: string, invoiceId: string, input: 
   if (existing.status === 'void') throw AppError.badRequest('Cannot edit a void invoice');
   if (existing.invoiceStatus === 'paid') throw AppError.badRequest('Cannot edit a paid invoice');
 
+  // Allow editing the invoice number on an unpaid invoice. Only re-check
+  // uniqueness when it actually changed, excluding this invoice itself.
+  const newNumber = input.txnNumber?.trim();
+  if (newNumber && newNumber !== existing.txnNumber) {
+    await assertInvoiceNumberAvailable(tenantId, newNumber, invoiceId);
+  }
+
   const arAccountId = await getSystemAccount(tenantId, 'accounts_receivable');
   const defaultTaxRate = await getDefaultTaxRate(tenantId);
   const { revenueLines, subtotal, totalTax, total } = buildTaxLines(input.lines, defaultTaxRate);
@@ -170,6 +207,7 @@ export async function updateInvoice(tenantId: string, invoiceId: string, input: 
 
   return ledger.updateTransaction(tenantId, invoiceId, {
     txnType: 'invoice',
+    ...(newNumber ? { txnNumber: newNumber } : {}),
     txnDate: input.txnDate,
     dueDate: input.dueDate,
     contactId: input.contactId,

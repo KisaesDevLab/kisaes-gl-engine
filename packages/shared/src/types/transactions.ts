@@ -236,6 +236,8 @@ export interface CreateInvoiceInput {
   }>;
   memo?: string;
   internalNotes?: string;
+  /** Optional manual invoice-number override; auto-assigned when omitted. */
+  txnNumber?: string;
 }
 
 export interface RecordPaymentInput {

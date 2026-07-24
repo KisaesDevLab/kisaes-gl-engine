@@ -108,6 +108,11 @@ export const createInvoiceSchema = z.object({
   lines: z.array(lineItemSchema).min(1).max(MAX_LINES),
   memo: z.string().optional(),
   internalNotes: z.string().optional(),
+  // Optional caller-supplied invoice number. When omitted, the server
+  // auto-assigns the next number from the company counter. When provided
+  // (manual override), the counter is left untouched and the number is
+  // checked for collisions with other invoices in the tenant.
+  txnNumber: z.string().trim().max(50).optional(),
 });
 
 export const recordPaymentSchema = z.object({
