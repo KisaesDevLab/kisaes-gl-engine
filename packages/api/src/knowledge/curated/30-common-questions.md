@@ -64,7 +64,25 @@ all your recovery codes, contact your administrator.
 ### "How do I import lots of transactions at once?"
 Use **Batch Entry →** in the Transactions menu. Pick the transaction type, then paste
 from a spreadsheet or import a CSV file. You can enter expenses, deposits, invoices,
-bills, journal entries, and more in bulk.
+bills, journal entries, and more in bulk. For migrating from another system (or a
+spreadsheet), use **Bulk Import →** instead: it imports a chart of accounts, contacts,
+a trial balance, or GL transactions from **Generic Excel templates** (with a
+**Download template** button), **Accounting Power**, **QuickBooks Online**, or
+**QuickBooks Desktop**, with a validation preview before anything is posted.
+
+### "I posted transactions to the wrong account — how do I move them in bulk?"
+On the **Transactions** list, filter by the account they're currently in (or drill
+into it from the Balance Sheet). Tick the transactions, then use **Move to Account**
+in the bulk toolbar to re-point that account's line to the correct account — e.g.
+from a clearing account to a loan account. Splits are safe (only the source side
+moves); void, locked-period, and reconciled-cleared lines are skipped and reported;
+A/R and A/P can't be bulk-moved. The bulk toolbar also offers **Set Category**,
+**Set Payee**, and **Set Tag**.
+
+### "How do I see more than 50 transactions per page?"
+Use the **Show** dropdown next to the pager at the bottom of the Transactions list:
+50, 100, 250, 500, or **All** (loads the entire filtered set). The choice is
+remembered per company.
 
 ### "How do I set up a recurring bill?"
 Enter the bill normally, then on the bill detail page click **Make Recurring**. Choose

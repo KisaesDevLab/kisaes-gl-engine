@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-03T15:50:31.660Z",
+  "generatedAt": "2026-07-25T13:59:41.818Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -16,7 +16,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 49957
+    "totalBytes": 50408
   },
   "screens": [
     {
@@ -26,6 +26,15 @@
       "sourceFile": null,
       "title": "Public Invoice",
       "section": "Pay",
+      "actions": []
+    },
+    {
+      "id": "reports-view",
+      "path": "/reports/view/:token",
+      "component": "PublicReportPage",
+      "sourceFile": null,
+      "title": "Public Report",
+      "section": "Reports",
       "actions": []
     },
     {
@@ -98,6 +107,15 @@
       "sourceFile": "packages/web/src/features/dashboard/DashboardPage.tsx",
       "title": "Dashboard",
       "section": "Dashboard",
+      "actions": []
+    },
+    {
+      "id": "clients",
+      "path": "/clients",
+      "component": "ClientSwitcherPage",
+      "sourceFile": null,
+      "title": "Client Switcher",
+      "section": "Clients",
       "actions": []
     },
     {
@@ -272,6 +290,24 @@
       "actions": []
     },
     {
+      "id": "transactions-journal-templates",
+      "path": "/transactions/journal-templates",
+      "component": "JournalTemplatesPage",
+      "sourceFile": null,
+      "title": "Journal Templates",
+      "section": "Transactions",
+      "actions": []
+    },
+    {
+      "id": "transactions-journal-templates-enter",
+      "path": "/transactions/journal-templates/enter",
+      "component": "JournalTemplateEntryPage",
+      "sourceFile": null,
+      "title": "Journal Template Entry",
+      "section": "Transactions",
+      "actions": []
+    },
+    {
       "id": "checks-write",
       "path": "/checks/write",
       "component": "WriteCheckPage",
@@ -391,9 +427,9 @@
     {
       "id": "banking-rules",
       "path": "/banking/rules",
-      "component": "Navigate",
+      "component": "BankingRulesRoute",
       "sourceFile": null,
-      "title": "Navigate",
+      "title": "Banking Rules Route",
       "section": "Banking",
       "actions": []
     },
@@ -551,6 +587,42 @@
       "actions": []
     },
     {
+      "id": "reports-packs",
+      "path": "/reports/packs",
+      "component": "ReportPacksListPage",
+      "sourceFile": null,
+      "title": "Report Packs List",
+      "section": "Reports",
+      "actions": []
+    },
+    {
+      "id": "reports-packs-new",
+      "path": "/reports/packs/new",
+      "component": "ReportPackBuilderPage",
+      "sourceFile": null,
+      "title": "Report Pack Builder",
+      "section": "Reports",
+      "actions": []
+    },
+    {
+      "id": "reports-packs-edit",
+      "path": "/reports/packs/:id/edit",
+      "component": "ReportPackBuilderPage",
+      "sourceFile": null,
+      "title": "Report Pack Builder",
+      "section": "Reports",
+      "actions": []
+    },
+    {
+      "id": "reports-packs-runs",
+      "path": "/reports/packs/runs/:runId",
+      "component": "ReportPackRunPage",
+      "sourceFile": null,
+      "title": "Report Pack Run",
+      "section": "Reports",
+      "actions": []
+    },
+    {
       "id": "reports-profit-loss",
       "path": "/reports/profit-loss",
       "component": "ProfitAndLossReport",
@@ -625,18 +697,54 @@
     {
       "id": "reports-expense-by-vendor",
       "path": "/reports/expense-by-vendor",
-      "component": "GenericReport",
+      "component": "ExpensesByVendorReport",
       "sourceFile": null,
-      "title": "Expenses by Vendor",
+      "title": "Expenses By Vendor",
       "section": "Reports",
       "actions": []
     },
     {
       "id": "reports-expense-by-category",
       "path": "/reports/expense-by-category",
-      "component": "GenericReport",
+      "component": "ExpensesByCategoryReport",
       "sourceFile": null,
-      "title": "Expenses by Category",
+      "title": "Expenses By Category",
+      "section": "Reports",
+      "actions": []
+    },
+    {
+      "id": "reports-revenue-by-category",
+      "path": "/reports/revenue-by-category",
+      "component": "RevenuesByCategoryReport",
+      "sourceFile": null,
+      "title": "Revenues By Category",
+      "section": "Reports",
+      "actions": []
+    },
+    {
+      "id": "reports-assets-by-account",
+      "path": "/reports/assets-by-account",
+      "component": "AssetsByAccountReport",
+      "sourceFile": null,
+      "title": "Assets By Account",
+      "section": "Reports",
+      "actions": []
+    },
+    {
+      "id": "reports-liabilities-by-account",
+      "path": "/reports/liabilities-by-account",
+      "component": "LiabilitiesByAccountReport",
+      "sourceFile": null,
+      "title": "Liabilities By Account",
+      "section": "Reports",
+      "actions": []
+    },
+    {
+      "id": "reports-equity-by-account",
+      "path": "/reports/equity-by-account",
+      "component": "EquityByAccountReport",
+      "sourceFile": null,
+      "title": "Equity By Account",
       "section": "Reports",
       "actions": []
     },
@@ -731,11 +839,29 @@
       "actions": []
     },
     {
-      "id": "reports-bank-reconciliation-summary",
-      "path": "/reports/bank-reconciliation-summary",
+      "id": "reports-bank-balances",
+      "path": "/reports/bank-balances",
       "component": "GenericReport",
       "sourceFile": null,
-      "title": "Bank Reconciliation",
+      "title": "Bank Account Balances",
+      "section": "Reports",
+      "actions": []
+    },
+    {
+      "id": "reports-bank-reconciliation-summary",
+      "path": "/reports/bank-reconciliation-summary",
+      "component": "BankReconciliationSummaryReport",
+      "sourceFile": null,
+      "title": "Bank Reconciliation Summary",
+      "section": "Reports",
+      "actions": []
+    },
+    {
+      "id": "reports-reconciliation-detail",
+      "path": "/reports/reconciliation-detail",
+      "component": "ReconciliationDetailReport",
+      "sourceFile": null,
+      "title": "Reconciliation Detail",
       "section": "Reports",
       "actions": []
     },
@@ -808,6 +934,15 @@
       "component": "GenericReport",
       "sourceFile": null,
       "title": "Trial Balance",
+      "section": "Reports",
+      "actions": []
+    },
+    {
+      "id": "reports-account-activity-summary",
+      "path": "/reports/account-activity-summary",
+      "component": "GenericReport",
+      "sourceFile": null,
+      "title": "Account Activity Summary",
       "section": "Reports",
       "actions": []
     },
@@ -961,6 +1096,15 @@
       "component": "ReportLabelsPage",
       "sourceFile": null,
       "title": "Report Labels",
+      "section": "Settings",
+      "actions": []
+    },
+    {
+      "id": "settings-detail-types",
+      "path": "/settings/detail-types",
+      "component": "DetailTypesPage",
+      "sourceFile": null,
+      "title": "Detail Types",
       "section": "Settings",
       "actions": []
     },
@@ -1192,6 +1336,8 @@
     "\"How do I set up 2FA?\"",
     "\"I lost my authenticator app — how do I log in?\"",
     "\"How do I import lots of transactions at once?\"",
+    "\"I posted transactions to the wrong account — how do I move them in bulk?\"",
+    "\"How do I see more than 50 transactions per page?\"",
     "\"How do I set up a recurring bill?\"",
     "\"How do I back up my data?\"",
     "\"How do I switch between companies?\"",

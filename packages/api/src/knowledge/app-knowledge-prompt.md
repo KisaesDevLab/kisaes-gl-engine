@@ -292,7 +292,25 @@ all your recovery codes, contact your administrator.
 ### "How do I import lots of transactions at once?"
 Use **Batch Entry →** in the Transactions menu. Pick the transaction type, then paste
 from a spreadsheet or import a CSV file. You can enter expenses, deposits, invoices,
-bills, journal entries, and more in bulk.
+bills, journal entries, and more in bulk. For migrating from another system (or a
+spreadsheet), use **Bulk Import →** instead: it imports a chart of accounts, contacts,
+a trial balance, or GL transactions from **Generic Excel templates** (with a
+**Download template** button), **Accounting Power**, **QuickBooks Online**, or
+**QuickBooks Desktop**, with a validation preview before anything is posted.
+
+### "I posted transactions to the wrong account — how do I move them in bulk?"
+On the **Transactions** list, filter by the account they're currently in (or drill
+into it from the Balance Sheet). Tick the transactions, then use **Move to Account**
+in the bulk toolbar to re-point that account's line to the correct account — e.g.
+from a clearing account to a loan account. Splits are safe (only the source side
+moves); void, locked-period, and reconciled-cleared lines are skipped and reported;
+A/R and A/P can't be bulk-moved. The bulk toolbar also offers **Set Category**,
+**Set Payee**, and **Set Tag**.
+
+### "How do I see more than 50 transactions per page?"
+Use the **Show** dropdown next to the pager at the bottom of the Transactions list:
+50, 100, 250, 500, or **All** (loads the entire filtered set). The choice is
+remembered per company.
 
 ### "How do I set up a recurring bill?"
 Enter the bill normally, then on the bill detail page click **Make Recurring**. Choose
@@ -629,8 +647,10 @@ Manage backups under **Settings → Backup & Restore →**.
    passphrase, the backup cannot be recovered.**
 
 **Restoring a Backup:**
-1. Upload a `.vmb` (portable) or `.kbk` (legacy) file.
-2. For `.vmb` files, enter the backup passphrase.
+1. Upload a `.vmx` (system package), `.vmb` (portable), or `.kbk` (legacy) file. A
+   multi-part disaster-recovery bundle is several `.partNNofMM.vmx` files — select
+   **all of them**; every part is required.
+2. For `.vmx`/`.vmb` files, enter the backup passphrase.
 3. Type "RESTORE" to confirm.
 4. The system validates and restores the data.
 
@@ -961,7 +981,7 @@ The following screens exist in the application. Use these names and paths when d
 - **Statement Imports** (`/banking/statement-imports`)
 - **Reconciliation** (`/banking/reconcile`)
 - **Reconciliation History** (`/banking/reconciliation-history`)
-- **Navigate** (`/banking/rules`)
+- **Banking Rules Route** (`/banking/rules`)
 - **Bank Deposit** (`/banking/deposit`)
 
 ### Expenses
@@ -991,6 +1011,8 @@ The following screens exist in the application. Use these names and paths when d
 - **Cash Sale** (`/transactions/:id/edit/cash-sale`)
 - **Journal Entry** (`/transactions/:id/edit/journal-entry`)
 - **Batch Entry** (`/transactions/batch`)
+- **Journal Templates** (`/transactions/journal-templates`)
+- **Journal Template Entry** (`/transactions/journal-templates/enter`)
 
 ### Contacts
 
@@ -1011,7 +1033,12 @@ The following screens exist in the application. Use these names and paths when d
 
 ### Reports
 
+- **Public Report** (`/reports/view/:token`)
 - **Reports** (`/reports`)
+- **Report Packs List** (`/reports/packs`)
+- **Report Pack Builder** (`/reports/packs/new`)
+- **Report Pack Builder** (`/reports/packs/:id/edit`)
+- **Report Pack Run** (`/reports/packs/runs/:runId`)
 - **Profit And Loss** (`/reports/profit-loss`)
 - **Balance Sheet** (`/reports/balance-sheet`)
 - **Cash Flow** (`/reports/cash-flow`)
@@ -1020,8 +1047,12 @@ The following screens exist in the application. Use these names and paths when d
 - **Customer Balance Summary** (`/reports/customer-balance-summary`)
 - **Customer Balance Detail** (`/reports/customer-balance-detail`)
 - **Invoice List** (`/reports/invoice-list`)
-- **Expenses by Vendor** (`/reports/expense-by-vendor`)
-- **Expenses by Category** (`/reports/expense-by-category`)
+- **Expenses By Vendor** (`/reports/expense-by-vendor`)
+- **Expenses By Category** (`/reports/expense-by-category`)
+- **Revenues By Category** (`/reports/revenue-by-category`)
+- **Assets By Account** (`/reports/assets-by-account`)
+- **Liabilities By Account** (`/reports/liabilities-by-account`)
+- **Equity By Account** (`/reports/equity-by-account`)
 - **Vendor Balance Summary** (`/reports/vendor-balance-summary`)
 - **Sales by Customer** (`/reports/sales-by-customer`)
 - **Sales by Item** (`/reports/sales-by-item`)
@@ -1031,7 +1062,9 @@ The following screens exist in the application. Use these names and paths when d
 - **Bill Payment History** (`/reports/bill-payment-history`)
 - **1099 Preparation** (`/reports/ap-1099-prep`)
 - **Transactions by Vendor** (`/reports/transaction-list-by-vendor`)
-- **Bank Reconciliation** (`/reports/bank-reconciliation-summary`)
+- **Bank Account Balances** (`/reports/bank-balances`)
+- **Bank Reconciliation Summary** (`/reports/bank-reconciliation-summary`)
+- **Reconciliation Detail** (`/reports/reconciliation-detail`)
 - **Deposit Detail** (`/reports/deposit-detail`)
 - **Check Register** (`/reports/check-register`)
 - **Sales Tax Liability** (`/reports/sales-tax-liability`)
@@ -1040,6 +1073,7 @@ The following screens exist in the application. Use these names and paths when d
 - **1099 Vendor Summary** (`/reports/vendor-1099-summary`)
 - **General Ledger** (`/reports/general-ledger`)
 - **Trial Balance** (`/reports/trial-balance`)
+- **Account Activity Summary** (`/reports/account-activity-summary`)
 - **Transaction List** (`/reports/transaction-list`)
 - **Journal Entries** (`/reports/journal-entry-report`)
 - **Budget Vs Actual** (`/reports/budget-vs-actual`)
@@ -1063,6 +1097,7 @@ The following screens exist in the application. Use these names and paths when d
 - **Company Ai Settings** (`/settings/ai`)
 - **Ai Diagnostics** (`/settings/ai/diagnostics`)
 - **Report Labels** (`/settings/report-labels`)
+- **Detail Types** (`/settings/detail-types`)
 - **Stripe Settings** (`/settings/online-payments`)
 - **Team** (`/settings/team`)
 - **Api Keys** (`/settings/api-keys`)
@@ -1087,6 +1122,10 @@ The following screens exist in the application. Use these names and paths when d
 ### Capture
 
 - **Portal Capture** (`capture`)
+
+### Clients
+
+- **Client Switcher** (`/clients`)
 
 ### Daily sales
 
