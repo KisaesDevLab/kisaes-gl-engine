@@ -27,4 +27,19 @@ describe('bulkUpdateTransactionsSchema', () => {
     expect(bulkUpdateTransactionsSchema.safeParse({ txnIds: [], setTagId: id }).success).toBe(false);
     expect(bulkUpdateTransactionsSchema.safeParse({ txnIds: ['nope'], setTagId: id }).success).toBe(false);
   });
+
+  it('accepts a paired source-account move', () => {
+    const to = '22222222-2222-2222-2222-222222222222';
+    expect(bulkUpdateTransactionsSchema.safeParse({
+      txnIds: [id], moveFromAccountId: id, moveToAccountId: to,
+    }).success).toBe(true);
+  });
+
+  it('rejects a half-specified or self-targeted move', () => {
+    expect(bulkUpdateTransactionsSchema.safeParse({ txnIds: [id], moveFromAccountId: id }).success).toBe(false);
+    expect(bulkUpdateTransactionsSchema.safeParse({ txnIds: [id], moveToAccountId: id }).success).toBe(false);
+    expect(bulkUpdateTransactionsSchema.safeParse({
+      txnIds: [id], moveFromAccountId: id, moveToAccountId: id,
+    }).success).toBe(false);
+  });
 });

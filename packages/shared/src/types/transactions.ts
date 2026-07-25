@@ -196,6 +196,17 @@ export interface BulkUpdateTransactionsInput {
    * only the viewed account's line should carry the tag.
    */
   tagAccountId?: string;
+  /**
+   * Source-account move: re-points every journal line posted to
+   * moveFromAccountId (the account the list is filtered by) onto
+   * moveToAccountId — e.g. relocating transactions parked in a clearing
+   * account to a loan account. Unlike setCategoryAccountId this moves the
+   * MONEY/source side, so split transactions work (the splits are untouched).
+   * Both must be supplied together. Lines cleared in a completed
+   * reconciliation are skipped.
+   */
+  moveFromAccountId?: string;
+  moveToAccountId?: string;
 }
 
 export interface BulkUpdateTransactionsResult {

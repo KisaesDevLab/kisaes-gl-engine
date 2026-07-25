@@ -170,7 +170,9 @@ export const transactionFiltersSchema = z.object({
   // columns server-side; default is date desc.
   sortBy: z.enum(['date', 'type', 'number', 'payee', 'memo', 'category', 'amount', 'status']).optional(),
   sortDir: z.enum(['asc', 'desc']).optional(),
-  limit: z.coerce.number().int().min(1).max(500).default(50),
+  // Max 10000 (was 500) so the list's "ALL" page-size option can fetch the
+  // whole filtered set in one request for typical small-business volumes.
+  limit: z.coerce.number().int().min(1).max(10000).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
 
@@ -182,6 +184,9 @@ export const transactionFiltersSchema = z.object({
 //   - setTagId: null clears, a uuid sets the tag on the transaction's lines.
 //   - tagAccountId: scopes a setTagId change to lines on this account only
 //     (e.g. the filtered account), so a JE/split only tags the viewed line.
+//   - moveFromAccountId + moveToAccountId (paired): re-point the lines posted
+//     to moveFrom onto moveTo — a SOURCE-account move (clearing → loan), which
+//     works on splits because the category lines are untouched.
 export const bulkUpdateTransactionsSchema = z
   .object({
     txnIds: z.array(z.string().uuid()).min(1).max(500),
@@ -189,13 +194,24 @@ export const bulkUpdateTransactionsSchema = z
     setCategoryAccountId: z.string().uuid().optional(),
     setTagId: z.string().uuid().nullable().optional(),
     tagAccountId: z.string().uuid().optional(),
+    moveFromAccountId: z.string().uuid().optional(),
+    moveToAccountId: z.string().uuid().optional(),
   })
+  .refine(
+    (v) => (v.moveFromAccountId === undefined) === (v.moveToAccountId === undefined),
+    { message: 'moveFromAccountId and moveToAccountId must be supplied together.' },
+  )
+  .refine(
+    (v) => v.moveFromAccountId === undefined || v.moveFromAccountId !== v.moveToAccountId,
+    { message: 'The move source and destination accounts must differ.' },
+  )
   .refine(
     (v) =>
       v.setPayeeContactId !== undefined ||
       v.setCategoryAccountId !== undefined ||
-      v.setTagId !== undefined,
-    { message: 'Specify at least one of payee, category, or tag to change.' },
+      v.setTagId !== undefined ||
+      v.moveToAccountId !== undefined,
+    { message: 'Specify at least one of payee, category, tag, or account move to change.' },
   );
 
 // Tag schemas moved to schemas/tags.ts

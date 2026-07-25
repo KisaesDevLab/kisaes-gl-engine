@@ -1115,6 +1115,12 @@ function categoryLineAccountCond() {
  *   - Category re-points the transaction's SINGLE P&L line to a new account
  *     and moves the denormalised accounts.balance to match. Split
  *     transactions (0 or >1 category lines) are skipped, never collapsed.
+ *   - Source move (moveFromAccountId → moveToAccountId) re-points every line
+ *     posted to the FROM account onto the TO account — the money/source side,
+ *     so splits work (their category lines are untouched). Transactions whose
+ *     from-account line is cleared in a completed reconciliation are skipped
+ *     (moving it would orphan the rec); A/R and A/P control accounts are
+ *     rejected outright (aging and payment application depend on them).
  *   - Void, lock-dated, and reconciled (cleared in a completed rec)
  *     transactions are skipped for line-touching changes.
  * Returns counts so the UI can report "N updated, M skipped (splits, etc.)".
@@ -1125,7 +1131,7 @@ export async function bulkUpdateTransactions(
   userId?: string,
   companyId?: string,
 ): Promise<BulkUpdateTransactionsResult> {
-  const { txnIds, setPayeeContactId, setCategoryAccountId, setTagId, tagAccountId } = input;
+  const { txnIds, setPayeeContactId, setCategoryAccountId, setTagId, tagAccountId, moveFromAccountId, moveToAccountId } = input;
   const skipped: Array<{ id: string; reason: string }> = [];
   let updated = 0;
 
@@ -1134,6 +1140,20 @@ export async function bulkUpdateTransactions(
     // the whole batch rather than silently no-op per transaction.
     if (setCategoryAccountId !== undefined) {
       await assertAccountsInScope(tx, tenantId, companyId ?? null, [setCategoryAccountId]);
+    }
+    if (moveToAccountId !== undefined) {
+      if (!moveFromAccountId || moveFromAccountId === moveToAccountId) {
+        throw AppError.badRequest('A source-account move needs distinct from/to accounts.');
+      }
+      await assertAccountsInScope(tx, tenantId, companyId ?? null, [moveFromAccountId, moveToAccountId]);
+      // A/R and A/P control lines drive aging + payment application; moving
+      // them wholesale would corrupt both. Refuse the batch, don't skip rows.
+      const moveAccounts = await tx.select({ id: accounts.id, detailType: accounts.detailType })
+        .from(accounts)
+        .where(and(eq(accounts.tenantId, tenantId), inArray(accounts.id, [moveFromAccountId, moveToAccountId])));
+      if (moveAccounts.some((a) => a.detailType === 'accounts_receivable' || a.detailType === 'accounts_payable')) {
+        throw AppError.badRequest('Accounts Receivable / Accounts Payable lines cannot be bulk-moved.');
+      }
     }
     if (setPayeeContactId) {
       const [contact] = await tx.select({ id: contacts.id })
@@ -1226,6 +1246,60 @@ export async function bulkUpdateTransactions(
         // else: payee/tag still apply below; the category just didn't move.
       }
 
+      // Source-account move — re-point this transaction's line(s) on the FROM
+      // account to the TO account. Splits are fine: only the source side moves.
+      if (moveToAccountId !== undefined && moveFromAccountId !== undefined) {
+        const soleChange =
+          setPayeeContactId === undefined && setCategoryAccountId === undefined && setTagId === undefined;
+        const moveLines = await tx.select({
+          id: journalLines.id, debit: journalLines.debit, credit: journalLines.credit,
+        })
+          .from(journalLines)
+          .where(and(
+            eq(journalLines.tenantId, tenantId),
+            eq(journalLines.transactionId, txnId),
+            eq(journalLines.accountId, moveFromAccountId),
+          ));
+
+        if (moveLines.length === 0) {
+          if (soleChange) { skipped.push({ id: txnId, reason: 'no_line_on_account' }); continue; }
+        } else {
+          // A from-account line cleared in a completed reconciliation must not
+          // move — the rec's cleared total would no longer describe the account.
+          const cleared = await tx.execute(sql`
+            SELECT 1
+            FROM ${reconciliationLines} rl
+            JOIN ${reconciliations} r ON r.id = rl.reconciliation_id
+            WHERE r.tenant_id = ${tenantId}
+              AND r.status = 'complete'
+              AND rl.is_cleared = true
+              AND rl.journal_line_id IN (${sql.join(moveLines.map((l) => sql`${l.id}`), sql`, `)})
+            LIMIT 1
+          `);
+          if ((cleared.rows as unknown[]).length > 0) {
+            if (soleChange) { skipped.push({ id: txnId, reason: 'reconciled' }); continue; }
+          } else {
+            if (txn.status === 'posted') {
+              // Shift the denormalised balances: reverse the lines off the from
+              // account, apply them to the to account. Amounts are unchanged so
+              // the trial balance still balances.
+              let d = new Decimal('0');
+              let c = new Decimal('0');
+              for (const l of moveLines) { d = d.plus(l.debit || '0'); c = c.plus(l.credit || '0'); }
+              await updateAccountBalances(tx, tenantId, [{ accountId: moveFromAccountId, debit: c.toFixed(4), credit: d.toFixed(4) }]);
+              await updateAccountBalances(tx, tenantId, [{ accountId: moveToAccountId, debit: d.toFixed(4), credit: c.toFixed(4) }]);
+            }
+            await tx.update(journalLines)
+              .set({ accountId: moveToAccountId })
+              .where(and(
+                eq(journalLines.tenantId, tenantId),
+                inArray(journalLines.id, moveLines.map((l) => l.id)),
+              ));
+            changed = true;
+          }
+        }
+      }
+
       // Tag — set (uuid) or clear (null). Scoped to the viewed account's
       // line(s) when tagAccountId is given, so a split / journal entry only
       // tags the account the operator is looking at rather than every line.
@@ -1259,6 +1333,7 @@ export async function bulkUpdateTransactions(
           ...(setPayeeContactId !== undefined ? { contactId: setPayeeContactId } : {}),
           ...(setCategoryAccountId !== undefined ? { categoryAccountId: setCategoryAccountId } : {}),
           ...(setTagId !== undefined ? { tagId: setTagId } : {}),
+          ...(moveToAccountId !== undefined ? { moveFromAccountId, moveToAccountId } : {}),
         }, userId, tx);
       } else {
         skipped.push({ id: txnId, reason: 'no_change' });
