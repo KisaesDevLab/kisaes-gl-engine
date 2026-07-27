@@ -157,11 +157,19 @@ async function computePortalActivity(tenantId: string) {
 //
 // /summary runs all nine panels in parallel server-side with
 // Promise.allSettled so a single panel's failure doesn't collapse the
+// ?months= for the revenue/expense trend, clamped to [1, 36]: the trend
+// builder runs one aggregate query per month bucket, so an arbitrary
+// client-supplied value must not translate into unbounded query fan-out.
+function readTrendMonths(req: { query: Record<string, unknown> }): number {
+  const parsed = parseInt(req.query['months'] as string) || 6;
+  return Math.min(Math.max(parsed, 1), 36);
+}
+
 // whole response — the client still sees the successful panels and gets
 // explicit null for the failing ones. The shape matches the individual
 // endpoints one-to-one so the UI code only changed its fetching layer.
 dashboardRouter.get('/summary', async (req, res) => {
-  const months = parseInt(req.query['months'] as string) || 6;
+  const months = readTrendMonths(req);
   const [
     snapshot, trend, cashPosition, receivables, payables,
     actionItems, budgetPerformance, bankingHealth, portalActivity,
@@ -224,8 +232,7 @@ dashboardRouter.get('/snapshot', async (req, res) => {
 });
 
 dashboardRouter.get('/trend', async (req, res) => {
-  const months = parseInt(req.query['months'] as string) || 6;
-  const data = await dashboardService.getRevExpTrend(req.tenantId, months);
+  const data = await dashboardService.getRevExpTrend(req.tenantId, readTrendMonths(req));
   res.json({ data });
 });
 
