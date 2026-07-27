@@ -268,6 +268,14 @@ companyRouter.post('/users/:userId/reactivate', async (req, res) => {
   res.json({ message: 'User reactivated' });
 });
 
+// Email the user a password-reset link (same flow as self-service
+// forgot-password). Never reveals or sets a password server-side.
+companyRouter.post('/users/:userId/send-password-reset', async (req, res) => {
+  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can manage users');
+  const result = await authService.sendPasswordReset(req.tenantId, req.params['userId']!, req.userId);
+  res.json({ message: `Password reset email sent to ${result.email}` });
+});
+
 // ─── Permission Templates & Per-User Permissions ────────────
 // Owner-gated. Templates are named, reusable access sets; per-user
 // permissions assign a template + overrides. Bookkeepers and external

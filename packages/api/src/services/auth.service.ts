@@ -670,6 +670,29 @@ export async function logout(refreshToken: string): Promise<void> {
   await db.delete(sessions).where(eq(sessions.refreshTokenHash, tokenHash));
 }
 
+// Issue a fresh 1-hour reset token for a known user and email the link.
+// Shared by the self-service forgot-password flow and the owner/admin
+// "send password reset" actions (Team page, admin user list).
+async function issuePasswordReset(userId: string, email: string): Promise<void> {
+  const rawToken = crypto.randomBytes(32).toString('hex');
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  const expiresAt = new Date();
+  expiresAt.setHours(expiresAt.getHours() + 1); // 1 hour expiry
+
+  // Invalidate any existing tokens for this user
+  await db.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, userId));
+
+  // Store the hashed token
+  await db.insert(passwordResetTokens).values({
+    userId,
+    tokenHash,
+    expiresAt,
+  });
+
+  // Send the email (uses system SMTP, falls back to stub if not configured)
+  await systemEmail.sendPasswordResetEmail(email, rawToken);
+}
+
 export async function forgotPassword(email: string): Promise<void> {
   const normalized = normalizeEmail(email);
   const user = await db.query.users.findFirst({
@@ -679,24 +702,37 @@ export async function forgotPassword(email: string): Promise<void> {
   // Always return success to prevent email enumeration
   if (!user) return;
 
-  // Generate a reset token
-  const rawToken = crypto.randomBytes(32).toString('hex');
-  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
-  const expiresAt = new Date();
-  expiresAt.setHours(expiresAt.getHours() + 1); // 1 hour expiry
+  await issuePasswordReset(user.id, normalized);
+}
 
-  // Invalidate any existing tokens for this user
-  await db.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, user.id));
-
-  // Store the hashed token
-  await db.insert(passwordResetTokens).values({
-    userId: user.id,
-    tokenHash,
-    expiresAt,
+/**
+ * Owner-triggered password-reset email from the Team page. Tenant-scoped
+ * like the other team-management actions: the target must have access to
+ * the caller's tenant. Unlike the admin set-password tool this never
+ * reveals or sets a password — it just emails the user a reset link.
+ */
+export async function sendPasswordReset(tenantId: string, userId: string, actorUserId?: string): Promise<{ email: string }> {
+  const access = await db.query.userTenantAccess.findFirst({
+    where: and(eq(userTenantAccess.userId, userId), eq(userTenantAccess.tenantId, tenantId)),
   });
+  if (!access) throw AppError.notFound('User access not found');
+  const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+  if (!user) throw AppError.notFound('User not found');
 
-  // Send the email (uses system SMTP, falls back to stub if not configured)
-  await systemEmail.sendPasswordResetEmail(normalized, rawToken);
+  await issuePasswordReset(user.id, user.email);
+  await auditLog(tenantId, 'update', 'user', user.id, null, { action: 'password_reset_email_sent' }, actorUserId);
+  return { email: user.email };
+}
+
+/**
+ * Super-admin variant for the admin user list — no tenant scoping (the
+ * admin surface is cross-tenant), same email-only semantics.
+ */
+export async function sendPasswordResetById(userId: string): Promise<{ email: string }> {
+  const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+  if (!user) throw AppError.notFound('User not found');
+  await issuePasswordReset(user.id, user.email);
+  return { email: user.email };
 }
 
 export async function resetPassword(token: string, newPassword: string): Promise<void> {

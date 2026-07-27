@@ -504,6 +504,14 @@ adminRouter.post('/users/:id/reset-password', validate(adminResetPasswordSchema)
   res.json({ message: 'Password reset' });
 });
 
+// Email the user a password-reset link — contrast with reset-password
+// above, which sets a typed-in password directly. Preferred: the admin
+// never sees or transmits a credential.
+adminRouter.post('/users/:id/send-password-reset', async (req, res) => {
+  const result = await authService.sendPasswordResetById(req.params['id']!);
+  res.json({ message: `Password reset email sent to ${result.email}` });
+});
+
 // Admin-required lockout unlock — CLOUDFLARE_TUNNEL_PLAN Phase 3.
 // Auto-unlock-after-15-min was removed because it gave credential-
 // stuffing attackers a cheap oracle. A locked account now requires

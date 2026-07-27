@@ -490,6 +490,11 @@ an email with a link to set up their account. Each user can have different roles
 levels per company. Use **Admin → All Users →** (admin only) to manage users across the
 entire system.
 
+If a team member forgets their password, the owner can click **Reset** on their row on
+the Team page to email them a password-reset link (valid 1 hour). Admins have the same
+option in the Reset Password dialog on **Admin → All Users →** ("Send reset email"),
+alongside the ability to set a password directly.
+
 ### Per-Member Permissions
 Owners can fine-tune what each **bookkeeper** can see and do under
 **Settings → Team →**. Access is set per feature (Invoices, Bills, Banking, Reports,

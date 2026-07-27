@@ -327,4 +327,30 @@ describe('Auth Service', () => {
       await expect(authService.refresh(registerResult.tokens.refreshToken)).rejects.toThrow('Invalid refresh token');
     });
   });
+
+  describe('sendPasswordReset (owner/admin-triggered)', () => {
+    it('issues a reset token for a user in the caller tenant', async () => {
+      const reg = await authService.register({
+        email: 'owner@example.com', password: 'password123',
+        displayName: 'Owner', companyName: 'Reset Co',
+      });
+      const result = await authService.sendPasswordReset(reg.user.tenantId, reg.user.id);
+      expect(result.email).toBe('owner@example.com');
+      const tokens = await db.execute(sql`SELECT 1 FROM password_reset_tokens WHERE user_id = ${reg.user.id}`);
+      expect(tokens.rows.length).toBe(1);
+    });
+
+    it('rejects a user without access to the caller tenant (cross-tenant)', async () => {
+      const a = await authService.register({
+        email: 'a@example.com', password: 'password123',
+        displayName: 'A', companyName: 'Tenant A Co',
+      });
+      const b = await authService.register({
+        email: 'b@example.com', password: 'password123',
+        displayName: 'B', companyName: 'Tenant B Co',
+      });
+      await expect(authService.sendPasswordReset(a.user.tenantId, b.user.id))
+        .rejects.toThrow('User access not found');
+    });
+  });
 });
