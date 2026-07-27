@@ -10,8 +10,10 @@
 // operator remembering to print at 100% ("Actual size").
 //
 // Layouts (page is always Letter, one check per page):
-//   voucher      — check face on top 3.5", stub below (top-perf stock)
-//   check_middle — stub / check face at 3.67" / stub (middle-check stock)
+//   voucher      — check face on top 3.5", two identical 3.5"/4" stubs
+//                  below (QB-compatible stock, perfs at 3.5" and 7")
+//   check_middle — 3.5" stub / 3.5" check face / 4" stub
+//                  (QB-compatible middle stock, perfs at 3.5" and 7")
 //   z_fold       — pressure-seal self-mailer, coupon in the middle panel
 //
 // The MICR line is drawn with vector E-13B glyphs — see check-micr.ts.
@@ -638,11 +640,17 @@ function drawCheckPage(page: PDFPage, fonts: Fonts, c: CheckData, format: string
   }
 
   if (format === 'check_middle') {
-    const faceTop = PAGE_H - 3.67 * IN;
-    const faceBottom = PAGE_H - 7.17 * IN;
+    // QuickBooks-compatible middle stock: perforations at 3.5" and 7.0"
+    // from the top — 3.5" top stub, 3.5" check face, 4" bottom stub.
+    // (Equal-thirds 3.667"/7.333" middle stock exists but is a different
+    // product; QB-compatible stock is 3.5/3.5/4.) The face boundaries ARE
+    // the perforations, so the MICR clear band stays spec'd against the
+    // real tear line the bank sees as the document bottom edge.
+    const faceTop = PAGE_H - 3.5 * IN;
+    const faceBottom = PAGE_H - 7 * IN;
     if (c.printVoucherStub) {
       drawStub(ctx, c, PAGE_H - 0.3 * IN, faceTop + 6);
-      drawLine(ctx, 0, PAGE_H - 3.5 * IN, PAGE_W, PAGE_H - 3.5 * IN, 0.75, LIGHT, [4, 3]);
+      drawLine(ctx, 0, faceTop, PAGE_W, faceTop, 0.75, LIGHT, [4, 3]);
       drawLine(ctx, 0, faceBottom, PAGE_W, faceBottom, 0.75, LIGHT, [4, 3]);
       drawStub(ctx, c, faceBottom - 12, 0.3 * IN);
     }
@@ -650,12 +658,20 @@ function drawCheckPage(page: PDFPage, fonts: Fonts, c: CheckData, format: string
     return;
   }
 
-  // voucher (default): check face on top 3.5", stub below the perf
+  // voucher (default): QuickBooks-compatible check-on-top stock —
+  // perforations at 3.5" and 7.0": check face on the top 3.5", then TWO
+  // stubs (3.5" + 4") carrying identical detail, matching how QuickBooks
+  // fills voucher stock (one stub goes to the vendor, one is the file
+  // copy). Each stub's row budget is computed within its own panel so
+  // an itemized bill table can never straddle the 7" tear line.
   const faceBottom = PAGE_H - 3.5 * IN;
+  const perf2 = PAGE_H - 7 * IN;
   drawCheckFace(ctx, c, PAGE_H, faceBottom, false);
   if (c.printVoucherStub) {
     drawLine(ctx, 0, faceBottom, PAGE_W, faceBottom, 0.75, LIGHT, [4, 3]);
-    drawStub(ctx, c, faceBottom - 12, 0.3 * IN);
+    drawStub(ctx, c, faceBottom - 12, perf2 + 10);
+    drawLine(ctx, 0, perf2, PAGE_W, perf2, 0.75, LIGHT, [4, 3]);
+    drawStub(ctx, c, perf2 - 12, 0.3 * IN);
   }
 }
 

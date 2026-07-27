@@ -31,8 +31,8 @@ export interface WriteCheckInput {
 // selectors all derive from this, so adding a layout is a one-line
 // change here plus a render branch in check-pdf.service.drawCheckPage.
 export const CHECK_LAYOUTS = [
-  { value: 'voucher', label: 'Check on Top', description: 'Check at the top of the page, voucher stub below (standard business check).' },
-  { value: 'check_middle', label: 'Check in Middle', description: 'Check in the center of the page with stubs above and below.' },
+  { value: 'voucher', label: 'Check on Top', description: 'Check on the top 3.5", two identical voucher stubs below — QuickBooks-compatible stock perforated at 3.5" and 7".' },
+  { value: 'check_middle', label: 'Check in Middle', description: 'Stub on top, check in the middle, stub below — QuickBooks-compatible middle stock perforated at 3.5" and 7".' },
   { value: 'z_fold', label: 'Z-Fold Pressure Seal', description: 'Z-fold self-mailer (8.5×11) — check in the middle panel with remittance stubs above/below. For blank pressure-seal stock (e.g. blue Z-fold).' },
 ] as const;
 export type CheckLayout = typeof CHECK_LAYOUTS[number]['value'];

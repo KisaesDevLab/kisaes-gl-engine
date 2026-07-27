@@ -853,9 +853,11 @@ under **Settings → Check Print Settings →**. A test print option lets you ve
 alignment before printing real checks.
 
 **Check Layouts:**
-- **Check on Top** — check at the top of the page, voucher stub below (standard
-  business check stock).
-- **Check in Middle** — check in the center of the page with stubs above and below.
+- **Check on Top** — check on the top 3.5" of the page, two identical voucher
+  stubs below (one for the vendor, one file copy). Matches QuickBooks-compatible
+  voucher stock perforated at 3.5" and 7".
+- **Check in Middle** — stub on top, check in the middle, stub on the bottom.
+  Matches QuickBooks-compatible middle check stock perforated at 3.5" and 7".
 - **Z-Fold Pressure Seal** — for 8.5×11 pressure-seal self-mailer stock (e.g. blue
   Z-fold forms). The check prints in the middle panel with remittance stubs above
   and below, positioned for the Z-fold creases at 3.667" and 7.333". When printing
