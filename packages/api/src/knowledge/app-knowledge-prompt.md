@@ -598,6 +598,12 @@ locations, properties). Manage tags under **Settings → Tags →**.
   group. Multi-select groups allow multiple.
 - Tags can be applied when creating or editing any transaction.
 - Filter by tags on reports to see activity for specific projects or departments.
+  The report tag filter is multi-select: pick tags from the dropdown to add them
+  (each shows as a chip; the chip's X removes it), and the report includes lines
+  matching any selected tag.
+- On the Profit and Loss report, with one or more tags selected, the comparison
+  dropdown offers **By Tag (column per tag)** — one column per selected tag plus
+  a Total column. Requires an explicit tag selection (not available on "All Tags").
 
 ### Budgets
 Create and manage budgets under **Budgets →** in the sidebar.

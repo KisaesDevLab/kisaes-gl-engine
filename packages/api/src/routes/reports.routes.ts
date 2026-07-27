@@ -910,13 +910,18 @@ async function respond(res: any, reportData: any, format: string | undefined) {
   res.json(reportData);
 }
 
-// ADR 0XX §5 — single-select tag filter. Accepts `tag_id` (preferred) and
-// `tagId` as a fallback so clients that already send camelCase don't break.
-// Empty string is treated as "no filter" the same as absent.
+// ADR 0XX §5 — tag filter. Accepts `tag_id` (preferred) and `tagId` as a
+// fallback so clients that already send camelCase don't break. §5.5 makes
+// it multi-select: the value may be a comma-separated list of tag UUIDs
+// ("match any of these tags"). Malformed entries are dropped rather than
+// 400ing — like readAccountIds, the SQL re-scopes by tenant anyway, so a
+// bad id can never widen the result set. Returns the normalized comma-
+// joined list (services render it via tagIn()), or null for no filter.
 function readTagFilter(req: { query: Record<string, unknown> }): string | null {
   const raw = (req.query['tag_id'] ?? req.query['tagId']) as string | undefined;
   if (!raw || typeof raw !== 'string' || raw.trim() === '') return null;
-  return raw;
+  const ids = raw.split(',').map((s) => s.trim()).filter((s) => UUID_RE.test(s));
+  return ids.length > 0 ? ids.join(',') : null;
 }
 
 // ?basis=cash | accrual (default accrual). Anything else falls back to accrual.
@@ -970,7 +975,16 @@ reportsRouter.get('/profit-loss', async (req, res) => {
   // ?show_pct=1 mirrors the on-screen "% of Revenue" toggle into the
   // standard P&L export (PDF/CSV gain the column).
   const showPct = req.query['show_pct'] === '1' || req.query['show_pct'] === 'true';
-  if (compare) {
+  // ADR 0XX §5.6 — ?compare=by_tag: one column per explicitly selected
+  // tag. Only meaningful with a tag filter; without one ("All Tags")
+  // the column view is not allowed and the standard P&L is returned.
+  if (compare === 'by_tag') {
+    const data = tagId
+      ? await comparisonService.buildPLByTag(req.tenantId, sd, ed, b, tagId, companyId, readGroupBy(req))
+      : null;
+    const fallback = data ?? await reportService.buildProfitAndLoss(req.tenantId, sd, ed, b, companyId, tagId, readGroupBy(req));
+    await respond(res, { ...fallback, ...(display ? { display } : {}), ...(showPct ? { showPct: true } : {}), ...readHideAcctNums(req) }, format);
+  } else if (compare) {
     const data = await comparisonService.buildComparativePL(
       req.tenantId, sd, ed, b,
       compare as any,

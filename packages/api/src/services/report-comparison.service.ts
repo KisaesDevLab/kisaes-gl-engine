@@ -2,7 +2,10 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+import { eq, and, inArray } from 'drizzle-orm';
 import { formatDetailTypeLabel } from '@kis-books/shared';
+import { db } from '../db/index.js';
+import { tags } from '../db/schema/index.js';
 import * as reportService from './report.service.js';
 import { getCustomDetailTypeRanks, orderDetailTypeGroups } from './detail-types.service.js';
 
@@ -455,5 +458,105 @@ export async function buildComparativeBS(
       ...Object.values(computeVariance(currentBS.totalLiabilitiesAndEquity, priorBS.totalLiabilitiesAndEquity)),
     ],
     ...(bsGroups ? { groupBy: 'detail_type' as const, groups: bsGroups } : {}),
+  };
+}
+
+// ─── P&L by tag (one column per selected tag) ────────────────────
+//
+// ADR 0XX §5.6 — column view for the multi-select tag filter: each
+// explicitly selected tag becomes a period-style column (same date
+// range, filtered to that tag) plus a trailing Total column summing
+// the selected tags. Reuses the multi_period response shape verbatim
+// so the comparative renderer and the columns+rows export path work
+// unchanged. Requires an explicit selection — with no tag filter
+// ("All Tags") the route stays on the standard single-column P&L,
+// so this never runs unbounded over every tag in the tenant.
+//
+// Tag columns carry `tagId` so the UI can QuickZoom a cell into the
+// transaction list pre-filtered to account + period + tag. The Total
+// column has no dates/tag on purpose: a drill from it could not
+// represent "any of these tags" faithfully in the list filters, and a
+// misleading drill is worse than a non-clickable cell.
+//
+// Returns null when none of the requested tags belong to the tenant —
+// the caller falls back to the standard P&L.
+export async function buildPLByTag(
+  tenantId: string, startDate: string, endDate: string, basis: Basis,
+  // Comma-separated tag UUID list as produced by readTagFilter.
+  tagIdList: string,
+  companyId: string | null = null,
+  groupBy: reportService.ReportGroupBy | null = null,
+) {
+  const grouped = groupBy === 'detail_type';
+  const requested = tagIdList.split(',').map((s) => s.trim()).filter(Boolean);
+  const tagRows = await db.select({ id: tags.id, name: tags.name }).from(tags)
+    .where(and(eq(tags.tenantId, tenantId), inArray(tags.id, requested)));
+  // Columns keep the user's selection order (chip order in the filter),
+  // not the tag admin's sort order.
+  const byId = new Map(tagRows.map((t) => [t.id, t]));
+  const selected = requested.map((id) => byId.get(id)).filter((t): t is { id: string; name: string } => !!t);
+  if (selected.length === 0) return null;
+
+  const columns: Array<{ label: string; startDate: string; endDate: string; tagId?: string }> =
+    selected.map((t) => ({ label: t.name, startDate, endDate, tagId: t.id }));
+  columns.push({ label: 'Total', startDate: '', endDate: '' });
+
+  const plResults = await Promise.all(selected.map((t) =>
+    reportService.buildProfitAndLoss(tenantId, startDate, endDate, basis, companyId, t.id, groupBy)));
+
+  type PLType = 'revenue' | 'cogs' | 'expense' | 'other_revenue' | 'other_expense';
+  const sectionKey: Record<PLType, 'revenue' | 'cogs' | 'expenses' | 'otherRevenue' | 'otherExpenses'> = {
+    revenue: 'revenue', cogs: 'cogs', expense: 'expenses',
+    other_revenue: 'otherRevenue', other_expense: 'otherExpenses',
+  };
+  const accountMap = new Map<string, { accountId: string; name: string; accountNumber: string | null; type: PLType; detailType: string | null }>();
+  for (const pl of plResults) {
+    for (const r of pl.revenue) accountMap.set(r.accountId ?? r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'revenue', detailType: r.detailType ?? null });
+    for (const r of pl.cogs) accountMap.set(r.accountId ?? r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'cogs', detailType: r.detailType ?? null });
+    for (const r of pl.expenses) accountMap.set(r.accountId ?? r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'expense', detailType: r.detailType ?? null });
+    for (const r of pl.otherRevenue) accountMap.set(r.accountId ?? r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_revenue', detailType: r.detailType ?? null });
+    for (const r of pl.otherExpenses) accountMap.set(r.accountId ?? r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_expense', detailType: r.detailType ?? null });
+  }
+
+  const rows = [...accountMap.values()].map((acct) => {
+    const values = plResults.map((pl) => {
+      const items = (pl as any)[sectionKey[acct.type]] as Array<{ accountId: string; name: string; amount: number }>;
+      return items.find((i) => i.accountId === acct.accountId)?.amount || 0;
+    });
+    // Total column. A journal line carries at most one tag, so summing
+    // the per-tag columns never double-counts a line.
+    values.push(values.reduce((a, b) => a + b, 0));
+    return {
+      accountId: acct.accountId, account: acct.name, accountNumber: acct.accountNumber,
+      accountType: acct.type, values,
+      ...(grouped ? { detailType: acct.detailType } : {}),
+    };
+  });
+
+  const ranks = grouped ? await getCustomDetailTypeRanks(tenantId) : null;
+  const plGroups = grouped && ranks
+    ? {
+        revenue: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'revenue'), columns), ranks, 'revenue'),
+        cogs: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'cogs'), columns), ranks, 'cogs'),
+        expenses: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'expense'), columns), ranks, 'expense'),
+        otherRevenue: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'other_revenue'), columns), ranks, 'other_revenue'),
+        otherExpenses: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'other_expense'), columns), ranks, 'other_expense'),
+      }
+    : undefined;
+
+  const withTotal = (vals: number[]) => { vals.push(vals.reduce((a, b) => a + b, 0)); return vals; };
+  return {
+    title: 'Profit and Loss by Tag' + reportService.basisTitleSuffix(basis), comparisonMode: 'by_tag',
+    startDate, endDate,
+    labels: plResults[0]?.labels,
+    footer: plResults[0]?.footer ?? '',
+    columns, rows,
+    totalRevenue: withTotal(plResults.map((pl) => pl.totalRevenue)),
+    totalCogs: withTotal(plResults.map((pl) => pl.totalCogs)),
+    totalExpenses: withTotal(plResults.map((pl) => pl.totalExpenses)),
+    totalOtherRevenue: withTotal(plResults.map((pl) => pl.totalOtherRevenue)),
+    totalOtherExpenses: withTotal(plResults.map((pl) => pl.totalOtherExpenses)),
+    netIncome: withTotal(plResults.map((pl) => pl.netIncome)),
+    ...(plGroups ? { groupBy: 'detail_type' as const, groups: plGroups } : {}),
   };
 }

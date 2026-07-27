@@ -207,4 +207,40 @@ describe('Report parity — split-level tag filter does not distort totals', () 
     // identity, not a parity nicety.
     expect(tb.totalDebits).toBe(tb.totalCredits);
   });
+
+  // ADR 0XX §5.5 — the tag filter is multi-select: a comma-separated
+  // id list means "lines carrying ANY of these tags". A journal line
+  // carries at most one tag, so the multi-tag run must equal the sum
+  // of the single-tag runs exactly.
+  it('P&L: multi-tag filter (A,B) equals sum of single-tag runs', async () => {
+    await seedFixture();
+
+    const both = await reportService.buildProfitAndLoss(tenantId, PERIOD_START, PERIOD_END, 'accrual', null, `${tagA},${tagB}`);
+    expect(both.totalRevenue).toBe(1800); // A 1300 + B 500
+    expect(both.totalExpenses).toBe(200); // B only; untagged 50 excluded
+    expect(both.netIncome).toBe(1600);
+  });
+
+  // ADR 0XX §5.6 — by-tag column view: one column per selected tag in
+  // selection order, plus a Total column footing across the selection.
+  it('P&L by tag: one column per tag plus a footing Total column', async () => {
+    await seedFixture();
+    const comparisonService = await import('./report-comparison.service.js');
+
+    const data = await comparisonService.buildPLByTag(tenantId, PERIOD_START, PERIOD_END, 'accrual', `${tagB},${tagA}`);
+    expect(data).not.toBeNull();
+    // Selection order (B first), then Total.
+    expect(data!.columns.map((c) => c.label)).toEqual(['Project B', 'Project A', 'Total']);
+    expect(data!.columns[0]!.tagId).toBe(tagB);
+    expect(data!.columns[2]!.tagId).toBeUndefined();
+
+    expect(data!.totalRevenue).toEqual([500, 1300, 1800]);
+    expect(data!.totalExpenses).toEqual([200, 0, 200]);
+    expect(data!.netIncome).toEqual([300, 1300, 1600]);
+
+    // Unknown / other-tenant tags are dropped; nothing valid → null so
+    // the route falls back to the standard P&L.
+    const none = await comparisonService.buildPLByTag(tenantId, PERIOD_START, PERIOD_END, 'accrual', '00000000-0000-0000-0000-000000000000');
+    expect(none).toBeNull();
+  });
 });

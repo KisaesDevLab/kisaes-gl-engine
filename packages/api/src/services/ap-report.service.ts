@@ -6,6 +6,7 @@ import { sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import { db } from '../db/index.js';
+import { tagIn } from './report.service.js';
 
 // Helper: add `b` to `a` via Decimal and return a plain number rounded
 // to 4 decimals. Reports expose `number` to the UI, but accumulation
@@ -34,7 +35,7 @@ export async function buildApAgingSummary(
   tagId: string | null = null,
 ) {
   const tagClause = tagId
-    ? sql` AND EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = t.id AND jl.tenant_id = ${tenantId} AND jl.tag_id = ${tagId})`
+    ? sql` AND EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = t.id AND jl.tenant_id = ${tenantId} AND jl.tag_id IN ${tagIn(tagId)})`
     : sql``;
   const rows = await db.execute(sql`
     SELECT t.id, t.txn_number, t.vendor_invoice_number, t.txn_date, t.due_date,

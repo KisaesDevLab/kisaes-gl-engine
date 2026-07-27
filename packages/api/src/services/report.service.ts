@@ -37,6 +37,17 @@ function sub(a: string | number | null | undefined, b: string | number | null | 
 
 type Basis = 'accrual' | 'cash';
 
+// ADR 0XX §5.5 — multi-select tag filter. A report `tagId` is a comma-
+// separated list of tag UUIDs (a single id is a list of one); tagIn()
+// renders the parenthesized value list for `tag_id IN (...)` clauses.
+// Callers guard on truthiness before building the clause, and the route
+// layer (readTagFilter) has already dropped malformed entries, so the
+// list is never empty here.
+export function tagIn(tagId: string) {
+  const ids = tagId.split(',').map((s) => s.trim()).filter(Boolean);
+  return sql`(${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`;
+}
+
 // Report-title basis suffix — QBO-style "Accrual Basis" / "Cash Basis" so an
 // exported statement states the basis it was run on (shown in the export
 // header + filename). Appended to the P&L / Balance Sheet report titles.
@@ -324,7 +335,7 @@ export async function buildProfitAndLoss(
   // aggregated lines to those tagged with the given tag_id. Virtual
   // cash-basis lines inherit the source line's tag, so the same clause
   // applies to both bases.
-  const tagJoinClause = tagId ? sql` AND jl.tag_id = ${tagId}` : sql``;
+  const tagJoinClause = tagId ? sql` AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
   const grouped = groupBy === 'detail_type';
 
   const rows = basis === 'cash'
@@ -461,7 +472,7 @@ export async function buildBalanceSheet(
   // only; see buildProfitAndLoss.
   groupBy: ReportGroupBy | null = null,
 ) {
-  const tagClause = tagId ? sql` AND jl.tag_id = ${tagId}` : sql``;
+  const tagClause = tagId ? sql` AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
   const grouped = groupBy === 'detail_type';
   // Cash basis balance sheet: built from the virtual cash-basis ledger
   // (cashBasisLinesWith). AR/AP documents drop out entirely, payment
@@ -669,7 +680,7 @@ export async function buildCashFlowStatement(
   // Transfers between two cash accounts net to zero and drop out.
   const companyCond = companyId ? sql`t.company_id = ${companyId}` : sql`TRUE`;
   const tagExistsClause = tagId
-    ? sql` AND EXISTS (SELECT 1 FROM journal_lines jlt WHERE jlt.transaction_id = t.id AND jlt.tenant_id = ${tenantId} AND jlt.tag_id = ${tagId})`
+    ? sql` AND EXISTS (SELECT 1 FROM journal_lines jlt WHERE jlt.transaction_id = t.id AND jlt.tenant_id = ${tenantId} AND jlt.tag_id IN ${tagIn(tagId)})`
     : sql``;
 
   const rows = await db.execute(sql`
@@ -741,7 +752,7 @@ export async function buildARAgingSummary(
   tagId: string | null = null,
 ) {
   const tagClause = tagId
-    ? sql` AND EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = t.id AND jl.tenant_id = ${tenantId} AND jl.tag_id = ${tagId})`
+    ? sql` AND EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = t.id AND jl.tenant_id = ${tenantId} AND jl.tag_id IN ${tagIn(tagId)})`
     : sql``;
   const rows = await db.execute(sql`
     SELECT t.id, t.txn_number, t.txn_date, t.due_date, t.total, t.amount_paid, t.balance_due,
@@ -804,7 +815,7 @@ export async function buildCustomerBalanceSummary(
 ) {
   // Header-level tag filter: only count invoices that touch a tagged line.
   const txnTagFilter = tagId
-    ? sql` AND EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = t.id AND jl.tenant_id = ${tenantId} AND jl.tag_id = ${tagId})`
+    ? sql` AND EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = t.id AND jl.tenant_id = ${tenantId} AND jl.tag_id IN ${tagIn(tagId)})`
     : sql``;
   const rows = await db.execute(sql`
     SELECT c.id, c.display_name,
@@ -840,7 +851,7 @@ export async function buildInvoiceList(
   if (filters?.endDate) conditions.push(sql`t.txn_date <= ${filters.endDate}`);
   if (filters?.status) conditions.push(sql`t.invoice_status = ${filters.status}`);
   if (filters?.tagId) {
-    conditions.push(sql`EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = t.id AND jl.tenant_id = ${tenantId} AND jl.tag_id = ${filters.tagId})`);
+    conditions.push(sql`EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = t.id AND jl.tenant_id = ${tenantId} AND jl.tag_id IN ${tagIn(filters.tagId)})`);
   }
 
   const rows = await db.execute(sql`
@@ -886,8 +897,8 @@ export async function buildExpenseByVendor(
   detail = false,
   basis: Basis = 'accrual',
 ) {
-  const tagClause = tagId ? sql`AND jl.tag_id = ${tagId}` : sql``;
-  const cbTag = tagId ? sql`AND cb.tag_id = ${tagId}` : sql``;
+  const tagClause = tagId ? sql`AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
+  const cbTag = tagId ? sql`AND cb.tag_id IN ${tagIn(tagId)}` : sql``;
   // Cash basis groups by the PAYMENT's contact (cb.txn_contact_id); the
   // check-image payee fallback is accrual-only.
   const rows = basis === 'cash'
@@ -1043,7 +1054,7 @@ export async function buildExpenseByCategory(
   detail = false,
   basis: Basis = 'accrual',
 ) {
-  const tagClause = tagId ? sql`AND jl.tag_id = ${tagId}` : sql``;
+  const tagClause = tagId ? sql`AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
   const hasIdFilter = !!accountIds && accountIds.length > 0;
   // colRef is a code-controlled constant ('a.id' / 'id'), never user
   // input; the ids themselves are bound parameters.
@@ -1052,7 +1063,7 @@ export async function buildExpenseByCategory(
       ? sql`AND ${sql.raw(colRef)} IN (${sql.join(accountIds!.map((id) => sql`${id}`), sql`, `)})`
       : sql``;
   // Cash-basis filters over the virtual ledger (cb_lines).
-  const cbTag = tagId ? sql`AND cb.tag_id = ${tagId}` : sql``;
+  const cbTag = tagId ? sql`AND cb.tag_id IN ${tagIn(tagId)}` : sql``;
   const cbId = hasIdFilter
     ? sql`AND cb.account_id IN (${sql.join(accountIds!.map((id) => sql`${id}`), sql`, `)})`
     : sql``;
@@ -1270,7 +1281,7 @@ export async function buildAccountDetailReport(
   const carryForward = opts.carryForward ?? false;
 
   const creditNormal = normalSide === 'credit';
-  const tagClause = tagId ? sql`AND jl.tag_id = ${tagId}` : sql``;
+  const tagClause = tagId ? sql`AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
   const hasIdFilter = !!accountIds && accountIds.length > 0;
   const idFilter = (colRef: string) =>
     hasIdFilter
@@ -1287,7 +1298,7 @@ export async function buildAccountDetailReport(
   // which already scopes the date range + company. Same tag / account filters.
   const basis = opts.basis ?? 'accrual';
   const cbSideCol = sql.raw(creditNormal ? 'cb.credit' : 'cb.debit');
-  const cbTag = tagId ? sql`AND cb.tag_id = ${tagId}` : sql``;
+  const cbTag = tagId ? sql`AND cb.tag_id IN ${tagIn(tagId)}` : sql``;
   const cbId = hasIdFilter
     ? sql`AND cb.account_id IN (${sql.join(accountIds!.map((id) => sql`${id}`), sql`, `)})`
     : sql``;
@@ -1501,8 +1512,8 @@ export async function buildSalesByCustomer(
   tagId: string | null = null,
   basis: Basis = 'accrual',
 ) {
-  const tagClause = tagId ? sql`AND jl.tag_id = ${tagId}` : sql``;
-  const cbTag = tagId ? sql`AND cb.tag_id = ${tagId}` : sql``;
+  const tagClause = tagId ? sql`AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
+  const cbTag = tagId ? sql`AND cb.tag_id IN ${tagIn(tagId)}` : sql``;
   // Cash basis recognizes revenue when the customer pays (cb_lines Rule 3 for
   // invoices at payment; cash sales pass through) grouped by the payment's
   // contact. Accrual counts sale-document revenue by the document's contact.
@@ -1554,8 +1565,8 @@ export async function buildSalesByItem(
   tagId: string | null = null,
   basis: Basis = 'accrual',
 ) {
-  const tagClause = tagId ? sql`AND jl.tag_id = ${tagId}` : sql``;
-  const cbTag = tagId ? sql`AND cb.tag_id = ${tagId}` : sql``;
+  const tagClause = tagId ? sql`AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
+  const cbTag = tagId ? sql`AND cb.tag_id IN ${tagIn(tagId)}` : sql``;
   const rows = basis === 'cash'
     ? await db.execute(sql`
         WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
@@ -2004,7 +2015,7 @@ export async function buildCheckRegister(
   ];
   if (dateRange?.startDate) conditions.push(sql`t.txn_date >= ${dateRange.startDate}`);
   if (dateRange?.endDate) conditions.push(sql`t.txn_date <= ${dateRange.endDate}`);
-  if (tagId) conditions.push(sql`jl.tag_id = ${tagId}`);
+  if (tagId) conditions.push(sql`jl.tag_id IN ${tagIn(tagId)}`);
 
   const rows = await db.execute(sql`
     SELECT t.id, t.txn_type, t.txn_number, t.txn_date, t.memo,
@@ -2107,8 +2118,8 @@ export async function buildGeneralLedger(
   basis: Basis = 'accrual',
 ) {
   // Evaluated as an inline conjunct. Empty sql`` is a no-op append.
-  const tagClause = tagId ? sql` AND jl.tag_id = ${tagId}` : sql``;
-  const cbTag = tagId ? sql` AND cb.tag_id = ${tagId}` : sql``;
+  const tagClause = tagId ? sql` AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
+  const cbTag = tagId ? sql` AND cb.tag_id IN ${tagIn(tagId)}` : sql``;
   // Day before the period start for the cash-basis beginning-balance window
   // (cb_lines' date range is inclusive).
   const dayBeforeStart = new Date(new Date(startDate + 'T00:00:00Z').getTime() - 86400000).toISOString().split('T')[0]!;
@@ -2398,7 +2409,7 @@ export async function buildTrialBalance(
   if (endDt.getUTCMonth() + 1 < fyStartMonth) fyStartYear--;
   const fyStart = `${fyStartYear}-${String(fyStartMonth).padStart(2, '0')}-01`;
   const tagExistsClause = tagId
-    ? sql` AND EXISTS (SELECT 1 FROM journal_lines jl2 WHERE jl2.transaction_id = transactions.id AND jl2.tenant_id = ${tenantId} AND jl2.tag_id = ${tagId})`
+    ? sql` AND EXISTS (SELECT 1 FROM journal_lines jl2 WHERE jl2.transaction_id = transactions.id AND jl2.tenant_id = ${tenantId} AND jl2.tag_id IN ${tagIn(tagId)})`
     : sql``;
 
   // For balance sheet accounts (asset, liability, equity): show cumulative balance through end date
@@ -2408,7 +2419,7 @@ export async function buildTrialBalance(
   // Cash basis reads the virtual cash-basis ledger (already scoped to
   // <= endDate); the fiscal-year cutoff for P&L accounts uses each line's
   // recognition date (cb.txn_date). Accrual reads the posted journal.
-  const cashTagClause = tagId ? sql`AND cb.tag_id = ${tagId}` : sql``;
+  const cashTagClause = tagId ? sql`AND cb.tag_id IN ${tagIn(tagId)}` : sql``;
   const rows = basis === 'cash'
     ? await db.execute(sql`
         WITH ${cashBasisLinesWith(tenantId, null, endDate, companyId)}
@@ -2565,7 +2576,7 @@ export async function buildAccountActivitySummary(
   tagId: string | null = null,
 ) {
   const tagExistsClause = tagId
-    ? sql` AND EXISTS (SELECT 1 FROM journal_lines jl2 WHERE jl2.transaction_id = transactions.id AND jl2.tenant_id = ${tenantId} AND jl2.tag_id = ${tagId})`
+    ? sql` AND EXISTS (SELECT 1 FROM journal_lines jl2 WHERE jl2.transaction_id = transactions.id AND jl2.tenant_id = ${tenantId} AND jl2.tag_id IN ${tagIn(tagId)})`
     : sql``;
 
   const rows = await db.execute(sql`
@@ -2635,7 +2646,7 @@ export async function buildTransactionList(tenantId: string, filters?: {
     const start = filters?.startDate || null;
     const typeCond = filters?.txnType ? sql`AND cb.txn_type = ${filters.txnType}` : sql``;
     const acctCond = filters?.accountId ? sql`AND cb.account_id = ${filters.accountId}` : sql``;
-    const tagCond = filters?.tagId ? sql`AND cb.tag_id = ${filters.tagId}` : sql``;
+    const tagCond = filters?.tagId ? sql`AND cb.tag_id IN ${tagIn(filters.tagId)}` : sql``;
     const cashRows = await db.execute(sql`
       WITH ${cashBasisLinesWith(tenantId, start, end, companyId)}
       SELECT cb.transaction_id AS id, cb.txn_type, cb.txn_number, cb.txn_date, cb.memo, 'posted' AS status,
@@ -2665,7 +2676,7 @@ export async function buildTransactionList(tenantId: string, filters?: {
   // ignored it, so ?account_id returned every account's lines).
   if (filters?.accountId) conditions.push(sql`jl.account_id = ${filters.accountId}`);
   if (filters?.tagId) {
-    conditions.push(sql`EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = t.id AND jl.tenant_id = ${tenantId} AND jl.tag_id = ${filters.tagId})`);
+    conditions.push(sql`EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = t.id AND jl.tenant_id = ${tenantId} AND jl.tag_id IN ${tagIn(filters.tagId)})`);
   }
 
   // One row per journal LINE (not per transaction), so a split shows each of
