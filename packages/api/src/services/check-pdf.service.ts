@@ -61,6 +61,7 @@ export interface CheckData {
   printSignatureLine: boolean;
   printDateLine: boolean;
   printPayeeLine: boolean;
+  printPayeeAddress: boolean;
   printAmountBox: boolean;
   printAmountWords: boolean;
   printMemoLine: boolean;
@@ -191,6 +192,7 @@ async function gatherCheckData(tenantId: string, checkId: string): Promise<Check
     printSignatureLine: settings['printSignatureLine'] !== false,
     printDateLine: settings['printDateLine'] !== false,
     printPayeeLine: settings['printPayeeLine'] !== false,
+    printPayeeAddress: settings['printPayeeAddress'] !== false,
     printAmountBox: settings['printAmountBox'] !== false,
     printAmountWords: settings['printAmountWords'] !== false,
     printMemoLine: settings['printMemoLine'] !== false,
@@ -441,11 +443,29 @@ function drawCheckFace(ctx: Ctx, c: CheckData, faceTopY: number, faceBottomY: nu
     }
   }
 
-  // Bank name/address (blank stock)
+  // Bank name/address (blank stock). Non-compact: tucked under the
+  // company block top-left — the zone below the amount-words line
+  // belongs to the payee address block (window-envelope position).
   if (c.printBankInfo && (c.bank.name || c.bank.address)) {
-    let y = faceTopY - (compact ? 1.68 : 2.3) * IN - 6;
+    let y = faceTopY - (compact ? 1.68 : 0.72) * IN - 6;
     if (c.bank.name) { drawText(ctx, c.bank.name, L, y, { size: compact ? 5.6 : 6, color: rgb(0.27, 0.27, 0.27) }); y -= 7; }
     if (c.bank.address) drawText(ctx, c.bank.address, L, y, { size: compact ? 5.6 : 6, color: rgb(0.27, 0.27, 0.27) });
+  }
+
+  // Payee name + mailing address block — standard on top/middle business
+  // checks so the address shows through the bottom window of a #8/#9
+  // double-window envelope. Window zone on a 3.5" check face: roughly
+  // 0.9"–4.4" from the left, 2.0"–3.0" down; the block sits between the
+  // amount-words line and the memo rule. z_fold has its own mailing
+  // panel, so the compact face never draws this.
+  if (!compact && c.printPayeeAddress && (c.payeeAddressLines?.length ?? 0) > 0) {
+    let y = faceTopY - 2.12 * IN - 8;
+    drawText(ctx, c.payeeName, 0.9 * IN, y, { size: 8, maxWidth: 3.5 * IN });
+    // Cap at 3 address rows so the block can never reach the memo rule.
+    for (const line of c.payeeAddressLines!.slice(0, 3)) {
+      y -= 9.5;
+      drawText(ctx, line, 0.9 * IN, y, { size: 8, maxWidth: 3.5 * IN });
+    }
   }
 
   // Memo + signature. Their rules sit at 0.65" from the bottom edge —
@@ -747,6 +767,7 @@ export async function generateTestCheckPdf(tenantId: string, format: string = 'v
     printSignatureLine: settings['printSignatureLine'] !== false,
     printDateLine: settings['printDateLine'] !== false,
     printPayeeLine: settings['printPayeeLine'] !== false,
+    printPayeeAddress: settings['printPayeeAddress'] !== false,
     printAmountBox: settings['printAmountBox'] !== false,
     printAmountWords: settings['printAmountWords'] !== false,
     printMemoLine: settings['printMemoLine'] !== false,

@@ -50,6 +50,7 @@ export const checkSettingsSchema = z.object({
   printSignatureLine: z.boolean().optional(),
   printDateLine: z.boolean().optional(),
   printPayeeLine: z.boolean().optional(),
+  printPayeeAddress: z.boolean().optional(),
   printAmountBox: z.boolean().optional(),
   printAmountWords: z.boolean().optional(),
   printMemoLine: z.boolean().optional(),

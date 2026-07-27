@@ -57,6 +57,9 @@ export interface CheckSettings {
   printSignatureLine: boolean;
   printDateLine: boolean;
   printPayeeLine: boolean;
+  /** Payee name + mailing address block under the payee line, positioned
+   *  for double-window envelopes (top/middle layouts). */
+  printPayeeAddress: boolean;
   printAmountBox: boolean;
   printAmountWords: boolean;
   printMemoLine: boolean;

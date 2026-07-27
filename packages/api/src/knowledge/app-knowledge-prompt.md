@@ -858,6 +858,10 @@ alignment before printing real checks.
   voucher stock perforated at 3.5" and 7".
 - **Check in Middle** — stub on top, check in the middle, stub on the bottom.
   Matches QuickBooks-compatible middle check stock perforated at 3.5" and 7".
+
+On both layouts the payee's name and mailing address print below the amount
+line, positioned to show through the bottom window of a #8/#9 double-window
+envelope (toggle: "Payee address block" in Check Print Settings).
 - **Z-Fold Pressure Seal** — for 8.5×11 pressure-seal self-mailer stock (e.g. blue
   Z-fold forms). The check prints in the middle panel with remittance stubs above
   and below, positioned for the Z-fold creases at 3.667" and 7.333". When printing
