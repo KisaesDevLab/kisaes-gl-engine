@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-28T19:29:02.436Z",
+  "generatedAt": "2026-07-28T22:36:17.371Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -16,7 +16,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 51969
+    "totalBytes": 52999
   },
   "screens": [
     {
@@ -368,6 +368,24 @@
       "sourceFile": null,
       "title": "Statement Imports",
       "section": "Banking",
+      "actions": []
+    },
+    {
+      "id": "share-view",
+      "path": "/share/view",
+      "component": "ShareViewerPage",
+      "sourceFile": null,
+      "title": "Share Viewer",
+      "section": "Share",
+      "actions": []
+    },
+    {
+      "id": "settings-screen-share",
+      "path": "/settings/screen-share",
+      "component": "ShareAdminPage",
+      "sourceFile": null,
+      "title": "Share Admin",
+      "section": "Settings",
       "actions": []
     },
     {
@@ -1352,6 +1370,7 @@
     "Team & User Management",
     "Per-Member Permissions",
     "Company Access Control",
+    "Peer Screen Sharing",
     "Bulk Import (Data Migration)",
     "Recurring Transactions",
     "Products & Services (Items)",

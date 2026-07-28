@@ -361,6 +361,27 @@ const envSchema = z.object({
     .optional()
     .transform((v) => v === 'true' || v === '1')
     .default('false'),
+  // ── Peer screen share (rrweb DOM mirroring) ─────────────────────────────
+  // Off until deliberately enabled. See docs/screen-share.md and the WISP
+  // addendum before flipping this on.
+  SHARE_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true' || v === '1')
+    .default('false'),
+  // Who may view whom. `any` (default) permits cross-firm viewing subject to
+  // per-viewer approval + the D5 second confirmation; `tenant` restricts to
+  // the sharer's own tenant; `tenant_and_linked` additionally admits users
+  // holding a tenancy in the sharer's tenant via user_tenant_access.
+  SHARE_SCOPE: z.enum(['tenant', 'tenant_and_linked', 'any']).default('any'),
+  SHARE_TTL_MINUTES: z.coerce.number().int().positive().default(60),
+  // The idle timeout is the primary exposure bound (the TTL is a backstop).
+  SHARE_IDLE_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(90),
+  SHARE_APPROVAL_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
+  SHARE_MAX_VIEWERS_PER_SESSION: z.coerce.number().int().positive().default(5),
+  SHARE_MAX_CONCURRENT_PER_TENANT: z.coerce.number().int().positive().default(10),
+  SHARE_MAX_BYTES_PER_SESSION: z.coerce.number().int().positive().default(52_428_800),
+  SHARE_AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().default(1095),
 });
 
 export type Env = z.infer<typeof envSchema>;

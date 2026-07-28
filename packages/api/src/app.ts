@@ -53,6 +53,7 @@ import { passkeyRouter } from './routes/passkey.routes.js';
 import { magicLinkRouter } from './routes/magic-link.routes.js';
 import { plaidRouter } from './routes/plaid.routes.js';
 import { aiRouter } from './routes/ai.routes.js';
+import { shareRouter } from './routes/share.routes.js';
 import { chatRouter } from './routes/chat.routes.js';
 import { oauthRouter } from './routes/oauth.routes.js';
 import { storageRouter } from './routes/storage.routes.js';
@@ -450,6 +451,7 @@ app.put('/api/v1/users/me/login-preference', authMw, async (req, res) => {
 app.use('/api/v1/auth/magic-link', magicLinkRouter);
 app.use('/api/v1/plaid', plaidRouter);
 app.use('/api/v1/ai', aiRouter);
+app.use('/api/v1/share', shareRouter);
 app.use('/api/v1/chat', chatRouter);
 app.use('/oauth', oauthRouter);
 app.use('/api/v1/settings/storage', storageRouter);

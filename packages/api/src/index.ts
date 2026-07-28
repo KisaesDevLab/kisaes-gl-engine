@@ -13,6 +13,8 @@ import { startCloudflaredAlerter, stopCloudflaredAlerter } from './services/clou
 import { startBackupVerifier, stopBackupVerifier } from './services/backup-verify.service.js';
 import { startRecurringDocRequestScheduler, stopRecurringDocRequestScheduler } from './services/recurring-doc-request-scheduler.service.js';
 import { startAiRetentionScheduler, stopAiRetentionScheduler } from './services/ai-retention.service.js';
+import { attachShareGateway, shutdownShareGateway } from './services/share/share-gateway.js';
+import { startShareSweeper, stopShareSweeper } from './services/share/share-sweeper.js';
 import * as coaTemplatesService from './services/coa-templates.service.js';
 import { seedPayrollTemplates } from './services/payroll-templates.seed.js';
 import { seedDefaultPrompts } from './services/ai-prompt.service.js';
@@ -47,6 +49,8 @@ function installShutdownHandlers(server: Server): void {
     stopBackupVerifier();
     stopRecurringDocRequestScheduler();
     stopAiRetentionScheduler();
+    stopShareSweeper();
+    await shutdownShareGateway().catch(() => undefined);
     try {
       await pool.end();
       console.log('[shutdown] DB pool closed, exiting cleanly');
@@ -185,7 +189,17 @@ async function start() {
     // AI data retention purge (ai_jobs + old chat). Advisory-locked so
     // the worker container can also boot it without double-purging.
     startAiRetentionScheduler();
+    startShareSweeper();
   });
+  // Peer screen share WS gateway rides the same HTTP server (Phase 5.1);
+  // no-ops entirely when SHARE_ENABLED is off.
+  if (env.SHARE_ENABLED) {
+    attachShareGateway(server);
+    if (env.SHARE_SCOPE === 'any') {
+      // 2.3 — make the cross-firm posture visible in deployment logs.
+      console.log('[boot] NOTE: SHARE_SCOPE=any — cross-firm screen sharing is permitted (each viewer still requires per-viewer approval + the cross-firm confirmation).');
+    }
+  }
   installShutdownHandlers(server);
 }
 

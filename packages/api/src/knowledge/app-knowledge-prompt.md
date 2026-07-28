@@ -518,6 +518,20 @@ accountant or bookkeeper can see. Under **Admin → All Users →**, the **Compa
 action lists every company with a Has Access / Excluded toggle. Excluded companies
 disappear from that user's company switcher and cannot be opened.
 
+### Peer Screen Sharing
+When enabled by the appliance operator, users can share their MyBooks screen live with
+other MyBooks users ("Share my screen" in the header; viewers use "Join a screen share"
+with an 8-character code). It is view-only DOM mirroring of the MyBooks tab only — never
+the desktop or other apps. All typed input is masked and SSN/EIN/routing/card numbers are
+redacted on the sharer's machine before transmission; password/security/API-key screens
+are blocked. A join code alone grants nothing: the sharer approves each viewer by name,
+with an extra confirmation for viewers from another firm and a warning when the viewer
+lacks access to the open company. Sessions auto-end after 60 minutes or 90 seconds of
+inactivity; nothing is recorded; every session is logged for 3 years under Settings →
+Screen Sharing (firm owners), where sharing can also be disabled per firm or per user.
+Safety rule to relay to users: only approve a share request from someone you were already
+talking to — deny anything unexpected.
+
 ## Advanced Features
 
 ### Batch Entry
@@ -1105,6 +1119,7 @@ The following screens exist in the application. Use these names and paths when d
 ### Settings
 
 - **Check Print Settings** (`/settings/check-printing`)
+- **Share Admin** (`/settings/screen-share`)
 - **Invoice Template Editor** (`/settings/invoice-template`)
 - **Tag Manager** (`/settings/tags`)
 - **Company Profile** (`/settings/company`)
@@ -1209,6 +1224,10 @@ The following screens exist in the application. Use these names and paths when d
 ### Recurring
 
 - **Recurring List** (`/recurring`)
+
+### Share
+
+- **Share Viewer** (`/share/view`)
 
 ### W9
 

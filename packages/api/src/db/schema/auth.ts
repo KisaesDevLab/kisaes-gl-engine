@@ -14,6 +14,10 @@ export const tenants = pgTable('tenants', {
   // thresholds; shape is a partial ClassificationThresholds
   // (merged with defaults from shared/constants).
   practiceSettings: jsonb('practice_settings'),
+  // Peer screen share (addendum): { enabled?: boolean|null,
+  // allowInboundCrossFirm?: boolean }. `enabled` null/absent inherits the
+  // global SHARE_ENABLED flag.
+  shareSettings: jsonb('share_settings'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 });
@@ -55,6 +59,9 @@ export const users = pgTable('users', {
   // Passwordless fields
   preferredLoginMethod: varchar('preferred_login_method', { length: 20 }).default('password'), // password | magic_link | passkey
   magicLinkEnabled: boolean('magic_link_enabled').default(false),
+  // Peer screen share per-user override (D9). Tri-state: null inherits the
+  // tenant setting; false blocks this user from sharing AND viewing.
+  shareAllowed: boolean('share_allowed'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({

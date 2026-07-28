@@ -216,6 +216,8 @@ companyRouter.get('/users', async (req, res) => {
   const sanitized = users.map((u) => ({
     id: u.id, email: u.email, displayName: u.displayName, role: u.role, userType: u.userType,
     isActive: u.isActive, lastLoginAt: u.lastLoginAt, createdAt: u.createdAt,
+    // Peer screen share per-user override (D9); tri-state, null = inherit.
+    shareAllowed: u.shareAllowed ?? null,
   }));
   res.json({ users: sanitized });
 });

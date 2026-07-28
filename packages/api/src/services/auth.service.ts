@@ -862,7 +862,7 @@ export async function inviteUser(tenantId: string, input: { email: string; displ
 export async function listTenantUsers(tenantId: string) {
   const rows = await db.execute(sql`
     SELECT u.id, u.email, u.display_name, u.role as user_role, u.user_type, u.is_active as user_active,
-      u.is_super_admin, u.last_login_at, u.created_at, u.tenant_id,
+      u.is_super_admin, u.last_login_at, u.created_at, u.tenant_id, u.share_allowed,
       uta.role as tenant_role, uta.is_active as tenant_active
     FROM user_tenant_access uta
     JOIN users u ON u.id = uta.user_id
@@ -881,6 +881,8 @@ export async function listTenantUsers(tenantId: string) {
     lastLoginAt: r.last_login_at,
     createdAt: r.created_at,
     isHomeTenant: r.tenant_id === tenantId,
+    // Peer screen share per-user override (D9); null = inherit tenant.
+    shareAllowed: r.share_allowed ?? null,
   }));
 }
 

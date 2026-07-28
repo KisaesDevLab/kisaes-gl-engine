@@ -56,3 +56,4 @@ export * from './permissions.js';
 export * from './firm-integrations.js';
 export * from './tenant-detail-types.js';
 export * from './backup-runs.js';
+export * from './share.js';
