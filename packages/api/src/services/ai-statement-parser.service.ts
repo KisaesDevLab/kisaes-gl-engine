@@ -37,7 +37,7 @@ import { sanitize } from './pii-sanitizer.service.js';
 import { unwrapParsedResult } from './ai-providers/json-utils.js';
 import { renderPdfToPngPages, isRenderablePdf, isPassthroughImage } from './extraction/pdf-render.service.js';
 import { analyzePdf, routePdf, extractTextLayer } from './extraction/pdf-detect.service.js';
-import { ocrPages, type OcrPageInput } from './extraction/glm-ocr.client.js';
+import { ocrPages, GlmOcrCircuitOpenError, type OcrPageInput } from './extraction/glm-ocr.client.js';
 import { reconcileGoldenRule, repairPass, findSuspectRows } from './extraction/reconcile.service.js';
 import { centsToAmountString, isCreditCardType, mapSignedCentsToFeed } from './extraction/statement-map.js';
 import {
@@ -158,6 +158,17 @@ function isConnError(err: unknown): boolean {
     msg.includes('network') ||
     ['econnrefused', 'enotfound', 'econnreset', 'etimedout', 'eai_again'].includes(code)
   );
+}
+
+// A request timeout means the engine accepted the connection but didn't finish
+// in time — reachable but busy/slow (single-slot llama-server working through a
+// queue, or a very heavy page). Reporting it as "couldn't reach" sends the
+// operator to check connectivity that is fine; check this BEFORE isConnError
+// (whose 'timed out' match also catches these).
+function isTimeoutError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  const code = String((err as { cause?: { code?: unknown } })?.cause?.code ?? '').toLowerCase();
+  return msg.includes('timed out') || code === 'etimedout';
 }
 
 /**
@@ -494,6 +505,20 @@ async function executePipeline(
       checkPagesOf(checkCandidates),
     ));
   } catch (err) {
+    if (err instanceof GlmOcrCircuitOpenError) {
+      throw AppError.badRequest(
+        'GLM-OCR is paused after repeated failures (circuit breaker). ' +
+          'Give the engine a minute to recover, then re-process this statement.',
+      );
+    }
+    if (isTimeoutError(err)) {
+      throw AppError.badRequest(
+        `GLM-OCR timed out reading this statement${glm.baseUrl ? ` (engine at ${glm.baseUrl})` : ''}. ` +
+          `The engine is reachable but didn't finish within ${Math.round(glm.timeoutMs / 1000)}s — ` +
+          'it is likely busy working through other pages. Re-process this statement once the ' +
+          'queue clears, process fewer statements at once, or raise the timeout in Admin → AI → GLM-OCR.',
+      );
+    }
     if (isConnError(err)) {
       throw AppError.badRequest(
         `Couldn't reach the GLM-OCR engine${glm.baseUrl ? ` at ${glm.baseUrl}` : ''}. ` +
@@ -547,6 +572,13 @@ async function executePipeline(
       responseFormat: 'json',
     });
   } catch (err) {
+    if (isTimeoutError(err)) {
+      throw AppError.badRequest(
+        `The statement-extraction LLM timed out (provider: ${extractProvider}` +
+          `${extractModel ? `, model: ${extractModel}` : ''}). The engine is reachable but busy ` +
+          'or the statement is very large — re-process this statement, or raise the timeout in Admin → AI.',
+      );
+    }
     if (isConnError(err)) {
       throw AppError.badRequest(
         `Couldn't reach the statement-extraction LLM (provider: ${extractProvider}` +
@@ -999,4 +1031,37 @@ export async function markStatementJobImported(tenantId: string, jobId: string):
 export async function deleteStatementJob(tenantId: string, jobId: string): Promise<void> {
   await db.delete(aiJobs)
     .where(and(eq(aiJobs.tenantId, tenantId), eq(aiJobs.id, jobId), eq(aiJobs.jobType, 'ocr_statement')));
+}
+
+/**
+ * Re-run a statement parse from its original attachment (failed engine, bad
+ * extraction, config since fixed…). Starts a NEW job — same attachment, same
+ * per-upload Force-OCR choice — and deletes the old row on success so the
+ * Statement Processing list keeps one live entry per statement. Guarded to
+ * terminal, not-yet-imported jobs: re-parsing an imported statement would
+ * invite a duplicate feed import.
+ */
+export async function reprocessStatementJob(
+  tenantId: string,
+  jobId: string,
+): Promise<{ jobId: string }> {
+  const job = await db.query.aiJobs.findFirst({
+    where: and(eq(aiJobs.tenantId, tenantId), eq(aiJobs.id, jobId), eq(aiJobs.jobType, 'ocr_statement')),
+  });
+  if (!job) throw AppError.notFound('Statement parse job not found');
+  if (!['complete', 'failed', 'cancelled'].includes(job.status ?? '')) {
+    throw AppError.badRequest('This statement is still processing — wait for it to finish before re-processing.');
+  }
+  if (job.importedAt) {
+    throw AppError.badRequest(
+      'This statement has already been imported. Re-processing it would risk duplicate transactions — upload it again as a new statement if you need a fresh extraction.',
+    );
+  }
+  if (!job.inputId) throw AppError.notFound('The original statement file is no longer available.');
+  const forceOcr = (job.inputData as { forceOcr?: boolean } | null)?.forceOcr === true;
+  // startStatementParse re-validates the attachment, AI-enabled, consent and
+  // budget — if any of those now fail, the old row is left untouched.
+  const { jobId: newJobId } = await startStatementParse(tenantId, job.inputId, { forceOcr });
+  await db.delete(aiJobs).where(and(eq(aiJobs.tenantId, tenantId), eq(aiJobs.id, jobId)));
+  return { jobId: newJobId };
 }

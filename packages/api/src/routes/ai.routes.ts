@@ -510,6 +510,13 @@ aiRouter.delete('/parse/statement/jobs/:jobId', authenticate, async (req, res) =
   res.json({ deleted: true });
 });
 
+// Re-run a failed or pending-review parse from its original attachment. Rides
+// the same limiter as /parse/statement — it starts the identical pipeline.
+aiRouter.post('/parse/statement/jobs/:jobId/reprocess', authenticate, aiProcessingLimiter, async (req, res) => {
+  const result = await aiStatementParser.reprocessStatementJob(req.tenantId, String(req.params['jobId']));
+  res.status(202).json(result);
+});
+
 // ─── Processing — Document Classification ──────────────────────
 
 aiRouter.post('/classify', authenticate, aiProcessingLimiter, validate(aiClassifySchema), async (req, res) => {

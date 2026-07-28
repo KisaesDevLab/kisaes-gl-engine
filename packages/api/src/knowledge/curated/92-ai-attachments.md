@@ -45,6 +45,12 @@ Upload a bank or credit card statement PDF, and the AI extracts individual trans
 This is useful when Plaid isn't available or for credit card statements that can't be
 connected electronically.
 
+Uploaded statements appear on **Banking > Statement Processing** with their status
+(Processing, Pending review, Imported, Failed). A failed or pending-review statement can
+be **Re-processed** from that list — extraction re-runs from the original file, which
+helps after an OCR engine outage or timeout. Already-imported statements can't be
+re-processed (that would risk duplicate transactions); upload the file again instead.
+
 ### In-App Chat Assistant
 The chat assistant (the speech bubble icon in the bottom-right) can answer questions about
 the app, explain accounting concepts, and help you navigate to the right screen. It reads

@@ -39,6 +39,7 @@ export interface GlmOcrConfig {
   maxAttempts?: number; // default 3
   apiKey?: string | null; // optional bearer
   defaultConfidence?: number; // default 0.9
+  maxTokens?: number; // per-page output cap, default 8192
   fetcher?: typeof fetch; // injectable for tests
 }
 
@@ -75,8 +76,18 @@ interface InternalConfig {
   maxAttempts: number;
   apiKey: string | null;
   defaultConfidence: number;
+  maxTokens: number;
   fetcher: typeof fetch;
 }
+
+// A dense statement page transcribes to well under 2k tokens of markdown, so
+// 8192 is generous headroom — its real job is stopping a repetition loop (a
+// known small-VLM failure mode on noisy scans) from generating unbounded
+// output. llama-server defaults to n_predict=-1, and on a single-slot server
+// one looping page monopolizes the slot for minutes while every other request
+// queues into its client timeout. finish_reason='length' still fails loud
+// (see parseOpenAiChatResponse) rather than passing truncated text downstream.
+const DEFAULT_MAX_TOKENS = 8192;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 const hashImage = (buffer: Buffer): string => createHash('sha256').update(buffer).digest('hex');
@@ -100,7 +111,41 @@ const resolveConfig = (cfg: GlmOcrConfig): InternalConfig => {
     apiKey: cfg.apiKey && cfg.apiKey.length > 0 ? cfg.apiKey : null,
     defaultConfidence:
       typeof cfg.defaultConfidence === 'number' ? cfg.defaultConfidence : 0.9,
+    maxTokens: cfg.maxTokens && cfg.maxTokens > 0 ? cfg.maxTokens : DEFAULT_MAX_TOKENS,
     fetcher: cfg.fetcher ?? fetch,
+  };
+};
+
+// ── Cross-call in-flight gate ───────────────────────────────────────────────
+// `concurrency` used to be a per-ocrPages() budget, so N simultaneous parse
+// jobs put N×concurrency requests in flight against one engine. On a
+// single-slot llama-server the surplus requests sit in the SERVER's queue with
+// their client timeout running — a busy engine then fails with "timed out"
+// even though every request would have succeeded in turn. This module-level
+// gate makes `concurrency` a per-engine budget across all concurrent callers
+// in this process: excess pages wait here (no timer running) and the request
+// timeout only measures the engine actually working.
+const inflightGates = new Map<string, { active: number; waiters: Array<() => void> }>();
+
+const acquireOcrSlot = async (baseUrl: string, cap: number): Promise<() => void> => {
+  let gate = inflightGates.get(baseUrl);
+  if (!gate) {
+    gate = { active: 0, waiters: [] };
+    inflightGates.set(baseUrl, gate);
+  }
+  // Condition-variable loop: releases wake every waiter and each re-checks,
+  // so a cap that changed between calls (admin config edit) is honored.
+  while (gate.active >= Math.max(1, cap)) {
+    await new Promise<void>((resolve) => gate.waiters.push(resolve));
+  }
+  gate.active += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    gate.active -= 1;
+    const waiters = gate.waiters.splice(0);
+    for (const wake of waiters) wake();
   };
 };
 
@@ -186,7 +231,7 @@ export const parseOpenAiChatResponse = (
 export const buildOcrRequestBody = (
   image: Buffer,
   mimeType: string,
-  cfg: { model: string; prompt: string },
+  cfg: { model: string; prompt: string; maxTokens?: number },
 ): Record<string, unknown> => ({
   model: cfg.model,
   messages: [
@@ -201,6 +246,7 @@ export const buildOcrRequestBody = (
   // Near-greedy decoding — what you want for OCR fidelity. Matches the
   // vibe-glm-ocr entrypoint default.
   temperature: 0.02,
+  max_tokens: cfg.maxTokens && cfg.maxTokens > 0 ? cfg.maxTokens : DEFAULT_MAX_TOKENS,
 });
 
 const ocrOnePage = async (
@@ -220,9 +266,17 @@ const ocrOnePage = async (
   }
 
   const url = `${cfg.baseUrl}/v1/chat/completions`;
-  const requestBody = buildOcrRequestBody(image, mimeType, { model: cfg.model, prompt: cfg.prompt });
+  const requestBody = buildOcrRequestBody(image, mimeType, {
+    model: cfg.model,
+    prompt: cfg.prompt,
+    maxTokens: cfg.maxTokens,
+  });
   let lastErr: unknown;
   for (let attempt = 1; attempt <= cfg.maxAttempts; attempt += 1) {
+    // Hold an in-flight slot only for the HTTP attempt itself — the timeout
+    // timer starts after the slot is acquired, and backoff sleeps between
+    // attempts don't hog a slot.
+    const releaseSlot = await acquireOcrSlot(cfg.baseUrl, cfg.concurrency);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), cfg.timeoutMs);
     try {
@@ -248,12 +302,18 @@ const ocrOnePage = async (
       // retrying won't help and wastes wall time. Only retry 5xx/timeout/network.
       if (err instanceof GlmOcrError && err.status !== undefined && err.status < 500) {
         clearTimeout(timer);
+        releaseSlot();
         onFailure();
         throw err;
       }
-      if (attempt < cfg.maxAttempts) await sleep(200 * 2 ** (attempt - 1));
+      if (attempt < cfg.maxAttempts) {
+        clearTimeout(timer);
+        releaseSlot();
+        await sleep(200 * 2 ** (attempt - 1));
+      }
     } finally {
       clearTimeout(timer);
+      releaseSlot();
     }
   }
   onFailure();

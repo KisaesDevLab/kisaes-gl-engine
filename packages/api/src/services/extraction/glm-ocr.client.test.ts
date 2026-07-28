@@ -57,6 +57,13 @@ describe('buildOcrRequestBody', () => {
     expect(((content[0]!['image_url'] as { url: string }).url)).toContain('data:image/png;base64,');
     expect(content[1]!['text']).toBe('OCR:');
   });
+
+  it('caps output tokens (default 8192) so a looping page cannot generate unbounded', () => {
+    const body = buildOcrRequestBody(Buffer.from('x'), 'image/png', { model: 'glm-ocr', prompt: 'OCR:' });
+    expect(body['max_tokens']).toBe(8192);
+    const custom = buildOcrRequestBody(Buffer.from('x'), 'image/png', { model: 'glm-ocr', prompt: 'OCR:', maxTokens: 4096 });
+    expect(custom['max_tokens']).toBe(4096);
+  });
 });
 
 describe('ocrPages', () => {
@@ -101,5 +108,29 @@ describe('ocrPages', () => {
     await expect(
       ocrPages([{ data: Buffer.from('q'), mimeType: 'image/png' }], { baseUrl: '' }),
     ).rejects.toThrow(GlmOcrError);
+  });
+
+  it('shares one in-flight budget across concurrent ocrPages calls (same engine)', async () => {
+    // Two simultaneous ocrPages calls with concurrency:1 against the same base
+    // URL must never have more than ONE request in flight — the cross-call
+    // gate is what keeps a single-slot llama-server from queueing requests
+    // into their client timeout.
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const fetcher = vi.fn(async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 20));
+      inFlight -= 1;
+      return okResponse(chatBody(`ok-${Math.max(1, inFlight)}`));
+    }) as unknown as typeof fetch;
+    const cfg = { baseUrl: 'http://glm-gate-test:8090', concurrency: 1, fetcher };
+    const [a, b] = await Promise.all([
+      ocrPages([{ data: Buffer.from('gate-a'), mimeType: 'image/png' }], cfg),
+      ocrPages([{ data: Buffer.from('gate-b'), mimeType: 'image/png' }], cfg),
+    ]);
+    expect(a).toHaveLength(1);
+    expect(b).toHaveLength(1);
+    expect(maxInFlight).toBe(1);
   });
 });
