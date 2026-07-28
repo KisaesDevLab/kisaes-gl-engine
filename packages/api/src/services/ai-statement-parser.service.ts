@@ -206,6 +206,17 @@ async function buildStatementMarkdown(
       );
     }
   };
+  // A page whose OCR hit the output cap (repetition loop on a noisy scan —
+  // typically a check-image grid page) comes back salvaged-but-flagged; record
+  // it so the parse routes to review instead of silently passing.
+  const noteTruncatedPages = (
+    results: Array<{ truncated?: boolean } | undefined>,
+    pageNumberOf: (i: number) => number,
+  ) => {
+    results.forEach((r, i) => {
+      if (r?.truncated) qualityWarnings.push(`ocr_page_truncated_p${pageNumberOf(i)}`);
+    });
+  };
 
   // Non-PDF image: single page, OCR-only.
   if (isPassthroughImage(mimeType)) {
@@ -213,6 +224,7 @@ async function buildStatementMarkdown(
     await onOcrStart();
     const ocrPagesInput: OcrPageInput[] = [{ data: fileBuffer, mimeType: mimeType.toLowerCase() }];
     const out = await ocrPages(ocrPagesInput, ocrConfig);
+    noteTruncatedPages(out, () => 1);
     return { markdown: `# Page 1\n\n${out[0]?.markdown ?? ''}`.trim(), extractionSource: 'glm_ocr' };
   }
 
@@ -240,6 +252,7 @@ async function buildStatementMarkdown(
           ocrConfig,
         );
         targets.forEach((p, i) => ocrByPage.set(p - 1, out[i]?.markdown ?? ''));
+        noteTruncatedPages(out, (i) => targets[i] ?? i + 1);
         qualityWarnings.push('check_pages_ocr_appended');
       } catch (err) {
         // Additive only — a failed check-page OCR must never sink the parse.
@@ -270,6 +283,7 @@ async function buildStatementMarkdown(
 
   if (method === 'ocr') {
     const out = await ocrPages(rendered.map((r) => ({ data: r.data, mimeType: r.mimeType })), ocrConfig);
+    noteTruncatedPages(out, (i) => (out[i]?.index ?? i) + 1);
     const md = out.map((p) => `# Page ${p.index + 1}\n\n${p.markdown}`).join('\n\n');
     return { markdown: md, extractionSource: 'glm_ocr' };
   }
@@ -284,6 +298,7 @@ async function buildStatementMarkdown(
   const ocrResults = ocrTargets.length
     ? await ocrPages(ocrTargets.map((t) => t.input), ocrConfig)
     : [];
+  noteTruncatedPages(ocrResults, (i) => (ocrTargets[i]?.pageIndex ?? i) + 1);
   const ocrByPage = new Map<number, string>();
   ocrTargets.forEach((t, i) => ocrByPage.set(t.pageIndex, ocrResults[i]?.markdown ?? ''));
   const md = rendered

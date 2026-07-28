@@ -47,6 +47,10 @@ export interface OcrPageResult {
   index: number; // 0-based page index
   markdown: string;
   confidence: number;
+  /** Output hit the max_tokens cap (usually a repetition loop on a noisy
+   *  scan). The markdown is the salvaged head with trailing repeats
+   *  collapsed — usable, but flag it for review. */
+  truncated?: boolean;
 }
 
 export class GlmOcrError extends Error {
@@ -180,8 +184,63 @@ export const resetOcrCircuit = (): void => {
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
+// Collapse a repetition loop in truncated OCR output. A looping decode
+// repeats a line — or a multi-line block (observed in prod: a 15-line check
+// block repeated 75×) — until the token cap; the head of the output is still
+// a faithful read of the page. Any block of up to `maxBlock` lines that
+// repeats 3+ times consecutively is kept once with a marker (3+ so a page
+// that legitimately shows the same short block twice — e.g. a check front and
+// its back — is never collapsed). Exported for unit tests.
+export const collapseRepeatedLines = (text: string, maxBlock = 30): string => {
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    let collapsed = false;
+    for (let b = 1; b <= maxBlock && i + 2 * b <= lines.length; b += 1) {
+      let eq = true;
+      for (let k = 0; k < b; k += 1) {
+        if (lines[i + k] !== lines[i + b + k]) { eq = false; break; }
+      }
+      if (!eq) continue;
+      if (!lines.slice(i, i + b).some((l) => l.trim() !== '')) continue;
+      let reps = 2;
+      for (;;) {
+        const start = i + reps * b;
+        if (start + b > lines.length) break;
+        let same = true;
+        for (let k = 0; k < b; k += 1) {
+          if (lines[start + k] !== lines[i + k]) { same = false; break; }
+        }
+        if (!same) break;
+        reps += 1;
+      }
+      if (reps >= 3) {
+        out.push(...lines.slice(i, i + b));
+        out.push(`[…OCR repetition loop: previous block repeated ${reps}× — collapsed…]`);
+        i += reps * b;
+        collapsed = true;
+        break;
+      }
+    }
+    if (!collapsed) {
+      out.push(lines[i]!);
+      i += 1;
+    }
+  }
+  return out.join('\n');
+};
+
 // Pure parser for the llama-server (OpenAI-compatible) response. The OCR'd
 // markdown lives in choices[0].message.content. Exported for unit tests.
+//
+// finish_reason='length' (output hit the max_tokens cap) is reported via
+// `truncated: true` rather than thrown: with the client-side cap in place the
+// cap is only ever reached by a repetition loop on a noisy scan, the head of
+// the output is still a faithful read, and one unreadable page shouldn't sink
+// a whole statement. The caller decides how loud to be (the statement
+// pipeline adds a quality warning; ocrOnePage first retries with a repetition
+// penalty).
 export const parseOpenAiChatResponse = (
   body: unknown,
   pageIndex: number,
@@ -197,15 +256,7 @@ export const parseOpenAiChatResponse = (
   const first = choices[0];
   if (!isPlainObject(first)) throw new GlmOcrError('GLM-OCR response: choices[0] is not an object');
 
-  // Truncation guard: finish_reason='length' means the model hit max_tokens
-  // before completing. Treating that as success silently feeds truncated
-  // markdown downstream — fail loud so the audit row names the page.
-  if (first['finish_reason'] === 'length') {
-    throw new GlmOcrError(
-      `GLM-OCR response truncated by output-token cap on page ${pageIndex + 1} ` +
-        `(finish_reason='length'). Raise --n-predict on the OCR server or lower DPI.`,
-    );
-  }
+  const truncated = first['finish_reason'] === 'length';
   const message = first['message'];
   if (!isPlainObject(message)) throw new GlmOcrError('GLM-OCR response: choices[0].message missing');
 
@@ -222,8 +273,16 @@ export const parseOpenAiChatResponse = (
   } else {
     text = '';
   }
+  if (truncated) text = collapseRepeatedLines(text);
   const empty = text.length === 0;
-  return { index: pageIndex, markdown: text, confidence: empty ? 0 : defaultConfidence };
+  return {
+    index: pageIndex,
+    markdown: text,
+    // A truncated page is a degraded read — halve its confidence so the
+    // downstream statement confidence reflects it.
+    confidence: empty ? 0 : truncated ? defaultConfidence * 0.5 : defaultConfidence,
+    ...(truncated ? { truncated: true } : {}),
+  };
 };
 
 // Build the OpenAI vision request body for a single page image. Exported so
@@ -231,7 +290,7 @@ export const parseOpenAiChatResponse = (
 export const buildOcrRequestBody = (
   image: Buffer,
   mimeType: string,
-  cfg: { model: string; prompt: string; maxTokens?: number },
+  cfg: { model: string; prompt: string; maxTokens?: number; antiLoop?: boolean },
 ): Record<string, unknown> => ({
   model: cfg.model,
   messages: [
@@ -244,32 +303,30 @@ export const buildOcrRequestBody = (
     },
   ],
   // Near-greedy decoding — what you want for OCR fidelity. Matches the
-  // vibe-glm-ocr entrypoint default.
-  temperature: 0.02,
+  // vibe-glm-ocr entrypoint default. The anti-loop retry (after a truncated
+  // first read) trades a little fidelity for escape velocity: a repetition
+  // penalty plus mild sampling usually breaks a greedy-decode loop.
+  temperature: cfg.antiLoop ? 0.3 : 0.02,
+  ...(cfg.antiLoop ? { repeat_penalty: 1.3 } : {}),
   max_tokens: cfg.maxTokens && cfg.maxTokens > 0 ? cfg.maxTokens : DEFAULT_MAX_TOKENS,
 });
 
-const ocrOnePage = async (
+// One logical OCR request (with network/5xx retries) for a single page.
+// antiLoop=true resends with a repetition penalty — used after a truncated
+// first read to try to break a decode loop.
+const requestOcrPage = async (
   cfg: InternalConfig,
   image: Buffer,
   mimeType: string,
   pageIndex: number,
+  antiLoop: boolean,
 ): Promise<OcrPageResult> => {
-  const key = hashImage(image);
-  const hit = memCache.get(key);
-  if (hit) return { ...hit, index: pageIndex };
-
-  if (circuitState() === 'open') {
-    throw new GlmOcrCircuitOpenError(
-      `GLM-OCR circuit open (${cbConsecutiveFailures} consecutive failures); retry after cooldown`,
-    );
-  }
-
   const url = `${cfg.baseUrl}/v1/chat/completions`;
   const requestBody = buildOcrRequestBody(image, mimeType, {
     model: cfg.model,
     prompt: cfg.prompt,
     maxTokens: cfg.maxTokens,
+    antiLoop,
   });
   let lastErr: unknown;
   for (let attempt = 1; attempt <= cfg.maxAttempts; attempt += 1) {
@@ -293,7 +350,6 @@ const ocrOnePage = async (
       }
       const body = (await res.json()) as unknown;
       const result = parseOpenAiChatResponse(body, pageIndex, cfg.defaultConfidence);
-      memCache.set(key, result);
       onSuccess();
       return result;
     } catch (err) {
@@ -329,6 +385,50 @@ const ocrOnePage = async (
   throw lastErr instanceof Error
     ? lastErr
     : new GlmOcrError(`GLM-OCR failed after ${cfg.maxAttempts} attempts (page ${pageIndex + 1})`, undefined, url);
+};
+
+const ocrOnePage = async (
+  cfg: InternalConfig,
+  image: Buffer,
+  mimeType: string,
+  pageIndex: number,
+): Promise<OcrPageResult> => {
+  const key = hashImage(image);
+  const hit = memCache.get(key);
+  if (hit) return { ...hit, index: pageIndex };
+
+  if (circuitState() === 'open') {
+    throw new GlmOcrCircuitOpenError(
+      `GLM-OCR circuit open (${cbConsecutiveFailures} consecutive failures); retry after cooldown`,
+    );
+  }
+
+  let result = await requestOcrPage(cfg, image, mimeType, pageIndex, false);
+  if (result.truncated) {
+    // Near-greedy decoding got stuck in a repetition loop and hit the output
+    // cap. One retry with a repetition penalty usually breaks the loop; if it
+    // doesn't, keep the (collapsed) truncated read rather than failing.
+    log.warn({
+      component: 'glm-ocr',
+      event: 'ocr_page_truncated_retrying',
+      page: pageIndex + 1,
+      chars: result.markdown.length,
+    });
+    try {
+      const retry = await requestOcrPage(cfg, image, mimeType, pageIndex, true);
+      if (!retry.truncated && retry.markdown.length > 0) {
+        // The page is known-loopy — the penalty run terminates but can still
+        // repeat itself below the cap, so collapse its repeats as well.
+        result = { ...retry, markdown: collapseRepeatedLines(retry.markdown) };
+      }
+    } catch {
+      // Anti-loop retry is best-effort; the collapsed first read stands.
+    }
+  }
+  // Don't cache truncated reads: a later re-process (after a server fix or a
+  // DPI change) should get a fresh chance, not the cached bad read.
+  if (!result.truncated) memCache.set(key, result);
+  return result;
 };
 
 const runWithConcurrency = async <T, R>(
