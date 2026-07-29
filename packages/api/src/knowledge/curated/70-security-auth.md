@@ -75,8 +75,9 @@ disappear from that user's company switcher and cannot be opened.
 
 ### Peer Screen Sharing
 When enabled by the appliance operator, users can share their MyBooks screen live with
-other MyBooks users ("Share my screen" in the header; viewers use "Join a screen share"
-with an 8-character code). It is view-only DOM mirroring of the MyBooks tab only — never
+other MyBooks users. Both entry points live on the **Help → Knowledge Base** page:
+"Share my screen" starts a session, and viewers use "Join a screen share" with an
+8-character code. It is view-only DOM mirroring of the MyBooks tab only — never
 the desktop or other apps. All typed input is masked and SSN/EIN/routing/card numbers are
 redacted on the sharer's machine before transmission; password/security/API-key screens
 are blocked. A join code alone grants nothing: the sharer approves each viewer by name,
