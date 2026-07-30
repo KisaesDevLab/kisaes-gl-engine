@@ -10,9 +10,18 @@ import { OllamaProvider } from './ollama.provider.js';
 import { OpenAiCompatProvider } from './openai-compat.provider.js';
 import { decrypt } from '../../utils/encryption.js';
 import { retryWithBackoff, abortableTimeout, withTimeout, TimeoutError } from '../../utils/retry.js';
+import { aiMode, routerProvider } from './vibe-router.provider.js';
 
 export type { AiProvider, CompletionParams, CompletionResult } from './ai-provider.interface.js';
 export type { VisionParams } from './ai-provider.interface.js';
+export {
+  MYBOOKS_TASK_CLASSES,
+  VibeRouterProvider,
+  aiMode,
+  registerMybooksTaskClasses,
+  routerProvider,
+  validateAiModeEnv,
+} from './vibe-router.provider.js';
 
 interface AiConfigRow {
   anthropicApiKeyEncrypted?: string | null;
@@ -47,7 +56,23 @@ export function resolveOllamaNative(baseUrl: string, mode?: string | null): bool
   return /:11434(\b|\/|$)/.test(baseUrl) || /\bollama\b/i.test(baseUrl);
 }
 
-export function getProvider(providerName: string, config: AiConfigRow, model?: string): AiProvider {
+export function getProvider(
+  providerName: string,
+  config: AiConfigRow,
+  model?: string,
+  opts?: {
+    /** MIG-2: bypass the router short-circuit. ONLY for surfaces that are
+     *  direct by design in both modes: the pinned-local document-extraction
+     *  pipeline (qwen-client), GLM-OCR, and the admin credential test /
+     *  model-list endpoints (which diagnose a SPECIFIC stored provider). */
+    forceDirect?: boolean;
+  },
+): AiProvider {
+  // MIG-2: router mode ignores the requested provider/model — task classes +
+  // router policy own that. Never falls through to a direct provider.
+  if (!opts?.forceDirect && aiMode() === 'router') {
+    return routerProvider();
+  }
   switch (providerName) {
     case 'anthropic':
       if (!config.anthropicApiKeyEncrypted) throw new Error('Anthropic API key not configured');
@@ -161,6 +186,14 @@ export async function executeWithFallback(
 ): Promise<CompletionResult> {
   const errors: string[] = [];
   const timeoutMs = options?.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS;
+
+  // MIG-2: router mode short-circuits the provider selection and fallback
+  // chain entirely — failover WITHIN router mode is the router's own
+  // fallback-chain job, and a router outage must surface as an error, not
+  // silently retry a direct provider around the scrubber and ledger.
+  if (aiMode() === 'router') {
+    return attempt(routerProvider(), params, timeoutMs);
+  }
 
   // Tag timeout errors with the provider name so the combined error
   // message at the bottom shows operators which upstream stalled.

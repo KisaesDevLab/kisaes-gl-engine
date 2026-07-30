@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+import { registerMybooksTaskClasses } from './services/ai-providers/index.js';
 import { app } from './app.js';
 import { env } from './config/env.js';
 import { pool } from './db/index.js';
@@ -171,6 +172,9 @@ async function start() {
   // Start server
   const server = app.listen(env.PORT, () => {
     console.log(`Vibe MyBooks API listening on port ${env.PORT}`);
+    // MIG-2: router mode only; non-blocking with retry — AI features fail
+    // closed at the router until registration lands, which is correct.
+    registerMybooksTaskClasses();
     startBackupScheduler();
     startRecurringScheduler();
     startFingerprintScheduler();

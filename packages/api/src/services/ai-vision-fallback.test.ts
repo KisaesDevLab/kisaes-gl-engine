@@ -17,6 +17,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock('./ai-providers/index.js', () => ({
   getProvider: (...a: unknown[]) => mocks.getProvider(...a),
   hasCredentials: (...a: unknown[]) => mocks.hasCredentials(...a),
+  // MIG-2: the chain consults the mode before building attempts; these
+  // suites exercise the DIRECT chain, so pin it.
+  aiMode: () => 'direct',
+  routerProvider: () => { throw new Error('router provider not expected in direct-mode tests'); },
 }));
 vi.mock('./ai-orchestrator.service.js', () => ({
   assertCloudVisionAllowed: (...a: unknown[]) => mocks.assertCloudVisionAllowed(...a),

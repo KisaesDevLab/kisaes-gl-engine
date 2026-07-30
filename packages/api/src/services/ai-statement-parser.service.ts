@@ -22,6 +22,7 @@
 // debit/credit type) so the route, the upload UI, and importStatementItems are
 // unchanged except for the sign fix in the importer.
 
+import { MYBOOKS_TASK_CLASSES } from './ai-providers/vibe-router.provider.js';
 import fs from 'fs';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { StatementExtractionResult, StatementExtractionTransaction } from '@kis-books/shared';
@@ -575,6 +576,7 @@ async function executePipeline(
   let result: Awaited<ReturnType<typeof provider.complete>>;
   try {
     result = await provider.complete({
+      taskClass: MYBOOKS_TASK_CLASSES.STATEMENT_EXTRACT,
       systemPrompt: customPrompt ?? stage2SystemPrompt,
       userPrompt:
         'Extract EVERY transaction from the statement markdown below into the JSON object. ' +

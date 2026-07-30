@@ -67,6 +67,8 @@ vi.mock('./ai-providers/index.js', () => ({
   // The vision-fallback helper imports hasCredentials too; return false so no
   // Anthropic step is added (the primary MiniCPM attempt succeeds first).
   hasCredentials: () => false,
+  aiMode: () => 'direct',
+  routerProvider: () => { throw new Error('router provider not expected in direct-mode tests'); },
 }));
 
 import { processReceipt } from './ai-receipt-ocr.service.js';

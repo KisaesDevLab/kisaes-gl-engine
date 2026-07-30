@@ -13,6 +13,7 @@ import {
 import { AppError } from '../utils/errors.js';
 import * as aiConfigService from './ai-config.service.js';
 import * as aiPrompt from './ai-prompt.service.js';
+import { MYBOOKS_TASK_CLASSES } from './ai-providers/vibe-router.provider.js';
 import { executeWithFallback, getProvider } from './ai-providers/index.js';
 import type { CompletionParams, CompletionResult } from './ai-providers/index.js';
 import { getKnowledgePrompt } from './chat-knowledge.service.js';
@@ -276,6 +277,9 @@ export async function sendMessage(
   const chatParams = aiConfigService.resolveTaskParams(config, 'chat', { maxTokens: 1024, temperature: 0.4 });
   const chatExec = aiConfigService.resolveTaskExec(config, 'chat');
   const params: CompletionParams = {
+    taskClass: MYBOOKS_TASK_CLASSES.CHAT,
+    userId,
+    companyRef: companyId ?? null,
     systemPrompt,
     userPrompt,
     temperature: chatParams.temperature,

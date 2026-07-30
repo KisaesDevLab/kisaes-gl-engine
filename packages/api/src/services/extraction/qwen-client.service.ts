@@ -87,7 +87,7 @@ async function resolveProvider(modelTag?: string): Promise<{ provider: AiProvide
   // openai_compat /v1 provider for non-Ollama backends.
   const provider = opt.ollamaNative && config.openaiCompatBaseUrl
     ? new OllamaProvider(nativeOllamaBaseUrl(config.openaiCompatBaseUrl), tag)
-    : getProvider(PROVIDER_NAME, config, tag);
+    : getProvider(PROVIDER_NAME, config, tag, { forceDirect: true });
   return { provider, opt };
 }
 
@@ -150,7 +150,7 @@ export async function healthCheck(): Promise<ExtractionHealth> {
   }
   const provider = opt.ollamaNative
     ? new OllamaProvider(nativeOllamaBaseUrl(baseUrl), modelTag)
-    : getProvider(PROVIDER_NAME, config, modelTag);
+    : getProvider(PROVIDER_NAME, config, modelTag, { forceDirect: true });
   const { signal, cancel } = abortableTimeout(HEALTH_TIMEOUT_MS);
   try {
     const res = await provider.testConnection(signal);

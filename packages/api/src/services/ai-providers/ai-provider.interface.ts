@@ -22,6 +22,14 @@ export interface CompletionParams {
    *  OLLAMA_NUM_CTX. Vision/extraction calls set this so a full-page image
    *  doesn't overflow the model's small default context. */
   numCtx?: number;
+  /** Router-mode fields (MIG-2). Direct providers ignore all three. In
+   *  VIBE_AI_MODE=router the task class is the only knob — model choice,
+   *  data boundaries, budgets, and audit attribution derive from it — and
+   *  the router paths fail closed when a call site does not declare one.
+   *  userId/companyRef thread attribution into the router ledger. */
+  taskClass?: string;
+  userId?: string | null;
+  companyRef?: string | null;
 }
 
 export interface VisionParams extends CompletionParams {

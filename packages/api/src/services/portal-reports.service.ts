@@ -20,6 +20,7 @@ import { auditLog } from '../middleware/audit.js';
 import * as aiConfigService from './ai-config.service.js';
 import { checkTenantTaskConsent } from './ai-consent.service.js';
 import { consentReasonMessage } from './ai-orchestrator.service.js';
+import { MYBOOKS_TASK_CLASSES } from './ai-providers/vibe-router.provider.js';
 import { executeWithFallback, getProvider } from './ai-providers/index.js';
 import type { CompletionResult } from './ai-providers/index.js';
 import { getProviderForTenant } from './storage/storage-provider.factory.js';
@@ -1233,6 +1234,7 @@ export async function generateAiSummary(
   try {
     result = await executeWithFallback(
       {
+        taskClass: MYBOOKS_TASK_CLASSES.REPORT_NARRATIVE,
         systemPrompt,
         userPrompt,
         temperature: params.temperature,

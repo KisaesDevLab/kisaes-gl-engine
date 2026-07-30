@@ -122,6 +122,14 @@ const envSchema = z.object({
   // cost of holding the model in RAM. Default 30m; set "0" to unload
   // immediately or "-1" to keep loaded indefinitely.
   OLLAMA_KEEP_ALIVE: z.string().default('30m'),
+  // MIG-2 — Vibe AI Router dual-mode. "router" sends every AI feature (except
+  // the pinned-local extraction pipeline and GLM-OCR) through the appliance's
+  // Vibe AI Router: task classes + router policy pick the model; the admin AI
+  // provider credentials, fallback chains, and budget become inert. Requires
+  // both URL and token (validated below) and never silently falls back.
+  VIBE_AI_MODE: z.enum(['direct', 'router']).optional().default('direct'),
+  VIBE_AI_ROUTER_URL: z.string().optional(),
+  VIBE_AI_TOKEN: z.string().optional(),
   // Optional context-window override (num_ctx) for Ollama requests. Unset
   // = use the model's default. Raise it when the Chart-of-Accounts +
   // vendor + tag lists in a categorization prompt would otherwise be
@@ -401,6 +409,18 @@ function loadEnv(): Env {
   const result = envSchema.safeParse(process.env);
   if (!result.success) {
     console.error('Invalid environment variables:', result.error.flatten().fieldErrors);
+    process.exit(1);
+  }
+  // MIG-2: refuse to boot on a half-configured router mode — limping to
+  // request time fails every AI feature with a worse message.
+  if (
+    result.data.VIBE_AI_MODE === 'router' &&
+    (!result.data.VIBE_AI_ROUTER_URL || !result.data.VIBE_AI_TOKEN)
+  ) {
+    console.error(
+      'VIBE_AI_MODE=router requires both VIBE_AI_ROUTER_URL and VIBE_AI_TOKEN ' +
+        '(the appliance mints the token during "vibe enable"), or set VIBE_AI_MODE=direct.',
+    );
     process.exit(1);
   }
   return result.data;

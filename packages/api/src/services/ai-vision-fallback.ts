@@ -19,7 +19,7 @@
 // result wins; if all fail, the last result is returned so the caller's normal
 // unwrapParsed surfaces ai_parse_failed (or the last thrown error is rethrown).
 
-import { getProvider, hasCredentials } from './ai-providers/index.js';
+import { aiMode, getProvider, hasCredentials, routerProvider } from './ai-providers/index.js';
 import type { VisionParams, CompletionResult } from './ai-providers/ai-provider.interface.js';
 import * as orchestrator from './ai-orchestrator.service.js';
 import { env } from '../config/env.js';
@@ -52,6 +52,17 @@ export async function completeVisionWithFallback(
   params: VisionParams,
   ctx: VisionFallbackCtx,
 ): Promise<CompletionResult> {
+  // MIG-2: router mode collapses the whole chain to one router call — model
+  // choice and failover are router policy's job, and the router's config-time
+  // capability gate guarantees the class's bound model can serve vision.
+  if (aiMode() === 'router') {
+    const call = routerProvider().completeWithImage(params);
+    if (ctx.timeoutMs) call.catch(() => { /* swallow late rejection after timeout */ });
+    return ctx.timeoutMs
+      ? withTimeout(call, ctx.timeoutMs, 'vision.completeWithImage(vibe_router)')
+      : call;
+  }
+
   const { rawConfig, ocrProvider, primaryModel } = ctx;
   const attempts: Attempt[] = [
     { label: `primary:${primaryModel}`, build: () => getProvider(ocrProvider, rawConfig, primaryModel) },

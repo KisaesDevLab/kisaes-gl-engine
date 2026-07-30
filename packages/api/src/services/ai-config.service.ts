@@ -46,6 +46,10 @@ export type ProviderTestHistory = Record<string, ProviderTestRecord>;
 export async function getConfig() {
   const config = await getOrCreateConfig();
   return {
+
+    // MIG-2: deployment-level AI mode. router -> every provider setting in
+    // this payload is inert; the SPA renders a managed-by-router banner.
+    aiMode: (process.env['VIBE_AI_MODE'] === 'router' ? 'router' : 'direct') as 'direct' | 'router',
     providerTestHistory: (config.providerTestHistory as ProviderTestHistory) || {},
     isEnabled: config.isEnabled || false,
     categorizationProvider: config.categorizationProvider,
@@ -407,7 +411,7 @@ export async function listProviderModels(providerName: string): Promise<Provider
   const config = await getRawConfig();
   try {
     const { getProvider } = await import('./ai-providers/index.js');
-    const provider = getProvider(providerName, config);
+    const provider = getProvider(providerName, config, undefined, { forceDirect: true });
     if (typeof provider.listModels !== 'function') return { models: [] };
     const { abortableTimeout } = await import('../utils/retry.js');
     const { signal, cancel } = abortableTimeout(12_000);
@@ -484,7 +488,7 @@ export async function testProvider(providerName: string): Promise<TestProviderRe
   const configuredModels = configuredModelsForProvider(config, providerName);
   let provider;
   try {
-    provider = getProvider(providerName, config, configuredModels[0]);
+    provider = getProvider(providerName, config, configuredModels[0], { forceDirect: true });
   } catch (err) {
     const result: TestProviderResult = { success: false, error: err instanceof Error ? err.message : String(err) };
     await recordTestResult(providerName, result);
@@ -650,6 +654,13 @@ export interface TestFunctionResult {
 // Per-function test maxTokens — mirrors each function's real built-in
 // default so the round-trip behaves like production (a thinking model
 // starved of tokens would falsely "fail" the test).
+// MIG-2: function-key -> task class for the router-mode self-test path.
+const FN_TASK_CLASS: Record<string, string> = {
+  categorization: 'mybooks_txn_categorize',
+  ocr: 'mybooks_receipt_extract',
+  document_classification: 'mybooks_doc_classify',
+  chat: 'mybooks_chat',
+};
 const TEST_FN_MAX_TOKENS: Record<AiFunctionKey, number> = {
   categorization: 512,
   ocr: 1024,
@@ -699,6 +710,7 @@ export async function testFunction(fn: AiFunctionKey): Promise<TestFunctionResul
   try {
     const result = await executeWithFallback(
       {
+        taskClass: FN_TASK_CLASS[fn],
         systemPrompt: 'You are a connectivity test harness. Reply with strict JSON only, no prose.',
         userPrompt: 'Return exactly {"ok":true} and nothing else.',
         temperature: tp.temperature,

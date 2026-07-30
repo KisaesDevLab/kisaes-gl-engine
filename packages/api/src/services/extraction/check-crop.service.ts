@@ -19,6 +19,7 @@
 //      permissive PII) Anthropic cloud vision. The crop is the privacy win:
 //      the model sees one check image, never the full statement.
 
+import { MYBOOKS_TASK_CLASSES } from '../ai-providers/vibe-router.provider.js';
 import { mkdtemp, writeFile, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -254,6 +255,7 @@ export async function readChecksFromCandidates(
       try {
         const completion = await completeVisionWithFallback(
           {
+            taskClass: MYBOOKS_TASK_CLASSES.STATEMENT_EXTRACT,
             systemPrompt: CHECK_VISION_PROMPT,
             userPrompt: 'Read this check and return the JSON object.',
             images: [{ base64: cand.data.toString('base64'), mimeType: 'image/png' }],
