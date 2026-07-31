@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import rateLimit from 'express-rate-limit';
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
@@ -66,11 +66,24 @@ import {
   adminAssignSystemAccountSchema,
 } from '@kis-books/shared';
 import { eq } from 'drizzle-orm';
+import { parseLimit, parseOffset } from '../utils/pagination.js';
 import { tailscaleRouter } from './tailscale.routes.js';
 
 export const adminRouter = Router();
 adminRouter.use(authenticate);
 adminRouter.use(requireSuperAdmin);
+
+// Paging + search for the tenant / user directories. `limit` is only applied
+// when the caller sends one, because the tenant-picker dropdowns hit
+// GET /admin/tenants with no params and need the whole list back.
+function parseAdminListQuery(query: Request['query']): adminService.AdminListOptions {
+  const rawSearch = query['search'];
+  return {
+    limit: query['limit'] === undefined ? undefined : parseLimit(query['limit'], 50, 5000),
+    offset: parseOffset(query['offset']),
+    search: typeof rawSearch === 'string' && rawSearch.trim() ? rawSearch : undefined,
+  };
+}
 
 // Step-up auth limiter. Destructive security endpoints (rotate installation
 // ID, regenerate recovery key, refresh recovery file, delete recovery file)
@@ -303,8 +316,8 @@ adminRouter.put('/settings/application', validate(adminApplicationSettingsSchema
 // ─── Tenant Management ──────────────────────────────────────────
 
 adminRouter.get('/tenants', async (req, res) => {
-  const tenants = await adminService.listTenants();
-  res.json({ tenants });
+  const { tenants, total } = await adminService.listTenants(parseAdminListQuery(req.query));
+  res.json({ tenants, total });
 });
 
 adminRouter.get('/tenants/:id', async (req, res) => {
@@ -425,8 +438,8 @@ adminRouter.post('/tenants/:id/apply-coa-template', async (req, res) => {
 // ─── User Management ────────────────────────────────────────────
 
 adminRouter.get('/users', async (req, res) => {
-  const users = await adminService.listAllUsers();
-  res.json({ users });
+  const { users, total } = await adminService.listAllUsers(parseAdminListQuery(req.query));
+  res.json({ users, total });
 });
 
 adminRouter.post('/users/create', validate(adminCreateUserSchema), async (req, res) => {
@@ -807,8 +820,8 @@ adminRouter.get('/plaid/connections', async (req, res) => {
 
 // Tenants list for the mapping picker (id + name only).
 adminRouter.get('/plaid/tenants', async (_req, res) => {
-  const list = await adminService.listTenants();
-  res.json({ tenants: list.map((t) => ({ id: t.id, name: t.name })) });
+  const { tenants } = await adminService.listTenants();
+  res.json({ tenants: tenants.map((t) => ({ id: t.id, name: t.name })) });
 });
 
 // Mappable GL accounts (bank / credit card / current asset-liability) for a
