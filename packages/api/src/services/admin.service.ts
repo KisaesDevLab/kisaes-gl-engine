@@ -14,24 +14,70 @@ import { auditLog } from '../middleware/audit.js';
 
 // ─── Tenant Management ───────────────────────────────────────────
 
-export async function listTenants() {
+/**
+ * Paging + search for the super-admin tenant and user directories.
+ *
+ * `limit` omitted means "every row" on purpose: the tenant picker dropdowns
+ * (new user, feature flags, COA templates, Plaid) call GET /admin/tenants
+ * with no query params and need the full list, so the unpaged path has to
+ * keep working. The list pages pass limit/offset/search explicitly.
+ */
+export interface AdminListOptions {
+  limit?: number | undefined;
+  offset?: number | undefined;
+  search?: string | undefined;
+}
+
+function likeTerm(search?: string): string | null {
+  const term = search?.trim();
+  return term ? `%${term}%` : null;
+}
+
+function pageClause(options: AdminListOptions) {
+  return options.limit === undefined
+    ? sql``
+    : sql`LIMIT ${options.limit} OFFSET ${options.offset ?? 0}`;
+}
+
+export async function listTenants(options: AdminListOptions = {}) {
+  const like = likeTerm(options.search);
+  const where = like
+    ? sql`WHERE t.name ILIKE ${like} OR t.slug ILIKE ${like}`
+    : sql``;
+
   const rows = await db.execute(sql`
     SELECT t.id, t.name, t.slug, t.created_at,
       (SELECT COUNT(*) FROM users u WHERE u.tenant_id = t.id) as user_count,
       (SELECT COUNT(*) FROM companies c WHERE c.tenant_id = t.id) as company_count,
-      (SELECT COUNT(*) FROM transactions tx WHERE tx.tenant_id = t.id) as transaction_count
+      (SELECT COUNT(*) FROM transactions tx WHERE tx.tenant_id = t.id) as transaction_count,
+      EXISTS (SELECT 1 FROM users u WHERE u.tenant_id = t.id AND u.is_active) as is_active
     FROM tenants t
-    ORDER BY t.created_at DESC
+    ${where}
+    -- id tiebreaker keeps paging stable: bulk-created tenants can share a
+    -- created_at, and an unstable sort makes rows repeat or vanish between
+    -- LIMIT/OFFSET pages.
+    ORDER BY t.created_at DESC, t.id DESC
+    ${pageClause(options)}
   `);
-  return (rows.rows as any[]).map((r) => ({
-    id: r.id,
-    name: r.name,
-    slug: r.slug,
-    createdAt: r.created_at,
-    userCount: parseInt(r.user_count || '0'),
-    companyCount: parseInt(r.company_count || '0'),
-    transactionCount: parseInt(r.transaction_count || '0'),
-  }));
+  const totalRows = await db.execute<{ total: number }>(sql`
+    SELECT COUNT(*)::int as total FROM tenants t ${where}
+  `);
+
+  return {
+    tenants: (rows.rows as any[]).map((r) => ({
+      id: r.id,
+      name: r.name,
+      slug: r.slug,
+      createdAt: r.created_at,
+      // Disable/enable a tenant deactivates/reactivates its users, so a
+      // tenant counts as active while any of its users can still sign in.
+      isActive: !!r.is_active,
+      userCount: parseInt(r.user_count || '0'),
+      companyCount: parseInt(r.company_count || '0'),
+      transactionCount: parseInt(r.transaction_count || '0'),
+    })),
+    total: Number(totalRows.rows[0]?.total ?? 0),
+  };
 }
 
 export async function getTenantDetail(tenantId: string) {
@@ -828,27 +874,48 @@ export async function applyCoaTemplate(
 
 // ─── User Management ─────────────────────────────────────────────
 
-export async function listAllUsers() {
+export async function listAllUsers(options: AdminListOptions = {}) {
+  const like = likeTerm(options.search);
+  const where = like
+    ? sql`WHERE u.email ILIKE ${like}
+        OR COALESCE(u.display_name, '') ILIKE ${like}
+        OR t.name ILIKE ${like}`
+    : sql``;
+
   const rows = await db.execute(sql`
     SELECT u.id, u.email, u.display_name, u.role, u.is_active, u.is_super_admin,
       u.last_login_at, u.created_at, u.tenant_id,
       t.name as tenant_name
     FROM users u
     JOIN tenants t ON t.id = u.tenant_id
-    ORDER BY u.created_at DESC
+    ${where}
+    -- See listTenants: stable tiebreaker so LIMIT/OFFSET paging can't
+    -- repeat or skip users created in the same transaction.
+    ORDER BY u.created_at DESC, u.id DESC
+    ${pageClause(options)}
   `);
-  return (rows.rows as any[]).map((r) => ({
-    id: r.id,
-    email: r.email,
-    displayName: r.display_name,
-    role: r.role,
-    isActive: r.is_active,
-    isSuperAdmin: r.is_super_admin,
-    lastLoginAt: r.last_login_at,
-    createdAt: r.created_at,
-    tenantId: r.tenant_id,
-    tenantName: r.tenant_name,
-  }));
+  const totalRows = await db.execute<{ total: number }>(sql`
+    SELECT COUNT(*)::int as total
+    FROM users u
+    JOIN tenants t ON t.id = u.tenant_id
+    ${where}
+  `);
+
+  return {
+    users: (rows.rows as any[]).map((r) => ({
+      id: r.id,
+      email: r.email,
+      displayName: r.display_name,
+      role: r.role,
+      isActive: r.is_active,
+      isSuperAdmin: r.is_super_admin,
+      lastLoginAt: r.last_login_at,
+      createdAt: r.created_at,
+      tenantId: r.tenant_id,
+      tenantName: r.tenant_name,
+    })),
+    total: Number(totalRows.rows[0]?.total ?? 0),
+  };
 }
 
 /**
