@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import type {
   BucketReceiptOcr,
   BucketRow,
@@ -773,9 +773,11 @@ export async function listManualQueue(
     periodStart?: string;
     periodEnd?: string;
     limit?: number;
+    offset?: number;
   },
-): Promise<{ rows: ManualQueueRow[] }> {
+): Promise<{ rows: ManualQueueRow[]; total: number }> {
   const limit = Math.min(opts.limit ?? 100, 500);
+  const offset = Math.max(opts.offset ?? 0, 0);
 
   // Scope by bank feed item (not state) so we catch orphans.
   const conditions = [
@@ -792,7 +794,23 @@ export async function listManualQueue(
     conditions.push(lt(bankFeedItems.feedDate, opts.periodEnd.slice(0, 10)));
   }
 
-  const rows = await db
+  // Queue membership, expressed in SQL so limit/offset/total are exact:
+  // orphans (no state row), or needs_review with neither a suggestion nor
+  // match candidates. Previously this was filtered in JS after a capped
+  // fetch, which both truncated silently and could return short pages.
+  const noCandidates = sql`(${transactionClassificationState.matchCandidates} IS NULL OR jsonb_typeof(${transactionClassificationState.matchCandidates}) <> 'array' OR jsonb_array_length(${transactionClassificationState.matchCandidates}) = 0)`;
+  conditions.push(
+    or(
+      isNull(transactionClassificationState.id),
+      and(
+        eq(transactionClassificationState.bucket, 'needs_review'),
+        isNull(transactionClassificationState.suggestedAccountId),
+        noCandidates,
+      ),
+    )!,
+  );
+
+  const queueQuery = db
     .select({
       item: bankFeedItems,
       state: transactionClassificationState,
@@ -802,44 +820,30 @@ export async function listManualQueue(
       transactionClassificationState,
       eq(transactionClassificationState.bankFeedItemId, bankFeedItems.id),
     )
-    .where(and(...conditions))
-    .orderBy(desc(bankFeedItems.feedDate))
-    .limit(limit);
+    .where(and(...conditions));
 
-  const result: ManualQueueRow[] = [];
-  for (const r of rows) {
-    if (!r.state) {
-      // Orphan — no classification result at all.
-      result.push({
-        bankFeedItemId: r.item.id,
-        bankConnectionId: r.item.bankConnectionId,
-        feedDate: r.item.feedDate,
-        description: r.item.description ?? '',
-        amount: r.item.amount,
-        stateId: null,
-        reason: 'orphan',
-      });
-      continue;
-    }
-    const candidates = (r.state.matchCandidates as MatchCandidate[] | null) ?? null;
-    const hasCandidates = Array.isArray(candidates) && candidates.length > 0;
-    const noSuggestion =
-      r.state.bucket === 'needs_review' &&
-      !r.state.suggestedAccountId &&
-      !hasCandidates;
-    if (noSuggestion) {
-      result.push({
-        bankFeedItemId: r.item.id,
-        bankConnectionId: r.item.bankConnectionId,
-        feedDate: r.item.feedDate,
-        description: r.item.description ?? '',
-        amount: r.item.amount,
-        stateId: r.state.id,
-        reason: 'no_suggestion',
-      });
-    }
-  }
-  return { rows: result };
+  const [rows, [countRow]] = await Promise.all([
+    queueQuery.orderBy(desc(bankFeedItems.feedDate)).limit(limit).offset(offset),
+    db
+      .select({ total: count() })
+      .from(bankFeedItems)
+      .leftJoin(
+        transactionClassificationState,
+        eq(transactionClassificationState.bankFeedItemId, bankFeedItems.id),
+      )
+      .where(and(...conditions)),
+  ]);
+
+  const result: ManualQueueRow[] = rows.map((r) => ({
+    bankFeedItemId: r.item.id,
+    bankConnectionId: r.item.bankConnectionId,
+    feedDate: r.item.feedDate,
+    description: r.item.description ?? '',
+    amount: r.item.amount,
+    stateId: r.state?.id ?? null,
+    reason: r.state ? 'no_suggestion' : 'orphan',
+  }));
+  return { rows: result, total: countRow?.total ?? 0 };
 }
 
 function mapRowToState(row: typeof transactionClassificationState.$inferSelect): ClassificationState {

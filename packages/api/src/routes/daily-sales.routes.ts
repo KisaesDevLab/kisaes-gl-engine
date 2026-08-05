@@ -54,7 +54,8 @@ dailySalesRouter.put('/templates/:id/lines', validate(replaceDailySalesTemplateL
 // ── Entries ──
 dailySalesRouter.get('/entries', async (req, res) => {
   const filters = dailySalesEntriesFilterSchema.parse(req.query);
-  res.json({ entries: await service.listEntries(req.tenantId, filters) });
+  const { entries, total } = await service.listEntries(req.tenantId, filters);
+  res.json({ entries, total });
 });
 
 dailySalesRouter.post('/entries', validate(createDailySalesEntrySchema), async (req, res) => {

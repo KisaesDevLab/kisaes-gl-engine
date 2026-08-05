@@ -29,6 +29,16 @@ billsRouter.get('/payable', async (req, res) => {
   res.json(result);
 });
 
+billsRouter.get('/vendor-summary', async (req, res) => {
+  const contactId = typeof req.query['contactId'] === 'string' ? req.query['contactId'] : '';
+  if (!contactId) {
+    res.status(400).json({ error: { message: 'contactId required' } });
+    return;
+  }
+  const summary = await billService.getVendorApSummary(req.tenantId, contactId, req.companyId);
+  res.json({ summary });
+});
+
 billsRouter.post('/', validate(createBillSchema), async (req, res) => {
   const bill = await billService.createBill(req.tenantId, req.body, req.userId, req.companyId);
   res.status(201).json({ bill });

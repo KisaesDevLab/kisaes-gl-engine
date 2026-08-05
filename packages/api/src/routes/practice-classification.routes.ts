@@ -235,11 +235,14 @@ practiceClassificationRouter.get('/manual-queue', async (req, res) => {
   const periodEnd = typeof req.query['periodEnd'] === 'string' ? req.query['periodEnd'] : undefined;
   const limitRaw = typeof req.query['limit'] === 'string' ? Number(req.query['limit']) : undefined;
   const limit = Number.isFinite(limitRaw) && limitRaw! > 0 ? Math.min(limitRaw!, 500) : 100;
+  const offsetRaw = typeof req.query['offset'] === 'string' ? Number(req.query['offset']) : undefined;
+  const offset = Number.isFinite(offsetRaw) && offsetRaw! > 0 ? Math.floor(offsetRaw!) : 0;
   const result = await classificationService.listManualQueue(req.tenantId, {
     companyId,
     periodStart,
     periodEnd,
     limit,
+    offset,
   });
   res.json(result);
 });

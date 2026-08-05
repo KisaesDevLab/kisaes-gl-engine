@@ -7,7 +7,7 @@
 // entry (auto Cash Over/Short absorbs any residual) that the user reviews and
 // posts via ledger.postTransaction. See Build Plans/DAILY_SALES_POS_PLAN.md.
 
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, count } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import {
@@ -284,9 +284,12 @@ export async function listEntries(
     .leftJoin(dailySalesTemplates, eq(dailySalesTemplates.id, dailySalesEntries.templateId))
     .where(and(...conds))
     .orderBy(desc(dailySalesEntries.businessDate))
-    .limit(Math.min(Math.max(filters.limit ?? 100, 1), 200))
+    .limit(Math.min(Math.max(filters.limit ?? 100, 1), 500))
     .offset(Math.max(filters.offset ?? 0, 0));
-  return rows;
+  const [countRow] = await db.select({ total: count() })
+    .from(dailySalesEntries)
+    .where(and(...conds));
+  return { entries: rows, total: countRow?.total ?? 0 };
 }
 
 export async function createDraft(tenantId: string, input: CreateDailySalesEntryInput, userId?: string, companyId?: string) {

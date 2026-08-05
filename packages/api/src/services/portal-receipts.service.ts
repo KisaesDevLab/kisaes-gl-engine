@@ -3,7 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import crypto from 'node:crypto';
-import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gte, lte, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   portalReceipts,
@@ -416,13 +416,17 @@ export interface InboxRow {
 
 export async function listInbox(
   tenantId: string,
-  opts: { status?: string; companyId?: string } = {},
-): Promise<InboxRow[]> {
+  opts: { status?: string; companyId?: string; uploadedBy?: string; limit?: number; offset?: number } = {},
+): Promise<{ receipts: InboxRow[]; total: number }> {
   const filters: ReturnType<typeof eq>[] = [eq(portalReceipts.tenantId, tenantId)];
   if (opts.status && opts.status !== 'all') {
     filters.push(eq(portalReceipts.status, opts.status));
   }
   if (opts.companyId) filters.push(eq(portalReceipts.companyId, opts.companyId));
+  if (opts.uploadedBy) filters.push(eq(portalReceipts.uploadedBy, opts.uploadedBy));
+
+  const limit = Math.min(Math.max(opts.limit ?? 200, 1), 500);
+  const offset = Math.max(opts.offset ?? 0, 0);
 
   const rows = await db
     .select({
@@ -444,9 +448,16 @@ export async function listInbox(
     .innerJoin(companies, eq(portalReceipts.companyId, companies.id))
     .where(and(...filters))
     .orderBy(desc(portalReceipts.capturedAt))
-    .limit(200);
+    .limit(limit)
+    .offset(offset);
 
-  return rows;
+  const [countRow] = await db
+    .select({ total: count() })
+    .from(portalReceipts)
+    .innerJoin(companies, eq(portalReceipts.companyId, companies.id))
+    .where(and(...filters));
+
+  return { receipts: rows, total: countRow?.total ?? 0 };
 }
 
 export async function getReceipt(tenantId: string, id: string) {

@@ -81,6 +81,6 @@ export const dailySalesEntriesFilterSchema = z.object({
   templateId: z.string().uuid().optional(),
   from: z.string().max(20).optional(),
   to: z.string().max(20).optional(),
-  limit: z.coerce.number().int().min(1).max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
   offset: z.coerce.number().int().min(0).optional(),
 });

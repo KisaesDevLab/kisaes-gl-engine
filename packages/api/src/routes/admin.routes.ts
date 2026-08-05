@@ -736,9 +736,14 @@ adminRouter.put('/mcp/config', validate(adminMcpConfigSchema), async (req, res) 
 adminRouter.get('/mcp/log', async (req, res) => {
   const { db: database } = await import('../db/index.js');
   const { mcpRequestLog } = await import('../db/schema/index.js');
-  const { desc } = await import('drizzle-orm');
-  const logs = await database.select().from(mcpRequestLog).orderBy(desc(mcpRequestLog.createdAt)).limit(100);
-  res.json({ logs });
+  const { desc, count } = await import('drizzle-orm');
+  const limit = parseLimit(req.query['limit'], 100);
+  const offset = parseOffset(req.query['offset']);
+  const [logs, [countRow]] = await Promise.all([
+    database.select().from(mcpRequestLog).orderBy(desc(mcpRequestLog.createdAt)).limit(limit).offset(offset),
+    database.select({ total: count() }).from(mcpRequestLog),
+  ]);
+  res.json({ logs, total: countRow?.total ?? 0, limit, offset });
 });
 
 adminRouter.post('/impersonate/:userId', async (req, res) => {
@@ -901,18 +906,23 @@ adminRouter.get('/plaid/stats', async (req, res) => {
 
 adminRouter.get('/plaid/webhook-log', async (req, res) => {
   const { plaidWebhookLog } = await import('../db/schema/index.js');
-  const { desc } = await import('drizzle-orm');
+  const { desc, count } = await import('drizzle-orm');
   const { db: database } = await import('../db/index.js');
-  const logs = await database.select({
-    id: plaidWebhookLog.id,
-    receivedAt: plaidWebhookLog.receivedAt,
-    plaidItemId: plaidWebhookLog.plaidItemId,
-    webhookType: plaidWebhookLog.webhookType,
-    webhookCode: plaidWebhookLog.webhookCode,
-    processed: plaidWebhookLog.processed,
-    error: plaidWebhookLog.error,
-  }).from(plaidWebhookLog).orderBy(desc(plaidWebhookLog.receivedAt)).limit(100);
-  res.json({ logs });
+  const limit = parseLimit(req.query['limit'], 100);
+  const offset = parseOffset(req.query['offset']);
+  const [logs, [countRow]] = await Promise.all([
+    database.select({
+      id: plaidWebhookLog.id,
+      receivedAt: plaidWebhookLog.receivedAt,
+      plaidItemId: plaidWebhookLog.plaidItemId,
+      webhookType: plaidWebhookLog.webhookType,
+      webhookCode: plaidWebhookLog.webhookCode,
+      processed: plaidWebhookLog.processed,
+      error: plaidWebhookLog.error,
+    }).from(plaidWebhookLog).orderBy(desc(plaidWebhookLog.receivedAt)).limit(limit).offset(offset),
+    database.select({ total: count() }).from(plaidWebhookLog),
+  ]);
+  res.json({ logs, total: countRow?.total ?? 0, limit, offset });
 });
 
 // ─── Backup Remote Config ──────────────────────────────────────

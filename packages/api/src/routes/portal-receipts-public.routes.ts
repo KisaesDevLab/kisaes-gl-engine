@@ -63,9 +63,11 @@ portalReceiptsPublicRouter.get('/', async (req, res) => {
   const companyId = req.query['companyId'] as string | undefined;
   if (!companyId) throw AppError.badRequest('companyId required');
 
-  const list = await svc.listInbox(req.portalContact.tenantId, { companyId });
   // Filter to this contact's uploads only — the bookkeeper inbox is not
   // visible to portal contacts.
-  const own = list.filter((r) => r.uploadedBy === req.portalContact!.contactId);
-  res.json({ receipts: own });
+  const { receipts } = await svc.listInbox(req.portalContact.tenantId, {
+    companyId,
+    uploadedBy: req.portalContact.contactId,
+  });
+  res.json({ receipts });
 });

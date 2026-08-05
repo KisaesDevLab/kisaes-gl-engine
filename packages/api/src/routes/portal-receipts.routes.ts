@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { authenticate } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../utils/errors.js';
+import { parseLimit, parseOffset } from '../utils/pagination.js';
 import * as svc from '../services/portal-receipts.service.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 18 — bookkeeper-side
@@ -36,11 +37,15 @@ portalReceiptsRouter.use((req, _res, next) => {
 });
 
 portalReceiptsRouter.get('/', async (req, res) => {
-  const list = await svc.listInbox(req.tenantId, {
+  const limit = parseLimit(req.query['limit'], 200);
+  const offset = parseOffset(req.query['offset']);
+  const { receipts, total } = await svc.listInbox(req.tenantId, {
     status: req.query['status'] as string | undefined,
     companyId: req.query['companyId'] as string | undefined,
+    limit,
+    offset,
   });
-  res.json({ receipts: list });
+  res.json({ receipts, total, limit, offset });
 });
 
 portalReceiptsRouter.get('/:id', async (req, res) => {

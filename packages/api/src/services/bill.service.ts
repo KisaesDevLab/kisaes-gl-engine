@@ -365,6 +365,31 @@ export async function listBills(tenantId: string, filters: BillFilters, companyI
 }
 
 /**
+ * SQL-aggregated AP roll-up for one vendor. The contact detail page used to
+ * derive these numbers from its (paginated) bill list, which understated the
+ * balance for vendors with more bills than one page.
+ */
+export async function getVendorApSummary(tenantId: string, contactId: string, companyId?: string) {
+  const conditions = [
+    eq(transactions.tenantId, tenantId),
+    eq(transactions.contactId, contactId),
+    inArray(transactions.txnType, ['bill', 'vendor_credit']),
+  ];
+  if (companyId) conditions.push(eq(transactions.companyId, companyId));
+
+  const [row] = await db.select({
+    unpaidCount: sql<number>`COUNT(*) FILTER (WHERE ${transactions.txnType} = 'bill' AND ${transactions.billStatus} <> 'paid' AND COALESCE(${transactions.balanceDue}, 0) > 0)::int`,
+    totalOwed: sql<string>`COALESCE(SUM(${transactions.balanceDue}) FILTER (WHERE ${transactions.txnType} = 'bill' AND ${transactions.billStatus} <> 'paid' AND COALESCE(${transactions.balanceDue}, 0) > 0), 0)`,
+    overdueCount: sql<number>`COUNT(*) FILTER (WHERE ${transactions.txnType} = 'bill' AND ${transactions.billStatus} <> 'paid' AND COALESCE(${transactions.balanceDue}, 0) > 0 AND ${transactions.dueDate} < CURRENT_DATE)::int`,
+    totalOverdue: sql<string>`COALESCE(SUM(${transactions.balanceDue}) FILTER (WHERE ${transactions.txnType} = 'bill' AND ${transactions.billStatus} <> 'paid' AND COALESCE(${transactions.balanceDue}, 0) > 0 AND ${transactions.dueDate} < CURRENT_DATE), 0)`,
+    availableCreditsCount: sql<number>`COUNT(*) FILTER (WHERE ${transactions.txnType} = 'vendor_credit' AND COALESCE(${transactions.balanceDue}, 0) > 0)::int`,
+    totalAvailableCredits: sql<string>`COALESCE(SUM(${transactions.balanceDue}) FILTER (WHERE ${transactions.txnType} = 'vendor_credit' AND COALESCE(${transactions.balanceDue}, 0) > 0), 0)`,
+  }).from(transactions).where(and(...conditions));
+
+  return row!;
+}
+
+/**
  * Returns all unpaid/partial bills for the tenant (optionally filtered to one
  * vendor), plus the available vendor credits whose vendors appear in the
  * payable bill list. Used by the Pay Bills page.
