@@ -84,6 +84,15 @@ Use the **Show** dropdown next to the pager at the bottom of the Transactions li
 50, 100, 250, 500, or **All** (loads the entire filtered set). The choice is
 remembered per company.
 
+### "How do I see more rows in other lists (bills, receipts, admin tables)?"
+Nearly every list in the app — bills, vendor credits, statement imports,
+reconciliation statements, daily sales, recurring schedules, the attachment
+library, practice document requests, portal questions, the receipts inbox, and
+the admin tables (tenants, users, Plaid webhook log, MCP log, backup history) —
+has the same pager with a **Show** rows-per-page dropdown at the bottom. Older
+rows are never hidden anymore; page through with **Prev/Next** or raise the page
+size. Close-review buckets and findings use a **Load more** button instead.
+
 ### "How do I set up a recurring bill?"
 Enter the bill normally, then on the bill detail page click **Make Recurring**. Choose
 frequency (monthly, weekly, etc.), mode (auto-post or reminder), and start date. The

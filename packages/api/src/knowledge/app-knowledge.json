@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-29T02:27:31.874Z",
+  "generatedAt": "2026-08-05T22:38:08.469Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -16,7 +16,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 53067
+    "totalBytes": 53689
   },
   "screens": [
     {
@@ -1356,6 +1356,7 @@
     "\"How do I import lots of transactions at once?\"",
     "\"I posted transactions to the wrong account — how do I move them in bulk?\"",
     "\"How do I see more than 50 transactions per page?\"",
+    "\"How do I see more rows in other lists (bills, receipts, admin tables)?\"",
     "\"How do I set up a recurring bill?\"",
     "\"How do I back up my data?\"",
     "\"How do I switch between companies?\"",
