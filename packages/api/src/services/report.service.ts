@@ -119,7 +119,11 @@ export async function getFiscalYearStart(tenantId: string, companyId: string | n
 // bill_payment_applications, whose amounts are the CASH portion per
 // bill — vendor-credit-settled portions are correctly never recognized
 // (no cash moved).
-function cashBasisLinesWith(
+// Exported for the TB module's five-column workpaper engine
+// (services/tb/balance-engine.service.ts), which must compute cash-basis
+// columns on the SAME virtual ledger as every other report (D12) —
+// re-implementing these rules there would guarantee drift.
+export function cashBasisLinesWith(
   tenantId: string,
   startDate: string | null,
   endDate: string,

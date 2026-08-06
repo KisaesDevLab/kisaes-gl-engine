@@ -4,6 +4,7 @@
 
 import { Router } from 'express';
 import type { Request, Response, NextFunction } from 'express';
+import { z } from 'zod';
 import {
   createFirmTaxCodeSchema, updateFirmTaxCodeSchema,
   upsertTaxProfileSchema, createActivityUnitSchema, updateActivityUnitSchema, mapTagSchema,
@@ -17,6 +18,7 @@ import * as firmCodesService from '../services/tb/firm-tax-codes.service.js';
 import * as taxProfileService from '../services/tb/tax-profile.service.js';
 import * as seedService from '../services/tb/tax-code-seed.service.js';
 import * as unitsService from '../services/tb/activity-units.service.js';
+import * as balanceEngine from '../services/tb/balance-engine.service.js';
 
 // Trial Balance module router (docs/tb/BUILD_PLAN.md). Firm-side only:
 // client-type users get a 404 (surface hidden, same pattern as
@@ -73,6 +75,35 @@ tbRouter.delete('/firm-codes/:id', requireFirmAdmin, async (req, res) => {
 tbRouter.get('/seed-versions', async (_req, res) => {
   const versions = await seedService.listVersions();
   res.json({ versions });
+});
+
+// ── Balance engine (Phase 4, ADR-TB-01) ────────────────────────────
+
+const workpaperQuerySchema = z.object({
+  periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  basis: z.enum(['accrual', 'cash']).default('accrual'),
+  taxYear: z.coerce.number().int().min(2000).max(2100).optional(),
+});
+
+tbRouter.get('/workpaper', async (req, res) => {
+  const q = workpaperQuerySchema.parse(req.query);
+  const workpaper = await balanceEngine.computeWorkpaper(req.tenantId, req.companyId!, {
+    periodEnd: q.periodEnd,
+    basis: q.basis,
+    taxYear: q.taxYear,
+  });
+  res.json({ workpaper });
+});
+
+tbRouter.get('/assignments', async (req, res) => {
+  const assignments = await balanceEngine.listAssignments(req.tenantId, req.companyId!);
+  res.json({ assignments });
+});
+
+// Cheap change probe (ADR-TB-06 fallback poll + staleness banners).
+tbRouter.get('/version', async (req, res) => {
+  const glVersionStamp = await balanceEngine.getGlVersionStamp(req.tenantId, req.companyId!);
+  res.json({ glVersionStamp });
 });
 
 // ── Company tax profile (Phase 3.1) ────────────────────────────────

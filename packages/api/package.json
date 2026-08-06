@@ -13,6 +13,7 @@
     "migrate": "tsx src/migrate.ts",
     "seed:coa": "tsx src/db/seeds/coa.ts",
     "seed:tax-codes": "tsx src/scripts/seed-tax-codes.ts",
+    "tb:perf": "tsx src/scripts/tb-perf.ts",
     "backfill:firm-context": "tsx src/scripts/backfill-firm-context.ts",
     "generate-knowledge": "tsx src/scripts/generate-knowledge.ts"
   },
