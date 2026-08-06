@@ -571,9 +571,15 @@ describe('journal_entry_without_attachment', () => {
 
 describe('new_entities_review', () => {
   it('flags contacts and accounts created inside the period', async () => {
-    // The fixture's contact + accounts were created "now", inside July 2026.
+    // The fixture's contact + accounts were created "now", so the period is
+    // the current month (a hardcoded month breaks on calendar rollover —
+    // periodEnd is exclusive in the handler).
+    const now = new Date();
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const nextMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
     const drafts = await HANDLERS['new_entities_review']!(tenantId, companyId, {
-      periodStart: '2026-07-01', periodEnd: '2026-08-01',
+      periodStart: monthStart.toISOString().slice(0, 10),
+      periodEnd: nextMonthStart.toISOString().slice(0, 10),
     });
     const names = drafts.map((d) => (d.payload as Record<string, unknown>)['entityName']);
     expect(names).toContain('Acme Corp');
