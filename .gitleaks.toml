@@ -1,0 +1,7 @@
+# Gitleaks configuration — extends the default ruleset with a docs allowlist.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "In-app help documentation shows illustrative curl examples with placeholder credentials (YOUR_API_KEY, truncated eyJhbG...). Real secrets never live in this file."
+paths = ['''packages/web/src/features/help/articles\.ts''']
