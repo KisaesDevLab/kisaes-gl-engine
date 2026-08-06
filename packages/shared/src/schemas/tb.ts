@@ -6,6 +6,12 @@
 // validate with these; the web app shares the enums.
 
 import { z } from 'zod';
+import { createJournalEntrySchema } from './transactions.js';
+
+// An AJE is shaped exactly like a manual JE (multi-line, per-line tags,
+// basis) — the difference is txn_type, numbering, and the firm-only
+// route that accepts it (rule TB3).
+export const createAjeSchema = createJournalEntrySchema;
 
 export const tbReturnForms = ['1040', '1065', '1120', '1120S'] as const;
 export type TbReturnForm = typeof tbReturnForms[number];

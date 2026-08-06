@@ -17,6 +17,7 @@ import * as ledger from '../services/ledger.service.js';
 import * as pdfService from '../services/pdf.service.js';
 import * as emailService from '../services/email.service.js';
 import * as journalEntryService from '../services/journal-entry.service.js';
+import { AppError } from '../utils/errors.js';
 import * as expenseService from '../services/expense.service.js';
 import * as transferService from '../services/transfer.service.js';
 import * as depositService from '../services/deposit.service.js';
@@ -49,6 +50,10 @@ transactionsRouter.post('/', async (req, res) => {
   let result;
 
   switch (txnType) {
+    case 'aje':
+      // AJEs are created only through the TB module router, which is
+      // firm-only and handles AJE numbering (rule TB3).
+      throw AppError.badRequest('Adjusting journal entries are managed in the Trial Balance module', 'TB_AJE_ROUTE');
     case 'journal_entry':
       result = await journalEntryService.createJournalEntry(req.tenantId, createJournalEntrySchema.parse(body), req.userId, req.companyId);
       break;
@@ -90,6 +95,13 @@ transactionsRouter.put('/:id', async (req, res) => {
   const { txnType, ...body } = req.body;
   let result;
 
+  // An AJE can't be edited here — nor re-typed into an editable kind by
+  // sending a different txnType against its id (rule TB3).
+  const existingType = await ledger.getTransactionType(req.tenantId, txnId);
+  if (txnType === 'aje' || existingType === 'aje') {
+    throw AppError.badRequest('Adjusting journal entries are managed in the Trial Balance module', 'TB_AJE_ROUTE');
+  }
+
   switch (txnType) {
     case 'journal_entry':
       result = await journalEntryService.updateJournalEntry(req.tenantId, txnId, createJournalEntrySchema.parse(body), req.userId, req.companyId);
@@ -127,6 +139,12 @@ transactionsRouter.get('/:id', async (req, res) => {
 });
 
 transactionsRouter.post('/:id/void', validate(voidTransactionSchema), async (req, res) => {
+  // AJE lifecycle is firm-only regardless of ledger permissions (TB3):
+  // client-type users never touch it, staff can void here or via /tb.
+  const voidType = await ledger.getTransactionType(req.tenantId, req.params['id']!);
+  if (voidType === 'aje' && req.userType === 'client') {
+    throw AppError.forbidden('Adjusting journal entries are managed by your accounting firm', 'TB_AJE_ROUTE');
+  }
   await ledger.voidTransaction(req.tenantId, req.params['id']!, req.body.reason, req.userId);
   const txn = await ledger.getTransaction(req.tenantId, req.params['id']!);
   res.json({ transaction: txn });
@@ -134,6 +152,10 @@ transactionsRouter.post('/:id/void', validate(voidTransactionSchema), async (req
 
 transactionsRouter.post('/:id/duplicate', async (req, res) => {
   const original = await ledger.getTransaction(req.tenantId, req.params['id']!);
+  // AJE duplication runs through /tb (numbering + firm gate, rule TB3).
+  if (original.txnType === 'aje') {
+    throw AppError.badRequest('Adjusting journal entries are managed in the Trial Balance module', 'TB_AJE_ROUTE');
+  }
   const lines = original.lines.map((l) => ({
     accountId: l.accountId,
     debit: l.debit,

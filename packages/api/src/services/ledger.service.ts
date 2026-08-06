@@ -274,7 +274,13 @@ export async function postTransaction(
   // error between any two of these steps leaves torn state — a transaction
   // missing its lines, or lines whose accounts.balance was never updated.
   const inner = async (tx: Tx) => {
-    await checkLockDate(tx, tenantId, input.txnDate, companyId ?? null);
+    // AJEs bypass the closing-date lock by design (TB module D10 /
+    // CLAUDE.md TB5): AJE CRUD is firm-only at all times — the tb
+    // router is the only path that posts txn_type 'aje', and closing a
+    // period is exactly when the firm posts adjusting entries into it.
+    if (input.txnType !== 'aje') {
+      await checkLockDate(tx, tenantId, input.txnDate, companyId ?? null);
+    }
     await assertAccountsInScope(
       tx,
       tenantId,
@@ -385,8 +391,11 @@ export async function voidTransaction(tenantId: string, txnId: string, reason: s
     if (!txn) throw AppError.notFound('Transaction not found');
     if (txn.status === 'void') throw AppError.badRequest('Transaction is already void');
 
-    // Check lock date against the transaction's date (company-scoped)
-    await checkLockDate(tx, tenantId, txn.txnDate, txn.companyId);
+    // Check lock date against the transaction's date (company-scoped).
+    // AJEs are exempt (firm-only CRUD regardless of closing date — TB5).
+    if (txn.txnType !== 'aje') {
+      await checkLockDate(tx, tenantId, txn.txnDate, txn.companyId);
+    }
 
     // Mirror updateTransaction's reconciliation guard: a transaction
     // whose lines are cleared in a COMPLETED bank rec must not be
@@ -493,9 +502,12 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
     if (!existing) throw AppError.notFound('Transaction not found');
     if (existing.status === 'void') throw AppError.badRequest('Cannot update a void transaction');
 
-    // Check lock date for both old and new dates (company-scoped)
-    await checkLockDate(tx, tenantId, existing.txnDate, existing.companyId);
-    await checkLockDate(tx, tenantId, input.txnDate, companyId ?? existing.companyId ?? null);
+    // Check lock date for both old and new dates (company-scoped).
+    // AJEs are exempt (firm-only CRUD regardless of closing date — TB5).
+    if (existing.txnType !== 'aje' && input.txnType !== 'aje') {
+      await checkLockDate(tx, tenantId, existing.txnDate, existing.companyId);
+      await checkLockDate(tx, tenantId, input.txnDate, companyId ?? existing.companyId ?? null);
+    }
 
     // Validate the new lines' account ownership inside this tenant/company.
     await assertAccountsInScope(
@@ -750,6 +762,15 @@ async function updateAccountBalances(
       }).where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, line.accountId)));
     }
   }
+}
+
+// Cheap type probe for route guards (the TB module fences txn_type
+// 'aje' off from the generic transaction routes — rule TB3).
+export async function getTransactionType(tenantId: string, txnId: string): Promise<string | null> {
+  const [row] = await db.select({ txnType: transactions.txnType }).from(transactions)
+    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
+    .limit(1);
+  return row?.txnType ?? null;
 }
 
 export async function getTransaction(tenantId: string, txnId: string) {

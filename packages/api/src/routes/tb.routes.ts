@@ -8,6 +8,7 @@ import { z } from 'zod';
 import {
   createFirmTaxCodeSchema, updateFirmTaxCodeSchema,
   upsertTaxProfileSchema, createActivityUnitSchema, updateActivityUnitSchema, mapTagSchema,
+  createAjeSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
@@ -19,6 +20,8 @@ import * as taxProfileService from '../services/tb/tax-profile.service.js';
 import * as seedService from '../services/tb/tax-code-seed.service.js';
 import * as unitsService from '../services/tb/activity-units.service.js';
 import * as balanceEngine from '../services/tb/balance-engine.service.js';
+import * as ajeService from '../services/tb/aje.service.js';
+import * as attachmentService from '../services/attachment.service.js';
 
 // Trial Balance module router (docs/tb/BUILD_PLAN.md). Firm-side only:
 // client-type users get a 404 (surface hidden, same pattern as
@@ -75,6 +78,52 @@ tbRouter.delete('/firm-codes/:id', requireFirmAdmin, async (req, res) => {
 tbRouter.get('/seed-versions', async (_req, res) => {
   const versions = await seedService.listVersions();
   res.json({ versions });
+});
+
+// ── AJEs (Phase 5, D10/D17, rule TB3) ──────────────────────────────
+// Firm-only by router construction; independent of the closing date
+// (ledger exempts txn_type 'aje').
+
+tbRouter.get('/ajes', async (req, res) => {
+  const limit = Math.min(Number(req.query['limit']) || 50, 500);
+  const offset = Number(req.query['offset']) || 0;
+  const result = await ajeService.listAjes(req.tenantId, req.companyId!, {
+    fiscalYear: req.query['fiscalYear'] ? Number(req.query['fiscalYear']) : undefined,
+    includeVoid: req.query['includeVoid'] === 'true',
+    limit,
+    offset,
+  });
+  res.json({ ...result, limit, offset });
+});
+
+tbRouter.post('/ajes', validate(createAjeSchema), async (req, res) => {
+  const aje = await ajeService.createAje(req.tenantId, req.companyId!, req.body, req.userId);
+  if (req.body.draftAttachmentId) {
+    await attachmentService.reassignDraftAttachments(req.tenantId, req.body.draftAttachmentId, 'journal_entry', aje.id);
+  }
+  res.status(201).json({ aje });
+});
+
+tbRouter.put('/ajes/:id', validate(createAjeSchema), async (req, res) => {
+  const aje = await ajeService.updateAje(req.tenantId, req.companyId!, String(req.params['id']), req.body, req.userId);
+  res.json({ aje });
+});
+
+tbRouter.post('/ajes/:id/void', async (req, res) => {
+  const reason = typeof req.body?.reason === 'string' && req.body.reason.trim() ? req.body.reason.trim() : null;
+  if (!reason) throw AppError.badRequest('Void reason is required');
+  const aje = await ajeService.voidAje(req.tenantId, String(req.params['id']), reason, req.userId);
+  res.json({ aje });
+});
+
+tbRouter.post('/ajes/:id/reverse', async (req, res) => {
+  const aje = await ajeService.reverseAje(req.tenantId, req.companyId!, String(req.params['id']), req.userId);
+  res.status(201).json({ aje });
+});
+
+tbRouter.post('/ajes/:id/duplicate', async (req, res) => {
+  const aje = await ajeService.duplicateAje(req.tenantId, req.companyId!, String(req.params['id']), req.userId);
+  res.status(201).json({ aje });
 });
 
 // ── Balance engine (Phase 4, ADR-TB-01) ────────────────────────────
