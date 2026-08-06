@@ -76,3 +76,8 @@ scripts/license-audit-result.txt
 scripts/license-audit-result.json
 scripts/sbom.cdx.json
 scripts/license-inventory.json
+
+# machine-local deployment files — never commit
+.env.bak*
+docker-compose.local.yml
+scripts/host-backup.sh

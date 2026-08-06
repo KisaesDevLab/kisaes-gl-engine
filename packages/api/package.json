@@ -16,7 +16,7 @@
     "generate-knowledge": "tsx src/scripts/generate-knowledge.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.82.0",
+    "@anthropic-ai/sdk": "^0.91.1",
     "@aws-sdk/client-s3": "^3.1024.0",
     "@aws-sdk/s3-request-presigner": "^3.1024.0",
     "@azure/msal-node": "^5.1.2",
