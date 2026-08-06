@@ -49,6 +49,21 @@ interface SectionFailure {
 async function htmlToPdfBytes(browser: Browser, html: string, landscape: boolean): Promise<Uint8Array> {
   const page = await browser.newPage();
   try {
+    // Same hardening as pdf.service.ts: every section is static server-built
+    // HTML (and the letter body is stored super-admin HTML rendered verbatim),
+    // so no script should ever run and no network request should ever leave
+    // this page. Even if markup slips through, it cannot execute or exfiltrate
+    // during rendering.
+    await page.setJavaScriptEnabled(false);
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      const url = req.url();
+      if (url.startsWith('data:') || url.startsWith('about:') || url.startsWith('file:')) {
+        req.continue();
+      } else {
+        req.abort();
+      }
+    });
     await page.setContent(html, { waitUntil: 'networkidle0' });
     return await page.pdf({ format: 'Letter', landscape, margin: PDF_MARGIN, printBackground: true });
   } finally {
