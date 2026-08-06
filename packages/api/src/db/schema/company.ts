@@ -40,6 +40,10 @@ export const companies = pgTable('companies', {
   smtpFrom: varchar('smtp_from', { length: 255 }),
   smtpFromName: varchar('smtp_from_name', { length: 255 }),
   lockDate: date('lock_date'),
+  // Closing-date provenance (TB module, ADR-TB-04 / rule TB5): lock_date
+  // doubles as the TB closing date; these record who set it and when.
+  lockDateSetBy: uuid('lock_date_set_by'),
+  lockDateSetAt: timestamp('lock_date_set_at', { withTimezone: true }),
   setupComplete: boolean('setup_complete').default(false),
   mcpEnabled: boolean('mcp_enabled').default(false),
   // Per-company chat opt-in (tier 2 of two-tier consent — see

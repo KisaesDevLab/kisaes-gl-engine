@@ -15,7 +15,10 @@ export type TxnType =
   | 'bill'
   | 'vendor_credit'
   | 'bill_payment'
-  | 'daily_sales';
+  | 'daily_sales'
+  // Adjusting journal entry (TB module, rule TB3): a real GL journal
+  // entry, firm-only CRUD, numbered AJE-001 per company per fiscal year.
+  | 'aje';
 
 export type TxnStatus = 'draft' | 'posted' | 'void';
 

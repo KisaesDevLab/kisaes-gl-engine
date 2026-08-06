@@ -54,6 +54,10 @@ export const transactions = pgTable('transactions', {
   printBatchId: uuid('print_batch_id'),
   // Source tracking — identifies where this transaction originated
   source: varchar('source', { length: 30 }),  // 'payroll_import', 'bank_feed', 'manual', 'recurring', etc.
+  // AJE display number (TB module, D17): sequential per company per
+  // fiscal year, only set when txn_type = 'aje'. Shown as AJE-001
+  // alongside txn_number. Claimed from tb_aje_sequences.
+  ajeNumber: integer('aje_number'),
   sourceId: varchar('source_id', { length: 100 }), // payroll session ID, bank feed item ID, etc.
   // Public invoice link + Stripe payment
   publicToken: varchar('public_token', { length: 64 }).unique(),

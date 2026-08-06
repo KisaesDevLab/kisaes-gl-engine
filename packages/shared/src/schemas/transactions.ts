@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 
-const txnTypes = ['invoice', 'customer_payment', 'cash_sale', 'expense', 'deposit', 'transfer', 'journal_entry', 'credit_memo', 'customer_refund'] as const;
+const txnTypes = ['invoice', 'customer_payment', 'cash_sale', 'expense', 'deposit', 'transfer', 'journal_entry', 'credit_memo', 'customer_refund', 'aje'] as const;
 
 // Cap on any journal-line / line-item array. 500 is well beyond any realistic
 // invoice or deposit and bounds the input size so a malicious client can't
