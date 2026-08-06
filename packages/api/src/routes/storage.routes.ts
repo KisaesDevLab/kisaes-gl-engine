@@ -7,15 +7,27 @@ import type { Request, Response } from 'express';
 import crypto from 'crypto';
 import { eq, and } from 'drizzle-orm';
 import { authenticate } from '../middleware/auth.js';
+import { requireResource, requirePermission } from '../middleware/permission.js';
 import { db } from '../db/index.js';
 import { storageProviders } from '../db/schema/index.js';
 import { encrypt, decrypt } from '../utils/encryption.js';
 import { env } from '../config/env.js';
+import { assertExternalUrlSafe } from '../utils/url-safety.js';
 import { getProviderForTenant, invalidateProviderCache } from '../services/storage/storage-provider.factory.js';
 import * as migrationService from '../services/storage-migration.service.js';
 
 export const storageRouter = Router();
 storageRouter.use(authenticate);
+// Storage backend administration is a company-settings surface: GETs need
+// view, mutations need update (owner/accountant by default; tailored per
+// user via the Team page). Same gate as tenantSettingsRouter.
+storageRouter.use(requireResource('company_settings'));
+
+// The OAuth connect + callback routes are GETs (browser redirects) but they
+// initiate/complete a provider mutation — the method-based guard above would
+// let a view-only user complete a full connect flow, so gate them at
+// 'update' explicitly.
+const settingsWrite = requirePermission('company_settings', 'update');
 
 // In-memory OAuth state store. The /connect/:provider route mints a random
 // state bound to (tenantId, userId, provider) and includes it in the
@@ -187,7 +199,7 @@ storageRouter.post('/configure/:provider', async (req, res) => {
 
 // ─── OAuth initiation — redirect to provider ──────────────────
 
-storageRouter.get('/connect/:provider', async (req, res) => {
+storageRouter.get('/connect/:provider', settingsWrite, async (req, res) => {
   const provider = req.params['provider']!;
   // Use env.CORS_ORIGIN rather than derived host header. A reverse proxy
   // forwarding a crafted Host could otherwise let an attacker point the
@@ -227,7 +239,7 @@ storageRouter.get('/connect/:provider', async (req, res) => {
 
 // ─── OAuth callback ───────────────────────────────────────────
 
-storageRouter.get('/callback/:provider', async (req, res) => {
+storageRouter.get('/callback/:provider', settingsWrite, async (req, res) => {
   const provider = req.params['provider']!;
   const code = req.query['code'] as string;
   const state = req.query['state'] as string | undefined;
@@ -350,6 +362,17 @@ storageRouter.get('/callback/:provider', async (req, res) => {
 async function configureS3(req: any, res: any) {
   const { bucket, region, endpoint, accessKeyId, secretAccessKey, prefix } = req.body;
 
+  // The endpoint is tenant-supplied and the health check below sends a
+  // signed HeadBucket to it server-side — block loopback / RFC-1918 /
+  // metadata targets (same guard as the remote-backup S3 destination).
+  if (endpoint) {
+    try {
+      assertExternalUrlSafe(String(endpoint), 'S3 endpoint');
+    } catch (err: any) {
+      res.status(400).json({ error: { message: err.message } }); return;
+    }
+  }
+
   // Test connection
   try {
     const { S3Provider } = await import('../services/storage/s3.provider.js');
@@ -390,6 +413,15 @@ async function configureB2(req: Request, res: Response) {
 
   if (!bucket || !endpoint || !keyId || !applicationKey) {
     res.status(400).json({ error: { message: 'bucket, endpoint, keyId, and applicationKey are required' } });
+    return;
+  }
+
+  // Same SSRF guard as configureS3 — the health check hits this endpoint
+  // server-side with signed requests.
+  try {
+    assertExternalUrlSafe(endpoint, 'B2 endpoint');
+  } catch (err) {
+    res.status(400).json({ error: { message: err instanceof Error ? err.message : 'Invalid endpoint' } });
     return;
   }
 

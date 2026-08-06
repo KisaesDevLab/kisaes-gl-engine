@@ -6,6 +6,7 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.js';
+import { requireResource } from '../middleware/permission.js';
 import * as remoteBackupService from '../services/remote-backup.service.js';
 import { validatePassphraseStrength } from '../services/portable-encryption.service.js';
 
@@ -75,6 +76,10 @@ const testConnectionSchema = z.object({
 
 export const remoteBackupRouter = Router();
 remoteBackupRouter.use(authenticate);
+// Backup destinations/policies are a company-settings surface: GETs
+// (config/history) need view, PUT /config + POST /test + POST /trigger
+// need update (owner/accountant by default; tailored via the Team page).
+remoteBackupRouter.use(requireResource('company_settings'));
 
 // Get remote backup configuration
 remoteBackupRouter.get('/config', async (req, res) => {
@@ -86,12 +91,18 @@ remoteBackupRouter.get('/config', async (req, res) => {
     if (sanitized['sftp'] && typeof sanitized['sftp'] === 'object') {
       const sftp = { ...(sanitized['sftp'] as Record<string, unknown>) };
       if (sftp['password']) sftp['password'] = '********';
+      if (sftp['privateKey']) sftp['privateKey'] = '********';
       sanitized['sftp'] = sftp;
     }
     if (sanitized['webdav'] && typeof sanitized['webdav'] === 'object') {
       const webdav = { ...(sanitized['webdav'] as Record<string, unknown>) };
       if (webdav['password']) webdav['password'] = '********';
       sanitized['webdav'] = webdav;
+    }
+    if (sanitized['s3'] && typeof sanitized['s3'] === 'object') {
+      const s3 = { ...(sanitized['s3'] as Record<string, unknown>) };
+      if (s3['secretAccessKey']) s3['secretAccessKey'] = '********';
+      sanitized['s3'] = s3;
     }
     config.config = sanitized;
   }
