@@ -21,6 +21,7 @@ export const PERMISSION_GROUPS = [
   'Checks',
   'Banking',
   'Reporting',
+  'Trial Balance',
   'Manage',
 ] as const;
 export type PermissionGroup = typeof PERMISSION_GROUPS[number];
@@ -53,6 +54,12 @@ export const PERMISSION_RESOURCES = [
   { key: 'reports', label: 'Reports', group: 'Reporting', writable: false },
   { key: 'budgets', label: 'Budgets', group: 'Reporting', writable: true },
   { key: 'dashboard', label: 'Dashboard', group: 'Reporting', writable: false },
+  // Trial Balance — one resource covering the whole TB module router
+  // (workpaper grid, AJEs, tax entries, mappings, exports, reports).
+  // Firm-only semantics (AJE/tax-entry CRUD, closing date) are enforced
+  // by staff/firm guards on the tb router, not by this matrix; client
+  // portal users never reach the module at all.
+  { key: 'trial_balance', label: 'Trial Balance', group: 'Trial Balance', writable: true },
   // Manage
   { key: 'accounts', label: 'Chart of Accounts', group: 'Manage', writable: true },
   { key: 'contacts', label: 'Contacts', group: 'Manage', writable: true },

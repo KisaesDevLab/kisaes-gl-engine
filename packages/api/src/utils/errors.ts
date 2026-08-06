@@ -41,6 +41,13 @@ export class AppError extends Error {
     return new AppError(409, message, code, details);
   }
 
+  // 423 Locked — a closed accounting period (or similar resource lock)
+  // rejects the mutation. Client-portal callers get this hard; firm
+  // callers can retry with `overrideConfirmed: true` (ADR-TB-04).
+  static locked(message: string, code: string = 'TB_PERIOD_LOCKED', details?: Record<string, unknown>) {
+    return new AppError(423, message, code, details);
+  }
+
   static unprocessableEntity(message: string, code?: string, details?: Record<string, unknown>) {
     return new AppError(422, message, code, details);
   }

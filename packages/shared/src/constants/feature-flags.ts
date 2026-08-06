@@ -61,6 +61,11 @@ export const PRACTICE_FEATURE_FLAGS = [
   // instead of the receipts inbox when the document_request's type
   // is bank_statement or cc_statement. Default OFF.
   'STATEMENT_AUTO_IMPORT_V1',
+  // Trial Balance module (docs/tb/BUILD_PLAN.md). Gates the Trial
+  // Balance sidebar group + /tb routes + /api/v1/tb router. Firm-side
+  // feature, base license (no commercial gate). Default OFF until the
+  // module completes its Phase 15 review.
+  'TRIAL_BALANCE_V1',
 ] as const;
 
 export type PracticeFeatureFlagKey = typeof PRACTICE_FEATURE_FLAGS[number];

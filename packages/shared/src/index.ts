@@ -85,6 +85,7 @@ export * from './constants/system-account-roles.js';
 export * from './constants/tag-colors.js';
 export * from './constants/accounting.js';
 export * from './constants/feature-flags.js';
+export * from './constants/modules.js';
 export * from './constants/user-types.js';
 export * from './constants/classification-thresholds.js';
 export * from './constants/match-scoring.js';
