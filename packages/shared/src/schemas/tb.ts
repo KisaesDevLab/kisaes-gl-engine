@@ -53,3 +53,25 @@ export const createFirmTaxCodeSchema = z.object({
 export const updateFirmTaxCodeSchema = createFirmTaxCodeSchema.partial().extend({
   isActive: z.coerce.boolean().optional(),
 });
+
+export const upsertTaxProfileSchema = z.object({
+  returnForm: z.enum(tbReturnForms),
+  // NULL floats to the latest seed version for the tax year (ADR-TB-05).
+  pinnedSeedVersionId: z.string().uuid().nullable().optional(),
+  sCorpElectionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+});
+
+export const createActivityUnitSchema = z.object({
+  activityType: z.enum(tbActivityUnitTypes),
+  displayName: z.string().min(1).max(200),
+  // Omitted = next free instance number for the activity type.
+  instanceNumber: z.coerce.number().int().min(1).max(999).optional(),
+});
+
+export const updateActivityUnitSchema = z.object({
+  displayName: z.string().min(1).max(200),
+});
+
+export const mapTagSchema = z.object({
+  activityUnitId: z.string().uuid(),
+});

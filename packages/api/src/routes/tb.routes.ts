@@ -4,13 +4,19 @@
 
 import { Router } from 'express';
 import type { Request, Response, NextFunction } from 'express';
-import { createFirmTaxCodeSchema, updateFirmTaxCodeSchema } from '@kis-books/shared';
+import {
+  createFirmTaxCodeSchema, updateFirmTaxCodeSchema,
+  upsertTaxProfileSchema, createActivityUnitSchema, updateActivityUnitSchema, mapTagSchema,
+} from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
 import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../utils/errors.js';
 import * as firmCodesService from '../services/tb/firm-tax-codes.service.js';
+import * as taxProfileService from '../services/tb/tax-profile.service.js';
+import * as seedService from '../services/tb/tax-code-seed.service.js';
+import * as unitsService from '../services/tb/activity-units.service.js';
 
 // Trial Balance module router (docs/tb/BUILD_PLAN.md). Firm-side only:
 // client-type users get a 404 (surface hidden, same pattern as
@@ -60,4 +66,69 @@ tbRouter.put('/firm-codes/:id', requireFirmAdmin, validate(updateFirmTaxCodeSche
 tbRouter.delete('/firm-codes/:id', requireFirmAdmin, async (req, res) => {
   const code = await firmCodesService.deactivateFirmCode(req.tenantId, String(req.params['id']), req.userId);
   res.json({ code });
+});
+
+// Staff-readable seed-version list (the profile screen's pinning
+// selector). Import/browse stay super-admin on /admin/tb.
+tbRouter.get('/seed-versions', async (_req, res) => {
+  const versions = await seedService.listVersions();
+  res.json({ versions });
+});
+
+// ── Company tax profile (Phase 3.1) ────────────────────────────────
+
+tbRouter.get('/profile', async (req, res) => {
+  const result = await taxProfileService.getProfile(req.tenantId, req.companyId!);
+  res.json(result);
+});
+
+// Return form + seed pinning reshape every assignment's validity —
+// firm-admin territory (13.1).
+tbRouter.put('/profile', requireFirmAdmin, validate(upsertTaxProfileSchema), async (req, res) => {
+  const profile = await taxProfileService.upsertProfile(req.tenantId, req.companyId!, req.body, req.userId);
+  res.json({ profile });
+});
+
+// ── Activity units (Phase 3.2) ─────────────────────────────────────
+
+tbRouter.get('/activity-units', async (req, res) => {
+  const units = await unitsService.listUnits(req.tenantId, req.companyId!, req.query['includeArchived'] === 'true');
+  res.json({ units });
+});
+
+tbRouter.post('/activity-units', validate(createActivityUnitSchema), async (req, res) => {
+  const unit = await unitsService.createUnit(req.tenantId, req.companyId!, req.body, req.userId);
+  res.status(201).json({ unit });
+});
+
+tbRouter.put('/activity-units/:id', validate(updateActivityUnitSchema), async (req, res) => {
+  const unit = await unitsService.renameUnit(req.tenantId, req.companyId!, String(req.params['id']), req.body.displayName, req.userId);
+  res.json({ unit });
+});
+
+tbRouter.post('/activity-units/:id/set-default', async (req, res) => {
+  const unit = await unitsService.setDefaultUnit(req.tenantId, req.companyId!, String(req.params['id']), req.userId);
+  res.json({ unit });
+});
+
+tbRouter.delete('/activity-units/:id', async (req, res) => {
+  const result = await unitsService.archiveUnit(req.tenantId, req.companyId!, String(req.params['id']), req.userId);
+  res.json(result);
+});
+
+// ── Tag → activity unit mapping (Phase 3.3) ────────────────────────
+
+tbRouter.get('/tag-mappings', async (req, res) => {
+  const result = await unitsService.listTagMappings(req.tenantId, req.companyId!);
+  res.json(result);
+});
+
+tbRouter.put('/tag-mappings/:tagId', validate(mapTagSchema), async (req, res) => {
+  const mapping = await unitsService.mapTag(req.tenantId, req.companyId!, String(req.params['tagId']), req.body.activityUnitId, req.userId);
+  res.json({ mapping });
+});
+
+tbRouter.delete('/tag-mappings/:tagId', async (req, res) => {
+  await unitsService.unmapTag(req.tenantId, req.companyId!, String(req.params['tagId']), req.userId);
+  res.status(204).end();
 });
