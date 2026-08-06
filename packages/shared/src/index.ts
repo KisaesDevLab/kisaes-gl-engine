@@ -77,6 +77,7 @@ export * from './schemas/je-templates.js';
 export * from './schemas/permissions.js';
 export * from './schemas/firm-integrations.js';
 export * from './schemas/report-letters.js';
+export * from './schemas/tb.js';
 
 // Constants
 export * from './constants/coa-templates.js';
