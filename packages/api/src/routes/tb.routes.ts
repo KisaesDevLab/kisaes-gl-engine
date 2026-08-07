@@ -8,7 +8,7 @@ import { z } from 'zod';
 import {
   createFirmTaxCodeSchema, updateFirmTaxCodeSchema,
   upsertTaxProfileSchema, createActivityUnitSchema, updateActivityUnitSchema, mapTagSchema,
-  createAjeSchema,
+  createAjeSchema, createTaxEntrySchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
@@ -27,6 +27,7 @@ import * as diagnosticsService from '../services/tb/diagnostics.service.js';
 import * as signoffsService from '../services/tb/signoffs.service.js';
 import * as aiTaxAssign from '../services/tb/ai-tax-assign.service.js';
 import * as groupingsService from '../services/tb/groupings.service.js';
+import * as taxEntriesService from '../services/tb/tax-entries.service.js';
 import { db } from '../db/index.js';
 import { tbStatus } from '../db/schema/index.js';
 import { and, eq } from 'drizzle-orm';
@@ -331,6 +332,32 @@ tbRouter.get('/stream', async (req, res) => {
     clearInterval(heartbeat);
   };
   req.on('close', cleanup);
+});
+
+// ── Tax RJEs (Phase 8, ADR-TB-03 — never touch the GL) ─────────────
+
+tbRouter.get('/tax-entries', async (req, res) => {
+  const taxYear = Number(req.query['taxYear']) || new Date().getUTCFullYear();
+  const result = await taxEntriesService.listTaxEntries(req.tenantId, req.companyId!, taxYear);
+  res.json(result);
+});
+
+tbRouter.post('/tax-entries', validate(createTaxEntrySchema), async (req, res) => {
+  const entry = await taxEntriesService.createTaxEntry(req.tenantId, req.companyId!, req.body, req.userId);
+  if (req.body.draftAttachmentId) {
+    await attachmentService.reassignDraftAttachments(req.tenantId, req.body.draftAttachmentId, 'tb_tax_entry', entry.id);
+  }
+  res.status(201).json({ entry });
+});
+
+tbRouter.put('/tax-entries/:id', validate(createTaxEntrySchema), async (req, res) => {
+  const entry = await taxEntriesService.updateTaxEntry(req.tenantId, req.companyId!, String(req.params['id']), req.body, req.userId);
+  res.json({ entry });
+});
+
+tbRouter.delete('/tax-entries/:id', async (req, res) => {
+  await taxEntriesService.deleteTaxEntry(req.tenantId, req.companyId!, String(req.params['id']), req.userId);
+  res.status(204).end();
 });
 
 // ── Groupings / leadsheets / tickmarks / notes / sign-offs (Phase 7) ─

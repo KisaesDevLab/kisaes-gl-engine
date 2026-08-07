@@ -81,3 +81,17 @@ export const updateActivityUnitSchema = z.object({
 export const mapTagSchema = z.object({
   activityUnitId: z.string().uuid(),
 });
+
+// Tax RJEs (ADR-TB-03): tax-basis-only, must net to zero (service-
+// enforced with Decimal — the schema just shapes the wire format).
+export const createTaxEntrySchema = z.object({
+  taxYear: z.coerce.number().int().min(2000).max(2100),
+  memo: z.string().max(2000).optional(),
+  lines: z.array(z.object({
+    accountId: z.string().uuid(),
+    activityUnitId: z.string().uuid().nullable().optional(),
+    debit: z.string().regex(/^\d+(\.\d{1,4})?$/).default('0'),
+    credit: z.string().regex(/^\d+(\.\d{1,4})?$/).default('0'),
+    description: z.string().max(500).optional(),
+  })).min(2).max(100),
+});
