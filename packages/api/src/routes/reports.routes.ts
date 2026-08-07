@@ -1702,18 +1702,23 @@ function tbParams(req: Request): { companyId: string; endDate: string; basis: 'a
   return { companyId, endDate, basis: readBasis(req) };
 }
 
+// Optional tag view on workpaper-derived TB reports (rule TB7).
+function tbTag(req: Request): string | null {
+  return typeof req.query['tag_id'] === 'string' && req.query['tag_id'] ? String(req.query['tag_id']) : null;
+}
+
 const TB_REPORTS: Record<string, (tenantId: string, p: { companyId: string; endDate: string; basis: 'accrual' | 'cash' }, req: Request) => Promise<unknown>> = {
-  'tb-workpaper': (t, p) => tbReports.buildTbWorkpaperReport(t, p.companyId, p.endDate, p.basis),
-  'tb-grouped': (t, p) => tbReports.buildTbGroupedReport(t, p.companyId, p.endDate, p.basis),
+  'tb-workpaper': (t, p, req) => tbReports.buildTbWorkpaperReport(t, p.companyId, p.endDate, p.basis, tbTag(req)),
+  'tb-grouped': (t, p, req) => tbReports.buildTbGroupedReport(t, p.companyId, p.endDate, p.basis, tbTag(req)),
   'tb-leadsheets': (t, p, req) => tbReports.buildTbLeadsheetsReport(t, p.companyId, p.endDate, p.basis,
-    typeof req.query['grouping_id'] === 'string' ? String(req.query['grouping_id']) : null),
+    typeof req.query['grouping_id'] === 'string' ? String(req.query['grouping_id']) : null, tbTag(req)),
   'tb-return-order': (t, p) => tbReports.buildTbReturnOrderReport(t, p.companyId, p.endDate, p.basis),
   'tb-tax-basis-pl': (t, p, req) => tbReports.buildTbTaxBasisPl(t, p.companyId, p.endDate, p.basis,
-    typeof req.query['activity_unit_id'] === 'string' ? String(req.query['activity_unit_id']) : null),
+    typeof req.query['activity_unit_id'] === 'string' ? String(req.query['activity_unit_id']) : null, tbTag(req)),
   'tb-flux': (t, p, req) => tbReports.buildTbFluxReport(t, p.companyId, p.endDate, p.basis,
     typeof req.query['compare_end_date'] === 'string' ? String(req.query['compare_end_date']) : null,
     Number(req.query['threshold_amount']) || 0,
-    Number(req.query['threshold_pct']) || 0),
+    Number(req.query['threshold_pct']) || 0, tbTag(req)),
   'tb-aje-listing': (t, p) => tbReports.buildTbAjeListing(t, p.companyId, p.endDate, false),
   'tb-bookkeeper-letter': (t, p) => tbReports.buildTbAjeListing(t, p.companyId, p.endDate, true),
   'tb-rje-listing': (t, p) => tbReports.buildTbRjeListing(t, p.companyId, p.endDate),

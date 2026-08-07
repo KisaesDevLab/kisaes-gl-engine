@@ -18,7 +18,7 @@ import { db } from '../../db/index.js';
 import {
   accounts, activityUnits, attachments, companies, journalLines,
   tbGroupingAccounts, tbGroupings, tbNotes, tbTickmarkApplications,
-  tbTickmarks, transactions,
+  tbTickmarks, tags, transactions,
 } from '../../db/schema/index.js';
 import { AppError } from '../../utils/errors.js';
 import { computeWorkpaper, type TbBasis } from './balance-engine.service.js';
@@ -45,6 +45,15 @@ async function fiscalContext(tenantId: string, companyId: string, endDate: strin
 }
 
 const basisSuffix = (basis: TbBasis) => basis === 'cash' ? ' (Cash Basis)' : ' (Accrual Basis)';
+
+// Tag-view suffix for workpaper-derived reports (rule TB7 semantics
+// come from the engine's tagId option).
+async function tagSuffix(tenantId: string, tagId: string | null | undefined): Promise<string> {
+  if (!tagId) return '';
+  const [tag] = await db.select({ name: tags.name }).from(tags)
+    .where(and(eq(tags.tenantId, tenantId), eq(tags.id, tagId))).limit(1);
+  return ` — Tag: ${tag?.name ?? tagId}`;
+}
 
 const FIVE_COLS: Col[] = [
   { key: 'account_number', label: '#' },
@@ -104,9 +113,9 @@ async function loadWpAnnotations(tenantId: string, companyId: string, taxYear: n
 
 // ── 12.1 Standard five-column TB ────────────────────────────────────
 
-export async function buildTbWorkpaperReport(tenantId: string, companyId: string, endDate: string, basis: TbBasis) {
+export async function buildTbWorkpaperReport(tenantId: string, companyId: string, endDate: string, basis: TbBasis, tagId: string | null = null) {
   const { taxYear } = await fiscalContext(tenantId, companyId, endDate);
-  const wp = await computeWorkpaper(tenantId, companyId, { periodEnd: endDate, basis, taxYear });
+  const wp = await computeWorkpaper(tenantId, companyId, { periodEnd: endDate, basis, taxYear, tagId });
   const ann = await loadWpAnnotations(tenantId, companyId, taxYear);
   const data: Array<Record<string, unknown>> = wp.rows.map((r) => ({
     ...toFiveCol(r),
@@ -122,7 +131,7 @@ export async function buildTbWorkpaperReport(tenantId: string, companyId: string
     tax: `${wp.totals.taxDr.toFixed(2)} / ${wp.totals.taxCr.toFixed(2)}`,
   });
   return {
-    title: `Trial Balance Workpaper — TY${taxYear}${basisSuffix(basis)}`,
+    title: `Trial Balance Workpaper — TY${taxYear}${basisSuffix(basis)}${await tagSuffix(tenantId, tagId)}`,
     startDate: wp.fyStart,
     endDate,
     glVersionStamp: wp.glVersionStamp,
@@ -138,9 +147,9 @@ export async function buildTbWorkpaperReport(tenantId: string, companyId: string
 
 // ── 12.1 Grouped TB / leadsheets (7.5 lands here too) ───────────────
 
-export async function buildTbGroupedReport(tenantId: string, companyId: string, endDate: string, basis: TbBasis) {
+export async function buildTbGroupedReport(tenantId: string, companyId: string, endDate: string, basis: TbBasis, tagId: string | null = null) {
   const { taxYear } = await fiscalContext(tenantId, companyId, endDate);
-  const wp = await computeWorkpaper(tenantId, companyId, { periodEnd: endDate, basis, taxYear });
+  const wp = await computeWorkpaper(tenantId, companyId, { periodEnd: endDate, basis, taxYear, tagId });
   const groupings = await db.select().from(tbGroupings)
     .where(and(eq(tbGroupings.tenantId, tenantId), eq(tbGroupings.companyId, companyId)))
     .orderBy(tbGroupings.sortOrder);
@@ -178,7 +187,7 @@ export async function buildTbGroupedReport(tenantId: string, companyId: string, 
   }
   pushSection('Ungrouped', wp.rows.filter((r) => !used.has(r.accountId)));
   return {
-    title: `Grouped Trial Balance — TY${taxYear}${basisSuffix(basis)}`,
+    title: `Grouped Trial Balance — TY${taxYear}${basisSuffix(basis)}${await tagSuffix(tenantId, tagId)}`,
     startDate: wp.fyStart,
     endDate,
     data,
@@ -195,10 +204,10 @@ export async function buildTbGroupedReport(tenantId: string, companyId: string, 
 const LEADSHEET_COLS: Col[] = [...FIVE_COLS, { key: 'marks', label: 'Marks' }];
 
 export async function buildTbLeadsheetsReport(
-  tenantId: string, companyId: string, endDate: string, basis: TbBasis, groupingId: string | null = null,
+  tenantId: string, companyId: string, endDate: string, basis: TbBasis, groupingId: string | null = null, tagId: string | null = null,
 ) {
   const { taxYear } = await fiscalContext(tenantId, companyId, endDate);
-  const wp = await computeWorkpaper(tenantId, companyId, { periodEnd: endDate, basis, taxYear });
+  const wp = await computeWorkpaper(tenantId, companyId, { periodEnd: endDate, basis, taxYear, tagId });
   let groupings = await db.select().from(tbGroupings)
     .where(and(eq(tbGroupings.tenantId, tenantId), eq(tbGroupings.companyId, companyId)))
     .orderBy(tbGroupings.sortOrder);
@@ -278,9 +287,9 @@ export async function buildTbLeadsheetsReport(
   const single = groupingId ? groupings[0] : null;
   const singleLabel = single ? `${single.leadsheetCode ? single.leadsheetCode + ' — ' : ''}${single.name}` : null;
   return {
-    title: singleLabel
+    title: (singleLabel
       ? `Leadsheet ${singleLabel} — TY${taxYear}${basisSuffix(basis)}`
-      : `Leadsheets — TY${taxYear}${basisSuffix(basis)}`,
+      : `Leadsheets — TY${taxYear}${basisSuffix(basis)}`) + await tagSuffix(tenantId, tagId),
     startDate: wp.fyStart,
     endDate,
     asOfDate: endDate,
@@ -327,9 +336,9 @@ export async function buildTbReturnOrderReport(tenantId: string, companyId: stri
 
 // ── 12.3 Tax-Basis P&L ─────────────────────────────────────────────
 
-export async function buildTbTaxBasisPl(tenantId: string, companyId: string, endDate: string, basis: TbBasis, activityUnitId?: string | null) {
+export async function buildTbTaxBasisPl(tenantId: string, companyId: string, endDate: string, basis: TbBasis, activityUnitId?: string | null, tagId: string | null = null) {
   const { taxYear } = await fiscalContext(tenantId, companyId, endDate);
-  const wp = await computeWorkpaper(tenantId, companyId, { periodEnd: endDate, basis, taxYear });
+  const wp = await computeWorkpaper(tenantId, companyId, { periodEnd: endDate, basis, taxYear, tagId });
   const PL_SECTIONS: Array<{ type: string; label: string; income: boolean }> = [
     { type: 'revenue', label: 'Revenue', income: true },
     { type: 'cogs', label: 'Cost of Goods Sold', income: false },
@@ -369,7 +378,7 @@ export async function buildTbTaxBasisPl(tenantId: string, companyId: string, end
   }
   data.push({ account_number: '', name: 'NET INCOME/(LOSS)', book: money(bookNet), tax_rje: money(taxNet - bookNet), tax: money(taxNet) });
   return {
-    title: `Tax-Basis P&L — TY${taxYear}${basisSuffix(basis)}${activityUnitId ? ' — activity view' : ''}`,
+    title: `Tax-Basis P&L — TY${taxYear}${basisSuffix(basis)}${activityUnitId ? ' — activity view' : ''}${await tagSuffix(tenantId, tagId)}`,
     startDate: wp.fyStart,
     endDate,
     data,
@@ -387,13 +396,13 @@ export async function buildTbTaxBasisPl(tenantId: string, companyId: string, end
 
 export async function buildTbFluxReport(
   tenantId: string, companyId: string, endDate: string, basis: TbBasis,
-  compareEndDate?: string | null, thresholdAmount = 0, thresholdPct = 0,
+  compareEndDate?: string | null, thresholdAmount = 0, thresholdPct = 0, tagId: string | null = null,
 ) {
   const { fyMonth, taxYear } = await fiscalContext(tenantId, companyId, endDate);
-  const wp = await computeWorkpaper(tenantId, companyId, { periodEnd: endDate, basis, taxYear });
+  const wp = await computeWorkpaper(tenantId, companyId, { periodEnd: endDate, basis, taxYear, tagId });
   const priorEnd = compareEndDate
     ?? new Date(new Date(wp.fyStart + 'T00:00:00Z').getTime() - 86400000).toISOString().slice(0, 10);
-  const prior = await computeWorkpaper(tenantId, companyId, { periodEnd: priorEnd, basis, taxYear: taxYearOf(priorEnd, fyMonth) });
+  const prior = await computeWorkpaper(tenantId, companyId, { periodEnd: priorEnd, basis, taxYear: taxYearOf(priorEnd, fyMonth), tagId });
   const priorBy = new Map(prior.rows.map((r) => [r.accountId, r.adjusted]));
   const ids = new Set([...wp.rows.map((r) => r.accountId), ...prior.rows.map((r) => r.accountId)]);
   const data: Array<Record<string, unknown>> = [];
@@ -418,7 +427,7 @@ export async function buildTbFluxReport(
   }
   data.sort((a, b) => String(a['account_number']).localeCompare(String(b['account_number'])));
   return {
-    title: `Flux Analysis — ${endDate} vs ${priorEnd}${basisSuffix(basis)}`,
+    title: `Flux Analysis — ${endDate} vs ${priorEnd}${basisSuffix(basis)}${await tagSuffix(tenantId, tagId)}`,
     startDate: priorEnd,
     endDate,
     data,
