@@ -8,7 +8,7 @@
 // assignments, workpaper annotations, tax-only (RJE) entries, and the
 // glVersionStamp counters that make computed-balance caching exact.
 
-import { pgTable, uuid, varchar, text, decimal, boolean, date, timestamp, integer, bigint, index, uniqueIndex, check } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, decimal, boolean, date, timestamp, integer, bigint, jsonb, index, uniqueIndex, check } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 // ─── Seed code library (global, ADR-TB-05) ──────────────────────────
@@ -91,6 +91,9 @@ export const companyTaxProfiles = pgTable('company_tax_profiles', {
   // NULL = float to the latest seed version for the tax year (ADR-TB-05).
   pinnedSeedVersionId: uuid('pinned_seed_version_id').references(() => taxCodeSeedVersions.id),
   sCorpElectionDate: date('s_corp_election_date'),
+  // Schedule M-2 equity-account role map (9.4): { accountId:
+  // 'retained' | 'distributions' | 'contributions' | 'other' }.
+  equityRoles: jsonb('equity_roles'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [

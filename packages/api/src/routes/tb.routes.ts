@@ -28,6 +28,7 @@ import * as signoffsService from '../services/tb/signoffs.service.js';
 import * as aiTaxAssign from '../services/tb/ai-tax-assign.service.js';
 import * as groupingsService from '../services/tb/groupings.service.js';
 import * as taxEntriesService from '../services/tb/tax-entries.service.js';
+import * as m1Service from '../services/tb/m1.service.js';
 import { db } from '../db/index.js';
 import { tbStatus } from '../db/schema/index.js';
 import { and, eq } from 'drizzle-orm';
@@ -332,6 +333,37 @@ tbRouter.get('/stream', async (req, res) => {
     clearInterval(heartbeat);
   };
   req.on('close', cleanup);
+});
+
+// ── Schedule M-1 / M-2 previews (Phase 9) ──────────────────────────
+
+const mQuerySchema = z.object({
+  taxYear: z.coerce.number().int().min(2000).max(2100),
+  basis: z.enum(['accrual', 'cash']).default('accrual'),
+});
+
+tbRouter.get('/m1', async (req, res) => {
+  const q = mQuerySchema.parse(req.query);
+  const m1 = await m1Service.buildM1(req.tenantId, req.companyId!, q);
+  res.json({ m1 });
+});
+
+tbRouter.get('/m2', async (req, res) => {
+  const q = mQuerySchema.parse(req.query);
+  const m2 = await m1Service.buildM2(req.tenantId, req.companyId!, q);
+  res.json({ m2 });
+});
+
+tbRouter.get('/equity-roles', async (req, res) => {
+  const roles = await m1Service.getEquityRoles(req.tenantId, req.companyId!);
+  res.json({ roles });
+});
+
+tbRouter.put('/equity-roles', validate(z.object({
+  roles: z.record(z.string().uuid(), z.enum(['retained', 'distributions', 'contributions', 'other'])),
+})), async (req, res) => {
+  await m1Service.setEquityRoles(req.tenantId, req.companyId!, req.body.roles, req.userId);
+  res.json({ roles: req.body.roles });
 });
 
 // ── Tax RJEs (Phase 8, ADR-TB-03 — never touch the GL) ─────────────
