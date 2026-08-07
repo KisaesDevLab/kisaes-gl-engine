@@ -190,6 +190,39 @@ describe('vendor export dataset (Phase 11)', () => {
     expect([...nums].sort((a, b) => a.localeCompare(b))).toEqual(nums);
   });
 
+  it('unit suffixes apply only to split accounts; consolidated identity collisions 409', async () => {
+    const synthetic = {
+      taxYear: 2026, periodEnd: '2026-12-31', basis: 'accrual' as const,
+      glVersionStamp: 1, consolidationPrefs: {}, unassigned: [], missingVendorCode: [],
+      lines: [
+        { key: 'seed|business|X1', code: 'X1', description: 'Split code', vendorCode: 'X1', sortOrder: 1, amount: 30, bookAmount: 30, consolidated: null,
+          accounts: [
+            { accountId: 'a', accountNumber: '100', name: 'Split Acct', unitId: 'u1', amount: 10, bookAmount: 10 },
+            { accountId: 'a', accountNumber: '100', name: 'Split Acct', unitId: 'u2', amount: 20, bookAmount: 20 },
+          ] },
+        { key: 'seed|business|X2', code: 'X2', description: 'Single code', vendorCode: 'X2', sortOrder: 2, amount: 5, bookAmount: 5, consolidated: null,
+          accounts: [{ accountId: 'b', accountNumber: '200', name: 'Single Acct', unitId: 'u1', amount: 5, bookAmount: 5 }] },
+      ],
+    };
+    const unitInfo = new Map([['u1', { name: 'Unit One', number: 1 }], ['u2', { name: 'Unit Two', number: 2 }]]);
+    const file = await buildVendorFile('generic', synthetic, 'Co', new Map(), unitInfo);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(file.buffer as unknown as ArrayBuffer);
+    const ws = wb.getWorksheet('Generic Export')!;
+    const nums: string[] = [];
+    for (let i = 2; i <= ws.rowCount; i++) nums.push(String(ws.getRow(i).getCell(1).value ?? ''));
+    // Split account gets per-unit suffixes; single-slice account stays plain.
+    expect(nums.sort()).toEqual(['100-1', '100-2', '200']);
+
+    // Two consolidated groups sharing an export code → DUPLICATE_ACCOUNT.
+    const prefs = {
+      'seed|business|X1': { exportCode: '4010', description: 'One' },
+      'seed|business|X2': { exportCode: '4010', description: 'Two' },
+    };
+    await expect(buildVendorFile('generic', { ...synthetic, consolidationPrefs: prefs }, 'Co', new Map(), unitInfo, prefs))
+      .rejects.toMatchObject({ statusCode: 409, code: 'DUPLICATE_ACCOUNT' });
+  });
+
   it('builds the working TB workbook with sections and five columns', async () => {
     const file = await buildWorkingTbXlsx(tenantId, companyId, { taxYear: 2026, basis: 'accrual' });
     expect(file.fileName).toMatch(/working-tb-20261231-accrual\.xlsx/);

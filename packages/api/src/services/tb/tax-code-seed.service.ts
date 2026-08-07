@@ -9,7 +9,7 @@
 // Firm custom codes live in firm_tax_codes and are never touched here
 // (standing invariant #5).
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import ExcelJS from 'exceljs';
 import { and, desc, eq, ilike, or, sql } from 'drizzle-orm';
 import { db } from '../../db/index.js';
@@ -280,6 +280,15 @@ export async function browseCodes(f: BrowseFilters) {
 
 const ZERO_TENANT = '00000000-0000-0000-0000-000000000000';
 
+// In-place CRUD diverges a version from its imported workbook — stamp
+// a non-sha value into sourceFileHash so a byte-identical re-import of
+// the canonical file is no longer treated as an unchanged no-op.
+async function markVersionEdited(versionId: string) {
+  await db.update(taxCodeSeedVersions)
+    .set({ sourceFileHash: `edited:${randomUUID()}`.slice(0, 64) })
+    .where(eq(taxCodeSeedVersions.id, versionId));
+}
+
 export interface AdminCodeInput {
   returnForm: string;
   activityType: string;
@@ -334,6 +343,7 @@ export async function createCode(versionId: string, input: AdminCodeInput, userI
   if (!created) throw AppError.internal('Tax code insert failed');
   await db.update(taxCodeSeedVersions).set({ rowCount: sql`${taxCodeSeedVersions.rowCount} + 1` })
     .where(eq(taxCodeSeedVersions.id, versionId));
+  await markVersionEdited(versionId);
   await auditLog(ZERO_TENANT, 'create', 'tax_code', created.id, null, created, userId);
   return created;
 }
@@ -381,6 +391,7 @@ export async function updateCode(id: string, patch: Partial<AdminCodeInput>, use
     }
   }
   const [updated] = await db.update(taxCodes).set(next).where(eq(taxCodes.id, id)).returning();
+  await markVersionEdited(existing.versionId);
   await auditLog(ZERO_TENANT, 'update', 'tax_code', id, existing, updated, userId);
   return updated!;
 }
@@ -401,6 +412,7 @@ export async function deleteCode(id: string, userId?: string) {
   await db.delete(taxCodes).where(eq(taxCodes.id, id));
   await db.update(taxCodeSeedVersions).set({ rowCount: sql`GREATEST(${taxCodeSeedVersions.rowCount} - 1, 0)` })
     .where(eq(taxCodeSeedVersions.id, existing.versionId));
+  await markVersionEdited(existing.versionId);
   await auditLog(ZERO_TENANT, 'delete', 'tax_code', id, existing, null, userId);
   return { deleted: true as const };
 }

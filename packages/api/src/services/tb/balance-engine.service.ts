@@ -188,7 +188,12 @@ export async function computeWorkpaper(tenantId: string, companyId: string, opts
         LEFT JOIN activity_units du
           ON du.company_id = ${companyId} AND du.is_default = TRUE AND du.archived_at IS NULL
         WHERE ${opts.tagId
-          ? sql`EXISTS (SELECT 1 FROM journal_lines jlx WHERE jlx.transaction_id = cb.transaction_id AND jlx.tag_id = ${opts.tagId})`
+          /* Rule-3 cash rows re-home invoice/bill lines under the
+             PAYMENT's transaction id while keeping the source line's
+             tag — so the whole-transaction EXISTS must scan cb_lines,
+             not journal_lines, or payment-settled tagged activity
+             vanishes from the cash tag view. */
+          ? sql`EXISTS (SELECT 1 FROM cb_lines cbx WHERE cbx.transaction_id = cb.transaction_id AND cbx.tag_id = ${opts.tagId})`
           : sql`TRUE`}
         GROUP BY 1, 2, 3, 4, 5, 6
       `)

@@ -238,7 +238,7 @@ tbRouter.post('/assignments/bulk', validate(z.object({ assignments: z.array(setA
 // accounts and reports `remaining`; the panel loops, passing the
 // already-analyzed ids back via excludeAccountIds.
 const aiSuggestSchema = z.object({
-  excludeAccountIds: z.array(z.string().uuid()).max(1000).optional(),
+  excludeAccountIds: z.array(z.string().uuid()).max(20000).optional(),
 });
 
 tbRouter.post('/ai/suggest-assignments', expensiveOpLimiter, async (req, res) => {

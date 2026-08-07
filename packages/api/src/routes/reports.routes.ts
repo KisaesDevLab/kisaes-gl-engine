@@ -1704,7 +1704,10 @@ function tbParams(req: Request): { companyId: string; endDate: string; basis: 'a
 
 // Optional tag view on workpaper-derived TB reports (rule TB7).
 function tbTag(req: Request): string | null {
-  return typeof req.query['tag_id'] === 'string' && req.query['tag_id'] ? String(req.query['tag_id']) : null;
+  const v = req.query['tag_id'];
+  if (typeof v !== 'string' || v === '') return null;
+  if (!UUID_RE.test(v)) throw AppError.badRequest('tag_id must be a UUID');
+  return v;
 }
 
 const TB_REPORTS: Record<string, (tenantId: string, p: { companyId: string; endDate: string; basis: 'accrual' | 'cash' }, req: Request) => Promise<unknown>> = {

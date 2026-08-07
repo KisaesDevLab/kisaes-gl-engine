@@ -48,7 +48,9 @@ tbAdminRouter.post('/seed-versions/import', upload.single('file'), async (req, r
 // Registered before the CRUD routes for clarity; path has no overlap.
 tbAdminRouter.get('/codes/export', async (req, res) => {
   const versionId = typeof req.query['versionId'] === 'string' ? req.query['versionId'] : '';
-  if (!versionId) throw AppError.badRequest('versionId is required', 'TB_SEED_INVALID');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(versionId)) {
+    throw AppError.badRequest('versionId must be a UUID', 'TB_SEED_INVALID');
+  }
   const file = await seedService.exportCodesXlsx(versionId);
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="${file.fileName}"`);

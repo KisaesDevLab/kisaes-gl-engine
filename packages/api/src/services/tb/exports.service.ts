@@ -327,26 +327,38 @@ interface ExportAccountRow {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
-// Flatten the code-pivot dataset back to account grain, splitting
-// account×unit slices (suffix `-N`) and re-sorting by account number
-// ASC like the reference's `coa.account_number ASC`.
+// Flatten the code-pivot dataset back to account grain and re-sort by
+// account number ASC like the reference's `coa.account_number ASC`.
+// The unit-number suffix (`-N`) applies ONLY to accounts that actually
+// emit multiple rows (a split across units / codes) — a single-unit
+// book must keep its plain account numbers or vendor account matching
+// breaks. Amounts stay RAW here; rounding happens once at emission so
+// consolidation sums can't drift a penny from the validation panel.
 function toAccountRows(dataset: TaxDataset, unitInfo: Map<string, UnitInfo>): ExportAccountRow[] {
-  const rows: ExportAccountRow[] = [];
+  const rows: Array<ExportAccountRow & { _unitId: string }> = [];
+  const perAccount = new Map<string, number>();
   for (const l of dataset.lines) {
     for (const a of l.accounts) {
-      const unitNumber = unitInfo.get(a.unitId)?.number ?? null;
-      const suffix = unitNumber != null ? `-${unitNumber}` : '';
+      perAccount.set(a.accountId, (perAccount.get(a.accountId) ?? 0) + 1);
       rows.push({
-        accountNumber: `${a.accountNumber ?? ''}${suffix}`,
+        accountNumber: a.accountNumber ?? '',
         accountName: a.name,
         key: l.key,
         code: l.code,
         description: l.description,
         vendorCode: l.vendorCode ?? '',
         sortOrder: l.sortOrder,
-        bookAmt: round2(a.bookAmount),
-        taxAmt: round2(a.amount),
-      });
+        bookAmt: a.bookAmount,
+        taxAmt: a.amount,
+        _unitId: a.unitId,
+        _accountId: a.accountId,
+      } as ExportAccountRow & { _unitId: string });
+    }
+  }
+  for (const r of rows as Array<ExportAccountRow & { _unitId: string; _accountId: string }>) {
+    if ((perAccount.get(r._accountId) ?? 0) > 1) {
+      const unitNumber = unitInfo.get(r._unitId)?.number;
+      if (unitNumber != null) r.accountNumber = `${r.accountNumber}-${unitNumber}`;
     }
   }
   rows.sort((x, y) => x.accountNumber.localeCompare(y.accountNumber));
@@ -379,20 +391,25 @@ function consolidateAccountRows(rows: ExportAccountRow[], prefs: ConsolidationPr
       ...first,
       accountNumber: pref.exportCode || first.accountNumber,
       accountName: pref.description || first.accountName,
-      bookAmt: round2(members.reduce((s, m) => s + m.bookAmt, 0)),
-      taxAmt: round2(members.reduce((s, m) => s + m.taxAmt, 0)),
+      // Raw sums — rounding happens once at emission.
+      bookAmt: members.reduce((s, m) => s + m.bookAmt, 0),
+      taxAmt: members.reduce((s, m) => s + m.taxAmt, 0),
     });
   }
-  // Reference hard failure: a consolidated identity colliding with a
-  // pass-through account number is a 409 DUPLICATE_ACCOUNT.
+  // Hard failure: a consolidated identity colliding with a pass-through
+  // account number OR another consolidated group's identity is a 409
+  // DUPLICATE_ACCOUNT — either way the file would carry duplicate
+  // account numbers.
   const existing = new Set(passThrough.map((r) => r.accountNumber.toLowerCase()));
   for (const c of consolidated) {
-    if (existing.has(c.accountNumber.toLowerCase())) {
+    const num = c.accountNumber.toLowerCase();
+    if (existing.has(num)) {
       throw AppError.conflict(
         `Consolidated account number "${c.accountNumber}" conflicts with an existing account in the export. Choose a different number.`,
         'DUPLICATE_ACCOUNT',
       );
     }
+    existing.add(num);
   }
   consolidated.sort((a, b) => a.sortOrder - b.sortOrder);
   return [...consolidated, ...passThrough];
@@ -423,7 +440,7 @@ export async function buildVendorFile(
       { header: 'TaxCode', key: 'code', width: 18 },
       { header: 'Book Basis Amt', key: 'bookAmt', ...amt },
       { header: 'Tax Basis Amt', key: 'taxAmt', ...amt },
-    ], rows.map((r) => ({ acct: r.accountNumber, name: r.accountName, code: r.vendorCode, bookAmt: r.bookAmt, taxAmt: r.taxAmt })));
+    ], rows.map((r) => ({ acct: r.accountNumber, name: r.accountName, code: r.vendorCode, bookAmt: round2(r.bookAmt), taxAmt: round2(r.taxAmt) })));
     return { buffer, fileName: `ultratax-export-${stamp}.xlsx`, mimeType: XLSX_MIME, rowCount: rows.length };
   }
   if (software === 'cch') {
@@ -434,7 +451,7 @@ export async function buildVendorFile(
       { header: 'Description', key: 'desc', width: 40 },
       { header: 'Book Basis Amt', key: 'bookAmt', ...amt },
       { header: 'Tax Basis Amt', key: 'taxAmt', ...amt },
-    ], rows.map((r) => ({ acct: r.accountNumber, name: r.accountName, code: r.vendorCode, desc: '', bookAmt: r.bookAmt, taxAmt: r.taxAmt })),
+    ], rows.map((r) => ({ acct: r.accountNumber, name: r.accountName, code: r.vendorCode, desc: '', bookAmt: round2(r.bookAmt), taxAmt: round2(r.taxAmt) })),
     { centerHeader: false });
     return { buffer, fileName: `cch-export-${stamp}.xlsx`, mimeType: XLSX_MIME, rowCount: rows.length };
   }
@@ -445,7 +462,7 @@ export async function buildVendorFile(
       { header: 'Description', key: 'name', width: 40 },
       { header: 'Book Basis Amt', key: 'bookAmt', ...amt },
       { header: 'Tax Basis Amt', key: 'taxAmt', ...amt },
-    ], rows.map((r) => ({ code: r.vendorCode, name: r.accountName, bookAmt: r.bookAmt, taxAmt: r.taxAmt })));
+    ], rows.map((r) => ({ code: r.vendorCode, name: r.accountName, bookAmt: round2(r.bookAmt), taxAmt: round2(r.taxAmt) })));
     return { buffer, fileName: `${software}-export-${stamp}.xlsx`, mimeType: XLSX_MIME, rowCount: rows.length };
   }
   // generic: canonical code + description, no software crosswalk.
@@ -456,7 +473,7 @@ export async function buildVendorFile(
     { header: 'TaxDescription', key: 'desc', width: 40 },
     { header: 'Book Basis Amt', key: 'bookAmt', ...amt },
     { header: 'Tax Basis Amt', key: 'taxAmt', ...amt },
-  ], rows.map((r) => ({ acct: r.accountNumber, name: r.accountName, code: r.code, desc: r.description, bookAmt: r.bookAmt, taxAmt: r.taxAmt })));
+  ], rows.map((r) => ({ acct: r.accountNumber, name: r.accountName, code: r.code, desc: r.description, bookAmt: round2(r.bookAmt), taxAmt: round2(r.taxAmt) })));
   return { buffer, fileName: `generic-export-${stamp}.xlsx`, mimeType: XLSX_MIME, rowCount: rows.length };
 }
 

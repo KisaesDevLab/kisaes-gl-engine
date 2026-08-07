@@ -66,6 +66,12 @@ function startsWith(buf: Buffer, magic: Buffer): boolean {
 export function verifyAttachmentContent(mime: string, buf: Buffer): void {
   const err = () => { throw new Error('Uploaded file content does not match its declared type.'); };
 
+  if (mime === 'image/heic') {
+    // ISO base media file format: 'ftyp' box at offset 4.
+    if (buf.length < 12 || buf.subarray(4, 8).toString('ascii') !== 'ftyp') err();
+    return;
+  }
+
   if (mime === 'application/pdf') {
     if (!startsWith(buf, Buffer.from('%PDF-'))) err();
     return;
