@@ -21,6 +21,7 @@ import {
 } from '../../db/schema/index.js';
 import { AppError } from '../../utils/errors.js';
 import { auditLog } from '../../middleware/audit.js';
+import { incCounter } from '../../utils/metrics.js';
 import { getProviderForTenant } from '../storage/storage-provider.factory.js';
 import { tenantStorageKey } from '../storage/storage-keys.js';
 import { computeWorkpaper, ZERO_UUID, type TbBasis } from './balance-engine.service.js';
@@ -382,6 +383,7 @@ export async function generateExport(
   }).returning();
   await auditLog(tenantId, 'create', 'tb_export', record!.id, null,
     { software: opts.software, taxYear: opts.taxYear, basis: opts.basis, glVersionStamp, overrideUsed }, userId);
+  incCounter('tb_exports_total', 'TB vendor exports generated', { software: opts.software, override: String(overrideUsed) });
   return record!;
 }
 

@@ -35,6 +35,7 @@ import { cashBasisLinesWith, getFiscalYearStart } from '../report.service.js';
 import { taxYearOf } from './tax-profile.service.js';
 import { AppError } from '../../utils/errors.js';
 import { log } from '../../utils/logger.js';
+import { incCounter, setGauge } from '../../utils/metrics.js';
 import { tbCacheGet, tbCacheSet } from './tb-redis.js';
 
 export const ZERO_UUID = '00000000-0000-0000-0000-000000000000';
@@ -146,7 +147,10 @@ export async function computeWorkpaper(tenantId: string, companyId: string, opts
   const cacheKey = `tb:wp:${tenantId}:${companyId}:${opts.periodEnd}:${opts.basis}:${taxYear}:${stamp}`;
   if (!opts.skipCache) {
     const hit = await tbCacheGet<TbWorkpaper>(cacheKey);
-    if (hit) return { ...hit, cached: true, computeMs: Date.now() - started };
+    if (hit) {
+      incCounter('tb_workpaper_requests_total', 'TB workpaper requests', { cached: 'true', basis: opts.basis });
+      return { ...hit, cached: true, computeMs: Date.now() - started };
+    }
   }
 
   // Tag→unit resolution happens in SQL: line unit = mapped unit of the
@@ -380,6 +384,8 @@ export async function computeWorkpaper(tenantId: string, companyId: string, opts
     ) as unknown as TbWorkpaperTotals,
   };
   if (!opts.skipCache) await tbCacheSet(cacheKey, workpaper);
+  incCounter('tb_workpaper_requests_total', 'TB workpaper requests', { cached: 'false', basis: opts.basis });
+  setGauge('tb_workpaper_compute_ms', 'Last uncached TB workpaper compute time (ms)', workpaper.computeMs, { basis: opts.basis });
   log.debug({ component: 'tb', event: 'workpaper_computed', companyId, basis: opts.basis, rowCount: rows.length, ms: workpaper.computeMs });
   return workpaper;
 }
