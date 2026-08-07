@@ -27,6 +27,7 @@ export type StorageDomain =
   | 'w9'
   | 'receipts'
   | 'documents'
+  | 'question-attachments'
   | 'backups';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

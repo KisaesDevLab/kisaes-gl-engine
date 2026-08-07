@@ -68,6 +68,14 @@ portalQuestionsRouter.get('/:id', async (req, res) => {
   res.json({ question: q });
 });
 
+// Download a client-answer attachment (staff side).
+portalQuestionsRouter.get('/:id/attachments/:attachmentId/download', async (req, res) => {
+  const file = await svc.getQuestionAttachmentForStaff(req.tenantId, req.params['id']!, req.params['attachmentId']!);
+  res.setHeader('Content-Type', file.mimeType);
+  res.setHeader('Content-Disposition', `attachment; filename="${file.filename.replace(/[\r\n"]/g, '_')}"`);
+  res.send(file.buffer);
+});
+
 portalQuestionsRouter.post('/', validate(createSchema), async (req, res) => {
   const result = await svc.createQuestion(req.tenantId, req.userId, req.body);
   res.status(201).json(result);

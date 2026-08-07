@@ -63,7 +63,7 @@ function startsWith(buf: Buffer, magic: Buffer): boolean {
   return buf.subarray(0, magic.length).equals(magic);
 }
 
-function verifyAttachmentContent(mime: string, buf: Buffer): void {
+export function verifyAttachmentContent(mime: string, buf: Buffer): void {
   const err = () => { throw new Error('Uploaded file content does not match its declared type.'); };
 
   if (mime === 'application/pdf') {

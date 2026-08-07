@@ -2,10 +2,12 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+import crypto from 'node:crypto';
 import { and, desc, eq, inArray, isNull, lte, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   portalQuestions,
+  portalQuestionAttachments,
   portalQuestionMessages,
   portalContacts,
   portalContactCompanies,
@@ -15,6 +17,8 @@ import {
   transactions,
 } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { getProviderForTenant } from './storage/storage-provider.factory.js';
+import { tenantStorageKey } from './storage/storage-keys.js';
 import { auditLog } from '../middleware/audit.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 10 — Question System Core.
@@ -269,6 +273,7 @@ export async function getQuestionForBookkeeper(
       senderType: portalQuestionMessages.senderType,
       senderId: portalQuestionMessages.senderId,
       body: portalQuestionMessages.body,
+      attachments: portalQuestionMessages.attachmentsJson,
       createdAt: portalQuestionMessages.createdAt,
     })
     .from(portalQuestionMessages)
@@ -530,6 +535,7 @@ export async function getQuestionForContact(args: {
       id: portalQuestionMessages.id,
       senderType: portalQuestionMessages.senderType,
       body: portalQuestionMessages.body,
+      attachments: portalQuestionMessages.attachmentsJson,
       createdAt: portalQuestionMessages.createdAt,
     })
     .from(portalQuestionMessages)
@@ -563,12 +569,23 @@ export async function getQuestionForContact(args: {
   };
 }
 
-// 10.6 — contact submits an answer.
+export interface AnswerFile {
+  filename: string;
+  mimeType: string;
+  buffer: Buffer;
+}
+
+// 10.6 — contact submits an answer, optionally with attached files.
+// Files are stored under the tenant's storage provider first (same
+// upload-then-record order as portal receipts); the attachment rows +
+// the message's denormalized attachments_json commit atomically with
+// the message itself.
 export async function contactAnswer(args: {
   tenantId: string;
   contactId: string;
   questionId: string;
   body: string;
+  files?: AnswerFile[];
 }): Promise<{ messageId: string }> {
   if (!args.body || !args.body.trim()) {
     throw AppError.badRequest('Answer body is required');
@@ -585,6 +602,31 @@ export async function contactAnswer(args: {
     throw AppError.badRequest('This question has already been resolved.', 'RESOLVED');
   }
 
+  const files = args.files ?? [];
+  const stored: Array<{ storageKey: string; storageProvider: string; filename: string; mimeType: string; sizeBytes: number }> = [];
+  if (files.length > 0) {
+    const provider = await getProviderForTenant(args.tenantId);
+    for (const f of files) {
+      const storageKey = tenantStorageKey(
+        args.tenantId,
+        'question-attachments',
+        `${crypto.randomUUID()}-${f.filename.replace(/[^A-Za-z0-9._-]/g, '_')}`,
+      );
+      await provider.upload(storageKey, f.buffer, {
+        fileName: f.filename,
+        mimeType: f.mimeType,
+        sizeBytes: f.buffer.length,
+      });
+      stored.push({
+        storageKey,
+        storageProvider: provider.name,
+        filename: f.filename,
+        mimeType: f.mimeType,
+        sizeBytes: f.buffer.length,
+      });
+    }
+  }
+
   return db.transaction(async (tx) => {
     const inserted = await tx
       .insert(portalQuestionMessages)
@@ -596,15 +638,92 @@ export async function contactAnswer(args: {
       })
       .returning({ id: portalQuestionMessages.id });
 
+    const row = inserted[0];
+    if (!row) throw AppError.badRequest('Insert failed');
+
+    if (stored.length > 0) {
+      const attachmentRows = await tx.insert(portalQuestionAttachments).values(stored.map((f) => ({
+        questionId: q.id,
+        messageId: row.id,
+        storageProvider: f.storageProvider,
+        storageKey: f.storageKey,
+        filename: f.filename,
+        mimeType: f.mimeType,
+        sizeBytes: f.sizeBytes,
+        uploadedBy: args.contactId,
+        uploadedByType: 'contact',
+      }))).returning({ id: portalQuestionAttachments.id, filename: portalQuestionAttachments.filename, mimeType: portalQuestionAttachments.mimeType, sizeBytes: portalQuestionAttachments.sizeBytes });
+      await tx.update(portalQuestionMessages)
+        .set({
+          attachmentsJson: attachmentRows.map((a) => ({
+            attachmentId: a.id, filename: a.filename, mimeType: a.mimeType, sizeBytes: a.sizeBytes,
+          })),
+        })
+        .where(eq(portalQuestionMessages.id, row.id));
+    }
+
     await tx
       .update(portalQuestions)
       .set({ status: 'responded', respondedAt: new Date() })
       .where(eq(portalQuestions.id, q.id));
 
-    const row = inserted[0];
-    if (!row) throw AppError.badRequest('Insert failed');
     return { messageId: row.id };
   });
+}
+
+// ── Question attachments: authorized read paths ─────────────────────
+// The table has no tenant_id — isolation always hops through the
+// parent question row.
+
+async function loadQuestionAttachment(tenantId: string, questionId: string, attachmentId: string) {
+  const [row] = await db.select({
+    a: portalQuestionAttachments,
+    q: portalQuestions,
+  }).from(portalQuestionAttachments)
+    .innerJoin(portalQuestions, eq(portalQuestionAttachments.questionId, portalQuestions.id))
+    .where(and(
+      eq(portalQuestionAttachments.id, attachmentId),
+      eq(portalQuestionAttachments.questionId, questionId),
+      eq(portalQuestions.tenantId, tenantId),
+    ))
+    .limit(1);
+  if (!row) throw AppError.notFound('Attachment not found');
+  return row;
+}
+
+async function downloadStoredAttachment(tenantId: string, a: typeof portalQuestionAttachments.$inferSelect) {
+  const provider = await getProviderForTenant(tenantId);
+  const buffer = await provider.download(a.storageKey);
+  return {
+    buffer,
+    filename: a.filename,
+    mimeType: a.mimeType ?? 'application/octet-stream',
+  };
+}
+
+// Contact download: same visibility guards as reading the question.
+export async function getQuestionAttachmentForContact(args: {
+  tenantId: string;
+  contactId: string;
+  questionId: string;
+  attachmentId: string;
+}) {
+  const { a, q } = await loadQuestionAttachment(args.tenantId, args.questionId, args.attachmentId);
+  if (q.assignedContactId && q.assignedContactId !== args.contactId) {
+    throw AppError.forbidden('You are not assigned this question');
+  }
+  if (!q.assignedContactId) {
+    await ensureContactLinkedToCompany(args.tenantId, args.contactId, q.companyId);
+  }
+  if (!q.notifiedAt) throw AppError.notFound('Attachment not found');
+  return downloadStoredAttachment(args.tenantId, a);
+}
+
+// Staff download: tenant scoping only (staff router already gates
+// client-type users and readonly writes).
+export async function getQuestionAttachmentForStaff(tenantId: string, questionId: string, attachmentId: string) {
+  const { a } = await loadQuestionAttachment(tenantId, questionId, attachmentId);
+  return downloadStoredAttachment(tenantId, a);
 }
 
 // 11.1 — bulk-ask: create the same body against many transactions.

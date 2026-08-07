@@ -3,11 +3,36 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
+import multer from 'multer';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { portalAuthenticate, refuseDuringPreview } from '../middleware/portal-auth.js';
 import { AppError } from '../utils/errors.js';
 import * as svc from '../services/portal-question.service.js';
+import { verifyAttachmentContent } from './attachments.routes.js';
+
+// Answer attachments: same document types the staff attachment surface
+// accepts, 10 MB each, max 5 per answer. Client-supplied MIME is
+// re-verified against magic bytes before storage.
+const ANSWER_MIME_TYPES = [
+  'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/heic',
+  'application/pdf',
+  'text/csv', 'text/plain',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+];
+const answerUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024, files: 5 },
+  fileFilter: (_req, file, cb) => {
+    if (!ANSWER_MIME_TYPES.includes(file.mimetype)) {
+      cb(new Error(`File type ${file.mimetype} is not allowed`));
+      return;
+    }
+    cb(null, true);
+  },
+});
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 10.5/10.6 — portal-side
 // (signed-in contact) Question endpoints. Mounted at
@@ -40,16 +65,43 @@ portalQuestionsPublicRouter.get('/:id', async (req, res) => {
 
 const answerSchema = z.object({ body: z.string().min(1).max(4000) });
 
-portalQuestionsPublicRouter.post('/:id/answers', validate(answerSchema), async (req, res) => {
+// Accepts application/json (body only) or multipart/form-data with a
+// `body` field plus up to 5 `files` — multer passes non-multipart
+// requests through untouched.
+portalQuestionsPublicRouter.post('/:id/answers', answerUpload.array('files', 5), validate(answerSchema), async (req, res) => {
   if (!req.portalContact) throw AppError.unauthorized('No portal session');
   refuseDuringPreview(req);
+  const uploads = (req.files as Express.Multer.File[] | undefined) ?? [];
+  for (const f of uploads) {
+    try {
+      verifyAttachmentContent(f.mimetype, f.buffer);
+    } catch {
+      throw AppError.badRequest(`"${f.originalname}" does not match its declared file type`);
+    }
+  }
   const result = await svc.contactAnswer({
     tenantId: req.portalContact.tenantId,
     contactId: req.portalContact.contactId,
     questionId: req.params['id']!,
     body: req.body.body,
+    files: uploads.map((f) => ({ filename: f.originalname, mimeType: f.mimetype, buffer: f.buffer })),
   });
   res.status(201).json(result);
+});
+
+// Attachment download — cookie-authed, so a plain <a href> works in the
+// portal. Reads are allowed during staff preview (read-only).
+portalQuestionsPublicRouter.get('/:id/attachments/:attachmentId/download', async (req, res) => {
+  if (!req.portalContact) throw AppError.unauthorized('No portal session');
+  const file = await svc.getQuestionAttachmentForContact({
+    tenantId: req.portalContact.tenantId,
+    contactId: req.portalContact.contactId,
+    questionId: req.params['id']!,
+    attachmentId: req.params['attachmentId']!,
+  });
+  res.setHeader('Content-Type', file.mimeType);
+  res.setHeader('Content-Disposition', `attachment; filename="${file.filename.replace(/[\r\n"]/g, '_')}"`);
+  res.send(file.buffer);
 });
 
 // 11.7 — Questions-for-Us (contact-initiated). Requires the contact's
