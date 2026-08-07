@@ -152,7 +152,10 @@ export async function buildTaxDataset(
   }
 
   const lines = [...byCode.values()].sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code));
-  const missingVendorCode = vendorField
+  // 11.8a applies to real vendor imports only — the generic CSV is the
+  // full-detail export and tolerates empty crosswalk cells.
+  const requiresVendorCode = vendorField !== null && opts.software !== 'generic';
+  const missingVendorCode = requiresVendorCode
     ? lines.filter((l) => !l.vendorCode && l.code !== 'DONOTMAP')
       .map((l) => ({ code: l.code, description: l.description }))
     : [];

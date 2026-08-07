@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-05T22:38:08.469Z",
+  "generatedAt": "2026-08-07T01:29:53.339Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -7,6 +7,7 @@
       "20-workflows.md",
       "30-common-questions.md",
       "40-reports.md",
+      "45-trial-balance.md",
       "50-errors.md",
       "60-capability-boundaries.md",
       "70-security-auth.md",
@@ -16,7 +17,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 53689
+    "totalBytes": 56479
   },
   "screens": [
     {
@@ -1295,6 +1296,96 @@
       "sourceFile": null,
       "title": "Firm Settings",
       "section": "Firm",
+      "actions": []
+    },
+    {
+      "id": "workpaper",
+      "path": "workpaper",
+      "component": "TbWorkpaperPage",
+      "sourceFile": null,
+      "title": "Tb Workpaper",
+      "section": "Workpaper",
+      "actions": []
+    },
+    {
+      "id": "ajes",
+      "path": "ajes",
+      "component": "AjeListPage",
+      "sourceFile": null,
+      "title": "Aje List",
+      "section": "Ajes",
+      "actions": []
+    },
+    {
+      "id": "ajes-new",
+      "path": "ajes/new",
+      "component": "AjeFormPage",
+      "sourceFile": null,
+      "title": "Aje Form",
+      "section": "Ajes",
+      "actions": []
+    },
+    {
+      "id": "ajes-edit",
+      "path": "ajes/:id/edit",
+      "component": "AjeFormPage",
+      "sourceFile": null,
+      "title": "Aje Form",
+      "section": "Ajes",
+      "actions": []
+    },
+    {
+      "id": "leadsheets",
+      "path": "leadsheets",
+      "component": "TbLeadsheetsPage",
+      "sourceFile": null,
+      "title": "Tb Leadsheets",
+      "section": "Leadsheets",
+      "actions": []
+    },
+    {
+      "id": "tax-entries",
+      "path": "tax-entries",
+      "component": "TbTaxEntriesPage",
+      "sourceFile": null,
+      "title": "Tb Tax Entries",
+      "section": "Tax entries",
+      "actions": []
+    },
+    {
+      "id": "m1",
+      "path": "m1",
+      "component": "TbM1Page",
+      "sourceFile": null,
+      "title": "Tb M1",
+      "section": "M1",
+      "actions": []
+    },
+    {
+      "id": "reports",
+      "path": "reports",
+      "component": "TbReportsPage",
+      "sourceFile": null,
+      "title": "Tb Reports",
+      "section": "Reports",
+      "actions": []
+    },
+    {
+      "id": "exports",
+      "path": "exports",
+      "component": "TbExportsPage",
+      "sourceFile": null,
+      "title": "Tb Exports",
+      "section": "Exports",
+      "actions": []
+    },
+    {
+      "id": "settings",
+      "path": "settings",
+      "component": "TbSettingsPage",
+      "sourceFile": null,
+      "title": "Tb Settings",
+      "section": "Settings",
       "actions": []
     },
     {

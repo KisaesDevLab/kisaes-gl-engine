@@ -1017,7 +1017,7 @@ describe('Statement Match Engine', () => {
       const [line] = await statementLinesOf(statementId);
       await expect(
         statementMatch.createTransactionFromStatementLine(tenantId, line!.id, { accountId: expenseAccountId }),
-      ).rejects.toThrow(/lock date/i);
+      ).rejects.toThrow(/period was closed/i);
       const lines = await statementLinesOf(statementId);
       expect(lines[0]!.matchStatus).toBe('unmatched');
       expect(lines[0]!.matchedJournalLineId).toBeNull();

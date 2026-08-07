@@ -225,7 +225,7 @@ describe('bank-feed approve() — posts the staged assignment', () => {
 
     await expect(
       bankFeedService.approve(tenantId, item.id, userId, companyId),
-    ).rejects.toThrow(/lock date/i);
+    ).rejects.toThrow(/period was closed/i);
 
     // The claim reverted back to 'assigned' with the staged values intact.
     const after = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, item.id) });
