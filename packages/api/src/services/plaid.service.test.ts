@@ -359,6 +359,25 @@ describe('manual sync freshness + sync-start-date visibility', () => {
     expect(result.added).toBe(1);
     expect(result.skippedByStartDate).toBe(1);
   });
+
+  it('skips bank-pending transactions — only settled ones enter the feed', async () => {
+    const { item } = await seedMappedItem('2026-07-01');
+    syncMocks.syncTransactions.mockResolvedValue({
+      added: [
+        { transaction_id: 'pend-1', account_id: 'fresh-acct', date: '2026-07-11', name: 'PENDING CARD HOLD', amount: 42, pending: true },
+        { transaction_id: 'post-1', account_id: 'fresh-acct', date: '2026-07-10', name: 'SETTLED CHARGE', amount: 20, pending: false },
+      ],
+      modified: [], removed: [], nextCursor: 'N4',
+    });
+    syncMocks.getBalances.mockResolvedValue([]);
+
+    const result = await plaidSyncService.syncItem(item.id);
+    expect(result.added).toBe(1);
+    expect(result.skippedPending).toBe(1);
+    const rows = await db.select().from(bankFeedItems)
+      .where(eq(bankFeedItems.providerTransactionId, 'pend-1'));
+    expect(rows).toHaveLength(0);
+  });
 });
 
 describe('detectAccountsConnectedElsewhere (cross-tenant duplicate warning)', () => {

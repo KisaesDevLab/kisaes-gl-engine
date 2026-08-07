@@ -119,7 +119,7 @@ export async function syncItem(itemId: string, opts: SyncItemOptions = {}) {
       { maxRetries: 3, baseDelayMs: 2000 },
     );
 
-    let addedCount = 0, modifiedCount = 0, removedCount = 0, skippedByStartDate = 0;
+    let addedCount = 0, modifiedCount = 0, removedCount = 0, skippedByStartDate = 0, skippedPending = 0;
     const addedRowsByTenant = new Map<string, Array<typeof bankFeedItems.$inferSelect>>(); // tenantId → inserted rows
 
     // Process added transactions — route to correct tenant
@@ -132,6 +132,14 @@ export async function syncItem(itemId: string, opts: SyncItemOptions = {}) {
       // operator needs to know they were skipped (Full re-import is the
       // recovery path after widening the sync start date).
       if (route.syncStartDate && txn.date < route.syncStartDate) { skippedByStartDate++; continue; }
+
+      // Never import bank-PENDING transactions. When a pending txn
+      // settles, Plaid retires its id and re-issues the posted version
+      // under a NEW id — so a pending item that got posted in the feed
+      // before settling produced a duplicate (dedup is by provider id).
+      // Skipping pending is safe with the cursor: the settled version
+      // always arrives later as its own `added` entry.
+      if (txn.pending) { skippedPending++; continue; }
 
       // Dedup
       const existing = await db.select({ id: bankFeedItems.id }).from(bankFeedItems)
@@ -302,7 +310,7 @@ export async function syncItem(itemId: string, opts: SyncItemOptions = {}) {
       // eslint-disable-next-line no-console
       console.warn(`[plaid-sync] item ${itemId}: ${skippedByStartDate} transaction(s) skipped (dated before the mapping's sync start date)`);
     }
-    return { added: addedCount, modified: modifiedCount, removed: removedCount, skippedByStartDate, refreshRequested, cleansing };
+    return { added: addedCount, modified: modifiedCount, removed: removedCount, skippedByStartDate, skippedPending, refreshRequested, cleansing };
   } catch (err: any) {
     await db.update(plaidItems).set({
       lastSyncAt: new Date(), lastSyncStatus: 'error', lastSyncError: err.message || 'Sync failed', updatedAt: new Date(),
