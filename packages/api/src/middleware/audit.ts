@@ -7,7 +7,9 @@ import { auditLog as auditLogTable } from '../db/schema/audit-log.js';
 
 export async function auditLog(
   tenantId: string,
-  action: 'create' | 'update' | 'delete' | 'void' | 'login' | 'download',
+  // 'signoff' + 'override' added by the TB module (leadsheet sign-offs,
+  // closing-date overrides) — QUESTIONS.md #5.
+  action: 'create' | 'update' | 'delete' | 'void' | 'login' | 'download' | 'signoff' | 'override',
   entityType: string,
   entityId: string | null,
   before: unknown | null,

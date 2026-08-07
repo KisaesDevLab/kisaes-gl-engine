@@ -26,6 +26,7 @@ import * as assignmentsService from '../services/tb/assignments.service.js';
 import * as diagnosticsService from '../services/tb/diagnostics.service.js';
 import * as signoffsService from '../services/tb/signoffs.service.js';
 import * as aiTaxAssign from '../services/tb/ai-tax-assign.service.js';
+import * as groupingsService from '../services/tb/groupings.service.js';
 import { db } from '../db/index.js';
 import { tbStatus } from '../db/schema/index.js';
 import { and, eq } from 'drizzle-orm';
@@ -330,6 +331,148 @@ tbRouter.get('/stream', async (req, res) => {
     clearInterval(heartbeat);
   };
   req.on('close', cleanup);
+});
+
+// ── Groupings / leadsheets / tickmarks / notes / sign-offs (Phase 7) ─
+
+tbRouter.get('/groupings', async (req, res) => {
+  const result = await groupingsService.listGroupings(req.tenantId, req.companyId!);
+  res.json(result);
+});
+
+tbRouter.post('/groupings/seed-defaults', async (req, res) => {
+  const result = await groupingsService.seedDefaultGroupings(req.tenantId, req.companyId!, req.userId);
+  res.json(result);
+});
+
+const groupingSchema = z.object({
+  name: z.string().min(1).max(200),
+  leadsheetCode: z.string().max(10).nullable().optional(),
+  parentId: z.string().uuid().nullable().optional(),
+  sortOrder: z.coerce.number().int().optional(),
+});
+
+tbRouter.post('/groupings', validate(groupingSchema), async (req, res) => {
+  const grouping = await groupingsService.createGrouping(req.tenantId, req.companyId!, req.body, req.userId);
+  res.status(201).json({ grouping });
+});
+
+tbRouter.put('/groupings/:id', validate(groupingSchema.partial()), async (req, res) => {
+  const grouping = await groupingsService.updateGrouping(req.tenantId, req.companyId!, String(req.params['id']), req.body, req.userId);
+  res.json({ grouping });
+});
+
+tbRouter.delete('/groupings/:id', async (req, res) => {
+  await groupingsService.deleteGrouping(req.tenantId, req.companyId!, String(req.params['id']), req.userId);
+  res.status(204).end();
+});
+
+tbRouter.put('/groupings/membership/:accountId', validate(z.object({ groupingId: z.string().uuid().nullable() })), async (req, res) => {
+  await groupingsService.setAccountGrouping(req.tenantId, req.companyId!, String(req.params['accountId']), req.body.groupingId, req.userId);
+  res.status(204).end();
+});
+
+tbRouter.get('/grouping-accounts', async (req, res) => {
+  const accountsList = await groupingsService.listAccountsForGrouping(req.tenantId, req.companyId!);
+  res.json({ accounts: accountsList });
+});
+
+// Tickmark library (tenant-level) + per-cell applications.
+tbRouter.get('/tickmarks', async (req, res) => {
+  const tickmarks = await groupingsService.listTickmarks(req.tenantId);
+  res.json({ tickmarks });
+});
+
+tbRouter.post('/tickmarks/seed-defaults', async (req, res) => {
+  const result = await groupingsService.seedStandardTickmarks(req.tenantId, req.userId);
+  res.json(result);
+});
+
+const tickmarkSchema = z.object({
+  id: z.string().uuid().optional(),
+  symbol: z.string().min(1).max(8),
+  description: z.string().min(1).max(300),
+  color: z.string().max(20).nullable().optional(),
+  sortOrder: z.coerce.number().int().optional(),
+});
+
+tbRouter.post('/tickmarks', validate(tickmarkSchema), async (req, res) => {
+  const tickmark = await groupingsService.saveTickmark(req.tenantId, req.body, req.userId);
+  res.status(201).json({ tickmark });
+});
+
+tbRouter.delete('/tickmarks/:id', async (req, res) => {
+  await groupingsService.deleteTickmark(req.tenantId, String(req.params['id']), req.userId);
+  res.status(204).end();
+});
+
+tbRouter.get('/tickmark-applications', async (req, res) => {
+  const taxYear = Number(req.query['taxYear']) || new Date().getUTCFullYear();
+  const applications = await groupingsService.listTickmarkApplications(req.tenantId, req.companyId!, taxYear);
+  res.json({ applications });
+});
+
+tbRouter.post('/tickmark-applications', validate(z.object({
+  taxYear: z.coerce.number().int(),
+  accountId: z.string().uuid(),
+  column: z.enum(['unadjusted', 'aje', 'adjusted', 'tax_rje', 'tax']),
+  tickmarkId: z.string().uuid(),
+  note: z.string().max(1000).nullable().optional(),
+})), async (req, res) => {
+  const application = await groupingsService.applyTickmark(req.tenantId, req.companyId!, req.body, req.userId);
+  res.status(201).json({ application });
+});
+
+tbRouter.delete('/tickmark-applications/:id', async (req, res) => {
+  await groupingsService.removeTickmarkApplication(req.tenantId, req.companyId!, String(req.params['id']));
+  res.status(204).end();
+});
+
+// Notes.
+tbRouter.get('/notes', async (req, res) => {
+  const taxYear = Number(req.query['taxYear']) || new Date().getUTCFullYear();
+  const notes = await groupingsService.listNotes(req.tenantId, req.companyId!, taxYear);
+  res.json({ notes });
+});
+
+tbRouter.post('/notes', validate(z.object({
+  taxYear: z.coerce.number().int(),
+  accountId: z.string().uuid().nullable().optional(),
+  body: z.string().min(1).max(5000),
+})), async (req, res) => {
+  const note = await groupingsService.createNote(req.tenantId, req.companyId!, req.body, req.userId);
+  res.status(201).json({ note });
+});
+
+tbRouter.post('/notes/:id/resolve', validate(z.object({ resolved: z.boolean() })), async (req, res) => {
+  const note = await groupingsService.resolveNote(req.tenantId, req.companyId!, String(req.params['id']), req.body.resolved, req.userId);
+  res.json({ note });
+});
+
+tbRouter.delete('/notes/:id', async (req, res) => {
+  await groupingsService.deleteNote(req.tenantId, req.companyId!, String(req.params['id']));
+  res.status(204).end();
+});
+
+// Sign-offs (7.6/7.7).
+tbRouter.get('/signoffs', async (req, res) => {
+  const taxYear = Number(req.query['taxYear']) || new Date().getUTCFullYear();
+  const result = await signoffsService.listSignoffs(req.tenantId, req.companyId!, taxYear);
+  res.json(result);
+});
+
+tbRouter.post('/signoffs', validate(z.object({
+  taxYear: z.coerce.number().int(),
+  groupingId: z.string().uuid(),
+  role: z.enum(['preparer', 'reviewer']),
+})), async (req, res) => {
+  const signoff = await signoffsService.sign(req.tenantId, req.companyId!, req.body, req.userId!);
+  res.status(201).json({ signoff });
+});
+
+tbRouter.delete('/signoffs/:id', async (req, res) => {
+  await signoffsService.unsign(req.tenantId, req.companyId!, String(req.params['id']), req.userId!);
+  res.status(204).end();
 });
 
 // ── Company tax profile (Phase 3.1) ────────────────────────────────
