@@ -30,8 +30,9 @@ import * as groupingsService from '../services/tb/groupings.service.js';
 import * as taxEntriesService from '../services/tb/tax-entries.service.js';
 import * as m1Service from '../services/tb/m1.service.js';
 import { db } from '../db/index.js';
-import { tbStatus } from '../db/schema/index.js';
-import { and, eq } from 'drizzle-orm';
+import { companies, tbStatus } from '../db/schema/index.js';
+import { and, eq, sql } from 'drizzle-orm';
+import { auditLog as auditLogFn } from '../middleware/audit.js';
 
 // Trial Balance module router (docs/tb/BUILD_PLAN.md). Firm-side only:
 // client-type users get a 404 (surface hidden, same pattern as
@@ -333,6 +334,80 @@ tbRouter.get('/stream', async (req, res) => {
     clearInterval(heartbeat);
   };
   req.on('close', cleanup);
+});
+
+// ── Closing date (Phase 10, ADR-TB-04 / rule TB5) ──────────────────
+// companies.lock_date IS the closing date; enforcement lives at the
+// ledger choke point. These routes manage it (firm-admin) and surface
+// closed-period drift for the workpaper banner.
+
+tbRouter.get('/closing-date', async (req, res) => {
+  const [row] = await db.select({
+    lockDate: companies.lockDate,
+    setBy: companies.lockDateSetBy,
+    setAt: companies.lockDateSetAt,
+  }).from(companies)
+    .where(and(eq(companies.tenantId, req.tenantId), eq(companies.id, req.companyId!)))
+    .limit(1);
+  if (!row) throw AppError.notFound('Company not found');
+  res.json({ closingDate: row.lockDate, setBy: row.setBy, setAt: row.setAt });
+});
+
+tbRouter.put('/closing-date', requireFirmAdmin, validate(z.object({
+  closingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
+})), async (req, res) => {
+  const [before] = await db.select({ lockDate: companies.lockDate }).from(companies)
+    .where(and(eq(companies.tenantId, req.tenantId), eq(companies.id, req.companyId!)))
+    .limit(1);
+  if (!before) throw AppError.notFound('Company not found');
+  const closingDate = req.body.closingDate as string | null;
+  const [after] = await db.update(companies).set({
+    lockDate: closingDate,
+    lockDateSetBy: req.userId ?? null,
+    lockDateSetAt: new Date(),
+  }).where(and(eq(companies.tenantId, req.tenantId), eq(companies.id, req.companyId!)))
+    .returning({ lockDate: companies.lockDate });
+  await auditLogFn(req.tenantId, 'update', 'closing_date', req.companyId!,
+    { closingDate: before.lockDate }, { closingDate }, req.userId);
+  res.json({ closingDate: after?.lockDate ?? null });
+});
+
+// 10.5: transactions dated inside the closed period but created/changed
+// after it was closed — the "closed period modified since close" list.
+tbRouter.get('/closed-period-changes', async (req, res) => {
+  const [company] = await db.select({
+    lockDate: companies.lockDate,
+    setAt: companies.lockDateSetAt,
+  }).from(companies)
+    .where(and(eq(companies.tenantId, req.tenantId), eq(companies.id, req.companyId!)))
+    .limit(1);
+  if (!company?.lockDate || !company.setAt) {
+    res.json({ closingDate: company?.lockDate ?? null, changes: [], total: 0 });
+    return;
+  }
+  const rows = await db.execute(sql`
+    SELECT id, txn_type, txn_date, memo, total, updated_at, created_at
+    FROM transactions
+    WHERE tenant_id = ${req.tenantId}
+      AND (company_id = ${req.companyId} OR company_id IS NULL)
+      AND txn_date <= ${company.lockDate}
+      AND GREATEST(created_at, COALESCE(updated_at, created_at)) > ${company.setAt}
+    ORDER BY txn_date DESC
+    LIMIT 50
+  `);
+  const countRes = await db.execute(sql`
+    SELECT COUNT(*)::int AS n FROM transactions
+    WHERE tenant_id = ${req.tenantId}
+      AND (company_id = ${req.companyId} OR company_id IS NULL)
+      AND txn_date <= ${company.lockDate}
+      AND GREATEST(created_at, COALESCE(updated_at, created_at)) > ${company.setAt}
+  `);
+  res.json({
+    closingDate: company.lockDate,
+    closedAt: company.setAt,
+    changes: rows.rows,
+    total: (countRes.rows as Array<{ n: number }>)[0]?.n ?? 0,
+  });
 });
 
 // ── Schedule M-1 / M-2 previews (Phase 9) ──────────────────────────

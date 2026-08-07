@@ -93,7 +93,7 @@ describe('company-scoped lock date', () => {
 
     await expect(
       ledger.postTransaction(tenantId, je(cash.id, rev.id, '100.00', '2025-06-15'), undefined, lockedCo.id),
-    ).rejects.toThrow(/lock date/i);
+    ).rejects.toThrow(/period was closed/i);
 
     const txn = await ledger.postTransaction(tenantId, je(cash.id, rev.id, '100.00', '2025-06-15'), undefined, openCo.id);
     expect(txn.id).toBeTruthy();
@@ -107,7 +107,7 @@ describe('company-scoped lock date', () => {
 
     await expect(
       ledger.postTransaction(tenantId, je(cash.id, rev.id, '100.00', '2025-06-15')),
-    ).rejects.toThrow(/lock date/i);
+    ).rejects.toThrow(/period was closed/i);
   });
 });
 
@@ -134,7 +134,7 @@ describe('bill payment lock enforcement', () => {
       bankAccountId: cash.id,
       txnDate: '2025-06-15', // inside the locked year
       bills: [{ billId: bill.id, amount: '500.00' }],
-    } as any, undefined, co.id)).rejects.toThrow(/lock date/i);
+    } as any, undefined, co.id)).rejects.toThrow(/period was closed/i);
   });
 
   it('voidBillPayment refuses when the payment is in a locked period', async () => {
@@ -155,7 +155,7 @@ describe('bill payment lock enforcement', () => {
     await db.update(companies).set({ lockDate: '2026-01-31' }).where(eq(companies.id, co.id));
     await expect(
       billPaymentService.voidBillPayment(tenantId, paymentId, 'oops'),
-    ).rejects.toThrow(/lock date/i);
+    ).rejects.toThrow(/period was closed/i);
   });
 });
 

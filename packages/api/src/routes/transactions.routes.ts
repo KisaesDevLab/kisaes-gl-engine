@@ -18,6 +18,7 @@ import * as pdfService from '../services/pdf.service.js';
 import * as emailService from '../services/email.service.js';
 import * as journalEntryService from '../services/journal-entry.service.js';
 import { AppError } from '../utils/errors.js';
+import { lockContextMiddleware } from '../services/lock-context.js';
 import * as expenseService from '../services/expense.service.js';
 import * as transferService from '../services/transfer.service.js';
 import * as depositService from '../services/deposit.service.js';
@@ -30,6 +31,10 @@ export const transactionsRouter = Router();
 transactionsRouter.use(authenticate);
 transactionsRouter.use(companyContext);
 transactionsRouter.use(requireResource('transactions'));
+// Closed-period actor context (TB ADR-TB-04): carries userType +
+// overrideConfirmed into the ledger choke point without threading it
+// through every posting-service signature.
+transactionsRouter.use(lockContextMiddleware);
 
 transactionsRouter.get('/', async (req, res) => {
   const filters = transactionFiltersSchema.parse(req.query);

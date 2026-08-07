@@ -83,7 +83,7 @@ describe('AJE workflow', () => {
       await expect(ledger.postTransaction(tenantId, {
         txnType: 'journal_entry', txnDate: '2027-06-15',
         lines: [line(expenseId, 5, 0), line(cashId, 0, 5)],
-      }, undefined, companyId)).rejects.toMatchObject({ statusCode: 400 });
+      }, undefined, companyId)).rejects.toMatchObject({ statusCode: 423, code: 'TB_PERIOD_LOCKED' });
 
       // AJE into the same locked period → allowed; edit + void too.
       const aje = await createAje(tenantId, companyId, {

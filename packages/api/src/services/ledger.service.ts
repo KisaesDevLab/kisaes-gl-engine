@@ -12,6 +12,7 @@ import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { env } from '../config/env.js';
 import { deriveHeaderTags } from './tags/derive-header-tags.js';
+import { getLockContext } from './lock-context.js';
 import { resolveDefaultTag } from './tags/resolve-default-tag.js';
 
 // ADR 0XY §3.2 — belt-and-suspenders default-tag resolution at the
@@ -179,23 +180,60 @@ export async function assertAccountsInScope(
 // posting can't sneak under any company's close).
 // Exported so posting paths that can't route through postTransaction
 // (bill payments) enforce the same policy.
+// Actor context for the closed-period rule (TB module ADR-TB-04 /
+// CLAUDE.md TB5). Threaded from routes that host the override modal;
+// paths that don't thread it (importers, bank feeds, background jobs)
+// get the hard 423 and must fail items gracefully — never bypass.
+export interface LockDateContext {
+  userType?: 'staff' | 'client';
+  overrideConfirmed?: boolean;
+  userId?: string;
+}
+
 export async function checkLockDate(
   executor: DbOrTx,
   tenantId: string,
   txnDate: string,
   companyId?: string | null,
+  ctx?: LockDateContext,
 ) {
+  // Explicit ctx wins; otherwise pick up the request-scoped store set
+  // by lockContextMiddleware (see services/lock-context.ts).
+  ctx = ctx ?? getLockContext();
   const result = companyId
     ? await executor.execute(sql`
-        SELECT lock_date FROM companies WHERE tenant_id = ${tenantId} AND id = ${companyId}
+        SELECT lock_date, lock_date_set_by, lock_date_set_at FROM companies
+        WHERE tenant_id = ${tenantId} AND id = ${companyId}
       `)
     : await executor.execute(sql`
-        SELECT MAX(lock_date) AS lock_date FROM companies WHERE tenant_id = ${tenantId}
+        SELECT MAX(lock_date) AS lock_date, NULL AS lock_date_set_by, NULL AS lock_date_set_at
+        FROM companies WHERE tenant_id = ${tenantId}
       `);
-  const lockDate = (result.rows as any[])[0]?.lock_date;
-  if (lockDate && txnDate <= lockDate) {
-    throw AppError.badRequest(`Cannot create or modify transactions on or before the lock date (${lockDate}). Adjust the lock date in Settings to make changes.`);
+  const row = (result.rows as any[])[0];
+  const lockDate = row?.lock_date;
+  if (!lockDate || txnDate > lockDate) return;
+
+  // Firm staff may proceed with an explicit confirmation; the override
+  // is audit-logged with the facts a reviewer needs (ADR-TB-04).
+  if (ctx?.userType === 'staff' && ctx.overrideConfirmed) {
+    await auditLog(tenantId, 'override', 'closing_date_override', companyId ?? tenantId,
+      { lockDate, lockDateSetBy: row?.lock_date_set_by ?? null, lockDateSetAt: row?.lock_date_set_at ?? null },
+      { txnDate, overrideConfirmed: true },
+      ctx.userId, executor as Tx);
+    return;
   }
+  if (ctx?.userType === 'client') {
+    throw AppError.locked(
+      `This period was closed by your accounting firm on ${lockDate}. Contact them to make changes.`,
+      'TB_PERIOD_LOCKED',
+      { lockDate, canOverride: false },
+    );
+  }
+  throw AppError.locked(
+    `This period was closed on ${String(row?.lock_date_set_at ?? '').slice(0, 10) || lockDate}. Proceeding will change closed-period balances.`,
+    'TB_PERIOD_LOCKED',
+    { lockDate, canOverride: ctx?.userType === 'staff' },
+  );
 }
 
 interface PostTransactionInput {
