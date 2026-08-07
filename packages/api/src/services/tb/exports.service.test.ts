@@ -18,7 +18,7 @@ import {
   journalLines, tenants, transactions,
 } from '../../db/schema/index.js';
 import { importSeed } from './tax-code-seed.service.js';
-import { buildTaxDataset, buildWorkingTbXlsx, validateForExport } from './exports.service.js';
+import { buildTaxDataset, buildVendorFile, buildWorkingTbXlsx, validateForExport } from './exports.service.js';
 
 const SEED_FILE_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'db', 'seeds', 'tax-codes', '2025', 'tax-codes.xlsx');
 
@@ -143,15 +143,51 @@ describe('vendor export dataset (Phase 11)', () => {
     const after = await buildTaxDataset(tenantId, companyId, { taxYear: 2026, basis: 'accrual', software: 'ultratax' });
     const line = after.lines.find((l) => l.key === target.key)!;
     expect(line.consolidated).toEqual({ exportCode: '4010', description: 'Receipts' });
-    expect(line.vendorCode).toBe('4010');
-    expect(line.description).toBe('Receipts');
-    // The custom code satisfies the vendor-code requirement.
-    expect(after.missingVendorCode.map((m) => m.code)).not.toContain(line.code);
-    // Amount unchanged — consolidation reshapes lines, never totals.
+    // Reference semantics: consolidation replaces the ACCOUNT identity
+    // in the file — the tax-line software code stays untouched.
+    expect(line.vendorCode).toBe(target.vendorCode);
     expect(line.amount).toBeCloseTo(target.amount, 2);
+
+    // File level: the consolidated group becomes one row, identified by
+    // the custom export number/description, emitted FIRST.
+    const file = await buildVendorFile('ultratax', after, 'Export Co', new Map(), new Map(), after.consolidationPrefs);
+    expect(file.fileName).toMatch(/^ultratax-export-\d{8}\.xlsx$/);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(file.buffer as unknown as ArrayBuffer);
+    const ws = wb.getWorksheet('UltraTax CS Export')!;
+    const header = (ws.getRow(1).values as unknown[]).slice(1);
+    expect(header).toEqual(['AccountNumber', 'AccountName', 'TaxCode', 'Book Basis Amt', 'Tax Basis Amt']);
+    const first = ws.getRow(2);
+    expect(String(first.getCell(1).value)).toBe('4010');
+    expect(String(first.getCell(2).value)).toBe('Receipts');
+    expect(String(first.getCell(3).value)).toBe(target.vendorCode ?? '');
 
     await db.update(companyTaxProfiles).set({ consolidationPrefs: {} })
       .where(and(eq(companyTaxProfiles.tenantId, tenantId), eq(companyTaxProfiles.companyId, companyId)));
+  });
+
+  it('vendor files match the Vibe TB reference layouts (account grain, book+tax)', async () => {
+    const dataset = await buildTaxDataset(tenantId, companyId, { taxYear: 2026, basis: 'accrual', software: 'lacerte' });
+    const expectSheet = async (software: 'lacerte' | 'gosystem' | 'cch' | 'generic', sheet: string, header: string[]) => {
+      const file = await buildVendorFile(software, dataset, 'Export Co', new Map());
+      expect(file.mimeType).toContain('spreadsheetml');
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(file.buffer as unknown as ArrayBuffer);
+      const ws = wb.getWorksheet(sheet);
+      expect(ws, sheet).toBeTruthy();
+      expect((ws!.getRow(1).values as unknown[]).slice(1)).toEqual(header);
+      // One row per account with BOTH basis columns present.
+      expect(ws!.rowCount).toBeGreaterThan(1);
+      return ws!;
+    };
+    await expectSheet('lacerte', 'Lacerte Export', ['LineCode', 'Description', 'Book Basis Amt', 'Tax Basis Amt']);
+    await expectSheet('gosystem', 'GoSystem Tax RS Export', ['LineCode', 'Description', 'Book Basis Amt', 'Tax Basis Amt']);
+    await expectSheet('cch', 'CCH Axcess Export', ['AccountNumber', 'AccountName', 'CCHCode', 'Description', 'Book Basis Amt', 'Tax Basis Amt']);
+    const ws = await expectSheet('generic', 'Generic Export', ['AccountNumber', 'AccountName', 'TaxCode', 'TaxDescription', 'Book Basis Amt', 'Tax Basis Amt']);
+    // Account grain: rows sorted by account number ascending.
+    const nums: string[] = [];
+    for (let i = 2; i <= ws.rowCount; i++) nums.push(String(ws.getRow(i).getCell(1).value ?? ''));
+    expect([...nums].sort((a, b) => a.localeCompare(b))).toEqual(nums);
   });
 
   it('builds the working TB workbook with sections and five columns', async () => {

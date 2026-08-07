@@ -24,7 +24,6 @@ import { auditLog } from '../../middleware/audit.js';
 import { incCounter } from '../../utils/metrics.js';
 import { getProviderForTenant } from '../storage/storage-provider.factory.js';
 import { tenantStorageKey } from '../storage/storage-keys.js';
-import { neutralizeFormula } from '../report-export.service.js';
 import { computeWorkpaper, ZERO_UUID, type TbBasis } from './balance-engine.service.js';
 import { fiscalYearEnd } from './tax-profile.service.js';
 import { resolveSeedVersionId } from './assignments.service.js';
@@ -69,7 +68,7 @@ export interface TaxDatasetLine {
   // Set when the entity consolidates this code: the file emits ONE
   // line under the custom export code instead of per-account rows.
   consolidated: { exportCode: string; description: string } | null;
-  accounts: Array<{ accountId: string; accountNumber: string | null; name: string; unitId: string; amount: number }>;
+  accounts: Array<{ accountId: string; accountNumber: string | null; name: string; unitId: string; amount: number; bookAmount: number }>;
 }
 
 export interface ConsolidationPref { exportCode: string; description: string }
@@ -94,6 +93,7 @@ export interface TaxDataset {
   periodEnd: string;
   basis: TbBasis;
   glVersionStamp: number;
+  consolidationPrefs: ConsolidationPrefs;
   lines: TaxDatasetLine[];
   unassigned: Array<{ accountId: string; name: string }>;
   missingVendorCode: Array<{ code: string; description: string }>;
@@ -178,10 +178,12 @@ export async function buildTaxDataset(
         line = {
           key,
           code: m.code,
-          description: pref ? pref.description || m.description : m.description,
-          // A consolidated code exports under its custom code for every
-          // software target (Vibe TB "Export as").
-          vendorCode: pref ? pref.exportCode : (vendorField ? m[vendorField] : m.code),
+          description: m.description,
+          // Consolidation does NOT change the software code (Vibe TB
+          // reference: the custom "Export as" values replace the
+          // ACCOUNT identity on the consolidated row; the tax-line
+          // mapping stays).
+          vendorCode: vendorField ? m[vendorField] : m.code,
           sortOrder: m.sortOrder,
           amount: 0,
           bookAmount: 0,
@@ -194,7 +196,7 @@ export async function buildTaxDataset(
       // drifts on cash-basis allocation dust.
       line.amount = line.amount + u.tax;
       line.bookAmount = line.bookAmount + u.adjusted;
-      line.accounts.push({ accountId: row.accountId, accountNumber: row.accountNumber, name: row.name, unitId: u.unitId, amount: u.tax });
+      line.accounts.push({ accountId: row.accountId, accountNumber: row.accountNumber, name: row.name, unitId: u.unitId, amount: u.tax, bookAmount: u.adjusted });
     }
     if (dropped) {
       unassigned.push({ accountId: row.accountId, name: row.name });
@@ -219,6 +221,7 @@ export async function buildTaxDataset(
     periodEnd,
     basis: opts.basis,
     glVersionStamp: wp.glVersionStamp,
+    consolidationPrefs,
     lines: lines.filter((l) => l.code !== 'DONOTMAP'),
     unassigned,
     missingVendorCode,
@@ -258,84 +261,205 @@ export async function validateForExport(
 }
 
 // ── File builders ───────────────────────────────────────────────────
+// Byte-compatible with the Vibe Trial Balance reference implementation
+// (server/src/routes/exports.ts there): one row per account (or per
+// account×unit slice when a book splits activities — the slice carries
+// the unit number as an account-number suffix), BOTH Book Basis and
+// Tax Basis amount columns, debits positive with no normal-balance
+// flip, ExcelJS .xlsx for every target, exact sheet names / headers /
+// widths / styling, and consolidation that replaces the ACCOUNT
+// identity (consolidated block first, ordered by tax-code sort order,
+// then pass-through rows by account number).
 
-function csv(rows: string[][]): Buffer {
-  // Same defense as report-export.service: user-authored text (custom
-  // code descriptions, unit names) must not execute as a formula when
-  // the file opens in Excel.
-  const esc = (v: string) => {
-    const safe = neutralizeFormula(v);
-    return /[",\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
-  };
-  return Buffer.from(rows.map((r) => r.map(esc).join(',')).join('\n') + '\n', 'utf8');
+// Leading-character formula guard — identical to the reference
+// sanitizeCell (= + - @ tab CR get a leading apostrophe).
+function sanitizeCell<T>(value: T): T | string {
+  if (typeof value !== 'string' || value.length === 0) return value;
+  const first = value.charCodeAt(0);
+  if (first === 0x3D || first === 0x2B || first === 0x2D || first === 0x40 || first === 0x09 || first === 0x0D) {
+    return `'${value}`;
+  }
+  return value;
+}
+
+async function buildRefExcel(
+  sheetName: string,
+  columns: Array<{ header: string; key: string; width: number; numFmt?: string }>,
+  rowData: Array<Record<string, unknown>>,
+  opts: { centerHeader?: boolean } = { centerHeader: true },
+): Promise<Buffer> {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'Trial Balance App';
+  wb.created = new Date();
+  const ws = wb.addWorksheet(sheetName);
+  ws.columns = columns.map(({ header: _h, ...rest }) => rest);
+  const headerRow = ws.addRow(columns.map((c) => c.header));
+  headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E3A5F' } };
+  // The reference's CCH route skips header centering; every other
+  // format centers it.
+  if (opts.centerHeader !== false) headerRow.alignment = { horizontal: 'center' };
+  for (const row of rowData) {
+    const dataRow = ws.addRow(columns.map((c) => sanitizeCell(row[c.key])));
+    for (let i = 0; i < columns.length; i++) {
+      if (columns[i]!.numFmt) dataRow.getCell(i + 1).numFmt = columns[i]!.numFmt!;
+    }
+  }
+  ws.views = [{ state: 'frozen', ySplit: 1 }];
+  return Buffer.from(await wb.xlsx.writeBuffer());
 }
 
 export interface UnitInfo { name: string; number: number | null }
 
-async function buildVendorFile(software: TbExportSoftware, dataset: TaxDataset, companyName: string, unitNames: Map<string, string>, unitInfo: Map<string, UnitInfo> = new Map()): Promise<{ buffer: Buffer; fileName: string; mimeType: string }> {
-  // Account numbers carry the activity-unit number as a suffix
-  // (e.g. 6050-2) so multi-unit books keep account identity per unit.
-  const acctNo = (accountNumber: string | null, unitId: string) => {
-    const n = unitInfo.get(unitId)?.number;
-    if (!accountNumber) return '';
-    return n != null ? `${accountNumber}-${n}` : accountNumber;
-  };
-  const unitNo = (unitId: string) => {
-    const n = unitInfo.get(unitId)?.number;
-    return n != null ? String(n) : '';
-  };
+// Account-grain export row (reference grain). `key` is the resolved
+// tax-code dataset key (consolidation groups on it).
+interface ExportAccountRow {
+  accountNumber: string;
+  accountName: string;
+  key: string | null;
+  code: string;            // canonical tax code ('' when unresolved)
+  description: string;     // canonical description
+  vendorCode: string;      // software crosswalk code ('' when absent)
+  sortOrder: number;
+  bookAmt: number;
+  taxAmt: number;
+}
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+// Flatten the code-pivot dataset back to account grain, splitting
+// account×unit slices (suffix `-N`) and re-sorting by account number
+// ASC like the reference's `coa.account_number ASC`.
+function toAccountRows(dataset: TaxDataset, unitInfo: Map<string, UnitInfo>): ExportAccountRow[] {
+  const rows: ExportAccountRow[] = [];
+  for (const l of dataset.lines) {
+    for (const a of l.accounts) {
+      const unitNumber = unitInfo.get(a.unitId)?.number ?? null;
+      const suffix = unitNumber != null ? `-${unitNumber}` : '';
+      rows.push({
+        accountNumber: `${a.accountNumber ?? ''}${suffix}`,
+        accountName: a.name,
+        key: l.key,
+        code: l.code,
+        description: l.description,
+        vendorCode: l.vendorCode ?? '',
+        sortOrder: l.sortOrder,
+        bookAmt: round2(a.bookAmount),
+        taxAmt: round2(a.amount),
+      });
+    }
+  }
+  rows.sort((x, y) => x.accountNumber.localeCompare(y.accountNumber));
+  return rows;
+}
+
+// Reference consolidateRows: selected tax codes collapse to ONE row
+// whose account identity is the custom "Export as" number/description;
+// the software code stays the tax line's. Consolidated block first
+// (tax-code sort order), pass-through rows after (account number ASC).
+function consolidateAccountRows(rows: ExportAccountRow[], prefs: ConsolidationPrefs): ExportAccountRow[] {
+  const keys = new Set(Object.keys(prefs));
+  if (keys.size === 0) return rows;
+  const passThrough: ExportAccountRow[] = [];
+  const groups = new Map<string, ExportAccountRow[]>();
+  for (const r of rows) {
+    if (r.key && keys.has(r.key)) {
+      const g = groups.get(r.key) ?? [];
+      g.push(r);
+      groups.set(r.key, g);
+    } else {
+      passThrough.push(r);
+    }
+  }
+  const consolidated: ExportAccountRow[] = [];
+  for (const [key, members] of groups) {
+    const first = members[0]!;
+    const pref = prefs[key]!;
+    consolidated.push({
+      ...first,
+      accountNumber: pref.exportCode || first.accountNumber,
+      accountName: pref.description || first.accountName,
+      bookAmt: round2(members.reduce((s, m) => s + m.bookAmt, 0)),
+      taxAmt: round2(members.reduce((s, m) => s + m.taxAmt, 0)),
+    });
+  }
+  // Reference hard failure: a consolidated identity colliding with a
+  // pass-through account number is a 409 DUPLICATE_ACCOUNT.
+  const existing = new Set(passThrough.map((r) => r.accountNumber.toLowerCase()));
+  for (const c of consolidated) {
+    if (existing.has(c.accountNumber.toLowerCase())) {
+      throw AppError.conflict(
+        `Consolidated account number "${c.accountNumber}" conflicts with an existing account in the export. Choose a different number.`,
+        'DUPLICATE_ACCOUNT',
+      );
+    }
+  }
+  consolidated.sort((a, b) => a.sortOrder - b.sortOrder);
+  return [...consolidated, ...passThrough];
+}
+
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+export async function buildVendorFile(
+  software: TbExportSoftware,
+  dataset: TaxDataset,
+  companyName: string,
+  unitNames: Map<string, string>,
+  unitInfo: Map<string, UnitInfo> = new Map(),
+  consolidationPrefs: ConsolidationPrefs = {},
+): Promise<{ buffer: Buffer; fileName: string; mimeType: string }> {
+  void companyName; void unitNames;
   const stamp = dataset.periodEnd.replace(/-/g, '');
   if (software === 'workingtb') {
-    // Excel working trial balance (11.7a) is built by the caller with
-    // full five-column data; not reachable here.
     throw AppError.internal('workingtb is built via buildWorkingTbXlsx');
   }
-  if (software === 'generic') {
-    const rows: string[][] = [['tax_code', 'description', 'ultratax_code', 'cch_code', 'lacerte_code', 'gosystem_code', 'generic_code', 'account_number', 'activity_unit', 'unit_number', 'amount']];
-    for (const l of dataset.lines) {
-      if (l.consolidated) {
-        // One line per consolidated code, under the custom export code.
-        rows.push([
-          l.consolidated.exportCode, l.description, '', '', '', '', l.consolidated.exportCode,
-          '', '', '', l.amount.toFixed(2),
-        ]);
-        continue;
-      }
-      for (const a of l.accounts) {
-        rows.push([
-          l.code, l.description, '', '', '', '', l.vendorCode ?? '',
-          acctNo(a.accountNumber, a.unitId),
-          unitNames.get(a.unitId) ?? '', unitNo(a.unitId), a.amount.toFixed(2),
-        ]);
-      }
-    }
-    return { buffer: csv(rows), fileName: `tb-generic-${stamp}.csv`, mimeType: 'text/csv' };
-  }
+  const rows = consolidateAccountRows(toAccountRows(dataset, unitInfo), consolidationPrefs);
+  const amt = { width: 18, numFmt: '#,##0.00' };
+
   if (software === 'ultratax') {
-    // UltraTax CS Excel import layout (docs/tb/exports/ultratax.md):
-    // one row per (vendor code, activity unit) with the tax-basis amount.
-    const wb = new ExcelJS.Workbook();
-    const ws = wb.addWorksheet('UltraTax Import');
-    ws.addRow(['Tax Code', 'Description', 'Unit', 'Unit #', 'Amount']);
-    ws.getRow(1).font = { bold: true };
-    for (const l of dataset.lines) {
-      const byUnit = new Map<string, number>();
-      for (const a of l.accounts) byUnit.set(a.unitId, (byUnit.get(a.unitId) ?? 0) + a.amount);
-      for (const [unitId, amount] of byUnit) {
-        ws.addRow([l.vendorCode ?? l.code, l.description, unitNames.get(unitId) ?? '', unitNo(unitId), Math.round(amount * 100) / 100]);
-      }
-    }
-    ws.getColumn(5).numFmt = '#,##0.00';
-    const buffer = Buffer.from(await wb.xlsx.writeBuffer());
-    return { buffer, fileName: `tb-ultratax-${stamp}.xlsx`, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' };
+    const buffer = await buildRefExcel('UltraTax CS Export', [
+      { header: 'AccountNumber', key: 'acct', width: 18 },
+      { header: 'AccountName', key: 'name', width: 40 },
+      { header: 'TaxCode', key: 'code', width: 18 },
+      { header: 'Book Basis Amt', key: 'bookAmt', ...amt },
+      { header: 'Tax Basis Amt', key: 'taxAmt', ...amt },
+    ], rows.map((r) => ({ acct: r.accountNumber, name: r.accountName, code: r.vendorCode, bookAmt: r.bookAmt, taxAmt: r.taxAmt })));
+    return { buffer, fileName: `ultratax-export-${stamp}.xlsx`, mimeType: XLSX_MIME };
   }
-  // Lacerte / CCH / GoSystem: CSV of (vendor code, description, amount).
-  const rows: string[][] = [['code', 'description', 'amount']];
-  for (const l of dataset.lines) {
-    rows.push([l.vendorCode ?? l.code, l.description, l.amount.toFixed(2)]);
+  if (software === 'cch') {
+    const buffer = await buildRefExcel('CCH Axcess Export', [
+      { header: 'AccountNumber', key: 'acct', width: 18 },
+      { header: 'AccountName', key: 'name', width: 40 },
+      { header: 'CCHCode', key: 'code', width: 18 },
+      { header: 'Description', key: 'desc', width: 40 },
+      { header: 'Book Basis Amt', key: 'bookAmt', ...amt },
+      { header: 'Tax Basis Amt', key: 'taxAmt', ...amt },
+    ], rows.map((r) => ({ acct: r.accountNumber, name: r.accountName, code: r.vendorCode, desc: '', bookAmt: r.bookAmt, taxAmt: r.taxAmt })),
+    { centerHeader: false });
+    return { buffer, fileName: `cch-export-${stamp}.xlsx`, mimeType: XLSX_MIME };
   }
-  return { buffer: csv(rows), fileName: `tb-${software}-${stamp}.csv`, mimeType: 'text/csv' };
+  if (software === 'lacerte' || software === 'gosystem') {
+    const sheet = software === 'lacerte' ? 'Lacerte Export' : 'GoSystem Tax RS Export';
+    const buffer = await buildRefExcel(sheet, [
+      { header: 'LineCode', key: 'code', width: 18 },
+      { header: 'Description', key: 'name', width: 40 },
+      { header: 'Book Basis Amt', key: 'bookAmt', ...amt },
+      { header: 'Tax Basis Amt', key: 'taxAmt', ...amt },
+    ], rows.map((r) => ({ code: r.vendorCode, name: r.accountName, bookAmt: r.bookAmt, taxAmt: r.taxAmt })));
+    return { buffer, fileName: `${software}-export-${stamp}.xlsx`, mimeType: XLSX_MIME };
+  }
+  // generic: canonical code + description, no software crosswalk.
+  const buffer = await buildRefExcel('Generic Export', [
+    { header: 'AccountNumber', key: 'acct', width: 18 },
+    { header: 'AccountName', key: 'name', width: 40 },
+    { header: 'TaxCode', key: 'code', width: 18 },
+    { header: 'TaxDescription', key: 'desc', width: 40 },
+    { header: 'Book Basis Amt', key: 'bookAmt', ...amt },
+    { header: 'Tax Basis Amt', key: 'taxAmt', ...amt },
+  ], rows.map((r) => ({ acct: r.accountNumber, name: r.accountName, code: r.code, desc: r.description, bookAmt: r.bookAmt, taxAmt: r.taxAmt })));
+  return { buffer, fileName: `generic-export-${stamp}.xlsx`, mimeType: XLSX_MIME };
 }
+
 
 // Excel working trial balance (11.7a): five columns + code + unit,
 // grouped subtotals, tabular numerals.
@@ -448,7 +572,7 @@ export async function generateExport(
       .where(and(eq(activityUnits.tenantId, tenantId), eq(activityUnits.companyId, companyId)));
     const unitNames = new Map(units.map((u) => [u.id, `${u.displayName}`]));
     const unitInfo = new Map(units.map((u) => [u.id, { name: u.displayName, number: u.instanceNumber }]));
-    const file = await buildVendorFile(opts.software, dataset, company?.name ?? '', unitNames, unitInfo);
+    const file = await buildVendorFile(opts.software, dataset, company?.name ?? '', unitNames, unitInfo, dataset.consolidationPrefs);
     ({ buffer, fileName, mimeType } = file);
     glVersionStamp = dataset.glVersionStamp;
     rowCount = dataset.lines.length;
