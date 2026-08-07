@@ -8,14 +8,20 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { db, pool } from '../../db/index.js';
 import {
   accounts, accountTaxAssignments, companies, companyTaxProfiles,
   journalLines, tbTaxEntries, tbTaxEntryLines, tenants, transactions,
 } from '../../db/schema/index.js';
+import { importSeed } from './tax-code-seed.service.js';
 import { buildTrialBalance } from '../report.service.js';
 import { getGlVersionStamp } from './balance-engine.service.js';
 import { createTaxEntry, deleteTaxEntry, listTaxEntries, updateTaxEntry } from './tax-entries.service.js';
+
+const SEED_FILE_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'db', 'seeds', 'tax-codes', '2025', 'tax-codes.xlsx');
 
 let tenantId: string;
 let companyId: string;
@@ -24,6 +30,9 @@ let accDepId: string;
 let cashId: string;
 
 beforeAll(async () => {
+  // CI runs against a fresh DB with no tax-code seed — import it
+  // idempotently (byte-identical re-import is a no-op locally).
+  await importSeed({ taxYear: 2025, buffer: readFileSync(SEED_FILE_PATH), dryRun: false });
   const [t] = await db.insert(tenants).values({ name: 'tb-rje-test', slug: `tb-rje-${Date.now()}` }).returning();
   tenantId = t!.id;
   const [c] = await db.insert(companies).values({ tenantId, businessName: 'RJE Co', fiscalYearStartMonth: 1 }).returning();

@@ -8,19 +8,28 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { db, pool } from '../../db/index.js';
 import {
   accounts, accountTaxAssignments, companies, companyTaxProfiles,
   journalLines, tenants, transactions,
 } from '../../db/schema/index.js';
+import { importSeed } from './tax-code-seed.service.js';
 import { seedDefaultGroupings } from './groupings.service.js';
 import * as tbReports from './tb-reports.service.js';
+
+const SEED_FILE_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'db', 'seeds', 'tax-codes', '2025', 'tax-codes.xlsx');
 
 let tenantId: string;
 let companyId: string;
 const A: Record<string, string> = {};
 
 beforeAll(async () => {
+  // CI runs against a fresh DB with no tax-code seed — import it
+  // idempotently (byte-identical re-import is a no-op locally).
+  await importSeed({ taxYear: 2025, buffer: readFileSync(SEED_FILE_PATH), dryRun: false });
   const [t] = await db.insert(tenants).values({ name: 'tb-rep-test', slug: `tb-rep-${Date.now()}` }).returning();
   tenantId = t!.id;
   const [c] = await db.insert(companies).values({ tenantId, businessName: 'Report Co', fiscalYearStartMonth: 1 }).returning();
