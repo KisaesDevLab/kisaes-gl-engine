@@ -16,7 +16,7 @@
 import ExcelJS from 'exceljs';
 import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../../db/index.js';
-import {
+import { companyTaxProfiles,
   accountTaxAssignments, activityUnits, companies, firmTaxCodes, taxCodes, tbExports,
 } from '../../db/schema/index.js';
 import { AppError } from '../../utils/errors.js';
@@ -57,13 +57,37 @@ interface CodeMeta {
 }
 
 export interface TaxDatasetLine {
+  // Stable dataset key ('seed|activity|code' or 'firm|id') — the
+  // consolidation prefs map keys on it.
+  key: string;
   code: string;
   description: string;
   vendorCode: string | null;
   sortOrder: number;
   amount: number;
+  bookAmount: number;
+  // Set when the entity consolidates this code: the file emits ONE
+  // line under the custom export code instead of per-account rows.
+  consolidated: { exportCode: string; description: string } | null;
   accounts: Array<{ accountId: string; accountNumber: string | null; name: string; unitId: string; amount: number }>;
 }
+
+export interface ConsolidationPref { exportCode: string; description: string }
+export type ConsolidationPrefs = Record<string, ConsolidationPref>;
+
+const readConsolidationPrefs = (raw: unknown): ConsolidationPrefs => {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: ConsolidationPrefs = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (v && typeof v === 'object' && typeof (v as ConsolidationPref).exportCode === 'string' && (v as ConsolidationPref).exportCode.trim()) {
+      out[k] = {
+        exportCode: (v as ConsolidationPref).exportCode,
+        description: typeof (v as ConsolidationPref).description === 'string' ? (v as ConsolidationPref).description : '',
+      };
+    }
+  }
+  return out;
+};
 
 export interface TaxDataset {
   taxYear: number;
@@ -118,6 +142,9 @@ export async function buildTaxDataset(
     .where(and(eq(accountTaxAssignments.tenantId, tenantId), eq(accountTaxAssignments.companyId, companyId)));
   const meta = await loadCodeMeta(tenantId, companyId);
   const vendorField = VENDOR_CODE_FIELD[opts.software];
+  const [profile] = await db.select({ prefs: companyTaxProfiles.consolidationPrefs }).from(companyTaxProfiles)
+    .where(and(eq(companyTaxProfiles.tenantId, tenantId), eq(companyTaxProfiles.companyId, companyId))).limit(1);
+  const consolidationPrefs = readConsolidationPrefs(profile?.prefs);
 
   const byCode = new Map<string, TaxDatasetLine>();
   const unassigned: TaxDataset['unassigned'] = [];
@@ -147,12 +174,18 @@ export async function buildTaxDataset(
       if (!m) continue;
       let line = byCode.get(key);
       if (!line) {
+        const pref = consolidationPrefs[key] ?? null;
         line = {
+          key,
           code: m.code,
-          description: m.description,
-          vendorCode: vendorField ? m[vendorField] : m.code,
+          description: pref ? pref.description || m.description : m.description,
+          // A consolidated code exports under its custom code for every
+          // software target (Vibe TB "Export as").
+          vendorCode: pref ? pref.exportCode : (vendorField ? m[vendorField] : m.code),
           sortOrder: m.sortOrder,
           amount: 0,
+          bookAmount: 0,
+          consolidated: pref,
           accounts: [],
         };
         byCode.set(key, line);
@@ -160,6 +193,7 @@ export async function buildTaxDataset(
       // Accumulate raw and round once at the end — per-addition rounding
       // drifts on cash-basis allocation dust.
       line.amount = line.amount + u.tax;
+      line.bookAmount = line.bookAmount + u.adjusted;
       line.accounts.push({ accountId: row.accountId, accountNumber: row.accountNumber, name: row.name, unitId: u.unitId, amount: u.tax });
     }
     if (dropped) {
@@ -168,6 +202,7 @@ export async function buildTaxDataset(
   }
   for (const line of byCode.values()) {
     line.amount = Math.round(line.amount * 100) / 100;
+    line.bookAmount = Math.round(line.bookAmount * 100) / 100;
   }
 
   const lines = [...byCode.values()].sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code));
@@ -235,7 +270,20 @@ function csv(rows: string[][]): Buffer {
   return Buffer.from(rows.map((r) => r.map(esc).join(',')).join('\n') + '\n', 'utf8');
 }
 
-async function buildVendorFile(software: TbExportSoftware, dataset: TaxDataset, companyName: string, unitNames: Map<string, string>): Promise<{ buffer: Buffer; fileName: string; mimeType: string }> {
+export interface UnitInfo { name: string; number: number | null }
+
+async function buildVendorFile(software: TbExportSoftware, dataset: TaxDataset, companyName: string, unitNames: Map<string, string>, unitInfo: Map<string, UnitInfo> = new Map()): Promise<{ buffer: Buffer; fileName: string; mimeType: string }> {
+  // Account numbers carry the activity-unit number as a suffix
+  // (e.g. 6050-2) so multi-unit books keep account identity per unit.
+  const acctNo = (accountNumber: string | null, unitId: string) => {
+    const n = unitInfo.get(unitId)?.number;
+    if (!accountNumber) return '';
+    return n != null ? `${accountNumber}-${n}` : accountNumber;
+  };
+  const unitNo = (unitId: string) => {
+    const n = unitInfo.get(unitId)?.number;
+    return n != null ? String(n) : '';
+  };
   const stamp = dataset.periodEnd.replace(/-/g, '');
   if (software === 'workingtb') {
     // Excel working trial balance (11.7a) is built by the caller with
@@ -243,12 +291,21 @@ async function buildVendorFile(software: TbExportSoftware, dataset: TaxDataset, 
     throw AppError.internal('workingtb is built via buildWorkingTbXlsx');
   }
   if (software === 'generic') {
-    const rows: string[][] = [['tax_code', 'description', 'ultratax_code', 'cch_code', 'lacerte_code', 'gosystem_code', 'generic_code', 'activity_unit', 'amount']];
+    const rows: string[][] = [['tax_code', 'description', 'ultratax_code', 'cch_code', 'lacerte_code', 'gosystem_code', 'generic_code', 'account_number', 'activity_unit', 'unit_number', 'amount']];
     for (const l of dataset.lines) {
+      if (l.consolidated) {
+        // One line per consolidated code, under the custom export code.
+        rows.push([
+          l.consolidated.exportCode, l.description, '', '', '', '', l.consolidated.exportCode,
+          '', '', '', l.amount.toFixed(2),
+        ]);
+        continue;
+      }
       for (const a of l.accounts) {
         rows.push([
           l.code, l.description, '', '', '', '', l.vendorCode ?? '',
-          unitNames.get(a.unitId) ?? '', a.amount.toFixed(2),
+          acctNo(a.accountNumber, a.unitId),
+          unitNames.get(a.unitId) ?? '', unitNo(a.unitId), a.amount.toFixed(2),
         ]);
       }
     }
@@ -259,16 +316,16 @@ async function buildVendorFile(software: TbExportSoftware, dataset: TaxDataset, 
     // one row per (vendor code, activity unit) with the tax-basis amount.
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('UltraTax Import');
-    ws.addRow(['Tax Code', 'Description', 'Unit', 'Amount']);
+    ws.addRow(['Tax Code', 'Description', 'Unit', 'Unit #', 'Amount']);
     ws.getRow(1).font = { bold: true };
     for (const l of dataset.lines) {
       const byUnit = new Map<string, number>();
       for (const a of l.accounts) byUnit.set(a.unitId, (byUnit.get(a.unitId) ?? 0) + a.amount);
       for (const [unitId, amount] of byUnit) {
-        ws.addRow([l.vendorCode ?? l.code, l.description, unitNames.get(unitId) ?? '', Math.round(amount * 100) / 100]);
+        ws.addRow([l.vendorCode ?? l.code, l.description, unitNames.get(unitId) ?? '', unitNo(unitId), Math.round(amount * 100) / 100]);
       }
     }
-    ws.getColumn(4).numFmt = '#,##0.00';
+    ws.getColumn(5).numFmt = '#,##0.00';
     const buffer = Buffer.from(await wb.xlsx.writeBuffer());
     return { buffer, fileName: `tb-ultratax-${stamp}.xlsx`, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' };
   }
@@ -390,7 +447,8 @@ export async function generateExport(
     const units = await db.select().from(activityUnits)
       .where(and(eq(activityUnits.tenantId, tenantId), eq(activityUnits.companyId, companyId)));
     const unitNames = new Map(units.map((u) => [u.id, `${u.displayName}`]));
-    const file = await buildVendorFile(opts.software, dataset, company?.name ?? '', unitNames);
+    const unitInfo = new Map(units.map((u) => [u.id, { name: u.displayName, number: u.instanceNumber }]));
+    const file = await buildVendorFile(opts.software, dataset, company?.name ?? '', unitNames, unitInfo);
     ({ buffer, fileName, mimeType } = file);
     glVersionStamp = dataset.glVersionStamp;
     rowCount = dataset.lines.length;

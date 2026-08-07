@@ -75,13 +75,26 @@ export async function createUnit(tenantId: string, companyId: string, input: Cre
   });
 }
 
-export async function renameUnit(tenantId: string, companyId: string, unitId: string, displayName: string, userId?: string) {
+export async function renameUnit(tenantId: string, companyId: string, unitId: string, displayName: string, userId?: string, instanceNumber?: number) {
   return db.transaction(async (tx) => {
     const [before] = await tx.select().from(activityUnits)
       .where(and(eq(activityUnits.id, unitId), eq(activityUnits.tenantId, tenantId), eq(activityUnits.companyId, companyId)))
       .limit(1);
     if (!before) throw AppError.notFound('Activity unit not found');
-    const [unit] = await tx.update(activityUnits).set({ displayName })
+    if (instanceNumber !== undefined && instanceNumber !== before.instanceNumber) {
+      const [clash] = await tx.select({ id: activityUnits.id }).from(activityUnits)
+        .where(and(
+          eq(activityUnits.companyId, companyId),
+          eq(activityUnits.activityType, before.activityType),
+          eq(activityUnits.instanceNumber, instanceNumber),
+          isNull(activityUnits.archivedAt),
+        )).limit(1);
+      if (clash) {
+        throw AppError.conflict(`Unit number ${instanceNumber} is already used by another ${before.activityType} unit`, 'TB_UNIT_IN_USE');
+      }
+    }
+    const [unit] = await tx.update(activityUnits)
+      .set({ displayName, ...(instanceNumber !== undefined ? { instanceNumber } : {}) })
       .where(eq(activityUnits.id, unitId)).returning();
     if (!unit) throw AppError.internal('Activity unit update failed');
     await auditLog(tenantId, 'update', 'activity_unit', unitId, before, unit, userId, tx);

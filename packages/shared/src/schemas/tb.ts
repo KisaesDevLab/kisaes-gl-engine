@@ -106,6 +106,9 @@ export const createActivityUnitSchema = z.object({
 
 export const updateActivityUnitSchema = z.object({
   displayName: z.string().min(1).max(200),
+  // Vendor exports print the unit number and suffix account numbers
+  // with it — firms align it with the return's unit numbering.
+  instanceNumber: z.coerce.number().int().min(1).max(999).optional(),
 });
 
 export const mapTagSchema = z.object({

@@ -33,7 +33,7 @@ import * as taxEntriesService from '../services/tb/tax-entries.service.js';
 import * as m1Service from '../services/tb/m1.service.js';
 import * as exportsService from '../services/tb/exports.service.js';
 import { db } from '../db/index.js';
-import { companies, tbStatus } from '../db/schema/index.js';
+import { companies, companyTaxProfiles, tbStatus } from '../db/schema/index.js';
 import { and, eq, sql } from 'drizzle-orm';
 import { auditLog as auditLogFn } from '../middleware/audit.js';
 
@@ -163,6 +163,8 @@ const workpaperQuerySchema = z.object({
   periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   basis: z.enum(['accrual', 'cash']).default('accrual'),
   taxYear: z.coerce.number().int().min(2000).max(2100).optional(),
+  // TB-by-tag view (rule TB7 transaction-level semantics).
+  tagId: z.string().uuid().optional(),
 });
 
 tbRouter.get('/workpaper', expensiveOpLimiter, async (req, res) => {
@@ -171,6 +173,7 @@ tbRouter.get('/workpaper', expensiveOpLimiter, async (req, res) => {
     periodEnd: q.periodEnd,
     basis: q.basis,
     taxYear: q.taxYear,
+    tagId: q.tagId ?? null,
   });
   res.json({ workpaper });
 });
@@ -377,7 +380,57 @@ const exportQuerySchema = z.object({
 tbRouter.get('/exports/validate', expensiveOpLimiter, async (req, res) => {
   const q = exportQuerySchema.parse(req.query);
   const { validation, dataset } = await exportsService.validateForExport(req.tenantId, req.companyId!, q);
-  res.json({ validation, lineCount: dataset.lines.length, glVersionStamp: dataset.glVersionStamp });
+  // The consolidation panel needs the line detail: key, amounts,
+  // member accounts, and current consolidation state.
+  res.json({
+    validation,
+    lineCount: dataset.lines.length,
+    glVersionStamp: dataset.glVersionStamp,
+    lines: dataset.lines.map((l) => ({
+      key: l.key,
+      code: l.code,
+      description: l.description,
+      accountCount: l.accounts.length,
+      bookAmount: l.bookAmount,
+      taxAmount: l.amount,
+      consolidated: l.consolidated,
+      accounts: l.accounts.map((a) => ({ accountNumber: a.accountNumber, name: a.name, amount: a.amount })),
+    })),
+  });
+});
+
+// ── Consolidation options (Vibe TB parity) ─────────────────────────
+// Per-entity: { [datasetLineKey]: { exportCode, description } }. A
+// consolidated code exports as ONE line under the custom export code.
+
+const consolidationPrefsSchema = z.object({
+  prefs: z.record(
+    z.string().max(160),
+    z.object({
+      exportCode: z.string().min(1).max(50),
+      description: z.string().max(200).default(''),
+    }),
+  ).refine((r) => Object.keys(r).length <= 500, 'Too many consolidation entries'),
+});
+
+tbRouter.get('/exports/consolidation', async (req, res) => {
+  const [profile] = await db.select({ prefs: companyTaxProfiles.consolidationPrefs }).from(companyTaxProfiles)
+    .where(and(eq(companyTaxProfiles.tenantId, req.tenantId), eq(companyTaxProfiles.companyId, req.companyId!)))
+    .limit(1);
+  res.json({ prefs: profile?.prefs ?? {} });
+});
+
+tbRouter.put('/exports/consolidation', validate(consolidationPrefsSchema), async (req, res) => {
+  const [before] = await db.select().from(companyTaxProfiles)
+    .where(and(eq(companyTaxProfiles.tenantId, req.tenantId), eq(companyTaxProfiles.companyId, req.companyId!)))
+    .limit(1);
+  if (!before) throw AppError.unprocessableEntity('Set the company tax profile (return form) first', 'TB_NOT_ASSIGNABLE');
+  const [row] = await db.update(companyTaxProfiles)
+    .set({ consolidationPrefs: req.body.prefs, updatedAt: new Date() })
+    .where(eq(companyTaxProfiles.id, before.id)).returning();
+  await auditLogFn(req.tenantId, 'update', 'tb_consolidation_prefs', before.id,
+    { prefs: before.consolidationPrefs }, { prefs: row!.consolidationPrefs }, req.userId);
+  res.json({ prefs: row!.consolidationPrefs });
 });
 
 tbRouter.post('/exports', expensiveOpLimiter, validate(exportQuerySchema.extend({ overrideConfirmed: z.boolean().optional() })), async (req, res) => {
@@ -704,7 +757,7 @@ tbRouter.post('/activity-units', validate(createActivityUnitSchema), async (req,
 });
 
 tbRouter.put('/activity-units/:id', validate(updateActivityUnitSchema), async (req, res) => {
-  const unit = await unitsService.renameUnit(req.tenantId, req.companyId!, String(req.params['id']), req.body.displayName, req.userId);
+  const unit = await unitsService.renameUnit(req.tenantId, req.companyId!, String(req.params['id']), req.body.displayName, req.userId, req.body.instanceNumber);
   res.json({ unit });
 });
 

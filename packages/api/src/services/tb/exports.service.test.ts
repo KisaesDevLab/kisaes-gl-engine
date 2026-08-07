@@ -131,6 +131,29 @@ describe('vendor export dataset (Phase 11)', () => {
     expect(generic.validation.missingVendorCode.map((m) => m.code)).not.toContain(noUt.code);
   });
 
+  it('consolidates a code into one custom export line when prefs say so', async () => {
+    const before = await buildTaxDataset(tenantId, companyId, { taxYear: 2026, basis: 'accrual', software: 'ultratax' });
+    const target = before.lines.find((l) => l.accounts.length > 1)!;
+    expect(target.consolidated).toBeNull();
+
+    await db.update(companyTaxProfiles)
+      .set({ consolidationPrefs: { [target.key]: { exportCode: '4010', description: 'Receipts' } } })
+      .where(and(eq(companyTaxProfiles.tenantId, tenantId), eq(companyTaxProfiles.companyId, companyId)));
+
+    const after = await buildTaxDataset(tenantId, companyId, { taxYear: 2026, basis: 'accrual', software: 'ultratax' });
+    const line = after.lines.find((l) => l.key === target.key)!;
+    expect(line.consolidated).toEqual({ exportCode: '4010', description: 'Receipts' });
+    expect(line.vendorCode).toBe('4010');
+    expect(line.description).toBe('Receipts');
+    // The custom code satisfies the vendor-code requirement.
+    expect(after.missingVendorCode.map((m) => m.code)).not.toContain(line.code);
+    // Amount unchanged — consolidation reshapes lines, never totals.
+    expect(line.amount).toBeCloseTo(target.amount, 2);
+
+    await db.update(companyTaxProfiles).set({ consolidationPrefs: {} })
+      .where(and(eq(companyTaxProfiles.tenantId, tenantId), eq(companyTaxProfiles.companyId, companyId)));
+  });
+
   it('builds the working TB workbook with sections and five columns', async () => {
     const file = await buildWorkingTbXlsx(tenantId, companyId, { taxYear: 2026, basis: 'accrual' });
     expect(file.fileName).toMatch(/working-tb-20261231-accrual\.xlsx/);

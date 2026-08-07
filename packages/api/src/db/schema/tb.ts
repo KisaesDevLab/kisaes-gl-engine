@@ -94,6 +94,9 @@ export const companyTaxProfiles = pgTable('company_tax_profiles', {
   // Entity activity (business | rental | farm | farm_rental) — scopes
   // the assignable-code surface alongside live activity-unit types.
   defaultActivityType: varchar('default_activity_type', { length: 20 }).notNull().default('business'),
+  // Vendor-export consolidation: { [datasetLineKey]: { exportCode,
+  // description } } — consolidated codes export as one custom line.
+  consolidationPrefs: jsonb('consolidation_prefs').notNull().default({}),
   // Schedule M-2 equity-account role map (9.4): { accountId:
   // 'retained' | 'distributions' | 'contributions' | 'other' }.
   equityRoles: jsonb('equity_roles'),

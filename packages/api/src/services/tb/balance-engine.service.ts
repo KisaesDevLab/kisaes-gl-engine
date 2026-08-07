@@ -130,6 +130,11 @@ export interface ComputeOptions {
   // calendar; explicit for tests and cross-year workpapers.
   taxYear?: number;
   skipCache?: boolean;
+  // TB-by-tag (rule TB7): transaction-level EXISTS — every line of any
+  // transaction carrying the tag is included, so DR = CR holds even on
+  // mixed-tag transactions. Tax RJEs are not tag-scoped and overlay
+  // unchanged.
+  tagId?: string | null;
 }
 
 export async function computeWorkpaper(tenantId: string, companyId: string, opts: ComputeOptions): Promise<TbWorkpaper> {
@@ -144,7 +149,7 @@ export async function computeWorkpaper(tenantId: string, companyId: string, opts
   const taxYear = opts.taxYear ?? taxYearOf(opts.periodEnd, fyStartMonth);
   const stamp = await getGlVersionStamp(tenantId, companyId);
 
-  const cacheKey = `tb:wp:${tenantId}:${companyId}:${opts.periodEnd}:${opts.basis}:${taxYear}:${stamp}`;
+  const cacheKey = `tb:wp:${tenantId}:${companyId}:${opts.periodEnd}:${opts.basis}:${taxYear}:${stamp}:${opts.tagId ?? 'all'}`;
   if (!opts.skipCache) {
     const hit = await tbCacheGet<TbWorkpaper>(cacheKey);
     if (hit) {
@@ -182,6 +187,9 @@ export async function computeWorkpaper(tenantId: string, companyId: string, opts
           ON tam.company_id = ${companyId} AND tam.tag_id = cb.tag_id
         LEFT JOIN activity_units du
           ON du.company_id = ${companyId} AND du.is_default = TRUE AND du.archived_at IS NULL
+        WHERE ${opts.tagId
+          ? sql`EXISTS (SELECT 1 FROM journal_lines jlx WHERE jlx.transaction_id = cb.transaction_id AND jlx.tag_id = ${opts.tagId})`
+          : sql`TRUE`}
         GROUP BY 1, 2, 3, 4, 5, 6
       `)
     : await db.execute(sql`
@@ -211,6 +219,9 @@ export async function computeWorkpaper(tenantId: string, companyId: string, opts
         LEFT JOIN activity_units du
           ON du.company_id = ${companyId} AND du.is_default = TRUE AND du.archived_at IS NULL
         WHERE jl.tenant_id = ${tenantId} AND jl.is_void_reversal = FALSE
+          AND ${opts.tagId
+            ? sql`EXISTS (SELECT 1 FROM journal_lines jlx WHERE jlx.transaction_id = t.id AND jlx.tag_id = ${opts.tagId})`
+            : sql`TRUE`}
         GROUP BY 1, 2, 3, 4, 5, 6
       `);
   // Tax RJEs for the tax year, per (account, unit-or-null).
