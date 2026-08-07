@@ -264,7 +264,12 @@ async function allowedActivityTypes(companyId: string, activityUnitType: string)
   const units = await db.select({ t: activityUnits.activityType }).from(activityUnits)
     .where(and(eq(activityUnits.companyId, companyId), isNull(activityUnits.archivedAt)));
   if (units.length === 0) return null; // no units yet → any activity type
-  return new Set(['common', ...units.map((u) => u.t)]);
+  // The profile's entity activity is always assignable account-level —
+  // a business-default entity with only a rental unit must still take
+  // business codes (the picker surface offers them).
+  const [profile] = await db.select({ t: companyTaxProfiles.defaultActivityType }).from(companyTaxProfiles)
+    .where(eq(companyTaxProfiles.companyId, companyId)).limit(1);
+  return new Set(['common', ...(profile?.t ? [profile.t] : []), ...units.map((u) => u.t)]);
 }
 
 // A code is assignable iff the pinned (or latest) seed version contains

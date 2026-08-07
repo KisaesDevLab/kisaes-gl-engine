@@ -65,10 +65,22 @@ portalQuestionsPublicRouter.get('/:id', async (req, res) => {
 
 const answerSchema = z.object({ body: z.string().min(1).max(4000) });
 
+// Multer failures (disallowed type, too many files, >10 MB) must reach
+// the client as a 400 with the reason — not an unhandled 500.
+function answerFiles(req: Parameters<ReturnType<typeof answerUpload.array>>[0], res: Parameters<ReturnType<typeof answerUpload.array>>[1], next: (err?: unknown) => void) {
+  answerUpload.array('files', 5)(req, res, (err: unknown) => {
+    if (err) {
+      next(AppError.badRequest(err instanceof Error ? err.message : 'File upload rejected'));
+      return;
+    }
+    next();
+  });
+}
+
 // Accepts application/json (body only) or multipart/form-data with a
 // `body` field plus up to 5 `files` — multer passes non-multipart
 // requests through untouched.
-portalQuestionsPublicRouter.post('/:id/answers', answerUpload.array('files', 5), validate(answerSchema), async (req, res) => {
+portalQuestionsPublicRouter.post('/:id/answers', answerFiles, validate(answerSchema), async (req, res) => {
   if (!req.portalContact) throw AppError.unauthorized('No portal session');
   refuseDuringPreview(req);
   const uploads = (req.files as Express.Multer.File[] | undefined) ?? [];

@@ -407,7 +407,7 @@ export async function buildVendorFile(
   unitNames: Map<string, string>,
   unitInfo: Map<string, UnitInfo> = new Map(),
   consolidationPrefs: ConsolidationPrefs = {},
-): Promise<{ buffer: Buffer; fileName: string; mimeType: string }> {
+): Promise<{ buffer: Buffer; fileName: string; mimeType: string; rowCount: number }> {
   void companyName; void unitNames;
   const stamp = dataset.periodEnd.replace(/-/g, '');
   if (software === 'workingtb') {
@@ -424,7 +424,7 @@ export async function buildVendorFile(
       { header: 'Book Basis Amt', key: 'bookAmt', ...amt },
       { header: 'Tax Basis Amt', key: 'taxAmt', ...amt },
     ], rows.map((r) => ({ acct: r.accountNumber, name: r.accountName, code: r.vendorCode, bookAmt: r.bookAmt, taxAmt: r.taxAmt })));
-    return { buffer, fileName: `ultratax-export-${stamp}.xlsx`, mimeType: XLSX_MIME };
+    return { buffer, fileName: `ultratax-export-${stamp}.xlsx`, mimeType: XLSX_MIME, rowCount: rows.length };
   }
   if (software === 'cch') {
     const buffer = await buildRefExcel('CCH Axcess Export', [
@@ -436,7 +436,7 @@ export async function buildVendorFile(
       { header: 'Tax Basis Amt', key: 'taxAmt', ...amt },
     ], rows.map((r) => ({ acct: r.accountNumber, name: r.accountName, code: r.vendorCode, desc: '', bookAmt: r.bookAmt, taxAmt: r.taxAmt })),
     { centerHeader: false });
-    return { buffer, fileName: `cch-export-${stamp}.xlsx`, mimeType: XLSX_MIME };
+    return { buffer, fileName: `cch-export-${stamp}.xlsx`, mimeType: XLSX_MIME, rowCount: rows.length };
   }
   if (software === 'lacerte' || software === 'gosystem') {
     const sheet = software === 'lacerte' ? 'Lacerte Export' : 'GoSystem Tax RS Export';
@@ -446,7 +446,7 @@ export async function buildVendorFile(
       { header: 'Book Basis Amt', key: 'bookAmt', ...amt },
       { header: 'Tax Basis Amt', key: 'taxAmt', ...amt },
     ], rows.map((r) => ({ code: r.vendorCode, name: r.accountName, bookAmt: r.bookAmt, taxAmt: r.taxAmt })));
-    return { buffer, fileName: `${software}-export-${stamp}.xlsx`, mimeType: XLSX_MIME };
+    return { buffer, fileName: `${software}-export-${stamp}.xlsx`, mimeType: XLSX_MIME, rowCount: rows.length };
   }
   // generic: canonical code + description, no software crosswalk.
   const buffer = await buildRefExcel('Generic Export', [
@@ -457,7 +457,7 @@ export async function buildVendorFile(
     { header: 'Book Basis Amt', key: 'bookAmt', ...amt },
     { header: 'Tax Basis Amt', key: 'taxAmt', ...amt },
   ], rows.map((r) => ({ acct: r.accountNumber, name: r.accountName, code: r.code, desc: r.description, bookAmt: r.bookAmt, taxAmt: r.taxAmt })));
-  return { buffer, fileName: `generic-export-${stamp}.xlsx`, mimeType: XLSX_MIME };
+  return { buffer, fileName: `generic-export-${stamp}.xlsx`, mimeType: XLSX_MIME, rowCount: rows.length };
 }
 
 
@@ -573,9 +573,8 @@ export async function generateExport(
     const unitNames = new Map(units.map((u) => [u.id, `${u.displayName}`]));
     const unitInfo = new Map(units.map((u) => [u.id, { name: u.displayName, number: u.instanceNumber }]));
     const file = await buildVendorFile(opts.software, dataset, company?.name ?? '', unitNames, unitInfo, dataset.consolidationPrefs);
-    ({ buffer, fileName, mimeType } = file);
+    ({ buffer, fileName, mimeType, rowCount } = file);
     glVersionStamp = dataset.glVersionStamp;
-    rowCount = dataset.lines.length;
   }
 
   const provider = await getProviderForTenant(tenantId);
