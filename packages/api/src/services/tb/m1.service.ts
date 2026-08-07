@@ -64,7 +64,7 @@ export async function buildM1(tenantId: string, companyId: string, opts: { taxYe
     const delta = row.tax - row.adjusted;
     if (Math.abs(delta) < 0.005) continue;
     let category: M1Category;
-    if (row.accountType === 'revenue') {
+    if (row.accountType === 'revenue' || row.accountType === 'other_revenue') {
       // More credit (delta<0) = more income on the return.
       category = delta < 0 ? 'income_on_return_not_books' : 'income_on_books_not_return';
     } else {
@@ -265,5 +265,8 @@ export async function buildM2(tenantId: string, companyId: string, opts: { taxYe
 }
 
 function isPl(row: TbWorkpaperRow): boolean {
-  return row.accountType === 'revenue' || row.accountType === 'expense';
+  // Mirror the balance engine's fold rule: P&L is everything that is
+  // NOT asset/liability/equity — cogs, other_revenue, and
+  // other_expense included.
+  return !['asset', 'liability', 'equity'].includes(row.accountType);
 }

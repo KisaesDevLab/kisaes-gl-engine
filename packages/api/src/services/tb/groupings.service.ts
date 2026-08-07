@@ -28,8 +28,10 @@ const DEFAULT_LEADSHEETS: Array<{ code: string; name: string; match: (type: stri
   { code: 'I', name: 'Other Liabilities', match: (t) => t === 'liability' },
   { code: 'J', name: 'Equity', match: (t) => t === 'equity' },
   { code: 'K', name: 'Revenue', match: (t) => t === 'revenue' },
-  { code: 'L', name: 'Cost of Goods Sold', match: (t, d) => t === 'expense' && /cogs|cost_of_goods/.test(d ?? '') },
+  { code: 'L', name: 'Cost of Goods Sold', match: (t, d) => t === 'cogs' || (t === 'expense' && /cogs|cost_of_goods/.test(d ?? '')) },
   { code: 'M', name: 'Operating Expenses', match: (t) => t === 'expense' },
+  { code: 'N', name: 'Other Income', match: (t) => t === 'other_revenue' },
+  { code: 'O', name: 'Other Expenses', match: (t) => t === 'other_expense' },
 ];
 
 export async function listGroupings(tenantId: string, companyId: string) {

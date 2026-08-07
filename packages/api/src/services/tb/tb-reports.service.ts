@@ -285,7 +285,14 @@ export async function buildTbReturnOrderReport(tenantId: string, companyId: stri
 export async function buildTbTaxBasisPl(tenantId: string, companyId: string, endDate: string, basis: TbBasis, activityUnitId?: string | null) {
   const { taxYear } = await fiscalContext(tenantId, companyId, endDate);
   const wp = await computeWorkpaper(tenantId, companyId, { periodEnd: endDate, basis, taxYear });
-  const rows = wp.rows.filter((r) => r.accountType === 'revenue' || r.accountType === 'expense');
+  const PL_SECTIONS: Array<{ type: string; label: string; income: boolean }> = [
+    { type: 'revenue', label: 'Revenue', income: true },
+    { type: 'cogs', label: 'Cost of Goods Sold', income: false },
+    { type: 'expense', label: 'Expenses', income: false },
+    { type: 'other_revenue', label: 'Other Income', income: true },
+    { type: 'other_expense', label: 'Other Expenses', income: false },
+  ];
+  const rows = wp.rows.filter((r) => PL_SECTIONS.some((sec) => sec.type === r.accountType));
   const pick = (r: typeof rows[number]) => {
     if (!activityUnitId) return { adjusted: r.adjusted, tax: r.tax };
     const u = r.units.find((x) => x.unitId === activityUnitId);
@@ -294,25 +301,26 @@ export async function buildTbTaxBasisPl(tenantId: string, companyId: string, end
   const data: Array<Record<string, unknown>> = [];
   let bookNet = 0;
   let taxNet = 0;
-  for (const section of ['revenue', 'expense'] as const) {
-    const sectionRows = rows.filter((r) => r.accountType === section);
+  for (const section of PL_SECTIONS) {
+    const sectionRows = rows.filter((r) => r.accountType === section.type);
     const picked = sectionRows.map((r) => ({ r, v: pick(r) })).filter((x): x is { r: typeof rows[number]; v: { adjusted: number; tax: number } } => !!x.v);
     if (picked.length === 0) continue;
-    data.push({ account_number: '---', name: section === 'revenue' ? 'Revenue' : 'Expenses', book: '', tax_rje: '', tax: '' });
+    data.push({ account_number: '---', name: section.label, book: '', tax_rje: '', tax: '' });
     let secBook = 0;
     let secTax = 0;
     for (const { r, v } of picked) {
-      const book = section === 'revenue' ? -v.adjusted : v.adjusted;
-      const tax = section === 'revenue' ? -v.tax : v.tax;
+      // Income sections display credit-positive; cost sections debit-positive.
+      const book = section.income ? -v.adjusted : v.adjusted;
+      const tax = section.income ? -v.tax : v.tax;
       secBook += book; secTax += tax;
       data.push({
         account_number: r.accountNumber ?? '', name: r.name,
         book: money(book), tax_rje: money(tax - book), tax: money(tax),
       });
     }
-    data.push({ account_number: '', name: `Total ${section === 'revenue' ? 'Revenue' : 'Expenses'}`, book: money(secBook), tax_rje: money(secTax - secBook), tax: money(secTax) });
-    bookNet += section === 'revenue' ? secBook : -secBook;
-    taxNet += section === 'revenue' ? secTax : -secTax;
+    data.push({ account_number: '', name: `Total ${section.label}`, book: money(secBook), tax_rje: money(secTax - secBook), tax: money(secTax) });
+    bookNet += section.income ? secBook : -secBook;
+    taxNet += section.income ? secTax : -secTax;
   }
   data.push({ account_number: '', name: 'NET INCOME/(LOSS)', book: money(bookNet), tax_rje: money(taxNet - bookNet), tax: money(taxNet) });
   return {

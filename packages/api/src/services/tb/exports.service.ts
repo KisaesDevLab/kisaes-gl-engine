@@ -305,7 +305,10 @@ export async function buildWorkingTbXlsx(tenantId: string, companyId: string, op
     ['Liabilities', (t) => t === 'liability'],
     ['Equity', (t) => t === 'equity'],
     ['Revenue', (t) => t === 'revenue'],
+    ['Cost of Goods Sold', (t) => t === 'cogs'],
     ['Expenses', (t) => t === 'expense'],
+    ['Other Income', (t) => t === 'other_revenue'],
+    ['Other Expenses', (t) => t === 'other_expense'],
   ];
   let rowCount = 0;
   for (const [label, match] of sections) {
