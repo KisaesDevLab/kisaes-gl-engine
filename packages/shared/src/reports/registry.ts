@@ -143,6 +143,7 @@ export const REPORT_CATALOG: ReportDef[] = [
   // containing the as-of date.
   { id: 'tb-workpaper', label: 'TB Workpaper (5-column)', group: 'Trial Balance', endpoint: 'tb-workpaper', temporal: 'as-of', orientation: 'landscape', options: { basis: true } },
   { id: 'tb-grouped', label: 'Grouped Trial Balance', group: 'Trial Balance', endpoint: 'tb-grouped', temporal: 'as-of', orientation: 'landscape', options: { basis: true } },
+  { id: 'tb-leadsheets', label: 'Leadsheets', group: 'Trial Balance', endpoint: 'tb-leadsheets', temporal: 'as-of', orientation: 'landscape', options: { basis: true } },
   { id: 'tb-return-order', label: 'Tax Return Order', group: 'Trial Balance', endpoint: 'tb-return-order', temporal: 'as-of', orientation: 'portrait', options: { basis: true } },
   { id: 'tb-tax-basis-pl', label: 'Tax-Basis P&L', group: 'Trial Balance', endpoint: 'tb-tax-basis-pl', temporal: 'as-of', orientation: 'portrait', options: { basis: true } },
   { id: 'tb-flux', label: 'Flux Analysis', group: 'Trial Balance', endpoint: 'tb-flux', temporal: 'as-of', orientation: 'portrait', options: { basis: true } },

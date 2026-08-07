@@ -7,14 +7,14 @@
 // numeric spine of the key reports ties to the engine.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db, pool } from '../../db/index.js';
 import {
   accounts, accountTaxAssignments, companies, companyTaxProfiles,
-  journalLines, tenants, transactions,
+  journalLines, tbGroupings, tenants, transactions,
 } from '../../db/schema/index.js';
 import { importSeed } from './tax-code-seed.service.js';
 import { seedDefaultGroupings } from './groupings.service.js';
@@ -85,6 +85,7 @@ describe('TB report family (Phase 12)', () => {
     const builders: Array<[string, () => Promise<{ title: string; data: unknown[]; _exportColumns: unknown[] }>]> = [
       ['workpaper', () => tbReports.buildTbWorkpaperReport(tenantId, companyId, END, 'accrual')],
       ['grouped', () => tbReports.buildTbGroupedReport(tenantId, companyId, END, 'accrual')],
+      ['leadsheets', () => tbReports.buildTbLeadsheetsReport(tenantId, companyId, END, 'accrual')],
       ['return-order', () => tbReports.buildTbReturnOrderReport(tenantId, companyId, END, 'accrual')],
       ['tax-basis-pl', () => tbReports.buildTbTaxBasisPl(tenantId, companyId, END, 'accrual', null)],
       ['flux', () => tbReports.buildTbFluxReport(tenantId, companyId, END, 'accrual')],
@@ -123,5 +124,25 @@ describe('TB report family (Phase 12)', () => {
     const pl = await tbReports.buildTbTaxBasisPl(tenantId, companyId, END, 'accrual', null);
     const net = pl.data.find((r) => r['name'] === 'NET INCOME/(LOSS)')!;
     expect(Number(net['book'])).toBeCloseTo(800, 2);
+  });
+
+  it('leadsheets report: sign-off line per grouping, grouping_id scopes to one', async () => {
+    const all = await tbReports.buildTbLeadsheetsReport(tenantId, companyId, END, 'accrual');
+    expect(all.title).toContain('Leadsheets');
+    // Every rendered section carries a Prepared/Reviewed line.
+    const sections = all.data.filter((r) => r['account_number'] === '---').length;
+    const sigLines = all.data.filter((r) => String(r['name']).startsWith('Prepared:')).length;
+    expect(sections).toBeGreaterThan(0);
+    expect(sigLines).toBe(sections);
+
+    const [anyGrouping] = await db.select().from(tbGroupings)
+      .where(and(eq(tbGroupings.tenantId, tenantId), eq(tbGroupings.companyId, companyId)))
+      .limit(1);
+    const single = await tbReports.buildTbLeadsheetsReport(tenantId, companyId, END, 'accrual', anyGrouping!.id);
+    expect(single.title).toMatch(/^Leadsheet /);
+    expect(single.data.filter((r) => r['account_number'] === '---').length).toBe(1);
+
+    await expect(tbReports.buildTbLeadsheetsReport(tenantId, companyId, END, 'accrual', '00000000-0000-0000-0000-000000000099'))
+      .rejects.toMatchObject({ statusCode: 404 });
   });
 });

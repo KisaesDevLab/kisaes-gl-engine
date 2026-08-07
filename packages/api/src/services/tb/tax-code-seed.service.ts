@@ -13,7 +13,7 @@ import { createHash } from 'node:crypto';
 import ExcelJS from 'exceljs';
 import { and, desc, eq, ilike, or, sql } from 'drizzle-orm';
 import { db } from '../../db/index.js';
-import { taxCodeSeedVersions, taxCodes } from '../../db/schema/index.js';
+import { accountTaxAssignments, taxCodeSeedVersions, taxCodes } from '../../db/schema/index.js';
 import { AppError } from '../../utils/errors.js';
 import { auditLog } from '../../middleware/audit.js';
 import { log } from '../../utils/logger.js';
@@ -268,4 +268,168 @@ export async function browseCodes(f: BrowseFilters) {
     db.select({ count: sql<number>`count(*)::int` }).from(taxCodes).where(where),
   ]);
   return { codes: rows, total: countRows[0]?.count ?? 0 };
+}
+
+// ── Super-admin direct CRUD ─────────────────────────────────────────
+// TB8's immutability governs the IMPORT pipeline (imports never UPDATE
+// existing rows — new version instead). Admin corrections are a
+// different path: they edit rows in place with a full audit trail.
+// Identity ((returnForm, activityType, code)) is what assignments
+// reference, so identity edits and deletes are refused while any
+// assignment (any tenant) points at the row.
+
+const ZERO_TENANT = '00000000-0000-0000-0000-000000000000';
+
+export interface AdminCodeInput {
+  returnForm: string;
+  activityType: string;
+  code: string;
+  description?: string;
+  sortOrder?: number;
+  isM1Adjustment?: boolean;
+  notes?: string | null;
+  ultrataxCode?: string | null;
+  cchCode?: string | null;
+  lacerteCode?: string | null;
+  gosystemCode?: string | null;
+  genericCode?: string | null;
+}
+
+async function assignmentUsage(activityType: string, code: string): Promise<number> {
+  const [row] = await db.select({ count: sql<number>`count(*)::int` })
+    .from(accountTaxAssignments)
+    .where(and(eq(accountTaxAssignments.seedActivityType, activityType), eq(accountTaxAssignments.seedCode, code)));
+  return row?.count ?? 0;
+}
+
+const isUtilityRow = (r: { returnForm: string; activityType: string; code: string }) =>
+  r.returnForm === 'common' && r.activityType === 'common' &&
+  (REQUIRED_UTILITY_CODES as readonly string[]).includes(r.code);
+
+export async function createCode(versionId: string, input: AdminCodeInput, userId?: string) {
+  const [version] = await db.select().from(taxCodeSeedVersions).where(eq(taxCodeSeedVersions.id, versionId)).limit(1);
+  if (!version) throw AppError.notFound('Seed version not found');
+  const [dupe] = await db.select({ id: taxCodes.id }).from(taxCodes).where(and(
+    eq(taxCodes.versionId, versionId), eq(taxCodes.returnForm, input.returnForm),
+    eq(taxCodes.activityType, input.activityType), eq(taxCodes.code, input.code),
+  )).limit(1);
+  if (dupe) {
+    throw AppError.conflict(`Code ${input.returnForm}/${input.activityType}/${input.code} already exists in this version`, 'TB_SEED_INVALID');
+  }
+  const [created] = await db.insert(taxCodes).values({
+    versionId,
+    returnForm: input.returnForm,
+    activityType: input.activityType,
+    code: input.code,
+    description: input.description ?? '',
+    sortOrder: input.sortOrder ?? 0,
+    isM1Adjustment: input.isM1Adjustment ?? false,
+    notes: input.notes ?? null,
+    ultrataxCode: input.ultrataxCode ?? null,
+    cchCode: input.cchCode ?? null,
+    lacerteCode: input.lacerteCode ?? null,
+    gosystemCode: input.gosystemCode ?? null,
+    genericCode: input.genericCode ?? null,
+  }).returning();
+  if (!created) throw AppError.internal('Tax code insert failed');
+  await db.update(taxCodeSeedVersions).set({ rowCount: sql`${taxCodeSeedVersions.rowCount} + 1` })
+    .where(eq(taxCodeSeedVersions.id, versionId));
+  await auditLog(ZERO_TENANT, 'create', 'tax_code', created.id, null, created, userId);
+  return created;
+}
+
+export async function updateCode(id: string, patch: Partial<AdminCodeInput>, userId?: string) {
+  const [existing] = await db.select().from(taxCodes).where(eq(taxCodes.id, id)).limit(1);
+  if (!existing) throw AppError.notFound('Tax code not found');
+  const identityChanged =
+    (patch.returnForm !== undefined && patch.returnForm !== existing.returnForm) ||
+    (patch.activityType !== undefined && patch.activityType !== existing.activityType) ||
+    (patch.code !== undefined && patch.code !== existing.code);
+  if (identityChanged) {
+    if (isUtilityRow(existing)) {
+      throw AppError.conflict(`${existing.code} is a required utility code and cannot be renamed`, 'TB_SEED_INVALID');
+    }
+    const used = await assignmentUsage(existing.activityType, existing.code);
+    if (used > 0) {
+      throw AppError.conflict(
+        `Cannot rename ${existing.activityType}/${existing.code}: ${used} account assignment(s) reference it`,
+        'TB_CODE_IN_USE',
+      );
+    }
+  }
+  const next = {
+    returnForm: patch.returnForm ?? existing.returnForm,
+    activityType: patch.activityType ?? existing.activityType,
+    code: patch.code ?? existing.code,
+    description: patch.description ?? existing.description,
+    sortOrder: patch.sortOrder ?? existing.sortOrder,
+    isM1Adjustment: patch.isM1Adjustment ?? existing.isM1Adjustment,
+    notes: patch.notes === undefined ? existing.notes : patch.notes,
+    ultrataxCode: patch.ultrataxCode === undefined ? existing.ultrataxCode : patch.ultrataxCode,
+    cchCode: patch.cchCode === undefined ? existing.cchCode : patch.cchCode,
+    lacerteCode: patch.lacerteCode === undefined ? existing.lacerteCode : patch.lacerteCode,
+    gosystemCode: patch.gosystemCode === undefined ? existing.gosystemCode : patch.gosystemCode,
+    genericCode: patch.genericCode === undefined ? existing.genericCode : patch.genericCode,
+  };
+  if (identityChanged) {
+    const [dupe] = await db.select({ id: taxCodes.id }).from(taxCodes).where(and(
+      eq(taxCodes.versionId, existing.versionId), eq(taxCodes.returnForm, next.returnForm),
+      eq(taxCodes.activityType, next.activityType), eq(taxCodes.code, next.code),
+    )).limit(1);
+    if (dupe) {
+      throw AppError.conflict(`Code ${next.returnForm}/${next.activityType}/${next.code} already exists in this version`, 'TB_SEED_INVALID');
+    }
+  }
+  const [updated] = await db.update(taxCodes).set(next).where(eq(taxCodes.id, id)).returning();
+  await auditLog(ZERO_TENANT, 'update', 'tax_code', id, existing, updated, userId);
+  return updated!;
+}
+
+export async function deleteCode(id: string, userId?: string) {
+  const [existing] = await db.select().from(taxCodes).where(eq(taxCodes.id, id)).limit(1);
+  if (!existing) throw AppError.notFound('Tax code not found');
+  if (isUtilityRow(existing)) {
+    throw AppError.conflict(`${existing.code} is a required utility code and cannot be deleted`, 'TB_SEED_INVALID');
+  }
+  const used = await assignmentUsage(existing.activityType, existing.code);
+  if (used > 0) {
+    throw AppError.conflict(
+      `Cannot delete ${existing.activityType}/${existing.code}: ${used} account assignment(s) reference it`,
+      'TB_CODE_IN_USE',
+    );
+  }
+  await db.delete(taxCodes).where(eq(taxCodes.id, id));
+  await db.update(taxCodeSeedVersions).set({ rowCount: sql`GREATEST(${taxCodeSeedVersions.rowCount} - 1, 0)` })
+    .where(eq(taxCodeSeedVersions.id, existing.versionId));
+  await auditLog(ZERO_TENANT, 'delete', 'tax_code', id, existing, null, userId);
+  return { deleted: true as const };
+}
+
+// ── Excel download ──────────────────────────────────────────────────
+// Emits the exact seed-workbook layout (same HEADER row), so a
+// downloaded file can be hand-edited and re-imported as a new version.
+
+export async function exportCodesXlsx(versionId: string) {
+  const [version] = await db.select().from(taxCodeSeedVersions).where(eq(taxCodeSeedVersions.id, versionId)).limit(1);
+  if (!version) throw AppError.notFound('Seed version not found');
+  const rows = await db.select().from(taxCodes).where(eq(taxCodes.versionId, versionId))
+    .orderBy(taxCodes.returnForm, taxCodes.activityType, taxCodes.sortOrder, taxCodes.code);
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('tax-codes');
+  ws.addRow(HEADER);
+  ws.getRow(1).font = { bold: true };
+  for (const r of rows) {
+    ws.addRow([
+      r.returnForm, r.activityType, r.code, r.description, r.sortOrder,
+      r.isM1Adjustment ? 'true' : 'false',
+      r.notes ?? '', r.ultrataxCode ?? '', r.cchCode ?? '', r.lacerteCode ?? '', r.gosystemCode ?? '', r.genericCode ?? '',
+    ]);
+  }
+  ws.columns.forEach((col, i) => { col.width = i === 3 ? 60 : i === 6 ? 40 : 16; });
+  const buffer = Buffer.from(await wb.xlsx.writeBuffer());
+  return {
+    buffer,
+    fileName: `tax-codes-TY${version.taxYear}-v${version.version}.xlsx`,
+    rowCount: rows.length,
+  };
 }

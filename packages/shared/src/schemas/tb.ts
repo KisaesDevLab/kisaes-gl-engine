@@ -47,6 +47,28 @@ export const seedImportSchema = z.object({
 
 const vendorCode = z.string().max(50).nullable().optional();
 
+// Super-admin direct CRUD on seed-library rows. Identity fields
+// (returnForm/activityType/code) are the stable key assignments point
+// at, so the service refuses identity changes while any assignment
+// references the row.
+export const adminTaxCodeCreateSchema = z.object({
+  versionId: z.string().uuid(),
+  returnForm: z.enum(tbSeedReturnForms),
+  activityType: z.enum(tbActivityTypes),
+  code: z.string().min(1).max(50).regex(/^[A-Za-z0-9_.:-]+$/, 'Code may contain letters, digits, and _ . : -'),
+  description: z.string().max(1000).default(''),
+  sortOrder: z.coerce.number().int().min(0).max(1_000_000).optional().default(0),
+  isM1Adjustment: z.boolean().optional().default(false),
+  notes: z.string().max(2000).nullable().optional(),
+  ultrataxCode: vendorCode,
+  cchCode: vendorCode,
+  lacerteCode: vendorCode,
+  gosystemCode: vendorCode,
+  genericCode: vendorCode,
+});
+
+export const adminTaxCodeUpdateSchema = adminTaxCodeCreateSchema.omit({ versionId: true }).partial();
+
 export const createFirmTaxCodeSchema = z.object({
   // Sent WITHOUT the FIRM: prefix; the server namespaces it (rule TB8).
   code: z.string().min(1).max(50).regex(/^[A-Za-z0-9_.:-]+$/, 'Code may contain letters, digits, and _ . : -'),

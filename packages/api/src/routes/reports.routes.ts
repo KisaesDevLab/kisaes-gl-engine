@@ -1705,6 +1705,8 @@ function tbParams(req: Request): { companyId: string; endDate: string; basis: 'a
 const TB_REPORTS: Record<string, (tenantId: string, p: { companyId: string; endDate: string; basis: 'accrual' | 'cash' }, req: Request) => Promise<unknown>> = {
   'tb-workpaper': (t, p) => tbReports.buildTbWorkpaperReport(t, p.companyId, p.endDate, p.basis),
   'tb-grouped': (t, p) => tbReports.buildTbGroupedReport(t, p.companyId, p.endDate, p.basis),
+  'tb-leadsheets': (t, p, req) => tbReports.buildTbLeadsheetsReport(t, p.companyId, p.endDate, p.basis,
+    typeof req.query['grouping_id'] === 'string' ? String(req.query['grouping_id']) : null),
   'tb-return-order': (t, p) => tbReports.buildTbReturnOrderReport(t, p.companyId, p.endDate, p.basis),
   'tb-tax-basis-pl': (t, p, req) => tbReports.buildTbTaxBasisPl(t, p.companyId, p.endDate, p.basis,
     typeof req.query['activity_unit_id'] === 'string' ? String(req.query['activity_unit_id']) : null),

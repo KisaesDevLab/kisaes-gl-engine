@@ -228,6 +228,7 @@ export const REPORT_PACK_RENDERERS: Record<string, Renderer> = {
   // exactly. Date: as_of_date (fallback end_date) picks the tax year.
   'tb-workpaper': (t, c, p, o) => tbReports.buildTbWorkpaperReport(t, c, tbDate(p), o.basis),
   'tb-grouped': (t, c, p, o) => tbReports.buildTbGroupedReport(t, c, tbDate(p), o.basis),
+  'tb-leadsheets': (t, c, p, o) => tbReports.buildTbLeadsheetsReport(t, c, tbDate(p), o.basis, null),
   'tb-return-order': (t, c, p, o) => tbReports.buildTbReturnOrderReport(t, c, tbDate(p), o.basis),
   'tb-tax-basis-pl': (t, c, p, o) => tbReports.buildTbTaxBasisPl(t, c, tbDate(p), o.basis, null),
   'tb-flux': (t, c, p, o) => tbReports.buildTbFluxReport(t, c, tbDate(p), o.basis, null, 0, 0),

@@ -18,7 +18,7 @@ import { db } from '../../db/index.js';
 import {
   accounts, activityUnits, attachments, companies, journalLines,
   tbGroupingAccounts, tbGroupings, tbNotes, tbTickmarkApplications,
-  transactions,
+  tbTickmarks, transactions,
 } from '../../db/schema/index.js';
 import { AppError } from '../../utils/errors.js';
 import { computeWorkpaper, type TbBasis } from './balance-engine.service.js';
@@ -138,6 +138,91 @@ export async function buildTbGroupedReport(tenantId: string, companyId: string, 
     endDate,
     data,
     _exportColumns: FIVE_COLS,
+  };
+}
+
+// ── Leadsheets report ───────────────────────────────────────────────
+// One section per grouping: five-column member rows with their tickmark
+// symbols, subtotals, and the preparer/reviewer sign-off line. Pass a
+// groupingId to print a single leadsheet (the TB Leadsheets page's
+// "PDF" button); null prints the whole book (TB Reports + report packs).
+
+const LEADSHEET_COLS: Col[] = [...FIVE_COLS, { key: 'marks', label: 'Marks' }];
+
+export async function buildTbLeadsheetsReport(
+  tenantId: string, companyId: string, endDate: string, basis: TbBasis, groupingId: string | null = null,
+) {
+  const { taxYear } = await fiscalContext(tenantId, companyId, endDate);
+  const wp = await computeWorkpaper(tenantId, companyId, { periodEnd: endDate, basis, taxYear });
+  let groupings = await db.select().from(tbGroupings)
+    .where(and(eq(tbGroupings.tenantId, tenantId), eq(tbGroupings.companyId, companyId)))
+    .orderBy(tbGroupings.sortOrder);
+  if (groupingId) {
+    groupings = groupings.filter((g) => g.id === groupingId);
+    if (groupings.length === 0) throw AppError.notFound('Leadsheet grouping not found');
+  }
+  const memberships = await db.select().from(tbGroupingAccounts)
+    .where(and(eq(tbGroupingAccounts.tenantId, tenantId), eq(tbGroupingAccounts.companyId, companyId)));
+  const { signoffs } = await listSignoffs(tenantId, companyId, taxYear);
+  const marks = await db.select({
+    accountId: tbTickmarkApplications.accountId,
+    symbol: tbTickmarks.symbol,
+  }).from(tbTickmarkApplications)
+    .innerJoin(tbTickmarks, eq(tbTickmarkApplications.tickmarkId, tbTickmarks.id))
+    .where(and(
+      eq(tbTickmarkApplications.tenantId, tenantId),
+      eq(tbTickmarkApplications.companyId, companyId),
+      eq(tbTickmarkApplications.taxYear, taxYear),
+    ));
+  const marksByAccount = new Map<string, Set<string>>();
+  for (const m of marks) {
+    const set = marksByAccount.get(m.accountId) ?? new Set();
+    set.add(m.symbol);
+    marksByAccount.set(m.accountId, set);
+  }
+  const sigLabel = (gId: string, role: string) => {
+    const s = signoffs.find((x) => x.groupingId === gId && x.role === role);
+    if (!s) return 'not signed';
+    return `${String(s.signedAt).slice(0, 10)}${s.stale ? ' (STALE)' : ''}`;
+  };
+
+  const data: Array<Record<string, unknown>> = [];
+  for (const g of groupings) {
+    const members = new Set(memberships.filter((m) => m.groupingId === g.id).map((m) => m.accountId));
+    const rows = wp.rows.filter((r) => members.has(r.accountId));
+    if (rows.length === 0 && !groupingId) continue;
+    const label = `${g.leadsheetCode ? g.leadsheetCode + ' — ' : ''}${g.name}`;
+    data.push({ account_number: '---', name: label, unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '', marks: '' });
+    const totals = { unadjusted: 0, aje: 0, adjusted: 0, tax_rje: 0, tax: 0 };
+    for (const r of rows) {
+      data.push({
+        ...toFiveCol(r),
+        marks: [...(marksByAccount.get(r.accountId) ?? [])].join(' '),
+      });
+      totals.unadjusted += r.unadjusted; totals.aje += r.aje; totals.adjusted += r.adjusted;
+      totals.tax_rje += r.taxRje; totals.tax += r.tax;
+    }
+    data.push({
+      account_number: '', name: `Total ${label}`,
+      unadjusted: money(totals.unadjusted), aje: money(totals.aje), adjusted: money(totals.adjusted),
+      tax_rje: money(totals.tax_rje), tax: money(totals.tax), marks: '',
+    });
+    data.push({
+      account_number: '', name: `Prepared: ${sigLabel(g.id, 'preparer')} · Reviewed: ${sigLabel(g.id, 'reviewer')}`,
+      unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '', marks: '',
+    });
+  }
+  const single = groupingId ? groupings[0] : null;
+  const singleLabel = single ? `${single.leadsheetCode ? single.leadsheetCode + ' — ' : ''}${single.name}` : null;
+  return {
+    title: singleLabel
+      ? `Leadsheet ${singleLabel} — TY${taxYear}${basisSuffix(basis)}`
+      : `Leadsheets — TY${taxYear}${basisSuffix(basis)}`,
+    startDate: wp.fyStart,
+    endDate,
+    asOfDate: endDate,
+    data,
+    _exportColumns: LEADSHEET_COLS,
   };
 }
 

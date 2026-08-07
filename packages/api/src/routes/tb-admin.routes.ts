@@ -9,7 +9,7 @@
 
 import { Router } from 'express';
 import multer from 'multer';
-import { seedImportSchema } from '@kis-books/shared';
+import { adminTaxCodeCreateSchema, adminTaxCodeUpdateSchema, seedImportSchema } from '@kis-books/shared';
 import { authenticate, requireSuperAdmin } from '../middleware/auth.js';
 import { AppError } from '../utils/errors.js';
 import * as seedService from '../services/tb/tax-code-seed.service.js';
@@ -41,6 +41,35 @@ tbAdminRouter.post('/seed-versions/import', upload.single('file'), async (req, r
     userId: req.userId,
   });
   res.status(dryRun || result.unchanged ? 200 : 201).json(result);
+});
+
+// Download a version's full code set in the seed-workbook layout —
+// hand-edit and re-import it as a new version, or keep as a backup.
+// Registered before the CRUD routes for clarity; path has no overlap.
+tbAdminRouter.get('/codes/export', async (req, res) => {
+  const versionId = typeof req.query['versionId'] === 'string' ? req.query['versionId'] : '';
+  if (!versionId) throw AppError.badRequest('versionId is required', 'TB_SEED_INVALID');
+  const file = await seedService.exportCodesXlsx(versionId);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${file.fileName}"`);
+  res.send(file.buffer);
+});
+
+tbAdminRouter.post('/codes', async (req, res) => {
+  const { versionId, ...input } = adminTaxCodeCreateSchema.parse(req.body);
+  const created = await seedService.createCode(versionId, input, req.userId);
+  res.status(201).json({ code: created });
+});
+
+tbAdminRouter.put('/codes/:id', async (req, res) => {
+  const patch = adminTaxCodeUpdateSchema.parse(req.body);
+  const updated = await seedService.updateCode(String(req.params['id']), patch, req.userId);
+  res.json({ code: updated });
+});
+
+tbAdminRouter.delete('/codes/:id', async (req, res) => {
+  await seedService.deleteCode(String(req.params['id']), req.userId);
+  res.status(204).end();
 });
 
 tbAdminRouter.get('/codes', async (req, res) => {
