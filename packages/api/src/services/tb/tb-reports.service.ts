@@ -68,14 +68,53 @@ const toFiveCol = (r: { accountNumber: string | null; name: string; unadjusted: 
   tax: money(r.tax),
 });
 
+// Workpaper annotations shared by the TB reports: leadsheet code (WP
+// ref) per account, and the tax year's applied tickmark symbols.
+async function loadWpAnnotations(tenantId: string, companyId: string, taxYear: number) {
+  const [groupings, memberships, marks] = await Promise.all([
+    db.select().from(tbGroupings)
+      .where(and(eq(tbGroupings.tenantId, tenantId), eq(tbGroupings.companyId, companyId))),
+    db.select().from(tbGroupingAccounts)
+      .where(and(eq(tbGroupingAccounts.tenantId, tenantId), eq(tbGroupingAccounts.companyId, companyId))),
+    db.select({ accountId: tbTickmarkApplications.accountId, symbol: tbTickmarks.symbol })
+      .from(tbTickmarkApplications)
+      .innerJoin(tbTickmarks, eq(tbTickmarkApplications.tickmarkId, tbTickmarks.id))
+      .where(and(
+        eq(tbTickmarkApplications.tenantId, tenantId),
+        eq(tbTickmarkApplications.companyId, companyId),
+        eq(tbTickmarkApplications.taxYear, taxYear),
+      )),
+  ]);
+  const codeByGrouping = new Map(groupings.map((g) => [g.id, g.leadsheetCode ?? '']));
+  const wpRefByAccount = new Map<string, string>();
+  for (const m of memberships) {
+    wpRefByAccount.set(m.accountId, codeByGrouping.get(m.groupingId) ?? '');
+  }
+  const marksByAccount = new Map<string, Set<string>>();
+  for (const m of marks) {
+    const set = marksByAccount.get(m.accountId) ?? new Set();
+    set.add(m.symbol);
+    marksByAccount.set(m.accountId, set);
+  }
+  return {
+    wpRef: (accountId: string) => wpRefByAccount.get(accountId) ?? '',
+    marks: (accountId: string) => [...(marksByAccount.get(accountId) ?? [])].join(' '),
+  };
+}
+
 // ── 12.1 Standard five-column TB ────────────────────────────────────
 
 export async function buildTbWorkpaperReport(tenantId: string, companyId: string, endDate: string, basis: TbBasis) {
   const { taxYear } = await fiscalContext(tenantId, companyId, endDate);
   const wp = await computeWorkpaper(tenantId, companyId, { periodEnd: endDate, basis, taxYear });
-  const data: Array<Record<string, unknown>> = wp.rows.map((r) => toFiveCol(r));
+  const ann = await loadWpAnnotations(tenantId, companyId, taxYear);
+  const data: Array<Record<string, unknown>> = wp.rows.map((r) => ({
+    ...toFiveCol(r),
+    wp_ref: ann.wpRef(r.accountId),
+    marks: ann.marks(r.accountId),
+  }));
   data.push({
-    account_number: '', name: 'TOTALS (DR/CR)',
+    account_number: '', name: 'TOTALS (DR/CR)', wp_ref: '', marks: '',
     unadjusted: `${wp.totals.unadjustedDr.toFixed(2)} / ${wp.totals.unadjustedCr.toFixed(2)}`,
     aje: `${wp.totals.ajeDr.toFixed(2)} / ${wp.totals.ajeCr.toFixed(2)}`,
     adjusted: `${wp.totals.adjustedDr.toFixed(2)} / ${wp.totals.adjustedCr.toFixed(2)}`,
@@ -88,7 +127,12 @@ export async function buildTbWorkpaperReport(tenantId: string, companyId: string
     endDate,
     glVersionStamp: wp.glVersionStamp,
     data,
-    _exportColumns: FIVE_COLS,
+    _exportColumns: [
+      FIVE_COLS[0]!, FIVE_COLS[1]!,
+      { key: 'wp_ref', label: 'WP' },
+      ...FIVE_COLS.slice(2),
+      { key: 'marks', label: 'Marks' },
+    ],
   };
 }
 
@@ -108,19 +152,20 @@ export async function buildTbGroupedReport(tenantId: string, companyId: string, 
     set.add(m.accountId);
     byGrouping.set(m.groupingId, set);
   }
+  const ann = await loadWpAnnotations(tenantId, companyId, taxYear);
   const data: Array<Record<string, unknown>> = [];
   const used = new Set<string>();
   const pushSection = (label: string, rows: typeof wp.rows) => {
     if (rows.length === 0) return;
-    data.push({ account_number: '---', name: label, unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '' });
+    data.push({ account_number: '---', name: label, unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '', marks: '' });
     const totals = { unadjusted: 0, aje: 0, adjusted: 0, tax_rje: 0, tax: 0 };
     for (const r of rows) {
-      data.push(toFiveCol(r));
+      data.push({ ...toFiveCol(r), marks: ann.marks(r.accountId) });
       totals.unadjusted += r.unadjusted; totals.aje += r.aje; totals.adjusted += r.adjusted;
       totals.tax_rje += r.taxRje; totals.tax += r.tax;
     }
     data.push({
-      account_number: '', name: `Total ${label}`,
+      account_number: '', name: `Total ${label}`, marks: '',
       unadjusted: money(totals.unadjusted), aje: money(totals.aje), adjusted: money(totals.adjusted),
       tax_rje: money(totals.tax_rje), tax: money(totals.tax),
     });
@@ -137,7 +182,7 @@ export async function buildTbGroupedReport(tenantId: string, companyId: string, 
     startDate: wp.fyStart,
     endDate,
     data,
-    _exportColumns: FIVE_COLS,
+    _exportColumns: [...FIVE_COLS, { key: 'marks', label: 'Marks' }],
   };
 }
 
