@@ -93,6 +93,8 @@ export const upsertTaxProfileSchema = z.object({
   // NULL floats to the latest seed version for the tax year (ADR-TB-05).
   pinnedSeedVersionId: z.string().uuid().nullable().optional(),
   sCorpElectionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  // Entity activity — scopes assignable codes (with live unit types).
+  defaultActivityType: z.enum(tbActivityUnitTypes).optional(),
 });
 
 export const createActivityUnitSchema = z.object({

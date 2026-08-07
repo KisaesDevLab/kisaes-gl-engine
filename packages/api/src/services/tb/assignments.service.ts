@@ -33,7 +33,10 @@ export async function resolveSeedVersionId(tenantId: string, companyId: string):
 
 // The filtered code list for this company: seed rows valid for its
 // return form (form-specific + form/common + common/common utility)
-// plus the firm's active custom codes for the form.
+// AND its activities — 'common' plus the profile's entity activity
+// plus every live activity-unit type. Without the activity filter the
+// picker repeats each code once per seed activity type.
+// Plus the firm's active custom codes for the form.
 export async function listAvailableCodes(tenantId: string, companyId: string) {
   const [profile] = await db.select().from(companyTaxProfiles)
     .where(and(eq(companyTaxProfiles.tenantId, tenantId), eq(companyTaxProfiles.companyId, companyId)))
@@ -45,6 +48,9 @@ export async function listAvailableCodes(tenantId: string, companyId: string) {
   if (!versionId) {
     throw AppError.unprocessableEntity('No tax code seed imported', 'TB_SEED_INVALID');
   }
+  const units = await db.select({ t: activityUnits.activityType }).from(activityUnits)
+    .where(and(eq(activityUnits.companyId, companyId), sql`${activityUnits.archivedAt} IS NULL`));
+  const allowedActivities = [...new Set(['common', profile.defaultActivityType ?? 'business', ...units.map((u) => u.t)])];
   const seedCodes = await db.select({
     code: taxCodes.code,
     description: taxCodes.description,
@@ -56,6 +62,7 @@ export async function listAvailableCodes(tenantId: string, companyId: string) {
     .where(and(
       eq(taxCodes.versionId, versionId),
       inArray(taxCodes.returnForm, [profile.returnForm, 'common']),
+      inArray(taxCodes.activityType, allowedActivities),
     ))
     .orderBy(taxCodes.sortOrder, taxCodes.code);
 
@@ -63,10 +70,12 @@ export async function listAvailableCodes(tenantId: string, companyId: string) {
   const firmConds = [eq(firmTaxCodes.isActive, true), eq(firmTaxCodes.returnForm, profile.returnForm)];
   const firmRows = await db.select().from(firmTaxCodes).where(and(...firmConds));
   const firmCodesList = firmRows.filter((c) =>
-    c.firmId ? c.firmId === owner.firmId : c.tenantId === tenantId);
+    (c.firmId ? c.firmId === owner.firmId : c.tenantId === tenantId) &&
+    allowedActivities.includes(c.activityType));
 
   return {
     returnForm: profile.returnForm,
+    activityType: profile.defaultActivityType ?? 'business',
     versionId,
     seedCodes,
     firmCodes: firmCodesList.map((c) => ({

@@ -91,6 +91,9 @@ export const companyTaxProfiles = pgTable('company_tax_profiles', {
   // NULL = float to the latest seed version for the tax year (ADR-TB-05).
   pinnedSeedVersionId: uuid('pinned_seed_version_id').references(() => taxCodeSeedVersions.id),
   sCorpElectionDate: date('s_corp_election_date'),
+  // Entity activity (business | rental | farm | farm_rental) — scopes
+  // the assignable-code surface alongside live activity-unit types.
+  defaultActivityType: varchar('default_activity_type', { length: 20 }).notNull().default('business'),
   // Schedule M-2 equity-account role map (9.4): { accountId:
   // 'retained' | 'distributions' | 'contributions' | 'other' }.
   equityRoles: jsonb('equity_roles'),

@@ -1030,6 +1030,13 @@
       "when": 1784800000004,
       "tag": "0146_tb_exports",
       "breakpoints": true
+    },
+    {
+      "idx": 147,
+      "version": "7",
+      "when": 1784800000005,
+      "tag": "0147_tb_profile_activity_type",
+      "breakpoints": true
     }
   ]
 }
