@@ -29,6 +29,7 @@ import * as aiTaxAssign from '../services/tb/ai-tax-assign.service.js';
 import * as groupingsService from '../services/tb/groupings.service.js';
 import * as taxEntriesService from '../services/tb/tax-entries.service.js';
 import * as m1Service from '../services/tb/m1.service.js';
+import * as exportsService from '../services/tb/exports.service.js';
 import { db } from '../db/index.js';
 import { companies, tbStatus } from '../db/schema/index.js';
 import { and, eq, sql } from 'drizzle-orm';
@@ -334,6 +335,44 @@ tbRouter.get('/stream', async (req, res) => {
     clearInterval(heartbeat);
   };
   req.on('close', cleanup);
+});
+
+// ── Vendor exports (Phase 11) ──────────────────────────────────────
+
+const exportQuerySchema = z.object({
+  taxYear: z.coerce.number().int().min(2000).max(2100),
+  basis: z.enum(['accrual', 'cash']).default('accrual'),
+  software: z.enum(['ultratax', 'lacerte', 'cch', 'gosystem', 'generic', 'workingtb']),
+});
+
+tbRouter.get('/exports/validate', async (req, res) => {
+  const q = exportQuerySchema.parse(req.query);
+  const { validation, dataset } = await exportsService.validateForExport(req.tenantId, req.companyId!, q);
+  res.json({ validation, lineCount: dataset.lines.length, glVersionStamp: dataset.glVersionStamp });
+});
+
+tbRouter.post('/exports', validate(exportQuerySchema.extend({ overrideConfirmed: z.boolean().optional() })), async (req, res) => {
+  const record = await exportsService.generateExport(req.tenantId, req.companyId!, {
+    ...req.body,
+    isFirmAdmin: req.isSuperAdmin || req.userRole === 'owner',
+  }, req.userId);
+  res.status(201).json({ export: record });
+});
+
+tbRouter.get('/exports', async (req, res) => {
+  const taxYear = req.query['taxYear'] ? Number(req.query['taxYear']) : undefined;
+  const exports = await exportsService.listExports(req.tenantId, req.companyId!, taxYear);
+  const glVersionStamp = await balanceEngine.getGlVersionStamp(req.tenantId, req.companyId!);
+  res.json({ exports, glVersionStamp });
+});
+
+tbRouter.get('/exports/:id/download', async (req, res) => {
+  const { record, buffer } = await exportsService.downloadExport(req.tenantId, req.companyId!, String(req.params['id']));
+  res.setHeader('Content-Type', record.fileName.endsWith('.xlsx')
+    ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    : 'text/csv');
+  res.setHeader('Content-Disposition', `attachment; filename="${record.fileName}"`);
+  res.send(buffer);
 });
 
 // ── Closing date (Phase 10, ADR-TB-04 / rule TB5) ──────────────────

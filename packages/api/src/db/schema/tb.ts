@@ -323,6 +323,28 @@ export const tbAjeSequences = pgTable('tb_aje_sequences', {
   uniqueIndex('uniq_tb_aje_sequences').on(t.companyId, t.fiscalYear),
 ]);
 
+// Vendor-export history (11.9, rule TB11): provenance per generated
+// file — stamp + basis at generation, override flag, storage key.
+export const tbExports = pgTable('tb_exports', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull(),
+  companyId: uuid('company_id').notNull(),
+  taxYear: integer('tax_year').notNull(),
+  software: varchar('software', { length: 20 }).notNull(),
+  basis: varchar('basis', { length: 10 }).notNull(),
+  glVersionStamp: bigint('gl_version_stamp', { mode: 'number' }).notNull(),
+  overrideUsed: boolean('override_used').notNull().default(false),
+  fileName: varchar('file_name', { length: 255 }).notNull(),
+  storageKey: varchar('storage_key', { length: 500 }).notNull(),
+  storageProvider: varchar('storage_provider', { length: 30 }),
+  rowCount: integer('row_count').notNull().default(0),
+  createdBy: uuid('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index('idx_tb_exports_lookup').on(t.companyId, t.taxYear, t.createdAt),
+  index('idx_tb_exports_tenant').on(t.tenantId),
+]);
+
 // Monotonic GL change counter per company (ADR-TB-01, rule TB6). Bumped
 // by DB triggers on journal_lines / transactions so every mutation path —
 // including raw-SQL ones — is caught. Read per TB request for exact cache
