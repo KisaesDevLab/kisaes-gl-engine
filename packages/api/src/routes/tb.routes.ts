@@ -14,6 +14,8 @@ import { authenticate } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
 import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
+import { expensiveOpLimiter } from '../middleware/expensive-op-limiter.js';
+import * as featureFlags from '../services/feature-flags.service.js';
 import { AppError } from '../utils/errors.js';
 import * as firmCodesService from '../services/tb/firm-tax-codes.service.js';
 import * as taxProfileService from '../services/tb/tax-profile.service.js';
@@ -48,8 +50,25 @@ tbRouter.use((req, _res, next) => {
   }
   next();
 });
+// Server-side flag gate (not just hidden nav): with TRIAL_BALANCE_V1
+// off, the whole module API is absent — including AJE posting, which
+// is closing-date-exempt and must not be reachable early.
+tbRouter.use(async (req, _res, next) => {
+  try {
+    if (!(await featureFlags.isEnabled(req.tenantId, 'TRIAL_BALANCE_V1'))) {
+      next(AppError.notFound('Feature not available'));
+      return;
+    }
+    next();
+  } catch (err) {
+    next(err);
+  }
+});
 tbRouter.use(companyContext);
 tbRouter.use(requireResource('trial_balance'));
+// expensiveOpLimiter is applied PER-ROUTE to the heavy computes below —
+// router-wide it throttled ordinary page loads (a workpaper screen
+// fires ~8 cheap reads alongside the one expensive compute).
 
 // Firm-admin gate (plan 13.1): closing date, seed pinning, and custom
 // codes are owner-level acts. Bookkeeper/accountant staff do TB work but
@@ -124,7 +143,7 @@ tbRouter.put('/ajes/:id', validate(createAjeSchema), async (req, res) => {
 tbRouter.post('/ajes/:id/void', async (req, res) => {
   const reason = typeof req.body?.reason === 'string' && req.body.reason.trim() ? req.body.reason.trim() : null;
   if (!reason) throw AppError.badRequest('Void reason is required');
-  const aje = await ajeService.voidAje(req.tenantId, String(req.params['id']), reason, req.userId);
+  const aje = await ajeService.voidAje(req.tenantId, req.companyId!, String(req.params['id']), reason, req.userId);
   res.json({ aje });
 });
 
@@ -146,7 +165,7 @@ const workpaperQuerySchema = z.object({
   taxYear: z.coerce.number().int().min(2000).max(2100).optional(),
 });
 
-tbRouter.get('/workpaper', async (req, res) => {
+tbRouter.get('/workpaper', expensiveOpLimiter, async (req, res) => {
   const q = workpaperQuerySchema.parse(req.query);
   const workpaper = await balanceEngine.computeWorkpaper(req.tenantId, req.companyId!, {
     periodEnd: q.periodEnd,
@@ -212,7 +231,7 @@ tbRouter.post('/assignments/bulk', validate(z.object({ assignments: z.array(setA
 
 // ── AI assignment + diagnostics (Phase 6C — advisory) ──────────────
 
-tbRouter.post('/ai/suggest-assignments', async (req, res) => {
+tbRouter.post('/ai/suggest-assignments', expensiveOpLimiter, async (req, res) => {
   const q = workpaperQuerySchema.parse(req.body);
   const result = await aiTaxAssign.suggestAssignments(req.tenantId, req.companyId!, {
     periodEnd: q.periodEnd, basis: q.basis,
@@ -220,7 +239,7 @@ tbRouter.post('/ai/suggest-assignments', async (req, res) => {
   res.json(result);
 });
 
-tbRouter.post('/ai/diagnostics', async (req, res) => {
+tbRouter.post('/ai/diagnostics', expensiveOpLimiter, async (req, res) => {
   const q = workpaperQuerySchema.parse(req.body);
   const result = await aiTaxAssign.aiDiagnostics(req.tenantId, req.companyId!, {
     periodEnd: q.periodEnd, basis: q.basis,
@@ -230,7 +249,7 @@ tbRouter.post('/ai/diagnostics', async (req, res) => {
 
 // ── Diagnostics (Phase 6.4 — authoritative for export gating) ──────
 
-tbRouter.get('/diagnostics', async (req, res) => {
+tbRouter.get('/diagnostics', expensiveOpLimiter, async (req, res) => {
   const q = workpaperQuerySchema.parse(req.query);
   const result = await diagnosticsService.runDiagnostics(req.tenantId, req.companyId!, {
     periodEnd: q.periodEnd, basis: q.basis, taxYear: q.taxYear,
@@ -243,7 +262,7 @@ tbRouter.get('/diagnostics', async (req, res) => {
 tbRouter.get('/status', async (req, res) => {
   const taxYear = Number(req.query['taxYear']) || new Date().getUTCFullYear();
   const [status] = await db.select().from(tbStatus)
-    .where(and(eq(tbStatus.companyId, req.companyId!), eq(tbStatus.taxYear, taxYear)))
+    .where(and(eq(tbStatus.tenantId, req.tenantId), eq(tbStatus.companyId, req.companyId!), eq(tbStatus.taxYear, taxYear)))
     .limit(1);
   res.json({ status: status ?? { workflowState: 'open', taxYear } });
 });
@@ -251,40 +270,41 @@ tbRouter.get('/status', async (req, res) => {
 const statusSchema = z.object({
   taxYear: z.coerce.number().int().min(2000).max(2100),
   workflowState: z.enum(['open', 'in_review', 'complete']),
+  // Firm-admin gate override (7.8) — must be IN the schema or
+  // validate() strips it before the handler can read it.
+  overrideConfirmed: z.boolean().optional(),
 });
 
 tbRouter.put('/status', validate(statusSchema), async (req, res) => {
-  const { taxYear, workflowState } = req.body as { taxYear: number; workflowState: 'open' | 'in_review' | 'complete' };
+  const { taxYear, workflowState, overrideConfirmed } = req.body as { taxYear: number; workflowState: 'open' | 'in_review' | 'complete'; overrideConfirmed?: boolean };
   if (workflowState === 'complete') {
-    // 7.8: completion requires reviewer sign-off on every grouping; a
-    // firm admin may override (audited). Until Phase 7 lands there are
-    // no groupings, so the gate trivially passes.
+    // 7.8: completion requires reviewer sign-off on every grouping;
+    // only a FIRM ADMIN may override, and the override is audited.
     const gate = await signoffsService.checkCompletionGate(req.tenantId, req.companyId!, taxYear);
-    if (!gate.ok && !(req.body as { overrideConfirmed?: boolean }).overrideConfirmed) {
-      throw AppError.unprocessableEntity(gate.reason ?? 'Reviewer sign-offs incomplete', 'TB_STATUS_GATE', { missing: gate.missing });
+    const isFirmAdmin = req.isSuperAdmin || req.userRole === 'owner';
+    if (!gate.ok) {
+      if (!(overrideConfirmed && isFirmAdmin)) {
+        throw AppError.unprocessableEntity(gate.reason ?? 'Reviewer sign-offs incomplete', 'TB_STATUS_GATE', { missing: gate.missing, canOverride: isFirmAdmin });
+      }
+      await auditLogFn(req.tenantId, 'override', 'tb_status_gate_override', req.companyId!,
+        { missing: gate.missing }, { taxYear, workflowState }, req.userId);
     }
   }
-  const [existing] = await db.select().from(tbStatus)
-    .where(and(eq(tbStatus.companyId, req.companyId!), eq(tbStatus.taxYear, taxYear))).limit(1);
-  let row;
-  if (existing) {
-    [row] = await db.update(tbStatus).set({
-      workflowState,
-      completedBy: workflowState === 'complete' ? req.userId : null,
-      completedAt: workflowState === 'complete' ? new Date() : null,
-      updatedAt: new Date(),
-    }).where(eq(tbStatus.id, existing.id)).returning();
-  } else {
-    [row] = await db.insert(tbStatus).values({
-      tenantId: req.tenantId,
-      companyId: req.companyId!,
-      taxYear,
-      workflowState,
-      completedBy: workflowState === 'complete' ? req.userId : null,
-      completedAt: workflowState === 'complete' ? new Date() : null,
-    }).returning();
-  }
-  res.json({ status: row });
+  // Atomic upsert on (company, taxYear) — the select-then-insert form
+  // raced to a unique-violation 500.
+  const upsert = await db.execute(sql`
+    INSERT INTO tb_status (tenant_id, company_id, tax_year, workflow_state, completed_by, completed_at, updated_at)
+    VALUES (${req.tenantId}, ${req.companyId}, ${taxYear}, ${workflowState},
+      ${workflowState === 'complete' ? req.userId ?? null : null},
+      ${workflowState === 'complete' ? new Date() : null}, now())
+    ON CONFLICT (company_id, tax_year)
+    DO UPDATE SET workflow_state = EXCLUDED.workflow_state,
+      completed_by = EXCLUDED.completed_by,
+      completed_at = EXCLUDED.completed_at,
+      updated_at = now()
+    RETURNING *
+  `);
+  res.json({ status: upsert.rows[0] });
 });
 
 // ── Live change stream (Phase 6B.4, ADR-TB-06) ─────────────────────
@@ -313,6 +333,7 @@ tbRouter.get('/stream', async (req, res) => {
     if (closed) return;
     try {
       const current = await balanceEngine.getGlVersionStamp(tenantId, companyId);
+      if (closed) return;
       if (current !== last) {
         last = current;
         res.write(`event: stamp\ndata: ${JSON.stringify({ glVersionStamp: current })}\n\n`);
@@ -345,13 +366,13 @@ const exportQuerySchema = z.object({
   software: z.enum(['ultratax', 'lacerte', 'cch', 'gosystem', 'generic', 'workingtb']),
 });
 
-tbRouter.get('/exports/validate', async (req, res) => {
+tbRouter.get('/exports/validate', expensiveOpLimiter, async (req, res) => {
   const q = exportQuerySchema.parse(req.query);
   const { validation, dataset } = await exportsService.validateForExport(req.tenantId, req.companyId!, q);
   res.json({ validation, lineCount: dataset.lines.length, glVersionStamp: dataset.glVersionStamp });
 });
 
-tbRouter.post('/exports', validate(exportQuerySchema.extend({ overrideConfirmed: z.boolean().optional() })), async (req, res) => {
+tbRouter.post('/exports', expensiveOpLimiter, validate(exportQuerySchema.extend({ overrideConfirmed: z.boolean().optional() })), async (req, res) => {
   const record = await exportsService.generateExport(req.tenantId, req.companyId!, {
     ...req.body,
     isFirmAdmin: req.isSuperAdmin || req.userRole === 'owner',
@@ -456,13 +477,13 @@ const mQuerySchema = z.object({
   basis: z.enum(['accrual', 'cash']).default('accrual'),
 });
 
-tbRouter.get('/m1', async (req, res) => {
+tbRouter.get('/m1', expensiveOpLimiter, async (req, res) => {
   const q = mQuerySchema.parse(req.query);
   const m1 = await m1Service.buildM1(req.tenantId, req.companyId!, q);
   res.json({ m1 });
 });
 
-tbRouter.get('/m2', async (req, res) => {
+tbRouter.get('/m2', expensiveOpLimiter, async (req, res) => {
   const q = mQuerySchema.parse(req.query);
   const m2 = await m1Service.buildM2(req.tenantId, req.companyId!, q);
   res.json({ m2 });

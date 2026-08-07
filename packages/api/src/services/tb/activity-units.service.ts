@@ -232,18 +232,38 @@ export interface AssignabilityQuery {
   seedCode?: string | null;
   seedActivityType?: string | null;
   firmCodeId?: string | null;
-  activityUnitType: string; // the unit's activityType (or 'common' for account-level)
+  // The specific unit's activityType, or 'common' for an ACCOUNT-LEVEL
+  // assignment (no unit) — account-level accepts any activity the
+  // entity actually runs (ADR-TB-02 defines validity per unit; the
+  // account-level row serves whichever units the account touches).
+  activityUnitType: string;
 }
 
-// A code is assignable to a unit iff the pinned (or latest) seed
-// version contains a row for (returnForm, unit.activityType, code) or
-// (returnForm, 'common', code) or the common/common utility codes —
-// and firm codes must match form + activity the same way.
+// Activity types a code may carry for the given context: 'common'
+// always; a specific unit type when targeting that unit; for
+// account-level, every LIVE unit type — and when no units are
+// configured yet (fresh entity), any type for the form, so the module
+// is usable before activity setup.
+async function allowedActivityTypes(companyId: string, activityUnitType: string): Promise<Set<string> | null> {
+  if (activityUnitType && activityUnitType !== 'common') {
+    return new Set(['common', activityUnitType]);
+  }
+  const units = await db.select({ t: activityUnits.activityType }).from(activityUnits)
+    .where(and(eq(activityUnits.companyId, companyId), isNull(activityUnits.archivedAt)));
+  if (units.length === 0) return null; // no units yet → any activity type
+  return new Set(['common', ...units.map((u) => u.t)]);
+}
+
+// A code is assignable iff the pinned (or latest) seed version contains
+// a row for (returnForm, allowedActivity, code) or (returnForm,
+// 'common', code) or the common/common utility codes — and firm codes
+// must match form + activity the same way.
 export async function isCodeAssignable(tenantId: string, companyId: string, q: AssignabilityQuery): Promise<{ ok: boolean; reason?: string }> {
   const [profile] = await db.select().from(companyTaxProfiles)
     .where(and(eq(companyTaxProfiles.tenantId, tenantId), eq(companyTaxProfiles.companyId, companyId)))
     .limit(1);
   if (!profile) return { ok: false, reason: 'Set the company tax profile (return form) first' };
+  const allowed = await allowedActivityTypes(companyId, q.activityUnitType);
 
   if (q.firmCodeId) {
     const owner = await resolveOwner(tenantId);
@@ -254,7 +274,7 @@ export async function isCodeAssignable(tenantId: string, companyId: string, q: A
       return { ok: false, reason: 'Custom code belongs to another firm' };
     }
     if (code.returnForm !== profile.returnForm) return { ok: false, reason: `Code is for form ${code.returnForm}` };
-    if (code.activityType !== 'common' && code.activityType !== q.activityUnitType) {
+    if (allowed && !allowed.has(code.activityType)) {
       return { ok: false, reason: `Code is for ${code.activityType} activities` };
     }
     return { ok: true };
@@ -281,9 +301,10 @@ export async function isCodeAssignable(tenantId: string, companyId: string, q: A
   const match = candidates.find((c) =>
     // utility codes: common/common rows work for any unit
     (c.returnForm === 'common' && c.activityType === 'common') ||
-    // form match with the unit's activity or the form's common bucket
-    (c.returnForm === profile.returnForm && (c.activityType === 'common' || c.activityType === q.activityUnitType)),
+    // form match with an allowed activity (specific unit, the entity's
+    // live unit types for account-level, or anything pre-unit-setup)
+    (c.returnForm === profile.returnForm && (allowed === null || allowed.has(c.activityType))),
   );
-  if (!match) return { ok: false, reason: `Code ${q.seedCode} is not valid for form ${profile.returnForm} / ${q.activityUnitType} activities` };
+  if (!match) return { ok: false, reason: `Code ${q.seedCode} is not valid for form ${profile.returnForm} / ${q.activityUnitType === 'common' ? 'this entity’s' : q.activityUnitType} activities` };
   return { ok: true };
 }

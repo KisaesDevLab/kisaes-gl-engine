@@ -68,7 +68,7 @@ export async function createAje(tenantId: string, companyId: string, input: AjeI
 }
 
 export async function updateAje(tenantId: string, companyId: string, txnId: string, input: AjeInput, userId?: string) {
-  await assertIsAje(tenantId, txnId);
+  await loadAje(tenantId, companyId, txnId);
   const txn = await ledger.updateTransaction(tenantId, txnId, {
     txnType: 'aje',
     txnDate: input.txnDate,
@@ -79,21 +79,22 @@ export async function updateAje(tenantId: string, companyId: string, txnId: stri
   return txn;
 }
 
-export async function voidAje(tenantId: string, txnId: string, reason: string, userId?: string) {
-  await assertIsAje(tenantId, txnId);
+export async function voidAje(tenantId: string, companyId: string, txnId: string, reason: string, userId?: string) {
+  await loadAje(tenantId, companyId, txnId);
   return ledger.voidTransaction(tenantId, txnId, reason, userId);
 }
 
-async function loadAje(tenantId: string, txnId: string) {
+async function loadAje(tenantId: string, companyId: string, txnId: string) {
   const [txn] = await db.select().from(transactions)
     .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
     .limit(1);
-  if (!txn || txn.txnType !== 'aje') throw AppError.notFound('AJE not found');
+  // The company assertion matters: update/reverse/duplicate post lines
+  // under the REQUEST's company — a mismatched X-Company-Id header must
+  // not let entries tear across entities.
+  if (!txn || txn.txnType !== 'aje' || txn.companyId !== companyId) {
+    throw AppError.notFound('AJE not found');
+  }
   return txn;
-}
-
-async function assertIsAje(tenantId: string, txnId: string) {
-  await loadAje(tenantId, txnId);
 }
 
 async function loadLines(tenantId: string, txnId: string) {
@@ -115,7 +116,7 @@ export function firstOfNextMonth(dateIso: string): string {
 }
 
 export async function reverseAje(tenantId: string, companyId: string, txnId: string, userId?: string) {
-  const original = await loadAje(tenantId, txnId);
+  const original = await loadAje(tenantId, companyId, txnId);
   if (original.status === 'void') throw AppError.badRequest('Cannot reverse a void AJE');
   const lines = await loadLines(tenantId, txnId);
   const label = original.ajeNumber ? formatAjeNumber(original.ajeNumber) : 'AJE';
@@ -137,7 +138,7 @@ export async function reverseAje(tenantId: string, companyId: string, txnId: str
 }
 
 export async function duplicateAje(tenantId: string, companyId: string, txnId: string, userId?: string) {
-  const original = await loadAje(tenantId, txnId);
+  const original = await loadAje(tenantId, companyId, txnId);
   const lines = await loadLines(tenantId, txnId);
   return createAje(tenantId, companyId, {
     txnDate: original.txnDate,
@@ -172,7 +173,7 @@ export async function listAjes(tenantId: string, companyId: string, f: AjeListFi
   if (!f.includeVoid) conds.push(eq(transactions.status, 'posted'));
   if (f.fiscalYear) {
     const [c] = await db.select({ m: companies.fiscalYearStartMonth }).from(companies)
-      .where(eq(companies.id, companyId)).limit(1);
+      .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId))).limit(1);
     const m = c?.m ?? 1;
     const start = m === 1 ? `${f.fiscalYear}-01-01` : `${f.fiscalYear - 1}-${String(m).padStart(2, '0')}-01`;
     const endMonth = m === 1 ? 12 : m - 1;

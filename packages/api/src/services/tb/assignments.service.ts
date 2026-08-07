@@ -6,10 +6,10 @@
 // list is THE filtered surface (ADR-TB-02): pickers and the AI
 // assignment service consume it — never the raw seed table (6C.1).
 
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import {
-  accountTaxAssignments, companyTaxProfiles, firmTaxCodes, taxCodes,
+  accounts, accountTaxAssignments, activityUnits, companyTaxProfiles, firmTaxCodes, taxCodes,
 } from '../../db/schema/index.js';
 import { AppError } from '../../utils/errors.js';
 import { auditLog } from '../../middleware/audit.js';
@@ -101,6 +101,24 @@ export async function setAssignment(tenantId: string, companyId: string, input: 
   const hasFirm = !!input.firmCodeId;
   if (hasSeed === hasFirm) {
     throw AppError.badRequest('Provide exactly one of seed code or firm code', 'TB_NOT_ASSIGNABLE');
+  }
+  // The account must belong to this tenant/company; a unit must be one
+  // of the company's own (body-supplied FKs are otherwise trusted).
+  const [acct] = await db.select({ id: accounts.id }).from(accounts)
+    .where(and(
+      eq(accounts.tenantId, tenantId),
+      eq(accounts.id, input.accountId),
+      sql`(${accounts.companyId} = ${companyId} OR ${accounts.companyId} IS NULL)`,
+    )).limit(1);
+  if (!acct) throw AppError.notFound('Account not found');
+  if (input.activityUnitId) {
+    const [unit] = await db.select({ id: activityUnits.id }).from(activityUnits)
+      .where(and(
+        eq(activityUnits.tenantId, tenantId),
+        eq(activityUnits.companyId, companyId),
+        eq(activityUnits.id, input.activityUnitId),
+      )).limit(1);
+    if (!unit) throw AppError.notFound('Activity unit not found');
   }
   const check = await isCodeAssignable(tenantId, companyId, {
     seedCode: input.seedCode ?? null,

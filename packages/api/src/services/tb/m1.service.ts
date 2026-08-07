@@ -18,7 +18,7 @@
 // ending balance. Roles default by heuristic and are configurable per
 // entity (company_tax_profiles.equity_roles).
 
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { companies, companyTaxProfiles } from '../../db/schema/index.js';
 import { AppError } from '../../utils/errors.js';
@@ -61,7 +61,7 @@ export async function buildM1(tenantId: string, companyId: string, opts: { taxYe
     if (!isPl(row)) continue;
     bookIncome -= row.adjusted;
     taxIncome -= row.tax;
-    const delta = round2(row.tax - row.adjusted);
+    const delta = row.tax - row.adjusted;
     if (Math.abs(delta) < 0.005) continue;
     let category: M1Category;
     if (row.accountType === 'revenue') {
@@ -76,7 +76,7 @@ export async function buildM1(tenantId: string, companyId: string, opts: { taxYe
       accountNumber: row.accountNumber,
       name: row.name,
       category,
-      amount: Math.abs(delta),
+      amount: round2(Math.abs(delta)),
       flagged: flagged.has(row.accountId),
     });
   }
@@ -131,6 +131,19 @@ export async function setEquityRoles(tenantId: string, companyId: string, roles:
     .where(and(eq(companyTaxProfiles.tenantId, tenantId), eq(companyTaxProfiles.companyId, companyId)))
     .limit(1);
   if (!profile) throw AppError.unprocessableEntity('Set the company tax profile first', 'TB_NOT_ASSIGNABLE');
+  // Role keys must be this company's own equity accounts.
+  const ids = Object.keys(roles);
+  if (ids.length) {
+    const owned = await db.execute(sql`
+      SELECT COUNT(*)::int AS n FROM accounts
+      WHERE tenant_id = ${tenantId} AND id IN ${sql`(${sql.join(ids.map((i) => sql`${i}`), sql`, `)})`}
+        AND account_type = 'equity'
+        AND (company_id = ${companyId} OR company_id IS NULL)
+    `);
+    if (Number((owned.rows as Array<{ n: number }>)[0]?.n ?? 0) !== ids.length) {
+      throw AppError.badRequest('Roles may only reference this company’s equity accounts', 'TB_NOT_ASSIGNABLE');
+    }
+  }
   const [after] = await db.update(companyTaxProfiles).set({ equityRoles: roles, updatedAt: new Date() })
     .where(eq(companyTaxProfiles.id, profile.id)).returning();
   await auditLog(tenantId, 'update', 'tb_equity_roles', profile.id, { roles: profile.equityRoles }, { roles }, userId);
@@ -166,10 +179,21 @@ export async function buildM2(tenantId: string, companyId: string, opts: { taxYe
   const equityRows = wp.rows.filter((r) => r.accountType === 'equity');
   const priorEquity = prior.rows.filter((r) => r.accountType === 'equity');
   const priorByAccount = new Map(priorEquity.map((r) => [r.accountId, r.adjusted]));
-  const foldRow = equityRows.find((r) => r.isVirtualRe)
-    ?? equityRows.find((r) => r.detailType === 'retained_earnings');
+  // Fold target must match the engine's choice exactly: the designated
+  // system RE account when one exists, else the virtual RE row. Keying
+  // off detail_type could pick a different account and misstate
+  // beginning equity while still "reconciling".
+  const reRes = await db.execute(sql`
+    SELECT id FROM accounts
+    WHERE tenant_id = ${tenantId} AND system_tag = 'retained_earnings'
+      AND (company_id = ${companyId} OR company_id IS NULL)
+    ORDER BY company_id NULLS LAST LIMIT 1
+  `);
+  const systemReId = (reRes.rows as Array<{ id: string }>)[0]?.id ?? null;
+  const foldRowId = systemReId ?? equityRows.find((r) => r.isVirtualRe)?.accountId ?? null;
 
   const ids = new Set<string>([...equityRows.map((r) => r.accountId), ...priorEquity.map((r) => r.accountId)]);
+  if (foldRowId && priorBookIncome !== 0) ids.add(foldRowId);
   let beginning = 0;
   let distributions = 0;
   let contributions = 0;
@@ -178,9 +202,15 @@ export async function buildM2(tenantId: string, companyId: string, opts: { taxYe
   for (const id of ids) {
     const currentRow = equityRows.find((r) => r.accountId === id);
     const priorRow = priorEquity.find((r) => r.accountId === id);
-    const meta = currentRow ?? priorRow!;
-    const endingSigned = currentRow?.adjusted ?? priorRow?.adjusted ?? 0;
-    const beginningSigned = (priorByAccount.get(id) ?? 0) + (foldRow && id === foldRow.accountId ? -priorBookIncome : 0);
+    const meta = currentRow ?? priorRow ?? {
+      accountId: id, accountNumber: null,
+      name: 'Retained Earnings', detailType: 'retained_earnings',
+    } as unknown as TbWorkpaperRow;
+    // Absent from the current workpaper = the engine dropped an all-zero
+    // row → TRUE ending balance is 0 (falling back to the prior balance
+    // would fabricate an unchanged account and break the rollforward).
+    const endingSigned = currentRow?.adjusted ?? 0;
+    const beginningSigned = (priorByAccount.get(id) ?? 0) + (foldRowId && id === foldRowId ? -priorBookIncome : 0);
     const activitySigned = round2(endingSigned - beginningSigned);
     const role = roleOf(meta);
     accounts.push({

@@ -17,7 +17,7 @@ import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import { db, type Tx } from '../../db/index.js';
 import {
-  accountTaxAssignments, firmTaxCodes, taxCodes, tbTaxEntries, tbTaxEntryLines,
+  accounts, accountTaxAssignments, activityUnits, firmTaxCodes, taxCodes, tbTaxEntries, tbTaxEntryLines,
 } from '../../db/schema/index.js';
 import type { z } from 'zod';
 import type { createTaxEntrySchema } from '@kis-books/shared';
@@ -56,8 +56,49 @@ function assertBalanced(lines: TaxEntryInput['lines']) {
   if (dr.isZero()) throw AppError.unprocessableEntity('Tax entry has no amounts', 'TB_UNBALANCED');
 }
 
-export async function createTaxEntry(tenantId: string, companyId: string, input: TaxEntryInput, userId?: string) {
+async function assertLineRefs(tenantId: string, companyId: string, lines: TaxEntryInput['lines']) {
+  const accountIds = [...new Set(lines.map((l) => l.accountId))];
+  const owned = await db.select({ id: accounts.id }).from(accounts)
+    .where(and(
+      eq(accounts.tenantId, tenantId),
+      sql`${accounts.id} IN ${accountIds}`,
+      sql`(${accounts.companyId} = ${companyId} OR ${accounts.companyId} IS NULL)`,
+    ));
+  if (owned.length !== accountIds.length) {
+    throw AppError.badRequest('One or more accounts do not belong to this company', 'TB_NOT_ASSIGNABLE');
+  }
+  const unitIds = [...new Set(lines.map((l) => l.activityUnitId).filter((x): x is string => !!x))];
+  if (unitIds.length) {
+    const units = await db.select({ id: activityUnits.id }).from(activityUnits)
+      .where(and(
+        eq(activityUnits.tenantId, tenantId),
+        eq(activityUnits.companyId, companyId),
+        sql`${activityUnits.id} IN ${unitIds}`,
+      ));
+    if (units.length !== unitIds.length) {
+      throw AppError.badRequest('One or more activity units do not belong to this company', 'TB_UNIT_IN_USE');
+    }
+  }
+}
+
+export async function createTaxEntry(tenantId: string, companyId: string, input: TaxEntryInput, userId?: string, retried = false): Promise<Awaited<ReturnType<typeof insertTaxEntry>>> {
   assertBalanced(input.lines);
+  await assertLineRefs(tenantId, companyId, input.lines);
+  try {
+    return await insertTaxEntry(tenantId, companyId, input, userId);
+  } catch (err) {
+    // Concurrent creates race MAX(entry_number)+1 into the unique
+    // index — retry once with a fresh number instead of surfacing 500.
+    const pgCode = (err as { cause?: { code?: string }; code?: string });
+    const code = pgCode.code ?? pgCode.cause?.code;
+    if (code === '23505' && !retried) {
+      return createTaxEntry(tenantId, companyId, input, userId, true);
+    }
+    throw err;
+  }
+}
+
+async function insertTaxEntry(tenantId: string, companyId: string, input: TaxEntryInput, userId?: string) {
   return db.transaction(async (tx) => {
     const [max] = await tx.select({ n: sql<number>`COALESCE(MAX(${tbTaxEntries.entryNumber}), 0)::int` })
       .from(tbTaxEntries)
@@ -89,6 +130,7 @@ export async function createTaxEntry(tenantId: string, companyId: string, input:
 
 export async function updateTaxEntry(tenantId: string, companyId: string, id: string, input: TaxEntryInput, userId?: string) {
   assertBalanced(input.lines);
+  await assertLineRefs(tenantId, companyId, input.lines);
   return db.transaction(async (tx) => {
     const [before] = await tx.select().from(tbTaxEntries)
       .where(and(eq(tbTaxEntries.id, id), eq(tbTaxEntries.tenantId, tenantId), eq(tbTaxEntries.companyId, companyId)))

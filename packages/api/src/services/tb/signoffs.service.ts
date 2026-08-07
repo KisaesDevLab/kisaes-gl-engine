@@ -30,6 +30,7 @@ export async function checkCompletionGate(tenantId: string, companyId: string, t
 
   const signoffs = await db.select().from(tbLeadsheetSignoffs)
     .where(and(
+      eq(tbLeadsheetSignoffs.tenantId, tenantId),
       eq(tbLeadsheetSignoffs.companyId, companyId),
       eq(tbLeadsheetSignoffs.taxYear, taxYear),
       eq(tbLeadsheetSignoffs.role, 'reviewer'),

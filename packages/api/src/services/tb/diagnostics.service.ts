@@ -107,18 +107,23 @@ export async function runDiagnostics(
       continue;
     }
     // Tag-split gaps: a unit carrying balance without a resolvable code.
+    // The ZERO bucket counts too — an archived default unit routes
+    // balances there, and dropping it would hide one side of an entry.
     if (row.units.length > 1) {
-      for (const unitId of unitIds) {
-        if (unitId === ZERO_UUID) continue;
-        if (!resolveCodeFor(assignments, row.accountId, unitId)) {
-          const unit = units.find((u) => u.id === unitId);
+      for (const u of row.units) {
+        const carries = Math.abs(u.unadjusted) >= 0.005 || Math.abs(u.aje) >= 0.005 || Math.abs(u.taxRje) >= 0.005;
+        if (!carries) continue;
+        if (!resolveCodeFor(assignments, row.accountId, u.unitId)) {
+          const unit = units.find((x) => x.id === u.unitId);
           diagnostics.push({
             kind: 'split_gap',
             severity: 'error',
             accountId: row.accountId,
             accountName: row.name,
-            unitId,
-            message: `${row.name} splits into ${unit?.displayName ?? 'a unit'} with no resolvable tax code for that activity`,
+            unitId: u.unitId,
+            message: u.unitId === ZERO_UUID
+              ? `${row.name} routes balance to an unmapped bucket (archived default unit or no live units) with no resolvable tax code`
+              : `${row.name} splits into ${unit?.displayName ?? 'a unit'} with no resolvable tax code for that activity`,
           });
         }
       }

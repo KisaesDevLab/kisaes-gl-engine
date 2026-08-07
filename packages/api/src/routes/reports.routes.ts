@@ -14,6 +14,7 @@ import * as apReportService from '../services/ap-report.service.js';
 import * as exportService from '../services/report-export.service.js';
 import * as comparisonService from '../services/report-comparison.service.js';
 import * as tbReports from '../services/tb/tb-reports.service.js';
+import * as featureFlags from '../services/feature-flags.service.js';
 
 // Build-plan Phase 5 cache-invalidation hook. We don't run a Redis
 // report cache today, but clients may cache report responses locally
@@ -847,6 +848,18 @@ export function buildHtmlTable(rows: ExportRow[], columns: ExportColumn[]): stri
 }
 
 // Helper: respond with json, csv, or pdf
+// Download filenames must be ASCII-safe: titles may carry em-dashes or
+// other typography (the TB report family does), and Node's setHeader
+// rejects non-ASCII header bytes outright.
+function asciiFilename(title: unknown): string {
+  const base = String(title || 'report')
+    .replace(/[\u2013\u2014]/g, '-')
+    .replace(/[^\x20-\x7E]/g, '')
+    .replace(/["\\]/g, '')
+    .replace(/\s+/g, '_');
+  return base || 'report';
+}
+
 async function respond(res: any, reportData: any, format: string | undefined) {
   // Footer is only set by the three financial-statement builders (P&L,
   // Balance Sheet, Cash Flow). For other reports it's empty/undefined,
@@ -866,7 +879,7 @@ async function respond(res: any, reportData: any, format: string | undefined) {
       csv = csv + '\n' + escaped.join('\n');
     }
     res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename="${(reportData.title || 'report').replace(/\s+/g, '_')}.csv"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${asciiFilename(reportData.title)}.csv"`);
     return res.send(csv);
   }
   if (format === 'pdf') {
@@ -906,7 +919,7 @@ async function respond(res: any, reportData: any, format: string | undefined) {
     const html = exportService.toReportHtml(reportData.title || 'Report', companyName, dateLabel, tableHtml, footer);
     const pdf = await exportService.toPdf(html, { orientation });
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${(reportData.title || 'report').replace(/\s+/g, '_')}.pdf"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${asciiFilename(reportData.title)}.pdf"`);
     return res.send(pdf);
   }
   res.json(reportData);
@@ -1674,8 +1687,11 @@ reportsRouter.get('/account-activity-summary', async (req, res) => {
 // as the tb router). All accept end_date (tax year = the fiscal year
 // containing it) + basis; respond() gives json/csv/pdf uniformly.
 
-function tbGuard(req: Request): void {
+async function tbGuard(req: Request): Promise<void> {
   if (req.userType === 'client') throw AppError.notFound('Feature not available');
+  if (!(await featureFlags.isEnabled(req.tenantId, 'TRIAL_BALANCE_V1'))) {
+    throw AppError.notFound('Feature not available');
+  }
 }
 
 function tbParams(req: Request): { companyId: string; endDate: string; basis: 'accrual' | 'cash' } {
@@ -1707,8 +1723,10 @@ const TB_REPORTS: Record<string, (tenantId: string, p: { companyId: string; endD
 };
 
 for (const [slug, builder] of Object.entries(TB_REPORTS)) {
-  reportsRouter.get(`/${slug}`, async (req, res) => {
-    tbGuard(req);
+  // TB reports carry workpaper/AJE/RJE detail — they answer to the
+  // trial_balance resource (TB13), not just reports:read.
+  reportsRouter.get(`/${slug}`, requirePermission('trial_balance', 'read'), async (req, res) => {
+    await tbGuard(req);
     const params = tbParams(req);
     const data = await builder(req.tenantId, params, req);
     await respond(res, data, (req.query as Record<string, string>)['format']);

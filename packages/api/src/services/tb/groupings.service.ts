@@ -87,6 +87,11 @@ export async function seedDefaultGroupings(tenantId: string, companyId: string, 
 }
 
 export async function createGrouping(tenantId: string, companyId: string, input: { name: string; leadsheetCode?: string | null; parentId?: string | null; sortOrder?: number }, userId?: string) {
+  if (input.parentId) {
+    const [parent] = await db.select({ id: tbGroupings.id }).from(tbGroupings)
+      .where(and(eq(tbGroupings.id, input.parentId), eq(tbGroupings.tenantId, tenantId), eq(tbGroupings.companyId, companyId))).limit(1);
+    if (!parent) throw AppError.notFound('Parent grouping not found');
+  }
   const [g] = await db.insert(tbGroupings).values({
     tenantId, companyId,
     name: input.name,
@@ -212,6 +217,12 @@ export async function listTickmarkApplications(tenantId: string, companyId: stri
 }
 
 export async function applyTickmark(tenantId: string, companyId: string, input: { taxYear: number; accountId: string; column: string; tickmarkId: string; note?: string | null }, userId?: string) {
+  const [mark] = await db.select({ id: tbTickmarks.id }).from(tbTickmarks)
+    .where(and(eq(tbTickmarks.id, input.tickmarkId), eq(tbTickmarks.tenantId, tenantId))).limit(1);
+  if (!mark) throw AppError.notFound('Tickmark not found');
+  const [acct] = await db.select({ id: accounts.id }).from(accounts)
+    .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, input.accountId))).limit(1);
+  if (!acct) throw AppError.notFound('Account not found');
   const [row] = await db.insert(tbTickmarkApplications).values({
     tenantId, companyId,
     taxYear: input.taxYear,
@@ -243,6 +254,11 @@ export async function listNotes(tenantId: string, companyId: string, taxYear: nu
 }
 
 export async function createNote(tenantId: string, companyId: string, input: { taxYear: number; accountId?: string | null; body: string }, userId?: string) {
+  if (input.accountId) {
+    const [acct] = await db.select({ id: accounts.id }).from(accounts)
+      .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, input.accountId))).limit(1);
+    if (!acct) throw AppError.notFound('Account not found');
+  }
   const [row] = await db.insert(tbNotes).values({
     tenantId, companyId,
     taxYear: input.taxYear,

@@ -544,7 +544,11 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
     // AJEs are exempt (firm-only CRUD regardless of closing date — TB5).
     if (existing.txnType !== 'aje' && input.txnType !== 'aje') {
       await checkLockDate(tx, tenantId, existing.txnDate, existing.companyId);
-      await checkLockDate(tx, tenantId, input.txnDate, companyId ?? existing.companyId ?? null);
+      // Only re-check (and possibly re-audit an override) when the date
+      // actually moves — same-date edits shouldn't double-log.
+      if (input.txnDate !== existing.txnDate) {
+        await checkLockDate(tx, tenantId, input.txnDate, companyId ?? existing.companyId ?? null);
+      }
     }
 
     // Validate the new lines' account ownership inside this tenant/company.
@@ -971,6 +975,8 @@ export async function listTransactions(tenantId: string, filters: {
       tenantId: transactions.tenantId,
       txnType: transactions.txnType,
       txnNumber: transactions.txnNumber,
+      // TB module: the list badge shows AJE-nnn when present.
+      ajeNumber: transactions.ajeNumber,
       txnDate: transactions.txnDate,
       dueDate: transactions.dueDate,
       status: transactions.status,
@@ -1242,6 +1248,9 @@ export async function bulkUpdateTransactions(
 
       if (!txn) { skipped.push({ id: txnId, reason: 'not_found' }); continue; }
       if (txn.status === 'void') { skipped.push({ id: txnId, reason: 'void' }); continue; }
+      // TB3: AJE lifecycle is firm-only and runs through the tb router —
+      // bulk recategorize/retag must never rewrite an adjusting entry.
+      if (txn.txnType === 'aje') { skipped.push({ id: txnId, reason: 'aje' }); continue; }
       const lockDate = txn.companyId ? (lockByCompany.get(txn.companyId) ?? null) : maxLock;
       if (lockDate && txn.txnDate <= lockDate) { skipped.push({ id: txnId, reason: 'locked' }); continue; }
 

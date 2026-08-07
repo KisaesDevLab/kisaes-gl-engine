@@ -94,7 +94,7 @@ describe('AJE workflow', () => {
         txnDate: '2027-06-15', memo: 'locked-period AJE (edited)', basis: 'both',
         lines: [line(expenseId, 7, 0), line(cashId, 0, 7)],
       });
-      await voidAje(tenantId, aje.id, 'test void');
+      await voidAje(tenantId, companyId, aje.id, 'test void');
       const [voided] = await db.select({ status: transactions.status }).from(transactions)
         .where(eq(transactions.id, aje.id));
       expect(voided?.status).toBe('void');

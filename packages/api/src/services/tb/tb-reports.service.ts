@@ -165,6 +165,7 @@ export async function buildTbReturnOrderReport(tenantId: string, companyId: stri
     title: `Tax Return Order Report — TY${taxYear}${basisSuffix(basis)}`,
     startDate: null,
     endDate,
+    asOfDate: endDate,
     data,
     _exportColumns: [
       { key: 'code', label: 'Code' },
@@ -353,6 +354,7 @@ export async function buildTbAjeListing(tenantId: string, companyId: string, end
       : `AJE Listing — TY${taxYear}`,
     startDate: null,
     endDate,
+    asOfDate: endDate,
     data,
     _exportColumns: cols,
   };
@@ -384,6 +386,7 @@ export async function buildTbRjeListing(tenantId: string, companyId: string, end
     title: `Tax RJE Listing — TY${taxYear} (tax basis only — never posted to the books)`,
     startDate: null,
     endDate,
+    asOfDate: endDate,
     data,
     _exportColumns: [
       { key: 'number', label: '#' },
@@ -405,6 +408,7 @@ export async function buildTbCodeSummary(tenantId: string, companyId: string, en
     title: `Tax Code Summary — TY${taxYear}${basisSuffix(basis)}`,
     startDate: null,
     endDate,
+    asOfDate: endDate,
     data: dataset.lines.map((l) => ({
       code: l.code, description: l.description,
       accounts: l.accounts.length, amount: money(l.amount),
@@ -439,6 +443,7 @@ export async function buildTbM1Report(tenantId: string, companyId: string, endDa
     title: `Schedule M-1 Preview — TY${taxYear}${basisSuffix(basis)}${m1.reconciles ? '' : ' — DOES NOT RECONCILE'}`,
     startDate: null,
     endDate,
+    asOfDate: endDate,
     data,
     _exportColumns: [{ key: 'item', label: 'Item' }, num('amount', 'Amount')],
   };
@@ -463,6 +468,7 @@ export async function buildTbM2Report(tenantId: string, companyId: string, endDa
     title: `Schedule M-2 Rollforward — TY${taxYear}${basisSuffix(basis)}${m2.reconciles ? '' : ' — UNRECONCILED'}`,
     startDate: null,
     endDate,
+    asOfDate: endDate,
     data,
     _exportColumns: [{ key: 'item', label: 'Item' }, num('amount', 'Amount')],
   };
@@ -480,10 +486,10 @@ export async function buildTbWorkpaperIndex(tenantId: string, companyId: string,
   const { signoffs } = await listSignoffs(tenantId, companyId, taxYear);
   const marks = await db.select({ id: tbTickmarkApplications.id, accountId: tbTickmarkApplications.accountId })
     .from(tbTickmarkApplications)
-    .where(and(eq(tbTickmarkApplications.companyId, companyId), eq(tbTickmarkApplications.taxYear, taxYear)));
+    .where(and(eq(tbTickmarkApplications.tenantId, tenantId), eq(tbTickmarkApplications.companyId, companyId), eq(tbTickmarkApplications.taxYear, taxYear)));
   const notes = await db.select({ id: tbNotes.id, accountId: tbNotes.accountId, resolvedAt: tbNotes.resolvedAt })
     .from(tbNotes)
-    .where(and(eq(tbNotes.companyId, companyId), eq(tbNotes.taxYear, taxYear)));
+    .where(and(eq(tbNotes.tenantId, tenantId), eq(tbNotes.companyId, companyId), eq(tbNotes.taxYear, taxYear)));
   const data = groupings.map((g) => {
     const accts = new Set(memberships.filter((m) => m.groupingId === g.id).map((m) => m.accountId));
     const sig = (role: string) => {
@@ -506,6 +512,7 @@ export async function buildTbWorkpaperIndex(tenantId: string, companyId: string,
     title: `Workpaper Index — TY${taxYear}`,
     startDate: null,
     endDate,
+    asOfDate: endDate,
     data,
     _exportColumns: [
       { key: 'code', label: 'WP' },
@@ -529,6 +536,7 @@ export async function buildTbDiagnosticsReport(tenantId: string, companyId: stri
     title: `TB Diagnostics — TY${taxYear}${basisSuffix(basis)} — ${diag.errorCount} errors / ${diag.warningCount} warnings`,
     startDate: null,
     endDate,
+    asOfDate: endDate,
     data: diag.diagnostics.map((d) => ({
       severity: d.severity,
       kind: d.kind.replace(/_/g, ' '),

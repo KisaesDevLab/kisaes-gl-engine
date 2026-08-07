@@ -31,7 +31,7 @@ import {
   accountTaxAssignments, activityUnits, companies, glVersionStamps,
   tagActivityMap, tbTaxEntries, tbTaxEntryLines,
 } from '../../db/schema/index.js';
-import { cashBasisLinesWith, getFiscalYearStart } from '../report.service.js';
+import { cashBasisLinesWith } from '../report.service.js';
 import { taxYearOf } from './tax-profile.service.js';
 import { AppError } from '../../utils/errors.js';
 import { log } from '../../utils/logger.js';
@@ -139,7 +139,7 @@ export async function computeWorkpaper(tenantId: string, companyId: string, opts
     .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)))
     .limit(1);
   if (!company) throw AppError.notFound('Company not found');
-  const fyStartMonth = (company.fyStartMonth ?? 1) || (await getFiscalYearStart(tenantId, companyId));
+  const fyStartMonth = company.fyStartMonth ?? 1;
   const fyStart = fyStartFor(opts.periodEnd, fyStartMonth);
   const taxYear = opts.taxYear ?? taxYearOf(opts.periodEnd, fyStartMonth);
   const stamp = await getGlVersionStamp(tenantId, companyId);
@@ -155,8 +155,10 @@ export async function computeWorkpaper(tenantId: string, companyId: string, opts
 
   // Tag→unit resolution happens in SQL: line unit = mapped unit of the
   // line's tag, else the default unit, else the ZERO_UUID bucket (no
-  // units configured). Company scope includes NULL-company (tenant-
-  // wide) transactions, matching report behavior under a company filter.
+  // units configured). Company scope is STRICT (= companyId, NULL
+  // excluded) on both bases, matching cashBasisLinesWith and
+  // buildTrialBalance — the Adjusted ≡ published-TB identity depends
+  // on all three agreeing.
   const raw = opts.basis === 'cash'
     ? await db.execute(sql`
         WITH ${cashBasisLinesWith(tenantId, null, opts.periodEnd, companyId)}
@@ -202,7 +204,7 @@ export async function computeWorkpaper(tenantId: string, companyId: string, opts
           AND t.tenant_id = ${tenantId} AND t.status = 'posted'
           AND t.txn_date <= ${opts.periodEnd}
           AND t.basis <> 'cash'
-          AND (t.company_id = ${companyId} OR t.company_id IS NULL)
+          AND t.company_id = ${companyId}
         JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = ${tenantId}
         LEFT JOIN tag_activity_map tam
           ON tam.company_id = ${companyId} AND tam.tag_id = jl.tag_id

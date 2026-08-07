@@ -30,7 +30,12 @@ import { REPORT_CATALOG } from '@kis-books/shared';
 export const reportPacksRouter = Router();
 reportPacksRouter.use(authenticate);
 reportPacksRouter.use(companyContext);
-reportPacksRouter.use(expensiveOpLimiter);
+// Path-scoped: this router mounts at /api/v1/reports BEFORE the main
+// reports router, so a router-wide limiter here would double-count
+// every fallthrough /reports/* request (halving the shared budget).
+// All of this router's own routes live under /catalog, /letters, and
+// /packs.
+reportPacksRouter.use(['/catalog', '/letters', '/packs'], expensiveOpLimiter);
 
 const readPerm = requirePermission('reports', 'read');
 

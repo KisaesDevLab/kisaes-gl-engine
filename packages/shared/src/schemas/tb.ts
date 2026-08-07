@@ -10,8 +10,11 @@ import { createJournalEntrySchema } from './transactions.js';
 
 // An AJE is shaped exactly like a manual JE (multi-line, per-line tags,
 // basis) — the difference is txn_type, numbering, and the firm-only
-// route that accepts it (rule TB3).
-export const createAjeSchema = createJournalEntrySchema;
+// route that accepts it (rule TB3). draftAttachmentId must live IN the
+// schema: validate() replaces req.body with the stripped parse.
+export const createAjeSchema = createJournalEntrySchema.extend({
+  draftAttachmentId: z.string().uuid().optional(),
+});
 
 export const tbReturnForms = ['1040', '1065', '1120', '1120S'] as const;
 export type TbReturnForm = typeof tbReturnForms[number];
@@ -36,7 +39,10 @@ export type TbWorkflowState = typeof tbWorkflowStates[number];
 export const seedImportSchema = z.object({
   taxYear: z.coerce.number().int().min(2000).max(2100),
   label: z.string().max(200).optional(),
-  dryRun: z.coerce.boolean().optional().default(false),
+  // Multipart fields arrive as STRINGS and z.coerce.boolean() is
+  // Boolean(input) — Boolean('false') === true. Parse explicitly.
+  dryRun: z.union([z.boolean(), z.enum(['true', 'false']).transform((v) => v === 'true')])
+    .optional().default(false),
 });
 
 const vendorCode = z.string().max(50).nullable().optional();
@@ -48,7 +54,7 @@ export const createFirmTaxCodeSchema = z.object({
   returnForm: z.enum(tbReturnForms),
   activityType: z.enum(tbActivityTypes),
   sortOrder: z.coerce.number().int().min(0).max(1_000_000).optional().default(0),
-  isM1Adjustment: z.coerce.boolean().optional().default(false),
+  isM1Adjustment: z.boolean().optional().default(false),
   ultrataxCode: vendorCode,
   cchCode: vendorCode,
   lacerteCode: vendorCode,
@@ -57,7 +63,7 @@ export const createFirmTaxCodeSchema = z.object({
 });
 
 export const updateFirmTaxCodeSchema = createFirmTaxCodeSchema.partial().extend({
-  isActive: z.coerce.boolean().optional(),
+  isActive: z.boolean().optional(),
 });
 
 export const upsertTaxProfileSchema = z.object({
@@ -94,4 +100,5 @@ export const createTaxEntrySchema = z.object({
     credit: z.string().regex(/^\d+(\.\d{1,4})?$/).default('0'),
     description: z.string().max(500).optional(),
   })).min(2).max(100),
+  draftAttachmentId: z.string().uuid().optional(),
 });

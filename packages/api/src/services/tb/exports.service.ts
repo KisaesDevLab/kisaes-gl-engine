@@ -24,9 +24,11 @@ import { auditLog } from '../../middleware/audit.js';
 import { incCounter } from '../../utils/metrics.js';
 import { getProviderForTenant } from '../storage/storage-provider.factory.js';
 import { tenantStorageKey } from '../storage/storage-keys.js';
+import { neutralizeFormula } from '../report-export.service.js';
 import { computeWorkpaper, ZERO_UUID, type TbBasis } from './balance-engine.service.js';
 import { fiscalYearEnd } from './tax-profile.service.js';
 import { resolveSeedVersionId } from './assignments.service.js';
+import { resolveOwner } from './firm-tax-codes.service.js';
 import { resolveCodeFor } from './diagnostics.service.js';
 import { runDiagnostics } from './diagnostics.service.js';
 
@@ -86,7 +88,12 @@ async function loadCodeMeta(tenantId: string, companyId: string): Promise<Map<st
       });
     }
   }
-  const firmRows = await db.select().from(firmTaxCodes).where(eq(firmTaxCodes.isActive, true));
+  const owner = await resolveOwner(tenantId);
+  const firmRows = await db.select().from(firmTaxCodes)
+    .where(and(
+      eq(firmTaxCodes.isActive, true),
+      owner.firmId ? eq(firmTaxCodes.firmId, owner.firmId) : eq(firmTaxCodes.tenantId, tenantId),
+    ));
   for (const r of firmRows) {
     meta.set(`firm|${r.id}`, {
       code: r.code, description: r.description, activityType: r.activityType, sortOrder: r.sortOrder,
@@ -116,17 +123,25 @@ export async function buildTaxDataset(
   const unassigned: TaxDataset['unassigned'] = [];
   for (const row of wp.rows) {
     if (row.isVirtualRe) {
-      // Prior-years RE is a computed row; it flows through the real RE
-      // account's assignment when one exists, else stays book-only.
+      // Prior-years RE has no real account to assign — surface it so
+      // the preparer designates a Retained Earnings account instead of
+      // the balance silently missing from the file.
+      if (Math.abs(row.tax) >= 0.005) {
+        unassigned.push({ accountId: row.accountId, name: `${row.name} (designate a Retained Earnings account)` });
+      }
       continue;
     }
     const units = row.units.length ? row.units : [{ unitId: ZERO_UUID, unadjusted: row.unadjusted, aje: row.aje, adjusted: row.adjusted, taxRje: row.taxRje, tax: row.tax }];
-    let anyResolved = false;
+    let dropped = false;
     for (const u of units) {
       if (Math.abs(u.tax) < 0.005) continue;
       const assignment = resolveCodeFor(assignments, row.accountId, u.unitId);
-      if (!assignment) continue;
-      anyResolved = true;
+      if (!assignment) {
+        // A unit split with balance and no resolvable code would drop
+        // one side of a balanced entry from the file — hard finding.
+        dropped = true;
+        continue;
+      }
       const key = assignment.firmCodeId ? `firm|${assignment.firmCodeId}` : `seed|${(assignment as { seedActivityType?: string }).seedActivityType}|${assignment.seedCode}`;
       const m = meta.get(key);
       if (!m) continue;
@@ -142,13 +157,17 @@ export async function buildTaxDataset(
         };
         byCode.set(key, line);
       }
-      line.amount = Math.round((line.amount + u.tax) * 100) / 100;
+      // Accumulate raw and round once at the end — per-addition rounding
+      // drifts on cash-basis allocation dust.
+      line.amount = line.amount + u.tax;
       line.accounts.push({ accountId: row.accountId, accountNumber: row.accountNumber, name: row.name, unitId: u.unitId, amount: u.tax });
     }
-    const hasBalance = Math.abs(row.tax) >= 0.005;
-    if (!anyResolved && hasBalance) {
+    if (dropped) {
       unassigned.push({ accountId: row.accountId, name: row.name });
     }
+  }
+  for (const line of byCode.values()) {
+    line.amount = Math.round(line.amount * 100) / 100;
   }
 
   const lines = [...byCode.values()].sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code));
@@ -206,7 +225,13 @@ export async function validateForExport(
 // ── File builders ───────────────────────────────────────────────────
 
 function csv(rows: string[][]): Buffer {
-  const esc = (v: string) => /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+  // Same defense as report-export.service: user-authored text (custom
+  // code descriptions, unit names) must not execute as a formula when
+  // the file opens in Excel.
+  const esc = (v: string) => {
+    const safe = neutralizeFormula(v);
+    return /[",\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+  };
   return Buffer.from(rows.map((r) => r.map(esc).join(',')).join('\n') + '\n', 'utf8');
 }
 
@@ -358,8 +383,9 @@ export async function generateExport(
         null, { software: opts.software, taxYear: opts.taxYear }, userId);
     }
     const [company] = await db.select({ name: companies.businessName }).from(companies)
-      .where(eq(companies.id, companyId)).limit(1);
-    const units = await db.select().from(activityUnits).where(eq(activityUnits.companyId, companyId));
+      .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId))).limit(1);
+    const units = await db.select().from(activityUnits)
+      .where(and(eq(activityUnits.tenantId, tenantId), eq(activityUnits.companyId, companyId)));
     const unitNames = new Map(units.map((u) => [u.id, `${u.displayName}`]));
     const file = await buildVendorFile(opts.software, dataset, company?.name ?? '', unitNames);
     ({ buffer, fileName, mimeType } = file);
