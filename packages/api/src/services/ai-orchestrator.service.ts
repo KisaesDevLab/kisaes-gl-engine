@@ -317,7 +317,10 @@ export async function completeJob(jobId: string, result: CompletionResult, outpu
     provider: result.provider,
     model: result.model,
     outputData,
-    confidenceScore: String(confidenceScore),
+    // ai_jobs.confidence_score is decimal(3,2) — a 0–1 scale. A caller
+    // passing percent (0–100) must not blow up the whole request with a
+    // numeric-overflow 500 after the AI call already succeeded.
+    confidenceScore: (Math.min(Math.max(confidenceScore > 1 ? confidenceScore / 100 : confidenceScore, 0), 1)).toFixed(2),
     inputTokens: result.inputTokens,
     outputTokens: result.outputTokens,
     estimatedCost,

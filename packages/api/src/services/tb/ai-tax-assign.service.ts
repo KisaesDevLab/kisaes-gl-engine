@@ -142,7 +142,7 @@ export async function suggestAssignments(
       throw AppError.unprocessableEntity('AI returned an unusable response — try again', 'TB_AI_PARSE');
     }
     const parsed = validateModelOutput(suggestionSchema, result.parsed, 'tb tax assignment');
-    await orchestrator.completeJob(job.id, result, { count: parsed.suggestions.length }, 100);
+    await orchestrator.completeJob(job.id, result, { count: parsed.suggestions.length }, 1);
 
     const byId = new Map(unassigned.map((r) => [r.accountId, r]));
     const codeMeta = new Map(available.seedCodes.map((c) => [`${c.code}|${c.activityType}`, c]));
@@ -241,7 +241,7 @@ export async function aiDiagnostics(
       throw AppError.unprocessableEntity('AI returned an unusable response — try again', 'TB_AI_PARSE');
     }
     const parsed = validateModelOutput(aiDiagnosticsSchema, result.parsed, 'tb ai diagnostics');
-    await orchestrator.completeJob(job.id, result, { count: parsed.warnings.length }, 100);
+    await orchestrator.completeJob(job.id, result, { count: parsed.warnings.length }, 1);
     // Drop hallucinated account ids but keep dataset-level warnings.
     const validIds = new Set(wp.rows.map((r) => r.accountId));
     const warnings = parsed.warnings.filter((w) => !w.accountId || validIds.has(w.accountId));
