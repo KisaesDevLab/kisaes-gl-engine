@@ -22,6 +22,13 @@ import * as unitsService from '../services/tb/activity-units.service.js';
 import * as balanceEngine from '../services/tb/balance-engine.service.js';
 import * as ajeService from '../services/tb/aje.service.js';
 import * as attachmentService from '../services/attachment.service.js';
+import * as assignmentsService from '../services/tb/assignments.service.js';
+import * as diagnosticsService from '../services/tb/diagnostics.service.js';
+import * as signoffsService from '../services/tb/signoffs.service.js';
+import * as aiTaxAssign from '../services/tb/ai-tax-assign.service.js';
+import { db } from '../db/index.js';
+import { tbStatus } from '../db/schema/index.js';
+import { and, eq } from 'drizzle-orm';
 
 // Trial Balance module router (docs/tb/BUILD_PLAN.md). Firm-side only:
 // client-type users get a 404 (surface hidden, same pattern as
@@ -153,6 +160,176 @@ tbRouter.get('/assignments', async (req, res) => {
 tbRouter.get('/version', async (req, res) => {
   const glVersionStamp = await balanceEngine.getGlVersionStamp(req.tenantId, req.companyId!);
   res.json({ glVersionStamp });
+});
+
+// ── Assignments & available codes (Phase 6.2 / 6C.1) ───────────────
+
+// THE filtered code surface (ADR-TB-02). Pickers and the AI assignment
+// service consume this — never the raw seed table.
+tbRouter.get('/tax-codes/available', async (req, res) => {
+  const result = await assignmentsService.listAvailableCodes(req.tenantId, req.companyId!);
+  res.json(result);
+});
+
+const setAssignmentSchema = z.object({
+  accountId: z.string().uuid(),
+  activityUnitId: z.string().uuid().nullable().optional(),
+  seedCode: z.string().max(50).nullable().optional(),
+  seedActivityType: z.string().max(20).nullable().optional(),
+  firmCodeId: z.string().uuid().nullable().optional(),
+  activityUnitType: z.string().max(20).optional(),
+  effectiveTaxYear: z.coerce.number().int().optional(),
+  // 'ai' when the user ACCEPTS an AI suggestion (6C.4) — acceptance is
+  // always an explicit user act; the server never auto-commits.
+  source: z.enum(['manual', 'ai']).optional().default('manual'),
+  aiConfidence: z.coerce.number().int().min(0).max(100).nullable().optional(),
+});
+
+tbRouter.put('/assignments', validate(setAssignmentSchema), async (req, res) => {
+  const assignment = await assignmentsService.setAssignment(req.tenantId, req.companyId!, req.body, req.userId);
+  res.json({ assignment });
+});
+
+tbRouter.delete('/assignments/:accountId', async (req, res) => {
+  const unitId = typeof req.query['activityUnitId'] === 'string' ? req.query['activityUnitId'] : null;
+  await assignmentsService.clearAssignment(req.tenantId, req.companyId!, String(req.params['accountId']), unitId, req.userId);
+  res.status(204).end();
+});
+
+tbRouter.post('/assignments/bulk', validate(z.object({ assignments: z.array(setAssignmentSchema).max(500) })), async (req, res) => {
+  const results = await assignmentsService.bulkAssign(
+    req.tenantId, req.companyId!,
+    (req.body.assignments as assignmentsService.SetAssignmentInput[]).map((a) => ({ ...a, source: 'manual' as const })),
+    req.userId,
+  );
+  res.json({ results });
+});
+
+// ── AI assignment + diagnostics (Phase 6C — advisory) ──────────────
+
+tbRouter.post('/ai/suggest-assignments', async (req, res) => {
+  const q = workpaperQuerySchema.parse(req.body);
+  const result = await aiTaxAssign.suggestAssignments(req.tenantId, req.companyId!, {
+    periodEnd: q.periodEnd, basis: q.basis,
+  });
+  res.json(result);
+});
+
+tbRouter.post('/ai/diagnostics', async (req, res) => {
+  const q = workpaperQuerySchema.parse(req.body);
+  const result = await aiTaxAssign.aiDiagnostics(req.tenantId, req.companyId!, {
+    periodEnd: q.periodEnd, basis: q.basis,
+  });
+  res.json(result);
+});
+
+// ── Diagnostics (Phase 6.4 — authoritative for export gating) ──────
+
+tbRouter.get('/diagnostics', async (req, res) => {
+  const q = workpaperQuerySchema.parse(req.query);
+  const result = await diagnosticsService.runDiagnostics(req.tenantId, req.companyId!, {
+    periodEnd: q.periodEnd, basis: q.basis, taxYear: q.taxYear,
+  });
+  res.json(result);
+});
+
+// ── Workflow status (Phase 6.6; 'complete' gate hardens in 7.8) ────
+
+tbRouter.get('/status', async (req, res) => {
+  const taxYear = Number(req.query['taxYear']) || new Date().getUTCFullYear();
+  const [status] = await db.select().from(tbStatus)
+    .where(and(eq(tbStatus.companyId, req.companyId!), eq(tbStatus.taxYear, taxYear)))
+    .limit(1);
+  res.json({ status: status ?? { workflowState: 'open', taxYear } });
+});
+
+const statusSchema = z.object({
+  taxYear: z.coerce.number().int().min(2000).max(2100),
+  workflowState: z.enum(['open', 'in_review', 'complete']),
+});
+
+tbRouter.put('/status', validate(statusSchema), async (req, res) => {
+  const { taxYear, workflowState } = req.body as { taxYear: number; workflowState: 'open' | 'in_review' | 'complete' };
+  if (workflowState === 'complete') {
+    // 7.8: completion requires reviewer sign-off on every grouping; a
+    // firm admin may override (audited). Until Phase 7 lands there are
+    // no groupings, so the gate trivially passes.
+    const gate = await signoffsService.checkCompletionGate(req.tenantId, req.companyId!, taxYear);
+    if (!gate.ok && !(req.body as { overrideConfirmed?: boolean }).overrideConfirmed) {
+      throw AppError.unprocessableEntity(gate.reason ?? 'Reviewer sign-offs incomplete', 'TB_STATUS_GATE', { missing: gate.missing });
+    }
+  }
+  const [existing] = await db.select().from(tbStatus)
+    .where(and(eq(tbStatus.companyId, req.companyId!), eq(tbStatus.taxYear, taxYear))).limit(1);
+  let row;
+  if (existing) {
+    [row] = await db.update(tbStatus).set({
+      workflowState,
+      completedBy: workflowState === 'complete' ? req.userId : null,
+      completedAt: workflowState === 'complete' ? new Date() : null,
+      updatedAt: new Date(),
+    }).where(eq(tbStatus.id, existing.id)).returning();
+  } else {
+    [row] = await db.insert(tbStatus).values({
+      tenantId: req.tenantId,
+      companyId: req.companyId!,
+      taxYear,
+      workflowState,
+      completedBy: workflowState === 'complete' ? req.userId : null,
+      completedAt: workflowState === 'complete' ? new Date() : null,
+    }).returning();
+  }
+  res.json({ status: row });
+});
+
+// ── Live change stream (Phase 6B.4, ADR-TB-06) ─────────────────────
+// SSE emitting glVersionStamp bumps. Poll-based over the stamp table
+// (1.5s — the stamp read is a two-row indexed lookup), mirroring the
+// ai.routes SSE conventions: no-transform disables compression
+// buffering, heartbeats keep proxies open, 30-min ceiling.
+
+tbRouter.get('/stream', async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+  res.write(': connected\n\n');
+
+  const tenantId = req.tenantId;
+  const companyId = req.companyId!;
+  let last = await balanceEngine.getGlVersionStamp(tenantId, companyId);
+  res.write(`event: stamp\ndata: ${JSON.stringify({ glVersionStamp: last })}\n\n`);
+
+  let closed = false;
+  const started = Date.now();
+  const MAX_MS = 30 * 60 * 1000;
+  const poll = setInterval(async () => {
+    if (closed) return;
+    try {
+      const current = await balanceEngine.getGlVersionStamp(tenantId, companyId);
+      if (current !== last) {
+        last = current;
+        res.write(`event: stamp\ndata: ${JSON.stringify({ glVersionStamp: current })}\n\n`);
+      }
+      if (Date.now() - started > MAX_MS) {
+        res.write('event: close\ndata: {}\n\n');
+        cleanup();
+        res.end();
+      }
+    } catch {
+      // Transient DB hiccup — keep the stream; the next tick retries.
+    }
+  }, 1500);
+  const heartbeat = setInterval(() => {
+    if (!closed) res.write(': hb\n\n');
+  }, 15000);
+  const cleanup = () => {
+    closed = true;
+    clearInterval(poll);
+    clearInterval(heartbeat);
+  };
+  req.on('close', cleanup);
 });
 
 // ── Company tax profile (Phase 3.1) ────────────────────────────────
