@@ -10,7 +10,7 @@
 
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../../db/index.js';
-import { tbGroupings, tbLeadsheetSignoffs } from '../../db/schema/index.js';
+import { tbGroupings, tbLeadsheetSignoffs, users } from '../../db/schema/index.js';
 import { AppError } from '../../utils/errors.js';
 import { auditLog } from '../../middleware/audit.js';
 import { getGlVersionStamp } from './balance-engine.service.js';
@@ -51,7 +51,9 @@ export async function checkCompletionGate(tenantId: string, companyId: string, t
 // staleness check and the workpaper cache key exact for RJE edits.
 export async function listSignoffs(tenantId: string, companyId: string, taxYear: number) {
   const [signoffs, currentStamp] = await Promise.all([
-    db.select().from(tbLeadsheetSignoffs)
+    db.select({ s: tbLeadsheetSignoffs, signedByName: users.displayName })
+      .from(tbLeadsheetSignoffs)
+      .leftJoin(users, eq(tbLeadsheetSignoffs.userId, users.id))
       .where(and(
         eq(tbLeadsheetSignoffs.tenantId, tenantId),
         eq(tbLeadsheetSignoffs.companyId, companyId),
@@ -61,8 +63,9 @@ export async function listSignoffs(tenantId: string, companyId: string, taxYear:
     getGlVersionStamp(tenantId, companyId),
   ]);
   return {
-    signoffs: signoffs.map((s) => ({
+    signoffs: signoffs.map(({ s, signedByName }) => ({
       ...s,
+      signedByName: signedByName ?? null,
       stale: Number(s.glVersionStampAtSignoff) < currentStamp,
     })),
     currentStamp,

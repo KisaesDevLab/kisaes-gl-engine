@@ -14,7 +14,8 @@ import { fileURLToPath } from 'node:url';
 import { db, pool } from '../../db/index.js';
 import {
   accounts, accountTaxAssignments, companies, companyTaxProfiles,
-  journalLines, tbGroupings, tenants, transactions,
+  journalLines, tbGroupings, tbTickmarkApplications, tbTickmarks,
+  tenants, transactions,
 } from '../../db/schema/index.js';
 import { importSeed } from './tax-code-seed.service.js';
 import { seedDefaultGroupings } from './groupings.service.js';
@@ -65,6 +66,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await db.execute(sql`DELETE FROM tb_tickmark_applications WHERE tenant_id = ${tenantId}`);
+  await db.execute(sql`DELETE FROM tb_tickmarks WHERE tenant_id = ${tenantId}`);
   await db.execute(sql`DELETE FROM tb_grouping_accounts WHERE tenant_id = ${tenantId}`);
   await db.execute(sql`DELETE FROM tb_groupings WHERE tenant_id = ${tenantId}`);
   await db.delete(accountTaxAssignments).where(eq(accountTaxAssignments.tenantId, tenantId));
@@ -126,11 +129,25 @@ describe('TB report family (Phase 12)', () => {
     expect(Number(net['book'])).toBeCloseTo(800, 2);
   });
 
-  it('leadsheets report: sign-off line per grouping, grouping_id scopes to one', async () => {
+  it('leadsheets report: sign-off line per grouping, grouping_id scopes to one, used-marks legend', async () => {
+    // Apply one tickmark to Cash; a second unused tickmark must NOT
+    // reach the legend.
+    const [used] = await db.insert(tbTickmarks).values({ tenantId, symbol: 'F', description: 'Footed', sortOrder: 1 }).returning();
+    await db.insert(tbTickmarks).values({ tenantId, symbol: 'Z', description: 'Unused mark', sortOrder: 2 });
+    await db.insert(tbTickmarkApplications).values({
+      tenantId, companyId, taxYear: 2026, accountId: A['Cash']!, column: 'adjusted', tickmarkId: used!.id,
+    });
+
     const all = await tbReports.buildTbLeadsheetsReport(tenantId, companyId, END, 'accrual');
     expect(all.title).toContain('Leadsheets');
-    // Every rendered section carries a Prepared/Reviewed line.
-    const sections = all.data.filter((r) => r['account_number'] === '---').length;
+    const legendHeader = all.data.findIndex((r) => r['name'] === 'Tickmark Legend');
+    expect(legendHeader).toBeGreaterThan(-1);
+    const legendRows = all.data.slice(legendHeader + 1);
+    expect(legendRows.map((r) => r['marks'])).toEqual(['F']);
+    expect(legendRows[0]!['name']).toBe('Footed');
+    // Every rendered leadsheet section carries a Prepared/Reviewed line
+    // (the Tickmark Legend banner is a section marker too — exclude it).
+    const sections = all.data.filter((r) => r['account_number'] === '---' && r['name'] !== 'Tickmark Legend').length;
     const sigLines = all.data.filter((r) => String(r['name']).startsWith('Prepared:')).length;
     expect(sections).toBeGreaterThan(0);
     expect(sigLines).toBe(sections);
@@ -140,7 +157,7 @@ describe('TB report family (Phase 12)', () => {
       .limit(1);
     const single = await tbReports.buildTbLeadsheetsReport(tenantId, companyId, END, 'accrual', anyGrouping!.id);
     expect(single.title).toMatch(/^Leadsheet /);
-    expect(single.data.filter((r) => r['account_number'] === '---').length).toBe(1);
+    expect(single.data.filter((r) => r['account_number'] === '---' && r['name'] !== 'Tickmark Legend').length).toBe(1);
 
     await expect(tbReports.buildTbLeadsheetsReport(tenantId, companyId, END, 'accrual', '00000000-0000-0000-0000-000000000099'))
       .rejects.toMatchObject({ statusCode: 404 });

@@ -167,6 +167,7 @@ export async function buildTbLeadsheetsReport(
   const marks = await db.select({
     accountId: tbTickmarkApplications.accountId,
     symbol: tbTickmarks.symbol,
+    description: tbTickmarks.description,
   }).from(tbTickmarkApplications)
     .innerJoin(tbTickmarks, eq(tbTickmarkApplications.tickmarkId, tbTickmarks.id))
     .where(and(
@@ -175,18 +176,23 @@ export async function buildTbLeadsheetsReport(
       eq(tbTickmarkApplications.taxYear, taxYear),
     ));
   const marksByAccount = new Map<string, Set<string>>();
+  const markDescriptions = new Map<string, string>();
   for (const m of marks) {
     const set = marksByAccount.get(m.accountId) ?? new Set();
     set.add(m.symbol);
     marksByAccount.set(m.accountId, set);
+    markDescriptions.set(m.symbol, m.description);
   }
+  // Who signed, when — names print on the leadsheet.
   const sigLabel = (gId: string, role: string) => {
     const s = signoffs.find((x) => x.groupingId === gId && x.role === role);
     if (!s) return 'not signed';
-    return `${String(s.signedAt).slice(0, 10)}${s.stale ? ' (STALE)' : ''}`;
+    const who = s.signedByName ? `${s.signedByName} ` : '';
+    return `${who}${String(s.signedAt).slice(0, 10)}${s.stale ? ' (STALE)' : ''}`;
   };
 
   const data: Array<Record<string, unknown>> = [];
+  const usedSymbols = new Set<string>();
   for (const g of groupings) {
     const members = new Set(memberships.filter((m) => m.groupingId === g.id).map((m) => m.accountId));
     const rows = wp.rows.filter((r) => members.has(r.accountId));
@@ -195,9 +201,11 @@ export async function buildTbLeadsheetsReport(
     data.push({ account_number: '---', name: label, unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '', marks: '' });
     const totals = { unadjusted: 0, aje: 0, adjusted: 0, tax_rje: 0, tax: 0 };
     for (const r of rows) {
+      const rowMarks = [...(marksByAccount.get(r.accountId) ?? [])];
+      rowMarks.forEach((sym) => usedSymbols.add(sym));
       data.push({
         ...toFiveCol(r),
-        marks: [...(marksByAccount.get(r.accountId) ?? [])].join(' '),
+        marks: rowMarks.join(' '),
       });
       totals.unadjusted += r.unadjusted; totals.aje += r.aje; totals.adjusted += r.adjusted;
       totals.tax_rje += r.taxRje; totals.tax += r.tax;
@@ -211,6 +219,16 @@ export async function buildTbLeadsheetsReport(
       account_number: '', name: `Prepared: ${sigLabel(g.id, 'preparer')} · Reviewed: ${sigLabel(g.id, 'reviewer')}`,
       unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '', marks: '',
     });
+  }
+  // Tickmark legend — only the symbols that actually appear on the
+  // printed leadsheet(s); the PDF has no hover tooltip to lean on.
+  if (usedSymbols.size > 0) {
+    data.push({ account_number: '---', name: 'Tickmark Legend', unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '', marks: '' });
+    for (const sym of [...usedSymbols].sort()) {
+      data.push({
+        account_number: '', name: markDescriptions.get(sym) ?? '', unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '', marks: sym,
+      });
+    }
   }
   const single = groupingId ? groupings[0] : null;
   const singleLabel = single ? `${single.leadsheetCode ? single.leadsheetCode + ' — ' : ''}${single.name}` : null;
