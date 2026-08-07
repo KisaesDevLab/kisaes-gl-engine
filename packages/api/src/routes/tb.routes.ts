@@ -231,10 +231,18 @@ tbRouter.post('/assignments/bulk', validate(z.object({ assignments: z.array(setA
 
 // ── AI assignment + diagnostics (Phase 6C — advisory) ──────────────
 
+// Batched: each call analyzes a capped slice of the unassigned
+// accounts and reports `remaining`; the panel loops, passing the
+// already-analyzed ids back via excludeAccountIds.
+const aiSuggestSchema = z.object({
+  excludeAccountIds: z.array(z.string().uuid()).max(1000).optional(),
+});
+
 tbRouter.post('/ai/suggest-assignments', expensiveOpLimiter, async (req, res) => {
   const q = workpaperQuerySchema.parse(req.body);
+  const extra = aiSuggestSchema.parse({ excludeAccountIds: (req.body as Record<string, unknown>)['excludeAccountIds'] });
   const result = await aiTaxAssign.suggestAssignments(req.tenantId, req.companyId!, {
-    periodEnd: q.periodEnd, basis: q.basis,
+    periodEnd: q.periodEnd, basis: q.basis, excludeAccountIds: extra.excludeAccountIds,
   });
   res.json(result);
 });

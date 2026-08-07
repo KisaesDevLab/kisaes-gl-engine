@@ -79,11 +79,18 @@ async function firmPatternExamples(tenantId: string, companyId: string, returnFo
   return rows.filter((r) => r.code).map((r) => `"${r.name}" → ${r.code}`);
 }
 
+// Per-call batch cap: one full-book request took 55-70s of model time
+// (the whole code list + every account in one generation), which sat at
+// the 60s provider timeout and past the tunnel's ~100s ceiling. The
+// panel loops batches instead — each call analyzes at most BATCH
+// accounts and reports how many are left.
+const AI_SUGGEST_BATCH = 15;
+
 export async function suggestAssignments(
   tenantId: string,
   companyId: string,
-  opts: { periodEnd: string; basis: TbBasis },
-): Promise<{ suggestions: AiSuggestion[] }> {
+  opts: { periodEnd: string; basis: TbBasis; excludeAccountIds?: string[] },
+): Promise<{ suggestions: AiSuggestion[]; analyzedAccountIds: string[]; remaining: number }> {
   const config = await aiConfigService.getConfig();
   assertCategorizationEnabled(config);
 
@@ -92,16 +99,20 @@ export async function suggestAssignments(
   const assignments = await db.select().from(accountTaxAssignments)
     .where(and(eq(accountTaxAssignments.tenantId, tenantId), eq(accountTaxAssignments.companyId, companyId)));
 
+  const excluded = new Set(opts.excludeAccountIds ?? []);
   const unassigned = wp.rows.filter((r) => !r.isVirtualRe &&
+    !excluded.has(r.accountId) &&
     !resolveCodeFor(assignments, r.accountId, r.units[0]?.unitId ?? '00000000-0000-0000-0000-000000000000'));
-  if (unassigned.length === 0) return { suggestions: [] };
+  if (unassigned.length === 0) return { suggestions: [], analyzedAccountIds: [], remaining: 0 };
+  const batch = unassigned.slice(0, AI_SUGGEST_BATCH);
+  const remaining = unassigned.length - batch.length;
 
   // Stable context first (KV-cache reuse), untrusted names last.
   const codeList = available.seedCodes
     .map((c) => `${c.code} [${c.activityType}] — ${c.description}`)
     .join('\n');
   const examples = await firmPatternExamples(tenantId, companyId, available.returnForm);
-  const accountList = unassigned
+  const accountList = batch
     .map((r) => `${r.accountId} | ${r.accountNumber ?? ''} ${r.name} | type=${r.accountType}`)
     .join('\n');
 
@@ -117,7 +128,7 @@ export async function suggestAssignments(
   const rawConfig = await aiConfigService.getRawConfig();
   const job = await orchestrator.createJob(
     tenantId, 'categorize', 'tb_tax_assignment', companyId,
-    { accounts: unassigned.length }, companyId,
+    { accounts: batch.length }, companyId,
   );
   const params = aiConfigService.resolveTaskParams(config, 'categorization', { maxTokens: 4096, temperature: 0.1 });
   const exec = aiConfigService.resolveTaskExec(config, 'categorization');
@@ -144,7 +155,7 @@ export async function suggestAssignments(
     const parsed = validateModelOutput(suggestionSchema, result.parsed, 'tb tax assignment');
     await orchestrator.completeJob(job.id, result, { count: parsed.suggestions.length }, 1);
 
-    const byId = new Map(unassigned.map((r) => [r.accountId, r]));
+    const byId = new Map(batch.map((r) => [r.accountId, r]));
     const codeMeta = new Map(available.seedCodes.map((c) => [`${c.code}|${c.activityType}`, c]));
     const suggestions: AiSuggestion[] = [];
     for (const s of parsed.suggestions) {
@@ -162,10 +173,15 @@ export async function suggestAssignments(
         confidence: Math.round(s.confidence),
       });
     }
-    log.info({ component: 'tb', event: 'ai_assignment_suggested', companyId, requested: unassigned.length, returned: suggestions.length });
-    return { suggestions };
+    log.info({ component: 'tb', event: 'ai_assignment_suggested', companyId, requested: batch.length, returned: suggestions.length, remaining });
+    return { suggestions, analyzedAccountIds: batch.map((r) => r.accountId), remaining };
   } catch (err) {
     if (!(err instanceof AppError)) await orchestrator.failJobTerminal(job.id, err instanceof Error ? err.message : 'unknown');
+    // Provider failures (timeout/unavailable) surface as a clean 503
+    // instead of an unhandled 500.
+    if (err instanceof Error && /providers failed|timeout/i.test(err.message)) {
+      throw new AppError(503, 'The AI provider timed out — try again in a moment', 'TB_AI_UNAVAILABLE');
+    }
     throw err;
   }
 }
