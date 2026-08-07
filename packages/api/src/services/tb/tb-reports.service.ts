@@ -138,7 +138,7 @@ export async function buildTbWorkpaperReport(tenantId: string, companyId: string
     data,
     _exportColumns: [
       FIVE_COLS[0]!, FIVE_COLS[1]!,
-      { key: 'wp_ref', label: 'WP' },
+      { key: 'wp_ref', label: 'LS' },
       ...FIVE_COLS.slice(2),
       { key: 'marks', label: 'Marks' },
     ],
@@ -680,7 +680,7 @@ export async function buildTbWorkpaperIndex(tenantId: string, companyId: string,
     asOfDate: endDate,
     data,
     _exportColumns: [
-      { key: 'code', label: 'WP' },
+      { key: 'code', label: 'LS' },
       { key: 'grouping', label: 'Grouping' },
       num('accounts', 'Accounts'),
       num('tickmarks', 'Tickmarks'),
