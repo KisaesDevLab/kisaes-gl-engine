@@ -5,6 +5,7 @@
 import { Router, type Request } from 'express';
 import { formatDetailTypeLabel, formatIsoUS } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { AppError } from '../utils/errors.js';
 import { requirePermission } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { expensiveOpLimiter } from '../middleware/expensive-op-limiter.js';
@@ -12,6 +13,7 @@ import * as reportService from '../services/report.service.js';
 import * as apReportService from '../services/ap-report.service.js';
 import * as exportService from '../services/report-export.service.js';
 import * as comparisonService from '../services/report-comparison.service.js';
+import * as tbReports from '../services/tb/tb-reports.service.js';
 
 // Build-plan Phase 5 cache-invalidation hook. We don't run a Redis
 // report cache today, but clients may cache report responses locally
@@ -1666,6 +1668,52 @@ reportsRouter.get('/account-activity-summary', async (req, res) => {
     { key: 'net', label: 'Net', align: 'right' },
   ]}, format);
 });
+
+// ── TB module report family (TB Phase 12) ──────────────────────────
+// Firm-side surfaces: client-type users get 404 (same hiding pattern
+// as the tb router). All accept end_date (tax year = the fiscal year
+// containing it) + basis; respond() gives json/csv/pdf uniformly.
+
+function tbGuard(req: Request): void {
+  if (req.userType === 'client') throw AppError.notFound('Feature not available');
+}
+
+function tbParams(req: Request): { companyId: string; endDate: string; basis: 'accrual' | 'cash' } {
+  const companyId = resolveCompanyScope(req);
+  if (!companyId) throw AppError.badRequest('A company scope is required for TB reports');
+  const { end_date, as_of_date } = req.query as Record<string, string>;
+  const endDate = end_date || as_of_date || new Date().toISOString().slice(0, 10);
+  return { companyId, endDate, basis: readBasis(req) };
+}
+
+const TB_REPORTS: Record<string, (tenantId: string, p: { companyId: string; endDate: string; basis: 'accrual' | 'cash' }, req: Request) => Promise<unknown>> = {
+  'tb-workpaper': (t, p) => tbReports.buildTbWorkpaperReport(t, p.companyId, p.endDate, p.basis),
+  'tb-grouped': (t, p) => tbReports.buildTbGroupedReport(t, p.companyId, p.endDate, p.basis),
+  'tb-return-order': (t, p) => tbReports.buildTbReturnOrderReport(t, p.companyId, p.endDate, p.basis),
+  'tb-tax-basis-pl': (t, p, req) => tbReports.buildTbTaxBasisPl(t, p.companyId, p.endDate, p.basis,
+    typeof req.query['activity_unit_id'] === 'string' ? String(req.query['activity_unit_id']) : null),
+  'tb-flux': (t, p, req) => tbReports.buildTbFluxReport(t, p.companyId, p.endDate, p.basis,
+    typeof req.query['compare_end_date'] === 'string' ? String(req.query['compare_end_date']) : null,
+    Number(req.query['threshold_amount']) || 0,
+    Number(req.query['threshold_pct']) || 0),
+  'tb-aje-listing': (t, p) => tbReports.buildTbAjeListing(t, p.companyId, p.endDate, false),
+  'tb-bookkeeper-letter': (t, p) => tbReports.buildTbAjeListing(t, p.companyId, p.endDate, true),
+  'tb-rje-listing': (t, p) => tbReports.buildTbRjeListing(t, p.companyId, p.endDate),
+  'tb-code-summary': (t, p) => tbReports.buildTbCodeSummary(t, p.companyId, p.endDate, p.basis),
+  'tb-m1': (t, p) => tbReports.buildTbM1Report(t, p.companyId, p.endDate, p.basis),
+  'tb-m2': (t, p) => tbReports.buildTbM2Report(t, p.companyId, p.endDate, p.basis),
+  'tb-workpaper-index': (t, p) => tbReports.buildTbWorkpaperIndex(t, p.companyId, p.endDate),
+  'tb-diagnostics': (t, p) => tbReports.buildTbDiagnosticsReport(t, p.companyId, p.endDate, p.basis),
+};
+
+for (const [slug, builder] of Object.entries(TB_REPORTS)) {
+  reportsRouter.get(`/${slug}`, async (req, res) => {
+    tbGuard(req);
+    const params = tbParams(req);
+    const data = await builder(req.tenantId, params, req);
+    await respond(res, data, (req.query as Record<string, string>)['format']);
+  });
+}
 
 reportsRouter.get('/transaction-list', async (req, res) => {
   const { start_date, end_date, txn_type, account_id, format } = req.query as Record<string, string>;

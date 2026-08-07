@@ -137,6 +137,23 @@ export const REPORT_CATALOG: ReportDef[] = [
     orientation: 'landscape',
     options: { tagFilter: true },
   },
+  // ── Trial Balance module family (TB Phase 12). Firm-side: the
+  // /reports routes 404 client-type users; the pack builder shows them
+  // to staff only. Temporal 'as-of': the tax year is the fiscal year
+  // containing the as-of date.
+  { id: 'tb-workpaper', label: 'TB Workpaper (5-column)', group: 'Trial Balance', endpoint: 'tb-workpaper', temporal: 'as-of', orientation: 'landscape', options: { basis: true } },
+  { id: 'tb-grouped', label: 'Grouped Trial Balance', group: 'Trial Balance', endpoint: 'tb-grouped', temporal: 'as-of', orientation: 'landscape', options: { basis: true } },
+  { id: 'tb-return-order', label: 'Tax Return Order', group: 'Trial Balance', endpoint: 'tb-return-order', temporal: 'as-of', orientation: 'portrait', options: { basis: true } },
+  { id: 'tb-tax-basis-pl', label: 'Tax-Basis P&L', group: 'Trial Balance', endpoint: 'tb-tax-basis-pl', temporal: 'as-of', orientation: 'portrait', options: { basis: true } },
+  { id: 'tb-flux', label: 'Flux Analysis', group: 'Trial Balance', endpoint: 'tb-flux', temporal: 'as-of', orientation: 'portrait', options: { basis: true } },
+  { id: 'tb-aje-listing', label: 'AJE Listing', group: 'Trial Balance', endpoint: 'tb-aje-listing', temporal: 'as-of', orientation: 'portrait', options: {} },
+  { id: 'tb-bookkeeper-letter', label: 'Bookkeeper Letter (AJEs)', group: 'Trial Balance', endpoint: 'tb-bookkeeper-letter', temporal: 'as-of', orientation: 'portrait', options: {} },
+  { id: 'tb-rje-listing', label: 'Tax RJE Listing', group: 'Trial Balance', endpoint: 'tb-rje-listing', temporal: 'as-of', orientation: 'portrait', options: {} },
+  { id: 'tb-code-summary', label: 'Tax Code Summary', group: 'Trial Balance', endpoint: 'tb-code-summary', temporal: 'as-of', orientation: 'portrait', options: { basis: true } },
+  { id: 'tb-m1', label: 'Schedule M-1 Preview', group: 'Trial Balance', endpoint: 'tb-m1', temporal: 'as-of', orientation: 'portrait', options: { basis: true } },
+  { id: 'tb-m2', label: 'Schedule M-2 Rollforward', group: 'Trial Balance', endpoint: 'tb-m2', temporal: 'as-of', orientation: 'portrait', options: { basis: true } },
+  { id: 'tb-workpaper-index', label: 'Workpaper Index', group: 'Trial Balance', endpoint: 'tb-workpaper-index', temporal: 'as-of', orientation: 'portrait', options: {} },
+  { id: 'tb-diagnostics', label: 'TB Diagnostics', group: 'Trial Balance', endpoint: 'tb-diagnostics', temporal: 'as-of', orientation: 'portrait', options: { basis: true } },
 ];
 
 /** Fast lookup by report id. */

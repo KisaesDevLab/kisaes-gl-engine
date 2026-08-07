@@ -16,6 +16,7 @@ import { getReportDef } from '@kis-books/shared';
 import * as reportService from './report.service.js';
 import * as apReportService from './ap-report.service.js';
 import * as comparisonService from './report-comparison.service.js';
+import * as tbReports from './tb/tb-reports.service.js';
 import { extractDataAndColumns, buildHtmlTable } from '../routes/reports.routes.js';
 
 /** Query-shaped params from resolveReportDates (start_date/end_date/as_of_date). */
@@ -220,7 +221,29 @@ export const REPORT_PACK_RENDERERS: Record<string, Renderer> = {
       ],
     };
   },
+
+  // ── Trial Balance module family (TB Phase 12.9). The tb-reports
+  // builders already return the respond()-ready object incl.
+  // _exportColumns, so pack output matches single-report export
+  // exactly. Date: as_of_date (fallback end_date) picks the tax year.
+  'tb-workpaper': (t, c, p, o) => tbReports.buildTbWorkpaperReport(t, c, tbDate(p), o.basis),
+  'tb-grouped': (t, c, p, o) => tbReports.buildTbGroupedReport(t, c, tbDate(p), o.basis),
+  'tb-return-order': (t, c, p, o) => tbReports.buildTbReturnOrderReport(t, c, tbDate(p), o.basis),
+  'tb-tax-basis-pl': (t, c, p, o) => tbReports.buildTbTaxBasisPl(t, c, tbDate(p), o.basis, null),
+  'tb-flux': (t, c, p, o) => tbReports.buildTbFluxReport(t, c, tbDate(p), o.basis, null, 0, 0),
+  'tb-aje-listing': (t, c, p) => tbReports.buildTbAjeListing(t, c, tbDate(p), false),
+  'tb-bookkeeper-letter': (t, c, p) => tbReports.buildTbAjeListing(t, c, tbDate(p), true),
+  'tb-rje-listing': (t, c, p) => tbReports.buildTbRjeListing(t, c, tbDate(p)),
+  'tb-code-summary': (t, c, p, o) => tbReports.buildTbCodeSummary(t, c, tbDate(p), o.basis),
+  'tb-m1': (t, c, p, o) => tbReports.buildTbM1Report(t, c, tbDate(p), o.basis),
+  'tb-m2': (t, c, p, o) => tbReports.buildTbM2Report(t, c, tbDate(p), o.basis),
+  'tb-workpaper-index': (t, c, p) => tbReports.buildTbWorkpaperIndex(t, c, tbDate(p)),
+  'tb-diagnostics': (t, c, p, o) => tbReports.buildTbDiagnosticsReport(t, c, tbDate(p), o.basis),
 };
+
+function tbDate(params: PackRenderParams): string {
+  return params['as_of_date'] || params['end_date'] || new Date().toISOString().slice(0, 10);
+}
 
 /**
  * Run a report's data through the shared export pipeline
