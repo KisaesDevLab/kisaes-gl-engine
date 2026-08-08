@@ -113,10 +113,10 @@ describe('full TB workflow — 1120S (14.2)', () => {
 
     // 3. Assignments (incl. an M-1-flagged code on meals).
     const anyCode = (await db.execute(sql`
-      SELECT code, activity_type FROM tax_codes WHERE return_form IN ('1120S','common') AND is_m1_adjustment = FALSE AND code NOT IN ('DONOTMAP','MEMO','SUSPENSE','REPORTING_ONLY') LIMIT 1
+      SELECT code, activity_type FROM tax_codes WHERE return_form IN ('1120S','common') AND is_m1_adjustment = FALSE AND code NOT IN ('DONOTMAP','MEMO','SUSPENSE','REPORTING_ONLY') AND version_id = (SELECT id FROM tax_code_seed_versions WHERE tax_year = 2025 ORDER BY version DESC LIMIT 1) LIMIT 1
     `)).rows[0] as { code: string; activity_type: string };
     const m1Code = (await db.execute(sql`
-      SELECT code, activity_type FROM tax_codes WHERE return_form IN ('1120S','common') AND is_m1_adjustment = TRUE LIMIT 1
+      SELECT code, activity_type FROM tax_codes WHERE return_form IN ('1120S','common') AND is_m1_adjustment = TRUE AND version_id = (SELECT id FROM tax_code_seed_versions WHERE tax_year = 2025 ORDER BY version DESC LIMIT 1) LIMIT 1
     `)).rows[0] as { code: string; activity_type: string };
     for (const [name, code] of [
       ['Cash in Safe', anyCode], ['Accumulated Depreciation', anyCode],

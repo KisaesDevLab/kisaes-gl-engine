@@ -88,6 +88,7 @@ beforeAll(async () => {
   const m1Code = await db.execute(sql`
     SELECT tc.code, tc.activity_type FROM tax_codes tc
     WHERE tc.is_m1_adjustment = TRUE AND tc.return_form IN ('1120S', 'common')
+      AND tc.version_id = (SELECT id FROM tax_code_seed_versions WHERE tax_year = 2025 ORDER BY version DESC LIMIT 1)
     ORDER BY tc.code LIMIT 1
   `);
   const codeRow = (m1Code.rows as Array<{ code: string; activity_type: string }>)[0]!;

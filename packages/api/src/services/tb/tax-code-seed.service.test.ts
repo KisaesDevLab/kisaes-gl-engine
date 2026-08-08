@@ -59,10 +59,10 @@ afterAll(async () => {
 });
 
 describe('parseSeedWorkbook', () => {
-  it('parses the shipped 2025 file: 2,846 rows, utility codes present', async () => {
+  it('parses the shipped 2025 file: 760 rows, utility codes present', async () => {
     const { rows, errors } = await parseSeedWorkbook(seedBuffer);
     expect(errors).toEqual([]);
-    expect(rows.length).toBe(2846);
+    expect(rows.length).toBe(760);
     const util = rows.filter((r) => r.returnForm === 'common' && r.activityType === 'common').map((r) => r.code);
     expect(util).toEqual(expect.arrayContaining(['DONOTMAP', 'MEMO', 'SUSPENSE', 'REPORTING_ONLY']));
     expect(rows.some((r) => r.isM1Adjustment)).toBe(true);
@@ -97,7 +97,7 @@ describe('importSeed', () => {
     expect(first.unchanged).toBe(false);
     if (!first.unchanged && !first.dryRun) {
       expect(first.version).toBe(1);
-      expect(first.rowCount).toBe(2846);
+      expect(first.rowCount).toBe(760);
     }
 
     const again = await importSeed({ taxYear: TY, buffer: seedBuffer, dryRun: false });
@@ -137,9 +137,9 @@ describe('importSeed', () => {
     const latest = await latestVersionForYear(TY);
     const page = await browseCodes({ versionId: latest!.id, returnForm: '1065', limit: 10, offset: 0 });
     expect(page.codes.length).toBe(10);
-    expect(page.total).toBe(792);
+    expect(page.total).toBe(206);
     const m1 = await browseCodes({ versionId: latest!.id, m1Only: true, limit: 1, offset: 0 });
-    expect(m1.total).toBe(315);
+    expect(m1.total).toBe(60);
   });
 });
 

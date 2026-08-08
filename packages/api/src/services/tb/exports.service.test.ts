@@ -70,9 +70,12 @@ afterAll(async () => {
 });
 
 async function seedCode(where: string): Promise<{ code: string; activity_type: string; ultratax_code: string | null }> {
+  // Constrain to the latest version — the workpaper resolves codes
+  // against it, and stale-version rows may no longer exist there.
   const res = await db.execute(sql.raw(`
     SELECT code, activity_type, ultratax_code FROM tax_codes tc
     WHERE ${where} AND tc.return_form IN ('1065', 'common')
+      AND tc.version_id = (SELECT id FROM tax_code_seed_versions WHERE tax_year = 2025 ORDER BY version DESC LIMIT 1)
     LIMIT 1
   `));
   return (res.rows as Array<{ code: string; activity_type: string; ultratax_code: string | null }>)[0]!;
