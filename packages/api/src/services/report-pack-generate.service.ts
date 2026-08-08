@@ -22,13 +22,16 @@ import {
   formatIsoUS,
 } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { reportPacks, reportPackItems, reportPackRuns } from '../db/schema/index.js';
+import { companies, reportPacks, reportPackItems, reportPackRuns } from '../db/schema/index.js';
 import { REPORT_PACK_RENDERERS, renderReportSectionHtml } from './report-pack-render.js';
 import { buildReportPackSectionHtml, escapeHtml } from './report-export.service.js';
 import { getLetter, resolveLetterContent, buildLetterPageHtml } from './report-letter.service.js';
 import { getReportFooter } from './tenant-report-settings.service.js';
 import { getProviderForTenant } from './storage/storage-provider.factory.js';
 import { reportPackArtifactKey, ARTIFACT_TTL_MS } from './report-pack.service.js';
+import { taxYearOf } from './tb/tax-profile.service.js';
+import { log } from '../utils/logger.js';
+import { listRowAttachments, renderRowAttachmentPdf } from './tb/row-attachments.service.js';
 
 const TOC_ENTRIES_PER_PAGE = 30;
 const PDF_MARGIN = { top: '0.5in', bottom: '0.5in', left: '0.5in', right: '0.5in' };
@@ -101,6 +104,29 @@ function tocHtml(entries: Array<{ label: string; startPage: number }>): string {
 }
 
 /** Copy every page of a source PDF (raw bytes) into `target`. */
+// Merge every leadsheet row attachment for the as-of date's tax year
+// (stamped, ref-code order) after the given section bytes. A corrupt
+// or unreadable attachment is skipped — one bad upload must not sink
+// the whole pack run.
+async function appendLeadsheetAttachments(tenantId: string, companyId: string, asOf: string, sectionBytes: Buffer | Uint8Array): Promise<Buffer> {
+  const [company] = await db.select({ m: companies.fiscalYearStartMonth }).from(companies)
+    .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId))).limit(1);
+  const taxYear = taxYearOf(asOf, company?.m ?? 1);
+  const attachments = await listRowAttachments(tenantId, companyId, taxYear);
+  if (attachments.length === 0) return Buffer.from(sectionBytes);
+  const merged = await PDFDocument.create();
+  await appendPdf(merged, sectionBytes);
+  for (const att of attachments) {
+    try {
+      const file = await renderRowAttachmentPdf(tenantId, companyId, att.id, true);
+      await appendPdf(merged, file.buffer);
+    } catch (err) {
+      log.warn({ component: 'report-packs', event: 'leadsheet_attachment_skipped', attachmentId: att.id, refCode: att.refCode, message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return Buffer.from(await merged.save());
+}
+
 async function appendPdf(target: PDFDocument, srcBytes: Uint8Array): Promise<void> {
   const src = await PDFDocument.load(srcBytes);
   const pages = await target.copyPages(src, src.getPageIndices());
@@ -233,7 +259,13 @@ export async function generateReportPackRun(runId: string): Promise<void> {
         const sectionHtml = buildReportPackSectionHtml({
           title: def.label, companyName, dateLabel, tableHtml, footer: '',
         });
-        const bytes = await htmlToPdfBytes(browser, sectionHtml, orientation === 'landscape');
+        let bytes = await htmlToPdfBytes(browser, sectionHtml, orientation === 'landscape');
+        // Leadsheets can carry their row attachments (stamped) as part
+        // of the package — merged into the section so the TOC and the
+        // cross-document page numbering stay correct.
+        if (item.reportId === 'tb-leadsheets' && options.includeAttachments) {
+          bytes = await appendLeadsheetAttachments(run.tenantId, run.companyId, params['as_of_date'] ?? params['end_date'] ?? asOfDate, bytes);
+        }
         const doc = await PDFDocument.load(bytes);
         sections.push({ reportId: item.reportId, label: def.label, bytes, pageCount: doc.getPageCount(), startPage: 0 });
       } catch (err) {
