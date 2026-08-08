@@ -140,6 +140,7 @@ describe('TB report family (Phase 12)', () => {
 
     const all = await tbReports.buildTbLeadsheetsReport(tenantId, companyId, END, 'accrual');
     expect(all.title).toContain('Leadsheets');
+    expect(all._exportColumns.some((c) => c.key === 'attachments')).toBe(true);
     const legendHeader = all.data.findIndex((r) => r['name'] === 'Tickmark Legend');
     expect(legendHeader).toBeGreaterThan(-1);
     const legendRows = all.data.slice(legendHeader + 1);

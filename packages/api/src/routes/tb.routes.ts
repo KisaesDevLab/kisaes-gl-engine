@@ -3,6 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
+import multer from 'multer';
 import type { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import {
@@ -17,6 +18,7 @@ import { validate } from '../middleware/validate.js';
 import { expensiveOpLimiter } from '../middleware/expensive-op-limiter.js';
 import * as featureFlags from '../services/feature-flags.service.js';
 import { AppError } from '../utils/errors.js';
+import { verifyAttachmentContent } from './attachments.routes.js';
 import * as firmCodesService from '../services/tb/firm-tax-codes.service.js';
 import * as taxProfileService from '../services/tb/tax-profile.service.js';
 import * as seedService from '../services/tb/tax-code-seed.service.js';
@@ -32,6 +34,7 @@ import * as groupingsService from '../services/tb/groupings.service.js';
 import * as taxEntriesService from '../services/tb/tax-entries.service.js';
 import * as m1Service from '../services/tb/m1.service.js';
 import * as exportsService from '../services/tb/exports.service.js';
+import * as rowAttachmentsService from '../services/tb/row-attachments.service.js';
 import { db } from '../db/index.js';
 import { companies, companyTaxProfiles, tbStatus } from '../db/schema/index.js';
 import { and, eq, sql } from 'drizzle-orm';
@@ -727,6 +730,86 @@ tbRouter.post('/signoffs', validate(z.object({
 
 tbRouter.delete('/signoffs/:id', async (req, res) => {
   await signoffsService.unsign(req.tenantId, req.companyId!, String(req.params['id']), req.userId!);
+  res.status(204).end();
+});
+
+// ── Leadsheet row attachments (ref-coded PDFs + tickmark stamps) ───
+
+const rowAttachUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype !== 'application/pdf') {
+      cb(new Error('Only PDF files can be attached to leadsheet rows'));
+      return;
+    }
+    cb(null, true);
+  },
+});
+
+// Multer failures surface as 400s with the reason, not unhandled 500s.
+function rowAttachFile(req: Request, res: Response, next: NextFunction) {
+  rowAttachUpload.single('file')(req, res, (err: unknown) => {
+    if (err) {
+      next(AppError.badRequest(err instanceof Error ? err.message : 'File upload rejected'));
+      return;
+    }
+    next();
+  });
+}
+
+const rowAttachSchema = z.object({
+  groupingId: z.string().uuid(),
+  accountId: z.string().uuid(),
+  taxYear: z.coerce.number().int().min(2000).max(2100),
+});
+
+tbRouter.post('/row-attachments', rowAttachFile, async (req, res) => {
+  if (!req.file) throw AppError.badRequest('No file uploaded');
+  verifyAttachmentContent('application/pdf', req.file.buffer);
+  const body = rowAttachSchema.parse(req.body);
+  const row = await rowAttachmentsService.attachRowPdf(req.tenantId, req.companyId!, {
+    ...body,
+    filename: req.file.originalname,
+    buffer: req.file.buffer,
+  }, req.userId);
+  res.status(201).json({ attachment: row });
+});
+
+tbRouter.get('/row-attachments', async (req, res) => {
+  const taxYear = Number(req.query['taxYear']) || new Date().getUTCFullYear();
+  const attachments = await rowAttachmentsService.listRowAttachments(req.tenantId, req.companyId!, taxYear);
+  res.json({ attachments });
+});
+
+tbRouter.get('/row-attachments/:id/file', async (req, res) => {
+  const stamped = req.query['stamped'] !== '0';
+  const file = await rowAttachmentsService.renderRowAttachmentPdf(req.tenantId, req.companyId!, String(req.params['id']), stamped);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${file.fileName}"`);
+  res.send(file.buffer);
+});
+
+tbRouter.delete('/row-attachments/:id', async (req, res) => {
+  await rowAttachmentsService.removeRowAttachment(req.tenantId, req.companyId!, String(req.params['id']), req.userId);
+  res.status(204).end();
+});
+
+const annotationSchema = z.object({
+  page: z.coerce.number().int().min(1).max(2000),
+  xPct: z.coerce.number().min(0).max(1),
+  yPct: z.coerce.number().min(0).max(1),
+  tickmarkId: z.string().uuid(),
+  note: z.string().max(200).nullable().optional(),
+});
+
+tbRouter.post('/row-attachments/:id/annotations', validate(annotationSchema), async (req, res) => {
+  const annotation = await rowAttachmentsService.addAnnotation(req.tenantId, req.companyId!, String(req.params['id']), req.body, req.userId);
+  res.status(201).json({ annotation });
+});
+
+tbRouter.delete('/row-attachments/:id/annotations/:annotationId', async (req, res) => {
+  await rowAttachmentsService.removeAnnotation(req.tenantId, req.companyId!, String(req.params['id']), String(req.params['annotationId']), req.userId);
   res.status(204).end();
 });
 

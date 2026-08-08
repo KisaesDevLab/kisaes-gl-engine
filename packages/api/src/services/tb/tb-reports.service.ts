@@ -29,6 +29,7 @@ import { buildM1, buildM2 } from './m1.service.js';
 import { listSignoffs } from './signoffs.service.js';
 import { formatAjeNumber } from './aje.service.js';
 import { formatRjeNumber, listTaxEntries } from './tax-entries.service.js';
+import { refCodesByAccount } from './row-attachments.service.js';
 
 const money = (n: number) => Math.round(n * 100) / 100;
 type Col = { key: string; label: string; align?: 'left' | 'right' };
@@ -166,7 +167,7 @@ export async function buildTbGroupedReport(tenantId: string, companyId: string, 
   const used = new Set<string>();
   const pushSection = (label: string, rows: typeof wp.rows) => {
     if (rows.length === 0) return;
-    data.push({ account_number: '---', name: label, unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '', marks: '' });
+    data.push({ account_number: '---', name: label, unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '', marks: '', attachments: '' });
     const totals = { unadjusted: 0, aje: 0, adjusted: 0, tax_rje: 0, tax: 0 };
     for (const r of rows) {
       data.push({ ...toFiveCol(r), marks: ann.marks(r.accountId) });
@@ -201,7 +202,7 @@ export async function buildTbGroupedReport(tenantId: string, companyId: string, 
 // groupingId to print a single leadsheet (the TB Leadsheets page's
 // "PDF" button); null prints the whole book (TB Reports + report packs).
 
-const LEADSHEET_COLS: Col[] = [...FIVE_COLS, { key: 'marks', label: 'Marks' }];
+const LEADSHEET_COLS: Col[] = [...FIVE_COLS, { key: 'marks', label: 'Marks' }, { key: 'attachments', label: 'Attach' }];
 
 export async function buildTbLeadsheetsReport(
   tenantId: string, companyId: string, endDate: string, basis: TbBasis, groupingId: string | null = null, tagId: string | null = null,
@@ -244,6 +245,7 @@ export async function buildTbLeadsheetsReport(
     const who = s.signedByName ? `${s.signedByName} ` : '';
     return `${who}${String(s.signedAt).slice(0, 10)}${s.stale ? ' (STALE)' : ''}`;
   };
+  const { byAccount: attachRefs } = await refCodesByAccount(tenantId, companyId, taxYear);
 
   const data: Array<Record<string, unknown>> = [];
   const usedSymbols = new Set<string>();
@@ -252,7 +254,7 @@ export async function buildTbLeadsheetsReport(
     const rows = wp.rows.filter((r) => members.has(r.accountId));
     if (rows.length === 0 && !groupingId) continue;
     const label = `${g.leadsheetCode ? g.leadsheetCode + ' — ' : ''}${g.name}`;
-    data.push({ account_number: '---', name: label, unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '', marks: '' });
+    data.push({ account_number: '---', name: label, unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '', marks: '', attachments: '' });
     const totals = { unadjusted: 0, aje: 0, adjusted: 0, tax_rje: 0, tax: 0 };
     for (const r of rows) {
       const rowMarks = [...(marksByAccount.get(r.accountId) ?? [])];
@@ -260,6 +262,7 @@ export async function buildTbLeadsheetsReport(
       data.push({
         ...toFiveCol(r),
         marks: rowMarks.join(' '),
+        attachments: (attachRefs.get(r.accountId) ?? []).join(' '),
       });
       totals.unadjusted += r.unadjusted; totals.aje += r.aje; totals.adjusted += r.adjusted;
       totals.tax_rje += r.taxRje; totals.tax += r.tax;
@@ -267,20 +270,20 @@ export async function buildTbLeadsheetsReport(
     data.push({
       account_number: '', name: `Total ${label}`,
       unadjusted: money(totals.unadjusted), aje: money(totals.aje), adjusted: money(totals.adjusted),
-      tax_rje: money(totals.tax_rje), tax: money(totals.tax), marks: '',
+      tax_rje: money(totals.tax_rje), tax: money(totals.tax), marks: '', attachments: '',
     });
     data.push({
       account_number: '', name: `Prepared: ${sigLabel(g.id, 'preparer')} · Reviewed: ${sigLabel(g.id, 'reviewer')}`,
-      unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '', marks: '',
+      unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '', marks: '', attachments: '',
     });
   }
   // Tickmark legend — only the symbols that actually appear on the
   // printed leadsheet(s); the PDF has no hover tooltip to lean on.
   if (usedSymbols.size > 0) {
-    data.push({ account_number: '---', name: 'Tickmark Legend', unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '', marks: '' });
+    data.push({ account_number: '---', name: 'Tickmark Legend', unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '', marks: '', attachments: '' });
     for (const sym of [...usedSymbols].sort()) {
       data.push({
-        account_number: '', name: markDescriptions.get(sym) ?? '', unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '', marks: sym,
+        account_number: '', name: markDescriptions.get(sym) ?? '', unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '', marks: sym, attachments: '',
       });
     }
   }
@@ -649,6 +652,7 @@ export async function buildTbWorkpaperIndex(tenantId: string, companyId: string,
   const memberships = await db.select().from(tbGroupingAccounts)
     .where(and(eq(tbGroupingAccounts.tenantId, tenantId), eq(tbGroupingAccounts.companyId, companyId)));
   const { signoffs } = await listSignoffs(tenantId, companyId, taxYear);
+  const { byGrouping: attachCounts } = await refCodesByAccount(tenantId, companyId, taxYear);
   const marks = await db.select({ id: tbTickmarkApplications.id, accountId: tbTickmarkApplications.accountId })
     .from(tbTickmarkApplications)
     .where(and(eq(tbTickmarkApplications.tenantId, tenantId), eq(tbTickmarkApplications.companyId, companyId), eq(tbTickmarkApplications.taxYear, taxYear)));
@@ -667,6 +671,7 @@ export async function buildTbWorkpaperIndex(tenantId: string, companyId: string,
       grouping: g.name,
       accounts: accts.size,
       tickmarks: marks.filter((m) => accts.has(m.accountId)).length,
+      attachments: attachCounts.get(g.id) ?? 0,
       notes: notes.filter((n) => n.accountId && accts.has(n.accountId)).length,
       open_notes: notes.filter((n) => n.accountId && accts.has(n.accountId) && !n.resolvedAt).length,
       preparer: sig('preparer'),
@@ -684,6 +689,7 @@ export async function buildTbWorkpaperIndex(tenantId: string, companyId: string,
       { key: 'grouping', label: 'Grouping' },
       num('accounts', 'Accounts'),
       num('tickmarks', 'Tickmarks'),
+      num('attachments', 'Attach'),
       num('notes', 'Notes'),
       num('open_notes', 'Open'),
       { key: 'preparer', label: 'Preparer' },

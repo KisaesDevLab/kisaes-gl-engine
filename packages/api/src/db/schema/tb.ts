@@ -268,6 +268,28 @@ export const tbLeadsheetSignoffs = pgTable('tb_leadsheet_signoffs', {
   index('idx_tb_leadsheet_signoffs_lookup').on(t.companyId, t.taxYear),
 ]);
 
+// Per-row leadsheet PDF attachments (ref-coded A001…; annotations are
+// tickmark stamps burned onto the PDF at download time).
+export const tbRowAttachments = pgTable('tb_row_attachments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull(),
+  companyId: uuid('company_id').notNull(),
+  groupingId: uuid('grouping_id').notNull().references(() => tbGroupings.id, { onDelete: 'cascade' }),
+  accountId: uuid('account_id').notNull(),
+  taxYear: integer('tax_year').notNull(),
+  refCode: varchar('ref_code', { length: 12 }).notNull(),
+  attachmentId: uuid('attachment_id').notNull(),
+  sourceFileName: varchar('source_file_name', { length: 255 }).notNull().default(''),
+  // [{ id, page, xPct, yPct, symbol, color, note }]
+  annotations: jsonb('annotations').notNull().default([]),
+  createdBy: uuid('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex('uniq_tb_row_attachments_ref').on(t.companyId, t.taxYear, t.refCode),
+  index('idx_tb_row_attachments_lookup').on(t.companyId, t.taxYear, t.groupingId),
+  index('idx_tb_row_attachments_tenant').on(t.tenantId),
+]);
+
 // ─── Tax RJEs (ADR-TB-03, rule TB4 — never touch the GL) ────────────
 
 export const tbTaxEntries = pgTable('tb_tax_entries', {
