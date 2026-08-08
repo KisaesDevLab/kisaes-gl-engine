@@ -245,7 +245,7 @@ export async function buildTbLeadsheetsReport(
     const who = s.signedByName ? `${s.signedByName} ` : '';
     return `${who}${String(s.signedAt).slice(0, 10)}${s.stale ? ' (STALE)' : ''}`;
   };
-  const { byAccount: attachRefs } = await refCodesByAccount(tenantId, companyId, taxYear);
+  const { byAccount: attachRefs } = await refCodesByAccount(tenantId, companyId, endDate);
 
   const data: Array<Record<string, unknown>> = [];
   const usedSymbols = new Set<string>();
@@ -254,7 +254,9 @@ export async function buildTbLeadsheetsReport(
     const rows = wp.rows.filter((r) => members.has(r.accountId));
     if (rows.length === 0 && !groupingId) continue;
     const label = `${g.leadsheetCode ? g.leadsheetCode + ' — ' : ''}${g.name}`;
-    data.push({ account_number: '---', name: label, unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '', marks: '', attachments: '' });
+    // Each leadsheet group starts a fresh PDF page (the first flows
+    // under the report header).
+    data.push({ account_number: '---', name: label, unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '', marks: '', attachments: '', _pageBreak: data.length > 0 });
     const totals = { unadjusted: 0, aje: 0, adjusted: 0, tax_rje: 0, tax: 0 };
     for (const r of rows) {
       const rowMarks = [...(marksByAccount.get(r.accountId) ?? [])];
@@ -280,7 +282,7 @@ export async function buildTbLeadsheetsReport(
   // Tickmark legend — only the symbols that actually appear on the
   // printed leadsheet(s); the PDF has no hover tooltip to lean on.
   if (usedSymbols.size > 0) {
-    data.push({ account_number: '---', name: 'Tickmark Legend', unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '', marks: '', attachments: '' });
+    data.push({ account_number: '---', name: 'Tickmark Legend', unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '', marks: '', attachments: '', _pageBreak: data.length > 0 });
     for (const sym of [...usedSymbols].sort()) {
       data.push({
         account_number: '', name: markDescriptions.get(sym) ?? '', unadjusted: '', aje: '', adjusted: '', tax_rje: '', tax: '', marks: sym, attachments: '',
@@ -652,7 +654,7 @@ export async function buildTbWorkpaperIndex(tenantId: string, companyId: string,
   const memberships = await db.select().from(tbGroupingAccounts)
     .where(and(eq(tbGroupingAccounts.tenantId, tenantId), eq(tbGroupingAccounts.companyId, companyId)));
   const { signoffs } = await listSignoffs(tenantId, companyId, taxYear);
-  const { byGrouping: attachCounts } = await refCodesByAccount(tenantId, companyId, taxYear);
+  const { byGrouping: attachCounts } = await refCodesByAccount(tenantId, companyId, endDate);
   const marks = await db.select({ id: tbTickmarkApplications.id, accountId: tbTickmarkApplications.accountId })
     .from(tbTickmarkApplications)
     .where(and(eq(tbTickmarkApplications.tenantId, tenantId), eq(tbTickmarkApplications.companyId, companyId), eq(tbTickmarkApplications.taxYear, taxYear)));

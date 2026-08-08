@@ -54,7 +54,7 @@ async function loadGrouping(tenantId: string, companyId: string, groupingId: str
 export async function attachRowPdf(
   tenantId: string,
   companyId: string,
-  input: { groupingId: string; accountId: string; taxYear: number; filename: string; buffer: Buffer },
+  input: { groupingId: string; accountId: string; taxYear: number; periodEnd: string; filename: string; buffer: Buffer },
   userId?: string,
 ) {
   const grouping = await loadGrouping(tenantId, companyId, input.groupingId);
@@ -71,7 +71,7 @@ export async function attachRowPdf(
     const [latest] = await db.select({ refCode: tbRowAttachments.refCode }).from(tbRowAttachments)
       .where(and(
         eq(tbRowAttachments.companyId, companyId),
-        eq(tbRowAttachments.taxYear, input.taxYear),
+        eq(tbRowAttachments.periodEnd, input.periodEnd),
         eq(tbRowAttachments.groupingId, input.groupingId),
       ))
       .orderBy(desc(tbRowAttachments.createdAt));
@@ -96,13 +96,14 @@ export async function attachRowPdf(
         groupingId: input.groupingId,
         accountId: input.accountId,
         taxYear: input.taxYear,
+        periodEnd: input.periodEnd,
         refCode,
         attachmentId: uploaded.id,
         sourceFileName: input.filename,
         createdBy: userId ?? null,
       }).returning();
       await auditLog(tenantId, 'create', 'tb_row_attachment', row!.id, null,
-        { refCode, groupingId: input.groupingId, accountId: input.accountId, taxYear: input.taxYear, sourceFileName: input.filename }, userId);
+        { refCode, groupingId: input.groupingId, accountId: input.accountId, taxYear: input.taxYear, periodEnd: input.periodEnd, sourceFileName: input.filename }, userId);
       return { ...row!, fileName: `${refCode}.pdf`, fileSize: input.buffer.length };
     } catch (err) {
       // Undo the stored file, then retry on a ref-code race.
@@ -116,7 +117,7 @@ export async function attachRowPdf(
   throw AppError.conflict('Could not allocate an attachment reference — try again', 'TB_REF_RACE');
 }
 
-export async function listRowAttachments(tenantId: string, companyId: string, taxYear: number) {
+export async function listRowAttachments(tenantId: string, companyId: string, periodEnd: string) {
   const rows = await db.select({
     r: tbRowAttachments,
     fileName: attachments.fileName,
@@ -126,7 +127,7 @@ export async function listRowAttachments(tenantId: string, companyId: string, ta
     .where(and(
       eq(tbRowAttachments.tenantId, tenantId),
       eq(tbRowAttachments.companyId, companyId),
-      eq(tbRowAttachments.taxYear, taxYear),
+      eq(tbRowAttachments.periodEnd, periodEnd),
     ))
     .orderBy(tbRowAttachments.refCode);
   return rows.map(({ r, fileName, fileSize }) => ({
@@ -134,6 +135,7 @@ export async function listRowAttachments(tenantId: string, companyId: string, ta
     groupingId: r.groupingId,
     accountId: r.accountId,
     taxYear: r.taxYear,
+    periodEnd: r.periodEnd,
     refCode: r.refCode,
     sourceFileName: r.sourceFileName,
     annotations: (r.annotations as RowAttachmentAnnotation[]) ?? [],
@@ -237,11 +239,11 @@ export async function renderRowAttachmentPdf(tenantId: string, companyId: string
 }
 
 // Ref codes per account for the leadsheet report's Attach column.
-export async function refCodesByAccount(tenantId: string, companyId: string, taxYear: number, groupingIds?: string[]) {
+export async function refCodesByAccount(tenantId: string, companyId: string, periodEnd: string, groupingIds?: string[]) {
   const conds = [
     eq(tbRowAttachments.tenantId, tenantId),
     eq(tbRowAttachments.companyId, companyId),
-    eq(tbRowAttachments.taxYear, taxYear),
+    eq(tbRowAttachments.periodEnd, periodEnd),
   ];
   if (groupingIds && groupingIds.length > 0) conds.push(inArray(tbRowAttachments.groupingId, groupingIds));
   const rows = await db.select({

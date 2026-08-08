@@ -29,7 +29,6 @@ import { getLetter, resolveLetterContent, buildLetterPageHtml } from './report-l
 import { getReportFooter } from './tenant-report-settings.service.js';
 import { getProviderForTenant } from './storage/storage-provider.factory.js';
 import { reportPackArtifactKey, ARTIFACT_TTL_MS } from './report-pack.service.js';
-import { taxYearOf } from './tb/tax-profile.service.js';
 import { log } from '../utils/logger.js';
 import { listRowAttachments, renderRowAttachmentPdf } from './tb/row-attachments.service.js';
 
@@ -104,22 +103,31 @@ function tocHtml(entries: Array<{ label: string; startPage: number }>): string {
 }
 
 /** Copy every page of a source PDF (raw bytes) into `target`. */
-// Merge every leadsheet row attachment for the as-of date's tax year
-// (stamped, ref-code order) after the given section bytes. A corrupt
-// or unreadable attachment is skipped — one bad upload must not sink
-// the whole pack run.
+// Merge every leadsheet row attachment for the pack's as-of PERIOD
+// (stamped, ref-code order) after the given section bytes — a 7/31
+// interim pack carries only files attached under the 7/31 workpaper.
+// Each attachment page gets its reference + source name stamped
+// top-left. A corrupt attachment is skipped — one bad upload must not
+// sink the whole pack run.
 async function appendLeadsheetAttachments(tenantId: string, companyId: string, asOf: string, sectionBytes: Buffer | Uint8Array): Promise<Buffer> {
-  const [company] = await db.select({ m: companies.fiscalYearStartMonth }).from(companies)
-    .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId))).limit(1);
-  const taxYear = taxYearOf(asOf, company?.m ?? 1);
-  const attachments = await listRowAttachments(tenantId, companyId, taxYear);
+  const attachments = await listRowAttachments(tenantId, companyId, asOf);
   if (attachments.length === 0) return Buffer.from(sectionBytes);
   const merged = await PDFDocument.create();
   await appendPdf(merged, sectionBytes);
+  const labelFont = await merged.embedFont(StandardFonts.HelveticaBold);
   for (const att of attachments) {
     try {
       const file = await renderRowAttachmentPdf(tenantId, companyId, att.id, true);
+      const before = merged.getPageCount();
       await appendPdf(merged, file.buffer);
+      const label = att.sourceFileName ? `${att.refCode} — ${att.sourceFileName}` : att.refCode;
+      for (let i = before; i < merged.getPageCount(); i++) {
+        const page = merged.getPage(i);
+        const { height } = page.getSize();
+        page.drawText(label.slice(0, 110), {
+          x: 24, y: height - 20, size: 9, font: labelFont, color: rgb(0.15, 0.15, 0.15),
+        });
+      }
     } catch (err) {
       log.warn({ component: 'report-packs', event: 'leadsheet_attachment_skipped', attachmentId: att.id, refCode: att.refCode, message: err instanceof Error ? err.message : String(err) });
     }

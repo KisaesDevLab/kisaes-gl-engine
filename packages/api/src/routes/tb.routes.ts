@@ -762,6 +762,7 @@ const rowAttachSchema = z.object({
   groupingId: z.string().uuid(),
   accountId: z.string().uuid(),
   taxYear: z.coerce.number().int().min(2000).max(2100),
+  periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
 });
 
 tbRouter.post('/row-attachments', rowAttachFile, async (req, res) => {
@@ -777,8 +778,10 @@ tbRouter.post('/row-attachments', rowAttachFile, async (req, res) => {
 });
 
 tbRouter.get('/row-attachments', async (req, res) => {
-  const taxYear = Number(req.query['taxYear']) || new Date().getUTCFullYear();
-  const attachments = await rowAttachmentsService.listRowAttachments(req.tenantId, req.companyId!, taxYear);
+  const periodEnd = typeof req.query['periodEnd'] === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query['periodEnd'])
+    ? req.query['periodEnd']
+    : `${new Date().getUTCFullYear()}-12-31`;
+  const attachments = await rowAttachmentsService.listRowAttachments(req.tenantId, req.companyId!, periodEnd);
   res.json({ attachments });
 });
 

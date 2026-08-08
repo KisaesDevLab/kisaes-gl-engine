@@ -74,13 +74,13 @@ afterAll(async () => {
 describe('leadsheet row attachments', () => {
   it('sequences ref codes per leadsheet + tax year and keeps the original name', async () => {
     const first = await attachRowPdf(tenantId, companyId, {
-      groupingId: groupA, accountId, taxYear: 2026, filename: 'bank statement dec.pdf', buffer: pdfBytes,
+      groupingId: groupA, accountId, taxYear: 2026, periodEnd: '2026-12-31', filename: 'bank statement dec.pdf', buffer: pdfBytes,
     });
     const second = await attachRowPdf(tenantId, companyId, {
-      groupingId: groupA, accountId, taxYear: 2026, filename: 'recon.pdf', buffer: pdfBytes,
+      groupingId: groupA, accountId, taxYear: 2026, periodEnd: '2026-12-31', filename: 'recon.pdf', buffer: pdfBytes,
     });
     const other = await attachRowPdf(tenantId, companyId, {
-      groupingId: groupB, accountId, taxYear: 2026, filename: 'aging.pdf', buffer: pdfBytes,
+      groupingId: groupB, accountId, taxYear: 2026, periodEnd: '2026-12-31', filename: 'aging.pdf', buffer: pdfBytes,
     });
     expect(first.refCode).toBe('A001');
     expect(second.refCode).toBe('A002');
@@ -88,13 +88,22 @@ describe('leadsheet row attachments', () => {
     expect(first.fileName).toBe('A001.pdf');
     expect(first.sourceFileName).toBe('bank statement dec.pdf');
 
-    // Next tax year restarts the sequence.
+    // Another PERIOD restarts the sequence — interim 7/31 work is its
+    // own workpaper set and never mixes with 12/31's files.
+    const interim = await attachRowPdf(tenantId, companyId, {
+      groupingId: groupA, accountId, taxYear: 2026, periodEnd: '2026-07-31', filename: 'interim.pdf', buffer: pdfBytes,
+    });
+    expect(interim.refCode).toBe('A001');
+    const interimList = await listRowAttachments(tenantId, companyId, '2026-07-31');
+    expect(interimList.map((r) => r.refCode)).toEqual(['A001']);
+
+    // Next tax year restarts too.
     const nextYear = await attachRowPdf(tenantId, companyId, {
-      groupingId: groupA, accountId, taxYear: 2027, filename: 'py.pdf', buffer: pdfBytes,
+      groupingId: groupA, accountId, taxYear: 2027, periodEnd: '2027-12-31', filename: 'py.pdf', buffer: pdfBytes,
     });
     expect(nextYear.refCode).toBe('A001');
 
-    const list = await listRowAttachments(tenantId, companyId, 2026);
+    const list = await listRowAttachments(tenantId, companyId, '2026-12-31');
     expect(list.map((r) => r.refCode)).toEqual(['A001', 'A002', 'B001']);
     // The stored attachment row carries the ref-code display name.
     const [att] = await db.select().from(attachments).where(eq(attachments.id, (await db.select().from(tbRowAttachments).where(eq(tbRowAttachments.id, first.id)))[0]!.attachmentId));
@@ -103,7 +112,7 @@ describe('leadsheet row attachments', () => {
   });
 
   it('stamps annotations onto the served PDF and removes them cleanly', async () => {
-    const list = await listRowAttachments(tenantId, companyId, 2026);
+    const list = await listRowAttachments(tenantId, companyId, '2026-12-31');
     const target = list.find((r) => r.refCode === 'A001')!;
 
     const ann = await addAnnotation(tenantId, companyId, target.id, {
@@ -123,14 +132,14 @@ describe('leadsheet row attachments', () => {
     expect(original.buffer.equals(pdfBytes)).toBe(true);
 
     await removeAnnotation(tenantId, companyId, target.id, ann.id);
-    const after = await listRowAttachments(tenantId, companyId, 2026);
+    const after = await listRowAttachments(tenantId, companyId, '2026-12-31');
     expect(after.find((r) => r.id === target.id)!.annotations).toHaveLength(0);
     await expect(removeAnnotation(tenantId, companyId, target.id, ann.id))
       .rejects.toMatchObject({ statusCode: 404 });
   });
 
   it('delete removes the side row and the underlying attachment', async () => {
-    const list = await listRowAttachments(tenantId, companyId, 2026);
+    const list = await listRowAttachments(tenantId, companyId, '2026-12-31');
     const target = list.find((r) => r.refCode === 'B001')!;
     const [side] = await db.select().from(tbRowAttachments).where(eq(tbRowAttachments.id, target.id));
     await removeRowAttachment(tenantId, companyId, target.id);
@@ -141,11 +150,11 @@ describe('leadsheet row attachments', () => {
   });
 
   it('refuses cross-tenant access', async () => {
-    const list = await listRowAttachments(tenantId, companyId, 2026);
+    const list = await listRowAttachments(tenantId, companyId, '2026-12-31');
     await expect(renderRowAttachmentPdf('00000000-0000-0000-0000-000000000001', companyId, list[0]!.id))
       .rejects.toMatchObject({ statusCode: 404 });
     await expect(attachRowPdf(tenantId, companyId, {
-      groupingId: '00000000-0000-0000-0000-000000000002', accountId, taxYear: 2026, filename: 'x.pdf', buffer: pdfBytes,
+      groupingId: '00000000-0000-0000-0000-000000000002', accountId, taxYear: 2026, periodEnd: '2026-12-31', filename: 'x.pdf', buffer: pdfBytes,
     })).rejects.toMatchObject({ statusCode: 404 });
   });
 });

@@ -111,6 +111,8 @@ type ExportRow = Record<string, unknown> & {
   // PDF visually separates one transaction (which may span several lines)
   // from the next. Ignored in CSV.
   _groupStart?: boolean;
+  // Force a PDF page break before this row (leadsheet groups).
+  _pageBreak?: boolean;
   // First-column indentation in the rendered PDF/HTML table (grouped
   // display mode). Stripped from CSV like the other underscore flags.
   _indent?: boolean;
@@ -754,6 +756,7 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
     // Carry rendering directives through the column projection (the
     // transaction-group boundary rule renders off `_groupStart`).
     if (row._groupStart) formatted._groupStart = true;
+    if (row._pageBreak) formatted._pageBreak = true;
     return formatted;
   });
 
@@ -836,13 +839,15 @@ export function buildHtmlTable(rows: ExportRow[], columns: ExportColumn[]): stri
     // period total in the General Ledger). Bold + tinted background.
     if (row._summary) return `<tr style="font-weight:600;background:#fafafa">${cells}</tr>`;
 
+    // Forced page break rides whatever styling the row otherwise gets.
+    const brk = row._pageBreak ? 'break-before:page;' : '';
     // Legacy detection for the older P&L / BS / Trial Balance flatteners
     // that haven't been migrated to explicit row metadata.
-    if (isLegacySection) return `<tr style="background:#f3f4f6;font-weight:600">${cells}</tr>`;
-    if (isLegacyTotal) return `<tr class="total-row" style="font-weight:700;border-top:2px solid #111">${cells}</tr>`;
+    if (isLegacySection) return `<tr style="${brk}background:#f3f4f6;font-weight:600">${cells}</tr>`;
+    if (isLegacyTotal) return `<tr class="total-row" style="${brk}font-weight:700;border-top:2px solid #111">${cells}</tr>`;
     // Thicker rule at the start of each transaction group.
-    if (row._groupStart) return `<tr style="border-top:2px solid #9ca3af">${cells}</tr>`;
-    return `<tr>${cells}</tr>`;
+    if (row._groupStart) return `<tr style="${brk}border-top:2px solid #9ca3af">${cells}</tr>`;
+    return brk ? `<tr style="${brk}">${cells}</tr>` : `<tr>${cells}</tr>`;
   }).join('');
   return `<table><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`;
 }

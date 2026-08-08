@@ -277,6 +277,10 @@ export const tbRowAttachments = pgTable('tb_row_attachments', {
   groupingId: uuid('grouping_id').notNull().references(() => tbGroupings.id, { onDelete: 'cascade' }),
   accountId: uuid('account_id').notNull(),
   taxYear: integer('tax_year').notNull(),
+  // Period-scoped (interim workpapers): the attachment belongs to the
+  // workpaper period end it was attached under; numbering restarts per
+  // (company, period_end).
+  periodEnd: date('period_end').notNull(),
   refCode: varchar('ref_code', { length: 12 }).notNull(),
   attachmentId: uuid('attachment_id').notNull(),
   sourceFileName: varchar('source_file_name', { length: 255 }).notNull().default(''),
@@ -285,8 +289,8 @@ export const tbRowAttachments = pgTable('tb_row_attachments', {
   createdBy: uuid('created_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
-  uniqueIndex('uniq_tb_row_attachments_ref').on(t.companyId, t.taxYear, t.refCode),
-  index('idx_tb_row_attachments_lookup').on(t.companyId, t.taxYear, t.groupingId),
+  uniqueIndex('uniq_tb_row_attachments_ref').on(t.companyId, t.periodEnd, t.refCode),
+  index('idx_tb_row_attachments_lookup').on(t.companyId, t.periodEnd, t.groupingId),
   index('idx_tb_row_attachments_tenant').on(t.tenantId),
 ]);
 
