@@ -1397,7 +1397,14 @@ export async function impersonateUser(adminUserId: string, targetUserId: string)
 export async function setUserRole(userId: string, role: string, actingUserId?: string) {
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   if (!user) throw AppError.notFound('User not found');
-  await db.update(users).set({ role, updatedAt: new Date() }).where(eq(users.id, userId));
+  await db.transaction(async (tx) => {
+    await tx.update(users).set({ role, updatedAt: new Date() }).where(eq(users.id, userId));
+    // Keep the home-tenant access row in sync: the Team page and a
+    // switched-tenant refresh read user_tenant_access.role first, so
+    // updating only users.role leaves the change invisible there.
+    await tx.update(userTenantAccess).set({ role })
+      .where(and(eq(userTenantAccess.userId, userId), eq(userTenantAccess.tenantId, user.tenantId)));
+  });
   await auditLog(user.tenantId, 'update', 'user_role', userId, { role: user.role }, { role }, actingUserId);
 }
 

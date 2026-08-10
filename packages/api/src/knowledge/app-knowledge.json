@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-07T01:29:53.339Z",
+  "generatedAt": "2026-08-10T20:21:57.717Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -17,7 +17,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 56479
+    "totalBytes": 57354
   },
   "screens": [
     {
@@ -1308,6 +1308,15 @@
       "actions": []
     },
     {
+      "id": "mapping",
+      "path": "mapping",
+      "component": "TbMappingPage",
+      "sourceFile": null,
+      "title": "Tb Mapping",
+      "section": "Mapping",
+      "actions": []
+    },
+    {
       "id": "ajes",
       "path": "ajes",
       "component": "AjeListPage",
@@ -1460,6 +1469,8 @@
     "Passkeys (Passwordless Login)",
     "Magic Links",
     "Team & User Management",
+    "Changing Your Own Password",
+    "Changing a Team Member's Role",
     "Per-Member Permissions",
     "Company Access Control",
     "Peer Screen Sharing",

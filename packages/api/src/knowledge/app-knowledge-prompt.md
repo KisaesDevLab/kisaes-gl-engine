@@ -553,6 +553,20 @@ the Team page to email them a password-reset link (valid 1 hour). Admins have th
 option in the Reset Password dialog on **Admin → All Users →** ("Send reset email"),
 alongside the ability to set a password directly.
 
+### Changing Your Own Password
+Any signed-in user can change their password under **Settings → Security →** in the
+**Password** card: enter the current password and a new one (at least 8 characters).
+Changing it signs you out on every other device; the browser you changed it from stays
+signed in. Passwords found in known data breaches are rejected.
+
+### Changing a Team Member's Role
+Owners can change a member's role (including removing a read-only designation): on
+**Settings → Team →**, click **Edit** on the user's row and pick the new role (Owner,
+Accountant, Bookkeeper, or Read-only). You cannot change your own role, and the last
+owner cannot be demoted — a company always keeps at least one owner. Role changes take
+effect within about 15 minutes. External (client) users don't use the role selector —
+manage their access with the **Permissions** button instead.
+
 ### Per-Member Permissions
 Owners can fine-tune what each **bookkeeper** can see and do under
 **Settings → Team →**. Access is set per feature (Invoices, Bills, Banking, Reports,
@@ -1276,6 +1290,10 @@ The following screens exist in the application. Use these names and paths when d
 ### M1
 
 - **Tb M1** (`m1`)
+
+### Mapping
+
+- **Tb Mapping** (`mapping`)
 
 ### Pay
 

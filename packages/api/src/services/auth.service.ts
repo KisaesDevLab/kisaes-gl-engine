@@ -789,6 +789,52 @@ export async function resetPassword(token: string, newPassword: string): Promise
   await db.delete(sessions).where(eq(sessions.userId, resetRecord.userId));
 }
 
+/**
+ * Logged-in password change. Requires the current password — this is the
+ * whole authorization for the operation, so a wrong guess is audited.
+ * Like resetPassword this is a trust-boundary event: ALL sessions are
+ * revoked; the route immediately re-issues one for the current device via
+ * issueSession, which also rotates that device's refresh token.
+ */
+export async function changePassword(
+  userId: string,
+  input: { currentPassword: string; newPassword: string },
+): Promise<void> {
+  const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+  if (!user) throw AppError.notFound('User not found');
+
+  const validPassword = await bcrypt.compare(input.currentPassword, user.passwordHash);
+  if (!validPassword) {
+    // Audited but NOT counted toward login lockout: the lockout is
+    // admin-unlock-only, so counting here would let anyone at an unlocked
+    // browser lock the account out. The per-user rate limit on the route
+    // bounds guessing instead.
+    await auditLog(user.tenantId, 'update', 'user_password_change_failed', userId, null, null, userId);
+    // 400, not 401 — the web apiClient treats any 401 as an expired access
+    // token and burns a refresh+retry cycle on it.
+    throw AppError.badRequest('Current password is incorrect', 'INVALID_CURRENT_PASSWORD');
+  }
+
+  if (await bcrypt.compare(input.newPassword, user.passwordHash)) {
+    throw AppError.badRequest('New password must be different from the current password', 'PASSWORD_UNCHANGED');
+  }
+
+  const breach = await checkPasswordBreached(input.newPassword);
+  if (breach.ok && breach.breached) {
+    throw AppError.badRequest(
+      `This password has appeared in ${breach.count.toLocaleString()} known data breaches and is unsafe to reuse. Pick a different password.`,
+      'PASSWORD_BREACHED',
+    );
+  }
+
+  const passwordHash = await bcrypt.hash(input.newPassword, env.BCRYPT_ROUNDS);
+  await db.update(users).set({ passwordHash, updatedAt: new Date() }).where(eq(users.id, userId));
+
+  await db.delete(sessions).where(eq(sessions.userId, userId));
+
+  await auditLog(user.tenantId, 'update', 'user_password_change', userId, null, { sessionsRevoked: true }, userId);
+}
+
 export async function inviteUser(tenantId: string, input: { email: string; displayName: string; role: string; userType?: 'staff' | 'client' }, inviterUserId?: string): Promise<{ user: typeof users.$inferSelect; temporaryPassword: string | null; existingUser: boolean }> {
   const role = input.role || 'accountant';
   const userType = input.userType === 'client' ? 'client' : 'staff';
@@ -902,14 +948,25 @@ export async function reactivateUser(tenantId: string, userId: string) {
     .where(and(eq(userTenantAccess.userId, userId), eq(userTenantAccess.tenantId, tenantId)));
 }
 
-// Edit a team member's display name and/or login email. Scoped to the
-// caller's tenant: the target must have access to this tenant, so an owner
-// can't rename a user in someone else's book. Email is the login identity,
-// so a change is rejected if it collides with any other account.
+// Edit a team member's display name, login email, and/or tenant role.
+// Scoped to the caller's tenant: the target must have access to this
+// tenant, so an owner can't rename a user in someone else's book. Email is
+// the login identity, so a change is rejected if it collides with any
+// other account.
+//
+// Role semantics: the effective role for this tenant is
+// user_tenant_access.role falling back to users.role (see listTenantUsers
+// and refresh()), so a role change always writes the UTA row — and writes
+// users.role only when this tenant is the user's HOME tenant. Touching
+// users.role from a non-home tenant would let any client's owner clobber
+// an accountant's role everywhere else. No sessions are revoked: refresh()
+// re-derives the role from the DB, so the change lands within one access-
+// token lifetime.
 export async function updateUser(
   tenantId: string,
   userId: string,
-  input: { email?: string; displayName?: string },
+  input: { email?: string; displayName?: string; role?: 'owner' | 'accountant' | 'bookkeeper' | 'readonly' },
+  actorUserId?: string,
 ): Promise<typeof users.$inferSelect> {
   const access = await db.query.userTenantAccess.findFirst({
     where: and(eq(userTenantAccess.userId, userId), eq(userTenantAccess.tenantId, tenantId)),
@@ -931,16 +988,62 @@ export async function updateUser(
     updates.email = email;
   }
 
-  if (Object.keys(updates).length === 0) {
-    const current = await db.query.users.findFirst({ where: eq(users.id, userId) });
-    if (!current) throw AppError.notFound('User not found');
-    return current;
+  const target = await db.query.users.findFirst({ where: eq(users.id, userId) });
+  if (!target) throw AppError.notFound('User not found');
+
+  let roleChange: { before: string; after: string } | null = null;
+  if (input.role !== undefined) {
+    if (actorUserId && userId === actorUserId) {
+      throw AppError.badRequest('You cannot change your own role', 'CANNOT_CHANGE_OWN_ROLE');
+    }
+
+    const effectiveRole = access.role || target.role;
+    if (effectiveRole !== input.role) {
+      if (effectiveRole === 'owner' && input.role !== 'owner') {
+        // Demoting an owner is allowed only while another active owner
+        // remains, so a tenant can never end up ownerless.
+        const others = await db.execute(sql`
+          SELECT 1
+          FROM user_tenant_access uta
+          JOIN users u ON u.id = uta.user_id
+          WHERE uta.tenant_id = ${tenantId}
+            AND uta.user_id != ${userId}
+            AND uta.is_active = true
+            AND u.is_active = true
+            AND COALESCE(uta.role, u.role) = 'owner'
+          LIMIT 1
+        `);
+        if (others.rows.length === 0) {
+          throw AppError.badRequest('Cannot demote the only owner of this company', 'CANNOT_DEMOTE_LAST_OWNER');
+        }
+      }
+      roleChange = { before: effectiveRole, after: input.role };
+    }
   }
 
-  const [updated] = await db.update(users).set(updates).where(eq(users.id, userId)).returning();
-  if (!updated) throw AppError.notFound('User not found');
+  if (Object.keys(updates).length === 0 && !roleChange) {
+    return target;
+  }
 
-  await auditLog(tenantId, 'update', 'user', userId, null, { email: updated.email, displayName: updated.displayName }, undefined);
+  const isHomeTenant = target.tenantId === tenantId;
+  const updated = await db.transaction(async (tx) => {
+    if (roleChange) {
+      await tx.update(userTenantAccess).set({ role: roleChange.after })
+        .where(and(eq(userTenantAccess.userId, userId), eq(userTenantAccess.tenantId, tenantId)));
+      if (isHomeTenant) {
+        updates.role = roleChange.after;
+      }
+    }
+    if (Object.keys(updates).length === 0) return target;
+    const [row] = await tx.update(users).set(updates).where(eq(users.id, userId)).returning();
+    if (!row) throw AppError.notFound('User not found');
+    return row;
+  });
+
+  await auditLog(tenantId, 'update', 'user', userId, null, { email: updated.email, displayName: updated.displayName }, actorUserId);
+  if (roleChange) {
+    await auditLog(tenantId, 'update', 'user_role', userId, { role: roleChange.before }, { role: roleChange.after }, actorUserId);
+  }
   return updated;
 }
 

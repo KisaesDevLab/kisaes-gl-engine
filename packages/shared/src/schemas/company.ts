@@ -109,16 +109,19 @@ export const inviteUserSchema = z.object({
 });
 export type InviteUserInput = z.infer<typeof inviteUserSchema>;
 
-// Edit an existing team member's display name and/or login email. Both
-// fields are optional so the caller can change just one; the refine keeps
-// an empty PATCH from silently no-op'ing. Email is the login identity, so
-// the service rejects a collision with another account before saving.
+// Edit an existing team member's display name, login email, and/or tenant
+// role. All fields are optional so the caller can change just one; the
+// refine keeps an empty PATCH from silently no-op'ing. Email is the login
+// identity, so the service rejects a collision with another account before
+// saving. Role includes 'owner' (multi-owner is supported); the service
+// guards self-changes and demoting a tenant's last owner.
 export const updateUserSchema = z
   .object({
     email: z.string().email().max(320).optional(),
     displayName: z.string().min(1).max(255).optional(),
+    role: z.enum(['owner', 'accountant', 'bookkeeper', 'readonly']).optional(),
   })
-  .refine((v) => v.email !== undefined || v.displayName !== undefined, {
-    message: 'Provide an email or display name to update',
+  .refine((v) => v.email !== undefined || v.displayName !== undefined || v.role !== undefined, {
+    message: 'Provide an email, display name, or role to update',
   });
 export type UpdateUserInput = z.infer<typeof updateUserSchema>;

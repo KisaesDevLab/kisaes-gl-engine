@@ -59,7 +59,7 @@ export const adminAssignSystemAccountSchema = z.object({
 });
 export type AdminAssignSystemAccountInput = z.infer<typeof adminAssignSystemAccountSchema>;
 
-export const adminRoles = ['owner', 'accountant', 'bookkeeper'] as const;
+export const adminRoles = ['owner', 'accountant', 'bookkeeper', 'readonly'] as const;
 export const adminSetRoleSchema = z.object({
   role: z.enum(adminRoles),
 });

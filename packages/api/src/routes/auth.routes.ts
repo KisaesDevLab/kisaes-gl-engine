@@ -3,7 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
-import { loginSchema, registerSchema, forgotPasswordSchema, resetPasswordSchema, updatePreferencesSchema } from '@kis-books/shared';
+import { loginSchema, registerSchema, forgotPasswordSchema, resetPasswordSchema, changePasswordSchema, updatePreferencesSchema } from '@kis-books/shared';
 import { validate } from '../middleware/validate.js';
 import { authenticate } from '../middleware/auth.js';
 import * as authService from '../services/auth.service.js';
@@ -80,6 +80,26 @@ const forgotPasswordEmailLimiter = rateLimit({
     error: {
       message: 'Too many password reset requests for this email. Try again later.',
       code: 'FORGOT_PASSWORD_RATE_LIMIT',
+    },
+  },
+});
+
+// Per-user change-password limiter. The endpoint requires the current
+// password, so it is a password-guessing oracle for a logged-in session —
+// wrong guesses are deliberately NOT counted toward the login lockout
+// (which is admin-unlock-only), so this bound is what stops guessing.
+// Runs after authenticate, so req.userId is set.
+const changePasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: getRateLimitStore('change-password'),
+  keyGenerator: (req) => (req.userId ? `user:${req.userId}` : `ip:${req.ip || 'unknown'}`),
+  message: {
+    error: {
+      message: 'Too many password change attempts. Try again in 15 minutes.',
+      code: 'CHANGE_PASSWORD_RATE_LIMIT',
     },
   },
 });
@@ -287,6 +307,21 @@ authRouter.post('/forgot-password', authLimiter, forgotPasswordEmailLimiter, req
 authRouter.post('/reset-password', authLimiter, validate(resetPasswordSchema), async (req, res) => {
   await authService.resetPassword(req.body.token, req.body.newPassword);
   res.json({ message: 'Password has been reset' });
+});
+
+authRouter.post('/change-password', authenticate, changePasswordLimiter, validate(changePasswordSchema), async (req, res) => {
+  await authService.changePassword(req.userId, req.body);
+  // changePassword revoked every session (trust-boundary event). Keep THIS
+  // device signed in by minting a fresh pair under the current operating
+  // tenant/role — which also rotates this device's refresh token.
+  const tokens = await authService.issueSession({
+    userId: req.userId,
+    tenantId: req.tenantId,
+    role: req.userRole,
+    isSuperAdmin: !!req.isSuperAdmin,
+  });
+  setRefreshCookie(res, tokens.refreshToken);
+  res.json({ message: 'Password changed', tokens: { accessToken: tokens.accessToken } });
 });
 
 authRouter.get('/me', authenticate, async (req, res) => {

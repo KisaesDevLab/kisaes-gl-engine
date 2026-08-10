@@ -14,7 +14,10 @@ import { sql, eq, and, inArray, like } from 'drizzle-orm';
 
 // Every email this file registers with — register() creates one tenant
 // per call, so these locate the tenants the file owns.
-const TEST_EMAILS = ['test@example.com', 'session-cap@example.com', 'lockout@example.com'];
+const TEST_EMAILS = [
+  'test@example.com', 'session-cap@example.com', 'lockout@example.com',
+  'changepw@example.com', 'role-owner@example.com', 'role-owner-b@example.com',
+];
 
 // Tenant-scoped cleanup — only ever touch this file's own tenants so
 // concurrently-running suites' data survives. Tenants are discovered via
@@ -351,6 +354,201 @@ describe('Auth Service', () => {
       });
       await expect(authService.sendPasswordReset(a.user.tenantId, b.user.id))
         .rejects.toThrow('User access not found');
+    });
+  });
+
+  describe('changePassword', () => {
+    it('changes the password: new one logs in, old one is rejected', async () => {
+      const reg = await authService.register({
+        email: 'changepw@example.com', password: 'password123',
+        displayName: 'PW User', companyName: 'PW Co',
+      });
+
+      await authService.changePassword(reg.user.id, {
+        currentPassword: 'password123', newPassword: 'newpassword456',
+      });
+
+      const ok = await authService.login({ email: 'changepw@example.com', password: 'newpassword456' });
+      expect(ok.tokens.accessToken).toBeTruthy();
+      await expect(
+        authService.login({ email: 'changepw@example.com', password: 'password123' }),
+      ).rejects.toThrow('Invalid email or password');
+
+      const rows = await db.select().from(auditLog).where(
+        and(eq(auditLog.tenantId, reg.user.tenantId), eq(auditLog.entityType, 'user_password_change')),
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.userId).toBe(reg.user.id);
+    });
+
+    it('rejects a wrong current password without touching the hash, and audits the attempt', async () => {
+      const reg = await authService.register({
+        email: 'changepw@example.com', password: 'password123',
+        displayName: 'PW User', companyName: 'PW Co',
+      });
+
+      await expect(
+        authService.changePassword(reg.user.id, { currentPassword: 'wrongpassword', newPassword: 'newpassword456' }),
+      ).rejects.toThrow('Current password is incorrect');
+
+      // Old password still works — the hash was not modified.
+      const ok = await authService.login({ email: 'changepw@example.com', password: 'password123' });
+      expect(ok.tokens.accessToken).toBeTruthy();
+
+      const rows = await db.select().from(auditLog).where(
+        and(eq(auditLog.tenantId, reg.user.tenantId), eq(auditLog.entityType, 'user_password_change_failed')),
+      );
+      expect(rows).toHaveLength(1);
+    });
+
+    it('rejects a new password identical to the current one', async () => {
+      const reg = await authService.register({
+        email: 'changepw@example.com', password: 'password123',
+        displayName: 'PW User', companyName: 'PW Co',
+      });
+      await expect(
+        authService.changePassword(reg.user.id, { currentPassword: 'password123', newPassword: 'password123' }),
+      ).rejects.toThrow('must be different');
+    });
+
+    it('revokes every existing session (trust-boundary event)', async () => {
+      const reg = await authService.register({
+        email: 'changepw@example.com', password: 'password123',
+        displayName: 'PW User', companyName: 'PW Co',
+      });
+      const second = await authService.login({ email: 'changepw@example.com', password: 'password123' });
+
+      const before = await db.select().from(sessions).where(eq(sessions.userId, reg.user.id));
+      expect(before.length).toBe(2);
+
+      await authService.changePassword(reg.user.id, {
+        currentPassword: 'password123', newPassword: 'newpassword456',
+      });
+
+      const after = await db.select().from(sessions).where(eq(sessions.userId, reg.user.id));
+      expect(after.length).toBe(0);
+      await expect(authService.refresh(reg.tokens.refreshToken)).rejects.toThrow('Invalid refresh token');
+      await expect(authService.refresh(second.tokens.refreshToken)).rejects.toThrow('Invalid refresh token');
+    });
+  });
+
+  describe('updateUser (role change)', () => {
+    async function setup() {
+      const reg = await authService.register({
+        email: 'role-owner@example.com', password: 'password123',
+        displayName: 'Role Owner', companyName: 'Role Co',
+      });
+      const invited = await authService.inviteUser(reg.user.tenantId, {
+        email: 'role-target@example.com', displayName: 'Target', role: 'readonly',
+      }, reg.user.id);
+      return { reg, invited };
+    }
+
+    it('promotes a home-tenant readonly user: both users.role and the UTA row update', async () => {
+      const { reg, invited } = await setup();
+
+      await authService.updateUser(reg.user.tenantId, invited.user.id, { role: 'accountant' }, reg.user.id);
+
+      const u = await db.query.users.findFirst({ where: eq(users.id, invited.user.id) });
+      expect(u!.role).toBe('accountant');
+      const uta = await db.query.userTenantAccess.findFirst({
+        where: and(eq(userTenantAccess.userId, invited.user.id), eq(userTenantAccess.tenantId, reg.user.tenantId)),
+      });
+      expect(uta!.role).toBe('accountant');
+
+      const listed = await authService.listTenantUsers(reg.user.tenantId);
+      expect(listed.find((x) => x.id === invited.user.id)!.role).toBe('accountant');
+
+      const rows = await db.select().from(auditLog).where(
+        and(eq(auditLog.tenantId, reg.user.tenantId), eq(auditLog.entityType, 'user_role')),
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.userId).toBe(reg.user.id);
+      expect(rows[0]!.beforeData).toEqual({ role: 'readonly' });
+      expect(rows[0]!.afterData).toEqual({ role: 'accountant' });
+    });
+
+    it('changes only the UTA row when the tenant is not the user home tenant', async () => {
+      const { reg } = await setup();
+      const other = await authService.register({
+        email: 'role-owner-b@example.com', password: 'password123',
+        displayName: 'Owner B', companyName: 'Role B Co',
+      });
+      // Owner B gets readonly access to Role Co (non-home tenant for them).
+      await db.insert(userTenantAccess).values({
+        userId: other.user.id, tenantId: reg.user.tenantId, role: 'readonly', isActive: true,
+      });
+
+      await authService.updateUser(reg.user.tenantId, other.user.id, { role: 'bookkeeper' }, reg.user.id);
+
+      const uta = await db.query.userTenantAccess.findFirst({
+        where: and(eq(userTenantAccess.userId, other.user.id), eq(userTenantAccess.tenantId, reg.user.tenantId)),
+      });
+      expect(uta!.role).toBe('bookkeeper');
+      // Home role (owner of their own tenant) must be untouched.
+      const u = await db.query.users.findFirst({ where: eq(users.id, other.user.id) });
+      expect(u!.role).toBe('owner');
+    });
+
+    it('rejects changing your own role', async () => {
+      const { reg } = await setup();
+      await expect(
+        authService.updateUser(reg.user.tenantId, reg.user.id, { role: 'accountant' }, reg.user.id),
+      ).rejects.toThrow('You cannot change your own role');
+    });
+
+    it('rejects demoting the only owner; allows it once a second owner exists', async () => {
+      const { reg, invited } = await setup();
+
+      // Only one owner — demotion (by a different actor) must be refused.
+      await expect(
+        authService.updateUser(reg.user.tenantId, reg.user.id, { role: 'accountant' }, invited.user.id),
+      ).rejects.toThrow('Cannot demote the only owner');
+
+      // Promote the invited user to owner (multi-owner supported)...
+      await authService.updateUser(reg.user.tenantId, invited.user.id, { role: 'owner' }, reg.user.id);
+      const listed = await authService.listTenantUsers(reg.user.tenantId);
+      expect(listed.find((x) => x.id === invited.user.id)!.role).toBe('owner');
+
+      // ...after which demoting the original owner goes through.
+      await authService.updateUser(reg.user.tenantId, reg.user.id, { role: 'accountant' }, invited.user.id);
+      const u = await db.query.users.findFirst({ where: eq(users.id, reg.user.id) });
+      expect(u!.role).toBe('accountant');
+    });
+
+    it('a name/email-only update leaves the role untouched (regression)', async () => {
+      const { reg, invited } = await setup();
+      await authService.updateUser(reg.user.tenantId, invited.user.id, { displayName: 'Renamed' }, reg.user.id);
+      const u = await db.query.users.findFirst({ where: eq(users.id, invited.user.id) });
+      expect(u!.displayName).toBe('Renamed');
+      expect(u!.role).toBe('readonly');
+    });
+
+    it('refresh() picks up the new role within one token rotation', async () => {
+      const { reg, invited } = await setup();
+      const login = await authService.login({
+        email: 'role-target@example.com', password: invited.temporaryPassword!,
+      });
+      expect((jwt.verify(login.tokens.accessToken, env.JWT_SECRET) as JwtPayload).role).toBe('readonly');
+
+      await authService.updateUser(reg.user.tenantId, invited.user.id, { role: 'accountant' }, reg.user.id);
+
+      const refreshed = await authService.refresh(login.tokens.refreshToken);
+      expect((jwt.verify(refreshed.accessToken, env.JWT_SECRET) as JwtPayload).role).toBe('accountant');
+    });
+
+    it('admin setUserRole keeps the home-tenant UTA row in sync', async () => {
+      const { reg, invited } = await setup();
+      const { setUserRole } = await import('./admin.service.js');
+
+      await setUserRole(invited.user.id, 'bookkeeper', reg.user.id);
+
+      const u = await db.query.users.findFirst({ where: eq(users.id, invited.user.id) });
+      expect(u!.role).toBe('bookkeeper');
+      const uta = await db.query.userTenantAccess.findFirst({
+        where: and(eq(userTenantAccess.userId, invited.user.id), eq(userTenantAccess.tenantId, reg.user.tenantId)),
+      });
+      expect(uta!.role).toBe('bookkeeper');
     });
   });
 });

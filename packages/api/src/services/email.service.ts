@@ -8,8 +8,37 @@ import { db } from '../db/index.js';
 import { companies, contacts, transactions } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import * as pdfService from './pdf.service.js';
+import { AppError } from '../utils/errors.js';
 import { getSmtpSettings as getCompanySmtp } from './company.service.js';
 import { getSmtpSettings as getSystemSmtp } from './admin.service.js';
+
+/**
+ * Send through the given transport, translating SMTP failures into
+ * actionable AppErrors instead of the opaque 500 an unhandled nodemailer
+ * rejection produces. Auth rejections (bad username/App Password — Gmail's
+ * 535) get their own code so the UI can point the user at Settings → Email.
+ * No silent fallback to system SMTP here: sending a company's mail from
+ * the system identity would misrepresent the From address.
+ */
+export async function sendOrThrow(
+  transport: { sendMail: (opts: any) => Promise<any> },
+  mail: { from: unknown; to: string; subject: string; text: string },
+): Promise<void> {
+  try {
+    await transport.sendMail(mail);
+  } catch (err) {
+    const code = (err as { code?: string })?.code;
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[email] send to ${mail.to} failed:`, message);
+    if (code === 'EAUTH' || message.includes('535')) {
+      throw AppError.badRequest(
+        'Email could not be sent: the SMTP username or password was rejected by the mail server. Check Settings → Email (Gmail requires an App Password).',
+        'SMTP_AUTH_FAILED',
+      );
+    }
+    throw AppError.badRequest('Email could not be sent. Check the SMTP settings under Settings → Email.', 'SMTP_SEND_FAILED');
+  }
+}
 
 async function createTransport(tenantId: string, companyId?: string) {
   // Try company-level SMTP first
@@ -205,7 +234,7 @@ export async function sendPaymentReminder(tenantId: string, invoiceId: string, b
   }
 
   const { from, transport } = await createTransport(tenantId, companyId);
-  await transport.sendMail({
+  await sendOrThrow(transport, {
     from,
     to: customerEmail,
     subject: safeSubject`Payment Reminder: Invoice ${txn.txnNumber || invoiceId.slice(0, 8)} from ${companyName}`,
@@ -229,7 +258,7 @@ export async function sendPaymentConfirmation(tenantId: string, paymentTxnId: st
   });
 
   const { from, transport } = await createTransport(tenantId, company?.id);
-  await transport.sendMail({
+  await sendOrThrow(transport, {
     from,
     to: contact.email,
     subject: safeSubject`Payment Received - ${company?.businessName || 'Company'}`,

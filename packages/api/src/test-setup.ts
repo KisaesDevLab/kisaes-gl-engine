@@ -3,6 +3,8 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { afterAll } from 'vitest';
+import os from 'os';
+import path from 'path';
 
 // Use a separate test database to avoid wiping dev data
 process.env['DATABASE_URL'] = process.env['DATABASE_URL'] || 'postgresql://kisbooks:kisbooks@localhost:5434/kisbooks_test';
@@ -19,6 +21,11 @@ process.env['ENCRYPTION_KEY'] =
 process.env['PLAID_ENCRYPTION_KEY'] =
   process.env['PLAID_ENCRYPTION_KEY'] || 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6a7b8c9d0e1f2a3b4c5d6a7b8c9d0e1f2';
 process.env['NODE_ENV'] = 'test';
+// Route files that build a multer disk storage at import time (e.g.
+// company.routes.ts logo upload) mkdir UPLOAD_DIR on module load — point
+// it at a writable temp dir so importing them doesn't require /data.
+process.env['UPLOAD_DIR'] =
+  process.env['UPLOAD_DIR'] || path.join(os.tmpdir(), 'kis-books-test-uploads');
 // PORTAL_IDENTITY_LINKING_V1 — flag is off in production but the
 // test suite exercises both flag-on (identity auto-link, switcher
 // authz) and explicit flag-off branches. Set it on globally here so
