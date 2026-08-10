@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-10T20:21:57.717Z",
+  "generatedAt": "2026-08-10T20:31:42.380Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -17,7 +17,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 57354
+    "totalBytes": 58374
   },
   "screens": [
     {
@@ -1490,6 +1490,7 @@
     "Daily Balance Validation",
     "Admin Tenant Tools",
     "Email (SMTP) Configuration",
+    "Using Gmail as the SMTP Server",
     "AI Processing Overview",
     "AI Transaction Categorization",
     "Receipt OCR",

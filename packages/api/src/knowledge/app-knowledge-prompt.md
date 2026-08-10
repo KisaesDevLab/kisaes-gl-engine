@@ -830,6 +830,24 @@ port, username, password, and "from" address. Use **Test Connection** to verify 
 settings work before saving. Email is used for sending invoices, password resets, magic
 links, and 2FA codes.
 
+### Using Gmail as the SMTP Server
+Gmail works with host `smtp.gmail.com`, port `587`, and these two rules:
+- **Username** must be the full email address (e.g. `you@gmail.com`) — a bare
+  username is rejected with "535 BadCredentials".
+- **Password** must be a 16-character **App Password**, never the regular account
+  password. Google rejects regular passwords for SMTP with the same 535 error.
+
+To obtain an App Password:
+1. Turn on **2-Step Verification** for the Google account (Google Account → Security)
+   — App Passwords are only available with 2-Step Verification on.
+2. Go to Google Account → Security → **App Passwords** (or visit
+   myaccount.google.com/apppasswords).
+3. Enter a name like "Vibe MyBooks" and click **Create**.
+4. Copy the 16-character password shown (spaces don't matter) and paste it into the
+   Password field on the Email Settings page. Google shows it only once — generate a
+   new one if it's lost.
+5. Set the **From Address** to the same Gmail address, then run **Test Connection**.
+
 ## AI Features & Attachments
 
 ### AI Processing Overview
