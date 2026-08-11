@@ -118,6 +118,53 @@ describe('Register Service', () => {
     expect(result.lines[0]!.runningBalance).toBe(500);
   });
 
+  it('sorts the FULL filtered set (not just the fetched page) and keeps running balances canonical', async () => {
+    // Four deposits across four dates with distinct amounts.
+    const rows = [
+      { date: '2026-03-01', amount: '100.00' },
+      { date: '2026-03-05', amount: '400.00' },
+      { date: '2026-03-10', amount: '200.00' },
+      { date: '2026-03-20', amount: '300.00' },
+    ];
+    for (const r of rows) {
+      await ledger.postTransaction(tenantId, {
+        txnType: 'deposit', txnDate: r.date,
+        lines: [
+          { accountId: bankAccountId, debit: r.amount, credit: '0' },
+          { accountId: revenueAccountId, debit: '0', credit: r.amount },
+        ],
+      });
+    }
+    const range = { startDate: '2026-01-01', endDate: '2026-12-31' };
+
+    // Date desc, page size 2: page 1 must be the two NEWEST rows — the old
+    // implementation returned the two OLDEST reversed.
+    const dateDesc = await registerService.getRegister(tenantId, bankAccountId, {
+      ...range, sortBy: 'date', sortDir: 'desc', page: 1, perPage: 2,
+    });
+    expect(dateDesc.lines.map((l) => l.txnDate)).toEqual(['2026-03-20', '2026-03-10']);
+    // Running balances stay canonical (by date) regardless of display sort.
+    expect(dateDesc.lines.map((l) => l.runningBalance)).toEqual([1000, 700]);
+    // Ending balance covers the whole filtered range, not the page.
+    expect(dateDesc.endingBalance).toBe(1000);
+    expect(dateDesc.pagination.totalRows).toBe(4);
+
+    // Page 2 of date desc continues the global order.
+    const dateDescP2 = await registerService.getRegister(tenantId, bankAccountId, {
+      ...range, sortBy: 'date', sortDir: 'desc', page: 2, perPage: 2,
+    });
+    expect(dateDescP2.lines.map((l) => l.txnDate)).toEqual(['2026-03-05', '2026-03-01']);
+    expect(dateDescP2.lines.map((l) => l.runningBalance)).toEqual([500, 100]);
+
+    // Amount desc sorts across the whole set.
+    const amountDesc = await registerService.getRegister(tenantId, bankAccountId, {
+      ...range, sortBy: 'amount', sortDir: 'desc', page: 1, perPage: 2,
+    });
+    expect(amountDesc.lines.map((l) => l.deposit)).toEqual([400, 300]);
+    // Each row still shows its canonical (date-ordered) balance.
+    expect(amountDesc.lines.map((l) => l.runningBalance)).toEqual([500, 1000]);
+  });
+
   it('should compute balance_forward correctly', async () => {
     // Transaction in February
     await ledger.postTransaction(tenantId, {

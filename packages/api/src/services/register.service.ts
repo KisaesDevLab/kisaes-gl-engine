@@ -145,20 +145,42 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
 
   const whereClause = sql.join(sqlConditions, sql` AND `);
 
-  // Sort — always compute in ASC for correct running balance, reverse later if DESC
-  const requestedDesc = filters.sortDir === 'desc';
-  // For running balance correctness, always query in ascending date order
-  const orderClause = sql`t.txn_date ASC, t.created_at ASC`;
+  // Display sort — independent of the running balance, which is computed by
+  // a window over canonical date order (running_delta below), so any column
+  // can sort the FULL filtered set without corrupting balances. Sort columns
+  // are a fixed switch, never interpolated from user input.
+  const dir = filters.sortDir === 'desc' ? sql`DESC` : sql`ASC`;
+  let orderClause;
+  switch (filters.sortBy) {
+    case 'amount':
+      orderClause = sql`GREATEST(jl.debit, jl.credit) ${dir}, t.txn_date ASC, jl.id ASC`;
+      break;
+    case 'type':
+      orderClause = sql`t.txn_type ${dir}, t.txn_date ASC, jl.id ASC`;
+      break;
+    case 'ref_no':
+      orderClause = sql`t.txn_number ${dir} NULLS LAST, t.txn_date ASC, jl.id ASC`;
+      break;
+    default:
+      orderClause = sql`t.txn_date ${dir}, t.created_at ${dir}, jl.id ${dir}`;
+  }
 
-  // Count total
+  // Count + full-range totals (the ending balance must cover the whole
+  // filtered range, not just the fetched page).
   const countResult = await db.execute(sql`
-    SELECT COUNT(*) as total
+    SELECT COUNT(*) as total,
+      COALESCE(SUM(jl.debit), 0) as sum_debit,
+      COALESCE(SUM(jl.credit), 0) as sum_credit
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id
     LEFT JOIN contacts c ON c.id = t.contact_id
     WHERE ${whereClause}
   `);
-  const totalRows = parseInt((countResult.rows as any[])[0]?.total || '0');
+  const countRow = (countResult.rows as any[])[0] || {};
+  const totalRows = parseInt(countRow.total || '0');
+  const filteredDelta = debitNormal
+    ? parseFloat(countRow.sum_debit || '0') - parseFloat(countRow.sum_credit || '0')
+    : parseFloat(countRow.sum_credit || '0') - parseFloat(countRow.sum_debit || '0');
 
   // Fetch page
   const dataResult = await db.execute(sql`
@@ -179,7 +201,14 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
       rl.is_cleared,
       r.status AS recon_status,
       cat.category_name,
-      cat.category_account_id
+      cat.category_account_id,
+      -- Running balance delta in canonical ledger order, regardless of the
+      -- display ORDER BY below: each row carries the cumulative signed sum
+      -- of every filtered row up to and including itself by date.
+      SUM(jl.debit - jl.credit) OVER (
+        ORDER BY t.txn_date ASC, t.created_at ASC, jl.id ASC
+        ROWS UNBOUNDED PRECEDING
+      ) AS running_delta
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id
     LEFT JOIN contacts c ON c.id = t.contact_id AND c.tenant_id = ${tenantId}
@@ -225,34 +254,14 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
     }
   }
 
-  // Build response lines with running balance
-  let runningBalance = balanceForward;
-
-  // If we're on page > 1, we need balance at end of previous pages
-  if (offset > 0) {
-    const priorResult = await db.execute(sql`
-      SELECT COALESCE(SUM(sub.debit), 0) as td, COALESCE(SUM(sub.credit), 0) as tc
-      FROM (
-        SELECT jl.debit, jl.credit
-        FROM journal_lines jl
-        JOIN transactions t ON t.id = jl.transaction_id
-        LEFT JOIN contacts c ON c.id = t.contact_id
-        WHERE ${whereClause}
-        ORDER BY ${orderClause}
-        LIMIT ${offset}
-      ) sub
-    `);
-    const pr = (priorResult.rows as any[])[0] || { td: '0', tc: '0' };
-    if (debitNormal) {
-      runningBalance += parseFloat(pr.td) - parseFloat(pr.tc);
-    } else {
-      runningBalance += parseFloat(pr.tc) - parseFloat(pr.td);
-    }
-  }
-
   const lines: RegisterLine[] = (dataResult.rows as any[]).map((row: any) => {
     const debit = parseFloat(row.debit);
     const credit = parseFloat(row.credit);
+    // Balance after this row = balance forward + this row's cumulative
+    // canonical-order delta (window column) — correct on any page and
+    // under any display sort.
+    const delta = parseFloat(row.running_delta);
+    const runningBalance = balanceForward + (debitNormal ? delta : -delta);
 
     // Payment/deposit relative to account normal balance
     let payment: number | null = null;
@@ -261,12 +270,10 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
       // Asset/expense: debit = increase (deposit), credit = decrease (payment)
       if (credit > 0) payment = credit;
       if (debit > 0) deposit = debit;
-      runningBalance += debit - credit;
     } else {
       // Liability/equity/revenue: credit = increase (deposit), debit = decrease (payment)
       if (debit > 0) payment = debit;
       if (credit > 0) deposit = credit;
-      runningBalance += credit - debit;
     }
 
     // Reconciliation status
@@ -312,12 +319,9 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
     };
   });
 
-  const endingBalance = lines.length > 0 ? lines[lines.length - 1]!.runningBalance : balanceForward;
-
-  // Reverse lines if descending sort was requested
-  if (requestedDesc) {
-    lines.reverse();
-  }
+  // Ending balance for the FULL filtered range (balance forward + every
+  // filtered row's delta) — pages and display sort don't change it.
+  const endingBalance = Math.round((balanceForward + filteredDelta) * 100) / 100;
 
   return {
     account: {
