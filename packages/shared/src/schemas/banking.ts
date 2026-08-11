@@ -133,6 +133,17 @@ export const createFromStatementLineSchema = z.object({
   memo: z.string().max(500).optional(),
 });
 
+// Reconcile-only import of a bank-download file (OFX/QFX/QBO — all OFX
+// dialects). Content is the raw file text; accountId is optional on the
+// first call (the server suggests one from the file's masked account
+// number when it can, otherwise responds needsAccount and the client
+// re-posts with the user's choice).
+export const importOfxStatementSchema = z.object({
+  content: z.string().min(1).max(5 * 1024 * 1024),
+  accountId: z.string().uuid().optional(),
+  fileName: z.string().max(255).optional(),
+});
+
 export const bankImportSchema = z.object({
   accountId: z.string().uuid(),
   mapping: z.object({

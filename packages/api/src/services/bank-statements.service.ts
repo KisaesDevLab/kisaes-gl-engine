@@ -255,6 +255,203 @@ export async function suggestAccountForMasked(
   return row ? { accountId: row.account_id, accountName: row.name } : null;
 }
 
+// ─── OFX/QFX/QBO reconcile-only import ───────────────────────────
+//
+// QFX (Quicken) and QBO (QuickBooks WebConnect) are OFX dialects — the
+// STMTTRN/LEDGERBAL structure is identical, so one parser covers all three,
+// in both SGML (no closing tags) and XML flavors. Unlike the PDF path there
+// is no OCR/AI step: the file is authoritative, parsed synchronously, and
+// lands directly as a bank_statements row + bank_statement_lines for the
+// Statement Match Engine. Nothing is imported into the bank feed (same
+// rationale as importReconcileOnly: the books already have the entries).
+
+export interface OfxStatementParse {
+  transactions: Array<{ date: string; amount: string; description: string; checkNumber: string | null }>;
+  periodStart: string | null;
+  periodEnd: string | null;
+  /** LEDGERBAL BALAMT — the statement closing balance. */
+  closingBalance: string | null;
+  maskedAccountNumber: string | null;
+  institutionName: string | null;
+  statementType: string | null;
+  isCreditCard: boolean;
+}
+
+const ofxDate = (raw: string): string | null => {
+  const m = /^(\d{4})(\d{2})(\d{2})/.exec(raw.trim());
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+};
+
+export function parseOfxStatement(content: string): OfxStatementParse {
+  // Tag values end at the next tag or newline (SGML has no closing tags).
+  const topTag = (tag: string): string => {
+    const m = content.match(new RegExp(`<${tag}>([^<\\r\\n]+)`, 'i'));
+    return m?.[1]?.trim() || '';
+  };
+  const isCreditCard = /<CCSTMTRS>/i.test(content);
+
+  const transactions: OfxStatementParse['transactions'] = [];
+  const txnRegex = /<STMTTRN>([\s\S]*?)(?=<STMTTRN>|<\/STMTTRN>|<\/BANKTRANLIST>|<LEDGERBAL>|$)/gi;
+  let match;
+  while ((match = txnRegex.exec(content)) !== null) {
+    const block = match[1]!;
+    const getTag = (tag: string) => {
+      const m = block.match(new RegExp(`<${tag}>([^<\\r\\n]+)`, 'i'));
+      return m?.[1]?.trim() || '';
+    };
+    const date = ofxDate(getTag('DTPOSTED'));
+    const amount = parseFloat(getTag('TRNAMT'));
+    const name = getTag('NAME');
+    const memo = getTag('MEMO');
+    const description = [name, memo].filter(Boolean).join(' — ');
+    if (!date || !Number.isFinite(amount)) continue;
+    const checkNumRaw = getTag('CHECKNUM');
+    const checkNumber = (checkNumRaw ? String(Number.parseInt(checkNumRaw, 10) || '') || null : null)
+      ?? (parseCheckNumber(description) != null ? String(parseCheckNumber(description)) : null);
+    transactions.push({
+      date,
+      // OFX TRNAMT is signed money-in-positive for bank AND card accounts —
+      // exactly the bank_statement_lines orientation (jl.debit - jl.credit).
+      amount: amount.toFixed(4),
+      description,
+      checkNumber,
+    });
+  }
+
+  // LEDGERBAL appears once per statement response; take the first block.
+  const ledgerBlock = content.match(/<LEDGERBAL>([\s\S]*?)(?=<\/LEDGERBAL>|<AVAILBAL>|<\/STMTRS>|<\/CCSTMTRS>|$)/i)?.[1] ?? '';
+  const balMatch = ledgerBlock.match(/<BALAMT>([^<\r\n]+)/i)?.[1]?.trim();
+  const closingBalance = balMatch && Number.isFinite(parseFloat(balMatch)) ? parseFloat(balMatch).toFixed(4) : null;
+  const balDate = ofxDate(ledgerBlock.match(/<DTASOF>([^<\r\n]+)/i)?.[1] ?? '');
+
+  const txnDates = transactions.map((t) => t.date).sort();
+  const acctId = topTag('ACCTID');
+  return {
+    transactions,
+    periodStart: ofxDate(topTag('DTSTART')) ?? txnDates[0] ?? null,
+    periodEnd: ofxDate(topTag('DTEND')) ?? balDate ?? txnDates[txnDates.length - 1] ?? null,
+    closingBalance,
+    maskedAccountNumber: acctId ? acctId.slice(-4) : null,
+    institutionName: topTag('ORG') || null,
+    statementType: isCreditCard ? 'CREDITCARD' : (topTag('ACCTTYPE') || null),
+    isCreditCard,
+  };
+}
+
+export type OfxImportResult =
+  | { needsAccount: true; summary: { transactionCount: number; periodStart: string | null; periodEnd: string | null; closingBalance: string | null; maskedAccountNumber: string | null; institutionName: string | null } }
+  | { needsAccount?: false; statementId: string; lineCount: number; periodEnd: string; closingBalance: string; accountId: string };
+
+export async function importStatementFromOfx(
+  tenantId: string,
+  opts: { content: string; accountId?: string | null; fileName?: string | null; userId?: string },
+): Promise<OfxImportResult> {
+  const parse = parseOfxStatement(opts.content);
+  if (parse.transactions.length === 0) {
+    throw AppError.badRequest('No transactions found — this does not look like an OFX/QFX/QBO file.');
+  }
+  if (!parse.closingBalance) {
+    throw AppError.unprocessableEntity(
+      'The file has no ledger balance (LEDGERBAL), so a statement ending balance cannot be determined. ' +
+        'Start the reconciliation manually and enter the ending balance from your paper statement.',
+      'OFX_NO_LEDGER_BALANCE',
+    );
+  }
+  const periodEnd = parse.periodEnd;
+  if (!periodEnd) throw AppError.badRequest('The file has no statement period or transaction dates.');
+
+  // Resolve the GL account: explicit choice wins; otherwise reuse the account
+  // that previous statements with the same masked number were filed under.
+  let accountId = opts.accountId ?? null;
+  if (!accountId && parse.maskedAccountNumber) {
+    accountId = (await suggestAccountForMasked(tenantId, parse.maskedAccountNumber))?.accountId ?? null;
+  }
+  if (!accountId) {
+    return {
+      needsAccount: true,
+      summary: {
+        transactionCount: parse.transactions.length,
+        periodStart: parse.periodStart,
+        periodEnd: parse.periodEnd,
+        closingBalance: parse.closingBalance,
+        maskedAccountNumber: parse.maskedAccountNumber,
+        institutionName: parse.institutionName,
+      },
+    };
+  }
+
+  const account = await db.query.accounts.findFirst({
+    where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, accountId)),
+  });
+  if (!account) throw AppError.notFound('Account not found');
+  if (!['asset', 'liability'].includes(account.accountType)) {
+    throw AppError.badRequest('Statements can only be filed under a bank or credit-card account.');
+  }
+
+  const existing = await db.query.bankStatements.findFirst({
+    where: and(
+      eq(bankStatements.tenantId, tenantId),
+      eq(bankStatements.accountId, accountId),
+      eq(bankStatements.periodEnd, periodEnd),
+    ),
+  });
+  if (existing) {
+    throw AppError.badRequest(
+      `A statement for this account ending ${periodEnd} is already on file — reconcile that one, or delete it first.`,
+    );
+  }
+
+  // File-implied opening balance: closing minus the period's net movement.
+  // OFX files carry the complete period, so this is exact — it powers the
+  // continuity check against the prior reconciliation's ending balance.
+  const net = parse.transactions.reduce((s, t) => s + parseFloat(t.amount), 0);
+  const openingBalance = (parseFloat(parse.closingBalance) - net).toFixed(4);
+
+  const statementId = await db.transaction(async (tx) => {
+    const [stmt] = await tx.insert(bankStatements).values({
+      tenantId,
+      accountId: accountId!,
+      periodStart: parse.periodStart,
+      periodEnd,
+      openingBalance,
+      closingBalance: parse.closingBalance!,
+      maskedAccountNumber: parse.maskedAccountNumber,
+      institutionName: parse.institutionName,
+      statementType: parse.statementType,
+      // Opening is DERIVED from closing − Σtxns, so the golden rule holds by
+      // construction — 'verified' would overstate what the file proves.
+      goldenRuleStatus: 'unknown',
+    }).returning();
+    await tx.insert(bankStatementLines).values(parse.transactions.map((t) => ({
+      tenantId,
+      statementId: stmt!.id,
+      lineDate: t.date,
+      description: t.description || null,
+      amount: t.amount,
+      checkNumber: t.checkNumber,
+      payee: null,
+      matchStatus: 'unmatched' as const,
+    })));
+    return stmt!.id;
+  });
+
+  await auditLog(tenantId, 'create', 'bank_statement', statementId, null, {
+    source: 'ofx_import',
+    fileName: opts.fileName ?? null,
+    periodEnd,
+    closingBalance: parse.closingBalance,
+    lineCount: parse.transactions.length,
+  }, opts.userId);
+
+  return {
+    statementId,
+    lineCount: parse.transactions.length,
+    periodEnd,
+    closingBalance: parse.closingBalance,
+    accountId,
+  };
+}
+
 export interface BankStatementListRow {
   id: string;
   accountId: string;

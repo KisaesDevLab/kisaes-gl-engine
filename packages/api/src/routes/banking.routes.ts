@@ -10,7 +10,7 @@ import {
   bulkApproveSchema, bulkCategorizeSchema, bulkExcludeSchema, bulkRecleanseSchema,
   bulkReprocessRulesSchema,
   createManualConnectionSchema, updateFeedItemSchema, bankStatementFiltersSchema,
-  confirmStatementLineSchema, createFromStatementLineSchema,
+  confirmStatementLineSchema, createFromStatementLineSchema, importOfxStatementSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
@@ -296,6 +296,22 @@ bankingRouter.get('/statements/suggest-account', async (req, res) => {
   const masked = String(req.query['masked'] ?? '');
   const suggestion = masked ? await bankStatementsService.suggestAccountForMasked(req.tenantId, masked) : null;
   res.json({ suggestion });
+});
+
+// Reconcile-only import of an OFX/QFX/QBO bank download: parses the file
+// synchronously (no OCR/AI) into a bank_statements row + statement lines
+// for the match engine. Nothing lands in the bank feed. When accountId is
+// omitted and the file's masked account number has no prior statement to
+// infer from, responds { needsAccount: true, summary } and the client
+// re-posts with the user's account choice.
+bankingRouter.post('/statements/import-ofx', validate(importOfxStatementSchema), async (req, res) => {
+  const result = await bankStatementsService.importStatementFromOfx(req.tenantId, {
+    content: req.body.content,
+    accountId: req.body.accountId,
+    fileName: req.body.fileName,
+    userId: req.userId,
+  });
+  res.status('needsAccount' in result && result.needsAccount ? 200 : 201).json(result);
 });
 
 // Explicit backfill trigger (the statements list also runs it lazily).

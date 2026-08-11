@@ -204,6 +204,136 @@ describe('Bank Statements Service', () => {
     });
   });
 
+  describe('OFX/QFX reconcile-only import', () => {
+    // Minimal SGML-flavor OFX (no closing tags on leaf values), the shape
+    // banks actually emit for QFX/QBO downloads.
+    const OFX_SAMPLE = `OFXHEADER:100
+DATA:OFXSGML
+
+<OFX>
+<BANKMSGSRSV1><STMTTRNRS><STMTRS>
+<CURDEF>USD
+<BANKACCTFROM><ACCTID>000123456789<ACCTTYPE>CHECKING</BANKACCTFROM>
+<BANKTRANLIST>
+<DTSTART>20260401
+<DTEND>20260430
+<STMTTRN>
+<TRNTYPE>CREDIT
+<DTPOSTED>20260403120000
+<TRNAMT>1500.00
+<FITID>F1
+<NAME>Customer deposit
+</STMTTRN>
+<STMTTRN>
+<TRNTYPE>CHECK
+<DTPOSTED>20260410
+<TRNAMT>-250.00
+<FITID>F2
+<CHECKNUM>1042
+<NAME>CHECK 1042
+</STMTTRN>
+<STMTTRN>
+<TRNTYPE>DEBIT
+<DTPOSTED>20260415
+<TRNAMT>-42.17
+<FITID>F3
+<NAME>CARD PURCHASE
+<MEMO>OFFICE SUPPLY CO
+</STMTTRN>
+</BANKTRANLIST>
+<LEDGERBAL><BALAMT>1207.83<DTASOF>20260430</LEDGERBAL>
+</STMTRS></STMTTRNRS></BANKMSGSRSV1>
+</OFX>`;
+
+    it('parses SGML OFX: transactions, signs, period, balance, mask', () => {
+      const p = bankStatementsService.parseOfxStatement(OFX_SAMPLE);
+      expect(p.transactions).toHaveLength(3);
+      expect(p.transactions[0]).toMatchObject({ date: '2026-04-03', amount: '1500.0000' });
+      expect(p.transactions[1]).toMatchObject({ date: '2026-04-10', amount: '-250.0000', checkNumber: '1042' });
+      expect(p.transactions[2]!.description).toContain('OFFICE SUPPLY CO');
+      expect(p.periodStart).toBe('2026-04-01');
+      expect(p.periodEnd).toBe('2026-04-30');
+      expect(p.closingBalance).toBe('1207.8300');
+      expect(p.maskedAccountNumber).toBe('6789');
+      expect(p.statementType).toBe('CHECKING');
+      expect(p.isCreditCard).toBe(false);
+    });
+
+    it('asks for an account on first import, then remembers the masked number', async () => {
+      const first = await bankStatementsService.importStatementFromOfx(tenantId, { content: OFX_SAMPLE });
+      expect(first).toMatchObject({ needsAccount: true });
+      if (!('needsAccount' in first) || !first.needsAccount) throw new Error('expected needsAccount');
+      expect(first.summary.transactionCount).toBe(3);
+      expect(first.summary.maskedAccountNumber).toBe('6789');
+
+      const imported = await bankStatementsService.importStatementFromOfx(tenantId, {
+        content: OFX_SAMPLE, accountId: bankAccountId, fileName: 'april.qfx',
+      });
+      if ('needsAccount' in imported && imported.needsAccount) throw new Error('expected import');
+      expect(imported.lineCount).toBe(3);
+      expect(imported.periodEnd).toBe('2026-04-30');
+
+      const lines = await db.select().from(bankStatementLines)
+        .where(and(eq(bankStatementLines.tenantId, tenantId), eq(bankStatementLines.statementId, imported.statementId)));
+      expect(lines).toHaveLength(3);
+      // money-in positive / money-out negative (jl.debit - jl.credit orientation)
+      expect(lines.map((l) => parseFloat(l.amount)).sort((a, b) => a - b)).toEqual([-250, -42.17, 1500]);
+
+      const stmt = await db.query.bankStatements.findFirst({
+        where: eq(bankStatements.id, imported.statementId),
+      });
+      // Derived opening = closing − net movement = 1207.83 − 1207.83 = 0
+      expect(parseFloat(stmt!.openingBalance!)).toBe(0);
+
+      // A May file for the same masked account now resolves without asking.
+      const may = OFX_SAMPLE
+        .replace('20260401', '20260501').replace('<DTEND>20260430', '<DTEND>20260531')
+        .replace('<DTASOF>20260430', '<DTASOF>20260531');
+      const second = await bankStatementsService.importStatementFromOfx(tenantId, { content: may });
+      if ('needsAccount' in second && second.needsAccount) throw new Error('expected auto-resolved account');
+      expect(second.accountId).toBe(bankAccountId);
+    });
+
+    it('rejects a duplicate period for the same account', async () => {
+      await bankStatementsService.importStatementFromOfx(tenantId, { content: OFX_SAMPLE, accountId: bankAccountId });
+      await expect(
+        bankStatementsService.importStatementFromOfx(tenantId, { content: OFX_SAMPLE, accountId: bankAccountId }),
+      ).rejects.toThrow(/already on file/i);
+    });
+
+    it('rejects files without a ledger balance or without transactions', async () => {
+      const noBal = OFX_SAMPLE.replace(/<LEDGERBAL>[\s\S]*?<\/LEDGERBAL>/, '');
+      await expect(
+        bankStatementsService.importStatementFromOfx(tenantId, { content: noBal, accountId: bankAccountId }),
+      ).rejects.toThrow(/ledger balance/i);
+      await expect(
+        bankStatementsService.importStatementFromOfx(tenantId, { content: '<OFX></OFX>', accountId: bankAccountId }),
+      ).rejects.toThrow(/No transactions/i);
+    });
+
+    it('imported statement drives the match engine against posted transactions', async () => {
+      // Post the check so the worksheet has its journal line.
+      await ledger.postTransaction(tenantId, {
+        txnType: 'expense', txnDate: '2026-04-10',
+        lines: [
+          { accountId: expenseAccountId, debit: '250.00', credit: '0' },
+          { accountId: bankAccountId, debit: '0', credit: '250.00' },
+        ],
+      });
+      const imported = await bankStatementsService.importStatementFromOfx(tenantId, {
+        content: OFX_SAMPLE, accountId: bankAccountId,
+      });
+      if ('needsAccount' in imported && imported.needsAccount) throw new Error('expected import');
+
+      const recon = await reconciliation.start(tenantId, undefined, undefined, undefined, { statementId: imported.statementId });
+      expect(recon.statementId).toBe(imported.statementId);
+      const { matchStatement } = await import('./statement-match.service.js');
+      const result = await matchStatement(tenantId, recon.id, { apply: true });
+      // The $-250 statement line should auto-clear or suggest the posted check.
+      expect(result.autoCleared + result.suggestions.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
   describe('suggestAccountForMasked', () => {
     it('suggests the account of the most recent statement with the same masked number', async () => {
       const { job } = await mkStatementJob({ masked: '9876' });
