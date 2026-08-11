@@ -372,8 +372,18 @@ function drawCheckFace(ctx: Ctx, c: CheckData, faceTopY: number, faceBottomY: nu
   if (c.printCompanyInfo) {
     let y = faceTopY - (compact ? 7.2 : 18) - (compact ? 7.5 : 8.25);
     drawText(ctx, c.company.name, L, y, { font: ctx.fonts.bold, size: compact ? 7.5 : 8.25, maxWidth: 260 });
-    if (c.company.address) { y -= compact ? 8 : 8.75; drawText(ctx, c.company.address, L, y, { size: compact ? 6.5 : 6.75, maxWidth: 280 }); }
-    if (c.company.phone) { y -= compact ? 8 : 8.75; drawText(ctx, c.company.phone, L, y, { size: compact ? 6.5 : 6.75 }); }
+    if (compact) {
+      if (c.company.address) { y -= 8; drawText(ctx, c.company.address, L, y, { size: 6.5, maxWidth: 280 }); }
+      if (c.company.phone) { y -= 8; drawText(ctx, c.company.phone, L, y, { size: 6.5 }); }
+    } else {
+      // Structured rows (street / street 2 / City, ST ZIP / phone),
+      // return-address style: 8.75 name→first row, then 7.5 leading.
+      y -= 1.25;
+      for (const row of [c.company.line1, c.company.line2, c.company.cityStateZip, c.company.phone].filter(Boolean)) {
+        y -= 7.5;
+        drawText(ctx, row, L, y, { size: 6.75, maxWidth: 280 });
+      }
+    }
   }
 
   // Check number + fractional routing (top right)
@@ -387,7 +397,7 @@ function drawCheckFace(ctx: Ctx, c: CheckData, faceTopY: number, faceBottomY: nu
 
   // Date
   {
-    const dateY = faceTopY - (compact ? 0.5 : 0.9) * IN - 8.25;
+    const dateY = faceTopY - (compact ? 0.5 * IN + 8.25 : 59.4);
     const lineX1 = nrX - 100;
     if (c.printDateLine) {
       drawText(ctx, 'DATE', lineX1 - 6, dateY, { size: 6, color: GRAY, align: 'right' });
@@ -398,8 +408,7 @@ function drawCheckFace(ctx: Ctx, c: CheckData, faceTopY: number, faceBottomY: nu
 
   // Payee
   {
-    const topIn = compact ? 0.85 : 1.3;
-    const labelY = faceTopY - topIn * IN - 6;
+    const labelY = faceTopY - (compact ? 0.85 * IN + 6 : 82.13);
     const nameY = labelY - (compact ? 10 : 12);
     const ulY = nameY - 3;
     const ulX2 = PAGE_W - (compact ? 2.1 : 1.75) * IN;
@@ -407,7 +416,7 @@ function drawCheckFace(ctx: Ctx, c: CheckData, faceTopY: number, faceBottomY: nu
       drawText(ctx, 'PAY TO THE ORDER OF', L, labelY, { size: compact ? 5.25 : 6, color: GRAY });
       drawLine(ctx, L, ulY, ulX2, ulY);
     }
-    drawText(ctx, c.payeeName, L, nameY, { font: ctx.fonts.bold, size: 9, maxWidth: ulX2 - L - 6 });
+    drawText(ctx, c.payeeName, L, nameY, { font: ctx.fonts.bold, size: compact ? 9 : 11, maxWidth: ulX2 - L - 6 });
   }
 
   // Amount box
@@ -415,7 +424,7 @@ function drawCheckFace(ctx: Ctx, c: CheckData, faceTopY: number, faceBottomY: nu
     const boxW = 1.35 * IN;
     const boxH = compact ? 22 : 24;
     const boxX = R - boxW;
-    const boxTop = faceTopY - (compact ? 0.82 : 1.3) * IN;
+    const boxTop = faceTopY - (compact ? 0.82 * IN : 76.13);
     const amtSize = 13;
     if (c.printAmountBox) drawBox(ctx, boxX, boxTop - boxH, boxW, boxH, 1.5);
     drawText(ctx, `$${fmtMoney(c.amount)}`, boxX + boxW / 2, boxTop - boxH + (boxH - amtSize) / 2 + 2.5, {
@@ -425,31 +434,39 @@ function drawCheckFace(ctx: Ctx, c: CheckData, faceTopY: number, faceBottomY: nu
 
   // Amount in words with asterisk fill (fraud protection)
   if (c.printAmountWords) {
-    const ulY = faceTopY - (compact ? 1.3 : 1.85) * IN - 13;
+    const ulY = faceTopY - (compact ? 1.3 * IN + 13 : 120.55);
     const textY = ulY + 3;
     const x2 = R;
     drawLine(ctx, L, ulY, x2, ulY);
-    const size = compact ? 7 : 7.5;
+    const size = compact ? 7 : 10;
+    const labelSize = compact ? 7 : 7.5;
     const wordsW = drawText(ctx, c.amountInWords, L, textY, { size, maxWidth: x2 - L - 60 });
-    const dollarsW = ctx.fonts.bold.widthOfTextAtSize('DOLLARS', size);
-    drawText(ctx, 'DOLLARS', x2, textY, { font: ctx.fonts.bold, size, align: 'right' });
+    const dollarsW = ctx.fonts.bold.widthOfTextAtSize('DOLLARS', labelSize);
+    drawText(ctx, 'DOLLARS', x2, textY, { font: ctx.fonts.bold, size: labelSize, align: 'right' });
     // fill the gap with asterisks so the line can't be altered
     const gapX1 = L + wordsW + 6;
     const gapX2 = x2 - dollarsW - 6;
     if (gapX2 > gapX1) {
       const starW = ctx.fonts.reg.widthOfTextAtSize('*', size);
       const count = Math.floor((gapX2 - gapX1) / starW);
-      if (count > 0) drawText(ctx, '*'.repeat(count), gapX1, textY, { size, color: GRAY });
+      if (count > 0) drawText(ctx, '*'.repeat(count), gapX1, textY - (compact ? 0 : 2), { size, color: GRAY });
     }
   }
 
-  // Bank name/address (blank stock). Non-compact: tucked under the
-  // company block top-left — the zone below the amount-words line
-  // belongs to the payee address block (window-envelope position).
+  // Bank name/address (blank stock). Non-compact: top-center block next
+  // to the company block, address split into standard rows.
   if (c.printBankInfo && (c.bank.name || c.bank.address)) {
-    let y = faceTopY - (compact ? 1.68 : 0.72) * IN - 6;
-    if (c.bank.name) { drawText(ctx, c.bank.name, L, y, { size: compact ? 5.6 : 6, color: rgb(0.27, 0.27, 0.27) }); y -= 7; }
-    if (c.bank.address) drawText(ctx, c.bank.address, L, y, { size: compact ? 5.6 : 6, color: rgb(0.27, 0.27, 0.27) });
+    if (compact) {
+      let y = faceTopY - 1.68 * IN - 6;
+      if (c.bank.name) { drawText(ctx, c.bank.name, L, y, { size: 5.6, color: rgb(0.27, 0.27, 0.27) }); y -= 7; }
+      if (c.bank.address) drawText(ctx, c.bank.address, L, y, { size: 5.6, color: rgb(0.27, 0.27, 0.27) });
+    } else {
+      let y = faceTopY - 22.9;
+      for (const row of [c.bank.name, ...toMailRows([c.bank.address])].filter(Boolean)) {
+        drawText(ctx, row, 231.4, y, { size: 6, color: rgb(0.27, 0.27, 0.27) });
+        y -= 7;
+      }
+    }
   }
 
   // Payee name + mailing address block — standard on top/middle business
@@ -459,19 +476,19 @@ function drawCheckFace(ctx: Ctx, c: CheckData, faceTopY: number, faceBottomY: nu
   // amount-words line and the memo rule. z_fold has its own mailing
   // panel, so the compact face never draws this.
   if (!compact && c.printPayeeAddress && (c.payeeAddressLines?.length ?? 0) > 0) {
-    let y = faceTopY - 2.12 * IN - 8;
-    drawText(ctx, c.payeeName, 0.9 * IN, y, { size: 8, maxWidth: 3.5 * IN });
+    let y = faceTopY - 150.3;
+    drawText(ctx, c.payeeName, 0.9 * IN, y, { size: 11, maxWidth: 3.5 * IN });
     // Cap at 3 address rows so the block can never reach the memo rule.
     for (const line of c.payeeAddressLines!.slice(0, 3)) {
-      y -= 9.5;
-      drawText(ctx, line, 0.9 * IN, y, { size: 8, maxWidth: 3.5 * IN });
+      y -= 10.3;
+      drawText(ctx, line, 0.9 * IN, y, { size: 11, maxWidth: 3.5 * IN });
     }
   }
 
-  // Memo + signature. Their rules sit at 0.65" from the bottom edge —
-  // just above the 5/8" MICR clear band, which must stay empty.
+  // Memo + signature. Their rules sit at 0.75" (compact: 0.65") from the
+  // bottom edge — above the 5/8" MICR clear band, which must stay empty.
   {
-    const ruleY = faceBottomY + 0.65 * IN;
+    const ruleY = faceBottomY + (compact ? 0.65 : 0.75) * IN;
     if (c.printMemoLine) {
       drawText(ctx, 'MEMO', L, ruleY + 11, { size: 6, color: GRAY });
       drawLine(ctx, L, ruleY, L + 3 * IN, ruleY);
