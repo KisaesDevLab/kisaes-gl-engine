@@ -34,11 +34,23 @@ The accounting impact:
    creating rules that match by description / amount.
 
 ### Reconciliation
-1. **Start Reconciliation** — pick the bank account and enter the statement
-   ending balance and date.
-2. **Mark Cleared** — tick off each transaction that appears on the statement.
+1. **Start Reconciliation** — three ways:
+   - **Manually** — pick the bank account and enter the statement ending
+     balance and date.
+   - **Import statement (PDF)** — upload the bank statement PDF/image; the
+     parsed lines power the Statement Match Engine, which auto-clears and
+     suggests matches against your books.
+   - **Import bank file (QFX/OFX/QBO)** — upload the file downloaded from
+     your bank's website (Quicken/QuickBooks/OFX format). Parsed instantly
+     (no OCR), it appears under Statements on File ready to reconcile with
+     the same match engine. First import of a new account number asks which
+     GL account it belongs to and remembers the answer.
+2. **Mark Cleared** — tick off each transaction that appears on the statement
+   (or let the match engine do it from an imported statement).
 3. **Difference must be $0.00** — if it's not, you have either uncleared
    transactions, cleared something incorrectly, or there's data missing.
+   **Refresh transactions** pulls newly entered transactions onto the
+   worksheet and removes ones voided since it was opened.
 4. **Complete** — locks in the cleared state for that statement.
 
 If the difference is off by a small amount like $0.01, it's almost always a
