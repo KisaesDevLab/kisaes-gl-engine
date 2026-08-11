@@ -5,7 +5,7 @@
 // list() surfaces matchCandidateCount so the feed can flag a PENDING item that
 // already exists in the ledger (e.g. a check written in-system) instead of
 // letting the user post a duplicate. Mirrors findMatchCandidates():
-//   - same bank account, ±5 days, matching absolute amount, matchable txn_type,
+//   - same bank account, ±15 days, matching absolute amount, matchable txn_type,
 //     not already matched to another feed item.
 //   - guarded so only pending/unmatched/non-zero rows pay for the subquery.
 
@@ -117,8 +117,14 @@ afterEach(async () => {
 });
 
 describe('bank-feed list — matchCandidateCount', () => {
-  it('flags a pending item when a posted ledger txn matches amount + account within ±5 days', async () => {
+  it('flags a pending item when a posted ledger txn matches amount + account within ±15 days', async () => {
     await postExpense({ total: '250.00', date: '2026-06-13' });
+    const item = await insertPendingItem();
+    expect(await countFor(item.id)).toBe(1);
+  });
+
+  it('flags a match in the widened window (10 days out — a check that cleared slowly)', async () => {
+    await postExpense({ total: '250.00', date: '2026-06-25' });
     const item = await insertPendingItem();
     expect(await countFor(item.id)).toBe(1);
   });
@@ -129,8 +135,8 @@ describe('bank-feed list — matchCandidateCount', () => {
     expect(await countFor(item.id)).toBe(0);
   });
 
-  it('is 0 when the posted txn is outside the ±5-day window', async () => {
-    await postExpense({ total: '250.00', date: '2026-06-25' });
+  it('is 0 when the posted txn is outside the ±15-day window', async () => {
+    await postExpense({ total: '250.00', date: '2026-07-08' });
     const item = await insertPendingItem();
     expect(await countFor(item.id)).toBe(0);
   });

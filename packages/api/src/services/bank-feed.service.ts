@@ -178,8 +178,8 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
           SELECT COUNT(*)::int FROM transactions mt
           WHERE mt.tenant_id = ${tenantId}
             AND mt.status = 'posted'
-            AND mt.txn_date >= (${bankFeedItems.feedDate}::date - INTERVAL '5 days')
-            AND mt.txn_date <= (${bankFeedItems.feedDate}::date + INTERVAL '5 days')
+            AND mt.txn_date >= (${bankFeedItems.feedDate}::date - INTERVAL '15 days')
+            AND mt.txn_date <= (${bankFeedItems.feedDate}::date + INTERVAL '15 days')
             AND ABS(CAST(mt.total AS DECIMAL) - ABS(CAST(${bankFeedItems.amount} AS DECIMAL))) < 0.01
             AND mt.txn_type IN ('bill_payment', 'expense', 'deposit', 'transfer')
             AND EXISTS (
@@ -695,8 +695,11 @@ export async function match(tenantId: string, feedItemId: string, transactionId:
 /**
  * Find candidate transactions that could match a bank feed item.
  *
- * Heuristic: same dollar amount, within ±5 days of the feed item's date,
+ * Heuristic: same dollar amount, within ±15 days of the feed item's date,
  * not already matched to another feed item, and on the same bank account.
+ * (Was ±5; widened 2026-08-11 — printed checks routinely take longer than a
+ * week to clear, which left real matches invisible. Must stay in step with
+ * the matchCandidateCount badge window in the list query above.)
  *
  * Returns bill payments, write-checks (expense txns with check fields), and
  * other expense/deposit txns that touch the connected bank account. Bill
@@ -720,12 +723,12 @@ export async function findMatchCandidates(tenantId: string, feedItemId: string) 
   const feedAmount = parseFloat(String(item.amount || '0'));
   if (feedAmount === 0) return [];
 
-  // ±5-day window
+  // ±15-day window
   const feedDate = new Date(item.feedDate);
   const start = new Date(feedDate);
-  start.setDate(start.getDate() - 5);
+  start.setDate(start.getDate() - 15);
   const end = new Date(feedDate);
-  end.setDate(end.getDate() + 5);
+  end.setDate(end.getDate() + 15);
   const startStr = start.toISOString().split('T')[0]!;
   const endStr = end.toISOString().split('T')[0]!;
 
