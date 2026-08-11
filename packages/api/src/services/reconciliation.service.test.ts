@@ -563,6 +563,49 @@ describe('Reconciliation Service', () => {
       expect(second.added).toBe(0);
     });
 
+    it('removes worksheet rows whose transaction was voided mid-reconciliation', async () => {
+      await postDeposit('100.00', '2026-04-01');
+      const dupId = await postWithdrawal('250.00', '2026-04-10');
+      const recon = await reconciliation.start(tenantId, bankAccountId, '2026-04-30', '100.00');
+      const before = await db.query.reconciliationLines.findMany({
+        where: (rl, { eq: e }) => e(rl.reconciliationId, recon.id),
+      });
+      expect(before.length).toBe(2);
+
+      // Operator spots the duplicate and voids it, then refreshes.
+      await ledger.voidTransaction(tenantId, dupId, 'Duplicate entry');
+      const result = await reconciliation.refreshLines(tenantId, recon.id);
+      expect(result.removed).toBe(1);
+      expect(result.added).toBe(0);
+
+      const after = await db.query.reconciliationLines.findMany({
+        where: (rl, { eq: e }) => e(rl.reconciliationId, recon.id),
+      });
+      expect(after.length).toBe(1);
+      // No line of the voided transaction (original or reversing) remains.
+      const voidedTxnLines = await getBankLineIds(dupId);
+      expect(after.some((rl) => voidedTxnLines.includes(rl.journalLineId))).toBe(false);
+    });
+
+    it('removes a voided row even if it had been cleared in the in-progress reconciliation', async () => {
+      await postDeposit('100.00', '2026-04-01');
+      const dupId = await postWithdrawal('250.00', '2026-04-10');
+      const recon = await reconciliation.start(tenantId, bankAccountId, '2026-04-30', '100.00');
+      const dupLineIds = await getBankLineIds(dupId);
+      await reconciliation.updateLines(tenantId, recon.id, dupLineIds.map((id) => ({ journalLineId: id, isCleared: true })));
+
+      await ledger.voidTransaction(tenantId, dupId, 'Duplicate entry');
+      const result = await reconciliation.refreshLines(tenantId, recon.id);
+      // Both the original cleared row AND the reversing line's absence hold:
+      // only the original snapshot row existed, and it is gone.
+      expect(result.removed).toBe(1);
+
+      const after = await db.query.reconciliationLines.findMany({
+        where: (rl, { eq: e }) => e(rl.reconciliationId, recon.id),
+      });
+      expect(after.some((rl) => dupLineIds.includes(rl.journalLineId))).toBe(false);
+    });
+
     it('refuses to refresh a completed reconciliation', async () => {
       await postDeposit('100.00', '2026-04-01');
       const recon = await reconciliation.start(tenantId, bankAccountId, '2026-04-30', '100.00');

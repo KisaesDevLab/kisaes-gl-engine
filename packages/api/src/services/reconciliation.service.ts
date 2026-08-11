@@ -191,14 +191,16 @@ export async function start(
   return { ...recon, statementId: statement?.id ?? null, continuityWarning };
 }
 
-// Pull transactions posted AFTER the reconciliation was started into the
-// worksheet. start() snapshots the uncleared lines at start time, so a
-// transaction the user adds mid-reconciliation (a "missing" one they just
-// entered) has no reconciliation_line and never appears. This adds a
-// worksheet row for every posted, on-or-before-statement-date line for the
-// account that isn't already on this worksheet and isn't cleared in a prior
-// completed reconciliation — the same eligibility rule start() uses.
-export async function refreshLines(tenantId: string, reconciliationId: string): Promise<{ added: number }> {
+// Sync the worksheet with the ledger as it stands NOW — both directions.
+// start() snapshots the uncleared lines at start time, so a transaction the
+// user adds mid-reconciliation (a "missing" one they just entered) has no
+// reconciliation_line and never appears; conversely a transaction VOIDED
+// mid-reconciliation keeps its snapshot row and lingers on the worksheet.
+// Adds a worksheet row for every posted, on-or-before-statement-date line
+// for the account that isn't already on this worksheet and isn't cleared in
+// a prior completed reconciliation (the same eligibility rule start() uses),
+// and removes rows whose transaction is no longer posted.
+export async function refreshLines(tenantId: string, reconciliationId: string): Promise<{ added: number; removed: number }> {
   return await db.transaction(async (tx) => {
     const [recon] = await tx.select().from(reconciliations)
       .where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)))
@@ -206,6 +208,22 @@ export async function refreshLines(tenantId: string, reconciliationId: string): 
       .limit(1);
     if (!recon) throw AppError.notFound('Reconciliation not found');
     if (recon.status === 'complete') throw AppError.badRequest('Reconciliation is already complete');
+
+    // Remove rows whose transaction has been voided (or otherwise left
+    // 'posted') since the worksheet snapshot — they can never clear against
+    // the statement and sit in the uncleared list forever. Cleared rows are
+    // removed too: this reconciliation is still in progress, and a cleared
+    // row pointing at a void transaction would corrupt the cleared balance.
+    const removedRes = await tx.execute(sql`
+      DELETE FROM reconciliation_lines rl
+      USING journal_lines jl, transactions t
+      WHERE rl.reconciliation_id = ${reconciliationId}
+        AND jl.id = rl.journal_line_id
+        AND t.id = jl.transaction_id
+        AND t.status <> 'posted'
+      RETURNING rl.id
+    `);
+    const removed = (removedRes.rows as any[]).length;
 
     const newLines = await tx.execute(sql`
       SELECT jl.id FROM journal_lines jl
@@ -229,7 +247,7 @@ export async function refreshLines(tenantId: string, reconciliationId: string): 
         rows.map((r) => ({ reconciliationId, journalLineId: r.id, isCleared: false })),
       );
     }
-    return { added: rows.length };
+    return { added: rows.length, removed };
   });
 }
 
