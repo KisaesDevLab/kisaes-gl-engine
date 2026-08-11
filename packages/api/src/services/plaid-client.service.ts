@@ -76,6 +76,26 @@ export async function updateConfig(input: {
   if (userId) { updates.configuredBy = userId; updates.configuredAt = new Date(); }
 
   await db.update(plaidConfig).set(updates).where(eq(plaidConfig.id, config.id));
+
+  // Propagate a CHANGED webhook URL to every existing item. Plaid pins the
+  // URL per item at link time, so without this step existing connections
+  // keep delivering to the old address forever (and Plaid slows its
+  // transaction pulls once those deliveries fail). Best-effort: a Plaid
+  // outage or missing credentials must not fail the config save.
+  const webhookChanged = input.webhookUrl !== undefined && (input.webhookUrl || null) !== config.webhookUrl;
+  if (webhookChanged && updates.webhookUrl) {
+    try {
+      const { syncWebhooksToItems } = await import('./plaid-webhook.service.js');
+      const { results } = await syncWebhooksToItems();
+      const failed = results.filter((r) => r.error);
+      if (failed.length > 0) {
+        console.warn(`[plaid-config] webhook URL propagated with ${failed.length} failure(s):`, failed.map((f) => `${f.institutionName || f.itemId}: ${f.error}`).join('; '));
+      }
+    } catch (err) {
+      console.warn('[plaid-config] webhook URL propagation to existing items failed:', err instanceof Error ? err.message : err);
+    }
+  }
+
   return getConfig();
 }
 
@@ -156,6 +176,18 @@ export async function exchangePublicToken(publicToken: string) {
 export async function getItem(accessToken: string) {
   const client = await getClient();
   const response = await client.itemGet({ access_token: accessToken });
+  return response.data.item;
+}
+
+// Re-register an existing item's webhook receiver. Plaid pins the webhook
+// URL per item at link time; a later change to the configured URL (domain
+// move, path change) silently strands every existing item on the old
+// address — and Plaid degrades its transaction-pull cadence for items whose
+// webhooks keep failing, so the feed goes stale even though cursor syncs
+// report success.
+export async function updateItemWebhook(accessToken: string, webhookUrl: string) {
+  const client = await getClient();
+  const response = await client.itemWebhookUpdate({ access_token: accessToken, webhook: webhookUrl });
   return response.data.item;
 }
 

@@ -26,6 +26,8 @@ const syncMocks = vi.hoisted(() => ({
   syncTransactions: vi.fn(),
   getBalances: vi.fn(),
   refreshTransactions: vi.fn(),
+  getItem: vi.fn(),
+  updateItemWebhook: vi.fn(),
   runCleansingPipeline: vi.fn(),
   runCategorizationPipeline: vi.fn(),
 }));
@@ -37,6 +39,8 @@ vi.mock('./plaid-client.service.js', async (importOriginal) => {
     syncTransactions: (...args: unknown[]) => syncMocks.syncTransactions(...args),
     getBalances: (...args: unknown[]) => syncMocks.getBalances(...args),
     refreshTransactions: (...args: unknown[]) => syncMocks.refreshTransactions(...args),
+    getItem: (...args: unknown[]) => syncMocks.getItem(...args),
+    updateItemWebhook: (...args: unknown[]) => syncMocks.updateItemWebhook(...args),
   };
 });
 
@@ -522,6 +526,103 @@ describe('Plaid Webhook Service (System-Scoped)', () => {
       where: eq(plaidItems.plaidItemId, 'revoked-item'),
     });
     expect(item!.itemStatus).toBe('revoked');
+  });
+});
+
+describe('Plaid webhook registration maintenance', () => {
+  const NEW_URL = 'https://new.example.com/api/v1/plaid/webhooks';
+  const OLD_URL = 'https://old.example.com/mybooks/api/v1/plaid/webhooks';
+
+  beforeEach(async () => {
+    await cleanDb();
+    syncMocks.getItem.mockReset();
+    syncMocks.updateItemWebhook.mockReset();
+  });
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await cleanDb();
+  });
+
+  it('pushes the configured URL only to items registered elsewhere', async () => {
+    const { user } = await createTestUser();
+    await db.insert(plaidConfig).values({ webhookUrl: NEW_URL });
+    await db.insert(plaidItems).values([
+      { plaidItemId: 'wh-stale-item', accessTokenEncrypted: encrypt('token-stale'), institutionName: 'Stale Bank', createdBy: user.id },
+      { plaidItemId: 'wh-current-item', accessTokenEncrypted: encrypt('token-current'), institutionName: 'Current Bank', createdBy: user.id },
+    ]);
+    syncMocks.getItem.mockImplementation(async (token: string) => ({
+      webhook: token === 'token-current' ? NEW_URL : OLD_URL,
+    }));
+    syncMocks.updateItemWebhook.mockResolvedValue({ webhook: NEW_URL });
+
+    const { webhookUrl, results } = await plaidWebhookService.syncWebhooksToItems();
+
+    expect(webhookUrl).toBe(NEW_URL);
+    expect(syncMocks.updateItemWebhook).toHaveBeenCalledTimes(1);
+    expect(syncMocks.updateItemWebhook).toHaveBeenCalledWith('token-stale', NEW_URL);
+    const byName = new Map(results.map((r) => [r.institutionName, r]));
+    expect(byName.get('Stale Bank')).toMatchObject({ updated: true, previousWebhook: OLD_URL });
+    expect(byName.get('Current Bank')).toMatchObject({ updated: false, previousWebhook: NEW_URL });
+    expect(results.every((r) => !r.error)).toBe(true);
+  });
+
+  it('reports per-item errors without aborting the rest', async () => {
+    const { user } = await createTestUser();
+    await db.insert(plaidConfig).values({ webhookUrl: NEW_URL });
+    await db.insert(plaidItems).values([
+      { plaidItemId: 'wh-bad-item', accessTokenEncrypted: encrypt('token-bad'), institutionName: 'Bad Bank', createdBy: user.id },
+      { plaidItemId: 'wh-good-item', accessTokenEncrypted: encrypt('token-good'), institutionName: 'Good Bank', createdBy: user.id },
+    ]);
+    syncMocks.getItem.mockImplementation(async (token: string) => {
+      if (token === 'token-bad') throw new Error('ITEM_LOGIN_REQUIRED');
+      return { webhook: OLD_URL };
+    });
+    syncMocks.updateItemWebhook.mockResolvedValue({ webhook: NEW_URL });
+
+    const { results } = await plaidWebhookService.syncWebhooksToItems();
+    const byName = new Map(results.map((r) => [r.institutionName, r]));
+    expect(byName.get('Bad Bank')!.error).toContain('ITEM_LOGIN_REQUIRED');
+    expect(byName.get('Good Bank')).toMatchObject({ updated: true });
+  });
+
+  it('rejects when no webhook URL is configured', async () => {
+    await db.insert(plaidConfig).values({});
+    await expect(plaidWebhookService.syncWebhooksToItems()).rejects.toThrow(/webhook URL/i);
+  });
+
+  it('updateConfig propagates a changed webhook URL to existing items', async () => {
+    const { user } = await createTestUser();
+    await db.insert(plaidConfig).values({ webhookUrl: OLD_URL });
+    await db.insert(plaidItems).values({
+      plaidItemId: 'wh-propagate-item', accessTokenEncrypted: encrypt('token-stale'), institutionName: 'Stale Bank', createdBy: user.id,
+    });
+    syncMocks.getItem.mockResolvedValue({ webhook: OLD_URL });
+    syncMocks.updateItemWebhook.mockResolvedValue({ webhook: NEW_URL });
+
+    await plaidClientService.updateConfig({ webhookUrl: NEW_URL });
+    expect(syncMocks.updateItemWebhook).toHaveBeenCalledWith('token-stale', NEW_URL);
+
+    // Saving the SAME URL again must not re-touch items.
+    syncMocks.updateItemWebhook.mockClear();
+    await plaidClientService.updateConfig({ webhookUrl: NEW_URL });
+    expect(syncMocks.updateItemWebhook).not.toHaveBeenCalled();
+  });
+
+  it('testWebhookEndpoint treats 401 as reachable and 404/network errors as failures', async () => {
+    await db.insert(plaidConfig).values({ webhookUrl: NEW_URL });
+
+    vi.stubGlobal('fetch', vi.fn(async () => ({ status: 401 })));
+    let result = await plaidWebhookService.testWebhookEndpoint();
+    expect(result).toMatchObject({ ok: true, status: 401, webhookUrl: NEW_URL });
+
+    vi.stubGlobal('fetch', vi.fn(async () => ({ status: 404 })));
+    result = await plaidWebhookService.testWebhookEndpoint();
+    expect(result).toMatchObject({ ok: false, status: 404 });
+
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('getaddrinfo ENOTFOUND'); }));
+    result = await plaidWebhookService.testWebhookEndpoint();
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('ENOTFOUND');
   });
 });
 

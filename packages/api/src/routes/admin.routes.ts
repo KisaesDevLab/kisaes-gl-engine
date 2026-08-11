@@ -925,6 +925,20 @@ adminRouter.get('/plaid/webhook-log', async (req, res) => {
   res.json({ logs, total: countRow?.total ?? 0, limit, offset });
 });
 
+// Push the configured webhook URL to every active Plaid item (repairs items
+// linked before a domain/path change — Plaid pins the URL per item).
+adminRouter.post('/plaid/webhooks/update', async (req, res) => {
+  const { syncWebhooksToItems } = await import('../services/plaid-webhook.service.js');
+  res.json(await syncWebhooksToItems());
+});
+
+// Server-side reachability probe of the configured webhook URL. Expects the
+// receiver to answer 401 to an unsigned POST (verification active).
+adminRouter.post('/plaid/webhooks/test', async (req, res) => {
+  const { testWebhookEndpoint } = await import('../services/plaid-webhook.service.js');
+  res.json(await testWebhookEndpoint());
+});
+
 // ─── Backup Remote Config ──────────────────────────────────────
 
 adminRouter.get('/backup/remote-config', async (req, res) => {
