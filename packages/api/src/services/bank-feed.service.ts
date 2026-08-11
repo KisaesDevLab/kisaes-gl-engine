@@ -1599,11 +1599,24 @@ export async function runCategorizationPipeline(tenantId: string, items: any[]) 
         matchedRuleId: matched?.ruleId ?? null,
         matchCandidates: candidates,
       });
-    } catch (err) {
-      console.warn(
-        `[runCategorizationPipeline] classification-state upsert failed for item ${item.id}:`,
-        err instanceof Error ? err.message : String(err),
-      );
+    } catch {
+      // Retry once — observed failures here have been transient (the same
+      // upsert succeeds on immediate re-run), and a lost state row stays
+      // lost until the next reprocess. Log the UNDERLYING cause on a
+      // repeat failure: DrizzleQueryError.message is only the SQL text.
+      try {
+        await new Promise((r) => setTimeout(r, 250));
+        await classificationStateService.upsertStateForFeedItem(tenantId, item.id, {
+          matchedRuleId: matched?.ruleId ?? null,
+          matchCandidates: candidates,
+        });
+      } catch (err) {
+        console.warn(
+          `[runCategorizationPipeline] classification-state upsert failed for item ${item.id}:`,
+          err instanceof Error ? err.message : String(err),
+          'cause:', (err as { cause?: Error })?.cause?.message ?? '(none)',
+        );
+      }
     }
   }
 }
@@ -1702,11 +1715,21 @@ export async function reprocessRules(
         await classificationStateService.upsertStateForFeedItem(tenantId, itemId, {
           matchedRuleId: fired.ruleId,
         });
-      } catch (err) {
-        console.warn(
-          `[reprocessRules] classification-state upsert failed for item ${itemId}:`,
-          err instanceof Error ? err.message : String(err),
-        );
+      } catch {
+        // Same transient-failure retry + cause logging as the
+        // categorization pipeline's upsert above.
+        try {
+          await new Promise((r) => setTimeout(r, 250));
+          await classificationStateService.upsertStateForFeedItem(tenantId, itemId, {
+            matchedRuleId: fired.ruleId,
+          });
+        } catch (err) {
+          console.warn(
+            `[reprocessRules] classification-state upsert failed for item ${itemId}:`,
+            err instanceof Error ? err.message : String(err),
+            'cause:', (err as { cause?: Error })?.cause?.message ?? '(none)',
+          );
+        }
       }
     }
   };

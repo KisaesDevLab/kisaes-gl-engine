@@ -278,32 +278,72 @@ export async function verifyWebhook(body: string, headers: Record<string, string
 
     const kid = decoded.header?.kid;
     if (!kid) return false;
+    if (decoded.header?.alg !== 'ES256') {
+      console.warn(`[Plaid Webhook] Unexpected JWT alg ${decoded.header?.alg} — rejecting`);
+      return false;
+    }
 
-    const jwksRes = await fetch('https://production.plaid.com/webhook_verification_key/get', {
+    // The key endpoint requires the REAL client credentials for the
+    // configured environment (empty creds are a guaranteed 400, which
+    // silently rejected every genuine webhook), and must hit the same
+    // environment the item lives in.
+    const config = await getOrCreateConfig();
+    const env = config.environment || 'sandbox';
+    const secretEncrypted = env === 'production' ? config.secretProductionEncrypted : config.secretSandboxEncrypted;
+    if (!config.clientIdEncrypted || !secretEncrypted) {
+      console.warn('[Plaid Webhook] Plaid credentials not configured — cannot verify, rejecting');
+      return false;
+    }
+    const basePath = env === 'production' ? PlaidEnvironments['production'] : PlaidEnvironments['sandbox'];
+    const jwksRes = await fetch(`${basePath}/webhook_verification_key/get`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: '', secret: '', key_id: kid }),
+      body: JSON.stringify({
+        client_id: decrypt(config.clientIdEncrypted),
+        secret: decrypt(secretEncrypted),
+        key_id: kid,
+      }),
     });
 
     if (!jwksRes.ok) {
-      console.warn('[Plaid Webhook] Could not fetch verification key — rejecting');
+      console.warn(`[Plaid Webhook] Could not fetch verification key (HTTP ${jwksRes.status}) — rejecting`);
       return false;
     }
 
     const jwksData = await jwksRes.json() as any;
     const key = jwksData.key;
     if (!key) {
-      console.warn('[Plaid Webhook] Verification key missing from JWKS response — rejecting');
+      console.warn('[Plaid Webhook] Verification key missing from response — rejecting');
+      return false;
+    }
+    if (key.expired_at != null) {
+      console.warn('[Plaid Webhook] Signed with an expired verification key — rejecting');
       return false;
     }
 
-    const pem = `-----BEGIN PUBLIC KEY-----\n${key.n}\n-----END PUBLIC KEY-----`;
+    // Plaid verification keys are EC P-256 JWKs (x/y coordinates), not RSA
+    // — the old code built a PEM from `key.n`, which does not exist on an
+    // EC key, so verification could never succeed.
+    const publicKey = crypto.default.createPublicKey({
+      key: { kty: key.kty, crv: key.crv, x: key.x, y: key.y },
+      format: 'jwk',
+    });
     try {
-      const payload = jwt.default.verify(plaidVerification, pem, { algorithms: ['ES256'] }) as any;
-      const bodyHash = crypto.default.createHash('sha256').update(body).digest('hex');
-      return payload.request_body_sha256 === bodyHash;
-    } catch {
-      console.warn('[Plaid Webhook] JWT verification failed — rejecting');
+      // maxAge enforces Plaid's guidance to reject tokens issued >5 min ago.
+      const payload = jwt.default.verify(plaidVerification, publicKey, { algorithms: ['ES256'], maxAge: '5m' }) as any;
+      const bodyHash = crypto.default.createHash('sha256').update(body, 'utf8').digest();
+      const claimed = Buffer.from(String(payload.request_body_sha256 || ''), 'hex');
+      if (claimed.length !== bodyHash.length) {
+        console.warn('[Plaid Webhook] Body hash mismatch — rejecting');
+        return false;
+      }
+      if (!crypto.default.timingSafeEqual(claimed, bodyHash)) {
+        console.warn('[Plaid Webhook] Body hash mismatch — rejecting');
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.warn('[Plaid Webhook] JWT verification failed — rejecting:', err instanceof Error ? err.message : err);
       return false;
     }
   } catch (err: any) {

@@ -3,6 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import crypto from 'crypto';
 import { db } from '../db/index.js';
 import {
   tenants, users, sessions, companies, accounts, plaidConfig, plaidItems, plaidAccounts,
@@ -623,6 +624,104 @@ describe('Plaid webhook registration maintenance', () => {
     result = await plaidWebhookService.testWebhookEndpoint();
     expect(result.ok).toBe(false);
     expect(result.detail).toContain('ENOTFOUND');
+  });
+});
+
+describe('Plaid webhook signature verification (ES256)', () => {
+  // Real crypto, mocked transport: a locally generated P-256 keypair signs
+  // the JWT exactly like Plaid does, and the stubbed key endpoint returns
+  // the matching public JWK. This is what caught the production bug where
+  // verification built an RSA-style PEM from `key.n` (EC keys have x/y)
+  // and sent empty credentials to the key endpoint — every genuine
+  // webhook was silently 401'd.
+  const { generateKeyPairSync, createHash } = crypto;
+  const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const publicJwk = publicKey.export({ format: 'jwk' }) as Record<string, string>;
+  const KID = 'test-key-id';
+
+  const signWebhook = async (body: string, opts: { iatOffsetSec?: number; hash?: string } = {}) => {
+    const jwt = (await import('jsonwebtoken')).default;
+    return jwt.sign(
+      {
+        iat: Math.floor(Date.now() / 1000) + (opts.iatOffsetSec ?? 0),
+        request_body_sha256: opts.hash ?? createHash('sha256').update(body, 'utf8').digest('hex'),
+      },
+      privateKey,
+      { algorithm: 'ES256', keyid: KID } as never,
+    );
+  };
+
+  const stubKeyEndpoint = (key: Record<string, unknown> | null, status = 200) => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: status === 200,
+      status,
+      json: async () => ({ key }),
+    })));
+  };
+
+  beforeEach(async () => {
+    await cleanDb();
+    await db.insert(plaidConfig).values({
+      environment: 'sandbox',
+      clientIdEncrypted: encrypt('client-id'),
+      secretSandboxEncrypted: encrypt('sandbox-secret'),
+    });
+  });
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await cleanDb();
+  });
+
+  it('accepts a correctly signed webhook and rejects a tampered body', async () => {
+    const body = JSON.stringify({ webhook_type: 'TRANSACTIONS', webhook_code: 'SYNC_UPDATES_AVAILABLE', item_id: 'x' });
+    const token = await signWebhook(body);
+    stubKeyEndpoint(publicJwk);
+
+    expect(await plaidClientService.verifyWebhook(body, { 'plaid-verification': token })).toBe(true);
+    expect(await plaidClientService.verifyWebhook(body + ' ', { 'plaid-verification': token })).toBe(false);
+  });
+
+  it('rejects a wrong body hash even with a valid signature', async () => {
+    const body = '{"webhook_type":"ITEM"}';
+    const token = await signWebhook(body, { hash: createHash('sha256').update('other-body').digest('hex') });
+    stubKeyEndpoint(publicJwk);
+    expect(await plaidClientService.verifyWebhook(body, { 'plaid-verification': token })).toBe(false);
+  });
+
+  it('rejects when the verification key is expired or the key fetch fails', async () => {
+    const body = '{}';
+    const token = await signWebhook(body);
+
+    stubKeyEndpoint({ ...publicJwk, expired_at: 1700000000 });
+    expect(await plaidClientService.verifyWebhook(body, { 'plaid-verification': token })).toBe(false);
+
+    stubKeyEndpoint(null, 400);
+    expect(await plaidClientService.verifyWebhook(body, { 'plaid-verification': token })).toBe(false);
+  });
+
+  it('rejects a stale token (issued >5 minutes ago) and a missing header', async () => {
+    const body = '{}';
+    const stale = await signWebhook(body, { iatOffsetSec: -600 });
+    stubKeyEndpoint(publicJwk);
+    expect(await plaidClientService.verifyWebhook(body, { 'plaid-verification': stale })).toBe(false);
+    expect(await plaidClientService.verifyWebhook(body, {})).toBe(false);
+  });
+
+  it('sends the configured credentials to the environment key endpoint', async () => {
+    const body = '{}';
+    const token = await signWebhook(body);
+    stubKeyEndpoint(publicJwk);
+    await plaidClientService.verifyWebhook(body, { 'plaid-verification': token });
+
+    const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toContain('sandbox.plaid.com');
+    expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({
+      client_id: 'client-id',
+      secret: 'sandbox-secret',
+      key_id: KID,
+    });
   });
 });
 
