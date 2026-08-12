@@ -33,6 +33,16 @@ import * as authService from './auth.service.js';
 
 const STEP_UP_TTL_SECONDS = 600; // 10-minute grace window
 
+// Step-up tokens are signed with a key DERIVED from JWT_SECRET, not
+// JWT_SECRET itself. authenticate() accepts any HS256 token signed with
+// JWT_SECRET whose userId resolves, so a step-up token signed with the
+// raw secret would double as a (role-less) session token — and vice
+// versa an access token must never satisfy verifyStepUpToken. Distinct
+// keys make the two token families mutually unverifiable.
+function stepUpSecret(): Buffer {
+  return crypto.createHmac('sha256', env.JWT_SECRET).update('check-signature-step-up').digest();
+}
+
 // Same role as auth.service's dummy hash: equalize bcrypt timing on the
 // no-password branch so step-up can't be used to probe account state.
 const DUMMY_PASSWORD_HASH =
@@ -160,6 +170,12 @@ export async function updateSignature(
   userId: string,
 ): Promise<void> {
   const sig = await getOwned(tenantId, id);
+  if (input.label !== undefined && input.label !== sig.label) {
+    const clash = await db.query.checkSignatures.findFirst({
+      where: and(eq(checkSignatures.tenantId, tenantId), eq(checkSignatures.label, input.label), eq(checkSignatures.isActive, true)),
+    });
+    if (clash) throw AppError.badRequest(`A signature named "${input.label}" already exists`, 'SIGNATURE_LABEL_TAKEN');
+  }
   await db.update(checkSignatures).set({
     ...(input.label !== undefined ? { label: input.label } : {}),
     ...(input.maxAmount !== undefined ? { maxAmount: input.maxAmount } : {}),
@@ -309,14 +325,14 @@ export async function verifySignerCredential(
 }
 
 export function issueStepUpToken(userId: string, tenantId: string): { stepUpToken: string; expiresAt: string } {
-  const stepUpToken = jwt.sign({ userId, tenantId, checks_stepup: true }, env.JWT_SECRET, { expiresIn: STEP_UP_TTL_SECONDS });
+  const stepUpToken = jwt.sign({ userId, tenantId, checks_stepup: true }, stepUpSecret(), { expiresIn: STEP_UP_TTL_SECONDS });
   return { stepUpToken, expiresAt: new Date(Date.now() + STEP_UP_TTL_SECONDS * 1000).toISOString() };
 }
 
 export function verifyStepUpToken(token: string | undefined, userId: string, tenantId: string): boolean {
   if (!token) return false;
   try {
-    const payload = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as { userId?: string; tenantId?: string; checks_stepup?: boolean };
+    const payload = jwt.verify(token, stepUpSecret(), { algorithms: ['HS256'] }) as { userId?: string; tenantId?: string; checks_stepup?: boolean };
     return payload.checks_stepup === true && payload.userId === userId && payload.tenantId === tenantId;
   } catch {
     return false;

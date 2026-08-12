@@ -17,6 +17,7 @@ import express from 'express';
 import http from 'http';
 import zlib from 'zlib';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import { inArray, and, eq } from 'drizzle-orm';
@@ -172,12 +173,30 @@ describe('signature enforcement on /render and /print', () => {
     expect(noToken.status).toBe(403);
     expect(noToken.json['error'].code).toBe('STEP_UP_REQUIRED');
 
-    const expired = jwt.sign({ userId: owner.user.id, tenantId, checks_stepup: true }, env.JWT_SECRET, { expiresIn: -1 });
+    // Expired token — signed with the DERIVED step-up key (mirrors the
+    // service's stepUpSecret) so this exercises expiry, not key mismatch.
+    const derived = crypto.createHmac('sha256', env.JWT_SECRET).update('check-signature-step-up').digest();
+    const expired = jwt.sign({ userId: owner.user.id, tenantId, checks_stepup: true }, derived, { expiresIn: -1 });
     const stale = await request('POST', '/api/v1/checks/render', {
       checkIds: [under.id], format: 'voucher', signatureId: signature.id, stepUpToken: expired,
     }, owner.tokens.accessToken);
     expect(stale.status).toBe(403);
     expect(stale.json['error'].code).toBe('STEP_UP_REQUIRED');
+  });
+
+  it('keeps step-up and session tokens mutually unverifiable', async () => {
+    const { owner, tenantId, under, signature, stepUpToken } = await setup();
+    // An ACCESS token must not satisfy the step-up gate…
+    const res = await request('POST', '/api/v1/checks/render', {
+      checkIds: [under.id], format: 'voucher', signatureId: signature.id, stepUpToken: owner.tokens.accessToken,
+    }, owner.tokens.accessToken);
+    expect(res.status).toBe(403);
+    expect(res.json['error'].code).toBe('STEP_UP_REQUIRED');
+    // …and a STEP-UP token must not authenticate as a session.
+    const asSession = await request('POST', '/api/v1/checks/render', {
+      checkIds: [under.id], format: 'voucher',
+    }, stepUpToken);
+    expect(asSession.status).toBe(401);
   });
 
   it('renders a signed PDF with a valid token; unsigned render needs none', async () => {

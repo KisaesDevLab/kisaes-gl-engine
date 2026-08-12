@@ -4,6 +4,7 @@
 
 import type { Request, Response, NextFunction } from 'express';
 import { ZodError } from 'zod';
+import multer from 'multer';
 import { AppError } from '../utils/errors.js';
 
 // Body-parser throws a custom error with `.type === 'entity.too.large'`
@@ -46,6 +47,18 @@ export function errorHandler(
   if (bpErr.type === 'entity.parse.failed') {
     res.status(400).json({
       error: { message: 'Request body could not be parsed as JSON.', code: 'INVALID_JSON' },
+    });
+    return;
+  }
+
+  // Multer upload errors (file too large, unexpected field, …) are client
+  // errors, not server faults — previously they fell through to a 500.
+  if (err instanceof multer.MulterError) {
+    res.status(400).json({
+      error: {
+        message: err.code === 'LIMIT_FILE_SIZE' ? 'Uploaded file exceeds the size limit.' : err.message,
+        code: `UPLOAD_${err.code}`,
+      },
     });
     return;
   }

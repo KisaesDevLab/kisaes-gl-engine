@@ -573,9 +573,13 @@ export async function writeBackBundleFiles(
     }
     try {
       if (target.kind === 'localPath') {
-        // Payroll files recorded absolute paths under UPLOAD_DIR; never
-        // write outside it — remap foreign prefixes to UPLOAD_DIR/payroll.
-        let dest = path.resolve(target.key);
+        // Payroll files recorded absolute paths under UPLOAD_DIR; check
+        // signatures record RELATIVE paths (signatures/<tenant>/<id>.enc)
+        // that resolve against UPLOAD_DIR. Never write outside it — remap
+        // foreign absolute prefixes to UPLOAD_DIR/payroll.
+        let dest = path.isAbsolute(target.key)
+          ? path.resolve(target.key)
+          : path.resolve(uploadDir, target.key);
         if (!dest.startsWith(path.resolve(uploadDir) + path.sep)) {
           dest = path.join(uploadDir, 'payroll', path.basename(target.key));
         }

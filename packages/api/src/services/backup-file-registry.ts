@@ -44,6 +44,13 @@ export const FILE_EXPORT_REGISTRY: FileRegistryEntry[] = [
   { table: 'portal_receipts', columns: ['storage_key'], source: 'provider', tenantColumn: 'tenant_id' },
   { table: 'portal_question_attachments', columns: ['storage_key'], source: 'provider', tenantVia: { parentTable: 'portal_questions', fkColumn: 'question_id' } },
   { table: 'payroll_import_sessions', columns: ['file_path', 'companion_file_path'], source: 'localPath', tenantColumn: 'tenant_id' },
+  // Check signature images — RELATIVE paths under UPLOAD_DIR
+  // (signatures/<tenantId>/<id>.enc), local-only by design (never on a
+  // storage provider). Bundled bytes are the at-rest AES-256-GCM
+  // ciphertext, so backups don't weaken the encryption guarantee; a
+  // restored appliance needs the same PLAID_ENCRYPTION_KEY (which the
+  // system bundle already carries) to render them.
+  { table: 'check_signatures', columns: ['file_path'], source: 'localPath', tenantColumn: 'tenant_id' },
   { table: 'report_instances', columns: ['pdf_url'], source: 'provider', tenantColumn: 'tenant_id' },
 ];
 
