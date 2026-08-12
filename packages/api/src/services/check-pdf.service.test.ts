@@ -164,3 +164,130 @@ describe('toMailRows — real prod address shapes (single comma)', () => {
     }
   });
 });
+
+// ── Check signature printing ──────────────────────────────────────
+
+// 1×1 transparent PNG (valid file — embedPng parses it fully).
+const TINY_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+  'base64',
+);
+
+/** Inflate each page content stream; return them in page order. */
+function pageStreams(pdf: Buffer): string[] {
+  const streams: string[] = [];
+  let idx = 0;
+  while (true) {
+    const s = pdf.indexOf('stream', idx);
+    if (s === -1) break;
+    const dataStart = pdf.indexOf('\n', s) + 1;
+    const e = pdf.indexOf('endstream', dataStart);
+    if (e === -1) break;
+    try {
+      const text = zlib.inflateSync(pdf.subarray(dataStart, e)).toString('latin1');
+      if (text.includes('Tj') || text.includes(' Do')) streams.push(text);
+    } catch { /* font/image data — ignore */ }
+    idx = e + 9;
+  }
+  return streams;
+}
+
+/** Decode every hex-string Tj operand in a content stream. */
+function decodeTexts(stream: string): string[] {
+  return [...stream.matchAll(/<([0-9A-Fa-f]+)>\s*Tj/g)].map((m) => Buffer.from(m[1]!, 'hex').toString('latin1'));
+}
+
+function makeCheckData(overrides: Record<string, unknown> = {}) {
+  return {
+    checkNumber: 1001,
+    date: '2026-08-12',
+    payeeName: 'SIGNED PAYEE',
+    amount: '100.00',
+    amountInWords: 'One Hundred and 00/100',
+    memo: '',
+    company: { name: 'Sig Co', address: '482 Commerce Way, Springfield, MO 65807', line1: '482 Commerce Way', line2: '', cityStateZip: 'Springfield, MO 65807', phone: '' },
+    payeeAddressLines: ['1200 Vendor Avenue', 'Kansas City, MO 64105'],
+    bank: { name: 'First Bank', address: '100 Bank St, Springfield, MO 65807', routing: '081000032', account: '123456', fractional: '' },
+    printCompanyInfo: true,
+    printSignatureLine: true,
+    printDateLine: true,
+    printPayeeLine: true,
+    printPayeeAddress: false,
+    printAmountBox: true,
+    printAmountWords: true,
+    printMemoLine: true,
+    printBankInfo: true,
+    printMicrLine: false,
+    printCheckNumber: true,
+    printVoucherStub: false,
+    offsetX: 0,
+    offsetY: 0,
+    applySignature: true,
+    ...overrides,
+  };
+}
+
+describe('renderChecksPdf — signature image', () => {
+  const signature = { bytes: TINY_PNG, mime: 'image/png', maxAmount: null };
+
+  it('paints the image on signed pages and skips over-cap pages in the same batch', async () => {
+    const { _internal } = await import('./check-pdf.service.js');
+    const pdf = await _internal.renderChecksPdf([
+      makeCheckData({ applySignature: true }) as any,
+      makeCheckData({ applySignature: false, payeeName: 'OVER CAP PAYEE' }) as any,
+    ], 'voucher', signature as any);
+    const doc = await PDFDocument.load(pdf);
+    expect(doc.getPageCount()).toBe(2);
+    const streams = pageStreams(pdf);
+    expect(streams).toHaveLength(2);
+    expect(streams[0]).toMatch(/ Do\b/);      // XObject painted
+    expect(streams[1]).not.toMatch(/ Do\b/);  // over-cap page unsigned
+  });
+
+  it('draws the rule and caption AFTER the image so the line prints on top', async () => {
+    const { _internal } = await import('./check-pdf.service.js');
+    const pdf = await _internal.renderChecksPdf([makeCheckData() as any], 'voucher', signature as any);
+    const stream = pageStreams(pdf)[0]!;
+    const doIdx = stream.search(/ Do\b/);
+    expect(doIdx).toBeGreaterThan(-1);
+    const captionHex = Buffer.from('AUTHORIZED SIGNATURE', 'latin1').toString('hex').toUpperCase();
+    const capIdx = stream.toUpperCase().indexOf(captionHex);
+    expect(capIdx).toBeGreaterThan(doIdx);
+  });
+
+  it('draws the signature line on a signed check even when printSignatureLine is off', async () => {
+    const { _internal } = await import('./check-pdf.service.js');
+    const pdf = await _internal.renderChecksPdf(
+      [makeCheckData({ printSignatureLine: false }) as any], 'voucher', signature as any);
+    expect(decodeTexts(pageStreams(pdf)[0]!)).toContain('AUTHORIZED SIGNATURE');
+    // And without a signature, the toggle still controls the caption.
+    const off = await _internal.renderChecksPdf(
+      [makeCheckData({ printSignatureLine: false, applySignature: false }) as any], 'voucher');
+    expect(decodeTexts(pageStreams(off)[0]!)).not.toContain('AUTHORIZED SIGNATURE');
+  });
+
+  it('renders a valid signed page on all three layouts', async () => {
+    const { _internal } = await import('./check-pdf.service.js');
+    for (const format of ['voucher', 'check_middle', 'z_fold']) {
+      const pdf = await _internal.renderChecksPdf([makeCheckData() as any], format, signature as any);
+      const doc = await PDFDocument.load(pdf);
+      expect(doc.getPageCount()).toBe(1);
+      expect(pageStreams(pdf)[0]).toMatch(/ Do\b/);
+    }
+  });
+});
+
+describe('compact (z_fold) face — structured address rows', () => {
+  it('prints company and bank City, ST ZIP on their own rows', async () => {
+    const { _internal } = await import('./check-pdf.service.js');
+    const pdf = await _internal.renderChecksPdf([makeCheckData() as any], 'z_fold');
+    const texts = decodeTexts(pageStreams(pdf)[0]!);
+    // Company block: structured rows, not the one-line join.
+    expect(texts).toContain('482 Commerce Way');
+    expect(texts).toContain('Springfield, MO 65807');
+    expect(texts).not.toContain('482 Commerce Way, Springfield, MO 65807');
+    // Bank block: toMailRows split of the stored one-line address.
+    expect(texts).toContain('100 Bank St');
+    expect(texts).not.toContain('100 Bank St, Springfield, MO 65807');
+  });
+});

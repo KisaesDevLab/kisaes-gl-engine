@@ -9,6 +9,7 @@ import { transactions, companies } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
 import { auditLog } from '../middleware/audit.js';
+import { signatureApplies } from './check-signature.service.js';
 import crypto from 'crypto';
 
 // Check numbers are tracked PER BANK ACCOUNT in
@@ -222,8 +223,13 @@ export async function getPrintQueue(tenantId: string, bankAccountId?: string, co
   }));
 }
 
-export async function printChecks(tenantId: string, bankAccountId: string, checkIds: string[], startingNumber: number, format: string, userId?: string) {
+export async function printChecks(
+  tenantId: string, bankAccountId: string, checkIds: string[],
+  startingNumber: number, format: string, userId?: string,
+  signature?: { id: string; maxAmount: string | null },
+) {
   const batchId = crypto.randomUUID();
+  let signedCount = 0;
 
   // Wrap the entire batch in a single database transaction. Without this,
   // a partial print run leaves some checks marked 'printed' with new
@@ -267,11 +273,18 @@ export async function printChecks(tenantId: string, bankAccountId: string, check
       if (!txn) throw AppError.notFound(`Check ${checkId} not found`);
       if (txn.printStatus !== 'queue') throw AppError.badRequest(`Check ${checkId} is not in the print queue`);
 
+      // Record which signature image this check printed with. Over-cap
+      // checks in a signed batch print unsigned (bare rule) — mirror of
+      // the render-side applySignature flag in check-pdf.service.
+      const signed = !!signature && signatureApplies(txn.total ?? '0', signature.maxAmount);
+      if (signed) signedCount++;
+
       await tx.update(transactions).set({
         checkNumber: startingNumber + i,
         printStatus: 'printed',
         printedAt: new Date(),
         printBatchId: batchId,
+        printSignatureId: signed ? signature!.id : null,
         updatedAt: new Date(),
       }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, checkId)));
     }
@@ -295,6 +308,9 @@ export async function printChecks(tenantId: string, bankAccountId: string, check
       checkCount: checkIds.length,
       range: `${startingNumber}-${startingNumber + checkIds.length - 1}`,
       format,
+      signatureId: signature?.id ?? null,
+      signedCount,
+      unsignedCount: checkIds.length - signedCount,
     }, userId, tx);
 
     return {
@@ -312,6 +328,7 @@ export async function requeueChecks(tenantId: string, checkIds: string[]) {
       checkNumber: null,
       printedAt: null,
       printBatchId: null,
+      printSignatureId: null,
       updatedAt: new Date(),
     }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, id)));
   }

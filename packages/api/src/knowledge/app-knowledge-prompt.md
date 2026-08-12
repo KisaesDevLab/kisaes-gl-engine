@@ -187,7 +187,21 @@ The accounting impact:
    moves the funds out of Payments Clearing into the bank account.
 
 ### Bank Feed Categorization
-1. **Import** — connect a bank via Plaid or upload a CSV statement.
+1. **Import** — connect a bank via Plaid, upload a CSV statement, or send
+   the client a **bank connection invite** (Banking → Invite client, gated
+   by the BANK_CONNECT_INVITES_V1 flag): they get an emailed/texted link
+   (/connect/…, valid 7 days, works for multiple banks) that runs Plaid
+   Link with no MyBooks login; the resulting connection is attributed to
+   the inviting staff user, who is emailed to map the new accounts.
+   When a connected bank's login later breaks (ITEM_LOGIN_REQUIRED), a
+   "needs attention" banner appears on Bank Connections AND the Bank Feed
+   with two repair paths: **Update login / Fix Now** (staff re-authenticate
+   in-app via Plaid update mode — nothing is disconnected) and **Email fix
+   link** (a repair invite: the client of record gets a public
+   fix-your-bank-login link, valid 7 days). The sync worker also
+   auto-sends the fix link to client-connected banks (max one per 3 days,
+   3 per 30 days per connection; kill switch: Admin → Plaid → "Auto-send
+   fix your bank login links").
 2. **Categorize** — for each pending feed item, pick the expense or income
    account, optionally a contact, and confirm. The assistant turns it into a
    posted transaction.
@@ -198,11 +212,28 @@ The accounting impact:
    creating rules that match by description / amount.
 
 ### Reconciliation
-1. **Start Reconciliation** — pick the bank account and enter the statement
-   ending balance and date.
-2. **Mark Cleared** — tick off each transaction that appears on the statement.
+1. **Start Reconciliation** — three ways:
+   - **Manually** — pick the bank account and enter the statement ending
+     balance and date.
+   - **Import statement (PDF)** — upload the bank statement PDF/image; the
+     parsed lines power the Statement Match Engine, which auto-clears and
+     suggests matches against your books.
+   - **Import bank file (QFX/OFX/QBO)** — upload the file downloaded from
+     your bank's website (Quicken/QuickBooks/OFX format). Parsed instantly
+     (no OCR), it appears under Statements on File ready to reconcile with
+     the same match engine. First import of a new account number asks which
+     GL account it belongs to and remembers the answer.
+2. **Mark Cleared** — tick off each transaction that appears on the statement
+   (or let the match engine do it from an imported statement).
 3. **Difference must be $0.00** — if it's not, you have either uncleared
    transactions, cleared something incorrectly, or there's data missing.
+   **Refresh transactions** pulls newly entered transactions onto the
+   worksheet and removes ones voided since it was opened. Uncleared rows
+   that mirror an already-cleared transaction (same amount + same check
+   number or nearby date) get a **Likely duplicate** badge, and any
+   uncleared row can be voided directly from the worksheet (reason
+   pre-filled, reversing entries posted, totals recalculated) — duplicates
+   are never voided automatically.
 4. **Complete** — locks in the cleared state for that statement.
 
 If the difference is off by a small amount like $0.01, it's almost always a
@@ -985,6 +1016,27 @@ envelope (toggle: "Payee address block" in Check Print Settings).
   Fold guides help you verify positioning, and the X/Y alignment offsets fine-tune
   placement for your printer.
 
+### Signature Images on Checks
+Checks can print with a signature image in the signature area:
+
+- **Setup (owner only):** **Settings → Check Print Settings → Check Signatures**.
+  Upload a PNG or JPEG up to 600×200 pixels (larger uploads are rejected — resize
+  first). Each signature can have an optional **max amount**; checks above it print
+  with a blank signature line for hand-signing.
+- **Who can use it:** each signature has its own authorized-user list (the "Users"
+  button). A user not assigned to any signature prints blank checks. One user can
+  be authorized for several signatures (e.g., an assistant printing with the
+  owner's signature) and picks one at print time.
+- **Security:** signature images are stored encrypted on the server and only ever
+  served to authorized users. Printing WITH a signature always requires step-up
+  verification — the user re-enters their password, or their 6-digit authenticator
+  code if two-factor is enrolled. One verification covers ~10 minutes of printing.
+  Every signed print records which signature was used (audit trail).
+- **On the check:** the image prints sitting on the signature line, scaled to fit
+  the signature area; the line and "AUTHORIZED SIGNATURE" caption always print on
+  top of the image. Over-cap checks in the same batch print unsigned, and the
+  Print Checks page shows an amber warning listing them before you print.
+
 ## API & Integrations
 
 ### REST API (v2)
@@ -1263,6 +1315,11 @@ The following screens exist in the application. Use these names and paths when d
 ### Clients
 
 - **Client Switcher** (`/clients`)
+
+### Connect
+
+- **Bank Connect OAuth Return** (`/connect/oauth-return`)
+- **Bank Connect** (`/connect/:token`)
 
 ### Daily sales
 

@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-10T20:31:42.380Z",
+  "generatedAt": "2026-08-12T17:48:28.277Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -17,7 +17,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 58374
+    "totalBytes": 61844
   },
   "screens": [
     {
@@ -45,6 +45,24 @@
       "sourceFile": null,
       "title": "W9Submit",
       "section": "W9",
+      "actions": []
+    },
+    {
+      "id": "connect-oauth-return",
+      "path": "/connect/oauth-return",
+      "component": "BankConnectOAuthReturnPage",
+      "sourceFile": null,
+      "title": "Bank Connect OAuth Return",
+      "section": "Connect",
+      "actions": []
+    },
+    {
+      "id": "connect",
+      "path": "/connect/:token",
+      "component": "BankConnectPage",
+      "sourceFile": null,
+      "title": "Bank Connect",
+      "section": "Connect",
       "actions": []
     },
     {
@@ -1500,6 +1518,7 @@
     "Attachments",
     "Writing a Check",
     "Printing Checks",
+    "Signature Images on Checks",
     "REST API (v2)",
     "API Keys",
     "Plaid Bank Connections",

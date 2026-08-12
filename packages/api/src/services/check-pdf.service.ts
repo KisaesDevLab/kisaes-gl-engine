@@ -18,12 +18,13 @@
 //
 // The MICR line is drawn with vector E-13B glyphs — see check-micr.ts.
 
-import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
+import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage, type PDFImage } from 'pdf-lib';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { companies, contacts, transactions, billPaymentApplications, vendorCreditApplications } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { layoutMicrLine, drawMicrLine } from './check-micr.js';
+import { signatureApplies } from './check-signature.service.js';
 
 // ── Data gathering (unchanged semantics from the HTML renderer) ───
 
@@ -75,6 +76,17 @@ export interface CheckData {
   billPaymentCredits?: VendorCreditStubLine[];
   billPaymentTotalBills?: string;
   billPaymentTotalCredits?: string;
+  /** Signature image applies to THIS check (authorized + within the
+   *  signature's amount cap). Over-cap checks in a signed batch print
+   *  with a bare signature line instead. */
+  applySignature?: boolean;
+}
+
+/** Decrypted signature image to print on the check face (in-memory only). */
+export interface SignatureRenderData {
+  bytes: Buffer;
+  mime: string;
+  maxAmount: string | null;
 }
 
 async function gatherCheckData(tenantId: string, checkId: string): Promise<CheckData> {
@@ -343,6 +355,10 @@ function drawLine(ctx: Ctx, x1: number, y1: number, x2: number, y2: number, thic
   });
 }
 
+function drawImage(ctx: Ctx, img: PDFImage, x: number, y: number, w: number, h: number): void {
+  ctx.page.drawImage(img, { x: x + ctx.dx, y: y + ctx.dy, width: w, height: h });
+}
+
 function drawBox(ctx: Ctx, x: number, y: number, w: number, h: number, thickness = 1): void {
   ctx.page.drawRectangle({
     x: x + ctx.dx, y: y + ctx.dy, width: w, height: h,
@@ -360,7 +376,7 @@ function drawBox(ctx: Ctx, x: number, y: number, w: number, h: number, thickness
  * The bottom 5/8" of the face is kept clear of everything except the
  * MICR line (ANSI X9.100-160-1 clear band).
  */
-function drawCheckFace(ctx: Ctx, c: CheckData, faceTopY: number, faceBottomY: number, compact: boolean): void {
+function drawCheckFace(ctx: Ctx, c: CheckData, faceTopY: number, faceBottomY: number, compact: boolean, sigImg?: PDFImage): void {
   // z-fold (compact) uses wider margins per operator request — left 17mm,
   // right 15mm (asymmetric); standard stock keeps its tighter 0.25in margin.
   // The MICR line is NOT affected — it stays at its ANSI spec offset from the
@@ -373,8 +389,13 @@ function drawCheckFace(ctx: Ctx, c: CheckData, faceTopY: number, faceBottomY: nu
     let y = faceTopY - (compact ? 7.2 : 18) - (compact ? 7.5 : 8.25);
     drawText(ctx, c.company.name, L, y, { font: ctx.fonts.bold, size: compact ? 7.5 : 8.25, maxWidth: 260 });
     if (compact) {
-      if (c.company.address) { y -= 8; drawText(ctx, c.company.address, L, y, { size: 6.5, maxWidth: 280 }); }
-      if (c.company.phone) { y -= 8; drawText(ctx, c.company.phone, L, y, { size: 6.5 }); }
+      // Structured rows like the non-compact branch — never the one-line
+      // join, so "City, ST ZIP" always gets its own row. Tighter 7pt
+      // leading keeps a full 4-row block clear of the payee label below.
+      for (const row of [c.company.line1, c.company.line2, c.company.cityStateZip, c.company.phone].filter(Boolean)) {
+        y -= 7;
+        drawText(ctx, row, L, y, { size: 6.5, maxWidth: 280 });
+      }
     } else {
       // Structured rows (street / street 2 / City, ST ZIP / phone),
       // return-address style: 8.75 name→first row, then 7.5 leading.
@@ -457,9 +478,17 @@ function drawCheckFace(ctx: Ctx, c: CheckData, faceTopY: number, faceBottomY: nu
   // to the company block, address split into standard rows.
   if (c.printBankInfo && (c.bank.name || c.bank.address)) {
     if (compact) {
-      let y = faceTopY - 1.68 * IN - 6;
-      if (c.bank.name) { drawText(ctx, c.bank.name, L, y, { size: 5.6, color: rgb(0.27, 0.27, 0.27) }); y -= 7; }
-      if (c.bank.address) drawText(ctx, c.bank.address, L, y, { size: 5.6, color: rgb(0.27, 0.27, 0.27) });
+      // Same structured rows as non-compact: toMailRows splits a one-line
+      // "street, City, ST ZIP" so the tail lands on its own row. The block
+      // starts higher than the old 2-row version (1.56" vs 1.68") with
+      // 6.5pt leading so a 4-row worst case (name + street + street 2 +
+      // City, ST ZIP, ending ~1.99" down) clears the MEMO label at ~2.13"
+      // and stays under the amount-words rule at ~1.48".
+      let y = faceTopY - 1.56 * IN - 6;
+      for (const row of [c.bank.name, ...toMailRows([c.bank.address])].filter(Boolean)) {
+        drawText(ctx, row, L, y, { size: 5.6, color: rgb(0.27, 0.27, 0.27) });
+        y -= 6.5;
+      }
     } else {
       let y = faceTopY - 22.9;
       for (const row of [c.bank.name, ...toMailRows([c.bank.address])].filter(Boolean)) {
@@ -494,7 +523,24 @@ function drawCheckFace(ctx: Ctx, c: CheckData, faceTopY: number, faceBottomY: nu
       drawLine(ctx, L, ruleY, L + 3 * IN, ruleY);
     }
     if (c.memo) drawText(ctx, c.memo, L + (c.printMemoLine ? 26 : 0), ruleY + 2.5, { size: 6.75, maxWidth: 3 * IN - 30 });
-    if (c.printSignatureLine) {
+
+    // Signature image FIRST (background), rule + caption AFTER (foreground):
+    // the line must always print on top of the image, and a signed check
+    // always shows the rule even when the printSignatureLine setting is off.
+    const signed = !!(c.applySignature && sigImg);
+    if (signed) {
+      // Scale-to-fit above the rule, bottom-centered on it. Headroom to the
+      // amount-words line is ~77pt standard / ~46pt compact; the box heights
+      // below leave clearance. A full 600×200 upload lands 162×54 / 120×40.
+      const sigX1 = R - (compact ? 2.4 : 2.5) * IN;
+      const boxW = R - sigX1;
+      const boxH = compact ? 40 : 54;
+      const scale = Math.min(boxW / sigImg!.width, boxH / sigImg!.height);
+      const w = sigImg!.width * scale;
+      const h = sigImg!.height * scale;
+      drawImage(ctx, sigImg!, sigX1 + (boxW - w) / 2, ruleY, w, h);
+    }
+    if (c.printSignatureLine || signed) {
       drawLine(ctx, R - (compact ? 2.4 : 2.5) * IN, ruleY, R, ruleY);
       drawText(ctx, 'AUTHORIZED SIGNATURE', R, ruleY - 8, { size: 5.25, color: GRAY, align: 'right' });
     }
@@ -647,7 +693,7 @@ function drawMailingPanel(ctx: Ctx, c: CheckData, panelTopY: number, panelBottom
 
 // ── Page assembly per layout ──────────────────────────────────────
 
-function drawCheckPage(page: PDFPage, fonts: Fonts, c: CheckData, format: string): void {
+function drawCheckPage(page: PDFPage, fonts: Fonts, c: CheckData, format: string, sigImg?: PDFImage): void {
   // Alignment offsets arrive in CSS px (96/in) from the settings UI.
   const dx = (Number.isFinite(c.offsetX) ? Number(c.offsetX) : 0) * 0.75;
   const dy = -(Number.isFinite(c.offsetY) ? Number(c.offsetY) : 0) * 0.75;
@@ -672,7 +718,7 @@ function drawCheckPage(page: PDFPage, fonts: Fonts, c: CheckData, format: string
     // company return address + payee delivery address block (NOT a duplicate
     // voucher). Always drawn: without it the folded piece has no address.
     drawMailingPanel(ctx, c, PAGE_H - 7.5 * IN, 0.4 * IN);
-    drawCheckFace(ctx, c, couponTop, couponBottom, true);
+    drawCheckFace(ctx, c, couponTop, couponBottom, true, sigImg);
     return;
   }
 
@@ -691,7 +737,7 @@ function drawCheckPage(page: PDFPage, fonts: Fonts, c: CheckData, format: string
       drawLine(ctx, 0, faceBottom, PAGE_W, faceBottom, 0.75, LIGHT, [4, 3]);
       drawStub(ctx, c, faceBottom - 12, 0.3 * IN);
     }
-    drawCheckFace(ctx, c, faceTop, faceBottom, false);
+    drawCheckFace(ctx, c, faceTop, faceBottom, false, sigImg);
     return;
   }
 
@@ -703,7 +749,7 @@ function drawCheckPage(page: PDFPage, fonts: Fonts, c: CheckData, format: string
   // an itemized bill table can never straddle the 7" tear line.
   const faceBottom = PAGE_H - 3.5 * IN;
   const perf2 = PAGE_H - 7 * IN;
-  drawCheckFace(ctx, c, PAGE_H, faceBottom, false);
+  drawCheckFace(ctx, c, PAGE_H, faceBottom, false, sigImg);
   if (c.printVoucherStub) {
     drawLine(ctx, 0, faceBottom, PAGE_W, faceBottom, 0.75, LIGHT, [4, 3]);
     drawStub(ctx, c, faceBottom - 12, perf2 + 10);
@@ -712,7 +758,7 @@ function drawCheckPage(page: PDFPage, fonts: Fonts, c: CheckData, format: string
   }
 }
 
-async function renderChecksPdf(checks: CheckData[], format: string): Promise<Buffer> {
+async function renderChecksPdf(checks: CheckData[], format: string, signature?: SignatureRenderData): Promise<Buffer> {
   const doc = await PDFDocument.create();
   doc.setTitle('Checks');
   doc.setProducer('Vibe MyBooks');
@@ -722,9 +768,13 @@ async function renderChecksPdf(checks: CheckData[], format: string): Promise<Buf
     mono: await doc.embedFont(StandardFonts.Courier),
     monoBold: await doc.embedFont(StandardFonts.CourierBold),
   };
+  // One embedded XObject shared by every signed page in the batch.
+  const sigImg = signature
+    ? (signature.mime === 'image/png' ? await doc.embedPng(signature.bytes) : await doc.embedJpg(signature.bytes))
+    : undefined;
   for (const c of checks) {
     const page = doc.addPage([PAGE_W, PAGE_H]);
-    drawCheckPage(page, fonts, c, format);
+    drawCheckPage(page, fonts, c, format, sigImg);
   }
   return Buffer.from(await doc.save());
 }
@@ -746,6 +796,7 @@ export async function generateCheckPdf(
   checkIds: string[],
   format: string = 'voucher',
   startingCheckNumber?: number | null,
+  signature?: SignatureRenderData,
 ): Promise<Buffer> {
   const checks: CheckData[] = [];
   for (let i = 0; i < checkIds.length; i++) {
@@ -753,9 +804,11 @@ export async function generateCheckPdf(
     if (c.checkNumber == null && startingCheckNumber != null) {
       c.checkNumber = startingCheckNumber + i;
     }
+    // Per-check cap: an over-cap check in a signed batch prints unsigned.
+    c.applySignature = !!signature && signatureApplies(c.amount, signature.maxAmount);
     checks.push(c);
   }
-  return renderChecksPdf(checks, format);
+  return renderChecksPdf(checks, format, signature);
 }
 
 /** Alignment test page: sample data over the tenant's real settings. */

@@ -51,3 +51,29 @@ export function decrypt(ciphertext: string): string {
   decipher.setAuthTag(tag);
   return decipher.update(encrypted) + decipher.final('utf8');
 }
+
+// Binary variants for file bytes (check signature images). decrypt() above
+// coerces through utf8 which corrupts binary data; these keep Buffers
+// end-to-end while sharing the key and iv:tag:ciphertext base64 format.
+export function encryptBuffer(plaintext: Buffer): string {
+  const key = getKey();
+  const iv = crypto.randomBytes(IV_LENGTH);
+  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `${iv.toString('base64')}:${tag.toString('base64')}:${encrypted.toString('base64')}`;
+}
+
+export function decryptBuffer(ciphertext: string): Buffer {
+  const key = getKey();
+  const parts = ciphertext.split(':');
+  if (parts.length !== 3) throw new Error('Invalid encrypted data format');
+
+  const iv = Buffer.from(parts[0]!, 'base64');
+  const tag = Buffer.from(parts[1]!, 'base64');
+  const encrypted = Buffer.from(parts[2]!, 'base64');
+
+  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(encrypted), decipher.final()]);
+}

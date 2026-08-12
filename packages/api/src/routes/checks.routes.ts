@@ -3,13 +3,15 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
-import { writeCheckSchema, printCheckSchema, checkSettingsSchema } from '@kis-books/shared';
+import { writeCheckSchema, printCheckSchema, renderChecksSchema, checkSettingsSchema, STEP_UP_REQUIRED } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as checkService from '../services/check.service.js';
 import * as checkPdfService from '../services/check-pdf.service.js';
+import * as signatureService from '../services/check-signature.service.js';
+import { AppError } from '../utils/errors.js';
 import { parseLimit, parseOffset } from '../utils/pagination.js';
 import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
@@ -49,17 +51,31 @@ checksRouter.post('/test-print', async (req, res) => {
   res.send(pdf);
 });
 
-checksRouter.post('/render', async (req, res) => {
-  const { checkIds, format, startingCheckNumber } = req.body;
-  if (!Array.isArray(checkIds) || checkIds.length === 0) {
-    res.status(400).json({ error: 'checkIds is required' });
-    return;
+// Signature authorization + step-up gate, shared by /render and /print.
+// BOTH must enforce it: the render PDF IS the printable artifact, and the
+// step-up token can expire between the two calls. Returns the decrypted
+// image (memory only) or undefined when the request is unsigned.
+async function resolveSignature(req: import('express').Request): Promise<checkPdfService.SignatureRenderData | undefined> {
+  const { signatureId, stepUpToken } = req.body as { signatureId?: string; stepUpToken?: string };
+  if (!signatureId) return undefined;
+  const isOwner = req.userRole === 'owner' || !!req.isSuperAdmin;
+  const allowed = await signatureService.userCanUseSignature(req.tenantId, signatureId, req.userId, isOwner);
+  if (!allowed) throw AppError.forbidden('You are not authorized to print with this signature');
+  if (!signatureService.verifyStepUpToken(stepUpToken, req.userId, req.tenantId)) {
+    throw AppError.forbidden('Re-authentication required to print with a signature', STEP_UP_REQUIRED);
   }
+  const sig = await signatureService.loadSignatureImage(req.tenantId, signatureId);
+  return { bytes: sig.bytes, mime: sig.mime, maxAmount: sig.maxAmount };
+}
+
+checksRouter.post('/render', validate(renderChecksSchema), async (req, res) => {
+  const { checkIds, format, startingCheckNumber } = req.body;
+  const signature = await resolveSignature(req);
   // startingCheckNumber lets the render preview the numbers that the
   // subsequent POST /print will assign (same checkIds order).
   const startNum = Number.isInteger(startingCheckNumber) && startingCheckNumber > 0
     ? startingCheckNumber : null;
-  const pdf = await checkPdfService.generateCheckPdf(req.tenantId, checkIds, format || 'voucher', startNum);
+  const pdf = await checkPdfService.generateCheckPdf(req.tenantId, checkIds, format || 'voucher', startNum, signature);
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', 'inline; filename="checks.pdf"');
   res.send(pdf);
@@ -79,9 +95,11 @@ checksRouter.post('/envelopes', async (req, res) => {
 });
 
 checksRouter.post('/print', validate(printCheckSchema), async (req, res) => {
+  const signature = await resolveSignature(req);
   const result = await checkService.printChecks(
     req.tenantId, req.body.bankAccountId, req.body.checkIds,
     req.body.startingCheckNumber, req.body.format, req.userId,
+    signature ? { id: req.body.signatureId, maxAmount: signature.maxAmount } : undefined,
   );
   res.json(result);
 });

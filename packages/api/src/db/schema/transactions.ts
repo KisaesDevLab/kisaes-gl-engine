@@ -52,6 +52,10 @@ export const transactions = pgTable('transactions', {
   printedMemo: varchar('printed_memo', { length: 255 }),
   printedAt: timestamp('printed_at', { withTimezone: true }),
   printBatchId: uuid('print_batch_id'),
+  // Signature image applied when this check printed (NULL = printed
+  // unsigned). FK-less on purpose: historical record, survives signature
+  // soft-delete. See check-signatures.ts.
+  printSignatureId: uuid('print_signature_id'),
   // Source tracking — identifies where this transaction originated
   source: varchar('source', { length: 30 }),  // 'payroll_import', 'bank_feed', 'manual', 'recurring', etc.
   // AJE display number (TB module, D17): sequential per company per

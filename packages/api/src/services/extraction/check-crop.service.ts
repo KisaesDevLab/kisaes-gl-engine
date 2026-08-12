@@ -86,12 +86,10 @@ export async function checkPdfimagesAvailable(): Promise<{ available: boolean }>
   }
 }
 
-/** Parse PNG dimensions straight from the IHDR chunk — no image library. */
-export function pngDimensions(buf: Buffer): { width: number; height: number } | null {
-  // 8-byte signature + 4 len + "IHDR" → width at 16, height at 20 (BE).
-  if (buf.length < 24 || buf.readUInt32BE(12) !== 0x49484452) return null;
-  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
-}
+// Moved to utils/image-dimensions.ts (shared with check-signature uploads);
+// re-exported so existing imports keep working.
+import { pngDimensions } from '../../utils/image-dimensions.js';
+export { pngDimensions };
 
 const isCheckLike = (w: number, h: number): boolean => {
   if (w < MIN_WIDTH_PX || h < MIN_HEIGHT_PX || h > MAX_HEIGHT_PX) return false;

@@ -36,7 +36,43 @@ export const printCheckSchema = z.object({
   checkIds: z.array(z.string().uuid()).min(1),
   startingCheckNumber: z.number().int().min(1),
   format: z.enum(CHECK_LAYOUT_VALUES),
+  // Signature image to apply (must be one the caller is authorized for;
+  // server re-validates). stepUpToken proves fresh re-authentication —
+  // required whenever signatureId is present.
+  signatureId: z.string().uuid().optional(),
+  stepUpToken: z.string().optional(),
 });
+
+export const renderChecksSchema = z.object({
+  checkIds: z.array(z.string().uuid()).min(1),
+  format: z.enum(CHECK_LAYOUT_VALUES).optional(),
+  startingCheckNumber: z.number().int().min(1).optional(),
+  signatureId: z.string().uuid().optional(),
+  stepUpToken: z.string().optional(),
+});
+
+// Decimal string like the money fields elsewhere (writeCheckSchema.amount).
+const decimalString = z.string().regex(/^\d+(\.\d{1,4})?$/, 'Must be a positive amount');
+
+export const createCheckSignatureSchema = z.object({
+  label: z.string().min(1).max(100),
+  maxAmount: decimalString.nullish(),
+});
+
+export const updateCheckSignatureSchema = z.object({
+  label: z.string().min(1).max(100).optional(),
+  maxAmount: decimalString.nullish(),
+});
+
+export const setSignatureUsersSchema = z.object({
+  userIds: z.array(z.string().uuid()).max(200),
+});
+
+// Step-up re-authentication: password, or TOTP code for 2FA-enrolled users.
+export const stepUpSchema = z.object({
+  password: z.string().min(1).optional(),
+  totpCode: z.string().regex(/^\d{6}$/).optional(),
+}).refine((v) => v.password || v.totpCode, { message: 'Password or authenticator code required' });
 
 export const checkSettingsSchema = z.object({
   format: z.enum(CHECK_LAYOUT_VALUES).optional(),

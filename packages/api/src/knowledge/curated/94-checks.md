@@ -52,3 +52,24 @@ envelope (toggle: "Payee address block" in Check Print Settings).
   on blank stock, the MICR line (routing, account, check number) is printed too.
   Fold guides help you verify positioning, and the X/Y alignment offsets fine-tune
   placement for your printer.
+
+### Signature Images on Checks
+Checks can print with a signature image in the signature area:
+
+- **Setup (owner only):** **Settings → Check Print Settings → Check Signatures**.
+  Upload a PNG or JPEG up to 600×200 pixels (larger uploads are rejected — resize
+  first). Each signature can have an optional **max amount**; checks above it print
+  with a blank signature line for hand-signing.
+- **Who can use it:** each signature has its own authorized-user list (the "Users"
+  button). A user not assigned to any signature prints blank checks. One user can
+  be authorized for several signatures (e.g., an assistant printing with the
+  owner's signature) and picks one at print time.
+- **Security:** signature images are stored encrypted on the server and only ever
+  served to authorized users. Printing WITH a signature always requires step-up
+  verification — the user re-enters their password, or their 6-digit authenticator
+  code if two-factor is enrolled. One verification covers ~10 minutes of printing.
+  Every signed print records which signature was used (audit trail).
+- **On the check:** the image prints sitting on the signature line, scaled to fit
+  the signature area; the line and "AUTHORIZED SIGNATURE" caption always print on
+  top of the image. Over-cap checks in the same batch print unsigned, and the
+  Print Checks page shows an amber warning listing them before you print.

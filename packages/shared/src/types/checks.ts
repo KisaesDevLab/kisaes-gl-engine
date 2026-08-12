@@ -43,6 +43,9 @@ export interface PrintCheckInput {
   checkIds: string[];
   startingCheckNumber: number;
   format: CheckLayout;
+  /** Signature image to apply; requires stepUpToken (fresh re-auth). */
+  signatureId?: string;
+  stepUpToken?: string;
 }
 
 export interface CheckSettings {
@@ -80,4 +83,40 @@ export interface PrintBatchResult {
   batchId: string;
   checksPrinted: number;
   checkNumberRange: string;
+}
+
+// ── Check signature printing ─────────────────────────────────────
+
+/** Upload pixel-dimension caps, enforced server-side (hard reject) and
+ *  prechecked client-side before the upload request. */
+export const CHECK_SIGNATURE_MAX_WIDTH = 600;
+export const CHECK_SIGNATURE_MAX_HEIGHT = 200;
+
+/** Error code returned (403) when a signature-bearing render/print lacks a
+ *  valid step-up token; the client keys its re-auth modal off this. */
+export const STEP_UP_REQUIRED = 'STEP_UP_REQUIRED';
+
+export type StepUpMethod = 'password' | 'totp';
+
+/** Owner management view of a signature (never exposes file paths). */
+export interface CheckSignature {
+  id: string;
+  label: string;
+  mimeType: string;
+  width: number;
+  height: number;
+  /** NULL = no cap; checks above the cap print with a bare signature line. */
+  maxAmount: string | null;
+  isActive: boolean;
+  createdAt: string;
+  users: Array<{ id: string; displayName: string; email: string }>;
+}
+
+/** What the print dialog needs about a signature the current user may use. */
+export interface MySignature {
+  id: string;
+  label: string;
+  maxAmount: string | null;
+  width: number;
+  height: number;
 }
