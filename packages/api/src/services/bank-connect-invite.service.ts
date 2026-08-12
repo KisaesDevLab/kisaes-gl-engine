@@ -14,9 +14,9 @@
 
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
-import { eq, and, desc, count } from 'drizzle-orm';
+import { eq, and, or, desc, count, gt } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { bankConnectInvites, users, tenants, companies, portalSettingsPerPractice } from '../db/schema/index.js';
+import { bankConnectInvites, users, tenants, companies, portalSettingsPerPractice, plaidItems } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { getSmtpSettings } from './admin.service.js';
@@ -103,6 +103,11 @@ export function buildInviteSmsBody(link: string): string {
   return `Your accountant asked you to securely connect your bank: ${link}`;
 }
 
+/** Repair variant, same single-segment budget — no bank name, no expiry. */
+export function buildRepairSmsBody(link: string): string {
+  return `Your bank connection needs attention. Fix it securely here: ${link}`;
+}
+
 /** Firm display name shown on the public page: company > tenant. */
 async function firmNameFor(tenantId: string, companyId?: string | null): Promise<string> {
   if (companyId) {
@@ -135,6 +140,9 @@ async function composeAndSend(args: {
   companyId?: string | null;
   token: string;
   baseUrl: string;
+  // Present on repair invites: switches copy from "connect your bank" to
+  // "your existing connection needs its login updated".
+  repair?: { institutionName: string | null };
 }): Promise<{ channels: Array<'email' | 'sms'>; viaEmailStub: boolean; smsError?: string }> {
   const firmName = await firmNameFor(args.tenantId, args.companyId);
   const link = `${args.baseUrl.replace(/\/$/, '')}/connect/${encodeURIComponent(args.token)}`;
@@ -144,16 +152,25 @@ async function composeAndSend(args: {
 
   if (args.invite.recipientEmail) {
     const greeting = `Hello ${args.invite.recipientName},`;
-    const text = `${greeting}\n\n${firmName} has asked you to securely connect your bank account so your bookkeeping stays up to date. Open the link below to get started — it takes about two minutes and your banking credentials go directly to your bank, never to us.\n\n${link}\n\nThe link is valid for ${INVITE_TTL_DAYS} days.${args.invite.message ? `\n\n${args.invite.message}` : ''}`;
-    const html = `<p>${greeting}</p><p><strong>${firmName}</strong> has asked you to securely connect your bank account so your bookkeeping stays up to date. It takes about two minutes, and your banking credentials go directly to your bank — never to us.</p><p><a href="${link}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px">Connect your bank</a></p><p style="color:#888;font-size:12px">Link valid for ${INVITE_TTL_DAYS} days. If you didn't expect this, you can ignore this message.</p>${args.invite.message ? `<hr><p>${args.invite.message}</p>` : ''}`;
+    let subject: string, text: string, html: string;
+    if (args.repair) {
+      const bank = args.repair.institutionName || 'your bank';
+      subject = `${firmName} — action needed: update your ${bank} connection`;
+      text = `${greeting}\n\n${bank} has stopped sharing transactions with ${firmName} — this usually happens after a password change or a security update at the bank. Open the link below to update your login; it takes about a minute and your credentials go directly to your bank, never to us.\n\n${link}\n\nThe link is valid for ${INVITE_TTL_DAYS} days.${args.invite.message ? `\n\n${args.invite.message}` : ''}`;
+      html = `<p>${greeting}</p><p><strong>${bank}</strong> has stopped sharing transactions with <strong>${firmName}</strong> — this usually happens after a password change or a security update at the bank. Updating your login takes about a minute, and your credentials go directly to your bank — never to us.</p><p><a href="${link}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px">Fix bank connection</a></p><p style="color:#888;font-size:12px">Link valid for ${INVITE_TTL_DAYS} days. If you didn't expect this, you can ignore this message.</p>${args.invite.message ? `<hr><p>${args.invite.message}</p>` : ''}`;
+    } else {
+      subject = `${firmName} — connect your bank account`;
+      text = `${greeting}\n\n${firmName} has asked you to securely connect your bank account so your bookkeeping stays up to date. Open the link below to get started — it takes about two minutes and your banking credentials go directly to your bank, never to us.\n\n${link}\n\nThe link is valid for ${INVITE_TTL_DAYS} days.${args.invite.message ? `\n\n${args.invite.message}` : ''}`;
+      html = `<p>${greeting}</p><p><strong>${firmName}</strong> has asked you to securely connect your bank account so your bookkeeping stays up to date. It takes about two minutes, and your banking credentials go directly to your bank — never to us.</p><p><a href="${link}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px">Connect your bank</a></p><p style="color:#888;font-size:12px">Link valid for ${INVITE_TTL_DAYS} days. If you didn't expect this, you can ignore this message.</p>${args.invite.message ? `<hr><p>${args.invite.message}</p>` : ''}`;
+    }
     const mailer = await getMailer();
-    await mailer.send(args.invite.recipientEmail, `${firmName} — connect your bank account`, html, text);
+    await mailer.send(args.invite.recipientEmail, subject, html, text);
     viaEmailStub = mailer.isStub;
     channels.push('email');
   }
 
   if (args.invite.recipientPhone) {
-    const result = await sendInviteSms(args.invite.recipientPhone, buildInviteSmsBody(link));
+    const result = await sendInviteSms(args.invite.recipientPhone, args.repair ? buildRepairSmsBody(link) : buildInviteSmsBody(link));
     if (result.success) channels.push('sms');
     else {
       smsError = result.error ?? 'SMS delivery failed';
@@ -237,6 +254,159 @@ export async function createInvite(args: {
   return { inviteId: row.id, channels: sent.channels };
 }
 
+/** The most recent invite that touched this plaid item — the connection's
+ * client of record. Used to infer the repair recipient. */
+async function latestInviteForItem(plaidItemId: string) {
+  return db.query.bankConnectInvites.findFirst({
+    where: or(
+      eq(bankConnectInvites.connectedPlaidItemId, plaidItemId),
+      eq(bankConnectInvites.repairPlaidItemId, plaidItemId),
+    ),
+    orderBy: desc(bankConnectInvites.sentAt),
+  });
+}
+
+/**
+ * Send a "fix your bank login" link for an existing plaid item. The link
+ * opens Plaid Link in UPDATE MODE against the item — no new Item, no
+ * token exchange, mappings and history untouched.
+ *
+ * Recipient defaults to the client of record (the most recent invite that
+ * connected or repaired this item); staff may override via args.recipient.
+ * Items connected by staff in-app have no invite trail — those throw, and
+ * staff repairs them with the in-app Fix Now button instead.
+ */
+export async function createRepairInvite(args: {
+  plaidItemId: string;
+  requestedBy?: string; // absent on worker auto-sends
+  recipient?: { name: string; email?: string; phone?: string };
+  message?: string;
+  baseUrl: string;
+  autoSent?: boolean;
+}): Promise<{ inviteId: string; channels: Array<'email' | 'sms'>; recipientName: string }> {
+  const item = await db.query.plaidItems.findFirst({ where: eq(plaidItems.id, args.plaidItemId) });
+  if (!item || item.itemStatus === 'removed') throw AppError.notFound('Bank connection not found');
+
+  const prior = await latestInviteForItem(args.plaidItemId);
+  if (!prior && !args.recipient?.email && !args.recipient?.phone) {
+    throw AppError.badRequest(
+      'No client on record for this connection — it was connected in-app. Use Fix Now, or provide a recipient email/phone.',
+    );
+  }
+
+  const tenantId = prior?.tenantId;
+  if (!tenantId) throw AppError.badRequest('No inviting practice on record for this connection');
+  const recipientName = (args.recipient?.name || prior?.recipientName || '').trim();
+  let email = (args.recipient ? args.recipient.email : prior?.recipientEmail)?.trim().toLowerCase() || null;
+  let phone = (args.recipient ? args.recipient.phone : prior?.recipientPhone)?.trim() || null;
+  if (!recipientName) throw AppError.badRequest('Recipient name is required');
+  if (!email && !phone) throw AppError.badRequest('Provide an email address, a phone number, or both');
+  if (phone) {
+    if (args.autoSent) {
+      // Worker context: a closed SMS gate (practice switch off, STOP list)
+      // downgrades to email-only instead of failing the whole send.
+      try { await assertSmsAllowed(tenantId, phone); } catch { phone = email ? null : phone; }
+      if (!email && !phone) throw AppError.badRequest('SMS is the only channel on record and it is unavailable');
+    } else {
+      await assertSmsAllowed(tenantId, phone);
+    }
+  }
+
+  const createdBy = args.requestedBy ?? prior?.createdBy;
+  if (!createdBy) throw AppError.badRequest('No inviting user on record for this connection');
+  const inviter = await db.query.users.findFirst({ where: eq(users.id, createdBy) });
+
+  const token = generateToken();
+  const expiresAt = new Date(Date.now() + INVITE_TTL_DAYS * 24 * 60 * 60 * 1000);
+  const [row] = await db.insert(bankConnectInvites).values({
+    tenantId,
+    companyId: prior?.companyId ?? null,
+    recipientName,
+    recipientEmail: email,
+    recipientPhone: phone,
+    message: args.message?.trim() || null,
+    kind: 'repair',
+    repairPlaidItemId: args.plaidItemId,
+    autoSent: args.autoSent ?? false,
+    tokenHash: sha256Hex(token),
+    status: 'sent',
+    sentVia: email && phone ? 'both' : email ? 'email' : 'sms',
+    expiresAt,
+    createdBy,
+    createdByName: inviter?.displayName ?? prior?.createdByName ?? null,
+    createdByEmail: inviter?.email ?? prior?.createdByEmail ?? null,
+  }).returning();
+  if (!row) throw AppError.internal('Invite insert failed');
+
+  const sent = await composeAndSend({
+    invite: { id: row.id, recipientName, recipientEmail: email, recipientPhone: phone, message: row.message },
+    tenantId,
+    companyId: row.companyId,
+    token,
+    baseUrl: args.baseUrl,
+    repair: { institutionName: item.institutionName },
+  });
+
+  await auditLog(tenantId, 'create', 'bank_connect_invite', row.id, null, {
+    kind: 'repair', plaidItemId: args.plaidItemId, institutionName: item.institutionName,
+    recipientName, email, phone, channels: sent.channels, autoSent: args.autoSent ?? false,
+    viaEmailStub: sent.viaEmailStub, smsError: sent.smsError,
+  }, createdBy);
+
+  return { inviteId: row.id, channels: sent.channels, recipientName };
+}
+
+// Auto-send throttle: at most one worker-dispatched repair invite per item
+// per 72h, and at most 3 per 30 days. Manual sends are never throttled and
+// don't count against the caps.
+const AUTO_REPAIR_MIN_GAP_MS = 72 * 60 * 60 * 1000;
+const AUTO_REPAIR_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const AUTO_REPAIR_MAX_PER_WINDOW = 3;
+
+/**
+ * Worker entry point: on a credential failure, email/SMS the client of
+ * record a repair link — best-effort and throttled. Every skip reason
+ * returns quietly (this runs inside the sync error path; it must never
+ * mask the original sync failure).
+ */
+export async function autoSendRepairInvite(plaidItemId: string): Promise<{ sent: boolean; reason?: string }> {
+  if (!env.PUBLIC_URL) return { sent: false, reason: 'PUBLIC_URL not configured' };
+
+  const { getConfig } = await import('./plaid-client.service.js');
+  if (!(await getConfig()).autoRepairInvites) return { sent: false, reason: 'auto-repair invites disabled' };
+
+  const prior = await latestInviteForItem(plaidItemId);
+  if (!prior) return { sent: false, reason: 'no client on record (staff-connected item)' };
+
+  const { isEnabled } = await import('./feature-flags.service.js');
+  if (!(await isEnabled(prior.tenantId, 'BANK_CONNECT_INVITES_V1'))) {
+    return { sent: false, reason: 'invites feature disabled for tenant' };
+  }
+
+  // Gap check counts EVERY repair invite for the item (a staff manual send
+  // an hour ago should also silence the worker); the 30-day cap counts only
+  // auto-sends so manual activity never exhausts the worker's budget.
+  const recent = await db.select().from(bankConnectInvites).where(and(
+    eq(bankConnectInvites.repairPlaidItemId, plaidItemId),
+    eq(bankConnectInvites.kind, 'repair'),
+    gt(bankConnectInvites.sentAt, new Date(Date.now() - AUTO_REPAIR_WINDOW_MS)),
+  )).orderBy(desc(bankConnectInvites.sentAt));
+  if (recent.filter((r) => r.autoSent).length >= AUTO_REPAIR_MAX_PER_WINDOW) return { sent: false, reason: 'auto-send cap reached' };
+  if (recent[0] && recent[0].sentAt.getTime() > Date.now() - AUTO_REPAIR_MIN_GAP_MS) {
+    return { sent: false, reason: 'sent recently' };
+  }
+
+  const origin = env.PUBLIC_URL.replace(/\/+$/, '');
+  const basePath = appBasePath().replace(/\/+$/, '');
+  const result = await createRepairInvite({ plaidItemId, baseUrl: `${origin}${basePath}`, autoSent: true });
+  // eslint-disable-next-line no-console
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(), level: 'info', component: 'bank-connect-invite',
+    event: 'auto_repair_invite_sent', plaidItemId, inviteId: result.inviteId, channels: result.channels,
+  }));
+  return { sent: true };
+}
+
 export async function listInvites(tenantId: string, opts: { limit: number; offset: number }) {
   const [rows, [totalRow]] = await Promise.all([
     db.select().from(bankConnectInvites)
@@ -280,6 +450,9 @@ export async function resendInvite(tenantId: string, inviteId: string, userId: s
     updatedAt: new Date(),
   }).where(eq(bankConnectInvites.id, invite.id));
 
+  const repairItem = invite.kind === 'repair' && invite.repairPlaidItemId
+    ? await db.query.plaidItems.findFirst({ where: eq(plaidItems.id, invite.repairPlaidItemId) })
+    : null;
   const sent = await composeAndSend({
     invite: {
       id: invite.id, recipientName: invite.recipientName,
@@ -287,6 +460,7 @@ export async function resendInvite(tenantId: string, inviteId: string, userId: s
       message: invite.message,
     },
     tenantId, companyId: invite.companyId, token, baseUrl,
+    ...(invite.kind === 'repair' ? { repair: { institutionName: repairItem?.institutionName ?? null } } : {}),
   });
 
   await auditLog(tenantId, 'update', 'bank_connect_invite', invite.id, { status: invite.status }, {
@@ -330,8 +504,10 @@ async function loadLiveInvite(token: string) {
 
 export async function loadInviteByToken(token: string): Promise<{
   status: string;
+  kind: string;
   recipientName: string;
   firmName: string;
+  institutionName: string | null;
   expiresAt: Date;
   connectionsCount: number;
 }> {
@@ -343,10 +519,15 @@ export async function loadInviteByToken(token: string): Promise<{
       updatedAt: new Date(),
     }).where(eq(bankConnectInvites.id, invite.id));
   }
+  const repairItem = invite.kind === 'repair' && invite.repairPlaidItemId
+    ? await db.query.plaidItems.findFirst({ where: eq(plaidItems.id, invite.repairPlaidItemId) })
+    : null;
   return {
     status: invite.status === 'sent' ? 'viewed' : invite.status,
+    kind: invite.kind,
     recipientName: invite.recipientName,
     firmName: await firmNameFor(invite.tenantId, invite.companyId),
+    institutionName: repairItem?.institutionName ?? null,
     expiresAt: invite.expiresAt,
     connectionsCount: invite.connectionsCount,
   };
@@ -355,6 +536,23 @@ export async function loadInviteByToken(token: string): Promise<{
 export async function createLinkTokenForInvite(token: string): Promise<{ linkToken: string }> {
   const invite = await loadLiveInvite(token);
   const plaidClient = await import('./plaid-client.service.js');
+
+  if (invite.kind === 'repair') {
+    // Update mode: the link token is bound to the broken item's access
+    // token — Link re-authenticates the EXISTING Item instead of creating
+    // a new one, so no public-token exchange happens on success.
+    if (!invite.repairPlaidItemId) throw AppError.badRequest('This repair link is missing its bank connection');
+    const item = await db.query.plaidItems.findFirst({ where: eq(plaidItems.id, invite.repairPlaidItemId) });
+    if (!item || item.itemStatus === 'removed') {
+      throw AppError.badRequest('This bank connection no longer exists. Ask your accountant for a new connect link.');
+    }
+    const { decrypt } = await import('../utils/encryption.js');
+    const linkToken = await plaidClient.createUpdateLinkToken('system', `bank-repair:${invite.id}`, decrypt(item.accessTokenEncrypted), {
+      redirectUri: oauthRedirectUri(),
+    });
+    return { linkToken };
+  }
+
   const linkToken = await plaidClient.createLinkToken('system', `bank-invite:${invite.id}`, {
     redirectUri: oauthRedirectUri(),
   });
@@ -370,6 +568,7 @@ export async function completeInviteConnection(
   // never spends the public token, so no Plaid Item is created (nothing to
   // orphan-clean).
   const invite = await loadLiveInvite(token);
+  if (invite.kind === 'repair') throw AppError.badRequest('This link repairs an existing connection — nothing to exchange');
 
   const plaidConnection = await import('./plaid-connection.service.js');
   // Attribute the connection to the INVITING staff user: createConnection's
@@ -414,4 +613,62 @@ export async function completeInviteConnection(
   }
 
   return { ok: true, institutionName: metadata.institutionName ?? null, accountCount };
+}
+
+/**
+ * Public completion for a repair invite. Link update mode already fixed the
+ * credentials at Plaid — there is no token to exchange. We kick a sync,
+ * whose success self-heals the item's error status (same path as the staff
+ * Fix Now button); if Plaid is still settling, the scheduler's next pass
+ * finishes the healing.
+ */
+export async function completeInviteRepair(token: string): Promise<{ ok: true; institutionName: string | null; healthy: boolean }> {
+  const invite = await loadLiveInvite(token);
+  if (invite.kind !== 'repair' || !invite.repairPlaidItemId) {
+    throw AppError.badRequest('This link is not a repair link');
+  }
+  const item = await db.query.plaidItems.findFirst({ where: eq(plaidItems.id, invite.repairPlaidItemId) });
+  if (!item || item.itemStatus === 'removed') {
+    throw AppError.badRequest('This bank connection no longer exists. Ask your accountant for a new connect link.');
+  }
+
+  let healthy = false;
+  try {
+    const { syncItem } = await import('./plaid-sync.service.js');
+    await syncItem(invite.repairPlaidItemId);
+    healthy = true;
+  } catch {
+    // Sync still failing right after repair — leave the error state for the
+    // scheduler; the client's part is done either way.
+  }
+
+  await db.update(bankConnectInvites).set({
+    status: 'connected',
+    connectedAt: invite.connectedAt ?? new Date(),
+    connectionsCount: invite.connectionsCount + 1,
+    updatedAt: new Date(),
+  }).where(eq(bankConnectInvites.id, invite.id));
+
+  await auditLog(invite.tenantId, 'update', 'bank_connect_invite', invite.id, null, {
+    action: 'repaired', plaidItemId: invite.repairPlaidItemId,
+    institutionName: item.institutionName, syncHealthy: healthy,
+  }, invite.createdBy);
+
+  // Best-effort inviter notification, same contract as the connect path.
+  if (invite.createdByEmail) {
+    try {
+      const firmName = await firmNameFor(invite.tenantId, invite.companyId);
+      const mailer = await getMailer();
+      const bank = item.institutionName || 'their bank';
+      const subject = `${invite.recipientName} fixed the ${bank} connection`;
+      const body = `${invite.recipientName} updated their bank login for ${bank} (${firmName}).` +
+        (healthy ? ' The connection is syncing again.' : ' The next scheduled sync will confirm the repair.');
+      await mailer.send(invite.createdByEmail, subject, `<p>${body}</p>`, body);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[bank-connect] repair notification failed:', err instanceof Error ? err.message : err);
+    }
+  }
+
+  return { ok: true, institutionName: item.institutionName, healthy };
 }

@@ -104,6 +104,32 @@ plaidRouter.post('/invites/:id/revoke', authenticate, inviteGuard, async (req, r
   res.json({ revoked: true });
 });
 
+// Send the client of record a "fix your bank login" link for a broken
+// item (Plaid Link update mode). Recipient defaults to whoever the item's
+// original connect/repair invite went to; an explicit recipient overrides.
+const sendRepairInviteSchema = z.object({
+  recipientName: z.string().min(1).max(255).optional(),
+  email: z.string().email().max(320).optional(),
+  phone: z.string().min(7).max(30).optional(),
+  message: z.string().max(2000).optional(),
+});
+
+plaidRouter.post('/items/:id/send-repair-invite', authenticate, inviteGuard, validate(sendRepairInviteSchema), async (req, res) => {
+  await plaidConnection.assertCanAccessItem(req.userId, req.params['id']!);
+  const bankConnectInvite = await import('../services/bank-connect-invite.service.js');
+  const { baseUrlFor } = await import('../utils/base-url.js');
+  const result = await bankConnectInvite.createRepairInvite({
+    plaidItemId: req.params['id']!,
+    requestedBy: req.userId,
+    recipient: req.body.email || req.body.phone
+      ? { name: req.body.recipientName ?? '', email: req.body.email, phone: req.body.phone }
+      : undefined,
+    message: req.body.message,
+    baseUrl: baseUrlFor(req),
+  });
+  res.status(201).json(result);
+});
+
 // ─── Link Token ────────────────────────────────────────────────
 
 plaidRouter.post('/link-token', authenticate, async (req, res) => {

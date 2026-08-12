@@ -29,6 +29,15 @@ The accounting impact:
    (/connect/…, valid 7 days, works for multiple banks) that runs Plaid
    Link with no MyBooks login; the resulting connection is attributed to
    the inviting staff user, who is emailed to map the new accounts.
+   When a connected bank's login later breaks (ITEM_LOGIN_REQUIRED), a
+   "needs attention" banner appears on Bank Connections AND the Bank Feed
+   with two repair paths: **Update login / Fix Now** (staff re-authenticate
+   in-app via Plaid update mode — nothing is disconnected) and **Email fix
+   link** (a repair invite: the client of record gets a public
+   fix-your-bank-login link, valid 7 days). The sync worker also
+   auto-sends the fix link to client-connected banks (max one per 3 days,
+   3 per 30 days per connection; kill switch: Admin → Plaid → "Auto-send
+   fix your bank login links").
 2. **Categorize** — for each pending feed item, pick the expense or income
    account, optionally a contact, and confirm. The assistant turns it into a
    posted transaction.

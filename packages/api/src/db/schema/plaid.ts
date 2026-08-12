@@ -18,6 +18,9 @@ export const plaidConfig = pgTable('plaid_config', {
   maxHistoricalDays: integer('max_historical_days').default(90),
   // Automatic sync interval in hours (Admin UI). NULL = env/default; 0 = off.
   autoSyncHours: integer('auto_sync_hours'),
+  // Kill switch for worker-dispatched repair invites (client "fix your
+  // login" emails on credential failures). Manual sends are unaffected.
+  autoRepairInvites: boolean('auto_repair_invites').notNull().default(true),
   isActive: boolean('is_active').default(true),
   configuredBy: uuid('configured_by'),
   configuredAt: timestamp('configured_at', { withTimezone: true }),

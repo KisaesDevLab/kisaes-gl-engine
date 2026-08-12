@@ -335,6 +335,18 @@ export async function syncItem(itemId: string, opts: SyncItemOptions = {}) {
         sendConnectionErrorNotice(itemId, item.institutionName, err?.response?.data?.error_message || plaidCode)
           .catch((e) => console.warn('[plaid-sync] error notice failed:', e instanceof Error ? e.message : e));
       }
+      // Login-repairable failures also auto-send the client of record a
+      // "fix your bank login" link (update mode). Fires on every failed
+      // attempt, not just the healthy→broken transition — the service
+      // throttles (72h gap, 3/30d) so repeated scheduler retries become
+      // gentle reminders instead of spam. Revoked/removed items need a
+      // full reconnect, so only these two codes qualify.
+      if (plaidCode === 'ITEM_LOGIN_REQUIRED' || plaidCode === 'PENDING_EXPIRATION') {
+        const { autoSendRepairInvite } = await import('./bank-connect-invite.service.js');
+        autoSendRepairInvite(itemId)
+          .then((r) => { if (!r.sent && r.reason && !['sent recently', 'auto-send cap reached'].includes(r.reason)) console.log(`[plaid-sync] repair invite not sent for ${itemId}: ${r.reason}`); })
+          .catch((e) => console.warn('[plaid-sync] auto repair invite failed:', e instanceof Error ? e.message : e));
+      }
     }
     throw err;
   }

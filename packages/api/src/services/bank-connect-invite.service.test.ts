@@ -10,7 +10,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import crypto from 'crypto';
-import { eq, inArray } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   tenants, users, sessions, companies, auditLog,
@@ -21,6 +21,7 @@ import * as inviteService from './bank-connect-invite.service.js';
 
 const plaidMocks = vi.hoisted(() => ({
   createLinkToken: vi.fn(),
+  createUpdateLinkToken: vi.fn(),
   exchangePublicToken: vi.fn(),
   getAccounts: vi.fn(),
   removeItem: vi.fn(),
@@ -31,10 +32,19 @@ vi.mock('./plaid-client.service.js', async (importOriginal) => {
   return {
     ...actual,
     createLinkToken: (...args: unknown[]) => plaidMocks.createLinkToken(...args),
+    createUpdateLinkToken: (...args: unknown[]) => plaidMocks.createUpdateLinkToken(...args),
     exchangePublicToken: (...args: unknown[]) => plaidMocks.exchangePublicToken(...args),
     getAccounts: (...args: unknown[]) => plaidMocks.getAccounts(...args),
     removeItem: (...args: unknown[]) => plaidMocks.removeItem(...args),
   };
+});
+
+// completeInviteRepair kicks a sync to verify + self-heal the item; keep
+// the real module otherwise (nothing else in this suite touches it).
+const syncMocks = vi.hoisted(() => ({ syncItem: vi.fn() }));
+vi.mock('./plaid-sync.service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./plaid-sync.service.js')>();
+  return { ...actual, syncItem: (...args: unknown[]) => syncMocks.syncItem(...args) };
 });
 
 let tenantId: string;
@@ -253,5 +263,185 @@ describe('Bank connection invites', () => {
     const body = inviteService.buildInviteSmsBody(link);
     expect(body).toContain(link);
     expect(body.length).toBeLessThanOrEqual(160);
+    const repair = inviteService.buildRepairSmsBody(link);
+    expect(repair).toContain(link);
+    expect(repair.length).toBeLessThanOrEqual(160);
+  });
+});
+
+// ─── Repair invites (Plaid Link update mode) ─────────────────────
+
+describe('Bank connection repair invites', () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(async () => {
+    await cleanDb();
+    await setup();
+    Object.values(plaidMocks).forEach((m) => m.mockReset());
+    syncMocks.syncItem.mockReset();
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+  afterEach(async () => {
+    logSpy.mockRestore();
+    await cleanDb();
+  });
+
+  /** Broken item + the connect invite that originally created it. */
+  async function seedBrokenItem(): Promise<{ itemId: string; priorInviteId: string }> {
+    const { encrypt } = await import('../utils/encryption.js');
+    const [item] = await db.insert(plaidItems).values({
+      plaidItemId: 'item-' + Math.random().toString(36).slice(2, 10),
+      institutionName: 'U.S. Bank',
+      accessTokenEncrypted: encrypt('access-token-123'),
+      createdBy: userId,
+      itemStatus: 'login_required',
+      errorCode: 'ITEM_LOGIN_REQUIRED',
+    }).returning();
+    const { inviteId } = await mkInvite();
+    await db.update(bankConnectInvites).set({
+      connectedPlaidItemId: item!.id, status: 'connected', connectedAt: new Date(),
+    }).where(eq(bankConnectInvites.id, inviteId));
+    // The connect invite above logged its own mail-stub line; clear it so
+    // captureTokenFromStub grabs the REPAIR link, not this one.
+    logSpy.mockClear();
+    return { itemId: item!.id, priorInviteId: inviteId };
+  }
+
+  it('createRepairInvite infers the recipient from the item invite trail and stamps kind/target', async () => {
+    const { itemId } = await seedBrokenItem();
+    const { inviteId, channels, recipientName } = await inviteService.createRepairInvite({
+      plaidItemId: itemId, requestedBy: userId, baseUrl: BASE_URL,
+    });
+    expect(channels).toEqual(['email']);
+    expect(recipientName).toBe('Cleo Client');
+
+    const row = await db.query.bankConnectInvites.findFirst({ where: eq(bankConnectInvites.id, inviteId) });
+    expect(row!.kind).toBe('repair');
+    expect(row!.repairPlaidItemId).toBe(itemId);
+    expect(row!.autoSent).toBe(false);
+    expect(row!.recipientEmail).toBe('cleo@example.com');
+
+    // Repair copy, not connect copy.
+    const mail = logSpy.mock.calls.map((c) => String(c[0]))
+      .filter((l) => l.includes('bank-connect-mail-stub'));
+    expect(mail.some((l) => l.includes('update your U.S. Bank connection'))).toBe(true);
+  });
+
+  it('createRepairInvite refuses staff-connected items with no client on record', async () => {
+    const { encrypt } = await import('../utils/encryption.js');
+    const [item] = await db.insert(plaidItems).values({
+      plaidItemId: 'item-' + Math.random().toString(36).slice(2, 10),
+      institutionName: 'Staff Bank',
+      accessTokenEncrypted: encrypt('tok'),
+      createdBy: userId,
+      itemStatus: 'login_required',
+    }).returning();
+    await expect(inviteService.createRepairInvite({
+      plaidItemId: item!.id, requestedBy: userId, baseUrl: BASE_URL,
+    })).rejects.toThrow(/No client on record/);
+  });
+
+  it('a repair link mints an UPDATE-mode token bound to the broken item', async () => {
+    const { itemId } = await seedBrokenItem();
+    await inviteService.createRepairInvite({ plaidItemId: itemId, requestedBy: userId, baseUrl: BASE_URL });
+    const token = captureTokenFromStub(logSpy);
+
+    plaidMocks.createUpdateLinkToken.mockResolvedValue('link-update-123');
+    const res = await inviteService.createLinkTokenForInvite(token);
+    expect(res.linkToken).toBe('link-update-123');
+    expect(plaidMocks.createLinkToken).not.toHaveBeenCalled();
+    const [, pseudoUser, accessToken] = plaidMocks.createUpdateLinkToken.mock.calls[0]!;
+    expect(String(pseudoUser)).toMatch(/^bank-repair:/);
+    expect(accessToken).toBe('access-token-123');
+  });
+
+  it('repair-complete syncs, stamps the invite, and rejects kind mismatches both ways', async () => {
+    const { itemId, priorInviteId } = await seedBrokenItem();
+    await inviteService.createRepairInvite({ plaidItemId: itemId, requestedBy: userId, baseUrl: BASE_URL });
+    const repairToken = captureTokenFromStub(logSpy);
+
+    // Exchange on a repair invite must not spend a public token.
+    await expect(inviteService.completeInviteConnection(repairToken, 'public-tok', {}))
+      .rejects.toThrow(/repairs an existing connection/);
+    expect(plaidMocks.exchangePublicToken).not.toHaveBeenCalled();
+
+    syncMocks.syncItem.mockResolvedValue({ added: 0, modified: 0, removed: 0 });
+    const result = await inviteService.completeInviteRepair(repairToken);
+    expect(result).toMatchObject({ ok: true, institutionName: 'U.S. Bank', healthy: true });
+    expect(syncMocks.syncItem).toHaveBeenCalledWith(itemId);
+
+    const row = await db.query.bankConnectInvites.findFirst({
+      where: and(eq(bankConnectInvites.repairPlaidItemId, itemId), eq(bankConnectInvites.kind, 'repair')),
+    });
+    expect(row!.status).toBe('connected');
+    expect(row!.connectionsCount).toBe(1);
+
+    // repair-complete on the ORIGINAL connect invite is rejected. Its raw
+    // token is gone (only the hash survives), so re-key the row with a
+    // known token instead of re-sending.
+    const knownToken = 'c'.repeat(64);
+    await db.update(bankConnectInvites)
+      .set({ tokenHash: crypto.createHash('sha256').update(knownToken).digest('hex') })
+      .where(eq(bankConnectInvites.id, priorInviteId));
+    await expect(inviteService.completeInviteRepair(knownToken)).rejects.toThrow(/not a repair link/);
+  });
+
+  it('a still-failing verify sync leaves the client flow green but reports healthy=false', async () => {
+    const { itemId } = await seedBrokenItem();
+    await inviteService.createRepairInvite({ plaidItemId: itemId, requestedBy: userId, baseUrl: BASE_URL });
+    const repairToken = captureTokenFromStub(logSpy);
+
+    syncMocks.syncItem.mockRejectedValue(new Error('still propagating'));
+    const result = await inviteService.completeInviteRepair(repairToken);
+    expect(result.healthy).toBe(false);
+    expect(result.ok).toBe(true);
+  });
+
+  it('autoSendRepairInvite: sends to the client of record, then throttles (gap + cap) and skips no-trail items', async () => {
+    const { env } = await import('../config/env.js');
+    const prevPublicUrl = env.PUBLIC_URL;
+    (env as { PUBLIC_URL?: string }).PUBLIC_URL = BASE_URL;
+    try {
+      const { itemId } = await seedBrokenItem();
+      await db.insert(tenantFeatureFlags).values({ tenantId, flagKey: 'BANK_CONNECT_INVITES_V1', enabled: true });
+
+      const first = await inviteService.autoSendRepairInvite(itemId);
+      expect(first).toEqual({ sent: true });
+      const row = await db.query.bankConnectInvites.findFirst({
+        where: and(eq(bankConnectInvites.repairPlaidItemId, itemId), eq(bankConnectInvites.autoSent, true)),
+      });
+      expect(row!.kind).toBe('repair');
+
+      // 72h gap: an immediate retry is silenced.
+      const second = await inviteService.autoSendRepairInvite(itemId);
+      expect(second).toMatchObject({ sent: false, reason: 'sent recently' });
+
+      // Cap: 3 auto-sends inside 30 days exhaust the budget even when the
+      // gap has passed. Backdate the existing send and add two more.
+      const days = (n: number) => new Date(Date.now() - n * 86400000);
+      await db.update(bankConnectInvites).set({ sentAt: days(10) }).where(eq(bankConnectInvites.id, row!.id));
+      for (const d of [7, 4]) {
+        await inviteService.createRepairInvite({ plaidItemId: itemId, baseUrl: BASE_URL, autoSent: true });
+        const latest = await db.select().from(bankConnectInvites)
+          .where(and(eq(bankConnectInvites.repairPlaidItemId, itemId), eq(bankConnectInvites.autoSent, true)))
+          .then((rows) => rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0]!);
+        await db.update(bankConnectInvites).set({ sentAt: days(d) }).where(eq(bankConnectInvites.id, latest.id));
+      }
+      const capped = await inviteService.autoSendRepairInvite(itemId);
+      expect(capped).toMatchObject({ sent: false, reason: 'auto-send cap reached' });
+
+      // No invite trail → quiet skip, not an error.
+      const { encrypt } = await import('../utils/encryption.js');
+      const [staffItem] = await db.insert(plaidItems).values({
+        plaidItemId: 'item-' + Math.random().toString(36).slice(2, 10),
+        institutionName: 'Staff Bank', accessTokenEncrypted: encrypt('tok'),
+        createdBy: userId, itemStatus: 'login_required',
+      }).returning();
+      const skipped = await inviteService.autoSendRepairInvite(staffItem!.id);
+      expect(skipped.sent).toBe(false);
+      expect(skipped.reason).toContain('no client on record');
+    } finally {
+      (env as { PUBLIC_URL?: string }).PUBLIC_URL = prevPublicUrl;
+    }
   });
 });

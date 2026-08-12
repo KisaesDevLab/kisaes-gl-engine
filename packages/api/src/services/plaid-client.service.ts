@@ -33,6 +33,7 @@ export async function getConfig() {
     defaultLanguage: config.defaultLanguage || 'en',
     maxHistoricalDays: config.maxHistoricalDays || 90,
     autoSyncHours: config.autoSyncHours ?? null,
+    autoRepairInvites: config.autoRepairInvites ?? true,
     isActive: config.isActive ?? true,
   };
 }
@@ -50,6 +51,7 @@ export async function updateConfig(input: {
   defaultLanguage?: string;
   maxHistoricalDays?: number;
   autoSyncHours?: number | null;
+  autoRepairInvites?: boolean;
   isActive?: boolean;
 }, userId?: string) {
   const config = await getOrCreateConfig();
@@ -72,6 +74,7 @@ export async function updateConfig(input: {
   if (input.defaultLanguage !== undefined) updates.defaultLanguage = input.defaultLanguage;
   if (input.maxHistoricalDays !== undefined) updates.maxHistoricalDays = input.maxHistoricalDays;
   if (input.autoSyncHours !== undefined) updates.autoSyncHours = input.autoSyncHours;
+  if (input.autoRepairInvites !== undefined) updates.autoRepairInvites = input.autoRepairInvites;
   if (input.isActive !== undefined) updates.isActive = input.isActive;
   if (userId) { updates.configuredBy = userId; updates.configuredAt = new Date(); }
 
@@ -156,7 +159,7 @@ export async function createLinkToken(tenantId: string, userId: string, opts?: {
   return response.data.link_token;
 }
 
-export async function createUpdateLinkToken(tenantId: string, userId: string, accessToken: string) {
+export async function createUpdateLinkToken(tenantId: string, userId: string, accessToken: string, opts?: { redirectUri?: string }) {
   const client = await getClient();
   const config = await getConfig();
 
@@ -166,6 +169,10 @@ export async function createUpdateLinkToken(tenantId: string, userId: string, ac
     country_codes: config.defaultCountryCodes.map((c) => c as CountryCode),
     language: config.defaultLanguage,
     access_token: accessToken,
+    // Update mode on the public repair page needs the registered OAuth
+    // return URI too — OAuth banks bounce through the bank's site even
+    // when only re-authenticating. In-app staff repair omits it.
+    ...(opts?.redirectUri ? { redirect_uri: opts.redirectUri } : {}),
   });
 
   return response.data.link_token;

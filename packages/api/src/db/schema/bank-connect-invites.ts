@@ -9,7 +9,7 @@
 // the INVITING staff user (created_by), which is what makes it visible for
 // mapping. One invite serves multiple institutions until expiry/revocation.
 
-import { pgTable, uuid, varchar, text, timestamp, integer, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, integer, boolean, index } from 'drizzle-orm/pg-core';
 import { tenants } from './auth.js';
 import { companies } from './company.js';
 
@@ -22,6 +22,15 @@ export const bankConnectInvites = pgTable('bank_connect_invites', {
   recipientEmail: varchar('recipient_email', { length: 320 }),
   recipientPhone: varchar('recipient_phone', { length: 30 }),
   message: text('message'),
+  // 'connect' = link a new bank; 'repair' = fix the login on an existing
+  // plaid_item via Link update mode (no new Item, no token exchange).
+  kind: varchar('kind', { length: 10 }).notNull().default('connect'),
+  // The broken item a 'repair' invite targets. No FK — plaid_items is
+  // appliance-global and force-removal deletes rows independently.
+  repairPlaidItemId: uuid('repair_plaid_item_id'),
+  // True when the sync worker dispatched this invite automatically on a
+  // credential failure; auto-send throttling counts only these rows.
+  autoSent: boolean('auto_sent').notNull().default(false),
   tokenHash: varchar('token_hash', { length: 64 }).notNull(),
   // sent | viewed | connected | expired | revoked. Unlike W-9 requests,
   // 'connected' invites remain loadable/connectable until expiry (a client
@@ -49,4 +58,5 @@ export const bankConnectInvites = pgTable('bank_connect_invites', {
 }, (table) => ({
   tokenIdx: index('idx_bci_token').on(table.tokenHash),
   tenantIdx: index('idx_bci_tenant').on(table.tenantId, table.status),
+  repairItemIdx: index('idx_bci_repair_item').on(table.repairPlaidItemId),
 }));

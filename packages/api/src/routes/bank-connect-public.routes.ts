@@ -55,6 +55,13 @@ const exchangeSchema = z.object({
   linkSessionId: z.string().max(100).optional(),
 });
 
+// Repair invites: update mode fixed the credentials inside Link — no
+// public token to exchange, just confirm + heal the item server-side.
+bankConnectPublicRouter.post('/:token/repair-complete', plaidLimiter, async (req, res) => {
+  const result = await svc.completeInviteRepair(req.params['token']!);
+  res.json(result);
+});
+
 bankConnectPublicRouter.post('/:token/exchange', plaidLimiter, validate(exchangeSchema), async (req, res) => {
   const body = req.body as z.infer<typeof exchangeSchema>;
   const result = await svc.completeInviteConnection(req.params['token']!, body.publicToken, {

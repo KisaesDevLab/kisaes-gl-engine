@@ -209,6 +209,8 @@ export const adminPlaidConfigSchema = z.object({
   maxHistoricalDays: z.number().int().min(1).max(730).optional(),
   // Automatic sync interval in hours: 0 disables, null = use server default.
   autoSyncHours: z.number().int().min(0).max(168).nullable().optional(),
+  // Kill switch for worker-dispatched client repair invites.
+  autoRepairInvites: z.boolean().optional(),
   isActive: z.boolean().optional(),
 }).strict();
 export type AdminPlaidConfigInput = z.infer<typeof adminPlaidConfigSchema>;
