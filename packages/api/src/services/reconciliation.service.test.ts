@@ -215,6 +215,66 @@ describe('Reconciliation Service', () => {
     });
   });
 
+  describe('likely-duplicate flags (void-duplicates-during-reconciliation)', () => {
+    it('flags an uncleared row whose cleared twin has the same amount within ±3 days', async () => {
+      const realId = await postWithdrawal('250.00', '2026-04-10');
+      await postWithdrawal('250.00', '2026-04-11'); // the double entry
+      await postWithdrawal('99.00', '2026-04-12');  // different amount — never flagged
+      const recon = await reconciliation.start(tenantId, bankAccountId, '2026-04-30', '-599.00');
+
+      // Clear the "real" one (as the statement match would).
+      const realLines = await getBankLineIds(realId);
+      await reconciliation.updateLines(tenantId, recon.id, realLines.map((id) => ({ journalLineId: id, isCleared: true })));
+
+      const view = await reconciliation.getReconciliation(tenantId, recon.id);
+      const rows = view.lines as any[];
+      const flagged = rows.filter((r) => r.likely_duplicate);
+      expect(flagged).toHaveLength(1);
+      expect(flagged[0].is_cleared).toBe(false);
+      expect(parseFloat(flagged[0].credit)).toBe(250);
+      expect(flagged[0].duplicate_of).toMatchObject({ txn_date: '2026-04-10' });
+      expect(flagged[0].transaction_id).toBeTruthy();
+      // The cleared row and the $99 row are not flagged.
+      expect(rows.filter((r) => r.is_cleared).every((r) => !r.likely_duplicate)).toBe(true);
+    });
+
+    it('uses check numbers when both rows have them: match flags even far apart, mismatch never flags', async () => {
+      const paidId = await postWithdrawal('500.00', '2026-04-02');
+      const dupId = await postWithdrawal('500.00', '2026-04-20');   // same check # — flagged despite 18 days
+      const otherId = await postWithdrawal('500.00', '2026-04-21'); // different check # — not flagged
+      await db.update(transactions).set({ checkNumber: 1042 }).where(eq(transactions.id, paidId));
+      await db.update(transactions).set({ checkNumber: 1042 }).where(eq(transactions.id, dupId));
+      await db.update(transactions).set({ checkNumber: 2000 }).where(eq(transactions.id, otherId));
+      const recon = await reconciliation.start(tenantId, bankAccountId, '2026-04-30', '-1500.00');
+
+      const paidLines = await getBankLineIds(paidId);
+      await reconciliation.updateLines(tenantId, recon.id, paidLines.map((id) => ({ journalLineId: id, isCleared: true })));
+
+      const view = await reconciliation.getReconciliation(tenantId, recon.id);
+      const rows = view.lines as any[];
+      const flaggedChecks = rows.filter((r) => r.likely_duplicate).map((r) => Number(r.check_number));
+      expect(flaggedChecks).toEqual([1042]);
+    });
+
+    it('void + refresh clears the flag and the row', async () => {
+      const realId = await postWithdrawal('250.00', '2026-04-10');
+      const dupId = await postWithdrawal('250.00', '2026-04-11');
+      const recon = await reconciliation.start(tenantId, bankAccountId, '2026-04-30', '-250.00');
+      const realLines = await getBankLineIds(realId);
+      await reconciliation.updateLines(tenantId, recon.id, realLines.map((id) => ({ journalLineId: id, isCleared: true })));
+
+      await ledger.voidTransaction(tenantId, dupId, 'Duplicate entry — voided during reconciliation');
+      const refresh = await reconciliation.refreshLines(tenantId, recon.id);
+      expect(refresh.removed).toBe(1);
+
+      const view = await reconciliation.getReconciliation(tenantId, recon.id);
+      const rows = view.lines as any[];
+      expect(rows).toHaveLength(1);
+      expect(rows.every((r) => !r.likely_duplicate)).toBe(true);
+      expect(view.difference).toBe(0);
+    });
+  });
+
   describe('getReconciliation', () => {
     it('returns difference=statementEnding when no lines are cleared', async () => {
       await postDeposit('100.00', '2026-04-01');

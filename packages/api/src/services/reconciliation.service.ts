@@ -261,6 +261,7 @@ export async function getReconciliation(tenantId: string, reconciliationId: stri
   // additive fields consumed by the Statement Match Engine UI (wave 1).
   const lines = await db.execute(sql`
     SELECT rl.id, rl.journal_line_id, rl.is_cleared, rl.cleared_at,
+      jl.transaction_id,
       jl.debit, jl.credit, jl.description,
       t.txn_date, t.txn_type, t.txn_number, t.memo,
       t.check_number, t.payee_name_on_check, t.contact_id,
@@ -324,9 +325,42 @@ export async function getReconciliation(tenantId: string, reconciliationId: stri
     statementLineCount = Number((cnt.rows as Array<{ count: number }>)[0]?.count ?? 0);
   }
 
+  // Likely-duplicate detection: an UNCLEARED row whose CLEARED twin has the
+  // same amount on the same side and either the same check number or a date
+  // within ±3 days is almost certainly a double entry (manual + bank-feed,
+  // or a check keyed twice) — the cleared one matched the statement, the
+  // twin never will. Flag it so the UI can offer a one-click void. Human
+  // confirms — two identical legitimate charges do exist, so nothing is
+  // voided automatically.
+  const rows = lines.rows as any[];
+  const clearedRows = rows.filter((r) => r.is_cleared);
+  const dayMs = 86400000;
+  for (const row of rows) {
+    row.likely_duplicate = false;
+    row.duplicate_of = null;
+    if (row.is_cleared) continue;
+    const amt = new Decimal(row.debit).minus(row.credit);
+    if (amt.isZero()) continue;
+    const twin = clearedRows.find((c: any) => {
+      if (!new Decimal(c.debit).minus(c.credit).equals(amt)) return false;
+      if (row.check_number != null && c.check_number != null) return Number(row.check_number) === Number(c.check_number);
+      const dd = Math.abs(new Date(String(c.txn_date)).getTime() - new Date(String(row.txn_date)).getTime()) / dayMs;
+      return dd <= 3;
+    });
+    if (twin) {
+      row.likely_duplicate = true;
+      row.duplicate_of = {
+        txn_date: twin.txn_date,
+        txn_type: twin.txn_type,
+        check_number: twin.check_number,
+        description: twin.description ?? twin.memo ?? null,
+      };
+    }
+  }
+
   return {
     ...recon,
-    lines: lines.rows,
+    lines: rows,
     clearedBalance: clearedTotal,
     difference,
     statement: statement ? { ...statement, lineCount: statementLineCount } : null,

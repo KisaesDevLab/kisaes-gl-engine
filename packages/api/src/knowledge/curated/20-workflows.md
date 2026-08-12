@@ -50,7 +50,12 @@ The accounting impact:
 3. **Difference must be $0.00** — if it's not, you have either uncleared
    transactions, cleared something incorrectly, or there's data missing.
    **Refresh transactions** pulls newly entered transactions onto the
-   worksheet and removes ones voided since it was opened.
+   worksheet and removes ones voided since it was opened. Uncleared rows
+   that mirror an already-cleared transaction (same amount + same check
+   number or nearby date) get a **Likely duplicate** badge, and any
+   uncleared row can be voided directly from the worksheet (reason
+   pre-filled, reversing entries posted, totals recalculated) — duplicates
+   are never voided automatically.
 4. **Complete** — locks in the cleared state for that statement.
 
 If the difference is off by a small amount like $0.01, it's almost always a
