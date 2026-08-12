@@ -93,7 +93,22 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
 
   const token = queryToken || authHeader!.slice(7);
   try {
-    const payload = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as JwtPayload & { iat?: number };
+    const payload = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as JwtPayload & {
+      iat?: number; typ?: string; tfa_pending?: boolean; checks_stepup?: boolean;
+    };
+
+    // Session-SHAPE validation. Several special-purpose token families are
+    // (or historically were) signed with JWT_SECRET — download tokens
+    // (typ:'dl'), tfa-pending handoffs, check-signature step-up proofs,
+    // portal preview tokens. None of them is a session, and accepting any
+    // of them here would let a narrow-purpose token authenticate API calls
+    // (e.g. a ?_dl= token bypassing its single-use consumption by riding
+    // the Authorization header). Require the full session claim set and
+    // reject explicit non-session markers.
+    if (!payload.userId || !payload.tenantId || !payload.role
+      || payload.typ !== undefined || payload.tfa_pending !== undefined || payload.checks_stepup !== undefined) {
+      throw AppError.unauthorized('Invalid or expired token');
+    }
 
     // Verify user is still active
     const user = await db.query.users.findFirst({ where: eq(users.id, payload.userId) });

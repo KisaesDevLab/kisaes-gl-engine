@@ -246,13 +246,21 @@ export async function verifyRecoveryCode(userId: string, code: string): Promise<
 
 // ─── TFA Token (short-lived JWT proving password was correct) ───
 
+// Signed with a key DERIVED from JWT_SECRET (not the raw secret) so a
+// tfa-pending handoff can never be presented as any other token family
+// and nothing else verifies as a tfa token. authenticate() additionally
+// rejects tfa_pending-marked payloads by shape — this is defense in depth.
+function tfaTokenSecret(): Buffer {
+  return crypto.createHmac('sha256', env.JWT_SECRET).update('tfa-pending').digest();
+}
+
 export function generateTfaToken(userId: string): string {
-  return jwt.sign({ userId, tfa_pending: true }, env.JWT_SECRET, { expiresIn: 300 }); // 5 minutes
+  return jwt.sign({ userId, tfa_pending: true }, tfaTokenSecret(), { expiresIn: 300 }); // 5 minutes
 }
 
 export function verifyTfaToken(token: string): { userId: string } | null {
   try {
-    const payload = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as any;
+    const payload = jwt.verify(token, tfaTokenSecret(), { algorithms: ['HS256'] }) as any;
     if (!payload.tfa_pending) return null;
     return { userId: payload.userId };
   } catch {

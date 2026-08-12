@@ -750,7 +750,15 @@ export function verifyPreviewToken(token: string): PreviewTokenPayload {
     // A preview token grants staff impersonation of a client portal, so this
     // is the wrong place to be the lone unpinned verify — fail closed against
     // any future algorithm-confusion footgun.
-    return jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as PreviewTokenPayload;
+    const payload = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as PreviewTokenPayload;
+    // Claim-shape check: any other JWT_SECRET-signed token (e.g. a session
+    // access token) must not be accepted here just because the signature
+    // verifies. Previously this only failed downstream by accident (the
+    // undefined contactId lookup found no contact).
+    if (!payload.previewSessionId || !payload.contactId || !payload.tenantId || !payload.initiatingUserId) {
+      throw AppError.unauthorized('Preview token invalid or expired', 'PREVIEW_TOKEN_INVALID');
+    }
+    return payload;
   } catch {
     throw AppError.unauthorized('Preview token invalid or expired', 'PREVIEW_TOKEN_INVALID');
   }
