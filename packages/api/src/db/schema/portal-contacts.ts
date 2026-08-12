@@ -15,8 +15,9 @@ import {
   uniqueIndex,
   primaryKey,
 } from 'drizzle-orm/pg-core';
-import { tenants } from './auth.js';
+import { tenants, users } from './auth.js';
 import { companies } from './company.js';
+import { accounts } from './accounts.js';
 import { portalIdentities } from './portal-identities.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 8 — Client Portal contact
@@ -59,6 +60,10 @@ export const portalContactCompanies = pgTable('portal_contact_companies', {
   financialsAccess: boolean('financials_access').notNull().default(false),
   filesAccess: boolean('files_access').notNull().default(true),
   questionsForUsAccess: boolean('questions_for_us_access').notNull().default(true),
+  // PORTAL_BANKING_V1 — may view checking/credit-card book balances + registers.
+  bankingAccess: boolean('banking_access').notNull().default(false),
+  // PORTAL_BILL_PAY_V1 — may view unpaid bills and mark them for payment.
+  billPayAccess: boolean('bill_pay_access').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   pk: primaryKey({ columns: [table.contactId, table.companyId] }),
@@ -101,6 +106,11 @@ export const portalSettingsPerCompany = pgTable('portal_settings_per_company', {
   // Per-company override of preview re-auth requirement.
   previewRequireReauth: boolean('preview_require_reauth').notNull().default(false),
   paused: boolean('paused').notNull().default(false),
+  // PORTAL_BILL_PAY_V1 — the bank account portal-marked bill payments draw
+  // on (NULL = unconfigured; portal bill pay refuses until the firm sets it)
+  // and the staff user emailed when checks are queued (NULL = all owners).
+  billPayBankAccountId: uuid('bill_pay_bank_account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  billPayNotifyUserId: uuid('bill_pay_notify_user_id').references(() => users.id, { onDelete: 'set null' }),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

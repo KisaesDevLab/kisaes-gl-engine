@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-12T17:48:28.277Z",
+  "generatedAt": "2026-08-12T23:19:24.302Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -12,12 +12,13 @@
       "60-capability-boundaries.md",
       "70-security-auth.md",
       "80-advanced-features.md",
+      "85-client-portal.md",
       "90-setup-admin.md",
       "92-ai-attachments.md",
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 61844
+    "totalBytes": 64848
   },
   "screens": [
     {
@@ -117,6 +118,33 @@
       "sourceFile": null,
       "title": "Portal Financials",
       "section": "Financials",
+      "actions": []
+    },
+    {
+      "id": "banking",
+      "path": "banking",
+      "component": "PortalBankingPage",
+      "sourceFile": null,
+      "title": "Portal Banking",
+      "section": "Banking",
+      "actions": []
+    },
+    {
+      "id": "banking",
+      "path": "banking/:accountId",
+      "component": "PortalBankingRegisterPage",
+      "sourceFile": null,
+      "title": "Portal Banking Register",
+      "section": "Banking",
+      "actions": []
+    },
+    {
+      "id": "bills",
+      "path": "bills",
+      "component": "PortalBillsPage",
+      "sourceFile": null,
+      "title": "Portal Bills",
+      "section": "Expenses",
       "actions": []
     },
     {
@@ -1499,6 +1527,8 @@
     "Account Register",
     "Chart of Accounts Bulk Edit",
     "Budgets",
+    "Balances & Activity (banking views)",
+    "Bill Pay (clients mark bills for payment)",
     "Managing Multiple Companies",
     "Backup & Restore",
     "Cloud File Storage",

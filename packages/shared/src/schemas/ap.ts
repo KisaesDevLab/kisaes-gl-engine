@@ -82,3 +82,11 @@ export const payableBillsQuerySchema = z.object({
   contactId: z.string().uuid().optional(),
   dueOnOrBefore: z.string().optional(),
 });
+
+// PORTAL_BILL_PAY_V1 — portal contact marks bills for payment. Bill ids
+// only: the portal always pays the full balance due, and the bank
+// account comes from portal_settings_per_company, never the client.
+export const portalMarkBillsSchema = z.object({
+  companyId: z.string().uuid(),
+  billIds: z.array(z.string().uuid()).min(1).max(100),
+});

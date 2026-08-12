@@ -1079,6 +1079,20 @@
       "when": 1784800000011,
       "tag": "0153_check_signatures",
       "breakpoints": true
+    },
+    {
+      "idx": 154,
+      "version": "7",
+      "when": 1784800000012,
+      "tag": "0154_portal_banking",
+      "breakpoints": true
+    },
+    {
+      "idx": 155,
+      "version": "7",
+      "when": 1784800000013,
+      "tag": "0155_portal_bill_pay",
+      "breakpoints": true
     }
   ]
 }

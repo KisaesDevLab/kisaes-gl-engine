@@ -86,6 +86,8 @@ import { portalW9PublicRouter } from './routes/portal-w9-public.routes.js';
 import { bankConnectPublicRouter } from './routes/bank-connect-public.routes.js';
 import { recurringDocRequestsRouter } from './routes/recurring-doc-requests.routes.js';
 import { portalDocumentRequestsPublicRouter } from './routes/portal-document-requests-public.routes.js';
+import { portalBankingPublicRouter } from './routes/portal-banking-public.routes.js';
+import { portalBillsPublicRouter } from './routes/portal-bills-public.routes.js';
 import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './swagger.js';
 
@@ -503,6 +505,10 @@ app.use('/api/portal/receipts', portalReceiptsPublicRouter);
 // Portal-side outstanding-doc-requests list — drives the "Documents
 // requested" panel on the portal dashboard.
 app.use('/api/portal/document-requests', portalDocumentRequestsPublicRouter);
+// PORTAL_BANKING_V1 — read-only bank/card balances + registers.
+app.use('/api/portal/banking', portalBankingPublicRouter);
+// PORTAL_BILL_PAY_V1 — unpaid bills list + mark-for-payment.
+app.use('/api/portal/bills', portalBillsPublicRouter);
 
 // MCP Server endpoint
 app.post('/mcp', async (req, res) => {

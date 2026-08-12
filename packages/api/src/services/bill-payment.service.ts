@@ -96,7 +96,17 @@ interface VendorPaymentGroup {
  * cash amount (bills - credits), since the credit's original journal entry
  * has already moved AP for the credit portion.
  */
-export async function payBills(tenantId: string, input: PayBillsInput, userId?: string, companyId?: string) {
+export async function payBills(
+  tenantId: string,
+  input: PayBillsInput,
+  userId?: string,
+  companyId?: string,
+  // Where the payment was initiated when not by a signed-in staff user —
+  // e.g. { source: 'client_portal', sourceId: portalContactId }. Stamped
+  // on the payment header (transactions.source/source_id) so the print
+  // queue and audit trail can attribute client-triggered checks.
+  origin?: { source: string; sourceId: string },
+) {
   if (input.bills.length === 0) throw AppError.badRequest('Must select at least one bill to pay');
 
   const apAccountId = await getApAccountId(tenantId);
@@ -314,6 +324,8 @@ export async function payBills(tenantId: string, input: PayBillsInput, userId?: 
         status: 'posted',
         checkNumber,
         printStatus,
+        source: origin?.source ?? null,
+        sourceId: origin?.sourceId ?? null,
       }).returning();
       if (!payment) throw AppError.internal('Failed to create bill payment');
 
@@ -386,6 +398,7 @@ export async function payBills(tenantId: string, input: PayBillsInput, userId?: 
         bills: grp.vendorBills.length,
         credits: grp.vendorCredits.length,
         net: grp.netPayment.toFixed(4),
+        ...(origin ? { source: origin.source, sourceId: origin.sourceId } : {}),
       }, userId, tx);
 
       createdPayments.push({ payment, group: grp });

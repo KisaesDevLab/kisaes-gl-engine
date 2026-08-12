@@ -161,7 +161,9 @@ export async function listChecks(tenantId: string, filters?: {
 }, companyId?: string) {
   const conds = [
     sql`t.tenant_id = ${tenantId}`,
-    sql`t.txn_type = 'expense'`,
+    // bill_payment checks print through the same queue — without it here
+    // they'd vanish from the Checks list the moment they printed.
+    sql`t.txn_type IN ('expense', 'bill_payment')`,
     sql`t.print_status IS NOT NULL`,
   ];
   if (companyId) conds.push(sql`t.company_id = ${companyId}`);
@@ -204,7 +206,7 @@ export async function getPrintQueue(tenantId: string, bankAccountId?: string, co
 
   const rows = await db.execute(sql`
     SELECT t.id, t.txn_date, t.total, t.memo, t.payee_name_on_check, t.printed_memo,
-      c.display_name as contact_name, t.created_at
+      t.source, c.display_name as contact_name, t.created_at
     FROM transactions t
     LEFT JOIN contacts c ON c.id = t.contact_id
     WHERE ${sql.join(pqConds, sql` AND `)}
@@ -220,6 +222,9 @@ export async function getPrintQueue(tenantId: string, bankAccountId?: string, co
     printedMemo: r.printed_memo,
     contactName: r.contact_name,
     createdAt: r.created_at,
+    // 'client_portal' → rendered as a "Client requested" chip in the
+    // print-queue UI so staff can see which checks a client triggered.
+    source: r.source ?? null,
   }));
 }
 

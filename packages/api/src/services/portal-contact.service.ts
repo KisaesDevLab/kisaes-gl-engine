@@ -10,6 +10,8 @@ import {
   portalSettingsPerPractice,
   portalSettingsPerCompany,
   companies,
+  accounts,
+  users,
 } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -30,6 +32,8 @@ export interface PortalContactCompanyAssignment {
   financialsAccess?: boolean;
   filesAccess?: boolean;
   questionsForUsAccess?: boolean;
+  bankingAccess?: boolean;
+  billPayAccess?: boolean;
 }
 
 export interface CreatePortalContactInput {
@@ -146,6 +150,8 @@ export async function getContact(
     financialsAccess: boolean;
     filesAccess: boolean;
     questionsForUsAccess: boolean;
+    bankingAccess: boolean;
+    billPayAccess: boolean;
   }>;
 }> {
   const contact = await db.query.portalContacts.findFirst({
@@ -162,6 +168,8 @@ export async function getContact(
       financialsAccess: portalContactCompanies.financialsAccess,
       filesAccess: portalContactCompanies.filesAccess,
       questionsForUsAccess: portalContactCompanies.questionsForUsAccess,
+      bankingAccess: portalContactCompanies.bankingAccess,
+      billPayAccess: portalContactCompanies.billPayAccess,
     })
     .from(portalContactCompanies)
     .innerJoin(companies, eq(portalContactCompanies.companyId, companies.id))
@@ -234,6 +242,8 @@ export async function createContact(
         financialsAccess: c.financialsAccess ?? false,
         filesAccess: c.filesAccess ?? true,
         questionsForUsAccess: c.questionsForUsAccess ?? true,
+        bankingAccess: c.bankingAccess ?? false,
+        billPayAccess: c.billPayAccess ?? false,
       })),
     );
 
@@ -350,6 +360,8 @@ export async function setCompanyAssignments(
           financialsAccess: a.financialsAccess ?? false,
           filesAccess: a.filesAccess ?? true,
           questionsForUsAccess: a.questionsForUsAccess ?? true,
+          bankingAccess: a.bankingAccess ?? false,
+          billPayAccess: a.billPayAccess ?? false,
         })),
       );
     }
@@ -557,6 +569,11 @@ export interface CompanyPortalSettings {
   filesAccessDefault: boolean | null;
   previewRequireReauth: boolean;
   paused: boolean;
+  // PORTAL_BILL_PAY_V1 — bank account client-marked payments draw on
+  // (null = feature unconfigured for this company) and the staff user
+  // notified when checks are queued (null = all active owners).
+  billPayBankAccountId: string | null;
+  billPayNotifyUserId: string | null;
 }
 
 const COMPANY_DEFAULTS: CompanyPortalSettings = {
@@ -567,6 +584,8 @@ const COMPANY_DEFAULTS: CompanyPortalSettings = {
   filesAccessDefault: null,
   previewRequireReauth: false,
   paused: false,
+  billPayBankAccountId: null,
+  billPayNotifyUserId: null,
 };
 
 export async function getCompanySettings(tenantId: string, companyId: string): Promise<CompanyPortalSettings> {
@@ -588,6 +607,8 @@ export async function getCompanySettings(tenantId: string, companyId: string): P
     filesAccessDefault: row.filesAccessDefault,
     previewRequireReauth: row.previewRequireReauth,
     paused: row.paused,
+    billPayBankAccountId: row.billPayBankAccountId,
+    billPayNotifyUserId: row.billPayNotifyUserId,
   };
 }
 
@@ -600,6 +621,30 @@ export async function updateCompanySettings(
   const before = await getCompanySettings(tenantId, companyId);
   const next: CompanyPortalSettings = { ...before, ...patch };
 
+  // PORTAL_BILL_PAY_V1 — these two ids gate real money movement, so
+  // validate them against the tenant before persisting.
+  if (patch.billPayBankAccountId !== undefined && patch.billPayBankAccountId !== null) {
+    const acct = await db.query.accounts.findFirst({
+      where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, patch.billPayBankAccountId)),
+    });
+    const isBank =
+      acct &&
+      acct.isActive !== false &&
+      acct.accountType === 'asset' &&
+      ['bank', 'checking', 'savings'].includes(acct.detailType ?? '');
+    if (!isBank) {
+      throw AppError.badRequest('Bank account not found or not a bank-type account', 'BILL_PAY_BANK_INVALID');
+    }
+  }
+  if (patch.billPayNotifyUserId !== undefined && patch.billPayNotifyUserId !== null) {
+    const u = await db.query.users.findFirst({
+      where: and(eq(users.tenantId, tenantId), eq(users.id, patch.billPayNotifyUserId)),
+    });
+    if (!u || !u.isActive) {
+      throw AppError.badRequest('Notify user not found or inactive', 'BILL_PAY_NOTIFY_INVALID');
+    }
+  }
+
   await db
     .insert(portalSettingsPerCompany)
     .values({
@@ -611,6 +656,8 @@ export async function updateCompanySettings(
       filesAccessDefault: next.filesAccessDefault,
       previewRequireReauth: next.previewRequireReauth,
       paused: next.paused,
+      billPayBankAccountId: next.billPayBankAccountId,
+      billPayNotifyUserId: next.billPayNotifyUserId,
       updatedAt: new Date(),
     })
     .onConflictDoUpdate({
@@ -623,6 +670,8 @@ export async function updateCompanySettings(
         filesAccessDefault: next.filesAccessDefault,
         previewRequireReauth: next.previewRequireReauth,
         paused: next.paused,
+        billPayBankAccountId: next.billPayBankAccountId,
+        billPayNotifyUserId: next.billPayNotifyUserId,
         updatedAt: new Date(),
       },
     });

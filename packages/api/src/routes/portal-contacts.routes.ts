@@ -42,6 +42,8 @@ const companyAssignmentSchema = z.object({
   financialsAccess: z.boolean().optional(),
   filesAccess: z.boolean().optional(),
   questionsForUsAccess: z.boolean().optional(),
+  bankingAccess: z.boolean().optional(),
+  billPayAccess: z.boolean().optional(),
 });
 
 const createContactSchema = z.object({
@@ -203,6 +205,8 @@ const updateCompanySettingsSchema = z.object({
   filesAccessDefault: z.boolean().nullable().optional(),
   previewRequireReauth: z.boolean().optional(),
   paused: z.boolean().optional(),
+  billPayBankAccountId: z.string().uuid().nullable().optional(),
+  billPayNotifyUserId: z.string().uuid().nullable().optional(),
 });
 
 portalContactsRouter.get('/settings/company/:companyId', async (req, res) => {

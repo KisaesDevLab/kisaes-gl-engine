@@ -72,6 +72,19 @@ export const PRACTICE_FEATURE_FLAGS = [
   // the public router stays mounted but tokens only exist once a
   // tenant with the flag ON mints one. Default OFF.
   'BANK_CONNECT_INVITES_V1',
+  // Client Portal banking views: portal contacts with
+  // portal_contact_companies.banking_access=true on a company may view
+  // that company's checking/credit-card BOOK balances and sanitized
+  // registers (mobile-first, read-only). Default OFF; firm opts in per
+  // tenant, then per contact. Default OFF.
+  'PORTAL_BANKING_V1',
+  // Client Portal bill pay: portal contacts with bill_pay_access=true
+  // may view unpaid bills and mark them for payment. Marking posts
+  // bill payments (via payBills) and queues UNNUMBERED checks; the
+  // per-company bill_pay_notify_user (fallback: owners) is emailed and
+  // a staff user prints via the normal check flow. Requires
+  // portal_settings_per_company.bill_pay_bank_account_id. Default OFF.
+  'PORTAL_BILL_PAY_V1',
 ] as const;
 
 export type PracticeFeatureFlagKey = typeof PRACTICE_FEATURE_FLAGS[number];

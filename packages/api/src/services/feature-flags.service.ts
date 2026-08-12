@@ -139,6 +139,8 @@ export const FLAGS_DEFAULT_OFF_FOR_NEW_TENANTS: ReadonlySet<string> = new Set([
   'STATEMENT_AUTO_IMPORT_V1',
   'TRIAL_BALANCE_V1',
   'BANK_CONNECT_INVITES_V1',
+  'PORTAL_BANKING_V1',
+  'PORTAL_BILL_PAY_V1',
 ]);
 
 export async function seedDefaultsForNewTenant(tenantId: string): Promise<void> {

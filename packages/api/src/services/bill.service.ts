@@ -394,7 +394,10 @@ export async function getVendorApSummary(tenantId: string, contactId: string, co
  * vendor), plus the available vendor credits whose vendors appear in the
  * payable bill list. Used by the Pay Bills page.
  */
-export async function getPayableBills(tenantId: string, opts: { contactId?: string; dueOnOrBefore?: string }) {
+export async function getPayableBills(
+  tenantId: string,
+  opts: { contactId?: string; dueOnOrBefore?: string; companyId?: string; companyIncludesNull?: boolean },
+) {
   const billConds = [
     eq(transactions.tenantId, tenantId),
     eq(transactions.txnType, 'bill'),
@@ -404,6 +407,16 @@ export async function getPayableBills(tenantId: string, opts: { contactId?: stri
   ];
   if (opts.contactId) billConds.push(eq(transactions.contactId, opts.contactId));
   if (opts.dueOnOrBefore) billConds.push(sql`${transactions.dueDate} <= ${opts.dueOnOrBefore}`);
+  // Company scope (portal callers). companyIncludesNull admits legacy
+  // NULL-company bills — pass it only for single-company tenants, where
+  // a NULL company is unambiguous.
+  if (opts.companyId) {
+    billConds.push(
+      opts.companyIncludesNull
+        ? sql`(${transactions.companyId} = ${opts.companyId} OR ${transactions.companyId} IS NULL)`
+        : eq(transactions.companyId, opts.companyId),
+    );
+  }
 
   const bills = await db.select({
     id: transactions.id,
