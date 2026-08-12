@@ -353,7 +353,10 @@ export async function buildRestoreChecklist(dbi: Db): Promise<Record<string, Che
     ? { status: 'ok', message: 'SMTP settings restored' }
     : { status: 'warning', message: 'SMTP not configured — email features unavailable' };
 
-  const plaid = await firstRow(dbi, sql`SELECT client_id_encrypted FROM plaid_config LIMIT 1`);
+  // WHERE client_id_encrypted IS NOT NULL: getOrCreateConfig() can leave a
+  // bare settings row (all credentials NULL) that would otherwise win the
+  // LIMIT 1 by heap order and mask a real configured row after a restore.
+  const plaid = await firstRow(dbi, sql`SELECT client_id_encrypted FROM plaid_config WHERE client_id_encrypted IS NOT NULL LIMIT 1`);
   checklist['plaid'] = plaid?.['client_id_encrypted']
     ? { status: 'ok', message: 'Plaid configuration restored' }
     : { status: 'warning', message: 'Plaid not configured — bank feeds unavailable' };

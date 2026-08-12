@@ -15,7 +15,7 @@ import { db } from '../db/index.js';
 import {
   tenants, users, sessions, companies, auditLog,
   bankConnectInvites, plaidItems, plaidAccounts, plaidItemActivity,
-  portalSettingsPerPractice, tenantFeatureFlags,
+  plaidConfig, portalSettingsPerPractice, tenantFeatureFlags,
 } from '../db/schema/index.js';
 import * as inviteService from './bank-connect-invite.service.js';
 
@@ -63,6 +63,11 @@ async function cleanDb() {
     await db.delete(plaidItems).where(inArray(plaidItems.id, itemIds));
   }
   await db.delete(bankConnectInvites).where(eq(bankConnectInvites.tenantId, tenantId));
+  // The auto-send path calls getConfig() → getOrCreateConfig(), which
+  // INSERTS an empty appliance-global plaid_config row when none exists.
+  // Left behind, that NULL-credential row breaks the system-restore
+  // checklist test (its plaid probe reads plaid_config LIMIT 1).
+  await db.delete(plaidConfig);
   await db.delete(tenantFeatureFlags).where(eq(tenantFeatureFlags.tenantId, tenantId));
   await db.delete(portalSettingsPerPractice).where(eq(portalSettingsPerPractice.tenantId, tenantId));
   await db.delete(auditLog).where(eq(auditLog.tenantId, tenantId));

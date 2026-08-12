@@ -104,8 +104,16 @@ async function queuedPaymentsForCompany(
       AND ${companyCond}
     ORDER BY t.created_at DESC, t.id, bpa.id
   `);
+  interface QueuedRow {
+    id: string;
+    txn_date: string;
+    total: string | null;
+    vendor_name: string | null;
+    app_amount: string | null;
+    vendor_invoice_number: string | null;
+  }
   const byPayment = new Map<string, PortalQueuedPayment>();
-  for (const row of result.rows as any[]) {
+  for (const row of result.rows as unknown as QueuedRow[]) {
     let entry = byPayment.get(row.id);
     if (!entry) {
       entry = {

@@ -92,6 +92,15 @@ function eligibleAccountConditions(tenantId: string, companyId: string, singleCo
   `;
 }
 
+interface EligibleAccountRow {
+  id: string;
+  name: string;
+  account_number: string | null;
+  account_type: string;
+  detail_type: string | null;
+  balance: string | null;
+}
+
 export async function listPortalBankAccounts(
   tenantId: string,
   companyId: string,
@@ -103,7 +112,7 @@ export async function listPortalBankAccounts(
     WHERE ${eligibleAccountConditions(tenantId, companyId, singleCompany)}
     ORDER BY a.account_type ASC, a.name ASC
   `);
-  return (result.rows as any[]).map((row) => {
+  return (result.rows as unknown as EligibleAccountRow[]).map((row) => {
     const raw = parseFloat(row.balance ?? '0');
     const isCard = row.account_type === 'liability';
     return {
@@ -134,7 +143,7 @@ export async function getPortalRegister(
     WHERE a.id = ${accountId} AND ${eligibleAccountConditions(tenantId, companyId, singleCompany)}
     LIMIT 1
   `);
-  const acct = (eligible.rows as any[])[0];
+  const acct = (eligible.rows as unknown as Pick<EligibleAccountRow, 'id' | 'name' | 'account_type' | 'balance'>[])[0];
   if (!acct) throw AppError.notFound('Account not found');
 
   const perPage = Math.min(filters.perPage ?? 50, 100);
