@@ -2,13 +2,28 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-// Minimal SSRF-defense helpers for URLs supplied by admins (Ollama endpoint,
-// WebDAV backup target, etc.). These are *string-level* checks — they don't
-// resolve DNS, so an attacker registering evil.example with A=127.0.0.1
-// bypasses them. That's fine for the current threat model (misconfiguration
-// by a trusted super-admin, not malicious super-admin): string guards catch
-// the accidental `http://169.254.169.254/` paste and the obvious localhost
-// redirect without adding the latency + TOCTOU surface of DNS resolution.
+// SSRF-defense helpers for URLs supplied through the app.
+//
+// Two tiers, matched to who can set the URL:
+//
+//  - assertExternalUrlSafe: *string-level* checks only — no DNS. Catches the
+//    accidental `http://169.254.169.254/` paste and obvious localhost
+//    targets. Sufficient for super-admin-only fields (Ollama / AI endpoints)
+//    where the threat model is misconfiguration, not malice.
+//
+//  - makeSafeLookup / makeSafeAgents: connect-time DNS validation for URLs
+//    settable by TENANT users (remote-backup WebDAV/S3, storage-provider
+//    endpoints — gated on company_settings, not super-admin). String checks
+//    alone are bypassable there: a hostname the user controls can resolve
+//    (or rebind between validation and use) to loopback/RFC-1918, making the
+//    server probe internal services or deliver backup contents to them.
+//    The lookup wrapper classifies EVERY address on EVERY socket connect,
+//    so validation and use cannot be separated by a rebind.
+
+import dns from 'node:dns';
+import http from 'node:http';
+import https from 'node:https';
+import type net from 'node:net';
 
 // Loopback aliases. Blocked by default, but a legitimate target for
 // self-hosted services (Ollama on the same host), so `allowPrivate`
@@ -101,4 +116,51 @@ export function assertExternalUrlSafe(raw: string, label = 'URL', opts: UrlSafet
   if (ipClass === 'private' && !opts.allowPrivate) {
     throw new Error(`${label} points at a blocked IP range (loopback, link-local, or private)`);
   }
+}
+
+/**
+ * A net/tls-compatible `lookup` that resolves via dns.lookup and rejects the
+ * connection when ANY returned address is link-local (always) or
+ * private/loopback (unless allowPrivate). Because it runs at socket-connect
+ * time — inside http.Agent / https.Agent / http.request — there is no
+ * validate-then-connect gap for DNS rebinding to slip through.
+ */
+export function makeSafeLookup(opts: UrlSafetyOptions = {}): net.LookupFunction {
+  return ((hostname: string, options: dns.LookupOptions, callback: (...args: never[]) => void) => {
+    const cb = callback as unknown as (
+      err: NodeJS.ErrnoException | null,
+      address?: string | dns.LookupAddress[],
+      family?: number,
+    ) => void;
+    dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
+      if (err) return cb(err);
+      const list = addresses as dns.LookupAddress[];
+      if (!list.length) return cb(Object.assign(new Error(`No addresses found for ${hostname}`), { code: 'ENOTFOUND' }));
+      for (const a of list) {
+        const cls = classifyIpLiteral(a.address);
+        if (cls === 'link-local' || (cls === 'private' && !opts.allowPrivate)) {
+          return cb(Object.assign(
+            new Error(`${hostname} resolves to a blocked internal address (${a.address})`),
+            { code: 'EBLOCKEDHOST' },
+          ));
+        }
+      }
+      if (options.all) return cb(null, list);
+      const first = list[0]!;
+      cb(null, first.address, first.family);
+    });
+  }) as net.LookupFunction;
+}
+
+/**
+ * http/https Agents wired to makeSafeLookup — for HTTP clients that take an
+ * agent (AWS SDK NodeHttpHandler, node http/https.request) so every
+ * connection they open re-validates the DNS answer it is about to dial.
+ */
+export function makeSafeAgents(opts: UrlSafetyOptions = {}): { httpAgent: http.Agent; httpsAgent: https.Agent } {
+  const lookup = makeSafeLookup(opts);
+  return {
+    httpAgent: new http.Agent({ lookup }),
+    httpsAgent: new https.Agent({ lookup }),
+  };
 }

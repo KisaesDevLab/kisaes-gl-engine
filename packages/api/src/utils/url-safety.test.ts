@@ -3,7 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { describe, it, expect } from 'vitest';
-import { assertExternalUrlSafe } from './url-safety.js';
+import { assertExternalUrlSafe, makeSafeLookup } from './url-safety.js';
 
 describe('assertExternalUrlSafe — default (allowPrivate off)', () => {
   it('accepts a normal public https URL', () => {
@@ -68,5 +68,29 @@ describe('assertExternalUrlSafe — allowPrivate (self-hosted AI endpoints)', ()
 
   it('still enforces scheme even with allowPrivate', () => {
     expect(() => assertExternalUrlSafe('ssh://192.168.68.105', 'Ollama', allow)).toThrow(/http or https/);
+  });
+});
+
+describe('makeSafeLookup — connect-time DNS validation', () => {
+  const doLookup = (hostname: string, opts?: Parameters<typeof makeSafeLookup>[0]) =>
+    new Promise<string>((resolve, reject) => {
+      const lookup = makeSafeLookup(opts) as (
+        h: string,
+        o: Record<string, unknown>,
+        cb: (err: Error | null, address?: string, family?: number) => void,
+      ) => void;
+      lookup(hostname, {}, (err, address) => (err ? reject(err) : resolve(address!)));
+    });
+
+  it('blocks a hostname that resolves to loopback (the string check cannot see this)', async () => {
+    await expect(doLookup('localhost')).rejects.toThrow(/blocked internal address/);
+  });
+
+  it('allows loopback-resolving hostnames under allowPrivate', async () => {
+    await expect(doLookup('localhost', { allowPrivate: true })).resolves.toMatch(/^(127\.0\.0\.1|::1)$/);
+  });
+
+  it('errors (not hangs) on a non-existent hostname', async () => {
+    await expect(doLookup('definitely-not-a-real-host.invalid')).rejects.toThrow();
   });
 });

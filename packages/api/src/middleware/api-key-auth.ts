@@ -6,7 +6,7 @@ import crypto from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
 import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { apiKeys } from '../db/schema/index.js';
+import { apiKeys, users } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 
 function hashKey(key: string): string {
@@ -43,6 +43,14 @@ export async function apiKeyAuth(req: Request, _res: Response, next: NextFunctio
 
   if (record.expiresAt && new Date() > record.expiresAt) {
     throw AppError.unauthorized('API key has expired');
+  }
+
+  // The key is only as alive as its owner: a deactivated (offboarded) user
+  // must not keep API access through a key issued while they were active —
+  // JWT auth enforces the same check on every request.
+  const owner = await db.query.users.findFirst({ where: eq(users.id, record.userId) });
+  if (!owner || !owner.isActive) {
+    throw AppError.unauthorized('Account is deactivated');
   }
 
   // Set request context

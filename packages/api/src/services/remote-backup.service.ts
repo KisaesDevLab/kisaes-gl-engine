@@ -5,11 +5,13 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import http from 'node:http';
+import https from 'node:https';
 import { sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
-import { assertExternalUrlSafe } from '../utils/url-safety.js';
+import { assertExternalUrlSafe, makeSafeLookup, makeSafeAgents } from '../utils/url-safety.js';
 
 
 const BACKUP_DIR = process.env['BACKUP_DIR'] || '/data/backups';
@@ -95,10 +97,36 @@ async function testSftpConnection(config: SftpConfig): Promise<{ success: boolea
   }
 }
 
+// WebDAV requests go through node http(s).request instead of global fetch:
+// fetch has no hook for a custom DNS lookup, and the WebDAV URL is tenant-
+// supplied — the string-level assertExternalUrlSafe check alone is
+// bypassable via a hostname that resolves (or rebinds) to an internal
+// address. makeSafeLookup re-validates the DNS answer at connect time.
+function webdavRequest(
+  url: string,
+  options: { method: string; headers: Record<string, string>; body?: Buffer },
+): Promise<{ status: number; ok: boolean }> {
+  return new Promise((resolve, reject) => {
+    const mod = new URL(url).protocol === 'https:' ? https : http;
+    const req = mod.request(
+      url,
+      { method: options.method, headers: options.headers, lookup: makeSafeLookup() },
+      (res) => {
+        res.resume(); // drain — only the status is consumed
+        const status = res.statusCode ?? 0;
+        resolve({ status, ok: status >= 200 && status < 300 });
+      },
+    );
+    req.on('error', reject);
+    if (options.body) req.write(options.body);
+    req.end();
+  });
+}
+
 async function testWebDavConnection(config: WebDavConfig): Promise<{ success: boolean; message: string }> {
   try {
     assertExternalUrlSafe(config.url, 'WebDAV URL');
-    const response = await fetch(config.url, {
+    const response = await webdavRequest(config.url, {
       method: 'OPTIONS',
       headers: {
         Authorization: 'Basic ' + Buffer.from(`${config.username}:${config.password || ''}`).toString('base64'),
@@ -165,19 +193,27 @@ export async function uploadBackup(
   }
 }
 
+// Shared S3 client construction: validates the (tenant-supplied) custom
+// endpoint string AND pins DNS at connect time via safe agents, so a
+// hostname resolving/rebinding to an internal address cannot make the
+// signed requests land on loopback/RFC-1918 services.
+async function s3ClientFor(config: S3Config) {
+  if (config.endpoint) assertExternalUrlSafe(config.endpoint, 'S3 endpoint');
+  const { S3Client } = await import('@aws-sdk/client-s3');
+  const { NodeHttpHandler } = await import('@smithy/node-http-handler');
+  return new S3Client({
+    region: config.region || 'us-east-1',
+    endpoint: config.endpoint || undefined,
+    credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey },
+    forcePathStyle: config.forcePathStyle ?? !!config.endpoint,
+    requestHandler: new NodeHttpHandler(makeSafeAgents()),
+  });
+}
+
 async function testS3Connection(config: S3Config): Promise<{ success: boolean; message: string }> {
-  // Validate endpoint URL (custom endpoints — MinIO, R2, etc.) — link-
-  // local and metadata-service IPs are SSRF risks if the operator
-  // accidentally points the backup at one.
   try {
-    if (config.endpoint) assertExternalUrlSafe(config.endpoint, 'S3 endpoint');
-    const { S3Client, HeadBucketCommand } = await import('@aws-sdk/client-s3');
-    const client = new S3Client({
-      region: config.region || 'us-east-1',
-      endpoint: config.endpoint || undefined,
-      credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey },
-      forcePathStyle: config.forcePathStyle ?? !!config.endpoint,
-    });
+    const { HeadBucketCommand } = await import('@aws-sdk/client-s3');
+    const client = await s3ClientFor(config);
     await client.send(new HeadBucketCommand({ Bucket: config.bucket }));
     return { success: true, message: `S3 bucket "${config.bucket}" reachable.` };
   } catch (err) {
@@ -191,14 +227,8 @@ async function uploadS3(
   config: S3Config,
 ): Promise<{ success: boolean; message: string; size?: number }> {
   try {
-    if (config.endpoint) assertExternalUrlSafe(config.endpoint, 'S3 endpoint');
-    const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
-    const client = new S3Client({
-      region: config.region || 'us-east-1',
-      endpoint: config.endpoint || undefined,
-      credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey },
-      forcePathStyle: config.forcePathStyle ?? !!config.endpoint,
-    });
+    const { PutObjectCommand } = await import('@aws-sdk/client-s3');
+    const client = await s3ClientFor(config);
     const body = fs.readFileSync(filePath);
     const key = config.prefix ? `${config.prefix.replace(/\/+$/, '')}/${fileName}` : fileName;
     await client.send(new PutObjectCommand({
@@ -249,7 +279,7 @@ async function uploadWebDav(
     const fileBuffer = fs.readFileSync(filePath);
     const uploadUrl = config.url.endsWith('/') ? config.url + fileName : config.url + '/' + fileName;
 
-    const response = await fetch(uploadUrl, {
+    const response = await webdavRequest(uploadUrl, {
       method: 'PUT',
       headers: {
         Authorization: 'Basic ' + Buffer.from(`${config.username}:${config.password || ''}`).toString('base64'),
@@ -341,14 +371,8 @@ export async function applyRetention(
 
 async function applyS3Retention(config: S3Config, keepCount: number): Promise<{ deleted: number }> {
   try {
-    if (config.endpoint) assertExternalUrlSafe(config.endpoint, 'S3 endpoint');
-    const { S3Client, ListObjectsV2Command, DeleteObjectCommand } = await import('@aws-sdk/client-s3');
-    const client = new S3Client({
-      region: config.region || 'us-east-1',
-      endpoint: config.endpoint || undefined,
-      credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey },
-      forcePathStyle: config.forcePathStyle ?? !!config.endpoint,
-    });
+    const { ListObjectsV2Command, DeleteObjectCommand } = await import('@aws-sdk/client-s3');
+    const client = await s3ClientFor(config);
     const prefix = config.prefix ? config.prefix.replace(/\/+$/, '') + '/' : '';
     const listResult = await client.send(new ListObjectsV2Command({
       Bucket: config.bucket,

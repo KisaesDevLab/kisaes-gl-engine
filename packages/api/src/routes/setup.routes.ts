@@ -15,6 +15,7 @@ import {
   stashPendingRecoveryKey,
   peekPendingRecoveryKey,
   acknowledgePendingRecoveryKey,
+  hasPendingRecoveryKey,
 } from '../services/pending-recovery-key.service.js';
 import { getSetting as dbGetSetting } from '../services/admin.service.js';
 import { SystemSettingsKeys } from '../constants/system-settings-keys.js';
@@ -162,7 +163,7 @@ setupRouter.get('/status', async (req, res) => {
     // DB unreachable — leave null
   }
   const hasPending =
-    !!pendingRecoveryKeyForInstall && peekPendingRecoveryKey(pendingRecoveryKeyForInstall) !== null;
+    !!pendingRecoveryKeyForInstall && hasPendingRecoveryKey(pendingRecoveryKeyForInstall);
 
   // White-label app name for PRE-LOGIN surfaces (login page, first-run wizard,
   // browser tab title) that have no authenticated /auth/me to read branding
@@ -184,8 +185,13 @@ setupRouter.get('/status', async (req, res) => {
 
 setupRouter.get('/pending-recovery-key', async (req, res) => {
   const installationId = (req.query?.['installationId'] ?? '').toString();
-  if (!installationId) {
-    res.status(400).json({ error: { message: 'installationId query parameter required' } });
+  // The installationId is public (returned by /status), so it locates the
+  // entry but cannot authorize the read. The claim token — minted at stash
+  // time and returned only to the browser that ran /initialize or the
+  // restore — is the actual credential.
+  const claimToken = (req.query?.['claimToken'] ?? '').toString();
+  if (!installationId || !claimToken) {
+    res.status(400).json({ error: { message: 'installationId and claimToken query parameters required' } });
     return;
   }
   // Cross-check against system_settings: the caller must supply an
@@ -202,7 +208,7 @@ setupRouter.get('/pending-recovery-key', async (req, res) => {
     res.status(503).json({ error: { message: 'database unreachable' } });
     return;
   }
-  const key = peekPendingRecoveryKey(installationId);
+  const key = peekPendingRecoveryKey(installationId, claimToken);
   if (!key) {
     res.status(404).json({ error: { message: 'no pending recovery key — it may have expired or been acknowledged' } });
     return;
@@ -212,11 +218,12 @@ setupRouter.get('/pending-recovery-key', async (req, res) => {
 
 setupRouter.post('/acknowledge-recovery-key', async (req, res) => {
   const installationId = (req.body?.installationId ?? '').toString();
-  if (!installationId) {
-    res.status(400).json({ error: { message: 'installationId required' } });
+  const claimToken = (req.body?.claimToken ?? '').toString();
+  if (!installationId || !claimToken) {
+    res.status(400).json({ error: { message: 'installationId and claimToken required' } });
     return;
   }
-  const cleared = acknowledgePendingRecoveryKey(installationId);
+  const cleared = acknowledgePendingRecoveryKey(installationId, claimToken);
   res.json({ success: true, cleared });
 });
 
@@ -413,7 +420,12 @@ setupRouter.post('/initialize', async (req, res) => {
 
       // F22: hold the recovery key in memory so the wizard can re-display
       // it on reload if the operator closes the tab before acknowledging.
-      stashPendingRecoveryKey(sentinelResult.installationId, sentinelResult.recoveryKey);
+      // The returned claim token is the read credential — only this response
+      // (and hence the operator's browser) ever sees it.
+      const recoveryKeyClaimToken = stashPendingRecoveryKey(
+        sentinelResult.installationId,
+        sentinelResult.recoveryKey,
+      );
 
       return {
         success: true,
@@ -423,6 +435,7 @@ setupRouter.post('/initialize', async (req, res) => {
         userId: admin.userId,
         installationId: sentinelResult.installationId,
         recoveryKey: sentinelResult.recoveryKey,
+        recoveryKeyClaimToken,
         demo: demoResult
           ? {
               tenantId: demoResult.tenantId,
@@ -916,9 +929,12 @@ async function runGuardedSetupRestore(
         }
 
         // F22: stash for wizard re-display resilience — only when a new key
-        // was actually issued and must be shown to the operator.
+        // was actually issued and must be shown to the operator. The claim
+        // token rides back in the run result, which is itself only readable
+        // via the unguessable runId.
+        let recoveryKeyClaimToken: string | null = null;
         if (!recoveryKeyPreserved) {
-          stashPendingRecoveryKey(
+          recoveryKeyClaimToken = stashPendingRecoveryKey(
             sentinelResultRestore.installationId,
             sentinelResultRestore.recoveryKey,
           );
@@ -959,6 +975,7 @@ async function runGuardedSetupRestore(
           users_restored: (content.users || []).length,
           installationId: sentinelResultRestore.installationId,
           recoveryKey: recoveryKeyPreserved ? null : sentinelResultRestore.recoveryKey,
+          recoveryKeyClaimToken,
           recoveryKeyPreserved,
           crossHostRestore: !isSameHost,
           credentialRecovery,

@@ -23,12 +23,23 @@
  *
  * NOT persisted anywhere. NOT logged. Removed the moment the operator
  * acknowledges or the TTL expires.
+ *
+ * Access control: the installationId is PUBLIC (GET /setup/status returns
+ * it), so it cannot gate the key by itself — an unauthenticated caller who
+ * read /status could otherwise fetch the key during the pending window.
+ * stash() therefore mints a random claim token, returned only in the
+ * /initialize response / restore run result (itself gated by the
+ * unguessable runId). Reading or acknowledging the pending key requires
+ * presenting that token; the wizard keeps it browser-side for reloads.
  */
+
+import crypto from 'crypto';
 
 const TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 interface Pending {
   recoveryKey: string;
+  claimToken: string;
   expiresAt: number;
 }
 
@@ -40,21 +51,40 @@ function purgeExpired(now: number): void {
   }
 }
 
-export function stashPendingRecoveryKey(installationId: string, recoveryKey: string): void {
+function tokenMatches(entry: Pending, claimToken: string): boolean {
+  const expected = Buffer.from(entry.claimToken);
+  const given = Buffer.from(claimToken);
+  return expected.length === given.length && crypto.timingSafeEqual(expected, given);
+}
+
+/** Stash the key; returns the claim token required to read/acknowledge it. */
+export function stashPendingRecoveryKey(installationId: string, recoveryKey: string): string {
+  const claimToken = crypto.randomBytes(32).toString('hex');
   pending.set(installationId, {
     recoveryKey,
+    claimToken,
     expiresAt: Date.now() + TTL_MS,
   });
+  return claimToken;
 }
 
-export function peekPendingRecoveryKey(installationId: string): string | null {
+/** True if an unexpired entry exists — safe to expose (boolean only). */
+export function hasPendingRecoveryKey(installationId: string): boolean {
+  purgeExpired(Date.now());
+  return pending.has(installationId);
+}
+
+export function peekPendingRecoveryKey(installationId: string, claimToken: string): string | null {
   purgeExpired(Date.now());
   const entry = pending.get(installationId);
-  return entry?.recoveryKey ?? null;
+  if (!entry || !claimToken || !tokenMatches(entry, claimToken)) return null;
+  return entry.recoveryKey;
 }
 
-export function acknowledgePendingRecoveryKey(installationId: string): boolean {
+export function acknowledgePendingRecoveryKey(installationId: string, claimToken: string): boolean {
   purgeExpired(Date.now());
+  const entry = pending.get(installationId);
+  if (!entry || !claimToken || !tokenMatches(entry, claimToken)) return false;
   return pending.delete(installationId);
 }
 

@@ -20,6 +20,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.1",
     "@aws-sdk/client-s3": "^3.1024.0",
+    "@smithy/node-http-handler": "^4.5.3",
     "@aws-sdk/s3-request-presigner": "^3.1024.0",
     "@azure/msal-node": "^5.1.2",
     "@google/genai": "^1.50.1",

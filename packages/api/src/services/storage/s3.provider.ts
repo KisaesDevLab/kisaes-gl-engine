@@ -4,6 +4,8 @@
 
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadBucketCommand, HeadObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { NodeHttpHandler } from '@smithy/node-http-handler';
+import { makeSafeAgents } from '../../utils/url-safety.js';
 import type { StorageProvider, FileMetadata, StorageResult, HealthResult } from './storage-provider.interface.js';
 
 export class S3Provider implements StorageProvider {
@@ -21,6 +23,10 @@ export class S3Provider implements StorageProvider {
       endpoint: config.endpoint || undefined,
       credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey },
       forcePathStyle: !!config.endpoint, // needed for MinIO/non-AWS
+      // The endpoint is tenant-configurable: pin DNS at connect time so a
+      // hostname resolving/rebinding to loopback/RFC-1918 is refused (the
+      // route-level string check can't see what a public name resolves to).
+      requestHandler: new NodeHttpHandler(makeSafeAgents()),
     });
   }
 
