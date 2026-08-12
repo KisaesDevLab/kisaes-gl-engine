@@ -53,7 +53,22 @@ export async function getVisibleAccounts(userId: string, plaidItemId: string, sc
     // "mappable here". Mapped accounts owned by other tenants were already
     // hidden; this closes the unassigned-account bleed too.
     const hasOtherTenantMapping = mappings.some((m) => m.tenantId !== scopeTenantId);
-    const canShowUnassigned = itemUsedHere && !hasOtherTenantMapping;
+    let canShowUnassigned = itemUsedHere && !hasOtherTenantMapping;
+    // Carve-out: a fully UNMAPPED item (e.g. just created via a client
+    // bank-connect invite) has no tenant relationship yet, so the rule
+    // above hid it from every tenant-scoped Bank Connections screen and
+    // nobody could ever map it. Show its unassigned accounts in tenants
+    // the CREATOR administers — the inviting team can finish mapping.
+    // Mirrors assertCanAccessItem's unmapped-item carve-out; items with
+    // any mapping elsewhere stay hidden, so the cross-tenant bleed the
+    // rule above closes stays closed.
+    if (!canShowUnassigned && mappings.length === 0) {
+      const item = await db.query.plaidItems.findFirst({ where: eq(plaidItems.id, plaidItemId) });
+      if (item?.createdBy) {
+        const creatorTenants = await getUserAdminTenants(item.createdBy);
+        canShowUnassigned = creatorTenants.includes(scopeTenantId);
+      }
+    }
     for (const acct of allAccounts) {
       const mapping = mappingByAccount.get(acct.id) ?? null;
       if (mapping) {

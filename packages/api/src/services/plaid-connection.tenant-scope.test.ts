@@ -182,4 +182,51 @@ describe('getItemsForUser tenant scoping', () => {
     await db.delete(userTenantAccess).where(eq(userTenantAccess.userId, mate!.id));
     await db.delete(users).where(eq(users.id, mate!.id));
   });
+
+  it('a fully unmapped item IS mappable from the creator\'s tenant-scoped Bank Connections (invite handoff)', async () => {
+    // Regression: a client-invite connection is attributed to the inviting
+    // user but starts with ZERO mappings. Tenant-scoped visibility required
+    // the item to already be used by the tenant, so it appeared nowhere and
+    // could never be mapped.
+    const item3 = await seedItem('Fresh Bank');
+    await seedPlaidAccount(item3, 'f1');
+
+    const itemsA = await getItemsForUser(userId, tenantA);
+    const fresh = itemsA.find((i) => i.institutionName === 'Fresh Bank');
+    expect(fresh).toBeDefined();
+    expect(acctNames(fresh!)).toEqual(['f1']); // unassigned account is offered for mapping
+
+    // Visible in ANY tenant the creator administers (they pick where to map).
+    const itemsB = await getItemsForUser(userId, tenantB);
+    expect(itemsB.some((i) => i.institutionName === 'Fresh Bank')).toBe(true);
+
+    await db.delete(plaidAccounts).where(eq(plaidAccounts.plaidItemId, item3));
+    await db.delete(plaidItems).where(eq(plaidItems.id, item3));
+  });
+
+  it('a fully unmapped FOREIGN item stays hidden from tenant-scoped views (SECURITY)', async () => {
+    // Creator belongs only to tenant C; their fresh item must not surface in
+    // tenant A's or B's Bank Connections even for a user who could see the
+    // page — the carve-out is limited to tenants the CREATOR administers.
+    const tenantC = await seedTenant('client-c');
+    const [stranger] = await db.insert(users).values({
+      tenantId: tenantC, email: `str-${sfx()}@example.com`, passwordHash: 'x'.repeat(60), role: 'owner', displayName: 'Str',
+    }).returning();
+    await db.insert(userTenantAccess).values({ userId: stranger!.id, tenantId: tenantC, role: 'owner', isActive: true });
+    const [i] = await db.insert(plaidItems).values({
+      plaidItemId: `pi-${sfx()}`, institutionName: 'Stranger Bank', accessTokenEncrypted: 'enc', createdBy: stranger!.id,
+    }).returning();
+    await seedPlaidAccount(i!.id, 's1');
+
+    const itemsA = await getItemsForUser(userId, tenantA);
+    expect(itemsA.some((it) => it.institutionName === 'Stranger Bank')).toBe(false);
+    const itemsB = await getItemsForUser(userId, tenantB);
+    expect(itemsB.some((it) => it.institutionName === 'Stranger Bank')).toBe(false);
+
+    await db.delete(plaidAccounts).where(eq(plaidAccounts.plaidItemId, i!.id));
+    await db.delete(plaidItems).where(eq(plaidItems.id, i!.id));
+    await db.delete(userTenantAccess).where(eq(userTenantAccess.userId, stranger!.id));
+    await db.delete(users).where(eq(users.id, stranger!.id));
+    await db.delete(tenants).where(eq(tenants.id, tenantC));
+  });
 });
