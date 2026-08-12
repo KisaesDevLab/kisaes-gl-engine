@@ -81,17 +81,17 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     return;
   }
 
+  // URL-auth happens ONLY via the single-use ~60s ?_dl= tokens above. The
+  // legacy ?_token= path (full session JWT in the query string) is gone:
+  // URLs land in browser history, proxy/analytics logs, and Referer
+  // headers, so a leaked link stayed replayable until token expiry. No
+  // first-party caller used it — exports mint ?_dl= tokens.
   const authHeader = req.headers.authorization;
-  // Legacy URL-auth path kept for backward compatibility. Prefer ?_dl= for
-  // new integrations — it avoids putting the full access token in URLs,
-  // browser history, and referer headers.
-  const queryToken = req.query['_token'] as string | undefined;
-
-  if (!authHeader?.startsWith('Bearer ') && !queryToken) {
+  if (!authHeader?.startsWith('Bearer ')) {
     throw AppError.unauthorized('Missing or invalid authorization header');
   }
 
-  const token = queryToken || authHeader!.slice(7);
+  const token = authHeader.slice(7);
   try {
     const payload = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as JwtPayload & {
       iat?: number; typ?: string; tfa_pending?: boolean; checks_stepup?: boolean;
