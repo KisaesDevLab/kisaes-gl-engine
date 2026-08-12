@@ -132,7 +132,7 @@ export async function getClient(): Promise<PlaidApi> {
 
 // ─── Plaid API Methods ─────────────────────────────────────────
 
-export async function createLinkToken(tenantId: string, userId: string) {
+export async function createLinkToken(tenantId: string, userId: string, opts?: { redirectUri?: string }) {
   const client = await getClient();
   const config = await getConfig();
 
@@ -146,6 +146,10 @@ export async function createLinkToken(tenantId: string, userId: string) {
     country_codes: countryCodes,
     language: config.defaultLanguage,
     webhook: config.webhookUrl || undefined,
+    // OAuth institutions (Chase, Capital One, …) require a dashboard-
+    // registered redirect URI when Link runs on a page that can lose state
+    // (the public bank-connect invite page). Regular in-app Link omits it.
+    ...(opts?.redirectUri ? { redirect_uri: opts.redirectUri } : {}),
     transactions: { days_requested: config.maxHistoricalDays },
   });
 

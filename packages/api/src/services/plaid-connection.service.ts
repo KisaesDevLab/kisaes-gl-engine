@@ -176,6 +176,8 @@ async function getUserAdminTenants(userId: string): Promise<string[]> {
 
 export async function createConnection(userId: string, publicToken: string, metadata: {
   institutionId?: string; institutionName?: string; accounts?: any[]; linkSessionId?: string; forceNew?: boolean;
+  /** 'client_invite' when the exchange came from a bank-connect invite link (activity attribution). */
+  source?: string;
 }) {
   const { users } = await import('../db/schema/index.js');
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
@@ -265,7 +267,10 @@ export async function createConnection(userId: string, publicToken: string, meta
     accounts.push(acct!);
   }
 
-  await logActivity(item!.id, null, 'item_created', userId, user?.displayName || null, { institutionName: metadata.institutionName });
+  await logActivity(item!.id, null, 'item_created', userId, user?.displayName || null, {
+    institutionName: metadata.institutionName,
+    ...(metadata.source ? { source: metadata.source } : {}),
+  });
 
   // Warn (never block) if one of these accounts is already connected under a
   // tenant the user can't see — connecting it again double-bills Plaid and

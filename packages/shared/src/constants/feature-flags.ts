@@ -66,6 +66,12 @@ export const PRACTICE_FEATURE_FLAGS = [
   // feature, base license (no commercial gate). Default OFF until the
   // module completes its Phase 15 review.
   'TRIAL_BALANCE_V1',
+  // Bank connection invites: staff email/SMS a client a tokenized
+  // public link (/connect/:token) that runs Plaid Link with no login.
+  // Gates the Banking-page invite UI + /plaid/invites staff routes;
+  // the public router stays mounted but tokens only exist once a
+  // tenant with the flag ON mints one. Default OFF.
+  'BANK_CONNECT_INVITES_V1',
 ] as const;
 
 export type PracticeFeatureFlagKey = typeof PRACTICE_FEATURE_FLAGS[number];

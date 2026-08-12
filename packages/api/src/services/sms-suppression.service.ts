@@ -63,6 +63,29 @@ async function findContactByPhone(rawPhone: string): Promise<ContactMatch | null
   return null;
 }
 
+/**
+ * Read-only check for outbound senders: has this phone number STOPped the
+ * SMS channel? Best-effort by design — suppressions are keyed to
+ * portal_contacts, so a number we've never stored can't be suppressed.
+ * Callers outside the reminder pipeline (e.g. bank-connect invites) use
+ * this to honor STOP before dispatching to an arbitrary recipient.
+ */
+export async function isPhoneSuppressed(rawPhone: string): Promise<boolean> {
+  const match = await findContactByPhone(rawPhone);
+  if (!match) return false;
+  const existing = await db
+    .select({ id: reminderSuppressions.id })
+    .from(reminderSuppressions)
+    .where(
+      and(
+        eq(reminderSuppressions.contactId, match.contactId),
+        or(eq(reminderSuppressions.channel, 'sms'), isNull(reminderSuppressions.channel)),
+      ),
+    )
+    .limit(1);
+  return existing.length > 0;
+}
+
 export async function applyStopKeyword(rawPhone: string): Promise<{ matched: boolean; contactId?: string }> {
   const match = await findContactByPhone(rawPhone);
   if (!match) return { matched: false };

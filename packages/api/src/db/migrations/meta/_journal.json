@@ -1058,6 +1058,13 @@
       "when": 1784800000008,
       "tag": "0150_tb_row_attachments_period",
       "breakpoints": true
+    },
+    {
+      "idx": 151,
+      "version": "7",
+      "when": 1784800000009,
+      "tag": "0151_bank_connect_invites",
+      "breakpoints": true
     }
   ]
 }

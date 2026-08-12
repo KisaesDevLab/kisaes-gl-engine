@@ -82,6 +82,7 @@ import { portalReportsRouter } from './routes/portal-reports.routes.js';
 import { portalReceiptsRouter } from './routes/portal-receipts.routes.js';
 import { portalReceiptsPublicRouter } from './routes/portal-receipts-public.routes.js';
 import { portalW9PublicRouter } from './routes/portal-w9-public.routes.js';
+import { bankConnectPublicRouter } from './routes/bank-connect-public.routes.js';
 import { recurringDocRequestsRouter } from './routes/recurring-doc-requests.routes.js';
 import { portalDocumentRequestsPublicRouter } from './routes/portal-document-requests-public.routes.js';
 import swaggerUi from 'swagger-ui-express';
@@ -492,6 +493,9 @@ app.use('/api/portal/financials', portalFinancialsPublicRouter);
 app.use('/api/portal', portalTrackingRouter);
 // Public W-9 form — token in URL is the auth.
 app.use('/api/w9', portalW9PublicRouter);
+// Public bank-connect invites (client connects their bank via Plaid Link
+// from an emailed/texted link, no login) — token in URL is the auth.
+app.use('/api/bank-connect', bankConnectPublicRouter);
 // Portal-side receipt upload (signed-in contact).
 app.use('/api/portal/receipts', portalReceiptsPublicRouter);
 // Portal-side outstanding-doc-requests list — drives the "Documents

@@ -23,7 +23,12 @@ The accounting impact:
    moves the funds out of Payments Clearing into the bank account.
 
 ### Bank Feed Categorization
-1. **Import** — connect a bank via Plaid or upload a CSV statement.
+1. **Import** — connect a bank via Plaid, upload a CSV statement, or send
+   the client a **bank connection invite** (Banking → Invite client, gated
+   by the BANK_CONNECT_INVITES_V1 flag): they get an emailed/texted link
+   (/connect/…, valid 7 days, works for multiple banks) that runs Plaid
+   Link with no MyBooks login; the resulting connection is attributed to
+   the inviting staff user, who is emailed to map the new accounts.
 2. **Categorize** — for each pending feed item, pick the expense or income
    account, optionally a contact, and confirm. The assistant turns it into a
    posted transaction.

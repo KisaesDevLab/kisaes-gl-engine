@@ -2,7 +2,8 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { Router } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
+import { AppError } from '../utils/errors.js';
 import { z } from 'zod';
 import {
   plaidExchangeSchema, plaidCreateAndMapSchema,
@@ -39,6 +40,69 @@ const updateLinkTokenSchema = z.object({
 });
 
 export const plaidRouter = Router();
+
+// ─── Bank connection invites (staff side) ──────────────────────
+//
+// Email/SMS a client a tokenized public link (/connect/:token) that runs
+// Plaid Link with no login. Gated on BANK_CONNECT_INVITES_V1; hidden from
+// client-type users entirely; readonly staff can list but not send.
+
+const createInviteSchema = z.object({
+  recipientName: z.string().min(1).max(255),
+  email: z.string().email().max(320).optional(),
+  phone: z.string().min(7).max(30).optional(),
+  companyId: z.string().uuid().optional(),
+  message: z.string().max(2000).optional(),
+});
+
+const inviteGuard = async (req: Request, _res: Response, next: NextFunction) => {
+  try {
+    if (req.userType === 'client') throw AppError.notFound('Feature not available');
+    if (req.userRole === 'readonly' && req.method !== 'GET') {
+      throw AppError.forbidden('Read-only role cannot manage bank connection invites');
+    }
+    const { isEnabled } = await import('../services/feature-flags.service.js');
+    if (!(await isEnabled(req.tenantId, 'BANK_CONNECT_INVITES_V1'))) {
+      throw AppError.notFound('Feature not available');
+    }
+    next();
+  } catch (err) { next(err); }
+};
+
+plaidRouter.post('/invites', authenticate, inviteGuard, validate(createInviteSchema), async (req, res) => {
+  const bankConnectInvite = await import('../services/bank-connect-invite.service.js');
+  const { baseUrlFor } = await import('../utils/base-url.js');
+  const result = await bankConnectInvite.createInvite({
+    tenantId: req.tenantId,
+    companyId: req.body.companyId,
+    createdBy: req.userId,
+    recipientName: req.body.recipientName,
+    email: req.body.email,
+    phone: req.body.phone,
+    message: req.body.message,
+    baseUrl: baseUrlFor(req),
+  });
+  res.status(201).json(result);
+});
+
+plaidRouter.get('/invites', authenticate, inviteGuard, async (req, res) => {
+  const bankConnectInvite = await import('../services/bank-connect-invite.service.js');
+  const limit = Math.min(parseInt(String(req.query['limit'] ?? '50'), 10) || 50, 200);
+  const offset = Math.max(parseInt(String(req.query['offset'] ?? '0'), 10) || 0, 0);
+  res.json(await bankConnectInvite.listInvites(req.tenantId, { limit, offset }));
+});
+
+plaidRouter.post('/invites/:id/resend', authenticate, inviteGuard, async (req, res) => {
+  const bankConnectInvite = await import('../services/bank-connect-invite.service.js');
+  const { baseUrlFor } = await import('../utils/base-url.js');
+  res.json(await bankConnectInvite.resendInvite(req.tenantId, req.params['id']!, req.userId, baseUrlFor(req)));
+});
+
+plaidRouter.post('/invites/:id/revoke', authenticate, inviteGuard, async (req, res) => {
+  const bankConnectInvite = await import('../services/bank-connect-invite.service.js');
+  await bankConnectInvite.revokeInvite(req.tenantId, req.params['id']!, req.userId);
+  res.json({ revoked: true });
+});
 
 // ─── Link Token ────────────────────────────────────────────────
 
