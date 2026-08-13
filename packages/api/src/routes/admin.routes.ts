@@ -905,8 +905,8 @@ adminRouter.get('/plaid/stats', async (req, res) => {
 });
 
 adminRouter.get('/plaid/webhook-log', async (req, res) => {
-  const { plaidWebhookLog } = await import('../db/schema/index.js');
-  const { desc, count } = await import('drizzle-orm');
+  const { plaidWebhookLog, plaidItems, plaidAccounts, plaidAccountMappings, tenants } = await import('../db/schema/index.js');
+  const { desc, count, eq, inArray } = await import('drizzle-orm');
   const { db: database } = await import('../db/index.js');
   const limit = parseLimit(req.query['limit'], 100);
   const offset = parseOffset(req.query['offset']);
@@ -922,7 +922,34 @@ adminRouter.get('/plaid/webhook-log', async (req, res) => {
     }).from(plaidWebhookLog).orderBy(desc(plaidWebhookLog.receivedAt)).limit(limit).offset(offset),
     database.select({ total: count() }).from(plaidWebhookLog),
   ]);
-  res.json({ logs, total: countRow?.total ?? 0, limit, offset });
+
+  // Tenant attribution is indirect by design: items are system-scoped, so a
+  // webhook's tenant(s) come from item → accounts → account mappings. One
+  // item CAN map into several tenants (accounts of one bank login split
+  // across companies), hence tenantNames is a list.
+  const itemIds = [...new Set(logs.map((l) => l.plaidItemId).filter((v): v is string => !!v))];
+  const attribution = new Map<string, { institutionName: string | null; tenantNames: string[] }>();
+  if (itemIds.length > 0) {
+    const rows = await database.select({
+      plaidItemId: plaidItems.plaidItemId,
+      institutionName: plaidItems.institutionName,
+      tenantName: tenants.name,
+    }).from(plaidItems)
+      .leftJoin(plaidAccounts, eq(plaidAccounts.plaidItemId, plaidItems.id))
+      .leftJoin(plaidAccountMappings, eq(plaidAccountMappings.plaidAccountId, plaidAccounts.id))
+      .leftJoin(tenants, eq(tenants.id, plaidAccountMappings.tenantId))
+      .where(inArray(plaidItems.plaidItemId, itemIds));
+    for (const r of rows) {
+      const entry = attribution.get(r.plaidItemId) ?? { institutionName: r.institutionName, tenantNames: [] };
+      if (r.tenantName && !entry.tenantNames.includes(r.tenantName)) entry.tenantNames.push(r.tenantName);
+      attribution.set(r.plaidItemId, entry);
+    }
+  }
+  const enriched = logs.map((l) => {
+    const a = l.plaidItemId ? attribution.get(l.plaidItemId) : undefined;
+    return { ...l, institutionName: a?.institutionName ?? null, tenantNames: a?.tenantNames ?? [] };
+  });
+  res.json({ logs: enriched, total: countRow?.total ?? 0, limit, offset });
 });
 
 // Push the configured webhook URL to every active Plaid item (repairs items
