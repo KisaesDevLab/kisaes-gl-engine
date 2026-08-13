@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-12T23:19:24.302Z",
+  "generatedAt": "2026-08-13T19:06:54.927Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -18,7 +18,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 64848
+    "totalBytes": 65490
   },
   "screens": [
     {
@@ -1548,6 +1548,7 @@
     "Attachments",
     "Writing a Check",
     "Printing Checks",
+    "Printing #10 Envelopes",
     "Signature Images on Checks",
     "REST API (v2)",
     "API Keys",

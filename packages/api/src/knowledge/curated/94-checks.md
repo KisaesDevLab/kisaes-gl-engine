@@ -53,6 +53,18 @@ envelope (toggle: "Payee address block" in Check Print Settings).
   Fold guides help you verify positioning, and the X/Y alignment offsets fine-tune
   placement for your printer.
 
+### Printing #10 Envelopes
+One-page-per-envelope PDFs sized for standard #10 envelopes (9.5" × 4.125"),
+with the company return address top-left and the recipient's mailing address
+in the delivery zone. Print at 100% ("Actual size") from the envelope feed.
+
+- **Check batch:** on **Print Checks →**, after confirming the checks printed
+  correctly, click **Print #10 Envelopes** — one envelope per printed check,
+  addressed to each payee.
+- **Single contact:** open any contact from **Contacts →** and click
+  **Print #10 Envelope** at the top of the detail page. Uses the contact's
+  billing address, falling back to the shipping address.
+
 ### Signature Images on Checks
 Checks can print with a signature image in the signature area:
 
