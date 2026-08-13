@@ -8,6 +8,7 @@ import { db } from '../db/index.js';
 import { contacts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import * as ledger from './ledger.service.js';
 
 export async function list(tenantId: string, filters: ContactFilters) {
   const conditions = [eq(contacts.tenantId, tenantId)];
@@ -203,8 +204,15 @@ export async function merge(tenantId: string, sourceId: string, targetId: string
   return target;
 }
 
-export async function getTransactionHistory(tenantId: string, contactId: string, pagination: { limit?: number; offset?: number }) {
-  // Transactions table doesn't exist yet (Phase 4), return empty
-  await getById(tenantId, contactId);
-  return { data: [], total: 0 };
+export async function getTransactionHistory(tenantId: string, contactId: string, pagination: { limit?: number; offset?: number }, companyId?: string) {
+  await getById(tenantId, contactId); // 404 on unknown contact
+  // Delegate to the ledger list so filtering/sorting/displayTotal semantics
+  // stay identical to the Transactions page filtered by this payee.
+  return ledger.listTransactions(tenantId, {
+    contactId,
+    sortBy: 'date',
+    sortDir: 'desc',
+    limit: pagination.limit,
+    offset: pagination.offset,
+  }, companyId);
 }

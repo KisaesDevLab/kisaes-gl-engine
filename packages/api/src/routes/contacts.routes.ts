@@ -6,6 +6,7 @@ import { Router } from 'express';
 import { createContactSchema, updateContactSchema, contactFiltersSchema, mergeContactsSchema, contactsImportSchema, bulkUpdateContactTypeSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
+import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as contactsService from '../services/contacts.service.js';
 import * as batchService from '../services/batch.service.js';
@@ -92,10 +93,12 @@ contactsRouter.get('/:id/envelope', async (req, res) => {
   res.send(pdf);
 });
 
-contactsRouter.get('/:id/transactions', async (req, res) => {
+// companyContext scopes the history to the active company (X-Company-Id),
+// matching what the Transactions page shows for the same payee.
+contactsRouter.get('/:id/transactions', companyContext, async (req, res) => {
   const result = await contactsService.getTransactionHistory(req.tenantId, req.params['id']!, {
     limit: parseLimit(req.query['limit']),
     offset: parseOffset(req.query['offset']),
-  });
+  }, req.companyId);
   res.json(result);
 });
