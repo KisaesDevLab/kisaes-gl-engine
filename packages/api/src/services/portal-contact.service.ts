@@ -474,6 +474,8 @@ export interface PracticePortalSettings {
   announcementEnabled: boolean;
   previewEnabled: boolean;
   previewAllowedRoles: string[];
+  smsOutboundEnabled: boolean;
+  smsAllowMultiSegment: boolean;
 }
 
 const PRACTICE_DEFAULTS: PracticePortalSettings = {
@@ -488,6 +490,8 @@ const PRACTICE_DEFAULTS: PracticePortalSettings = {
   announcementEnabled: false,
   previewEnabled: true,
   previewAllowedRoles: ['owner', 'bookkeeper', 'accountant'],
+  smsOutboundEnabled: false,
+  smsAllowMultiSegment: false,
 };
 
 export async function getPracticeSettings(tenantId: string): Promise<PracticePortalSettings> {
@@ -511,6 +515,8 @@ export async function getPracticeSettings(tenantId: string): Promise<PracticePor
     previewAllowedRoles: row.previewAllowedRoles
       ? row.previewAllowedRoles.split(',').map((s) => s.trim()).filter(Boolean)
       : PRACTICE_DEFAULTS.previewAllowedRoles,
+    smsOutboundEnabled: row.smsOutboundEnabled,
+    smsAllowMultiSegment: row.smsAllowMultiSegment,
   };
 }
 
@@ -537,6 +543,8 @@ export async function updatePracticeSettings(
       announcementEnabled: next.announcementEnabled,
       previewEnabled: next.previewEnabled,
       previewAllowedRoles: next.previewAllowedRoles.join(','),
+      smsOutboundEnabled: next.smsOutboundEnabled,
+      smsAllowMultiSegment: next.smsAllowMultiSegment,
       updatedAt: new Date(),
     })
     .onConflictDoUpdate({
@@ -553,6 +561,8 @@ export async function updatePracticeSettings(
         announcementEnabled: next.announcementEnabled,
         previewEnabled: next.previewEnabled,
         previewAllowedRoles: next.previewAllowedRoles.join(','),
+        smsOutboundEnabled: next.smsOutboundEnabled,
+        smsAllowMultiSegment: next.smsAllowMultiSegment,
         updatedAt: new Date(),
       },
     });

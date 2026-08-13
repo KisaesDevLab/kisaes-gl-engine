@@ -191,7 +191,7 @@ async function assertSmsAllowed(tenantId: string, phone: string): Promise<void> 
   });
   if (!settings?.smsOutboundEnabled) {
     throw AppError.badRequest(
-      'Outbound SMS is disabled for this practice — enable it under Practice settings, or send the invite by email.',
+      'Outbound SMS is disabled for this practice — enable it under Client Portal → Settings → Text messaging, or send the invite by email.',
     );
   }
   const { isPhoneSuppressed } = await import('./sms-suppression.service.js');

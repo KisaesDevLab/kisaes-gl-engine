@@ -178,6 +178,8 @@ const updatePracticeSettingsSchema = z.object({
   announcementEnabled: z.boolean().optional(),
   previewEnabled: z.boolean().optional(),
   previewAllowedRoles: z.array(z.string()).optional(),
+  smsOutboundEnabled: z.boolean().optional(),
+  smsAllowMultiSegment: z.boolean().optional(),
 });
 
 portalContactsRouter.get('/settings/practice', async (req, res) => {
