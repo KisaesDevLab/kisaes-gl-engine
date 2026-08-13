@@ -860,7 +860,13 @@ export async function generateTestCheckPdf(tenantId: string, format: string = 'v
 // the USPS read zone (indented, vertically centered). Printed from the
 // "Did the checks print correctly?" step so the operator can address the
 // same batch of checks.
-function drawEnvelope(page: PDFPage, fonts: Fonts, c: CheckData): void {
+interface EnvelopeData {
+  company: CheckData['company'];
+  payeeName: string;
+  payeeAddressLines: string[];
+}
+
+function drawEnvelope(page: PDFPage, fonts: Fonts, c: EnvelopeData): void {
   const ctx: Ctx = { page, fonts, dx: 0, dy: 0 };
   const up = (s: string) => sanitize(s).toUpperCase();
 
@@ -903,6 +909,48 @@ export async function generateEnvelopePdf(tenantId: string, checkIds: string[]):
     const page = doc.addPage([ENV10_W, ENV10_H]);
     drawEnvelope(page, fonts, c);
   }
+  return Buffer.from(await doc.save());
+}
+
+// One #10 envelope addressed to a single contact (no check involved) —
+// printed from the contact detail page. Billing address is the mailing
+// address; shipping is the fallback for shipping-only contacts.
+export async function generateContactEnvelopePdf(tenantId: string, contactId: string): Promise<Buffer> {
+  const contact = await db.query.contacts.findFirst({
+    where: and(eq(contacts.tenantId, tenantId), eq(contacts.id, contactId)),
+  });
+  if (!contact) throw AppError.notFound('Contact not found');
+  const company = await db.query.companies.findFirst({ where: eq(companies.tenantId, tenantId) });
+  if (!company) throw AppError.internal('Company not found');
+
+  const lines: string[] = [];
+  const pushAddr = (line1: string | null, line2: string | null, city: string | null, state: string | null, zip: string | null) => {
+    if (line1) lines.push(line1);
+    if (line2) lines.push(line2);
+    const cityState = [city, state].filter(Boolean).join(', ');
+    const cityStateZip = [cityState, zip].filter(Boolean).join(' ');
+    if (cityStateZip) lines.push(cityStateZip);
+  };
+  pushAddr(contact.billingLine1, contact.billingLine2, contact.billingCity, contact.billingState, contact.billingZip);
+  if (lines.length === 0) {
+    pushAddr(contact.shippingLine1, contact.shippingLine2, contact.shippingCity, contact.shippingState, contact.shippingZip);
+  }
+
+  const doc = await PDFDocument.create();
+  doc.setTitle('Envelope');
+  doc.setProducer('Vibe MyBooks');
+  const fonts: Fonts = {
+    reg: await doc.embedFont(StandardFonts.Helvetica),
+    bold: await doc.embedFont(StandardFonts.HelveticaBold),
+    mono: await doc.embedFont(StandardFonts.Courier),
+    monoBold: await doc.embedFont(StandardFonts.CourierBold),
+  };
+  const page = doc.addPage([ENV10_W, ENV10_H]);
+  drawEnvelope(page, fonts, {
+    company: companyAddress(company),
+    payeeName: contact.displayName,
+    payeeAddressLines: toMailRows(lines),
+  });
   return Buffer.from(await doc.save());
 }
 

@@ -9,6 +9,7 @@ import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
 import * as contactsService from '../services/contacts.service.js';
 import * as batchService from '../services/batch.service.js';
+import * as checkPdfService from '../services/check-pdf.service.js';
 import { parseLimit, parseOffset } from '../utils/pagination.js';
 
 export const contactsRouter = Router();
@@ -79,6 +80,16 @@ contactsRouter.delete('/:id', async (req, res) => {
 contactsRouter.get('/:id/suggest-account', async (req, res) => {
   const result = await batchService.suggestAccountForContact(req.tenantId, req.params['id']!);
   res.json(result);
+});
+
+// #10 envelope PDF addressed to this contact: company return address
+// top-left, contact mailing address in the USPS read zone. Same renderer
+// as the check-batch envelopes (POST /checks/envelopes).
+contactsRouter.get('/:id/envelope', async (req, res) => {
+  const pdf = await checkPdfService.generateContactEnvelopePdf(req.tenantId, req.params['id']!);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', 'inline; filename="envelope.pdf"');
+  res.send(pdf);
 });
 
 contactsRouter.get('/:id/transactions', async (req, res) => {
