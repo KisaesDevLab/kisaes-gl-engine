@@ -54,6 +54,17 @@ interface ImportResult {
 
 const EXPORT_DIR = process.env['BACKUP_DIR'] || '/data/backups';
 const TEMP_DIR = path.join(EXPORT_DIR, '_temp');
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// jsonb columns come back from pg as parsed objects (or a string for legacy
+// exports that serialized them). Normalize to a JSON string param — pg would
+// otherwise turn a JS array into a postgres array literal and fail the insert.
+function toJsonbParam(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value);
+}
 const APP_VERSION = '0.3.0';
 
 // Token cache for validated imports (in-memory, short-lived). Capped so an
@@ -524,6 +535,23 @@ export async function previewImport(
   };
 }
 
+// A decrypted payload must be a tenant export (not a .vmb system dump) written
+// by a version we understand. Same checks previewImport applies for the legacy
+// two-phase flow; single-phase import went straight to the importer without them.
+function assertTenantExportPayload(payload: ExportPayload): void {
+  const meta = payload?.metadata;
+  if (!meta || meta['export_type'] !== 'tenant') {
+    throw AppError.badRequest('This file is not a tenant export. Use the system restore for .vmb files.');
+  }
+  const sourceVersion = (meta['source_version'] as string) || '0.0.0';
+  if (compareVersions(sourceVersion, APP_VERSION) > 0) {
+    throw AppError.badRequest(
+      `This export was created by a newer version of Vibe MyBooks (${sourceVersion}). ` +
+      `Please upgrade to at least version ${sourceVersion} before importing.`,
+    );
+  }
+}
+
 // Read an uploaded export file into a normalized { payload, attachments } pair,
 // transparently handling both the v2 streamed package (a ZIP starting with the
 // PK magic) and the legacy v1 single-encrypted-JSON format (base64 attachment
@@ -533,8 +561,21 @@ async function readImportSource(
   passphrase: string,
 ): Promise<{ payload: ExportPayload; attachments: () => AsyncGenerator<PackageAttachment> }> {
   if (isPackageFormat(fileBuffer)) {
-    const pkg = await readTenantPackage(fileBuffer, passphrase);
-    return { payload: pkg.data as ExportPayload, attachments: () => pkg.attachments() };
+    // readTenantPackage throws plain Errors for user-facing conditions (wrong
+    // passphrase, not a package, part of a multi-part series). Left unmapped
+    // they reach the error handler as a bare 500 "Internal server error", so
+    // translate them into 400s the import page can actually show.
+    let pkg: Awaited<ReturnType<typeof readTenantPackage>>;
+    try {
+      pkg = await readTenantPackage(fileBuffer, passphrase);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Could not read export package';
+      if (msg.includes('Incorrect passphrase')) throw AppError.badRequest('Incorrect passphrase');
+      throw AppError.badRequest(msg);
+    }
+    const payload = pkg.data as ExportPayload;
+    assertTenantExportPayload(payload);
+    return { payload, attachments: () => pkg.attachments() };
   }
   // Legacy v1 single-file format.
   if (detectEncryptionMethod(fileBuffer) !== 'passphrase') {
@@ -552,6 +593,7 @@ async function readImportSource(
   } catch {
     throw AppError.badRequest('Invalid export file: could not parse contents');
   }
+  assertTenantExportPayload(payload);
   async function* legacyAttachments(): AsyncGenerator<PackageAttachment> {
     for (const af of payload.attachment_files || []) {
       yield { id: af.id, buffer: Buffer.from(af.data, 'base64') };
@@ -1096,19 +1138,30 @@ export async function importAsNewTenant(
     `);
   }
 
-  // 15. Import audit trail (as historical snapshots)
+  // 15. Import audit trail (as historical snapshots). audit_log.id is a
+  // bigserial — never supply it (a UUID here is a 22P02 → 500 on every
+  // default export, since "Include audit trail" is on by default). entity_id
+  // is a uuid column: point it at the re-keyed entity when we imported it,
+  // keep the source uuid otherwise (still useful as a historical reference),
+  // and drop non-uuid junk rather than failing the whole import.
   for (const entry of payload.audit_trail || []) {
+    const rawEntityId = (entry['entity_id'] as string | null) || null;
+    const entityId = rawEntityId
+      ? (idMap.get(rawEntityId) ?? (UUID_RE.test(rawEntityId) ? rawEntityId : null))
+      : null;
+    const rawCompanyId = (entry['company_id'] as string | null) || null;
+    const auditCompanyId = rawCompanyId ? (idMap.get(rawCompanyId) ?? companyId) : companyId;
     await db.execute(sql`
       INSERT INTO audit_log (
-        id, tenant_id, action, entity_type, entity_id,
+        tenant_id, company_id, action, entity_type, entity_id,
         before_data, after_data, user_id, created_at
       ) VALUES (
-        ${crypto.randomUUID()}, ${tenantId},
-        ${(entry['action'] as string) || 'imported'},
-        ${(entry['entity_type'] as string) || 'unknown'},
-        ${(entry['entity_id'] as string) || 'unknown'},
-        ${(entry['before_data'] as string) || null},
-        ${(entry['after_data'] as string) || null},
+        ${tenantId}, ${auditCompanyId},
+        ${((entry['action'] as string) || 'imported').slice(0, 20)},
+        ${((entry['entity_type'] as string) || 'unknown').slice(0, 50)},
+        ${entityId},
+        ${toJsonbParam(entry['before_data'])}::jsonb,
+        ${toJsonbParam(entry['after_data'])}::jsonb,
         ${null},
         ${(entry['created_at'] as string) || new Date().toISOString()}
       )
