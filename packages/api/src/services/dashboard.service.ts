@@ -117,11 +117,13 @@ export async function getCashPosition(tenantId: string) {
     ORDER BY a.detail_type, a.account_number, a.name
   `);
 
-  const bankAccounts: Array<{ name: string; balance: number }> = [];
-  const creditCards: Array<{ name: string; balance: number }> = [];
+  // `id` rides along so the dashboard can deep-link each row to its
+  // account register (/accounts/:id/register).
+  const bankAccounts: Array<{ id: string; name: string; balance: number }> = [];
+  const creditCards: Array<{ id: string; name: string; balance: number }> = [];
 
   for (const row of rows.rows as any[]) {
-    const entry = { name: row.name, balance: parseFloat(row.balance || '0') };
+    const entry = { id: String(row.id), name: row.name, balance: parseFloat(row.balance || '0') };
     if (row.detail_type === 'bank') bankAccounts.push(entry);
     else creditCards.push(entry);
   }

@@ -1,5 +1,12 @@
 ## Common Questions
 
+### "Is there a faster way to get to Enter Expense / Write Check / Pay Bills?"
+Yes — the Dashboard has a **Quick Actions** row of shortcut cards: Enter Expense,
+Write Check, Enter Deposit, Transfer Funds, Enter Bill, Pay Bills, Print Checks,
+Bank Feed, Create Invoice, and Receive Payment. Only the shortcuts your permissions
+allow are shown. The Cash Position panel on the Dashboard is also clickable — each
+bank or credit-card line opens that account's register.
+
 ### "How is the due date calculated on a bill?"
 The due date defaults to bill date + payment terms days. For Net 30, the due
 date is 30 days after the bill date. You can override it manually if the vendor

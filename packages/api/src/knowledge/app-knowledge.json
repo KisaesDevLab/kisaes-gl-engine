@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-13T19:06:54.927Z",
+  "generatedAt": "2026-08-17T20:08:07.714Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -18,7 +18,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 65490
+    "totalBytes": 66057
   },
   "screens": [
     {
@@ -1489,6 +1489,7 @@
     "Cash Sale",
     "Bank Feed Categorization",
     "Period Close",
+    "\"Is there a faster way to get to Enter Expense / Write Check / Pay Bills?\"",
     "\"How is the due date calculated on a bill?\"",
     "\"Why can't I save this bill?\"",
     "\"Why is my AP balance so high?\"",

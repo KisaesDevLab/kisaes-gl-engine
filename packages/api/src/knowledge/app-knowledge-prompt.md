@@ -32,7 +32,9 @@ Vibe MyBooks is a double-entry accounting system. Every transaction posts journa
 lines (debits + credits) to the General Ledger. Account balances are derived from
 those lines. The major sections of the app are:
 
-- **Dashboard** — at-a-glance view of cash position, AR, AP, recent activity
+- **Dashboard** — at-a-glance view of cash position (click a line to open its
+  register), AR, AP, action items, plus Quick Action shortcut cards to the
+  everyday entry screens
 - **Banking** — connect bank accounts (Plaid or CSV), import statements, categorize
   feed items, bank rules, reconciliation
 - **Sales** — invoices, estimates, customer payments, deposits, cash sales, items
@@ -258,6 +260,13 @@ foreign currency conversion, or a bill paid for slightly more than its total.
    each fiscal year — there are no manual closing entries.
 
 ## Common Questions
+
+### "Is there a faster way to get to Enter Expense / Write Check / Pay Bills?"
+Yes — the Dashboard has a **Quick Actions** row of shortcut cards: Enter Expense,
+Write Check, Enter Deposit, Transfer Funds, Enter Bill, Pay Bills, Print Checks,
+Bank Feed, Create Invoice, and Receive Payment. Only the shortcuts your permissions
+allow are shown. The Cash Position panel on the Dashboard is also clickable — each
+bank or credit-card line opens that account's register.
 
 ### "How is the due date calculated on a bill?"
 The due date defaults to bill date + payment terms days. For Net 30, the due

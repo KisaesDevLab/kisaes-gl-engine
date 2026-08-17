@@ -32,7 +32,9 @@ Vibe MyBooks is a double-entry accounting system. Every transaction posts journa
 lines (debits + credits) to the General Ledger. Account balances are derived from
 those lines. The major sections of the app are:
 
-- **Dashboard** — at-a-glance view of cash position, AR, AP, recent activity
+- **Dashboard** — at-a-glance view of cash position (click a line to open its
+  register), AR, AP, action items, plus Quick Action shortcut cards to the
+  everyday entry screens
 - **Banking** — connect bank accounts (Plaid or CSV), import statements, categorize
   feed items, bank rules, reconciliation
 - **Sales** — invoices, estimates, customer payments, deposits, cash sales, items
