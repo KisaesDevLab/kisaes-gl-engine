@@ -9,6 +9,7 @@ import { requirePermission } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../utils/errors.js';
 import * as svc from '../services/portal-reports.service.js';
+import * as portalSettings from '../services/portal-contact.service.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 16 + 17 — Report Builder admin.
 
@@ -28,6 +29,49 @@ portalReportsRouter.use((req, _res, next) => {
 // requirement for every method here; write protection stays with the
 // role gates above (client 404, readonly 403 on non-GET).
 portalReportsRouter.use(requirePermission('reports', 'read'));
+
+// ── Practice-wide branding (Report Builder theme, "Practice-wide" scope) ──
+// The practice theme's logo + primary color are stored in the shared portal
+// branding bucket so the portal and published PDFs stay visually coherent.
+// Editing it is a Report Builder concern (bookkeeper-tier — see
+// usePracticeVisibility minRole), NOT an owner-only portal-settings change, so
+// it rides THIS router's staff gate (non-client, non-readonly, `reports` perm)
+// instead of PUT /practice/portal/settings/practice's owner requirement. The
+// service does a partial merge, so only these two fields are touched — the rest
+// of the portal settings (reminders, custom domain, announcements) are
+// untouched and remain owner-gated on their own endpoint.
+const brandingSchema = z.object({
+  brandingPrimaryColor: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/)
+    .nullable()
+    .optional(),
+  brandingLogoUrl: z.string().max(2048).nullable().optional(),
+});
+
+// Only the two branding fields leave this router — the rest of the
+// practice settings (custom domain, SMS toggles, reminder cadence…) are
+// owner-only surfaces and must not be readable via a bookkeeper's
+// `reports` grant.
+function pickBranding(s: { brandingLogoUrl: string | null; brandingPrimaryColor: string | null }) {
+  return { brandingLogoUrl: s.brandingLogoUrl, brandingPrimaryColor: s.brandingPrimaryColor };
+}
+
+portalReportsRouter.get('/branding', async (req, res) => {
+  const settings = await portalSettings.getPracticeSettings(req.tenantId);
+  res.json({ settings: pickBranding(settings) });
+});
+
+portalReportsRouter.put('/branding', validate(brandingSchema), async (req, res) => {
+  // validate() already strips unknown keys, but be explicit: this endpoint
+  // can never write anything except the two branding fields.
+  const body = req.body as z.infer<typeof brandingSchema>;
+  const patch: { brandingLogoUrl?: string | null; brandingPrimaryColor?: string | null } = {};
+  if (body.brandingLogoUrl !== undefined) patch.brandingLogoUrl = body.brandingLogoUrl;
+  if (body.brandingPrimaryColor !== undefined) patch.brandingPrimaryColor = body.brandingPrimaryColor;
+  const settings = await portalSettings.updatePracticeSettings(req.tenantId, patch, req.userId);
+  res.json({ settings: pickBranding(settings) });
+});
 
 // ── KPI library (stock + custom) ───────────────────────────────
 

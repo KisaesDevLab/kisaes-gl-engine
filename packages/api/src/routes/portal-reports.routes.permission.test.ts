@@ -19,7 +19,7 @@ import { db } from '../db/index.js';
 import {
   tenants, users, permissionTemplates, userPermissions,
   reportTemplates, reportInstances, kpiDefinitions,
-  auditLog as auditLogTable,
+  auditLog as auditLogTable, portalSettingsPerPractice,
 } from '../db/schema/index.js';
 import * as permissionService from '../services/permission.service.js';
 import { portalReportsRouter } from './portal-reports.routes.js';
@@ -123,6 +123,7 @@ async function cleanDb() {
     await db.delete(reportInstances).where(eq(reportInstances.tenantId, tenantId));
     await db.delete(reportTemplates).where(eq(reportTemplates.tenantId, tenantId));
     await db.delete(kpiDefinitions).where(eq(kpiDefinitions.tenantId, tenantId));
+    await db.delete(portalSettingsPerPractice).where(eq(portalSettingsPerPractice.tenantId, tenantId));
     await db.delete(auditLogTable).where(eq(auditLogTable.tenantId, tenantId));
     await db.delete(userPermissions).where(eq(userPermissions.tenantId, tenantId));
     await db.delete(permissionTemplates).where(eq(permissionTemplates.tenantId, tenantId));
@@ -171,5 +172,66 @@ describe('portal-reports router permission enforcement (H4)', () => {
     const tk = tokenFor(ids['readonly']!, 'readonly');
     expect((await request('GET', '/api/v1/practice/reports/kpis', tk)).status).toBe(200);
     expect((await request('POST', '/api/v1/practice/reports/templates', tk, { name: 'Nope' })).status).toBe(403);
+  });
+});
+
+// Report Builder "Practice-wide" theme scope. Branding (logo + primary
+// color) lives in the shared portal-settings bucket, whose general PUT is
+// owner-only; this router exposes ONLY those two fields under the Report
+// Builder's staff gate so a bookkeeper can theme reports without being
+// handed the rest of the portal settings.
+describe('portal-reports /branding (practice-wide report theme)', () => {
+  const BR = '/api/v1/practice/reports/branding';
+
+  it('bookkeeper with a reports view grant can read and write branding', async () => {
+    const tk = tokenFor(ids['bkViewOnly']!, 'bookkeeper');
+    const before = await request('GET', BR, tk);
+    expect(before.status).toBe(200);
+    expect(before.json).toEqual({ settings: { brandingLogoUrl: null, brandingPrimaryColor: null } });
+
+    const put = await request('PUT', BR, tk, {
+      brandingPrimaryColor: '#123ABC',
+      brandingLogoUrl: 'https://cdn.example.com/logo.png',
+      // Must be ignored — not a branding field, and owner-only elsewhere.
+      customDomain: 'evil.example.com',
+      smsOutboundEnabled: true,
+    });
+    expect(put.status).toBe(200);
+    expect(put.json).toEqual({ settings: { brandingLogoUrl: 'https://cdn.example.com/logo.png', brandingPrimaryColor: '#123ABC' } });
+
+    // Persisted, and nothing but branding was written.
+    const [row] = await db.select().from(portalSettingsPerPractice)
+      .where(eq(portalSettingsPerPractice.tenantId, tenantId));
+    expect(row?.brandingPrimaryColor).toBe('#123ABC');
+    expect(row?.brandingLogoUrl).toBe('https://cdn.example.com/logo.png');
+    expect(row?.customDomain).toBeNull();
+    expect(row?.smsOutboundEnabled).toBe(false);
+
+    // A partial PUT leaves the other branding field intact.
+    const put2 = await request('PUT', BR, tk, { brandingLogoUrl: null });
+    expect(put2.status).toBe(200);
+    expect(put2.json).toEqual({ settings: { brandingLogoUrl: null, brandingPrimaryColor: '#123ABC' } });
+  });
+
+  it('GET never leaks non-branding practice settings', async () => {
+    const tk = tokenFor(ids['owner']!, 'owner');
+    const res = await request('GET', BR, tk);
+    expect(res.status).toBe(200);
+    expect(Object.keys((res.json as { settings: Record<string, unknown> }).settings).sort())
+      .toEqual(['brandingLogoUrl', 'brandingPrimaryColor']);
+  });
+
+  it('rejects a malformed color', async () => {
+    const tk = tokenFor(ids['owner']!, 'owner');
+    expect((await request('PUT', BR, tk, { brandingPrimaryColor: 'red' })).status).toBe(400);
+  });
+
+  it('readonly can read but not write; reports-denied bookkeeper gets 403 on both', async () => {
+    const ro = tokenFor(ids['readonly']!, 'readonly');
+    expect((await request('GET', BR, ro)).status).toBe(200);
+    expect((await request('PUT', BR, ro, { brandingPrimaryColor: '#000000' })).status).toBe(403);
+    const denied = tokenFor(ids['bkDenied']!, 'bookkeeper');
+    expect((await request('GET', BR, denied)).status).toBe(403);
+    expect((await request('PUT', BR, denied, { brandingPrimaryColor: '#000000' })).status).toBe(403);
   });
 });
