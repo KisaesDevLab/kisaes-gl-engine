@@ -38,6 +38,9 @@ The accounting impact:
    auto-sends the fix link to client-connected banks (max one per 3 days,
    3 per 30 days per connection; kill switch: Admin → Plaid → "Auto-send
    fix your bank login links").
+   The Bank Feed opens with **Hide processed** ticked by default — only
+   pending/assigned items show; un-tick it (or use a status button) to see
+   matched, categorized, or excluded rows.
 2. **Categorize** — for each pending feed item, pick the expense or income
    account, optionally a contact, and confirm. The assistant turns it into a
    posted transaction.
