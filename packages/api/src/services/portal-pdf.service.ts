@@ -79,7 +79,7 @@ export async function htmlToPdf(html: string): Promise<Buffer> {
         void req.abort();
       }
     });
-    await page.setContent(html, { waitUntil: 'networkidle0' });
+    await page.setContent(html, { waitUntil: 'load' });
     const pdf = await page.pdf({
       format: 'letter',
       printBackground: true,

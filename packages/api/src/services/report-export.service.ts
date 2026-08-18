@@ -150,7 +150,7 @@ export async function toPdf(html: string, options: ToPdfOptions = {}): Promise<B
   });
   try {
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'networkidle0' });
+    await page.setContent(html, { waitUntil: 'load' });
     const pdf = await page.pdf({
       format: 'Letter',
       landscape: options.orientation === 'landscape',

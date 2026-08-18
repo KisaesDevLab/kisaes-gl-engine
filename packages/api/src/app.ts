@@ -206,6 +206,43 @@ app.use('/api/v1/plaid/webhooks', plaidWebhookRouter);
 import { smsInboundRouter } from './routes/sms-inbound.routes.js';
 app.use('/api/sms/inbound', smsInboundRouter);
 
+// CSP violation collector — mounted before the JSON limiter so it can use
+// its own tiny body parser and its own limiter. Browsers POST reports here
+// (no auth, no cookies) as `application/csp-report` or `application/
+// reports+json`; we log a compact line so an operator can watch what the
+// document CSP (currently Report-Only, see the web nginx config) would
+// block before promoting it to enforcing. Best-effort: any parse failure
+// still 204s so a noisy browser extension can't error-spam.
+const cspReportLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: false,
+  legacyHeaders: false,
+  store: getRateLimitStore('csp-report'),
+  message: {},
+});
+app.post('/api/v1/csp-report',
+  cspReportLimiter,
+  // express.TEXT (not json) so a malformed body can't make body-parser 400
+  // — the endpoint must always 204 so it can't be turned into error noise.
+  express.text({ type: () => true, limit: '16kb' }),
+  (req, res) => {
+    try {
+      const parsed = JSON.parse(typeof req.body === 'string' && req.body ? req.body : '{}');
+      const body = parsed as Record<string, unknown> | Array<Record<string, unknown>>;
+      const reports = Array.isArray(body) ? body : [body];
+      for (const r of reports.slice(0, 10)) {
+        const cr = (r?.['csp-report'] ?? r?.['body'] ?? r) as Record<string, unknown>;
+        const directive = cr?.['violated-directive'] ?? cr?.['effectiveDirective'] ?? cr?.['effective-directive'] ?? 'unknown';
+        const blocked = cr?.['blocked-uri'] ?? cr?.['blockedURL'] ?? cr?.['blocked-url'] ?? 'unknown';
+        // eslint-disable-next-line no-console
+        console.warn(`[csp-report] directive=${String(directive).slice(0, 80)} blocked=${String(blocked).slice(0, 200)}`);
+      }
+    } catch { /* ignore malformed reports */ }
+    res.status(204).end();
+  },
+);
+
 app.use(express.json({ limit: '10mb' }));
 // Access log with bearer-ish query parameters redacted: magic-link
 // verify (?token=), download tokens (?_dl=), portal/W-9/bank-connect

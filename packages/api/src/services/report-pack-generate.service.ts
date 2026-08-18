@@ -66,7 +66,7 @@ async function htmlToPdfBytes(browser: Browser, html: string, landscape: boolean
         req.abort();
       }
     });
-    await page.setContent(html, { waitUntil: 'networkidle0' });
+    await page.setContent(html, { waitUntil: 'load' });
     return await page.pdf({ format: 'Letter', landscape, margin: PDF_MARGIN, printBackground: true });
   } finally {
     await page.close();
