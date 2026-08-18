@@ -5,7 +5,7 @@
 import crypto from 'crypto';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, or, isNull, lt, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { users, tfaCodes, tfaTrustedDevices } from '../db/schema/index.js';
 import { env } from '../config/env.js';
@@ -51,7 +51,18 @@ export async function checkTfaRequired(userId: string, deviceFingerprint?: strin
     }
   }
 
-  const methods = (user.tfaMethods || '').split(',').filter(Boolean);
+  let methods = (user.tfaMethods || '').split(',').filter(Boolean);
+  if (methods.length === 0) {
+    // Enabled but never finished enrolling (pre-seeding rows, or an
+    // abandoned setup): the login gate only accepts enrolled methods, so
+    // fall back to — and persist — email when the instance allows it,
+    // exactly the method that used to be the implicit default. Otherwise
+    // the user is left with recovery codes only (as before).
+    if (config.allowedMethods.includes('email')) {
+      methods = ['email'];
+      await db.update(users).set({ tfaMethods: 'email', updatedAt: new Date() }).where(eq(users.id, userId));
+    }
+  }
   const emailMasked = user.email.replace(/^(.{1,2})(.*)(@.*)$/, '$1***$3');
   const phoneMasked = user.tfaPhone ? user.tfaPhone.replace(/^(.*)(.{4})$/, '***$2') : undefined;
 
@@ -183,14 +194,18 @@ export async function verifyCode(userId: string, code: string, method: string): 
       // Replay guard: a code is single-use. The verifier tells us which
       // 30-second step matched; refuse anything at or before the last
       // accepted step (RFC 6238 §5.2) and remember the new high-water mark.
+      // The high-water mark is advanced with a CONDITIONAL update so two
+      // concurrent verifies of the same code can't both pass (the read
+      // above is not enough — only the row that actually moved the mark
+      // counts as the accepted use).
       if (isValid) {
         const step = (result as { timeStep?: number }).timeStep;
         if (typeof step === 'number') {
-          if (user.tfaTotpLastStep != null && step <= user.tfaTotpLastStep) {
-            isValid = false;
-          } else {
-            await db.update(users).set({ tfaTotpLastStep: step }).where(eq(users.id, userId));
-          }
+          const claimed = await db.update(users)
+            .set({ tfaTotpLastStep: step })
+            .where(and(eq(users.id, userId), or(isNull(users.tfaTotpLastStep), lt(users.tfaTotpLastStep, step))))
+            .returning({ id: users.id });
+          if (claimed.length === 0) isValid = false;
         }
       }
     } catch {

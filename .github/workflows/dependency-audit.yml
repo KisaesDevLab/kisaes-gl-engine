@@ -3,10 +3,9 @@
 # Free for small businesses; see LICENSE for terms.
 #
 # Production-dependency vulnerability audit.
-#   - CRITICAL findings fail the build.
-#   - HIGH findings are reported (job summary) but do not block: the two
-#     current highs are transitive to puppeteer's browser downloader, which
-#     the images never run (PUPPETEER_SKIP_DOWNLOAD, system chromium).
+#   - HIGH and CRITICAL findings fail the build (the tree is clean at high
+#     since puppeteer 25 / react-router 7 — 2026-08-18).
+#   - MODERATE+ findings are reported in the job summary but do not block.
 name: Dependency audit
 on:
   pull_request:
@@ -28,12 +27,12 @@ jobs:
           cache: npm
       - name: Install (lockfile only)
         run: npm ci --ignore-scripts
-      - name: Report (high+, non-blocking)
+      - name: Report (moderate+, non-blocking)
         continue-on-error: true
         run: |
-          echo '## npm audit --omit=dev (high+)' >> "$GITHUB_STEP_SUMMARY"
+          echo '## npm audit --omit=dev (moderate+)' >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          npm audit --omit=dev --audit-level=high 2>&1 | tail -n 60 >> "$GITHUB_STEP_SUMMARY" || true
+          npm audit --omit=dev --audit-level=moderate 2>&1 | tail -n 60 >> "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-      - name: Gate (critical blocks)
-        run: npm audit --omit=dev --audit-level=critical
+      - name: Gate (high+ blocks)
+        run: npm audit --omit=dev --audit-level=high

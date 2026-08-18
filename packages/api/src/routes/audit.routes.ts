@@ -9,6 +9,7 @@ import { db } from '../db/index.js';
 import { sql, count } from 'drizzle-orm';
 import { auditLog } from '../db/schema/index.js';
 import { toCsvRow } from '../services/export.service.js';
+import { escapeLike } from '../utils/sql-like.js';
 
 export const auditRouter = Router();
 auditRouter.use(authenticate);
@@ -26,7 +27,7 @@ auditRouter.get('/', async (req, res) => {
   if (start_date) conditions.push(sql`created_at >= ${start_date}::timestamptz`);
   if (end_date) conditions.push(sql`created_at <= ${end_date}::timestamptz + interval '1 day'`);
   if (search) {
-    const pattern = '%' + search + '%';
+    const pattern = '%' + escapeLike(String(search)) + '%';
     conditions.push(sql`(entity_type ILIKE ${pattern} OR CAST(before_data AS TEXT) ILIKE ${pattern} OR CAST(after_data AS TEXT) ILIKE ${pattern})`);
   }
 

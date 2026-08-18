@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { assertExternalUrlSafe, makeSafeLookup } from './url-safety.js';
+import * as urlSafety from './url-safety.js';
 
 describe('assertExternalUrlSafe — default (allowPrivate off)', () => {
   it('accepts a normal public https URL', () => {
@@ -112,5 +113,47 @@ describe('assertExternalUrlSafe — alternate IP encodings (2026-08-18 review)',
     expect(() => assertExternalUrlSafe('http://[2606:4700:4700::1111]/')).not.toThrow();
     expect(() => assertExternalUrlSafe('http://[::ffff:8.8.8.8]/')).not.toThrow();
     expect(() => assertExternalUrlSafe('http://8.8.8.8/')).not.toThrow();
+  });
+});
+
+describe('QA follow-ups (2026-08-18): canonical loopback in assertHostSafe, SSRF_ALLOW_PRIVATE_TARGETS', () => {
+  const { assertHostSafe, classifyIpLiteral } = urlSafety;
+  it('classifies loopback / reserved distinctly from private', () => {
+    expect(classifyIpLiteral('127.0.0.1')).toBe('loopback');
+    expect(classifyIpLiteral('::1')).toBe('loopback');
+    expect(classifyIpLiteral('::ffff:7f00:1')).toBe('loopback');
+    expect(classifyIpLiteral('0:0:0:0:0:0:0:1')).toBe('loopback');
+    expect(classifyIpLiteral('0.0.0.0')).toBe('reserved');
+    expect(classifyIpLiteral('::')).toBe('reserved');
+    expect(classifyIpLiteral('10.1.2.3')).toBe('private');
+    expect(classifyIpLiteral('100.91.61.19')).toBe('private');
+    expect(classifyIpLiteral('169.254.169.254')).toBe('link-local');
+  });
+  it('assertHostSafe(allowPrivate) still refuses non-canonical IPv6 loopback spellings', async () => {
+    await expect(assertHostSafe('::ffff:7f00:1', 'SMTP host', { allowPrivate: true })).rejects.toThrow(/loopback/);
+    await expect(assertHostSafe('0:0:0:0:0:0:0:1', 'SMTP host', { allowPrivate: true })).rejects.toThrow(/loopback/);
+    await expect(assertHostSafe('[::ffff:127.0.0.1]', 'SMTP host', { allowPrivate: true })).rejects.toThrow(/loopback/);
+    await expect(assertHostSafe('0.0.0.0', 'SMTP host', { allowPrivate: true })).rejects.toThrow(/reserved/);
+    // LAN relay is fine under allowPrivate; loopback is fine only with allowLoopback.
+    await expect(assertHostSafe('192.168.1.25', 'SMTP host', { allowPrivate: true })).resolves.toBeUndefined();
+    await expect(assertHostSafe('127.0.0.1', 'SMTP host', { allowPrivate: true, allowLoopback: true })).resolves.toBeUndefined();
+  });
+  it('SSRF_ALLOW_PRIVATE_TARGETS=1 opens RFC-1918/CGNAT for non-allowPrivate callers but never loopback/link-local', async () => {
+    const prev = process.env['SSRF_ALLOW_PRIVATE_TARGETS'];
+    process.env['SSRF_ALLOW_PRIVATE_TARGETS'] = '1';
+    try {
+      expect(() => assertExternalUrlSafe('http://100.91.61.19:9000/')).not.toThrow();
+      expect(() => assertExternalUrlSafe('http://192.168.1.50/dav/')).not.toThrow();
+      expect(() => assertExternalUrlSafe('http://127.0.0.1:9000/')).toThrow(/blocked IP range/);
+      expect(() => assertExternalUrlSafe('http://[::ffff:7f00:1]:9000/')).toThrow(/blocked IP range/);
+      expect(() => assertExternalUrlSafe('http://169.254.169.254/latest/')).toThrow(/blocked IP range/);
+      expect(() => assertExternalUrlSafe('http://0.0.0.0:9000/')).toThrow(/blocked IP range/);
+      await expect(assertHostSafe('10.0.0.5', 'SFTP host')).resolves.toBeUndefined();
+      await expect(assertHostSafe('127.0.0.1', 'SFTP host')).rejects.toThrow(/loopback/);
+    } finally {
+      if (prev === undefined) delete process.env['SSRF_ALLOW_PRIVATE_TARGETS']; else process.env['SSRF_ALLOW_PRIVATE_TARGETS'] = prev;
+    }
+    // Default (unset) — private is blocked again for non-allowPrivate callers.
+    expect(() => assertExternalUrlSafe('http://100.91.61.19:9000/')).toThrow(/blocked IP range/);
   });
 });

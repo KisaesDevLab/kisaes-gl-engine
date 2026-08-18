@@ -27,8 +27,23 @@ describe('checkRegexSafety', () => {
     expect(re.test('AMAZON MKTPLACE')).toBe(true);
     expect(compileSafeRegex('a*a*a*b')).toBeNull(); // 3 unbounded quantifiers → cubic
     const start = Date.now();
-    // The worst we allow (quadratic) over the capped haystack must be instant.
+    // The worst we allow (quadratic; cubic only when ^-anchored) over the
+    // capped haystack must be instant.
     compileSafeRegex('a*a*b')!.test('a'.repeat(200));
-    expect(Date.now() - start).toBeLessThan(100);
+    compileSafeRegex('^a*a*a*b')!.test('a'.repeat(200));
+    expect(Date.now() - start).toBeLessThan(150);
+  });
+  it('counts per alternative, ignores a trailing quantifier, allows one more when ^-anchored, and does not treat {n} as nesting', () => {
+    // Real-world rule shapes that must pass.
+    for (const p of ['.*amazon.*|.*amzn.*', '^AMZN.*MKTP.*US.*', 'CHECK\\s*#?\\s*\\d+', '\\$\\d{1,3}(,\\d{3})*(\\.\\d{2})?', '(\\d{3}){2}', 'a*|b*|c*|d*', '(?:ab)*c\\d+', '^\\s*x\\s*y\\s*z']) {
+      expect(checkRegexSafety(p).safe, p).toBe(true);
+    }
+    // Still refused: too many overlapping unbounded quantifiers in ONE alternative.
+    for (const p of ['\\w*\\w*\\w*x', 'a*a*a*b', '^a*a*a*a*b', '(\\d+){4}', '(a\\d+)b\\s*c\\s*d\\s*e', 'x\\s*y\\s*z\\s*w|q']) {
+      expect(checkRegexSafety(p).safe, p).toBe(false);
+    }
+    // Nesting / alternation-in-repeat still refused.
+    expect(checkRegexSafety('(\\d+)+').safe).toBe(false);
+    expect(checkRegexSafety('(foo|bar)+').safe).toBe(false);
   });
 });

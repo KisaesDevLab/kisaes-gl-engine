@@ -11,6 +11,7 @@ import { tenants, users, sessions, companies, transactions, accounts, contacts, 
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import { escapeLike } from '../utils/sql-like.js';
 
 // ─── Tenant Management ───────────────────────────────────────────
 
@@ -30,7 +31,7 @@ export interface AdminListOptions {
 
 function likeTerm(search?: string): string | null {
   const term = search?.trim();
-  return term ? `%${term}%` : null;
+  return term ? `%${escapeLike(term)}%` : null;
 }
 
 function pageClause(options: AdminListOptions) {

@@ -22,6 +22,7 @@ import {
   linkContactToIdentity,
   listLinkedContacts,
   verifyPassword,
+  clearIdentityLock,
 } from './portal-identity.service.js';
 import { switchToContact } from './portal-auth.service.js';
 import crypto from 'node:crypto';
@@ -48,6 +49,8 @@ const SUITE_EMAILS = [
   'bob@example.com',
   'legacy@example.com',
   'target@example.com',
+  'expired@example.com',
+  'clear@example.com',
 ];
 
 async function clean() {
@@ -200,12 +203,45 @@ describe('portal-identity.service', () => {
       }
       const after = await db.query.portalIdentities.findFirst({ where: eq(portalIdentities.id, identity.id) });
       expect(after?.failedLoginAttempts).toBe(5);
+      // Timed lock: locked_until sits in the future (LOCK_MINUTES).
       expect(after?.lockedUntil).toBeTruthy();
+      expect(after!.lockedUntil!.getTime()).toBeGreaterThan(Date.now() + 60_000);
       // 6th attempt — even with the correct password — must throw
-      // ACCOUNT_LOCKED. Matches the staff lockout contract.
+      // ACCOUNT_LOCKED while the lock is live; a wrong password stays null
+      // (no lock oracle).
       await expect(verifyPassword(identity.id, 'correct')).rejects.toMatchObject({
         code: 'ACCOUNT_LOCKED',
       });
+      expect(await verifyPassword(identity.id, 'wrong')).toBeNull();
+    });
+
+    it('an expired lock is ignored: wrong restarts the count at 1, right clears it', async () => {
+      const hash = await hashPassword('correct');
+      const identity = await findOrCreateIdentity({ email: 'expired@example.com', bcryptHash: hash, emailVerified: true });
+      await db.update(portalIdentities)
+        .set({ failedLoginAttempts: 5, lockedUntil: new Date(Date.now() - 60_000) })
+        .where(eq(portalIdentities.id, identity.id));
+      expect(await verifyPassword(identity.id, 'wrong')).toBeNull();
+      const mid = await db.query.portalIdentities.findFirst({ where: eq(portalIdentities.id, identity.id) });
+      expect(mid?.failedLoginAttempts).toBe(1);
+      expect(await verifyPassword(identity.id, 'correct')).toBeTruthy();
+      const after = await db.query.portalIdentities.findFirst({ where: eq(portalIdentities.id, identity.id) });
+      expect(after?.failedLoginAttempts).toBe(0);
+      expect(after?.lockedUntil).toBeNull();
+    });
+
+    it('clearIdentityLock resets the counters but never the hash', async () => {
+      const hash = await hashPassword('correct');
+      const identity = await findOrCreateIdentity({ email: 'clear@example.com', bcryptHash: hash, emailVerified: true });
+      await db.update(portalIdentities)
+        .set({ failedLoginAttempts: 5, lockedUntil: new Date(Date.now() + 10 * 60_000) })
+        .where(eq(portalIdentities.id, identity.id));
+      await clearIdentityLock(identity.id);
+      const after = await db.query.portalIdentities.findFirst({ where: eq(portalIdentities.id, identity.id) });
+      expect(after?.failedLoginAttempts).toBe(0);
+      expect(after?.lockedUntil).toBeNull();
+      expect(after?.bcryptHash).toBe(hash);
+      expect(await verifyPassword(identity.id, 'correct')).toBeTruthy();
     });
   });
 

@@ -16,7 +16,7 @@ import * as recurringService from '../services/recurring.service.js';
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD');
 const frequency = z.enum(['daily', 'weekly', 'biweekly', 'semimonthly', 'monthly', 'quarterly', 'annually']);
 const mode = z.enum(['auto', 'reminder']);
-const createScheduleSchema = z.object({
+export const createScheduleSchema = z.object({
   templateTransactionId: z.string().uuid(),
   name: z.string().trim().max(255).nullable().optional(),
   frequency,
@@ -25,7 +25,7 @@ const createScheduleSchema = z.object({
   startDate: isoDate,
   endDate: isoDate.nullable().optional(),
 }).strict();
-const updateScheduleSchema = z.object({
+export const updateScheduleSchema = z.object({
   name: z.string().trim().max(255).nullable().optional(),
   frequency: frequency.optional(),
   intervalValue: z.number().int().min(1).max(365).optional(),

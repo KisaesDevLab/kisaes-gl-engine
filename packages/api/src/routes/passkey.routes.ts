@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { getRateLimitStore } from '../utils/rate-limit-store.js';
-import { authenticate } from '../middleware/auth.js';
+import { authenticate, requireSessionAuth } from '../middleware/auth.js';
 import * as passkeyService from '../services/passkey.service.js';
 import { setRefreshCookie } from '../utils/refresh-cookie.js';
 
@@ -36,29 +36,34 @@ passkeyRouter.post('/login/verify', authLimiter, async (req, res) => {
 });
 
 // ─── Protected (registration + management — auth required) ─────
+// Session-only: registering a passkey plants a durable credential that
+// later mints a full session (and skips TFA), so an API key or download
+// token must not reach any of these.
 
-passkeyRouter.post('/register/options', authenticate, async (req, res) => {
+passkeyRouter.use(authenticate, requireSessionAuth);
+
+passkeyRouter.post('/register/options', async (req, res) => {
   const options = await passkeyService.getRegistrationOptions(req.userId);
   res.json(options);
 });
 
-passkeyRouter.post('/register/verify', authenticate, async (req, res) => {
+passkeyRouter.post('/register/verify', async (req, res) => {
   const { response, name } = req.body;
   const result = await passkeyService.verifyRegistration(req.userId, response, name);
   res.status(201).json(result);
 });
 
-passkeyRouter.get('/me', authenticate, async (req, res) => {
+passkeyRouter.get('/me', async (req, res) => {
   const list = await passkeyService.listPasskeys(req.userId);
   res.json({ passkeys: list });
 });
 
-passkeyRouter.put('/me/:id', authenticate, async (req, res) => {
+passkeyRouter.put('/me/:id', async (req, res) => {
   const pk = await passkeyService.renamePasskey(req.userId, req.params['id']!, req.body.name);
   res.json(pk);
 });
 
-passkeyRouter.delete('/me/:id', authenticate, async (req, res) => {
+passkeyRouter.delete('/me/:id', async (req, res) => {
   await passkeyService.removePasskey(req.userId, req.params['id']!);
   res.json({ removed: true });
 });

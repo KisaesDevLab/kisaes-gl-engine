@@ -4,7 +4,7 @@
 
 import { eq, and } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { companies, userTenantAccess, users } from '../db/schema/index.js';
+import { companies, userTenantAccess, users, accountantCompanyExclusions } from '../db/schema/index.js';
 import type { McpAuthContext } from '@kis-books/shared';
 
 // Active company session per auth context (in-memory, keyed by userId)
@@ -69,9 +69,25 @@ export async function getUserCompanies(userId: string) {
     .where(and(eq(userTenantAccess.userId, userId), eq(userTenantAccess.isActive, true)));
   for (const a of access) tenantIds.push(a.tenantId);
 
+  // Mirror middleware/company.ts: an accountant excluded from a company
+  // (accountant_company_exclusions) must not reach it through MCP either.
+  // Super-admins are never excluded.
+  const excluded = user.isSuperAdmin
+    ? new Set<string>()
+    : new Set(
+        (await db.select({ companyId: accountantCompanyExclusions.companyId })
+          .from(accountantCompanyExclusions)
+          .where(eq(accountantCompanyExclusions.userId, userId))
+        ).map((e) => e.companyId),
+      );
+
   const result = [];
   for (const tid of [...new Set(tenantIds)]) {
-    const company = await db.query.companies.findFirst({ where: eq(companies.tenantId, tid) });
+    const candidates = await db.query.companies.findMany({
+      where: eq(companies.tenantId, tid),
+      orderBy: (c, { asc }) => [asc(c.createdAt)],
+    });
+    const company = candidates.find((c) => !excluded.has(c.id));
     if (company) result.push(company);
   }
   return result;

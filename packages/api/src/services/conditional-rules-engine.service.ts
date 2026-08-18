@@ -14,6 +14,7 @@ import {
   type LeafCondition,
   type RuleEvaluationResult,
   compileSafeRegex,
+  checkRegexSafety,
   MAX_REGEX_HAYSTACK,
 } from '@kis-books/shared';
 import { AppError } from '../utils/errors.js';
@@ -81,6 +82,19 @@ function evaluateLeaf(leaf: LeafCondition, ctx: ConditionalRuleContext): boolean
   }
 }
 
+// One warning per distinct pattern per process — a stored rule that the
+// ReDoS guard now refuses is silently inert otherwise. Operators see the
+// reason in the log; the rule builder shows the same reason on save.
+const warnedPatterns = new Set<string>();
+function warnUnsafeStoredPattern(pattern: string): void {
+  if (warnedPatterns.has(pattern)) return;
+  if (warnedPatterns.size > 500) warnedPatterns.clear();
+  warnedPatterns.add(pattern);
+  const why = checkRegexSafety(pattern).reason ?? 'invalid regular expression';
+  // eslint-disable-next-line no-console
+  console.warn(`[rules] stored regex refused (rule condition treated as non-matching): ${why} — pattern=${JSON.stringify(pattern.slice(0, 120))}`);
+}
+
 function evaluateString(field: string | undefined, op: string, value: unknown): boolean {
   const haystack = (field ?? '').toLowerCase();
   const needle = String(value ?? '').toLowerCase();
@@ -93,16 +107,19 @@ function evaluateString(field: string | undefined, op: string, value: unknown): 
     case 'not_starts_with':  return !haystack.startsWith(needle);
     case 'ends_with':        return haystack.endsWith(needle);
     case 'not_ends_with':    return !haystack.endsWith(needle);
-    case 'matches_regex': {
+    case 'matches_regex':
+    case 'not_matches_regex': {
       // compileSafeRegex refuses ReDoS-prone patterns (nested quantifiers,
       // backrefs, >200 chars) and memoises; the haystack is capped so even
-      // polynomial patterns stay cheap over a batch.
-      const re = compileSafeRegex(String(value));
-      return re ? re.test((field ?? '').slice(0, MAX_REGEX_HAYSTACK)) : false;
-    }
-    case 'not_matches_regex': {
-      const re = compileSafeRegex(String(value));
-      return re ? !re.test((field ?? '').slice(0, MAX_REGEX_HAYSTACK)) : true;
+      // polynomial patterns stay cheap over a batch. A STORED pattern that
+      // fails the check (saved before the guard, or by an older build) makes
+      // the leaf non-matching for BOTH operators — a rejected regex must
+      // never turn a `not_matches_regex` rule into "fires on everything".
+      const pattern = String(value);
+      const re = compileSafeRegex(pattern);
+      if (!re) { warnUnsafeStoredPattern(pattern); return false; }
+      const hit = re.test((field ?? '').slice(0, MAX_REGEX_HAYSTACK));
+      return op === 'matches_regex' ? hit : !hit;
     }
     default:
       throw AppError.badRequest(`Unknown string operator "${op}"`);

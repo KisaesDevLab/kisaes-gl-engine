@@ -355,7 +355,7 @@ authRouter.post('/switch-tenant', authenticate, requireSessionAuth, async (req, 
   // the pre-switch session when it mints the new one. Stops a compromised
   // token under the old tenant context from staying valid post-switch.
   const prior = readRefreshCookie(req);
-  const tokens = await authService.switchTenant(req.userId, req.body.tenantId, prior);
+  const tokens = await authService.switchTenant(req.userId, req.body.tenantId, prior, req.authTime);
   setRefreshCookie(res, tokens.refreshToken);
   res.json({ tokens: { accessToken: tokens.accessToken } });
 });

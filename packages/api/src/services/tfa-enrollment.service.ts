@@ -55,15 +55,26 @@ export async function enableTfa(userId: string): Promise<string[]> {
 
   const { plaintext, hashes } = await generateRecoveryCodes();
 
+  const before = await db.query.users.findFirst({ where: eq(users.id, userId) });
+  if (!before) throw AppError.notFound('User not found');
+  // Login step-up only accepts ENROLLED methods (assertLoginTfaMethodAllowed),
+  // so "enabled with no method yet" would be a hard lockout (recovery codes
+  // only) if the user closes the page before adding one. Seed email — the
+  // method that needs no further setup — when the instance allows it; the
+  // user can still add TOTP/SMS and remove email afterwards.
+  const hadMethods = (before.tfaMethods || '').split(',').filter(Boolean).length > 0;
+  const seedEmail = !hadMethods && await tfaConfigService.isMethodAvailable('email');
+
   await db.update(users).set({
     tfaEnabled: true,
     tfaRecoveryCodesEncrypted: JSON.stringify(hashes),
     tfaRecoveryCodesRemaining: 10,
+    ...(seedEmail ? { tfaMethods: 'email' } : {}),
     updatedAt: new Date(),
   }).where(eq(users.id, userId));
 
-  const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
-  if (user) await auditLog(user.tenantId, 'create', 'tfa_enabled', userId, null, null, userId);
+  await auditLog(before.tenantId, 'create', 'tfa_enabled', userId, null, null, userId);
+  if (seedEmail) await auditLog(before.tenantId, 'create', 'tfa_method_added', userId, null, { method: 'email', seeded: true }, userId);
 
   return plaintext;
 }

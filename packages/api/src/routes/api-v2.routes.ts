@@ -27,6 +27,7 @@ import * as vendorCreditService from '../services/vendor-credit.service.js';
 import * as paymentService from '../services/payment.service.js';
 import * as checkService from '../services/check.service.js';
 import * as recurringService from '../services/recurring.service.js';
+import { createScheduleSchema as recurringCreateSchema, updateScheduleSchema as recurringUpdateSchema } from './recurring.routes.js';
 import * as budgetService from '../services/budget.service.js';
 import * as dashboardService from '../services/dashboard.service.js';
 import * as tagsService from '../services/tags.service.js';
@@ -151,7 +152,7 @@ apiV2Router.get('/tenants', async (req, res) => {
 
 apiV2Router.post('/tenants/switch', requireSessionAuth, async (req, res) => {
   const { tenantId } = switchTenantBodySchema.parse(req.body);
-  const tokens = await authService.switchTenant(req.userId, tenantId);
+  const tokens = await authService.switchTenant(req.userId, tenantId, undefined, req.authTime);
   res.json({ tokens });
 });
 
@@ -487,15 +488,18 @@ apiV2Router.get('/recurring', async (req, res) => {
   res.json({ schedules: result.data, total: result.total, limit: result.limit, offset: result.offset });
 });
 
+// Same strict allowlists as the v1 router: a raw body spread into the
+// service's `.set()` would let an API-key holder rewrite tenantId /
+// companyId / nextOccurrence / lastPostedAt / isActive.
 apiV2Router.post('/recurring', async (req, res) => {
-  const { templateTransactionId, ...schedule } = req.body;
-  if (!templateTransactionId) { res.status(400).json({ error: { message: 'templateTransactionId is required' } }); return; }
+  const { templateTransactionId, ...schedule } = recurringCreateSchema.parse(req.body);
   const sched = await recurringService.create(req.tenantId, templateTransactionId, schedule, req.userId);
   res.status(201).json({ schedule: sched });
 });
 
 apiV2Router.put('/recurring/:id', async (req, res) => {
-  const sched = await recurringService.update(req.tenantId, req.params['id']!, req.body, req.userId);
+  const patch = recurringUpdateSchema.parse(req.body);
+  const sched = await recurringService.update(req.tenantId, req.params['id']!, patch, req.userId);
   res.json({ schedule: sched });
 });
 

@@ -40,6 +40,7 @@ let sharedClient: RedisClient | null = null;
 function getClient(): RedisClient {
   if (sharedClient) return sharedClient;
   const url = process.env['REDIS_URL'] || 'redis://redis:6379';
+  breakerOpenUntil = 0; // fresh client, fresh breaker
   sharedClient = new Redis(url, {
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
@@ -55,8 +56,8 @@ function getClient(): RedisClient {
     lazyConnect: false,
   });
   sharedClient.on('error', (err: Error) => {
-    // Log once per minute-ish rather than per-call; ioredis will keep
-    // retrying in the background.
+    // One line per reconnect attempt (~every 2 s during an outage); the
+    // audit row below is what's coalesced. ioredis keeps retrying.
     console.warn('[rate-limit-redis] Redis error:', err.message);
     // Also emit a coalesced security-degradation audit row so super-
     // admins see that RATE_LIMIT_REDIS=1 is effectively fallback-in-
@@ -90,6 +91,35 @@ function getClient(): RedisClient {
  * handler. Counters silently continue in memory while degraded, exactly
  * the behaviour the appliance had before RATE_LIMIT_REDIS existed.
  */
+// Short-circuit breaker shared by every ResilientStore: after a command
+// failure, skip Redis for BREAKER_OPEN_MS and serve from memory directly.
+// Without it every limiter in a request chain pays the 2 s command timeout
+// (twice — rate-limit-redis reloads the script) while Redis is down: a
+// login (global + auth + per-account limiter) stalled ~12 s. `client.status`
+// tells us up front when the socket isn't ready, so nothing is even tried.
+const BREAKER_OPEN_MS = 30_000;
+let breakerOpenUntil = 0;
+let breakerAuditAt = 0;
+function redisUsable(client: RedisClient | null): boolean {
+  if (Date.now() < breakerOpenUntil) return false;
+  // enableReadyCheck is off, so 'connect' → 'ready' is immediate; accept both.
+  return !!client && (client.status === 'ready' || client.status === 'connect');
+}
+function tripBreaker(reason: string, err: unknown): void {
+  breakerOpenUntil = Date.now() + BREAKER_OPEN_MS;
+  // Command timeouts don't surface as ioredis 'error' events, so the
+  // degradation audit row is written from here as well (coalesced 1/min).
+  const now = Date.now();
+  if (process.env['RATE_LIMIT_REDIS_ALERT'] !== '0' && now - breakerAuditAt > 60_000) {
+    breakerAuditAt = now;
+    recordSecurityEvent({
+      component: 'rate_limit_redis',
+      reason: 'command_failed',
+      details: { op: reason, message: (err as Error)?.message ?? String(err), fallbackMs: BREAKER_OPEN_MS },
+    });
+  }
+}
+
 class ResilientStore implements Store {
   localKeys = false;
   prefix: string;
@@ -111,10 +141,11 @@ class ResilientStore implements Store {
   }
 
   private warn(op: string, err: unknown): void {
+    tripBreaker(op, err);
     const now = Date.now();
     if (now - this.lastWarnAt > 60_000) {
       this.lastWarnAt = now;
-      console.warn(`[rate-limit-redis] ${op} failed for ${this.prefix} — serving from in-memory counters:`, (err as Error)?.message ?? err);
+      console.warn(`[rate-limit-redis] ${op} failed for ${this.prefix} — serving from in-memory counters for ${BREAKER_OPEN_MS / 1000}s:`, (err as Error)?.message ?? err);
     }
   }
 
@@ -123,16 +154,21 @@ class ResilientStore implements Store {
     this.memory.init(options);
   }
   async get(key: string): Promise<ClientRateLimitInfo | undefined> {
+    if (!redisUsable(sharedClient)) return this.memory.get(key);
     try { return await this.redis.get(key); } catch (err) { this.warn('get', err); return this.memory.get(key); }
   }
   async increment(key: string): Promise<ClientRateLimitInfo> {
+    if (!redisUsable(sharedClient)) return this.memory.increment(key);
     try { return await this.redis.increment(key); } catch (err) { this.warn('increment', err); return this.memory.increment(key); }
   }
   async decrement(key: string): Promise<void> {
+    if (!redisUsable(sharedClient)) { await this.memory.decrement(key); return; }
     try { await this.redis.decrement(key); } catch (err) { this.warn('decrement', err); await this.memory.decrement(key); }
   }
   async resetKey(key: string): Promise<void> {
-    try { await this.redis.resetKey(key); } catch (err) { this.warn('resetKey', err); }
+    if (redisUsable(sharedClient)) {
+      try { await this.redis.resetKey(key); } catch (err) { this.warn('resetKey', err); }
+    }
     await this.memory.resetKey(key);
   }
   async resetAll(): Promise<void> {
@@ -160,7 +196,13 @@ export function getRateLimitStore(prefix: string): Store | undefined {
  * a test opts into Redis mode.
  */
 export async function closeRateLimitStore(): Promise<void> {
+  breakerOpenUntil = 0;
   if (!sharedClient) return;
   try { await sharedClient.quit(); } catch { /* ignore */ }
   sharedClient = null;
+}
+
+/** Test/diagnostic hook: is the shared client connected and the breaker closed? */
+export function rateLimitRedisReady(): boolean {
+  return redisUsable(sharedClient);
 }

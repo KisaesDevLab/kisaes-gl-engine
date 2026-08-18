@@ -230,9 +230,25 @@ describe('M5 — portal password login', () => {
     // contact from any master identity so the per-contact row is what
     // authenticates (the identity path keeps its own lock/unlock contract).
     await db.update(portalContacts).set({ identityId: null }).where(eq(portalContacts.id, contact!.id));
-    await db.update(portalPasswords).set({ failedLoginAttempts: 5, lockedUntil: new Date() }).where(eq(portalPasswords.contactId, contact!.id));
+    // Portal locks are TIMED (PORTAL_LOCK_MINUTES): a lock in the future
+    // refuses even the right password; an expired one is ignored and the
+    // next failure restarts the count at 1.
+    await db.update(portalPasswords).set({ failedLoginAttempts: 5, lockedUntil: new Date(Date.now() + 10 * 60_000) }).where(eq(portalPasswords.contactId, contact!.id));
     await expect(portalAuth.loginWithPassword({ tenantId, email: PORTAL, password: 'correct horse battery' })).rejects.toMatchObject({ code: 'ACCOUNT_LOCKED' });
     await db.update(portalContacts).set({ identityId: null }).where(eq(portalContacts.id, contact!.id));
+    await db.update(portalPasswords).set({ failedLoginAttempts: 5, lockedUntil: new Date(Date.now() - 60_000) }).where(eq(portalPasswords.contactId, contact!.id));
+    await expect(portalAuth.loginWithPassword({ tenantId, email: PORTAL, password: 'wrong' })).rejects.toMatchObject({ code: 'INVALID_CREDS' });
+    const pwExpired = await db.query.portalPasswords.findFirst({ where: eq(portalPasswords.contactId, contact!.id) });
+    expect(pwExpired!.failedLoginAttempts).toBe(1);
+    // Expired lock + correct password → login succeeds and clears both columns.
+    await db.update(portalContacts).set({ identityId: null }).where(eq(portalContacts.id, contact!.id));
+    expect(await portalAuth.loginWithPassword({ tenantId, email: PORTAL, password: 'correct horse battery' })).toBeTruthy();
+    const pwCleared = await db.query.portalPasswords.findFirst({ where: eq(portalPasswords.contactId, contact!.id) });
+    expect(pwCleared!.lockedUntil).toBeNull();
+    expect(pwCleared!.failedLoginAttempts).toBe(0);
+    // Re-lock, then a magic-link/staff password (re)set is the early unlock.
+    await db.update(portalContacts).set({ identityId: null }).where(eq(portalContacts.id, contact!.id));
+    await db.update(portalPasswords).set({ failedLoginAttempts: 5, lockedUntil: new Date(Date.now() + 10 * 60_000) }).where(eq(portalPasswords.contactId, contact!.id));
     await portalAuth.setPassword(contact!.id, 'correct horse battery 2');
     // setPassword re-links to the existing identity (whose password is
     // unchanged by design) — detach again to exercise the legacy row.

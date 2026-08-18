@@ -60,18 +60,21 @@ export async function assertContactMayUploadFor(
   contactId: string,
   companyId: string,
   documentRequestId?: string,
-): Promise<void> {
-  const link = await db
-    .select({ contactId: portalContactCompanies.contactId })
-    .from(portalContactCompanies)
-    .innerJoin(portalContacts, eq(portalContacts.id, portalContactCompanies.contactId))
-    .where(and(
-      eq(portalContactCompanies.contactId, contactId),
-      eq(portalContactCompanies.companyId, companyId),
-      eq(portalContacts.tenantId, tenantId),
-    ))
-    .limit(1);
-  if (link.length === 0) throw AppError.notFound('Company not found');
+): Promise<{ companyId: string }> {
+  const isLinked = async (cid: string): Promise<boolean> => {
+    const link = await db
+      .select({ contactId: portalContactCompanies.contactId })
+      .from(portalContactCompanies)
+      .innerJoin(portalContacts, eq(portalContacts.id, portalContactCompanies.contactId))
+      .where(and(
+        eq(portalContactCompanies.contactId, contactId),
+        eq(portalContactCompanies.companyId, cid),
+        eq(portalContacts.tenantId, tenantId),
+      ))
+      .limit(1);
+    return link.length > 0;
+  };
+  if (!(await isLinked(companyId))) throw AppError.notFound('Company not found');
   if (documentRequestId) {
     const dr = await db.query.documentRequests.findFirst({
       where: and(
@@ -79,10 +82,21 @@ export async function assertContactMayUploadFor(
         eq(documentRequests.id, documentRequestId),
       ),
     });
-    if (!dr || dr.contactId !== contactId || (dr.companyId && dr.companyId !== companyId)) {
+    if (!dr || dr.contactId !== contactId) {
       throw AppError.notFound('Document request not found');
     }
+    // The portal dashboard lists every pending request for the contact
+    // regardless of which company is active, but posts the ACTIVE company.
+    // A request issued for another company the contact is linked to must
+    // still be fulfillable — file it under the request's own company so it
+    // lands in the right inbox — while a request for a company the contact
+    // is NOT linked to stays a 404.
+    if (dr.companyId && dr.companyId !== companyId) {
+      if (!(await isLinked(dr.companyId))) throw AppError.notFound('Document request not found');
+      return { companyId: dr.companyId };
+    }
   }
+  return { companyId };
 }
 
 export async function uploadReceipt(input: UploadInput): Promise<{

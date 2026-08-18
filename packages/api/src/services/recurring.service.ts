@@ -48,7 +48,7 @@ export function calculateNextOccurrence(current: string, frequency: string, inte
 }
 
 export async function create(tenantId: string, templateTransactionId: string, schedule: {
-  frequency: string; intervalValue?: number; mode?: string; startDate: string; endDate?: string; name?: string;
+  frequency: string; intervalValue?: number; mode?: string; startDate: string; endDate?: string | null; name?: string | null;
 }, userId?: string) {
   const [sched] = await db.insert(recurringSchedules).values({
     tenantId,
@@ -103,7 +103,14 @@ export async function update(tenantId: string, id: string, input: {
     where: and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id)),
   });
   if (!before) throw AppError.notFound('Recurring schedule not found');
-  const patch: Record<string, unknown> = { ...input, updatedAt: new Date() };
+  // Explicit field pick — never spread the caller's object into .set(), so
+  // no route can smuggle tenantId/companyId/nextOccurrence/isActive through.
+  const patch: Record<string, unknown> = { updatedAt: new Date() };
+  if (input.frequency !== undefined) patch['frequency'] = input.frequency;
+  if (input.intervalValue !== undefined) patch['intervalValue'] = input.intervalValue;
+  if (input.mode !== undefined) patch['mode'] = input.mode;
+  if (input.startDate !== undefined) patch['startDate'] = input.startDate;
+  if (input.endDate !== undefined) patch['endDate'] = input.endDate;
   if (input.name !== undefined) patch['name'] = (typeof input.name === 'string' && input.name.trim()) || null;
   // Moving the start date before anything has posted drags nextOccurrence with
   // it (otherwise the next run would still fire on the old start date).

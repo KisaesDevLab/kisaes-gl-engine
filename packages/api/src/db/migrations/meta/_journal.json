@@ -1114,6 +1114,13 @@
       "when": 1784800000016,
       "tag": "0158_totp_last_step",
       "breakpoints": true
+    },
+    {
+      "idx": 159,
+      "version": "7",
+      "when": 1784800000017,
+      "tag": "0159_legacy_admin_role_repair",
+      "breakpoints": true
     }
   ]
 }

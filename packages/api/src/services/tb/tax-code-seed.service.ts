@@ -17,6 +17,7 @@ import { accountTaxAssignments, taxCodeSeedVersions, taxCodes } from '../../db/s
 import { AppError } from '../../utils/errors.js';
 import { auditLog } from '../../middleware/audit.js';
 import { log } from '../../utils/logger.js';
+import { escapeLike } from '../../utils/sql-like.js';
 
 export const SEED_RETURN_FORMS = ['1040', '1065', '1120', '1120S', 'common'] as const;
 export const SEED_ACTIVITY_TYPES = ['common', 'business', 'rental', 'farm', 'farm_rental'] as const;
@@ -257,7 +258,7 @@ export async function browseCodes(f: BrowseFilters) {
   if (f.activityType) conds.push(eq(taxCodes.activityType, f.activityType));
   if (f.m1Only) conds.push(eq(taxCodes.isM1Adjustment, true));
   if (f.search) {
-    const term = `%${f.search}%`;
+    const term = `%${escapeLike(f.search)}%`;
     conds.push(or(ilike(taxCodes.code, term), ilike(taxCodes.description, term))!);
   }
   const where = and(...conds);

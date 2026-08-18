@@ -469,7 +469,10 @@ export async function login(input: LoginInput): Promise<{ user: typeof users.$in
       // that can't log in anyway — keep the audit trail meaningful.
       throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDENTIALS');
     }
-    const attempts = (user.loginFailedAttempts || 0) + 1;
+    // An EXPIRED super-admin timed lock starts a fresh window: otherwise the
+    // stale count (already ≥ MAX) would re-lock on the very next typo.
+    const expiredTimedLock = !!user.loginLockedUntil && user.isSuperAdmin && new Date(user.loginLockedUntil).getTime() <= now;
+    const attempts = expiredTimedLock ? 1 : (user.loginFailedAttempts || 0) + 1;
     // When the threshold is hit, stamp the lockout: "now" as a sentinel
     // for regular users (any truthy value = locked until admin unlock),
     // or a future release time for super-admins.
@@ -503,9 +506,12 @@ export async function login(input: LoginInput): Promise<{ user: typeof users.$in
     );
   }
   if (isLocked) {
+    const remainingMin = user.isSuperAdmin && user.loginLockedUntil
+      ? Math.max(1, Math.ceil((new Date(user.loginLockedUntil).getTime() - now) / 60_000))
+      : SUPER_ADMIN_LOCK_MINUTES;
     throw AppError.forbidden(
       user.isSuperAdmin
-        ? `This account is temporarily locked after too many failed sign-in attempts. Try again in ${SUPER_ADMIN_LOCK_MINUTES} minutes.`
+        ? `This account is temporarily locked after too many failed sign-in attempts. Try again in ${remainingMin} minute${remainingMin === 1 ? '' : 's'}.`
         : 'This account is locked due to too many failed login attempts. Contact your administrator to unlock it.',
       'ACCOUNT_LOCKED',
     );
@@ -547,7 +553,13 @@ export async function login(input: LoginInput): Promise<{ user: typeof users.$in
   };
 }
 
-export async function switchTenant(userId: string, targetTenantId: string, priorRefreshToken?: string): Promise<AuthTokens> {
+export async function switchTenant(
+  userId: string,
+  targetTenantId: string,
+  priorRefreshToken?: string,
+  /** `auth_time` (unix seconds) of the JWT that authorised this call. */
+  callerAuthTime?: number,
+): Promise<AuthTokens> {
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   if (!user) throw AppError.notFound('User not found');
 
@@ -562,13 +574,25 @@ export async function switchTenant(userId: string, targetTenantId: string, prior
   }
 
   const role = access?.role || 'owner';
-  // Carry the original authentication time across the switch (falls back
-  // to "now" for API-v2 callers that don't pass a prior token).
-  let switchAuthTime: Date | null = null;
+  // Carry the original authentication time across the switch. A switch is
+  // NOT a fresh authentication, so auth_time must never reset here —
+  // otherwise a session-holder could call switch-tenant (even to the same
+  // tenant, or via /api/v2/tenants/switch which has no cookie) every <12h
+  // and sidestep JWT_ADMIN_ABSOLUTE_MAX_AGE forever. Take the OLDEST of the
+  // prior session row's auth_time and the calling JWT's auth_time claim;
+  // "now" is only for a caller that carries neither (pre-0157 chains).
+  const candidates: Date[] = [];
   if (priorRefreshToken) {
     const prior = await db.query.sessions.findFirst({ where: eq(sessions.refreshTokenHash, hashToken(priorRefreshToken)) });
-    switchAuthTime = prior?.authTime ?? prior?.createdAt ?? null;
+    const fromPrior = prior?.authTime ?? prior?.createdAt ?? null;
+    if (fromPrior) candidates.push(fromPrior);
   }
+  if (typeof callerAuthTime === 'number' && Number.isFinite(callerAuthTime) && callerAuthTime > 0) {
+    candidates.push(new Date(callerAuthTime * 1000));
+  }
+  const switchAuthTime: Date | null = candidates.length
+    ? new Date(Math.min(...candidates.map((d) => d.getTime())))
+    : null;
   const jwtPayload: JwtPayload = { userId: user.id, tenantId: targetTenantId, role, isSuperAdmin: user.isSuperAdmin || false, auth_time: authTimeClaim(switchAuthTime) };
   const accessToken = generateAccessToken(jwtPayload);
   const refreshToken = generateRefreshToken();
@@ -1034,23 +1058,30 @@ export async function updateUser(
   });
   if (!access) throw AppError.notFound('User access not found');
 
+  const target = await db.query.users.findFirst({ where: eq(users.id, userId) });
+  if (!target) throw AppError.notFound('User not found');
+
   const updates: Partial<typeof users.$inferInsert> = {};
 
-  if (input.displayName !== undefined) {
+  // The Team page echoes the current email + displayName with every edit
+  // (including role-only edits), so only a value that actually CHANGES
+  // counts as an identity edit — otherwise a role change on a non-home
+  // user (a firm accountant edited from a client tenant) would be refused
+  // by the home-tenant gate below.
+  if (input.displayName !== undefined && input.displayName !== target.displayName) {
     updates.displayName = input.displayName;
   }
 
   if (input.email !== undefined) {
     const email = normalizeEmail(input.email);
-    const clash = await db.query.users.findFirst({ where: eq(users.email, email) });
-    if (clash && clash.id !== userId) {
-      throw AppError.conflict('That email is already in use by another user');
+    if (email !== target.email) {
+      const clash = await db.query.users.findFirst({ where: eq(users.email, email) });
+      if (clash && clash.id !== userId) {
+        throw AppError.conflict('That email is already in use by another user');
+      }
+      updates.email = email;
     }
-    updates.email = email;
   }
-
-  const target = await db.query.users.findFirst({ where: eq(users.id, userId) });
-  if (!target) throw AppError.notFound('User not found');
 
   // Identity fields (email, displayName) live on the global users row and
   // are only editable from the user's HOME tenant. A user who merely has

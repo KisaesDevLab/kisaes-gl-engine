@@ -60,7 +60,9 @@ const APPLY = process.argv.includes('--apply');
 const FORCE = process.argv.includes('--i-know-the-api-is-running');
 const IDENT_RE = /^[a-z_][a-z0-9_]*$/;
 // iv (12 bytes → 16 b64 chars) : tag (16 bytes → 24 b64 chars ending "==") : ciphertext
-const CIPHERTEXT_RE = /^[A-Za-z0-9+/]{16}:[A-Za-z0-9+/]{22}==:[A-Za-z0-9+/]+={0,2}$/;
+// Ciphertext body may be empty (encrypt('') is legal) — `*`, not `+`.
+const CIPHERTEXT_RE = /^[A-Za-z0-9+/]{16}:[A-Za-z0-9+/]{22}==:[A-Za-z0-9+/]*={0,2}$/;
+const RUN_TS = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
 // Same shape, but usable as a Postgres POSIX regex prefilter inside JSON text.
 const PG_PREFILTER = '[A-Za-z0-9+/]{16}:[A-Za-z0-9+/]{22}==:[A-Za-z0-9+/]+';
 
@@ -192,6 +194,13 @@ async function main(): Promise<void> {
     if (c.verdict === 'unreadable') unreadableSamples.push(f);
     if (c.verdict === 'rotate' && APPLY) {
       const st = fs.statSync(f);
+      // Keep the OLD-key ciphertext beside the file: if the run dies after
+      // this write and is (wrongly) restarted with a different new key, the
+      // image is still recoverable from the copy. Never overwrite an
+      // existing copy (a resume must not clobber the original backup).
+      const bak = `${f}.pre-rotation-${RUN_TS}`;
+      if (!fs.existsSync(bak)) fs.copyFileSync(f, bak);
+      fs.chmodSync(bak, 0o600);
       writeAtomicSync(f, encryptBuffer(c.plaintext!), st.mode & 0o777);
     }
   }

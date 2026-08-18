@@ -28,6 +28,7 @@ import {
   getIdentityByEmail,
   isLinkingEnabled,
   linkContactToIdentity,
+  clearIdentityLock,
   verifyPassword as verifyIdentityPassword,
 } from './portal-identity.service.js';
 import { escapeHtml } from '../utils/html-escape.js';
@@ -341,6 +342,11 @@ export async function setPassword(contactId: string, password: string): Promise<
     if (contact.identityId !== existing.id) {
       await linkContactToIdentity(contactId, existing.id);
     }
+    // The caller proved control of this email (magic link / staff action),
+    // which is exactly what the identity's timed lock protects — clear the
+    // lock counters (never the hash) so a locked-out client isn't stuck
+    // waiting out the window after re-verifying their email.
+    await clearIdentityLock(existing.id);
     return;
   }
 
@@ -360,6 +366,14 @@ export async function setPassword(contactId: string, password: string): Promise<
 // contact-missing / no-password branches (same trick as auth.service).
 const PORTAL_DUMMY_HASH = '$2b$12$CwTycUXWue0Thq9StjUM0uJ8lGwkE1dKtDSpFQNshLQ4uMRGjB3sC';
 const PORTAL_MAX_LOGIN_ATTEMPTS = 5;
+// Portal locks are TIMED, not admin-unlock: unlike staff users there is no
+// staff-side "unlock portal contact" action, so a sentinel lock would let
+// anyone who knows a client's email disable that client's password login
+// permanently with five POSTs. 30 minutes matches the super-admin policy in
+// auth.service.ts; the magic-link path stays available throughout, and a
+// verified magic-link set-password clears the lock immediately.
+export const PORTAL_LOCK_MINUTES = 30;
+export const PORTAL_LOCKED_MESSAGE = `This account is temporarily locked after too many failed sign-in attempts. Try again in ${PORTAL_LOCK_MINUTES} minutes, or sign in with an email link.`;
 
 export async function loginWithPassword(args: {
   tenantId: string;
@@ -403,24 +417,33 @@ export async function loginWithPassword(args: {
       await bcrypt.compare(args.password, PORTAL_DUMMY_HASH);
       throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDS');
     }
-    // Per-contact lockout (migration 0156) — mirrors the identity path and
-    // the staff users table: MAX failures → locked until admin/staff
-    // clears it (setPassword resets both columns).
+    // Per-contact lockout (migration 0156) — mirrors the identity path:
+    // MAX failures → TIMED lock (PORTAL_LOCK_MINUTES); setPassword via a
+    // verified magic link resets both columns early.
     const ok = await bcrypt.compare(args.password, pw.bcryptHash);
-    if (pw.lockedUntil) {
+    if (pw.lockedUntil && pw.lockedUntil.getTime() > Date.now()) {
       // Locked accounts fail closed regardless of the password; the
       // legitimate owner learns why only with the correct password.
-      if (ok) throw AppError.forbidden('This account is locked after too many failed sign-in attempts. Ask your accountant to reset your portal password.', 'ACCOUNT_LOCKED');
+      if (ok) throw AppError.forbidden(PORTAL_LOCKED_MESSAGE, 'ACCOUNT_LOCKED');
       throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDS');
     }
     if (!ok) {
-      const attempts = (pw.failedLoginAttempts ?? 0) + 1;
-      await db.update(portalPasswords)
-        .set({ failedLoginAttempts: attempts, lockedUntil: attempts >= PORTAL_MAX_LOGIN_ATTEMPTS ? new Date() : null })
-        .where(eq(portalPasswords.contactId, contact.id));
+      // Atomic increment (a parallel burst must not collapse into one
+      // count); an expired lock restarts the count from 1.
+      const [bumped] = await db.update(portalPasswords)
+        .set({
+          failedLoginAttempts: sql`CASE WHEN ${portalPasswords.lockedUntil} IS NOT NULL AND ${portalPasswords.lockedUntil} <= now() THEN 1 ELSE ${portalPasswords.failedLoginAttempts} + 1 END`,
+        })
+        .where(eq(portalPasswords.contactId, contact.id))
+        .returning({ attempts: portalPasswords.failedLoginAttempts });
+      if ((bumped?.attempts ?? 0) >= PORTAL_MAX_LOGIN_ATTEMPTS) {
+        await db.update(portalPasswords)
+          .set({ lockedUntil: new Date(Date.now() + PORTAL_LOCK_MINUTES * 60_000) })
+          .where(eq(portalPasswords.contactId, contact.id));
+      }
       throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDS');
     }
-    if (pw.failedLoginAttempts > 0) {
+    if (pw.failedLoginAttempts > 0 || pw.lockedUntil) {
       await db.update(portalPasswords).set({ failedLoginAttempts: 0, lockedUntil: null }).where(eq(portalPasswords.contactId, contact.id));
     }
   }

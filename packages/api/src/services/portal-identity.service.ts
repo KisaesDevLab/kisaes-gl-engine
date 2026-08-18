@@ -25,15 +25,21 @@ import { AppError } from '../utils/errors.js';
 //     owns its own row with its own status/permissions/companies.
 //   - portal_contacts.identity_id is the nullable bridge.
 //
-// Lockout policy mirrors the staff users table
-// (auth.service.ts:267–284): after MAX_LOGIN_ATTEMPTS failures we set
-// locked_until = now() as a sentinel. Any truthy value blocks login;
-// an admin unlock (or a successful login on a separate device that
-// resets failedLoginAttempts) clears both columns. The result is that
-// brute force at firm A also throttles firm B — the documented
-// tradeoff of unifying credentials.
+// Lockout policy: after MAX_LOGIN_ATTEMPTS failures we set locked_until =
+// now() + LOCK_MINUTES (a TIMED lock — there is no staff-side "unlock
+// portal contact" action, so a permanent sentinel would let anyone who
+// knows a client's email disable their password login for good). While
+// locked, even the correct password is refused (403 ACCOUNT_LOCKED); a
+// wrong password on a locked identity is indistinguishable from any other
+// wrong password. The lock clears when it expires, on the next successful
+// login after expiry, or immediately via clearIdentityLock() when the
+// contact re-proves email ownership through a magic-link set-password.
+// Brute force at firm A also throttles firm B — the documented tradeoff of
+// unifying credentials.
 
 const MAX_LOGIN_ATTEMPTS = 5;
+export const LOCK_MINUTES = 30;
+export const IDENTITY_LOCKED_MESSAGE = `This account is temporarily locked after too many failed sign-in attempts. Try again in ${LOCK_MINUTES} minutes, or sign in with an email link.`;
 
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
@@ -135,22 +141,28 @@ export async function verifyPassword(
   // the lock isn't an existence/state oracle. Locked + wrong doesn't bump
   // the counter (already locked; keeps the audit meaningful).
   const ok = await bcrypt.compare(plaintext, row.bcryptHash);
-  if (row.lockedUntil) {
+  if (row.lockedUntil && row.lockedUntil.getTime() > Date.now()) {
     if (ok) {
-      throw AppError.forbidden(
-        'This account is locked due to too many failed login attempts. Contact your administrator to unlock it.',
-        'ACCOUNT_LOCKED',
-      );
+      throw AppError.forbidden(IDENTITY_LOCKED_MESSAGE, 'ACCOUNT_LOCKED');
     }
     return null;
   }
 
   if (!ok) {
-    const attempts = (row.failedLoginAttempts ?? 0) + 1;
-    const lockUntil = attempts >= MAX_LOGIN_ATTEMPTS ? new Date() : null;
-    await db.update(portalIdentities)
-      .set({ failedLoginAttempts: attempts, lockedUntil: lockUntil, updatedAt: new Date() })
-      .where(eq(portalIdentities.id, identityId));
+    // Atomic increment so a parallel burst can't collapse into a single
+    // count; an expired lock restarts the count from 1.
+    const [bumped] = await db.update(portalIdentities)
+      .set({
+        failedLoginAttempts: sql`CASE WHEN ${portalIdentities.lockedUntil} IS NOT NULL AND ${portalIdentities.lockedUntil} <= now() THEN 1 ELSE ${portalIdentities.failedLoginAttempts} + 1 END`,
+        updatedAt: new Date(),
+      })
+      .where(eq(portalIdentities.id, identityId))
+      .returning({ attempts: portalIdentities.failedLoginAttempts });
+    if ((bumped?.attempts ?? 0) >= MAX_LOGIN_ATTEMPTS) {
+      await db.update(portalIdentities)
+        .set({ lockedUntil: new Date(Date.now() + LOCK_MINUTES * 60_000), updatedAt: new Date() })
+        .where(eq(portalIdentities.id, identityId));
+    }
     return null;
   }
 
@@ -164,6 +176,17 @@ export async function verifyPassword(
     .where(eq(portalIdentities.id, identityId));
 
   return row as PortalIdentityRow;
+}
+
+/**
+ * Clear the identity's lockout counters (never the hash). Called when the
+ * contact has re-proved control of the email — magic-link set-password —
+ * so a timed lock doesn't strand a legitimate client.
+ */
+export async function clearIdentityLock(identityId: string): Promise<void> {
+  await db.update(portalIdentities)
+    .set({ failedLoginAttempts: 0, lockedUntil: null, updatedAt: new Date() })
+    .where(and(eq(portalIdentities.id, identityId), sql`(${portalIdentities.failedLoginAttempts} > 0 OR ${portalIdentities.lockedUntil} IS NOT NULL)`));
 }
 
 /**

@@ -81,6 +81,12 @@ describe('ResilientStore (RATE_LIMIT_REDIS=1)', () => {
     if (!reachable) return;
     const store = getRateLimitStore(`redis-test-${Date.now()}`)!;
     store.init!({ windowMs: 60_000 } as any);
+    // The store short-circuits to memory until the socket is up (and while
+    // the breaker is open after a failure) — wait for "ready" so this test
+    // really exercises the Redis path.
+    const { rateLimitRedisReady } = await import('./rate-limit-store.js');
+    for (let i = 0; i < 40 && !rateLimitRedisReady(); i++) await new Promise((r) => setTimeout(r, 50));
+    expect(rateLimitRedisReady()).toBe(true);
     const key = `k-${Date.now()}`;
     const a = await store.increment(key);
     const b = await store.increment(key);
@@ -92,5 +98,25 @@ describe('ResilientStore (RATE_LIMIT_REDIS=1)', () => {
     // rate-limit-redis reports a missing key as NaN hits (library quirk).
     const after = await store.get!(key);
     expect(after === undefined || !(after.totalHits > 0)).toBe(true);
+  }, 15_000);
+
+  it('with an UNREACHABLE redis the breaker short-circuits: increments do not wait out the command timeout', async () => {
+    process.env['RATE_LIMIT_REDIS'] = '1';
+    process.env['REDIS_URL'] = 'redis://127.0.0.1:1';
+    const { closeRateLimitStore, rateLimitRedisReady } = await import('./rate-limit-store.js');
+    await closeRateLimitStore();
+    const store = getRateLimitStore('breaker-test')!;
+    store.init!({ windowMs: 60_000 } as any);
+    expect(rateLimitRedisReady()).toBe(false); // socket never comes up
+    const key = `k-${Date.now()}`;
+    const t0 = Date.now();
+    const a = (await store.increment(key)).totalHits;
+    const b = (await store.increment(key)).totalHits;
+    const elapsed = Date.now() - t0;
+    expect(a).toBe(1);
+    expect(b).toBe(2);
+    // Two increments that each waited for the 2 s command timeout would take
+    // ≥ 4 s; the short-circuit answers from memory immediately.
+    expect(elapsed).toBeLessThan(500);
   }, 15_000);
 });

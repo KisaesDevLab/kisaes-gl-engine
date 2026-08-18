@@ -242,7 +242,8 @@ registerTool('search', 'Search transactions and contacts', { company_id: 'string
   const { db } = await import('../db/index.js');
   const { transactions, contacts } = await import('../db/schema/index.js');
   const { eq, and, ilike } = await import('drizzle-orm');
-  const q = `%${p.query}%`;
+  const { escapeLike } = await import('../utils/sql-like.js');
+  const q = `%${escapeLike(String(p.query))}%`;
   const txns = await db.select().from(transactions).where(and(eq(transactions.tenantId, tenantId), ilike(transactions.memo, q))).limit(20);
   const ctcts = await db.select().from(contacts).where(and(eq(contacts.tenantId, tenantId), ilike(contacts.displayName, q))).limit(20);
   return { transactions: txns, contacts: ctcts };

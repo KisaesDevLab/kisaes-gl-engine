@@ -45,8 +45,22 @@ const METADATA_HOSTNAMES = new Set([
 
 type IpClass =
   | 'link-local' // 169.254/16 + IPv6 fe80::/10 — cloud metadata / always unsafe
-  | 'private' //    loopback + RFC-1918 + IPv6 ULA — unsafe unless allowPrivate
+  | 'loopback' //   127/8, ::1, ::ffff:127.x — unsafe unless allowPrivate (+allowLoopback for assertHostSafe)
+  | 'reserved' //   0/8, multicast/240/4, unspecified, NAT64/6to4 embeds, un-canonicalisable mapped forms — like loopback (never opened by the env override)
+  | 'private' //    RFC-1918 + CGNAT + IPv6 ULA — unsafe unless allowPrivate or SSRF_ALLOW_PRIVATE_TARGETS
   | 'public'; //    not a recognised internal literal
+
+/**
+ * Operator escape hatch for tenant-settable destinations that are NOT
+ * `allowPrivate` by design (remote-backup WebDAV/S3, S3-compatible object
+ * storage): a self-hosted appliance frequently backs up to a NAS / MinIO on
+ * the LAN or on the operator's tailnet (100.64.0.0/10). SSRF_ALLOW_PRIVATE_TARGETS=1
+ * lets RFC-1918 / CGNAT / ULA through for those callers. Loopback and
+ * link-local (cloud metadata) stay blocked regardless.
+ */
+export function privateTargetsAllowedByEnv(): boolean {
+  return process.env['SSRF_ALLOW_PRIVATE_TARGETS'] === '1';
+}
 
 // Classify a literal hostname. Note: link-local (169.254 / fe80) is kept
 // distinct from private because it stays blocked even under allowPrivate —
@@ -56,14 +70,14 @@ export function classifyIpLiteral(host: string): IpClass {
   if (v4) {
     const [a, b] = [Number(v4[1]), Number(v4[2])];
     if (a === 169 && b === 254) return 'link-local'; // 169.254.0.0/16 (metadata)
-    if (a === 127) return 'private'; // 127.0.0.0/8 loopback
+    if (a === 127) return 'loopback'; // 127.0.0.0/8
     if (a === 10) return 'private'; // 10.0.0.0/8
-    if (a === 0) return 'private'; // 0.0.0.0/8
+    if (a === 0) return 'reserved'; // 0.0.0.0/8 (0.0.0.0 dials localhost on Linux)
     if (a === 192 && b === 168) return 'private'; // 192.168.0.0/16
     if (a === 172 && b >= 16 && b <= 31) return 'private'; // 172.16.0.0/12
     if (a === 100 && b >= 64 && b <= 127) return 'private'; // 100.64.0.0/10 CGNAT (Tailscale lives here)
-    if (a === 198 && (b === 18 || b === 19)) return 'private'; // 198.18.0.0/15 benchmarking
-    if (a >= 224) return 'private'; // 224/4 multicast + 240/4 reserved + broadcast
+    if (a === 198 && (b === 18 || b === 19)) return 'reserved'; // 198.18.0.0/15 benchmarking
+    if (a >= 224) return 'reserved'; // 224/4 multicast + 240/4 reserved + broadcast
     return 'public';
   }
   // IPv6 — only classify when there's a colon, so hostnames that happen to
@@ -78,16 +92,17 @@ export function classifyIpLiteral(host: string): IpClass {
     if (net.isIPv6(lower)) {
       try { canon = new net.SocketAddress({ address: lower, family: 'ipv6' }).address.toLowerCase(); } catch { /* keep as-is */ }
     }
-    if (canon === '::1' || canon === '::') return 'private'; // loopback / unspecified
+    if (canon === '::1') return 'loopback';
+    if (canon === '::') return 'reserved'; // unspecified
     if (canon.startsWith('fe80:')) return 'link-local';
     if (canon.startsWith('fc') || canon.startsWith('fd')) return 'private'; // ULA fc00::/7
     if (canon.startsWith('::ffff:')) {
       const tail = canon.slice('::ffff:'.length);
       if (/^\d{1,3}(\.\d{1,3}){3}$/.test(tail)) return classifyIpLiteral(tail); // IPv4-mapped (canonical dotted)
-      return 'private'; // any other mapped spelling we failed to canonicalise: fail closed
+      return 'reserved'; // any other mapped spelling we failed to canonicalise: fail closed
     }
-    if (canon.startsWith('64:ff9b:')) return 'private'; // NAT64 well-known prefix (embeds an IPv4)
-    if (canon.startsWith('2002:')) return 'private'; // 6to4 (embeds an IPv4)
+    if (canon.startsWith('64:ff9b:')) return 'reserved'; // NAT64 well-known prefix (embeds an IPv4)
+    if (canon.startsWith('2002:')) return 'reserved'; // 6to4 (embeds an IPv4)
   }
   return 'public';
 }
@@ -134,9 +149,20 @@ export function assertExternalUrlSafe(raw: string, label = 'URL', opts: UrlSafet
   if (ipClass === 'link-local') {
     throw new Error(`${label} points at a blocked IP range (link-local / cloud metadata)`);
   }
-  if (ipClass === 'private' && !opts.allowPrivate) {
-    throw new Error(`${label} points at a blocked IP range (loopback, link-local, or private)`);
+  if ((ipClass === 'loopback' || ipClass === 'reserved') && !opts.allowPrivate) {
+    throw new Error(`${label} points at a blocked IP range (loopback / reserved)`);
   }
+  if (ipClass === 'private' && !opts.allowPrivate && !privateTargetsAllowedByEnv()) {
+    throw new Error(`${label} points at a blocked IP range (private / CGNAT — set SSRF_ALLOW_PRIVATE_TARGETS=1 to allow LAN/tailnet destinations)`);
+  }
+}
+
+/** Shared verdict for connect-time guards (lookup wrapper + literal guard). */
+function isBlockedClass(cls: IpClass, opts: UrlSafetyOptions): boolean {
+  if (cls === 'link-local') return true;
+  if (cls === 'loopback' || cls === 'reserved') return !opts.allowPrivate;
+  if (cls === 'private') return !opts.allowPrivate && !privateTargetsAllowedByEnv();
+  return false;
 }
 
 /**
@@ -161,8 +187,7 @@ export function makeSafeLookup(opts: UrlSafetyOptions = {}): net.LookupFunction 
       const list = addresses as dns.LookupAddress[];
       if (!list.length) return cb(Object.assign(new Error(`No addresses found for ${hostname}`), { code: 'ENOTFOUND' }));
       for (const a of list) {
-        const cls = classifyIpLiteral(a.address);
-        if (cls === 'link-local' || (cls === 'private' && !opts.allowPrivate)) {
+        if (isBlockedClass(classifyIpLiteral(a.address), opts)) {
           return cb(Object.assign(
             new Error(`${hostname} resolves to a blocked internal address (${a.address})`),
             { code: 'EBLOCKEDHOST' },
@@ -191,8 +216,7 @@ export function makeSafeAgents(opts: UrlSafetyOptions = {}): { httpAgent: http.A
     if (!host) return;
     const bare = host.replace(/^\[|\]$/g, '');
     if (!net.isIP(bare)) return;
-    const cls = classifyIpLiteral(bare);
-    if (cls === 'link-local' || (cls === 'private' && !opts.allowPrivate)) {
+    if (isBlockedClass(classifyIpLiteral(bare), opts)) {
       throw Object.assign(new Error(`${host} is a blocked internal address`), { code: 'EBLOCKEDHOST' });
     }
   };
@@ -233,13 +257,15 @@ export async function assertHostSafe(host: string, label = 'host', opts: UrlSafe
   if (METADATA_HOSTNAMES.has(lower)) throw new Error(`${label} points at a blocked metadata hostname`);
   if (LOOPBACK_HOSTNAMES.has(lower) && !opts.allowLoopback) throw new Error(`${label} points at a blocked hostname`);
   const check = (addr: string) => {
+    // classifyIpLiteral canonicalises IPv6 spellings (::ffff:7f00:1,
+    // 0:0:0:0:0:0:0:1, …) before classifying, so 'loopback' is decided on the
+    // canonical form — never on the raw string.
     const cls = classifyIpLiteral(addr);
     if (cls === 'link-local') throw new Error(`${label} resolves to a blocked address (link-local / cloud metadata)`);
-    if (cls === 'private') {
-      const isLoopback = /^127\./.test(addr) || addr === '::1' || addr === '::ffff:127.0.0.1' || /^::ffff:127\./.test(addr);
-      if (isLoopback && !opts.allowLoopback) throw new Error(`${label} resolves to a loopback address`);
-      if (!isLoopback && !opts.allowPrivate) throw new Error(`${label} resolves to a private address`);
-    }
+    if (cls === 'loopback' && !opts.allowLoopback) throw new Error(`${label} resolves to a loopback address`);
+    // 0.0.0.0 / :: dial the local host, so reserved rides the loopback gate here.
+    if (cls === 'reserved' && !opts.allowLoopback) throw new Error(`${label} resolves to a reserved address`);
+    if (cls === 'private' && !opts.allowPrivate && !privateTargetsAllowedByEnv()) throw new Error(`${label} resolves to a private address`);
   };
   if (net.isIP(bare)) { check(bare); return; }
   const answers = await dns.promises.lookup(bare, { all: true }).catch(() => [] as dns.LookupAddress[]);

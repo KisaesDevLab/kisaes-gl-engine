@@ -111,8 +111,10 @@ export async function suggestCategorization(tenantId: string, feedItemId: string
     JOIN contacts c ON c.id = t.contact_id
     WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
       AND char_length(c.display_name) >= 3
-      AND (${cleanedDesc} LIKE '%' || LOWER(c.display_name) || '%'
-           OR ${rawDesc} LIKE '%' || LOWER(c.display_name) || '%')
+      -- Escape LIKE metacharacters in the contact name (a contact literally
+      -- named "%%%" would otherwise fuzzy-match every description).
+      AND (${cleanedDesc} LIKE '%' || replace(replace(replace(LOWER(c.display_name), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%'
+           OR ${rawDesc} LIKE '%' || replace(replace(replace(LOWER(c.display_name), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%')
     ORDER BY t.txn_date DESC LIMIT 1
   `);
 

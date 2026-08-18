@@ -8,6 +8,7 @@ import { db } from '../db/index.js';
 import { transactions, accounts, contacts, vendorCreditApplications } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
+import { escapeLike } from '../utils/sql-like.js';
 
 async function getApAccountId(tenantId: string): Promise<string> {
   const account = await db.query.accounts.findFirst({
@@ -97,7 +98,7 @@ export async function listVendorCredits(tenantId: string, filters: {
   if (filters.startDate) conditions.push(sql`${transactions.txnDate} >= ${filters.startDate}`);
   if (filters.endDate) conditions.push(sql`${transactions.txnDate} <= ${filters.endDate}`);
   if (filters.search) {
-    const term = `%${filters.search}%`;
+    const term = `%${escapeLike(filters.search)}%`;
     conditions.push(sql`(${transactions.memo} ILIKE ${term} OR ${transactions.txnNumber} ILIKE ${term} OR ${contacts.displayName} ILIKE ${term})`);
   }
 

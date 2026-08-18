@@ -11,6 +11,7 @@ import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as coaTemplatesService from './coa-templates.service.js';
 import { toCsvRow } from './export.service.js';
+import { escapeLike } from '../utils/sql-like.js';
 
 export async function list(tenantId: string, filters: AccountFilters) {
   const conditions = [eq(accounts.tenantId, tenantId)];
@@ -23,7 +24,7 @@ export async function list(tenantId: string, filters: AccountFilters) {
   }
   if (filters.search) {
     conditions.push(
-      sql`(${accounts.name} ILIKE ${'%' + filters.search + '%'} OR ${accounts.accountNumber} ILIKE ${'%' + filters.search + '%'})`,
+      sql`(${accounts.name} ILIKE ${'%' + escapeLike(filters.search) + '%'} OR ${accounts.accountNumber} ILIKE ${'%' + escapeLike(filters.search) + '%'})`,
     );
   }
 

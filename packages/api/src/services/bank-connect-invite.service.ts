@@ -669,10 +669,12 @@ export async function completeInviteRepair(token: string): Promise<{ ok: true; i
       const firmName = await firmNameFor(invite.tenantId, invite.companyId);
       const mailer = await getMailer();
       const bank = item.institutionName || 'their bank';
-      const subject = `${invite.recipientName} fixed the ${bank} connection`;
+      // Same treatment as the connect path: institutionName is Plaid metadata
+      // from the client's Link session, recipientName is staff-entered text.
+      const subject = safeSubjectSegment(`${invite.recipientName} fixed the ${bank} connection`);
       const body = `${invite.recipientName} updated their bank login for ${bank} (${firmName}).` +
         (healthy ? ' The connection is syncing again.' : ' The next scheduled sync will confirm the repair.');
-      await mailer.send(invite.createdByEmail, subject, `<p>${body}</p>`, body);
+      await mailer.send(invite.createdByEmail, subject, `<p>${escapeHtml(body)}</p>`, body);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn('[bank-connect] repair notification failed:', err instanceof Error ? err.message : err);

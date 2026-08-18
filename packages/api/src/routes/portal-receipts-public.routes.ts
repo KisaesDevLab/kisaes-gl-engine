@@ -48,11 +48,13 @@ portalReceiptsPublicRouter.post('/upload', upload.single('file'), async (req, re
   // were issued to THEM. Without this, any contact of the tenant could
   // push files into another client's inbox or mark another client's
   // standing request "submitted".
-  await svc.assertContactMayUploadFor(req.portalContact.tenantId, req.portalContact.contactId, companyId, documentRequestId);
+  // Returns the company the upload is filed under: normally the posted
+  // one, but a document request issued for another linked company wins.
+  const target = await svc.assertContactMayUploadFor(req.portalContact.tenantId, req.portalContact.contactId, companyId, documentRequestId);
 
   const result = await svc.uploadReceipt({
     tenantId: req.portalContact.tenantId,
-    companyId,
+    companyId: target.companyId,
     uploadedBy: req.portalContact.contactId,
     uploadedByType: 'contact',
     captureSource: 'portal',

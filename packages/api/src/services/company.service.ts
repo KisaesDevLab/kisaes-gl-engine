@@ -168,6 +168,18 @@ export async function updateSmtpSettings(
 ) {
   const existing = await getCompany(tenantId, companyId);
 
+  // The same host guard the "test connection" path applies (loopback,
+  // link-local / cloud-metadata refused; LAN relays allowed): otherwise a
+  // tenant could SAVE 127.0.0.1 here and have every outbound mail dial it.
+  if (input.smtpHost && input.smtpHost.trim()) {
+    const { assertHostSafe } = await import('../utils/url-safety.js');
+    try {
+      await assertHostSafe(input.smtpHost, 'SMTP host', { allowPrivate: true });
+    } catch (err) {
+      throw AppError.badRequest(err instanceof Error ? err.message : 'SMTP host is not allowed', 'SMTP_HOST_BLOCKED');
+    }
+  }
+
   // smtpPass uses 3-state sentinel: null = explicit clear, '' or
   // undefined = no change, non-empty = set. The GET endpoint scrubs the
   // password so an empty form value must never overwrite the stored one.

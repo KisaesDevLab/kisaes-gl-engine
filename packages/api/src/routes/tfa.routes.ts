@@ -3,12 +3,16 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
-import { authenticate } from '../middleware/auth.js';
+import { authenticate, requireSessionAuth } from '../middleware/auth.js';
 import * as tfaService from '../services/tfa.service.js';
 import * as tfaEnrollment from '../services/tfa-enrollment.service.js';
 
 export const tfaRouter = Router();
 tfaRouter.use(authenticate);
+// Second-factor self-service (enable/disable, add/remove methods, recovery
+// codes) is an interactive-session-only surface: an API key or download
+// token must never be able to strip or re-enrol the owner's second factor.
+tfaRouter.use(requireSessionAuth);
 
 // ─── User TFA Status ────────────────────────────────────────────
 

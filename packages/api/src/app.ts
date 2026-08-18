@@ -225,18 +225,28 @@ app.post('/api/v1/csp-report',
   cspReportLimiter,
   // express.TEXT (not json) so a malformed body can't make body-parser 400
   // — the endpoint must always 204 so it can't be turned into error noise.
-  express.text({ type: () => true, limit: '16kb' }),
+  // Body-parser's own errors (413 over 16kb, 415 unknown charset) are
+  // swallowed the same way by the tiny wrapper below.
+  (req, res, next) => {
+    express.text({ type: () => true, limit: '16kb' })(req, res, (err?: unknown) => {
+      if (err) { res.status(204).end(); return; }
+      next();
+    });
+  },
   (req, res) => {
     try {
       const parsed = JSON.parse(typeof req.body === 'string' && req.body ? req.body : '{}');
       const body = parsed as Record<string, unknown> | Array<Record<string, unknown>>;
       const reports = Array.isArray(body) ? body : [body];
+      // Unauthenticated input lands in the log: strip control characters so
+      // a report can't forge extra log lines / ANSI sequences.
+      const clean = (v: unknown, max: number) => String(v).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').slice(0, max);
       for (const r of reports.slice(0, 10)) {
         const cr = (r?.['csp-report'] ?? r?.['body'] ?? r) as Record<string, unknown>;
         const directive = cr?.['violated-directive'] ?? cr?.['effectiveDirective'] ?? cr?.['effective-directive'] ?? 'unknown';
         const blocked = cr?.['blocked-uri'] ?? cr?.['blockedURL'] ?? cr?.['blocked-url'] ?? 'unknown';
         // eslint-disable-next-line no-console
-        console.warn(`[csp-report] directive=${String(directive).slice(0, 80)} blocked=${String(blocked).slice(0, 200)}`);
+        console.warn(`[csp-report] directive=${clean(directive, 80)} blocked=${clean(blocked, 200)}`);
       }
     } catch { /* ignore malformed reports */ }
     res.status(204).end();
@@ -249,7 +259,11 @@ app.use(express.json({ limit: '10mb' }));
 // tokens all travel in the URL and must not land in stdout/log shipping.
 morgan.token('url', (req) => {
   const raw = (req as unknown as { originalUrl?: string }).originalUrl ?? req.url ?? '';
-  return raw.replace(/([?&](?:token|_dl|code|state|access_token|refresh_token|passphrase)=)[^&#]*/gi, '$1[redacted]');
+  return raw
+    // query-string credentials
+    .replace(/([?&](?:token|_dl|code|state|access_token|refresh_token|passphrase|claimToken|claim_token)=)[^&#]*/gi, '$1[redacted]')
+    // path-segment tokens: public invoice / published report / W-9 / bank-connect links
+    .replace(/^(\/api\/(?:v1\/public\/invoices|reports\/public|w9|bank-connect)\/)[^/?#]+/i, '$1[redacted]');
 });
 app.use(morgan('short'));
 
@@ -366,7 +380,18 @@ const healthHandler = async (_req: express.Request, res: express.Response) => {
     }
   })();
 
-  const [db, redis, workers] = await Promise.all([dbProbe, redisPing(), readHeartbeats()]);
+  const [db, redisRaw, workersRaw] = await Promise.all([dbProbe, redisPing(), readHeartbeats()]);
+
+  // Same code-only treatment as the DB probe: ioredis messages carry the
+  // internal host:port ("connect ECONNREFUSED 172.18.0.3:6379") and this
+  // endpoint is unauthenticated. Detail goes to the server log.
+  const redactErr = <T extends { ok: boolean; error?: string }>(name: string, c: T): T => {
+    if (!c.error) return c;
+    console.warn(`[health] ${name} check failed:`, c.error);
+    return { ...c, error: 'unavailable' };
+  };
+  const redis = redactErr('redis', redisRaw);
+  const workers = redactErr('workers', workersRaw);
 
   // Queue health rides on Redis until BullMQ wiring lands.
   const queue = { ok: redis.ok, latencyMs: redis.latencyMs, error: redis.error };
@@ -487,8 +512,8 @@ app.use('/api/v1/auth/passkeys', passkeyRouter);
 // preferredLoginMethod is a known enum used by auth-availability to decide
 // which login UI to surface; writing an arbitrary string there wouldn't
 // grant privilege but would silently disable login hints for the user.
-import { authenticate as authMw } from './middleware/auth.js';
-app.put('/api/v1/users/me/login-preference', authMw, async (req, res) => {
+import { authenticate as authMw, requireSessionAuth as sessionOnlyMw } from './middleware/auth.js';
+app.put('/api/v1/users/me/login-preference', authMw, sessionOnlyMw, async (req, res) => {
   const { eq } = await import('drizzle-orm');
   const { db } = await import('./db/index.js');
   const { users } = await import('./db/schema/index.js');
