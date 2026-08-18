@@ -8,6 +8,7 @@ import { db } from '../db/index.js';
 import { items } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import { toCsvRow } from './export.service.js';
 
 export async function list(tenantId: string, filters?: { isActive?: boolean; search?: string; limit?: number; offset?: number }) {
   const conditions = [eq(items.tenantId, tenantId)];
@@ -68,7 +69,7 @@ export async function exportToCsv(tenantId: string): Promise<string> {
   const data = await db.select().from(items).where(eq(items.tenantId, tenantId)).orderBy(items.name);
   const header = 'Name,Description,Unit Price,Income Account ID,Taxable,Active\n';
   const rows = data.map((i) =>
-    `"${i.name}","${i.description || ''}","${i.unitPrice || ''}","${i.incomeAccountId}","${i.isTaxable}","${i.isActive}"`,
+    toCsvRow([i.name, i.description || '', i.unitPrice || '', i.incomeAccountId, String(i.isTaxable), String(i.isActive)]),
   ).join('\n');
   return header + rows;
 }

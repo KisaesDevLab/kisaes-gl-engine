@@ -14,6 +14,7 @@ import { db } from '../db/index.js';
 import { conditionalRules } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as crudService from './conditional-rules.service.js';
+import { neutralizeCsvFormula } from './export.service.js';
 
 // Phase 5b §5.8 — JSON + CSV import/export.
 //
@@ -181,6 +182,7 @@ export async function importJson(
 // 4180.
 function csvEscape(cell: string): string {
   if (cell == null) return '';
+  cell = neutralizeCsvFormula(cell);
   const needsQuoting = /[",\n\r]/.test(cell);
   if (!needsQuoting) return cell;
   return `"${cell.replace(/"/g, '""')}"`;

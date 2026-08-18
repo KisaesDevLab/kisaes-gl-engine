@@ -11,7 +11,7 @@ import { sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
-import { assertExternalUrlSafe, makeSafeLookup, makeSafeAgents } from '../utils/url-safety.js';
+import { assertExternalUrlSafe, makeSafeLookup, makeSafeAgents, assertHostSafe } from '../utils/url-safety.js';
 
 
 const BACKUP_DIR = process.env['BACKUP_DIR'] || '/data/backups';
@@ -78,6 +78,7 @@ async function testSftpConnection(config: SftpConfig): Promise<{ success: boolea
   try {
     // Dynamic import — ssh2-sftp-client is an optional dependency
     const SftpClient = (await import('ssh2-sftp-client')).default;
+    await assertHostSafe(config.host, 'SFTP host', { allowPrivate: true });
     const sftp = new SftpClient();
     await sftp.connect({
       host: config.host,
@@ -250,6 +251,7 @@ async function uploadSftp(
 ): Promise<{ success: boolean; message: string; size?: number }> {
   try {
     const SftpClient = (await import('ssh2-sftp-client')).default;
+    await assertHostSafe(config.host, 'SFTP host', { allowPrivate: true });
     const sftp = new SftpClient();
     await sftp.connect({
       host: config.host,

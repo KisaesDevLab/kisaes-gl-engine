@@ -16,6 +16,7 @@ import * as healthService from '../services/tailscale/health.service.js';
 import * as auditService from '../services/tailscale/audit.service.js';
 import * as updateCheckService from '../services/tailscale/update-check.service.js';
 import type { AuditContext } from '../services/tailscale/audit.service.js';
+import { neutralizeCsvFormula } from '../services/export.service.js';
 
 export const tailscaleRouter = Router();
 
@@ -132,7 +133,7 @@ tailscaleRouter.get('/audit/export', async (req, res) => {
       e.ipAddress ?? '',
       JSON.stringify(e.details ?? {}),
     ];
-    return cells.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',');
+    return cells.map((c) => `"${neutralizeCsvFormula(String(c)).replace(/"/g, '""')}"`).join(',');
   });
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename="tailscale-audit.csv"');

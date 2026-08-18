@@ -4,12 +4,14 @@
 
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
+import { getRateLimitStore } from '../utils/rate-limit-store.js';
 import * as magicLinkService from '../services/magic-link.service.js';
 import * as tfaService from '../services/tfa.service.js';
 import * as authService from '../services/auth.service.js';
 import { setRefreshCookie } from '../utils/refresh-cookie.js';
 
 const authLimiter = rateLimit({
+  store: getRateLimitStore('magic-link:auth'),
   windowMs: 60 * 1000,
   max: 10,
   message: { error: { message: 'Too many requests, please try again later', code: 'RATE_LIMIT' } },

@@ -4,6 +4,7 @@
 
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
+import { getRateLimitStore } from '../utils/rate-limit-store.js';
 import { createPaymentIntentSchema } from '@kis-books/shared';
 import * as publicInvoiceService from '../services/public-invoice.service.js';
 import * as stripeService from '../services/stripe.service.js';
@@ -15,6 +16,7 @@ export const publicInvoiceRouter = Router();
 // surfaces, so we want to keep distributed brute-force against the 160-bit
 // invoice token well below the already-infeasible threshold.
 const publicLimiter = rateLimit({
+  store: getRateLimitStore('public-invoice:public'),
   windowMs: 60 * 1000,
   max: 10,
   standardHeaders: true,

@@ -17,7 +17,7 @@ const FORMULA_TRIGGER_RE = /^[=+\-@\t\r]/;
 // formula — it must export as a number, not get apostrophe-quoted into text.
 // Anchored, so a crafted "-1+HYPERLINK(...)" still trips FORMULA_TRIGGER_RE.
 const NEGATIVE_NUMBER_RE = /^-\d[\d,]*(\.\d+)?$/;
-function neutralizeCsvFormula(s: string): string {
+export function neutralizeCsvFormula(s: string): string {
   if (NEGATIVE_NUMBER_RE.test(s)) return s;
   return FORMULA_TRIGGER_RE.test(s) ? `'${s}` : s;
 }

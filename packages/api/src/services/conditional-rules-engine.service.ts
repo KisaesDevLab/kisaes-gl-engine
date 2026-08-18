@@ -13,6 +13,8 @@ import {
   type ConditionalRuleContext,
   type LeafCondition,
   type RuleEvaluationResult,
+  compileSafeRegex,
+  MAX_REGEX_HAYSTACK,
 } from '@kis-books/shared';
 import { AppError } from '../utils/errors.js';
 
@@ -92,20 +94,15 @@ function evaluateString(field: string | undefined, op: string, value: unknown): 
     case 'ends_with':        return haystack.endsWith(needle);
     case 'not_ends_with':    return !haystack.endsWith(needle);
     case 'matches_regex': {
-      try {
-        const re = new RegExp(String(value), 'i');
-        return re.test(field ?? '');
-      } catch {
-        return false;
-      }
+      // compileSafeRegex refuses ReDoS-prone patterns (nested quantifiers,
+      // backrefs, >200 chars) and memoises; the haystack is capped so even
+      // polynomial patterns stay cheap over a batch.
+      const re = compileSafeRegex(String(value));
+      return re ? re.test((field ?? '').slice(0, MAX_REGEX_HAYSTACK)) : false;
     }
     case 'not_matches_regex': {
-      try {
-        const re = new RegExp(String(value), 'i');
-        return !re.test(field ?? '');
-      } catch {
-        return true;
-      }
+      const re = compileSafeRegex(String(value));
+      return re ? !re.test((field ?? '').slice(0, MAX_REGEX_HAYSTACK)) : true;
     }
     default:
       throw AppError.badRequest(`Unknown string operator "${op}"`);

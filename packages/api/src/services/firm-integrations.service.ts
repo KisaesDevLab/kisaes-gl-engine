@@ -14,6 +14,22 @@ import { encrypt, decrypt } from '../utils/encryption.js';
 import { auditLog } from '../middleware/audit.js';
 import { AppError } from '../utils/errors.js';
 import type { Tax1099Credentials } from './tax1099-client.js';
+import { assertExternalUrlSafe } from '../utils/url-safety.js';
+
+/**
+ * A firm admin may point the Tax1099 client at a non-default base URL
+ * (sandbox/staging). The api fetches it server-side with the firm's
+ * credentials, so it must be a public https origin — never loopback,
+ * RFC-1918, link-local or metadata (SSRF + credential exfil otherwise).
+ */
+export function validateBaseUrlOverride(value: string | null | undefined): string | null {
+  if (value === null || value === undefined || value === '') return null;
+  let u: URL;
+  try { u = new URL(value); } catch { throw AppError.badRequest('Tax1099 base URL is not a valid URL', 'TAX1099_BASE_URL_INVALID'); }
+  if (u.protocol !== 'https:') throw AppError.badRequest('Tax1099 base URL must use https', 'TAX1099_BASE_URL_INVALID');
+  try { assertExternalUrlSafe(value, 'Tax1099 base URL'); } catch (err) { throw AppError.badRequest((err as Error).message, 'TAX1099_BASE_URL_INVALID'); }
+  return u.origin + u.pathname.replace(/\/+$/, '');
+}
 
 export const TAX1099_PROVIDER = 'tax1099';
 
@@ -79,7 +95,7 @@ export async function saveTax1099Settings(
     usernameEncrypted: resolveSecret(input.username, existing?.usernameEncrypted ?? null),
     passwordEncrypted: resolveSecret(input.password, existing?.passwordEncrypted ?? null),
     environment: input.environment ?? (existing?.environment as 'sandbox' | 'production') ?? 'sandbox',
-    baseUrlOverride: input.baseUrlOverride !== undefined ? input.baseUrlOverride : existing?.baseUrlOverride ?? null,
+    baseUrlOverride: input.baseUrlOverride !== undefined ? validateBaseUrlOverride(input.baseUrlOverride) : existing?.baseUrlOverride ?? null,
     isEnabled: input.isEnabled ?? existing?.isEnabled ?? false,
     updatedByUserId: actingUserId ?? null,
     updatedAt: new Date(),

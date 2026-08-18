@@ -4,6 +4,7 @@
 
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
+import { getRateLimitStore } from '../utils/rate-limit-store.js';
 import { AppError } from '../utils/errors.js';
 import * as reportsSvc from '../services/portal-reports.service.js';
 
@@ -20,6 +21,7 @@ export const publicReportsRouter = Router();
 // token well below the already-infeasible threshold. Matches the public
 // invoice router (10/min per IP).
 const publicLimiter = rateLimit({
+  store: getRateLimitStore('reports-public:public'),
   windowMs: 60 * 1000,
   max: 10,
   standardHeaders: true,

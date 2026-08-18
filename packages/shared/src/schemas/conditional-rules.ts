@@ -10,6 +10,7 @@ import {
   FIELD_OPERATOR_MAP,
   MAX_BRANCH_DEPTH,
 } from '../constants/conditional-rules.js';
+import { checkRegexSafety } from '../utils/safe-regex.js';
 
 // Leaf condition. The value type depends on the (field, operator)
 // pair — we accept the loosest structural shape here and refine
@@ -39,6 +40,16 @@ const leafConditionSchema = z.object({
       message: `Operator "${cond.operator}" not valid for field "${cond.field}". Expected one of: ${allowed.join(', ')}`,
       path: ['operator'],
     });
+  }
+  // User-authored regexes are evaluated over transaction batches by the
+  // rules engine; refuse catastrophic-backtracking shapes up front.
+  if (cond.operator === 'matches_regex' || cond.operator === 'not_matches_regex') {
+    const safety = checkRegexSafety(String(cond.value ?? ''));
+    if (!safety.safe) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `Unsafe or invalid regular expression: ${safety.reason}`, path: ['value'] });
+    } else {
+      try { new RegExp(String(cond.value), 'i'); } catch { ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid regular expression', path: ['value'] }); }
+    }
   }
 });
 

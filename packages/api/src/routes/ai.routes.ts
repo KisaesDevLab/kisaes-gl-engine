@@ -4,6 +4,7 @@
 
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
+import { getRateLimitStore } from '../utils/rate-limit-store.js';
 import {
   aiConfigUpdateSchema,
   aiCategorizeSchema,
@@ -45,6 +46,7 @@ export const aiRouter = Router();
 // per minute is generous for a human working through a bank feed but
 // bounds the per-user cost ceiling.
 const aiProcessingLimiter = rateLimit({
+  store: getRateLimitStore('ai:aiProcessing'),
   windowMs: 60 * 1000,
   max: 60,
   standardHeaders: true,
@@ -68,6 +70,7 @@ const aiProcessingLimiter = rateLimit({
 // Keyed on userId (not tenant) per the plan's risk callout — super
 // admin actions are global, and tenants don't apply here.
 const aiAdminTestLimiter = rateLimit({
+  store: getRateLimitStore('ai:aiAdminTest'),
   windowMs: 60 * 1000,
   max: 10,
   standardHeaders: true,

@@ -3,6 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import rateLimit from 'express-rate-limit';
+import { getRateLimitStore } from '../utils/rate-limit-store.js';
 
 // Shared per-user limiter for endpoints that do meaningful work on each call:
 // report generation hits big aggregate queries, PDF export spins up Puppeteer
@@ -15,6 +16,7 @@ import rateLimit from 'express-rate-limit';
 // reports, re-running with different filters) while keeping a hostile caller
 // bounded to something the DB and Puppeteer pool can handle without OOM.
 export const expensiveOpLimiter = rateLimit({
+  store: getRateLimitStore('expensive-op-limiter:expensiveOp'),
   windowMs: 60 * 1000,
   max: 30,
   standardHeaders: true,

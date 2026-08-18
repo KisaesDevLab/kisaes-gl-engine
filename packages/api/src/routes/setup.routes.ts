@@ -9,6 +9,7 @@ import net from 'node:net';
 import { Router } from 'express';
 import multer from 'multer';
 import rateLimit from 'express-rate-limit';
+import { getRateLimitStore } from '../utils/rate-limit-store.js';
 import * as setupService from '../services/setup.service.js';
 import { createDemoTenant } from '../services/demo-data.service.js';
 import {
@@ -67,6 +68,7 @@ function isZipFile(filePath: string): boolean {
 // network. Tight limit because legitimate wizard traffic is a handful of
 // calls from one browser.
 const setupLimiter = rateLimit({
+  store: getRateLimitStore('setup:setup'),
   windowMs: 60 * 1000,
   max: 30,
   standardHeaders: true,

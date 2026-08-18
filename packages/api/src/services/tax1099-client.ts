@@ -17,6 +17,7 @@
 // are constants — adjust here if the gated docs differ.
 
 import { AppError } from '../utils/errors.js';
+import { assertExternalUrlSafe } from '../utils/url-safety.js';
 
 export interface Tax1099Credentials {
   apiKey: string;
@@ -73,7 +74,14 @@ const PATHS = {
 const TIMEOUT_MS = 30_000;
 
 function baseUrl(creds: Tax1099Credentials): string {
-  return (creds.baseUrlOverride || DEFAULT_BASE_URLS[creds.environment]).replace(/\/+$/, '');
+  const url = (creds.baseUrlOverride || DEFAULT_BASE_URLS[creds.environment]).replace(/\/+$/, '');
+  // Re-check at use time too (the stored value could predate validation
+  // or have been written by an older build / restore bundle).
+  if (creds.baseUrlOverride) {
+    if (!/^https:\/\//i.test(url)) throw AppError.badRequest('Tax1099 base URL must use https', 'TAX1099_BASE_URL_INVALID');
+    try { assertExternalUrlSafe(url, 'Tax1099 base URL'); } catch (err) { throw AppError.badRequest((err as Error).message, 'TAX1099_BASE_URL_INVALID'); }
+  }
+  return url;
 }
 
 type JsonBody = Record<string, unknown> | null;
@@ -83,7 +91,9 @@ async function httpJson(url: string, init: RequestInit): Promise<JsonBody> {
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   let res: Response;
   try {
-    res = await fetch(url, { ...init, signal: controller.signal });
+    // No redirect following: a 3xx from a mis-set base URL must not walk
+    // the firm's Tax1099 credentials to an arbitrary (or internal) host.
+    res = await fetch(url, { ...init, signal: controller.signal, redirect: 'manual' });
   } catch (err) {
     throw AppError.badRequest(
       `Tax1099 API unreachable (${url}): ${err instanceof Error ? err.message : 'network error'}`,
@@ -92,11 +102,17 @@ async function httpJson(url: string, init: RequestInit): Promise<JsonBody> {
   } finally {
     clearTimeout(timer);
   }
+  if (res.status >= 300 && res.status < 400) {
+    throw AppError.badRequest(`Tax1099 API returned a redirect (HTTP ${res.status}) — check the base URL`, 'TAX1099_API_ERROR');
+  }
   const text = await res.text();
   let body: JsonBody = null;
-  try { body = text ? (JSON.parse(text) as JsonBody) : null; } catch { body = { raw: text?.slice(0, 500) }; }
+  try { body = text ? (JSON.parse(text) as JsonBody) : null; } catch { body = null; }
   if (!res.ok) {
-    const msg = body?.['message'] || body?.['error'] || body?.['raw'] || `HTTP ${res.status}`;
+    // Only reflect a short JSON error string; never raw response bodies
+    // (which could be an internal service's page if the URL was wrong).
+    const candidate = body?.['message'] ?? body?.['error'];
+    const msg = typeof candidate === 'string' ? candidate.slice(0, 200) : `HTTP ${res.status}`;
     throw AppError.badRequest(`Tax1099 API error: ${msg}`, 'TAX1099_API_ERROR');
   }
   return body;

@@ -4,6 +4,7 @@
 
 import { Router, type Request } from 'express';
 import rateLimit from 'express-rate-limit';
+import { getRateLimitStore } from '../utils/rate-limit-store.js';
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import { sql } from 'drizzle-orm';
@@ -92,6 +93,7 @@ function parseAdminListQuery(query: Request['query']): adminService.AdminListOpt
 // under the permissive global 200/min limit. Keyed by userId because the
 // attacker has the session, not necessarily the same IP as the legit admin.
 const stepUpLimiter = rateLimit({
+  store: getRateLimitStore('admin:stepUp'),
   windowMs: 60 * 1000,
   max: 5,
   keyGenerator: (req) => (req as any).userId || req.ip || 'anonymous',

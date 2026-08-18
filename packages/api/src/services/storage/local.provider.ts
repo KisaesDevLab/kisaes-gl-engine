@@ -16,7 +16,21 @@ export class LocalProvider implements StorageProvider {
   }
 
   private resolvePath(key: string): string {
-    return path.join(this.basePath, key);
+    // Universal traversal guard: every read/write/delete on the local
+    // provider goes through here, so a key from ANY caller (attachments,
+    // DR restore bundles, exports) is confined to basePath. Absolute keys,
+    // NUL bytes, backslashes and any `.` / `..` segment are refused, and
+    // the resolved path must stay inside the root.
+    if (typeof key !== 'string' || key.length === 0 || key.includes('\0') || key.includes('\\')) {
+      throw new Error('Invalid storage key');
+    }
+    for (const seg of key.split('/')) {
+      if (seg === '.' || seg === '..') throw new Error('Invalid storage key');
+    }
+    const root = path.resolve(this.basePath);
+    const full = path.resolve(root, key.replace(/^\/+/, ''));
+    if (full !== root && !full.startsWith(root + path.sep)) throw new Error('Invalid storage key');
+    return full;
   }
 
   private ensureDir(filePath: string): void {

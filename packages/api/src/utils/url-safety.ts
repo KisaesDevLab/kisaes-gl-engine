@@ -215,3 +215,33 @@ export function makeSafeAgents(opts: UrlSafetyOptions = {}): { httpAgent: http.A
     httpsAgent: new SafeHttpsAgent({ lookup }),
   };
 }
+
+/**
+ * Resolve a bare hostname (SMTP relay, SFTP server, …) and refuse it when
+ * any answer is link-local/metadata (always) or loopback/private (unless
+ * allowPrivate). For protocols whose client libraries expose no `lookup`
+ * hook (nodemailer SMTP, ssh2 SFTP) this is the best available check:
+ * validate immediately before connecting. LAN relays/NAS boxes are
+ * legitimate for on-prem installs, so callers typically pass
+ * allowPrivate:true and rely on this to block loopback + link-local +
+ * the cloud-metadata endpoint only.
+ */
+export async function assertHostSafe(host: string, label = 'host', opts: UrlSafetyOptions & { allowLoopback?: boolean } = {}): Promise<void> {
+  const bare = (host || '').trim().replace(/^\[|\]$/g, '');
+  if (!bare) throw new Error(`${label} is required`);
+  const lower = bare.toLowerCase();
+  if (METADATA_HOSTNAMES.has(lower)) throw new Error(`${label} points at a blocked metadata hostname`);
+  if (LOOPBACK_HOSTNAMES.has(lower) && !opts.allowLoopback) throw new Error(`${label} points at a blocked hostname`);
+  const check = (addr: string) => {
+    const cls = classifyIpLiteral(addr);
+    if (cls === 'link-local') throw new Error(`${label} resolves to a blocked address (link-local / cloud metadata)`);
+    if (cls === 'private') {
+      const isLoopback = /^127\./.test(addr) || addr === '::1' || addr === '::ffff:127.0.0.1' || /^::ffff:127\./.test(addr);
+      if (isLoopback && !opts.allowLoopback) throw new Error(`${label} resolves to a loopback address`);
+      if (!isLoopback && !opts.allowPrivate) throw new Error(`${label} resolves to a private address`);
+    }
+  };
+  if (net.isIP(bare)) { check(bare); return; }
+  const answers = await dns.promises.lookup(bare, { all: true }).catch(() => [] as dns.LookupAddress[]);
+  for (const a of answers) check(a.address);
+}

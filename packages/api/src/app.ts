@@ -314,7 +314,10 @@ const healthHandler = async (_req: express.Request, res: express.Response) => {
       return {
         ok: false,
         latencyMs: Date.now() - t0,
-        error: err instanceof Error ? err.message : String(err),
+        // Codes only: the raw driver message can echo the DB host/user
+        // or internal hostnames to an unauthenticated caller. Full detail
+        // goes to the server log.
+        error: (() => { console.warn('[health] check failed:', err instanceof Error ? err.message : String(err)); return 'unavailable'; })(),
       };
     }
   })();

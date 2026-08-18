@@ -1935,7 +1935,10 @@ export async function importFromCsv(
 export async function importFromOfx(tenantId: string, bankConnectionId: string, ofxContent: string, dateRange?: ImportDateRange) {
   await assertConnectionInTenant(tenantId, bankConnectionId);
   // Simple OFX/QFX parser — extract STMTTRN elements
-  const txnRegex = /<STMTTRN>([\s\S]*?)<\/STMTTRN>/gi;
+  // Lookahead-terminated (not `.*?</STMTTRN>`): the lazy form goes quadratic
+  // on a file with unclosed <STMTTRN> tags (measured 360 KB → 3 s, 10 MB cap
+  // → minutes of blocked event loop). Same shape as bank-statements.service.
+  const txnRegex = /<STMTTRN>([\s\S]*?)(?=<STMTTRN>|<\/STMTTRN>|<\/BANKTRANLIST>|<LEDGERBAL>|$)/gi;
   const items: Array<typeof bankFeedItems.$inferInsert> = [];
   let match;
 

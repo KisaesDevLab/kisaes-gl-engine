@@ -25,8 +25,16 @@ export const CSV_HEADER = [
   'correction_type',
 ].join(',');
 
+// Spreadsheet formula neutralisation (same rule as export.service's
+// toCsvRow — kept inline so this module stays free of DB imports for its
+// unit tests): a cell starting with = + - @ TAB CR is prefixed with an
+// apostrophe unless it is a plain negative number.
+function neutralize(value: string): string {
+  if (/^-\d[\d,]*(\.\d+)?$/.test(value)) return value;
+  return /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+}
 export function csvEscape(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
+  return `"${neutralize(value ?? '').replace(/"/g, '""')}"`;
 }
 
 export interface CsvLineArgs {

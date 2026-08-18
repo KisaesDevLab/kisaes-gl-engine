@@ -4,6 +4,7 @@
 
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
+import { getRateLimitStore } from '../utils/rate-limit-store.js';
 import { authenticate, requireSessionAuth } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
 import { auditLog } from '../middleware/audit.js';
@@ -58,6 +59,7 @@ export const apiV2Router = Router();
 
 // IP-based rate limiter (before auth — protects against brute force)
 const ipLimiter = rateLimit({
+  store: getRateLimitStore('api-v2:ip'),
   windowMs: 60 * 1000,
   max: 60,
   keyGenerator: (req) => req.ip || 'unknown',
@@ -69,6 +71,7 @@ apiV2Router.use(authenticate);
 
 // Per-user rate limiter (after auth — fair usage per account)
 const userLimiter = rateLimit({
+  store: getRateLimitStore('api-v2:user'),
   windowMs: 60 * 1000,
   max: 100,
   keyGenerator: (req) => req.userId || 'unknown',

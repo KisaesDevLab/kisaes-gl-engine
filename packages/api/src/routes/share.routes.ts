@@ -19,6 +19,7 @@ import * as shareService from '../services/share/share.service.js';
 import { db } from '../db/index.js';
 import { users } from '../db/schema/index.js';
 import { eq } from 'drizzle-orm';
+import { neutralizeCsvFormula } from '../services/export.service.js';
 
 export const shareRouter = Router();
 
@@ -232,8 +233,8 @@ async function requireTenantOwner(req: Request, _res: Response, next: NextFuncti
 }
 
 function csvEscape(v: unknown): string {
-  const s = v == null ? '' : String(v);
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  const s = neutralizeCsvFormula(v == null ? '' : String(v));
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 shareRouter.get('/admin/sessions', authenticate, requireShareEnabled, requireTenantOwner, async (req, res) => {

@@ -4,6 +4,7 @@
 
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
+import { getRateLimitStore } from '../utils/rate-limit-store.js';
 import { z } from 'zod';
 import {
   chatSendMessageSchema,
@@ -29,6 +30,7 @@ chatRouter.use(requireResource('ai_chat'));
 // the per-user cost ceiling. Keyed by userId (set by authenticate
 // middleware) so shared-IP NAT doesn't starve individual users.
 const chatMessageLimiter = rateLimit({
+  store: getRateLimitStore('chat:chatMessage'),
   windowMs: 60 * 1000,
   max: 30,
   standardHeaders: true,

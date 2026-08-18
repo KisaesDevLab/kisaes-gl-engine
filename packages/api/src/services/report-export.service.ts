@@ -26,7 +26,7 @@ export function escapeHtml(s: unknown): string {
  * "--- REVENUE ---" whose leading dashes are cosmetic, not attacks.
  */
 export function neutralizeFormula(s: string): string {
-  if (/^[=+@]/.test(s)) return `'${s}`;
+  if (/^[=+@\t\r]/.test(s)) return `'${s}`;
   // Lone '-' followed by a letter/digit (e.g. -SUM(...), -1+1) is a formula —
   // but a genuine negative number (-1, -1.50, -1,234.56) must export AS a
   // number, not text, and "---" section banners are cosmetic. So neutralize a

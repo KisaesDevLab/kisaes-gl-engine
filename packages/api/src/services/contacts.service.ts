@@ -9,6 +9,7 @@ import { contacts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
+import { toCsvRow } from './export.service.js';
 
 export async function list(tenantId: string, filters: ContactFilters) {
   const conditions = [eq(contacts.tenantId, tenantId)];
@@ -179,7 +180,7 @@ export async function exportToCsv(tenantId: string, contactType?: string): Promi
 
   const header = 'Display Name,Type,Company,First Name,Last Name,Email,Phone,Active\n';
   const rows = data.map((c) =>
-    `"${c.displayName}","${c.contactType}","${c.companyName || ''}","${c.firstName || ''}","${c.lastName || ''}","${c.email || ''}","${c.phone || ''}","${c.isActive}"`,
+    toCsvRow([c.displayName, c.contactType, c.companyName || '', c.firstName || '', c.lastName || '', c.email || '', c.phone || '', String(c.isActive)]),
   ).join('\n');
 
   return header + rows;

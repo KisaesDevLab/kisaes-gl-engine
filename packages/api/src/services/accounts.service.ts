@@ -10,6 +10,7 @@ import { accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as coaTemplatesService from './coa-templates.service.js';
+import { toCsvRow } from './export.service.js';
 
 export async function list(tenantId: string, filters: AccountFilters) {
   const conditions = [eq(accounts.tenantId, tenantId)];
@@ -354,7 +355,7 @@ export async function exportToCsv(tenantId: string): Promise<string> {
 
   const header = 'Account Number,Name,Type,Detail Type,Balance,Active,System\n';
   const rows = data.map((a) =>
-    `"${a.accountNumber || ''}","${a.name}","${a.accountType}","${a.detailType || ''}","${a.balance}","${a.isActive}","${a.isSystem}"`,
+    toCsvRow([a.accountNumber || '', a.name, a.accountType, a.detailType || '', a.balance, String(a.isActive), String(a.isSystem)]),
   ).join('\n');
 
   return header + rows;

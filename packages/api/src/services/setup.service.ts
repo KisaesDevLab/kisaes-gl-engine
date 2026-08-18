@@ -410,6 +410,12 @@ export interface SmtpConfig {
 
 export async function testSmtpConnection(config: SmtpConfig, testEmail?: string): Promise<{ success: boolean; error?: string }> {
   try {
+    // The host is tenant/operator supplied and this call opens a TCP
+    // connection from inside the appliance. LAN relays are legitimate;
+    // loopback (the api container itself), link-local and the cloud
+    // metadata endpoint never are.
+    const { assertHostSafe } = await import('../utils/url-safety.js');
+    await assertHostSafe(config.host, 'SMTP host', { allowPrivate: true });
     const transport = nodemailer.createTransport({
       host: config.host,
       port: config.port,

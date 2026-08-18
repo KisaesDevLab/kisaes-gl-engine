@@ -4,7 +4,7 @@
 
 import RedisPkg from 'ioredis';
 import { RedisStore, type SendCommandFn } from 'rate-limit-redis';
-import type { Store } from 'express-rate-limit';
+import { MemoryStore, type Store, type Options, type ClientRateLimitInfo } from 'express-rate-limit';
 import { recordSecurityEvent } from './security-audit.js';
 
 // ioredis v5 ships a CommonJS default export; TS sees it as a
@@ -43,10 +43,16 @@ function getClient(): RedisClient {
   sharedClient = new Redis(url, {
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
-    // rate-limit-redis only runs small ops; a tight command timeout
-    // keeps a wedged Redis from wedging the whole login path.
-    commandTimeout: 500,
-    lazyConnect: true,
+    // Small ops only, but the timeout also covers time spent in the
+    // offline queue while the socket is still connecting — at boot ~28
+    // limiters issue SCRIPT LOAD simultaneously before the connection is
+    // up. 500 ms + lazyConnect made those time out and (because
+    // rate-limit-redis stores the constructor's SCRIPT LOAD promise
+    // without a handler) crash the process with an unhandled rejection.
+    // Connect eagerly and allow 2 s; ResilientStore below falls back to
+    // memory on any error, so a wedged Redis still can't wedge login.
+    commandTimeout: 2000,
+    lazyConnect: false,
   });
   sharedClient.on('error', (err: Error) => {
     // Log once per minute-ish rather than per-call; ioredis will keep
@@ -75,6 +81,68 @@ function getClient(): RedisClient {
  * `prefix` is namespaced into Redis keys so multiple limiters sharing
  * the same instance don't collide (`rl:login:...`, `rl:global:...`).
  */
+/**
+ * Redis-backed store that degrades to a per-limiter MemoryStore when
+ * Redis is unreachable / times out, instead of throwing into the request
+ * path (express-rate-limit would surface that as a 500 on /login) or —
+ * worse — crashing the process at boot. Redis errors are logged at most
+ * once a minute; the security-audit row is written by getClient()'s error
+ * handler. Counters silently continue in memory while degraded, exactly
+ * the behaviour the appliance had before RATE_LIMIT_REDIS existed.
+ */
+class ResilientStore implements Store {
+  localKeys = false;
+  prefix: string;
+  private readonly redis: RedisStore;
+  private readonly memory = new MemoryStore();
+  private lastWarnAt = 0;
+
+  constructor(prefix: string, sendCommand: SendCommandFn) {
+    this.prefix = prefix;
+    this.redis = new RedisStore({ sendCommand, prefix });
+    // rate-limit-redis kicks off SCRIPT LOAD in its constructor and parks
+    // the promises on public fields with no rejection handler; if Redis
+    // is slow/down at boot that rejection is unhandled → process exit.
+    // Marking them handled here changes nothing else: the store still
+    // awaits them and re-loads on failure.
+    const r = this.redis as unknown as { incrementScriptSha?: Promise<unknown>; getScriptSha?: Promise<unknown> };
+    r.incrementScriptSha?.catch(() => { /* handled in ResilientStore */ });
+    r.getScriptSha?.catch(() => { /* handled in ResilientStore */ });
+  }
+
+  private warn(op: string, err: unknown): void {
+    const now = Date.now();
+    if (now - this.lastWarnAt > 60_000) {
+      this.lastWarnAt = now;
+      console.warn(`[rate-limit-redis] ${op} failed for ${this.prefix} — serving from in-memory counters:`, (err as Error)?.message ?? err);
+    }
+  }
+
+  init(options: Options): void {
+    this.redis.init(options);
+    this.memory.init(options);
+  }
+  async get(key: string): Promise<ClientRateLimitInfo | undefined> {
+    try { return await this.redis.get(key); } catch (err) { this.warn('get', err); return this.memory.get(key); }
+  }
+  async increment(key: string): Promise<ClientRateLimitInfo> {
+    try { return await this.redis.increment(key); } catch (err) { this.warn('increment', err); return this.memory.increment(key); }
+  }
+  async decrement(key: string): Promise<void> {
+    try { await this.redis.decrement(key); } catch (err) { this.warn('decrement', err); await this.memory.decrement(key); }
+  }
+  async resetKey(key: string): Promise<void> {
+    try { await this.redis.resetKey(key); } catch (err) { this.warn('resetKey', err); }
+    await this.memory.resetKey(key);
+  }
+  async resetAll(): Promise<void> {
+    await this.memory.resetAll();
+  }
+  shutdown(): void {
+    this.memory.shutdown();
+  }
+}
+
 export function getRateLimitStore(prefix: string): Store | undefined {
   if (process.env['RATE_LIMIT_REDIS'] !== '1') return undefined;
   const client = getClient();
@@ -84,10 +152,7 @@ export function getRateLimitStore(prefix: string): Store | undefined {
   // the boundary — rate-limit-redis's README documents the exact
   // usage pattern here.
   const callClient = client.call.bind(client) as unknown as (...a: string[]) => Promise<unknown>;
-  return new RedisStore({
-    sendCommand: callClient as unknown as SendCommandFn,
-    prefix: `rl:${prefix}:`,
-  });
+  return new ResilientStore(`rl:${prefix}:`, callClient as unknown as SendCommandFn);
 }
 
 /**
