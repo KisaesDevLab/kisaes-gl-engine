@@ -1100,6 +1100,20 @@
       "when": 1784800000014,
       "tag": "0156_portal_password_lockout",
       "breakpoints": true
+    },
+    {
+      "idx": 157,
+      "version": "7",
+      "when": 1784800000015,
+      "tag": "0157_sessions_auth_time",
+      "breakpoints": true
+    },
+    {
+      "idx": 158,
+      "version": "7",
+      "when": 1784800000016,
+      "tag": "0158_totp_last_step",
+      "breakpoints": true
     }
   ]
 }

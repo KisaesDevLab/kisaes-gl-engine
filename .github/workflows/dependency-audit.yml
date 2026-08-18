@@ -1,0 +1,39 @@
+# Copyright 2026 Kisaes LLC
+# Licensed under the PolyForm Small Business License 1.0.0.
+# Free for small businesses; see LICENSE for terms.
+#
+# Production-dependency vulnerability audit.
+#   - CRITICAL findings fail the build.
+#   - HIGH findings are reported (job summary) but do not block: the two
+#     current highs are transitive to puppeteer's browser downloader, which
+#     the images never run (PUPPETEER_SKIP_DOWNLOAD, system chromium).
+name: Dependency audit
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 6 * * 1'   # Mondays 06:17 UTC
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  npm-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install (lockfile only)
+        run: npm ci --ignore-scripts
+      - name: Report (high+, non-blocking)
+        continue-on-error: true
+        run: |
+          echo '## npm audit --omit=dev (high+)' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          npm audit --omit=dev --audit-level=high 2>&1 | tail -n 60 >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - name: Gate (critical blocks)
+        run: npm audit --omit=dev --audit-level=critical

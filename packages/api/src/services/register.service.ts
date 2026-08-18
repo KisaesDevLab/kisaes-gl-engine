@@ -7,6 +7,7 @@ import { isDebitNormal } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { accounts, journalLines, transactions, contacts, reconciliationLines, reconciliations } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { escapeLike } from '../utils/sql-like.js';
 
 interface RegisterFilters {
   startDate?: string;
@@ -130,10 +131,10 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
     sqlConditions.push(sql`t.txn_type = ${filters.txnType}`);
   }
   if (filters.payee) {
-    sqlConditions.push(sql`c.display_name ILIKE ${'%' + filters.payee + '%'}`);
+    sqlConditions.push(sql`c.display_name ILIKE ${'%' + escapeLike(filters.payee) + '%'}`);
   }
   if (filters.search) {
-    const pattern = '%' + filters.search + '%';
+    const pattern = '%' + escapeLike(filters.search) + '%';
     sqlConditions.push(sql`(c.display_name ILIKE ${pattern} OR t.memo ILIKE ${pattern} OR t.txn_number ILIKE ${pattern})`);
   }
   if (filters.minAmount !== undefined) {

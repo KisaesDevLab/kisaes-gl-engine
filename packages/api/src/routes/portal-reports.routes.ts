@@ -300,6 +300,12 @@ portalReportsRouter.post('/instances/:id/share-link', async (req, res) => {
   res.json({ url });
 });
 
+portalReportsRouter.delete('/instances/:id/share-link', async (req, res) => {
+  const params = idParamSchema.safeParse(req.params);
+  if (!params.success) throw AppError.badRequest('Invalid report id');
+  res.json(await svc.revokeReportShareToken(req.tenantId, params.data.id, req.userId));
+});
+
 // ── Comments ────────────────────────────────────────────────────
 
 const commentSchema = z.object({

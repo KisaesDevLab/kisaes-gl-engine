@@ -8,6 +8,7 @@ import { db } from '../db/index.js';
 import { tags, tagGroups, transactionTags, savedReportFilters, transactions, journalLines, items, contacts, budgets, bankRules } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import { escapeLike } from '../utils/sql-like.js';
 
 // Defense-in-depth tenant checks for transaction-tag mutations. Without
 // these, a caller who knows (or guesses) a txn/tag UUID from another
@@ -37,7 +38,7 @@ export async function list(tenantId: string, filters?: TagFilters & { limit?: nu
   const conditions = [eq(tags.tenantId, tenantId)];
   if (filters?.groupId) conditions.push(eq(tags.groupId, filters.groupId));
   if (filters?.isActive !== undefined) conditions.push(eq(tags.isActive, filters.isActive));
-  if (filters?.search) conditions.push(ilike(tags.name, `%${filters.search}%`));
+  if (filters?.search) conditions.push(ilike(tags.name, `%${escapeLike(filters.search)}%`));
   const where = and(...conditions);
 
   const limit = Math.min(Math.max(filters?.limit ?? 200, 1), 500);

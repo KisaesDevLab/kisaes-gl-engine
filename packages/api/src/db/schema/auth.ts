@@ -2,7 +2,8 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { pgTable, uuid, varchar, boolean, integer, timestamp, uniqueIndex, jsonb, text } from 'drizzle-orm/pg-core';
+import {
+  bigint, pgTable, uuid, varchar, boolean, integer, timestamp, uniqueIndex, jsonb, text } from 'drizzle-orm/pg-core';
 
 export const tenants = pgTable('tenants', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -49,6 +50,8 @@ export const users = pgTable('users', {
   tfaPhoneVerified: boolean('tfa_phone_verified').default(false),
   tfaTotpSecretEncrypted: text('tfa_totp_secret_encrypted'),
   tfaTotpVerified: boolean('tfa_totp_verified').default(false),
+  // Last accepted TOTP time-step (migration 0158) — replay guard.
+  tfaTotpLastStep: bigint('tfa_totp_last_step', { mode: 'number' }),
   tfaRecoveryCodesEncrypted: text('tfa_recovery_codes_encrypted'),
   tfaRecoveryCodesRemaining: integer('tfa_recovery_codes_remaining').default(0),
   tfaFailedAttempts: integer('tfa_failed_attempts').default(0),
@@ -88,5 +91,8 @@ export const sessions = pgTable('sessions', {
   // user's home tenant/role at refresh time.
   tenantId: uuid('tenant_id'),
   role: varchar('role', { length: 20 }),
+  // Original authentication instant for this session chain (migration
+  // 0157); carried through refresh rotation → JWT auth_time.
+  authTime: timestamp('auth_time', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });

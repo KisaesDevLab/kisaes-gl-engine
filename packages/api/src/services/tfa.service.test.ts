@@ -241,10 +241,15 @@ describe('TFA Core Service', () => {
     const code = generateSync({ secret, ...plugins });
     await tfaEnrollment.verifyTotpSetup(user.id, code);
 
-    // Now verify through the core service
-    const freshCode = generateSync({ secret, ...plugins });
+    // Now verify through the core service. The enrolment code's time-step
+    // is now consumed (replay guard), so use the NEXT step's code — a real
+    // authenticator would show it 30 s later.
+    const freshCode = generateSync({ secret, epoch: Math.floor(Date.now() / 1000) + 30, ...plugins });
     const result = await tfaService.verifyCode(user.id, freshCode, 'totp');
     expect(result.valid).toBe(true);
+    // And the same code a second time is refused.
+    const replay = await tfaService.verifyCode(user.id, freshCode, 'totp');
+    expect(replay.valid).toBe(false);
   });
 
   it('should reject invalid TOTP code', async () => {

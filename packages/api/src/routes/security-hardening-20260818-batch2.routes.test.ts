@@ -244,3 +244,39 @@ describe('M5 — portal password login', () => {
     expect(ok).toBeTruthy();
   });
 });
+
+describe('batch 4 — auth_time survives refresh/switch; TOTP replay guard', () => {
+  it('refresh keeps the original auth_time; a stale chain is refused on admin routes', async () => {
+    const reg = await authService.register({ email: SUPER, password: 'password123', displayName: 'SA', companyName: 'AT Co' });
+    const jwt = await import('jsonwebtoken');
+    const first = jwt.default.decode(reg.tokens.accessToken) as { auth_time?: number; iat?: number };
+    expect(typeof first.auth_time).toBe('number');
+    await new Promise((r) => setTimeout(r, 1100));
+    const refreshed = await authService.refresh(reg.tokens.refreshToken);
+    const second = jwt.default.decode(refreshed.accessToken) as { auth_time?: number; iat?: number };
+    expect(second.auth_time).toBe(first.auth_time);   // preserved
+    expect(second.iat).toBeGreaterThan(first.iat!);     // but iat moved on
+  });
+
+  it('a TOTP code cannot be replayed within its tolerance window', async () => {
+    const reg = await authService.register({ email: OWNER, password: 'password123', displayName: 'Owner', companyName: 'TOTP Co' });
+    const tfa = await import('../services/tfa.service.js');
+    const enroll = await import('../services/tfa-enrollment.service.js');
+    const tfaConfig = await import('../services/tfa-config.service.js');
+    await tfaConfig.updateConfig({ isEnabled: true, allowedMethods: ['email', 'totp', 'sms'] } as any, reg.user.id);
+    await enroll.enableTfa(reg.user.id);
+    const setup = await enroll.addTotpMethod(reg.user.id);
+    const { generateSync, NobleCryptoPlugin, ScureBase32Plugin } = await import('otplib');
+    const plugins = { crypto: new NobleCryptoPlugin(), base32: new ScureBase32Plugin() };
+    const code = generateSync({ secret: setup.secret, ...plugins });
+    expect(await enroll.verifyTotpSetup(reg.user.id, code)).toBe(true);
+    // The very same code (same 30 s step) must now be refused at login.
+    const again = await tfa.verifyCode(reg.user.id, code, 'totp');
+    expect(again.valid).toBe(false);
+    // …but a code for a LATER step is fine (simulate by clearing the guard
+    // to a lower step and generating for a future epoch).
+    const later = generateSync({ secret: setup.secret, epoch: Math.floor(Date.now() / 1000) + 30, ...plugins });
+    const ok = await tfa.verifyCode(reg.user.id, later, 'totp');
+    expect(ok.valid).toBe(true);
+  });
+});

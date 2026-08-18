@@ -27,6 +27,11 @@ const envSchema = z.object({
   // are automatically refreshed via the refresh cookie; this is an
   // additional, tighter bound that applies only to the admin scope.
   JWT_ADMIN_MAX_AGE: z.string().default('30m'),
+  // Absolute cap on how long after the ORIGINAL sign-in a session may keep
+  // using super-admin surfaces, regardless of refreshes. JWT_ADMIN_MAX_AGE
+  // bounds a single access token's age (an idle-ish check); this bounds
+  // the whole chain (JWT auth_time carried through refresh/switch).
+  JWT_ADMIN_ABSOLUTE_MAX_AGE: z.string().default('12h'),
   ENCRYPTION_KEY: z.string().min(32, 'ENCRYPTION_KEY must be at least 32 hex characters (16 bytes) — the setup wizard generates a 64-char hex value by default'),
   // PLAID_ENCRYPTION_KEY is used by utils/encryption.ts to wrap Plaid,
   // Stripe, OAuth refresh tokens, TFA secrets, and any other data we

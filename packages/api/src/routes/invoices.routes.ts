@@ -12,6 +12,7 @@ import * as invoiceService from '../services/invoice.service.js';
 import * as ledger from '../services/ledger.service.js';
 import * as pdfService from '../services/pdf.service.js';
 import * as emailService from '../services/email.service.js';
+import { auditLog } from '../middleware/audit.js';
 
 export const invoicesRouter = Router();
 invoicesRouter.use(authenticate);
@@ -83,6 +84,19 @@ invoicesRouter.post('/:id/share-link', async (req, res) => {
   const { baseUrlFor } = await import('../utils/base-url.js');
   const link = await invoiceService.generateShareLink(req.tenantId, req.params['id']!, req.userId, baseUrlFor(req));
   res.json({ link });
+});
+
+// Kill an issued public link (see revokePublicToken). Owners/accountants
+// only — same gate as minting.
+invoicesRouter.delete('/:id/share-link', async (req, res) => {
+  if (req.userRole === 'readonly') {
+    res.status(403).json({ error: { message: 'Readonly users cannot manage share links' } });
+    return;
+  }
+  const publicInvoice = await import('../services/public-invoice.service.js');
+  const result = await publicInvoice.revokePublicToken(req.tenantId, req.params['id']!);
+  await auditLog(req.tenantId, 'update', 'invoice', req.params['id']!, null, { action: 'share_link_revoked' }, req.userId);
+  res.json(result);
 });
 
 invoicesRouter.post('/:id/duplicate', async (req, res) => {

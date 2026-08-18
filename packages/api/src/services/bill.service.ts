@@ -10,6 +10,7 @@ import { db, type DbOrTx } from '../db/index.js';
 import { transactions, accounts, contacts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
+import { escapeLike } from '../utils/sql-like.js';
 
 const TERM_DAYS: Record<string, number> = {
   due_on_receipt: 0,
@@ -317,7 +318,7 @@ export async function listBills(tenantId: string, filters: BillFilters, companyI
     conditions.push(sql`${transactions.billStatus} IN ('unpaid', 'partial', 'overdue')`);
   }
   if (filters.search) {
-    const term = `%${filters.search}%`;
+    const term = `%${escapeLike(filters.search)}%`;
     conditions.push(sql`(${transactions.memo} ILIKE ${term} OR ${transactions.txnNumber} ILIKE ${term} OR ${transactions.vendorInvoiceNumber} ILIKE ${term} OR ${contacts.displayName} ILIKE ${term})`);
   }
 

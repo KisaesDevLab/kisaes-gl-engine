@@ -180,6 +180,19 @@ export async function verifyCode(userId: string, code: string, method: string): 
       try { secret = decrypt(user.tfaTotpSecretEncrypted); } catch { secret = user.tfaTotpSecretEncrypted; }
       const result = verifySync({ token: code, secret, epochTolerance: 30, ...plugins });
       isValid = result.valid;
+      // Replay guard: a code is single-use. The verifier tells us which
+      // 30-second step matched; refuse anything at or before the last
+      // accepted step (RFC 6238 §5.2) and remember the new high-water mark.
+      if (isValid) {
+        const step = (result as { timeStep?: number }).timeStep;
+        if (typeof step === 'number') {
+          if (user.tfaTotpLastStep != null && step <= user.tfaTotpLastStep) {
+            isValid = false;
+          } else {
+            await db.update(users).set({ tfaTotpLastStep: step }).where(eq(users.id, userId));
+          }
+        }
+      }
     } catch {
       isValid = false;
     }

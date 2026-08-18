@@ -14,6 +14,7 @@ import { env } from '../config/env.js';
 import { deriveHeaderTags } from './tags/derive-header-tags.js';
 import { getLockContext } from './lock-context.js';
 import { resolveDefaultTag } from './tags/resolve-default-tag.js';
+import { escapeLike } from '../utils/sql-like.js';
 
 // ADR 0XY §3.2 — belt-and-suspenders default-tag resolution at the
 // ledger write path. When the split-level tags flag is on we batch-load
@@ -907,12 +908,12 @@ export async function listTransactions(tenantId: string, filters: {
     conditions.push(sql`EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = ${transactions.id} AND jl.tenant_id = ${tenantId} AND jl.tag_id = ${filters.tagId})`);
   }
   if (filters.search) {
-    const term = '%' + filters.search + '%';
+    const term = '%' + escapeLike(filters.search) + '%';
     // Amount match: compare against the DISPLAYED amount (total, or the
     // journal-line magnitude for NULL-total JEs/transfers) as text, and strip
     // '$', commas and spaces from the typed term so "$1,051.07" matches
     // "1051.07".
-    const amountTerm = '%' + filters.search.replace(/[$,\s]/g, '') + '%';
+    const amountTerm = '%' + escapeLike(filters.search.replace(/[$,\s]/g, '')) + '%';
     conditions.push(sql`(${transactions.memo} ILIKE ${term}
       OR ${transactions.txnNumber} ILIKE ${term}
       OR ${contacts.displayName} ILIKE ${term}

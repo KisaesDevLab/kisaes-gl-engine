@@ -56,6 +56,11 @@ export interface JwtPayload {
   role: string;
   isSuperAdmin?: boolean;
   impersonating?: string; // original admin userId when impersonating
+  /** Unix seconds of the ORIGINAL authentication (password/passkey/magic
+   *  link/TFA completion). Preserved through refresh + tenant switch so
+   *  privileged surfaces can bound the absolute session age — `iat` alone
+   *  resets on every 15-minute refresh. */
+  auth_time?: number;
 }
 
 export interface ForgotPasswordInput {

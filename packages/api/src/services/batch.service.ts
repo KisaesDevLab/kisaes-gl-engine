@@ -14,6 +14,7 @@ import * as creditMemoService from './credit-memo.service.js';
 import * as journalEntryService from './journal-entry.service.js';
 import * as ledger from './ledger.service.js';
 import * as billService from './bill.service.js';
+import { escapeLike } from '../utils/sql-like.js';
 
 // ─── Fuzzy Matching ──────────────────────────────────────────────
 
@@ -28,13 +29,13 @@ export async function resolveContactByName(tenantId: string, name: string, conta
 
   // Case-insensitive
   const ciRows = await db.select().from(contacts)
-    .where(and(eq(contacts.tenantId, tenantId), ilike(contacts.displayName, name.trim())))
+    .where(and(eq(contacts.tenantId, tenantId), ilike(contacts.displayName, escapeLike(name.trim()))))
     .limit(1);
   if (ciRows.length > 0) return { match: ciRows[0]!, suggestions: [], isExact: false };
 
   // Fuzzy — search for partial matches
   const fuzzyRows = await db.select().from(contacts)
-    .where(and(eq(contacts.tenantId, tenantId), ilike(contacts.displayName, `%${name.trim()}%`)))
+    .where(and(eq(contacts.tenantId, tenantId), ilike(contacts.displayName, `%${escapeLike(name.trim())}%`)))
     .limit(3);
 
   return { match: null, suggestions: fuzzyRows, isExact: false };
@@ -57,13 +58,13 @@ export async function resolveAccountByName(tenantId: string, name: string) {
 
   // Case-insensitive
   const ciRows = await db.select().from(accounts)
-    .where(and(eq(accounts.tenantId, tenantId), ilike(accounts.name, name.trim())))
+    .where(and(eq(accounts.tenantId, tenantId), ilike(accounts.name, escapeLike(name.trim()))))
     .limit(1);
   if (ciRows.length > 0) return { match: ciRows[0]!, suggestions: [], isExact: false };
 
   // Fuzzy
   const fuzzyRows = await db.select().from(accounts)
-    .where(and(eq(accounts.tenantId, tenantId), ilike(accounts.name, `%${name.trim()}%`)))
+    .where(and(eq(accounts.tenantId, tenantId), ilike(accounts.name, `%${escapeLike(name.trim())}%`)))
     .limit(3);
 
   return { match: null, suggestions: fuzzyRows, isExact: false };

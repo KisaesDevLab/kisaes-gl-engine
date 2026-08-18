@@ -84,16 +84,22 @@ function hashToken(token: string): string {
  * in one place.
  */
 export async function issueSession(payload: JwtPayload): Promise<AuthTokens> {
-  const accessToken = generateAccessToken(payload);
+  const authTime = payload.auth_time ? new Date(payload.auth_time * 1000) : new Date();
+  const accessToken = generateAccessToken({ ...payload, auth_time: Math.floor(authTime.getTime() / 1000) });
   const refreshToken = generateRefreshToken();
-  await createSession(payload.userId, refreshToken, { tenantId: payload.tenantId, role: payload.role });
+  await createSession(payload.userId, refreshToken, { tenantId: payload.tenantId, role: payload.role, authTime });
   return { accessToken, refreshToken };
+}
+
+/** Unix-seconds auth_time for a JWT, defaulting to "now" for a fresh login. */
+function authTimeClaim(authTime?: Date | null): number {
+  return Math.floor((authTime ?? new Date()).getTime() / 1000);
 }
 
 async function createSession(
   userId: string,
   refreshToken: string,
-  context?: { tenantId?: string | null; role?: string | null },
+  context?: { tenantId?: string | null; role?: string | null; authTime?: Date | null },
 ): Promise<void> {
   // 7 days from now, computed as an exact 7-day offset rather than via
   // `setDate(getDate() + 7)` which is TZ-sensitive during DST transitions.
@@ -109,6 +115,7 @@ async function createSession(
     // token against the same context instead of the user's home tenant.
     tenantId: context?.tenantId ?? null,
     role: context?.role ?? null,
+    authTime: context?.authTime ?? new Date(),
   });
 
   // Running the trim AFTER the insert keeps the new session the most-
@@ -376,10 +383,11 @@ export async function register(input: RegisterInput): Promise<{ user: typeof use
   }
 
   // Generate tokens
-  const jwtPayload: JwtPayload = { userId: user.id, tenantId: tenant.id, role: user.role, isSuperAdmin: user.isSuperAdmin || false };
+  const regAuthTime = new Date();
+  const jwtPayload: JwtPayload = { userId: user.id, tenantId: tenant.id, role: user.role, isSuperAdmin: user.isSuperAdmin || false, auth_time: authTimeClaim(regAuthTime) };
   const accessToken = generateAccessToken(jwtPayload);
   const refreshToken = generateRefreshToken();
-  await createSession(user.id, refreshToken, { tenantId: tenant.id, role: user.role });
+  await createSession(user.id, refreshToken, { tenantId: tenant.id, role: user.role, authTime: regAuthTime });
 
   await auditLog(tenant.id, 'create', 'user', user.id, null, { email: user.email }, user.id);
 
@@ -524,10 +532,11 @@ export async function login(input: LoginInput): Promise<{ user: typeof users.$in
   const tenantId = activeTenant?.tenantId || user.tenantId;
   const role = activeTenant?.role || user.role;
 
-  const jwtPayload: JwtPayload = { userId: user.id, tenantId, role, isSuperAdmin: user.isSuperAdmin || false };
+  const authTime = new Date();
+  const jwtPayload: JwtPayload = { userId: user.id, tenantId, role, isSuperAdmin: user.isSuperAdmin || false, auth_time: authTimeClaim(authTime) };
   const accessToken = generateAccessToken(jwtPayload);
   const refreshToken = generateRefreshToken();
-  await createSession(user.id, refreshToken, { tenantId, role });
+  await createSession(user.id, refreshToken, { tenantId, role, authTime });
 
   await auditLog(tenantId, 'login', 'user', user.id, null, null, user.id);
 
@@ -553,7 +562,14 @@ export async function switchTenant(userId: string, targetTenantId: string, prior
   }
 
   const role = access?.role || 'owner';
-  const jwtPayload: JwtPayload = { userId: user.id, tenantId: targetTenantId, role, isSuperAdmin: user.isSuperAdmin || false };
+  // Carry the original authentication time across the switch (falls back
+  // to "now" for API-v2 callers that don't pass a prior token).
+  let switchAuthTime: Date | null = null;
+  if (priorRefreshToken) {
+    const prior = await db.query.sessions.findFirst({ where: eq(sessions.refreshTokenHash, hashToken(priorRefreshToken)) });
+    switchAuthTime = prior?.authTime ?? prior?.createdAt ?? null;
+  }
+  const jwtPayload: JwtPayload = { userId: user.id, tenantId: targetTenantId, role, isSuperAdmin: user.isSuperAdmin || false, auth_time: authTimeClaim(switchAuthTime) };
   const accessToken = generateAccessToken(jwtPayload);
   const refreshToken = generateRefreshToken();
 
@@ -575,6 +591,7 @@ export async function switchTenant(userId: string, targetTenantId: string, prior
       // refresh preserves the switch instead of reverting to the home tenant.
       tenantId: targetTenantId,
       role,
+      authTime: switchAuthTime ?? new Date(),
     });
     // Mark this tenant as most-recently-accessed for the switcher's "recent"
     // ordering. No-ops for a super-admin with no explicit access row.
@@ -683,10 +700,13 @@ export async function refresh(refreshToken: string): Promise<AuthTokens> {
     }
   }
 
-  const jwtPayload: JwtPayload = { userId: user.id, tenantId: effectiveTenantId, role: effectiveRole, isSuperAdmin: user.isSuperAdmin || false };
+  // Preserve the chain's original authentication time (pre-0157 rows fall
+  // back to the row's createdAt) so auth_time never resets on refresh.
+  const chainAuthTime = session.authTime ?? session.createdAt ?? new Date();
+  const jwtPayload: JwtPayload = { userId: user.id, tenantId: effectiveTenantId, role: effectiveRole, isSuperAdmin: user.isSuperAdmin || false, auth_time: authTimeClaim(chainAuthTime) };
   const newAccessToken = generateAccessToken(jwtPayload);
   const newRefreshToken = generateRefreshToken();
-  await createSession(user.id, newRefreshToken, { tenantId: effectiveTenantId, role: effectiveRole });
+  await createSession(user.id, newRefreshToken, { tenantId: effectiveTenantId, role: effectiveRole, authTime: chainAuthTime });
 
   return { accessToken: newAccessToken, refreshToken: newRefreshToken };
 }

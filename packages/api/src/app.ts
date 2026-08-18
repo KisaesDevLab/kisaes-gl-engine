@@ -207,6 +207,13 @@ import { smsInboundRouter } from './routes/sms-inbound.routes.js';
 app.use('/api/sms/inbound', smsInboundRouter);
 
 app.use(express.json({ limit: '10mb' }));
+// Access log with bearer-ish query parameters redacted: magic-link
+// verify (?token=), download tokens (?_dl=), portal/W-9/bank-connect
+// tokens all travel in the URL and must not land in stdout/log shipping.
+morgan.token('url', (req) => {
+  const raw = (req as unknown as { originalUrl?: string }).originalUrl ?? req.url ?? '';
+  return raw.replace(/([?&](?:token|_dl|code|state|access_token|refresh_token|passphrase)=)[^&#]*/gi, '$1[redacted]');
+});
 app.use(morgan('short'));
 
 // Optional staff-route IP allowlist (CLOUDFLARE_TUNNEL_PLAN Phase 6).

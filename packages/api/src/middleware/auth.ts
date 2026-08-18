@@ -28,6 +28,9 @@ declare global {
       /** JWT `iat` claim in seconds. Set by authenticate() — used by
        *  requireSuperAdmin to enforce the admin idle-timeout bound. */
       tokenIssuedAt?: number;
+      /** JWT `auth_time` claim in seconds — when the session chain was
+       *  originally authenticated (survives refresh/switch). */
+      authTime?: number;
       /** How this request authenticated. 'session' = Bearer JWT (default);
        *  'api_key' = x-api-key; 'download_token' = ?_dl= single-use token.
        *  Routes that mint sessions (switch-tenant) or credentials must
@@ -139,6 +142,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     req.isSuperAdmin = !!user.isSuperAdmin;
     req.impersonating = payload.impersonating;
     req.tokenIssuedAt = typeof payload.iat === 'number' ? payload.iat : undefined;
+    req.authTime = typeof payload.auth_time === 'number' ? payload.auth_time : undefined;
     req.authKind = 'session';
     next();
   } catch (err) {
@@ -168,6 +172,19 @@ export function requireSuperAdmin(req: Request, _res: Response, next: NextFuncti
     if (ageSec > maxAgeSec) {
       throw AppError.unauthorized(
         `Admin session idle timeout exceeded (${Math.floor(maxAgeSec / 60)} minutes). Please sign in again.`,
+        'ADMIN_SESSION_EXPIRED',
+      );
+    }
+  }
+  // Absolute bound: the SPA refreshes tokens on a timer, so a fresh `iat`
+  // every 15 minutes is not evidence of a human at the keyboard. auth_time
+  // is the original sign-in and survives refresh + tenant switch.
+  if (req.authTime) {
+    const absMaxSec = parseExpiryToSeconds(env.JWT_ADMIN_ABSOLUTE_MAX_AGE);
+    const sinceAuthSec = Math.floor(Date.now() / 1000) - req.authTime;
+    if (sinceAuthSec > absMaxSec) {
+      throw AppError.unauthorized(
+        `Admin sessions must be re-authenticated every ${Math.floor(absMaxSec / 3600)} hours. Please sign in again.`,
         'ADMIN_SESSION_EXPIRED',
       );
     }

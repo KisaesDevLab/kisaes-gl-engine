@@ -10,6 +10,7 @@ import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
 import { toCsvRow } from './export.service.js';
+import { escapeLike } from '../utils/sql-like.js';
 
 export async function list(tenantId: string, filters: ContactFilters) {
   const conditions = [eq(contacts.tenantId, tenantId)];
@@ -29,7 +30,7 @@ export async function list(tenantId: string, filters: ContactFilters) {
   }
   if (filters.search) {
     conditions.push(
-      sql`(${contacts.displayName} ILIKE ${'%' + filters.search + '%'} OR ${contacts.email} ILIKE ${'%' + filters.search + '%'} OR ${contacts.companyName} ILIKE ${'%' + filters.search + '%'})`,
+      sql`(${contacts.displayName} ILIKE ${'%' + escapeLike(filters.search) + '%'} OR ${contacts.email} ILIKE ${'%' + escapeLike(filters.search) + '%'} OR ${contacts.companyName} ILIKE ${'%' + escapeLike(filters.search) + '%'})`,
     );
   }
 

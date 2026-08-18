@@ -181,6 +181,9 @@ export async function verifyTotpSetup(userId: string, code: string): Promise<boo
   await db.update(users).set({
     tfaTotpVerified: true,
     tfaMethods: addMethod(user.tfaMethods || '', 'totp'),
+    // Record the accepted step so the enrolment code can't be replayed at
+    // the login step-up a moment later (tfa.service replay guard).
+    tfaTotpLastStep: (result as { timeStep?: number }).timeStep ?? null,
     updatedAt: new Date(),
   }).where(eq(users.id, userId));
 

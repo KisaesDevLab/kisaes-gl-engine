@@ -17,6 +17,7 @@ import { cleanNameViaRules } from './bank-rules.service.js';
 import { updateLearning } from './categorization-ai.service.js';
 import { assertTagsInTenant } from './tags.service.js';
 import type { StatementCheckImage } from './ai-statement-parser.service.js';
+import { escapeLike } from '../utils/sql-like.js';
 
 /**
  * Verify a client-supplied `bankConnectionId` belongs to the caller's
@@ -60,7 +61,7 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
   const assignedContact = alias(contacts, 'assigned_contact');
 
   if ((filters as any).search) {
-    const term = '%' + (filters as any).search + '%';
+    const term = '%' + escapeLike(String((filters as any).search)) + '%';
     // Search the same NAME the feed's column shows (assigned/suggested contact)
     // and the AMOUNT (as text, so "12.50" matches "12.5000"), in addition to
     // the bank descriptor, category and raw memo. The contact aliases must

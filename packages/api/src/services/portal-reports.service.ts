@@ -1385,6 +1385,16 @@ export interface PublicReportPayload {
 // Idempotent mint. Requires the instance to be PUBLISHED — you only
 // share the client-facing record, not drafts. Tenant-scoped: getInstance
 // 404s for another tenant's id.
+/** Revoke a published report's share link (idempotent, tenant-scoped, audited). */
+export async function revokeReportShareToken(tenantId: string, instanceId: string, bookkeeperUserId?: string): Promise<{ revoked: boolean }> {
+  const inst = await getInstance(tenantId, instanceId);
+  if (!inst.shareToken) return { revoked: false };
+  await db.update(reportInstances).set({ shareToken: null })
+    .where(and(eq(reportInstances.tenantId, tenantId), eq(reportInstances.id, instanceId)));
+  await auditLog(tenantId, 'update', 'report_instance', instanceId, null, { action: 'share_link_revoked' }, bookkeeperUserId);
+  return { revoked: true };
+}
+
 export async function generateReportShareToken(
   tenantId: string,
   instanceId: string,

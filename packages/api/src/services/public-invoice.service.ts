@@ -96,6 +96,20 @@ export async function generatePublicToken(tenantId: string, invoiceId: string): 
   return token;
 }
 
+/**
+ * Revoke an invoice's public link. The token is a bearer credential with no
+ * expiry (customers may pay weeks later), so revocation is the control: a
+ * link that leaked (forwarded email, chat paste) can be killed and a fresh
+ * one minted via generatePublicToken. Idempotent.
+ */
+export async function revokePublicToken(tenantId: string, invoiceId: string): Promise<{ revoked: boolean }> {
+  const [row] = await db.update(transactions)
+    .set({ publicToken: null, updatedAt: new Date() })
+    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, invoiceId), eq(transactions.txnType, 'invoice')))
+    .returning({ id: transactions.id });
+  return { revoked: !!row };
+}
+
 // ── Get Invoice by Public Token ──
 
 export async function getInvoiceByToken(token: string): Promise<PublicInvoiceData> {

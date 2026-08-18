@@ -9,11 +9,12 @@ import { items } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { toCsvRow } from './export.service.js';
+import { escapeLike } from '../utils/sql-like.js';
 
 export async function list(tenantId: string, filters?: { isActive?: boolean; search?: string; limit?: number; offset?: number }) {
   const conditions = [eq(items.tenantId, tenantId)];
   if (filters?.isActive !== undefined) conditions.push(eq(items.isActive, filters.isActive));
-  if (filters?.search) conditions.push(ilike(items.name, `%${filters.search}%`));
+  if (filters?.search) conditions.push(ilike(items.name, `%${escapeLike(filters.search)}%`));
 
   const where = and(...conditions);
   const [data, total] = await Promise.all([

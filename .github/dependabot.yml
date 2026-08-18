@@ -1,0 +1,32 @@
+# Copyright 2026 Kisaes LLC
+# Licensed under the PolyForm Small Business License 1.0.0.
+# Free for small businesses; see LICENSE for terms.
+#
+# Weekly dependency PRs. Security updates open immediately regardless of
+# the schedule. Grouped so a week's minor/patch bumps arrive as one PR per
+# ecosystem instead of dozens.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # Majors are reviewed by hand (puppeteer 25 changes the browser
+      # download/launch contract; react-router 7 is a routing rewrite).
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: docker
+    directory: "/packages/api"
+    schedule: { interval: weekly, day: monday }
+  - package-ecosystem: docker
+    directory: "/packages/web"
+    schedule: { interval: weekly, day: monday }
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: { interval: weekly, day: monday }
