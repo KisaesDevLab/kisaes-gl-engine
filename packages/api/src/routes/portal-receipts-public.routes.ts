@@ -43,6 +43,13 @@ portalReceiptsPublicRouter.post('/upload', upload.single('file'), async (req, re
     throw AppError.badRequest('documentRequestId must be a UUID');
   }
 
+  // The contact may only file receipts into companies they are linked to
+  // (portal_contact_companies) and only fulfil document requests that
+  // were issued to THEM. Without this, any contact of the tenant could
+  // push files into another client's inbox or mark another client's
+  // standing request "submitted".
+  await svc.assertContactMayUploadFor(req.portalContact.tenantId, req.portalContact.contactId, companyId, documentRequestId);
+
   const result = await svc.uploadReceipt({
     tenantId: req.portalContact.tenantId,
     companyId,

@@ -11,6 +11,8 @@ import {
   contacts,
   companies,
   documentRequests,
+  portalContacts,
+  portalContactCompanies,
 } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { getProviderForTenant } from './storage/storage-provider.factory.js';
@@ -44,6 +46,43 @@ export interface UploadInput {
   // standing document_requests row. The service flips that row to
   // status='submitted' + stamps submitted_receipt_id back.
   documentRequestId?: string;
+}
+
+/**
+ * Portal-side authorization for uploads: the contact must be linked to
+ * `companyId` via portal_contact_companies, and when a documentRequestId
+ * is supplied it must be a request issued to this contact for this
+ * company. Called by the public portal route before uploadReceipt (which
+ * is also used by staff-side flows and only checks company ∈ tenant).
+ */
+export async function assertContactMayUploadFor(
+  tenantId: string,
+  contactId: string,
+  companyId: string,
+  documentRequestId?: string,
+): Promise<void> {
+  const link = await db
+    .select({ contactId: portalContactCompanies.contactId })
+    .from(portalContactCompanies)
+    .innerJoin(portalContacts, eq(portalContacts.id, portalContactCompanies.contactId))
+    .where(and(
+      eq(portalContactCompanies.contactId, contactId),
+      eq(portalContactCompanies.companyId, companyId),
+      eq(portalContacts.tenantId, tenantId),
+    ))
+    .limit(1);
+  if (link.length === 0) throw AppError.notFound('Company not found');
+  if (documentRequestId) {
+    const dr = await db.query.documentRequests.findFirst({
+      where: and(
+        eq(documentRequests.tenantId, tenantId),
+        eq(documentRequests.id, documentRequestId),
+      ),
+    });
+    if (!dr || dr.contactId !== contactId || (dr.companyId && dr.companyId !== companyId)) {
+      throw AppError.notFound('Document request not found');
+    }
+  }
 }
 
 export async function uploadReceipt(input: UploadInput): Promise<{

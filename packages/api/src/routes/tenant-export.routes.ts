@@ -7,6 +7,7 @@ import crypto from 'crypto';
 import multer from 'multer';
 import { and, eq } from 'drizzle-orm';
 import { authenticate } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/permission.js';
 import { validatePassphraseStrength } from '../services/portable-encryption.service.js';
 import * as tenantExportService from '../services/tenant-export.service.js';
 import { getImportProgress } from '../services/tenant-export.service.js';
@@ -44,6 +45,12 @@ const upload = multer({
 
 export const tenantExportRouter = Router();
 tenantExportRouter.use(authenticate);
+// Whole-book export/backup/restore is a company-administration capability:
+// it hands over the entire ledger, contacts, attachments and audit trail
+// (or deletes/replaces backups). Gate on company_settings:update so
+// readonly members and permission-templated bookkeepers / external client
+// users cannot exfiltrate the books with only e.g. invoices:read.
+tenantExportRouter.use(requirePermission('company_settings', 'update'));
 
 // ─── EXPORT ────────────────────────────────────────────────
 

@@ -57,11 +57,13 @@ export async function apiKeyAuth(req: Request, _res: Response, next: NextFunctio
   req.userId = record.userId;
   req.tenantId = record.tenantId;
   req.userRole = record.role;
-  // API keys are issued by staff users for staff workflows. Practice
-  // routes still gate on userType so default 'staff' is correct here.
-  req.userType = 'staff';
+  // Replay the OWNER's userType, never a blanket 'staff': a key minted
+  // (historically) by an external client-type user must keep every
+  // client gate (practice/TB/portal-staff routers 404 on 'client').
+  req.userType = owner.userType === 'client' ? 'client' : 'staff';
   req.isSuperAdmin = false;
   req.impersonating = undefined;
+  req.authKind = 'api_key';
 
   // Update last used — log failures instead of silently swallowing
   db.update(apiKeys).set({ lastUsedAt: new Date() })

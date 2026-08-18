@@ -254,17 +254,46 @@ function tfaTokenSecret(): Buffer {
   return crypto.createHmac('sha256', env.JWT_SECRET).update('tfa-pending').digest();
 }
 
-export function generateTfaToken(userId: string): string {
-  return jwt.sign({ userId, tfa_pending: true }, tfaTokenSecret(), { expiresIn: 300 }); // 5 minutes
+export type TfaTokenOrigin = 'password' | 'magic_link';
+
+/**
+ * Short-lived handoff token between first factor and second factor.
+ * `origin` records HOW the first factor was proven so the second-factor
+ * routes can refuse a same-channel "second" factor: a magic-link login has
+ * already proven mailbox control, so an email OTP would be no factor at
+ * all — and any tfa token minted from a magic link must not be redeemable
+ * through the password-login verify routes with method 'email' either.
+ */
+export function generateTfaToken(userId: string, origin: TfaTokenOrigin = 'password'): string {
+  return jwt.sign({ userId, tfa_pending: true, origin }, tfaTokenSecret(), { expiresIn: 300 }); // 5 minutes
 }
 
-export function verifyTfaToken(token: string): { userId: string } | null {
+export function verifyTfaToken(token: string): { userId: string; origin: TfaTokenOrigin } | null {
   try {
     const payload = jwt.verify(token, tfaTokenSecret(), { algorithms: ['HS256'] }) as any;
     if (!payload.tfa_pending) return null;
-    return { userId: payload.userId };
+    return { userId: payload.userId, origin: payload.origin === 'magic_link' ? 'magic_link' : 'password' };
   } catch {
     return null;
+  }
+}
+
+/**
+ * Second-factor method gate for the LOGIN step-up routes. Only methods the
+ * user has actually enrolled (users.tfa_methods) may be used to complete a
+ * login, and a magic-link-originated handoff can never be completed with
+ * an email code. Enrollment flows (tfa-enrollment.service) call
+ * generateAndSendCode/verifyCode directly and are unaffected.
+ */
+export async function assertLoginTfaMethodAllowed(userId: string, method: string, origin: TfaTokenOrigin): Promise<void> {
+  if (origin === 'magic_link' && method === 'email') {
+    throw AppError.badRequest('Email verification is not available for magic link login. Use your authenticator app or SMS.', 'TFA_METHOD_NOT_ALLOWED');
+  }
+  const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+  if (!user) throw AppError.notFound('User not found');
+  const enrolled = (user.tfaMethods || '').split(',').map((m) => m.trim()).filter(Boolean);
+  if (!enrolled.includes(method)) {
+    throw AppError.badRequest('That verification method is not enabled for this account.', 'TFA_METHOD_NOT_ALLOWED');
   }
 }
 

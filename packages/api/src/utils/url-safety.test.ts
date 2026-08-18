@@ -94,3 +94,23 @@ describe('makeSafeLookup — connect-time DNS validation', () => {
     await expect(doLookup('definitely-not-a-real-host.invalid')).rejects.toThrow();
   });
 });
+
+describe('assertExternalUrlSafe — alternate IP encodings (2026-08-18 review)', () => {
+  it('blocks IPv4-mapped / hex-tail IPv6 loopback and unspecified literals', () => {
+    expect(() => assertExternalUrlSafe('http://[::ffff:127.0.0.1]:6379/')).toThrow(/blocked IP range/);
+    expect(() => assertExternalUrlSafe('http://[::ffff:7f00:1]:6379/')).toThrow(/blocked IP range/);
+    expect(() => assertExternalUrlSafe('http://[::ffff:a9fe:a9fe]/latest/')).toThrow(/blocked IP range/);
+    expect(() => assertExternalUrlSafe('http://[::]:80/')).toThrow(/blocked IP range/);
+    expect(() => assertExternalUrlSafe('http://[0:0:0:0:0:0:0:1]/')).toThrow(/blocked IP range/);
+    expect(() => assertExternalUrlSafe('http://[64:ff9b::7f00:1]/')).toThrow(/blocked IP range/);
+  });
+  it('blocks CGNAT (tailnet) and multicast/reserved v4 ranges', () => {
+    expect(() => assertExternalUrlSafe('http://100.91.61.19/')).toThrow(/blocked IP range/);
+    expect(() => assertExternalUrlSafe('http://224.0.0.1/')).toThrow(/blocked IP range/);
+  });
+  it('still accepts public IPv6 and IPv4 literals', () => {
+    expect(() => assertExternalUrlSafe('http://[2606:4700:4700::1111]/')).not.toThrow();
+    expect(() => assertExternalUrlSafe('http://[::ffff:8.8.8.8]/')).not.toThrow();
+    expect(() => assertExternalUrlSafe('http://8.8.8.8/')).not.toThrow();
+  });
+});

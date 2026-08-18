@@ -718,6 +718,11 @@ export async function sendPasswordReset(tenantId: string, userId: string, actorU
   if (!access) throw AppError.notFound('User access not found');
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   if (!user) throw AppError.notFound('User not found');
+  // Same boundary as updateUser: only the home company manages a user's
+  // credentials, and super-admins are managed by super-admins only.
+  if (user.isSuperAdmin || user.tenantId !== tenantId) {
+    throw AppError.forbidden('Only the user\'s home company can send a password reset for this account', 'USER_MANAGED_ELSEWHERE');
+  }
 
   await issuePasswordReset(user.id, user.email);
   await auditLog(tenantId, 'update', 'user', user.id, null, { action: 'password_reset_email_sent' }, actorUserId);
@@ -844,6 +849,16 @@ export async function inviteUser(tenantId: string, input: { email: string; displ
   const existing = await db.query.users.findFirst({ where: eq(users.email, email) });
 
   if (existing) {
+    // Never let a tenant owner attach a super-admin to their tenant. Super
+    // admins already reach every tenant, so the only effect of the grant
+    // would be to make the super-admin "manageable" from this tenant's
+    // Team page (email rewrite / reset mail) — the first hop of an
+    // account-takeover chain. Respond as if the invite went through so
+    // this isn't a super-admin-email oracle.
+    if (existing.isSuperAdmin) {
+      await auditLog(tenantId, 'create', 'user_access', existing.id, null, { email: existing.email, role, refused: 'super_admin_target' }, undefined);
+      return { user: existing, temporaryPassword: null, existingUser: true };
+    }
     // User exists — check if they already have access to this tenant
     const existingAccess = await db.query.userTenantAccess.findFirst({
       where: and(eq(userTenantAccess.userId, existing.id), eq(userTenantAccess.tenantId, tenantId)),
@@ -990,6 +1005,22 @@ export async function updateUser(
 
   const target = await db.query.users.findFirst({ where: eq(users.id, userId) });
   if (!target) throw AppError.notFound('User not found');
+
+  // Identity fields (email, displayName) live on the global users row and
+  // are only editable from the user's HOME tenant. A user who merely has
+  // access to this tenant (a firm accountant, a super-admin, an owner of
+  // another business) is managed where their account was created — a
+  // non-home owner rewriting the email and then triggering a reset mail
+  // is a full cross-tenant account takeover. Super-admin identity is
+  // never editable through the tenant Team surface at all.
+  if (updates.email !== undefined || updates.displayName !== undefined) {
+    if (target.isSuperAdmin) {
+      throw AppError.forbidden('This account is managed by a system administrator', 'USER_MANAGED_ELSEWHERE');
+    }
+    if (target.tenantId !== tenantId) {
+      throw AppError.forbidden('Only the user\'s home company can change their email or name', 'USER_MANAGED_ELSEWHERE');
+    }
+  }
 
   let roleChange: { before: string; after: string } | null = null;
   if (input.role !== undefined) {

@@ -597,6 +597,11 @@ export async function contactAnswer(args: {
   if (q.assignedContactId && q.assignedContactId !== args.contactId) {
     throw AppError.forbidden('You are not assigned this question');
   }
+  // Mirror the read path: an unassigned question may only be answered by
+  // a contact linked to its company (not by any contact of the tenant).
+  if (!q.assignedContactId) {
+    await ensureContactLinkedToCompany(args.tenantId, args.contactId, q.companyId);
+  }
   if (!q.notifiedAt) throw AppError.notFound('Question not found');
   if (q.status === 'resolved') {
     throw AppError.badRequest('This question has already been resolved.', 'RESOLVED');

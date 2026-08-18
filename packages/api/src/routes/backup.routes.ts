@@ -6,6 +6,7 @@ import fs from 'fs';
 import { Router } from 'express';
 import multer from 'multer';
 import { authenticate, requireSuperAdmin } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/permission.js';
 import { validatePassphraseStrength } from '../services/portable-encryption.service.js';
 import * as backupService from '../services/backup.service.js';
 
@@ -49,6 +50,12 @@ function encodeContentDisposition(fileName: string, inline = false): string {
 
 export const backupRouter = Router();
 backupRouter.use(authenticate);
+// Whole-book export/backup/restore is a company-administration capability:
+// it hands over the entire ledger, contacts, attachments and audit trail
+// (or deletes/replaces backups). Gate on company_settings:update so
+// readonly members and permission-templated bookkeepers / external client
+// users cannot exfiltrate the books with only e.g. invoices:read.
+backupRouter.use(requirePermission('company_settings', 'update'));
 
 // Create a passphrase-encrypted backup
 backupRouter.post('/create', async (req, res) => {

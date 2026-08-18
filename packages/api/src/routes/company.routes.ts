@@ -21,6 +21,7 @@ import {
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
+import { requirePermission } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
 import * as companyService from '../services/company.service.js';
 import * as invoiceTemplateService from '../services/invoice-template.service.js';
@@ -96,8 +97,17 @@ companyRouter.get('/list', async (req, res) => {
 
 companyRouter.use(companyContext);
 
+// Company-configuration writes (profile, logo, fiscal settings, invoice
+// template, SMTP relay, extra companies) are gated on the
+// company_settings resource. Without this a readonly member — or an
+// external client-type user with a narrow permission template — could
+// e.g. repoint the company's outbound SMTP at a relay they control and
+// read every customer-facing email. Reads stay open: every role needs
+// the company profile/settings to render the app.
+const requireCompanySettingsWrite = requirePermission('company_settings', 'update');
+
 // Create additional company
-companyRouter.post('/create', validate(createCompanySchema), async (req, res) => {
+companyRouter.post('/create', requireCompanySettingsWrite, validate(createCompanySchema), async (req, res) => {
   const company = await companyService.createAdditionalCompany(req.tenantId, req.body);
   res.status(201).json({ company });
 });
@@ -107,12 +117,12 @@ companyRouter.get('/', async (req, res) => {
   res.json({ company });
 });
 
-companyRouter.put('/', validate(updateCompanySchema), async (req, res) => {
+companyRouter.put('/', requireCompanySettingsWrite, validate(updateCompanySchema), async (req, res) => {
   const company = await companyService.updateCompany(req.tenantId, req.companyId, req.body, req.userId);
   res.json({ company });
 });
 
-companyRouter.post('/logo', upload.single('logo'), async (req, res) => {
+companyRouter.post('/logo', requireCompanySettingsWrite, upload.single('logo'), async (req, res) => {
   if (!req.file) {
     res.status(400).json({ error: { message: 'No file uploaded' } });
     return;
@@ -128,7 +138,7 @@ companyRouter.get('/settings', async (req, res) => {
   res.json({ settings });
 });
 
-companyRouter.put('/settings', validate(updateCompanySettingsSchema), async (req, res) => {
+companyRouter.put('/settings', requireCompanySettingsWrite, validate(updateCompanySettingsSchema), async (req, res) => {
   const company = await companyService.updateCompany(req.tenantId, req.companyId, req.body, req.userId);
   res.json({
     settings: {
@@ -182,7 +192,7 @@ companyRouter.get('/invoice-template', async (req, res) => {
   res.json({ template });
 });
 
-companyRouter.put('/invoice-template', validate(invoiceTemplateUpdateSchema), async (req, res) => {
+companyRouter.put('/invoice-template', requireCompanySettingsWrite, validate(invoiceTemplateUpdateSchema), async (req, res) => {
   const existing = await getOrCreateDefaultTemplate(req.tenantId);
   if (!existing) throw AppError.badRequest('No invoice template available to update');
   const template = await invoiceTemplateService.update(req.tenantId, existing.id, req.body, req.userId);
@@ -194,17 +204,17 @@ companyRouter.get('/smtp', async (req, res) => {
   res.json(smtp);
 });
 
-companyRouter.put('/smtp', validate(companySmtpUpdateSchema), async (req, res) => {
+companyRouter.put('/smtp', requireCompanySettingsWrite, validate(companySmtpUpdateSchema), async (req, res) => {
   await companyService.updateSmtpSettings(req.tenantId, req.companyId, req.body, req.userId);
   res.json({ message: 'SMTP settings saved' });
 });
 
-companyRouter.post('/smtp/test', validate(companySmtpTestSchema), async (req, res) => {
+companyRouter.post('/smtp/test', requireCompanySettingsWrite, validate(companySmtpTestSchema), async (req, res) => {
   const result = await testSmtpConnection(req.body, req.body.testEmail);
   res.json(result);
 });
 
-companyRouter.post('/setup-complete', async (req, res) => {
+companyRouter.post('/setup-complete', requireCompanySettingsWrite, async (req, res) => {
   await companyService.markSetupComplete(req.tenantId, req.companyId);
   res.json({ message: 'Setup complete' });
 });

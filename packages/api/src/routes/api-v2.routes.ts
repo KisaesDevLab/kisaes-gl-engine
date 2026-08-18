@@ -4,7 +4,7 @@
 
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
-import { authenticate } from '../middleware/auth.js';
+import { authenticate, requireSessionAuth } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
 import { auditLog } from '../middleware/audit.js';
 import { resolvePermissionsForRequest } from '../middleware/permission.js';
@@ -146,7 +146,7 @@ apiV2Router.get('/tenants', async (req, res) => {
   res.json({ tenants });
 });
 
-apiV2Router.post('/tenants/switch', async (req, res) => {
+apiV2Router.post('/tenants/switch', requireSessionAuth, async (req, res) => {
   const { tenantId } = switchTenantBodySchema.parse(req.body);
   const tokens = await authService.switchTenant(req.userId, tenantId);
   res.json({ tokens });

@@ -166,11 +166,14 @@ app.use(
 //
 // Defaults to `'loopback'` (only 127.0.0.0/8, ::1, fc00::/7 — safe for
 // direct-exposure installs). Operators behind a reverse proxy or the
-// Cloudflare Tunnel sidecar should set TRUST_PROXY=true (or a CIDR
-// list like `"10.0.0.0/8,cloudflared"`). The Cloudflare Tunnel setup
-// guide calls this out — without TRUST_PROXY=true, the tunnel's
-// X-Forwarded-For header is ignored and every request appears to
-// come from the cloudflared sidecar's internal IP.
+// Cloudflare Tunnel sidecar should set TRUST_PROXY to the CIDR(s) of
+// the internal proxy hops (docker-compose stack: `172.16.0.0/12,loopback`)
+// or a hop count — NOT `true`. `true` takes the left-most X-Forwarded-For
+// entry, and Cloudflare appends the visitor IP to any client-supplied
+// X-Forwarded-For, so with `true` a client picks its own req.ip and
+// every per-IP limiter / allowlist is bypassable (verified 2026-08-18).
+// Without any TRUST_PROXY the tunnel's X-Forwarded-For header is ignored
+// and every request appears to come from the cloudflared sidecar.
 const trustProxyRaw = process.env['TRUST_PROXY'];
 if (!trustProxyRaw) {
   app.set('trust proxy', 'loopback');
@@ -460,7 +463,10 @@ app.use('/api/v1/plaid', plaidRouter);
 app.use('/api/v1/ai', aiRouter);
 app.use('/api/v1/share', shareRouter);
 app.use('/api/v1/chat', chatRouter);
-app.use('/oauth', oauthRouter);
+// /oauth lives outside the /api prefix and previously had NO rate limit
+// (token/revoke endpoints hit the DB per call). Reuse the global limiter
+// so anonymous callers get the same 300/min/IP budget as everything else.
+app.use('/oauth', globalLimiter, oauthRouter);
 app.use('/api/v1/settings/storage', storageRouter);
 app.use('/api/v1/payroll-import', payrollImportRouter);
 app.use('/api/v1/imports', importsRouter);

@@ -75,11 +75,9 @@ magicLinkRouter.post('/tfa/verify', authLimiter, async (req, res) => {
 
   const { code, method } = req.body;
 
-  // Enforce non-email 2FA only (magic link already proves email)
-  if (method === 'email') {
-    res.status(400).json({ error: { message: 'Email verification is not available for magic link login. Use your authenticator app or SMS.' } });
-    return;
-  }
+  // Enforce non-email 2FA only (magic link already proves email) and only
+  // methods the user has enrolled.
+  await tfaService.assertLoginTfaMethodAllowed(payload.userId, String(method ?? ''), 'magic_link');
 
   const result = await tfaService.verifyCode(payload.userId, code, method);
   if (!result.valid) {

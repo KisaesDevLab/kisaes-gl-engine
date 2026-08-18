@@ -161,7 +161,7 @@ export async function verifyMagicLink(token: string) {
 
   // Otherwise require the second factor: magic link proves email (factor 1),
   // TOTP/SMS is factor 2.
-  const tfaToken = tfaService.generateTfaToken(user.id);
+  const tfaToken = tfaService.generateTfaToken(user.id, 'magic_link');
   const emailMasked = user.email.replace(/^(.{1,2})(.*)(@.*)$/, '$1***$3');
   const phoneMasked = user.tfaPhone ? user.tfaPhone.replace(/^(.*)(.{4})$/, '***$2') : undefined;
 

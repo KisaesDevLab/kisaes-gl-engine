@@ -5,6 +5,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { authenticate } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { expensiveOpLimiter } from '../middleware/expensive-op-limiter.js';
 import * as exportService from '../services/export.service.js';
@@ -15,6 +16,12 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 export const exportRouter = Router();
 exportRouter.use(authenticate);
 exportRouter.use(companyContext);
+// Whole-book export/backup/restore is a company-administration capability:
+// it hands over the entire ledger, contacts, attachments and audit trail
+// (or deletes/replaces backups). Gate on company_settings:update so
+// readonly members and permission-templated bookkeepers / external client
+// users cannot exfiltrate the books with only e.g. invoices:read.
+exportRouter.use(requirePermission('company_settings', 'update'));
 exportRouter.use(expensiveOpLimiter);
 
 // Full data export as individual CSVs (JSON response with file contents)

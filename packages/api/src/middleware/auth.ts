@@ -28,6 +28,12 @@ declare global {
       /** JWT `iat` claim in seconds. Set by authenticate() — used by
        *  requireSuperAdmin to enforce the admin idle-timeout bound. */
       tokenIssuedAt?: number;
+      /** How this request authenticated. 'session' = Bearer JWT (default);
+       *  'api_key' = x-api-key; 'download_token' = ?_dl= single-use token.
+       *  Routes that mint sessions (switch-tenant) or credentials must
+       *  refuse anything but a real session — a scoped/expiring API key
+       *  must never be upgradable into a full JWT+refresh pair. */
+      authKind?: 'session' | 'api_key' | 'download_token';
     }
   }
 }
@@ -65,6 +71,13 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
   const dlTokenRaw = req.query['_dl'];
   const dlToken = typeof dlTokenRaw === 'string' ? dlTokenRaw : undefined;
   if (dlToken) {
+    // Download tokens exist ONLY for "open export in a new tab" — i.e.
+    // idempotent GET/HEAD. They are stateless and replayable within their
+    // TTL and travel in URLs (referer/proxy logs), so they must never be
+    // able to drive a mutation on any route.
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      throw AppError.unauthorized('Download tokens are valid for GET requests only');
+    }
     const payload = consumeDownloadToken(dlToken);
     if (!payload) throw AppError.unauthorized('Invalid or expired download token');
     req.userId = payload.userId;
@@ -74,6 +87,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     // PDF-export surface in /portal. Default 'staff' is safe.
     req.userType = 'staff';
     req.isSuperAdmin = payload.isSuperAdmin;
+    req.authKind = 'download_token';
     if (payload.companyId && !req.headers['x-company-id']) {
       req.headers['x-company-id'] = payload.companyId;
     }
@@ -125,6 +139,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     req.isSuperAdmin = !!user.isSuperAdmin;
     req.impersonating = payload.impersonating;
     req.tokenIssuedAt = typeof payload.iat === 'number' ? payload.iat : undefined;
+    req.authKind = 'session';
     next();
   } catch (err) {
     if (err instanceof AppError) throw err;
@@ -156,6 +171,21 @@ export function requireSuperAdmin(req: Request, _res: Response, next: NextFuncti
         'ADMIN_SESSION_EXPIRED',
       );
     }
+  }
+  next();
+}
+
+/**
+ * Refuse non-session principals. API keys and single-use download tokens
+ * are deliberately narrow (tenant-bound, scoped, expiring/revocable);
+ * letting them reach endpoints that mint a full JWT + refresh session
+ * (switch-tenant) or plant durable credentials (API keys, passkeys) would
+ * turn a leaked read-only key into a persistent full-role session that
+ * outlives key revocation. Mount after authenticate().
+ */
+export function requireSessionAuth(req: Request, _res: Response, next: NextFunction) {
+  if (req.authKind && req.authKind !== 'session') {
+    throw AppError.forbidden('This action requires an interactive session (not an API key or download token)', 'SESSION_AUTH_REQUIRED');
   }
   next();
 }

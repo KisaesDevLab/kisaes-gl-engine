@@ -5,13 +5,24 @@
 import crypto from 'crypto';
 import { Router } from 'express';
 import { eq, and } from 'drizzle-orm';
-import { authenticate } from '../middleware/auth.js';
+import { authenticate, requireSessionAuth } from '../middleware/auth.js';
 import { db } from '../db/index.js';
 import { apiKeys } from '../db/schema/index.js';
 import { auditLog } from '../middleware/audit.js';
+import { AppError } from '../utils/errors.js';
 
 export const apiKeysRouter = Router();
 apiKeysRouter.use(authenticate);
+// Keys are durable credentials: only an interactive staff session may mint
+// or manage them. An API key must not be able to mint further keys, and
+// external (client-type) users have no API surface — their portal access
+// is cookie-based and permission-templated, and an sk_ key would replay
+// as userType 'staff' (see api-key-auth.ts), bypassing every client gate.
+apiKeysRouter.use(requireSessionAuth);
+apiKeysRouter.use((req, _res, next) => {
+  if (req.userType === 'client') throw AppError.notFound('Not found');
+  next();
+});
 
 function generateApiKey(): string {
   return 'sk_live_' + crypto.randomBytes(32).toString('hex');
@@ -56,15 +67,22 @@ apiKeysRouter.post('/', async (req, res) => {
     return;
   }
 
-  // Role authorization — cannot create keys with higher privileges than your own
+  // Role authorization — cannot create keys with higher privileges than your own.
+  // The key's role is replayed verbatim as req.userRole on every request
+  // (api-key-auth.ts), so this clamp IS the privilege boundary: a readonly
+  // or template-restricted bookkeeper minting an 'accountant' key would
+  // otherwise get full accountant permissions through the REST/MCP surface.
   const validRoles = ['owner', 'accountant', 'readonly'];
-  const requestedRole = role || req.userRole || 'readonly';
+  const requestedRole = role || (validRoles.includes(req.userRole) ? req.userRole : 'readonly');
   if (!validRoles.includes(requestedRole)) {
     res.status(400).json({ error: { message: `Invalid role. Must be one of: ${validRoles.join(', ')}` } });
     return;
   }
-  if (requestedRole === 'owner' && req.userRole !== 'owner' && !req.isSuperAdmin) {
-    res.status(403).json({ error: { message: 'Only owners can create full-access API keys' } });
+  const ROLE_RANK: Record<string, number> = { readonly: 1, bookkeeper: 1, accountant: 2, owner: 3 };
+  const callerRank = req.isSuperAdmin ? 3 : (ROLE_RANK[req.userRole] ?? 0);
+  const requestedRank = ROLE_RANK[requestedRole] ?? 99;
+  if (requestedRank > callerRank) {
+    res.status(403).json({ error: { message: 'Cannot create an API key with more privileges than your own role', code: 'API_KEY_ROLE_ESCALATION' } });
     return;
   }
 

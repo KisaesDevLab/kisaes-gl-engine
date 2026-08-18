@@ -364,3 +364,31 @@ describe('TFA Trusted Devices', () => {
     expect(await tfaService.listTrustedDevices(user.id)).toHaveLength(0);
   });
 });
+
+describe('TFA login-step method gate (2026-08-18 review)', () => {
+  beforeEach(async () => { await cleanDb(); });
+  afterEach(async () => { await cleanDb(); });
+
+  it('only enrolled methods may complete a login; magic-link handoffs never accept email', async () => {
+    const { user } = await createTestUser();
+    // Enrolled with TOTP only.
+    await db.update(users).set({ tfaEnabled: true, tfaMethods: 'totp' }).where(eq(users.id, user.id));
+
+    await expect(tfaService.assertLoginTfaMethodAllowed(user.id, 'email', 'password')).rejects.toMatchObject({ code: 'TFA_METHOD_NOT_ALLOWED' });
+    await expect(tfaService.assertLoginTfaMethodAllowed(user.id, 'sms', 'password')).rejects.toMatchObject({ code: 'TFA_METHOD_NOT_ALLOWED' });
+    await expect(tfaService.assertLoginTfaMethodAllowed(user.id, 'totp', 'password')).resolves.toBeUndefined();
+
+    // Even when email IS enrolled, a magic-link-originated handoff can't use it.
+    await db.update(users).set({ tfaMethods: 'email,totp' }).where(eq(users.id, user.id));
+    await expect(tfaService.assertLoginTfaMethodAllowed(user.id, 'email', 'password')).resolves.toBeUndefined();
+    await expect(tfaService.assertLoginTfaMethodAllowed(user.id, 'email', 'magic_link')).rejects.toMatchObject({ code: 'TFA_METHOD_NOT_ALLOWED' });
+    await expect(tfaService.assertLoginTfaMethodAllowed(user.id, 'totp', 'magic_link')).resolves.toBeUndefined();
+  });
+
+  it('tfa tokens carry their origin', () => {
+    const t1 = tfaService.verifyTfaToken(tfaService.generateTfaToken('00000000-0000-0000-0000-000000000001'));
+    expect(t1?.origin).toBe('password');
+    const t2 = tfaService.verifyTfaToken(tfaService.generateTfaToken('00000000-0000-0000-0000-000000000001', 'magic_link'));
+    expect(t2?.origin).toBe('magic_link');
+  });
+});

@@ -937,7 +937,11 @@ export async function resetUserPassword(userId: string, newPassword: string, act
 
   const passwordHash = await bcrypt.hash(newPassword, env.BCRYPT_ROUNDS);
   await db.update(users).set({ passwordHash, updatedAt: new Date() }).where(eq(users.id, userId));
-  await auditLog(user.tenantId, 'update', 'user_password_reset', userId, null, { email: user.email }, actingUserId);
+  // An admin reset is most often a response to a suspected compromise:
+  // revoke every existing refresh session so an attacker holding the old
+  // credentials/cookie is logged out, matching self-service reset/change.
+  await db.delete(sessions).where(eq(sessions.userId, userId));
+  await auditLog(user.tenantId, 'update', 'user_password_reset', userId, null, { email: user.email, sessionsRevoked: true }, actingUserId);
 }
 
 /**

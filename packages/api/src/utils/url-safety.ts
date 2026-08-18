@@ -23,7 +23,7 @@
 import dns from 'node:dns';
 import http from 'node:http';
 import https from 'node:https';
-import type net from 'node:net';
+import net from 'node:net';
 
 // Loopback aliases. Blocked by default, but a legitimate target for
 // self-hosted services (Ollama on the same host), so `allowPrivate`
@@ -51,7 +51,7 @@ type IpClass =
 // Classify a literal hostname. Note: link-local (169.254 / fe80) is kept
 // distinct from private because it stays blocked even under allowPrivate —
 // 169.254.169.254 is the AWS/GCP metadata endpoint, never a real Ollama host.
-function classifyIpLiteral(host: string): IpClass {
+export function classifyIpLiteral(host: string): IpClass {
   const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (v4) {
     const [a, b] = [Number(v4[1]), Number(v4[2])];
@@ -61,18 +61,33 @@ function classifyIpLiteral(host: string): IpClass {
     if (a === 0) return 'private'; // 0.0.0.0/8
     if (a === 192 && b === 168) return 'private'; // 192.168.0.0/16
     if (a === 172 && b >= 16 && b <= 31) return 'private'; // 172.16.0.0/12
+    if (a === 100 && b >= 64 && b <= 127) return 'private'; // 100.64.0.0/10 CGNAT (Tailscale lives here)
+    if (a === 198 && (b === 18 || b === 19)) return 'private'; // 198.18.0.0/15 benchmarking
+    if (a >= 224) return 'private'; // 224/4 multicast + 240/4 reserved + broadcast
     return 'public';
   }
   // IPv6 — only classify when there's a colon, so hostnames that happen to
   // start with "fc"/"fd" (e.g. fc-barcelona.example) aren't mistaken for ULA.
-  const lower = host.toLowerCase();
+  const lower = host.toLowerCase().replace(/^\[|\]$/g, '');
   if (lower.includes(':')) {
-    if (lower === '::1' || lower === '0:0:0:0:0:0:0:1') return 'private';
-    if (lower.startsWith('fe80:')) return 'link-local';
-    if (lower.startsWith('fc') || lower.startsWith('fd')) return 'private'; // ULA fc00::/7
-    if (lower.startsWith('::ffff:')) {
-      return classifyIpLiteral(lower.replace(/^::ffff:/, '')); // IPv4-mapped
+    // Canonicalise first: `new URL('http://[::ffff:127.0.0.1]/').hostname`
+    // is `[::ffff:7f00:1]` (hex-tail mapped form), `0:0:0:0:0:0:0:1` is
+    // loopback, etc. SocketAddress folds every spelling into one shape so
+    // the checks below can't be dodged by an alternate encoding.
+    let canon = lower;
+    if (net.isIPv6(lower)) {
+      try { canon = new net.SocketAddress({ address: lower, family: 'ipv6' }).address.toLowerCase(); } catch { /* keep as-is */ }
     }
+    if (canon === '::1' || canon === '::') return 'private'; // loopback / unspecified
+    if (canon.startsWith('fe80:')) return 'link-local';
+    if (canon.startsWith('fc') || canon.startsWith('fd')) return 'private'; // ULA fc00::/7
+    if (canon.startsWith('::ffff:')) {
+      const tail = canon.slice('::ffff:'.length);
+      if (/^\d{1,3}(\.\d{1,3}){3}$/.test(tail)) return classifyIpLiteral(tail); // IPv4-mapped (canonical dotted)
+      return 'private'; // any other mapped spelling we failed to canonicalise: fail closed
+    }
+    if (canon.startsWith('64:ff9b:')) return 'private'; // NAT64 well-known prefix (embeds an IPv4)
+    if (canon.startsWith('2002:')) return 'private'; // 6to4 (embeds an IPv4)
   }
   return 'public';
 }
@@ -99,6 +114,12 @@ export function assertExternalUrlSafe(raw: string, label = 'URL', opts: UrlSafet
     throw new Error(`${label} must use http or https`);
   }
   const host = parsed.hostname.replace(/^\[|\]$/g, ''); // strip IPv6 brackets
+  if (/^\d+$/.test(host) || /^0x[0-9a-f]+$/i.test(host) || /^\d+(\.\d+){1,2}$/.test(host)) {
+    // WHATWG URL already normalises decimal/hex/short IPv4 forms
+    // (http://2130706433/, http://0x7f000001/, http://127.1/) to dotted
+    // quads, so seeing one here means parsing failed to — refuse.
+    throw new Error(`${label} uses an unsupported IP literal form`);
+  }
   if (!host) throw new Error(`${label} must include a hostname`);
   const lowerHost = host.toLowerCase();
 
@@ -132,6 +153,9 @@ export function makeSafeLookup(opts: UrlSafetyOptions = {}): net.LookupFunction 
       address?: string | dns.LookupAddress[],
       family?: number,
     ) => void;
+    // NOTE: Node skips the custom `lookup` entirely when the host is already
+    // an IP literal (net.isIP(host) !== 0), so literals must be classified
+    // by the caller before connecting — see makeSafeAgents' createConnection.
     dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
       if (err) return cb(err);
       const list = addresses as dns.LookupAddress[];
@@ -159,8 +183,35 @@ export function makeSafeLookup(opts: UrlSafetyOptions = {}): net.LookupFunction 
  */
 export function makeSafeAgents(opts: UrlSafetyOptions = {}): { httpAgent: http.Agent; httpsAgent: https.Agent } {
   const lookup = makeSafeLookup(opts);
+  // Node bypasses `lookup` for IP-literal hosts, so a URL like
+  // http://[::ffff:7f00:1]:6379/ would dial loopback without ever hitting
+  // the DNS guard. Classify literals at connect time so the guarantee
+  // "every socket this agent opens is checked" actually holds.
+  const literalGuard = (host: string | undefined): void => {
+    if (!host) return;
+    const bare = host.replace(/^\[|\]$/g, '');
+    if (!net.isIP(bare)) return;
+    const cls = classifyIpLiteral(bare);
+    if (cls === 'link-local' || (cls === 'private' && !opts.allowPrivate)) {
+      throw Object.assign(new Error(`${host} is a blocked internal address`), { code: 'EBLOCKEDHOST' });
+    }
+  };
+  class SafeHttpAgent extends http.Agent {
+    override createConnection(options: net.NetConnectOpts & { host?: string }, callback?: (err: Error | null, stream: net.Socket) => void): net.Socket {
+      literalGuard(options.host);
+      // @ts-expect-error — http.Agent#createConnection exists at runtime (net.createConnection wrapper)
+      return super.createConnection(options, callback);
+    }
+  }
+  class SafeHttpsAgent extends https.Agent {
+    override createConnection(options: net.NetConnectOpts & { host?: string }, callback?: (err: Error | null, stream: net.Socket) => void): net.Socket {
+      literalGuard(options.host);
+      // @ts-expect-error — https.Agent#createConnection exists at runtime (tls.connect wrapper)
+      return super.createConnection(options, callback);
+    }
+  }
   return {
-    httpAgent: new http.Agent({ lookup }),
-    httpsAgent: new https.Agent({ lookup }),
+    httpAgent: new SafeHttpAgent({ lookup }),
+    httpsAgent: new SafeHttpsAgent({ lookup }),
   };
 }
