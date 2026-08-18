@@ -22,6 +22,7 @@ import { auditLog } from '../middleware/audit.js';
 import { getSmtpSettings } from './admin.service.js';
 import { env } from '../config/env.js';
 import { appBasePath } from '../utils/base-url.js';
+import { escapeHtml, safeSubjectSegment } from '../utils/html-escape.js';
 
 export const INVITE_TTL_DAYS = 7;
 
@@ -152,16 +153,22 @@ async function composeAndSend(args: {
 
   if (args.invite.recipientEmail) {
     const greeting = `Hello ${args.invite.recipientName},`;
+    // HTML variants of every user/tenant-supplied fragment. The plain-text
+    // body keeps the raw values.
+    const hGreeting = escapeHtml(greeting);
+    const hFirm = escapeHtml(firmName);
+    const hMessage = args.invite.message ? escapeHtml(args.invite.message) : '';
     let subject: string, text: string, html: string;
     if (args.repair) {
       const bank = args.repair.institutionName || 'your bank';
-      subject = `${firmName} — action needed: update your ${bank} connection`;
+      const hBank = escapeHtml(bank);
+      subject = safeSubjectSegment(`${firmName} — action needed: update your ${bank} connection`);
       text = `${greeting}\n\n${bank} has stopped sharing transactions with ${firmName} — this usually happens after a password change or a security update at the bank. Open the link below to update your login; it takes about a minute and your credentials go directly to your bank, never to us.\n\n${link}\n\nThe link is valid for ${INVITE_TTL_DAYS} days.${args.invite.message ? `\n\n${args.invite.message}` : ''}`;
-      html = `<p>${greeting}</p><p><strong>${bank}</strong> has stopped sharing transactions with <strong>${firmName}</strong> — this usually happens after a password change or a security update at the bank. Updating your login takes about a minute, and your credentials go directly to your bank — never to us.</p><p><a href="${link}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px">Fix bank connection</a></p><p style="color:#888;font-size:12px">Link valid for ${INVITE_TTL_DAYS} days. If you didn't expect this, you can ignore this message.</p>${args.invite.message ? `<hr><p>${args.invite.message}</p>` : ''}`;
+      html = `<p>${hGreeting}</p><p><strong>${hBank}</strong> has stopped sharing transactions with <strong>${hFirm}</strong> — this usually happens after a password change or a security update at the bank. Updating your login takes about a minute, and your credentials go directly to your bank — never to us.</p><p><a href="${escapeHtml(link)}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px">Fix bank connection</a></p><p style="color:#888;font-size:12px">Link valid for ${INVITE_TTL_DAYS} days. If you didn't expect this, you can ignore this message.</p>${hMessage ? `<hr><p>${hMessage}</p>` : ''}`;
     } else {
-      subject = `${firmName} — connect your bank account`;
+      subject = safeSubjectSegment(`${firmName} — connect your bank account`);
       text = `${greeting}\n\n${firmName} has asked you to securely connect your bank account so your bookkeeping stays up to date. Open the link below to get started — it takes about two minutes and your banking credentials go directly to your bank, never to us.\n\n${link}\n\nThe link is valid for ${INVITE_TTL_DAYS} days.${args.invite.message ? `\n\n${args.invite.message}` : ''}`;
-      html = `<p>${greeting}</p><p><strong>${firmName}</strong> has asked you to securely connect your bank account so your bookkeeping stays up to date. It takes about two minutes, and your banking credentials go directly to your bank — never to us.</p><p><a href="${link}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px">Connect your bank</a></p><p style="color:#888;font-size:12px">Link valid for ${INVITE_TTL_DAYS} days. If you didn't expect this, you can ignore this message.</p>${args.invite.message ? `<hr><p>${args.invite.message}</p>` : ''}`;
+      html = `<p>${hGreeting}</p><p><strong>${hFirm}</strong> has asked you to securely connect your bank account so your bookkeeping stays up to date. It takes about two minutes, and your banking credentials go directly to your bank — never to us.</p><p><a href="${escapeHtml(link)}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px">Connect your bank</a></p><p style="color:#888;font-size:12px">Link valid for ${INVITE_TTL_DAYS} days. If you didn't expect this, you can ignore this message.</p>${hMessage ? `<hr><p>${hMessage}</p>` : ''}`;
     }
     const mailer = await getMailer();
     await mailer.send(args.invite.recipientEmail, subject, html, text);
@@ -601,11 +608,13 @@ export async function completeInviteConnection(
     try {
       const firmName = await firmNameFor(invite.tenantId, invite.companyId);
       const mailer = await getMailer();
-      const subject = `${invite.recipientName} connected a bank account`;
+      // recipientName is staff-entered but institutionName comes from Plaid
+      // metadata the CLIENT's Link session produced — treat both as text.
+      const subject = safeSubjectSegment(`${invite.recipientName} connected a bank account`);
       const body = `${invite.recipientName} connected ${accountCount || 'their'} account${accountCount === 1 ? '' : 's'}` +
         `${metadata.institutionName ? ` at ${metadata.institutionName}` : ''} using your invite (${firmName}).\n\n` +
         `Open Banking → Bank Connections in MyBooks to map the new accounts to the books.`;
-      await mailer.send(invite.createdByEmail, subject, `<p>${body.replace(/\n\n/g, '</p><p>')}</p>`, body);
+      await mailer.send(invite.createdByEmail, subject, `<p>${escapeHtml(body).replace(/\n\n/g, '</p><p>')}</p>`, body);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn('[bank-connect] inviter notification failed:', err instanceof Error ? err.message : err);

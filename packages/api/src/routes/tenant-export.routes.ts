@@ -126,11 +126,30 @@ tenantExportRouter.post('/import', upload.single('file'), async (req, res) => {
     return;
   }
 
-  // Default: import as a new company.
+  // Default: import as a new company. Creating a tenant is a privileged
+  // act: it must follow the same policy as "New Business" (self_service_
+  // tenant_creation toggle + per-user cap + owner-of-something rule) unless
+  // the caller is a super-admin or practice staff (firm member — DR/
+  // onboarding of client books is their job). And only a super-admin may
+  // hand the new tenant to OTHER users; everyone else gets themselves.
+  if (!req.isSuperAdmin) {
+    if (req.userType === 'client') throw AppError.notFound('Not found');
+    const firmsService = await import('../services/firms.service.js');
+    const isPracticeStaff = (await firmsService.listForUser(req.userId)).length > 0;
+    if (!isPracticeStaff) {
+      const authService = await import('../services/auth.service.js');
+      const elig = await authService.getTenantCreationEligibility(req.userId, req.userRole);
+      if (!elig.allowed) throw AppError.forbidden(elig.reason ?? 'Creating a new company is not permitted for this account', 'TENANT_CREATION_NOT_ALLOWED');
+    }
+  }
   const name = company_name || 'Imported Company';
-  const users = assign_users
+  const requested = assign_users
     ? (Array.isArray(assign_users) ? assign_users : [assign_users])
     : [req.userId];
+  const users = req.isSuperAdmin
+    ? requested.filter((u: unknown): u is string => typeof u === 'string' && /^[0-9a-f-]{36}$/i.test(u))
+    : [req.userId];
+  if (users.length === 0) users.push(req.userId);
   const jobId = crypto.randomUUID();
   const result = await tenantExportService.importNewTenantFromFile(
     req.file.buffer, passphrase, name, users, req.userId, jobId,

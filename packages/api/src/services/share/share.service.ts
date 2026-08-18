@@ -30,6 +30,7 @@ import { env } from '../../config/env.js';
 import { AppError } from '../../utils/errors.js';
 import { log } from '../../utils/logger.js';
 import * as shareRedis from './share-redis.js';
+import { escapeHtml } from '../../utils/html-escape.js';
 
 export type ShareSession = typeof shareSessions.$inferSelect;
 export type ShareParticipant = typeof shareSessionParticipants.$inferSelect;
@@ -341,7 +342,7 @@ export async function requestJoin(
       await alertTenantAdmins(
         viewerTenantId,
         'MyBooks security: repeated failed screen-share join attempts',
-        `<p>User <b>${viewer?.displayName ?? viewer?.email ?? viewerUserId}</b> entered ${CODE_FAILURE_LOCKOUT} consecutive invalid screen-share join codes and has been locked out of code entry for an hour. If this was not expected, review the account.</p>`,
+        `<p>User <b>${escapeHtml(viewer?.displayName ?? viewer?.email ?? viewerUserId)}</b> entered ${CODE_FAILURE_LOCKOUT} consecutive invalid screen-share join codes and has been locked out of code entry for an hour. If this was not expected, review the account.</p>`,
       );
     }
     // Identical message for invalid and non-existent codes (10.2).
@@ -489,7 +490,7 @@ async function detectViewerAnomalies(viewerUserId: string, viewerTenantId: strin
     await alertTenantAdmins(
       viewerTenantId,
       'MyBooks security: unusual screen-share viewing pattern',
-      `<p>User <b>${viewer?.displayName ?? viewer?.email ?? viewerUserId}</b> has requested to view ${distinctSharers} different users' screens in the last hour and holds ${crossFirmViews} cross-firm views in the last day. This resembles a compromised-account pattern — verify with the user.</p>`,
+      `<p>User <b>${escapeHtml(viewer?.displayName ?? viewer?.email ?? viewerUserId)}</b> has requested to view ${distinctSharers} different users' screens in the last hour and holds ${crossFirmViews} cross-firm views in the last day. This resembles a compromised-account pattern — verify with the user.</p>`,
     );
   }
 }
@@ -636,7 +637,7 @@ async function notifyFirstCrossFirm(session: ShareSession, ctx: ApprovalContext)
   await alertTenantAdmins(
     session.tenantId,
     'MyBooks: first cross-firm screen share for a user',
-    `<p><b>${sharer?.displayName ?? sharer?.email ?? session.sharerUserId}</b> approved their first screen-share viewer from outside your firm (<b>${ctx.viewerName}</b>, ${ctx.viewerFirmName}). If this was expected, no action is needed.</p>`,
+    `<p><b>${escapeHtml(sharer?.displayName ?? sharer?.email ?? session.sharerUserId)}</b> approved their first screen-share viewer from outside your firm (<b>${escapeHtml(ctx.viewerName)}</b>, ${escapeHtml(ctx.viewerFirmName)}). If this was expected, no action is needed.</p>`,
   );
 }
 

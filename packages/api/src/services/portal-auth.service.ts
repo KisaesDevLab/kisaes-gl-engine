@@ -30,6 +30,7 @@ import {
   linkContactToIdentity,
   verifyPassword as verifyIdentityPassword,
 } from './portal-identity.service.js';
+import { escapeHtml } from '../utils/html-escape.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 9 — magic-link auth +
 // portal session lifecycle. Distinct from staff JWT auth.
@@ -173,7 +174,7 @@ export async function requestMagicLink(args: {
   )}`;
   const greeting = contact.firstName ? `Hi ${contact.firstName},` : 'Hello,';
   const text = `${greeting}\n\nUse the link below to sign in to the portal. It expires in ${MAGIC_LINK_TTL_MIN} minutes and can only be used once.\n\n${link}\n\nIf you didn't request this, you can ignore this email.`;
-  const html = `<p>${greeting}</p><p>Use the button below to sign in. The link expires in ${MAGIC_LINK_TTL_MIN} minutes and can only be used once.</p><p><a href="${link}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px">Sign in to the portal</a></p><p>Or copy and paste this URL: <code>${link}</code></p><p style="color:#888;font-size:12px">If you didn't request this, you can ignore this email.</p>`;
+  const html = `<p>${escapeHtml(greeting)}</p><p>Use the button below to sign in. The link expires in ${MAGIC_LINK_TTL_MIN} minutes and can only be used once.</p><p><a href="${link}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px">Sign in to the portal</a></p><p>Or copy and paste this URL: <code>${link}</code></p><p style="color:#888;font-size:12px">If you didn't request this, you can ignore this email.</p>`;
 
   const mailer = await ensureSmtpTransport();
   // Swallow send failures: an unhandled throw here 500s the request,
@@ -310,7 +311,9 @@ export async function setPassword(contactId: string, password: string): Promise<
     .values({ contactId, bcryptHash: hash, active: true })
     .onConflictDoUpdate({
       target: portalPasswords.contactId,
-      set: { bcryptHash: hash, setAt: new Date(), active: true },
+      // A password (re)set — reached only through a verified magic link
+      // or staff action — is the unlock path for the legacy lockout.
+      set: { bcryptHash: hash, setAt: new Date(), active: true, failedLoginAttempts: 0, lockedUntil: null },
     });
 
   // PORTAL_IDENTITY_LINKING_V1 — promote (or bind to) a master
@@ -353,6 +356,11 @@ export async function setPassword(contactId: string, password: string): Promise<
   }
 }
 
+// bcrypt of an empty string at cost 12 — timing equalizer for the
+// contact-missing / no-password branches (same trick as auth.service).
+const PORTAL_DUMMY_HASH = '$2b$12$CwTycUXWue0Thq9StjUM0uJ8lGwkE1dKtDSpFQNshLQ4uMRGjB3sC';
+const PORTAL_MAX_LOGIN_ATTEMPTS = 5;
+
 export async function loginWithPassword(args: {
   tenantId: string;
   email: string;
@@ -364,8 +372,11 @@ export async function loginWithPassword(args: {
   const contact = await db.query.portalContacts.findFirst({
     where: and(eq(portalContacts.tenantId, args.tenantId), eq(portalContacts.email, email)),
   });
-  // Constant-time-ish failure to avoid leaking which emails exist.
+  // Uniform failure — same code, same message, and the same bcrypt cost —
+  // for "no such contact", "inactive", "no password set" and "wrong
+  // password", so neither the response nor its timing says which.
   if (!contact || contact.status !== 'active') {
+    await bcrypt.compare(args.password, PORTAL_DUMMY_HASH);
     throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDS');
   }
 
@@ -389,10 +400,29 @@ export async function loginWithPassword(args: {
       where: eq(portalPasswords.contactId, contact.id),
     });
     if (!pw || !pw.active) {
-      throw AppError.unauthorized('No password set — request a magic link instead', 'NO_PASSWORD');
+      await bcrypt.compare(args.password, PORTAL_DUMMY_HASH);
+      throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDS');
     }
+    // Per-contact lockout (migration 0156) — mirrors the identity path and
+    // the staff users table: MAX failures → locked until admin/staff
+    // clears it (setPassword resets both columns).
     const ok = await bcrypt.compare(args.password, pw.bcryptHash);
-    if (!ok) throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDS');
+    if (pw.lockedUntil) {
+      // Locked accounts fail closed regardless of the password; the
+      // legitimate owner learns why only with the correct password.
+      if (ok) throw AppError.forbidden('This account is locked after too many failed sign-in attempts. Ask your accountant to reset your portal password.', 'ACCOUNT_LOCKED');
+      throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDS');
+    }
+    if (!ok) {
+      const attempts = (pw.failedLoginAttempts ?? 0) + 1;
+      await db.update(portalPasswords)
+        .set({ failedLoginAttempts: attempts, lockedUntil: attempts >= PORTAL_MAX_LOGIN_ATTEMPTS ? new Date() : null })
+        .where(eq(portalPasswords.contactId, contact.id));
+      throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDS');
+    }
+    if (pw.failedLoginAttempts > 0) {
+      await db.update(portalPasswords).set({ failedLoginAttempts: 0, lockedUntil: null }).where(eq(portalPasswords.contactId, contact.id));
+    }
   }
 
   const sessionToken = generateToken();

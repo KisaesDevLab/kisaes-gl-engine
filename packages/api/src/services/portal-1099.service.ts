@@ -45,6 +45,7 @@ import {
   type FormBox,
 } from './portal-1099.boxes.js';
 import nodemailer from 'nodemailer';
+import { escapeHtml } from '../utils/html-escape.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 14 + 15 — 1099 / W-9.
 
@@ -1072,7 +1073,7 @@ export async function requestW9(args: {
 
   if (email) {
     const text = `Hello,\n\nWe need a Form W-9 from you for IRS reporting. Click the link below to complete it securely. The link is valid for ${W9_REQUEST_TTL_DAYS} days.\n\n${link}\n\n${args.message ?? ''}`;
-    const html = `<p>Hello,</p><p>We need a Form W-9 from you for IRS reporting. Click the button below to complete it securely.</p><p><a href="${link}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px">Complete W-9</a></p><p style="color:#888;font-size:12px">Link valid for ${W9_REQUEST_TTL_DAYS} days. If you didn't expect this, you can ignore this message.</p>${args.message ? `<hr><p>${args.message}</p>` : ''}`;
+    const html = `<p>Hello,</p><p>We need a Form W-9 from you for IRS reporting. Click the button below to complete it securely.</p><p><a href="${link}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px">Complete W-9</a></p><p style="color:#888;font-size:12px">Link valid for ${W9_REQUEST_TTL_DAYS} days. If you didn't expect this, you can ignore this message.</p>${args.message ? `<hr><p>${escapeHtml(args.message)}</p>` : ''}`;
     const mailer = await getMailer();
     await mailer.send(email, 'Action requested: Complete your W-9', html, text);
     viaEmailStub = mailer.isStub;

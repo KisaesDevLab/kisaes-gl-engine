@@ -1241,7 +1241,7 @@ export async function importAsNewTenant(
   for (const uid of assignUserIds) {
     await db.execute(sql`
       INSERT INTO user_tenant_access (id, user_id, tenant_id, role, is_active)
-      VALUES (${crypto.randomUUID()}, ${uid}, ${tenantId}, 'admin', ${true})
+      VALUES (${crypto.randomUUID()}, ${uid}, ${tenantId}, 'owner', ${true})
       ON CONFLICT DO NOTHING
     `);
   }

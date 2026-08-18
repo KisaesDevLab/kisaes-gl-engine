@@ -3,9 +3,32 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
+import { z } from 'zod';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
+import { validate } from '../middleware/validate.js';
 import * as budgetService from '../services/budget.service.js';
+
+// Explicit field allowlists. Previously req.body was spread straight into
+// db.update().set(), so any column (tenantId, companyId, createdBy,
+// fiscalYearStart, id) was client-settable — setting tenantId re-homed the
+// row into another tenant.
+const budgetStatus = z.enum(['draft', 'active', 'archived']);
+const createBudgetSchema = z.object({
+  name: z.string().trim().min(1).max(255),
+  fiscalYear: z.number().int().min(1900).max(2200),
+  tagId: z.string().uuid().nullable().optional(),
+  description: z.string().max(2000).nullable().optional(),
+  periodType: z.enum(['monthly', 'quarterly', 'annual']).optional(),
+  status: budgetStatus.optional(),
+}).strict();
+const updateBudgetSchema = z.object({
+  name: z.string().trim().min(1).max(255).optional(),
+  isActive: z.boolean().optional(),
+  tagId: z.string().uuid().nullable().optional(),
+  description: z.string().max(2000).nullable().optional(),
+  status: budgetStatus.optional(),
+}).strict();
 
 export const budgetsRouter = Router();
 budgetsRouter.use(authenticate);
@@ -20,7 +43,7 @@ budgetsRouter.get('/', async (req, res) => {
   res.json({ budgets: result.data, total: result.total, limit: result.limit, offset: result.offset });
 });
 
-budgetsRouter.post('/', async (req, res) => {
+budgetsRouter.post('/', validate(createBudgetSchema), async (req, res) => {
   const budget = await budgetService.create(req.tenantId, req.body, req.userId);
   res.status(201).json({ budget });
 });
@@ -30,7 +53,7 @@ budgetsRouter.get('/:id', async (req, res) => {
   res.json({ budget });
 });
 
-budgetsRouter.put('/:id', async (req, res) => {
+budgetsRouter.put('/:id', validate(updateBudgetSchema), async (req, res) => {
   const budget = await budgetService.update(req.tenantId, req.params['id']!, req.body, req.userId);
   res.json({ budget });
 });

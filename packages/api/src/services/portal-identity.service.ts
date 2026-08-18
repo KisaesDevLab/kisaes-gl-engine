@@ -129,14 +129,22 @@ export async function verifyPassword(
   });
   if (!row) return null;
 
+  // Compare first; disclose the locked state only to a caller who has the
+  // correct password (the account owner). A wrong password on a locked
+  // identity is indistinguishable from a wrong password anywhere else, so
+  // the lock isn't an existence/state oracle. Locked + wrong doesn't bump
+  // the counter (already locked; keeps the audit meaningful).
+  const ok = await bcrypt.compare(plaintext, row.bcryptHash);
   if (row.lockedUntil) {
-    throw AppError.forbidden(
-      'This account is locked due to too many failed login attempts. Contact your administrator to unlock it.',
-      'ACCOUNT_LOCKED',
-    );
+    if (ok) {
+      throw AppError.forbidden(
+        'This account is locked due to too many failed login attempts. Contact your administrator to unlock it.',
+        'ACCOUNT_LOCKED',
+      );
+    }
+    return null;
   }
 
-  const ok = await bcrypt.compare(plaintext, row.bcryptHash);
   if (!ok) {
     const attempts = (row.failedLoginAttempts ?? 0) + 1;
     const lockUntil = attempts >= MAX_LOGIN_ATTEMPTS ? new Date() : null;

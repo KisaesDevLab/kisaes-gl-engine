@@ -413,6 +413,8 @@ export async function getAccessibleTenants(userId: string) {
 const DUMMY_PASSWORD_HASH =
   '$2b$12$CwTycUXWue0Thq9StjUM0uJ8lGwkE1dKtDSpFQNshLQ4uMRGjB3sC';
 
+const SUPER_ADMIN_LOCK_MINUTES = 30;
+
 export async function login(input: LoginInput): Promise<{ user: typeof users.$inferSelect; tokens: AuthTokens; accessibleTenants: any[] }> {
   const MAX_LOGIN_ATTEMPTS = 5;
 
@@ -429,13 +431,6 @@ export async function login(input: LoginInput): Promise<{ user: typeof users.$in
     throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDENTIALS');
   }
 
-  if (!user.isActive) {
-    throw AppError.forbidden(
-      'This account has been deactivated. Please contact your administrator.',
-      'ACCOUNT_DEACTIVATED',
-    );
-  }
-
   // Account lockout — CLOUDFLARE_TUNNEL_PLAN Phase 3.
   // Locked accounts stay locked until a super-admin explicitly
   // unlocks them via POST /admin/users/:id/unlock. Previously the
@@ -444,20 +439,35 @@ export async function login(input: LoginInput): Promise<{ user: typeof users.$in
   // (attacker waits 16 min, tries another 5). Admin-unlock removes
   // that cheap oracle; loginLockedUntil being set (to any date past
   // or future) blocks login.
-  if (user.loginLockedUntil) {
-    throw AppError.forbidden(
-      'This account is locked due to too many failed login attempts. Contact your administrator to unlock it.',
-      'ACCOUNT_LOCKED',
-    );
-  }
+  //
+  // EXCEPTION — super-admins get a TIMED lock (SUPER_ADMIN_LOCK_MINUTES)
+  // instead of admin-unlock: with a single super-admin on the box, five
+  // bad guesses at their email would otherwise lock the only account
+  // able to unlock anything (recovery = raw SQL). The per-account and
+  // per-IP limiters still bound the guess rate.
+  const now = Date.now();
+  const isLocked = !!user.loginLockedUntil
+    && (!user.isSuperAdmin || new Date(user.loginLockedUntil).getTime() > now);
 
   const validPassword = await bcrypt.compare(input.password, user.passwordHash);
+
+  // Account-state disclosure only AFTER the password is verified. Telling
+  // a caller "this account is locked / deactivated" on a wrong password
+  // was a free existence + state oracle for anyone guessing emails; the
+  // legitimate owner (who knows the password) still gets the real reason.
   if (!validPassword) {
+    if (isLocked || !user.isActive) {
+      // Don't advance the counter or write an audit row for an account
+      // that can't log in anyway — keep the audit trail meaningful.
+      throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDENTIALS');
+    }
     const attempts = (user.loginFailedAttempts || 0) + 1;
-    // When the threshold is hit, stamp the lockout with "now" as a
-    // sentinel — any truthy value means locked. The admin unlock path
-    // clears both columns.
-    const lockUntil = attempts >= MAX_LOGIN_ATTEMPTS ? new Date() : null;
+    // When the threshold is hit, stamp the lockout: "now" as a sentinel
+    // for regular users (any truthy value = locked until admin unlock),
+    // or a future release time for super-admins.
+    const lockUntil = attempts >= MAX_LOGIN_ATTEMPTS
+      ? (user.isSuperAdmin ? new Date(now + SUPER_ADMIN_LOCK_MINUTES * 60_000) : new Date())
+      : null;
     await db.update(users)
       .set({ loginFailedAttempts: attempts, loginLockedUntil: lockUntil, updatedAt: new Date() })
       .where(eq(users.id, user.id));
@@ -478,8 +488,24 @@ export async function login(input: LoginInput): Promise<{ user: typeof users.$in
     throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDENTIALS');
   }
 
-  // Reset failed attempts on successful login
-  if (user.loginFailedAttempts && user.loginFailedAttempts > 0) {
+  if (!user.isActive) {
+    throw AppError.forbidden(
+      'This account has been deactivated. Please contact your administrator.',
+      'ACCOUNT_DEACTIVATED',
+    );
+  }
+  if (isLocked) {
+    throw AppError.forbidden(
+      user.isSuperAdmin
+        ? `This account is temporarily locked after too many failed sign-in attempts. Try again in ${SUPER_ADMIN_LOCK_MINUTES} minutes.`
+        : 'This account is locked due to too many failed login attempts. Contact your administrator to unlock it.',
+      'ACCOUNT_LOCKED',
+    );
+  }
+
+  // Reset failed attempts on successful login (also clears an expired
+  // super-admin timed lock).
+  if ((user.loginFailedAttempts && user.loginFailedAttempts > 0) || user.loginLockedUntil) {
     await db.update(users)
       .set({ loginFailedAttempts: 0, loginLockedUntil: null, updatedAt: new Date() })
       .where(eq(users.id, user.id));

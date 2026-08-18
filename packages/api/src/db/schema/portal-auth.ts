@@ -8,6 +8,7 @@ import {
   varchar,
   text,
   boolean,
+  integer,
   timestamp,
   index,
   uniqueIndex,
@@ -68,4 +69,8 @@ export const portalPasswords = pgTable('portal_passwords', {
   // Active flag lets us soft-disable a password without wiping the hash —
   // useful when an admin pauses an account but might want to restore.
   active: boolean('active').notNull().default(true),
+  // Per-contact lockout for the legacy (unlinked) password path — mirrors
+  // users.login_failed_attempts / portal_identities. Migration 0156.
+  failedLoginAttempts: integer('failed_login_attempts').notNull().default(0),
+  lockedUntil: timestamp('locked_until', { withTimezone: true }),
 });
