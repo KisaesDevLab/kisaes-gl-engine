@@ -217,8 +217,6 @@ describe('trend charts', () => {
 
 describe('report embeds', () => {
   it('cash_flow embed returns section totals + net change', async () => {
-    // NB: buildCashFlowStatement's cash-account set uses the specific
-    // detail types ('checking', 'savings', …), not the umbrella 'bank'.
     const cash = await mk('Checking', 'asset', '1000', 'checking');
     const rev = await mk('Sales', 'revenue', '4000', 'service');
     const truck = await mk('Vehicles', 'asset', '10600', 'fixed_asset');

@@ -89,6 +89,32 @@ describe('buildCashFlowStatement (direct method)', () => {
     expect(cf.netChange).toBeCloseTo(2500, 2); // = true cash movement
   });
 
+  it("recognises the default-COA / QBD umbrella detail_type 'bank' as cash (regression: statement read $0.00 for tenants whose bank accounts are all 'bank')", async () => {
+    const bank = await mk('Operating Checking', 'asset', '1000', 'bank');
+    const petty = await mk('Petty Cash', 'asset', '1050', 'petty_cash');
+    const rev = await mk('Sales', 'revenue', '4000', 'service');
+    const loan = await mk('Bank Loan', 'liability', '2500', 'long_term_liability');
+    await post('sale', [
+      { accountId: bank.id, debit: '2500', credit: '0' },
+      { accountId: rev.id, debit: '0', credit: '2500' },
+    ], '2026-02-01');
+    await post('loan proceeds', [
+      { accountId: bank.id, debit: '4000', credit: '0' },
+      { accountId: loan.id, debit: '0', credit: '4000' },
+    ], '2026-02-02');
+    // bank → petty cash is cash-to-cash: nets to zero
+    await post('top up petty cash', [
+      { accountId: petty.id, debit: '100', credit: '0' },
+      { accountId: bank.id, debit: '0', credit: '100' },
+    ], '2026-02-03');
+
+    const cf = await reportService.buildCashFlowStatement(tenantId, '2026-01-01', '2026-12-31');
+    expect(cf.operatingActivities).toBeCloseTo(2500, 2);
+    expect(cf.financingActivities).toBeCloseTo(4000, 2);
+    expect(cf.investingActivities).toBeCloseTo(0, 2);
+    expect(cf.netChange).toBeCloseTo(6500, 2);
+  });
+
   it('drops cash-to-cash transfers (net zero)', async () => {
     const checking = await mk('Checking', 'asset', '1000', 'checking');
     const savings = await mk('Savings', 'asset', '1010', 'savings');

@@ -686,12 +686,17 @@ export async function buildCashFlowStatement(
   const tagExistsClause = tagId
     ? sql` AND EXISTS (SELECT 1 FROM journal_lines jlt WHERE jlt.transaction_id = t.id AND jlt.tenant_id = ${tenantId} AND jlt.tag_id IN ${tagIn(tagId)})`
     : sql``;
+  // Both detail-type vocabularies ('bank' from the default COA / QBD import,
+  // 'checking'/'savings' from the QBO-style import) — a tenant whose bank
+  // accounts are all 'bank' otherwise has NO cash accounts here and the
+  // whole statement reads $0.00.
+  const cashDetailList = sql.join(CASH_ACCOUNT_DETAIL_TYPES.map((d) => sql`${d}`), sql`, `);
 
   const rows = await db.execute(sql`
     WITH cash_accounts AS (
       SELECT id FROM accounts
       WHERE tenant_id = ${tenantId} AND account_type = 'asset'
-        AND detail_type IN ('checking', 'savings', 'cash', 'petty_cash', 'undeposited_funds')
+        AND detail_type IN (${cashDetailList})
     ),
     txn_cash AS (
       SELECT t.id, SUM(jl.debit - jl.credit) AS cash_delta
@@ -1655,6 +1660,10 @@ export async function buildTransactionListByVendor(tenantId: string, vendorId: s
 // exist in production data (see BANK_DETAIL_TYPES in
 // portal-report-evaluator.service.ts), so the report accepts either.
 export const BANK_ACCOUNT_DETAIL_TYPES = ['bank', 'checking', 'savings'];
+// Everything that IS cash for the direct-method cash-flow statement: the
+// bank vocabulary above plus cash-on-hand and the undeposited-funds
+// clearing account (money received, not yet at the bank — still cash).
+export const CASH_ACCOUNT_DETAIL_TYPES = [...BANK_ACCOUNT_DETAIL_TYPES, 'cash', 'petty_cash', 'undeposited_funds'];
 // Liability accounts that are reconciled like a bank account (credit-card and
 // line-of-credit statements). Included in the Bank Reconciliation Summary so
 // card reconciliations show alongside bank accounts.

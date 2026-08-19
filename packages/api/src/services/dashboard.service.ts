@@ -113,8 +113,11 @@ export async function getCashPosition(tenantId: string) {
     SELECT a.id, a.name, a.account_number, a.detail_type, a.balance
     FROM accounts a
     WHERE a.tenant_id = ${tenantId} AND a.is_active = true
-      AND a.detail_type IN ('bank', 'credit_card')
-    ORDER BY a.detail_type, a.account_number, a.name
+      AND (
+        (a.account_type = 'asset' AND a.detail_type IN ('bank', 'checking', 'savings', 'cash', 'petty_cash'))
+        OR (a.account_type = 'liability' AND a.detail_type = 'credit_card')
+      )
+    ORDER BY a.account_type, a.account_number, a.name
   `);
 
   // `id` rides along so the dashboard can deep-link each row to its
@@ -124,8 +127,8 @@ export async function getCashPosition(tenantId: string) {
 
   for (const row of rows.rows as any[]) {
     const entry = { id: String(row.id), name: row.name, balance: parseFloat(row.balance || '0') };
-    if (row.detail_type === 'bank') bankAccounts.push(entry);
-    else creditCards.push(entry);
+    if (row.detail_type === 'credit_card') creditCards.push(entry);
+    else bankAccounts.push(entry);
   }
 
   return {
