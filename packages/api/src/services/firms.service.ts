@@ -43,13 +43,28 @@ export async function create(input: CreateFirmInput, createdByUserId: string): P
       'FIRM_SLUG_TAKEN',
     );
   }
-  const [row] = await db.insert(firms).values({
-    name: input.name,
-    slug: input.slug,
-    superAdminManaged: input.superAdminManaged ?? false,
-    createdByUserId,
-  }).returning();
-  return mapRow(row!);
+  // The pre-check is racy (two concurrent creates both pass it), so
+  // the DB unique violation must map to the same FIRM_SLUG_TAKEN —
+  // ensureApplianceFirm relies on that code to resolve the winner.
+  try {
+    const [row] = await db.insert(firms).values({
+      name: input.name,
+      slug: input.slug,
+      superAdminManaged: input.superAdminManaged ?? false,
+      createdByUserId,
+    }).returning();
+    return mapRow(row!);
+  } catch (err) {
+    const code = (err as { code?: string }).code ??
+      (err as { cause?: { code?: string } }).cause?.code;
+    if (code === '23505') {
+      throw AppError.conflict(
+        `A firm with slug "${input.slug}" already exists`,
+        'FIRM_SLUG_TAKEN',
+      );
+    }
+    throw err;
+  }
 }
 
 export async function getById(id: string): Promise<Firm> {

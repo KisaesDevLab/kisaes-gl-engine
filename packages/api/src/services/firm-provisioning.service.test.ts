@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { APPLIANCE_FIRM_SLUG } from '@kis-books/shared';
 import { db } from '../db/index.js';
@@ -66,6 +66,31 @@ describe('firm-provisioning.ensureApplianceFirm', () => {
     expect(b.id).toBe(a.id);
     const rows = await db.select().from(firms).where(eq(firms.slug, APPLIANCE_FIRM_SLUG));
     expect(rows).toHaveLength(1);
+  });
+
+  it('tolerates the create race — losing the insert resolves the winner row instead of throwing', async () => {
+    // Two concurrent registrations both read no firm row before either
+    // inserts, so the loser hits the DB unique constraint. Simulate the
+    // loser's view: the row exists, but both pre-reads (getBySlug and
+    // create's pre-check) miss it. The unique violation must surface as
+    // FIRM_SLUG_TAKEN internally so the winner's row is returned.
+    const [winner] = await db.insert(firms).values({
+      name: 'Default Practice',
+      slug: APPLIANCE_FIRM_SLUG,
+      superAdminManaged: true,
+      createdByUserId: userId,
+    }).returning();
+    const spy = vi.spyOn(db.query.firms, 'findFirst')
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined);
+    try {
+      const firm = await provisioning.ensureApplianceFirm(userId);
+      expect(firm.id).toBe(winner!.id);
+      const rows = await db.select().from(firms).where(eq(firms.slug, APPLIANCE_FIRM_SLUG));
+      expect(rows).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
