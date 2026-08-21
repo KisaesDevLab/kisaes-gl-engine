@@ -19,8 +19,8 @@ import { db } from '../db/index.js';
 import {
   accounts,
   bankFeedItems,
-  bankRules,
   categorizationHistory,
+  conditionalRules,
   contacts,
   findings,
   transactionClassificationState,
@@ -531,13 +531,13 @@ export async function listByBucket(
       item: bankFeedItems,
       account: accounts,
       contact: contacts,
-      rule: bankRules,
+      rule: conditionalRules,
     })
     .from(transactionClassificationState)
     .innerJoin(bankFeedItems, eq(bankFeedItems.id, transactionClassificationState.bankFeedItemId))
     .leftJoin(accounts, eq(accounts.id, transactionClassificationState.suggestedAccountId))
     .leftJoin(contacts, eq(contacts.id, transactionClassificationState.suggestedVendorId))
-    .leftJoin(bankRules, eq(bankRules.id, transactionClassificationState.matchedRuleId))
+    .leftJoin(conditionalRules, eq(conditionalRules.id, transactionClassificationState.matchedRuleId))
     .where(and(...conditions))
     .orderBy(desc(transactionClassificationState.createdAt), asc(transactionClassificationState.id))
     .limit(opts.limit + 1);

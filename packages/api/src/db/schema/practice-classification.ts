@@ -5,7 +5,7 @@
 import { pgTable, uuid, varchar, text, decimal, timestamp, index, uniqueIndex, jsonb } from 'drizzle-orm/pg-core';
 import { tenants } from './auth.js';
 import { bankFeedItems } from './banking.js';
-import { bankRules } from './bank-rules.js';
+import { conditionalRules } from './conditional-rules.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 2 — the bucket workflow
 // extends each pending bank-feed item with the computed bucket
@@ -22,7 +22,10 @@ export const transactionClassificationState = pgTable('transaction_classificatio
   confidenceScore: decimal('confidence_score', { precision: 4, scale: 3 }).notNull().default('0'),
   suggestedAccountId: uuid('suggested_account_id'),
   suggestedVendorId: uuid('suggested_vendor_id'),
-  matchedRuleId: uuid('matched_rule_id').references(() => bankRules.id, { onDelete: 'set null' }),
+  // Repointed from legacy bank_rules → conditional_rules (migration
+  // 0160): the categorization pipeline records conditional-rule ids
+  // here, and the old FK made every attribution upsert fail silently.
+  matchedRuleId: uuid('matched_rule_id').references(() => conditionalRules.id, { onDelete: 'set null' }),
   reasoningBlob: jsonb('reasoning_blob'),
   modelUsed: varchar('model_used', { length: 100 }),
   matchCandidates: jsonb('match_candidates'),
