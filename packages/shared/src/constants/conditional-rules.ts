@@ -43,6 +43,19 @@ export const STRING_OPERATORS = [
   'matches_regex', 'not_matches_regex',
 ] as const;
 
+// String operators whose needle must be non-empty. An empty needle
+// makes `contains`/`starts_with`/`ends_with` (and an empty regex)
+// match EVERY descriptor — `"x".includes('')` is true — turning the
+// rule into a catch-all that short-circuits the whole rule list.
+// The negated forms with an empty needle can never match, which is
+// equally certain to be a mistake, so they're rejected too.
+export const STRING_OPERATORS_REQUIRING_VALUE = [
+  'contains', 'not_contains',
+  'starts_with', 'not_starts_with',
+  'ends_with', 'not_ends_with',
+  'matches_regex', 'not_matches_regex',
+] as const;
+
 export const NUMERIC_OPERATORS = [
   'eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'between',
 ] as const;

@@ -9,6 +9,7 @@ import {
   CONDITION_FIELDS_DEFERRED,
   FIELD_OPERATOR_MAP,
   MAX_BRANCH_DEPTH,
+  STRING_OPERATORS_REQUIRING_VALUE,
 } from '../constants/conditional-rules.js';
 import { checkRegexSafety } from '../utils/safe-regex.js';
 
@@ -39,6 +40,19 @@ const leafConditionSchema = z.object({
       code: z.ZodIssueCode.custom,
       message: `Operator "${cond.operator}" not valid for field "${cond.field}". Expected one of: ${allowed.join(', ')}`,
       path: ['operator'],
+    });
+  }
+  // An empty needle turns substring operators into catch-alls
+  // (`"x".includes('')` is true) that short-circuit the whole rule
+  // list; the negated forms can never match. Both are mistakes.
+  if (
+    (STRING_OPERATORS_REQUIRING_VALUE as readonly string[]).includes(cond.operator) &&
+    String(cond.value ?? '') === ''
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Operator "${cond.operator}" requires a non-empty match value`,
+      path: ['value'],
     });
   }
   // User-authored regexes are evaluated over transaction batches by the

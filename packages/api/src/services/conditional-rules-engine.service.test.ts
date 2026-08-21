@@ -75,6 +75,23 @@ describe('evaluateCondition — string operators', () => {
     expect(evaluateCondition(leaf('descriptor', 'equals', ''), c)).toBe(true);
     expect(evaluateCondition(leaf('descriptor', 'contains', 'foo'), c)).toBe(false);
   });
+  it('empty needle is inert for substring operators (no catch-all)', () => {
+    expect(evaluateCondition(leaf('descriptor', 'contains', ''), ctx())).toBe(false);
+    expect(evaluateCondition(leaf('descriptor', 'starts_with', ''), ctx())).toBe(false);
+    expect(evaluateCondition(leaf('descriptor', 'ends_with', ''), ctx())).toBe(false);
+    expect(evaluateCondition(leaf('descriptor', 'not_contains', ''), ctx())).toBe(false);
+    expect(evaluateCondition(leaf('descriptor', 'not_starts_with', ''), ctx())).toBe(false);
+    expect(evaluateCondition(leaf('descriptor', 'not_ends_with', ''), ctx())).toBe(false);
+    expect(evaluateCondition(leaf('descriptor', 'contains', null), ctx())).toBe(false);
+  });
+  it('empty regex pattern is inert (no catch-all)', () => {
+    expect(evaluateCondition(leaf('descriptor', 'matches_regex', ''), ctx())).toBe(false);
+    expect(evaluateCondition(leaf('descriptor', 'not_matches_regex', ''), ctx())).toBe(false);
+  });
+  it('equals against empty string keeps exact-comparison semantics', () => {
+    expect(evaluateCondition(leaf('descriptor', 'equals', ''), ctx())).toBe(false);
+    expect(evaluateCondition(leaf('descriptor', 'not_equals', ''), ctx())).toBe(true);
+  });
 });
 
 // ─── Numeric operators ────────────────────────────────────────

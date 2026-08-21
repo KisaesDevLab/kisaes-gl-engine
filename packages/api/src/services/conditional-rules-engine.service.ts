@@ -98,6 +98,17 @@ function warnUnsafeStoredPattern(pattern: string): void {
 function evaluateString(field: string | undefined, op: string, value: unknown): boolean {
   const haystack = (field ?? '').toLowerCase();
   const needle = String(value ?? '').toLowerCase();
+  // An empty needle makes the positive substring operators match
+  // EVERYTHING (`"x".includes('')` is true), so a rule stored with a
+  // blank value becomes a catch-all that short-circuits the whole
+  // rule list. The schema now refuses such rules on save; a stored
+  // one (saved by an older build) is treated as non-matching here —
+  // same defensive posture as unsafe stored regexes below. `equals`/
+  // `not_equals` keep exact-comparison semantics against ''.
+  const emptyNeedleInert =
+    op === 'contains' || op === 'starts_with' || op === 'ends_with' ||
+    op === 'not_contains' || op === 'not_starts_with' || op === 'not_ends_with';
+  if (needle === '' && emptyNeedleInert) return false;
   switch (op) {
     case 'equals':           return haystack === needle;
     case 'not_equals':       return haystack !== needle;
@@ -116,6 +127,9 @@ function evaluateString(field: string | undefined, op: string, value: unknown): 
       // the leaf non-matching for BOTH operators — a rejected regex must
       // never turn a `not_matches_regex` rule into "fires on everything".
       const pattern = String(value);
+      // An empty pattern compiles to a match-everything regex — the
+      // same catch-all hazard as an empty substring needle. Inert.
+      if (pattern === '') return false;
       const re = compileSafeRegex(pattern);
       if (!re) { warnUnsafeStoredPattern(pattern); return false; }
       const hit = re.test((field ?? '').slice(0, MAX_REGEX_HAYSTACK));
