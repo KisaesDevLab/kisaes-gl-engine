@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import jwt from 'jsonwebtoken';
 import { db, pool } from '../db/index.js';
-import { tenants, users, sessions, companies, accounts, userTenantAccess } from '../db/schema/index.js';
+import { tenants, users, sessions, companies, accounts, userTenantAccess, passwordResetTokens } from '../db/schema/index.js';
 import { auditLog } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import * as authService from './auth.service.js';
@@ -17,6 +17,10 @@ import { sql, eq, and, inArray, like } from 'drizzle-orm';
 const TEST_EMAILS = [
   'test@example.com', 'session-cap@example.com', 'lockout@example.com',
   'changepw@example.com', 'role-owner@example.com', 'role-owner-b@example.com',
+  // sendPasswordReset's registrations. Missing from this list, they were never
+  // cleaned, so the file passed once against a fresh database and threw
+  // "An account with this email already exists" on every run after that.
+  'owner@example.com', 'a@example.com', 'b@example.com',
 ];
 
 // Tenant-scoped cleanup — only ever touch this file's own tenants so
@@ -35,6 +39,11 @@ async function cleanDb() {
   const tenantIds = [...new Set([...owned, ...switchTargets].map((r) => r.id))];
   if (tenantIds.length === 0) return;
   await db.delete(auditLog).where(inArray(auditLog.tenantId, tenantIds));
+  // Before users: the FK is NO ACTION, so a leftover reset token blocks the
+  // user delete and the whole cleanup silently fails.
+  await db.delete(passwordResetTokens).where(
+    inArray(passwordResetTokens.userId, db.select({ id: users.id }).from(users).where(inArray(users.tenantId, tenantIds))),
+  );
   await db.delete(accounts).where(inArray(accounts.tenantId, tenantIds));
   await db.delete(companies).where(inArray(companies.tenantId, tenantIds));
   await db.delete(sessions).where(

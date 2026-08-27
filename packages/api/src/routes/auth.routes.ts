@@ -350,6 +350,20 @@ authRouter.get('/me', authenticate, async (req, res) => {
   });
 });
 
+// Bank-feed backlog + Plaid freshness per client, for the Clients screen.
+// Kept off /me on purpose: /me runs on every app boot and these are aggregate
+// queries, so the Clients page fetches them on its own and merges by tenantId.
+//
+// requireSessionAuth, like /switch-tenant: this is the one route that reads
+// ACROSS tenants, and `authenticate` also accepts API keys and ?_dl= download
+// tokens. An API key is issued against a single tenant, so without this gate a
+// key scoped to one client could read every client its issuer can reach.
+authRouter.get('/accessible-tenants/banking', authenticate, requireSessionAuth, async (req, res) => {
+  const clientBankingStatusService = await import('../services/client-banking-status.service.js');
+  const data = await clientBankingStatusService.getForUser(req.userId);
+  res.json({ data });
+});
+
 authRouter.post('/switch-tenant', authenticate, requireSessionAuth, async (req, res) => {
   // Pass the current refresh cookie so switchTenant can atomically revoke
   // the pre-switch session when it mints the new one. Stops a compromised

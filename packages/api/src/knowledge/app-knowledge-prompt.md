@@ -834,6 +834,29 @@ top of the sidebar — click it to see all your companies.
 - For accountants/bookkeepers with multiple clients, the dropdown also shows a
   **Switch Client** section for switching between tenants.
 
+### The Clients Screen
+**View all clients…** at the bottom of the company switcher opens the **Clients**
+page — every client (tenant) you have access to, in one sortable table. Click any
+row to switch into that client.
+
+Alongside Name, Role, and Last accessed, each row shows two things you would
+otherwise have to open each client to find out:
+
+- **Unprocessed bank txns** — bank feed items still waiting on someone, counting
+  both untouched items and ones with a category staged but not yet approved.
+  This is the same set the Bank Feed page shows with "Hide processed" on, so the
+  number here is the row count you will see after clicking through. (The
+  dashboard's bank-feed banner counts only untouched items, so it reads lower.)
+  Sort by this column to see which client has the biggest backlog.
+- **Last bank sync** — the most recent Plaid sync for that client's bank
+  connections, or "No Plaid connection" (a client whose transactions arrive by
+  CSV/OFX import has no Plaid item, so this column stays blank for them).
+  An amber warning triangle means a connection is erroring or the client needs
+  to re-enter their bank login. The time shown is when a sync was last
+  *attempted*, which for a broken connection can look recent even though no
+  transactions came in — that is what the triangle is telling you. Sort by this
+  column ascending to bring the clients whose feeds have gone quiet to the top.
+
 ### Backup & Restore
 Manage backups under **Settings → Backup & Restore →**.
 
