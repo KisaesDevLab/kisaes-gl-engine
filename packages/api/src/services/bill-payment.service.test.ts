@@ -4,6 +4,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
+import { CHECK_MEMO_PRINT_LIMIT } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import {
   tenants,
@@ -792,6 +793,143 @@ describe('Bill Payment Service', () => {
 
     expect(result.payments[0]!.checkNumber).toBe(1042);
     expect(result.payments[0]!.printStatus).toBe('hand_written');
+  });
+
+  describe('printed memo', () => {
+    const memoOf = async (paymentId: string) => {
+      const [txn] = await db.select().from(transactions).where(eq(transactions.id, paymentId));
+      return txn!.printedMemo;
+    };
+
+    it('defaults the check memo to the vendor invoice numbers being paid', async () => {
+      const first = await billService.createBill(tenantId, {
+        contactId: vendorId,
+        txnDate: '2026-04-01',
+        vendorInvoiceNumber: 'INV-1001',
+        lines: [{ accountId: officeSuppliesId, amount: '100.00' }],
+      });
+      const second = await billService.createBill(tenantId, {
+        contactId: vendorId,
+        txnDate: '2026-04-02',
+        vendorInvoiceNumber: 'INV-1002',
+        lines: [{ accountId: officeSuppliesId, amount: '50.00' }],
+      });
+
+      const result = await billPaymentService.payBills(tenantId, {
+        bankAccountId,
+        txnDate: '2026-04-15',
+        method: 'check',
+        bills: [
+          { billId: first.id, amount: '100.00' },
+          { billId: second.id, amount: '50.00' },
+        ],
+      });
+
+      expect(await memoOf(result.payments[0]!.id)).toBe('INV-1001, INV-1002');
+    });
+
+    it('falls back to our bill number when the vendor gave no invoice number', async () => {
+      const bill = await billService.createBill(tenantId, {
+        contactId: vendorId,
+        txnDate: '2026-04-01',
+        lines: [{ accountId: officeSuppliesId, amount: '100.00' }],
+      });
+
+      const result = await billPaymentService.payBills(tenantId, {
+        bankAccountId,
+        txnDate: '2026-04-15',
+        method: 'check',
+        bills: [{ billId: bill.id, amount: '100.00' }],
+      });
+
+      expect(await memoOf(result.payments[0]!.id)).toBe(bill.txnNumber);
+    });
+
+    it('uses the memo the payer typed instead of the default', async () => {
+      const bill = await billService.createBill(tenantId, {
+        contactId: vendorId,
+        txnDate: '2026-04-01',
+        vendorInvoiceNumber: 'INV-1001',
+        lines: [{ accountId: officeSuppliesId, amount: '100.00' }],
+      });
+
+      const result = await billPaymentService.payBills(tenantId, {
+        bankAccountId,
+        txnDate: '2026-04-15',
+        method: 'check',
+        printedMemo: '  Acct 55-2291  ',
+        bills: [{ billId: bill.id, amount: '100.00' }],
+      });
+
+      expect(await memoOf(result.payments[0]!.id)).toBe('Acct 55-2291');
+    });
+
+    it('leaves the memo unset when the payment is not by check', async () => {
+      const bill = await billService.createBill(tenantId, {
+        contactId: vendorId,
+        txnDate: '2026-04-01',
+        vendorInvoiceNumber: 'INV-1001',
+        lines: [{ accountId: officeSuppliesId, amount: '100.00' }],
+      });
+
+      const result = await billPaymentService.payBills(tenantId, {
+        bankAccountId,
+        txnDate: '2026-04-15',
+        method: 'ach',
+        bills: [{ billId: bill.id, amount: '100.00' }],
+      });
+
+      expect(await memoOf(result.payments[0]!.id)).toBeNull();
+    });
+
+    it('trims a long reference list to what the memo line actually prints', async () => {
+      // Six ordinary invoice numbers already overrun the printed memo rule
+      // (~60 chars) while staying well under the 255-char column, so the
+      // budget has to be the print limit or the check prints a half-written
+      // invoice number with the rest silently gone.
+      const bills = [];
+      for (let i = 0; i < 6; i++) {
+        bills.push(await billService.createBill(tenantId, {
+          contactId: vendorId,
+          txnDate: '2026-04-01',
+          vendorInvoiceNumber: `INV-2026-04${String(i).padStart(2, '0')}`,
+          lines: [{ accountId: officeSuppliesId, amount: '10.00' }],
+        }));
+      }
+
+      const result = await billPaymentService.payBills(tenantId, {
+        bankAccountId,
+        txnDate: '2026-04-15',
+        method: 'check',
+        bills: bills.map((b) => ({ billId: b.id, amount: '10.00' })),
+      });
+
+      const memo = (await memoOf(result.payments[0]!.id))!;
+      expect(memo.length).toBeLessThanOrEqual(CHECK_MEMO_PRINT_LIMIT);
+      expect(memo).toMatch(/ \+\d+ more$/);
+      // Only whole references survive — never a half-written invoice number.
+      expect(memo).toContain('INV-2026-0400');
+      expect(memo).not.toMatch(/INV-2026-\d{0,3}(,| \+|$)/);
+    });
+
+    it('keeps a single over-long reference whole in the register', async () => {
+      const bill = await billService.createBill(tenantId, {
+        contactId: vendorId,
+        txnDate: '2026-04-01',
+        vendorInvoiceNumber: 'INVOICE-REFERENCE-THAT-IS-FAR-TOO-LONG-FOR-THE-PRINTED-MEMO-RULE',
+        lines: [{ accountId: officeSuppliesId, amount: '10.00' }],
+      });
+
+      const result = await billPaymentService.payBills(tenantId, {
+        bankAccountId,
+        txnDate: '2026-04-15',
+        method: 'check',
+        bills: [{ billId: bill.id, amount: '10.00' }],
+      });
+
+      expect(await memoOf(result.payments[0]!.id))
+        .toBe('INVOICE-REFERENCE-THAT-IS-FAR-TOO-LONG-FOR-THE-PRINTED-MEMO-RULE');
+    });
   });
 });
 

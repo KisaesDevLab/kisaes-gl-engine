@@ -4,6 +4,14 @@
 
 export type PrintStatus = 'queue' | 'printed' | 'hand_written';
 
+/**
+ * Characters that actually fit on the printed memo line. The column stores 255,
+ * but the rule is three inches wide at 6.75pt and check-pdf's drawText drops
+ * whatever runs past it with no ellipsis — so warn in the UI at this length
+ * rather than let a memo lose its tail on paper.
+ */
+export const CHECK_MEMO_PRINT_LIMIT = 60;
+
 export interface WriteCheckInput {
   bankAccountId: string;
   contactId?: string;
@@ -24,6 +32,9 @@ export interface WriteCheckInput {
     tagId?: string | null;
   }>;
   tagIds?: string[];
+  /** Draft id the form's attachments were uploaded against, relinked to the
+   *  created check by POST /checks. */
+  draftAttachmentId?: string;
 }
 
 // Single source of truth for the selectable check print layouts. The

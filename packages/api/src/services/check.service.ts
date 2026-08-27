@@ -326,6 +326,60 @@ export async function printChecks(
   });
 }
 
+/**
+ * Change the memo that will print on a check's memo line.
+ *
+ * Only checks still waiting in the print queue can be edited: once the memo
+ * exists on paper it is a fact, and rewriting the record would make the
+ * register disagree with what the payee is holding. That rules out
+ * 'hand_written' as well as 'printed' — a hand-written check was written by
+ * hand before it ever reached us. Reprinting a batch requeues its checks, so
+ * a genuine correction is still reachable.
+ */
+export async function updatePrintedMemo(
+  tenantId: string, checkId: string, printedMemo: string,
+  userId?: string, companyId?: string,
+) {
+  const conds = [eq(transactions.tenantId, tenantId), eq(transactions.id, checkId)];
+  if (companyId) conds.push(eq(transactions.companyId, companyId));
+  const [txn] = await db.select().from(transactions).where(and(...conds)).limit(1);
+
+  if (!txn || txn.printStatus === null) throw AppError.notFound('Check not found');
+  if (txn.status === 'void') throw AppError.badRequest('Cannot edit the memo on a voided check');
+  if (txn.printStatus === 'printed') {
+    throw AppError.badRequest('This check has already printed. Reprint the batch to return it to the queue before editing its memo.');
+  }
+  if (txn.printStatus !== 'queue') {
+    throw AppError.badRequest("A hand-written check's memo can't be changed here — the check already exists on paper.");
+  }
+
+  // Empty string, not NULL: NULL means "nobody set one" and falls back to
+  // the internal memo at print time, so clearing the field has to be
+  // recorded as a deliberate "print no memo".
+  const next = printedMemo.trim();
+
+  // The status condition is repeated in the WHERE, not just checked above:
+  // printChecks holds the row FOR UPDATE, so an edit submitted while a batch
+  // is printing would otherwise land on a check that has since printed.
+  const updated = await db.update(transactions)
+    .set({ printedMemo: next, updatedAt: new Date() })
+    .where(and(
+      eq(transactions.tenantId, tenantId),
+      eq(transactions.id, checkId),
+      eq(transactions.printStatus, 'queue'),
+    ))
+    .returning({ id: transactions.id });
+
+  if (updated.length === 0) {
+    throw AppError.badRequest('This check printed while you were editing it. Reprint the batch to return it to the queue before editing its memo.');
+  }
+
+  await auditLog(tenantId, 'update', 'check', checkId,
+    { printedMemo: txn.printedMemo }, { printedMemo: next }, userId);
+
+  return { id: checkId, printedMemo: next };
+}
+
 export async function requeueChecks(tenantId: string, checkIds: string[]) {
   for (const id of checkIds) {
     await db.update(transactions).set({

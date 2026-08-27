@@ -106,3 +106,4 @@ export * from './utils/number-to-words.js';
 export * from './utils/account-types.js';
 export * from './utils/permissions.js';
 export * from './utils/safe-regex.js';
+export * from './utils/address.js';

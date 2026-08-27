@@ -6,7 +6,7 @@ import { eq, and, sql, inArray } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 type Decimal = InstanceType<typeof Decimal>;
-import type { PayBillsInput } from '@kis-books/shared';
+import { CHECK_MEMO_PRINT_LIMIT, type PayBillsInput } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import {
   transactions,
@@ -52,6 +52,46 @@ async function allocateCheckNumber(tenantId: string): Promise<number> {
     throw AppError.internal('Failed to allocate check number');
   }
   return Number(assigned);
+}
+
+/** Width of the printed_memo column. */
+const MAX_PRINTED_MEMO = 255;
+
+/**
+ * Memo to print on the check face when the payer didn't type one. A vendor
+ * needs to know which of their invoices the check covers, so default to
+ * their invoice numbers, falling back to our bill number where the vendor
+ * gave none.
+ *
+ * The list is budgeted against CHECK_MEMO_PRINT_LIMIT, not the column width:
+ * the memo rule is three inches wide and check-pdf's drawText slices off
+ * whatever runs past it with no ellipsis, so budgeting at 255 would print a
+ * half-written invoice number and silently drop the rest. Trimming here keeps
+ * whole references and says how many didn't fit — the stub itemizes every
+ * bill in full either way.
+ */
+function defaultPrintedMemo(grp: VendorPaymentGroup): string | null {
+  const refs = grp.vendorBills
+    .map((b) => (b.bill.vendorInvoiceNumber || b.bill.txnNumber || '').trim())
+    .filter((r) => r.length > 0);
+  if (refs.length === 0) return null;
+
+  const full = refs.join(', ');
+  if (full.length <= CHECK_MEMO_PRINT_LIMIT) return full;
+
+  const kept: string[] = [];
+  for (const ref of refs) {
+    const candidate = [...kept, ref].join(', ');
+    const dropped = refs.length - (kept.length + 1);
+    const suffix = dropped > 0 ? ` +${dropped} more` : '';
+    if (candidate.length + suffix.length > CHECK_MEMO_PRINT_LIMIT) break;
+    kept.push(ref);
+  }
+  // A single reference longer than the print line still goes in whole: the
+  // register should hold the real invoice number even though the paper cuts
+  // it. Only the column width can truncate it.
+  if (kept.length === 0) return refs[0]!.slice(0, MAX_PRINTED_MEMO);
+  return `${kept.join(', ')} +${refs.length - kept.length} more`;
 }
 
 interface VendorPaymentGroup {
@@ -300,7 +340,8 @@ export async function payBills(
       // Determine check number / print status
       let checkNumber: number | null = null;
       let printStatus: string | null = null;
-      if (input.method === 'check' || input.method === 'check_handwritten') {
+      const paysByCheck = input.method === 'check' || input.method === 'check_handwritten';
+      if (paysByCheck) {
         if (input.method === 'check_handwritten') {
           checkNumber = await allocateCheckNumber(tenantId);
           printStatus = 'hand_written';
@@ -309,6 +350,12 @@ export async function payBills(
           printStatus = 'queue';
         }
       }
+
+      // printed_memo is what lands on the check's memo line; transactions.memo
+      // stays the bookkeeping note. Only checks carry one.
+      const printedMemo = paysByCheck
+        ? (input.printedMemo?.trim() || defaultPrintedMemo(grp))
+        : null;
 
       // Insert transaction header directly (we're inside an active tx; we
       // don't go through ledger.postTransaction because we need to set
@@ -324,6 +371,7 @@ export async function payBills(
         status: 'posted',
         checkNumber,
         printStatus,
+        printedMemo,
         source: origin?.source ?? null,
         sourceId: origin?.sourceId ?? null,
       }).returning();

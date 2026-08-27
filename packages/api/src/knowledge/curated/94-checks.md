@@ -9,6 +9,11 @@ Go to **Write Check →** in the sidebar to create a new check.
 - **Pay to the Order of** — select a contact (vendor or other payee)
 - **Payee Name on Check** — auto-filled from the contact, but you can override it
   (useful when the legal name differs from how you know the vendor)
+- **Mailing Address** — filled in from the vendor's billing address (falling back to
+  their shipping address). Edit it for a one-off "send it here instead" — the check
+  keeps its own copy, so editing it here does not change the vendor record. Use
+  **Use address on file** to put it back. This address prints on the mailing panel
+  of z-fold checks and on #10 envelopes.
 - **Amount** — the check total (automatically converted to words for the check face,
   e.g., "Two Hundred Thirty-Four and 50/100 Dollars")
 - **Printed Memo** — appears on the physical check
@@ -19,6 +24,11 @@ Below the check header, add one or more expense line items with Account, Descrip
 and Amount. If you split the check across multiple accounts, the lines must total the
 check amount.
 
+**Attachments:**
+Attach the invoice, receipt, or supporting document to the check before you save it —
+same panel as every other entry form. The files follow the check into the ledger and
+show up on its transaction detail page.
+
 **Saving:**
 - **Save** — records the check immediately (posted to the ledger).
 - **Save & Queue for Print** — records the check and adds it to the print queue.
@@ -28,9 +38,16 @@ The journal entry is the same as an expense: `DR Expense Account(s) / CR Bank Ac
 ### Printing Checks
 Go to **Print Checks →** to see all checks queued for printing.
 
-1. Review the list of queued checks (payee, amount, date).
+1. Review the list of queued checks (payee, amount, date, memo).
 2. Select which checks to print (or select all).
 3. Click **Print** to send to your printer.
+
+**Editing the memo before you print:** click the Memo cell on any queued check to
+retype what prints on its memo line, then press Enter (or click away) to save.
+Clearing it prints no memo at all. Only checks still waiting in the queue can be
+edited — once the memo exists on paper it is the record — so use **Reprint** to
+return a printed batch to the queue first. Hand-written checks are never editable
+this way for the same reason.
 
 Check print settings (check layout, starting check number, alignment) can be configured
 under **Settings → Check Print Settings →**. A test print option lets you verify

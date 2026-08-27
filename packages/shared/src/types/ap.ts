@@ -60,6 +60,8 @@ export interface PayBillsInput {
   method: BillPaymentMethod;
   printLater?: boolean;
   memo?: string;
+  /** Memo line printed on the check face; blank defaults to the bill refs. */
+  printedMemo?: string;
   bills: BillPaymentBillSelection[];
   credits?: BillPaymentCreditApplication[];
 }

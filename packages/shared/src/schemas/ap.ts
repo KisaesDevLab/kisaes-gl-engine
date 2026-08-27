@@ -60,6 +60,11 @@ export const payBillsSchema = z.object({
   method: z.enum(paymentMethods),
   printLater: z.boolean().optional(),
   memo: z.string().optional(),
+  // Memo line printed on the check face (transactions.printed_memo). Left
+  // blank, the service fills in the bill/vendor-invoice numbers being paid
+  // so the vendor can apply the payment. Editable afterwards from the
+  // print queue until the check prints.
+  printedMemo: z.string().max(255).optional(),
   bills: z.array(billPaymentBillSchema).min(1, 'Select at least one bill to pay'),
   credits: z.array(billPaymentCreditSchema).optional(),
 });

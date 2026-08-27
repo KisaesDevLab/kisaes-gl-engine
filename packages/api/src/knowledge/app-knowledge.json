@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-17T20:33:21.048Z",
+  "generatedAt": "2026-08-27T15:02:50.432Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -18,7 +18,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 66247
+    "totalBytes": 67757
   },
   "screens": [
     {

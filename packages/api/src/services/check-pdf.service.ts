@@ -190,9 +190,17 @@ async function gatherCheckData(tenantId: string, checkId: string): Promise<Check
     payeeName,
     amount: parseFloat(txn.total || '0').toFixed(2),
     amountInWords: numberToWords(parseFloat(txn.total || '0')),
-    memo: txn.printedMemo || txn.memo || '',
+    // `??`, not `||`: an empty printed_memo is a deliberate "print no memo"
+    // (see check.service.updatePrintedMemo). NULL means none was ever set,
+    // and only then does the internal memo stand in.
+    memo: txn.printedMemo ?? txn.memo ?? '',
     company: companyAddress(company),
-    payeeAddressLines: toMailRows(payeeAddressLines),
+    // Capped at the source so every consumer is bounded: the z-fold panel
+    // and the #10 envelope both size their address block off the line count,
+    // so a long freeform payee_address would push the block off its panel.
+    // A USPS delivery address needs at most an attention line, two street
+    // lines, and the city/state/ZIP row.
+    payeeAddressLines: toMailRows(payeeAddressLines).slice(0, 4),
     bank: {
       name: settings['bankName'] || '',
       address: settings['bankAddress'] || '',
@@ -564,6 +572,22 @@ function drawCheckFace(ctx: Ctx, c: CheckData, faceTopY: number, faceBottomY: nu
 
 // ── Voucher stub ──────────────────────────────────────────────────
 
+/**
+ * True when a bill payment's memo says nothing the itemized table below it
+ * doesn't already say — that is, it is the bill/vendor-invoice reference list
+ * payBills derives when the payer types no memo of their own. Restating it
+ * above the table would spend a stub row saying the same thing twice.
+ */
+function memoRestatesBills(memo: string, bills: BillPaymentStubLine[]): boolean {
+  const refs = new Set<string>();
+  for (const b of bills) {
+    if (b.txnNumber) refs.add(b.txnNumber.trim());
+    if (b.vendorInvoiceNumber) refs.add(b.vendorInvoiceNumber.trim());
+  }
+  const tokens = memo.replace(/\s*\+\d+ more$/, '').split(',').map((t) => t.trim()).filter(Boolean);
+  return tokens.length > 0 && tokens.every((t) => refs.has(t));
+}
+
 /** Draw the stub content inside the panel [stubTopY .. stubBottomY]. */
 function drawStub(ctx: Ctx, c: CheckData, stubTopY: number, stubBottomY: number, leftMargin = 21.6, rightMargin = 21.6): void {
   const L = leftMargin;
@@ -589,6 +613,14 @@ function drawStub(ctx: Ctx, c: CheckData, stubTopY: number, stubBottomY: number,
   y -= 12;
   drawText(ctx, `Pay to: ${c.payeeName}`, L, y, { size: 7, maxWidth: R - L });
   y -= 13;
+  // A payer-typed memo (an account number, "final payment") is context the
+  // itemized table can't carry, so it repeats on the remittance advice — but
+  // only when it isn't just the bill numbers the table already lists. It costs
+  // one bill row on a full stub; availableRows is derived from y below.
+  if (c.memo && !memoRestatesBills(c.memo, c.billPaymentBills!)) {
+    drawText(ctx, `Memo: ${c.memo}`, L, y, { size: 6.75, maxWidth: R - L });
+    y -= 12;
+  }
 
   // Column x positions
   const colBill = L, colInv = L + 100, colDate = L + 205, colOrig = R - 90, colPaid = R;
@@ -954,4 +986,4 @@ export async function generateContactEnvelopePdf(tenantId: string, contactId: st
   return Buffer.from(await doc.save());
 }
 
-export const _internal = { renderChecksPdf, drawCheckPage, drawEnvelope, toMailRows };
+export const _internal = { renderChecksPdf, drawCheckPage, drawEnvelope, toMailRows, memoRestatesBills };

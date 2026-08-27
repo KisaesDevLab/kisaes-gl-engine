@@ -6,9 +6,14 @@
 3. **Apply Vendor Credits** (optional) — reduce the cash payment by any credits
    you have from this vendor.
 4. **Pay** — choose method (check, ACH, etc.). Vibe MyBooks creates the bill payment
-   transaction and updates the bill's status.
+   transaction and updates the bill's status. Paying by check also shows a
+   **Memo on check** field: leave it blank and each check's memo line prints the
+   vendor invoice numbers it covers (our bill number where the vendor gave none),
+   or type your own — an account number, say — to use instead.
 5. **Print Checks** (if paying by check) — go to **Print Checks →** to print
-   queued checks in a batch.
+   queued checks in a batch. Click a queued check's Memo cell to retype its memo
+   before it prints; after printing, reprint the batch to edit it. Hand-written
+   checks skip the queue, so their memo is fixed at the moment you record them.
 
 The accounting impact:
 - Bill posts: `DR Expense lines, CR Accounts Payable (total)`

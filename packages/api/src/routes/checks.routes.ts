@@ -3,7 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
-import { writeCheckSchema, printCheckSchema, renderChecksSchema, checkSettingsSchema, STEP_UP_REQUIRED } from '@kis-books/shared';
+import { writeCheckSchema, printCheckSchema, renderChecksSchema, checkSettingsSchema, updateCheckMemoSchema, STEP_UP_REQUIRED } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
@@ -11,6 +11,7 @@ import { validate } from '../middleware/validate.js';
 import * as checkService from '../services/check.service.js';
 import * as checkPdfService from '../services/check-pdf.service.js';
 import * as signatureService from '../services/check-signature.service.js';
+import * as attachmentService from '../services/attachment.service.js';
 import { AppError } from '../utils/errors.js';
 import { parseLimit, parseOffset } from '../utils/pagination.js';
 import { eq } from 'drizzle-orm';
@@ -24,6 +25,13 @@ checksRouter.use(requireResource('checks'));
 
 checksRouter.post('/', validate(writeCheckSchema), async (req, res) => {
   const check = await checkService.createCheck(req.tenantId, req.body, req.userId, req.companyId);
+  // Checks post as txn_type 'expense', which is the attachable type the
+  // transaction detail page reads — keep them in step.
+  if (req.body.draftAttachmentId && check?.id) {
+    await attachmentService.reassignDraftAttachments(
+      req.tenantId, req.body.draftAttachmentId, 'expense', check.id,
+    );
+  }
   res.status(201).json({ check });
 });
 
@@ -42,6 +50,15 @@ checksRouter.get('/', async (req, res) => {
 checksRouter.get('/print-queue', async (req, res) => {
   const data = await checkService.getPrintQueue(req.tenantId, req.query['bank_account_id'] as string, req.companyId);
   res.json({ data });
+});
+
+// Edit the memo that will print on a queued check — including the checks
+// created by paying bills, which POST /transactions/:id refuses to touch.
+checksRouter.patch('/:id/memo', validate(updateCheckMemoSchema), async (req, res) => {
+  const result = await checkService.updatePrintedMemo(
+    req.tenantId, req.params['id']!, req.body.printedMemo, req.userId, req.companyId,
+  );
+  res.json(result);
 });
 
 checksRouter.post('/test-print', async (req, res) => {

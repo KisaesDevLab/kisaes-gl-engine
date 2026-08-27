@@ -291,3 +291,45 @@ describe('compact (z_fold) face — structured address rows', () => {
     expect(texts).not.toContain('100 Bank St, Springfield, MO 65807');
   });
 });
+
+// The bill-payment voucher stub itemizes every bill, so repeating the derived
+// "these are the bill numbers" memo above the table would spend a row saying
+// the same thing twice. A memo the payer actually typed does carry new
+// information and is worth the row.
+describe('bill-payment stub memo', () => {
+  const billPaymentCheck = (memo: string) => makeCheckData({
+    memo,
+    printVoucherStub: true,
+    applySignature: false,
+    billPaymentBills: [
+      { txnNumber: 'BILL-1000', vendorInvoiceNumber: 'INV-2026-0401', txnDate: '2026-07-15', description: null, originalAmount: '50.00', paidAmount: '50.00' },
+      { txnNumber: 'BILL-1001', vendorInvoiceNumber: 'INV-2026-0402', txnDate: '2026-07-15', description: null, originalAmount: '50.00', paidAmount: '50.00' },
+    ],
+    billPaymentCredits: [],
+    billPaymentTotalBills: '100.00',
+    billPaymentTotalCredits: '0.00',
+  });
+
+  it('omits a memo that only restates the bill numbers in the table', async () => {
+    const { _internal } = await import('./check-pdf.service.js');
+    const pdf = await _internal.renderChecksPdf([billPaymentCheck('INV-2026-0401, INV-2026-0402') as any], 'voucher');
+    const texts = decodeTexts(pageStreams(pdf)[0]!);
+    expect(texts.some((t) => t.startsWith('Memo: '))).toBe(false);
+    // Still printed on the check face itself.
+    expect(texts).toContain('INV-2026-0401, INV-2026-0402');
+  });
+
+  it('omits it too when the derived list was trimmed with a +N more tail', async () => {
+    const { _internal } = await import('./check-pdf.service.js');
+    const pdf = await _internal.renderChecksPdf([billPaymentCheck('INV-2026-0401 +1 more') as any], 'voucher');
+    const texts = decodeTexts(pageStreams(pdf)[0]!);
+    expect(texts.some((t) => t.startsWith('Memo: '))).toBe(false);
+  });
+
+  it('prints a memo the payer typed', async () => {
+    const { _internal } = await import('./check-pdf.service.js');
+    const pdf = await _internal.renderChecksPdf([billPaymentCheck('Acct 55-2291') as any], 'voucher');
+    const texts = decodeTexts(pageStreams(pdf)[0]!);
+    expect(texts).toContain('Memo: Acct 55-2291');
+  });
+});

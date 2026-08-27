@@ -9,7 +9,10 @@ export const writeCheckSchema = z.object({
   bankAccountId: z.string().uuid(),
   contactId: z.string().uuid().optional(),
   payeeNameOnCheck: z.string().min(1).max(255),
-  payeeAddress: z.string().optional(),
+  // Freeform, newline-separated. Prints on the z-fold mailing panel and the
+  // #10 envelope; check-pdf splits it on '\n' and keeps the first four rows.
+  // Bounded because the Write Check form exposes it as a free textarea.
+  payeeAddress: z.string().max(500).optional(),
   txnDate: z.string().min(1),
   amount: z.string().min(1),
   printedMemo: z.string().max(255).optional(),
@@ -29,6 +32,16 @@ export const writeCheckSchema = z.object({
     tagId: z.string().uuid().nullable().optional(),
   })).min(1),
   tagIds: z.array(z.string().uuid()).optional(),
+  // Client-generated id the form's attachments were uploaded against while
+  // the check was still a draft; the route relinks them once it has a real
+  // transaction id (same contract as POST /transactions).
+  draftAttachmentId: z.string().uuid().optional(),
+});
+
+// Edit the memo line of a check that hasn't printed yet. Empty string is
+// meaningful — it means "print no memo" (see check.service).
+export const updateCheckMemoSchema = z.object({
+  printedMemo: z.string().max(255),
 });
 
 export const printCheckSchema = z.object({

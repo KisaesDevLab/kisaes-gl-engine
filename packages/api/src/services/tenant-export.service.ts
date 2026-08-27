@@ -921,7 +921,10 @@ export async function importAsNewTenant(
         ${(txn['print_status'] as string) || null},
         ${(txn['payee_name_on_check'] as string) || null},
         ${(txn['payee_address'] as string) || null},
-        ${(txn['printed_memo'] as string) || null},
+        ${/* `??`, not `||`: an empty printed_memo means "print no memo" and
+              must not collapse back to NULL, which re-enables the internal-memo
+              fallback in check-pdf. */
+          (txn['printed_memo'] as string | null | undefined) ?? null},
         ${(txn['printed_at'] as string) || null}
       )
     `);
