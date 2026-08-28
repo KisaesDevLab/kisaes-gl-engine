@@ -28,6 +28,24 @@ export const updateAccountSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
+// Bulk CSV import (Accounts → Import). Rows are validated here so a bad
+// file comes back as a 400 with the offending field instead of blowing up
+// on a DB constraint; `updateExisting` lets the operator overwrite rows
+// whose account number is already in the tenant instead of skipping them.
+export const importAccountRowSchema = z.object({
+  accountNumber: z.string().trim().max(20).nullish(),
+  name: z.string().trim().min(1, 'Name is required').max(255),
+  accountType: z.enum(accountTypes),
+  detailType: z.string().trim().max(100).nullish(),
+});
+
+export const importAccountsSchema = z.object({
+  accounts: z.array(importAccountRowSchema).min(1, 'At least one account is required').max(2000),
+  updateExisting: z.boolean().optional().default(false),
+});
+export type ImportAccountRow = z.infer<typeof importAccountRowSchema>;
+export type ImportAccountsInput = z.input<typeof importAccountsSchema>;
+
 export const accountFiltersSchema = z.object({
   accountType: z.enum(accountTypes).optional(),
   isActive: z.preprocess((v) => v === 'true' ? true : v === 'false' ? false : v, z.boolean().optional()),

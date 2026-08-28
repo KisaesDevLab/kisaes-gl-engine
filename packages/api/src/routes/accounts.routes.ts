@@ -3,7 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
-import { createAccountSchema, updateAccountSchema, accountFiltersSchema, mergeAccountsSchema, bulkUpdateAccountsSchema } from '@kis-books/shared';
+import { createAccountSchema, updateAccountSchema, accountFiltersSchema, mergeAccountsSchema, bulkUpdateAccountsSchema, importAccountsSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
@@ -33,9 +33,9 @@ accountsRouter.get('/export', async (req, res) => {
   res.send(csv);
 });
 
-accountsRouter.post('/import', async (req, res) => {
-  const result = await accountsService.importFromCsv(req.tenantId, req.body.accounts, req.userId);
-  res.status(201).json({ imported: result.length, accounts: result });
+accountsRouter.post('/import', validate(importAccountsSchema), async (req, res) => {
+  const result = await accountsService.importFromCsv(req.tenantId, req.body, req.userId);
+  res.status(201).json(result);
 });
 
 accountsRouter.post('/merge', validate(mergeAccountsSchema), async (req, res) => {

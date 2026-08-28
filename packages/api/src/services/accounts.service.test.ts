@@ -181,11 +181,63 @@ describe('Accounts Service', () => {
   describe('import/export', () => {
     it('should import accounts from CSV data', async () => {
       const csvData = [
-        { name: 'Import 1', accountNumber: '9001', accountType: 'asset', detailType: 'bank' },
-        { name: 'Import 2', accountNumber: '9002', accountType: 'expense', detailType: 'other_expense' },
+        { name: 'Import 1', accountNumber: '9001', accountType: 'asset' as const, detailType: 'bank' },
+        { name: 'Import 2', accountNumber: '9002', accountType: 'expense' as const, detailType: 'other_expense' },
       ];
-      const result = await accountsService.importFromCsv(tenantId, csvData);
-      expect(result.length).toBe(2);
+      const result = await accountsService.importFromCsv(tenantId, { accounts: csvData });
+      expect(result.imported).toBe(2);
+      expect(result.accounts.length).toBe(2);
+      expect(result.skipped).toEqual([]);
+    });
+
+    it('should skip account numbers that already exist instead of failing', async () => {
+      await accountsService.create(tenantId, { name: 'Cash', accountNumber: '9101', accountType: 'asset' });
+
+      const result = await accountsService.importFromCsv(tenantId, {
+        accounts: [
+          { name: 'Cash From File', accountNumber: '9101', accountType: 'asset' as const },
+          { name: 'Fresh', accountNumber: '9102', accountType: 'expense' as const },
+        ],
+      });
+
+      expect(result.imported).toBe(1);
+      expect(result.updated).toBe(0);
+      expect(result.skipped).toHaveLength(1);
+      expect(result.skipped[0]).toMatchObject({ row: 1, accountNumber: '9101' });
+
+      const kept = await accountsService.list(tenantId, { limit: 500, offset: 0 });
+      expect(kept.data.find((a) => a.accountNumber === '9101')?.name).toBe('Cash');
+    });
+
+    it('should overwrite existing accounts when updateExisting is set', async () => {
+      await accountsService.create(tenantId, { name: 'Old Name', accountNumber: '9201', accountType: 'asset' });
+
+      const result = await accountsService.importFromCsv(tenantId, {
+        accounts: [{ name: 'New Name', accountNumber: '9201', accountType: 'expense' as const, detailType: 'Immediate' }],
+        updateExisting: true,
+      });
+
+      expect(result.imported).toBe(0);
+      expect(result.updated).toBe(1);
+
+      const after = await accountsService.list(tenantId, { limit: 500, offset: 0 });
+      const row = after.data.find((a) => a.accountNumber === '9201');
+      expect(row?.name).toBe('New Name');
+      expect(row?.accountType).toBe('expense');
+      expect(row?.detailType).toBe('Immediate');
+    });
+
+    it('should skip a number repeated inside the same file', async () => {
+      const result = await accountsService.importFromCsv(tenantId, {
+        accounts: [
+          { name: 'First', accountNumber: '9301', accountType: 'asset' as const },
+          { name: 'Second', accountNumber: '9301', accountType: 'asset' as const },
+        ],
+      });
+
+      expect(result.imported).toBe(1);
+      expect(result.skipped).toHaveLength(1);
+      expect(result.skipped[0]?.reason).toMatch(/within the file/i);
     });
 
     it('should export to CSV', async () => {

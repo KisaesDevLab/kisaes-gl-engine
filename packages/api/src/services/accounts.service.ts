@@ -3,7 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { eq, and, ilike, sql, count, inArray } from 'drizzle-orm';
-import type { CreateAccountInput, UpdateAccountInput, AccountFilters, BulkUpdateAccountsInput } from '@kis-books/shared';
+import type { CreateAccountInput, UpdateAccountInput, AccountFilters, BulkUpdateAccountsInput, ImportAccountRow } from '@kis-books/shared';
 import { COA_TEMPLATES } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { accounts } from '../db/schema/index.js';
@@ -323,28 +323,115 @@ export async function seedFromTemplate(
   });
 }
 
-export async function importFromCsv(tenantId: string, csvData: Array<{ name: string; accountNumber?: string; accountType: string; detailType?: string }>, userId?: string) {
-  const results: Array<typeof accounts.$inferSelect> = [];
+export interface AccountImportSkip {
+  row: number;
+  accountNumber: string | null;
+  name: string;
+  reason: string;
+}
 
-  for (const row of csvData) {
-    const [account] = await db.insert(accounts).values({
-      tenantId,
-      name: row.name,
-      accountNumber: row.accountNumber || null,
-      accountType: row.accountType,
-      detailType: row.detailType || null,
-    }).returning();
+export interface AccountImportResult {
+  imported: number;
+  updated: number;
+  skipped: AccountImportSkip[];
+  accounts: Array<typeof accounts.$inferSelect>;
+}
 
-    if (account) {
-      results.push(account);
+/**
+ * Bulk-import rows parsed from a chart-of-accounts CSV.
+ *
+ * Account numbers are unique per tenant (idx_accounts_tenant_number), and a
+ * file exported from one client almost always collides with the seeded
+ * accounts of another (10100 Cash, 20200 Credit Cards Payable, …). This used
+ * to insert blind, so the first collision surfaced as a 500 and left whatever
+ * had already been inserted behind. Collisions are now reported per row —
+ * skipped by default, overwritten when the operator passes `updateExisting` —
+ * and the whole file commits or rolls back as one transaction.
+ *
+ * Rows without an account number are always inserted; nothing makes them
+ * unique, so de-duplicating them is the operator's call (same rule as the
+ * Imports module's CoA commit).
+ */
+export async function importFromCsv(
+  tenantId: string,
+  input: { accounts: ImportAccountRow[]; updateExisting?: boolean },
+  userId?: string,
+): Promise<AccountImportResult> {
+  const rows = input.accounts;
+  const updateExisting = input.updateExisting ?? false;
+
+  const numbers = [...new Set(
+    rows.map((r) => r.accountNumber?.trim()).filter((n): n is string => !!n),
+  )];
+  const existing = numbers.length
+    ? await db
+        .select({ id: accounts.id, accountNumber: accounts.accountNumber, isSystem: accounts.isSystem })
+        .from(accounts)
+        .where(and(eq(accounts.tenantId, tenantId), inArray(accounts.accountNumber, numbers)))
+    : [];
+  const existingByNumber = new Map(existing.map((a) => [a.accountNumber as string, a]));
+
+  const created: Array<typeof accounts.$inferSelect> = [];
+  const skipped: AccountImportSkip[] = [];
+  const seenInFile = new Set<string>();
+  let updated = 0;
+
+  await db.transaction(async (tx) => {
+    for (const [i, row] of rows.entries()) {
+      const rowNumber = i + 1;
+      const accountNumber = row.accountNumber?.trim() || null;
+      const name = row.name.trim();
+      const detailType = row.detailType?.trim() || null;
+
+      if (accountNumber && seenInFile.has(accountNumber)) {
+        skipped.push({ row: rowNumber, accountNumber, name, reason: 'Duplicate account number within the file' });
+        continue;
+      }
+      if (accountNumber) seenInFile.add(accountNumber);
+
+      const match = accountNumber ? existingByNumber.get(accountNumber) : undefined;
+      if (match) {
+        if (!updateExisting) {
+          skipped.push({ row: rowNumber, accountNumber, name, reason: `Account number ${accountNumber} already exists` });
+          continue;
+        }
+        if (match.isSystem) {
+          skipped.push({ row: rowNumber, accountNumber, name, reason: `Account number ${accountNumber} is a system account and cannot be overwritten` });
+          continue;
+        }
+        await tx
+          .update(accounts)
+          .set({ name, accountType: row.accountType, detailType, updatedAt: new Date() })
+          .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, match.id)));
+        updated++;
+        continue;
+      }
+
+      // onConflictDoNothing covers a number created between the lookup above
+      // and this insert — a race reports as a skip, never a 500.
+      const [account] = await tx
+        .insert(accounts)
+        .values({ tenantId, name, accountNumber, accountType: row.accountType, detailType })
+        .onConflictDoNothing()
+        .returning();
+
+      if (account) {
+        created.push(account);
+      } else {
+        skipped.push({ row: rowNumber, accountNumber, name, reason: `Account number ${accountNumber} already exists` });
+      }
     }
-  }
+  });
 
   if (userId) {
-    await auditLog(tenantId, 'create', 'account', null, null, { imported: results.length }, userId);
+    await auditLog(tenantId, 'create', 'account', null, null, {
+      imported: created.length,
+      updated,
+      skipped: skipped.length,
+    }, userId);
   }
 
-  return results;
+  return { imported: created.length, updated, skipped, accounts: created };
 }
 
 export async function exportToCsv(tenantId: string): Promise<string> {
