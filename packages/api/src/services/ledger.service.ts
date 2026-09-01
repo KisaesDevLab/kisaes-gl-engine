@@ -917,6 +917,11 @@ export async function listTransactions(tenantId: string, filters: {
     conditions.push(sql`(${transactions.memo} ILIKE ${term}
       OR ${transactions.txnNumber} ILIKE ${term}
       OR ${contacts.displayName} ILIKE ${term}
+      OR EXISTS (
+          SELECT 1 FROM journal_lines jlm
+          WHERE jlm.transaction_id = ${transactions.id} AND jlm.tenant_id = ${tenantId}
+            AND jlm.description ILIKE ${term}
+        )
       OR CAST(COALESCE(${transactions.total}, (
           SELECT SUM(jls.debit) FROM journal_lines jls
           WHERE jls.transaction_id = ${transactions.id} AND jls.tenant_id = ${tenantId}
