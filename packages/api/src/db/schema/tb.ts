@@ -97,6 +97,9 @@ export const companyTaxProfiles = pgTable('company_tax_profiles', {
   // Vendor-export consolidation: { [datasetLineKey]: { exportCode,
   // description } } — consolidated codes export as one custom line.
   consolidationPrefs: jsonb('consolidation_prefs').notNull().default({}),
+  // Where vendor exports attach the activity-unit number on unit-split
+  // account rows: 'suffix' (1000-2) or 'prefix' (2-1000). Migration 0161.
+  unitNumberPlacement: varchar('unit_number_placement', { length: 10 }).notNull().default('suffix'),
   // Schedule M-2 equity-account role map (9.4): { accountId:
   // 'retained' | 'distributions' | 'contributions' | 'other' }.
   equityRoles: jsonb('equity_roles'),

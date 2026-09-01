@@ -196,7 +196,8 @@ describe('vendor export dataset (Phase 11)', () => {
   it('unit suffixes apply only to split accounts; consolidated identity collisions 409', async () => {
     const synthetic = {
       taxYear: 2026, periodEnd: '2026-12-31', basis: 'accrual' as const,
-      glVersionStamp: 1, consolidationPrefs: {}, unassigned: [], missingVendorCode: [],
+      glVersionStamp: 1, consolidationPrefs: {}, unitNumberPlacement: 'suffix' as const,
+      unassigned: [], missingVendorCode: [],
       lines: [
         { key: 'seed|business|X1', code: 'X1', description: 'Split code', vendorCode: 'X1', sortOrder: 1, amount: 30, bookAmount: 30, consolidated: null,
           accounts: [
@@ -216,6 +217,16 @@ describe('vendor export dataset (Phase 11)', () => {
     for (let i = 2; i <= ws.rowCount; i++) nums.push(String(ws.getRow(i).getCell(1).value ?? ''));
     // Split account gets per-unit suffixes; single-slice account stays plain.
     expect(nums.sort()).toEqual(['100-1', '100-2', '200']);
+
+    // 'prefix' placement prepends the unit number instead; single-slice
+    // accounts still stay plain.
+    const prefixed = await buildVendorFile('generic', { ...synthetic, unitNumberPlacement: 'prefix' as const }, 'Co', new Map(), unitInfo);
+    const wb2 = new ExcelJS.Workbook();
+    await wb2.xlsx.load(prefixed.buffer as unknown as ArrayBuffer);
+    const ws2 = wb2.getWorksheet('Generic Export')!;
+    const nums2: string[] = [];
+    for (let i = 2; i <= ws2.rowCount; i++) nums2.push(String(ws2.getRow(i).getCell(1).value ?? ''));
+    expect(nums2.sort()).toEqual(['1-100', '2-100', '200']);
 
     // Two consolidated groups sharing an export code → DUPLICATE_ACCOUNT.
     const prefs = {

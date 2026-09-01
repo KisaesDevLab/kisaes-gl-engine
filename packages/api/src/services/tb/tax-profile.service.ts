@@ -89,6 +89,7 @@ export async function upsertProfile(tenantId: string, companyId: string, input: 
         pinnedSeedVersionId: input.pinnedSeedVersionId ?? null,
         sCorpElectionDate: input.sCorpElectionDate ?? null,
         defaultActivityType: input.defaultActivityType ?? before.defaultActivityType,
+        unitNumberPlacement: input.unitNumberPlacement ?? before.unitNumberPlacement,
         updatedAt: new Date(),
       }).where(eq(companyTaxProfiles.id, before.id)).returning();
     } else {
@@ -99,6 +100,7 @@ export async function upsertProfile(tenantId: string, companyId: string, input: 
         pinnedSeedVersionId: input.pinnedSeedVersionId ?? null,
         sCorpElectionDate: input.sCorpElectionDate ?? null,
         defaultActivityType: input.defaultActivityType ?? 'business',
+        unitNumberPlacement: input.unitNumberPlacement ?? 'suffix',
       }).returning();
     }
     if (!row) throw AppError.internal('Tax profile write failed');

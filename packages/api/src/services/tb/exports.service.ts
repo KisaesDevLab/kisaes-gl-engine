@@ -94,6 +94,9 @@ export interface TaxDataset {
   basis: TbBasis;
   glVersionStamp: number;
   consolidationPrefs: ConsolidationPrefs;
+  /** Where unit-split rows attach the unit number to the account number
+   *  ('suffix' → 1000-2, 'prefix' → 2-1000). Company tax-profile setting. */
+  unitNumberPlacement: 'suffix' | 'prefix';
   lines: TaxDatasetLine[];
   unassigned: Array<{ accountId: string; name: string }>;
   missingVendorCode: Array<{ code: string; description: string }>;
@@ -142,9 +145,13 @@ export async function buildTaxDataset(
     .where(and(eq(accountTaxAssignments.tenantId, tenantId), eq(accountTaxAssignments.companyId, companyId)));
   const meta = await loadCodeMeta(tenantId, companyId);
   const vendorField = VENDOR_CODE_FIELD[opts.software];
-  const [profile] = await db.select({ prefs: companyTaxProfiles.consolidationPrefs }).from(companyTaxProfiles)
+  const [profile] = await db.select({
+    prefs: companyTaxProfiles.consolidationPrefs,
+    unitNumberPlacement: companyTaxProfiles.unitNumberPlacement,
+  }).from(companyTaxProfiles)
     .where(and(eq(companyTaxProfiles.tenantId, tenantId), eq(companyTaxProfiles.companyId, companyId))).limit(1);
   const consolidationPrefs = readConsolidationPrefs(profile?.prefs);
+  const unitNumberPlacement = profile?.unitNumberPlacement === 'prefix' ? 'prefix' as const : 'suffix' as const;
 
   const byCode = new Map<string, TaxDatasetLine>();
   const unassigned: TaxDataset['unassigned'] = [];
@@ -222,6 +229,7 @@ export async function buildTaxDataset(
     basis: opts.basis,
     glVersionStamp: wp.glVersionStamp,
     consolidationPrefs,
+    unitNumberPlacement,
     lines: lines.filter((l) => l.code !== 'DONOTMAP'),
     unassigned,
     missingVendorCode,
@@ -329,7 +337,8 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 
 // Flatten the code-pivot dataset back to account grain and re-sort by
 // account number ASC like the reference's `coa.account_number ASC`.
-// The unit-number suffix (`-N`) applies ONLY to accounts that actually
+// The unit number (suffix `1000-N` or prefix `N-1000`, per the tax
+// profile's unitNumberPlacement) applies ONLY to accounts that actually
 // emit multiple rows (a split across units / codes) — a single-unit
 // book must keep its plain account numbers or vendor account matching
 // breaks. Amounts stay RAW here; rounding happens once at emission so
@@ -358,7 +367,11 @@ function toAccountRows(dataset: TaxDataset, unitInfo: Map<string, UnitInfo>): Ex
   for (const r of rows as Array<ExportAccountRow & { _unitId: string; _accountId: string }>) {
     if ((perAccount.get(r._accountId) ?? 0) > 1) {
       const unitNumber = unitInfo.get(r._unitId)?.number;
-      if (unitNumber != null) r.accountNumber = `${r.accountNumber}-${unitNumber}`;
+      if (unitNumber != null) {
+        r.accountNumber = dataset.unitNumberPlacement === 'prefix'
+          ? `${unitNumber}-${r.accountNumber}`
+          : `${r.accountNumber}-${unitNumber}`;
+      }
     }
   }
   rows.sort((x, y) => x.accountNumber.localeCompare(y.accountNumber));

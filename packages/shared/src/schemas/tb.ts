@@ -95,6 +95,9 @@ export const upsertTaxProfileSchema = z.object({
   sCorpElectionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
   // Entity activity — scopes assignable codes (with live unit types).
   defaultActivityType: z.enum(tbActivityUnitTypes).optional(),
+  // Where vendor exports attach the unit number on unit-split account
+  // rows: append (1000-2) or prepend (2-1000) to the account number.
+  unitNumberPlacement: z.enum(['suffix', 'prefix']).optional(),
 });
 
 export const createActivityUnitSchema = z.object({
