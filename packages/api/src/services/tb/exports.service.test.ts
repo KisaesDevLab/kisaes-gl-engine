@@ -14,10 +14,11 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db, pool } from '../../db/index.js';
 import {
-  accounts, accountTaxAssignments, companies, companyTaxProfiles,
-  journalLines, tenants, transactions,
+  accounts, accountTaxAssignments, activityUnits, companies, companyTaxProfiles,
+  journalLines, tagActivityMap, tags, tenants, transactions,
 } from '../../db/schema/index.js';
 import { importSeed } from './tax-code-seed.service.js';
+import { createUnit, mapTag } from './activity-units.service.js';
 import { buildTaxDataset, buildVendorFile, buildWorkingTbXlsx, validateForExport } from './exports.service.js';
 
 const SEED_FILE_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'db', 'seeds', 'tax-codes', '2025', 'tax-codes.xlsx');
@@ -62,6 +63,9 @@ afterAll(async () => {
   await db.delete(companyTaxProfiles).where(eq(companyTaxProfiles.tenantId, tenantId));
   await db.delete(journalLines).where(eq(journalLines.tenantId, tenantId));
   await db.delete(transactions).where(eq(transactions.tenantId, tenantId));
+  await db.delete(tagActivityMap).where(eq(tagActivityMap.tenantId, tenantId));
+  await db.delete(tags).where(eq(tags.tenantId, tenantId));
+  await db.delete(activityUnits).where(eq(activityUnits.tenantId, tenantId));
   await db.execute(sql`DELETE FROM gl_version_stamps WHERE tenant_id = ${tenantId}`);
   await db.delete(accounts).where(eq(accounts.tenantId, tenantId));
   await db.delete(companies).where(eq(companies.tenantId, tenantId));
@@ -235,6 +239,40 @@ describe('vendor export dataset (Phase 11)', () => {
     };
     await expect(buildVendorFile('generic', { ...synthetic, consolidationPrefs: prefs }, 'Co', new Map(), unitInfo, prefs))
       .rejects.toMatchObject({ statusCode: 409, code: 'DUPLICATE_ACCOUNT' });
+  });
+
+  it('segments P&L accounts by unit but never balance sheet accounts (engine-driven)', async () => {
+    const main = await createUnit(tenantId, companyId, { activityType: 'business', displayName: 'Main' });
+    const rental = await createUnit(tenantId, companyId, { activityType: 'rental', displayName: 'Rental' });
+    const [tag] = await db.insert(tags).values({ tenantId, name: 'rental-tag' }).returning();
+    await mapTag(tenantId, companyId, tag!.id, rental.id);
+    // Tagged deposit: BOTH the Cash line and the Sales line carry the
+    // rental tag — Sales splits (main 1000 / rental 250), Cash must not.
+    const [txn] = await db.insert(transactions).values({
+      tenantId, companyId, txnType: 'journal_entry', txnDate: '2026-05-01', status: 'posted', basis: 'both',
+    }).returning();
+    await db.insert(journalLines).values([
+      { tenantId, transactionId: txn!.id, accountId: A['Cash']!, debit: '250', credit: '0', lineOrder: 0, tagId: tag!.id },
+      { tenantId, transactionId: txn!.id, accountId: A['Sales']!, debit: '0', credit: '250', lineOrder: 1, tagId: tag!.id },
+    ]);
+
+    const dataset = await buildTaxDataset(tenantId, companyId, { taxYear: 2026, basis: 'accrual', software: 'generic' });
+    const cashRows = dataset.lines.flatMap((l) => l.accounts).filter((a) => a.accountId === A['Cash']);
+    const salesRows = dataset.lines.flatMap((l) => l.accounts).filter((a) => a.accountId === A['Sales']);
+    expect(cashRows).toHaveLength(1);
+    expect(cashRows[0]!.amount).toBeCloseTo(1350, 2);
+    expect(salesRows.map((r) => [r.unitId, r.amount]).sort()).toEqual([[main.id, -1000], [rental.id, -250]].sort());
+
+    const unitInfo = new Map([[main.id, { name: 'Main', number: 1 }], [rental.id, { name: 'Rental', number: 2 }]]);
+    const file = await buildVendorFile('generic', dataset, 'Co', new Map(), unitInfo);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(file.buffer as unknown as ArrayBuffer);
+    const ws = wb.getWorksheet('Generic Export')!;
+    const nums: string[] = [];
+    for (let i = 2; i <= ws.rowCount; i++) nums.push(String(ws.getRow(i).getCell(1).value ?? ''));
+    expect(nums).toContain('1000');
+    expect(nums.filter((x) => x.startsWith('1000'))).toEqual(['1000']);
+    expect(nums.filter((x) => x.startsWith('4000')).sort()).toEqual(['4000-1', '4000-2']);
   });
 
   it('builds the working TB workbook with sections and five columns', async () => {

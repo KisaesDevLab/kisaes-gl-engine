@@ -222,6 +222,39 @@ describe('five-column workpaper (accrual)', () => {
     expect(depExp.units.some((u) => u.unitId === ZERO_UUID)).toBe(false);
   });
 
+  it('byTag keeps untagged activity in the zero bucket instead of folding it into the default unit', async () => {
+    const wp = await computeWorkpaper(tenantId, companyId, { periodEnd: '2026-12-31', basis: 'accrual', skipCache: true });
+    for (const r of wp.rows) {
+      for (const col of ['unadjusted', 'aje', 'taxRje', 'tax'] as const) {
+        const sum = r.byTag.reduce((acc, u) => acc + u[col], 0);
+        expect(sum, `${r.name} byTag ${col}`).toBeCloseTo(r[col], 3);
+      }
+    }
+    const rev = row(wp, 'Revenue')!;
+    expect(rev.byTag.find((u) => u.unitId === unitOakId)?.unadjusted).toBeCloseTo(-400, 3);
+    expect(rev.byTag.find((u) => u.unitId === ZERO_UUID)?.unadjusted).toBeCloseTo(-900, 3);
+    expect(rev.byTag.some((u) => u.unitId === unitMainId)).toBe(false);
+    // NULL-unit RJE lines and untagged AJE lines are "no tag" too.
+    const depExp = row(wp, 'Depreciation Expense')!;
+    expect(depExp.byTag).toHaveLength(1);
+    expect(depExp.byTag[0]).toMatchObject({ unitId: ZERO_UUID, aje: 75, taxRje: 500 });
+  });
+
+  it('balance sheet accounts never segment: one default-unit bucket, one zero byTag bucket', async () => {
+    const wp = await computeWorkpaper(tenantId, companyId, { periodEnd: '2026-12-31', basis: 'accrual', skipCache: true });
+    // Accumulated Depreciation carries an RJE line pinned to the oak
+    // unit — it still collapses with the rest of the account.
+    const accDep = row(wp, 'Accumulated Depreciation')!;
+    expect(accDep.units).toHaveLength(1);
+    expect(accDep.units[0]).toMatchObject({ unitId: unitMainId, unadjusted: -50, aje: -75, taxRje: -500, tax: -625 });
+    expect(accDep.byTag).toHaveLength(1);
+    expect(accDep.byTag[0]).toMatchObject({ unitId: ZERO_UUID, tax: -625 });
+    for (const r of wp.rows.filter((x) => ['asset', 'liability', 'equity'].includes(x.accountType))) {
+      expect(r.units.length, `${r.name} units`).toBeLessThanOrEqual(1);
+      expect(r.byTag.map((u) => u.unitId), `${r.name} byTag`).toEqual(r.byTag.length ? [ZERO_UUID] : []);
+    }
+  });
+
   it('cash basis diverges: accrual-only JE excluded', async () => {
     const wp = await computeWorkpaper(tenantId, companyId, { periodEnd: '2026-12-31', basis: 'cash', skipCache: true });
     // Revenue on cash basis: -1000 (no accrual-only 300).

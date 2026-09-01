@@ -165,7 +165,13 @@ export async function buildTaxDataset(
       }
       continue;
     }
-    const units = row.units.length ? row.units : [{ unitId: ZERO_UUID, unadjusted: row.unadjusted, aje: row.aje, adjusted: row.adjusted, taxRje: row.taxRje, tax: row.tax }];
+    // Balance sheet accounts export as ONE unsegmented row — the engine
+    // already collapses them to the default unit; guard here too so a
+    // vendor file never carries a per-activity Schedule L slice.
+    const balanceSheet = row.accountType === 'asset' || row.accountType === 'liability' || row.accountType === 'equity';
+    const units = row.units.length && !(balanceSheet && row.units.length > 1)
+      ? row.units
+      : [{ unitId: row.units[0]?.unitId ?? ZERO_UUID, unadjusted: row.unadjusted, aje: row.aje, adjusted: row.adjusted, taxRje: row.taxRje, tax: row.tax }];
     let dropped = false;
     for (const u of units) {
       if (Math.abs(u.tax) < 0.005) continue;
@@ -339,9 +345,10 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 // account number ASC like the reference's `coa.account_number ASC`.
 // The unit number (suffix `1000-N` or prefix `N-1000`, per the tax
 // profile's unitNumberPlacement) applies ONLY to accounts that actually
-// emit multiple rows (a split across units / codes) — a single-unit
+// emit multiple rows (a P&L split across units / codes) — a single-unit
 // book must keep its plain account numbers or vendor account matching
-// breaks. Amounts stay RAW here; rounding happens once at emission so
+// breaks, and balance sheet accounts are never split (buildTaxDataset).
+// Amounts stay RAW here; rounding happens once at emission so
 // consolidation sums can't drift a penny from the validation panel.
 function toAccountRows(dataset: TaxDataset, unitInfo: Map<string, UnitInfo>): ExportAccountRow[] {
   const rows: Array<ExportAccountRow & { _unitId: string }> = [];

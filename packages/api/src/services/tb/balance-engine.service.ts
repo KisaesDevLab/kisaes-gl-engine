@@ -20,6 +20,13 @@
 // a render concern. Tag→unit splits ride journal_lines.tag_id (D13);
 // lines without a mapped tag fall to the default unit; splits sum to
 // the account balance by construction (asserted in tests).
+//
+// Only P&L accounts segment by activity. A balance sheet cannot balance
+// per tag (a bill tagged to one activity is paid from a shared bank
+// account; a payment settles invoices across activities), so asset/
+// liability/equity rows carry ONE unit bucket — the default unit in
+// `units`, the zero bucket in `byTag` — and vendor exports emit them
+// as a single unsegmented row.
 
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
@@ -66,7 +73,14 @@ export interface TbWorkpaperRow {
   adjusted: number;
   taxRje: number;
   tax: number;
+  // Activity-unit splits for tax work: untagged / unmapped-tag lines
+  // and NULL-unit RJE lines fold into the default unit (D13); balance
+  // sheet accounts collapse to the default unit entirely.
   units: TbUnitSplit[];
+  // Same balances keyed by what the LINES actually say: a mapped tag's
+  // unit, else ZERO_UUID ("no tag → unit 0"). Balance sheet accounts
+  // are one ZERO_UUID bucket. Drives the workpaper's by-tag view.
+  byTag: TbUnitSplit[];
 }
 
 export interface TbWorkpaperTotals {
@@ -116,6 +130,7 @@ interface RawSplit {
   account_type: string;
   detail_type: string | null;
   unit_id: string;
+  tagged: boolean; // the line's tag resolved to a mapped unit
   unadjusted: string | number;
   aje: string | number;
   prior_pl: string | number; // pre-FY P&L net (folds to RE)
@@ -149,7 +164,8 @@ export async function computeWorkpaper(tenantId: string, companyId: string, opts
   const taxYear = opts.taxYear ?? taxYearOf(opts.periodEnd, fyStartMonth);
   const stamp = await getGlVersionStamp(tenantId, companyId);
 
-  const cacheKey = `tb:wp:${tenantId}:${companyId}:${opts.periodEnd}:${opts.basis}:${taxYear}:${stamp}:${opts.tagId ?? 'all'}`;
+  // v2: rows gained byTag + BS collapse — old entries lack the field.
+  const cacheKey = `tb:wp:v2:${tenantId}:${companyId}:${opts.periodEnd}:${opts.basis}:${taxYear}:${stamp}:${opts.tagId ?? 'all'}`;
   if (!opts.skipCache) {
     const hit = await tbCacheGet<TbWorkpaper>(cacheKey);
     if (hit) {
@@ -169,6 +185,7 @@ export async function computeWorkpaper(tenantId: string, companyId: string, opts
         WITH ${cashBasisLinesWith(tenantId, null, opts.periodEnd, companyId)}
         SELECT a.id AS account_id, a.account_number, a.name, a.account_type, a.detail_type,
           COALESCE(tam.activity_unit_id, du.id, ${ZERO_UUID}::uuid) AS unit_id,
+          (tam.activity_unit_id IS NOT NULL) AS tagged,
           COALESCE(SUM(CASE
             WHEN a.account_type IN ('asset','liability','equity')
               THEN CASE WHEN cb.txn_type = 'aje' AND cb.txn_date >= ${fyStart} THEN 0 ELSE cb.debit - cb.credit END
@@ -195,11 +212,12 @@ export async function computeWorkpaper(tenantId: string, companyId: string, opts
              vanishes from the cash tag view. */
           ? sql`EXISTS (SELECT 1 FROM cb_lines cbx WHERE cbx.transaction_id = cb.transaction_id AND cbx.tag_id = ${opts.tagId})`
           : sql`TRUE`}
-        GROUP BY 1, 2, 3, 4, 5, 6
+        GROUP BY 1, 2, 3, 4, 5, 6, 7
       `)
     : await db.execute(sql`
         SELECT a.id AS account_id, a.account_number, a.name, a.account_type, a.detail_type,
           COALESCE(tam.activity_unit_id, du.id, ${ZERO_UUID}::uuid) AS unit_id,
+          (tam.activity_unit_id IS NOT NULL) AS tagged,
           COALESCE(SUM(CASE
             WHEN a.account_type IN ('asset','liability','equity')
               THEN CASE WHEN t.txn_type = 'aje' AND t.txn_date >= ${fyStart} THEN 0 ELSE jl.debit - jl.credit END
@@ -227,7 +245,7 @@ export async function computeWorkpaper(tenantId: string, companyId: string, opts
           AND ${opts.tagId
             ? sql`EXISTS (SELECT 1 FROM journal_lines jlx WHERE jlx.transaction_id = t.id AND jlx.tag_id = ${opts.tagId})`
             : sql`TRUE`}
-        GROUP BY 1, 2, 3, 4, 5, 6
+        GROUP BY 1, 2, 3, 4, 5, 6, 7
       `);
   // Tax RJEs for the tax year, per (account, unit-or-null).
   const rjeRows = await db.select({
@@ -264,14 +282,16 @@ export async function computeWorkpaper(tenantId: string, companyId: string, opts
   const reAccount = (reRow.rows as Array<{ id: string; account_number: string | null; name: string }>)[0] ?? null;
 
   // ── Assemble rows ────────────────────────────────────────────────
+  interface Bucket { unadj: Dec; aje: Dec; rje: Dec }
   interface Acc {
     row: TbWorkpaperRow;
     unadj: Dec; aje: Dec; rje: Dec;
-    units: Map<string, { unadj: Dec; aje: Dec; rje: Dec }>;
+    units: Map<string, Bucket>;
+    byTag: Map<string, Bucket>;
   }
   const byAccount = new Map<string, Acc>();
   let priorPl: Dec = new Decimal(0);
-  const priorPlByUnit = new Map<string, Dec>();
+  const isBalanceSheet = (accountType: string) => accountType === 'asset' || accountType === 'liability' || accountType === 'equity';
 
   const ensure = (id: string, meta: { account_number: string | null; name: string; account_type: string; detail_type: string | null }, isVirtualRe = false): Acc => {
     let acc = byAccount.get(id);
@@ -286,48 +306,55 @@ export async function computeWorkpaper(tenantId: string, companyId: string, opts
           isVirtualRe,
           unadjusted: 0, aje: 0, adjusted: 0, taxRje: 0, tax: 0,
           units: [],
+          byTag: [],
         },
         unadj: new Decimal(0), aje: new Decimal(0), rje: new Decimal(0),
         units: new Map(),
+        byTag: new Map(),
       };
       byAccount.set(id, acc);
     }
     return acc;
   };
-  const unitBucket = (acc: Acc, unitId: string) => {
-    let u = acc.units.get(unitId);
-    if (!u) {
-      u = { unadj: new Decimal(0), aje: new Decimal(0), rje: new Decimal(0) };
-      acc.units.set(unitId, u);
+  const bucket = (map: Map<string, Bucket>, key: string): Bucket => {
+    let b = map.get(key);
+    if (!b) {
+      b = { unadj: new Decimal(0), aje: new Decimal(0), rje: new Decimal(0) };
+      map.set(key, b);
     }
-    return u;
+    return b;
+  };
+  // Resolve where a slice lands in each split (see header comment):
+  // BS accounts never segment; P&L follows the unit (default-folded)
+  // for `units` and the literal tag resolution for `byTag`.
+  const buckets = (acc: Acc, unitId: string, tagged: boolean): [Bucket, Bucket] => {
+    if (isBalanceSheet(acc.row.accountType)) {
+      return [bucket(acc.units, defaultUnitId), bucket(acc.byTag, ZERO_UUID)];
+    }
+    return [bucket(acc.units, unitId), bucket(acc.byTag, tagged ? unitId : ZERO_UUID)];
   };
 
   for (const r of raw.rows as unknown as RawSplit[]) {
     const acc = ensure(r.account_id, r);
-    const u = unitBucket(acc, r.unit_id);
     acc.unadj = acc.unadj.plus(r.unadjusted ?? 0);
     acc.aje = acc.aje.plus(r.aje ?? 0);
-    u.unadj = u.unadj.plus(r.unadjusted ?? 0);
-    u.aje = u.aje.plus(r.aje ?? 0);
-    const pl = new Decimal(r.prior_pl ?? 0);
-    if (!pl.isZero()) {
-      priorPl = priorPl.plus(pl);
-      priorPlByUnit.set(r.unit_id, (priorPlByUnit.get(r.unit_id) ?? new Decimal(0)).plus(pl));
+    for (const b of buckets(acc, r.unit_id, r.tagged === true)) {
+      b.unadj = b.unadj.plus(r.unadjusted ?? 0);
+      b.aje = b.aje.plus(r.aje ?? 0);
     }
+    const pl = new Decimal(r.prior_pl ?? 0);
+    if (!pl.isZero()) priorPl = priorPl.plus(pl);
   }
 
   // Fold prior-years P&L into Retained Earnings (its natural credit
-  // balance arrives as a negative signed net, which is correct).
+  // balance arrives as a negative signed net, which is correct). RE is
+  // equity, so the fold lands in the single BS bucket.
   if (!priorPl.isZero()) {
     const acc = reAccount
       ? ensure(reAccount.id, { account_number: reAccount.account_number, name: reAccount.name, account_type: 'equity', detail_type: 'retained_earnings' })
       : ensure(VIRTUAL_RE_ID, { account_number: '30120', name: 'Retained Earnings (Prior Years)', account_type: 'equity', detail_type: 'retained_earnings' }, true);
     acc.unadj = acc.unadj.plus(priorPl);
-    for (const [unitId, amt] of priorPlByUnit) {
-      const u = unitBucket(acc, unitId);
-      u.unadj = u.unadj.plus(amt);
-    }
+    for (const b of buckets(acc, defaultUnitId, false)) b.unadj = b.unadj.plus(priorPl);
   }
 
   for (const r of rjeRows) {
@@ -338,8 +365,8 @@ export async function computeWorkpaper(tenantId: string, companyId: string, opts
     })();
     const net = new Decimal(r.debit).minus(r.credit);
     acc.rje = acc.rje.plus(net);
-    const u = unitBucket(acc, r.unitId ?? defaultUnitId);
-    u.rje = u.rje.plus(net);
+    // An RJE line with an explicit unit counts as "tagged" to it.
+    for (const b of buckets(acc, r.unitId ?? defaultUnitId, r.unitId != null)) b.rje = b.rje.plus(net);
   }
 
   // Finalize rows, drop all-zero accounts, compute totals.
@@ -365,7 +392,7 @@ export async function computeWorkpaper(tenantId: string, companyId: string, opts
     acc.row.adjusted = n(adjusted.toString());
     acc.row.taxRje = n(acc.rje.toString());
     acc.row.tax = n(tax.toString());
-    acc.row.units = [...acc.units.entries()]
+    const splits = (map: Map<string, Bucket>): TbUnitSplit[] => [...map.entries()]
       .filter(([, u]) => !(u.unadj.isZero() && u.aje.isZero() && u.rje.isZero()))
       .map(([unitId, u]) => {
         const uAdj = u.unadj.plus(u.aje);
@@ -378,6 +405,8 @@ export async function computeWorkpaper(tenantId: string, companyId: string, opts
           tax: n(uAdj.plus(u.rje).toString()),
         };
       });
+    acc.row.units = splits(acc.units);
+    acc.row.byTag = splits(acc.byTag);
     addTotal('unadjustedDr', 'unadjustedCr', acc.unadj);
     addTotal('ajeDr', 'ajeCr', acc.aje);
     addTotal('adjustedDr', 'adjustedCr', adjusted);
