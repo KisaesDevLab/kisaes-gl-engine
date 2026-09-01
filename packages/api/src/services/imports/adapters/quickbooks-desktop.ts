@@ -350,6 +350,9 @@ interface QbdLegRaw {
   account: string;
   debit: string;
   credit: string;
+  /** QB Desktop Class column (present when class tracking is on). Imported
+   *  as the line's tag — commit resolves/auto-creates tags by name. */
+  className: string;
 }
 
 interface QbdGroup {
@@ -384,6 +387,9 @@ export function parseGl(buf: Buffer): { entries: CanonicalGlEntry[]; errors: Imp
   const iAcct = colOf(header, 'Account');
   const iDeb = colOf(header, 'Debit');
   const iCred = colOf(header, 'Credit');
+  // Optional: present when the company file has class tracking on and the
+  // Journal report includes the Class column. Mapped to per-line tags.
+  const iClass = colOf(header, 'Class');
 
   let current: QbdGroup | null = null;
 
@@ -410,6 +416,7 @@ export function parseGl(buf: Buffer): { entries: CanonicalGlEntry[]; errors: Imp
         debit: l.debit,
         credit: l.credit,
         memo: l.memo || undefined,
+        ...(l.className ? { tagName: l.className } : {}),
       };
     });
     // Drop a wholly zero-amount entry (postTransaction rejects all-zero
@@ -478,6 +485,7 @@ export function parseGl(buf: Buffer): { entries: CanonicalGlEntry[]; errors: Imp
       account,
       debit: toDecimal(r[iDeb]),
       credit: toDecimal(r[iCred]),
+      className: iClass !== -1 ? (r[iClass] ?? '').trim() : '',
     });
   }
   closeCurrent();

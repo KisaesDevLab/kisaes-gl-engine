@@ -73,8 +73,9 @@ export interface CanonicalGlLine {
   credit: string;
   memo?: string;
   /** Tag name to apply to this posted line. Resolved (or auto-created) at
-   *  commit time and written to journal_lines.tag_id. Only the Generic
-   *  import populates this today. */
+   *  commit time and written to journal_lines.tag_id. Populated by the
+   *  Generic import (Tag column) and the QBO/QBD Journal imports (Class
+   *  column, when class tracking is on). */
   tagName?: string;
 }
 

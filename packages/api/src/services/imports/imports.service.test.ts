@@ -35,8 +35,9 @@ async function cleanDb() {
   if (!tenantId) return;
   await db.delete(importSessions).where(eq(importSessions.tenantId, tenantId));
   await db.delete(transactionTags).where(eq(transactionTags.tenantId, tenantId));
-  await db.delete(tags).where(eq(tags.tenantId, tenantId));
+  // journal_lines.tag_id → tags is ON DELETE RESTRICT: lines go first.
   await db.delete(journalLines).where(eq(journalLines.tenantId, tenantId));
+  await db.delete(tags).where(eq(tags.tenantId, tenantId));
   await db.delete(transactions).where(eq(transactions.tenantId, tenantId));
   await db.delete(auditLog).where(eq(auditLog.tenantId, tenantId));
   await db.delete(contacts).where(eq(contacts.tenantId, tenantId));
@@ -667,6 +668,43 @@ Cythia Martin","","Monett","MO","65708",,,"",False,False,True,Net 15,5920,""
       const txns = await db.select().from(transactions).where(eq(transactions.tenantId, tenantId));
       expect(txns.length).toBe(2);
       expect(txns.map((t) => t.txnDate).sort()).toEqual(['2025-01-02', '2025-01-03']);
+    });
+
+    it('maps the Class column to per-line tags (auto-created)', async () => {
+      await db.insert(accounts).values([
+        { tenantId, companyId, name: 'Car Wash Checking', accountType: 'asset' },
+        { tenantId, companyId, name: 'Operating Revenue', accountType: 'revenue' },
+      ]);
+      const file = await xlsxFromGrid('journal-class.xlsx', 'Journal', [
+        ['Test Co'],
+        ['Journal'],
+        ['January 2025'],
+        [],
+        [null, 'Date', 'Transaction Type', 'Num', 'Name', 'Memo/Description', 'Class', 'Account', 'Debit', 'Credit'],
+        [null, '01/02/2025', 'Deposit', null, null, 'Sale 1', 'Westside', 'Car Wash Checking', 3.5, null],
+        [null, null, null, null, null, 'Sale 1', 'Westside', 'Operating Revenue', null, 3.5],
+        [null, null, null, null, null, null, null, null, 3.5, 3.5],
+        [],
+        [null, '01/03/2025', 'Deposit', null, null, 'Sale 2', null, 'Car Wash Checking', 9.25, null],
+        [null, null, null, null, null, 'Sale 2', null, 'Operating Revenue', null, 9.25],
+        [null, null, null, null, null, null, null, null, 9.25, 9.25],
+      ]);
+      const out = await importsService.createSession({
+        tenantId, companyId, userId,
+        file, kind: 'gl_transactions', sourceSystem: 'quickbooks_online', options: {},
+      });
+      expect(out.session.errorCount).toBe(0);
+      const commit = await importsService.commitSession(tenantId, companyId, userId, out.session.id);
+      expect(commit.result.created).toBe(2);
+
+      const tagRows = await db.select().from(tags).where(eq(tags.tenantId, tenantId));
+      expect(tagRows.map((t) => t.name)).toEqual(['Westside']);
+      const tagId = tagRows[0]!.id;
+
+      const lines = await db.select().from(journalLines).where(eq(journalLines.tenantId, tenantId));
+      // JE 1's two lines carry the Westside tag; JE 2's two lines carry none.
+      expect(lines.filter((l) => l.tagId === tagId)).toHaveLength(2);
+      expect(lines.filter((l) => l.tagId === null)).toHaveLength(2);
     });
 
     it('skips the grand-TOTAL and trailing timestamp rows (real QBO footer)', async () => {

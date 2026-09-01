@@ -455,6 +455,9 @@ interface QboLineRaw {
   account: string;
   debit: unknown;
   credit: unknown;
+  /** QBO Class column (present when class tracking is on). Imported as the
+   *  line's tag — commit resolves/auto-creates tags by name. */
+  className: string;
 }
 
 // QBO's GL/Journal exports put the account NUMBER and NAME in one cell
@@ -508,6 +511,9 @@ export async function parseGl(
   const iAcct = colIdx(header, 'account');
   const iDeb = colIdx(header, 'debit');
   const iCred = colIdx(header, 'credit');
+  // Optional: present when the company has class tracking on and the Journal
+  // export includes the Class column. Mapped to per-line tags.
+  const iClass = colIdx(header, 'class');
 
   // State-machine: walk rows after header. Buffer the current JE in
   // `current`. A row with both Date and Type starts a new JE (closing
@@ -543,6 +549,7 @@ export async function parseGl(
         debit: cellToDecimal(l.debit) ?? '0',
         credit: cellToDecimal(l.credit) ?? '0',
         memo: l.memo || undefined,
+        ...(l.className ? { tagName: l.className } : {}),
       };
     });
     // Skip a wholly zero-amount entry — a QBO voided transaction
@@ -660,6 +667,7 @@ export async function parseGl(
       account,
       debit: r[iDeb],
       credit: r[iCred],
+      className: iClass !== -1 ? cellToString(r[iClass]).trim() : '',
     });
   }
   // EOF: flush whatever's open.

@@ -157,6 +157,27 @@ describe('QuickBooks Desktop adapter', () => {
       }
     });
 
+    it('maps a Class column to per-line tagName, leaving blank classes untagged', () => {
+      const withClass =
+        `"Trans #","Type","Date","Num","Adj","Name","Memo","Class","Account","Debit","Credit"\r\n` +
+        `"4650","Check","01/01/2025","2450",,"Betty's Flowers",,"Retail","12000 ${DOT} Cash Operating Account Freedom","",623.95\r\n` +
+        `,,,,,"Betty's Flowers",,"Retail","50000 ${DOT} Cost of Sales/Revenue",623.95,""\r\n` +
+        `,,,,,,,,,623.95,623.95\r\n` +
+        `"4720","Deposit","01/31/2025",,,,"Deposit",,"12000 ${DOT} Cash Operating Account Freedom",9514.23,""\r\n` +
+        `,,,,,,"Deposit",,"41000 ${DOT} Sales/Revenues","",9514.23\r\n` +
+        `,,,,,,,,,9514.23,9514.23\r\n`;
+      const { entries, errors } = qbd.parseGl(buf(withClass));
+      expect(errors).toEqual([]);
+      expect(entries).toHaveLength(2);
+      expect(entries[0]!.lines.map((l) => l.tagName)).toEqual(['Retail', 'Retail']);
+      expect(entries[1]!.lines.map((l) => l.tagName)).toEqual([undefined, undefined]);
+    });
+
+    it('leaves tagName unset when the export has no Class column', () => {
+      const { entries } = qbd.parseGl(buf(csv));
+      for (const e of entries) for (const l of e.lines) expect(l.tagName).toBeUndefined();
+    });
+
     it('carries a continuation-row memo onto the entry', () => {
       const withMemo =
         `"Trans #","Type","Date","Num","Adj","Name","Memo","Account","Debit","Credit"\r\n` +

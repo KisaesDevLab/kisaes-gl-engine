@@ -1259,8 +1259,10 @@ async function commitGl(
   }
 
   // Resolve (and auto-create) every tag named across the file up front, so a
-  // single tag referenced by many rows is created once. Only the Generic
-  // importer populates line.tagName; for other sources this is a no-op.
+  // single tag referenced by many rows is created once. The Generic importer
+  // populates line.tagName from its Tag column; the QBO/QBD adapters populate
+  // it from the Class column (class tracking); for other sources this is a
+  // no-op.
   const { map: tagMap, created: tagsCreated } = await ensureTags(
     tenantId,
     companyId,
