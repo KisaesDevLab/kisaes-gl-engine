@@ -378,6 +378,17 @@ const exportQuerySchema = z.object({
   taxYear: z.coerce.number().int().min(2000).max(2100),
   basis: z.enum(['accrual', 'cash']).default('accrual'),
   software: z.enum(['ultratax', 'lacerte', 'cch', 'gosystem', 'generic', 'workingtb']),
+  // Working TB only — the workpaper screen's Download passes its
+  // period end, tag filter, activity view ('' | 'tags' | unit id)
+  // and toolbar filters so the workbook matches the screen.
+  periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  tagId: z.string().uuid().optional(),
+  view: z.object({
+    activityView: z.union([z.literal(''), z.literal('tags'), z.string().uuid()]).optional(),
+    accountType: z.string().max(40).optional(),
+    search: z.string().max(200).optional(),
+    nonZeroOnly: z.boolean().optional(),
+  }).optional(),
 });
 
 tbRouter.get('/exports/validate', expensiveOpLimiter, async (req, res) => {

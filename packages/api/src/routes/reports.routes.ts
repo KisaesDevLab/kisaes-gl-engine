@@ -14,6 +14,7 @@ import * as apReportService from '../services/ap-report.service.js';
 import * as exportService from '../services/report-export.service.js';
 import * as comparisonService from '../services/report-comparison.service.js';
 import * as tbReports from '../services/tb/tb-reports.service.js';
+import { parseActivityView, type TbViewFilters } from '../services/tb/activity-view.service.js';
 import * as featureFlags from '../services/feature-flags.service.js';
 
 // Build-plan Phase 5 cache-invalidation hook. We don't run a Redis
@@ -1715,8 +1716,22 @@ function tbTag(req: Request): string | null {
   return v;
 }
 
+// Workpaper "Activity view" + toolbar filters so the on-screen
+// Download foots to what the grid shows: activity_view = '' | 'tags'
+// | <unitId>; account_type, q (name/number search), nonzero_only.
+function tbView(req: Request): TbViewFilters {
+  const q = req.query as Record<string, unknown>;
+  const str = (k: string) => (typeof q[k] === 'string' ? String(q[k]) : '');
+  return {
+    activityView: parseActivityView(q['activity_view']),
+    accountType: str('account_type') || null,
+    search: str('q') || null,
+    nonZeroOnly: str('nonzero_only') === '1' || str('nonzero_only') === 'true',
+  };
+}
+
 const TB_REPORTS: Record<string, (tenantId: string, p: { companyId: string; endDate: string; basis: 'accrual' | 'cash' }, req: Request) => Promise<unknown>> = {
-  'tb-workpaper': (t, p, req) => tbReports.buildTbWorkpaperReport(t, p.companyId, p.endDate, p.basis, tbTag(req)),
+  'tb-workpaper': (t, p, req) => tbReports.buildTbWorkpaperReport(t, p.companyId, p.endDate, p.basis, tbTag(req), tbView(req)),
   'tb-grouped': (t, p, req) => tbReports.buildTbGroupedReport(t, p.companyId, p.endDate, p.basis, tbTag(req)),
   'tb-leadsheets': (t, p, req) => tbReports.buildTbLeadsheetsReport(t, p.companyId, p.endDate, p.basis,
     typeof req.query['grouping_id'] === 'string' ? String(req.query['grouping_id']) : null, tbTag(req)),

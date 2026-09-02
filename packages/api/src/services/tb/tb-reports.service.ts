@@ -22,6 +22,9 @@ import {
 } from '../../db/schema/index.js';
 import { AppError } from '../../utils/errors.js';
 import { computeWorkpaper, type TbBasis } from './balance-engine.service.js';
+import {
+  TB_VIEW_BY_TAG, activityViewLabel, loadUnitFormatting, segmentWorkpaperRows, type TbViewFilters,
+} from './activity-view.service.js';
 import { taxYearOf } from './tax-profile.service.js';
 import { buildTaxDataset } from './exports.service.js';
 import { runDiagnostics } from './diagnostics.service.js';
@@ -114,31 +117,64 @@ async function loadWpAnnotations(tenantId: string, companyId: string, taxYear: n
 
 // ── 12.1 Standard five-column TB ────────────────────────────────────
 
-export async function buildTbWorkpaperReport(tenantId: string, companyId: string, endDate: string, basis: TbBasis, tagId: string | null = null) {
+export async function buildTbWorkpaperReport(
+  tenantId: string,
+  companyId: string,
+  endDate: string,
+  basis: TbBasis,
+  tagId: string | null = null,
+  view: TbViewFilters = {},
+) {
   const { taxYear } = await fiscalContext(tenantId, companyId, endDate);
   const wp = await computeWorkpaper(tenantId, companyId, { periodEnd: endDate, basis, taxYear, tagId });
-  const ann = await loadWpAnnotations(tenantId, companyId, taxYear);
-  const data: Array<Record<string, unknown>> = wp.rows.map((r) => ({
-    ...toFiveCol(r),
-    wp_ref: ann.wpRef(r.accountId),
-    marks: ann.marks(r.accountId),
-  }));
-  data.push({
-    account_number: '', name: 'TOTALS (DR/CR)', wp_ref: '', marks: '',
-    unadjusted: `${wp.totals.unadjustedDr.toFixed(2)} / ${wp.totals.unadjustedCr.toFixed(2)}`,
-    aje: `${wp.totals.ajeDr.toFixed(2)} / ${wp.totals.ajeCr.toFixed(2)}`,
-    adjusted: `${wp.totals.adjustedDr.toFixed(2)} / ${wp.totals.adjustedCr.toFixed(2)}`,
-    tax_rje: `${wp.totals.taxRjeDr.toFixed(2)} / ${wp.totals.taxRjeCr.toFixed(2)}`,
-    tax: `${wp.totals.taxDr.toFixed(2)} / ${wp.totals.taxCr.toFixed(2)}`,
+  const [ann, fmt] = await Promise.all([loadWpAnnotations(tenantId, companyId, taxYear), loadUnitFormatting(tenantId, companyId)]);
+  const activityView = view.activityView ?? '';
+  const byTag = activityView === TB_VIEW_BY_TAG;
+  // One line per account (or per account × segment in by-tag view),
+  // amounts + totals footing to the emitted lines so a filtered or
+  // segmented download agrees with itself, like the grid.
+  const segments = segmentWorkpaperRows(wp.rows, view, fmt);
+  // [debits, credits] per column.
+  const totals: Record<'unadjusted' | 'aje' | 'adjusted' | 'taxRje' | 'tax', [number, number]> = {
+    unadjusted: [0, 0], aje: [0, 0], adjusted: [0, 0], taxRje: [0, 0], tax: [0, 0],
+  };
+  const addTotal = (key: keyof typeof totals, v: number) => {
+    if (v > 0) totals[key][0] += v; else totals[key][1] -= v;
+  };
+  const data: Array<Record<string, unknown>> = segments.map((s) => {
+    for (const key of ['unadjusted', 'aje', 'adjusted', 'taxRje', 'tax'] as const) addTotal(key, s[key]);
+    return {
+      ...toFiveCol({ ...s, name: s.row.name }),
+      ...(byTag ? { segment: s.segment } : {}),
+      wp_ref: s.primary ? ann.wpRef(s.row.accountId) : '',
+      marks: s.primary ? ann.marks(s.row.accountId) : '',
+    };
   });
+  const drcr = (key: keyof typeof totals) => `${money(totals[key][0]).toFixed(2)} / ${money(totals[key][1]).toFixed(2)}`;
+  data.push({
+    account_number: '', name: 'TOTALS (DR/CR)', ...(byTag ? { segment: '' } : {}), wp_ref: '', marks: '',
+    unadjusted: drcr('unadjusted'),
+    aje: drcr('aje'),
+    adjusted: drcr('adjusted'),
+    tax_rje: drcr('taxRje'),
+    tax: drcr('tax'),
+  });
+  const viewLabel = activityViewLabel(activityView, fmt);
+  const filterLabel = [
+    view.accountType ? `Type: ${view.accountType}` : '',
+    view.search?.trim() ? `Search: ${view.search.trim()}` : '',
+    view.nonZeroOnly ? 'Non-zero only' : '',
+  ].filter(Boolean).join(', ');
   return {
-    title: `Trial Balance Workpaper — TY${taxYear}${basisSuffix(basis)}${await tagSuffix(tenantId, tagId)}`,
+    title: `Trial Balance Workpaper — TY${taxYear}${basisSuffix(basis)}${await tagSuffix(tenantId, tagId)}`
+      + (viewLabel ? ` — ${viewLabel}` : '') + (filterLabel ? ` (${filterLabel})` : ''),
     startDate: wp.fyStart,
     endDate,
     glVersionStamp: wp.glVersionStamp,
     data,
     _exportColumns: [
       FIVE_COLS[0]!, FIVE_COLS[1]!,
+      ...(byTag ? [{ key: 'segment', label: 'Unit' }] : []),
       { key: 'wp_ref', label: 'LS' },
       ...FIVE_COLS.slice(2),
       { key: 'marks', label: 'Marks' },

@@ -20,6 +20,7 @@ import {
 import { importSeed } from './tax-code-seed.service.js';
 import { createUnit, mapTag } from './activity-units.service.js';
 import { buildTaxDataset, buildVendorFile, buildWorkingTbXlsx, validateForExport } from './exports.service.js';
+import { buildTbWorkpaperReport } from './tb-reports.service.js';
 
 const SEED_FILE_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'db', 'seeds', 'tax-codes', '2025', 'tax-codes.xlsx');
 
@@ -288,5 +289,70 @@ describe('vendor export dataset (Phase 11)', () => {
     expect(flat).toContain('Revenue');
     expect(flat).toContain('Total Assets');
     expect(flat).toContain('Cash');
+  });
+
+  it('working TB "by tag / unit #" segments P&L lines with unit-numbered account numbers, never the balance sheet', async () => {
+    // Fixture from the engine-driven test above: Sales 1000 untagged
+    // + 250 under the rental tag; Cash touched by the same tagged JE.
+    const units = await db.select().from(activityUnits)
+      .where(and(eq(activityUnits.tenantId, tenantId), eq(activityUnits.companyId, companyId)));
+    const rental = units.find((u) => u.displayName === 'Rental')!;
+    await db.update(companyTaxProfiles).set({ unitNumberPlacement: 'prefix' })
+      .where(and(eq(companyTaxProfiles.tenantId, tenantId), eq(companyTaxProfiles.companyId, companyId)));
+
+    const file = await buildWorkingTbXlsx(tenantId, companyId, { taxYear: 2026, basis: 'accrual', view: { activityView: 'tags' } });
+    expect(file.fileName).toMatch(/working-tb-20261231-accrual-by-tag\.xlsx/);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(file.buffer as unknown as ArrayBuffer);
+    const ws = wb.getWorksheet('Working TB')!;
+    const lines: Array<[string, string, string, number]> = [];
+    ws.eachRow((row) => lines.push([
+      String(row.getCell(1).value ?? ''), String(row.getCell(2).value ?? ''),
+      String(row.getCell(3).value ?? ''), Number(row.getCell(6).value ?? 0),
+    ]));
+    expect(lines.find((l) => l[0] === 'Acct #')!.slice(0, 3)).toEqual(['Acct #', 'Account', 'Unit']);
+    // Balance sheet: ONE line, unit 0, plain balance.
+    const cash = lines.filter((l) => l[1] === 'Cash');
+    expect(cash).toEqual([['0-1000', 'Cash', 'balance sheet · not segmented', 1350]]);
+    // P&L: untagged activity is unit 0, the tagged slice carries the
+    // rental unit's number (prefix placement honoured).
+    const sales = lines.filter((l) => l[1] === 'Sales');
+    expect(sales).toEqual([
+      ['0-4000', 'Sales', 'no tag', -1000],
+      [`${rental.instanceNumber}-4000`, 'Sales', 'Rental', -250],
+    ]);
+    // Section subtotal still foots to the account total.
+    expect(lines.find((l) => l[1] === 'Total Revenue')![3]).toBeCloseTo(-1550, 2);
+
+    // The Workpaper report shares the same segmentation + formatting.
+    const report = await buildTbWorkpaperReport(tenantId, companyId, '2026-12-31', 'accrual', null, { activityView: 'tags' });
+    expect(report.title).toContain('By tag / unit #');
+    expect(report._exportColumns.map((c) => c.key)).toContain('segment');
+    const salesRows = report.data.filter((r) => r['name'] === 'Sales');
+    expect(salesRows.map((r) => [r['account_number'], r['segment'], r['adjusted']])).toEqual([
+      ['0-4000', 'no tag', -1000],
+      [`${rental.instanceNumber}-4000`, 'Rental', -250],
+    ]);
+    expect(report.data.filter((r) => r['name'] === 'Cash')).toHaveLength(1);
+    // Totals foot to the emitted lines (DR 1350 / CR 1350 in TB terms:
+    // 1350 cash vs 1000 + 250 + 300 revenue − 200 expense).
+    const totals = report.data.find((r) => r['name'] === 'TOTALS (DR/CR)')!;
+    expect(totals['adjusted']).toBe('1550.00 / 1550.00');
+
+    // Filters mirror the grid toolbar: type + search narrow the lines.
+    const filtered = await buildTbWorkpaperReport(tenantId, companyId, '2026-12-31', 'accrual', null,
+      { activityView: 'tags', accountType: 'revenue', search: 'sales' });
+    expect(filtered.data.map((r) => r['name'])).toEqual(['Sales', 'Sales', 'TOTALS (DR/CR)']);
+    expect(filtered.title).toContain('Type: revenue');
+
+    // Single-unit view: accounts with no activity in the unit drop out.
+    const rentalOnly = await buildWorkingTbXlsx(tenantId, companyId, { taxYear: 2026, basis: 'accrual', view: { activityView: rental.id } });
+    const wb2 = new ExcelJS.Workbook();
+    await wb2.xlsx.load(rentalOnly.buffer as unknown as ArrayBuffer);
+    const names: string[] = [];
+    wb2.getWorksheet('Working TB')!.eachRow((row) => names.push(String(row.getCell(2).value ?? '')));
+    expect(names).toContain('Sales');
+    expect(names).not.toContain('Interest Income');
+    expect(names).not.toContain('Cash');
   });
 });

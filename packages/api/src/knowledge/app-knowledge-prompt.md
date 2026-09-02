@@ -492,7 +492,16 @@ Key ideas:
   for suggestions; nothing commits until the preparer accepts.
 - **Activity units** (TB Settings) split one set of books across
   multiple return activities (e.g. two rentals + a farm on a 1065) by
-  mapping line-level tags to units.
+  mapping line-level tags to units. The workpaper's Activity view can
+  show one unit, or "By tag / unit #" — every income/expense account
+  once per tag with the unit number on the account number (6050-2, or
+  2-6050 when TB Settings → "Unit # on exports" prepends it; untagged
+  activity is unit 0). Balance sheet accounts are never segmented (a
+  balance sheet can't balance per tag) — they show as unit 0 and export
+  as one plain row.
+- **Download** (workpaper header) exports exactly what's on screen —
+  CSV, PDF, or the Excel Working TB — with the current period, basis,
+  tag filter, activity view, and category/search filters applied.
 - **Leadsheets** (Trial Balance → Leadsheets) group accounts into
   workpapers (Cash, AR, Fixed Assets…) with tickmarks, notes, and a
   preparer→reviewer sign-off flow. A sign-off goes "stale" if the

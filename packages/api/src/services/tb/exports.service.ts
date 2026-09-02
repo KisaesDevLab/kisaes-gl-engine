@@ -17,7 +17,7 @@ import ExcelJS from 'exceljs';
 import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { companyTaxProfiles,
-  accountTaxAssignments, activityUnits, companies, firmTaxCodes, taxCodes, tbExports,
+  accountTaxAssignments, activityUnits, companies, firmTaxCodes, tags, taxCodes, tbExports,
 } from '../../db/schema/index.js';
 import { AppError } from '../../utils/errors.js';
 import { auditLog } from '../../middleware/audit.js';
@@ -25,6 +25,9 @@ import { incCounter } from '../../utils/metrics.js';
 import { getProviderForTenant } from '../storage/storage-provider.factory.js';
 import { tenantStorageKey } from '../storage/storage-keys.js';
 import { computeWorkpaper, ZERO_UUID, type TbBasis } from './balance-engine.service.js';
+import {
+  TB_VIEW_BY_TAG, activityViewLabel, loadUnitFormatting, segmentWorkpaperRows, type TbViewFilters,
+} from './activity-view.service.js';
 import { fiscalYearEnd } from './tax-profile.service.js';
 import { resolveSeedVersionId } from './assignments.service.js';
 import { resolveOwner } from './firm-tax-codes.service.js';
@@ -499,22 +502,63 @@ export async function buildVendorFile(
 
 
 // Excel working trial balance (11.7a): five columns + code + unit,
-// grouped subtotals, tabular numerals.
-export async function buildWorkingTbXlsx(tenantId: string, companyId: string, opts: { taxYear: number; basis: TbBasis }): Promise<{ buffer: Buffer; fileName: string; mimeType: string; glVersionStamp: number; rowCount: number }> {
+// grouped subtotals, tabular numerals. The `view` (activity view +
+// toolbar filters), an interim `periodEnd` inside the tax year, and a
+// `tagId` let the workpaper screen's Download produce exactly what's
+// on screen; all default to the full-year consolidated book.
+export interface WorkingTbOptions {
+  taxYear: number;
+  basis: TbBasis;
+  periodEnd?: string | null;
+  tagId?: string | null;
+  view?: TbViewFilters | null;
+}
+
+export async function buildWorkingTbXlsx(
+  tenantId: string,
+  companyId: string,
+  opts: WorkingTbOptions,
+): Promise<{ buffer: Buffer; fileName: string; mimeType: string; glVersionStamp: number; rowCount: number }> {
   const [company] = await db.select({ m: companies.fiscalYearStartMonth, name: companies.businessName }).from(companies)
     .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId))).limit(1);
   if (!company) throw AppError.notFound('Company not found');
-  const periodEnd = fiscalYearEnd(opts.taxYear, company.m ?? 1);
-  const wp = await computeWorkpaper(tenantId, companyId, { periodEnd, basis: opts.basis, taxYear: opts.taxYear });
+  const fyEnd = fiscalYearEnd(opts.taxYear, company.m ?? 1);
+  const periodEnd = opts.periodEnd || fyEnd;
+  const tagId = opts.tagId || null;
+  const wp = await computeWorkpaper(tenantId, companyId, { periodEnd, basis: opts.basis, taxYear: opts.taxYear, tagId });
   const assignments = await db.select().from(accountTaxAssignments)
     .where(and(eq(accountTaxAssignments.tenantId, tenantId), eq(accountTaxAssignments.companyId, companyId)));
+  const fmt = await loadUnitFormatting(tenantId, companyId);
+  const view = opts.view ?? {};
+  const activityView = view.activityView ?? '';
+  const byTag = activityView === TB_VIEW_BY_TAG;
+  const viewLabel = activityViewLabel(activityView, fmt);
+  const lines = segmentWorkpaperRows(wp.rows, view, fmt);
+  let tagLabel = '';
+  if (tagId) {
+    const [tag] = await db.select({ name: tags.name }).from(tags)
+      .where(and(eq(tags.tenantId, tenantId), eq(tags.id, tagId))).limit(1);
+    tagLabel = `Tag: ${tag?.name ?? tagId}`;
+  }
+  const subtitle = [
+    `Tax year ${opts.taxYear}`,
+    periodEnd === fyEnd ? `FY end ${periodEnd}` : `Period end ${periodEnd} (FY end ${fyEnd})`,
+    `${opts.basis} basis`,
+    viewLabel, tagLabel,
+    view.accountType ? `Type: ${view.accountType}` : '',
+    view.search?.trim() ? `Search: ${view.search.trim()}` : '',
+    view.nonZeroOnly ? 'Non-zero only' : '',
+  ].filter(Boolean).join(' · ');
 
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('Working TB');
-  ws.addRow([`${company.name} — Working Trial Balance`, '', '', '', '', '', '', '']);
-  ws.addRow([`Tax year ${opts.taxYear} · FY end ${periodEnd} · ${opts.basis} basis`]);
+  ws.addRow([`${company.name} — Working Trial Balance`]);
+  ws.addRow([subtitle]);
   ws.addRow([]);
-  const header = ws.addRow(['Acct #', 'Account', 'Unadjusted', 'AJE', 'Adjusted', 'Tax RJE', 'Tax', 'Tax Code']);
+  const header = ws.addRow([
+    'Acct #', 'Account', ...(byTag ? ['Unit'] : []),
+    'Unadjusted', 'AJE', 'Adjusted', 'Tax RJE', 'Tax', 'Tax Code',
+  ]);
   header.font = { bold: true };
   ws.getRow(1).font = { bold: true, size: 14 };
 
@@ -530,15 +574,17 @@ export async function buildWorkingTbXlsx(tenantId: string, companyId: string, op
   ];
   let rowCount = 0;
   for (const [label, match] of sections) {
-    const rows = wp.rows.filter((r) => match(r.accountType));
+    const rows = lines.filter((r) => match(r.row.accountType));
     if (rows.length === 0) continue;
     const sec = ws.addRow([label]);
     sec.font = { bold: true };
     const totals = { unadjusted: 0, aje: 0, adjusted: 0, taxRje: 0, tax: 0 };
     for (const r of rows) {
-      const assignment = resolveCodeFor(assignments, r.accountId, r.units[0]?.unitId ?? ZERO_UUID);
+      // Tax code resolves per slice (unit-specific assignment first,
+      // then account-level); the zero bucket has no unit assignment.
+      const assignment = resolveCodeFor(assignments, r.row.accountId, r.unitId ?? r.row.units[0]?.unitId ?? ZERO_UUID);
       ws.addRow([
-        r.accountNumber ?? '', r.name,
+        r.accountNumber, r.row.name, ...(byTag ? [r.segment] : []),
         r.unadjusted, r.aje, r.adjusted, r.taxRje, r.tax,
         assignment?.seedCode ?? (assignment?.firmCodeId ? 'FIRM' : ''),
       ]);
@@ -549,15 +595,17 @@ export async function buildWorkingTbXlsx(tenantId: string, companyId: string, op
       totals.tax += r.tax;
       rowCount++;
     }
-    const st = ws.addRow(['', `Total ${label}`, totals.unadjusted, totals.aje, totals.adjusted, totals.taxRje, totals.tax, '']);
+    const st = ws.addRow(['', `Total ${label}`, ...(byTag ? [''] : []), totals.unadjusted, totals.aje, totals.adjusted, totals.taxRje, totals.tax, '']);
     st.font = { bold: true };
   }
-  for (const col of [3, 4, 5, 6, 7]) ws.getColumn(col).numFmt = '#,##0.00;(#,##0.00)';
+  const firstNum = byTag ? 4 : 3;
+  for (const col of [0, 1, 2, 3, 4].map((i) => firstNum + i)) ws.getColumn(col).numFmt = '#,##0.00;(#,##0.00)';
   ws.getColumn(2).width = 40;
+  if (byTag) ws.getColumn(3).width = 24;
   const buffer = Buffer.from(await wb.xlsx.writeBuffer());
   return {
     buffer,
-    fileName: `working-tb-${periodEnd.replace(/-/g, '')}-${opts.basis}.xlsx`,
+    fileName: `working-tb-${periodEnd.replace(/-/g, '')}-${opts.basis}${byTag ? '-by-tag' : ''}.xlsx`,
     mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     glVersionStamp: wp.glVersionStamp,
     rowCount,
@@ -569,7 +617,7 @@ export async function buildWorkingTbXlsx(tenantId: string, companyId: string, op
 export async function generateExport(
   tenantId: string,
   companyId: string,
-  opts: { taxYear: number; basis: TbBasis; software: TbExportSoftware; overrideConfirmed?: boolean; isFirmAdmin?: boolean },
+  opts: { taxYear: number; basis: TbBasis; software: TbExportSoftware; overrideConfirmed?: boolean; isFirmAdmin?: boolean } & Omit<WorkingTbOptions, 'taxYear' | 'basis'>,
   userId?: string,
 ) {
   let buffer: Buffer;
