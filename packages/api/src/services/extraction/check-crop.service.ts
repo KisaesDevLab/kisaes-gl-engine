@@ -98,6 +98,36 @@ const isCheckLike = (w: number, h: number): boolean => {
 };
 
 /**
+ * Run pdfimages, tolerating a non-zero exit.
+ *
+ * poppler returns a non-zero status when a PDF contains ANY malformed object
+ * ("Unknown compression method in flate stream", "End of file inside array"),
+ * which is routine in bank statements — and it does so AFTER having already
+ * written most or all of the images. poppler 25.x is stricter here than 24.x,
+ * so the same statement that extracted fine on an older build started
+ * returning nothing. Treating the exit code as fatal threw away a complete set
+ * of check images and reported the statement as having none, which is both
+ * wrong and un-actionable for the user.
+ *
+ * A timeout or signal kill IS fatal: the run was cut short, so whatever landed
+ * on disk is arbitrary and must not be trusted.
+ */
+async function runPdfimages(args: string[]): Promise<{ stdout: string; failed: boolean }> {
+  try {
+    const { stdout } = await execFileAsync(PDFIMAGES_BIN, args, {
+      timeout: EXTRACT_TIMEOUT_MS,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return { stdout, failed: false };
+  } catch (err) {
+    const e = err as { stdout?: string | Buffer; killed?: boolean; signal?: string | null };
+    if (e.killed || e.signal) throw err;
+    const stdout = typeof e.stdout === 'string' ? e.stdout : (e.stdout?.toString() ?? '');
+    return { stdout, failed: true };
+  }
+}
+
+/**
  * Extract every embedded image from the PDF via `pdfimages -png -p` and keep
  * the check-shaped ones. Returns [] (never throws) on any extraction problem —
  * the pass is strictly additive to the statement pipeline.
@@ -113,26 +143,32 @@ export async function extractCheckCandidateImages(pdf: Buffer): Promise<CheckCan
     // soft-masks (alpha channels) pdfimages extracts alongside them. A mask
     // has the same dimensions as its check, so filtering by geometry alone
     // would send every check to the vision model twice.
-    const { stdout: listOut } = await execFileAsync(PDFIMAGES_BIN, ['-l', String(MAX_EXTRACT_PAGES), '-list', inputPath], {
-      timeout: EXTRACT_TIMEOUT_MS,
-    });
+    const { stdout: listOut, failed: listFailed } = await runPdfimages(
+      ['-l', String(MAX_EXTRACT_PAGES), '-list', inputPath],
+    );
     const realImageNums = new Set<number>();
     for (const line of listOut.split('\n')) {
       const m = line.match(/^\s*\d+\s+(\d+)\s+(\S+)/);
       if (m && m[2] === 'image') realImageNums.add(parseInt(m[1]!, 10));
     }
+    // Without a usable listing we can't tell a check from its soft-mask, so
+    // the mask filter is skipped rather than rejecting every file. The cost is
+    // a few wasted vision calls on alpha channels; the alternative is
+    // returning no payees at all.
+    const maskFilterUsable = realImageNums.size > 0;
 
     // -p embeds the page number in the filename: prefix-PPP-NNN.png, where
     // NNN is the global image number matching `-list`'s `num` column.
-    await execFileAsync(PDFIMAGES_BIN, ['-l', String(MAX_EXTRACT_PAGES), '-png', '-p', inputPath, path.join(workDir, 'img')], {
-      timeout: EXTRACT_TIMEOUT_MS,
-    });
+    const { failed: pngFailed } = await runPdfimages(
+      ['-l', String(MAX_EXTRACT_PAGES), '-png', '-p', inputPath, path.join(workDir, 'img')],
+    );
 
     const out: CheckCandidateImage[] = [];
     let totalBytes = 0;
     for (const f of (await readdir(workDir)).sort()) {
       const m = f.match(/^img-(\d+)-(\d+)\.png$/);
-      if (!m || !realImageNums.has(parseInt(m[2]!, 10))) continue;
+      if (!m) continue;
+      if (maskFilterUsable && !realImageNums.has(parseInt(m[2]!, 10))) continue;
       const filePath = path.join(workDir, f);
       const st = await stat(filePath);
       if (st.size > MAX_CANDIDATE_BYTES) continue;
@@ -143,6 +179,19 @@ export async function extractCheckCandidateImages(pdf: Buffer): Promise<CheckCan
       if (!dims || !isCheckLike(dims.width, dims.height)) continue;
       out.push({ page: parseInt(m[1]!, 10), data, ...dims });
       if (out.length >= MAX_CANDIDATES) break;
+    }
+    if (listFailed || pngFailed) {
+      // Visible on purpose: the statement still yields payees, but the PDF is
+      // malformed enough that poppler complained, and a future zero-candidate
+      // report on this file should not be mistaken for "no check images".
+      log.warn({
+        component: 'check-crop',
+        event: 'pdfimages_partial',
+        listFailed,
+        pngFailed,
+        maskFilterUsable,
+        candidates: out.length,
+      });
     }
     return out;
   } catch (err) {

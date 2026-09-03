@@ -1121,7 +1121,11 @@ export async function rereadCheckImages(
   const candidates = await extractCheckCandidateImages(pdf);
   if (candidates.length === 0) {
     // Nothing check-shaped in the PDF — re-running will never help, so say
-    // so rather than reporting a bland zero.
+    // so rather than reporting a bland zero. Logged because this is the
+    // report a user is most likely to question: check-crop emits its own
+    // `pdfimages_partial` / `pdfimages_failed` line just above, and the two
+    // together say whether the PDF truly has no checks or poppler struggled.
+    log.info({ component: 'statement-check-reread', event: 'no_candidates', jobId });
     return { candidates: 0, checksRead: 0, checksAdded: 0, statementLinesUpdated: 0, checks: [] };
   }
 
