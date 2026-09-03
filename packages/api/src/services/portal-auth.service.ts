@@ -8,6 +8,7 @@ import { and, eq, isNull, lt, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
+import { PASSWORD_MIN_LENGTH, PASSWORD_MIN_MESSAGE } from '@kis-books/shared';
 import {
   portalContacts,
   portalContactCompanies,
@@ -298,8 +299,8 @@ export async function verifyMagicLink(args: {
 const BCRYPT_COST = 12;
 
 export async function setPassword(contactId: string, password: string): Promise<void> {
-  if (!password || password.length < 8) {
-    throw AppError.badRequest('Password must be at least 8 characters', 'WEAK_PASSWORD');
+  if (!password || password.length < PASSWORD_MIN_LENGTH) {
+    throw AppError.badRequest(PASSWORD_MIN_MESSAGE, 'WEAK_PASSWORD');
   }
   const hash = await bcrypt.hash(password, BCRYPT_COST);
 

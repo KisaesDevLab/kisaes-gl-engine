@@ -92,6 +92,7 @@ export * from './constants/modules.js';
 export * from './constants/user-types.js';
 export * from './constants/classification-thresholds.js';
 export * from './constants/match-scoring.js';
+export * from './constants/password-policy.js';
 export * from './constants/conditional-rules.js';
 export * from './constants/review-checks.js';
 export * from './constants/imports.js';

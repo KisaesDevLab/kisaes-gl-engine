@@ -101,3 +101,28 @@ inactivity; nothing is recorded; every session is logged for 3 years under Setti
 Screen Sharing (firm owners), where sharing can also be disabled per firm or per user.
 Safety rule to relay to users: only approve a share request from someone you were already
 talking to — deny anything unexpected.
+
+### Account lockout — how a locked user gets back in
+After too many failed sign-ins an account locks and the login page says to contact your
+administrator. **Lockouts never expire on their own** — waiting does not help, by design
+(an automatic release would just give a password guesser another window).
+
+To release one:
+- **Settings → Team** — a locked member shows a red **Locked** badge; an owner clicks
+  **Unlock** on that row. This is tenant-scoped: owners can only unlock their own team.
+- **Admin → Users** (super-admin) — locked rows show a red padlock button that unlocks
+  after a confirmation.
+
+Unlocking clears the failed-attempt counter and is written to the audit log
+(`user_login_unlocked`). It does not change the password — pair it with **Reset** if the
+user has forgotten theirs.
+
+### Password requirements
+Account passwords must be **at least 12 characters** (maximum 128). This is one policy
+shared by every screen that sets a password: registration, forgot-password reset,
+change-password in Settings, admin-created users, admin password resets, and the client
+portal. Passwords are also checked against known-breach lists, so a long but widely
+leaked password is refused.
+
+Raising the minimum does not lock anyone out — existing shorter passwords keep working at
+sign-in until their owner next changes one.

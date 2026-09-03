@@ -5,7 +5,15 @@
 import { eq, and, ne, sql, count } from 'drizzle-orm';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
-import { SYSTEM_ACCOUNT_ROLES, SYSTEM_ACCOUNT_ROLE_BY_TAG, type JwtPayload } from '@kis-books/shared';
+import {
+  SYSTEM_ACCOUNT_ROLES,
+  SYSTEM_ACCOUNT_ROLE_BY_TAG,
+  PASSWORD_MIN_LENGTH,
+  PASSWORD_MAX_LENGTH,
+  PASSWORD_MIN_MESSAGE,
+  PASSWORD_MAX_MESSAGE,
+  type JwtPayload,
+} from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { tenants, users, sessions, companies, transactions, accounts, contacts, systemSettings, accountantCompanyExclusions, userTenantAccess, plaidItems, plaidAccounts } from '../db/schema/index.js';
 import { env } from '../config/env.js';
@@ -886,6 +894,7 @@ export async function listAllUsers(options: AdminListOptions = {}) {
   const rows = await db.execute(sql`
     SELECT u.id, u.email, u.display_name, u.role, u.is_active, u.is_super_admin,
       u.last_login_at, u.created_at, u.tenant_id,
+      u.login_locked_until, u.login_failed_attempts,
       t.name as tenant_name
     FROM users u
     JOIN tenants t ON t.id = u.tenant_id
@@ -914,6 +923,10 @@ export async function listAllUsers(options: AdminListOptions = {}) {
       createdAt: r.created_at,
       tenantId: r.tenant_id,
       tenantName: r.tenant_name,
+      // Lockouts are admin-release-only, so the directory has to show them
+      // and offer the unlock action (POST /admin/users/:id/unlock).
+      isLocked: !!r.login_locked_until,
+      loginFailedAttempts: r.login_failed_attempts ?? 0,
     })),
     total: Number(totalRows.rows[0]?.total ?? 0),
   };
@@ -926,11 +939,11 @@ export async function listAllUsers(options: AdminListOptions = {}) {
  * checks are left to the registration schema to avoid drift.
  */
 export async function resetUserPassword(userId: string, newPassword: string, actingUserId?: string) {
-  if (typeof newPassword !== 'string' || newPassword.length < 12) {
-    throw AppError.badRequest('Password must be at least 12 characters', 'PASSWORD_TOO_SHORT');
+  if (typeof newPassword !== 'string' || newPassword.length < PASSWORD_MIN_LENGTH) {
+    throw AppError.badRequest(PASSWORD_MIN_MESSAGE, 'PASSWORD_TOO_SHORT');
   }
-  if (newPassword.length > 128) {
-    throw AppError.badRequest('Password must be 128 characters or fewer', 'PASSWORD_TOO_LONG');
+  if (newPassword.length > PASSWORD_MAX_LENGTH) {
+    throw AppError.badRequest(PASSWORD_MAX_MESSAGE, 'PASSWORD_TOO_LONG');
   }
 
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });

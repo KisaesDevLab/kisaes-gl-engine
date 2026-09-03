@@ -226,6 +226,8 @@ companyRouter.get('/users', async (req, res) => {
   const sanitized = users.map((u) => ({
     id: u.id, email: u.email, displayName: u.displayName, role: u.role, userType: u.userType,
     isActive: u.isActive, lastLoginAt: u.lastLoginAt, createdAt: u.createdAt,
+    // Login lockout state, so the Team page can show it and offer Unlock.
+    isLocked: u.isLocked, loginFailedAttempts: u.loginFailedAttempts,
     // Peer screen share per-user override (D9); tri-state, null = inherit.
     shareAllowed: u.shareAllowed ?? null,
   }));
@@ -280,6 +282,21 @@ companyRouter.post('/users/:userId/reactivate', async (req, res) => {
   if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can manage users');
   await authService.reactivateUser(req.tenantId, req.params['userId']!);
   res.json({ message: 'User reactivated' });
+});
+
+// Clear a login lockout. Lockouts are admin-release-only by design (there
+// is no wait-it-out window), so without this an owner had to call the
+// super-admin endpoint or edit the database to let a locked-out teammate
+// back in. Tenant-scoped: the target must be on this tenant's team.
+companyRouter.post('/users/:userId/unlock', async (req, res) => {
+  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can manage users');
+  const result = await authService.unlockUserForTenant(req.tenantId, req.params['userId']!, req.userId);
+  res.json({
+    message: result.wasLocked
+      ? `${result.email} can sign in again`
+      : `${result.email} was not locked; failed-attempt count cleared`,
+    ...result,
+  });
 });
 
 // Email the user a password-reset link (same flow as self-service

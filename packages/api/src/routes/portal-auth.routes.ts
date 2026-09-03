@@ -8,6 +8,7 @@ import rateLimit from 'express-rate-limit';
 import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { tenants } from '../db/schema/index.js';
+import { PASSWORD_MIN_LENGTH, PASSWORD_MIN_MESSAGE } from '@kis-books/shared';
 import { validate } from '../middleware/validate.js';
 import { portalAuthenticate, PORTAL_SESSION_COOKIE } from '../middleware/portal-auth.js';
 import { AppError } from '../utils/errors.js';
@@ -230,7 +231,9 @@ portalAuthRouter.post(
 );
 
 // 9.4 — set or rotate password (must already be signed in).
-const setPasswordSchema = z.object({ password: z.string().min(8).max(200) });
+const setPasswordSchema = z.object({
+  password: z.string().min(PASSWORD_MIN_LENGTH, PASSWORD_MIN_MESSAGE).max(200),
+});
 portalAuthRouter.post(
   '/auth/set-password',
   portalAuthenticate,

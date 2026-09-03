@@ -6,6 +6,11 @@
 //   - an owner changes a team member's role → 200, role persisted
 //   - a non-owner is refused → 403
 //   - an empty body fails the schema refine → 400
+//
+// POST /company/users/:userId/unlock (lockout release):
+//   - an owner clears a locked teammate's lockout → 200, login works again
+//   - a non-owner is refused → 403
+//   - a user outside the caller's tenant → 404 (no cross-tenant unlock)
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import 'express-async-errors';
@@ -13,7 +18,7 @@ import express from 'express';
 import http from 'http';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
-import { inArray } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { tenants, users, sessions, companies, accounts, auditLog } from '../db/schema/index.js';
 import { companyRouter } from './company.routes.js';
@@ -139,5 +144,80 @@ describe('PATCH /company/users/:userId (role)', () => {
     const { reg, invited } = await setup();
     const res = await request('PATCH', `/api/company/users/${invited.user.id}`, {}, reg.tokens.accessToken);
     expect(res.status).toBe(400);
+  });
+});
+
+describe('POST /company/users/:userId/unlock', () => {
+  it('lets an owner clear a lockout so the user can sign in again', async () => {
+    const { reg, invited } = await setup();
+    // Simulate the lockout the login path writes after MAX_LOGIN_ATTEMPTS.
+    // login_locked_until is a flag, not a countdown: any non-null value
+    // keeps a regular user out until an admin clears it.
+    await db.update(users)
+      .set({ loginFailedAttempts: 5, loginLockedUntil: new Date('2099-01-01T00:00:00Z') })
+      .where(eq(users.id, invited.user.id));
+
+    const listedLocked = await authService.listTenantUsers(reg.user.tenantId);
+    expect(listedLocked.find((u) => u.id === invited.user.id)!.isLocked).toBe(true);
+
+    await expect(authService.login({
+      email: invited.user.email, password: invited.temporaryPassword!,
+    })).rejects.toMatchObject({ code: 'ACCOUNT_LOCKED' });
+
+    const res = await request('POST', `/api/company/users/${invited.user.id}/unlock`, {}, reg.tokens.accessToken);
+    expect(res.status).toBe(200);
+    expect(res.json['wasLocked']).toBe(true);
+
+    const after = await db.query.users.findFirst({ where: eq(users.id, invited.user.id) });
+    expect(after!.loginLockedUntil).toBeNull();
+    expect(after!.loginFailedAttempts).toBe(0);
+
+    const listed = await authService.listTenantUsers(reg.user.tenantId);
+    expect(listed.find((u) => u.id === invited.user.id)!.isLocked).toBe(false);
+
+    // The whole point: the user can actually get back in.
+    const login = await authService.login({
+      email: invited.user.email, password: invited.temporaryPassword!,
+    });
+    expect(login.tokens.accessToken).toBeTruthy();
+  });
+
+  it('is a no-op (not an error) for a user who is not locked', async () => {
+    const { reg, invited } = await setup();
+    const res = await request('POST', `/api/company/users/${invited.user.id}/unlock`, {}, reg.tokens.accessToken);
+    expect(res.status).toBe(200);
+    expect(res.json['wasLocked']).toBe(false);
+  });
+
+  it('refuses a non-owner', async () => {
+    const { reg, invited } = await setup();
+    await authService.updateUser(reg.user.tenantId, invited.user.id, { role: 'accountant' }, reg.user.id);
+    const login = await authService.login({
+      email: invited.user.email, password: invited.temporaryPassword!,
+    });
+    const res = await request('POST', `/api/company/users/${reg.user.id}/unlock`, {}, login.tokens.accessToken);
+    expect(res.status).toBe(403);
+  });
+
+  it('404s for a user outside the caller tenant', async () => {
+    const { reg } = await setup();
+    const outsider = await authService.register({
+      email: 'company-users-route-outsider@example.com', password: 'password123',
+      displayName: 'Outsider', companyName: 'Other Co',
+    });
+    try {
+      const res = await request('POST', `/api/company/users/${outsider.user.id}/unlock`, {}, reg.tokens.accessToken);
+      expect(res.status).toBe(404);
+      // And the outsider's own state is untouched.
+      const still = await db.query.users.findFirst({ where: eq(users.id, outsider.user.id) });
+      expect(still).toBeDefined();
+    } finally {
+      await db.delete(auditLog).where(eq(auditLog.tenantId, outsider.user.tenantId));
+      await db.delete(accounts).where(eq(accounts.tenantId, outsider.user.tenantId));
+      await db.delete(companies).where(eq(companies.tenantId, outsider.user.tenantId));
+      await db.delete(sessions).where(eq(sessions.userId, outsider.user.id));
+      await db.delete(users).where(eq(users.tenantId, outsider.user.tenantId));
+      await db.delete(tenants).where(eq(tenants.id, outsider.user.tenantId));
+    }
   });
 });

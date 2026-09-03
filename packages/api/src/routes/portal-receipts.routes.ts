@@ -53,6 +53,24 @@ portalReceiptsRouter.get('/:id', async (req, res) => {
   res.json({ receipt: r });
 });
 
+// Inline view / download of the stored file. Serves the Open document
+// requests grid ("view what the client actually sent") and the receipts
+// inbox. Accepts a ?_dl= single-use token via `authenticate`, so an
+// <iframe>/<img>/new-tab can load it without custom headers; ?inline=1
+// renders in place instead of prompting a save, matching the attachments
+// download route.
+portalReceiptsRouter.get('/:id/file', async (req, res) => {
+  const file = await svc.getReceiptFile(req.tenantId, req.params['id']!);
+  res.setHeader('Content-Type', file.mimeType);
+  const disposition = req.query['inline'] === '1' ? 'inline' : 'attachment';
+  // Strip CR/LF/quote so a stored filename can't break out of the header.
+  const safeName = file.filename.replace(/[\r\n"]/g, '_');
+  res.setHeader('Content-Disposition', `${disposition}; filename="${safeName}"`);
+  // Client documents must never be cached by a shared proxy.
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.send(file.buffer);
+});
+
 portalReceiptsRouter.get('/:id/matches', async (req, res) => {
   const matches = await svc.suggestMatches(req.tenantId, req.params['id']!);
   res.json({ matches });

@@ -65,6 +65,9 @@ Where unread submissions appear:
   requests tab, and an "Unread submissions" filter; unread rows carry a **New** badge
   and show the uploaded filename.
 
+Viewing what was sent: click the filename on a submitted row to open the document inline
+(PDFs and images render in a viewer with a Download button).
+
 Clearing them: the **Mark reviewed** (open-envelope) row action, or **Mark all reviewed**
 on the unread filter. "Mark received" (closing a request by hand) and manually routing a
 statement from the receipts inbox count as reviewed. A second upload against an

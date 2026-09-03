@@ -539,3 +539,35 @@ export async function getReceipt(tenantId: string, id: string) {
   if (!r) throw AppError.notFound('Receipt not found');
   return r;
 }
+
+/**
+ * Fetch a receipt's stored bytes for inline viewing/download.
+ *
+ * Tenant-scoped by the same rule as every other read here: the row must
+ * belong to the caller's tenant, so a receipt id from another firm 404s
+ * rather than leaking a client document. Provider-first with the same
+ * shape as attachment.service.download so both viewers behave alike.
+ */
+export async function getReceiptFile(
+  tenantId: string,
+  receiptId: string,
+): Promise<{ buffer: Buffer; filename: string; mimeType: string }> {
+  const receipt = await db.query.portalReceipts.findFirst({
+    where: and(eq(portalReceipts.tenantId, tenantId), eq(portalReceipts.id, receiptId)),
+  });
+  if (!receipt) throw AppError.notFound('Receipt not found');
+  if (!receipt.storageKey) throw AppError.notFound('Receipt has no stored file');
+
+  const provider = await getProviderForTenant(tenantId);
+  let buffer: Buffer;
+  try {
+    buffer = await provider.download(receipt.storageKey);
+  } catch {
+    throw AppError.notFound('File not found in storage');
+  }
+  return {
+    buffer,
+    filename: receipt.filename || 'receipt',
+    mimeType: receipt.mimeType || 'application/octet-stream',
+  };
+}

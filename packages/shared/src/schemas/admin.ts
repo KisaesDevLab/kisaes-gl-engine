@@ -3,14 +3,20 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { z } from 'zod';
+import {
+  PASSWORD_MIN_LENGTH,
+  PASSWORD_MAX_LENGTH,
+  PASSWORD_MIN_MESSAGE,
+  PASSWORD_MAX_MESSAGE,
+} from '../constants/password-policy.js';
 
 // ─── User mutation payloads ────────────────────────────────────
 
 export const adminResetPasswordSchema = z.object({
   password: z
     .string()
-    .min(12, 'Password must be at least 12 characters')
-    .max(128, 'Password must be 128 characters or fewer'),
+    .min(PASSWORD_MIN_LENGTH, PASSWORD_MIN_MESSAGE)
+    .max(PASSWORD_MAX_LENGTH, PASSWORD_MAX_MESSAGE),
 });
 export type AdminResetPasswordInput = z.infer<typeof adminResetPasswordSchema>;
 
@@ -21,7 +27,7 @@ export type AdminResetPasswordInput = z.infer<typeof adminResetPasswordSchema>;
 export const adminCreateUserRoles = ['owner', 'accountant', 'bookkeeper', 'readonly'] as const;
 export const adminCreateUserSchema = z.object({
   email: z.string().email().max(255),
-  password: z.string().min(12, 'Password must be at least 12 characters').max(128),
+  password: z.string().min(PASSWORD_MIN_LENGTH, PASSWORD_MIN_MESSAGE).max(PASSWORD_MAX_LENGTH),
   displayName: z.string().min(1).max(255).optional(),
   tenantId: z.string().uuid(),
   role: z.enum(adminCreateUserRoles).default('owner'),

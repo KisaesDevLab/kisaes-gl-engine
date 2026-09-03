@@ -994,6 +994,7 @@ export async function listTenantUsers(tenantId: string) {
   const rows = await db.execute(sql`
     SELECT u.id, u.email, u.display_name, u.role as user_role, u.user_type, u.is_active as user_active,
       u.is_super_admin, u.last_login_at, u.created_at, u.tenant_id, u.share_allowed,
+      u.login_locked_until, u.login_failed_attempts,
       uta.role as tenant_role, uta.is_active as tenant_active
     FROM user_tenant_access uta
     JOIN users u ON u.id = uta.user_id
@@ -1014,7 +1015,45 @@ export async function listTenantUsers(tenantId: string) {
     isHomeTenant: r.tenant_id === tenantId,
     // Peer screen share per-user override (D9); null = inherit tenant.
     shareAllowed: r.share_allowed ?? null,
+    // Login lockout. Any non-null login_locked_until means locked for a
+    // regular user — the timestamp is not a countdown, because auto-unlock
+    // was removed (see login()); only an explicit admin unlock clears it.
+    isLocked: !!r.login_locked_until,
+    loginFailedAttempts: r.login_failed_attempts ?? 0,
   }));
+}
+
+/**
+ * Clear a login lockout for a user in THIS tenant. Same effect as the
+ * super-admin `adminService.unlockUser`, but scoped: the target must have
+ * access to the caller's tenant, so an owner can only unlock their own
+ * team. Safe to call on a user who isn't locked (it also clears the
+ * failed-attempt counter).
+ */
+export async function unlockUserForTenant(tenantId: string, userId: string, actingUserId?: string) {
+  const access = await db.query.userTenantAccess.findFirst({
+    where: and(eq(userTenantAccess.userId, userId), eq(userTenantAccess.tenantId, tenantId)),
+  });
+  if (!access) throw AppError.notFound('User access not found');
+
+  const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+  if (!user) throw AppError.notFound('User not found');
+
+  const wasLocked = !!user.loginLockedUntil;
+  await db
+    .update(users)
+    .set({ loginFailedAttempts: 0, loginLockedUntil: null, updatedAt: new Date() })
+    .where(eq(users.id, userId));
+  await auditLog(
+    tenantId,
+    'update',
+    'user_login_unlocked',
+    userId,
+    { failedAttempts: user.loginFailedAttempts || 0, wasLocked },
+    { failedAttempts: 0, wasLocked: false, email: user.email },
+    actingUserId,
+  );
+  return { unlocked: true, wasLocked, email: user.email };
 }
 
 export async function deactivateUser(tenantId: string, userId: string) {
