@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { and, asc, desc, eq, inArray, lte, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, lte, sql, type SQL } from 'drizzle-orm';
 import type {
   DocRequestStatus,
   DocumentRequestListFilters,
@@ -14,13 +14,20 @@ import type {
 } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import {
+  companies,
   documentRequests,
   portalContacts,
+  portalReceipts,
   recurringDocumentRequests,
   reminderSends,
+  tenants,
+  userTenantAccess,
+  users,
 } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import { env } from '../config/env.js';
+import { isSmtpConfigured, sendActionEmail } from './system-email.service.js';
 
 // RECURRING_DOC_REQUESTS_V1 — service layer for the standing rule
 // ("ask client X for their bank statement on the 3rd of every month")
@@ -244,6 +251,40 @@ async function assertContactInTenant(tenantId: string, contactId: string): Promi
   }
 }
 
+// notify_user_ids must be active STAFF users with active access to this
+// tenant — otherwise a rule could be pointed at a client-type user (who
+// would receive another client's filenames) or at a user from a firm
+// that has no business with this tenant. Returns the de-duplicated list.
+async function assertNotifyUsersInTenant(tenantId: string, ids: string[]): Promise<string[]> {
+  const unique = Array.from(new Set(ids));
+  if (unique.length === 0) return [];
+  const rows = await db
+    .select({ id: users.id })
+    .from(users)
+    .innerJoin(userTenantAccess, eq(userTenantAccess.userId, users.id))
+    .where(
+      and(
+        eq(userTenantAccess.tenantId, tenantId),
+        eq(userTenantAccess.isActive, true),
+        inArray(users.id, unique),
+        eq(users.isActive, true),
+        sql`${users.userType} <> 'client'`,
+      ),
+    );
+  const found = new Set(rows.map((r) => r.id));
+  const missing = unique.filter((id) => !found.has(id));
+  if (missing.length > 0) {
+    throw AppError.badRequest('Notify list must contain active staff users with access to this client');
+  }
+  return unique;
+}
+
+function notifyIdsOf(row: { notifyUserIds: unknown }): string[] {
+  return Array.isArray(row.notifyUserIds)
+    ? (row.notifyUserIds as unknown[]).filter((x): x is string => typeof x === 'string')
+    : [];
+}
+
 export async function createRule(
   tenantId: string,
   bookkeeperUserId: string,
@@ -264,6 +305,8 @@ export async function createRule(
     const v = isValidCronExpression(input.cronExpression, input.cronTimezone ?? undefined);
     if (!v.ok) throw AppError.badRequest(`Invalid cron expression: ${v.reason}`);
   }
+
+  const notifyUserIds = await assertNotifyUsersInTenant(tenantId, input.notifyUserIds ?? []);
 
   const now = new Date();
   const startAt = input.startAt ? new Date(input.startAt) : undefined;
@@ -305,6 +348,7 @@ export async function createRule(
           ? input.bankConnectionId ?? null
           : null,
       reminderChannel: input.reminderChannel ?? 'email',
+      notifyUserIds,
     })
     .returning({ id: recurringDocumentRequests.id });
   const row = inserted[0];
@@ -379,6 +423,9 @@ export async function updateRule(
     patch.statementRouting = input.bankConnectionId ? 'auto_import' : 'inbox';
   }
   if (input.reminderChannel !== undefined) patch.reminderChannel = input.reminderChannel;
+  if (input.notifyUserIds !== undefined) {
+    patch.notifyUserIds = await assertNotifyUsersInTenant(tenantId, input.notifyUserIds);
+  }
   if (input.frequency !== undefined) patch.frequency = input.frequency;
   if (input.intervalValue !== undefined) patch.intervalValue = input.intervalValue;
   if (input.dayOfMonth !== undefined) patch.dayOfMonth = input.dayOfMonth;
@@ -565,6 +612,7 @@ export async function listRules(tenantId: string): Promise<RecurringDocRequestSu
     bankConnectionId: r.bankConnectionId ?? null,
     statementRouting: (r.statementRouting ?? 'inbox') as RecurringDocRequestSummary['statementRouting'],
     reminderChannel: (r.reminderChannel ?? 'email') as RecurringDocRequestSummary['reminderChannel'],
+    notifyUserIds: notifyIdsOf(r),
     outstandingCount: outstandingByRule.get(r.id) ?? 0,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
@@ -726,6 +774,10 @@ export async function listOpenRequests(
     conditions.push(eq(documentRequests.status, 'pending'));
     conditions.push(sql`${documentRequests.dueDate} IS NOT NULL AND ${documentRequests.dueDate} < NOW()`);
   }
+  if (filters.unread) {
+    conditions.push(eq(documentRequests.status, 'submitted'));
+    conditions.push(isNull(documentRequests.reviewedAt));
+  }
   const where = conditions.length === 1 ? conditions[0]! : and(...conditions)!;
 
   const totalRow = await db
@@ -740,11 +792,18 @@ export async function listOpenRequests(
       contactEmail: portalContacts.email,
       contactFirstName: portalContacts.firstName,
       contactLastName: portalContacts.lastName,
+      submittedFilename: portalReceipts.filename,
     })
     .from(documentRequests)
     .innerJoin(portalContacts, eq(documentRequests.contactId, portalContacts.id))
+    .leftJoin(portalReceipts, eq(portalReceipts.id, documentRequests.submittedReceiptId))
     .where(where)
-    .orderBy(desc(documentRequests.requestedAt))
+    // Unread submissions float to the top of whatever filter is active so
+    // a staffer opening the grid sees what the client just sent first.
+    .orderBy(
+      sql`(${documentRequests.status} = 'submitted' AND ${documentRequests.reviewedAt} IS NULL) DESC`,
+      desc(documentRequests.requestedAt),
+    )
     .limit(filters.limit)
     .offset(filters.offset);
 
@@ -789,7 +848,7 @@ export async function listOpenRequests(
     }
   }
 
-  const items: DocumentRequestSummary[] = rows.map(({ d, contactEmail, contactFirstName, contactLastName }) => {
+  const items: DocumentRequestSummary[] = rows.map(({ d, contactEmail, contactFirstName, contactLastName, submittedFilename }) => {
     const agg = sendsById.get(d.id);
     return {
       id: d.id,
@@ -807,6 +866,9 @@ export async function listOpenRequests(
       status: d.status as DocRequestStatus,
       submittedAt: d.submittedAt ? d.submittedAt.toISOString() : null,
       submittedReceiptId: d.submittedReceiptId,
+      submittedFilename: submittedFilename ?? null,
+      reviewedAt: d.reviewedAt ? d.reviewedAt.toISOString() : null,
+      unread: d.status === 'submitted' && !d.reviewedAt,
       // new Date() normalizes the pg timestamp string (or a Date) to ISO;
       // guarded on truthiness so null aggregates stay null.
       lastRemindedAt: agg?.lastSentAt ? new Date(agg.lastSentAt).toISOString() : null,
@@ -858,9 +920,12 @@ export async function markReceivedManually(
   if (before.status !== 'pending') {
     throw AppError.conflict(`Document request is already ${before.status}`);
   }
+  // Closed by hand by a staffer — there is no client upload to look at,
+  // so it is reviewed the moment it is received.
+  const now = new Date();
   await db
     .update(documentRequests)
-    .set({ status: 'submitted', submittedAt: new Date(), updatedAt: new Date() })
+    .set({ status: 'submitted', submittedAt: now, reviewedAt: now, reviewedBy: bookkeeperUserId, updatedAt: now })
     .where(eq(documentRequests.id, documentRequestId));
   await auditLog(
     tenantId,
@@ -871,6 +936,72 @@ export async function markReceivedManually(
     { status: 'submitted', source: 'manual' },
     bookkeeperUserId,
   );
+}
+
+// Staff acknowledgement of a client submission. Idempotent.
+export async function markReviewed(
+  tenantId: string,
+  bookkeeperUserId: string,
+  documentRequestId: string,
+): Promise<void> {
+  const before = await db.query.documentRequests.findFirst({
+    where: and(
+      eq(documentRequests.tenantId, tenantId),
+      eq(documentRequests.id, documentRequestId),
+    ),
+  });
+  if (!before) throw AppError.notFound('Document request not found');
+  if (before.status !== 'submitted') {
+    throw AppError.conflict('Only submitted requests can be marked reviewed');
+  }
+  if (before.reviewedAt) return;
+  const now = new Date();
+  await db
+    .update(documentRequests)
+    .set({ reviewedAt: now, reviewedBy: bookkeeperUserId, updatedAt: now })
+    .where(eq(documentRequests.id, documentRequestId));
+  await auditLog(
+    tenantId,
+    'update',
+    'document_request',
+    documentRequestId,
+    { reviewedAt: null },
+    { reviewedAt: now.toISOString() },
+    bookkeeperUserId,
+  );
+}
+
+// "Mark all reviewed" — clears every unread submission for the tenant
+// (optionally one contact). Returns how many rows it touched.
+export async function markAllReviewed(
+  tenantId: string,
+  bookkeeperUserId: string,
+  contactId?: string,
+): Promise<number> {
+  const now = new Date();
+  const conditions: SQL<unknown>[] = [
+    eq(documentRequests.tenantId, tenantId),
+    eq(documentRequests.status, 'submitted'),
+    isNull(documentRequests.reviewedAt),
+  ];
+  if (contactId) conditions.push(eq(documentRequests.contactId, contactId));
+  const updated = await db
+    .update(documentRequests)
+    .set({ reviewedAt: now, reviewedBy: bookkeeperUserId, updatedAt: now })
+    .where(and(...conditions))
+    .returning({ id: documentRequests.id });
+  if (updated.length > 0) {
+    await auditLog(
+      tenantId,
+      'update',
+      'document_request',
+      null,
+      null,
+      { action: 'mark_all_reviewed', count: updated.length, contactId: contactId ?? null, ids: updated.map((u) => u.id) },
+      bookkeeperUserId,
+    );
+  }
+  return updated.length;
 }
 
 export async function cancelRequest(
@@ -906,10 +1037,17 @@ export async function cancelRequest(
 // Mark a request fulfilled by an uploaded receipt. Called from
 // portal-receipts.service.ts when the upload form passed a
 // documentRequestId. Idempotent — already-submitted rows are a no-op.
+//
+// Every fulfilment by upload is a NEW client submission, so the staff
+// acknowledgement (reviewed_at) is cleared — a second file sent after a
+// staffer reviewed the first must show up as unread again. When a
+// staffer's own action closes the request (manual statement routing),
+// pass `reviewedBy` and it is stamped reviewed immediately instead.
 export async function markFulfilledByReceipt(
   tenantId: string,
   documentRequestId: string,
   receiptId: string,
+  opts: { reviewedBy?: string } = {},
 ): Promise<void> {
   const before = await db.query.documentRequests.findFirst({
     where: and(
@@ -919,13 +1057,16 @@ export async function markFulfilledByReceipt(
   });
   if (!before) throw AppError.notFound('Document request not found');
   if (before.status === 'submitted' && before.submittedReceiptId === receiptId) return;
+  const now = new Date();
   await db
     .update(documentRequests)
     .set({
       status: 'submitted',
-      submittedAt: new Date(),
+      submittedAt: now,
       submittedReceiptId: receiptId,
-      updatedAt: new Date(),
+      reviewedAt: opts.reviewedBy ? now : null,
+      reviewedBy: opts.reviewedBy ?? null,
+      updatedAt: now,
     })
     .where(eq(documentRequests.id, documentRequestId));
   await auditLog(
@@ -942,6 +1083,7 @@ export async function markFulfilledByReceipt(
 export async function dashboardCounts(tenantId: string): Promise<{
   openRequests: number;
   overdue: number;
+  unreadSubmissions: number;
   avgFulfilDays: number | null;
 }> {
   const open = await db
@@ -970,10 +1112,21 @@ export async function dashboardCounts(tenantId: string): Promise<{
         sql`${documentRequests.submittedAt} >= NOW() - INTERVAL '30 days'`,
       ),
     );
+  const unread = await db
+    .select({ n: sql<number>`COUNT(*)::int` })
+    .from(documentRequests)
+    .where(
+      and(
+        eq(documentRequests.tenantId, tenantId),
+        eq(documentRequests.status, 'submitted'),
+        isNull(documentRequests.reviewedAt),
+      ),
+    );
   const avg = fulfil[0]?.avgDays;
   return {
     openRequests: Number(open[0]?.n ?? 0),
     overdue: Number(overdue[0]?.n ?? 0),
+    unreadSubmissions: Number(unread[0]?.n ?? 0),
     avgFulfilDays: avg === null || avg === undefined ? null : Number(avg),
   };
 }
@@ -1019,6 +1172,9 @@ export async function listForPortalContact(
     status: d.status as DocRequestStatus,
     submittedAt: d.submittedAt ? d.submittedAt.toISOString() : null,
     submittedReceiptId: d.submittedReceiptId,
+    submittedFilename: null,
+    reviewedAt: d.reviewedAt ? d.reviewedAt.toISOString() : null,
+    unread: d.status === 'submitted' && !d.reviewedAt,
     lastRemindedAt: null,
     lastOpenedAt: null,
     lastClickedAt: null,
@@ -1062,6 +1218,9 @@ export async function listForContactDetail(
     status: d.status as DocRequestStatus,
     submittedAt: d.submittedAt ? d.submittedAt.toISOString() : null,
     submittedReceiptId: d.submittedReceiptId,
+    submittedFilename: null,
+    reviewedAt: d.reviewedAt ? d.reviewedAt.toISOString() : null,
+    unread: d.status === 'submitted' && !d.reviewedAt,
     lastRemindedAt: null,
     lastOpenedAt: null,
     lastClickedAt: null,
@@ -1069,3 +1228,127 @@ export async function listForContactDetail(
   }));
 }
 
+
+// ── staff notification on client submission ──────────────────────
+
+// Email the rule's notify list that the contact uploaded against one of
+// its requests. Called from the portal upload path (portal-receipts
+// service) for EVERY portal upload that names a document request —
+// including uploads that land in 'awaits_routing' and leave the request
+// pending, because from the client's side the document was sent.
+// Best-effort by contract: never throws (an SMTP outage must not fail
+// the client's upload), logs + audits what it did.
+export async function notifyStaffOfSubmission(
+  tenantId: string,
+  documentRequestId: string,
+  receiptId: string,
+): Promise<{ sent: number; skipped: string | null }> {
+  const log = (event: string, extra: Record<string, unknown> = {}) => {
+    // eslint-disable-next-line no-console
+    console.log(JSON.stringify({
+      ts: new Date().toISOString(),
+      level: event === 'error' ? 'warn' : 'info',
+      component: 'doc-request-staff-notify',
+      event,
+      tenantId,
+      documentRequestId,
+      receiptId,
+      ...extra,
+    }));
+  };
+  try {
+    const row = await db
+      .select({
+        d: documentRequests,
+        contactEmail: portalContacts.email,
+        contactFirstName: portalContacts.firstName,
+        contactLastName: portalContacts.lastName,
+        notifyUserIds: recurringDocumentRequests.notifyUserIds,
+      })
+      .from(documentRequests)
+      .innerJoin(portalContacts, eq(documentRequests.contactId, portalContacts.id))
+      .leftJoin(recurringDocumentRequests, eq(recurringDocumentRequests.id, documentRequests.recurringId))
+      .where(and(eq(documentRequests.tenantId, tenantId), eq(documentRequests.id, documentRequestId)))
+      .limit(1);
+    const r = row[0];
+    if (!r) return { sent: 0, skipped: 'not_found' };
+    const ids = notifyIdsOf({ notifyUserIds: r.notifyUserIds });
+    if (ids.length === 0) return { sent: 0, skipped: 'no_recipients' };
+    if (!(await isSmtpConfigured())) {
+      log('skipped', { reason: 'smtp_not_configured', recipients: ids.length });
+      return { sent: 0, skipped: 'smtp_not_configured' };
+    }
+
+    // Re-check membership at send time: a user removed from the tenant
+    // after the rule was saved must not keep receiving client filenames.
+    const recipients = await db
+      .select({ id: users.id, email: users.email, displayName: users.displayName })
+      .from(users)
+      .innerJoin(userTenantAccess, eq(userTenantAccess.userId, users.id))
+      .where(
+        and(
+          eq(userTenantAccess.tenantId, tenantId),
+          eq(userTenantAccess.isActive, true),
+          inArray(users.id, ids),
+          eq(users.isActive, true),
+          sql`${users.userType} <> 'client'`,
+        ),
+      );
+    if (recipients.length === 0) return { sent: 0, skipped: 'no_eligible_recipients' };
+
+    const [tenant, company, receipt] = await Promise.all([
+      db.query.tenants.findFirst({ where: eq(tenants.id, tenantId), columns: { name: true } }),
+      r.d.companyId
+        ? db.query.companies.findFirst({ where: eq(companies.id, r.d.companyId), columns: { businessName: true } })
+        : Promise.resolve(undefined),
+      db.query.portalReceipts.findFirst({ where: eq(portalReceipts.id, receiptId), columns: { filename: true } }),
+    ]);
+    const contactName = [r.contactFirstName, r.contactLastName].filter(Boolean).join(' ') || r.contactEmail;
+    const clientName = tenant?.name ?? 'a client';
+    const docLabel = r.d.documentType.replace(/_/g, ' ');
+    const subject = `${clientName}: ${contactName} sent ${docLabel} (${r.d.periodLabel})`;
+    const lines = [
+      `${contactName} uploaded a document through the client portal.`,
+      '',
+      `Client: ${clientName}${company?.businessName ? ` — ${company.businessName}` : ''}`,
+      `Request: ${r.d.description}`,
+      `Document type: ${docLabel}`,
+      `Period: ${r.d.periodLabel}`,
+      `File: ${receipt?.filename ?? '(unknown)'}`,
+      `Received: ${new Date().toLocaleString('en-US', { timeZone: 'UTC' })} UTC`,
+      '',
+      'Open Practice → Reminders → Open requests to review it and mark it reviewed.',
+      'If you are signed in to a different client, switch to this client first.',
+    ];
+    const base = env.PUBLIC_URL.replace(/\/+$/, '');
+    const url = `${base}/practice/reminders?tab=open&filter=unread`;
+
+    let sent = 0;
+    for (const u of recipients) {
+      try {
+        await sendActionEmail({
+          to: u.email,
+          subject,
+          bodyText: lines.join('\n'),
+          cta: { label: 'Review submission', url },
+        });
+        sent += 1;
+      } catch (e) {
+        log('error', { userId: u.id, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    await auditLog(
+      tenantId,
+      'create',
+      'document_request_notification',
+      documentRequestId,
+      null,
+      { receiptId, recipients: recipients.map((u) => u.id), sent },
+    );
+    log('sent', { sent, recipients: recipients.length });
+    return { sent, skipped: null };
+  } catch (e) {
+    log('error', { error: e instanceof Error ? e.message : String(e) });
+    return { sent: 0, skipped: 'error' };
+  }
+}

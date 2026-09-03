@@ -111,11 +111,13 @@ async function computeBankingHealth(tenantId: string) {
 }
 
 // Portal-activity panel: client activity that's waiting on a human.
-// Three signals — questions the client has answered or asked (status
+// Four signals — questions the client has answered or asked (status
 // 'responded' means the ball is in the firm's court), reminder
-// responses sitting unprocessed in the receipts inbox, and document
-// requests past their due date. Each count is gated on its feature's
-// flag so firms without the portal features get null and no banner.
+// responses sitting unprocessed in the receipts inbox, document
+// requests the client fulfilled that nobody has reviewed yet, and
+// document requests past their due date. Each count is gated on its
+// feature's flag so firms without the portal features get null and no
+// banner.
 async function computePortalActivity(tenantId: string) {
   const [portalOn, receiptsOn, docReqOn] = await Promise.all([
     flags.isEnabled(tenantId, 'CLIENT_PORTAL_V1'),
@@ -125,7 +127,7 @@ async function computePortalActivity(tenantId: string) {
   if (!portalOn && !receiptsOn && !docReqOn) return null;
 
   const countOf = async (q: Promise<Array<{ n: number }>>) => Number((await q)[0]?.n ?? 0);
-  const [questionsAwaitingReply, receiptsToReview, docRequestsOverdue] = await Promise.all([
+  const [questionsAwaitingReply, receiptsToReview, docRequestsOverdue, docRequestsUnread] = await Promise.all([
     portalOn
       ? countOf(db.select({ n: sql<number>`COUNT(*)::int` }).from(portalQuestions)
           .where(and(eq(portalQuestions.tenantId, tenantId), eq(portalQuestions.status, 'responded'))))
@@ -145,8 +147,16 @@ async function computePortalActivity(tenantId: string) {
             sql`${documentRequests.dueDate} IS NOT NULL AND ${documentRequests.dueDate} < NOW()`,
           )))
       : 0,
+    docReqOn
+      ? countOf(db.select({ n: sql<number>`COUNT(*)::int` }).from(documentRequests)
+          .where(and(
+            eq(documentRequests.tenantId, tenantId),
+            eq(documentRequests.status, 'submitted'),
+            sql`${documentRequests.reviewedAt} IS NULL`,
+          )))
+      : 0,
   ]);
-  return { questionsAwaitingReply, receiptsToReview, docRequestsOverdue };
+  return { questionsAwaitingReply, receiptsToReview, docRequestsOverdue, docRequestsUnread };
 }
 
 // Bundled dashboard endpoint. Previously the DashboardPage fired nine

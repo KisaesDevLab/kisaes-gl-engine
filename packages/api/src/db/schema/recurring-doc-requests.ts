@@ -80,6 +80,11 @@ export const recurringDocumentRequests = pgTable('recurring_document_requests', 
   // follow the reminder_schedules channel strategy. Effective SMS also
   // requires the tenant's SMS-outbound setting and a contact phone.
   reminderChannel: varchar('reminder_channel', { length: 10 }).notNull().default('email'),
+  // Staff user ids (JSON array of uuid strings) emailed when the contact
+  // uploads against a request issued by this rule. Read from the rule at
+  // submission time so editing the list applies to requests already
+  // out. Membership is validated against user_tenant_access on write.
+  notifyUserIds: jsonb('notify_user_ids').notNull().default([]),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
@@ -118,6 +123,13 @@ export const documentRequests = pgTable('document_requests', {
   submittedReceiptId: uuid('submitted_receipt_id'),
   // Denormalised opener channel from the parent rule (DOC_REQUEST_SMS_V1).
   reminderChannel: varchar('reminder_channel', { length: 10 }).notNull().default('email'),
+  // Staff acknowledgement of a client submission. status='submitted'
+  // AND reviewed_at IS NULL == an UNREAD submission (dashboard banner,
+  // Clients screen, Reminders tiles). A new portal upload against an
+  // already-submitted request clears these again. Soft FK to users
+  // (no Drizzle reference — audit-trail semantics, never joined hard).
+  reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
+  reviewedBy: uuid('reviewed_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({

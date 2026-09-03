@@ -3,21 +3,32 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { tenants, portalContacts, recurringDocumentRequests, documentRequests, reminderSends, auditLog } from '../db/schema/index.js';
+import {
+  tenants, portalContacts, recurringDocumentRequests, documentRequests, reminderSends, auditLog,
+  users, userTenantAccess, companies, portalReceipts,
+} from '../db/schema/index.js';
 import {
   CRON_LAST_BUSINESS_DAY,
   computeFirstIssueAt,
   computeNextIssueAt,
+  createRule,
   cronNext,
+  dashboardCounts,
   deleteRule,
   isValidCronExpression,
   issueNow,
   issueOne,
   listOpenRequests,
+  markAllReviewed,
+  markFulfilledByReceipt,
+  markReceivedManually,
+  markReviewed,
+  notifyStaffOfSubmission,
   periodLabelFor,
 } from './recurring-doc-request.service.js';
+import { getForUser as portalActivityForUser } from './client-portal-activity.service.js';
 
 // RECURRING_DOC_REQUESTS_V1 — pure-function unit tests. The DB-touching
 // branches (issueOne, listRules, etc.) are covered by integration tests
@@ -368,5 +379,214 @@ describe('recurring-doc-request — deleteRule / issueNow (db)', () => {
     const second = await issueNow(tenantId, actorId, rule.id, new Date('2026-08-12T12:00:00Z'));
     expect(second.outcome).toBe('already_closed');
     expect(second.outcome === 'already_closed' && second.status).toBe('submitted');
+  });
+});
+
+// Unread-submission tracking (migration 0162) + staff notification.
+describe('recurring-doc-request — unread submissions / review (db)', () => {
+  let tenantId: string;
+  let contactId: string;
+  let staffId: string;
+  let clientUserId: string;
+  let outsiderId: string;
+  let companyId: string;
+  // Real portal_receipts rows — submitted_receipt_id carries a hard FK.
+  let receiptA: string;
+  let receiptB: string;
+
+  beforeAll(async () => {
+    const stamp = Date.now();
+    const [tenant] = await db.insert(tenants).values({
+      name: 'RDR Unread Tenant', slug: 'test-rdr-unread-' + stamp,
+    }).returning();
+    tenantId = tenant!.id;
+    const [contact] = await db.insert(portalContacts).values({
+      tenantId, email: `rdr-unread-${stamp}@example.com`, firstName: 'Pat', lastName: 'Client',
+    }).returning();
+    contactId = contact!.id;
+    // Staff user with access; a client-type user with access; a staff user
+    // with NO access to this tenant (belongs elsewhere).
+    const mkUser = async (email: string, userType: 'staff' | 'client', ownerTenant: string) => {
+      const [u] = await db.insert(users).values({
+        tenantId: ownerTenant, email, passwordHash: 'x', role: 'accountant', userType,
+      }).returning();
+      return u!.id;
+    };
+    staffId = await mkUser(`rdr-staff-${stamp}@example.com`, 'staff', tenantId);
+    clientUserId = await mkUser(`rdr-clientuser-${stamp}@example.com`, 'client', tenantId);
+    const [other] = await db.insert(tenants).values({
+      name: 'RDR Outsider Tenant', slug: 'test-rdr-outsider-' + stamp,
+    }).returning();
+    outsiderId = await mkUser(`rdr-outsider-${stamp}@example.com`, 'staff', other!.id);
+    await db.insert(userTenantAccess).values([
+      { userId: staffId, tenantId, role: 'accountant', isActive: true },
+      { userId: clientUserId, tenantId, role: 'readonly', isActive: true },
+    ]);
+    const [co] = await db.insert(companies).values({ tenantId, businessName: 'Unread Co' }).returning();
+    companyId = co!.id;
+    const mkReceipt = async (filename: string) => {
+      const [r] = await db.insert(portalReceipts).values({
+        tenantId, companyId, captureSource: 'portal', uploadedBy: contactId, uploadedByType: 'contact',
+        storageKey: `test/${stamp}/${filename}`, filename,
+      }).returning();
+      return r!.id;
+    };
+    receiptA = await mkReceipt('statement-a.pdf');
+    receiptB = await mkReceipt('statement-b.pdf');
+  });
+
+  afterAll(async () => {
+    if (!tenantId) return;
+    await db.delete(auditLog).where(eq(auditLog.tenantId, tenantId));
+    await db.delete(documentRequests).where(eq(documentRequests.tenantId, tenantId));
+    await db.delete(portalReceipts).where(eq(portalReceipts.tenantId, tenantId));
+    await db.delete(recurringDocumentRequests).where(eq(recurringDocumentRequests.tenantId, tenantId));
+    await db.delete(portalContacts).where(eq(portalContacts.tenantId, tenantId));
+    await db.delete(companies).where(eq(companies.tenantId, tenantId));
+    await db.delete(userTenantAccess).where(eq(userTenantAccess.tenantId, tenantId));
+    for (const id of [staffId, clientUserId, outsiderId]) {
+      if (id) await db.delete(users).where(eq(users.id, id));
+    }
+    const outsider = await db.query.users.findFirst({ where: eq(users.id, outsiderId) });
+    if (outsider) await db.delete(tenants).where(eq(tenants.id, outsider.tenantId));
+    await db.delete(tenants).where(sql`${tenants.slug} LIKE 'test-rdr-outsider-%'`);
+    await db.delete(tenants).where(eq(tenants.id, tenantId));
+  });
+
+  async function mkRequest(overrides: Partial<typeof documentRequests.$inferInsert> = {}) {
+    const [row] = await db.insert(documentRequests).values({
+      tenantId,
+      contactId,
+      documentType: 'payroll_report',
+      description: 'unread test',
+      periodLabel: 'p-' + Math.random().toString(36).slice(2, 8),
+      ...overrides,
+    }).returning();
+    return row!;
+  }
+
+  const baseRuleInput = {
+    contactId: '',
+    documentType: 'payroll_report' as const,
+    description: 'notify rule',
+    cadenceKind: 'frequency' as const,
+    frequency: 'monthly' as const,
+    intervalValue: 1,
+    dayOfMonth: 3,
+    dueDaysAfterIssue: 7,
+    cadenceDays: [] as number[],
+    active: true,
+    reminderChannel: 'email' as const,
+  };
+
+  it('a portal upload lands as UNREAD; a later upload after review makes it unread again', async () => {
+    const req = await mkRequest();
+    await markFulfilledByReceipt(tenantId, req.id, receiptA);
+    let row = (await db.query.documentRequests.findFirst({ where: eq(documentRequests.id, req.id) }))!;
+    expect(row.status).toBe('submitted');
+    expect(row.reviewedAt).toBeNull();
+
+    await markReviewed(tenantId, staffId, req.id);
+    row = (await db.query.documentRequests.findFirst({ where: eq(documentRequests.id, req.id) }))!;
+    expect(row.reviewedAt).not.toBeNull();
+    expect(row.reviewedBy).toBe(staffId);
+
+    // Same receipt again → idempotent no-op, stays reviewed.
+    await markFulfilledByReceipt(tenantId, req.id, receiptA);
+    row = (await db.query.documentRequests.findFirst({ where: eq(documentRequests.id, req.id) }))!;
+    expect(row.reviewedAt).not.toBeNull();
+
+    // A NEW file → unread again.
+    await markFulfilledByReceipt(tenantId, req.id, receiptB);
+    row = (await db.query.documentRequests.findFirst({ where: eq(documentRequests.id, req.id) }))!;
+    expect(row.reviewedAt).toBeNull();
+    expect(row.submittedReceiptId).toBe(receiptB);
+  });
+
+  it('staff-driven fulfilment (manual route / mark received) is reviewed immediately', async () => {
+    const routed = await mkRequest();
+    await markFulfilledByReceipt(tenantId, routed.id, receiptA, { reviewedBy: staffId });
+    const r1 = (await db.query.documentRequests.findFirst({ where: eq(documentRequests.id, routed.id) }))!;
+    expect(r1.status).toBe('submitted');
+    expect(r1.reviewedBy).toBe(staffId);
+
+    const manual = await mkRequest();
+    await markReceivedManually(tenantId, staffId, manual.id);
+    const r2 = (await db.query.documentRequests.findFirst({ where: eq(documentRequests.id, manual.id) }))!;
+    expect(r2.reviewedAt).not.toBeNull();
+  });
+
+  it('markReviewed rejects a pending request and 404s across tenants', async () => {
+    const pending = await mkRequest();
+    await expect(markReviewed(tenantId, staffId, pending.id)).rejects.toThrow(/submitted/i);
+    await expect(markReviewed('00000000-0000-4000-8000-0000000000ff', staffId, pending.id)).rejects.toThrow(/not found/i);
+  });
+
+  it('unread filter, dashboard count, cross-tenant activity and mark-all agree', async () => {
+    // Start clean for this tenant.
+    await markAllReviewed(tenantId, staffId);
+    const a = await mkRequest();
+    const b = await mkRequest();
+    await markFulfilledByReceipt(tenantId, a.id, receiptA);
+    await markFulfilledByReceipt(tenantId, b.id, receiptB);
+    const overdue = await mkRequest({ dueDate: new Date('2020-01-01T00:00:00Z') });
+
+    const { items, total } = await listOpenRequests(tenantId, { unread: true, limit: 100, offset: 0 });
+    expect(total).toBe(2);
+    expect(items.map((i) => i.id).sort()).toEqual([a.id, b.id].sort());
+    expect(items.every((i) => i.unread && i.status === 'submitted')).toBe(true);
+    expect(items.find((i) => i.id === a.id)!.submittedFilename).toBe('statement-a.pdf');
+
+    const counts = await dashboardCounts(tenantId);
+    expect(counts.unreadSubmissions).toBe(2);
+    expect(counts.overdue).toBeGreaterThanOrEqual(1);
+
+    // Clients screen: the staff user reaches this tenant, sees both numbers;
+    // the outsider (no access row) sees nothing for it.
+    const mine = await portalActivityForUser(staffId);
+    const row = mine.find((r) => r.tenantId === tenantId);
+    expect(row).toBeDefined();
+    expect(row!.unreadSubmissions).toBe(2);
+    expect(row!.overdueDocRequests).toBeGreaterThanOrEqual(1);
+    const theirs = await portalActivityForUser(outsiderId);
+    expect(theirs.find((r) => r.tenantId === tenantId)).toBeUndefined();
+
+    const n = await markAllReviewed(tenantId, staffId);
+    expect(n).toBe(2);
+    expect((await dashboardCounts(tenantId)).unreadSubmissions).toBe(0);
+    expect((await listOpenRequests(tenantId, { unread: true, limit: 100, offset: 0 })).total).toBe(0);
+    // Idempotent.
+    expect(await markAllReviewed(tenantId, staffId)).toBe(0);
+    // The overdue pending row was untouched.
+    const still = (await db.query.documentRequests.findFirst({ where: eq(documentRequests.id, overdue.id) }))!;
+    expect(still.status).toBe('pending');
+  });
+
+  it('createRule accepts active staff with access and rejects client users / outsiders', async () => {
+    const ok = await createRule(tenantId, staffId, { ...baseRuleInput, contactId, notifyUserIds: [staffId, staffId] });
+    const rule = (await db.query.recurringDocumentRequests.findFirst({ where: eq(recurringDocumentRequests.id, ok.id) }))!;
+    expect(rule.notifyUserIds).toEqual([staffId]); // de-duplicated
+
+    await expect(
+      createRule(tenantId, staffId, { ...baseRuleInput, contactId, notifyUserIds: [clientUserId] }),
+    ).rejects.toThrow(/active staff/i);
+    await expect(
+      createRule(tenantId, staffId, { ...baseRuleInput, contactId, notifyUserIds: [outsiderId] }),
+    ).rejects.toThrow(/active staff/i);
+  });
+
+  it('notifyStaffOfSubmission is a no-op without recipients and never throws', async () => {
+    const lone = await mkRequest();
+    expect(await notifyStaffOfSubmission(tenantId, lone.id, receiptA)).toEqual({ sent: 0, skipped: 'no_recipients' });
+    expect(await notifyStaffOfSubmission(tenantId, '00000000-0000-4000-8000-0000000000ee', receiptA))
+      .toEqual({ sent: 0, skipped: 'not_found' });
+
+    // With a recipient but no SMTP host configured on the test box the
+    // notifier reports the skip instead of failing the upload path.
+    const created = await createRule(tenantId, staffId, { ...baseRuleInput, contactId, notifyUserIds: [staffId] });
+    const issued = await mkRequest({ recurringId: created.id });
+    const out = await notifyStaffOfSubmission(tenantId, issued.id, receiptA);
+    expect(out.sent + (out.skipped ? 1 : 0)).toBeGreaterThan(0);
+    expect(['smtp_not_configured', 'error', null]).toContain(out.skipped);
   });
 });

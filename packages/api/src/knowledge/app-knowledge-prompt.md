@@ -830,6 +830,32 @@ Firm setup (all three required before clients can pay bills):
    account configured, clients see "contact your accountant" instead of the pay button.
 3. Edit each contact and turn on **Can pay bills** for the company.
 
+### Document requests — unread client submissions & staff notification
+Standing document requests (**Practice → Reminders → Recurring requests**) ask a portal
+contact for a document on a schedule. When the contact uploads against a request, it
+becomes **submitted** and is **unread** until a staff member marks it reviewed.
+
+Where unread submissions appear:
+- **Dashboard** — the "Client portal activity" banner shows "N client submissions to
+  review"; clicking it opens Reminders filtered to unread.
+- **Clients screen** (View all clients… in the company switcher) — an inbox icon with a
+  count next to a client with unread submissions, and a red calendar icon with a count
+  when that client has document requests past due.
+- **Practice → Reminders** — "Unread submissions" tile, an "N new" badge on the Open
+  requests tab, and an "Unread submissions" filter; unread rows carry a **New** badge
+  and show the uploaded filename.
+
+Clearing them: the **Mark reviewed** (open-envelope) row action, or **Mark all reviewed**
+on the unread filter. "Mark received" (closing a request by hand) and manually routing a
+statement from the receipts inbox count as reviewed. A second upload against an
+already-reviewed request makes it unread again.
+
+Staff email on submission: in the rule editor, **Email staff when the client submits**
+lists active staff users with access to the client; everyone checked is emailed the
+moment the contact uploads (client, request, period, filename, link to the grid). Editing
+the list applies to requests already outstanding. Needs SMTP configured; the unread
+tracking works regardless. Feature flag: `RECURRING_DOC_REQUESTS_V1`.
+
 ## Setup & Administration
 
 ### Managing Multiple Companies

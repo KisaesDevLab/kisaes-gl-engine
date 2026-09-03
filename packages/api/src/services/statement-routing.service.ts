@@ -331,6 +331,9 @@ export async function importStatementForReceipt(
      *  import this specific statement, so the unattended quality gate is
      *  skipped (the action is audit-logged with the decision). */
     bypassQualityGate?: boolean;
+    /** Staff user driving a manual route — the request closes as already
+     *  reviewed (they are looking at the statement), instead of unread. */
+    reviewedBy?: string;
   } = {},
 ): Promise<RouteResult> {
   const receipt = await db.query.portalReceipts.findFirst({
@@ -428,7 +431,9 @@ export async function importStatementForReceipt(
 
     if (documentRequestId) {
       const recurDoc = await import('./recurring-doc-request.service.js');
-      await recurDoc.markFulfilledByReceipt(tenantId, documentRequestId, receiptId);
+      await recurDoc.markFulfilledByReceipt(tenantId, documentRequestId, receiptId, {
+        reviewedBy: opts.reviewedBy,
+      });
     }
 
     await auditLog(
@@ -500,7 +505,7 @@ export async function manualRouteStatement(
     // Explicit staff decision — the bookkeeper picked this connection and
     // asked for the import, so the unattended quality gate doesn't apply.
     // The action (and who took it) is audit-logged below.
-    { bypassQualityGate: true },
+    { bypassQualityGate: true, reviewedBy: bookkeeperUserId },
   );
   await auditLog(
     tenantId,

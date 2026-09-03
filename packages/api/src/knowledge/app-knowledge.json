@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-02T00:00:04.932Z",
+  "generatedAt": "2026-09-03T15:04:49.683Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -18,7 +18,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 69784
+    "totalBytes": 71442
   },
   "screens": [
     {
@@ -1530,6 +1530,7 @@
     "Budgets",
     "Balances & Activity (banking views)",
     "Bill Pay (clients mark bills for payment)",
+    "Document requests — unread client submissions & staff notification",
     "Managing Multiple Companies",
     "The Clients Screen",
     "Backup & Restore",

@@ -91,6 +91,13 @@ export const recurringDocRequestCreateSchema = z.object({
   // Opener channel. Defaults 'email'; 'sms'/'both' require the tenant's
   // SMS-outbound setting + a contact phone at send time.
   reminderChannel: z.enum(DOC_REQUEST_CHANNELS).default('email'),
+  // Staff users emailed when the contact uploads against a request this
+  // rule issued. Must be active staff with access to the tenant (the
+  // service validates). Empty = nobody is emailed; the submission still
+  // shows as unread on the dashboard / Clients screen / Reminders page.
+  // Optional (not .default) so existing callers' payload types stay valid;
+  // the service treats undefined as [].
+  notifyUserIds: z.array(z.string().uuid()).max(20).optional(),
 });
 export type RecurringDocRequestCreateInput = z.infer<typeof recurringDocRequestCreateSchema>;
 
@@ -123,6 +130,7 @@ export interface RecurringDocRequestSummary {
   bankConnectionId: string | null;
   statementRouting: StatementRoutingMode;
   reminderChannel: DocRequestChannel;
+  notifyUserIds: string[];
   outstandingCount: number;
   createdAt: string;
   updatedAt: string;
@@ -144,6 +152,13 @@ export interface DocumentRequestSummary {
   status: DocRequestStatus;
   submittedAt: string | null;
   submittedReceiptId: string | null;
+  // Original filename of the upload that fulfilled the request (null
+  // when closed by hand or the receipt row is gone).
+  submittedFilename: string | null;
+  // Staff acknowledgement. `unread` is the derived flag the UI badges:
+  // status === 'submitted' && reviewedAt === null.
+  reviewedAt: string | null;
+  unread: boolean;
   // Most-recent reminder-send timestamps for the in-grid columns.
   lastRemindedAt: string | null;
   lastOpenedAt: string | null;
@@ -156,6 +171,9 @@ export const documentRequestListFiltersSchema = z.object({
   contactId: z.string().uuid().optional(),
   recurringId: z.string().uuid().optional(),
   overdue: z.coerce.boolean().optional(),
+  // Submitted by the client and not yet acknowledged by staff. Implies
+  // status='submitted'.
+  unread: z.coerce.boolean().optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
   offset: z.coerce.number().int().min(0).default(0),
 });

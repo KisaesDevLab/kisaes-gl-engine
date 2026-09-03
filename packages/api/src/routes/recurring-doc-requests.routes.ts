@@ -172,6 +172,26 @@ recurringDocRequestsRouter.post('/document-requests/:id/cancel', async (req, res
   res.json({ ok: true });
 });
 
+// Staff acknowledgement of a client submission — clears the "unread"
+// badge for one request, or (mark-all) for every unread submission in
+// the tenant / for one contact.
+recurringDocRequestsRouter.post('/document-requests/:id/mark-reviewed', async (req, res) => {
+  await svc.markReviewed(req.tenantId, req.userId, req.params['id']!);
+  res.json({ ok: true });
+});
+
+const markAllReviewedSchema = z.object({
+  contactId: z.string().uuid().optional(),
+});
+recurringDocRequestsRouter.post(
+  '/document-requests/mark-all-reviewed',
+  validate(markAllReviewedSchema),
+  async (req, res) => {
+    const count = await svc.markAllReviewed(req.tenantId, req.userId, req.body.contactId);
+    res.json({ ok: true, count });
+  },
+);
+
 // Per-contact rollup for the ContactDetailPage panel.
 recurringDocRequestsRouter.get('/contacts/:contactId/document-requests', async (req, res) => {
   const items = await svc.listForContactDetail(req.tenantId, req.params['contactId']!);

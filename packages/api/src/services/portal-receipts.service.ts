@@ -129,6 +129,7 @@ export async function uploadReceipt(input: UploadInput): Promise<{
         .update(portalReceipts)
         .set({ documentRequestId: input.documentRequestId, updatedAt: new Date() })
         .where(eq(portalReceipts.id, dup.id));
+      notifyStaffAfterPortalUpload(input, dup.id);
     }
     return { id: dup.id, duplicate: true };
   }
@@ -205,6 +206,7 @@ export async function uploadReceipt(input: UploadInput): Promise<{
         // on the imported path; on awaits_routing we leave the
         // request pending so the CPA's manual-route action can close
         // it.
+        notifyStaffAfterPortalUpload(input, row.id);
         return { id: row.id, duplicate: false };
       }
     }
@@ -212,9 +214,26 @@ export async function uploadReceipt(input: UploadInput): Promise<{
     // Default path: just mark the request fulfilled (matches today's
     // behavior for non-statement document types).
     await recurDoc.markFulfilledByReceipt(input.tenantId, input.documentRequestId, row.id);
+    notifyStaffAfterPortalUpload(input, row.id);
   }
 
   return { id: row.id, duplicate: false };
+}
+
+// Fire-and-forget staff email for a CLIENT upload against a document
+// request. Deliberately not awaited: the upload response must not wait
+// on SMTP, and the notifier is best-effort by contract (never throws).
+// Practice-side captures (a staffer filing a document on the client's
+// behalf) don't notify — staff already know.
+function notifyStaffAfterPortalUpload(input: UploadInput, receiptId: string): void {
+  if (input.captureSource !== 'portal' || !input.documentRequestId) return;
+  const documentRequestId = input.documentRequestId;
+  void import('./recurring-doc-request.service.js')
+    .then((recurDoc) => recurDoc.notifyStaffOfSubmission(input.tenantId, documentRequestId, receiptId))
+    .catch((e: unknown) => {
+      // eslint-disable-next-line no-console
+      console.warn('[portal-receipts] staff notification failed', e instanceof Error ? e.message : e);
+    });
 }
 
 // 18.4 — patch the OCR result onto an existing receipt + run the

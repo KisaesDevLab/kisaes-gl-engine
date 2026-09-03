@@ -364,6 +364,15 @@ authRouter.get('/accessible-tenants/banking', authenticate, requireSessionAuth, 
   res.json({ data });
 });
 
+// Unread client submissions + overdue document requests per client, for the
+// Clients screen's attention icons. Same cross-tenant contract and the same
+// requireSessionAuth gate as /accessible-tenants/banking above.
+authRouter.get('/accessible-tenants/portal-activity', authenticate, requireSessionAuth, async (req, res) => {
+  const clientPortalActivityService = await import('../services/client-portal-activity.service.js');
+  const data = await clientPortalActivityService.getForUser(req.userId);
+  res.json({ data });
+});
+
 authRouter.post('/switch-tenant', authenticate, requireSessionAuth, async (req, res) => {
   // Pass the current refresh cookie so switchTenant can atomically revoke
   // the pre-switch session when it mints the new one. Stops a compromised
