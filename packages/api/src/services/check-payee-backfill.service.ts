@@ -321,10 +321,20 @@ interface FeedTarget {
   check_number: number;
   amount: string;
   company_id: string | null;
+  payee_name_on_check: string | null;
+  suggested_contact_id: string | null;
 }
 
 /**
- * Unposted check rows in the feed that carry a check number but no payee.
+ * Unposted check rows the feed can still improve. Two shapes:
+ *
+ *  1. No payee at all — fill it from the statement lines.
+ *  2. A payee, but no vendor link — the payee text is already right, the row
+ *     just isn't connected to a contact. This is the state the AI step used
+ *     to leave rows in (it nulled the check-image contact), and it is also
+ *     what happens when contact creation was declined or failed. Without
+ *     this case the button skips exactly the rows a user is looking at when
+ *     they say "I have the payee but it isn't matching a name".
  *
  * Money-out only (`amount > 0` is an outflow on bank_feed_items): a check is
  * something we wrote, so a deposit that happens to quote a check number in
@@ -337,14 +347,17 @@ interface FeedTarget {
  */
 async function findFeedTargets(tenantId: string, companyId?: string | null): Promise<FeedTarget[]> {
   const res = await db.execute(sql`
-    SELECT id, check_number, amount, company_id
+    SELECT id, check_number, amount, company_id, payee_name_on_check, suggested_contact_id
     FROM bank_feed_items
     WHERE tenant_id = ${tenantId}
       AND (${companyId ?? null}::uuid IS NULL OR company_id = ${companyId ?? null}::uuid OR company_id IS NULL)
       AND check_number IS NOT NULL
       AND amount > 0
-      AND (payee_name_on_check IS NULL OR payee_name_on_check = '')
       AND status IN ('pending', 'assigned')
+      AND (
+        (payee_name_on_check IS NULL OR payee_name_on_check = '')
+        OR suggested_contact_id IS NULL
+      )
     ORDER BY check_number
   `);
   return res.rows as unknown as FeedTarget[];
@@ -429,25 +442,31 @@ export async function backfillFeedItemCheckPayees(
   const accountNameCache = new Map<string, string | null>();
 
   for (const item of targets) {
-    const candidates = sources.get(Number(item.check_number)) ?? [];
-    if (candidates.length === 0) continue;
-    const itemCents = centsOf(item.amount);
+    const existingPayee = (item.payee_name_on_check ?? '').trim();
+    let payee: string | null = existingPayee || null;
 
-    // Identical selection rule to the posted-transaction path: prefer an
-    // amount-confirmed candidate; otherwise accept a sole payee only when no
-    // candidate's readable amount actively contradicts this row.
-    let payee: string | null = null;
-    const amountConfirmed = candidates.filter(
-      (c) => c.cents != null && itemCents != null && Math.abs(c.cents - itemCents) <= 1,
-    );
-    if (amountConfirmed.length > 0) {
-      payee = amountConfirmed[0]!.payee;
-    } else {
-      const contradicted = candidates.some(
-        (c) => c.cents != null && itemCents != null && Math.abs(c.cents - itemCents) > 1,
+    // Only consult the statement when the row has no payee of its own. A row
+    // that already carries one is here to be linked, not re-read.
+    if (!payee) {
+      const candidates = sources.get(Number(item.check_number)) ?? [];
+      if (candidates.length === 0) continue;
+      const itemCents = centsOf(item.amount);
+
+      // Identical selection rule to the posted-transaction path: prefer an
+      // amount-confirmed candidate; otherwise accept a sole payee only when no
+      // candidate's readable amount actively contradicts this row.
+      const amountConfirmed = candidates.filter(
+        (c) => c.cents != null && itemCents != null && Math.abs(c.cents - itemCents) <= 1,
       );
-      const distinct = new Set(candidates.map((c) => c.payee.toLowerCase()));
-      if (!contradicted && distinct.size === 1) payee = candidates[0]!.payee;
+      if (amountConfirmed.length > 0) {
+        payee = amountConfirmed[0]!.payee;
+      } else {
+        const contradicted = candidates.some(
+          (c) => c.cents != null && itemCents != null && Math.abs(c.cents - itemCents) > 1,
+        );
+        const distinct = new Set(candidates.map((c) => c.payee.toLowerCase()));
+        if (!contradicted && distinct.size === 1) payee = candidates[0]!.payee;
+      }
     }
     if (!payee) continue;
 

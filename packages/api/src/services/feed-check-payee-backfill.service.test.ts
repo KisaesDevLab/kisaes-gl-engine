@@ -26,7 +26,8 @@ const itemHistoryVendor = crypto.randomUUID();  // payee + unambiguous history �
 const itemNewVendor = crypto.randomUUID();      // payee, no history → needs a category
 const itemWrongAmount = crypto.randomUUID();    // check# matches, amount contradicts → untouched
 const itemDeposit = crypto.randomUUID();        // money IN with a check# → never touched
-const itemHasPayee = crypto.randomUUID();       // already has a payee → not a target
+const itemComplete = crypto.randomUUID();       // payee AND contact → not a target
+const itemNeedsLink = crypto.randomUUID();     // payee but NO contact → relink target
 const itemSplitVendor = crypto.randomUUID();    // payee coded 2 ways before → payee only
 const itemPosted = crypto.randomUUID();         // already categorized → not a target
 
@@ -92,17 +93,22 @@ beforeAll(async () => {
       (${tenantId}, ${statementId}, '2026-06-07', 'CHECK 3007', -80.00, '3007', 'Posted Already')
   `);
 
-  const mkItem = async (id: string, checkNo: number, amount: string, status: string, payee: string | null) => {
+  const mkItem = async (
+    id: string, checkNo: number, amount: string, status: string,
+    payee: string | null, contactId: string | null = null,
+  ) => {
     await db.execute(sql`
-      INSERT INTO bank_feed_items (id, tenant_id, bank_connection_id, feed_date, description, amount, status, check_number, payee_name_on_check)
-      VALUES (${id}, ${tenantId}, ${connectionId}, '2026-06-01', 'Taz-Boy''s', ${amount}::numeric, ${status}, ${checkNo}, ${payee})
+      INSERT INTO bank_feed_items (id, tenant_id, bank_connection_id, feed_date, description, amount, status, check_number, payee_name_on_check, suggested_contact_id)
+      VALUES (${id}, ${tenantId}, ${connectionId}, '2026-06-01', 'Taz-Boy''s', ${amount}::numeric, ${status}, ${checkNo}, ${payee}, ${contactId}::uuid)
     `);
   };
   await mkItem(itemHistoryVendor, 3001, '150.00', 'pending', null);
   await mkItem(itemNewVendor, 3002, '275.50', 'pending', null);
   await mkItem(itemWrongAmount, 3003, '999.00', 'pending', null);
   await mkItem(itemDeposit, 3004, '-60.00', 'pending', null);       // money IN
-  await mkItem(itemHasPayee, 3005, '90.00', 'pending', 'Already Set');
+  await mkItem(itemComplete, 3005, '90.00', 'pending', 'Already Set', splitVendorId);
+  // The state the AI regression left rows in: payee text, no vendor link.
+  await mkItem(itemNeedsLink, 3010, '150.00', 'pending', 'Cosmos Granite', null);
   await mkItem(itemSplitVendor, 3006, '70.00', 'pending', null);
   await mkItem(itemPosted, 3007, '80.00', 'categorized', null);
 });
@@ -141,11 +147,12 @@ describe('backfillFeedItemCheckPayees', () => {
   it('dry run reports the matches and writes nothing', async () => {
     const report = await backfillFeedItemCheckPayees(tenantId, { dryRun: true });
     expect(report.dryRun).toBe(true);
-    // 3001, 3002, 3006 match. 3003 amount contradicts, 3004 is a deposit,
-    // 3005 already has a payee, 3007 is already categorized.
-    expect(report.matched).toBe(3);
+    // 3001, 3002, 3006 need a payee; 3010 has one but no vendor link.
+    // 3003's amount contradicts, 3004 is a deposit, 3005 is already
+    // complete (payee AND contact), 3007 is already categorized.
+    expect(report.matched).toBe(4);
     expect(report.payeesApplied).toBe(0);
-    expect(report.matches.map((m) => m.checkNumber).sort()).toEqual([3001, 3002, 3006]);
+    expect(report.matches.map((m) => m.checkNumber).sort((a, b) => a - b)).toEqual([3001, 3002, 3006, 3010]);
 
     // Nothing was written.
     expect((await itemRow(itemHistoryVendor)).payee_name_on_check).toBeNull();
@@ -157,16 +164,29 @@ describe('backfillFeedItemCheckPayees', () => {
     const kl2 = report.matches.find((m) => m.checkNumber === 3002)!;
     expect(kl2.suggestedAccountId).toBeNull();
     expect(kl2.contactAction).toBe('created');
-    expect(report.categoriesSuggested).toBe(1);
+    // Both Cosmos Granite rows (3001 and the relink at 3010) resolve to the
+    // one account that payee has always used.
+    expect(report.categoriesSuggested).toBe(2);
     expect(report.needsCategory).toBe(2);
+  });
+
+  it('links a payee that has no contact yet, without needing a statement line', async () => {
+    // 3010 carries a payee but no vendor. There is no statement line for it
+    // at all, so this can only pass by trusting the payee already on the row.
+    const report = await backfillFeedItemCheckPayees(tenantId, { dryRun: true });
+    const relink = report.matches.find((m) => m.checkNumber === 3010);
+    expect(relink).toBeDefined();
+    expect(relink!.payee).toBe('Cosmos Granite');
+    expect(relink!.contactAction).toBe('linked');
+    expect(relink!.suggestedAccountName).toBe('Stone Supplies');
   });
 
   it('applies payee, links the known vendor, and sets the category from unambiguous history', async () => {
     const report = await backfillFeedItemCheckPayees(tenantId, { dryRun: false });
-    expect(report.payeesApplied).toBe(3);
-    expect(report.contactsLinked).toBe(2);   // Cosmos Granite + Split Hardware
+    expect(report.payeesApplied).toBe(4);
+    expect(report.contactsLinked).toBe(3);   // Cosmos Granite ×2 + Split Hardware
     expect(report.contactsCreated).toBe(1);  // KL2 Stone
-    expect(report.categoriesSuggested).toBe(1);
+    expect(report.categoriesSuggested).toBe(2);
 
     const cosmos = await itemRow(itemHistoryVendor);
     expect(cosmos.payee_name_on_check).toBe('Cosmos Granite');
@@ -195,10 +215,20 @@ describe('backfillFeedItemCheckPayees', () => {
     expect((created.rows[0] as { contact_type: string }).contact_type).toBe('vendor');
   });
 
-  it('never touches a contradicting amount, a deposit, an already-named row, or a posted row', async () => {
+  it('links the payee that had no contact, and gives it the history category', async () => {
+    const row = await itemRow(itemNeedsLink);
+    expect(row.payee_name_on_check).toBe('Cosmos Granite');
+    expect(row.suggested_contact_id).toBe(knownVendorId);
+    expect(row.suggested_account_id).toBe(expenseAccountId);
+  });
+
+  it('never touches a contradicting amount, a deposit, a complete row, or a posted row', async () => {
     expect((await itemRow(itemWrongAmount)).payee_name_on_check).toBeNull();
     expect((await itemRow(itemDeposit)).payee_name_on_check).toBeNull();
-    expect((await itemRow(itemHasPayee)).payee_name_on_check).toBe('Already Set');
+    // Payee AND contact already set — nothing left to do, so it is skipped.
+    const complete = await itemRow(itemComplete);
+    expect(complete.payee_name_on_check).toBe('Already Set');
+    expect(complete.suggested_contact_id).toBe(splitVendorId);
     expect((await itemRow(itemPosted)).payee_name_on_check).toBeNull();
   });
 
