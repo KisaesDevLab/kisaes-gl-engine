@@ -13,6 +13,7 @@ import { log } from '../utils/logger.js';
 import * as aiConfigService from './ai-config.service.js';
 import * as aiPrompt from './ai-prompt.service.js';
 import { matchByName } from './ai-name-match.js';
+import { suggestAccountFromPayeeHistory } from './categorization-ai.service.js';
 import * as orchestrator from './ai-orchestrator.service.js';
 import { normalizePayeePattern } from './categorization-ai.service.js';
 import { sanitize, type PiiType } from './pii-sanitizer.service.js';
@@ -284,13 +285,79 @@ export interface PreAiLayerResult {
  * neither layer resolves — the caller then falls through to the AI step
  * (single or batched).
  */
+/**
+ * Decide what the AI step may do to a row's payee.
+ *
+ * Two rules, both learned from a real regression: the AI wrote
+ * `suggestedContactId: matchedVendor?.id || null` unconditionally, so a row
+ * whose payee had been read off the check image at 0.95 confidence lost that
+ * contact the moment the model failed to name a vendor from "CHECK 7187".
+ * Every check on a statement came out with a visible payee and no payee link.
+ *
+ *  1. Never NULL an existing contact. A model that didn't identify a vendor
+ *     has expressed no opinion, not a negative one.
+ *  2. Never overwrite a contact that came from the check image. The image is
+ *     direct evidence of who the check was written to; the model is guessing
+ *     from a description that does not contain the payee.
+ */
+function applyAiVendor(
+  patch: Partial<typeof bankFeedItems.$inferInsert>,
+  matchedVendorId: string | null,
+  item: { payeeNameOnCheck?: string | null; suggestedContactId?: string | null },
+): void {
+  if (!matchedVendorId) return;
+  if (item.payeeNameOnCheck && item.suggestedContactId) return;
+  patch.suggestedContactId = matchedVendorId;
+}
+
 export async function resolvePreAiLayers(
   tenantId: string,
-  item: { id: string; description: string | null; originalDescription?: string | null; suggestedAccountId: string | null; confidenceScore: string | null },
+  item: {
+    id: string;
+    description: string | null;
+    originalDescription?: string | null;
+    suggestedAccountId: string | null;
+    confidenceScore: string | null;
+    // STATEMENT_CHECK_PAYEE_CATEGORY — identity read off the check image,
+    // which is what makes a check row categorizable at all.
+    payeeNameOnCheck?: string | null;
+    suggestedContactId?: string | null;
+    companyId?: string | null;
+  },
 ): Promise<PreAiLayerResult | null> {
   // Layer 1: Bank Rules (handled elsewhere — check if already suggested)
   if (item.suggestedAccountId && item.confidenceScore && parseFloat(item.confidenceScore) >= 0.9) {
     return { status: 'suggested', accountId: item.suggestedAccountId, confidence: parseFloat(item.confidenceScore), matchType: 'rule' };
+  }
+
+  // Layer 2a: Payee history. A check's bank description is the same useless
+  // string on every row ("CHECK 7187", or the account nickname), so the
+  // description-keyed layers below can never categorize one. Once the payee
+  // has been read off the check image we can instead use the account this
+  // tenant has always coded that payee to. Running it HERE, before the AI,
+  // matters twice over: a known payee never spends an LLM call, and it never
+  // reaches the AI write path that used to overwrite the check-image contact.
+  if (item.payeeNameOnCheck || item.suggestedContactId) {
+    const byPayee = await suggestAccountFromPayeeHistory(tenantId, {
+      contactId: item.suggestedContactId ?? null,
+      payeeName: item.payeeNameOnCheck ?? null,
+      companyId: item.companyId ?? null,
+    });
+    if (byPayee) {
+      await db.update(bankFeedItems).set({
+        suggestedAccountId: byPayee.accountId,
+        confidenceScore: byPayee.confidence.toFixed(2),
+        matchType: 'history',
+        updatedAt: new Date(),
+      }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, item.id)));
+      return {
+        status: 'suggested',
+        accountId: byPayee.accountId,
+        contactId: item.suggestedContactId ?? null,
+        confidence: byPayee.confidence,
+        matchType: 'history',
+      };
+    }
   }
 
   // Layer 2: Categorization history — trusted only past the confirmation
@@ -477,16 +544,18 @@ export async function categorize(tenantId: string, feedItemId: string) {
     const lowConfidence = confidence < config.categorizationConfidenceThreshold;
     const suggested = !!matchedAccount;
     if (suggested) {
-      await db.update(bankFeedItems).set({
+      const patch: Partial<typeof bankFeedItems.$inferInsert> = {
         suggestedAccountId: matchedAccount!.id,
-        suggestedContactId: matchedVendor?.id || null,
         // ADR 0XY §3.4 — persist the AI's tag suggestion so the categorize
         // drawer can show it pre-selected without another LLM round-trip.
         suggestedTagId: matchedTag?.id || null,
         confidenceScore: String(confidence),
         matchType: 'ai',
         updatedAt: new Date(),
-      }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
+      };
+      applyAiVendor(patch, matchedVendor?.id ?? null, item);
+      await db.update(bankFeedItems).set(patch)
+        .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
     }
 
     await orchestrator.completeJob(
@@ -707,6 +776,10 @@ interface BatchFeedItem {
   feedDate: string | null;
   companyId: string | null;
   bankConnectionId: string;
+  // Carried so the write path can tell a payee read off the check image from
+  // one the model guessed — see applyAiVendor.
+  payeeNameOnCheck: string | null;
+  suggestedContactId: string | null;
 }
 
 /**
@@ -848,14 +921,16 @@ async function runCategorizeBatch(
     const suggested = !!matchedAccount;
     if (suggested) {
       suggestedCount++;
-      await db.update(bankFeedItems).set({
+      const patch: Partial<typeof bankFeedItems.$inferInsert> = {
         suggestedAccountId: matchedAccount!.id,
-        suggestedContactId: matchedVendor?.id || null,
         suggestedTagId: matchedTag?.id || null,
         confidenceScore: String(confidence),
         matchType: 'ai',
         updatedAt: new Date(),
-      }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, item.id)));
+      };
+      applyAiVendor(patch, matchedVendor?.id ?? null, item);
+      await db.update(bankFeedItems).set(patch)
+        .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, item.id)));
     }
     results.set(item.id, {
       outcome: {
@@ -936,6 +1011,8 @@ export async function categorizeFeedItemsBatch(
     feedDate: bankFeedItems.feedDate,
     companyId: bankFeedItems.companyId,
     bankConnectionId: bankFeedItems.bankConnectionId,
+    payeeNameOnCheck: bankFeedItems.payeeNameOnCheck,
+    suggestedContactId: bankFeedItems.suggestedContactId,
   }).from(bankFeedItems).where(and(eq(bankFeedItems.tenantId, tenantId), inArray(bankFeedItems.id, feedItemIds)));
   const byId = new Map(rows.map((r) => [r.id, r]));
 
