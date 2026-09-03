@@ -520,6 +520,16 @@ aiRouter.post('/parse/statement/jobs/:jobId/reprocess', authenticate, aiProcessi
   res.status(202).json(result);
 });
 
+// STATEMENT_CHECK_PAYEE_REREAD — re-run ONLY the check-image pass for one
+// statement. Unlike /reprocess this creates nothing and is safe on a statement
+// that has already been saved, so it is not gated on importedAt: the crop
+// reads are the pass that fails transiently (single-slot vision engine), and
+// re-running them is how a statement that landed with zero payees recovers.
+aiRouter.post('/parse/statement/jobs/:jobId/reread-checks', authenticate, aiProcessingLimiter, async (req, res) => {
+  const result = await aiStatementParser.rereadCheckImages(req.tenantId, String(req.params['jobId']));
+  res.json(result);
+});
+
 // ─── Processing — Document Classification ──────────────────────
 
 aiRouter.post('/classify', authenticate, aiProcessingLimiter, validate(aiClassifySchema), async (req, res) => {

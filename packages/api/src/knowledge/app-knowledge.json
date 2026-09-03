@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-03T18:32:56.939Z",
+  "generatedAt": "2026-09-03T19:21:39.474Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -18,7 +18,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 74475
+    "totalBytes": 75945
   },
   "screens": [
     {
@@ -1490,6 +1490,7 @@
     "Bank Feed Categorization",
     "Period Close",
     "Filling check payees and categories from a statement",
+    "Re-reading check images when payees came back blank",
     "\"Is there a faster way to get to Enter Expense / Write Check / Pay Bills?\"",
     "\"How is the due date calculated on a bill?\"",
     "\"Why can't I save this bill?\"",

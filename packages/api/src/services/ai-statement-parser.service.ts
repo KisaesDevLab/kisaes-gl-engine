@@ -1045,6 +1045,179 @@ export async function markStatementJobImported(tenantId: string, jobId: string):
     .where(and(eq(aiJobs.tenantId, tenantId), eq(aiJobs.id, jobId), eq(aiJobs.jobType, 'ocr_statement')));
 }
 
+/**
+ * STATEMENT_CHECK_PAYEE_REREAD — re-run ONLY the check-image pass for one
+ * statement, from the file already on file.
+ *
+ * Why this is separate from reprocessStatementJob: that re-runs the entire
+ * parse (page OCR, extraction, reconciliation) and refuses once a statement
+ * has been saved, because re-importing risks duplicate transactions. Re-reading
+ * the check crops creates nothing and moves no money, so it is safe on a saved
+ * statement too — and it is the pass that actually fails in practice. The crop
+ * reads are vision calls against a single-slot engine; when that engine is
+ * busy or briefly down during a parse, every crop comes back empty and the
+ * statement lands with zero payees even though its images extracted fine.
+ * Re-running just this pass recovers them without touching anything else.
+ *
+ * Writes to both places a payee can live: the parse job's stored result (so
+ * the review screen shows them) and, when this job has already been saved as
+ * a statement, that statement's payee-less check lines.
+ */
+export async function rereadCheckImages(
+  tenantId: string,
+  jobId: string,
+): Promise<{
+  candidates: number;
+  checksRead: number;
+  checksAdded: number;
+  statementLinesUpdated: number;
+  checks: StatementCheckImage[];
+}> {
+  const job = await db.query.aiJobs.findFirst({
+    where: and(eq(aiJobs.tenantId, tenantId), eq(aiJobs.id, jobId), eq(aiJobs.jobType, 'ocr_statement')),
+  });
+  if (!job) throw AppError.notFound('Statement parse job not found');
+  if (job.status !== 'complete') {
+    throw AppError.badRequest('This statement is still processing — wait for it to finish.');
+  }
+  if (!job.inputId) throw AppError.notFound('The original statement file is no longer available.');
+
+  const attachment = await db.query.attachments.findFirst({ where: eq(attachments.id, job.inputId) });
+  if (!attachment) throw AppError.notFound('The original statement file is no longer available.');
+
+  // Same gates the normal parse path gets: the AI master switch and the
+  // per-company statement-parsing consent. Without these, a company that
+  // turned statement parsing off could still have its stored PDF pushed
+  // through the vision models by anyone clicking this button.
+  const config = await aiConfigService.getConfig();
+  if (!config.isEnabled) {
+    throw AppError.badRequest('AI processing is disabled (Admin → AI), so check images cannot be re-read.');
+  }
+  const { checkTenantTaskConsent } = await import('./ai-consent.service.js');
+  const consent = await checkTenantTaskConsent(tenantId, 'statement_parsing', attachment.companyId ?? null);
+  if (!consent.allowed) {
+    throw AppError.badRequest('Statement parsing is not permitted for this company (AI consent).');
+  }
+
+  // Fetch the stored file — provider first, local path as the fallback, the
+  // same order attachment downloads use.
+  let pdf: Buffer | null = null;
+  try {
+    const { getProviderForTenant } = await import('./storage/storage-provider.factory.js');
+    const provider = await getProviderForTenant(tenantId);
+    const key = attachment.storageKey || attachment.filePath;
+    if (key) pdf = await provider.download(key);
+  } catch (err) {
+    log.warn({
+      component: 'statement-check-reread', event: 'provider_fetch_failed', jobId,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+  if (!pdf && attachment.filePath && fs.existsSync(attachment.filePath)) {
+    pdf = fs.readFileSync(attachment.filePath);
+  }
+  if (!pdf) throw AppError.notFound('The stored statement file could not be read.');
+
+  const candidates = await extractCheckCandidateImages(pdf);
+  if (candidates.length === 0) {
+    // Nothing check-shaped in the PDF — re-running will never help, so say
+    // so rather than reporting a bland zero.
+    return { candidates: 0, checksRead: 0, checksAdded: 0, statementLinesUpdated: 0, checks: [] };
+  }
+
+  const rawConfig = await aiConfigService.getRawConfig();
+  const glm = await aiConfigService.resolveGlmOcrConfig();
+  const ocrProvider = config.ocrProvider || config.categorizationProvider;
+  const reads = await readChecksFromCandidates(candidates, {
+    glm: glm.enabled
+      ? { baseUrl: glm.baseUrl, model: glm.model, timeoutMs: glm.timeoutMs, concurrency: glm.concurrency, apiKey: glm.apiKey }
+      : null,
+    vision: ocrProvider
+      ? { rawConfig, ocrProvider, primaryModel: config.ocrModel || env.OCR_VISION_MODEL, task: 'ocr_statement_checks' }
+      : null,
+  });
+
+  const result = (job.outputData ?? null) as StatementParseResult | null;
+  const existing: StatementCheckImage[] = Array.isArray(result?.checks) ? result!.checks : [];
+
+  // Numeric-normalize numeric check numbers so '0234' and '234' collide;
+  // non-numeric refs ('1042A') keep their raw key. Same rule the parse uses.
+  const mergeKey = (raw: string): string => {
+    const t = String(raw).trim();
+    return /^\d+$/.test(t) ? String(parseInt(t, 10)) : t;
+  };
+  // Amount by check number from the already-parsed rows, to fill in a crop
+  // whose courtesy box was unreadable — the importer confirms on amount.
+  const amountByNumber = new Map<string, string>();
+  for (const t of result?.transactions ?? []) {
+    const n = (t as { checkNumber?: string | null }).checkNumber;
+    const amt = (t as { amount?: string | null }).amount;
+    if (n && amt) amountByNumber.set(mergeKey(n), String(amt));
+  }
+
+  const byNumber = new Map<string, StatementCheckImage>();
+  for (const c of existing) byNumber.set(mergeKey(c.checkNumber), c);
+  let checksAdded = 0;
+  for (const r of reads) {
+    const key = mergeKey(r.checkNumber);
+    const had = byNumber.get(key);
+    // A fresh read off the image wins over an earlier text-proximity guess,
+    // which is the same precedence the parse pipeline applies.
+    byNumber.set(key, {
+      checkNumber: r.checkNumber,
+      payee: r.payee,
+      amount: r.amount ?? had?.amount ?? amountByNumber.get(key),
+    });
+    if (!had || !had.payee) checksAdded += 1;
+  }
+  const merged = [...byNumber.values()];
+
+  if (result) {
+    const warnings = new Set([...(result.qualityWarnings ?? [])]);
+    if (reads.length > 0) warnings.add('check_image_payees_read');
+    await db.update(aiJobs)
+      .set({ outputData: { ...result, checks: merged, qualityWarnings: [...warnings] } })
+      .where(and(eq(aiJobs.tenantId, tenantId), eq(aiJobs.id, jobId)));
+  }
+
+  // If this job was already saved as a statement, push the new payees onto
+  // its payee-less check lines too. Debit lines only, amount-confirmed when
+  // the crop read one — identical guards to the tenant-wide re-scan.
+  let statementLinesUpdated = 0;
+  for (const r of reads) {
+    const upd = await db.execute(sql`
+      UPDATE bank_statement_lines l
+      SET payee = ${r.payee}
+      FROM bank_statements st
+      WHERE l.statement_id = st.id
+        AND st.ai_job_id = ${jobId}
+        AND l.tenant_id = ${tenantId}
+        AND (l.payee IS NULL OR l.payee = '')
+        AND l.check_number IS NOT NULL
+        AND regexp_replace(l.check_number, '[^0-9]', '', 'g') <> ''
+        AND regexp_replace(l.check_number, '[^0-9]', '', 'g')::bigint
+            = regexp_replace(${String(r.checkNumber)}, '[^0-9]', '', 'g')::bigint
+        AND l.amount < 0
+        AND (${r.amount ?? null}::numeric IS NULL
+             OR abs(abs(l.amount) - abs(${r.amount ?? null}::numeric)) <= 0.01)
+    `);
+    statementLinesUpdated += (upd as { rowCount?: number | null }).rowCount ?? 0;
+  }
+
+  log.info({
+    component: 'statement-check-reread', event: 'complete', jobId,
+    candidates: candidates.length, checksRead: reads.length, checksAdded, statementLinesUpdated,
+  });
+
+  return {
+    candidates: candidates.length,
+    checksRead: reads.length,
+    checksAdded,
+    statementLinesUpdated,
+    checks: merged,
+  };
+}
+
 export async function deleteStatementJob(tenantId: string, jobId: string): Promise<void> {
   await db.delete(aiJobs)
     .where(and(eq(aiJobs.tenantId, tenantId), eq(aiJobs.id, jobId), eq(aiJobs.jobType, 'ocr_statement')));

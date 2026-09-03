@@ -125,3 +125,26 @@ This is distinct from the Reconciliation page's check-payee backfill, which repa
 already-POSTED check transactions. Categorization also now consults payee history
 generally: once a feed row has a payee, its category can be suggested from how that payee
 was coded before, which description matching could never do for checks.
+
+### Re-reading check images when payees came back blank
+Statement parsing reads the payee off each check image with a vision reader. When that
+reader is busy or briefly down during a parse, EVERY check comes back blank even though
+the images extracted fine, and the statement lands with zero payees.
+
+**Import Bank Statement → Re-read check images** re-runs only that pass against the PDF
+already on file. It does not re-parse or re-import anything and creates nothing, so it is
+safe to repeat and safe on an already-saved statement. Newly read payees fill into the
+review rows immediately; a payee the user typed is never overwritten. When the statement
+has already been saved, its stored statement lines are updated too, which is what "Fill
+Payees from Statements" on the Bank Feed reads.
+
+Reading the outcome:
+- "N payees read from M check images" — worked.
+- "Found M check images but could not read a payee from any" — reader busy, retry shortly.
+- "No check images found in this PDF" — re-running will never help; either there are no
+  check images, or the bank printed several checks onto one full-page scan (the extractor
+  keeps images roughly 220px+ wide, 80-1400px tall, aspect 1.4-3.8). Type those by hand.
+
+Distinct from **Re-process** (re-runs the whole extraction; refused once a statement is
+saved, to avoid duplicate imports) and from the Reconciliation page's tenant-wide
+**Backfill check payees** with its optional re-scan of every stored statement.
