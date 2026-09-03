@@ -52,7 +52,7 @@ alongside the ability to set a password directly.
 
 ### Changing Your Own Password
 Any signed-in user can change their password under **Settings → Security →** in the
-**Password** card: enter the current password and a new one (at least 8 characters).
+**Password** card: enter the current password and a new one (at least 12 characters).
 Changing it signs you out on every other device; the browser you changed it from stays
 signed in. Passwords found in known data breaches are rejected.
 
