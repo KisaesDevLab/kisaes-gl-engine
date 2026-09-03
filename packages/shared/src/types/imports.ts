@@ -151,6 +151,15 @@ export interface ImportUploadOptions {
   tbColumn?: TbColumnChoice;
   /** AP TB only: ISO date for the opening JE (file doesn't carry one). */
   tbReportDate?: string;
+  /**
+   * TB / GL only. When a line names an account this company's chart of
+   * accounts does not have, post it to the suspense account instead of
+   * failing the import, and report it. Keeps the entry balanced and turns a
+   * dead-end error into reviewable work on Practice -> Uncategorized.
+   * Defaults to ON; set false to restore the old "Import the CoA first" hard
+   * failure.
+   */
+  unmappedAccountsToSuspense?: boolean;
 }
 
 export interface ImportCommitResult {
@@ -162,6 +171,10 @@ export interface ImportCommitResult {
   updated?: number;
   /** GL only — non-zero when the file contained inline-void groups. */
   voidsReversed?: number;
+  /** TB / GL — lines posted to suspense because their account was unmapped. */
+  unmappedToSuspense?: number;
+  /** The distinct account numbers/names that went to suspense, for the report. */
+  unmappedAccountKeys?: string[];
   /** GL only — imported transactions whose description matched an existing
    *  vendor name and were assigned that vendor as the payee. */
   vendorsMatched?: number;

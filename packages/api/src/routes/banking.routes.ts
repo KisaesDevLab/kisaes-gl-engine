@@ -8,6 +8,7 @@ import {
   bankFeedFiltersSchema, categorizeSchema, matchSchema, assignSchema, bulkAssignSchema,
   startReconciliationSchema, updateReconciliationLinesSchema, updateReconciliationSchema, bankImportSchema,
   bulkApproveSchema, bulkCategorizeSchema, bulkExcludeSchema, bulkRecleanseSchema,
+  bulkPostToSuspenseSchema,
   bulkReprocessRulesSchema,
   createManualConnectionSchema, updateFeedItemSchema, bankStatementFiltersSchema,
   confirmStatementLineSchema, createFromStatementLineSchema, importOfxStatementSchema,
@@ -18,6 +19,7 @@ import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as bankConnectionService from '../services/bank-connection.service.js';
 import * as bankFeedService from '../services/bank-feed.service.js';
+import * as suspenseService from '../services/suspense.service.js';
 import * as reconciliationService from '../services/reconciliation.service.js';
 import * as bankStatementsService from '../services/bank-statements.service.js';
 import * as statementMatchService from '../services/statement-match.service.js';
@@ -150,6 +152,17 @@ bankingRouter.post('/feed/bulk-assign', validate(bulkAssignSchema), async (req, 
 bankingRouter.post('/feed/bulk-categorize', validate(bulkCategorizeSchema), async (req, res) => {
   const { feedItemIds, accountId, contactId, memo, tagId } = req.body;
   const result = await bankFeedService.bulkCategorize(req.tenantId, feedItemIds, accountId, contactId, memo, tagId, req.userId, req.companyId);
+  res.json(result);
+});
+
+// Post selected PENDING rows to the suspense account. The books stay
+// complete (the bank reconciles) while the classification work moves to
+// Practice -> Uncategorized. The destination account is resolved by role
+// server-side; the request carries no account id.
+bankingRouter.post('/feed/bulk-post-to-suspense', validate(bulkPostToSuspenseSchema), async (req, res) => {
+  const result = await suspenseService.postFeedItemsToSuspense(
+    req.tenantId, req.body.feedItemIds, req.userId, req.companyId,
+  );
   res.json(result);
 });
 

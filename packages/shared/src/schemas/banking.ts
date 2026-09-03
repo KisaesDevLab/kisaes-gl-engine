@@ -173,6 +173,14 @@ export const bulkCategorizeSchema = z.object({
   tagId: z.string().uuid().nullable().optional(),
 });
 
+// Post selected PENDING feed rows to the suspense account so the bank
+// reconciles even though nobody has classified them yet. No account id: the
+// destination is resolved from accounts.system_tag='suspense' server-side, so
+// a client can never aim this at an arbitrary account.
+export const bulkPostToSuspenseSchema = z.object({
+  feedItemIds: z.array(z.string().uuid()).min(1).max(500),
+});
+
 export const bulkSetTagSchema = z.object({
   feedItemIds: z.array(z.string().uuid()).min(1).max(500),
   tagId: z.string().uuid().nullable(),

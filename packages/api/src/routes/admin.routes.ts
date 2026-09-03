@@ -10,7 +10,9 @@ import crypto from 'crypto';
 import { sql } from 'drizzle-orm';
 import { authenticate, requireSuperAdmin } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
+import { z } from 'zod';
 import * as adminService from '../services/admin.service.js';
+import * as systemAccountsService from '../services/system-accounts.service.js';
 import * as authService from '../services/auth.service.js';
 import { testSmtpConnection, withSetupLock } from '../services/setup.service.js';
 import * as tfaConfigService from '../services/tfa-config.service.js';
@@ -350,6 +352,32 @@ adminRouter.get('/tenants/:id/system-accounts', async (req, res) => {
 adminRouter.put('/tenants/:id/system-accounts/:tag', validate(adminAssignSystemAccountSchema), async (req, res) => {
   res.json(await adminService.assignSystemAccount(req.params['id']!, req.params['tag']!, req.body.accountId, req.userId));
 });
+
+// Suspense consolidation. A tenant that has been running a while may have
+// several hand-made "uncategorized"-ish accounts; folding them into the one
+// tagged suspense account makes the review screen show a single number.
+//
+// This REWRITES POSTED JOURNAL LINES, so it is deliberately two-step: GET
+// previews the candidates (with balances, line counts, and why any of them
+// cannot move), POST applies only the account ids the operator names. Lines
+// inside a completed reconciliation, a locked period, or an adjusting entry
+// are skipped and reported, never forced.
+adminRouter.get('/tenants/:id/suspense-consolidation', async (req, res) => {
+  res.json(await systemAccountsService.previewSuspenseConsolidation(req.params['id']!));
+});
+
+const consolidateSuspenseSchema = z.object({
+  accountIds: z.array(z.string().uuid()).min(1).max(50),
+});
+adminRouter.post(
+  '/tenants/:id/suspense-consolidation',
+  validate(consolidateSuspenseSchema),
+  async (req, res) => {
+    res.json(await systemAccountsService.consolidateIntoSuspense(
+      req.params['id']!, req.body.accountIds, req.userId,
+    ));
+  },
+);
 
 adminRouter.post('/tenants/:id/disable', async (req, res) => {
   await adminService.disableTenant(req.params['id']!, req.userId);

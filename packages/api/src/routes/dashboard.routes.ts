@@ -10,7 +10,7 @@ import * as dashboardService from '../services/dashboard.service.js';
 import * as budgetService from '../services/budget.service.js';
 import * as flags from '../services/feature-flags.service.js';
 import { db } from '../db/index.js';
-import { portalQuestions, portalReceipts, documentRequests } from '../db/schema/index.js';
+import { portalQuestions, portalReceipts, documentRequests, clientCategorySuggestions } from '../db/schema/index.js';
 
 export const dashboardRouter = Router();
 dashboardRouter.use(authenticate);
@@ -119,15 +119,19 @@ async function computeBankingHealth(tenantId: string) {
 // feature's flag so firms without the portal features get null and no
 // banner.
 async function computePortalActivity(tenantId: string) {
-  const [portalOn, receiptsOn, docReqOn] = await Promise.all([
+  const [portalOn, receiptsOn, docReqOn, categorizeOn] = await Promise.all([
     flags.isEnabled(tenantId, 'CLIENT_PORTAL_V1'),
     flags.isEnabled(tenantId, 'RECEIPT_PWA_V1'),
     flags.isEnabled(tenantId, 'RECURRING_DOC_REQUESTS_V1'),
+    flags.isEnabled(tenantId, 'PORTAL_CATEGORIZE_V1'),
   ]);
-  if (!portalOn && !receiptsOn && !docReqOn) return null;
+  if (!portalOn && !receiptsOn && !docReqOn && !categorizeOn) return null;
 
   const countOf = async (q: Promise<Array<{ n: number }>>) => Number((await q)[0]?.n ?? 0);
-  const [questionsAwaitingReply, receiptsToReview, docRequestsOverdue, docRequestsUnread] = await Promise.all([
+  const [
+    questionsAwaitingReply, receiptsToReview, docRequestsOverdue, docRequestsUnread,
+    clientSuggestionsUnread,
+  ] = await Promise.all([
     portalOn
       ? countOf(db.select({ n: sql<number>`COUNT(*)::int` }).from(portalQuestions)
           .where(and(eq(portalQuestions.tenantId, tenantId), eq(portalQuestions.status, 'responded'))))
@@ -155,8 +159,21 @@ async function computePortalActivity(tenantId: string) {
             sql`${documentRequests.reviewedAt} IS NULL`,
           )))
       : 0,
+    // Same predicate as idx_ccs_tenant_unread: a client answered and no
+    // staff member has looked yet. Nothing has posted.
+    categorizeOn
+      ? countOf(db.select({ n: sql<number>`COUNT(*)::int` }).from(clientCategorySuggestions)
+          .where(and(
+            eq(clientCategorySuggestions.tenantId, tenantId),
+            eq(clientCategorySuggestions.status, 'pending'),
+            sql`${clientCategorySuggestions.reviewedAt} IS NULL`,
+          )))
+      : 0,
   ]);
-  return { questionsAwaitingReply, receiptsToReview, docRequestsOverdue, docRequestsUnread };
+  return {
+    questionsAwaitingReply, receiptsToReview, docRequestsOverdue, docRequestsUnread,
+    clientSuggestionsUnread,
+  };
 }
 
 // Bundled dashboard endpoint. Previously the DashboardPage fired nine

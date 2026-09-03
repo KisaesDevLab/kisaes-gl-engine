@@ -85,6 +85,16 @@ export const PRACTICE_FEATURE_FLAGS = [
   // a staff user prints via the normal check flow. Requires
   // portal_settings_per_company.bill_pay_bank_account_id. Default OFF.
   'PORTAL_BILL_PAY_V1',
+  // Practice -> Uncategorized: one screen for everything that is not yet
+  // classified. Three tabs — bank lines not posted at all, amounts already
+  // posted to the suspense account, and categories clients suggested from
+  // the portal — each with per-row and bulk categorization. Default OFF.
+  'UNCATEGORIZED_REVIEW_V1',
+  // Client Portal categorization: portal contacts with
+  // portal_contact_companies.categorize_access=true may SUGGEST a category
+  // for uncategorized activity. A suggestion never posts; staff approve,
+  // override or reject it from Practice -> Uncategorized. Default OFF.
+  'PORTAL_CATEGORIZE_V1',
 ] as const;
 
 export type PracticeFeatureFlagKey = typeof PRACTICE_FEATURE_FLAGS[number];

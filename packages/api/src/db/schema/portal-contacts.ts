@@ -64,6 +64,9 @@ export const portalContactCompanies = pgTable('portal_contact_companies', {
   bankingAccess: boolean('banking_access').notNull().default(false),
   // PORTAL_BILL_PAY_V1 — may view unpaid bills and mark them for payment.
   billPayAccess: boolean('bill_pay_access').notNull().default(false),
+  // PORTAL_CATEGORIZE_V1 — may SUGGEST a category for uncategorized activity.
+  // A suggestion never posts; staff approve it from Practice -> Uncategorized.
+  categorizeAccess: boolean('categorize_access').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   pk: primaryKey({ columns: [table.contactId, table.companyId] }),

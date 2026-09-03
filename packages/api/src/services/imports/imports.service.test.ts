@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import ExcelJS from 'exceljs';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import {
   tenants,
@@ -890,24 +890,53 @@ Cythia Martin","","Monett","MO","65708",,,"",False,False,True,Net 15,5920,""
   // ── Error-path coverage ────────────────────────────────────────
 
   describe('error paths', () => {
-    it('refuses GL commit when an account number is missing from the CoA', async () => {
+    // Unmapped accounts used to abort the whole import with
+    // IMPORT_UNKNOWN_ACCOUNT ("Import the CoA first"). They now post to the
+    // suspense account by default, so the entry still balances and the fix
+    // becomes reviewable work on Practice -> Uncategorized. The old hard
+    // failure is still reachable via unmappedAccountsToSuspense: false.
+    const unknownAccountCsv = `Journal, Date, Reference, Description, Account, Account Name, Debit Amount, Credit Amount, Memo, Department, Updated by
+"CD","01/02/2025","X1","Vendor","9999","Unknown",10.0000,0.0000,"","","u"
+"CD","01/02/2025","X1","Vendor","1000","Cash",0.0000,10.0000,"","","u"
+`;
+
+    it('posts a GL line with an unmapped account to suspense and reports it', async () => {
       // CoA seeded with Cash but NOT 9999.
       await db.insert(accounts).values([
         { tenantId, companyId, accountNumber: '1000', name: 'Cash', accountType: 'asset' },
       ]);
-      const csv = `Journal, Date, Reference, Description, Account, Account Name, Debit Amount, Credit Amount, Memo, Department, Updated by
-"CD","01/02/2025","X1","Vendor","9999","Unknown",10.0000,0.0000,"","","u"
-"CD","01/02/2025","X1","Vendor","1000","Cash",0.0000,10.0000,"","","u"
-`;
       const out = await importsService.createSession({
         tenantId, companyId, userId,
-        file: fileFromText('gl.csv', csv),
+        file: fileFromText('gl.csv', unknownAccountCsv),
         kind: 'gl_transactions',
         sourceSystem: 'accounting_power',
         options: {},
       });
-      // The unknown-account error should be flagged at validation time,
-      // and committing should be refused via IMPORT_HAS_ERRORS.
+      expect(out.validationErrors.some((e) => e.code === 'IMPORT_UNKNOWN_ACCOUNT')).toBe(false);
+
+      const commit = await importsService.commitSession(tenantId, companyId, userId, out.session.id);
+      expect(commit.result.created).toBe(1);
+      expect(commit.result.unmappedToSuspense).toBe(1);
+      expect(commit.result.unmappedAccountKeys).toEqual(['9999']);
+
+      // The $10 debit really landed on the tagged suspense account.
+      const [suspenseAcct] = await db.select().from(accounts)
+        .where(and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'suspense')));
+      expect(suspenseAcct).toBeTruthy();
+      expect(parseFloat(suspenseAcct!.balance ?? '0')).toBe(10);
+    });
+
+    it('still refuses the commit when the suspense fallback is turned off', async () => {
+      await db.insert(accounts).values([
+        { tenantId, companyId, accountNumber: '1000', name: 'Cash', accountType: 'asset' },
+      ]);
+      const out = await importsService.createSession({
+        tenantId, companyId, userId,
+        file: fileFromText('gl.csv', unknownAccountCsv),
+        kind: 'gl_transactions',
+        sourceSystem: 'accounting_power',
+        options: { unmappedAccountsToSuspense: false },
+      });
       expect(out.session.errorCount).toBeGreaterThan(0);
       expect(out.validationErrors.some((e) => e.code === 'IMPORT_UNKNOWN_ACCOUNT')).toBe(true);
       await expect(

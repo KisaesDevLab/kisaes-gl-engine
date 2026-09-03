@@ -66,6 +66,7 @@ import { featureFlagsRouter, adminFeatureFlagsRouter } from './routes/feature-fl
 import { tbRouter } from './routes/tb.routes.js';
 import { tbAdminRouter } from './routes/tb-admin.routes.js';
 import { practiceClassificationRouter } from './routes/practice-classification.routes.js';
+import { uncategorizedRouter } from './routes/uncategorized.routes.js';
 import { practiceSettingsRouter } from './routes/practice-settings.routes.js';
 import { matchActionsRouter } from './routes/match-actions.routes.js';
 import { conditionalRulesRouter } from './routes/conditional-rules.routes.js';
@@ -87,6 +88,7 @@ import { bankConnectPublicRouter } from './routes/bank-connect-public.routes.js'
 import { recurringDocRequestsRouter } from './routes/recurring-doc-requests.routes.js';
 import { portalDocumentRequestsPublicRouter } from './routes/portal-document-requests-public.routes.js';
 import { portalBankingPublicRouter } from './routes/portal-banking-public.routes.js';
+import { portalCategorizePublicRouter } from './routes/portal-categorize-public.routes.js';
 import { portalBillsPublicRouter } from './routes/portal-bills-public.routes.js';
 import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './swagger.js';
@@ -548,6 +550,7 @@ app.use('/api/v1/feature-flags', featureFlagsRouter);
 app.use('/api/v1/tb', tbRouter);
 app.use('/api/v1/admin/tb', tbAdminRouter);
 app.use('/api/v1/admin/feature-flags', adminFeatureFlagsRouter);
+app.use('/api/v1/practice/uncategorized', uncategorizedRouter);
 app.use('/api/v1/practice/classification', practiceClassificationRouter);
 app.use('/api/v1/practice/classification', matchActionsRouter);
 app.use('/api/v1/practice/settings', practiceSettingsRouter);
@@ -585,6 +588,7 @@ app.use('/api/portal/receipts', portalReceiptsPublicRouter);
 app.use('/api/portal/document-requests', portalDocumentRequestsPublicRouter);
 // PORTAL_BANKING_V1 — read-only bank/card balances + registers.
 app.use('/api/portal/banking', portalBankingPublicRouter);
+app.use('/api/portal/categorize', portalCategorizePublicRouter);
 // PORTAL_BILL_PAY_V1 — unpaid bills list + mark-for-payment.
 app.use('/api/portal/bills', portalBillsPublicRouter);
 

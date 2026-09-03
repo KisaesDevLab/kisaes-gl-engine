@@ -13,7 +13,6 @@ const Decimal = DecimalLib.default || DecimalLib;
 import {
   BALANCE_TOLERANCE,
   DAILY_SALES_PRESETS,
-  DAILY_SALES_SYSTEM_ACCOUNTS,
   type CreateDailySalesTemplateInput,
   type UpdateDailySalesTemplateInput,
   type DailySalesTemplateLineInput,
@@ -32,37 +31,11 @@ import {
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
+// Get-or-create for role accounts now lives in system-accounts.service.ts so
+// banking, imports and the Practice surfaces share one implementation.
+import { getOrCreateSystemAccount } from './system-accounts.service.js';
 
 const TOLERANCE = new Decimal(BALANCE_TOLERANCE);
-
-// ── System accounts (lazy create) ───────────────────────────────
-// Beyond payments_clearing / sales_tax_payable (in every COA template), the
-// feature needs cash_over_short / tips_payable / gift_card_liability. Create
-// them on first use so existing tenants don't need a COA re-seed.
-async function getOrCreateSystemAccount(tenantId: string, systemTag: string, companyId?: string): Promise<string> {
-  const existing = await db.query.accounts.findFirst({
-    where: and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, systemTag)),
-  });
-  if (existing) return existing.id;
-  const spec = DAILY_SALES_SYSTEM_ACCOUNTS.find((s) => s.systemTag === systemTag);
-  if (!spec) throw AppError.internal(`Unknown daily-sales system account '${systemTag}'.`);
-  // (tenant_id, account_number) is unique — fall back to a null number on clash.
-  const numTaken = await db.query.accounts.findFirst({
-    where: and(eq(accounts.tenantId, tenantId), eq(accounts.accountNumber, spec.accountNumber)),
-  });
-  const [created] = await db.insert(accounts).values({
-    tenantId,
-    companyId: companyId ?? null,
-    accountNumber: numTaken ? null : spec.accountNumber,
-    name: spec.name,
-    accountType: spec.accountType,
-    detailType: spec.detailType,
-    isSystem: true,
-    systemTag: spec.systemTag,
-    isActive: true,
-  }).returning();
-  return created!.id;
-}
 
 // ── Templates ───────────────────────────────────────────────────
 export async function getTemplate(tenantId: string, id: string) {

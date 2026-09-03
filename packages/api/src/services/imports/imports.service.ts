@@ -38,6 +38,8 @@ import {
   type TbColumnChoice,
 } from '@kis-books/shared';
 import { AppError } from '../../utils/errors.js';
+// Unmapped TB/GL accounts land here instead of failing the import.
+import { getSuspenseAccountId } from '../system-accounts.service.js';
 import * as ap from './adapters/accounting-power.js';
 import * as qbo from './adapters/quickbooks-online.js';
 import * as qbd from './adapters/quickbooks-desktop.js';
@@ -454,6 +456,7 @@ export async function createSession(input: CreateSessionInput): Promise<{
     input.kind,
     parsed.parsed,
     reportDate,
+    input.options,
   );
   const allErrors = [...parsed.errors, ...dbErrors];
 
@@ -487,17 +490,28 @@ export async function createSession(input: CreateSessionInput): Promise<{
 
 // ── Validation ────────────────────────────────────────────────────
 
+// TB/GL lines naming an account this company's CoA does not have are posted
+// to suspense rather than failing the import, unless the operator turned it
+// off. Default ON: a balanced entry the reviewer can fix on
+// Practice -> Uncategorized beats a dead-end "Import the CoA first."
+function suspenseFallbackOn(options: ImportUploadOptions | null | undefined): boolean {
+  return options?.unmappedAccountsToSuspense !== false;
+}
+
 async function validateAgainstDb(
   tenantId: string,
   companyId: string,
   kind: ImportKind,
   parsedAny: unknown,
   reportDate: string | null,
+  options?: ImportUploadOptions | null,
 ): Promise<ImportValidationError[]> {
   if (kind === 'coa') return validateCoa(tenantId, parsedAny as CanonicalCoaRow[]);
   if (kind === 'contacts') return validateContacts(parsedAny as CanonicalContactRow[]);
   if (kind === 'trial_balance') {
-    const errs = await validateTrialBalance(tenantId, companyId, parsedAny as CanonicalTrialBalanceRow[]);
+    const errs = await validateTrialBalance(
+      tenantId, companyId, parsedAny as CanonicalTrialBalanceRow[], suspenseFallbackOn(options),
+    );
     // Pre-flight lock-date against the operator-supplied report date.
     if (reportDate) {
       errs.push(...(await checkLockDate(tenantId, companyId, [reportDate])));
@@ -506,7 +520,7 @@ async function validateAgainstDb(
   }
   if (kind === 'gl_transactions') {
     const entries = parsedAny as CanonicalGlEntry[];
-    const errs = await validateGl(tenantId, companyId, entries);
+    const errs = await validateGl(tenantId, companyId, entries, suspenseFallbackOn(options));
     // Pre-flight lock-date against every distinct entry date — stops
     // the operator burning time on a preview when commit is certain to
     // fail at the ledger layer.
@@ -578,6 +592,7 @@ async function validateTrialBalance(
   tenantId: string,
   companyId: string,
   rows: CanonicalTrialBalanceRow[],
+  suspenseFallback = true,
 ): Promise<ImportValidationError[]> {
   const errors: ImportValidationError[] = [];
   let totalDebit = new Decimal(0);
@@ -608,7 +623,9 @@ async function validateTrialBalance(
       (r.accountNumber && byNum.get(r.accountNumber)) ||
       (r.accountName && byName.get(r.accountName.toLowerCase())) ||
       null;
-    if (!found) {
+    // With the fallback on this is not an error: commitTrialBalance posts the
+    // line to suspense and reports it in the commit result instead.
+    if (!found && !suspenseFallback) {
       errors.push({
         rowNumber: r.rowNumber,
         code: 'IMPORT_UNKNOWN_ACCOUNT',
@@ -659,6 +676,7 @@ async function validateGl(
   tenantId: string,
   companyId: string,
   entries: CanonicalGlEntry[],
+  suspenseFallback = true,
 ): Promise<ImportValidationError[]> {
   const errors: ImportValidationError[] = [];
   // See validateTrialBalance — scope to this company's CoA plus any
@@ -687,7 +705,9 @@ async function validateGl(
         (line.accountNumber && byNum.get(line.accountNumber)) ||
         (line.accountName && byName.get(line.accountName.toLowerCase())) ||
         null;
-      if (!found) {
+      // With the fallback on this is not an error: commitGl posts the line to
+      // suspense and reports it in the commit result instead.
+      if (!found && !suspenseFallback) {
         errors.push({
           rowNumber: e.rowNumber,
           code: 'IMPORT_UNKNOWN_ACCOUNT',
@@ -818,6 +838,7 @@ export async function commitSession(
     row.kind as ImportKind,
     row.parsedRows,
     row.reportDate,
+    row.options as ImportUploadOptions | null,
   );
 
   if (dbErrors.length > 0 && !options.dryRun) {
@@ -890,6 +911,7 @@ export async function commitSession(
         row.fileHash,
         row.sourceSystem as SourceSystem,
         row.parsedRows as CanonicalGlEntry[],
+        row.options as ImportUploadOptions | null,
       );
     } else {
       throw AppError.badRequest(`Unknown import kind "${row.kind}".`, 'IMPORT_WRONG_KIND');
@@ -1158,16 +1180,30 @@ async function commitTrialBalance(
     if (a.accountNumber) byNum.set(a.accountNumber, a.id);
     byName.set(a.name.toLowerCase(), a.id);
   }
+  // Lines naming an account this CoA does not have go to suspense (default)
+  // so the opening JE still balances and the work is reviewable, instead of
+  // aborting the whole import. Resolved lazily: a file that maps cleanly
+  // never mints a suspense account.
+  const fallbackOn = suspenseFallbackOn(options);
+  let suspenseAccountId: string | null = null;
+  const unmappedKeys = new Set<string>();
+
   const lines = [];
   for (const r of rows) {
-    const id =
+    let id =
       (r.accountNumber && byNum.get(r.accountNumber)) ||
       (r.accountName && byName.get(r.accountName.toLowerCase()));
     if (!id) {
-      throw AppError.unprocessableEntity(
-        `Account "${r.accountNumber ?? r.accountName ?? '?'}" not found.`,
-        'IMPORT_UNKNOWN_ACCOUNT',
-      );
+      const key = r.accountNumber ?? r.accountName ?? '?';
+      if (!fallbackOn) {
+        throw AppError.unprocessableEntity(
+          `Account "${key}" not found.`,
+          'IMPORT_UNKNOWN_ACCOUNT',
+        );
+      }
+      suspenseAccountId ??= await getSuspenseAccountId(tenantId, companyId, userId);
+      unmappedKeys.add(key);
+      id = suspenseAccountId;
     }
     lines.push({
       accountId: id,
@@ -1191,7 +1227,13 @@ async function commitTrialBalance(
   );
 
   void sessionId; // sessionId reserved for future per-session traceability fields
-  return { created: 1, skipped: 0 };
+  return {
+    created: 1,
+    skipped: 0,
+    ...(unmappedKeys.size > 0
+      ? { unmappedToSuspense: unmappedKeys.size, unmappedAccountKeys: [...unmappedKeys].sort() }
+      : {}),
+  };
 }
 
 async function commitGl(
@@ -1201,10 +1243,16 @@ async function commitGl(
   fileHash: string,
   sourceSystem: SourceSystem,
   entries: CanonicalGlEntry[],
+  options: ImportUploadOptions | null,
 ): Promise<ImportCommitResult> {
   let created = 0;
   let skipped = 0;
   let voidsReversed = 0;
+  // See commitTrialBalance — unmapped accounts land in suspense by default so
+  // the JE still balances and the fix becomes reviewable work.
+  const fallbackOn = suspenseFallbackOn(options);
+  let suspenseAccountId: string | null = null;
+  const unmappedKeys = new Set<string>();
 
   const sourceTag =
     sourceSystem === 'accounting_power'
@@ -1305,18 +1353,24 @@ async function commitGl(
 
     const lines = [];
     for (const line of e.lines) {
-      const id =
+      let id =
         (line.accountNumber && byNum.get(line.accountNumber)) ||
         (line.accountName && byName.get(line.accountName.toLowerCase()));
       if (!id) {
-        // Mid-loop failure. Throw an AppError carrying `created` so far
-        // so commitSession's catch block can persist partial progress
-        // into commit_result and the operator UI can surface it.
-        throw AppError.unprocessableEntity(
-          `JE on ${e.date} references unknown account "${line.accountNumber ?? line.accountName ?? '?'}"`,
-          'IMPORT_UNKNOWN_ACCOUNT',
-          { createdSoFar: created, failedAtIndex: idx, accountKey: line.accountNumber ?? line.accountName },
-        );
+        const key = line.accountNumber ?? line.accountName ?? '?';
+        if (!fallbackOn) {
+          // Mid-loop failure. Throw an AppError carrying `created` so far
+          // so commitSession's catch block can persist partial progress
+          // into commit_result and the operator UI can surface it.
+          throw AppError.unprocessableEntity(
+            `JE on ${e.date} references unknown account "${key}"`,
+            'IMPORT_UNKNOWN_ACCOUNT',
+            { createdSoFar: created, failedAtIndex: idx, accountKey: line.accountNumber ?? line.accountName },
+          );
+        }
+        suspenseAccountId ??= await getSuspenseAccountId(tenantId, companyId, userId);
+        unmappedKeys.add(key);
+        id = suspenseAccountId;
       }
       lines.push({
         accountId: id,
@@ -1362,5 +1416,11 @@ async function commitGl(
     created++;
     if (e.isVoidReversal) voidsReversed++;
   }
-  return { created, skipped, voidsReversed, vendorsMatched, ...(tagsCreated ? { tagsCreated } : {}) };
+  return {
+    created, skipped, voidsReversed, vendorsMatched,
+    ...(tagsCreated ? { tagsCreated } : {}),
+    ...(unmappedKeys.size > 0
+      ? { unmappedToSuspense: unmappedKeys.size, unmappedAccountKeys: [...unmappedKeys].sort() }
+      : {}),
+  };
 }

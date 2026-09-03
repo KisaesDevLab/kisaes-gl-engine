@@ -26,6 +26,7 @@ import {
   transactionClassificationState,
 } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { findSystemAccountId, SUSPENSE_TAG } from './system-accounts.service.js';
 
 // Inputs the pure bucket-assignment function consumes. The
 // function is deliberately called `assignBucket` rather than
@@ -342,7 +343,23 @@ export async function upsertStateForFeedItem(
     signals.hasPotentialMatch = (opts.matchCandidates ?? []).length > 0;
   }
 
-  const { bucket, confidenceScore, reasoning } = assignBucket(signals, thresholds);
+  const assigned = assignBucket(signals, thresholds);
+  const { confidenceScore, reasoning } = assigned;
+  let bucket = assigned.bucket;
+
+  // A suggestion pointing at the suspense account is by definition "we could
+  // not classify this", so it must never sit in an auto bucket where
+  // approve-all would sweep it through as though it were confident. Force it
+  // to needs_review; it still posts to suspense when a human says so, and
+  // shows up on Practice -> Uncategorized either way.
+  if (item.suggestedAccountId) {
+    const suspenseAccountId = await findSystemAccountId(tenantId, SUSPENSE_TAG);
+    if (suspenseAccountId && item.suggestedAccountId === suspenseAccountId && bucket !== 'rule') {
+      bucket = 'needs_review';
+      reasoning.bucket = 'needs_review';
+      reasoning.adjustments.push({ reason: 'suggested_account_is_suspense', delta: 0 });
+    }
+  }
 
   const values: typeof transactionClassificationState.$inferInsert = {
     tenantId,

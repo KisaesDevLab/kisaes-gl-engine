@@ -118,6 +118,22 @@ export const SYSTEM_ACCOUNT_ROLES: SystemAccountRole[] = [
     accountType: 'liability',
     required: false,
   },
+  // Suspense — the holding account for amounts that must post now but are
+  // not yet classified. Created/adopted lazily by
+  // getOrCreateSystemAccount() in system-accounts.service.ts, which prefers
+  // an existing untagged `89999 Uncategorized` (every built-in COA template
+  // but two seeds one) over minting a new account. Consumers: the staff
+  // "Post to Suspense" bulk action, imports carrying an account the COA does
+  // not have, and the Uncategorized review page that clears it again.
+  // Deliberately other_expense, not a balance-sheet account, so an
+  // unclassified amount stays visible on the P&L until someone deals with it.
+  {
+    tag: 'suspense',
+    label: 'Suspense (Uncategorized)',
+    description: 'Holding account for amounts posted before they are categorized. Cleared from Practice \u2192 Uncategorized.',
+    accountType: 'other_expense',
+    required: false,
+  },
 ];
 
 export const SYSTEM_ACCOUNT_ROLE_BY_TAG: Record<string, SystemAccountRole> =

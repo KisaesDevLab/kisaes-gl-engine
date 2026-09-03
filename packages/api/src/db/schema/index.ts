@@ -36,6 +36,7 @@ export * from './conditional-rules.js';
 export * from './review-checks.js';
 export * from './portal-identities.js';
 export * from './portal-contacts.js';
+export * from './client-category-suggestions.js';
 export * from './portal-auth.js';
 export * from './portal-questions.js';
 export * from './portal-templates.js';
