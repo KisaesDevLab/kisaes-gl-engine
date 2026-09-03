@@ -13,9 +13,9 @@
 // check-crop pass to harvest payees that pre-V2 parses never read.
 
 import crypto from 'crypto';
-import { sql, eq } from 'drizzle-orm';
+import { sql, eq, and } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { contacts } from '../db/schema/index.js';
+import { bankFeedItems, contacts } from '../db/schema/index.js';
 import { log } from '../utils/logger.js';
 import { auditLog } from '../middleware/audit.js';
 import { matchByName } from './ai-name-match.js';
@@ -276,4 +276,277 @@ async function rescanStatements(tenantId: string, companyId?: string | null): Pr
     }
   }
   return result;
+}
+
+// ── Bank-feed variant (STATEMENT_CHECK_PAYEE_FEED) ───────────────
+//
+// backfillCheckPayees above repairs POSTED transactions. This one repairs
+// the step before that: check rows sitting UNPOSTED in the bank feed with no
+// payee, which is where they land when the feed item arrived (from Plaid, or
+// an earlier import) before the statement that names the payee was parsed.
+//
+// The existing `applyCheckImagePayees` in bank-feed.service already does this
+// correlation, but only at statement-import time and only over the rows that
+// same import just created — a feed item that was already sitting there is
+// never revisited. Everything here is the same matching rule (check number,
+// confirmed by amount within a cent, debit side only) sourced from the stored
+// bank_statement_lines instead of a live parse result.
+
+export interface FeedPayeeBackfillMatch {
+  feedItemId: string;
+  checkNumber: number;
+  amount: string;
+  payee: string;
+  /** Existing contact matched by name, or a vendor we would create. */
+  contactAction: 'linked' | 'created' | 'none';
+  suggestedAccountId: string | null;
+  suggestedAccountName: string | null;
+}
+
+export interface FeedPayeeBackfillReport {
+  dryRun: boolean;
+  scannedItems: number;
+  matched: number;
+  payeesApplied: number;
+  contactsLinked: number;
+  contactsCreated: number;
+  categoriesSuggested: number;
+  /** Matched a payee but history gave no unambiguous account — needs a human. */
+  needsCategory: number;
+  matches: FeedPayeeBackfillMatch[];
+}
+
+interface FeedTarget {
+  id: string;
+  check_number: number;
+  amount: string;
+  company_id: string | null;
+}
+
+/**
+ * Unposted check rows in the feed that carry a check number but no payee.
+ *
+ * Money-out only (`amount > 0` is an outflow on bank_feed_items): a check is
+ * something we wrote, so a deposit that happens to quote a check number in
+ * its description must never inherit that check's payee. Same guard
+ * applyCheckImagePayees uses.
+ *
+ * Company scoping accepts NULL company_id rows because Plaid-sourced feed
+ * items carry no company — excluding them would skip exactly the rows this
+ * is meant to repair.
+ */
+async function findFeedTargets(tenantId: string, companyId?: string | null): Promise<FeedTarget[]> {
+  const res = await db.execute(sql`
+    SELECT id, check_number, amount, company_id
+    FROM bank_feed_items
+    WHERE tenant_id = ${tenantId}
+      AND (${companyId ?? null}::uuid IS NULL OR company_id = ${companyId ?? null}::uuid OR company_id IS NULL)
+      AND check_number IS NOT NULL
+      AND amount > 0
+      AND (payee_name_on_check IS NULL OR payee_name_on_check = '')
+      AND status IN ('pending', 'assigned')
+    ORDER BY check_number
+  `);
+  return res.rows as unknown as FeedTarget[];
+}
+
+/**
+ * check# → statement payees. Separate from loadPayeeSources above because
+ * bank_statement_lines.check_number is VARCHAR while bank_feed_items
+ * .check_number is INTEGER, so the join needs an explicit cast — and the
+ * cast has to be guarded, since the column legitimately holds values like
+ * '1042A' (a bank's check-sequence marker) that would abort the query.
+ */
+async function loadStatementPayeesByCheckNumber(
+  tenantId: string,
+  companyId?: string | null,
+): Promise<Map<number, Array<{ payee: string; cents: number | null }>>> {
+  const out = new Map<number, Array<{ payee: string; cents: number | null }>>();
+  const res = await db.execute(sql`
+    SELECT l.check_number, l.payee, l.amount
+    FROM bank_statement_lines l
+    JOIN bank_statements st ON st.id = l.statement_id
+    WHERE l.tenant_id = ${tenantId}
+      AND (${companyId ?? null}::uuid IS NULL OR st.company_id = ${companyId ?? null}::uuid OR st.company_id IS NULL)
+      AND l.payee IS NOT NULL AND l.payee <> ''
+      AND l.check_number IS NOT NULL
+      -- Debit lines only (statement amounts are credit-positive), so a
+      -- same-numbered deposit line can't supply a check payee.
+      AND l.amount < 0
+  `);
+  for (const r of res.rows as Array<{ check_number: string; payee: string; amount: string }>) {
+    // '1042A' / '1042*' are variants of check 1042; parseInt buckets them
+    // the same way applyCheckImagePayees does.
+    const num = Number.parseInt(String(r.check_number), 10);
+    if (!Number.isFinite(num) || num <= 0) continue;
+    const payee = String(r.payee).trim();
+    if (!payee) continue;
+    const arr = out.get(num) ?? [];
+    arr.push({ payee, cents: centsOf(r.amount) });
+    out.set(num, arr);
+  }
+  return out;
+}
+
+/**
+ * Fill payee (and, where history is unambiguous, the category) on unposted
+ * check rows in the bank feed from statement data already on file.
+ *
+ * `dryRun` reports exactly what would be written without touching anything,
+ * including the contacts it would create — the intended first click, because
+ * the write path can auto-create vendor contacts.
+ */
+export async function backfillFeedItemCheckPayees(
+  tenantId: string,
+  opts: { dryRun?: boolean; createMissingContacts?: boolean; companyId?: string | null } = {},
+  userId?: string,
+): Promise<FeedPayeeBackfillReport> {
+  const dryRun = opts.dryRun === true;
+  const createMissingContacts = opts.createMissingContacts !== false;
+  const companyId = opts.companyId ?? null;
+
+  const targets = await findFeedTargets(tenantId, companyId);
+  const sources = await loadStatementPayeesByCheckNumber(tenantId, companyId);
+  const report: FeedPayeeBackfillReport = {
+    dryRun,
+    scannedItems: targets.length,
+    matched: 0,
+    payeesApplied: 0,
+    contactsLinked: 0,
+    contactsCreated: 0,
+    categoriesSuggested: 0,
+    needsCategory: 0,
+    matches: [],
+  };
+  if (targets.length === 0 || sources.size === 0) return report;
+
+  const tenantContacts = await db.query.contacts.findMany({
+    where: eq(contacts.tenantId, tenantId),
+    columns: { id: true, displayName: true },
+  });
+  const contactsService = await import('./contacts.service.js');
+  const { suggestAccountFromPayeeHistory } = await import('./categorization-ai.service.js');
+  const accountNameCache = new Map<string, string | null>();
+
+  for (const item of targets) {
+    const candidates = sources.get(Number(item.check_number)) ?? [];
+    if (candidates.length === 0) continue;
+    const itemCents = centsOf(item.amount);
+
+    // Identical selection rule to the posted-transaction path: prefer an
+    // amount-confirmed candidate; otherwise accept a sole payee only when no
+    // candidate's readable amount actively contradicts this row.
+    let payee: string | null = null;
+    const amountConfirmed = candidates.filter(
+      (c) => c.cents != null && itemCents != null && Math.abs(c.cents - itemCents) <= 1,
+    );
+    if (amountConfirmed.length > 0) {
+      payee = amountConfirmed[0]!.payee;
+    } else {
+      const contradicted = candidates.some(
+        (c) => c.cents != null && itemCents != null && Math.abs(c.cents - itemCents) > 1,
+      );
+      const distinct = new Set(candidates.map((c) => c.payee.toLowerCase()));
+      if (!contradicted && distinct.size === 1) payee = candidates[0]!.payee;
+    }
+    if (!payee) continue;
+
+    report.matched += 1;
+
+    let contact = matchByName(tenantContacts, (c) => c.displayName, payee);
+    let contactAction: FeedPayeeBackfillMatch['contactAction'] = contact ? 'linked' : 'none';
+    if (!contact && createMissingContacts) {
+      if (dryRun) {
+        contactAction = 'created';
+      } else {
+        try {
+          const created = await contactsService.create(tenantId, {
+            displayName: payee.slice(0, 255),
+            contactType: 'vendor',
+          });
+          contact = { id: created.id, displayName: created.displayName };
+          tenantContacts.push(contact);
+          contactAction = 'created';
+        } catch (err) {
+          // Best-effort, matching applyCheckImagePayees: a creation failure
+          // still leaves the payee text on the row.
+          log.warn({
+            component: 'feed-check-payee-backfill',
+            event: 'contact_create_failed',
+            payee,
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    }
+
+    // Category from what this payee has always been coded to before.
+    const suggestion = await suggestAccountFromPayeeHistory(tenantId, {
+      contactId: contact?.id ?? null,
+      payeeName: payee,
+      companyId: item.company_id,
+    });
+    if (suggestion) {
+      if (!accountNameCache.has(suggestion.accountId)) {
+        const acct = await db.execute(sql`
+          SELECT name FROM accounts WHERE id = ${suggestion.accountId} AND tenant_id = ${tenantId}
+        `);
+        accountNameCache.set(
+          suggestion.accountId,
+          (acct.rows[0] as { name?: string } | undefined)?.name ?? null,
+        );
+      }
+      report.categoriesSuggested += 1;
+    } else {
+      report.needsCategory += 1;
+    }
+
+    report.matches.push({
+      feedItemId: item.id,
+      checkNumber: Number(item.check_number),
+      amount: String(item.amount),
+      payee,
+      contactAction,
+      suggestedAccountId: suggestion?.accountId ?? null,
+      suggestedAccountName: suggestion ? accountNameCache.get(suggestion.accountId) ?? null : null,
+    });
+
+    if (dryRun) continue;
+
+    const patch: Partial<typeof bankFeedItems.$inferInsert> = {
+      payeeNameOnCheck: payee.slice(0, 255),
+      updatedAt: new Date(),
+    };
+    if (contact) {
+      patch.suggestedContactId = contact.id;
+      patch.matchType = 'check_image';
+      patch.confidenceScore = '0.95';
+    }
+    if (suggestion) {
+      patch.suggestedAccountId = suggestion.accountId;
+      // The account is the weaker of the two claims (payee is read off the
+      // check, the account is inferred), so the row's confidence reflects
+      // the account when we set one.
+      patch.confidenceScore = suggestion.confidence.toFixed(2);
+    }
+    await db.update(bankFeedItems).set(patch).where(
+      and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, item.id)),
+    );
+    report.payeesApplied += 1;
+    if (contactAction === 'linked') report.contactsLinked += 1;
+    if (contactAction === 'created') report.contactsCreated += 1;
+  }
+
+  if (!dryRun) {
+    await auditLog(
+      tenantId,
+      'update',
+      'feed_check_payee_backfill',
+      crypto.randomUUID(),
+      null,
+      { ...report, matches: report.matches.length },
+      userId,
+    );
+  }
+  return report;
 }

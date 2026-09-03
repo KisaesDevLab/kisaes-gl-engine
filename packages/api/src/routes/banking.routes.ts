@@ -21,7 +21,7 @@ import * as bankFeedService from '../services/bank-feed.service.js';
 import * as reconciliationService from '../services/reconciliation.service.js';
 import * as bankStatementsService from '../services/bank-statements.service.js';
 import * as statementMatchService from '../services/statement-match.service.js';
-import { backfillCheckPayees } from '../services/check-payee-backfill.service.js';
+import { backfillCheckPayees, backfillFeedItemCheckPayees } from '../services/check-payee-backfill.service.js';
 // Reuses the batch categorizer's contact→account resolver (contact default
 // → most-recently-used category account) so the feed and batch entry share
 // one source of truth. Exposed under /banking so it rides the 'banking'
@@ -436,6 +436,29 @@ bankingRouter.post('/check-payees/backfill', async (req, res) => {
     // restart at ~1001 per account, so an unscoped run can stamp one
     // company's payees onto another company's checks.
     { rescan: req.body?.rescan === true, companyId: req.companyId ?? null },
+    req.userId,
+  );
+  res.json(report);
+});
+
+// STATEMENT_CHECK_PAYEE_FEED: fill payee (and, where prior coding is
+// unambiguous, the category) on UNPOSTED check rows in the bank feed, using
+// statement lines already on file. The sibling /check-payees/backfill above
+// repairs posted transactions; this repairs the feed rows that never got a
+// payee because the statement was parsed after they arrived.
+//
+// Defaults to a dry run: the write path can auto-create vendor contacts, so
+// the caller sees the proposed matches before anything is written.
+bankingRouter.post('/feed/backfill-check-payees', async (req, res) => {
+  const report = await backfillFeedItemCheckPayees(
+    req.tenantId,
+    {
+      dryRun: req.body?.dryRun !== false,
+      createMissingContacts: req.body?.createMissingContacts !== false,
+      // Company-scoped like every sibling banking endpoint — check numbers
+      // restart per account, so an unscoped run could cross companies.
+      companyId: req.companyId ?? null,
+    },
     req.userId,
   );
   res.json(report);

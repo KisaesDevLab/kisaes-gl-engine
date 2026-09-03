@@ -100,3 +100,28 @@ foreign currency conversion, or a bill paid for slightly more than its total.
    before it.
 4. Vibe MyBooks automatically rolls revenue/expense balances into Retained Earnings
    each fiscal year — there are no manual closing entries.
+
+### Filling check payees and categories from a statement
+Bank feeds label a check with whatever the bank prints (often the account nickname, or
+just "CHECK 3607"), while a parsed statement reads the *pay to the order of* name off the
+check image. **Bank Feed → Fill Payees from Statements** joins the two.
+
+What it does, for unposted check rows that have a check number but no payee:
+1. Matches them to `bank_statement_lines` by **check number, confirmed by amount within a
+   cent** (debit side only, so a deposit quoting a check number is never touched).
+2. Writes the payee and links the vendor contact, creating the vendor when it is new.
+3. Suggests the **expense account** when every prior posted check to that payee used the
+   same one, requiring at least two prior checks.
+
+Nothing posts; rows stay pending for review. The button previews first and asks for
+confirmation, because applying can create vendor contacts, and statements sometimes read
+one vendor two ways ("J & A Janitorial" vs "J&A Janitorial, LLC") which would become two
+contacts.
+
+Deliberate limits: a payee coded to several accounts in the past gets a payee and NO
+category rather than a guess; months with no imported statement are untouched.
+
+This is distinct from the Reconciliation page's check-payee backfill, which repairs
+already-POSTED check transactions. Categorization also now consults payee history
+generally: once a feed row has a payee, its category can be suggested from how that payee
+was coded before, which description matching could never do for checks.

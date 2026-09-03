@@ -26,6 +26,77 @@ export function normalizePayeePattern(description: string): string {
 }
 
 /**
+ * STATEMENT_CHECK_PAYEE_CATEGORY — how many prior posted transactions to the
+ * same payee we require before treating "they always code to this account"
+ * as a suggestion. One prior check is an anecdote (it could itself have been
+ * mis-coded); two or more is a pattern. Kept below the categorization_history
+ * threshold of 3 because this signal is stronger: it keys on an identified
+ * payee, not on a fuzzy description pattern.
+ */
+const PAYEE_HISTORY_MIN_TXNS = 2;
+
+/**
+ * STATEMENT_CHECK_PAYEE_CATEGORY — suggest the expense account for a payee
+ * from what this tenant has actually coded that payee to before.
+ *
+ * Why this exists: `suggestCategorization` below keys everything on the
+ * DESCRIPTION. A check's description is whatever the bank prints, which for
+ * real feeds is often the account nickname ("Taz-Boy's") or literally
+ * "CHECK 3607" — identical across every payee, so description matching can
+ * never categorize a check no matter how good the payee data is. Once a
+ * statement has told us WHO the check was written to, the payee is the
+ * reliable key.
+ *
+ * Deliberately unambiguous-only: we return an account solely when every
+ * prior posted transaction for that payee hit the SAME expense account. A
+ * payee split across several accounts (a hardware store coded to both
+ * Supplies and Repairs) gets no suggestion rather than a coin-flip, and the
+ * item stays pending for a human. Never guesses.
+ */
+export async function suggestAccountFromPayeeHistory(
+  tenantId: string,
+  opts: { contactId?: string | null; payeeName?: string | null; companyId?: string | null },
+): Promise<{ accountId: string; timesSeen: number; confidence: number } | null> {
+  const contactId = opts.contactId ?? null;
+  const payeeName = (opts.payeeName ?? '').trim();
+  if (!contactId && !payeeName) return null;
+
+  // Match on the linked contact OR the literal payee text stamped on past
+  // checks — early rows may carry payee_name_on_check without ever having
+  // been linked to a contact.
+  const rows = await db.execute(sql`
+    SELECT jl.account_id, COUNT(DISTINCT t.id)::int AS times_seen
+    FROM transactions t
+    JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.debit > 0
+    JOIN accounts a ON a.id = jl.account_id
+     AND a.account_type IN ('expense', 'cogs', 'other_expense')
+    WHERE t.tenant_id = ${tenantId}
+      AND t.status = 'posted'
+      AND t.voided_at IS NULL
+      AND (${opts.companyId ?? null}::uuid IS NULL
+           OR t.company_id = ${opts.companyId ?? null}::uuid
+           OR t.company_id IS NULL)
+      AND (
+        (${contactId}::uuid IS NOT NULL AND t.contact_id = ${contactId}::uuid)
+        OR (${payeeName} <> '' AND LOWER(t.payee_name_on_check) = LOWER(${payeeName}))
+      )
+    GROUP BY jl.account_id
+  `);
+
+  const accounts = rows.rows as Array<{ account_id: string; times_seen: number }>;
+  // Ambiguous (or unseen) payee → no suggestion, by design.
+  if (accounts.length !== 1) return null;
+  const only = accounts[0]!;
+  const timesSeen = Number(only.times_seen);
+  if (timesSeen < PAYEE_HISTORY_MIN_TXNS) return null;
+
+  // Same shape as the categorization_history confidence curve: grows with
+  // corroboration, capped below 1.0 so it never outranks an exact match.
+  const confidence = Math.min(0.95, 0.75 + timesSeen * 0.02);
+  return { accountId: only.account_id, timesSeen, confidence };
+}
+
+/**
  * Three-layer categorization per AI_PROCESSING_PLAN.md §3.1:
  *   1. Bank Rules (handled separately before this is called)
  *   2. Categorization history lookup (local, no AI)
@@ -35,11 +106,14 @@ export async function suggestCategorization(tenantId: string, feedItemId: string
   const item = await db.query.bankFeedItems.findFirst({
     where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)),
   });
-  if (!item || !item.description) return null;
+  // A check row can carry a useless description but a known payee, so a
+  // missing description is no longer on its own a reason to give up.
+  if (!item) return null;
+  if (!item.description && !item.payeeNameOnCheck && !item.suggestedContactId) return null;
 
   // Use original description for matching if available, fall back to cleaned
   const rawDesc = (item.originalDescription || item.description || '').toLowerCase();
-  const cleanedDesc = item.description.toLowerCase();
+  const cleanedDesc = (item.description || '').toLowerCase();
   const payeePattern = normalizePayeePattern(item.originalDescription || item.description || '');
 
   // ── Step 2: Categorization history lookup ──────────────────────
@@ -69,6 +143,40 @@ export async function suggestCategorization(tenantId: string, feedItemId: string
         .where(eq(categorizationHistory.id, historyMatch.id));
 
       return { accountId: historyMatch.accountId, contactId: historyMatch.contactId, confidence, matchType: 'history' };
+    }
+  }
+
+  // ── Step 2b: Payee history (STATEMENT_CHECK_PAYEE_CATEGORY) ────
+  // Runs before the description passes below because when we know who the
+  // check was written to, that beats anything the bank's description text
+  // can tell us — for checks the description is usually the same string on
+  // every row. Only fires for rows that actually have payee identity, so
+  // ordinary card/ACH rows fall straight through to the existing logic.
+  if (item.payeeNameOnCheck || item.suggestedContactId) {
+    const byPayee = await suggestAccountFromPayeeHistory(tenantId, {
+      contactId: item.suggestedContactId,
+      payeeName: item.payeeNameOnCheck,
+      companyId: item.companyId,
+    });
+    if (byPayee) {
+      await db.update(bankFeedItems).set({
+        suggestedAccountId: byPayee.accountId,
+        // Keep whatever contact identity the row already had; this step
+        // resolves the ACCOUNT, it does not re-decide the payee.
+        confidenceScore: byPayee.confidence.toFixed(2),
+        // Reuses the existing 'history' match type: it is history, just
+        // keyed on the payee instead of the description, and this keeps the
+        // feed UI's badge rendering unchanged.
+        matchType: 'history',
+        updatedAt: new Date(),
+      }).where(eq(bankFeedItems.id, feedItemId));
+
+      return {
+        accountId: byPayee.accountId,
+        contactId: item.suggestedContactId,
+        confidence: byPayee.confidence,
+        matchType: 'history',
+      };
     }
   }
 
