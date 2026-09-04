@@ -27,12 +27,41 @@ import { auditLog } from '../middleware/audit.js';
 import * as suspenseService from '../services/suspense.service.js';
 import * as bankFeedService from '../services/bank-feed.service.js';
 import * as suggestionReview from '../services/client-suggestion-review.service.js';
+import { db } from '../db/index.js';
+import { sql } from 'drizzle-orm';
 
 export const uncategorizedRouter = Router();
 uncategorizedRouter.use(authenticate);
 uncategorizedRouter.use(companyContext);
 uncategorizedRouter.use(requirePracticeAccess('UNCATEGORIZED_REVIEW_V1'));
 uncategorizedRouter.use(requireResource('banking'));
+
+/**
+ * Attachment counts keyed by record id, for one page of rows.
+ *
+ * `attachableType` is the caller's business: bank-feed rows use
+ * 'bank_feed_items', while a POSTED transaction's attachments live under its
+ * own txn_type ('expense', 'deposit', ...), which is the convention
+ * TransactionDetail uses. Passing the wrong one silently returns zeroes.
+ */
+async function attachmentCountsFor(
+  tenantId: string, attachableType: string, ids: string[],
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (ids.length === 0) return out;
+  const rows = await db.execute<{ attachable_id: string; n: string }>(sql`
+    SELECT attachable_id, COUNT(*)::text AS n
+    FROM attachments
+    WHERE tenant_id = ${tenantId}
+      AND attachable_type = ${attachableType}
+      AND attachable_id IN (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})
+    GROUP BY attachable_id
+  `);
+  for (const r of rows.rows as Array<{ attachable_id: string; n: string }>) {
+    out.set(r.attachable_id, Number(r.n));
+  }
+  return out;
+}
 
 function optionalString(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
@@ -64,7 +93,18 @@ uncategorizedRouter.get('/unposted', async (req, res) => {
     offset: optionalInt(req.query['offset'], 0),
     ruleOnly: false,
   });
-  res.json(result);
+
+  // Attachment counts for the rows on THIS page only — one extra query rather
+  // than one per row, and bankFeedService.list stays untouched so the main
+  // Bank Feed page is unaffected.
+  const items = (result as { items?: Array<{ id: string }> }).items ?? [];
+  const counts = await attachmentCountsFor(
+    req.tenantId, 'bank_feed_items', items.map((i) => i.id),
+  );
+  res.json({
+    ...result,
+    items: items.map((i) => ({ ...i, attachmentCount: counts.get(i.id) ?? 0 })),
+  });
 });
 
 // GET /in-suspense — tab 2. Posted transactions still sitting in suspense.

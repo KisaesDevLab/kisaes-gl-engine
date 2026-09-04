@@ -149,6 +149,31 @@ export interface SuspenseRow {
   /** True when any suspense line on this transaction is a split sibling. */
   isSplit: boolean;
   source: string | null;
+  /**
+   * Receipts and documents already attached. Counted server-side so the list
+   * does not fire a request per row.
+   *
+   * NOTE the key: attachments on a posted transaction are stored under the
+   * transaction's OWN txn_type ('expense', 'deposit', ...), not a generic
+   * 'transaction'. That is the convention TransactionDetail uses, so anything
+   * attached here is visible there and vice versa. Do not "tidy" this into a
+   * constant — the files would disappear from one of the two screens.
+   */
+  attachmentCount: number;
+  /** The attachableType to use for this row. See attachmentCount. */
+  attachableType: string;
+  /**
+   * The bank-feed row this transaction was posted from, when there is one.
+   *
+   * A receipt attached BEFORE posting is keyed to the feed item and nothing
+   * relinks it when the transaction is created, so without this the file
+   * would look lost the moment a line moves into suspense. The count above
+   * includes both, and the UI offers both. Deliberately not migrating the
+   * rows: the receipt-amount-mismatch review check reads feed-item
+   * attachments for posted items too, and moving them would quietly narrow
+   * its coverage.
+   */
+  bankFeedItemId: string | null;
 }
 
 /**
@@ -205,7 +230,18 @@ export async function listInSuspense(
         WHERE jl.transaction_id = t.id AND jl.tenant_id = t.tenant_id
           AND jl.account_id = ${suspenseAccountId})::int AS suspense_line_count,
       (SELECT COUNT(*) FROM journal_lines jl
-        WHERE jl.transaction_id = t.id AND jl.tenant_id = t.tenant_id)::int AS total_line_count
+        WHERE jl.transaction_id = t.id AND jl.tenant_id = t.tenant_id)::int AS total_line_count,
+      (SELECT b.id FROM bank_feed_items b
+        WHERE b.tenant_id = t.tenant_id AND b.matched_transaction_id = t.id
+        LIMIT 1) AS bank_feed_item_id,
+      (SELECT COUNT(*) FROM attachments a
+        WHERE a.tenant_id = t.tenant_id
+          AND (
+            (a.attachable_id = t.id AND a.attachable_type = t.txn_type)
+            OR (a.attachable_type = 'bank_feed_items' AND a.attachable_id IN (
+                  SELECT b2.id FROM bank_feed_items b2
+                  WHERE b2.tenant_id = t.tenant_id AND b2.matched_transaction_id = t.id))
+          ))::int AS attachment_count
     ${base}
     ORDER BY t.txn_date DESC, t.created_at DESC
     LIMIT ${limit} OFFSET ${offset}
@@ -225,6 +261,9 @@ export async function listInSuspense(
     // suspense line to the SAME account.
     isSplit: Number(r['total_line_count'] ?? 0) > 2,
     source: (r['source'] as string | null) ?? null,
+    attachmentCount: Number(r['attachment_count'] ?? 0),
+    attachableType: String(r['txn_type']),
+    bankFeedItemId: (r['bank_feed_item_id'] as string | null) ?? null,
   }));
 
   return { rows, total, suspenseAccountId };

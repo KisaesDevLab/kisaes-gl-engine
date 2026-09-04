@@ -16,7 +16,7 @@ import { db } from '../db/index.js';
 import {
   tenants, users, sessions, companies, accounts, auditLog,
   transactions, journalLines, transactionTags, tags, contacts,
-  reconciliations, reconciliationLines,
+  reconciliations, reconciliationLines, attachments, bankConnections, bankFeedItems,
 } from '../db/schema/index.js';
 import * as authService from './auth.service.js';
 import * as ledger from './ledger.service.js';
@@ -44,6 +44,9 @@ async function cleanDb() {
   await db.delete(transactions).where(eq(transactions.tenantId, tenantId));
   await db.delete(tags).where(eq(tags.tenantId, tenantId));
   await db.delete(contacts).where(eq(contacts.tenantId, tenantId));
+  await db.delete(attachments).where(eq(attachments.tenantId, tenantId));
+  await db.delete(bankFeedItems).where(eq(bankFeedItems.tenantId, tenantId));
+  await db.delete(bankConnections).where(eq(bankConnections.tenantId, tenantId));
   await db.delete(auditLog).where(eq(auditLog.tenantId, tenantId));
   await db.delete(accounts).where(eq(accounts.tenantId, tenantId));
   await db.delete(companies).where(eq(companies.tenantId, tenantId));
@@ -571,5 +574,127 @@ describe('gap 2: the firm chooses whether suspense sits on the P&L or the balanc
         expect(role.tenantAssignable).toBe(false);
       }
     }
+  });
+});
+
+describe('attachments on suspense rows', () => {
+  async function attach(attachableType: string, attachableId: string, fileName: string) {
+    await db.insert(attachments).values({
+      tenantId, fileName, filePath: `/uploads/${fileName}`,
+      attachableType, attachableId, mimeType: 'image/jpeg', fileSize: 1234,
+    });
+  }
+
+  it('counts files attached directly to the posted transaction', async () => {
+    const suspenseId = await suspense.getSuspenseAccountId(tenantId, companyId, userId);
+    const txn = await ledger.postTransaction(tenantId, {
+      txnType: 'expense', txnDate: '2026-08-01',
+      lines: [
+        { accountId: suspenseId, debit: '12.00', credit: '0' },
+        { accountId: bankAccountId, debit: '0', credit: '12.00' },
+      ],
+    }, userId, companyId);
+
+    let listed = await suspense.listInSuspense(tenantId, { companyId });
+    expect(listed.rows[0]!.attachmentCount).toBe(0);
+    // The key is the transaction's OWN txn_type, matching what the
+    // transaction detail page reads.
+    expect(listed.rows[0]!.attachableType).toBe('expense');
+
+    await attach('expense', txn.id, 'receipt.jpg');
+    listed = await suspense.listInSuspense(tenantId, { companyId });
+    expect(listed.rows[0]!.attachmentCount).toBe(1);
+  });
+
+  it('does not count a file keyed to the wrong attachable type', async () => {
+    const suspenseId = await suspense.getSuspenseAccountId(tenantId, companyId, userId);
+    const txn = await ledger.postTransaction(tenantId, {
+      txnType: 'expense', txnDate: '2026-08-02',
+      lines: [
+        { accountId: suspenseId, debit: '12.00', credit: '0' },
+        { accountId: bankAccountId, debit: '0', credit: '12.00' },
+      ],
+    }, userId, companyId);
+    // 'transaction' is NOT the convention — only tests ever used it.
+    await attach('transaction', txn.id, 'wrong-key.jpg');
+    const listed = await suspense.listInSuspense(tenantId, { companyId });
+    expect(listed.rows[0]!.attachmentCount).toBe(0);
+  });
+
+  it('still finds a receipt attached to the bank line BEFORE it posted', async () => {
+    const [conn] = await db.insert(bankConnections).values({
+      tenantId, accountId: bankAccountId, institutionName: 'Test Bank',
+    }).returning();
+    const suspenseId = await suspense.getSuspenseAccountId(tenantId, companyId, userId);
+    const txn = await ledger.postTransaction(tenantId, {
+      txnType: 'expense', txnDate: '2026-08-03',
+      lines: [
+        { accountId: suspenseId, debit: '30.00', credit: '0' },
+        { accountId: bankAccountId, debit: '0', credit: '30.00' },
+      ],
+    }, userId, companyId);
+    const [item] = await db.insert(bankFeedItems).values({
+      tenantId, bankConnectionId: conn!.id, companyId,
+      feedDate: '2026-08-03', description: 'MYSTERY', amount: '30.0000',
+      status: 'categorized', matchedTransactionId: txn.id,
+    }).returning();
+
+    // Attached while it was still an unposted bank line. Nothing relinks it
+    // on posting, so the row has to look in both places or it seems lost.
+    await attach('bank_feed_items', item!.id, 'pre-post-receipt.jpg');
+
+    const listed = await suspense.listInSuspense(tenantId, { companyId });
+    const row = listed.rows.find((r) => r.transactionId === txn.id)!;
+    expect(row.attachmentCount).toBe(1);
+    expect(row.bankFeedItemId).toBe(item!.id);
+  });
+
+  it('counts both sources without double-counting', async () => {
+    const [conn] = await db.insert(bankConnections).values({
+      tenantId, accountId: bankAccountId, institutionName: 'Test Bank',
+    }).returning();
+    const suspenseId = await suspense.getSuspenseAccountId(tenantId, companyId, userId);
+    const txn = await ledger.postTransaction(tenantId, {
+      txnType: 'expense', txnDate: '2026-08-04',
+      lines: [
+        { accountId: suspenseId, debit: '40.00', credit: '0' },
+        { accountId: bankAccountId, debit: '0', credit: '40.00' },
+      ],
+    }, userId, companyId);
+    const [item] = await db.insert(bankFeedItems).values({
+      tenantId, bankConnectionId: conn!.id, companyId,
+      feedDate: '2026-08-04', description: 'BOTH', amount: '40.0000',
+      status: 'categorized', matchedTransactionId: txn.id,
+    }).returning();
+
+    await attach('bank_feed_items', item!.id, 'a.jpg');
+    await attach('expense', txn.id, 'b.jpg');
+
+    const listed = await suspense.listInSuspense(tenantId, { companyId });
+    const row = listed.rows.find((r) => r.transactionId === txn.id)!;
+    expect(row.attachmentCount).toBe(2);
+  });
+
+  it('does not leak another transaction\'s attachments onto the row', async () => {
+    const suspenseId = await suspense.getSuspenseAccountId(tenantId, companyId, userId);
+    const mine = await ledger.postTransaction(tenantId, {
+      txnType: 'expense', txnDate: '2026-08-05',
+      lines: [
+        { accountId: suspenseId, debit: '5.00', credit: '0' },
+        { accountId: bankAccountId, debit: '0', credit: '5.00' },
+      ],
+    }, userId, companyId);
+    const other = await ledger.postTransaction(tenantId, {
+      txnType: 'expense', txnDate: '2026-08-06',
+      lines: [
+        { accountId: expenseAccountId, debit: '7.00', credit: '0' },
+        { accountId: bankAccountId, debit: '0', credit: '7.00' },
+      ],
+    }, userId, companyId);
+    await attach('expense', other.id, 'not-mine.jpg');
+
+    const listed = await suspense.listInSuspense(tenantId, { companyId });
+    const row = listed.rows.find((r) => r.transactionId === mine.id)!;
+    expect(row.attachmentCount).toBe(0);
   });
 });
