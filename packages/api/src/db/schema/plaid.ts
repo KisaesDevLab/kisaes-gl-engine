@@ -40,6 +40,14 @@ export const plaidItems = pgTable('plaid_items', {
   syncCursor: text('sync_cursor'),
   lastSyncAt: timestamp('last_sync_at', { withTimezone: true }),
   lastSyncStatus: varchar('last_sync_status', { length: 30 }),
+  /**
+   * Migration 0166 — when this item last synced SUCCESSFULLY.
+   *
+   * Distinct from lastSyncAt, which the sync path bumps as a concurrency
+   * claim before it runs and again when it fails, and is therefore useless as
+   * a freshness signal. Read this one to ask "is the feed current?".
+   */
+  lastSuccessAt: timestamp('last_success_at', { withTimezone: true }),
   lastSyncError: text('last_sync_error'),
   initialUpdateComplete: boolean('initial_update_complete').default(false),
   historicalUpdateComplete: boolean('historical_update_complete').default(false),

@@ -281,6 +281,9 @@ export async function syncItem(itemId: string, opts: SyncItemOptions = {}) {
       syncCursor: nextCursor,
       lastSyncAt: new Date(),
       lastSyncStatus: 'success',
+      // The honest freshness signal: lastSyncAt is also bumped by the
+      // claim above and by the error path, so only this one means "current".
+      lastSuccessAt: new Date(),
       lastSyncError: null,
       itemStatus: 'active',
       errorCode: null,

@@ -81,7 +81,25 @@ export async function runPlaidSyncCycle(): Promise<void> {
   const { syncItem } = await import('./plaid-sync.service.js');
   let ok = 0;
   let failed = 0;
+  const { refreshItemStatus } = await import('./plaid-connection.service.js');
   for (const item of due.rows as Array<{ id: string; institution_name: string | null }>) {
+    // Ask Plaid what it thinks of this item before syncing it.
+    //
+    // refreshItemStatus has existed since the Plaid integration shipped and
+    // had ZERO callers, which meant consent_expiration_at — the only warning
+    // Plaid gives before a consent lapses and the feed dies — was never
+    // populated on any row. It also reconciles item_status from the
+    // authoritative /item/get rather than inferring it from whatever the last
+    // sync happened to throw.
+    //
+    // Best-effort on purpose: a status probe failing must never stop the sync
+    // that follows it.
+    try {
+      await refreshItemStatus(item.id);
+    } catch (err) {
+      console.warn(`[Plaid Sync Scheduler] status refresh failed for ${item.institution_name || item.id}:`, err instanceof Error ? err.message : err);
+    }
+
     try {
       await syncItem(item.id);
       ok++;

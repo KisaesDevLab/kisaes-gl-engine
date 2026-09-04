@@ -910,6 +910,18 @@ adminRouter.delete('/plaid/connections/:id/force', async (req, res) => {
   res.json({ removed: true, ...result });
 });
 
+// Everything currently wrong with the Plaid connections, in one place.
+//
+// Repair has never been the weak half — update-mode Fix Connection, repair
+// invites, map/unmap/remap, remove and force-remove all exist. Knowing that
+// something needs repairing was, and several failure modes had no signal at
+// all: webhooks going silent, a consent about to lapse, a sync failing for a
+// reason that is not a login problem.
+adminRouter.get('/plaid/health', async (_req, res) => {
+  const { getPlaidHealth } = await import('../services/plaid-health.service.js');
+  res.json(await getPlaidHealth());
+});
+
 adminRouter.get('/plaid/stats', async (req, res) => {
   const { plaidItems, plaidAccounts } = await import('../db/schema/index.js');
   const { sql: sqlTag } = await import('drizzle-orm');

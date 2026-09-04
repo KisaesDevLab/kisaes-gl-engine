@@ -33,8 +33,21 @@ export const handler: CheckHandler = async (tenantId, _companyId, params): Promi
       AND (
         COALESCE(pi.item_status, 'active') <> 'active'
         OR pi.error_code IS NOT NULL
-        OR pi.last_sync_at IS NULL
-        OR pi.last_sync_at < now() - (${staleDays}::INT || ' days')::INTERVAL
+        -- A sync that keeps FAILING leaves item_status active and error_code
+        -- null when the failure is not one of the five credential codes
+        -- (network, rate limit, decryption after a key rotation). That was
+        -- invisible here, though the client-list roll-up has always counted it.
+        OR pi.last_sync_status = 'error'
+        -- Freshness reads last_success_at, NOT last_sync_at. The sync path
+        -- bumps last_sync_at as a concurrency claim before it runs and again
+        -- when it fails, so this arm could never fire for any item the
+        -- scheduler was still attempting — which is every item that matters.
+        -- See migration 0166.
+        OR (pi.last_success_at IS NOT NULL
+            AND pi.last_success_at < now() - (${staleDays}::INT || ' days')::INTERVAL)
+        -- Never succeeded, and old enough that it should have by now.
+        OR (pi.last_success_at IS NULL
+            AND pi.created_at < now() - (${staleDays}::INT || ' days')::INTERVAL)
       )
     LIMIT 200
   `);
