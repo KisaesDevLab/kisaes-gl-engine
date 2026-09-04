@@ -138,3 +138,27 @@ describe('unmapCompany — deletePendingItems', () => {
     expect(await countOn(manualConnId)).toBe(1);
   });
 });
+
+// The regression that made this whole area worth a second look.
+//
+// A first pass resolved the connection by bank_connections.provider_item_id,
+// which reads as the obvious join and is wrong: that column is written only
+// when the row is inserted, so a re-link leaves it naming the REMOVED item on
+// a live, working connection. Nine of ten Plaid connections in production were
+// in that state, so the "fix" would have gone on deleting nothing.
+describe('unmapCompany — resolves connections after a re-link', () => {
+  it('still finds the connection when provider_item_id is stale', async () => {
+    // Simulate the re-link: the connection now names an item that no longer
+    // exists, while the mapping still points at the same ledger account.
+    await db.update(bankConnections)
+      .set({ providerItemId: 'a-removed-item-' + suffix() })
+      .where(eq(bankConnections.id, plaidConnId));
+
+    await unmapCompany(itemRowId, tenantId, true, userId);
+
+    expect(await countOn(plaidConnId, 'pending')).toBe(0);
+    expect(await countOn(plaidConnId, 'categorized')).toBe(1);
+    expect(await countOn(manualConnId)).toBe(1);
+  });
+});
+

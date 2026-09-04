@@ -111,7 +111,24 @@ export async function getOrCreatePlaidConnection(
       eq(bankConnections.accountId, accountId),
     ),
   });
-  if (existing) return existing.id;
+  if (existing) {
+    // Keep the provider ids honest. They are reference-only, but they go
+    // STALE the moment a client re-links: Plaid mints a new item, the mapping
+    // still points at this GL account, so this same row is reused while
+    // provider_item_id still names the removed item. Nine of ten Plaid
+    // connections here were in that state, which made any lookup keyed on
+    // provider_item_id silently match nothing.
+    if (opts.providerItemId && existing.providerItemId !== opts.providerItemId) {
+      await db.update(bankConnections).set({
+        providerItemId: opts.providerItemId,
+        providerAccountId: plaidAccountId,
+        ...(opts.institutionName ? { institutionName: opts.institutionName } : {}),
+        ...(opts.mask ? { mask: opts.mask } : {}),
+        updatedAt: new Date(),
+      }).where(eq(bankConnections.id, existing.id));
+    }
+    return existing.id;
+  }
   const [conn] = await db.insert(bankConnections).values({
     tenantId,
     accountId,

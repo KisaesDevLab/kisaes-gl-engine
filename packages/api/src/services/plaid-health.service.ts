@@ -16,7 +16,12 @@
 //     the feed goes a day late instead of dead and nobody notices at all.
 //   - an item's consent lapses on a date Plaid tells us about, which nothing
 //     currently reads.
-//   - a bank_connections row outlives the Plaid item it was created for.
+//
+// Deliberately NOT here: a bank feed connection whose provider_item_id names
+// a removed Plaid item. That looks like an orphan and is not one —
+// getOrCreatePlaidConnection writes that id only on insert, so every re-link
+// leaves it stale on a perfectly live connection. It flagged nine of ten
+// connections here, all of which had imported transactions that same day.
 //
 // Deliberately NOT here: an account connected but never mapped. A client
 // routinely ticks every account in Plaid Link, including personal ones, so it
@@ -202,36 +207,9 @@ export async function getPlaidHealth(): Promise<PlaidHealth> {
     });
   }
 
-  // 6. bank_connections whose Plaid item is gone. Nothing deletes these on
-  // unmap or removal, so they accumulate and keep appearing in feed filters.
-  const orphans = await db.execute<{
-    id: string; institution_name: string | null; tenant_name: string | null; rows: number;
-  }>(sql`
-    SELECT bc.id, bc.institution_name, t.name AS tenant_name,
-           (SELECT COUNT(*) FROM bank_feed_items b WHERE b.bank_connection_id = bc.id)::int AS rows
-      FROM bank_connections bc
-      JOIN tenants t ON t.id = bc.tenant_id
-     WHERE bc.provider = 'plaid'
-       AND bc.provider_item_id IS NOT NULL
-       AND NOT EXISTS (
-         SELECT 1 FROM plaid_items pi
-          WHERE pi.plaid_item_id = bc.provider_item_id AND pi.removed_at IS NULL
-       )
-  `);
-  for (const r of orphans.rows as Array<{ id: string; institution_name: string | null; tenant_name: string | null; rows: number }>) {
-    issues.push({
-      kind: 'orphaned_connection',
-      severity: 'warn',
-      plaidItemId: null,
-      institutionName: r.institution_name,
-      tenants: r.tenant_name ? [r.tenant_name] : [],
-      detail: `A bank feed connection outlived its Plaid connection and still holds ${r.rows} row(s). Harmless, but it will keep showing in the bank feed's connection filter.`,
-    });
-  }
-
   const counts = {
     item_needs_attention: 0, sync_failing: 0, feed_stale: 0, webhook_stale: 0,
-    consent_expiring: 0, orphaned_connection: 0,
+    consent_expiring: 0,
   } as Record<PlaidIssueKind, number>;
   for (const i of issues) counts[i.kind]++;
 

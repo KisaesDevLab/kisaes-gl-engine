@@ -553,28 +553,34 @@ export async function assertCanAccessItem(userId: string, itemId: string): Promi
  * The bank_connections rows a Plaid item feeds, for one tenant.
  *
  * Needed because bank_feed_items.bank_connection_id is a BANK_CONNECTIONS id,
- * not a plaid_items id. Both callers below used to compare it directly against
- * the plaid item's uuid, which can never match — so "also delete pending feed
- * items" silently deleted nothing, every time, for as long as the option has
- * existed.
+ * not a plaid_items id. Callers used to compare it directly against the plaid
+ * item's uuid, which can never match — so "also delete pending feed items"
+ * silently deleted nothing, every time.
  *
- * Matched on provider_item_id rather than the mapped GL account: the GL account
- * can also be fed by a manual Statement Import connection (four tenants here do
- * exactly that), and deleting those rows would be wrong. Every Plaid connection
- * in this install carries provider_item_id, and getOrCreatePlaidConnection
- * stamps it on creation.
+ * Resolved the same way the sync path resolves it: item → its accounts → this
+ * tenant's mappings → the GL account each feeds → the plaid connection on that
+ * account. Deliberately NOT keyed on bank_connections.provider_item_id, which
+ * looks like the obvious join and is a trap: getOrCreatePlaidConnection sets
+ * it only on insert, so it goes stale the moment a client re-links and the
+ * same row is reused for a new Plaid item. Nine of the ten Plaid connections
+ * on this install were in exactly that state.
+ *
+ * provider='plaid' in the WHERE is what keeps a manual Statement Import
+ * connection on the same GL account out of the result.
  */
 async function plaidConnectionIdsFor(tenantId: string, plaidItemRowId: string): Promise<string[]> {
-  const item = await db.query.plaidItems.findFirst({ where: eq(plaidItems.id, plaidItemRowId) });
-  if (!item?.plaidItemId) return [];
-
-  const rows = await db.select({ id: bankConnections.id }).from(bankConnections)
-    .where(and(
-      eq(bankConnections.tenantId, tenantId),
-      eq(bankConnections.provider, 'plaid'),
-      eq(bankConnections.providerItemId, item.plaidItemId),
-    ));
-  return rows.map((r) => r.id);
+  const rows = await db.execute<{ id: string }>(sql`
+    SELECT DISTINCT bc.id
+      FROM plaid_accounts pa
+      JOIN plaid_account_mappings pam
+        ON pam.plaid_account_id = pa.id AND pam.tenant_id = ${tenantId}
+      JOIN bank_connections bc
+        ON bc.tenant_id = ${tenantId}
+       AND bc.provider = 'plaid'
+       AND bc.account_id = pam.mapped_account_id
+     WHERE pa.plaid_item_id = ${plaidItemRowId}
+  `);
+  return (rows.rows as Array<{ id: string }>).map((r) => r.id);
 }
 
 export async function unmapCompany(plaidItemId: string, tenantId: string, deletePendingItems: boolean, userId: string) {
@@ -589,6 +595,13 @@ export async function unmapCompany(plaidItemId: string, tenantId: string, delete
     .where(and(eq(plaidAccountMappings.tenantId, tenantId)));
   const relevantMappings = mappings.filter((m) => accountIds.includes(m.plaidAccountId));
 
+  // Resolve the feed connections BEFORE the mappings are deleted below —
+  // the lookup walks item → accounts → mappings → GL account, so doing it
+  // afterwards finds nothing.
+  const connectionIds = deletePendingItems
+    ? await plaidConnectionIdsFor(tenantId, plaidItemId)
+    : [];
+
   // Delete mappings. Scoped to the caller's tenant for defense in
   // depth — `relevantMappings` is already filtered to this tenant's
   // rows, but an explicit tenantId in the WHERE keeps CLAUDE.md rule
@@ -602,7 +615,6 @@ export async function unmapCompany(plaidItemId: string, tenantId: string, delete
   // bank_connections for this item — comparing bank_connection_id against the
   // plaid item id, as this did, never matched anything.
   if (deletePendingItems) {
-    const connectionIds = await plaidConnectionIdsFor(tenantId, plaidItemId);
     if (connectionIds.length > 0) {
       await db.delete(bankFeedItems).where(and(
         eq(bankFeedItems.tenantId, tenantId),
