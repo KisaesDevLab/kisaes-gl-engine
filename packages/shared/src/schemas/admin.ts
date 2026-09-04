@@ -62,6 +62,12 @@ export type AdminDesignateRetainedEarningsInput = z.infer<typeof adminDesignateR
 // repair tool for tenants whose system accounts were deleted or mis-tagged.
 export const adminAssignSystemAccountSchema = z.object({
   accountId: z.string().uuid().nullable(),
+  /**
+   * What to do about money on the account losing the role. Omitted means
+   * `refuse`, which fails loudly rather than silently stranding a balance the
+   * UI would stop displaying.
+   */
+  balanceAction: z.enum(['refuse', 'move', 'leave']).optional(),
 });
 export type AdminAssignSystemAccountInput = z.infer<typeof adminAssignSystemAccountSchema>;
 
@@ -228,3 +234,13 @@ export const adminBankRuleSubmissionStatusSchema = z.enum([
   'approved',
   'rejected',
 ]);
+
+/**
+ * Tenant-side variant of adminAssignSystemAccountSchema. Same shape; kept
+ * separate so widening one surface never silently widens the other.
+ */
+export const assignTenantSystemAccountSchema = z.object({
+  accountId: z.string().uuid().nullable(),
+  balanceAction: z.enum(['refuse', 'move', 'leave']).optional(),
+});
+export type AssignTenantSystemAccountInput = z.infer<typeof assignTenantSystemAccountSchema>;

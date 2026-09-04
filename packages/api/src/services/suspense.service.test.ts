@@ -21,6 +21,7 @@ import {
 import * as authService from './auth.service.js';
 import * as ledger from './ledger.service.js';
 import * as suspense from './suspense.service.js';
+import * as admin from './admin.service.js';
 import {
   getOrCreateSystemAccount, findSystemAccountId, SUSPENSE_TAG,
   previewSuspenseConsolidation, consolidateIntoSuspense,
@@ -432,5 +433,143 @@ describe('consolidating look-alike accounts into suspense', () => {
       .where(and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'accounts_receivable')));
     const res = await consolidateIntoSuspense(tenantId, [ar[0]!.id], userId);
     expect(res.skipped).toEqual([{ accountId: ar[0]!.id, reason: 'is_system_role' }]);
+  });
+});
+
+// ── The three gaps fixed on 2026-09-04 ──────────────────────────
+
+describe('gap 1: re-pointing the suspense role must not strand a balance', () => {
+  async function seedSuspenseWithMoney(amount = '90.00') {
+    const suspenseId = await suspense.getSuspenseAccountId(tenantId, companyId, userId);
+    await ledger.postTransaction(tenantId, {
+      txnType: 'expense', txnDate: '2026-05-01',
+      lines: [
+        { accountId: suspenseId, debit: amount, credit: '0' },
+        { accountId: bankAccountId, debit: '0', credit: amount },
+      ],
+    }, userId, companyId);
+    const [replacement] = await db.insert(accounts).values({
+      tenantId, companyId, name: 'New Suspense',
+      accountType: 'other_expense', detailType: 'other_expense', accountNumber: '89001',
+    }).returning();
+    return { suspenseId, replacementId: replacement!.id };
+  }
+
+  it('REFUSES by default, naming the balance at stake', async () => {
+    const { suspenseId, replacementId } = await seedSuspenseWithMoney();
+    await expect(
+      admin.assignSystemAccount(tenantId, SUSPENSE_TAG, replacementId, userId),
+    ).rejects.toMatchObject({ code: 'SYSTEM_ACCOUNT_BALANCE_STRANDED' });
+
+    // Nothing moved and the role did not change.
+    expect(await findSystemAccountId(tenantId, SUSPENSE_TAG)).toBe(suspenseId);
+    expect(await balanceOf(suspenseId)).toBe(90);
+  });
+
+  it("moves the balance with the role when asked", async () => {
+    const { suspenseId, replacementId } = await seedSuspenseWithMoney();
+    await admin.assignSystemAccount(tenantId, SUSPENSE_TAG, replacementId, userId, { balanceAction: 'move' });
+
+    expect(await findSystemAccountId(tenantId, SUSPENSE_TAG)).toBe(replacementId);
+    expect(await balanceOf(suspenseId)).toBe(0);
+    expect(await balanceOf(replacementId)).toBe(90);
+    expect((await ledger.validateBalance(tenantId)).valid).toBe(true);
+
+    // And the screen still sees it — the whole point of the fix.
+    const summary = await suspense.getSuspenseSummary(tenantId, companyId);
+    expect(summary.suspenseAccountId).toBe(replacementId);
+    expect(parseFloat(summary.balance)).toBe(90);
+    expect(summary.transactionCount).toBe(1);
+  });
+
+  it('strands it only when the operator says so explicitly', async () => {
+    const { suspenseId, replacementId } = await seedSuspenseWithMoney();
+    await admin.assignSystemAccount(tenantId, SUSPENSE_TAG, replacementId, userId, { balanceAction: 'leave' });
+
+    expect(await findSystemAccountId(tenantId, SUSPENSE_TAG)).toBe(replacementId);
+    expect(await balanceOf(suspenseId)).toBe(90);
+    expect(parseFloat((await suspense.getSuspenseSummary(tenantId, companyId)).balance)).toBe(0);
+  });
+
+  it('refuses to MOVE lines that are locked, rather than forcing them', async () => {
+    const { replacementId } = await seedSuspenseWithMoney();
+    await db.update(companies).set({ lockDate: '2026-12-31' })
+      .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)));
+
+    await expect(
+      admin.assignSystemAccount(tenantId, SUSPENSE_TAG, replacementId, userId, { balanceAction: 'move' }),
+    ).rejects.toMatchObject({ code: 'SYSTEM_ACCOUNT_BALANCE_UNMOVABLE' });
+  });
+
+  it('still assigns freely when the outgoing account is empty', async () => {
+    const original = await suspense.getSuspenseAccountId(tenantId, companyId, userId);
+    const [replacement] = await db.insert(accounts).values({
+      tenantId, companyId, name: 'Fresh Suspense',
+      accountType: 'other_expense', detailType: 'other_expense', accountNumber: '89002',
+    }).returning();
+    await admin.assignSystemAccount(tenantId, SUSPENSE_TAG, replacement!.id, userId);
+    expect(await findSystemAccountId(tenantId, SUSPENSE_TAG)).toBe(replacement!.id);
+    void original;
+  });
+});
+
+describe('gap 2: the firm chooses whether suspense sits on the P&L or the balance sheet', () => {
+  it('accepts a balance-sheet account', async () => {
+    await suspense.getSuspenseAccountId(tenantId, companyId, userId);
+    const [bs] = await db.insert(accounts).values({
+      tenantId, companyId, name: 'Suspense (asset)',
+      accountType: 'asset', detailType: 'other_current_asset', accountNumber: '19999',
+    }).returning();
+
+    await admin.assignSystemAccount(tenantId, SUSPENSE_TAG, bs!.id, userId);
+    expect(await findSystemAccountId(tenantId, SUSPENSE_TAG)).toBe(bs!.id);
+
+    // And it still works end to end as the holding account.
+    const txn = await ledger.postTransaction(tenantId, {
+      txnType: 'expense', txnDate: '2026-06-01',
+      lines: [
+        { accountId: bs!.id, debit: '20.00', credit: '0' },
+        { accountId: bankAccountId, debit: '0', credit: '20.00' },
+      ],
+    }, userId, companyId);
+    const res = await suspense.clearSuspense(tenantId, [txn.id], expenseAccountId, userId, companyId);
+    expect(res.updated).toBe(1);
+    expect(await balanceOf(bs!.id)).toBe(0);
+    expect((await ledger.validateBalance(tenantId)).valid).toBe(true);
+  });
+
+  it('still refuses a bank, credit-card or A/R account', async () => {
+    await suspense.getSuspenseAccountId(tenantId, companyId, userId);
+    const [card] = await db.insert(accounts).values({
+      tenantId, companyId, name: 'Amex', accountType: 'liability',
+      detailType: 'credit_card', accountNumber: '21999',
+    }).returning();
+
+    await expect(admin.assignSystemAccount(tenantId, SUSPENSE_TAG, bankAccountId, userId))
+      .rejects.toThrow(/bank account cannot be/i);
+    await expect(admin.assignSystemAccount(tenantId, SUSPENSE_TAG, card!.id, userId))
+      .rejects.toThrow(/credit card account cannot be/i);
+  });
+
+  it('still refuses a type no suspense account could be', async () => {
+    await suspense.getSuspenseAccountId(tenantId, companyId, userId);
+    const [eq_] = await db.insert(accounts).values({
+      tenantId, companyId, name: 'Owner Equity', accountType: 'equity', accountNumber: '39999',
+    }).returning();
+    await expect(admin.assignSystemAccount(tenantId, SUSPENSE_TAG, eq_!.id, userId))
+      .rejects.toMatchObject({ code: 'SYSTEM_TAG_TYPE_MISMATCH' });
+  });
+
+  it('leaves every other role locked to its single type', async () => {
+    const info = await admin.getSystemAccountsInfo(tenantId);
+    for (const role of info.roles) {
+      if (role.tag === 'suspense') {
+        expect(role.allowedAccountTypes.length).toBeGreaterThan(1);
+        expect(role.tenantAssignable).toBe(true);
+      } else {
+        expect(role.allowedAccountTypes).toEqual([role.accountType]);
+        expect(role.tenantAssignable).toBe(false);
+      }
+    }
   });
 });

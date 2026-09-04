@@ -217,7 +217,7 @@ export async function previewSuspenseConsolidation(tenantId: string): Promise<{
  * cleared in a completed reconciliation must not move, and neither must a
  * line inside a closed period or on a void/adjusting entry.
  */
-async function blockedLineReason(tenantId: string, accountId: string): Promise<string | null> {
+export async function blockedLineReason(tenantId: string, accountId: string): Promise<string | null> {
   const res = await db.execute<{ reason: string }>(sql`
     SELECT 'reconciled' AS reason
     FROM journal_lines jl
@@ -241,6 +241,56 @@ async function blockedLineReason(tenantId: string, accountId: string): Promise<s
     LIMIT 1
   `);
   return (res.rows as Array<{ reason: string }>)[0]?.reason ?? null;
+}
+
+/**
+ * Re-point every journal line on `fromAccountId` onto `toAccountId` and shift
+ * the denormalised balances to match. Returns how many lines moved.
+ *
+ * Amounts are unchanged, so the trial balance still balances; only the
+ * per-account split moves. Callers MUST check `blockedLineReason` first — this
+ * helper deliberately does no guarding of its own so the two callers
+ * (consolidation, and sweeping a balance off an outgoing role account) cannot
+ * drift apart on what "safe to move" means.
+ */
+export async function moveAllLinesBetweenAccounts(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  tenantId: string,
+  fromAccountId: string,
+  toAccountId: string,
+): Promise<number> {
+  const sums = await tx.execute<{ d: string; c: string; n: string }>(sql`
+    SELECT COALESCE(SUM(debit), 0)::text AS d,
+           COALESCE(SUM(credit), 0)::text AS c,
+           COUNT(*)::text AS n
+    FROM journal_lines
+    WHERE tenant_id = ${tenantId} AND account_id = ${fromAccountId}
+  `);
+  const row = (sums.rows as Array<{ d: string; c: string; n: string }>)[0];
+  const lines = Number(row?.n ?? '0');
+  if (lines === 0) return 0;
+
+  const debit = row?.d ?? '0';
+  const credit = row?.c ?? '0';
+
+  await tx.update(journalLines)
+    .set({ accountId: toAccountId })
+    .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.accountId, fromAccountId)));
+
+  // Debit-positive convention, matching updateAccountBalances in the ledger
+  // service: balance moves by (debit - credit). The subtraction happens in
+  // Postgres `numeric` so it is exact at any magnitude.
+  await tx.execute(sql`
+    UPDATE accounts SET balance = balance - (${debit}::numeric - ${credit}::numeric),
+           updated_at = now()
+     WHERE tenant_id = ${tenantId} AND id = ${fromAccountId}
+  `);
+  await tx.execute(sql`
+    UPDATE accounts SET balance = balance + (${debit}::numeric - ${credit}::numeric),
+           updated_at = now()
+     WHERE tenant_id = ${tenantId} AND id = ${toAccountId}
+  `);
+  return lines;
 }
 
 export interface ConsolidationResult {
@@ -280,41 +330,7 @@ export async function consolidateIntoSuspense(
       const blocked = await blockedLineReason(tenantId, accountId);
       if (blocked) { skipped.push({ accountId, reason: blocked }); continue; }
 
-      // Sum what is moving so the denormalised balances can be shifted by the
-      // same amount that leaves the source account.
-      const sums = await tx.execute<{ d: string; c: string; n: string }>(sql`
-        SELECT COALESCE(SUM(debit), 0)::text AS d,
-               COALESCE(SUM(credit), 0)::text AS c,
-               COUNT(*)::text AS n
-        FROM journal_lines
-        WHERE tenant_id = ${tenantId} AND account_id = ${accountId}
-      `);
-      const row = (sums.rows as Array<{ d: string; c: string; n: string }>)[0];
-      const lines = Number(row?.n ?? '0');
-      const debit = row?.d ?? '0';
-      const credit = row?.c ?? '0';
-
-      if (lines > 0) {
-        await tx.update(journalLines)
-          .set({ accountId: suspenseAccountId })
-          .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.accountId, accountId)));
-
-        // Debit-positive convention, matching updateAccountBalances in the
-        // ledger service: balance moves by (debit - credit). The subtraction
-        // happens in Postgres `numeric` so it is exact at any magnitude.
-        await tx.execute(sql`
-          UPDATE accounts
-             SET balance = balance - (${debit}::numeric - ${credit}::numeric),
-                 updated_at = now()
-           WHERE tenant_id = ${tenantId} AND id = ${accountId}
-        `);
-        await tx.execute(sql`
-          UPDATE accounts
-             SET balance = balance + (${debit}::numeric - ${credit}::numeric),
-                 updated_at = now()
-           WHERE tenant_id = ${tenantId} AND id = ${suspenseAccountId}
-        `);
-      }
+      const lines = await moveAllLinesBetweenAccounts(tx, tenantId, accountId, suspenseAccountId);
 
       await tx.update(accounts)
         .set({ isActive: false, updatedAt: new Date() })

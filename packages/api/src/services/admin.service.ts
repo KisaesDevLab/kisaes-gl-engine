@@ -8,6 +8,8 @@ import bcrypt from 'bcrypt';
 import {
   SYSTEM_ACCOUNT_ROLES,
   SYSTEM_ACCOUNT_ROLE_BY_TAG,
+  roleEligibilityError,
+  allowedTypesForRole,
   PASSWORD_MIN_LENGTH,
   PASSWORD_MAX_LENGTH,
   PASSWORD_MIN_MESSAGE,
@@ -20,6 +22,8 @@ import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { escapeLike } from '../utils/sql-like.js';
+// Shared with the consolidation tool so "safe to move" has one definition.
+import { blockedLineReason, moveAllLinesBetweenAccounts } from './system-accounts.service.js';
 
 // ─── Tenant Management ───────────────────────────────────────────
 
@@ -1191,17 +1195,27 @@ export async function getSystemAccountsInfo(tenantId: string) {
       label: role.label,
       description: role.description,
       accountType: role.accountType,
+      // The picker filters on this, not on accountType — `suspense` accepts
+      // several types so a firm can put its holding account on the P&L or the
+      // balance sheet.
+      allowedAccountTypes: allowedTypesForRole(role),
+      forbiddenDetailTypes: role.forbiddenDetailTypes ?? [],
+      tenantAssignable: role.tenantAssignable === true,
       required: role.required,
       assigned,
       // Extra accounts sharing the tag — system lookups use findFirst, so
       // which one wins is arbitrary. Surfaced so the admin can fix it.
       duplicates: tagged.slice(1).map(toAssignment),
-      typeMismatch: assigned !== null && assigned.accountType !== role.accountType,
+      typeMismatch: assigned !== null && !allowedTypesForRole(role).includes(assigned.accountType as never),
     };
   });
 
-  // Full account list for the assignment picker (web filters by role type).
-  return { roles, accounts: rows.map((a) => ({ ...toAssignment(a), systemTag: a.systemTag })) };
+  // Full account list for the assignment picker. detailType rides along so the
+  // web can apply forbiddenDetailTypes without a second round-trip.
+  return {
+    roles,
+    accounts: rows.map((a) => ({ ...toAssignment(a), systemTag: a.systemTag, detailType: a.detailType ?? null })),
+  };
 }
 
 // Point a system role at an existing account (accountId), or clear the
@@ -1210,11 +1224,26 @@ export async function getSystemAccountsInfo(tenantId: string) {
 // per tenant holds each tag afterwards. Mirrors designateRetainedEarnings
 // (kept above for its dedicated card/endpoint) and stamps the canonical
 // detail type for roles that define one.
+/**
+ * What to do about money sitting on the account losing the role.
+ *
+ *   refuse  (default) — stop, and tell the caller what is at stake.
+ *   move    — sweep the outgoing account's lines and balance onto the new one.
+ *   leave   — proceed and knowingly strand the balance on the old account.
+ *
+ * The default is `refuse` because the failure it prevents is silent: every
+ * surface resolves these accounts BY ROLE, so after a re-point the old
+ * balance simply stops being displayed anywhere while the money is still
+ * there. An operator who has not been told will not go looking.
+ */
+export type RoleBalanceAction = 'refuse' | 'move' | 'leave';
+
 export async function assignSystemAccount(
   tenantId: string,
   tag: string,
   accountId: string | null,
   actingUserId?: string,
+  opts: { balanceAction?: RoleBalanceAction } = {},
 ) {
   const role = SYSTEM_ACCOUNT_ROLE_BY_TAG[tag];
   if (!role) throw AppError.badRequest(`Unknown system account role: ${tag}`, 'UNKNOWN_SYSTEM_TAG');
@@ -1247,12 +1276,12 @@ export async function assignSystemAccount(
     where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, accountId)),
   });
   if (!account) throw AppError.notFound('Account not found');
-  if (account.accountType !== role.accountType) {
-    throw AppError.badRequest(
-      `${role.label} must be a ${role.accountType} account (selected account is ${account.accountType})`,
-      'SYSTEM_TAG_TYPE_MISMATCH',
-    );
-  }
+  // Most roles admit exactly one account type; `suspense` admits several,
+  // because whether a holding account belongs on the P&L or the balance sheet
+  // is a firm's call. roleEligibilityError is the single shared answer, so the
+  // admin screen, the tenant screen and this check cannot disagree.
+  const ineligible = roleEligibilityError(role, account);
+  if (ineligible) throw AppError.badRequest(ineligible, 'SYSTEM_TAG_TYPE_MISMATCH');
   // An account can serve at most one role. Overwriting another role's tag
   // here would silently break that role — make the admin clear it first.
   if (account.systemTag && account.systemTag !== tag) {
@@ -1262,11 +1291,59 @@ export async function assignSystemAccount(
     );
   }
 
+  // An outgoing holder that still carries money is the trap this guards.
+  // Nothing below re-points a line on its own; the operator has to say so.
+  const outgoing = holders.filter((h) => h.id !== accountId);
+  const balanceAction = opts.balanceAction ?? 'refuse';
+  const stranded: Array<{ id: string; name: string; balance: string; lines: number; blockedReason: string | null }> = [];
+  for (const h of outgoing) {
+    const [row] = await db.select({ balance: accounts.balance }).from(accounts)
+      .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, h.id)));
+    const counted = await db.execute<{ n: string }>(sql`
+      SELECT COUNT(*)::text AS n FROM journal_lines
+      WHERE tenant_id = ${tenantId} AND account_id = ${h.id}
+    `);
+    const lines = Number((counted.rows as Array<{ n: string }>)[0]?.n ?? '0');
+    const balance = row?.balance ?? '0';
+    if (lines > 0 || parseFloat(balance) !== 0) {
+      stranded.push({
+        id: h.id, name: h.name, balance, lines,
+        blockedReason: await blockedLineReason(tenantId, h.id),
+      });
+    }
+  }
+
+  if (stranded.length > 0 && balanceAction === 'refuse') {
+    const first = stranded[0]!;
+    throw AppError.conflict(
+      `"${first.name}" still holds ${first.balance} across ${first.lines} line(s). `
+      + 'Move that balance onto the new account, or confirm you want to leave it behind.',
+      'SYSTEM_ACCOUNT_BALANCE_STRANDED',
+      { stranded },
+    );
+  }
+  if (stranded.length > 0 && balanceAction === 'move') {
+    const blocked = stranded.find((x) => x.blockedReason !== null);
+    if (blocked) {
+      throw AppError.unprocessableEntity(
+        `"${blocked.name}" has lines that cannot be moved (${blocked.blockedReason}). `
+        + 'Clear those first, or reassign leaving the balance where it is.',
+        'SYSTEM_ACCOUNT_BALANCE_UNMOVABLE',
+        { stranded },
+      );
+    }
+  }
+
   await db.transaction(async (tx) => {
     // Move semantics: clear the tag from any other holder atomically so the
     // (tenant, tag) mapping stays unique.
     for (const h of holders) {
       if (h.id !== accountId) {
+        if (balanceAction === 'move' && stranded.some((x) => x.id === h.id)) {
+          // Sweep BEFORE untagging so the whole thing is one transaction:
+          // either the role and the money both move, or neither does.
+          await moveAllLinesBetweenAccounts(tx, tenantId, h.id, accountId);
+        }
         await tx.update(accounts).set({ systemTag: null, isSystem: false, updatedAt: new Date() })
           .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, h.id)));
       }
@@ -1283,7 +1360,11 @@ export async function assignSystemAccount(
 
   await auditLog(tenantId, 'update', 'system_account_role', accountId,
     { tag, accountIds: holders.map((h) => h.id) },
-    { tag, accountId, isSystem: true, ...(role.canonicalDetailType ? { detailType: role.canonicalDetailType } : {}) },
+    {
+      tag, accountId, isSystem: true,
+      ...(role.canonicalDetailType ? { detailType: role.canonicalDetailType } : {}),
+      ...(stranded.length > 0 ? { balanceAction, affected: stranded.map((x) => ({ id: x.id, balance: x.balance, lines: x.lines })) } : {}),
+    },
     actingUserId);
 
   return getSystemAccountsInfo(tenantId);

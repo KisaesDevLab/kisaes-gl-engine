@@ -23,8 +23,40 @@ export interface SystemAccountRole {
   label: string;
   /** What the role does / which flows break when it's missing. */
   description: string;
-  /** Account type the tagged account must have. */
+  /**
+   * Canonical type. Used when the role's account is CREATED, and the default
+   * answer to "what type must this be?" when `allowedAccountTypes` is absent.
+   */
   accountType: AccountType;
+  /**
+   * Types an operator may ASSIGN this role to, when the accounting genuinely
+   * admits a choice. Defaults to `[accountType]`, which is the right answer
+   * for every role whose type is dictated by the flows that consume it (A/R
+   * must be an asset, sales tax must be a liability, and so on).
+   *
+   * Widened only for `suspense`: a holding account is legitimately either a
+   * P&L account (QuickBooks' "Uncategorized", visible on the income
+   * statement as a nag) or a balance-sheet one (a true suspense account that
+   * keeps unclassified amounts out of profit entirely). Different firms want
+   * different answers, so the role lets them choose.
+   */
+  allowedAccountTypes?: AccountType[];
+  /**
+   * Detail types that can never play this role even when the account type
+   * matches. Needed once `allowedAccountTypes` widens to `asset`/`liability`,
+   * because otherwise a checking account or the A/P control account becomes a
+   * selectable "suspense account".
+   */
+  forbiddenDetailTypes?: string[];
+  /**
+   * May the TENANT's own admin assign this, or is it super-admin only?
+   *
+   * Off for every role the ledger's core flows depend on: getting A/R or
+   * retained earnings wrong breaks posting and the year-end close, so those
+   * stay with whoever supports the appliance. Suspense is opt-in per firm and
+   * breaks nothing if changed, so its own admin owns it.
+   */
+  tenantAssignable?: boolean;
   /**
    * Detail type stamped onto the account when the role is (re)assigned, for
    * roles where reports/registers key off detail_type as well as system_tag
@@ -132,6 +164,16 @@ export const SYSTEM_ACCOUNT_ROLES: SystemAccountRole[] = [
     label: 'Suspense (Uncategorized)',
     description: 'Holding account for amounts posted before they are categorized. Cleared from Practice \u2192 Uncategorized.',
     accountType: 'other_expense',
+    // Either school of thought is defensible, so the firm picks. Expense keeps
+    // the nag on the P&L; a balance-sheet account keeps guesses out of profit.
+    allowedAccountTypes: ['other_expense', 'expense', 'asset', 'liability'],
+    // Money and control accounts are never a category, so never suspense.
+    forbiddenDetailTypes: [
+      'bank', 'checking', 'savings',
+      'credit_card', 'line_of_credit',
+      'accounts_receivable', 'accounts_payable',
+    ],
+    tenantAssignable: true,
     required: false,
   },
 ];
@@ -140,3 +182,32 @@ export const SYSTEM_ACCOUNT_ROLE_BY_TAG: Record<string, SystemAccountRole> =
   Object.fromEntries(SYSTEM_ACCOUNT_ROLES.map((r) => [r.tag, r]));
 
 export const SYSTEM_ACCOUNT_TAGS = SYSTEM_ACCOUNT_ROLES.map((r) => r.tag);
+
+/** The account types this role may be assigned to. */
+export function allowedTypesForRole(role: SystemAccountRole): AccountType[] {
+  return role.allowedAccountTypes ?? [role.accountType];
+}
+
+/** Roles a tenant's own admin may assign, without super-admin. */
+export const TENANT_ASSIGNABLE_SYSTEM_ROLES: SystemAccountRole[] =
+  SYSTEM_ACCOUNT_ROLES.filter((r) => r.tenantAssignable === true);
+
+/**
+ * Why this account cannot play this role, or null when it can. Shared so the
+ * admin screen, the tenant screen and the API all answer identically.
+ */
+export function roleEligibilityError(
+  role: SystemAccountRole,
+  account: { accountType: string; detailType?: string | null; isActive?: boolean | null },
+): string | null {
+  const allowed = allowedTypesForRole(role);
+  if (!allowed.includes(account.accountType as AccountType)) {
+    return `${role.label} must be ${allowed.length === 1 ? 'a' : 'one of'} ${allowed.join(' / ')} account (selected account is ${account.accountType})`;
+  }
+  if (account.isActive === false) return 'That account is inactive.';
+  if (role.forbiddenDetailTypes && account.detailType
+      && role.forbiddenDetailTypes.includes(account.detailType)) {
+    return `A ${account.detailType.replace(/_/g, ' ')} account cannot be the ${role.label} account.`;
+  }
+  return null;
+}

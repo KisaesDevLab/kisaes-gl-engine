@@ -350,7 +350,10 @@ adminRouter.get('/tenants/:id/system-accounts', async (req, res) => {
 });
 
 adminRouter.put('/tenants/:id/system-accounts/:tag', validate(adminAssignSystemAccountSchema), async (req, res) => {
-  res.json(await adminService.assignSystemAccount(req.params['id']!, req.params['tag']!, req.body.accountId, req.userId));
+  res.json(await adminService.assignSystemAccount(
+    req.params['id']!, req.params['tag']!, req.body.accountId, req.userId,
+    { balanceAction: req.body.balanceAction },
+  ));
 });
 
 // Suspense consolidation. A tenant that has been running a while may have
