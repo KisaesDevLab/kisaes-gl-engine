@@ -17,7 +17,11 @@
 
 import { and, eq, sql, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { accounts, companies, clientCategorySuggestions, portalContactCompanies } from '../db/schema/index.js';
+import { accounts, attachments, companies, clientCategorySuggestions, portalContactCompanies } from '../db/schema/index.js';
+// Storage + the attachments table only. Rule 1 of this module still holds:
+// nothing here imports ledger.service or bank-feed.service, so a client
+// upload cannot become a posting.
+import * as attachmentService from './attachment.service.js';
 import { AppError } from '../utils/errors.js';
 import { tenantHasSingleCompany } from './portal-banking.service.js';
 
@@ -115,27 +119,28 @@ export interface PortalQueueItem {
     note: string | null;
     rejectionReason: string | null;
   } | null;
+  /**
+   * Files THIS contact has attached to the row. Counted in one batched query
+   * for the whole page rather than a request per row, and it counts only the
+   * client's own uploads — the firm's documents are not the client's business.
+   * 0 when the caller passed no contactId.
+   */
+  myAttachmentCount: number;
 }
 
 /**
- * What this client may categorize, for one company.
+ * The queue's row source, as a `FROM (...) q` fragment.
  *
- * Deliberately NOT every pending bank line. Only rows the firm's own
- * categorizer could not place (needs_review with no suggestion) plus anything
- * already sitting in suspense. Showing a client a row the AI classified
- * confidently invites them to contradict a correct answer and manufactures
- * review work for the bookkeeper.
+ * Extracted so that "is this target in the client's queue?" is answered by
+ * the SAME predicate that produced the list, rather than a second copy of it.
+ * A copy would drift, and the two places it matters are both authorization
+ * checks: submitting an answer, and attaching a file.
+ *
+ * Columns: target_kind, target_id, the_date, description, amount.
  */
-export async function listPortalQueue(
-  tenantId: string,
-  companyId: string,
-  opts: { limit?: number; offset?: number } = {},
-): Promise<{ items: PortalQueueItem[]; total: number }> {
-  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
-  const offset = Math.max(opts.offset ?? 0, 0);
+async function queueSource(tenantId: string, companyId: string) {
   const singleCompany = await tenantHasSingleCompany(tenantId);
-
-  const base = sql`
+  return sql`
     FROM (
       -- 1. Bank lines the categorizer could not place.
       SELECT
@@ -182,6 +187,26 @@ export async function listPortalQueue(
         )
     ) q
   `;
+}
+
+/**
+ * What this client may categorize, for one company.
+ *
+ * Deliberately NOT every pending bank line. Only rows the firm's own
+ * categorizer could not place (needs_review with no suggestion) plus anything
+ * already sitting in suspense. Showing a client a row the AI classified
+ * confidently invites them to contradict a correct answer and manufactures
+ * review work for the bookkeeper.
+ */
+export async function listPortalQueue(
+  tenantId: string,
+  companyId: string,
+  opts: { limit?: number; offset?: number; contactId?: string } = {},
+): Promise<{ items: PortalQueueItem[]; total: number }> {
+  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+  const offset = Math.max(opts.offset ?? 0, 0);
+
+  const base = await queueSource(tenantId, companyId);
 
   const counted = await db.execute<{ n: string }>(sql`SELECT COUNT(*)::text AS n ${base}`);
   const total = Number((counted.rows as Array<{ n: string }>)[0]?.n ?? '0');
@@ -195,6 +220,9 @@ export async function listPortalQueue(
   const rows = res.rows as Array<Record<string, unknown>>;
   const ids = rows.map((r) => String(r['target_id']));
   const live = ids.length > 0 ? await liveSuggestionsFor(tenantId, ids) : new Map();
+  const attachCounts = ids.length > 0 && opts.contactId
+    ? await myAttachmentCounts(tenantId, opts.contactId, ids)
+    : new Map<string, number>();
 
   return {
     total,
@@ -210,9 +238,37 @@ export async function listPortalQueue(
         amount: amountNum.toFixed(2),
         direction: amountNum >= 0 ? 'money_out' : 'money_in',
         existingSuggestion: s,
+        myAttachmentCount: attachCounts.get(targetId) ?? 0,
       };
     }),
   };
+}
+
+/**
+ * How many files this contact attached to each row, in one query.
+ *
+ * Keyed on attachable_id alone: a feed-item id and a transaction id are
+ * distinct UUIDs, so the type adds nothing here. The type DOES matter when
+ * writing (the staff screen reads it), which is what resolveAttachmentTarget
+ * is for.
+ */
+async function myAttachmentCounts(
+  tenantId: string,
+  contactId: string,
+  targetIds: string[],
+): Promise<Map<string, number>> {
+  const res = await db.execute<{ attachable_id: string; n: string }>(sql`
+    SELECT attachable_id, COUNT(*)::text AS n
+    FROM attachments
+    WHERE tenant_id = ${tenantId}
+      AND uploaded_by_contact_id = ${contactId}
+      AND attachable_id IN (${sql.join(targetIds.map((id) => sql`${id}::uuid`), sql`, `)})
+    GROUP BY attachable_id
+  `);
+  return new Map(
+    (res.rows as Array<{ attachable_id: string; n: string }>)
+      .map((r) => [r.attachable_id, Number(r.n)]),
+  );
 }
 
 async function liveSuggestionsFor(tenantId: string, targetIds: string[]) {
@@ -431,4 +487,203 @@ export async function withdrawSuggestion(
   if (res.length === 0) {
     throw AppError.conflict('That answer has already been reviewed.', 'SUGGESTION_ALREADY_RESOLVED');
   }
+}
+
+// ── Attachments ─────────────────────────────────────────────────
+//
+// A client can send in the receipt or invoice for a row it is being asked
+// about. The file is written to the ORDINARY `attachments` table under the
+// same key the staff Uncategorized screen already reads, so the paperclip
+// there picks it up with no second store and no relinking step:
+//
+//   bank_feed_item -> attachable_type 'bank_feed_items'
+//   transaction    -> attachable_type = the transaction's OWN txn_type
+//
+// That second one is the trap documented on the staff screen: a posted row's
+// files live under 'expense'/'deposit'/..., never a generic 'transaction'.
+// Getting it wrong hides the file from one of the two screens, so the type is
+// resolved SERVER-SIDE from the row itself and never taken from the client.
+
+/** File metadata the portal may see. Deliberately no storage key or path. */
+export interface PortalAttachmentRef {
+  id: string;
+  fileName: string;
+  mimeType: string | null;
+  fileSize: number | null;
+  uploadedAt: string;
+}
+
+export interface PortalUploadFile {
+  filename: string;
+  mimeType: string;
+  buffer: Buffer;
+  size: number;
+}
+
+/** How many files one row may carry from the portal. */
+export const MAX_PORTAL_ATTACHMENTS_PER_TARGET = 10;
+
+/**
+ * Resolve a queue target to its attachment key, refusing anything not in
+ * THIS client's queue for THIS company.
+ *
+ * Membership is tested with `queueSource` — the very fragment that built the
+ * list — so a client cannot aim an upload at a row it was never shown, and
+ * the check cannot drift away from what the queue means. A miss is reported
+ * as not-found, so "belongs to another tenant" reads the same as "does not
+ * exist", matching the posture of submitSuggestions.
+ */
+export async function resolveAttachmentTarget(
+  tenantId: string,
+  companyId: string,
+  targetKind: 'bank_feed_item' | 'transaction',
+  targetId: string,
+): Promise<{ attachableType: string; attachableId: string }> {
+  const base = await queueSource(tenantId, companyId);
+  const hit = await db.execute(sql`
+    SELECT q.target_kind ${base}
+    WHERE q.target_id = ${targetId} AND q.target_kind = ${targetKind}
+    LIMIT 1
+  `);
+  if (hit.rows.length === 0) {
+    throw AppError.notFound('That transaction is not in your list.');
+  }
+
+  if (targetKind === 'bank_feed_item') {
+    return { attachableType: 'bank_feed_items', attachableId: targetId };
+  }
+
+  // The posted row's own txn_type IS the attachable_type. Re-read it here
+  // rather than trusting anything the client sent.
+  const row = await db.execute<{ txn_type: string }>(sql`
+    SELECT txn_type FROM transactions
+    WHERE id = ${targetId} AND tenant_id = ${tenantId}
+    LIMIT 1
+  `);
+  const txnType = (row.rows as Array<{ txn_type: string }>)[0]?.txn_type;
+  if (!txnType) throw AppError.notFound('That transaction is not in your list.');
+  return { attachableType: txnType, attachableId: targetId };
+}
+
+/**
+ * List only what THIS contact uploaded against the row.
+ *
+ * Not every attachment on it: a document the firm attached is the firm's, and
+ * even its filename can say more than the client should see. `attachments`
+ * gained `uploaded_by_contact_id` (migration 0165) precisely so this filter
+ * exists; NULL there means staff.
+ */
+export async function listMyAttachments(
+  tenantId: string,
+  companyId: string,
+  contactId: string,
+  targetKind: 'bank_feed_item' | 'transaction',
+  targetId: string,
+): Promise<PortalAttachmentRef[]> {
+  const { attachableType, attachableId } = await resolveAttachmentTarget(
+    tenantId, companyId, targetKind, targetId,
+  );
+  const rows = await db
+    .select({
+      id: attachments.id,
+      fileName: attachments.fileName,
+      mimeType: attachments.mimeType,
+      fileSize: attachments.fileSize,
+      createdAt: attachments.createdAt,
+    })
+    .from(attachments)
+    .where(and(
+      eq(attachments.tenantId, tenantId),
+      eq(attachments.attachableType, attachableType),
+      eq(attachments.attachableId, attachableId),
+      eq(attachments.uploadedByContactId, contactId),
+    ))
+    .orderBy(attachments.createdAt);
+
+  return rows.map((r) => ({
+    id: r.id,
+    fileName: r.fileName,
+    mimeType: r.mimeType,
+    fileSize: r.fileSize,
+    uploadedAt: (r.createdAt ?? new Date()).toISOString(),
+  }));
+}
+
+/**
+ * Store client-supplied files against a queue row.
+ *
+ * The per-row cap counts only THIS contact's files, so a client cannot be
+ * locked out by however many documents the firm has attached.
+ */
+export async function attachToTarget(
+  tenantId: string,
+  companyId: string,
+  contactId: string,
+  targetKind: 'bank_feed_item' | 'transaction',
+  targetId: string,
+  files: PortalUploadFile[],
+): Promise<PortalAttachmentRef[]> {
+  if (files.length === 0) throw AppError.badRequest('Choose a file to attach.');
+
+  const { attachableType, attachableId } = await resolveAttachmentTarget(
+    tenantId, companyId, targetKind, targetId,
+  );
+
+  const existing = await db
+    .select({ id: attachments.id })
+    .from(attachments)
+    .where(and(
+      eq(attachments.tenantId, tenantId),
+      eq(attachments.attachableType, attachableType),
+      eq(attachments.attachableId, attachableId),
+      eq(attachments.uploadedByContactId, contactId),
+    ));
+  if (existing.length + files.length > MAX_PORTAL_ATTACHMENTS_PER_TARGET) {
+    throw AppError.badRequest(
+      `You can attach up to ${MAX_PORTAL_ATTACHMENTS_PER_TARGET} files to one transaction.`,
+    );
+  }
+
+  const saved: PortalAttachmentRef[] = [];
+  for (const f of files) {
+    const row = await attachmentService.upload(
+      tenantId,
+      { originalname: f.filename, buffer: f.buffer, mimetype: f.mimeType, size: f.size },
+      attachableType,
+      attachableId,
+      { uploadedByContactId: contactId, companyId },
+    );
+    if (row) {
+      saved.push({
+        id: row.id,
+        fileName: row.fileName,
+        mimeType: row.mimeType,
+        fileSize: row.fileSize,
+        uploadedAt: (row.createdAt ?? new Date()).toISOString(),
+      });
+    }
+  }
+  return saved;
+}
+
+/**
+ * Remove a file the client sent — only its own, only from a row still in its
+ * queue. Staff attachments are untouchable from here.
+ */
+export async function removeMyAttachment(
+  tenantId: string,
+  contactId: string,
+  attachmentId: string,
+): Promise<void> {
+  const [row] = await db
+    .select({ id: attachments.id })
+    .from(attachments)
+    .where(and(
+      eq(attachments.tenantId, tenantId),
+      eq(attachments.id, attachmentId),
+      eq(attachments.uploadedByContactId, contactId),
+    ))
+    .limit(1);
+  if (!row) throw AppError.notFound('That file is not one of yours.');
+  await attachmentService.remove(tenantId, attachmentId);
 }

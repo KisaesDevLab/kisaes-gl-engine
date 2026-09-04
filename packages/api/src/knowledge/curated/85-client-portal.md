@@ -78,3 +78,34 @@ lists active staff users with access to the client; everyone checked is emailed 
 moment the contact uploads (client, request, period, filename, link to the grid). Editing
 the list applies to requests already outstanding. Needs SMTP configured; the unread
 tracking works regardless. Feature flag: `RECURRING_DOC_REQUESTS_V1`.
+
+## Clients suggesting categories ("What was this?")
+
+Feature flags: `PORTAL_CATEGORIZE_V1` (the client half) and `UNCATEGORIZED_REVIEW_V1`
+(the staff review queue). They are SEPARATE switches and both default off. On top of
+the tenant flag, each portal contact needs **Can suggest categories** ticked on
+Practice → Client Portal. That per-contact tick is the step people miss: with the flag
+on and the tick off, the client sees nothing at all. It defaults to false and is reset
+to false if a contact's company assignments are re-saved without it.
+
+What the client sees: a **What was this?** page listing only activity nobody could
+classify — bank lines the categorizer could not place, and amounts already posted to
+suspense. Rows the software categorized confidently are deliberately excluded. The
+picker offers income and expense accounts by name only: no balances, no account
+numbers, no balance-sheet accounts. Two extra answers exist, **Personal, not business**
+and **I am not sure** (which asks for a note).
+
+Nothing a client does here posts. Answers arrive as suggestions on Practice →
+Uncategorized → Client suggested, where staff approve, override or send them back.
+
+Attaching a receipt: each row has **Attach a photo or receipt** — images and PDFs, 10 MB
+per file, up to 10 files per transaction. It uploads immediately rather than waiting for
+"Send to my bookkeeper", because a client often has the photo before it has the answer.
+The file is stored as an ordinary attachment on the transaction or bank line, so it shows
+up on the paperclip staff already use on Practice → Uncategorized; there is no separate
+client inbox. A client can list and remove only its own uploads — files the firm attached
+to the same row are never shown in the portal, not even by filename.
+
+Getting into the screen: the portal has no navigation bar, so the way in is the
+**Categorize transactions** tile on the portal dashboard. It appears whenever the flag
+and the per-contact tick are both on, including when the queue is empty.

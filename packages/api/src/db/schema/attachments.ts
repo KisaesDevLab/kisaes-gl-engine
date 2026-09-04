@@ -14,6 +14,11 @@ export const attachments = pgTable('attachments', {
   mimeType: varchar('mime_type', { length: 100 }),
   attachableType: varchar('attachable_type', { length: 50 }).notNull(),
   attachableId: uuid('attachable_id').notNull(),
+  // Migration 0165 — set only when a PORTAL CONTACT uploaded the file
+  // (currently the categorize screen). NULL means staff, which is every
+  // pre-existing row. The portal lists back only its own uploads: filenames
+  // the firm chose can disclose more than a client should see.
+  uploadedByContactId: uuid('uploaded_by_contact_id'),
   ocrStatus: varchar('ocr_status', { length: 20 }),
   ocrVendor: varchar('ocr_vendor', { length: 255 }),
   ocrDate: date('ocr_date'),

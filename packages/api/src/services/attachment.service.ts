@@ -38,6 +38,12 @@ export async function upload(
   file: { originalname: string; buffer: Buffer; mimetype: string; size: number },
   attachableType: string,
   attachableId: string,
+  // Optional provenance. `uploadedByContactId` is set only by the PORTAL
+  // (migration 0165) so the client can list back its own files without
+  // seeing the firm's; `companyId` scopes the row when the caller knows it.
+  // Both default to null, which is exactly what every staff caller wrote
+  // before, so this is additive for them.
+  opts: { uploadedByContactId?: string | null; companyId?: string | null } = {},
 ) {
   if (file.size > env.MAX_FILE_SIZE_MB * 1024 * 1024) {
     throw AppError.badRequest(`File exceeds maximum size of ${env.MAX_FILE_SIZE_MB}MB`);
@@ -75,6 +81,8 @@ export async function upload(
     mimeType: file.mimetype,
     attachableType,
     attachableId,
+    uploadedByContactId: opts.uploadedByContactId ?? null,
+    companyId: opts.companyId ?? null,
     storageKey,
     storageProvider: storageProviderName,
     providerFileId: providerFileId || null,
