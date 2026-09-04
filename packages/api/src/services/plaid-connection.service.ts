@@ -4,7 +4,7 @@
 
 import { eq, and, sql, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { plaidItems, plaidAccounts, plaidAccountMappings, plaidItemActivity, bankFeedItems, accounts } from '../db/schema/index.js';
+import { plaidItems, plaidAccounts, plaidAccountMappings, plaidItemActivity, bankFeedItems, bankConnections, accounts } from '../db/schema/index.js';
 import { encrypt, decrypt } from '../utils/encryption.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -549,6 +549,34 @@ export async function assertCanAccessItem(userId: string, itemId: string): Promi
 
 // ─── Tier 1: Unmap Company ─────────────────────────────────────
 
+/**
+ * The bank_connections rows a Plaid item feeds, for one tenant.
+ *
+ * Needed because bank_feed_items.bank_connection_id is a BANK_CONNECTIONS id,
+ * not a plaid_items id. Both callers below used to compare it directly against
+ * the plaid item's uuid, which can never match — so "also delete pending feed
+ * items" silently deleted nothing, every time, for as long as the option has
+ * existed.
+ *
+ * Matched on provider_item_id rather than the mapped GL account: the GL account
+ * can also be fed by a manual Statement Import connection (four tenants here do
+ * exactly that), and deleting those rows would be wrong. Every Plaid connection
+ * in this install carries provider_item_id, and getOrCreatePlaidConnection
+ * stamps it on creation.
+ */
+async function plaidConnectionIdsFor(tenantId: string, plaidItemRowId: string): Promise<string[]> {
+  const item = await db.query.plaidItems.findFirst({ where: eq(plaidItems.id, plaidItemRowId) });
+  if (!item?.plaidItemId) return [];
+
+  const rows = await db.select({ id: bankConnections.id }).from(bankConnections)
+    .where(and(
+      eq(bankConnections.tenantId, tenantId),
+      eq(bankConnections.provider, 'plaid'),
+      eq(bankConnections.providerItemId, item.plaidItemId),
+    ));
+  return rows.map((r) => r.id);
+}
+
 export async function unmapCompany(plaidItemId: string, tenantId: string, deletePendingItems: boolean, userId: string) {
   const { users } = await import('../db/schema/index.js');
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
@@ -570,11 +598,18 @@ export async function unmapCompany(plaidItemId: string, tenantId: string, delete
       .where(and(eq(plaidAccountMappings.tenantId, tenantId), eq(plaidAccountMappings.id, m.id)));
   }
 
-  // Optionally delete pending feed items
+  // Optionally delete pending feed items. Resolved through the tenant's
+  // bank_connections for this item — comparing bank_connection_id against the
+  // plaid item id, as this did, never matched anything.
   if (deletePendingItems) {
-    await db.delete(bankFeedItems).where(
-      and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.bankConnectionId, plaidItemId), eq(bankFeedItems.status, 'pending')),
-    );
+    const connectionIds = await plaidConnectionIdsFor(tenantId, plaidItemId);
+    if (connectionIds.length > 0) {
+      await db.delete(bankFeedItems).where(and(
+        eq(bankFeedItems.tenantId, tenantId),
+        inArray(bankFeedItems.bankConnectionId, connectionIds),
+        eq(bankFeedItems.status, 'pending'),
+      ));
+    }
   }
 
   await logActivity(plaidItemId, tenantId, 'company_unmapped_all', userId, user?.displayName || null, {
@@ -640,12 +675,18 @@ export async function deleteConnection(plaidItemId: string, deletePendingItems: 
   const allMappings = await getAllMappingsForItem(plaidItemId);
   const affectedTenants = [...new Set(allMappings.map((m) => m.tenantId))];
 
-  // 3. Delete pending feed items if opted in
+  // 3. Delete pending feed items if opted in. Same correction as
+  // unmapCompany: bank_feed_items are keyed to a bank_connections row, which
+  // has to be looked up per tenant.
   if (deletePendingItems) {
     for (const tenantId of affectedTenants) {
-      await db.delete(bankFeedItems).where(
-        and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.bankConnectionId, plaidItemId), eq(bankFeedItems.status, 'pending')),
-      );
+      const connectionIds = await plaidConnectionIdsFor(tenantId, plaidItemId);
+      if (connectionIds.length === 0) continue;
+      await db.delete(bankFeedItems).where(and(
+        eq(bankFeedItems.tenantId, tenantId),
+        inArray(bankFeedItems.bankConnectionId, connectionIds),
+        eq(bankFeedItems.status, 'pending'),
+      ));
     }
   }
 

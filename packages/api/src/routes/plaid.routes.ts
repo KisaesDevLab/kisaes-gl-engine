@@ -9,6 +9,7 @@ import {
   plaidExchangeSchema, plaidCreateAndMapSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
 import * as plaidClient from '../services/plaid-client.service.js';
 import * as plaidConnection from '../services/plaid-connection.service.js';
@@ -41,6 +42,20 @@ const updateLinkTokenSchema = z.object({
 
 export const plaidRouter = Router();
 
+// Every route here was `authenticate` only, with no permission gate at all —
+// so a readonly-role user, or a client-type user, could unmap a bank account
+// from its ledger account, remap it, toggle syncing, or delete a whole
+// connection. Every neighbouring banking route has been gated for a long time
+// (banking.routes.ts does exactly this), and the invite routes here grew their
+// own inline role checks precisely because the router had none.
+//
+// requireResource maps the HTTP method to the action, so reads stay open to
+// anyone with banking read and every mutation needs banking update. It needs
+// nothing beyond what authenticate sets, which is why it can sit here rather
+// than after companyContext.
+plaidRouter.use(authenticate);
+plaidRouter.use(requireResource('banking'));
+
 // ─── Bank connection invites (staff side) ──────────────────────
 //
 // Email/SMS a client a tokenized public link (/connect/:token) that runs
@@ -69,7 +84,7 @@ const inviteGuard = async (req: Request, _res: Response, next: NextFunction) => 
   } catch (err) { next(err); }
 };
 
-plaidRouter.post('/invites', authenticate, inviteGuard, validate(createInviteSchema), async (req, res) => {
+plaidRouter.post('/invites', inviteGuard, validate(createInviteSchema), async (req, res) => {
   const bankConnectInvite = await import('../services/bank-connect-invite.service.js');
   const { baseUrlFor } = await import('../utils/base-url.js');
   const result = await bankConnectInvite.createInvite({
@@ -85,20 +100,20 @@ plaidRouter.post('/invites', authenticate, inviteGuard, validate(createInviteSch
   res.status(201).json(result);
 });
 
-plaidRouter.get('/invites', authenticate, inviteGuard, async (req, res) => {
+plaidRouter.get('/invites', inviteGuard, async (req, res) => {
   const bankConnectInvite = await import('../services/bank-connect-invite.service.js');
   const limit = Math.min(parseInt(String(req.query['limit'] ?? '50'), 10) || 50, 200);
   const offset = Math.max(parseInt(String(req.query['offset'] ?? '0'), 10) || 0, 0);
   res.json(await bankConnectInvite.listInvites(req.tenantId, { limit, offset }));
 });
 
-plaidRouter.post('/invites/:id/resend', authenticate, inviteGuard, async (req, res) => {
+plaidRouter.post('/invites/:id/resend', inviteGuard, async (req, res) => {
   const bankConnectInvite = await import('../services/bank-connect-invite.service.js');
   const { baseUrlFor } = await import('../utils/base-url.js');
   res.json(await bankConnectInvite.resendInvite(req.tenantId, req.params['id']!, req.userId, baseUrlFor(req)));
 });
 
-plaidRouter.post('/invites/:id/revoke', authenticate, inviteGuard, async (req, res) => {
+plaidRouter.post('/invites/:id/revoke', inviteGuard, async (req, res) => {
   const bankConnectInvite = await import('../services/bank-connect-invite.service.js');
   await bankConnectInvite.revokeInvite(req.tenantId, req.params['id']!, req.userId);
   res.json({ revoked: true });
@@ -114,7 +129,7 @@ const sendRepairInviteSchema = z.object({
   message: z.string().max(2000).optional(),
 });
 
-plaidRouter.post('/items/:id/send-repair-invite', authenticate, inviteGuard, validate(sendRepairInviteSchema), async (req, res) => {
+plaidRouter.post('/items/:id/send-repair-invite', inviteGuard, validate(sendRepairInviteSchema), async (req, res) => {
   await plaidConnection.assertCanAccessItem(req.userId, req.params['id']!);
   const bankConnectInvite = await import('../services/bank-connect-invite.service.js');
   const { baseUrlFor } = await import('../utils/base-url.js');
@@ -132,19 +147,19 @@ plaidRouter.post('/items/:id/send-repair-invite', authenticate, inviteGuard, val
 
 // ─── Link Token ────────────────────────────────────────────────
 
-plaidRouter.post('/link-token', authenticate, async (req, res) => {
+plaidRouter.post('/link-token', async (req, res) => {
   const linkToken = await plaidClient.createLinkToken('system', req.userId);
   res.json({ linkToken });
 });
 
-plaidRouter.post('/link-token/update', authenticate, validate(updateLinkTokenSchema), async (req, res) => {
+plaidRouter.post('/link-token/update', validate(updateLinkTokenSchema), async (req, res) => {
   const linkToken = await plaidConnection.getUpdateLinkToken(req.body.itemId, req.userId);
   res.json({ linkToken });
 });
 
 // ─── Exchange & Connection (System-Scoped) ─────────────────────
 
-plaidRouter.post('/exchange', authenticate, validate(plaidExchangeSchema), async (req, res) => {
+plaidRouter.post('/exchange', validate(plaidExchangeSchema), async (req, res) => {
   const result = await plaidConnection.createConnection(req.userId, req.body.publicToken, {
     institutionId: req.body.institutionId,
     institutionName: req.body.institutionName,
@@ -161,7 +176,7 @@ plaidRouter.post('/exchange', authenticate, validate(plaidExchangeSchema), async
 
 // ─── Check Existing Institution ────────────────────────────────
 
-plaidRouter.get('/check-institution', authenticate, async (req, res) => {
+plaidRouter.get('/check-institution', async (req, res) => {
   const institutionId = req.query['institutionId'] as string;
   const existing = await plaidConnection.checkExistingInstitution(institutionId);
   if (existing) {
@@ -181,21 +196,21 @@ plaidRouter.get('/check-institution', authenticate, async (req, res) => {
 
 // ─── Items (Filtered by User Visibility) ──────────────────────
 
-plaidRouter.get('/items', authenticate, async (req, res) => {
+plaidRouter.get('/items', async (req, res) => {
   // Scope to the active client (tenant) so a workspace's Bank Connections
   // screen shows only its own Plaid items, not every client the user can reach.
   const items = await plaidConnection.getItemsForUser(req.userId, req.tenantId);
   res.json({ items });
 });
 
-plaidRouter.get('/items/:id', authenticate, async (req, res) => {
+plaidRouter.get('/items/:id', async (req, res) => {
   const item = await plaidConnection.getItemDetail(req.userId, req.params['id']!);
   res.json(item);
 });
 
 // ─── Tier 1: Unmap Company ─────────────────────────────────────
 
-plaidRouter.post('/items/:id/unmap-company', authenticate, validate(unmapCompanySchema), async (req, res) => {
+plaidRouter.post('/items/:id/unmap-company', validate(unmapCompanySchema), async (req, res) => {
   // Visibility gate: the caller must already have a relationship to
   // this item (creator, super admin, or mapped into one of its
   // accounts in a tenant they can access). Without this, any
@@ -208,7 +223,7 @@ plaidRouter.post('/items/:id/unmap-company', authenticate, validate(unmapCompany
 
 // ─── Tier 2: Delete Connection ─────────────────────────────────
 
-plaidRouter.delete('/items/:id', authenticate, async (req, res) => {
+plaidRouter.delete('/items/:id', async (req, res) => {
   // `deleteConnection` already enforces creator / super-admin / admin-of-all-tenants
   // permission internally; we still pre-check here so random-UUID probes
   // can't distinguish "doesn't exist" from "exists but not yours".
@@ -223,7 +238,7 @@ plaidRouter.delete('/items/:id', authenticate, async (req, res) => {
 
 // ─── Account Mapping (Two-Step) ────────────────────────────────
 
-plaidRouter.post('/accounts/:id/assign', authenticate, validate(assignAccountSchema), async (req, res) => {
+plaidRouter.post('/accounts/:id/assign', validate(assignAccountSchema), async (req, res) => {
   // Tenant comes from the JWT only (CLAUDE.md §17 — never trust
   // client-supplied tenant_id). The previous version of this route
   // accepted `req.body.tenantId` and let a user assign a Plaid
@@ -235,32 +250,32 @@ plaidRouter.post('/accounts/:id/assign', authenticate, validate(assignAccountSch
   res.status(201).json(mapping);
 });
 
-plaidRouter.post('/accounts/:id/unmap', authenticate, async (req, res) => {
+plaidRouter.post('/accounts/:id/unmap', async (req, res) => {
   await plaidMapping.unmapAccount(req.params['id']!, req.tenantId);
   res.json({ unmapped: true });
 });
 
-plaidRouter.put('/accounts/:id/remap', authenticate, validate(remapAccountSchema), async (req, res) => {
+plaidRouter.put('/accounts/:id/remap', validate(remapAccountSchema), async (req, res) => {
   const mapping = await plaidMapping.remapAccount(req.params['id']!, req.tenantId, req.body.coaAccountId, req.userId);
   res.json(mapping);
 });
 
-plaidRouter.put('/accounts/:id/sync-date', authenticate, validate(syncDateSchema), async (req, res) => {
+plaidRouter.put('/accounts/:id/sync-date', validate(syncDateSchema), async (req, res) => {
   await plaidMapping.updateSyncStartDate(req.params['id']!, req.tenantId, req.body.syncStartDate);
   res.json({ updated: true });
 });
 
-plaidRouter.put('/accounts/:id/sync-toggle', authenticate, validate(syncToggleSchema), async (req, res) => {
+plaidRouter.put('/accounts/:id/sync-toggle', validate(syncToggleSchema), async (req, res) => {
   await plaidMapping.toggleSync(req.params['id']!, req.tenantId, req.body.enabled);
   res.json({ updated: true });
 });
 
-plaidRouter.get('/accounts/:id/suggestions', authenticate, async (req, res) => {
+plaidRouter.get('/accounts/:id/suggestions', async (req, res) => {
   const suggestions = await plaidMapping.autoSuggestMapping(req.tenantId, req.params['id']!, req.userId);
   res.json({ suggestions });
 });
 
-plaidRouter.post('/accounts/:id/create-and-map', authenticate, validate(
+plaidRouter.post('/accounts/:id/create-and-map', validate(
   plaidCreateAndMapSchema.extend({ syncStartDate: z.string().optional() }),
 ), async (req, res) => {
   const account = await plaidMapping.createAndMapAccount(
@@ -271,7 +286,7 @@ plaidRouter.post('/accounts/:id/create-and-map', authenticate, validate(
 
 // ─── Sync ──────────────────────────────────────────────────────
 
-plaidRouter.post('/items/:id/sync', authenticate, async (req, res) => {
+plaidRouter.post('/items/:id/sync', async (req, res) => {
   await plaidConnection.assertCanAccessItem(req.userId, req.params['id']!);
   // Manual sync = a human asking "check the bank NOW" — request an
   // on-demand Plaid refresh first. (The scheduler and webhook paths
@@ -284,13 +299,13 @@ plaidRouter.post('/items/:id/sync', authenticate, async (req, res) => {
 // Full re-import — reset the Plaid cursor and replay all available
 // history. Needed after deleting transactions/feed items locally, since
 // a normal sync won't re-fetch already-delivered transactions.
-plaidRouter.post('/items/:id/resync', authenticate, async (req, res) => {
+plaidRouter.post('/items/:id/resync', async (req, res) => {
   await plaidConnection.assertCanAccessItem(req.userId, req.params['id']!);
   const result = await plaidSync.resetAndResyncItem(req.params['id']!, req.tenantId, { refresh: true });
   res.json(result);
 });
 
-plaidRouter.get('/items/:id/sync-history', authenticate, async (req, res) => {
+plaidRouter.get('/items/:id/sync-history', async (req, res) => {
   await plaidConnection.assertCanAccessItem(req.userId, req.params['id']!);
   const { db } = await import('../db/index.js');
   const { plaidItems } = await import('../db/schema/index.js');
@@ -309,7 +324,7 @@ plaidRouter.get('/items/:id/sync-history', authenticate, async (req, res) => {
 
 // ─── Activity Log ──────────────────────────────────────────────
 
-plaidRouter.get('/items/:id/activity', authenticate, async (req, res) => {
+plaidRouter.get('/items/:id/activity', async (req, res) => {
   await plaidConnection.assertCanAccessItem(req.userId, req.params['id']!);
   const { db } = await import('../db/index.js');
   const { plaidItemActivity } = await import('../db/schema/index.js');
