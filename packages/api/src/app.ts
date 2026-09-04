@@ -26,6 +26,7 @@ import { reportsRouter } from './routes/reports.routes.js';
 import { reportPacksRouter } from './routes/report-packs.routes.js';
 import { bankingRouter } from './routes/banking.routes.js';
 import { dashboardRouter } from './routes/dashboard.routes.js';
+import { ledgerVersionRouter } from './routes/ledger-version.routes.js';
 import { attachmentsRouter } from './routes/attachments.routes.js';
 import { recurringRouter } from './routes/recurring.routes.js';
 import { batchRouter } from './routes/batch.routes.js';
@@ -486,6 +487,8 @@ app.use('/api/v1/reports', reportPacksRouter);
 app.use('/api/v1/reports', reportsRouter);
 app.use('/api/v1/banking', bankingRouter);
 app.use('/api/v1/dashboard', dashboardRouter);
+// Cheap change-detector so clients can refetch only when the books move.
+app.use('/api/v1/ledger-version', ledgerVersionRouter);
 app.use('/api/v1/attachments', attachmentsRouter);
 app.use('/api/v1/recurring', recurringRouter);
 app.use('/api/v1/batch', batchRouter);

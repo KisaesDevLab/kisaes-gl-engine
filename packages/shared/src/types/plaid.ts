@@ -75,6 +75,20 @@ export interface PlaidAccountMapping {
   mappedBy: string;
   mappedByName: string | null;
   createdAt: string;
+  /**
+   * The chart-of-accounts account this feed posts into, resolved server-side
+   * for display. The Bank Connections screen used to say only "Mapped", which
+   * is how a live bank feed sat pointed at the Payments Clearing system
+   * account with nobody able to see it.
+   */
+  mappedAccountNumber?: string | null;
+  mappedAccountName?: string | null;
+  /**
+   * Set when the mapped account carries a system role (suspense, payments
+   * clearing, A/R, ...). Feeding a bank into one is nearly always a mis-pick,
+   * so the UI flags it instead of showing a plain "Mapped".
+   */
+  mappedAccountSystemTag?: string | null;
 }
 
 export interface PlaidMappingSuggestion {

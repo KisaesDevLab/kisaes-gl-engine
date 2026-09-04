@@ -2,9 +2,9 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, sql, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { plaidItems, plaidAccounts, plaidAccountMappings, plaidItemActivity, bankFeedItems } from '../db/schema/index.js';
+import { plaidItems, plaidAccounts, plaidAccountMappings, plaidItemActivity, bankFeedItems, accounts } from '../db/schema/index.js';
 import { encrypt, decrypt } from '../utils/encryption.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -31,10 +31,45 @@ export async function getVisibleAccounts(userId: string, plaidItemId: string, sc
   const allAccounts = await db.select().from(plaidAccounts).where(and(eq(plaidAccounts.plaidItemId, plaidItemId), eq(plaidAccounts.isActive, true)));
 
   // One mapping lookup per account, reused below.
-  const mappingByAccount = new Map<string, typeof plaidAccountMappings.$inferSelect>();
+  type MappingRow = typeof plaidAccountMappings.$inferSelect & {
+    // The chart-of-accounts account this feeds, resolved for display. Without
+    // it the Bank Connections screen could only say "Mapped", which is how a
+    // client's bank ended up wired to the Payments Clearing system account
+    // with nobody able to see it.
+    mappedAccountNumber: string | null;
+    mappedAccountName: string | null;
+    /** Set when the target carries a system role. Feeding a bank into one is
+     *  nearly always a mis-pick, so the UI warns rather than saying "Mapped". */
+    mappedAccountSystemTag: string | null;
+  };
+  const mappingByAccount = new Map<string, MappingRow>();
+  const rawMappings: Array<typeof plaidAccountMappings.$inferSelect & { plaidAcctId: string }> = [];
   for (const acct of allAccounts) {
     const m = await db.query.plaidAccountMappings.findFirst({ where: eq(plaidAccountMappings.plaidAccountId, acct.id) });
-    if (m) mappingByAccount.set(acct.id, m);
+    if (m) rawMappings.push({ ...m, plaidAcctId: acct.id });
+  }
+
+  // Resolve every mapped GL account in ONE query rather than per row.
+  const targetIds = [...new Set(rawMappings.map((m) => m.mappedAccountId))];
+  const targets = targetIds.length > 0
+    ? await db.select({
+        id: accounts.id,
+        accountNumber: accounts.accountNumber,
+        name: accounts.name,
+        systemTag: accounts.systemTag,
+      }).from(accounts).where(inArray(accounts.id, targetIds))
+    : [];
+  const targetById = new Map(targets.map((t) => [t.id, t]));
+
+  for (const m of rawMappings) {
+    const t = targetById.get(m.mappedAccountId);
+    const { plaidAcctId, ...mapping } = m;
+    mappingByAccount.set(plaidAcctId, {
+      ...mapping,
+      mappedAccountNumber: t?.accountNumber ?? null,
+      mappedAccountName: t?.name ?? null,
+      mappedAccountSystemTag: t?.systemTag ?? null,
+    });
   }
 
   const visible = [];
