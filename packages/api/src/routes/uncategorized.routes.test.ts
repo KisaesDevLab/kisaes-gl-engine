@@ -284,3 +284,36 @@ describe('uncategorized router — posting to and clearing suspense', () => {
     expect(res.status).toBe(404);
   });
 });
+
+// The "Not posted" tab rendered nothing however many rows existed, because the
+// route read `result.items` while bankFeedService.list returns { data, total }.
+// The cast invented the key it was looking for, so nothing type-checked its
+// way to the surface. These assert the shape the web hook actually consumes.
+describe('GET /unposted — the shape the Not posted tab reads', () => {
+  it('returns the pending rows under `items`, not an empty list', async () => {
+    await seedPendingFeedItem('42.5000');
+    await seedPendingFeedItem('19.9900');
+
+    const res = await request('GET', '/api/v1/practice/uncategorized/unposted', undefined, ownerToken);
+    expect(res.status).toBe(200);
+    expect(res.json.total).toBe(2);
+    expect(Array.isArray(res.json.items)).toBe(true);
+    expect(res.json.items).toHaveLength(2);
+    expect(res.json.items.map((i: { amount: string }) => i.amount).sort())
+      .toEqual(['19.9900', '42.5000']);
+  });
+
+  it('carries an attachmentCount on every row', async () => {
+    await seedPendingFeedItem();
+    const res = await request('GET', '/api/v1/practice/uncategorized/unposted', undefined, ownerToken);
+    // Zero is fine; the point is the field exists, since it is what the
+    // paperclip reads for a receipt a client attached from the portal.
+    expect(res.json.items[0].attachmentCount).toBe(0);
+  });
+
+  it('is empty only when there is genuinely nothing pending', async () => {
+    const res = await request('GET', '/api/v1/practice/uncategorized/unposted', undefined, ownerToken);
+    expect(res.json.total).toBe(0);
+    expect(res.json.items).toEqual([]);
+  });
+});

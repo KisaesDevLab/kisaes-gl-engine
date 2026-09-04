@@ -9,6 +9,7 @@ import { encrypt, decrypt } from '../utils/encryption.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as plaidClient from './plaid-client.service.js';
+import { BANK_FEED_SYSTEM_TAG } from './system-accounts.service.js';
 
 // ─── Existing Institution Detection ────────────────────────────
 
@@ -38,8 +39,14 @@ export async function getVisibleAccounts(userId: string, plaidItemId: string, sc
     // with nobody able to see it.
     mappedAccountNumber: string | null;
     mappedAccountName: string | null;
-    /** Set when the target carries a system role. Feeding a bank into one is
-     *  nearly always a mis-pick, so the UI warns rather than saying "Mapped". */
+    /**
+     * Set ONLY when the target carries a system role a bank feed has no
+     * business posting into. `cash_on_hand` is excluded: it is the tag the
+     * correct account for a bank feed carries, and 14 healthy connections
+     * across the install map to one, so flagging it warned on almost every
+     * good connection. Anything else here (payments_clearing, suspense, A/R,
+     * ...) is very likely a mis-pick.
+     */
     mappedAccountSystemTag: string | null;
   };
   const mappingByAccount = new Map<string, MappingRow>();
@@ -68,7 +75,9 @@ export async function getVisibleAccounts(userId: string, plaidItemId: string, sc
       ...mapping,
       mappedAccountNumber: t?.accountNumber ?? null,
       mappedAccountName: t?.name ?? null,
-      mappedAccountSystemTag: t?.systemTag ?? null,
+      mappedAccountSystemTag: t?.systemTag && t.systemTag !== BANK_FEED_SYSTEM_TAG
+        ? t.systemTag
+        : null,
     });
   }
 
@@ -157,6 +166,93 @@ export async function getVisibleAccounts(userId: string, plaidItemId: string, sc
   return { accounts: visible, hiddenAccountCount: hiddenCount };
 }
 
+// ─── Same-tenant duplicate detection ───────────────────────────
+//
+// The one this install actually needed. A client re-linked the same bank
+// account into the SAME tenant; nothing noticed, and 513 duplicate rows
+// arrived. detectAccountsConnectedElsewhere below has exactly the right
+// matching logic but is built for a different question — it excludes the
+// caller's own tenants on purpose and only warns.
+//
+// The matching key is the same, and the reason is the same: a fresh Link mints
+// a new plaid_item_id and account_id every time, so those can never identify a
+// re-link. persistent_account_id is the stable one when Plaid supplies it
+// (about a quarter of accounts here), with institution + mask + subtype as the
+// fallback.
+//
+// Two deliberate differences from the cross-tenant version:
+//   - no mapping join. An account connected but not yet mapped is still
+//     connected, and would still duplicate the moment someone mapped it.
+//   - returns WHAT matched, not a boolean, so the caller can name the
+//     institution and the account in an error a user can act on.
+
+export interface SameTenantAccountMatch {
+  institutionName: string | null;
+  mask: string | null;
+  /** The chart-of-accounts account already fed, when the match is mapped. */
+  mappedAccountName: string | null;
+  matchedOn: 'persistent_account_id' | 'institution_mask_subtype';
+}
+
+export async function findAccountAlreadyConnectedInTenant(
+  tenantId: string,
+  institutionId: string | null | undefined,
+  plaidAccountList: Array<{ persistent_account_id?: string | null; mask?: string | null; subtype?: string | null }>,
+): Promise<SameTenantAccountMatch | null> {
+  for (const acct of plaidAccountList) {
+    const persistent = acct.persistent_account_id || null;
+    const mask = acct.mask || null;
+    const subtype = acct.subtype || null;
+    // No usable key for this account — do not guess, a false block is worse
+    // than a missed one here.
+    if (!persistent && !(institutionId && mask && subtype)) continue;
+
+    const rows = await db.execute<{
+      institution_name: string | null;
+      mask: string | null;
+      mapped_account_name: string | null;
+    }>(sql`
+      SELECT pi.institution_name, pa.mask, a.name AS mapped_account_name
+      FROM plaid_accounts pa
+      JOIN plaid_items pi ON pi.id = pa.plaid_item_id
+      -- LEFT, not INNER: an unmapped duplicate still counts.
+      LEFT JOIN plaid_account_mappings pam
+        ON pam.plaid_account_id = pa.id AND pam.tenant_id = ${tenantId}
+      LEFT JOIN accounts a
+        ON a.id = pam.mapped_account_id AND a.tenant_id = ${tenantId}
+      WHERE pi.removed_at IS NULL
+        AND pa.is_active = true
+        -- Reach this tenant either through a mapping it owns, or through an
+        -- item it created but has not mapped yet.
+        AND (pam.tenant_id = ${tenantId} OR pi.created_by IN (
+              SELECT user_id FROM user_tenant_access WHERE tenant_id = ${tenantId}
+            ))
+        AND (
+          (${persistent}::text IS NOT NULL AND pa.persistent_account_id = ${persistent})
+          OR (${persistent}::text IS NULL
+              AND ${institutionId ?? null}::text IS NOT NULL
+              AND pi.plaid_institution_id = ${institutionId ?? null}
+              AND pa.mask = ${mask}
+              AND pa.account_subtype = ${subtype})
+        )
+      LIMIT 1
+    `);
+
+    const hit = (rows.rows as Array<{
+      institution_name: string | null; mask: string | null; mapped_account_name: string | null;
+    }>)[0];
+    if (hit) {
+      return {
+        institutionName: hit.institution_name,
+        mask: hit.mask,
+        mappedAccountName: hit.mapped_account_name,
+        matchedOn: persistent ? 'persistent_account_id' : 'institution_mask_subtype',
+      };
+    }
+  }
+  return null;
+}
+
 // ─── Cross-tenant duplicate detection ──────────────────────────
 // Privacy-safe: returns only WHETHER the same real bank account is already
 // connected + mapped under a tenant the user has no access to — never the
@@ -226,6 +322,10 @@ async function getUserAdminTenants(userId: string): Promise<string[]> {
 
 export async function createConnection(userId: string, publicToken: string, metadata: {
   institutionId?: string; institutionName?: string; accounts?: any[]; linkSessionId?: string; forceNew?: boolean;
+  /** The tenant this connection is being made for. Required to catch a
+   *  re-link of an account the tenant already syncs; when absent the guard
+   *  cannot run and is skipped rather than guessing. */
+  tenantId?: string;
   /** 'client_invite' when the exchange came from a bank-connect invite link (activity attribution). */
   source?: string;
 }) {
@@ -289,6 +389,35 @@ export async function createConnection(userId: string, publicToken: string, meta
     await logActivity(existing.id, null, 'item_reauthorized', userId, user?.displayName || null, { institutionName: metadata.institutionName });
     // Never return the encrypted access token (or rely on the client to drop it).
     return { item: { ...existing, accessTokenEncrypted: undefined }, isExisting: true };
+  }
+
+  // DUPLICATE GUARD. A fresh Link always looks new — Plaid mints a new item id
+  // every session — so without this a client re-linking the same bank simply
+  // gets a second parallel feed. That is how one tenant ended up importing 513
+  // duplicate transactions.
+  //
+  // Placed before the plaidItems insert deliberately: throwing here lands in
+  // the orphan guard above, which removes the item at Plaid, so a blocked
+  // attempt leaves nothing behind and nothing billed.
+  //
+  // forceNew is the override for the case nobody predicted; it is only
+  // honoured when the caller is explicit about it.
+  if (metadata.tenantId && !metadata.forceNew) {
+    const already = await findAccountAlreadyConnectedInTenant(
+      metadata.tenantId, metadata.institutionId, plaidAccountList,
+    );
+    if (already) {
+      const where = already.mappedAccountName
+        ? ` It already feeds "${already.mappedAccountName}".`
+        : ' It is connected but not yet mapped to an account.';
+      throw AppError.conflict(
+        `${already.institutionName ?? 'That bank'}${already.mask ? ` account ending ${already.mask}` : ''} ` +
+        `is already connected to this client.${where} ` +
+        'To repair a connection that stopped working, use Fix Connection on the existing one — ' +
+        'that re-authorises it without creating a second feed.',
+        'ACCOUNT_ALREADY_CONNECTED',
+      );
+    }
   }
 
   const [item] = await db.insert(plaidItems).values({

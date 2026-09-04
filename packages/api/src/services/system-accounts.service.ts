@@ -21,6 +21,21 @@ import { auditLog } from '../middleware/audit.js';
 
 export const SUSPENSE_TAG = 'suspense';
 
+/**
+ * The ONE system role a bank feed may legitimately post into.
+ *
+ * Every other system-tagged account — payments_clearing, suspense, A/R, A/P,
+ * retained_earnings — is a holding or control account, and wiring a bank feed
+ * to one silently corrupts both it and the real bank balance. That is exactly
+ * what happened when a client's Plaid feed landed on Payments Clearing, which
+ * was selectable because its detail_type had drifted to 'bank'.
+ *
+ * Kept here rather than in the Plaid services because both the mapping guard
+ * and the Bank Connections read model need the same answer, and a second copy
+ * of this rule would drift.
+ */
+export const BANK_FEED_SYSTEM_TAG = 'cash_on_hand';
+
 export interface SystemAccountSpec {
   systemTag: string;
   name: string;

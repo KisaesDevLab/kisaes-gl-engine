@@ -150,6 +150,11 @@ plaidRouter.post('/exchange', authenticate, validate(plaidExchangeSchema), async
     institutionName: req.body.institutionName,
     accounts: req.body.accounts,
     linkSessionId: req.body.linkSessionId,
+    // Both of these were missing, which is why the duplicate guard had nothing
+    // to scope to and the override never arrived. The tenant comes from the
+    // session, never the body.
+    tenantId: req.tenantId,
+    forceNew: req.body.forceNew === true,
   });
   res.status(201).json(result);
 });

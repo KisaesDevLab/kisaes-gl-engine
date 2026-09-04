@@ -584,6 +584,10 @@ export async function completeInviteConnection(
   const result = await plaidConnection.createConnection(invite.createdBy, publicToken, {
     ...metadata,
     source: 'client_invite',
+    // Scope the duplicate-account guard to the invited client's tenant. This
+    // path matters most: the person clicking the link is the client, who is
+    // the one most likely to re-connect a bank the firm already has.
+    tenantId: invite.tenantId,
   });
 
   const accountCount = Array.isArray(metadata.accounts) ? metadata.accounts.length : 0;

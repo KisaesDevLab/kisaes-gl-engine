@@ -129,8 +129,20 @@ bankingRouter.get('/feed/:id/match-candidates', async (req, res) => {
 });
 
 bankingRouter.put('/feed/:id/exclude', async (req, res) => {
-  await bankFeedService.exclude(req.tenantId, req.params['id']!);
+  await bankFeedService.exclude(req.tenantId, req.params['id']!, req.userId);
   res.json({ message: 'Excluded' });
+});
+
+// Undo an exclusion. The confirm dialog has always promised this was possible;
+// until now nothing implemented it.
+bankingRouter.put('/feed/:id/unexclude', async (req, res) => {
+  await bankFeedService.unexclude(req.tenantId, req.params['id']!, req.userId);
+  res.json({ message: 'Restored' });
+});
+
+bankingRouter.post('/feed/bulk-unexclude', validate(bulkExcludeSchema), async (req, res) => {
+  const result = await bankFeedService.bulkUnexclude(req.tenantId, req.body.feedItemIds, req.userId);
+  res.json(result);
 });
 
 bankingRouter.post('/feed/bulk-approve', validate(bulkApproveSchema), async (req, res) => {
@@ -212,7 +224,7 @@ bankingRouter.post('/feed/bulk-reprocess-rules', validate(bulkReprocessRulesSche
 });
 
 bankingRouter.post('/feed/bulk-exclude', validate(bulkExcludeSchema), async (req, res) => {
-  const result = await bankFeedService.bulkExclude(req.tenantId, req.body.feedItemIds);
+  const result = await bankFeedService.bulkExclude(req.tenantId, req.body.feedItemIds, req.userId);
   res.json(result);
 });
 

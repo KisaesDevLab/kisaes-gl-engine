@@ -97,12 +97,18 @@ uncategorizedRouter.get('/unposted', async (req, res) => {
   // Attachment counts for the rows on THIS page only — one extra query rather
   // than one per row, and bankFeedService.list stays untouched so the main
   // Bank Feed page is unaffected.
-  const items = (result as { items?: Array<{ id: string }> }).items ?? [];
+  //
+  // `list()` returns { data, total }, NOT { items }. Reading `.items` here
+  // silently yielded [] and then overwrote the response with it, so this tab
+  // rendered nothing however many rows existed — and a receipt a client
+  // attached from the portal showed a count nobody could see. Typing did not
+  // catch it because the cast invented the key it was looking for.
+  const items = result.data;
   const counts = await attachmentCountsFor(
     req.tenantId, 'bank_feed_items', items.map((i) => i.id),
   );
   res.json({
-    ...result,
+    total: result.total,
     items: items.map((i) => ({ ...i, attachmentCount: counts.get(i.id) ?? 0 })),
   });
 });

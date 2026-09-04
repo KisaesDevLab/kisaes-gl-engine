@@ -29,6 +29,16 @@ export const plaidExchangeSchema = z.object({
     subtype: z.string().nullable().optional(),
   })).optional(),
   linkSessionId: z.string().optional(),
+  /**
+   * Deliberate override of the duplicate-account guard, for the case where a
+   * user really is connecting a different account that happens to match on
+   * institution + mask + subtype.
+   *
+   * This key was previously set by the UI, silently stripped here, and never
+   * copied by the route, so the escape hatch did not exist end to end. Any
+   * guard that can be overridden needs it to actually arrive.
+   */
+  forceNew: z.boolean().optional(),
 });
 
 export const plaidMapAccountSchema = z.object({

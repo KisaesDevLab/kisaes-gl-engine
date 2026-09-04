@@ -6,6 +6,7 @@ import { eq, and } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { plaidAccounts, plaidAccountMappings, accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { BANK_FEED_SYSTEM_TAG } from './system-accounts.service.js';
 
 // ─── Step 1: Assign Account to Company ─────────────────────────
 
@@ -55,6 +56,22 @@ export async function assignAccountToCompany(plaidAccountId: string, tenantId: s
   const validTypes = ['bank', 'credit_card', 'other_current_asset', 'other_current_liability'];
   if (!validTypes.includes(coaAccount.detailType || '')) {
     throw AppError.badRequest('Only bank, credit card, and current asset/liability accounts can be linked to Plaid');
+  }
+
+  // A SYSTEM account is never a bank feed's destination, with one exception:
+  // cash_on_hand is the role the real bank account carries.
+  //
+  // The detailType check above is not enough on its own. Payments Clearing is
+  // seeded as other_current_asset, but on two tenants it had drifted to
+  // 'bank', which put it in the picker looking like any other bank account —
+  // and a client's live Plaid feed was wired to it. Holding and control
+  // accounts corrupt both themselves and the real bank balance when fed.
+  if (coaAccount.systemTag && coaAccount.systemTag !== BANK_FEED_SYSTEM_TAG) {
+    throw AppError.badRequest(
+      `"${coaAccount.name}" is a system account (${coaAccount.systemTag}) and cannot receive a bank feed. ` +
+      'Choose the bank or credit card account this feed belongs to.',
+      'SYSTEM_ACCOUNT_NOT_FEEDABLE',
+    );
   }
 
   // Check no existing mapping on this Plaid account (one bank account → one company)

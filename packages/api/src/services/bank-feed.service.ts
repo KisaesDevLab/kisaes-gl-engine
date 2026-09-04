@@ -829,11 +829,63 @@ export async function findMatchCandidates(tenantId: string, feedItemId: string) 
   }));
 }
 
-export async function exclude(tenantId: string, feedItemId: string) {
-  await db.update(bankFeedItems).set({
+export async function exclude(tenantId: string, feedItemId: string, userId?: string) {
+  const [updated] = await db.update(bankFeedItems).set({
     status: 'excluded',
     updatedAt: new Date(),
-  }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
+  }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)))
+    .returning();
+
+  // Excluding is how a whole batch of bank activity gets taken out of the
+  // books' path, and it left no trace at all beyond updated_at. Every other
+  // state change on a feed item is audited; this one was not.
+  if (updated) {
+    await auditLog(tenantId, 'update', 'bank_feed', feedItemId, null, { status: 'excluded' }, userId);
+  }
+  return updated;
+}
+
+/**
+ * Put an excluded row back in play.
+ *
+ * The exclude confirmation has always told users "you can restore them later
+ * from the Excluded filter", and that was not true: excluded rows had no
+ * restore path at all, so undoing a mistaken bulk exclude meant direct SQL.
+ *
+ * Only touches rows that are actually 'excluded'. It must never resurrect a
+ * categorized or matched row, which would strand a posted transaction against
+ * a feed line that thinks it is unhandled.
+ */
+export async function unexclude(tenantId: string, feedItemId: string, userId?: string) {
+  const [updated] = await db.update(bankFeedItems).set({
+    status: 'pending',
+    updatedAt: new Date(),
+  }).where(and(
+    eq(bankFeedItems.tenantId, tenantId),
+    eq(bankFeedItems.id, feedItemId),
+    eq(bankFeedItems.status, 'excluded'),
+  )).returning();
+
+  if (!updated) {
+    throw AppError.badRequest('That bank line is not excluded, so there is nothing to restore.');
+  }
+  await auditLog(tenantId, 'update', 'bank_feed', feedItemId, { status: 'excluded' }, { status: 'pending' }, userId);
+  return updated;
+}
+
+/** Restore many at once, mirroring bulkExclude's per-row tolerance. */
+export async function bulkUnexclude(tenantId: string, feedItemIds: string[], userId?: string) {
+  let restored = 0;
+  const failures: Array<{ id: string; error: string }> = [];
+  for (const id of feedItemIds) {
+    try {
+      await unexclude(tenantId, id, userId);
+      restored++;
+    } catch (err) {
+      failures.push({ id, error: err instanceof Error ? err.message : 'unknown error' });
+    }
+  }
+  return { restored, failures };
 }
 
 /**
@@ -1121,7 +1173,7 @@ export async function bulkSetTag(tenantId: string, feedItemIds: string[], tagId:
   return { updated, failures };
 }
 
-export async function bulkExclude(tenantId: string, feedItemIds: string[]) {
+export async function bulkExclude(tenantId: string, feedItemIds: string[], userId?: string) {
   let excluded = 0;
   const failures: Array<{ id: string; error: string }> = [];
   for (const id of feedItemIds) {
@@ -1130,7 +1182,7 @@ export async function bulkExclude(tenantId: string, feedItemIds: string[]) {
         where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, id)),
       });
       if (item && item.status === 'pending') {
-        await exclude(tenantId, id);
+        await exclude(tenantId, id, userId);
         excluded++;
       }
     } catch (err: any) {
