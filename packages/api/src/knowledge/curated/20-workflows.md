@@ -148,3 +148,24 @@ Reading the outcome:
 Distinct from **Re-process** (re-runs the whole extraction; refused once a statement is
 saved, to avoid duplicate imports) and from the Reconciliation page's tenant-wide
 **Backfill check payees** with its optional re-scan of every stored statement.
+
+## Uncategorized: setting a category one row at a time
+
+Practice → Uncategorized (flag `UNCATEGORIZED_REVIEW_V1`), on both the **Not
+posted** and **In suspense** tabs. Each row has a **Category** column using the
+same account picker as the transaction forms.
+
+Picking an account does NOT post. The row shows an amber marker and a **Save**
+button, and a banner says nothing is committed yet. Pressing Save on that row
+posts it and the row leaves the list. The deliberate extra step exists because
+a row vanishing the moment a dropdown closed reads as an accidental posting.
+
+If the ledger refuses the move — closed period, voided entry, adjusting entry,
+or a bank line someone else already handled — the row KEEPS the pick and the
+message says why, rather than clearing the picker and hiding the problem.
+
+The bulk **Set category** action above the table still works the old way: tick
+rows, pick one account, apply to all of them.
+
+Both tabs also show a **Ref** column (check number, falling back to the entry
+number) and a **Payee** column.
