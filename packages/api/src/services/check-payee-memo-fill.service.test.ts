@@ -26,6 +26,7 @@ const txnBlankMemo = crypto.randomUUID();       // memo empty
 const txnHumanMemo = crypto.randomUUID();       // a bookkeeper typed it
 const txnNoPayee = crypto.randomUUID();         // nothing to fill from
 const txnVoided = crypto.randomUUID();          // voided → never rewritten
+const txnBareCheck = crypto.randomUUID();       // memo == 'Check', no feed row
 
 beforeAll(async () => {
   await db.execute(sql`INSERT INTO tenants (id, name, slug) VALUES (${tenantId}, 'Memo Fill Test', ${'memofill-' + tenantId.slice(0, 8)})`);
@@ -44,7 +45,8 @@ beforeAll(async () => {
       (${txnUnknownMemo},    ${tenantId}, 'expense', '2026-07-17', 294.91,  3608, 'Beta Hardware',  'Unknown',    'bank_feed'),
       (${txnBlankMemo},      ${tenantId}, 'check',   '2026-08-13', 2600.00, NULL, 'Gamma Roofing',  '',           'bank_feed'),
       (${txnHumanMemo},      ${tenantId}, 'expense', '2026-08-14', 120.00,  3610, 'Delta Plumbing', 'Q3 deposit refund', 'bank_feed'),
-      (${txnNoPayee},        ${tenantId}, 'expense', '2026-08-14', 150.50,  3611, NULL,             'CHECK 3611', 'bank_feed')
+      (${txnNoPayee},        ${tenantId}, 'expense', '2026-08-14', 150.50,  3611, NULL,             'CHECK 3611', 'bank_feed'),
+      (${txnBareCheck},      ${tenantId}, 'expense', '2026-07-17', 294.91,  1744, 'Kobe Thomas',    'Check',      'bank_feed')
   `);
   await db.execute(sql`
     INSERT INTO transactions (id, tenant_id, txn_type, txn_date, total, check_number, payee_name_on_check, memo, source, voided_at)
@@ -77,7 +79,7 @@ async function memos(): Promise<Map<string, string | null>> {
 describe('backfillCheckPayees — memo sweep', () => {
   it('replaces untouched descriptor memos with the payee and leaves typed ones alone', async () => {
     const report = await backfillCheckPayees(tenantId);
-    expect(report.memosFilled).toBe(3);
+    expect(report.memosFilled).toBe(4);
 
     const m = await memos();
     // Descriptor still matching its feed row → rewritten, check number kept.
@@ -89,6 +91,10 @@ describe('backfillCheckPayees — memo sweep', () => {
 
     // A memo somebody typed is never overwritten.
     expect(m.get(txnHumanMemo)).toBe('Q3 deposit refund');
+    // A bare "Check" descriptor with no feed row to compare against is still
+    // recognised as the bank's text, not a person's.
+    expect(m.get(txnBareCheck)).toBe('Check 1744 - Kobe Thomas');
+
     // No payee to fill from.
     expect(m.get(txnNoPayee)).toBe('CHECK 3611');
     // Voided rows are left exactly as posted.

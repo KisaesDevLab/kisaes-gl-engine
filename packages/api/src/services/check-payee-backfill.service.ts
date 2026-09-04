@@ -100,6 +100,11 @@ async function fillCheckMemosFromPayee(tenantId: string, companyId?: string | nu
       AND (
         COALESCE(btrim(t.memo), '') = ''
         OR lower(btrim(t.memo)) = 'unknown'
+        -- A memo that is only the word "check", with or without the number
+        -- ("Check", "CHECK 3607", "Check #1234"), is the bank's descriptor
+        -- carried through, not something a person wrote. Replacing it with
+        -- "Check 3607 - Acme Supply Co" strictly adds information.
+        OR btrim(t.memo) ~* '^check[[:space:]]*#?[[:space:]]*[0-9]*$'
         OR EXISTS (
           SELECT 1 FROM bank_feed_items b
           WHERE b.tenant_id = t.tenant_id
