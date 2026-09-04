@@ -972,6 +972,17 @@ and **I am not sure** (which asks for a note).
 Nothing a client does here posts. Answers arrive as suggestions on Practice →
 Uncategorized → Client suggested, where staff approve, override or send them back.
 
+The note: every row has a note box, always available and NOT gated on picking a
+category — a client who cannot name the account can usually still say what the
+payment was for. A note on its own is a complete answer and is submitted as
+"I am not sure" carrying the note. Choosing "I am not sure" with no note is
+refused (server reason `note_required`) and the portal says so rather than
+reporting "sent 0 answers". Rows the server turns down keep what the client
+typed and explain why. Staff read the note in its own **Client note** column on
+Practice → Uncategorized → Client suggested, shown in full beside what the
+client picked. A returning client sees its own note read back on rows still
+waiting.
+
 Attaching a receipt: each row has **Attach a photo or receipt** — images and PDFs, 10 MB
 per file, up to 10 files per transaction. It uploads immediately rather than waiting for
 "Send to my bookkeeper", because a client often has the photo before it has the answer.
