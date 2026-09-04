@@ -24,6 +24,12 @@ export interface BackfillReport {
   scannedTransactions: number;
   payeesApplied: number;
   contactsLinked: number;
+  /**
+   * Rows whose memo was still the bank's generic descriptor ("CHECK 3607",
+   * "Unknown") and has been replaced with the payee. Only untouched memos are
+   * rewritten — see the guard on the UPDATE below.
+   */
+  memosFilled: number;
   fromStatementLines: number;
   fromPayrollRegister: number;
   rescan?: { statementsScanned: number; checksRead: number; payeesApplied: number };
@@ -62,6 +68,47 @@ async function findTargets(tenantId: string, companyId?: string | null): Promise
     ORDER BY check_number
   `);
   return res.rows as unknown as TargetTxn[];
+}
+
+/**
+ * Put the check payee into the MEMO of already-stamped transactions.
+ *
+ * payee_name_on_check is metadata almost nothing displays. The memo is what
+ * the register, every report and the Uncategorized screen actually read, and a
+ * bank-feed posting carries the bank's own descriptor there — "CHECK 3607",
+ * "Unknown" — which tells a bookkeeper nothing. This covers both the rows this
+ * backfill just stamped and the ones that were posted with a payee already on
+ * them (the feed fill ran before approve).
+ *
+ * Only a memo nobody has touched is rewritten: blank, the literal "unknown",
+ * or still character-for-character the source feed item's description. A memo
+ * a person typed is left exactly as it is. Voided rows are skipped.
+ */
+async function fillCheckMemosFromPayee(tenantId: string, companyId?: string | null): Promise<number> {
+  const res = await db.execute(sql`
+    UPDATE transactions t
+    SET memo = CASE
+          WHEN t.check_number IS NOT NULL
+          THEN 'Check ' || t.check_number || ' - ' || t.payee_name_on_check
+          ELSE t.payee_name_on_check
+        END
+    WHERE t.tenant_id = ${tenantId}
+      AND (${companyId ?? null}::uuid IS NULL OR t.company_id = ${companyId ?? null}::uuid OR t.company_id IS NULL)
+      AND COALESCE(btrim(t.payee_name_on_check), '') <> ''
+      AND t.txn_type IN ('check', 'expense', 'bill_payment')
+      AND t.voided_at IS NULL
+      AND (
+        COALESCE(btrim(t.memo), '') = ''
+        OR lower(btrim(t.memo)) = 'unknown'
+        OR EXISTS (
+          SELECT 1 FROM bank_feed_items b
+          WHERE b.tenant_id = t.tenant_id
+            AND b.matched_transaction_id = t.id
+            AND b.description = t.memo
+        )
+      )
+  `);
+  return (res as { rowCount?: number | null }).rowCount ?? 0;
 }
 
 /** check# → payee candidates from both sources, amounts in abs cents.
@@ -121,6 +168,7 @@ export async function backfillCheckPayees(
     scannedTransactions: targets.length,
     payeesApplied: 0,
     contactsLinked: 0,
+    memosFilled: 0,
     fromStatementLines: 0,
     fromPayrollRegister: 0,
   };
@@ -153,7 +201,7 @@ export async function backfillCheckPayees(
     const contact = matchByName(tenantContacts, (c) => c.displayName, chosen.payee);
     const contactId: string | null = contact?.id ?? null;
 
-    await db.execute(sql`
+await db.execute(sql`
       UPDATE transactions
       SET payee_name_on_check = ${chosen.payee},
           contact_id = COALESCE(contact_id, ${contactId})
@@ -165,6 +213,8 @@ export async function backfillCheckPayees(
     else report.fromPayrollRegister += 1;
   }
 
+  report.memosFilled = await fillCheckMemosFromPayee(tenantId, opts.companyId);
+
   if (opts.rescan) {
     report.rescan = await rescanStatements(tenantId, opts.companyId);
     if (report.rescan.payeesApplied > 0) {
@@ -172,6 +222,7 @@ export async function backfillCheckPayees(
       const second = await backfillCheckPayees(tenantId, { companyId: opts.companyId }, userId);
       report.payeesApplied += second.payeesApplied;
       report.contactsLinked += second.contactsLinked;
+      report.memosFilled += second.memosFilled;
       report.fromStatementLines += second.fromStatementLines;
       report.fromPayrollRegister += second.fromPayrollRegister;
     }

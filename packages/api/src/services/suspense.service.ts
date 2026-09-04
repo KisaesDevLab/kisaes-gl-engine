@@ -142,6 +142,18 @@ export interface SuspenseRow {
   txnNumber: string | null;
   memo: string | null;
   contactName: string | null;
+  /**
+   * Check number stamped on the posted transaction — from the bank feed's
+   * parsed "CHECK ####" descriptor, or from a check written in-system. The
+   * Ref column shows this, falling back to txnNumber.
+   */
+  checkNumber: number | null;
+  /**
+   * Payee read off the statement's check image (STATEMENT_CHECK_PAYEE_V1).
+   * Shown in the Payee column when no contact was linked, so a payee the
+   * bookkeeper already confirmed on Bank Feeds is not invisible here.
+   */
+  payeeNameOnCheck: string | null;
   /** Signed suspense amount for this transaction: debit positive. */
   amount: string;
   /** >1 means a split with several suspense lines; they clear together. */
@@ -194,7 +206,10 @@ export async function listInSuspense(
   const startClause = opts.startDate ? sql`AND t.txn_date >= ${opts.startDate}` : sql``;
   const endClause = opts.endDate ? sql`AND t.txn_date <= ${opts.endDate}` : sql``;
   const searchClause = opts.search
-    ? sql`AND (t.memo ILIKE ${'%' + opts.search + '%'} OR c.display_name ILIKE ${'%' + opts.search + '%'})`
+    ? sql`AND (t.memo ILIKE ${'%' + opts.search + '%'}
+              OR c.display_name ILIKE ${'%' + opts.search + '%'}
+              OR t.payee_name_on_check ILIKE ${'%' + opts.search + '%'}
+              OR t.check_number::text ILIKE ${'%' + opts.search + '%'})`
     : sql``;
 
   const base = sql`
@@ -221,6 +236,8 @@ export async function listInSuspense(
       t.txn_number        AS txn_number,
       t.memo              AS memo,
       t.source            AS source,
+      t.check_number      AS check_number,
+      t.payee_name_on_check AS payee_name_on_check,
       c.display_name      AS contact_name,
       (SELECT COALESCE(SUM(jl.debit), 0) - COALESCE(SUM(jl.credit), 0)
          FROM journal_lines jl
@@ -254,6 +271,8 @@ export async function listInSuspense(
     txnNumber: (r['txn_number'] as string | null) ?? null,
     memo: (r['memo'] as string | null) ?? null,
     contactName: (r['contact_name'] as string | null) ?? null,
+    checkNumber: r['check_number'] == null ? null : Number(r['check_number']),
+    payeeNameOnCheck: (r['payee_name_on_check'] as string | null) ?? null,
     amount: String(r['amount'] ?? '0'),
     suspenseLineCount: Number(r['suspense_line_count'] ?? 0),
     // A plain feed posting is 2 lines (bank + category). More than that means

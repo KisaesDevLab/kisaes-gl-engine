@@ -72,6 +72,8 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
       OR ${bankFeedItems.memo} ILIKE ${term}
       OR ${assignedContact.displayName} ILIKE ${term}
       OR ${suggestedContact.displayName} ILIKE ${term}
+      OR ${bankFeedItems.payeeNameOnCheck} ILIKE ${term}
+      OR CAST(${bankFeedItems.checkNumber} AS TEXT) ILIKE ${term}
       OR CAST(${bankFeedItems.amount} AS TEXT) ILIKE ${term}
     )`);
   }
@@ -317,6 +319,44 @@ type FeedSplitsConfig =
   | { kind: 'fixed'; splits: Array<{ accountId: string; amount: string; tagId: string | null; memo: string | null }> }
   | null;
 
+/**
+ * Resolve the memo that a feed item should post with.
+ *
+ * Precedence: the caller's explicit memo, then the feed item's own memo (Plaid
+ * seeds it from payment_meta.payee, and the review panel edits it), then the
+ * payee read off the check image, then the bank's raw descriptor.
+ *
+ * The payee step is why this exists. STATEMENT_CHECK_PAYEE_V1 fills
+ * payee_name_on_check on a feed row from the statement's check images, and the
+ * Bank Feeds screen shows it, but before this the value only ever reached the
+ * posted row's payee_name_on_check metadata column. Every report and register
+ * read the memo, which fell through to a descriptor like "CHECK 3607" or
+ * "Unknown", so the payee the user had just confirmed on screen was invisible
+ * everywhere downstream.
+ *
+ * When there is a check number the memo reads "Check 3607 - ACME Supply" so the
+ * reference survives alongside the name; the number also lands in its own
+ * transactions.check_number column (see postAssignment).
+ */
+export function resolveFeedMemo(
+  item: Pick<typeof bankFeedItems.$inferSelect,
+    'memo' | 'description' | 'payeeNameOnCheck' | 'checkNumber'>,
+  explicit?: string | null,
+): string | undefined {
+  const staged = (explicit ?? '').trim();
+  if (staged) return staged;
+
+  const own = ((item.memo as string | null) ?? '').trim();
+  if (own) return own;
+
+  const payee = (item.payeeNameOnCheck ?? '').trim();
+  if (payee) {
+    return item.checkNumber != null ? `Check ${item.checkNumber} - ${payee}` : payee;
+  }
+
+  return (item.description ?? '').trim() || undefined;
+}
+
 // The fully-resolved values postAssignment posts. The caller has already
 // resolved the tag (an explicit id, or null for untagged — the
 // undefined→suggestedTagId fallback lives in categorize()), the contact, and
@@ -388,7 +428,9 @@ async function postAssignment(
         accountId: s.accountId,
         debit: isExpense ? lineAmt : '0',
         credit: isExpense ? '0' : lineAmt,
-        description: s.memo ?? item.description ?? undefined,
+        // Falls back through the resolved transaction memo so a check payee
+        // reaches the GL line description, not just the header memo.
+        description: s.memo ?? values.memo ?? item.description ?? undefined,
         tagId: s.tagId ?? values.tagId ?? undefined,
       });
     }
@@ -397,7 +439,9 @@ async function postAssignment(
       accountId: values.accountId,
       debit: isExpense ? amount.toFixed(4) : '0',
       credit: isExpense ? '0' : amount.toFixed(4),
-      description: item.description || undefined,
+      // Same reason as the split branch: reports that read the line
+      // description showed the bank descriptor instead of the payee.
+      description: values.memo || item.description || undefined,
       // The tag is already resolved by the caller (id or null).
       tagId: values.tagId ?? undefined,
     });
@@ -508,7 +552,7 @@ export async function categorize(tenantId: string, feedItemId: string, input: Ca
       accountId: input.accountId,
       contactId: input.contactId || (item.suggestedContactId ?? undefined),
       tagId: resolvedTagId,
-      memo: input.memo || (item.memo as string | null) || item.description || undefined,
+      memo: resolveFeedMemo(item, input.memo),
       splitsConfig,
     }, userId, companyId);
   } catch (err) {
@@ -646,11 +690,17 @@ export async function approve(tenantId: string, feedItemId: string, userId?: str
     const splitsConfig = item.splitsConfig as FeedSplitsConfig;
     return await postAssignment(tenantId, feedItemId, item, {
       accountId: item.assignedAccountId,
-      contactId: item.assignedContactId ?? undefined,
+      // Fall back to the rule/AI/check-image suggested payee when assign()
+      // staged none. assign() writes assigned_contact_id from the request and
+      // nulls it when absent, so without this fallback a row whose payee the
+      // Bank Feeds screen was showing (suggestedContactName) posts with no
+      // contact at all. categorize() has always had this fallback; approve()
+      // silently dropped it.
+      contactId: item.assignedContactId ?? item.suggestedContactId ?? undefined,
       // Approve posts the tag exactly as staged (explicit id or null — no
       // suggested-tag fallback; the user already made the choice at assign).
       tagId: item.assignedTagId ?? null,
-      memo: (item.assignedMemo as string | null) || (item.memo as string | null) || item.description || undefined,
+      memo: resolveFeedMemo(item, item.assignedMemo as string | null),
       splitsConfig,
     }, userId, companyId);
   } catch (err) {
