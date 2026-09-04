@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-03T19:21:39.474Z",
+  "generatedAt": "2026-09-04T14:59:42.341Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -18,7 +18,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 75945
+    "totalBytes": 79009
   },
   "screens": [
     {
@@ -145,6 +145,15 @@
       "sourceFile": null,
       "title": "Portal Bills",
       "section": "Expenses",
+      "actions": []
+    },
+    {
+      "id": "categorize",
+      "path": "categorize",
+      "component": "PortalCategorizePage",
+      "sourceFile": null,
+      "title": "Portal Categorize",
+      "section": "Categorize",
       "actions": []
     },
     {

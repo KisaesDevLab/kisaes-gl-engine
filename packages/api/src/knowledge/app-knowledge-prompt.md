@@ -315,6 +315,27 @@ Distinct from **Re-process** (re-runs the whole extraction; refused once a state
 saved, to avoid duplicate imports) and from the Reconciliation page's tenant-wide
 **Backfill check payees** with its optional re-scan of every stored statement.
 
+## Uncategorized: setting a category one row at a time
+
+Practice → Uncategorized (flag `UNCATEGORIZED_REVIEW_V1`), on both the **Not
+posted** and **In suspense** tabs. Each row has a **Category** column using the
+same account picker as the transaction forms.
+
+Picking an account does NOT post. The row shows an amber marker and a **Save**
+button, and a banner says nothing is committed yet. Pressing Save on that row
+posts it and the row leaves the list. The deliberate extra step exists because
+a row vanishing the moment a dropdown closed reads as an accidental posting.
+
+If the ledger refuses the move — closed period, voided entry, adjusting entry,
+or a bank line someone else already handled — the row KEEPS the pick and the
+message says why, rather than clearing the picker and hiding the problem.
+
+The bulk **Set category** action above the table still works the old way: tick
+rows, pick one account, apply to all of them.
+
+Both tabs also show a **Ref** column (check number, falling back to the entry
+number) and a **Payee** column.
+
 ## Common Questions
 
 ### "Is there a faster way to get to Enter Expense / Write Check / Pay Bills?"
@@ -932,6 +953,37 @@ moment the contact uploads (client, request, period, filename, link to the grid)
 the list applies to requests already outstanding. Needs SMTP configured; the unread
 tracking works regardless. Feature flag: `RECURRING_DOC_REQUESTS_V1`.
 
+## Clients suggesting categories ("What was this?")
+
+Feature flags: `PORTAL_CATEGORIZE_V1` (the client half) and `UNCATEGORIZED_REVIEW_V1`
+(the staff review queue). They are SEPARATE switches and both default off. On top of
+the tenant flag, each portal contact needs **Can suggest categories** ticked on
+Practice → Client Portal. That per-contact tick is the step people miss: with the flag
+on and the tick off, the client sees nothing at all. It defaults to false and is reset
+to false if a contact's company assignments are re-saved without it.
+
+What the client sees: a **What was this?** page listing only activity nobody could
+classify — bank lines the categorizer could not place, and amounts already posted to
+suspense. Rows the software categorized confidently are deliberately excluded. The
+picker offers income and expense accounts by name only: no balances, no account
+numbers, no balance-sheet accounts. Two extra answers exist, **Personal, not business**
+and **I am not sure** (which asks for a note).
+
+Nothing a client does here posts. Answers arrive as suggestions on Practice →
+Uncategorized → Client suggested, where staff approve, override or send them back.
+
+Attaching a receipt: each row has **Attach a photo or receipt** — images and PDFs, 10 MB
+per file, up to 10 files per transaction. It uploads immediately rather than waiting for
+"Send to my bookkeeper", because a client often has the photo before it has the answer.
+The file is stored as an ordinary attachment on the transaction or bank line, so it shows
+up on the paperclip staff already use on Practice → Uncategorized; there is no separate
+client inbox. A client can list and remove only its own uploads — files the firm attached
+to the same row are never shown in the portal, not even by filename.
+
+Getting into the screen: the portal has no navigation bar, so the way in is the
+**Categorize transactions** tile on the portal dashboard. It appears whenever the flag
+and the per-contact tick are both on, including when the queue is empty.
+
 ## Setup & Administration
 
 ### Managing Multiple Companies
@@ -1546,6 +1598,10 @@ The following screens exist in the application. Use these names and paths when d
 ### Capture
 
 - **Portal Capture** (`capture`)
+
+### Categorize
+
+- **Portal Categorize** (`categorize`)
 
 ### Clients
 
