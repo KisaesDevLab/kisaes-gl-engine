@@ -44,8 +44,7 @@ export type PlaidIssueKind =
   | 'sync_failing'
   | 'feed_stale'
   | 'webhook_stale'
-  | 'consent_expiring'
-  | 'orphaned_connection';
+  | 'consent_expiring';
 
 export interface PlaidHealthIssue {
   kind: PlaidIssueKind;
@@ -207,10 +206,13 @@ export async function getPlaidHealth(): Promise<PlaidHealth> {
     });
   }
 
-  const counts = {
+  // Typed, not cast: adding a kind above without counting it here should be a
+  // compile error. The cast this replaced is how 'orphaned_connection' stayed
+  // in the union after its check was removed, silently uncounted.
+  const counts: Record<PlaidIssueKind, number> = {
     item_needs_attention: 0, sync_failing: 0, feed_stale: 0, webhook_stale: 0,
     consent_expiring: 0,
-  } as Record<PlaidIssueKind, number>;
+  };
   for (const i of issues) counts[i.kind]++;
 
   // Errors first, so the list reads worst-first without the UI sorting it.
