@@ -74,12 +74,43 @@ export async function assignAccountToCompany(plaidAccountId: string, tenantId: s
     );
   }
 
-  // Check no existing mapping on this Plaid account (one bank account → one company)
+  // Check no existing mapping on this Plaid account (one bank account → one
+  // company). Stays deliberately NOT tenant-scoped: idx_pam_plaid_account_uniq
+  // is unique on plaid_account_id alone, so scoping this would just move the
+  // failure to a raw unique violation.
+  //
+  // The message used to be "already assigned to a company. Unmap it first."
+  // and said nothing else, which read as nonsense to anyone looking at a
+  // chart-of-accounts account with nothing on it — the thing already assigned
+  // is the BANK account, not the ledger account. Worse, when the mapping
+  // belongs to another tenant there is nothing the caller can unmap, so the
+  // instruction was impossible to follow. Say which, and what to do.
   const existingPlaidMapping = await db.query.plaidAccountMappings.findFirst({
     where: eq(plaidAccountMappings.plaidAccountId, plaidAccountId),
   });
   if (existingPlaidMapping) {
-    throw AppError.conflict('This bank account is already assigned to a company. Unmap it first.');
+    if (existingPlaidMapping.tenantId !== tenantId) {
+      throw AppError.conflict(
+        'This bank account is already connected under a different client. ' +
+        'It cannot be mapped here while that connection exists.',
+        'PLAID_ACCOUNT_MAPPED_ELSEWHERE',
+      );
+    }
+    const current = await db.query.accounts.findFirst({
+      where: and(
+        eq(accounts.id, existingPlaidMapping.mappedAccountId),
+        eq(accounts.tenantId, tenantId),
+      ),
+    });
+    const named = current
+      ? `"${current.accountNumber ? `${current.accountNumber} — ` : ''}${current.name}"`
+      : 'another account';
+    throw AppError.conflict(
+      `This bank account already feeds ${named}. ` +
+      'Use Change account on that connection to point it somewhere else — ' +
+      'mapping it a second time would create a duplicate feed.',
+      'PLAID_ACCOUNT_ALREADY_MAPPED',
+    );
   }
 
   // Check no existing mapping on this COA account (one COA → one feed)

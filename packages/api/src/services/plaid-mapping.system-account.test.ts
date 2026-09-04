@@ -104,3 +104,58 @@ describe('assignAccountToCompany — system account guard', () => {
     expect(result).toBeTruthy();
   });
 });
+
+// "This bank account is already assigned to a company. Unmap it first." was
+// the whole message, and a user looking at an empty ledger account read it as
+// plainly wrong — the thing already assigned is the BANK account. When the
+// mapping belonged to another tenant the instruction was impossible to follow
+// as well, since there was nothing here to unmap.
+describe('assignAccountToCompany — already-mapped message', () => {
+  it('names the account the bank already feeds', async () => {
+    const first = await mkAccount('Cash - Checking', 'bank', 'cash_on_hand');
+    await assignAccountToCompany(plaidAcctId, tenantId, first, null, userId);
+
+    const second = await mkAccount('Second Checking', 'bank', null);
+    await expect(
+      assignAccountToCompany(plaidAcctId, tenantId, second, null, userId),
+    ).rejects.toThrow(/already feeds "Cash - Checking"/);
+  });
+
+  it('sends a non-super-admin to the Plaid monitor for a shared connection', async () => {
+    // A mapping owned by another tenant is caught by the share guard EARLIER
+    // in this function, which is the better message of the two because it says
+    // where to go. The branch below it only ever runs for a super-admin, who
+    // skips that guard. Asserted so nobody "simplifies" the earlier guard away
+    // and silently changes what a normal user sees.
+    const [otherTenant] = await db.insert(tenants).values({
+      name: 'Other Client', slug: 'oc-' + suffix(),
+    }).returning();
+    const [otherCompany] = await db.insert(companies).values({
+      tenantId: otherTenant!.id, businessName: 'OC',
+    }).returning();
+    const [otherAcct] = await db.insert(accounts).values({
+      tenantId: otherTenant!.id, companyId: otherCompany!.id,
+      name: 'Their Checking', accountType: 'asset', detailType: 'bank',
+    }).returning();
+    await db.insert(plaidAccountMappings).values({
+      plaidAccountId: plaidAcctId,
+      tenantId: otherTenant!.id,
+      mappedAccountId: otherAcct!.id,
+      mappedBy: userId,
+    });
+
+    const mine = await mkAccount('Cash - Checking', 'bank', 'cash_on_hand');
+    await expect(
+      assignAccountToCompany(plaidAcctId, tenantId, mine, null, userId),
+    ).rejects.toThrow(/shared with another client/);
+    // Never names whose.
+    await expect(
+      assignAccountToCompany(plaidAcctId, tenantId, mine, null, userId),
+    ).rejects.not.toThrow(/Their Checking|Other Client/);
+
+    await db.delete(plaidAccountMappings).where(eq(plaidAccountMappings.tenantId, otherTenant!.id));
+    await db.delete(accounts).where(eq(accounts.tenantId, otherTenant!.id));
+    await db.delete(companies).where(eq(companies.tenantId, otherTenant!.id));
+    await db.delete(tenants).where(eq(tenants.id, otherTenant!.id));
+  });
+});
