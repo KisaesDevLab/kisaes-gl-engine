@@ -16,9 +16,13 @@
 //     the feed goes a day late instead of dead and nobody notices at all.
 //   - an item's consent lapses on a date Plaid tells us about, which nothing
 //     currently reads.
-//   - an account is connected but never mapped, so it silently imports
-//     nothing while still counting against Plaid billing.
 //   - a bank_connections row outlives the Plaid item it was created for.
+//
+// Deliberately NOT here: an account connected but never mapped. A client
+// routinely ticks every account in Plaid Link, including personal ones, so it
+// is the normal case rather than a fault — and the connection list below this
+// panel already shows each unmapped account with a Map button, which is where
+// someone would act on it anyway.
 //
 // None of these throw. Each is a query, which is what this is.
 
@@ -36,7 +40,6 @@ export type PlaidIssueKind =
   | 'feed_stale'
   | 'webhook_stale'
   | 'consent_expiring'
-  | 'account_unmapped'
   | 'orphaned_connection';
 
 export interface PlaidHealthIssue {
@@ -199,31 +202,7 @@ export async function getPlaidHealth(): Promise<PlaidHealth> {
     });
   }
 
-  // 6. Connected but never mapped. Often deliberate — a client ticks every
-  // account in Plaid Link — so this is a warning, and the fix may well be to
-  // remove the account rather than map it.
-  const unmapped = await db.execute<{
-    id: string; institution_name: string | null; mask: string | null; name: string | null;
-  }>(sql`
-    SELECT pi.id, pi.institution_name, pa.mask, pa.name
-      FROM plaid_accounts pa
-      JOIN plaid_items pi ON pi.id = pa.plaid_item_id
-      LEFT JOIN plaid_account_mappings pam ON pam.plaid_account_id = pa.id
-     WHERE pi.removed_at IS NULL AND pa.is_active = true AND pam.id IS NULL
-     ORDER BY pi.institution_name, pa.mask
-  `);
-  for (const r of unmapped.rows as Array<Record<string, string | null>>) {
-    issues.push({
-      kind: 'account_unmapped',
-      severity: 'warn',
-      plaidItemId: r['id'] ?? null,
-      institutionName: r['institution_name'] ?? null,
-      tenants: tenantsByItem.get(String(r['id'])) ?? [],
-      detail: `${r['name'] ?? 'Account'}${r['mask'] ? ` ending ${r['mask']}` : ''} is connected but not mapped, so it imports nothing. Map it or remove it from the connection.`,
-    });
-  }
-
-  // 7. bank_connections whose Plaid item is gone. Nothing deletes these on
+  // 6. bank_connections whose Plaid item is gone. Nothing deletes these on
   // unmap or removal, so they accumulate and keep appearing in feed filters.
   const orphans = await db.execute<{
     id: string; institution_name: string | null; tenant_name: string | null; rows: number;
@@ -252,7 +231,7 @@ export async function getPlaidHealth(): Promise<PlaidHealth> {
 
   const counts = {
     item_needs_attention: 0, sync_failing: 0, feed_stale: 0, webhook_stale: 0,
-    consent_expiring: 0, account_unmapped: 0, orphaned_connection: 0,
+    consent_expiring: 0, orphaned_connection: 0,
   } as Record<PlaidIssueKind, number>;
   for (const i of issues) counts[i.kind]++;
 

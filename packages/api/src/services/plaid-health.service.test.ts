@@ -92,15 +92,17 @@ describe('getPlaidHealth', () => {
     expect(consent[0]!.severity).toBe('error');
   });
 
-  it('flags an account connected but never mapped', async () => {
+  it('does NOT flag an account that is merely unmapped', async () => {
+    // Clients routinely tick every account in Plaid Link, personal ones
+    // included, so unmapped is the normal case and not something to chase.
+    // The connection list already shows each one with a Map button.
     const item = await mkItem({ lastSyncStatus: 'success', lastSuccessAt: new Date() });
     await db.insert(plaidAccounts).values({
       plaidItemId: item.id, plaidAccountId: 'pa-' + suffix(),
       name: 'FREE CHECKING', accountType: 'depository', accountSubtype: 'checking', mask: '6968',
     });
-    const unmapped = (await issuesHere()).filter((i) => i.kind === 'account_unmapped');
-    expect(unmapped).toHaveLength(1);
-    expect(unmapped[0]!.detail).toContain('6968');
+    const kinds = (await issuesHere()).map((i) => i.kind);
+    expect(kinds).not.toContain('account_unmapped');
   });
 
   it('ignores a removed connection entirely', async () => {
