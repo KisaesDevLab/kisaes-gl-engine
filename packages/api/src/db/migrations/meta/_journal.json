@@ -1170,6 +1170,13 @@
       "when": 1784800000024,
       "tag": "0166_plaid_last_success",
       "breakpoints": true
+    },
+    {
+      "idx": 167,
+      "version": "7",
+      "when": 1784800000025,
+      "tag": "0167_firm_users_role_check",
+      "breakpoints": true
     }
   ]
 }

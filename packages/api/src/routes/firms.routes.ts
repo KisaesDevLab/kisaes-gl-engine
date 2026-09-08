@@ -73,9 +73,11 @@ firmsRouter.post('/', requireSuperAdmin, validate(createFirmSchema), async (req,
 // req.firmRole.
 firmsRouter.use('/:firmId', resolveFirmFromPath());
 
+// Includes the caller's own firm role so the UI can hide controls a
+// firm_readonly member can't use (roster, managed-tenant list, invites).
 firmsRouter.get('/:firmId', async (req, res) => {
   const firm = await firmsService.getById(req.firmId!);
-  res.json(firm);
+  res.json({ ...firm, myRole: req.firmRole });
 });
 
 // ─── Tax1099 e-filing integration (firm-level, admin-managed) ────
@@ -151,7 +153,10 @@ firmsRouter.delete('/:firmId', requireSuperAdmin, async (req, res) => {
 
 // ─── Firm staff management ───────────────────────────────────
 
-firmsRouter.get('/:firmId/users', async (req, res) => {
+// Roster (with emails) is staff-tier: firm_readonly observes firm rules
+// but must not enumerate the practice's people. On the appliance firm
+// this is every staff email on the box.
+firmsRouter.get('/:firmId/users', requireFirmStaff, async (req, res) => {
   const users = await firmUsersService.listForFirm(req.firmId!);
   res.json({ users });
 });
@@ -258,7 +263,9 @@ firmsRouter.put(
 
 // ─── Tenant assignment ──────────────────────────────────────
 
-firmsRouter.get('/:firmId/tenants', async (req, res) => {
+// Managed-tenant list is staff-tier for the same reason as the roster:
+// on the appliance firm it is every tenant on the box.
+firmsRouter.get('/:firmId/tenants', requireFirmStaff, async (req, res) => {
   const assignments = await tenantFirmAssignmentService.listForFirm(req.firmId!);
   res.json({ assignments });
 });

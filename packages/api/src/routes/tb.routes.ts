@@ -73,10 +73,13 @@ tbRouter.use(requireResource('trial_balance'));
 // router-wide it throttled ordinary page loads (a workpaper screen
 // fires ~8 cheap reads alongside the one expensive compute).
 
-// Firm-admin gate (plan 13.1): closing date, seed pinning, and custom
-// codes are owner-level acts. Bookkeeper/accountant staff do TB work but
-// don't reshape the firm's code library.
-function requireFirmAdmin(req: Request, _res: Response, next: NextFunction) {
+// Tenant-owner gate (plan 13.1 calls this "firm admin", but it is the
+// TENANT role `owner`, not the firm_users `firm_admin` role that
+// middleware/firm-access.ts#requireFirmAdmin checks — hence the distinct
+// name): closing date, seed pinning, and custom codes are owner-level
+// acts. Bookkeeper/accountant staff do TB work but don't reshape the
+// firm's code library.
+function requireTenantOwnerForTb(req: Request, _res: Response, next: NextFunction) {
   if (req.isSuperAdmin || req.userRole === 'owner') {
     next();
     return;
@@ -92,17 +95,17 @@ tbRouter.get('/firm-codes', async (req, res) => {
   res.json(result);
 });
 
-tbRouter.post('/firm-codes', requireFirmAdmin, validate(createFirmTaxCodeSchema), async (req, res) => {
+tbRouter.post('/firm-codes', requireTenantOwnerForTb, validate(createFirmTaxCodeSchema), async (req, res) => {
   const code = await firmCodesService.createFirmCode(req.tenantId, req.body, req.userId);
   res.status(201).json({ code });
 });
 
-tbRouter.put('/firm-codes/:id', requireFirmAdmin, validate(updateFirmTaxCodeSchema), async (req, res) => {
+tbRouter.put('/firm-codes/:id', requireTenantOwnerForTb, validate(updateFirmTaxCodeSchema), async (req, res) => {
   const code = await firmCodesService.updateFirmCode(req.tenantId, String(req.params['id']), req.body, req.userId);
   res.json({ code });
 });
 
-tbRouter.delete('/firm-codes/:id', requireFirmAdmin, async (req, res) => {
+tbRouter.delete('/firm-codes/:id', requireTenantOwnerForTb, async (req, res) => {
   const code = await firmCodesService.deactivateFirmCode(req.tenantId, String(req.params['id']), req.userId);
   res.json({ code });
 });
@@ -488,7 +491,7 @@ tbRouter.get('/closing-date', async (req, res) => {
   res.json({ closingDate: row.lockDate, setBy: row.setBy, setAt: row.setAt });
 });
 
-tbRouter.put('/closing-date', requireFirmAdmin, validate(z.object({
+tbRouter.put('/closing-date', requireTenantOwnerForTb, validate(z.object({
   closingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
 })), async (req, res) => {
   const [before] = await db.select({ lockDate: companies.lockDate }).from(companies)
@@ -836,7 +839,7 @@ tbRouter.get('/profile', async (req, res) => {
 
 // Return form + seed pinning reshape every assignment's validity —
 // firm-admin territory (13.1).
-tbRouter.put('/profile', requireFirmAdmin, validate(upsertTaxProfileSchema), async (req, res) => {
+tbRouter.put('/profile', requireTenantOwnerForTb, validate(upsertTaxProfileSchema), async (req, res) => {
   const profile = await taxProfileService.upsertProfile(req.tenantId, req.companyId!, req.body, req.userId);
   res.json({ profile });
 });

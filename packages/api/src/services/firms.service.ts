@@ -80,16 +80,24 @@ export async function getBySlug(slug: string): Promise<Firm | null> {
   return row ? mapRow(row) : null;
 }
 
-// Returns firms the given user has any membership in (via
-// firm_users), regardless of `firm_role`. Used by the firm-list
-// page to render the user's firm switcher. Super-admins call
-// `listAll` instead.
+// Returns ACTIVE firms the given user has an active membership in
+// (via firm_users), regardless of `firm_role`. Used by the firm-list
+// page to render the user's firm switcher and, app-wide, as the
+// "is this user practice staff" signal — so a deactivated firm drops
+// out here and its members lose the practice surfaces. Super-admins
+// call `listAll` instead (which keeps inactive firms visible).
 export async function listForUser(userId: string): Promise<Firm[]> {
   const rows = await db
     .select({ firm: firms })
     .from(firmUsers)
     .innerJoin(firms, eq(firms.id, firmUsers.firmId))
-    .where(and(eq(firmUsers.userId, userId), eq(firmUsers.isActive, true)));
+    .where(
+      and(
+        eq(firmUsers.userId, userId),
+        eq(firmUsers.isActive, true),
+        eq(firms.isActive, true),
+      ),
+    );
   return rows.map((r) => mapRow(r.firm));
 }
 

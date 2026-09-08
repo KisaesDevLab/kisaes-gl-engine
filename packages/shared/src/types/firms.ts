@@ -30,6 +30,14 @@ export interface Firm {
   updatedAt: string;
 }
 
+// GET /firms/:id response: the firm plus the CALLER's role in it, so
+// the UI can hide roster / managed-tenant / invite controls from a
+// firm_readonly member instead of letting the server 403 them.
+// Super admins always read as `firm_admin`.
+export interface FirmWithMyRole extends Firm {
+  myRole: FirmRole;
+}
+
 export interface FirmUser {
   id: string;
   firmId: string;

@@ -239,6 +239,56 @@ describe('firms — collection', () => {
   });
 });
 
+describe('firms — hardening', () => {
+  it('GET /firms/:id includes the caller\'s myRole', async () => {
+    const created = await request('POST', '/api/v1/firms', { name: 'H', slug: 'firm-hard-myrole' }, superAdminToken);
+    firmId = created.json.id;
+    await db.insert(firmUsers).values({ firmId, userId: outsiderUserId, firmRole: 'firm_readonly', isActive: true });
+    const asMember = await request('GET', `/api/v1/firms/${firmId}`, undefined, outsiderToken);
+    expect(asMember.status).toBe(200);
+    expect(asMember.json.myRole).toBe('firm_readonly');
+    const asSa = await request('GET', `/api/v1/firms/${firmId}`, undefined, superAdminToken);
+    expect(asSa.json.myRole).toBe('firm_admin');
+  });
+
+  it('firm_readonly cannot list the roster or managed tenants (403 NOT_FIRM_STAFF)', async () => {
+    const created = await request('POST', '/api/v1/firms', { name: 'H', slug: 'firm-hard-readonly' }, superAdminToken);
+    firmId = created.json.id;
+    await db.insert(firmUsers).values({ firmId, userId: outsiderUserId, firmRole: 'firm_readonly', isActive: true });
+
+    const roster = await request('GET', `/api/v1/firms/${firmId}/users`, undefined, outsiderToken);
+    expect(roster.status).toBe(403);
+    expect(roster.json?.error?.code ?? roster.json?.code).toBe('NOT_FIRM_STAFF');
+    const tenantsRes = await request('GET', `/api/v1/firms/${firmId}/tenants`, undefined, outsiderToken);
+    expect(tenantsRes.status).toBe(403);
+
+    // Promote to firm_staff → both reads open up.
+    await db.update(firmUsers).set({ firmRole: 'firm_staff' }).where(eq(firmUsers.userId, outsiderUserId));
+    expect((await request('GET', `/api/v1/firms/${firmId}/users`, undefined, outsiderToken)).status).toBe(200);
+    expect((await request('GET', `/api/v1/firms/${firmId}/tenants`, undefined, outsiderToken)).status).toBe(200);
+  });
+
+  it('a deactivated firm authorizes nobody but stays visible to super admins', async () => {
+    const created = await request('POST', '/api/v1/firms', { name: 'Dead', slug: 'firm-hard-inactive' }, superAdminToken);
+    firmId = created.json.id;
+    await db.insert(firmUsers).values({ firmId, userId: outsiderUserId, firmRole: 'firm_admin', isActive: true });
+    // Sanity: member sees it while active.
+    expect((await request('GET', `/api/v1/firms/${firmId}`, undefined, outsiderToken)).status).toBe(200);
+
+    await db.update(firms).set({ isActive: false }).where(eq(firms.id, firmId));
+
+    // Member: hidden (404, same as a non-member) and gone from their list.
+    expect((await request('GET', `/api/v1/firms/${firmId}`, undefined, outsiderToken)).status).toBe(404);
+    const list = await request('GET', '/api/v1/firms', undefined, outsiderToken);
+    expect(list.json.firms.some((f: { id: string }) => f.id === firmId)).toBe(false);
+    // Super admin: still listed (with isActive=false) and still reachable.
+    const saList = await request('GET', '/api/v1/firms', undefined, superAdminToken);
+    const row = saList.json.firms.find((f: { id: string }) => f.id === firmId);
+    expect(row?.isActive).toBe(false);
+    expect((await request('GET', `/api/v1/firms/${firmId}`, undefined, superAdminToken)).status).toBe(200);
+  });
+});
+
 describe('firms — superAdminManaged lockdown', () => {
   // The appliance firm spans every tenant on the box; firm_admin
   // membership there must NOT grant firm management. Only super

@@ -129,3 +129,22 @@ describe('firm-staff tenant access', () => {
     expect((await accessRow(outsideTenantId))?.role).toBe('owner');
   });
 });
+
+describe('firm membership hardening', () => {
+  it('DB CHECK rejects a firm_role outside the FIRM_ROLES vocabulary (migration 0167)', async () => {
+    // Drizzle wraps the pg error (23514 check_violation) in DrizzleQueryError;
+    // the constraint name surfaces on the cause, so match on that.
+    await expect(
+      db.insert(firmUsers).values({ firmId, userId: staffUserId, firmRole: 'bogus' as never }),
+    ).rejects.toSatisfy((err: unknown) => {
+      const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+      return cause?.code === '23514' || /firm_users_firm_role_check/.test(String(cause?.message ?? (err as Error).message));
+    });
+  });
+
+  it('getRoleForUser returns null once the firm is deactivated', async () => {
+    expect(await firmUsersService.getRoleForUser(firmId, staffUserId)).toBe('firm_staff');
+    await db.update(firms).set({ isActive: false }).where(eq(firms.id, firmId));
+    expect(await firmUsersService.getRoleForUser(firmId, staffUserId)).toBeNull();
+  });
+});

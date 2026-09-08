@@ -1379,7 +1379,7 @@ export async function listFirmUsers() {
     FROM firm_users fu
     JOIN users u ON u.id = fu.user_id
     JOIN firms f ON f.id = fu.firm_id
-    WHERE fu.is_active = true
+    WHERE fu.is_active = true AND f.is_active = true
     GROUP BY u.id, u.email, u.display_name, u.is_active
     ORDER BY u.email
   `);

@@ -137,19 +137,28 @@ export async function listForFirm(firmId: string): Promise<FirmUserWithProfile[]
 
 // Look up a single user's role within a firm (used by the
 // firm-access middleware). Returns null when the user is not a
-// member or the row is inactive — the middleware translates that
-// into a 403.
+// member, the membership row is inactive, OR the firm itself has
+// been deactivated — a deactivated firm authorizes nobody. This is
+// the single membership choke point for non-super-admin callers
+// (resolveFirmFromPath, conditional-rules firm context, 1099
+// canSubmit), so enforcing `firms.is_active` here covers them all.
 export async function getRoleForUser(
   firmId: string,
   userId: string,
 ): Promise<FirmRole | null> {
-  const row = await db.query.firmUsers.findFirst({
-    where: and(
-      eq(firmUsers.firmId, firmId),
-      eq(firmUsers.userId, userId),
-      eq(firmUsers.isActive, true),
-    ),
-  });
+  const [row] = await db
+    .select({ firmRole: firmUsers.firmRole })
+    .from(firmUsers)
+    .innerJoin(firms, eq(firms.id, firmUsers.firmId))
+    .where(
+      and(
+        eq(firmUsers.firmId, firmId),
+        eq(firmUsers.userId, userId),
+        eq(firmUsers.isActive, true),
+        eq(firms.isActive, true),
+      ),
+    )
+    .limit(1);
   return row ? (row.firmRole as FirmRole) : null;
 }
 
