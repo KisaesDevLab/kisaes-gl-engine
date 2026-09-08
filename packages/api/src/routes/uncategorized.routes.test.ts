@@ -20,6 +20,7 @@ import { db } from '../db/index.js';
 import {
   tenants, users, companies, accounts, bankConnections, bankFeedItems,
   transactions, journalLines, auditLog as auditLogTable, tenantFeatureFlags,
+  portalContacts, portalContactCompanies, reminderSends, reminderSuppressions,
 } from '../db/schema/index.js';
 import { uncategorizedRouter } from './uncategorized.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
@@ -111,6 +112,7 @@ async function seedPendingFeedItem(amount = '42.5000'): Promise<string> {
 async function cleanDb() {
   for (const id of [tenantId, flagOffTenantId].filter(Boolean)) {
     await db.delete(auditLogTable).where(eq(auditLogTable.tenantId, id));
+    await db.delete(portalContacts).where(eq(portalContacts.tenantId, id));
     await db.delete(journalLines).where(eq(journalLines.tenantId, id));
     await db.delete(transactions).where(eq(transactions.tenantId, id));
     await db.delete(bankFeedItems).where(eq(bankFeedItems.tenantId, id));
@@ -315,5 +317,145 @@ describe('GET /unposted — the shape the Not posted tab reads', () => {
     const res = await request('GET', '/api/v1/practice/uncategorized/unposted', undefined, ownerToken);
     expect(res.json.total).toBe(0);
     expect(res.json.items).toEqual([]);
+  });
+});
+
+// "Ask the client for help" — a notice to the portal contacts who may suggest
+// categories for this company. The load-bearing rules: only ticked, active
+// contacts are offered or sent to; the tenant's portal flag must be on or the
+// client would log in to nothing; and every attempt leaves a reminder_sends
+// row so a failed text is evidence rather than silence.
+describe('help-request — asking the client to categorize', () => {
+  let tickedId = '';
+  let untickedId = '';
+  let pausedId = '';
+
+  async function seedContact(opts: { ticked: boolean; status?: string; phone?: string | null }) {
+    const [c] = await db.insert(portalContacts).values({
+      tenantId,
+      email: `client-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.com`,
+      firstName: opts.ticked ? 'Ticked' : 'Plain',
+      lastName: 'Client',
+      phone: opts.phone ?? null,
+      status: opts.status ?? 'active',
+    }).returning();
+    await db.insert(portalContactCompanies).values({
+      contactId: c!.id, companyId, categorizeAccess: opts.ticked,
+    });
+    return c!.id;
+  }
+
+  beforeEach(async () => {
+    await db.insert(tenantFeatureFlags).values({ tenantId, flagKey: 'PORTAL_CATEGORIZE_V1', enabled: true });
+    tickedId = await seedContact({ ticked: true, phone: '+15555550100' });
+    untickedId = await seedContact({ ticked: false });
+    pausedId = await seedContact({ ticked: true, status: 'paused' });
+  });
+
+  afterEach(async () => {
+    // reminder_sends and the company links cascade from the contact rows.
+    if (tenantId) await db.delete(portalContacts).where(eq(portalContacts.tenantId, tenantId));
+  });
+
+  it('offers only active contacts with "Can suggest categories" ticked', async () => {
+    const res = await request('GET', '/api/v1/practice/uncategorized/help-request/recipients', undefined, ownerToken);
+    expect(res.status).toBe(200);
+    expect(res.json.portalEnabled).toBe(true);
+    expect(res.json.contacts.map((c: { contactId: string }) => c.contactId)).toEqual([tickedId]);
+    expect(res.json.contacts[0].lastAskedAt).toBeNull();
+    // No provider on the test box, so the screen must say texts are off.
+    expect(res.json.smsAvailable).toBe(false);
+    expect(typeof res.json.smsUnavailableReason).toBe('string');
+  });
+
+  it('reports how many rows the client would find when they log in', async () => {
+    const feedItemId = await seedPendingFeedItem('42.5000');
+    await request('POST', '/api/v1/practice/uncategorized/post-to-suspense', { feedItemIds: [feedItemId] }, ownerToken);
+    const res = await request('GET', '/api/v1/practice/uncategorized/help-request/recipients', undefined, ownerToken);
+    expect(res.json.queueCount).toBe(1);
+  });
+
+  it('sends an email, records it, and shows it as the last ask', async () => {
+    const res = await request(
+      'POST', '/api/v1/practice/uncategorized/help-request',
+      { contactIds: [tickedId, untickedId, pausedId], channels: ['email'], note: 'Mostly the big checks in August.', confirmEmpty: true },
+      ownerToken,
+    );
+    expect(res.status).toBe(200);
+    expect(res.json.results).toHaveLength(1);
+    expect(res.json.results[0].contactId).toBe(tickedId);
+    expect(res.json.results[0].outcomes).toEqual([{ channel: 'email', outcome: 'sent' }]);
+    // The unticked and paused contacts are reported, not silently dropped.
+    expect(res.json.notEligible.sort()).toEqual([untickedId, pausedId].sort());
+
+    const sends = await db.select().from(reminderSends).where(eq(reminderSends.contactId, tickedId));
+    expect(sends).toHaveLength(1);
+    expect(sends[0]!.channel).toBe('email');
+    expect(sends[0]!.questionId).toBe(companyId);
+    expect(sends[0]!.error).toBeNull();
+
+    const again = await request('GET', '/api/v1/practice/uncategorized/help-request/recipients', undefined, ownerToken);
+    expect(again.json.contacts[0].lastAskedAt).not.toBeNull();
+  });
+
+  it('reports a text it could not send instead of pretending', async () => {
+    const res = await request(
+      'POST', '/api/v1/practice/uncategorized/help-request',
+      { contactIds: [tickedId], channels: ['sms'], confirmEmpty: true }, ownerToken,
+    );
+    expect(res.status).toBe(200);
+    expect(res.json.results[0].outcomes[0].channel).toBe('sms');
+    expect(res.json.results[0].outcomes[0].outcome).toBe('sms_disabled');
+  });
+
+  it('honours a STOP opt-out', async () => {
+    await db.insert(reminderSuppressions).values({ contactId: tickedId, reason: 'STOP_KEYWORD', channel: null });
+    const res = await request(
+      'POST', '/api/v1/practice/uncategorized/help-request',
+      { contactIds: [tickedId], channels: ['email'], confirmEmpty: true }, ownerToken,
+    );
+    expect(res.json.results[0].outcomes).toEqual([{ channel: 'email', outcome: 'suppressed' }]);
+    const sends = await db.select().from(reminderSends).where(eq(reminderSends.contactId, tickedId));
+    expect(sends).toHaveLength(0);
+  });
+
+  it('refuses when the client-side flag is off, since they would log in to nothing', async () => {
+    await db.update(tenantFeatureFlags).set({ enabled: false })
+      .where(and(eq(tenantFeatureFlags.tenantId, tenantId), eq(tenantFeatureFlags.flagKey, 'PORTAL_CATEGORIZE_V1')));
+    const view = await request('GET', '/api/v1/practice/uncategorized/help-request/recipients', undefined, ownerToken);
+    expect(view.json.portalEnabled).toBe(false);
+    const res = await request(
+      'POST', '/api/v1/practice/uncategorized/help-request',
+      { contactIds: [tickedId], channels: ['email'] }, ownerToken,
+    );
+    expect(res.status).toBe(409);
+    expect(res.json.code ?? res.json.error?.code).toBe('PORTAL_CATEGORIZE_OFF');
+  });
+
+  it('refuses an empty portal queue unless staff confirm it', async () => {
+    const res = await request(
+      'POST', '/api/v1/practice/uncategorized/help-request',
+      { contactIds: [tickedId], channels: ['email'] }, ownerToken,
+    );
+    expect(res.status).toBe(409);
+    expect(res.json.error?.code ?? res.json.code).toBe('PORTAL_QUEUE_EMPTY');
+
+    // With a row in suspense the send goes without confirmation.
+    const feedItemId = await seedPendingFeedItem('42.5000');
+    await request('POST', '/api/v1/practice/uncategorized/post-to-suspense', { feedItemIds: [feedItemId] }, ownerToken);
+    const ok = await request(
+      'POST', '/api/v1/practice/uncategorized/help-request',
+      { contactIds: [tickedId], channels: ['email'] }, ownerToken,
+    );
+    expect(ok.status).toBe(200);
+    expect(ok.json.queueCount).toBe(1);
+  });
+
+  it('rejects a request with no channel', async () => {
+    const res = await request(
+      'POST', '/api/v1/practice/uncategorized/help-request',
+      { contactIds: [tickedId], channels: [] }, ownerToken,
+    );
+    expect(res.status).toBe(400);
   });
 });

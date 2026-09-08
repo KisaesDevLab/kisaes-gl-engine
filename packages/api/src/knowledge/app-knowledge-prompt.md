@@ -995,6 +995,26 @@ Getting into the screen: the portal has no navigation bar, so the way in is the
 **Categorize transactions** tile on the portal dashboard. It appears whenever the flag
 and the per-contact tick are both on, including when the queue is empty.
 
+Asking the client to come and look ("Ask the client for help"): clients do not check the
+portal unprompted, so Practice → Uncategorized → **In suspense** has an **Ask the client
+for help** button. It emails, and optionally texts, the portal contacts who have **Can
+suggest categories** ticked for that company — nobody else, because a contact without the
+tick would log in and find nothing. The message says how many transactions are waiting,
+carries the portal login link (`/portal/login?firm=<slug>`), and can carry a personal
+note from staff. Before sending, the screen states what the client will actually find:
+the portal flag off (refused, HTTP 409 `PORTAL_CATEGORIZE_OFF`), nobody ticked, or an
+empty portal queue (refused with 409 `PORTAL_QUEUE_EMPTY` unless staff tick "Send anyway"
+— usually the rows sit in an account that is not the `system_tag='suspense'` account).
+Texting requires the firm's `sms_outbound_enabled` switch AND a system SMS provider;
+otherwise the option is greyed out with the reason. STOP opt-outs (reminder_suppressions)
+are always honoured; there is no weekly cap because a person presses the button, and the
+list shows when each contact was last asked and last seen in the portal. Every attempt is
+a `reminder_sends` row (question_id = the company id, schedule_id null) so opens/clicks
+show on the reminders dashboard. Wording is customisable under Practice → Reminders →
+Templates, trigger **Ask client to categorize** (`categorize_request`), variables
+`{first_name} {firm_name} {company_name} {count} {portal_link} {note}`.
+API: `GET/POST /api/v1/practice/uncategorized/help-request[/recipients]`.
+
 ## Setup & Administration
 
 ### Managing Multiple Companies

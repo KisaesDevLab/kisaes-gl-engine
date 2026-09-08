@@ -31,6 +31,10 @@ const TRIGGER_TYPES = [
   'magic_link_expiring',
 ] as const;
 
+// Template-only triggers: no schedule scans for them, a person sends them.
+// Practice -> Uncategorized -> "Ask the client for help" is the first.
+const TEMPLATE_TRIGGER_TYPES = [...TRIGGER_TYPES, 'categorize_request'] as const;
+
 const scheduleSchema = z.object({
   triggerType: z.enum(TRIGGER_TYPES),
   cadenceDays: z.array(z.number().int().min(1).max(365)).min(1).max(20),
@@ -74,7 +78,7 @@ portalRemindersRouter.delete('/schedules/:id', async (req, res) => {
 });
 
 const templateSchema = z.object({
-  triggerType: z.enum(TRIGGER_TYPES),
+  triggerType: z.enum(TEMPLATE_TRIGGER_TYPES),
   channel: z.enum(['email', 'sms']),
   subject: z.string().max(255).nullable().optional(),
   body: z.string().min(1).max(8000),

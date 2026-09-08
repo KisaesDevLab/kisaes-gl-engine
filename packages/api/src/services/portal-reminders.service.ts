@@ -30,7 +30,7 @@ import { escapeHtml } from './report-export.service.js';
 
 const DEFAULT_DIGEST_SUBJECT = 'You have new questions waiting';
 
-interface MailerHandle {
+export interface MailerHandle {
   send: (to: string, subject: string, html: string, text: string) => Promise<void>;
   isStub: boolean;
 }
@@ -64,7 +64,14 @@ async function portalLoginLink(linkBase: string, tenantId: string): Promise<stri
 // Exposed for tests — link construction only, no sends.
 export { portalLinkBase as __portalLinkBaseForTests, portalLoginLink as __portalLoginLinkForTests };
 
-async function getMailer(): Promise<MailerHandle> {
+// The send primitives below (mailer, suppression check, link builders,
+// template renderer, tenant SMS switch) are shared with
+// categorize-help-request.service — a staff-initiated "please log in and
+// help us categorize" notice that must honour the same STOP opt-outs and
+// land in the same reminder_sends audit trail as every other portal send.
+export { portalLinkBase, portalLoginLink };
+
+export async function getMailer(): Promise<MailerHandle> {
   const smtp = await getSmtpSettings();
   // Same From semantics as system emails: honor the display name.
   const from = buildFrom(smtp.smtpFrom || 'noreply@example.com', smtp.smtpFromName || undefined);
@@ -104,7 +111,7 @@ async function getMailer(): Promise<MailerHandle> {
 // 13.6 — engagement-based suppression check. Treats any portal
 // activity by the contact in the last 7 days, or an active explicit
 // suppression row, as "do not send".
-async function isSuppressed(
+export async function isSuppressed(
   contactId: string,
   channel: 'email' | 'sms',
   // Openers announce a NEW obligation, so they skip the 7-day
@@ -343,7 +350,7 @@ async function loadTemplatesByTrigger(
   return out;
 }
 
-function renderTemplate(
+export function renderTemplate(
   body: string,
   vars: Record<string, string | number>,
 ): string {
@@ -1099,7 +1106,7 @@ async function sendSmsLeg(
   return 'error';
 }
 
-async function getTenantSmsSettings(tenantId: string): Promise<{ smsOutboundEnabled: boolean; smsAllowMultiSegment: boolean }> {
+export async function getTenantSmsSettings(tenantId: string): Promise<{ smsOutboundEnabled: boolean; smsAllowMultiSegment: boolean }> {
   const row = await db.query.portalSettingsPerPractice.findFirst({
     where: eq(portalSettingsPerPractice.tenantId, tenantId),
   });

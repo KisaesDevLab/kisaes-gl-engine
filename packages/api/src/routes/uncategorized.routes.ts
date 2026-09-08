@@ -27,6 +27,7 @@ import { auditLog } from '../middleware/audit.js';
 import * as suspenseService from '../services/suspense.service.js';
 import * as bankFeedService from '../services/bank-feed.service.js';
 import * as suggestionReview from '../services/client-suggestion-review.service.js';
+import * as helpRequest from '../services/categorize-help-request.service.js';
 import { db } from '../db/index.js';
 import { sql } from 'drizzle-orm';
 
@@ -157,6 +158,32 @@ uncategorizedRouter.post('/clear', validate(clearSchema), async (req, res) => {
     req.tenantId, 'update', 'suspense_clear', null, null,
     { updated: result.updated, skipped: result.skipped.length, accountId: req.body.accountId },
     req.userId,
+  );
+  res.json(result);
+});
+
+// ── Asking the client for help ──────────────────────────────────
+// Sends the portal contacts who may suggest categories for this company an
+// email and/or text asking them to log in and answer "What was this?". A
+// notice only — nothing here touches the ledger. Lives on this router so it
+// carries the same flag + banking guards as the screen it is pressed from.
+
+// GET /help-request/recipients — who would receive it, and whether they
+// would find anything when they log in (queue count, portal flag, SMS).
+uncategorizedRouter.get('/help-request/recipients', async (req, res) => {
+  const view = await helpRequest.listHelpRecipients(req.tenantId, req.companyId);
+  res.json(view);
+});
+
+const helpRequestSchema = z.object({
+  contactIds: z.array(z.string().uuid()).min(1).max(100),
+  channels: z.array(z.enum(['email', 'sms'])).min(1).max(2),
+  note: z.string().max(1000).optional(),
+  confirmEmpty: z.boolean().optional(),
+});
+uncategorizedRouter.post('/help-request', validate(helpRequestSchema), async (req, res) => {
+  const result = await helpRequest.sendHelpRequest(
+    req.tenantId, req.companyId, req.userId, req.body,
   );
   res.json(result);
 });
