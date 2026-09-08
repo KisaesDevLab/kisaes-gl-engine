@@ -6,10 +6,13 @@ import { and, eq, inArray } from 'drizzle-orm';
 import type {
   AssignTenantToFirmInput,
   TenantFirmAssignment,
+  TenantFirmAssignmentWithFirm,
   TenantFirmAssignmentWithTenant,
+  TenantFirmState,
 } from '@kis-books/shared';
+import { desc } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { tenantFirmAssignments, tenants, userTenantAccess } from '../db/schema/index.js';
+import { firms, tenantFirmAssignments, tenants, users, userTenantAccess } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { syncFirmAdminAccessForTenant } from './firm-admin-access.service.js';
 
@@ -106,6 +109,49 @@ export async function listForFirm(firmId: string): Promise<TenantFirmAssignmentW
     tenantName: r.tenantName,
     tenantSlug: r.tenantSlug,
   }));
+}
+
+// Tenant-side view: every assignment (active + soft-detached history)
+// with the firm's name and who assigned it. Admin tenant detail page.
+export async function listForTenant(tenantId: string): Promise<TenantFirmAssignmentWithFirm[]> {
+  const rows = await db
+    .select({
+      id: tenantFirmAssignments.id,
+      tenantId: tenantFirmAssignments.tenantId,
+      firmId: tenantFirmAssignments.firmId,
+      assignedByUserId: tenantFirmAssignments.assignedByUserId,
+      assignedAt: tenantFirmAssignments.assignedAt,
+      isActive: tenantFirmAssignments.isActive,
+      firmName: firms.name,
+      firmSlug: firms.slug,
+      firmIsActive: firms.isActive,
+      assignedByEmail: users.email,
+    })
+    .from(tenantFirmAssignments)
+    .innerJoin(firms, eq(firms.id, tenantFirmAssignments.firmId))
+    .leftJoin(users, eq(users.id, tenantFirmAssignments.assignedByUserId))
+    .where(eq(tenantFirmAssignments.tenantId, tenantId))
+    .orderBy(desc(tenantFirmAssignments.assignedAt));
+  return rows.map((r) => ({
+    id: r.id,
+    tenantId: r.tenantId,
+    firmId: r.firmId,
+    assignedByUserId: r.assignedByUserId,
+    assignedAt: r.assignedAt.toISOString(),
+    isActive: r.isActive,
+    firmName: r.firmName,
+    firmSlug: r.firmSlug,
+    firmIsActive: r.firmIsActive,
+    assignedByEmail: r.assignedByEmail ?? null,
+  }));
+}
+
+export async function getTenantFirmState(tenantId: string): Promise<TenantFirmState> {
+  const all = await listForTenant(tenantId);
+  return {
+    current: all.find((a) => a.isActive) ?? null,
+    history: all.filter((a) => !a.isActive),
+  };
 }
 
 // Assigns a tenant to a firm. 1:N enforcement happens in two places:

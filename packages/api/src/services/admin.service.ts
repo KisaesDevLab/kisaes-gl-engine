@@ -63,8 +63,11 @@ export async function listTenants(options: AdminListOptions = {}) {
       (SELECT COUNT(*) FROM users u WHERE u.tenant_id = t.id) as user_count,
       (SELECT COUNT(*) FROM companies c WHERE c.tenant_id = t.id) as company_count,
       (SELECT COUNT(*) FROM transactions tx WHERE tx.tenant_id = t.id) as transaction_count,
-      EXISTS (SELECT 1 FROM users u WHERE u.tenant_id = t.id AND u.is_active) as is_active
+      EXISTS (SELECT 1 FROM users u WHERE u.tenant_id = t.id AND u.is_active) as is_active,
+      f.id as firm_id, f.name as firm_name
     FROM tenants t
+    LEFT JOIN tenant_firm_assignments tfa ON tfa.tenant_id = t.id AND tfa.is_active = true
+    LEFT JOIN firms f ON f.id = tfa.firm_id
     ${where}
     -- id tiebreaker keeps paging stable: bulk-created tenants can share a
     -- created_at, and an unstable sort makes rows repeat or vanish between
@@ -88,9 +91,75 @@ export async function listTenants(options: AdminListOptions = {}) {
       userCount: parseInt(r.user_count || '0'),
       companyCount: parseInt(r.company_count || '0'),
       transactionCount: parseInt(r.transaction_count || '0'),
+      firmId: (r.firm_id as string | null) ?? null,
+      firmName: (r.firm_name as string | null) ?? null,
     })),
     total: Number(totalRows.rows[0]?.total ?? 0),
   };
+}
+
+// Admin → Firms overview: every firm (inactive included) with live counts.
+export async function listFirmsWithCounts(options: AdminListOptions = {}) {
+  const like = likeTerm(options.search);
+  const where = like ? sql`WHERE f.name ILIKE ${like} OR f.slug ILIKE ${like}` : sql``;
+  const rows = await db.execute(sql`
+    SELECT f.id, f.name, f.slug, f.is_active, f.super_admin_managed, f.created_by_user_id,
+      f.created_at, f.updated_at,
+      (SELECT COUNT(*) FROM firm_users fu WHERE fu.firm_id = f.id AND fu.is_active) as member_count,
+      (SELECT COUNT(*) FROM tenant_firm_assignments tfa WHERE tfa.firm_id = f.id AND tfa.is_active) as tenant_count
+    FROM firms f
+    ${where}
+    ORDER BY f.name, f.id
+    ${pageClause(options)}
+  `);
+  const totalRows = await db.execute<{ total: number }>(sql`SELECT COUNT(*)::int as total FROM firms f ${where}`);
+  return {
+    firms: (rows.rows as any[]).map((r) => ({
+      id: r.id,
+      name: r.name,
+      slug: r.slug,
+      isActive: !!r.is_active,
+      superAdminManaged: !!r.super_admin_managed,
+      createdByUserId: r.created_by_user_id ?? null,
+      createdAt: new Date(r.created_at).toISOString(),
+      updatedAt: new Date(r.updated_at).toISOString(),
+      memberCount: parseInt(r.member_count || '0'),
+      tenantCount: parseInt(r.tenant_count || '0'),
+    })),
+    total: Number(totalRows.rows[0]?.total ?? 0),
+  };
+}
+
+// Super admin sets (or clears) the firm managing a tenant. Reassignment
+// soft-detaches the current firm (history kept); the target firm's admins
+// gain accountant access inside assignTenant. Unassigning revokes nothing
+// (deliberate — see firm-admin-access.service.ts). Audited with the
+// before/after firm ids on the tenant.
+export async function setTenantFirm(tenantId: string, firmId: string | null, actingUserId: string) {
+  const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
+  if (!tenant) throw AppError.notFound('Tenant not found');
+  const tfa = await import('./tenant-firm-assignment.service.js');
+  const before = await tfa.getActiveForTenant(tenantId);
+
+  if (firmId === null) {
+    if (before) {
+      await tfa.unassignTenant(before.firmId, tenantId);
+      await auditLog(tenantId, 'delete', 'tenant_firm_assignment', before.id,
+        { firmId: before.firmId }, { source: 'admin' }, actingUserId);
+    }
+    return tfa.getTenantFirmState(tenantId);
+  }
+
+  const firmsService = await import('./firms.service.js');
+  const firm = await firmsService.getById(firmId);
+  if (!firm.isActive) throw AppError.badRequest('That firm is deactivated', 'FIRM_INACTIVE');
+  if (before?.firmId === firmId) return tfa.getTenantFirmState(tenantId);
+
+  const assignment = await tfa.assignTenant(firmId, { tenantId, force: true }, actingUserId);
+  await auditLog(tenantId, before ? 'update' : 'create', 'tenant_firm_assignment', assignment.id,
+    before ? { firmId: before.firmId, assignmentId: before.id } : null,
+    { firmId, force: true, source: 'admin' }, actingUserId);
+  return tfa.getTenantFirmState(tenantId);
 }
 
 export async function getTenantDetail(tenantId: string) {
@@ -135,9 +204,12 @@ export async function getTenantDetail(tenantId: string) {
       (SELECT COUNT(*) FROM contacts WHERE tenant_id = ${tenantId}) as contacts
   `);
 
+  const firmState = await (await import('./tenant-firm-assignment.service.js')).getTenantFirmState(tenantId);
+
   return {
     tenant,
     users: tenantUsers,
+    firm: firmState,
     companies: tenantCompanies,
     stats: (stats.rows as any[])[0] || {},
   };

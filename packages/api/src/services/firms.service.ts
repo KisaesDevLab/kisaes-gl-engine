@@ -3,10 +3,11 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { and, eq } from 'drizzle-orm';
-import type {
-  CreateFirmInput,
-  Firm,
-  UpdateFirmInput,
+import {
+  APPLIANCE_FIRM_SLUG,
+  type CreateFirmInput,
+  type Firm,
+  type UpdateFirmInput,
 } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { firms, firmUsers } from '../db/schema/index.js';
@@ -116,6 +117,20 @@ export async function update(id: string, input: UpdateFirmInput): Promise<Firm> 
         `A firm with slug "${input.slug}" already exists`,
         'FIRM_SLUG_TAKEN',
       );
+    }
+  }
+  // The appliance firm is a singleton keyed by its reserved slug, and every
+  // self-registered tenant on the box is assigned to it — renaming its slug
+  // would orphan provisioning, and deactivating it would (since firms.is_active
+  // is now enforced) lock its staff out of every managed tenant in one click.
+  const current = await db.query.firms.findFirst({ where: eq(firms.id, id) });
+  if (!current) throw AppError.notFound('Firm not found');
+  if (current.slug === APPLIANCE_FIRM_SLUG) {
+    if (input.slug !== undefined && input.slug !== APPLIANCE_FIRM_SLUG) {
+      throw AppError.badRequest('The system-managed firm keeps its reserved slug', 'APPLIANCE_FIRM_SLUG_LOCKED');
+    }
+    if (input.isActive === false) {
+      throw AppError.badRequest('The system-managed firm cannot be deactivated', 'APPLIANCE_FIRM_REQUIRED');
     }
   }
   const set: Partial<typeof firms.$inferInsert> = { updatedAt: new Date() };

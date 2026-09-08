@@ -63,6 +63,7 @@ import {
   adminTfaConfigSchema,
   adminTfaSmsTestSchema,
   adminCreateClientSchema,
+  adminSetTenantFirmSchema,
   adminCreateUserSchema,
   adminMcpConfigSchema,
   adminPlaidConfigSchema,
@@ -327,6 +328,20 @@ adminRouter.get('/tenants', async (req, res) => {
 adminRouter.get('/tenants/:id', async (req, res) => {
   const detail = await adminService.getTenantDetail(req.params['id']!);
   res.json(detail);
+});
+
+// Managing firm — reassign (soft-detaches the current firm) or clear with
+// firmId: null. Firm CRUD itself rides /api/v1/firms (super admins pass
+// every gate there, the appliance firm included).
+adminRouter.post('/tenants/:id/firm', validate(adminSetTenantFirmSchema), async (req, res) => {
+  res.json(await adminService.setTenantFirm(req.params['id']!, req.body.firmId, req.userId));
+});
+
+// ─── Firms (admin overview) ─────────────────────────────────────
+
+adminRouter.get('/firms', async (req, res) => {
+  const { firms, total } = await adminService.listFirmsWithCounts(parseAdminListQuery(req.query));
+  res.json({ firms, total });
 });
 
 // System Retained Earnings — the current designation + equity accounts to pick
@@ -736,7 +751,7 @@ adminRouter.get('/tfa/stats', async (req, res) => {
 // ─── Create Client Tenant ───────────────────────────────────────
 
 adminRouter.post('/create-client', validate(adminCreateClientSchema), async (req, res) => {
-  const result = await authService.createClientTenant(req.userId, req.body);
+  const result = await authService.createClientTenant(req.userId, req.body, { isSuperAdmin: true });
   res.status(201).json(result);
 });
 

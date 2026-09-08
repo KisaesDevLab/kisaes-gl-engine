@@ -70,6 +70,26 @@ export interface TenantFirmAssignmentWithTenant extends TenantFirmAssignment {
   tenantSlug: string;
 }
 
+// Admin → Firms list row: the firm plus live counts.
+export interface AdminFirmSummary extends Firm {
+  memberCount: number;   // active firm_users rows
+  tenantCount: number;   // active tenant_firm_assignments rows
+}
+
+// Tenant-side view of an assignment (admin tenant detail page).
+export interface TenantFirmAssignmentWithFirm extends TenantFirmAssignment {
+  firmName: string;
+  firmSlug: string;
+  firmIsActive: boolean;
+  assignedByEmail: string | null;
+}
+
+export interface TenantFirmState {
+  current: TenantFirmAssignmentWithFirm | null;
+  // Soft-detached history, newest first.
+  history: TenantFirmAssignmentWithFirm[];
+}
+
 // Per-tenant access roles a firm staffer can be granted on a managed tenant.
 // Mirrors user_tenant_access.role (and admin.ts adminCreateUserRoles).
 export const TENANT_ACCESS_ROLES = ['owner', 'accountant', 'bookkeeper', 'readonly'] as const;

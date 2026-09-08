@@ -3,7 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { APPLIANCE_FIRM_SLUG } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import {
@@ -146,5 +146,47 @@ describe('firm-provisioning.assignTenantToApplianceFirm', () => {
       .from(tenantFirmAssignments)
       .where(and(eq(tenantFirmAssignments.tenantId, tenantId), eq(tenantFirmAssignments.isActive, true)));
     expect(activeAssignments).toHaveLength(1);
+  });
+});
+
+describe('firm-provisioning.resolveFirmForNewClient', () => {
+  const sfx = () => `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const extraFirmIds: string[] = [];
+  async function firm(name: string, active = true) {
+    const [f] = await db.insert(firms).values({ name, slug: `${name.toLowerCase()}-${sfx()}`, isActive: active }).returning();
+    extraFirmIds.push(f!.id);
+    return f!;
+  }
+  afterEach(async () => {
+    if (extraFirmIds.length) {
+      await db.delete(firmUsers).where(inArray(firmUsers.firmId, extraFirmIds));
+      await db.delete(firms).where(inArray(firms.id, extraFirmIds));
+      extraFirmIds.length = 0;
+    }
+  });
+
+  it('uses the sole membership; 422 with candidates when several; explicit firmId must be a membership', async () => {
+    const a = await firm('Resolve A');
+    await db.insert(firmUsers).values({ firmId: a.id, userId, firmRole: 'firm_staff' });
+    expect((await provisioning.resolveFirmForNewClient(userId, false)).id).toBe(a.id);
+
+    const b = await firm('Resolve B');
+    await db.insert(firmUsers).values({ firmId: b.id, userId, firmRole: 'firm_admin' });
+    await expect(provisioning.resolveFirmForNewClient(userId, false)).rejects.toMatchObject({
+      code: 'FIRM_SELECTION_REQUIRED', statusCode: 422,
+    });
+    expect((await provisioning.resolveFirmForNewClient(userId, false, b.id)).id).toBe(b.id);
+
+    const c = await firm('Resolve C');
+    await expect(provisioning.resolveFirmForNewClient(userId, false, c.id)).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it('no membership: 403 for staff, appliance firm for a super admin; super admin may name any active firm', async () => {
+    await expect(provisioning.resolveFirmForNewClient(userId, false)).rejects.toMatchObject({ code: 'FIRM_MEMBERSHIP_REQUIRED' });
+    expect((await provisioning.resolveFirmForNewClient(userId, true)).slug).toBe(APPLIANCE_FIRM_SLUG);
+    const c = await firm('Resolve SA');
+    expect((await provisioning.resolveFirmForNewClient(userId, true, c.id)).id).toBe(c.id);
+    const dead = await firm('Resolve Dead', false);
+    await expect(provisioning.resolveFirmForNewClient(userId, true, dead.id)).rejects.toMatchObject({ code: 'FIRM_INACTIVE' });
   });
 });

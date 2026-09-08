@@ -17,7 +17,8 @@ import { seedFromTemplate } from './accounts.service.js';
 import * as systemEmail from './system-email.service.js';
 import { checkPasswordBreached } from '../utils/hibp.js';
 import { seedDefaultsForNewTenant as seedFeatureFlags } from './feature-flags.service.js';
-import { joinApplianceFirm, assignTenantToApplianceFirm } from './firm-provisioning.service.js';
+import { assignTenantToApplianceFirm, resolveFirmForNewClient } from './firm-provisioning.service.js';
+import * as tenantFirmAssignmentService from './tenant-firm-assignment.service.js';
 
 // Cap per CLOUDFLARE_TUNNEL_PLAN Phase 3: max 3 concurrent sessions per
 // user. Oldest refresh token is revoked when the limit is exceeded —
@@ -168,7 +169,17 @@ async function provisionTenant(input: { companyName: string; businessType?: stri
   return { tenantId: tenant.id, companyId: company?.id || '', tenantName: tenant.name };
 }
 
-export async function createClientTenant(creatorUserId: string, input: { companyName: string; industry?: string; entityType?: string; businessType?: string; systemAccountsOnly?: boolean }): Promise<{ tenantId: string; companyId: string; tenantName: string }> {
+export async function createClientTenant(
+  creatorUserId: string,
+  input: { companyName: string; industry?: string; entityType?: string; businessType?: string; systemAccountsOnly?: boolean; firmId?: string },
+  ctx: { isSuperAdmin: boolean },
+): Promise<{ tenantId: string; companyId: string; tenantName: string; firmId: string; firmName: string }> {
+  // Resolve the managing firm FIRST so a bad firmId can't orphan a tenant.
+  // The creator's own firm (chooser when several; appliance firm only as
+  // the super-admin fallback) — no firm membership is created as a side
+  // effect any more (that was how migration 0136's cleanup became needed).
+  const firm = await resolveFirmForNewClient(creatorUserId, ctx.isSuperAdmin, input.firmId);
+
   const provisioned = await provisionTenant(input);
   const tenant = { id: provisioned.tenantId, name: provisioned.tenantName };
 
@@ -179,13 +190,10 @@ export async function createClientTenant(creatorUserId: string, input: { company
     role: 'accountant',
   }).onConflictDoNothing();
 
-  // Auto-join the appliance firm so the tiered conditional-rules UI
-  // resolves for the creator on this tenant. Idempotent. firm_staff,
-  // not firm_admin: staff author tenant_firm rules but must not manage
-  // the appliance-wide firm (membership, tenant assignments, creds).
-  await joinApplianceFirm(tenant.id, creatorUserId, 'firm_staff');
+  // Assign to the firm (firm_admin auto-access fires inside assignTenant).
+  await tenantFirmAssignmentService.assignTenant(firm.id, { tenantId: tenant.id, force: false }, creatorUserId);
 
-  return provisioned;
+  return { ...provisioned, firmId: firm.id, firmName: firm.name };
 }
 
 // ─── Self-service tenant creation (non-firm users) ───────────────

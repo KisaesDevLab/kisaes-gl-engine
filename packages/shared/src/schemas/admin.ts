@@ -181,8 +181,26 @@ export const adminCreateClientSchema = z.object({
   industry: z.string().max(100).optional(),
   entityType: z.string().max(50).optional(),
   businessType: z.string().max(100).optional(),
+  // Seed only the required system accounts (the switcher already sends this).
+  systemAccountsOnly: z.boolean().optional(),
+  // Which firm manages the new client. Optional when the creator belongs
+  // to exactly one firm; required (422 FIRM_SELECTION_REQUIRED) when they
+  // belong to several; super admins with no membership fall back to the
+  // appliance firm.
+  firmId: z.string().uuid().optional(),
 });
 export type AdminCreateClientInput = z.infer<typeof adminCreateClientSchema>;
+// Same payload on the practice route (POST /auth/create-client).
+export const createClientSchema = adminCreateClientSchema;
+export type CreateClientInput = AdminCreateClientInput;
+
+// Super admin: set (or clear, with null) the firm managing a tenant from
+// the tenant's admin detail page. Reassignment soft-detaches the current
+// firm; the target firm's admins gain accountant access automatically.
+export const adminSetTenantFirmSchema = z.object({
+  firmId: z.string().uuid().nullable(),
+});
+export type AdminSetTenantFirmInput = z.infer<typeof adminSetTenantFirmSchema>;
 
 // ─── MCP config ────────────────────────────────────────────────
 

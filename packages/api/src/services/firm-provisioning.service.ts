@@ -59,7 +59,10 @@ export async function ensureApplianceFirm(createdByUserId: string): Promise<Firm
 
 // Ensure `tenantId` is managed by the appliance firm and that
 // `ownerUserId` is a member (default firm_admin) so the tiered rules
-// UI resolves for them. Idempotent:
+// UI resolves for them. Only the first-run setup wizard calls this now
+// (the first admin becomes firm_admin of the appliance firm); client
+// creation assigns to the creator's own firm via resolveFirmForNewClient
+// and never adds memberships as a side effect. Idempotent:
 //   - re-running for an already-managed tenant is a no-op for the
 //     assignment (just guarantees the owner's membership);
 //   - if the tenant is somehow already managed by a DIFFERENT firm
@@ -89,6 +92,48 @@ export async function joinApplianceFirm(
     firm.id,
     { tenantId, force: false },
     ownerUserId,
+  );
+}
+
+// Which firm manages a NEW client tenant created by `creatorUserId`
+// (POST /auth/create-client, POST /admin/create-client). The creator's
+// own firm — not the appliance firm — so a multi-firm box keeps each
+// practice's clients with that practice:
+//   - requestedFirmId given: a super admin may name any active firm; a
+//     staffer must be an active member of it (404 hides non-member firms,
+//     like resolveFirmFromPath).
+//   - exactly one membership: use it.
+//   - several: 422 FIRM_SELECTION_REQUIRED with the candidate list.
+//   - none: super admin → appliance firm; anyone else → 403.
+// Resolve BEFORE provisioning so a bad firmId never orphans a tenant.
+export async function resolveFirmForNewClient(
+  creatorUserId: string,
+  isSuperAdmin: boolean,
+  requestedFirmId?: string,
+): Promise<Firm> {
+  const memberships = await firmsService.listForUser(creatorUserId);
+  if (requestedFirmId) {
+    if (isSuperAdmin) {
+      const firm = await firmsService.getById(requestedFirmId);
+      if (!firm.isActive) throw AppError.badRequest('That firm is deactivated', 'FIRM_INACTIVE');
+      return firm;
+    }
+    const firm = memberships.find((f) => f.id === requestedFirmId);
+    if (!firm) throw AppError.notFound('Firm not found');
+    return firm;
+  }
+  if (memberships.length === 1) return memberships[0]!;
+  if (memberships.length > 1) {
+    throw AppError.unprocessableEntity(
+      'Select which firm should manage the new company',
+      'FIRM_SELECTION_REQUIRED',
+      { firms: memberships.map((f) => ({ id: f.id, name: f.name })) },
+    );
+  }
+  if (isSuperAdmin) return ensureApplianceFirm(creatorUserId);
+  throw AppError.forbidden(
+    'Only practice staff can create client companies. Ask a firm administrator to add you to the firm first.',
+    'FIRM_MEMBERSHIP_REQUIRED',
   );
 }
 

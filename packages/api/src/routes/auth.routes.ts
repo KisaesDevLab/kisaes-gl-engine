@@ -3,7 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
-import { loginSchema, registerSchema, forgotPasswordSchema, resetPasswordSchema, changePasswordSchema, updatePreferencesSchema } from '@kis-books/shared';
+import { loginSchema, registerSchema, forgotPasswordSchema, resetPasswordSchema, changePasswordSchema, updatePreferencesSchema, createClientSchema } from '@kis-books/shared';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../utils/errors.js';
 import { authenticate, requireSessionAuth } from '../middleware/auth.js';
@@ -396,19 +396,19 @@ authRouter.get('/create-tenant/eligibility', authenticate, async (req, res) => {
   res.json(await authService.getTenantCreationEligibility(req.userId, req.userRole));
 });
 
-authRouter.post('/create-client', authenticate, requireSessionAuth, async (req, res) => {
+authRouter.post('/create-client', authenticate, requireSessionAuth, validate(createClientSchema), async (req, res) => {
   // Only accountants, bookkeepers, and super admins can create client tenants
   if (req.userRole !== 'accountant' && req.userRole !== 'bookkeeper' && !req.isSuperAdmin) {
     res.status(403).json({ error: { message: 'Only accountants and super admins can create client companies' } });
     return;
   }
-  // The practice flow auto-JOINS the creator to the appliance firm as
-  // firm_staff (box-wide tenant list + staff roster + firm-scoped
-  // writes). "accountant" is only a per-tenant role — any self-signup
-  // owner can invite a second account as accountant — so the role alone
-  // must not be the ticket into the firm. Require the caller to already
-  // be practice staff (an active firm membership) or a super admin, and
-  // never let external client-type users through.
+  // The new tenant is assigned to the CREATOR'S firm. "accountant" is
+  // only a per-tenant role — any self-signup owner can invite a second
+  // account as accountant — so the role alone must not be the ticket in.
+  // Require the caller to already be practice staff (an active firm
+  // membership) or a super admin, and never let external client-type
+  // users through. resolveFirmForNewClient re-checks membership against
+  // any explicit firmId.
   if (!req.isSuperAdmin) {
     if (req.userType === 'client') throw AppError.notFound('Not found');
     const firmsService = await import('../services/firms.service.js');
@@ -417,7 +417,7 @@ authRouter.post('/create-client', authenticate, requireSessionAuth, async (req, 
       throw AppError.forbidden('Only practice staff can create client companies. Ask a firm administrator to add you to the firm first.', 'FIRM_MEMBERSHIP_REQUIRED');
     }
   }
-  const result = await authService.createClientTenant(req.userId, req.body);
+  const result = await authService.createClientTenant(req.userId, req.body, { isSuperAdmin: !!req.isSuperAdmin });
   res.status(201).json(result);
 });
 
