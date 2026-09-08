@@ -164,7 +164,7 @@ export const copyAssignmentsSchema = z.object({
   // Restrict to these accounts (the per-row "apply to all <type> units").
   accountIds: z.array(z.string().uuid()).max(5000).optional(),
   // Report what would happen without writing (dialog preview).
-  dryRun: z.boolean().optional().default(false),
+  dryRun: z.boolean().optional(),
 });
 export type TbCopyAssignmentsInput = z.infer<typeof copyAssignmentsSchema>;
 

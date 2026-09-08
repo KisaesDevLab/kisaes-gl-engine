@@ -90,6 +90,7 @@ import { bankConnectPublicRouter } from './routes/bank-connect-public.routes.js'
 import { recurringDocRequestsRouter } from './routes/recurring-doc-requests.routes.js';
 import { portalDocumentRequestsPublicRouter } from './routes/portal-document-requests-public.routes.js';
 import { portalBankingPublicRouter } from './routes/portal-banking-public.routes.js';
+import { portalBankRepairPublicRouter } from './routes/portal-bank-repair-public.routes.js';
 import { portalCategorizePublicRouter } from './routes/portal-categorize-public.routes.js';
 import { portalBillsPublicRouter } from './routes/portal-bills-public.routes.js';
 import swaggerUi from 'swagger-ui-express';
@@ -592,6 +593,9 @@ app.use('/api/portal/receipts', portalReceiptsPublicRouter);
 // requested" panel on the portal dashboard.
 app.use('/api/portal/document-requests', portalDocumentRequestsPublicRouter);
 // PORTAL_BANKING_V1 — read-only bank/card balances + registers.
+// Connection repair first: its paths live under /banking/connections and
+// must not fall into the read-only banking router.
+app.use('/api/portal/banking/connections', portalBankRepairPublicRouter);
 app.use('/api/portal/banking', portalBankingPublicRouter);
 app.use('/api/portal/categorize', portalCategorizePublicRouter);
 // PORTAL_BILL_PAY_V1 — unpaid bills list + mark-for-payment.

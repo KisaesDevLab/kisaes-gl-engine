@@ -78,7 +78,7 @@ export async function assertBankingAccess(
   }
 }
 
-function eligibleAccountConditions(tenantId: string, companyId: string, singleCompany: boolean) {
+export function eligibleAccountConditions(tenantId: string, companyId: string, singleCompany: boolean) {
   const bankList = sql.join(BANK_ACCOUNT_DETAIL_TYPES.map((d) => sql`${d}`), sql`, `);
   const ccList = sql.join(RECONCILABLE_LIABILITY_DETAIL_TYPES.map((d) => sql`${d}`), sql`, `);
   return sql`

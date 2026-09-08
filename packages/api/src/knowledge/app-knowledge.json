@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-08T20:51:19.994Z",
+  "generatedAt": "2026-09-08T21:03:28.951Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -18,7 +18,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 85212
+    "totalBytes": 86345
   },
   "screens": [
     {
@@ -1563,6 +1563,7 @@
     "Chart of Accounts Bulk Edit",
     "Budgets",
     "Balances & Activity (banking views)",
+    "Fixing a bank login from the portal",
     "Bill Pay (clients mark bills for payment)",
     "Document requests — unread client submissions & staff notification",
     "Managing Multiple Companies",

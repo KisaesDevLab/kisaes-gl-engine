@@ -23,6 +23,22 @@ transactions, memos, and reconciliation details are never shown to clients.
 
 Requires the tenant flag `PORTAL_BANKING_V1` plus the per-contact toggle.
 
+### Fixing a bank login from the portal
+When a bank asks for a fresh sign-in (Plaid reports ITEM_LOGIN_REQUIRED, a
+pending disconnect, or an error), a client can re-authenticate it themselves
+from the portal instead of waiting for a staff-sent repair link. Enable it per
+contact per company with **Practice → Client Portal → Contacts → "Can fix bank
+logins"** (off by default; it also needs the tenant flag `PORTAL_BANKING_V1`).
+The client then sees a "needs you to sign in again" banner on the portal home
+and on Balances, plus a **Bank connections** card on Balances listing each
+institution with its status and a **Fix sign-in** button. Fixing opens the
+bank's own sign-in (Plaid Link update mode) — the client never sees or enters
+credentials in MyBooks, and only connections feeding that company's accounts
+are shown. When it succeeds the connection is marked healthy, a sync runs, and
+whoever set the connection up gets an email. Preview ("View as Client") can see
+the card but can never start a fix. OAuth banks (Chase, Capital One) return via
+the registered `/connect/oauth-return` URL, which requires PUBLIC_URL to be set.
+
 ### Bill Pay (clients mark bills for payment)
 When the firm grants **Can pay bills**, clients see their company's unpaid bills (vendor,
 invoice number, due date, overdue age, balance due) and can select bills and tap **Pay
