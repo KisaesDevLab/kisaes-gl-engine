@@ -88,8 +88,16 @@ export const updateFirmTaxCodeSchema = createFirmTaxCodeSchema.partial().extend(
   isActive: z.boolean().optional(),
 });
 
+// How tax codes resolve per activity unit (migration 0170). 'account':
+// a unit slice falls back to the account-level code. 'unit': strict —
+// the account-level row is the default unit's code and every other unit
+// with a balance needs its own row (Tax Mapping shows a sub-row per unit).
+export const tbTaxCodeMappingModes = ['account', 'unit'] as const;
+export type TbTaxCodeMappingMode = typeof tbTaxCodeMappingModes[number];
+
 export const upsertTaxProfileSchema = z.object({
   returnForm: z.enum(tbReturnForms),
+  taxCodeMappingMode: z.enum(tbTaxCodeMappingModes).optional(),
   // NULL floats to the latest seed version for the tax year (ADR-TB-05).
   pinnedSeedVersionId: z.string().uuid().nullable().optional(),
   sCorpElectionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
@@ -117,6 +125,48 @@ export const updateActivityUnitSchema = z.object({
 export const mapTagSchema = z.object({
   activityUnitId: z.string().uuid(),
 });
+
+// Making a unit the default in 'unit' mapping mode re-targets every
+// account-level code; the server returns an impact preview unless
+// `confirm` is set. `convertOldDefault` copies the account-level codes
+// onto the previous default unit as unit rows so nothing loses coverage.
+export const setDefaultUnitSchema = z.object({
+  confirm: z.boolean().optional().default(false),
+  convertOldDefault: z.boolean().optional().default(false),
+});
+
+// Account → tax code assignment write (PUT /tb/assignments). The unit's
+// activity type is derived server-side from activityUnitId; the legacy
+// `activityUnitType` field is accepted for compatibility and ignored.
+export const setAssignmentSchema = z.object({
+  accountId: z.string().uuid(),
+  activityUnitId: z.string().uuid().nullable().optional(),
+  seedCode: z.string().max(50).nullable().optional(),
+  seedActivityType: z.string().max(20).nullable().optional(),
+  firmCodeId: z.string().uuid().nullable().optional(),
+  activityUnitType: z.string().max(20).optional(),
+  effectiveTaxYear: z.coerce.number().int().optional(),
+  // 'ai' when the user ACCEPTS an AI suggestion (6C.4) — acceptance is
+  // always an explicit user act; the server never auto-commits.
+  source: z.enum(['manual', 'ai']).optional().default('manual'),
+  aiConfidence: z.coerce.number().int().min(0).max(100).nullable().optional(),
+});
+export type TbSetAssignmentInput = z.infer<typeof setAssignmentSchema>;
+
+// Copy tax-code mappings from one activity unit (or the account-level
+// codes, sourceUnitId = null) onto other live units. Codes that are not
+// assignable to a target's activity type are skipped and reported.
+export const tbCopyAssignmentModes = ['skip_existing', 'overwrite'] as const;
+export const copyAssignmentsSchema = z.object({
+  sourceUnitId: z.string().uuid().nullable(),
+  targetUnitIds: z.array(z.string().uuid()).min(1).max(100),
+  mode: z.enum(tbCopyAssignmentModes),
+  // Restrict to these accounts (the per-row "apply to all <type> units").
+  accountIds: z.array(z.string().uuid()).max(5000).optional(),
+  // Report what would happen without writing (dialog preview).
+  dryRun: z.boolean().optional().default(false),
+});
+export type TbCopyAssignmentsInput = z.infer<typeof copyAssignmentsSchema>;
 
 // Tax RJEs (ADR-TB-03): tax-basis-only, must net to zero (service-
 // enforced with Decimal — the schema just shapes the wire format).

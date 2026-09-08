@@ -9,7 +9,7 @@ import { z } from 'zod';
 import {
   createFirmTaxCodeSchema, updateFirmTaxCodeSchema,
   upsertTaxProfileSchema, createActivityUnitSchema, updateActivityUnitSchema, mapTagSchema,
-  createAjeSchema, createTaxEntrySchema,
+  createAjeSchema, createTaxEntrySchema, setAssignmentSchema, copyAssignmentsSchema, setDefaultUnitSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
@@ -204,27 +204,14 @@ tbRouter.get('/tax-codes/available', async (req, res) => {
   res.json(result);
 });
 
-const setAssignmentSchema = z.object({
-  accountId: z.string().uuid(),
-  activityUnitId: z.string().uuid().nullable().optional(),
-  seedCode: z.string().max(50).nullable().optional(),
-  seedActivityType: z.string().max(20).nullable().optional(),
-  firmCodeId: z.string().uuid().nullable().optional(),
-  activityUnitType: z.string().max(20).optional(),
-  effectiveTaxYear: z.coerce.number().int().optional(),
-  // 'ai' when the user ACCEPTS an AI suggestion (6C.4) — acceptance is
-  // always an explicit user act; the server never auto-commits.
-  source: z.enum(['manual', 'ai']).optional().default('manual'),
-  aiConfidence: z.coerce.number().int().min(0).max(100).nullable().optional(),
-});
-
 tbRouter.put('/assignments', validate(setAssignmentSchema), async (req, res) => {
   const assignment = await assignmentsService.setAssignment(req.tenantId, req.companyId!, req.body, req.userId);
   res.json({ assignment });
 });
 
 tbRouter.delete('/assignments/:accountId', async (req, res) => {
-  const unitId = typeof req.query['activityUnitId'] === 'string' ? req.query['activityUnitId'] : null;
+  const raw = typeof req.query['activityUnitId'] === 'string' ? req.query['activityUnitId'] : null;
+  const unitId = raw ? z.string().uuid().parse(raw) : null;
   await assignmentsService.clearAssignment(req.tenantId, req.companyId!, String(req.params['accountId']), unitId, req.userId);
   res.status(204).end();
 });
@@ -238,6 +225,14 @@ tbRouter.post('/assignments/bulk', validate(z.object({ assignments: z.array(setA
   res.json({ results });
 });
 
+// Copy mappings between activity units (unit mapping mode): dryRun
+// powers the dialog preview; the per-row "apply to all <type> units"
+// action is the same call with accountIds.
+tbRouter.post('/assignments/copy', validate(copyAssignmentsSchema), async (req, res) => {
+  const result = await assignmentsService.copyAssignments(req.tenantId, req.companyId!, req.body, req.userId);
+  res.json(result);
+});
+
 // ── AI assignment + diagnostics (Phase 6C — advisory) ──────────────
 
 // Batched: each call analyzes a capped slice of the unassigned
@@ -245,13 +240,16 @@ tbRouter.post('/assignments/bulk', validate(z.object({ assignments: z.array(setA
 // already-analyzed ids back via excludeAccountIds.
 const aiSuggestSchema = z.object({
   excludeAccountIds: z.array(z.string().uuid()).max(20000).optional(),
+  // Unit mapping mode: run for one activity unit (its codes only).
+  activityUnitId: z.string().uuid().nullable().optional(),
 });
 
 tbRouter.post('/ai/suggest-assignments', expensiveOpLimiter, async (req, res) => {
   const q = workpaperQuerySchema.parse(req.body);
-  const extra = aiSuggestSchema.parse({ excludeAccountIds: (req.body as Record<string, unknown>)['excludeAccountIds'] });
+  const body = req.body as Record<string, unknown>;
+  const extra = aiSuggestSchema.parse({ excludeAccountIds: body['excludeAccountIds'], activityUnitId: body['activityUnitId'] });
   const result = await aiTaxAssign.suggestAssignments(req.tenantId, req.companyId!, {
-    periodEnd: q.periodEnd, basis: q.basis, excludeAccountIds: extra.excludeAccountIds,
+    periodEnd: q.periodEnd, basis: q.basis, excludeAccountIds: extra.excludeAccountIds, activityUnitId: extra.activityUnitId ?? null,
   });
   res.json(result);
 });
@@ -861,9 +859,12 @@ tbRouter.put('/activity-units/:id', validate(updateActivityUnitSchema), async (r
   res.json({ unit });
 });
 
-tbRouter.post('/activity-units/:id/set-default', async (req, res) => {
-  const unit = await unitsService.setDefaultUnit(req.tenantId, req.companyId!, String(req.params['id']), req.userId);
-  res.json({ unit });
+// In unit mapping mode the response may be an impact preview
+// ({ requiresConfirm: true, impact }) until the client re-posts with
+// confirm: true (optionally convertOldDefault).
+tbRouter.post('/activity-units/:id/set-default', validate(setDefaultUnitSchema), async (req, res) => {
+  const result = await unitsService.setDefaultUnit(req.tenantId, req.companyId!, String(req.params['id']), req.userId, req.body);
+  res.json(result);
 });
 
 tbRouter.delete('/activity-units/:id', async (req, res) => {

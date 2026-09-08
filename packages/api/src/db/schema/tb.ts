@@ -100,6 +100,12 @@ export const companyTaxProfiles = pgTable('company_tax_profiles', {
   // Where vendor exports attach the activity-unit number on unit-split
   // account rows: 'suffix' (1000-2) or 'prefix' (2-1000). Migration 0161.
   unitNumberPlacement: varchar('unit_number_placement', { length: 10 }).notNull().default('suffix'),
+  // Tax-code mapping mode (migration 0170). 'account': a unit slice falls
+  // back to the account-level code (original behaviour). 'unit': P&L
+  // codes resolve strictly per activity unit — the account-level row is
+  // the DEFAULT unit's code (and the untagged / balance-sheet bucket);
+  // every other unit with a balance needs its own row.
+  taxCodeMappingMode: varchar('tax_code_mapping_mode', { length: 10 }).notNull().default('account'),
   // Schedule M-2 equity-account role map (9.4): { accountId:
   // 'retained' | 'distributions' | 'contributions' | 'other' }.
   equityRoles: jsonb('equity_roles'),

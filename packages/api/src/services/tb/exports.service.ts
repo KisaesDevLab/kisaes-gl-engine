@@ -31,7 +31,7 @@ import {
 import { fiscalYearEnd } from './tax-profile.service.js';
 import { resolveSeedVersionId } from './assignments.service.js';
 import { resolveOwner } from './firm-tax-codes.service.js';
-import { resolveCodeFor } from './diagnostics.service.js';
+import { buildResolveContext, loadResolveContext, resolveCodeFor } from './diagnostics.service.js';
 import { runDiagnostics } from './diagnostics.service.js';
 
 export const TB_EXPORT_SOFTWARE = ['ultratax', 'lacerte', 'cch', 'gosystem', 'generic', 'workingtb'] as const;
@@ -151,10 +151,15 @@ export async function buildTaxDataset(
   const [profile] = await db.select({
     prefs: companyTaxProfiles.consolidationPrefs,
     unitNumberPlacement: companyTaxProfiles.unitNumberPlacement,
+    taxCodeMappingMode: companyTaxProfiles.taxCodeMappingMode,
   }).from(companyTaxProfiles)
     .where(and(eq(companyTaxProfiles.tenantId, tenantId), eq(companyTaxProfiles.companyId, companyId))).limit(1);
   const consolidationPrefs = readConsolidationPrefs(profile?.prefs);
   const unitNumberPlacement = profile?.unitNumberPlacement === 'prefix' ? 'prefix' as const : 'suffix' as const;
+  const unitRows = await db.select().from(activityUnits)
+    .where(and(eq(activityUnits.tenantId, tenantId), eq(activityUnits.companyId, companyId)));
+  const ctx = buildResolveContext(profile?.taxCodeMappingMode, unitRows);
+  const unitNameById = new Map(unitRows.map((u) => [u.id, u.displayName]));
 
   const byCode = new Map<string, TaxDatasetLine>();
   const unassigned: TaxDataset['unassigned'] = [];
@@ -176,16 +181,19 @@ export async function buildTaxDataset(
       ? row.units
       : [{ unitId: row.units[0]?.unitId ?? ZERO_UUID, unadjusted: row.unadjusted, aje: row.aje, adjusted: row.adjusted, taxRje: row.taxRje, tax: row.tax }];
     let dropped = false;
+    const droppedUnits: string[] = [];
     for (const u of units) {
       if (Math.abs(u.tax) < 0.005) continue;
-      const assignment = resolveCodeFor(assignments, row.accountId, u.unitId);
+      const assignment = resolveCodeFor(assignments, row.accountId, u.unitId, ctx, row.accountType);
       if (!assignment) {
         // A unit split with balance and no resolvable code would drop
         // one side of a balanced entry from the file — hard finding.
         dropped = true;
+        const uname = unitNameById.get(u.unitId);
+        if (uname) droppedUnits.push(uname);
         continue;
       }
-      const key = assignment.firmCodeId ? `firm|${assignment.firmCodeId}` : `seed|${(assignment as { seedActivityType?: string }).seedActivityType}|${assignment.seedCode}`;
+      const key = assignment.firmCodeId ? `firm|${assignment.firmCodeId}` : `seed|${assignment.seedActivityType}|${assignment.seedCode}`;
       const m = meta.get(key);
       if (!m) continue;
       let line = byCode.get(key);
@@ -215,7 +223,12 @@ export async function buildTaxDataset(
       line.accounts.push({ accountId: row.accountId, accountNumber: row.accountNumber, name: row.name, unitId: u.unitId, amount: u.tax, bookAmount: u.adjusted });
     }
     if (dropped) {
-      unassigned.push({ accountId: row.accountId, name: row.name });
+      // In unit mode name the unit(s) so the preparer knows which slice
+      // to code on the Tax Mapping page.
+      unassigned.push({
+        accountId: row.accountId,
+        name: ctx.mode === 'unit' && droppedUnits.length ? `${row.name} · ${droppedUnits.join(', ')}` : row.name,
+      });
     }
   }
   for (const line of byCode.values()) {
@@ -250,6 +263,10 @@ export interface ExportValidation {
   unassigned: TaxDataset['unassigned'];
   missingVendorCode: TaxDataset['missingVendorCode'];
   splitGaps: number;
+  // Unit mapping mode: live unit slices with balance and no unit code,
+  // and account-level codes whose activity doesn't fit the default unit.
+  unitGaps: number;
+  activityMismatches: number;
   hardBlocked: boolean;
   overridableBlocked: boolean;
   ready: boolean;
@@ -264,12 +281,17 @@ export async function validateForExport(
   const diag = await runDiagnostics(tenantId, companyId, { periodEnd: dataset.periodEnd, basis: opts.basis, taxYear: opts.taxYear });
   const outOfBalance = diag.diagnostics.some((d) => d.kind === 'out_of_balance');
   const splitGaps = diag.diagnostics.filter((d) => d.kind === 'split_gap').length;
-  const hardBlocked = dataset.unassigned.length > 0 || dataset.missingVendorCode.length > 0 || splitGaps > 0;
+  const unitGaps = diag.diagnostics.filter((d) => d.kind === 'unit_gap').length;
+  const activityMismatches = diag.diagnostics.filter((d) => d.kind === 'activity_mismatch').length;
+  const hardBlocked = dataset.unassigned.length > 0 || dataset.missingVendorCode.length > 0
+    || splitGaps > 0 || unitGaps > 0 || activityMismatches > 0;
   const validation: ExportValidation = {
     balanced: !outOfBalance,
     unassigned: dataset.unassigned,
     missingVendorCode: dataset.missingVendorCode,
     splitGaps,
+    unitGaps,
+    activityMismatches,
     hardBlocked,
     overridableBlocked: outOfBalance,
     ready: !hardBlocked && !outOfBalance,
@@ -528,6 +550,7 @@ export async function buildWorkingTbXlsx(
   const wp = await computeWorkpaper(tenantId, companyId, { periodEnd, basis: opts.basis, taxYear: opts.taxYear, tagId });
   const assignments = await db.select().from(accountTaxAssignments)
     .where(and(eq(accountTaxAssignments.tenantId, tenantId), eq(accountTaxAssignments.companyId, companyId)));
+  const ctx = await loadResolveContext(tenantId, companyId);
   const fmt = await loadUnitFormatting(tenantId, companyId);
   const view = opts.view ?? {};
   const activityView = view.activityView ?? '';
@@ -581,12 +604,22 @@ export async function buildWorkingTbXlsx(
     const totals = { unadjusted: 0, aje: 0, adjusted: 0, taxRje: 0, tax: 0 };
     for (const r of rows) {
       // Tax code resolves per slice (unit-specific assignment first,
-      // then account-level); the zero bucket has no unit assignment.
-      const assignment = resolveCodeFor(assignments, r.row.accountId, r.unitId ?? r.row.units[0]?.unitId ?? ZERO_UUID);
+      // then account-level per the mapping mode). A consolidated line
+      // spanning several units prints the code only when every slice
+      // agrees, else 'multiple'.
+      const codeLabel = (a: ReturnType<typeof resolveCodeFor>) => a?.seedCode ?? (a?.firmCodeId ? 'FIRM' : '');
+      let codeCell: string;
+      if (r.unitId != null) {
+        codeCell = codeLabel(resolveCodeFor(assignments, r.row.accountId, r.unitId, ctx, r.row.accountType));
+      } else {
+        const sliceIds = r.row.units.length ? r.row.units.map((u) => u.unitId) : [ZERO_UUID];
+        const labels = [...new Set(sliceIds.map((id) => codeLabel(resolveCodeFor(assignments, r.row.accountId, id, ctx, r.row.accountType))))];
+        codeCell = labels.length === 1 ? labels[0]! : 'multiple';
+      }
       ws.addRow([
         r.accountNumber, r.row.name, ...(byTag ? [r.segment] : []),
         r.unadjusted, r.aje, r.adjusted, r.taxRje, r.tax,
-        assignment?.seedCode ?? (assignment?.firmCodeId ? 'FIRM' : ''),
+        codeCell,
       ]);
       totals.unadjusted += r.unadjusted;
       totals.aje += r.aje;
@@ -637,6 +670,8 @@ export async function generateExport(
         unassigned: validation.unassigned.slice(0, 20),
         missingVendorCode: validation.missingVendorCode.slice(0, 20),
         splitGaps: validation.splitGaps,
+        unitGaps: validation.unitGaps,
+        activityMismatches: validation.activityMismatches,
       });
     }
     if (validation.overridableBlocked) {

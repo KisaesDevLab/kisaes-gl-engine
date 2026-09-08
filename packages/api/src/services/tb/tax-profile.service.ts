@@ -6,9 +6,9 @@
 // pinning, and the fiscal/tax-year display data derived from the
 // company's fiscal calendar (month-granular — rule TB10).
 
-import { eq, and } from 'drizzle-orm';
+import { eq, and, isNull } from 'drizzle-orm';
 import { db } from '../../db/index.js';
-import { companies, companyTaxProfiles, taxCodeSeedVersions } from '../../db/schema/index.js';
+import { activityUnits, companies, companyTaxProfiles, taxCodeSeedVersions } from '../../db/schema/index.js';
 import type { z } from 'zod';
 import { upsertTaxProfileSchema } from '@kis-books/shared';
 import { AppError } from '../../utils/errors.js';
@@ -78,6 +78,23 @@ export async function upsertProfile(tenantId: string, companyId: string, input: 
       .where(eq(taxCodeSeedVersions.id, input.pinnedSeedVersionId)).limit(1);
     if (!v) throw AppError.badRequest('Unknown seed version', 'TB_SEED_INVALID');
   }
+  // 'unit' mode is meaningless without a live default unit — the
+  // account-level row would have nothing to be "the default unit's code"
+  // for, and every slice would sit in the zero bucket.
+  if (input.taxCodeMappingMode === 'unit') {
+    const [live] = await db.select({ id: activityUnits.id }).from(activityUnits)
+      .where(and(
+        eq(activityUnits.tenantId, tenantId),
+        eq(activityUnits.companyId, companyId),
+        isNull(activityUnits.archivedAt),
+      )).limit(1);
+    if (!live) {
+      throw AppError.unprocessableEntity(
+        'Add at least one activity unit before mapping tax codes per unit',
+        'TB_MODE_REQUIRES_UNITS',
+      );
+    }
+  }
   return db.transaction(async (tx) => {
     const [before] = await tx.select().from(companyTaxProfiles)
       .where(and(eq(companyTaxProfiles.tenantId, tenantId), eq(companyTaxProfiles.companyId, companyId)))
@@ -90,6 +107,7 @@ export async function upsertProfile(tenantId: string, companyId: string, input: 
         sCorpElectionDate: input.sCorpElectionDate ?? null,
         defaultActivityType: input.defaultActivityType ?? before.defaultActivityType,
         unitNumberPlacement: input.unitNumberPlacement ?? before.unitNumberPlacement,
+        taxCodeMappingMode: input.taxCodeMappingMode ?? before.taxCodeMappingMode,
         updatedAt: new Date(),
       }).where(eq(companyTaxProfiles.id, before.id)).returning();
     } else {
@@ -101,6 +119,7 @@ export async function upsertProfile(tenantId: string, companyId: string, input: 
         sCorpElectionDate: input.sCorpElectionDate ?? null,
         defaultActivityType: input.defaultActivityType ?? 'business',
         unitNumberPlacement: input.unitNumberPlacement ?? 'suffix',
+        taxCodeMappingMode: input.taxCodeMappingMode ?? 'account',
       }).returning();
     }
     if (!row) throw AppError.internal('Tax profile write failed');

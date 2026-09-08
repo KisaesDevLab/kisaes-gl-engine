@@ -10,7 +10,7 @@
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import {
-  accountTaxAssignments, activityUnits, companyTaxProfiles, firmTaxCodes,
+  accounts, accountTaxAssignments, activityUnits, companyTaxProfiles, firmTaxCodes,
   tagActivityMap, tags, taxCodes, tbTaxEntryLines,
 } from '../../db/schema/index.js';
 import type { z } from 'zod';
@@ -102,13 +102,94 @@ export async function renameUnit(tenantId: string, companyId: string, unitId: st
   });
 }
 
-export async function setDefaultUnit(tenantId: string, companyId: string, unitId: string, userId?: string) {
+export interface DefaultUnitImpact {
+  // P&L accounts whose only code is the account-level row: in unit
+  // mapping mode that row stops covering the OLD default unit.
+  accountsLosingCoverage: Array<{ accountId: string; accountNumber: string | null; name: string }>;
+  // Account-level codes whose activity doesn't fit the NEW default unit.
+  mismatches: Array<{ accountId: string; accountNumber: string | null; name: string; code: string; codeActivity: string }>;
+}
+
+// Making a unit the default. In 'unit' mapping mode the account-level
+// row IS the default unit's code, so swapping the default re-targets
+// every account-level code at once: the old default loses coverage
+// (→ unit_gap) and codes of the wrong activity become mismatches. The
+// caller therefore gets an impact preview first and must confirm; with
+// `convertOldDefault` the account-level codes are copied onto the old
+// default as unit rows in the same transaction so nothing loses coverage.
+export async function setDefaultUnit(
+  tenantId: string,
+  companyId: string,
+  unitId: string,
+  userId?: string,
+  opts: { confirm?: boolean; convertOldDefault?: boolean } = {},
+): Promise<{ unit: typeof activityUnits.$inferSelect | null; requiresConfirm: boolean; impact: DefaultUnitImpact | null }> {
   return db.transaction(async (tx) => {
     const [target] = await tx.select().from(activityUnits)
       .where(and(eq(activityUnits.id, unitId), eq(activityUnits.tenantId, tenantId), eq(activityUnits.companyId, companyId)))
       .limit(1);
     if (!target) throw AppError.notFound('Activity unit not found');
     if (target.archivedAt) throw AppError.badRequest('An archived unit cannot be the default', 'TB_UNIT_IN_USE');
+    const [current] = await tx.select().from(activityUnits)
+      .where(and(eq(activityUnits.companyId, companyId), eq(activityUnits.isDefault, true), isNull(activityUnits.archivedAt)))
+      .limit(1);
+    if (current?.id === target.id) return { unit: target, requiresConfirm: false, impact: null };
+
+    const [profile] = await tx.select({ mode: companyTaxProfiles.taxCodeMappingMode }).from(companyTaxProfiles)
+      .where(and(eq(companyTaxProfiles.tenantId, tenantId), eq(companyTaxProfiles.companyId, companyId))).limit(1);
+    let impact: DefaultUnitImpact | null = null;
+    if (profile?.mode === 'unit' && current) {
+      const rows = await tx.select({
+        accountId: accountTaxAssignments.accountId,
+        activityUnitId: accountTaxAssignments.activityUnitId,
+        seedCode: accountTaxAssignments.seedCode,
+        seedActivityType: accountTaxAssignments.seedActivityType,
+        firmCodeId: accountTaxAssignments.firmCodeId,
+        accountType: accounts.accountType,
+        accountNumber: accounts.accountNumber,
+        name: accounts.name,
+      }).from(accountTaxAssignments)
+        .innerJoin(accounts, eq(accounts.id, accountTaxAssignments.accountId))
+        .where(and(eq(accountTaxAssignments.tenantId, tenantId), eq(accountTaxAssignments.companyId, companyId)));
+      const firmIds = [...new Set(rows.map((r) => r.firmCodeId).filter((x): x is string => !!x))];
+      const firmType = new Map<string, string>();
+      if (firmIds.length) {
+        for (const f of await tx.select({ id: firmTaxCodes.id, t: firmTaxCodes.activityType }).from(firmTaxCodes).where(inArray(firmTaxCodes.id, firmIds))) {
+          firmType.set(f.id, f.t);
+        }
+      }
+      const isBs = (t: string) => t === 'asset' || t === 'liability' || t === 'equity';
+      const accountLevel = rows.filter((r) => r.activityUnitId === null && !isBs(r.accountType));
+      const hasOldDefaultRow = new Set(rows.filter((r) => r.activityUnitId === current.id).map((r) => r.accountId));
+      impact = {
+        accountsLosingCoverage: accountLevel
+          .filter((r) => !hasOldDefaultRow.has(r.accountId))
+          .map((r) => ({ accountId: r.accountId, accountNumber: r.accountNumber, name: r.name })),
+        mismatches: accountLevel.flatMap((r) => {
+          const codeActivity = r.firmCodeId ? (firmType.get(r.firmCodeId) ?? 'common') : (r.seedActivityType ?? 'common');
+          return codeActivity !== 'common' && codeActivity !== target.activityType
+            ? [{ accountId: r.accountId, accountNumber: r.accountNumber, name: r.name, code: r.seedCode ?? 'FIRM', codeActivity }]
+            : [];
+        }),
+      };
+      if (!opts.confirm) return { unit: null, requiresConfirm: true, impact };
+      if (opts.convertOldDefault) {
+        for (const r of accountLevel) {
+          if (hasOldDefaultRow.has(r.accountId)) continue;
+          await tx.insert(accountTaxAssignments).values({
+            tenantId, companyId,
+            accountId: r.accountId,
+            activityUnitId: current.id,
+            seedCode: r.seedCode, seedActivityType: r.seedActivityType, firmCodeId: r.firmCodeId,
+            source: 'manual', assignedBy: userId ?? null, updatedAt: new Date(),
+          }).onConflictDoNothing();
+        }
+        await auditLog(tenantId, 'update', 'account_tax_assignment_copy', companyId, null, {
+          sourceUnitId: null, targetUnitIds: [current.id], mode: 'skip_existing', reason: 'convert_old_default',
+          copied: impact.accountsLosingCoverage.length,
+        }, userId, tx);
+      }
+    }
     // Clear-then-set inside one tx so the partial unique index never
     // sees two defaults.
     await tx.update(activityUnits).set({ isDefault: false })
@@ -116,7 +197,7 @@ export async function setDefaultUnit(tenantId: string, companyId: string, unitId
     const [unit] = await tx.update(activityUnits).set({ isDefault: true })
       .where(eq(activityUnits.id, unitId)).returning();
     await auditLog(tenantId, 'update', 'activity_unit', unitId, target, unit ?? null, userId, tx);
-    return unit;
+    return { unit: unit ?? null, requiresConfirm: false, impact };
   });
 }
 

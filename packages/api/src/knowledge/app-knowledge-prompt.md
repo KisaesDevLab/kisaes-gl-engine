@@ -562,11 +562,28 @@ Key ideas:
 - **Tax adjustments (RJEs)** (Trial Balance → Tax Adjustments) exist
   only on the tax basis — they never touch the books or any financial
   report. They feed the Tax column, Schedule M-1, and exports.
-- **Tax codes**: each account gets a tax-return line code (from the
-  admin-managed seed library, or the firm's own FIRM: codes). The
-  workpaper's picker only offers codes valid for the client's return
-  form (1040/1065/1120/1120S) and activity. "Auto-assign" asks the AI
-  for suggestions; nothing commits until the preparer accepts.
+- **Tax codes** (Trial Balance → Tax Mapping): each account gets a
+  tax-return line code (from the admin-managed seed library, or the
+  firm's own FIRM: codes). The picker only offers codes valid for the
+  client's return form (1040/1065/1120/1120S) and activity. "Auto-assign"
+  asks the AI for suggestions; nothing commits until the preparer accepts.
+- **Tax codes per activity unit** (TB Settings → tax profile → "Map tax
+  codes per activity unit", firm admin): for a client running several
+  activities out of one set of books (a Schedule C business and a
+  Schedule F farm sharing accounts), Tax Mapping shows one sub-row per
+  activity unit for every income/expense account, so the same account
+  carries a Sch C code for one unit and a Sch F code for another. The
+  account's own row is the DEFAULT unit's code (also untagged lines and
+  all balance-sheet accounts, which never split); every other unit with a
+  balance needs its own code or the vendor export is blocked ("Per-unit
+  tax codes" on Tax Exports). Use the "Activity unit" filter to work one
+  unit at a time. **Copy mappings…** copies one unit's codes onto other
+  compatible units (e.g. a second Schedule F farm) with a preview —
+  codes that don't fit the target's activity are skipped, never silently
+  written; the copy icon on a unit row applies that one code to every
+  other unit of the same activity. Auto-assign runs per unit. Changing
+  the default unit shows the impact first (accounts losing coverage,
+  mismatched codes) with an option to keep the old default's codes.
 - **Activity units** (TB Settings) split one set of books across
   multiple return activities (e.g. two rentals + a farm on a 1065) by
   mapping line-level tags to units. The workpaper's Activity view can
