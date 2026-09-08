@@ -452,6 +452,14 @@ it somewhere safe — if you forget the passphrase, the backup cannot be recover
 Click the company name at the top of the sidebar. A dropdown shows all your companies —
 click one to switch. Your data and reports will update to reflect the selected company.
 
+### "How do I give my accountant access to my books?"
+Go to **Settings → Team →** and click **Invite accountant** on the **Your accountant** card.
+Enter their email; they get a link and an 8-character code valid for 14 days. When they
+accept, your company is linked to their firm and they get Accountant access (their firm's
+admins get access too). You can resend or revoke the invitation from the same card. They
+need a MyBooks account that belongs to an accounting firm — if they don't have one, their
+firm admin adds them first.
+
 ### "How do I connect my bank account?"
 Go to **Banking → Bank Connections →** and click **Connect Bank**. If Plaid is
 configured by your administrator, you can search for your bank and log in securely.
@@ -678,6 +686,33 @@ If a team member forgets their password, the owner can click **Reset** on their 
 the Team page to email them a password-reset link (valid 1 hour). Admins have the same
 option in the Reset Password dialog on **Admin → All Users →** ("Send reset email"),
 alongside the ability to set a password directly.
+
+### Inviting Your Accountant (linking books to a firm)
+A company owner can link their books to an accounting firm from **Settings → Team →** using
+the **Your accountant** card → **Invite accountant**. Enter the accountant's email; they
+receive an email with an **Accept invitation** link and an **8-character code** (valid 14
+days). The accountant accepts by clicking the link or entering the code under
+**Firm → Join a client**. Accepting assigns the company to the accountant's firm (replacing
+any previous firm), gives the accepting staff member Accountant access, and gives that firm's
+admins access automatically; the owner gets a confirmation email. The card lists every
+invitation with its status; **Resend** rotates the link and code, **Revoke** cancels a
+pending one. The accountant must already have a MyBooks account that is a member of a firm —
+otherwise they see "Firm membership required" and a firm admin has to add them under
+**Firm → Staff** first. "Wrong account" means they signed in with a different address than
+the one invited.
+
+### Firms, firm roles, and automatic firm-admin access
+Practice staff belong to a **firm**; firm membership is separate from per-company roles.
+Firm roles: **firm_admin** (manages staff, staff access to clients, client assignments,
+firm settings, firm-wide rules), **firm_staff** (works assigned clients, authors firm-scoped
+rules, sees the roster and managed-client list), **firm_readonly** (observes firm rules only;
+cannot list the roster or managed clients). Every active firm_admin automatically holds
+Accountant access on every company the firm manages, including ones added later; other staff
+are granted per client from **Firm → Staff → Tenant access** (unchecking revokes until
+re-granted). New client companies created via **New Company (no owner)** are assigned to the
+creator's firm. Self-hosted installs start with one system-managed **Default Practice** firm
+that self-registered companies join automatically; only a super admin can manage it, create
+more firms (**Admin → Firms →**), or change which firm manages a company (tenant detail page).
 
 ### Changing Your Own Password
 Any signed-in user can change their password under **Settings → Security →** in the
@@ -1616,6 +1651,10 @@ The following screens exist in the application. Use these names and paths when d
 
 - **Not Found** (`*`)
 
+### Accept firm invite
+
+- **Accept Firm Invite** (`/accept-firm-invite/:token`)
+
 ### Ajes
 
 - **Aje List** (`ajes`)
@@ -1665,6 +1704,7 @@ The following screens exist in the application. Use these names and paths when d
 ### Firm
 
 - **Firm List** (`/firm`)
+- **Firm Join** (`/firm/join`)
 - **Navigate** (`/firm/:firmId`)
 - **Firm Staff** (`/firm/:firmId/staff`)
 - **Firm Tenants** (`/firm/:firmId/tenants`)

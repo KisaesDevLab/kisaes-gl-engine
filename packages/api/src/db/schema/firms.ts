@@ -37,11 +37,12 @@ export const firms = pgTable('firms', {
 });
 
 // Joins users to firms with a firm-internal role. Orthogonal to
-// per-tenant `user_tenant_access.role` — a firm staffer still
-// needs explicit per-tenant access via that table to operate on a
-// managed tenant. v1 does NOT auto-grant tenant access from firm
-// membership (avoids permission-amplification surprises during
-// rollout).
+// per-tenant `user_tenant_access.role` — a firm_staff / firm_readonly
+// member still needs explicit per-tenant access via that table to
+// operate on a managed tenant. firm_admin is the exception: an active
+// firm_admin automatically holds accountant access on every tenant the
+// firm manages (services/firm-admin-access.service.ts; migration 0169
+// backfilled existing data).
 //
 // firm_role values:
 //   firm_admin    — manages firm settings, creates global rules,

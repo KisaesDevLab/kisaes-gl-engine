@@ -71,3 +71,30 @@ export const setStaffTenantAccessSchema = z.object({
   })),
 });
 export type SetStaffTenantAccessInput = z.infer<typeof setStaffTenantAccessSchema>;
+
+// ─── "Invite my accountant" ──────────────────────────────────────
+export const createFirmInviteSchema = z.object({
+  email: z.string().trim().toLowerCase().email().max(320),
+});
+export type CreateFirmInviteInput = z.infer<typeof createFirmInviteSchema>;
+
+// Lookup/accept by EITHER the 64-hex link token OR the 8-char code. Codes
+// are drawn from an unambiguous alphabet (no 0/O/1/I) and matched
+// case-insensitively.
+export const firmInviteLookupSchema = z.object({
+  token: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  code: z.string().trim().toUpperCase().regex(/^[A-Z2-9]{8}$/).optional(),
+}).refine((v) => v.token !== undefined || v.code !== undefined, {
+  message: 'Either token or code is required',
+});
+export type FirmInviteLookupInput = z.infer<typeof firmInviteLookupSchema>;
+
+export const acceptFirmInviteSchema = z.object({
+  token: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  code: z.string().trim().toUpperCase().regex(/^[A-Z2-9]{8}$/).optional(),
+  // Required only when the acceptor belongs to more than one firm.
+  firmId: z.string().uuid().optional(),
+}).refine((v) => v.token !== undefined || v.code !== undefined, {
+  message: 'Either token or code is required',
+});
+export type AcceptFirmInviteInput = z.infer<typeof acceptFirmInviteSchema>;

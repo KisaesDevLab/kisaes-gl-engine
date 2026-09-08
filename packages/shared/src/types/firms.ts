@@ -86,3 +86,55 @@ export interface StaffTenantAccessRow {
   hasAccess: boolean;
   role: TenantAccessRole | null;
 }
+
+// ─── "Invite my accountant" (firm_invites) ───────────────────────
+// A tenant owner invites a firm staffer by email; accepting assigns the
+// tenant to the ACCEPTOR's firm and grants them accountant access.
+export const FIRM_INVITE_STATUSES = ['sent', 'viewed', 'accepted', 'expired', 'revoked'] as const;
+export type FirmInviteStatus = typeof FIRM_INVITE_STATUSES[number];
+
+export const FIRM_INVITE_TTL_DAYS = 14;
+export const FIRM_INVITE_CODE_LENGTH = 8;
+
+// Row as shown on the owner's Settings → Team pending list. Never carries
+// the token or code (only hashes are stored server-side anyway).
+export interface FirmInvite {
+  id: string;
+  tenantId: string;
+  recipientEmail: string;
+  status: FirmInviteStatus;
+  expiresAt: string;
+  sentAt: string;
+  resendCount: number;
+  viewedAt: string | null;
+  acceptedAt: string | null;
+  acceptedFirmId: string | null;
+  acceptedFirmName: string | null;
+  createdByName: string | null;
+}
+
+// What the accepting staffer sees before confirming.
+export interface FirmInvitePreview {
+  tenantId: string;
+  tenantName: string;
+  inviterName: string | null;
+  inviterEmail: string | null;
+  expiresAt: string;
+  status: FirmInviteStatus;
+  // The firm currently managing the tenant (name only — no id leak).
+  currentFirmName: string | null;
+  // Firms the acceptor may accept INTO (their active firm_admin /
+  // firm_staff memberships; every active firm for a super admin).
+  firms: Array<{ id: string; name: string }>;
+}
+
+export interface AcceptFirmInviteResult {
+  tenantId: string;
+  tenantName: string;
+  firmId: string;
+  firmName: string;
+  // True when the tenant was already assigned to this firm (idempotent).
+  alreadyAssigned: boolean;
+  // True when a new accountant access row was created for the acceptor.
+  accessGranted: boolean;
+}

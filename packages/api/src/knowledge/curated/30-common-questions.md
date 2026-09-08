@@ -114,6 +114,14 @@ it somewhere safe — if you forget the passphrase, the backup cannot be recover
 Click the company name at the top of the sidebar. A dropdown shows all your companies —
 click one to switch. Your data and reports will update to reflect the selected company.
 
+### "How do I give my accountant access to my books?"
+Go to **Settings → Team →** and click **Invite accountant** on the **Your accountant** card.
+Enter their email; they get a link and an 8-character code valid for 14 days. When they
+accept, your company is linked to their firm and they get Accountant access (their firm's
+admins get access too). You can resend or revoke the invitation from the same card. They
+need a MyBooks account that belongs to an accounting firm — if they don't have one, their
+firm admin adds them first.
+
 ### "How do I connect my bank account?"
 Go to **Banking → Bank Connections →** and click **Connect Bank**. If Plaid is
 configured by your administrator, you can search for your bank and log in securely.

@@ -1,0 +1,11 @@
+-- Copyright 2026 Kisaes LLC
+-- Licensed under the PolyForm Small Business License 1.0.0.
+-- Free for small businesses; see LICENSE for terms.
+--
+-- Deliberate no-op. The grants this migration inserted are ordinary
+-- user_tenant_access rows that firm admins may since have relied on;
+-- revoking them blindly could lock staff out mid-engagement. To undo a
+-- specific grant, deactivate it from Firm → Staff → Tenant access. The
+-- audit_log rows tagged source='firm_admin_backfill' identify exactly
+-- which rows this migration created.
+SELECT 1;

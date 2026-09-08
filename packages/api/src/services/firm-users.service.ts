@@ -16,12 +16,15 @@ import type {
 import { db } from '../db/index.js';
 import { firms, firmUsers, tenantFirmAssignments, tenants, userTenantAccess, users } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { syncFirmAdminAccessForUser } from './firm-admin-access.service.js';
 
 // 3-tier rules plan, Phase 1 — firm membership service.
 // firm_users joins users → firms with a firm-internal role.
-// firm membership is orthogonal to per-tenant access; a firm
-// staffer still needs a `user_tenant_access` row to operate on a
-// specific managed tenant. v1 does NOT auto-grant tenant access.
+// firm membership is orthogonal to per-tenant access: a firm_staff /
+// firm_readonly member still needs a `user_tenant_access` row to
+// operate on a specific managed tenant. The ONE exception is
+// firm_admin — an active firm_admin automatically receives accountant
+// access to every tenant the firm manages (firm-admin-access.service).
 
 function mapRow(row: typeof firmUsers.$inferSelect): FirmUser {
   return {
@@ -82,6 +85,9 @@ export async function invite(firmId: string, input: InviteFirmUserInput): Promis
     userId,
     firmRole: input.firmRole,
   }).returning();
+  if (input.firmRole === 'firm_admin') {
+    await syncFirmAdminAccessForUser(firmId, userId);
+  }
 
   // Notify the invitee. Fire-and-forget — a mail failure must not block
   // the membership grant, and the invitee already has a working account.
@@ -176,6 +182,11 @@ export async function updateMembership(
     .where(and(eq(firmUsers.firmId, firmId), eq(firmUsers.id, firmUserId)))
     .returning();
   if (!row) throw AppError.notFound('Firm membership not found');
+  // Promotion to (or reactivation as) firm_admin → auto-access across the
+  // firm's tenants. Demotion / deactivation revokes nothing.
+  if (row.isActive && row.firmRole === 'firm_admin') {
+    await syncFirmAdminAccessForUser(firmId, row.userId);
+  }
   return mapRow(row);
 }
 
@@ -340,4 +351,12 @@ export async function ensureMembership(
     .insert(firmUsers)
     .values({ firmId, userId, firmRole })
     .onConflictDoNothing({ target: [firmUsers.firmId, firmUsers.userId] });
+  // onConflictDoNothing can't say whether it inserted; re-read so an
+  // existing active firm_admin row also self-heals its auto-access.
+  const row = await db.query.firmUsers.findFirst({
+    where: and(eq(firmUsers.firmId, firmId), eq(firmUsers.userId, userId)),
+  });
+  if (row?.isActive && row.firmRole === 'firm_admin') {
+    await syncFirmAdminAccessForUser(firmId, userId);
+  }
 }

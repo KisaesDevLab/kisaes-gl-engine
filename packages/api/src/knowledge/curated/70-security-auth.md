@@ -50,6 +50,33 @@ the Team page to email them a password-reset link (valid 1 hour). Admins have th
 option in the Reset Password dialog on **Admin → All Users →** ("Send reset email"),
 alongside the ability to set a password directly.
 
+### Inviting Your Accountant (linking books to a firm)
+A company owner can link their books to an accounting firm from **Settings → Team →** using
+the **Your accountant** card → **Invite accountant**. Enter the accountant's email; they
+receive an email with an **Accept invitation** link and an **8-character code** (valid 14
+days). The accountant accepts by clicking the link or entering the code under
+**Firm → Join a client**. Accepting assigns the company to the accountant's firm (replacing
+any previous firm), gives the accepting staff member Accountant access, and gives that firm's
+admins access automatically; the owner gets a confirmation email. The card lists every
+invitation with its status; **Resend** rotates the link and code, **Revoke** cancels a
+pending one. The accountant must already have a MyBooks account that is a member of a firm —
+otherwise they see "Firm membership required" and a firm admin has to add them under
+**Firm → Staff** first. "Wrong account" means they signed in with a different address than
+the one invited.
+
+### Firms, firm roles, and automatic firm-admin access
+Practice staff belong to a **firm**; firm membership is separate from per-company roles.
+Firm roles: **firm_admin** (manages staff, staff access to clients, client assignments,
+firm settings, firm-wide rules), **firm_staff** (works assigned clients, authors firm-scoped
+rules, sees the roster and managed-client list), **firm_readonly** (observes firm rules only;
+cannot list the roster or managed clients). Every active firm_admin automatically holds
+Accountant access on every company the firm manages, including ones added later; other staff
+are granted per client from **Firm → Staff → Tenant access** (unchecking revokes until
+re-granted). New client companies created via **New Company (no owner)** are assigned to the
+creator's firm. Self-hosted installs start with one system-managed **Default Practice** firm
+that self-registered companies join automatically; only a super admin can manage it, create
+more firms (**Admin → Firms →**), or change which firm manages a company (tenant detail page).
+
 ### Changing Your Own Password
 Any signed-in user can change their password under **Settings → Security →** in the
 **Password** card: enter the current password and a new one (at least 12 characters).

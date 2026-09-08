@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-08T18:51:59.240Z",
+  "generatedAt": "2026-09-08T19:52:12.259Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -18,7 +18,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 81348
+    "totalBytes": 83993
   },
   "screens": [
     {
@@ -1309,6 +1309,24 @@
       "actions": []
     },
     {
+      "id": "firm-join",
+      "path": "/firm/join",
+      "component": "FirmJoinPage",
+      "sourceFile": null,
+      "title": "Firm Join",
+      "section": "Firm",
+      "actions": []
+    },
+    {
+      "id": "accept-firm-invite",
+      "path": "/accept-firm-invite/:token",
+      "component": "AcceptFirmInvitePage",
+      "sourceFile": null,
+      "title": "Accept Firm Invite",
+      "section": "Accept firm invite",
+      "actions": []
+    },
+    {
       "id": "firm",
       "path": "/firm/:firmId",
       "component": "Navigate",
@@ -1518,6 +1536,7 @@
     "\"How do I set up a recurring bill?\"",
     "\"How do I back up my data?\"",
     "\"How do I switch between companies?\"",
+    "\"How do I give my accountant access to my books?\"",
     "\"How do I connect my bank account?\"",
     "\"What file types can I attach to transactions?\"",
     "\"How does AI categorization work?\"",
@@ -1527,6 +1546,8 @@
     "Passkeys (Passwordless Login)",
     "Magic Links",
     "Team & User Management",
+    "Inviting Your Accountant (linking books to a firm)",
+    "Firms, firm roles, and automatic firm-admin access",
     "Changing Your Own Password",
     "Changing a Team Member's Role",
     "Per-Member Permissions",

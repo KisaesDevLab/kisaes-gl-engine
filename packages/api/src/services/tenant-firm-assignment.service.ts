@@ -11,6 +11,7 @@ import type {
 import { db } from '../db/index.js';
 import { tenantFirmAssignments, tenants, userTenantAccess } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { syncFirmAdminAccessForTenant } from './firm-admin-access.service.js';
 
 // 3-tier rules plan, Phase 1 — tenant ↔ firm assignment service.
 // 1:N: a tenant has at most one ACTIVE managing firm. Modeled
@@ -114,6 +115,13 @@ export async function listForFirm(firmId: string): Promise<TenantFirmAssignmentW
 //      catches any race condition.
 // When `force=true`, soft-detach the prior active assignment in
 // the same transaction so attribution history survives.
+//
+// Every assignment path funnels through here (firm UI, appliance
+// auto-provisioning, register, create-client, invite accept, admin
+// reassign), so this is also where firm_admin auto-access fires: the
+// firm's active firm_admins get accountant access to the tenant, in the
+// same transaction. Runs on the idempotent same-firm branch too, so a
+// re-assign self-heals a missing grant.
 export async function assignTenant(
   firmId: string,
   input: AssignTenantToFirmInput,
@@ -129,7 +137,8 @@ export async function assignTenant(
     if (existing) {
       if (existing.firmId === firmId) {
         // Idempotent — already assigned to this firm. Return the
-        // existing row.
+        // existing row (after self-healing firm_admin access).
+        await syncFirmAdminAccessForTenant(firmId, input.tenantId, assignedByUserId, tx);
         return mapRow(existing);
       }
       if (!input.force) {
@@ -150,6 +159,7 @@ export async function assignTenant(
       firmId,
       assignedByUserId,
     }).returning();
+    await syncFirmAdminAccessForTenant(firmId, input.tenantId, assignedByUserId, tx);
     return mapRow(row!);
   });
 }
