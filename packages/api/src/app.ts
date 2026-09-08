@@ -93,6 +93,7 @@ import { portalBankingPublicRouter } from './routes/portal-banking-public.routes
 import { portalBankRepairPublicRouter } from './routes/portal-bank-repair-public.routes.js';
 import { portalCategorizePublicRouter } from './routes/portal-categorize-public.routes.js';
 import { portalBillsPublicRouter } from './routes/portal-bills-public.routes.js';
+import { peerPmRouter } from './routes/peer-pm.routes.js';
 import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './swagger.js';
 
@@ -308,6 +309,9 @@ const globalLimiter = rateLimit({
   // security value (the endpoints reveal nothing tenant-specific).
   skip: (req) => {
     const p = req.path;
+    // /api/peer/* is server-to-server from one PM IP for every client; it
+    // carries its own per-IP and per-client limiters (routes/peer-pm.routes.ts).
+    if (p.startsWith('/peer/')) return true;
     return p === '/ping' || p === '/health' || p.endsWith('/ping') || p.endsWith('/health');
   },
 });
@@ -600,6 +604,9 @@ app.use('/api/portal/banking', portalBankingPublicRouter);
 app.use('/api/portal/categorize', portalCategorizePublicRouter);
 // PORTAL_BILL_PAY_V1 — unpaid bills list + mark-for-payment.
 app.use('/api/portal/bills', portalBillsPublicRouter);
+// Vibe Practice Management peer API — signed server-to-server tokens,
+// re-mounts the portal routers for a linked client (docs/vibe-pm-integration.md).
+app.use('/api/peer/pm', peerPmRouter);
 
 // MCP Server endpoint
 app.post('/mcp', async (req, res) => {

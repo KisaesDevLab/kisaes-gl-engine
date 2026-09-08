@@ -42,6 +42,10 @@ declare global {
         /** Active company scope. For real sessions the contact may
          *  switch companies via UI; for previews this is fixed. */
         previewCompanyId?: string;
+        /** True when the identity was established by a Vibe PM peer
+         *  token (middleware/peer-auth.ts requirePeerLink) rather than
+         *  a portal cookie. The linked company is on req.peerLink. */
+        viaPeer?: boolean;
       };
     }
   }
@@ -64,6 +68,14 @@ export async function portalAuthenticate(
   _res: Response,
   next: NextFunction,
 ): Promise<void> {
+  // Already authenticated upstream (Vibe PM peer token → requirePeerLink
+  // set a synthetic contact). Cookies are ignored entirely on that path:
+  // a stale portal cookie on the same request must not win.
+  if (req.portalContact) {
+    next();
+    return;
+  }
+
   // Preview takes precedence — staff impersonation.
   const previewToken = readCookie(req, PORTAL_PREVIEW_COOKIE);
   if (previewToken) {

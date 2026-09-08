@@ -31,6 +31,8 @@ portalDocumentRequestsPublicRouter.get('/', async (req, res) => {
   const items = await svc.listForPortalContact(
     req.portalContact.tenantId,
     req.portalContact.contactId,
+    // Peer (Vibe PM) requests see only the linked company's requests.
+    req.peerLink?.companyId,
   );
   res.json({ items, featureEnabled: true });
 });

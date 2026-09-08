@@ -7,6 +7,7 @@ import { eq, and } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { reportInstances, portalContactCompanies } from '../db/schema/index.js';
 import { portalAuthenticate } from '../middleware/portal-auth.js';
+import { scopedCompanyId } from '../middleware/peer-auth.js';
 import { AppError } from '../utils/errors.js';
 import * as reportsSvc from '../services/portal-reports.service.js';
 
@@ -20,7 +21,7 @@ portalFinancialsPublicRouter.use(portalAuthenticate);
 
 portalFinancialsPublicRouter.get('/', async (req, res) => {
   if (!req.portalContact) throw AppError.unauthorized('No portal session');
-  const companyId = req.query['companyId'] as string | undefined;
+  const companyId = scopedCompanyId(req, req.query['companyId'] as string | undefined);
   if (!companyId) throw AppError.badRequest('companyId required');
   const reports = await reportsSvc.listPublishedForContact({
     tenantId: req.portalContact.tenantId,
@@ -43,6 +44,8 @@ portalFinancialsPublicRouter.get('/:id/download', async (req, res) => {
     ),
   });
   if (!inst) throw AppError.notFound('Report not found');
+  // Peer (Vibe PM) requests are pinned to the linked company.
+  if (req.peerLink && inst.companyId !== req.peerLink.companyId) throw AppError.notFound('Report not found');
   if (inst.status !== 'published') {
     throw AppError.notFound('Report not published');
   }

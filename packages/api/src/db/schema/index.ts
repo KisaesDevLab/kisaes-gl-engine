@@ -57,6 +57,7 @@ export * from './daily-sales.js';
 export * from './je-templates.js';
 export * from './permissions.js';
 export * from './firm-integrations.js';
+export * from './firm-peers.js';
 export * from './tenant-detail-types.js';
 export * from './backup-runs.js';
 export * from './share.js';

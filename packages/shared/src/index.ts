@@ -33,6 +33,7 @@ export * from './types/payroll.js';
 export * from './types/tailscale.js';
 export * from './types/report-settings.js';
 export * from './types/firms.js';
+export * from './types/firm-peers.js';
 export * from './types/firm-tag-templates.js';
 export * from './types/recurring-doc-request.js';
 export * from './types/imports.js';
@@ -78,6 +79,7 @@ export * from './schemas/daily-sales.js';
 export * from './schemas/je-templates.js';
 export * from './schemas/permissions.js';
 export * from './schemas/firm-integrations.js';
+export * from './schemas/firm-peers.js';
 export * from './schemas/report-letters.js';
 export * from './schemas/tb.js';
 

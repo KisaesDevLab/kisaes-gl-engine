@@ -5,6 +5,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { portalAuthenticate, refuseDuringPreview } from '../middleware/portal-auth.js';
+import { scopedCompanyId } from '../middleware/peer-auth.js';
 import { AppError } from '../utils/errors.js';
 import * as svc from '../services/portal-receipts.service.js';
 
@@ -29,7 +30,8 @@ portalReceiptsPublicRouter.post('/upload', upload.single('file'), async (req, re
   if (!req.portalContact) throw AppError.unauthorized('No portal session');
   refuseDuringPreview(req);
   const file = req.file;
-  const companyId = (req.body?.companyId ?? '') as string;
+  // Multipart: the body is only parsed here, after mount-time scoping ran.
+  const companyId = scopedCompanyId(req, (req.body?.companyId ?? '') as string) ?? '';
   if (!file) throw AppError.badRequest('file required');
   if (!companyId) throw AppError.badRequest('companyId required');
 
@@ -51,6 +53,11 @@ portalReceiptsPublicRouter.post('/upload', upload.single('file'), async (req, re
   // Returns the company the upload is filed under: normally the posted
   // one, but a document request issued for another linked company wins.
   const target = await svc.assertContactMayUploadFor(req.portalContact.tenantId, req.portalContact.contactId, companyId, documentRequestId);
+  // A peer (Vibe PM) request may not be redirected into a sibling
+  // company by a document request issued for that other company.
+  if (req.peerLink && target.companyId !== req.peerLink.companyId) {
+    throw AppError.forbidden('That document request belongs to another company', 'PEER_COMPANY_MISMATCH');
+  }
 
   const result = await svc.uploadReceipt({
     tenantId: req.portalContact.tenantId,
@@ -69,7 +76,7 @@ portalReceiptsPublicRouter.post('/upload', upload.single('file'), async (req, re
 // Lightweight contact-side list — only their own uploads, last 30 days.
 portalReceiptsPublicRouter.get('/', async (req, res) => {
   if (!req.portalContact) throw AppError.unauthorized('No portal session');
-  const companyId = req.query['companyId'] as string | undefined;
+  const companyId = scopedCompanyId(req, req.query['companyId'] as string | undefined);
   if (!companyId) throw AppError.badRequest('companyId required');
 
   // Filter to this contact's uploads only — the bookkeeper inbox is not

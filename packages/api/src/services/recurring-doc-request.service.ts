@@ -1137,6 +1137,8 @@ export async function dashboardCounts(tenantId: string): Promise<{
 export async function listForPortalContact(
   tenantId: string,
   contactId: string,
+  /** Restrict to one company (Vibe PM peer requests). */
+  companyId?: string,
 ): Promise<DocumentRequestSummary[]> {
   const rows = await db
     .select({
@@ -1152,6 +1154,7 @@ export async function listForPortalContact(
         eq(documentRequests.tenantId, tenantId),
         eq(documentRequests.contactId, contactId),
         eq(documentRequests.status, 'pending'),
+        ...(companyId ? [eq(documentRequests.companyId, companyId)] : []),
       ),
     )
     .orderBy(asc(documentRequests.requestedAt));

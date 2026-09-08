@@ -6,6 +6,7 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { portalMarkBillsSchema } from '@kis-books/shared';
 import { portalAuthenticate, refuseDuringPreview } from '../middleware/portal-auth.js';
+import { scopedCompanyId, portalLimiterKey } from '../middleware/peer-auth.js';
 import { AppError } from '../utils/errors.js';
 import { getRateLimitStore } from '../utils/rate-limit-store.js';
 import * as flags from '../services/feature-flags.service.js';
@@ -25,14 +26,16 @@ const markLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   store: getRateLimitStore('portal-bills-mark'),
+  keyGenerator: portalLimiterKey,
   message: { error: { message: 'Too many requests. Try again later.' } },
   // Same rationale as expensive-op-limiter.ts: the suite would trip the
   // limit itself, so bypass under NODE_ENV=test. Production unaffected.
   skip: () => process.env['NODE_ENV'] === 'test',
 });
 
-function requireCompanyId(req: import('express').Request, companyId: string | undefined): string {
+function requireCompanyId(req: import('express').Request, supplied: string | undefined): string {
   if (!req.portalContact) throw AppError.unauthorized('No portal session');
+  const companyId = scopedCompanyId(req, supplied);
   if (!companyId) throw AppError.badRequest('companyId required');
   const pc = req.portalContact;
   if (pc.isPreview && pc.previewCompanyId && pc.previewCompanyId !== companyId) {

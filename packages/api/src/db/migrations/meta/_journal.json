@@ -1205,6 +1205,13 @@
       "when": 1784800000029,
       "tag": "0171_portal_bank_repair_access",
       "breakpoints": true
+    },
+    {
+      "idx": 172,
+      "version": "7",
+      "when": 1784800000030,
+      "tag": "0172_firm_peers",
+      "breakpoints": true
     }
   ]
 }

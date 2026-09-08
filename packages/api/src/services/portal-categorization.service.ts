@@ -474,6 +474,8 @@ export async function withdrawSuggestion(
   tenantId: string,
   contactId: string,
   suggestionId: string,
+  /** Pin to one company (Vibe PM peer requests). */
+  companyId?: string,
 ): Promise<void> {
   const res = await db.update(clientCategorySuggestions)
     .set({ status: 'superseded', updatedAt: new Date() })
@@ -482,6 +484,7 @@ export async function withdrawSuggestion(
       eq(clientCategorySuggestions.id, suggestionId),
       eq(clientCategorySuggestions.submittedByContactId, contactId),
       eq(clientCategorySuggestions.status, 'pending'),
+      ...(companyId ? [eq(clientCategorySuggestions.companyId, companyId)] : []),
     ))
     .returning({ id: clientCategorySuggestions.id });
   if (res.length === 0) {
@@ -674,6 +677,8 @@ export async function removeMyAttachment(
   tenantId: string,
   contactId: string,
   attachmentId: string,
+  /** Pin to one company (Vibe PM peer requests). */
+  companyId?: string,
 ): Promise<void> {
   const [row] = await db
     .select({ id: attachments.id })
@@ -682,6 +687,7 @@ export async function removeMyAttachment(
       eq(attachments.tenantId, tenantId),
       eq(attachments.id, attachmentId),
       eq(attachments.uploadedByContactId, contactId),
+      ...(companyId ? [eq(attachments.companyId, companyId)] : []),
     ))
     .limit(1);
   if (!row) throw AppError.notFound('That file is not one of yours.');

@@ -26,6 +26,7 @@ import multer from 'multer';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { portalAuthenticate, refuseDuringPreview } from '../middleware/portal-auth.js';
+import { scopedCompanyId, portalLimiterKey } from '../middleware/peer-auth.js';
 import { verifyAttachmentContent } from './attachments.routes.js';
 import { AppError } from '../utils/errors.js';
 import { getRateLimitStore } from '../utils/rate-limit-store.js';
@@ -48,13 +49,15 @@ const submitLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   store: getRateLimitStore('portal-categorize-submit'),
+  keyGenerator: portalLimiterKey,
   message: { error: { message: 'Too many requests. Try again later.' } },
   // The suite would trip its own limit; production unaffected.
   skip: () => process.env['NODE_ENV'] === 'test',
 });
 
-function requireCompanyId(req: import('express').Request, companyId: string | undefined): string {
+function requireCompanyId(req: import('express').Request, supplied: string | undefined): string {
   if (!req.portalContact) throw AppError.unauthorized('No portal session');
+  const companyId = scopedCompanyId(req, supplied);
   if (!companyId) throw AppError.badRequest('companyId required');
   const pc = req.portalContact;
   if (pc.isPreview && pc.previewCompanyId && pc.previewCompanyId !== companyId) {
@@ -119,6 +122,7 @@ const attachLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   store: getRateLimitStore('portal-categorize-attach'),
+  keyGenerator: portalLimiterKey,
   message: { error: { message: 'Too many uploads. Try again in a minute.' } },
   skip: () => process.env['NODE_ENV'] === 'test',
 });
@@ -197,7 +201,7 @@ portalCategorizePublicRouter.post('/attachments', attachLimiter, attachFiles, as
 portalCategorizePublicRouter.delete('/attachments/:id', async (req, res) => {
   refuseDuringPreview(req);
   const { tenantId, contactId } = req.portalContact!;
-  await categorization.removeMyAttachment(tenantId, contactId, req.params['id']!);
+  await categorization.removeMyAttachment(tenantId, contactId, req.params['id']!, req.peerLink?.companyId);
   res.json({ removed: true });
 });
 
@@ -303,6 +307,6 @@ portalCategorizePublicRouter.post('/suggestions', submitLimiter, async (req, res
 portalCategorizePublicRouter.delete('/suggestions/:id', async (req, res) => {
   refuseDuringPreview(req);
   const { tenantId, contactId } = req.portalContact!;
-  await categorization.withdrawSuggestion(tenantId, contactId, req.params['id']!);
+  await categorization.withdrawSuggestion(tenantId, contactId, req.params['id']!, req.peerLink?.companyId);
   res.json({ withdrawn: true });
 });

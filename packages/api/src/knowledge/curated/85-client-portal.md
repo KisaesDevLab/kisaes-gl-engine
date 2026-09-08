@@ -39,6 +39,37 @@ whoever set the connection up gets an email. Preview ("View as Client") can see
 the card but can never start a fix. OAuth banks (Chase, Capital One) return via
 the registered `/connect/oauth-return` URL, which requires PUBLIC_URL to be set.
 
+### Vibe Practice Management peer ("one client portal")
+
+A firm running Vibe Practice Management (Vibe PM, repo Vibe-Time-Billing) can show the
+MyBooks client portal INSIDE PM's own client portal: PM renders the screens natively and
+fetches data from `POST/GET https://<mybooks>/api/peer/pm/…` with a short-lived JWT it
+signs (ES256/RS256, `typ: vibe-pm-peer`, `aud: vibe-mybooks`, ≤ 5 min, single-use `jti`
+kept in Redis — fails CLOSED if Redis is down). No SSO, no iframe, no MyBooks login for
+the client. Trust root per firm: **Firm → Settings → Vibe Practice Management** card —
+issuer (globally unique), PEM public key OR JWKS URL (https, SSRF-guarded), Enable,
+"Test a token" (verifies without consuming). Writes are firm_admin (`requireFirmAdmin`,
+so on Default Practice = super admin only); staff read. Tables `firm_peers` and
+`pm_client_links` (migration 0172).
+
+Client matching is an explicit link table staff maintain on the same page (**Linked
+clients**): PM client id → tenant → company → portal contact. PM inherits exactly that
+contact's per-company toggles (financials, files, questions, banking, bill pay,
+categorize, fix bank logins); tenant feature flags still apply. `GET /portal/context`
+returns `features` = flag ∧ grant. The link is re-validated on EVERY request — contact
+paused, contact unlinked from the company, company portal paused, tenant detached from
+the firm, firm inactive → uniform 404 `PM_LINK_NOT_FOUND`; any token problem → uniform
+401 `PEER_TOKEN_INVALID`; a `companyId` that differs from the link → 400
+`PEER_COMPANY_MISMATCH`. Staff need `user_tenant_access` on the tenant to link/unlink.
+
+Ops signals: the card shows Last seen and Last error (enum: sig_invalid, unknown_kid,
+expired, replay, jwks_fetch_failed, no_link); each accepted token writes one audit row
+`portal_peer_access` (action login) under the client tenant with the PM actor email.
+The spec PM implements is `docs/vibe-pm-integration.md`. Common questions: "PM says
+PEER_TOKEN_INVALID" → issuer mismatch, key rotated, clock skew > 30 s, or the same
+token sent twice; "tab missing in PM" → the link is missing/inactive or the feature/grant
+is off — check `/links` and the contact's toggles.
+
 ### Bill Pay (clients mark bills for payment)
 When the firm grants **Can pay bills**, clients see their company's unpaid bills (vendor,
 invoice number, due date, overdue age, balance due) and can select bills and tap **Pay

@@ -18,6 +18,7 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { portalAuthenticate, refuseDuringPreview } from '../middleware/portal-auth.js';
+import { scopedCompanyId, portalLimiterKey } from '../middleware/peer-auth.js';
 import { AppError } from '../utils/errors.js';
 import { getRateLimitStore } from '../utils/rate-limit-store.js';
 import * as flags from '../services/feature-flags.service.js';
@@ -37,6 +38,7 @@ const plaidLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   store: getRateLimitStore('portal-bank-repair'),
+  keyGenerator: portalLimiterKey,
   message: { error: { message: 'Too many requests. Try again in a minute.', code: 'RATE_LIMIT' } },
   skip: () => process.env['NODE_ENV'] === 'test',
 });
@@ -44,7 +46,7 @@ const plaidLimiter = rateLimit({
 function requireCompanyId(req: import('express').Request): string {
   if (!req.portalContact) throw AppError.unauthorized('No portal session');
   const raw = (req.query['companyId'] ?? (req.body as Record<string, unknown> | undefined)?.['companyId']) as string | undefined;
-  const companyId = z.string().uuid().safeParse(raw);
+  const companyId = z.string().uuid().safeParse(scopedCompanyId(req, raw));
   if (!companyId.success) throw AppError.badRequest('companyId required');
   const pc = req.portalContact;
   if (pc.isPreview && pc.previewCompanyId && pc.previewCompanyId !== companyId.data) {

@@ -487,6 +487,8 @@ export async function getQuestionForContact(args: {
   tenantId: string;
   contactId: string;
   questionId: string;
+  /** When set (Vibe PM peer requests), the question must belong to this company. */
+  companyId?: string;
 }): Promise<{
   id: string;
   body: string;
@@ -510,6 +512,7 @@ export async function getQuestionForContact(args: {
     ),
   });
   if (!q) throw AppError.notFound('Question not found');
+  if (args.companyId && q.companyId !== args.companyId) throw AppError.notFound('Question not found');
   // Authorization: contact must be assigned, OR question is unassigned
   // for a company they're linked to.
   if (q.assignedContactId && q.assignedContactId !== args.contactId) {
@@ -586,6 +589,8 @@ export async function contactAnswer(args: {
   questionId: string;
   body: string;
   files?: AnswerFile[];
+  /** When set (Vibe PM peer requests), the question must belong to this company. */
+  companyId?: string;
 }): Promise<{ messageId: string }> {
   if (!args.body || !args.body.trim()) {
     throw AppError.badRequest('Answer body is required');
@@ -594,6 +599,7 @@ export async function contactAnswer(args: {
     where: and(eq(portalQuestions.tenantId, args.tenantId), eq(portalQuestions.id, args.questionId)),
   });
   if (!q) throw AppError.notFound('Question not found');
+  if (args.companyId && q.companyId !== args.companyId) throw AppError.notFound('Question not found');
   if (q.assignedContactId && q.assignedContactId !== args.contactId) {
     throw AppError.forbidden('You are not assigned this question');
   }
@@ -712,8 +718,11 @@ export async function getQuestionAttachmentForContact(args: {
   contactId: string;
   questionId: string;
   attachmentId: string;
+  /** When set (Vibe PM peer requests), the question must belong to this company. */
+  companyId?: string;
 }) {
   const { a, q } = await loadQuestionAttachment(args.tenantId, args.questionId, args.attachmentId);
+  if (args.companyId && q.companyId !== args.companyId) throw AppError.notFound('Attachment not found');
   if (q.assignedContactId && q.assignedContactId !== args.contactId) {
     throw AppError.forbidden('You are not assigned this question');
   }

@@ -104,6 +104,77 @@ firmsRouter.post('/:firmId/integrations/tax1099/test', requireFirmStaff, async (
   res.json(await testConnection(req.firmId!));
 });
 
+// ─── Vibe Practice Management peer (docs/vibe-pm-integration.md) ──
+// The trust root is firm ADMINISTRATION (it decides who may act as the
+// firm's clients), so writes are requireFirmAdmin — which on the
+// appliance firm means super admin only. Reads are staff-tier.
+
+firmsRouter.get('/:firmId/integrations/vibe-pm', requireFirmStaff, async (req, res) => {
+  const { getVibePmSettings } = await import('../services/firm-peers.service.js');
+  res.json(await getVibePmSettings(req.firmId!));
+});
+
+firmsRouter.put('/:firmId/integrations/vibe-pm', requireFirmAdmin, async (req, res) => {
+  const { vibePmSettingsSchema } = await import('@kis-books/shared');
+  const parsed = vibePmSettingsSchema.parse(req.body);
+  const { saveVibePmSettings } = await import('../services/firm-peers.service.js');
+  res.json(await saveVibePmSettings(req.firmId!, parsed, req.userId));
+});
+
+// Verify a token PM minted, WITHOUT consuming its jti. Admin-only: the
+// response reveals why a token fails, which is a probing aid.
+firmsRouter.post('/:firmId/integrations/vibe-pm/test-token', requireFirmAdmin, async (req, res) => {
+  const { peerTestTokenSchema } = await import('@kis-books/shared');
+  const parsed = peerTestTokenSchema.parse(req.body);
+  const { testPeerToken } = await import('../services/firm-peers.service.js');
+  res.json(await testPeerToken(req.firmId!, parsed.token));
+});
+
+// Links: staff-tier, plus the caller must hold access on the target
+// tenant (super admins exempt) — linking hands a peer that client's
+// portal, so it is a per-tenant act, not a firm-wide one.
+async function assertCallerTenantAccess(req: import('express').Request, tenantId: string): Promise<void> {
+  if (req.isSuperAdmin) return;
+  const access = await db.query.userTenantAccess.findFirst({
+    where: and(
+      eq(userTenantAccess.userId, req.userId),
+      eq(userTenantAccess.tenantId, tenantId),
+      eq(userTenantAccess.isActive, true),
+    ),
+  });
+  if (!access) throw AppError.forbidden('You do not have access to that client', 'NO_TENANT_ACCESS');
+}
+
+firmsRouter.get('/:firmId/pm-links', requireFirmStaff, async (req, res) => {
+  const { listLinks } = await import('../services/firm-peers.service.js');
+  res.json({ links: await listLinks(req.firmId!) });
+});
+
+firmsRouter.get('/:firmId/pm-links/options', requireFirmStaff, async (req, res) => {
+  const tenantId = String(req.query['tenantId'] ?? '');
+  if (!/^[0-9a-fA-F-]{36}$/.test(tenantId)) throw AppError.badRequest('tenantId is required');
+  await assertCallerTenantAccess(req, tenantId);
+  const { listLinkOptions } = await import('../services/firm-peers.service.js');
+  res.json(await listLinkOptions(req.firmId!, tenantId));
+});
+
+firmsRouter.post('/:firmId/pm-links', requireFirmStaff, async (req, res) => {
+  const { createPmClientLinkSchema } = await import('@kis-books/shared');
+  const parsed = createPmClientLinkSchema.parse(req.body);
+  await assertCallerTenantAccess(req, parsed.tenantId);
+  const { createLink } = await import('../services/firm-peers.service.js');
+  res.status(201).json(await createLink(req.firmId!, parsed, req.userId));
+});
+
+firmsRouter.delete('/:firmId/pm-links/:linkId', requireFirmStaff, async (req, res) => {
+  const { getLink, deleteLink } = await import('../services/firm-peers.service.js');
+  const row = await getLink(req.firmId!, req.params['linkId']!);
+  if (!row) throw AppError.notFound('Link not found');
+  await assertCallerTenantAccess(req, row.tenantId);
+  await deleteLink(req.firmId!, row.id, req.userId);
+  res.status(204).end();
+});
+
 firmsRouter.patch(
   '/:firmId',
   requireFirmAdmin,

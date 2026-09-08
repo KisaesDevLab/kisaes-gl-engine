@@ -4,6 +4,7 @@
 
 import { Router } from 'express';
 import { portalAuthenticate } from '../middleware/portal-auth.js';
+import { scopedCompanyId } from '../middleware/peer-auth.js';
 import { AppError } from '../utils/errors.js';
 import * as flags from '../services/feature-flags.service.js';
 import * as banking from '../services/portal-banking.service.js';
@@ -20,7 +21,7 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function requireCompanyId(req: import('express').Request): string {
   if (!req.portalContact) throw AppError.unauthorized('No portal session');
-  const companyId = req.query['companyId'] as string | undefined;
+  const companyId = scopedCompanyId(req, req.query['companyId'] as string | undefined);
   if (!companyId) throw AppError.badRequest('companyId required');
   const pc = req.portalContact;
   if (pc.isPreview && pc.previewCompanyId && pc.previewCompanyId !== companyId) {

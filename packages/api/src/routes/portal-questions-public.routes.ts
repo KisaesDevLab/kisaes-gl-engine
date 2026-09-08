@@ -7,6 +7,7 @@ import multer from 'multer';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { portalAuthenticate, refuseDuringPreview } from '../middleware/portal-auth.js';
+import { scopedCompanyId } from '../middleware/peer-auth.js';
 import { AppError } from '../utils/errors.js';
 import * as svc from '../services/portal-question.service.js';
 import { verifyAttachmentContent } from './attachments.routes.js';
@@ -42,7 +43,7 @@ export const portalQuestionsPublicRouter = Router();
 portalQuestionsPublicRouter.use(portalAuthenticate);
 
 portalQuestionsPublicRouter.get('/', async (req, res) => {
-  const companyId = (req.query['companyId'] as string | undefined) ?? '';
+  const companyId = scopedCompanyId(req, req.query['companyId'] as string | undefined) ?? '';
   if (!companyId) throw AppError.badRequest('companyId is required');
   if (!req.portalContact) throw AppError.unauthorized('No portal session');
   const result = await svc.listForContact({
@@ -59,6 +60,8 @@ portalQuestionsPublicRouter.get('/:id', async (req, res) => {
     tenantId: req.portalContact.tenantId,
     contactId: req.portalContact.contactId,
     questionId: req.params['id']!,
+    // Peer (Vibe PM) requests are pinned to the linked company.
+    companyId: req.peerLink?.companyId,
   });
   res.json({ question: q });
 });
@@ -95,6 +98,7 @@ portalQuestionsPublicRouter.post('/:id/answers', answerFiles, validate(answerSch
     tenantId: req.portalContact.tenantId,
     contactId: req.portalContact.contactId,
     questionId: req.params['id']!,
+    companyId: req.peerLink?.companyId,
     body: req.body.body,
     files: uploads.map((f) => ({ filename: f.originalname, mimeType: f.mimetype, buffer: f.buffer })),
   });
@@ -110,6 +114,7 @@ portalQuestionsPublicRouter.get('/:id/attachments/:attachmentId/download', async
     contactId: req.portalContact.contactId,
     questionId: req.params['id']!,
     attachmentId: req.params['attachmentId']!,
+    companyId: req.peerLink?.companyId,
   });
   res.setHeader('Content-Type', file.mimeType);
   res.setHeader('Content-Disposition', `attachment; filename="${file.filename.replace(/[\r\n"]/g, '_')}"`);
@@ -127,6 +132,7 @@ const askSchema = z.object({
 portalQuestionsPublicRouter.post('/ask', validate(askSchema), async (req, res) => {
   if (!req.portalContact) throw AppError.unauthorized('No portal session');
   refuseDuringPreview(req);
+  scopedCompanyId(req, req.body.companyId);
   const result = await svc.contactAsk(req.portalContact.tenantId, req.portalContact.contactId, req.body);
   res.status(201).json(result);
 });
