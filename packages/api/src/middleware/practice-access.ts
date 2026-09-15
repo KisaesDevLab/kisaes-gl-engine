@@ -6,6 +6,7 @@ import type { Request, Response, NextFunction } from 'express';
 import type { PracticeFeatureFlagKey } from '@kis-books/shared';
 import { AppError } from '../utils/errors.js';
 import * as featureFlagsService from '../services/feature-flags.service.js';
+import { resolveReviewMode } from '../services/suggestion-review-mode.service.js';
 
 // Shared gate for every /api/v1/practice/* router. Three checks in
 // one middleware so the routes stay terse and the policy lives in
@@ -35,4 +36,23 @@ export function requirePracticeAccess(flag: PracticeFeatureFlagKey) {
     }
     next();
   };
+}
+
+// Suggestion REVIEW gate for /practice/uncategorized. Tenant users who are
+// not staff of the firm managing the books (or not the owner of self-managed
+// books) may only SUGGEST categories from Banking → Uncategorized; approving,
+// rejecting, clearing suspense and posting to suspense are reserved for
+// reviewers. Mount after requirePracticeAccess. See
+// services/suggestion-review-mode.service.ts for the rule.
+export async function requireSuggestionReviewer(req: Request, _res: Response, next: NextFunction) {
+  const m = await resolveReviewMode(req.tenantId, req.userId, req.userRole, !!req.isSuperAdmin);
+  if (!m.canReview) {
+    throw AppError.forbidden(
+      m.managedByFirm
+        ? `Only ${m.firmName ?? 'your accounting firm'} can approve categories for this company. Suggest a category from Banking → Uncategorized instead.`
+        : 'Only an owner can approve categories here. Suggest a category from Banking → Uncategorized instead.',
+      'SUGGEST_ONLY_MODE',
+    );
+  }
+  next();
 }

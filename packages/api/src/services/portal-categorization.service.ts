@@ -271,7 +271,22 @@ async function myAttachmentCounts(
   );
 }
 
-async function liveSuggestionsFor(tenantId: string, targetIds: string[]) {
+export interface LiveSuggestion {
+  id: string;
+  status: string;
+  label: string | null;
+  note: string | null;
+  rejectionReason: string | null;
+  isPersonal: boolean;
+  submittedByContactId: string | null;
+  submittedByUserId: string | null;
+}
+
+// Live (pending/approving) suggestion per target id. Exported so the staff
+// in-suspense list can show "a teammate already suggested X" without a second
+// copy of the predicate. Loads the tenant's live rows then filters — the live
+// set is small by construction (one per target, cleared on review).
+export async function liveSuggestionsFor(tenantId: string, targetIds: string[]): Promise<Map<string, LiveSuggestion>> {
   const rows = await db
     .select({
       id: clientCategorySuggestions.id,
@@ -279,8 +294,11 @@ async function liveSuggestionsFor(tenantId: string, targetIds: string[]) {
       label: clientCategorySuggestions.suggestedLabel,
       note: clientCategorySuggestions.clientNote,
       rejectionReason: clientCategorySuggestions.rejectionReason,
+      isPersonal: clientCategorySuggestions.isPersonal,
       bankFeedItemId: clientCategorySuggestions.bankFeedItemId,
       transactionId: clientCategorySuggestions.transactionId,
+      submittedByContactId: clientCategorySuggestions.submittedByContactId,
+      submittedByUserId: clientCategorySuggestions.submittedByUserId,
     })
     .from(clientCategorySuggestions)
     .where(and(
@@ -288,13 +306,15 @@ async function liveSuggestionsFor(tenantId: string, targetIds: string[]) {
       inArray(clientCategorySuggestions.status, ['pending', 'approving']),
     ));
 
-  const map = new Map<string, PortalQueueItem['existingSuggestion']>();
+  const map = new Map<string, LiveSuggestion>();
   for (const r of rows) {
     const key = r.bankFeedItemId ?? r.transactionId;
     if (!key || !targetIds.includes(key)) continue;
     map.set(key, {
       id: r.id, status: r.status, label: r.label,
-      note: r.note, rejectionReason: r.rejectionReason,
+      note: r.note, rejectionReason: r.rejectionReason, isPersonal: r.isPersonal,
+      submittedByContactId: r.submittedByContactId ?? null,
+      submittedByUserId: r.submittedByUserId ?? null,
     });
   }
   return map;
@@ -315,20 +335,45 @@ export interface SubmitResult {
   failed: Array<{ targetId: string; reason: string }>;
 }
 
+// The partial unique index refusing a second live answer surfaces as a pg
+// 23505; Drizzle wraps it ("Failed query: …") with the pg error as `cause`,
+// so look at the code on both layers, then fall back to the message.
+function isUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: string; message?: string; cause?: { code?: string; message?: string } } | null;
+  if (!e) return false;
+  if (e.code === '23505' || e.cause?.code === '23505') return true;
+  return /unique/i.test(e.message ?? '') || /unique/i.test(e.cause?.message ?? '');
+}
+
+/** Who is answering: a portal contact, or a tenant user (team member). */
+export type Submitter = { contactId: string } | { userId: string };
+
+export interface SubmitOptions {
+  /** Restrict what may be answered; a team member only answers suspense rows. */
+  allowedTargetKinds?: Array<'bank_feed_item' | 'transaction'>;
+}
+
 /**
- * Record one batch of client answers. Per-item outcomes; a bad row never
- * aborts the batch, matching approveSelected's contract.
+ * Record one batch of answers. Per-item outcomes; a bad row never aborts the
+ * batch, matching approveSelected's contract.
  *
  * Every targetId is re-checked against the queue query for THIS company —
- * the client's own claim about what it is pointing at is never trusted. A
+ * the caller's own claim about what it is pointing at is never trusted. A
  * miss is reported as not_found, the same posture the portal register takes,
  * so "exists in another tenant" is indistinguishable from "does not exist".
+ *
+ * Supersede rule: a re-answer by the SAME submitter replaces their earlier
+ * pending answer. A portal contact also supersedes colleagues at the same
+ * company (they share one books). A team member never silently overwrites
+ * someone else's pending answer — the partial unique index refuses it and
+ * the row comes back as already_answered.
  */
-export async function submitSuggestions(
+export async function submitSuggestionsAs(
   tenantId: string,
   companyId: string,
-  contactId: string,
+  submitter: Submitter,
   items: SuggestionInput[],
+  opts: SubmitOptions = {},
 ): Promise<SubmitResult> {
   if (items.length === 0) throw AppError.badRequest('Nothing to submit.');
   if (items.length > 100) throw AppError.badRequest('Submit at most 100 answers at a time.');
@@ -342,10 +387,16 @@ export async function submitSuggestions(
 
   const accepted: string[] = [];
   const failed: SubmitResult['failed'] = [];
+  const isUser = 'userId' in submitter;
 
   for (const item of items) {
     const target = byId.get(item.targetId);
     if (!target || target.targetKind !== item.targetKind) {
+      failed.push({ targetId: item.targetId, reason: 'not_found' });
+      continue;
+    }
+    if (opts.allowedTargetKinds && !opts.allowedTargetKinds.includes(item.targetKind)) {
+      // Same posture as a cross-company id: not in this caller's list.
       failed.push({ targetId: item.targetId, reason: 'not_found' });
       continue;
     }
@@ -367,6 +418,9 @@ export async function submitSuggestions(
 
     try {
       await db.transaction(async (tx) => {
+        const targetClause = item.targetKind === 'bank_feed_item'
+          ? eq(clientCategorySuggestions.bankFeedItemId, item.targetId)
+          : eq(clientCategorySuggestions.transactionId, item.targetId);
         // A re-answer supersedes rather than duplicating. The partial unique
         // index makes the race safe if two devices submit at once.
         await tx.update(clientCategorySuggestions)
@@ -374,9 +428,8 @@ export async function submitSuggestions(
           .where(and(
             eq(clientCategorySuggestions.tenantId, tenantId),
             inArray(clientCategorySuggestions.status, ['pending']),
-            item.targetKind === 'bank_feed_item'
-              ? eq(clientCategorySuggestions.bankFeedItemId, item.targetId)
-              : eq(clientCategorySuggestions.transactionId, item.targetId),
+            targetClause,
+            ...(isUser ? [eq(clientCategorySuggestions.submittedByUserId, submitter.userId)] : []),
           ));
 
         await tx.insert(clientCategorySuggestions).values({
@@ -390,7 +443,8 @@ export async function submitSuggestions(
           clientNote: item.note?.trim() || null,
           isPersonal,
           status: 'pending',
-          submittedByContactId: contactId,
+          submittedByContactId: isUser ? null : submitter.contactId,
+          submittedByUserId: isUser ? submitter.userId : null,
           snapshotAmount: target.amount,
           snapshotDate: target.date,
           snapshotDescription: target.description.slice(0, 500),
@@ -400,12 +454,22 @@ export async function submitSuggestions(
     } catch (err) {
       failed.push({
         targetId: item.targetId,
-        reason: err instanceof Error && /unique/i.test(err.message) ? 'already_answered' : 'write_failed',
+        reason: isUniqueViolation(err) ? 'already_answered' : 'write_failed',
       });
     }
   }
 
   return { accepted, failed };
+}
+
+/** Portal call site — unchanged signature. */
+export function submitSuggestions(
+  tenantId: string,
+  companyId: string,
+  contactId: string,
+  items: SuggestionInput[],
+): Promise<SubmitResult> {
+  return submitSuggestionsAs(tenantId, companyId, { contactId }, items);
 }
 
 // ── History ─────────────────────────────────────────────────────
@@ -469,12 +533,12 @@ export async function listPortalHistory(
   };
 }
 
-/** Withdraw a still-pending answer. Only the contact who made it may. */
-export async function withdrawSuggestion(
+/** Withdraw a still-pending answer. Only whoever made it may. */
+export async function withdrawSuggestionAs(
   tenantId: string,
-  contactId: string,
+  submitter: Submitter,
   suggestionId: string,
-  /** Pin to one company (Vibe PM peer requests). */
+  /** Pin to one company (Vibe PM peer requests, team routes). */
   companyId?: string,
 ): Promise<void> {
   const res = await db.update(clientCategorySuggestions)
@@ -482,7 +546,9 @@ export async function withdrawSuggestion(
     .where(and(
       eq(clientCategorySuggestions.tenantId, tenantId),
       eq(clientCategorySuggestions.id, suggestionId),
-      eq(clientCategorySuggestions.submittedByContactId, contactId),
+      'userId' in submitter
+        ? eq(clientCategorySuggestions.submittedByUserId, submitter.userId)
+        : eq(clientCategorySuggestions.submittedByContactId, submitter.contactId),
       eq(clientCategorySuggestions.status, 'pending'),
       ...(companyId ? [eq(clientCategorySuggestions.companyId, companyId)] : []),
     ))
@@ -490,6 +556,16 @@ export async function withdrawSuggestion(
   if (res.length === 0) {
     throw AppError.conflict('That answer has already been reviewed.', 'SUGGESTION_ALREADY_RESOLVED');
   }
+}
+
+/** Portal call site — unchanged signature. */
+export function withdrawSuggestion(
+  tenantId: string,
+  contactId: string,
+  suggestionId: string,
+  companyId?: string,
+): Promise<void> {
+  return withdrawSuggestionAs(tenantId, { contactId }, suggestionId, companyId);
 }
 
 // ── Attachments ─────────────────────────────────────────────────

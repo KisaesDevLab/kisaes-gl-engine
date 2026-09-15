@@ -15,12 +15,19 @@
 // requireResource('banking'). The flag gate alone would let a bookkeeper
 // whose permission matrix denies banking move money from this page, and
 // every action here writes to the general ledger.
+//
+// Two audiences share this router (services/suggestion-review-mode.service):
+//   * REVIEWERS — staff of the firm managing the books, or the owner of
+//     self-managed books — reach every route.
+//   * everyone else on the tenant (Banking → Uncategorized) may only READ
+//     the lists and SUGGEST via /team/*; the posting and approval routes
+//     carry requireSuggestionReviewer and answer 403 SUGGEST_ONLY_MODE.
 
 import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
-import { requirePracticeAccess } from '../middleware/practice-access.js';
+import { requirePracticeAccess, requireSuggestionReviewer } from '../middleware/practice-access.js';
 import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
 import { auditLog } from '../middleware/audit.js';
@@ -28,6 +35,8 @@ import * as suspenseService from '../services/suspense.service.js';
 import * as bankFeedService from '../services/bank-feed.service.js';
 import * as suggestionReview from '../services/client-suggestion-review.service.js';
 import * as helpRequest from '../services/categorize-help-request.service.js';
+import * as categorization from '../services/portal-categorization.service.js';
+import { resolveReviewMode } from '../services/suggestion-review-mode.service.js';
 import { db } from '../db/index.js';
 import { sql } from 'drizzle-orm';
 
@@ -79,6 +88,59 @@ uncategorizedRouter.get('/summary', async (req, res) => {
   res.json(summary);
 });
 
+// GET /mode — which audience the caller is (see the header). The web reads
+// this to decide between the Practice page and Banking → Uncategorized, and
+// to show the owner's Suggested tab on self-managed books.
+uncategorizedRouter.get('/mode', async (req, res) => {
+  res.json(await resolveReviewMode(req.tenantId, req.userId, req.userRole, !!req.isSuperAdmin));
+});
+
+// ── Team members: suggest a category (Banking → Uncategorized) ──
+// The same write path the client portal uses, with the tenant user as the
+// submitter. Only amounts already in suspense may be answered here; nothing
+// posts until a reviewer approves.
+
+// GET /team/categories — the portal's sanitized picker (no AR/AP/system
+// accounts), grouped for a plain <select>.
+uncategorizedRouter.get('/team/categories', async (req, res) => {
+  res.json({ categories: await categorization.listPortalCategories(req.tenantId, req.companyId) });
+});
+
+const teamSuggestSchema = z.object({
+  items: z.array(z.object({
+    targetId: z.string().uuid(),
+    categoryId: z.union([z.string().uuid(), z.literal('personal'), z.literal('not_sure')]),
+    note: z.string().max(2000).optional(),
+  })).min(1).max(100),
+});
+uncategorizedRouter.post('/team/suggest', validate(teamSuggestSchema), async (req, res) => {
+  const items = (req.body.items as Array<{ targetId: string; categoryId: string; note?: string }>)
+    .map((i) => ({ ...i, targetKind: 'transaction' as const }));
+  const result = await categorization.submitSuggestionsAs(
+    req.tenantId, req.companyId, { userId: req.userId }, items, { allowedTargetKinds: ['transaction'] },
+  );
+  if (result.accepted.length > 0) {
+    await auditLog(
+      req.tenantId, 'create', 'client_category_suggestion', null, null,
+      { accepted: result.accepted.length, failed: result.failed.length, submittedBy: 'team_member' },
+      req.userId,
+    );
+    // Fire and forget: an SMTP outage must never fail the submission.
+    void suggestionReview.notifyStaffOfSuggestions(
+      req.tenantId, req.companyId, { userId: req.userId }, result.accepted.length,
+    ).catch(() => { /* the notifier logs */ });
+  }
+  res.status(201).json(result);
+});
+
+// DELETE /team/suggest/:id — withdraw your own still-pending answer.
+uncategorizedRouter.delete('/team/suggest/:id', async (req, res) => {
+  await categorization.withdrawSuggestionAs(
+    req.tenantId, { userId: req.userId }, req.params['id']!, req.companyId,
+  );
+  res.json({ withdrawn: true });
+});
+
 // GET /unposted — tab 1. Bank-feed rows nobody has dealt with yet.
 // Reuses the bank feed's own list query so this page and /banking/feed can
 // never disagree about what "actionable" means.
@@ -124,6 +186,30 @@ uncategorizedRouter.get('/in-suspense', async (req, res) => {
     limit: Math.min(optionalInt(req.query['limit'], 50), 500),
     offset: optionalInt(req.query['offset'], 0),
   });
+  // ?includeSuggestions=true — decorate each row with the live suggestion
+  // (if any), so Banking → Uncategorized can show "Sent · awaiting review"
+  // and the Practice tab can show "a teammate already suggested X".
+  if (req.query['includeSuggestions'] === 'true' && result.rows.length > 0) {
+    const live = await categorization.liveSuggestionsFor(req.tenantId, result.rows.map((r) => r.transactionId));
+    const names = await suggestionReview.submitterNames(live.values());
+    const rows = result.rows.map((r) => {
+      const l = live.get(r.transactionId);
+      const pendingSuggestion = l ? {
+        id: l.id,
+        label: l.label,
+        note: l.note,
+        isPersonal: l.isPersonal,
+        submittedBy: l.submittedByUserId ? 'team_member' : 'portal_contact',
+        submittedByUserId: l.submittedByUserId,
+        submittedByName: l.submittedByUserId
+          ? (names.users.get(l.submittedByUserId) ?? 'a former team member')
+          : (l.submittedByContactId ? (names.contacts.get(l.submittedByContactId) ?? 'a client') : 'a client'),
+      } : null;
+      return { ...r, pendingSuggestion };
+    });
+    res.json({ ...result, rows });
+    return;
+  }
   res.json(result);
 });
 
@@ -132,7 +218,7 @@ uncategorizedRouter.get('/in-suspense', async (req, res) => {
 const postToSuspenseSchema = z.object({
   feedItemIds: z.array(z.string().uuid()).min(1).max(500),
 });
-uncategorizedRouter.post('/post-to-suspense', validate(postToSuspenseSchema), async (req, res) => {
+uncategorizedRouter.post('/post-to-suspense', requireSuggestionReviewer, validate(postToSuspenseSchema), async (req, res) => {
   const result = await suspenseService.postFeedItemsToSuspense(
     req.tenantId, req.body.feedItemIds, req.userId, req.companyId,
   );
@@ -150,7 +236,7 @@ const clearSchema = z.object({
   transactionIds: z.array(z.string().uuid()).min(1).max(500),
   accountId: z.string().uuid(),
 });
-uncategorizedRouter.post('/clear', validate(clearSchema), async (req, res) => {
+uncategorizedRouter.post('/clear', requireSuggestionReviewer, validate(clearSchema), async (req, res) => {
   const result = await suspenseService.clearSuspense(
     req.tenantId, req.body.transactionIds, req.body.accountId, req.userId, req.companyId,
   );
@@ -195,7 +281,7 @@ uncategorizedRouter.post('/help-request', validate(helpRequestSchema), async (re
 // GET /suggestions?companyId&status&unread=true&limit&offset
 // `unread=true` is the same param name and predicate as
 // /practice/document-requests, so the deep links match.
-uncategorizedRouter.get('/suggestions', async (req, res) => {
+uncategorizedRouter.get('/suggestions', requireSuggestionReviewer, async (req, res) => {
   const result = await suggestionReview.listSuggestions(req.tenantId, {
     companyId: req.companyId,
     status: optionalString(req.query['status']),
@@ -215,7 +301,7 @@ const approveSchema = z.object({
   overrideAccountId: z.string().uuid().optional(),
   confirmDrift: z.boolean().optional(),
 });
-uncategorizedRouter.post('/suggestions/approve', validate(approveSchema), async (req, res) => {
+uncategorizedRouter.post('/suggestions/approve', requireSuggestionReviewer, validate(approveSchema), async (req, res) => {
   const result = await suggestionReview.approveSuggestions(
     req.tenantId, req.body.ids,
     { overrideAccountId: req.body.overrideAccountId, confirmDrift: req.body.confirmDrift },
@@ -228,7 +314,7 @@ const rejectSchema = z.object({
   ids: z.array(z.string().uuid()).min(1).max(200),
   reason: z.string().min(1).max(1000),
 });
-uncategorizedRouter.post('/suggestions/reject', validate(rejectSchema), async (req, res) => {
+uncategorizedRouter.post('/suggestions/reject', requireSuggestionReviewer, validate(rejectSchema), async (req, res) => {
   const result = await suggestionReview.rejectSuggestions(
     req.tenantId, req.body.ids, req.body.reason, req.userId,
   );
@@ -239,7 +325,7 @@ uncategorizedRouter.post('/suggestions/reject', validate(rejectSchema), async (r
 const markReviewedSchema = z.object({
   ids: z.array(z.string().uuid()).max(500).optional(),
 });
-uncategorizedRouter.post('/suggestions/mark-reviewed', validate(markReviewedSchema), async (req, res) => {
+uncategorizedRouter.post('/suggestions/mark-reviewed', requireSuggestionReviewer, validate(markReviewedSchema), async (req, res) => {
   const result = await suggestionReview.markReviewed(
     req.tenantId, req.body.ids ?? null, req.companyId ?? null, req.userId,
   );

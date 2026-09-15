@@ -16,7 +16,8 @@ import { accounts } from './accounts.js';
 import { bankFeedItems } from './banking.js';
 import { portalContacts } from './portal-contacts.js';
 
-/** Only a portal write may create one, and only ever as 'pending'. */
+/** Only a portal write or a team member's suggest may create one, and only
+ *  ever as 'pending'. */
 export const CLIENT_SUGGESTION_STATUSES = [
   'pending',
   // Transient claim taken while the ledger primitive runs. The posting
@@ -49,8 +50,12 @@ export const clientCategorySuggestions = pgTable('client_category_suggestions', 
   isPersonal: boolean('is_personal').notNull().default(false),
 
   status: varchar('status', { length: 20 }).notNull().default('pending'),
-  submittedByContactId: uuid('submitted_by_contact_id').notNull()
+  // Exactly one of the two submitters is set (CHECK ccs_submitter_exclusive,
+  // migration 0174): a portal contact, or a tenant user suggesting from
+  // Banking → Uncategorized. The user id is a loose reference.
+  submittedByContactId: uuid('submitted_by_contact_id')
     .references(() => portalContacts.id, { onDelete: 'cascade' }),
+  submittedByUserId: uuid('submitted_by_user_id'),
   submittedAt: timestamp('submitted_at', { withTimezone: true }).notNull().defaultNow(),
 
   reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
@@ -73,4 +78,6 @@ export const clientCategorySuggestions = pgTable('client_category_suggestions', 
   tenantCompanyIdx: index('idx_ccs_tenant_company_status')
     .on(table.tenantId, table.companyId, table.status, table.submittedAt),
   contactIdx: index('idx_ccs_contact').on(table.submittedByContactId, table.submittedAt),
+  // Partial (WHERE submitted_by_user_id IS NOT NULL) in the migration.
+  userIdx: index('idx_ccs_user').on(table.submittedByUserId, table.submittedAt),
 }));

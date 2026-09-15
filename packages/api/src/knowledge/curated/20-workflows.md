@@ -126,6 +126,25 @@ already-POSTED check transactions. Categorization also now consults payee histor
 generally: once a feed row has a payee, its category can be suggested from how that payee
 was coded before, which description matching could never do for checks.
 
+### Team members suggesting categories (Banking → Uncategorized)
+Company users who are NOT firm members (owner, accountant, bookkeeper with the banking
+permission; not readonly) get **Banking → Uncategorized** (`/banking/uncategorized`) when
+the tenant flag `UNCATEGORIZED_REVIEW_V1` is on. Firm members and super admins are
+redirected to Practice → Uncategorized, which is now firm-members-only. The team view
+shows only amounts in suspense and is SUGGEST-ONLY: a short income/expense category list
+(same sanitized list as the client portal) plus *Personal / not business* and *Not sure*
+(note required), a note box, and one **Send N answers** button per batch (one reviewer
+email per batch). Answers land as `client_category_suggestions` rows with
+`submitted_by_user_id` set; the row stays marked "Sent · awaiting review" with a Withdraw
+for the author only; a team member can never overwrite someone else's pending answer
+(`already_answered`). Reviewers: staff of the firm ACTIVELY managing the tenant (any firm
+role) approve on Practice → Uncategorized → Client suggested (Team member badge); on
+self-managed books the OWNER gets a Suggested tab in Banking → Uncategorized. The API
+decides via `GET /practice/uncategorized/mode` (`{mode, managedByFirm, firmName,
+canReview}`); approve/reject/clear/post-to-suspense answer 403 `SUGGEST_ONLY_MODE` to
+non-reviewers. Team endpoints: `GET /team/categories`, `POST /team/suggest`,
+`DELETE /team/suggest/:id`, `GET /in-suspense?includeSuggestions=true`.
+
 ### Correcting a misread amount on a statement import
 In the **Import Bank Statement** review table every row's Amount and debit/credit direction
 are editable (press Enter or click away to save). The correction is persisted onto the

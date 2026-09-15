@@ -27,6 +27,8 @@ import * as systemEmail from './system-email.service.js';
 import * as bankFeedService from './bank-feed.service.js';
 import * as suspenseService from './suspense.service.js';
 import * as classificationService from './practice-classification.service.js';
+import type { Submitter, LiveSuggestion } from './portal-categorization.service.js';
+import { resolveReviewMode } from './suggestion-review-mode.service.js';
 
 export interface SuggestionRow {
   id: string;
@@ -39,7 +41,10 @@ export interface SuggestionRow {
   status: string;
   submittedAt: string;
   reviewedAt: string | null;
+  /** Display name of whoever answered — a portal contact or a team member. */
   contactName: string;
+  submittedBy: 'portal_contact' | 'team_member';
+  submittedByUserId: string | null;
   snapshotAmount: string;
   snapshotDate: string;
   snapshotDescription: string | null;
@@ -79,9 +84,12 @@ export async function listSuggestions(
     contactEmail: portalContacts.email,
     contactFirst: portalContacts.firstName,
     contactLast: portalContacts.lastName,
+    userName: users.displayName,
+    userEmail: users.email,
   })
     .from(clientCategorySuggestions)
     .leftJoin(portalContacts, eq(portalContacts.id, clientCategorySuggestions.submittedByContactId))
+    .leftJoin(users, eq(users.id, clientCategorySuggestions.submittedByUserId))
     // Unread first, then newest — the doc-request queue's ordering.
     .orderBy(sql`(${clientCategorySuggestions.reviewedAt} IS NOT NULL), ${clientCategorySuggestions.submittedAt} DESC`)
     .where(where)
@@ -101,7 +109,11 @@ export async function listSuggestions(
       status: r.s.status,
       submittedAt: r.s.submittedAt.toISOString(),
       reviewedAt: r.s.reviewedAt ? r.s.reviewedAt.toISOString() : null,
-      contactName: [r.contactFirst, r.contactLast].filter(Boolean).join(' ') || (r.contactEmail ?? 'a client'),
+      contactName: r.s.submittedByUserId
+        ? (r.userName || r.userEmail || 'a former team member')
+        : ([r.contactFirst, r.contactLast].filter(Boolean).join(' ') || (r.contactEmail ?? 'a client')),
+      submittedBy: r.s.submittedByUserId ? 'team_member' : 'portal_contact',
+      submittedByUserId: r.s.submittedByUserId ?? null,
       snapshotAmount: String(r.s.snapshotAmount),
       snapshotDate: r.s.snapshotDate,
       snapshotDescription: r.s.snapshotDescription,
@@ -341,16 +353,18 @@ export async function countUnread(tenantId: string, companyId?: string): Promise
 export async function notifyStaffOfSuggestions(
   tenantId: string,
   companyId: string,
-  contactId: string,
+  submitter: Submitter,
   count: number,
 ): Promise<{ sent: number; skipped: string | null }> {
+  const contactId = 'contactId' in submitter ? submitter.contactId : null;
+  const submitterUserId = 'userId' in submitter ? submitter.userId : null;
   const log = (event: string, extra: Record<string, unknown> = {}) => {
     // eslint-disable-next-line no-console
     console.log(JSON.stringify({
       ts: new Date().toISOString(),
       level: event === 'error' ? 'warn' : 'info',
       component: 'client-suggestion-notify',
-      event, tenantId, companyId, contactId, count, ...extra,
+      event, tenantId, companyId, contactId, submitterUserId, count, ...extra,
     }));
   };
   try {
@@ -358,8 +372,8 @@ export async function notifyStaffOfSuggestions(
 
     // Membership is re-checked HERE, not at submission time: a staffer removed
     // from the client since then must stop receiving their data.
-    const recipients = await db
-      .select({ id: users.id, email: users.email })
+    const candidates = await db
+      .select({ id: users.id, email: users.email, role: userTenantAccess.role })
       .from(users)
       .innerJoin(userTenantAccess, eq(userTenantAccess.userId, users.id))
       .where(and(
@@ -369,27 +383,49 @@ export async function notifyStaffOfSuggestions(
         sql`${users.userType} <> 'client'`,
         inArray(users.role, ['owner', 'accountant', 'bookkeeper']),
       ));
+    // Only people who can actually REVIEW get the mail (firm staff of the
+    // managing firm, or the owner of self-managed books) — and never the
+    // team member who just submitted.
+    const recipients: Array<{ id: string; email: string }> = [];
+    let managedByFirm = false;
+    for (const u of candidates) {
+      if (submitterUserId && u.id === submitterUserId) continue;
+      const m = await resolveReviewMode(tenantId, u.id, u.role ?? undefined, false);
+      managedByFirm = m.managedByFirm;
+      if (m.canReview) recipients.push({ id: u.id, email: u.email });
+    }
     if (recipients.length === 0) return { sent: 0, skipped: 'no_eligible_recipients' };
 
-    const [tenant, company, contact] = await Promise.all([
+    const [tenant, company, contact, submitterUser] = await Promise.all([
       db.query.tenants.findFirst({ where: eq(tenants.id, tenantId), columns: { name: true } }),
       db.query.companies.findFirst({ where: eq(companies.id, companyId), columns: { businessName: true } }),
-      db.query.portalContacts.findFirst({ where: eq(portalContacts.id, contactId) }),
+      contactId ? db.query.portalContacts.findFirst({ where: eq(portalContacts.id, contactId) }) : Promise.resolve(null),
+      submitterUserId ? db.query.users.findFirst({ where: eq(users.id, submitterUserId), columns: { displayName: true, email: true } }) : Promise.resolve(null),
     ]);
-    const contactName = [contact?.firstName, contact?.lastName].filter(Boolean).join(' ')
-      || contact?.email || 'a client contact';
+    const isTeam = !!submitterUserId;
+    const contactName = isTeam
+      ? (submitterUser?.displayName || submitterUser?.email || 'a team member')
+      : ([contact?.firstName, contact?.lastName].filter(Boolean).join(' ') || contact?.email || 'a client contact');
     const clientName = tenant?.name ?? 'a client';
-    const subject = `${clientName}: ${contactName} categorized ${count} transaction${count === 1 ? '' : 's'}`;
+    const plural = count === 1 ? '' : 's';
+    const subject = isTeam
+      ? `${clientName}: team member ${contactName} suggested categories for ${count} transaction${plural}`
+      : `${clientName}: ${contactName} categorized ${count} transaction${plural}`;
     const base = env.PUBLIC_URL.replace(/\/+$/, '');
-    const url = `${base}/practice/uncategorized?tab=client-suggested&filter=unread`;
+    const reviewSpot = managedByFirm ? 'Practice → Uncategorized → Client suggested' : 'Banking → Uncategorized → Suggested';
+    const url = managedByFirm
+      ? `${base}/practice/uncategorized?tab=client-suggested&filter=unread`
+      : `${base}/banking/uncategorized?tab=suggested`;
     const lines = [
-      `${contactName} suggested categories through the client portal.`,
+      isTeam
+        ? `${contactName} suggested categories from Banking → Uncategorized.`
+        : `${contactName} suggested categories through the client portal.`,
       '',
       `Client: ${clientName}${company?.businessName ? ` — ${company.businessName}` : ''}`,
       `Answers: ${count}`,
       `Received: ${new Date().toLocaleString('en-US', { timeZone: 'UTC' })} UTC`,
       '',
-      'Nothing has posted. Open Practice → Uncategorized → Client suggested to approve,',
+      `Nothing has posted. Open ${reviewSpot} to approve,`,
       'override or send them back.',
       'If you are signed in to a different client, switch to this client first.',
     ];
@@ -412,4 +448,33 @@ export async function notifyStaffOfSuggestions(
     log('error', { error: e instanceof Error ? e.message : String(e) });
     return { sent: 0, skipped: 'error' };
   }
+}
+
+/**
+ * Display names for the submitters of a set of live suggestions — one users
+ * query + one portal_contacts query, never per row. Used to decorate the
+ * in-suspense list with "a teammate already suggested X".
+ */
+export async function submitterNames(
+  live: Iterable<LiveSuggestion>,
+): Promise<{ users: Map<string, string>; contacts: Map<string, string> }> {
+  const userIds = new Set<string>();
+  const contactIds = new Set<string>();
+  for (const l of live) {
+    if (l.submittedByUserId) userIds.add(l.submittedByUserId);
+    if (l.submittedByContactId) contactIds.add(l.submittedByContactId);
+  }
+  const out = { users: new Map<string, string>(), contacts: new Map<string, string>() };
+  if (userIds.size > 0) {
+    const rows = await db.select({ id: users.id, displayName: users.displayName, email: users.email })
+      .from(users).where(inArray(users.id, [...userIds]));
+    for (const r of rows) out.users.set(r.id, r.displayName || r.email);
+  }
+  if (contactIds.size > 0) {
+    const rows = await db.select({
+      id: portalContacts.id, first: portalContacts.firstName, last: portalContacts.lastName, email: portalContacts.email,
+    }).from(portalContacts).where(inArray(portalContacts.id, [...contactIds]));
+    for (const r of rows) out.contacts.set(r.id, [r.first, r.last].filter(Boolean).join(' ') || r.email || 'a client');
+  }
+  return out;
 }

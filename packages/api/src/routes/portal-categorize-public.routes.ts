@@ -296,7 +296,7 @@ portalCategorizePublicRouter.post('/suggestions', submitLimiter, async (req, res
 
   // Fire and forget: an SMTP outage must never fail the client's submission.
   if (result.accepted.length > 0) {
-    void notifyStaffOfSuggestions(tenantId, companyId, contactId, result.accepted.length)
+    void notifyStaffOfSuggestions(tenantId, companyId, { contactId }, result.accepted.length)
       .catch(() => { /* the notifier logs; never surfaces to the client */ });
   }
 

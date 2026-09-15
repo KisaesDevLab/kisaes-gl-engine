@@ -143,7 +143,10 @@ numbers, no balance-sheet accounts. Two extra answers exist, **Personal, not bus
 and **I am not sure** (which asks for a note).
 
 Nothing a client does here posts. Answers arrive as suggestions on Practice →
-Uncategorized → Client suggested, where staff approve, override or send them back.
+Uncategorized → Client suggested, where staff approve, override or send them back. That
+tab also lists suggestions the company's own team members sent from Banking →
+Uncategorized (badge **Team member** vs **Client**); both share the same queue and the
+same one-live-answer-per-row rule.
 
 The note: every row has a note box, always available and NOT gated on picking a
 category — a client who cannot name the account can usually still say what the
