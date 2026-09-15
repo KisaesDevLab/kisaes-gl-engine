@@ -326,6 +326,15 @@ one from the list). Typing a payee name or address without selecting a vendor sh
 inline warning and Save is blocked until a vendor is picked — the contact links the check to
 the vendor's history and 1099 totals.
 
+### Quick Add Contact → More details
+Every contact picker's "Add …" row opens **Quick Add Contact** (type, display name,
+company, email, phone). A **More details** toggle (collapsed by default) adds the
+mailing/billing address, for customers a shipping address with "Same as billing" ticked by
+default, and for vendors the **Default Expense Category** and **Default Tag**. Sections
+follow the chosen contact type; vendor defaults are never sent for a plain customer. The
+new contact is selected in the field that opened the window, so Write Check immediately
+fills the printed address and the first expense line from what was just entered.
+
 ### Re-reading check images when payees came back blank
 Statement parsing reads the payee off each check image with a vision reader. When that
 reader is busy or briefly down during a parse, EVERY check comes back blank even though
