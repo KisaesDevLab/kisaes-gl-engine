@@ -1313,6 +1313,42 @@ describe('Statement Match Engine', () => {
     });
   });
 
+  describe('setStatementLineAmount — post-import misread correction', () => {
+    it('rewrites an unmatched line (signed), clears a pending suggestion, refuses matched lines', async () => {
+      // Books first: the reconciliation worksheet is snapshotted at start.
+      await postBank({ date: '2026-04-03', amount: '12.00', memo: 'POS MISREAD', direction: 'out' });
+      await postBank({ date: '2026-04-05', amount: '50.00', memo: 'DEPOSIT OK', direction: 'in' });
+      const { statementId, reconId } = await captureAndStart({
+        transactions: [
+          { date: '2026-04-03', description: 'POS MISREAD', amount: '120.00', type: 'debit' }, // really 12.00
+          { date: '2026-04-05', description: 'DEPOSIT OK', amount: '50.00', type: 'credit' },
+        ],
+        openingBalance: '0.00', closingBalance: '38.00',
+      });
+      await statementMatch.matchStatement(tenantId, reconId, { apply: true });
+      const lines = await statementLinesOf(statementId);
+      const misread = lines.find((l) => l.description === 'POS MISREAD')!;
+      const matched = lines.find((l) => l.description === 'DEPOSIT OK')!;
+      expect(matched.matchStatus).toBe('auto');
+
+      // A matched line refuses.
+      await expect(statementMatch.setStatementLineAmount(tenantId, matched.id, '51.00'))
+        .rejects.toMatchObject({ code: 'STATEMENT_LINE_MATCHED' });
+      // Zero / garbage refuses.
+      await expect(statementMatch.setStatementLineAmount(tenantId, misread.id, '0'))
+        .rejects.toMatchObject({ code: 'STATEMENT_AMOUNT_INVALID' });
+
+      const { line } = await statementMatch.setStatementLineAmount(tenantId, misread.id, '-12.00');
+      expect(line.amount).toBe('-12.0000');
+      expect(line.matchStatus).toBe('unmatched');
+
+      // Re-running the match now auto-clears the corrected line.
+      const rerun = await statementMatch.matchStatement(tenantId, reconId, { apply: true });
+      expect(rerun.unmatchedLines.length).toBe(0);
+      expect((await statementLinesOf(statementId)).every((l) => l.matchStatus === 'auto')).toBe(true);
+    });
+  });
+
   describe('backfillStatementLines', () => {
     it('populates lines for statements captured before 0116 and is idempotent', async () => {
       const { job } = await mkStatementJob({

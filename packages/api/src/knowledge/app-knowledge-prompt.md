@@ -292,6 +292,21 @@ already-POSTED check transactions. Categorization also now consults payee histor
 generally: once a feed row has a payee, its category can be suggested from how that payee
 was coded before, which description matching could never do for checks.
 
+### Correcting a misread amount on a statement import
+In the **Import Bank Statement** review table every row's Amount and debit/credit direction
+are editable (press Enter or click away to save). The correction is persisted onto the
+statement's processing record, so both the bank-feed items and the stored statement lines
+carry it, and the Golden-Rule banner + per-row "off by" badges are re-checked at once
+(edited rows are marked). After a statement is saved, an unmatched line on its
+reconciliation has **Fix amount** (negative = money out); re-run **Match statement**
+afterwards. Matched lines must be unmatched first.
+
+### Write Check requires a vendor contact
+On **Write Check**, *Pay to the Order of* must be a vendor contact (type to search, or add
+one from the list). Typing a payee name or address without selecting a vendor shows an
+inline warning and Save is blocked until a vendor is picked — the contact links the check to
+the vendor's history and 1099 totals.
+
 ### Re-reading check images when payees came back blank
 Statement parsing reads the payee off each check image with a vision reader. When that
 reader is busy or briefly down during a parse, EVERY check comes back blank even though

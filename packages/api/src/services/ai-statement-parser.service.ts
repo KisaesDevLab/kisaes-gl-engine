@@ -29,6 +29,7 @@ import { StatementExtractionResult, StatementExtractionTransaction } from '@kis-
 import { db } from '../db/index.js';
 import { attachments, aiJobs } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { auditLog } from '../middleware/audit.js';
 import { env } from '../config/env.js';
 import { log } from '../utils/logger.js';
 import * as aiConfigService from './ai-config.service.js';
@@ -1038,6 +1039,97 @@ export async function getStatementJobResult(tenantId: string, jobId: string) {
     importedAt: job.importedAt,
     result: job.outputData ?? null,
   };
+}
+
+// Review-table corrections (misread amount / direction) on a NOT-yet-imported
+// parse. Rewrites the rows in the job's persisted output — the single source
+// both import paths read (feed items from the request body, statement lines
+// from `outputData`) — and re-runs the Golden Rule + suspect-row check over
+// the corrected rows. Refused once the statement has been saved: its
+// bank_statement_lines already exist (fix those on the reconciliation page).
+export interface StatementTransactionEdit { index: number; amount: string; type?: 'debit' | 'credit' }
+
+export async function updateStatementJobTransactions(
+  tenantId: string,
+  jobId: string,
+  edits: StatementTransactionEdit[],
+  userId?: string,
+): Promise<{ transactions: StatementTransaction[]; reconciliation: StatementReconciliation; suspectRows: StatementSuspectRow[]; qualityWarnings: string[] }> {
+  const job = await db.query.aiJobs.findFirst({
+    where: and(eq(aiJobs.tenantId, tenantId), eq(aiJobs.id, jobId), eq(aiJobs.jobType, 'ocr_statement')),
+  });
+  if (!job) throw AppError.notFound('Statement parse job not found');
+  if (job.importedAt) {
+    throw AppError.conflict(
+      'This statement has already been saved. Correct the amount on its statement line from the reconciliation page instead.',
+      'STATEMENT_ALREADY_IMPORTED',
+    );
+  }
+  const result = (job.outputData ?? null) as StatementParseResult | null;
+  if (!result || !Array.isArray(result.transactions)) {
+    throw AppError.badRequest('This parse has no transactions to edit', 'STATEMENT_NO_TRANSACTIONS');
+  }
+
+  const { recomputeStatementReconciliation, amountToCents } = await import('./extraction/statement-recompute.js');
+  const transactions = result.transactions.map((t) => ({ ...t }));
+  const before: Array<{ index: number; amount: string; type: string }> = [];
+  for (const e of edits) {
+    const row = transactions[e.index];
+    if (!row) throw AppError.badRequest(`No transaction at index ${e.index}`, 'STATEMENT_ROW_INDEX');
+    const cents = amountToCents(e.amount);
+    if (cents == null || cents < 0) throw AppError.badRequest('Amount must be a positive number', 'STATEMENT_AMOUNT_INVALID');
+    before.push({ index: e.index, amount: row.amount, type: row.type });
+    row.amount = (cents / 100).toFixed(2);
+    if (e.type) row.type = e.type;
+  }
+
+  const recomputed = recomputeStatementReconciliation({
+    transactions,
+    openingBalance: result.openingBalance,
+    closingBalance: result.closingBalance,
+    accountTypeHint: result.accountTypeHint ?? null,
+  });
+  const reconciliation: StatementReconciliation = {
+    ...result.reconciliation,
+    status: recomputed.reconciliation.status,
+    deltaCents: recomputed.reconciliation.deltaCents,
+    expectedClosingCents: recomputed.reconciliation.expectedClosingCents,
+    actualClosingCents: recomputed.reconciliation.actualClosingCents,
+  };
+  const warnings = new Set(Array.isArray(result.qualityWarnings) ? result.qualityWarnings : []);
+  if (reconciliation.status === 'verified') warnings.delete('statement_did_not_reconcile');
+  else if (reconciliation.status === 'discrepancy') warnings.add('statement_did_not_reconcile');
+  warnings.add('amounts_edited_in_review');
+
+  // Provenance: every correction is kept on the job so a later reader can
+  // tell an operator edit from the extractor's read.
+  const priorRaw = (result as unknown as { amountEdits?: unknown }).amountEdits;
+  const priorEdits: unknown[] = Array.isArray(priorRaw) ? priorRaw : [];
+  const amountEdits = [
+    ...priorEdits,
+    ...edits.map((e, i) => ({
+      index: e.index,
+      from: before[i],
+      to: { amount: transactions[e.index]!.amount, type: transactions[e.index]!.type },
+      at: new Date().toISOString(),
+      userId: userId ?? null,
+    })),
+  ];
+
+  const next = {
+    ...result,
+    transactions,
+    reconciliation,
+    suspectRows: recomputed.suspectRows,
+    qualityWarnings: [...warnings],
+    amountEdits,
+  };
+  await db.update(aiJobs)
+    .set({ outputData: next })
+    .where(and(eq(aiJobs.tenantId, tenantId), eq(aiJobs.id, jobId)));
+  await auditLog(tenantId, 'update', 'statement_parse_transactions', jobId, { edits: before }, { edits }, userId);
+
+  return { transactions, reconciliation, suspectRows: recomputed.suspectRows, qualityWarnings: [...warnings] };
 }
 
 export async function markStatementJobImported(tenantId: string, jobId: string): Promise<void> {

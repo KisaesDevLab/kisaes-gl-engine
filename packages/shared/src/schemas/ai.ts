@@ -244,3 +244,22 @@ export const aiTaskTogglesSchema = z.object({
 
 // Admin prompt template mutations.
 export const aiUpdatePromptTemplateSchema = aiPromptTemplateSchema.partial();
+
+// Review-table corrections to a persisted statement parse (misread amount /
+// direction). PATCH /ai/parse/statement/jobs/:jobId/transactions. Indexes
+// address `result.transactions` of the job; the server re-runs the Golden
+// Rule + suspect-row check and persists both the rows and the new verdict.
+export const aiEditStatementTransactionsSchema = z.object({
+  edits: z
+    .array(
+      z.object({
+        index: z.number().int().min(0),
+        // Positive magnitude, up to 2 decimals; direction rides `type`.
+        amount: z.string().trim().regex(/^\d{1,13}(\.\d{1,2})?$/, 'Enter a positive amount like 123.45'),
+        type: z.enum(['debit', 'credit']).optional(),
+      }),
+    )
+    .min(1)
+    .max(500),
+});
+export type AiEditStatementTransactionsInput = z.infer<typeof aiEditStatementTransactionsSchema>;

@@ -1316,6 +1316,44 @@ export async function setStatementLinePayee(
   });
 }
 
+// Correct a misread statement-line amount after import (signed, same
+// orientation as the stored line: money in positive, money out negative).
+// Only a line that is not matched to the books may change — a matched line's
+// amount is what the match was scored on. Any pending suggestion / rejection
+// for the line is cleared so the next match run re-scores it from scratch.
+export async function setStatementLineAmount(
+  tenantId: string,
+  statementLineId: string,
+  amount: string,
+  userId?: string,
+): Promise<{ line: StatementLineSummary }> {
+  const n = parseFloat(String(amount).replace(/[$,\s]/g, ''));
+  if (!Number.isFinite(n) || n === 0) {
+    throw AppError.badRequest('Amount must be a non-zero number', 'STATEMENT_AMOUNT_INVALID');
+  }
+  const signed = n.toFixed(4);
+  return await db.transaction(async (tx) => {
+    const { line } = await lockLineAndReconciliation(tx, tenantId, statementLineId);
+    if (line.matchedJournalLineId || line.matchStatus === 'auto' || line.matchStatus === 'confirmed') {
+      throw AppError.badRequest(
+        'This line is matched to a transaction. Unmatch it first, then correct the amount.',
+        'STATEMENT_LINE_MATCHED',
+      );
+    }
+    const [updated] = await tx.update(bankStatementLines)
+      .set({ amount: signed, matchStatus: 'unmatched', matchScore: null, scoreBreakdown: null, updatedAt: new Date() })
+      .where(and(eq(bankStatementLines.tenantId, tenantId), eq(bankStatementLines.id, statementLineId)))
+      .returning();
+    await auditLog(
+      tenantId, 'update', 'bank_statement_line', statementLineId,
+      { amount: line.amount, matchStatus: line.matchStatus },
+      { amount: signed, matchStatus: 'unmatched', reason: 'operator_amount_correction' },
+      userId, tx,
+    );
+    return { line: summaryOf(updated!) };
+  });
+}
+
 // ─── Wave 2: grouped confirm ───────────────────────────────────────
 
 // Shared prologue for the confirm/reject/create flows: resolve + lock the

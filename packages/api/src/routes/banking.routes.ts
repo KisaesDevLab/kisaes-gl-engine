@@ -451,6 +451,20 @@ bankingRouter.patch('/statement-lines/:lineId/payee', async (req, res) => {
   res.json(result);
 });
 
+// Correct a misread amount on an unmatched statement line (signed: money in
+// positive, money out negative — the line's stored orientation).
+bankingRouter.patch('/statement-lines/:lineId/amount', async (req, res) => {
+  const amount = String(req.body?.amount ?? '').trim();
+  if (!amount) {
+    res.status(400).json({ error: { message: 'amount is required', code: 'VALIDATION_ERROR' } });
+    return;
+  }
+  const result = await statementMatchService.setStatementLineAmount(
+    req.tenantId, req.params['lineId']!, amount, req.userId,
+  );
+  res.json(result);
+});
+
 // STATEMENT_CHECK_PAYEE_V2: backfill payees onto existing posted check
 // transactions (from statement lines + the payroll check register), with an
 // optional re-scan of stored statement PDFs through the check-image pass.

@@ -18,6 +18,7 @@ import {
   aiPromptTemplateSchema,
   aiUpdatePromptTemplateSchema,
   aiTaskTogglesSchema,
+  aiEditStatementTransactionsSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireTenantCapability } from '../middleware/firm-capabilities.js';
@@ -526,6 +527,17 @@ aiRouter.post('/parse/statement/jobs/:jobId/reprocess', authenticate, aiProcessi
 // that has already been saved, so it is not gated on importedAt: the crop
 // reads are the pass that fails transiently (single-slot vision engine), and
 // re-running them is how a statement that landed with zero payees recovers.
+// Review-table corrections to a misread amount / direction, persisted onto
+// the parse job so BOTH import paths (feed items and statement lines) use the
+// corrected row. Re-runs the Golden Rule + suspect-row check and returns the
+// new verdict for the review banner. 409 once the statement is saved.
+aiRouter.patch('/parse/statement/jobs/:jobId/transactions', authenticate, validate(aiEditStatementTransactionsSchema), async (req, res) => {
+  const result = await aiStatementParser.updateStatementJobTransactions(
+    req.tenantId, String(req.params['jobId']), req.body.edits, req.userId,
+  );
+  res.json(result);
+});
+
 aiRouter.post('/parse/statement/jobs/:jobId/reread-checks', authenticate, aiProcessingLimiter, async (req, res) => {
   const result = await aiStatementParser.rereadCheckImages(req.tenantId, String(req.params['jobId']));
   res.json(result);
