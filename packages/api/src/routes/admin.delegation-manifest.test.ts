@@ -12,11 +12,17 @@
 // route without updating this manifest, fails the build on purpose.
 
 import { describe, it, expect } from 'vitest';
-import { adminRouter, ADMIN_SUPER_ONLY_BARRIER } from './admin.routes.js';
+// express-async-errors (loaded by sibling test files in the single-process
+// run) wraps every Layer handle, so identity checks on `layer.handle` are
+// meaningless here. The router exports its barrier's stack index and the
+// registry that the `delegable` helper fills — that helper is the ONLY way a
+// route gets registered above the barrier WITH its capability guard.
+import 'express-async-errors';
+import { adminRouter, ADMIN_BARRIER_STACK_INDEX, DELEGABLE_ROUTES } from './admin.routes.js';
 
 interface Layer {
   handle: unknown;
-  route?: { path: string; methods: Record<string, boolean>; stack: Array<{ handle: { adminCapability?: string } }> };
+  route?: { path: string; methods: Record<string, boolean>; stack: Array<{ handle: unknown }> };
 }
 
 const DELEGABLE: Record<string, string> = {
@@ -83,22 +89,28 @@ function key(layer: Layer): string {
 
 describe('admin router delegation manifest', () => {
   const stack = (adminRouter as unknown as { stack: Layer[] }).stack;
-  const barrierIdx = stack.findIndex((l) => l.handle === ADMIN_SUPER_ONLY_BARRIER);
+  const barrierIdx = ADMIN_BARRIER_STACK_INDEX;
 
-  it('has the super-admin barrier layer', () => {
+  it('has the super-admin barrier layer (a non-route use-layer)', () => {
     expect(barrierIdx).toBeGreaterThan(0);
+    expect(stack[barrierIdx]!.route).toBeUndefined();
   });
 
-  it('every route above the barrier is capability-gated and matches the manifest exactly', () => {
+  it('every route above the barrier came through the delegable registry and the set matches the manifest exactly', () => {
+    const registry: Record<string, string> = {};
+    for (const r of DELEGABLE_ROUTES) registry[`${r.method} ${r.path}`] = r.capability;
     const seen: Record<string, string> = {};
     for (const layer of stack.slice(0, barrierIdx)) {
       if (!layer.route) continue; // authenticate / requireAdminPrincipal use-layers
       const k = key(layer);
-      const guard = layer.route.stack.find((h) => typeof h.handle?.adminCapability === 'string');
-      expect(guard, `${k} is above the super-admin barrier without requireAdminCapability`).toBeDefined();
-      seen[k] = guard!.handle.adminCapability!;
+      expect(registry[k], `${k} is above the super-admin barrier but was not registered via delegable()`).toBeDefined();
+      // The registry helper always prepends the capability guard, so the
+      // route has at least guard + handler.
+      expect(layer.route.stack.length).toBeGreaterThanOrEqual(2);
+      seen[k] = registry[k]!;
     }
     expect(seen).toEqual(DELEGABLE);
+    expect(registry).toEqual(DELEGABLE);
   });
 
   it('sensitive routes sit below the barrier (super-admin only)', () => {

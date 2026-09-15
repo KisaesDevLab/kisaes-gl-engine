@@ -135,7 +135,11 @@ export async function listFirmsWithCounts(options: AdminListOptions = {}) {
   `);
   const totalRows = await db.execute<{ total: number }>(sql`SELECT COUNT(*)::int as total FROM firms f ${where}`);
   return {
-    firms: (rows.rows as any[]).map((r) => ({
+    firms: (rows.rows as Array<{
+      id: string; name: string; slug: string; is_active: boolean; super_admin_managed: boolean;
+      created_by_user_id: string | null; created_at: string; updated_at: string;
+      member_count: string | null; tenant_count: string | null;
+    }>).map((r) => ({
       id: r.id,
       name: r.name,
       slug: r.slug,

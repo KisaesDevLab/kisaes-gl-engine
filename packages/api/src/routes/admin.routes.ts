@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { Router, type Request } from 'express';
+import { Router, type Request, type RequestHandler } from 'express';
 import rateLimit from 'express-rate-limit';
 import { getRateLimitStore } from '../utils/rate-limit-store.js';
 import bcrypt from 'bcrypt';
@@ -10,6 +10,7 @@ import crypto from 'crypto';
 import { sql } from 'drizzle-orm';
 import { authenticate, requireSuperAdmin } from '../middleware/auth.js';
 import { requireAdminPrincipal, requireAdminCapability } from '../middleware/firm-capabilities.js';
+import type { FirmCapabilityKey } from '@kis-books/shared';
 import {
   assertFirmInScope,
   assertMayReassignTenantFirm,
@@ -128,15 +129,33 @@ const stepUpLimiter = rateLimit({
 // barrier without a capability guard.
 // ═══════════════════════════════════════════════════════════════════
 
-const tenantOps = requireAdminCapability('admin_tenant_ops');
-const userSupport = requireAdminCapability('admin_user_support');
+// Registry of delegable routes, written ONLY by `delegable` below. The
+// delegation-manifest test compares it against the router's live stack: every
+// route registered before the barrier must be in it (so it carried a
+// capability guard), and it must equal the expected manifest exactly. A plain
+// function-identity check on `layer.handle` is not usable here because
+// express-async-errors wraps every handler at Layer construction.
+export interface DelegableRouteEntry { method: string; path: string; capability: FirmCapabilityKey }
+export const DELEGABLE_ROUTES: DelegableRouteEntry[] = [];
+type Handlers = RequestHandler[];
+function register(method: 'get' | 'post' | 'put', cap: FirmCapabilityKey, path: string, ...handlers: Handlers) {
+  DELEGABLE_ROUTES.push({ method: method.toUpperCase(), path, capability: cap });
+  adminRouter[method](path, requireAdminCapability(cap), ...handlers);
+}
+const delegable = {
+  get: (cap: FirmCapabilityKey, path: string, ...h: Handlers) => register('get', cap, path, ...h),
+  post: (cap: FirmCapabilityKey, path: string, ...h: Handlers) => register('post', cap, path, ...h),
+  put: (cap: FirmCapabilityKey, path: string, ...h: Handlers) => register('put', cap, path, ...h),
+};
+const tenantOps = 'admin_tenant_ops' as const;
+const userSupport = 'admin_user_support' as const;
 
-adminRouter.get('/tenants', tenantOps, async (req, res) => {
+delegable.get(tenantOps, '/tenants', async (req, res) => {
   const { tenants, total } = await adminService.listTenants({ ...parseAdminListQuery(req.query), tenantIds: req.adminScope?.tenantIds });
   res.json({ tenants, total });
 });
 
-adminRouter.get('/tenants/:id', tenantOps, async (req, res) => {
+delegable.get(tenantOps, '/tenants/:id', async (req, res) => {
   assertTenantInScope(req, req.params['id']!);
   const detail = await adminService.getTenantDetail(req.params['id']!, { hideSuperAdmins: isDelegatedAdmin(req) });
   res.json(detail);
@@ -145,25 +164,25 @@ adminRouter.get('/tenants/:id', tenantOps, async (req, res) => {
 // Managing firm — reassign (soft-detaches the current firm) or clear with
 // firmId: null. Firm CRUD itself rides /api/v1/firms (super admins pass
 // every gate there, the appliance firm included).
-adminRouter.post('/tenants/:id/firm', tenantOps, validate(adminSetTenantFirmSchema), async (req, res) => {
+delegable.post(tenantOps, '/tenants/:id/firm', validate(adminSetTenantFirmSchema), async (req, res) => {
   assertTenantInScope(req, req.params['id']!);
   await assertMayReassignTenantFirm(req, req.params['id']!, req.body.firmId ?? null);
   res.json(await adminService.setTenantFirm(req.params['id']!, req.body.firmId, req.userId));
 });
 
-adminRouter.get('/firms', tenantOps, async (req, res) => {
+delegable.get(tenantOps, '/firms', async (req, res) => {
   const { firms, total } = await adminService.listFirmsWithCounts({ ...parseAdminListQuery(req.query), firmIds: req.adminScope?.firmIds });
   res.json({ firms, total });
 });
 
 // System Retained Earnings — the current designation + equity accounts to pick
 // from, and a POST to (re)designate one when the system RE account was deleted.
-adminRouter.get('/tenants/:id/retained-earnings', tenantOps, async (req, res) => {
+delegable.get(tenantOps, '/tenants/:id/retained-earnings', async (req, res) => {
   assertTenantInScope(req, req.params['id']!);
   res.json(await adminService.getRetainedEarningsInfo(req.params['id']!));
 });
 
-adminRouter.post('/tenants/:id/retained-earnings', tenantOps, validate(adminDesignateRetainedEarningsSchema), async (req, res) => {
+delegable.post(tenantOps, '/tenants/:id/retained-earnings', validate(adminDesignateRetainedEarningsSchema), async (req, res) => {
   assertTenantInScope(req, req.params['id']!);
   res.json(await adminService.designateRetainedEarnings(req.params['id']!, req.body.accountId, req.userId));
 });
@@ -174,12 +193,12 @@ adminRouter.post('/tenants/:id/retained-earnings', tenantOps, validate(adminDesi
 // the tenant's account list for the assignment picker. PUT re-points a role
 // at an existing account (move semantics — the tag is cleared from any other
 // account atomically) or clears the mapping with accountId: null.
-adminRouter.get('/tenants/:id/system-accounts', tenantOps, async (req, res) => {
+delegable.get(tenantOps, '/tenants/:id/system-accounts', async (req, res) => {
   assertTenantInScope(req, req.params['id']!);
   res.json(await adminService.getSystemAccountsInfo(req.params['id']!));
 });
 
-adminRouter.put('/tenants/:id/system-accounts/:tag', tenantOps, validate(adminAssignSystemAccountSchema), async (req, res) => {
+delegable.put(tenantOps, '/tenants/:id/system-accounts/:tag', validate(adminAssignSystemAccountSchema), async (req, res) => {
   assertTenantInScope(req, req.params['id']!);
   res.json(await adminService.assignSystemAccount(
     req.params['id']!, req.params['tag']!, req.body.accountId, req.userId,
@@ -196,7 +215,7 @@ adminRouter.put('/tenants/:id/system-accounts/:tag', tenantOps, validate(adminAs
 // cannot move), POST applies only the account ids the operator names. Lines
 // inside a completed reconciliation, a locked period, or an adjusting entry
 // are skipped and reported, never forced.
-adminRouter.get('/tenants/:id/suspense-consolidation', tenantOps, async (req, res) => {
+delegable.get(tenantOps, '/tenants/:id/suspense-consolidation', async (req, res) => {
   assertTenantInScope(req, req.params['id']!);
   res.json(await systemAccountsService.previewSuspenseConsolidation(req.params['id']!));
 });
@@ -204,9 +223,9 @@ adminRouter.get('/tenants/:id/suspense-consolidation', tenantOps, async (req, re
 const consolidateSuspenseSchema = z.object({
   accountIds: z.array(z.string().uuid()).min(1).max(50),
 });
-adminRouter.post(
-  '/tenants/:id/suspense-consolidation',
+delegable.post(
   tenantOps,
+  '/tenants/:id/suspense-consolidation',
   validate(consolidateSuspenseSchema),
   async (req, res) => {
     assertTenantInScope(req, req.params['id']!);
@@ -216,13 +235,13 @@ adminRouter.post(
   },
 );
 
-adminRouter.post('/tenants/:id/disable', tenantOps, async (req, res) => {
+delegable.post(tenantOps, '/tenants/:id/disable', async (req, res) => {
   assertTenantInScope(req, req.params['id']!);
   await adminService.disableTenant(req.params['id']!, req.userId);
   res.json({ message: 'Tenant disabled' });
 });
 
-adminRouter.post('/tenants/:id/enable', tenantOps, async (req, res) => {
+delegable.post(tenantOps, '/tenants/:id/enable', async (req, res) => {
   assertTenantInScope(req, req.params['id']!);
   await adminService.enableTenant(req.params['id']!, req.userId);
   res.json({ message: 'Tenant enabled' });
@@ -230,7 +249,7 @@ adminRouter.post('/tenants/:id/enable', tenantOps, async (req, res) => {
 
 // Apply a COA template to a tenant with an EMPTY chart of accounts
 // (delete-COA first if a wrong template was seeded).
-adminRouter.post('/tenants/:id/apply-coa-template', tenantOps, async (req, res) => {
+delegable.post(tenantOps, '/tenants/:id/apply-coa-template', async (req, res) => {
   assertTenantInScope(req, req.params['id']!);
   const { z } = await import('zod');
   const { templateSlug } = z.object({ templateSlug: z.string().min(1).max(100) }).parse(req.body);
@@ -238,12 +257,12 @@ adminRouter.post('/tenants/:id/apply-coa-template', tenantOps, async (req, res) 
   res.status(201).json({ message: 'Chart of accounts template applied', ...result });
 });
 
-adminRouter.get('/users', userSupport, async (req, res) => {
+delegable.get(userSupport, '/users', async (req, res) => {
   const { users, total } = await adminService.listAllUsers({ ...parseAdminListQuery(req.query), tenantIds: req.adminScope?.tenantIds });
   res.json({ users, total });
 });
 
-adminRouter.post('/users/create', userSupport, validate(adminCreateUserSchema), async (req, res) => {
+delegable.post(userSupport, '/users/create', validate(adminCreateUserSchema), async (req, res) => {
   const { email: rawEmail, password, displayName, tenantId, role } = req.body;
   assertTenantInScope(req, tenantId);
   // Normalize to lowercase; users.email is treated case-insensitively
@@ -317,7 +336,7 @@ adminRouter.post('/users/create', userSupport, validate(adminCreateUserSchema), 
 // Email the user a password-reset link — contrast with reset-password
 // above, which sets a typed-in password directly. Preferred: the admin
 // never sees or transmits a credential.
-adminRouter.post('/users/:id/send-password-reset', userSupport, async (req, res) => {
+delegable.post(userSupport, '/users/:id/send-password-reset', async (req, res) => {
   await assertUserInScope(req, req.params['id']!, 'any');
   const result = await authService.sendPasswordResetById(req.params['id']!);
   res.json({ message: `Password reset email sent to ${result.email}` });
@@ -327,19 +346,19 @@ adminRouter.post('/users/:id/send-password-reset', userSupport, async (req, res)
 // Auto-unlock-after-15-min was removed because it gave credential-
 // stuffing attackers a cheap oracle. A locked account now requires
 // an explicit admin action to reset the failed-attempts counter.
-adminRouter.post('/users/:id/unlock', userSupport, async (req, res) => {
+delegable.post(userSupport, '/users/:id/unlock', async (req, res) => {
   await assertUserInScope(req, req.params['id']!, 'any');
   const result = await adminService.unlockUser(req.params['id']!, req.userId);
   res.json(result);
 });
 
-adminRouter.post('/users/:id/toggle-active', userSupport, async (req, res) => {
+delegable.post(userSupport, '/users/:id/toggle-active', async (req, res) => {
   await assertUserInScope(req, req.params['id']!, 'home');
   const result = await adminService.toggleUserActive(req.params['id']!, req.userId);
   res.json(result);
 });
 
-adminRouter.post('/users/:id/toggle-tenant-access', userSupport, validate(adminToggleTenantAccessSchema), async (req, res) => {
+delegable.post(userSupport, '/users/:id/toggle-tenant-access', validate(adminToggleTenantAccessSchema), async (req, res) => {
   await assertUserInScope(req, req.params['id']!, 'any');
   assertTenantInScope(req, req.body.tenantId);
   const result = await adminService.toggleTenantAccess(req.params['id']!, req.body.tenantId, req.userId);
@@ -348,7 +367,7 @@ adminRouter.post('/users/:id/toggle-tenant-access', userSupport, validate(adminT
 
 // Every tenant a user can reach (active or revoked) — the admin "manage a
 // user's tenant access" view.
-adminRouter.get('/users/:id/tenant-access', userSupport, async (req, res) => {
+delegable.get(userSupport, '/users/:id/tenant-access', async (req, res) => {
   await assertUserInScope(req, req.params['id']!, 'any');
   const access = await adminService.listUserTenantAccess(req.params['id']!, req.adminScope?.tenantIds);
   res.json({ access });
@@ -356,7 +375,7 @@ adminRouter.get('/users/:id/tenant-access', userSupport, async (req, res) => {
 
 // Grant (or reactivate) a user's access to a tenant with a role. Backs both
 // the tenant-detail "add firm user" flow and the user "add tenant" flow.
-adminRouter.post('/users/:id/grant-tenant-access', userSupport, validate(adminGrantTenantAccessSchema), async (req, res) => {
+delegable.post(userSupport, '/users/:id/grant-tenant-access', validate(adminGrantTenantAccessSchema), async (req, res) => {
   await assertUserGrantable(req, req.params['id']!);
   assertTenantInScope(req, req.body.tenantId);
   const result = await adminService.grantTenantAccess(req.params['id']!, req.body.tenantId, req.body.role, req.userId);
@@ -365,36 +384,36 @@ adminRouter.post('/users/:id/grant-tenant-access', userSupport, validate(adminGr
 
 // Firm-member users (across all firms) — candidate list for adding a firm
 // user to a tenant.
-adminRouter.get('/firm-users', userSupport, async (req, res) => {
+delegable.get(userSupport, '/firm-users', async (req, res) => {
   const users = await adminService.listFirmUsers(req.adminScope?.firmIds);
   res.json({ users });
 });
 
-adminRouter.post('/users/:id/set-role', userSupport, validate(adminSetRoleSchema), async (req, res) => {
+delegable.post(userSupport, '/users/:id/set-role', validate(adminSetRoleSchema), async (req, res) => {
   await assertUserInScope(req, req.params['id']!, 'home');
   await adminService.setUserRole(req.params['id']!, req.body.role, req.userId);
   res.json({ message: 'Role updated', role: req.body.role });
 });
 
-adminRouter.get('/users/:id/company-access', userSupport, async (req, res) => {
+delegable.get(userSupport, '/users/:id/company-access', async (req, res) => {
   await assertUserInScope(req, req.params['id']!, 'home');
   const access = await adminService.getAccountantCompanyAccess(req.params['id']!);
   res.json(access);
 });
 
-adminRouter.post('/users/:id/exclude-company', userSupport, validate(adminCompanyAccessSchema), async (req, res) => {
+delegable.post(userSupport, '/users/:id/exclude-company', validate(adminCompanyAccessSchema), async (req, res) => {
   await assertUserInScope(req, req.params['id']!, 'home');
   await adminService.excludeCompanyFromAccountant(req.params['id']!, req.body.companyId, req.userId);
   res.json({ message: 'Company excluded' });
 });
 
-adminRouter.post('/users/:id/include-company', userSupport, validate(adminCompanyAccessSchema), async (req, res) => {
+delegable.post(userSupport, '/users/:id/include-company', validate(adminCompanyAccessSchema), async (req, res) => {
   await assertUserInScope(req, req.params['id']!, 'home');
   await adminService.includeCompanyForAccountant(req.params['id']!, req.body.companyId, req.userId);
   res.json({ message: 'Company included' });
 });
 
-adminRouter.post('/create-client', tenantOps, validate(adminCreateClientSchema), async (req, res) => {
+delegable.post(tenantOps, '/create-client', validate(adminCreateClientSchema), async (req, res) => {
   // Delegated callers resolve the managing firm through their own
   // memberships (422 FIRM_SELECTION_REQUIRED when several), exactly like
   // the practice-side /auth/create-client; the appliance-firm fallback is
@@ -410,6 +429,8 @@ adminRouter.post('/create-client', tenantOps, validate(adminCreateClientSchema),
 // Named export so the delegation-manifest test can locate the layer.
 export const ADMIN_SUPER_ONLY_BARRIER = requireSuperAdmin;
 adminRouter.use(ADMIN_SUPER_ONLY_BARRIER);
+// Stack index of the barrier layer (for the manifest test).
+export const ADMIN_BARRIER_STACK_INDEX = (adminRouter as unknown as { stack: unknown[] }).stack.length - 1;
 
 // Tailscale remote-access management (super-admin only, already gated above).
 adminRouter.use('/tailscale', tailscaleRouter);

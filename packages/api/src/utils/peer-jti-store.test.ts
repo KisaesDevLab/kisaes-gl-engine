@@ -4,6 +4,7 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import crypto from 'node:crypto';
+import net from 'node:net';
 import {
   consumeJti, setPeerJtiClientForTests, closePeerJtiStore, JtiStoreUnavailableError, type JtiRedisLike,
 } from './peer-jti-store.js';
@@ -27,6 +28,17 @@ function fakeRedis(): JtiRedisLike & { keys: Map<string, number> } {
 afterEach(async () => {
   await closePeerJtiStore();
 });
+
+function redisReachable(): Promise<boolean> {
+  const url = new URL(process.env['REDIS_URL'] ?? 'redis://localhost:6379');
+  return new Promise((resolve) => {
+    const sock = net.connect({ host: url.hostname, port: Number(url.port || 6379) });
+    const done = (ok: boolean) => { sock.destroy(); resolve(ok); };
+    sock.once('connect', () => done(true));
+    sock.once('error', () => done(false));
+    sock.setTimeout(500, () => done(false));
+  });
+}
 
 describe('peer jti store', () => {
   it('first claim wins, second is a replay', async () => {
@@ -58,7 +70,11 @@ describe('peer jti store', () => {
     await expect(consumeJti('https://pm.example', crypto.randomUUID())).rejects.toBeInstanceOf(JtiStoreUnavailableError);
   });
 
-  it('works against the real Redis client', async () => {
+  // Needs a reachable Redis (the CI unit job provides Postgres only), so it
+  // self-skips instead of failing the run — same posture as the share
+  // gateway integration suite.
+  it('works against the real Redis client', async (ctx) => {
+    if (!(await redisReachable())) { ctx.skip(); return; }
     setPeerJtiClientForTests(null);
     const jti = crypto.randomUUID();
     expect(await consumeJti('https://real.example', jti, 5)).toBe(true);
