@@ -20,6 +20,7 @@ import {
   aiTaskTogglesSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { requireTenantCapability } from '../middleware/firm-capabilities.js';
 import { requireSuperAdmin } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
@@ -633,34 +634,33 @@ aiRouter.get('/consent/:companyId/disclosure', authenticate, async (req, res) =>
 // payment-settings mutations are owner-only (company.routes). Without this any
 // tenant member (bookkeeper, read-only) could opt a company in to (or out of)
 // external AI processing.
-function requireOwner(req: { userRole?: string; isSuperAdmin?: boolean }): void {
-  // Super-admins run the installation (they accept the system disclosure and
-  // configure providers) and can already impersonate an owner, so exempt them —
-  // otherwise a practice/appliance operator who isn't the literal company owner
-  // gets a silent 403 and "Accept and enable" appears to do nothing.
-  if (req.userRole !== 'owner' && !req.isSuperAdmin) {
-    throw AppError.forbidden('Only the company owner or a super-admin can change AI processing consent', 'PERMISSION_DENIED');
-  }
-}
+// Super-admins run the installation (they accept the system disclosure and
+// configure providers) and can already impersonate an owner, so they pass —
+// otherwise a practice/appliance operator who isn't the literal company owner
+// gets a silent 403 and "Accept and enable" appears to do nothing. Firm
+// members holding the `integrations_payments` access right on this tenant
+// pass too (owner parity; middleware/firm-capabilities.ts).
+const requireConsentAdmin = requireTenantCapability(
+  'integrations_payments',
+  'Only the company owner or a super-admin can change AI processing consent',
+  'PERMISSION_DENIED',
+);
 
-aiRouter.post('/consent/:companyId/accept', authenticate, async (req, res) => {
-  requireOwner(req);
+aiRouter.post('/consent/:companyId/accept', authenticate, requireConsentAdmin, async (req, res) => {
   const companyId = req.params['companyId']!;
   await assertCompanyInTenant(req.tenantId, companyId);
   const d = await aiConsent.acceptCompanyDisclosure(req.tenantId, companyId, req.userId!);
   res.json(d);
 });
 
-aiRouter.post('/consent/:companyId/revoke', authenticate, async (req, res) => {
-  requireOwner(req);
+aiRouter.post('/consent/:companyId/revoke', authenticate, requireConsentAdmin, async (req, res) => {
   const companyId = req.params['companyId']!;
   await assertCompanyInTenant(req.tenantId, companyId);
   await aiConsent.revokeCompanyConsent(req.tenantId, companyId, req.userId!);
   res.json({ revoked: true });
 });
 
-aiRouter.patch('/consent/:companyId/tasks', authenticate, validate(aiTaskTogglesSchema), async (req, res) => {
-  requireOwner(req);
+aiRouter.patch('/consent/:companyId/tasks', authenticate, requireConsentAdmin, validate(aiTaskTogglesSchema), async (req, res) => {
   const companyId = req.params['companyId']!;
   await assertCompanyInTenant(req.tenantId, companyId);
   const toggles = req.body as Partial<Record<aiConsent.AiTaskKey, boolean>>;

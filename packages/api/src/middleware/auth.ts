@@ -166,6 +166,19 @@ export function requireSuperAdmin(req: Request, _res: Response, next: NextFuncti
   if (!req.isSuperAdmin) {
     throw AppError.forbidden('Super admin access required');
   }
+  assertAdminSessionFresh(req);
+  next();
+}
+
+/**
+ * Admin session freshness — the idle (JWT_ADMIN_MAX_AGE) and absolute
+ * (JWT_ADMIN_ABSOLUTE_MAX_AGE) bounds shared by every principal that uses
+ * the /admin surfaces: super admins (requireSuperAdmin) AND firm members
+ * with delegated admin capabilities (middleware/firm-capabilities.ts).
+ * Skipped for API-key callers (req.tokenIssuedAt is undefined) because
+ * API keys have their own rotation policy.
+ */
+export function assertAdminSessionFresh(req: Request): void {
   if (req.tokenIssuedAt) {
     const maxAgeSec = parseExpiryToSeconds(env.JWT_ADMIN_MAX_AGE);
     const ageSec = Math.floor(Date.now() / 1000) - req.tokenIssuedAt;
@@ -189,7 +202,6 @@ export function requireSuperAdmin(req: Request, _res: Response, next: NextFuncti
       );
     }
   }
-  next();
 }
 
 /**

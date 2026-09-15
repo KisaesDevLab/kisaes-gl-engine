@@ -10,7 +10,9 @@ import {
   timestamp,
   uniqueIndex,
   index,
+  jsonb,
 } from 'drizzle-orm/pg-core';
+import type { FirmCapabilityMap } from '@kis-books/shared';
 import { tenants } from './auth.js';
 
 // 3-tier rules plan, Phase 1 — firms foundation.
@@ -56,6 +58,13 @@ export const firmUsers = pgTable('firm_users', {
   userId: uuid('user_id').notNull(),
   firmRole: varchar('firm_role', { length: 50 }).notNull().default('firm_staff'),
   isActive: boolean('is_active').notNull().default(true),
+  // Per-member access rights (migration 0173). NULL = firm_role defaults;
+  // an object = explicit customized set keyed by FIRM_CAPABILITIES. Reset to
+  // NULL whenever firm_role changes (firm-users.service.updateMembership).
+  capabilities: jsonb('capabilities').$type<FirmCapabilityMap>(),
+  capabilitiesUpdatedAt: timestamp('capabilities_updated_at', { withTimezone: true }),
+  // Loose reference — audit only.
+  capabilitiesUpdatedByUserId: uuid('capabilities_updated_by_user_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   uniqueFirmUser: uniqueIndex('firm_users_firm_user_idx').on(table.firmId, table.userId),

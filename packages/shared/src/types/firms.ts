@@ -2,6 +2,8 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+import type { EffectiveFirmCapabilities, FirmCapabilityMap } from '../constants/firm-capabilities.js';
+
 // 3-tier rules plan, Phase 1 — firms foundation types.
 // A firm anchors `tenant_firm` and `global_firm` rule ownership
 // independent of tenant lifecycles or staff roster changes.
@@ -45,6 +47,32 @@ export interface FirmUser {
   firmRole: FirmRole;
   isActive: boolean;
   createdAt: string;
+  // Effective access rights (role defaults or the member's customized
+  // set). See constants/firm-capabilities.ts.
+  capabilities: EffectiveFirmCapabilities;
+  // True when a stored (customized) set exists on the row; false when the
+  // member follows their firm role's defaults.
+  capabilitiesCustomized: boolean;
+}
+
+// GET /firms/:id/users/:firmUserId/capabilities response.
+export interface FirmUserCapabilitiesView {
+  firmUserId: string;
+  userId: string;
+  firmRole: FirmRole;
+  capabilities: EffectiveFirmCapabilities;
+  capabilitiesCustomized: boolean;
+  // The raw stored map (null = role defaults). Lets the editor seed its
+  // draft from what was actually saved rather than the resolved view.
+  stored: FirmCapabilityMap | null;
+  updatedAt: string | null;
+}
+
+// `/auth/me` addendum: the caller's effective rights on the ACTIVE tenant
+// (owner-parity elevations) and across all firms (delegated admin).
+export interface MeFirmCapabilities {
+  tenant: EffectiveFirmCapabilities;
+  admin: EffectiveFirmCapabilities;
 }
 
 export interface TenantFirmAssignment {

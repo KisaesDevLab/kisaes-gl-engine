@@ -11,6 +11,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.js';
+import { hasTenantOwnerPower } from '../middleware/firm-capabilities.js';
 import { validate } from '../middleware/validate.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
@@ -223,9 +224,16 @@ shareRouter.get('/sessions/:sessionId', authenticate, requireShareEnabled, async
 
 // ── Admin (Phase 12.4–12.6, 13.8; tenant owners only) ──────────────────────
 
+// Owner parity on the ACTIVE tenant: the tenant owner (req.userRole, i.e.
+// the effective role on this tenant), a super admin, or a firm member with
+// the `screen_share_admin` access right. Client users and everyone else get
+// a 404 so the surface stays invisible.
 async function requireTenantOwner(req: Request, _res: Response, next: NextFunction): Promise<void> {
-  const user = await db.query.users.findFirst({ where: eq(users.id, req.userId) });
-  if (!user || user.role !== 'owner' || user.userType !== 'staff') {
+  if (req.userType !== 'staff') {
+    next(AppError.notFound('Not found'));
+    return;
+  }
+  if (!(await hasTenantOwnerPower(req, 'screen_share_admin'))) {
     next(AppError.notFound('Not found'));
     return;
   }

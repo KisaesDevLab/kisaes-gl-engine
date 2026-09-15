@@ -4,7 +4,9 @@
 
 import { Router } from 'express';
 import { featureFlagToggleSchema } from '@kis-books/shared';
-import { authenticate, requireSuperAdmin } from '../middleware/auth.js';
+import { authenticate } from '../middleware/auth.js';
+import { requireAdminPrincipal, requireAdminCapability } from '../middleware/firm-capabilities.js';
+import { assertTenantInScope } from '../utils/admin-scope.js';
 import { validate } from '../middleware/validate.js';
 import { auditLog } from '../middleware/audit.js';
 import * as featureFlagsService from '../services/feature-flags.service.js';
@@ -19,18 +21,23 @@ featureFlagsRouter.get('/', authenticate, async (req, res) => {
   res.json({ flags });
 });
 
-// Super-admin flag management for a specific tenant. Mounted under
-// the admin router prefix in app.ts. Read is scoped to the :tenantId
-// path param rather than req.tenantId so super-admin can audit
-// another tenant's state without switch-tenant side effects.
+// Admin flag management for a specific tenant. Mounted under the admin
+// router prefix in app.ts. Read is scoped to the :tenantId path param
+// rather than req.tenantId so an admin can audit another tenant's state
+// without switch-tenant side effects. Super admins see every tenant; a
+// firm member with the `admin_tenant_ops` capability only the tenants
+// their firm manages (out-of-scope ids 404, never 403).
 export const adminFeatureFlagsRouter = Router();
+const tenantOps = requireAdminCapability('admin_tenant_ops');
 
 adminFeatureFlagsRouter.get(
   '/:tenantId',
   authenticate,
-  requireSuperAdmin,
+  requireAdminPrincipal,
+  tenantOps,
   async (req, res) => {
     const { tenantId } = req.params as { tenantId: string };
+    assertTenantInScope(req, tenantId);
     const flags = await featureFlagsService.listFlagsForTenant(tenantId);
     res.json({ flags });
   },
@@ -39,10 +46,12 @@ adminFeatureFlagsRouter.get(
 adminFeatureFlagsRouter.post(
   '/:tenantId/:flagKey',
   authenticate,
-  requireSuperAdmin,
+  requireAdminPrincipal,
+  tenantOps,
   validate(featureFlagToggleSchema),
   async (req, res) => {
     const { tenantId, flagKey } = req.params as { tenantId: string; flagKey: string };
+    assertTenantInScope(req, tenantId);
     const change = await featureFlagsService.setFlag(tenantId, flagKey, req.body);
     // entity_id is a UUID column — flagKey is a string, so pass
     // null and encode the flag identity in the JSON payload. The

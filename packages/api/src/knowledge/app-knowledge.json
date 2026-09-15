@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-08T22:00:14.929Z",
+  "generatedAt": "2026-09-15T14:02:23.713Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -18,7 +18,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 88543
+    "totalBytes": 90758
   },
   "screens": [
     {
@@ -1537,6 +1537,7 @@
     "\"How do I back up my data?\"",
     "\"How do I switch between companies?\"",
     "\"How do I give my accountant access to my books?\"",
+    "\"Can my firm staff manage a client's Team page or settings without being the owner?\"",
     "\"How do I connect my bank account?\"",
     "\"What file types can I attach to transactions?\"",
     "\"How does AI categorization work?\"",
@@ -1548,6 +1549,7 @@
     "Team & User Management",
     "Inviting Your Accountant (linking books to a firm)",
     "Firms, firm roles, and automatic firm-admin access",
+    "Firm member access rights (capabilities)",
     "Changing Your Own Password",
     "Changing a Team Member's Role",
     "Per-Member Permissions",

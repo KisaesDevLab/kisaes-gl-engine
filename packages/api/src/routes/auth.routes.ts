@@ -340,6 +340,13 @@ authRouter.get('/me', authenticate, async (req, res) => {
   const permissions = await permissionService.getEffectivePermissions(
     req.tenantId, req.userId, req.userRole, req.userType, !!req.isSuperAdmin,
   );
+  // Firm member access rights: owner-parity elevations on the ACTIVE tenant
+  // and delegated-admin capabilities across firms. Membership-derived only
+  // (a super admin's map reflects their firm rows, not their super-admin
+  // status — the web ORs isSuperAdmin in itself). Never ships the admin
+  // scope's tenant list.
+  const firmCapabilitiesService = await import('../services/firm-capabilities.service.js');
+  const firmCapabilities = await firmCapabilitiesService.getForMe(req.userId, req.tenantId);
   res.json({
     user: sanitizeUser(user),
     companies: companiesList,
@@ -347,6 +354,7 @@ authRouter.get('/me', authenticate, async (req, res) => {
     activeTenantId: req.tenantId,
     branding,
     permissions,
+    firmCapabilities,
   });
 });
 

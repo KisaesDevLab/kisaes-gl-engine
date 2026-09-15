@@ -20,6 +20,7 @@ import {
   setUserPermissionsSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { requireTenantCapability } from '../middleware/firm-capabilities.js';
 import { companyContext } from '../middleware/company.js';
 import { requirePermission } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
@@ -234,8 +235,13 @@ companyRouter.get('/users', async (req, res) => {
   res.json({ users: sanitized });
 });
 
-companyRouter.post('/invite-user', validate(inviteUserSchema), async (req, res) => {
-  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can invite users');
+// Team management is owner-parity: the tenant owner, a super admin, or a
+// firm member holding the `team_management` access right on this tenant
+// (middleware/firm-capabilities.ts). Service-level guards (last owner,
+// no self role change) apply to all of them alike.
+const requireTeamManagement = requireTenantCapability('team_management', 'Only owners can manage users');
+
+companyRouter.post('/invite-user', requireTeamManagement, validate(inviteUserSchema), async (req, res) => {
   const { email, displayName, role, userType } = req.body;
   // External (client) users default to a view-only baseline until the owner
   // applies a permission template; internal staff default to accountant.
@@ -255,8 +261,7 @@ companyRouter.post('/invite-user', validate(inviteUserSchema), async (req, res) 
   });
 });
 
-companyRouter.patch('/users/:userId', validate(updateUserSchema), async (req, res) => {
-  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can manage users');
+companyRouter.patch('/users/:userId', requireTeamManagement, validate(updateUserSchema), async (req, res) => {
   const { email, displayName, role } = req.body;
   const user = await authService.updateUser(req.tenantId, req.params['userId']!, { email, displayName, role }, req.userId);
   res.json({
@@ -272,14 +277,12 @@ companyRouter.patch('/users/:userId', validate(updateUserSchema), async (req, re
   });
 });
 
-companyRouter.post('/users/:userId/deactivate', async (req, res) => {
-  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can manage users');
+companyRouter.post('/users/:userId/deactivate', requireTeamManagement, async (req, res) => {
   await authService.deactivateUser(req.tenantId, req.params['userId']!);
   res.json({ message: 'User deactivated' });
 });
 
-companyRouter.post('/users/:userId/reactivate', async (req, res) => {
-  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can manage users');
+companyRouter.post('/users/:userId/reactivate', requireTeamManagement, async (req, res) => {
   await authService.reactivateUser(req.tenantId, req.params['userId']!);
   res.json({ message: 'User reactivated' });
 });
@@ -288,8 +291,7 @@ companyRouter.post('/users/:userId/reactivate', async (req, res) => {
 // is no wait-it-out window), so without this an owner had to call the
 // super-admin endpoint or edit the database to let a locked-out teammate
 // back in. Tenant-scoped: the target must be on this tenant's team.
-companyRouter.post('/users/:userId/unlock', async (req, res) => {
-  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can manage users');
+companyRouter.post('/users/:userId/unlock', requireTeamManagement, async (req, res) => {
   const result = await authService.unlockUserForTenant(req.tenantId, req.params['userId']!, req.userId);
   res.json({
     message: result.wasLocked
@@ -301,53 +303,45 @@ companyRouter.post('/users/:userId/unlock', async (req, res) => {
 
 // Email the user a password-reset link (same flow as self-service
 // forgot-password). Never reveals or sets a password server-side.
-companyRouter.post('/users/:userId/send-password-reset', async (req, res) => {
-  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can manage users');
+companyRouter.post('/users/:userId/send-password-reset', requireTeamManagement, async (req, res) => {
   const result = await authService.sendPasswordReset(req.tenantId, req.params['userId']!, req.userId);
   res.json({ message: `Password reset email sent to ${result.email}` });
 });
 
 // ─── Permission Templates & Per-User Permissions ────────────
-// Owner-gated. Templates are named, reusable access sets; per-user
-// permissions assign a template + overrides. Bookkeepers and external
-// (client) users consult these at enforcement time (see permission.service).
+// Owner-parity (team_management). Templates are named, reusable access
+// sets; per-user permissions assign a template + overrides. Bookkeepers and
+// external (client) users consult these at enforcement time (see
+// permission.service).
 
-function assertOwner(req: import('express').Request) {
-  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can manage permissions');
-}
+const requirePermissionAdmin = requireTenantCapability('team_management', 'Only owners can manage permissions');
 
-companyRouter.get('/permission-templates', async (req, res) => {
-  assertOwner(req);
+companyRouter.get('/permission-templates', requirePermissionAdmin, async (req, res) => {
   const templates = await permissionService.listTemplates(req.tenantId);
   res.json({ templates });
 });
 
-companyRouter.post('/permission-templates', validate(createPermissionTemplateSchema), async (req, res) => {
-  assertOwner(req);
+companyRouter.post('/permission-templates', requirePermissionAdmin, validate(createPermissionTemplateSchema), async (req, res) => {
   const template = await permissionService.createTemplate(req.tenantId, req.body, req.userId);
   res.status(201).json({ template });
 });
 
-companyRouter.put('/permission-templates/:id', validate(updatePermissionTemplateSchema), async (req, res) => {
-  assertOwner(req);
+companyRouter.put('/permission-templates/:id', requirePermissionAdmin, validate(updatePermissionTemplateSchema), async (req, res) => {
   const template = await permissionService.updateTemplate(req.tenantId, req.params['id']!, req.body, req.userId);
   res.json({ template });
 });
 
-companyRouter.delete('/permission-templates/:id', async (req, res) => {
-  assertOwner(req);
+companyRouter.delete('/permission-templates/:id', requirePermissionAdmin, async (req, res) => {
   await permissionService.deleteTemplate(req.tenantId, req.params['id']!, req.userId);
   res.json({ message: 'Template deleted' });
 });
 
-companyRouter.get('/users/:userId/permissions', async (req, res) => {
-  assertOwner(req);
+companyRouter.get('/users/:userId/permissions', requirePermissionAdmin, async (req, res) => {
   const row = await permissionService.getUserPermissionRow(req.tenantId, req.params['userId']!);
   res.json({ permissions: row });
 });
 
-companyRouter.put('/users/:userId/permissions', validate(setUserPermissionsSchema), async (req, res) => {
-  assertOwner(req);
+companyRouter.put('/users/:userId/permissions', requirePermissionAdmin, validate(setUserPermissionsSchema), async (req, res) => {
   const row = await permissionService.setUserPermissions(req.tenantId, req.params['userId']!, req.body, req.userId);
   res.json({ permissions: row });
 });
@@ -360,8 +354,10 @@ companyRouter.get('/stripe', async (req, res) => {
   res.json(config);
 });
 
-companyRouter.put('/stripe', async (req, res) => {
-  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can configure payment settings');
+// Owner-parity via the `integrations_payments` access right.
+const requirePaymentsAdmin = requireTenantCapability('integrations_payments', 'Only owners can configure payment settings');
+
+companyRouter.put('/stripe', requirePaymentsAdmin, async (req, res) => {
   const { stripeConfigSchema } = await import('@kis-books/shared');
   const parsed = stripeConfigSchema.parse(req.body);
   const { configureStripe } = await import('../services/stripe.service.js');
@@ -369,8 +365,7 @@ companyRouter.put('/stripe', async (req, res) => {
   res.json({ message: 'Stripe configured', onlinePaymentsEnabled: true });
 });
 
-companyRouter.delete('/stripe', async (req, res) => {
-  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can configure payment settings');
+companyRouter.delete('/stripe', requirePaymentsAdmin, async (req, res) => {
   const { removeStripeConfig } = await import('../services/stripe.service.js');
   await removeStripeConfig(req.tenantId, req.companyId);
   res.json({ message: 'Stripe configuration removed', onlinePaymentsEnabled: false });

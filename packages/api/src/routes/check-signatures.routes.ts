@@ -13,6 +13,7 @@ import multer from 'multer';
 import rateLimit from 'express-rate-limit';
 import { createCheckSignatureSchema, updateCheckSignatureSchema, setSignatureUsersSchema, stepUpSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { hasTenantOwnerPower, requireTenantCapability } from '../middleware/firm-capabilities.js';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../utils/errors.js';
 import { getRateLimitStore } from '../utils/rate-limit-store.js';
@@ -21,9 +22,11 @@ import * as signatureService from '../services/check-signature.service.js';
 export const checkSignaturesRouter = Router();
 checkSignaturesRouter.use(authenticate);
 
-function assertOwner(req: import('express').Request) {
-  if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can manage check signatures');
-}
+// Signature MANAGEMENT is owner-parity via the `check_signatures` access
+// right (deliberately not the `checks` resource). Printing with a signature
+// still requires step-up re-auth on the checks router regardless of who
+// manages the library.
+const requireSignatureAdmin = requireTenantCapability('check_signatures', 'Only owners can manage check signatures');
 
 // memoryStorage on purpose (unlike the logo route's diskStorage): the
 // plaintext image must never touch disk — it is encrypted from the buffer.
@@ -44,14 +47,12 @@ const stepUpLimiter = rateLimit({
   store: getRateLimitStore('check-sig-stepup'),
 });
 
-checkSignaturesRouter.get('/', async (req, res) => {
-  assertOwner(req);
+checkSignaturesRouter.get('/', requireSignatureAdmin, async (req, res) => {
   const signatures = await signatureService.listSignatures(req.tenantId);
   res.json({ signatures });
 });
 
-checkSignaturesRouter.post('/', upload.single('image'), async (req, res) => {
-  assertOwner(req);
+checkSignaturesRouter.post('/', requireSignatureAdmin, upload.single('image'), async (req, res) => {
   if (!req.file) throw AppError.badRequest('Signature image file is required');
   const input = createCheckSignatureSchema.parse({
     label: req.body.label,
@@ -64,7 +65,7 @@ checkSignaturesRouter.post('/', upload.single('image'), async (req, res) => {
 // /mine before /:id-shaped params so it can't be swallowed by them.
 checkSignaturesRouter.get('/mine', async (req, res) => {
   const signatures = await signatureService.listMySignatures(
-    req.tenantId, req.userId, req.userRole === 'owner' || !!req.isSuperAdmin,
+    req.tenantId, req.userId, await hasTenantOwnerPower(req, 'check_signatures'),
   );
   res.json({ signatures });
 });
@@ -83,27 +84,23 @@ checkSignaturesRouter.post('/step-up', stepUpLimiter, validate(stepUpSchema), as
   res.json(signatureService.issueStepUpToken(req.userId, req.tenantId));
 });
 
-checkSignaturesRouter.put('/:id', validate(updateCheckSignatureSchema), async (req, res) => {
-  assertOwner(req);
+checkSignaturesRouter.put('/:id', requireSignatureAdmin, validate(updateCheckSignatureSchema), async (req, res) => {
   await signatureService.updateSignature(req.tenantId, req.params['id']!, req.body, req.userId);
   res.json({ success: true });
 });
 
-checkSignaturesRouter.put('/:id/image', upload.single('image'), async (req, res) => {
-  assertOwner(req);
+checkSignaturesRouter.put('/:id/image', requireSignatureAdmin, upload.single('image'), async (req, res) => {
   if (!req.file) throw AppError.badRequest('Signature image file is required');
   await signatureService.replaceImage(req.tenantId, req.params['id']!, req.file, req.userId);
   res.json({ success: true });
 });
 
-checkSignaturesRouter.put('/:id/users', validate(setSignatureUsersSchema), async (req, res) => {
-  assertOwner(req);
+checkSignaturesRouter.put('/:id/users', requireSignatureAdmin, validate(setSignatureUsersSchema), async (req, res) => {
   await signatureService.setSignatureUsers(req.tenantId, req.params['id']!, req.body.userIds, req.userId);
   res.json({ success: true });
 });
 
-checkSignaturesRouter.delete('/:id', async (req, res) => {
-  assertOwner(req);
+checkSignaturesRouter.delete('/:id', requireSignatureAdmin, async (req, res) => {
   await signatureService.deleteSignature(req.tenantId, req.params['id']!, req.userId);
   res.json({ success: true });
 });
@@ -111,7 +108,7 @@ checkSignaturesRouter.delete('/:id', async (req, res) => {
 // Authenticated preview — owner or a user the signature is assigned to.
 // Decrypted in memory; explicitly never cacheable, never a static URL.
 checkSignaturesRouter.get('/:id/image', async (req, res) => {
-  const isOwner = req.userRole === 'owner' || !!req.isSuperAdmin;
+  const isOwner = await hasTenantOwnerPower(req, 'check_signatures');
   const allowed = await signatureService.userCanUseSignature(req.tenantId, req.params['id']!, req.userId, isOwner);
   if (!allowed) throw AppError.forbidden('You are not authorized to view this signature');
   const sig = await signatureService.loadSignatureImage(req.tenantId, req.params['id']!);

@@ -122,6 +122,15 @@ admins get access too). You can resend or revoke the invitation from the same ca
 need a MyBooks account that belongs to an accounting firm — if they don't have one, their
 firm admin adds them first.
 
+### "Can my firm staff manage a client's Team page or settings without being the owner?"
+Yes. A firm admin opens **Firm → Staff → Access rights** for the staff member and turns on
+the right they need — *Team management*, *Integrations & payments*, *Check signatures*, or
+*Screen share admin*. It applies on client companies the firm manages and that the member
+already has access to (grant access first under **Tenant access**). *Tenant operations* and
+*User support* additionally open Admin → Tenants / Admin → Users limited to the firm's own
+clients. Read-only firm members can't hold rights, and on the Default Practice firm only a
+super admin can change them.
+
 ### "How do I connect my bank account?"
 Go to **Banking → Bank Connections →** and click **Connect Bank**. If Plaid is
 configured by your administrator, you can search for your bank and log in securely.

@@ -13,6 +13,7 @@ import type {
   TenantAccessRole,
   UpdateFirmUserInput,
 } from '@kis-books/shared';
+import { resolveFirmCapabilities } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { firms, firmUsers, tenantFirmAssignments, tenants, userTenantAccess, users } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -27,6 +28,7 @@ import { syncFirmAdminAccessForUser } from './firm-admin-access.service.js';
 // access to every tenant the firm manages (firm-admin-access.service).
 
 function mapRow(row: typeof firmUsers.$inferSelect): FirmUser {
+  const stored = row.capabilities ?? null;
   return {
     id: row.id,
     firmId: row.firmId,
@@ -34,6 +36,10 @@ function mapRow(row: typeof firmUsers.$inferSelect): FirmUser {
     firmRole: row.firmRole as FirmRole,
     isActive: row.isActive,
     createdAt: row.createdAt.toISOString(),
+    // Access rights (migration 0173): effective set + whether it is a
+    // stored customization or the role default.
+    capabilities: resolveFirmCapabilities(row.firmRole, stored),
+    capabilitiesCustomized: stored !== null,
   };
 }
 
@@ -122,6 +128,7 @@ export async function listForFirm(firmId: string): Promise<FirmUserWithProfile[]
       firmRole: firmUsers.firmRole,
       isActive: firmUsers.isActive,
       createdAt: firmUsers.createdAt,
+      capabilities: firmUsers.capabilities,
       email: users.email,
       displayName: users.displayName,
     })
@@ -136,6 +143,8 @@ export async function listForFirm(firmId: string): Promise<FirmUserWithProfile[]
     firmRole: r.firmRole as FirmRole,
     isActive: r.isActive,
     createdAt: r.createdAt.toISOString(),
+    capabilities: resolveFirmCapabilities(r.firmRole, r.capabilities ?? null),
+    capabilitiesCustomized: (r.capabilities ?? null) !== null,
     email: r.email,
     displayName: r.displayName,
   }));
@@ -174,7 +183,16 @@ export async function updateMembership(
   input: UpdateFirmUserInput,
 ): Promise<FirmUser> {
   const set: Partial<typeof firmUsers.$inferInsert> = {};
-  if (input.firmRole !== undefined) set.firmRole = input.firmRole;
+  if (input.firmRole !== undefined) {
+    set.firmRole = input.firmRole;
+    // A stored (customized) capability set is only meaningful relative to
+    // the role it was trimmed from: carrying a trimmed firm_admin set into
+    // firm_staff would turn trims into grants, and a firm_staff grant set
+    // into firm_admin would silently produce a trimmed admin. Any role
+    // change resets to the new role's defaults (NULL).
+    set.capabilities = null;
+    set.capabilitiesUpdatedAt = new Date();
+  }
   if (input.isActive !== undefined) set.isActive = input.isActive;
   const [row] = await db
     .update(firmUsers)

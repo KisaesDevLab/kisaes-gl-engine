@@ -460,6 +460,15 @@ admins get access too). You can resend or revoke the invitation from the same ca
 need a MyBooks account that belongs to an accounting firm — if they don't have one, their
 firm admin adds them first.
 
+### "Can my firm staff manage a client's Team page or settings without being the owner?"
+Yes. A firm admin opens **Firm → Staff → Access rights** for the staff member and turns on
+the right they need — *Team management*, *Integrations & payments*, *Check signatures*, or
+*Screen share admin*. It applies on client companies the firm manages and that the member
+already has access to (grant access first under **Tenant access**). *Tenant operations* and
+*User support* additionally open Admin → Tenants / Admin → Users limited to the firm's own
+clients. Read-only firm members can't hold rights, and on the Default Practice firm only a
+super admin can change them.
+
 ### "How do I connect my bank account?"
 Go to **Banking → Bank Connections →** and click **Connect Bank**. If Plaid is
 configured by your administrator, you can search for your bank and log in securely.
@@ -730,6 +739,25 @@ re-granted). New client companies created via **New Company (no owner)** are ass
 creator's firm. Self-hosted installs start with one system-managed **Default Practice** firm
 that self-registered companies join automatically; only a super admin can manage it, create
 more firms (**Admin → Firms →**), or change which firm manages a company (tenant detail page).
+
+### Firm member access rights (capabilities)
+A firm admin can give any firm_admin or firm_staff member extra rights from **Firm → Staff →
+Access rights** (super admins from **Admin → Firms → Members**, the only way for Default
+Practice). Two groups: **Client settings** — on client companies the member already has access
+to, act as the owner for *Team management* (invite/edit/unlock/deactivate users, permission
+templates, owner role changes), *Integrations & payments* (Stripe, AI processing consent,
+"Invite my accountant"), *Check signatures*, *Screen share admin*. **Administration** — a
+delegated slice of Admin limited to the firm's own clients: *Tenant operations* (Admin →
+Tenants: feature flags, enable/disable, managing firm, CoA template, retained earnings,
+system accounts, create client) and *User support* (Admin → Users: create, unlock, send
+password reset, activate/deactivate, role, tenant/company access). Never delegable: deleting
+data, impersonation, typed password resets, system configuration (SMTP/AI/MCP/2FA/backup/
+Plaid), installation security, super-admin changes. Defaults: new firm_admins get every
+right, firm_staff none, firm_readonly cannot hold rights; existing firm_admins at upgrade
+started with none. A member shows "Using role defaults" or "Customized"; "Reset to role
+defaults" restores the role set, and changing a member's firm role resets their rights.
+Delegated admin pages use the same session expiry as super admins (re-sign-in after the
+idle/absolute limits). API keys never inherit a member's rights.
 
 ### Changing Your Own Password
 Any signed-in user can change their password under **Settings → Security →** in the

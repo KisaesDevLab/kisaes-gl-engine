@@ -99,6 +99,7 @@ export * from './constants/conditional-rules.js';
 export * from './constants/review-checks.js';
 export * from './constants/imports.js';
 export * from './constants/permissions.js';
+export * from './constants/firm-capabilities.js';
 
 // Reports
 export * from './reports/registry.js';
@@ -110,5 +111,6 @@ export * from './utils/dates.js';
 export * from './utils/number-to-words.js';
 export * from './utils/account-types.js';
 export * from './utils/permissions.js';
+export * from './utils/firm-capabilities.js';
 export * from './utils/safe-regex.js';
 export * from './utils/address.js';

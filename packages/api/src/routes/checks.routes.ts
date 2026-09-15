@@ -5,6 +5,7 @@
 import { Router } from 'express';
 import { writeCheckSchema, printCheckSchema, renderChecksSchema, checkSettingsSchema, updateCheckMemoSchema, STEP_UP_REQUIRED } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { hasTenantOwnerPower } from '../middleware/firm-capabilities.js';
 import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
@@ -75,7 +76,9 @@ checksRouter.post('/test-print', async (req, res) => {
 async function resolveSignature(req: import('express').Request): Promise<checkPdfService.SignatureRenderData | undefined> {
   const { signatureId, stepUpToken } = req.body as { signatureId?: string; stepUpToken?: string };
   if (!signatureId) return undefined;
-  const isOwner = req.userRole === 'owner' || !!req.isSuperAdmin;
+  // Owner parity includes firm members holding the `check_signatures`
+  // access right; the step-up token check below is unchanged for everyone.
+  const isOwner = await hasTenantOwnerPower(req, 'check_signatures');
   const allowed = await signatureService.userCanUseSignature(req.tenantId, signatureId, req.userId, isOwner);
   if (!allowed) throw AppError.forbidden('You are not authorized to print with this signature');
   if (!signatureService.verifyStepUpToken(stepUpToken, req.userId, req.tenantId)) {

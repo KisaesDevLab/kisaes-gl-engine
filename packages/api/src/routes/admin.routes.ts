@@ -9,6 +9,15 @@ import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import { sql } from 'drizzle-orm';
 import { authenticate, requireSuperAdmin } from '../middleware/auth.js';
+import { requireAdminPrincipal, requireAdminCapability } from '../middleware/firm-capabilities.js';
+import {
+  assertFirmInScope,
+  assertMayReassignTenantFirm,
+  assertTenantInScope,
+  assertUserGrantable,
+  assertUserInScope,
+  isDelegatedAdmin,
+} from '../utils/admin-scope.js';
 import { validate } from '../middleware/validate.js';
 import { z } from 'zod';
 import * as adminService from '../services/admin.service.js';
@@ -75,7 +84,10 @@ import { tailscaleRouter } from './tailscale.routes.js';
 
 export const adminRouter = Router();
 adminRouter.use(authenticate);
-adminRouter.use(requireSuperAdmin);
+// Super admin OR a firm member holding at least one admin access right;
+// both are bound by the admin idle/absolute session limits. Per-route
+// capability guards and the barrier below decide what each may reach.
+adminRouter.use(requireAdminPrincipal);
 
 // Paging + search for the tenant / user directories. `limit` is only applied
 // when the caller sends one, because the tenant-picker dropdowns hit
@@ -104,6 +116,300 @@ const stepUpLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// DELEGABLE ROUTES — firm members with an admin access right
+// (middleware/firm-capabilities.ts) may use the routes in this section.
+// Every route here MUST carry requireAdminCapability(...) and scope its
+// target with the utils/admin-scope.ts helpers (super admins pass
+// unfiltered). Everything registered AFTER the barrier below is
+// super-admin only — that default-deny is pinned by
+// admin.delegation-manifest.test.ts. Do not add a route above the
+// barrier without a capability guard.
+// ═══════════════════════════════════════════════════════════════════
+
+const tenantOps = requireAdminCapability('admin_tenant_ops');
+const userSupport = requireAdminCapability('admin_user_support');
+
+adminRouter.get('/tenants', tenantOps, async (req, res) => {
+  const { tenants, total } = await adminService.listTenants({ ...parseAdminListQuery(req.query), tenantIds: req.adminScope?.tenantIds });
+  res.json({ tenants, total });
+});
+
+adminRouter.get('/tenants/:id', tenantOps, async (req, res) => {
+  assertTenantInScope(req, req.params['id']!);
+  const detail = await adminService.getTenantDetail(req.params['id']!, { hideSuperAdmins: isDelegatedAdmin(req) });
+  res.json(detail);
+});
+
+// Managing firm — reassign (soft-detaches the current firm) or clear with
+// firmId: null. Firm CRUD itself rides /api/v1/firms (super admins pass
+// every gate there, the appliance firm included).
+adminRouter.post('/tenants/:id/firm', tenantOps, validate(adminSetTenantFirmSchema), async (req, res) => {
+  assertTenantInScope(req, req.params['id']!);
+  await assertMayReassignTenantFirm(req, req.params['id']!, req.body.firmId ?? null);
+  res.json(await adminService.setTenantFirm(req.params['id']!, req.body.firmId, req.userId));
+});
+
+adminRouter.get('/firms', tenantOps, async (req, res) => {
+  const { firms, total } = await adminService.listFirmsWithCounts({ ...parseAdminListQuery(req.query), firmIds: req.adminScope?.firmIds });
+  res.json({ firms, total });
+});
+
+// System Retained Earnings — the current designation + equity accounts to pick
+// from, and a POST to (re)designate one when the system RE account was deleted.
+adminRouter.get('/tenants/:id/retained-earnings', tenantOps, async (req, res) => {
+  assertTenantInScope(req, req.params['id']!);
+  res.json(await adminService.getRetainedEarningsInfo(req.params['id']!));
+});
+
+adminRouter.post('/tenants/:id/retained-earnings', tenantOps, validate(adminDesignateRetainedEarningsSchema), async (req, res) => {
+  assertTenantInScope(req, req.params['id']!);
+  res.json(await adminService.designateRetainedEarnings(req.params['id']!, req.body.accountId, req.userId));
+});
+
+// System Accounts — every system role the ledger resolves via
+// accounts.system_tag (AR, AP, sales tax, payments clearing, …), with the
+// currently-assigned account (or null), duplicate/type-mismatch flags, and
+// the tenant's account list for the assignment picker. PUT re-points a role
+// at an existing account (move semantics — the tag is cleared from any other
+// account atomically) or clears the mapping with accountId: null.
+adminRouter.get('/tenants/:id/system-accounts', tenantOps, async (req, res) => {
+  assertTenantInScope(req, req.params['id']!);
+  res.json(await adminService.getSystemAccountsInfo(req.params['id']!));
+});
+
+adminRouter.put('/tenants/:id/system-accounts/:tag', tenantOps, validate(adminAssignSystemAccountSchema), async (req, res) => {
+  assertTenantInScope(req, req.params['id']!);
+  res.json(await adminService.assignSystemAccount(
+    req.params['id']!, req.params['tag']!, req.body.accountId, req.userId,
+    { balanceAction: req.body.balanceAction },
+  ));
+});
+
+// Suspense consolidation. A tenant that has been running a while may have
+// several hand-made "uncategorized"-ish accounts; folding them into the one
+// tagged suspense account makes the review screen show a single number.
+//
+// This REWRITES POSTED JOURNAL LINES, so it is deliberately two-step: GET
+// previews the candidates (with balances, line counts, and why any of them
+// cannot move), POST applies only the account ids the operator names. Lines
+// inside a completed reconciliation, a locked period, or an adjusting entry
+// are skipped and reported, never forced.
+adminRouter.get('/tenants/:id/suspense-consolidation', tenantOps, async (req, res) => {
+  assertTenantInScope(req, req.params['id']!);
+  res.json(await systemAccountsService.previewSuspenseConsolidation(req.params['id']!));
+});
+
+const consolidateSuspenseSchema = z.object({
+  accountIds: z.array(z.string().uuid()).min(1).max(50),
+});
+adminRouter.post(
+  '/tenants/:id/suspense-consolidation',
+  tenantOps,
+  validate(consolidateSuspenseSchema),
+  async (req, res) => {
+    assertTenantInScope(req, req.params['id']!);
+    res.json(await systemAccountsService.consolidateIntoSuspense(
+      req.params['id']!, req.body.accountIds, req.userId,
+    ));
+  },
+);
+
+adminRouter.post('/tenants/:id/disable', tenantOps, async (req, res) => {
+  assertTenantInScope(req, req.params['id']!);
+  await adminService.disableTenant(req.params['id']!, req.userId);
+  res.json({ message: 'Tenant disabled' });
+});
+
+adminRouter.post('/tenants/:id/enable', tenantOps, async (req, res) => {
+  assertTenantInScope(req, req.params['id']!);
+  await adminService.enableTenant(req.params['id']!, req.userId);
+  res.json({ message: 'Tenant enabled' });
+});
+
+// Apply a COA template to a tenant with an EMPTY chart of accounts
+// (delete-COA first if a wrong template was seeded).
+adminRouter.post('/tenants/:id/apply-coa-template', tenantOps, async (req, res) => {
+  assertTenantInScope(req, req.params['id']!);
+  const { z } = await import('zod');
+  const { templateSlug } = z.object({ templateSlug: z.string().min(1).max(100) }).parse(req.body);
+  const result = await adminService.applyCoaTemplate(req.params['id']!, templateSlug, req.userId);
+  res.status(201).json({ message: 'Chart of accounts template applied', ...result });
+});
+
+adminRouter.get('/users', userSupport, async (req, res) => {
+  const { users, total } = await adminService.listAllUsers({ ...parseAdminListQuery(req.query), tenantIds: req.adminScope?.tenantIds });
+  res.json({ users, total });
+});
+
+adminRouter.post('/users/create', userSupport, validate(adminCreateUserSchema), async (req, res) => {
+  const { email: rawEmail, password, displayName, tenantId, role } = req.body;
+  assertTenantInScope(req, tenantId);
+  // Normalize to lowercase; users.email is treated case-insensitively
+  // elsewhere in the auth path, so storing mixed-case here would create a
+  // row that no normal login flow can find.
+  const email = rawEmail.trim().toLowerCase();
+
+  const { users, tenants, userTenantAccess } = await import('../db/schema/index.js');
+  const { eq } = await import('drizzle-orm');
+  const { env } = await import('../config/env.js');
+
+  // Pre-flight checks: cheap reads outside the transaction so we return the
+  // user-friendly 409 / 404 quickly. The transaction below *re-checks*
+  // uniqueness (via the unique constraint on users.email) so a concurrent
+  // insert can't produce a duplicate, and rolls back both inserts together
+  // on failure.
+  const existing = await db.query.users.findFirst({ where: eq(users.email, email) });
+  if (existing) {
+    res.status(409).json({ error: { message: 'A user with this email already exists' } });
+    return;
+  }
+
+  const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
+  if (!tenant) {
+    res.status(404).json({ error: { message: 'Tenant not found' } });
+    return;
+  }
+
+  const passwordHash = await bcrypt.hash(password, env.BCRYPT_ROUNDS);
+
+  try {
+    const user = await db.transaction(async (tx) => {
+      const [u] = await tx.insert(users).values({
+        tenantId,
+        email,
+        passwordHash,
+        displayName: displayName || null,
+        role,
+      }).returning();
+      if (!u) throw new Error('user insert returned no row');
+      await tx.insert(userTenantAccess).values({
+        userId: u.id,
+        tenantId,
+        role,
+      }).onConflictDoNothing();
+      return u;
+    });
+
+    // Welcome email with the credentials the admin just set. Fire-and-
+    // forget — the admin already has the password to hand off manually
+    // if SMTP is down, so a send failure must not fail the create.
+    const { sendAccountCreatedEmail } = await import('../services/system-email.service.js');
+    sendAccountCreatedEmail(user.email, tenant.name, password).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.warn(`[admin.routes] account-created email to ${user.email} failed:`, err?.message ?? err);
+    });
+
+    res.status(201).json({ user: { id: user.id, email: user.email, displayName: user.displayName, role: user.role } });
+  } catch (err: any) {
+    // Unique-constraint violation on users.email — race with another
+    // concurrent create. Map to 409 so the client sees the same shape as
+    // the pre-flight check.
+    if (err?.code === '23505' || /unique/i.test(err?.message || '')) {
+      res.status(409).json({ error: { message: 'A user with this email already exists' } });
+      return;
+    }
+    throw err;
+  }
+});
+
+// Email the user a password-reset link — contrast with reset-password
+// above, which sets a typed-in password directly. Preferred: the admin
+// never sees or transmits a credential.
+adminRouter.post('/users/:id/send-password-reset', userSupport, async (req, res) => {
+  await assertUserInScope(req, req.params['id']!, 'any');
+  const result = await authService.sendPasswordResetById(req.params['id']!);
+  res.json({ message: `Password reset email sent to ${result.email}` });
+});
+
+// Admin-required lockout unlock — CLOUDFLARE_TUNNEL_PLAN Phase 3.
+// Auto-unlock-after-15-min was removed because it gave credential-
+// stuffing attackers a cheap oracle. A locked account now requires
+// an explicit admin action to reset the failed-attempts counter.
+adminRouter.post('/users/:id/unlock', userSupport, async (req, res) => {
+  await assertUserInScope(req, req.params['id']!, 'any');
+  const result = await adminService.unlockUser(req.params['id']!, req.userId);
+  res.json(result);
+});
+
+adminRouter.post('/users/:id/toggle-active', userSupport, async (req, res) => {
+  await assertUserInScope(req, req.params['id']!, 'home');
+  const result = await adminService.toggleUserActive(req.params['id']!, req.userId);
+  res.json(result);
+});
+
+adminRouter.post('/users/:id/toggle-tenant-access', userSupport, validate(adminToggleTenantAccessSchema), async (req, res) => {
+  await assertUserInScope(req, req.params['id']!, 'any');
+  assertTenantInScope(req, req.body.tenantId);
+  const result = await adminService.toggleTenantAccess(req.params['id']!, req.body.tenantId, req.userId);
+  res.json(result);
+});
+
+// Every tenant a user can reach (active or revoked) — the admin "manage a
+// user's tenant access" view.
+adminRouter.get('/users/:id/tenant-access', userSupport, async (req, res) => {
+  await assertUserInScope(req, req.params['id']!, 'any');
+  const access = await adminService.listUserTenantAccess(req.params['id']!, req.adminScope?.tenantIds);
+  res.json({ access });
+});
+
+// Grant (or reactivate) a user's access to a tenant with a role. Backs both
+// the tenant-detail "add firm user" flow and the user "add tenant" flow.
+adminRouter.post('/users/:id/grant-tenant-access', userSupport, validate(adminGrantTenantAccessSchema), async (req, res) => {
+  await assertUserGrantable(req, req.params['id']!);
+  assertTenantInScope(req, req.body.tenantId);
+  const result = await adminService.grantTenantAccess(req.params['id']!, req.body.tenantId, req.body.role, req.userId);
+  res.json(result);
+});
+
+// Firm-member users (across all firms) — candidate list for adding a firm
+// user to a tenant.
+adminRouter.get('/firm-users', userSupport, async (req, res) => {
+  const users = await adminService.listFirmUsers(req.adminScope?.firmIds);
+  res.json({ users });
+});
+
+adminRouter.post('/users/:id/set-role', userSupport, validate(adminSetRoleSchema), async (req, res) => {
+  await assertUserInScope(req, req.params['id']!, 'home');
+  await adminService.setUserRole(req.params['id']!, req.body.role, req.userId);
+  res.json({ message: 'Role updated', role: req.body.role });
+});
+
+adminRouter.get('/users/:id/company-access', userSupport, async (req, res) => {
+  await assertUserInScope(req, req.params['id']!, 'home');
+  const access = await adminService.getAccountantCompanyAccess(req.params['id']!);
+  res.json(access);
+});
+
+adminRouter.post('/users/:id/exclude-company', userSupport, validate(adminCompanyAccessSchema), async (req, res) => {
+  await assertUserInScope(req, req.params['id']!, 'home');
+  await adminService.excludeCompanyFromAccountant(req.params['id']!, req.body.companyId, req.userId);
+  res.json({ message: 'Company excluded' });
+});
+
+adminRouter.post('/users/:id/include-company', userSupport, validate(adminCompanyAccessSchema), async (req, res) => {
+  await assertUserInScope(req, req.params['id']!, 'home');
+  await adminService.includeCompanyForAccountant(req.params['id']!, req.body.companyId, req.userId);
+  res.json({ message: 'Company included' });
+});
+
+adminRouter.post('/create-client', tenantOps, validate(adminCreateClientSchema), async (req, res) => {
+  // Delegated callers resolve the managing firm through their own
+  // memberships (422 FIRM_SELECTION_REQUIRED when several), exactly like
+  // the practice-side /auth/create-client; the appliance-firm fallback is
+  // super-admin only.
+  if (isDelegatedAdmin(req) && req.body.firmId) assertFirmInScope(req, req.body.firmId);
+  const result = await authService.createClientTenant(req.userId, req.body, { isSuperAdmin: !isDelegatedAdmin(req) });
+  res.status(201).json(result);
+});
+
+// ─── Super-admin barrier ──────────────────────────────────────────
+// Everything below is reserved for super admins (system configuration,
+// destructive tenant operations, impersonation, credentials, security).
+// Named export so the delegation-manifest test can locate the layer.
+export const ADMIN_SUPER_ONLY_BARRIER = requireSuperAdmin;
+adminRouter.use(ADMIN_SUPER_ONLY_BARRIER);
 
 // Tailscale remote-access management (super-admin only, already gated above).
 adminRouter.use('/tailscale', tailscaleRouter);
@@ -320,92 +626,7 @@ adminRouter.put('/settings/application', validate(adminApplicationSettingsSchema
 
 // ─── Tenant Management ──────────────────────────────────────────
 
-adminRouter.get('/tenants', async (req, res) => {
-  const { tenants, total } = await adminService.listTenants(parseAdminListQuery(req.query));
-  res.json({ tenants, total });
-});
-
-adminRouter.get('/tenants/:id', async (req, res) => {
-  const detail = await adminService.getTenantDetail(req.params['id']!);
-  res.json(detail);
-});
-
-// Managing firm — reassign (soft-detaches the current firm) or clear with
-// firmId: null. Firm CRUD itself rides /api/v1/firms (super admins pass
-// every gate there, the appliance firm included).
-adminRouter.post('/tenants/:id/firm', validate(adminSetTenantFirmSchema), async (req, res) => {
-  res.json(await adminService.setTenantFirm(req.params['id']!, req.body.firmId, req.userId));
-});
-
 // ─── Firms (admin overview) ─────────────────────────────────────
-
-adminRouter.get('/firms', async (req, res) => {
-  const { firms, total } = await adminService.listFirmsWithCounts(parseAdminListQuery(req.query));
-  res.json({ firms, total });
-});
-
-// System Retained Earnings — the current designation + equity accounts to pick
-// from, and a POST to (re)designate one when the system RE account was deleted.
-adminRouter.get('/tenants/:id/retained-earnings', async (req, res) => {
-  res.json(await adminService.getRetainedEarningsInfo(req.params['id']!));
-});
-
-adminRouter.post('/tenants/:id/retained-earnings', validate(adminDesignateRetainedEarningsSchema), async (req, res) => {
-  res.json(await adminService.designateRetainedEarnings(req.params['id']!, req.body.accountId, req.userId));
-});
-
-// System Accounts — every system role the ledger resolves via
-// accounts.system_tag (AR, AP, sales tax, payments clearing, …), with the
-// currently-assigned account (or null), duplicate/type-mismatch flags, and
-// the tenant's account list for the assignment picker. PUT re-points a role
-// at an existing account (move semantics — the tag is cleared from any other
-// account atomically) or clears the mapping with accountId: null.
-adminRouter.get('/tenants/:id/system-accounts', async (req, res) => {
-  res.json(await adminService.getSystemAccountsInfo(req.params['id']!));
-});
-
-adminRouter.put('/tenants/:id/system-accounts/:tag', validate(adminAssignSystemAccountSchema), async (req, res) => {
-  res.json(await adminService.assignSystemAccount(
-    req.params['id']!, req.params['tag']!, req.body.accountId, req.userId,
-    { balanceAction: req.body.balanceAction },
-  ));
-});
-
-// Suspense consolidation. A tenant that has been running a while may have
-// several hand-made "uncategorized"-ish accounts; folding them into the one
-// tagged suspense account makes the review screen show a single number.
-//
-// This REWRITES POSTED JOURNAL LINES, so it is deliberately two-step: GET
-// previews the candidates (with balances, line counts, and why any of them
-// cannot move), POST applies only the account ids the operator names. Lines
-// inside a completed reconciliation, a locked period, or an adjusting entry
-// are skipped and reported, never forced.
-adminRouter.get('/tenants/:id/suspense-consolidation', async (req, res) => {
-  res.json(await systemAccountsService.previewSuspenseConsolidation(req.params['id']!));
-});
-
-const consolidateSuspenseSchema = z.object({
-  accountIds: z.array(z.string().uuid()).min(1).max(50),
-});
-adminRouter.post(
-  '/tenants/:id/suspense-consolidation',
-  validate(consolidateSuspenseSchema),
-  async (req, res) => {
-    res.json(await systemAccountsService.consolidateIntoSuspense(
-      req.params['id']!, req.body.accountIds, req.userId,
-    ));
-  },
-);
-
-adminRouter.post('/tenants/:id/disable', async (req, res) => {
-  await adminService.disableTenant(req.params['id']!, req.userId);
-  res.json({ message: 'Tenant disabled' });
-});
-
-adminRouter.post('/tenants/:id/enable', async (req, res) => {
-  await adminService.enableTenant(req.params['id']!, req.userId);
-  res.json({ message: 'Tenant enabled' });
-});
 
 // Hard-delete a tenant and all its scoped data. Destructive and
 // irreversible — see deleteTenant() in admin.service.ts for the full
@@ -474,112 +695,11 @@ adminRouter.post('/tenants/:id/delete-transactions-range', async (req, res) => {
   res.json({ message: 'Transactions in date range deleted', ...result });
 });
 
-// Apply a COA template to a tenant with an EMPTY chart of accounts
-// (delete-COA first if a wrong template was seeded).
-adminRouter.post('/tenants/:id/apply-coa-template', async (req, res) => {
-  const { z } = await import('zod');
-  const { templateSlug } = z.object({ templateSlug: z.string().min(1).max(100) }).parse(req.body);
-  const result = await adminService.applyCoaTemplate(req.params['id']!, templateSlug, req.userId);
-  res.status(201).json({ message: 'Chart of accounts template applied', ...result });
-});
-
 // ─── User Management ────────────────────────────────────────────
-
-adminRouter.get('/users', async (req, res) => {
-  const { users, total } = await adminService.listAllUsers(parseAdminListQuery(req.query));
-  res.json({ users, total });
-});
-
-adminRouter.post('/users/create', validate(adminCreateUserSchema), async (req, res) => {
-  const { email: rawEmail, password, displayName, tenantId, role } = req.body;
-  // Normalize to lowercase; users.email is treated case-insensitively
-  // elsewhere in the auth path, so storing mixed-case here would create a
-  // row that no normal login flow can find.
-  const email = rawEmail.trim().toLowerCase();
-
-  const { users, tenants, userTenantAccess } = await import('../db/schema/index.js');
-  const { eq } = await import('drizzle-orm');
-  const { env } = await import('../config/env.js');
-
-  // Pre-flight checks: cheap reads outside the transaction so we return the
-  // user-friendly 409 / 404 quickly. The transaction below *re-checks*
-  // uniqueness (via the unique constraint on users.email) so a concurrent
-  // insert can't produce a duplicate, and rolls back both inserts together
-  // on failure.
-  const existing = await db.query.users.findFirst({ where: eq(users.email, email) });
-  if (existing) {
-    res.status(409).json({ error: { message: 'A user with this email already exists' } });
-    return;
-  }
-
-  const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
-  if (!tenant) {
-    res.status(404).json({ error: { message: 'Tenant not found' } });
-    return;
-  }
-
-  const passwordHash = await bcrypt.hash(password, env.BCRYPT_ROUNDS);
-
-  try {
-    const user = await db.transaction(async (tx) => {
-      const [u] = await tx.insert(users).values({
-        tenantId,
-        email,
-        passwordHash,
-        displayName: displayName || null,
-        role,
-      }).returning();
-      if (!u) throw new Error('user insert returned no row');
-      await tx.insert(userTenantAccess).values({
-        userId: u.id,
-        tenantId,
-        role,
-      }).onConflictDoNothing();
-      return u;
-    });
-
-    // Welcome email with the credentials the admin just set. Fire-and-
-    // forget — the admin already has the password to hand off manually
-    // if SMTP is down, so a send failure must not fail the create.
-    const { sendAccountCreatedEmail } = await import('../services/system-email.service.js');
-    sendAccountCreatedEmail(user.email, tenant.name, password).catch((err) => {
-      // eslint-disable-next-line no-console
-      console.warn(`[admin.routes] account-created email to ${user.email} failed:`, err?.message ?? err);
-    });
-
-    res.status(201).json({ user: { id: user.id, email: user.email, displayName: user.displayName, role: user.role } });
-  } catch (err: any) {
-    // Unique-constraint violation on users.email — race with another
-    // concurrent create. Map to 409 so the client sees the same shape as
-    // the pre-flight check.
-    if (err?.code === '23505' || /unique/i.test(err?.message || '')) {
-      res.status(409).json({ error: { message: 'A user with this email already exists' } });
-      return;
-    }
-    throw err;
-  }
-});
 
 adminRouter.post('/users/:id/reset-password', validate(adminResetPasswordSchema), async (req, res) => {
   await adminService.resetUserPassword(req.params['id']!, req.body.password, req.userId);
   res.json({ message: 'Password reset' });
-});
-
-// Email the user a password-reset link — contrast with reset-password
-// above, which sets a typed-in password directly. Preferred: the admin
-// never sees or transmits a credential.
-adminRouter.post('/users/:id/send-password-reset', async (req, res) => {
-  const result = await authService.sendPasswordResetById(req.params['id']!);
-  res.json({ message: `Password reset email sent to ${result.email}` });
-});
-
-// Admin-required lockout unlock — CLOUDFLARE_TUNNEL_PLAN Phase 3.
-// Auto-unlock-after-15-min was removed because it gave credential-
-// stuffing attackers a cheap oracle. A locked account now requires
-// an explicit admin action to reset the failed-attempts counter.
-adminRouter.post('/users/:id/unlock', async (req, res) => {
-  const result = await adminService.unlockUser(req.params['id']!, req.userId);
-  res.json(result);
 });
 
 // Manual backup verification trigger. The worker runs this monthly
@@ -653,63 +773,12 @@ adminRouter.get('/updates/check', async (req, res) => {
   res.json(result);
 });
 
-adminRouter.post('/users/:id/toggle-active', async (req, res) => {
-  const result = await adminService.toggleUserActive(req.params['id']!, req.userId);
-  res.json(result);
-});
-
 adminRouter.post('/users/:id/toggle-super-admin', async (req, res) => {
   const result = await adminService.toggleSuperAdmin(req.params['id']!, req.userId);
   res.json(result);
 });
 
-adminRouter.post('/users/:id/toggle-tenant-access', validate(adminToggleTenantAccessSchema), async (req, res) => {
-  const result = await adminService.toggleTenantAccess(req.params['id']!, req.body.tenantId, req.userId);
-  res.json(result);
-});
-
-// Every tenant a user can reach (active or revoked) — the admin "manage a
-// user's tenant access" view.
-adminRouter.get('/users/:id/tenant-access', async (req, res) => {
-  const access = await adminService.listUserTenantAccess(req.params['id']!);
-  res.json({ access });
-});
-
-// Grant (or reactivate) a user's access to a tenant with a role. Backs both
-// the tenant-detail "add firm user" flow and the user "add tenant" flow.
-adminRouter.post('/users/:id/grant-tenant-access', validate(adminGrantTenantAccessSchema), async (req, res) => {
-  const result = await adminService.grantTenantAccess(req.params['id']!, req.body.tenantId, req.body.role, req.userId);
-  res.json(result);
-});
-
-// Firm-member users (across all firms) — candidate list for adding a firm
-// user to a tenant.
-adminRouter.get('/firm-users', async (_req, res) => {
-  const users = await adminService.listFirmUsers();
-  res.json({ users });
-});
-
-adminRouter.post('/users/:id/set-role', validate(adminSetRoleSchema), async (req, res) => {
-  await adminService.setUserRole(req.params['id']!, req.body.role, req.userId);
-  res.json({ message: 'Role updated', role: req.body.role });
-});
-
 // ─── Accountant Company Access ─────────────────────────────────
-
-adminRouter.get('/users/:id/company-access', async (req, res) => {
-  const access = await adminService.getAccountantCompanyAccess(req.params['id']!);
-  res.json(access);
-});
-
-adminRouter.post('/users/:id/exclude-company', validate(adminCompanyAccessSchema), async (req, res) => {
-  await adminService.excludeCompanyFromAccountant(req.params['id']!, req.body.companyId, req.userId);
-  res.json({ message: 'Company excluded' });
-});
-
-adminRouter.post('/users/:id/include-company', validate(adminCompanyAccessSchema), async (req, res) => {
-  await adminService.includeCompanyForAccountant(req.params['id']!, req.body.companyId, req.userId);
-  res.json({ message: 'Company included' });
-});
 
 // ─── SMTP Test ─────────────────────────────────────────────────
 
@@ -749,11 +818,6 @@ adminRouter.get('/tfa/stats', async (req, res) => {
 });
 
 // ─── Create Client Tenant ───────────────────────────────────────
-
-adminRouter.post('/create-client', validate(adminCreateClientSchema), async (req, res) => {
-  const result = await authService.createClientTenant(req.userId, req.body, { isSuperAdmin: true });
-  res.status(201).json(result);
-});
 
 // ─── Impersonation ──────────────────────────────────────────────
 

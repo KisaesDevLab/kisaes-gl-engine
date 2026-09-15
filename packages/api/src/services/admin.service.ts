@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { eq, and, ne, sql, count } from 'drizzle-orm';
+import { eq, and, ne, sql, count, type SQL } from 'drizzle-orm';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import {
@@ -39,6 +39,21 @@ export interface AdminListOptions {
   limit?: number | undefined;
   offset?: number | undefined;
   search?: string | undefined;
+  /** Delegated-admin scope: restrict tenant-keyed lists to these tenant ids.
+   *  undefined = unfiltered (super admin). An empty array yields no rows. */
+  tenantIds?: string[] | undefined;
+  /** Delegated-admin scope: restrict firm-keyed lists to these firm ids. */
+  firmIds?: string[] | undefined;
+}
+
+// Build a WHERE clause from optional fragments. Returns sql`` when empty.
+function whereAll(conds: SQL[]): SQL {
+  if (conds.length === 0) return sql``;
+  return sql`WHERE ${sql.join(conds, sql` AND `)}`;
+}
+
+function idArray(ids: string[]): SQL {
+  return sql`ARRAY[${sql.join(ids.map((id) => sql`${id}`), sql`, `)}]::uuid[]`;
 }
 
 function likeTerm(search?: string): string | null {
@@ -53,10 +68,12 @@ function pageClause(options: AdminListOptions) {
 }
 
 export async function listTenants(options: AdminListOptions = {}) {
+  if (options.tenantIds && options.tenantIds.length === 0) return { tenants: [], total: 0 };
   const like = likeTerm(options.search);
-  const where = like
-    ? sql`WHERE t.name ILIKE ${like} OR t.slug ILIKE ${like}`
-    : sql``;
+  const conds: SQL[] = [];
+  if (like) conds.push(sql`(t.name ILIKE ${like} OR t.slug ILIKE ${like})`);
+  if (options.tenantIds) conds.push(sql`t.id = ANY(${idArray(options.tenantIds)})`);
+  const where = whereAll(conds);
 
   const rows = await db.execute(sql`
     SELECT t.id, t.name, t.slug, t.created_at,
@@ -100,8 +117,12 @@ export async function listTenants(options: AdminListOptions = {}) {
 
 // Admin → Firms overview: every firm (inactive included) with live counts.
 export async function listFirmsWithCounts(options: AdminListOptions = {}) {
+  if (options.firmIds && options.firmIds.length === 0) return { firms: [], total: 0 };
   const like = likeTerm(options.search);
-  const where = like ? sql`WHERE f.name ILIKE ${like} OR f.slug ILIKE ${like}` : sql``;
+  const conds: SQL[] = [];
+  if (like) conds.push(sql`(f.name ILIKE ${like} OR f.slug ILIKE ${like})`);
+  if (options.firmIds) conds.push(sql`f.id = ANY(${idArray(options.firmIds)})`);
+  const where = whereAll(conds);
   const rows = await db.execute(sql`
     SELECT f.id, f.name, f.slug, f.is_active, f.super_admin_managed, f.created_by_user_id,
       f.created_at, f.updated_at,
@@ -162,7 +183,7 @@ export async function setTenantFirm(tenantId: string, firmId: string | null, act
   return tfa.getTenantFirmState(tenantId);
 }
 
-export async function getTenantDetail(tenantId: string) {
+export async function getTenantDetail(tenantId: string, opts: { hideSuperAdmins?: boolean } = {}) {
   const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
   if (!tenant) throw AppError.notFound('Tenant not found');
 
@@ -189,6 +210,9 @@ export async function getTenantDetail(tenantId: string) {
       isActive: u.isActive, isSuperAdmin: u.isSuperAdmin, lastLoginAt: u.lastLoginAt,
     }));
   }
+
+  // Delegated admins never see (or act on) super-admin accounts.
+  if (opts.hideSuperAdmins) tenantUsers = tenantUsers.filter((u) => !u.isSuperAdmin);
 
   const tenantCompanies = await db.select({
     id: companies.id, businessName: companies.businessName, setupComplete: companies.setupComplete,
@@ -960,12 +984,25 @@ export async function applyCoaTemplate(
 // ─── User Management ─────────────────────────────────────────────
 
 export async function listAllUsers(options: AdminListOptions = {}) {
+  if (options.tenantIds && options.tenantIds.length === 0) return { users: [], total: 0 };
   const like = likeTerm(options.search);
-  const where = like
-    ? sql`WHERE u.email ILIKE ${like}
+  const conds: SQL[] = [];
+  if (like) {
+    conds.push(sql`(u.email ILIKE ${like}
         OR COALESCE(u.display_name, '') ILIKE ${like}
-        OR t.name ILIKE ${like}`
-    : sql``;
+        OR t.name ILIKE ${like})`);
+  }
+  // Delegated scope: users with ACTIVE access on an in-scope tenant, never
+  // super admins (they are not a firm's to manage).
+  if (options.tenantIds) {
+    conds.push(sql`u.is_super_admin = false`);
+    conds.push(sql`EXISTS (
+      SELECT 1 FROM user_tenant_access uta
+      WHERE uta.user_id = u.id AND uta.is_active = true
+        AND uta.tenant_id = ANY(${idArray(options.tenantIds)})
+    )`);
+  }
+  const where = whereAll(conds);
 
   const rows = await db.execute(sql`
     SELECT u.id, u.email, u.display_name, u.role, u.is_active, u.is_super_admin,
@@ -1129,12 +1166,14 @@ export async function grantTenantAccess(
 
 // Every tenant a user can reach (active or revoked), with role — powers the
 // admin "monitor & manage a user's tenant access" view.
-export async function listUserTenantAccess(userId: string) {
+export async function listUserTenantAccess(userId: string, tenantIds?: string[]) {
+  if (tenantIds && tenantIds.length === 0) return [];
+  const scope = tenantIds ? sql`AND uta.tenant_id = ANY(${idArray(tenantIds)})` : sql``;
   const rows = await db.execute(sql`
     SELECT uta.tenant_id, t.name AS tenant_name, uta.role, uta.is_active, uta.last_accessed_at
     FROM user_tenant_access uta
     JOIN tenants t ON t.id = uta.tenant_id
-    WHERE uta.user_id = ${userId}
+    WHERE uta.user_id = ${userId} ${scope}
     ORDER BY t.name
   `);
   return (rows.rows as Array<{ tenant_id: string; tenant_name: string; role: string; is_active: boolean; last_accessed_at: string | null }>).map((r) => ({
@@ -1444,14 +1483,16 @@ export async function assignSystemAccount(
 
 // Distinct users who are active members of any firm, with the firm(s) they
 // belong to — the candidate list for "add a firm user to this tenant".
-export async function listFirmUsers() {
+export async function listFirmUsers(firmIds?: string[]) {
+  if (firmIds && firmIds.length === 0) return [];
+  const scope = firmIds ? sql`AND fu.firm_id = ANY(${idArray(firmIds)})` : sql``;
   const rows = await db.execute(sql`
     SELECT u.id, u.email, u.display_name, u.is_active,
       array_agg(DISTINCT f.name) FILTER (WHERE f.name IS NOT NULL) AS firm_names
     FROM firm_users fu
     JOIN users u ON u.id = fu.user_id
     JOIN firms f ON f.id = fu.firm_id
-    WHERE fu.is_active = true AND f.is_active = true
+    WHERE fu.is_active = true AND f.is_active = true AND u.is_super_admin = false ${scope}
     GROUP BY u.id, u.email, u.display_name, u.is_active
     ORDER BY u.email
   `);
@@ -1568,6 +1609,11 @@ export async function impersonateUser(adminUserId: string, targetUserId: string)
 export async function setUserRole(userId: string, role: string, actingUserId?: string) {
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   if (!user) throw AppError.notFound('User not found');
+  // Same rule as the Team page: nobody re-roles themselves through an
+  // admin surface (a delegated admin must not self-elevate to owner).
+  if (actingUserId && actingUserId === userId) {
+    throw AppError.badRequest('You cannot change your own role', 'CANNOT_CHANGE_OWN_ROLE');
+  }
   await db.transaction(async (tx) => {
     await tx.update(users).set({ role, updatedAt: new Date() }).where(eq(users.id, userId));
     // Keep the home-tenant access row in sync: the Team page and a

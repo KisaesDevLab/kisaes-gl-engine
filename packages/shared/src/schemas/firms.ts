@@ -4,6 +4,7 @@
 
 import { z } from 'zod';
 import { FIRM_ROLES, TENANT_ACCESS_ROLES } from '../types/firms.js';
+import { FIRM_CAPABILITY_KEYS } from '../constants/firm-capabilities.js';
 
 // 3-tier rules plan, Phase 1 — firms foundation zod schemas.
 // Reuses the legacy slug rule (lowercase letters/digits/hyphens
@@ -48,6 +49,22 @@ export const updateFirmUserSchema = z.object({
   isActive: z.boolean().optional(),
 });
 export type UpdateFirmUserInput = z.infer<typeof updateFirmUserSchema>;
+
+// ─── Firm member access rights ───────────────────────────────────
+// Keys validate against the capability catalog so a typo can't create a
+// dead entry that never enforces (same trick as permissionMapSchema).
+export const firmCapabilityMapSchema = z.record(
+  z.enum(FIRM_CAPABILITY_KEYS as [string, ...string[]]),
+  z.boolean(),
+);
+
+// PUT /firms/:firmId/users/:firmUserId/capabilities
+//   { capabilities: { ...map } }  → store this exact set (customized)
+//   { capabilities: null }        → clear customization, back to role defaults
+export const setFirmUserCapabilitiesSchema = z.object({
+  capabilities: firmCapabilityMapSchema.nullable(),
+});
+export type SetFirmUserCapabilitiesInput = z.infer<typeof setFirmUserCapabilitiesSchema>;
 
 export const assignTenantToFirmSchema = z.object({
   tenantId: z.string().uuid(),

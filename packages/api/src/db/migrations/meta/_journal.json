@@ -1212,6 +1212,13 @@
       "when": 1784800000030,
       "tag": "0172_firm_peers",
       "breakpoints": true
+    },
+    {
+      "idx": 173,
+      "version": "7",
+      "when": 1784800000031,
+      "tag": "0173_firm_user_capabilities",
+      "breakpoints": true
     }
   ]
 }

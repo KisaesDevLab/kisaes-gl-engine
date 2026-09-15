@@ -16,6 +16,7 @@ import {
   firmInviteLookupSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
+import { hasTenantOwnerPower } from '../middleware/firm-capabilities.js';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../utils/errors.js';
 import { baseUrlFor } from '../utils/base-url.js';
@@ -28,13 +29,14 @@ firmInvitesRouter.use(authenticate);
 
 // Owner gate. Client-type users get a 404 so the surface is invisible to
 // them (same convention as the other staff-only routers); non-owner staff
-// get a 403. Super admins pass, mirroring /company/invite-user.
-function requireTenantOwner(req: Request, _res: Response, next: NextFunction) {
+// get a 403. Super admins pass, mirroring /company/invite-user, as do firm
+// members holding the `integrations_payments` access right on this tenant.
+async function requireTenantOwner(req: Request, _res: Response, next: NextFunction) {
   if (req.userType === 'client') {
     next(AppError.notFound('Not found'));
     return;
   }
-  if (req.userRole !== 'owner' && !req.isSuperAdmin) {
+  if (!(await hasTenantOwnerPower(req, 'integrations_payments'))) {
     next(AppError.forbidden('Only the owner can invite an accountant', 'OWNER_REQUIRED'));
     return;
   }

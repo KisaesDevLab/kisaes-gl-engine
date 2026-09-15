@@ -9,6 +9,7 @@ import {
   createFirmSchema,
   createFirmTagTemplateSchema,
   inviteFirmUserSchema,
+  setFirmUserCapabilitiesSchema,
   setStaffTenantAccessSchema,
   updateFirmSchema,
   updateFirmTagTemplateSchema,
@@ -24,6 +25,7 @@ import { db } from '../db/index.js';
 import { userTenantAccess } from '../db/schema/index.js';
 import * as firmsService from '../services/firms.service.js';
 import * as firmUsersService from '../services/firm-users.service.js';
+import * as firmCapabilitiesService from '../services/firm-capabilities.service.js';
 import * as tenantFirmAssignmentService from '../services/tenant-firm-assignment.service.js';
 import * as tagTemplatesService from '../services/firm-tag-templates.service.js';
 
@@ -329,6 +331,50 @@ firmsRouter.put(
       req.userId,
     );
     res.json({ access });
+  },
+);
+
+// ─── Member access rights (capabilities) ────────────────────
+// Per-member boolean matrix (shared FIRM_CAPABILITIES). firm_admin only —
+// requireFirmAdmin already refuses non-super-admins on the super-admin-
+// managed appliance firm, so Default Practice members are configured by
+// super admins alone. PUT with `capabilities: null` reverts to role
+// defaults; firm_readonly members are ineligible (400 FIRM_ROLE_INELIGIBLE).
+
+firmsRouter.get(
+  '/:firmId/users/:firmUserId/capabilities',
+  requireFirmAdmin,
+  async (req, res) => {
+    res.json(await firmCapabilitiesService.getForMember(req.firmId!, req.params['firmUserId']!));
+  },
+);
+
+firmsRouter.put(
+  '/:firmId/users/:firmUserId/capabilities',
+  requireFirmAdmin,
+  validate(setFirmUserCapabilitiesSchema),
+  async (req, res) => {
+    const { before, after } = await firmCapabilitiesService.setForMember(
+      req.firmId!,
+      req.params['firmUserId']!,
+      req.body,
+      req.userId,
+    );
+    await auditLog(
+      req.tenantId,
+      'update',
+      'firm_user_capabilities',
+      after.firmUserId,
+      { capabilities: before.capabilities, customized: before.capabilitiesCustomized },
+      {
+        capabilities: after.capabilities,
+        customized: after.capabilitiesCustomized,
+        firmId: req.firmId,
+        userId: after.userId,
+      },
+      req.userId,
+    );
+    res.json(after);
   },
 );
 
