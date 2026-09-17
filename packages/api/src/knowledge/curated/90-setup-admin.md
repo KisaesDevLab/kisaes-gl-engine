@@ -76,8 +76,14 @@ When switching providers, existing files are automatically migrated. A progress 
 migration status.
 
 ### Data Export
-Export your data under **Settings → Export Data →**. Available formats include CSV and
-Excel. You can export transactions, contacts, chart of accounts, and other data.
+Export your data as CSV under **Settings → Export Data →**. Choose **All dates** or a
+**Date range**, click **Prepare Export**, then download any of six files: chart of
+accounts, contacts (with addresses, terms, tax ID, 1099 flag), products & services
+(items), tags, transactions (one row per document) and journal lines (one row per
+posting — the file to rebuild a general ledger elsewhere). The date range applies to
+transactions and journal lines only; master data always exports in full. Every report
+also has its own CSV button, and each account register has a CSV download. For a
+complete restorable backup use **Settings → Export Company Data →** (.vmx file).
 
 ### Opening Balances
 If you're migrating from another system, enter your opening balances under
