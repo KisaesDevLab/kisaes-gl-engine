@@ -37,8 +37,19 @@ and tax amount.
 5. The receipt image is automatically attached to the resulting transaction.
 
 ### Bill OCR / Document Scanning
-Similar to receipt OCR but for vendor invoices and bills. Upload a bill image and the AI
-extracts vendor, date, line items, and totals to pre-fill the bill entry form.
+Two ways to use it:
+- **Enter Bill** — drop one PDF or image on the form and it pre-fills from the extraction.
+- **Payables → Bill Capture** (feature flag `AP_BILL_CAPTURE_V1`) — upload MANY bills at once.
+  Each becomes a queue row (Queued → Reading → Ready to review → Entered). Clicking a row opens
+  the document beside a pre-filled bill form. Choose **Detailed** lines (the AI's line items)
+  or **Single line at the total** (one account, the vendor's default expense account + tag);
+  the choice is remembered per vendor. Unknown vendors can be created on post (address read
+  from the bill). Possible duplicates (same vendor + invoice number, or same total + date) show a
+  banner with a link and a "Post anyway" override. **Post & next** walks the stack. One file =
+  one bill (a multi-page PDF is one bill). If AI is off or consent is missing the upload still
+  lands as "Ready — not scanned" for manual keying with the image beside the form. Portal
+  contacts with "Can upload bills" get a "Send us bills" tile and see Received / Being
+  processed / Entered (no amounts); staff are emailed on upload.
 
 ### AI Bank Statement Parsing
 Upload a bank or credit card statement PDF, and the AI extracts individual transactions.

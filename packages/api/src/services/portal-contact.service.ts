@@ -36,6 +36,7 @@ export interface PortalContactCompanyAssignment {
   billPayAccess?: boolean;
   categorizeAccess?: boolean;
   bankRepairAccess?: boolean;
+  billUploadAccess?: boolean;
 }
 
 export interface CreatePortalContactInput {
@@ -156,6 +157,7 @@ export async function getContact(
     billPayAccess: boolean;
     categorizeAccess: boolean;
     bankRepairAccess: boolean;
+    billUploadAccess: boolean;
   }>;
 }> {
   const contact = await db.query.portalContacts.findFirst({
@@ -176,6 +178,7 @@ export async function getContact(
       billPayAccess: portalContactCompanies.billPayAccess,
       categorizeAccess: portalContactCompanies.categorizeAccess,
       bankRepairAccess: portalContactCompanies.bankRepairAccess,
+      billUploadAccess: portalContactCompanies.billUploadAccess,
     })
     .from(portalContactCompanies)
     .innerJoin(companies, eq(portalContactCompanies.companyId, companies.id))
@@ -252,6 +255,7 @@ export async function createContact(
         billPayAccess: c.billPayAccess ?? false,
         categorizeAccess: c.categorizeAccess ?? false,
         bankRepairAccess: c.bankRepairAccess ?? false,
+        billUploadAccess: c.billUploadAccess ?? false,
       })),
     );
 
@@ -372,6 +376,7 @@ export async function setCompanyAssignments(
           billPayAccess: a.billPayAccess ?? false,
           categorizeAccess: a.categorizeAccess ?? false,
           bankRepairAccess: a.bankRepairAccess ?? false,
+          billUploadAccess: a.billUploadAccess ?? false,
         })),
       );
     }

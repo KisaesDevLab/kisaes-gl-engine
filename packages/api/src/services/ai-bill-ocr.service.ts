@@ -14,6 +14,7 @@ import { escapeLike } from '../utils/sql-like.js';
 import * as aiConfigService from './ai-config.service.js';
 import * as aiPrompt from './ai-prompt.service.js';
 import * as orchestrator from './ai-orchestrator.service.js';
+import { checkTenantTaskConsent } from './ai-consent.service.js';
 import { sanitize } from './pii-sanitizer.service.js';
 import { extractLocally, extractTextFromPdf } from './local-ocr.service.js';
 import { unwrapParsedResult, validateModelOutput } from './ai-providers/json-utils.js';
@@ -50,6 +51,17 @@ export const billOcrOutputSchema = z
     notes: z.string().nullish(),
     confidence: z.union([z.number(), z.string()]).nullish(),
     raw_text: z.string().nullish(),
+    // Bill Capture uses this to pre-fill a new vendor's address.
+    vendor_address: z
+      .object({
+        line1: z.string().nullish(),
+        line2: z.string().nullish(),
+        city: z.string().nullish(),
+        state: z.string().nullish(),
+        zip: z.string().nullish(),
+      })
+      .passthrough()
+      .nullish(),
   })
   .passthrough();
 
@@ -80,8 +92,21 @@ export interface BillOcrLineItem {
   quantity: string | null;
 }
 
+export interface BillOcrVendorAddress {
+  line1: string | null;
+  line2: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+}
+
 export interface BillOcrResult {
+  /** The ai_jobs row this extraction ran under (cost/audit trail). */
+  jobId: string;
   vendor: string | null;
+  /** Vendor's remit-to/letterhead address when legible; Bill Capture
+   *  pre-fills a new vendor contact from it. */
+  vendorAddress: BillOcrVendorAddress | null;
   vendorInvoiceNumber: string | null;
   billDate: string | null;
   dueDate: string | null;
@@ -106,6 +131,7 @@ export interface BillOcrResult {
 export const billSystemPrompt = `You are a vendor invoice / bill OCR assistant. Extract the structured data and return JSON ONLY in this exact schema:
 {
   "vendor": "string | null",
+  "vendor_address": { "line1": "string | null", "line2": "string | null", "city": "string | null", "state": "string | null", "zip": "string | null" },
   "vendor_invoice_number": "string | null",
   "bill_date": "YYYY-MM-DD | null",
   "due_date": "YYYY-MM-DD | null",
@@ -120,11 +146,35 @@ export const billSystemPrompt = `You are a vendor invoice / bill OCR assistant. 
 
 Rules:
 - Use null for missing fields. Do not invent data.
+- vendor_address is the VENDOR's own address (letterhead or remit-to), never the bill-to/customer address. Use null for the whole object if not visible.
 - Dates MUST be in ISO format YYYY-MM-DD. If only month/year is visible, use the 1st of that month.
 - Amounts are decimal strings without currency symbols ("1234.56", not "$1,234.56").
 - If the invoice has no clear line item breakdown, return one summary line with the total.
 - payment_terms should match standard codes when possible: "due_on_receipt", "net_10", "net_15", "net_30", "net_45", "net_60", "net_90". If non-standard, return the human-readable string.
 - Return JSON only — no markdown fences, no commentary.`;
+
+export type BillOcrUnavailableReason = 'ai_disabled' | 'ai_function_disabled' | 'ai_consent_blocked';
+
+/**
+ * The same three gates extractBillFromAttachment applies, answered without
+ * side effects. Bill Capture calls this at upload time so a company with AI
+ * off (or consent missing) gets a plain manual-keying queue instead of a
+ * failed extraction per file.
+ */
+export async function billOcrAvailability(
+  tenantId: string,
+  companyId: string | null,
+): Promise<{ ok: true } | { ok: false; reason: BillOcrUnavailableReason }> {
+  const config = await aiConfigService.getConfig();
+  if (!config.isEnabled) return { ok: false, reason: 'ai_disabled' };
+  if (!aiConfigService.resolveTaskExec(config, 'ocr').enabled) return { ok: false, reason: 'ai_function_disabled' };
+  const ocrProvider = config.ocrProvider || config.categorizationProvider;
+  if (!ocrProvider) return { ok: false, reason: 'ai_function_disabled' };
+  // 'ocr_invoice' rides the receipt_ocr consent toggle (orchestrator JOB_TO_TASK).
+  const consent = await checkTenantTaskConsent(tenantId, 'receipt_ocr', companyId ?? null);
+  if (!consent.allowed) return { ok: false, reason: 'ai_consent_blocked' };
+  return { ok: true };
+}
 
 export async function extractBillFromAttachment(tenantId: string, attachmentId: string): Promise<BillOcrResult> {
   const attachment = await db.query.attachments.findFirst({
@@ -338,8 +388,15 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
         }))
       : [];
 
+    const va = parsed.vendor_address;
+    const vendorAddress: BillOcrVendorAddress | null = va && (va.line1 || va.city || va.zip)
+      ? { line1: va.line1 ?? null, line2: va.line2 ?? null, city: va.city ?? null, state: va.state ?? null, zip: va.zip ?? null }
+      : null;
+
     const ocrResult: Omit<BillOcrResult, 'contactId' | 'defaultExpenseAccountId'> = {
+      jobId: job.id,
       vendor: parsed.vendor ?? null,
+      vendorAddress,
       vendorInvoiceNumber: parsed.vendor_invoice_number ?? null,
       billDate: parsed.bill_date ?? null,
       dueDate: parsed.due_date ?? null,

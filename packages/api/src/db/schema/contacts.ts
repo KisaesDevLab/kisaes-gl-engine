@@ -42,6 +42,9 @@ export const contacts = pgTable('contacts', {
   // Per §2.1 this source is consulted ONLY when contact_type is
   // 'vendor' or 'both'. Customer-only contacts ignore the column.
   defaultTagId: uuid('default_tag_id'),
+  // Migration 0175 — the vendor's last Detailed/Single choice on the Bill
+  // Capture review screen ('detailed' | 'single' | null = not yet chosen).
+  billLinesMode: varchar('bill_lines_mode', { length: 10 }).$type<'detailed' | 'single'>(),
   // Shared
   notes: text('notes'),
   isActive: boolean('is_active').default(true),

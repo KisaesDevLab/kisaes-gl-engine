@@ -126,6 +126,14 @@ moment the contact uploads (client, request, period, filename, link to the grid)
 the list applies to requests already outstanding. Needs SMTP configured; the unread
 tracking works regardless. Feature flag: `RECURRING_DOC_REQUESTS_V1`.
 
+### Sending bills from the portal (Bill Capture)
+Flag `AP_BILL_CAPTURE_V1` plus the per-contact **Can upload bills** toggle (Practice → Client
+Portal). The client sees a **Send us bills** tile → `/portal/bill-upload`: drag-and-drop PDF/JPG/PNG/
+WEBP/HEIC (10 MB each, up to 10 per drop), then a list of their own uploads with Received /
+Being processed / Entered / Reviewed. No amounts or accounting detail are shown. Uploads land in
+the company's **Payables → Bill Capture** queue for staff; one email per upload batch goes to the
+company's bill-pay notify user, else the owners. Preview ("View as Client") cannot upload.
+
 ## Clients suggesting categories ("What was this?")
 
 Feature flags: `PORTAL_CATEGORIZE_V1` (the client half) and `UNCATEGORIZED_REVIEW_V1`

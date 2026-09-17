@@ -95,3 +95,45 @@ export const portalMarkBillsSchema = z.object({
   companyId: z.string().uuid(),
   billIds: z.array(z.string().uuid()).min(1).max(100),
 });
+
+// ─── AP Bill Capture (migration 0175) ───────────────────────────────
+// Multi-upload intake reviewed on a two-pane screen and posted through the
+// same createBill path as Enter Bill.
+
+export const billLinesModes = ['detailed', 'single'] as const;
+export const billCaptureStatuses = ['received', 'processing', 'ready', 'failed', 'entered', 'discarded'] as const;
+
+export const billCaptureListQuerySchema = z.object({
+  status: z.enum(billCaptureStatuses).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+// Vendor created on save when the OCR'd name matched no contact and the
+// user kept it. Address fields come pre-filled from the bill when read.
+export const newVendorSchema = z.object({
+  displayName: z.string().trim().min(1).max(255),
+  billingLine1: z.string().max(255).nullish(),
+  billingLine2: z.string().max(255).nullish(),
+  billingCity: z.string().max(100).nullish(),
+  billingState: z.string().max(50).nullish(),
+  billingZip: z.string().max(20).nullish(),
+  billingCountry: z.string().max(3).optional(),
+  email: z.string().email().max(255).nullish(),
+  phone: z.string().max(30).nullish(),
+  defaultExpenseAccountId: z.string().uuid().nullish(),
+});
+
+export const enterBillCaptureSchema = createBillSchema
+  .omit({ contactId: true })
+  .extend({
+    contactId: z.string().uuid().optional(),
+    newVendor: newVendorSchema.optional(),
+    linesMode: z.enum(billLinesModes),
+    // Server re-checks for a duplicate bill on enter; true posts anyway.
+    overrideDuplicate: z.boolean().default(false),
+  })
+  .refine((v) => !!v.contactId !== !!v.newVendor, {
+    message: 'Provide contactId or newVendor, not both',
+    path: ['contactId'],
+  });

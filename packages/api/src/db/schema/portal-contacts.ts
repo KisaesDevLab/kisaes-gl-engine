@@ -70,6 +70,9 @@ export const portalContactCompanies = pgTable('portal_contact_companies', {
   // Migration 0171 — may re-authenticate a Plaid bank login (Link update
   // mode) for this company's connections from the portal.
   bankRepairAccess: boolean('bank_repair_access').notNull().default(false),
+  // Migration 0175 / AP_BILL_CAPTURE_V1 — may upload vendor bills into the
+  // company's Bill Capture queue from the portal.
+  billUploadAccess: boolean('bill_upload_access').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   pk: primaryKey({ columns: [table.contactId, table.companyId] }),

@@ -351,6 +351,9 @@ const envSchema = z.object({
   // Max concurrent statement parses in the worker. Each is a multi-page OCR +
   // an LLM call, so keep it low to avoid hammering the OCR/LLM engine.
   STATEMENT_PARSE_CONCURRENCY: z.coerce.number().int().positive().default(2),
+  // Max concurrent Bill Capture extractions in the worker. GLM-OCR is a
+  // single-slot engine on most appliances, so default to one at a time.
+  BILL_CAPTURE_CONCURRENCY: z.coerce.number().int().positive().default(1),
   // ── GLM-OCR engine (statement-import redesign) ──────────────────────────
   // GLM-OCR runs on its OWN llama.cpp llama-server (OpenAI-compatible chat
   // API), separate from the main Ollama/openai_compat endpoint. These env

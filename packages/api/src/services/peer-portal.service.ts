@@ -35,6 +35,7 @@ export interface PeerPermissions {
   billPayAccess: boolean;
   categorizeAccess: boolean;
   bankRepairAccess: boolean;
+  billUploadAccess: boolean;
 }
 
 /** Effective features = tenant flag AND the contact's grant. Questions
@@ -49,6 +50,7 @@ export interface PeerFeatures {
   bankRepair: boolean;
   billPay: boolean;
   categorize: boolean;
+  billUpload: boolean;
 }
 
 export interface PeerPortalContext {
@@ -161,15 +163,17 @@ async function loadPermissions(contactId: string, companyId: string): Promise<Pe
     billPayAccess: pcc?.billPayAccess ?? false,
     categorizeAccess: pcc?.categorizeAccess ?? false,
     bankRepairAccess: pcc?.bankRepairAccess ?? false,
+    billUploadAccess: pcc?.billUploadAccess ?? false,
   };
 }
 
 async function computeFeatures(tenantId: string, p: PeerPermissions): Promise<PeerFeatures> {
-  const [banking, billPay, categorize, docReq] = await Promise.all([
+  const [banking, billPay, categorize, docReq, billCapture] = await Promise.all([
     flags.isEnabled(tenantId, 'PORTAL_BANKING_V1'),
     flags.isEnabled(tenantId, 'PORTAL_BILL_PAY_V1'),
     flags.isEnabled(tenantId, 'PORTAL_CATEGORIZE_V1'),
     flags.isEnabled(tenantId, 'RECURRING_DOC_REQUESTS_V1'),
+    flags.isEnabled(tenantId, 'AP_BILL_CAPTURE_V1'),
   ]);
   return {
     questions: true,
@@ -181,6 +185,7 @@ async function computeFeatures(tenantId: string, p: PeerPermissions): Promise<Pe
     bankRepair: banking && p.bankRepairAccess,
     billPay: billPay && p.billPayAccess,
     categorize: categorize && p.categorizeAccess,
+    billUpload: billCapture && p.billUploadAccess,
   };
 }
 

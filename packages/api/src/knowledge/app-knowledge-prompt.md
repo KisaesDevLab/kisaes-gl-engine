@@ -168,6 +168,8 @@ receivable created). Use when the customer pays at the point of sale.
 
 ### Bill → Payment Workflow
 1. **Enter Bill** — record the vendor invoice with line items, terms, due date.
+   Or use **Payables → Bill Capture** to upload a stack of bills and let the AI pre-fill each
+   one for review (see AI Features).
 2. **Pay Bills** — when the bill is due, select it for payment.
 3. **Apply Vendor Credits** (optional) — reduce the cash payment by any credits
    you have from this vendor.
@@ -1123,6 +1125,14 @@ moment the contact uploads (client, request, period, filename, link to the grid)
 the list applies to requests already outstanding. Needs SMTP configured; the unread
 tracking works regardless. Feature flag: `RECURRING_DOC_REQUESTS_V1`.
 
+### Sending bills from the portal (Bill Capture)
+Flag `AP_BILL_CAPTURE_V1` plus the per-contact **Can upload bills** toggle (Practice → Client
+Portal). The client sees a **Send us bills** tile → `/portal/bill-upload`: drag-and-drop PDF/JPG/PNG/
+WEBP/HEIC (10 MB each, up to 10 per drop), then a list of their own uploads with Received /
+Being processed / Entered / Reviewed. No amounts or accounting detail are shown. Uploads land in
+the company's **Payables → Bill Capture** queue for staff; one email per upload batch goes to the
+company's bill-pay notify user, else the owners. Preview ("View as Client") cannot upload.
+
 ## Clients suggesting categories ("What was this?")
 
 Feature flags: `PORTAL_CATEGORIZE_V1` (the client half) and `UNCATEGORIZED_REVIEW_V1`
@@ -1383,8 +1393,19 @@ and tax amount.
 5. The receipt image is automatically attached to the resulting transaction.
 
 ### Bill OCR / Document Scanning
-Similar to receipt OCR but for vendor invoices and bills. Upload a bill image and the AI
-extracts vendor, date, line items, and totals to pre-fill the bill entry form.
+Two ways to use it:
+- **Enter Bill** — drop one PDF or image on the form and it pre-fills from the extraction.
+- **Payables → Bill Capture** (feature flag `AP_BILL_CAPTURE_V1`) — upload MANY bills at once.
+  Each becomes a queue row (Queued → Reading → Ready to review → Entered). Clicking a row opens
+  the document beside a pre-filled bill form. Choose **Detailed** lines (the AI's line items)
+  or **Single line at the total** (one account, the vendor's default expense account + tag);
+  the choice is remembered per vendor. Unknown vendors can be created on post (address read
+  from the bill). Possible duplicates (same vendor + invoice number, or same total + date) show a
+  banner with a link and a "Post anyway" override. **Post & next** walks the stack. One file =
+  one bill (a multi-page PDF is one bill). If AI is off or consent is missing the upload still
+  lands as "Ready — not scanned" for manual keying with the image beside the form. Portal
+  contacts with "Can upload bills" get a "Send us bills" tile and see Received / Being
+  processed / Entered (no amounts); staff are emailed on upload.
 
 ### AI Bank Statement Parsing
 Upload a bank or credit card statement PDF, and the AI extracts individual transactions.
@@ -1809,6 +1830,10 @@ The following screens exist in the application. Use these names and paths when d
 ### Attachments
 
 - **Attachment Library** (`/attachments`)
+
+### Bill upload
+
+- **Portal Bill Upload** (`bill-upload`)
 
 ### Capture
 

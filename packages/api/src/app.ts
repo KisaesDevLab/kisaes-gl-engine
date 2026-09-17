@@ -18,6 +18,7 @@ import { contactsRouter } from './routes/contacts.routes.js';
 import { transactionsRouter } from './routes/transactions.routes.js';
 import { invoicesRouter } from './routes/invoices.routes.js';
 import { billsRouter } from './routes/bills.routes.js';
+import { billCapturesRouter } from './routes/bill-captures.routes.js';
 import { vendorCreditsRouter } from './routes/vendor-credits.routes.js';
 import { billPaymentsRouter } from './routes/bill-payments.routes.js';
 import { estimatesRouter } from './routes/estimates.routes.js';
@@ -93,6 +94,7 @@ import { portalBankingPublicRouter } from './routes/portal-banking-public.routes
 import { portalBankRepairPublicRouter } from './routes/portal-bank-repair-public.routes.js';
 import { portalCategorizePublicRouter } from './routes/portal-categorize-public.routes.js';
 import { portalBillsPublicRouter } from './routes/portal-bills-public.routes.js';
+import { portalBillCapturesPublicRouter } from './routes/portal-bill-captures-public.routes.js';
 import { peerPmRouter } from './routes/peer-pm.routes.js';
 import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './swagger.js';
@@ -483,6 +485,7 @@ app.use('/api/v1/contacts', contactsRouter);
 app.use('/api/v1/transactions', transactionsRouter);
 app.use('/api/v1/invoices', invoicesRouter);
 app.use('/api/v1/bills', billsRouter);
+app.use('/api/v1/bill-captures', billCapturesRouter);
 app.use('/api/v1/vendor-credits', vendorCreditsRouter);
 app.use('/api/v1/bill-payments', billPaymentsRouter);
 app.use('/api/v1/estimates', estimatesRouter);
@@ -604,6 +607,7 @@ app.use('/api/portal/banking', portalBankingPublicRouter);
 app.use('/api/portal/categorize', portalCategorizePublicRouter);
 // PORTAL_BILL_PAY_V1 — unpaid bills list + mark-for-payment.
 app.use('/api/portal/bills', portalBillsPublicRouter);
+app.use('/api/portal/bill-captures', portalBillCapturesPublicRouter);
 // Vibe Practice Management peer API — signed server-to-server tokens,
 // re-mounts the portal routers for a linked client (docs/vibe-pm-integration.md).
 app.use('/api/peer/pm', peerPmRouter);

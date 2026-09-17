@@ -95,6 +95,9 @@ export const PRACTICE_FEATURE_FLAGS = [
   // for uncategorized activity. A suggestion never posts; staff approve,
   // override or reject it from Practice -> Uncategorized. Default OFF.
   'PORTAL_CATEGORIZE_V1',
+  // Migration 0175 — Payables > Bill Capture (multi-upload + AI extraction
+  // + review-to-Bill) and the portal "Send us bills" tile.
+  'AP_BILL_CAPTURE_V1',
 ] as const;
 
 export type PracticeFeatureFlagKey = typeof PRACTICE_FEATURE_FLAGS[number];

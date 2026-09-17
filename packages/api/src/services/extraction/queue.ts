@@ -23,11 +23,20 @@ export const DOC_RENDER_QUEUE = 'doc-render';
 export const DOC_EXTRACT_QUEUE = 'doc-extract';
 export const STATEMENT_PARSE_QUEUE = 'statement-parse';
 export const REPORT_PACK_QUEUE = 'report-pack';
+export const BILL_CAPTURE_QUEUE = 'bill-capture';
 
 export interface StatementParseJobData {
   jobId: string;
   tenantId: string;
   attachmentId: string;
+}
+
+export interface BillCaptureJobData {
+  captureId: string;
+  tenantId: string;
+  // Reprocess bumps this so the BullMQ job id is fresh (a completed id is
+  // a silent no-op on re-add).
+  attempt: number;
 }
 
 export interface ReportPackJobData {
@@ -93,6 +102,7 @@ let renderQueue: Queue<RenderJobData> | null = null;
 let extractQueue: Queue<ExtractJobData> | null = null;
 let statementParseQueue: Queue<StatementParseJobData> | null = null;
 let reportPackQueue: Queue<ReportPackJobData> | null = null;
+let billCaptureQueue: Queue<BillCaptureJobData> | null = null;
 
 function getRenderQueue(): Queue<RenderJobData> {
   if (!renderQueue) {
@@ -137,6 +147,21 @@ function getReportPackQueue(): Queue<ReportPackJobData> {
 /** Enqueue a statement parse. jobId as the BullMQ job id makes it idempotent. */
 export async function enqueueStatementParse(data: StatementParseJobData): Promise<void> {
   await getStatementParseQueue().add('parse', data, { jobId: `stmt:${data.jobId}` });
+}
+
+function getBillCaptureQueue(): Queue<BillCaptureJobData> {
+  if (!billCaptureQueue) {
+    billCaptureQueue = new Queue<BillCaptureJobData>(BILL_CAPTURE_QUEUE, {
+      connection: getSharedConnection() as ConnectionOptions,
+      defaultJobOptions: STATEMENT_PARSE_JOB_OPTIONS,
+    });
+  }
+  return billCaptureQueue;
+}
+
+/** Enqueue a Bill Capture extraction. captureId+attempt as the BullMQ job id. */
+export async function enqueueBillCapture(data: BillCaptureJobData): Promise<void> {
+  await getBillCaptureQueue().add('extract', data, { jobId: `bcap:${data.captureId}:${data.attempt}` });
 }
 
 /** Enqueue a report-pack render. runId as the BullMQ job id makes it idempotent. */
@@ -187,11 +212,13 @@ export async function closeQueues(): Promise<void> {
     extractQueue?.close(),
     statementParseQueue?.close(),
     reportPackQueue?.close(),
+    billCaptureQueue?.close(),
   ]);
   renderQueue = null;
   extractQueue = null;
   statementParseQueue = null;
   reportPackQueue = null;
+  billCaptureQueue = null;
   if (sharedConnection) {
     await sharedConnection.quit().catch(() => undefined);
     sharedConnection = null;

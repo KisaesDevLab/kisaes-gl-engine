@@ -158,3 +158,120 @@ export interface BillFilters {
 
 // Re-export the journal line type so consumers of AP types can read returned bills
 export type { JournalLine };
+
+// ─── AP Bill Capture (migration 0175) ───────────────────────────────
+
+export type BillCaptureStatus = 'received' | 'processing' | 'ready' | 'failed' | 'entered' | 'discarded';
+export type BillCaptureSource = 'staff' | 'portal';
+export type BillLinesMode = 'detailed' | 'single';
+export type ExtractionSkippedReason = 'ai_disabled' | 'ai_function_disabled' | 'ai_consent_blocked' | 'unsupported_type';
+
+export interface NewVendorInput {
+  displayName: string;
+  billingLine1?: string | null;
+  billingLine2?: string | null;
+  billingCity?: string | null;
+  billingState?: string | null;
+  billingZip?: string | null;
+  billingCountry?: string;
+  email?: string | null;
+  phone?: string | null;
+  defaultExpenseAccountId?: string | null;
+}
+
+export interface EnterBillCaptureInput extends Omit<CreateBillInput, 'contactId'> {
+  contactId?: string;
+  newVendor?: NewVendorInput;
+  linesMode: BillLinesMode;
+  overrideDuplicate?: boolean;
+}
+
+/** What the OCR pipeline read from the document (subset of the API's BillOcrResult). */
+export interface BillCaptureExtraction {
+  vendor: string | null;
+  vendorInvoiceNumber: string | null;
+  billDate: string | null;
+  dueDate: string | null;
+  paymentTerms: string | null;
+  total: string | null;
+  subtotal: string | null;
+  tax: string | null;
+  lineItems: Array<{ description: string | null; amount: string | null; quantity: string | null }>;
+  notes: string | null;
+  confidence: number;
+  contactId: string | null;
+  defaultExpenseAccountId: string | null;
+  qualityWarnings: string[];
+  status?: 'ok' | 'ocr_only';
+  vendorAddress?: {
+    line1: string | null; line2: string | null; city: string | null;
+    state: string | null; zip: string | null;
+  } | null;
+}
+
+export interface BillCaptureDuplicate {
+  transactionId: string;
+  txnNumber: string | null;
+  matchedOn: 'invoice_number' | 'total_date';
+}
+
+export interface BillCaptureSummary {
+  id: string;
+  fileName: string;
+  mimeType: string | null;
+  source: BillCaptureSource;
+  status: BillCaptureStatus;
+  createdAt: string;
+  enteredAt: string | null;
+  vendorName: string | null;
+  contactId: string | null;
+  contactName: string | null;
+  suggestedContactId: string | null;
+  suggestedContactName: string | null;
+  total: string | null;
+  billDate: string | null;
+  vendorInvoiceNumber: string | null;
+  confidence: number | null;
+  isDuplicate: boolean;
+  duplicateOfTransactionId: string | null;
+  billId: string | null;
+  billTxnNumber: string | null;
+  billVoided: boolean;
+  extractionSkippedReason: ExtractionSkippedReason | null;
+  extractionError: string | null;
+  uploadedByName: string | null;
+}
+
+export interface BillCaptureVendorDefaults {
+  contactId: string;
+  displayName: string;
+  defaultExpenseAccountId: string | null;
+  defaultTagId: string | null;
+  defaultPaymentTerms: string | null;
+  defaultTermsDays: number | null;
+  billLinesMode: BillLinesMode | null;
+}
+
+export interface BillCaptureDetail extends BillCaptureSummary {
+  attachmentId: string;
+  extraction: BillCaptureExtraction | null;
+  duplicate: BillCaptureDuplicate | null;
+  vendorCandidates: Array<{ id: string; displayName: string }>;
+  vendorDefaults: BillCaptureVendorDefaults | null;
+}
+
+export interface BillCaptureListResponse {
+  captures: BillCaptureSummary[];
+  total: number;
+  counts: Record<BillCaptureStatus, number>;
+}
+
+export type PortalBillCaptureStatus = 'received' | 'processing' | 'entered' | 'closed';
+
+export interface PortalBillCaptureRow {
+  id: string;
+  fileName: string;
+  status: PortalBillCaptureStatus;
+  createdAt: string;
+  enteredAt: string | null;
+}

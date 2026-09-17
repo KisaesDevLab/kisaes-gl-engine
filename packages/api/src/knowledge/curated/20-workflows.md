@@ -2,6 +2,8 @@
 
 ### Bill → Payment Workflow
 1. **Enter Bill** — record the vendor invoice with line items, terms, due date.
+   Or use **Payables → Bill Capture** to upload a stack of bills and let the AI pre-fill each
+   one for review (see AI Features).
 2. **Pay Bills** — when the bill is due, select it for payment.
 3. **Apply Vendor Credits** (optional) — reduce the cash payment by any credits
    you have from this vendor.

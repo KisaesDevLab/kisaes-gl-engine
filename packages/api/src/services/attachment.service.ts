@@ -43,7 +43,10 @@ export async function upload(
   // seeing the firm's; `companyId` scopes the row when the caller knows it.
   // Both default to null, which is exactly what every staff caller wrote
   // before, so this is additive for them.
-  opts: { uploadedByContactId?: string | null; companyId?: string | null } = {},
+  // `skipAutoClassify` is for callers that run their own extraction on the
+  // file (Bill Capture): the generic receipt-OCR/classifier must not also
+  // fire and spend AI twice or route the bill into the receipts inbox.
+  opts: { uploadedByContactId?: string | null; companyId?: string | null; skipAutoClassify?: boolean } = {},
 ) {
   if (file.size > env.MAX_FILE_SIZE_MB * 1024 * 1024) {
     throw AppError.badRequest(`File exceeds maximum size of ${env.MAX_FILE_SIZE_MB}MB`);
@@ -89,7 +92,7 @@ export async function upload(
   }).returning();
 
   // Auto-trigger AI classification + OCR for images
-  if (attachment && file.mimetype.startsWith('image/')) {
+  if (attachment && file.mimetype.startsWith('image/') && !opts.skipAutoClassify) {
     triggerAutoClassify(tenantId, attachment.id).catch(() => {});
   }
 
