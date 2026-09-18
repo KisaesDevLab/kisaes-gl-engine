@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { eq, asc } from 'drizzle-orm';
+import { eq, asc, sql } from 'drizzle-orm';
 import {
   BUSINESS_TEMPLATES,
   BUSINESS_TYPE_OPTIONS,
@@ -47,23 +47,31 @@ function rowToSummary(row: DbCoaTemplate): CoaTemplateSummary {
   };
 }
 
+// Built-ins seeded hidden on a fresh install. `personal_activities` is not a
+// business chart of accounts; migration 0176 hides it on existing installs.
+const HIDDEN_BY_DEFAULT = new Set(['personal_activities']);
+
 /**
- * On first startup, copy the static BUSINESS_TEMPLATES into the database
- * so super admins have something to manage. Idempotent and safe to call
- * from API startup unconditionally, INCLUDING under scale-out where two
- * API containers may boot simultaneously.
+ * On every startup, copy the static BUSINESS_TEMPLATES into the database
+ * so super admins have something to manage, and re-sync the accounts of
+ * existing built-in rows so they stay in lockstep with the code constant
+ * (built-in accounts are frozen against admin edits — see update()).
+ * Label and is_hidden are admin-owned and never touched on conflict.
+ * Idempotent and safe to call from API startup unconditionally,
+ * INCLUDING under scale-out where two API containers may boot
+ * simultaneously.
  *
- * Race safety: the emptiness check + INSERT is intentionally not wrapped
- * in any application-level "am I first?" logic. Instead the INSERT uses
- * `ON CONFLICT (slug) DO NOTHING` so a second container whose INSERT
- * arrives after the first simply no-ops its own rows and returns.
- * Without this, the second container would crash on the unique index
+ * Race safety: the upsert is intentionally not wrapped in any
+ * application-level "am I first?" logic. `ON CONFLICT (slug) DO UPDATE`
+ * with a setWhere that only fires for built-ins whose accounts differ
+ * means a second container's upsert is a no-op. Without the ON CONFLICT
+ * clause the second container would crash on the unique index
  * (idx_coa_templates_slug) and the API would fail to start.
  *
- * `returning()` tells us how many rows this particular caller actually
- * inserted — zero for the loser of the race, full count for the winner.
+ * `returning()` reports only rows this caller inserted or changed;
+ * `xmax = 0` distinguishes a fresh insert from an update.
  */
-export async function bootstrapBuiltins(): Promise<{ inserted: number }> {
+export async function bootstrapBuiltins(): Promise<{ inserted: number; synced: number }> {
   // Build (slug → label) map from BUSINESS_TYPE_OPTIONS so the labels match
   // what the rest of the app already shows.
   const labelBySlug = new Map<string, string>();
@@ -76,18 +84,24 @@ export async function bootstrapBuiltins(): Promise<{ inserted: number }> {
     label: labelBySlug.get(slug) ?? slug,
     accounts: accountsList as unknown as CoaTemplateAccountInput[],
     isBuiltin: true,
+    isHidden: HIDDEN_BY_DEFAULT.has(slug),
   }));
 
   if (rows.length === 0) {
-    return { inserted: 0 };
+    return { inserted: 0, synced: 0 };
   }
 
-  const inserted = await db
+  const changed = await db
     .insert(coaTemplatesTable)
     .values(rows)
-    .onConflictDoNothing({ target: coaTemplatesTable.slug })
-    .returning({ id: coaTemplatesTable.id });
-  return { inserted: inserted.length };
+    .onConflictDoUpdate({
+      target: coaTemplatesTable.slug,
+      set: { accounts: sql`excluded.accounts`, updatedAt: new Date() },
+      setWhere: sql`${coaTemplatesTable.isBuiltin} = true AND ${coaTemplatesTable.accounts} IS DISTINCT FROM excluded.accounts`,
+    })
+    .returning({ id: coaTemplatesTable.id, inserted: sql<boolean>`(xmax = 0)` });
+  const inserted = changed.filter((r) => r.inserted).length;
+  return { inserted, synced: changed.length - inserted };
 }
 
 /**

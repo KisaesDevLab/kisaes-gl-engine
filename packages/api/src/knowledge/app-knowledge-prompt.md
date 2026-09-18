@@ -90,8 +90,14 @@ lock date. Found under **Settings → Closing Date**.
 ### Chart of Accounts (COA)
 The list of accounts the company uses to categorize money — Bank, AR, Inventory,
 AP, Equity, Revenue, Expenses, etc. Every journal line posts to one of these.
-Vibe MyBooks ships with industry-specific COA templates that admins can edit at
-runtime via **Admin → COA Templates**.
+Vibe MyBooks ships with industry-specific COA templates (one per business type, each
+with revenue, cost-of-sales and expense accounts for that industry, plus
+Depreciation, Bank Service Charges, Travel, Utilities and Uncategorized). The
+Farm template follows Schedule F, with sales and cost accounts per livestock
+class and commodity. A template is used only when a company is created, so
+later template changes never alter an existing company's chart. Built-in
+templates can be relabeled or hidden, but not edited, in **Admin → COA Templates**;
+to customize one, create a custom template.
 
 ### Tags
 Labels you can attach to transactions for cross-cutting reporting (e.g., projects,

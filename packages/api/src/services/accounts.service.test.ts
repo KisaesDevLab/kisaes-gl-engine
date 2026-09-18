@@ -66,8 +66,8 @@ describe('Accounts Service', () => {
       await accountsService.seedFromTemplate(tenantId, 'freelancer');
       const result = await accountsService.list(tenantId, { limit: 100, offset: 0 });
       expect(result.total).toBeGreaterThan(10);
-      // Freelancer template (graphic_design) should have Revenues, Cash & Check
-      const revenue = result.data.find((a) => a.name === 'Revenues, Cash & Check');
+      // Freelancer template (graphic_design) seeds industry revenue lines
+      const revenue = result.data.find((a) => a.name === 'Design Fees');
       expect(revenue).toBeDefined();
     });
   });

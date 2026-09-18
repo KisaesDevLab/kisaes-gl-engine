@@ -130,13 +130,16 @@ async function start() {
   }
 
   // Bootstrap built-in COA templates from the static BUSINESS_TEMPLATES
-  // constant. Idempotent — only inserts when the coa_templates table is
-  // empty. After this runs once, super admins can edit templates via
-  // /admin/coa-templates and those edits become the source of truth.
+  // constant and re-sync built-in accounts when the constant changes.
+  // Idempotent. Custom templates (and built-in labels / hidden flags)
+  // edited via /admin/coa-templates are never touched.
   try {
     const result = await coaTemplatesService.bootstrapBuiltins();
     if (result.inserted > 0) {
       console.log(`Bootstrapped ${result.inserted} COA templates.`);
+    }
+    if (result.synced > 0) {
+      console.log(`Synced accounts on ${result.synced} built-in COA templates.`);
     }
   } catch (err) {
     console.error('Failed to bootstrap COA templates:', err);
