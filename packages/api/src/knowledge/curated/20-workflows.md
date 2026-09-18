@@ -162,9 +162,18 @@ one from the list). Typing a payee name or address without selecting a vendor sh
 inline warning and Save is blocked until a vendor is picked — the contact links the check to
 the vendor's history and 1099 totals.
 
+### Quick Add Account
+Firm staff (members of the firm assigned to the company, any role, plus super admins)
+get an "Add …" row in every account/category dropdown. It opens **Quick Add Account**
+(name prefilled from what was typed, optional number, account type, detail type). The type
+list is limited to what that dropdown accepts, e.g. only Expense on an expense line, and the
+new account is selected immediately. Only creating is opened up this way: editing, merging
+or deleting accounts still needs the Chart of Accounts permission.
+
 ### Quick Add Contact → More details
 Every contact picker's "Add …" row opens **Quick Add Contact** (type, display name,
-company, email, phone). A **More details** toggle (collapsed by default) adds the
+company, email, phone). The type starts as **Vendor**, except on customer-only screens
+(invoices, receive payment, cash sales), which start as Customer. A **More details** toggle (collapsed by default) adds the
 mailing/billing address, for customers a shipping address with "Same as billing" ticked by
 default, and for vendors the **Default Expense Category** and **Default Tag**. Sections
 follow the chosen contact type; vendor defaults are never sent for a plain customer. The

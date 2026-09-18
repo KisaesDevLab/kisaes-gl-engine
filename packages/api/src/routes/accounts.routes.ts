@@ -2,10 +2,15 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { Router } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
+import { and, eq } from 'drizzle-orm';
+import { can } from '@kis-books/shared';
 import { createAccountSchema, updateAccountSchema, accountFiltersSchema, mergeAccountsSchema, bulkUpdateAccountsSchema, importAccountsSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
-import { requireResource } from '../middleware/permission.js';
+import { requireResource, resolvePermissionsForRequest } from '../middleware/permission.js';
+import { db } from '../db/index.js';
+import { firms, firmUsers, tenantFirmAssignments } from '../db/schema/index.js';
+import { AppError } from '../utils/errors.js';
 import { validate } from '../middleware/validate.js';
 import * as accountsService from '../services/accounts.service.js';
 import * as registerService from '../services/register.service.js';
@@ -13,17 +18,44 @@ import { parseLimit, parseOffset } from '../utils/pagination.js';
 
 export const accountsRouter = Router();
 accountsRouter.use(authenticate);
+
+// Creating an account (the "+ Add" in every account dropdown) is open to
+// the firm that keeps these books, whatever the member's role — firm staff
+// set up categories on the fly while entering work. Everyone else needs
+// the Chart of Accounts write permission, as for every other mutation.
+async function canCreateAccount(req: Request, _res: Response, next: NextFunction) {
+  if (req.isSuperAdmin) return next();
+  if (can(await resolvePermissionsForRequest(req), 'accounts', 'update')) return next();
+  const [member] = await db
+    .select({ id: firmUsers.id })
+    .from(firmUsers)
+    .innerJoin(firms, eq(firms.id, firmUsers.firmId))
+    .innerJoin(tenantFirmAssignments, eq(tenantFirmAssignments.firmId, firmUsers.firmId))
+    .where(and(
+      eq(firmUsers.userId, req.userId),
+      eq(firmUsers.isActive, true),
+      eq(firms.isActive, true),
+      eq(tenantFirmAssignments.tenantId, req.tenantId),
+      eq(tenantFirmAssignments.isActive, true),
+    ))
+    .limit(1);
+  if (member) return next();
+  throw AppError.forbidden('You do not have permission for this feature', 'PERMISSION_DENIED');
+}
+
+// Registered before the router-wide guard so a firm member without the
+// accounts permission still reaches the create handler.
+accountsRouter.post('/', canCreateAccount, validate(createAccountSchema), async (req, res) => {
+  const account = await accountsService.create(req.tenantId, req.body, req.userId);
+  res.status(201).json({ account });
+});
+
 accountsRouter.use(requireResource('accounts'));
 
 accountsRouter.get('/', async (req, res) => {
   const filters = accountFiltersSchema.parse(req.query);
   const result = await accountsService.list(req.tenantId, filters);
   res.json(result);
-});
-
-accountsRouter.post('/', validate(createAccountSchema), async (req, res) => {
-  const account = await accountsService.create(req.tenantId, req.body, req.userId);
-  res.status(201).json({ account });
 });
 
 accountsRouter.get('/export', async (req, res) => {

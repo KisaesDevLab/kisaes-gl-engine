@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-18T17:37:32.581Z",
+  "generatedAt": "2026-09-18T17:47:31.983Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -18,7 +18,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 96751
+    "totalBytes": 97417
   },
   "screens": [
     {
@@ -1538,6 +1538,7 @@
     "Team members suggesting categories (Banking → Uncategorized)",
     "Correcting a misread amount on a statement import",
     "Write Check requires a vendor contact",
+    "Quick Add Account",
     "Quick Add Contact → More details",
     "Re-reading check images when payees came back blank",
     "\"Is there a faster way to get to Enter Expense / Write Check / Pay Bills?\"",
