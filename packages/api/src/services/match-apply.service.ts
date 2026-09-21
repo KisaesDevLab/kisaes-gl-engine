@@ -175,22 +175,22 @@ async function applyBillMatch(
     {
       bankAccountId,
       txnDate: item.feedDate,
-      method: 'check',
+      // Required by the input type, ignored: alreadyCleared below decides
+      // what is recorded. This used to say 'check', which dropped a check
+      // for money that had already left the bank into the print queue.
+      method: 'other',
       memo: item.description ?? undefined,
       bills: [{ billId: bill.id, amount: application }],
     },
     userId,
     companyId ?? undefined,
+    { source: 'bank_feed', sourceId: item.id, alreadyCleared: { checkNumber: item.checkNumber } },
   );
 
-  // payBills returns either a single payment txn or a per-vendor
-  // group. The exact return shape varies; we read the id off the
-  // first posted payment so the link to the feed item works for
-  // the common single-bill case.
-  const paymentId =
-    (result as { paymentTransactionIds?: string[] }).paymentTransactionIds?.[0] ??
-    (result as { transactionId?: string }).transactionId ??
-    (Array.isArray(result) ? (result as Array<{ id: string }>)[0]?.id : undefined);
+  // One bill, so one vendor, so exactly one payment. (This read three result
+  // shapes payBills has never returned and threw AFTER the payment posted —
+  // bill paid, feed line still unmatched, a retry away from paying twice.)
+  const paymentId = result.payments[0]?.id;
   if (!paymentId) {
     throw AppError.internal('payBills did not return a payment transaction id');
   }

@@ -4,8 +4,15 @@
 
 import { z } from 'zod';
 import { PAYMENT_METHODS } from '../constants/payment-methods.js';
+import type { TxnType } from '../types/transactions.js';
 
-const txnTypes = ['invoice', 'customer_payment', 'cash_sale', 'expense', 'deposit', 'transfer', 'journal_entry', 'credit_memo', 'customer_refund', 'aje'] as const;
+// Every TxnType. The AP types and daily sales were missing, so the
+// transaction list's Type filter could not ask for bills or bill payments —
+// the query param failed validation before it reached the ledger.
+const txnTypes = [
+  'invoice', 'customer_payment', 'cash_sale', 'expense', 'deposit', 'transfer', 'journal_entry',
+  'credit_memo', 'customer_refund', 'bill', 'vendor_credit', 'bill_payment', 'daily_sales', 'aje',
+] as const satisfies readonly TxnType[];
 
 // Cap on any journal-line / line-item array. 500 is well beyond any realistic
 // invoice or deposit and bounds the input size so a malicious client can't

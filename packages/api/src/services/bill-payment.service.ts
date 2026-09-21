@@ -155,7 +155,12 @@ export async function payBills(
   // e.g. { source: 'client_portal', sourceId: portalContactId }. Stamped
   // on the payment header (transactions.source/source_id) so the print
   // queue and audit trail can attribute client-triggered checks.
-  origin?: { source: string; sourceId: string },
+  //
+  // `alreadyCleared` is for a payment the bank has already made (a bank-feed
+  // line matched to an open bill): there is nothing left to print and no
+  // check number to hand out. It overrides input.method — the feed knows a
+  // check number or it knows nothing, so the method is 'check' or unrecorded.
+  origin?: { source: string; sourceId: string; alreadyCleared?: { checkNumber: number | null } },
 ) {
   if (input.bills.length === 0) throw AppError.badRequest('Must select at least one bill to pay');
 
@@ -361,7 +366,14 @@ export async function payBills(
       // Determine check number / print status
       let checkNumber: number | null = null;
       let printStatus: string | null = null;
-      const paysByCheck = input.method === 'check' || input.method === 'check_handwritten';
+      const cleared = origin?.alreadyCleared;
+      const paysByCheck = !cleared && (input.method === 'check' || input.method === 'check_handwritten');
+      if (cleared && cleared.checkNumber != null) {
+        // Written outside the system and already through the bank: keep the
+        // bank's number, stay out of the print queue.
+        checkNumber = cleared.checkNumber;
+        printStatus = 'hand_written';
+      }
       if (paysByCheck) {
         if (input.method === 'check_handwritten') {
           checkNumber = await allocateCheckNumber(tenantId);
@@ -393,7 +405,9 @@ export async function payBills(
         checkNumber,
         printStatus,
         printedMemo,
-        paymentMethod: toStoredPaymentMethod(input.method),
+        paymentMethod: cleared
+          ? (cleared.checkNumber != null ? 'check' : null)
+          : toStoredPaymentMethod(input.method),
         referenceNumber: input.referenceNumber?.trim() || null,
         source: origin?.source ?? null,
         sourceId: origin?.sourceId ?? null,
