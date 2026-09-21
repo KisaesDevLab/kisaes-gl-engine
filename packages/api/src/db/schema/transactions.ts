@@ -56,6 +56,11 @@ export const transactions = pgTable('transactions', {
   // unsigned). FK-less on purpose: historical record, survives signature
   // soft-delete. See check-signatures.ts.
   printSignatureId: uuid('print_signature_id'),
+  // How the payment was made (shared PAYMENT_METHODS) and the payer/payee's
+  // reference for it — ACH trace, card auth, the customer's check number.
+  // NULL on rows that predate migration 0178.
+  paymentMethod: varchar('payment_method', { length: 20 }),
+  referenceNumber: varchar('reference_number', { length: 100 }),
   // Source tracking — identifies where this transaction originated
   source: varchar('source', { length: 30 }),  // 'payroll_import', 'bank_feed', 'manual', 'recurring', etc.
   // AJE display number (TB module, D17): sequential per company per

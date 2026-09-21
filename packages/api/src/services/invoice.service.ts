@@ -310,6 +310,8 @@ export async function recordPayment(tenantId: string, invoiceId: string, input: 
       memo: input.memo || `Payment for invoice ${invoice.txnNumber || invoice.id}`,
       total: input.amount,
       appliedToInvoiceId: invoiceId,
+      paymentMethod: input.paymentMethod,
+      referenceNumber: input.refNo,
       lines: [
         { accountId: input.depositToAccountId, debit: input.amount, credit: '0' },
         { accountId: arAccountId, debit: '0', credit: input.amount },

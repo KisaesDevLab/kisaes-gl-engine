@@ -12,8 +12,7 @@
 // is unreachable (appliance deployments without a separate worker/Redis).
 
 import { and, asc, eq, inArray } from 'drizzle-orm';
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
-import puppeteer, { type Browser } from 'puppeteer';
+import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { sql } from 'drizzle-orm';
 import {
   getReportDef,
@@ -30,10 +29,10 @@ import { getReportFooter } from './tenant-report-settings.service.js';
 import { getProviderForTenant } from './storage/storage-provider.factory.js';
 import { reportPackArtifactKey, ARTIFACT_TTL_MS } from './report-pack.service.js';
 import { log } from '../utils/logger.js';
+import { appendPdf, htmlToPdfBytes, launchPdfBrowser, stampCaption, stampPageFooter } from './pdf-merge.util.js';
 import { listRowAttachments, renderRowAttachmentPdf } from './tb/row-attachments.service.js';
 
 const TOC_ENTRIES_PER_PAGE = 30;
-const PDF_MARGIN = { top: '0.5in', bottom: '0.5in', left: '0.5in', right: '0.5in' };
 
 interface RenderedSection {
   reportId: string;
@@ -46,31 +45,6 @@ interface RenderedSection {
 interface SectionFailure {
   reportId: string;
   message: string;
-}
-
-async function htmlToPdfBytes(browser: Browser, html: string, landscape: boolean): Promise<Uint8Array> {
-  const page = await browser.newPage();
-  try {
-    // Same hardening as pdf.service.ts: every section is static server-built
-    // HTML (and the letter body is stored super-admin HTML rendered verbatim),
-    // so no script should ever run and no network request should ever leave
-    // this page. Even if markup slips through, it cannot execute or exfiltrate
-    // during rendering.
-    await page.setJavaScriptEnabled(false);
-    await page.setRequestInterception(true);
-    page.on('request', (req) => {
-      const url = req.url();
-      if (url.startsWith('data:') || url.startsWith('about:') || url.startsWith('file:')) {
-        req.continue();
-      } else {
-        req.abort();
-      }
-    });
-    await page.setContent(html, { waitUntil: 'load' });
-    return await page.pdf({ format: 'Letter', landscape, margin: PDF_MARGIN, printBackground: true });
-  } finally {
-    await page.close();
-  }
 }
 
 function coverHtml(packName: string, companyName: string, dateLabel: string): string {
@@ -121,24 +95,12 @@ async function appendLeadsheetAttachments(tenantId: string, companyId: string, a
       const before = merged.getPageCount();
       await appendPdf(merged, file.buffer);
       const label = att.sourceFileName ? `${att.refCode} — ${att.sourceFileName}` : att.refCode;
-      for (let i = before; i < merged.getPageCount(); i++) {
-        const page = merged.getPage(i);
-        const { height } = page.getSize();
-        page.drawText(label.slice(0, 110), {
-          x: 24, y: height - 20, size: 9, font: labelFont, color: rgb(0.15, 0.15, 0.15),
-        });
-      }
+      stampCaption(merged, before, merged.getPageCount(), label, labelFont);
     } catch (err) {
       log.warn({ component: 'report-packs', event: 'leadsheet_attachment_skipped', attachmentId: att.id, refCode: att.refCode, message: err instanceof Error ? err.message : String(err) });
     }
   }
   return Buffer.from(await merged.save());
-}
-
-async function appendPdf(target: PDFDocument, srcBytes: Uint8Array): Promise<void> {
-  const src = await PDFDocument.load(srcBytes);
-  const pages = await target.copyPages(src, src.getPageIndices());
-  for (const p of pages) target.addPage(p);
 }
 
 /**
@@ -197,11 +159,7 @@ export async function generateReportPackRun(runId: string): Promise<void> {
   const sections: RenderedSection[] = [];
   const failures: SectionFailure[] = [];
 
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-    executablePath: process.env['PUPPETEER_EXECUTABLE_PATH'] || undefined,
-  });
+  const browser = await launchPdfBrowser();
 
   try {
     // Engagement letter (SSARS 21) — rendered FIRST, before any financial
@@ -310,36 +268,7 @@ export async function generateReportPackRun(runId: string): Promise<void> {
     // Stamp page numbers (right) and the footer (left) onto EVERY content
     // page of the merged PDF — so the footer repeats on every page, not just
     // the last page of each section (which is where a flowed-HTML footer lands).
-    const footerLines = (footer && footer.trim())
-      ? footer.trim().split('\n').map((l) => l.trim()).filter(Boolean)
-      : [];
-    if (pack.pageNumbers || footerLines.length > 0) {
-      const font = await merged.embedFont(StandardFonts.Helvetica);
-      const pages = merged.getPages();
-      const total = pages.length;
-      const size = 8;
-      const gray = rgb(0.4, 0.4, 0.4);
-      pages.forEach((page, idx) => {
-        if (idx < coverPages) return;
-        const { width: pw } = page.getSize();
-        if (pack.pageNumbers) {
-          const label = `Page ${idx + 1} of ${total}`;
-          const width = font.widthOfTextAtSize(label, size);
-          page.drawText(label, { x: pw - width - 36, y: 18, size, font, color: gray });
-        }
-        if (footerLines.length > 0) {
-          // Left-aligned so it never collides with the right page number;
-          // truncate to the available width; stack multiple lines upward.
-          const maxW = pw - 72 - (pack.pageNumbers ? 90 : 0);
-          footerLines.forEach((raw, li) => {
-            let text = raw;
-            while (text.length > 1 && font.widthOfTextAtSize(text, size) > maxW) text = text.slice(0, -1);
-            const y = 18 + (footerLines.length - 1 - li) * 10;
-            page.drawText(text, { x: 36, y, size, font, color: gray });
-          });
-        }
-      });
-    }
+    await stampPageFooter(merged, { pageNumbers: pack.pageNumbers, footer, skipPages: coverPages });
 
     const mergedBytes = await merged.save();
     const buffer = Buffer.from(mergedBytes);

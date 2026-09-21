@@ -3,6 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { z } from 'zod';
+import { PAYMENT_METHODS } from '../constants/payment-methods.js';
 
 const txnTypes = ['invoice', 'customer_payment', 'cash_sale', 'expense', 'deposit', 'transfer', 'journal_entry', 'credit_memo', 'customer_refund', 'aje'] as const;
 
@@ -120,6 +121,8 @@ export const recordPaymentSchema = z.object({
   txnDate: z.string().min(1),
   depositToAccountId: z.string().uuid(),
   memo: z.string().optional(),
+  paymentMethod: z.enum(PAYMENT_METHODS).optional(),
+  refNo: z.string().trim().max(100).optional(),
 });
 
 export const createCreditMemoSchema = z.object({

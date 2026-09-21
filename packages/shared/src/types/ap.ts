@@ -5,8 +5,9 @@
 // Accounts Payable types: bills, vendor credits, bill payments
 
 import type { BillStatus, JournalLine } from './transactions.js';
+import type { BILL_PAYMENT_METHODS } from '../constants/payment-methods.js';
 
-export type BillPaymentMethod = 'check' | 'check_handwritten' | 'ach' | 'credit_card' | 'cash' | 'other';
+export type BillPaymentMethod = (typeof BILL_PAYMENT_METHODS)[number];
 
 export interface BillLineInput {
   accountId: string;
@@ -60,6 +61,8 @@ export interface PayBillsInput {
   method: BillPaymentMethod;
   printLater?: boolean;
   memo?: string;
+  /** ACH trace / card auth / confirmation number; stored on each payment. */
+  referenceNumber?: string;
   /** Memo line printed on the check face; blank defaults to the bill refs. */
   printedMemo?: string;
   bills: BillPaymentBillSelection[];

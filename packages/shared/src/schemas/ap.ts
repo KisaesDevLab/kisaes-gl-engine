@@ -3,9 +3,9 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { z } from 'zod';
+import { BILL_PAYMENT_METHODS } from '../constants/payment-methods.js';
 
 const billStatuses = ['unpaid', 'partial', 'paid', 'overdue'] as const;
-const paymentMethods = ['check', 'check_handwritten', 'ach', 'credit_card', 'cash', 'other'] as const;
 
 const billLineSchema = z.object({
   accountId: z.string().uuid(),
@@ -57,9 +57,13 @@ const billPaymentCreditSchema = z.object({
 export const payBillsSchema = z.object({
   bankAccountId: z.string().uuid(),
   txnDate: z.string().min(1),
-  method: z.enum(paymentMethods),
+  method: z.enum(BILL_PAYMENT_METHODS),
   printLater: z.boolean().optional(),
   memo: z.string().optional(),
+  // ACH trace / card auth / confirmation number. Stored on every payment the
+  // run creates (transactions.reference_number). Checks don't need one — the
+  // check number is the reference.
+  referenceNumber: z.string().trim().max(100).optional(),
   // Memo line printed on the check face (transactions.printed_memo). Left
   // blank, the service fills in the bill/vendor-invoice numbers being paid
   // so the vendor can apply the payment. Editable afterwards from the

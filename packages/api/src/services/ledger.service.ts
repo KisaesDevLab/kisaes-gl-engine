@@ -5,7 +5,7 @@
 import { eq, and, or, sql, lte, count, inArray, notInArray, isNull } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
-import type { JournalLineInput, TxnType, TxnStatus, BulkUpdateTransactionsInput, BulkUpdateTransactionsResult } from '@kis-books/shared';
+import type { JournalLineInput, TxnType, TxnStatus, PaymentMethod, BulkUpdateTransactionsInput, BulkUpdateTransactionsResult } from '@kis-books/shared';
 import { db, type DbOrTx, type Tx } from '../db/index.js';
 import { transactions, journalLines, accounts, companies, contacts, reconciliations, reconciliationLines, bankFeedItems, transactionTags, items } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -266,6 +266,9 @@ interface PostTransactionInput {
   // Source tracking
   source?: string;
   sourceId?: string;
+  // How a payment was made + the payer/payee's reference for it.
+  paymentMethod?: PaymentMethod;
+  referenceNumber?: string;
   lines: JournalLineInput[];
 }
 
@@ -355,6 +358,8 @@ export async function postTransaction(
       sourceEstimateId: input.sourceEstimateId || null,
       source: input.source || null,
       sourceId: input.sourceId || null,
+      paymentMethod: input.paymentMethod || null,
+      referenceNumber: input.referenceNumber?.trim() || null,
     }).returning();
 
     if (!txn) throw AppError.internal('Failed to create transaction');

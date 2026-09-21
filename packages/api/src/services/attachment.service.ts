@@ -158,7 +158,7 @@ export async function download(tenantId: string, id: string) {
 // direct-filesystem fallback as download() above. Kept in lockstep with
 // download(): storage key preference is providerFileId > storageKey >
 // filePath, and any provider failure falls back to UPLOAD_DIR.
-async function readAttachmentBytes(
+export async function readAttachmentBytes(
   tenantId: string,
   attachment: { providerFileId: string | null; storageKey: string | null; filePath: string },
 ): Promise<Buffer> {

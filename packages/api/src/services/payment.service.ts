@@ -36,6 +36,8 @@ export async function receivePayment(tenantId: string, input: ReceivePaymentInpu
     contactId: input.customerId,
     memo: input.memo,
     total: input.amount,
+    paymentMethod: input.paymentMethod,
+    referenceNumber: input.refNo,
     lines: [
       { accountId: input.depositTo, debit: input.amount, credit: '0' },
       { accountId: arAccount.id, debit: '0', credit: input.amount },
@@ -153,7 +155,8 @@ export async function getPendingDeposits(tenantId: string) {
   if (!pcAccount) return { paymentsClearingBalance: 0, items: [] };
 
   const rows = await db.execute(sql`
-    SELECT t.id as transaction_id, t.txn_type, t.txn_date as date, t.txn_number as ref_no, t.memo,
+    SELECT t.id as transaction_id, t.txn_type, t.txn_date as date,
+      COALESCE(t.reference_number, t.txn_number) as ref_no, t.payment_method, t.memo,
       c.display_name as customer_name,
       jl.debit as amount
     FROM journal_lines jl
@@ -174,7 +177,7 @@ export async function getPendingDeposits(tenantId: string) {
     date: r.date,
     customerName: r.customer_name,
     refNo: r.ref_no,
-    paymentMethod: null,
+    paymentMethod: r.payment_method ?? null,
     amount: Number(new Decimal(r.amount || '0').toFixed(4)),
   }));
 

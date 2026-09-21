@@ -40,6 +40,13 @@
 - **Check Register** — all checks written, with check numbers, payees, and amounts.
 - **1099 Vendor Summary** — detailed 1099-eligible payments per vendor.
 - **Transaction List** — all transactions for a period in date order.
+- **Transaction Report** — not on the Reports page: a button on any transaction
+  (and on the Bill and Invoice pages). One PDF with the transaction's details and
+  journal lines, the same for every linked transaction (a bill and the payments
+  that paid it, an invoice and its payments), then every attachment on all of
+  them, page for page, captioned with the file name. Unreadable or
+  password-protected files are listed with the reason instead of failing the
+  report. Limits: 40 attachments, 50 pages per PDF, 300 pages total.
 - **Journal Entries Report** — all journal entries for a period.
 - **Budget Overview** — summary view of all budget lines for a fiscal year.
 

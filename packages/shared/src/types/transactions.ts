@@ -2,6 +2,8 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+import type { PaymentMethod } from '../constants/payment-methods.js';
+
 export type TxnType =
   | 'invoice'
   | 'customer_payment'
@@ -48,6 +50,20 @@ export interface JournalLine {
   // Denormalised display helpers populated by list endpoints.
   accountName?: string | null;
   accountNumber?: string | null;
+  // Transaction-detail enrichment (GET /transactions/:id). Absent elsewhere.
+  accountType?: string | null;
+  accountDetailType?: string | null;
+  tagName?: string | null;
+  contactName?: string | null;
+}
+
+// The bank / credit-card account a transaction moved money through, derived
+// from its journal lines. Transfers carry both ends.
+export interface TransactionBankAccount {
+  accountId: string;
+  name: string;
+  accountNumber: string | null;
+  side: 'from' | 'to';
 }
 
 export interface Transaction {
@@ -90,9 +106,29 @@ export interface Transaction {
   appliedToInvoiceId: string | null;
   voidReason: string | null;
   voidedAt: string | null;
+  // Check fields — set on checks (txn_type 'expense') and bill payments.
+  checkNumber?: number | null;
+  printStatus?: string | null;
+  payeeNameOnCheck?: string | null;
+  payeeAddress?: string | null;
+  printedMemo?: string | null;
+  printedAt?: string | null;
+  // How the payment was made + the payer/payee's reference for it. NULL on
+  // anything entered before migration 0178 — see effectivePaymentMethod().
+  paymentMethod?: PaymentMethod | null;
+  referenceNumber?: string | null;
+  // Provenance ('bank_feed', 'payroll_import', 'recurring', …).
+  source?: string | null;
+  sourceId?: string | null;
+  ajeNumber?: number | null;
+  companyId?: string | null;
   createdAt: string;
   updatedAt: string;
   lines?: JournalLine[];
+  // Transaction-detail enrichment (GET /transactions/:id). Absent elsewhere.
+  tags?: Array<{ id: string; name: string }>;
+  bankAccounts?: TransactionBankAccount[];
+  appliedToInvoiceNumber?: string | null;
   // List endpoints enrich transactions with denormalised display helpers.
   // Both are absent on raw detail / insert payloads.
   contactName?: string | null;
@@ -259,6 +295,41 @@ export interface RecordPaymentInput {
   txnDate: string;
   depositToAccountId: string;
   memo?: string;
+  paymentMethod?: PaymentMethod;
+  refNo?: string;
+}
+
+// How a related transaction is tied to the one being viewed.
+export type TransactionRelation =
+  | 'payment'          // a payment applied to this bill / invoice
+  | 'paid_bill'        // a bill this payment paid
+  | 'paid_invoice'     // an invoice this payment / credit was applied to
+  | 'credit'           // a vendor credit / credit memo / refund applied here
+  | 'credited_bill';   // a bill this vendor credit was applied to
+
+export interface RelatedTransaction {
+  id: string;
+  txnType: TxnType;
+  txnNumber: string | null;
+  txnDate: string;
+  status: TxnStatus;
+  contactName: string | null;
+  total: string | null;
+  relation: TransactionRelation;
+  // Amount of this link (cash or credit applied). Null when the link carries
+  // no amount of its own (legacy applied_to_invoice_id).
+  appliedAmount: string | null;
+  checkNumber: number | null;
+  paymentMethod: PaymentMethod | null;
+  referenceNumber: string | null;
+  vendorInvoiceNumber: string | null;
+  attachmentCount: number;
+}
+
+export interface RelatedTransactionsResult {
+  related: RelatedTransaction[];
+  // True when the chain was longer than the cap and the tail was dropped.
+  truncated: boolean;
 }
 
 export interface CreateCreditMemoInput {

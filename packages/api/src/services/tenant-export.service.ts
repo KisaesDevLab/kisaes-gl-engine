@@ -887,7 +887,7 @@ export async function importAsNewTenant(
         is_recurring, recurring_schedule_id, source_estimate_id,
         applied_to_invoice_id, void_reason, voided_at,
         check_number, print_status, payee_name_on_check, payee_address,
-        printed_memo, printed_at
+        printed_memo, printed_at, payment_method, reference_number
       ) VALUES (
         ${newId}, ${tenantId}, ${companyId},
         ${txn['txn_type'] as string},
@@ -926,7 +926,9 @@ export async function importAsNewTenant(
               must not collapse back to NULL, which re-enables the internal-memo
               fallback in check-pdf. */
           (txn['printed_memo'] as string | null | undefined) ?? null},
-        ${(txn['printed_at'] as string) || null}
+        ${(txn['printed_at'] as string) || null},
+        ${(txn['payment_method'] as string) || null},
+        ${(txn['reference_number'] as string) || null}
       )
     `);
     counts.transactions++;

@@ -4,15 +4,15 @@
 
 import { z } from 'zod';
 
-const paymentMethods = ['check', 'cash', 'credit_card', 'ach', 'other'] as const;
+import { PAYMENT_METHODS } from '../constants/payment-methods.js';
 
 export const receivePaymentSchema = z.object({
   customerId: z.string().uuid(),
   date: z.string().min(1),
   amount: z.string().min(1),
   depositTo: z.string().uuid(),
-  paymentMethod: z.enum(paymentMethods).optional(),
-  refNo: z.string().optional(),
+  paymentMethod: z.enum(PAYMENT_METHODS).optional(),
+  refNo: z.string().trim().max(100).optional(),
   memo: z.string().optional(),
   applications: z.array(z.object({
     invoiceId: z.string().uuid(),

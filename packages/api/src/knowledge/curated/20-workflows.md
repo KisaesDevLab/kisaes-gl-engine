@@ -11,7 +11,10 @@
    transaction and updates the bill's status. Paying by check also shows a
    **Memo on check** field: leave it blank and each check's memo line prints the
    vendor invoice numbers it covers (our bill number where the vendor gave none),
-   or type your own — an account number, say — to use instead.
+   or type your own — an account number, say — to use instead. Paying any other
+   way (ACH, credit card, cash, other) shows an optional **Ref #** field instead —
+   an ACH trace or confirmation number. The method and Ref # are saved on the
+   payment and show on the transaction and its **Transaction Report**.
 5. **Print Checks** (if paying by check) — go to **Print Checks →** to print
    queued checks in a batch. Click a queued check's Memo cell to retype its memo
    before it prints; after printing, reprint the batch to edit it. Hand-written

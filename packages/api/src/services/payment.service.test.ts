@@ -158,6 +158,20 @@ describe('Payment Service', () => {
       expect(updated?.paidAt).not.toBeNull();
     });
 
+    it('stores the payment method and the customer reference', async () => {
+      const invoice = await createTestInvoice('500.00');
+      const payment = await paymentService.receivePayment(tenantId, {
+        customerId, date: '2026-04-15', amount: '500.00', depositTo: bankAccountId,
+        paymentMethod: 'check', refNo: '10442',
+        applications: [{ invoiceId: invoice.id, amount: '500.00' }],
+      });
+      const stored = await db.query.transactions.findFirst({
+        where: and(eq(transactions.tenantId, tenantId), eq(transactions.id, payment.id)),
+      });
+      expect(stored?.paymentMethod).toBe('check');
+      expect(stored?.referenceNumber).toBe('10442');
+    });
+
     it('applies partial payment and sets status=partial with correct balance', async () => {
       const invoice = await createTestInvoice('1000.00');
 

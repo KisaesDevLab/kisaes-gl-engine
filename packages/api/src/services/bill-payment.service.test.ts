@@ -795,6 +795,36 @@ describe('Bill Payment Service', () => {
     expect(result.payments[0]!.printStatus).toBe('hand_written');
   });
 
+  describe('payment method and reference', () => {
+    const pay = async (method: 'ach' | 'check_handwritten', referenceNumber?: string) => {
+      const bill = await billService.createBill(tenantId, {
+        contactId: vendorId, txnDate: '2026-04-01',
+        lines: [{ accountId: officeSuppliesId, amount: '100.00' }],
+      });
+      const result = await billPaymentService.payBills(tenantId, {
+        bankAccountId, txnDate: '2026-04-10', method, referenceNumber,
+        bills: [{ billId: bill.id, amount: '100.00' }],
+      });
+      const [txn] = await db.select().from(transactions).where(eq(transactions.id, result.payments[0]!.id));
+      return txn!;
+    };
+
+    it('stores how the bill was paid and the reference for it', async () => {
+      const txn = await pay('ach', '  ACH-20260410-77  ');
+      expect(txn.paymentMethod).toBe('ach');
+      expect(txn.referenceNumber).toBe('ACH-20260410-77');
+    });
+
+    it("stores a hand-written check as 'check' — print_status keeps the distinction", async () => {
+      // Need a company row for nextCheckNumber to work
+      await db.insert(companies).values({ tenantId, businessName: 'Test Co', checkSettings: { nextCheckNumber: 1042 } });
+      const txn = await pay('check_handwritten');
+      expect(txn.paymentMethod).toBe('check');
+      expect(txn.printStatus).toBe('hand_written');
+      expect(txn.referenceNumber).toBeNull();
+    });
+  });
+
   describe('printed memo', () => {
     const memoOf = async (paymentId: string) => {
       const [txn] = await db.select().from(transactions).where(eq(transactions.id, paymentId));

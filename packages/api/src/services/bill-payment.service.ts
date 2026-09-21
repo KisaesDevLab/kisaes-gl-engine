@@ -6,7 +6,7 @@ import { eq, and, sql, inArray } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 type Decimal = InstanceType<typeof Decimal>;
-import { CHECK_MEMO_PRINT_LIMIT, vendorAccountMemo, type PayBillsInput } from '@kis-books/shared';
+import { CHECK_MEMO_PRINT_LIMIT, vendorAccountMemo, toStoredPaymentMethod, type PayBillsInput } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import {
   transactions,
@@ -393,6 +393,8 @@ export async function payBills(
         checkNumber,
         printStatus,
         printedMemo,
+        paymentMethod: toStoredPaymentMethod(input.method),
+        referenceNumber: input.referenceNumber?.trim() || null,
         source: origin?.source ?? null,
         sourceId: origin?.sourceId ?? null,
       }).returning();

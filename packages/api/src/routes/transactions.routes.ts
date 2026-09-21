@@ -3,14 +3,16 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
+import { z } from 'zod';
 import {
   createJournalEntrySchema, createExpenseSchema, createTransferSchema,
   createDepositSchema, createCashSaleSchema, createCreditMemoSchema,
   createCustomerRefundSchema, voidTransactionSchema, transactionFiltersSchema,
-  bulkUpdateTransactionsSchema,
+  bulkUpdateTransactionsSchema, can,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
-import { requireResource } from '../middleware/permission.js';
+import { requireResource, resolvePermissionsForRequest } from '../middleware/permission.js';
+import { expensiveOpLimiter } from '../middleware/expensive-op-limiter.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as ledger from '../services/ledger.service.js';
@@ -26,6 +28,7 @@ import * as cashSaleService from '../services/cash-sale.service.js';
 import * as creditMemoService from '../services/credit-memo.service.js';
 import * as customerRefundService from '../services/customer-refund.service.js';
 import * as attachmentService from '../services/attachment.service.js';
+import * as transactionReport from '../services/transaction-report.service.js';
 
 export const transactionsRouter = Router();
 transactionsRouter.use(authenticate);
@@ -138,8 +141,38 @@ transactionsRouter.get('/:id/pdf', async (req, res) => {
   res.send(pdf);
 });
 
+const txnIdParam = z.string().uuid();
+
+// Everything directly tied to this transaction: payments applied to a bill,
+// bills a payment paid, and the invoice-side equivalents.
+transactionsRouter.get('/:id/related', async (req, res) => {
+  const parsed = txnIdParam.safeParse(req.params['id']);
+  if (!parsed.success) throw AppError.badRequest('Invalid transaction id');
+  res.json(await transactionReport.getRelatedTransactions(req.tenantId, parsed.data, req.companyId));
+});
+
+// Transaction Report: summary of this transaction and everything linked to
+// it, followed by their attachments. Launches Chromium, hence the limiter.
+transactionsRouter.get('/:id/report.pdf', expensiveOpLimiter, async (req, res) => {
+  const parsed = txnIdParam.safeParse(req.params['id']);
+  if (!parsed.success) throw AppError.badRequest('Invalid transaction id');
+  // The report embeds the attachments themselves, so reading transactions
+  // is not enough to get them: without attachment access it is summary-only.
+  const perms = await resolvePermissionsForRequest(req);
+  const report = await transactionReport.generateTransactionReportPdf(req.tenantId, parsed.data, {
+    companyId: req.companyId,
+    includeAttachments: can(perms, 'attachments', 'read'),
+    userId: req.userId,
+  });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${report.fileName}"`);
+  res.setHeader('X-Report-Warnings', String(report.warnings.length));
+  res.setHeader('Access-Control-Expose-Headers', 'X-Report-Warnings, Content-Disposition');
+  res.send(report.buffer);
+});
+
 transactionsRouter.get('/:id', async (req, res) => {
-  const txn = await ledger.getTransaction(req.tenantId, req.params['id']!);
+  const txn = await transactionReport.getTransactionDetail(req.tenantId, req.params['id']!);
   res.json({ transaction: txn });
 });
 

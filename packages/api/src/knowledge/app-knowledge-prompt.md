@@ -183,7 +183,10 @@ receivable created). Use when the customer pays at the point of sale.
    transaction and updates the bill's status. Paying by check also shows a
    **Memo on check** field: leave it blank and each check's memo line prints the
    vendor invoice numbers it covers (our bill number where the vendor gave none),
-   or type your own — an account number, say — to use instead.
+   or type your own — an account number, say — to use instead. Paying any other
+   way (ACH, credit card, cash, other) shows an optional **Ref #** field instead —
+   an ACH trace or confirmation number. The method and Ref # are saved on the
+   payment and show on the transaction and its **Transaction Report**.
 5. **Print Checks** (if paying by check) — go to **Print Checks →** to print
    queued checks in a batch. Click a queued check's Memo cell to retype its memo
    before it prints; after printing, reprint the batch to edit it. Hand-written
@@ -603,6 +606,13 @@ queue. Vendors with no account number print the same memo as before.
 - **Check Register** — all checks written, with check numbers, payees, and amounts.
 - **1099 Vendor Summary** — detailed 1099-eligible payments per vendor.
 - **Transaction List** — all transactions for a period in date order.
+- **Transaction Report** — not on the Reports page: a button on any transaction
+  (and on the Bill and Invoice pages). One PDF with the transaction's details and
+  journal lines, the same for every linked transaction (a bill and the payments
+  that paid it, an invoice and its payments), then every attachment on all of
+  them, page for page, captioned with the file name. Unreadable or
+  password-protected files are listed with the reason instead of failing the
+  report. Limits: 40 attachments, 50 pages per PDF, 300 pages total.
 - **Journal Entries Report** — all journal entries for a period.
 - **Budget Overview** — summary view of all budget lines for a fiscal year.
 

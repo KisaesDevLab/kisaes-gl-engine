@@ -132,6 +132,7 @@ export async function createCheck(tenantId: string, input: WriteCheckInput, user
       contactId: input.contactId,
       memo: input.memo,
       total: input.amount,
+      paymentMethod: 'check',
       lines: journalLines,
     }, userId, companyId, tx);
 
