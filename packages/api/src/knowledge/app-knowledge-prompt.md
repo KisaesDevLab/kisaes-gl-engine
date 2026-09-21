@@ -545,6 +545,13 @@ categories. The suggestion includes a confidence score. You review and accept or
 the category in the Bank Feed. An administrator must enable AI under
 **Admin → AI Processing →**.
 
+### "A screen isn't showing a change I just made (or someone else made). How do I refresh it?"
+Click the **Refresh** icon (circular arrows) at the top right of the header bar, next to the
+Dashboard icon. It reloads the data behind the screen you're on without a browser reload, so
+you keep your place and anything you've typed into a form. Screens also update on their own
+within about 20 seconds when the ledger changes, but changes that don't post to the ledger
+(bank feed rows, contacts, rules, document requests) may need the Refresh icon.
+
 ## Reports Quick Reference
 
 - **Profit and Loss (P&L)** — revenue minus expenses for a period. Tells you if

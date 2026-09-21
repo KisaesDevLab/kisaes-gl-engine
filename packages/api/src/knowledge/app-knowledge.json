@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-18T17:47:31.983Z",
+  "generatedAt": "2026-09-21T13:42:39.737Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -18,7 +18,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 97417
+    "totalBytes": 97962
   },
   "screens": [
     {
@@ -1564,6 +1564,7 @@
     "\"How do I connect my bank account?\"",
     "\"What file types can I attach to transactions?\"",
     "\"How does AI categorization work?\"",
+    "\"A screen isn't showing a change I just made (or someone else made). How do I refresh it?\"",
     "Cash vs. Accrual Basis",
     "Fiscal-Year Date Presets",
     "Two-Factor Authentication (2FA)",
