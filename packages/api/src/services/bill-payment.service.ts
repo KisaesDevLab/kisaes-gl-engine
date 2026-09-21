@@ -6,12 +6,13 @@ import { eq, and, sql, inArray } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 type Decimal = InstanceType<typeof Decimal>;
-import { CHECK_MEMO_PRINT_LIMIT, type PayBillsInput } from '@kis-books/shared';
+import { CHECK_MEMO_PRINT_LIMIT, vendorAccountMemo, type PayBillsInput } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import {
   transactions,
   journalLines,
   accounts,
+  contacts,
   billPaymentApplications,
   vendorCreditApplications,
   reconciliations,
@@ -69,29 +70,38 @@ const MAX_PRINTED_MEMO = 255;
  * half-written invoice number and silently drop the rest. Trimming here keeps
  * whole references and says how many didn't fit — the stub itemizes every
  * bill in full either way.
+ *
+ * When the vendor record carries the account number they assigned us
+ * (contacts.vendor_account_number), it leads the memo: it is what the vendor
+ * keys the payment to, so it must survive even when the invoice list has to
+ * be trimmed. The invoice references then share whatever room is left.
  */
-function defaultPrintedMemo(grp: VendorPaymentGroup): string | null {
+function defaultPrintedMemo(grp: VendorPaymentGroup, vendorAccountNumber?: string | null): string | null {
+  const acct = vendorAccountMemo(vendorAccountNumber);
+  const prefix = acct ? `${acct} - ` : '';
+  const budget = CHECK_MEMO_PRINT_LIMIT - prefix.length;
+
   const refs = grp.vendorBills
     .map((b) => (b.bill.vendorInvoiceNumber || b.bill.txnNumber || '').trim())
     .filter((r) => r.length > 0);
-  if (refs.length === 0) return null;
+  if (refs.length === 0) return acct || null;
 
   const full = refs.join(', ');
-  if (full.length <= CHECK_MEMO_PRINT_LIMIT) return full;
+  if (full.length <= budget) return prefix + full;
 
   const kept: string[] = [];
   for (const ref of refs) {
     const candidate = [...kept, ref].join(', ');
     const dropped = refs.length - (kept.length + 1);
     const suffix = dropped > 0 ? ` +${dropped} more` : '';
-    if (candidate.length + suffix.length > CHECK_MEMO_PRINT_LIMIT) break;
+    if (candidate.length + suffix.length > budget) break;
     kept.push(ref);
   }
   // A single reference longer than the print line still goes in whole: the
   // register should hold the real invoice number even though the paper cuts
   // it. Only the column width can truncate it.
-  if (kept.length === 0) return refs[0]!.slice(0, MAX_PRINTED_MEMO);
-  return `${kept.join(', ')} +${refs.length - kept.length} more`;
+  if (kept.length === 0) return (prefix + refs[0]!).slice(0, MAX_PRINTED_MEMO);
+  return `${prefix}${kept.join(', ')} +${refs.length - kept.length} more`;
 }
 
 interface VendorPaymentGroup {
@@ -291,6 +301,17 @@ export async function payBills(
       group: VendorPaymentGroup;
     }> = [];
 
+    // The account number each vendor assigned us, for the default check memo.
+    // One read for the whole batch; an explicit input.printedMemo still wins.
+    const vendorAccountNumbers = new Map<string, string | null>();
+    if (input.method === 'check' || input.method === 'check_handwritten') {
+      const vendorRows = await tx
+        .select({ id: contacts.id, vendorAccountNumber: contacts.vendorAccountNumber })
+        .from(contacts)
+        .where(and(eq(contacts.tenantId, tenantId), inArray(contacts.id, [...groups.keys()])));
+      for (const v of vendorRows) vendorAccountNumbers.set(v.id, v.vendorAccountNumber);
+    }
+
     for (const grp of groups.values()) {
       // Build journal lines.
       // - DR AP for the total of bills being paid (this clears the AP balance
@@ -354,7 +375,7 @@ export async function payBills(
       // printed_memo is what lands on the check's memo line; transactions.memo
       // stays the bookkeeping note. Only checks carry one.
       const printedMemo = paysByCheck
-        ? (input.printedMemo?.trim() || defaultPrintedMemo(grp))
+        ? (input.printedMemo?.trim() || defaultPrintedMemo(grp, vendorAccountNumbers.get(grp.vendorId)))
         : null;
 
       // Insert transaction header directly (we're inside an active tx; we

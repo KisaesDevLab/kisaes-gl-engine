@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-21T13:42:39.737Z",
+  "generatedAt": "2026-09-21T14:40:24.771Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -18,7 +18,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 97962
+    "totalBytes": 98671
   },
   "screens": [
     {
@@ -1565,6 +1565,7 @@
     "\"What file types can I attach to transactions?\"",
     "\"How does AI categorization work?\"",
     "\"A screen isn't showing a change I just made (or someone else made). How do I refresh it?\"",
+    "\"How do I get a vendor's account number to print on the check memo?\"",
     "Cash vs. Accrual Basis",
     "Fiscal-Year Date Presets",
     "Two-Factor Authentication (2FA)",

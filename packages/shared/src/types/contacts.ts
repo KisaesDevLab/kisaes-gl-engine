@@ -33,6 +33,8 @@ export interface Contact {
   // ADR 0XY — vendor-scoped default tag.
   defaultTagId: string | null;
   taxId: string | null;
+  /** Account number the vendor assigned to us; free text. Seeds check memos. */
+  vendorAccountNumber: string | null;
   is1099Eligible: boolean;
   notes: string | null;
   isActive: boolean;
@@ -66,6 +68,7 @@ export interface CreateContactInput {
   defaultExpenseAccountId?: string | null;
   defaultTagId?: string | null;
   taxId?: string | null;
+  vendorAccountNumber?: string | null;
   is1099Eligible?: boolean;
   notes?: string | null;
 }
@@ -94,6 +97,7 @@ export interface UpdateContactInput {
   defaultExpenseAccountId?: string | null;
   defaultTagId?: string | null;
   taxId?: string | null;
+  vendorAccountNumber?: string | null;
   is1099Eligible?: boolean;
   notes?: string | null;
   isActive?: boolean;

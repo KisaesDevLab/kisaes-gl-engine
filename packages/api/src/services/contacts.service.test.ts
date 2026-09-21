@@ -70,6 +70,24 @@ describe('Contacts Service', () => {
       expect(contact.taxId).toBe('12-3456789');
     });
 
+    // Migration 0177. Text, not numeric: a number column (or a numeric input)
+    // would turn "00-4471-A" into garbage and "0012345" into 12345.
+    it('stores the vendor account number as text, verbatim', async () => {
+      const created = await contactsService.create(tenantId, {
+        contactType: 'vendor',
+        displayName: 'City Water',
+        vendorAccountNumber: '0012345',
+      });
+      expect(created.vendorAccountNumber).toBe('0012345');
+
+      const updated = await contactsService.update(tenantId, created.id, { vendorAccountNumber: '00-4471-A' });
+      expect(updated.vendorAccountNumber).toBe('00-4471-A');
+      expect((await contactsService.getById(tenantId, created.id)).vendorAccountNumber).toBe('00-4471-A');
+
+      const cleared = await contactsService.update(tenantId, created.id, { vendorAccountNumber: null });
+      expect(cleared.vendorAccountNumber).toBeNull();
+    });
+
     it('should create a dual-type contact', async () => {
       const contact = await contactsService.create(tenantId, {
         contactType: 'both',

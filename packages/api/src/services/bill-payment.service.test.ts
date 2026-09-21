@@ -912,6 +912,90 @@ describe('Bill Payment Service', () => {
       expect(memo).not.toMatch(/INV-2026-\d{0,3}(,| \+|$)/);
     });
 
+    // contacts.vendor_account_number (migration 0177): the number the vendor
+    // assigned us leads the default memo so they can apply the payment.
+    describe('vendor account number', () => {
+      const setAccountNumber = (id: string, n: string | null) =>
+        db.update(contacts).set({ vendorAccountNumber: n }).where(eq(contacts.id, id));
+
+      it('leads the default memo, ahead of the invoice numbers', async () => {
+        // Text, not a number: leading zeros, dashes and letters must survive.
+        await setAccountNumber(vendorId, '00-4471-A');
+        const bill = await billService.createBill(tenantId, {
+          contactId: vendorId, txnDate: '2026-04-01', vendorInvoiceNumber: 'INV-1001',
+          lines: [{ accountId: officeSuppliesId, amount: '100.00' }],
+        });
+        const result = await billPaymentService.payBills(tenantId, {
+          bankAccountId, txnDate: '2026-04-15', method: 'check',
+          bills: [{ billId: bill.id, amount: '100.00' }],
+        });
+        expect(await memoOf(result.payments[0]!.id)).toBe('Acct 00-4471-A - INV-1001');
+      });
+
+      it('is per vendor in a multi-vendor run', async () => {
+        await setAccountNumber(vendorId, '7781');
+        const a = await billService.createBill(tenantId, {
+          contactId: vendorId, txnDate: '2026-04-01', vendorInvoiceNumber: 'A-1',
+          lines: [{ accountId: officeSuppliesId, amount: '10.00' }],
+        });
+        const b = await billService.createBill(tenantId, {
+          contactId: vendorBId, txnDate: '2026-04-01', vendorInvoiceNumber: 'B-1',
+          lines: [{ accountId: officeSuppliesId, amount: '20.00' }],
+        });
+        const result = await billPaymentService.payBills(tenantId, {
+          bankAccountId, txnDate: '2026-04-15', method: 'check',
+          bills: [{ billId: a.id, amount: '10.00' }, { billId: b.id, amount: '20.00' }],
+        });
+        const memos = new Map<string, string | null>();
+        for (const pmt of result.payments) memos.set(pmt.contactId!, await memoOf(pmt.id));
+        expect(memos.get(vendorId)).toBe('Acct 7781 - A-1');
+        // No account number on file → exactly the old default, no stray prefix.
+        expect(memos.get(vendorBId)).toBe('B-1');
+      });
+
+      it('keeps the account number whole when the invoice list has to be trimmed', async () => {
+        await setAccountNumber(vendorId, '5520-118-9934');
+        const bills = [];
+        for (let i = 0; i < 6; i++) {
+          bills.push(await billService.createBill(tenantId, {
+            contactId: vendorId, txnDate: '2026-04-01',
+            vendorInvoiceNumber: `INV-2026-04${String(i).padStart(2, '0')}`,
+            lines: [{ accountId: officeSuppliesId, amount: '10.00' }],
+          }));
+        }
+        const result = await billPaymentService.payBills(tenantId, {
+          bankAccountId, txnDate: '2026-04-15', method: 'check',
+          bills: bills.map((b) => ({ billId: b.id, amount: '10.00' })),
+        });
+        const memo = (await memoOf(result.payments[0]!.id))!;
+        expect(memo.startsWith('Acct 5520-118-9934 - INV-2026-0400')).toBe(true);
+        expect(memo.length).toBeLessThanOrEqual(CHECK_MEMO_PRINT_LIMIT);
+        expect(memo).toMatch(/ \+\d+ more$/);
+      });
+
+      it('never overrides a memo the payer typed, and stays off non-check payments', async () => {
+        await setAccountNumber(vendorId, '7781');
+        const typed = await billService.createBill(tenantId, {
+          contactId: vendorId, txnDate: '2026-04-01', vendorInvoiceNumber: 'T-1',
+          lines: [{ accountId: officeSuppliesId, amount: '10.00' }],
+        });
+        const ach = await billService.createBill(tenantId, {
+          contactId: vendorId, txnDate: '2026-04-01', vendorInvoiceNumber: 'T-2',
+          lines: [{ accountId: officeSuppliesId, amount: '10.00' }],
+        });
+        const r1 = await billPaymentService.payBills(tenantId, {
+          bankAccountId, txnDate: '2026-04-15', method: 'check', printedMemo: 'April service',
+          bills: [{ billId: typed.id, amount: '10.00' }],
+        });
+        const r2 = await billPaymentService.payBills(tenantId, {
+          bankAccountId, txnDate: '2026-04-15', method: 'ach',
+          bills: [{ billId: ach.id, amount: '10.00' }],
+        });
+        expect(await memoOf(r1.payments[0]!.id)).toBe('April service');
+        expect(await memoOf(r2.payments[0]!.id)).toBeNull();
+      });
+    });
+
     it('keeps a single over-long reference whole in the register', async () => {
       const bill = await billService.createBill(tenantId, {
         contactId: vendorId,

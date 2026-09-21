@@ -769,7 +769,7 @@ export async function importAsNewTenant(
         billing_line1, billing_line2, billing_city, billing_state, billing_zip, billing_country,
         shipping_line1, shipping_line2, shipping_city, shipping_state, shipping_zip, shipping_country,
         default_payment_terms, default_terms_days, opening_balance, opening_balance_date,
-        default_expense_account_id, tax_id, is_1099_eligible, notes, is_active
+        default_expense_account_id, tax_id, vendor_account_number, is_1099_eligible, notes, is_active
       ) VALUES (
         ${newId}, ${tenantId}, ${companyId},
         ${c['contact_type'] as string},
@@ -797,6 +797,7 @@ export async function importAsNewTenant(
         ${(c['opening_balance_date'] as string) || null},
         ${defaultExpenseAccountId},
         ${(c['tax_id'] as string) || null},
+        ${(c['vendor_account_number'] as string) || null},
         ${c['is_1099_eligible'] === true},
         ${(c['notes'] as string) || null},
         ${c['is_active'] !== false}
@@ -1404,7 +1405,7 @@ export async function importMergeIntoTenant(
           id, tenant_id, company_id, contact_type, display_name, company_name,
           first_name, last_name, email, phone,
           billing_line1, billing_line2, billing_city, billing_state, billing_zip, billing_country,
-          default_payment_terms, default_expense_account_id, tax_id, is_1099_eligible, notes, is_active
+          default_payment_terms, default_expense_account_id, tax_id, vendor_account_number, is_1099_eligible, notes, is_active
         ) VALUES (
           ${newId}, ${targetTenantId}, ${companyId},
           ${c['contact_type'] as string},
@@ -1423,6 +1424,7 @@ export async function importMergeIntoTenant(
           ${(c['default_payment_terms'] as string) || null},
           ${defaultExpenseAccountId},
           ${(c['tax_id'] as string) || null},
+          ${(c['vendor_account_number'] as string) || null},
           ${c['is_1099_eligible'] === true},
           ${(c['notes'] as string) || null},
           ${c['is_active'] !== false}

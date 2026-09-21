@@ -38,6 +38,10 @@ export const contacts = pgTable('contacts', {
   defaultExpenseAccountId: uuid('default_expense_account_id'),
   taxId: varchar('tax_id', { length: 30 }),
   is1099Eligible: boolean('is_1099_eligible').default(false),
+  // Migration 0177 — the account number THIS VENDOR assigned to us (utility
+  // account, customer no.). Free text: dashes, letters and leading zeros are
+  // normal. Seeds the memo line of checks written to the vendor.
+  vendorAccountNumber: varchar('vendor_account_number', { length: 50 }),
   // ADR 0XY: default tag for transactions that reference this contact.
   // Per §2.1 this source is consulted ONLY when contact_type is
   // 'vendor' or 'both'. Customer-only contacts ignore the column.

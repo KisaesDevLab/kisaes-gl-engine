@@ -31,6 +31,9 @@ export const createContactSchema = z.object({
   openingBalanceDate: z.string().nullish(),
   defaultExpenseAccountId: z.string().uuid().nullish(),
   taxId: z.string().max(30).nullish(),
+  // Free text on purpose — vendor account numbers carry dashes, letters and
+  // leading zeros. Trimmed so a stray space doesn't print on the check.
+  vendorAccountNumber: z.string().trim().max(50).nullish(),
   is1099Eligible: z.boolean().default(false),
   notes: z.string().nullish(),
   // ADR 0XY: vendor-scoped default tag. Set on any contact; the resolver
@@ -61,6 +64,9 @@ export const updateContactSchema = z.object({
   defaultPaymentTerms: z.string().max(50).nullish(),
   defaultExpenseAccountId: z.string().uuid().nullish(),
   taxId: z.string().max(30).nullish(),
+  // Free text on purpose — vendor account numbers carry dashes, letters and
+  // leading zeros. Trimmed so a stray space doesn't print on the check.
+  vendorAccountNumber: z.string().trim().max(50).nullish(),
   is1099Eligible: z.boolean().optional(),
   notes: z.string().nullish(),
   isActive: z.boolean().optional(),

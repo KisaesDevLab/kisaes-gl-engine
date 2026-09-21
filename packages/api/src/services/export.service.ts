@@ -101,7 +101,7 @@ export async function fullExport(tenantId: string, opts: FullExportOptions = {})
       c.billing_line1, c.billing_line2, c.billing_city, c.billing_state, c.billing_zip, c.billing_country,
       c.shipping_line1, c.shipping_line2, c.shipping_city, c.shipping_state, c.shipping_zip, c.shipping_country,
       c.default_payment_terms, c.default_terms_days, c.opening_balance, c.opening_balance_date,
-      c.tax_id, c.is_1099_eligible, c.notes, c.is_active,
+      c.tax_id, c.vendor_account_number, c.is_1099_eligible, c.notes, c.is_active,
       ea.account_number AS default_expense_account_number, ea.name AS default_expense_account,
       tag.name AS default_tag
     FROM contacts c
@@ -115,13 +115,13 @@ export async function fullExport(tenantId: string, opts: FullExportOptions = {})
       'Billing Line 1', 'Billing Line 2', 'Billing City', 'Billing State', 'Billing Zip', 'Billing Country',
       'Shipping Line 1', 'Shipping Line 2', 'Shipping City', 'Shipping State', 'Shipping Zip', 'Shipping Country',
       'Payment Terms', 'Terms Days', 'Opening Balance', 'Opening Balance Date',
-      'Tax ID', '1099 Eligible', 'Default Expense Account Number', 'Default Expense Account', 'Default Tag', 'Notes', 'Active'],
+      'Tax ID', 'Vendor Account Number', '1099 Eligible', 'Default Expense Account Number', 'Default Expense Account', 'Default Tag', 'Notes', 'Active'],
     ctcts.rows,
     ['id', 'display_name', 'contact_type', 'company_name', 'first_name', 'last_name', 'email', 'phone',
       'billing_line1', 'billing_line2', 'billing_city', 'billing_state', 'billing_zip', 'billing_country',
       'shipping_line1', 'shipping_line2', 'shipping_city', 'shipping_state', 'shipping_zip', 'shipping_country',
       'default_payment_terms', 'default_terms_days', 'opening_balance', 'opening_balance_date',
-      'tax_id', 'is_1099_eligible', 'default_expense_account_number', 'default_expense_account', 'default_tag', 'notes', 'is_active'],
+      'tax_id', 'vendor_account_number', 'is_1099_eligible', 'default_expense_account_number', 'default_expense_account', 'default_tag', 'notes', 'is_active'],
   );
 
   // Items (products & services)

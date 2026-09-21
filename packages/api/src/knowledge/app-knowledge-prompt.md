@@ -552,6 +552,15 @@ you keep your place and anything you've typed into a form. Screens also update o
 within about 20 seconds when the ledger changes, but changes that don't post to the ledger
 (bank feed rows, contacts, rules, document requests) may need the Refresh icon.
 
+### "How do I get a vendor's account number to print on the check memo?"
+Open the vendor under **Contacts**, click **Edit**, and fill in **Account number** in the
+*Vendor Details* section (the number the vendor assigned to you — utility account, customer
+number, etc.). It is a text field, so dashes, letters and leading zeros are kept exactly. From
+then on, **Write Check** fills the Printed Memo with `Acct <number>` when you pick that vendor,
+and **Pay Bills** checks default to `Acct <number> - <invoice numbers>`. You can still edit the
+memo on Write Check, in the *Memo on check* field on Pay Bills, or per check in the Print Checks
+queue. Vendors with no account number print the same memo as before.
+
 ## Reports Quick Reference
 
 - **Profit and Loss (P&L)** — revenue minus expenses for a period. Tells you if
