@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { tenants, users, sessions, accounts, companies, auditLog, contacts, transactions, journalLines, tags, transactionTags } from '../db/schema/index.js';
+import { tenants, users, sessions, accounts, companies, auditLog, contacts, transactions, journalLines, tags, transactionTags, reconciliations, reconciliationLines } from '../db/schema/index.js';
 import * as registerService from './register.service.js';
 import * as accountsService from './accounts.service.js';
 import * as ledger from './ledger.service.js';
@@ -20,6 +20,11 @@ let liabilityAccountId: string;
 // running suites' data (and trip over their FKs). Only touch our tenant.
 async function cleanDb() {
   if (!tenantId) return;
+  // reconciliation_lines has no tenant_id — scope through this tenant's reconciliations
+  await db.delete(reconciliationLines).where(
+    inArray(reconciliationLines.reconciliationId, db.select({ id: reconciliations.id }).from(reconciliations).where(eq(reconciliations.tenantId, tenantId))),
+  );
+  await db.delete(reconciliations).where(eq(reconciliations.tenantId, tenantId));
   await db.delete(transactionTags).where(eq(transactionTags.tenantId, tenantId));
   await db.delete(tags).where(eq(tags.tenantId, tenantId));
   await db.delete(journalLines).where(eq(journalLines.tenantId, tenantId));
@@ -163,6 +168,78 @@ describe('Register Service', () => {
     expect(amountDesc.lines.map((l) => l.deposit)).toEqual([400, 300]);
     // Each row still shows its canonical (date-ordered) balance.
     expect(amountDesc.lines.map((l) => l.runningBalance)).toEqual([500, 1000]);
+  });
+
+  // An item left outstanding gets a reconciliation_lines row in EVERY
+  // reconciliation whose worksheet it sits on. Joining those rows directly
+  // listed the line once per reconciliation and added its amount that many
+  // times to every later running balance (the header balance stayed right,
+  // which is how it was spotted: register bottom line != Current Balance).
+  it('counts a line once even when it sits on several reconciliations', async () => {
+    await ledger.postTransaction(tenantId, {
+      txnType: 'deposit', txnDate: '2026-01-05',
+      lines: [
+        { accountId: bankAccountId, debit: '5000.00', credit: '0' },
+        { accountId: revenueAccountId, debit: '0', credit: '5000.00' },
+      ],
+    });
+    // The stale outstanding check — never clears.
+    const stale = await ledger.postTransaction(tenantId, {
+      txnType: 'expense', txnDate: '2026-01-10',
+      lines: [
+        { accountId: expenseAccountId, debit: '1000.00', credit: '0' },
+        { accountId: bankAccountId, debit: '0', credit: '1000.00' },
+      ],
+    });
+    // Outstanding in January, cleared in February.
+    const slow = await ledger.postTransaction(tenantId, {
+      txnType: 'expense', txnDate: '2026-01-20',
+      lines: [
+        { accountId: expenseAccountId, debit: '200.00', credit: '0' },
+        { accountId: bankAccountId, debit: '0', credit: '200.00' },
+      ],
+    });
+    await ledger.postTransaction(tenantId, {
+      txnType: 'deposit', txnDate: '2026-03-15',
+      lines: [
+        { accountId: bankAccountId, debit: '300.00', credit: '0' },
+        { accountId: revenueAccountId, debit: '0', credit: '300.00' },
+      ],
+    });
+
+    const bankLineOf = async (txnId: string) => {
+      const rows = await db.select().from(journalLines).where(eq(journalLines.transactionId, txnId));
+      return rows.find((l) => l.accountId === bankAccountId)!.id;
+    };
+    const staleLine = await bankLineOf(stale.id);
+    const slowLine = await bankLineOf(slow.id);
+
+    const recons = await db.insert(reconciliations).values(
+      ['2026-01-31', '2026-02-28', '2026-03-31'].map((statementDate, i) => ({
+        tenantId, accountId: bankAccountId, statementDate,
+        statementEndingBalance: '0', beginningBalance: '0',
+        status: i < 2 ? 'complete' : 'in_progress',
+      })),
+    ).returning();
+    await db.insert(reconciliationLines).values([
+      ...recons.map((r) => ({ reconciliationId: r.id, journalLineId: staleLine, isCleared: false })),
+      { reconciliationId: recons[0]!.id, journalLineId: slowLine, isCleared: false },
+      { reconciliationId: recons[1]!.id, journalLineId: slowLine, isCleared: true },
+    ]);
+
+    const result = await registerService.getRegister(tenantId, bankAccountId, { startDate: '2026-01-01', endDate: '2026-12-31' });
+
+    expect(result.pagination.totalRows).toBe(4);
+    expect(result.lines).toHaveLength(4);
+    expect(result.lines.map((l) => l.runningBalance)).toEqual([5000, 4000, 3800, 4100]);
+    // The last row and the range total must agree with each other and the GL.
+    expect(result.endingBalance).toBe(4100);
+
+    expect(result.lines[1]!.reconciliationStatus).toBe('uncleared');
+    // Cleared on the completed February reconciliation, despite the
+    // uncleared January row for the same line.
+    expect(result.lines[2]!.reconciliationStatus).toBe('reconciled');
+    expect(result.lines[2]!.isEditable).toBe(false);
   });
 
   it('should compute balance_forward correctly', async () => {

@@ -199,8 +199,8 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
       t.memo,
       t.contact_id,
       c.display_name AS payee_name,
-      rl.is_cleared,
-      r.status AS recon_status,
+      rec.is_cleared,
+      rec.is_reconciled,
       cat.category_name,
       cat.category_account_id,
       -- Running balance delta in canonical ledger order, regardless of the
@@ -213,8 +213,20 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id
     LEFT JOIN contacts c ON c.id = t.contact_id AND c.tenant_id = ${tenantId}
-    LEFT JOIN reconciliation_lines rl ON rl.journal_line_id = jl.id
-    LEFT JOIN reconciliations r ON r.id = rl.reconciliation_id
+    -- Reconciliation status, collapsed to ONE row per journal line. A line
+    -- gets a reconciliation_lines row in every reconciliation whose worksheet
+    -- it appears on, so an item left outstanding for months has one per
+    -- month. Joining those rows directly duplicated the line in the register
+    -- and — because the window below runs over the joined rows — counted its
+    -- amount once per reconciliation in every later running balance.
+    LEFT JOIN LATERAL (
+      SELECT
+        COALESCE(BOOL_OR(rl.is_cleared), false) AS is_cleared,
+        COALESCE(BOOL_OR(rl.is_cleared AND r.status = 'complete'), false) AS is_reconciled
+      FROM reconciliation_lines rl
+      JOIN reconciliations r ON r.id = rl.reconciliation_id AND r.tenant_id = ${tenantId}
+      WHERE rl.journal_line_id = jl.id
+    ) rec ON true
     -- Resolve the "other side" account(s) for the transaction. If exactly one
     -- distinct account other than the one being viewed, show its name/id.
     -- If more than one, it's a split. Scoped to tenant throughout.
@@ -279,7 +291,7 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
 
     // Reconciliation status
     let reconciliationStatus: 'cleared' | 'reconciled' | 'uncleared' = 'uncleared';
-    if (row.recon_status === 'complete' && row.is_cleared) {
+    if (row.is_reconciled) {
       reconciliationStatus = 'reconciled';
     } else if (row.is_cleared) {
       reconciliationStatus = 'cleared';
