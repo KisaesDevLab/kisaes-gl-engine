@@ -206,16 +206,23 @@ Distinct from **Re-process** (re-runs the whole extraction; refused once a state
 saved, to avoid duplicate imports) and from the Reconciliation page's tenant-wide
 **Backfill check payees** with its optional re-scan of every stored statement.
 
-## Uncategorized: setting a category one row at a time
+## Uncategorized: setting a payee and a category one row at a time
 
 Practice → Uncategorized (flag `UNCATEGORIZED_REVIEW_V1`), on both the **Not
-posted** and **In suspense** tabs. Each row has a **Category** column using the
-same account picker as the transaction forms.
+posted** and **In suspense** tabs. Each row has a **Payee** column using the
+same contact picker as Write Check and Bank Feeds (search, quick-add) and a
+**Category** column using the same account picker as the transaction forms.
+Both pickers stretch to the width the screen has. A payee read off a check
+image but not yet linked to a contact shows as a hint under the empty Payee
+picker.
 
-Picking an account does NOT post. The row shows an amber marker and a **Save**
-button, and a banner says nothing is committed yet. Pressing Save on that row
-posts it and the row leaves the list. The deliberate extra step exists because
-a row vanishing the moment a dropdown closed reads as an accidental posting.
+Picking a payee or an account does NOT save. The row shows an amber marker and
+a **Save** button, and a banner says nothing is committed yet. Pressing Save on
+that row saves the payee first (header-level: no money moves, the row stays),
+then posts the category and the row leaves the list. Saving a payee alone keeps
+the row. Picking a contact with a default expense account prefills the row's
+category draft. The deliberate extra step exists because a row vanishing the
+moment a dropdown closed reads as an accidental posting.
 
 If the ledger refuses the move — closed period, voided entry, adjusting entry,
 or a bank line someone else already handled — the row KEEPS the pick and the

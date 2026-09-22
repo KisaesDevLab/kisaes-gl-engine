@@ -141,6 +141,8 @@ export interface SuspenseRow {
   txnType: string;
   txnNumber: string | null;
   memo: string | null;
+  /** Linked payee (transactions.contact_id); the row's Payee picker edits it. */
+  contactId: string | null;
   contactName: string | null;
   /**
    * Check number stamped on the posted transaction — from the bank feed's
@@ -238,6 +240,7 @@ export async function listInSuspense(
       t.source            AS source,
       t.check_number      AS check_number,
       t.payee_name_on_check AS payee_name_on_check,
+      t.contact_id        AS contact_id,
       c.display_name      AS contact_name,
       (SELECT COALESCE(SUM(jl.debit), 0) - COALESCE(SUM(jl.credit), 0)
          FROM journal_lines jl
@@ -270,6 +273,7 @@ export async function listInSuspense(
     txnType: String(r['txn_type']),
     txnNumber: (r['txn_number'] as string | null) ?? null,
     memo: (r['memo'] as string | null) ?? null,
+    contactId: (r['contact_id'] as string | null) ?? null,
     contactName: (r['contact_name'] as string | null) ?? null,
     checkNumber: r['check_number'] == null ? null : Number(r['check_number']),
     payeeNameOnCheck: (r['payee_name_on_check'] as string | null) ?? null,
