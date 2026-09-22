@@ -216,6 +216,20 @@ Both pickers stretch to the width the screen has. A payee read off a check
 image but not yet linked to a contact shows as a hint under the empty Payee
 picker.
 
+Every column except Category and Docs sorts (click a header; click again to
+flip). The sort is server-side because the lists paginate: `sortBy`/`sortDir`
+on `/practice/uncategorized/unposted` (feedDate, checkNumber, payee,
+description, amount) and `/in-suspense` (txnDate, checkNumber, payee, memo,
+amount); an unknown key falls back to newest first.
+
+The toolbar has **Set payee** beside **Set category**: tick rows, pick one
+contact, apply. It is header-level, so rows stay on their list with the new
+name. In suspense uses `POST /transactions/bulk-update` (setPayeeContactId);
+Not posted uses `POST /banking/feed/bulk-set-contact`, which writes
+`suggested_contact_id` WITHOUT staging — `bulk-set-name` would flip the line
+to `assigned` and drop it off the pending-only list. Non-pending lines are
+reported as skipped.
+
 Picking a payee or an account does NOT save. The row shows an amber marker and
 a **Save** button, and a banner says nothing is committed yet. Pressing Save on
 that row saves the payee first (header-level: no money moves, the row stays),

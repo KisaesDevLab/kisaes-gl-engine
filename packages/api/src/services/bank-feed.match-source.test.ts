@@ -187,6 +187,42 @@ describe('bank-feed bulkSetName — match existing contact only', () => {
   });
 });
 
+// Bulk "Set payee" from the Uncategorized page — the OTHER bulk contact write.
+// It must NOT stage the line (bulkSetName flips pending → assigned, which
+// drops the line off a pending-only list); it writes suggested_contact_id.
+describe('bank-feed bulkSetContact — sets the contact without staging', () => {
+  it('writes the suggested contact on pending rows and leaves the status alone', async () => {
+    const a = await insertItem();
+    const b = await insertItem();
+    const res = await bankFeedService.bulkSetContact(tenantId, [a.id, b.id], vendorId);
+    expect(res.updated).toBe(2);
+    expect(res.skipped).toEqual([]);
+    expect((await rowFor(a.id)).suggestedContactName).toBe('Acme Supplies');
+    const row = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, a.id) });
+    expect(row!.status).toBe('pending');
+    expect(row!.assignedContactId).toBeNull();
+  });
+
+  it('clears with null and reports non-pending rows as skipped rather than touching them', async () => {
+    const a = await insertItem({ suggestedContactId: vendorId });
+    const staged = await insertItem({ status: 'assigned', assignedContactId: vendorId });
+    const res = await bankFeedService.bulkSetContact(tenantId, [a.id, staged.id, '00000000-0000-4000-8000-000000000000'], null);
+    expect(res.updated).toBe(1);
+    expect(res.skipped).toEqual([
+      { id: staged.id, reason: 'already_assigned' },
+      { id: '00000000-0000-4000-8000-000000000000', reason: 'not_found_or_wrong_tenant' },
+    ]);
+    expect((await rowFor(a.id)).suggestedContactName ?? null).toBeNull();
+    expect((await rowFor(staged.id)).assignedContactName).toBe('Acme Supplies');
+  });
+
+  it('refuses a contact from another tenant', async () => {
+    const a = await insertItem();
+    await expect(bankFeedService.bulkSetContact(tenantId, [a.id], '00000000-0000-4000-8000-000000000001'))
+      .rejects.toThrow(/Contact not found/);
+  });
+});
+
 // Search box now matches the resolved NAME (assigned/suggested contact display
 // name) and the AMOUNT, in addition to the bank descriptor, category and memo.
 // The count query must join the contact aliases too, so `total` stays in sync.

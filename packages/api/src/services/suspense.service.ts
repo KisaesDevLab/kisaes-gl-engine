@@ -194,9 +194,15 @@ export interface SuspenseRow {
  * Posted transactions carrying at least one line in suspense. Ordered newest
  * first. Offset/limit with a total, per the list-endpoint convention.
  */
+export type SuspenseSortKey = 'txnDate' | 'checkNumber' | 'payee' | 'memo' | 'amount';
+
 export async function listInSuspense(
   tenantId: string,
-  opts: { companyId?: string; startDate?: string; endDate?: string; search?: string; limit?: number; offset?: number } = {},
+  opts: {
+    companyId?: string; startDate?: string; endDate?: string; search?: string;
+    limit?: number; offset?: number;
+    sortBy?: SuspenseSortKey; sortDir?: 'asc' | 'desc';
+  } = {},
 ): Promise<{ rows: SuspenseRow[]; total: number; suspenseAccountId: string | null }> {
   const suspenseAccountId = await findSystemAccountId(tenantId, SUSPENSE_TAG);
   if (!suspenseAccountId) return { rows: [], total: 0, suspenseAccountId: null };
@@ -230,6 +236,27 @@ export async function listInSuspense(
   const counted = await db.execute<{ n: string }>(sql`SELECT COUNT(*)::text AS n ${base}`);
   const total = Number((counted.rows as Array<{ n: string }>)[0]?.n ?? '0');
 
+  // Signed suspense amount, debit positive. Used for the column and, when
+  // asked, the sort — ORDER BY cannot reference the text-cast alias.
+  const amountExpr = sql`(SELECT COALESCE(SUM(jl.debit), 0) - COALESCE(SUM(jl.credit), 0)
+         FROM journal_lines jl
+        WHERE jl.transaction_id = t.id AND jl.tenant_id = t.tenant_id
+          AND jl.account_id = ${suspenseAccountId})`;
+  const dir = opts.sortDir === 'asc' ? sql`ASC` : sql`DESC`;
+  const sortExpr = (() => {
+    switch (opts.sortBy) {
+      case 'checkNumber': return sql`t.check_number`;
+      // The name the Payee column shows: linked contact, else the check image.
+      case 'payee': return sql`COALESCE(c.display_name, t.payee_name_on_check)`;
+      case 'memo': return sql`t.memo`;
+      case 'amount': return amountExpr;
+      case 'txnDate':
+      default: return sql`t.txn_date`;
+    }
+  })();
+  // Stable tiebreaker so pages never overlap or skip.
+  const orderBy = sql`${sortExpr} ${dir} NULLS LAST, t.txn_date DESC, t.created_at DESC, t.id`;
+
   const res = await db.execute(sql`
     SELECT
       t.id                AS transaction_id,
@@ -242,10 +269,7 @@ export async function listInSuspense(
       t.payee_name_on_check AS payee_name_on_check,
       t.contact_id        AS contact_id,
       c.display_name      AS contact_name,
-      (SELECT COALESCE(SUM(jl.debit), 0) - COALESCE(SUM(jl.credit), 0)
-         FROM journal_lines jl
-        WHERE jl.transaction_id = t.id AND jl.tenant_id = t.tenant_id
-          AND jl.account_id = ${suspenseAccountId})::text AS amount,
+      ${amountExpr}::text AS amount,
       (SELECT COUNT(*) FROM journal_lines jl
         WHERE jl.transaction_id = t.id AND jl.tenant_id = t.tenant_id
           AND jl.account_id = ${suspenseAccountId})::int AS suspense_line_count,
@@ -263,7 +287,7 @@ export async function listInSuspense(
                   WHERE b2.tenant_id = t.tenant_id AND b2.matched_transaction_id = t.id))
           ))::int AS attachment_count
     ${base}
-    ORDER BY t.txn_date DESC, t.created_at DESC
+    ORDER BY ${orderBy}
     LIMIT ${limit} OFFSET ${offset}
   `);
 

@@ -103,6 +103,9 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
       case 'category': return sql`${suggestedAccount.name}`;
       case 'status': return sql`${bankFeedItems.status}`;
       case 'amount': return sql`CAST(${bankFeedItems.amount} AS DECIMAL)`;
+      case 'checkNumber': return sql`${bankFeedItems.checkNumber}`;
+      // The name the Payee column shows: same precedence as the UI.
+      case 'payee': return sql`COALESCE(${assignedContact.displayName}, ${suggestedContact.displayName}, ${bankFeedItems.payeeNameOnCheck})`;
       case 'feedDate':
       default: return sql`${bankFeedItems.feedDate}`;
     }
@@ -1025,6 +1028,59 @@ export async function bulkCategorize(tenantId: string, feedItemIds: string[], ac
 // an existing tenant contact. If no contact matches, nothing is created and
 // every selected row is reported as skipped — the caller surfaces that so the
 // user can create the contact (or pick it from the list) first.
+/**
+ * Bulk "Set payee" from the Uncategorized page: put ONE contact (or none) on
+ * many still-pending lines without staging or posting them. Writes
+ * suggested_contact_id — the field updateFeedItem and the Bank Feeds editor
+ * write — so the line stays `pending`, stays on the Not posted list, and the
+ * contact carries onto the transaction when the line is later categorized
+ * (categorize() falls back to suggestedContactId). Contrast bulkSetName,
+ * which flips pending → assigned.
+ *
+ * Lines not in `pending` are reported as skipped, never touched: an assigned
+ * line has a human-staged contact this must not silently override, and a
+ * posted line's payee lives on the transaction.
+ */
+export async function bulkSetContact(
+  tenantId: string,
+  feedItemIds: string[],
+  contactId: string | null,
+): Promise<{ updated: number; skipped: Array<{ id: string; reason: string }> }> {
+  if (contactId) {
+    const contact = await db.query.contacts.findFirst({
+      where: and(eq(contacts.tenantId, tenantId), eq(contacts.id, contactId)),
+    });
+    if (!contact) throw AppError.badRequest('Contact not found in this tenant');
+  }
+  const ids = [...new Set(feedItemIds)];
+  const rows = await db.select({ id: bankFeedItems.id, status: bankFeedItems.status })
+    .from(bankFeedItems)
+    .where(and(eq(bankFeedItems.tenantId, tenantId), inArray(bankFeedItems.id, ids)));
+  const statusById = new Map(rows.map((r) => [r.id, r.status]));
+
+  const skipped: Array<{ id: string; reason: string }> = [];
+  const targets: string[] = [];
+  for (const id of ids) {
+    const status = statusById.get(id);
+    if (!status) skipped.push({ id, reason: 'not_found_or_wrong_tenant' });
+    else if (status !== 'pending') skipped.push({ id, reason: `already_${status}` });
+    else targets.push(id);
+  }
+  if (targets.length === 0) return { updated: 0, skipped };
+
+  const updated = await db.update(bankFeedItems)
+    .set({ suggestedContactId: contactId, updatedAt: new Date() })
+    .where(and(
+      eq(bankFeedItems.tenantId, tenantId),
+      inArray(bankFeedItems.id, targets),
+      // Re-checked in the write: a line approved between the read and here
+      // must not have its posted payee silently shadowed.
+      eq(bankFeedItems.status, 'pending'),
+    ))
+    .returning({ id: bankFeedItems.id });
+  return { updated: updated.length, skipped };
+}
+
 export async function bulkSetName(tenantId: string, feedItemIds: string[], name: string) {
   const trimmed = name.trim();
   if (!trimmed || feedItemIds.length === 0) {

@@ -73,6 +73,15 @@ async function attachmentCountsFor(
   return out;
 }
 
+// Column sorts are whitelisted here and again in the services; an unknown key
+// falls back to the default order rather than erroring.
+const SORT_DIRS = ['asc', 'desc'] as const;
+const UNPOSTED_SORT_KEYS = ['feedDate', 'checkNumber', 'payee', 'description', 'amount'] as const;
+const SUSPENSE_SORT_KEYS = ['txnDate', 'checkNumber', 'payee', 'memo', 'amount'] as const;
+function pickEnum<T extends string>(v: unknown, allowed: readonly T[]): T | undefined {
+  return typeof v === 'string' && (allowed as readonly string[]).includes(v) ? (v as T) : undefined;
+}
+
 function optionalString(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
 }
@@ -152,6 +161,8 @@ uncategorizedRouter.get('/unposted', async (req, res) => {
     startDate: optionalString(req.query['startDate']),
     endDate: optionalString(req.query['endDate']),
     search: optionalString(req.query['search']),
+    sortBy: pickEnum(req.query['sortBy'], UNPOSTED_SORT_KEYS),
+    sortDir: pickEnum(req.query['sortDir'], SORT_DIRS),
     limit: Math.min(Math.max(optionalInt(req.query['limit'], 50), 1), 500),
     offset: optionalInt(req.query['offset'], 0),
     ruleOnly: false,
@@ -183,6 +194,8 @@ uncategorizedRouter.get('/in-suspense', async (req, res) => {
     startDate: optionalString(req.query['startDate']),
     endDate: optionalString(req.query['endDate']),
     search: optionalString(req.query['search']),
+    sortBy: pickEnum(req.query['sortBy'], SUSPENSE_SORT_KEYS),
+    sortDir: pickEnum(req.query['sortDir'], SORT_DIRS),
     limit: Math.min(optionalInt(req.query['limit'], 50), 500),
     offset: optionalInt(req.query['offset'], 0),
   });

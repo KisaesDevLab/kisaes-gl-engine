@@ -28,7 +28,9 @@ export const bankFeedFiltersSchema = z.object({
     .union([z.boolean(), z.enum(['true', 'false'])])
     .optional()
     .transform((v) => v === true || v === 'true'),
-  sortBy: z.enum(['feedDate', 'description', 'category', 'status', 'amount']).optional(),
+  // 'checkNumber' and 'payee' (assigned → suggested contact → payee read off
+  // the check) serve the Uncategorized page's sortable Ref and Payee columns.
+  sortBy: z.enum(['feedDate', 'description', 'category', 'status', 'amount', 'checkNumber', 'payee']).optional(),
   sortDir: z.enum(['asc', 'desc']).optional(),
   limit: z.coerce.number().int().min(1).max(500).default(50),
   offset: z.coerce.number().int().min(0).default(0),
@@ -68,6 +70,15 @@ export const bulkAssignSchema = z.object({
   contactId: z.string().uuid().nullable().optional(),
   tagId: z.string().uuid().nullable().optional(),
   memo: z.string().max(500).nullable().optional(),
+});
+
+// Bulk "Set payee" on UNPOSTED lines from the Uncategorized page. Writes the
+// same field the Bank Feeds editor writes (suggested_contact_id) and leaves
+// the status alone — unlike bulk-set-name, which stages the line as
+// 'assigned' and so drops it off a pending-only list. null clears it.
+export const bulkSetContactSchema = z.object({
+  feedItemIds: z.array(z.string().uuid()).min(1).max(500),
+  contactId: z.string().uuid().nullable(),
 });
 
 // Start a reconciliation either manually (accountId + statementDate +

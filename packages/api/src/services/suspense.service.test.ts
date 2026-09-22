@@ -328,6 +328,35 @@ describe('suspense listing', () => {
     expect(listed.rows[0]!.isSplit).toBe(false);
   });
 
+  it('sorts server-side by the whitelisted columns, numerically for the amount', async () => {
+    const suspenseId = await suspense.getSuspenseAccountId(tenantId, companyId, userId);
+    const post = (txnDate: string, amount: string, memo: string) => ledger.postTransaction(tenantId, {
+      txnType: 'expense', txnDate, memo,
+      lines: [
+        { accountId: suspenseId, debit: amount, credit: '0' },
+        { accountId: bankAccountId, debit: '0', credit: amount },
+      ],
+    }, userId, companyId);
+    await post('2026-07-01', '9.00', 'bravo');
+    await post('2026-07-02', '100.00', 'alpha');
+    await post('2026-07-03', '25.00', 'charlie');
+
+    // Default: newest first.
+    let rows = (await suspense.listInSuspense(tenantId, { companyId })).rows;
+    expect(rows.map((r) => r.memo)).toEqual(['charlie', 'alpha', 'bravo']);
+
+    // Amount is a numeric sort — '9' must not sort after '100' as text would.
+    rows = (await suspense.listInSuspense(tenantId, { companyId, sortBy: 'amount', sortDir: 'asc' })).rows;
+    expect(rows.map((r) => Number(r.amount))).toEqual([9, 25, 100]);
+    rows = (await suspense.listInSuspense(tenantId, { companyId, sortBy: 'amount', sortDir: 'desc' })).rows;
+    expect(rows.map((r) => Number(r.amount))).toEqual([100, 25, 9]);
+
+    rows = (await suspense.listInSuspense(tenantId, { companyId, sortBy: 'memo', sortDir: 'asc' })).rows;
+    expect(rows.map((r) => r.memo)).toEqual(['alpha', 'bravo', 'charlie']);
+    rows = (await suspense.listInSuspense(tenantId, { companyId, sortBy: 'txnDate', sortDir: 'asc' })).rows;
+    expect(rows.map((r) => r.txnDate)).toEqual(['2026-07-01', '2026-07-02', '2026-07-03']);
+  });
+
   it('flags a split entry so the UI can warn that all its suspense lines clear together', async () => {
     const suspenseId = await suspense.getSuspenseAccountId(tenantId, companyId, userId);
     await ledger.postTransaction(tenantId, {

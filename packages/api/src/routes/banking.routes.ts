@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import {
-  bankFeedFiltersSchema, categorizeSchema, matchSchema, assignSchema, bulkAssignSchema,
+  bankFeedFiltersSchema, categorizeSchema, matchSchema, assignSchema, bulkAssignSchema, bulkSetContactSchema,
   startReconciliationSchema, updateReconciliationLinesSchema, updateReconciliationSchema, bankImportSchema,
   bulkApproveSchema, bulkCategorizeSchema, bulkExcludeSchema, bulkRecleanseSchema,
   bulkPostToSuspenseSchema,
@@ -179,6 +179,14 @@ bankingRouter.post('/feed/bulk-post-to-suspense', validate(bulkPostToSuspenseSch
 });
 
 // Bank Feed bulk "set name": overwrite the displayed description for selected items.
+// Bulk "Set payee" from the Uncategorized page: one contact onto many
+// still-pending lines, without staging them (see bankFeedService.bulkSetContact).
+bankingRouter.post('/feed/bulk-set-contact', validate(bulkSetContactSchema), async (req, res) => {
+  const { feedItemIds, contactId } = req.body as { feedItemIds: string[]; contactId: string | null };
+  const result = await bankFeedService.bulkSetContact(req.tenantId, feedItemIds, contactId);
+  res.json(result);
+});
+
 bankingRouter.post('/feed/bulk-set-name', async (req, res) => {
   const { feedItemIds, name } = req.body as { feedItemIds?: string[]; name?: string };
   if (!Array.isArray(feedItemIds) || feedItemIds.length === 0) {
