@@ -201,6 +201,8 @@ export const transactionRangeReportSchema = z.object({
     .union([z.boolean(), z.enum(['true', 'false'])])
     .optional()
     .transform((v) => v === true || v === 'true'),
+  /** Which planned part to build (1-based); see GET /transactions/report-plan. */
+  part: z.coerce.number().int().min(1).max(10000).optional(),
 }).refine((v) => v.startDate <= v.endDate, { message: 'startDate must not be after endDate.' });
 
 // Bulk edit on the transactions list: change Payee, Category, and/or Tag

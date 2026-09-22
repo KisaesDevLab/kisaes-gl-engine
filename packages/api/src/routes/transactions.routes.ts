@@ -45,6 +45,17 @@ transactionsRouter.get('/', async (req, res) => {
   res.json(result);
 });
 
+// How a date-range Transaction Report will be split: the parts, each with
+// its dates and counts, so the screen can offer one link per part. Cheap —
+// list query plus two attachment counts, no rendering.
+transactionsRouter.get('/report-plan', async (req, res) => {
+  const parsed = transactionRangeReportSchema.safeParse(req.query);
+  if (!parsed.success) throw AppError.badRequest(parsed.error.issues[0]?.message ?? 'Invalid report filters');
+  const { part: _part, ...filters } = parsed.data;
+  const { plan } = await transactionReport.planTransactionRangeReport(req.tenantId, filters, req.companyId);
+  res.json(plan);
+});
+
 // Transaction Report for a date range: every matching transaction's block,
 // several to a page, then their attachments. Static path, declared before
 // '/:id' so "report.pdf" is not read as an id. Same limiter and the same

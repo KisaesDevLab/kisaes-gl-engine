@@ -43,8 +43,8 @@
 - **Transaction Report** — not on the Reports page: a button on any transaction
   (and on the Bill and Invoice pages). One PDF with the transaction's details and
   journal lines, the same for every linked transaction (a bill and the payments
-  that paid it, an invoice and its payments), then every attachment on all of
-  them, page for page, captioned with the file name. Unreadable or
+  that paid it, an invoice and its payments), each block followed by its own
+  attachments (images inline, PDF pages page for page, captioned). Unreadable or
   password-protected files are listed with the reason instead of failing the
   report. Limits: 40 attachments, 50 pages per PDF, 300 pages total.
 - **Transaction Report (date range)** — Reports → General → Transaction Report
@@ -52,10 +52,15 @@
   plus optional txnType / contactId / accountId / tagId / basis / includeVoid).
   Every matching transaction as a block (details, journal lines, one-line
   "Linked:" note — linked transactions are NOT expanded into their own blocks),
-  packed several to a page (`.txn{break-inside:avoid}`), then every attachment
-  in transaction order. Voids excluded unless includeVoid. Capped at 250
-  transactions (`MAX_RANGE_TRANSACTIONS`) with the count stated on the report;
-  same attachment caps as the single report. Same bearer-fetch rule: no `?_dl=`.
+  packed several to a page (`.txn{break-inside:avoid}`). **Attachments are
+  interleaved**: images inline under their block, a PDF's pages copied in
+  right after the block that owns it (the summary is rendered in parts, one
+  part ending at each block with PDF pages). Voids excluded unless includeVoid.
+  **Nothing is capped away**: `GET /transactions/report-plan` splits the range
+  into parts in date order (≤ 250 transactions, ≤ 40 showable files, ≤ 100 MB
+  each, `planTransactionRangeReport`); the screen lists parts with a View
+  button each and `?part=N` builds one on demand, deterministic from the same
+  filters, nothing stored. Same bearer-fetch rule: no `?_dl=`.
 - **Journal Entries Report** — all journal entries for a period.
 - **Budget Overview** — summary view of all budget lines for a fiscal year.
 

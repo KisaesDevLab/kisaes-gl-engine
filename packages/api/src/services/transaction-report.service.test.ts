@@ -228,6 +228,61 @@ describe('transaction-report.service', () => {
     });
   });
 
+  describe('planTransactionRangeReport', () => {
+    it('splits the range into parts at the attachment cap, in date order, and builds each part on demand', async () => {
+      // Three bills: 25 files, 20 files, none. 25 + 20 > 40, so the second
+      // bill starts part 2 and the third (no files) rides along with it.
+      const a = await billService.createBill(tenantId, { contactId: vendorId, txnDate: '2026-09-02', vendorInvoiceNumber: 'A-1', lines: [{ accountId: utilitiesId, amount: '1.00' }] });
+      const b = await billService.createBill(tenantId, { contactId: vendorId, txnDate: '2026-09-10', vendorInvoiceNumber: 'B-2', lines: [{ accountId: utilitiesId, amount: '2.00' }] });
+      const c = await billService.createBill(tenantId, { contactId: vendorId, txnDate: '2026-09-20', vendorInvoiceNumber: 'C-3', lines: [{ accountId: utilitiesId, amount: '3.00' }] });
+      const one = await makePdf(1);
+      for (let i = 0; i < 25; i++) await attach(a, 'bill', `a-${i}.pdf`, 'application/pdf', one);
+      for (let i = 0; i < 20; i++) await attach(b, 'bill', `b-${i}.pdf`, 'application/pdf', one);
+      // A spreadsheet is not showable, so it does not count toward the split.
+      await attach(c, 'bill', 'notes.csv', 'text/csv', Buffer.from('a,b\n'));
+
+      const range = { startDate: '2026-09-01', endDate: '2026-09-30' };
+      const { plan } = await report.planTransactionRangeReport(tenantId, range);
+      expect(plan.transactionCount).toBe(3);
+      expect(plan.attachmentCount).toBe(45);
+      expect(plan.truncated).toBe(false);
+      expect(plan.parts.map((p) => [p.index, p.startDate, p.endDate, p.transactionCount, p.attachmentCount])).toEqual([
+        [1, '2026-09-02', '2026-09-02', 1, 25],
+        [2, '2026-09-10', '2026-09-20', 2, 20],
+      ]);
+
+      // Part 2 built alone: its own two bills, its own 20 pages, its own header.
+      const stub = stubRenderer();
+      const result = await report.generateTransactionRangeReportPdf(tenantId, { ...range, part: 2 }, { includeAttachments: true }, stub.deps);
+      expect(result.fileName).toBe('transaction-report-2026-09-01-to-2026-09-30-part-2-of-2.pdf');
+      // bill b part (1) + 20 pages + bill c part (1)
+      expect(result.pageCount).toBe(22);
+      const summary = stub.html.join('');
+      expect(summary).toContain('Part 2 of 2');
+      expect(summary).toContain('B-2');
+      expect(summary).toContain('C-3');
+      expect(summary).not.toContain('A-1');
+      expect(summary).toContain('notes.csv — not included');
+
+      await expect(report.generateTransactionRangeReportPdf(tenantId, { ...range, part: 3 }, { includeAttachments: true }, stub.deps))
+        .rejects.toThrow(/2 part\(s\)/);
+    });
+
+    it('is one part when everything fits, and the PDF then carries no part label', async () => {
+      const bill = await makeBill();
+      await attach(bill, 'bill', 'statement.pdf', 'application/pdf', await makePdf(1));
+      const range = { startDate: '2026-09-01', endDate: '2026-09-30' };
+      const { plan } = await report.planTransactionRangeReport(tenantId, range);
+      expect(plan.parts).toHaveLength(1);
+      expect(plan.parts[0]).toMatchObject({ index: 1, transactionCount: 1, attachmentCount: 1 });
+
+      const stub = stubRenderer();
+      const result = await report.generateTransactionRangeReportPdf(tenantId, range, { includeAttachments: true }, stub.deps);
+      expect(result.fileName).toBe('transaction-report-2026-09-01-to-2026-09-30.pdf');
+      expect(stub.html.join('')).not.toContain('Part 1 of 1');
+    });
+  });
+
   describe('generateTransactionRangeReportPdf', () => {
     it('reports every transaction in the range in one summary, with attachments in transaction order', async () => {
       const bill = await makeBill();            // 2026-09-10
@@ -247,13 +302,21 @@ describe('transaction-report.service', () => {
         tenantId, { startDate: '2026-09-01', endDate: '2026-09-30' }, { includeAttachments: true }, stub.deps,
       );
 
-      // summary (1, stubbed) + statement (2) + confirmation (1)
-      expect(result.pageCount).toBe(4);
+      // bill part (1, stubbed) + statement (2) + payment part (1) + confirmation (1):
+      // each transaction's documents follow its own entry.
+      expect(result.pageCount).toBe(5);
       expect(result.warnings).toEqual([]);
       expect(result.fileName).toBe('transaction-report-2026-09-01-to-2026-09-30.pdf');
       expect(stub.closed).toBe(1);
+      expect(stub.html).toHaveLength(2);
+      // The bill's part names its statement; the payment's part names the
+      // confirmation — never the other way round.
+      expect(stub.html[0]).toContain('1. spire-statement.pdf');
+      expect(stub.html[0]).not.toContain('2. confirmation.pdf');
+      expect(stub.html[1]).toContain('2. confirmation.pdf');
+      expect(stub.html[1]).not.toContain('1. spire-statement.pdf');
 
-      const summary = stub.html[stub.html.length - 1]!;
+      const summary = stub.html.join('');
       expect(summary).toContain('09/01/2026 to 09/30/2026');
       expect(summary).toContain('2 transactions');
       expect(summary).not.toContain('Outside the range');
@@ -287,21 +350,21 @@ describe('transaction-report.service', () => {
       const range = { startDate: '2026-09-01', endDate: '2026-09-30' };
       let stub = stubRenderer();
       await report.generateTransactionRangeReportPdf(tenantId, range, { includeAttachments: false }, stub.deps);
-      let summary = stub.html[stub.html.length - 1]!;
+      let summary = stub.html.join('');
       expect(summary).toContain('2 transactions');
       expect(summary).not.toContain('Voided later');
       expect(summary).toContain('Attachments are not included');
 
       stub = stubRenderer();
       await report.generateTransactionRangeReportPdf(tenantId, { ...range, includeVoid: true }, { includeAttachments: false }, stub.deps);
-      summary = stub.html[stub.html.length - 1]!;
+      summary = stub.html.join('');
       expect(summary).toContain('3 transactions');
       expect(summary).toContain('Voided later');
       expect(summary).toContain('including voided');
 
       stub = stubRenderer();
       await report.generateTransactionRangeReportPdf(tenantId, { ...range, txnType: 'bill_payment' }, { includeAttachments: false }, stub.deps);
-      summary = stub.html[stub.html.length - 1]!;
+      summary = stub.html.join('');
       expect(summary).toContain('1 transaction<');
       expect(summary).toContain('· Bill Payment');
       expect(summary).toContain('ACH-7781');
@@ -310,7 +373,7 @@ describe('transaction-report.service', () => {
 
       stub = stubRenderer();
       await report.generateTransactionRangeReportPdf(tenantId, { ...range, contactId: other!.id }, { includeAttachments: false }, stub.deps);
-      summary = stub.html[stub.html.length - 1]!;
+      summary = stub.html.join('');
       expect(summary).toContain('· Other Co');
       expect(summary).toContain('No transactions match');
     });
@@ -322,7 +385,7 @@ describe('transaction-report.service', () => {
         otherTenantId, { startDate: '2026-01-01', endDate: '2026-12-31' }, { includeAttachments: true }, stub.deps,
       );
       expect(result.pageCount).toBe(1);
-      expect(stub.html[stub.html.length - 1]!).toContain('No transactions match');
+      expect(stub.html.join('')).toContain('No transactions match');
     });
   });
 
@@ -343,13 +406,18 @@ describe('transaction-report.service', () => {
       expect((await PDFDocument.load(result.buffer)).getPageCount()).toBe(4);
       expect(stub.closed).toBe(1);
 
-      const summary = stub.html[stub.html.length - 1]!;
+      // Two rendered parts: the bill block (its statement pages follow it),
+      // then the linked table and the payment block with its image inline.
+      expect(stub.html).toHaveLength(2);
+      const summary = stub.html.join('');
       expect(summary).toContain('Vendor: Spire');
       expect(summary).toContain('4394722222');
       expect(summary).toContain('ACH-7781');
       expect(summary).toContain('Linked transactions');
       expect(summary).toContain('1. spire-statement.pdf');
       expect(summary).toContain('2. confirmation.png');
+      expect(stub.html[1]).toContain('Attachment 2 of 2 — confirmation.png');
+      expect(stub.html[1]).toContain('<img src="data:image/png;base64,');
     });
 
     it('notes an unreadable or unsupported attachment instead of failing', async () => {
