@@ -47,6 +47,15 @@
   them, page for page, captioned with the file name. Unreadable or
   password-protected files are listed with the reason instead of failing the
   report. Limits: 40 attachments, 50 pages per PDF, 300 pages total.
+- **Transaction Report (date range)** — Reports → General → Transaction Report
+  (`/reports/transaction-report`, `GET /transactions/report.pdf?startDate&endDate`
+  plus optional txnType / contactId / accountId / tagId / basis / includeVoid).
+  Every matching transaction as a block (details, journal lines, one-line
+  "Linked:" note — linked transactions are NOT expanded into their own blocks),
+  packed several to a page (`.txn{break-inside:avoid}`), then every attachment
+  in transaction order. Voids excluded unless includeVoid. Capped at 250
+  transactions (`MAX_RANGE_TRANSACTIONS`) with the count stated on the report;
+  same attachment caps as the single report. Same bearer-fetch rule: no `?_dl=`.
 - **Journal Entries Report** — all journal entries for a period.
 - **Budget Overview** — summary view of all budget lines for a fiscal year.
 

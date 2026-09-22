@@ -12,6 +12,7 @@
 import { and, asc, eq, inArray, or, sql } from 'drizzle-orm';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import {
+  TXN_TYPE_LABELS,
   buildTransactionHeaderFields,
   contactRoleLabel,
   formatIsoUS,
@@ -459,7 +460,7 @@ function relatedLabel(r: RelatedTransaction): string {
   return transactionTitle({ ...r });
 }
 
-function transactionBlockHtml(txn: TransactionDetail, atts: PreparedAttachment[]): string {
+function transactionBlockHtml(txn: TransactionDetail, atts: PreparedAttachment[], extra = ''): string {
   const display = toDisplay(txn);
   // The contact is already in the block title.
   const fields = buildTransactionHeaderFields(display).filter((f) => f.key !== 'contact');
@@ -497,7 +498,55 @@ function transactionBlockHtml(txn: TransactionDetail, atts: PreparedAttachment[]
     ${atts.length ? `<div class="atts"><span class="lbl">Attachments:</span> ${atts.map((a) => a.included
       ? `<span class="att">${a.ordinal}. ${escapeHtml(a.fileName)}${a.note ? ` <span class="muted">(${escapeHtml(a.note)})</span>` : ''}</span>`
       : `<span class="att att-missing">${escapeHtml(a.fileName)} — ${escapeHtml(a.note ?? 'not included')}</span>`).join('')}</div>` : ''}
+    ${extra}
   </section>`;
+}
+
+// One stylesheet for both report kinds. `.txn` blocks refuse to split across
+// a page break, so a page holds as many whole blocks as fit and a block that
+// would straddle the edge starts the next page — the date-range report packs
+// several transactions per page this way.
+const REPORT_CSS = `
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#111827;font-size:10.5px;margin:0}
+    header{border-bottom:2px solid #111827;padding-bottom:6px;margin-bottom:14px}
+    header h1{font-size:16px;margin:0}
+    header .sub{color:#6b7280;margin-top:2px}
+    h2{font-size:14px;margin:0}
+    h3{font-size:11.5px;margin:0 0 6px 0;color:#1f2937}
+    .txn{margin-bottom:18px;break-inside:avoid;page-break-inside:avoid}
+    .txn-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;page-break-after:avoid}
+    .cols{display:flex;gap:10px;align-items:flex-start}
+    .card{border:1px solid #e5e7eb;border-radius:6px;padding:10px}
+    .details{width:32%;box-sizing:border-box}
+    .details p{margin:0 0 4px 0;line-height:1.35}
+    .lines{flex:1}
+    .linked{margin-bottom:18px}
+    .lbl{color:#6b7280}
+    .muted{color:#6b7280}
+    table{width:100%;border-collapse:collapse}
+    th{text-align:left;color:#6b7280;font-weight:600;border-bottom:1px solid #d1d5db;padding:3px 4px}
+    td{padding:4px;border-bottom:1px solid #f3f4f6;vertical-align:top}
+    tfoot td{font-weight:600;border-bottom:none}
+    tr{page-break-inside:avoid}
+    .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+    .pill{display:inline-block;padding:1px 7px;border-radius:999px;font-size:9px;font-weight:600;background:#e5e7eb;color:#374151}
+    .pill-posted,.pill-paid{background:#dcfce7;color:#15803d}
+    .pill-void,.pill-overdue{background:#fee2e2;color:#b91c1c}
+    .pill-partial,.pill-unpaid,.pill-draft{background:#fef9c3;color:#a16207}
+    .atts{margin-top:6px;line-height:1.5}
+    .att{margin-right:10px}
+    .att-missing{color:#b91c1c}
+    .links{margin-top:6px;line-height:1.5}
+    .links .rel{margin-right:10px}
+    .divider{border:0;border-top:1px dashed #d1d5db;margin:0 0 14px 0}
+    .range-note{margin:0 0 12px 0;color:#6b7280}
+`;
+
+/** A one-line "Linked:" summary for a block on the date-range report. */
+function linkedLineHtml(related: RelatedTransactionsResult): string {
+  if (related.related.length === 0) return '';
+  return `<div class="links"><span class="lbl">Linked:</span> ${related.related.map((r) =>
+    `<span class="rel">${escapeHtml(RELATION_LABELS[r.relation] ?? r.relation)} — ${escapeHtml(relatedLabel(r))}${r.contactName ? ` (${escapeHtml(r.contactName)})` : ''}${r.appliedAmount ? ` ${escapeHtml(fmtMoney(r.appliedAmount))}` : ''}${r.status === 'void' ? ' <span class="pill pill-void">void</span>' : ''}</span>`).join('')}${related.truncated ? ' <span class="muted">…</span>' : ''}</div>`;
 }
 
 function summaryHtml(opts: {
@@ -526,37 +575,7 @@ function summaryHtml(opts: {
     ${related.some((r) => r.status === 'void') ? '<p class="muted">Voided transactions are listed for reference; their details and attachments are not included.</p>' : ''}
   </section>` : '';
 
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#111827;font-size:10.5px;margin:0}
-    header{border-bottom:2px solid #111827;padding-bottom:6px;margin-bottom:14px}
-    header h1{font-size:16px;margin:0}
-    header .sub{color:#6b7280;margin-top:2px}
-    h2{font-size:14px;margin:0}
-    h3{font-size:11.5px;margin:0 0 6px 0;color:#1f2937}
-    .txn{margin-bottom:18px}
-    .txn-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;page-break-after:avoid}
-    .cols{display:flex;gap:10px;align-items:flex-start}
-    .card{border:1px solid #e5e7eb;border-radius:6px;padding:10px}
-    .details{width:32%;box-sizing:border-box}
-    .details p{margin:0 0 4px 0;line-height:1.35}
-    .lines{flex:1}
-    .linked{margin-bottom:18px}
-    .lbl{color:#6b7280}
-    .muted{color:#6b7280}
-    table{width:100%;border-collapse:collapse}
-    th{text-align:left;color:#6b7280;font-weight:600;border-bottom:1px solid #d1d5db;padding:3px 4px}
-    td{padding:4px;border-bottom:1px solid #f3f4f6;vertical-align:top}
-    tfoot td{font-weight:600;border-bottom:none}
-    tr{page-break-inside:avoid}
-    .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-    .pill{display:inline-block;padding:1px 7px;border-radius:999px;font-size:9px;font-weight:600;background:#e5e7eb;color:#374151}
-    .pill-posted,.pill-paid{background:#dcfce7;color:#15803d}
-    .pill-void,.pill-overdue{background:#fee2e2;color:#b91c1c}
-    .pill-partial,.pill-unpaid,.pill-draft{background:#fef9c3;color:#a16207}
-    .atts{margin-top:6px;line-height:1.5}
-    .att{margin-right:10px}
-    .att-missing{color:#b91c1c}
-  </style></head><body>
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>${REPORT_CSS}</style></head><body>
     <header>
       <h1>${escapeHtml(opts.companyName)}</h1>
       <div class="sub">Transaction Report — ${escapeHtml(blockTitle(toDisplay(opts.root)))}</div>
@@ -565,6 +584,34 @@ function summaryHtml(opts: {
     ${opts.blocks.slice(0, 1).map((b) => transactionBlockHtml(b.txn, b.atts)).join('')}
     ${linked}
     ${opts.blocks.slice(1).map((b) => transactionBlockHtml(b.txn, b.atts)).join('')}
+    ${opts.attachmentsOmitted ? '<p class="muted">Attachments are not included: your role does not have access to attachments.</p>' : ''}
+  </body></html>`;
+}
+
+function rangeSummaryHtml(opts: {
+  companyName: string;
+  generatedBy?: string | null;
+  startDate: string;
+  endDate: string;
+  criteria: string[];
+  blocks: Array<{ txn: TransactionDetail; atts: PreparedAttachment[]; related: RelatedTransactionsResult }>;
+  matched: number;
+  truncated: boolean;
+  attachmentsOmitted: boolean;
+}): string {
+  const shown = opts.blocks.length;
+  const count = opts.truncated
+    ? `Showing the first ${shown} of ${opts.matched} transactions — narrow the dates or filters for the rest.`
+    : `${shown} transaction${shown === 1 ? '' : 's'}`;
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>${REPORT_CSS}</style></head><body>
+    <header>
+      <h1>${escapeHtml(opts.companyName)}</h1>
+      <div class="sub">Transaction Report — ${escapeHtml(formatIsoUS(opts.startDate))} to ${escapeHtml(formatIsoUS(opts.endDate))}${opts.criteria.length ? ` · ${opts.criteria.map(escapeHtml).join(' · ')}` : ''}</div>
+      <div class="sub">Generated ${escapeHtml(formatIsoUS(new Date().toISOString()))}${opts.generatedBy ? ` by ${escapeHtml(opts.generatedBy)}` : ''}</div>
+    </header>
+    <p class="range-note">${escapeHtml(count)}</p>
+    ${shown === 0 ? '<p class="muted">No transactions match.</p>' : ''}
+    ${opts.blocks.map((b) => transactionBlockHtml(b.txn, b.atts, linkedLineHtml(b.related))).join('')}
     ${opts.attachmentsOmitted ? '<p class="muted">Attachments are not included: your role does not have access to attachments.</p>' : ''}
   </body></html>`;
 }
@@ -588,119 +635,234 @@ export async function generateTransactionReportPdf(
     for (const r of related.related) {
       if (r.status !== 'void') included.push(await getTransactionDetail(tenantId, r.id));
     }
+    const slug = (root.txnNumber || (root.checkNumber != null ? `check-${root.checkNumber}` : root.id.slice(0, 8))).replace(/[^A-Za-z0-9._-]+/g, '-');
+    return assembleReport({
+      tenantId, included, opts, deps,
+      companyId: root.companyId,
+      fileName: `transaction-report-${txnTypeLabel(toDisplay(root)).toLowerCase().replace(/[^a-z]+/g, '-')}-${slug}.pdf`,
+      html: (ctx) => summaryHtml({ ...ctx, root, related }),
+    });
+  });
+}
 
-    let renderer: ReportRenderer | null = null;
-    const getRenderer = async () => (renderer ??= await (deps.openRenderer ?? openChromiumRenderer)());
+export const MAX_RANGE_TRANSACTIONS = 250;
 
-    try {
-      const warnings: string[] = [];
-      // Attachment pages are laid down first, so the summary can report on
-      // each file truthfully; the summary's own pages are inserted in front.
-      const merged = await PDFDocument.create();
-      const blocks: Array<{ txn: TransactionDetail; atts: PreparedAttachment[] }> = [];
-      let ordinal = 0;
-      let seen = 0;
-      let totalBytes = 0;
-      let totalPages = 0;
+export interface TransactionRangeFilters {
+  startDate: string;
+  endDate: string;
+  txnType?: string;
+  contactId?: string;
+  accountId?: string;
+  tagId?: string;
+  basis?: 'cash' | 'accrual';
+  /** Voided transactions are left out unless asked for. */
+  includeVoid?: boolean;
+}
 
-      for (const txn of included) {
-        const atts: PreparedAttachment[] = [];
-        const rows = opts.includeAttachments ? await listReportAttachments(tenantId, txn) : [];
-        const ownerLabel = [transactionTitle(toDisplay(txn)), txn.contactName].filter(Boolean).join(' · ');
-        for (const att of rows) {
-          seen++;
-          const prepared: PreparedAttachment = { ordinal: 0, fileName: att.fileName, ownerLabel, ownerId: txn.id, included: false, from: 0, to: 0, note: null };
-          atts.push(prepared);
-          try {
-            if (seen > MAX_ATTACHMENTS) throw new SkipAttachment(`not included — the report holds ${MAX_ATTACHMENTS} attachments at most`);
-            const image = !!att.mimeType && IMAGE_MIME_TYPES.has(att.mimeType.toLowerCase());
-            if (!image && !isPdf(att)) throw new SkipAttachment('not included — only PDF and image attachments can be shown');
-            totalBytes += att.fileSize ?? 0;
-            if (totalBytes > MAX_TOTAL_BYTES) throw new SkipAttachment('not included — the report is over its 100 MB attachment limit');
-            if (image && (att.fileSize ?? 0) > MAX_IMAGE_BYTES) throw new SkipAttachment('not included — the image is too large');
-            if (totalPages >= MAX_TOTAL_PAGES) throw new SkipAttachment(`not included — the report is over its ${MAX_TOTAL_PAGES}-page limit`);
+/**
+ * The same report for every transaction in a date range (optionally one
+ * type / payee / account / tag): each transaction's block with a one-line
+ * note of what it is linked to, packed several to a page, then every
+ * attachment in transaction order. Linked transactions are NOT expanded into
+ * blocks of their own — in a range they are usually in the range already,
+ * and a payment covering twenty bills would otherwise print twenty-one
+ * times. Capped at MAX_RANGE_TRANSACTIONS, and the attachment caps are the
+ * same as the single report's, so a quarter of receipts is a deliberate
+ * choice of narrower filters rather than a 400-page surprise.
+ */
+export async function generateTransactionRangeReportPdf(
+  tenantId: string,
+  filters: TransactionRangeFilters,
+  opts: TransactionReportOptions,
+  deps: TransactionReportDeps = {},
+): Promise<TransactionReportResult> {
+  return withSlot(async () => {
+    // One page over the cap tells us whether there was more, and the void
+    // filter is applied here because the list has no "not void" filter.
+    const list = await ledger.listTransactions(tenantId, {
+      txnType: filters.txnType, contactId: filters.contactId, accountId: filters.accountId,
+      tagId: filters.tagId, basis: filters.basis,
+      startDate: filters.startDate, endDate: filters.endDate,
+      sortBy: 'date', sortDir: 'asc',
+      limit: 1000, offset: 0,
+    }, opts.companyId ?? undefined);
+    const candidates = list.data.filter((t) => filters.includeVoid || t.status !== 'void');
+    const truncated = candidates.length > MAX_RANGE_TRANSACTIONS;
+    const chosen = candidates.slice(0, MAX_RANGE_TRANSACTIONS);
 
-            const bytes = await withTimeout(readAttachmentBytes(tenantId, att), READ_TIMEOUT_MS, 'Reading the file');
-            const available = Math.min(MAX_PAGES_PER_PDF, MAX_TOTAL_PAGES - totalPages);
-            prepared.from = merged.getPageCount();
-            if (image) {
-              // Already a Letter page with clear margins — copy it as is.
-              const r = await getRenderer();
-              const page = await PDFDocument.load(await r.render(imagePageHtml(att.mimeType!.toLowerCase().replace('image/jpg', 'image/jpeg'), bytes)));
-              await appendPdfDocument(merged, page, available);
-            } else {
-              // No ignoreEncryption: pages copied out of an encrypted file
-              // come out blank or garbled, which is worse than a note.
-              const src = await PDFDocument.load(bytes);
-              const added = await appendFramedPdf(merged, src, available);
-              if (added < src.getPageCount()) prepared.note = `first ${added} of ${src.getPageCount()} pages`;
-            }
-            prepared.to = merged.getPageCount();
-            prepared.included = true;
-            prepared.ordinal = ++ordinal;
-            totalPages += prepared.to - prepared.from;
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            prepared.note = err instanceof SkipAttachment
-              ? message
-              : /encrypt/i.test(message) ? 'could not be included — the PDF is password-protected'
-                : 'could not be included — the file could not be read';
-            warnings.push(`${att.fileName}: ${prepared.note}`);
-            if (!(err instanceof SkipAttachment)) {
-              log.warn({ component: 'transaction-report', event: 'attachment_skipped', attachmentId: att.id, transactionId: txn.id, message });
-            }
+    const included: TransactionDetail[] = [];
+    const relatedById = new Map<string, RelatedTransactionsResult>();
+    for (const t of chosen) {
+      included.push(await getTransactionDetail(tenantId, t.id));
+      relatedById.set(t.id, await getRelatedTransactions(tenantId, t.id, opts.companyId));
+    }
+
+    const criteria: string[] = [];
+    if (filters.txnType) criteria.push(TXN_TYPE_LABELS[filters.txnType as TxnType] ?? filters.txnType);
+    if (filters.contactId) {
+      const [c] = await db.select({ name: contacts.displayName }).from(contacts)
+        .where(and(eq(contacts.tenantId, tenantId), eq(contacts.id, filters.contactId))).limit(1);
+      if (c) criteria.push(c.name);
+    }
+    if (filters.accountId) {
+      const [a] = await db.select({ name: accounts.name, number: accounts.accountNumber }).from(accounts)
+        .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, filters.accountId))).limit(1);
+      if (a) criteria.push(a.number ? `${a.number} ${a.name}` : a.name);
+    }
+    if (filters.tagId) {
+      const [t] = await db.select({ name: tags.name }).from(tags)
+        .where(and(eq(tags.tenantId, tenantId), eq(tags.id, filters.tagId))).limit(1);
+      if (t) criteria.push(`Tag: ${t.name}`);
+    }
+    if (filters.basis) criteria.push(filters.basis === 'cash' ? 'Cash basis' : 'Accrual basis');
+    if (filters.includeVoid) criteria.push('including voided');
+
+    return assembleReport({
+      tenantId, included, opts, deps,
+      companyId: opts.companyId ?? included[0]?.companyId ?? null,
+      fileName: `transaction-report-${filters.startDate}-to-${filters.endDate}.pdf`,
+      html: (ctx) => rangeSummaryHtml({
+        ...ctx,
+        startDate: filters.startDate,
+        endDate: filters.endDate,
+        criteria,
+        blocks: ctx.blocks.map((b) => ({ ...b, related: relatedById.get(b.txn.id) ?? { related: [], truncated: false } })),
+        matched: candidates.length,
+        truncated,
+      }),
+    });
+  });
+}
+
+interface ReportBlock { txn: TransactionDetail; atts: PreparedAttachment[] }
+
+interface AssembleContext {
+  companyName: string;
+  generatedBy: string | null;
+  blocks: ReportBlock[];
+  attachmentsOmitted: boolean;
+}
+
+/**
+ * The part both reports share: read and lay down every attachment of every
+ * included transaction (within the caps), render the caller's summary HTML
+ * in front of them, caption the attachment pages and stamp the footer.
+ * Attachments are prepared BEFORE the summary renders so the summary can
+ * say, per file, whether it made it in.
+ */
+async function assembleReport(args: {
+  tenantId: string;
+  included: TransactionDetail[];
+  opts: TransactionReportOptions;
+  deps: TransactionReportDeps;
+  companyId: string | null;
+  fileName: string;
+  html: (ctx: AssembleContext) => string;
+}): Promise<TransactionReportResult> {
+  const { tenantId, included, opts, deps } = args;
+  let renderer: ReportRenderer | null = null;
+  const getRenderer = async () => (renderer ??= await (deps.openRenderer ?? openChromiumRenderer)());
+
+  try {
+    const warnings: string[] = [];
+    // Attachment pages are laid down first, so the summary can report on
+    // each file truthfully; the summary's own pages are inserted in front.
+    const merged = await PDFDocument.create();
+    const blocks: ReportBlock[] = [];
+    let ordinal = 0;
+    let seen = 0;
+    let totalBytes = 0;
+    let totalPages = 0;
+
+    for (const txn of included) {
+      const atts: PreparedAttachment[] = [];
+      const rows = opts.includeAttachments ? await listReportAttachments(tenantId, txn) : [];
+      const ownerLabel = [transactionTitle(toDisplay(txn)), txn.contactName].filter(Boolean).join(' · ');
+      for (const att of rows) {
+        seen++;
+        const prepared: PreparedAttachment = { ordinal: 0, fileName: att.fileName, ownerLabel, ownerId: txn.id, included: false, from: 0, to: 0, note: null };
+        atts.push(prepared);
+        try {
+          if (seen > MAX_ATTACHMENTS) throw new SkipAttachment(`not included — the report holds ${MAX_ATTACHMENTS} attachments at most`);
+          const image = !!att.mimeType && IMAGE_MIME_TYPES.has(att.mimeType.toLowerCase());
+          if (!image && !isPdf(att)) throw new SkipAttachment('not included — only PDF and image attachments can be shown');
+          totalBytes += att.fileSize ?? 0;
+          if (totalBytes > MAX_TOTAL_BYTES) throw new SkipAttachment('not included — the report is over its 100 MB attachment limit');
+          if (image && (att.fileSize ?? 0) > MAX_IMAGE_BYTES) throw new SkipAttachment('not included — the image is too large');
+          if (totalPages >= MAX_TOTAL_PAGES) throw new SkipAttachment(`not included — the report is over its ${MAX_TOTAL_PAGES}-page limit`);
+
+          const bytes = await withTimeout(readAttachmentBytes(tenantId, att), READ_TIMEOUT_MS, 'Reading the file');
+          const available = Math.min(MAX_PAGES_PER_PDF, MAX_TOTAL_PAGES - totalPages);
+          prepared.from = merged.getPageCount();
+          if (image) {
+            // Already a Letter page with clear margins — copy it as is.
+            const r = await getRenderer();
+            const page = await PDFDocument.load(await r.render(imagePageHtml(att.mimeType!.toLowerCase().replace('image/jpg', 'image/jpeg'), bytes)));
+            await appendPdfDocument(merged, page, available);
+          } else {
+            // No ignoreEncryption: pages copied out of an encrypted file
+            // come out blank or garbled, which is worse than a note.
+            const src = await PDFDocument.load(bytes);
+            const added = await appendFramedPdf(merged, src, available);
+            if (added < src.getPageCount()) prepared.note = `first ${added} of ${src.getPageCount()} pages`;
+          }
+          prepared.to = merged.getPageCount();
+          prepared.included = true;
+          prepared.ordinal = ++ordinal;
+          totalPages += prepared.to - prepared.from;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          prepared.note = err instanceof SkipAttachment
+            ? message
+            : /encrypt/i.test(message) ? 'could not be included — the PDF is password-protected'
+              : 'could not be included — the file could not be read';
+          warnings.push(`${att.fileName}: ${prepared.note}`);
+          if (!(err instanceof SkipAttachment)) {
+            log.warn({ component: 'transaction-report', event: 'attachment_skipped', attachmentId: att.id, transactionId: txn.id, message });
           }
         }
-        blocks.push({ txn, atts });
       }
-
-      const [company] = root.companyId
-        ? await db.select({ name: companies.businessName }).from(companies)
-          .where(and(eq(companies.tenantId, tenantId), eq(companies.id, root.companyId))).limit(1)
-        : await db.select({ name: companies.businessName }).from(companies)
-          .where(eq(companies.tenantId, tenantId)).limit(1);
-
-      // By id alone: firm staff working in a client's books have their user
-      // row under the firm's tenant. The id comes from the verified JWT.
-      const [user] = opts.userId
-        ? await db.select({ displayName: users.displayName, email: users.email }).from(users)
-          .where(eq(users.id, opts.userId)).limit(1)
-        : [];
-
-      const html = summaryHtml({
-        companyName: company?.name ?? '',
-        generatedBy: user?.displayName || user?.email || null,
-        root,
-        blocks,
-        related,
-        attachmentsOmitted: !opts.includeAttachments,
-      });
-
-      // The summary goes in front of the attachment pages already in `merged`.
-      const summary = await PDFDocument.load(await (await getRenderer()).render(html));
-      const summaryPages = await merged.copyPages(summary, summary.getPageIndices());
-      summaryPages.forEach((p, i) => merged.insertPage(i, p));
-      const captionFont = await merged.embedFont(StandardFonts.HelveticaBold);
-      for (const att of blocks.flatMap((b) => b.atts)) {
-        if (!att.included) continue;
-        stampCaption(merged, summaryPages.length + att.from, summaryPages.length + att.to,
-          `Attachment ${att.ordinal} of ${ordinal} — ${att.fileName} — ${att.ownerLabel}`, captionFont);
-      }
-      await stampPageFooter(merged, { pageNumbers: true, footer: await getReportFooter(tenantId) });
-
-      const buffer = Buffer.from(await merged.save());
-      const slug = (root.txnNumber || (root.checkNumber != null ? `check-${root.checkNumber}` : root.id.slice(0, 8))).replace(/[^A-Za-z0-9._-]+/g, '-');
-      return {
-        buffer,
-        fileName: `transaction-report-${txnTypeLabel(toDisplay(root)).toLowerCase().replace(/[^a-z]+/g, '-')}-${slug}.pdf`,
-        pageCount: merged.getPageCount(),
-        warnings,
-      };
-    } finally {
-      // `renderer` is assigned inside a closure, which TS narrowing can't see.
-      await (renderer as ReportRenderer | null)?.close();
+      blocks.push({ txn, atts });
     }
-  });
+
+    const [company] = args.companyId
+      ? await db.select({ name: companies.businessName }).from(companies)
+        .where(and(eq(companies.tenantId, tenantId), eq(companies.id, args.companyId))).limit(1)
+      : await db.select({ name: companies.businessName }).from(companies)
+        .where(eq(companies.tenantId, tenantId)).limit(1);
+
+    // By id alone: firm staff working in a client's books have their user
+    // row under the firm's tenant. The id comes from the verified JWT.
+    const [user] = opts.userId
+      ? await db.select({ displayName: users.displayName, email: users.email }).from(users)
+        .where(eq(users.id, opts.userId)).limit(1)
+      : [];
+
+    const html = args.html({
+      companyName: company?.name ?? '',
+      generatedBy: user?.displayName || user?.email || null,
+      blocks,
+      attachmentsOmitted: !opts.includeAttachments,
+    });
+
+    // The summary goes in front of the attachment pages already in `merged`.
+    const summary = await PDFDocument.load(await (await getRenderer()).render(html));
+    const summaryPages = await merged.copyPages(summary, summary.getPageIndices());
+    summaryPages.forEach((p, i) => merged.insertPage(i, p));
+    const captionFont = await merged.embedFont(StandardFonts.HelveticaBold);
+    for (const att of blocks.flatMap((b) => b.atts)) {
+      if (!att.included) continue;
+      stampCaption(merged, summaryPages.length + att.from, summaryPages.length + att.to,
+        `Attachment ${att.ordinal} of ${ordinal} — ${att.fileName} — ${att.ownerLabel}`, captionFont);
+    }
+    await stampPageFooter(merged, { pageNumbers: true, footer: await getReportFooter(tenantId) });
+
+    const buffer = Buffer.from(await merged.save());
+    return { buffer, fileName: args.fileName, pageCount: merged.getPageCount(), warnings };
+  } finally {
+    // `renderer` is assigned inside a closure, which TS narrowing can't see.
+    await (renderer as ReportRenderer | null)?.close();
+  }
 }
 
 // A deliberate, explainable omission (caps, unsupported type) — as opposed to

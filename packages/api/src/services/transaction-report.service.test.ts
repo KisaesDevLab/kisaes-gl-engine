@@ -228,6 +228,104 @@ describe('transaction-report.service', () => {
     });
   });
 
+  describe('generateTransactionRangeReportPdf', () => {
+    it('reports every transaction in the range in one summary, with attachments in transaction order', async () => {
+      const bill = await makeBill();            // 2026-09-10
+      const payment = await payBill(bill.id);   // 2026-09-28
+      await ledger.postTransaction(tenantId, {
+        txnType: 'expense', txnDate: '2026-10-02', memo: 'Outside the range',
+        lines: [
+          { accountId: utilitiesId, debit: '10.00', credit: '0' },
+          { accountId: bankAccountId, debit: '0', credit: '10.00' },
+        ],
+      });
+      await attach(payment, 'bill_payment', 'confirmation.pdf', 'application/pdf', await makePdf(1));
+      await attach(bill, 'bill', 'spire-statement.pdf', 'application/pdf', await makePdf(2));
+
+      const stub = stubRenderer();
+      const result = await report.generateTransactionRangeReportPdf(
+        tenantId, { startDate: '2026-09-01', endDate: '2026-09-30' }, { includeAttachments: true }, stub.deps,
+      );
+
+      // summary (1, stubbed) + statement (2) + confirmation (1)
+      expect(result.pageCount).toBe(4);
+      expect(result.warnings).toEqual([]);
+      expect(result.fileName).toBe('transaction-report-2026-09-01-to-2026-09-30.pdf');
+      expect(stub.closed).toBe(1);
+
+      const summary = stub.html[stub.html.length - 1]!;
+      expect(summary).toContain('09/01/2026 to 09/30/2026');
+      expect(summary).toContain('2 transactions');
+      expect(summary).not.toContain('Outside the range');
+      // Every block is a whole unit that refuses to split across pages, so a
+      // page holds as many as fit.
+      expect(summary).toContain('.txn{margin-bottom:18px;break-inside:avoid;page-break-inside:avoid}');
+      // Date order: the bill's attachment comes first, so it is ordinal 1.
+      expect(summary.indexOf('Vendor: Spire')).toBeGreaterThan(-1);
+      expect(summary).toContain('1. spire-statement.pdf');
+      expect(summary).toContain('2. confirmation.pdf');
+      // Links are a one-line note per block, not expanded blocks.
+      expect(summary).toContain('Linked:');
+      expect(summary).toContain('Payment applied');
+      expect(summary).toContain('Bill paid');
+      expect(summary).not.toContain('Linked transactions</h3>');
+    });
+
+    it('applies the type / name lenses and leaves voided transactions out unless asked', async () => {
+      const bill = await makeBill();
+      const payment = await payBill(bill.id);
+      const [other] = await db.insert(contacts).values({ tenantId, contactType: 'vendor', displayName: 'Other Co' }).returning();
+      const voided = await ledger.postTransaction(tenantId, {
+        txnType: 'expense', txnDate: '2026-09-15', memo: 'Voided later', contactId: other!.id,
+        lines: [
+          { accountId: utilitiesId, debit: '5.00', credit: '0' },
+          { accountId: bankAccountId, debit: '0', credit: '5.00' },
+        ],
+      });
+      await ledger.voidTransaction(tenantId, voided.id, 'mistake');
+
+      const range = { startDate: '2026-09-01', endDate: '2026-09-30' };
+      let stub = stubRenderer();
+      await report.generateTransactionRangeReportPdf(tenantId, range, { includeAttachments: false }, stub.deps);
+      let summary = stub.html[stub.html.length - 1]!;
+      expect(summary).toContain('2 transactions');
+      expect(summary).not.toContain('Voided later');
+      expect(summary).toContain('Attachments are not included');
+
+      stub = stubRenderer();
+      await report.generateTransactionRangeReportPdf(tenantId, { ...range, includeVoid: true }, { includeAttachments: false }, stub.deps);
+      summary = stub.html[stub.html.length - 1]!;
+      expect(summary).toContain('3 transactions');
+      expect(summary).toContain('Voided later');
+      expect(summary).toContain('including voided');
+
+      stub = stubRenderer();
+      await report.generateTransactionRangeReportPdf(tenantId, { ...range, txnType: 'bill_payment' }, { includeAttachments: false }, stub.deps);
+      summary = stub.html[stub.html.length - 1]!;
+      expect(summary).toContain('1 transaction<');
+      expect(summary).toContain('· Bill Payment');
+      expect(summary).toContain('ACH-7781');
+      expect(summary).not.toContain('4394722222');
+      void payment;
+
+      stub = stubRenderer();
+      await report.generateTransactionRangeReportPdf(tenantId, { ...range, contactId: other!.id }, { includeAttachments: false }, stub.deps);
+      summary = stub.html[stub.html.length - 1]!;
+      expect(summary).toContain('· Other Co');
+      expect(summary).toContain('No transactions match');
+    });
+
+    it('stays inside its own tenant', async () => {
+      await makeBill();
+      const stub = stubRenderer();
+      const result = await report.generateTransactionRangeReportPdf(
+        otherTenantId, { startDate: '2026-01-01', endDate: '2026-12-31' }, { includeAttachments: true }, stub.deps,
+      );
+      expect(result.pageCount).toBe(1);
+      expect(stub.html[stub.html.length - 1]!).toContain('No transactions match');
+    });
+  });
+
   describe('generateTransactionReportPdf', () => {
     it('merges the summary, a PDF attachment page-for-page and an image attachment', async () => {
       const bill = await makeBill();

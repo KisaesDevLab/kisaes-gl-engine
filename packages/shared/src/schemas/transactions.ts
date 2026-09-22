@@ -186,6 +186,23 @@ export const transactionFiltersSchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
+// Transaction Report for a date range (GET /transactions/report.pdf). The
+// same lenses as the transactions list, minus paging: the service caps the
+// count itself and says so on the report.
+export const transactionRangeReportSchema = z.object({
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  txnType: z.enum(txnTypes).optional(),
+  contactId: z.string().uuid().optional(),
+  accountId: z.string().uuid().optional(),
+  tagId: z.string().uuid().optional(),
+  basis: z.enum(['cash', 'accrual']).optional(),
+  includeVoid: z
+    .union([z.boolean(), z.enum(['true', 'false'])])
+    .optional()
+    .transform((v) => v === true || v === 'true'),
+}).refine((v) => v.startDate <= v.endDate, { message: 'startDate must not be after endDate.' });
+
 // Bulk edit on the transactions list: change Payee, Category, and/or Tag
 // across the selected transactions. At least one mutation must be supplied.
 //   - setPayeeContactId: null clears the payee; a uuid assigns it.

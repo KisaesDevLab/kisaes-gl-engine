@@ -8,7 +8,7 @@ import {
   createJournalEntrySchema, createExpenseSchema, createTransferSchema,
   createDepositSchema, createCashSaleSchema, createCreditMemoSchema,
   createCustomerRefundSchema, voidTransactionSchema, transactionFiltersSchema,
-  bulkUpdateTransactionsSchema, can,
+  bulkUpdateTransactionsSchema, transactionRangeReportSchema, can,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource, resolvePermissionsForRequest } from '../middleware/permission.js';
@@ -43,6 +43,26 @@ transactionsRouter.get('/', async (req, res) => {
   const filters = transactionFiltersSchema.parse(req.query);
   const result = await ledger.listTransactions(req.tenantId, filters, req.companyId);
   res.json(result);
+});
+
+// Transaction Report for a date range: every matching transaction's block,
+// several to a page, then their attachments. Static path, declared before
+// '/:id' so "report.pdf" is not read as an id. Same limiter and the same
+// attachment-permission rule as the single-transaction report below.
+transactionsRouter.get('/report.pdf', expensiveOpLimiter, async (req, res) => {
+  const parsed = transactionRangeReportSchema.safeParse(req.query);
+  if (!parsed.success) throw AppError.badRequest(parsed.error.issues[0]?.message ?? 'Invalid report filters');
+  const perms = await resolvePermissionsForRequest(req);
+  const report = await transactionReport.generateTransactionRangeReportPdf(req.tenantId, parsed.data, {
+    companyId: req.companyId,
+    includeAttachments: can(perms, 'attachments', 'read'),
+    userId: req.userId,
+  });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${report.fileName}"`);
+  res.setHeader('X-Report-Warnings', String(report.warnings.length));
+  res.setHeader('Access-Control-Expose-Headers', 'X-Report-Warnings, Content-Disposition');
+  res.send(report.buffer);
 });
 
 // Bulk-edit Payee / Category / Tag across selected transactions from the
