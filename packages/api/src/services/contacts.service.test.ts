@@ -168,6 +168,24 @@ describe('Contacts Service', () => {
       expect(result.total).toBe(1);
     });
 
+    it('sorts server-side by the whitelisted keys, name as tiebreak', async () => {
+      await contactsService.create(tenantId, { contactType: 'vendor', displayName: 'Zed', email: 'a@x.com' });
+      await contactsService.create(tenantId, { contactType: 'customer', displayName: 'Amy', email: 'z@x.com' });
+      await contactsService.create(tenantId, { contactType: 'both', displayName: 'Mid', email: null });
+      // The suite's beforeEach seeds other contacts; only the relative order
+      // of these three is asserted.
+      const mine = new Set(['Amy', 'Mid', 'Zed']);
+      const names = async (f: Parameters<typeof contactsService.list>[1]) =>
+        (await contactsService.list(tenantId, f)).data.map((c) => c.displayName).filter((n) => mine.has(n));
+      expect(await names({})).toEqual(['Amy', 'Mid', 'Zed']);
+      expect(await names({ sortBy: 'name', sortDir: 'desc' })).toEqual(['Zed', 'Mid', 'Amy']);
+      // both < customer < vendor alphabetically.
+      expect(await names({ sortBy: 'type', sortDir: 'asc' })).toEqual(['Mid', 'Amy', 'Zed']);
+      // Missing email last either way.
+      expect(await names({ sortBy: 'email', sortDir: 'asc' })).toEqual(['Zed', 'Amy', 'Mid']);
+      expect(await names({ sortBy: 'email', sortDir: 'desc' })).toEqual(['Amy', 'Zed', 'Mid']);
+    });
+
     it('joins the default expense category name and number onto list rows', async () => {
       const [util] = await db.insert(accounts).values({
         tenantId, name: 'Utilities', accountType: 'expense', accountNumber: '7021',

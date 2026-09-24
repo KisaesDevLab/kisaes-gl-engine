@@ -33,3 +33,15 @@ export interface UpdateItemInput {
 }
 
 export type LineEntryMode = 'category' | 'item';
+
+export type ItemSortKey = 'name' | 'price' | 'taxable' | 'status';
+
+export interface ItemFilters {
+  isActive?: boolean;
+  isTaxable?: boolean;
+  search?: string;
+  sortBy?: ItemSortKey;
+  sortDir?: 'asc' | 'desc';
+  limit?: number;
+  offset?: number;
+}

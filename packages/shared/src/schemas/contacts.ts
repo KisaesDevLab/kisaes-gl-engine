@@ -3,6 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { z } from 'zod';
+import { sortBySchema, sortDirSchema } from './list-view.js';
 
 const contactTypes = ['customer', 'vendor', 'both'] as const;
 
@@ -73,10 +74,15 @@ export const updateContactSchema = z.object({
   defaultTagId: z.string().uuid().nullable().optional(),
 });
 
+export const contactSortKeys = ['name', 'type', 'email', 'phone', 'status'] as const;
+
 export const contactFiltersSchema = z.object({
   contactType: z.enum(contactTypes).optional(),
   isActive: z.preprocess((v) => v === 'true' ? true : v === 'false' ? false : v, z.boolean().optional()),
   search: z.string().optional(),
+  // Server-side column sort: the list paginates.
+  sortBy: sortBySchema(contactSortKeys),
+  sortDir: sortDirSchema.optional(),
   limit: z.coerce.number().int().min(1).max(500).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });

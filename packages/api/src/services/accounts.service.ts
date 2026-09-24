@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { eq, and, ilike, sql, count, inArray } from 'drizzle-orm';
+import { eq, and, ilike, sql, count, inArray, asc, desc, type SQL } from 'drizzle-orm';
 import type { CreateAccountInput, UpdateAccountInput, AccountFilters, BulkUpdateAccountsInput, ImportAccountRow } from '@kis-books/shared';
 import { COA_TEMPLATES } from '@kis-books/shared';
 import { db } from '../db/index.js';
@@ -16,7 +16,9 @@ import { escapeLike } from '../utils/sql-like.js';
 export async function list(tenantId: string, filters: AccountFilters) {
   const conditions = [eq(accounts.tenantId, tenantId)];
 
-  if (filters.accountType) {
+  if (Array.isArray(filters.accountType)) {
+    if (filters.accountType.length > 0) conditions.push(inArray(accounts.accountType, filters.accountType));
+  } else if (filters.accountType) {
     conditions.push(eq(accounts.accountType, filters.accountType));
   }
   if (filters.isActive !== undefined) {
@@ -30,12 +32,27 @@ export async function list(tenantId: string, filters: AccountFilters) {
 
   const where = and(...conditions);
 
+  // Whitelisted column sort; number + name + id keep pages deterministic.
+  const dir = filters.sortDir === 'asc' ? asc : desc;
+  const nulls = filters.sortDir === 'asc' ? sql`ASC NULLS LAST` : sql`DESC NULLS LAST`;
+  const orderBy: SQL[] = (() => {
+    switch (filters.sortBy) {
+      case 'number': return [sql`${accounts.accountNumber} ${nulls}`];
+      case 'name': return [dir(accounts.name)];
+      case 'type': return [dir(accounts.accountType)];
+      case 'detailType': return [sql`${accounts.detailType} ${nulls}`];
+      case 'balance': return [sql`CAST(${accounts.balance} AS DECIMAL) ${nulls}`];
+      case 'status': return [dir(accounts.isActive)];
+      default: return [];
+    }
+  })();
+
   const [data, total] = await Promise.all([
     db
       .select()
       .from(accounts)
       .where(where)
-      .orderBy(accounts.accountNumber, accounts.name)
+      .orderBy(...orderBy, asc(accounts.accountNumber), asc(accounts.name), asc(accounts.id))
       .limit(filters.limit ?? 100)
       .offset(filters.offset ?? 0),
     db

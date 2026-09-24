@@ -2,8 +2,8 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { eq, and, ilike, count } from 'drizzle-orm';
-import type { CreateItemInput, UpdateItemInput } from '@kis-books/shared';
+import { eq, and, ilike, count, asc, desc, sql, type SQL } from 'drizzle-orm';
+import type { CreateItemInput, UpdateItemInput, ItemFilters } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { items } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -11,14 +11,27 @@ import { auditLog } from '../middleware/audit.js';
 import { toCsvRow } from './export.service.js';
 import { escapeLike } from '../utils/sql-like.js';
 
-export async function list(tenantId: string, filters?: { isActive?: boolean; search?: string; limit?: number; offset?: number }) {
+export async function list(tenantId: string, filters?: ItemFilters) {
   const conditions = [eq(items.tenantId, tenantId)];
   if (filters?.isActive !== undefined) conditions.push(eq(items.isActive, filters.isActive));
+  if (filters?.isTaxable !== undefined) conditions.push(eq(items.isTaxable, filters.isTaxable));
   if (filters?.search) conditions.push(ilike(items.name, `%${escapeLike(filters.search)}%`));
+
+  // Whitelisted column sort (the list paginates); name + id tiebreak.
+  const dir = filters?.sortDir === 'asc' ? asc : desc;
+  const orderBy: SQL[] = (() => {
+    switch (filters?.sortBy) {
+      case 'price': return [sql`CAST(${items.unitPrice} AS DECIMAL) ${filters?.sortDir === 'asc' ? sql`ASC` : sql`DESC`} NULLS LAST`];
+      case 'taxable': return [dir(items.isTaxable)];
+      case 'status': return [dir(items.isActive)];
+      case 'name': return [dir(items.name)];
+      default: return [asc(items.name)];
+    }
+  })();
 
   const where = and(...conditions);
   const [data, total] = await Promise.all([
-    db.select().from(items).where(where).orderBy(items.name).limit(filters?.limit ?? 100).offset(filters?.offset ?? 0),
+    db.select().from(items).where(where).orderBy(...orderBy, asc(items.name), asc(items.id)).limit(filters?.limit ?? 100).offset(filters?.offset ?? 0),
     db.select({ count: count() }).from(items).where(where),
   ]);
   return { data, total: total[0]?.count ?? 0 };

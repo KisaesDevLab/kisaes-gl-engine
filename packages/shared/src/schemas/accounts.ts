@@ -3,6 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { z } from 'zod';
+import { csvEnumSet, sortBySchema, sortDirSchema } from './list-view.js';
 
 const accountTypes = [
   'asset', 'liability', 'equity',
@@ -46,10 +47,15 @@ export const importAccountsSchema = z.object({
 export type ImportAccountRow = z.infer<typeof importAccountRowSchema>;
 export type ImportAccountsInput = z.input<typeof importAccountsSchema>;
 
+export const accountSortKeys = ['number', 'name', 'type', 'detailType', 'balance', 'status'] as const;
+
 export const accountFiltersSchema = z.object({
-  accountType: z.enum(accountTypes).optional(),
+  // One type, or a comma-joined set (the Chart of Accounts' Type filter).
+  accountType: csvEnumSet(accountTypes),
   isActive: z.preprocess((v) => v === 'true' ? true : v === 'false' ? false : v, z.boolean().optional()),
   search: z.string().optional(),
+  sortBy: sortBySchema(accountSortKeys),
+  sortDir: sortDirSchema.optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
   offset: z.coerce.number().int().min(0).default(0),
 });

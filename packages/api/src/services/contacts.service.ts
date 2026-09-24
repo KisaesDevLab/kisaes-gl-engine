@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { eq, and, sql, count, or, inArray, getTableColumns } from 'drizzle-orm';
+import { eq, and, sql, count, or, inArray, getTableColumns, asc, desc, type SQL } from 'drizzle-orm';
 import type { CreateContactInput, UpdateContactInput, ContactFilters } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { contacts, accounts } from '../db/schema/index.js';
@@ -36,6 +36,21 @@ export async function list(tenantId: string, filters: ContactFilters) {
 
   const where = and(...conditions);
 
+  // Whitelisted column sort; the display name + id tiebreak keeps pages
+  // deterministic. Unknown keys never reach here (zod), but the default
+  // branch keeps the old name order regardless.
+  const dir = filters.sortDir === 'asc' ? asc : desc;
+  const orderBy: SQL[] = (() => {
+    switch (filters.sortBy) {
+      case 'type': return [dir(contacts.contactType)];
+      case 'email': return [sql`${contacts.email} ${filters.sortDir === 'asc' ? sql`ASC` : sql`DESC`} NULLS LAST`];
+      case 'phone': return [sql`${contacts.phone} ${filters.sortDir === 'asc' ? sql`ASC` : sql`DESC`} NULLS LAST`];
+      case 'status': return [dir(contacts.isActive)];
+      case 'name': return [dir(contacts.displayName)];
+      default: return [asc(contacts.displayName)];
+    }
+  })();
+
   // The list shows (and edits in place) each vendor's default expense
   // category, so the account's name and number ride along — the row
   // otherwise carries only the id.
@@ -47,7 +62,7 @@ export async function list(tenantId: string, filters: ContactFilters) {
     }).from(contacts)
       .leftJoin(accounts, and(eq(accounts.id, contacts.defaultExpenseAccountId), eq(accounts.tenantId, contacts.tenantId)))
       .where(where)
-      .orderBy(contacts.displayName)
+      .orderBy(...orderBy, asc(contacts.displayName), asc(contacts.id))
       .limit(filters.limit ?? 50)
       .offset(filters.offset ?? 0),
     db.select({ count: count() }).from(contacts).where(where),

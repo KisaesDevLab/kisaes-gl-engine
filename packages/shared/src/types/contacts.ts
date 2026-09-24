@@ -110,10 +110,14 @@ export interface UpdateContactInput {
   isActive?: boolean;
 }
 
+export type ContactSortKey = 'name' | 'type' | 'email' | 'phone' | 'status';
+
 export interface ContactFilters {
   contactType?: ContactType;
   isActive?: boolean;
   search?: string;
+  sortBy?: ContactSortKey;
+  sortDir?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
 }

@@ -3,24 +3,18 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
-import { createItemSchema, updateItemSchema, itemsImportSchema } from '@kis-books/shared';
+import { createItemSchema, updateItemSchema, itemsImportSchema, itemFiltersSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
 import * as itemsService from '../services/items.service.js';
-import { parseLimit, parseOffset } from '../utils/pagination.js';
 
 export const itemsRouter = Router();
 itemsRouter.use(authenticate);
 itemsRouter.use(requireResource('items'));
 
 itemsRouter.get('/', async (req, res) => {
-  const result = await itemsService.list(req.tenantId, {
-    isActive: req.query['is_active'] === 'true' ? true : req.query['is_active'] === 'false' ? false : undefined,
-    search: req.query['search'] as string,
-    limit: parseLimit(req.query['limit'], 100),
-    offset: parseOffset(req.query['offset']),
-  });
+  const result = await itemsService.list(req.tenantId, itemFiltersSchema.parse(req.query));
   res.json(result);
 });
 

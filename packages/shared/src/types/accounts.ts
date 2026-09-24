@@ -48,10 +48,15 @@ export interface UpdateAccountInput {
   isActive?: boolean;
 }
 
+export type AccountSortKey = 'number' | 'name' | 'type' | 'detailType' | 'balance' | 'status';
+
 export interface AccountFilters {
-  accountType?: AccountType;
+  /** One type (every selector) or several (the Chart of Accounts filter). */
+  accountType?: AccountType | AccountType[];
   isActive?: boolean;
   search?: string;
+  sortBy?: AccountSortKey;
+  sortDir?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
 }

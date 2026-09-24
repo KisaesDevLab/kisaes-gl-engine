@@ -3,6 +3,24 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { z } from 'zod';
+import { sortBySchema, sortDirSchema } from './list-view.js';
+
+export const itemSortKeys = ['name', 'price', 'taxable', 'status'] as const;
+
+const boolParam = z.preprocess((v) => (v === 'true' ? true : v === 'false' ? false : v), z.boolean().optional());
+
+// GET /items query. Parsed with zod like every other list (the route used
+// to hand-read `is_active` while the client sent `isActive`, so the
+// Active/Inactive select silently did nothing).
+export const itemFiltersSchema = z.object({
+  isActive: boolParam,
+  isTaxable: boolParam,
+  search: z.string().optional(),
+  sortBy: sortBySchema(itemSortKeys),
+  sortDir: sortDirSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+  offset: z.coerce.number().int().min(0).default(0),
+});
 
 export const createItemSchema = z.object({
   name: z.string().min(1, 'Name is required').max(255),

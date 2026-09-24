@@ -34,6 +34,25 @@ async function createTestTenant(): Promise<string> {
 }
 
 describe('Accounts Service', () => {
+  describe('list — sort and type set', () => {
+    it('sorts by the whitelisted keys, balance numerically, and filters by a set of types', async () => {
+      await db.insert(accounts).values([
+        { tenantId, name: 'Checking', accountType: 'asset', accountNumber: '1060', balance: '250.00' },
+        { tenantId, name: 'Rent', accountType: 'expense', accountNumber: '7010', balance: '9.00' },
+        { tenantId, name: 'Sales', accountType: 'revenue', accountNumber: null, balance: '1000.00' },
+        { tenantId, name: 'Old', accountType: 'expense', accountNumber: '7000', balance: '0', isActive: false },
+      ]);
+      const names = async (f: Parameters<typeof accountsService.list>[1]) =>
+        (await accountsService.list(tenantId, f)).data.map((a) => a.name);
+      expect(await names({})).toEqual(['Checking', 'Old', 'Rent', 'Sales']);
+      expect(await names({ sortBy: 'balance', sortDir: 'desc' })).toEqual(['Sales', 'Checking', 'Rent', 'Old']);
+      expect(await names({ sortBy: 'name', sortDir: 'asc' })).toEqual(['Checking', 'Old', 'Rent', 'Sales']);
+      expect(await names({ sortBy: 'number', sortDir: 'desc' })).toEqual(['Rent', 'Old', 'Checking', 'Sales']);
+      expect(await names({ accountType: ['expense', 'revenue'] })).toEqual(['Old', 'Rent', 'Sales']);
+      expect(await names({ accountType: 'asset' })).toEqual(['Checking']);
+    });
+  });
+
   beforeEach(async () => {
     await cleanDb();
     tenantId = await createTestTenant();
