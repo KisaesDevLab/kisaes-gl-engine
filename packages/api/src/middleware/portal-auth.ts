@@ -28,6 +28,9 @@ declare global {
          *  staff-authenticated, not identity-authenticated). */
         identityId: string | null;
         email: string;
+        /** The address this session was minted against (migration 0182).
+         *  Null for preview sessions and for sessions issued before it. */
+        verifiedEmail?: string | null;
         firstName: string | null;
         lastName: string | null;
         /** True when the request is running inside a "View as Client"
@@ -128,6 +131,7 @@ export async function portalAuthenticate(
       tenantId: session.tenantId,
       identityId: session.identityId,
       email: session.contact.email,
+      verifiedEmail: session.verifiedEmail,
       firstName: session.contact.firstName,
       lastName: session.contact.lastName,
       isPreview: false,

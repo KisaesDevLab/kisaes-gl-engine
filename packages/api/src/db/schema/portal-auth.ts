@@ -51,6 +51,12 @@ export const portalContactSessions = pgTable('portal_contact_sessions', {
   // we compare hashes server-side so a DB read of this table never reveals
   // a usable cookie.
   tokenHash: varchar('token_hash', { length: 64 }).notNull(),
+  // The address whose control the holder actually proved when this session
+  // was minted (migration 0182). portal_contacts.email is mutable by staff,
+  // so it cannot be the basis for reaching another tenant's contact; this
+  // column can. Null on sessions issued before 0182 — those are refused the
+  // email-matched switch and expire within the session TTL.
+  verifiedEmail: varchar('verified_email', { length: 320 }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   lastActivityAt: timestamp('last_activity_at', { withTimezone: true }).notNull().defaultNow(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),

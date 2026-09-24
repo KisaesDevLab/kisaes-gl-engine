@@ -405,6 +405,8 @@ export async function verifyMagicLink(args: {
       // switcher hides.
       identityId: isLinkingEnabled() ? contact.identityId ?? null : null,
       tokenHash: sessionHash,
+      // The address whose control was proved to mint this session (0182).
+      verifiedEmail: normalizeEmail(contact.email),
       expiresAt,
       ipAddress: args.ipAddress ?? null,
       userAgent: args.userAgent ?? null,
@@ -605,6 +607,8 @@ export async function loginWithPassword(args: {
       // is unlinked and the switcher hides itself in the UI.
       identityId: authedViaIdentity ? contact.identityId : null,
       tokenHash: sessionHash,
+      // The address whose control was proved to mint this session (0182).
+      verifiedEmail: normalizeEmail(contact.email),
       expiresAt,
       ipAddress: args.ipAddress ?? null,
       userAgent: args.userAgent ?? null,
@@ -642,6 +646,8 @@ export async function resolveSession(sessionToken: string): Promise<{
   // minted for a linked contact. /portal/auth/switch requires this
   // to be present; the switcher in the UI hides itself otherwise.
   identityId: string | null;
+  /** The address this session was minted against (migration 0182). */
+  verifiedEmail: string | null;
   expiresAt: Date;
   contact: {
     id: string;
@@ -684,6 +690,7 @@ export async function resolveSession(sessionToken: string): Promise<{
     contactId: session.contactId,
     tenantId: session.tenantId,
     identityId: session.identityId ?? null,
+    verifiedEmail: session.verifiedEmail ?? null,
     expiresAt: session.expiresAt,
     contact: {
       id: contact.id,
@@ -696,10 +703,14 @@ export async function resolveSession(sessionToken: string): Promise<{
 
 /**
  * PORTAL_IDENTITY_LINKING_V1 — atomic session swap for the firm
- * switcher. Validates the current session belongs to an identity AND
- * the target contact shares that identity, then revokes the current
- * session and mints a new one. Returns the new session token (the
- * route handler is responsible for setting the cookie).
+ * switcher. Authorises the swap one of two ways — the target shares the
+ * session's identity, or it carries the address the session was minted
+ * against (portal_contact_sessions.verified_email, migration 0182) — then
+ * revokes the current session and mints a new one. Returns the new session
+ * token (the route handler is responsible for setting the cookie).
+ *
+ * It must never compare the contact's CURRENT email column: staff can edit
+ * that, which briefly made this a cross-tenant pivot.
  *
  * **Authorization is the highest-risk surface in this feature.** A
  * missed check here is horizontal escalation between firms. Two
@@ -741,13 +752,24 @@ export async function switchToContact(args: {
   }
 
   // The authz check, one of two ways. Either both contacts hang off the same
-  // identity (the client set a password), or — far more commonly — both
-  // carry the same email address, which the session holder proved they
-  // control when they consumed the link sent to it. Anything else is a
-  // different human and gets the same generic error.
+  // identity (the client set a password), or both carry the address this
+  // SESSION was minted against — the one whose control its holder actually
+  // proved by consuming the link sent to it.
+  //
+  // It compares session.verifiedEmail, never the contact's current email
+  // column: that column is editable by any non-readonly staff user of the
+  // tenant, so comparing it let a staff member point a contact they had
+  // signed in as at a victim's address in an unrelated tenant and switch
+  // into that tenant's portal. Sessions minted before migration 0182 have
+  // no recorded address and are refused this path; they expire within the
+  // 24-hour session TTL.
   const sameIdentity = !!session.identityId && target.identityId === session.identityId;
+  const pinned = session.verifiedEmail ? normalizeEmail(session.verifiedEmail) : null;
   const sameEmail =
-    normalizeEmail(target.email) === normalizeEmail(current.email) && current.status === 'active';
+    !!pinned
+    && normalizeEmail(target.email) === pinned
+    && normalizeEmail(current.email) === pinned
+    && current.status === 'active';
   if (!sameIdentity && !sameEmail) {
     throw AppError.forbidden('Target contact not available', 'TARGET_UNAVAILABLE');
   }
@@ -773,6 +795,9 @@ export async function switchToContact(args: {
       // which the next switch re-derives from the address.
       identityId: sameIdentity ? session.identityId : null,
       tokenHash: newHash,
+      // Carried across the switch: the holder proved this address, and the
+      // target contact had to match it (or share an identity).
+      verifiedEmail: session.verifiedEmail ?? normalizeEmail(current.email),
       expiresAt,
       ipAddress: args.ipAddress ?? null,
       userAgent: args.userAgent ?? null,
@@ -782,14 +807,20 @@ export async function switchToContact(args: {
       .set({ lastSeenAt: new Date() })
       .where(eq(portalContacts.id, target.id));
 
-    await auditLog(
-      target.tenantId,
-      'update',
-      'portal_contact_session',
-      session.id,
-      { fromContactId: session.contactId, fromTenantId: session.tenantId },
-      { toContactId: target.id, toTenantId: target.tenantId },
-    );
+    // Audited on BOTH sides: the client being left keeps a record that a
+    // session departed, which is the half a single row was missing.
+    const before = { fromContactId: session.contactId, fromTenantId: session.tenantId };
+    const after = {
+      toContactId: target.id,
+      toTenantId: target.tenantId,
+      basis: sameIdentity ? 'identity' : 'verified_email',
+      ipAddress: args.ipAddress ?? null,
+      userAgent: args.userAgent ?? null,
+    };
+    await auditLog(target.tenantId, 'update', 'portal_contact_session', session.id, before, after);
+    if (session.tenantId !== target.tenantId) {
+      await auditLog(session.tenantId, 'update', 'portal_contact_session', session.id, before, after);
+    }
 
     const cos = await tx
       .select({

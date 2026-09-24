@@ -271,10 +271,13 @@ portalAuthRouter.get(
       return;
     }
     // No identity — the usual case, because an identity only exists once a
-    // client has set a password. Fall back to the same email address, which
-    // this session holder proved they control.
-    const { email } = req.portalContact;
-    res.json({ contacts: email ? await identity.listSiblingContactsByEmail(email) : [] });
+    // client has set a password. Fall back to the address this SESSION was
+    // minted against (portal_contact_sessions.verified_email, migration
+    // 0182), never the contact's current email column: staff can edit that
+    // column, and listing by it leaked other tenants' client names to
+    // whoever the column was pointed at.
+    const pinned = req.portalContact.verifiedEmail;
+    res.json({ contacts: pinned ? await identity.listSiblingContactsByEmail(pinned) : [] });
   },
 );
 

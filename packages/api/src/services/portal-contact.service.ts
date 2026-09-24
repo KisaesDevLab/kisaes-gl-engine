@@ -2,11 +2,13 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   portalContacts,
   portalContactCompanies,
+  portalContactSessions,
+  portalMagicLinks,
   portalSettingsPerPractice,
   portalSettingsPerCompany,
   companies,
@@ -305,6 +307,7 @@ export async function updateContact(
     status?: 'active' | 'paused';
     updatedAt: Date;
   } = { updatedAt: new Date() };
+  let emailChanged = false;
   if (input.email !== undefined) {
     const newEmail = normalizeEmail(input.email);
     if (newEmail !== before.email) {
@@ -313,6 +316,12 @@ export async function updateContact(
       });
       if (dup) throw AppError.conflict('A portal contact with this email already exists', 'DUPLICATE_EMAIL');
       patch.email = newEmail;
+      // The address changed, so every session and outstanding link minted
+      // against the OLD one is no longer proof of anything. Retire them,
+      // the way issuing a new link already does. Leaving them alive is what
+      // let a staff member sign in as a contact, repoint it at someone
+      // else's address and inherit their access.
+      emailChanged = true;
     }
   }
   if (input.phone !== undefined) patch.phone = input.phone;
@@ -324,6 +333,21 @@ export async function updateContact(
     .update(portalContacts)
     .set(patch)
     .where(and(eq(portalContacts.tenantId, tenantId), eq(portalContacts.id, contactId)));
+
+  if (emailChanged) {
+    // Every session was minted against the previous address; the new one has
+    // proved nothing yet. Deleting them (rather than expiring) also matches
+    // how the switcher looks sessions up, by token hash.
+    await db.delete(portalContactSessions).where(eq(portalContactSessions.contactId, contactId));
+    await db
+      .update(portalMagicLinks)
+      .set({ invalidatedAt: new Date() })
+      .where(and(
+        eq(portalMagicLinks.contactId, contactId),
+        isNull(portalMagicLinks.consumedAt),
+        isNull(portalMagicLinks.invalidatedAt),
+      ));
+  }
 
   await auditLog(tenantId, 'update', 'portal_contact', contactId, before, { ...before, ...patch }, actorUserId);
 }

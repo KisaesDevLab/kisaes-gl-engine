@@ -458,6 +458,11 @@ export async function sendHelpRequest(
       companyId,
       queueCount: count,
       reminder,
+      // Who caused it. An automated send has no user, so name the schedule
+      // and the scheduler rather than leaving a row with a null actor that
+      // looks like a threading bug.
+      actor: userId ? 'user' : 'scheduler:portal-categorize-reminder',
+      scheduleId: input.scheduleId ?? null,
       channels,
       contacts: results.map((r) => ({ contactId: r.contactId, outcomes: r.outcomes.map((o) => `${o.channel}:${o.outcome}`) })),
       notEligible,
@@ -687,9 +692,19 @@ export async function dispatchCategorizeReminders(tenantId?: string): Promise<Ca
       const anySent = sendResult.results.some((r) => r.outcomes.some((o) => o.outcome === 'sent'));
       if (anySent) result.sent++;
       else result.failed++;
-    } catch {
+    } catch (err) {
       // A queue that emptied between scan and send, a flag switched off
-      // mid-cycle: skip this one, keep the cycle going.
+      // mid-cycle: skip this one, keep the cycle going — but say which one
+      // and why. Swallowing it silently would hide a send that had already
+      // gone out before the failure.
+      // eslint-disable-next-line no-console
+      console.error(JSON.stringify({
+        ts: new Date().toISOString(), level: 'error',
+        component: 'portal-categorize-reminder', event: 'send_failed',
+        tenantId: c.tenantId, companyId: c.companyId, contactId: c.contactId,
+        scheduleId: c.scheduleId,
+        error: err instanceof Error ? err.message : String(err),
+      }));
       result.failed++;
     }
   }

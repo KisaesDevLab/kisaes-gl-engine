@@ -1275,6 +1275,13 @@
       "when": 1784800000039,
       "tag": "0181_purge_non_identifying_history",
       "breakpoints": true
+    },
+    {
+      "idx": 182,
+      "version": "7",
+      "when": 1784800000040,
+      "tag": "0182_session_verified_email",
+      "breakpoints": true
     }
   ]
 }

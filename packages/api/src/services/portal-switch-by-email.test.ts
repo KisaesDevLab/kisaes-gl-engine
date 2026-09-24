@@ -17,6 +17,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { tenants, companies, portalContacts, portalContactSessions } from '../db/schema/index.js';
 import { switchToContact } from './portal-auth.service.js';
+import { updateContact } from './portal-contact.service.js';
 import { listSiblingContactsByEmail } from './portal-identity.service.js';
 
 const stamp = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
@@ -58,6 +59,7 @@ beforeAll(async () => {
     tenantId: a,
     contactId: contactA,
     identityId: null,                       // magic-link session: no identity
+    verifiedEmail: email,                   // the address it was minted against
     tokenHash: hash(sessionToken),
     expiresAt: new Date(Date.now() + 60 * 60 * 1000),
   });
@@ -112,5 +114,52 @@ describe('portal firm switching', () => {
     // …and a paused tenancy drops off the switcher entirely.
     expect((await listSiblingContactsByEmail(email)).map((s) => s.contactId)).toEqual([contactA]);
     await db.update(portalContacts).set({ status: 'active' }).where(eq(portalContacts.id, contactB));
+  });
+
+  it('refuses a session that predates the pinned address', async () => {
+    // Sessions issued before migration 0182 carry no proof of an address.
+    // They fail closed rather than falling back to the mutable column.
+    const token = crypto.randomBytes(16).toString('hex');
+    await db.insert(portalContactSessions).values({
+      tenantId: tenantIds[0]!, contactId: contactA, identityId: null,
+      verifiedEmail: null, tokenHash: hash(token),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    await expect(
+      switchToContact({ currentSessionToken: token, targetContactId: contactB }),
+    ).rejects.toThrow(/not available/i);
+  });
+
+  it('cannot be aimed at someone else by editing the contact email', async () => {
+    // The escalation this rule exists to stop: staff sign in as a contact of
+    // their own tenant, repoint it at a victim's address in another tenant,
+    // and inherit the victim's portal. Editing the address now kills the
+    // session outright, and even a surviving one compares the address the
+    // session was MINTED against, not the column staff can edit.
+    const token = crypto.randomBytes(16).toString('hex');
+    const [attacker] = await db.insert(portalContacts).values({
+      tenantId: tenantIds[0]!, email: `attacker-${stamp}@example.com`, status: 'active',
+    }).returning();
+    await db.insert(portalContactSessions).values({
+      tenantId: tenantIds[0]!, contactId: attacker!.id, identityId: null,
+      verifiedEmail: `attacker-${stamp}@example.com`, tokenHash: hash(token),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+
+    // A victim address that does NOT exist in the attacker's own tenant, so
+    // the per-tenant duplicate check cannot be what stops this.
+    const victimEmail = `victim-${stamp}@example.com`;
+    const [victim] = await db.insert(portalContacts).values({
+      tenantId: tenantIds[1]!, email: victimEmail, status: 'active',
+    }).returning();
+    await updateContact(tenantIds[0]!, attacker!.id, { email: victimEmail });
+
+    // The session is gone the moment the address changed.
+    const left = await db.select().from(portalContactSessions)
+      .where(eq(portalContactSessions.tokenHash, hash(token)));
+    expect(left).toHaveLength(0);
+    await expect(
+      switchToContact({ currentSessionToken: token, targetContactId: victim!.id }),
+    ).rejects.toThrow();
   });
 });

@@ -117,10 +117,14 @@ const envSchema = z.object({
   // contact create when the email already has one, and when a client sets
   // a password (portal_identities requires a password hash), so nothing
   // is linked behind a client's back.
+  // Fails CLOSED on anything that reads as off: the previous transform
+  // (v !== 'false' && v !== '0') enabled the feature for 'FALSE', 'off',
+  // 'no' and an empty string, so an operator who thought they had switched
+  // it off had not.
   PORTAL_IDENTITY_LINKING_V1: z
     .string()
     .optional()
-    .transform((v) => v !== 'false' && v !== '0')
+    .transform((v) => !/^(false|0|off|no|disabled)$/i.test((v ?? 'true').trim()))
     .default('true'),
   // CLOUDFLARE_TUNNEL_PLAN Phase 6 — staff IP allowlist. "1" enforces.
   STAFF_IP_ALLOWLIST_ENFORCED: z.enum(['0', '1']).optional().default('0'),

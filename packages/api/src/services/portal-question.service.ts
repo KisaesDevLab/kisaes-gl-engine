@@ -589,8 +589,23 @@ export async function listForContact(args: {
         eq(portalQuestions.companyId, args.companyId),
         // Only show questions assigned to this contact OR unassigned questions
         // for the company. Contacts never see questions explicitly assigned
-        // to a peer.
-        sql`(${portalQuestions.assignedContactId} IS NULL OR ${portalQuestions.assignedContactId} = ${args.contactId})`,
+        // to a peer — and an unassigned one is only visible to a contact who
+        // may answer questions at all, which is the same audience that is
+        // emailed about it (questionAudience). Without that second rule,
+        // releasing an unassigned question showed its body to a
+        // documents-only contact the firm had deliberately excluded.
+        sql`(
+          ${portalQuestions.assignedContactId} = ${args.contactId}
+          OR (
+            ${portalQuestions.assignedContactId} IS NULL
+            AND EXISTS (
+              SELECT 1 FROM portal_contact_companies pcc
+              WHERE pcc.contact_id = ${args.contactId}
+                AND pcc.company_id = ${args.companyId}
+                AND pcc.questions_for_us_access
+            )
+          )
+        )`,
         // Don't show unsent questions (notified_at IS NULL means the
         // bookkeeper hasn't released them yet via 10.3).
         sql`${portalQuestions.notifiedAt} IS NOT NULL`,

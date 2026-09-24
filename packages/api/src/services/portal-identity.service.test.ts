@@ -90,6 +90,8 @@ async function mkSession(args: {
   tenantId: string;
   contactId: string;
   identityId: string | null;
+  /** The address the session proved control of (migration 0182). */
+  verifiedEmail?: string | null;
 }): Promise<{ token: string; id: string }> {
   const token = crypto.randomBytes(32).toString('hex');
   const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
@@ -99,6 +101,7 @@ async function mkSession(args: {
       tenantId: args.tenantId,
       contactId: args.contactId,
       identityId: args.identityId,
+      verifiedEmail: args.verifiedEmail ?? null,
       tokenHash,
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
     })
@@ -361,7 +364,11 @@ describe('portal-identity.service', () => {
       const t2 = await mkTenant('emailswitch-b');
       const here = await mkContact(t1, 'roams@example.com');
       const there = await mkContact(t2, 'roams@example.com');
-      const session = await mkSession({ tenantId: t1, contactId: here.id, identityId: null });
+      // A magic-link session carries the address it was minted against;
+      // without one the email path is refused (see the case below).
+      const session = await mkSession({
+        tenantId: t1, contactId: here.id, identityId: null, verifiedEmail: 'roams@example.com',
+      });
 
       const next = await switchToContact({
         currentSessionToken: session.token,
@@ -369,6 +376,17 @@ describe('portal-identity.service', () => {
       });
       expect(next.contactId).toBe(there.id);
       expect(next.tenantId).toBe(t2);
+    });
+
+    it('refuses the email path when the session recorded no address', async () => {
+      const t1 = await mkTenant('nopin-a');
+      const t2 = await mkTenant('nopin-b');
+      const here = await mkContact(t1, 'nopin@example.com');
+      const there = await mkContact(t2, 'nopin@example.com');
+      const session = await mkSession({ tenantId: t1, contactId: here.id, identityId: null });
+      await expect(
+        switchToContact({ currentSessionToken: session.token, targetContactId: there.id }),
+      ).rejects.toMatchObject({ code: 'TARGET_UNAVAILABLE' });
     });
   });
 });
