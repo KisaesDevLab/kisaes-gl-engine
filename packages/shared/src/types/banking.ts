@@ -105,7 +105,8 @@ export interface BankFeedFilters {
   ruleOnly?: boolean;
   // Server-side column sort — the list paginates, so ordering must happen
   // in SQL, not on the loaded page.
-  sortBy?: 'feedDate' | 'description' | 'category' | 'status' | 'amount' | 'checkNumber' | 'payee';
+  sortBy?: 'feedDate' | 'description' | 'category' | 'status' | 'amount' | 'checkNumber' | 'payee'
+    | 'name' | 'originalDescription' | 'confidence';
   sortDir?: 'asc' | 'desc';
   limit?: number;
   offset?: number;

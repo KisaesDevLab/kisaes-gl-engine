@@ -106,6 +106,12 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
       case 'checkNumber': return sql`${bankFeedItems.checkNumber}`;
       // The name the Payee column shows: same precedence as the UI.
       case 'payee': return sql`COALESCE(${assignedContact.displayName}, ${suggestedContact.displayName}, ${bankFeedItems.payeeNameOnCheck})`;
+      // The name the feed's NAME column shows: assigned contact, else the
+      // rule/AI suggested contact, else the cleaned descriptor.
+      case 'name': return sql`COALESCE(${assignedContact.displayName}, ${suggestedContact.displayName}, ${bankFeedItems.description})`;
+      case 'originalDescription': return sql`${bankFeedItems.originalDescription}`;
+      // decimal(3,2), NULL when nothing scored the row — NULLS LAST below.
+      case 'confidence': return sql`CAST(${bankFeedItems.confidenceScore} AS DECIMAL)`;
       case 'feedDate':
       default: return sql`${bankFeedItems.feedDate}`;
     }

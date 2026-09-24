@@ -30,7 +30,13 @@ export const bankFeedFiltersSchema = z.object({
     .transform((v) => v === true || v === 'true'),
   // 'checkNumber' and 'payee' (assigned → suggested contact → payee read off
   // the check) serve the Uncategorized page's sortable Ref and Payee columns.
-  sortBy: z.enum(['feedDate', 'description', 'category', 'status', 'amount', 'checkNumber', 'payee']).optional(),
+  // 'name' is what the feed's NAME column shows (assigned → suggested contact
+  // → cleaned descriptor), 'originalDescription' the raw bank text, and
+  // 'confidence' the AI score — the Bank Feed page's "Sort by" choices.
+  sortBy: z.enum([
+    'feedDate', 'description', 'category', 'status', 'amount', 'checkNumber', 'payee',
+    'name', 'originalDescription', 'confidence',
+  ]).optional(),
   sortDir: z.enum(['asc', 'desc']).optional(),
   limit: z.coerce.number().int().min(1).max(500).default(50),
   offset: z.coerce.number().int().min(0).default(0),
