@@ -30,6 +30,13 @@ export interface Contact {
   openingBalance: string;
   openingBalanceDate: string | null;
   defaultExpenseAccountId: string | null;
+  /**
+   * Server-enriched on LIST responses only (joined from accounts): the
+   * default expense category's name and number, for the Contacts table.
+   * Absent on single-contact reads and on create/update results.
+   */
+  defaultExpenseAccountName?: string | null;
+  defaultExpenseAccountNumber?: string | null;
   // ADR 0XY — vendor-scoped default tag.
   defaultTagId: string | null;
   taxId: string | null;

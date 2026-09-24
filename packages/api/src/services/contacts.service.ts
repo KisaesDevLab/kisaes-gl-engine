@@ -2,10 +2,10 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { eq, and, sql, count, or, inArray } from 'drizzle-orm';
+import { eq, and, sql, count, or, inArray, getTableColumns } from 'drizzle-orm';
 import type { CreateContactInput, UpdateContactInput, ContactFilters } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { contacts } from '../db/schema/index.js';
+import { contacts, accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
@@ -36,8 +36,17 @@ export async function list(tenantId: string, filters: ContactFilters) {
 
   const where = and(...conditions);
 
+  // The list shows (and edits in place) each vendor's default expense
+  // category, so the account's name and number ride along — the row
+  // otherwise carries only the id.
   const [data, total] = await Promise.all([
-    db.select().from(contacts).where(where)
+    db.select({
+      ...getTableColumns(contacts),
+      defaultExpenseAccountName: accounts.name,
+      defaultExpenseAccountNumber: accounts.accountNumber,
+    }).from(contacts)
+      .leftJoin(accounts, and(eq(accounts.id, contacts.defaultExpenseAccountId), eq(accounts.tenantId, contacts.tenantId)))
+      .where(where)
       .orderBy(contacts.displayName)
       .limit(filters.limit ?? 50)
       .offset(filters.offset ?? 0),

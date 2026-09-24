@@ -168,6 +168,20 @@ describe('Contacts Service', () => {
       expect(result.total).toBe(1);
     });
 
+    it('joins the default expense category name and number onto list rows', async () => {
+      const [util] = await db.insert(accounts).values({
+        tenantId, name: 'Utilities', accountType: 'expense', accountNumber: '7021',
+      }).returning();
+      const vendor = await contactsService.create(tenantId, { contactType: 'vendor', displayName: 'Spire', defaultExpenseAccountId: util!.id });
+      const { data } = await contactsService.list(tenantId, { contactType: 'vendor' });
+      const row = data.find((c) => c.id === vendor.id)!;
+      expect(row.defaultExpenseAccountName).toBe('Utilities');
+      expect(row.defaultExpenseAccountNumber).toBe('7021');
+      // A contact without one reads null, not a missing key.
+      const plain = data.find((c) => c.id !== vendor.id);
+      if (plain) expect(plain.defaultExpenseAccountName).toBeNull();
+    });
+
     it('should filter by active', async () => {
       const all = await contactsService.list(tenantId, { limit: 50, offset: 0 });
       const c = all.data[0]!;
