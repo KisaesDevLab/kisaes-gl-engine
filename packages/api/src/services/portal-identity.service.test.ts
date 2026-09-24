@@ -335,15 +335,17 @@ describe('portal-identity.service', () => {
       expect(stillOurs?.contactId).toBe(aliceContact.id);
     });
 
-    it('refuses to switch from a session without identity_id', async () => {
+    it('refuses a session without identity_id a target belonging to someone else', async () => {
       const t = await mkTenant('legacy');
       const hash = await hashPassword('p');
       const identity = await findOrCreateIdentity({ email: 'target@example.com', bcryptHash: hash, emailVerified: true });
       const legacyContact = await mkContact(t, 'legacy@example.com');
       const linkedTarget = await mkContact(t, 'target@example.com', identity.id);
-      // The legacy session has identity_id = null even though the
-      // target is identity-bound. Switching must still fail because
-      // we don't trust the cookie to pick which identity to scope to.
+      // A session with identity_id = null may switch (2026-09-24 — an
+      // identity only exists once a client sets a password, and almost none
+      // do), but only to the SAME email address, which is what its holder
+      // proved they control. A different address is a different human, even
+      // when that human is identity-bound.
       const session = await mkSession({ tenantId: t, contactId: legacyContact.id, identityId: null });
 
       await expect(
@@ -351,7 +353,22 @@ describe('portal-identity.service', () => {
           currentSessionToken: session.token,
           targetContactId: linkedTarget.id,
         }),
-      ).rejects.toMatchObject({ code: 'SESSION_NOT_LINKED' });
+      ).rejects.toMatchObject({ code: 'TARGET_UNAVAILABLE' });
+    });
+
+    it('lets a session without identity_id reach the same address at another firm', async () => {
+      const t1 = await mkTenant('emailswitch-a');
+      const t2 = await mkTenant('emailswitch-b');
+      const here = await mkContact(t1, 'roams@example.com');
+      const there = await mkContact(t2, 'roams@example.com');
+      const session = await mkSession({ tenantId: t1, contactId: here.id, identityId: null });
+
+      const next = await switchToContact({
+        currentSessionToken: session.token,
+        targetContactId: there.id,
+      });
+      expect(next.contactId).toBe(there.id);
+      expect(next.tenantId).toBe(t2);
     });
   });
 });
