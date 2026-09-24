@@ -10,6 +10,24 @@ Access is layered: a feature must be enabled for the tenant (feature flag, super
 and then granted per portal contact per company by the firm (Edit Contact → access
 toggles). Everything defaults off except questions and receipt uploads.
 
+### Questions actually reach the client now (2026-09-24)
+
+"draft — not yet sent" on Practice → Client Portal → Questions means
+`portal_questions.notified_at IS NULL`; a draft is invisible to the client. The amber
+"Ready to send → Send all" panel used to call `markBatchNotified`, which ONLY stamped the
+flag — no client was ever emailed about a question (prod: 0 `reminder_sends` rows joined to
+`portal_questions`). It now calls `sendQuestionNotices`: one email per CONTACT listing
+their questions, through the shared mailer/STOP list/`reminder_sends` trail, using the
+`unanswered_question` template, then stamps notified_at. The UI reports sent / SMTP-unset /
+nobody-to-receive rather than implying delivery.
+
+**Audience rule** (`questionAudience`, shared with the reminder scan): an ASSIGNED question
+goes to that contact only; an UNASSIGNED one goes to every active contact of that company
+with `questions_for_us_access` — which matches what `listForContact` lets a contact see.
+Both the release path and the `unanswered_question` reminder scan previously INNER JOINed
+on `assigned_contact_id`, so a question with no contact (Contact column shows "—") had no
+audience at all: it could never be released and was never chased.
+
 ### Invitations (how a client first hears about the portal)
 
 Adding a contact emails them an invitation, ticked by default on the Add Contact form

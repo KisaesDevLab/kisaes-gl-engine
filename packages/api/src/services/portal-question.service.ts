@@ -13,6 +13,8 @@ import {
   portalContactCompanies,
   portalQuestionTemplates,
   portalRecurringQuestionSchedules,
+  reminderSends,
+  reminderTemplates,
   companies,
   transactions,
 } from '../db/schema/index.js';
@@ -20,6 +22,7 @@ import { AppError } from '../utils/errors.js';
 import { getProviderForTenant } from './storage/storage-provider.factory.js';
 import { tenantStorageKey } from './storage/storage-keys.js';
 import { auditLog } from '../middleware/audit.js';
+import { escapeHtml as escapeHtmlForMail } from '../utils/html-escape.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 10 — Question System Core.
 // CRUD + threading for transaction-scoped (and non-transaction)
@@ -360,30 +363,15 @@ export interface PendingBatch {
 }
 
 export async function listPendingBatches(tenantId: string): Promise<PendingBatch[]> {
-  const rows = await db
-    .select({
-      questionId: portalQuestions.id,
-      contactId: portalQuestions.assignedContactId,
-      email: portalContacts.email,
-      firstName: portalContacts.firstName,
-    })
-    .from(portalQuestions)
-    .innerJoin(portalContacts, eq(portalQuestions.assignedContactId, portalContacts.id))
-    .where(
-      and(
-        eq(portalQuestions.tenantId, tenantId),
-        isNull(portalQuestions.notifiedAt),
-        eq(portalContacts.status, 'active'),
-      ),
-    );
-
+  // Drafts, grouped by the person who would receive them. Uses the shared
+  // audience rule, so a question with no assigned contact reaches every
+  // contact of that company instead of falling out of the list entirely.
+  const rows = await questionAudience(tenantId, { unnotified: true });
   const map = new Map<string, PendingBatch>();
   for (const row of rows) {
-    if (!row.contactId) continue;
     const existing = map.get(row.contactId);
-    if (existing) {
-      existing.questionIds.push(row.questionId);
-    } else {
+    if (existing) existing.questionIds.push(row.questionId);
+    else {
       map.set(row.contactId, {
         contactId: row.contactId,
         email: row.email,
@@ -393,6 +381,151 @@ export async function listPendingBatches(tenantId: string): Promise<PendingBatch
     }
   }
   return [...map.values()];
+}
+
+/**
+ * Who should hear about a question.
+ *
+ * An ASSIGNED question goes to that contact and nobody else. An unassigned
+ * one belongs to the company, so it goes to every active contact there who
+ * may answer questions — which is also who can see it in the portal
+ * (listForContact matches assigned_contact_id IS NULL OR = me). The old
+ * inner join on assigned_contact_id meant an unassigned question had no
+ * audience at all: it could never be released and was never chased, which
+ * is how a draft showing "—" in the Contact column got stuck forever.
+ */
+async function questionAudience(
+  tenantId: string,
+  filter: { questionIds?: string[]; unnotified?: boolean },
+): Promise<Array<{ questionId: string; contactId: string; email: string; firstName: string | null }>> {
+  const idClause = filter.questionIds?.length
+    ? sql`AND q.id IN (${sql.join(filter.questionIds.map((id) => sql`${id}`), sql`, `)})`
+    : sql``;
+  const notifiedClause = filter.unnotified ? sql`AND q.notified_at IS NULL` : sql``;
+  const rows = await db.execute(sql`
+    SELECT q.id AS question_id, pc.id AS contact_id, pc.email, pc.first_name
+    FROM portal_questions q
+    JOIN portal_contact_companies pcc ON pcc.company_id = q.company_id
+    JOIN portal_contacts pc ON pc.id = pcc.contact_id AND pc.tenant_id = q.tenant_id
+    WHERE q.tenant_id = ${tenantId}
+      AND pc.status = 'active'
+      AND (q.assigned_contact_id IS NULL OR q.assigned_contact_id = pc.id)
+      AND (q.assigned_contact_id IS NOT NULL OR pcc.questions_for_us_access)
+      ${idClause}
+      ${notifiedClause}
+  `);
+  return (rows.rows as Array<Record<string, unknown>>).map((r) => ({
+    questionId: String(r['question_id']),
+    contactId: String(r['contact_id']),
+    email: String(r['email']),
+    firstName: (r['first_name'] as string | null) ?? null,
+  }));
+}
+
+export interface QuestionNoticeResult {
+  /** Questions now marked as released, whether or not mail reached anyone. */
+  released: number;
+  results: Array<{ contactId: string; email: string; questionCount: number; outcome: 'sent' | 'suppressed' | 'error'; error?: string }>;
+  /** True when SMTP is unset and the "send" only wrote to the server log. */
+  viaStub: boolean;
+  /** Questions nobody could receive — no active contact on that company. */
+  noAudience: number;
+}
+
+export async function sendQuestionNotices(
+  tenantId: string,
+  questionIds: string[],
+  userId?: string,
+): Promise<QuestionNoticeResult> {
+  const ids = [...new Set(questionIds)];
+  if (ids.length === 0) return { released: 0, results: [], viaStub: false, noAudience: 0 };
+
+  const audience = await questionAudience(tenantId, { questionIds: ids });
+  const byContact = new Map<string, { email: string; firstName: string | null; questionIds: string[] }>();
+  for (const row of audience) {
+    const entry = byContact.get(row.contactId);
+    if (entry) entry.questionIds.push(row.questionId);
+    else byContact.set(row.contactId, { email: row.email, firstName: row.firstName, questionIds: [row.questionId] });
+  }
+  const reachable = new Set(audience.map((a) => a.questionId));
+
+  // Shared portal-mail plumbing: same mailer, STOP list, login link, firm
+  // name and reminder_sends trail as every other message a client gets.
+  const reminders = await import('./portal-reminders.service.js');
+  const mailer = await reminders.getMailer();
+  const linkBase = reminders.portalLinkBase();
+  const portalLink = await reminders.portalLoginLink(linkBase, tenantId);
+  const firmName = await reminders.resolveFirmName(tenantId);
+
+  const results: QuestionNoticeResult['results'] = [];
+  for (const [contactId, c] of byContact) {
+    if (await reminders.isSuppressed(contactId, 'email', { skipEngagementWindow: true })) {
+      results.push({ contactId, email: c.email, questionCount: c.questionIds.length, outcome: 'suppressed' });
+      continue;
+    }
+    const vars = {
+      first_name: c.firstName ?? '',
+      open_count: c.questionIds.length,
+      portal_link: portalLink,
+      firm_name: firmName,
+    };
+    const tpl = await loadQuestionTemplate(tenantId);
+    const subject = reminders.renderTemplate(tpl?.subject || DEFAULT_QUESTION_SUBJECT, vars);
+    const text = reminders.renderTemplate(tpl?.body || DEFAULT_QUESTION_BODY, vars);
+
+    const [sendRow] = await db.insert(reminderSends).values({
+      scheduleId: null, tenantId, contactId, questionId: c.questionIds[0]!, channel: 'email',
+    }).returning({ id: reminderSends.id });
+    const html = `<div style="font-family:system-ui,sans-serif;line-height:1.5;color:#111">${
+      escapeHtmlForMail(text).replace(/\n/g, '<br>')
+    }</div>`;
+    try {
+      await mailer.send(c.email, subject, html, text);
+      results.push({ contactId, email: c.email, questionCount: c.questionIds.length, outcome: 'sent' });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (sendRow?.id) await db.update(reminderSends).set({ error: message }).where(eq(reminderSends.id, sendRow.id));
+      results.push({ contactId, email: c.email, questionCount: c.questionIds.length, outcome: 'error', error: message });
+    }
+  }
+
+  // Stamp every question asked for, including ones nobody could receive:
+  // the release is a decision by staff, and an unreachable question should
+  // still leave draft state rather than look un-actioned forever.
+  await markBatchNotified(tenantId, ids);
+  await auditLog(
+    tenantId, 'update', 'portal_question_release', ids[0]!, null,
+    { questionIds: ids, contacts: results.map((r) => ({ contactId: r.contactId, outcome: r.outcome })), viaStub: mailer.isStub },
+    userId,
+  );
+
+  return {
+    released: ids.length,
+    results,
+    viaStub: mailer.isStub,
+    noAudience: ids.filter((id) => !reachable.has(id)).length,
+  };
+}
+
+const DEFAULT_QUESTION_SUBJECT = '{firm_name} has {open_count} question(s) for you';
+const DEFAULT_QUESTION_BODY =
+  `Hi {first_name},\n\n` +
+  `{firm_name} has asked you {open_count} question(s) about your books. ` +
+  `They cannot finish without your answer.\n\n` +
+  `Open your portal to read and answer them: {portal_link}\n\n` +
+  `Thank you,\n{firm_name}`;
+
+async function loadQuestionTemplate(tenantId: string): Promise<{ subject: string | null; body: string } | null> {
+  const rows = await db
+    .select({ subject: reminderTemplates.subject, body: reminderTemplates.body })
+    .from(reminderTemplates)
+    .where(and(
+      eq(reminderTemplates.tenantId, tenantId),
+      eq(reminderTemplates.triggerType, 'unanswered_question'),
+      eq(reminderTemplates.channel, 'email'),
+    ))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 export async function markBatchNotified(

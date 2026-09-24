@@ -261,26 +261,32 @@ export async function scanForReminders(tenantId?: string): Promise<ReminderCandi
 
     const cutoff = new Date(now.getTime() - minDays * 24 * 60 * 60 * 1000);
 
-    const rows = await db
-      .select({
-        questionId: portalQuestions.id,
-        notifiedAt: portalQuestions.notifiedAt,
-        contactId: portalQuestions.assignedContactId,
-        contactEmail: portalContacts.email,
-        contactFirstName: portalContacts.firstName,
-      })
-      .from(portalQuestions)
-      .innerJoin(portalContacts, eq(portalQuestions.assignedContactId, portalContacts.id))
-      .where(
-        and(
-          eq(portalQuestions.tenantId, sched.tenantId),
-          sched.companyId ? eq(portalQuestions.companyId, sched.companyId) : sql`TRUE`,
-          inArray(portalQuestions.status, ['open', 'viewed']),
-          sql`${portalQuestions.notifiedAt} IS NOT NULL`,
-          lt(portalQuestions.notifiedAt, cutoff),
-          eq(portalContacts.status, 'active'),
-        ),
-      );
+    // Same audience rule as releasing a question: an assigned one chases
+    // that contact, an unassigned one chases every active contact of the
+    // company who may answer questions. The old inner join on
+    // assigned_contact_id meant an unassigned question was never chased.
+    const companyClause = sched.companyId ? sql`AND q.company_id = ${sched.companyId}` : sql``;
+    const raw = await db.execute(sql`
+      SELECT q.id AS question_id, q.notified_at, pc.id AS contact_id, pc.email, pc.first_name
+      FROM portal_questions q
+      JOIN portal_contact_companies pcc ON pcc.company_id = q.company_id
+      JOIN portal_contacts pc ON pc.id = pcc.contact_id AND pc.tenant_id = q.tenant_id
+      WHERE q.tenant_id = ${sched.tenantId}
+        AND q.status IN ('open', 'viewed')
+        AND q.notified_at IS NOT NULL
+        AND q.notified_at < ${cutoff}
+        AND pc.status = 'active'
+        AND (q.assigned_contact_id IS NULL OR q.assigned_contact_id = pc.id)
+        AND (q.assigned_contact_id IS NOT NULL OR pcc.questions_for_us_access)
+        ${companyClause}
+    `);
+    const rows = (raw.rows as Array<Record<string, unknown>>).map((r) => ({
+      questionId: String(r['question_id']),
+      notifiedAt: r['notified_at'] ? new Date(r['notified_at'] as string) : null,
+      contactId: String(r['contact_id']),
+      contactEmail: String(r['email']),
+      contactFirstName: (r['first_name'] as string | null) ?? null,
+    }));
 
     // For each question, compute whether the next cadence step is
     // due. Group by contact so we send one digest per contact per

@@ -62,8 +62,10 @@ portalQuestionsRouter.post('/pending-batches/mark-notified', async (req, res) =>
   if (!Array.isArray(ids) || ids.some((x) => typeof x !== 'string')) {
     throw AppError.badRequest('questionIds must be string[]');
   }
-  await svc.markBatchNotified(req.tenantId, ids as string[]);
-  res.json({ ok: true });
+  // Releasing now actually emails the people who can answer, instead of
+  // only stamping notified_at and hoping the client logs in.
+  const result = await svc.sendQuestionNotices(req.tenantId, ids as string[], req.userId);
+  res.json({ ok: true, ...result });
 });
 
 portalQuestionsRouter.get('/:id', async (req, res) => {
