@@ -26,6 +26,13 @@ green tick. Sending invalidates any earlier unconsumed link for that contact. Ro
 contact sent NOTHING and clients waited for an email nobody had written.
 
 ### Who portal mail says it is from
+The firm's NAME is editable in two places: **Practice → Client Portal → Settings → Your
+firm's name** (added 2026-09-24 — the firm was otherwise only reachable through Admin →
+Firms, so an appliance still called "Default Practice" introduced itself to clients that
+way) and **Admin → Firms** (pencil icon). `PATCH /firms/:firmId` takes `{name}` and is
+firm-admin gated; the appliance firm may be renamed freely — only its reserved SLUG is
+locked and it cannot be deactivated.
+
 
 `{firm_name}` is the managing PRACTICE, resolved from the active `tenant_firm_assignments`
 row (`resolveFirmName`), falling back to the tenant name on an appliance install with no
