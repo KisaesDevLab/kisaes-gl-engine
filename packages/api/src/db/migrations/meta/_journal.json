@@ -1268,6 +1268,13 @@
       "when": 1784800000038,
       "tag": "0180_categorize_reminder_trigger",
       "breakpoints": true
+    },
+    {
+      "idx": 181,
+      "version": "7",
+      "when": 1784800000039,
+      "tag": "0181_purge_non_identifying_history",
+      "breakpoints": true
     }
   ]
 }

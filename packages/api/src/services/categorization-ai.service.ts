@@ -26,6 +26,42 @@ export function normalizePayeePattern(description: string): string {
 }
 
 /**
+ * Words a bank prints on a line that identify NOBODY. "CHECK 3662" cleans to
+ * "check", which is the same key for every cheque the client ever wrote — so
+ * learned history keyed on it mapped an entire account's cheques to whichever
+ * payee happened to be learned first, and the wrong name then sat on rows the
+ * statement importer would otherwise have filled in correctly.
+ *
+ * A tenant that really does want "every line starting PAY goes to account X"
+ * should say so with a bank RULE, which is visible and editable, rather than
+ * have it inferred invisibly from one confirmation.
+ */
+const NON_IDENTIFYING_WORDS = new Set([
+  'check', 'checks', 'cheque', 'cheques', 'draft', 'drafts',
+  'deposit', 'deposits', 'withdrawal', 'withdrawals', 'withdrawl',
+  'transfer', 'transfers', 'payment', 'payments', 'pay',
+  'debit', 'debits', 'credit', 'credits', 'card', 'purchase', 'purchases',
+  'ach', 'eft', 'pos', 'atm', 'fee', 'fees', 'interest', 'misc', 'other',
+]);
+
+/**
+ * Whether a normalized pattern names someone. False for an empty key, for
+ * anything with no letters at all (a bare reference number), for a card mask
+ * ("xx1419", "****1419"), and for a key made only of the generic banking
+ * words above. Used on BOTH sides: such a key is never learned and never
+ * matched.
+ */
+export function isIdentifyingPattern(pattern: string | null | undefined): boolean {
+  const p = (pattern ?? '').trim().toLowerCase();
+  if (!p) return false;
+  if (!/[a-z]/.test(p)) return false;
+  if (/^[x*#]+\s*\d+$/.test(p)) return false;
+  const words = p.split(/[^a-z]+/).filter(Boolean);
+  if (words.length === 0) return false;
+  return words.some((w) => !NON_IDENTIFYING_WORDS.has(w));
+}
+
+/**
  * STATEMENT_CHECK_PAYEE_CATEGORY — how many prior posted transactions to the
  * same payee we require before treating "they always code to this account"
  * as a suggestion. One prior check is an anecdote (it could itself have been
@@ -117,13 +153,17 @@ export async function suggestCategorization(tenantId: string, feedItemId: string
   const payeePattern = normalizePayeePattern(item.originalDescription || item.description || '');
 
   // ── Step 2: Categorization history lookup ──────────────────────
-  // Check if this payee pattern has been confirmed 3+ times
-  const historyMatch = await db.query.categorizationHistory.findFirst({
-    where: and(
-      eq(categorizationHistory.tenantId, tenantId),
-      eq(categorizationHistory.payeePattern, payeePattern),
-    ),
-  });
+  // Check if this payee pattern has been confirmed 3+ times. A pattern that
+  // names nobody ("check", "deposit", a card mask) is skipped: matching on it
+  // sweeps every such line onto one payee.
+  const historyMatch = isIdentifyingPattern(payeePattern)
+    ? await db.query.categorizationHistory.findFirst({
+        where: and(
+          eq(categorizationHistory.tenantId, tenantId),
+          eq(categorizationHistory.payeePattern, payeePattern),
+        ),
+      })
+    : undefined;
 
   if (historyMatch && (historyMatch.timesConfirmed ?? 0) >= 3) {
     const overrideRate = (historyMatch.timesOverridden ?? 0) / ((historyMatch.timesConfirmed ?? 0) + (historyMatch.timesOverridden ?? 0));
@@ -259,7 +299,9 @@ export async function updateLearning(
   tenantId: string, rawDescription: string, accountId: string, contactId: string | null, accepted: boolean,
 ) {
   const payeePattern = normalizePayeePattern(rawDescription);
-  if (!payeePattern) return;
+  // Nothing to learn from a key that names nobody — storing it is what
+  // poisons every later check/deposit line.
+  if (!isIdentifyingPattern(payeePattern)) return;
 
   const existing = await db.query.categorizationHistory.findFirst({
     where: and(

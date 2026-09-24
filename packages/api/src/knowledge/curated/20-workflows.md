@@ -32,6 +32,22 @@ The accounting impact:
 4. **Bank Deposit** — when you take the money to the bank, create a deposit that
    moves the funds out of Payments Clearing into the bank account.
 
+### What learned history will and will not key on (2026-09-24, migration 0181)
+
+`categorization_history` keys on the CLEANED bank description, and a cheque's
+description cleans to `check` — one key for every cheque a client ever wrote. A single
+confirmation therefore taught the system that every future cheque went to that payee, and
+the wrong name then sat on rows the statement importer would have filled correctly (found
+in production: an account's cheques all reading one sheriff's office; another tenant with
+4,964 confirmations against `deposit`). `isIdentifyingPattern` (categorization-ai.service)
+now refuses BOTH to learn and to match a key that names nobody: the generic banking words
+(check, deposit, withdrawal, transfer, payment, pay, debit, credit, card, purchase, ach,
+eft, pos, atm, fee, interest, draft, misc, other), a key with no letters at all, and card
+masks like `xx1419`. Migration 0181 deleted the learned rows already keyed that way and
+cleared the suggestions they had written onto pending/assigned feed items — nothing
+posted was touched. A firm that genuinely wants "every PAY line to account X" should
+write a bank RULE, which is visible and editable, rather than rely on invisible learning.
+
 ### Bank Feed Categorization
 1. **Import** — connect a bank via Plaid, upload a CSV statement, or send
    the client a **bank connection invite** (Banking → Invite client, gated

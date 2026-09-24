@@ -15,7 +15,7 @@ import * as aiPrompt from './ai-prompt.service.js';
 import { matchByName } from './ai-name-match.js';
 import { suggestAccountFromPayeeHistory } from './categorization-ai.service.js';
 import * as orchestrator from './ai-orchestrator.service.js';
-import { normalizePayeePattern } from './categorization-ai.service.js';
+import { normalizePayeePattern, isIdentifyingPattern } from './categorization-ai.service.js';
 import { sanitize, type PiiType } from './pii-sanitizer.service.js';
 
 // Built-in default categorization prompt. Exported so the prompt-template seeder
@@ -235,6 +235,12 @@ async function findHistoryDualKey(
 ) {
   const currentKey = normalizePayeePattern(item.originalDescription || item.description || '');
   const legacyKey = (item.description || '').toLowerCase().trim();
+  // "check", "deposit", a bare card mask: the same key for every such line,
+  // so a match on it is a coin toss between unrelated payees. Refuse to read
+  // (and, at the write sites, to learn) anything keyed this way.
+  if (!isIdentifyingPattern(currentKey) && !isIdentifyingPattern(legacyKey)) {
+    return { row: null, currentKey };
+  }
   let row = currentKey
     ? await db.query.categorizationHistory.findFirst({
         where: and(eq(categorizationHistory.tenantId, tenantId), eq(categorizationHistory.payeePattern, currentKey)),
@@ -629,7 +635,7 @@ export async function recordUserDecision(tenantId: string, feedItemId: string, a
   // Canonical pattern key + dual-read of any legacy-keyed row (M12).
   // Whatever row we touch is re-keyed to the canonical pattern on write.
   const { row: existing, currentKey: pattern } = await findHistoryDualKey(tenantId, item);
-  if (!pattern) return;
+  if (!pattern || !isIdentifyingPattern(pattern)) return;
 
   if (existing) {
     const changesLearnedAccount = existing.accountId !== accountId;
