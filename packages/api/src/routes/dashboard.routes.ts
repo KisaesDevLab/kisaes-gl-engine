@@ -195,11 +195,90 @@ function readTrendMonths(req: { query: Record<string, unknown> }): number {
 // whole response — the client still sees the successful panels and gets
 // explicit null for the failing ones. The shape matches the individual
 // endpoints one-to-one so the UI code only changed its fetching layer.
+// The work queue: four counts of things waiting on a person, each the same
+// number the screen it links to would show. Deliberately counts rather than
+// lists — the dashboard is the "what needs me today" surface and the screens
+// themselves are where the work happens.
+//
+// Each count is gated on the feature that owns it, so a firm without the
+// portal or the review queue gets null for that one rather than a card
+// linking somewhere they cannot go.
+export async function computeWorkQueue(tenantId: string) {
+  const { bankFeedItems, transactions, journalLines, accounts, aiJobs } =
+    await import('../db/schema/index.js');
+  const [reviewOn, portalOn, docReqOn] = await Promise.all([
+    flags.isEnabled(tenantId, 'UNCATEGORIZED_REVIEW_V1'),
+    flags.isEnabled(tenantId, 'CLIENT_PORTAL_V1'),
+    flags.isEnabled(tenantId, 'RECURRING_DOC_REQUESTS_V1'),
+  ]);
+
+  const countOf = async (q: Promise<Array<{ n: number }>>) => Number((await q)[0]?.n ?? 0);
+
+  // Same two halves the Uncategorized screen shows: bank lines nobody has
+  // dealt with (status 'pending', as GET /unposted asks for) and amounts
+  // already parked in suspense.
+  const notPosted = countOf(
+    db.select({ n: sql<number>`COUNT(*)::int` }).from(bankFeedItems)
+      .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.status, 'pending'))),
+  );
+  const inSuspense = countOf(
+    db.select({ n: sql<number>`COUNT(DISTINCT ${transactions.id})::int` })
+      .from(transactions)
+      .innerJoin(journalLines, and(
+        eq(journalLines.transactionId, transactions.id),
+        eq(journalLines.tenantId, transactions.tenantId),
+      ))
+      .innerJoin(accounts, and(
+        eq(accounts.id, journalLines.accountId),
+        eq(accounts.systemTag, 'suspense'),
+      ))
+      .where(and(eq(transactions.tenantId, tenantId), sql`${transactions.status} <> 'void'`)),
+  );
+
+  // "Unresolved" — the Questions tab's own default filter, so the card and
+  // the screen agree on what is outstanding.
+  const openQuestions = portalOn
+    ? countOf(db.select({ n: sql<number>`COUNT(*)::int` }).from(portalQuestions)
+        .where(and(eq(portalQuestions.tenantId, tenantId), sql`${portalQuestions.status} <> 'resolved'`)))
+    : Promise.resolve(null as number | null);
+
+  // Asked for and not yet sent in. A submitted-but-unreviewed request is
+  // staff work, counted by the portal-activity panel instead.
+  const openRequests = docReqOn
+    ? countOf(db.select({ n: sql<number>`COUNT(*)::int` }).from(documentRequests)
+        .where(and(eq(documentRequests.tenantId, tenantId), eq(documentRequests.status, 'pending'))))
+    : Promise.resolve(null as number | null);
+
+  // Mirrors the statement-imports disposition CASE: parsed and finished, not
+  // yet imported, i.e. waiting for a human to accept the read.
+  const statementsPendingReview = countOf(
+    db.select({ n: sql<number>`COUNT(*)::int` }).from(aiJobs)
+      .where(and(
+        eq(aiJobs.tenantId, tenantId),
+        eq(aiJobs.jobType, 'ocr_statement'),
+        eq(aiJobs.status, 'complete'),
+        sql`${aiJobs.importedAt} IS NULL`,
+      )),
+  );
+
+  const [np, sus, q, dr, st] = await Promise.all([
+    notPosted, inSuspense, openQuestions, openRequests, statementsPendingReview,
+  ]);
+  return {
+    // null = the feature that owns this count is off for the tenant; the
+    // card is hidden rather than showing a zero that means "not applicable".
+    uncategorized: reviewOn ? { notPosted: np, inSuspense: sus, total: np + sus } : null,
+    openQuestions: q,
+    openRequests: dr,
+    statementsPendingReview: st,
+  };
+}
+
 dashboardRouter.get('/summary', async (req, res) => {
   const months = readTrendMonths(req);
   const [
     snapshot, trend, cashPosition, receivables, payables,
-    actionItems, budgetPerformance, bankingHealth, portalActivity,
+    actionItems, budgetPerformance, bankingHealth, portalActivity, workQueue,
   ] = await Promise.allSettled([
     dashboardService.getFinancialSnapshot(req.tenantId),
     dashboardService.getRevExpTrend(req.tenantId, months),
@@ -210,6 +289,7 @@ dashboardRouter.get('/summary', async (req, res) => {
     computeBudgetPerformance(req.tenantId),
     computeBankingHealth(req.tenantId),
     computePortalActivity(req.tenantId),
+    computeWorkQueue(req.tenantId),
   ]);
 
   const unwrap = <T>(r: PromiseSettledResult<T>) => r.status === 'fulfilled' ? r.value : null;
@@ -229,11 +309,12 @@ dashboardRouter.get('/summary', async (req, res) => {
     errored(budgetPerformance, 'Budget performance'),
     errored(bankingHealth, 'Banking health'),
     errored(portalActivity, 'Portal activity'),
+    errored(workQueue, 'Work queue'),
   ].filter((x): x is string => x !== null);
 
   // Log server-side failures so an operator looking at the logs sees the
   // underlying cause — the API response only carries the labels.
-  for (const panel of [snapshot, trend, cashPosition, receivables, payables, actionItems, budgetPerformance, bankingHealth, portalActivity]) {
+  for (const panel of [snapshot, trend, cashPosition, receivables, payables, actionItems, budgetPerformance, bankingHealth, portalActivity, workQueue]) {
     if (panel.status === 'rejected') {
       console.warn('[dashboard/summary] panel failed:', panel.reason);
     }
@@ -249,6 +330,7 @@ dashboardRouter.get('/summary', async (req, res) => {
     budgetPerformance: unwrap(budgetPerformance),
     bankingHealth: unwrap(bankingHealth),
     portalActivity: unwrap(portalActivity),
+    workQueue: unwrap(workQueue),
     errors,
   });
 });
