@@ -355,6 +355,11 @@ export async function sendHelpRequest(
 
   const sms = channels.includes('sms') ? await smsAvailability(tenantId) : { available: false, reason: null };
   const reminder = input.reminder === true;
+  // A person pressing the button is announcing a new obligation, so it skips
+  // the 7-day engagement throttle. A SCHEDULE firing is the repeat nudge that
+  // throttle exists for: a client who was in the portal this week is left
+  // alone. Explicit STOP rows are honoured either way.
+  const skipEngagementWindow = !input.scheduleId;
   const trigger = reminder ? CATEGORIZE_REMINDER_TRIGGER : CATEGORIZE_REQUEST_TRIGGER;
   const [emailTpl, smsTpl] = await Promise.all([
     loadTemplate(tenantId, 'email', trigger),
@@ -380,7 +385,7 @@ export async function sendHelpRequest(
     const outcomes: HelpSendResult['results'][number]['outcomes'] = [];
 
     for (const channel of channels) {
-      if (await isSuppressed(c.id, channel, { skipEngagementWindow: true })) {
+      if (await isSuppressed(c.id, channel, { skipEngagementWindow })) {
         outcomes.push({ channel, outcome: 'suppressed' });
         continue;
       }

@@ -175,6 +175,21 @@ describe('automated categorize reminders', () => {
     expect(result).toMatchObject({ capped: 1, sent: 0 });
   });
 
+  it('leaves alone a client who was in the portal this week', async () => {
+    // The 7-day engagement throttle applies to a SCHEDULE firing (a repeat
+    // nudge), not to a person pressing the button. Explicit STOP rows are
+    // honoured either way.
+    await db.update(portalContacts).set({ lastSeenAt: new Date() }).where(eq(portalContacts.id, contactId));
+    try {
+      const result = await dispatchCategorizeReminders(tenantId);
+      expect(result).toMatchObject({ sent: 0 });
+      const sends = await db.select().from(reminderSends).where(eq(reminderSends.tenantId, tenantId));
+      expect(sends).toHaveLength(0);
+    } finally {
+      await db.update(portalContacts).set({ lastSeenAt: null }).where(eq(portalContacts.id, contactId));
+    }
+  });
+
   it('ignores a paused schedule', async () => {
     await db.update(reminderSchedules).set({ active: false }).where(eq(reminderSchedules.id, scheduleId));
     expect(await scan()).toHaveLength(0);

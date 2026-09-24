@@ -43,6 +43,33 @@ green tick. Sending invalidates any earlier unconsumed link for that contact. Ro
 `{ invite: { sent, viaStub, rateLimited } }`. Added 2026-09-24 — before it, creating a
 contact sent NOTHING and clients waited for an email nobody had written.
 
+### Portal session trust rules (security review, 2026-09-24)
+
+A portal session records the ADDRESS whose control its holder proved
+(`portal_contact_sessions.verified_email`, migration 0182). The firm switcher
+compares that column — never `portal_contacts.email`, which any non-readonly staff
+user can edit: comparing the mutable column briefly let a staff member sign in as a
+contact of their own tenant, repoint it at a victim's address in another tenant and
+switch into the victim's portal. Sessions minted before 0182 have no recorded address
+and are refused the email path. Editing a contact's email now DELETES its sessions and
+invalidates unconsumed magic links. Switches are audited on both tenants with the basis
+(`identity` vs `verified_email`), IP and user agent.
+
+Question visibility matches the mail audience: an unassigned question is only visible to
+a contact with `questions_for_us_access`, because releasing one used to show its body
+(payee, amount, purpose) to a documents-only contact the firm had excluded.
+
+Scheduled sends honour the 7-day engagement throttle (a client who was in the portal
+this week is left alone); a staff member pressing the button skips it, because that
+announces a new obligation. STOP rows are honoured either way. Automated sends record
+`actor: 'scheduler:…'` and the `scheduleId` in the audit payload rather than a null user.
+
+**Open for the firm to decide (IRC §7216):** automated reminders disclose to the email
+and SMS providers that a named taxpayer is a client of a named preparer. There is no
+per-contact consent record — only the reactive STOP list — and no recorded
+§301.7216-2 basis. 9 of 10 practices have `sms_outbound_enabled`; the schedules created
+on 2026-09-24 are `email_only`.
+
 ### Who portal mail says it is from
 The firm's NAME is editable in two places: **Practice → Client Portal → Settings → Your
 firm's name** (added 2026-09-24 — the firm was otherwise only reachable through Admin →
