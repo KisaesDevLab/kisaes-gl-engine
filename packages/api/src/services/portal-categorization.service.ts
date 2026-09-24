@@ -96,6 +96,49 @@ export async function listPortalCategories(
   }));
 }
 
+// ── The payee picker ────────────────────────────────────────────
+
+export interface PortalPayee {
+  id: string;
+  label: string;
+  kind: 'vendor' | 'customer' | 'both' | 'other';
+}
+
+/**
+ * The sanitized payee list: every ACTIVE contact of the tenant, by name and
+ * kind only — no email, phone, tax id, addresses, balances or notes. All
+ * types on every row (user decision, 2026-09-24): a deposit can come from a
+ * vendor refund and a payment can go to a customer.
+ *
+ * Scope note: contacts are tenant-shared (contacts.service never filters
+ * them by company and company_id is normally NULL), so this deliberately
+ * does NOT apply the accounts list's "NULL company only when single-company"
+ * rule — that would hide every contact on a multi-company tenant.
+ */
+export async function listPortalPayees(
+  tenantId: string,
+  companyId: string,
+): Promise<PortalPayee[]> {
+  const rows = await db.execute(sql`
+    SELECT c.id, c.display_name, c.contact_type
+    FROM contacts c
+    WHERE c.tenant_id = ${tenantId}
+      AND c.is_active = true
+      AND (c.company_id = ${companyId} OR c.company_id IS NULL)
+    ORDER BY c.display_name
+    LIMIT 1000
+  `);
+  const kinds = new Set(['vendor', 'customer', 'both']);
+  return (rows.rows as Array<Record<string, unknown>>).map((r) => {
+    const t = String(r['contact_type']);
+    return {
+      id: String(r['id']),
+      label: String(r['display_name']),
+      kind: (kinds.has(t) ? t : 'other') as PortalPayee['kind'],
+    };
+  });
+}
+
 function groupFor(accountType: string): string {
   if (accountType === 'revenue' || accountType === 'other_revenue') return 'Money in';
   if (accountType === 'cogs') return 'Cost of sales';
@@ -124,6 +167,8 @@ export interface PortalQueueItem {
     status: string;
     label: string | null;
     note: string | null;
+    /** The payee as the client gave it — a label only, never a contact id. */
+    payeeLabel: string | null;
     rejectionReason: string | null;
   } | null;
   /**
@@ -291,6 +336,8 @@ export interface LiveSuggestion {
   status: string;
   label: string | null;
   note: string | null;
+  /** suggested_contact_label: the payee as shown/typed, or null. */
+  payeeLabel: string | null;
   rejectionReason: string | null;
   isPersonal: boolean;
   submittedByContactId: string | null;
@@ -308,6 +355,7 @@ export async function liveSuggestionsFor(tenantId: string, targetIds: string[]):
       status: clientCategorySuggestions.status,
       label: clientCategorySuggestions.suggestedLabel,
       note: clientCategorySuggestions.clientNote,
+      payeeLabel: clientCategorySuggestions.suggestedContactLabel,
       rejectionReason: clientCategorySuggestions.rejectionReason,
       isPersonal: clientCategorySuggestions.isPersonal,
       bankFeedItemId: clientCategorySuggestions.bankFeedItemId,
@@ -327,7 +375,7 @@ export async function liveSuggestionsFor(tenantId: string, targetIds: string[]):
     if (!key || !targetIds.includes(key)) continue;
     map.set(key, {
       id: r.id, status: r.status, label: r.label,
-      note: r.note, rejectionReason: r.rejectionReason, isPersonal: r.isPersonal,
+      note: r.note, payeeLabel: r.payeeLabel ?? null, rejectionReason: r.rejectionReason, isPersonal: r.isPersonal,
       submittedByContactId: r.submittedByContactId ?? null,
       submittedByUserId: r.submittedByUserId ?? null,
     });
@@ -343,6 +391,10 @@ export interface SuggestionInput {
   /** An account id from listPortalCategories, or one of the two pseudo-picks. */
   categoryId: string | 'personal' | 'not_sure';
   note?: string;
+  /** A contact id from listPortalPayees. Wins over contactLabel when both are sent. */
+  contactId?: string;
+  /** A name typed by the client when the payee is not in the list (≤ 120 chars). */
+  contactLabel?: string;
 }
 
 export interface SubmitResult {
@@ -399,6 +451,9 @@ export async function submitSuggestionsAs(
 
   const categories = await listPortalCategories(tenantId, companyId);
   const categoryById = new Map(categories.map((c) => [c.id, c]));
+  // Payees only when a row names one — the list is 1,000 rows at most.
+  const payees = items.some((i) => i.contactId) ? await listPortalPayees(tenantId, companyId) : [];
+  const payeeById = new Map(payees.map((p) => [p.id, p]));
 
   const accepted: string[] = [];
   const failed: SubmitResult['failed'] = [];
@@ -426,7 +481,19 @@ export async function submitSuggestionsAs(
       failed.push({ targetId: item.targetId, reason: 'invalid_category' });
       continue;
     }
-    if (notSure && !item.note?.trim()) {
+    // The payee, same posture as the category: an id not in the sanitized
+    // list is refused on WRITE, so the allowlist is enforced both ways.
+    const payee = item.contactId ? payeeById.get(item.contactId) : undefined;
+    if (item.contactId && !payee) {
+      failed.push({ targetId: item.targetId, reason: 'invalid_payee' });
+      continue;
+    }
+    const contactLabel = payee
+      ? payee.label
+      : (item.contactLabel?.trim().replace(/\s+/g, ' ').slice(0, 120) || null);
+    // "Not sure" needs SOMETHING the bookkeeper can use: a note, or who it
+    // was paid to — a payee on its own is exactly the missing fact.
+    if (notSure && !item.note?.trim() && !contactLabel) {
       failed.push({ targetId: item.targetId, reason: 'note_required' });
       continue;
     }
@@ -457,6 +524,8 @@ export async function submitSuggestionsAs(
           suggestedLabel: category?.label ?? (isPersonal ? 'Personal / not business' : 'Not sure'),
           clientNote: item.note?.trim() || null,
           isPersonal,
+          suggestedContactId: payee?.id ?? null,
+          suggestedContactLabel: contactLabel,
           status: 'pending',
           submittedByContactId: isUser ? null : submitter.contactId,
           submittedByUserId: isUser ? submitter.userId : null,
@@ -496,6 +565,7 @@ export interface PortalHistoryRow {
   amount: string;
   label: string | null;
   note: string | null;
+  payeeLabel: string | null;
   status: string;
   rejectionReason: string | null;
   submittedAt: string;
@@ -529,6 +599,7 @@ export async function listPortalHistory(
     amount: clientCategorySuggestions.snapshotAmount,
     label: clientCategorySuggestions.suggestedLabel,
     note: clientCategorySuggestions.clientNote,
+    payeeLabel: clientCategorySuggestions.suggestedContactLabel,
     status: clientCategorySuggestions.status,
     rejectionReason: clientCategorySuggestions.rejectionReason,
     submittedAt: clientCategorySuggestions.submittedAt,

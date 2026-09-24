@@ -120,10 +120,13 @@ const teamSuggestSchema = z.object({
     targetId: z.string().uuid(),
     categoryId: z.union([z.string().uuid(), z.literal('personal'), z.literal('not_sure')]),
     note: z.string().max(2000).optional(),
+    // Same payee answer the portal takes; shares the write path.
+    contactId: z.string().uuid().optional(),
+    contactLabel: z.string().trim().max(120).optional(),
   })).min(1).max(100),
 });
 uncategorizedRouter.post('/team/suggest', validate(teamSuggestSchema), async (req, res) => {
-  const items = (req.body.items as Array<{ targetId: string; categoryId: string; note?: string }>)
+  const items = (req.body.items as Array<{ targetId: string; categoryId: string; note?: string; contactId?: string; contactLabel?: string }>)
     .map((i) => ({ ...i, targetKind: 'transaction' as const }));
   const result = await categorization.submitSuggestionsAs(
     req.tenantId, req.companyId, { userId: req.userId }, items, { allowedTargetKinds: ['transaction'] },
@@ -211,6 +214,7 @@ uncategorizedRouter.get('/in-suspense', async (req, res) => {
         id: l.id,
         label: l.label,
         note: l.note,
+        payeeLabel: l.payeeLabel,
         isPersonal: l.isPersonal,
         submittedBy: l.submittedByUserId ? 'team_member' : 'portal_contact',
         submittedByUserId: l.submittedByUserId,
@@ -312,12 +316,13 @@ uncategorizedRouter.get('/suggestions', requireSuggestionReviewer, async (req, r
 const approveSchema = z.object({
   ids: z.array(z.string().uuid()).min(1).max(200),
   overrideAccountId: z.string().uuid().optional(),
+  overrideContactId: z.string().uuid().optional(),
   confirmDrift: z.boolean().optional(),
 });
 uncategorizedRouter.post('/suggestions/approve', requireSuggestionReviewer, validate(approveSchema), async (req, res) => {
   const result = await suggestionReview.approveSuggestions(
     req.tenantId, req.body.ids,
-    { overrideAccountId: req.body.overrideAccountId, confirmDrift: req.body.confirmDrift },
+    { overrideAccountId: req.body.overrideAccountId, overrideContactId: req.body.overrideContactId, confirmDrift: req.body.confirmDrift },
     req.userId,
   );
   res.json(result);

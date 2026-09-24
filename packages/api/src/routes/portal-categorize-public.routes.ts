@@ -243,6 +243,23 @@ portalCategorizePublicRouter.get('/categories', async (req, res) => {
   res.json({ featureEnabled: true, categories });
 });
 
+// GET /api/portal/categorize/payees?companyId=
+// Same guard order as /categories. Names and kinds only.
+portalCategorizePublicRouter.get('/payees', async (req, res) => {
+  const companyId = requireCompanyId(req, req.query['companyId'] as string | undefined);
+  const { tenantId, contactId } = req.portalContact!;
+
+  if (!(await flags.isEnabled(tenantId, 'PORTAL_CATEGORIZE_V1'))) {
+    res.json({ featureEnabled: false, payees: [] });
+    return;
+  }
+  await categorization.assertCategorizeAccess(tenantId, contactId, companyId);
+
+  const payees = await categorization.listPortalPayees(tenantId, companyId);
+  res.set('Cache-Control', 'private, max-age=60');
+  res.json({ featureEnabled: true, payees });
+});
+
 // GET /api/portal/categorize/history?companyId=
 portalCategorizePublicRouter.get('/history', async (req, res) => {
   const companyId = requireCompanyId(req, req.query['companyId'] as string | undefined);
@@ -271,6 +288,9 @@ const submitSchema = z.object({
     targetId: z.string().uuid(),
     categoryId: z.union([z.string().uuid(), z.literal('personal'), z.literal('not_sure')]),
     note: z.string().max(2000).optional(),
+    // Who it was paid to / from: a contact from /payees, or a typed name.
+    contactId: z.string().uuid().optional(),
+    contactLabel: z.string().trim().max(120).optional(),
   })).min(1).max(100),
 });
 

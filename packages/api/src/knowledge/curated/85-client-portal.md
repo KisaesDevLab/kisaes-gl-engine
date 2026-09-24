@@ -159,6 +159,23 @@ tab also lists suggestions the company's own team members sent from Banking →
 Uncategorized (badge **Team member** vs **Client**); both share the same queue and the
 same one-live-answer-per-row rule.
 
+The payee (2026-09-24, migration 0179): every row also asks **Who was it paid to or
+from?** — a select of EVERY active contact of the tenant (vendors, customers, both; all
+types on every row, user decision) served by `GET /api/portal/categorize/payees` as
+`{id,label,kind}` only, plus **Someone not in this list…** which reveals a 120-char name
+box. A payee on its own is a complete answer: it goes up as "I am not sure" carrying the
+payee, and "not sure" no longer demands a note when a payee is given. Stored as
+`suggested_contact_id` (FK, SET NULL if the contact is merged/deleted) plus
+`suggested_contact_label` (the name as shown or typed — always set). The write path
+allowlists `contactId` against the same payee list (`invalid_payee`). Staff see a
+**Payee** column on Client suggested; a typed name is badged **Not in contacts** and is
+resolved with the override payee picker (its quick-add creates the contact). Approving
+applies the payee: a bank line via categorize's contactId, a suspense amount inside the
+SAME bulk update as the move out of suspense (`clearSuspense(..., { payeeContactId })`),
+recorded as `resolved_contact_id`; an override payee marks the resolution `overridden`.
+A payee-only answer still cannot be approved without a category (`no_category` →
+override with one). Team-member suggest accepts the same two fields.
+
 The note: every row has a note box, always available and NOT gated on picking a
 category — a client who cannot name the account can usually still say what the
 payment was for. A note on its own is a complete answer and is submitted as

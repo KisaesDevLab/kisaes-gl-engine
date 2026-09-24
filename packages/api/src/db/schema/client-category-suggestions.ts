@@ -15,6 +15,7 @@ import { companies } from './company.js';
 import { accounts } from './accounts.js';
 import { bankFeedItems } from './banking.js';
 import { portalContacts } from './portal-contacts.js';
+import { contacts } from './contacts.js';
 
 /** Only a portal write or a team member's suggest may create one, and only
  *  ever as 'pending'. */
@@ -48,6 +49,13 @@ export const clientCategorySuggestions = pgTable('client_category_suggestions', 
   suggestedLabel: varchar('suggested_label', { length: 120 }),
   clientNote: text('client_note'),
   isPersonal: boolean('is_personal').notNull().default(false),
+  // Who it was paid to / came from (migration 0179). The id is the contact
+  // picked from the sanitized portal list; the label is the name as SHOWN
+  // or TYPED and is always set when there is a payee answer, so free text
+  // ("Joe the plumber") and a later rename both survive. Data, never an
+  // instruction — approval applies it through the same posting primitives.
+  suggestedContactId: uuid('suggested_contact_id').references(() => contacts.id, { onDelete: 'set null' }),
+  suggestedContactLabel: varchar('suggested_contact_label', { length: 120 }),
 
   status: varchar('status', { length: 20 }).notNull().default('pending'),
   // Exactly one of the two submitters is set (CHECK ccs_submitter_exclusive,
@@ -62,6 +70,8 @@ export const clientCategorySuggestions = pgTable('client_category_suggestions', 
   reviewedBy: uuid('reviewed_by'),
   resolution: varchar('resolution', { length: 30 }),
   resolvedAccountId: uuid('resolved_account_id'),
+  /** The payee staff actually applied on approval (loose reference). */
+  resolvedContactId: uuid('resolved_contact_id'),
   rejectionReason: text('rejection_reason'),
   postedTransactionId: uuid('posted_transaction_id'),
 

@@ -18,8 +18,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   clientCategorySuggestions, accounts, bankFeedItems, transactions,
-  tenants, companies, portalContacts, users, userTenantAccess,
-} from '../db/schema/index.js';
+  tenants, companies, portalContacts, users, userTenantAccess, contacts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { env } from '../config/env.js';
@@ -38,6 +37,13 @@ export interface SuggestionRow {
   suggestedLabel: string | null;
   clientNote: string | null;
   isPersonal: boolean;
+  /** The payee the client picked (null for free text or a since-removed contact). */
+  suggestedContactId: string | null;
+  /** The payee as shown or typed; set whenever there is any payee answer. */
+  suggestedContactLabel: string | null;
+  /** Live display name of the picked contact, null when free text or gone. */
+  suggestedContactName: string | null;
+  resolvedContactId: string | null;
   status: string;
   submittedAt: string;
   reviewedAt: string | null;
@@ -86,10 +92,12 @@ export async function listSuggestions(
     contactLast: portalContacts.lastName,
     userName: users.displayName,
     userEmail: users.email,
+    payeeName: contacts.displayName,
   })
     .from(clientCategorySuggestions)
     .leftJoin(portalContacts, eq(portalContacts.id, clientCategorySuggestions.submittedByContactId))
     .leftJoin(users, eq(users.id, clientCategorySuggestions.submittedByUserId))
+    .leftJoin(contacts, eq(contacts.id, clientCategorySuggestions.suggestedContactId))
     // Unread first, then newest — the doc-request queue's ordering.
     .orderBy(sql`(${clientCategorySuggestions.reviewedAt} IS NOT NULL), ${clientCategorySuggestions.submittedAt} DESC`)
     .where(where)
@@ -106,6 +114,10 @@ export async function listSuggestions(
       suggestedLabel: r.s.suggestedLabel,
       clientNote: r.s.clientNote,
       isPersonal: r.s.isPersonal,
+      suggestedContactId: r.s.suggestedContactId ?? null,
+      suggestedContactLabel: r.s.suggestedContactLabel ?? null,
+      suggestedContactName: r.s.suggestedContactId ? (r.payeeName ?? null) : null,
+      resolvedContactId: r.s.resolvedContactId ?? null,
       status: r.s.status,
       submittedAt: r.s.submittedAt.toISOString(),
       reviewedAt: r.s.reviewedAt ? r.s.reviewedAt.toISOString() : null,
@@ -183,13 +195,14 @@ export interface ApproveResult {
 export async function approveSuggestions(
   tenantId: string,
   ids: string[],
-  opts: { overrideAccountId?: string; confirmDrift?: boolean } = {},
+  opts: { overrideAccountId?: string; overrideContactId?: string; confirmDrift?: boolean } = {},
   userId?: string,
 ): Promise<ApproveResult> {
   if (ids.length === 0) throw AppError.badRequest('Select at least one suggestion.');
   if (ids.length > 200) throw AppError.badRequest('Approve at most 200 at a time.');
 
   if (opts.overrideAccountId) await assertUsableCategory(tenantId, opts.overrideAccountId);
+  if (opts.overrideContactId) await assertUsableContact(tenantId, opts.overrideContactId);
 
   const approved: string[] = [];
   const failed: ApproveResult['failed'] = [];
@@ -221,10 +234,15 @@ export async function approveSuggestions(
       if (drift.stale) throw new ReviewError('stale');
       if (drift.fields.length > 0 && !opts.confirmDrift) throw new ReviewError('drifted');
 
+      // The payee: staff override, else the contact the client picked. A
+      // free-text name has no id and applies nothing until staff resolve it
+      // through the override (quick-add lives in that picker).
+      const contactId = opts.overrideContactId ?? s.suggestedContactId ?? undefined;
+
       let postedTransactionId: string;
       if (s.targetKind === 'bank_feed_item' && s.bankFeedItemId) {
         const txn = await bankFeedService.categorize(
-          tenantId, s.bankFeedItemId, { accountId }, userId, s.companyId,
+          tenantId, s.bankFeedItemId, { accountId, contactId }, userId, s.companyId,
         );
         // Keep Close Review's audit trail consistent, exactly as
         // approveSelected does after categorize.
@@ -232,25 +250,30 @@ export async function approveSuggestions(
           .catch(() => { /* no state row is fine — the posting already happened */ });
         postedTransactionId = txn.id;
       } else {
+        // The payee rides in the same bulk update as the move, so the two
+        // land in one DB transaction or not at all.
         await suspenseService.clearSuspense(
           tenantId, [s.transactionId!], accountId, userId, s.companyId,
+          contactId ? { payeeContactId: contactId } : {},
         );
         // No new transaction and no new number: the money moved in place.
         postedTransactionId = s.transactionId!;
       }
 
+      const accountOverridden = !!opts.overrideAccountId && opts.overrideAccountId !== s.suggestedAccountId;
+      const payeeOverridden = !!opts.overrideContactId && opts.overrideContactId !== s.suggestedContactId;
       await db.update(clientCategorySuggestions).set({
         status: 'approved',
-        resolution: opts.overrideAccountId && opts.overrideAccountId !== s.suggestedAccountId
-          ? 'overridden' : 'accepted_as_suggested',
+        resolution: accountOverridden || payeeOverridden ? 'overridden' : 'accepted_as_suggested',
         resolvedAccountId: accountId,
+        resolvedContactId: contactId ?? null,
         postedTransactionId,
         reviewedAt: new Date(), reviewedBy: userId ?? null, updatedAt: new Date(),
       }).where(eq(clientCategorySuggestions.id, id));
 
       await auditLog(tenantId, 'update', 'client_category_suggestion', id,
         { status: 'pending' },
-        { status: 'approved', accountId, postedTransactionId }, userId);
+        { status: 'approved', accountId, contactId: contactId ?? null, postedTransactionId }, userId);
       approved.push(id);
     } catch (err) {
       const reason = err instanceof ReviewError
@@ -284,6 +307,16 @@ async function assertUsableCategory(tenantId: string, accountId: string): Promis
   if (a.systemTag) {
     throw AppError.badRequest('A system account cannot be a category here.', 'SYSTEM_ACCOUNT_TARGET');
   }
+}
+
+/** An override payee must be a live contact of this tenant. */
+async function assertUsableContact(tenantId: string, contactId: string): Promise<void> {
+  const [c] = await db.select({ id: contacts.id, isActive: contacts.isActive })
+    .from(contacts)
+    .where(and(eq(contacts.tenantId, tenantId), eq(contacts.id, contactId)))
+    .limit(1);
+  if (!c) throw AppError.badRequest('Payee contact not found.', 'CONTACT_NOT_FOUND');
+  if (!c.isActive) throw AppError.badRequest('That payee contact is inactive.', 'CONTACT_INACTIVE');
 }
 
 export async function rejectSuggestions(

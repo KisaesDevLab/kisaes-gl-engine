@@ -34,6 +34,8 @@ let bankGlAccountId = '';
 let rentAccountId = '';
 let travelAccountId = '';
 let bankConnectionId = '';
+let vendorContactId = '';
+let otherContactId = '';
 
 async function cleanDb() {
   if (!tenantId) return;
@@ -90,6 +92,11 @@ async function setup() {
   }).returning();
   bankConnectionId = conn!.id;
 
+  const [v] = await db.insert(contacts).values({ tenantId, contactType: 'vendor', displayName: 'Home Depot' }).returning();
+  vendorContactId = v!.id;
+  const [o] = await db.insert(contacts).values({ tenantId, contactType: 'vendor', displayName: 'Lowes' }).returning();
+  otherContactId = o!.id;
+
   const [c] = await db.insert(portalContacts).values({
     tenantId, email: `contact-${Date.now()}@ex.com`, status: 'active', firstName: 'Dana',
   }).returning();
@@ -113,6 +120,8 @@ async function mkSuggestion(v: {
   date?: string;
   isPersonal?: boolean;
   note?: string;
+  contactId?: string | null;
+  contactLabel?: string | null;
 }) {
   const [row] = await db.insert(clientCategorySuggestions).values({
     tenantId, companyId,
@@ -123,6 +132,8 @@ async function mkSuggestion(v: {
     suggestedLabel: v.accountId ? 'Rent' : 'Not sure',
     clientNote: v.note ?? null,
     isPersonal: v.isPersonal ?? false,
+    suggestedContactId: v.contactId ?? null,
+    suggestedContactLabel: v.contactLabel ?? (v.contactId ? 'Home Depot' : null),
     status: 'pending',
     submittedByContactId: contactId,
     snapshotAmount: v.amount,
@@ -238,6 +249,102 @@ describe('approving a suggestion on an amount ALREADY IN SUSPENSE', () => {
     expect(row!.status).toBe('stale');
     // The hand-clearing stands.
     expect(await balanceOf(travelAccountId)).toBe(30);
+  });
+});
+
+describe('the suggested payee', () => {
+  it('carries the picked contact onto the posted bank-line transaction', async () => {
+    const feedItemId = await mkFeedItem('42.5000');
+    const sid = await mkSuggestion({ targetKind: 'bank_feed_item', targetId: feedItemId, accountId: rentAccountId, amount: '42.50', contactId: vendorContactId });
+    const res = await review.approveSuggestions(tenantId, [sid], {}, userId);
+    expect(res.approved).toEqual([sid]);
+    const [row] = await db.select().from(clientCategorySuggestions).where(eq(clientCategorySuggestions.id, sid));
+    expect(row!.resolution).toBe('accepted_as_suggested');
+    expect(row!.resolvedContactId).toBe(vendorContactId);
+    const [txn] = await db.select().from(transactions).where(eq(transactions.id, row!.postedTransactionId!));
+    expect(txn!.contactId).toBe(vendorContactId);
+  });
+
+  it('a staff payee override is applied and recorded as overridden', async () => {
+    const feedItemId = await mkFeedItem();
+    const sid = await mkSuggestion({ targetKind: 'bank_feed_item', targetId: feedItemId, accountId: rentAccountId, amount: '42.50', contactId: vendorContactId });
+    await review.approveSuggestions(tenantId, [sid], { overrideContactId: otherContactId }, userId);
+    const [row] = await db.select().from(clientCategorySuggestions).where(eq(clientCategorySuggestions.id, sid));
+    expect(row!.resolution).toBe('overridden');
+    expect(row!.resolvedContactId).toBe(otherContactId);
+    const [txn] = await db.select().from(transactions).where(eq(transactions.id, row!.postedTransactionId!));
+    expect(txn!.contactId).toBe(otherContactId);
+  });
+
+  it('sets the payee on a suspense transaction in the same move out of suspense', async () => {
+    const suspenseId = await getSuspenseAccountId(tenantId, companyId, userId);
+    const txn = await ledger.postTransaction(tenantId, {
+      txnType: 'expense', txnDate: '2026-05-01',
+      lines: [
+        { accountId: suspenseId, debit: '75.00', credit: '0' },
+        { accountId: bankGlAccountId, debit: '0', credit: '75.00' },
+      ],
+    }, userId, companyId);
+    const sid = await mkSuggestion({ targetKind: 'transaction', targetId: txn.id, accountId: rentAccountId, amount: '75.00', contactId: vendorContactId });
+    const res = await review.approveSuggestions(tenantId, [sid], {}, userId);
+    expect(res.approved).toEqual([sid]);
+    const [after] = await db.select().from(transactions).where(eq(transactions.id, txn.id));
+    expect(after!.contactId).toBe(vendorContactId);
+    expect(await balanceOf(suspenseId)).toBe(0);
+    expect(await balanceOf(rentAccountId)).toBe(75);
+  });
+
+  it('a locked period refuses the move AND the payee together', async () => {
+    const suspenseId = await getSuspenseAccountId(tenantId, companyId, userId);
+    const txn = await ledger.postTransaction(tenantId, {
+      txnType: 'expense', txnDate: '2026-05-01',
+      lines: [
+        { accountId: suspenseId, debit: '20.00', credit: '0' },
+        { accountId: bankGlAccountId, debit: '0', credit: '20.00' },
+      ],
+    }, userId, companyId);
+    const sid = await mkSuggestion({ targetKind: 'transaction', targetId: txn.id, accountId: rentAccountId, amount: '20.00', contactId: vendorContactId });
+    await db.update(companies).set({ lockDate: '2026-12-31' }).where(eq(companies.id, companyId));
+    const res = await review.approveSuggestions(tenantId, [sid], {}, userId);
+    expect(res.approved).toEqual([]);
+    expect(res.failed).toHaveLength(1);
+    const [after] = await db.select().from(transactions).where(eq(transactions.id, txn.id));
+    expect(after!.contactId).toBeNull();
+    expect(await balanceOf(suspenseId)).toBe(20);
+    const [row] = await db.select().from(clientCategorySuggestions).where(eq(clientCategorySuggestions.id, sid));
+    expect(row!.status).toBe('pending');
+  });
+
+  it('a payee-only answer cannot be approved without a category, and works with an override', async () => {
+    const feedItemId = await mkFeedItem();
+    const sid = await mkSuggestion({ targetKind: 'bank_feed_item', targetId: feedItemId, accountId: null, amount: '42.50', contactLabel: 'Joe the plumber' });
+    const res = await review.approveSuggestions(tenantId, [sid], {}, userId);
+    expect(res.failed[0]!.reason).toBe('no_category');
+    const fixed = await review.approveSuggestions(tenantId, [sid], { overrideAccountId: rentAccountId, overrideContactId: vendorContactId }, userId);
+    expect(fixed.approved).toEqual([sid]);
+    const [row] = await db.select().from(clientCategorySuggestions).where(eq(clientCategorySuggestions.id, sid));
+    expect(row!.resolvedContactId).toBe(vendorContactId);
+  });
+
+  it('refuses an inactive or foreign contact as the override', async () => {
+    const feedItemId = await mkFeedItem();
+    const sid = await mkSuggestion({ targetKind: 'bank_feed_item', targetId: feedItemId, accountId: rentAccountId, amount: '42.50' });
+    await db.update(contacts).set({ isActive: false }).where(eq(contacts.id, otherContactId));
+    await expect(review.approveSuggestions(tenantId, [sid], { overrideContactId: otherContactId }, userId)).rejects.toThrow(/inactive/i);
+    await expect(review.approveSuggestions(tenantId, [sid], { overrideContactId: '00000000-0000-4000-8000-000000000000' }, userId)).rejects.toThrow(/not found/i);
+  });
+
+  it('lists the payee: live name for a picked contact, label alone for free text', async () => {
+    const f1 = await mkFeedItem('10.0000');
+    const f2 = await mkFeedItem('20.0000');
+    await mkSuggestion({ targetKind: 'bank_feed_item', targetId: f1, accountId: rentAccountId, amount: '10.00', contactId: vendorContactId });
+    await mkSuggestion({ targetKind: 'bank_feed_item', targetId: f2, accountId: null, amount: '20.00', contactLabel: 'Joe the plumber' });
+    const listed = await review.listSuggestions(tenantId, { companyId });
+    const picked = listed.rows.find((r) => r.suggestedContactId === vendorContactId)!;
+    expect(picked.suggestedContactName).toBe('Home Depot');
+    const typed = listed.rows.find((r) => r.suggestedContactLabel === 'Joe the plumber')!;
+    expect(typed.suggestedContactId).toBeNull();
+    expect(typed.suggestedContactName).toBeNull();
   });
 });
 

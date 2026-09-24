@@ -347,6 +347,12 @@ export async function clearSuspense(
   targetAccountId: string,
   userId?: string,
   companyId?: string,
+  /**
+   * Set the header payee in the SAME bulk update as the move, so the two
+   * commit together (client-suggestion approval). bulkUpdateTransactions
+   * validates the contact belongs to the tenant before touching any row.
+   */
+  opts: { payeeContactId?: string } = {},
 ): Promise<ClearSuspenseResult> {
   if (txnIds.length === 0) throw AppError.badRequest('Select at least one transaction.');
   if (txnIds.length > 500) throw AppError.badRequest('Clear at most 500 transactions at a time.');
@@ -380,7 +386,10 @@ export async function clearSuspense(
 
   const res = await bulkUpdateTransactions(
     tenantId,
-    { txnIds, moveFromAccountId: suspenseAccountId, moveToAccountId: targetAccountId },
+    {
+      txnIds, moveFromAccountId: suspenseAccountId, moveToAccountId: targetAccountId,
+      ...(opts.payeeContactId ? { setPayeeContactId: opts.payeeContactId } : {}),
+    },
     userId,
     companyId,
   );

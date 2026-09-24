@@ -24,7 +24,7 @@ import {
   tenants, companies, accounts, transactions, journalLines,
   bankConnections, bankFeedItems, transactionClassificationState,
   clientCategorySuggestions, portalContacts, portalContactCompanies,
-  portalContactSessions, tenantFeatureFlags, attachments,
+  portalContactSessions, tenantFeatureFlags, attachments, contacts,
 } from '../db/schema/index.js';
 import { portalCategorizePublicRouter } from './portal-categorize-public.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
@@ -178,6 +178,16 @@ async function seed() {
   await mk('suspense', { name: 'Uncategorized', accountType: 'other_expense', detailType: 'other_expense', isSystem: true, systemTag: 'suspense' });
   await mk('inactive', { name: 'Old Category', accountType: 'expense', isActive: false });
 
+  // Contacts the payee picker may (and may not) offer.
+  const mkPayee = async (key: string, tenantId: string, displayName: string, contactType: string, isActive = true) => {
+    const [row] = await db.insert(contacts).values({ tenantId, displayName, contactType, isActive, email: `${key}@ex.com`, phone: '555-0100' }).returning();
+    ids[key] = row!.id;
+  };
+  await mkPayee('homeDepot', tenantAId, 'Home Depot', 'vendor');
+  await mkPayee('wallace', tenantAId, 'Wallace Harner', 'customer');
+  await mkPayee('oldVendor', tenantAId, 'Old Vendor', 'vendor', false);
+  await mkPayee('bVendor', tenantBId, 'B Vendor', 'vendor');
+
   // An unclassified bank line on company A1.
   const [conn] = await db.insert(bankConnections).values({
     tenantId: tenantAId, accountId: ids['bank']!, institutionName: 'Test Bank',
@@ -244,6 +254,7 @@ async function cleanDb() {
     await db.delete(transactionClassificationState).where(eq(transactionClassificationState.tenantId, id));
     await db.delete(bankFeedItems).where(eq(bankFeedItems.tenantId, id));
     await db.delete(bankConnections).where(eq(bankConnections.tenantId, id));
+    await db.delete(contacts).where(eq(contacts.tenantId, id));
     await db.delete(journalLines).where(eq(journalLines.tenantId, id));
     await db.delete(transactions).where(eq(transactions.tenantId, id));
     await db.delete(accounts).where(eq(accounts.tenantId, id));
@@ -358,6 +369,96 @@ describe('portal categorize — the category list', () => {
     const blob = JSON.stringify(res.json);
     expect(blob).not.toContain('balance');
     expect(blob).not.toContain('accountNumber');
+  });
+});
+
+describe('portal categorize — the payee list', () => {
+  it('offers every active contact of the tenant by name and kind, nothing else', async () => {
+    const res = await request('GET', `/api/portal/categorize/payees?companyId=${ids['a1']}`, undefined, cookies['cGranted']);
+    expect(res.status).toBe(200);
+    expect(res.json.featureEnabled).toBe(true);
+    const labels = res.json.payees.map((p: any) => p.label).sort();
+    expect(labels).toEqual(['Home Depot', 'Wallace Harner']);
+    expect(res.json.payees.find((p: any) => p.label === 'Home Depot').kind).toBe('vendor');
+    expect(res.json.payees.find((p: any) => p.label === 'Wallace Harner').kind).toBe('customer');
+    // Sanitized: no contact details of any kind.
+    const blob = JSON.stringify(res.json);
+    for (const secret of ['@ex.com', '555-0100', 'taxId', 'is1099', 'notes', 'billing']) expect(blob).not.toContain(secret);
+    // Inactive and other-tenant contacts are absent.
+    expect(labels).not.toContain('Old Vendor');
+    expect(labels).not.toContain('B Vendor');
+  });
+
+  it('self-hides when the flag is off and refuses a contact without the grant', async () => {
+    await setFlag(tenantAId, false);
+    const off = await request('GET', `/api/portal/categorize/payees?companyId=${ids['a1']}`, undefined, cookies['cGranted']);
+    expect(off.json).toEqual({ featureEnabled: false, payees: [] });
+    await setFlag(tenantAId, true);
+    const denied = await request('GET', `/api/portal/categorize/payees?companyId=${ids['a1']}`, undefined, cookies['cDenied']);
+    expect(denied.status).toBe(403);
+  });
+});
+
+describe('portal categorize — submitting a payee', () => {
+  it('records the picked contact with its label snapshot, and posts nothing', async () => {
+    const res = await request('POST', '/api/portal/categorize/suggestions', {
+      companyId: ids['a1'],
+      items: [{ targetKind: 'bank_feed_item', targetId: ids['feedItem'], categoryId: ids['rent'], contactId: ids['homeDepot'] }],
+    }, cookies['cGranted']);
+    expect(res.status).toBe(201);
+    expect(res.json.accepted).toEqual([ids['feedItem']]);
+    const [row] = await db.select().from(clientCategorySuggestions).where(eq(clientCategorySuggestions.tenantId, tenantAId));
+    expect(row!.suggestedContactId).toBe(ids['homeDepot']);
+    expect(row!.suggestedContactLabel).toBe('Home Depot');
+    const [item] = await db.select().from(bankFeedItems).where(eq(bankFeedItems.id, ids['feedItem']!));
+    expect(item!.status).toBe('pending');
+  });
+
+  it('refuses a contact that is not in the sanitized payee list', async () => {
+    for (const bad of [ids['oldVendor']!, ids['bVendor']!, '00000000-0000-4000-8000-000000000000']) {
+      const res = await request('POST', '/api/portal/categorize/suggestions', {
+        companyId: ids['a1'],
+        items: [{ targetKind: 'bank_feed_item', targetId: ids['feedItem'], categoryId: ids['rent'], contactId: bad }],
+      }, cookies['cGranted']);
+      expect(res.status).toBe(201);
+      expect(res.json.accepted).toEqual([]);
+      expect(res.json.failed[0].reason).toBe('invalid_payee');
+    }
+  });
+
+  it('accepts a payee on its own — free text, normalised — as a pending "not sure" answer', async () => {
+    const res = await request('POST', '/api/portal/categorize/suggestions', {
+      companyId: ids['a1'],
+      items: [{ targetKind: 'bank_feed_item', targetId: ids['feedItem'], categoryId: 'not_sure', contactLabel: '  Joe   the plumber ' }],
+    }, cookies['cGranted']);
+    expect(res.json.accepted).toEqual([ids['feedItem']]);
+    const [row] = await db.select().from(clientCategorySuggestions).where(eq(clientCategorySuggestions.tenantId, tenantAId));
+    expect(row!.suggestedAccountId).toBeNull();
+    expect(row!.suggestedLabel).toBe('Not sure');
+    expect(row!.suggestedContactId).toBeNull();
+    expect(row!.suggestedContactLabel).toBe('Joe the plumber');
+    expect(row!.clientNote).toBeNull();
+  });
+
+  it('caps the typed name', async () => {
+    const res = await request('POST', '/api/portal/categorize/suggestions', {
+      companyId: ids['a1'],
+      items: [{ targetKind: 'bank_feed_item', targetId: ids['feedItem'], categoryId: 'not_sure', contactLabel: 'x'.repeat(121) }],
+    }, cookies['cGranted']);
+    expect(res.status).toBe(400);
+  });
+
+  it('reads the payee back on the queue and in history as a label only', async () => {
+    await request('POST', '/api/portal/categorize/suggestions', {
+      companyId: ids['a1'],
+      items: [{ targetKind: 'bank_feed_item', targetId: ids['feedItem'], categoryId: ids['rent'], contactId: ids['homeDepot'] }],
+    }, cookies['cGranted']);
+    const q = await request('GET', `/api/portal/categorize/queue?companyId=${ids['a1']}`, undefined, cookies['cGranted']);
+    const feed = q.json.items.find((i: any) => i.targetKind === 'bank_feed_item');
+    expect(feed.existingSuggestion.payeeLabel).toBe('Home Depot');
+    expect(JSON.stringify(feed.existingSuggestion)).not.toContain(ids['homeDepot']);
+    const h = await request('GET', `/api/portal/categorize/history?companyId=${ids['a1']}`, undefined, cookies['cGranted']);
+    expect(h.json.rows[0].payeeLabel).toBe('Home Depot');
   });
 });
 
