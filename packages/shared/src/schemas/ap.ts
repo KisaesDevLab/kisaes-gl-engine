@@ -3,6 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { z } from 'zod';
+import { csvEnumSet, sortBySchema, sortDirSchema } from './list-view.js';
 import { BILL_PAYMENT_METHODS } from '../constants/payment-methods.js';
 
 const billStatuses = ['unpaid', 'partial', 'paid', 'overdue'] as const;
@@ -73,9 +74,14 @@ export const payBillsSchema = z.object({
   credits: z.array(billPaymentCreditSchema).optional(),
 });
 
+export const billSortKeys = ['number', 'vendor', 'vendorInvoiceNumber', 'date', 'dueDate', 'status', 'total', 'balance'] as const;
+
 export const billFiltersSchema = z.object({
   contactId: z.string().uuid().optional(),
-  billStatus: z.enum(billStatuses).optional(),
+  // One status, or a comma-joined set (the Bills list's Status filter).
+  billStatus: csvEnumSet(billStatuses),
+  sortBy: sortBySchema(billSortKeys),
+  sortDir: sortDirSchema.optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional(),
   dueOnOrBefore: z.string().optional(),

@@ -354,10 +354,15 @@ export interface CreateCustomerRefundInput {
   memo?: string;
 }
 
+export type TransactionSortKey = 'date' | 'type' | 'number' | 'payee' | 'memo' | 'category' | 'amount' | 'status' | 'dueDate' | 'balanceDue' | 'invoiceStatus';
+
 export interface TransactionFilters {
   txnType?: TxnType;
   status?: TxnStatus;
-  contactId?: string;
+  /** One contact, or several (the Invoices list's Customer filter). */
+  contactId?: string | string[];
+  /** Invoices list: keep these invoice statuses. */
+  invoiceStatus?: InvoiceStatus[];
   accountId?: string;
   tagId?: string;
   /** Filter by transactions.source ('accounting_power_import' /
@@ -372,7 +377,7 @@ export interface TransactionFilters {
   startDate?: string;
   endDate?: string;
   search?: string;
-  sortBy?: 'date' | 'type' | 'number' | 'payee' | 'memo' | 'category' | 'amount' | 'status';
+  sortBy?: TransactionSortKey;
   sortDir?: 'asc' | 'desc';
   limit?: number;
   offset?: number;

@@ -304,7 +304,21 @@ export async function listBills(tenantId: string, filters: BillFilters, companyI
   if (companyId) conditions.push(eq(transactions.companyId, companyId));
 
   if (filters.contactId) conditions.push(eq(transactions.contactId, filters.contactId));
-  if (filters.billStatus) conditions.push(eq(transactions.billStatus, filters.billStatus));
+  if (Array.isArray(filters.billStatus)) {
+    if (filters.billStatus.length > 0) {
+      // The table derives "overdue" from the due date (the column keeps the
+      // literal until a sweep updates it), so a set that includes 'overdue'
+      // must match what the column shows: stored overdue OR past-due
+      // unpaid/partial.
+      const set = filters.billStatus;
+      const stored = sql`${transactions.billStatus} IN (${sql.join(set.map((v) => sql`${v}`), sql`, `)})`;
+      conditions.push(set.includes('overdue')
+        ? sql`(${stored} OR (${transactions.billStatus} IN ('unpaid', 'partial') AND ${transactions.dueDate} < CURRENT_DATE))`
+        : stored);
+    }
+  } else if (filters.billStatus) {
+    conditions.push(eq(transactions.billStatus, filters.billStatus));
+  }
   if (filters.startDate) conditions.push(sql`${transactions.txnDate} >= ${filters.startDate}`);
   if (filters.endDate) conditions.push(sql`${transactions.txnDate} <= ${filters.endDate}`);
   // ADR 0XX §5.2 — header-level tag filter via EXISTS on the line set.
@@ -323,6 +337,26 @@ export async function listBills(tenantId: string, filters: BillFilters, companyI
   }
 
   const where = and(...conditions);
+
+  // Whitelisted column sort; without one the list keeps its "due soonest
+  // first" order. Stable createdAt/id tiebreak either way.
+  const dirSql = filters.sortDir === 'asc' ? sql`ASC` : sql`DESC`;
+  const sortExpr = (() => {
+    switch (filters.sortBy) {
+      case 'number': return sql`${transactions.txnNumber}`;
+      case 'vendor': return sql`${contacts.displayName}`;
+      case 'vendorInvoiceNumber': return sql`${transactions.vendorInvoiceNumber}`;
+      case 'date': return sql`${transactions.txnDate}`;
+      case 'dueDate': return sql`${transactions.dueDate}`;
+      case 'status': return sql`${transactions.billStatus}`;
+      case 'total': return sql`CAST(${transactions.total} AS DECIMAL)`;
+      case 'balance': return sql`CAST(${transactions.balanceDue} AS DECIMAL)`;
+      default: return null;
+    }
+  })();
+  const orderBy = sortExpr
+    ? [sql`${sortExpr} ${dirSql} NULLS LAST`, sql`${transactions.createdAt} DESC`, sql`${transactions.id}`]
+    : [sql`${transactions.dueDate} ASC NULLS LAST`, sql`${transactions.txnDate} DESC`, sql`${transactions.createdAt} DESC`, sql`${transactions.id}`];
 
   const [data, totalRow] = await Promise.all([
     db.select({
@@ -345,7 +379,7 @@ export async function listBills(tenantId: string, filters: BillFilters, companyI
     }).from(transactions)
       .leftJoin(contacts, eq(transactions.contactId, contacts.id))
       .where(where)
-      .orderBy(sql`${transactions.dueDate} ASC NULLS LAST`, sql`${transactions.txnDate} DESC`)
+      .orderBy(...orderBy)
       .limit(filters.limit ?? 50)
       .offset(filters.offset ?? 0),
     db.select({ c: count() }).from(transactions)

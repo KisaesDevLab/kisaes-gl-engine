@@ -3,6 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { z } from 'zod';
+import { csvEnumSet, csvUuidSet } from './list-view.js';
 import { PAYMENT_METHODS } from '../constants/payment-methods.js';
 import type { TxnType } from '../types/transactions.js';
 
@@ -158,10 +159,16 @@ export const voidTransactionSchema = z.object({
   reason: z.string().min(1, 'Void reason is required'),
 });
 
+export const transactionSortKeys = ['date', 'type', 'number', 'payee', 'memo', 'category', 'amount', 'status', 'dueDate', 'balanceDue', 'invoiceStatus'] as const;
+const invoiceStatuses = ['draft', 'sent', 'viewed', 'partial', 'paid', 'void'] as const;
+
 export const transactionFiltersSchema = z.object({
   txnType: z.enum(txnTypes).optional(),
   status: z.enum(txnStatuses).optional(),
-  contactId: z.string().uuid().optional(),
+  // One contact, or a comma-joined set (the Invoices list's Customer filter).
+  contactId: csvUuidSet,
+  // Invoices list: keep these invoice statuses.
+  invoiceStatus: csvEnumSet(invoiceStatuses),
   accountId: z.string().uuid().optional(),
   tagId: z.string().uuid().optional(),
   /** Filter by transactions.source — the bulk-import success-link
@@ -178,7 +185,7 @@ export const transactionFiltersSchema = z.object({
   search: z.string().optional(),
   // Column sort for the transactions list. Whitelisted keys map to real
   // columns server-side; default is date desc.
-  sortBy: z.enum(['date', 'type', 'number', 'payee', 'memo', 'category', 'amount', 'status']).optional(),
+  sortBy: z.enum(transactionSortKeys).optional(),
   sortDir: z.enum(['asc', 'desc']).optional(),
   // Max 10000 (was 500) so the list's "ALL" page-size option can fetch the
   // whole filtered set in one request for typical small-business volumes.

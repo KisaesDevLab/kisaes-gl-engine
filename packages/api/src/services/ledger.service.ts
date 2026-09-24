@@ -873,7 +873,9 @@ export async function getTransaction(tenantId: string, txnId: string) {
 }
 
 export async function listTransactions(tenantId: string, filters: {
-  txnType?: string; status?: string; contactId?: string; accountId?: string; startDate?: string; endDate?: string;
+  txnType?: string; status?: string; contactId?: string | string[]; accountId?: string; startDate?: string; endDate?: string;
+  /** Invoices list: keep these invoice statuses. */
+  invoiceStatus?: string[];
   // ADR 0XX §5.2 — header-level tag filter semantics: keep the
   // transaction if *any* of its journal_lines carries this tag.
   tagId?: string;
@@ -888,7 +890,7 @@ export async function listTransactions(tenantId: string, filters: {
    *  'accrual' keeps (both,accrual). Mirrors report inclusion per-transaction. */
   basis?: 'cash' | 'accrual';
   search?: string;
-  sortBy?: 'date' | 'type' | 'number' | 'payee' | 'memo' | 'category' | 'amount' | 'status';
+  sortBy?: 'date' | 'type' | 'number' | 'payee' | 'memo' | 'category' | 'amount' | 'status' | 'dueDate' | 'balanceDue' | 'invoiceStatus';
   sortDir?: 'asc' | 'desc';
   limit?: number; offset?: number;
 }, companyId?: string) {
@@ -897,7 +899,14 @@ export async function listTransactions(tenantId: string, filters: {
 
   if (filters.txnType) conditions.push(eq(transactions.txnType, filters.txnType));
   if (filters.status) conditions.push(eq(transactions.status, filters.status));
-  if (filters.contactId) conditions.push(eq(transactions.contactId, filters.contactId));
+  if (Array.isArray(filters.contactId)) {
+    if (filters.contactId.length > 0) conditions.push(inArray(transactions.contactId, filters.contactId));
+  } else if (filters.contactId) {
+    conditions.push(eq(transactions.contactId, filters.contactId));
+  }
+  if (filters.invoiceStatus && filters.invoiceStatus.length > 0) {
+    conditions.push(inArray(transactions.invoiceStatus, filters.invoiceStatus));
+  }
   if (filters.source) conditions.push(eq(transactions.source, filters.source));
   // Report-basis lens: keep transactions whose basis flag affects the chosen
   // basis. 'both' shows on either; a basis-specific adjusting entry only shows
@@ -967,6 +976,10 @@ export async function listTransactions(tenantId: string, filters: {
           AND jl6.tenant_id = ${tenantId}
       ))`;
       case 'status': return sql`${transactions.status}`;
+      // Invoices list columns.
+      case 'dueDate': return sql`${transactions.dueDate}`;
+      case 'balanceDue': return sql`CAST(${transactions.balanceDue} AS DECIMAL)`;
+      case 'invoiceStatus': return sql`${transactions.invoiceStatus}`;
       case 'category': return sql`(
         SELECT min(a2.name) FROM journal_lines jl4
         JOIN accounts a2 ON a2.id = jl4.account_id

@@ -125,6 +125,23 @@ describe('listTenants paging with tied created_at', () => {
   });
 });
 
+describe('listAllUsers — sort and filters', () => {
+  it('sorts by the whitelisted keys and filters by role / active', async () => {
+    const byEmailAsc = await admin.listAllUsers({ search: token, sortBy: 'email', sortDir: 'asc', limit: 5000 });
+    const emails = byEmailAsc.users.map((u) => u.email);
+    expect(emails).toEqual([...emails].sort());
+    const byEmailDesc = await admin.listAllUsers({ search: token, sortBy: 'email', sortDir: 'desc', limit: 5000 });
+    expect(byEmailDesc.users.map((u) => u.email)).toEqual([...emails].reverse());
+    const roles = new Set(byEmailAsc.users.map((u) => u.role));
+    const oneRole = [...roles][0]!;
+    const filtered = await admin.listAllUsers({ search: token, roles: [oneRole], limit: 5000 });
+    expect(filtered.users.length).toBeGreaterThan(0);
+    expect(filtered.users.every((u) => u.role === oneRole)).toBe(true);
+    const inactive = await admin.listAllUsers({ search: token, isActive: false, limit: 5000 });
+    expect(inactive.users.every((u) => u.isActive === false)).toBe(true);
+  });
+});
+
 describe('listAllUsers', () => {
   it('searches email, display name and tenant name', async () => {
     const byEmail = await admin.listAllUsers({ search: `${token}-1@example.com` });

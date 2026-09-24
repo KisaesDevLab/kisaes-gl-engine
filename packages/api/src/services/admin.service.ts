@@ -35,10 +35,20 @@ import { blockedLineReason, moveAllLinesBetweenAccounts } from './system-account
  * with no query params and need the full list, so the unpaged path has to
  * keep working. The list pages pass limit/offset/search explicitly.
  */
+export type AdminUserSortKey = 'email' | 'displayName' | 'tenant' | 'role' | 'active' | 'superAdmin' | 'lastLogin';
+export const ADMIN_USER_SORT_KEYS: readonly AdminUserSortKey[] = ['email', 'displayName', 'tenant', 'role', 'active', 'superAdmin', 'lastLogin'];
+
 export interface AdminListOptions {
   limit?: number | undefined;
   offset?: number | undefined;
   search?: string | undefined;
+  /** Users list only: whitelisted column sort (listTenants ignores it). */
+  sortBy?: AdminUserSortKey | undefined;
+  sortDir?: 'asc' | 'desc' | undefined;
+  /** Users list only: keep these roles. */
+  roles?: string[] | undefined;
+  /** Users list only: active / inactive. */
+  isActive?: boolean | undefined;
   /** Delegated-admin scope: restrict tenant-keyed lists to these tenant ids.
    *  undefined = unfiltered (super admin). An empty array yields no rows. */
   tenantIds?: string[] | undefined;
@@ -1006,7 +1016,30 @@ export async function listAllUsers(options: AdminListOptions = {}) {
         AND uta.tenant_id = ANY(${idArray(options.tenantIds)})
     )`);
   }
+  if (options.roles && options.roles.length > 0) {
+    conds.push(sql`u.role IN (${sql.join(options.roles.map((r) => sql`${r}`), sql`, `)})`);
+  }
+  if (options.isActive !== undefined) conds.push(sql`u.is_active = ${options.isActive}`);
   const where = whereAll(conds);
+
+  // Whitelisted column sort (the directory paginates); created_at/id
+  // tiebreak so paging can't repeat or skip rows.
+  const dir = options.sortDir === 'asc' ? sql`ASC` : sql`DESC`;
+  const sortExpr = (() => {
+    switch (options.sortBy) {
+      case 'email': return sql`u.email`;
+      case 'displayName': return sql`u.display_name`;
+      case 'tenant': return sql`t.name`;
+      case 'role': return sql`u.role`;
+      case 'active': return sql`u.is_active`;
+      case 'superAdmin': return sql`u.is_super_admin`;
+      case 'lastLogin': return sql`u.last_login_at`;
+      default: return null;
+    }
+  })();
+  const orderBy = sortExpr
+    ? sql`ORDER BY ${sortExpr} ${dir} NULLS LAST, u.created_at DESC, u.id DESC`
+    : sql`ORDER BY u.created_at DESC, u.id DESC`;
 
   const rows = await db.execute(sql`
     SELECT u.id, u.email, u.display_name, u.role, u.is_active, u.is_super_admin,
@@ -1018,7 +1051,7 @@ export async function listAllUsers(options: AdminListOptions = {}) {
     ${where}
     -- See listTenants: stable tiebreaker so LIMIT/OFFSET paging can't
     -- repeat or skip users created in the same transaction.
-    ORDER BY u.created_at DESC, u.id DESC
+    ${orderBy}
     ${pageClause(options)}
   `);
   const totalRows = await db.execute<{ total: number }>(sql`

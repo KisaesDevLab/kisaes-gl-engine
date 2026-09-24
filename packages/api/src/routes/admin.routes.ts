@@ -22,6 +22,7 @@ import {
 import { validate } from '../middleware/validate.js';
 import { z } from 'zod';
 import * as adminService from '../services/admin.service.js';
+import { pickEnum } from '../utils/list-query.js';
 import * as systemAccountsService from '../services/system-accounts.service.js';
 import * as authService from '../services/auth.service.js';
 import { testSmtpConnection, withSetupLock } from '../services/setup.service.js';
@@ -95,10 +96,19 @@ adminRouter.use(requireAdminPrincipal);
 // GET /admin/tenants with no params and need the whole list back.
 function parseAdminListQuery(query: Request['query']): adminService.AdminListOptions {
   const rawSearch = query['search'];
+  const rawRoles = query['roles'];
+  const rawActive = query['isActive'];
   return {
     limit: query['limit'] === undefined ? undefined : parseLimit(query['limit'], 50, 5000),
     offset: parseOffset(query['offset']),
     search: typeof rawSearch === 'string' && rawSearch.trim() ? rawSearch : undefined,
+    // Users-list sort/filters; listTenants ignores them.
+    sortBy: pickEnum(query['sortBy'], adminService.ADMIN_USER_SORT_KEYS),
+    sortDir: pickEnum(query['sortDir'], ['asc', 'desc'] as const),
+    roles: typeof rawRoles === 'string'
+      ? rawRoles.split(',').map((r) => r.trim()).filter((r) => /^[a-z_]{1,40}$/.test(r)).slice(0, 20)
+      : undefined,
+    isActive: rawActive === 'true' ? true : rawActive === 'false' ? false : undefined,
   };
 }
 

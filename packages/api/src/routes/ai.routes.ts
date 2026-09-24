@@ -29,6 +29,7 @@ import * as aiConfigService from '../services/ai-config.service.js';
 import * as aiCategorization from '../services/ai-categorization.service.js';
 import * as aiReceiptOcr from '../services/ai-receipt-ocr.service.js';
 import * as aiStatementParser from '../services/ai-statement-parser.service.js';
+import { pickEnum, parseCsvSet } from '../utils/list-query.js';
 import * as aiDocClassifier from '../services/ai-document-classifier.service.js';
 import * as aiOrchestrator from '../services/ai-orchestrator.service.js';
 import * as bankConnectionService from '../services/bank-connection.service.js';
@@ -501,7 +502,12 @@ aiRouter.post('/parse/statement/import', authenticate, aiProcessingLimiter, vali
 aiRouter.get('/parse/statement/jobs', authenticate, async (req, res) => {
   const limit = req.query['limit'] ? Number(req.query['limit']) : undefined;
   const offset = req.query['offset'] ? Number(req.query['offset']) : undefined;
-  const data = await aiStatementParser.listStatementJobs(req.tenantId, { limit, offset });
+  const data = await aiStatementParser.listStatementJobs(req.tenantId, {
+    limit, offset,
+    sortBy: pickEnum(req.query['sortBy'], aiStatementParser.STATEMENT_JOB_SORT_KEYS),
+    sortDir: pickEnum(req.query['sortDir'], ['asc', 'desc'] as const),
+    status: parseCsvSet(req.query['status'], aiStatementParser.STATEMENT_JOB_DISPOSITIONS),
+  });
   res.json(data);
 });
 

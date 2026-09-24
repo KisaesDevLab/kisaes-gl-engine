@@ -986,13 +986,46 @@ function statementTxnCount(outputData: unknown): number {
   return 0;
 }
 
+export type StatementJobSortKey = 'fileName' | 'createdAt' | 'transactionCount' | 'status';
+/** The user-facing state of a job; MUST stay in step with disposition() in
+ *  packages/web/src/features/banking/StatementImportsPage.tsx. */
+export type StatementJobDisposition = 'imported' | 'failed' | 'pending' | 'processing';
+export const STATEMENT_JOB_SORT_KEYS: readonly StatementJobSortKey[] = ['fileName', 'createdAt', 'transactionCount', 'status'];
+export const STATEMENT_JOB_DISPOSITIONS: readonly StatementJobDisposition[] = ['imported', 'failed', 'pending', 'processing'];
+
 export async function listStatementJobs(
   tenantId: string,
-  opts: { limit?: number; offset?: number } = {},
+  opts: { limit?: number; offset?: number; sortBy?: StatementJobSortKey; sortDir?: 'asc' | 'desc'; status?: StatementJobDisposition[] } = {},
 ): Promise<{ jobs: StatementJobSummary[]; total: number }> {
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
   const offset = Math.max(opts.offset ?? 0, 0);
-  const where = and(eq(aiJobs.tenantId, tenantId), eq(aiJobs.jobType, 'ocr_statement'));
+  // Same precedence as the page's disposition(): imported wins, then a
+  // failed/cancelled job, then a finished parse awaiting review.
+  const dispositionExpr = sql`CASE
+    WHEN ${aiJobs.importedAt} IS NOT NULL THEN 'imported'
+    WHEN ${aiJobs.status} IN ('failed', 'cancelled') THEN 'failed'
+    WHEN ${aiJobs.status} = 'complete' THEN 'pending'
+    ELSE 'processing' END`;
+  const txnCountExpr = sql`CASE WHEN jsonb_typeof(${aiJobs.outputData}->'transactions') = 'array'
+    THEN jsonb_array_length(${aiJobs.outputData}->'transactions') ELSE 0 END`;
+  const conds = [eq(aiJobs.tenantId, tenantId), eq(aiJobs.jobType, 'ocr_statement')];
+  if (opts.status && opts.status.length > 0) {
+    conds.push(sql`${dispositionExpr} IN (${sql.join(opts.status.map((s) => sql`${s}`), sql`, `)})`);
+  }
+  const where = and(...conds);
+  const dir = opts.sortDir === 'asc' ? sql`ASC` : sql`DESC`;
+  const sortExpr = (() => {
+    switch (opts.sortBy) {
+      case 'fileName': return sql`${attachments.fileName}`;
+      case 'transactionCount': return txnCountExpr;
+      case 'status': return dispositionExpr;
+      case 'createdAt': return sql`${aiJobs.createdAt}`;
+      default: return null;
+    }
+  })();
+  const orderBy = sortExpr
+    ? [sql`${sortExpr} ${dir} NULLS LAST`, sql`${aiJobs.createdAt} DESC`, sql`${aiJobs.id}`]
+    : [desc(aiJobs.createdAt), sql`${aiJobs.id}`];
   const rows = await db.select({
     jobId: aiJobs.id,
     attachmentId: aiJobs.inputId,
@@ -1007,10 +1040,12 @@ export async function listStatementJobs(
     .from(aiJobs)
     .leftJoin(attachments, eq(attachments.id, aiJobs.inputId))
     .where(where)
-    .orderBy(desc(aiJobs.createdAt))
+    .orderBy(...orderBy)
     .limit(limit)
     .offset(offset);
-  const [countRow] = await db.select({ count: sql<number>`count(*)::int` }).from(aiJobs).where(where);
+  const [countRow] = await db.select({ count: sql<number>`count(*)::int` }).from(aiJobs)
+    .leftJoin(attachments, eq(attachments.id, aiJobs.inputId))
+    .where(where);
   return {
     total: Number(countRow?.count ?? 0),
     jobs: rows.map((r) => ({

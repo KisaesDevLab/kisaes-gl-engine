@@ -146,9 +146,14 @@ export interface ApAgingDetailRow {
   bucket: 'current' | '1_30' | '31_60' | '61_90' | 'over_90';
 }
 
+export type BillSortKey = 'number' | 'vendor' | 'vendorInvoiceNumber' | 'date' | 'dueDate' | 'status' | 'total' | 'balance';
+
 export interface BillFilters {
   contactId?: string;
-  billStatus?: BillStatus;
+  /** One status or a set. A set containing 'overdue' also matches unpaid/partial bills past due. */
+  billStatus?: BillStatus | BillStatus[];
+  sortBy?: BillSortKey;
+  sortDir?: 'asc' | 'desc';
   startDate?: string;
   endDate?: string;
   dueOnOrBefore?: string;
