@@ -18,6 +18,7 @@ import {
   portalSettingsPerPractice,
   previewSessions,
   companies,
+  tenants,
 } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
@@ -51,6 +52,12 @@ function generateToken(): string {
 
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
+}
+
+/** The client this portal contact belongs to — every client is a tenant. */
+async function tenantName(tenantId: string): Promise<string> {
+  const row = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
+  return row?.name ?? '';
 }
 
 async function ensureSmtpTransport(): Promise<{
@@ -174,9 +181,15 @@ export async function requestMagicLink(args: {
   const link = `${args.baseUrl.replace(/\/$/, '')}/portal/auth/verify?token=${encodeURIComponent(
     token,
   )}`;
+  // WHICH portal this opens. The same address can be a contact of two
+  // different clients, and asking for a link from the front page sends one
+  // per tenancy — two identical emails, where the only difference that
+  // matters (whose books) was invisible. tenants.name IS the client here.
+  const clientName = await tenantName(args.tenantId);
+  const forClient = clientName ? ` for ${clientName}` : '';
   const greeting = contact.firstName ? `Hi ${contact.firstName},` : 'Hello,';
-  const text = `${greeting}\n\nUse the link below to sign in to the portal. It expires in ${MAGIC_LINK_TTL_MIN} minutes and can only be used once.\n\n${link}\n\nIf you didn't request this, you can ignore this email.`;
-  const html = `<p>${escapeHtml(greeting)}</p><p>Use the button below to sign in. The link expires in ${MAGIC_LINK_TTL_MIN} minutes and can only be used once.</p><p><a href="${link}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px">Sign in to the portal</a></p><p>Or copy and paste this URL: <code>${link}</code></p><p style="color:#888;font-size:12px">If you didn't request this, you can ignore this email.</p>`;
+  const text = `${greeting}\n\nUse the link below to sign in to the${clientName ? ` ${clientName}` : ''} portal. It expires in ${MAGIC_LINK_TTL_MIN} minutes and can only be used once.\n\n${link}\n\nIf you didn't request this, you can ignore this email.`;
+  const html = `<p>${escapeHtml(greeting)}</p><p>Use the button below to sign in${clientName ? ` to <strong>${escapeHtml(clientName)}</strong>` : ''}. The link expires in ${MAGIC_LINK_TTL_MIN} minutes and can only be used once.</p><p><a href="${link}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px">Sign in to the portal</a></p><p>Or copy and paste this URL: <code>${link}</code></p><p style="color:#888;font-size:12px">If you didn't request this, you can ignore this email.</p>`;
 
   const mailer = await ensureSmtpTransport();
   // Swallow send failures: an unhandled throw here 500s the request,
@@ -186,7 +199,7 @@ export async function requestMagicLink(args: {
   // contract is that request-link always looks the same to the caller.
   let sent = true;
   try {
-    await mailer.send(email, 'Your portal sign-in link', html, text);
+    await mailer.send(email, `Your portal sign-in link${forClient}`, html, text);
   } catch (err) {
     sent = false;
     console.error(`[portal-auth] magic-link email send failed for contact ${contact.id}:`, err instanceof Error ? err.message : err);
@@ -275,14 +288,19 @@ export async function sendPortalInvite(args: {
   const reminders = await import('./portal-reminders.service.js');
   const base = args.baseUrl.replace(/\/$/, '');
   const firmName = await reminders.resolveFirmName(args.tenantId);
+  const clientName = await tenantName(args.tenantId);
   const link = `${base}/portal/auth/verify?token=${encodeURIComponent(token)}`;
   const loginLink = await reminders.portalLoginLink(base, args.tenantId);
   const who = firmName || 'Your bookkeeper';
+  // Name the client too: someone invited to two of the firm's clients gets
+  // two of these, and "which books is this one?" is the whole question.
+  // On an appliance install the firm IS the client, so don't say it twice.
+  const forClient = clientName && clientName !== who ? ` for ${clientName}` : '';
   const greeting = contact.firstName ? `Hi ${contact.firstName},` : 'Hello,';
 
   const text =
     `${greeting}\n\n` +
-    `${who} has set up a secure client portal for you. It is where you can see what they need from ` +
+    `${who} has set up a secure client portal${forClient} for you. It is where you can see what they need from ` +
     `you — questions, documents they have asked for, and transactions only you can explain — and ` +
     `where you can send receipts and see your reports.\n\n` +
     `Get started here (the link works for 7 days and can be used once):\n${link}\n\n` +
@@ -291,7 +309,7 @@ export async function sendPortalInvite(args: {
     `${who}`;
   const html =
     `<p>${escapeHtml(greeting)}</p>` +
-    `<p><strong>${escapeHtml(who)}</strong> has set up a secure client portal for you. It is where you can see ` +
+    `<p><strong>${escapeHtml(who)}</strong> has set up a secure client portal${escapeHtml(forClient)} for you. It is where you can see ` +
     `what they need from you — questions, documents they have asked for, and transactions only you ` +
     `can explain — and where you can send receipts and see your reports.</p>` +
     `<p><a href="${link}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px">Get started</a></p>` +
@@ -303,7 +321,12 @@ export async function sendPortalInvite(args: {
   const mailer = await ensureSmtpTransport();
   let sent = true;
   try {
-    await mailer.send(contact.email, `${who} has invited you to your client portal`, html, text);
+    await mailer.send(
+      contact.email,
+      forClient ? `${who} has invited you to the portal${forClient}` : `${who} has invited you to your client portal`,
+      html,
+      text,
+    );
   } catch (err) {
     sent = false;
     // eslint-disable-next-line no-console

@@ -90,14 +90,39 @@ describe('sendPortalInvite', () => {
     expect(sentMail[0]!.to).toBe(`client-${stamp}@example.com`);
   });
 
-  it('is signed by the practice, not by the client\'s own company', async () => {
+  it('comes from the practice and names the client it is for', async () => {
     await invite();
-    // The bug this pins: every client is a tenant, so tenants.name is the
-    // CLIENT. An invitation from "TimberStone LLC" to TimberStone's own
-    // bookkeeping contact tells them nothing about who is asking.
-    expect(sentMail[0]!.subject).toContain(`Krueger CPA ${stamp}`);
-    expect(sentMail[0]!.subject).not.toContain('TimberStone');
+    // Two bugs pinned at once. Every client is a tenant, so tenants.name is
+    // the CLIENT: an invitation FROM "TimberStone LLC" to TimberStone's own
+    // contact says nothing about who is asking. And a person invited to two
+    // of the firm's clients gets two of these, so the one thing that tells
+    // them apart — whose books — has to be in the subject.
+    expect(sentMail[0]!.subject.startsWith(`Krueger CPA ${stamp}`)).toBe(true);
+    expect(sentMail[0]!.subject).toContain(`TimberStone ${stamp}`);
     expect(await resolveFirmName(tenantId)).toBe(`Krueger CPA ${stamp}`);
+  });
+
+  it('does not say the same name twice when the firm is the client', async () => {
+    // Appliance install: a business running its own books, no separate
+    // practice, so resolveFirmName falls back to the tenant name.
+    await db.delete(tenantFirmAssignments).where(eq(tenantFirmAssignments.tenantId, tenantId));
+    try {
+      await invite();
+      expect(sentMail[0]!.subject).toBe(`TimberStone ${stamp} has invited you to your client portal`);
+    } finally {
+      await db.insert(tenantFirmAssignments).values({ tenantId, firmId, isActive: true });
+    }
+  });
+
+  it('says which client a sign-in link opens', async () => {
+    const { requestMagicLink } = await import('./portal-auth.service.js');
+    const r = await requestMagicLink({
+      tenantId, email: `client-${stamp}@example.com`, baseUrl: 'https://books.example.com',
+    });
+    expect(r.sent).toBe(true);
+    // Asking from the portal's front page sends one of these PER tenancy;
+    // without the client name they arrive identical and unusable.
+    expect(sentMail[0]!.subject).toBe(`Your portal sign-in link for TimberStone ${stamp}`);
   });
 
   it('never puts the token in the log preview', async () => {

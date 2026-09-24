@@ -37,9 +37,18 @@ contact (fixed 2026-09-24). `{company_name}` is the client's company and is corr
 ### The same email in two firms
 
 A portal contact belongs to ONE tenant. The same address in two tenancies is two separate
-contact rows. Asking for a link at a bare `/portal/login` (no `?firm=`) sends one sign-in
-link **per active tenancy** — two emails, each opening that firm's portal; there is no
-"pick a firm" screen. With `?firm=<slug>` only that tenancy's link is sent. A session
+contact rows, with their own per-company access ticks — a contact can have **Can suggest
+categories** at one client and not the other, which is a common reason "the portal isn't
+showing X" turns out to be "you are signed in to the other client". `portal_contacts
+.last_seen_at` per row tells you which one they actually used.
+
+Asking for a link at a bare `/portal/login` (no `?firm=`) sends one sign-in link **per
+active tenancy** — two emails, each opening that client's portal; there is no "pick a
+firm" screen. Both the sign-in link and the invitation therefore name the client in the
+subject ("Your portal sign-in link for TimberStone LLC") from `tenants.name`, which IS
+the client (2026-09-24). Without it the two arrived identical and the recipient could not
+tell which was which. The invitation names the practice as sender and the client as
+destination, and says neither twice when the firm IS the client. With `?firm=<slug>` only that tenancy's link is sent. A session
 belongs to one contact, so switching firms means using the other link. The in-portal firm
 switcher exists but needs `PORTAL_IDENTITY_LINKING_V1` (env, default OFF) AND the contacts
 linked to one identity; linking happens on contact create and on `setPassword`, never on a
