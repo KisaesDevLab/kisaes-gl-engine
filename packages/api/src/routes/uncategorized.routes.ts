@@ -281,6 +281,9 @@ const helpRequestSchema = z.object({
   channels: z.array(z.enum(['email', 'sms'])).min(1).max(2),
   note: z.string().max(1000).optional(),
   confirmEmpty: z.boolean().optional(),
+  // Same send, reminder wording (POST /help-request stays one route so the
+  // flag, company scope and audit trail cannot drift apart).
+  reminder: z.boolean().optional(),
 });
 uncategorizedRouter.post('/help-request', validate(helpRequestSchema), async (req, res) => {
   const result = await helpRequest.sendHelpRequest(

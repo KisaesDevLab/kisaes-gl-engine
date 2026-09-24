@@ -33,7 +33,7 @@ const TRIGGER_TYPES = [
 
 // Template-only triggers: no schedule scans for them, a person sends them.
 // Practice -> Uncategorized -> "Ask the client for help" is the first.
-const TEMPLATE_TRIGGER_TYPES = [...TRIGGER_TYPES, 'categorize_request'] as const;
+const TEMPLATE_TRIGGER_TYPES = [...TRIGGER_TYPES, 'categorize_request', 'categorize_reminder'] as const;
 
 const scheduleSchema = z.object({
   triggerType: z.enum(TRIGGER_TYPES),

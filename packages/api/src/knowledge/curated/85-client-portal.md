@@ -195,9 +195,12 @@ up on the paperclip staff already use on Practice → Uncategorized; there is no
 client inbox. A client can list and remove only its own uploads — files the firm attached
 to the same row are never shown in the portal, not even by filename.
 
-Getting into the screen: the portal has no navigation bar, so the way in is the
-**Categorize transactions** tile on the portal dashboard. It appears whenever the flag
-and the per-contact tick are both on, including when the queue is empty.
+Getting into the screen: the portal has no navigation bar, so the way in is the portal
+dashboard. When rows are waiting, the dashboard leads with a full-width banner above the
+counters — "N transactions need your input" — because the quiet tile it replaced read as
+optional and clients skipped it (changed 2026-09-24). When the queue is empty the banner
+disappears and the plain **Categorize transactions** card takes over, so the screen stays
+reachable. Both need the flag and the per-contact tick.
 
 Asking the client to come and look ("Ask the client for help"): clients do not check the
 portal unprompted, so Practice → Uncategorized → **In suspense** has an **Ask the client
@@ -218,3 +221,15 @@ show on the reminders dashboard. Wording is customisable under Practice → Remi
 Templates, trigger **Ask client to categorize** (`categorize_request`), variables
 `{first_name} {firm_name} {company_name} {count} {portal_link} {note}`.
 API: `GET/POST /api/v1/practice/uncategorized/help-request[/recipients]`.
+
+Reminding them ("Send reminder", 2026-09-24): the same toolbar has a **Send reminder**
+button beside it. Same route, same recipients, same `reminder_sends` tracking and STOP
+rules — `reminder: true` on the POST changes two things. The wording is the reminder
+wording ("Reminder: N transaction(s) still need your answer"), customisable separately
+under trigger **Remind client to categorize** (`categorize_reminder`) with the same
+variables. And the default selection is only the contacts who were asked and have not
+answered since: the recipients response carries `lastAnsweredAt` (latest
+`client_category_suggestions.submitted_at` for that contact and company, any status)
+next to `lastAskedAt`, and those rows are badged **No answer since you asked**. If
+nobody has been asked yet the screen says so and ticks everyone, so the button is never
+a dead end. Reminders are manual — one person pressing one button — not a cadence.

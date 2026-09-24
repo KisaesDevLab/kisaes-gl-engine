@@ -11,6 +11,10 @@
 // allowed to suggest categories for this company and nobody else, because a
 // contact without that tick would log in and find nothing to do.
 //
+// The same path sends a REMINDER (input.reminder): same recipients, same
+// tracking rows, different wording and its own editable template, because a
+// second message that reads exactly like the first one reads as a bug.
+//
 // It is a notice, not a ledger action: nothing here touches a transaction.
 // Every send lands in reminder_sends (channel + outcome + provider ids) so it
 // shares the open/click tracking, the STOP opt-out table and the reminders
@@ -22,6 +26,7 @@
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
+  clientCategorySuggestions,
   companies,
   portalContactCompanies,
   portalContacts,
@@ -47,6 +52,9 @@ import {
 export type HelpChannel = 'email' | 'sms';
 
 export const CATEGORIZE_REQUEST_TRIGGER = 'categorize_request';
+// A reminder is the same notice sent again, with its own wording (and its
+// own editable template) so the second message does not read like the first.
+export const CATEGORIZE_REMINDER_TRIGGER = 'categorize_reminder';
 
 export interface HelpRecipient {
   contactId: string;
@@ -59,6 +67,13 @@ export interface HelpRecipient {
   lastSeenAt: string | null;
   /** When this contact was last sent this notice for this company. */
   lastAskedAt: string | null;
+  /**
+   * When this contact last submitted an answer for this company. Read with
+   * lastAskedAt it says who a reminder is actually for: asked, and nothing
+   * back since. Answers are never deleted on review, so this survives the
+   * staff approving them.
+   */
+  lastAnsweredAt: string | null;
 }
 
 export interface HelpRecipientsView {
@@ -154,6 +169,25 @@ export async function listHelpRecipients(tenantId: string, companyId: string): P
     for (const r of rows) lastAsked.set(r.contactId, new Date(r.at));
   }
 
+  // Who has come back with something since. Counted across every status so
+  // an answer staff have already approved still counts as answered.
+  const lastAnswered = new Map<string, Date>();
+  if (ids.length > 0) {
+    const rows = await db
+      .select({
+        contactId: clientCategorySuggestions.submittedByContactId,
+        at: sql<Date>`MAX(${clientCategorySuggestions.submittedAt})`,
+      })
+      .from(clientCategorySuggestions)
+      .where(and(
+        eq(clientCategorySuggestions.tenantId, tenantId),
+        eq(clientCategorySuggestions.companyId, companyId),
+        inArray(clientCategorySuggestions.submittedByContactId, ids),
+      ))
+      .groupBy(clientCategorySuggestions.submittedByContactId);
+    for (const r of rows) if (r.contactId) lastAnswered.set(r.contactId, new Date(r.at));
+  }
+
   const out: HelpRecipient[] = [];
   for (const c of contacts) {
     const [emailSuppressed, smsSuppressed] = await Promise.all([
@@ -169,6 +203,7 @@ export async function listHelpRecipients(tenantId: string, companyId: string): P
       smsSuppressed,
       lastSeenAt: c.lastSeenAt ? c.lastSeenAt.toISOString() : null,
       lastAskedAt: lastAsked.get(c.id)?.toISOString() ?? null,
+      lastAnsweredAt: lastAnswered.get(c.id)?.toISOString() ?? null,
     });
   }
 
@@ -205,15 +240,25 @@ export interface HelpSendInput {
    * log in and find nothing. Refused unless staff confirm they mean it.
    */
   confirmEmpty?: boolean;
+  /**
+   * Send the REMINDER wording instead of the first-ask wording (its own
+   * template trigger, same recipients, same tracking rows). Nothing else
+   * changes: a reminder is still one person pressing one button.
+   */
+  reminder?: boolean;
 }
 
-async function loadTemplate(tenantId: string, channel: HelpChannel): Promise<{ subject: string | null; body: string } | null> {
+async function loadTemplate(
+  tenantId: string,
+  channel: HelpChannel,
+  trigger: string,
+): Promise<{ subject: string | null; body: string } | null> {
   const rows = await db
     .select({ subject: reminderTemplates.subject, body: reminderTemplates.body })
     .from(reminderTemplates)
     .where(and(
       eq(reminderTemplates.tenantId, tenantId),
-      eq(reminderTemplates.triggerType, CATEGORIZE_REQUEST_TRIGGER),
+      eq(reminderTemplates.triggerType, trigger),
       eq(reminderTemplates.channel, channel),
     ))
     .limit(1);
@@ -231,6 +276,20 @@ const DEFAULT_EMAIL_BODY =
 const DEFAULT_SMS_BODY =
   `{first_name}, {firm_name} needs your help with {count} transaction(s) for {company_name}. ` +
   `Log in and open "What was this?": {portal_link}`;
+
+// Reminder wording. Same variables, so a firm that edits one template can
+// edit the other the same way.
+const DEFAULT_REMINDER_EMAIL_SUBJECT = 'Reminder: {count} transaction(s) still need your answer';
+const DEFAULT_REMINDER_EMAIL_BODY =
+  `Hi {first_name},\n\n` +
+  `Just a reminder — {count} transaction(s) for {company_name} are still waiting on you. ` +
+  `Until we know what they were, we cannot finish your books.\n\n` +
+  `Open "What was this?" in your portal and tell us what each one was for: {portal_link}\n\n` +
+  `{note}` +
+  `Thank you,\n{firm_name}`;
+const DEFAULT_REMINDER_SMS_BODY =
+  `{first_name}, a reminder from {firm_name}: {count} transaction(s) for {company_name} are still waiting ` +
+  `on your answer. Open "What was this?": {portal_link}`;
 
 /**
  * Send the notice. One reminder_sends row per (contact, channel) attempt,
@@ -285,7 +344,15 @@ export async function sendHelpRequest(
   const note = (input.note ?? '').trim();
 
   const sms = channels.includes('sms') ? await smsAvailability(tenantId) : { available: false, reason: null };
-  const [emailTpl, smsTpl] = await Promise.all([loadTemplate(tenantId, 'email'), loadTemplate(tenantId, 'sms')]);
+  const reminder = input.reminder === true;
+  const trigger = reminder ? CATEGORIZE_REMINDER_TRIGGER : CATEGORIZE_REQUEST_TRIGGER;
+  const [emailTpl, smsTpl] = await Promise.all([
+    loadTemplate(tenantId, 'email', trigger),
+    loadTemplate(tenantId, 'sms', trigger),
+  ]);
+  const defaultEmailSubject = reminder ? DEFAULT_REMINDER_EMAIL_SUBJECT : DEFAULT_EMAIL_SUBJECT;
+  const defaultEmailBody = reminder ? DEFAULT_REMINDER_EMAIL_BODY : DEFAULT_EMAIL_BODY;
+  const defaultSmsBody = reminder ? DEFAULT_REMINDER_SMS_BODY : DEFAULT_SMS_BODY;
   const mailer = channels.includes('email') ? await getMailer() : null;
 
   const results: HelpSendResult['results'] = [];
@@ -327,8 +394,8 @@ export async function sendHelpRequest(
       };
 
       if (channel === 'email') {
-        const subject = renderTemplate(emailTpl?.subject || DEFAULT_EMAIL_SUBJECT, vars);
-        const text = renderTemplate(emailTpl?.body || DEFAULT_EMAIL_BODY, vars);
+        const subject = renderTemplate(emailTpl?.subject || defaultEmailSubject, vars);
+        const text = renderTemplate(emailTpl?.body || defaultEmailBody, vars);
         const trackedClick = `${linkBase}/api/portal/track/${sendId}/click?to=${encodeURIComponent(portalLink)}`;
         const trackingPixel = `${linkBase}/api/portal/track/${sendId}/open.gif`;
         const escaped = escapeHtml(text).replace(
@@ -354,7 +421,7 @@ export async function sendHelpRequest(
         const provider = smsProviderModule.getSmsProvider(await tfaConfigService.getRawConfig());
         const tenantSms = await getTenantSmsSettings(tenantId);
         const body = renderSmsBody(
-          smsTpl?.body || DEFAULT_SMS_BODY,
+          smsTpl?.body || defaultSmsBody,
           { ...vars, note: note ? ` ${note}` : '' },
           tenantSms.smsAllowMultiSegment,
         );
@@ -380,6 +447,7 @@ export async function sendHelpRequest(
     {
       companyId,
       queueCount: count,
+      reminder,
       channels,
       contacts: results.map((r) => ({ contactId: r.contactId, outcomes: r.outcomes.map((o) => `${o.channel}:${o.outcome}`) })),
       notEligible,
