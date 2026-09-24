@@ -15,6 +15,7 @@ import { db } from '../db/index.js';
 import {
   tenants, companies, portalContacts, portalContactCompanies, tenantFeatureFlags,
   clientCategorySuggestions, reminderSends, reminderTemplates, auditLog,
+  firms, tenantFirmAssignments,
 } from '../db/schema/index.js';
 import {
   listHelpRecipients, sendHelpRequest, CATEGORIZE_REMINDER_TRIGGER,
@@ -112,6 +113,27 @@ describe('categorize help request — reminder mode', () => {
     const logs = await db.select().from(auditLog).where(eq(auditLog.tenantId, tenantId));
     const entry = logs.find((l) => l.entityType === 'categorize_help_request');
     expect((entry?.afterData as { reminder?: boolean })?.reminder).toBe(true);
+  });
+});
+
+describe('categorize mail — who it is from', () => {
+  it('is signed by the practice, not by the client whose books they are', async () => {
+    // tenants.name is the CLIENT here, so before this was fixed the mail
+    // read "<client> needs your help with 42 transactions" and was signed by
+    // the client, to the client's own contact.
+    const [f] = await db.insert(firms).values({
+      name: `Krueger CPA ${stamp}`, slug: `krueger-cat-${stamp}`,
+    }).returning();
+    await db.insert(tenantFirmAssignments).values({ tenantId, firmId: f!.id, isActive: true });
+    try {
+      await send(false);
+      expect(sentMail[0]!.subject).toContain(`Krueger CPA ${stamp}`);
+      expect(sentMail[0]!.subject).not.toContain('Remind');   // the tenant's own name
+      expect(sentMail[0]!.preview).toContain('Darrow Enterprises');  // the company still appears
+    } finally {
+      await db.delete(tenantFirmAssignments).where(eq(tenantFirmAssignments.tenantId, tenantId));
+      await db.delete(firms).where(eq(firms.id, f!.id));
+    }
   });
 });
 

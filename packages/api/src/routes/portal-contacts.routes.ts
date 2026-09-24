@@ -55,6 +55,10 @@ const createContactSchema = z.object({
   firstName: z.string().max(120).nullable().optional(),
   lastName: z.string().max(120).nullable().optional(),
   companies: z.array(companyAssignmentSchema).min(1),
+  // Default true: a contact created without a word to the person is a
+  // contact who never logs in. Staff can untick it for a contact they are
+  // setting up ahead of time.
+  sendInvite: z.boolean().optional(),
 });
 
 const updateContactSchema = z.object({
@@ -86,7 +90,48 @@ portalContactsRouter.get('/contacts/:id', async (req, res) => {
 
 portalContactsRouter.post('/contacts', validate(createContactSchema), async (req, res) => {
   const result = await svc.createContact(req.tenantId, req.body, req.userId);
-  res.status(201).json(result);
+  // The invitation is sent here rather than inside createContact so a mail
+  // failure can never roll back a contact that was created correctly, and
+  // the service stays free of mail concerns. The response says what
+  // actually happened so the UI can tell staff, rather than implying an
+  // email that SMTP quietly dropped on the floor.
+  let invite: { sent: boolean; viaStub: boolean; rateLimited: boolean } | null = null;
+  if (req.body.sendInvite !== false) {
+    try {
+      const r = await portalAuth.sendPortalInvite({
+        tenantId: req.tenantId,
+        contactId: result.id,
+        baseUrl: resolveEmailBaseUrl(req.headers, req.protocol),
+        ipAddress: req.ip,
+        actorUserId: req.userId,
+      });
+      invite = { sent: r.sent, viaStub: r.viaStub, rateLimited: r.rateLimited };
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[portal-contacts] invite send failed after create', err);
+      invite = { sent: false, viaStub: false, rateLimited: false };
+    }
+  }
+  res.status(201).json({ ...result, invite });
+});
+
+// Resend (or send for the first time) the invitation. Same message as the
+// one the create step sends; staff reach for this when the client says they
+// never got it, or when the 7-day link has run out.
+portalContactsRouter.post('/contacts/:id/invite', async (req, res) => {
+  const result = await portalAuth.sendPortalInvite({
+    tenantId: req.tenantId,
+    contactId: req.params['id']!,
+    baseUrl: resolveEmailBaseUrl(req.headers, req.protocol),
+    ipAddress: req.ip,
+    actorUserId: req.userId,
+  });
+  if (result.rateLimited) {
+    throw AppError.tooManyRequests(
+      'This contact hit the link limit (5/hour, shared with their own login page). Wait before sending another.',
+    );
+  }
+  res.json({ ok: true, sent: result.sent, viaStub: result.viaStub, expiresAt: result.expiresAt });
 });
 
 portalContactsRouter.put('/contacts/:id', validate(updateContactSchema), async (req, res) => {

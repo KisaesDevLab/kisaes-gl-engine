@@ -10,6 +10,42 @@ Access is layered: a feature must be enabled for the tenant (feature flag, super
 and then granted per portal contact per company by the firm (Edit Contact → access
 toggles). Everything defaults off except questions and receipt uploads.
 
+### Invitations (how a client first hears about the portal)
+
+Adding a contact emails them an invitation, ticked by default on the Add Contact form
+("Email them an invitation now"); untick it to set someone up quietly. The message names
+the practice, says what the portal is for, and carries a single-use link good for
+**7 days** — unlike the **sign-in link** button on each row, which is the ordinary
+15-minute magic link. **Resend invite** (envelope icon) sends it again, for the client who
+deleted it or let the link expire; the key icon still sends a quick sign-in link. Both
+share the per-contact limit of 5 links/hour with the client's own login page, and both
+report honestly: SMTP unset means "logged on the server, not delivered" rather than a
+green tick. Sending invalidates any earlier unconsumed link for that contact. Route:
+`POST /practice/portal/contacts/:id/invite`; creation takes `sendInvite` and answers with
+`{ invite: { sent, viaStub, rateLimited } }`. Added 2026-09-24 — before it, creating a
+contact sent NOTHING and clients waited for an email nobody had written.
+
+### Who portal mail says it is from
+
+`{firm_name}` is the managing PRACTICE, resolved from the active `tenant_firm_assignments`
+row (`resolveFirmName`), falling back to the tenant name on an appliance install with no
+separate firm. It is not `tenants.name`: every client is a tenant, so that read as the
+client's own name — a categorize request went out titled "TimberStone LLC needs your help
+with 42 transaction(s)" and signed "TimberStone LLC", to TimberStone's own bookkeeper
+contact (fixed 2026-09-24). `{company_name}` is the client's company and is correct.
+
+### The same email in two firms
+
+A portal contact belongs to ONE tenant. The same address in two tenancies is two separate
+contact rows. Asking for a link at a bare `/portal/login` (no `?firm=`) sends one sign-in
+link **per active tenancy** — two emails, each opening that firm's portal; there is no
+"pick a firm" screen. With `?firm=<slug>` only that tenancy's link is sent. A session
+belongs to one contact, so switching firms means using the other link. The in-portal firm
+switcher exists but needs `PORTAL_IDENTITY_LINKING_V1` (env, default OFF) AND the contacts
+linked to one identity; linking happens on contact create and on `setPassword`, never on a
+plain magic-link login, so contacts created before the flag was turned on stay unlinked
+until one of those happens.
+
 ### Balances & Activity (banking views)
 When the firm grants **Can view bank & card activity**, the client's portal shows a
 Balances section: each checking/savings account and credit card with its current **book

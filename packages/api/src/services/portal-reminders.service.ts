@@ -7,6 +7,7 @@ import { and, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   documentRequests,
+  firms,
   portalContacts,
   portalQuestions,
   portalSettingsPerPractice,
@@ -14,6 +15,7 @@ import {
   reminderSends,
   reminderSuppressions,
   reminderTemplates,
+  tenantFirmAssignments,
   tenants,
 } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -411,7 +413,7 @@ export async function dispatch(tenantId?: string): Promise<DispatchResult> {
         first_name: firstName,
         open_count: openCount,
         portal_link: portalLink,
-        firm_name: '',
+        firm_name: await resolveFirmName(c.tenantId),
       });
       text = rendered;
       // Auto-link the portal URL inside the rendered body for HTML.
@@ -1012,7 +1014,7 @@ async function sendEmailLeg(
     period_label: periodLabel,
     due_date: dueDateStr,
     portal_link: portalLink,
-    firm_name: '',
+    firm_name: await resolveFirmName(tenantId),
   });
   const text = rendered;
   const escaped = escapeHtml(rendered).replace(
@@ -1104,6 +1106,32 @@ async function sendSmsLeg(
     .set({ error: result.error ?? 'sms_send_failed', providerStatus: 'failed' })
     .where(eq(reminderSends.id, sendId));
   return 'error';
+}
+
+/**
+ * The name a client should see on portal mail: the PRACTICE that manages
+ * their books, not their own company.
+ *
+ * Every client is a tenant here, so `tenants.name` is the CLIENT's name —
+ * using it made a categorize request read "TimberStone LLC needs your help"
+ * and sign off as TimberStone, to TimberStone's own bookkeeping contact.
+ * The managing practice is the active tenant_firm_assignments row. Falls
+ * back to the tenant name for an appliance install where the business runs
+ * its own books and there is no separate firm.
+ */
+export async function resolveFirmName(tenantId: string): Promise<string> {
+  const [assigned] = await db
+    .select({ name: firms.name })
+    .from(tenantFirmAssignments)
+    .innerJoin(firms, eq(firms.id, tenantFirmAssignments.firmId))
+    .where(and(
+      eq(tenantFirmAssignments.tenantId, tenantId),
+      eq(tenantFirmAssignments.isActive, true),
+    ))
+    .limit(1);
+  if (assigned?.name) return assigned.name;
+  const [tenant] = await db.select({ name: tenants.name }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+  return tenant?.name ?? '';
 }
 
 export async function getTenantSmsSettings(tenantId: string): Promise<{ smsOutboundEnabled: boolean; smsAllowMultiSegment: boolean }> {

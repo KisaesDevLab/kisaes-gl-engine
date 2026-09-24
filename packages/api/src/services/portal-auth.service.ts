@@ -207,6 +207,125 @@ export async function requestMagicLink(args: {
   return { ok: true, sent, viaStub: mailer.isStub };
 }
 
+// ── Invitation ────────────────────────────────────────────────────
+//
+// Creating a portal contact used to send NOTHING: the person was expected
+// to find the portal on their own, or a staff member had to remember the
+// per-contact "Email a portal sign-in link" button — whose link dies after
+// 15 minutes, so it is a poor invitation to read an hour later. This is the
+// welcome message: it says which practice invited them and what the portal
+// is for, and carries a link that is good for a week.
+//
+// Same single-use token machinery as the sign-in link (issue, invalidate
+// prior links, consume on use) with a longer TTL, and it shares the 5/hour
+// per-contact limit so invite spam cannot lock a client out of their own
+// login page without staff being told.
+const INVITE_TTL_MIN = 7 * 24 * 60;
+
+export async function sendPortalInvite(args: {
+  tenantId: string;
+  contactId: string;
+  baseUrl: string;
+  ipAddress?: string;
+  actorUserId?: string;
+}): Promise<{ sent: boolean; viaStub: boolean; rateLimited: boolean; expiresAt: Date | null }> {
+  const contact = await db.query.portalContacts.findFirst({
+    where: and(eq(portalContacts.tenantId, args.tenantId), eq(portalContacts.id, args.contactId)),
+  });
+  if (!contact) throw AppError.notFound('Portal contact not found');
+  if (contact.status !== 'active') {
+    throw AppError.badRequest('Contact must be active to receive an invitation');
+  }
+
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+  const recent = await db
+    .select({ n: sql<number>`COUNT(*)::int` })
+    .from(portalMagicLinks)
+    .where(and(
+      eq(portalMagicLinks.contactId, contact.id),
+      sql`${portalMagicLinks.createdAt} >= ${oneHourAgo}`,
+    ));
+  if (Number(recent[0]?.n ?? 0) >= RATE_LIMIT_PER_HOUR) {
+    return { sent: false, viaStub: false, rateLimited: true, expiresAt: null };
+  }
+
+  await db
+    .update(portalMagicLinks)
+    .set({ invalidatedAt: new Date() })
+    .where(and(
+      eq(portalMagicLinks.contactId, contact.id),
+      isNull(portalMagicLinks.consumedAt),
+      isNull(portalMagicLinks.invalidatedAt),
+    ));
+
+  const token = generateToken();
+  const expiresAt = new Date(Date.now() + INVITE_TTL_MIN * 60 * 1000);
+  await db.insert(portalMagicLinks).values({
+    tenantId: args.tenantId,
+    contactId: contact.id,
+    tokenHash: sha256Hex(token),
+    emailSentTo: contact.email,
+    ipAddress: args.ipAddress ?? null,
+    expiresAt,
+  });
+
+  // Dynamic import: portal-reminders owns the shared portal-mail helpers and
+  // pulls in the whole reminder stack, which has no business loading on the
+  // auth path unless an invite is actually being sent.
+  const reminders = await import('./portal-reminders.service.js');
+  const base = args.baseUrl.replace(/\/$/, '');
+  const firmName = await reminders.resolveFirmName(args.tenantId);
+  const link = `${base}/portal/auth/verify?token=${encodeURIComponent(token)}`;
+  const loginLink = await reminders.portalLoginLink(base, args.tenantId);
+  const who = firmName || 'Your bookkeeper';
+  const greeting = contact.firstName ? `Hi ${contact.firstName},` : 'Hello,';
+
+  const text =
+    `${greeting}\n\n` +
+    `${who} has set up a secure client portal for you. It is where you can see what they need from ` +
+    `you — questions, documents they have asked for, and transactions only you can explain — and ` +
+    `where you can send receipts and see your reports.\n\n` +
+    `Get started here (the link works for 7 days and can be used once):\n${link}\n\n` +
+    `After that, go to ${loginLink} and we will email you a fresh sign-in link. There is no ` +
+    `password to remember.\n\n` +
+    `${who}`;
+  const html =
+    `<p>${escapeHtml(greeting)}</p>` +
+    `<p><strong>${escapeHtml(who)}</strong> has set up a secure client portal for you. It is where you can see ` +
+    `what they need from you — questions, documents they have asked for, and transactions only you ` +
+    `can explain — and where you can send receipts and see your reports.</p>` +
+    `<p><a href="${link}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px">Get started</a></p>` +
+    `<p style="color:#555;font-size:13px">The button works for 7 days and can be used once. After that, go to ` +
+    `<a href="${loginLink}">${escapeHtml(loginLink)}</a> and we will email you a fresh sign-in link — ` +
+    `there is no password to remember.</p>` +
+    `<p style="color:#888;font-size:12px">${escapeHtml(who)}</p>`;
+
+  const mailer = await ensureSmtpTransport();
+  let sent = true;
+  try {
+    await mailer.send(contact.email, `${who} has invited you to your client portal`, html, text);
+  } catch (err) {
+    sent = false;
+    // eslint-disable-next-line no-console
+    console.error(
+      `[portal-auth] invite email send failed for contact ${contact.id}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  await auditLog(
+    args.tenantId,
+    'create',
+    'portal_invite',
+    contact.id,
+    null,
+    { contactId: contact.id, email: contact.email, sent, viaStub: mailer.isStub, expiresAt },
+    args.actorUserId,
+  );
+
+  return { sent, viaStub: mailer.isStub, rateLimited: false, expiresAt };
+}
+
 export interface VerifiedSession {
   sessionToken: string;
   contactId: string;

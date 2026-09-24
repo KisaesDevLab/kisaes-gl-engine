@@ -47,6 +47,7 @@ import {
   portalLoginLink,
   renderSmsBody,
   renderTemplate,
+  resolveFirmName,
 } from './portal-reminders.service.js';
 
 export type HelpChannel = 'email' | 'sms';
@@ -321,8 +322,10 @@ export async function sendHelpRequest(
     .where(and(eq(companies.id, companyId), eq(companies.tenantId, tenantId)))
     .limit(1);
   if (!company) throw AppError.notFound('Company not found');
-  const [tenant] = await db.select({ name: tenants.name }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
-  const firmName = tenant?.name ?? '';
+  // The PRACTICE's name, not the client's. Every client is a tenant here,
+  // so tenants.name is the client — which made this mail read "TimberStone
+  // LLC needs your help" and sign off as TimberStone, sent to TimberStone.
+  const firmName = await resolveFirmName(tenantId);
 
   const eligible = await eligibleContacts(tenantId, companyId);
   const byId = new Map(eligible.map((c) => [c.id, c]));
