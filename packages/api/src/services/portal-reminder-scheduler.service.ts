@@ -4,6 +4,7 @@
 
 import { withSchedulerLock } from '../utils/scheduler-lock.js';
 import * as svc from './portal-reminders.service.js';
+import { dispatchCategorizeReminders } from './categorize-help-request.service.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 13.2 — reminder-scan job.
 // Runs every 30 minutes (per the plan). Advisory-locked so a rolling
@@ -32,6 +33,25 @@ export function startPortalReminderScheduler(): void {
           }),
         );
       }
+      // Uncategorized chasing rides the same half-hourly tick, under its own
+      // advisory lock so a slow categorize scan cannot stall the others.
+      const categorize = await withSchedulerLock(
+        'portal-categorize-reminder',
+        () => dispatchCategorizeReminders(),
+      );
+      if (categorize && (categorize.sent > 0 || categorize.capped > 0 || categorize.failed > 0)) {
+        // eslint-disable-next-line no-console
+        console.log(
+          JSON.stringify({
+            ts: new Date().toISOString(),
+            level: 'info',
+            component: 'portal-categorize-reminder',
+            event: 'cycle',
+            ...categorize,
+          }),
+        );
+      }
+
       const purged = await withSchedulerLock(
         'portal-suppression-purge',
         svc.purgeExpiredSuppressions,

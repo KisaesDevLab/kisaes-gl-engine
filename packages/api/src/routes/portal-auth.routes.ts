@@ -259,15 +259,22 @@ portalAuthRouter.get(
   portalAuthenticate,
   async (req, res) => {
     if (!req.portalContact) throw AppError.unauthorized('No portal session');
-    if (!req.portalContact.identityId) {
+    // Staff previewing a client proved nothing about that client's mailbox,
+    // so a preview never lists anywhere to switch to.
+    if (req.portalContact.isPreview) {
       res.json({ contacts: [] });
       return;
     }
-    const { listLinkedContacts } = await import(
-      '../services/portal-identity.service.js'
-    );
-    const contacts = await listLinkedContacts(req.portalContact.identityId);
-    res.json({ contacts });
+    const identity = await import('../services/portal-identity.service.js');
+    if (req.portalContact.identityId) {
+      res.json({ contacts: await identity.listLinkedContacts(req.portalContact.identityId) });
+      return;
+    }
+    // No identity — the usual case, because an identity only exists once a
+    // client has set a password. Fall back to the same email address, which
+    // this session holder proved they control.
+    const { email } = req.portalContact;
+    res.json({ contacts: email ? await identity.listSiblingContactsByEmail(email) : [] });
   },
 );
 

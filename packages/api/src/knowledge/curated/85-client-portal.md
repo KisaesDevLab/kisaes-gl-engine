@@ -268,4 +268,21 @@ answered since: the recipients response carries `lastAnsweredAt` (latest
 `client_category_suggestions.submitted_at` for that contact and company, any status)
 next to `lastAskedAt`, and those rows are badged **No answer since you asked**. If
 nobody has been asked yet the screen says so and ticks everyone, so the button is never
-a dead end. Reminders are manual — one person pressing one button — not a cadence.
+a dead end. Reminders are manual — one person pressing one button — OR automatic, below.
+
+Automating it (2026-09-24, migration 0180): a **reminder_schedules** row with
+`trigger_type = 'categorize_reminder'` (Practice → Reminders → Schedules → trigger
+**Uncategorized transactions**) turns the button into a cadence. `cadenceDays` are
+day-offsets from the FIRST message of a spell: `[3,7,14]` opens the chase, then chases
+again 3, 7 and 14 days later, then stops. A "spell" runs from the client's last answer
+(or from the first message if they have never answered) until they answer again, which is
+what stops a new uncategorized row restarting the cadence at day one and gives someone who
+just sent ten answers a few days of quiet before the next nudge about the rest. It sends
+through the same `sendHelpRequest` with `reminder: true` plus the schedule id, so an
+automated nudge and a staff click are the same message with the same tracking; `step` (1 =
+the opener) drives the escalating channel strategy. It stops for: an empty portal queue,
+`PORTAL_CATEGORIZE_V1` off, quiet hours, the schedule's per-contact `maxPerWeek` (counted
+across ALL portal mail, not just this trigger), STOP opt-outs, and a 20-hour floor between
+messages whatever the cadence says. Runs on the existing half-hourly portal-reminder tick
+under advisory lock `portal-categorize-reminder`
+(`dispatchCategorizeReminders`). Templates: trigger `categorize_reminder`.

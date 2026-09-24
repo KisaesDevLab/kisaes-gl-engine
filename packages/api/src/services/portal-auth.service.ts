@@ -703,10 +703,10 @@ export async function switchToContact(args: {
   if (session.expiresAt.getTime() < Date.now()) {
     throw AppError.unauthorized('Portal session expired', 'SESSION_EXPIRED');
   }
-  if (!session.identityId) {
-    // Defense against switching from an unlinked legacy session.
-    throw AppError.forbidden('This session cannot be switched', 'SESSION_NOT_LINKED');
-  }
+  const current = await db.query.portalContacts.findFirst({
+    where: eq(portalContacts.id, session.contactId),
+  });
+  if (!current) throw AppError.unauthorized('Portal session not found', 'NO_SESSION');
 
   const target = await db.query.portalContacts.findFirst({
     where: eq(portalContacts.id, args.targetContactId),
@@ -716,10 +716,16 @@ export async function switchToContact(args: {
     // probing.
     throw AppError.forbidden('Target contact not available', 'TARGET_UNAVAILABLE');
   }
-  if (target.identityId !== session.identityId) {
-    // The critical authz check — different identity OR null identity
-    // means the target does not belong to this human. Throw the same
-    // generic error.
+
+  // The authz check, one of two ways. Either both contacts hang off the same
+  // identity (the client set a password), or — far more commonly — both
+  // carry the same email address, which the session holder proved they
+  // control when they consumed the link sent to it. Anything else is a
+  // different human and gets the same generic error.
+  const sameIdentity = !!session.identityId && target.identityId === session.identityId;
+  const sameEmail =
+    normalizeEmail(target.email) === normalizeEmail(current.email) && current.status === 'active';
+  if (!sameIdentity && !sameEmail) {
     throw AppError.forbidden('Target contact not available', 'TARGET_UNAVAILABLE');
   }
 
@@ -739,7 +745,10 @@ export async function switchToContact(args: {
     await tx.insert(portalContactSessions).values({
       tenantId: target.tenantId,
       contactId: target.id,
-      identityId: session.identityId,
+      // Carried only when the switch was authorised by identity; an
+      // email-verified switch has no identity to carry and stays null,
+      // which the next switch re-derives from the address.
+      identityId: sameIdentity ? session.identityId : null,
       tokenHash: newHash,
       expiresAt,
       ipAddress: args.ipAddress ?? null,

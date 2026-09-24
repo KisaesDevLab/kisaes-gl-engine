@@ -261,6 +261,55 @@ export async function listLinkedContacts(
 }
 
 /**
+ * The same person's other portal contacts, found by EMAIL rather than by a
+ * linked identity.
+ *
+ * An identity only exists once a client has set a password, and most never
+ * do — they sign in with magic links. Keying the switcher on identities
+ * alone therefore hid it from nearly everyone, including the case it exists
+ * for: one person who books with two of the firm's clients. A session is
+ * only minted after the holder proved control of that email address (they
+ * consumed a link sent to it, or knew the identity's password), and every
+ * row returned here carries the identical address, so it is the same human
+ * by exactly the trust the rest of portal auth runs on.
+ *
+ * Callers must not use this for preview (staff impersonation) sessions —
+ * staff proved nothing about the client's mailbox.
+ */
+export async function listSiblingContactsByEmail(
+  email: string,
+): Promise<LinkedContactSummary[]> {
+  const normalized = email.trim().toLowerCase();
+  if (!normalized) return [];
+  const rows = await db
+    .select({
+      contactId: portalContacts.id,
+      tenantId: portalContacts.tenantId,
+      tenantSlug: tenants.slug,
+      tenantName: tenants.name,
+      email: portalContacts.email,
+      firstName: portalContacts.firstName,
+      lastName: portalContacts.lastName,
+      status: portalContacts.status,
+    })
+    .from(portalContacts)
+    .innerJoin(tenants, eq(portalContacts.tenantId, tenants.id))
+    .where(and(
+      eq(portalContacts.email, normalized),
+      eq(portalContacts.status, 'active'),
+    ));
+
+  return rows.map((r) => ({
+    contactId: r.contactId,
+    tenantId: r.tenantId,
+    tenantSlug: r.tenantSlug,
+    tenantName: r.tenantName,
+    displayName: [r.firstName, r.lastName].filter(Boolean).join(' ').trim() || r.email,
+    status: r.status,
+  }));
+}
+
+/**
  * Whether the feature flag is enabled. Centralized so service callers
  * don't sprinkle env reads.
  */

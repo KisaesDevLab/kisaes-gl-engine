@@ -150,7 +150,7 @@ export async function isSuppressed(
 
 // 13.6 — max-per-week cap. Counts sends across all schedules so a
 // contact can never exceed N total reminders/week.
-async function exceededWeeklyCap(contactId: string, max: number): Promise<boolean> {
+export async function exceededWeeklyCap(contactId: string, max: number): Promise<boolean> {
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   const rows = await db
     .select({ n: sql<number>`COUNT(*)::int` })

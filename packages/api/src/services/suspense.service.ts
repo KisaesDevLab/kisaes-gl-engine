@@ -156,6 +156,13 @@ export interface SuspenseRow {
    * bookkeeper already confirmed on Bank Feeds is not invisible here.
    */
   payeeNameOnCheck: string | null;
+  /**
+   * The bank's raw descriptor for the feed line this transaction posted
+   * from (`bank_feed_items.original_description`). Null when the entry did
+   * not come from a feed. Surfaced as the Memo column's hover text — the
+   * memo reads cleanly, the raw text is what identifies the payment.
+   */
+  bankDescription: string | null;
   /** Signed suspense amount for this transaction: debit positive. */
   amount: string;
   /** >1 means a split with several suspense lines; they clear together. */
@@ -278,6 +285,14 @@ export async function listInSuspense(
       (SELECT b.id FROM bank_feed_items b
         WHERE b.tenant_id = t.tenant_id AND b.matched_transaction_id = t.id
         LIMIT 1) AS bank_feed_item_id,
+      -- The bank's own wording for the line this posted from. The memo is
+      -- cleaned up for reading; this is what actually came off the
+      -- statement, and it is often what identifies the payment.
+      (SELECT b.original_description FROM bank_feed_items b
+        WHERE b.tenant_id = t.tenant_id AND b.matched_transaction_id = t.id
+          AND b.original_description IS NOT NULL
+        ORDER BY b.created_at
+        LIMIT 1) AS bank_description,
       (SELECT COUNT(*) FROM attachments a
         WHERE a.tenant_id = t.tenant_id
           AND (
@@ -311,6 +326,7 @@ export async function listInSuspense(
     attachmentCount: Number(r['attachment_count'] ?? 0),
     attachableType: String(r['txn_type']),
     bankFeedItemId: (r['bank_feed_item_id'] as string | null) ?? null,
+    bankDescription: (r['bank_description'] as string | null) ?? null,
   }));
 
   return { rows, total, suspenseAccountId };

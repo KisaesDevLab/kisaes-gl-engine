@@ -110,11 +110,18 @@ const envSchema = z.object({
   // When off, all of the above short-circuit — schema columns exist but
   // are never populated. Default off so the migration can ship images
   // before the feature is enabled per appliance.
+  // Default ON since 2026-09-24. One person who works with two of the
+  // firm's clients should sign in once and switch between them, not keep
+  // two sets of links straight. Set PORTAL_IDENTITY_LINKING_V1=false to
+  // turn it off. Linking still only happens where an identity exists: on
+  // contact create when the email already has one, and when a client sets
+  // a password (portal_identities requires a password hash), so nothing
+  // is linked behind a client's back.
   PORTAL_IDENTITY_LINKING_V1: z
     .string()
     .optional()
-    .transform((v) => v === 'true' || v === '1')
-    .default('false'),
+    .transform((v) => v !== 'false' && v !== '0')
+    .default('true'),
   // CLOUDFLARE_TUNNEL_PLAN Phase 6 — staff IP allowlist. "1" enforces.
   STAFF_IP_ALLOWLIST_ENFORCED: z.enum(['0', '1']).optional().default('0'),
   // CLOUDFLARE_TUNNEL_PLAN Phase 7 — Stripe webhook IP allowlist. "1" enforces.

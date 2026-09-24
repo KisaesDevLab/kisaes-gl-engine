@@ -244,9 +244,15 @@ export interface HelpSendInput {
   /**
    * Send the REMINDER wording instead of the first-ask wording (its own
    * template trigger, same recipients, same tracking rows). Nothing else
-   * changes: a reminder is still one person pressing one button.
+   * changes when a person presses the button.
    */
   reminder?: boolean;
+  /**
+   * Set when a reminder_schedules row produced this send, so the reminders
+   * dashboard can tell an automated nudge from a staff member's click.
+   * Null / omitted for anything a human pressed.
+   */
+  scheduleId?: string | null;
 }
 
 async function loadTemplate(
@@ -304,7 +310,8 @@ const DEFAULT_REMINDER_SMS_BODY =
 export async function sendHelpRequest(
   tenantId: string,
   companyId: string,
-  userId: string,
+  /** The staff member who pressed the button; null when a schedule sent it. */
+  userId: string | null,
   input: HelpSendInput,
 ): Promise<HelpSendResult> {
   if (!(await isEnabled(tenantId, 'PORTAL_CATEGORIZE_V1'))) {
@@ -384,7 +391,7 @@ export async function sendHelpRequest(
 
       const [sendRow] = await db
         .insert(reminderSends)
-        .values({ scheduleId: null, tenantId, contactId: c.id, questionId: companyId, channel })
+        .values({ scheduleId: input.scheduleId ?? null, tenantId, contactId: c.id, questionId: companyId, channel })
         .returning({ id: reminderSends.id });
       const sendId = sendRow?.id;
       if (!sendId) { outcomes.push({ channel, outcome: 'error', error: 'could not record the send' }); continue; }
@@ -456,8 +463,235 @@ export async function sendHelpRequest(
       notEligible,
       noteLength: note.length,
     },
-    userId,
+    userId ?? undefined,
   );
 
   return { queueCount: count, results, notEligible };
+}
+
+// ── Automated reminders ───────────────────────────────────────────
+//
+// A reminder_schedules row with trigger_type 'categorize_reminder' turns the
+// manual button into a cadence: chase the client until the queue is empty or
+// they answer, then stop. It rides the same engine as every other portal
+// reminder (quiet hours, channel strategy, the per-contact weekly cap, STOP
+// opt-outs) and sends through sendHelpRequest, so an automated nudge and a
+// staff-pressed one are the same message with the same tracking.
+//
+// What a "spell" is: the run of chasing that starts when the client last
+// answered (or at the first message, if they never have) and ends when they
+// answer again. Anchoring on their last answer is what stops the cadence
+// restarting from day one every time a new uncategorized row appears, and
+// gives someone who just sent in ten answers a few days' peace before the
+// next nudge about the rest.
+
+import {
+  chooseChannelsForCandidate,
+  exceededWeeklyCap,
+  isInQuietHours,
+  nextCadenceStep,
+} from './portal-reminders.service.js';
+import { reminderSchedules } from '../db/schema/index.js';
+
+export interface CategorizeReminderCandidate {
+  scheduleId: string;
+  tenantId: string;
+  companyId: string;
+  contactId: string;
+  contactPhone: string | null;
+  /** 1-based cadence step; 1 is the first message of this spell. */
+  step: number;
+  channelStrategy: 'email_only' | 'sms_only' | 'both' | 'escalating';
+  maxPerWeek: number;
+  queueCount: number;
+}
+
+/** A send counts once per DAY: 'both' writes one row per channel. */
+interface SpellState { days: number; firstSentAt: Date | null; lastSentAt: Date | null }
+
+async function spellState(
+  tenantId: string,
+  companyId: string,
+  contactId: string,
+  since: Date | null,
+): Promise<SpellState> {
+  // Conditions as a list, not an empty sql`` fragment: and() renders a
+  // dangling AND for an empty one.
+  const conds = [
+    eq(reminderSends.tenantId, tenantId),
+    eq(reminderSends.contactId, contactId),
+    eq(reminderSends.questionId, companyId),
+    isNull(reminderSends.error),
+  ];
+  if (since) conds.push(sql`${reminderSends.sentAt} > ${since}`);
+  const rows = await db
+    .select({
+      days: sql<number>`COUNT(DISTINCT DATE(${reminderSends.sentAt} AT TIME ZONE 'UTC'))::int`,
+      first: sql<Date | null>`MIN(${reminderSends.sentAt})`,
+      last: sql<Date | null>`MAX(${reminderSends.sentAt})`,
+    })
+    .from(reminderSends)
+    .where(and(...conds));
+  const r = rows[0];
+  return {
+    days: Number(r?.days ?? 0),
+    firstSentAt: r?.first ? new Date(r.first) : null,
+    lastSentAt: r?.last ? new Date(r.last) : null,
+  };
+}
+
+/** Latest answer this contact sent for this company, any status. */
+async function lastAnswerAt(tenantId: string, companyId: string, contactId: string): Promise<Date | null> {
+  const rows = await db
+    .select({ at: sql<Date | null>`MAX(${clientCategorySuggestions.submittedAt})` })
+    .from(clientCategorySuggestions)
+    .where(and(
+      eq(clientCategorySuggestions.tenantId, tenantId),
+      eq(clientCategorySuggestions.companyId, companyId),
+      eq(clientCategorySuggestions.submittedByContactId, contactId),
+    ));
+  return rows[0]?.at ? new Date(rows[0].at) : null;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+// Never twice in a day, whatever the cadence says. Guards a cadence like
+// [1,1,1] against the half-hourly tick turning into three sends in an hour.
+const MIN_GAP_MS = 20 * 60 * 60 * 1000;
+
+export async function scanCategorizeReminders(tenantId?: string): Promise<CategorizeReminderCandidate[]> {
+  const schedules = await db
+    .select()
+    .from(reminderSchedules)
+    .where(and(
+      eq(reminderSchedules.triggerType, CATEGORIZE_REMINDER_TRIGGER),
+      eq(reminderSchedules.active, true),
+      ...(tenantId ? [eq(reminderSchedules.tenantId, tenantId)] : []),
+    ));
+  if (schedules.length === 0) return [];
+
+  const now = new Date();
+  const out: CategorizeReminderCandidate[] = [];
+  const flagCache = new Map<string, boolean>();
+
+  for (const sched of schedules) {
+    if (isInQuietHours(now, sched.quietHoursStart, sched.quietHoursEnd, sched.timezone)) continue;
+
+    let flagOn = flagCache.get(sched.tenantId);
+    if (flagOn === undefined) {
+      flagOn = await isEnabled(sched.tenantId, 'PORTAL_CATEGORIZE_V1');
+      flagCache.set(sched.tenantId, flagOn);
+    }
+    // Chasing a client toward a page their firm has not switched on would
+    // send them to an empty portal.
+    if (!flagOn) continue;
+
+    const cadence = Array.isArray(sched.cadenceDays)
+      ? (sched.cadenceDays as unknown[]).filter((d): d is number => typeof d === 'number' && d >= 1)
+      : [];
+    if (cadence.length === 0) continue;
+
+    const companyRows = sched.companyId
+      ? [{ id: sched.companyId }]
+      : await db.select({ id: companies.id }).from(companies).where(eq(companies.tenantId, sched.tenantId));
+
+    for (const co of companyRows) {
+      const queue = await listPortalQueue(sched.tenantId, co.id, { limit: 1 });
+      // Nothing waiting: the spell is over, whatever the cadence says.
+      if (queue.total === 0) continue;
+
+      const contacts = await eligibleContacts(sched.tenantId, co.id);
+      for (const c of contacts) {
+        const answeredAt = await lastAnswerAt(sched.tenantId, co.id, c.id);
+        const spell = await spellState(sched.tenantId, co.id, c.id, answeredAt);
+
+        if (spell.lastSentAt && now.getTime() - spell.lastSentAt.getTime() < MIN_GAP_MS) continue;
+
+        // The model, in one line: message 1 opens the spell, and cadenceDays
+        // are the day-offsets from it — [3,7,14] chases again 3, 7 and 14
+        // days later, then stops until the client answers or the queue
+        // empties. `step` is which message this is (1 = the opener), which
+        // is what the escalating channel strategy reads.
+        let step: number | null;
+        if (spell.days === 0) {
+          // Nobody has chased them in this spell. Open it now when they have
+          // never answered at all; otherwise give them cadence[0] days of
+          // quiet after the answer they did send.
+          step = answeredAt === null || now.getTime() - answeredAt.getTime() >= cadence[0]! * DAY_MS
+            ? 1
+            : null;
+        } else {
+          // days = messages already sent; the next one uses the cadence entry
+          // at days-1, measured from the first message of the spell.
+          step = nextCadenceStep(cadence, spell.firstSentAt ?? now, spell.days - 1, now) === null
+            ? null
+            : spell.days + 1;
+        }
+        if (step === null) continue;
+
+        out.push({
+          scheduleId: sched.id,
+          tenantId: sched.tenantId,
+          companyId: co.id,
+          contactId: c.id,
+          contactPhone: c.phone,
+          step,
+          channelStrategy: sched.channelStrategy as CategorizeReminderCandidate['channelStrategy'],
+          maxPerWeek: sched.maxPerWeek,
+          queueCount: queue.total,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+export interface CategorizeReminderResult {
+  attempted: number;
+  sent: number;
+  capped: number;
+  failed: number;
+}
+
+export async function dispatchCategorizeReminders(tenantId?: string): Promise<CategorizeReminderResult> {
+  const candidates = await scanCategorizeReminders(tenantId);
+  const result: CategorizeReminderResult = { attempted: 0, sent: 0, capped: 0, failed: 0 };
+  const smsCache = new Map<string, boolean>();
+
+  for (const c of candidates) {
+    // The cap is per contact across every portal message, not per schedule:
+    // a client already being chased about documents should not also get
+    // three of these in the same week.
+    if (await exceededWeeklyCap(c.contactId, c.maxPerWeek)) {
+      result.capped++;
+      continue;
+    }
+
+    let smsAvailable = smsCache.get(c.tenantId);
+    if (smsAvailable === undefined) {
+      smsAvailable = (await smsAvailability(c.tenantId)).available;
+      smsCache.set(c.tenantId, smsAvailable);
+    }
+    const channels = chooseChannelsForCandidate(c.channelStrategy, c.step, !!c.contactPhone, smsAvailable);
+    // sms_only with no usable SMS: the firm chose texts, so falling back to
+    // email would be answering a question nobody asked.
+    if (channels.length === 0) continue;
+
+    result.attempted++;
+    try {
+      const sendResult = await sendHelpRequest(c.tenantId, c.companyId, null, {
+        contactIds: [c.contactId],
+        channels,
+        reminder: true,
+        scheduleId: c.scheduleId,
+      });
+      const anySent = sendResult.results.some((r) => r.outcomes.some((o) => o.outcome === 'sent'));
+      if (anySent) result.sent++;
+      else result.failed++;
+    } catch {
+      // A queue that emptied between scan and send, a flag switched off
+      // mid-cycle: skip this one, keep the cycle going.
+      result.failed++;
+    }
+  }
+  return result;
 }

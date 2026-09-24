@@ -29,11 +29,14 @@ const TRIGGER_TYPES = [
   'doc_request',
   'recurring_non_transaction',
   'magic_link_expiring',
+  // Chase a client about transactions only they can explain, until the
+  // queue empties or they answer (categorize-help-request.service).
+  'categorize_reminder',
 ] as const;
 
 // Template-only triggers: no schedule scans for them, a person sends them.
 // Practice -> Uncategorized -> "Ask the client for help" is the first.
-const TEMPLATE_TRIGGER_TYPES = [...TRIGGER_TYPES, 'categorize_request', 'categorize_reminder'] as const;
+const TEMPLATE_TRIGGER_TYPES = [...TRIGGER_TYPES, 'categorize_request'] as const;
 
 const scheduleSchema = z.object({
   triggerType: z.enum(TRIGGER_TYPES),
