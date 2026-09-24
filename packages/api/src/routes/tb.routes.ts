@@ -25,6 +25,7 @@ import * as seedService from '../services/tb/tax-code-seed.service.js';
 import * as unitsService from '../services/tb/activity-units.service.js';
 import * as balanceEngine from '../services/tb/balance-engine.service.js';
 import * as ajeService from '../services/tb/aje.service.js';
+import { pickEnum } from '../utils/list-query.js';
 import * as attachmentService from '../services/attachment.service.js';
 import * as assignmentsService from '../services/tb/assignments.service.js';
 import * as diagnosticsService from '../services/tb/diagnostics.service.js';
@@ -127,6 +128,8 @@ tbRouter.get('/ajes', async (req, res) => {
   const result = await ajeService.listAjes(req.tenantId, req.companyId!, {
     fiscalYear: req.query['fiscalYear'] ? Number(req.query['fiscalYear']) : undefined,
     includeVoid: req.query['includeVoid'] === 'true',
+    sortBy: pickEnum(req.query['sortBy'], ajeService.AJE_SORT_KEYS),
+    sortDir: pickEnum(req.query['sortDir'], ['asc', 'desc'] as const),
     limit,
     offset,
   });

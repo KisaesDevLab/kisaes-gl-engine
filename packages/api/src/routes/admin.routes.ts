@@ -102,8 +102,11 @@ function parseAdminListQuery(query: Request['query']): adminService.AdminListOpt
     limit: query['limit'] === undefined ? undefined : parseLimit(query['limit'], 50, 5000),
     offset: parseOffset(query['offset']),
     search: typeof rawSearch === 'string' && rawSearch.trim() ? rawSearch : undefined,
-    // Users-list sort/filters; listTenants ignores them.
+    // Users-list sort/filters; listTenants ignores them. The tenants list
+    // reads the same sortBy param through its own whitelist (tenantSortBy)
+    // and shares sortDir.
     sortBy: pickEnum(query['sortBy'], adminService.ADMIN_USER_SORT_KEYS),
+    tenantSortBy: pickEnum(query['sortBy'], adminService.ADMIN_TENANT_SORT_KEYS),
     sortDir: pickEnum(query['sortDir'], ['asc', 'desc'] as const),
     roles: typeof rawRoles === 'string'
       ? rawRoles.split(',').map((r) => r.trim()).filter((r) => /^[a-z_]{1,40}$/.test(r)).slice(0, 20)

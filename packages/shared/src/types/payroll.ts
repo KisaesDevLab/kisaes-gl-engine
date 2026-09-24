@@ -519,11 +519,16 @@ export interface ColumnMapConfig {
   defaults?: Record<string, any>;
 }
 
+export type PayrollSessionSortKey = 'payPeriod' | 'originalFilename' | 'importMode' | 'status' | 'rowCount' | 'errorCount' | 'jeCount' | 'createdAt';
+
 export interface PayrollSessionFilters {
   companyId?: string;
   status?: PayrollSessionStatus;
   startDate?: string;
   endDate?: string;
+  // Server-side column sort (the history paginates). Default: newest import first.
+  sortBy?: PayrollSessionSortKey;
+  sortDir?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
 }

@@ -8,6 +8,7 @@ import { authenticate } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../utils/errors.js';
 import * as svc from '../services/portal-question.service.js';
+import { pickEnum } from '../utils/list-query.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 10 — bookkeeper-side
 // Question CRUD endpoints. Mounted at /api/v1/practice/portal/questions.
@@ -41,6 +42,8 @@ portalQuestionsRouter.get('/', async (req, res) => {
     assignedContactId: q['contactId'],
     transactionId: q['transactionId'],
     closePeriod: q['closePeriod'],
+    sortBy: pickEnum(q['sortBy'], svc.QUESTION_SORT_KEYS),
+    sortDir: pickEnum(q['sortDir'], ['asc', 'desc'] as const),
     limit: q['limit'] ? Number(q['limit']) : undefined,
     offset: q['offset'] ? Number(q['offset']) : undefined,
   });

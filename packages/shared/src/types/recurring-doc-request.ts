@@ -166,6 +166,7 @@ export interface DocumentRequestSummary {
   reminderSendCount: number;
 }
 
+export const DOC_REQUEST_SORT_KEYS = ['contact', 'document', 'period', 'requestedAt', 'dueDate', 'status'] as const;
 export const documentRequestListFiltersSchema = z.object({
   status: z.enum(DOC_REQUEST_STATUSES).optional(),
   contactId: z.string().uuid().optional(),
@@ -174,7 +175,12 @@ export const documentRequestListFiltersSchema = z.object({
   // Submitted by the client and not yet acknowledged by staff. Implies
   // status='submitted'.
   unread: z.coerce.boolean().optional(),
+  // Server-side column sort (the grid paginates). Omitted = unread first,
+  // then most recently requested.
+  sortBy: z.enum(DOC_REQUEST_SORT_KEYS).optional(),
+  sortDir: z.enum(['asc', 'desc']).optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
   offset: z.coerce.number().int().min(0).default(0),
 });
 export type DocumentRequestListFilters = z.infer<typeof documentRequestListFiltersSchema>;
+export type DocRequestSortKey = (typeof DOC_REQUEST_SORT_KEYS)[number];

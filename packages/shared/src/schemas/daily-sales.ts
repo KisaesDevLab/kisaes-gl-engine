@@ -76,11 +76,16 @@ export const previewDailySalesEntrySchema = z.object({
 });
 export type PreviewDailySalesEntryInput = z.infer<typeof previewDailySalesEntrySchema>;
 
+export const DAILY_SALES_ENTRY_SORT_KEYS = ['businessDate', 'templateName', 'totalSales', 'totalTax', 'overShortAmount', 'status'] as const;
+
 export const dailySalesEntriesFilterSchema = z.object({
   status: z.enum(['draft', 'posted', 'void']).optional(),
   templateId: z.string().uuid().optional(),
   from: z.string().max(20).optional(),
   to: z.string().max(20).optional(),
+  // Server-side column sort (the list paginates). Default: business date desc.
+  sortBy: z.enum(DAILY_SALES_ENTRY_SORT_KEYS).optional(),
+  sortDir: z.enum(['asc', 'desc']).optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
   offset: z.coerce.number().int().min(0).optional(),
 });

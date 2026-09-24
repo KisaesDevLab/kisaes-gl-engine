@@ -762,6 +762,32 @@ export async function findDueRules(now: Date = new Date()): Promise<{ id: string
 
 // ── document_requests grid + actions ────────────────────────────
 
+// Column sort for the issued-requests grid. With no sortBy the grid keeps
+// its inbox order: unread submissions first, then newest request. Any
+// explicit sort still breaks ties on requestedAt DESC, id so pages are stable.
+function docRequestOrder(filters: DocumentRequestListFilters): SQL[] {
+  const tail = [sql`${documentRequests.requestedAt} DESC`, sql`${documentRequests.id} DESC`];
+  if (!filters.sortBy) {
+    return [
+      sql`(${documentRequests.status} = 'submitted' AND ${documentRequests.reviewedAt} IS NULL) DESC`,
+      ...tail,
+    ];
+  }
+  const dir = (filters.sortDir ?? 'asc') === 'asc' ? sql`ASC` : sql`DESC`;
+  const expr = (() => {
+    switch (filters.sortBy) {
+      case 'contact': return sql`LOWER(COALESCE(NULLIF(TRIM(CONCAT_WS(' ', ${portalContacts.firstName}, ${portalContacts.lastName})), ''), ${portalContacts.email}))`;
+      case 'document': return sql`LOWER(${documentRequests.documentType} || ' ' || ${documentRequests.description})`;
+      case 'period': return sql`LOWER(${documentRequests.periodLabel})`;
+      case 'dueDate': return sql`${documentRequests.dueDate}`;
+      case 'status': return sql`${documentRequests.status}`;
+      case 'requestedAt':
+      default: return sql`${documentRequests.requestedAt}`;
+    }
+  })();
+  return [sql`${expr} ${dir} NULLS LAST`, ...tail];
+}
+
 export async function listOpenRequests(
   tenantId: string,
   filters: DocumentRequestListFilters,
@@ -799,11 +825,9 @@ export async function listOpenRequests(
     .leftJoin(portalReceipts, eq(portalReceipts.id, documentRequests.submittedReceiptId))
     .where(where)
     // Unread submissions float to the top of whatever filter is active so
-    // a staffer opening the grid sees what the client just sent first.
-    .orderBy(
-      sql`(${documentRequests.status} = 'submitted' AND ${documentRequests.reviewedAt} IS NULL) DESC`,
-      desc(documentRequests.requestedAt),
-    )
+    // a staffer opening the grid sees what the client just sent first —
+    // unless the staffer sorted a column explicitly (docRequestOrder).
+    .orderBy(...docRequestOrder(filters))
     .limit(filters.limit)
     .offset(filters.offset);
 

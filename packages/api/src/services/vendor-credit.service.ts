@@ -81,11 +81,29 @@ export async function voidVendorCredit(tenantId: string, creditId: string, reaso
   return ledger.voidTransaction(tenantId, creditId, reason, userId);
 }
 
+export const VENDOR_CREDIT_SORT_KEYS = ['txnNumber', 'contactName', 'txnDate', 'total', 'balanceDue', 'memo'] as const;
+export type VendorCreditSortKey = (typeof VENDOR_CREDIT_SORT_KEYS)[number];
+
+function vendorCreditOrderExpr(key: VendorCreditSortKey) {
+  switch (key) {
+    case 'txnNumber': return sql`${transactions.txnNumber}`;
+    case 'contactName': return sql`LOWER(${contacts.displayName})`;
+    case 'total': return sql`CAST(${transactions.total} AS DECIMAL)`;
+    case 'balanceDue': return sql`CAST(${transactions.balanceDue} AS DECIMAL)`;
+    case 'memo': return sql`LOWER(${transactions.memo})`;
+    case 'txnDate':
+    default: return sql`${transactions.txnDate}`;
+  }
+}
+
 export async function listVendorCredits(tenantId: string, filters: {
   contactId?: string;
   startDate?: string;
   endDate?: string;
   search?: string;
+  // Server-side column sort (the list paginates). Default: date desc.
+  sortBy?: VendorCreditSortKey;
+  sortDir?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
 }, companyId?: string) {
@@ -118,7 +136,12 @@ export async function listVendorCredits(tenantId: string, filters: {
     }).from(transactions)
       .leftJoin(contacts, eq(transactions.contactId, contacts.id))
       .where(where)
-      .orderBy(sql`${transactions.txnDate} DESC`)
+      .orderBy(
+        sql`${vendorCreditOrderExpr(filters.sortBy ?? 'txnDate')} ${(filters.sortDir ?? 'desc') === 'asc' ? sql`ASC` : sql`DESC`} NULLS LAST`,
+        sql`${transactions.txnDate} DESC`,
+        sql`${transactions.createdAt} DESC`,
+        sql`${transactions.id} DESC`,
+      )
       .limit(filters.limit ?? 50)
       .offset(filters.offset ?? 0),
     db.select({ c: count() }).from(transactions)

@@ -9,6 +9,7 @@ import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as vendorCreditService from '../services/vendor-credit.service.js';
+import { pickEnum } from '../utils/list-query.js';
 
 export const vendorCreditsRouter = Router();
 vendorCreditsRouter.use(authenticate);
@@ -21,6 +22,8 @@ vendorCreditsRouter.get('/', async (req, res) => {
     startDate: req.query['startDate'] as string | undefined,
     endDate: req.query['endDate'] as string | undefined,
     search: req.query['search'] as string | undefined,
+    sortBy: pickEnum(req.query['sortBy'], vendorCreditService.VENDOR_CREDIT_SORT_KEYS),
+    sortDir: pickEnum(req.query['sortDir'], ['asc', 'desc'] as const),
     limit: req.query['limit'] ? Number(req.query['limit']) : undefined,
     offset: req.query['offset'] ? Number(req.query['offset']) : undefined,
   }, req.companyId);

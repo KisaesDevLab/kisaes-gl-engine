@@ -91,6 +91,22 @@ Use the **Show** dropdown next to the pager at the bottom of the Transactions li
 50, 100, 250, 500, or **All** (loads the entire filtered set). The choice is
 remembered per company.
 
+### "How do I sort or filter a table by column?"
+
+Click any column header to sort by it (click again to reverse). Every list —
+Transactions, Bank Feed, Contacts, Items, Chart of Accounts, Bills, Invoices,
+Vendor Credits, Print Checks, statement imports, recurring schedules, the
+receipts inbox, document requests, portal questions, the close-review manual
+queue, AJEs, daily sales, payroll history, every report table and the admin
+Tenants/Users lists — works the same way. Lists that page through the server
+sort the whole set (page 2 continues the order), not just the loaded page.
+The small ▾ beside a header opens a filter popover: Sort A–Z / Z–A, then tick
+the values to keep and Apply (Clear removes it). Where the toolbar already has
+a matching dropdown (Status, Type…), the popover and the dropdown are one
+filter: one ticked value selects it in the dropdown; several read as "All".
+The sort and filters are remembered for the browser tab, and any change
+returns to page 1.
+
 ### "How do I see more rows in other lists (bills, receipts, admin tables)?"
 Nearly every list in the app — bills, vendor credits, statement imports,
 reconciliation statements, daily sales, recurring schedules, the attachment

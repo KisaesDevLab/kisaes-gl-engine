@@ -10,6 +10,7 @@ import { validate } from '../middleware/validate.js';
 import { AppError } from '../utils/errors.js';
 import { parseLimit, parseOffset } from '../utils/pagination.js';
 import * as svc from '../services/portal-receipts.service.js';
+import { pickEnum } from '../utils/list-query.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 18 — bookkeeper-side
 // Receipts Inbox + receipt review actions.
@@ -42,6 +43,8 @@ portalReceiptsRouter.get('/', async (req, res) => {
   const { receipts, total } = await svc.listInbox(req.tenantId, {
     status: req.query['status'] as string | undefined,
     companyId: req.query['companyId'] as string | undefined,
+    sortBy: pickEnum(req.query['sortBy'], svc.RECEIPT_INBOX_SORT_KEYS),
+    sortDir: pickEnum(req.query['sortDir'], ['asc', 'desc'] as const),
     limit,
     offset,
   });

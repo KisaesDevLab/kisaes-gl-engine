@@ -136,6 +136,20 @@ export interface BookkeeperQuestion {
   messageCount: number;
 }
 
+export const QUESTION_SORT_KEYS = ['body', 'companyName', 'contactEmail', 'status', 'createdAt'] as const;
+export type QuestionSortKey = (typeof QUESTION_SORT_KEYS)[number];
+
+function questionOrderExpr(key: QuestionSortKey) {
+  switch (key) {
+    case 'body': return sql`LOWER(${portalQuestions.body})`;
+    case 'companyName': return sql`LOWER(${companies.businessName})`;
+    case 'contactEmail': return sql`LOWER(${portalContacts.email})`;
+    case 'status': return sql`${portalQuestions.status}`;
+    case 'createdAt':
+    default: return sql`${portalQuestions.createdAt}`;
+  }
+}
+
 export async function listForBookkeeper(
   tenantId: string,
   opts: {
@@ -144,6 +158,9 @@ export async function listForBookkeeper(
     assignedContactId?: string;
     transactionId?: string;
     closePeriod?: string;
+    // Server-side column sort (the inbox paginates). Default: newest first.
+    sortBy?: QuestionSortKey;
+    sortDir?: 'asc' | 'desc';
     limit?: number;
     offset?: number;
   } = {},
@@ -182,7 +199,11 @@ export async function listForBookkeeper(
     .innerJoin(companies, eq(portalQuestions.companyId, companies.id))
     .leftJoin(portalContacts, eq(portalQuestions.assignedContactId, portalContacts.id))
     .where(where)
-    .orderBy(desc(portalQuestions.createdAt))
+    .orderBy(
+      sql`${questionOrderExpr(opts.sortBy ?? 'createdAt')} ${(opts.sortDir ?? 'desc') === 'asc' ? sql`ASC` : sql`DESC`} NULLS LAST`,
+      desc(portalQuestions.createdAt),
+      desc(portalQuestions.id),
+    )
     .limit(limit).offset(offset);
 
   // Total ignores limit/offset so the UI can show "page X of Y".

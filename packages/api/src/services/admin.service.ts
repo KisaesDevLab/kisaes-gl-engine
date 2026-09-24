@@ -38,6 +38,9 @@ import { blockedLineReason, moveAllLinesBetweenAccounts } from './system-account
 export type AdminUserSortKey = 'email' | 'displayName' | 'tenant' | 'role' | 'active' | 'superAdmin' | 'lastLogin';
 export const ADMIN_USER_SORT_KEYS: readonly AdminUserSortKey[] = ['email', 'displayName', 'tenant', 'role', 'active', 'superAdmin', 'lastLogin'];
 
+export type AdminTenantSortKey = 'name' | 'slug' | 'firmName' | 'userCount' | 'companyCount' | 'transactionCount' | 'createdAt';
+export const ADMIN_TENANT_SORT_KEYS: readonly AdminTenantSortKey[] = ['name', 'slug', 'firmName', 'userCount', 'companyCount', 'transactionCount', 'createdAt'];
+
 export interface AdminListOptions {
   limit?: number | undefined;
   offset?: number | undefined;
@@ -45,6 +48,8 @@ export interface AdminListOptions {
   /** Users list only: whitelisted column sort (listTenants ignores it). */
   sortBy?: AdminUserSortKey | undefined;
   sortDir?: 'asc' | 'desc' | undefined;
+  /** Tenants list only: whitelisted column sort (listAllUsers ignores it). */
+  tenantSortBy?: AdminTenantSortKey | undefined;
   /** Users list only: keep these roles. */
   roles?: string[] | undefined;
   /** Users list only: active / inactive. */
@@ -77,6 +82,26 @@ function pageClause(options: AdminListOptions) {
     : sql`LIMIT ${options.limit} OFFSET ${options.offset ?? 0}`;
 }
 
+// Whitelisted ORDER BY for the tenants list — the keys are the SELECT's
+// aliases (count subqueries included), never raw request text. Default is
+// newest first, which the tiebreak also supplies.
+function tenantOrderBy(options: AdminListOptions): SQL {
+  const dir = (options.sortDir ?? 'desc') === 'asc' ? sql`ASC` : sql`DESC`;
+  const col = (() => {
+    switch (options.tenantSortBy) {
+      case 'name': return sql`LOWER(t.name)`;
+      case 'slug': return sql`t.slug`;
+      case 'firmName': return sql`LOWER(f.name)`;
+      case 'userCount': return sql`user_count`;
+      case 'companyCount': return sql`company_count`;
+      case 'transactionCount': return sql`transaction_count`;
+      case 'createdAt':
+      default: return sql`t.created_at`;
+    }
+  })();
+  return sql`${col} ${dir} NULLS LAST`;
+}
+
 export async function listTenants(options: AdminListOptions = {}) {
   if (options.tenantIds && options.tenantIds.length === 0) return { tenants: [], total: 0 };
   const like = likeTerm(options.search);
@@ -99,7 +124,7 @@ export async function listTenants(options: AdminListOptions = {}) {
     -- id tiebreaker keeps paging stable: bulk-created tenants can share a
     -- created_at, and an unstable sort makes rows repeat or vanish between
     -- LIMIT/OFFSET pages.
-    ORDER BY t.created_at DESC, t.id DESC
+    ORDER BY ${tenantOrderBy(options)}, t.created_at DESC, t.id DESC
     ${pageClause(options)}
   `);
   const totalRows = await db.execute<{ total: number }>(sql`

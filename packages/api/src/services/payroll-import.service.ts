@@ -357,6 +357,22 @@ export async function applyMapping(tenantId: string, sessionId: string, config: 
 
 // ── List Sessions ──
 
+// 'payPeriod' follows what the column shows: the pay period end, falling
+// back to the check date for a Mode B import without a period.
+function sessionOrderExpr(key: NonNullable<PayrollSessionFilters['sortBy']>) {
+  switch (key) {
+    case 'payPeriod': return sql`COALESCE(${payrollImportSessions.payPeriodEnd}, ${payrollImportSessions.checkDate})`;
+    case 'originalFilename': return sql`LOWER(${payrollImportSessions.originalFilename})`;
+    case 'importMode': return sql`${payrollImportSessions.importMode}`;
+    case 'status': return sql`${payrollImportSessions.status}`;
+    case 'rowCount': return sql`${payrollImportSessions.rowCount}`;
+    case 'errorCount': return sql`${payrollImportSessions.errorCount}`;
+    case 'jeCount': return sql`${payrollImportSessions.jeCount}`;
+    case 'createdAt':
+    default: return sql`${payrollImportSessions.createdAt}`;
+  }
+}
+
 export async function listSessions(tenantId: string, filters: PayrollSessionFilters) {
   const { limit = 50, offset = 0 } = filters;
   const conditions = [eq(payrollImportSessions.tenantId, tenantId)];
@@ -367,7 +383,11 @@ export async function listSessions(tenantId: string, filters: PayrollSessionFilt
   const [data, countResult] = await Promise.all([
     db.select().from(payrollImportSessions)
       .where(and(...conditions))
-      .orderBy(desc(payrollImportSessions.createdAt))
+      .orderBy(
+        sql`${sessionOrderExpr(filters.sortBy ?? 'createdAt')} ${(filters.sortDir ?? 'desc') === 'asc' ? sql`ASC` : sql`DESC`} NULLS LAST`,
+        desc(payrollImportSessions.createdAt),
+        desc(payrollImportSessions.id),
+      )
       .limit(limit)
       .offset(offset),
     db.select({ total: count() }).from(payrollImportSessions)

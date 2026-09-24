@@ -18,6 +18,7 @@ import { auditLog } from '../middleware/audit.js';
 import { requirePracticeAccess } from '../middleware/practice-access.js';
 import { AppError } from '../utils/errors.js';
 import * as classificationService from '../services/practice-classification.service.js';
+import { pickEnum } from '../utils/list-query.js';
 import * as ruleExceptionService from '../services/rule-exception.service.js';
 import * as tenantFirmAssignmentService from '../services/tenant-firm-assignment.service.js';
 import * as vendorEnrichmentService from '../services/vendor-enrichment.service.js';
@@ -241,6 +242,8 @@ practiceClassificationRouter.get('/manual-queue', async (req, res) => {
     companyId,
     periodStart,
     periodEnd,
+    sortBy: pickEnum(req.query['sortBy'], classificationService.MANUAL_QUEUE_SORT_KEYS),
+    sortDir: pickEnum(req.query['sortDir'], ['asc', 'desc'] as const),
     limit,
     offset,
   });

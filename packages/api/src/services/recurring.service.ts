@@ -67,7 +67,29 @@ export async function create(tenantId: string, templateTransactionId: string, sc
   return sched;
 }
 
-export async function list(tenantId: string, opts: { limit?: number; offset?: number } = {}) {
+export const RECURRING_SORT_KEYS = ['name', 'frequency', 'mode', 'nextOccurrence', 'lastPostedAt', 'status'] as const;
+export type RecurringSortKey = (typeof RECURRING_SORT_KEYS)[number];
+
+// Status is derived (archived_at → archived, is_active → active, else
+// paused); sort it in that display order so the header matches the badge.
+function recurringOrderExpr(key: RecurringSortKey) {
+  switch (key) {
+    case 'name': return sql`LOWER(COALESCE(${recurringSchedules.name}, ''))`;
+    case 'frequency': return sql`${recurringSchedules.frequency}`;
+    case 'mode': return sql`${recurringSchedules.mode}`;
+    case 'lastPostedAt': return sql`${recurringSchedules.lastPostedAt}`;
+    case 'status': return sql`CASE WHEN ${recurringSchedules.archivedAt} IS NOT NULL THEN 2 WHEN ${recurringSchedules.isActive} THEN 0 ELSE 1 END`;
+    case 'nextOccurrence':
+    default: return sql`${recurringSchedules.nextOccurrence}`;
+  }
+}
+
+export async function list(tenantId: string, opts: {
+  limit?: number; offset?: number;
+  // Server-side column sort — the list paginates, so the page must be cut
+  // from the sorted set. Default: next occurrence ascending (the schedule).
+  sortBy?: RecurringSortKey; sortDir?: 'asc' | 'desc';
+} = {}) {
   // Cap the result set to avoid shipping an unbounded list to the UI. 500 is
   // well past what any real bookkeeper has; the few operators who cross it
   // can paginate with `offset` or filter via scheduling-frequency.
@@ -78,8 +100,13 @@ export async function list(tenantId: string, opts: { limit?: number; offset?: nu
   const limit = Math.min(Math.max(opts.limit ?? 200, 1), 500);
   const offset = Math.max(opts.offset ?? 0, 0);
 
+  const dir = (opts.sortDir ?? 'asc') === 'asc' ? sql`ASC` : sql`DESC`;
   const data = await db.select().from(recurringSchedules).where(where)
-    .orderBy(recurringSchedules.nextOccurrence)
+    .orderBy(
+      sql`${recurringOrderExpr(opts.sortBy ?? 'nextOccurrence')} ${dir} NULLS LAST`,
+      sql`${recurringSchedules.nextOccurrence} ASC`,
+      sql`${recurringSchedules.id} ASC`,
+    )
     .limit(limit).offset(offset);
 
   const totalRows = await db.select({ total: sql<number>`COUNT(*)::int` })

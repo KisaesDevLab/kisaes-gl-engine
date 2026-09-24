@@ -70,11 +70,16 @@ export const generateJeSchema = z.object({
   accountMappings: z.record(z.string(), z.string().uuid()).optional(),
 });
 
+export const PAYROLL_SESSION_SORT_KEYS = ['payPeriod', 'originalFilename', 'importMode', 'status', 'rowCount', 'errorCount', 'jeCount', 'createdAt'] as const;
+
 export const payrollSessionFiltersSchema = z.object({
   companyId: z.string().uuid().optional(),
   status: z.enum(sessionStatuses).optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional(),
+  // Server-side column sort (the history paginates). Default: newest import first.
+  sortBy: z.enum(PAYROLL_SESSION_SORT_KEYS).optional(),
+  sortDir: z.enum(['asc', 'desc']).optional(),
   limit: z.coerce.number().int().min(1).max(500).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });

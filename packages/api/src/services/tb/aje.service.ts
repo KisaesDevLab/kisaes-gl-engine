@@ -157,11 +157,29 @@ export async function duplicateAje(tenantId: string, companyId: string, txnId: s
   }, userId);
 }
 
+export const AJE_SORT_KEYS = ['ajeNumber', 'txnDate', 'memo', 'basis', 'total', 'status'] as const;
+export type AjeSortKey = (typeof AJE_SORT_KEYS)[number];
+
 export interface AjeListFilters {
   fiscalYear?: number;
   includeVoid?: boolean;
+  // Server-side column sort (the list paginates). Default: date desc, number desc.
+  sortBy?: AjeSortKey;
+  sortDir?: 'asc' | 'desc';
   limit: number;
   offset: number;
+}
+
+function ajeOrderExpr(key: AjeSortKey) {
+  switch (key) {
+    case 'ajeNumber': return sql`${transactions.ajeNumber}`;
+    case 'memo': return sql`LOWER(${transactions.memo})`;
+    case 'basis': return sql`${transactions.basis}`;
+    case 'total': return sql`CAST(${transactions.total} AS DECIMAL)`;
+    case 'status': return sql`${transactions.status}`;
+    case 'txnDate':
+    default: return sql`${transactions.txnDate}`;
+  }
 }
 
 export async function listAjes(tenantId: string, companyId: string, f: AjeListFilters) {
@@ -185,7 +203,10 @@ export async function listAjes(tenantId: string, companyId: string, f: AjeListFi
   const where = and(...conds);
   const [rows, countRows] = await Promise.all([
     db.select().from(transactions).where(where)
-      .orderBy(desc(transactions.txnDate), desc(transactions.ajeNumber))
+      .orderBy(
+        sql`${ajeOrderExpr(f.sortBy ?? 'txnDate')} ${(f.sortDir ?? 'desc') === 'asc' ? sql`ASC` : sql`DESC`} NULLS LAST`,
+        desc(transactions.txnDate), desc(transactions.ajeNumber), desc(transactions.id),
+      )
       .limit(f.limit).offset(f.offset),
     db.select({ count: sql<number>`count(*)::int` }).from(transactions).where(where),
   ]);

@@ -7,7 +7,7 @@
 // entry (auto Cash Over/Short absorbs any residual) that the user reviews and
 // posts via ledger.postTransaction. See Build Plans/DAILY_SALES_POS_PLAN.md.
 
-import { eq, and, desc, count } from 'drizzle-orm';
+import { eq, and, desc, count, sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import {
@@ -232,9 +232,27 @@ export async function getEntry(tenantId: string, id: string) {
   return { ...entry, values, template };
 }
 
+export type DailySalesEntrySortKey = 'businessDate' | 'templateName' | 'totalSales' | 'totalTax' | 'overShortAmount' | 'status';
+
+function entryOrderExpr(key: DailySalesEntrySortKey) {
+  switch (key) {
+    case 'templateName': return sql`LOWER(${dailySalesTemplates.name})`;
+    case 'totalSales': return sql`CAST(${dailySalesEntries.totalSales} AS DECIMAL)`;
+    case 'totalTax': return sql`CAST(${dailySalesEntries.totalTax} AS DECIMAL)`;
+    case 'overShortAmount': return sql`CAST(${dailySalesEntries.overShortAmount} AS DECIMAL)`;
+    case 'status': return sql`${dailySalesEntries.status}`;
+    case 'businessDate':
+    default: return sql`${dailySalesEntries.businessDate}`;
+  }
+}
+
 export async function listEntries(
   tenantId: string,
-  filters: { status?: string; templateId?: string; from?: string; to?: string; limit?: number; offset?: number } = {},
+  filters: {
+    status?: string; templateId?: string; from?: string; to?: string; limit?: number; offset?: number;
+    // Server-side column sort (the list paginates). Default: business date desc.
+    sortBy?: DailySalesEntrySortKey; sortDir?: 'asc' | 'desc';
+  } = {},
 ) {
   const conds = [eq(dailySalesEntries.tenantId, tenantId)];
   if (filters.status) conds.push(eq(dailySalesEntries.status, filters.status));
@@ -256,7 +274,12 @@ export async function listEntries(
     .from(dailySalesEntries)
     .leftJoin(dailySalesTemplates, eq(dailySalesTemplates.id, dailySalesEntries.templateId))
     .where(and(...conds))
-    .orderBy(desc(dailySalesEntries.businessDate))
+    .orderBy(
+      sql`${entryOrderExpr(filters.sortBy ?? 'businessDate')} ${(filters.sortDir ?? 'desc') === 'asc' ? sql`ASC` : sql`DESC`} NULLS LAST`,
+      desc(dailySalesEntries.businessDate),
+      desc(dailySalesEntries.createdAt),
+      desc(dailySalesEntries.id),
+    )
     .limit(Math.min(Math.max(filters.limit ?? 100, 1), 500))
     .offset(Math.max(filters.offset ?? 0, 0));
   const [countRow] = await db.select({ total: count() })

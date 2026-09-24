@@ -486,9 +486,29 @@ export interface InboxRow {
   companyName: string;
 }
 
+export const RECEIPT_INBOX_SORT_KEYS = ['filename', 'companyName', 'extractedVendor', 'extractedTotal', 'status', 'captureSource', 'capturedAt'] as const;
+export type ReceiptInboxSortKey = (typeof RECEIPT_INBOX_SORT_KEYS)[number];
+
+function inboxOrderExpr(key: ReceiptInboxSortKey) {
+  switch (key) {
+    case 'filename': return sql`LOWER(${portalReceipts.filename})`;
+    case 'companyName': return sql`LOWER(${companies.businessName})`;
+    case 'extractedVendor': return sql`LOWER(${portalReceipts.extractedVendor})`;
+    case 'extractedTotal': return sql`CAST(${portalReceipts.extractedTotal} AS DECIMAL)`;
+    case 'status': return sql`${portalReceipts.status}`;
+    case 'captureSource': return sql`${portalReceipts.captureSource}`;
+    case 'capturedAt':
+    default: return sql`${portalReceipts.capturedAt}`;
+  }
+}
+
 export async function listInbox(
   tenantId: string,
-  opts: { status?: string; companyId?: string; uploadedBy?: string; limit?: number; offset?: number } = {},
+  opts: {
+    status?: string; companyId?: string; uploadedBy?: string; limit?: number; offset?: number;
+    // Server-side column sort (the inbox paginates). Default: newest first.
+    sortBy?: ReceiptInboxSortKey; sortDir?: 'asc' | 'desc';
+  } = {},
 ): Promise<{ receipts: InboxRow[]; total: number }> {
   const filters: ReturnType<typeof eq>[] = [eq(portalReceipts.tenantId, tenantId)];
   if (opts.status && opts.status !== 'all') {
@@ -519,7 +539,11 @@ export async function listInbox(
     .from(portalReceipts)
     .innerJoin(companies, eq(portalReceipts.companyId, companies.id))
     .where(and(...filters))
-    .orderBy(desc(portalReceipts.capturedAt))
+    .orderBy(
+      sql`${inboxOrderExpr(opts.sortBy ?? 'capturedAt')} ${(opts.sortDir ?? 'desc') === 'asc' ? sql`ASC` : sql`DESC`} NULLS LAST`,
+      desc(portalReceipts.capturedAt),
+      desc(portalReceipts.id),
+    )
     .limit(limit)
     .offset(offset);
 

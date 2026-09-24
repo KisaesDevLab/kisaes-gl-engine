@@ -783,12 +783,19 @@ export interface ManualQueueRow {
   reason: 'orphan' | 'no_suggestion';
 }
 
+export const MANUAL_QUEUE_SORT_KEYS = ['feedDate', 'description', 'amount', 'reason'] as const;
+export type ManualQueueSortKey = (typeof MANUAL_QUEUE_SORT_KEYS)[number];
+
 export async function listManualQueue(
   tenantId: string,
   opts: {
     companyId?: string | null;
     periodStart?: string;
     periodEnd?: string;
+    // Server-side column sort (the queue paginates). Default: newest first.
+    // 'reason' orders orphans (no state row) before AI no-suggestion rows.
+    sortBy?: ManualQueueSortKey;
+    sortDir?: 'asc' | 'desc';
     limit?: number;
     offset?: number;
   },
@@ -839,8 +846,20 @@ export async function listManualQueue(
     )
     .where(and(...conditions));
 
+  const orderExpr = (() => {
+    switch (opts.sortBy) {
+      case 'description': return sql`LOWER(${bankFeedItems.description})`;
+      case 'amount': return sql`CAST(${bankFeedItems.amount} AS DECIMAL)`;
+      case 'reason': return sql`CASE WHEN ${transactionClassificationState.id} IS NULL THEN 0 ELSE 1 END`;
+      case 'feedDate':
+      default: return sql`${bankFeedItems.feedDate}`;
+    }
+  })();
+  const dir = (opts.sortDir ?? 'desc') === 'asc' ? sql`ASC` : sql`DESC`;
   const [rows, [countRow]] = await Promise.all([
-    queueQuery.orderBy(desc(bankFeedItems.feedDate)).limit(limit).offset(offset),
+    queueQuery
+      .orderBy(sql`${orderExpr} ${dir} NULLS LAST`, desc(bankFeedItems.feedDate), desc(bankFeedItems.id))
+      .limit(limit).offset(offset),
     db
       .select({ total: count() })
       .from(bankFeedItems)

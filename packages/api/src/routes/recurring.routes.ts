@@ -8,6 +8,7 @@ import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
 import * as recurringService from '../services/recurring.service.js';
+import { pickEnum } from '../utils/list-query.js';
 
 // Explicit field allowlists — the previous `{...req.body}` spread into
 // .set() let a caller write tenantId/companyId/nextOccurrence/lastPostedAt/
@@ -41,7 +42,11 @@ recurringRouter.use(requireResource('recurring'));
 recurringRouter.get('/', async (req, res) => {
   const limit = req.query['limit'] ? Number(req.query['limit']) : undefined;
   const offset = req.query['offset'] ? Number(req.query['offset']) : undefined;
-  const result = await recurringService.list(req.tenantId, { limit, offset });
+  const result = await recurringService.list(req.tenantId, {
+    limit, offset,
+    sortBy: pickEnum(req.query['sortBy'], recurringService.RECURRING_SORT_KEYS),
+    sortDir: pickEnum(req.query['sortDir'], ['asc', 'desc'] as const),
+  });
   res.json({ schedules: result.data, total: result.total, limit: result.limit, offset: result.offset });
 });
 
