@@ -39,6 +39,7 @@ import * as categorization from '../services/portal-categorization.service.js';
 import { resolveReviewMode } from '../services/suggestion-review-mode.service.js';
 import { db } from '../db/index.js';
 import { sql } from 'drizzle-orm';
+import { pickEnum } from '../utils/list-query.js';
 
 export const uncategorizedRouter = Router();
 uncategorizedRouter.use(authenticate);
@@ -78,9 +79,6 @@ async function attachmentCountsFor(
 const SORT_DIRS = ['asc', 'desc'] as const;
 const UNPOSTED_SORT_KEYS = ['feedDate', 'checkNumber', 'payee', 'description', 'amount'] as const;
 const SUSPENSE_SORT_KEYS = ['txnDate', 'checkNumber', 'payee', 'memo', 'amount'] as const;
-function pickEnum<T extends string>(v: unknown, allowed: readonly T[]): T | undefined {
-  return typeof v === 'string' && (allowed as readonly string[]).includes(v) ? (v as T) : undefined;
-}
 
 function optionalString(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
