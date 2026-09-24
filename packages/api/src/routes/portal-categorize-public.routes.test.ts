@@ -317,15 +317,21 @@ describe('portal categorize — the queue payload', () => {
     expect(targetIds).not.toContain(ids['a2FeedItem']);
   });
 
-  it('never leaks the raw bank descriptor, the AI guess, or its reasoning', async () => {
+  it('shows the raw bank descriptor beside the cleaned name, but never the AI guess or its reasoning', async () => {
     const res = await request('GET', `/api/portal/categorize/queue?companyId=${ids['a1']}`, undefined, cookies['cGranted']);
     const blob = JSON.stringify(res.json);
-    expect(blob).not.toContain('POS DEBIT');       // original_description
+    // The bank's own wording IS shown (user decision, 2026-09-24): it is what
+    // the client sees on their statement, so it is how they recognise a row.
+    const feed = res.json.items.find((i: any) => i.targetKind === 'bank_feed_item');
+    expect(feed.description).toBe('MYSTERY VENDOR');
+    expect(feed.bankDescription).toBe('POS DEBIT 1234 MYSTERY VENDOR CARD 9876');
+    // A suspense transaction that never came from a feed line has none.
+    const txn = res.json.items.find((i: any) => i.targetKind === 'transaction');
+    expect(txn.bankDescription).toBeNull();
+    // The firm's classification internals stay firm-only.
     expect(blob).not.toContain('firm-only reasoning'); // reasoning_blob
     expect(blob).not.toContain('confidence');
     expect(blob).not.toContain('suggestedAccountId');
-    // The cleansed description IS shown — that is what the client recognises.
-    expect(blob).toContain('MYSTERY VENDOR');
   });
 
   it('signs the amount so the client sees money out vs money in', async () => {

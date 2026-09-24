@@ -145,8 +145,11 @@ to false if a contact's company assignments are re-saved without it.
 
 What the client sees: a **What was this?** page listing only activity nobody could
 classify — bank lines the categorizer could not place, and amounts already posted to
-suspense. Rows the software categorized confidently are deliberately excluded. The
-picker offers income and expense accounts by name only: no balances, no account
+suspense. Rows the software categorized confidently are deliberately excluded. Each row
+shows the cleaned name and, under it, **On your statement:** the bank's own wording
+(`bank_feed_items.original_description`, also for a suspense amount that posted from a
+feed line) — a deliberate policy change on 2026-09-24; the AI guess, confidence and
+reasoning remain firm-only. The picker offers income and expense accounts by name only: no balances, no account
 numbers, no balance-sheet accounts. Two extra answers exist, **Personal, not business**
 and **I am not sure** (which asks for a note).
 

@@ -109,6 +109,13 @@ export interface PortalQueueItem {
   targetId: string;
   date: string;
   description: string;
+  /**
+   * What the bank actually printed (bank_feed_items.original_description),
+   * for the line itself or for the feed line a suspense transaction posted
+   * from. Shown under the cleaned name so the client can match the row to
+   * their own statement. Null for a transaction that never came from a feed.
+   */
+  bankDescription: string | null;
   /** Signed, 2dp. Positive means money left the account. */
   amount: string;
   direction: 'money_out' | 'money_in';
@@ -136,7 +143,9 @@ export interface PortalQueueItem {
  * A copy would drift, and the two places it matters are both authorization
  * checks: submitting an answer, and attaching a file.
  *
- * Columns: target_kind, target_id, the_date, description, amount.
+ * Columns: target_kind, target_id, the_date, description, bank_description,
+ * amount — identical in both branches; the fragment is also the auth
+ * predicate, so the two SELECT lists must stay parallel.
  */
 async function queueSource(tenantId: string, companyId: string) {
   const singleCompany = await tenantHasSingleCompany(tenantId);
@@ -148,6 +157,7 @@ async function queueSource(tenantId: string, companyId: string) {
         b.id                   AS target_id,
         b.feed_date            AS the_date,
         COALESCE(b.description, '(no description)') AS description,
+        b.original_description AS bank_description,
         b.amount               AS amount
       FROM bank_feed_items b
       JOIN transaction_classification_state tcs
@@ -166,6 +176,10 @@ async function queueSource(tenantId: string, companyId: string) {
         t.id                AS target_id,
         t.txn_date          AS the_date,
         COALESCE(t.memo, '(no description)') AS description,
+        -- The raw bank text of the feed line this posted from, if any.
+        (SELECT b2.original_description FROM bank_feed_items b2
+          WHERE b2.tenant_id = t.tenant_id AND b2.matched_transaction_id = t.id
+          LIMIT 1) AS bank_description,
         (SELECT COALESCE(SUM(jl.debit), 0) - COALESCE(SUM(jl.credit), 0)
            FROM journal_lines jl
           WHERE jl.transaction_id = t.id AND jl.tenant_id = t.tenant_id
@@ -235,6 +249,7 @@ export async function listPortalQueue(
         targetId,
         date: String(r['the_date']),
         description: String(r['description']),
+        bankDescription: (r['bank_description'] as string | null) ?? null,
         amount: amountNum.toFixed(2),
         direction: amountNum >= 0 ? 'money_out' : 'money_in',
         existingSuggestion: s,
