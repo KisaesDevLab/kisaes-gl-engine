@@ -112,6 +112,7 @@ export * from './reports/letter-variables.js';
 export * from './utils/money.js';
 export * from './utils/dates.js';
 export * from './utils/number-to-words.js';
+export * from './utils/accrual-schedule.js';
 export * from './utils/account-types.js';
 export * from './utils/permissions.js';
 export * from './utils/firm-capabilities.js';

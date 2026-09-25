@@ -152,6 +152,30 @@ export async function getCloseChecklist(
         : `${openCount} finding${openCount === 1 ? '' : 's'} still open for this period`,
   }));
 
+  // ── 3b. Accruals: this month's scheduled entries posted. Only shown once
+  //        the client has an accrual schedule.
+  const acc = await db.execute<{ drafts: string; schedules: string }>(sql`
+    SELECT
+      (SELECT COUNT(*) FROM accrual_entries e JOIN accrual_schedules s ON s.id = e.schedule_id
+        WHERE e.tenant_id = ${tenantId} ${companyId ? sql`AND (s.company_id = ${companyId} OR s.company_id IS NULL)` : sql``}
+          AND e.status = 'draft' AND e.post_period = ${pStart}::date) AS drafts,
+      (SELECT COUNT(*) FROM accrual_schedules s
+        WHERE s.tenant_id = ${tenantId} ${companyId ? sql`AND (s.company_id = ${companyId} OR s.company_id IS NULL)` : sql``}
+          AND s.status <> 'cancelled') AS schedules
+  `);
+  const accRow = acc.rows[0] as { drafts: string; schedules: string } | undefined;
+  if (Number(accRow?.schedules ?? 0) > 0) {
+    const drafts = Number(accRow?.drafts ?? 0);
+    tasks.push(withSignoff({
+      key: 'accruals',
+      section: 'final',
+      label: 'Post this month\'s accrual entries',
+      auto: true,
+      done: drafts === 0,
+      detail: drafts === 0 ? 'Nothing left to post for this month' : `${drafts} accrual entr${drafts === 1 ? 'y' : 'ies'} waiting to post`,
+    }));
+  }
+
   // ── 4. Final review: statements read by a human. Manual by nature.
   tasks.push(withSignoff({
     key: 'final_review',

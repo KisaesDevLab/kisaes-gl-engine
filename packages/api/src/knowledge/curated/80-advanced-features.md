@@ -81,6 +81,25 @@ and bill captures onto the kept contact, then deactivates the other). Defaults:
 large transactions $1,000; 1099 report excludes card-paid spend; flux flags
 >20% AND ≥$100 vs trailing average (combine=or available as an override).
 
+### Accruals (Close Review)
+Flag ACCRUALS_V1 (default off) adds an **Accruals** tab to Practice → Close
+Review. Schedule types: prepaid (Dr expense / Cr prepaid), deferred revenue
+(Dr deferred revenue / Cr revenue), accrued expense (Dr expense / Cr accrued
+liability), depreciation (Dr depreciation expense / Cr accumulated
+depreciation). Split methods: equal months, half month at each end, by days of
+service; each month rounds down to the cent and the last month takes the
+remainder. "Catch up from" posts earlier months in a later month (catch-up
+entries). Entries post ONLY on Post / Post all, as journal entries dated the
+month's last day (lock date applies); Unpost voids the entry's JE. Terms are
+locked once any entry posted (stop the schedule instead). Candidates: unscheduled
+debits to prepaid/fixed-asset accounts and credits to deferred/unearned accounts,
+large expenses whose memo/payee suggests a term, and vendors billed in 3 of the
+last 4 months with nothing this month. Tie-out compares each schedule account's
+ledger balance at month end with the schedules. CSV import columns: kind,
+description, balance account number, recognition account number, start month,
+remaining amount, remaining months, method. The Overview checklist adds "Post
+this month's accrual entries" once a client has a schedule.
+
 ### Account Register
 The register view is an inline ledger for any account. Go to **Chart of Accounts →**,
 then click the register icon next to an account (or click the account name). It shows

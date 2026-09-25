@@ -98,6 +98,10 @@ export const PRACTICE_FEATURE_FLAGS = [
   // Migration 0175 — Payables > Bill Capture (multi-upload + AI extraction
   // + review-to-Bill) and the portal "Send us bills" tile.
   'AP_BILL_CAPTURE_V1',
+  // Migration 0187 — Close Review -> Accruals: prepaid / deferred revenue /
+  // accrued expense / fixed-asset schedules that post monthly journal
+  // entries on the reviewer's click. Default OFF.
+  'ACCRUALS_V1',
 ] as const;
 
 export type PracticeFeatureFlagKey = typeof PRACTICE_FEATURE_FLAGS[number];
