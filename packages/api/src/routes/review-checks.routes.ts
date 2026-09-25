@@ -27,6 +27,7 @@ import * as registry from '../services/review-checks/registry.service.js';
 import * as findingsService from '../services/review-checks/findings.service.js';
 import * as suppressions from '../services/review-checks/suppressions.service.js';
 import * as closeChecklist from '../services/review-checks/close-checklist.service.js';
+import * as closeService from '../services/review-checks/close.service.js';
 
 export const reviewChecksRouter = Router();
 
@@ -180,6 +181,50 @@ reviewChecksRouter.get('/findings/:id', async (req, res) => {
   const finding = await findingsService.getById(req.tenantId, req.params['id']!);
   if (!finding) throw AppError.notFound('Finding not found');
   res.json(finding);
+});
+
+// GET /findings/:id/payee-history — how this finding's payee was coded
+// over the 12 months before its period.
+reviewChecksRouter.get('/findings/:id/payee-history', async (req, res) => {
+  res.json(await findingsService.payeeCodingHistory(req.tenantId, req.params['id']!));
+});
+
+// ── Close workspace ───────────────────────────────────────────────
+const closeQuerySchema = z.object({
+  companyId: z.string().uuid().optional(),
+  periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}/),
+  periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}/),
+});
+
+// GET /reports — per-check open / accepted / excluded counts for the month.
+reviewChecksRouter.get('/reports', async (req, res) => {
+  const q = closeQuerySchema.parse(req.query);
+  await assertCompanyInTenant(req.tenantId, q.companyId ?? null);
+  const counts = await findingsService.countsByCheck(req.tenantId, q.companyId ?? null, q);
+  res.json({ counts });
+});
+
+// GET /close — the month's close record and sign-off chain.
+reviewChecksRouter.get('/close', async (req, res) => {
+  const q = closeQuerySchema.parse(req.query);
+  await assertCompanyInTenant(req.tenantId, q.companyId ?? null);
+  res.json({ close: await closeService.getClose(req.tenantId, q.companyId ?? null, q.periodStart, q.periodEnd) });
+});
+
+const signSchema = closeQuerySchema.extend({
+  role: z.enum(['preparer', 'reviewer']),
+  note: z.string().trim().max(1000).optional(),
+});
+reviewChecksRouter.post('/close/sign', validate(signSchema), async (req, res) => {
+  const b = req.body as z.infer<typeof signSchema>;
+  await assertCompanyInTenant(req.tenantId, b.companyId ?? null);
+  res.json({ close: await closeService.sign(req.tenantId, b.companyId ?? null, b.periodStart, b.periodEnd, b.role, req.userId, b.note || null) });
+});
+
+reviewChecksRouter.post('/close/undo', validate(closeQuerySchema), async (req, res) => {
+  const b = req.body as z.infer<typeof closeQuerySchema>;
+  await assertCompanyInTenant(req.tenantId, b.companyId ?? null);
+  res.json({ close: await closeService.unsign(req.tenantId, b.companyId ?? null, b.periodStart, b.periodEnd, req.userId) });
 });
 
 // GET /findings/:id/events — state-transition history for the

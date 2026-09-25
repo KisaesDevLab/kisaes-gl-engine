@@ -371,6 +371,26 @@ describe('vendor_1099_threshold_no_w9', () => {
     const drafts = await HANDLERS['vendor_1099_threshold_no_w9']!(tenantId, companyId, { thresholdAmount: 600 });
     expect(drafts).toEqual([]);
   });
+
+  it('leaves out card payments by default (1099-K), counts them when asked', async () => {
+    const [vend] = await db.insert(contacts).values({
+      tenantId, displayName: 'Card Paid LLC', contactType: 'vendor', taxId: null,
+    }).returning();
+    const [card] = await db.insert(accounts).values({
+      tenantId, companyId, name: 'Amex', accountType: 'liability', detailType: 'credit_card', accountNumber: '2100', balance: '0',
+    }).returning();
+    const [t] = await db.insert(transactions).values({
+      tenantId, companyId, txnType: 'expense', txnDate: new Date().toISOString().slice(0, 10),
+      total: '900.0000', contactId: vend!.id, status: 'posted',
+    }).returning();
+    await db.insert(journalLines).values([
+      { tenantId, companyId, transactionId: t!.id, accountId: expenseAccountId, debit: '900.0000', credit: '0' },
+      { tenantId, companyId, transactionId: t!.id, accountId: card!.id, debit: '0', credit: '900.0000' },
+    ]);
+    expect(await HANDLERS['vendor_1099_threshold_no_w9']!(tenantId, companyId, { thresholdAmount: 600 })).toEqual([]);
+    const counted = await HANDLERS['vendor_1099_threshold_no_w9']!(tenantId, companyId, { thresholdAmount: 600, excludeCardSpend: false });
+    expect(counted).toHaveLength(1);
+  });
 });
 
 // ─── missing_required_customer ───────────────────────────────
@@ -645,6 +665,16 @@ describe('flux_variance', () => {
       periodStart: '2026-06-01', periodEnd: '2026-07-01',
     });
     expect(drafts).toEqual([]);
+  });
+
+  it('combine=or flags a big percent swing on a small account that AND would skip', async () => {
+    await seedMonthlyExpense('2026-03', '20.0000');
+    await seedMonthlyExpense('2026-04', '20.0000');
+    await seedMonthlyExpense('2026-05', '20.0000');
+    await seedMonthlyExpense('2026-06', '60.0000'); // +200%, but only $40
+    const period = { periodStart: '2026-06-01', periodEnd: '2026-07-01' };
+    expect(await HANDLERS['flux_variance']!(tenantId, companyId, period)).toEqual([]);
+    expect(await HANDLERS['flux_variance']!(tenantId, companyId, { ...period, combine: 'or' })).toHaveLength(1);
   });
 
   it('returns nothing without a close period', async () => {

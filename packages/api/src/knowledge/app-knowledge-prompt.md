@@ -1057,16 +1057,24 @@ Vibe MyBooks automatically flags potentially duplicate transactions. Review them
 - **Merge** — combine into one transaction
 
 ### Month-End Close Review
-Practice → Close Review reviews one client (company) for one month. The Period
-picker reaches any month and year and defaults to the month that just ended.
-Review checks NEVER run automatically — the reviewer clicks **Run checks now**
-(Findings tab) for the selected month; "Run AI judgment" runs only the AI checks
-for that month. Findings are stored per month; re-running a month is
-idempotent, and summary cards match the list. Buckets group that month's
-bank-feed items (by transaction date) into potential matches, rules, auto
-classifications, and needs review; an item leaves its bucket once it is
-categorized, matched, or excluded anywhere. The Checklist's findings task is
-done only after a run for that month with nothing left open.
+Practice → Close Review closes one client (company) for one month. Tabs:
+**Overview** (preparer → reviewer sign-off plus the close checklist; the
+preparer can only sign once checks were run for the month; either sign-off can
+be undone newest first; Practice → Clients shows last month's close status),
+**Bank feed** (that month's feed items by transaction date in buckets: potential
+matches, rules, auto classifications, needs review), **Review** (exception
+reports grouped as Transaction review / Payee review / Final review with open
+counts; views To review / Accepted / Dismissed; row actions Accept, Dismiss,
+Exclude payee — a per-client suppression for that report — and Ask the client,
+which creates portal questions delivered in the client's next reminder), and
+**Manual queue**. Checks NEVER run automatically — the reviewer clicks **Run
+checks now** for the selected month; "Run AI judgment" runs only the AI checks
+for that month. Findings are stored per month. The row drawer shows the payee's
+12-month coding history, and duplicate-name rows can be merged in place
+(merging moves transactions, journal lines, feed suggestions, history, rules
+and bill captures onto the kept contact, then deactivates the other). Defaults:
+large transactions $1,000; 1099 report excludes card-paid spend; flux flags
+>20% AND ≥$100 vs trailing average (combine=or available as an override).
 
 ### Account Register
 The register view is an inline ledger for any account. Go to **Chart of Accounts →**,

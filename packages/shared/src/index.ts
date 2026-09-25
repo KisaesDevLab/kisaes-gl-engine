@@ -98,6 +98,7 @@ export * from './constants/match-scoring.js';
 export * from './constants/password-policy.js';
 export * from './constants/conditional-rules.js';
 export * from './constants/review-checks.js';
+export * from './constants/close-reports.js';
 export * from './constants/imports.js';
 export * from './constants/permissions.js';
 export * from './constants/firm-capabilities.js';

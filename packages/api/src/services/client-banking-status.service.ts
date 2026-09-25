@@ -68,8 +68,22 @@ export async function getForUser(userId: string): Promise<ClientBankingStatus[]>
         AND pam.is_sync_enabled = true
         AND pi.removed_at IS NULL
       GROUP BY pam.tenant_id
+    ),
+    close_last AS (
+      -- Last calendar month's close. A client with several companies shows
+      -- its least-advanced one, so "closed" means every company is closed.
+      SELECT c.tenant_id,
+             (ARRAY['not_started','in_progress','prepared','closed'])[
+               MIN(CASE c.status WHEN 'not_started' THEN 1 WHEN 'in_progress' THEN 2
+                                 WHEN 'prepared' THEN 3 ELSE 4 END)
+             ] AS status
+      FROM closes c
+      WHERE c.tenant_id IN (SELECT tenant_id FROM my_tenants)
+        AND c.period_start = date_trunc('month', now() - INTERVAL '1 month')::date
+      GROUP BY c.tenant_id
     )
     SELECT mt.tenant_id,
+           cl.status AS close_status,
            COALESCE(f.unprocessed, 0)::int AS unprocessed,
            p.last_sync_at,
            COALESCE(p.item_count, 0)::int AS item_count,
@@ -77,6 +91,7 @@ export async function getForUser(userId: string): Promise<ClientBankingStatus[]>
     FROM my_tenants mt
     LEFT JOIN feed f ON f.tenant_id = mt.tenant_id
     LEFT JOIN plaid p ON p.tenant_id = mt.tenant_id
+    LEFT JOIN close_last cl ON cl.tenant_id = mt.tenant_id
   `);
 
   return (rows.rows as Array<{
@@ -85,11 +100,13 @@ export async function getForUser(userId: string): Promise<ClientBankingStatus[]>
     last_sync_at: string | Date | null;
     item_count: number;
     needs_attention: boolean;
+    close_status: string | null;
   }>).map((r) => ({
     tenantId: r.tenant_id,
     unprocessedBankTxns: Number(r.unprocessed),
     lastPlaidSyncAt: r.last_sync_at ? new Date(r.last_sync_at).toISOString() : null,
     plaidConnectionCount: Number(r.item_count),
     plaidNeedsAttention: !!r.needs_attention,
+    lastMonthCloseStatus: (r.close_status ?? 'not_started') as ClientBankingStatus['lastMonthCloseStatus'],
   }));
 }

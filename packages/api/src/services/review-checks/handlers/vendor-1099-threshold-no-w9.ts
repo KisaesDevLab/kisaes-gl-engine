@@ -15,6 +15,7 @@ import { hasPeriod } from './period.js';
 // Default threshold $600 (the IRS 1099-NEC reporting floor).
 export const handler: CheckHandler = async (tenantId, companyId, params): Promise<FindingDraft[]> => {
   const threshold = Number(params['thresholdAmount'] ?? 600);
+  const excludeCard = params['excludeCardSpend'] !== false;
   const companyClause = companyId
     ? sql`AND t.company_id = ${companyId}`
     : sql``;
@@ -39,6 +40,16 @@ export const handler: CheckHandler = async (tenantId, companyId, params): Promis
         // Calendar year of the close period, through the period end.
         ? sql`AND t.txn_date >= date_trunc('year', ${params.periodStart as string}::date) AND t.txn_date < ${params.periodEnd as string}::date`
         : sql`AND EXTRACT(YEAR FROM t.txn_date) = EXTRACT(YEAR FROM now())`}
+      -- Card payments are reported on the processor's 1099-K, not by the
+      -- payer, so by default they don't count toward the $600 (Double's
+      -- "Exclude CC spend"). Set excludeCardSpend=false to count them.
+      ${excludeCard ? sql`AND NOT EXISTS (
+        SELECT 1 FROM journal_lines cl
+        JOIN accounts ca ON ca.id = cl.account_id
+        WHERE cl.transaction_id = t.id
+          AND COALESCE(cl.credit, 0) > 0
+          AND ca.detail_type = 'credit_card'
+      )` : sql``}
       AND c.contact_type = 'vendor'
       AND (c.tax_id IS NULL OR c.tax_id = '')
       AND vp.exclusion_reason IS NULL

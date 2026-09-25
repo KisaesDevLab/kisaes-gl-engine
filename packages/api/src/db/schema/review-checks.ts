@@ -136,3 +136,28 @@ export const checkParamsOverrides = pgTable('check_params_overrides', {
   // one row per company.
   uniqIdx: uniqueIndex('uniq_check_params_overrides').on(table.tenantId, table.companyId, table.checkKey),
 }));
+
+// One month-end close per (tenant, company, month) — migration 0184. Holds
+// the sign-off chain (preparer, then reviewer). Status is stored so list
+// views (Practice → Clients) can show it without recomputing:
+// not_started → in_progress (first check run) → prepared → closed.
+// Unique on (tenant, COALESCE(company, zero uuid), period_start) — an
+// expression index created in SQL, so upserts go through raw SQL.
+export const closes = pgTable('closes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
+  companyId: uuid('company_id'),
+  periodStart: date('period_start').notNull(),
+  periodEnd: date('period_end').notNull(),
+  status: varchar('status', { length: 20 }).notNull().default('not_started'),
+  preparedBy: uuid('prepared_by'),
+  preparedAt: timestamp('prepared_at', { withTimezone: true }),
+  preparedNote: text('prepared_note'),
+  reviewedBy: uuid('reviewed_by'),
+  reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
+  reviewedNote: text('reviewed_note'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  tenantPeriodIdx: index('idx_closes_tenant_period').on(table.tenantId, table.periodStart),
+}));

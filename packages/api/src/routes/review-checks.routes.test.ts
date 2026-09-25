@@ -478,6 +478,68 @@ describe('period scoping (manual, per-period review)', () => {
   });
 });
 
+describe('close workspace — reports + sign-off', () => {
+  it('counts per report for the month, and payee history is empty without a payee', async () => {
+    const [c] = await db.insert(companies).values({ tenantId, businessName: 'Co1' }).returning();
+    await db.insert(transactions).values({
+      tenantId, companyId: c!.id, txnType: 'expense', txnDate: '2026-04-15', total: '20000.0000', status: 'posted',
+    });
+    await request('POST', '/api/v1/practice/checks/run', { companyId: c!.id, ...PERIOD }, bookkeeperToken);
+    const qs = `companyId=${c!.id}&periodStart=${PERIOD.periodStart}&periodEnd=${PERIOD.periodEnd}`;
+    const r = await request('GET', `/api/v1/practice/checks/reports?${qs}`, undefined, bookkeeperToken);
+    expect(r.status).toBe(200);
+    const big = r.json.counts.find((x: { checkKey: string }) => x.checkKey === 'transaction_above_materiality');
+    expect(big.open).toBeGreaterThanOrEqual(1);
+    const list = await request('GET', `/api/v1/practice/checks/findings?${qs}&checkKey=transaction_above_materiality`, undefined, bookkeeperToken);
+    const h = await request('GET', `/api/v1/practice/checks/findings/${list.json.rows[0].id}/payee-history`, undefined, bookkeeperToken);
+    expect(h.status).toBe(200);
+    expect(h.json.rows).toEqual([]);
+  });
+
+  it('walks not started → in progress → prepared → closed, and undoes newest first', async () => {
+    const [c] = await db.insert(companies).values({ tenantId, businessName: 'Co1' }).returning();
+    const body = { companyId: c!.id, ...PERIOD };
+    const qs = `companyId=${c!.id}&periodStart=${PERIOD.periodStart}&periodEnd=${PERIOD.periodEnd}`;
+    const get = async () => (await request('GET', `/api/v1/practice/checks/close?${qs}`, undefined, bookkeeperToken)).json.close;
+
+    expect((await get()).status).toBe('not_started');
+    // Can't sign a month nobody reviewed.
+    const early = await request('POST', '/api/v1/practice/checks/close/sign', { ...body, role: 'preparer' }, bookkeeperToken);
+    expect(early.status).toBe(400);
+    // Reviewer can't go first.
+    const rev = await request('POST', '/api/v1/practice/checks/close/sign', { ...body, role: 'reviewer' }, bookkeeperToken);
+    expect(rev.status).toBe(400);
+
+    await request('POST', '/api/v1/practice/checks/run', body, bookkeeperToken);
+    expect((await get()).status).toBe('in_progress');
+
+    const p = await request('POST', '/api/v1/practice/checks/close/sign', { ...body, role: 'preparer', note: 'All reconciled' }, bookkeeperToken);
+    expect(p.status).toBe(200);
+    expect(p.json.close.status).toBe('prepared');
+    expect(p.json.close.preparedNote).toBe('All reconciled');
+    expect(p.json.close.preparedByName).toBeTruthy();
+
+    const cl = await request('POST', '/api/v1/practice/checks/close/sign', { ...body, role: 'reviewer' }, ownerToken);
+    expect(cl.json.close.status).toBe('closed');
+
+    const u1 = await request('POST', '/api/v1/practice/checks/close/undo', body, ownerToken);
+    expect(u1.json.close.status).toBe('prepared');
+    expect(u1.json.close.reviewedAt).toBeNull();
+    const u2 = await request('POST', '/api/v1/practice/checks/close/undo', body, ownerToken);
+    expect(u2.json.close.status).toBe('in_progress');
+    const u3 = await request('POST', '/api/v1/practice/checks/close/undo', body, ownerToken);
+    expect(u3.status).toBe(400);
+  });
+
+  it('keeps each month separate', async () => {
+    const [c] = await db.insert(companies).values({ tenantId, businessName: 'Co1' }).returning();
+    await request('POST', '/api/v1/practice/checks/run', { companyId: c!.id, ...PERIOD }, bookkeeperToken);
+    const may = await request('GET', `/api/v1/practice/checks/close?companyId=${c!.id}&periodStart=2026-05-01&periodEnd=2026-06-01`, undefined, bookkeeperToken);
+    expect(may.json.close.status).toBe('not_started');
+    expect(may.json.close.hasRun).toBe(false);
+  });
+});
+
 describe('close checklist', () => {
   const PERIOD = 'periodStart=2026-06-01&periodEnd=2026-07-01';
 

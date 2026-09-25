@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { tenants, users, sessions, accounts, companies, auditLog, contacts } from '../db/schema/index.js';
+import { tenants, users, sessions, accounts, companies, auditLog, contacts, transactions } from '../db/schema/index.js';
 import * as contactsService from './contacts.service.js';
 
 let tenantId: string;
@@ -222,6 +222,18 @@ describe('Contacts Service', () => {
 
       const sourceAfter = await contactsService.getById(tenantId, source.id);
       expect(sourceAfter.isActive).toBe(false);
+    });
+
+    it('moves the duplicate\'s transactions onto the kept contact', async () => {
+      const source = await contactsService.create(tenantId, { contactType: 'vendor', displayName: 'Staples Inc.' });
+      const target = await contactsService.create(tenantId, { contactType: 'vendor', displayName: 'Staples' });
+      const [t] = await db.insert(transactions).values({
+        tenantId, txnType: 'expense', txnDate: '2026-08-01', total: '50.0000', status: 'posted', contactId: source.id,
+      }).returning();
+      await contactsService.merge(tenantId, source.id, target.id);
+      const after = await db.query.transactions.findFirst({ where: eq(transactions.id, t!.id) });
+      expect(after?.contactId).toBe(target.id);
+      await db.delete(transactions).where(eq(transactions.id, t!.id));
     });
 
     it('should reject merging contact with itself', async () => {

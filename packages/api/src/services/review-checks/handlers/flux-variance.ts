@@ -21,6 +21,10 @@ export const handler: CheckHandler = async (tenantId, companyId, params: CheckPa
   if (!start || !end) return [];
   const minDollars = Math.max(0, Number(params['minAmountDollars'] ?? 100));
   const minPercent = Math.max(0, Number(params['minPercent'] ?? 0.2));
+  // How the two thresholds combine: 'and' (default) flags only changes that
+  // are big in BOTH dollars and percent; 'or' flags either (Double's
+  // configurable flux rule).
+  const combine = params['combine'] === 'or' ? 'or' : 'and';
   const companyClause = companyId
     ? sql`AND t.company_id = ${companyId}`
     : sql``;
@@ -68,8 +72,10 @@ export const handler: CheckHandler = async (tenantId, companyId, params: CheckPa
     FROM hist h
     LEFT JOIN cur c ON c.account_id = h.account_id
     JOIN accounts a ON a.id = h.account_id
-    WHERE ABS(COALESCE(c.net, 0) - h.avg_net) >= ${minDollars}
-      AND ABS(COALESCE(c.net, 0) - h.avg_net) >= ABS(h.avg_net) * ${minPercent}
+    WHERE (ABS(COALESCE(c.net, 0) - h.avg_net) >= ${minDollars}
+      ${combine === 'or' ? sql`OR` : sql`AND`} ABS(COALESCE(c.net, 0) - h.avg_net) >= ABS(h.avg_net) * ${minPercent})
+      -- Never flag a zero change, whichever way the thresholds combine.
+      AND ABS(COALESCE(c.net, 0) - h.avg_net) > 0
     LIMIT 200
   `);
 

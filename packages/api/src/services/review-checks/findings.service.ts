@@ -465,3 +465,82 @@ function mapFindingRow(row: typeof findings.$inferSelect): Finding {
 
 // sql tag retained for future raw-SQL needs.
 export const _sqlRef = sql`SELECT 1`;
+
+// Per-report counts for the close workspace: one row per check key with
+// open (open / assigned / in review), accepted (resolved) and excluded
+// (ignored) totals for the company + period.
+export async function countsByCheck(
+  tenantId: string,
+  companyId: string | null,
+  period: { periodStart: string; periodEnd: string },
+): Promise<Array<{ checkKey: string; open: number; accepted: number; excluded: number }>> {
+  const conditions = [
+    eq(findings.tenantId, tenantId),
+    gte(findings.periodStart, period.periodStart.slice(0, 10)),
+    lt(findings.periodStart, period.periodEnd.slice(0, 10)),
+  ];
+  if (companyId) conditions.push(eq(findings.companyId, companyId));
+  const rows = await db
+    .select({
+      checkKey: findings.checkKey,
+      open: sql<number>`count(*) FILTER (WHERE ${findings.status} IN ('open','assigned','in_review'))::int`,
+      accepted: sql<number>`count(*) FILTER (WHERE ${findings.status} = 'resolved')::int`,
+      excluded: sql<number>`count(*) FILTER (WHERE ${findings.status} = 'ignored')::int`,
+    })
+    .from(findings)
+    .where(and(...conditions))
+    .groupBy(findings.checkKey);
+  return rows.map((r) => ({ checkKey: r.checkKey, open: Number(r.open), accepted: Number(r.accepted), excluded: Number(r.excluded) }));
+}
+
+// How this finding's payee has been coded over the 12 months before the
+// finding's period: one row per account with count and total. Shown in the
+// detail drawer so the reviewer can see "usually Office Supplies (18 of 20)"
+// before recoding. Empty when the finding has no payee.
+export async function payeeCodingHistory(
+  tenantId: string,
+  findingId: string,
+): Promise<{ payeeId: string | null; payeeName: string | null; rows: Array<{ accountId: string; accountName: string; count: number; total: string }> }> {
+  const f = await getById(tenantId, findingId);
+  if (!f) return { payeeId: null, payeeName: null, rows: [] };
+  let payeeId = f.vendorId ?? null;
+  if (!payeeId && f.transactionId) {
+    const t = await db.execute<{ contact_id: string | null }>(sql`
+      SELECT contact_id FROM transactions WHERE tenant_id = ${tenantId} AND id = ${f.transactionId} LIMIT 1
+    `);
+    payeeId = (t.rows[0] as { contact_id: string | null } | undefined)?.contact_id ?? null;
+  }
+  if (!payeeId) return { payeeId: null, payeeName: null, rows: [] };
+  const [pRow] = await db.select({ periodStart: findings.periodStart }).from(findings)
+    .where(and(eq(findings.tenantId, tenantId), eq(findings.id, findingId))).limit(1);
+  const anchor = String(pRow?.periodStart ?? new Date().toISOString()).slice(0, 10);
+  const res = await db.execute<{ account_id: string; account_name: string; n: string; total: string; payee: string | null }>(sql`
+    SELECT a.id AS account_id, a.name AS account_name, COUNT(*) AS n,
+      SUM(COALESCE(jl.debit, 0) - COALESCE(jl.credit, 0))::TEXT AS total,
+      MAX(c.display_name) AS payee
+    FROM transactions t
+    JOIN journal_lines jl ON jl.transaction_id = t.id
+    JOIN accounts a ON a.id = jl.account_id
+      AND a.account_type IN ('expense', 'cogs', 'other_expense', 'revenue', 'other_revenue')
+    LEFT JOIN contacts c ON c.id = t.contact_id
+    WHERE t.tenant_id = ${tenantId}
+      AND t.contact_id = ${payeeId}
+      AND t.status = 'posted'
+      AND t.txn_date >= (${anchor}::date - INTERVAL '12 months')
+      AND t.txn_date < ${anchor}::date
+    GROUP BY a.id, a.name
+    ORDER BY COUNT(*) DESC
+    LIMIT 10
+  `);
+  const rows = res.rows as Array<{ account_id: string; account_name: string; n: string; total: string; payee: string | null }>;
+  let payeeName = rows[0]?.payee ?? null;
+  if (!payeeName) {
+    const c = await db.execute<{ display_name: string }>(sql`SELECT display_name FROM contacts WHERE id = ${payeeId} AND tenant_id = ${tenantId} LIMIT 1`);
+    payeeName = (c.rows[0] as { display_name: string } | undefined)?.display_name ?? null;
+  }
+  return {
+    payeeId,
+    payeeName,
+    rows: rows.map((r) => ({ accountId: r.account_id, accountName: r.account_name, count: Number(r.n), total: r.total })),
+  };
+}

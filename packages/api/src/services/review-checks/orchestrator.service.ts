@@ -15,6 +15,7 @@ import { HANDLERS } from './handlers/index.js';
 import * as registry from './registry.service.js';
 import * as findingsService from './findings.service.js';
 import * as suppressions from './suppressions.service.js';
+import * as closeService from './close.service.js';
 
 // Phase 6 §6.4 — orchestrator. For a given (tenant, company)
 // invocation, iterates active registry entries, invokes each
@@ -184,6 +185,13 @@ async function runForCompanyLocked(
       error: errorMessage,
     })
     .where(eq(checkRuns.id, runId));
+
+  // A completed run for a month moves that month's close to in progress.
+  if (!errorMessage && periodStart && periodEnd) {
+    await closeService.markInProgress(tenantId, companyId, periodStart, periodEnd).catch((err) => {
+      console.warn('[review-checks] could not mark close in progress:', err instanceof Error ? err.message : String(err));
+    });
+  }
 
   return { runId, checksExecuted, findingsCreated, truncated, error: errorMessage };
 }

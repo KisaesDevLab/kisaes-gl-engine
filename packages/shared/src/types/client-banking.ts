@@ -33,4 +33,9 @@ export interface ClientBankingStatus {
   plaidConnectionCount: number;
   /** Some connection is erroring or needs the client to re-authenticate. */
   plaidNeedsAttention: boolean;
+  /**
+   * Last calendar month's Close Review status (least-advanced company).
+   * 'not_started' when no one has run the checks for that month.
+   */
+  lastMonthCloseStatus: 'not_started' | 'in_progress' | 'prepared' | 'closed';
 }

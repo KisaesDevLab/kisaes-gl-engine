@@ -1289,6 +1289,13 @@
       "when": 1784800000050,
       "tag": "0183_close_review_period_scope",
       "breakpoints": true
+    },
+    {
+      "idx": 184,
+      "version": "7",
+      "when": 1784800000060,
+      "tag": "0184_closes",
+      "breakpoints": true
     }
   ]
 }

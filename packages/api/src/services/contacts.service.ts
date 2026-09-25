@@ -219,14 +219,32 @@ export async function merge(tenantId: string, sourceId: string, targetId: string
     throw AppError.badRequest('Cannot merge a contact with itself');
   }
 
-  // Re-point transactions will happen in Phase 4 when transactions table exists
-  // For now, just deactivate the source
-  await db
-    .update(contacts)
-    .set({ isActive: false, updatedAt: new Date() })
-    .where(and(eq(contacts.tenantId, tenantId), eq(contacts.id, sourceId)));
-
-  await auditLog(tenantId, 'update', 'contact', sourceId, source, { merged_into: targetId }, userId);
+  // Move everything that names the duplicate onto the kept contact, then
+  // deactivate the duplicate — one DB transaction, so a merge is never half
+  // done. This used to only deactivate the source, which hid it while its
+  // transactions (and its 1099 total) stayed split across two contacts.
+  const moved: Record<string, number> = {};
+  await db.transaction(async (tx) => {
+    const repoint = async (label: string, statement: SQL) => {
+      const r = await tx.execute(statement);
+      moved[label] = r.rowCount ?? 0;
+    };
+    await repoint('transactions', sql`UPDATE transactions SET contact_id = ${targetId} WHERE tenant_id = ${tenantId} AND contact_id = ${sourceId}`);
+    await repoint('journalLines', sql`UPDATE journal_lines SET contact_id = ${targetId} WHERE tenant_id = ${tenantId} AND contact_id = ${sourceId}`);
+    await repoint('feedSuggested', sql`UPDATE bank_feed_items SET suggested_contact_id = ${targetId} WHERE tenant_id = ${tenantId} AND suggested_contact_id = ${sourceId}`);
+    await repoint('feedAssigned', sql`UPDATE bank_feed_items SET assigned_contact_id = ${targetId} WHERE tenant_id = ${tenantId} AND assigned_contact_id = ${sourceId}`);
+    await repoint('classification', sql`UPDATE transaction_classification_state SET suggested_vendor_id = ${targetId} WHERE tenant_id = ${tenantId} AND suggested_vendor_id = ${sourceId}`);
+    await repoint('history', sql`UPDATE categorization_history SET contact_id = ${targetId} WHERE tenant_id = ${tenantId} AND contact_id = ${sourceId}`);
+    await repoint('bankRules', sql`UPDATE bank_rules SET assign_contact_id = ${targetId} WHERE tenant_id = ${tenantId} AND assign_contact_id = ${sourceId}`);
+    await repoint('billCaptures', sql`UPDATE bill_captures SET suggested_contact_id = ${targetId} WHERE tenant_id = ${tenantId} AND suggested_contact_id = ${sourceId}`);
+    await repoint('clientSuggested', sql`UPDATE client_category_suggestions SET suggested_contact_id = ${targetId} WHERE tenant_id = ${tenantId} AND suggested_contact_id = ${sourceId}`);
+    await repoint('clientResolved', sql`UPDATE client_category_suggestions SET resolved_contact_id = ${targetId} WHERE tenant_id = ${tenantId} AND resolved_contact_id = ${sourceId}`);
+    await tx
+      .update(contacts)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(and(eq(contacts.tenantId, tenantId), eq(contacts.id, sourceId)));
+  });
+  await auditLog(tenantId, 'update', 'contact', sourceId, source, { merged_into: targetId, moved }, userId);
   return target;
 }
 
