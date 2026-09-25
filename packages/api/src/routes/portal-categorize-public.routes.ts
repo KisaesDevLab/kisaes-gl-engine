@@ -32,7 +32,7 @@ import { AppError } from '../utils/errors.js';
 import { getRateLimitStore } from '../utils/rate-limit-store.js';
 import * as flags from '../services/feature-flags.service.js';
 import * as categorization from '../services/portal-categorization.service.js';
-import { notifyStaffOfSuggestions } from '../services/client-suggestion-review.service.js';
+import { queuePortalSuggestionNotice } from '../services/suggestion-notice-coalescer.service.js';
 
 export const portalCategorizePublicRouter = Router();
 portalCategorizePublicRouter.use(portalAuthenticate);
@@ -314,10 +314,11 @@ portalCategorizePublicRouter.post('/suggestions', submitLimiter, async (req, res
     tenantId, companyId, contactId, parsed.data.items,
   );
 
-  // Fire and forget: an SMTP outage must never fail the client's submission.
+  // Coalesced: the portal saves one card at a time, so staff get one email
+  // per sitting (after the client goes quiet), not one per answer. Never
+  // fails the client's save.
   if (result.accepted.length > 0) {
-    void notifyStaffOfSuggestions(tenantId, companyId, { contactId }, result.accepted.length)
-      .catch(() => { /* the notifier logs; never surfaces to the client */ });
+    queuePortalSuggestionNotice(tenantId, companyId, contactId, result.accepted.length);
   }
 
   res.status(201).json(result);

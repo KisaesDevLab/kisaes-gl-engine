@@ -1402,14 +1402,20 @@ payment was for. A note on its own is a complete answer and is submitted as
 "I am not sure" carrying the note. Choosing "I am not sure" with no note is
 refused (server reason `note_required`) and the portal says so rather than
 reporting "sent 0 answers". Rows the server turns down keep what the client
-typed and explain why. Staff read the note in its own **Client note** column on
+typed and explain why.
+Saving: every row has its own **Save answer** button (plus **Save all** at the
+bottom). A failed save never replaces the list; the row names the cause —
+signed out (401), staff preview (PREVIEW_READ_ONLY, answers are never saved in
+preview), rate limit (429), or a server fault. Staff emails are coalesced per
+client contact: one email after 5 quiet minutes (30 minutes at most) with the
+total count, not one per saved row. Staff read the note in its own **Client note** column on
 Practice → Uncategorized → Client suggested, shown in full beside what the
 client picked. A returning client sees its own note read back on rows still
 waiting.
 
 Attaching a receipt: each row has **Attach a photo or receipt** — images and PDFs, 10 MB
 per file, up to 10 files per transaction. It uploads immediately rather than waiting for
-"Send to my bookkeeper", because a client often has the photo before it has the answer.
+the answer to be saved, because a client often has the photo before it has the answer.
 The file is stored as an ordinary attachment on the transaction or bank line, so it shows
 up on the paperclip staff already use on Practice → Uncategorized; there is no separate
 client inbox. A client can list and remove only its own uploads — files the firm attached

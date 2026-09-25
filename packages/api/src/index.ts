@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+import { flushAllSuggestionNotices } from './services/suggestion-notice-coalescer.service.js';
 import { registerMybooksTaskClasses } from './services/ai-providers/index.js';
 import { app } from './app.js';
 import { env } from './config/env.js';
@@ -52,6 +53,11 @@ function installShutdownHandlers(server: Server): void {
     stopAiRetentionScheduler();
     stopShareSweeper();
     await shutdownShareGateway().catch(() => undefined);
+    // Portal answers are saved; only their coalesced staff email is pending.
+    await Promise.race([
+      flushAllSuggestionNotices().catch(() => undefined),
+      new Promise((r) => setTimeout(r, 10_000)),
+    ]);
     try {
       await pool.end();
       console.log('[shutdown] DB pool closed, exiting cleanly');
