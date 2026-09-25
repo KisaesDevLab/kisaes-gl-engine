@@ -104,7 +104,15 @@ plaidRouter.get('/invites', inviteGuard, async (req, res) => {
   const bankConnectInvite = await import('../services/bank-connect-invite.service.js');
   const limit = Math.min(parseInt(String(req.query['limit'] ?? '50'), 10) || 50, 200);
   const offset = Math.max(parseInt(String(req.query['offset'] ?? '0'), 10) || 0, 0);
-  res.json(await bankConnectInvite.listInvites(req.tenantId, { limit, offset }));
+  const status = String(req.query['status'] ?? '');
+  const kind = String(req.query['kind'] ?? '');
+  const search = String(req.query['search'] ?? '').slice(0, 200);
+  res.json(await bankConnectInvite.listInvites(req.tenantId, {
+    limit, offset,
+    ...(['open', 'connected', 'expired', 'revoked'].includes(status) ? { status: status as 'open' } : {}),
+    ...(kind === 'connect' || kind === 'repair' ? { kind } : {}),
+    ...(search.trim() ? { search } : {}),
+  }));
 });
 
 plaidRouter.post('/invites/:id/resend', inviteGuard, async (req, res) => {

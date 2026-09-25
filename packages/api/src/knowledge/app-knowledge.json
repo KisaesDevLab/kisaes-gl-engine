@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-21T21:24:33.583Z",
+  "generatedAt": "2026-09-25T17:13:00.497Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -18,7 +18,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 99453
+    "totalBytes": 115084
   },
   "screens": [
     {
@@ -1021,6 +1021,15 @@
       "actions": []
     },
     {
+      "id": "reports-transaction-report",
+      "path": "/reports/transaction-report",
+      "component": "TransactionRangeReport",
+      "sourceFile": null,
+      "title": "Transaction Range",
+      "section": "Reports",
+      "actions": []
+    },
+    {
       "id": "reports-trial-balance",
       "path": "/reports/trial-balance",
       "component": "GenericReport",
@@ -1532,6 +1541,7 @@
     "Confidence Threshold",
     "Fiscal Year",
     "Cash Sale",
+    "What learned history will and will not key on (2026-09-24, migration 0181)",
     "Bank Feed Categorization",
     "Period Close",
     "Filling check payees and categories from a statement",
@@ -1555,6 +1565,7 @@
     "\"How do I import lots of transactions at once?\"",
     "\"I posted transactions to the wrong account — how do I move them in bulk?\"",
     "\"How do I see more than 50 transactions per page?\"",
+    "\"How do I sort or filter a table by column?\"",
     "\"How do I see more rows in other lists (bills, receipts, admin tables)?\"",
     "\"How do I set up a recurring bill?\"",
     "\"How do I back up my data?\"",
@@ -1589,6 +1600,10 @@
     "Account Register",
     "Chart of Accounts Bulk Edit",
     "Budgets",
+    "Invitations (how a client first hears about the portal)",
+    "Portal session trust rules (security review, 2026-09-24)",
+    "Who portal mail says it is from",
+    "The same email in two firms",
     "Balances & Activity (banking views)",
     "Fixing a bank login from the portal",
     "Vibe Practice Management peer (\"one client portal\")",

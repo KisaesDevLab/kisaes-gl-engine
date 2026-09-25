@@ -263,6 +263,42 @@ describe('Bank connection invites', () => {
     expect(plaidMocks.exchangePublicToken).not.toHaveBeenCalled();
   });
 
+  it('listInvites filters by status, kind, and search, with totals that match', async () => {
+    const open = await mkInvite({ recipientName: 'Olive Open', email: 'olive@example.com' });
+    const lapsed = await mkInvite({ recipientName: 'Lars Lapsed', email: 'lars@example.com' });
+    const gone = await mkInvite({ recipientName: 'Rhea Revoked', email: 'rhea@example.com' });
+    const done = await mkInvite({ recipientName: 'Cody Connected', email: 'cody@example.com' });
+    // Lapsed is still status 'sent' in the row: expiry is lazy.
+    await db.update(bankConnectInvites).set({ expiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(bankConnectInvites.id, lapsed.inviteId));
+    await inviteService.revokeInvite(tenantId, gone.inviteId, userId);
+    await db.update(bankConnectInvites).set({ status: 'connected', kind: 'repair' })
+      .where(eq(bankConnectInvites.id, done.inviteId));
+
+    const names = async (opts: Partial<inviteService.ListInvitesOpts>) => {
+      const r = await inviteService.listInvites(tenantId, { limit: 50, offset: 0, ...opts });
+      expect(r.total).toBe(r.invites.length);
+      return r.invites.map((i) => i.recipientName).sort();
+    };
+
+    expect(await names({})).toHaveLength(4);
+    expect(await names({ status: 'open' })).toEqual(['Olive Open']);
+    expect(await names({ status: 'expired' })).toEqual(['Lars Lapsed']);
+    expect(await names({ status: 'revoked' })).toEqual(['Rhea Revoked']);
+    expect(await names({ status: 'connected' })).toEqual(['Cody Connected']);
+    expect(await names({ kind: 'repair' })).toEqual(['Cody Connected']);
+    expect(await names({ kind: 'connect' })).toHaveLength(3);
+    expect(await names({ search: 'LARS' })).toEqual(['Lars Lapsed']);
+    expect(await names({ search: 'olive@' })).toEqual(['Olive Open']);
+    // LIKE wildcards in the search box are literal, not patterns.
+    expect(await names({ search: '%' })).toEqual([]);
+    expect(open.inviteId).toBeTruthy();
+
+    const page = await inviteService.listInvites(tenantId, { limit: 2, offset: 0 });
+    expect(page.invites).toHaveLength(2);
+    expect(page.total).toBe(4);
+  });
+
   it('SMS body stays a single GSM-7 segment for realistic links', () => {
     const link = `${BASE_URL}/connect/${'a'.repeat(64)}`;
     const body = inviteService.buildInviteSmsBody(link);

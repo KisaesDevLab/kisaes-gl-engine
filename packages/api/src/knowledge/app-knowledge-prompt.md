@@ -204,6 +204,22 @@ The accounting impact:
 4. **Bank Deposit** — when you take the money to the bank, create a deposit that
    moves the funds out of Payments Clearing into the bank account.
 
+### What learned history will and will not key on (2026-09-24, migration 0181)
+
+`categorization_history` keys on the CLEANED bank description, and a cheque's
+description cleans to `check` — one key for every cheque a client ever wrote. A single
+confirmation therefore taught the system that every future cheque went to that payee, and
+the wrong name then sat on rows the statement importer would have filled correctly (found
+in production: an account's cheques all reading one sheriff's office; another tenant with
+4,964 confirmations against `deposit`). `isIdentifyingPattern` (categorization-ai.service)
+now refuses BOTH to learn and to match a key that names nobody: the generic banking words
+(check, deposit, withdrawal, transfer, payment, pay, debit, credit, card, purchase, ach,
+eft, pos, atm, fee, interest, draft, misc, other), a key with no letters at all, and card
+masks like `xx1419`. Migration 0181 deleted the learned rows already keyed that way and
+cleared the suggestions they had written onto pending/assigned feed items — nothing
+posted was touched. A firm that genuinely wants "every PAY line to account X" should
+write a bank RULE, which is visible and editable, rather than rely on invisible learning.
+
 ### Bank Feed Categorization
 1. **Import** — connect a bank via Plaid, upload a CSV statement, or send
    the client a **bank connection invite** (Banking → Invite client, gated
@@ -211,6 +227,10 @@ The accounting impact:
    (/connect/…, valid 7 days, works for multiple banks) that runs Plaid
    Link with no MyBooks login; the resulting connection is attributed to
    the inviting staff user, who is emailed to map the new accounts.
+   Sent invites are listed under **Client connection invites** at the
+   bottom of Bank Connections, 10 per page, with search (name, email,
+   phone), a status filter (Open, Connected, Expired, Revoked), and a type
+   filter (New connection, Login fix).
    When a connected bank's login later breaks (ITEM_LOGIN_REQUIRED), a
    "needs attention" banner appears on Bank Connections AND the Bank Feed
    with two repair paths: **Update login / Fix Now** (staff re-authenticate
@@ -378,16 +398,37 @@ Distinct from **Re-process** (re-runs the whole extraction; refused once a state
 saved, to avoid duplicate imports) and from the Reconciliation page's tenant-wide
 **Backfill check payees** with its optional re-scan of every stored statement.
 
-## Uncategorized: setting a category one row at a time
+## Uncategorized: setting a payee and a category one row at a time
 
 Practice → Uncategorized (flag `UNCATEGORIZED_REVIEW_V1`), on both the **Not
-posted** and **In suspense** tabs. Each row has a **Category** column using the
-same account picker as the transaction forms.
+posted** and **In suspense** tabs. Each row has a **Payee** column using the
+same contact picker as Write Check and Bank Feeds (search, quick-add) and a
+**Category** column using the same account picker as the transaction forms.
+Both pickers stretch to the width the screen has. A payee read off a check
+image but not yet linked to a contact shows as a hint under the empty Payee
+picker.
 
-Picking an account does NOT post. The row shows an amber marker and a **Save**
-button, and a banner says nothing is committed yet. Pressing Save on that row
-posts it and the row leaves the list. The deliberate extra step exists because
-a row vanishing the moment a dropdown closed reads as an accidental posting.
+Every column except Category and Docs sorts (click a header; click again to
+flip). The sort is server-side because the lists paginate: `sortBy`/`sortDir`
+on `/practice/uncategorized/unposted` (feedDate, checkNumber, payee,
+description, amount) and `/in-suspense` (txnDate, checkNumber, payee, memo,
+amount); an unknown key falls back to newest first.
+
+The toolbar has **Set payee** beside **Set category**: tick rows, pick one
+contact, apply. It is header-level, so rows stay on their list with the new
+name. In suspense uses `POST /transactions/bulk-update` (setPayeeContactId);
+Not posted uses `POST /banking/feed/bulk-set-contact`, which writes
+`suggested_contact_id` WITHOUT staging — `bulk-set-name` would flip the line
+to `assigned` and drop it off the pending-only list. Non-pending lines are
+reported as skipped.
+
+Picking a payee or an account does NOT save. The row shows an amber marker and
+a **Save** button, and a banner says nothing is committed yet. Pressing Save on
+that row saves the payee first (header-level: no money moves, the row stays),
+then posts the category and the row leaves the list. Saving a payee alone keeps
+the row. Picking a contact with a default expense account prefills the row's
+category draft. The deliberate extra step exists because a row vanishing the
+moment a dropdown closed reads as an accidental posting.
 
 If the ledger refuses the move — closed period, voided entry, adjusting entry,
 or a bank line someone else already handled — the row KEEPS the pick and the
@@ -491,6 +532,22 @@ A/R and A/P can't be bulk-moved. The bulk toolbar also offers **Set Category**,
 Use the **Show** dropdown next to the pager at the bottom of the Transactions list:
 50, 100, 250, 500, or **All** (loads the entire filtered set). The choice is
 remembered per company.
+
+### "How do I sort or filter a table by column?"
+
+Click any column header to sort by it (click again to reverse). Every list —
+Transactions, Bank Feed, Contacts, Items, Chart of Accounts, Bills, Invoices,
+Vendor Credits, Print Checks, statement imports, recurring schedules, the
+receipts inbox, document requests, portal questions, the close-review manual
+queue, AJEs, daily sales, payroll history, every report table and the admin
+Tenants/Users lists — works the same way. Lists that page through the server
+sort the whole set (page 2 continues the order), not just the loaded page.
+The small ▾ beside a header opens a filter popover: Sort A–Z / Z–A, then tick
+the values to keep and Apply (Clear removes it). Where the toolbar already has
+a matching dropdown (Status, Type…), the popover and the dropdown are one
+filter: one ticked value selects it in the dropdown; several read as "All".
+The sort and filters are remembered for the browser tab, and any change
+returns to page 1.
 
 ### "How do I see more rows in other lists (bills, receipts, admin tables)?"
 Nearly every list in the app — bills, vendor credits, statement imports,
@@ -609,10 +666,24 @@ queue. Vendors with no account number print the same memo as before.
 - **Transaction Report** — not on the Reports page: a button on any transaction
   (and on the Bill and Invoice pages). One PDF with the transaction's details and
   journal lines, the same for every linked transaction (a bill and the payments
-  that paid it, an invoice and its payments), then every attachment on all of
-  them, page for page, captioned with the file name. Unreadable or
+  that paid it, an invoice and its payments), each block followed by its own
+  attachments (images inline, PDF pages page for page, captioned). Unreadable or
   password-protected files are listed with the reason instead of failing the
   report. Limits: 40 attachments, 50 pages per PDF, 300 pages total.
+- **Transaction Report (date range)** — Reports → General → Transaction Report
+  (`/reports/transaction-report`, `GET /transactions/report.pdf?startDate&endDate`
+  plus optional txnType / contactId / accountId / tagId / basis / includeVoid).
+  Every matching transaction as a block (details, journal lines, one-line
+  "Linked:" note — linked transactions are NOT expanded into their own blocks),
+  packed several to a page (`.txn{break-inside:avoid}`). **Attachments are
+  interleaved**: images inline under their block, a PDF's pages copied in
+  right after the block that owns it (the summary is rendered in parts, one
+  part ending at each block with PDF pages). Voids excluded unless includeVoid.
+  **Nothing is capped away**: `GET /transactions/report-plan` splits the range
+  into parts in date order (≤ 250 transactions, ≤ 40 showable files, ≤ 100 MB
+  each, `planTransactionRangeReport`); the screen lists parts with a View
+  button each and `?part=N` builds one on demand, deterministic from the same
+  filters, nothing stored. Same bearer-fetch rule: no `?_dl=`.
 - **Journal Entries Report** — all journal entries for a period.
 - **Budget Overview** — summary view of all budget lines for a fiscal year.
 
@@ -1050,6 +1121,103 @@ Access is layered: a feature must be enabled for the tenant (feature flag, super
 and then granted per portal contact per company by the firm (Edit Contact → access
 toggles). Everything defaults off except questions and receipt uploads.
 
+### Questions actually reach the client now (2026-09-24)
+
+"draft — not yet sent" on Practice → Client Portal → Questions means
+`portal_questions.notified_at IS NULL`; a draft is invisible to the client. The amber
+"Ready to send → Send all" panel used to call `markBatchNotified`, which ONLY stamped the
+flag — no client was ever emailed about a question (prod: 0 `reminder_sends` rows joined to
+`portal_questions`). It now calls `sendQuestionNotices`: one email per CONTACT listing
+their questions, through the shared mailer/STOP list/`reminder_sends` trail, using the
+`unanswered_question` template, then stamps notified_at. The UI reports sent / SMTP-unset /
+nobody-to-receive rather than implying delivery.
+
+**Audience rule** (`questionAudience`, shared with the reminder scan): an ASSIGNED question
+goes to that contact only; an UNASSIGNED one goes to every active contact of that company
+with `questions_for_us_access` — which matches what `listForContact` lets a contact see.
+Both the release path and the `unanswered_question` reminder scan previously INNER JOINed
+on `assigned_contact_id`, so a question with no contact (Contact column shows "—") had no
+audience at all: it could never be released and was never chased.
+
+### Invitations (how a client first hears about the portal)
+
+Adding a contact emails them an invitation, ticked by default on the Add Contact form
+("Email them an invitation now"); untick it to set someone up quietly. The message names
+the practice, says what the portal is for, and carries a single-use link good for
+**7 days** — unlike the **sign-in link** button on each row, which is the ordinary
+15-minute magic link. **Resend invite** (envelope icon) sends it again, for the client who
+deleted it or let the link expire; the key icon still sends a quick sign-in link. Both
+share the per-contact limit of 5 links/hour with the client's own login page, and both
+report honestly: SMTP unset means "logged on the server, not delivered" rather than a
+green tick. Sending invalidates any earlier unconsumed link for that contact. Route:
+`POST /practice/portal/contacts/:id/invite`; creation takes `sendInvite` and answers with
+`{ invite: { sent, viaStub, rateLimited } }`. Added 2026-09-24 — before it, creating a
+contact sent NOTHING and clients waited for an email nobody had written.
+
+### Portal session trust rules (security review, 2026-09-24)
+
+A portal session records the ADDRESS whose control its holder proved
+(`portal_contact_sessions.verified_email`, migration 0182). The firm switcher
+compares that column — never `portal_contacts.email`, which any non-readonly staff
+user can edit: comparing the mutable column briefly let a staff member sign in as a
+contact of their own tenant, repoint it at a victim's address in another tenant and
+switch into the victim's portal. Sessions minted before 0182 have no recorded address
+and are refused the email path. Editing a contact's email now DELETES its sessions and
+invalidates unconsumed magic links. Switches are audited on both tenants with the basis
+(`identity` vs `verified_email`), IP and user agent.
+
+Question visibility matches the mail audience: an unassigned question is only visible to
+a contact with `questions_for_us_access`, because releasing one used to show its body
+(payee, amount, purpose) to a documents-only contact the firm had excluded.
+
+Scheduled sends honour the 7-day engagement throttle (a client who was in the portal
+this week is left alone); a staff member pressing the button skips it, because that
+announces a new obligation. STOP rows are honoured either way. Automated sends record
+`actor: 'scheduler:…'` and the `scheduleId` in the audit payload rather than a null user.
+
+**Open for the firm to decide (IRC §7216):** automated reminders disclose to the email
+and SMS providers that a named taxpayer is a client of a named preparer. There is no
+per-contact consent record — only the reactive STOP list — and no recorded
+§301.7216-2 basis. 9 of 10 practices have `sms_outbound_enabled`; the schedules created
+on 2026-09-24 are `email_only`.
+
+### Who portal mail says it is from
+The firm's NAME is editable in two places: **Practice → Client Portal → Settings → Your
+firm's name** (added 2026-09-24 — the firm was otherwise only reachable through Admin →
+Firms, so an appliance still called "Default Practice" introduced itself to clients that
+way) and **Admin → Firms** (pencil icon). `PATCH /firms/:firmId` takes `{name}` and is
+firm-admin gated; the appliance firm may be renamed freely — only its reserved SLUG is
+locked and it cannot be deactivated.
+
+
+`{firm_name}` is the managing PRACTICE, resolved from the active `tenant_firm_assignments`
+row (`resolveFirmName`), falling back to the tenant name on an appliance install with no
+separate firm. It is not `tenants.name`: every client is a tenant, so that read as the
+client's own name — a categorize request went out titled "TimberStone LLC needs your help
+with 42 transaction(s)" and signed "TimberStone LLC", to TimberStone's own bookkeeper
+contact (fixed 2026-09-24). `{company_name}` is the client's company and is correct.
+
+### The same email in two firms
+
+A portal contact belongs to ONE tenant. The same address in two tenancies is two separate
+contact rows, with their own per-company access ticks — a contact can have **Can suggest
+categories** at one client and not the other, which is a common reason "the portal isn't
+showing X" turns out to be "you are signed in to the other client". `portal_contacts
+.last_seen_at` per row tells you which one they actually used.
+
+Asking for a link at a bare `/portal/login` (no `?firm=`) sends one sign-in link **per
+active tenancy** — two emails, each opening that client's portal; there is no "pick a
+firm" screen. Both the sign-in link and the invitation therefore name the client in the
+subject ("Your portal sign-in link for TimberStone LLC") from `tenants.name`, which IS
+the client (2026-09-24). Without it the two arrived identical and the recipient could not
+tell which was which. The invitation names the practice as sender and the client as
+destination, and says neither twice when the firm IS the client. With `?firm=<slug>` only that tenancy's link is sent. A session
+belongs to one contact, so switching firms means using the other link. The in-portal firm
+switcher exists but needs `PORTAL_IDENTITY_LINKING_V1` (env, default OFF) AND the contacts
+linked to one identity; linking happens on contact create and on `setPassword`, never on a
+plain magic-link login, so contacts created before the flag was turned on stay unlinked
+until one of those happens.
+
 ### Balances & Activity (banking views)
 When the firm grants **Can view bank & card activity**, the client's portal shows a
 Balances section: each checking/savings account and credit card with its current **book
@@ -1185,8 +1353,11 @@ to false if a contact's company assignments are re-saved without it.
 
 What the client sees: a **What was this?** page listing only activity nobody could
 classify — bank lines the categorizer could not place, and amounts already posted to
-suspense. Rows the software categorized confidently are deliberately excluded. The
-picker offers income and expense accounts by name only: no balances, no account
+suspense. Rows the software categorized confidently are deliberately excluded. Each row
+shows the cleaned name and, under it, **On your statement:** the bank's own wording
+(`bank_feed_items.original_description`, also for a suspense amount that posted from a
+feed line) — a deliberate policy change on 2026-09-24; the AI guess, confidence and
+reasoning remain firm-only. The picker offers income and expense accounts by name only: no balances, no account
 numbers, no balance-sheet accounts. Two extra answers exist, **Personal, not business**
 and **I am not sure** (which asks for a note).
 
@@ -1195,6 +1366,23 @@ Uncategorized → Client suggested, where staff approve, override or send them b
 tab also lists suggestions the company's own team members sent from Banking →
 Uncategorized (badge **Team member** vs **Client**); both share the same queue and the
 same one-live-answer-per-row rule.
+
+The payee (2026-09-24, migration 0179): every row also asks **Who was it paid to or
+from?** — a select of EVERY active contact of the tenant (vendors, customers, both; all
+types on every row, user decision) served by `GET /api/portal/categorize/payees` as
+`{id,label,kind}` only, plus **Someone not in this list…** which reveals a 120-char name
+box. A payee on its own is a complete answer: it goes up as "I am not sure" carrying the
+payee, and "not sure" no longer demands a note when a payee is given. Stored as
+`suggested_contact_id` (FK, SET NULL if the contact is merged/deleted) plus
+`suggested_contact_label` (the name as shown or typed — always set). The write path
+allowlists `contactId` against the same payee list (`invalid_payee`). Staff see a
+**Payee** column on Client suggested; a typed name is badged **Not in contacts** and is
+resolved with the override payee picker (its quick-add creates the contact). Approving
+applies the payee: a bank line via categorize's contactId, a suspense amount inside the
+SAME bulk update as the move out of suspense (`clearSuspense(..., { payeeContactId })`),
+recorded as `resolved_contact_id`; an override payee marks the resolution `overridden`.
+A payee-only answer still cannot be approved without a category (`no_category` →
+override with one). Team-member suggest accepts the same two fields.
 
 The note: every row has a note box, always available and NOT gated on picking a
 category — a client who cannot name the account can usually still say what the
@@ -1215,9 +1403,12 @@ up on the paperclip staff already use on Practice → Uncategorized; there is no
 client inbox. A client can list and remove only its own uploads — files the firm attached
 to the same row are never shown in the portal, not even by filename.
 
-Getting into the screen: the portal has no navigation bar, so the way in is the
-**Categorize transactions** tile on the portal dashboard. It appears whenever the flag
-and the per-contact tick are both on, including when the queue is empty.
+Getting into the screen: the portal has no navigation bar, so the way in is the portal
+dashboard. When rows are waiting, the dashboard leads with a full-width banner above the
+counters — "N transactions need your input" — because the quiet tile it replaced read as
+optional and clients skipped it (changed 2026-09-24). When the queue is empty the banner
+disappears and the plain **Categorize transactions** card takes over, so the screen stays
+reachable. Both need the flag and the per-contact tick.
 
 Asking the client to come and look ("Ask the client for help"): clients do not check the
 portal unprompted, so Practice → Uncategorized → **In suspense** has an **Ask the client
@@ -1238,6 +1429,35 @@ show on the reminders dashboard. Wording is customisable under Practice → Remi
 Templates, trigger **Ask client to categorize** (`categorize_request`), variables
 `{first_name} {firm_name} {company_name} {count} {portal_link} {note}`.
 API: `GET/POST /api/v1/practice/uncategorized/help-request[/recipients]`.
+
+Reminding them ("Send reminder", 2026-09-24): the same toolbar has a **Send reminder**
+button beside it. Same route, same recipients, same `reminder_sends` tracking and STOP
+rules — `reminder: true` on the POST changes two things. The wording is the reminder
+wording ("Reminder: N transaction(s) still need your answer"), customisable separately
+under trigger **Remind client to categorize** (`categorize_reminder`) with the same
+variables. And the default selection is only the contacts who were asked and have not
+answered since: the recipients response carries `lastAnsweredAt` (latest
+`client_category_suggestions.submitted_at` for that contact and company, any status)
+next to `lastAskedAt`, and those rows are badged **No answer since you asked**. If
+nobody has been asked yet the screen says so and ticks everyone, so the button is never
+a dead end. Reminders are manual — one person pressing one button — OR automatic, below.
+
+Automating it (2026-09-24, migration 0180): a **reminder_schedules** row with
+`trigger_type = 'categorize_reminder'` (Practice → Reminders → Schedules → trigger
+**Uncategorized transactions**) turns the button into a cadence. `cadenceDays` are
+day-offsets from the FIRST message of a spell: `[3,7,14]` opens the chase, then chases
+again 3, 7 and 14 days later, then stops. A "spell" runs from the client's last answer
+(or from the first message if they have never answered) until they answer again, which is
+what stops a new uncategorized row restarting the cadence at day one and gives someone who
+just sent ten answers a few days of quiet before the next nudge about the rest. It sends
+through the same `sendHelpRequest` with `reminder: true` plus the schedule id, so an
+automated nudge and a staff click are the same message with the same tracking; `step` (1 =
+the opener) drives the escalating channel strategy. It stops for: an empty portal queue,
+`PORTAL_CATEGORIZE_V1` off, quiet hours, the schedule's per-contact `maxPerWeek` (counted
+across ALL portal mail, not just this trigger), STOP opt-outs, and a 20-hour floor between
+messages whatever the cadence says. Runs on the existing half-hourly portal-reminder tick
+under advisory lock `portal-categorize-reminder`
+(`dispatchCategorizeReminders`). Templates: trigger `categorize_reminder`.
 
 ## Setup & Administration
 
@@ -1812,6 +2032,7 @@ The following screens exist in the application. Use these names and paths when d
 - **Sales Tax Payments** (`/reports/sales-tax-payments`)
 - **1099 Vendor Summary** (`/reports/vendor-1099-summary`)
 - **General Ledger** (`/reports/general-ledger`)
+- **Transaction Range** (`/reports/transaction-report`)
 - **Trial Balance** (`/reports/trial-balance`)
 - **Account Activity Summary** (`/reports/account-activity-summary`)
 - **Transaction List** (`/reports/transaction-list`)

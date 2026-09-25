@@ -55,6 +55,10 @@ write a bank RULE, which is visible and editable, rather than rely on invisible 
    (/connect/…, valid 7 days, works for multiple banks) that runs Plaid
    Link with no MyBooks login; the resulting connection is attributed to
    the inviting staff user, who is emailed to map the new accounts.
+   Sent invites are listed under **Client connection invites** at the
+   bottom of Bank Connections, 10 per page, with search (name, email,
+   phone), a status filter (Open, Connected, Expired, Revoked), and a type
+   filter (New connection, Login fix).
    When a connected bank's login later breaks (ITEM_LOGIN_REQUIRED), a
    "needs attention" banner appears on Bank Connections AND the Bank Feed
    with two repair paths: **Update login / Fix Now** (staff re-authenticate

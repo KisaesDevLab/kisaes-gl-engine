@@ -14,7 +14,7 @@
 
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
-import { eq, and, or, desc, count, gt } from 'drizzle-orm';
+import { eq, and, or, desc, count, gt, gte, lt, inArray, ilike, type SQL } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { bankConnectInvites, users, tenants, companies, portalSettingsPerPractice, plaidItems } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -414,14 +414,53 @@ export async function autoSendRepairInvite(plaidItemId: string): Promise<{ sent:
   return { sent: true };
 }
 
-export async function listInvites(tenantId: string, opts: { limit: number; offset: number }) {
+export type InviteStatusFilter = 'open' | 'connected' | 'expired' | 'revoked';
+export type InviteKindFilter = 'connect' | 'repair';
+
+export interface ListInvitesOpts {
+  limit: number;
+  offset: number;
+  /** 'open' = sent/viewed and not yet expired. Expiry is lazy (the row may
+   *  still say sent/viewed past its expiresAt), so open/expired are defined
+   *  on expiresAt, not on the stored status alone. */
+  status?: InviteStatusFilter;
+  kind?: InviteKindFilter;
+  /** Case-insensitive match on recipient name, email, or phone. */
+  search?: string;
+}
+
+function inviteFilter(tenantId: string, opts: ListInvitesOpts): SQL {
+  const now = new Date();
+  const conds: SQL[] = [eq(bankConnectInvites.tenantId, tenantId)];
+  const pending = inArray(bankConnectInvites.status, ['sent', 'viewed']);
+  if (opts.status === 'open') {
+    conds.push(and(pending, gte(bankConnectInvites.expiresAt, now))!);
+  } else if (opts.status === 'expired') {
+    conds.push(or(eq(bankConnectInvites.status, 'expired'), and(pending, lt(bankConnectInvites.expiresAt, now)))!);
+  } else if (opts.status === 'connected' || opts.status === 'revoked') {
+    conds.push(eq(bankConnectInvites.status, opts.status));
+  }
+  if (opts.kind) conds.push(eq(bankConnectInvites.kind, opts.kind));
+  const term = opts.search?.trim();
+  if (term) {
+    const like = `%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    conds.push(or(
+      ilike(bankConnectInvites.recipientName, like),
+      ilike(bankConnectInvites.recipientEmail, like),
+      ilike(bankConnectInvites.recipientPhone, like),
+    )!);
+  }
+  return and(...conds)!;
+}
+
+export async function listInvites(tenantId: string, opts: ListInvitesOpts) {
+  const where = inviteFilter(tenantId, opts);
   const [rows, [totalRow]] = await Promise.all([
     db.select().from(bankConnectInvites)
-      .where(eq(bankConnectInvites.tenantId, tenantId))
+      .where(where)
       .orderBy(desc(bankConnectInvites.sentAt))
       .limit(opts.limit).offset(opts.offset),
-    db.select({ total: count() }).from(bankConnectInvites)
-      .where(eq(bankConnectInvites.tenantId, tenantId)),
+    db.select({ total: count() }).from(bankConnectInvites).where(where),
   ]);
   // Lazily reflect expiry in the listing without waiting for a public hit.
   const now = Date.now();
