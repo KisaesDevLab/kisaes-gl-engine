@@ -134,6 +134,13 @@ describe('ai-consent service', () => {
       expect(aiConsent.changeRequiresReconsent(base, next)).toMatch(/cloud_vision_enabled/);
     });
 
+    it('requires re-consent when a feature is newly sent to the AI Router, not when one comes back', () => {
+      const routed = { ...base, routedFeatures: ['mybooks_chat'] };
+      expect(aiConsent.changeRequiresReconsent(base, routed)).toMatch(/router_enabled:mybooks_chat/);
+      expect(aiConsent.changeRequiresReconsent(routed, base)).toBeNull();
+      expect(aiConsent.changeRequiresReconsent(routed, routed)).toBeNull();
+    });
+
     it('dropping a provider (clearing it): no bump', () => {
       const prev = { ...base, ocrProvider: 'anthropic' };
       const next = { ...base, ocrProvider: null };

@@ -10,7 +10,7 @@ import { OllamaProvider } from './ollama.provider.js';
 import { OpenAiCompatProvider } from './openai-compat.provider.js';
 import { decrypt } from '../../utils/encryption.js';
 import { retryWithBackoff, abortableTimeout, withTimeout, TimeoutError } from '../../utils/retry.js';
-import { aiMode, routerProvider } from './vibe-router.provider.js';
+import { routeFor, routerOn, routerProvider, type RouterSettings } from './vibe-router.provider.js';
 
 export type { AiProvider, CompletionParams, CompletionResult } from './ai-provider.interface.js';
 export type { VisionParams } from './ai-provider.interface.js';
@@ -21,6 +21,10 @@ export {
   registerMybooksTaskClasses,
   routerProvider,
   validateAiModeEnv,
+  routeFor,
+  routerOn,
+  routerAvailable,
+  ROUTER_FEATURES,
 } from './vibe-router.provider.js';
 
 interface AiConfigRow {
@@ -37,6 +41,9 @@ interface AiConfigRow {
   // keep_alive / think) or the OpenAI-compatible /v1 path. See
   // resolveOllamaNative.
   openaiCompatMode?: string | null;
+  // Per-feature router settings (migration 0185).
+  routerEnabled?: boolean | null;
+  routerFeatures?: unknown;
 }
 
 // Normalise an Ollama base URL to the server root: the OllamaProvider
@@ -68,11 +75,21 @@ export function getProvider(
     forceDirect?: boolean;
   },
 ): AiProvider {
-  // MIG-2: router mode ignores the requested provider/model — task classes +
-  // router policy own that. Never falls through to a direct provider.
-  if (!opts?.forceDirect && aiMode() === 'router') {
-    return routerProvider();
+  // Per-feature routing: when the router is on, hand back a provider that
+  // decides at call time from params.taskClass (router for routed features,
+  // this direct provider otherwise). The direct provider is still built now
+  // so a missing key fails exactly where it did before — but only surfaces
+  // for calls that actually go direct.
+  if (!opts?.forceDirect && routerOn(config)) {
+    let direct: AiProvider | null = null;
+    let directError: unknown = null;
+    try { direct = buildDirect(providerName, config, model); } catch (err) { directError = err; }
+    return new FeatureRoutedProvider(config as RouterSettings, direct, directError);
   }
+  return buildDirect(providerName, config, model);
+}
+
+function buildDirect(providerName: string, config: AiConfigRow, model?: string): AiProvider {
   switch (providerName) {
     case 'anthropic':
       if (!config.anthropicApiKeyEncrypted) throw new Error('Anthropic API key not configured');
@@ -187,11 +204,11 @@ export async function executeWithFallback(
   const errors: string[] = [];
   const timeoutMs = options?.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS;
 
-  // MIG-2: router mode short-circuits the provider selection and fallback
-  // chain entirely — failover WITHIN router mode is the router's own
-  // fallback-chain job, and a router outage must surface as an error, not
-  // silently retry a direct provider around the scrubber and ledger.
-  if (aiMode() === 'router') {
+  // A feature switched to the router short-circuits provider selection and
+  // the fallback chain — failover WITHIN router mode is the router's own job,
+  // and a router outage must surface as an error, not silently retry a
+  // direct provider around the scrubber and ledger.
+  if (routeFor(params.taskClass, config)) {
     return attempt(routerProvider(), params, timeoutMs);
   }
 
@@ -317,5 +334,43 @@ export async function executeJsonWithRetry(
     return second.parseError ? first : second;
   } catch {
     return first;
+  }
+}
+
+/**
+ * Routes each call by its task class: router for features switched to the
+ * router in Admin -> AI, the configured direct provider for everything else.
+ * No silent cross-mode fallback in either direction.
+ */
+class FeatureRoutedProvider implements AiProvider {
+  name: string;
+  supportsVision: boolean;
+  constructor(
+    private readonly cfg: RouterSettings,
+    private readonly direct: AiProvider | null,
+    private readonly directError: unknown,
+  ) {
+    this.name = direct?.name ?? 'vibe_router';
+    this.supportsVision = direct?.supportsVision ?? true;
+  }
+  private pick(taskClass: string | undefined): AiProvider {
+    if (routeFor(taskClass, this.cfg)) return routerProvider();
+    if (!this.direct) throw this.directError instanceof Error ? this.directError : new Error(String(this.directError));
+    return this.direct;
+  }
+  complete(params: CompletionParams): Promise<CompletionResult> {
+    return this.pick(params.taskClass).complete(params);
+  }
+  completeWithImage(params: import('./ai-provider.interface.js').VisionParams): Promise<CompletionResult> {
+    return this.pick(params.taskClass).completeWithImage(params);
+  }
+  testConnection(signal?: AbortSignal) {
+    return this.pick(undefined).testConnection(signal);
+  }
+  estimateCost(inputTokens: number, outputTokens: number): number {
+    return this.direct ? this.direct.estimateCost(inputTokens, outputTokens) : 0;
+  }
+  listModels(signal?: AbortSignal): Promise<string[]> {
+    return this.direct?.listModels ? this.direct.listModels(signal) : Promise.resolve([]);
   }
 }

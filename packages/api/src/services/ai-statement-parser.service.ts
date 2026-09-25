@@ -22,7 +22,7 @@
 // debit/credit type) so the route, the upload UI, and importStatementItems are
 // unchanged except for the sign fix in the importer.
 
-import { MYBOOKS_TASK_CLASSES } from './ai-providers/vibe-router.provider.js';
+import { MYBOOKS_TASK_CLASSES, routeFor } from './ai-providers/vibe-router.provider.js';
 import fs from 'fs';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { StatementExtractionResult, StatementExtractionTransaction } from '@kis-books/shared';
@@ -35,7 +35,7 @@ import { log } from '../utils/logger.js';
 import * as aiConfigService from './ai-config.service.js';
 import * as aiPrompt from './ai-prompt.service.js';
 import * as orchestrator from './ai-orchestrator.service.js';
-import { sanitize } from './pii-sanitizer.service.js';
+import { sanitize, type SanitizerMode } from './pii-sanitizer.service.js';
 import { unwrapParsedResult } from './ai-providers/json-utils.js';
 import { renderPdfToPngPages, isRenderablePdf, isPassthroughImage } from './extraction/pdf-render.service.js';
 import { analyzePdf, routePdf, extractTextLayer } from './extraction/pdf-detect.service.js';
@@ -320,6 +320,24 @@ async function buildStatementMarkdown(
 // shape + the raw row (for openaiCompatBaseUrl).
 type PublicConfig = Awaited<ReturnType<typeof aiConfigService.getConfig>>;
 type RawConfig = Awaited<ReturnType<typeof aiConfigService.getRawConfig>>;
+/**
+ * Sanitizer mode for Stage-2 statement text. Routed to the Vibe AI Router,
+ * the configured local provider no longer decides where the text goes, so
+ * scrub strictly unless the admin attested the router keeps statements on
+ * this box. Otherwise the provider decides (local → none, cloud → strict).
+ */
+export function statementPiiMode(
+  extractProvider: string,
+  rawConfig: { openaiCompatBaseUrl?: string | null; routerEnabled?: boolean | null; routerFeatures?: unknown; routerStatementsOnBox?: boolean | null },
+): SanitizerMode {
+  if (routeFor(MYBOOKS_TASK_CLASSES.STATEMENT_EXTRACT, rawConfig)) {
+    return rawConfig.routerStatementsOnBox ? 'none' : 'strict';
+  }
+  return orchestrator.piiModeFor(extractProvider, 'ocr_statement', {
+    openaiCompatBaseUrl: rawConfig.openaiCompatBaseUrl ?? null,
+  });
+}
+
 export function resolveExtractProvider(
   config: PublicConfig,
   rawConfig: RawConfig,
@@ -562,9 +580,7 @@ async function executePipeline(
   // 'none' (nothing leaves the box → full fidelity); for Anthropic it resolves
   // to 'strict' so only PII-scrubbed text egresses.
   await orchestrator.setStage(jobId, 'extracting');
-  const piiMode = orchestrator.piiModeFor(extractProvider, 'ocr_statement', {
-    openaiCompatBaseUrl: rawConfig.openaiCompatBaseUrl,
-  });
+  const piiMode = statementPiiMode(extractProvider, rawConfig);
   const splitIndex = Math.min(400, Math.floor(markdown.length * 0.15));
   const headerSan = sanitize(markdown.slice(0, splitIndex), piiMode);
   const bodySan = sanitize(markdown.slice(splitIndex), piiMode);

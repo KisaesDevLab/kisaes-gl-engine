@@ -1655,6 +1655,23 @@ features are available. Go to **Admin → AI Processing →** to set up.
 - Ollama (self-hosted models — no API key required)
 - OpenAI-compatible (self-hosted: llama.cpp, LM Studio, vLLM)
 
+### Vibe AI Router (per feature)
+Admin → AI has a **Vibe AI Router** card (super admin). Once the router is
+connected with `vibe enable` (VIBE_AI_ROUTER_URL + VIBE_AI_TOKEN), an admin can
+turn it on and choose **Direct** or **Router** for each feature:
+categorization and AI judgment, receipt reading, bill reading, document type
+detection, bank statement extraction and check reads, vendor lookups, chat,
+report narratives, Trial Balance tax mapping, and Close Review AI. Changes
+apply immediately. Direct features keep using the providers on the page.
+GLM-OCR page reading and the local extraction model are always direct.
+Statements default to Direct; routing them asks for confirmation, scrubs
+statement text of personal details unless the admin ticks "the router keeps
+bank statements on this server", and only sends check images with that box
+or cloud vision on. Newly routing a feature requires companies to re-accept
+AI consent. A router outage fails the routed feature (no silent fallback to
+direct). The old VIBE_AI_MODE=router env switch still works until an admin
+saves a choice here; in that mode everything except statements is routed.
+
 ### AI Transaction Categorization
 When bank feed items are imported (via Plaid or CSV), AI can automatically assign expense
 or income categories.

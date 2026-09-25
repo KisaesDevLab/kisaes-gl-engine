@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-25T18:12:30.987Z",
+  "generatedAt": "2026-09-25T18:31:15.646Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -18,7 +18,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 116919
+    "totalBytes": 118070
   },
   "screens": [
     {
@@ -1623,6 +1623,7 @@
     "Email (SMTP) Configuration",
     "Using Gmail as the SMTP Server",
     "AI Processing Overview",
+    "Vibe AI Router (per feature)",
     "AI Transaction Categorization",
     "Receipt OCR",
     "Bill OCR / Document Scanning",

@@ -153,6 +153,18 @@ aiRouter.post('/admin/test-glm-ocr', authenticate, requireSuperAdmin, aiAdminTes
   res.json(result);
 });
 
+// Reachability test for the Vibe AI Router (GET /healthz on the router).
+aiRouter.post('/admin/test-router', authenticate, requireSuperAdmin, aiAdminTestLimiter, async (req, res) => {
+  const { routerAvailable, routerProvider } = await import('../services/ai-providers/vibe-router.provider.js');
+  if (!routerAvailable()) {
+    res.json({ success: false, error: 'The AI Router is not set up on this server (VIBE_AI_ROUTER_URL and VIBE_AI_TOKEN).' });
+    return;
+  }
+  const result = await routerProvider().testConnection();
+  log.warn({ component: 'ai', event: 'ai_router_test', success: result.success, error: result.error, userId: req.userId, ip: req.ip });
+  res.json(result);
+});
+
 // Real end-to-end test for a single function ("task"). Runs an actual
 // JSON completion through the function's resolved provider + options +
 // thinking + timeout + fallback chain, unlike test/:provider which only

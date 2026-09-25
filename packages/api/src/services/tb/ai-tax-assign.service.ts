@@ -22,7 +22,7 @@ import {
 import * as aiConfigService from '../ai-config.service.js';
 import * as orchestrator from '../ai-orchestrator.service.js';
 import { assertCategorizationEnabled } from '../ai-categorization.service.js';
-import { executeJsonWithRetry } from '../ai-providers/index.js';
+import { executeJsonWithRetry, MYBOOKS_TASK_CLASSES } from '../ai-providers/index.js';
 import { validateModelOutput } from '../ai-providers/json-utils.js';
 import { AppError } from '../../utils/errors.js';
 import { log } from '../../utils/logger.js';
@@ -190,6 +190,7 @@ export async function suggestAssignments(
     const result = await executeJsonWithRetry(
       {
         systemPrompt,
+        taskClass: MYBOOKS_TASK_CLASSES.TB_TAX_ASSIGN,
         userPrompt: `Accounts to map (id | number name | type):\n${accountList}`,
         responseFormat: 'json',
         maxTokens: params.maxTokens,
@@ -313,6 +314,7 @@ export async function aiDiagnostics(
     const result = await executeJsonWithRetry(
       {
         systemPrompt,
+        taskClass: MYBOOKS_TASK_CLASSES.TB_TAX_ASSIGN,
         userPrompt: `Workpaper rows (id | number name | type | columns | prior-year adjusted | assigned code):\n${dataset}`,
         responseFormat: 'json',
         maxTokens: params.maxTokens,

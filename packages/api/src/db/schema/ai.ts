@@ -80,6 +80,14 @@ export const aiConfig = pgTable('ai_config', {
   // acknowledgment captured in adminDisclosureAcceptedAt.
   piiProtectionLevel: varchar('pii_protection_level', { length: 20 }).notNull().default('strict'),
   cloudVisionEnabled: boolean('cloud_vision_enabled').notNull().default(false),
+  // Vibe AI Router, per feature (migration 0185). router_enabled NULL means
+  // "never set in the UI": fall back to the legacy VIBE_AI_MODE env switch.
+  // router_features maps a router task class to 'router' | 'direct'.
+  routerEnabled: boolean('router_enabled'),
+  routerFeatures: jsonb('router_features').notNull().default({}),
+  // Admin attests the router keeps bank statements on-box (local_only class),
+  // so routed statement text may skip PII scrubbing. Default: scrub.
+  routerStatementsOnBox: boolean('router_statements_on_box').notNull().default(false),
   adminDisclosureAcceptedAt: timestamp('admin_disclosure_accepted_at', { withTimezone: true }),
   adminDisclosureAcceptedBy: uuid('admin_disclosure_accepted_by'),
   disclosureVersion: integer('disclosure_version').notNull().default(1),

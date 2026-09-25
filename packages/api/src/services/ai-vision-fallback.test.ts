@@ -12,6 +12,8 @@ const mocks = vi.hoisted(() => ({
   getProvider: vi.fn(),
   hasCredentials: vi.fn(),
   assertCloudVisionAllowed: vi.fn(),
+  routeFor: vi.fn(),
+  routerComplete: vi.fn(),
 }));
 
 vi.mock('./ai-providers/index.js', () => ({
@@ -20,7 +22,10 @@ vi.mock('./ai-providers/index.js', () => ({
   // MIG-2: the chain consults the mode before building attempts; these
   // suites exercise the DIRECT chain, so pin it.
   aiMode: () => 'direct',
-  routerProvider: () => { throw new Error('router provider not expected in direct-mode tests'); },
+  // Per-feature routing: these suites exercise the DIRECT chain.
+  routeFor: (...a: unknown[]) => mocks.routeFor(...a),
+  MYBOOKS_TASK_CLASSES: { STATEMENT_EXTRACT: 'mybooks_statement_extract', RECEIPT_EXTRACT: 'mybooks_receipt_extract' },
+  routerProvider: () => ({ completeWithImage: (...a: unknown[]) => mocks.routerComplete(...a) }),
 }));
 vi.mock('./ai-orchestrator.service.js', () => ({
   assertCloudVisionAllowed: (...a: unknown[]) => mocks.assertCloudVisionAllowed(...a),
@@ -52,6 +57,7 @@ beforeEach(() => {
   for (const fn of Object.values(mocks)) fn.mockReset();
   mocks.hasCredentials.mockReturnValue(false);
   mocks.assertCloudVisionAllowed.mockResolvedValue(undefined);
+  mocks.routeFor.mockReturnValue(false);
 });
 
 describe('completeVisionWithFallback', () => {
@@ -120,5 +126,24 @@ describe('completeVisionWithFallback', () => {
     const res = await completeVisionWithFallback(PARAMS, { ...CTX, primaryModel: 'qwen3.5:35b-a3b' });
     expect(res.parseError).toBe('empty');
     expect(mocks.getProvider).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses to send routed statement images without an on-box or cloud-vision opt-in', async () => {
+    mocks.routeFor.mockReturnValue(true);
+    const stmt = { ...PARAMS, taskClass: 'mybooks_statement_extract' };
+    await expect(completeVisionWithFallback(stmt, { ...CTX, rawConfig: {} as never })).rejects.toThrow(/not sent to the AI Router/);
+    expect(mocks.routerComplete).not.toHaveBeenCalled();
+
+    mocks.routerComplete.mockResolvedValue(ok('router-model'));
+    const res = await completeVisionWithFallback(stmt, { ...CTX, rawConfig: { routerStatementsOnBox: true } as never });
+    expect(res.model).toBe('router-model');
+  });
+
+  it('routes other image features without the statement opt-in', async () => {
+    mocks.routeFor.mockReturnValue(true);
+    mocks.routerComplete.mockResolvedValue(ok('router-model'));
+    const res = await completeVisionWithFallback({ ...PARAMS, taskClass: 'mybooks_receipt_extract' }, CTX);
+    expect(res.model).toBe('router-model');
+    expect(mocks.getProvider).not.toHaveBeenCalled();
   });
 });

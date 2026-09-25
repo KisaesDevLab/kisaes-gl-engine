@@ -95,6 +95,10 @@ export const aiConfigUpdateSchema = z.object({
   monthlyBudgetLimit: z.number().nullable().optional(),
   piiProtectionLevel: z.enum(['strict', 'standard', 'permissive']).optional(),
   cloudVisionEnabled: z.boolean().optional(),
+  // Vibe AI Router, per feature. Keys are router task classes.
+  routerEnabled: z.boolean().optional(),
+  routerFeatures: z.record(z.string().regex(/^mybooks_[a-z_]+$/), z.enum(['router', 'direct'])).optional(),
+  routerStatementsOnBox: z.boolean().optional(),
   // Chat support fields (tier-2 consent flow, see AI_CHAT_SUPPORT_PLAN).
   chatSupportEnabled: z.boolean().optional(),
   chatProvider: z.string().nullable().optional(),

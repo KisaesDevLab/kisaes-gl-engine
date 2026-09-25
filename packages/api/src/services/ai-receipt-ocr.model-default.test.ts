@@ -68,6 +68,9 @@ vi.mock('./ai-providers/index.js', () => ({
   // Anthropic step is added (the primary MiniCPM attempt succeeds first).
   hasCredentials: () => false,
   aiMode: () => 'direct',
+  // Per-feature routing: these suites exercise the DIRECT chain.
+  routeFor: () => false,
+  MYBOOKS_TASK_CLASSES: { STATEMENT_EXTRACT: 'mybooks_statement_extract', RECEIPT_EXTRACT: 'mybooks_receipt_extract' },
   routerProvider: () => { throw new Error('router provider not expected in direct-mode tests'); },
 }));
 

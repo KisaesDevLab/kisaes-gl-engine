@@ -12,8 +12,9 @@ import {
   aiMode,
   registerMybooksTaskClasses,
   validateAiModeEnv,
+  routeFor,
 } from './vibe-router.provider.js';
-import { executeWithFallback } from './index.js';
+import { executeWithFallback, getProvider } from './index.js';
 
 const ENV_KEYS = ['VIBE_AI_MODE', 'VIBE_AI_ROUTER_URL', 'VIBE_AI_TOKEN'] as const;
 let savedEnv: Record<string, string | undefined>;
@@ -142,7 +143,7 @@ describe('executeWithFallback (router mode)', () => {
 });
 
 describe('registerMybooksTaskClasses', () => {
-  it('declares all eight classes in router mode only', async () => {
+  it('declares every class whenever the router is configured', async () => {
     const { calls, fn } = captureFetch(
       () => new Response(JSON.stringify({ registered: [] }), { status: 200 }),
     );
@@ -156,14 +157,78 @@ describe('registerMybooksTaskClasses', () => {
       'mybooks_doc_classify',
       'mybooks_receipt_extract',
       'mybooks_report_narrative',
+      'mybooks_close_review',
       'mybooks_statement_extract',
+      'mybooks_tb_tax_assign',
       'mybooks_txn_categorize',
       'mybooks_vendor_enrich',
-    ]);
+    ].sort());
 
-    process.env['VIBE_AI_MODE'] = 'direct';
+    // No router configured → nothing to register.
+    const savedUrl = process.env['VIBE_AI_ROUTER_URL'];
+    delete process.env['VIBE_AI_ROUTER_URL'];
     registerMybooksTaskClasses({ fetchImpl: fn, maxAttempts: 1, log: () => {} });
+    process.env['VIBE_AI_ROUTER_URL'] = savedUrl;
     await new Promise((r) => setTimeout(r, 30));
     expect(calls.length).toBe(1);
+  });
+});
+
+describe('routeFor — per-feature routing', () => {
+  const STMT = MYBOOKS_TASK_CLASSES.STATEMENT_EXTRACT;
+  const CAT = MYBOOKS_TASK_CLASSES.TXN_CATEGORIZE;
+
+  it('is always direct without a router, without a task class, or when switched off', () => {
+    delete process.env['VIBE_AI_TOKEN'];
+    expect(routeFor(CAT, { routerEnabled: true, routerFeatures: { [CAT]: 'router' } })).toBe(false);
+    process.env['VIBE_AI_TOKEN'] = 'tok';
+    expect(routeFor(undefined, { routerEnabled: true })).toBe(false);
+    expect(routeFor(CAT, { routerEnabled: false, routerFeatures: { [CAT]: 'router' } })).toBe(false);
+  });
+
+  it('follows the per-feature choice once the router is on in the UI', () => {
+    process.env['VIBE_AI_MODE'] = 'direct';
+    const cfg = { routerEnabled: true, routerFeatures: { [CAT]: 'router' } };
+    expect(routeFor(CAT, cfg)).toBe(true);
+    // Unset features default to direct in UI mode.
+    expect(routeFor(MYBOOKS_TASK_CLASSES.CHAT, cfg)).toBe(false);
+  });
+
+  it('legacy env mode routes everything except statements until the UI takes over', () => {
+    process.env['VIBE_AI_MODE'] = 'router';
+    expect(routeFor(CAT, { routerEnabled: null })).toBe(true);
+    expect(routeFor(STMT, { routerEnabled: null })).toBe(false);
+    expect(routeFor(STMT, { routerEnabled: null, routerFeatures: { [STMT]: 'router' } })).toBe(true);
+    // An explicit UI "off" overrides the env switch.
+    expect(routeFor(CAT, { routerEnabled: false })).toBe(false);
+  });
+});
+
+describe('getProvider — routes each call by its task class', () => {
+  it('sends a routed feature to the router and keeps the rest direct', async () => {
+    process.env['VIBE_AI_MODE'] = 'direct';
+    const { calls, fn } = captureFetch(() => completionResponse());
+    _setRouterProviderForTests(new VibeRouterProvider({ baseUrl: 'http://router.test:8220', token: 'tok', fetchImpl: fn }));
+    const cfg = {
+      routerEnabled: true,
+      routerFeatures: { [MYBOOKS_TASK_CLASSES.CHAT]: 'router' },
+      openaiCompatBaseUrl: 'http://local.test:8000/v1',
+      openaiCompatMode: 'compat',
+    };
+    const p = getProvider('openai_compat', cfg);
+    const routed = await p.complete({ taskClass: MYBOOKS_TASK_CLASSES.CHAT, systemPrompt: 's', userPrompt: 'u' });
+    expect(routed.provider).toBe('vibe_router');
+    expect(calls.length).toBe(1);
+    // Statements stay on the direct provider: it errors trying to reach the
+    // (fake) local server, and the router sees no second call.
+    await expect(p.complete({ taskClass: MYBOOKS_TASK_CLASSES.STATEMENT_EXTRACT, systemPrompt: 's', userPrompt: 'u' })).rejects.toThrow();
+    expect(calls.length).toBe(1);
+  });
+
+  it('returns the plain direct provider when the router is off', () => {
+    process.env['VIBE_AI_MODE'] = 'direct';
+    const p = getProvider('openai_compat', { routerEnabled: false, openaiCompatBaseUrl: 'http://local.test:8000/v1', openaiCompatMode: 'compat' });
+    expect(p.name).not.toBe('vibe_router');
+    expect(p.constructor.name).not.toBe('FeatureRoutedProvider');
   });
 });

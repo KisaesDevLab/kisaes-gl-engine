@@ -16,6 +16,7 @@
 // Follows the same shape as chatSupportEnabled (chat.service §60-99)
 // so existing "is any company opted in" queries compose cleanly.
 
+import { ROUTER_FEATURES, routeFor } from './ai-providers/vibe-router.provider.js';
 import { eq, and, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { aiConfig, companies } from '../db/schema/index.js';
@@ -178,6 +179,8 @@ export interface DataFlowSnapshot {
   chatProvider: string | null;
   piiProtectionLevel: string;
   cloudVisionEnabled: boolean;
+  /** Router task classes currently routed (optional for older snapshots). */
+  routedFeatures?: string[];
 }
 
 export async function snapshotDataFlow(): Promise<DataFlowSnapshot> {
@@ -190,6 +193,8 @@ export async function snapshotDataFlow(): Promise<DataFlowSnapshot> {
     chatProvider: config?.chatProvider ?? null,
     piiProtectionLevel: config?.piiProtectionLevel ?? 'strict',
     cloudVisionEnabled: !!config?.cloudVisionEnabled,
+    // Features that currently send data to the Vibe AI Router.
+    routedFeatures: ROUTER_FEATURES.map((f) => f.taskClass).filter((tc) => routeFor(tc, config ?? null)).sort(),
   };
 }
 
@@ -216,6 +221,12 @@ export function changeRequiresReconsent(prev: DataFlowSnapshot, next: DataFlowSn
   // Cloud vision: turning on requires re-consent.
   if (!prev.cloudVisionEnabled && next.cloudVisionEnabled) {
     return 'cloud_vision_enabled';
+  }
+  // A feature newly sent to the Vibe AI Router: the router's policy, not the
+  // provider the company agreed to, now decides where that data goes.
+  const newlyRouted = (next.routedFeatures ?? []).filter((f) => !(prev.routedFeatures ?? []).includes(f));
+  if (newlyRouted.length > 0) {
+    return `router_enabled:${newlyRouted.join(',')}`;
   }
   // Provider change per task. Self-hosted → cloud bumps; cloud →
   // self-hosted is more protective; cloud → different cloud bumps

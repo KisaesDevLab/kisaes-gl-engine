@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+import { ROUTER_FEATURES, routeFor, routerAvailable, routerOn } from './ai-providers/vibe-router.provider.js';
 import { eq, sql } from 'drizzle-orm';
 import type { AiConfigUpdateInput, AiFunctionKey, TaskOptions, ExtractionOptions } from '@kis-books/shared';
 import { db } from '../db/index.js';
@@ -107,6 +108,19 @@ export async function getConfig() {
     // PII protection
     piiProtectionLevel: config.piiProtectionLevel ?? 'strict',
     cloudVisionEnabled: !!config.cloudVisionEnabled,
+    // Vibe AI Router, per feature. routerAvailable = URL + token in env.
+    router: {
+      available: routerAvailable(),
+      enabled: routerOn(config),
+      // null = never saved in the UI (legacy VIBE_AI_MODE env decides).
+      enabledSetting: config.routerEnabled ?? null,
+      statementsOnBox: !!config.routerStatementsOnBox,
+      features: ROUTER_FEATURES.map((f) => ({
+        taskClass: f.taskClass,
+        label: f.label,
+        routed: routeFor(f.taskClass, config),
+      })),
+    },
     adminDisclosureAcceptedAt: config.adminDisclosureAcceptedAt ?? null,
     adminDisclosureAcceptedBy: config.adminDisclosureAcceptedBy ?? null,
     disclosureVersion: config.disclosureVersion ?? 1,
@@ -265,6 +279,17 @@ export async function updateConfig(input: AiConfigUpdateInput, userId?: string) 
     updates.piiProtectionLevel = lvl;
   }
   if (input.cloudVisionEnabled !== undefined) updates.cloudVisionEnabled = !!input.cloudVisionEnabled;
+  if (input.routerEnabled !== undefined) {
+    if (input.routerEnabled && !routerAvailable()) {
+      throw AppError.badRequest('The AI Router is not set up on this server (VIBE_AI_ROUTER_URL and VIBE_AI_TOKEN). Run "vibe enable" first.');
+    }
+    updates.routerEnabled = input.routerEnabled;
+  }
+  if (input.routerFeatures !== undefined) {
+    // Merge so saving one row never resets the others.
+    updates.routerFeatures = { ...((config.routerFeatures as Record<string, string>) || {}), ...input.routerFeatures };
+  }
+  if (input.routerStatementsOnBox !== undefined) updates.routerStatementsOnBox = !!input.routerStatementsOnBox;
   // Per-function settings: deep-merge per function so a partial update
   // (one function, one key) doesn't wipe the other functions' settings.
   // A key set to null is preserved as null (meaning "use the default"),

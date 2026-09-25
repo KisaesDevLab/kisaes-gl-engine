@@ -22,6 +22,7 @@ import { extractJsonForResult } from './json-utils.js';
 
 export type AiMode = 'direct' | 'router';
 
+/** Legacy deployment-wide switch. Routing decisions use routeFor(). */
 export function aiMode(): AiMode {
   return process.env['VIBE_AI_MODE'] === 'router' ? 'router' : 'direct';
 }
@@ -62,7 +63,81 @@ export const MYBOOKS_TASK_CLASSES = {
   CHAT: 'mybooks_chat',
   /** NEW: client-facing report narration */
   REPORT_NARRATIVE: 'mybooks_report_narrative',
+  /** NEW: Trial Balance AI tax-code mapping */
+  TB_TAX_ASSIGN: 'mybooks_tb_tax_assign',
+  /** NEW: month-end close review judgment (explanations, questions, accruals) */
+  CLOSE_REVIEW: 'mybooks_close_review',
 } as const;
+
+// ── Per-feature routing (migration 0185) ─────────────────────────────
+//
+// Router vs direct is chosen PER FEATURE from Admin -> AI, not by one env
+// switch. The router URL + token stay in env (minted by `vibe enable`);
+// the database says which features use it. A call with no task class is
+// always direct. Router mode still never falls back to direct on failure.
+
+export interface RouterFeatureDef {
+  taskClass: string;
+  label: string;
+}
+
+/** Features an admin can route, in display order. */
+export const ROUTER_FEATURES: readonly RouterFeatureDef[] = [
+  { taskClass: MYBOOKS_TASK_CLASSES.TXN_CATEGORIZE, label: 'Bank transaction categorization and AI judgment' },
+  { taskClass: MYBOOKS_TASK_CLASSES.RECEIPT_EXTRACT, label: 'Receipt reading' },
+  { taskClass: MYBOOKS_TASK_CLASSES.BILL_EXTRACT, label: 'Bill reading (Bill Capture)' },
+  { taskClass: MYBOOKS_TASK_CLASSES.DOC_CLASSIFY, label: 'Document type detection' },
+  { taskClass: MYBOOKS_TASK_CLASSES.STATEMENT_EXTRACT, label: 'Bank statement extraction and check reads' },
+  { taskClass: MYBOOKS_TASK_CLASSES.VENDOR_ENRICH, label: 'Vendor lookups' },
+  { taskClass: MYBOOKS_TASK_CLASSES.CHAT, label: 'Chat assistant' },
+  { taskClass: MYBOOKS_TASK_CLASSES.REPORT_NARRATIVE, label: 'Report narratives' },
+  { taskClass: MYBOOKS_TASK_CLASSES.TB_TAX_ASSIGN, label: 'Trial Balance tax-code mapping' },
+  { taskClass: MYBOOKS_TASK_CLASSES.CLOSE_REVIEW, label: 'Close Review AI' },
+];
+
+export interface RouterSettings {
+  routerEnabled?: boolean | null;
+  routerFeatures?: unknown;
+}
+
+/** The router URL and token are configured (env). */
+export function routerAvailable(): boolean {
+  return !!process.env['VIBE_AI_ROUTER_URL'] && !!process.env['VIBE_AI_TOKEN'];
+}
+
+function legacyEnvRouter(cfg: RouterSettings | null | undefined): boolean {
+  return (cfg?.routerEnabled === null || cfg?.routerEnabled === undefined)
+    && process.env['VIBE_AI_MODE'] === 'router';
+}
+
+/** The router is switched on at all (UI setting, or the legacy env switch). */
+export function routerOn(cfg: RouterSettings | null | undefined): boolean {
+  if (!routerAvailable()) return false;
+  return cfg?.routerEnabled === true || legacyEnvRouter(cfg);
+}
+
+/**
+ * Should a call for this task class go to the router?
+ *  - no router configured, router off, or no task class → direct
+ *  - an explicit per-feature choice wins
+ *  - otherwise: direct, except on legacy env-router installs, where every
+ *    feature but statement extraction keeps routing as before. Statements
+ *    default to direct because routing them changes privacy handling and
+ *    drops the local model's thinking / context settings.
+ */
+export function routeFor(taskClass: string | undefined, cfg: RouterSettings | null | undefined): boolean {
+  if (!taskClass || !routerOn(cfg)) return false;
+  const features = (cfg?.routerFeatures && typeof cfg.routerFeatures === 'object')
+    ? cfg.routerFeatures as Record<string, unknown>
+    : {};
+  const explicit = features[taskClass];
+  if (explicit === 'router') return true;
+  if (explicit === 'direct') return false;
+  return legacyEnvRouter(cfg) && taskClass !== MYBOOKS_TASK_CLASSES.STATEMENT_EXTRACT;
+}
+
+/** Default wall-clock cap for a router call that carries no signal. */
+export const ROUTER_DEFAULT_TIMEOUT_MS = Number(process.env['VIBE_AI_ROUTER_TIMEOUT_MS'] ?? 300_000);
 
 function requireTaskClass(params: CompletionParams): string {
   // Fail closed: an unmapped call site must not silently ride on some
@@ -127,7 +202,9 @@ export class VibeRouterProvider implements AiProvider {
         ...(params.responseFormat === 'json' ? { responseFormat: { type: 'json_object' as const } } : {}),
         ...(params.userId ? { userId: params.userId } : {}),
         ...(params.companyRef ? { clientRef: params.companyRef } : {}),
-        ...(params.signal ? { signal: params.signal } : {}),
+        // A stalled router call must not hang a job (statement imports call
+        // providers directly, with no outer timeout).
+        signal: params.signal ?? AbortSignal.timeout(ROUTER_DEFAULT_TIMEOUT_MS),
       });
       const truncated = result.finishReason === 'length';
       const text = result.content;
@@ -209,7 +286,7 @@ export function registerMybooksTaskClasses(o?: {
   maxAttempts?: number;
   log?: (level: 'info' | 'warn' | 'error', msg: string) => void;
 }): void {
-  if (aiMode() !== 'router') return;
+  if (!routerAvailable()) return;
   const log =
     o?.log ?? ((level, msg) => console[level === 'info' ? 'log' : level](`[vibe-router] ${msg}`));
   const client = new VibeAiClient({
@@ -237,6 +314,8 @@ export function registerMybooksTaskClasses(o?: {
           { key: MYBOOKS_TASK_CLASSES.VENDOR_ENRICH, description: 'Merchant/vendor enrichment lookups', requires: { json_schema: true }, defaultMaxTokens: 1024 },
           { key: MYBOOKS_TASK_CLASSES.CHAT, description: 'Bookkeeping chat assistant', requires: {}, defaultMaxTokens: 2048 },
           { key: MYBOOKS_TASK_CLASSES.REPORT_NARRATIVE, description: 'Client-facing report narration', requires: {}, defaultMaxTokens: 1024 },
+          { key: MYBOOKS_TASK_CLASSES.TB_TAX_ASSIGN, description: 'Trial Balance tax-code mapping', requires: { json_schema: true }, defaultMaxTokens: 8192 },
+          { key: MYBOOKS_TASK_CLASSES.CLOSE_REVIEW, description: 'Month-end close review judgment', requires: { json_schema: true }, defaultMaxTokens: 4096 },
         ],
       });
       log('info', 'task classes registered');

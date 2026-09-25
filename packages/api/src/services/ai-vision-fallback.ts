@@ -19,7 +19,7 @@
 // result wins; if all fail, the last result is returned so the caller's normal
 // unwrapParsed surfaces ai_parse_failed (or the last thrown error is rethrown).
 
-import { aiMode, getProvider, hasCredentials, routerProvider } from './ai-providers/index.js';
+import { getProvider, hasCredentials, routeFor, routerProvider, MYBOOKS_TASK_CLASSES } from './ai-providers/index.js';
 import type { VisionParams, CompletionResult } from './ai-providers/ai-provider.interface.js';
 import * as orchestrator from './ai-orchestrator.service.js';
 import { env } from '../config/env.js';
@@ -52,10 +52,20 @@ export async function completeVisionWithFallback(
   params: VisionParams,
   ctx: VisionFallbackCtx,
 ): Promise<CompletionResult> {
-  // MIG-2: router mode collapses the whole chain to one router call — model
-  // choice and failover are router policy's job, and the router's config-time
-  // capability gate guarantees the class's bound model can serve vision.
-  if (aiMode() === 'router') {
+  // A feature switched to the router collapses the whole chain to one
+  // router call — model choice and failover are router policy's job, and the
+  // router's config-time capability gate guarantees the class's bound model
+  // can serve vision.
+  if (routeFor(params.taskClass, ctx.rawConfig as Parameters<typeof routeFor>[1])) {
+    // Statement images (check reads) cannot be scrubbed. Sending them to the
+    // router needs the same kind of opt-in the direct chain needs for cloud
+    // vision: either the admin attests the router keeps statements on-box, or
+    // cloud vision is switched on. Otherwise fail closed; the caller keeps its
+    // local (GLM) read.
+    const raw = ctx.rawConfig as { routerStatementsOnBox?: boolean | null; cloudVisionEnabled?: boolean | null };
+    if (params.taskClass === MYBOOKS_TASK_CLASSES.STATEMENT_EXTRACT && !raw.routerStatementsOnBox && !raw.cloudVisionEnabled) {
+      throw new Error('Statement images are not sent to the AI Router unless it keeps statements on this server or cloud vision is enabled (Admin -> AI).');
+    }
     const call = routerProvider().completeWithImage(params);
     if (ctx.timeoutMs) call.catch(() => { /* swallow late rejection after timeout */ });
     return ctx.timeoutMs
