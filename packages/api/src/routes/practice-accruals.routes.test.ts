@@ -232,6 +232,30 @@ describe('accruals', () => {
     expect(list[0].status).toBe('completed');
   });
 
+  it('Post all keeps going when a row is posted by someone else at the same time', async () => {
+    await request('POST', '/schedules', annualPolicy());
+    await request('POST', '/schedules', { ...annualPolicy(), description: 'Second policy' });
+    await request('POST', '/schedules', { ...annualPolicy(), description: 'Third policy' });
+    const jul = (await request('GET', `/entries?companyId=${companyId}&periodStart=2026-07-01`)).json.entries;
+    const [all, one] = await Promise.all([
+      request('POST', '/post-all', { companyId, periodStart: '2026-07-01' }),
+      request('POST', `/entries/${jul[2].id}/post`),
+    ]);
+    expect(all.status).toBe(200);
+    expect(all.json.posted + all.json.skipped).toBe(3);
+    expect(all.json.posted + (one.status === 200 ? 1 : 0)).toBe(3);
+    const after = (await request('GET', `/entries?companyId=${companyId}&periodStart=2026-07-01`)).json.entries;
+    expect(after.every((e: { status: string }) => e.status === 'posted')).toBe(true);
+    const jes = (await db.select().from(transactions).where(eq(transactions.tenantId, tenantId))).filter((t) => t.txnType === 'journal_entry');
+    expect(jes).toHaveLength(3);
+  });
+
+  it('reports a headerless first row with a typo instead of dropping it', async () => {
+    const r = await request('POST', '/import', { companyId, csv: 'prepaids,Software license,1400,6300,2026-07,600,6' });
+    expect(r.json.created).toBe(0);
+    expect(r.json.errors).toEqual([{ row: 1, error: 'Unknown kind "prepaids"' }]);
+  });
+
   it('is hidden when ACCRUALS_V1 is off', async () => {
     await db.update(tenantFeatureFlags).set({ enabled: false }).where(eq(tenantFeatureFlags.tenantId, tenantId));
     expect((await request('GET', `/schedules?companyId=${companyId}`)).status).toBe(404);

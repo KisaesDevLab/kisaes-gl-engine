@@ -220,7 +220,7 @@ export async function postEntry(tenantId: string, entryId: string, userId?: stri
     .innerJoin(accrualSchedules, eq(accrualSchedules.id, accrualEntries.scheduleId))
     .where(and(eq(accrualEntries.tenantId, tenantId), eq(accrualEntries.id, entryId))).limit(1);
   if (!row) throw AppError.notFound('Entry not found');
-  if (row.e.status !== 'draft') throw AppError.badRequest('Only draft entries can be posted.');
+  if (row.e.status !== 'draft') throw AppError.badRequest('Only draft entries can be posted.', 'ACCRUAL_NOT_DRAFT');
 
   const claimed = await db.update(accrualEntries)
     .set({ status: 'posted', postedBy: userId ?? null, postedAt: new Date() })
@@ -245,7 +245,17 @@ export async function postEntry(tenantId: string, entryId: string, userId?: stri
         .where(and(eq(accrualEntries.id, entryId), eq(accrualEntries.status, 'posted'), sql`${accrualEntries.transactionId} IS NULL`));
       throw err;
     }
-    await db.update(accrualEntries).set({ transactionId }).where(eq(accrualEntries.id, entryId));
+    // Attach the journal entry only if the claim still stands. If the entry
+    // was unposted (or deleted) while the journal entry was being created,
+    // void what we just booked rather than attach it to a draft — otherwise
+    // the next Post would book the month again.
+    const attached = await db.update(accrualEntries).set({ transactionId })
+      .where(and(eq(accrualEntries.id, entryId), eq(accrualEntries.status, 'posted'), sql`${accrualEntries.transactionId} IS NULL`))
+      .returning({ id: accrualEntries.id });
+    if (attached.length === 0) {
+      await ledger.voidTransaction(tenantId, transactionId, 'Accrual entry changed while posting', userId).catch(() => undefined);
+      throw AppError.badRequest('This entry changed while it was posting, so the journal entry was voided. Try again.', 'ACCRUAL_CONFLICT');
+    }
   }
   await maybeComplete(row.s.id);
   await auditLog(tenantId, 'update', 'accrual_entry', entryId, { status: 'draft' }, { status: 'posted', transactionId }, userId);
@@ -256,11 +266,20 @@ export async function postEntry(tenantId: string, entryId: string, userId?: stri
 export async function postAllForMonth(tenantId: string, companyId: string | null, periodStart: string, userId?: string) {
   const rows = (await entriesForMonth(tenantId, companyId, periodStart)) as Array<{ id: string; status: string }>;
   let posted = 0;
+  let skipped = 0;
   for (const r of rows.filter((x) => x.status === 'draft')) {
-    await postEntry(tenantId, r.id, userId);
-    posted++;
+    try {
+      await postEntry(tenantId, r.id, userId);
+      posted++;
+    } catch (err) {
+      // Someone else posted (or changed) this one since the list was read:
+      // skip it and keep going. Anything else (a locked month) stops here.
+      const code = err instanceof AppError ? err.code : undefined;
+      if (code === 'ACCRUAL_NOT_DRAFT' || code === 'ACCRUAL_ALREADY_POSTED' || code === 'ACCRUAL_CONFLICT') { skipped++; continue; }
+      throw err;
+    }
   }
-  return { posted };
+  return { posted, skipped };
 }
 
 /** Void the journal entry and put the entry back to draft. */
@@ -445,7 +464,13 @@ export async function importCsv(tenantId: string, companyId: string | null, csv:
   // A header row is optional: skip the first line only when its first cell
   // is not a schedule kind.
   const KINDS = ['prepaid', 'deferred_revenue', 'accrued_expense', 'fixed_asset'];
-  const firstRow = KINDS.includes((split(lines[0]!)[0] ?? '').toLowerCase()) ? 0 : 1;
+  // Header = first cell is not a kind AND the amount column is not a
+  // number. A data row with a typo'd kind is then reported, not dropped.
+  const head = split(lines[0]!);
+  const headAmount = (head[5] ?? '').replace(/[$,]/g, '').trim();
+  const amountIsNumber = headAmount !== '' && Number.isFinite(Number(headAmount));
+  const looksLikeHeader = !KINDS.includes((head[0] ?? '').toLowerCase()) && !amountIsNumber;
+  const firstRow = looksLikeHeader ? 1 : 0;
   if (firstRow >= lines.length) throw AppError.badRequest('The file has no rows.');
   for (let i = firstRow; i < lines.length; i++) {
     const [kind, description, balNo, recNo, start, amount, months, method] = split(lines[i]!);
