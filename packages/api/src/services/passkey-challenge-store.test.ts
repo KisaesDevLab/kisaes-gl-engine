@@ -56,3 +56,33 @@ describe('passkey challenge store — single-use semantics', () => {
     expect(await consumeAuthenticationChallenge('forged-challenge-CCCC_-')).toBe(false);
   });
 });
+
+describe('passkey challenge store — Redis connection states', () => {
+  it('redeems a challenge that was stored while Redis was unreachable', async () => {
+    // Points at a port nothing listens on. Every Redis call fails, so the
+    // challenge is memory-only and must still be redeemable exactly once.
+    await closePasskeyChallengeStore();
+    const prev = process.env['REDIS_URL'];
+    process.env['REDIS_URL'] = 'redis://127.0.0.1:1';
+    try {
+      await storeAuthenticationChallenge('offline-challenge-DDDD_-');
+      expect(await consumeAuthenticationChallenge('offline-challenge-DDDD_-')).toBe(true);
+      expect(await consumeAuthenticationChallenge('offline-challenge-DDDD_-')).toBe(false);
+    } finally {
+      await closePasskeyChallengeStore();
+      if (prev === undefined) delete process.env['REDIS_URL'];
+      else process.env['REDIS_URL'] = prev;
+    }
+  });
+
+  it('works on the very first call after the store is created', async () => {
+    // Regression: the lazily-connected client rejected its first command,
+    // so the first sign-in after an API start failed with "Challenge expired".
+    await closePasskeyChallengeStore();
+    await storeAuthenticationChallenge('first-call-challenge-EEEE_-');
+    // In prod the verify arrives seconds later, after the socket is up, so
+    // a Redis miss is trusted. Wait so the test sees the same state.
+    await new Promise((r) => setTimeout(r, 300));
+    expect(await consumeAuthenticationChallenge('first-call-challenge-EEEE_-')).toBe(true);
+  });
+});

@@ -25,6 +25,12 @@ import {
   consumeAuthenticationChallenge,
 } from './passkey-challenge-store.js';
 
+// How long the browser keeps the passkey prompt open. @simplewebauthn
+// defaults to 60s, which is too short for phone/QR (hybrid) sign-in and
+// for security keys that need a PIN. Must stay under the challenge store's
+// 5-minute TTL so the challenge is still redeemable when the prompt ends.
+const PASSKEY_CEREMONY_TIMEOUT_MS = 3 * 60 * 1000;
+
 // ─── RP Configuration ──────────────────────────────────────────
 //
 // Resolution order (vibe-distribution-plan D3):
@@ -122,6 +128,7 @@ export async function getRegistrationOptions(userId: string) {
         residentKey: 'preferred',
       },
       attestationType: 'none',
+      timeout: PASSKEY_CEREMONY_TIMEOUT_MS,
     });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
@@ -200,6 +207,7 @@ export async function getAuthenticationOptions(email?: string) {
     rpID: getRpId(),
     allowCredentials,
     userVerification: 'required',
+    timeout: PASSKEY_CEREMONY_TIMEOUT_MS,
   });
 
   await storeAuthenticationChallenge(options.challenge);

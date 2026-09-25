@@ -35,6 +35,18 @@ import { recordSecurityEvent } from '../utils/security-audit.js';
 // miss would let a second replica re-consume from its local copy a
 // challenge Redis already handed to the first replica, reopening the very
 // double-use hole this exists to close.
+//
+// One exception to "a Redis miss is final": a challenge whose Redis write
+// FAILED lives only in this process's Map (it is flagged memoryOnly). No
+// other replica can hold it, so consuming it from the Map on a Redis miss
+// cannot double-spend it. Without this, a challenge issued while Redis was
+// (re)connecting was unredeemable once Redis came back, and the user saw
+// "Challenge expired" seconds after starting a sign-in.
+//
+// The client connects lazily with the offline queue off, so a command sent
+// before the socket is ready throws instead of queueing. ensureReady() waits
+// briefly for the connection first; before it existed, the first ceremony
+// after every API start (and every Redis reconnect) failed this way.
 
 const Redis = (RedisPkg as unknown as { default?: typeof import('ioredis').default }).default
   ?? (RedisPkg as unknown as typeof import('ioredis').default);
@@ -84,10 +96,49 @@ function getClient(): RedisClient {
 
 // ─── In-memory fallback (also dual-written) ────────────────────
 
-const memory = new Map<string, { challenge: string; expires: number }>();
+// How long a store/consume waits for a not-yet-ready connection before
+// falling back to the Map. Short: this sits on the interactive login path.
+const READY_WAIT_MS = 1500;
+
+async function ensureReady(client: RedisClient): Promise<void> {
+  if (client.status === 'ready') return;
+  if (client.status === 'wait') {
+    // lazyConnect: nothing has opened the socket yet.
+    client.connect().catch(() => { /* surfaced via the 'error' handler */ });
+  } else if (client.status !== 'connecting' && client.status !== 'connect') {
+    // reconnecting / close / end: Redis is down. Fail fast to the Map
+    // instead of adding a wait to every login during an outage.
+    throw new Error(`redis not ready (${client.status})`);
+  }
+  await new Promise<void>((resolve, reject) => {
+    const done = (err?: Error) => {
+      clearTimeout(timer);
+      client.off('ready', onReady);
+      client.off('error', onFail);
+      client.off('close', onFail);
+      if (err) reject(err); else resolve();
+    };
+    const onReady = () => done();
+    const onFail = () => done(new Error('redis connection failed'));
+    const timer = setTimeout(() => done(new Error('redis not ready')), READY_WAIT_MS);
+    client.once('ready', onReady);
+    client.once('error', onFail);
+    client.once('close', onFail);
+    if (client.status === 'ready') done();
+  });
+}
+
+async function redis(): Promise<RedisClient> {
+  const client = getClient();
+  await ensureReady(client);
+  return client;
+}
+
+const memory = new Map<string, { challenge: string; expires: number; memoryOnly: boolean }>();
 
 function memSet(key: string, challenge: string): void {
-  memory.set(key, { challenge, expires: Date.now() + CHALLENGE_TTL_MS });
+  // memoryOnly starts true and is cleared once the Redis write succeeds.
+  memory.set(key, { challenge, expires: Date.now() + CHALLENGE_TTL_MS, memoryOnly: true });
   // Opportunistic sweep so abandoned ceremonies don't grow the map
   // unbounded when Redis is the active backend and the map is only a
   // fallback that rarely gets consumed.
@@ -95,6 +146,21 @@ function memSet(key: string, challenge: string): void {
   for (const [k, v] of memory.entries()) {
     if (now > v.expires) memory.delete(k);
   }
+}
+
+function markRedisBacked(key: string): void {
+  const entry = memory.get(key);
+  if (entry) entry.memoryOnly = false;
+}
+
+// After a Redis miss: redeem the local copy only if Redis never had it.
+function memGetDelIfMemoryOnly(key: string): string | null {
+  const entry = memory.get(key);
+  if (!entry || !entry.memoryOnly) {
+    memory.delete(key);
+    return null;
+  }
+  return memGetDel(key);
 }
 
 function memGetDel(key: string): string | null {
@@ -117,7 +183,8 @@ export async function storeRegistrationChallenge(userId: string, challenge: stri
   const key = REG_PREFIX + userId;
   memSet(key, challenge);
   try {
-    await getClient().set(key, challenge, 'PX', CHALLENGE_TTL_MS);
+    await (await redis()).set(key, challenge, 'PX', CHALLENGE_TTL_MS);
+    markRedisBacked(key);
   } catch {
     // Redis unreachable — the in-memory write above is the fallback.
   }
@@ -128,9 +195,12 @@ export async function consumeRegistrationChallenge(userId: string): Promise<stri
   try {
     // GETDEL: atomic read-and-burn. On success Redis is authoritative —
     // do not consult memory (see module header).
-    const value = await getClient().getdel(key);
-    memory.delete(key);
-    return value ?? null;
+    const value = await (await redis()).getdel(key);
+    if (value !== null && value !== undefined) {
+      memory.delete(key);
+      return value;
+    }
+    return memGetDelIfMemoryOnly(key);
   } catch {
     return memGetDel(key);
   }
@@ -140,7 +210,8 @@ export async function storeAuthenticationChallenge(challenge: string): Promise<v
   const key = AUTH_PREFIX + challenge;
   memSet(key, challenge);
   try {
-    await getClient().set(key, challenge, 'EX', CHALLENGE_TTL_SEC);
+    await (await redis()).set(key, challenge, 'EX', CHALLENGE_TTL_SEC);
+    markRedisBacked(key);
   } catch {
     // Redis unreachable — in-memory write is the fallback.
   }
@@ -149,10 +220,13 @@ export async function storeAuthenticationChallenge(challenge: string): Promise<v
 export async function consumeAuthenticationChallenge(challenge: string): Promise<boolean> {
   const key = AUTH_PREFIX + challenge;
   try {
-    const value = await getClient().getdel(key);
-    memory.delete(key);
+    const value = await (await redis()).getdel(key);
     // The key IS the challenge, so any non-null hit is an exact match.
-    return value !== null && value !== undefined;
+    if (value !== null && value !== undefined) {
+      memory.delete(key);
+      return true;
+    }
+    return memGetDelIfMemoryOnly(key) !== null;
   } catch {
     return memGetDel(key) !== null;
   }
