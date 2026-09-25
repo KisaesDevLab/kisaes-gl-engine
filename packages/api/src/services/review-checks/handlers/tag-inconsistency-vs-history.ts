@@ -7,13 +7,14 @@ import type { FindingDraft } from '@kis-books/shared';
 import { db } from '../../../db/index.js';
 import type { CheckHandler } from './index.js';
 import { money, summaryLine } from './present.js';
+import { historyWindowClause, periodOrFallback } from './period.js';
 
 // `tag_inconsistency_vs_history` — find a journal_line whose
 // (account_id, tag_id) combination is rare for that vendor
 // compared to its history. Heuristic: vendor has ≥5 prior
 // transactions on this account, the dominant tag covers ≥80%
 // of them, and the current line uses a different tag.
-export const handler: CheckHandler = async (tenantId, companyId): Promise<FindingDraft[]> => {
+export const handler: CheckHandler = async (tenantId, companyId, params): Promise<FindingDraft[]> => {
   const companyClause = companyId
     ? sql`AND t.company_id = ${companyId}`
     : sql``;
@@ -39,7 +40,7 @@ export const handler: CheckHandler = async (tenantId, companyId): Promise<Findin
         ${companyClause}
         AND t.contact_id IS NOT NULL
         AND t.status = 'posted'  -- voided txns keep their lines; don't let them shape the baseline
-        AND t.created_at < now() - INTERVAL '7 days'  -- exclude very recent so dominant is stable
+        ${historyWindowClause(params, 't.txn_date', 12, sql`AND t.created_at < now() - INTERVAL '7 days'`)}
       GROUP BY t.contact_id, jl.account_id, jl.tag_id
     ),
     vendor_account_totals AS (
@@ -80,7 +81,7 @@ export const handler: CheckHandler = async (tenantId, companyId): Promise<Findin
     WHERE t.tenant_id = ${tenantId}
       ${companyClause}
       AND t.status = 'posted'
-      AND t.created_at >= now() - INTERVAL '30 days'
+      ${periodOrFallback(params, 't.txn_date', sql`AND t.created_at >= now() - INTERVAL '30 days'`)}
       AND d.share >= 0.8
       AND (jl.tag_id IS DISTINCT FROM d.dominant_tag_id)
     LIMIT 500

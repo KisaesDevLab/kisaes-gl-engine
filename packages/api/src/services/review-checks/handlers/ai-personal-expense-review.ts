@@ -10,6 +10,7 @@ import * as orchestrator from '../../ai-orchestrator.service.js';
 import { sanitize } from '../../pii-sanitizer.service.js';
 import { checkTenantTaskConsent } from '../../ai-consent.service.js';
 import { MYBOOKS_TASK_CLASSES } from '../../ai-providers/vibe-router.provider.js';
+import { periodOrFallback } from './period.js';
 import { executeWithFallback } from '../../ai-providers/index.js';
 import type { CheckHandler } from './index.js';
 import { money, summaryLine } from './present.js';
@@ -81,7 +82,7 @@ export const handler: CheckHandler = async (tenantId, companyId, params): Promis
       AND t.txn_type = 'expense'
       AND t.status = 'posted'
       AND t.total >= ${minAmountDollars}
-      AND t.txn_date >= (CURRENT_DATE - INTERVAL '${sql.raw(String(lookbackDays))} days')
+      ${periodOrFallback(params, 't.txn_date', sql`AND t.txn_date >= (CURRENT_DATE - INTERVAL '${sql.raw(String(lookbackDays))} days')`)}
     ORDER BY t.total DESC
     LIMIT ${maxCallsPerRun}
   `);

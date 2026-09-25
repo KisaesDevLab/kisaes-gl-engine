@@ -13,7 +13,7 @@ import { money, summaryLine } from './present.js';
 // above the materiality threshold. Default $10,000; per-tenant
 // override common.
 export const handler: CheckHandler = async (tenantId, companyId, params): Promise<FindingDraft[]> => {
-  const threshold = Number(params['thresholdAmount'] ?? 10000);
+  const threshold = Number(params['thresholdAmount'] ?? 1000);
   const companyClause = companyId
     ? sql`AND t.company_id = ${companyId}`
     : sql``;

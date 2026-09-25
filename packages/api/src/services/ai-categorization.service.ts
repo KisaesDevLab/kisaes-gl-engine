@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+import { resolveCompanyForConnection } from './feed-item-company.service.js';
 import { MYBOOKS_TASK_CLASSES } from './ai-providers/vibe-router.provider.js';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
@@ -263,11 +264,7 @@ async function resolveFeedItemCompanyId(
   item: { companyId?: string | null; bankConnectionId: string },
 ): Promise<string | null> {
   if (item.companyId) return item.companyId;
-  const conn = await db.query.bankConnections.findFirst({
-    where: and(eq(bankConnections.tenantId, tenantId), eq(bankConnections.id, item.bankConnectionId)),
-    columns: { companyId: true },
-  });
-  return conn?.companyId ?? null;
+  return resolveCompanyForConnection(tenantId, item.bankConnectionId);
 }
 
 // Result of the pre-AI precedence layers (existing high-confidence rule

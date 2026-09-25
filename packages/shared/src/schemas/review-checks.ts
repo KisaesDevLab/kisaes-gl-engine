@@ -5,12 +5,11 @@
 import { z } from 'zod';
 import { FINDING_SEVERITIES, FINDING_STATUSES } from '../constants/review-checks.js';
 
-// POST /run — body either empty (run for all companies in
-// tenant) or scoped to a specific company. `periodStart` /
-// `periodEnd` optionally scope the run to a close period
-// (ISO date/timestamp bounds; periodEnd is exclusive
-// first-of-next-month per ClosePeriodSelector). Omitting them
-// runs all-time, preserving the nightly scheduler's behavior.
+// POST /run — run the checks for one close period, for one company or
+// (companyId omitted) every company in the tenant. The period is
+// REQUIRED: there is no all-time or background run (user decision
+// 2026-09-25), so every finding belongs to exactly one period.
+// periodEnd is exclusive (first of the next month).
 // Bounds must LEAD with a calendar date (bare YYYY-MM-DD or a full ISO
 // timestamp) — the orchestrator writes the date part into the
 // check_runs date columns, so an arbitrary string would surface as a
@@ -18,14 +17,16 @@ import { FINDING_SEVERITIES, FINDING_STATUSES } from '../constants/review-checks
 const isoDateish = /^\d{4}-\d{2}-\d{2}(T.*)?$/;
 export const runChecksSchema = z.object({
   companyId: z.string().uuid().optional(),
-  periodStart: z.string().regex(isoDateish, 'Must be an ISO date').optional(),
-  periodEnd: z.string().regex(isoDateish, 'Must be an ISO date').optional(),
-});
+  periodStart: z.string().regex(isoDateish, 'Must be an ISO date'),
+  periodEnd: z.string().regex(isoDateish, 'Must be an ISO date'),
+}).refine(
+  (v) => v.periodStart.slice(0, 10) < v.periodEnd.slice(0, 10),
+  { message: 'periodEnd must be after periodStart', path: ['periodEnd'] },
+);
 export type RunChecksInput = z.infer<typeof runChecksSchema>;
 
-// POST /run-ai-judgment — same body shape, but the orchestrator
-// runs with includeAiHandlers=true so the judgment-category
-// handlers fire. Separate route + audit entity so cost-tracking
+// POST /run-ai-judgment — same body shape; runs ONLY the AI
+// judgment-category handlers for the period. Separate route + audit entity so cost-tracking
 // and the AI-credit dialog are explicit.
 export const runAiJudgmentSchema = runChecksSchema;
 export type RunAiJudgmentInput = z.infer<typeof runAiJudgmentSchema>;

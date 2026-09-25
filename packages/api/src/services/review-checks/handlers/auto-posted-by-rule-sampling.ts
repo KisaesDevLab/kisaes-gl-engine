@@ -7,6 +7,7 @@ import type { FindingDraft } from '@kis-books/shared';
 import { db } from '../../../db/index.js';
 import type { CheckHandler } from './index.js';
 import { money, summaryLine } from './present.js';
+import { periodOrFallback } from './period.js';
 
 // `auto_posted_by_rule_sampling` — sample N% of conditional-
 // rule fires (Phase 4 audit) for human review. Default 10%.
@@ -30,7 +31,7 @@ export const handler: CheckHandler = async (tenantId, _companyId, params): Promi
     LEFT JOIN conditional_rules cr ON cr.id = cra.rule_id
     LEFT JOIN bank_feed_items b ON b.id = cra.bank_feed_item_id
     WHERE cra.tenant_id = ${tenantId}
-      AND cra.matched_at > now() - INTERVAL '30 days'
+      ${periodOrFallback(params, 'b.feed_date', sql`AND cra.matched_at > now() - INTERVAL '30 days'`)}
       AND cra.was_overridden = FALSE
       AND random() < ${samplePercent}
     LIMIT 500

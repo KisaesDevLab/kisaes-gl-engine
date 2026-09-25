@@ -7,6 +7,7 @@ import type { FindingDraft } from '@kis-books/shared';
 import { db } from '../../../db/index.js';
 import type { CheckHandler } from './index.js';
 import { money, summaryLine } from './present.js';
+import { historyWindowClause, periodOrFallback } from './period.js';
 
 // `account_inconsistency_vs_history` — the account-level twin of
 // `tag_inconsistency_vs_history`: a recent journal line whose expense
@@ -14,7 +15,7 @@ import { money, summaryLine } from './present.js';
 // prior expense-side lines, one account dominates ≥80% of them, and
 // the current line hits a different expense account. This is the
 // classic "miscoding detector" — Staples suddenly coded to Meals.
-export const handler: CheckHandler = async (tenantId, companyId): Promise<FindingDraft[]> => {
+export const handler: CheckHandler = async (tenantId, companyId, params): Promise<FindingDraft[]> => {
   const companyClause = companyId
     ? sql`AND t.company_id = ${companyId}`
     : sql``;
@@ -35,7 +36,7 @@ export const handler: CheckHandler = async (tenantId, companyId): Promise<Findin
         ${companyClause}
         AND t.contact_id IS NOT NULL
         AND t.status = 'posted'
-        AND t.created_at < now() - INTERVAL '7 days'  -- exclude very recent so dominant is stable
+        ${historyWindowClause(params, 't.txn_date', 12, sql`AND t.created_at < now() - INTERVAL '7 days'`)}
       GROUP BY t.contact_id, jl.account_id
     ),
     vendor_totals AS (
@@ -74,7 +75,7 @@ export const handler: CheckHandler = async (tenantId, companyId): Promise<Findin
     WHERE t.tenant_id = ${tenantId}
       ${companyClause}
       AND t.status = 'posted'
-      AND t.created_at >= now() - INTERVAL '30 days'
+      ${periodOrFallback(params, 't.txn_date', sql`AND t.created_at >= now() - INTERVAL '30 days'`)}
       AND d.share >= 0.8
     LIMIT 500
   `);

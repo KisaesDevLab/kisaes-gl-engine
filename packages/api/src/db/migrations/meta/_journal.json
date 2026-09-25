@@ -1282,6 +1282,13 @@
       "when": 1784800000040,
       "tag": "0182_session_verified_email",
       "breakpoints": true
+    },
+    {
+      "idx": 183,
+      "version": "7",
+      "when": 1784800000050,
+      "tag": "0183_close_review_period_scope",
+      "breakpoints": true
     }
   ]
 }

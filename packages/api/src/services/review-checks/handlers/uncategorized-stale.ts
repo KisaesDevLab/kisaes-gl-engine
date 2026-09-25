@@ -7,6 +7,7 @@ import type { FindingDraft } from '@kis-books/shared';
 import { db } from '../../../db/index.js';
 import type { CheckHandler } from './index.js';
 import { money, summaryLine } from './present.js';
+import { periodDateClause } from './period.js';
 
 // `uncategorized_stale` — bank-feed item still in `pending`
 // status N days after ingestion. Default 14 days.
@@ -23,6 +24,7 @@ export const handler: CheckHandler = async (tenantId, companyId, params): Promis
       ${companyClause}
       AND b.status = 'pending'
       AND b.created_at < now() - (${olderThanDays}::INT || ' days')::INTERVAL
+      ${periodDateClause(params, 'b.feed_date')}
     LIMIT 1000
   `);
 

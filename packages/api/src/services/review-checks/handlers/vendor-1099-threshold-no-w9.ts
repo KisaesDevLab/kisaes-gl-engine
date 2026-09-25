@@ -7,6 +7,7 @@ import type { FindingDraft } from '@kis-books/shared';
 import { db } from '../../../db/index.js';
 import type { CheckHandler } from './index.js';
 import { money, summaryLine } from './present.js';
+import { hasPeriod } from './period.js';
 
 // `vendor_1099_threshold_no_w9` — vendors paid ≥$600 YTD with
 // no tax_id on file. Phase 12 (1099 Center) will add the W-9
@@ -34,7 +35,10 @@ export const handler: CheckHandler = async (tenantId, companyId, params): Promis
       ${companyClause}
       AND t.txn_type IN ('expense', 'bill_payment', 'check')
       AND t.status = 'posted'
-      AND EXTRACT(YEAR FROM t.txn_date) = EXTRACT(YEAR FROM now())
+      ${hasPeriod(params)
+        // Calendar year of the close period, through the period end.
+        ? sql`AND t.txn_date >= date_trunc('year', ${params.periodStart as string}::date) AND t.txn_date < ${params.periodEnd as string}::date`
+        : sql`AND EXTRACT(YEAR FROM t.txn_date) = EXTRACT(YEAR FROM now())`}
       AND c.contact_type = 'vendor'
       AND (c.tax_id IS NULL OR c.tax_id = '')
       AND vp.exclusion_reason IS NULL

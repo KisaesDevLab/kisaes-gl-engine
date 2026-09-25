@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { aliasedTable, and, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm';
+import { aliasedTable, and, desc, eq, gte, inArray, isNull, lt, sql } from 'drizzle-orm';
 import type { Finding, FindingDraft, FindingSeverity, FindingStatus } from '@kis-books/shared';
 import { FINDING_SEVERITIES, FINDING_STATUSES } from '@kis-books/shared';
 import { db } from '../../db/index.js';
@@ -47,10 +47,12 @@ export async function bulkInsert(
     key: dedupeKey(d),
   }));
 
-  // Pull existing findings (any status) with matching check keys
-  // to dedupe against. One query per (tenant, check keys present
-  // in the batch).
+  // Pull existing findings (any status) with matching check keys to
+  // dedupe against — within the SAME company and close period. A finding
+  // belongs to one period: re-running a period is idempotent, but the
+  // same issue surfacing in a later period is a new item to review there.
   const checkKeys = Array.from(new Set(keyed.map((k) => k.draft.checkKey)));
+  const periodStart = period?.periodStart ?? null;
   const existing = await db
     .select({
       checkKey: findings.checkKey,
@@ -63,6 +65,8 @@ export async function bulkInsert(
       and(
         eq(findings.tenantId, tenantId),
         inArray(findings.checkKey, checkKeys),
+        companyId === null ? isNull(findings.companyId) : eq(findings.companyId, companyId),
+        periodStart === null ? isNull(findings.periodStart) : eq(findings.periodStart, periodStart),
       ),
     );
 
@@ -394,12 +398,16 @@ export async function listEvents(tenantId: string, findingId: string): Promise<F
   }));
 }
 
-// Severity + status rollup for the dashboard summary widget.
-// Returns counts grouped by status x severity for active
-// findings only.
+// Severity + status rollup for the summary cards. Scoped by the SAME
+// company + period filter as list(), so a card count always matches the
+// rows the list can show. byStatus counts every status; bySeverity counts
+// only still-active findings (open / assigned / in review) — resolved and
+// ignored items are not work to do.
+const ACTIVE_STATUSES = new Set<FindingStatus>(['open', 'assigned', 'in_review']);
 export async function summaryByStatusSeverity(
   tenantId: string,
   companyId?: string | null,
+  period?: { periodStart?: string; periodEnd?: string },
 ): Promise<{
   byStatus: Record<FindingStatus, number>;
   bySeverity: Record<FindingSeverity, number>;
@@ -407,6 +415,8 @@ export async function summaryByStatusSeverity(
 }> {
   const conditions = [eq(findings.tenantId, tenantId)];
   if (companyId) conditions.push(eq(findings.companyId, companyId));
+  if (period?.periodStart) conditions.push(gte(findings.periodStart, period.periodStart.slice(0, 10)));
+  if (period?.periodEnd) conditions.push(lt(findings.periodStart, period.periodEnd.slice(0, 10)));
   const rows = await db
     .select({
       status: findings.status,
@@ -427,7 +437,9 @@ export async function summaryByStatusSeverity(
   for (const r of rows) {
     const c = Number(r.count);
     byStatus[r.status as FindingStatus] = (byStatus[r.status as FindingStatus] ?? 0) + c;
-    bySeverity[r.severity as FindingSeverity] = (bySeverity[r.severity as FindingSeverity] ?? 0) + c;
+    if (ACTIVE_STATUSES.has(r.status as FindingStatus)) {
+      bySeverity[r.severity as FindingSeverity] = (bySeverity[r.severity as FindingSeverity] ?? 0) + c;
+    }
     total += c;
   }
   return { byStatus, bySeverity, total };

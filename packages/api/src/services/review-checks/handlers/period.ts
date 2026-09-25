@@ -32,3 +32,21 @@ export function periodDateClause(params: CheckParams, column: string): SQL {
 export function hasPeriod(params: CheckParams): boolean {
   return typeof params.periodStart === 'string' && typeof params.periodEnd === 'string';
 }
+
+// Fallback-aware variant: bound `column` to the run's period, or apply
+// `fallback` (the handler's historical recency guard) when a run has no
+// period. Every UI-started run carries a period; the fallback only keeps
+// direct/internal callers and older tests behaving as before.
+export function periodOrFallback(params: CheckParams, column: string, fallback: SQL): SQL {
+  return hasPeriod(params) ? periodDateClause(params, column) : fallback;
+}
+
+// History window for "vs history" checks: the `months` months BEFORE the
+// period start (Double's trailing-12-month baseline). Without a period it
+// returns `fallback`.
+export function historyWindowClause(params: CheckParams, column: string, months: number, fallback: SQL): SQL {
+  if (!hasPeriod(params)) return fallback;
+  const start = params.periodStart as string;
+  const col = sql.raw(column);
+  return sql`AND ${col} >= (${start}::date - make_interval(months => ${months})) AND ${col} < ${start}::date`;
+}

@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+import { resolveCompanyForConnection } from './feed-item-company.service.js';
 import { eq, and, sql, count, gte, lte, inArray } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import type { BankFeedFilters, CategorizeInput, CsvColumnMapping } from '@kis-books/shared';
@@ -2086,7 +2087,8 @@ export async function importFromCsv(
 
   if (deduped.length === 0) return { items: [], cleansing: emptyCleansingAggregate() };
 
-  const inserted = await db.insert(bankFeedItems).values(deduped).returning();
+  const companyId = await resolveCompanyForConnection(tenantId, bankConnectionId);
+  const inserted = await db.insert(bankFeedItems).values(deduped.map((d) => ({ ...d, companyId }))).returning();
 
   // Run full cleansing pipeline on each item
   const cleansing = await runCleansingPipeline(tenantId, inserted);
@@ -2175,7 +2177,8 @@ export async function importFromOfx(tenantId: string, bankConnectionId: string, 
 
   if (dedupedOfx.length === 0) return { items: [], cleansing: emptyCleansingAggregate() };
 
-  const insertedOfx = await db.insert(bankFeedItems).values(dedupedOfx).returning();
+  const ofxCompanyId = await resolveCompanyForConnection(tenantId, bankConnectionId);
+  const insertedOfx = await db.insert(bankFeedItems).values(dedupedOfx.map((d) => ({ ...d, companyId: ofxCompanyId }))).returning();
 
   // Run full cleansing pipeline on each item
   const cleansing = await runCleansingPipeline(tenantId, insertedOfx);
@@ -2256,7 +2259,8 @@ export async function importStatementItems(
     return { imported: 0, skipped: transactions.length, cleansing: emptyCleansingAggregate() };
   }
 
-  const insertedStmt = await db.insert(bankFeedItems).values(dedupedPrepared.map((p) => p.row)).returning();
+  const stmtCompanyId = await resolveCompanyForConnection(tenantId, bankConnectionId);
+  const insertedStmt = await db.insert(bankFeedItems).values(dedupedPrepared.map((p) => ({ ...p.row, companyId: stmtCompanyId }))).returning();
 
   // STATEMENT_CHECK_PAYEE_V1 — correlate check-image payees to the
   // "CHECK ####" feed items and stage the payee (+ contact on a unique

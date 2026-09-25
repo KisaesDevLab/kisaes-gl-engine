@@ -61,6 +61,18 @@ Vibe MyBooks automatically flags potentially duplicate transactions. Review them
 - **Dismiss** — mark as not a duplicate (they're different transactions)
 - **Merge** — combine into one transaction
 
+### Month-End Close Review
+Practice → Close Review reviews one client (company) for one month. The Period
+picker reaches any month and year and defaults to the month that just ended.
+Review checks NEVER run automatically — the reviewer clicks **Run checks now**
+(Findings tab) for the selected month; "Run AI judgment" runs only the AI checks
+for that month. Findings are stored per month; re-running a month is
+idempotent, and summary cards match the list. Buckets group that month's
+bank-feed items (by transaction date) into potential matches, rules, auto
+classifications, and needs review; an item leaves its bucket once it is
+categorized, matched, or excluded anywhere. The Checklist's findings task is
+done only after a run for that month with nothing left open.
+
 ### Account Register
 The register view is an inline ledger for any account. Go to **Chart of Accounts →**,
 then click the register icon next to an account (or click the account name). It shows

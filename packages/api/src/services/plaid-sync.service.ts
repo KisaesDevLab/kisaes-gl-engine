@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+import { companyResolverCache } from './feed-item-company.service.js';
 import { eq, and, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { plaidItems, plaidAccounts, plaidAccountMappings, bankFeedItems } from '../db/schema/index.js';
@@ -122,6 +123,7 @@ export async function syncItem(itemId: string, opts: SyncItemOptions = {}) {
     let addedCount = 0, modifiedCount = 0, removedCount = 0, skippedByStartDate = 0, skippedPending = 0;
     const addedRowsByTenant = new Map<string, Array<typeof bankFeedItems.$inferSelect>>(); // tenantId → inserted rows
 
+    const companyFor = companyResolverCache();
     // Process added transactions — route to correct tenant
     for (const txn of added) {
       const route = routingMap.get(txn.account_id);
@@ -148,6 +150,7 @@ export async function syncItem(itemId: string, opts: SyncItemOptions = {}) {
 
       const [inserted] = await db.insert(bankFeedItems).values({
         tenantId: route.tenantId,
+        companyId: await companyFor(route.tenantId, route.connectionId),
         // The bank connection that maps to the GL bank account — NOT the Plaid
         // item id. This is what lets the feed show the account, the
         // categorization pipeline suggest an expense account, and posting

@@ -303,6 +303,19 @@ describe('practice-classification routes', () => {
         severity: 'med',
         status: 'open',
         payload: { detail: 'fixture' },
+        periodStart: '2026-03-01',
+        periodEnd: '2026-04-01',
+      });
+      // A finding from another period must not count.
+      await db.insert(findings).values({
+        tenantId,
+        companyId: null,
+        checkKey: 'parent_account_posting',
+        severity: 'med',
+        status: 'open',
+        payload: { detail: 'other period' },
+        periodStart: '2025-12-01',
+        periodEnd: '2026-01-01',
       });
       const { json } = await request(
         'GET',

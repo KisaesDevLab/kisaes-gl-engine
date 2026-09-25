@@ -118,22 +118,38 @@ export async function getCloseChecklist(
   }));
 
   // ── 3. Findings queue: run the checks, then clear what they raise.
+  //       Scoped to THIS period, and only "done" once a run for the
+  //       period has actually completed — checks never run on their own,
+  //       so zero findings without a run means "not reviewed", not "clean".
+  const pStart = periodStart.slice(0, 10);
+  const pEnd = periodEnd.slice(0, 10);
   const open = await db.execute<{ n: string }>(sql`
     SELECT COUNT(*) AS n FROM findings
     WHERE tenant_id = ${tenantId}
       ${companyCond(companyId)}
       AND status IN ('open', 'assigned', 'in_review')
+      AND period_start >= ${pStart}::date AND period_start < ${pEnd}::date
   `);
   const openCount = Number((open.rows[0] as { n: string } | undefined)?.n ?? 0);
+  const ran = await db.execute<{ n: string }>(sql`
+    SELECT COUNT(*) AS n FROM check_runs
+    WHERE tenant_id = ${tenantId}
+      ${companyCond(companyId)}
+      AND completed_at IS NOT NULL
+      AND period_start = ${pStart}::date
+  `);
+  const hasRun = Number((ran.rows[0] as { n: string } | undefined)?.n ?? 0) > 0;
   tasks.push(withSignoff({
     key: 'findings',
     section: 'review',
     label: 'Clear review-check findings',
     auto: true,
-    done: openCount === 0,
-    detail: openCount === 0
-      ? 'No open findings'
-      : `${openCount} finding${openCount === 1 ? '' : 's'} still open — run the checks for this period if you haven't`,
+    done: hasRun && openCount === 0,
+    detail: !hasRun
+      ? 'Checks have not been run for this period yet — open Findings and click Run checks now'
+      : openCount === 0
+        ? 'No open findings'
+        : `${openCount} finding${openCount === 1 ? '' : 's'} still open for this period`,
   }));
 
   // ── 4. Final review: statements read by a human. Manual by nature.

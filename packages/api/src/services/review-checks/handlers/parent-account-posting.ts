@@ -7,13 +7,14 @@ import type { FindingDraft } from '@kis-books/shared';
 import { db } from '../../../db/index.js';
 import type { CheckHandler } from './index.js';
 import { money, summaryLine } from './present.js';
+import { periodDateClause } from './period.js';
 
 // `parent_account_posting` — flag any journal_line whose
 // account is a parent (some other account references it via
 // `parent_id`). Direct posting to a parent account is a common
 // chart-of-accounts modeling mistake; the children won't roll
 // up correctly.
-export const handler: CheckHandler = async (tenantId, companyId): Promise<FindingDraft[]> => {
+export const handler: CheckHandler = async (tenantId, companyId, params): Promise<FindingDraft[]> => {
   const companyClause = companyId
     ? sql`AND jl.company_id = ${companyId}`
     : sql``;
@@ -30,6 +31,7 @@ export const handler: CheckHandler = async (tenantId, companyId): Promise<Findin
     -- by design, but their effect is reversed — flagging them tells the
     -- bookkeeper to "recode" a dead entry.
     JOIN transactions t ON t.id = jl.transaction_id AND t.status = 'posted'
+      ${periodDateClause(params, 't.txn_date')}
     LEFT JOIN contacts c ON c.id = t.contact_id
     WHERE jl.tenant_id = ${tenantId}
       ${companyClause}

@@ -51,9 +51,6 @@ export type StockCheckKey = typeof STOCK_CHECK_KEYS[number];
 // `check_runs.truncated = true`.
 export const MAX_FINDINGS_PER_RUN = 5000;
 
-// Resume-runs throttle: don't re-run the same (tenant, company)
-// pair within this window. The scheduler ticks every 30 min and
-// uses this to decide whether to invoke. Per-tenant timezones
-// could shift this; for v1 the window is a flat 24h since last
-// completion.
-export const RUN_THROTTLE_HOURS = 24;
+// Review checks never run on a schedule: every run is started by a
+// reviewer for one company and one close period (user decision
+// 2026-09-25). There is deliberately no background sweep or throttle.

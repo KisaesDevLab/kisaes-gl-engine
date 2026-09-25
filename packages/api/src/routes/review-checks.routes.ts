@@ -53,8 +53,8 @@ reviewChecksRouter.get('/registry', async (_req, res) => {
 reviewChecksRouter.post('/run', validate(runChecksSchema), async (req, res) => {
   const { companyId, periodStart, periodEnd } = req.body as {
     companyId?: string;
-    periodStart?: string;
-    periodEnd?: string;
+    periodStart: string;
+    periodEnd: string;
   };
   if (companyId) {
     // Tenant-isolation: confirm the company belongs to the caller's
@@ -80,7 +80,7 @@ reviewChecksRouter.post('/run', validate(runChecksSchema), async (req, res) => {
     'check_run',
     null,
     null,
-    { companyId: companyId ?? null, periodStart: periodStart ?? null, periodEnd: periodEnd ?? null, runs: results.length },
+    { companyId: companyId ?? null, periodStart, periodEnd, runs: results.length },
     req.userId,
   );
   res.json({ runs: results });
@@ -100,7 +100,11 @@ reviewChecksRouter.post(
     if (!enabled) {
       throw AppError.notFound('AI judgment checks are not enabled for this tenant');
     }
-    const { companyId } = req.body as { companyId?: string };
+    const { companyId, periodStart, periodEnd } = req.body as {
+      companyId?: string;
+      periodStart: string;
+      periodEnd: string;
+    };
     if (companyId) {
       const exists = await db
         .select({ id: companies.id })
@@ -114,11 +118,11 @@ reviewChecksRouter.post(
     const results = companyId
       ? [
           await orchestrator.runForCompany(req.tenantId, companyId, req.userId, {
-            includeAiHandlers: true,
+            onlyAiHandlers: true, periodStart, periodEnd,
           }),
         ]
       : await orchestrator.runForTenant(req.tenantId, req.userId, {
-          includeAiHandlers: true,
+          onlyAiHandlers: true, periodStart, periodEnd,
         });
 
     await auditLog(
@@ -127,7 +131,7 @@ reviewChecksRouter.post(
       'check_run_ai_judgment',
       null,
       null,
-      { companyId: companyId ?? null, runs: results.length },
+      { companyId: companyId ?? null, periodStart, periodEnd, runs: results.length },
       req.userId,
     );
     res.json({ runs: results });
@@ -144,7 +148,14 @@ reviewChecksRouter.get('/runs', async (req, res) => {
   const { limit } = listRunsQuerySchema
     .partial()
     .safeParse({ limit: req.query['limit'] }).data ?? { limit: undefined };
-  const runs = await orchestrator.listRuns(req.tenantId, limit ?? 20);
+  // Optional scope so "Last run" reflects THIS company and close period,
+  // not whichever company last ran anything.
+  const companyId = typeof req.query['companyId'] === 'string' ? req.query['companyId'] : undefined;
+  const periodStart = typeof req.query['periodStart'] === 'string' ? req.query['periodStart'] : undefined;
+  const runs = await orchestrator.listRuns(req.tenantId, limit ?? 20, {
+    ...(companyId ? { companyId } : {}),
+    ...(periodStart ? { periodStart } : {}),
+  });
   res.json({ runs });
 });
 
@@ -178,11 +189,16 @@ reviewChecksRouter.get('/findings/:id/events', async (req, res) => {
   res.json({ events });
 });
 
-// GET /findings-summary?companyId — counts grouped by status
-// and severity for the dashboard summary widget.
+// GET /findings-summary?companyId&periodStart&periodEnd — counts grouped
+// by status and severity, scoped exactly like GET /findings.
 reviewChecksRouter.get('/findings-summary', async (req, res) => {
   const companyId = typeof req.query['companyId'] === 'string' ? req.query['companyId'] : null;
-  const summary = await findingsService.summaryByStatusSeverity(req.tenantId, companyId);
+  const periodStart = typeof req.query['periodStart'] === 'string' ? req.query['periodStart'] : undefined;
+  const periodEnd = typeof req.query['periodEnd'] === 'string' ? req.query['periodEnd'] : undefined;
+  const summary = await findingsService.summaryByStatusSeverity(req.tenantId, companyId, {
+    ...(periodStart ? { periodStart } : {}),
+    ...(periodEnd ? { periodEnd } : {}),
+  });
   res.json(summary);
 });
 

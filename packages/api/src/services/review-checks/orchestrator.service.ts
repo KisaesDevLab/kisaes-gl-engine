@@ -39,6 +39,10 @@ export interface RunResult {
 // /run-ai-judgment route sets it to true.
 export interface RunOptions {
   includeAiHandlers?: boolean;
+  /** Run ONLY the AI judgment handlers (the "Run AI judgment" button).
+   *  Re-running every deterministic check there would duplicate work the
+   *  reviewer already did with "Run checks now". */
+  onlyAiHandlers?: boolean;
   // Optional close-period window scoping this run. ISO date/timestamp
   // bounds — periodStart inclusive, periodEnd exclusive
   // (first-of-next-month) per ClosePeriodSelector. When present the
@@ -122,7 +126,10 @@ async function runForCompanyLocked(
       // the caller explicitly opts in. The 24h scheduler does NOT
       // pass includeAiHandlers, so AI cost stays bounded to
       // explicit "Run AI judgment" clicks from the bookkeeper.
-      if (entry.category === 'judgment' && !options.includeAiHandlers) {
+      if (entry.category === 'judgment' && !options.includeAiHandlers && !options.onlyAiHandlers) {
+        continue;
+      }
+      if (options.onlyAiHandlers && entry.category !== 'judgment') {
         continue;
       }
       const handler = HANDLERS[entry.handlerName];
@@ -207,7 +214,11 @@ export async function runForTenant(
 // at 200 server-side so a maliciously large `?limit=` query
 // param can't exhaust the DB pool / memory.
 const LIST_RUNS_HARD_CAP = 200;
-export async function listRuns(tenantId: string, limit = 20): Promise<typeof checkRuns.$inferSelect[]> {
+export async function listRuns(
+  tenantId: string,
+  limit = 20,
+  scope: { companyId?: string; periodStart?: string } = {},
+): Promise<typeof checkRuns.$inferSelect[]> {
   const safeLimit =
     Number.isFinite(limit) && limit > 0
       ? Math.min(Math.floor(limit), LIST_RUNS_HARD_CAP)
@@ -215,7 +226,11 @@ export async function listRuns(tenantId: string, limit = 20): Promise<typeof che
   return db
     .select()
     .from(checkRuns)
-    .where(eq(checkRuns.tenantId, tenantId))
+    .where(and(
+      eq(checkRuns.tenantId, tenantId),
+      ...(scope.companyId ? [eq(checkRuns.companyId, scope.companyId)] : []),
+      ...(scope.periodStart ? [eq(checkRuns.periodStart, scope.periodStart.slice(0, 10))] : []),
+    ))
     .orderBy(desc(checkRuns.startedAt))
     .limit(safeLimit);
 }

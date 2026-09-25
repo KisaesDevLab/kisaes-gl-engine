@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { and, asc, count, desc, eq, gte, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, inArray, isNull, lt, lte, notInArray, or, sql } from 'drizzle-orm';
 import type {
   BucketReceiptOcr,
   BucketRow,
@@ -425,36 +425,58 @@ export async function stampTransactionId(
     );
 }
 
-// Bucket summary for the Close Review header. Counts the state
-// rows per bucket within the period window. Already-approved
-// rows (transaction_id NOT NULL) are excluded so the per-bucket
-// counts reflect remaining triage work, not historical totals.
-// `totalApproved` reports how many rows in the period have been
-// posted so the page-level progress bar has a real denominator.
+// Feed-item statuses that still need triage. categorized / matched /
+// excluded are done, however they got there (bucket approve, the bank
+// feed screen, Uncategorized, a client answer). Keying "done" off the
+// feed item — not only off state.transaction_id, which only the bucket
+// approve path stamps — keeps the counts falling as work is finished
+// anywhere in the app.
+const OPEN_FEED_STATUSES = ['pending', 'assigned'];
+// Open = no bucket approval stamped AND the feed item still awaits triage.
+const stillOpen = () => and(
+  isNull(transactionClassificationState.transactionId),
+  inArray(bankFeedItems.status, OPEN_FEED_STATUSES),
+);
+const alreadyDone = () => or(
+  sql`${transactionClassificationState.transactionId} IS NOT NULL`,
+  notInArray(bankFeedItems.status, OPEN_FEED_STATUSES),
+);
+
+// Period + company scope shared by the summary and the bucket lists. The
+// period is the BANK TRANSACTION date (feed_date in [start, end)), not
+// when the classification row happened to be written.
+function bucketScope(
+  tenantId: string,
+  companyId: string | null | undefined,
+  periodStart: string | undefined,
+  periodEnd: string | undefined,
+) {
+  const conds = [eq(transactionClassificationState.tenantId, tenantId)];
+  if (companyId) conds.push(eq(transactionClassificationState.companyId, companyId));
+  if (periodStart) conds.push(gte(bankFeedItems.feedDate, periodStart.slice(0, 10)));
+  if (periodEnd) conds.push(lt(bankFeedItems.feedDate, periodEnd.slice(0, 10)));
+  return and(...conds);
+}
+
+// Bucket summary for the Close Review header: open rows per bucket for
+// the period, plus how many of the period's rows are already done so the
+// progress bar has a real denominator.
 export async function summarizeForPeriod(
   tenantId: string,
   companyId: string | null,
   periodStart: string,
   periodEnd: string,
 ): Promise<BucketSummary> {
-  const base = and(
-    eq(transactionClassificationState.tenantId, tenantId),
-    gte(transactionClassificationState.createdAt, new Date(periodStart)),
-    lte(transactionClassificationState.createdAt, new Date(periodEnd)),
-  );
-  const scope = companyId
-    ? and(base, eq(transactionClassificationState.companyId, companyId))
-    : base;
+  const scope = bucketScope(tenantId, companyId, periodStart, periodEnd);
 
-  // Per-bucket count, restricted to rows still awaiting approval.
-  const remainingClause = and(scope, isNull(transactionClassificationState.transactionId));
   const rows = await db
     .select({
       bucket: transactionClassificationState.bucket,
       count: sql<number>`count(*)::int`,
     })
     .from(transactionClassificationState)
-    .where(remainingClause)
+    .innerJoin(bankFeedItems, eq(bankFeedItems.id, transactionClassificationState.bankFeedItemId))
+    .where(and(scope, stillOpen()))
     .groupBy(transactionClassificationState.bucket);
 
   const empty: Record<ClassificationBucket, number> = {
@@ -471,22 +493,20 @@ export async function summarizeForPeriod(
   }
   const totalRemaining = Object.values(empty).reduce((a, b) => a + b, 0);
 
-  // Approved rows in the same period — used by the progress bar
-  // to compute "X of Y remaining" against a real total.
   const [{ approved = 0 } = { approved: 0 }] = await db
     .select({ approved: sql<number>`count(*)::int` })
     .from(transactionClassificationState)
-    .where(and(scope, sql`${transactionClassificationState.transactionId} IS NOT NULL`));
+    .innerJoin(bankFeedItems, eq(bankFeedItems.id, transactionClassificationState.bankFeedItemId))
+    .where(and(scope, alreadyDone()));
   const totalApproved = Number(approved);
 
-  // Open + assigned + in_review findings for this tenant/company,
-  // gated on the period — findings.created_at semantics match
-  // state.created_at (both stamped at insert).
+  // Open + assigned + in_review findings for the same period — the same
+  // period_start scope the Findings tab lists by.
   const findingsBase = [
     eq(findings.tenantId, tenantId),
     inArray(findings.status, ['open', 'assigned', 'in_review']),
-    gte(findings.createdAt, new Date(periodStart)),
-    lte(findings.createdAt, new Date(periodEnd)),
+    gte(findings.periodStart, periodStart.slice(0, 10)),
+    lt(findings.periodStart, periodEnd.slice(0, 10)),
   ];
   if (companyId) findingsBase.push(eq(findings.companyId, companyId));
   const [findingsRow] = await db
@@ -520,22 +540,11 @@ export async function listByBucket(
   },
 ): Promise<{ rows: BucketRow[]; nextCursor: string | null }> {
   const conditions = [
-    eq(transactionClassificationState.tenantId, tenantId),
+    bucketScope(tenantId, opts.companyId, opts.periodStart, opts.periodEnd)!,
     eq(transactionClassificationState.bucket, bucket),
-    // Don't surface already-approved rows — once a state row has a
-    // transaction_id stamped, the work is done. Keeps bucket lists
-    // aligned with the count summary.
-    isNull(transactionClassificationState.transactionId),
+    // Only rows still needing triage — same rule as the summary counts.
+    stillOpen()!,
   ];
-  if (opts.companyId) {
-    conditions.push(eq(transactionClassificationState.companyId, opts.companyId));
-  }
-  if (opts.periodStart) {
-    conditions.push(gte(transactionClassificationState.createdAt, new Date(opts.periodStart)));
-  }
-  if (opts.periodEnd) {
-    conditions.push(lte(transactionClassificationState.createdAt, new Date(opts.periodEnd)));
-  }
   if (opts.cursor) {
     // Strictly less-than: lte would re-emit the boundary row across
     // pages because the order key (created_at) repeats at the seam.

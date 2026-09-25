@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-25T17:13:00.497Z",
+  "generatedAt": "2026-09-25T17:45:36.753Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -18,7 +18,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 115084
+    "totalBytes": 115854
   },
   "screens": [
     {
@@ -1597,6 +1597,7 @@
     "Recurring Transactions",
     "Products & Services (Items)",
     "Duplicate Detection",
+    "Month-End Close Review",
     "Account Register",
     "Chart of Accounts Bulk Edit",
     "Budgets",

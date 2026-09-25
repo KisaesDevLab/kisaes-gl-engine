@@ -37,6 +37,9 @@ let ownerToken = '';
 let bookkeeperToken = '';
 let readonlyToken = '';
 
+// Every run is for one close period (April 2026 matches the seeded txns).
+const PERIOD = { periodStart: '2026-04-01', periodEnd: '2026-05-01' };
+
 async function startApp() {
   const app = express();
   app.use(express.json());
@@ -181,9 +184,18 @@ describe('GET /registry', () => {
 });
 
 describe('POST /run', () => {
+  it('rejects a run with no close period (there is no all-time run)', async () => {
+    const [c] = await db.insert(companies).values({ tenantId, businessName: 'Co1' }).returning();
+    const { status } = await request('POST', '/api/v1/practice/checks/run', { companyId: c!.id }, bookkeeperToken);
+    expect(status).toBe(400);
+    const bad = await request('POST', '/api/v1/practice/checks/run',
+      { companyId: c!.id, periodStart: '2026-05-01', periodEnd: '2026-04-01' }, bookkeeperToken);
+    expect(bad.status).toBe(400);
+  });
+
   it('runs and returns RunResult per company', async () => {
     const [c] = await db.insert(companies).values({ tenantId, businessName: 'Co1' }).returning();
-    const { status, json } = await request('POST', '/api/v1/practice/checks/run', { companyId: c!.id }, bookkeeperToken);
+    const { status, json } = await request('POST', '/api/v1/practice/checks/run', { companyId: c!.id, ...PERIOD }, bookkeeperToken);
     expect(status).toBe(200);
     expect(json.runs).toHaveLength(1);
     expect(json.runs[0]).toHaveProperty('runId');
@@ -194,7 +206,7 @@ describe('POST /run', () => {
       { tenantId, businessName: 'Co1' },
       { tenantId, businessName: 'Co2' },
     ]);
-    const { json } = await request('POST', '/api/v1/practice/checks/run', {}, bookkeeperToken);
+    const { json } = await request('POST', '/api/v1/practice/checks/run', { ...PERIOD }, bookkeeperToken);
     expect(json.runs).toHaveLength(2);
   });
 });
@@ -213,7 +225,7 @@ describe('GET /findings', () => {
       tenantId, companyId: c!.id, txnType: 'expense', txnDate: '2026-04-15',
       total: '20000.0000', status: 'posted',
     });
-    await request('POST', '/api/v1/practice/checks/run', { companyId: c!.id }, bookkeeperToken);
+    await request('POST', '/api/v1/practice/checks/run', { companyId: c!.id, ...PERIOD }, bookkeeperToken);
     const { json: open } = await request('GET', '/api/v1/practice/checks/findings?status=open', undefined, bookkeeperToken);
     expect(open.rows.length).toBeGreaterThanOrEqual(1);
     const { json: resolved } = await request('GET', '/api/v1/practice/checks/findings?status=resolved', undefined, bookkeeperToken);
@@ -276,7 +288,7 @@ describe('POST /findings/:id/transition + bulk-transition', () => {
       tenantId, companyId: c!.id, txnType: 'expense', txnDate: '2026-04-15',
       total: '20000.0000', status: 'posted',
     });
-    await request('POST', '/api/v1/practice/checks/run', { companyId: c!.id }, bookkeeperToken);
+    await request('POST', '/api/v1/practice/checks/run', { companyId: c!.id, ...PERIOD }, bookkeeperToken);
     const list = await request('GET', '/api/v1/practice/checks/findings?status=open', undefined, bookkeeperToken);
     return list.json.rows[0].id;
   }
@@ -334,7 +346,7 @@ describe('POST /findings/:id/transition + bulk-transition', () => {
       tenantId, companyId: c2!.id, txnType: 'expense', txnDate: '2026-04-15',
       total: '11000.0000', status: 'posted',
     });
-    await request('POST', '/api/v1/practice/checks/run', { companyId: c2!.id }, bookkeeperToken);
+    await request('POST', '/api/v1/practice/checks/run', { companyId: c2!.id, ...PERIOD }, bookkeeperToken);
     const open = await request('GET', '/api/v1/practice/checks/findings?status=open', undefined, bookkeeperToken);
     const ids = open.json.rows.map((r: { id: string }) => r.id);
     expect(ids.length).toBeGreaterThanOrEqual(2);
@@ -361,7 +373,7 @@ describe('POST /run-ai-judgment', () => {
     const { status } = await request(
       'POST',
       '/api/v1/practice/checks/run-ai-judgment',
-      {},
+      { ...PERIOD },
       bookkeeperToken,
     );
     expect(status).toBe(404);
@@ -381,11 +393,13 @@ describe('POST /run-ai-judgment', () => {
     const { status, json } = await request(
       'POST',
       '/api/v1/practice/checks/run-ai-judgment',
-      { companyId: c!.id },
+      { companyId: c!.id, ...PERIOD },
       bookkeeperToken,
     );
     expect(status).toBe(200);
     expect(json.runs).toHaveLength(1);
+    // Only the AI (judgment) checks run here — not the whole registry.
+    expect(json.runs[0].checksExecuted).toBe(1);
     // No AI configured in tests, so judgment handler returns [];
     // the run completes cleanly with no findings created from
     // the AI check.
@@ -400,7 +414,7 @@ describe('GET /findings-summary', () => {
       tenantId, companyId: c!.id, txnType: 'expense', txnDate: '2026-04-15',
       total: '20000.0000', status: 'posted',
     });
-    await request('POST', '/api/v1/practice/checks/run', { companyId: c!.id }, bookkeeperToken);
+    await request('POST', '/api/v1/practice/checks/run', { companyId: c!.id, ...PERIOD }, bookkeeperToken);
     const { status, json } = await request(
       'GET',
       '/api/v1/practice/checks/findings-summary',
@@ -411,6 +425,56 @@ describe('GET /findings-summary', () => {
     expect(json.total).toBeGreaterThanOrEqual(1);
     expect(json.byStatus.open).toBeGreaterThanOrEqual(1);
     expect(typeof json.bySeverity.high).toBe('number');
+  });
+});
+
+describe('period scoping (manual, per-period review)', () => {
+  const MAY = { periodStart: '2026-05-01', periodEnd: '2026-06-01' };
+
+  it('summary cards match the list for the period, and other periods stay separate', async () => {
+    const [c] = await db.insert(companies).values({ tenantId, businessName: 'Co1' }).returning();
+    await db.insert(transactions).values([
+      { tenantId, companyId: c!.id, txnType: 'expense', txnDate: '2026-04-15', total: '20000.0000', status: 'posted' },
+      { tenantId, companyId: c!.id, txnType: 'expense', txnDate: '2026-05-10', total: '30000.0000', status: 'posted' },
+    ]);
+    await request('POST', '/api/v1/practice/checks/run', { companyId: c!.id, ...PERIOD }, bookkeeperToken);
+    // Re-running the same period creates nothing new.
+    const again = await request('POST', '/api/v1/practice/checks/run', { companyId: c!.id, ...PERIOD }, bookkeeperToken);
+    expect(again.json.runs[0].findingsCreated).toBe(0);
+    await request('POST', '/api/v1/practice/checks/run', { companyId: c!.id, ...MAY }, bookkeeperToken);
+
+    for (const p of [PERIOD, MAY]) {
+      const qs = `companyId=${c!.id}&periodStart=${p.periodStart}&periodEnd=${p.periodEnd}`;
+      const list = await request('GET', `/api/v1/practice/checks/findings?${qs}&status=open&limit=200`, undefined, bookkeeperToken);
+      const sum = await request('GET', `/api/v1/practice/checks/findings-summary?${qs}`, undefined, bookkeeperToken);
+      expect(list.json.rows.length).toBeGreaterThan(0);
+      expect(sum.json.byStatus.open).toBe(list.json.rows.length);
+      // Each period only sees its own month's transaction.
+      const dates = list.json.rows.map((r: { payload: { txnDate?: string } }) => r.payload.txnDate).filter(Boolean);
+      for (const d of dates) expect(String(d) >= p.periodStart && String(d) < p.periodEnd).toBe(true);
+    }
+  });
+
+  it('checklist does not call findings done until checks ran for the period', async () => {
+    const [c] = await db.insert(companies).values({ tenantId, businessName: 'Co1' }).returning();
+    const qs = `companyId=${c!.id}&periodStart=${PERIOD.periodStart}&periodEnd=${PERIOD.periodEnd}`;
+    const before = await request('GET', `/api/v1/practice/checks/checklist?${qs}`, undefined, bookkeeperToken);
+    const t1 = before.json.tasks.find((t: { key: string }) => t.key === 'findings');
+    expect(t1.done).toBe(false);
+    expect(t1.detail).toMatch(/not been run/);
+    await request('POST', '/api/v1/practice/checks/run', { companyId: c!.id, ...PERIOD }, bookkeeperToken);
+    const after = await request('GET', `/api/v1/practice/checks/checklist?${qs}`, undefined, bookkeeperToken);
+    const t2 = after.json.tasks.find((t: { key: string }) => t.key === 'findings');
+    expect(t2.done).toBe(true);
+  });
+
+  it('"Last run" is scoped to the company and period', async () => {
+    const [c] = await db.insert(companies).values({ tenantId, businessName: 'Co1' }).returning();
+    await request('POST', '/api/v1/practice/checks/run', { companyId: c!.id, ...PERIOD }, bookkeeperToken);
+    const apr = await request('GET', `/api/v1/practice/checks/runs?companyId=${c!.id}&periodStart=${PERIOD.periodStart}`, undefined, bookkeeperToken);
+    const may = await request('GET', `/api/v1/practice/checks/runs?companyId=${c!.id}&periodStart=${MAY.periodStart}`, undefined, bookkeeperToken);
+    expect(apr.json.runs).toHaveLength(1);
+    expect(may.json.runs).toHaveLength(0);
   });
 });
 
