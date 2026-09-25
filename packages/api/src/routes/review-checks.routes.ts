@@ -28,6 +28,7 @@ import * as findingsService from '../services/review-checks/findings.service.js'
 import * as suppressions from '../services/review-checks/suppressions.service.js';
 import * as closeChecklist from '../services/review-checks/close-checklist.service.js';
 import * as closeService from '../services/review-checks/close.service.js';
+import * as closeReviewAi from '../services/review-checks/close-review-ai.service.js';
 
 export const reviewChecksRouter = Router();
 
@@ -187,6 +188,23 @@ reviewChecksRouter.get('/findings/:id', async (req, res) => {
 // over the 12 months before its period.
 reviewChecksRouter.get('/findings/:id/payee-history', async (req, res) => {
   res.json(await findingsService.payeeCodingHistory(req.tenantId, req.params['id']!));
+});
+
+// GET /findings/:id/ai — the stored AI explanation and whether the books
+// changed since it was written ("out of date").
+reviewChecksRouter.get('/findings/:id/ai', async (req, res) => {
+  res.json(await closeReviewAi.getFindingAi(req.tenantId, req.params['id']!));
+});
+
+// POST /findings/:id/explain — ask the Close Review AI about one row. Runs
+// only when a reviewer clicks; gated like Run AI judgment.
+reviewChecksRouter.post('/findings/:id/explain', async (req, res) => {
+  if (!(await featureFlags.isEnabled(req.tenantId, 'AI_JUDGMENT_CHECKS_V1'))) {
+    throw AppError.notFound('AI review is not enabled for this client');
+  }
+  const ai = await closeReviewAi.explainFinding(req.tenantId, req.params['id']!);
+  await auditLog(req.tenantId, 'create', 'finding_ai_explanation', req.params['id']!, null, { model: ai.model, provider: ai.provider }, req.userId);
+  res.json({ ai, stale: false });
 });
 
 // ── Close workspace ───────────────────────────────────────────────

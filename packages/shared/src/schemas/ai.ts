@@ -26,6 +26,9 @@ export const taskOptionSchema = z
     // function only). null/absent = default 15; 1 = per-transaction. The
     // resolver additionally clamps stale JSONB values into [1, 50].
     batchSize: z.number().int().min(1).max(50).nullable().optional(),
+    // Provider + model for functions without dedicated columns (close_review).
+    provider: z.enum(['anthropic', 'openai', 'gemini', 'ollama', 'openai_compat', 'digitalocean']).nullable().optional(),
+    model: z.string().max(120).nullable().optional(),
   })
   .strict();
 
@@ -50,6 +53,7 @@ export const taskOptionsSchema = z
     ocr: taskOptionSchema.optional(),
     document_classification: taskOptionSchema.optional(),
     chat: taskOptionSchema.optional(),
+    close_review: taskOptionSchema.optional(),
   })
   .strict();
 
@@ -71,6 +75,9 @@ export const aiConfigUpdateSchema = z.object({
   openaiCompatApiKey: z.string().nullish(),
   openaiCompatBaseUrl: z.string().optional(),
   openaiCompatModel: z.string().nullable().optional(),
+  digitaloceanApiKey: z.string().nullish(),
+  digitaloceanModel: z.string().max(120).nullable().optional(),
+  digitaloceanBaseUrl: z.union([z.string().url().max(255), z.literal('')]).nullable().optional(),
   // How the openai_compat endpoint is driven (Ollama native vs /v1).
   openaiCompatMode: z.enum(['auto', 'native', 'compat']).optional(),
   // GLM-OCR engine (statement-import redesign). Dedicated llama.cpp OCR

@@ -71,6 +71,10 @@ export async function getConfig() {
     openaiCompatModel: config.openaiCompatModel,
     openaiCompatMode: (config.openaiCompatMode as 'auto' | 'native' | 'compat') || 'auto',
     hasOpenaiCompatKey: !!config.openaiCompatApiKeyEncrypted,
+    // DigitalOcean serverless inference (cloud). Key as a boolean flag only.
+    hasDigitaloceanKey: !!config.digitaloceanApiKeyEncrypted,
+    digitaloceanModel: config.digitaloceanModel,
+    digitaloceanBaseUrl: config.digitaloceanBaseUrl,
     // GLM-OCR engine (statement-import redesign). Key returned as a boolean
     // flag only; null/blank fields fall back to GLM_OCR_* env at resolve time.
     glmOcrEnabled: !!config.glmOcrEnabled,
@@ -238,6 +242,10 @@ export async function updateConfig(input: AiConfigUpdateInput, userId?: string) 
     updates.openaiCompatBaseUrl = input.openaiCompatBaseUrl || null;
   }
   if (input.openaiCompatModel !== undefined) updates.openaiCompatModel = input.openaiCompatModel || null;
+  if (input.digitaloceanApiKey === null) updates.digitaloceanApiKeyEncrypted = null;
+  else if (input.digitaloceanApiKey) updates.digitaloceanApiKeyEncrypted = encrypt(input.digitaloceanApiKey);
+  if (input.digitaloceanModel !== undefined) updates.digitaloceanModel = input.digitaloceanModel || null;
+  if (input.digitaloceanBaseUrl !== undefined) updates.digitaloceanBaseUrl = input.digitaloceanBaseUrl || null;
   if (input.openaiCompatMode !== undefined) updates.openaiCompatMode = input.openaiCompatMode;
   // GLM-OCR engine. Same 3-state credential sentinel; allowPrivate so the
   // llama.cpp box can live on the LAN. Empty base URL clears it (disables the
@@ -685,12 +693,14 @@ const FN_TASK_CLASS: Record<string, string> = {
   ocr: 'mybooks_receipt_extract',
   document_classification: 'mybooks_doc_classify',
   chat: 'mybooks_chat',
+  close_review: 'mybooks_close_review',
 };
 const TEST_FN_MAX_TOKENS: Record<AiFunctionKey, number> = {
   categorization: 512,
   ocr: 1024,
   document_classification: 256,
   chat: 256,
+  close_review: 512,
 };
 
 /**
@@ -714,12 +724,14 @@ export async function testFunction(fn: AiFunctionKey): Promise<TestFunctionResul
     ocr: config.ocrProvider || config.categorizationProvider,
     document_classification: config.documentClassificationProvider || config.categorizationProvider,
     chat: config.chatProvider || config.categorizationProvider,
+    close_review: config.taskOptions?.close_review?.provider || config.categorizationProvider,
   };
   const modelByFn: Record<AiFunctionKey, string | undefined> = {
     categorization: config.categorizationModel || undefined,
     ocr: config.ocrModel || undefined,
     document_classification: config.documentClassificationModel || undefined,
     chat: config.chatModel || undefined,
+    close_review: config.taskOptions?.close_review?.model || (config.taskOptions?.close_review?.provider ? undefined : config.categorizationModel) || undefined,
   };
 
   const provider = providerByFn[fn];

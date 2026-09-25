@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-export type AiProviderName = 'anthropic' | 'openai' | 'gemini' | 'ollama' | 'openai_compat';
+export type AiProviderName = 'anthropic' | 'openai' | 'gemini' | 'ollama' | 'openai_compat' | 'digitalocean';
 export type AiJobType = 'categorize' | 'ocr_receipt' | 'ocr_statement' | 'ocr_invoice' | 'classify_document';
 export type AiJobStatus = 'pending' | 'processing' | 'complete' | 'failed' | 'cancelled';
 
@@ -10,7 +10,9 @@ export type AiJobStatus = 'pending' | 'processing' | 'complete' | 'failed' | 'ca
 // receipt/bill/statement parsing (each keeps its own built-in token
 // default; the per-function override acts as a ceiling). See
 // Build Plans/AI_FUNCTION_SETTINGS_PLAN.md.
-export const AI_FUNCTION_KEYS = ['categorization', 'ocr', 'document_classification', 'chat'] as const;
+// close_review: Close Review AI (explanations, client-question drafts,
+// accrual suggestions). Its provider/model live in its TaskOption.
+export const AI_FUNCTION_KEYS = ['categorization', 'ocr', 'document_classification', 'chat', 'close_review'] as const;
 export type AiFunctionKey = (typeof AI_FUNCTION_KEYS)[number];
 
 export type AiThinkingMode = 'on' | 'off';
@@ -34,6 +36,10 @@ export interface TaskOption {
   // single AI request (categorization only). null/absent = built-in default
   // (15). 1 = today's per-transaction behaviour. Bounds 1–50.
   batchSize?: number | null;
+  // Provider + model for functions that have no dedicated columns
+  // (close_review). null/absent = the categorization provider/model.
+  provider?: string | null;
+  model?: string | null;
 }
 
 export type TaskOptions = Partial<Record<AiFunctionKey, TaskOption>>;

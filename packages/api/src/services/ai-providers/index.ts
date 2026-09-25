@@ -8,6 +8,7 @@ import { OpenAiProvider } from './openai.provider.js';
 import { GeminiProvider } from './gemini.provider.js';
 import { OllamaProvider } from './ollama.provider.js';
 import { OpenAiCompatProvider } from './openai-compat.provider.js';
+import { DigitalOceanProvider } from './digitalocean.provider.js';
 import { decrypt } from '../../utils/encryption.js';
 import { retryWithBackoff, abortableTimeout, withTimeout, TimeoutError } from '../../utils/retry.js';
 import { routeFor, routerOn, routerProvider, type RouterSettings } from './vibe-router.provider.js';
@@ -41,6 +42,9 @@ interface AiConfigRow {
   // keep_alive / think) or the OpenAI-compatible /v1 path. See
   // resolveOllamaNative.
   openaiCompatMode?: string | null;
+  digitaloceanApiKeyEncrypted?: string | null;
+  digitaloceanModel?: string | null;
+  digitaloceanBaseUrl?: string | null;
   // Per-feature router settings (migration 0185).
   routerEnabled?: boolean | null;
   routerFeatures?: unknown;
@@ -121,6 +125,13 @@ function buildDirect(providerName: string, config: AiConfigRow, model?: string):
       const apiKey = config.openaiCompatApiKeyEncrypted ? decrypt(config.openaiCompatApiKeyEncrypted) : undefined;
       return new OpenAiCompatProvider(config.openaiCompatBaseUrl, effectiveModel, apiKey);
     }
+    case 'digitalocean':
+      if (!config.digitaloceanApiKeyEncrypted) throw new Error('DigitalOcean API key not configured');
+      return new DigitalOceanProvider(
+        decrypt(config.digitaloceanApiKeyEncrypted),
+        model || config.digitaloceanModel || undefined,
+        config.digitaloceanBaseUrl || undefined,
+      );
     default:
       throw new Error(`Unknown AI provider: ${providerName}`);
   }
@@ -133,6 +144,7 @@ export function hasCredentials(providerName: string, config: AiConfigRow): boole
     case 'gemini': return !!config.geminiApiKeyEncrypted;
     case 'ollama': return true; // always available if Ollama is running
     case 'openai_compat': return !!config.openaiCompatBaseUrl;
+    case 'digitalocean': return !!config.digitaloceanApiKeyEncrypted;
     default: return false;
   }
 }

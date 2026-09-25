@@ -1672,6 +1672,21 @@ AI consent. A router outage fails the routed feature (no silent fallback to
 direct). The old VIBE_AI_MODE=router env switch still works until an admin
 saves a choice here; in that mode everything except statements is routed.
 
+### DigitalOcean provider and Close Review AI
+Admin → AI offers **DigitalOcean (open models)** as a provider: a model access
+key, a model id (e.g. gpt-oss-120b; the Test button lists the ids DO offers)
+and an optional endpoint (default https://inference.do-ai.run). It is a CLOUD
+provider: PII scrubbing and company consent apply; it has no vision, so it
+cannot do OCR. Task Settings has a **Close Review AI** function whose provider
+and model can differ from categorization (blank = same as categorization).
+Close Review AI runs only when a reviewer clicks **Explain this** in a row's
+detail drawer (flag AI_JUDGMENT_CHECKS_V1, company consent "AI judgment
+review"): it returns why the row may be wrong, a suggested fix and a question
+for the client (**Ask the client this** sends it to the portal). The answer is
+stored on the row and shows **Out of date** once the underlying books change,
+with Re-run. "Run AI judgment" (possibly-personal expenses) uses the same
+Close Review AI setting.
+
 ### AI Transaction Categorization
 When bank feed items are imported (via Plaid or CSV), AI can automatically assign expense
 or income categories.

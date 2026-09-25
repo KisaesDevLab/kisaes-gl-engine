@@ -169,7 +169,7 @@ aiRouter.post('/admin/test-router', authenticate, requireSuperAdmin, aiAdminTest
 // JSON completion through the function's resolved provider + options +
 // thinking + timeout + fallback chain, unlike test/:provider which only
 // checks reachability. Surfaces the per-provider error detail.
-const AI_FUNCTION_KEYS = ['categorization', 'ocr', 'document_classification', 'chat'] as const;
+const AI_FUNCTION_KEYS = ['categorization', 'ocr', 'document_classification', 'chat', 'close_review'] as const;
 aiRouter.post('/admin/test-function/:fn', authenticate, requireSuperAdmin, aiAdminTestLimiter, async (req, res) => {
   const fn = req.params['fn'] as (typeof AI_FUNCTION_KEYS)[number];
   if (!AI_FUNCTION_KEYS.includes(fn)) {
