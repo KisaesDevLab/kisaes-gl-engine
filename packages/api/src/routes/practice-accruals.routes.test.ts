@@ -183,6 +183,55 @@ describe('accruals', () => {
     expect(r.json.errors).toEqual([{ row: 3, error: 'Account number not found' }]);
   });
 
+  it('posts an entry once even when two posts race', async () => {
+    await request('POST', '/schedules', annualPolicy());
+    const jul = (await request('GET', `/entries?companyId=${companyId}&periodStart=2026-07-01`)).json.entries;
+    const [a, b] = await Promise.all([
+      request('POST', `/entries/${jul[0].id}/post`),
+      request('POST', `/entries/${jul[0].id}/post`),
+    ]);
+    expect([a.status, b.status].sort()).toEqual([200, 400]);
+    const jes = await db.select().from(transactions).where(eq(transactions.tenantId, tenantId));
+    expect(jes.filter((t) => t.txnType === 'journal_entry')).toHaveLength(1);
+  });
+
+  it('refuses to edit a stopped schedule (no revived drafts)', async () => {
+    const s = (await request('POST', '/schedules', annualPolicy())).json.schedule;
+    await request('POST', `/schedules/${s.id}/cancel`);
+    const r = await request('PUT', `/schedules/${s.id}`, { ...annualPolicy(), totalAmount: '600.00' });
+    expect(r.status).toBe(400);
+    const drafts = (await request('GET', `/schedules/${s.id}/entries`)).json.entries.filter((e: { status: string }) => e.status === 'draft');
+    expect(drafts).toHaveLength(0);
+  });
+
+  it('unposts cleanly when the journal entry was already voided elsewhere', async () => {
+    await request('POST', '/schedules', annualPolicy());
+    const jul = (await request('GET', `/entries?companyId=${companyId}&periodStart=2026-07-01`)).json.entries;
+    const p = await request('POST', `/entries/${jul[0].id}/post`);
+    await db.update(transactions).set({ status: 'void' }).where(eq(transactions.id, p.json.transactionId));
+    const u = await request('POST', `/entries/${jul[0].id}/unpost`);
+    expect(u.status).toBe(200);
+    const again = (await request('GET', `/entries?companyId=${companyId}&periodStart=2026-07-01`)).json.entries;
+    expect(again[0].status).toBe('draft');
+  });
+
+  it('imports a CSV that has no header row', async () => {
+    const r = await request('POST', '/import', { companyId, csv: 'prepaid,Software license,1400,6300,2026-07,600,6' });
+    expect(r.json).toEqual({ created: 1, errors: [] });
+  });
+
+  it('completes a schedule whose last posted entry is zero', async () => {
+    // 1 cent over 2 months: [0.00, 0.01]. Post the cent first, then the zero.
+    const s = (await request('POST', '/schedules', { ...annualPolicy(), totalAmount: '0.01', months: 2 })).json.schedule;
+    const entries = (await request('GET', `/schedules/${s.id}/entries`)).json.entries as Array<{ id: string; amount: string }>;
+    const zero = entries.find((e) => Number(e.amount) === 0)!;
+    const cent = entries.find((e) => Number(e.amount) > 0)!;
+    await request('POST', `/entries/${cent.id}/post`);
+    await request('POST', `/entries/${zero.id}/post`);
+    const list = (await request('GET', `/schedules?companyId=${companyId}`)).json.schedules;
+    expect(list[0].status).toBe('completed');
+  });
+
   it('is hidden when ACCRUALS_V1 is off', async () => {
     await db.update(tenantFeatureFlags).set({ enabled: false }).where(eq(tenantFeatureFlags.tenantId, tenantId));
     expect((await request('GET', `/schedules?companyId=${companyId}`)).status).toBe(404);

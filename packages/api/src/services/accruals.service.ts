@@ -7,7 +7,7 @@ import {
   buildAccrualSchedule, type AccrualKind, type AccrualMethod,
 } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { accrualSchedules, accrualEntries, accounts } from '../db/schema/index.js';
+import { accrualSchedules, accrualEntries, accounts, transactions } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as journalEntries from './journal-entry.service.js';
@@ -97,22 +97,25 @@ async function getSchedule(tenantId: string, id: string) {
   return s;
 }
 
-async function postedCount(scheduleId: string): Promise<number> {
-  const [r] = await db.select({ n: sql<number>`count(*)::int` }).from(accrualEntries)
-    .where(and(eq(accrualEntries.scheduleId, scheduleId), eq(accrualEntries.status, 'posted')));
-  return Number(r?.n ?? 0);
-}
-
 /** Change a schedule's terms. Allowed only while nothing has posted. */
 export async function updateSchedule(tenantId: string, id: string, input: Omit<ScheduleInput, 'companyId'>, userId?: string) {
   const s = await getSchedule(tenantId, id);
-  if (await postedCount(id) > 0) {
-    throw AppError.badRequest('Entries from this schedule have already posted. Cancel its future entries and create a new schedule instead.', 'ACCRUAL_LOCKED');
+  if (s.status !== 'active') {
+    throw AppError.badRequest(`This schedule is ${s.status}. Create a new schedule instead.`, 'ACCRUAL_NOT_ACTIVE');
   }
   await assertAccounts(tenantId, [input.balanceAccountId, input.recognitionAccountId]);
   let built;
   try { built = entriesFor({ ...input, companyId: s.companyId }); } catch (e) { throw AppError.badRequest(e instanceof Error ? e.message : String(e)); }
   await db.transaction(async (tx) => {
+    // Lock the schedule and every entry first, then decide. A Post racing
+    // this edit either committed before (we see it and refuse) or waits on
+    // the lock and then finds its draft gone — never a deleted posted entry.
+    const [locked] = await tx.execute(sql`SELECT status FROM accrual_schedules WHERE id = ${id} FOR UPDATE`).then((r) => r.rows as Array<{ status: string }>);
+    if (locked?.status !== 'active') throw AppError.badRequest('This schedule is no longer active.', 'ACCRUAL_NOT_ACTIVE');
+    const current = await tx.execute(sql`SELECT status FROM accrual_entries WHERE schedule_id = ${id} FOR UPDATE`);
+    if ((current.rows as Array<{ status: string }>).some((r) => r.status === 'posted')) {
+      throw AppError.badRequest('Entries from this schedule have already posted. Cancel its future entries and create a new schedule instead.', 'ACCRUAL_LOCKED');
+    }
     await tx.update(accrualSchedules).set({
       kind: input.kind, description: input.description.trim(), contactId: input.contactId ?? null,
       balanceAccountId: input.balanceAccountId, recognitionAccountId: input.recognitionAccountId,
@@ -129,8 +132,16 @@ export async function updateSchedule(tenantId: string, id: string, input: Omit<S
 /** Delete a schedule that has never posted. */
 export async function deleteSchedule(tenantId: string, id: string, userId?: string) {
   await getSchedule(tenantId, id);
-  if (await postedCount(id) > 0) throw AppError.badRequest('This schedule has posted entries. Cancel it instead.', 'ACCRUAL_LOCKED');
-  await db.delete(accrualSchedules).where(eq(accrualSchedules.id, id));
+  await db.transaction(async (tx) => {
+    // Same locking as updateSchedule: never cascade-delete an entry that a
+    // concurrent Post just booked.
+    await tx.execute(sql`SELECT id FROM accrual_schedules WHERE id = ${id} FOR UPDATE`);
+    const current = await tx.execute(sql`SELECT status FROM accrual_entries WHERE schedule_id = ${id} FOR UPDATE`);
+    if ((current.rows as Array<{ status: string }>).some((r) => r.status === 'posted')) {
+      throw AppError.badRequest('This schedule has posted entries. Stop it instead.', 'ACCRUAL_LOCKED');
+    }
+    await tx.delete(accrualSchedules).where(eq(accrualSchedules.id, id));
+  });
   await auditLog(tenantId, 'delete', 'accrual_schedule', id, null, null, userId);
 }
 
@@ -197,30 +208,48 @@ function journalLines(kind: string, balanceAccountId: string, recognitionAccount
   ];
 }
 
-/** Post one draft entry as a journal entry dated the last day of its posting month. */
+/**
+ * Post one draft entry as a journal entry dated the last day of its posting
+ * month. The draft is CLAIMED first with a conditional update (draft →
+ * posted), so two concurrent Posts (a row click during Post all, two
+ * reviewers) cannot both book it: the loser gets "already posted". If the
+ * journal entry then fails (e.g. a locked period), the claim is released.
+ */
 export async function postEntry(tenantId: string, entryId: string, userId?: string) {
   const [row] = await db.select({ e: accrualEntries, s: accrualSchedules }).from(accrualEntries)
     .innerJoin(accrualSchedules, eq(accrualSchedules.id, accrualEntries.scheduleId))
     .where(and(eq(accrualEntries.tenantId, tenantId), eq(accrualEntries.id, entryId))).limit(1);
   if (!row) throw AppError.notFound('Entry not found');
   if (row.e.status !== 'draft') throw AppError.badRequest('Only draft entries can be posted.');
-  if (Number(row.e.amount) === 0) {
-    await db.update(accrualEntries).set({ status: 'posted', postedBy: userId ?? null, postedAt: new Date() }).where(eq(accrualEntries.id, entryId));
-    return { transactionId: null };
+
+  const claimed = await db.update(accrualEntries)
+    .set({ status: 'posted', postedBy: userId ?? null, postedAt: new Date() })
+    .where(and(eq(accrualEntries.id, entryId), eq(accrualEntries.status, 'draft')))
+    .returning({ id: accrualEntries.id });
+  if (claimed.length === 0) throw AppError.badRequest('This entry was just posted by someone else.', 'ACCRUAL_ALREADY_POSTED');
+
+  let transactionId: string | null = null;
+  if (Number(row.e.amount) !== 0) {
+    const period = String(row.e.periodStart).slice(0, 7);
+    const memo = `${row.s.description} — ${period}${row.e.isCatchUp ? ' (catch-up)' : ''}`;
+    try {
+      const txn = await journalEntries.createJournalEntry(tenantId, {
+        txnDate: monthEnd(String(row.e.postPeriod)),
+        memo: `Accrual: ${memo}`,
+        basis: 'both',
+        lines: journalLines(row.s.kind, row.s.balanceAccountId, row.s.recognitionAccountId, String(row.e.amount), memo),
+      }, userId, row.s.companyId ?? undefined);
+      transactionId = txn.id;
+    } catch (err) {
+      await db.update(accrualEntries).set({ status: 'draft', postedBy: null, postedAt: null })
+        .where(and(eq(accrualEntries.id, entryId), eq(accrualEntries.status, 'posted'), sql`${accrualEntries.transactionId} IS NULL`));
+      throw err;
+    }
+    await db.update(accrualEntries).set({ transactionId }).where(eq(accrualEntries.id, entryId));
   }
-  const period = String(row.e.periodStart).slice(0, 7);
-  const memo = `${row.s.description} — ${period}${row.e.isCatchUp ? ' (catch-up)' : ''}`;
-  const txn = await journalEntries.createJournalEntry(tenantId, {
-    txnDate: monthEnd(String(row.e.postPeriod)),
-    memo: `Accrual: ${memo}`,
-    basis: 'both',
-    lines: journalLines(row.s.kind, row.s.balanceAccountId, row.s.recognitionAccountId, String(row.e.amount), memo),
-  }, userId, row.s.companyId ?? undefined);
-  await db.update(accrualEntries).set({ status: 'posted', transactionId: txn.id, postedBy: userId ?? null, postedAt: new Date() })
-    .where(eq(accrualEntries.id, entryId));
   await maybeComplete(row.s.id);
-  await auditLog(tenantId, 'update', 'accrual_entry', entryId, { status: 'draft' }, { status: 'posted', transactionId: txn.id }, userId);
-  return { transactionId: txn.id };
+  await auditLog(tenantId, 'update', 'accrual_entry', entryId, { status: 'draft' }, { status: 'posted', transactionId }, userId);
+  return { transactionId };
 }
 
 /** Post every draft for the month. Stops at the first failure (e.g. a locked period). */
@@ -240,8 +269,17 @@ export async function unpostEntry(tenantId: string, entryId: string, userId?: st
     .where(and(eq(accrualEntries.tenantId, tenantId), eq(accrualEntries.id, entryId))).limit(1);
   if (!e) throw AppError.notFound('Entry not found');
   if (e.status !== 'posted') throw AppError.badRequest('Only posted entries can be unposted.');
-  if (e.transactionId) await ledger.voidTransaction(tenantId, e.transactionId, 'Accrual entry unposted from Close Review', userId);
-  await db.update(accrualEntries).set({ status: 'draft', transactionId: null, postedBy: null, postedAt: null }).where(eq(accrualEntries.id, entryId));
+  if (e.transactionId) {
+    // Someone may already have voided the journal entry from the register;
+    // that must not leave the entry stuck as posted.
+    const [txn] = await db.select({ status: transactions.status }).from(transactions)
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, e.transactionId))).limit(1);
+    if (txn && txn.status !== 'void') {
+      await ledger.voidTransaction(tenantId, e.transactionId, 'Accrual entry unposted from Close Review', userId);
+    }
+  }
+  await db.update(accrualEntries).set({ status: 'draft', transactionId: null, postedBy: null, postedAt: null })
+    .where(and(eq(accrualEntries.id, entryId), eq(accrualEntries.status, 'posted')));
   await db.update(accrualSchedules).set({ status: 'active', updatedAt: new Date() })
     .where(and(eq(accrualSchedules.id, e.scheduleId), eq(accrualSchedules.status, 'completed')));
   await auditLog(tenantId, 'update', 'accrual_entry', entryId, { status: 'posted' }, { status: 'draft' }, userId);
@@ -398,13 +436,18 @@ export async function tieOut(tenantId: string, companyId: string | null, periodE
  */
 export async function importCsv(tenantId: string, companyId: string | null, csv: string, userId?: string) {
   const lines = csv.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  if (lines.length < 2) throw AppError.badRequest('The file has no rows.');
+  if (lines.length === 0) throw AppError.badRequest('The file has no rows.');
   const split = (l: string) => l.match(/("([^"]|"")*"|[^,]*)(,|$)/g)!.map((c) => c.replace(/,$/, '').replace(/^"|"$/g, '').replace(/""/g, '"').trim()).slice(0, -1);
   const acctRows = await db.select({ id: accounts.id, number: accounts.accountNumber }).from(accounts).where(eq(accounts.tenantId, tenantId));
   const byNumber = new Map(acctRows.filter((a) => a.number).map((a) => [String(a.number), a.id]));
   const created: string[] = [];
   const errors: Array<{ row: number; error: string }> = [];
-  for (let i = 1; i < lines.length; i++) {
+  // A header row is optional: skip the first line only when its first cell
+  // is not a schedule kind.
+  const KINDS = ['prepaid', 'deferred_revenue', 'accrued_expense', 'fixed_asset'];
+  const firstRow = KINDS.includes((split(lines[0]!)[0] ?? '').toLowerCase()) ? 0 : 1;
+  if (firstRow >= lines.length) throw AppError.badRequest('The file has no rows.');
+  for (let i = firstRow; i < lines.length; i++) {
     const [kind, description, balNo, recNo, start, amount, months, method] = split(lines[i]!);
     try {
       if (!['prepaid', 'deferred_revenue', 'accrued_expense', 'fixed_asset'].includes(kind ?? '')) throw new Error(`Unknown kind "${kind}"`);
