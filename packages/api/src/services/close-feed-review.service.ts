@@ -13,6 +13,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { AppError } from '../utils/errors.js';
+import { sortDirSql } from '../utils/list-query.js';
 import { bulkUpdateTransactions } from './ledger.service.js';
 import { recordUserDecision } from './ai-categorization.service.js';
 
@@ -21,6 +22,10 @@ export const FEED_REVIEW_METHODS = [
 ] as const;
 export type FeedReviewMethod = (typeof FEED_REVIEW_METHODS)[number];
 export type FeedReviewStatus = 'todo' | 'reviewed' | 'all';
+export const FEED_REVIEW_SORT_KEYS = [
+  'feedDate', 'description', 'payee', 'category', 'method', 'amount', 'reviewed',
+] as const;
+export type FeedReviewSortKey = (typeof FEED_REVIEW_SORT_KEYS)[number];
 
 const DONE_STATUSES = sql`('categorized', 'matched', 'excluded')`;
 
@@ -189,6 +194,8 @@ export async function list(
   scope: FeedReviewScope & {
     method?: FeedReviewMethod;
     status?: FeedReviewStatus;
+    sortBy?: FeedReviewSortKey;
+    sortDir?: 'asc' | 'desc';
     limit?: number;
     offset?: number;
   },
@@ -201,6 +208,25 @@ export async function list(
   if (scope.status === 'reviewed') conds.push(sql`d.close_reviewed_at IS NOT NULL`);
   const where = sql.join(conds, sql` AND `);
 
+  // Server-side sort (the list pages by offset, so a client sort would only
+  // order the loaded rows). Amount sorts by the displayed sign: money in is
+  // positive. Blanks last, then newest first as a stable tiebreak.
+  const dir = sortDirSql(scope.sortDir);
+  let sortExpr: SQL | null = null;
+  switch (scope.sortBy) {
+    case 'feedDate': sortExpr = sql`d.feed_date`; break;
+    case 'description': sortExpr = sql`LOWER(d.description)`; break;
+    case 'payee': sortExpr = sql`LOWER(d.payee_name)`; break;
+    case 'category': sortExpr = sql`LOWER(ca.name)`; break;
+    case 'method': sortExpr = sql`d.method`; break;
+    case 'amount': sortExpr = sql`(-CAST(d.amount AS DECIMAL))`; break;
+    case 'reviewed': sortExpr = sql`d.close_reviewed_at`; break;
+    default: sortExpr = null;
+  }
+  const orderBy = sortExpr
+    ? sql`${sortExpr} ${dir} NULLS LAST, d.feed_date DESC, d.id`
+    : sql`d.feed_date DESC, d.id`;
+
   const res = await db.execute(sql`
     ${doneItemsCte(tenantId, scope)}
     SELECT d.*, ca.name AS category_account_name, ca.account_number AS category_account_number,
@@ -210,7 +236,7 @@ export async function list(
     LEFT JOIN accounts ca ON ca.id = d.category_account_id
     LEFT JOIN accounts sa ON sa.id = d.suggested_account_id
     WHERE ${where}
-    ORDER BY d.feed_date DESC, d.id
+    ORDER BY ${orderBy}
     LIMIT ${limit} OFFSET ${offset}
   `);
 

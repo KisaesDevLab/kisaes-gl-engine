@@ -91,7 +91,7 @@ practiceClassificationRouter.get('/feed-review/summary', async (req, res) => {
   }));
 });
 
-// GET /feed-review?companyId&periodStart&periodEnd&method&status&limit&offset
+// GET /feed-review?companyId&periodStart&periodEnd&method&status&sortBy&sortDir&limit&offset
 practiceClassificationRouter.get('/feed-review', async (req, res) => {
   const q = feedReviewScopeSchema.parse({
     companyId: req.query['companyId'] || null,
@@ -100,6 +100,8 @@ practiceClassificationRouter.get('/feed-review', async (req, res) => {
   });
   const method = pickEnum(req.query['method'], closeFeedReviewService.FEED_REVIEW_METHODS);
   const status = pickEnum(req.query['status'], ['todo', 'reviewed', 'all'] as const) ?? 'todo';
+  const sortBy = pickEnum(req.query['sortBy'], closeFeedReviewService.FEED_REVIEW_SORT_KEYS);
+  const sortDir = pickEnum(req.query['sortDir'], ['asc', 'desc'] as const);
   const limit = Number(req.query['limit']) || 100;
   const offset = Number(req.query['offset']) || 0;
   res.json(await closeFeedReviewService.list(req.tenantId, {
@@ -108,6 +110,8 @@ practiceClassificationRouter.get('/feed-review', async (req, res) => {
     periodEnd: q.periodEnd,
     ...(method ? { method } : {}),
     status,
+    ...(sortBy ? { sortBy } : {}),
+    ...(sortDir ? { sortDir } : {}),
     limit,
     offset,
   }));

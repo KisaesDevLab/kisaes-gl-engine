@@ -153,6 +153,24 @@ describe('close-feed-review list', () => {
   });
 });
 
+describe('close-feed-review sort', () => {
+  it('sorts server-side by the chosen column, both directions, across pages', async () => {
+    const asc = await closeFeedReview.list(tenantId, { companyId, ...AUG, status: 'all', sortBy: 'description', sortDir: 'asc' });
+    expect(asc.rows.map((r) => r.description)).toEqual(['AI VENDOR', 'RULE VENDOR', 'TRANSFER']);
+    const desc = await closeFeedReview.list(tenantId, { companyId, ...AUG, status: 'all', sortBy: 'description', sortDir: 'desc' });
+    expect(desc.rows.map((r) => r.description)).toEqual(['TRANSFER', 'RULE VENDOR', 'AI VENDOR']);
+    const page2 = await closeFeedReview.list(tenantId, { companyId, ...AUG, status: 'all', sortBy: 'description', sortDir: 'asc', limit: 1, offset: 1 });
+    expect(page2.rows.map((r) => r.description)).toEqual(['RULE VENDOR']);
+    expect(page2.total).toBe(3);
+  });
+
+  it('sorts amount by the displayed sign (money in first when descending)', async () => {
+    await db.update(bankFeedItems).set({ amount: '-250.0000' }).where(eq(bankFeedItems.id, ids.excluded));
+    const desc = await closeFeedReview.list(tenantId, { companyId, ...AUG, status: 'all', sortBy: 'amount', sortDir: 'desc' });
+    expect(desc.rows[0]!.feedItemId).toBe(ids.excluded);
+  });
+});
+
 describe('close-feed-review marks', () => {
   it('marks done items reviewed, ignores uncategorized ones, and undoes', async () => {
     const res = await closeFeedReview.setReviewed(tenantId, userId, [ids.rule, ids.excluded, ids.open], true, companyId);
