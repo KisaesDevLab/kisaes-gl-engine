@@ -29,6 +29,7 @@ import * as creditMemoService from '../services/credit-memo.service.js';
 import * as customerRefundService from '../services/customer-refund.service.js';
 import * as attachmentService from '../services/attachment.service.js';
 import * as transactionReport from '../services/transaction-report.service.js';
+import * as transactionActivity from '../services/transaction-activity.service.js';
 
 export const transactionsRouter = Router();
 transactionsRouter.use(authenticate);
@@ -180,6 +181,16 @@ transactionsRouter.get('/:id/related', async (req, res) => {
   const parsed = txnIdParam.safeParse(req.params['id']);
   if (!parsed.success) throw AppError.badRequest('Invalid transaction id');
   res.json(await transactionReport.getRelatedTransactions(req.tenantId, parsed.data, req.companyId));
+});
+
+// Activity card: everything recorded about this transaction, oldest first
+// (created / edited / voided, the bank-feed item it came from, review marks,
+// attachments, review findings, client questions).
+transactionsRouter.get('/:id/activity', async (req, res) => {
+  const parsed = txnIdParam.safeParse(req.params['id']);
+  if (!parsed.success) throw AppError.badRequest('Invalid transaction id');
+  const events = await transactionActivity.getTransactionActivity(req.tenantId, parsed.data, req.companyId);
+  res.json({ events });
 });
 
 // Transaction Report: summary of this transaction and everything linked to

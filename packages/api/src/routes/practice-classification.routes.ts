@@ -129,12 +129,9 @@ practiceClassificationRouter.post(
   validate(feedReviewMarkSchema),
   async (req, res) => {
     const { feedItemIds, reviewed, companyId } = req.body as z.infer<typeof feedReviewMarkSchema>;
+    // The service writes one audit row per item marked.
     const result = await closeFeedReviewService.setReviewed(
       req.tenantId, req.userId, feedItemIds, reviewed, companyId ?? null,
-    );
-    await auditLog(
-      req.tenantId, 'update', 'close_feed_review', null, null,
-      { reviewed, feedItemIds, updated: result.updated }, req.userId,
     );
     res.json(result);
   },

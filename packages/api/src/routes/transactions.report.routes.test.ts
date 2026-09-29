@@ -98,6 +98,7 @@ describe('transaction report routes', () => {
     const token = a.tokens.accessToken;
     expect((await get('/api/v1/transactions/not-a-uuid/related', token)).status).toBe(400);
     expect((await get('/api/v1/transactions/not-a-uuid/report.pdf', token)).status).toBe(400);
+    expect((await get('/api/v1/transactions/not-a-uuid/activity', token)).status).toBe(400);
   });
 
   it('serves related transactions and the enriched detail for the caller’s own transaction', async () => {
@@ -106,6 +107,10 @@ describe('transaction report routes', () => {
     const related = await get(`/api/v1/transactions/${je.id}/related`, a.tokens.accessToken);
     expect(related.status).toBe(200);
     expect(related.json).toEqual({ related: [], truncated: false });
+
+    const activity = await get(`/api/v1/transactions/${je.id}/activity`, a.tokens.accessToken);
+    expect(activity.status).toBe(200);
+    expect(Array.isArray(activity.json['events'])).toBe(true);
 
     const detail = await get(`/api/v1/transactions/${je.id}`, a.tokens.accessToken);
     expect(detail.status).toBe(200);
@@ -120,5 +125,6 @@ describe('transaction report routes', () => {
     const je = await journalEntry(a.user.tenantId);
     expect((await get(`/api/v1/transactions/${je.id}/related`, b.tokens.accessToken)).status).toBe(404);
     expect((await get(`/api/v1/transactions/${je.id}/report.pdf`, b.tokens.accessToken)).status).toBe(404);
+    expect((await get(`/api/v1/transactions/${je.id}/activity`, b.tokens.accessToken)).status).toBe(404);
   });
 });

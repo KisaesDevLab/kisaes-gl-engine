@@ -12,6 +12,7 @@
 
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '../db/index.js';
+import { auditLog as auditLogTable } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { sortDirSql } from '../utils/list-query.js';
 import { bulkUpdateTransactions } from './ledger.service.js';
@@ -277,6 +278,28 @@ export async function list(
 
 const MAX_IDS = 500;
 
+// One audit row PER item (entity_id = the feed item), so a transaction's
+// Activity card can show who reviewed it and when. `via` says which Close
+// Review action set the mark.
+async function auditMarks(
+  tenantId: string,
+  userId: string | undefined,
+  feedItemIds: string[],
+  reviewed: boolean,
+  via: 'mark' | 'approve' | 'recategorize',
+): Promise<void> {
+  if (feedItemIds.length === 0) return;
+  await db.insert(auditLogTable).values(feedItemIds.map((id) => ({
+    tenantId,
+    action: 'update',
+    entityType: 'close_feed_review',
+    entityId: id,
+    beforeData: null,
+    afterData: JSON.stringify({ reviewed, via }),
+    userId: userId ?? null,
+  })));
+}
+
 // "Looks right" (reviewed = true) or undo (false). Only done items can be
 // marked — an uncategorized item has nothing to review yet.
 export async function setReviewed(
@@ -289,7 +312,7 @@ export async function setReviewed(
   if (feedItemIds.length === 0) return { updated: 0 };
   if (feedItemIds.length > MAX_IDS) throw AppError.badRequest(`Mark at most ${MAX_IDS} items at a time.`);
   const ids = sql.join(feedItemIds.map((id) => sql`${id}::uuid`), sql`, `);
-  const res = await db.execute(sql`
+  const res = await db.execute<{ id: string }>(sql`
     UPDATE bank_feed_items f
     SET close_reviewed_at = ${reviewed ? sql`now()` : sql`NULL`},
         close_reviewed_by = ${reviewed ? sql`${userId}::uuid` : sql`NULL`}
@@ -297,20 +320,30 @@ export async function setReviewed(
       ${companyCond(companyId)}
       AND f.id IN (${ids})
       AND f.status IN ${DONE_STATUSES}
+    RETURNING f.id
   `);
-  return { updated: res.rowCount ?? 0 };
+  const changed = (res.rows as Array<{ id: string }>).map((r) => r.id);
+  await auditMarks(tenantId, userId, changed, reviewed, 'mark');
+  return { updated: changed.length };
 }
 
 // Stamp items a reviewer finished inside Close Review itself (bucket
-// approve), so they count as reviewed without a second click.
-export async function markReviewedByIds(tenantId: string, userId: string | undefined, feedItemIds: string[]): Promise<void> {
+// approve, recategorize), so they count as reviewed without a second click.
+export async function markReviewedByIds(
+  tenantId: string,
+  userId: string | undefined,
+  feedItemIds: string[],
+  via: 'approve' | 'recategorize' = 'approve',
+): Promise<void> {
   if (feedItemIds.length === 0) return;
   const ids = sql.join(feedItemIds.map((id) => sql`${id}::uuid`), sql`, `);
-  await db.execute(sql`
+  const res = await db.execute<{ id: string }>(sql`
     UPDATE bank_feed_items
     SET close_reviewed_at = now(), close_reviewed_by = ${userId ?? null}
     WHERE tenant_id = ${tenantId} AND id IN (${ids}) AND close_reviewed_at IS NULL
+    RETURNING id
   `);
+  await auditMarks(tenantId, userId, (res.rows as Array<{ id: string }>).map((r) => r.id), true, via);
 }
 
 // Recategorize from the review list: re-point the posted transaction's
@@ -375,7 +408,7 @@ export async function recategorize(
       } catch { /* learning is advisory */ }
     }
   }
-  await markReviewedByIds(tenantId, userId, changed);
+  await markReviewedByIds(tenantId, userId, changed, 'recategorize');
 
   return { updated: changed.length, skipped };
 }

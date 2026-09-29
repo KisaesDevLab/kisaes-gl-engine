@@ -384,3 +384,30 @@ export interface TransactionFilters {
 }
 
 // Tag type moved to types/tags.ts
+
+// ── Transaction activity (GET /transactions/:id/activity) ─────────
+// One line of the transaction page's Activity card, assembled from the
+// audit log, the bank-feed item the transaction came from, attachments,
+// Close Review findings and client questions. Oldest first.
+export type TransactionActivityKind =
+  | 'imported' | 'suggested' | 'staged' | 'excluded'
+  | 'created' | 'edited' | 'voided'
+  | 'printed' | 'sent' | 'viewed' | 'paid'
+  | 'attachment_added' | 'attachment_removed'
+  | 'reviewed' | 'unreviewed'
+  | 'finding' | 'finding_update'
+  | 'question' | 'question_update';
+
+export interface TransactionActivityEvent {
+  at: string;
+  kind: TransactionActivityKind;
+  title: string;
+  detail: string | null;
+  /** Who did it: a user's name, "Client (…)" for portal actions, or null
+   *  for the system (imports, bank sync, automatic steps). */
+  actor: string | null;
+}
+
+export interface TransactionActivityResponse {
+  events: TransactionActivityEvent[];
+}

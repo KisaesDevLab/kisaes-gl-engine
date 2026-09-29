@@ -663,6 +663,12 @@ queue. Vendors with no account number print the same memo as before.
 - **Check Register** — all checks written, with check numbers, payees, and amounts.
 - **1099 Vendor Summary** — detailed 1099-eligible payments per vendor.
 - **Transaction List** — all transactions for a period in date order.
+- **Activity card** — bottom of every transaction page: timeline, oldest first,
+  of where it came from (bank download / file / statement / import), the
+  category suggestion and its source, posted by, edits (what changed, bulk
+  edits), voids, Close Review review marks, attachments added/removed, review
+  findings, client questions, and printed / sent / viewed / paid. "Automatic"
+  = done by the system.
 - **Transaction Report** — not on the Reports page: a button on any transaction
   (and on the Bill and Invoice pages). One PDF with the transaction's details and
   journal lines, the same for every linked transaction (a bill and the payments
