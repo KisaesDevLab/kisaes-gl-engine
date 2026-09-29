@@ -66,9 +66,10 @@ Practice → Close Review closes one client (company) for one month. Tabs:
 **Overview** (preparer → reviewer sign-off plus the close checklist; the
 preparer can only sign once checks were run for the month; either sign-off can
 be undone newest first; Practice → Clients shows last month's close status),
-**Bank feed** (by transaction date: "Still to categorize" buckets — potential
-matches, rules, auto classifications, needs review — shown only while anything
-is uncategorized; then "Review what was categorized": every categorized /
+**Bank feed** (by transaction date: if anything in the month is still
+uncategorized, a count with **Open in Banking**, which opens Banking → Bank
+feed filtered to that month — categorizing happens there; then "Review what
+was categorized": every categorized /
 matched / excluded item with its posted category and payee, filterable by how
 it was coded — Bank rule, AI suggestion, Payee history, Check image, By hand
 (category picked or changed by a person; the overridden suggestion is shown),
