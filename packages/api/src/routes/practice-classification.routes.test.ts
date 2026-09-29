@@ -230,6 +230,41 @@ describe('practice-classification routes', () => {
     });
   });
 
+  describe('feed review (Close Review reviewer pass)', () => {
+    const Q = 'periodStart=2026-08-01&periodEnd=2026-09-01';
+
+    it('summarizes an empty tenant as having no bank feed', async () => {
+      const { status, json } = await request('GET', `/api/v1/practice/classification/feed-review/summary?${Q}`, undefined, bookkeeperToken);
+      expect(status).toBe(200);
+      expect(json.hasBankFeed).toBe(false);
+      expect(json.doneTotal).toBe(0);
+    });
+
+    it('marks a done item reviewed and audits it', async () => {
+      const { bankFeedItemId } = await seedFeedItemWithState(tenantId, 'needs_review', 0.5);
+      await db.update(bankFeedItems)
+        .set({ status: 'excluded', feedDate: '2026-08-15' })
+        .where(eq(bankFeedItems.id, bankFeedItemId));
+      const { status, json } = await request(
+        'POST', '/api/v1/practice/classification/feed-review/mark',
+        { feedItemIds: [bankFeedItemId], reviewed: true }, bookkeeperToken,
+      );
+      expect(status).toBe(200);
+      expect(json.updated).toBe(1);
+      const list = await request('GET', `/api/v1/practice/classification/feed-review?${Q}&status=reviewed`, undefined, bookkeeperToken);
+      expect(list.json.rows.map((r: { feedItemId: string }) => r.feedItemId)).toEqual([bankFeedItemId]);
+      const audits = await db.select().from(auditLogTable).where(eq(auditLogTable.tenantId, tenantId));
+      expect(audits.some((a) => a.entityType === 'close_feed_review')).toBe(true);
+    });
+
+    it('rejects a malformed mark body (400) and readonly users (403)', async () => {
+      const bad = await request('POST', '/api/v1/practice/classification/feed-review/mark', { feedItemIds: ['nope'], reviewed: true }, bookkeeperToken);
+      expect(bad.status).toBe(400);
+      const ro = await request('POST', '/api/v1/practice/classification/feed-review/mark', { feedItemIds: [crypto.randomUUID()], reviewed: true }, readonlyToken);
+      expect(ro.status).toBe(403);
+    });
+  });
+
   describe('GET /summary', () => {
     it('returns zero counts for an empty tenant', async () => {
       const { status, json } = await request(

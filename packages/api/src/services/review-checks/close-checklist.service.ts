@@ -26,6 +26,8 @@ export interface CloseChecklistTask {
   manuallyCompleted: boolean;
   completedAt: string | null;
   note: string | null;
+  /** Findings task only: no completed check run exists for this period. */
+  needsRun?: boolean;
 }
 
 function companyCond(companyId: string | null) {
@@ -117,6 +119,36 @@ export async function getCloseChecklist(
       : `${feedCount} bank-feed item${feedCount === 1 ? '' : 's'} dated in or before this period still need categorizing or approval`,
   }));
 
+  // ── 2b. Reviewer pass over what was categorized: every categorized /
+  //        matched / excluded item dated in the period gets a "Looks
+  //        right" (or a recategorize) on Close Review → Bank feed. Only
+  //        shown when the period has bank-feed activity.
+  const pStartReview = periodStart.slice(0, 10);
+  const pEndReview = periodEnd.slice(0, 10);
+  const rev = await db.execute<{ total: string; reviewed: string }>(sql`
+    SELECT COUNT(*) AS total, COUNT(close_reviewed_at) AS reviewed FROM bank_feed_items
+    WHERE tenant_id = ${tenantId}
+      ${companyCond(companyId)}
+      AND status IN ('categorized', 'matched', 'excluded')
+      AND feed_date >= ${pStartReview}::date AND feed_date < ${pEndReview}::date
+  `);
+  const revRow = rev.rows[0] as { total: string; reviewed: string } | undefined;
+  const reviewTotal = Number(revRow?.total ?? 0);
+  const reviewDone = Number(revRow?.reviewed ?? 0);
+  if (reviewTotal > 0) {
+    const left = reviewTotal - reviewDone;
+    tasks.push(withSignoff({
+      key: 'bank_feed_review',
+      section: 'transactions',
+      label: 'Review the categorized bank transactions',
+      auto: true,
+      done: left === 0,
+      detail: left === 0
+        ? `All ${reviewTotal} reviewed`
+        : `${reviewDone} of ${reviewTotal} reviewed — ${left} to go`,
+    }));
+  }
+
   // ── 3. Findings queue: run the checks, then clear what they raise.
   //       Scoped to THIS period, and only "done" once a run for the
   //       period has actually completed — checks never run on their own,
@@ -145,8 +177,9 @@ export async function getCloseChecklist(
     label: 'Clear review-check findings',
     auto: true,
     done: hasRun && openCount === 0,
+    needsRun: !hasRun,
     detail: !hasRun
-      ? 'Checks have not been run for this period yet — open Findings and click Run checks now'
+      ? 'Checks have not been run for this period yet — click Run checks now'
       : openCount === 0
         ? 'No open findings'
         : `${openCount} finding${openCount === 1 ? '' : 's'} still open for this period`,

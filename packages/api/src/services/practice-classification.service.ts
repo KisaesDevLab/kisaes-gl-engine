@@ -731,6 +731,7 @@ export async function approveSelected(
     );
 
   const approved: string[] = [];
+  const approvedFeedItemIds: string[] = [];
   const failed: Array<{ stateId: string; reason: string }> = [];
   const found = new Set(rows.map((r) => r.id));
   for (const id of stateIds) {
@@ -760,12 +761,19 @@ export async function approveSelected(
       );
       await stampTransactionId(tenantId, state.bankFeedItemId, txn.id);
       approved.push(state.id);
+      approvedFeedItemIds.push(state.bankFeedItemId);
     } catch (err) {
       failed.push({
         stateId: state.id,
         reason: err instanceof Error ? err.message : 'unknown_error',
       });
     }
+  }
+  // Approving inside Close Review is the reviewer's decision — count those
+  // items as reviewed for the close (Bank feed "X of N reviewed").
+  if (approvedFeedItemIds.length > 0) {
+    const closeFeedReview = await import('./close-feed-review.service.js');
+    await closeFeedReview.markReviewedByIds(tenantId, userId, approvedFeedItemIds);
   }
   return { approved, failed };
 }

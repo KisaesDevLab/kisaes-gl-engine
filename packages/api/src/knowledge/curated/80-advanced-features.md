@@ -66,14 +66,26 @@ Practice → Close Review closes one client (company) for one month. Tabs:
 **Overview** (preparer → reviewer sign-off plus the close checklist; the
 preparer can only sign once checks were run for the month; either sign-off can
 be undone newest first; Practice → Clients shows last month's close status),
-**Bank feed** (that month's feed items by transaction date in buckets: potential
-matches, rules, auto classifications, needs review), **Review** (exception
+**Bank feed** (by transaction date: "Still to categorize" buckets — potential
+matches, rules, auto classifications, needs review — shown only while anything
+is uncategorized; then "Review what was categorized": every categorized /
+matched / excluded item with its posted category and payee, filterable by how
+it was coded — Bank rule, AI suggestion, Payee history, Check image, By hand
+(category picked or changed by a person; the overridden suggestion is shown),
+Matched, Excluded — with **Looks right** (mark reviewed; undoable) and
+**Recategorize** (changes the posted transaction's single category line and/or
+payee, teaches payee history, marks reviewed; splits are edited on the
+transaction). A banner links months that still have uncategorized items; a
+client with no bank feed gets a note pointing to Review. The page progress bar
+is "X of N bank transactions reviewed" and the Overview checklist adds "Review
+the categorized bank transactions"), **Review** (exception
 reports grouped as Transaction review / Payee review / Final review with open
 counts; views To review / Accepted / Dismissed; row actions Accept, Dismiss,
 Exclude payee — a per-client suppression for that report — and Ask the client,
 which creates portal questions delivered in the client's next reminder), and
 **Manual queue**. Checks NEVER run automatically — the reviewer clicks **Run
-checks now** for the selected month; "Run AI judgment" runs only the AI checks
+checks now** for the selected month (Overview shows a banner with that button
+until checks have run for the month); "Run AI judgment" runs only the AI checks
 for that month. Findings are stored per month. The row drawer shows the payee's
 12-month coding history, and duplicate-name rows can be merged in place
 (merging moves transactions, journal lines, feed suggestions, history, rules

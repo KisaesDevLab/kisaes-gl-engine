@@ -74,6 +74,10 @@ export const bankFeedItems = pgTable('bank_feed_items', {
   // row this item was imported from. Lets auto-clear trace statement rows to
   // their posted journal lines. FK ON DELETE SET NULL in SQL.
   statementId: uuid('statement_id'),
+  // Migration 0188 — Close Review "Looks right" mark on a categorized /
+  // matched / excluded item. NULL = not yet reviewed for the close.
+  closeReviewedAt: timestamp('close_reviewed_at', { withTimezone: true }),
+  closeReviewedBy: uuid('close_reviewed_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({

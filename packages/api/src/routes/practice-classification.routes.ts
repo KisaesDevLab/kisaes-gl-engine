@@ -18,6 +18,7 @@ import { auditLog } from '../middleware/audit.js';
 import { requirePracticeAccess } from '../middleware/practice-access.js';
 import { AppError } from '../utils/errors.js';
 import * as classificationService from '../services/practice-classification.service.js';
+import * as closeFeedReviewService from '../services/close-feed-review.service.js';
 import { pickEnum } from '../utils/list-query.js';
 import * as ruleExceptionService from '../services/rule-exception.service.js';
 import * as tenantFirmAssignmentService from '../services/tenant-firm-assignment.service.js';
@@ -68,6 +69,105 @@ practiceClassificationRouter.get('/bucket/:bucket', async (req, res) => {
   });
   res.json(result);
 });
+
+// ── Bank feed review (Close Review reviewer pass) ─────────────────
+// The period's DONE feed items (categorized / matched / excluded), how
+// each got its category, and the reviewer's "Looks right" mark.
+const feedReviewScopeSchema = z.object({
+  companyId: z.string().uuid().nullable().optional(),
+  periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}/),
+  periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}/),
+});
+
+// GET /feed-review/summary?companyId&periodStart&periodEnd
+practiceClassificationRouter.get('/feed-review/summary', async (req, res) => {
+  const q = feedReviewScopeSchema.parse({
+    companyId: req.query['companyId'] || null,
+    periodStart: req.query['periodStart'],
+    periodEnd: req.query['periodEnd'],
+  });
+  res.json(await closeFeedReviewService.summarize(req.tenantId, {
+    companyId: q.companyId ?? null, periodStart: q.periodStart, periodEnd: q.periodEnd,
+  }));
+});
+
+// GET /feed-review?companyId&periodStart&periodEnd&method&status&limit&offset
+practiceClassificationRouter.get('/feed-review', async (req, res) => {
+  const q = feedReviewScopeSchema.parse({
+    companyId: req.query['companyId'] || null,
+    periodStart: req.query['periodStart'],
+    periodEnd: req.query['periodEnd'],
+  });
+  const method = pickEnum(req.query['method'], closeFeedReviewService.FEED_REVIEW_METHODS);
+  const status = pickEnum(req.query['status'], ['todo', 'reviewed', 'all'] as const) ?? 'todo';
+  const limit = Number(req.query['limit']) || 100;
+  const offset = Number(req.query['offset']) || 0;
+  res.json(await closeFeedReviewService.list(req.tenantId, {
+    companyId: q.companyId ?? null,
+    periodStart: q.periodStart,
+    periodEnd: q.periodEnd,
+    ...(method ? { method } : {}),
+    status,
+    limit,
+    offset,
+  }));
+});
+
+const feedReviewMarkSchema = z.object({
+  feedItemIds: z.array(z.string().uuid()).min(1).max(500),
+  reviewed: z.boolean(),
+  companyId: z.string().uuid().nullable().optional(),
+});
+
+// POST /feed-review/mark — "Looks right" (reviewed=true) or undo.
+practiceClassificationRouter.post(
+  '/feed-review/mark',
+  validate(feedReviewMarkSchema),
+  async (req, res) => {
+    const { feedItemIds, reviewed, companyId } = req.body as z.infer<typeof feedReviewMarkSchema>;
+    const result = await closeFeedReviewService.setReviewed(
+      req.tenantId, req.userId, feedItemIds, reviewed, companyId ?? null,
+    );
+    await auditLog(
+      req.tenantId, 'update', 'close_feed_review', null, null,
+      { reviewed, feedItemIds, updated: result.updated }, req.userId,
+    );
+    res.json(result);
+  },
+);
+
+const feedReviewRecategorizeSchema = z.object({
+  feedItemIds: z.array(z.string().uuid()).min(1).max(500),
+  accountId: z.string().uuid().optional(),
+  contactId: z.string().uuid().optional(),
+  companyId: z.string().uuid().nullable().optional(),
+});
+
+// POST /feed-review/recategorize — change the posted category and/or payee,
+// then mark the items reviewed.
+practiceClassificationRouter.post(
+  '/feed-review/recategorize',
+  validate(feedReviewRecategorizeSchema),
+  async (req, res) => {
+    const body = req.body as z.infer<typeof feedReviewRecategorizeSchema>;
+    const result = await closeFeedReviewService.recategorize(
+      req.tenantId,
+      req.userId,
+      {
+        feedItemIds: body.feedItemIds,
+        ...(body.accountId ? { accountId: body.accountId } : {}),
+        ...(body.contactId ? { contactId: body.contactId } : {}),
+      },
+      body.companyId ?? null,
+    );
+    await auditLog(
+      req.tenantId, 'update', 'close_feed_review_recategorize', null, null,
+      { feedItemIds: body.feedItemIds, accountId: body.accountId ?? null, contactId: body.contactId ?? null, ...result },
+      req.userId,
+    );
+    res.json(result);
+  },
+);
 
 // POST /approve — bulk approve selected state ids
 practiceClassificationRouter.post(
