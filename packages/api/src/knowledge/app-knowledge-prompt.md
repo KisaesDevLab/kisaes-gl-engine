@@ -1071,7 +1071,9 @@ it was coded — Bank rule, AI suggestion, Payee history, Check image, By hand
 Matched, Excluded — with **Looks right** (mark reviewed; undoable) and
 **Recategorize** (changes the posted transaction's single category line and/or
 payee, teaches payee history, marks reviewed; splits are edited on the
-transaction). A banner links months that still have uncategorized items; a
+transaction). With rows selected, bulk **Change payee…** / **Change
+category…** set one payee or one category on all of them and mark them
+reviewed. A banner links months that still have uncategorized items; a
 client with no bank feed gets a note pointing to Review. The page progress bar
 is "X of N bank transactions reviewed" and the Overview checklist adds "Review
 the categorized bank transactions"), **Review** (exception

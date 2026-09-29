@@ -196,6 +196,24 @@ describe('close-feed-review recategorize', () => {
     expect(moved.reviewedAt).not.toBeNull();
   });
 
+  it('changes only the payee when no category is given', async () => {
+    const [vendor] = await db.insert(contacts).values({ tenantId, contactType: 'vendor', displayName: 'Bulk Payee Co' }).returning();
+    const res = await closeFeedReview.recategorize(
+      tenantId, userId, { feedItemIds: [ids.rule, ids.manual], contactId: vendor!.id }, companyId,
+    );
+    expect(res).toEqual({ updated: 2, skipped: [] });
+    const { rows } = await closeFeedReview.list(tenantId, { companyId, ...AUG, status: 'all' });
+    for (const id of [ids.rule, ids.manual]) {
+      const r = rows.find((x) => x.feedItemId === id)!;
+      expect(r.payeeContactId).toBe(vendor!.id);
+      expect(r.payeeName).toBe('Bulk Payee Co');
+      expect(r.reviewedAt).not.toBeNull();
+    }
+    // Categories untouched.
+    expect(rows.find((x) => x.feedItemId === ids.rule)!.categoryAccountId).toBe(exp1);
+    expect(rows.find((x) => x.feedItemId === ids.manual)!.categoryAccountId).toBe(exp2);
+  });
+
   it('requires a category or payee', async () => {
     await expect(closeFeedReview.recategorize(tenantId, userId, { feedItemIds: [ids.rule] }, companyId))
       .rejects.toThrow(/category or a payee/);
