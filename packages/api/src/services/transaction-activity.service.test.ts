@@ -88,6 +88,7 @@ describe('getTransactionActivity', () => {
   it('tells the story: downloaded, suggested, posted, edited, reviewed, attachment', async () => {
     const [vendor] = await db.insert(contacts).values({ tenantId, contactType: 'vendor', displayName: 'Slack Inc' }).returning();
     await closeFeedReview.recategorize(tenantId, userId, { feedItemIds: [feedItemId], contactId: vendor!.id }, companyId);
+    await closeFeedReview.setReviewed(tenantId, userId, [feedItemId], true, companyId);
     await closeFeedReview.setReviewed(tenantId, userId, [feedItemId], false, companyId);
     await closeFeedReview.setReviewed(tenantId, userId, [feedItemId], true, companyId);
     // A portal upload leaves no audit row — it still shows, credited to nobody.
@@ -109,10 +110,10 @@ describe('getTransactionActivity', () => {
     expect(edit.title).toBe('Edited (bulk change)');
     expect(edit.detail).toBe('payee → Slack Inc');
 
-    // recategorize → reviewed (via recategorize), undo, reviewed again.
+    // Recategorize leaves no review mark; Looks right, undo, Looks right again.
     const marks = events.filter((e) => e.kind === 'reviewed' || e.kind === 'unreviewed');
     expect(marks.map((m) => m.kind)).toEqual(['reviewed', 'unreviewed', 'reviewed']);
-    expect(marks[0]!.detail).toBe('Recategorized from Close Review');
+    expect(marks[0]!.detail).toBeNull();
     expect(marks.every((m) => m.actor === 'Activity Tester')).toBe(true);
 
     const att = events.find((e) => e.kind === 'attachment_added')!;
