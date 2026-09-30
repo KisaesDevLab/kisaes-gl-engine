@@ -144,8 +144,8 @@ const feedReviewRecategorizeSchema = z.object({
   companyId: z.string().uuid().nullable().optional(),
 });
 
-// POST /feed-review/recategorize — change the posted category and/or payee,
-// then mark the items reviewed.
+// POST /feed-review/recategorize — change the posted category and/or payee.
+// Does not mark the items reviewed; that stays a separate "Looks right".
 practiceClassificationRouter.post(
   '/feed-review/recategorize',
   validate(feedReviewRecategorizeSchema),

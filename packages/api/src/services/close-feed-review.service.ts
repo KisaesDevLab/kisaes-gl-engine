@@ -331,12 +331,12 @@ export async function setReviewed(
 }
 
 // Stamp items a reviewer finished inside Close Review itself (bucket
-// approve, recategorize), so they count as reviewed without a second click.
+// approve), so they count as reviewed without a second click.
 export async function markReviewedByIds(
   tenantId: string,
   userId: string | undefined,
   feedItemIds: string[],
-  via: 'approve' | 'recategorize' = 'approve',
+  via: 'approve' = 'approve',
 ): Promise<void> {
   if (feedItemIds.length === 0) return;
   const ids = sql.join(feedItemIds.map((id) => sql`${id}::uuid`), sql`, `);
@@ -351,7 +351,8 @@ export async function markReviewedByIds(
 
 // Recategorize from the review list: re-point the posted transaction's
 // single category line (and/or its payee) via the ledger's bulk update, teach
-// the payee history the correction, and mark the items reviewed. Splits,
+// the payee history the correction. The review mark is left alone — a fix
+// is not a sign-off; the reviewer still clicks "Looks right". Splits,
 // excluded items and locked periods come back as skipped, never forced.
 export async function recategorize(
   tenantId: string,
@@ -411,7 +412,5 @@ export async function recategorize(
       } catch { /* learning is advisory */ }
     }
   }
-  await markReviewedByIds(tenantId, userId, changed, 'recategorize');
-
   return { updated: changed.length, skipped };
 }

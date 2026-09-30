@@ -196,7 +196,7 @@ describe('close-feed-review marks', () => {
 });
 
 describe('close-feed-review recategorize', () => {
-  it('moves the posted category, learns it, and marks the item reviewed', async () => {
+  it('moves the posted category and learns it, without marking the item reviewed', async () => {
     const res = await closeFeedReview.recategorize(
       tenantId, userId, { feedItemIds: [ids.rule, ids.excluded], accountId: exp2 }, companyId,
     );
@@ -204,7 +204,7 @@ describe('close-feed-review recategorize', () => {
     expect(res.skipped).toEqual([{ feedItemId: ids.excluded, reason: 'excluded' }]);
 
     const feed = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, ids.rule) });
-    expect(feed!.closeReviewedAt).not.toBeNull();
+    expect(feed!.closeReviewedAt).toBeNull();
     const lines = await db.select().from(journalLines)
       .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, feed!.matchedTransactionId!)));
     expect(lines.map((l) => l.accountId).sort()).toEqual([bankAccountId, exp2].sort());
@@ -212,7 +212,7 @@ describe('close-feed-review recategorize', () => {
     const { rows } = await closeFeedReview.list(tenantId, { companyId, ...AUG, status: 'all' });
     const moved = rows.find((r) => r.feedItemId === ids.rule)!;
     expect(moved.categoryAccountId).toBe(exp2);
-    expect(moved.reviewedAt).not.toBeNull();
+    expect(moved.reviewedAt).toBeNull();
   });
 
   it('changes only the payee when no category is given', async () => {
@@ -226,7 +226,7 @@ describe('close-feed-review recategorize', () => {
       const r = rows.find((x) => x.feedItemId === id)!;
       expect(r.payeeContactId).toBe(vendor!.id);
       expect(r.payeeName).toBe('Bulk Payee Co');
-      expect(r.reviewedAt).not.toBeNull();
+      expect(r.reviewedAt).toBeNull();
     }
     // Categories untouched.
     expect(rows.find((x) => x.feedItemId === ids.rule)!.categoryAccountId).toBe(exp1);
