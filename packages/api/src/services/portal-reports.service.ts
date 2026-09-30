@@ -328,7 +328,7 @@ export async function updateInstance(
   bookkeeperUserId: string,
   input: UpdateInstanceInput,
 ): Promise<void> {
-  const before = await getInstance(tenantId, id);
+  const before = await getBuilderInstance(tenantId, id);
   // Don't allow editing published reports — those are the legal record
   // shared with the client. Bookkeeper must duplicate for revisions.
   if (before.status === 'published') {
@@ -393,7 +393,7 @@ export async function updateInstanceLayout(
   bookkeeperUserId: string,
   layout: unknown[],
 ): Promise<{ instance: Awaited<ReturnType<typeof getInstance>> }> {
-  const before = await getInstance(tenantId, id);
+  const before = await getBuilderInstance(tenantId, id);
   assertSnapshotEditable(before.status);
   await db.update(reportInstances)
     .set({ layoutSnapshotJsonb: layout as never })
@@ -415,7 +415,7 @@ export async function deleteInstance(
   // AI summaries and orphan the PDF artifact).
   _force: boolean = false,
 ): Promise<void> {
-  const before = await getInstance(tenantId, id);
+  const before = await getBuilderInstance(tenantId, id);
   if (before.status === 'published') {
     throw AppError.badRequest(
       'Published reports cannot be deleted. Archive the report instead (Status → Archived), then Duplicate if you need a new version.',
@@ -439,7 +439,9 @@ export async function deleteInstance(
 }
 
 export async function listInstances(tenantId: string, companyId?: string) {
-  const filters: ReturnType<typeof eq>[] = [eq(reportInstances.tenantId, tenantId)];
+  // Financial-statement publishes (source 'financial_statements') live in
+  // the same table for the portal's sake but belong to the TB module.
+  const filters: ReturnType<typeof eq>[] = [eq(reportInstances.tenantId, tenantId), eq(reportInstances.source, 'report_builder')];
   if (companyId) filters.push(eq(reportInstances.companyId, companyId));
   return db
     .select()
@@ -453,6 +455,15 @@ export async function getInstance(tenantId: string, id: string) {
     where: and(eq(reportInstances.tenantId, tenantId), eq(reportInstances.id, id)),
   });
   if (!inst) throw AppError.notFound('Instance not found');
+  return inst;
+}
+
+// Report Builder mutations never touch financial-statement publishes
+// (TB module, source 'financial_statements'); those are managed from the
+// Financial Statements screen.
+async function getBuilderInstance(tenantId: string, id: string) {
+  const inst = await getInstance(tenantId, id);
+  if (inst.source !== 'report_builder') throw AppError.notFound('Instance not found');
   return inst;
 }
 
@@ -484,7 +495,7 @@ export async function generateInstance(
   bookkeeperUserId: string,
   data: Record<string, unknown>,
 ): Promise<void> {
-  const before = await getInstance(tenantId, id);
+  const before = await getBuilderInstance(tenantId, id);
   assertSnapshotEditable(before.status);
   const beforeData =
     typeof before.dataSnapshotJsonb === 'object' && before.dataSnapshotJsonb
@@ -520,7 +531,7 @@ export async function computeInstance(
   id: string,
   bookkeeperUserId: string,
 ): Promise<{ keys: string[]; metricsAvailable: boolean; error: string | null }> {
-  const before = await getInstance(tenantId, id);
+  const before = await getBuilderInstance(tenantId, id);
   assertSnapshotEditable(before.status);
   const layout = Array.isArray(before.layoutSnapshotJsonb)
     ? (before.layoutSnapshotJsonb as Array<Record<string, unknown>>)
@@ -721,7 +732,7 @@ export async function patchSnapshot(
   bookkeeperUserId: string,
   input: PatchSnapshotInput,
 ): Promise<{ data: Record<string, unknown> }> {
-  const before = await getInstance(tenantId, id);
+  const before = await getBuilderInstance(tenantId, id);
   assertSnapshotEditable(before.status);
   const existing =
     typeof before.dataSnapshotJsonb === 'object' && before.dataSnapshotJsonb
@@ -839,7 +850,7 @@ export async function setStatus(
   bookkeeperUserId: string,
   status: 'draft' | 'review' | 'published' | 'archived',
 ): Promise<SetStatusResult> {
-  const before = await getInstance(tenantId, id);
+  const before = await getBuilderInstance(tenantId, id);
   const patch: {
     status: typeof status;
     publishedAt?: Date;
@@ -1031,6 +1042,7 @@ export async function listPublishedForContact(args: {
       // already filtered to the published period.
       data: reportInstances.dataSnapshotJsonb,
       layout: reportInstances.layoutSnapshotJsonb,
+      source: reportInstances.source,
     })
     .from(reportInstances)
     .where(
@@ -1130,7 +1142,7 @@ export async function generateAiSummary(
   bookkeeperUserId: string,
   input: GenerateAiSummaryInput = {},
 ): Promise<GenerateAiSummaryResult> {
-  const inst = await getInstance(tenantId, instanceId);
+  const inst = await getBuilderInstance(tenantId, instanceId);
   assertSnapshotEditable(inst.status);
 
   const config = await aiConfigService.getConfig();
@@ -1313,7 +1325,7 @@ export async function duplicateInstance(
   id: string,
   bookkeeperUserId: string,
 ): Promise<{ id: string; version: number }> {
-  const before = await getInstance(tenantId, id);
+  const before = await getBuilderInstance(tenantId, id);
   const inserted = await db
     .insert(reportInstances)
     .values({
@@ -1387,7 +1399,7 @@ export interface PublicReportPayload {
 // 404s for another tenant's id.
 /** Revoke a published report's share link (idempotent, tenant-scoped, audited). */
 export async function revokeReportShareToken(tenantId: string, instanceId: string, bookkeeperUserId?: string): Promise<{ revoked: boolean }> {
-  const inst = await getInstance(tenantId, instanceId);
+  const inst = await getBuilderInstance(tenantId, instanceId);
   if (!inst.shareToken) return { revoked: false };
   await db.update(reportInstances).set({ shareToken: null })
     .where(and(eq(reportInstances.tenantId, tenantId), eq(reportInstances.id, instanceId)));
@@ -1400,7 +1412,7 @@ export async function generateReportShareToken(
   instanceId: string,
   bookkeeperUserId?: string,
 ): Promise<string> {
-  const inst = await getInstance(tenantId, instanceId);
+  const inst = await getBuilderInstance(tenantId, instanceId);
   if (inst.status !== 'published') {
     throw AppError.badRequest(
       'Only published reports can be shared. Publish the report first.',

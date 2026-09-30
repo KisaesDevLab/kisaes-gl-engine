@@ -60,6 +60,10 @@ export const reportInstances = pgTable('report_instances', {
   // report without auth but only while status='published' (see
   // getPublishedReportByShareToken). Mirrors transactions.public_token.
   shareToken: varchar('share_token', { length: 64 }),
+  // 'report_builder' | 'financial_statements' (migration 0189). FS rows
+  // carry an empty layout and a finalized PDF in pdf_url.
+  source: varchar('source', { length: 30 }).notNull().default('report_builder'),
+  fsReportVersionId: uuid('fs_report_version_id'),
   createdBy: uuid('created_by').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   publishedAt: timestamp('published_at', { withTimezone: true }),

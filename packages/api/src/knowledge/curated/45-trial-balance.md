@@ -72,3 +72,17 @@ Key ideas:
 - **Popout**: the workpaper's popout button opens a read-only live
   trial balance in its own window that refreshes as book work posts —
   changed rows flash.
+- **Financial Statements** (Trial Balance → Financial Statements, flag
+  FINANCIAL_STATEMENTS_V1): report-ready compiled statements built on the
+  leadsheets — balance sheet, income statement, equity statement and
+  indirect-method cash flows, GAAP / cash / income-tax basis, single,
+  comparative or month + YTD columns. Drag-and-drop outline (sections,
+  subtotals, captions, underlines, page breaks), leadsheets shown as one
+  line, full detail, or a summary line with a supporting schedule
+  (Supplementary Information). Fonts, sizes, page setup and footer are
+  styleable; cover page, table of contents and the accountant's report
+  come from the firm library (letterhead, logo, report templates, styles,
+  layout templates). Whole-dollar rounding is plugged so everything
+  foots. Download PDF / Word / Excel; Finalize freezes a version (marked
+  "Ledger changed" if the books move later); Publish to portal puts the
+  final PDF on the client's Financials page.

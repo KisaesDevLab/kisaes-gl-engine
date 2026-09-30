@@ -102,6 +102,11 @@ export const PRACTICE_FEATURE_FLAGS = [
   // accrued expense / fixed-asset schedules that post monthly journal
   // entries on the reviewer's click. Default OFF.
   'ACCRUALS_V1',
+  // Migration 0189 — Trial Balance -> Financial Statements: report-ready
+  // (compilation-style) statements built on TB leadsheets, with firm
+  // letterhead / letters / style presets / layout templates, finalize +
+  // portal publish. Requires TRIAL_BALANCE_V1. Default OFF.
+  'FINANCIAL_STATEMENTS_V1',
 ] as const;
 
 export type PracticeFeatureFlagKey = typeof PRACTICE_FEATURE_FLAGS[number];

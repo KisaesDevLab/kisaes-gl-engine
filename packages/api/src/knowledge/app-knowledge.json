@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-30T16:49:13.593Z",
+  "generatedAt": "2026-09-30T19:32:06.291Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -18,7 +18,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 122574
+    "totalBytes": 123542
   },
   "screens": [
     {
@@ -1450,6 +1450,24 @@
       "sourceFile": null,
       "title": "Tb Leadsheets",
       "section": "Leadsheets",
+      "actions": []
+    },
+    {
+      "id": "library",
+      "path": "library",
+      "component": "FsLibraryPage",
+      "sourceFile": null,
+      "title": "Fs Library",
+      "section": "Library",
+      "actions": []
+    },
+    {
+      "id": "fs-editor",
+      "path": ":reportId",
+      "component": "FsEditorPage",
+      "sourceFile": null,
+      "title": "Fs Editor",
+      "section": ":reportId",
       "actions": []
     },
     {

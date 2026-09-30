@@ -46,6 +46,33 @@ export async function htmlToPdfBytes(browser: Browser, html: string, landscape: 
 }
 
 /**
+ * Like htmlToPdfBytes, but paper size / orientation / margins come from the
+ * document's own CSS @page rule (report-ready financial statements vary
+ * them per statement). Same hardening: JS off, network blocked except
+ * data:/file:/about:.
+ */
+export async function htmlToPdfBytesCssPage(browser: Browser, html: string): Promise<Uint8Array> {
+  const page = await browser.newPage();
+  try {
+    await page.setJavaScriptEnabled(false);
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      const url = req.url();
+      if (url.startsWith('data:') || url.startsWith('about:') || url.startsWith('file:')) {
+        req.continue();
+      } else {
+        req.abort();
+      }
+    });
+    await page.setContent(html, { waitUntil: 'load' });
+    await page.evaluateHandle('document.fonts.ready').catch(() => undefined);
+    return await page.pdf({ preferCSSPageSize: true, printBackground: true });
+  } finally {
+    await page.close();
+  }
+}
+
+/**
  * Copy pages of `srcBytes` onto the end of `target`; returns how many were
  * added. Throws on an unreadable or encrypted source — callers decide whether
  * that sinks the document or just skips the file. `maxPages` takes the first

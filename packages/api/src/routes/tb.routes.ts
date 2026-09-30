@@ -40,6 +40,7 @@ import { db } from '../db/index.js';
 import { companies, companyTaxProfiles, tbStatus } from '../db/schema/index.js';
 import { and, eq, sql } from 'drizzle-orm';
 import { auditLog as auditLogFn } from '../middleware/audit.js';
+import { fsRouter } from './tb-fs.routes.js';
 
 // Trial Balance module router (docs/tb/BUILD_PLAN.md). Firm-side only:
 // client-type users get a 404 (surface hidden, same pattern as
@@ -891,3 +892,7 @@ tbRouter.delete('/tag-mappings/:tagId', async (req, res) => {
   await unitsService.unmapTag(req.tenantId, req.companyId!, String(req.params['tagId']), req.userId);
   res.status(204).end();
 });
+
+// ── Report-ready financial statements (FINANCIAL_STATEMENTS_V1) ────
+// Inherits every gate above; adds its own flag gate.
+tbRouter.use('/fs', fsRouter);

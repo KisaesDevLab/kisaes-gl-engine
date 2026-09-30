@@ -107,6 +107,7 @@ export * from './constants/payment-methods.js';
 // Reports
 export * from './reports/registry.js';
 export * from './reports/letter-variables.js';
+export * from './financial-statements/index.js';
 
 // Utils
 export * from './utils/money.js';

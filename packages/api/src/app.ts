@@ -473,6 +473,10 @@ app.use('/api/setup', setupRouter);
 import { publicInvoiceRouter } from './routes/public-invoice.routes.js';
 app.use('/api/v1/public/invoices', publicInvoiceRouter);
 
+// Financial-statement preview fonts (bundled OFL files; no auth — see route).
+import { fsFontsPublicRouter } from './routes/fs-fonts-public.routes.js';
+app.use('/api/v1/fs-fonts', fsFontsPublicRouter);
+
 // Public report share links (no auth required — anonymous client-facing
 // view of a PUBLISHED financial report via a 160-bit share token)
 import { publicReportsRouter } from './routes/reports-public.routes.js';
