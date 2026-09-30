@@ -87,7 +87,7 @@ async function setup() {
   connectionId = conn!.id;
 
   // Rule-suggested, posted as suggested → 'rule'.
-  const rule = await item({ description: 'RULE VENDOR', matchType: 'rule', suggestedAccountId: exp1 });
+  const rule = await item({ description: 'RULE VENDOR', originalDescription: 'RULE VENDOR 0042 ACH DEBIT', matchType: 'rule', suggestedAccountId: exp1 });
   await categorize(rule.id, exp1);
   // AI-suggested, but a person posted a different account → 'manual'.
   const manual = await item({ description: 'AI VENDOR', matchType: 'ai', suggestedAccountId: exp1, feedDate: '2026-08-20' });
@@ -140,6 +140,7 @@ describe('close-feed-review list', () => {
     expect(rule.categoryAccountId).toBe(exp1);
     expect(rule.suggestedAccountName).toBeNull();
     expect(rule.transactionId).toBeTruthy();
+    expect(rule.originalDescription).toBe('RULE VENDOR 0042 ACH DEBIT');
     const excluded = rows.find((r) => r.feedItemId === ids.excluded)!;
     expect(excluded.method).toBe('excluded');
     expect(excluded.categoryCount).toBe(0);

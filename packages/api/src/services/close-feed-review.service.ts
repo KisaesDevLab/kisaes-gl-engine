@@ -52,7 +52,7 @@ function doneItemsCte(tenantId: string, scope: FeedReviewScope): SQL {
   return sql`
     WITH done AS (
       SELECT
-        f.id, f.feed_date, f.description, f.amount, f.status, f.memo,
+        f.id, f.feed_date, f.description, f.original_description, f.amount, f.status, f.memo,
         f.close_reviewed_at, f.matched_transaction_id,
         f.suggested_account_id,
         bc.institution_name, bc.mask, ba.name AS bank_account_name,
@@ -169,6 +169,8 @@ export interface FeedReviewRow {
   feedItemId: string;
   feedDate: string;
   description: string | null;
+  /** The bank's raw text from the import (shown on hover). */
+  originalDescription: string | null;
   amount: string;
   status: string;
   method: FeedReviewMethod;
@@ -253,6 +255,7 @@ export async function list(
         feedItemId: r['id'] as string,
         feedDate: String(r['feed_date']).slice(0, 10),
         description: (r['description'] as string | null) ?? null,
+        originalDescription: (r['original_description'] as string | null) ?? null,
         amount: String(r['amount']),
         status: r['status'] as string,
         method,
