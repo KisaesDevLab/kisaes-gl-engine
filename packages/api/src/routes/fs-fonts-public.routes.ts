@@ -13,8 +13,11 @@ import { fsFontBytes } from '../services/tb/fs/fs-fonts.js';
 
 export const fsFontsPublicRouter = Router();
 
+// The preview requests files WITHOUT ".ttf" (nginx in the web container
+// serves any *.ttf URL as a static asset); the extension is still accepted.
 fsFontsPublicRouter.get('/:file', (req, res) => {
-  const file = String(req.params['file']);
+  const name = String(req.params['file']);
+  const file = name.endsWith('.ttf') ? name : `${name}.ttf`;
   if (!FS_FONT_FILES.has(file)) {
     res.status(404).end();
     return;

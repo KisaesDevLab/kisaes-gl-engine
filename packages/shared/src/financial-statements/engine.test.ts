@@ -371,3 +371,12 @@ describe('schemas, titles, binding', () => {
       .toBe("balance sheet, and the related statements of income, changes in stockholders' equity, and cash flows");
   });
 });
+
+describe('preview fonts', () => {
+  it('requests preview fonts without a .ttf extension (nginx static rule)', async () => {
+    const { fsDocumentCss } = await import('./render/html.js');
+    const css = fsDocumentCss(FS_DEFAULT_STYLE, { mode: 'url', baseUrl: '/api/v1/fs-fonts' });
+    expect(css).toContain("url('/api/v1/fs-fonts/LiberationSerif-Regular')");
+    expect(css).not.toMatch(/fs-fonts\/[^')]+\.ttf/);
+  });
+});

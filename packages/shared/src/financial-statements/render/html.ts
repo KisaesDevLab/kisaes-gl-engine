@@ -100,7 +100,9 @@ function fontFaceCss(style: FsStyle, fonts: FsFontSource): string {
       if (!b64) return '';
       src = `url(data:font/ttf;base64,${b64}) format('truetype')`;
     } else {
-      src = `url('${fonts.baseUrl.replace(/\/$/, '')}/${f.file}') format('truetype')`;
+      // No ".ttf" in the URL: the web container's nginx serves any *.ttf
+      // path as a static asset (regex location beats the /api/ proxy).
+      src = `url('${fonts.baseUrl.replace(/\/$/, '')}/${f.file.replace(/\.ttf$/, '')}') format('truetype')`;
     }
     return `@font-face{font-family:'${def.cssFamily}';src:${src};font-weight:${f.weight};font-style:${f.style};font-display:block}`;
   }).join('\n');
