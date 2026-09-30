@@ -37,8 +37,11 @@ provider: PII scrubbing and company consent apply; it has no vision, so it
 cannot do OCR. Task Settings has a **Close Review AI** function whose provider
 and model can differ from categorization (blank = same as categorization).
 Close Review AI runs only when a reviewer clicks **Explain this** in a row's
-detail drawer (flag AI_JUDGMENT_CHECKS_V1, company consent "AI judgment
-review"): it returns why the row may be wrong, a suggested fix and a question
+detail drawer. Three switches turn it on: the super admin enables the
+AI_JUDGMENT_CHECKS_V1 flag for the client (Admin → Tenants → client → Feature
+Flags); the client accepts the AI disclosure and ticks **AI review of close
+findings** under Settings → AI Processing; and a provider is set (Close Review
+AI or, if blank, the categorization provider). It returns why the row may be wrong, a suggested fix and a question
 for the client (**Ask the client this** sends it to the portal). The answer is
 stored on the row and shows **Out of date** once the underlying books change,
 with Re-run. "Run AI judgment" (possibly-personal expenses) uses the same

@@ -38,11 +38,54 @@ export async function findDuplicates(tenantId: string, transactionId: string) {
   return rows.rows;
 }
 
-export async function scanDateRange(tenantId: string, startDate: string, endDate: string) {
+// One side of a candidate pair, as the Duplicates page shows it.
+export interface DuplicateTxn {
+  id: string;
+  txnType: string;
+  txnNumber: string | null;
+  txnDate: string;
+  payee: string | null;
+  total: string;
+  memo: string | null;
+}
+
+export interface DuplicatePair {
+  a: DuplicateTxn;
+  b: DuplicateTxn;
+  /** Calendar days between the two dates (0 = same day). */
+  daysApart: number;
+}
+
+// Flat row from the pair scan below. Dates are cast to text in SQL so the
+// shape doesn't depend on pg's DATE parser.
+interface ScanRow {
+  id_a: string; id_b: string;
+  type_a: string; type_b: string;
+  number_a: string | null; number_b: string | null;
+  date_a: string; date_b: string;
+  amount: string;
+  contact_a: string | null; contact_b: string | null;
+  memo_a: string | null; memo_b: string | null;
+}
+
+export function toPair(r: ScanRow): DuplicatePair {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const daysApart = Math.round(Math.abs(Date.parse(r.date_a) - Date.parse(r.date_b)) / dayMs);
+  return {
+    a: { id: r.id_a, txnType: r.type_a, txnNumber: r.number_a, txnDate: r.date_a, payee: r.contact_a, total: String(r.amount), memo: r.memo_a },
+    b: { id: r.id_b, txnType: r.type_b, txnNumber: r.number_b, txnDate: r.date_b, payee: r.contact_b, total: String(r.amount), memo: r.memo_b },
+    daysApart: Number.isFinite(daysApart) ? daysApart : 0,
+  };
+}
+
+export const SCAN_LIMIT = 100;
+
+export async function scanDateRange(tenantId: string, startDate: string, endDate: string): Promise<DuplicatePair[]> {
   const rows = await db.execute(sql`
     SELECT t1.id as id_a, t2.id as id_b,
       t1.txn_type as type_a, t2.txn_type as type_b,
-      t1.txn_date as date_a, t2.txn_date as date_b,
+      t1.txn_number as number_a, t2.txn_number as number_b,
+      t1.txn_date::text as date_a, t2.txn_date::text as date_b,
       t1.total as amount,
       c1.display_name as contact_a, c2.display_name as contact_b,
       t1.memo as memo_a, t2.memo as memo_b
@@ -66,10 +109,10 @@ export async function scanDateRange(tenantId: string, startDate: string, endDate
             OR (dd.transaction_id_a = t2.id AND dd.transaction_id_b = t1.id))
       )
     ORDER BY t1.txn_date DESC
-    LIMIT 100
+    LIMIT ${SCAN_LIMIT}
   `);
 
-  return rows.rows;
+  return (rows.rows as unknown as ScanRow[]).map(toPair);
 }
 
 export async function dismissDuplicate(tenantId: string, txnIdA: string, txnIdB: string, userId?: string) {

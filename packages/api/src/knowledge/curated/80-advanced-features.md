@@ -55,11 +55,18 @@ When creating an invoice, select an item from the line item dropdown to auto-fil
 description and price.
 
 ### Duplicate Detection
-Vibe MyBooks automatically flags potentially duplicate transactions. Review them at
-**Duplicate Review →** in the sidebar. For each potential duplicate pair, you can:
+Vibe MyBooks flags potentially duplicate transactions: same amount, same payee,
+dated within 3 days of each other (journal entries and transfers are skipped).
+Review them at **Duplicates** in the sidebar. The scan covers the last 3 months
+by default; use the From/To dates or the presets (Last 12 months, This year,
+All time) to look further back. Each pair shows how many days apart the two
+are. For each pair you can:
 
-- **Dismiss** — mark as not a duplicate (they're different transactions)
-- **Merge** — combine into one transaction
+- **Not a Duplicate** — hides the pair for good (they're different transactions)
+- **Keep Left / Void Right** or **Keep Right / Void Left** — voids one transaction and keeps the other
+
+Close Review also flags duplicates for the month being closed (the
+"duplicate candidate" check); this page is the all-time view.
 
 ### Month-End Close Review
 Practice → Close Review closes one client (company) for one month. Tabs:

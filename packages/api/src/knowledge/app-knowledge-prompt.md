@@ -1056,11 +1056,18 @@ When creating an invoice, select an item from the line item dropdown to auto-fil
 description and price.
 
 ### Duplicate Detection
-Vibe MyBooks automatically flags potentially duplicate transactions. Review them at
-**Duplicate Review →** in the sidebar. For each potential duplicate pair, you can:
+Vibe MyBooks flags potentially duplicate transactions: same amount, same payee,
+dated within 3 days of each other (journal entries and transfers are skipped).
+Review them at **Duplicates** in the sidebar. The scan covers the last 3 months
+by default; use the From/To dates or the presets (Last 12 months, This year,
+All time) to look further back. Each pair shows how many days apart the two
+are. For each pair you can:
 
-- **Dismiss** — mark as not a duplicate (they're different transactions)
-- **Merge** — combine into one transaction
+- **Not a Duplicate** — hides the pair for good (they're different transactions)
+- **Keep Left / Void Right** or **Keep Right / Void Left** — voids one transaction and keeps the other
+
+Close Review also flags duplicates for the month being closed (the
+"duplicate candidate" check); this page is the all-time view.
 
 ### Month-End Close Review
 Practice → Close Review closes one client (company) for one month. Tabs:
@@ -1720,8 +1727,11 @@ provider: PII scrubbing and company consent apply; it has no vision, so it
 cannot do OCR. Task Settings has a **Close Review AI** function whose provider
 and model can differ from categorization (blank = same as categorization).
 Close Review AI runs only when a reviewer clicks **Explain this** in a row's
-detail drawer (flag AI_JUDGMENT_CHECKS_V1, company consent "AI judgment
-review"): it returns why the row may be wrong, a suggested fix and a question
+detail drawer. Three switches turn it on: the super admin enables the
+AI_JUDGMENT_CHECKS_V1 flag for the client (Admin → Tenants → client → Feature
+Flags); the client accepts the AI disclosure and ticks **AI review of close
+findings** under Settings → AI Processing; and a provider is set (Close Review
+AI or, if blank, the categorization provider). It returns why the row may be wrong, a suggested fix and a question
 for the client (**Ask the client this** sends it to the portal). The answer is
 stored on the row and shows **Out of date** once the underlying books change,
 with Re-run. "Run AI judgment" (possibly-personal expenses) uses the same
