@@ -278,3 +278,29 @@ describe('engine across reporting periods (generated ledger)', () => {
     expect(rep3.statements.find((s) => s.kind === 'balance_sheet')!.pageSetup.orientation).toBe('portrait');
   });
 });
+
+describe('letterhead layouts', async () => {
+  const { fsBuildSections } = await import('./render/html.js');
+  const settings = fsReportSettingsSchema.parse(base({ periodEnd: '2025-12-31', period: { type: 'annual', start: '2025-01-01' } }));
+  const report = computeFsReport(settings, buildDefaultLayout('corporation'), FS_DEFAULT_STYLE, sourceFor(settings, genLedger(3)));
+  const lhBase = { displayName: 'Smith & Co., CPAs', addressLine1: '1 Main St', logoDataUri: 'data:image/png;base64,AAAA', logoAspect: 0.2 };
+  const letterSection = (lh: Record<string, unknown>) => fsBuildSections({
+    report, style: FS_DEFAULT_STYLE, fonts: { mode: 'none' },
+    frontMatter: { cover: { enabled: false }, toc: { enabled: false }, letter: { enabled: true, letterId: null } },
+    letterhead: { ...lhBase, ...lh } as never, letter: { title: 'Report', bodyHtml: '<p>x</p>' },
+  }).find((x) => x.kind === 'letter')!;
+
+  it('edge to edge reserves space and hands the logo to the PDF step', () => {
+    const s = letterSection({ logoSize: 'full_bleed', letterheadContent: 'logo' });
+    expect(s.bleedLogo?.heightIn).toBeCloseTo(8.5 * 0.2);
+    expect(s.extraCss).toContain('@page :first{margin-top:0}');
+    expect(s.bodyHtml).not.toContain('Smith &amp; Co.');
+  });
+  it('text only omits the logo; logo only omits the text', () => {
+    expect(letterSection({ letterheadContent: 'text' }).bodyHtml).not.toContain('<img');
+    expect(letterSection({ letterheadContent: 'text' }).bodyHtml).toContain('Smith &amp; Co.');
+    const logoOnly = letterSection({ letterheadContent: 'logo', logoSize: 'content_width' });
+    expect(logoOnly.bodyHtml).toContain('width:100%');
+    expect(logoOnly.bleedLogo).toBeNull();
+  });
+});

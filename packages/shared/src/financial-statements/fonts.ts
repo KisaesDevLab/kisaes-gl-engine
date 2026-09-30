@@ -29,8 +29,9 @@ export interface FsFontDef {
   cssFamily: string;
   msEquivalent: string;
   faces: FsFontFace[];
-  // Face used by pdf-lib for the page footer / page numbers.
-  footerFile: string;
+  // Static faces pdf-lib stamps the page footer / page numbers with
+  // (pdf-lib can't draw from variable fonts).
+  stampFaces: { regular: string; bold: string; italic: string; boldItalic: string };
 }
 
 const staticFaces = (prefix: string): FsFontFace[] => [
@@ -40,20 +41,24 @@ const staticFaces = (prefix: string): FsFontFace[] => [
   { file: `${prefix}-BoldItalic.ttf`, weight: '700', style: 'italic' },
 ];
 
+const statics = (prefix: string) => ({
+  regular: `${prefix}-Regular.ttf`, bold: `${prefix}-Bold.ttf`, italic: `${prefix}-Italic.ttf`, boldItalic: `${prefix}-BoldItalic.ttf`,
+});
+
 const variableFaces = (prefix: string, range: string): FsFontFace[] => [
   { file: `${prefix}-VF.ttf`, weight: range, style: 'normal' },
   { file: `${prefix}-Italic-VF.ttf`, weight: range, style: 'italic' },
 ];
 
 export const FS_FONTS: readonly FsFontDef[] = [
-  { key: 'liberation_serif', label: 'Times New Roman (Liberation Serif)', category: 'serif', cssFamily: 'FS Liberation Serif', msEquivalent: 'Times New Roman', faces: staticFaces('LiberationSerif'), footerFile: 'LiberationSerif-Regular.ttf' },
-  { key: 'liberation_sans', label: 'Arial (Liberation Sans)', category: 'sans-serif', cssFamily: 'FS Liberation Sans', msEquivalent: 'Arial', faces: staticFaces('LiberationSans'), footerFile: 'LiberationSans-Regular.ttf' },
-  { key: 'carlito', label: 'Calibri (Carlito)', category: 'sans-serif', cssFamily: 'FS Carlito', msEquivalent: 'Calibri', faces: staticFaces('Carlito'), footerFile: 'Carlito-Regular.ttf' },
-  { key: 'caladea', label: 'Cambria (Caladea)', category: 'serif', cssFamily: 'FS Caladea', msEquivalent: 'Cambria', faces: staticFaces('Caladea'), footerFile: 'Caladea-Regular.ttf' },
-  { key: 'eb_garamond', label: 'Garamond (EB Garamond)', category: 'serif', cssFamily: 'FS EB Garamond', msEquivalent: 'Garamond', faces: variableFaces('EBGaramond', '400 800'), footerFile: 'EBGaramond-VF.ttf' },
-  { key: 'source_serif', label: 'Georgia-style (Source Serif 4)', category: 'serif', cssFamily: 'FS Source Serif', msEquivalent: 'Georgia', faces: variableFaces('SourceSerif4', '200 900'), footerFile: 'SourceSerif4-VF.ttf' },
-  { key: 'lato', label: 'Lato', category: 'sans-serif', cssFamily: 'FS Lato', msEquivalent: 'Calibri', faces: staticFaces('Lato'), footerFile: 'Lato-Regular.ttf' },
-  { key: 'libre_baskerville', label: 'Baskerville (Libre Baskerville)', category: 'serif', cssFamily: 'FS Libre Baskerville', msEquivalent: 'Baskerville Old Face', faces: variableFaces('LibreBaskerville', '400 700'), footerFile: 'LibreBaskerville-VF.ttf' },
+  { key: 'liberation_serif', label: 'Times New Roman (Liberation Serif)', category: 'serif', cssFamily: 'FS Liberation Serif', msEquivalent: 'Times New Roman', faces: staticFaces('LiberationSerif'), stampFaces: statics('LiberationSerif') },
+  { key: 'liberation_sans', label: 'Arial (Liberation Sans)', category: 'sans-serif', cssFamily: 'FS Liberation Sans', msEquivalent: 'Arial', faces: staticFaces('LiberationSans'), stampFaces: statics('LiberationSans') },
+  { key: 'carlito', label: 'Calibri (Carlito)', category: 'sans-serif', cssFamily: 'FS Carlito', msEquivalent: 'Calibri', faces: staticFaces('Carlito'), stampFaces: statics('Carlito') },
+  { key: 'caladea', label: 'Cambria (Caladea)', category: 'serif', cssFamily: 'FS Caladea', msEquivalent: 'Cambria', faces: staticFaces('Caladea'), stampFaces: statics('Caladea') },
+  { key: 'eb_garamond', label: 'Garamond (EB Garamond)', category: 'serif', cssFamily: 'FS EB Garamond', msEquivalent: 'Garamond', faces: variableFaces('EBGaramond', '400 800'), stampFaces: statics('EBGaramond') },
+  { key: 'source_serif', label: 'Georgia-style (Source Serif 4)', category: 'serif', cssFamily: 'FS Source Serif', msEquivalent: 'Georgia', faces: variableFaces('SourceSerif4', '200 900'), stampFaces: statics('SourceSerif4') },
+  { key: 'lato', label: 'Lato', category: 'sans-serif', cssFamily: 'FS Lato', msEquivalent: 'Calibri', faces: staticFaces('Lato'), stampFaces: statics('Lato') },
+  { key: 'libre_baskerville', label: 'Baskerville (Libre Baskerville)', category: 'serif', cssFamily: 'FS Libre Baskerville', msEquivalent: 'Baskerville Old Face', faces: variableFaces('LibreBaskerville', '400 700'), stampFaces: statics('LibreBaskerville') },
 ];
 
 export function fsFont(key: string | null | undefined): FsFontDef {
@@ -61,4 +66,4 @@ export function fsFont(key: string | null | undefined): FsFontDef {
 }
 
 // Every file the public font route may serve.
-export const FS_FONT_FILES: ReadonlySet<string> = new Set(FS_FONTS.flatMap((f) => f.faces.map((x) => x.file)));
+export const FS_FONT_FILES: ReadonlySet<string> = new Set(FS_FONTS.flatMap((f) => [...f.faces.map((x) => x.file), ...Object.values(f.stampFaces)]));

@@ -24,7 +24,12 @@ export interface FsLetterhead {
   email?: string | null;
   website?: string | null;
   logoDataUri?: string | null;
-  letterheadAlign?: 'left' | 'center';
+  letterheadAlign?: 'left' | 'center' | 'right';
+  letterheadContent?: 'both' | 'logo' | 'text';
+  logoSize?: 'small' | 'medium' | 'content_width' | 'full_bleed';
+  // Logo height / width (from the image header); needed to reserve space
+  // for an edge-to-edge logo in the PDF.
+  logoAspect?: number | null;
 }
 
 export type FsFontSource =
@@ -56,6 +61,11 @@ export interface FsHtmlSection {
   footer: boolean;
   pageNumber: boolean;
   bodyHtml: string; // inner HTML (no <html> wrapper)
+  // Section-only CSS (e.g. @page :first for an edge-to-edge letterhead).
+  extraCss?: string;
+  // Logo the PDF step draws flush to the top and side edges of this
+  // section's first page (the HTML reserves the space).
+  bleedLogo?: { dataUri: string; heightIn: number } | null;
 }
 
 const esc = (s: string): string => s
@@ -159,9 +169,6 @@ td.rb-double{border-bottom:2.4pt double #000}
 .toc tr.grp td{padding-top:10pt;font-weight:700}
 .toc tr.sub td.lbl{padding-left:14pt}
 .lh{margin:0 0 22pt}
-.lh.center{text-align:center}
-.lh img{max-height:0.9in;max-width:3in;display:block;margin-bottom:6pt}
-.lh.center img{margin-left:auto;margin-right:auto}
 .lh .n{font-weight:700;font-size:${style.baseSizePt + 3}pt}
 .lh .a{font-size:${Math.max(7, style.baseSizePt - 1.5)}pt}
 .letter h1{${elCss(style, 'statementTitle')};text-align:center;margin:0 0 14pt}
@@ -279,12 +286,51 @@ export function fsStatementHtml(report: FsRenderedReport, st: FsRenderedStatemen
 
 // ─── Front matter ──────────────────────────────────────────────────
 
-function letterheadHtml(lh: FsLetterhead | null | undefined): string {
-  if (!lh || !(lh.displayName || lh.logoDataUri)) return '';
+const LOGO_MAX_HEIGHT_IN: Record<'small' | 'medium', number> = { small: 0.9, medium: 1.5 };
+
+function letterheadText(lh: FsLetterhead): string {
   const cityLine = [lh.city, [lh.state, lh.postalCode].filter(Boolean).join(' ')].filter(Boolean).join(', ');
   const contact = [lh.phone, lh.email, lh.website].filter(Boolean).join(' · ');
-  const logo = lh.logoDataUri && /^data:image\/(png|jpeg);base64,/.test(lh.logoDataUri) ? `<img src="${lh.logoDataUri}" alt="">` : '';
-  return `<div class="lh${lh.letterheadAlign === 'center' ? ' center' : ''}">${logo}${lh.displayName ? `<div class="n">${esc(lh.displayName)}</div>` : ''}<div class="a">${[lh.addressLine1, lh.addressLine2, cityLine].filter(Boolean).map((x) => esc(x!)).join('<br>')}${contact ? `<br>${esc(contact)}` : ''}</div></div>`;
+  return `${lh.displayName ? `<div class="n">${esc(lh.displayName)}</div>` : ''}<div class="a">${[lh.addressLine1, lh.addressLine2, cityLine].filter(Boolean).map((x) => esc(x!)).join('<br>')}${contact ? `<br>${esc(contact)}` : ''}</div>`;
+}
+
+// Letterhead block for the accountant's report page. Returns the HTML and,
+// for an edge-to-edge logo, what the PDF step must stamp.
+function letterheadBlock(lh: FsLetterhead | null | undefined, page: FsPageSetup): { html: string; extraCss?: string; bleed?: FsHtmlSection['bleedLogo'] } {
+  if (!lh) return { html: '' };
+  const logo = lh.logoDataUri && /^data:image\/(png|jpeg);base64,/.test(lh.logoDataUri) ? lh.logoDataUri : null;
+  const content = lh.letterheadContent ?? 'both';
+  const showLogo = !!logo && content !== 'text';
+  const showText = content !== 'logo' || !logo;
+  if (!showLogo && !(showText && (lh.displayName || lh.addressLine1))) return { html: '' };
+  const align = lh.letterheadAlign ?? 'left';
+  const size = lh.logoSize ?? 'small';
+  const text = showText ? letterheadText(lh) : '';
+  let logoHtml = '';
+  let extraCss: string | undefined;
+  let bleed: FsHtmlSection['bleedLogo'];
+  if (showLogo) {
+    const pageW = fsPageSizeIn(page).width;
+    const m = page.margins;
+    if (size === 'full_bleed' && lh.logoAspect) {
+      const heightIn = pageW * lh.logoAspect;
+      // Screen (preview sheet): pull the image over the sheet padding.
+      // Print: Chromium clips the page margins, so reserve the space and
+      // let the PDF step draw the image flush to the edges.
+      logoHtml = `<img class="lh-bleed-screen" src="${logo}" alt="" style="display:block;width:calc(100% + ${m.left + m.right}in);margin:-${m.top}in -${m.right}in 0 -${m.left}in;max-width:none">`
+        + `<div class="lh-bleed-print" style="height:${heightIn.toFixed(3)}in"></div>`;
+      extraCss = `@page :first{margin-top:0}@media print{.lh-bleed-screen{display:none}}@media screen{.lh-bleed-print{display:none}}`;
+      bleed = { dataUri: logo, heightIn };
+    } else if (size === 'content_width' || size === 'full_bleed') {
+      logoHtml = `<img src="${logo}" alt="" style="display:block;width:100%;max-width:none;margin-bottom:6pt">`;
+    } else {
+      const h = LOGO_MAX_HEIGHT_IN[size];
+      const pos = align === 'center' ? 'margin-left:auto;margin-right:auto;' : align === 'right' ? 'margin-left:auto;' : '';
+      logoHtml = `<img src="${logo}" alt="" style="display:block;max-height:${h}in;max-width:100%;${pos}margin-bottom:6pt">`;
+    }
+  }
+  const html = `<div class="lh" style="text-align:${align}">${logoHtml}${text ? `<div style="${size === 'full_bleed' ? 'margin-top:10pt;' : ''}">${text}</div>` : ''}</div>`;
+  return { html, extraCss, bleed };
 }
 
 export function fsBuildSections(input: FsDocumentInput): FsHtmlSection[] {
@@ -302,9 +348,11 @@ export function fsBuildSections(input: FsDocumentInput): FsHtmlSection[] {
 
   const body: FsHtmlSection[] = [];
   if (frontMatter.letter.enabled && input.letter) {
+    const lh = letterheadBlock(input.letterhead, base);
     body.push({
       id: 'letter', kind: 'letter', tocLabel: input.letter.title, pageSetup: base, footer: false, pageNumber: true,
-      bodyHtml: `<div class="letter">${letterheadHtml(input.letterhead)}<h1>${esc(input.letter.title)}</h1><div class="body">${input.letter.bodyHtml}</div></div>`,
+      bodyHtml: `<div class="letter">${lh.html}<h1>${esc(input.letter.title)}</h1><div class="body">${input.letter.bodyHtml}</div></div>`,
+      extraCss: lh.extraCss, bleedLogo: lh.bleed ?? null,
     });
   }
   for (const st of report.statements) {
@@ -351,6 +399,7 @@ export function fsSectionDocument(section: FsHtmlSection, input: FsDocumentInput
   // Bottom margin keeps room for the stamped footer / page number.
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>${fsDocumentCss(input.style, input.fonts)}
 @page{size:${size.width}in ${size.height}in;margin:${m.top}in ${m.right}in ${m.bottom}in ${m.left}in}
+${section.extraCss ?? ''}
 </style></head><body>${input.draftWatermark ? '<div class="draft-wm">DRAFT</div>' : ''}${section.bodyHtml}</body></html>`;
 }
 
@@ -367,7 +416,7 @@ export function fsPreviewDocument(input: FsDocumentInput): string {
     const posRight = input.style.footer.pageNumber.position === 'bottom_right';
     return `<section class="sheet" data-section="${esc(s.id)}" style="width:${size.width}in;min-height:${size.height}in;padding:${m.top}in ${m.right}in ${m.bottom}in ${m.left}in">
 ${s.bodyHtml}
-<div class="sheet-foot" style="left:${m.left}in;right:${m.right}in;bottom:${Math.max(0.2, m.bottom / 2 - 0.1)}in"><div class="fs-footer" style="text-align:${posRight ? 'left' : 'center'}">${footer}</div>${pn ? `<div class="fs-footer" style="text-align:${posRight ? 'right' : 'center'}">${esc(pn)}</div>` : ''}</div>
+<div class="sheet-foot" style="left:${m.left}in;right:${m.right}in;bottom:${Math.max(0.3, m.bottom / 2 - 0.1)}in;flex-direction:${posRight ? 'row' : 'column'};justify-content:${posRight ? 'space-between' : 'flex-end'}"><div class="fs-footer" style="text-align:${posRight ? 'left' : 'center'}">${footer}</div>${pn ? `<div class="fs-footer" style="text-align:${posRight ? 'right' : 'center'};white-space:nowrap">${esc(pn)}</div>` : ''}</div>
 </section>`;
   }).join('\n');
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>${fsDocumentCss(input.style, input.fonts)}
@@ -376,6 +425,8 @@ body{padding:24px 0}
 .sheet{position:relative;background:#fff;margin:0 auto 24px;box-shadow:0 1px 4px rgba(0,0,0,.25)}
 .sheet .chunk+.chunk{border-top:1px dashed #9ca3af;margin-top:18pt;padding-top:18pt}
 .sheet-foot{position:absolute;display:flex;flex-direction:column;gap:2pt}
+.sheet{overflow:hidden}
+${sections.map((x) => (x.extraCss ?? '').replace(/@page[^{]*\{[^}]*\}/g, '')).join('')}
 </style></head><body>${sheets}</body></html>`;
 }
 

@@ -18,6 +18,7 @@ import {
 } from '@kis-books/shared';
 import { appendPdf, htmlToPdfBytesCssPage, launchPdfBrowser } from '../../pdf-merge.util.js';
 import { fsFontBytes, fsFontDataFiles } from './fs-fonts.js';
+import { imageInfoFromDataUri } from './image-size.js';
 
 export interface FsPdfInput {
   report: FsRenderedReport;
@@ -87,7 +88,27 @@ export async function renderFsPdf(input: FsPdfInput): Promise<FsPdfResult> {
       ranges.push({ section: s, from, to: merged.getPageCount() });
     }
 
-    const font = await merged.embedFont(fsFontBytes(fsFont(input.style.fontKey).footerFile), { subset: true });
+    // Static face matching the footer's bold / italic style. Embedded in
+    // full: pdf-lib's subsetter drops glyphs for some fonts (Carlito), and
+    // it cannot draw from variable fonts at all.
+    const faces = fsFont(input.style.fontKey).stampFaces;
+    const fe = input.style.elements.footer;
+    const file = fe.bold && fe.italic ? faces.boldItalic : fe.bold ? faces.bold : fe.italic ? faces.italic : faces.regular;
+    // Ligatures off: fontkit's substitutions (Carlito's "ti") mis-measure in pdf-lib.
+    // Edge-to-edge letterhead logo: the HTML reserved the space; draw the
+    // image flush to the top and sides of the section's first page.
+    for (const { section, from, to } of ranges) {
+      if (!section.bleedLogo || from >= to) continue;
+      const info = imageInfoFromDataUri(section.bleedLogo.dataUri);
+      if (!info) continue;
+      const img = info.type === 'png' ? await merged.embedPng(info.bytes) : await merged.embedJpg(info.bytes);
+      const page = merged.getPage(from);
+      const { width, height } = page.getSize();
+      const h = section.bleedLogo.heightIn * 72;
+      page.drawImage(img, { x: 0, y: height - h, width, height: h });
+    }
+
+    const font = await merged.embedFont(fsFontBytes(file), { subset: false, features: { liga: false, clig: false, dlig: false, calt: false } });
     stampChrome(merged, ranges, input.style, font, numberedTotal);
 
     const out = Buffer.from(await merged.save());
@@ -104,9 +125,11 @@ function stampChrome(
   font: PDFFont,
   numberedTotal: number,
 ) {
-  const size = style.elements.footer.sizePt;
+  const baseSize = style.elements.footer.sizePt;
   const fmt = style.footer.pageNumber.format;
   const right = style.footer.pageNumber.position === 'bottom_right';
+  // Keep the lowest baseline clear of the printer's unprintable edge.
+  const minBaseline = 22; // pt (~0.3in)
   let pageNo = 0;
   for (const { section, from, to } of ranges) {
     for (let i = from; i < to; i++) {
@@ -115,23 +138,38 @@ function stampChrome(
       const m = section.pageSetup.margins;
       const left = m.left * 72;
       const rightEdge = width - m.right * 72;
-      const baseY = Math.max(14, (m.bottom * 72) / 2 - size / 2);
-      const lines: Array<{ text: string; align: 'left' | 'center' | 'right' }> = [];
-      if (section.footer && style.footer.text.trim()) lines.push({ text: style.footer.text.trim(), align: right ? 'left' : 'center' });
+      const avail = rightEdge - left;
+      const footerText = section.footer ? style.footer.text.trim() : '';
+      let numberText = '';
       if (section.pageNumber) {
         pageNo += 1;
-        const t = fsPageNumberText(fmt, pageNo, numberedTotal);
-        if (t) lines.push({ text: t, align: right ? 'right' : 'center' });
+        numberText = fsPageNumberText(fmt, pageNo, numberedTotal);
       }
-      // Footer text above the page number when both are centred; side by
-      // side when the number sits bottom-right.
-      let y = baseY + (lines.length > 1 && !right ? size * 1.4 : 0);
-      for (const l of lines) {
+      if (!footerText && !numberText) continue;
+      // Side by side (number bottom-right) needs room for both on one line.
+      const needed = right
+        ? font.widthOfTextAtSize(footerText, baseSize) + (numberText ? font.widthOfTextAtSize(numberText, baseSize) + 18 : 0)
+        : Math.max(font.widthOfTextAtSize(footerText, baseSize), font.widthOfTextAtSize(numberText, baseSize));
+      const size = needed > avail ? Math.max(6, baseSize * (avail / needed)) : baseSize;
+      const lines: Array<{ text: string; align: 'left' | 'center' | 'right' }> = [];
+      if (right) {
+        if (footerText) lines.push({ text: footerText, align: 'left' });
+        if (numberText) lines.push({ text: numberText, align: 'right' });
+      } else {
+        if (footerText) lines.push({ text: footerText, align: 'center' });
+        if (numberText) lines.push({ text: numberText, align: 'center' });
+      }
+      const gap = size * 1.35;
+      const stacked = right ? 1 : lines.length;
+      const blockH = size + (stacked - 1) * gap;
+      const bottomMargin = m.bottom * 72;
+      const y0 = Math.max(minBaseline, (bottomMargin - blockH) / 2);
+      lines.forEach((l, idx) => {
         const w = font.widthOfTextAtSize(l.text, size);
         const x = l.align === 'center' ? (width - w) / 2 : l.align === 'right' ? rightEdge - w : left;
+        const y = right ? y0 : y0 + (lines.length - 1 - idx) * gap;
         page.drawText(l.text, { x, y, size, font, color: rgb(0, 0, 0) });
-        if (!right) y -= size * 1.4;
-      }
+      });
     }
   }
 }

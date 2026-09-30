@@ -10,7 +10,8 @@
 // named by their Office equivalents (the PDF's metric-compatible fonts).
 
 import {
-  AlignmentType, BorderStyle, Document, Footer, Header, Packer, PageBreak, PageNumber, PageOrientation, Paragraph,
+  AlignmentType, BorderStyle, Document, Footer, Header, HorizontalPositionRelativeFrom, ImageRun, Packer, PageBreak, PageNumber, PageOrientation, Paragraph,
+  TextWrappingType, VerticalPositionRelativeFrom,
   Table, TableCell, TableLayoutType, TableRow, TextRun, VerticalAlign, WidthType,
   type ISectionOptions,
 } from 'docx';
@@ -18,6 +19,7 @@ import {
   fsColumnWidthsIn, fsFont, fsFormatAmount, fsFormatPct, fsPageSizeIn,
   type FsFrontMatter, type FsLetterhead, type FsPageSetup, type FsRenderedReport, type FsRenderedStatement, type FsRow, type FsStyle,
 } from '@kis-books/shared';
+import { imageInfoFromDataUri } from './image-size.js';
 
 const TW = 1440; // twips per inch
 const NONE = { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' };
@@ -259,12 +261,46 @@ export async function buildFsDocx(input: FsDocxInput): Promise<Buffer> {
 
   if (frontMatter.letter.enabled && input.letter) {
     const lh = input.letterhead;
-    const align = lh?.letterheadAlign === 'center' ? AlignmentType.CENTER : AlignmentType.LEFT;
+    const align = lh?.letterheadAlign === 'center' ? AlignmentType.CENTER : lh?.letterheadAlign === 'right' ? AlignmentType.RIGHT : AlignmentType.LEFT;
+    const content = lh?.letterheadContent ?? 'both';
+    const logo = imageInfoFromDataUri(lh?.logoDataUri);
+    const showLogo = !!logo && content !== 'text';
+    const showText = content !== 'logo' || !logo;
     const lhParas: Paragraph[] = [];
-    if (lh?.displayName) lhParas.push(new Paragraph({ alignment: align, children: [run(lh.displayName, font, style.baseSizePt + 3, true)] }));
-    const cityLine = [lh?.city, [lh?.state, lh?.postalCode].filter(Boolean).join(' ')].filter(Boolean).join(', ');
-    for (const l of [lh?.addressLine1, lh?.addressLine2, cityLine, [lh?.phone, lh?.email, lh?.website].filter(Boolean).join(' · ')]) {
-      if (l) lhParas.push(new Paragraph({ alignment: align, children: [run(l, font, Math.max(7, style.baseSizePt - 1.5))] }));
+    if (showLogo && logo) {
+      const PX = 96; // docx sizes images in 96-dpi pixels
+      const pg = fsPageSizeIn(style.page);
+      const contentW = pg.width - style.page.margins.left - style.page.margins.right;
+      const aspect = logo.height / logo.width;
+      const size = lh?.logoSize ?? 'small';
+      let wIn: number;
+      if (size === 'full_bleed') wIn = pg.width;
+      else if (size === 'content_width') wIn = contentW;
+      else wIn = Math.min(contentW, (size === 'medium' ? 1.5 : 0.9) / aspect);
+      const transformation = { width: Math.round(wIn * PX), height: Math.round(wIn * aspect * PX) };
+      if (size === 'full_bleed') {
+        // Floating, anchored to the page corner; text flows below it.
+        lhParas.push(new Paragraph({ children: [new ImageRun({
+          type: logo.type, data: logo.bytes, transformation,
+          floating: {
+            horizontalPosition: { relative: HorizontalPositionRelativeFrom.PAGE, offset: 0 },
+            verticalPosition: { relative: VerticalPositionRelativeFrom.PAGE, offset: 0 },
+            wrap: { type: TextWrappingType.TOP_AND_BOTTOM },
+          },
+        })] }));
+        // Keep the first line of text below the banner.
+        const below = Math.max(0, wIn * aspect - style.page.margins.top) * TW + 200;
+        lhParas.push(new Paragraph({ spacing: { before: Math.round(below) }, children: [] }));
+      } else {
+        lhParas.push(new Paragraph({ alignment: size === 'content_width' ? AlignmentType.LEFT : align, spacing: { after: 120 }, children: [new ImageRun({ type: logo.type, data: logo.bytes, transformation })] }));
+      }
+    }
+    if (showText) {
+      if (lh?.displayName) lhParas.push(new Paragraph({ alignment: align, children: [run(lh.displayName, font, style.baseSizePt + 3, true)] }));
+      const cityLine = [lh?.city, [lh?.state, lh?.postalCode].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+      for (const l of [lh?.addressLine1, lh?.addressLine2, cityLine, [lh?.phone, lh?.email, lh?.website].filter(Boolean).join(' · ')]) {
+        if (l) lhParas.push(new Paragraph({ alignment: align, children: [run(l, font, Math.max(7, style.baseSizePt - 1.5))] }));
+      }
     }
     sections.push({
       properties: { ...pageProps(style.page), ...numbered() },

@@ -27,6 +27,9 @@ export const fsFirmProfiles = pgTable('fs_firm_profiles', {
   logoDataUri: text('logo_data_uri'),
   accountantSignature: varchar('accountant_signature', { length: 300 }),
   letterheadAlign: varchar('letterhead_align', { length: 10 }).notNull().default('left'),
+  // Migration 0191: 'both' | 'logo' | 'text'; 'small' | 'medium' | 'content_width' | 'full_bleed'.
+  letterheadContent: varchar('letterhead_content', { length: 10 }).notNull().default('both'),
+  logoSize: varchar('logo_size', { length: 15 }).notNull().default('small'),
   updatedBy: uuid('updated_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

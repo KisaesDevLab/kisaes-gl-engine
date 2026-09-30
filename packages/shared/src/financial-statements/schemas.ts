@@ -559,6 +559,11 @@ export const fsCashFlowOverridesSchema = z.object({
   })).max(1000),
 });
 
+export const FS_LETTERHEAD_CONTENT = ['both', 'logo', 'text'] as const;
+export type FsLetterheadContent = (typeof FS_LETTERHEAD_CONTENT)[number];
+export const FS_LOGO_SIZES = ['small', 'medium', 'content_width', 'full_bleed'] as const;
+export type FsLogoSize = (typeof FS_LOGO_SIZES)[number];
+
 const MAX_LOGO_DATA_URI = 700 * 1024 * 4 / 3 + 64; // ~700 KB image
 export const fsLetterheadSchema = z.object({
   displayName: z.string().trim().max(200).nullable().optional(),
@@ -574,7 +579,12 @@ export const fsLetterheadSchema = z.object({
     .regex(/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/, 'Logo must be a PNG or JPEG')
     .nullable().optional(),
   accountantSignature: z.string().trim().max(300).nullable().optional(),
-  letterheadAlign: z.enum(['left', 'center']).optional(),
+  letterheadAlign: z.enum(['left', 'center', 'right']).optional(),
+  // What the letterhead shows, and how big the logo is. 'content_width'
+  // spans the text area; 'full_bleed' runs to the top and side edges of
+  // the page.
+  letterheadContent: z.enum(FS_LETTERHEAD_CONTENT).optional(),
+  logoSize: z.enum(FS_LOGO_SIZES).optional(),
 });
 export type FsLetterheadInput = z.infer<typeof fsLetterheadSchema>;
 

@@ -158,6 +158,8 @@ export async function upsertLetterhead(tenantId: string, input: FsLetterheadInpu
     ...(input.logoDataUri !== undefined ? { logoDataUri: input.logoDataUri } : {}),
     ...(input.accountantSignature !== undefined ? { accountantSignature: input.accountantSignature } : {}),
     ...(input.letterheadAlign !== undefined ? { letterheadAlign: input.letterheadAlign } : {}),
+    ...(input.letterheadContent !== undefined ? { letterheadContent: input.letterheadContent } : {}),
+    ...(input.logoSize !== undefined ? { logoSize: input.logoSize } : {}),
     updatedBy: userId ?? null,
     updatedAt: new Date(),
   };

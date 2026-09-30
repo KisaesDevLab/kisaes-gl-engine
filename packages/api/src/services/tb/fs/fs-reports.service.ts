@@ -24,6 +24,7 @@ import { getGlVersionStamp } from '../balance-engine.service.js';
 import { resolveLetterVariables } from '../../report-letter.service.js';
 import * as library from './fs-library.service.js';
 import { loadFsSource } from './fs-source.service.js';
+import { imageInfoFromDataUri } from './image-size.js';
 
 type ReportRow = typeof fsReports.$inferSelect;
 type LayoutRow = typeof fsCompanyLayouts.$inferSelect;
@@ -322,7 +323,10 @@ export function letterheadOf(row: Awaited<ReturnType<typeof library.getLetterhea
   return {
     displayName: row.displayName, addressLine1: row.addressLine1, addressLine2: row.addressLine2, city: row.city, state: row.state,
     postalCode: row.postalCode, phone: row.phone, email: row.email, website: row.website, logoDataUri: row.logoDataUri,
-    letterheadAlign: row.letterheadAlign === 'center' ? 'center' : 'left',
+    letterheadAlign: row.letterheadAlign === 'center' || row.letterheadAlign === 'right' ? row.letterheadAlign : 'left',
+    letterheadContent: (['both', 'logo', 'text'] as const).find((x) => x === row.letterheadContent) ?? 'both',
+    logoSize: (['small', 'medium', 'content_width', 'full_bleed'] as const).find((x) => x === row.logoSize) ?? 'small',
+    logoAspect: (() => { const info = imageInfoFromDataUri(row.logoDataUri); return info && info.width ? info.height / info.width : null; })(),
   };
 }
 
