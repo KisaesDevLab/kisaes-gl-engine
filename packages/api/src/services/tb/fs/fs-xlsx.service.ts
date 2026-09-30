@@ -85,13 +85,13 @@ function addStatementSheet(wb: ExcelJS.Workbook, report: FsRenderedReport, st: F
   titleRow(2, st.scheduleNo ? `${st.scheduleNo} — ${st.title}` : st.title, el.statementTitle);
   titleRow(3, st.dateLine, el.dateLine);
   let headerRows = 3;
-  if (st.columns.some((c) => c.label)) {
+  if (st.columns.some((c) => c.label || c.sublabel)) {
     headerRows = 5;
     st.columns.forEach((c, i) => {
       const cell = ws.getCell(5, i + 2);
-      cell.value = c.label;
+      cell.value = c.sublabel ? `${c.label}\n${c.sublabel}` : c.label;
       cell.font = { name: font, size: el.columnHeader.sizePt, bold: el.columnHeader.bold, italic: el.columnHeader.italic };
-      cell.alignment = { horizontal: 'right' };
+      cell.alignment = { horizontal: 'right', wrapText: true };
       cell.border = { bottom: { style: 'thin' } };
     });
   }
@@ -130,6 +130,10 @@ function addStatementSheet(wb: ExcelJS.Workbook, report: FsRenderedReport, st: F
         const cy = st.columns.findIndex((x) => x.kind === 'amount');
         const py = st.columns.findIndex((x, xi) => x.kind === 'amount' && xi > cy);
         cell.value = cy >= 0 && py >= 0 ? { formula: `${colLetter(cy + 2)}${rowNo}-${colLetter(py + 2)}${rowNo}`, result: v } : v;
+      } else if (report.meta.columnMode === 'side_by_side' && c.key === 'P' && r.kind !== 'heading') {
+        // Total column = the month / quarter columns across the row.
+        const refs = st.columns.map((x, xi) => (x.kind === 'amount' && x.key !== 'P' ? `${colLetter(xi + 2)}${rowNo}` : null)).filter((x): x is string => !!x);
+        cell.value = { formula: `SUM(${refs.join(',')})`, result: v };
       } else if (r.formula) {
         const terms = r.formula.kind === 'sum' ? r.formula.rows.map((row) => ({ row: sheetRow(row), sign: 1 as const })) : r.formula.terms.map((t) => ({ row: sheetRow(t.row), sign: t.sign }));
         cell.value = { formula: formulaText(letter, terms), result: v };

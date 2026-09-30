@@ -73,10 +73,10 @@ export interface FaceOptions {
 export function buildColumnDefs(ctx: EngineCtx, cols: AmountCol<string>[], withPct: boolean, withVariance: boolean): FsColumnDef[] {
   const defs: FsColumnDef[] = [];
   for (const c of cols) {
-    defs.push({ key: c.key, label: c.label, kind: 'amount' });
+    defs.push({ key: c.key, label: c.label, ...(c.sublabel ? { sublabel: c.sublabel } : {}), kind: 'amount' });
     if (withPct && ctx.settings.columns.pctOfRevenue) defs.push({ key: `${c.key}_pct`, label: '%', kind: 'pct' });
   }
-  if (withVariance && ctx.settings.columns.mode === 'cy_py' && cols.length === 2) {
+  if (withVariance && cols.length === 2 && (ctx.plan.variance || ctx.comparative)) {
     if (ctx.settings.columns.varianceAmt) defs.push({ key: 'var_amt', label: '$ Change', kind: 'variance_amt' });
     if (ctx.settings.columns.variancePct) defs.push({ key: 'var_pct', label: '% Change', kind: 'variance_pct' });
   }
@@ -629,7 +629,7 @@ export function buildFace(ctx: EngineCtx, stmt: FsStatementConfig, opt: FaceOpti
   });
   applyDollarSigns(ctx, rows);
 
-  const pageSetup = { ...ctx.style.page, ...(stmt.pageSetup ?? {}), margins: { ...ctx.style.page.margins, ...(stmt.pageSetup?.margins ?? {}) } };
+  const pageSetup = fsStatementPageSetup(ctx, stmt, defs);
 
   // ── Schedules ──
   const schedules: FsRenderedStatement[] = scheduleBuilds.map((sb) => {
@@ -683,6 +683,15 @@ export function buildFace(ctx: EngineCtx, stmt: FsStatementConfig, opt: FaceOpti
     roleExact,
     lines: allLines,
   };
+}
+
+// Statement page setup: document default ← statement override; wide
+// statements (side-by-side) turn landscape unless the statement pins it.
+export function fsStatementPageSetup(ctx: EngineCtx, stmt: FsStatementConfig, defs: FsColumnDef[]) {
+  const ps = { ...ctx.style.page, ...(stmt.pageSetup ?? {}), margins: { ...ctx.style.page.margins, ...(stmt.pageSetup?.margins ?? {}) } };
+  const amountCols = defs.filter((d) => d.kind === 'amount' || d.kind === 'variance_amt').length + defs.filter((d) => d.kind === 'pct' || d.kind === 'variance_pct').length / 2;
+  if (!stmt.pageSetup?.orientation && amountCols > 6) ps.orientation = 'landscape';
+  return ps;
 }
 
 export function formulaOf(terms: Array<{ row: number; sign: 1 | -1 }>): FsRowFormula {

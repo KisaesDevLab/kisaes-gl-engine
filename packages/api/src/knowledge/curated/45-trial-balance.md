@@ -55,7 +55,9 @@ Key ideas:
   tag filter, activity view, and category/search filters applied.
 - **Leadsheets** (Trial Balance → Leadsheets) group accounts into
   workpapers (Cash, AR, Fixed Assets…) with tickmarks, notes, and a
-  preparer→reviewer sign-off flow. A sign-off goes "stale" if the
+  preparer→reviewer sign-off flow. Move an account between leadsheets
+  with "Move to…" on its row (or remove it); "Add account" pulls any
+  account — including zero-balance ones — into the open leadsheet. A sign-off goes "stale" if the
   books change after signing.
 - **Closing date** (TB Settings): locks client-side changes on or
   before the date. Firm staff can override with a confirmation
@@ -75,8 +77,13 @@ Key ideas:
 - **Financial Statements** (Trial Balance → Financial Statements, flag
   FINANCIAL_STATEMENTS_V1): report-ready compiled statements built on the
   leadsheets — balance sheet, income statement, equity statement and
-  indirect-method cash flows, GAAP / cash / income-tax basis, single,
-  comparative or month + YTD columns. Drag-and-drop outline (sections,
+  indirect-method cash flows, GAAP / cash / income-tax basis (tax is
+  annual only). Reporting period: fiscal year, fiscal quarter, month,
+  year to date, or any date range (may cross a fiscal year-end). Columns:
+  this period, vs same period last year, period + YTD, period + YTD vs
+  last year, or side by side by month/quarter with a Total (landscape
+  automatically); comparative balance sheets vs prior year-end or same
+  date last year. Drag-and-drop outline (sections,
   subtotals, captions, underlines, page breaks), leadsheets shown as one
   line, full detail, or a summary line with a supporting schedule
   (Supplementary Information). Fonts, sizes, page setup and footer are

@@ -9,15 +9,17 @@
 import type { FsCashFlowClass, FsLayout, FsReportSettings, FsStyle } from '../schemas.js';
 import type { FsCheck, FsSourceAccount, FsSourceData, FsSourceGrouping, FsSourcePeriod } from '../model.js';
 import { fsDefaultCashFlowClass } from '../defaults.js';
+import { fsPlanColumns, fsRangeComposition, type FsPlan, type FsPlanRange } from '../periods.js';
 import { isBsType, presUnit, toUnits } from './util.js';
 
-export type BsColKey = 'cy' | 'py';
-export type PlColKey = 'cy' | 'py' | 'month' | 'ytd';
-
-export interface AmountCol<K extends string> {
+export interface AmountCol<K extends string = string> {
   key: K;
   label: string;
+  sublabel?: string;
   available: boolean;
+  // BS column date / IS range.
+  date?: string;
+  range?: FsPlanRange;
 }
 
 export type Balances = Map<string, number>;
@@ -27,37 +29,36 @@ export interface EngineCtx {
   layout: FsLayout;
   style: FsStyle;
   source: FsSourceData;
+  plan: FsPlan;
   decimals: 0 | 2;
   unit: number;
   accounts: Map<string, FsSourceAccount>;
   groupingById: Map<string, FsSourceGrouping>;
   groupingByCode: Map<string, FsSourceGrouping>;
   groupingOfAccount: Map<string, FsSourceGrouping>;
-  bsCols: AmountCol<BsColKey>[];
-  plCols: AmountCol<PlColKey>[];
-  // Closed (P&L folded into RE) balance sheet at a column's date.
-  bsClosed(key: BsColKey | 'cyOpen' | 'pyOpen'): Balances | null;
-  // P&L activity for an income-statement column (tag-filtered when set).
-  plActivity(key: PlColKey): Balances | null;
-  // Untagged P&L activity (for equity / cash flows).
-  plActivityUntagged(key: 'cy' | 'py'): Balances | null;
+  bsCols: AmountCol[];
+  plCols: AmountCol[];
+  // Closed (P&L folded into RE) balance sheet at a date. 'open' reads the
+  // book (Adjusted) column even for tax-basis statements — tax RJEs are
+  // current-year only, so beginning balances are book.
+  bsClosed(date: string, role?: 'close' | 'open'): Balances | null;
+  // P&L activity for a range (tag-filtered when a tag is set).
+  plActivity(range: { start: string; end: string }): Balances | null;
+  // Untagged P&L activity (equity / cash flows).
+  plActivityUntagged(range: { start: string; end: string }): Balances | null;
   cfClass(accountId: string): FsCashFlowClass;
   checks: FsCheck[];
   comparative: boolean;
 }
 
-function toMap(p: FsSourcePeriod | undefined): Balances | null {
+function toMap(p: FsSourcePeriod | undefined, tax = false): Balances | null {
   if (!p || !p.hasData) return null;
   const m = new Map<string, number>();
-  for (const [k, v] of Object.entries(p.balances)) {
+  for (const [k, v] of Object.entries(tax && p.taxBalances ? p.taxBalances : p.balances)) {
     const u = toUnits(v);
     if (u !== 0) m.set(k, u);
   }
   return m;
-}
-
-function yearLabel(iso: string | undefined): string {
-  return iso ? iso.slice(0, 4) : '';
 }
 
 export function buildContext(settings: FsReportSettings, layout: FsLayout, style: FsStyle, source: FsSourceData): EngineCtx {
@@ -93,23 +94,22 @@ export function buildContext(settings: FsReportSettings, layout: FsLayout, style
     });
   }
 
-  const raw = {
-    cy: toMap(source.periods.cy),
-    py: toMap(source.periods.py),
-    cyOpen: toMap(source.periods.cyOpen),
-    pyOpen: toMap(source.periods.pyOpen),
-    cyPriorMonth: toMap(source.periods.cyPriorMonth),
-  };
-  const tagged = source.tagged
-    ? { cy: toMap(source.tagged.cy), py: toMap(source.tagged.py), cyPriorMonth: toMap(source.tagged.cyPriorMonth) }
-    : null;
-
+  const plan = fsPlanColumns(settings, source.fyStartMonth);
+  const tax = settings.framework === 'tax';
   const isBsAcct = (id: string) => isBsType(accounts.get(id)?.accountType ?? 'expense');
 
+  const rawCache = new Map<string, Balances | null>();
+  const raw = (date: string, useTax: boolean, set: Record<string, FsSourcePeriod> | null | undefined = source.workpapers): Balances | null => {
+    const k = `${set === source.workpapers ? 'u' : 't'}|${useTax ? 'x' : 'b'}|${date}`;
+    if (!rawCache.has(k)) rawCache.set(k, toMap(set?.[date], useTax));
+    return rawCache.get(k)!;
+  };
+
   const closedCache = new Map<string, Balances | null>();
-  const closed = (key: 'cy' | 'py' | 'cyOpen' | 'pyOpen'): Balances | null => {
+  const closed = (date: string, role: 'close' | 'open' = 'close'): Balances | null => {
+    const key = `${role}|${date}`;
     if (closedCache.has(key)) return closedCache.get(key)!;
-    const src = raw[key];
+    const src = raw(date, tax && role === 'close');
     let out: Balances | null = null;
     if (src) {
       out = new Map();
@@ -124,48 +124,29 @@ export function buildContext(settings: FsReportSettings, layout: FsLayout, style
     return out;
   };
 
-  const plOnly = (m: Balances | null): Balances | null => {
-    if (!m) return null;
+  // Range P&L from fiscal-YTD snapshots (fsRangeComposition). A range is
+  // unavailable only when none of its snapshots has any data.
+  const compose = (range: { start: string; end: string }, set: Record<string, FsSourcePeriod> | null | undefined): Balances | null => {
+    const parts = fsRangeComposition(range.start, range.end, source.fyStartMonth);
+    let any = false;
     const out: Balances = new Map();
-    for (const [id, v] of m) if (!isBsAcct(id)) out.set(id, v);
-    return out;
+    for (const c of parts) {
+      const m = raw(c.date, tax, set);
+      if (!m) continue;
+      any = true;
+      for (const [id, v] of m) {
+        if (isBsAcct(id)) continue;
+        out.set(id, (out.get(id) ?? 0) + c.sign * v);
+      }
+    }
+    return any ? out : null;
   };
 
-  const sameFy = source.periods.cyPriorMonth && source.periods.cy
-    && source.periods.cyPriorMonth.fyStart === source.periods.cy.fyStart;
-
-  const plFrom = (set: { cy: Balances | null; py: Balances | null; cyPriorMonth: Balances | null }, key: PlColKey): Balances | null => {
-    if (key === 'cy' || key === 'ytd') return plOnly(set.cy);
-    if (key === 'py') return plOnly(set.py);
-    // month = YTD − prior month-end YTD within the same fiscal year; the
-    // first fiscal month's month column IS the YTD.
-    const ytd = plOnly(set.cy);
-    if (!ytd) return null;
-    if (!sameFy) return ytd;
-    const prior = plOnly(set.cyPriorMonth) ?? new Map();
-    const out: Balances = new Map(ytd);
-    for (const [id, v] of prior) out.set(id, (out.get(id) ?? 0) - v);
-    return out;
-  };
-
-  const mode = settings.columns.mode;
-  const bsCols: AmountCol<BsColKey>[] = mode === 'cy_py'
-    ? [
-      { key: 'cy', label: yearLabel(source.periods.cy?.date ?? settings.periodEnd), available: !!raw.cy },
-      { key: 'py', label: yearLabel(source.periods.py?.date), available: !!raw.py },
-    ]
-    : [{ key: 'cy', label: '', available: !!raw.cy }];
-  const plCols: AmountCol<PlColKey>[] = mode === 'cy_py'
-    ? [
-      { key: 'cy', label: yearLabel(source.periods.cy?.date ?? settings.periodEnd), available: !!raw.cy },
-      { key: 'py', label: yearLabel(source.periods.py?.date), available: !!raw.py },
-    ]
-    : mode === 'month_ytd'
-      ? [
-        { key: 'month', label: 'Month', available: !!raw.cy },
-        { key: 'ytd', label: 'Year to Date', available: !!raw.cy },
-      ]
-      : [{ key: 'cy', label: '', available: !!raw.cy }];
+  const bsCols: AmountCol[] = plan.bsPoints.map((p) => ({ key: p.key, label: p.label, date: p.date, available: !!raw(p.date, tax) }));
+  const plCols: AmountCol[] = plan.isRanges.map((r) => ({
+    key: r.key, label: r.label, sublabel: r.sublabel, range: r,
+    available: !!compose(r, source.workpapers),
+  }));
 
   const overrideByAccount = new Map<string, FsCashFlowClass>();
   const overrideByGrouping = new Map<string, FsCashFlowClass>();
@@ -186,14 +167,14 @@ export function buildContext(settings: FsReportSettings, layout: FsLayout, style
 
   const decimals = style.number.decimals;
   return {
-    settings, layout, style, source, decimals, unit: presUnit(decimals),
+    settings, layout, style, source, plan, decimals, unit: presUnit(decimals),
     accounts, groupingById, groupingByCode, groupingOfAccount,
     bsCols, plCols,
     bsClosed: closed,
-    plActivity: (k) => plFrom(tagged ?? raw, k),
-    plActivityUntagged: (k) => plFrom(raw, k),
+    plActivity: (r) => compose(r, source.tagged ?? source.workpapers),
+    plActivityUntagged: (r) => compose(r, source.workpapers),
     cfClass,
     checks: [],
-    comparative: mode === 'cy_py',
+    comparative: plan.bsPoints.length > 1,
   };
 }

@@ -205,7 +205,7 @@ describe('financial statements API', () => {
     const res = await call('POST', `/reports/${reportId}/preview-data`, { body: {} });
     expect(res.status).toBe(200);
     expect(res.json.source.companyName).toBe('Acme Widgets, Inc.');
-    expect(res.json.source.periods.py.hasData).toBe(true);
+    expect(res.json.source.workpapers['2024-12-31'].hasData).toBe(true);
     expect(res.json.source.groupings.length).toBeGreaterThan(5);
   });
 
@@ -286,6 +286,64 @@ describe('financial statements API', () => {
     const ok = await call('POST', `/reports/${id}/finalize`, { body: { overrideValidation: true, reason: 'Draft for review' } });
     expect(ok.status).toBe(200);
     expect(ok.json.validationOverride).toBe(true);
+  });
+
+  it('quarter + YTD vs prior year ties every column to the P&L report', async () => {
+    const { buildProfitAndLoss } = await import('../../report.service.js');
+    const settings = {
+      periodEnd: '2025-06-30', period: { type: 'quarter', start: '2025-04-01' }, framework: 'gaap', bookBasis: 'accrual',
+      columns: { mode: 'period_ytd_py', pctOfRevenue: false, varianceAmt: false, variancePct: false },
+    };
+    const created = await call('POST', '/reports', { body: { name: 'Q2 2025', settings, layoutSource: { kind: 'default' } } });
+    expect(created.status).toBe(201);
+    const comp = await call('POST', `/reports/${created.json.report.id}/compute`, { body: {} });
+    expect(comp.status).toBe(200);
+    const model = comp.json.model;
+    expect(model.checks.filter((c: any) => c.severity === 'error')).toEqual([]);
+    const is = model.statements.find((x: any) => x.kind === 'income_statement');
+    expect(is.dateLine).toBe('For the Three and Six Months Ended June 30, 2025 and 2024');
+    const ni = is.rows.find((r: any) => r.caption === 'NET INCOME').values;
+    const ranges = [['2025-04-01', '2025-06-30'], ['2024-04-01', '2024-06-30'], ['2025-01-01', '2025-06-30'], ['2024-01-01', '2024-06-30']];
+    for (let i = 0; i < ranges.length; i++) {
+      const pl = await buildProfitAndLoss(tenantId, ranges[i]![0]!, ranges[i]![1]!, 'accrual', companyId);
+      expect(Math.abs(ni[i] - pl.netIncome)).toBeLessThanOrEqual(1);
+    }
+    const bs = model.statements.find((x: any) => x.kind === 'balance_sheet');
+    expect(bs.dateLine).toBe('June 30, 2025 and December 31, 2024');
+    // Stored period survives a reload.
+    const detail = await call('GET', `/reports/${created.json.report.id}`);
+    expect(detail.json.report.settings.period).toEqual({ type: 'quarter', start: '2025-04-01' });
+    // Roll forward = next quarter.
+    const rolled = await call('POST', `/reports/${created.json.report.id}/roll-forward`, { body: {} });
+    const next = await call('GET', `/reports/${rolled.json.report.id}`);
+    expect(next.json.report.settings.periodEnd).toBe('2025-09-30');
+    expect(next.json.report.settings.period).toEqual({ type: 'quarter', start: '2025-07-01' });
+  });
+
+  it('a custom range across the fiscal year-end reconciles', async () => {
+    const { buildProfitAndLoss } = await import('../../report.service.js');
+    const settings = {
+      periodEnd: '2025-06-30', period: { type: 'custom', start: '2024-07-01' }, framework: 'gaap', bookBasis: 'accrual',
+      columns: { mode: 'single', pctOfRevenue: false, varianceAmt: false, variancePct: false },
+    };
+    const created = await call('POST', '/reports', { body: { name: 'Trailing 12', settings, layoutSource: { kind: 'default' } } });
+    const comp = await call('POST', `/reports/${created.json.report.id}/compute`, { body: {} });
+    const model = comp.json.model;
+    expect(model.checks.filter((c: any) => c.severity === 'error')).toEqual([]);
+    const is = model.statements.find((x: any) => x.kind === 'income_statement');
+    expect(is.dateLine).toBe('For the Twelve Months Ended June 30, 2025');
+    const pl = await buildProfitAndLoss(tenantId, '2024-07-01', '2025-06-30', 'accrual', companyId);
+    expect(Math.abs(is.rows.find((r: any) => r.caption === 'NET INCOME').values[0] - pl.netIncome)).toBeLessThanOrEqual(1);
+    const cf = model.statements.find((x: any) => x.kind === 'cash_flows');
+    expect(cf.rows.find((r: any) => r.caption === 'Cash, beginning of period').values[0]).toBe(41000); // cash at 2024-06-30: 11,000 + 30,000.40
+  });
+
+  it('rejects income-tax basis for a quarter', async () => {
+    const res = await call('POST', '/reports', { body: {
+      name: 'Tax Q', layoutSource: { kind: 'default' },
+      settings: { periodEnd: '2025-06-30', period: { type: 'quarter', start: '2025-04-01' }, framework: 'tax', bookBasis: 'accrual', columns: { mode: 'single', pctOfRevenue: false, varianceAmt: false, variancePct: false } },
+    } });
+    expect(res.status).toBe(400);
   });
 
   it('gates: client users, flag off, other company', async () => {

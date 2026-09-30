@@ -116,6 +116,9 @@ export const fsReports = pgTable('fs_reports', {
   companyLayoutId: uuid('company_layout_id').notNull().references(() => fsCompanyLayouts.id),
   name: varchar('name', { length: 200 }).notNull(),
   periodEnd: date('period_end').notNull(),
+  // Migration 0190: NULL = fiscal-year-to-date (reports created earlier).
+  periodType: varchar('period_type', { length: 10 }),
+  periodStart: date('period_start'),
   framework: varchar('framework', { length: 10 }).notNull(),
   bookBasis: varchar('book_basis', { length: 10 }).notNull(),
   columnsJson: jsonb('columns_json').notNull(),

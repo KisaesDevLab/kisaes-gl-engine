@@ -15,7 +15,7 @@ import {
   type ISectionOptions,
 } from 'docx';
 import {
-  fsFont, fsFormatAmount, fsFormatPct, fsPageSizeIn, fsBalanceSheetDateLine,
+  fsColumnWidthsIn, fsFont, fsFormatAmount, fsFormatPct, fsPageSizeIn,
   type FsFrontMatter, type FsLetterhead, type FsPageSetup, type FsRenderedReport, type FsRenderedStatement, type FsRow, type FsStyle,
 } from '@kis-books/shared';
 
@@ -90,23 +90,31 @@ function cell(children: Paragraph[], width: number, borders?: Record<string, unk
 function statementTables(st: FsRenderedStatement, style: FsStyle, font: string): Array<Table | Paragraph> {
   const size = fsPageSizeIn(st.pageSetup);
   const usable = Math.round((size.width - st.pageSetup.margins.left - st.pageSetup.margins.right) * TW);
-  const gap = 240;
-  const sign = 180;
-  const amt = Math.round(style.amountColumnWidthIn * TW);
-  const pctW = Math.round(Math.max(0.55, style.amountColumnWidthIn * 0.55) * TW);
+  // Same widths as the PDF (captions keep a readable minimum).
+  const w = fsColumnWidthsIn(st, style);
+  const gap = Math.round(w.gap * TW);
+  const sign = Math.round(w.sign * TW);
+  const amt = Math.round(w.amount * TW);
+  const pctW = Math.round(w.pct * TW);
   const colWidths = st.columns.map((c) => (c.kind === 'pct' || c.kind === 'variance_pct' ? [gap, pctW] : [gap, sign, amt]));
   const used = colWidths.flat().reduce((s, w) => s + w, 0);
-  const capW = Math.max(2000, usable - used);
+  const capW = Math.max(Math.round(TW), usable - used);
   const el = style.elements;
 
-  const headerRow = st.columns.some((c) => c.label)
+  const headerRow = st.columns.some((c) => c.label || c.sublabel)
     ? new TableRow({
       tableHeader: true,
       children: [
         cell([new Paragraph({})], capW),
         ...st.columns.flatMap((c, i) => {
           const ws = colWidths[i]!;
-          const label = new Paragraph({ alignment: AlignmentType.RIGHT, children: [run(c.label, font, el.columnHeader.sizePt, el.columnHeader.bold, el.columnHeader.italic)] });
+          const label = new Paragraph({
+            alignment: AlignmentType.RIGHT,
+            children: [
+              run(c.label, font, el.columnHeader.sizePt, el.columnHeader.bold, el.columnHeader.italic),
+              ...(c.sublabel ? [new TextRun({ text: c.sublabel, break: 1, font, size: Math.round(el.columnHeader.sizePt * 2), bold: el.columnHeader.bold, italics: el.columnHeader.italic })] : []),
+            ],
+          });
           const bottom = { bottom: { style: BorderStyle.SINGLE, size: 4, color: '000000' } };
           return ws.length === 3
             ? [cell([new Paragraph({})], ws[0]!), new TableCell({ children: [label], columnSpan: 2, width: { size: ws[1]! + ws[2]!, type: WidthType.DXA }, borders: { ...NO_BORDERS, ...bottom } })]
@@ -224,11 +232,7 @@ export async function buildFsDocx(input: FsDocxInput): Promise<Buffer> {
   const el = style.elements;
   const sections: ISectionOptions[] = [];
   const empty = new Footer({ children: [new Paragraph({})] });
-  const pyYear = report.meta.columnMode === 'cy_py';
-  const dateLine = fsBalanceSheetDateLine({
-    fyStart: report.meta.fyStart, periodEnd: report.meta.periodEnd, mode: report.meta.columnMode,
-    priorPeriodEnd: pyYear ? `${Number(report.meta.periodEnd.slice(0, 4)) - 1}${report.meta.periodEnd.slice(4)}` : null,
-  });
+  const dateLine = report.meta.bsDateLine;
 
   if (frontMatter.cover.enabled) {
     sections.push({

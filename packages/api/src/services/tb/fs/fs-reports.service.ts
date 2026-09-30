@@ -9,7 +9,7 @@
 import { and, asc, count, desc, eq, isNull } from 'drizzle-orm';
 import {
   bindLayout, buildDefaultLayout, computeFsReport, fsClientLayoutSchema, fsCompanyEntityKind, fsFrontMatterSchema,
-  fsIncludedTitlesPhrase, fsReportSettingsSchema, fsShiftYear, fsStyleSchema, fsTemplateLayoutSchema, renderLetterBody,
+  fsIncludedTitlesPhrase, fsNextPeriod, fsReportSettingsSchema, fsStyleSchema, normalizeFsSettings, fsTemplateLayoutSchema, renderLetterBody,
   sanitizeFsLetterHtml, toPortableLayout, FS_DEFAULT_FRONT_MATTER, REPORT_LETTER_TITLES,
   type FsCreateReportInput, type FsDraftOverrides, type FsEntityKind, type FsFrontMatter, type FsLayout,
   type FsLetterhead, type FsRenderedReport, type FsReportSettings, type FsSourceData, type FsStyle, type FsUpdateReportInput,
@@ -136,6 +136,7 @@ export async function saveLayoutAsTemplate(
 export function settingsOf(r: ReportRow): FsReportSettings {
   return fsReportSettingsSchema.parse({
     periodEnd: r.periodEnd,
+    ...(r.periodType && r.periodStart ? { period: { type: r.periodType, start: r.periodStart } } : {}),
     framework: r.framework,
     bookBasis: r.bookBasis,
     columns: r.columnsJson,
@@ -165,7 +166,8 @@ export async function listReports(tenantId: string, companyId: string, opts: { l
     reports: rows.map((r) => {
       const v = r.currentVersionId ? byId.get(r.currentVersionId) : undefined;
       return {
-        id: r.id, name: r.name, periodEnd: r.periodEnd, framework: r.framework, bookBasis: r.bookBasis,
+        id: r.id, name: r.name, periodEnd: r.periodEnd, periodStart: r.periodStart, periodType: r.periodType,
+        framework: r.framework, bookBasis: r.bookBasis,
         columns: r.columnsJson, status: r.status, updatedAt: r.updatedAt,
         currentVersion: v ? { versionNo: v.versionNo, finalizedAt: v.finalizedAt, publishedAt: v.publishedAt, stale: v.glVersionStamp !== stamp } : null,
       };
@@ -224,7 +226,8 @@ export async function createReport(tenantId: string, companyId: string, input: F
   const s = input.settings;
   const [row] = await db.insert(fsReports).values({
     tenantId, companyId, companyLayoutId: layoutId, name: input.name,
-    periodEnd: s.periodEnd, framework: s.framework, bookBasis: s.framework === 'cash' ? 'cash' : s.bookBasis,
+    periodEnd: s.periodEnd, periodType: s.period?.type ?? null, periodStart: s.period?.start ?? null,
+    framework: s.framework, bookBasis: s.framework === 'cash' ? 'cash' : s.bookBasis,
     columnsJson: s.columns, tagId: s.tagId ?? null, frontMatterJson: frontMatter,
     createdBy: userId ?? null, updatedBy: userId ?? null,
   }).returning();
@@ -245,7 +248,8 @@ export async function updateReport(tenantId: string, companyId: string, id: stri
   const [row] = await db.update(fsReports).set({
     ...(input.name !== undefined ? { name: input.name } : {}),
     ...(s ? {
-      periodEnd: s.periodEnd, framework: s.framework, bookBasis: s.framework === 'cash' ? 'cash' : s.bookBasis,
+      periodEnd: s.periodEnd, periodType: s.period?.type ?? null, periodStart: s.period?.start ?? null,
+      framework: s.framework, bookBasis: s.framework === 'cash' ? 'cash' : s.bookBasis,
       columnsJson: s.columns, tagId: s.tagId ?? null,
     } : {}),
     ...(input.frontMatter !== undefined ? {
@@ -273,11 +277,17 @@ export async function archiveReport(tenantId: string, companyId: string, id: str
 // Next period's draft with the same layout (layouts are reused year to year).
 export async function rollForward(tenantId: string, companyId: string, id: string, input: { periodEnd?: string; name?: string }, userId?: string) {
   const src = await getReportRow(tenantId, companyId, id);
-  const periodEnd = input.periodEnd ?? fsShiftYear(src.periodEnd, 1);
+  // One period forward (annual +1y, quarter +3m, month +1m, else +1y).
+  const [co] = await db.select({ m: companies.fiscalYearStartMonth }).from(companies)
+    .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId))).limit(1);
+  const cur = normalizeFsSettings(settingsOf(src), co?.m ?? 1);
+  const next = fsNextPeriod(cur.period!.type, cur.period!.start, cur.periodEnd);
+  const periodEnd = input.periodEnd ?? next.end;
   const [row] = await db.insert(fsReports).values({
     tenantId, companyId, companyLayoutId: src.companyLayoutId,
     name: input.name ?? src.name.replace(/\b(19|20)\d{2}\b/, periodEnd.slice(0, 4)),
-    periodEnd, framework: src.framework, bookBasis: src.bookBasis, columnsJson: src.columnsJson, tagId: src.tagId,
+    periodEnd, periodType: input.periodEnd ? null : cur.period!.type, periodStart: input.periodEnd ? null : next.start,
+    framework: src.framework, bookBasis: src.bookBasis, columnsJson: src.columnsJson, tagId: src.tagId,
     frontMatterJson: { ...frontMatterOf(src), letter: { ...frontMatterOf(src).letter, reportDate: null, bodyHtmlOverride: null } },
     createdBy: userId ?? null, updatedBy: userId ?? null,
   }).returning();
@@ -326,7 +336,7 @@ export async function resolveLetter(
   const letterType = (letter?.letterType ?? 'compilation') as ReportLetterType;
   const profile = await library.getLetterhead(tenantId);
   const base = await resolveLetterVariables(tenantId, companyId, {
-    periodStart: source.fyStart,
+    periodStart: normalizeFsSettings(draft.settings, source.fyStartMonth).period!.start,
     periodEnd: draft.settings.periodEnd,
     basis: draft.settings.framework === 'gaap' ? 'accrual' : draft.settings.framework,
     reportDate: fm.reportDate ?? new Date().toISOString().slice(0, 10),

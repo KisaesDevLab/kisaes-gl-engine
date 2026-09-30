@@ -15,7 +15,7 @@
 
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import {
-  fsCompanyEntityKind, fsDayBefore, fsPriorMonthEnd, fsShiftYear,
+  fsCompanyEntityKind, fsFiscalYearStart, fsPlanColumns, normalizeFsSettings,
   type FsCashFlowClass, type FsEquityRole, type FsReportSettings, type FsSourceData, type FsSourceAccount, type FsSourcePeriod,
 } from '@kis-books/shared';
 import { db } from '../../../db/index.js';
@@ -25,43 +25,36 @@ import { computeWorkpaper, VIRTUAL_RE_ID, type TbWorkpaper } from '../balance-en
 import { listGroupings } from '../groupings.service.js';
 import { defaultEquityRole, getEquityRoles } from '../m1.service.js';
 
-export async function loadFsSource(tenantId: string, companyId: string, settings: FsReportSettings): Promise<FsSourceData> {
+export async function loadFsSource(tenantId: string, companyId: string, rawSettings: FsReportSettings): Promise<FsSourceData> {
   const [company] = await db.select({
-    name: companies.businessName, entityType: companies.entityType,
+    name: companies.businessName, entityType: companies.entityType, fyStartMonth: companies.fiscalYearStartMonth,
   }).from(companies).where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId))).limit(1);
   if (!company) throw AppError.notFound('Company not found');
+  const fyStartMonth = company.fyStartMonth ?? 1;
+  const settings = normalizeFsSettings(rawSettings, fyStartMonth);
 
   const basis = settings.framework === 'cash' ? 'cash' : settings.bookBasis;
-  const column: 'adjusted' | 'tax' = settings.framework === 'tax' ? 'tax' : 'adjusted';
-  const wp = (periodEnd: string, tagId?: string | null) => computeWorkpaper(tenantId, companyId, { periodEnd, basis, tagId: tagId ?? null });
+  const withTax = settings.framework === 'tax';
+  const plan = fsPlanColumns(settings, fyStartMonth);
 
-  const cyWp = await wp(settings.periodEnd);
-  const fyStart = cyWp.fyStart;
-  const mode = settings.columns.mode;
-  const wantPy = mode === 'cy_py';
-  const wantMonth = mode === 'month_ytd';
-
-  const cyOpenDate = fsDayBefore(fyStart);
-  const pyDate = fsShiftYear(settings.periodEnd, -1);
-  const pyOpenDate = fsDayBefore(fsShiftYear(fyStart, -1));
-  const priorMonthDate = fsPriorMonthEnd(settings.periodEnd);
-
-  const [cyOpenWp, pyWp, pyOpenWp, pmWp] = await Promise.all([
-    wp(cyOpenDate),
-    wantPy ? wp(pyDate) : Promise.resolve(null),
-    wantPy ? wp(pyOpenDate) : Promise.resolve(null),
-    wantMonth ? wp(priorMonthDate) : Promise.resolve(null),
-  ]);
-
-  const toPeriod = (w: TbWorkpaper | null, col: 'adjusted' | 'tax'): FsSourcePeriod | undefined => {
-    if (!w) return undefined;
+  // One workpaper per date the plan needs (Redis-cached by GL stamp);
+  // the engine composes every range's P&L from these fiscal-YTD snapshots.
+  const toPeriod = (w: TbWorkpaper): FsSourcePeriod => {
     const balances: Record<string, number> = {};
+    const taxBalances: Record<string, number> = {};
     for (const r of w.rows) {
-      const v = r[col];
-      if (v !== 0) balances[r.accountId] = v;
+      if (r.adjusted !== 0) balances[r.accountId] = r.adjusted;
+      if (withTax && r.tax !== 0) taxBalances[r.accountId] = r.tax;
     }
-    return { date: w.periodEnd, fyStart: w.fyStart, balances, hasData: w.rows.length > 0 };
+    return { date: w.periodEnd, fyStart: w.fyStart, balances, ...(withTax ? { taxBalances } : {}), hasData: w.rows.length > 0 };
   };
+  const load = async (tagId: string | null) => {
+    const out: Record<string, FsSourcePeriod> = {};
+    const wps = await Promise.all(plan.workpaperDates.map((d) => computeWorkpaper(tenantId, companyId, { periodEnd: d, basis, tagId })));
+    wps.forEach((w, i) => { out[plan.workpaperDates[i]!] = toPeriod(w); });
+    return { out, stamp: wps[0]?.glVersionStamp ?? 0 };
+  };
+  const { out: workpapers, stamp } = await load(null);
 
   let tagged: FsSourceData['tagged'] = null;
   let tagName: string | null = null;
@@ -70,12 +63,7 @@ export async function loadFsSource(tenantId: string, companyId: string, settings
       .where(and(eq(tags.tenantId, tenantId), eq(tags.id, settings.tagId))).limit(1);
     if (!tag) throw AppError.badRequest('Tag not found', 'TB_FS_TAG');
     tagName = tag.name;
-    const [tCy, tPy, tPm] = await Promise.all([
-      wp(settings.periodEnd, settings.tagId),
-      wantPy ? wp(pyDate, settings.tagId) : Promise.resolve(null),
-      wantMonth ? wp(priorMonthDate, settings.tagId) : Promise.resolve(null),
-    ]);
-    tagged = { cy: toPeriod(tCy, column), py: toPeriod(tPy, column), cyPriorMonth: toPeriod(tPm, column) };
+    tagged = (await load(settings.tagId)).out;
   }
 
   // Accounts seen in any period (+ every company account for claims).
@@ -117,18 +105,13 @@ export async function loadFsSource(tenantId: string, companyId: string, settings
     entityKind: fsCompanyEntityKind(company.entityType),
     framework: settings.framework,
     basis,
-    glVersionStamp: cyWp.glVersionStamp,
+    glVersionStamp: stamp,
     periodEnd: settings.periodEnd,
-    fyStart,
+    fyStart: fsFiscalYearStart(settings.periodEnd, fyStartMonth),
+    fyStartMonth,
     accounts: list,
     groupings: groupings.map((g) => ({ id: g.id, code: g.leadsheetCode ?? null, name: g.name, sortOrder: g.sortOrder, accountIds: g.accountIds })),
-    periods: {
-      cy: toPeriod(cyWp, column),
-      cyOpen: toPeriod(cyOpenWp, 'adjusted'),
-      py: toPeriod(pyWp, column),
-      pyOpen: toPeriod(pyOpenWp, 'adjusted'),
-      cyPriorMonth: toPeriod(pmWp, column),
-    },
+    workpapers,
     tagged,
     tagName,
     reAccountId,

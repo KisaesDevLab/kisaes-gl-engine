@@ -9,8 +9,6 @@
 
 import type { FsCashFlowClass, FsColumnMode, FsEntityKind, FsFramework, FsPageSetup, FsRule, FsStatementKind } from './schemas.js';
 
-export type FsPeriodKey = 'cy' | 'py' | 'cyOpen' | 'pyOpen' | 'cyPriorMonth';
-
 export interface FsSourceAccount {
   id: string;
   number: string | null;
@@ -27,6 +25,8 @@ export interface FsSourcePeriod {
   // Signed balances by account id. BS accounts: cumulative through date.
   // P&L accounts: fiscal-year-to-date (the engine closes them into RE).
   balances: Record<string, number>;
+  // Tax column (income-tax-basis statements): Adjusted + the tax year's RJEs.
+  taxBalances?: Record<string, number>;
   hasData: boolean;
 }
 
@@ -50,9 +50,12 @@ export interface FsSourceData {
   fyStart: string;
   accounts: FsSourceAccount[];
   groupings: FsSourceGrouping[];
-  periods: Partial<Record<FsPeriodKey, FsSourcePeriod>>;
-  // Tag-filtered P&L balances (income statement only) when a tag is set.
-  tagged?: Partial<Record<'cy' | 'py' | 'cyPriorMonth', FsSourcePeriod>> | null;
+  fyStartMonth: number;
+  // TB workpapers by date (every date in fsPlanColumns().workpaperDates).
+  // The engine composes any range's P&L from these fiscal-YTD snapshots.
+  workpapers: Record<string, FsSourcePeriod>;
+  // Tag-filtered workpapers (income statement only) when a tag is set.
+  tagged?: Record<string, FsSourcePeriod> | null;
   tagName?: string | null;
   // Account that receives the year-end P&L close (system RE or virtual).
   reAccountId: string;
@@ -130,6 +133,8 @@ export interface FsCheck {
 export interface FsRenderedReport {
   meta: {
     companyName: string;
+    periodStart: string;
+    periodType: string;
     periodEnd: string;
     fyStart: string;
     framework: FsFramework;
@@ -139,6 +144,8 @@ export interface FsRenderedReport {
     glVersionStamp: number;
     decimals: 0 | 2;
     tagName?: string | null;
+    // "December 31, 2025" / "September 30, 2026 and December 31, 2025".
+    bsDateLine: string;
   };
   statements: FsRenderedStatement[]; // face statements in layout order
   schedules: FsRenderedStatement[];  // supplementary schedules, numbered

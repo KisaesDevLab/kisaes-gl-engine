@@ -12,7 +12,6 @@
 import type { FsFrontMatter, FsPageSetup, FsStyle, FsStyleElement } from '../schemas.js';
 import type { FsRenderedReport, FsRenderedStatement, FsRow } from '../model.js';
 import { fsFont } from '../fonts.js';
-import { fsBalanceSheetDateLine } from '../titles.js';
 
 export interface FsLetterhead {
   displayName?: string | null;
@@ -116,7 +115,6 @@ function elCss(style: FsStyle, el: FsStyleElement): string {
 export function fsDocumentCss(style: FsStyle, fonts: FsFontSource): string {
   const def = fsFont(style.fontKey);
   const family = `'${def.cssFamily}', ${def.category === 'serif' ? "'Times New Roman', serif" : 'Arial, sans-serif'}`;
-  const amountW = style.amountColumnWidthIn;
   const titleAlign = style.titleBlock.align;
   return `${fontFaceCss(style, fonts)}
 *{box-sizing:border-box}
@@ -128,11 +126,7 @@ body{font-family:${family};font-size:${style.baseSizePt}pt;line-height:${style.l
 .fs-title .dl{${elCss(style, 'dateLine')};${titleAlign === 'center' ? 'text-align:center;' : ''}}
 table.fs{width:100%;border-collapse:collapse;table-layout:fixed}
 table.fs td,table.fs th{padding:0.6pt 0;vertical-align:bottom}
-table.fs col.cap{width:auto}
-table.fs col.sign{width:9pt}
-table.fs col.amt{width:${amountW}in}
-table.fs col.pct{width:${Math.max(0.55, amountW * 0.55)}in}
-table.fs col.gap{width:12pt}
+table.fs.narrow td,table.fs.narrow th{font-size:${Math.max(7, style.baseSizePt - 1.5)}pt}
 th.colh{${elCss(style, 'columnHeader')};text-align:right;border-bottom:0.75pt solid #000;padding-bottom:1pt;white-space:nowrap}
 th.colh.center{text-align:center}
 td.cap{padding-right:6pt;overflow-wrap:anywhere}
@@ -183,23 +177,50 @@ function titleBlock(report: FsRenderedReport, st: FsRenderedStatement, continued
   return `<div class="fs-title"><div class="co">${esc(report.meta.companyName)}</div><div class="st">${esc(st.scheduleNo ? `${st.scheduleNo} — ${st.title}` : st.title)}${continued ? ' (Continued)' : ''}</div><div class="dl">${esc(st.dateLine)}</div></div>`;
 }
 
-function colgroup(st: FsRenderedStatement): string {
-  const cols: string[] = ['<col class="cap">'];
+// Explicit column widths: captions keep a readable minimum and amount
+// columns shrink to fit the page (comparative / side-by-side layouts).
+export function fsColumnWidthsIn(st: FsRenderedStatement, style: FsStyle): { caption: number; amount: number; pct: number; sign: number; gap: number } {
+  const size = fsPageSizeIn(st.pageSetup);
+  const usable = size.width - st.pageSetup.margins.left - st.pageSetup.margins.right;
+  const nAmt = st.columns.filter((c) => c.kind === 'amount' || c.kind === 'variance_amt').length;
+  const nPct = st.columns.length - nAmt;
+  const wide = nAmt >= 8;
+  const gap = (wide ? 3 : 12) / 72;
+  const sign = (wide ? 5 : 9) / 72;
+  const captionMin = wide ? 1.3 : 2.2;
+  let amount = style.amountColumnWidthIn;
+  let pct = Math.max(0.55, amount * 0.55);
+  const room = usable - captionMin - st.columns.length * gap - nAmt * sign;
+  const need = nAmt * amount + nPct * pct;
+  if (need > room && need > 0) {
+    const scale = Math.max(0, room) / need;
+    amount = Math.max(0.5, amount * scale);
+    pct = Math.max(0.4, pct * scale);
+  }
+  const caption = Math.max(1, usable - st.columns.length * gap - nAmt * (sign + amount) - nPct * pct);
+  return { caption, amount, pct, sign, gap };
+}
+
+function colgroup(st: FsRenderedStatement, style: FsStyle): string {
+  const w = fsColumnWidthsIn(st, style);
+  const col = (inches: number) => `<col style="width:${inches.toFixed(3)}in">`;
+  const cols: string[] = [col(w.caption)];
   st.columns.forEach((c) => {
-    cols.push('<col class="gap">');
-    if (c.kind === 'amount' || c.kind === 'variance_amt') cols.push('<col class="sign">', '<col class="amt">');
-    else cols.push('<col class="pct">');
+    cols.push(col(w.gap));
+    if (c.kind === 'amount' || c.kind === 'variance_amt') cols.push(col(w.sign), col(w.amount));
+    else cols.push(col(w.pct));
   });
   return `<colgroup>${cols.join('')}</colgroup>`;
 }
 
 function headerRow(st: FsRenderedStatement): string {
-  if (!st.columns.some((c) => c.label)) return '';
+  if (!st.columns.some((c) => c.label || c.sublabel)) return '';
   const cells: string[] = ['<th></th>'];
   st.columns.forEach((c) => {
     cells.push('<th></th>');
     const span = c.kind === 'amount' || c.kind === 'variance_amt' ? 2 : 1;
-    cells.push(`<th class="colh${span === 2 ? '' : ' center'}" colspan="${span}">${esc(c.label)}</th>`);
+    const text = c.sublabel ? `${esc(c.label)}<br>${esc(c.sublabel)}` : esc(c.label);
+    cells.push(`<th class="colh${span === 2 ? '' : ' center'}" colspan="${span}">${text}</th>`);
   });
   return `<tr>${cells.join('')}</tr>`;
 }
@@ -250,7 +271,10 @@ function chunks(rows: FsRow[]): FsRow[][] {
 }
 
 export function fsStatementHtml(report: FsRenderedReport, st: FsRenderedStatement, style: FsStyle): string {
-  return chunks(st.rows).map((rows, i) => `<div class="chunk">${titleBlock(report, st, i > 0)}<table class="fs">${colgroup(st)}<thead>${headerRow(st)}</thead><tbody>${rows.map((r) => rowHtml(r, st, style)).join('')}</tbody></table></div>`).join('');
+  // Wide statements (side-by-side months) tighten the amount columns.
+  const amountCols = st.columns.filter((c) => c.kind === 'amount' || c.kind === 'variance_amt').length;
+  const cls = amountCols >= 8 ? 'fs narrow' : 'fs';
+  return chunks(st.rows).map((rows, i) => `<div class="chunk">${titleBlock(report, st, i > 0)}<table class="${cls}">${colgroup(st, style)}<thead>${headerRow(st)}</thead><tbody>${rows.map((r) => rowHtml(r, st, style)).join('')}</tbody></table></div>`).join('');
 }
 
 // ─── Front matter ──────────────────────────────────────────────────
@@ -267,11 +291,7 @@ export function fsBuildSections(input: FsDocumentInput): FsHtmlSection[] {
   const { report, style, frontMatter } = input;
   const sections: FsHtmlSection[] = [];
   const base = style.page;
-  const pyYear = report.meta.columnMode === 'cy_py';
-  const dateLine = fsBalanceSheetDateLine({
-    fyStart: report.meta.fyStart, periodEnd: report.meta.periodEnd, mode: report.meta.columnMode,
-    priorPeriodEnd: pyYear ? `${Number(report.meta.periodEnd.slice(0, 4)) - 1}${report.meta.periodEnd.slice(4)}` : null,
-  });
+  const dateLine = report.meta.bsDateLine;
 
   if (frontMatter.cover.enabled) {
     sections.push({

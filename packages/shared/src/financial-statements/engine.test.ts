@@ -52,11 +52,12 @@ function source(over: Partial<FsSourceData> = {}): FsSourceData {
     companyName: 'Acme Widgets, Inc.', entityKind: 'corporation', framework: 'gaap', basis: 'accrual', glVersionStamp: 7,
     periodEnd: '2025-12-31', fyStart: '2025-01-01',
     accounts: ACCOUNTS, groupings: GROUPINGS.map((g) => ({ ...g, accountIds: [...g.accountIds] })),
-    periods: {
-      cy: { date: '2025-12-31', fyStart: '2025-01-01', balances: CY_2025, hasData: true },
-      cyOpen: { date: '2024-12-31', fyStart: '2024-01-01', balances: OPEN_2024, hasData: true },
+    workpapers: {
+      '2025-12-31': { date: '2025-12-31', fyStart: '2025-01-01', balances: CY_2025, hasData: true },
+      '2024-12-31': { date: '2024-12-31', fyStart: '2024-01-01', balances: OPEN_2024, hasData: true },
     },
     reAccountId: 're',
+    fyStartMonth: 1,
     equityRoles: { cs: 'contributions', re: 'retained', dist: 'distributions' },
     cashFlowOverrides: [],
     ...over,
@@ -169,9 +170,9 @@ describe('checks', () => {
   it('flags accounts with balances that are not on any leadsheet', () => {
     const s = source({
       accounts: [...ACCOUNTS, A('stray', '1900', 'Suspense', 'asset')],
-      periods: {
-        cy: { date: '2025-12-31', fyStart: '2025-01-01', balances: { ...CY_2025, stray: 5, cash: CY_2025.cash - 5 }, hasData: true },
-        cyOpen: { date: '2024-12-31', fyStart: '2024-01-01', balances: OPEN_2024, hasData: true },
+      workpapers: {
+        '2025-12-31': { date: '2025-12-31', fyStart: '2025-01-01', balances: { ...CY_2025, stray: 5, cash: CY_2025.cash - 5 }, hasData: true },
+        '2024-12-31': { date: '2024-12-31', fyStart: '2024-01-01', balances: OPEN_2024, hasData: true },
       },
     });
     const rep = run({ source: s });
@@ -217,23 +218,33 @@ describe('checks', () => {
 
 describe('columns', () => {
   it('month + YTD derives the month from the prior month-end', () => {
-    const nov = { ...CY_2025, sales: -45000, cogs: 18000, rent: 11000, depr: 2000, office: 3000, int: -100 };
+    const nov: Record<string, number> = { ...CY_2025, sales: -45000, cogs: 18000, rent: 11000, depr: 2000, office: 3000, int: -100 };
+    // Keep November a balanced trial balance (cash absorbs the difference).
+    const off = Object.values(nov).reduce((sum, v) => sum + Math.round(v * 100), 0);
+    nov['cash'] = Math.round(nov['cash']! * 100 - off) / 100;
     const s = source({
-      periods: {
-        ...source().periods,
-        cyPriorMonth: { date: '2025-11-30', fyStart: '2025-01-01', balances: nov, hasData: true },
+      workpapers: {
+        ...source().workpapers,
+        '2025-11-30': { date: '2025-11-30', fyStart: '2025-01-01', balances: nov, hasData: true },
       },
     });
     const rep = run({ source: s, settings: { columns: { mode: 'month_ytd', pctOfRevenue: true, varianceAmt: false, variancePct: false } } });
     const is = stmt(rep, 'income_statement');
     expect(is.columns.map((c) => c.kind)).toEqual(['amount', 'pct', 'amount', 'pct']);
-    expect(rowBy(is, 'Revenue').values).toEqual([5000, 100, 50001, 100]);
+    const rev = rowBy(is, 'Revenue').values;
+    // Month revenue 5,000.49; the month's net income comes from the rounded
+    // equity roll-forward, so the largest line may carry $1 of rounding.
+    expect(Math.abs((rev[0] as number) - 5000)).toBeLessThanOrEqual(1);
+    expect(rev[2]).toBe(50001);
+    expect(rep.checks.filter((c) => c.severity === 'error')).toEqual([]);
     expect(is.dateLine).toBe('For the One Month and Twelve Months Ended December 31, 2025'.replace('Twelve Months', 'Year'));
     assertFoots(is);
   });
 
   it('prior-year column is blank with an info check when the ledger has no PY', () => {
-    const rep = run({ settings: { columns: { mode: 'cy_py', pctOfRevenue: false, varianceAmt: true, variancePct: true } } });
+    // A company whose books start in 2025: no prior-year workpaper at all.
+    const s = source({ workpapers: { '2025-12-31': { date: '2025-12-31', fyStart: '2025-01-01', balances: CY_2025, hasData: true } } });
+    const rep = run({ source: s, settings: { columns: { mode: 'cy_py', pctOfRevenue: false, varianceAmt: true, variancePct: true } } });
     const bs = stmt(rep, 'balance_sheet');
     expect(bs.title).toBe('Balance Sheets');
     expect(rowBy(bs, 'TOTAL ASSETS').values).toEqual([38301, null, null, null]);
@@ -241,7 +252,7 @@ describe('columns', () => {
   });
 
   it('a tag filter keeps the income statement only and warns', () => {
-    const rep = run({ settings: { tagId: '00000000-0000-0000-0000-0000000000aa' }, source: source({ tagged: { cy: { date: '2025-12-31', fyStart: '2025-01-01', balances: { sales: -100, rent: 40 }, hasData: true } }, tagName: 'Farm' }) });
+    const rep = run({ settings: { tagId: '00000000-0000-0000-0000-0000000000aa' }, source: source({ tagged: { '2025-12-31': { date: '2025-12-31', fyStart: '2025-01-01', balances: { sales: -100, rent: 40 }, hasData: true } }, tagName: 'Farm' }) });
     expect(rep.statements.map((s) => s.kind)).toEqual(['balance_sheet', 'income_statement']);
     expect(rowBy(stmt(rep, 'income_statement'), 'NET INCOME').values[0]).toBe(60);
     expect(rep.checks.filter((c) => c.code === 'TB_FS_TAG_PARTIAL').length).toBeGreaterThan(0);
@@ -265,9 +276,9 @@ describe('rounding property: random balanced trial balances always foot', () => 
         return b;
       };
       const s = source({
-        periods: {
-          cy: { date: '2025-12-31', fyStart: '2025-01-01', balances: mk(), hasData: true },
-          cyOpen: { date: '2024-12-31', fyStart: '2024-01-01', balances: mk(), hasData: true },
+        workpapers: {
+          '2025-12-31': { date: '2025-12-31', fyStart: '2025-01-01', balances: mk(), hasData: true },
+          '2024-12-31': { date: '2024-12-31', fyStart: '2024-01-01', balances: mk(), hasData: true },
         },
       });
       const rep = run({ source: s });
@@ -304,11 +315,10 @@ describe('rounding property: comparative years stay consistent', () => {
       const end2024 = mk();
       const end2025 = mk();
       const s = source({
-        periods: {
-          cy: { date: '2025-12-31', fyStart: '2025-01-01', balances: end2025, hasData: true },
-          cyOpen: { date: '2024-12-31', fyStart: '2024-01-01', balances: end2024, hasData: true },
-          py: { date: '2024-12-31', fyStart: '2024-01-01', balances: end2024, hasData: true },
-          pyOpen: { date: '2023-12-31', fyStart: '2023-01-01', balances: open2023, hasData: true },
+        workpapers: {
+          '2025-12-31': { date: '2025-12-31', fyStart: '2025-01-01', balances: end2025, hasData: true },
+          '2024-12-31': { date: '2024-12-31', fyStart: '2024-01-01', balances: end2024, hasData: true },
+          '2023-12-31': { date: '2023-12-31', fyStart: '2023-01-01', balances: open2023, hasData: true },
         },
       });
       const rep = run({ source: s, settings: { columns: { mode: 'cy_py', pctOfRevenue: true, varianceAmt: true, variancePct: true } } });

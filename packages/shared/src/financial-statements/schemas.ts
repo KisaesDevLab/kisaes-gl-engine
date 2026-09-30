@@ -399,21 +399,47 @@ export type FsStyle = z.infer<typeof fsStyleSchema>;
 
 // ─── Report settings / front matter ────────────────────────────────
 
-export const FS_COLUMN_MODES = ['single', 'cy_py', 'month_ytd'] as const;
+// 'month_ytd' is the pre-period legacy name of 'period_ytd' (a month period).
+export const FS_COLUMN_MODES = ['single', 'cy_py', 'period_ytd', 'period_ytd_py', 'side_by_side', 'month_ytd'] as const;
 export type FsColumnMode = (typeof FS_COLUMN_MODES)[number];
+
+export const FS_PERIOD_TYPES = ['annual', 'quarter', 'month', 'ytd', 'custom'] as const;
+export type FsPeriodType = (typeof FS_PERIOD_TYPES)[number];
 
 export const fsColumnsConfigSchema = z.object({
   mode: z.enum(FS_COLUMN_MODES),
   pctOfRevenue: z.boolean(),
   varianceAmt: z.boolean(),
   variancePct: z.boolean(),
+  // Side-by-side slices.
+  sideBy: z.enum(['month', 'quarter']).optional(),
+  // Comparative balance sheet column: prior fiscal year-end (interim
+  // convention) or the same date one year earlier.
+  bsCompare: z.enum(['prior_fye', 'same_date']).optional(),
 });
 export type FsColumnsConfig = z.infer<typeof fsColumnsConfigSchema>;
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
 
+export const fsPeriodSchema = z.object({
+  type: z.enum(FS_PERIOD_TYPES),
+  start: isoDate,
+});
+export type FsPeriod = z.infer<typeof fsPeriodSchema>;
+
+// Whole months from the first day of `start`'s month through `end`'s month.
+function monthsSpanned(start: string, end: string): number {
+  const [sy, sm] = start.split('-').map(Number) as [number, number];
+  const [ey, em] = end.split('-').map(Number) as [number, number];
+  return (ey - sy) * 12 + (em - sm) + 1;
+}
+
 export const fsReportSettingsSchema = z.object({
+  // End of the reporting period (balance-sheet date).
   periodEnd: isoDate,
+  // Absent on reports created before reporting periods existed: they are
+  // fiscal-year-to-date (normalizeFsSettings).
+  period: fsPeriodSchema.optional(),
   framework: z.enum(FS_FRAMEWORKS),
   // Book basis for gaap/cash frameworks; 'cash' framework forces cash.
   bookBasis: z.enum(['accrual', 'cash']),
@@ -421,8 +447,26 @@ export const fsReportSettingsSchema = z.object({
   // Income statement only; the balance sheet never segments.
   tagId: z.string().uuid().nullable().optional(),
 }).superRefine((s, ctx) => {
-  if (s.framework === 'tax' && s.columns.mode === 'month_ytd') {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Month + YTD columns are not available for income-tax-basis statements (tax adjustments are not dated).', path: ['columns', 'mode'] });
+  const mode = s.columns.mode;
+  if (s.period && s.period.start > s.periodEnd) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'The period start must be on or before the period end.', path: ['period', 'start'] });
+  }
+  if (s.framework === 'tax') {
+    if ((s.period && s.period.type !== 'annual') || mode === 'month_ytd' || mode === 'period_ytd' || mode === 'period_ytd_py' || mode === 'side_by_side') {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Income-tax-basis statements are annual only (tax adjustments are not dated).', path: ['period', 'type'] });
+    }
+  }
+  if (mode === 'side_by_side') {
+    const start = s.period?.start;
+    if (!start) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Side-by-side columns need a reporting period.', path: ['columns', 'mode'] });
+    } else {
+      const months = monthsSpanned(start, s.periodEnd);
+      const slices = s.columns.sideBy === 'quarter' ? Math.ceil(months / 3) : months;
+      if (slices < 2 || slices > 13) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `Side-by-side needs 2 to 13 ${s.columns.sideBy === 'quarter' ? 'quarters' : 'months'} (this period has ${slices}).`, path: ['columns', 'sideBy'] });
+      }
+    }
   }
 });
 export type FsReportSettings = z.infer<typeof fsReportSettingsSchema>;

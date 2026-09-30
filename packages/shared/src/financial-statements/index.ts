@@ -12,3 +12,4 @@ export * from './sanitize.js';
 export * from './render/html.js';
 export { computeFsReport, fsHasBlockingErrors } from './engine/compute.js';
 export { shiftYear as fsShiftYear, dayBefore as fsDayBefore, priorMonthEnd as fsPriorMonthEnd } from './engine/util.js';
+export * from './periods.js';

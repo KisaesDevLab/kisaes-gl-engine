@@ -195,7 +195,7 @@ export async function publish(
     }
     const [inst] = await tx.insert(reportInstances).values({
       tenantId, companyId,
-      periodStart: model.meta.fyStart, periodEnd: model.meta.periodEnd,
+      periodStart: model.meta.periodStart ?? model.meta.fyStart, periodEnd: model.meta.periodEnd,
       status: 'published', layoutSnapshotJsonb: [], dataSnapshotJsonb: { kind: 'financial_statements', title },
       pdfUrl: key, version: v.versionNo, createdBy: userId, publishedAt: new Date(),
       source: 'financial_statements', fsReportVersionId: v.id,

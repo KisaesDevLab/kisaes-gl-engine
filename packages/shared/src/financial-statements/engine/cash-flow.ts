@@ -15,20 +15,20 @@
 import type { FsCashFlowClass, FsStatementConfig } from '../schemas.js';
 import type { FsColumnDef, FsRenderedStatement, FsRow } from '../model.js';
 import type { Balances, EngineCtx } from './context.js';
-import { applyDollarSigns, formulaOf } from './face.js';
+import { applyDollarSigns, formulaOf, fsStatementPageSetup } from './face.js';
+import { rangeId } from './equity.js';
+import { fsAddDays, fsSpanWords } from '../periods.js';
 import { fsIsAccumulatedDepreciation } from '../defaults.js';
 import { roundTo, toDisplay } from './util.js';
 
 export interface CashFlowInputs {
   title: string;
   dateLine: string;
-  niRounded: { cy: number | null; py: number | null };
-  // Rounded cash per balance-sheet column (debit-positive), when the
-  // balance sheet isolates cash on its own lines.
-  cashTarget: { cy: number | null; py: number | null };
-  // Rounded opening cash when the opening date is a shown balance-sheet date.
-  openCashTarget: { cy: number | null; py: number | null };
-  fullYear: boolean;
+  // Rounded net income by range id (start|end) from the income statement.
+  niRounded: Map<string, number | null>;
+  // Rounded cash (debit-positive) at balance-sheet dates, when the balance
+  // sheet isolates cash on its own lines.
+  cashTarget: Map<string, number | null>;
 }
 
 interface CfLine {
@@ -42,9 +42,11 @@ interface CfLine {
 const lc = (s: string) => s.toLowerCase();
 
 export function buildCashFlows(ctx: EngineCtx, stmt: FsStatementConfig, inp: CashFlowInputs): FsRenderedStatement | null {
-  const years: Array<'cy' | 'py'> = ctx.comparative ? ['cy', 'py'] : ['cy'];
-  const avail = years.map((y) => !!ctx.bsClosed(y));
+  // One column per planned range (period, prior-year period, YTD …).
+  const years = ctx.plan.cfRanges;
+  const avail = years.map((r) => !!ctx.bsClosed(r.end));
   if (!avail[0]) return null;
+  const fullYears = years.every((r) => fsSpanWords(r.start, r.end, ctx.source.fyStartMonth) === 'Year');
   const fold = ctx.source.reAccountId;
   const detailByAccount = stmt.cashFlow?.detailByAccount === true;
   const cap = stmt.cashFlow?.captions ?? {};
@@ -89,8 +91,8 @@ export function buildCashFlows(ctx: EngineCtx, stmt: FsStatementConfig, inp: Cas
   const effects: Array<Map<string, number>> = [];
   years.forEach((y, yi) => {
     if (!avail[yi]) { cashBegin.push(null); cashEnd.push(null); niExact.push(null); unreconciled.push(null); effects.push(new Map()); return; }
-    const open: Balances = ctx.bsClosed(y === 'cy' ? 'cyOpen' : 'pyOpen') ?? new Map();
-    const close: Balances = ctx.bsClosed(y)!;
+    const open: Balances = ctx.bsClosed(fsAddDays(y.start, -1), 'open') ?? new Map();
+    const close: Balances = ctx.bsClosed(y.end)!;
     const niSigned = [...(ctx.plActivityUntagged(y) ?? new Map()).values()].reduce((s, v) => s + v, 0);
     niExact.push(-niSigned);
     let cb = 0; let ce = 0; let sumEffects = 0;
@@ -128,16 +130,16 @@ export function buildCashFlows(ctx: EngineCtx, stmt: FsStatementConfig, inp: Cas
       ctx.checks.push({
         code: 'TB_FS_CF_UNRECONCILED', severity: 'error', statementId: stmt.id, amount: toDisplay(u),
         accountIds: [...excludedAccounts],
-        message: `Cash flows ${years[yi] === 'py' ? '(prior year) ' : ''}do not reconcile to the change in cash by ${toDisplay(u).toLocaleString('en-US')}. Check accounts marked "excluded" on the cash-flow classification panel.`,
+        message: `Cash flows${yi > 0 ? ` (${years[yi]!.label || years[yi]!.end})` : ''} do not reconcile to the change in cash by ${toDisplay(u).toLocaleString('en-US')}. Check accounts marked "excluded" on the cash-flow classification panel.`,
       });
     }
   });
 
   // ── Rounding: lines independently, then anchor the net change ──
   for (const l of lines.values()) l.rounded = l.exact.map((v) => (v === null ? null : roundTo(v, ctx.unit)));
-  const niR = years.map((y, yi) => (avail[yi] ? (inp.niRounded[y] ?? roundTo(niExact[yi]!, ctx.unit)) : null));
-  const beginR = years.map((y, yi) => (avail[yi] ? (inp.openCashTarget[y] ?? roundTo(cashBegin[yi]!, ctx.unit)) : null));
-  const endR = years.map((y, yi) => (avail[yi] ? (inp.cashTarget[y] ?? roundTo(cashEnd[yi]!, ctx.unit)) : null));
+  const niR = years.map((y, yi) => (avail[yi] ? (inp.niRounded.get(rangeId(y)) ?? roundTo(niExact[yi]!, ctx.unit)) : null));
+  const beginR = years.map((y, yi) => (avail[yi] ? (inp.cashTarget.get(fsAddDays(y.start, -1)) ?? roundTo(cashBegin[yi]!, ctx.unit)) : null));
+  const endR = years.map((y, yi) => (avail[yi] ? (inp.cashTarget.get(y.end) ?? roundTo(cashEnd[yi]!, ctx.unit)) : null));
   years.forEach((_, yi) => {
     if (!avail[yi]) return;
     const target = endR[yi]! - beginR[yi]!;
@@ -161,7 +163,7 @@ export function buildCashFlows(ctx: EngineCtx, stmt: FsStatementConfig, inp: Cas
   });
 
   // ── Rows ──
-  const columns: FsColumnDef[] = years.map((y, yi) => ({ key: y, label: ctx.comparative ? ctx.bsCols[yi]?.label ?? '' : '', kind: 'amount' as const }));
+  const columns: FsColumnDef[] = years.map((y) => ({ key: y.key, label: y.label, ...(y.sublabel ? { sublabel: y.sublabel } : {}), kind: 'amount' as const }));
   const rows: FsRow[] = [];
   const vals = (v: Array<number | null>) => v.map((x) => (x === null ? null : toDisplay(x)));
   const push = (r: Omit<FsRow, 'dollarSign' | 'ruleAbove' | 'ruleBelow'> & Partial<FsRow>) => {
@@ -195,11 +197,11 @@ export function buildCashFlows(ctx: EngineCtx, stmt: FsStatementConfig, inp: Cas
 
   const netChange = years.map((_, yi) => (avail[yi] ? endR[yi]! - beginR[yi]! : null));
   const ncRow = push({ key: 'net_change', kind: 'subtotal', caption: cap.netChange ?? 'NET INCREASE (DECREASE) IN CASH', level: 0, styleRole: 'subtotal', values: vals(netChange), formula: formulaOf(sectionTotals.map((row) => ({ row, sign: 1 }))) });
-  const period = inp.fullYear ? 'year' : 'period';
+  const period = fullYears ? 'year' : 'period';
   const bRow = push({ key: 'begin_cash', kind: 'detail', caption: cap.beginningCash ?? `Cash, beginning of ${period}`, level: 0, styleRole: 'detail', values: vals(beginR), ruleBelow: 'single' });
   push({ key: 'end_cash', kind: 'total', caption: cap.endingCash ?? `CASH, END OF ${period.toUpperCase()}`, level: 0, styleRole: 'total', values: vals(endR), ruleBelow: 'double', formula: formulaOf([{ row: ncRow, sign: 1 }, { row: bRow, sign: 1 }]) });
   applyDollarSigns(ctx, rows);
 
-  const pageSetup = { ...ctx.style.page, ...(stmt.pageSetup ?? {}), margins: { ...ctx.style.page.margins, ...(stmt.pageSetup?.margins ?? {}) } };
+  const pageSetup = fsStatementPageSetup(ctx, stmt, columns);
   return { id: stmt.id, kind: 'cash_flows', title: inp.title, dateLine: inp.dateLine, pageSetup, columns, rows };
 }
