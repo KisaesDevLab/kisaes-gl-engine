@@ -130,6 +130,12 @@ export const documentRequests = pgTable('document_requests', {
   // (no Drizzle reference — audit-trail semantics, never joined hard).
   reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
   reviewedBy: uuid('reviewed_by'),
+  // One-off requests only (recurring_id NULL, migration 0193): the
+  // settings a standing rule carries for its issued rows. Rule-issued rows
+  // leave these at their defaults and keep reading the rule.
+  notifyUserIds: jsonb('notify_user_ids').notNull().default([]),
+  statementRouting: varchar('statement_routing', { length: 30 }),
+  bankConnectionId: uuid('bank_connection_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({

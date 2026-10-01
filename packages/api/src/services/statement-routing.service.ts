@@ -76,7 +76,7 @@ export function isStatementDocumentType(type: string): type is StatementDocument
 
 interface PickResult {
   bankConnectionId: string | null;
-  reason: 'rule_bound' | 'unique_company_match' | 'ambiguous' | 'no_candidates';
+  reason: 'rule_bound' | 'request_bound' | 'unique_company_match' | 'ambiguous' | 'no_candidates';
 }
 
 // Picks the bank connection a statement upload should land in. Returns
@@ -163,8 +163,12 @@ interface RouteResult {
 // the receipt in a recoverable state — never throws on the happy path
 // so the upload route still returns 201.
 export async function routeStatementUpload(input: RouteInput): Promise<RouteResult> {
-  // Explicit routing mode on the rule. One-off requests (no rule) keep
-  // the historical auto_import behavior.
+  // Explicit routing mode: the rule's, or — for a one-off request created
+  // with its own routing (migration 0193) — the request's. A rule-less row
+  // with no routing of its own (its rule was deleted) keeps the historical
+  // auto_import behavior.
+  let mode: string | null = null;
+  let boundConnectionId: string | null = null;
   if (input.recurringId) {
     const rule = await db.query.recurringDocumentRequests.findFirst({
       where: and(
@@ -172,8 +176,18 @@ export async function routeStatementUpload(input: RouteInput): Promise<RouteResu
         eq(recurringDocumentRequests.id, input.recurringId),
       ),
     });
-    const mode = rule?.statementRouting ?? 'inbox';
-
+    mode = rule?.statementRouting ?? 'inbox';
+  } else {
+    const req = await db.query.documentRequests.findFirst({
+      where: and(
+        eq(documentRequests.tenantId, input.tenantId),
+        eq(documentRequests.id, input.documentRequestId),
+      ),
+    });
+    mode = req?.statementRouting ?? null;
+    boundConnectionId = req?.bankConnectionId ?? null;
+  }
+  if (mode) {
     if (mode === 'inbox') {
       // Operator chose "receipts inbox, manual pick" — park it there.
       // (Before the mode column, unbound rules could still silently
@@ -200,12 +214,14 @@ export async function routeStatementUpload(input: RouteInput): Promise<RouteResu
     // mode === 'auto_import' falls through to the connection pick below.
   }
 
-  const pick = await pickBankConnectionFor(
-    input.tenantId,
-    input.contactId,
-    input.recurringId,
-    input.documentType,
-  );
+  const pick: PickResult = boundConnectionId
+    ? { bankConnectionId: boundConnectionId, reason: 'request_bound' }
+    : await pickBankConnectionFor(
+      input.tenantId,
+      input.contactId,
+      input.recurringId,
+      input.documentType,
+    );
 
   if (!pick.bankConnectionId) {
     await db

@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-01T19:46:34.290Z",
+  "generatedAt": "2026-10-01T21:01:45.314Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -18,7 +18,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 125548
+    "totalBytes": 126542
   },
   "screens": [
     {
@@ -1628,6 +1628,7 @@
     "Fixing a bank login from the portal",
     "Vibe Practice Management peer (\"one client portal\")",
     "Bill Pay (clients mark bills for payment)",
+    "Document requests — one-time and standing",
     "Document requests — unread client submissions & staff notification",
     "Sending bills from the portal (Bill Capture)",
     "Managing Multiple Companies",

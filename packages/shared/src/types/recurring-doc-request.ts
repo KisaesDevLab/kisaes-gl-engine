@@ -106,6 +106,24 @@ export const recurringDocRequestUpdateSchema = recurringDocRequestCreateSchema
   .omit({ contactId: true });
 export type RecurringDocRequestUpdateInput = z.infer<typeof recurringDocRequestUpdateSchema>;
 
+// One-off request (Open requests → New request): a single document
+// request created and sent right away, with no standing rule behind it.
+export const oneOffDocRequestCreateSchema = z.object({
+  contactId: z.string().uuid(),
+  documentType: z.enum(DOCUMENT_TYPES),
+  description: z.string().trim().min(1).max(2000),
+  // Printed as "For …" in the email and the portal, e.g. "2025" or "June 2026".
+  periodLabel: z.string().trim().min(1).max(40),
+  // Calendar date (YYYY-MM-DD). Omitted / null = no due date.
+  dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  reminderChannel: z.enum(DOC_REQUEST_CHANNELS).default('email'),
+  notifyUserIds: z.array(z.string().uuid()).max(20).optional(),
+  // Bank / card statements only; omitted → receipts inbox.
+  statementRouting: z.enum(STATEMENT_ROUTING_MODES).optional(),
+  bankConnectionId: z.string().uuid().nullable().optional(),
+});
+export type OneOffDocRequestCreateInput = z.infer<typeof oneOffDocRequestCreateSchema>;
+
 export interface RecurringDocRequestSummary {
   id: string;
   tenantId: string;

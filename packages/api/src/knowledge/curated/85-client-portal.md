@@ -194,6 +194,19 @@ Firm setup (all three required before clients can pay bills):
    account configured, clients see "contact your accountant" instead of the pay button.
 3. Edit each contact and turn on **Can pay bills** for the company.
 
+### Document requests — one-time and standing
+**One-time request** ("can you send me X?"): **Practice → Reminders → Open requests →
+New request**. Pick the contact, say what you need, the document type, the period it is
+for (printed as "For …" in the message, e.g. "2025"), an optional due date, the channel
+(email / SMS / both when SMS is enabled), who on staff to email when it arrives, and —
+for a bank or card statement, when statement auto-import is on — where the statement goes.
+**Send request** creates it and sends it immediately; nothing recurring is created, so
+there is nothing to pause or delete afterwards. It then behaves like any request: shows in
+the client's portal, is nudged on the firm's document-request reminder schedule, turns
+unread when they upload, and can be reminded, marked received or cancelled from the grid.
+(API: `POST /practice/document-requests`; a `document_requests` row with
+`recurring_id` NULL carrying its own notify list and routing, migration 0193.)
+
 ### Document requests — unread client submissions & staff notification
 Standing document requests (**Practice → Reminders → Recurring requests**) ask a portal
 contact for a document on a schedule. When the contact uploads against a request, it

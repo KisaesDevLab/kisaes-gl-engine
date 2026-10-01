@@ -7,6 +7,7 @@ import type {
   DocRequestStatus,
   DocumentRequestListFilters,
   DocumentRequestSummary,
+  OneOffDocRequestCreateInput,
   RecurringDocRequestCreateInput,
   RecurringDocRequestSummary,
   RecurringDocRequestUpdateInput,
@@ -14,6 +15,7 @@ import type {
 } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import {
+  bankConnections,
   companies,
   documentRequests,
   portalContacts,
@@ -241,13 +243,13 @@ export function periodLabelForRule(
 
 // Verify the contact belongs to this tenant. A leaked UUID can't be
 // turned into a rule against another firm's contact.
-async function assertContactInTenant(tenantId: string, contactId: string): Promise<void> {
+async function assertContactInTenant(tenantId: string, contactId: string, what = 'a rule'): Promise<void> {
   const contact = await db.query.portalContacts.findFirst({
     where: and(eq(portalContacts.tenantId, tenantId), eq(portalContacts.id, contactId)),
   });
   if (!contact) throw AppError.notFound('Portal contact not found');
   if (contact.status !== 'active') {
-    throw AppError.badRequest('Contact is not active; reactivate before creating a rule');
+    throw AppError.badRequest(`Contact is not active; reactivate before creating ${what}`);
   }
 }
 
@@ -472,6 +474,63 @@ export async function deleteRule(
 // and the rule advances as usual. The route decides what to send based
 // on the outcome: opener for a fresh row, forced nudge when this
 // period's request already exists and is still pending.
+// One-off request: a single document_requests row with no standing rule
+// (recurring_id NULL). The caller sends the opener right after. The
+// per-request settings a rule would carry — staff to notify on upload and
+// statement routing — are stored on the row (migration 0193). Due date is
+// a calendar date, stored as the end of that day (UTC) so the request is
+// not "past due" until the day is over.
+export async function createOneOffRequest(
+  tenantId: string,
+  bookkeeperUserId: string,
+  input: OneOffDocRequestCreateInput,
+  now: Date = new Date(),
+): Promise<{ id: string }> {
+  await assertContactInTenant(tenantId, input.contactId, 'a request');
+  const notifyUserIds = await assertNotifyUsersInTenant(tenantId, input.notifyUserIds ?? []);
+
+  const isStatement = input.documentType === 'bank_statement' || input.documentType === 'cc_statement';
+  const routing = isStatement
+    ? input.statementRouting ?? (input.bankConnectionId ? 'auto_import' : 'inbox')
+    : null;
+  let bankConnectionId: string | null = null;
+  if (routing === 'auto_import') {
+    if (!input.bankConnectionId) throw AppError.badRequest('Pick the bank connection to import the statement into');
+    const conn = await db.query.bankConnections.findFirst({
+      where: and(eq(bankConnections.tenantId, tenantId), eq(bankConnections.id, input.bankConnectionId)),
+    });
+    if (!conn) throw AppError.badRequest('Bank connection not found');
+    bankConnectionId = conn.id;
+  }
+
+  const dueDate = input.dueDate ? new Date(`${input.dueDate}T23:59:59.000Z`) : null;
+  if (dueDate && Number.isNaN(dueDate.getTime())) throw AppError.badRequest('Invalid due date');
+
+  const [row] = await db
+    .insert(documentRequests)
+    .values({
+      tenantId,
+      companyId: null,
+      recurringId: null,
+      contactId: input.contactId,
+      documentType: input.documentType,
+      description: input.description,
+      periodLabel: input.periodLabel,
+      requestedAt: now,
+      dueDate,
+      status: 'pending',
+      reminderChannel: input.reminderChannel ?? 'email',
+      notifyUserIds,
+      statementRouting: routing,
+      bankConnectionId,
+    })
+    .returning({ id: documentRequests.id });
+  if (!row) throw AppError.internal('Failed to create the document request');
+
+  await auditLog(tenantId, 'create', 'document_request', row.id, null, { ...input, via: 'one_off' }, bookkeeperUserId);
+  return { id: row.id };
+}
+
 export async function issueNow(
   tenantId: string,
   bookkeeperUserId: string,
@@ -1291,6 +1350,7 @@ export async function notifyStaffOfSubmission(
         contactFirstName: portalContacts.firstName,
         contactLastName: portalContacts.lastName,
         notifyUserIds: recurringDocumentRequests.notifyUserIds,
+        ownNotifyUserIds: documentRequests.notifyUserIds,
       })
       .from(documentRequests)
       .innerJoin(portalContacts, eq(documentRequests.contactId, portalContacts.id))
@@ -1299,7 +1359,8 @@ export async function notifyStaffOfSubmission(
       .limit(1);
     const r = row[0];
     if (!r) return { sent: 0, skipped: 'not_found' };
-    const ids = notifyIdsOf({ notifyUserIds: r.notifyUserIds });
+    // Rule-issued rows follow their rule; a one-off carries its own list.
+    const ids = notifyIdsOf({ notifyUserIds: r.d.recurringId ? r.notifyUserIds : r.ownNotifyUserIds });
     if (ids.length === 0) return { sent: 0, skipped: 'no_recipients' };
     if (!(await isSmtpConfigured())) {
       log('skipped', { reason: 'smtp_not_configured', recipients: ids.length });

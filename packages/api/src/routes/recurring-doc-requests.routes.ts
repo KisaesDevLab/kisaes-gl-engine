@@ -8,6 +8,7 @@ import {
   recurringDocRequestCreateSchema,
   recurringDocRequestUpdateSchema,
   documentRequestListFiltersSchema,
+  oneOffDocRequestCreateSchema,
   RECURRING_FREQUENCIES,
   type RecurringFrequency,
 } from '@kis-books/shared';
@@ -141,6 +142,21 @@ recurringDocRequestsRouter.get('/document-requests', async (req, res) => {
   const result = await svc.listOpenRequests(req.tenantId, filters);
   res.json(result);
 });
+
+// One-off request: create a single request (no standing rule) and send
+// the opener right away — the same opener a rule's issuance sends. The
+// request then lives in the Open requests grid like any other: nudges on
+// the firm's doc-request reminder schedule, unread on upload, cancel /
+// mark received by hand.
+recurringDocRequestsRouter.post(
+  '/document-requests',
+  validate(oneOffDocRequestCreateSchema),
+  async (req, res) => {
+    const { id } = await svc.createOneOffRequest(req.tenantId, req.userId, req.body);
+    const sendResult = await remind.sendOpenerForDocRequest(req.tenantId, id);
+    res.status(201).json({ requestId: id, sendResult });
+  },
+);
 
 recurringDocRequestsRouter.get('/document-requests/dashboard', async (req, res) => {
   const counts = await svc.dashboardCounts(req.tenantId);

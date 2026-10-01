@@ -13,6 +13,7 @@ import {
   CRON_LAST_BUSINESS_DAY,
   computeFirstIssueAt,
   computeNextIssueAt,
+  createOneOffRequest,
   createRule,
   cronNext,
   dashboardCounts,
@@ -588,5 +589,40 @@ describe('recurring-doc-request — unread submissions / review (db)', () => {
     const out = await notifyStaffOfSubmission(tenantId, issued.id, receiptA);
     expect(out.sent + (out.skipped ? 1 : 0)).toBeGreaterThan(0);
     expect(['smtp_not_configured', 'error', null]).toContain(out.skipped);
+  });
+
+  it('createOneOffRequest makes a pending rule-less request with its own settings', async () => {
+    const { id } = await createOneOffRequest(tenantId, staffId, {
+      contactId, documentType: 'other', description: '2025 Form 1098 from Chase', periodLabel: '2025',
+      dueDate: '2026-10-15', reminderChannel: 'email', notifyUserIds: [staffId, staffId],
+    });
+    const row = (await db.query.documentRequests.findFirst({ where: eq(documentRequests.id, id) }))!;
+    expect(row.recurringId).toBeNull();
+    expect(row.status).toBe('pending');
+    expect(row.periodLabel).toBe('2025');
+    expect(row.dueDate?.toISOString()).toBe('2026-10-15T23:59:59.000Z');
+    expect(row.notifyUserIds).toEqual([staffId]);
+    // Not a statement → no routing stored.
+    expect(row.statementRouting).toBeNull();
+
+    // It shows in the Open requests grid.
+    const list = await listOpenRequests(tenantId, { limit: 100, offset: 0 });
+    expect(list.items.some((r) => r.id === id && r.recurringId === null)).toBe(true);
+
+    // Staff notify on upload reads the request's own list.
+    const out = await notifyStaffOfSubmission(tenantId, id, receiptA);
+    expect(out.skipped).not.toBe('no_recipients');
+  });
+
+  it('createOneOffRequest validates the notify list, the contact and statement routing', async () => {
+    const base = { contactId, documentType: 'bank_statement' as const, description: 'x', periodLabel: 'June 2026', reminderChannel: 'email' as const };
+    await expect(createOneOffRequest(tenantId, staffId, { ...base, notifyUserIds: [clientUserId] })).rejects.toThrow(/active staff/i);
+    await expect(createOneOffRequest(tenantId, staffId, { ...base, contactId: '00000000-0000-4000-8000-0000000000aa' })).rejects.toThrow(/not found/i);
+    await expect(createOneOffRequest(tenantId, staffId, { ...base, statementRouting: 'auto_import' })).rejects.toThrow(/bank connection/i);
+    // A statement with no routing chosen goes to the receipts inbox.
+    const { id } = await createOneOffRequest(tenantId, staffId, base);
+    const row = (await db.query.documentRequests.findFirst({ where: eq(documentRequests.id, id) }))!;
+    expect(row.statementRouting).toBe('inbox');
+    expect(row.dueDate).toBeNull();
   });
 });

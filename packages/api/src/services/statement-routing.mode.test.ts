@@ -23,7 +23,7 @@ vi.mock('./ai-statement-parser.service.js', () => ({
 }));
 
 import { routeStatementUpload } from './statement-routing.service.js';
-import { createRule, updateRule } from './recurring-doc-request.service.js';
+import { createOneOffRequest, createRule, updateRule } from './recurring-doc-request.service.js';
 
 let tenantId = '';
 let companyId = '';
@@ -88,6 +88,36 @@ function routeInput(req: { id: string; recurringId: string | null }, receiptId: 
 }
 
 describe('routeStatementUpload — statement_routing modes', () => {
+  async function seedOneOff(statementRouting: 'inbox' | 'statement_processing') {
+    const { id } = await createOneOffRequest(tenantId, contactId, {
+      contactId, documentType: 'bank_statement', description: 'Savings xxxx-9', periodLabel: 'June 2026',
+      reminderChannel: 'email', statementRouting,
+    });
+    const req = (await db.query.documentRequests.findFirst({ where: eq(documentRequests.id, id) }))!;
+    const [receipt] = await db.insert(portalReceipts).values({
+      tenantId, companyId, uploadedBy: contactId, uploadedByType: 'contact',
+      storageKey: `${tenantId}/receipts/one-off-${uniq}.pdf`, filename: 'stmt.pdf',
+      mimeType: 'application/pdf', status: 'pending_ocr', documentRequestId: id,
+    }).returning();
+    return { req, receipt: receipt! };
+  }
+
+  it("a one-off request's own 'inbox' routing parks the receipt (no rule behind it)", async () => {
+    const { req, receipt } = await seedOneOff('inbox');
+    expect(req.recurringId).toBeNull();
+    const result = await routeStatementUpload(routeInput(req, receipt.id));
+    expect(result.status).toBe('awaits_routing');
+    expect(parseMock).not.toHaveBeenCalled();
+  });
+
+  it("a one-off request's own 'statement_processing' routing parses immediately", async () => {
+    parseMock.mockResolvedValue({ transactions: [] });
+    const { req, receipt } = await seedOneOff('statement_processing');
+    const result = await routeStatementUpload(routeInput(req, receipt.id));
+    expect(result.status).toBe('parsed_for_review');
+    expect(parseMock).toHaveBeenCalledTimes(1);
+  });
+
   it("'inbox' parks the receipt for manual pick and never parses", async () => {
     const { req, receipt } = await seedRule('inbox');
     const result = await routeStatementUpload(routeInput(req, receipt.id));
