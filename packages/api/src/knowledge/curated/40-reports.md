@@ -53,6 +53,11 @@
   attachments (images inline, PDF pages page for page, captioned). Unreadable or
   password-protected files are listed with the reason instead of failing the
   report. Limits: 40 attachments, 50 pages per PDF, 300 pages total.
+  The caret beside the button offers **Transaction Report with activity log**:
+  each block (main and every non-void linked transaction) then gets an Activity
+  table (When / Event / Detail / By — the same events as the Activity card),
+  times in the viewer's browser zone (`?activity=1&tz=`). The last choice is
+  remembered per browser and becomes the main click.
 - **Transaction Report (date range)** — Reports → General → Transaction Report
   (`/reports/transaction-report`, `GET /transactions/report.pdf?startDate&endDate`
   plus optional txnType / contactId / accountId / tagId / basis / includeVoid).

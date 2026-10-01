@@ -16,6 +16,7 @@ import * as billService from './bill.service.js';
 import * as billPaymentService from './bill-payment.service.js';
 import * as ledger from './ledger.service.js';
 import * as report from './transaction-report.service.js';
+import { getTransactionActivity } from './transaction-activity.service.js';
 
 let tenantId = '';
 let otherTenantId = '';
@@ -474,6 +475,49 @@ describe('transaction-report.service', () => {
       expect(summary).toContain('Voided transactions are listed for reference');
       // One block (the invoice) — the voided payment gets a table row only.
       expect(summary.match(/<section class="txn">/g)).toHaveLength(1);
+    });
+
+    it('adds an Activity section under the main and each linked transaction when asked', async () => {
+      const bill = await makeBill();
+      await payBill(bill.id);
+      const stub = stubRenderer();
+      await report.generateTransactionReportPdf(tenantId, bill.id, { includeAttachments: true, includeActivity: true, timeZone: 'America/Chicago' }, stub.deps);
+      const summary = stub.html.join('');
+      // Bill block + payment block, each with its own log.
+      expect(summary.match(/<div class="card activity">/g)).toHaveLength(2);
+      const [first] = await getTransactionActivity(tenantId, bill.id);
+      expect(first).toBeTruthy();
+      expect(summary).toContain(first!.title);
+      // Times print in the viewer's zone, labelled.
+      expect(summary).toMatch(/C[DS]T/);
+    });
+
+    it('has no Activity section unless asked, and falls back to UTC for a bad zone', async () => {
+      const bill = await makeBill();
+      const plain = stubRenderer();
+      await report.generateTransactionReportPdf(tenantId, bill.id, { includeAttachments: true }, plain.deps);
+      expect(plain.html.join('')).not.toContain('class="card activity"');
+
+      expect(report.safeTimeZone('Not/AZone')).toBe('UTC');
+      expect(report.safeTimeZone(undefined)).toBe('UTC');
+      expect(report.safeTimeZone('America/New_York')).toBe('America/New_York');
+    });
+
+    it('gives a voided linked transaction no Activity section', async () => {
+      const lines = (debit: string, credit: string) => [
+        { accountId: debit, debit: '50.00', credit: '0' }, { accountId: credit, debit: '0', credit: '50.00' },
+      ];
+      const invoice = await ledger.postTransaction(tenantId, {
+        txnType: 'invoice', txnDate: '2026-09-01', txnNumber: 'INV-10', contactId: customerId, total: '50.00', lines: lines(arAccountId, utilitiesId),
+      });
+      const payment = await ledger.postTransaction(tenantId, {
+        txnType: 'customer_payment', txnDate: '2026-09-05', contactId: customerId, total: '50.00',
+        appliedToInvoiceId: invoice.id, lines: lines(bankAccountId, arAccountId),
+      });
+      await ledger.voidTransaction(tenantId, payment.id, 'entered twice');
+      const stub = stubRenderer();
+      await report.generateTransactionReportPdf(tenantId, invoice.id, { includeAttachments: true, includeActivity: true }, stub.deps);
+      expect(stub.html.join('').match(/<div class="card activity">/g)).toHaveLength(1);
     });
   });
 });

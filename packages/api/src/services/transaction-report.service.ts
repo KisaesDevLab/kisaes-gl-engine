@@ -23,6 +23,7 @@ import {
   type PaymentMethod,
   type TransactionBankAccount,
   type TransactionDisplayInput,
+  type TransactionActivityEvent,
   type TransactionHeaderField,
   type TransactionRelation,
   type TxnType,
@@ -36,6 +37,7 @@ import { readAttachmentBytes } from './attachment.service.js';
 import { escapeHtml } from './report-export.service.js';
 import { CASH_ACCOUNT_DETAIL_TYPES, RECONCILABLE_LIABILITY_DETAIL_TYPES } from './report.service.js';
 import { getReportFooter } from './tenant-report-settings.service.js';
+import { getTransactionActivity } from './transaction-activity.service.js';
 import { appendFramedPdf, appendPdfDocument, htmlToPdfBytes, launchPdfBrowser, stampCaption, stampPageFooter } from './pdf-merge.util.js';
 
 // ─── Enriched detail ─────────────────────────────────────────────
@@ -316,6 +318,12 @@ export interface TransactionReportOptions {
   includeAttachments: boolean;
   /** Printed as "Generated … by <name>". */
   userId?: string | null;
+  /** Single report only: an Activity section under each transaction block. */
+  includeActivity?: boolean;
+  /** IANA zone activity times print in (the viewer's browser zone). Default UTC. */
+  timeZone?: string;
+  /** False when the caller stamps its own page numbers / footer (report packs). */
+  stampFooter?: boolean;
 }
 
 export interface TransactionReportResult {
@@ -568,6 +576,9 @@ const REPORT_CSS = `
     .links{margin-top:6px;line-height:1.5}
     .links .rel{margin-right:10px}
     .range-note{margin:0 0 12px 0;color:#6b7280}
+    .activity{margin-top:8px}
+    .activity td.when{white-space:nowrap;width:1%}
+    .activity td.by{white-space:nowrap}
     .fig{margin:8px 0 0 0;break-inside:avoid;page-break-inside:avoid}
     .fig figcaption{font-size:9px;font-weight:600;color:#374151;margin:0 0 3px 0}
     .fig img{display:block;max-width:100%;max-height:6.6in;object-fit:contain;image-orientation:from-image;border:1px solid #e5e7eb}
@@ -596,6 +607,45 @@ function linkedLineHtml(related: RelatedTransactionsResult): string {
     `<span class="rel">${escapeHtml(RELATION_LABELS[r.relation] ?? r.relation)} — ${escapeHtml(relatedLabel(r))}${r.contactName ? ` (${escapeHtml(r.contactName)})` : ''}${r.appliedAmount ? ` ${escapeHtml(fmtMoney(r.appliedAmount))}` : ''}${r.status === 'void' ? ' <span class="pill pill-void">void</span>' : ''}</span>`).join('')}${related.truncated ? ' <span class="muted">…</span>' : ''}</div>`;
 }
 
+/** A valid IANA zone name, or UTC — the server's own zone means nothing to the reader. */
+export function safeTimeZone(tz: string | null | undefined): string {
+  if (!tz) return 'UTC';
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return tz;
+  } catch {
+    return 'UTC';
+  }
+}
+
+function activityWhen(at: string, timeZone: string): string {
+  return new Date(at).toLocaleString('en-US', {
+    year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone, timeZoneName: 'short',
+  });
+}
+
+/**
+ * A transaction's activity log (oldest first), the same events the
+ * Activity card on the transaction view shows. `null` = the log could not be
+ * loaded; the report still builds and says so in place.
+ */
+function activityHtml(events: TransactionActivityEvent[] | null, timeZone: string): string {
+  const body = events === null
+    ? '<p class="muted">Activity could not be loaded.</p>'
+    : events.length === 0
+      ? '<p class="muted">No activity recorded.</p>'
+      : `<table>
+        <thead><tr><th>When</th><th>Event</th><th>Detail</th><th>By</th></tr></thead>
+        <tbody>${events.map((e) => `<tr>
+          <td class="when">${escapeHtml(activityWhen(e.at, timeZone))}</td>
+          <td>${escapeHtml(e.title)}</td>
+          <td>${escapeHtml(e.detail ?? '')}</td>
+          <td class="by">${escapeHtml(e.actor ?? 'Automatic')}</td>
+        </tr>`).join('')}</tbody>
+      </table>`;
+  return `<div class="card activity"><h3>Activity</h3>${body}</div>`;
+}
+
 function summaryParts(opts: {
   companyName: string;
   generatedBy?: string | null;
@@ -604,6 +654,9 @@ function summaryParts(opts: {
   attachmentTotal: number;
   related: RelatedTransactionsResult;
   attachmentsOmitted: boolean;
+  /** Set when the activity log was asked for: events per transaction id (null = failed to load). */
+  activity: Map<string, TransactionActivityEvent[] | null> | null;
+  timeZone: string;
 }): ReportPart[] {
   const { related } = opts.related;
   const linked = related.length ? `<section class="linked card">
@@ -632,7 +685,8 @@ function summaryParts(opts: {
   // The root block, its attachments, then the linked table and each linked
   // block with its own attachments — every document right after its entry.
   const block = (b: { txn: TransactionDetail; atts: PreparedAttachment[] }) => ({
-    html: transactionBlockHtml(b.txn, b.atts, opts.attachmentTotal), txnId: b.txn.id, endsPart: hasPdfPages(b.atts),
+    html: transactionBlockHtml(b.txn, b.atts, opts.attachmentTotal, opts.activity ? activityHtml(opts.activity.get(b.txn.id) ?? null, opts.timeZone) : ''),
+    txnId: b.txn.id, endsPart: hasPdfPages(b.atts),
   });
   return partsFrom(head, [
     ...opts.blocks.slice(0, 1).map(block),
@@ -694,12 +748,24 @@ export async function generateTransactionReportPdf(
     for (const r of related.related) {
       if (r.status !== 'void') included.push(await getTransactionDetail(tenantId, r.id));
     }
+    let activity: Map<string, TransactionActivityEvent[] | null> | null = null;
+    if (opts.includeActivity) {
+      activity = new Map();
+      for (const t of included) {
+        try {
+          activity.set(t.id, await getTransactionActivity(tenantId, t.id, opts.companyId));
+        } catch (err) {
+          log.warn({ component: 'transaction-report', event: 'activity_load_failed', transactionId: t.id, message: err instanceof Error ? err.message : String(err) });
+          activity.set(t.id, null);
+        }
+      }
+    }
     const slug = (root.txnNumber || (root.checkNumber != null ? `check-${root.checkNumber}` : root.id.slice(0, 8))).replace(/[^A-Za-z0-9._-]+/g, '-');
     return assembleReport({
       tenantId, included, opts, deps,
       companyId: root.companyId,
       fileName: `transaction-report-${txnTypeLabel(toDisplay(root)).toLowerCase().replace(/[^a-z]+/g, '-')}-${slug}.pdf`,
-      parts: (ctx) => summaryParts({ ...ctx, root, related }),
+      parts: (ctx) => summaryParts({ ...ctx, root, related, activity, timeZone: safeTimeZone(opts.timeZone) }),
     });
   });
 }
@@ -1082,7 +1148,9 @@ async function assembleReport(args: {
         }
       }
     }
-    await stampPageFooter(merged, { pageNumbers: true, footer: await getReportFooter(tenantId) });
+    if (opts.stampFooter !== false) {
+      await stampPageFooter(merged, { pageNumbers: true, footer: await getReportFooter(tenantId) });
+    }
 
     const buffer = Buffer.from(await merged.save());
     return { buffer, fileName: args.fileName, pageCount: merged.getPageCount(), warnings };

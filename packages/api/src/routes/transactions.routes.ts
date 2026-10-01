@@ -193,6 +193,13 @@ transactionsRouter.get('/:id/activity', async (req, res) => {
   res.json({ events });
 });
 
+// ?activity=1 adds each transaction's activity log under its block; ?tz=
+// is the viewer's IANA zone for the activity times (invalid → UTC).
+const singleReportQuery = z.object({
+  activity: z.string().optional(),
+  tz: z.string().max(64).optional(),
+}).passthrough();
+
 // Transaction Report: summary of this transaction and everything linked to
 // it, followed by their attachments. Launches Chromium, hence the limiter.
 transactionsRouter.get('/:id/report.pdf', expensiveOpLimiter, async (req, res) => {
@@ -201,10 +208,13 @@ transactionsRouter.get('/:id/report.pdf', expensiveOpLimiter, async (req, res) =
   // The report embeds the attachments themselves, so reading transactions
   // is not enough to get them: without attachment access it is summary-only.
   const perms = await resolvePermissionsForRequest(req);
+  const q = singleReportQuery.parse(req.query);
   const report = await transactionReport.generateTransactionReportPdf(req.tenantId, parsed.data, {
     companyId: req.companyId,
     includeAttachments: can(perms, 'attachments', 'read'),
     userId: req.userId,
+    includeActivity: q.activity === '1' || q.activity === 'true',
+    timeZone: q.tz,
   });
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="${report.fileName}"`);
