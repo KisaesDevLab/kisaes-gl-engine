@@ -23,6 +23,7 @@ import {
 import { db } from '../db/index.js';
 import { companies, reportPacks, reportPackItems, reportPackRuns } from '../db/schema/index.js';
 import { REPORT_PACK_RENDERERS, renderReportSectionHtml } from './report-pack-render.js';
+import { REPORT_PACK_DOCUMENT_RENDERERS } from './report-pack-documents.js';
 import { buildReportPackSectionHtml, escapeHtml } from './report-export.service.js';
 import { getLetter, resolveLetterContent, buildLetterPageHtml } from './report-letter.service.js';
 import { getReportFooter } from './tenant-report-settings.service.js';
@@ -204,6 +205,25 @@ export async function generateReportPackRun(runId: string): Promise<void> {
 
       const def = getReportDef(item.reportId);
       try {
+        // Source-document sections (reconciliations, statements, the
+        // Transaction Report) arrive as finished PDF bytes.
+        const documentRenderer = REPORT_PACK_DOCUMENT_RENDERERS[item.reportId];
+        if (def && documentRenderer) {
+          const bytes = await documentRenderer({
+            tenantId: run.tenantId,
+            companyId: run.companyId,
+            companyName,
+            rangeStart,
+            rangeEnd,
+            options: reportPackItemOptionsSchema.parse(item.optionsJson ?? {}),
+            allowAttachments: run.allowAttachments,
+            allowTransactions: run.allowTransactions,
+            renderHtml: (html) => htmlToPdfBytes(browser, html, false),
+          });
+          const doc = await PDFDocument.load(bytes);
+          sections.push({ reportId: item.reportId, label: def.label, bytes, pageCount: doc.getPageCount(), startPage: 0 });
+          continue;
+        }
         const renderer = REPORT_PACK_RENDERERS[item.reportId];
         if (!def || !renderer) throw new Error(`Unknown report id: ${item.reportId}`);
 

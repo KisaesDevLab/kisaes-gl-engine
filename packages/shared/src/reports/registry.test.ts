@@ -125,6 +125,25 @@ describe('reportPackItemOptionsSchema', () => {
     expect(() => reportPackItemOptionsSchema.parse({ nope: 1 })).toThrow();
   });
 
+  it('accepts the source-document options and rejects bad ones', () => {
+    const ok = reportPackItemOptionsSchema.parse({
+      omitStatements: true, txnType: 'expense', accountId: '11111111-1111-4111-8111-111111111111', includeVoid: true, includeAttachments: true,
+    });
+    expect(ok.txnType).toBe('expense');
+    expect(() => reportPackItemOptionsSchema.parse({ txnType: 'not_a_type' })).toThrow();
+    expect(() => reportPackItemOptionsSchema.parse({ accountId: 'nope' })).toThrow();
+  });
+
+  it('lists the source-document sections as date-range documents', () => {
+    for (const id of ['bank-reconciliations', 'bank-statements', 'transaction-report']) {
+      const def = getReportDef(id);
+      expect(def?.kind).toBe('document');
+      expect(def?.temporal).toBe('date-range');
+    }
+    expect(getReportDef('bank-reconciliations')?.options.statements).toBe(true);
+    expect(getReportDef('transaction-report')?.options.txnFilters).toBe(true);
+  });
+
   it('rejects a non-uuid tagId', () => {
     expect(() => reportPackItemOptionsSchema.parse({ tagId: 'not-a-uuid' })).toThrow();
   });

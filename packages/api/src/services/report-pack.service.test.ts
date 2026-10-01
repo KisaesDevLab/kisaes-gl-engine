@@ -159,4 +159,16 @@ describe('report-pack.service', () => {
     expect(run.rangeEnd).toBe('2026-03-31');
     expect(run.asOfDate).toBe('2026-03-31');
   });
+
+  it('createRun records the requester permissions, denying by default', async () => {
+    const pack = await packService.createPack(tenantId, companyId, USER_ID, baseInput({
+      items: [{ reportId: 'bank-reconciliations' }, { reportId: 'transaction-report', options: { includeAttachments: true, txnType: 'expense' } }],
+    }));
+    const denied = await packService.createRun(tenantId, companyId, pack.id, USER_ID, {});
+    expect(denied.allowAttachments).toBe(false);
+    expect(denied.allowTransactions).toBe(false);
+    const allowed = await packService.createRun(tenantId, companyId, pack.id, USER_ID, {}, { attachments: true, transactions: true });
+    expect(allowed.allowAttachments).toBe(true);
+    expect(allowed.allowTransactions).toBe(true);
+  });
 });

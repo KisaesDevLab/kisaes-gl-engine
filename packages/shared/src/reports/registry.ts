@@ -14,6 +14,7 @@
 // ReportsPage / App routing. It exists solely for the pack feature.
 
 import { z } from 'zod';
+import { TXN_TYPE_LABELS } from '../utils/transaction-display.js';
 
 /**
  * How a report's date parameters are shaped:
@@ -33,6 +34,11 @@ export interface ReportOptionSpec {
   // tb-leadsheets: merge each row attachment PDF (stamped) into the
   // pack after the leadsheet pages.
   includeAttachments?: boolean;
+  // bank-reconciliations: offer "Include statement after each
+  // reconciliation" (on by default; stored as omitStatements when off).
+  statements?: boolean;
+  // transaction-report: type / account / include-voided filters.
+  txnFilters?: boolean;
   // Comparison modes this report supports (mirrors the standalone report's
   // Compare selector). Present only when `compare` is true.
   compareModes?: ReportCompareMode[];
@@ -51,6 +57,12 @@ export interface ReportDef {
   temporal: ReportTemporalMode;
   orientation: 'portrait' | 'landscape';
   options: ReportOptionSpec;
+  /**
+   * 'document' = the section is a finished PDF (reconciliations, statement
+   * files, the Transaction Report) rather than a table the pack renders.
+   * Such sections ignore the pack's default basis and tag. Omitted = table.
+   */
+  kind?: 'table' | 'document';
 }
 
 /**
@@ -140,6 +152,13 @@ export const REPORT_CATALOG: ReportDef[] = [
     orientation: 'landscape',
     options: { tagFilter: true },
   },
+  // ── Source documents. Rendered by the API's document renderers
+  // (report-pack-documents.ts), not the table path. Date-range: the pack
+  // range picks completed reconciliations by statement date, statements by
+  // period end, and transactions by date.
+  { id: 'bank-reconciliations', label: 'Bank Reconciliations', group: 'Banking & Source Documents', endpoint: 'bank-reconciliations', temporal: 'date-range', orientation: 'portrait', kind: 'document', options: { statements: true } },
+  { id: 'bank-statements', label: 'Bank Statements', group: 'Banking & Source Documents', endpoint: 'bank-statements', temporal: 'date-range', orientation: 'portrait', kind: 'document', options: {} },
+  { id: 'transaction-report', label: 'Transaction Report', group: 'Banking & Source Documents', endpoint: 'transaction-report', temporal: 'date-range', orientation: 'portrait', kind: 'document', options: { txnFilters: true, includeAttachments: true } },
   // ── Trial Balance module family (TB Phase 12). Firm-side: the
   // /reports routes 404 client-type users; the pack builder shows them
   // to staff only. Temporal 'as-of': the tax year is the fiscal year
@@ -270,6 +289,12 @@ export const reportPackItemOptionsSchema = z
     groupBy: z.enum(['detail_type']).nullable().optional(),
     showPct: z.boolean().optional(),
     includeAttachments: z.boolean().optional(),
+    // bank-reconciliations: leave the linked statement files out.
+    omitStatements: z.boolean().optional(),
+    // transaction-report filters.
+    txnType: z.string().refine((v) => v in TXN_TYPE_LABELS, 'Unknown transaction type').optional(),
+    accountId: z.string().uuid().optional(),
+    includeVoid: z.boolean().optional(),
   })
   .strict();
 

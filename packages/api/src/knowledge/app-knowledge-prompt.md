@@ -676,6 +676,11 @@ queue. Vendors with no account number print the same memo as before.
   attachments (images inline, PDF pages page for page, captioned). Unreadable or
   password-protected files are listed with the reason instead of failing the
   report. Limits: 40 attachments, 50 pages per PDF, 300 pages total.
+  The caret beside the button offers **Transaction Report with activity log**:
+  each block (main and every non-void linked transaction) then gets an Activity
+  table (When / Event / Detail / By — the same events as the Activity card),
+  times in the viewer's browser zone (`?activity=1&tz=`). The last choice is
+  remembered per browser and becomes the main click.
 - **Transaction Report (date range)** — Reports → General → Transaction Report
   (`/reports/transaction-report`, `GET /transactions/report.pdf?startDate&endDate`
   plus optional txnType / contactId / accountId / tagId / basis / includeVoid).
@@ -691,6 +696,21 @@ queue. Vendors with no account number print the same memo as before.
   button each and `?part=N` builds one on demand, deterministic from the same
   filters, nothing stored. Same bearer-fetch rule: no `?_dl=`.
 - **Journal Entries Report** — all journal entries for a period.
+- **Report Packs** — Reports → Report Packs (`/reports/packs`): a saved set of
+  reports + period preset built into ONE PDF (cover, TOC, page numbers, footer),
+  generated in the background. Besides the financial/TB reports, the
+  **Banking & Source Documents** group adds: **Bank Reconciliations** (completed
+  reconciliations with statement date in the period, all company accounts; a
+  summary page, then per reconciliation a detail page + its linked statement
+  file, toggle "Include the statement after each reconciliation"; in-progress
+  ones excluded), **Bank Statements** (every statement whose period ends in the
+  period, reconciled or not — index page then the files; OFX imports have no
+  file) and **Transaction Report** (the date-range report for the period, all
+  parts back to back; options type / account / include voided / include
+  attachments). Files are framed + captioned. The run records the requester's
+  permissions (migration 0192 `allow_attachments` / `allow_transactions`): no
+  attachments access → files listed but not embedded; no transactions access →
+  the Transaction Report section fails (skipped).
 - **Budget Overview** — summary view of all budget lines for a fiscal year.
 
 ### Cash vs. Accrual Basis

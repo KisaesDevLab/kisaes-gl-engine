@@ -63,6 +63,14 @@ export interface CreateRunInput {
   asOfDate?: string;
 }
 
+/** What the requester may see — recorded on the run for the worker. */
+export interface RunPermissions {
+  /** attachments:read — statement files and transaction attachments. */
+  attachments: boolean;
+  /** transactions:read — the Transaction Report section. */
+  transactions: boolean;
+}
+
 type PackRow = typeof reportPacks.$inferSelect;
 type PackItemRow = typeof reportPackItems.$inferSelect;
 type PackRunRow = typeof reportPackRuns.$inferSelect;
@@ -262,6 +270,7 @@ export async function createRun(
   packId: string,
   userId: string,
   input: CreateRunInput,
+  permissions: RunPermissions = { attachments: false, transactions: false },
 ): Promise<PackRunRow> {
   const pack = await loadPackOrThrow(tenantId, packId);
   const { rangeStart, rangeEnd, asOfDate } = resolveRunDates(pack, input);
@@ -274,6 +283,8 @@ export async function createRun(
     asOfDate,
     status: 'queued',
     progress: 0,
+    allowAttachments: permissions.attachments,
+    allowTransactions: permissions.transactions,
   }).returning();
   // Prefer the background worker (Redis-backed queue) so the heavy multi-render
   // stays off the request path. But appliance deployments may not run a

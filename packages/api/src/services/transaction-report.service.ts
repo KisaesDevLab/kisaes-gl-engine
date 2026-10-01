@@ -324,6 +324,8 @@ export interface TransactionReportOptions {
   timeZone?: string;
   /** False when the caller stamps its own page numbers / footer (report packs). */
   stampFooter?: boolean;
+  /** Why attachments are left out, when includeAttachments is false. Default: no access. */
+  attachmentsOmittedNote?: string;
 }
 
 export interface TransactionReportResult {
@@ -654,6 +656,7 @@ function summaryParts(opts: {
   attachmentTotal: number;
   related: RelatedTransactionsResult;
   attachmentsOmitted: boolean;
+  attachmentsOmittedNote: string;
   /** Set when the activity log was asked for: events per transaction id (null = failed to load). */
   activity: Map<string, TransactionActivityEvent[] | null> | null;
   timeZone: string;
@@ -681,7 +684,7 @@ function summaryParts(opts: {
       <div class="sub">Transaction Report — ${escapeHtml(blockTitle(toDisplay(opts.root)))}</div>
       <div class="sub">Generated ${escapeHtml(formatIsoUS(new Date().toISOString()))}${opts.generatedBy ? ` by ${escapeHtml(opts.generatedBy)}` : ''}</div>
     </header>
-    ${opts.attachmentsOmitted ? '<p class="muted">Attachments are not included: your role does not have access to attachments.</p>' : ''}`;
+    ${opts.attachmentsOmitted ? `<p class="muted">${escapeHtml(opts.attachmentsOmittedNote)}</p>` : ''}`;
   // The root block, its attachments, then the linked table and each linked
   // block with its own attachments — every document right after its entry.
   const block = (b: { txn: TransactionDetail; atts: PreparedAttachment[] }) => ({
@@ -708,6 +711,7 @@ function rangeSummaryParts(opts: {
   part: { index: number; of: number; startDate: string; endDate: string } | null;
   planTruncated: boolean;
   attachmentsOmitted: boolean;
+  attachmentsOmittedNote: string;
 }): ReportPart[] {
   const shown = opts.blocks.length;
   const count = opts.part
@@ -720,7 +724,7 @@ function rangeSummaryParts(opts: {
     </header>
     <p class="range-note">${escapeHtml(count)}</p>
     ${opts.planTruncated ? `<p class="muted">More than ${MAX_PLANNED_TRANSACTIONS} transactions matched; only the first ${MAX_PLANNED_TRANSACTIONS} are planned. Narrow the dates or filters for the rest.</p>` : ''}
-    ${opts.attachmentsOmitted ? '<p class="muted">Attachments are not included: your role does not have access to attachments.</p>' : ''}
+    ${opts.attachmentsOmitted ? `<p class="muted">${escapeHtml(opts.attachmentsOmittedNote)}</p>` : ''}
     ${shown === 0 ? '<p class="muted">No transactions match.</p>' : ''}`;
   return partsFrom(head, opts.blocks.map((b) => ({
     html: transactionBlockHtml(b.txn, b.atts, opts.attachmentTotal, linkedLineHtml(b.related)),
@@ -1018,6 +1022,7 @@ interface AssembleContext {
   /** How many attachments made it in — the M in "Attachment N of M". */
   attachmentTotal: number;
   attachmentsOmitted: boolean;
+  attachmentsOmittedNote: string;
 }
 
 /**
@@ -1127,6 +1132,7 @@ async function assembleReport(args: {
       blocks,
       attachmentTotal: ordinal,
       attachmentsOmitted: !opts.includeAttachments,
+      attachmentsOmittedNote: opts.attachmentsOmittedNote ?? 'Attachments are not included: your role does not have access to attachments.',
     });
 
     // Each part's pages, then the PDF attachment pages of the transactions

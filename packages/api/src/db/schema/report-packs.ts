@@ -98,6 +98,11 @@ export const reportPackRuns = pgTable('report_pack_runs', {
   pageCount: integer('page_count'),
   byteSize: integer('byte_size'),
   errorJson: jsonb('error_json'),
+  // The requester's permissions, captured at create time (the worker has no
+  // request): whether source-document sections may embed files / show
+  // transaction detail. Migration 0192.
+  allowAttachments: boolean('allow_attachments').notNull().default(false),
+  allowTransactions: boolean('allow_transactions').notNull().default(false),
   startedAt: timestamp('started_at', { withTimezone: true }),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

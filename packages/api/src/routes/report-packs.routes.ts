@@ -16,10 +16,10 @@
 
 import { Router } from 'express';
 import { z } from 'zod';
-import { reportPackItemOptionsSchema } from '@kis-books/shared';
+import { can, reportPackItemOptionsSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
-import { requirePermission } from '../middleware/permission.js';
+import { requirePermission, resolvePermissionsForRequest } from '../middleware/permission.js';
 import { expensiveOpLimiter } from '../middleware/expensive-op-limiter.js';
 import { validate } from '../middleware/validate.js';
 import * as packService from '../services/report-pack.service.js';
@@ -125,7 +125,13 @@ reportPacksRouter.post('/packs/:id/duplicate', readPerm, async (req, res) => {
 
 // ─── Runs ───
 reportPacksRouter.post('/packs/:id/runs', readPerm, validate(runBodySchema), async (req, res) => {
-  const run = await packService.createRun(req.tenantId, req.companyId, req.params['id']!, req.userId, req.body);
+  // The run renders in the worker; record what THIS requester may see so
+  // source-document sections honour it (files, transaction detail).
+  const perms = await resolvePermissionsForRequest(req);
+  const run = await packService.createRun(req.tenantId, req.companyId, req.params['id']!, req.userId, req.body, {
+    attachments: can(perms, 'attachments', 'read'),
+    transactions: can(perms, 'transactions', 'read'),
+  });
   res.status(202).json(run);
 });
 
