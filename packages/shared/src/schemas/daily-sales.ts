@@ -27,11 +27,18 @@ export const updateDailySalesTemplateSchema = z.object({
 });
 export type UpdateDailySalesTemplateInput = z.infer<typeof updateDailySalesTemplateSchema>;
 
+// Copy a template (header + active lines). Name defaults to "<name> (copy)".
+export const duplicateDailySalesTemplateSchema = z.object({
+  name: z.string().min(1).max(255).optional(),
+});
+export type DuplicateDailySalesTemplateInput = z.infer<typeof duplicateDailySalesTemplateSchema>;
+
 export const dailySalesTemplateLineSchema = z.object({
   id: z.string().uuid().optional(),
   section: dailySalesSectionEnum,
   label: z.string().min(1).max(120),
   accountId: z.string().uuid().nullable().optional(),
+  tagId: z.string().uuid().nullable().optional(),
   normalSide: dailySalesSideEnum,
   sortOrder: z.number().int().min(0).default(0),
   isRequired: z.boolean().optional().default(false),

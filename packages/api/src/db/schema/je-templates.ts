@@ -30,6 +30,7 @@ export const jeTemplateLines = pgTable('je_template_lines', {
   templateId: uuid('template_id').notNull(),
   label: varchar('label', { length: 120 }).notNull(),
   accountId: uuid('account_id'),
+  tagId: uuid('tag_id'), // per-line tag (migration 0194); null → template default
   normalSide: varchar('normal_side', { length: 6 }).notNull(), // debit | credit
   sortOrder: integer('sort_order').notNull().default(0),
   isRequired: boolean('is_required').notNull().default(false),

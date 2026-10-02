@@ -8,7 +8,7 @@ import { computeEntry } from './daily-sales.service.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
 
-type Line = { id: string; section: string; label: string; accountId: string | null; normalSide: string; isActive: boolean };
+type Line = { id: string; section: string; label: string; accountId: string | null; tagId?: string | null; normalSide: string; isActive: boolean };
 
 // A minimal generic template: sales+tax (credits) and cash+card tenders (debits).
 const lines: Line[] = [
@@ -76,5 +76,19 @@ describe('daily-sales computeEntry', () => {
     const cash = c.journalLines.find((l) => l.description === 'Cash');
     expect(food?.tagId).toBe('line-tag');
     expect(cash?.tagId).toBe('entry-tag');
+  });
+
+  it('a template-line tag beats the entry tag but not a per-value tag', () => {
+    const tagged: Line[] = lines.map((l) => (l.id === 'tax' || l.id === 'card' ? { ...l, tagId: 'tpl-line-tag' } : l));
+    const vals = [
+      { templateLineId: 'food', amount: '100', tagId: null },
+      { templateLineId: 'tax', amount: '8', tagId: null },
+      { templateLineId: 'card', amount: '108', tagId: 'value-tag' },
+    ];
+    const c = computeEntry(tagged, vals, 'entry-tag', 'tpl-tag');
+    const tagOf = (d: string) => c.journalLines.find((l) => l.description === d)?.tagId;
+    expect(tagOf('Food Sales')).toBe('entry-tag');
+    expect(tagOf('Sales Tax')).toBe('tpl-line-tag');
+    expect(tagOf('Card')).toBe('value-tag');
   });
 });

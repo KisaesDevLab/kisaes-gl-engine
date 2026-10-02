@@ -6,6 +6,7 @@ import { Router } from 'express';
 import {
   createDailySalesTemplateSchema,
   updateDailySalesTemplateSchema,
+  duplicateDailySalesTemplateSchema,
   replaceDailySalesTemplateLinesSchema,
   createDailySalesEntrySchema,
   updateDailySalesEntrySchema,
@@ -39,6 +40,11 @@ dailySalesRouter.get('/templates/:id', async (req, res) => {
 
 dailySalesRouter.put('/templates/:id', validate(updateDailySalesTemplateSchema), async (req, res) => {
   res.json({ template: await service.updateTemplate(req.tenantId, req.params['id']!, req.body, req.userId) });
+});
+
+dailySalesRouter.post('/templates/:id/duplicate', validate(duplicateDailySalesTemplateSchema), async (req, res) => {
+  const template = await service.duplicateTemplate(req.tenantId, req.params['id']!, req.body, req.userId);
+  res.status(201).json({ template });
 });
 
 dailySalesRouter.delete('/templates/:id', async (req, res) => {

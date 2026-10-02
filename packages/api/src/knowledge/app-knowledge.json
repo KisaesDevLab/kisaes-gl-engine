@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-01T21:01:45.314Z",
+  "generatedAt": "2026-10-02T14:14:16.856Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -18,7 +18,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 126542
+    "totalBytes": 127182
   },
   "screens": [
     {
@@ -1585,6 +1585,7 @@
     "\"How do I see more than 50 transactions per page?\"",
     "\"How do I sort or filter a table by column?\"",
     "\"How do I see more rows in other lists (bills, receipts, admin tables)?\"",
+    "\"How do I tag, rename, or copy a Journal Entry or Daily Sales template?\"",
     "\"How do I set up a recurring bill?\"",
     "\"How do I back up my data?\"",
     "\"How do I switch between companies?\"",

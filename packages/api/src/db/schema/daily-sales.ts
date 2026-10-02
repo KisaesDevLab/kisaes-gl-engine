@@ -30,6 +30,7 @@ export const dailySalesTemplateLines = pgTable('daily_sales_template_lines', {
   section: varchar('section', { length: 20 }).notNull(), // sales|tax|tips|discount|payment|payout|other
   label: varchar('label', { length: 120 }).notNull(),
   accountId: uuid('account_id'), // null until mapped (preset-seeded revenue/expense lines)
+  tagId: uuid('tag_id'), // per-line tag (migration 0194); null → entry/template default
   normalSide: varchar('normal_side', { length: 6 }).notNull(), // debit | credit
   sortOrder: integer('sort_order').notNull().default(0),
   isRequired: boolean('is_required').notNull().default(false),

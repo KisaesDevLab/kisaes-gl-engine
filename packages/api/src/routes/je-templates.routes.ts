@@ -6,6 +6,7 @@ import { Router } from 'express';
 import {
   createJeTemplateSchema,
   updateJeTemplateSchema,
+  duplicateJeTemplateSchema,
   replaceJeTemplateLinesSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
@@ -36,6 +37,11 @@ jeTemplatesRouter.get('/:id', async (req, res) => {
 
 jeTemplatesRouter.put('/:id', validate(updateJeTemplateSchema), async (req, res) => {
   res.json({ template: await service.updateTemplate(req.tenantId, req.params['id']!, req.body, req.userId) });
+});
+
+jeTemplatesRouter.post('/:id/duplicate', validate(duplicateJeTemplateSchema), async (req, res) => {
+  const template = await service.duplicateTemplate(req.tenantId, req.params['id']!, req.body, req.userId);
+  res.status(201).json({ template });
 });
 
 jeTemplatesRouter.delete('/:id', async (req, res) => {

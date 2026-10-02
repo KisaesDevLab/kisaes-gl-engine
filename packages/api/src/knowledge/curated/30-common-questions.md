@@ -116,6 +116,15 @@ has the same pager with a **Show** rows-per-page dropdown at the bottom. Older
 rows are never hidden anymore; page through with **Prev/Next** or raise the page
 size. Close-review buckets and findings use a **Load more** button instead.
 
+### "How do I tag, rename, or copy a Journal Entry or Daily Sales template?"
+Open the template (Transactions → Journal Templates, or Daily Sales → Templates).
+**Default tag** at the top is applied to every posted line that has no tag of its
+own. The **Tag** column fixes a tag on a single line, and that line tag wins over
+the entry's tag. When entering a journal or a day's sales, the **Tag** field starts
+at the template default and can be changed for that entry. To rename a template,
+edit **Template name** and click **Save template**. **Duplicate** copies the saved
+template (lines, accounts, tags, memo) under a new name you choose.
+
 ### "How do I set up a recurring bill?"
 Enter the bill normally, then on the bill detail page click **Make Recurring**. Choose
 frequency (monthly, weekly, etc.), mode (auto-post or reminder), and start date. The

@@ -15,6 +15,7 @@ import {
   DAILY_SALES_PRESETS,
   type CreateDailySalesTemplateInput,
   type UpdateDailySalesTemplateInput,
+  type DuplicateDailySalesTemplateInput,
   type DailySalesTemplateLineInput,
   type CreateDailySalesEntryInput,
   type UpdateDailySalesEntryInput,
@@ -34,6 +35,7 @@ import * as ledger from './ledger.service.js';
 // Get-or-create for role accounts now lives in system-accounts.service.ts so
 // banking, imports and the Practice surfaces share one implementation.
 import { getOrCreateSystemAccount } from './system-accounts.service.js';
+import { assertTagsInTenant } from './tags.service.js';
 
 const TOLERANCE = new Decimal(BALANCE_TOLERANCE);
 
@@ -57,6 +59,7 @@ export async function listTemplates(tenantId: string) {
 }
 
 export async function createTemplate(tenantId: string, input: CreateDailySalesTemplateInput, userId?: string, companyId?: string) {
+  if (input.defaultTagId) await assertTagsInTenant(tenantId, [input.defaultTagId]);
   const [tpl] = await db.insert(dailySalesTemplates).values({
     tenantId,
     companyId: companyId ?? null,
@@ -96,6 +99,7 @@ export async function createTemplate(tenantId: string, input: CreateDailySalesTe
 
 export async function updateTemplate(tenantId: string, id: string, input: UpdateDailySalesTemplateInput, userId?: string) {
   const before = await getTemplate(tenantId, id);
+  if (input.defaultTagId) await assertTagsInTenant(tenantId, [input.defaultTagId]);
   const updates: Record<string, unknown> = { updatedAt: new Date() };
   if (input.name !== undefined) updates['name'] = input.name;
   if (input.defaultTagId !== undefined) updates['defaultTagId'] = input.defaultTagId;
@@ -112,11 +116,34 @@ export async function deleteTemplate(tenantId: string, id: string, userId?: stri
   await auditLog(tenantId, 'delete', 'daily_sales_template', id, null, null, userId);
 }
 
+export async function duplicateTemplate(tenantId: string, id: string, input: DuplicateDailySalesTemplateInput, userId?: string) {
+  const src = await getTemplate(tenantId, id); // tenant-scope + existence check
+  const newId = await db.transaction(async (tx) => {
+    const [tpl] = await tx.insert(dailySalesTemplates).values({
+      tenantId, companyId: src.companyId, name: input.name?.trim() || `${src.name} (copy)`,
+      presetType: src.presetType, defaultTagId: src.defaultTagId,
+    }).returning();
+    // Active lines only — soft-removed lines exist for old entries' provenance.
+    const lines = src.lines.filter((l) => l.isActive);
+    if (lines.length) {
+      await tx.insert(dailySalesTemplateLines).values(lines.map((l, i) => ({
+        tenantId, templateId: tpl!.id, section: l.section, label: l.label, accountId: l.accountId,
+        tagId: l.tagId, normalSide: l.normalSide, sortOrder: i, isRequired: l.isRequired,
+        allowTag: l.allowTag, isActive: true,
+      })));
+    }
+    return tpl!.id;
+  });
+  await auditLog(tenantId, 'create', 'daily_sales_template', newId, null, { duplicatedFrom: id }, userId);
+  return getTemplate(tenantId, newId);
+}
+
 // Upsert the template's line definitions: update by id, insert new, soft-remove
 // (is_active=false) any existing line not present — preserves provenance for
 // entry values that referenced a removed line.
 export async function replaceTemplateLines(tenantId: string, templateId: string, lines: DailySalesTemplateLineInput[], userId?: string) {
   await getTemplate(tenantId, templateId); // tenant-scope check
+  await assertTagsInTenant(tenantId, lines.flatMap((l) => (l.tagId ? [l.tagId] : [])));
   const existing = await db.select({ id: dailySalesTemplateLines.id }).from(dailySalesTemplateLines)
     .where(and(eq(dailySalesTemplateLines.tenantId, tenantId), eq(dailySalesTemplateLines.templateId, templateId)));
   const incomingIds = new Set(lines.filter((l) => l.id).map((l) => l.id as string));
@@ -125,7 +152,7 @@ export async function replaceTemplateLines(tenantId: string, templateId: string,
     const l = lines[i]!;
     const row = {
       tenantId, templateId, section: l.section, label: l.label,
-      accountId: l.accountId ?? null, normalSide: l.normalSide, sortOrder: l.sortOrder ?? i,
+      accountId: l.accountId ?? null, tagId: l.tagId ?? null, normalSide: l.normalSide, sortOrder: l.sortOrder ?? i,
       isRequired: l.isRequired ?? false, allowTag: l.allowTag ?? false, isActive: l.isActive ?? true,
     };
     if (l.id) {
@@ -159,7 +186,7 @@ interface Computed {
 }
 
 export function computeEntry(
-  templateLines: Array<{ id: string; section: string; label: string; accountId: string | null; normalSide: string; isActive: boolean }>,
+  templateLines: Array<{ id: string; section: string; label: string; accountId: string | null; tagId?: string | null; normalSide: string; isActive: boolean }>,
   values: Array<{ templateLineId: string; amount: string; tagId: string | null }>,
   entryTagId: string | null,
   defaultTagId: string | null,
@@ -192,7 +219,9 @@ export function computeEntry(
       debit: isDebit ? amount.toFixed(4) : '0',
       credit: isDebit ? '0' : amount.toFixed(4),
       description: line.label,
-      tagId: v.tagId ?? entryTagId ?? defaultTagId,
+      // Most specific wins: a per-value tag, then the template line's own
+      // tag, then the entry's tag, then the template default.
+      tagId: v.tagId ?? line.tagId ?? entryTagId ?? defaultTagId,
     });
   }
 
@@ -210,6 +239,10 @@ export function computeEntry(
 }
 
 // ── Entries ─────────────────────────────────────────────────────
+function entryTagIds(input: { tagId?: string | null; values?: Array<{ tagId?: string | null }> }): string[] {
+  return [input.tagId, ...(input.values ?? []).map((v) => v.tagId)].filter((t): t is string => !!t);
+}
+
 async function saveValues(tenantId: string, entryId: string, values: CreateDailySalesEntryInput['values']) {
   await db.delete(dailySalesEntryValues)
     .where(and(eq(dailySalesEntryValues.tenantId, tenantId), eq(dailySalesEntryValues.entryId, entryId)));
@@ -290,6 +323,7 @@ export async function listEntries(
 
 export async function createDraft(tenantId: string, input: CreateDailySalesEntryInput, userId?: string, companyId?: string) {
   await getTemplate(tenantId, input.templateId); // validate + tenant scope
+  await assertTagsInTenant(tenantId, entryTagIds(input));
   const [entry] = await db.insert(dailySalesEntries).values({
     tenantId, companyId: companyId ?? null, templateId: input.templateId,
     businessDate: input.businessDate, status: 'draft',
@@ -306,6 +340,7 @@ export async function updateDraft(tenantId: string, id: string, input: UpdateDai
   });
   if (!entry) throw AppError.notFound('Daily-sales entry not found');
   if (entry.status !== 'draft') throw AppError.badRequest('Only draft entries can be edited.');
+  await assertTagsInTenant(tenantId, entryTagIds(input));
   const updates: Record<string, unknown> = { updatedAt: new Date() };
   if (input.businessDate !== undefined) updates['businessDate'] = input.businessDate;
   if (input.tagId !== undefined) updates['tagId'] = input.tagId;

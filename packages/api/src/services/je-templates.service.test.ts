@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { tenants, companies, accounts, auditLog, jeTemplates, jeTemplateLines } from '../db/schema/index.js';
+import { tenants, companies, accounts, auditLog, jeTemplates, jeTemplateLines, tags } from '../db/schema/index.js';
 import * as svc from './je-templates.service.js';
 
 let tenantId = '';
@@ -18,6 +18,7 @@ async function cleanup() {
   await db.delete(jeTemplateLines).where(eq(jeTemplateLines.tenantId, tenantId));
   await db.delete(jeTemplates).where(eq(jeTemplates.tenantId, tenantId));
   await db.delete(auditLog).where(eq(auditLog.tenantId, tenantId));
+  await db.delete(tags).where(eq(tags.tenantId, tenantId));
   await db.delete(accounts).where(eq(accounts.tenantId, tenantId));
   await db.delete(companies).where(eq(companies.tenantId, tenantId));
   await db.delete(tenants).where(eq(tenants.id, tenantId));
@@ -85,6 +86,58 @@ describe('je-templates service', () => {
     expect(list.map((l) => l.id)).not.toContain(tpl.id);
     const raw = await db.query.jeTemplates.findFirst({ where: eq(jeTemplates.id, tpl.id) });
     expect(raw?.isActive).toBe(false);
+  });
+
+  it('stores a default tag and per-line tags; rejects a foreign tenant\'s tag', async () => {
+    const [tag] = await db.insert(tags).values({ tenantId, name: 'Store 1' }).returning();
+    const tpl = await svc.createTemplate(tenantId, { name: 'Tagged', defaultTagId: tag!.id }, undefined, companyId);
+    expect(tpl.defaultTagId).toBe(tag!.id);
+
+    const v = await svc.replaceTemplateLines(tenantId, tpl.id, [
+      { label: 'A', accountId: debitAcct, tagId: tag!.id, normalSide: 'debit', sortOrder: 0, isRequired: false, isActive: true },
+      { label: 'B', accountId: creditAcct, normalSide: 'credit', sortOrder: 1, isRequired: false, isActive: true },
+    ]);
+    expect(v.lines.find((l) => l.label === 'A')?.tagId).toBe(tag!.id);
+    expect(v.lines.find((l) => l.label === 'B')?.tagId).toBeNull();
+
+    const cleared = await svc.updateTemplate(tenantId, tpl.id, { defaultTagId: null });
+    expect(cleared.defaultTagId).toBeNull();
+
+    const [other] = await db.insert(tenants).values({
+      name: 'Other', slug: 'other-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+    }).returning();
+    try {
+      const [foreignTag] = await db.insert(tags).values({ tenantId: other!.id, name: 'Theirs' }).returning();
+      await expect(svc.updateTemplate(tenantId, tpl.id, { defaultTagId: foreignTag!.id })).rejects.toThrow('do not belong');
+      await expect(svc.replaceTemplateLines(tenantId, tpl.id, [
+        { label: 'X', accountId: debitAcct, tagId: foreignTag!.id, normalSide: 'debit', sortOrder: 0, isRequired: false, isActive: true },
+      ])).rejects.toThrow('do not belong');
+    } finally {
+      await db.delete(tags).where(eq(tags.tenantId, other!.id));
+      await db.delete(tenants).where(eq(tenants.id, other!.id));
+    }
+  });
+
+  it('renames and duplicates a template with its active lines', async () => {
+    const tpl = await svc.createTemplate(tenantId, { name: 'Orig', memo: 'M' }, undefined, companyId);
+    await svc.replaceTemplateLines(tenantId, tpl.id, [
+      { label: 'A', accountId: debitAcct, normalSide: 'debit', sortOrder: 0, isRequired: true, isActive: true },
+      { label: 'B', accountId: creditAcct, normalSide: 'credit', sortOrder: 1, isRequired: false, isActive: true },
+    ]);
+    const renamed = await svc.updateTemplate(tenantId, tpl.id, { name: 'Renamed' });
+    expect(renamed.name).toBe('Renamed');
+
+    const copy = await svc.duplicateTemplate(tenantId, tpl.id, {});
+    expect(copy.id).not.toBe(tpl.id);
+    expect(copy.name).toBe('Renamed (copy)');
+    expect(copy.memo).toBe('M');
+    expect(copy.lines.map((l) => l.label)).toEqual(['A', 'B']);
+    expect(copy.lines[0]!.isRequired).toBe(true);
+
+    const named = await svc.duplicateTemplate(tenantId, tpl.id, { name: 'Second' });
+    expect(named.name).toBe('Second');
+    // The original is untouched.
+    expect((await svc.getTemplate(tenantId, tpl.id)).lines).toHaveLength(2);
   });
 
   it('is tenant-scoped: a foreign tenant cannot read or edit', async () => {

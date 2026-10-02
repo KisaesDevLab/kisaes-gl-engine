@@ -9,10 +9,11 @@
 // place (ledger.postTransaction).
 
 import { and, eq } from 'drizzle-orm';
-import type { CreateJeTemplateInput, UpdateJeTemplateInput, JeTemplateLineInput } from '@kis-books/shared';
+import type { CreateJeTemplateInput, UpdateJeTemplateInput, DuplicateJeTemplateInput, JeTemplateLineInput } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { jeTemplates, jeTemplateLines } from '../db/schema/index.js';
 import { auditLog } from '../middleware/audit.js';
+import { assertTagsInTenant } from './tags.service.js';
 import { AppError } from '../utils/errors.js';
 
 export async function getTemplate(tenantId: string, id: string) {
@@ -33,6 +34,7 @@ export async function listTemplates(tenantId: string) {
 }
 
 export async function createTemplate(tenantId: string, input: CreateJeTemplateInput, userId?: string, companyId?: string) {
+  if (input.defaultTagId) await assertTagsInTenant(tenantId, [input.defaultTagId]);
   const [tpl] = await db.insert(jeTemplates).values({
     tenantId,
     companyId: companyId ?? null,
@@ -46,6 +48,7 @@ export async function createTemplate(tenantId: string, input: CreateJeTemplateIn
 
 export async function updateTemplate(tenantId: string, id: string, input: UpdateJeTemplateInput, userId?: string) {
   const before = await getTemplate(tenantId, id);
+  if (input.defaultTagId) await assertTagsInTenant(tenantId, [input.defaultTagId]);
   const updates: Record<string, unknown> = { updatedAt: new Date() };
   if (input.name !== undefined) updates['name'] = input.name;
   if (input.memo !== undefined) updates['memo'] = input.memo;
@@ -55,6 +58,26 @@ export async function updateTemplate(tenantId: string, id: string, input: Update
     .where(and(eq(jeTemplates.tenantId, tenantId), eq(jeTemplates.id, id)));
   await auditLog(tenantId, 'update', 'je_template', id, before, updates, userId);
   return getTemplate(tenantId, id);
+}
+
+export async function duplicateTemplate(tenantId: string, id: string, input: DuplicateJeTemplateInput, userId?: string) {
+  const src = await getTemplate(tenantId, id); // tenant-scope + existence check
+  const newId = await db.transaction(async (tx) => {
+    const [tpl] = await tx.insert(jeTemplates).values({
+      tenantId, companyId: src.companyId, name: input.name?.trim() || `${src.name} (copy)`,
+      memo: src.memo, defaultTagId: src.defaultTagId,
+    }).returning();
+    const lines = src.lines.filter((l) => l.isActive);
+    if (lines.length) {
+      await tx.insert(jeTemplateLines).values(lines.map((l, i) => ({
+        tenantId, templateId: tpl!.id, label: l.label, accountId: l.accountId, tagId: l.tagId,
+        normalSide: l.normalSide, sortOrder: i, isRequired: l.isRequired, isActive: true,
+      })));
+    }
+    return tpl!.id;
+  });
+  await auditLog(tenantId, 'create', 'je_template', newId, null, { duplicatedFrom: id }, userId);
+  return getTemplate(tenantId, newId);
 }
 
 export async function deleteTemplate(tenantId: string, id: string, userId?: string) {
@@ -71,6 +94,7 @@ export async function deleteTemplate(tenantId: string, id: string, userId?: stri
 // unlike daily-sales entry values — so no soft-remove needed).
 export async function replaceTemplateLines(tenantId: string, templateId: string, lines: JeTemplateLineInput[], userId?: string) {
   await getTemplate(tenantId, templateId); // tenant-scope check
+  await assertTagsInTenant(tenantId, lines.flatMap((l) => (l.tagId ? [l.tagId] : [])));
   const existing = await db.select({ id: jeTemplateLines.id }).from(jeTemplateLines)
     .where(and(eq(jeTemplateLines.tenantId, tenantId), eq(jeTemplateLines.templateId, templateId)));
   const incomingIds = new Set(lines.filter((l) => l.id).map((l) => l.id as string));
@@ -79,7 +103,7 @@ export async function replaceTemplateLines(tenantId: string, templateId: string,
     const l = lines[i]!;
     const row = {
       tenantId, templateId, label: l.label,
-      accountId: l.accountId ?? null, normalSide: l.normalSide, sortOrder: l.sortOrder ?? i,
+      accountId: l.accountId ?? null, tagId: l.tagId ?? null, normalSide: l.normalSide, sortOrder: l.sortOrder ?? i,
       isRequired: l.isRequired ?? false, isActive: l.isActive ?? true,
     };
     if (l.id) {
