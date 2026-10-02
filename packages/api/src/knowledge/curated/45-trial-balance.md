@@ -61,7 +61,10 @@ Key ideas:
   year it falls in. Click **Edit** on a leadsheet to change its accounts:
   "Move to…" on a row moves it to another leadsheet (or removes it), and
   "Add account" pulls any account — including zero-balance ones — into
-  the open leadsheet. Click **Done** to hide those controls. A sign-off
+  the open leadsheet. While editing, the Groupings list on the left also
+  gets drag handles and up/down arrows to change the leadsheet order
+  (saved right away; reports grouped by leadsheet follow it). Click
+  **Done** to hide those controls. A sign-off
   goes "stale" if the books change after signing.
 - **Reports by leadsheet**: with the Trial Balance module on, the
   Balance Sheet and Profit & Loss "View" menu adds **Grouped by

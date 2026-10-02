@@ -119,6 +119,27 @@ export async function updateGrouping(tenantId: string, companyId: string, id: st
   return after;
 }
 
+// Re-sequence the company's leadsheets in the given order (sort_order =
+// position × 10, one transaction). The list must name every leadsheet of
+// the company exactly once, so a stale screen can't silently drop one.
+export async function reorderGroupings(tenantId: string, companyId: string, ids: string[], userId?: string) {
+  const existing = await db.select({ id: tbGroupings.id, sortOrder: tbGroupings.sortOrder }).from(tbGroupings)
+    .where(and(eq(tbGroupings.tenantId, tenantId), eq(tbGroupings.companyId, companyId)));
+  const known = new Set(existing.map((g) => g.id));
+  if (new Set(ids).size !== ids.length || ids.length !== known.size || ids.some((id) => !known.has(id))) {
+    throw AppError.badRequest('The leadsheet list changed — refresh and try again.');
+  }
+  await db.transaction(async (tx) => {
+    for (let i = 0; i < ids.length; i += 1) {
+      await tx.update(tbGroupings).set({ sortOrder: i * 10 })
+        .where(and(eq(tbGroupings.id, ids[i]!), eq(tbGroupings.tenantId, tenantId), eq(tbGroupings.companyId, companyId)));
+    }
+  });
+  await auditLog(tenantId, 'update', 'tb_grouping_order', companyId,
+    { order: [...existing].sort((a, b) => a.sortOrder - b.sortOrder).map((g) => g.id) }, { order: ids }, userId);
+  return listGroupings(tenantId, companyId);
+}
+
 export async function deleteGrouping(tenantId: string, companyId: string, id: string, userId?: string) {
   const [before] = await db.select().from(tbGroupings)
     .where(and(eq(tbGroupings.id, id), eq(tbGroupings.tenantId, tenantId), eq(tbGroupings.companyId, companyId))).limit(1);

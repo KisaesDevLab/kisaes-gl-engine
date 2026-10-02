@@ -631,6 +631,11 @@ tbRouter.post('/groupings', validate(groupingSchema), async (req, res) => {
   res.status(201).json({ grouping });
 });
 
+// Declared before /groupings/:id so 'order' isn't read as an id.
+tbRouter.put('/groupings/order', validate(z.object({ ids: z.array(z.string().uuid()).max(500) })), async (req, res) => {
+  res.json(await groupingsService.reorderGroupings(req.tenantId, req.companyId!, req.body.ids, req.userId));
+});
+
 tbRouter.put('/groupings/:id', validate(groupingSchema.partial()), async (req, res) => {
   const grouping = await groupingsService.updateGrouping(req.tenantId, req.companyId!, String(req.params['id']), req.body, req.userId);
   res.json({ grouping });
