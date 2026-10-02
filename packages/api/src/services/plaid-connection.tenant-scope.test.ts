@@ -11,8 +11,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { tenants, users, userTenantAccess, accounts, plaidItems, plaidAccounts, plaidAccountMappings } from '../db/schema/index.js';
-import { getItemsForUser } from './plaid-connection.service.js';
+import { tenants, users, userTenantAccess, accounts, plaidItems, plaidAccounts, plaidAccountMappings, plaidItemActivity, bankConnectInvites } from '../db/schema/index.js';
+import { getItemsForUser, getItemHomeTenants } from './plaid-connection.service.js';
 
 const sfx = () => `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
@@ -39,6 +39,16 @@ async function seedPlaidAccount(itemId: string, label: string): Promise<string> 
     plaidItemId: itemId, plaidAccountId: `pa-${label}-${sfx()}`, name: label, isActive: true,
   }).returning();
   return a!.id;
+}
+// Record the client an item was connected FOR (what createConnection now
+// writes on its item_created activity).
+async function connectedFor(itemId: string, tenantId: string) {
+  await db.insert(plaidItemActivity).values({ plaidItemId: itemId, tenantId, action: 'item_created', performedBy: userId });
+}
+async function dropItem(itemId: string) {
+  await db.delete(plaidItemActivity).where(eq(plaidItemActivity.plaidItemId, itemId));
+  await db.delete(plaidAccounts).where(eq(plaidAccounts.plaidItemId, itemId));
+  await db.delete(plaidItems).where(eq(plaidItems.id, itemId));
 }
 async function map(plaidAccountId: string, tenantId: string, mappedAccountId: string) {
   await db.insert(plaidAccountMappings).values({ plaidAccountId, tenantId, mappedAccountId, mappedBy: userId });
@@ -162,8 +172,8 @@ describe('getItemsForUser tenant scoping', () => {
     await db.delete(tenants).where(eq(tenants.id, tenantC));
   });
 
-  it('a teammate of the connecting user CAN see their unmapped item (mapping handoff)', async () => {
-    // Colleague in tenant A (shares a tenant with the creator).
+  it('a teammate in the client the bank was connected for CAN see the unmapped item (mapping handoff)', async () => {
+    // Colleague in tenant A — the client the item was connected for.
     const [mate] = await db.insert(users).values({
       tenantId: tenantA, email: `mate-${sfx()}@example.com`, passwordHash: 'x'.repeat(60), role: 'accountant', displayName: 'Mate',
     }).returning();
@@ -171,14 +181,21 @@ describe('getItemsForUser tenant scoping', () => {
 
     const item3 = await seedItem('Fresh Bank');
     await seedPlaidAccount(item3, 'f1');
+    await connectedFor(item3, tenantA);
+    // Connected for tenant B: tenant A's teammate must NOT see it, even
+    // though the creator administers both (2026-10-02 incident).
+    const item4 = await seedItem('B Fresh Bank');
+    await seedPlaidAccount(item4, 'g1');
+    await connectedFor(item4, tenantB);
 
     const items = await getItemsForUser(mate!.id);
     const fresh = items.find((i) => i.institutionName === 'Fresh Bank');
     expect(fresh).toBeDefined();
     expect(acctNames(fresh!)).toEqual(['f1']);
+    expect(items.some((i) => i.institutionName === 'B Fresh Bank')).toBe(false);
 
-    await db.delete(plaidAccounts).where(eq(plaidAccounts.plaidItemId, item3));
-    await db.delete(plaidItems).where(eq(plaidItems.id, item3));
+    await dropItem(item3);
+    await dropItem(item4);
     await db.delete(userTenantAccess).where(eq(userTenantAccess.userId, mate!.id));
     await db.delete(users).where(eq(users.id, mate!.id));
   });
@@ -190,18 +207,46 @@ describe('getItemsForUser tenant scoping', () => {
     // could never be mapped.
     const item3 = await seedItem('Fresh Bank');
     await seedPlaidAccount(item3, 'f1');
+    await connectedFor(item3, tenantA);
 
     const itemsA = await getItemsForUser(userId, tenantA);
     const fresh = itemsA.find((i) => i.institutionName === 'Fresh Bank');
     expect(fresh).toBeDefined();
     expect(acctNames(fresh!)).toEqual(['f1']); // unassigned account is offered for mapping
 
-    // Visible in ANY tenant the creator administers (they pick where to map).
+    // SECURITY (2026-10-02 incident): NOT in the creator's other clients.
+    // It used to show in every tenant the creator administers — for a firm
+    // admin, every client's Bank Connections.
     const itemsB = await getItemsForUser(userId, tenantB);
-    expect(itemsB.some((i) => i.institutionName === 'Fresh Bank')).toBe(true);
+    expect(itemsB.some((i) => i.institutionName === 'Fresh Bank')).toBe(false);
 
-    await db.delete(plaidAccounts).where(eq(plaidAccounts.plaidItemId, item3));
-    await db.delete(plaidItems).where(eq(plaidItems.id, item3));
+    await dropItem(item3);
+  });
+
+  it('an invite-created item is attributed to the invite\'s client', async () => {
+    const item3 = await seedItem('Invite Bank');
+    await seedPlaidAccount(item3, 'v1');
+    const [inv] = await db.insert(bankConnectInvites).values({
+      tenantId: tenantB, recipientName: 'Client', recipientEmail: 'c@example.com', tokenHash: 'h'.repeat(64),
+      sentVia: 'email', expiresAt: new Date(Date.now() + 86400000), createdBy: userId,
+      status: 'connected', connectedPlaidItemId: item3,
+    }).returning();
+
+    expect(await getItemHomeTenants(item3)).toEqual([tenantB]);
+    expect((await getItemsForUser(userId, tenantB)).some((i) => i.institutionName === 'Invite Bank')).toBe(true);
+    expect((await getItemsForUser(userId, tenantA)).some((i) => i.institutionName === 'Invite Bank')).toBe(false);
+
+    await db.delete(bankConnectInvites).where(eq(bankConnectInvites.id, inv!.id));
+    await dropItem(item3);
+  });
+
+  it('an unattributed unmapped item shows in no client screen (only the creator\'s user-wide view)', async () => {
+    const item3 = await seedItem('Orphan Bank');
+    await seedPlaidAccount(item3, 'o1');
+    expect((await getItemsForUser(userId, tenantA)).some((i) => i.institutionName === 'Orphan Bank')).toBe(false);
+    expect((await getItemsForUser(userId, tenantB)).some((i) => i.institutionName === 'Orphan Bank')).toBe(false);
+    expect((await getItemsForUser(userId)).some((i) => i.institutionName === 'Orphan Bank')).toBe(true);
+    await dropItem(item3);
   });
 
   it('a fully unmapped FOREIGN item stays hidden from tenant-scoped views (SECURITY)', async () => {

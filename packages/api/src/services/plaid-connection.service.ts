@@ -99,19 +99,13 @@ export async function getVisibleAccounts(userId: string, plaidItemId: string, sc
     const hasOtherTenantMapping = mappings.some((m) => m.tenantId !== scopeTenantId);
     let canShowUnassigned = itemUsedHere && !hasOtherTenantMapping;
     // Carve-out: a fully UNMAPPED item (e.g. just created via a client
-    // bank-connect invite) has no tenant relationship yet, so the rule
-    // above hid it from every tenant-scoped Bank Connections screen and
-    // nobody could ever map it. Show its unassigned accounts in tenants
-    // the CREATOR administers — the inviting team can finish mapping.
-    // Mirrors assertCanAccessItem's unmapped-item carve-out; items with
-    // any mapping elsewhere stay hidden, so the cross-tenant bleed the
-    // rule above closes stays closed.
+    // bank-connect invite) has no mapping yet, so the rule above would hide
+    // it everywhere and nobody could map it. Show its unassigned accounts
+    // ONLY in the client it was connected for (getItemHomeTenants). It used
+    // to be every tenant the creator administers — for a firm admin that is
+    // every client, so one client's bank showed on all of them.
     if (!canShowUnassigned && mappings.length === 0) {
-      const item = await db.query.plaidItems.findFirst({ where: eq(plaidItems.id, plaidItemId) });
-      if (item?.createdBy) {
-        const creatorTenants = await getUserAdminTenants(item.createdBy);
-        canShowUnassigned = creatorTenants.includes(scopeTenantId);
-      }
+      canShowUnassigned = (await getItemHomeTenants(plaidItemId)).includes(scopeTenantId);
     }
     for (const acct of allAccounts) {
       const mapping = mappingByAccount.get(acct.id) ?? null;
@@ -135,8 +129,8 @@ export async function getVisibleAccounts(userId: string, plaidItemId: string, sc
   // balances, and the creator's name/email (reachable via MCP
   // get_bank_connections). An item's unassigned accounts are now shown only
   // when:
-  //   - the caller created the item, OR shares a tenant with its creator
-  //     (the connecting user's team can finish mapping), OR one of the
+  //   - the caller created the item, OR (item still unmapped) administers
+  //     the client it was connected for (getItemHomeTenants), OR one of the
   //     caller's tenants already has a mapping on it (a sanctioned share),
   //   - AND no OTHER tenant holds a mapping on it (a cross-tenant item's
   //     unassigned accounts can't be attributed — super-admin maps those
@@ -145,11 +139,12 @@ export async function getVisibleAccounts(userId: string, plaidItemId: string, sc
   const mappings = [...mappingByAccount.values()];
   const item = await db.query.plaidItems.findFirst({ where: eq(plaidItems.id, plaidItemId) });
   const isCreator = !!item?.createdBy && item.createdBy === userId;
-  const creatorTenants = item?.createdBy && !isCreator ? await getUserAdminTenants(item.createdBy) : [];
-  const sharesTenantWithCreator = isCreator || creatorTenants.some((t) => userTenants.includes(t));
+  const adminsHomeTenant = !isCreator && mappings.length === 0
+    ? (await getItemHomeTenants(plaidItemId)).some((t) => userTenants.includes(t))
+    : false;
   const itemUsedByUser = mappings.some((m) => userTenants.includes(m.tenantId));
   const hasForeignMapping = mappings.some((m) => !userTenants.includes(m.tenantId));
-  const showUnassigned = !hasForeignMapping && (sharesTenantWithCreator || itemUsedByUser);
+  const showUnassigned = !hasForeignMapping && (isCreator || adminsHomeTenant || itemUsedByUser);
 
   for (const acct of allAccounts) {
     const mapping = mappingByAccount.get(acct.id) ?? null;
@@ -302,6 +297,25 @@ export async function detectAccountsConnectedElsewhere(
   return false;
 }
 
+// The client(s) a Plaid item was connected FOR. plaid_items carry no
+// tenant, so an item with no mappings yet is attributed by (a) the tenant
+// recorded on its item_created activity (both the in-app and the invite
+// exchange pass the session/invite tenant) and (b) any bank-connect invite
+// that produced it. SECURITY: this — not "every tenant the creator
+// administers" — decides where an unmapped item may surface. The creator
+// rule showed a client's freshly connected bank on EVERY client a firm
+// admin manages (2026-10-02 incident).
+export async function getItemHomeTenants(plaidItemId: string): Promise<string[]> {
+  const { bankConnectInvites } = await import('../db/schema/index.js');
+  const [activity, invites] = await Promise.all([
+    db.select({ tenantId: plaidItemActivity.tenantId }).from(plaidItemActivity)
+      .where(and(eq(plaidItemActivity.plaidItemId, plaidItemId), eq(plaidItemActivity.action, 'item_created'))),
+    db.select({ tenantId: bankConnectInvites.tenantId }).from(bankConnectInvites)
+      .where(eq(bankConnectInvites.connectedPlaidItemId, plaidItemId)),
+  ]);
+  return [...new Set([...activity, ...invites].map((r) => r.tenantId).filter((t): t is string => !!t))];
+}
+
 async function getUserAdminTenants(userId: string): Promise<string[]> {
   const { users, userTenantAccess } = await import('../db/schema/index.js');
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
@@ -446,7 +460,9 @@ export async function createConnection(userId: string, publicToken: string, meta
     accounts.push(acct!);
   }
 
-  await logActivity(item!.id, null, 'item_created', userId, user?.displayName || null, {
+  // The tenant is recorded so getItemHomeTenants can attribute the item
+  // while it's still unmapped.
+  await logActivity(item!.id, metadata.tenantId ?? null, 'item_created', userId, user?.displayName || null, {
     institutionName: metadata.institutionName,
     ...(metadata.source ? { source: metadata.source } : {}),
   });
@@ -532,17 +548,16 @@ export async function assertCanAccessItem(userId: string, itemId: string): Promi
   // SECURITY: access requires an account MAPPED into one of the user's
   // tenants — not merely a visible unassigned account (counting those let
   // any authenticated user pass this gate). One carve-out: a fully UNMAPPED
-  // item is operable by the connecting user's teammates (they share a
-  // tenant with the creator) so a colleague can finish mapping or delete an
+  // item is operable by admins of the client it was connected for
+  // (getItemHomeTenants) so a colleague can finish mapping or delete an
   // abandoned link.
   const { accounts } = await getVisibleAccounts(userId, itemId);
   if (accounts.some((a) => a.mapping)) return;
 
   const allMappings = await getAllMappingsForItem(itemId);
-  if (allMappings.length === 0 && item.createdBy) {
+  if (allMappings.length === 0) {
     const userTenants = await getUserAdminTenants(userId);
-    const creatorTenants = await getUserAdminTenants(item.createdBy);
-    if (creatorTenants.some((t) => userTenants.includes(t))) return;
+    if ((await getItemHomeTenants(itemId)).some((t) => userTenants.includes(t))) return;
   }
   throw AppError.notFound('Connection not found');
 }
@@ -644,8 +659,8 @@ export async function deleteConnection(plaidItemId: string, deletePendingItems: 
   // affected-tenant list is empty — `every()` over an empty list is
   // vacuously true, which previously let ANY authenticated user delete
   // another client's freshly-connected (not-yet-mapped) bank. An unmapped
-  // item may only be deleted by its creator, a super-admin, or a user who
-  // shares a tenant with the creator.
+  // item may only be deleted by its creator, a super-admin, or an admin of
+  // the client it was connected for.
   const isSuperAdmin = user?.isSuperAdmin;
   const isCreator = item.createdBy === userId;
   if (!isSuperAdmin && !isCreator) {
@@ -653,10 +668,9 @@ export async function deleteConnection(plaidItemId: string, deletePendingItems: 
     const allMappings = await getAllMappingsForItem(plaidItemId);
     const affectedTenants = [...new Set(allMappings.map((m) => m.tenantId))];
     if (affectedTenants.length === 0) {
-      const creatorTenants = item.createdBy ? await getUserAdminTenants(item.createdBy) : [];
-      const sharesTenantWithCreator = creatorTenants.some((t) => userTenants.includes(t));
-      if (!sharesTenantWithCreator) {
-        throw AppError.forbidden('Only the user who connected this bank (or their team) can delete an unmapped connection');
+      const homeTenants = await getItemHomeTenants(plaidItemId);
+      if (!homeTenants.some((t) => userTenants.includes(t))) {
+        throw AppError.forbidden('Only the user who connected this bank (or the client\'s team) can delete an unmapped connection');
       }
     } else {
       const hasAccessToAll = affectedTenants.every((t) => userTenants.includes(t));
