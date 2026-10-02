@@ -799,10 +799,19 @@ Key ideas:
   tag filter, activity view, and category/search filters applied.
 - **Leadsheets** (Trial Balance → Leadsheets) group accounts into
   workpapers (Cash, AR, Fixed Assets…) with tickmarks, notes, and a
-  preparer→reviewer sign-off flow. Move an account between leadsheets
-  with "Move to…" on its row (or remove it); "Add account" pulls any
-  account — including zero-balance ones — into the open leadsheet. A sign-off goes "stale" if the
-  books change after signing.
+  preparer→reviewer sign-off flow. The date box at the top is the period
+  end (shared with the Trial Balance page); the leadsheet shows balances
+  as of that date, and tickmarks, notes and sign-offs belong to the tax
+  year it falls in. Click **Edit** on a leadsheet to change its accounts:
+  "Move to…" on a row moves it to another leadsheet (or removes it), and
+  "Add account" pulls any account — including zero-balance ones — into
+  the open leadsheet. Click **Done** to hide those controls. A sign-off
+  goes "stale" if the books change after signing.
+- **Reports by leadsheet**: with the Trial Balance module on, the
+  Balance Sheet and Profit & Loss "View" menu adds **Grouped by
+  leadsheet** and **Condensed (leadsheet totals)**. Accounts on no
+  leadsheet appear last under "Not on a leadsheet". Works with
+  comparisons and in PDF/CSV exports.
 - **Closing date** (TB Settings): locks client-side changes on or
   before the date. Firm staff can override with a confirmation
   (audit-logged); AJEs are always allowed.

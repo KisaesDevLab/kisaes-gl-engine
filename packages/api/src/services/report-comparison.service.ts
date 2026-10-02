@@ -8,6 +8,8 @@ import { db } from '../db/index.js';
 import { tags } from '../db/schema/index.js';
 import * as reportService from './report.service.js';
 import { getCustomDetailTypeRanks, orderDetailTypeGroups } from './detail-types.service.js';
+import { getLeadsheetMap, groupByLeadsheet } from './report-leadsheets.js';
+import type { AccountType } from '@kis-books/shared';
 
 type CompareMode = 'previous_period' | 'previous_year' | 'ytd_vs_prior_ytd' | 'multi_period';
 type PeriodType = 'month' | 'quarter' | 'year';
@@ -44,6 +46,7 @@ const favSign = (t: PLAcctType): 1 | -1 => (t === 'cogs' || t === 'expense' || t
 // per-row percentages would be nonsense).
 export interface ComparativeDetailTypeGroup<T> {
   detailType: string | null;
+  leadsheetCode?: string | null; // leadsheet groups only (group_by=leadsheet)
   label: string;
   rows: T[];
   values: Array<number | null>;
@@ -103,6 +106,41 @@ function groupComparativeRows<T extends { detailType?: string | null; values: Ar
   }
   for (const g of out) g.values = subtotalValues(g.rows, columns, favorabilitySign);
   return out;
+}
+
+// One section's comparative groups for the active grouping mode (see
+// reportService.makeSectionGrouper). Leadsheet groups subtotal with the
+// same variance semantics; computed equity rows still trail in
+// 'Equity (Calculated)'.
+type ComparativeGrouper = <T extends { accountId?: string | null; detailType?: string | null; values: Array<number | null> }>(
+  accountType: AccountType,
+  rows: T[],
+  columns: ComparativeColumn[],
+  isCalculated?: (row: T) => boolean,
+  favorabilitySign?: 1 | -1,
+) => Array<ComparativeDetailTypeGroup<T>>;
+
+async function makeComparativeGrouper(tenantId: string, companyId: string | null, groupBy: reportService.ReportGroupBy): Promise<ComparativeGrouper> {
+  if (groupBy === 'leadsheet') {
+    const map = await getLeadsheetMap(tenantId, companyId);
+    return (_accountType, rows, columns, isCalculated = () => false, favorabilitySign = 1) => {
+      const calculated = rows.filter(isCalculated);
+      const out = groupByLeadsheet(rows.filter((r) => !isCalculated(r)), map, (members, label, code) => ({
+        detailType: null as string | null,
+        leadsheetCode: code,
+        label,
+        rows: members,
+        values: subtotalValues(members, columns, favorabilitySign),
+      }));
+      if (calculated.length > 0) {
+        out.push({ detailType: null, leadsheetCode: null, label: 'Equity (Calculated)', rows: calculated, values: subtotalValues(calculated, columns, favorabilitySign) });
+      }
+      return out;
+    };
+  }
+  const ranks = await getCustomDetailTypeRanks(tenantId);
+  return (accountType, rows, columns, isCalculated, favorabilitySign) =>
+    orderDetailTypeGroups(groupComparativeRows(rows, columns, isCalculated, favorabilitySign), ranks, accountType);
 }
 
 function getPriorPeriodRange(startDate: string, endDate: string): DateRange {
@@ -189,7 +227,7 @@ export async function buildComparativePL(
   // field per section; existing comparative shape untouched.
   groupBy: reportService.ReportGroupBy | null = null,
 ) {
-  const grouped = groupBy === 'detail_type';
+  const grouped = groupBy !== null;
   if (compareMode === 'multi_period') {
     const fyStartMonth = periodType === 'year'
       ? await reportService.getFiscalYearStart(tenantId, companyId)
@@ -233,14 +271,14 @@ export async function buildComparativePL(
     // no variance columns; the trailing Total column sums like any other).
     // Custom detail types follow the tenant's presentation order —
     // same shared helper as the standard P&L/BS builders.
-    const ranks = grouped ? await getCustomDetailTypeRanks(tenantId) : null;
-    const plGroups = grouped && ranks
+    const group = grouped ? await makeComparativeGrouper(tenantId, companyId, groupBy!) : null;
+    const plGroups = group
       ? {
-          revenue: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'revenue'), columns), ranks, 'revenue'),
-          cogs: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'cogs'), columns), ranks, 'cogs'),
-          expenses: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'expense'), columns), ranks, 'expense'),
-          otherRevenue: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'other_revenue'), columns), ranks, 'other_revenue'),
-          otherExpenses: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'other_expense'), columns), ranks, 'other_expense'),
+          revenue: group('revenue', rows.filter((r) => r.accountType === 'revenue'), columns),
+          cogs: group('cogs', rows.filter((r) => r.accountType === 'cogs'), columns),
+          expenses: group('expense', rows.filter((r) => r.accountType === 'expense'), columns),
+          otherRevenue: group('other_revenue', rows.filter((r) => r.accountType === 'other_revenue'), columns),
+          otherExpenses: group('other_expense', rows.filter((r) => r.accountType === 'other_expense'), columns),
         }
       : undefined;
 
@@ -263,7 +301,7 @@ export async function buildComparativePL(
       totalOtherRevenue: otherRevTotals,
       totalOtherExpenses: otherExpTotals,
       netIncome: netTotals,
-      ...(plGroups ? { groupBy: 'detail_type' as const, groups: plGroups } : {}),
+      ...(plGroups ? { groupBy: groupBy!, groups: plGroups } : {}),
     };
   }
 
@@ -322,14 +360,14 @@ export async function buildComparativePL(
   // values for every column -- current/prior sums with the $ / % change
   // re-derived from those sums (same semantics as account rows). Custom
   // detail types follow the tenant's presentation order (shared helper).
-  const ranks = grouped ? await getCustomDetailTypeRanks(tenantId) : null;
-  const plGroups = grouped && ranks
+  const group = grouped ? await makeComparativeGrouper(tenantId, companyId, groupBy!) : null;
+  const plGroups = group
     ? {
-        revenue: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'revenue'), columns, undefined, favSign('revenue')), ranks, 'revenue'),
-        cogs: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'cogs'), columns, undefined, favSign('cogs')), ranks, 'cogs'),
-        expenses: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'expense'), columns, undefined, favSign('expense')), ranks, 'expense'),
-        otherRevenue: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'other_revenue'), columns, undefined, favSign('other_revenue')), ranks, 'other_revenue'),
-        otherExpenses: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'other_expense'), columns, undefined, favSign('other_expense')), ranks, 'other_expense'),
+        revenue: group('revenue', rows.filter((r) => r.accountType === 'revenue'), columns, undefined, favSign('revenue')),
+        cogs: group('cogs', rows.filter((r) => r.accountType === 'cogs'), columns, undefined, favSign('cogs')),
+        expenses: group('expense', rows.filter((r) => r.accountType === 'expense'), columns, undefined, favSign('expense')),
+        otherRevenue: group('other_revenue', rows.filter((r) => r.accountType === 'other_revenue'), columns, undefined, favSign('other_revenue')),
+        otherExpenses: group('other_expense', rows.filter((r) => r.accountType === 'other_expense'), columns, undefined, favSign('other_expense')),
       }
     : undefined;
 
@@ -351,7 +389,7 @@ export async function buildComparativePL(
     totalOtherRevenue: varRow(currentPL.totalOtherRevenue, priorPL.totalOtherRevenue, favSign('other_revenue')),
     totalOtherExpenses: varRow(currentPL.totalOtherExpenses, priorPL.totalOtherExpenses, favSign('other_expense')),
     netIncome: varRow(currentPL.netIncome, priorPL.netIncome),
-    ...(plGroups ? { groupBy: 'detail_type' as const, groups: plGroups } : {}),
+    ...(plGroups ? { groupBy: groupBy!, groups: plGroups } : {}),
   };
 }
 
@@ -362,7 +400,7 @@ export async function buildComparativeBS(
   // field per section; existing comparative shape untouched.
   groupBy: reportService.ReportGroupBy | null = null,
 ) {
-  const grouped = groupBy === 'detail_type';
+  const grouped = groupBy !== null;
   const currentBS = await reportService.buildBalanceSheet(tenantId, asOfDate, basis, companyId, null, groupBy);
   let priorDate: string;
 
@@ -430,12 +468,12 @@ export async function buildComparativeBS(
   // (Current Year)) land in a trailing 'Equity (Calculated)' group.
   // Custom detail types follow the tenant's presentation order; null-
   // detail groups (incl. the calculated one) stay trailing.
-  const ranks = grouped ? await getCustomDetailTypeRanks(tenantId) : null;
-  const bsGroups = grouped && ranks
+  const group = grouped ? await makeComparativeGrouper(tenantId, companyId, groupBy!) : null;
+  const bsGroups = group
     ? {
-        assets: orderDetailTypeGroups(groupComparativeRows(mergedAssets, columns), ranks, 'asset'),
-        liabilities: orderDetailTypeGroups(groupComparativeRows(mergedLiabilities, columns), ranks, 'liability'),
-        equity: orderDetailTypeGroups(groupComparativeRows(mergedEquity, columns, (r) => r.accountId === null), ranks, 'equity'),
+        assets: group('asset', mergedAssets, columns),
+        liabilities: group('liability', mergedLiabilities, columns),
+        equity: group('equity', mergedEquity, columns, (r) => r.accountId === null),
       }
     : undefined;
 
@@ -457,7 +495,7 @@ export async function buildComparativeBS(
       priorBS.totalLiabilitiesAndEquity,
       ...Object.values(computeVariance(currentBS.totalLiabilitiesAndEquity, priorBS.totalLiabilitiesAndEquity)),
     ],
-    ...(bsGroups ? { groupBy: 'detail_type' as const, groups: bsGroups } : {}),
+    ...(bsGroups ? { groupBy: groupBy!, groups: bsGroups } : {}),
   };
 }
 
@@ -487,7 +525,7 @@ export async function buildPLByTag(
   companyId: string | null = null,
   groupBy: reportService.ReportGroupBy | null = null,
 ) {
-  const grouped = groupBy === 'detail_type';
+  const grouped = groupBy !== null;
   const requested = tagIdList.split(',').map((s) => s.trim()).filter(Boolean);
   const tagRows = await db.select({ id: tags.id, name: tags.name }).from(tags)
     .where(and(eq(tags.tenantId, tenantId), inArray(tags.id, requested)));
@@ -533,14 +571,14 @@ export async function buildPLByTag(
     };
   });
 
-  const ranks = grouped ? await getCustomDetailTypeRanks(tenantId) : null;
-  const plGroups = grouped && ranks
+  const group = grouped ? await makeComparativeGrouper(tenantId, companyId, groupBy!) : null;
+  const plGroups = group
     ? {
-        revenue: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'revenue'), columns), ranks, 'revenue'),
-        cogs: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'cogs'), columns), ranks, 'cogs'),
-        expenses: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'expense'), columns), ranks, 'expense'),
-        otherRevenue: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'other_revenue'), columns), ranks, 'other_revenue'),
-        otherExpenses: orderDetailTypeGroups(groupComparativeRows(rows.filter((r) => r.accountType === 'other_expense'), columns), ranks, 'other_expense'),
+        revenue: group('revenue', rows.filter((r) => r.accountType === 'revenue'), columns),
+        cogs: group('cogs', rows.filter((r) => r.accountType === 'cogs'), columns),
+        expenses: group('expense', rows.filter((r) => r.accountType === 'expense'), columns),
+        otherRevenue: group('other_revenue', rows.filter((r) => r.accountType === 'other_revenue'), columns),
+        otherExpenses: group('other_expense', rows.filter((r) => r.accountType === 'other_expense'), columns),
       }
     : undefined;
 
@@ -557,6 +595,6 @@ export async function buildPLByTag(
     totalOtherRevenue: withTotal(plResults.map((pl) => pl.totalOtherRevenue)),
     totalOtherExpenses: withTotal(plResults.map((pl) => pl.totalOtherExpenses)),
     netIncome: withTotal(plResults.map((pl) => pl.netIncome)),
-    ...(plGroups ? { groupBy: 'detail_type' as const, groups: plGroups } : {}),
+    ...(plGroups ? { groupBy: groupBy!, groups: plGroups } : {}),
   };
 }

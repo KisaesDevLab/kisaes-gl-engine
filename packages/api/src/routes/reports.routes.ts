@@ -344,7 +344,7 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
     // subtotal row per group (condensed = subtotal rows only) — and
     // keeps a Detail Type column so the CSV still pivots cleanly.
     // ?show_pct=1 adds the on-screen "% of Revenue" column.
-    const grouped = reportData.groupBy === 'detail_type';
+    const grouped = !!reportData.groupBy;
     const condensed = reportData.display === 'condensed';
     const showPct = reportData.showPct === true;
     const totalRev = Number(reportData.totalRevenue) || 0;
@@ -447,7 +447,7 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
     const liabilitiesLabel = BS?.liabilities || 'Liabilities';
     const equityLabel = BS?.equity || 'Equity';
     const totalLELabel = BS?.totalLiabilitiesAndEquity || 'Total Liabilities & Equity';
-    const grouped = reportData.groupBy === 'detail_type';
+    const grouped = !!reportData.groupBy;
     const columns: ExportColumn[] = [
       { key: 'account', label: 'Account' },
       ...(grouped ? [{ key: 'detail_type', label: 'Detail Type' }] : []),
@@ -968,10 +968,12 @@ function readAccountIds(req: { query: Record<string, unknown> }): string[] | nul
   return ids.length > 0 ? ids : null;
 }
 
-// Optional grouping mode for P&L / Balance Sheet: ?group_by=detail_type.
-// Anything else (absent, empty, unknown value) means "no grouping".
-function readGroupBy(req: { query: Record<string, unknown> }): 'detail_type' | null {
-  return req.query['group_by'] === 'detail_type' ? 'detail_type' : null;
+// Optional grouping mode for P&L / Balance Sheet: ?group_by=detail_type
+// or ?group_by=leadsheet (the TB module's leadsheets). Anything else
+// (absent, empty, unknown value) means "no grouping".
+function readGroupBy(req: { query: Record<string, unknown> }): 'detail_type' | 'leadsheet' | null {
+  const v = req.query['group_by'];
+  return v === 'detail_type' || v === 'leadsheet' ? v : null;
 }
 
 // Display mode for exports: ?display=condensed collapses grouped

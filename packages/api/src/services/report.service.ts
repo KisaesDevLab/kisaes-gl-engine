@@ -12,6 +12,7 @@ import {
   isDebitNormal as isDebitNormalShared,
   COST_TYPES,
   formatDetailTypeLabel,
+  type AccountType,
 } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { transactions, journalLines, accounts, contacts } from '../db/schema/index.js';
@@ -23,6 +24,7 @@ import {
 } from './tenant-report-settings.service.js';
 import { missingMonthsBetween } from './bank-statements.service.js';
 import { getCustomDetailTypeRanks, orderDetailTypeGroups } from './detail-types.service.js';
+import { getLeadsheetMap, groupByLeadsheet } from './report-leadsheets.js';
 
 // Money parsers. Reports expose `number` to the UI, but every SUM /
 // DIFFERENCE runs through Decimal so aggregating hundreds of rows
@@ -242,12 +244,40 @@ export interface PLEntry {
 // a null detail type groups under 'Other'.
 export interface DetailTypeGroup<T> {
   detailType: string | null;
+  // Set only on leadsheet groups (group_by=leadsheet); null for the
+  // 'Not on a leadsheet' group.
+  leadsheetCode?: string | null;
   label: string;
   entries: T[];
   subtotal: number;
 }
 
-export type ReportGroupBy = 'detail_type';
+export type ReportGroupBy = 'detail_type' | 'leadsheet';
+
+// Builds one section's groups for the active grouping mode. Detail type:
+// humanized detail types in the tenant's presentation order. Leadsheet:
+// the TB module's leadsheets in their sort order, unassigned accounts
+// trailing (see report-leadsheets.ts).
+type SectionGrouper = <T extends { accountId?: string | null; detailType?: string | null }>(
+  entries: T[],
+  amountOf: (e: T) => number,
+  accountType: AccountType,
+) => Array<DetailTypeGroup<T>>;
+
+export async function makeSectionGrouper(tenantId: string, companyId: string | null, groupBy: ReportGroupBy): Promise<SectionGrouper> {
+  if (groupBy === 'leadsheet') {
+    const map = await getLeadsheetMap(tenantId, companyId);
+    return (entries, amountOf) => groupByLeadsheet(entries, map, (members, label, code) => ({
+      detailType: null,
+      leadsheetCode: code,
+      label,
+      entries: members,
+      subtotal: Number(members.reduce((d, e) => d.plus(amountOf(e)), new Decimal(0)).toFixed(4)),
+    }));
+  }
+  const ranks = await getCustomDetailTypeRanks(tenantId);
+  return (entries, amountOf, accountType) => orderDetailTypeGroups(groupByDetailType(entries, amountOf), ranks, accountType);
+}
 
 // Group a section's entries by their detailType, preserving the
 // account-number ordering of the underlying entries (groups appear in
@@ -340,7 +370,7 @@ export async function buildProfitAndLoss(
   // cash-basis lines inherit the source line's tag, so the same clause
   // applies to both bases.
   const tagJoinClause = tagId ? sql` AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
-  const grouped = groupBy === 'detail_type';
+  const grouped = groupBy !== null;
 
   const rows = basis === 'cash'
     ? await db.execute(sql`
@@ -442,19 +472,18 @@ export async function buildProfitAndLoss(
     netIncome,
     ...(grouped
       ? await (async () => {
-          // Presentation order for custom detail types (Settings →
-          // Detail Types): stock groups keep first-occurrence order,
+          // Detail types: stock groups keep first-occurrence order,
           // custom groups follow by tenant sort_order, null-detail
-          // ('Other') trails. See orderDetailTypeGroups.
-          const ranks = await getCustomDetailTypeRanks(tenantId);
+          // ('Other') trails. Leadsheets: TB sort order, unassigned last.
+          const group = await makeSectionGrouper(tenantId, companyId, groupBy!);
           return {
-            groupBy: 'detail_type' as const,
+            groupBy: groupBy!,
             groups: {
-              revenue: orderDetailTypeGroups(groupByDetailType(revenue, (e) => e.amount), ranks, 'revenue'),
-              cogs: orderDetailTypeGroups(groupByDetailType(cogs, (e) => e.amount), ranks, 'cogs'),
-              expenses: orderDetailTypeGroups(groupByDetailType(expenses, (e) => e.amount), ranks, 'expense'),
-              otherRevenue: orderDetailTypeGroups(groupByDetailType(otherRevenue, (e) => e.amount), ranks, 'other_revenue'),
-              otherExpenses: orderDetailTypeGroups(groupByDetailType(otherExpenses, (e) => e.amount), ranks, 'other_expense'),
+              revenue: group(revenue, (e) => e.amount, 'revenue'),
+              cogs: group(cogs, (e) => e.amount, 'cogs'),
+              expenses: group(expenses, (e) => e.amount, 'expense'),
+              otherRevenue: group(otherRevenue, (e) => e.amount, 'other_revenue'),
+              otherExpenses: group(otherExpenses, (e) => e.amount, 'other_expense'),
             },
           };
         })()
@@ -477,7 +506,7 @@ export async function buildBalanceSheet(
   groupBy: ReportGroupBy | null = null,
 ) {
   const tagClause = tagId ? sql` AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
-  const grouped = groupBy === 'detail_type';
+  const grouped = groupBy !== null;
   // Cash basis balance sheet: built from the virtual cash-basis ledger
   // (cashBasisLinesWith). AR/AP documents drop out entirely, payment
   // AR/AP legs are replaced by scaled document distributions, so:
@@ -630,15 +659,15 @@ export async function buildBalanceSheet(
           // Same custom detail-type presentation ordering as the P&L —
           // stock first-occurrence, custom by sort_order, null trailing
           // (which keeps 'Equity (Calculated)' last).
-          const ranks = await getCustomDetailTypeRanks(tenantId);
+          const group = await makeSectionGrouper(tenantId, companyId, groupBy!);
           return {
-            groupBy: 'detail_type' as const,
+            groupBy: groupBy!,
             groups: {
-              assets: orderDetailTypeGroups(groupByDetailType(assets, (e) => e.balance), ranks, 'asset'),
-              liabilities: orderDetailTypeGroups(groupByDetailType(liabilities, (e) => e.balance), ranks, 'liability'),
-              equity: orderDetailTypeGroups([
-                // Real equity accounts group by their detail type…
-                ...groupByDetailType(equity.filter((e) => e.accountId !== null), (e) => e.balance),
+              assets: group(assets, (e) => e.balance, 'asset'),
+              liabilities: group(liabilities, (e) => e.balance, 'liability'),
+              equity: [
+                // Real equity accounts group by detail type / leadsheet…
+                ...group(equity.filter((e) => e.accountId !== null), (e) => e.balance, 'equity'),
                 // …the computed rows land in a dedicated trailing group.
                 ...(calculatedEquity.length > 0
                   ? [{
@@ -652,7 +681,7 @@ export async function buildBalanceSheet(
                       ),
                     }]
                   : []),
-              ], ranks, 'equity'),
+              ],
             },
           };
         })()
