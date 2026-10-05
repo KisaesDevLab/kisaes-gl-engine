@@ -445,6 +445,29 @@ describe('guards', () => {
   });
 });
 
+describe('dismissing', () => {
+  it('retires a pending answer without posting, without a client-facing reason, and only once', async () => {
+    const f = await mkFeedItem('42.5000');
+    const id = await mkSuggestion({ targetKind: 'bank_feed_item', targetId: f, accountId: rentAccountId, amount: '42.50' });
+    const before = await balanceOf(rentAccountId);
+
+    const res = await review.dismissSuggestions(tenantId, [id], userId);
+    expect(res.dismissed).toEqual([id]);
+    const [row] = await db.select().from(clientCategorySuggestions).where(eq(clientCategorySuggestions.id, id));
+    expect(row!.status).toBe('stale');
+    expect(row!.resolution).toBe('dismissed');
+    expect(row!.rejectionReason).toBeNull();
+    expect(row!.reviewedBy).toBe(userId);
+    expect(await balanceOf(rentAccountId)).toBe(before);
+    const [item] = await db.select().from(bankFeedItems).where(eq(bankFeedItems.id, f));
+    expect(item!.status).toBe('pending');
+
+    // Gone from the review list; a second dismiss is a no-op.
+    expect((await review.listSuggestions(tenantId, { companyId, status: 'pending' })).total).toBe(0);
+    expect((await review.dismissSuggestions(tenantId, [id], userId)).dismissed).toEqual([]);
+  });
+});
+
 describe('the unread badge', () => {
   it('counts pending unreviewed answers and clears without posting', async () => {
     const f1 = await mkFeedItem('10.0000');

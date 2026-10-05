@@ -1509,6 +1509,15 @@ tab also lists suggestions the company's own team members sent from Banking →
 Uncategorized (badge **Team member** vs **Client**); both share the same queue and the
 same one-live-answer-per-row rule.
 
+Inline review (2026-10-05): each row's category and payee are pickers prefilled with the
+client's pick ("Client said: …" stays visible once changed); the row's **Approve** posts it
+with those values (a drifted row's button reads **Approve anyway**), and bulk Approve uses
+each ticked row's edits, with toolbar overrides winning per field. **Dismiss** (row or
+bulk, confirm prompt) retires answers staff already recorded by hand:
+`POST /practice/uncategorized/suggestions/dismiss {ids}` sets status `stale` with
+resolution `dismissed` — nothing posts, no client-facing reason, audit-logged. An
+**Already handled** (stale) row has no Approve, only Dismiss.
+
 The payee (2026-09-24, migration 0179): every row also asks **Who was it paid to or
 from?** — a select of EVERY active contact of the tenant (vendors, customers, both; all
 types on every row, user decision) served by `GET /api/portal/categorize/payees` as
@@ -1519,7 +1528,7 @@ payee, and "not sure" no longer demands a note when a payee is given. Stored as
 `suggested_contact_label` (the name as shown or typed — always set). The write path
 allowlists `contactId` against the same payee list (`invalid_payee`). Staff see a
 **Payee** column on Client suggested; a typed name is badged **Not in contacts** and is
-resolved with the override payee picker (its quick-add creates the contact). Approving
+resolved with the row's Payee picker or the override payee picker (quick-add creates the contact). Approving
 applies the payee: a bank line via categorize's contactId, a suspense amount inside the
 SAME bulk update as the move out of suspense (`clearSuspense(..., { payeeContactId })`),
 recorded as `resolved_contact_id`; an override payee marks the resolution `overridden`.

@@ -343,6 +343,16 @@ uncategorizedRouter.post('/suggestions/reject', requireSuggestionReviewer, valid
   res.json(result);
 });
 
+// POST /suggestions/dismiss — retire without posting or telling the client
+// (staff already recorded it by hand).
+const dismissSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(200),
+});
+uncategorizedRouter.post('/suggestions/dismiss', requireSuggestionReviewer, validate(dismissSchema), async (req, res) => {
+  const result = await suggestionReview.dismissSuggestions(req.tenantId, req.body.ids, req.userId);
+  res.json(result);
+});
+
 // POST /suggestions/mark-reviewed — clear the unread badge without posting.
 const markReviewedSchema = z.object({
   ids: z.array(z.string().uuid()).max(500).optional(),

@@ -365,6 +365,34 @@ export async function rejectSuggestions(
 }
 
 /**
+ * Retire suggestions without posting anything and without telling the client.
+ * For answers staff already recorded by hand: it is not the client's fault, so
+ * it reuses 'stale' (no "declined" message) and marks the resolution so the
+ * audit trail shows a person chose it.
+ */
+export async function dismissSuggestions(
+  tenantId: string, ids: string[], userId?: string,
+): Promise<{ dismissed: string[] }> {
+  if (ids.length === 0) throw AppError.badRequest('Select at least one suggestion.');
+  const res = await db.update(clientCategorySuggestions)
+    .set({
+      status: 'stale', resolution: 'dismissed',
+      reviewedAt: new Date(), reviewedBy: userId ?? null, updatedAt: new Date(),
+    })
+    .where(and(
+      eq(clientCategorySuggestions.tenantId, tenantId),
+      inArray(clientCategorySuggestions.id, ids),
+      eq(clientCategorySuggestions.status, 'pending'),
+    ))
+    .returning({ id: clientCategorySuggestions.id });
+  for (const r of res) {
+    await auditLog(tenantId, 'update', 'client_category_suggestion', r.id,
+      { status: 'pending' }, { status: 'stale', resolution: 'dismissed' }, userId);
+  }
+  return { dismissed: res.map((r) => r.id) };
+}
+
+/**
  * Clear the unread badge without approving. A bookkeeper who has looked but
  * is not ready to post should not keep seeing a red count.
  */
