@@ -28,6 +28,7 @@ import * as suspenseService from './suspense.service.js';
 import * as classificationService from './practice-classification.service.js';
 import type { Submitter, LiveSuggestion } from './portal-categorization.service.js';
 import { resolveReviewMode } from './suggestion-review-mode.service.js';
+import { sortDirSql } from '../utils/list-query.js';
 
 export interface SuggestionRow {
   id: string;
@@ -62,10 +63,13 @@ export interface SuggestionRow {
 
 // ── Listing ─────────────────────────────────────────────────────
 
+export type SuggestionSortKey = 'date' | 'description' | 'amount' | 'suggested' | 'payee' | 'note' | 'from';
+
 export async function listSuggestions(
   tenantId: string,
   opts: {
     companyId?: string; status?: string; unread?: boolean;
+    sortBy?: SuggestionSortKey; sortDir?: 'asc' | 'desc';
     limit?: number; offset?: number;
   } = {},
 ): Promise<{ rows: SuggestionRow[]; total: number }> {
@@ -85,6 +89,26 @@ export async function listSuggestions(
   const counted = await db.select({ n: sql<number>`count(*)::int` })
     .from(clientCategorySuggestions).where(where);
 
+  // Column sort runs in SQL because the list paginates. The display-name
+  // expressions mirror how each row is labelled below (contactName etc.).
+  const s = clientCategorySuggestions;
+  let sortExpr: ReturnType<typeof sql> | null = null;
+  switch (opts.sortBy) {
+    case 'date': sortExpr = sql`${s.snapshotDate}`; break;
+    case 'description': sortExpr = sql`LOWER(${s.snapshotDescription})`; break;
+    case 'amount': sortExpr = sql`CAST(${s.snapshotAmount} AS DECIMAL)`; break;
+    case 'suggested': sortExpr = sql`LOWER(${s.suggestedLabel})`; break;
+    case 'payee': sortExpr = sql`LOWER(COALESCE(${contacts.displayName}, ${s.suggestedContactLabel}))`; break;
+    case 'note': sortExpr = sql`LOWER(${s.clientNote})`; break;
+    case 'from': sortExpr = sql`LOWER(CASE WHEN ${s.submittedByUserId} IS NOT NULL
+        THEN COALESCE(NULLIF(${users.displayName}, ''), ${users.email})
+        ELSE COALESCE(NULLIF(TRIM(CONCAT_WS(' ', ${portalContacts.firstName}, ${portalContacts.lastName})), ''), ${portalContacts.email}) END)`; break;
+  }
+  const orderBy = sortExpr
+    ? sql`${sortExpr} ${sortDirSql(opts.sortDir, 'asc')} NULLS LAST, ${s.submittedAt} DESC, ${s.id}`
+    // Unread first, then newest — the doc-request queue's ordering.
+    : sql`(${s.reviewedAt} IS NOT NULL), ${s.submittedAt} DESC, ${s.id}`;
+
   const rows = await db.select({
     s: clientCategorySuggestions,
     contactEmail: portalContacts.email,
@@ -98,8 +122,7 @@ export async function listSuggestions(
     .leftJoin(portalContacts, eq(portalContacts.id, clientCategorySuggestions.submittedByContactId))
     .leftJoin(users, eq(users.id, clientCategorySuggestions.submittedByUserId))
     .leftJoin(contacts, eq(contacts.id, clientCategorySuggestions.suggestedContactId))
-    // Unread first, then newest — the doc-request queue's ordering.
-    .orderBy(sql`(${clientCategorySuggestions.reviewedAt} IS NOT NULL), ${clientCategorySuggestions.submittedAt} DESC`)
+    .orderBy(orderBy)
     .where(where)
     .limit(limit).offset(offset);
 

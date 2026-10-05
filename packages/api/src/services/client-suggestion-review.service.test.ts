@@ -348,6 +348,33 @@ describe('the suggested payee', () => {
   });
 });
 
+describe('listing order', () => {
+  it('sorts by a whitelisted column in both directions and across pages', async () => {
+    const f1 = await mkFeedItem('10.0000');
+    const f2 = await mkFeedItem('30.0000');
+    const f3 = await mkFeedItem('20.0000');
+    await mkSuggestion({ targetKind: 'bank_feed_item', targetId: f1, accountId: rentAccountId, amount: '10.00', date: '2026-05-03' });
+    await mkSuggestion({ targetKind: 'bank_feed_item', targetId: f2, accountId: null, amount: '30.00', date: '2026-05-01', note: 'No idea' });
+    await mkSuggestion({ targetKind: 'bank_feed_item', targetId: f3, accountId: rentAccountId, amount: '20.00', date: '2026-05-02' });
+
+    const amt = (rows: { snapshotAmount: string }[]) => rows.map((r) => Number(r.snapshotAmount));
+    expect(amt((await review.listSuggestions(tenantId, { companyId, sortBy: 'amount', sortDir: 'asc' })).rows)).toEqual([10, 20, 30]);
+    expect(amt((await review.listSuggestions(tenantId, { companyId, sortBy: 'amount', sortDir: 'desc' })).rows)).toEqual([30, 20, 10]);
+    expect((await review.listSuggestions(tenantId, { companyId, sortBy: 'date', sortDir: 'asc' })).rows.map((r) => r.snapshotDate))
+      .toEqual(['2026-05-01', '2026-05-02', '2026-05-03']);
+    // 'Not sure' sorts after 'Rent' descending.
+    expect((await review.listSuggestions(tenantId, { companyId, sortBy: 'suggested', sortDir: 'desc' })).rows[0]!.suggestedLabel).toBe('Rent');
+    // Page 2 follows the same order.
+    const p2 = await review.listSuggestions(tenantId, { companyId, sortBy: 'amount', sortDir: 'asc', limit: 2, offset: 2 });
+    expect(amt(p2.rows)).toEqual([30]);
+    expect(p2.total).toBe(3);
+    // Every column key runs.
+    for (const key of ['description', 'payee', 'note', 'from'] as const) {
+      expect((await review.listSuggestions(tenantId, { companyId, sortBy: key })).rows).toHaveLength(3);
+    }
+  });
+});
+
 describe('guards', () => {
   it('refuses to bulk-approve a row whose amount moved since the client answered', async () => {
     const feedItemId = await mkFeedItem('42.5000');

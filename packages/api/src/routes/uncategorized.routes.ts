@@ -79,6 +79,7 @@ async function attachmentCountsFor(
 const SORT_DIRS = ['asc', 'desc'] as const;
 const UNPOSTED_SORT_KEYS = ['feedDate', 'checkNumber', 'payee', 'description', 'amount'] as const;
 const SUSPENSE_SORT_KEYS = ['txnDate', 'checkNumber', 'payee', 'memo', 'amount'] as const;
+const SUGGESTION_SORT_KEYS = ['date', 'description', 'amount', 'suggested', 'payee', 'note', 'from'] as const;
 
 function optionalString(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
@@ -304,6 +305,8 @@ uncategorizedRouter.get('/suggestions', requireSuggestionReviewer, async (req, r
     companyId: req.companyId,
     status: optionalString(req.query['status']),
     unread: req.query['unread'] === 'true',
+    sortBy: pickEnum(req.query['sortBy'], SUGGESTION_SORT_KEYS),
+    sortDir: pickEnum(req.query['sortDir'], SORT_DIRS),
     limit: Math.min(optionalInt(req.query['limit'], 50), 500),
     offset: optionalInt(req.query['offset'], 0),
   });
