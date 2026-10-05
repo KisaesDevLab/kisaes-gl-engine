@@ -199,17 +199,20 @@ export function computeFirstIssueAt(
   return candidate;
 }
 
-// Period label that's printed in the email — "2026-04" for April. For
-// quarterly we use "2026-Q2"; for annually "2026".
+// Period label that's printed in the email — the last COMPLETE period
+// before the issue date, because a statement can't be sent for a month
+// that hasn't ended: a monthly request issued 2026-05-03 asks for
+// "2026-04"; quarterly issued in Q2 asks for "2026-Q1"; annually issued in
+// 2026 asks for "2025".
 export function periodLabelFor(when: Date, frequency: RecurringFrequency): string {
   const y = when.getUTCFullYear();
-  if (frequency === 'annually') return String(y);
+  const m = when.getUTCMonth(); // 0-based
+  if (frequency === 'annually') return String(y - 1);
   if (frequency === 'quarterly') {
-    const q = Math.floor(when.getUTCMonth() / 3) + 1;
-    return `${y}-Q${q}`;
+    const q = Math.floor(m / 3); // current quarter, 0-based
+    return q === 0 ? `${y - 1}-Q4` : `${y}-Q${q}`;
   }
-  const m = String(when.getUTCMonth() + 1).padStart(2, '0');
-  return `${y}-${m}`;
+  return m === 0 ? `${y - 1}-12` : `${y}-${String(m).padStart(2, '0')}`;
 }
 
 // Period label for a specific rule. Cron rules can fire sub-monthly

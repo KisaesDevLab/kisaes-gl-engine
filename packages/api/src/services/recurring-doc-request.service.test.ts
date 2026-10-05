@@ -115,21 +115,24 @@ describe('recurring-doc-request — calendar arithmetic', () => {
     });
   });
 
-  describe('periodLabelFor', () => {
-    it('formats monthly as YYYY-MM', () => {
-      expect(periodLabelFor(new Date(Date.UTC(2026, 3, 3, 9, 0, 0)), 'monthly')).toBe('2026-04');
-      expect(periodLabelFor(new Date(Date.UTC(2026, 11, 31, 9, 0, 0)), 'monthly')).toBe('2026-12');
+  describe('periodLabelFor — the last complete period before the issue date', () => {
+    it('monthly asks for the previous month', () => {
+      expect(periodLabelFor(new Date(Date.UTC(2026, 3, 3, 9, 0, 0)), 'monthly')).toBe('2026-03');
+      expect(periodLabelFor(new Date(Date.UTC(2026, 9, 3, 9, 0, 0)), 'monthly')).toBe('2026-09');
+      expect(periodLabelFor(new Date(Date.UTC(2026, 11, 31, 9, 0, 0)), 'monthly')).toBe('2026-11');
+      // January wraps to December of the prior year.
+      expect(periodLabelFor(new Date(Date.UTC(2026, 0, 3, 9, 0, 0)), 'monthly')).toBe('2025-12');
     });
 
-    it('formats quarterly as YYYY-Qn', () => {
-      expect(periodLabelFor(new Date(Date.UTC(2026, 0, 1, 9, 0, 0)), 'quarterly')).toBe('2026-Q1');
-      expect(periodLabelFor(new Date(Date.UTC(2026, 3, 1, 9, 0, 0)), 'quarterly')).toBe('2026-Q2');
-      expect(periodLabelFor(new Date(Date.UTC(2026, 8, 1, 9, 0, 0)), 'quarterly')).toBe('2026-Q3');
-      expect(periodLabelFor(new Date(Date.UTC(2026, 11, 31, 9, 0, 0)), 'quarterly')).toBe('2026-Q4');
+    it('quarterly asks for the previous quarter', () => {
+      expect(periodLabelFor(new Date(Date.UTC(2026, 0, 1, 9, 0, 0)), 'quarterly')).toBe('2025-Q4');
+      expect(periodLabelFor(new Date(Date.UTC(2026, 3, 1, 9, 0, 0)), 'quarterly')).toBe('2026-Q1');
+      expect(periodLabelFor(new Date(Date.UTC(2026, 8, 1, 9, 0, 0)), 'quarterly')).toBe('2026-Q2');
+      expect(periodLabelFor(new Date(Date.UTC(2026, 11, 31, 9, 0, 0)), 'quarterly')).toBe('2026-Q3');
     });
 
-    it('formats annually as YYYY', () => {
-      expect(periodLabelFor(new Date(Date.UTC(2026, 5, 15, 9, 0, 0)), 'annually')).toBe('2026');
+    it('annually asks for the previous year', () => {
+      expect(periodLabelFor(new Date(Date.UTC(2026, 5, 15, 9, 0, 0)), 'annually')).toBe('2025');
     });
   });
 
