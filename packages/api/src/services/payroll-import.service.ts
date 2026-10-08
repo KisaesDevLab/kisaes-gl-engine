@@ -25,7 +25,9 @@ import {
   payrollCheckRegisterRows,
   payrollAccountMapping,
   accounts,
+  tags,
 } from '../db/schema/index.js';
+import { assertTagsInTenant } from './tags.service.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import {
@@ -569,6 +571,18 @@ export async function getDescriptionMap(tenantId: string, sessionId: string) {
   // Use provider-specific suggestion map
   const suggestions = MODE_B_DESCRIPTION_SUGGESTIONS[providerKey] || PAYROLL_RELIEF_DESCRIPTION_SUGGESTIONS;
 
+  // Tag suggestion: Payroll Relief suffixes location-specific lines with
+  // " - <Location>" ("Wages and Salary - Bentonville"); when an active tag
+  // has that name, suggest it for descriptions with no saved mapping.
+  const activeTags = await db.select({ id: tags.id, name: tags.name }).from(tags)
+    .where(and(eq(tags.tenantId, tenantId), eq(tags.isActive, true)));
+  const tagByName = new Map(activeTags.map(t => [t.name.trim().toLowerCase(), t.id]));
+  const suggestTag = (description: string): string | null => {
+    const idx = description.lastIndexOf(' - ');
+    if (idx < 0) return null;
+    return tagByName.get(description.slice(idx + 3).trim().toLowerCase()) ?? null;
+  };
+
   // Build result
   const result = Array.from(descriptionEntries.entries()).map(([description, info]) => {
     const existing = existingMap.get(description);
@@ -610,6 +624,8 @@ export async function getDescriptionMap(tenantId: string, sessionId: string) {
       accountNumber: acct ? acct.accountNumber : suggestedAccountNumber,
       status,
       lineCategory: existing?.lineCategory || null,
+      tagId: existing ? existing.tagId ?? null : suggestTag(description),
+      tagSuggested: !existing && suggestTag(description) !== null,
     };
   });
 
@@ -620,11 +636,12 @@ export async function saveDescriptionMap(
   tenantId: string,
   sessionId: string,
   providerKey: string,
-  mappings: Array<{ sourceDescription: string; accountId: string; lineCategory?: string }>,
+  mappings: Array<{ sourceDescription: string; accountId: string; lineCategory?: string; tagId?: string | null }>,
 ) {
   const session = await getSession(tenantId, sessionId);
   const companyId = session.companyId;
   if (!companyId) throw AppError.badRequest('Session must have a company to save description mappings');
+  await assertTagsInTenant(tenantId, mappings.flatMap(m => (m.tagId ? [m.tagId] : [])));
 
   // Batch upsert using ON CONFLICT
   for (const mapping of mappings) {
@@ -635,6 +652,7 @@ export async function saveDescriptionMap(
       sourceDescription: mapping.sourceDescription,
       accountId: mapping.accountId,
       lineCategory: mapping.lineCategory || null,
+      tagId: mapping.tagId ?? null,
     }).onConflictDoUpdate({
       target: [
         payrollDescriptionAccountMap.tenantId,
@@ -645,6 +663,7 @@ export async function saveDescriptionMap(
       set: {
         accountId: sql`excluded.account_id`,
         lineCategory: sql`excluded.line_category`,
+        tagId: sql`excluded.tag_id`,
         updatedAt: new Date(),
       },
     });

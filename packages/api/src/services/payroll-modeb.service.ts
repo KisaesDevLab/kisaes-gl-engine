@@ -12,6 +12,7 @@ import {
   payrollCheckRegisterRows,
   payrollDescriptionAccountMap,
   accounts,
+  tags,
 } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -280,6 +281,14 @@ export async function generateModeBJE(tenantId: string, sessionId: string): Prom
     : [];
   const acctMap = new Map(accts.map(a => [a.id, a]));
 
+  // Mapped tags that still exist in this tenant (a tag deleted since the
+  // mapping was saved leaves its lines untagged rather than dangling).
+  const mappedTagIds = [...new Set(descMappings.flatMap(m => (m.tagId ? [m.tagId] : [])))];
+  const liveTagIds = new Set(mappedTagIds.length > 0
+    ? (await db.select({ id: tags.id }).from(tags)
+        .where(and(eq(tags.tenantId, tenantId), inArray(tags.id, mappedTagIds)))).map(t => t.id)
+    : []);
+
   const previews: PayrollJEPreview[] = [];
 
   for (const [date, dateEntries] of groups) {
@@ -297,6 +306,7 @@ export async function generateModeBJE(tenantId: string, sessionId: string): Prom
         accountNumber: acct?.accountNumber || null,
         debit: e.debit > 0 ? e.debit.toFixed(2) : '0.00',
         credit: e.credit > 0 ? e.credit.toFixed(2) : '0.00',
+        tagId: mapping?.tagId && liveTagIds.has(mapping.tagId) ? mapping.tagId : null,
       };
     });
 

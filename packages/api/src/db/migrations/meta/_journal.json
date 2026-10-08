@@ -1373,6 +1373,13 @@
       "when": 1784800000170,
       "tag": "0195_payroll_check_register_accounts",
       "breakpoints": true
+    },
+    {
+      "idx": 196,
+      "version": "7",
+      "when": 1784800000180,
+      "tag": "0196_payroll_description_map_tag",
+      "breakpoints": true
     }
   ]
 }

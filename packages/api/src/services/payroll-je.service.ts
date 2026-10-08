@@ -349,7 +349,9 @@ export async function checkPayrollPeriodOverlap(tenantId: string, session: typeo
 // ── Tags on posted JEs ──
 
 export interface PayrollPostTags {
-  /** Stamped on every line unless a line override says otherwise. */
+  /** Stamped on every line unless a line override says otherwise; when
+   *  unset, each line keeps the tag its preview line carries (the
+   *  description mapping's tag for Mode B). */
   tagId?: string | null;
   /** Per-line overrides, addressed by position in the generated preview. */
   lineTags?: PayrollLineTagInput[];
@@ -382,7 +384,8 @@ export async function resolvePayrollPostTags(
   await assertTagsInTenant(tenantId, used);
   return (jeIndex, lineIndex) => {
     const key = `${jeIndex}:${lineIndex}`;
-    return overrides.has(key) ? overrides.get(key)! : defaultTagId;
+    if (overrides.has(key)) return overrides.get(key)!;
+    return defaultTagId ?? previews[jeIndex]?.lines[lineIndex]?.tagId ?? null;
   };
 }
 

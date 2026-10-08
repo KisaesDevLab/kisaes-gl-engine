@@ -102,6 +102,7 @@ export const payrollDescriptionAccountMap = pgTable('payroll_description_account
   sourceDescription: varchar('source_description', { length: 200 }).notNull(),
   accountId: uuid('account_id').notNull(),
   lineCategory: varchar('line_category', { length: 30 }), // expense, liability, asset, equity
+  tagId: uuid('tag_id'),
   isSystemSuggested: boolean('is_system_suggested').default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),

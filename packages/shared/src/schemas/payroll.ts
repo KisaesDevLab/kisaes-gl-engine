@@ -52,6 +52,9 @@ export const descriptionMapEntrySchema = z.object({
   sourceDescription: z.string(),
   accountId: z.string().uuid(),
   lineCategory: z.string().optional(),
+  // Tag stamped on every line with this description (e.g. the location in
+  // "Wages and Salary - Bentonville"). Saved with the mapping for reuse.
+  tagId: z.string().uuid().nullable().optional(),
 });
 
 export const saveDescriptionMapSchema = z.object({

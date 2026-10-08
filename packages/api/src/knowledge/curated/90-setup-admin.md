@@ -100,15 +100,20 @@ in the sidebar).
    payroll provider template for auto-detection.
 2. **Map** — map your file's columns to payroll data fields. Two modes:
    - **Mode A (Employee-level)** — maps individual employee pay details
-   - **Mode B (Pre-built JE)** — maps GL account descriptions to amounts
+   - **Mode B (Pre-built JE)** — maps GL account descriptions to amounts. Each
+     description also has a **Tag** (e.g. the location in "Wages and Salary -
+     Bentonville"), saved with the mapping and reused on future imports. When a
+     description ends in " - <name>" and an active tag has that name, the tag is
+     pre-filled.
    Gross Pay is optional in Mode A: when a file only has net pay, gross is taken to
    equal net (no withholdings).
 3. **Validate** — review the extracted data for accuracy. "Check date is more than 90
    days ago" and "also appears on row N" are warnings only and do not block posting.
 4. **Preview & Post** — review the journal entries that will be created, then click
-   **Post** to record them in the general ledger. If the company has tags, choose
-   **Tag all lines** to tag every line of every entry, or change a single line's tag
-   in its row.
+   **Post** to record them in the general ledger. Each line starts with its
+   description's mapped tag. **Tag all lines** replaces those with one tag for every
+   line (leave it empty to keep them), and any single line's tag can be changed in
+   its row.
 
 **Check Register import (Payroll Relief Checks.csv).** A checks file (columns Check
 Number, Date, Payee Name, Cash Account, Account, Amount, Memo) uploaded on its own is

@@ -454,6 +454,10 @@ export interface PayrollDescriptionMapping {
   accountNumber: string | null;
   status: 'mapped' | 'suggested' | 'unmapped';
   lineCategory: string | null;
+  /** Saved tag for this description, else one suggested from its
+   *  " - <Tag name>" suffix; null when neither. */
+  tagId: string | null;
+  tagSuggested: boolean;
 }
 
 export interface PayrollCheckRow {
@@ -511,6 +515,8 @@ export interface PayrollJEPreviewLine {
   accountNumber: string | null;
   debit: string;
   credit: string;
+  /** Tag from the description mapping (Mode B); the default for this line. */
+  tagId?: string | null;
 }
 
 export interface PayrollJEPreview {
