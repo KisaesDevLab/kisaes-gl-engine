@@ -18,6 +18,7 @@ import { auditLog } from '../middleware/audit.js';
 import { parseCurrency, parseDate, parseFile, detectHeaderRow, detectProvider } from './payroll-parse.service.js';
 import * as ledger from './ledger.service.js';
 import * as importService from './payroll-import.service.js';
+import { resolvePayrollPostTags, stampPayrollHeaderTags, type PayrollPostTags } from './payroll-je.service.js';
 
 // ── Default column config (Payroll Relief backward compat) ──
 
@@ -190,6 +191,8 @@ export async function parseAndStoreChecks(
       const memo = (raw['Memo'] || raw['memo'] || '').trim();
       const checkNumber = (raw['Check Number'] || raw['check_number'] || '').trim();
       const checkDate = parseDate(raw['Date'] || raw['date'] || '') || '';
+      const cashAccountCode = (raw['Cash Account'] || raw['cash_account'] || '').trim();
+      const offsetAccountCode = (raw['Account'] || raw['account'] || '').trim();
 
       return {
         sessionId,
@@ -200,18 +203,21 @@ export async function parseAndStoreChecks(
         amount: Math.round(amount * 100) / 100 + '',
         memo: memo || null,
         checkType: classifyCheck(payeeName, memo),
+        cashAccountCode: cashAccountCode || null,
+        offsetAccountCode: offsetAccountCode || null,
         posted: false,
       };
     })
     .filter(r => r.payeeName && r.checkDate);
+  // $0 rows are voided checks — nothing to post.
+  const nonZero = checkRows.filter(r => Number(r.amount) !== 0);
+  const skippedZero = checkRows.length - nonZero.length;
 
-  if (checkRows.length > 0) {
-    for (let i = 0; i < checkRows.length; i += 500) {
-      await db.insert(payrollCheckRegisterRows).values(checkRows.slice(i, i + 500) as any);
-    }
+  for (let i = 0; i < nonZero.length; i += 500) {
+    await db.insert(payrollCheckRegisterRows).values(nonZero.slice(i, i + 500) as any);
   }
 
-  return checkRows.length;
+  return { stored: nonZero.length, skippedZero };
 }
 
 // ── Get Checks ──
@@ -231,6 +237,8 @@ export async function getChecks(tenantId: string, sessionId: string): Promise<Pa
     amount: r.amount,
     memo: r.memo,
     checkType: r.checkType as any,
+    cashAccountCode: r.cashAccountCode,
+    offsetAccountCode: r.offsetAccountCode,
     posted: r.posted ?? false,
     transactionId: r.transactionId,
   }));
@@ -311,7 +319,14 @@ export async function generateModeBJE(tenantId: string, sessionId: string): Prom
 
 // ── Post Mode B JEs ──
 
-export async function postModeBJE(tenantId: string, sessionId: string, userId: string, forcePost = false, companyId?: string) {
+export async function postModeBJE(
+  tenantId: string,
+  sessionId: string,
+  userId: string,
+  forcePost = false,
+  companyId?: string,
+  tags?: PayrollPostTags,
+) {
   const session = await importService.getSession(tenantId, sessionId);
   if (session.status === 'posted') throw AppError.badRequest('Session already posted');
 
@@ -340,14 +355,16 @@ export async function postModeBJE(tenantId: string, sessionId: string, userId: s
     }
   }
 
+  const tagFor = await resolvePayrollPostTags(tenantId, previews, tags);
   const postedIds: string[] = [];
 
-  for (const preview of previews) {
-    const lines = preview.lines.map(l => ({
+  for (const [jeIndex, preview] of previews.entries()) {
+    const lines = preview.lines.map((l, lineIndex) => ({
       accountId: l.accountId!,
       debit: l.debit !== '0.00' ? l.debit : '0',
       credit: l.credit !== '0.00' ? l.credit : '0',
       description: l.description,
+      tagId: tagFor(jeIndex, lineIndex),
     }));
 
     const txn = await ledger.postTransaction(tenantId, {
@@ -358,6 +375,7 @@ export async function postModeBJE(tenantId: string, sessionId: string, userId: s
       sourceId: sessionId,
       lines,
     }, userId, companyId);
+    await stampPayrollHeaderTags(tenantId, companyId, txn.id, lines.map(l => l.tagId));
 
     postedIds.push(txn.id);
   }
@@ -373,7 +391,7 @@ export async function postModeBJE(tenantId: string, sessionId: string, userId: s
     .where(eq(payrollImportSessions.id, sessionId));
 
   await auditLog(tenantId, 'create', 'payroll_import_post', sessionId, null,
-    { mode: 'prebuilt_je', jeCount: postedIds.length, journalEntryIds: postedIds }, userId);
+    { mode: 'prebuilt_je', jeCount: postedIds.length, journalEntryIds: postedIds, tagId: tags?.tagId ?? null, lineTagOverrides: tags?.lineTags?.length ?? 0 }, userId);
 
   return { journalEntryIds: postedIds, count: postedIds.length };
 }

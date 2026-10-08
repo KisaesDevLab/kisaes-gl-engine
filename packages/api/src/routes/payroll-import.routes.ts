@@ -9,6 +9,7 @@ import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
+import { AppError } from '../utils/errors.js';
 import {
   payrollUploadSchema,
   applyMappingSchema,
@@ -16,6 +17,7 @@ import {
   updateTemplateSchema,
   saveDescriptionMapSchema,
   postChecksSchema,
+  postCheckRegisterSchema,
   generateJeSchema,
   payrollSessionFiltersSchema,
   reversePayrollSchema,
@@ -24,6 +26,7 @@ import {
 } from '@kis-books/shared';
 import * as importService from '../services/payroll-import.service.js';
 import * as validationService from '../services/payroll-validation.service.js';
+import * as checkRegisterService from '../services/payroll-check-register.service.js';
 import * as jeService from '../services/payroll-je.service.js';
 import * as modeBService from '../services/payroll-modeb.service.js';
 
@@ -161,6 +164,16 @@ payrollImportRouter.post('/upload',
       req.userId,
     );
 
+    // A check register uploaded on its own is the checks file itself.
+    if (result.session?.importMode === 'check_register') {
+      await checkRegisterService.storeCheckRegisterFile(
+        req.tenantId,
+        result.session.id,
+        mainFile.buffer,
+        mainFile.originalname,
+      );
+    }
+
     // Parse companion file (Mode B checks) if present
     if (companionFile && result.session) {
       await modeBService.parseAndStoreChecks(
@@ -218,6 +231,9 @@ payrollImportRouter.post('/sessions/:id/validate', async (req, res) => {
 payrollImportRouter.post('/sessions/:id/generate-je', validate(generateJeSchema), async (req, res) => {
   const sessionId = uuidParam.parse(req.params['id']);
   const session = await importService.getSession(req.tenantId, sessionId);
+  if (session.importMode === 'check_register') {
+    throw AppError.badRequest('Check-register imports post as checks — use the check register step');
+  }
   let result;
   if (session.importMode === 'prebuilt_je') {
     result = await modeBService.generateModeBJE(req.tenantId, sessionId);
@@ -231,12 +247,16 @@ payrollImportRouter.post('/sessions/:id/generate-je', validate(generateJeSchema)
 payrollImportRouter.post('/sessions/:id/post', validate(postPayrollSchema), async (req, res) => {
   const sessionId = uuidParam.parse(req.params['id']);
   const session = await importService.getSession(req.tenantId, sessionId);
-  const { forcePost, aggregationMode } = req.body;
+  if (session.importMode === 'check_register') {
+    throw AppError.badRequest('Check-register imports post as checks — use the check register step');
+  }
+  const { forcePost, aggregationMode, tagId, lineTags } = req.body;
+  const tags = { tagId, lineTags };
   let result;
   if (session.importMode === 'prebuilt_je') {
-    result = await modeBService.postModeBJE(req.tenantId, sessionId, req.userId, forcePost, req.companyId);
+    result = await modeBService.postModeBJE(req.tenantId, sessionId, req.userId, forcePost, req.companyId, tags);
   } else {
-    result = await jeService.postJE(req.tenantId, sessionId, req.userId, forcePost, aggregationMode, req.companyId);
+    result = await jeService.postJE(req.tenantId, sessionId, req.userId, forcePost, aggregationMode, req.companyId, tags);
   }
   res.json(result);
 });
@@ -253,6 +273,19 @@ payrollImportRouter.get('/sessions/:id/checks', async (req, res) => {
   const sessionId = uuidParam.parse(req.params['id']);
   const result = await modeBService.getChecks(req.tenantId, sessionId);
   res.json({ checks: result });
+});
+
+// ── Check Register (standalone checks import) ──
+payrollImportRouter.get('/sessions/:id/check-register', async (req, res) => {
+  const sessionId = uuidParam.parse(req.params['id']);
+  const result = await checkRegisterService.getCheckRegister(req.tenantId, sessionId);
+  res.json(result);
+});
+
+payrollImportRouter.post('/sessions/:id/check-register/post', validate(postCheckRegisterSchema), async (req, res) => {
+  const sessionId = uuidParam.parse(req.params['id']);
+  const result = await checkRegisterService.postCheckRegister(req.tenantId, sessionId, req.body, req.userId, req.companyId);
+  res.json(result);
 });
 
 payrollImportRouter.post('/sessions/:id/checks/post', validate(postChecksSchema), async (req, res) => {

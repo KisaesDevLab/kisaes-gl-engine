@@ -3,7 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { eq, and, ne, inArray } from 'drizzle-orm';
-import { PayrollLineType, type PayrollJEPreview, type PayrollJEPreviewLine } from '@kis-books/shared';
+import { PayrollLineType, type PayrollJEPreview, type PayrollJEPreviewLine, type PayrollLineTagInput } from '@kis-books/shared';
 
 interface GenerateJeInput {
   aggregationMode?: 'summary' | 'per_employee';
@@ -16,11 +16,14 @@ import {
   payrollAccountMapping,
   payrollCheckRegisterRows,
   accounts,
+  transactionTags,
 } from '../db/schema/index.js';
+import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
 import * as importService from './payroll-import.service.js';
+import { assertTagsInTenant } from './tags.service.js';
 
 // ── Aggregate payroll rows into JE lines ──
 
@@ -48,6 +51,13 @@ function n(row: Record<string, any>, key: string): number {
   return Number(row[key] ?? 0);
 }
 
+/** Gross pay is optional: a file that carries only net pay (a check
+ *  register, say) books gross = net with no withholdings. */
+export function grossOf(row: Record<string, any>): number {
+  const g = row['gross_pay'];
+  return g === undefined || g === null || g === '' ? n(row, 'net_pay') : n(row, 'gross_pay');
+}
+
 function aggregateRows(mappedRows: Record<string, any>[]): AggregatedAmounts {
   const agg: AggregatedAmounts = {
     gross_wages: 0, employer_tax: 0, employer_benefits: 0,
@@ -62,13 +72,13 @@ function aggregateRows(mappedRows: Record<string, any>[]): AggregatedAmounts {
     const isContractor = row['is_contractor'] === true;
 
     if (isContractor) {
-      const pay = n(row, 'contractor_pay') || n(row, 'gross_pay');
+      const pay = n(row, 'contractor_pay') || grossOf(row);
       agg.contractor_expense += pay;
       agg.contractor_payable += pay;
       continue;
     }
 
-    agg.gross_wages += n(row, 'gross_pay');
+    agg.gross_wages += grossOf(row);
     agg.fit += n(row, 'federal_income_tax');
     agg.sit += n(row, 'state_income_tax');
     agg.local_tax += n(row, 'local_income_tax');
@@ -336,6 +346,65 @@ export async function checkPayrollPeriodOverlap(tenantId: string, session: typeo
   return overlaps;
 }
 
+// ── Tags on posted JEs ──
+
+export interface PayrollPostTags {
+  /** Stamped on every line unless a line override says otherwise. */
+  tagId?: string | null;
+  /** Per-line overrides, addressed by position in the generated preview. */
+  lineTags?: PayrollLineTagInput[];
+}
+
+export type PayrollTagResolver = (jeIndex: number, lineIndex: number) => string | null;
+
+/**
+ * Validate the tags chosen on the Preview & Post step against the previews
+ * regenerated at post time and the tenant's tags, and return a per-line
+ * resolver. An override pointing at a JE whose date no longer matches (or a
+ * line that no longer exists) means the preview changed under the user, so we
+ * refuse instead of tagging the wrong lines.
+ */
+export async function resolvePayrollPostTags(
+  tenantId: string,
+  previews: PayrollJEPreview[],
+  tags?: PayrollPostTags,
+): Promise<PayrollTagResolver> {
+  const defaultTagId = tags?.tagId ?? null;
+  const overrides = new Map<string, string | null>();
+  for (const lt of tags?.lineTags ?? []) {
+    const preview = previews[lt.jeIndex];
+    if (!preview || preview.date !== lt.date || lt.lineIndex >= preview.lines.length) {
+      throw AppError.badRequest('The journal entry preview changed since tags were assigned. Reload the preview and re-apply the tags.');
+    }
+    overrides.set(`${lt.jeIndex}:${lt.lineIndex}`, lt.tagId);
+  }
+  const used = [defaultTagId, ...overrides.values()].filter((t): t is string => !!t);
+  await assertTagsInTenant(tenantId, used);
+  return (jeIndex, lineIndex) => {
+    const key = `${jeIndex}:${lineIndex}`;
+    return overrides.has(key) ? overrides.get(key)! : defaultTagId;
+  };
+}
+
+/**
+ * With TAGS_SPLIT_LEVEL_V2 on, the ledger derives transaction_tags from the
+ * line tags itself. With it off, transaction_tags is still authoritative and
+ * the ledger leaves it alone, so the header rows are written here.
+ */
+export async function stampPayrollHeaderTags(
+  tenantId: string,
+  companyId: string | null | undefined,
+  transactionId: string,
+  lineTagIds: Array<string | null>,
+) {
+  if (env.TAGS_SPLIT_LEVEL_V2) return;
+  const unique = [...new Set(lineTagIds.filter((t): t is string => !!t))];
+  if (unique.length === 0) return;
+  await db.insert(transactionTags).values(
+    unique.map((tagId) => ({ tenantId, companyId: companyId ?? null, transactionId, tagId })),
+  );
+}
+
 // ── Post JE ──
 
 export async function postJE(
@@ -345,6 +414,7 @@ export async function postJE(
   forcePost = false,
   aggregationMode: 'summary' | 'per_employee' = 'summary',
   companyId?: string,
+  tags?: PayrollPostTags,
 ) {
   const session = await importService.getSession(tenantId, sessionId);
   if (session.status === 'posted') throw AppError.badRequest('Session already posted');
@@ -360,9 +430,10 @@ export async function postJE(
   }
 
   const { previews } = await generateJE(tenantId, sessionId, { aggregationMode });
+  const tagFor = await resolvePayrollPostTags(tenantId, previews, tags);
   const postedIds: string[] = [];
 
-  for (const preview of previews) {
+  for (const [jeIndex, preview] of previews.entries()) {
     // Verify all lines have account mappings
     const unmapped = preview.lines.filter(l => !l.accountId);
     if (unmapped.length > 0) {
@@ -375,11 +446,12 @@ export async function postJE(
       throw AppError.badRequest(`JE does not balance: debits ${preview.totalDebits} ≠ credits ${preview.totalCredits}`);
     }
 
-    const lines = preview.lines.map(l => ({
+    const lines = preview.lines.map((l, lineIndex) => ({
       accountId: l.accountId!,
       debit: l.debit !== '0.00' ? l.debit : '0',
       credit: l.credit !== '0.00' ? l.credit : '0',
       description: l.description,
+      tagId: tagFor(jeIndex, lineIndex),
     }));
 
     const txn = await ledger.postTransaction(tenantId, {
@@ -390,6 +462,7 @@ export async function postJE(
       sourceId: sessionId,
       lines,
     }, userId, companyId);
+    await stampPayrollHeaderTags(tenantId, companyId, txn.id, lines.map(l => l.tagId));
 
     postedIds.push(txn.id);
   }
@@ -412,7 +485,7 @@ export async function postJE(
     .where(eq(payrollImportSessions.id, sessionId));
 
   await auditLog(tenantId, 'create', 'payroll_import_post', sessionId, null,
-    { mode: 'employee_level', jeCount: postedIds.length, journalEntryIds: postedIds }, userId);
+    { mode: 'employee_level', jeCount: postedIds.length, journalEntryIds: postedIds, tagId: tags?.tagId ?? null, lineTagOverrides: tags?.lineTags?.length ?? 0 }, userId);
 
   return { journalEntryIds: postedIds, count: postedIds.length };
 }

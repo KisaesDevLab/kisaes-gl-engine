@@ -4,7 +4,7 @@
 
 // Payroll Import types
 
-export type PayrollImportMode = 'employee_level' | 'prebuilt_je';
+export type PayrollImportMode = 'employee_level' | 'prebuilt_je' | 'check_register';
 export type PayrollSessionStatus = 'uploaded' | 'mapped' | 'validated' | 'posted' | 'failed' | 'cancelled';
 export type PayrollCheckType = 'employee' | 'contractor' | 'tax_payment';
 
@@ -155,7 +155,7 @@ export const PAYROLL_STANDARD_FIELDS: Record<string, { label: string; category: 
   pay_period_start: { label: 'Pay Period Start', category: 'pay_period' },
   pay_period_end: { label: 'Pay Period End', category: 'pay_period' },
   check_date: { label: 'Check Date', category: 'pay_period', required: true },
-  gross_pay: { label: 'Gross Pay', category: 'gross', required: true },
+  gross_pay: { label: 'Gross Pay', category: 'gross' },
   regular_pay: { label: 'Regular Pay', category: 'gross' },
   overtime_pay: { label: 'Overtime Pay', category: 'gross' },
   bonus_pay: { label: 'Bonus Pay', category: 'gross' },
@@ -380,6 +380,12 @@ export const PROVIDER_SIGNATURES: Record<string, string[]> = {
   toast_je_report: ['AccountID', 'Account Description', 'Debit', 'Credit', 'Check Date', 'Pay Group'],
 };
 
+/** Check-register files: one row per check/EFT, posted as checks (cash out
+ *  against an offset account) rather than as a payroll JE. */
+export const CHECK_REGISTER_PROVIDERS = new Set([
+  'payroll_relief_checks',
+]);
+
 /** Set of Mode B provider keys for import mode detection */
 export const MODE_B_PROVIDERS = new Set([
   'payroll_relief_gl',
@@ -459,8 +465,27 @@ export interface PayrollCheckRow {
   amount: string;
   memo: string | null;
   checkType: PayrollCheckType | null;
+  /** Account numbers from the file (check-register imports). */
+  cashAccountCode?: string | null;
+  offsetAccountCode?: string | null;
   posted: boolean;
   transactionId: string | null;
+}
+
+/** An account number from a check-register file and the account it matched. */
+export interface PayrollCheckAccountCode {
+  code: string;
+  accountId: string | null;
+  accountName: string | null;
+  checkCount: number;
+}
+
+export interface PayrollCheckRegisterSummary {
+  checks: PayrollCheckRow[];
+  cashCodes: PayrollCheckAccountCode[];
+  offsetCodes: PayrollCheckAccountCode[];
+  /** $0 rows dropped at upload (voided checks). */
+  skippedZeroCount: number;
 }
 
 export interface PayrollValidationMessage {

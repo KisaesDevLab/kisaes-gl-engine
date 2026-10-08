@@ -26,7 +26,7 @@ export const payrollImportSessions = pgTable('payroll_import_sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull(),
   companyId: uuid('company_id'),
-  importMode: varchar('import_mode', { length: 20 }).notNull(), // 'employee_level' | 'prebuilt_je'
+  importMode: varchar('import_mode', { length: 20 }).notNull(), // 'employee_level' | 'prebuilt_je' | 'check_register'
   templateId: uuid('template_id'),
   originalFilename: varchar('original_filename', { length: 255 }).notNull(),
   filePath: varchar('file_path', { length: 500 }).notNull(),
@@ -121,6 +121,10 @@ export const payrollCheckRegisterRows = pgTable('payroll_check_register_rows', {
   amount: decimal('amount', { precision: 19, scale: 4 }).notNull(),
   memo: varchar('memo', { length: 500 }),
   checkType: varchar('check_type', { length: 20 }), // employee, contractor, tax_payment
+  // Account numbers as the file gives them (Payroll Relief "Cash Account" /
+  // "Account"); resolved against the chart of accounts at post time.
+  cashAccountCode: varchar('cash_account_code', { length: 50 }),
+  offsetAccountCode: varchar('offset_account_code', { length: 50 }),
   posted: boolean('posted').default(false),
   transactionId: uuid('transaction_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),

@@ -101,9 +101,25 @@ in the sidebar).
 2. **Map** — map your file's columns to payroll data fields. Two modes:
    - **Mode A (Employee-level)** — maps individual employee pay details
    - **Mode B (Pre-built JE)** — maps GL account descriptions to amounts
-3. **Validate** — review the extracted data for accuracy.
+   Gross Pay is optional in Mode A: when a file only has net pay, gross is taken to
+   equal net (no withholdings).
+3. **Validate** — review the extracted data for accuracy. "Check date is more than 90
+   days ago" and "also appears on row N" are warnings only and do not block posting.
 4. **Preview & Post** — review the journal entries that will be created, then click
-   **Post** to record them in the general ledger.
+   **Post** to record them in the general ledger. If the company has tags, choose
+   **Tag all lines** to tag every line of every entry, or change a single line's tag
+   in its row.
+
+**Check Register import (Payroll Relief Checks.csv).** A checks file (columns Check
+Number, Date, Payee Name, Cash Account, Account, Amount, Memo) uploaded on its own is
+detected as a **Check Register Import** and skips mapping. Each check or EFT posts as a
+check: credit the bank account, debit the posting account. For each side, choose
+**one account for every check** (for example Payroll Clearing) or **use the file's
+column** (Cash Account / Account numbers matched to your chart of accounts — a number
+with no matching account blocks the post until you add it or pick one account).
+Only the amount paid is needed. $0 voided rows are skipped, and an optional tag is
+applied to every check. When a GL entries file and a checks file are dropped
+together, the checks file is used as the companion whichever order they're dropped in.
 
 The system auto-detects your payroll provider and shows a confidence percentage. Duplicate
 file detection warns you if the same file was already imported.

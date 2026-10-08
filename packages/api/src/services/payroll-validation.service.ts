@@ -10,6 +10,7 @@ import { payrollImportSessions, payrollImportRows, payrollImportErrors, accounts
 import { AppError } from '../utils/errors.js';
 import { parseCurrency } from './payroll-parse.service.js';
 import * as importService from './payroll-import.service.js';
+import { grossOf } from './payroll-je.service.js';
 
 // ── SSN Pattern Scanner ──
 
@@ -28,8 +29,9 @@ function validateRow(mapped: Record<string, any>, rowNumber: number): PayrollVal
   const r = mapped as any;
   const msgs: PayrollValidationMessage[] = [];
 
-  // MISSING_REQUIRED
-  for (const field of ['employee_name', 'check_date', 'gross_pay', 'net_pay']) {
+  // MISSING_REQUIRED — gross pay is optional (it defaults to net pay, see
+  // grossOf in payroll-je.service), so net pay is the only amount required.
+  for (const field of ['employee_name', 'check_date', 'net_pay']) {
     const val = mapped[field];
     if (val === undefined || val === null || val === '' || (typeof val === 'number' && isNaN(val))) {
       msgs.push({
@@ -61,7 +63,7 @@ function validateRow(mapped: Record<string, any>, rowNumber: number): PayrollVal
     }
   }
 
-  const grossPay = Number(r.gross_pay ?? 0);
+  const grossPay = grossOf(r);
   const netPay = Number(r.net_pay ?? 0);
   const isContractor = r.is_contractor === true;
 
@@ -126,6 +128,11 @@ export async function dispatchValidation(tenantId: string, sessionId: string): P
   const session = await importService.getSession(tenantId, sessionId);
   if (session.importMode === 'prebuilt_je') {
     return validateModeBSession(tenantId, sessionId);
+  }
+  if (session.importMode === 'check_register') {
+    // Checks are parsed at upload and their accounts resolved at post time;
+    // there is no employee-level mapping to validate.
+    return { totalRows: session.rowCount ?? 0, validRows: session.rowCount ?? 0, warningRows: 0, errorRows: 0, messages: [] };
   }
   return validateSession(tenantId, sessionId);
 }

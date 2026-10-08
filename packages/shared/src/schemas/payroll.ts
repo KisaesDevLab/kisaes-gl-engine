@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 
-const importModes = ['employee_level', 'prebuilt_je'] as const;
+const importModes = ['employee_level', 'prebuilt_je', 'check_register'] as const;
 const sessionStatuses = ['uploaded', 'mapped', 'validated', 'posted', 'failed', 'cancelled'] as const;
 
 export const payrollUploadSchema = z.object({
@@ -65,6 +65,21 @@ export const postChecksSchema = z.object({
   checkIds: z.array(z.string().uuid()).min(1),
 });
 
+// Standalone check-register import. Each side of every check comes either
+// from the file's own account-number column ('file') or from one account
+// chosen for the whole import ('account').
+export const postCheckRegisterSchema = z.object({
+  cashSource: z.enum(['file', 'account']),
+  cashAccountId: z.string().uuid().optional(),
+  offsetSource: z.enum(['file', 'account']),
+  offsetAccountId: z.string().uuid().optional(),
+  tagId: z.string().uuid().nullable().optional(),
+}).refine((v) => v.cashSource === 'file' || !!v.cashAccountId, {
+  message: 'Choose the bank account the checks are paid from', path: ['cashAccountId'],
+}).refine((v) => v.offsetSource === 'file' || !!v.offsetAccountId, {
+  message: 'Choose the account the checks post to', path: ['offsetAccountId'],
+});
+
 export const generateJeSchema = z.object({
   aggregationMode: z.enum(['summary', 'per_employee']).default('summary'),
   accountMappings: z.record(z.string(), z.string().uuid()).optional(),
@@ -84,9 +99,23 @@ export const payrollSessionFiltersSchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
+// Tags applied when the generated JEs post. `tagId` stamps every line;
+// `lineTags` overrides individual lines of the preview (null = untagged).
+// Lines are addressed by position in the generated preview, and `date`
+// pins the JE so a preview that changed since the user tagged it is
+// rejected rather than tagging the wrong lines.
+export const payrollLineTagSchema = z.object({
+  jeIndex: z.number().int().min(0),
+  lineIndex: z.number().int().min(0),
+  date: z.string().min(1).max(20),
+  tagId: z.string().uuid().nullable(),
+});
+
 export const postPayrollSchema = z.object({
   forcePost: z.boolean().optional().default(false),
   aggregationMode: z.enum(['summary', 'per_employee']).optional().default('summary'),
+  tagId: z.string().uuid().nullable().optional(),
+  lineTags: z.array(payrollLineTagSchema).max(10000).optional(),
 });
 
 export const accountMappingSaveSchema = z.object({
@@ -101,6 +130,8 @@ export type ApplyMappingInput = z.infer<typeof applyMappingSchema>;
 export type SaveTemplateInput = z.infer<typeof saveTemplateSchema>;
 export type SaveDescriptionMapInput = z.infer<typeof saveDescriptionMapSchema>;
 export type PostChecksInput = z.infer<typeof postChecksSchema>;
+export type PostCheckRegisterInput = z.infer<typeof postCheckRegisterSchema>;
+export type PayrollLineTagInput = z.infer<typeof payrollLineTagSchema>;
 export type GenerateJeInput = z.infer<typeof generateJeSchema>;
 export type PostPayrollInput = z.infer<typeof postPayrollSchema>;
 export type AccountMappingSaveInput = z.infer<typeof accountMappingSaveSchema>;

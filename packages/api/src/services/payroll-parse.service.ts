@@ -6,7 +6,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { ColumnMapConfig, PayrollImportRow } from '@kis-books/shared';
-import { PROVIDER_SIGNATURES, MODE_B_PROVIDERS } from '@kis-books/shared';
+import { PROVIDER_SIGNATURES, MODE_B_PROVIDERS, CHECK_REGISTER_PROVIDERS } from '@kis-books/shared';
 import { AppError } from '../utils/errors.js';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
@@ -218,8 +218,9 @@ export function detectProvider(headers: string[]): { provider: string; confidenc
 
 // ── Determine import mode from provider detection ──
 
-export function detectImportMode(provider: string | null): 'employee_level' | 'prebuilt_je' {
+export function detectImportMode(provider: string | null): 'employee_level' | 'prebuilt_je' | 'check_register' {
   if (provider && MODE_B_PROVIDERS.has(provider)) return 'prebuilt_je';
+  if (provider && CHECK_REGISTER_PROVIDERS.has(provider)) return 'check_register';
   return 'employee_level';
 }
 
