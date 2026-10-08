@@ -66,10 +66,10 @@ afterEach(cleanup);
 async function linesFor(transactionIds: string[]) {
   const res = await db.execute(sql`
     SELECT jl.transaction_id, jl.account_id, jl.debit::numeric AS debit, jl.credit::numeric AS credit, jl.tag_id,
-           t.txn_type, t.reference_number
+           t.txn_type, t.reference_number, t.payment_method
     FROM journal_lines jl JOIN transactions t ON t.id = jl.transaction_id
     WHERE jl.tenant_id = ${tenantId} AND jl.transaction_id IN (${sql.join(transactionIds.map((id) => sql`${id}::uuid`), sql`, `)})`);
-  return res.rows as Array<{ transaction_id: string; account_id: string; debit: string; credit: string; tag_id: string | null; txn_type: string; reference_number: string | null }>;
+  return res.rows as Array<{ transaction_id: string; account_id: string; debit: string; credit: string; tag_id: string | null; txn_type: string; reference_number: string | null; payment_method: string | null }>;
 }
 
 describe('check-register payroll import', () => {
@@ -93,7 +93,7 @@ describe('check-register payroll import', () => {
     const lines = await linesFor(res.transactionIds);
     expect(lines).toHaveLength(6);
     for (const l of lines) {
-      expect(l.txn_type).toBe('check');
+      expect(l.txn_type).toBe('expense');
       expect(l.tag_id).toBe(tagId);
       if (Number(l.debit) > 0) expect(l.account_id).toBe(acct['10000']);
       else expect(l.account_id).toBe(acct['11090']);
@@ -104,6 +104,8 @@ describe('check-register payroll import', () => {
     expect((tt.rows[0] as { c: number }).c).toBe(3);
     const treasury = lines.find((l) => Number(l.credit) === 3356.07);
     expect(treasury?.reference_number).toBe('EFT');
+    expect(treasury?.payment_method).toBe('ach');
+    expect(lines.find((l) => Number(l.credit) === 759.21)?.payment_method).toBe('check');
 
     const [session] = await db.select().from(payrollImportSessions).where(eq(payrollImportSessions.id, sessionId));
     expect(session!.status).toBe('posted');

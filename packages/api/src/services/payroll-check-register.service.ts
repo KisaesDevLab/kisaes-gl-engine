@@ -5,7 +5,7 @@
 // Standalone check-register payroll import (import_mode 'check_register').
 // A check register (e.g. Payroll Relief's Checks.csv) is one row per
 // check/EFT with only the amount paid — no gross/net split — so each row
-// posts as a check: DR the offset account (a clearing account, or the
+// posts as a check (an expense paid by check/ACH): DR the offset account (a clearing account, or the
 // liability/expense the file names), CR the bank account. Both sides come
 // either from the file's own account-number columns or from one account
 // chosen for the whole import.
@@ -87,7 +87,7 @@ export async function getCheckRegister(tenantId: string, sessionId: string): Pro
     checks,
     cashCodes: summarizeCodes(checks.map(c => c.cashAccountCode), byNumber),
     offsetCodes: summarizeCodes(checks.map(c => c.offsetAccountCode), byNumber),
-    skippedZeroCount: Number((session.metadata as any)?.skippedZeroChecks ?? 0),
+    skippedZeroCount: Number((session.metadata as Record<string, unknown> | null)?.['skippedZeroChecks'] ?? 0),
   };
 }
 
@@ -150,7 +150,11 @@ export async function postCheckRegister(
       // A negative row is a returned/voided payment: money back into the bank.
       const outflow = amount > 0;
       const txn = await ledger.postTransaction(tenantId, {
-        txnType: (outflow ? 'check' : 'journal_entry') as any,
+        // A written check is an expense paid by check (what Write Check
+        // posts); there is no separate 'check' transaction type.
+        txnType: outflow ? 'expense' : 'journal_entry',
+        total: outflow ? abs : undefined,
+        paymentMethod: outflow ? (/^\d+$/.test(check.checkNumber ?? '') ? 'check' : 'ach') : undefined,
         txnDate: check.checkDate,
         memo: `Payroll: ${check.payeeName}${check.memo ? ` — ${check.memo}` : ''}`,
         referenceNumber: check.checkNumber || undefined,
