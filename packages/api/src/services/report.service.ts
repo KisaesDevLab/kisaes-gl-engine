@@ -22,7 +22,7 @@ import {
   getCFLabels,
   getReportFooter,
 } from './tenant-report-settings.service.js';
-import { missingMonthsBetween } from './bank-statements.service.js';
+import { loadGapDismissals, missingMonthsBetween } from './bank-statements.service.js';
 import { getCustomDetailTypeRanks, orderDetailTypeGroups } from './detail-types.service.js';
 import { getLeadsheetMap, groupByLeadsheet } from './report-leadsheets.js';
 
@@ -1901,6 +1901,7 @@ export async function buildBankReconciliationSummary(tenantId: string, accountId
     staleCountByAccount.set(s.accountId, (staleCountByAccount.get(s.accountId) ?? 0) + 1);
   }
 
+  const gapDismissals = await loadGapDismissals(tenantId);
   const accountsOut: ReconSummaryAccountRow[] = bankAccounts.map((a) => {
     const rec = lastRecByAccount.get(a.id);
     const ends = stmtsByAccount.get(a.id) ?? [];
@@ -1913,7 +1914,7 @@ export async function buildBankReconciliationSummary(tenantId: string, accountId
       lastReconciledBalance: rec ? num(rec.statement_ending_balance) : null,
       latestStatementEnd: ends.length ? [...ends].sort().pop()! : null,
       statementCount: ends.length,
-      statementGapCount: missingMonthsBetween(ends).length,
+      statementGapCount: missingMonthsBetween(ends).filter((m) => !gapDismissals.get(a.id)?.has(m)).length,
       unclearedCount: uncleared?.uncleared_count ?? 0,
       oldestUnclearedDate: uncleared?.oldest_date ?? null,
       staleCheckCount: staleCountByAccount.get(a.id) ?? 0,

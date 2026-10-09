@@ -435,6 +435,36 @@ DATA:OFXSGML
       expect(other.total).toBe(0);
     });
 
+    it('dismissed gap months drop out of the warning and can be restored', async () => {
+      for (const [start, end] of [['2026-01-01', '2026-01-31'], ['2026-04-01', '2026-04-30']] as const) {
+        const { job } = await mkStatementJob({ periodStart: start, periodEnd: end });
+        await bankStatementsService.captureStatementOnImport(tenantId, { jobId: job.id, accountId: bankAccountId });
+      }
+      let { gaps } = await bankStatementsService.listStatements(tenantId, {});
+      expect(gaps[0]!.missingMonths).toEqual(['2026-02', '2026-03']);
+      expect(gaps[0]!.dismissedMonths).toEqual([]);
+
+      const r = await bankStatementsService.dismissStatementGaps(tenantId, undefined, bankAccountId, ['2026-02', '2026-02']);
+      expect(r.dismissed).toBe(1);
+      // Idempotent.
+      expect((await bankStatementsService.dismissStatementGaps(tenantId, undefined, bankAccountId, ['2026-02'])).dismissed).toBe(0);
+      ({ gaps } = await bankStatementsService.listStatements(tenantId, {}));
+      expect(gaps[0]!.missingMonths).toEqual(['2026-03']);
+      expect(gaps[0]!.dismissedMonths).toEqual(['2026-02']);
+
+      await bankStatementsService.dismissStatementGaps(tenantId, undefined, bankAccountId, ['2026-03']);
+      ({ gaps } = await bankStatementsService.listStatements(tenantId, {}));
+      expect(gaps[0]!.missingMonths).toEqual([]);
+
+      expect((await bankStatementsService.restoreStatementGaps(tenantId, undefined, bankAccountId)).restored).toBe(2);
+      ({ gaps } = await bankStatementsService.listStatements(tenantId, {}));
+      expect(gaps[0]!.missingMonths).toEqual(['2026-02', '2026-03']);
+
+      // Another tenant's account is rejected.
+      await expect(bankStatementsService.dismissStatementGaps(tenantId, undefined, crypto.randomUUID(), ['2026-02']))
+        .rejects.toThrow();
+    });
+
     it('reports reconciled status and continuity warnings', async () => {
       // Prior completed reconciliation at $100.
       await ledger.postTransaction(tenantId, {

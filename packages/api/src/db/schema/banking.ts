@@ -146,6 +146,18 @@ export const bankStatements = pgTable('bank_statements', {
   reconciliationIdx: index('idx_bank_statements_reconciliation').on(table.reconciliationId),
 }));
 
+// Dismissed "no statement on file for YYYY-MM" Bank Rec warnings (migration 0197).
+export const statementGapDismissals = pgTable('statement_gap_dismissals', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull(),
+  accountId: uuid('account_id').notNull(),
+  month: varchar('month', { length: 7 }).notNull(),
+  dismissedBy: uuid('dismissed_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  uniq: uniqueIndex('uniq_statement_gap_dismissals').on(table.tenantId, table.accountId, table.month),
+}));
+
 // Statement Match Engine wave 1 (migration 0116): each parsed statement
 // transaction as a first-class line, scored against reconciliation worksheet
 // journal lines. `amount` is SIGNED in normalized statement orientation —

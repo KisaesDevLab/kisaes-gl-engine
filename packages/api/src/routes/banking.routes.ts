@@ -4,6 +4,7 @@
 
 import { Router } from 'express';
 import multer from 'multer';
+import { z } from 'zod';
 import {
   bankFeedFiltersSchema, categorizeSchema, matchSchema, assignSchema, bulkAssignSchema, bulkSetContactSchema,
   startReconciliationSchema, updateReconciliationLinesSchema, updateReconciliationSchema, bankImportSchema,
@@ -345,6 +346,24 @@ bankingRouter.post('/statements/import-ofx', validate(importOfxStatementSchema),
     userId: req.userId,
   });
   res.status('needsAccount' in result && result.needsAccount ? 200 : 201).json(result);
+});
+
+// Dismiss / restore "no statement on file for YYYY-MM" gap warnings.
+const statementGapsSchema = z.object({
+  accountId: z.string().uuid(),
+  months: z.array(z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/)).max(240).optional(),
+});
+bankingRouter.post('/statements/gaps/dismiss', validate(statementGapsSchema), async (req, res) => {
+  const result = await bankStatementsService.dismissStatementGaps(
+    req.tenantId, req.userId, req.body.accountId, req.body.months ?? [],
+  );
+  res.json(result);
+});
+bankingRouter.post('/statements/gaps/restore', validate(statementGapsSchema), async (req, res) => {
+  const result = await bankStatementsService.restoreStatementGaps(
+    req.tenantId, req.userId, req.body.accountId, req.body.months,
+  );
+  res.json(result);
 });
 
 // Explicit backfill trigger (the statements list also runs it lazily).

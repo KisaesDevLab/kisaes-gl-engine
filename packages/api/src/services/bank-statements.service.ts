@@ -13,10 +13,11 @@
 // readiness counts (imported items not yet posted), and auto-clearing the
 // statement's items on the reconciliation worksheet.
 
-import { eq, and, desc, sql } from 'drizzle-orm';
+import { eq, and, desc, sql, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   bankStatements, bankStatementLines, bankFeedItems, bankConnections, reconciliations, accounts, aiJobs,
+  statementGapDismissals,
 } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -483,7 +484,59 @@ export interface BankStatementListRow {
 export interface StatementGapInfo {
   accountId: string;
   accountName: string;
-  missingMonths: string[]; // 'YYYY-MM'
+  missingMonths: string[]; // 'YYYY-MM', dismissed months excluded
+  dismissedMonths: string[]; // gap months a user dismissed (still uncovered)
+}
+
+// Dismissed gap months per account ('YYYY-MM'), tenant-wide.
+export async function loadGapDismissals(tenantId: string): Promise<Map<string, Set<string>>> {
+  const rows = await db
+    .select({ accountId: statementGapDismissals.accountId, month: statementGapDismissals.month })
+    .from(statementGapDismissals)
+    .where(eq(statementGapDismissals.tenantId, tenantId));
+  const out = new Map<string, Set<string>>();
+  for (const r of rows) {
+    const set = out.get(r.accountId) ?? new Set<string>();
+    set.add(r.month);
+    out.set(r.accountId, set);
+  }
+  return out;
+}
+
+async function assertTenantAccount(tenantId: string, accountId: string): Promise<void> {
+  const acct = await db.query.accounts.findFirst({
+    where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, accountId)),
+    columns: { id: true },
+  });
+  if (!acct) throw AppError.notFound('Account not found');
+}
+
+export async function dismissStatementGaps(
+  tenantId: string, userId: string | undefined, accountId: string, months: string[],
+): Promise<{ dismissed: number }> {
+  await assertTenantAccount(tenantId, accountId);
+  const unique = [...new Set(months)];
+  if (unique.length === 0) return { dismissed: 0 };
+  const inserted = await db.insert(statementGapDismissals)
+    .values(unique.map((month) => ({ tenantId, accountId, month, dismissedBy: userId ?? null })))
+    .onConflictDoNothing()
+    .returning({ id: statementGapDismissals.id });
+  await auditLog(tenantId, 'create', 'statement_gap_dismissal', accountId, null, { months: unique }, userId);
+  return { dismissed: inserted.length };
+}
+
+// Restores (un-dismisses) the given months, or every dismissed month of the
+// account when `months` is omitted.
+export async function restoreStatementGaps(
+  tenantId: string, userId: string | undefined, accountId: string, months?: string[],
+): Promise<{ restored: number }> {
+  await assertTenantAccount(tenantId, accountId);
+  const conds = [eq(statementGapDismissals.tenantId, tenantId), eq(statementGapDismissals.accountId, accountId)];
+  if (months && months.length > 0) conds.push(inArray(statementGapDismissals.month, months));
+  const deleted = await db.delete(statementGapDismissals).where(and(...conds))
+    .returning({ id: statementGapDismissals.id });
+  await auditLog(tenantId, 'delete', 'statement_gap_dismissal', accountId, { months: months ?? 'all' }, null, userId);
+  return { restored: deleted.length };
 }
 
 // Calendar months ('YYYY-MM') strictly between the earliest and latest
@@ -623,10 +676,14 @@ export async function listStatements(
     entry.ends.push(r.period_end);
     byAccount.set(r.account_id, entry);
   }
+  const dismissals = await loadGapDismissals(tenantId);
   const gaps: StatementGapInfo[] = [];
   for (const [accountId, { name, ends }] of byAccount) {
-    const missing = missingMonthsBetween(ends);
-    if (missing.length > 0) gaps.push({ accountId, accountName: name, missingMonths: missing });
+    const all = missingMonthsBetween(ends);
+    const dismissed = dismissals.get(accountId);
+    const missing = dismissed ? all.filter((m) => !dismissed.has(m)) : all;
+    const dismissedMonths = dismissed ? all.filter((m) => dismissed.has(m)) : [];
+    if (all.length > 0) gaps.push({ accountId, accountName: name, missingMonths: missing, dismissedMonths });
   }
 
   return { statements, total, gaps };
