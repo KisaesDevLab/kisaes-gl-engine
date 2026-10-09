@@ -68,6 +68,8 @@ export interface CoaTemplate {
   isBuiltin: boolean;
   /** Hidden templates are excluded from the public business-type dropdowns. */
   isHidden: boolean;
+  /** Built-in whose accounts a super admin edited; the startup re-sync skips it until reset. */
+  accountsCustomized?: boolean;
   createdByUserId: string | null;
   createdAt: string;
   updatedAt: string;
@@ -79,6 +81,7 @@ export interface CoaTemplateSummary {
   label: string;
   isBuiltin: boolean;
   isHidden: boolean;
+  accountsCustomized?: boolean;
   accountCount: number;
   updatedAt: string;
 }

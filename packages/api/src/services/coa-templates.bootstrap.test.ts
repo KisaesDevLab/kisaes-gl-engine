@@ -11,7 +11,7 @@ import { eq } from 'drizzle-orm';
 import { BUSINESS_TEMPLATES } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { coaTemplatesTable } from '../db/schema/index.js';
-import { bootstrapBuiltins } from './coa-templates.service.js';
+import { bootstrapBuiltins, update, resetBuiltin } from './coa-templates.service.js';
 
 const SLUG = 'farm_crops_and_animals';
 let restore: { label: string; isHidden: boolean } | null = null;
@@ -47,5 +47,46 @@ describe('bootstrapBuiltins', () => {
     await bootstrapBuiltins();
     const again = await bootstrapBuiltins();
     expect(again).toEqual({ inserted: 0, synced: 0 });
+  });
+});
+
+describe('editing a built-in template (migration 0199)', () => {
+  const def = () => (BUSINESS_TEMPLATES as Record<string, Array<{ accountNumber: string | null; name: string; isSystem: boolean; systemTag: string | null }>>)[SLUG]!;
+
+  afterEach(async () => {
+    await resetBuiltin(SLUG);
+  });
+
+  it('saves edits, marks the template customized, survives the startup re-sync, and resets to default', async () => {
+    await bootstrapBuiltins();
+    const edited = def().map((a) => ({ ...a }));
+    const firstNonSystem = edited.findIndex((a) => !a.isSystem);
+    edited[firstNonSystem]!.name = 'Renamed By Super Admin';
+    edited.push({ accountNumber: '69999', name: 'Brand New Account', accountType: 'expense', detailType: 'other_expense', isSystem: false, systemTag: null } as never);
+
+    const saved = await update(SLUG, { accounts: edited as never });
+    expect(saved.accountsCustomized).toBe(true);
+    expect(saved.accounts.some((a) => a.name === 'Brand New Account')).toBe(true);
+
+    await bootstrapBuiltins(); // must not overwrite the customized built-in
+    const kept = await db.query.coaTemplatesTable.findFirst({ where: eq(coaTemplatesTable.slug, SLUG) });
+    expect((kept!.accounts as Array<{ name: string }>).some((a) => a.name === 'Brand New Account')).toBe(true);
+    expect(kept!.accountsCustomized).toBe(true);
+
+    const reset = await resetBuiltin(SLUG);
+    expect(reset.accountsCustomized).toBe(false);
+    expect(reset.accounts).toEqual(def());
+  });
+
+  it('saving the shipped default again clears the customized flag', async () => {
+    await bootstrapBuiltins();
+    const saved = await update(SLUG, { accounts: def().map((a) => ({ ...a })) as never });
+    expect(saved.accountsCustomized).toBe(false);
+  });
+
+  it('refuses an edit that drops a required system account', async () => {
+    await bootstrapBuiltins();
+    const withoutSystem = def().filter((a) => !a.isSystem || a.systemTag !== 'accounts_payable');
+    await expect(update(SLUG, { accounts: withoutSystem as never })).rejects.toThrow(/system accounts are required/);
   });
 });

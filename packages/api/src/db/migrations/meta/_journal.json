@@ -1394,6 +1394,13 @@
       "when": 1784800000200,
       "tag": "0198_ai_router_connection",
       "breakpoints": true
+    },
+    {
+      "idx": 199,
+      "version": "7",
+      "when": 1784800000210,
+      "tag": "0199_coa_template_customized",
+      "breakpoints": true
     }
   ]
 }

@@ -96,8 +96,10 @@ Depreciation, Bank Service Charges, Travel, Utilities and Uncategorized). The
 Farm template follows Schedule F, with sales and cost accounts per livestock
 class and commodity. A template is used only when a company is created, so
 later template changes never alter an existing company's chart. Built-in
-templates can be relabeled or hidden, but not edited, in **Admin → COA Templates**;
-to customize one, create a custom template.
+templates can be relabeled, hidden, or edited by a super admin in **Admin → COA
+Templates**. An edited built-in shows **Customized** and no longer picks up app updates
+to that template until **Reset to default**; its system accounts (Cash, A/R, A/P,
+Payments Clearing, …) can be renamed or renumbered but not removed.
 
 ### Tags
 Labels you can attach to transactions for cross-cutting reporting (e.g., projects,

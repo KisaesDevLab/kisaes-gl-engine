@@ -1644,6 +1644,12 @@ adminRouter.put('/coa-templates/:slug', validate(updateCoaTemplateSchema), async
   res.json({ template });
 });
 
+// Restore a built-in template's accounts to the shipped default.
+adminRouter.post('/coa-templates/:slug/reset', async (req, res) => {
+  const template = await coaTemplatesService.resetBuiltin(req.params['slug']!);
+  res.json({ template });
+});
+
 adminRouter.delete('/coa-templates/:slug', async (req, res) => {
   await coaTemplatesService.remove(req.params['slug']!, req.tenantId, req.userId);
   res.json({ message: 'Template deleted' });

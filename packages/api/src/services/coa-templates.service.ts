@@ -28,6 +28,7 @@ function rowToTemplate(row: DbCoaTemplate): CoaTemplate {
     accounts: (row.accounts as CoaTemplateAccountInput[]) ?? [],
     isBuiltin: row.isBuiltin,
     isHidden: row.isHidden,
+    accountsCustomized: row.accountsCustomized,
     createdByUserId: row.createdByUserId ?? null,
     createdAt: (row.createdAt instanceof Date ? row.createdAt : new Date(row.createdAt as unknown as string)).toISOString(),
     updatedAt: (row.updatedAt instanceof Date ? row.updatedAt : new Date(row.updatedAt as unknown as string)).toISOString(),
@@ -42,6 +43,7 @@ function rowToSummary(row: DbCoaTemplate): CoaTemplateSummary {
     label: row.label,
     isBuiltin: row.isBuiltin,
     isHidden: row.isHidden,
+    accountsCustomized: row.accountsCustomized,
     accountCount: acctList.length,
     updatedAt: (row.updatedAt instanceof Date ? row.updatedAt : new Date(row.updatedAt as unknown as string)).toISOString(),
   };
@@ -97,7 +99,9 @@ export async function bootstrapBuiltins(): Promise<{ inserted: number; synced: n
     .onConflictDoUpdate({
       target: coaTemplatesTable.slug,
       set: { accounts: sql`excluded.accounts`, updatedAt: new Date() },
-      setWhere: sql`${coaTemplatesTable.isBuiltin} = true AND ${coaTemplatesTable.accounts} IS DISTINCT FROM excluded.accounts`,
+      // A built-in a super admin edited (accounts_customized) is left alone
+      // until "Reset to default" (migration 0199).
+      setWhere: sql`${coaTemplatesTable.isBuiltin} = true AND ${coaTemplatesTable.accountsCustomized} = false AND ${coaTemplatesTable.accounts} IS DISTINCT FROM excluded.accounts`,
     })
     .returning({ id: coaTemplatesTable.id, inserted: sql<boolean>`(xmax = 0)` });
   const inserted = changed.filter((r) => r.inserted).length;
@@ -198,21 +202,6 @@ export async function update(
     throw AppError.notFound(`COA template not found: ${slug}`);
   }
 
-  // Built-in templates are frozen: their accounts are referenced
-  // by system-account lookups (e.g., systemTag = 'accounts_payable')
-  // and must stay in lockstep with the static BUSINESS_TEMPLATES
-  // constant. We still allow relabeling the display label so an
-  // admin can re-brand the dropdown entry, but block account
-  // mutations outright — editing the accounts list on a built-in
-  // silently diverges the DB from the code constant and causes
-  // hard-to-debug seeding failures.
-  if (existing.isBuiltin && input.accounts !== undefined) {
-    throw AppError.badRequest(
-      'Cannot modify accounts on a built-in template. Hide it and create a custom copy instead.',
-      'TEMPLATE_BUILTIN_LOCKED',
-    );
-  }
-
   if (input.accounts) {
     validateAccountNumbersUnique(input.accounts);
   }
@@ -221,7 +210,19 @@ export async function update(
     updatedAt: new Date(),
   };
   if (input.label !== undefined) updates.label = input.label;
-  if (input.accounts !== undefined) updates.accounts = input.accounts;
+  if (input.accounts !== undefined) {
+    // Built-ins are editable by super admins (migration 0199). Their system
+    // accounts (A/R, A/P, Cash, Payments Clearing, …) are looked up by
+    // systemTag when a tenant is seeded, so every system account of the
+    // shipped default must survive the edit. An edited built-in is marked
+    // customized so the startup re-sync stops overwriting it; matching the
+    // default exactly clears the flag again.
+    if (existing.isBuiltin) {
+      assertSystemAccountsKept(slug, input.accounts);
+      updates.accountsCustomized = !sameAsDefault(slug, input.accounts);
+    }
+    updates.accounts = input.accounts;
+  }
 
   const [row] = await db
     .update(coaTemplatesTable)
@@ -231,6 +232,54 @@ export async function update(
   if (!row) {
     throw AppError.internal('Failed to update COA template');
   }
+  return rowToTemplate(row);
+}
+
+function builtinDefault(slug: string): CoaTemplateAccountInput[] | null {
+  const list = (BUSINESS_TEMPLATES as Record<string, unknown>)[slug];
+  return Array.isArray(list) ? (list as CoaTemplateAccountInput[]) : null;
+}
+
+// Key-order-independent JSON (jsonb reorders object keys on storage).
+function canonical(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(',')}]`;
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    return `{${Object.keys(o).filter((k) => o[k] !== undefined).sort().map((k) => `${JSON.stringify(k)}:${canonical(o[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(v ?? null);
+}
+
+function sameAsDefault(slug: string, accountsList: CoaTemplateAccountInput[]): boolean {
+  const def = builtinDefault(slug);
+  return !!def && canonical(def) === canonical(accountsList);
+}
+
+function assertSystemAccountsKept(slug: string, accountsList: CoaTemplateAccountInput[]): void {
+  const def = builtinDefault(slug) ?? [];
+  const kept = new Set(accountsList.filter((a) => a.isSystem && a.systemTag).map((a) => a.systemTag));
+  const missing = def
+    .filter((a) => a.isSystem && a.systemTag && !kept.has(a.systemTag))
+    .map((a) => `${a.accountNumber ?? ''} ${a.name}`.trim());
+  if (missing.length > 0) {
+    throw AppError.badRequest(
+      `These system accounts are required and can't be removed (you can rename or renumber them): ${missing.join(', ')}`,
+      'TEMPLATE_SYSTEM_ACCOUNT_REQUIRED',
+    );
+  }
+}
+
+/** Restore a built-in template's accounts to the version shipped in code. */
+export async function resetBuiltin(slug: string): Promise<CoaTemplate> {
+  const existing = await db.query.coaTemplatesTable.findFirst({ where: eq(coaTemplatesTable.slug, slug) });
+  if (!existing) throw AppError.notFound(`COA template not found: ${slug}`);
+  const def = builtinDefault(slug);
+  if (!existing.isBuiltin || !def) throw AppError.badRequest('Only built-in templates can be reset to default.');
+  const [row] = await db.update(coaTemplatesTable)
+    .set({ accounts: def, accountsCustomized: false, updatedAt: new Date() })
+    .where(eq(coaTemplatesTable.slug, slug))
+    .returning();
+  if (!row) throw AppError.internal('Failed to reset COA template');
   return rowToTemplate(row);
 }
 

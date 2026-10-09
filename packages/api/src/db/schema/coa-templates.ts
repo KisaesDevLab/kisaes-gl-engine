@@ -29,6 +29,9 @@ export const coaTemplatesTable = pgTable('coa_templates', {
   // dropdowns at registration / setup time, but they remain
   // visible to super admins so they can un-hide later.
   isHidden: boolean('is_hidden').default(false).notNull(),
+  // A built-in whose accounts a super admin edited (migration 0199): the
+  // startup re-sync from the code constant skips it until reset.
+  accountsCustomized: boolean('accounts_customized').default(false).notNull(),
   createdByUserId: uuid('created_by_user_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
