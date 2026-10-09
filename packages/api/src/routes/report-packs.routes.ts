@@ -143,6 +143,8 @@ reportPacksRouter.get('/packs/runs/:runId', readPerm, async (req, res) => {
 reportPacksRouter.get('/packs/runs/:runId/pdf', readPerm, async (req, res) => {
   const { buffer, filename } = await packService.readRunArtifact(req.tenantId, req.params['runId']!);
   res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  // filename is already ASCII-safe (renderPackFilename); filename* for
+  // clients that prefer the RFC 5987 form.
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
   res.send(buffer);
 });

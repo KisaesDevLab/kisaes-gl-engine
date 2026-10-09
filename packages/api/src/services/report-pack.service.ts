@@ -13,9 +13,10 @@ import {
   reportPackItemOptionsSchema,
   type PeriodPreset,
   type ReportPackItemOptions,
+  renderPackFilename,
 } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { reportPacks, reportPackItems, reportPackRuns } from '../db/schema/index.js';
+import { reportPacks, reportPackItems, reportPackRuns, tenants, companies } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { enqueueReportPack } from './extraction/queue.js';
@@ -328,10 +329,6 @@ export async function getRun(tenantId: string, runId: string): Promise<PackRunRo
   return run;
 }
 
-function sanitizeFilenamePart(s: string): string {
-  return s.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'report-pack';
-}
-
 /** Read the transient PDF for download. Throws 410 if expired/swept. */
 export async function readRunArtifact(
   tenantId: string,
@@ -347,12 +344,21 @@ export async function readRunArtifact(
   const pack = await db.query.reportPacks.findFirst({ where: eq(reportPacks.id, run.packId) });
   const provider = await getProviderForTenant(tenantId);
   const buffer = await provider.download(run.transientKey);
-  const packName = sanitizeFilenamePart(pack?.name ?? 'report-pack');
-  const template = pack?.filenameTemplate ?? '{pack}-{date}';
-  const filename = `${template
-    .replace(/\{pack\}/g, packName)
-    .replace(/\{date\}/g, run.rangeEnd ?? run.asOfDate ?? '')}`
-    .replace(/[^A-Za-z0-9._-]+/g, '_') + '.pdf';
+  const [tenant, company] = await Promise.all([
+    db.query.tenants.findFirst({ where: eq(tenants.id, tenantId), columns: { name: true } }),
+    db.query.companies.findFirst({
+      where: and(eq(companies.tenantId, tenantId), eq(companies.id, run.companyId)),
+      columns: { businessName: true },
+    }),
+  ]);
+  const filename = renderPackFilename(pack?.filenameTemplate, {
+    pack: pack?.name ?? 'report-pack',
+    tenant: tenant?.name ?? null,
+    company: company?.businessName ?? null,
+    rangeStart: run.rangeStart,
+    rangeEnd: run.rangeEnd,
+    asOfDate: run.asOfDate,
+  });
   return { buffer, filename, pageCount: run.pageCount };
 }
 
