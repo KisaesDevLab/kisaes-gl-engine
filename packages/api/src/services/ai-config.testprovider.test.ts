@@ -109,3 +109,36 @@ describe('aiConfigService.testProvider — uses the configured task model', () =
     expect(model).toBe('gpt-cat-model');
   });
 });
+
+describe('aiConfigService.testAll — each task is tested with its own model', () => {
+  beforeEach(async () => {
+    await db.delete(aiConfig);
+    mocks.getProvider.mockReset();
+    mocks.getProvider.mockImplementation((_name: string, _cfg: unknown, model?: string) => ({
+      testConnection: vi.fn(async () => ({ success: true, modelInfo: model ?? 'provider-default' })),
+    }));
+  });
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await db.delete(aiConfig);
+  });
+
+  it('reports categorization on Haiku and OCR on Sonnet instead of copying one model to every row', async () => {
+    await aiConfigService.updateConfig({
+      categorizationProvider: 'anthropic', categorizationModel: 'claude-haiku-5-5',
+      ocrProvider: 'anthropic', ocrModel: 'claude-sonnet-5-5',
+      chatProvider: 'anthropic', chatModel: 'claude-sonnet-5-5',
+      anthropicApiKey: 'sk-test',
+    });
+    const { rows } = await aiConfigService.testAll();
+    const info = Object.fromEntries(rows.map((r) => [r.task, r.modelInfo]));
+    expect(info['categorization']).toBe('claude-haiku-5-5');
+    expect(info['ocr']).toBe('claude-sonnet-5-5');
+    expect(info['chat']).toBe('claude-sonnet-5-5');
+    // No model of its own → the provider default, not another task's model.
+    expect(info['document_classification']).toBe('provider-default');
+    expect(rows.every((r) => !String(r.modelInfo).includes('untested'))).toBe(true);
+    // Haiku, Sonnet (shared by OCR + chat) and the default: three pings.
+    expect(mocks.getProvider).toHaveBeenCalledTimes(3);
+  });
+});

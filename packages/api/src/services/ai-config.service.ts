@@ -553,7 +553,13 @@ function configuredModelsForProvider(
   return models;
 }
 
-export async function testProvider(providerName: string): Promise<TestProviderResult> {
+export async function testProvider(
+  providerName: string,
+  /** Test exactly this model (the self-test passes each task's own model);
+   *  null = the provider's default model; undefined = the provider's
+   *  configured models (the per-provider Test button). */
+  modelOverride?: string | null,
+): Promise<TestProviderResult> {
   const config = await getRawConfig();
   const { getProvider } = await import('./ai-providers/index.js');
   const { abortableTimeout, TimeoutError } = await import('../utils/retry.js');
@@ -562,7 +568,9 @@ export async function testProvider(providerName: string): Promise<TestProviderRe
   // hardcoded default — a green badge must mean the real production call
   // path works. Several distinct models: test the first and name the rest;
   // none configured: keep the provider default.
-  const configuredModels = configuredModelsForProvider(config, providerName);
+  const configuredModels = modelOverride !== undefined
+    ? (modelOverride ? [modelOverride] : [])
+    : configuredModelsForProvider(config, providerName);
   let provider;
   try {
     provider = getProvider(providerName, config, configuredModels[0], { forceDirect: true });
@@ -630,35 +638,47 @@ export interface SelfTestRow {
  */
 export async function testAll(): Promise<{ rows: SelfTestRow[]; runAt: string }> {
   const config = await getConfig();
-  const tasks: Array<{ task: SelfTestRow['task']; provider: string | null | undefined }> = [
-    { task: 'categorization', provider: config.categorizationProvider },
-    { task: 'ocr', provider: config.ocrProvider || config.categorizationProvider },
-    { task: 'document_classification', provider: config.documentClassificationProvider || config.categorizationProvider },
-    { task: 'chat', provider: config.chatProvider },
+  // Each task is tested with ITS OWN model (the same *_model columns the
+  // runtime uses; blank = the provider's default). Tasks sharing a
+  // provider AND model share one ping. Previously one ping per provider
+  // used the first configured model and was copied to every row, so a task
+  // on a different model showed the wrong model.
+  const tasks: Array<{ task: SelfTestRow['task']; provider: string | null | undefined; model: string | undefined }> = [
+    { task: 'categorization', provider: config.categorizationProvider, model: config.categorizationModel || undefined },
+    { task: 'ocr', provider: config.ocrProvider || config.categorizationProvider, model: config.ocrModel || undefined },
+    {
+      task: 'document_classification',
+      provider: config.documentClassificationProvider || config.categorizationProvider,
+      model: config.documentClassificationModel || undefined,
+    },
+    { task: 'chat', provider: config.chatProvider, model: config.chatModel || undefined },
   ];
 
-  const distinctProviders = Array.from(new Set(tasks.map((t) => t.provider).filter((p): p is string => !!p)));
-  const startTimes = new Map<string, number>(distinctProviders.map((p) => [p, Date.now()]));
+  const keyOf = (provider: string, model: string | undefined) => `${provider}|${model ?? ''}`;
+  const pairs = new Map<string, { provider: string; model: string | undefined }>();
+  for (const t of tasks) if (t.provider) pairs.set(keyOf(t.provider, t.model), { provider: t.provider, model: t.model });
   const settled = await Promise.all(
-    distinctProviders.map(async (provider) => ({ provider, result: await testProvider(provider) })),
+    [...pairs.entries()].map(async ([key, { provider, model }]) => {
+      const start = Date.now();
+      // A task with no model of its own runs the provider default — test that.
+      const result = await testProvider(provider, model ?? null);
+      return { key, result, latency: Date.now() - start };
+    }),
   );
-  const resultByProvider = new Map(settled.map(({ provider, result }) => [provider, result]));
-  const latencyByProvider = new Map(
-    settled.map(({ provider }) => [provider, Date.now() - (startTimes.get(provider) ?? Date.now())]),
-  );
+  const byKey = new Map(settled.map((r) => [r.key, r]));
 
-  const rows: SelfTestRow[] = tasks.map(({ task, provider }) => {
+  const rows: SelfTestRow[] = tasks.map(({ task, provider, model }) => {
     if (!provider) {
       return { task, provider: null, success: false, latencyMs: null, skipped: true, skipReason: 'no_provider_configured' };
     }
-    const result = resultByProvider.get(provider)!;
+    const { result, latency } = byKey.get(keyOf(provider, model))!;
     return {
       task,
       provider,
       success: result.success,
       ...(result.error ? { error: result.error } : {}),
       ...(result.modelInfo ? { modelInfo: result.modelInfo } : {}),
-      latencyMs: latencyByProvider.get(provider) ?? null,
+      latencyMs: latency,
     };
   });
   return { rows, runAt: new Date().toISOString() };
