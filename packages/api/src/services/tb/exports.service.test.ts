@@ -276,6 +276,33 @@ describe('vendor export dataset (Phase 11)', () => {
     expect(nums.filter((x) => x.startsWith('4000')).sort()).toEqual(['4000-1', '4000-2']);
   });
 
+  it('describes codes from the company\'s own return form, not another form sharing the number', async () => {
+    // TimberStone 2026-10-09: code 211 is 1065 L21 "Other deductions" but
+    // 1120S L18 "Employee benefit programs"; a 1065 exported the 1120S text.
+    const res = await db.execute(sql.raw(`
+      SELECT return_form, description, ultratax_code FROM tax_codes
+      WHERE code = '211' AND activity_type = 'business' AND return_form IN ('1065', '1120S')
+        AND version_id = (SELECT id FROM tax_code_seed_versions WHERE tax_year = 2025 ORDER BY version DESC LIMIT 1)
+    `));
+    const byForm = Object.fromEntries((res.rows as Array<{ return_form: string; description: string; ultratax_code: string | null }>)
+      .map((r) => [r.return_form, r]));
+    expect(byForm['1065']).toBeTruthy();
+    expect(byForm['1120S']).toBeTruthy();
+    expect(byForm['1065']!.description).not.toBe(byForm['1120S']!.description);
+
+    await db.delete(accountTaxAssignments).where(eq(accountTaxAssignments.tenantId, tenantId));
+    const other = await seedCode('tc.ultratax_code IS NOT NULL');
+    await assign(A['Sales']!, other.code, other.activity_type);
+    await assign(A['Interest Income']!, other.code, other.activity_type);
+    await assign(A['Cash']!, other.code, other.activity_type);
+    await assign(A['Rent Expense']!, '211', 'business');
+
+    const dataset = await buildTaxDataset(tenantId, companyId, { taxYear: 2026, basis: 'accrual', software: 'ultratax' });
+    const line = dataset.lines.find((l) => l.code === '211')!;
+    expect(line.description).toBe(byForm['1065']!.description);
+    expect(line.vendorCode ?? null).toBe(byForm['1065']!.ultratax_code ?? null);
+  });
+
   it('builds the working TB workbook with sections and five columns', async () => {
     const file = await buildWorkingTbXlsx(tenantId, companyId, { taxYear: 2026, basis: 'accrual' });
     expect(file.fileName).toMatch(/working-tb-20261231-accrual\.xlsx/);

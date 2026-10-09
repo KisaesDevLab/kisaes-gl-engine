@@ -14,7 +14,7 @@
 // first client use.
 
 import ExcelJS from 'exceljs';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { companyTaxProfiles,
   accountTaxAssignments, activityUnits, companies, firmTaxCodes, tags, taxCodes, tbExports,
@@ -105,11 +105,26 @@ export interface TaxDataset {
   missingVendorCode: Array<{ code: string; description: string }>;
 }
 
+async function profileReturnForm(tenantId: string, companyId: string): Promise<string | null> {
+  const [p] = await db.select({ f: companyTaxProfiles.returnForm }).from(companyTaxProfiles)
+    .where(and(eq(companyTaxProfiles.tenantId, tenantId), eq(companyTaxProfiles.companyId, companyId))).limit(1);
+  return p?.f ?? null;
+}
+
 async function loadCodeMeta(tenantId: string, companyId: string): Promise<Map<string, CodeMeta>> {
   const versionId = await resolveSeedVersionId(tenantId, companyId);
   const meta = new Map<string, CodeMeta>();
-  if (versionId) {
-    const rows = await db.select().from(taxCodes).where(eq(taxCodes.versionId, versionId));
+  const returnForm = await profileReturnForm(tenantId, companyId);
+  if (versionId && returnForm) {
+    // Only the company's return form (+ shared 'common' rows). The same
+    // code number means different lines on different forms (211 = 1065 L21
+    // vs 1120S L18); loading every form let the last one win, so a 1065
+    // exported 1120S descriptions and vendor codes.
+    const rows = (await db.select().from(taxCodes).where(and(
+      eq(taxCodes.versionId, versionId),
+      inArray(taxCodes.returnForm, [returnForm, 'common']),
+    ))).sort((a, b) => (a.returnForm === 'common' ? 0 : 1) - (b.returnForm === 'common' ? 0 : 1));
+    // Form-specific rows sort last, so they win over a 'common' duplicate.
     for (const r of rows) {
       meta.set(`seed|${r.activityType}|${r.code}`, {
         code: r.code, description: r.description, activityType: r.activityType, sortOrder: r.sortOrder,

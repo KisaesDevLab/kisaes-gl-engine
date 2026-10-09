@@ -12,12 +12,12 @@
 // sign-off staleness both ride the stamp and MUST move on RJE edits
 // (STATE.md Phase-7 note).
 
-import { and, asc, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import { db, type Tx } from '../../db/index.js';
 import {
-  accounts, accountTaxAssignments, activityUnits, firmTaxCodes, taxCodes, tbTaxEntries, tbTaxEntryLines,
+  accounts, accountTaxAssignments, activityUnits, companyTaxProfiles, firmTaxCodes, taxCodes, tbTaxEntries, tbTaxEntryLines,
 } from '../../db/schema/index.js';
 import type { z } from 'zod';
 import type { createTaxEntrySchema } from '@kis-books/shared';
@@ -219,9 +219,16 @@ export async function m1FlaggedAccountIds(tenantId: string, companyId: string): 
   if (assignments.length === 0) return new Set();
 
   const versionId = await resolveSeedVersionId(tenantId, companyId);
-  const m1SeedCodes = versionId
+  const [profile] = await db.select({ f: companyTaxProfiles.returnForm }).from(companyTaxProfiles)
+    .where(and(eq(companyTaxProfiles.tenantId, tenantId), eq(companyTaxProfiles.companyId, companyId))).limit(1);
+  // Only the company's return form (+ 'common'): a code flagged M-1 on
+  // another form must not flag this company's account.
+  const m1SeedCodes = versionId && profile
     ? await db.select({ code: taxCodes.code, activityType: taxCodes.activityType }).from(taxCodes)
-      .where(and(eq(taxCodes.versionId, versionId), eq(taxCodes.isM1Adjustment, true)))
+      .where(and(
+        eq(taxCodes.versionId, versionId), eq(taxCodes.isM1Adjustment, true),
+        inArray(taxCodes.returnForm, [profile.f, 'common']),
+      ))
     : [];
   const m1Seed = new Set(m1SeedCodes.map((c) => `${c.activityType}|${c.code}`));
   const firmIds = assignments.map((a) => a.firmCodeId).filter((x): x is string => !!x);
