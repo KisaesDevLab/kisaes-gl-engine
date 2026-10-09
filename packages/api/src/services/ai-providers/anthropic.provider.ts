@@ -36,7 +36,7 @@ export class AnthropicProvider implements AiProvider {
   private client: Anthropic;
   private model: string;
 
-  constructor(apiKey: string, model: string = 'claude-sonnet-4-6') {
+  constructor(apiKey: string, model: string = 'claude-sonnet-5-5') {
     this.client = new Anthropic({ apiKey });
     this.model = model;
   }
@@ -161,6 +161,12 @@ export class AnthropicProvider implements AiProvider {
   async listModels(signal?: AbortSignal): Promise<string[]> {
     const page = await this.client.models.list({ limit: 100 }, { signal });
     return page.data.map((m) => m.id);
+  }
+
+  /** Models with display name + release date, newest first (API order). */
+  async listModelDetails(signal?: AbortSignal): Promise<Array<{ id: string; displayName: string; createdAt: string }>> {
+    const page = await this.client.models.list({ limit: 100 }, { signal });
+    return page.data.map((m) => ({ id: m.id, displayName: m.display_name, createdAt: m.created_at }));
   }
 
   estimateCost(inputTokens: number, outputTokens: number): number {

@@ -3,6 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
+import { z } from 'zod';
 import rateLimit from 'express-rate-limit';
 import { getRateLimitStore } from '../utils/rate-limit-store.js';
 import {
@@ -135,6 +136,24 @@ aiRouter.get('/admin/models/:provider', authenticate, requireSuperAdmin, async (
   const result = await aiConfigService.listProviderModels(String(req.params['provider']));
   res.json(result);
 });
+
+// "Check for new Claude models": configured Claude models vs Anthropic's
+// live list, proposing the newest model of the same family for each.
+aiRouter.get('/admin/models/anthropic/upgrades', authenticate, requireSuperAdmin, aiAdminTestLimiter, async (_req, res) => {
+  const result = await aiConfigService.checkClaudeModelUpgrades();
+  res.json(result);
+});
+
+const applyClaudeUpgradesSchema = z.object({ slots: z.array(z.string().max(60)).max(20).optional() });
+aiRouter.post('/admin/models/anthropic/upgrade', authenticate, requireSuperAdmin, aiAdminTestLimiter,
+  validate(applyClaudeUpgradesSchema), async (req, res) => {
+    const result = await aiConfigService.applyClaudeModelUpgrades(req.body.slots, req.userId);
+    log.warn({
+      component: 'ai', event: 'ai_claude_models_upgraded', userId: req.userId, ip: req.ip,
+      changes: result.applied.map((u) => `${u.slot}: ${u.current} -> ${u.latest}`),
+    });
+    res.json(result);
+  });
 
 aiRouter.get('/admin/glm-ocr/models', authenticate, requireSuperAdmin, async (_req, res) => {
   const result = await aiConfigService.listGlmOcrModels();

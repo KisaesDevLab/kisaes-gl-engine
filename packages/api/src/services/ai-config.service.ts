@@ -787,3 +787,158 @@ export async function testFunction(fn: AiFunctionKey): Promise<TestFunctionResul
     return { success: false, provider, durationMs, error: detail };
   }
 }
+
+// ─── Claude model upgrades ───────────────────────────────────────
+// Admin → AI "Check for new Claude models": compares every place a Claude
+// model is configured against Anthropic's live model list and proposes the
+// newest model of the SAME family (Haiku → newest Haiku, Opus → newest Opus).
+// Applying runs through updateConfig, so nothing else changes.
+
+export interface ClaudeModelInfo { id: string; displayName: string; createdAt: string }
+
+export interface ClaudeModelSlot {
+  /** Stable key: categorization | ocr | document_classification | chat | statement_extraction | task:<fn> */
+  slot: string;
+  label: string;
+  current: string;
+}
+
+export interface ClaudeModelUpgrade extends ClaudeModelSlot {
+  latest: string;
+  latestDisplayName: string;
+}
+
+export interface ClaudeModelUpgradeCheck {
+  /** Newest model per family, e.g. { sonnet: {...}, opus: {...} }. */
+  latestByFamily: Record<string, ClaudeModelInfo>;
+  /** Every configured Claude model slot, upgradable or not. */
+  configured: ClaudeModelSlot[];
+  upgrades: ClaudeModelUpgrade[];
+}
+
+/** 'claude-sonnet-5-5' → 'sonnet'; null for anything that isn't a Claude id. */
+export function claudeFamily(modelId: string): string | null {
+  const m = /^claude-([a-z]+)-/.exec(modelId);
+  return m ? m[1]! : null;
+}
+
+// Pure: exported for tests.
+export function planClaudeModelUpgrades(
+  slots: ClaudeModelSlot[],
+  live: ClaudeModelInfo[],
+): Omit<ClaudeModelUpgradeCheck, 'configured'> {
+  const latestByFamily: Record<string, ClaudeModelInfo> = {};
+  for (const m of live) {
+    const fam = claudeFamily(m.id);
+    if (!fam) continue;
+    const cur = latestByFamily[fam];
+    if (!cur || Date.parse(m.createdAt) > Date.parse(cur.createdAt)) latestByFamily[fam] = m;
+  }
+  const upgrades: ClaudeModelUpgrade[] = [];
+  for (const s of slots) {
+    const fam = claudeFamily(s.current);
+    const latest = fam ? latestByFamily[fam] : undefined;
+    if (latest && latest.id !== s.current) {
+      upgrades.push({ ...s, latest: latest.id, latestDisplayName: latest.displayName });
+    }
+  }
+  return { latestByFamily, upgrades };
+}
+
+const TASK_LABELS: Record<AiFunctionKey, string> = {
+  categorization: 'Transaction Categorization & Name Cleanup',
+  ocr: 'OCR / Document Parsing',
+  document_classification: 'Document Classification',
+  chat: 'Chat',
+  close_review: 'Close Review',
+};
+
+async function configuredClaudeSlots(): Promise<ClaudeModelSlot[]> {
+  const c = await getRawConfig();
+  const base: Record<AiFunctionKey, { provider: string | null; model: string | null }> = {
+    categorization: { provider: c.categorizationProvider, model: c.categorizationModel },
+    ocr: { provider: c.ocrProvider || c.categorizationProvider, model: c.ocrModel },
+    document_classification: {
+      provider: c.documentClassificationProvider || c.categorizationProvider,
+      model: c.documentClassificationModel,
+    },
+    chat: { provider: c.chatProvider, model: c.chatModel },
+    // No model column of its own — runs the categorization model unless a
+    // Task Settings override names one (picked up in the override loop).
+    close_review: { provider: c.categorizationProvider, model: null },
+  };
+  const slots: ClaudeModelSlot[] = [];
+  for (const fn of Object.keys(base) as AiFunctionKey[]) {
+    const b = base[fn];
+    if (b.provider === 'anthropic' && b.model && claudeFamily(b.model)) {
+      slots.push({ slot: fn, label: TASK_LABELS[fn], current: b.model });
+    }
+  }
+  if (c.statementExtractionProvider === 'anthropic' && c.statementExtractionModel && claudeFamily(c.statementExtractionModel)) {
+    slots.push({ slot: 'statement_extraction', label: 'Statement Extraction', current: c.statementExtractionModel });
+  }
+  // Per-function overrides in Task Settings.
+  const opts = (c.taskOptions as TaskOptions | null) || {};
+  for (const fn of Object.keys(opts) as AiFunctionKey[]) {
+    const o = opts[fn];
+    const provider = o?.provider || base[fn]?.provider;
+    if (o?.model && provider === 'anthropic' && claudeFamily(o.model)) {
+      slots.push({ slot: `task:${fn}`, label: `${TASK_LABELS[fn] ?? fn} (Task Settings override)`, current: o.model });
+    }
+  }
+  return slots;
+}
+
+async function liveClaudeModels(): Promise<ClaudeModelInfo[]> {
+  const config = await getRawConfig();
+  const { getProvider } = await import('./ai-providers/index.js');
+  const { AnthropicProvider } = await import('./ai-providers/anthropic.provider.js');
+  const provider = getProvider('anthropic', config, undefined, { forceDirect: true });
+  if (!(provider instanceof AnthropicProvider)) throw AppError.badRequest('Anthropic is not configured.');
+  const { abortableTimeout } = await import('../utils/retry.js');
+  const { signal, cancel } = abortableTimeout(12_000);
+  try {
+    return await provider.listModelDetails(signal);
+  } catch (err) {
+    throw AppError.badRequest(`Could not reach Anthropic to list models: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    cancel();
+  }
+}
+
+export async function checkClaudeModelUpgrades(): Promise<ClaudeModelUpgradeCheck> {
+  const [configured, live] = await Promise.all([configuredClaudeSlots(), liveClaudeModels()]);
+  return { configured, ...planClaudeModelUpgrades(configured, live) };
+}
+
+/**
+ * Applies the upgrades for the given slots (all proposed ones when omitted),
+ * re-checking against the live list so a stale browser can't write an id
+ * Anthropic no longer offers.
+ */
+export async function applyClaudeModelUpgrades(
+  slots: string[] | undefined,
+  userId?: string,
+): Promise<{ applied: ClaudeModelUpgrade[] }> {
+  const check = await checkClaudeModelUpgrades();
+  const chosen = check.upgrades.filter((u) => !slots || slots.includes(u.slot));
+  if (chosen.length === 0) return { applied: [] };
+  const input: AiConfigUpdateInput = {};
+  const taskOptions: NonNullable<AiConfigUpdateInput['taskOptions']> = {};
+  for (const u of chosen) {
+    switch (u.slot) {
+      case 'categorization': input.categorizationModel = u.latest; break;
+      case 'ocr': input.ocrModel = u.latest; break;
+      case 'document_classification': input.documentClassificationModel = u.latest; break;
+      case 'chat': input.chatModel = u.latest; break;
+      case 'statement_extraction': input.statementExtractionModel = u.latest; break;
+      default: {
+        const fn = u.slot.slice('task:'.length) as AiFunctionKey;
+        taskOptions[fn] = { model: u.latest };
+      }
+    }
+  }
+  if (Object.keys(taskOptions).length > 0) input.taskOptions = taskOptions;
+  await updateConfig(input, userId);
+  return { applied: chosen };
+}
