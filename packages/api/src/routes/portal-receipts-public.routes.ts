@@ -80,10 +80,30 @@ portalReceiptsPublicRouter.get('/', async (req, res) => {
   if (!companyId) throw AppError.badRequest('companyId required');
 
   // Filter to this contact's uploads only — the bookkeeper inbox is not
-  // visible to portal contacts.
-  const { receipts } = await svc.listInbox(req.portalContact.tenantId, {
+  // visible to portal contacts. ?kind=receipt → receipt-button uploads
+  // only; ?kind=request → files sent against a document request.
+  const rawKind = req.query['kind'];
+  const kind = rawKind === 'receipt' || rawKind === 'request' ? rawKind : 'all';
+  const receipts = await svc.listContactUploads(req.portalContact.tenantId, {
     companyId,
-    uploadedBy: req.portalContact.contactId,
+    contactId: req.portalContact.contactId,
+    kind,
   });
   res.json({ receipts });
+});
+
+// Preview / download of a file this contact uploaded. The portal session
+// cookie authenticates a plain <iframe>/<img>/new-tab load.
+portalReceiptsPublicRouter.get('/:id/file', async (req, res) => {
+  if (!req.portalContact) throw AppError.unauthorized('No portal session');
+  const id = req.params['id'] ?? '';
+  if (!/^[0-9a-fA-F-]{36}$/.test(id)) throw AppError.badRequest('Invalid id');
+  const file = await svc.getContactUploadFile(req.portalContact.tenantId, req.portalContact.contactId, id);
+  res.setHeader('Content-Type', file.mimeType);
+  const disposition = req.query['inline'] === '1' ? 'inline' : 'attachment';
+  const safeName = file.filename.replace(/[\r\n"]/g, '_');
+  res.setHeader('Content-Disposition', `${disposition}; filename="${safeName}"`);
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.send(file.buffer);
 });

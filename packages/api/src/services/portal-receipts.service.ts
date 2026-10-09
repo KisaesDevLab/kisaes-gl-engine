@@ -595,3 +595,84 @@ export async function getReceiptFile(
     mimeType: receipt.mimeType || 'application/octet-stream',
   };
 }
+
+// ── Portal contact: their own uploads ───────────────────────────────
+// Receipts sent with the portal's receipt button carry no document request;
+// files sent against a document request carry one. The dashboard tile and
+// the capture page's "Your uploads" list separate the two.
+
+export type ContactUploadKind = 'receipt' | 'request' | 'all';
+
+// Superset of InboxRow so existing consumers of GET /portal/receipts
+// (the dashboard, the Vibe PM peer API) keep every field they had.
+export interface ContactUploadRow extends InboxRow {
+  mimeType: string | null;
+  sizeBytes: number | null;
+  documentRequestId: string | null;
+  /** The request's description ("Sept 2025 Amex statement"), when sent against one. */
+  requestDescription: string | null;
+  requestPeriodLabel: string | null;
+}
+
+export async function listContactUploads(
+  tenantId: string,
+  opts: { companyId: string; contactId: string; kind?: ContactUploadKind; limit?: number },
+): Promise<ContactUploadRow[]> {
+  const conds = [
+    eq(portalReceipts.tenantId, tenantId),
+    eq(portalReceipts.companyId, opts.companyId),
+    eq(portalReceipts.uploadedBy, opts.contactId),
+    eq(portalReceipts.uploadedByType, 'contact'),
+  ];
+  if (opts.kind === 'receipt') conds.push(sql`${portalReceipts.documentRequestId} IS NULL`);
+  if (opts.kind === 'request') conds.push(sql`${portalReceipts.documentRequestId} IS NOT NULL`);
+  const limit = Math.min(Math.max(opts.limit ?? 200, 1), 500);
+  return db
+    .select({
+      id: portalReceipts.id,
+      filename: portalReceipts.filename,
+      status: portalReceipts.status,
+      capturedAt: portalReceipts.capturedAt,
+      uploadedBy: portalReceipts.uploadedBy,
+      captureSource: portalReceipts.captureSource,
+      extractedVendor: portalReceipts.extractedVendor,
+      extractedTotal: portalReceipts.extractedTotal,
+      extractedDate: portalReceipts.extractedDate,
+      matchedTransactionId: portalReceipts.matchedTransactionId,
+      matchScore: portalReceipts.matchScore,
+      companyId: portalReceipts.companyId,
+      companyName: companies.businessName,
+      mimeType: portalReceipts.mimeType,
+      sizeBytes: portalReceipts.sizeBytes,
+      documentRequestId: portalReceipts.documentRequestId,
+      requestDescription: documentRequests.description,
+      requestPeriodLabel: documentRequests.periodLabel,
+    })
+    .from(portalReceipts)
+    .innerJoin(companies, eq(portalReceipts.companyId, companies.id))
+    .leftJoin(documentRequests, and(
+      eq(documentRequests.id, portalReceipts.documentRequestId),
+      eq(documentRequests.tenantId, portalReceipts.tenantId),
+    ))
+    .where(and(...conds))
+    .orderBy(desc(portalReceipts.capturedAt))
+    .limit(limit);
+}
+
+/** A portal contact may open only a file they uploaded themselves. */
+export async function getContactUploadFile(
+  tenantId: string,
+  contactId: string,
+  receiptId: string,
+): Promise<{ buffer: Buffer; filename: string; mimeType: string }> {
+  const receipt = await db.query.portalReceipts.findFirst({
+    where: and(
+      eq(portalReceipts.tenantId, tenantId),
+      eq(portalReceipts.id, receiptId),
+      eq(portalReceipts.uploadedBy, contactId),
+      eq(portalReceipts.uploadedByType, 'contact'),
+    ),
+  });
+  if (!receipt) throw AppError.notFound('File not found');
+  return getReceiptFile(tenantId, receipt.id);
+}
