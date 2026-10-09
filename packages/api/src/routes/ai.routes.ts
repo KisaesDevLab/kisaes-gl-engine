@@ -175,8 +175,9 @@ aiRouter.post('/admin/test-glm-ocr', authenticate, requireSuperAdmin, aiAdminTes
 // Reachability test for the Vibe AI Router (GET /healthz on the router).
 aiRouter.post('/admin/test-router', authenticate, requireSuperAdmin, aiAdminTestLimiter, async (req, res) => {
   const { routerAvailable, routerProvider } = await import('../services/ai-providers/vibe-router.provider.js');
+  await aiConfigService.getRawConfig(); // loads the Admin -> AI router connection
   if (!routerAvailable()) {
-    res.json({ success: false, error: 'The AI Router is not set up on this server (VIBE_AI_ROUTER_URL and VIBE_AI_TOKEN).' });
+    res.json({ success: false, error: 'The AI Router is not connected. Enter its URL and app token above.' });
     return;
   }
   const result = await routerProvider().testConnection();

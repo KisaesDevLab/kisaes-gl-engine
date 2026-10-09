@@ -183,7 +183,11 @@ async function start() {
     console.log(`Vibe MyBooks API listening on port ${env.PORT}`);
     // MIG-2: router mode only; non-blocking with retry — AI features fail
     // closed at the router until registration lands, which is correct.
-    registerMybooksTaskClasses();
+    // Load the Admin -> AI router connection (overrides env) before registering.
+    void import('./services/ai-config.service.js')
+      .then((m) => m.getRawConfig())
+      .catch(() => undefined)
+      .finally(() => registerMybooksTaskClasses());
     startBackupScheduler();
     startRecurringScheduler();
     startFingerprintScheduler();

@@ -2,7 +2,9 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { ROUTER_FEATURES, routeFor, routerAvailable, routerOn } from './ai-providers/vibe-router.provider.js';
+import {
+  ROUTER_FEATURES, routeFor, routerAvailable, routerOn, routerConnection, setRouterConnectionOverride, registerMybooksTaskClasses,
+} from './ai-providers/vibe-router.provider.js';
 import { eq, sql } from 'drizzle-orm';
 import type { AiConfigUpdateInput, AiFunctionKey, TaskOptions, ExtractionOptions } from '@kis-books/shared';
 import { db } from '../db/index.js';
@@ -31,7 +33,19 @@ async function getOrCreateConfig() {
     // "defaults" that didn't match what actually runs. See
     // AI_FUNCTION_SETTINGS_PLAN / Mechanism B wiring.
   }
+  applyRouterConnection(config);
   return config;
+}
+
+// Push the router connection saved in Admin -> AI into the router provider
+// (it overrides env when both URL and token are saved). Runs on every config
+// load, so api and worker follow a change on their next AI call.
+function applyRouterConnection(config: { routerUrl: string | null; routerTokenEncrypted: string | null }): void {
+  let token: string | null = null;
+  if (config.routerUrl && config.routerTokenEncrypted) {
+    try { token = decrypt(config.routerTokenEncrypted); } catch { token = null; }
+  }
+  setRouterConnectionOverride(config.routerUrl, token);
 }
 
 export interface ProviderTestRecord {
@@ -115,6 +129,12 @@ export async function getConfig() {
     // Vibe AI Router, per feature. routerAvailable = URL + token in env.
     router: {
       available: routerAvailable(),
+      // Where the connection comes from; the token itself is never returned.
+      connectionSource: routerConnection()?.source ?? null,
+      url: routerConnection()?.url ?? null,
+      savedUrl: config.routerUrl ?? null,
+      hasSavedToken: !!config.routerTokenEncrypted,
+      envConfigured: !!process.env['VIBE_AI_ROUTER_URL'] && !!process.env['VIBE_AI_TOKEN'],
       enabled: routerOn(config),
       // null = never saved in the UI (legacy VIBE_AI_MODE env decides).
       enabledSetting: config.routerEnabled ?? null,
@@ -287,9 +307,27 @@ export async function updateConfig(input: AiConfigUpdateInput, userId?: string) 
     updates.piiProtectionLevel = lvl;
   }
   if (input.cloudVisionEnabled !== undefined) updates.cloudVisionEnabled = !!input.cloudVisionEnabled;
+  // Router connection (a router on this or another local server). Applied
+  // before the routerEnabled check so one save can connect and turn it on.
+  const prevConn = routerConnection();
+  if (input.routerUrl !== undefined || input.routerToken !== undefined) {
+    let url = input.routerUrl !== undefined ? (input.routerUrl.trim() || null) : config.routerUrl;
+    if (url) {
+      if (!/^https?:\/\//i.test(url)) throw AppError.badRequest('Router URL must start with http:// or https://');
+      assertExternalUrlSafe(url, 'Router URL', { allowPrivate: true });
+      url = url.replace(/\/+$/, '');
+    }
+    let tokenEnc = config.routerTokenEncrypted;
+    if (input.routerToken === null) tokenEnc = null;
+    else if (input.routerToken) tokenEnc = encrypt(input.routerToken.trim());
+    if (!url) tokenEnc = null; // clearing the URL clears the saved connection
+    updates.routerUrl = url;
+    updates.routerTokenEncrypted = tokenEnc;
+    applyRouterConnection({ routerUrl: url, routerTokenEncrypted: tokenEnc });
+  }
   if (input.routerEnabled !== undefined) {
     if (input.routerEnabled && !routerAvailable()) {
-      throw AppError.badRequest('The AI Router is not set up on this server (VIBE_AI_ROUTER_URL and VIBE_AI_TOKEN). Run "vibe enable" first.');
+      throw AppError.badRequest('The AI Router is not connected. Enter its URL and app token in Admin → AI (or set VIBE_AI_ROUTER_URL and VIBE_AI_TOKEN).');
     }
     updates.routerEnabled = input.routerEnabled;
   }
@@ -320,6 +358,12 @@ export async function updateConfig(input: AiConfigUpdateInput, userId?: string) 
   if (userId) { updates.configuredBy = userId; updates.configuredAt = new Date(); }
 
   await db.update(aiConfig).set(updates).where(eq(aiConfig.id, config.id));
+
+  // A new router connection: declare this app's task classes on it.
+  const nextConn = routerConnection();
+  if (nextConn && (nextConn.url !== prevConn?.url || nextConn.token !== prevConn?.token)) {
+    registerMybooksTaskClasses({ maxAttempts: 3 });
+  }
 
   // Compare post-update data flow against the snapshot. If the change
   // loosens data handling, bump ai_config.disclosure_version so every

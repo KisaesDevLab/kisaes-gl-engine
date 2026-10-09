@@ -92,6 +92,10 @@ export const aiConfig = pgTable('ai_config', {
   // Admin attests the router keeps bank statements on-box (local_only class),
   // so routed statement text may skip PII scrubbing. Default: scrub.
   routerStatementsOnBox: boolean('router_statements_on_box').notNull().default(false),
+  // Router connection set in Admin -> AI (migration 0198). When both are set
+  // they override VIBE_AI_ROUTER_URL / VIBE_AI_TOKEN; NULL = use env.
+  routerUrl: varchar('router_url', { length: 500 }),
+  routerTokenEncrypted: text('router_token_encrypted'),
   adminDisclosureAcceptedAt: timestamp('admin_disclosure_accepted_at', { withTimezone: true }),
   adminDisclosureAcceptedBy: uuid('admin_disclosure_accepted_by'),
   disclosureVersion: integer('disclosure_version').notNull().default(1),

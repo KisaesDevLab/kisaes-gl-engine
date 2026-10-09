@@ -106,6 +106,9 @@ export const aiConfigUpdateSchema = z.object({
   routerEnabled: z.boolean().optional(),
   routerFeatures: z.record(z.string().regex(/^mybooks_[a-z_]+$/), z.enum(['router', 'direct'])).optional(),
   routerStatementsOnBox: z.boolean().optional(),
+  // Router connection from the UI. '' / null clears it (falls back to env).
+  routerUrl: z.string().max(500).optional(),
+  routerToken: z.string().max(500).nullable().optional(),
   // Chat support fields (tier-2 consent flow, see AI_CHAT_SUPPORT_PLAN).
   chatSupportEnabled: z.boolean().optional(),
   chatProvider: z.string().nullable().optional(),

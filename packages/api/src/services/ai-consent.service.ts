@@ -16,7 +16,8 @@
 // Follows the same shape as chatSupportEnabled (chat.service §60-99)
 // so existing "is any company opted in" queries compose cleanly.
 
-import { ROUTER_FEATURES, routeFor } from './ai-providers/vibe-router.provider.js';
+import { ROUTER_FEATURES, routeFor, routerConnection, setRouterConnectionOverride } from './ai-providers/vibe-router.provider.js';
+import { decrypt } from '../utils/encryption.js';
 import { eq, and, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { aiConfig, companies } from '../db/schema/index.js';
@@ -181,11 +182,24 @@ export interface DataFlowSnapshot {
   cloudVisionEnabled: boolean;
   /** Router task classes currently routed (optional for older snapshots). */
   routedFeatures?: string[];
+  /** Router URL while any feature is routed (null otherwise). */
+  routerDestination?: string | null;
 }
 
 export async function snapshotDataFlow(): Promise<DataFlowSnapshot> {
   const config = await db.query.aiConfig.findFirst();
+  // Reads the row directly, so apply the Admin -> AI router connection here
+  // too (same rule as ai-config.service: saved URL + token override env).
+  if (config) {
+    let token: string | null = null;
+    if (config.routerUrl && config.routerTokenEncrypted) {
+      try { token = decrypt(config.routerTokenEncrypted); } catch { token = null; }
+    }
+    setRouterConnectionOverride(config.routerUrl, token);
+  }
+  const routed = ROUTER_FEATURES.map((f) => f.taskClass).filter((tc) => routeFor(tc, config ?? null));
   return {
+    routerDestination: routed.length > 0 ? (routerConnection()?.url ?? null) : null,
     isEnabled: !!config?.isEnabled,
     categorizationProvider: config?.categorizationProvider ?? null,
     ocrProvider: config?.ocrProvider ?? null,
@@ -227,6 +241,10 @@ export function changeRequiresReconsent(prev: DataFlowSnapshot, next: DataFlowSn
   const newlyRouted = (next.routedFeatures ?? []).filter((f) => !(prev.routedFeatures ?? []).includes(f));
   if (newlyRouted.length > 0) {
     return `router_enabled:${newlyRouted.join(',')}`;
+  }
+  // Routed features now go to a different router server.
+  if (prev.routerDestination && next.routerDestination && prev.routerDestination !== next.routerDestination) {
+    return 'router_destination_changed';
   }
   // Provider change per task. Self-hosted → cloud bumps; cloud →
   // self-hosted is more protective; cloud → different cloud bumps

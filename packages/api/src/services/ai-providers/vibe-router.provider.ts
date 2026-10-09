@@ -100,9 +100,34 @@ export interface RouterSettings {
   routerFeatures?: unknown;
 }
 
-/** The router URL and token are configured (env). */
+// ── Router connection ───────────────────────────────────────────────
+// URL + token come from Admin -> AI (ai_config.router_url / token, migration
+// 0198) when both are saved there, else from env (minted by `vibe enable`).
+// ai-config.service pushes the saved pair in via setRouterConnectionOverride
+// every time it loads the config row, so the api and the worker pick up a
+// change on their next AI call without a restart.
+
+let uiConnection: { url: string; token: string } | null = null;
+
+export function setRouterConnectionOverride(url: string | null | undefined, token: string | null | undefined): void {
+  const next = url && token ? { url, token } : null;
+  if (next?.url === uiConnection?.url && next?.token === uiConnection?.token) return;
+  uiConnection = next;
+  cached = null; // rebuild the client against the new connection
+}
+
+export interface RouterConnection { url: string; token: string; source: 'settings' | 'env' }
+
+export function routerConnection(): RouterConnection | null {
+  if (uiConnection) return { ...uiConnection, source: 'settings' };
+  const url = process.env['VIBE_AI_ROUTER_URL'];
+  const token = process.env['VIBE_AI_TOKEN'];
+  return url && token ? { url, token, source: 'env' } : null;
+}
+
+/** The router URL and token are configured (Admin -> AI or env). */
 export function routerAvailable(): boolean {
-  return !!process.env['VIBE_AI_ROUTER_URL'] && !!process.env['VIBE_AI_TOKEN'];
+  return routerConnection() !== null;
 }
 
 function legacyEnvRouter(cfg: RouterSettings | null | undefined): boolean {
@@ -263,10 +288,8 @@ let cached: VibeRouterProvider | null = null;
 
 export function routerProvider(): VibeRouterProvider {
   if (!cached) {
-    cached = new VibeRouterProvider({
-      baseUrl: process.env['VIBE_AI_ROUTER_URL'] ?? '',
-      token: process.env['VIBE_AI_TOKEN'] ?? '',
-    });
+    const conn = routerConnection();
+    cached = new VibeRouterProvider({ baseUrl: conn?.url ?? '', token: conn?.token ?? '' });
   }
   return cached;
 }
@@ -289,9 +312,10 @@ export function registerMybooksTaskClasses(o?: {
   if (!routerAvailable()) return;
   const log =
     o?.log ?? ((level, msg) => console[level === 'info' ? 'log' : level](`[vibe-router] ${msg}`));
+  const conn = routerConnection();
   const client = new VibeAiClient({
-    baseUrl: process.env['VIBE_AI_ROUTER_URL'] ?? '',
-    token: process.env['VIBE_AI_TOKEN'] ?? '',
+    baseUrl: conn?.url ?? '',
+    token: conn?.token ?? '',
     ...(o?.fetchImpl ? { fetch: o.fetchImpl } : {}),
   });
   const maxAttempts = o?.maxAttempts ?? 10;
