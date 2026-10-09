@@ -1401,6 +1401,13 @@
       "when": 1784800000210,
       "tag": "0199_coa_template_customized",
       "breakpoints": true
+    },
+    {
+      "idx": 200,
+      "version": "7",
+      "when": 1784800000220,
+      "tag": "0200_report_pack_templates",
+      "breakpoints": true
     }
   ]
 }

@@ -17,12 +17,14 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { can, reportPackItemOptionsSchema } from '@kis-books/shared';
-import { authenticate } from '../middleware/auth.js';
+import { authenticate, requireSuperAdmin } from '../middleware/auth.js';
+import { AppError } from '../utils/errors.js';
 import { companyContext } from '../middleware/company.js';
 import { requirePermission, resolvePermissionsForRequest } from '../middleware/permission.js';
 import { expensiveOpLimiter } from '../middleware/expensive-op-limiter.js';
 import { validate } from '../middleware/validate.js';
 import * as packService from '../services/report-pack.service.js';
+import * as templateService from '../services/report-pack-templates.service.js';
 import { listActiveLetters } from '../services/report-letter.service.js';
 import { getReportPackQueueHealth } from '../services/extraction/queue.js';
 import { REPORT_CATALOG } from '@kis-books/shared';
@@ -35,7 +37,7 @@ reportPacksRouter.use(companyContext);
 // every fallthrough /reports/* request (halving the shared budget).
 // All of this router's own routes live under /catalog, /letters, and
 // /packs.
-reportPacksRouter.use(['/catalog', '/letters', '/packs'], expensiveOpLimiter);
+reportPacksRouter.use(['/catalog', '/letters', '/packs', '/pack-templates'], expensiveOpLimiter);
 
 const readPerm = requirePermission('reports', 'read');
 
@@ -121,6 +123,44 @@ reportPacksRouter.delete('/packs/:id', readPerm, async (req, res) => {
 reportPacksRouter.post('/packs/:id/duplicate', readPerm, async (req, res) => {
   const pack = await packService.duplicatePack(req.tenantId, req.params['id']!, req.userId);
   res.status(201).json(pack);
+});
+
+// ─── Pack templates (migration 0200) ───
+// Super admin saves a pack as an install-wide template and manages the list;
+// staff (never client users) apply one to create a pack in this client.
+const staffOnly = (req: { userType?: string }) => {
+  if (req.userType === 'client') throw AppError.notFound('Not found');
+};
+const templateMetaSchema = z.object({
+  name: z.string().trim().max(200).optional(),
+  description: z.string().max(2000).nullable().optional(),
+});
+
+reportPacksRouter.post('/packs/:id/save-as-template', requireSuperAdmin, validate(templateMetaSchema), async (req, res) => {
+  const template = await templateService.saveAsTemplate(req.tenantId, req.params['id']!, req.userId, req.body);
+  res.status(201).json({ template });
+});
+
+reportPacksRouter.get('/pack-templates', readPerm, async (req, res) => {
+  staffOnly(req);
+  const templates = await templateService.listTemplates();
+  res.json({ templates });
+});
+
+reportPacksRouter.post('/pack-templates/:id/apply', readPerm, validate(z.object({ name: z.string().trim().max(200).optional() })), async (req, res) => {
+  staffOnly(req);
+  const pack = await templateService.applyTemplate(req.tenantId, req.companyId, req.userId, req.params['id']!, req.body);
+  res.status(201).json(pack);
+});
+
+reportPacksRouter.put('/pack-templates/:id', requireSuperAdmin, validate(templateMetaSchema), async (req, res) => {
+  const template = await templateService.updateTemplate(req.tenantId, req.params['id']!, req.userId, req.body);
+  res.json({ template });
+});
+
+reportPacksRouter.delete('/pack-templates/:id', requireSuperAdmin, async (req, res) => {
+  await templateService.deleteTemplate(req.tenantId, req.params['id']!, req.userId);
+  res.status(204).end();
 });
 
 // ─── Runs ───

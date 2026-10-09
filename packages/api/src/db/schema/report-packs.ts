@@ -110,3 +110,18 @@ export const reportPackRuns = pgTable('report_pack_runs', {
   tenantPackIdx: index('idx_report_pack_runs_tenant_pack').on(table.tenantId, table.packId),
   expiresIdx: index('idx_report_pack_runs_expires').on(table.expiresAt),
 }));
+
+// Install-wide report pack templates (migration 0200). Super admin saves a
+// pack as one; staff apply it to create a pack in their client.
+export const reportPackTemplates = pgTable('report_pack_templates', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  name: varchar('name', { length: 200 }).notNull(),
+  description: text('description'),
+  settings: jsonb('settings').notNull().default({}),
+  items: jsonb('items').notNull().default([]),
+  sourcePackId: uuid('source_pack_id'),
+  createdBy: uuid('created_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+});
