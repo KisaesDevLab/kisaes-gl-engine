@@ -173,6 +173,9 @@ export interface DocumentRequestSummary {
   // Original filename of the upload that fulfilled the request (null
   // when closed by hand or the receipt row is gone).
   submittedFilename: string | null;
+  /** Every file sent against this request, oldest first (multi-file
+   *  requests: the client uploads several, then presses "I'm done"). */
+  files?: DocRequestFile[];
   // Staff acknowledgement. `unread` is the derived flag the UI badges:
   // status === 'submitted' && reviewedAt === null.
   reviewedAt: string | null;
@@ -202,3 +205,10 @@ export const documentRequestListFiltersSchema = z.object({
 });
 export type DocumentRequestListFilters = z.infer<typeof documentRequestListFiltersSchema>;
 export type DocRequestSortKey = (typeof DOC_REQUEST_SORT_KEYS)[number];
+
+export interface DocRequestFile {
+  receiptId: string;
+  filename: string | null;
+  mimeType: string | null;
+  uploadedAt: string;
+}

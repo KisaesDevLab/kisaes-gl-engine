@@ -149,6 +149,9 @@ interface RouteInput {
   contactId: string;
   recurringId: string | null;
   documentType: StatementDocumentType;
+  /** false = parse/import the file but leave the document request open
+   *  (multi-file portal request; the contact presses "I'm done"). */
+  fulfil?: boolean;
 }
 
 interface RouteResult {
@@ -210,7 +213,7 @@ export async function routeStatementUpload(input: RouteInput): Promise<RouteResu
     }
 
     if (mode === 'statement_processing') {
-      return parseStatementForReview(input.tenantId, input.receiptId, input.documentRequestId);
+      return parseStatementForReview(input.tenantId, input.receiptId, input.documentRequestId, { fulfil: input.fulfil });
     }
     // mode === 'auto_import' falls through to the connection pick below.
   }
@@ -271,6 +274,7 @@ export async function routeStatementUpload(input: RouteInput): Promise<RouteResu
     input.receiptId,
     input.documentRequestId,
     pick.bankConnectionId,
+    { fulfil: input.fulfil },
   );
 }
 
@@ -334,6 +338,7 @@ export async function parseStatementForReview(
   tenantId: string,
   receiptId: string,
   documentRequestId: string | null,
+  opts: { fulfil?: boolean } = {},
 ): Promise<RouteResult> {
   const receipt = await db.query.portalReceipts.findFirst({
     where: and(eq(portalReceipts.tenantId, tenantId), eq(portalReceipts.id, receiptId)),
@@ -351,7 +356,7 @@ export async function parseStatementForReview(
       .set({ status: 'statement_review', documentRequestId, updatedAt: new Date() })
       .where(eq(portalReceipts.id, receiptId));
 
-    if (documentRequestId) {
+    if (documentRequestId && opts.fulfil !== false) {
       const recurDoc = await import('./recurring-doc-request.service.js');
       await recurDoc.markFulfilledByReceipt(tenantId, documentRequestId, receiptId);
     }
@@ -399,6 +404,8 @@ export async function importStatementForReceipt(
     /** Staff user driving a manual route — the request closes as already
      *  reviewed (they are looking at the statement), instead of unread. */
     reviewedBy?: string;
+    /** false = import but leave the document request open (multi-file). */
+    fulfil?: boolean;
   } = {},
 ): Promise<RouteResult> {
   const receipt = await db.query.portalReceipts.findFirst({
@@ -494,7 +501,7 @@ export async function importStatementForReceipt(
       })
       .where(eq(portalReceipts.id, receiptId));
 
-    if (documentRequestId) {
+    if (documentRequestId && opts.fulfil !== false) {
       const recurDoc = await import('./recurring-doc-request.service.js');
       await recurDoc.markFulfilledByReceipt(tenantId, documentRequestId, receiptId, {
         reviewedBy: opts.reviewedBy,

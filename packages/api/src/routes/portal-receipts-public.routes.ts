@@ -69,6 +69,9 @@ portalReceiptsPublicRouter.post('/upload', upload.single('file'), async (req, re
     mimeType: file.mimetype,
     buffer: file.buffer,
     documentRequestId,
+    // Our portal sends keepOpen=1 (multi-file request, completed by "I'm
+    // done"); without it the upload completes the request as before.
+    keepRequestOpen: !!documentRequestId && req.body?.keepOpen === '1',
   });
   res.status(201).json(result);
 });

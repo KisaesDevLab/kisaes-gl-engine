@@ -3,7 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
-import { portalAuthenticate } from '../middleware/portal-auth.js';
+import { portalAuthenticate, refuseDuringPreview } from '../middleware/portal-auth.js';
 import { AppError } from '../utils/errors.js';
 import * as svc from '../services/recurring-doc-request.service.js';
 import * as flags from '../services/feature-flags.service.js';
@@ -35,4 +35,16 @@ portalDocumentRequestsPublicRouter.get('/', async (req, res) => {
     req.peerLink?.companyId,
   );
   res.json({ items, featureEnabled: true });
+});
+
+// "I'm done" — the contact has uploaded every file for this request.
+portalDocumentRequestsPublicRouter.post('/:id/complete', async (req, res) => {
+  if (!req.portalContact) throw AppError.unauthorized('No portal session');
+  refuseDuringPreview(req);
+  const id = req.params['id'] ?? '';
+  if (!/^[0-9a-fA-F-]{36}$/.test(id)) throw AppError.badRequest('Invalid id');
+  const result = await svc.completeByContact(
+    req.portalContact.tenantId, req.portalContact.contactId, id, req.peerLink?.companyId,
+  );
+  res.json(result);
 });

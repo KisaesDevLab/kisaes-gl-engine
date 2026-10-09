@@ -209,8 +209,11 @@ unread when they upload, and can be reminded, marked received or cancelled from 
 
 ### Document requests — unread client submissions & staff notification
 Standing document requests (**Practice → Reminders → Recurring requests**) ask a portal
-contact for a document on a schedule. When the contact uploads against a request, it
-becomes **submitted** and is **unread** until a staff member marks it reviewed.
+contact for a document on a schedule. In the portal the contact can upload several files to
+one request (pick many at once or Add more files later); it stays open, listing each file,
+until they press **I'm done** (staff can close it sooner with Mark received). Then it
+becomes **submitted** and is **unread** until a staff member marks it reviewed; the staff
+email goes out once, listing every file.
 
 Where unread submissions appear:
 - **Dashboard** — the "Client portal activity" banner shows "N client submissions to

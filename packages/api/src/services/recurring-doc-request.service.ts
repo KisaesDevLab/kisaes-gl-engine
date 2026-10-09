@@ -4,6 +4,7 @@
 
 import { and, asc, desc, eq, inArray, isNull, lte, sql, type SQL } from 'drizzle-orm';
 import type {
+  DocRequestFile,
   DocRequestStatus,
   DocumentRequestListFilters,
   DocumentRequestSummary,
@@ -934,6 +935,7 @@ export async function listOpenRequests(
     }
   }
 
+  const filesById = await filesForRequests(tenantId, reqIds);
   const items: DocumentRequestSummary[] = rows.map(({ d, contactEmail, contactFirstName, contactLastName, submittedFilename }) => {
     const agg = sendsById.get(d.id);
     return {
@@ -953,6 +955,7 @@ export async function listOpenRequests(
       submittedAt: d.submittedAt ? d.submittedAt.toISOString() : null,
       submittedReceiptId: d.submittedReceiptId,
       submittedFilename: submittedFilename ?? null,
+      files: filesById.get(d.id) ?? [],
       reviewedAt: d.reviewedAt ? d.reviewedAt.toISOString() : null,
       unread: d.status === 'submitted' && !d.reviewedAt,
       // new Date() normalizes the pg timestamp string (or a Date) to ISO;
@@ -1220,6 +1223,30 @@ export async function dashboardCounts(tenantId: string): Promise<{
 // Used by the portal-side dashboard panel — every pending request
 // for a contact across companies. Filtered by tenant so a portal
 // session can't read another firm's queue.
+/** Files sent against each request (portal_receipts.document_request_id), oldest first. */
+export async function filesForRequests(tenantId: string, requestIds: string[]): Promise<Map<string, DocRequestFile[]>> {
+  const out = new Map<string, DocRequestFile[]>();
+  if (requestIds.length === 0) return out;
+  const rows = await db
+    .select({
+      id: portalReceipts.id,
+      requestId: portalReceipts.documentRequestId,
+      filename: portalReceipts.filename,
+      mimeType: portalReceipts.mimeType,
+      capturedAt: portalReceipts.capturedAt,
+    })
+    .from(portalReceipts)
+    .where(and(eq(portalReceipts.tenantId, tenantId), inArray(portalReceipts.documentRequestId, requestIds)))
+    .orderBy(asc(portalReceipts.capturedAt));
+  for (const r of rows) {
+    if (!r.requestId) continue;
+    const list = out.get(r.requestId) ?? [];
+    list.push({ receiptId: r.id, filename: r.filename, mimeType: r.mimeType, uploadedAt: r.capturedAt.toISOString() });
+    out.set(r.requestId, list);
+  }
+  return out;
+}
+
 export async function listForPortalContact(
   tenantId: string,
   contactId: string,
@@ -1245,6 +1272,7 @@ export async function listForPortalContact(
     )
     .orderBy(asc(documentRequests.requestedAt));
 
+  const filesById = await filesForRequests(tenantId, rows.map((r) => r.d.id));
   return rows.map(({ d, contactEmail, contactFirstName, contactLastName }) => ({
     id: d.id,
     tenantId: d.tenantId,
@@ -1262,6 +1290,7 @@ export async function listForPortalContact(
     submittedAt: d.submittedAt ? d.submittedAt.toISOString() : null,
     submittedReceiptId: d.submittedReceiptId,
     submittedFilename: null,
+    files: filesById.get(d.id) ?? [],
     reviewedAt: d.reviewedAt ? d.reviewedAt.toISOString() : null,
     unread: d.status === 'submitted' && !d.reviewedAt,
     lastRemindedAt: null,
@@ -1269,6 +1298,43 @@ export async function listForPortalContact(
     lastClickedAt: null,
     reminderSendCount: 0,
   }));
+}
+
+/**
+ * Portal "I'm done": the contact has uploaded every file for this request.
+ * Marks it submitted (pointing at the latest file) and sends staff ONE email
+ * listing all the files. Only the contact the request was issued to, only
+ * while pending, and only once at least one file is on it.
+ */
+export async function completeByContact(
+  tenantId: string,
+  contactId: string,
+  documentRequestId: string,
+  companyId?: string,
+): Promise<{ fileCount: number }> {
+  const req = await db.query.documentRequests.findFirst({
+    where: and(
+      eq(documentRequests.tenantId, tenantId),
+      eq(documentRequests.id, documentRequestId),
+      eq(documentRequests.contactId, contactId),
+      ...(companyId ? [eq(documentRequests.companyId, companyId)] : []),
+    ),
+  });
+  if (!req) throw AppError.notFound('Document request not found');
+  if (req.status !== 'pending') {
+    throw AppError.conflict('This request is already complete.', 'DOC_REQUEST_NOT_PENDING');
+  }
+  const files = (await filesForRequests(tenantId, [req.id])).get(req.id) ?? [];
+  if (files.length === 0) throw AppError.badRequest('Upload at least one file first.');
+  const latest = files[files.length - 1]!;
+  const now = new Date();
+  await db.update(documentRequests)
+    .set({ status: 'submitted', submittedAt: now, submittedReceiptId: latest.receiptId, reviewedAt: null, reviewedBy: null, updatedAt: now })
+    .where(and(eq(documentRequests.id, req.id), eq(documentRequests.status, 'pending')));
+  await auditLog(tenantId, 'update', 'document_request', req.id,
+    { status: 'pending' }, { status: 'submitted', source: 'portal_done', fileCount: files.length });
+  void notifyStaffOfSubmission(tenantId, req.id, latest.receiptId);
+  return { fileCount: files.length };
 }
 
 // Used by ContactDetailPage's Documents panel — open + recently-
@@ -1394,6 +1460,7 @@ export async function notifyStaffOfSubmission(
         : Promise.resolve(undefined),
       db.query.portalReceipts.findFirst({ where: eq(portalReceipts.id, receiptId), columns: { filename: true } }),
     ]);
+    const allFiles = (await filesForRequests(tenantId, [documentRequestId])).get(documentRequestId) ?? [];
     const contactName = [r.contactFirstName, r.contactLastName].filter(Boolean).join(' ') || r.contactEmail;
     const clientName = tenant?.name ?? 'a client';
     const docLabel = r.d.documentType.replace(/_/g, ' ');
@@ -1405,7 +1472,9 @@ export async function notifyStaffOfSubmission(
       `Request: ${r.d.description}`,
       `Document type: ${docLabel}`,
       `Period: ${r.d.periodLabel}`,
-      `File: ${receipt?.filename ?? '(unknown)'}`,
+      ...(allFiles.length > 1
+        ? [`Files (${allFiles.length}):`, ...allFiles.map((f) => `  • ${f.filename ?? '(unnamed)'}`)]
+        : [`File: ${receipt?.filename ?? allFiles[0]?.filename ?? '(unknown)'}`]),
       `Received: ${new Date().toLocaleString('en-US', { timeZone: 'UTC' })} UTC`,
       '',
       'Open Practice → Reminders → Open requests to review it and mark it reviewed.',

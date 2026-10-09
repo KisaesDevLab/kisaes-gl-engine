@@ -46,6 +46,11 @@ export interface UploadInput {
   // standing document_requests row. The service flips that row to
   // status='submitted' + stamps submitted_receipt_id back.
   documentRequestId?: string;
+  /** Multi-file requests: link the file to the request but leave it open
+   *  (no submit, no staff email) — the contact presses "I'm done" later
+   *  (recurring-doc-request.completeByContact). Unset = complete on upload
+   *  (the behaviour Vibe PM and staff captures rely on). */
+  keepRequestOpen?: boolean;
 }
 
 /**
@@ -124,12 +129,14 @@ export async function uploadReceipt(input: UploadInput): Promise<{
     // the practice dashboard.
     if (input.documentRequestId) {
       const recurDoc = await import('./recurring-doc-request.service.js');
-      await recurDoc.markFulfilledByReceipt(input.tenantId, input.documentRequestId, dup.id);
+      if (!input.keepRequestOpen) {
+        await recurDoc.markFulfilledByReceipt(input.tenantId, input.documentRequestId, dup.id);
+      }
       await db
         .update(portalReceipts)
         .set({ documentRequestId: input.documentRequestId, updatedAt: new Date() })
         .where(eq(portalReceipts.id, dup.id));
-      notifyStaffAfterPortalUpload(input, dup.id);
+      if (!input.keepRequestOpen) notifyStaffAfterPortalUpload(input, dup.id);
     }
     return { id: dup.id, duplicate: true };
   }
@@ -201,20 +208,23 @@ export async function uploadReceipt(input: UploadInput): Promise<{
           contactId: docReq.contactId,
           recurringId: docReq.recurringId,
           documentType: docReq.documentType,
+          fulfil: !input.keepRequestOpen,
         });
         // routeStatementUpload handles markFulfilledByReceipt itself
         // on the imported path; on awaits_routing we leave the
         // request pending so the CPA's manual-route action can close
-        // it.
-        notifyStaffAfterPortalUpload(input, row.id);
+        // it. A kept-open request completes on "I'm done" instead.
+        if (!input.keepRequestOpen) notifyStaffAfterPortalUpload(input, row.id);
         return { id: row.id, duplicate: false };
       }
     }
 
     // Default path: just mark the request fulfilled (matches today's
     // behavior for non-statement document types).
-    await recurDoc.markFulfilledByReceipt(input.tenantId, input.documentRequestId, row.id);
-    notifyStaffAfterPortalUpload(input, row.id);
+    if (!input.keepRequestOpen) {
+      await recurDoc.markFulfilledByReceipt(input.tenantId, input.documentRequestId, row.id);
+      notifyStaffAfterPortalUpload(input, row.id);
+    }
   }
 
   return { id: row.id, duplicate: false };
