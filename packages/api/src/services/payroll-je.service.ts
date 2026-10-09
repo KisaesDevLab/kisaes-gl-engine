@@ -17,6 +17,7 @@ import {
   payrollCheckRegisterRows,
   accounts,
   transactionTags,
+  transactions,
 } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
@@ -520,8 +521,14 @@ export async function reverseJE(tenantId: string, sessionId: string, reason: str
 
   if (jeIds.length === 0) throw AppError.badRequest('No journal entries to reverse');
 
-  // Void each JE
-  for (const jeId of jeIds) {
+  // Void each JE that still exists and isn't already void. Transactions
+  // removed by the admin date-range delete (or voided by hand) are skipped,
+  // so a reversal can still release the import instead of failing.
+  const existing = await db.select({ id: transactions.id, status: transactions.status })
+    .from(transactions)
+    .where(and(eq(transactions.tenantId, tenantId), inArray(transactions.id, jeIds)));
+  const toVoid = existing.filter((t) => t.status !== 'void').map((t) => t.id);
+  for (const jeId of toVoid) {
     await ledger.voidTransaction(tenantId, jeId, `Reversal of payroll import: ${reason}`, userId);
   }
 
@@ -537,7 +544,7 @@ export async function reverseJE(tenantId: string, sessionId: string, reason: str
     .where(eq(payrollImportSessions.id, sessionId));
 
   await auditLog(tenantId, 'update', 'payroll_import_reverse', sessionId,
-    { status: 'posted' }, { status: 'cancelled', reason, reversedCount: jeIds.length }, userId);
+    { status: 'posted' }, { status: 'cancelled', reason, reversedCount: toVoid.length, alreadyGone: jeIds.length - toVoid.length }, userId);
 
-  return { reversed: jeIds.length, journalEntryIds: jeIds };
+  return { reversed: toVoid.length, journalEntryIds: toVoid };
 }

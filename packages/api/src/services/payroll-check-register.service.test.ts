@@ -8,7 +8,7 @@ import type { PayrollJEPreview } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { tenants, companies, accounts, tags, payrollImportSessions } from '../db/schema/index.js';
 import * as svc from './payroll-check-register.service.js';
-import { resolvePayrollPostTags, grossOf } from './payroll-je.service.js';
+import { resolvePayrollPostTags, grossOf, reverseJE } from './payroll-je.service.js';
 
 const CHECKS_CSV = [
   'Check Number,Date,Payee Name,Cash Account,Account,Amount,Memo',
@@ -130,6 +130,58 @@ describe('check-register payroll import', () => {
     const lines = await linesFor(res.transactionIds);
     const treasuryDebit = lines.find((l) => Number(l.debit) === 3356.07);
     expect(treasuryDebit?.account_id).toBe(acct['22300']);
+  });
+});
+
+describe('re-posting after the posted checks were deleted', () => {
+  async function secondSession() {
+    const [s2] = await db.insert(payrollImportSessions).values({
+      tenantId, companyId, importMode: 'check_register', originalFilename: 'Checks.csv',
+      filePath: '/tmp/Checks.csv', fileHash: 'hash-' + tenantId, status: 'uploaded', rowCount: 4,
+    }).returning();
+    await svc.storeCheckRegisterFile(tenantId, s2!.id, Buffer.from(CHECKS_CSV), 'Checks.csv');
+    return s2!.id;
+  }
+  const opts = { cashSource: 'file' as const, offsetSource: 'account' as const, offsetAccountId: '' };
+
+  it('still blocks a duplicate while the first import\'s checks are in the books', async () => {
+    await svc.postCheckRegister(tenantId, sessionId, { ...opts, offsetAccountId: acct['10000']! }, USER_ID, companyId);
+    const s2 = await secondSession();
+    await expect(svc.postCheckRegister(tenantId, s2, { ...opts, offsetAccountId: acct['10000']! }, USER_ID, companyId))
+      .rejects.toThrow(/already posted/i);
+  });
+
+  it('releases a "posted" import whose transactions were removed (date-range delete) and lets the file post again', async () => {
+    const first = await svc.postCheckRegister(tenantId, sessionId, { ...opts, offsetAccountId: acct['10000']! }, USER_ID, companyId);
+    // What the admin "delete transactions in date range" purge does.
+    const ids = sql.join(first.transactionIds.map((id) => sql`${id}::uuid`), sql`, `);
+    await db.execute(sql`DELETE FROM transaction_tags WHERE transaction_id IN (${ids})`);
+    await db.execute(sql`DELETE FROM journal_lines WHERE transaction_id IN (${ids})`);
+    await db.execute(sql`DELETE FROM transactions WHERE id IN (${ids})`);
+
+    const s2 = await secondSession();
+    const again = await svc.postCheckRegister(tenantId, s2, { ...opts, offsetAccountId: acct['10000']! }, USER_ID, companyId);
+    expect(again.posted).toBe(3);
+    const [old] = await db.select().from(payrollImportSessions).where(eq(payrollImportSessions.id, sessionId));
+    expect(old!.status).toBe('cancelled');
+  });
+});
+
+describe('reversing an import whose checks were already deleted', () => {
+  it('releases the import instead of failing on the missing transactions', async () => {
+    const first = await svc.postCheckRegister(tenantId, sessionId, { cashSource: 'file', offsetSource: 'account', offsetAccountId: acct['10000']! }, USER_ID, companyId);
+    const keep = first.transactionIds[0]!;
+    const gone = first.transactionIds.slice(1);
+    const ids = sql.join(gone.map((id) => sql`${id}::uuid`), sql`, `);
+    await db.execute(sql`DELETE FROM transaction_tags WHERE transaction_id IN (${ids})`);
+    await db.execute(sql`DELETE FROM journal_lines WHERE transaction_id IN (${ids})`);
+    await db.execute(sql`DELETE FROM transactions WHERE id IN (${ids})`);
+
+    const res = await reverseJE(tenantId, sessionId, 'cleanup', USER_ID);
+    expect(res.reversed).toBe(1);
+    expect(res.journalEntryIds).toEqual([keep]);
+    const [session] = await db.select().from(payrollImportSessions).where(eq(payrollImportSessions.id, sessionId));
+    expect(session!.status).toBe('cancelled');
   });
 });
 

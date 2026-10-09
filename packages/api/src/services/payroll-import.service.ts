@@ -26,6 +26,7 @@ import {
   payrollAccountMapping,
   accounts,
   tags,
+  transactions,
 } from '../db/schema/index.js';
 import { assertTagsInTenant } from './tags.service.js';
 import { AppError } from '../utils/errors.js';
@@ -768,6 +769,50 @@ export async function autoMapAccounts(tenantId: string, companyId: string) {
 
 // ── Duplicate File Guard (shared by Mode A + Mode B posting) ──
 
+/** Every ledger transaction a posted import created (JEs + check rows). */
+export async function sessionTransactionIds(sessionId: string, session: Pick<typeof payrollImportSessions.$inferSelect, 'journalEntryId' | 'journalEntryIds'>): Promise<string[]> {
+  const ids = new Set<string>();
+  if (session.journalEntryId) ids.add(session.journalEntryId);
+  if (Array.isArray(session.journalEntryIds)) for (const id of session.journalEntryIds as string[]) ids.add(id);
+  const rows = await db.select({ transactionId: payrollCheckRegisterRows.transactionId })
+    .from(payrollCheckRegisterRows)
+    .where(and(eq(payrollCheckRegisterRows.sessionId, sessionId), eq(payrollCheckRegisterRows.posted, true)));
+  for (const r of rows) if (r.transactionId) ids.add(r.transactionId);
+  return [...ids];
+}
+
+/**
+ * A "posted" import whose transactions are all gone (removed by the admin
+ * date-range delete / a tenant purge) or voided no longer has anything in
+ * the books. Such a record must not block re-posting the same file: release
+ * it (status cancelled, check rows unposted, audited) and report that it was
+ * stale. Returns true when the prior import still has live transactions.
+ */
+async function priorImportStillLive(tenantId: string, priorId: string): Promise<boolean> {
+  const prior = await db.query.payrollImportSessions.findFirst({
+    where: and(eq(payrollImportSessions.tenantId, tenantId), eq(payrollImportSessions.id, priorId)),
+  });
+  if (!prior) return false;
+  const ids = await sessionTransactionIds(prior.id, prior);
+  if (ids.length > 0) {
+    const [live] = await db.select({ n: count() }).from(transactions)
+      .where(and(eq(transactions.tenantId, tenantId), inArray(transactions.id, ids), ne(transactions.status, 'void')));
+    if ((live?.n ?? 0) > 0) return true;
+  }
+  await db.update(payrollCheckRegisterRows)
+    .set({ posted: false, transactionId: null })
+    .where(eq(payrollCheckRegisterRows.sessionId, prior.id));
+  await db.update(payrollImportSessions)
+    .set({ status: 'cancelled', updatedAt: new Date() })
+    .where(and(eq(payrollImportSessions.id, prior.id), eq(payrollImportSessions.status, 'posted')));
+  await auditLog(tenantId, 'update', 'payroll_import_reverse', prior.id, { status: 'posted' }, {
+    status: 'cancelled',
+    reason: 'Its transactions were already removed from the books; released so the file can be posted again',
+    missingTransactions: ids.length,
+  });
+  return false;
+}
+
 export async function checkDuplicateFileHash(tenantId: string, session: typeof payrollImportSessions.$inferSelect) {
   // Check idempotency key first (provider-specific composite key)
   if (session.idempotencyKey && session.detectedProvider) {
@@ -791,7 +836,7 @@ export async function checkDuplicateFileHash(tenantId: string, session: typeof p
       .where(and(...conditions))
       .limit(1);
 
-    if (priorByKey) {
+    if (priorByKey && await priorImportStillLive(tenantId, priorByKey.id)) {
       const date = priorByKey.createdAt ? new Date(priorByKey.createdAt).toLocaleDateString() : 'unknown date';
       throw AppError.badRequest(
         `A payroll import with matching data was already posted on ${date} (file "${priorByKey.originalFilename}"). ` +
@@ -815,7 +860,7 @@ export async function checkDuplicateFileHash(tenantId: string, session: typeof p
     ))
     .limit(1);
 
-  if (priorPosted) {
+  if (priorPosted && await priorImportStillLive(tenantId, priorPosted.id)) {
     const date = priorPosted.createdAt ? new Date(priorPosted.createdAt).toLocaleDateString() : 'unknown date';
     throw AppError.badRequest(
       `This payroll file was already posted on ${date} (file "${priorPosted.originalFilename}"). ` +
