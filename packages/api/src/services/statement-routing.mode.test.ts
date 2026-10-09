@@ -14,7 +14,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   tenants, companies, portalContacts, portalReceipts, documentRequests,
-  recurringDocumentRequests, attachments,
+  recurringDocumentRequests, attachments, accounts, bankConnections as bankConnectionsTable,
 } from '../db/schema/index.js';
 
 const parseMock = vi.fn();
@@ -68,6 +68,7 @@ afterEach(async () => {
   await db.delete(attachments).where(eq(attachments.tenantId, tenantId));
   await db.delete(recurringDocumentRequests).where(eq(recurringDocumentRequests.tenantId, tenantId));
   await db.delete(bankConnections).where(eq(bankConnections.tenantId, tenantId));
+  await db.delete(accounts).where(eq(accounts.tenantId, tenantId));
   await db.execute(
     // audit rows reference nothing but block nothing — clear by tenant
     (await import('drizzle-orm')).sql`DELETE FROM audit_log WHERE tenant_id = ${tenantId}`,
@@ -159,6 +160,54 @@ describe('routeStatementUpload — statement_routing modes', () => {
     expect(r?.status).toBe('awaits_routing');
     const d = await db.query.documentRequests.findFirst({ where: eq(documentRequests.id, req.id) });
     expect(d?.status).toBe('pending');
+  });
+});
+
+describe('routeStatementUpload — statement kind vs. bound account type', () => {
+  // A card statement bound (by a mis-pick) to the Cash connection must not
+  // auto-import every row into the bank register (TimberStone 2026-10-09).
+  async function seedBound(documentType: 'bank_statement' | 'cc_statement', accountType: 'asset' | 'liability') {
+    const [acct] = await db.insert(accounts).values({
+      tenantId, accountNumber: accountType === 'asset' ? '10100' : '20200',
+      name: accountType === 'asset' ? 'Cash' : 'Credit Cards Payable', accountType,
+    }).returning();
+    const [conn] = await db.insert(bankConnectionsTable).values({
+      tenantId, accountId: acct!.id, provider: 'manual', institutionName: 'Statement Import', syncStatus: 'active',
+    }).returning();
+    const [req] = await db.insert(documentRequests).values({
+      tenantId, companyId, contactId, documentType, description: 'Amex statement',
+      periodLabel: 'Sept 2025 ' + documentType + accountType, status: 'pending',
+      statementRouting: 'auto_import', bankConnectionId: conn!.id,
+    }).returning();
+    const [receipt] = await db.insert(portalReceipts).values({
+      tenantId, companyId, uploadedBy: contactId, uploadedByType: 'contact',
+      storageKey: `${tenantId}/receipts/bound-${uniq}.pdf`, filename: 'stmt.pdf',
+      mimeType: 'application/pdf', status: 'pending_ocr', documentRequestId: req!.id,
+    }).returning();
+    return { req: req!, receipt: receipt! };
+  }
+
+  it('a credit-card statement bound to an asset account is held, never parsed or imported', async () => {
+    const { req, receipt } = await seedBound('cc_statement', 'asset');
+    const result = await routeStatementUpload({ ...routeInput(req, receipt.id), documentType: 'cc_statement' });
+    expect(result.status).toBe('awaits_routing');
+    expect(parseMock).not.toHaveBeenCalled();
+    const row = await db.query.portalReceipts.findFirst({ where: eq(portalReceipts.id, receipt.id) });
+    expect(row?.status).toBe('awaits_routing');
+  });
+
+  it('a bank statement bound to a liability account is held', async () => {
+    const { req, receipt } = await seedBound('bank_statement', 'liability');
+    const result = await routeStatementUpload(routeInput(req, receipt.id));
+    expect(result.status).toBe('awaits_routing');
+    expect(parseMock).not.toHaveBeenCalled();
+  });
+
+  it('a credit-card statement bound to a liability account proceeds to parse', async () => {
+    parseMock.mockResolvedValue({ transactions: [] });
+    const { req, receipt } = await seedBound('cc_statement', 'liability');
+    await routeStatementUpload({ ...routeInput(req, receipt.id), documentType: 'cc_statement' });
+    expect(parseMock).toHaveBeenCalledTimes(1);
   });
 });
 

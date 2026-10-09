@@ -20,8 +20,8 @@ import * as remind from '../services/portal-reminders.service.js';
 import * as flags from '../services/feature-flags.service.js';
 import * as stmtRouting from '../services/statement-routing.service.js';
 import { db } from '../db/index.js';
-import { bankConnections } from '../db/schema/index.js';
-import { eq } from 'drizzle-orm';
+import { accounts, bankConnections } from '../db/schema/index.js';
+import { and, asc, eq } from 'drizzle-orm';
 
 // RECURRING_DOC_REQUESTS_V1 — bookkeeper-side admin for the calendar-
 // cadence document-request feature. Two routers under the same prefix:
@@ -216,6 +216,9 @@ recurringDocRequestsRouter.get('/contacts/:contactId/document-requests', async (
 
 // STATEMENT_AUTO_IMPORT_V1 — list the firm's bank connections so the
 // rule editor can populate its picker. Read-only, tenant-scoped.
+// Carries the backing GL account: manual connections are all named
+// "Statement Import" with no mask, so without the account the picker
+// showed identical options and a card statement was bound to Cash.
 recurringDocRequestsRouter.get('/bank-connections', async (req, res) => {
   const rows = await db
     .select({
@@ -223,9 +226,14 @@ recurringDocRequestsRouter.get('/bank-connections', async (req, res) => {
       institutionName: bankConnections.institutionName,
       mask: bankConnections.mask,
       companyId: bankConnections.companyId,
+      accountName: accounts.name,
+      accountNumber: accounts.accountNumber,
+      accountType: accounts.accountType,
     })
     .from(bankConnections)
-    .where(eq(bankConnections.tenantId, req.tenantId));
+    .leftJoin(accounts, and(eq(accounts.id, bankConnections.accountId), eq(accounts.tenantId, bankConnections.tenantId)))
+    .where(eq(bankConnections.tenantId, req.tenantId))
+    .orderBy(asc(accounts.accountNumber), asc(accounts.name));
   res.json({ connections: rows });
 });
 

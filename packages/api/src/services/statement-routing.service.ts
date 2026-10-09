@@ -5,6 +5,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
+  accounts,
   attachments,
   bankConnections,
   documentRequests,
@@ -239,12 +240,60 @@ export async function routeStatementUpload(input: RouteInput): Promise<RouteResu
     return { status: pick.reason === 'no_candidates' ? 'no_candidates' : 'awaits_routing' };
   }
 
+  // A card statement must not auto-import into a bank (asset) account, nor
+  // a bank statement into a card (liability) account. A mis-bound rule or
+  // request otherwise lands every row in the wrong register unattended.
+  const mismatch = await statementAccountMismatch(input.tenantId, pick.bankConnectionId, input.documentType);
+  if (mismatch) {
+    await db
+      .update(portalReceipts)
+      .set({ status: 'awaits_routing', updatedAt: new Date() })
+      .where(eq(portalReceipts.id, input.receiptId));
+    await auditLog(
+      input.tenantId,
+      'update',
+      'portal_receipt',
+      input.receiptId,
+      null,
+      {
+        status: 'awaits_routing',
+        reason: 'account_type_mismatch',
+        message: mismatch,
+        bankConnectionId: pick.bankConnectionId,
+        documentType: input.documentType,
+      },
+    );
+    return { status: 'awaits_routing', bankConnectionId: pick.bankConnectionId };
+  }
+
   return importStatementForReceipt(
     input.tenantId,
     input.receiptId,
     input.documentRequestId,
     pick.bankConnectionId,
   );
+}
+
+// Exported for tests. Returns a reason string when the connection's GL
+// account type contradicts the requested statement kind, else null.
+export async function statementAccountMismatch(
+  tenantId: string,
+  bankConnectionId: string,
+  documentType: StatementDocumentType,
+): Promise<string | null> {
+  const [row] = await db
+    .select({ accountType: accounts.accountType, name: accounts.name })
+    .from(bankConnections)
+    .innerJoin(accounts, and(eq(accounts.id, bankConnections.accountId), eq(accounts.tenantId, bankConnections.tenantId)))
+    .where(and(eq(bankConnections.tenantId, tenantId), eq(bankConnections.id, bankConnectionId)));
+  if (!row) return null;
+  if (documentType === 'cc_statement' && row.accountType === 'asset') {
+    return `Credit-card statement bound to asset account "${row.name}" — held for review, not auto-imported`;
+  }
+  if (documentType === 'bank_statement' && row.accountType === 'liability') {
+    return `Bank statement bound to liability account "${row.name}" — held for review, not auto-imported`;
+  }
+  return null;
 }
 
 // The statement parser operates on attachments rows. Create a shadow
