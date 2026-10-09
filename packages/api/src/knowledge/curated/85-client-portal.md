@@ -275,8 +275,9 @@ with those values (a drifted row's button reads **Approve anyway**), and bulk Ap
 each ticked row's edits, with toolbar overrides winning per field. **Dismiss** (row or
 bulk, confirm prompt) retires answers staff already recorded by hand:
 `POST /practice/uncategorized/suggestions/dismiss {ids}` sets status `stale` with
-resolution `dismissed` — nothing posts, no client-facing reason, audit-logged. An
-**Already handled** (stale) row has no Approve, only Dismiss.
+resolution `dismissed` — nothing posts, no client-facing reason, audit-logged. An answer whose row was already handled another way (categorized or moved
+out of suspense without Approve) closes itself and leaves the list; the
+client is not told it was declined.
 
 The payee (2026-09-24, migration 0179): every row also asks **Who was it paid to or
 from?** — a select of EVERY active contact of the tenant (vendors, customers, both; all

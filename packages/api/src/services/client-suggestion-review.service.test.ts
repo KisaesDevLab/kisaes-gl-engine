@@ -468,6 +468,27 @@ describe('dismissing', () => {
   });
 });
 
+describe('answers handled another way', () => {
+  it('close themselves (no client-facing decline) and drop off the list and the badge', async () => {
+    const handled = await mkFeedItem('42.5000');
+    const open = await mkFeedItem('10.0000');
+    const handledId = await mkSuggestion({ targetKind: 'bank_feed_item', targetId: handled, accountId: rentAccountId, amount: '42.50' });
+    const openId = await mkSuggestion({ targetKind: 'bank_feed_item', targetId: open, accountId: rentAccountId, amount: '10.00' });
+    // Staff categorized the line directly instead of approving the answer.
+    await db.update(bankFeedItems).set({ status: 'categorized' }).where(eq(bankFeedItems.id, handled));
+
+    expect(await review.countUnread(tenantId, companyId)).toBe(1);
+    const listed = await review.listSuggestions(tenantId, { companyId, status: 'pending' });
+    expect(listed.rows.map((r) => r.id)).toEqual([openId]);
+
+    const [row] = await db.select().from(clientCategorySuggestions).where(eq(clientCategorySuggestions.id, handledId));
+    expect(row!.status).toBe('stale');
+    expect(row!.resolution).toBe('handled_elsewhere');
+    expect(row!.rejectionReason).toBeNull();
+    expect(await review.closeHandledSuggestions(tenantId, companyId)).toBe(0); // idempotent
+  });
+});
+
 describe('the unread badge', () => {
   it('counts pending unreviewed answers and clears without posting', async () => {
     const f1 = await mkFeedItem('10.0000');

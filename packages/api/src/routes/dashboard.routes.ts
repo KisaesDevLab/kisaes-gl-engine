@@ -9,6 +9,7 @@ import { requirePermission } from '../middleware/permission.js';
 import * as dashboardService from '../services/dashboard.service.js';
 import * as budgetService from '../services/budget.service.js';
 import * as flags from '../services/feature-flags.service.js';
+import { closeHandledSuggestions } from '../services/client-suggestion-review.service.js';
 import { db } from '../db/index.js';
 import { portalQuestions, portalReceipts, documentRequests, clientCategorySuggestions } from '../db/schema/index.js';
 
@@ -161,13 +162,15 @@ async function computePortalActivity(tenantId: string) {
       : 0,
     // Same predicate as idx_ccs_tenant_unread: a client answered and no
     // staff member has looked yet. Nothing has posted.
+    // Answers whose row was already handled another way close first, so
+    // they never count (client-suggestion-review.closeHandledSuggestions).
     categorizeOn
-      ? countOf(db.select({ n: sql<number>`COUNT(*)::int` }).from(clientCategorySuggestions)
+      ? countOf(closeHandledSuggestions(tenantId).catch(() => 0).then(() => db.select({ n: sql<number>`COUNT(*)::int` }).from(clientCategorySuggestions)
           .where(and(
             eq(clientCategorySuggestions.tenantId, tenantId),
             eq(clientCategorySuggestions.status, 'pending'),
             sql`${clientCategorySuggestions.reviewedAt} IS NULL`,
-          )))
+          ))))
       : 0,
   ]);
   return {

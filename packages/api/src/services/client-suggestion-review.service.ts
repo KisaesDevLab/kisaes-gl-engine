@@ -63,6 +63,39 @@ export interface SuggestionRow {
 
 // ── Listing ─────────────────────────────────────────────────────
 
+/**
+ * Close pending answers whose target was already handled another way — the
+ * bank line was categorized/excluded, or the amount was moved out of suspense
+ * by someone other than this approval flow. They used to linger on Client
+ * suggested as "Already handled" until someone pressed Dismiss. Closed the
+ * same way Dismiss does (status 'stale', so the client is not told it was
+ * declined) with resolution 'handled_elsewhere' so the audit trail shows the
+ * system did it. Runs before the list and the badge count.
+ */
+export async function closeHandledSuggestions(tenantId: string, companyId?: string): Promise<number> {
+  const conds = [eq(clientCategorySuggestions.tenantId, tenantId), eq(clientCategorySuggestions.status, 'pending')];
+  if (companyId) conds.push(eq(clientCategorySuggestions.companyId, companyId));
+  const pending = await db.select().from(clientCategorySuggestions).where(and(...conds));
+  const staleIds: string[] = [];
+  for (const s of pending) {
+    if ((await driftFor(tenantId, s)).stale) staleIds.push(s.id);
+  }
+  if (staleIds.length === 0) return 0;
+  const closed = await db.update(clientCategorySuggestions)
+    .set({ status: 'stale', resolution: 'handled_elsewhere', reviewedAt: new Date(), updatedAt: new Date() })
+    .where(and(
+      eq(clientCategorySuggestions.tenantId, tenantId),
+      inArray(clientCategorySuggestions.id, staleIds),
+      eq(clientCategorySuggestions.status, 'pending'),
+    ))
+    .returning({ id: clientCategorySuggestions.id });
+  for (const r of closed) {
+    await auditLog(tenantId, 'update', 'client_category_suggestion', r.id,
+      { status: 'pending' }, { status: 'stale', resolution: 'handled_elsewhere' });
+  }
+  return closed.length;
+}
+
 export type SuggestionSortKey = 'date' | 'description' | 'amount' | 'suggested' | 'payee' | 'note' | 'from';
 
 export async function listSuggestions(
@@ -75,6 +108,7 @@ export async function listSuggestions(
 ): Promise<{ rows: SuggestionRow[]; total: number }> {
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 500);
   const offset = Math.max(opts.offset ?? 0, 0);
+  await closeHandledSuggestions(tenantId, opts.companyId);
 
   const conds = [eq(clientCategorySuggestions.tenantId, tenantId)];
   if (opts.companyId) conds.push(eq(clientCategorySuggestions.companyId, opts.companyId));
@@ -416,6 +450,7 @@ export async function markReviewed(
 
 /** Count for the dashboard badge — the partial-index predicate exactly. */
 export async function countUnread(tenantId: string, companyId?: string): Promise<number> {
+  await closeHandledSuggestions(tenantId, companyId);
   const conds = [
     eq(clientCategorySuggestions.tenantId, tenantId),
     eq(clientCategorySuggestions.status, 'pending'),
