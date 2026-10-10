@@ -267,7 +267,17 @@ export function readSentinelHeader(): SentinelHeader | null {
  */
 export function readSentinelPayload(encryptionKey: string): SentinelPayload | null {
   if (!sentinelExists()) return null;
-  const buf = fs.readFileSync(getSentinelPath());
+  return decodeSentinelBuffer(fs.readFileSync(getSentinelPath()), encryptionKey);
+}
+
+/**
+ * Decrypt and validate a sentinel held in memory (e.g. the source server's
+ * sentinel carried inside a backup bundle). Same validation as
+ * `readSentinelPayload`; used by the restore flow to prove whether THIS
+ * server's ENCRYPTION_KEY / JWT_SECRET still match the ones the backup was
+ * taken under before it trusts the bundle's recovery file.
+ */
+export function decodeSentinelBuffer(buf: Buffer, encryptionKey: string): SentinelPayload {
   const parsed = parseFile(buf);
 
   const key = deriveKey(encryptionKey);

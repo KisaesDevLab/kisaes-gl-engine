@@ -20,15 +20,36 @@ import {
 } from '../services/pending-recovery-key.service.js';
 import { getSetting as dbGetSetting } from '../services/admin.service.js';
 import { SystemSettingsKeys } from '../constants/system-settings-keys.js';
+import { decodeSentinelBuffer } from '../services/sentinel.service.js';
 import {
   mergeBundleSections,
   restoreDatabaseSections,
   resyncOwnedSequences,
   buildRestoreChecklist,
+  findUndecryptableTotpUsers,
   writeBackBundleFiles,
   type RestoreReport,
   type FileRestoreReport,
+  type ChecklistItem,
+  type UndecryptableTotpUser,
 } from '../services/system-restore.service.js';
+import {
+  acknowledgeRecoveryKeySchema,
+  checkPortSchema,
+  dbConfigSchema,
+  executeStagedSchema,
+  initializeSchema,
+  localExecuteSchema,
+  parseOr400,
+  pendingRecoveryKeyQuerySchema,
+  recoverCredentialsSchema,
+  remoteCredsSchema,
+  remoteExecuteSchema,
+  restoreUploadFieldsSchema,
+  runIdParamSchema,
+  stageIdParamSchema,
+  testSmtpSchema,
+} from './setup.schemas.js';
 
 // Restore uploads go to DISK, not memory: an attachments-included .vmx system
 // backup can be many GB (createSystemBackup caps attachments at 10 GB), and
@@ -79,6 +100,10 @@ const setupLimiter = rateLimit({
 export const setupRouter = Router();
 setupRouter.use(setupLimiter);
 
+const UUID_RE_SRC = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const RUN_POLL_RE = new RegExp(`^/restore/runs/${UUID_RE_SRC}$`, 'i');
+const RUN_RECOVER_RE = new RegExp(`^/restore/runs/${UUID_RE_SRC}/recover-credentials$`, 'i');
+
 // Security guard: block all setup endpoints once setup is complete.
 setupRouter.use(async (req, res, next) => {
   // Always-open endpoints:
@@ -94,26 +119,27 @@ setupRouter.use(async (req, res, next) => {
   //     so it acts as a bearer secret. /restore/runs/latest is NOT exempt —
   //     it would hand the last run's result (incl. the recovery key) to any
   //     unauthenticated caller with no id, post-setup.
-  const isRunByIdPoll = req.method === 'GET' &&
-    /^\/restore\/runs\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.path);
+  //   - POST /restore/runs/<uuid>/recover-credentials: same bearer-by-runId
+  //     model — lets the operator who just ran a restore enter their recovery
+  //     key to re-encrypt credentials/TOTP secrets BEFORE trying to log in,
+  //     because an undecryptable TOTP secret is otherwise a lockout.
+  const isRunByIdPoll = req.method === 'GET' && RUN_POLL_RE.test(req.path);
+  const isRunRecover = req.method === 'POST' && RUN_RECOVER_RE.test(req.path);
   if (
     req.path === '/status' ||
     req.path === '/pending-recovery-key' ||
     req.path === '/acknowledge-recovery-key' ||
-    isRunByIdPoll
+    isRunByIdPoll ||
+    isRunRecover
   ) {
     return next();
   }
 
-  // The persistent on-disk marker is authoritative. Once present it can
-  // never be flipped back by a transient DB error or a missing volume.
-  if (setupService.isInitialized()) {
-    res.status(403).json({
-      error: { message: 'Setup is already complete. These endpoints are disabled.' },
-    });
-    return;
-  }
-
+  // `getSetupStatus` is the single source of truth. It consults the
+  // persistent marker AND the database: a marker whose database has no users
+  // (volume carried to a new server, Postgres wiped) must not lock the
+  // wizard — there is no account to sign in with and nothing to protect —
+  // while an unreachable database still fails closed.
   let status: Awaited<ReturnType<typeof setupService.getSetupStatus>>;
   try {
     status = await setupService.getSetupStatus();
@@ -186,16 +212,13 @@ setupRouter.get('/status', async (req, res) => {
 });
 
 setupRouter.get('/pending-recovery-key', async (req, res) => {
-  const installationId = (req.query?.['installationId'] ?? '').toString();
   // The installationId is public (returned by /status), so it locates the
   // entry but cannot authorize the read. The claim token — minted at stash
   // time and returned only to the browser that ran /initialize or the
   // restore — is the actual credential.
-  const claimToken = (req.query?.['claimToken'] ?? '').toString();
-  if (!installationId || !claimToken) {
-    res.status(400).json({ error: { message: 'installationId and claimToken query parameters required' } });
-    return;
-  }
+  const query = parseOr400(pendingRecoveryKeyQuerySchema, req.query, res);
+  if (!query) return;
+  const { installationId, claimToken } = query;
   // Cross-check against system_settings: the caller must supply an
   // installation ID that actually matches this server. This stops a curl
   // against a random UUID from enumerating pending entries across servers
@@ -219,13 +242,9 @@ setupRouter.get('/pending-recovery-key', async (req, res) => {
 });
 
 setupRouter.post('/acknowledge-recovery-key', async (req, res) => {
-  const installationId = (req.body?.installationId ?? '').toString();
-  const claimToken = (req.body?.claimToken ?? '').toString();
-  if (!installationId || !claimToken) {
-    res.status(400).json({ error: { message: 'installationId and claimToken required' } });
-    return;
-  }
-  const cleared = acknowledgePendingRecoveryKey(installationId, claimToken);
+  const body = parseOr400(acknowledgeRecoveryKeySchema, req.body, res);
+  if (!body) return;
+  const cleared = acknowledgePendingRecoveryKey(body.installationId, body.claimToken);
   res.json({ success: true, cleared });
 });
 
@@ -235,7 +254,9 @@ setupRouter.post('/generate-secrets', async (req, res) => {
 });
 
 setupRouter.post('/test-database', async (req, res) => {
-  const result = await setupService.testDatabaseConnection(req.body);
+  const config = parseOr400(dbConfigSchema, req.body, res);
+  if (!config) return;
+  const result = await setupService.testDatabaseConnection(config);
   res.json(result);
 });
 
@@ -246,7 +267,7 @@ setupRouter.post('/test-database', async (req, res) => {
 // scripts/install.sh — can click straight through without typing anything.
 //
 // Safe by construction: this endpoint sits behind the same route guard
-// that blocks every non-status setup endpoint once .initialized exists
+// that blocks every non-status setup endpoint once setup is complete
 // (see setupRouter.use above). Post-setup the endpoint returns 403. See
 // the getDatabaseDefaults() docstring for the full threat-model rationale.
 setupRouter.get('/db-defaults', async (_req, res) => {
@@ -254,93 +275,60 @@ setupRouter.get('/db-defaults', async (_req, res) => {
 });
 
 setupRouter.post('/check-port', async (req, res) => {
-  const { port } = req.body;
-  if (!port || port < 1 || port > 65535) {
-    res.status(400).json({ error: { message: 'Invalid port number' } });
-    return;
-  }
-  const result = await setupService.checkPortAvailability(Number(port));
+  const body = parseOr400(checkPortSchema, req.body, res);
+  if (!body) return;
+  const result = await setupService.checkPortAvailability(body.port);
   res.json(result);
 });
 
 setupRouter.post('/test-smtp', async (req, res) => {
-  const result = await setupService.testSmtpConnection(req.body, req.body.testEmail);
+  const body = parseOr400(testSmtpSchema, req.body, res);
+  if (!body) return;
+  const { testEmail, ...smtp } = body;
+  const result = await setupService.testSmtpConnection(smtp, testEmail);
   res.json(result);
 });
 
 setupRouter.post('/initialize', async (req, res) => {
+  // Zod does the structural work; the wizard UI also validates, but a
+  // bulletproof system must never rely on the client — an unusable .env
+  // (JWT_SECRET='') or a guessable admin password is rejected here.
+  const parsed = parseOr400(initializeSchema, req.body, res);
+  if (!parsed) return;
+  const config: setupService.SetupConfig = {
+    ...parsed,
+    // plaidEncryptionKey: clients no longer submit this (the wizard used to
+    // surface it; it's now entirely server-side because non-technical
+    // operators kept asking "what is this Plaid thing?" during setup). When
+    // absent or too short we mint one so the rest of the flow always has a
+    // valid value. It is validated on boot by config/env.ts and written into
+    // /data/.env.recovery alongside the other secrets.
+    plaidEncryptionKey:
+      parsed.plaidEncryptionKey && parsed.plaidEncryptionKey.length >= 32
+        ? parsed.plaidEncryptionKey
+        : crypto.randomBytes(32).toString('hex'),
+  };
+  const adopt = config.adoptExistingTenants === true;
+
   try {
-    const config = req.body as setupService.SetupConfig;
-
-    // --- Server-side input validation ---------------------------------
-    // The wizard UI also validates, but a bulletproof system must never
-    // rely on the client. Reject empty / too-short values here so we can
-    // never end up with an unusable .env file (e.g. JWT_SECRET='') or a
-    // trivially guessable admin password.
-    const reject = (message: string) => {
-      res.status(400).json({ error: { message } });
-    };
-    if (!config || typeof config !== 'object') {
-      reject('Missing setup configuration');
-      return;
-    }
-    if (!config.jwtSecret || typeof config.jwtSecret !== 'string' || config.jwtSecret.length < 32) {
-      reject('JWT secret must be at least 32 characters');
-      return;
-    }
-    if (!config.backupKey || typeof config.backupKey !== 'string' || config.backupKey.length < 32) {
-      reject('Backup encryption key must be at least 32 characters');
-      return;
-    }
-    if (!config.encryptionKey || typeof config.encryptionKey !== 'string' || config.encryptionKey.length < 32) {
-      reject('Installation encryption key must be at least 32 characters');
-      return;
-    }
-    // plaidEncryptionKey: clients no longer submit this (the wizard used
-    // to surface it; it's now entirely server-side because non-technical
-    // operators kept asking "what is this Plaid thing?" during setup).
-    // If the client omits it we mint one here using crypto.randomBytes so
-    // the rest of the flow always has a valid value. The key is still
-    // validated on API boot by config/env.ts, and the recovery-key flow
-    // still writes it into /data/.env.recovery alongside the others — so
-    // nothing downstream changes.
-    if (!config.plaidEncryptionKey || typeof config.plaidEncryptionKey !== 'string' || config.plaidEncryptionKey.length < 32) {
-      const { randomBytes } = await import('crypto');
-      config.plaidEncryptionKey = randomBytes(32).toString('hex');
-    }
-    if (!config.admin || typeof config.admin !== 'object') {
-      reject('Admin account details are required');
-      return;
-    }
-    if (!config.admin.email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(config.admin.email)) {
-      reject('A valid admin email is required');
-      return;
-    }
-    if (!config.admin.password || config.admin.password.length < 8) {
-      reject('Admin password must be at least 8 characters');
-      return;
-    }
-    if (!config.admin.displayName || !config.admin.displayName.trim()) {
-      reject('Admin display name is required');
-      return;
-    }
-    if (!config.company || !config.company.name || !config.company.name.trim()) {
-      reject('Company name is required');
-      return;
-    }
-    if (!config.db || !config.db.host || !config.db.database || !config.db.username) {
-      reject('Database connection details are required');
-      return;
-    }
-
     // --- Serialize via advisory lock ----------------------------------
     // Two concurrent /initialize calls must never both proceed. The lock
     // is released automatically in withSetupLock's finally block.
     const result = await setupService.withSetupLock(async () => {
       // Re-check under the lock: another process may have completed
       // setup between the guard check and now.
-      if (setupService.isInitialized()) {
+      const status = await setupService.getSetupStatus();
+      if (status.setupComplete) {
         throw new Error('Setup already completed by another process');
+      }
+      if (adopt && !status.needsAdminUser) {
+        throw new Error('[step:admin] Nothing to adopt: the database holds no restored companies awaiting an admin account.');
+      }
+      if (!adopt && status.needsAdminUser) {
+        throw new Error(
+          `[step:admin] The database already contains ${status.tenantCount} restored compan${status.tenantCount === 1 ? 'y' : 'ies'} ` +
+            'without any user account. Create the admin account for the restored data instead of a new installation.',
+        );
       }
 
       // Step 1: Test database connection
@@ -357,19 +345,33 @@ setupRouter.post('/initialize', async (req, res) => {
         throw new Error(`[step:database] Database connection failed:${hint}`);
       }
 
-      // Step 2: Write .env file (refuses to overwrite an existing file)
-      const envPath = setupService.writeEnvFile(config);
+      // Step 2: Write /data/config/.env. The guard above proved the database
+      // has no user accounts, so an existing file can only belong to a
+      // previous life of this volume (DB wiped, or /data carried to a new
+      // server) — replacing it (a timestamped copy is kept) is what unwedges
+      // exactly that disaster-recovery case. If anything below fails, the
+      // file we wrote is removed again so a retry starts clean.
+      const envPath = setupService.writeEnvFile(config, { replaceExisting: true });
 
-      // Step 3: Create admin user and company (refuses if data exists)
-      const admin = await setupService.createAdminUser({
-        email: config.admin.email,
-        password: config.admin.password,
-        displayName: config.admin.displayName,
-        companyName: config.company.name,
-        industry: config.company.industry,
-        entityType: config.company.entityType,
-        businessType: config.company.businessType,
-      });
+      // Step 3: Create admin user (+ company for a fresh install). Atomic:
+      // createAdminUser rolls back everything it created on failure so the
+      // emptiness guards let the operator simply retry.
+      let admin: Awaited<ReturnType<typeof setupService.createAdminUser>>;
+      try {
+        admin = await setupService.createAdminUser({
+          email: config.admin.email,
+          password: config.admin.password,
+          displayName: config.admin.displayName,
+          companyName: config.company.name,
+          industry: config.company.industry,
+          entityType: config.company.entityType,
+          businessType: config.company.businessType,
+          adoptExistingTenants: adopt,
+        });
+      } catch (err) {
+        setupService.removeEnvFile(envPath);
+        throw err;
+      }
 
       // Step 4 (optional): Create a demo tenant with sample data.
       //
@@ -381,7 +383,7 @@ setupRouter.post('/initialize', async (req, res) => {
       // install.
       let demoResult: Awaited<ReturnType<typeof createDemoTenant>> | null = null;
       let demoError: string | null = null;
-      if (config.createDemoCompany) {
+      if (config.createDemoCompany && !adopt) {
         try {
           demoResult = await createDemoTenant(admin.userId, {
             log: (line) => console.log(`[demo-seed] ${line}`),
@@ -400,21 +402,21 @@ setupRouter.post('/initialize', async (req, res) => {
       // The DATABASE_URL we persist into the sentinel matches what was just
       // written to .env, so the validator can detect a wrong DATABASE_URL on
       // next boot via the hash comparison.
-      const dbUrl = `postgresql://${config.db.username}:${config.db.password}@${config.db.host}:${config.db.port}/${config.db.database}`;
       const sentinelResult = await setupService.completeSetupSentinel({
         adminEmail: config.admin.email,
-        databaseUrl: dbUrl,
+        databaseUrl: setupService.buildDatabaseUrl(config.db),
         jwtSecret: config.jwtSecret,
         encryptionKey: config.encryptionKey,
+        plaidEncryptionKey: config.plaidEncryptionKey,
         appVersion: process.env['APP_VERSION'] || '0.1.0',
-        tenantCountAtSetup: 1,
+        tenantCountAtSetup: adopt ? Math.max(1, status.tenantCount) : 1,
       });
 
-      // Step 6: mark the system as initialized. Once this runs, the
-      // guard will reject every further call to /initialize and
-      // /restore/execute forever, regardless of any transient DB state.
+      // Step 6: mark the system as initialized. From here on the guard
+      // rejects every further call to /initialize and /restore/execute while
+      // the database holds users.
       setupService.markInitialized({
-        via: 'initialize',
+        via: adopt ? 'initialize/adopt' : 'initialize',
         tenantId: admin.tenantId,
         installationId: sentinelResult.installationId,
         hostId: sentinelResult.hostId,
@@ -431,13 +433,16 @@ setupRouter.post('/initialize', async (req, res) => {
 
       return {
         success: true,
-        message: 'Setup complete! You can now log in.',
+        message: adopt
+          ? 'Admin account created for the restored data. You can now log in.'
+          : 'Setup complete! You can now log in.',
         envPath,
         tenantId: admin.tenantId,
         userId: admin.userId,
         installationId: sentinelResult.installationId,
         recoveryKey: sentinelResult.recoveryKey,
         recoveryKeyClaimToken,
+        adoptedExistingTenants: adopt,
         demo: demoResult
           ? {
               tenantId: demoResult.tenantId,
@@ -456,7 +461,8 @@ setupRouter.post('/initialize', async (req, res) => {
     // Map certain errors to more meaningful status codes
     const status =
       message.includes('already in progress') ? 409 :
-      message.includes('already exist') || message.includes('already completed') ? 409 :
+      message.includes('already exist') || message.includes('already completed') || message.includes('already contains') ? 409 :
+      message.includes('Nothing to adopt') ? 409 :
       message.includes('Refusing to overwrite') ? 409 :
       500;
     res.status(status).json({ error: { message } });
@@ -469,23 +475,24 @@ setupRouter.post('/restore/validate', upload.single('file'), async (req, res) =>
     res.status(400).json({ error: { message: 'No file uploaded' } });
     return;
   }
-  const passphrase = req.body?.passphrase;
-  if (!passphrase) {
-    res.status(400).json({ error: { message: 'Passphrase is required' } });
+  const uploadedPath = req.file.path;
+  const fields = parseOr400(restoreUploadFieldsSchema, req.body, res);
+  if (!fields) {
+    try { fs.unlinkSync(uploadedPath); } catch { /* already gone */ }
     return;
   }
+  const { passphrase } = fields;
 
-  const uploadedPath = req.file.path;
   try {
     const { smartDecrypt } = await import('../services/portable-encryption.service.js');
     const { readTenantPackage } = await import('../services/vmx-package.js');
-    let content;
+    let content: RestoreBundleContent;
     let method: 'passphrase' | 'server_key' = 'passphrase';
     if (isZipFile(uploadedPath)) {
       // .vmx package — readTenantPackage streams entries from the file path
       // (no whole-file buffering; the data payload is small).
       const pkg = await readTenantPackage(uploadedPath, passphrase);
-      content = pkg.data;
+      content = pkg.data as RestoreBundleContent;
     } else {
       // .vmb — a single encrypted blob (DB-only). System .vmb payloads are
       // NDJSON (large-DB safe); decodeVmbContent sniffs + parses accordingly.
@@ -497,17 +504,22 @@ setupRouter.post('/restore/validate', upload.single('file'), async (req, res) =>
 
     // Determine what's in the backup
     const isSystem = metadata.backup_type === 'system' || metadata.format === 'kis-books-system-v1';
+    const userCount = metadata.user_count ?? (Array.isArray(content.users) ? content.users.length : 0);
 
     res.json({
       valid: true,
       method,
       backup_type: isSystem ? 'system' : 'tenant',
+      // A bundle with no user accounts restores fine but leaves nobody able
+      // to sign in; the wizard tells the operator up front that it will ask
+      // them to create an admin account after the restore.
+      needsAdminUser: userCount === 0,
       metadata: {
         format: metadata.format,
         source_version: metadata.source_version || metadata.appVersion,
         created_at: metadata.created_at || metadata.timestamp,
         tenant_count: metadata.tenant_count || (isSystem ? Object.keys(content.tenant_data || {}).length : 1),
-        user_count: metadata.user_count || (content.users || []).length,
+        user_count: userCount,
         transaction_count: metadata.transaction_count || metadata.rowCount || 0,
       },
     });
@@ -525,13 +537,14 @@ setupRouter.post('/restore/execute', upload.single('file'), async (req, res) => 
     res.status(400).json({ error: { message: 'No file uploaded' } });
     return;
   }
-  const passphrase = req.body?.passphrase;
-  if (!passphrase) {
-    res.status(400).json({ error: { message: 'Passphrase is required' } });
+  const uploadedPath = req.file.path;
+  const fields = parseOr400(restoreUploadFieldsSchema, req.body, res);
+  if (!fields) {
+    try { fs.unlinkSync(uploadedPath); } catch { /* already gone */ }
     return;
   }
+  const { passphrase, recoveryKey } = fields;
 
-  const uploadedPath = req.file.path;
   // One restore at a time — a second (possibly different) upload while one is
   // in flight must not silently attach to it. The wizard adopts the 409 runId.
   const activeUpload = peekActiveRestoreRun();
@@ -551,7 +564,7 @@ setupRouter.post('/restore/execute', upload.single('file'), async (req, res) => 
       const { readTenantPackage } = await import('../services/vmx-package.js');
       if (isZipFile(uploadedPath)) {
         const pkg = await readTenantPackage(uploadedPath, passphrase);
-        return { content: pkg.data as RestoreContent, packageAttachments: () => pkg.attachments() };
+        return { content: pkg.data as RestoreBundleContent, packageAttachments: () => pkg.attachments() };
       }
       const { data } = smartDecrypt(fs.readFileSync(uploadedPath), passphrase);
       return { content: await decodeVmbContent(data), packageAttachments: null };
@@ -560,29 +573,72 @@ setupRouter.post('/restore/execute', upload.single('file'), async (req, res) => 
       // The uploaded backup landed on disk (multer diskStorage) — remove it
       // once the run settles (NOT in this handler: the run reads it async).
       onSettle: () => { try { fs.unlinkSync(uploadedPath); } catch { /* already gone */ } },
-      recoveryKey: req.body?.recoveryKey,
+      recoveryKey,
     },
   );
   res.status(202).json(restoreRunView(run));
 });
 
-// `content` is the decrypted DB payload (evolving-any, exactly as the
-// original JSON.parse path — rows are re-inserted via parameterized SQL).
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type RestoreContent = any;
+/**
+ * Decrypted DB payload of a backup bundle. Rows are re-inserted via
+ * parameterized SQL by the restore engine, which treats every section as
+ * `Record<string, unknown>[]`; only the top-level envelope is typed here.
+ */
+interface RestoreBundleMetadata {
+  backup_type?: string;
+  /** tenant-export.service files carry `export_type: 'tenant'` — a different format from backups. */
+  export_type?: string;
+  format?: string;
+  tenantId?: string;
+  rowCount?: number;
+  source_version?: string;
+  appVersion?: string;
+  created_at?: string;
+  timestamp?: string;
+  tenant_count?: number;
+  user_count?: number;
+  transaction_count?: number;
+  [key: string]: unknown;
+}
+
+interface RestoreInstallationFiles {
+  hostId?: string | null;
+  sentinel?: string | null;
+  envRecovery?: string | null;
+}
+
+interface RestoredUserRow {
+  email?: string;
+  is_super_admin?: boolean;
+  [key: string]: unknown;
+}
+
+export interface RestoreBundleContent {
+  metadata?: RestoreBundleMetadata;
+  tenants?: unknown[];
+  users?: RestoredUserRow[];
+  user_tenant_access?: unknown[];
+  tenant_data?: Record<string, Record<string, unknown[]>>;
+  global_tables?: Record<string, unknown[]>;
+  system_config?: Record<string, unknown[]>;
+  /** Tenant-scoped bundles: table → rows. */
+  tables?: Record<string, unknown>;
+  installation_files?: RestoreInstallationFiles;
+  [key: string]: unknown;
+}
 
 // Decode a decrypted .vmb payload. A SYSTEM .vmb is now an NDJSON dump
 // (large-DB safe); a tenant/legacy .vmb is a single JSON blob. Sniff the NDJSON
 // header so no restore path ever JSON.parse()s an NDJSON buffer — that fails
 // with "Unexpected non-whitespace character after JSON" at the 2nd line. Every
 // .vmb read path MUST go through this.
-async function decodeVmbContent(data: Buffer): Promise<RestoreContent> {
+async function decodeVmbContent(data: Buffer): Promise<RestoreBundleContent> {
   const { isNdjsonDump, decodeSystemDump } = await import('../services/system-dump-codec.js');
-  return (isNdjsonDump(data) ? decodeSystemDump(data) : JSON.parse(data.toString())) as RestoreContent;
+  return (isNdjsonDump(data) ? decodeSystemDump(data) : JSON.parse(data.toString())) as RestoreBundleContent;
 }
 
 type ContentSource = () => Promise<{
-  content: RestoreContent;
+  content: RestoreBundleContent;
   packageAttachments: (() => AsyncGenerator<{ id: string; buffer: Buffer }>) | null;
 }>;
 
@@ -706,13 +762,96 @@ setupRouter.get('/restore/runs/latest', (_req, res) => {
 });
 
 setupRouter.get('/restore/runs/:runId', (req, res) => {
-  const run = restoreRuns.get(req.params['runId']!);
+  const params = parseOr400(runIdParamSchema, req.params, res);
+  if (!params) return;
+  const run = restoreRuns.get(params.runId.toLowerCase()) ?? restoreRuns.get(params.runId);
   if (!run) {
     res.status(404).json({ error: { message: 'Unknown restore run — it may have been lost to an api restart; retry the restore' } });
     return;
   }
   res.json(restoreRunView(run));
 });
+
+/**
+ * Post-restore credential recovery, keyed by the restore run (the runId is
+ * the bearer credential, exactly as for polling). After a cross-host restore
+ * — or a same-host restore of a bundle taken before a key rotation — every
+ * restored `*_encrypted` value, INCLUDING users' authenticator (TOTP)
+ * secrets, is unreadable under this server's key. Entering the ORIGINAL
+ * recovery key here re-encrypts them before the operator ever reaches the
+ * login screen, which is the only moment this can be fixed without a shell:
+ * once setup is complete the admin UI requires a login that an unreadable
+ * TOTP secret would refuse.
+ */
+setupRouter.post('/restore/runs/:runId/recover-credentials', async (req, res) => {
+  const params = parseOr400(runIdParamSchema, req.params, res);
+  if (!params) return;
+  const body = parseOr400(recoverCredentialsSchema, req.body, res);
+  if (!body) return;
+  const run = restoreRuns.get(params.runId.toLowerCase()) ?? restoreRuns.get(params.runId);
+  if (!run) {
+    res.status(404).json({ error: { message: 'Unknown restore run — it may have been lost to an api restart' } });
+    return;
+  }
+  if (run.status !== 'complete' || !run.result) {
+    res.status(409).json({ error: { message: 'Credential recovery is only available after a restore has completed' } });
+    return;
+  }
+  try {
+    const { db } = await import('../db/index.js');
+    const { recoverCredentialEncryption } = await import('../services/credential-reencrypt.service.js');
+    const report = await recoverCredentialEncryption({ recoveryKey: body.recoveryKey });
+    const checklist = await buildRestoreChecklist(db);
+    const tfaLockedUsers = await findUndecryptableTotpUsers(db);
+    run.result = {
+      ...run.result,
+      credentialRecovery: { attempted: true, reencrypted: report.totals.reencrypted, unreadable: report.totals.unreadable },
+      checklist,
+      tfaLockedUsers,
+    };
+    console.log(`[restore] post-restore credential recovery: ${report.totals.reencrypted} re-encrypted, ${report.totals.unreadable} unreadable`);
+    res.json({ ...restoreRunView(run), report });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const status = (err as { statusCode?: number }).statusCode ?? 400;
+    res.status(status >= 400 && status < 600 ? status : 400).json({ error: { message } });
+  }
+});
+
+interface SourceSecretsAssessment {
+  /** Bundle sentinel decrypts with THIS server's ENCRYPTION_KEY (null = bundle carried no sentinel). */
+  sentinelDecrypts: boolean | null;
+  /** Bundle sentinel's JWT_SECRET hash equals this server's (null = unknown). */
+  jwtMatches: boolean | null;
+}
+
+/**
+ * Same host ≠ same secrets. A same-host restore of a bundle taken BEFORE a
+ * key rotation must not write the bundle's recovery file back verbatim (it
+ * would decrypt to the OLD keys, and a later env-missing recovery would loop
+ * into SENTINEL_DECRYPT_FAILED). Prove the keys are unchanged by decrypting
+ * the bundle's own sentinel with the current ENCRYPTION_KEY and comparing its
+ * JWT_SECRET hash; the credential probe in the checklist covers
+ * PLAID_ENCRYPTION_KEY.
+ */
+function assessSourceSecrets(
+  files: RestoreInstallationFiles,
+  encryptionKey: string,
+  jwtSecret: string,
+): SourceSecretsAssessment {
+  if (!files.sentinel) return { sentinelDecrypts: null, jwtMatches: null };
+  try {
+    const payload = decodeSentinelBuffer(Buffer.from(files.sentinel, 'base64'), encryptionKey);
+    const jwtHash = crypto.createHash('sha256').update(jwtSecret).digest('hex');
+    return { sentinelDecrypts: true, jwtMatches: payload.jwtSecretHash === jwtHash };
+  } catch {
+    return { sentinelDecrypts: false, jwtMatches: null };
+  }
+}
+
+function tenantCountOf(content: RestoreBundleContent): number {
+  return Array.isArray(content.tenants) ? content.tenants.length : 0;
+}
 
 /**
  * Shared core of restore-during-setup: emptiness guard, setup lock, row
@@ -723,8 +862,9 @@ setupRouter.get('/restore/runs/:runId', (req, res) => {
  */
 async function runGuardedSetupRestore(
   readContent: ContentSource,
-  // Operator's original recovery key, entered WITH the restore. On a cross-host
-  // restore it auto-re-encrypts the restored credentials under this box's key.
+  // Operator's original recovery key, entered WITH the restore. When the
+  // restored credentials are unreadable under this box's key it drives the
+  // automatic re-encryption below.
   recoveryKey?: string,
 ): Promise<Record<string, unknown>> {
   const { sql } = await import('drizzle-orm');
@@ -734,22 +874,22 @@ async function runGuardedSetupRestore(
   // tenants. Restore-during-setup is strictly a fresh-install
   // operation — there is no safe "combine two backups" mode, and
   // ON CONFLICT DO NOTHING would otherwise silently diverge.
-  const existingTenants = await db.execute(sql`SELECT COUNT(*) as cnt FROM tenants`);
-  const tenantCount = parseInt((existingTenants.rows as any[])[0]?.cnt || '0');
-  if (tenantCount > 0) {
+  const before = await setupService.countTenantsAndUsers();
+  if (before.tenants > 0 || before.users > 0) {
     throw new Error(
-      `Cannot restore: ${tenantCount} tenant(s) already exist in the database. ` +
+      `Cannot restore: ${before.tenants} tenant(s) and ${before.users} user(s) already exist in the database. ` +
       `Restore-from-backup is only available on a completely empty install.`,
     );
   }
 
   return setupService.withSetupLock(async () => {
       // Re-check under the lock.
-      if (setupService.isInitialized()) {
+      const status = await setupService.getSetupStatus();
+      if (status.setupComplete) {
         throw new Error('Setup already completed by another process');
       }
-      const recheck = await db.execute(sql`SELECT COUNT(*) as cnt FROM tenants`);
-      if (parseInt((recheck.rows as any[])[0]?.cnt || '0') > 0) {
+      const recheck = await setupService.countTenantsAndUsers();
+      if (recheck.tenants > 0 || recheck.users > 0) {
         throw new Error('Tenants appeared between pre-check and lock acquisition');
       }
 
@@ -789,24 +929,65 @@ async function runGuardedSetupRestore(
           } catch (err) {
             // Defensive: writeBackBundleFiles is built not to throw, but the DB
             // restore has already COMMITTED — a file-phase throw must never fail
-            // the run or skip the sentinel/markInitialized below (which would
-            // wedge every retry). Downgrade to a reported warning.
+            // the run or skip the finalization below (which would wedge every
+            // retry). Downgrade to a reported warning.
             console.error('[restore] file write-back threw (DB already committed):', err);
             fileReport = { perTable: {}, unknownEntries: 0, readErrors: 1, sampleErrors: [err instanceof Error ? err.message : String(err)] };
           }
           console.log('[restore] file write-back:', JSON.stringify(fileReport));
         }
 
-        // Write the installation sentinel after a successful system restore.
-        // Phase A doesn't yet include sentinel data in backup archives, so we
-        // generate a fresh installation_id + host ID as if this were a new
-        // install. Phase C will extract these from the backup metadata and
-        // branch on cross-host vs same-host restore via the host-id signal.
-        //
-        // We need an encryption key to write the sentinel. The restore flow
-        // runs against an already-started container, so env.ts has been
-        // loaded — ENCRYPTION_KEY is guaranteed to be in process.env by the
-        // time this code runs in Phase A.
+        const filesFailed = !!(fileReport && (Object.values(fileReport.perTable).some((t) => t.failed > 0) || fileReport.readErrors > 0));
+        const warnings: string[] = [];
+        if (restoreReport.totals.failed > 0) {
+          warnings.push(`${restoreReport.totals.failed} row(s) could not be restored — see tables report`);
+        }
+        if (filesFailed) {
+          warnings.push('Some bundled files could not be written back — see files report');
+        }
+        // Partial = the restore committed but something was NOT restored. The
+        // wizard MUST render this as a non-green result, never a plain success —
+        // otherwise a firm is told all data returned when rows/files were
+        // silently dropped.
+        const partial = restoreReport.totals.failed > 0 || filesFailed;
+        const tablesView = {
+          totals: restoreReport.totals,
+          passes: restoreReport.passes,
+          failures: Object.fromEntries(
+            Object.entries(restoreReport.perTable)
+              .filter(([, s]) => s.failed > 0)
+              .map(([t, s]) => [t, { failed: s.failed, sampleErrors: s.sampleErrors }]),
+          ),
+        };
+
+        // A system bundle that carried NO user accounts (exported from a
+        // half-provisioned install, or hand-built) restores its data fine,
+        // but finishing setup here would leave an installation nobody can
+        // log in to. Leave setup OPEN: the wizard asks for an admin account
+        // that adopts the restored companies (/initialize adoptExistingTenants),
+        // and that step writes the sentinel + marker.
+        const after = await setupService.countTenantsAndUsers();
+        if (after.users === 0) {
+          const checklist = await buildRestoreChecklist(db);
+          return {
+            success: true,
+            partial,
+            needsAdminUser: true,
+            message: partial
+              ? `Restore completed with ISSUES — ${restoreReport.totals.failed} row(s)${filesFailed ? ' and some files' : ''} could NOT be restored. The backup contained no user accounts: create an admin account next.`
+              : 'Data restored. This backup contained no user accounts — create your admin account next to finish.',
+            tenants_restored: tenantCountOf(content),
+            users_restored: 0,
+            tables: tablesView,
+            files: fileReport,
+            warnings,
+            checklist,
+          };
+        }
+
+        // Finalization: sentinel + installation_id + marker + recovery file.
+        // We need an encryption key to write the sentinel; env.ts has been
+        // loaded, so ENCRYPTION_KEY is guaranteed to be in process.env.
         const encryptionKeyForRestore = process.env['ENCRYPTION_KEY'];
         const jwtSecretForRestore = process.env['JWT_SECRET'];
         const databaseUrlForRestore = process.env['DATABASE_URL'];
@@ -818,18 +999,15 @@ async function runGuardedSetupRestore(
         // Find the first super-admin in the restored users so the sentinel
         // header can record who owns the installation. Falls back to the
         // first user if no super admin is present.
-        const restoredUsers = (content.users || []) as Array<{ email?: string; is_super_admin?: boolean }>;
+        const restoredUsers = content.users ?? [];
         const superAdmin = restoredUsers.find((u) => u.is_super_admin) ?? restoredUsers[0];
         const restoreAdminEmail = superAdmin?.email ?? 'restored-installation@unknown';
 
-        // Phase C: cross-host restore detection. The backup archive may
-        // include the source server's `installation_files.hostId`. If the
-        // current /data volume has a matching host-id, this is a same-host
-        // restore — we still regenerate the sentinel because the DB has
-        // been reset, but we keep the old installation_id to preserve
-        // continuity for the operator. If it doesn't match, this is a new
-        // host and we generate fresh IDs across the board.
-        const restoredInstallationFiles = (content as { installation_files?: { hostId?: string | null; sentinel?: string | null; envRecovery?: string | null } }).installation_files ?? {};
+        // Cross-host restore detection. The backup archive may include the
+        // source server's `installation_files.hostId`. If the current /data
+        // volume has a matching host-id, this is a same-host restore (the
+        // volume survived; only the database was lost).
+        const restoredInstallationFiles: RestoreInstallationFiles = content.installation_files ?? {};
         const restoredHostId = restoredInstallationFiles.hostId ?? null;
         const { readHostId } = await import('../services/host-id.service.js');
         const currentHostId = readHostId();
@@ -850,84 +1028,128 @@ async function runGuardedSetupRestore(
           );
         }
 
-        const sentinelResultRestore = await setupService.completeSetupSentinel({
-          adminEmail: restoreAdminEmail,
-          databaseUrl: databaseUrlForRestore,
-          jwtSecret: jwtSecretForRestore,
-          encryptionKey: encryptionKeyForRestore,
-          appVersion: process.env['APP_VERSION'] || '0.1.0',
-          tenantCountAtSetup: (content.tenants || []).length || 1,
-        });
+        // Checklist reflects what was ACTUALLY restored; its `encryption`
+        // probe tells us whether this server's PLAID_ENCRYPTION_KEY opens the
+        // restored credentials.
+        let checklist: Record<string, ChecklistItem> = await buildRestoreChecklist(db);
+        const credentialsUnreadable = () => checklist['encryption']?.status === 'warning';
+        let tfaLockedUsers: UndecryptableTotpUser[] = await findUndecryptableTotpUsers(db);
 
-        // Mark initialized after successful restore.
-        setupService.markInitialized({
-          via: 'restore/system',
-          installationId: sentinelResultRestore.installationId,
-          hostId: sentinelResultRestore.hostId,
-          crossHostRestore: !isSameHost,
-        });
+        // Same host ≠ same secrets (bundle taken before a key rotation).
+        const secrets = assessSourceSecrets(restoredInstallationFiles, encryptionKeyForRestore, jwtSecretForRestore);
+        const secretsUnchanged =
+          isSameHost &&
+          secrets.sentinelDecrypts === true &&
+          secrets.jwtMatches === true &&
+          !credentialsUnreadable() &&
+          tfaLockedUsers.length === 0;
+        const keysRotatedSinceBackup = isSameHost && !secretsUnchanged;
 
-        // Same-host restore: the bundle carries the source install's
-        // .env.recovery verbatim, and on the same host the env values inside
-        // it are still correct — write it back (overwriting the fresh file
-        // completeSetupSentinel just minted) so the operator's original
-        // recovery key stays valid. Cross-host keeps rotate-on-restore: the
-        // old file would decrypt to the *source* server's secrets.
+        // The restore has COMMITTED. From here on nothing may turn the run
+        // into a failure: a sentinel write that fails because /data is not
+        // writable must be REPORTED (data is fine; the sentinel regenerates
+        // at the next boot once permissions are fixed), not presented as
+        // "Restore failed" — which invited a retry that could only 409.
+        let finalization: { ok: boolean; error: string | null } = { ok: true, error: null };
+        let sentinelResultRestore: Awaited<ReturnType<typeof setupService.completeSetupSentinel>> | null = null;
+        try {
+          sentinelResultRestore = await setupService.completeSetupSentinel({
+            adminEmail: restoreAdminEmail,
+            databaseUrl: databaseUrlForRestore,
+            jwtSecret: jwtSecretForRestore,
+            encryptionKey: encryptionKeyForRestore,
+            appVersion: process.env['APP_VERSION'] || '0.1.0',
+            tenantCountAtSetup: tenantCountOf(content) || 1,
+          });
+          setupService.markInitialized({
+            via: 'restore/system',
+            installationId: sentinelResultRestore.installationId,
+            hostId: sentinelResultRestore.hostId,
+            crossHostRestore: !isSameHost,
+            keysRotatedSinceBackup,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          finalization = { ok: false, error: message };
+          console.error('[restore] finalization failed AFTER the database restore committed:', err);
+          warnings.push(
+            `Installation sentinel could not be written (${message}). Your data IS restored and you can log in; ` +
+              'fix /data permissions (container UID 1001) and restart the api — the sentinel is regenerated at boot. No recovery key was issued.',
+          );
+        }
+
         let recoveryKeyPreserved = false;
         let credentialRecovery: { attempted: boolean; reencrypted: number; unreadable: number; error?: string } | null = null;
-        if (isSameHost && restoredInstallationFiles.envRecovery) {
-          try {
-            const { writeRecoveryFileRaw } = await import('../services/env-recovery.service.js');
-            writeRecoveryFileRaw(Buffer.from(restoredInstallationFiles.envRecovery, 'base64'));
-            recoveryKeyPreserved = true;
-            // eslint-disable-next-line no-console
-            console.log(
-              `[sentinel-audit] ${JSON.stringify({
-                ts: new Date().toISOString(),
-                kind: 'sentinel-audit',
-                event: 'recovery.file_restored_from_backup',
-                source: 'restore/execute',
-                installationId: sentinelResultRestore.installationId,
-              })}`,
-            );
-          } catch (err) {
-            // Fall through to the new-key flow — worst case the operator
-            // gets a rotated key, same as before this write-back existed.
-            console.error('[restore] recovery file write-back failed, issuing new key:', err instanceof Error ? err.message : err);
-          }
-        } else if (!isSameHost && restoredInstallationFiles.envRecovery) {
-          // Cross-host: the main recovery file was just re-minted for THIS
-          // host, but PARK the source install's file alongside it so the
-          // operator's ORIGINAL recovery key can unlock the source
-          // credential-encryption key.
-          try {
-            const { writeSourceRecoveryFileRaw } = await import('../services/env-recovery.service.js');
-            writeSourceRecoveryFileRaw(Buffer.from(restoredInstallationFiles.envRecovery, 'base64'));
-          } catch (err) {
-            console.error('[restore] source recovery file parking failed (non-fatal):', err instanceof Error ? err.message : err);
-          }
-
-          // Automate cross-host credential recovery IN the restore: if the
-          // operator supplied their recovery key with the restore, decrypt the
-          // just-parked source recovery file with it and re-encrypt every
-          // restored *_encrypted credential (API keys, SMTP, SMS, Plaid, …)
-          // from the source key to THIS server's key — so a DR restore comes
-          // back with WORKING credentials instead of blank fields. On a real
-          // disaster the operator has their recovery key (stored off-box), not
-          // the dead server's raw PLAID_ENCRYPTION_KEY. Best-effort: a wrong
-          // key / pre-v2 source file leaves the manual Admin → Security path.
-          if (recoveryKey && recoveryKey.trim()) {
+        if (finalization.ok && restoredInstallationFiles.envRecovery) {
+          if (secretsUnchanged) {
+            // Same host AND proven-unchanged secrets: the bundle's recovery
+            // file still decrypts to this server's exact values — write it
+            // back (over the fresh file completeSetupSentinel just minted) so
+            // the operator's original recovery key stays valid.
             try {
-              const { recoverCredentialEncryption } = await import('../services/credential-reencrypt.service.js');
-              const rep = await recoverCredentialEncryption({ recoveryKey: recoveryKey.trim() });
-              credentialRecovery = { attempted: true, reencrypted: rep.totals.reencrypted, unreadable: rep.totals.unreadable };
-              console.log(`[restore] auto credential recovery: ${rep.totals.reencrypted} re-encrypted, ${rep.totals.unreadable} unreadable`);
+              const { writeRecoveryFileRaw } = await import('../services/env-recovery.service.js');
+              writeRecoveryFileRaw(Buffer.from(restoredInstallationFiles.envRecovery, 'base64'));
+              recoveryKeyPreserved = true;
+              // eslint-disable-next-line no-console
+              console.log(
+                `[sentinel-audit] ${JSON.stringify({
+                  ts: new Date().toISOString(),
+                  kind: 'sentinel-audit',
+                  event: 'recovery.file_restored_from_backup',
+                  source: 'restore/execute',
+                  installationId: sentinelResultRestore?.installationId,
+                })}`,
+              );
             } catch (err) {
-              const message = err instanceof Error ? err.message : String(err);
-              credentialRecovery = { attempted: true, reencrypted: 0, unreadable: 0, error: message };
-              console.error('[restore] auto credential recovery failed (retry in Admin → Security):', message);
+              // Fall through to the new-key flow — worst case the operator
+              // gets a rotated key, same as before this write-back existed.
+              console.error('[restore] recovery file write-back failed, issuing new key:', err instanceof Error ? err.message : err);
+            }
+          } else {
+            // Different server, or same server with rotated keys: the main
+            // recovery file was re-minted for THIS host's current secrets.
+            // PARK the source install's file alongside it so the operator's
+            // ORIGINAL recovery key can unlock the source
+            // credential-encryption key (now, or later in Admin → Security).
+            try {
+              const { writeSourceRecoveryFileRaw } = await import('../services/env-recovery.service.js');
+              writeSourceRecoveryFileRaw(Buffer.from(restoredInstallationFiles.envRecovery, 'base64'));
+            } catch (err) {
+              console.error('[restore] source recovery file parking failed (non-fatal):', err instanceof Error ? err.message : err);
             }
           }
+        }
+
+        // Automate credential recovery IN the restore when it is actually
+        // needed: if the restored credentials (or any TOTP secret) do not
+        // open under this server's key and the operator supplied their
+        // recovery key, decrypt the parked source recovery file with it and
+        // re-encrypt every restored *_encrypted value — so a DR restore comes
+        // back with WORKING credentials and nobody is locked out of 2FA.
+        // Skipped when everything already decrypts (same key), which the old
+        // code reported as a spurious "identical key" error.
+        if (recoveryKey && recoveryKey.trim() && (credentialsUnreadable() || tfaLockedUsers.length > 0)) {
+          try {
+            const { recoverCredentialEncryption } = await import('../services/credential-reencrypt.service.js');
+            const rep = await recoverCredentialEncryption({ recoveryKey: recoveryKey.trim() });
+            credentialRecovery = { attempted: true, reencrypted: rep.totals.reencrypted, unreadable: rep.totals.unreadable };
+            console.log(`[restore] auto credential recovery: ${rep.totals.reencrypted} re-encrypted, ${rep.totals.unreadable} unreadable`);
+            checklist = await buildRestoreChecklist(db);
+            tfaLockedUsers = await findUndecryptableTotpUsers(db);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            credentialRecovery = { attempted: true, reencrypted: 0, unreadable: 0, error: message };
+            console.error('[restore] auto credential recovery failed (retry below or in Admin → Security):', message);
+          }
+        }
+
+        if (tfaLockedUsers.length > 0) {
+          const admins = tfaLockedUsers.filter((u) => u.isSuperAdmin).map((u) => u.email);
+          warnings.push(
+            `${tfaLockedUsers.length} user(s) with authenticator-app 2FA cannot sign in until their secrets are re-encrypted` +
+              (admins.length ? ` — including super admin ${admins.join(', ')}` : '') +
+              '. Enter your original recovery key below before going to the login page.',
+          );
         }
 
         // F22: stash for wizard re-display resilience — only when a new key
@@ -935,61 +1157,40 @@ async function runGuardedSetupRestore(
         // token rides back in the run result, which is itself only readable
         // via the unguessable runId.
         let recoveryKeyClaimToken: string | null = null;
-        if (!recoveryKeyPreserved) {
-          recoveryKeyClaimToken = stashPendingRecoveryKey(
-            sentinelResultRestore.installationId,
-            sentinelResultRestore.recoveryKey,
-          );
+        const issuedKey = finalization.ok && !recoveryKeyPreserved && sentinelResultRestore ? sentinelResultRestore.recoveryKey : null;
+        if (issuedKey && sentinelResultRestore) {
+          recoveryKeyClaimToken = stashPendingRecoveryKey(sentinelResultRestore.installationId, issuedKey);
         }
 
-        // Checklist reflects what was ACTUALLY restored — the previous
-        // hardcoded 'not configured' literals ignored the bundle entirely.
-        const checklist = await buildRestoreChecklist(db);
-
-        const filesFailed = !!(fileReport && (Object.values(fileReport.perTable).some((t) => t.failed > 0) || fileReport.readErrors > 0));
-        const warnings: string[] = [];
-        if (restoreReport.totals.failed > 0) {
-          warnings.push(
-            `${restoreReport.totals.failed} row(s) could not be restored — see tables report`,
-          );
-        }
-        if (filesFailed) {
-          warnings.push('Some bundled files could not be written back — see files report');
-        }
-        // Partial = the restore committed but something was NOT restored. The
-        // wizard MUST render this as a non-green result, never a plain success —
-        // otherwise a firm is told all data returned when rows/files were
-        // silently dropped.
-        const partial = restoreReport.totals.failed > 0 || filesFailed;
-        const okMessage = recoveryKeyPreserved
-          ? 'System restored successfully — your existing recovery key remains valid'
-          : isSameHost
-            ? 'System restored successfully (same host detected — new recovery key issued)'
-            : 'System restored successfully (new host — new recovery key issued)';
+        const okMessage = !finalization.ok
+          ? 'System restored — but the installation sentinel could not be written. See the warning below.'
+          : recoveryKeyPreserved
+            ? 'System restored successfully — your existing recovery key remains valid'
+            : keysRotatedSinceBackup
+              ? 'System restored successfully (same host, but this server’s keys differ from the backup’s — a new recovery key was issued)'
+              : isSameHost
+                ? 'System restored successfully (same host detected — new recovery key issued)'
+                : 'System restored successfully (new host — new recovery key issued)';
 
         return {
           success: true,
-          partial,
+          partial: partial || !finalization.ok,
+          needsAdminUser: false,
           message: partial
             ? `Restore completed with ISSUES — ${restoreReport.totals.failed} row(s)${filesFailed ? ' and some files' : ''} could NOT be restored. Review the report below before relying on this data.`
             : okMessage,
-          tenants_restored: (content.tenants || []).length,
-          users_restored: (content.users || []).length,
-          installationId: sentinelResultRestore.installationId,
-          recoveryKey: recoveryKeyPreserved ? null : sentinelResultRestore.recoveryKey,
+          tenants_restored: tenantCountOf(content),
+          users_restored: restoredUsers.length,
+          installationId: sentinelResultRestore?.installationId ?? null,
+          recoveryKey: issuedKey,
           recoveryKeyClaimToken,
           recoveryKeyPreserved,
           crossHostRestore: !isSameHost,
+          keysRotatedSinceBackup,
+          finalization,
           credentialRecovery,
-          tables: {
-            totals: restoreReport.totals,
-            passes: restoreReport.passes,
-            failures: Object.fromEntries(
-              Object.entries(restoreReport.perTable)
-                .filter(([, s]) => s.failed > 0)
-                .map(([t, s]) => [t, { failed: s.failed, sampleErrors: s.sampleErrors }]),
-            ),
-          },
+          tfaLockedUsers,
+          tables: tablesView,
           files: fileReport,
           warnings,
           checklist,
@@ -997,9 +1198,15 @@ async function runGuardedSetupRestore(
       } else {
         // Tenant-scoped backup restore
         const tables = content.tables || {};
-        const tenantId = metadata.tenantId;
+        const tenantId = typeof metadata.tenantId === 'string' ? metadata.tenantId : null;
 
         if (!tenantId) {
+          if (metadata.export_type === 'tenant') {
+            throw new Error(
+              'This file is a company EXPORT (Settings → Export Data), not a backup, so it cannot seed an empty installation. ' +
+                'Finish setup (New installation), then bring it in via Settings → Tenant Export → "Import as new company".',
+            );
+          }
           throw new Error('Backup does not contain tenant information');
         }
 
@@ -1041,34 +1248,28 @@ async function runGuardedSetupRestore(
           console.log('[restore] file write-back:', JSON.stringify(fileReport));
         }
 
-        // Mark initialized after successful restore. Tenant-scoped restore
-        // does NOT touch the sentinel (F26): a tenant backup does not
-        // represent a full installation, so generating a sentinel here
-        // would produce a misleading "installation was set up" record
-        // without the usual admin user, COA seed, or installation-wide
-        // configuration. The current flow writes the .initialized marker
-        // without a sentinel, which the validator will catch as Case 3
-        // (regenerate-sentinel) on next boot — the regenerate path will
-        // use the installation_id from system_settings if set, and this
-        // tenant-restore flow does not set it, so the next boot will
-        // effectively behave as a fresh install against a DB with one
-        // restored tenant. This is pre-existing weirdness in the restore
-        // flow and is tracked for Phase C cleanup.
-        setupService.markInitialized({ via: 'restore/tenant', tenantId });
-
+        // A tenant bundle carries company data but NO user accounts and no
+        // installation-wide configuration, so it is NOT a finished
+        // installation: writing the `.initialized` marker here used to close
+        // the setup router (403 on every endpoint), make /status claim an
+        // admin existed, and leave the operator at a login page no account
+        // could satisfy. Setup stays open; the wizard continues to the admin
+        // step, and /initialize with adoptExistingTenants writes the sentinel
+        // and marker once an account exists.
         const checklist = await buildRestoreChecklist(db);
-        // A tenant bundle carries no user accounts — keep the actionable hint.
-        checklist['users'] = { status: 'warning', message: 'Create an admin account to access the restored data' };
 
         const tenantFilesFailed = !!(fileReport && (Object.values(fileReport.perTable).some((t) => t.failed > 0) || fileReport.readErrors > 0));
         const tenantPartial = restoreReport.totals.failed > 0 || tenantFilesFailed;
         return {
           success: true,
           partial: tenantPartial,
+          needsAdminUser: true,
           message: tenantPartial
-            ? `Tenant data restored with ISSUES — ${restoreReport.totals.failed} row(s)${tenantFilesFailed ? ' and some files' : ''} could NOT be restored. Review the report below before relying on this data.`
-            : 'Tenant data restored',
+            ? `Company data restored with ISSUES — ${restoreReport.totals.failed} row(s)${tenantFilesFailed ? ' and some files' : ''} could NOT be restored. Review the report below, then create your admin account.`
+            : 'Company data restored. Create your admin account next to finish setup.',
           tenant_id: tenantId,
+          tenants_restored: 1,
+          users_restored: 0,
           row_count: metadata.rowCount,
           tables: {
             totals: restoreReport.totals,
@@ -1187,12 +1388,12 @@ setupRouter.post('/restore/stage', upload.single('file'), async (req, res) => {
     res.status(400).json({ error: { message: 'No file uploaded' } });
     return;
   }
-  const passphrase = req.body?.passphrase;
-  if (!passphrase || typeof passphrase !== 'string') {
+  const fields = parseOr400(restoreUploadFieldsSchema, req.body, res);
+  if (!fields) {
     try { fs.unlinkSync(req.file.path); } catch { /* already gone */ }
-    res.status(400).json({ error: { message: 'Passphrase is required' } });
     return;
   }
+  const { passphrase } = fields;
 
   purgeStaleStageSessions();
 
@@ -1275,8 +1476,10 @@ setupRouter.post('/restore/stage', upload.single('file'), async (req, res) => {
 
 // Staging progress for a series — lets the wizard resume after a reload.
 setupRouter.get('/restore/stage/:backupId', (req, res) => {
+  const params = parseOr400(stageIdParamSchema, req.params, res);
+  if (!params) return;
   try {
-    const meta = readStageMeta(req.params['backupId']!);
+    const meta = readStageMeta(params.backupId);
     if (!meta) {
       res.status(404).json({ error: { message: 'No staged backup with that id' } });
       return;
@@ -1289,12 +1492,9 @@ setupRouter.get('/restore/stage/:backupId', (req, res) => {
 
 // Assemble a fully-staged series and run the guarded restore core.
 setupRouter.post('/restore/execute-staged', async (req, res) => {
-  const backupId = (req.body?.backupId ?? '').toString();
-  const passphrase = req.body?.passphrase;
-  if (!passphrase || typeof passphrase !== 'string') {
-    res.status(400).json({ error: { message: 'Passphrase is required' } });
-    return;
-  }
+  const body = parseOr400(executeStagedSchema, req.body, res);
+  if (!body) return;
+  const { backupId, passphrase, recoveryKey } = body;
   let meta: StageMeta | null = null;
   try {
     meta = readStageMeta(backupId);
@@ -1338,14 +1538,14 @@ setupRouter.post('/restore/execute-staged', async (req, res) => {
       }
       const { readTenantPackageMulti } = await import('../services/vmx-package.js');
       const pkg = await readTenantPackageMulti(paths, passphrase);
-      return { content: pkg.data as RestoreContent, packageAttachments: () => pkg.attachments() };
+      return { content: pkg.data as RestoreBundleContent, packageAttachments: () => pkg.attachments() };
     },
     {
       // Success — the staged files have served their purpose. On failure
       // they stay so the operator can retry (e.g. re-upload one corrupted
       // part) without re-uploading everything.
       onSuccess: () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ } },
-      recoveryKey: req.body?.recoveryKey,
+      recoveryKey,
     },
   );
   res.status(202).json(restoreRunView(run));
@@ -1476,11 +1676,11 @@ function localContentSource(files: string[], passphrase: string): ContentSource 
     if (files.length === 1) {
       const { readTenantPackage } = await import('../services/vmx-package.js');
       const pkg = await readTenantPackage(files[0]!, passphrase);
-      return { content: pkg.data as RestoreContent, packageAttachments: () => pkg.attachments() };
+      return { content: pkg.data as RestoreBundleContent, packageAttachments: () => pkg.attachments() };
     }
     const { readTenantPackageMulti } = await import('../services/vmx-package.js');
     const pkg = await readTenantPackageMulti(files, passphrase);
-    return { content: pkg.data as RestoreContent, packageAttachments: () => pkg.attachments() };
+    return { content: pkg.data as RestoreBundleContent, packageAttachments: () => pkg.attachments() };
   };
 }
 
@@ -1501,12 +1701,9 @@ setupRouter.get('/restore/local/list', (_req, res) => {
 });
 
 setupRouter.post('/restore/local/execute', async (req, res) => {
-  const id = (req.body?.id ?? '').toString();
-  const passphrase = req.body?.passphrase;
-  if (!passphrase || typeof passphrase !== 'string') {
-    res.status(400).json({ error: { message: 'Passphrase is required' } });
-    return;
-  }
+  const body = parseOr400(localExecuteSchema, req.body, res);
+  if (!body) return;
+  const { id, passphrase, recoveryKey } = body;
   // Re-scan and resolve `id` server-side — never trust a client-supplied path.
   const all: LocalBundle[] = [];
   for (const [key, dir] of Object.entries(RESTORE_LOCAL_ROOTS)) all.push(...scanLocalBundles(key, dir));
@@ -1523,7 +1720,7 @@ setupRouter.post('/restore/local/execute', async (req, res) => {
   // re-calling execute, so this never breaks resume.)
   const active = peekActiveRestoreRun();
   if (active) { res.status(409).json({ runId: active.id, error: { message: 'A restore is already in progress. Wait for it to finish.' } }); return; }
-  const run = startRestoreRun(localContentSource(bundle.files, passphrase), { recoveryKey: req.body?.recoveryKey });
+  const run = startRestoreRun(localContentSource(bundle.files, passphrase), { recoveryKey });
   res.status(202).json(restoreRunView(run));
 });
 
@@ -1571,21 +1768,18 @@ export function assertSafeEndpoint(endpoint: string): void {
   }
 }
 
-function parseRemoteCreds(body: Record<string, unknown>): RemoteRestoreCreds {
-  const provider = String(body['provider'] ?? 'b2');
-  if (provider !== 'b2' && provider !== 's3') throw new Error('provider must be b2 or s3');
-  const bucket = String(body['bucket'] ?? '').trim();
-  const endpoint = String(body['endpoint'] ?? '').trim();
-  const keyId = String(body['keyId'] ?? '').trim();
-  const applicationKey = String(body['applicationKey'] ?? '').trim();
-  if (!bucket || !endpoint || !keyId || !applicationKey) {
-    throw new Error('bucket, endpoint, keyId, and applicationKey are required');
+function parseRemoteCreds(body: unknown): RemoteRestoreCreds {
+  const parsed = remoteCredsSchema.safeParse(body ?? {});
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    throw new Error(first ? `${first.path.join('.')}: ${first.message}` : 'bucket, endpoint, keyId, and applicationKey are required');
   }
-  assertSafeEndpoint(endpoint);
+  const c = parsed.data;
+  assertSafeEndpoint(c.endpoint);
   return {
-    provider, bucket, endpoint, keyId, applicationKey,
-    region: body['region'] ? String(body['region']) : undefined,
-    prefix: body['prefix'] !== undefined ? String(body['prefix']) : 'backups/',
+    provider: c.provider, bucket: c.bucket, endpoint: c.endpoint, keyId: c.keyId, applicationKey: c.applicationKey,
+    region: c.region || undefined,
+    prefix: c.prefix !== undefined ? c.prefix : 'backups/',
   };
 }
 
@@ -1651,16 +1845,9 @@ setupRouter.post('/restore/remote/list', async (req, res) => {
 });
 
 setupRouter.post('/restore/remote/execute', async (req, res) => {
-  const passphrase = req.body?.passphrase;
-  const keys: unknown = req.body?.keys;
-  if (!passphrase || typeof passphrase !== 'string') {
-    res.status(400).json({ error: { message: 'Passphrase is required' } });
-    return;
-  }
-  if (!Array.isArray(keys) || keys.length === 0 || !keys.every((k) => typeof k === 'string')) {
-    res.status(400).json({ error: { message: 'keys (the object key[s] of the bundle part[s]) are required' } });
-    return;
-  }
+  const body = parseOr400(remoteExecuteSchema, req.body, res);
+  if (!body) return;
+  const { passphrase, keys, recoveryKey } = body;
   let creds: RemoteRestoreCreds;
   try { creds = parseRemoteCreds(req.body ?? {}); }
   catch (err) { res.status(400).json({ error: { message: err instanceof Error ? err.message : 'Invalid credentials' } }); return; }
@@ -1678,8 +1865,8 @@ setupRouter.post('/restore/remote/execute', async (req, res) => {
     fs.mkdirSync(dir, { recursive: true });
     const provider = await buildRemoteProvider(creds);
     const localFiles: string[] = [];
-    for (let i = 0; i < (keys as string[]).length; i++) {
-      const key = (keys as string[])[i]!;
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i]!;
       const dest = path.join(dir, `part${i + 1}.${key.endsWith('.vmb') ? 'vmb' : 'vmx'}`);
       await provider.downloadToFile(key, dest, REMOTE_OBJECT_MAX);
       localFiles.push(dest);
@@ -1688,7 +1875,7 @@ setupRouter.post('/restore/remote/execute', async (req, res) => {
       localContentSource(localFiles, passphrase),
       {
         onSettle: () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ } },
-        recoveryKey: req.body?.recoveryKey,
+        recoveryKey,
       },
     );
     res.status(202).json(restoreRunView(run));

@@ -161,6 +161,63 @@ describe('env-missing-app', () => {
     expect(body).toContain(`ENCRYPTION_KEY=${KEY}`);
     expect(body).toContain(`JWT_SECRET=jwt-sec-for-recovery`);
     expect(body).toContain(`DATABASE_URL=postgresql://db`);
+    // Secrets ONLY: the entrypoint uses this file to fill blanks in the
+    // compose environment, so hardcoded defaults here would shadow the
+    // operator's real REDIS_URL / CORS_ORIGIN / PORT on every later boot.
+    for (const forbidden of ['REDIS_URL=', 'CORS_ORIGIN=', 'PORT=', 'UPLOAD_DIR=', 'BACKUP_DIR=', 'NODE_ENV=']) {
+      expect(body).not.toContain(forbidden);
+    }
+  });
+
+  it('/api/diagnostic/env-recovery writes PLAID_ENCRYPTION_KEY from a v2 file', async () => {
+    const correct = generateRecoveryKey();
+    const plaid = crypto.randomBytes(32).toString('hex');
+    writeRecoveryFile(
+      correct,
+      { encryptionKey: KEY, jwtSecret: 'jwt-sec-for-recovery', databaseUrl: 'postgresql://db', plaidEncryptionKey: plaid },
+      'inst-id',
+    );
+    await startApp(['PLAID_ENCRYPTION_KEY']);
+    const { status } = await request('POST', '/api/diagnostic/env-recovery', { recoveryKey: correct });
+    expect(status).toBe(200);
+    const body = fs.readFileSync(path.join(process.env['CONFIG_DIR']!, '.env'), 'utf8');
+    expect(body).toContain(`PLAID_ENCRYPTION_KEY=${plaid}`);
+  });
+
+  // A v1 file has no PLAID_ENCRYPTION_KEY. If the environment lacks it too,
+  // writing the file just boots straight back into this page — so the
+  // handler must say so instead, and only mint a key on explicit consent.
+  it('/api/diagnostic/env-recovery 409s when PLAID_ENCRYPTION_KEY would still be missing', async () => {
+    const correct = generateRecoveryKey();
+    writeRecoveryFile(correct, { encryptionKey: KEY, jwtSecret: 'jwt-sec', databaseUrl: 'postgresql://db' }, 'inst-id');
+    const prev = process.env['PLAID_ENCRYPTION_KEY'];
+    delete process.env['PLAID_ENCRYPTION_KEY'];
+    try {
+      await startApp(['PLAID_ENCRYPTION_KEY']);
+      const first = await request('POST', '/api/diagnostic/env-recovery', { recoveryKey: correct });
+      expect(first.status).toBe(409);
+      expect(first.json.error?.code).toBe('MISSING_AFTER_RECOVERY');
+      expect(first.json.error?.missingAfterRecovery).toEqual(['PLAID_ENCRYPTION_KEY']);
+      expect(fs.existsSync(path.join(process.env['CONFIG_DIR']!, '.env'))).toBe(false);
+
+      const second = await request('POST', '/api/diagnostic/env-recovery', { recoveryKey: correct, generateMissingKeys: true });
+      expect(second.status).toBe(200);
+      expect(second.json.generatedKeys).toEqual(['PLAID_ENCRYPTION_KEY']);
+      const body = fs.readFileSync(path.join(process.env['CONFIG_DIR']!, '.env'), 'utf8');
+      expect(body).toMatch(/PLAID_ENCRYPTION_KEY=[0-9a-f]{64}/);
+    } finally {
+      if (prev !== undefined) process.env['PLAID_ENCRYPTION_KEY'] = prev;
+    }
+  });
+
+  it('/api/diagnostic/env-recovery does not complain about a v1 file when the environment supplies the key', async () => {
+    const correct = generateRecoveryKey();
+    writeRecoveryFile(correct, { encryptionKey: KEY, jwtSecret: 'jwt-sec', databaseUrl: 'postgresql://db' }, 'inst-id');
+    // test-setup.ts sets PLAID_ENCRYPTION_KEY in process.env
+    await startApp(['ENCRYPTION_KEY']);
+    const { status, json } = await request('POST', '/api/diagnostic/env-recovery', { recoveryKey: correct });
+    expect(status).toBe(200);
+    expect(json.generatedKeys).toEqual([]);
   });
 
   it('/api/diagnostic/env-recovery rate-limits after 10 attempts', async () => {

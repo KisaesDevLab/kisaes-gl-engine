@@ -11,7 +11,7 @@ import bcrypt from 'bcrypt';
 import nodemailer from 'nodemailer';
 import { db } from '../db/index.js';
 import { tenants, users, companies, userTenantAccess } from '../db/schema/index.js';
-import { sql } from 'drizzle-orm';
+import { sql, asc } from 'drizzle-orm';
 import { env } from '../config/env.js';
 import * as accountsService from './accounts.service.js';
 import * as adminService from './admin.service.js';
@@ -28,15 +28,43 @@ import { writeAtomicSync } from '../utils/atomic-write.js';
 import { SystemSettingsKeys } from '../constants/system-settings-keys.js';
 import { generateRecoveryKey } from './recovery-key.service.js';
 import { writeRecoveryFile } from './env-recovery.service.js';
+import { clearRestoreIntent } from './restore-intent.service.js';
 
-const CONFIG_DIR = process.env['CONFIG_DIR'] || '/data/config';
-const INITIALIZED_MARKER = path.join(CONFIG_DIR, '.initialized');
+// Resolved per call (not at import) so the diagnostic app, tests and the
+// CLI scripts all honour a CONFIG_DIR set after this module was first loaded.
+function configDir(): string {
+  return process.env['CONFIG_DIR'] || '/data/config';
+}
+function initializedMarkerPath(): string {
+  return path.join(configDir(), '.initialized');
+}
 
 // Advisory-lock key used to serialize `/initialize` and `/restore/execute`
 // calls across concurrent processes. Picked arbitrarily; the only
 // requirement is that it stays stable across deploys so two API replicas
 // contend on the same lock.
 const SETUP_ADVISORY_LOCK_KEY = 4242424242;
+
+const IDENT_RE = /^[a-z_][a-z0-9_]*$/;
+
+/** Shape of a `SELECT COUNT(*) AS cnt` row. pg returns bigint counts as strings. */
+interface CountRow {
+  cnt?: string | number | null;
+}
+interface ExistsRow {
+  exists?: boolean | null;
+}
+interface LockedRow {
+  locked?: boolean | null;
+}
+
+function firstCount(result: { rows: unknown[] }): number {
+  const row = (result.rows as CountRow[])[0];
+  const raw = row?.cnt;
+  if (typeof raw === 'number') return raw;
+  const parsed = parseInt(raw ?? '0', 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
 
 export interface SetupStatus {
   envFileExists: boolean;
@@ -52,131 +80,201 @@ export interface SetupStatus {
    * setup endpoints to an anonymous caller.
    */
   statusCheckFailed: boolean;
+  /**
+   * The database holds tenant data but NO user accounts (a tenant-scoped
+   * restore, or a system bundle that carried no users). Setup stays open so
+   * the wizard can create the admin account that adopts the restored data;
+   * `/initialize` must be called with `adoptExistingTenants: true`.
+   */
+  needsAdminUser: boolean;
+  /** Number of tenants currently in the database (0 when unknown). */
+  tenantCount: number;
+  /**
+   * `/data/config/.initialized` exists but the database is completely empty
+   * (no tenants, no users). The marker is from a previous life of this
+   * volume — a Postgres wipe or a /data directory carried to a new server —
+   * and must not hide the wizard: there is no account to log in with and
+   * nothing in the database to protect. Setup re-opens; the marker is
+   * rewritten when setup completes.
+   */
+  staleMarker: boolean;
 }
 
 /**
- * Persistent installation marker. Once this file exists, the system is
- * treated as initialized forever — no heuristic can flip it back. Removing
- * it requires deliberate manual action on the server filesystem.
+ * Persistent installation marker. Written when setup (or a restore that
+ * produced user accounts) completes. It is a strong signal, not an oracle:
+ * `getSetupStatus` always cross-checks it against the database, because a
+ * marker on a volume whose database has been emptied would otherwise lock
+ * the operator out of an installation that has no users at all.
  */
 export function isInitialized(): boolean {
-  return fs.existsSync(INITIALIZED_MARKER);
+  return fs.existsSync(initializedMarkerPath());
 }
 
 export function markInitialized(extra: Record<string, unknown> = {}): void {
   const payload = { initializedAt: new Date().toISOString(), ...extra };
-  writeAtomicSync(INITIALIZED_MARKER, JSON.stringify(payload, null, 2), 0o600);
+  writeAtomicSync(initializedMarkerPath(), JSON.stringify(payload, null, 2), 0o600);
+  // A completed setup/restore supersedes any pending "I intend to restore"
+  // flag written by the diagnostic prepare-restore flow.
+  try { clearRestoreIntent(); } catch { /* best-effort */ }
+}
+
+export function getInitializedMarkerPath(): string {
+  return initializedMarkerPath();
+}
+
+/** Row counts the setup/restore guards key on. Throws when the DB is unreachable. */
+export async function countTenantsAndUsers(): Promise<{ tenants: number; users: number }> {
+  const tenantRes = await db.execute(sql`SELECT COUNT(*) as cnt FROM tenants`);
+  const userRes = await db.execute(sql`SELECT COUNT(*) as cnt FROM users`);
+  return { tenants: firstCount(tenantRes), users: firstCount(userRes) };
+}
+
+let staleMarkerLogged = false;
+
+function lockedStatus(base: Partial<SetupStatus>, smtpConfigured: boolean): SetupStatus {
+  return {
+    envFileExists: true,
+    databaseReachable: true,
+    databaseInitialized: true,
+    hasAdminUser: true,
+    smtpConfigured,
+    setupComplete: true,
+    statusCheckFailed: false,
+    needsAdminUser: false,
+    tenantCount: 0,
+    staleMarker: false,
+    ...base,
+  };
 }
 
 export async function getSetupStatus(): Promise<SetupStatus> {
   const smtpConfigured = !!(process.env['SMTP_HOST'] && process.env['SMTP_HOST'].length > 0);
+  const envFileExists = fs.existsSync(path.join(configDir(), '.env')) || !!process.env['JWT_SECRET'];
 
-  // Short-circuit #1: persistent marker is authoritative.
+  // Short-circuit #1: persistent marker — verified against the database.
+  //
+  // The marker alone used to be authoritative ("hasAdminUser = true without
+  // consulting the DB"). That produced the worst possible failure mode in
+  // disaster recovery: a /data volume rsync'd to a new server, or kept
+  // across a Postgres wipe, carried the marker but no users, so every setup
+  // endpoint returned 403, /status claimed an admin existed, and the login
+  // page offered a form no account could satisfy. We now confirm the claim:
+  //   - DB unreachable        → keep the lock (fail closed, as before)
+  //   - users > 0             → initialized (the normal case)
+  //   - users = 0, tenants > 0 → restored data awaiting an admin (adopt)
+  //   - users = 0, tenants = 0 → stale marker; nothing to protect; re-open
   if (isInitialized()) {
+    let counts: { tenants: number; users: number };
+    try {
+      counts = await countTenantsAndUsers();
+    } catch {
+      return lockedStatus({}, smtpConfigured);
+    }
+    if (counts.users > 0) {
+      return lockedStatus({ tenantCount: counts.tenants }, smtpConfigured);
+    }
+    if (!staleMarkerLogged) {
+      staleMarkerLogged = true;
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[sentinel-audit] ${JSON.stringify({
+          ts: new Date().toISOString(),
+          kind: 'sentinel-audit',
+          event: 'installation.stale_marker_detected',
+          marker: initializedMarkerPath(),
+          tenants: counts.tenants,
+          users: counts.users,
+          action: counts.tenants > 0 ? 'setup re-opened to create an admin for the restored data' : 'setup re-opened',
+        })}`,
+      );
+    }
     return {
-      envFileExists: true,
+      envFileExists,
       databaseReachable: true,
       databaseInitialized: true,
-      hasAdminUser: true,
+      hasAdminUser: false,
       smtpConfigured,
-      setupComplete: true,
+      setupComplete: false,
       statusCheckFailed: false,
+      needsAdminUser: counts.tenants > 0,
+      tenantCount: counts.tenants,
+      staleMarker: true,
     };
   }
-
-  const envFileExists = fs.existsSync(path.join(CONFIG_DIR, '.env')) || !!process.env['JWT_SECRET'];
 
   let databaseReachable = false;
   let databaseInitialized = false;
   let hasAdminUser = false;
   let statusCheckFailed = false;
+  let needsAdminUser = false;
+  let tenantCount = 0;
 
   try {
     const result = await db.execute(sql`SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'tenants') as exists`);
     databaseReachable = true;
-    databaseInitialized = (result.rows as any[])[0]?.exists === true;
+    databaseInitialized = (result.rows as ExistsRow[])[0]?.exists === true;
 
     if (databaseInitialized) {
       try {
         const userCount = await db.execute(sql`SELECT COUNT(*) as cnt FROM users`);
-        hasAdminUser = parseInt((userCount.rows as any[])[0]?.cnt || '0') > 0;
+        hasAdminUser = firstCount(userCount) > 0;
+        const tenantRes = await db.execute(sql`SELECT COUNT(*) as cnt FROM tenants`);
+        tenantCount = firstCount(tenantRes);
+        needsAdminUser = !hasAdminUser && tenantCount > 0;
 
         // Self-healing: if the DB already has tenants + users but the
         // marker file is missing (e.g. operator lost /data/config/), write
         // the marker now so no future status check can ever flip back to
         // "not initialized". This closes the "lost volume → wipe" path.
-        if (hasAdminUser) {
-          const tenantCount = await db.execute(sql`SELECT COUNT(*) as cnt FROM tenants`);
-          const hasTenants = parseInt((tenantCount.rows as any[])[0]?.cnt || '0') > 0;
-          if (hasTenants) {
-            // SENTINEL GUARD (F2): do not self-heal if the sentinel exists
-            // and its installation ID disagrees with the DB. That combination
-            // means the DB was wiped and an attacker — or a mistake — has
-            // inserted tenant+user rows without updating installation_id in
-            // system_settings. Letting self-heal run would hide the reset
-            // from the validator. Instead, bail out with statusCheckFailed
-            // so the route guard stays locked and the validator produces
-            // the appropriate diagnostic page on next boot.
-            if (sentinelExists()) {
-              try {
-                const header = readSentinelHeader();
-                const dbInstallationId = await adminService.getSetting(
-                  SystemSettingsKeys.INSTALLATION_ID,
-                );
-                if (header && dbInstallationId && header.installationId !== dbInstallationId) {
-                  return {
-                    envFileExists,
-                    databaseReachable: true,
-                    databaseInitialized: true,
-                    hasAdminUser,
-                    smtpConfigured,
-                    setupComplete: true,
-                    statusCheckFailed: true,
-                  };
-                }
-                if (header && !dbInstallationId) {
-                  // Sentinel exists but DB has no installation_id row — the
-                  // tenant rows came from somewhere other than a real setup.
-                  // Refuse to self-heal.
-                  return {
-                    envFileExists,
-                    databaseReachable: true,
-                    databaseInitialized: true,
-                    hasAdminUser,
-                    smtpConfigured,
-                    setupComplete: true,
-                    statusCheckFailed: true,
-                  };
-                }
-              } catch {
-                // If we can't read the sentinel at all, be conservative and
-                // block self-heal too.
-                return {
-                  envFileExists,
-                  databaseReachable: true,
-                  databaseInitialized: true,
-                  hasAdminUser,
-                  smtpConfigured,
-                  setupComplete: true,
-                  statusCheckFailed: true,
-                };
-              }
-            }
-            try {
-              markInitialized({ recoveredFromExistingData: true });
-            } catch {
-              // best-effort; next call will retry
-            }
-            return {
-              envFileExists: true,
+        if (hasAdminUser && tenantCount > 0) {
+          // SENTINEL GUARD (F2): do not self-heal if the sentinel exists
+          // and its installation ID disagrees with the DB. That combination
+          // means the DB was wiped and an attacker — or a mistake — has
+          // inserted tenant+user rows without updating installation_id in
+          // system_settings. Letting self-heal run would hide the reset
+          // from the validator. Instead, bail out with statusCheckFailed
+          // so the route guard stays locked and the validator produces
+          // the appropriate diagnostic page on next boot.
+          if (sentinelExists()) {
+            const blocked: SetupStatus = {
+              envFileExists,
               databaseReachable: true,
               databaseInitialized: true,
-              hasAdminUser: true,
+              hasAdminUser,
               smtpConfigured,
               setupComplete: true,
-              statusCheckFailed: false,
+              statusCheckFailed: true,
+              needsAdminUser: false,
+              tenantCount,
+              staleMarker: false,
             };
+            try {
+              const header = readSentinelHeader();
+              const dbInstallationId = await adminService.getSetting(
+                SystemSettingsKeys.INSTALLATION_ID,
+              );
+              if (header && dbInstallationId && header.installationId !== dbInstallationId) {
+                return blocked;
+              }
+              if (header && !dbInstallationId) {
+                // Sentinel exists but DB has no installation_id row — the
+                // tenant rows came from somewhere other than a real setup.
+                // Refuse to self-heal.
+                return blocked;
+              }
+            } catch {
+              // If we can't read the sentinel at all, be conservative and
+              // block self-heal too.
+              return blocked;
+            }
           }
+          try {
+            markInitialized({ recoveredFromExistingData: true });
+          } catch {
+            // best-effort; next call will retry
+          }
+          return lockedStatus({ tenantCount }, smtpConfigured);
         }
       } catch {
         // Second query failed independently; treat the whole check as
@@ -211,12 +309,6 @@ export async function getSetupStatus(): Promise<SetupStatus> {
   // a pristine install with zero users, which hid the first-run wizard and
   // made the guard below 403 every setup endpoint — an unrecoverable
   // deadlock: no account to log in with, and no way to create one.
-  //
-  // "Already configured" is proven by the persistent marker (short-circuit
-  // #1 above) or by hasAdminUser — never by schema/secrets that the
-  // appliance ships by default. A failed users probe cannot masquerade as
-  // "no users" either: the inner catch sets statusCheckFailed, which still
-  // locks the endpoints.
   const setupComplete = statusCheckFailed || hasAdminUser;
 
   return {
@@ -227,6 +319,9 @@ export async function getSetupStatus(): Promise<SetupStatus> {
     smtpConfigured,
     setupComplete,
     statusCheckFailed,
+    needsAdminUser: statusCheckFailed ? false : needsAdminUser,
+    tenantCount,
+    staleMarker: false,
   };
 }
 
@@ -239,7 +334,7 @@ export async function withSetupLock<T>(fn: () => Promise<T>): Promise<T> {
   const lockRes = await db.execute(
     sql`SELECT pg_try_advisory_lock(${SETUP_ADVISORY_LOCK_KEY}) as locked`,
   );
-  const locked = (lockRes.rows as any[])[0]?.locked === true;
+  const locked = (lockRes.rows as LockedRow[])[0]?.locked === true;
   if (!locked) {
     throw new Error('Another setup operation is already in progress. Please wait a moment and retry.');
   }
@@ -310,6 +405,21 @@ export interface DbConfig {
 }
 
 /**
+ * Assemble a `postgresql://` URL from discrete connection fields. The
+ * username and password are percent-encoded: `testDatabaseConnection` passes
+ * them to pg as separate fields, so a password containing `@`, `/`, `:` or
+ * `#` passes the connection test — and would then produce a URL that parses
+ * to the wrong host (or fails env.ts validation) on the next boot unless it
+ * is encoded here. `getDatabaseDefaults` decodes symmetrically.
+ */
+export function buildDatabaseUrl(config: DbConfig): string {
+  const user = encodeURIComponent(config.username);
+  const auth = config.password ? `${user}:${encodeURIComponent(config.password)}` : user;
+  const host = config.host.includes(':') && !config.host.startsWith('[') ? `[${config.host}]` : config.host;
+  return `postgresql://${auth}@${host}:${config.port}/${encodeURIComponent(config.database)}`;
+}
+
+/**
  * Parse DATABASE_URL from the current process environment (injected by
  * docker-compose from the host .env) and return the connection components
  * so the setup wizard can pre-populate its Database step with values that
@@ -322,9 +432,9 @@ export interface DbConfig {
  * the wizard auto-fill the Database step so the user just clicks Next.
  *
  * Why this is safe to expose over HTTP:
- *   - The setup router blocks every non-status endpoint once
- *     /data/config/.initialized exists (see setupRouter.use in
- *     setup.routes.ts). After setup completes, this endpoint returns 403.
+ *   - The setup router blocks every non-status endpoint once setup is
+ *     complete (see setupRouter.use in setup.routes.ts). After setup
+ *     completes, this endpoint returns 403.
  *   - The password is for the local Postgres container, which is only
  *     reachable from inside the docker-compose network. Leaking it to
  *     the local operator running the wizard is a no-op because they
@@ -351,9 +461,9 @@ export function getDatabaseDefaults(): {
       const parsed = new URL(url);
       const password = decodeURIComponent(parsed.password || '');
       return {
-        host: parsed.hostname || 'db',
+        host: parsed.hostname.replace(/^\[|\]$/g, '') || 'db',
         port: parsed.port ? Number(parsed.port) : 5432,
-        database: (parsed.pathname || '').replace(/^\//, '') || 'kisbooks',
+        database: decodeURIComponent((parsed.pathname || '').replace(/^\//, '')) || 'kisbooks',
         username: decodeURIComponent(parsed.username || '') || 'kisbooks',
         password,
         passwordAutoDetected: password.length > 0,
@@ -465,6 +575,14 @@ export interface SetupConfig {
    * you weren't expecting it.
    */
   createDemoCompany?: boolean;
+  /**
+   * The database already holds restored tenant data but no user accounts
+   * (`SetupStatus.needsAdminUser`). Instead of creating a new tenant, the
+   * admin account is created inside the first restored tenant and granted
+   * owner access to every restored tenant. No chart of accounts is seeded —
+   * the restored one is the truth.
+   */
+  adoptExistingTenants?: boolean;
 }
 
 export async function checkPortAvailability(port: number): Promise<{ port: number; available: boolean }> {
@@ -476,10 +594,21 @@ export async function checkPortAvailability(port: number): Promise<{ port: numbe
   });
 }
 
-export function writeEnvFile(config: SetupConfig): string {
-  const dbUrl = `postgresql://${config.db.username}:${config.db.password}@${config.db.host}:${config.db.port}/${config.db.database}`;
+export interface WriteEnvFileOptions {
+  /**
+   * Replace an existing /data/config/.env instead of refusing. The caller
+   * must have verified that the database is EMPTY (no tenants, no users) —
+   * i.e. the file belongs to a previous life of this volume and there is
+   * no running installation whose keys it protects. The old file is kept
+   * as a timestamped `.pre-setup-*` sibling either way.
+   */
+  replaceExisting?: boolean;
+}
+
+export function writeEnvFile(config: SetupConfig, options: WriteEnvFileOptions = {}): string {
+  const dbUrl = buildDatabaseUrl(config.db);
   const redisUrl = config.redis.password
-    ? `redis://:${config.redis.password}@${config.redis.host}:${config.redis.port}`
+    ? `redis://:${encodeURIComponent(config.redis.password)}@${config.redis.host}:${config.redis.port}`
     : `redis://${config.redis.host}:${config.redis.port}`;
 
   const apiPort = config.ports?.api || 3001;
@@ -487,6 +616,10 @@ export function writeEnvFile(config: SetupConfig): string {
 
   const envContent = `# Vibe MyBooks Configuration — Generated by Setup Wizard
 # ${new Date().toISOString()}
+#
+# docker-entrypoint.sh loads this file at boot and uses it to FILL IN any
+# variable that the compose environment leaves unset or empty. A value that
+# compose already supplies (docker-compose.yml / the install .env) wins.
 
 # Database
 DATABASE_URL=${dbUrl}
@@ -533,105 +666,255 @@ BACKUP_ENCRYPTION_KEY=${config.backupKey}
 `;
 
   // Write to config dir
-  const dir = CONFIG_DIR;
+  const dir = configDir();
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, '.env');
 
-  // Bulletproof guard: refuse to overwrite an existing env file. The only
-  // legitimate way to re-run setup is to delete both /data/config/.env
-  // and /data/config/.initialized by hand on the server. This prevents
-  // silently destroying BACKUP_ENCRYPTION_KEY — overwriting it would
+  // Guard: refuse to overwrite an existing env file unless the caller has
+  // proven the database is empty (replaceExisting). Overwriting the file of
+  // a LIVE installation would silently destroy BACKUP_ENCRYPTION_KEY and
   // render every previously-taken encrypted backup cryptographically
   // unrecoverable, with no warning to the operator.
   //
-  // We still take a timestamped backup first as extra insurance: even if
-  // some future code path bypasses this guard, the prior values remain
-  // recoverable on disk.
+  // We always keep a timestamped copy first: even on the replace path the
+  // prior values remain recoverable on disk.
   if (fs.existsSync(filePath)) {
     const backupPath = `${filePath}.pre-setup-${Date.now()}`;
     try { fs.copyFileSync(filePath, backupPath); } catch { /* best-effort */ }
-    throw new Error(
-      `Refusing to overwrite existing configuration at ${filePath}. ` +
-      `A backup copy was saved to ${backupPath}. ` +
-      `If you intend to reinstall from scratch, stop the service and delete both ` +
-      `${filePath} and ${INITIALIZED_MARKER} manually before re-running setup.`,
-    );
+    if (!options.replaceExisting) {
+      throw new Error(
+        `Refusing to overwrite existing configuration at ${filePath}. ` +
+        `A backup copy was saved to ${backupPath}. ` +
+        `If you intend to reinstall from scratch, stop the service and delete both ` +
+        `${filePath} and ${initializedMarkerPath()} manually before re-running setup.`,
+      );
+    }
+    // eslint-disable-next-line no-console
+    console.warn(`[setup] replacing stale ${filePath} (database is empty); previous copy kept at ${backupPath}`);
   }
 
-  fs.writeFileSync(filePath, envContent, { mode: 0o600 });
+  writeAtomicSync(filePath, envContent, 0o600);
   return filePath;
 }
 
-export async function createAdminUser(input: { email: string; password: string; displayName: string; companyName: string; industry?: string; entityType?: string; businessType?: string }) {
+/** Remove a /data/config/.env this setup run created. Used to unwind a failed /initialize. */
+export function removeEnvFile(filePath: string): void {
+  try { fs.unlinkSync(filePath); } catch { /* already gone */ }
+}
+
+export interface CreateAdminUserInput {
+  email: string;
+  password: string;
+  displayName: string;
+  companyName: string;
+  industry?: string;
+  entityType?: string;
+  businessType?: string;
+  /** See SetupConfig.adoptExistingTenants. */
+  adoptExistingTenants?: boolean;
+}
+
+/**
+ * Create the first-run admin account.
+ *
+ * Fresh install (default): creates tenant → company → user → access inside
+ * ONE transaction, then runs the post-steps (chart-of-accounts seed, feature
+ * flags, appliance firm). The chart-of-accounts template is resolved BEFORE
+ * any row is written so an unknown template can never leave a half-built
+ * tenant behind. If a post-step still fails, `rollbackPartialSetup` removes
+ * every row this call created so the emptiness guards let the operator
+ * simply retry — the previous behaviour left 1 tenant / 0 users in the DB
+ * and every retry 409'd with "tenant(s) already exist".
+ *
+ * Adopt mode (`adoptExistingTenants`): the database already holds restored
+ * tenant data but no users. The admin is created inside the oldest tenant
+ * and granted owner access to every tenant. Nothing is seeded.
+ */
+export async function createAdminUser(input: CreateAdminUserInput) {
   // Defense-in-depth: refuse to initialize if the database already contains
-  // tenants or users. Even if the route guard, the setup token, and the
-  // persistent marker are all bypassed somehow, this check prevents a
-  // setup run from silently planting a super-admin user on top of a
-  // populated database.
-  const existingTenants = await db.execute(sql`SELECT COUNT(*) as cnt FROM tenants`);
-  const tenantCount = parseInt((existingTenants.rows as any[])[0]?.cnt || '0');
-  if (tenantCount > 0) {
+  // users, or tenants we were not told to adopt. Even if the route guard and
+  // the status check are bypassed somehow, this check prevents a setup run
+  // from silently planting a super-admin user on top of a populated database.
+  const counts = await countTenantsAndUsers();
+  if (counts.users > 0) {
     throw new Error(
-      `Cannot initialize: ${tenantCount} tenant(s) already exist in the database. ` +
-      `This looks like an already-configured installation.`,
+      `Cannot initialize: ${counts.users} user account(s) already exist in the database.`,
     );
   }
-  const existingUsers = await db.execute(sql`SELECT COUNT(*) as cnt FROM users`);
-  const userCount = parseInt((existingUsers.rows as any[])[0]?.cnt || '0');
-  if (userCount > 0) {
+  if (counts.tenants > 0 && !input.adoptExistingTenants) {
     throw new Error(
-      `Cannot initialize: ${userCount} user account(s) already exist in the database.`,
+      `Cannot initialize: ${counts.tenants} tenant(s) already exist in the database. ` +
+      `This looks like restored data — re-run setup choosing to create an admin for the existing data.`,
     );
   }
+  if (counts.tenants === 0 && input.adoptExistingTenants) {
+    throw new Error('Cannot adopt existing data: the database has no tenants to adopt.');
+  }
 
-  // Create tenant
-  const slug = input.companyName.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 80) + '-' + crypto.randomBytes(4).toString('hex');
-  const [tenant] = await db.insert(tenants).values({ name: input.companyName, slug }).returning();
-  if (!tenant) throw new Error('Failed to create tenant');
-
-  // Create company
-  await db.insert(companies).values({
-    tenantId: tenant.id,
-    businessName: input.companyName,
-    entityType: input.entityType || 'sole_prop',
-    industry: input.industry || null,
-    setupComplete: true,
-  });
-
-  // Create user (first user is super admin)
   const passwordHash = await bcrypt.hash(input.password, env.BCRYPT_ROUNDS);
-  const [user] = await db.insert(users).values({
-    tenantId: tenant.id,
-    email: input.email,
-    passwordHash,
-    displayName: input.displayName,
-    role: 'owner',
-    isSuperAdmin: true,
-  }).returning();
 
-  if (!user) throw new Error('Failed to create admin user');
+  if (input.adoptExistingTenants) {
+    return adoptRestoredTenants(input, passwordHash);
+  }
 
-  // Create user-tenant access record
-  await db.insert(userTenantAccess).values({
-    userId: user.id,
-    tenantId: tenant.id,
-    role: 'owner',
+  const templateName = input.businessType || 'default';
+  // Fail BEFORE writing anything if the chart-of-accounts template is unknown.
+  await accountsService.assertTemplateExists(templateName);
+
+  const slug = input.companyName.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 80) + '-' + crypto.randomBytes(4).toString('hex');
+
+  const created = await db.transaction(async (tx) => {
+    const [tenant] = await tx.insert(tenants).values({ name: input.companyName, slug }).returning();
+    if (!tenant) throw new Error('Failed to create tenant');
+
+    await tx.insert(companies).values({
+      tenantId: tenant.id,
+      businessName: input.companyName,
+      entityType: input.entityType || 'sole_prop',
+      industry: input.industry || null,
+      setupComplete: true,
+    });
+
+    // First user is super admin.
+    const [user] = await tx.insert(users).values({
+      tenantId: tenant.id,
+      email: input.email,
+      passwordHash,
+      displayName: input.displayName,
+      role: 'owner',
+      isSuperAdmin: true,
+    }).returning();
+    if (!user) throw new Error('Failed to create admin user');
+
+    await tx.insert(userTenantAccess).values({
+      userId: user.id,
+      tenantId: tenant.id,
+      role: 'owner',
+    });
+
+    return { tenantId: tenant.id, userId: user.id };
   });
 
-  // Seed COA with business type template
-  await accountsService.seedFromTemplate(tenant.id, input.businessType || 'default');
+  try {
+    // Seed COA with business type template
+    await accountsService.seedFromTemplate(created.tenantId, templateName);
 
-  // First-run setup creates the bootstrap tenant; Practice flags
-  // are on by default so the operator can see them immediately.
-  await seedFeatureFlags(tenant.id);
+    // First-run setup creates the bootstrap tenant; Practice flags
+    // are on by default so the operator can see them immediately.
+    await seedFeatureFlags(created.tenantId);
 
-  // Create the appliance firm and make the first-run admin its
-  // firm_admin, then assign this bootstrap tenant to it. This is the
-  // natural place the singleton appliance firm comes into existence;
-  // every later tenant joins the same firm.
-  await joinApplianceFirm(tenant.id, user.id);
+    // Create the appliance firm and make the first-run admin its
+    // firm_admin, then assign this bootstrap tenant to it. This is the
+    // natural place the singleton appliance firm comes into existence;
+    // every later tenant joins the same firm.
+    await joinApplianceFirm(created.tenantId, created.userId);
+  } catch (err) {
+    await rollbackPartialSetup(created.tenantId, created.userId);
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`[step:seed] Setup could not finish provisioning the first company (${message}). Nothing was kept — fix the cause and retry.`);
+  }
 
-  return { tenantId: tenant.id, userId: user.id };
+  return created;
+}
+
+async function adoptRestoredTenants(input: CreateAdminUserInput, passwordHash: string) {
+  const restored = await db.select({ id: tenants.id, name: tenants.name })
+    .from(tenants)
+    .orderBy(asc(tenants.createdAt), asc(tenants.id));
+  const home = restored[0];
+  if (!home) throw new Error('Cannot adopt existing data: the database has no tenants to adopt.');
+
+  const created = await db.transaction(async (tx) => {
+    const [user] = await tx.insert(users).values({
+      tenantId: home.id,
+      email: input.email,
+      passwordHash,
+      displayName: input.displayName,
+      role: 'owner',
+      isSuperAdmin: true,
+    }).returning();
+    if (!user) throw new Error('Failed to create admin user');
+
+    await tx.insert(userTenantAccess).values(
+      restored.map((t) => ({ userId: user.id, tenantId: t.id, role: 'owner' })),
+    ).onConflictDoNothing();
+
+    // A tenant-scoped bundle may not carry a companies row; make sure the
+    // home tenant has one so the app shell can load.
+    const companyRows = await tx.select({ id: companies.id }).from(companies)
+      .where(sql`${companies.tenantId} = ${home.id}`).limit(1);
+    if (companyRows.length === 0) {
+      await tx.insert(companies).values({
+        tenantId: home.id,
+        businessName: input.companyName?.trim() || home.name,
+        entityType: input.entityType || 'sole_prop',
+        industry: input.industry || null,
+        setupComplete: true,
+      });
+    }
+    return { tenantId: home.id, userId: user.id };
+  });
+
+  try {
+    for (const t of restored) {
+      await seedFeatureFlags(t.id); // onConflictDoNothing — restored flags win
+      await joinApplianceFirm(t.id, created.userId);
+    }
+  } catch (err) {
+    // Only the user rows are ours; the restored tenant data must stay.
+    try {
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`DELETE FROM firm_users WHERE user_id = ${created.userId}`);
+        await tx.delete(userTenantAccess).where(sql`${userTenantAccess.userId} = ${created.userId}`);
+        await tx.delete(users).where(sql`${users.id} = ${created.userId}`);
+      });
+    } catch (cleanupErr) {
+      // eslint-disable-next-line no-console
+      console.error('[setup] adopt rollback failed:', cleanupErr);
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`[step:admin] Could not link the admin account to the restored data (${message}). Nothing was kept — retry.`);
+  }
+
+  return created;
+}
+
+/**
+ * Remove everything a failed fresh-install `createAdminUser` created, so
+ * the database is EMPTY again and the emptiness guards allow a clean retry.
+ * Precondition (checked by the caller): the DB held no tenants and no users
+ * before this setup run, so every tenant-scoped row belongs to this run.
+ */
+export async function rollbackPartialSetup(tenantId: string, userId: string): Promise<void> {
+  try {
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`DELETE FROM firm_users WHERE user_id = ${userId}`);
+      await tx.execute(sql`DELETE FROM firms WHERE created_by_user_id = ${userId}`);
+      await tx.delete(userTenantAccess).where(sql`${userTenantAccess.tenantId} = ${tenantId}`);
+      await tx.delete(users).where(sql`${users.id} = ${userId}`);
+      const tablesResult = await tx.execute(sql`
+        SELECT c.table_name
+        FROM information_schema.columns c
+        JOIN information_schema.tables t
+          ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+        WHERE c.column_name = 'tenant_id'
+          AND c.table_schema = 'public'
+          AND t.table_type = 'BASE TABLE'
+          AND c.table_name NOT IN ('tenants', 'users', 'user_tenant_access')
+        ORDER BY c.table_name
+      `);
+      for (const row of tablesResult.rows as { table_name: string }[]) {
+        if (!IDENT_RE.test(row.table_name)) continue;
+        await tx.execute(sql`DELETE FROM ${sql.identifier(row.table_name)} WHERE tenant_id = ${tenantId}`);
+      }
+      await tx.delete(tenants).where(sql`${tenants.id} = ${tenantId}`);
+    });
+    // eslint-disable-next-line no-console
+    console.warn(`[setup] rolled back partially-created tenant ${tenantId} after a provisioning failure`);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[setup] rollback of partial setup FAILED — manual cleanup may be required:', err);
+  }
 }
 
 /**
@@ -654,6 +937,8 @@ export async function completeSetupSentinel(input: {
   databaseUrl: string;
   jwtSecret: string;
   encryptionKey: string;
+  /** Credential-encryption key to protect in /data/.env.recovery. Defaults to process.env. */
+  plaidEncryptionKey?: string;
   appVersion: string;
   tenantCountAtSetup: number;
 }): Promise<{ installationId: string; hostId: string; recoveryKey: string }> {
@@ -694,6 +979,7 @@ export async function completeSetupSentinel(input: {
   // sentinel, and the operator can regenerate the recovery file later from
   // admin settings (Phase B.8).
   const recoveryKey = generateRecoveryKey();
+  const plaidEncryptionKey = input.plaidEncryptionKey || process.env['PLAID_ENCRYPTION_KEY'];
   try {
     writeRecoveryFile(
       recoveryKey,
@@ -701,7 +987,7 @@ export async function completeSetupSentinel(input: {
         encryptionKey: input.encryptionKey,
         jwtSecret: input.jwtSecret,
         databaseUrl: input.databaseUrl,
-        ...(process.env['PLAID_ENCRYPTION_KEY'] ? { plaidEncryptionKey: process.env['PLAID_ENCRYPTION_KEY'] } : {}),
+        ...(plaidEncryptionKey ? { plaidEncryptionKey } : {}),
       },
       installationId,
     );

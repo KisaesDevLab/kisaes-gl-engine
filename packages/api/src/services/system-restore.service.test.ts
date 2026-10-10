@@ -11,6 +11,7 @@ import {
   mergeBundleSections,
   restoreDatabaseSections,
   buildRestoreChecklist,
+  findUndecryptableTotpUsers,
   resyncOwnedSequences,
 } from './system-restore.service.js';
 import { encrypt } from '../utils/encryption.js';
@@ -256,5 +257,41 @@ describe('resyncOwnedSequences', () => {
     // The good sequence was still resynced past its max.
     const r = await db.execute(sql.raw(`SELECT nextval(pg_get_serial_sequence('${good}', 'id')) AS n`));
     expect(Number((r.rows[0] as { n: string }).n)).toBeGreaterThan(250);
+  });
+});
+
+describe('findUndecryptableTotpUsers (integration)', () => {
+  const tenantId = crypto.randomUUID();
+  const lockedId = crypto.randomUUID();
+  const fineId = crypto.randomUUID();
+  const legacyId = crypto.randomUUID();
+  const foreignCiphertext =
+    Buffer.from('aaaaaaaaaaaa').toString('base64') + ':' +
+    Buffer.from('bbbbbbbbbbbbbbbb').toString('base64') + ':' +
+    Buffer.from('cccc').toString('base64');
+
+  afterEach(async () => {
+    await db.execute(sql`DELETE FROM users WHERE tenant_id = ${tenantId}`);
+    await db.execute(sql`DELETE FROM tenants WHERE id = ${tenantId}`);
+  });
+
+  it('lists only users whose TOTP ciphertext this server cannot open, super admins first', async () => {
+    await db.execute(sql`INSERT INTO tenants (id, name, slug) VALUES (${tenantId}, 'totp-probe', ${'totp-' + tenantId.slice(0, 8)})`);
+    const insertUser = (id: string, email: string, superAdmin: boolean, secret: string) => db.execute(sql`
+      INSERT INTO users (id, tenant_id, email, password_hash, role, is_super_admin, tfa_enabled, tfa_methods, tfa_totp_secret_encrypted, tfa_totp_verified)
+      VALUES (${id}, ${tenantId}, ${email}, 'x', 'owner', ${superAdmin}, true, 'totp', ${secret}, true)
+    `);
+    await insertUser(lockedId, `locked-${lockedId.slice(0, 8)}@example.com`, true, foreignCiphertext);
+    await insertUser(fineId, `fine-${fineId.slice(0, 8)}@example.com`, false, encrypt('JBSWY3DPEHPK3PXP'));
+    // pre-hardening plaintext base32 secret — still verifies, must not be flagged
+    await insertUser(legacyId, `legacy-${legacyId.slice(0, 8)}@example.com`, false, 'JBSWY3DPEHPK3PXP');
+
+    const locked = await findUndecryptableTotpUsers(db);
+    const mine = locked.filter((u) => u.email.includes(lockedId.slice(0, 8)) || u.email.includes(fineId.slice(0, 8)) || u.email.includes(legacyId.slice(0, 8)));
+    expect(mine).toEqual([{ email: `locked-${lockedId.slice(0, 8)}@example.com`, isSuperAdmin: true }]);
+
+    const checklist = await buildRestoreChecklist(db);
+    expect(checklist['tfa']?.status).toBe('error');
+    expect(checklist['tfa']?.message).toContain(`locked-${lockedId.slice(0, 8)}@example.com`);
   });
 });

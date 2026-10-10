@@ -159,10 +159,31 @@ export async function generateAndSendCode(userId: string, method: 'email' | 'sms
   return { method, destinationMasked: masked, expiresInSeconds: config.codeExpirySeconds };
 }
 
+/**
+ * Does a stored TOTP secret look like `encrypt()` output (iv:tag:ciphertext,
+ * all base64)? Raw base32 secrets from the pre-hardening build contain no
+ * colons, so this cleanly separates "legacy plaintext" from "ciphertext we
+ * cannot open with this server's key".
+ */
+export function looksLikeCiphertext(value: string): boolean {
+  const parts = value.split(':');
+  if (parts.length !== 3) return false;
+  const b64 = /^[A-Za-z0-9+/]+={0,2}$/;
+  return parts.every((p) => p.length > 0 && b64.test(p));
+}
+
 export async function verifyCode(userId: string, code: string, method: string): Promise<{
   valid: boolean;
   remainingAttempts?: number;
   lockedUntil?: Date;
+  /**
+   * The stored authenticator secret is ciphertext this server's
+   * PLAID_ENCRYPTION_KEY cannot open (restore onto a new host without the
+   * recovery key, or a key rotation). No code the user types can ever match,
+   * so this is reported as a configuration failure — not counted as a wrong
+   * attempt — and the caller tells the user what to do.
+   */
+  secretUnreadable?: boolean;
 }> {
   const config = await tfaConfigService.getConfig();
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
@@ -184,11 +205,20 @@ export async function verifyCode(userId: string, code: string, method: string): 
       const { verifySync, NobleCryptoPlugin, ScureBase32Plugin } = await import('otplib');
       const { decrypt } = await import('../utils/encryption.js');
       const plugins = { crypto: new NobleCryptoPlugin(), base32: new ScureBase32Plugin() };
-      // Stored value is AES-GCM ciphertext. Fall back to raw on decrypt
-      // failure so TOTP secrets written by the pre-hardening build still
-      // verify — those rows re-encrypt the next time the user re-enrols.
+      // Stored value is AES-GCM ciphertext. Fall back to raw ONLY for the
+      // legacy plaintext shape (pre-hardening build; those rows re-encrypt
+      // on re-enrolment). Ciphertext that fails to decrypt means the key
+      // changed — silently using the ciphertext as the secret would make
+      // every code fail with a misleading "Invalid code".
       let secret: string;
-      try { secret = decrypt(user.tfaTotpSecretEncrypted); } catch { secret = user.tfaTotpSecretEncrypted; }
+      try {
+        secret = decrypt(user.tfaTotpSecretEncrypted);
+      } catch {
+        if (looksLikeCiphertext(user.tfaTotpSecretEncrypted)) {
+          return { valid: false, secretUnreadable: true };
+        }
+        secret = user.tfaTotpSecretEncrypted;
+      }
       const result = verifySync({ token: code, secret, epochTolerance: 30, ...plugins });
       isValid = result.valid;
       // Replay guard: a code is single-use. The verifier tells us which

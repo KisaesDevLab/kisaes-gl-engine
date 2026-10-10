@@ -19,6 +19,8 @@ export type SentinelAuditEvent =
   | 'sentinel.create'
   | 'sentinel.regenerate'
   | 'sentinel.reset'
+  | 'installation.restore_prepared'
+  | 'installation.stale_marker_detected'
   | 'installation.mismatch_detected'
   | 'installation.host_id_changed'
   | 'installation.database_reset_detected'

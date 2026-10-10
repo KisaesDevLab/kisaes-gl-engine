@@ -328,8 +328,55 @@ export async function resyncOwnedSequences(dbi: Db): Promise<void> {
 // ─── Truthful post-restore checklist ────────────────────────────────
 
 export interface ChecklistItem {
-  status: 'ok' | 'warning';
+  /** `error` = the operator will be locked out unless they act (shown red, never green). */
+  status: 'ok' | 'warning' | 'error';
   message: string;
+}
+
+export interface UndecryptableTotpUser {
+  email: string;
+  isSuperAdmin: boolean;
+}
+
+/**
+ * Users whose TOTP (authenticator-app) secret cannot be decrypted with THIS
+ * server's PLAID_ENCRYPTION_KEY. After a cross-host restore (or a restore
+ * of a pre-key-rotation bundle) every one of them is locked out at the 2FA
+ * step: the login accepts their password and then rejects every code. This
+ * is the single most dangerous restore outcome — the super admin is usually
+ * among them — so the restore surfaces it explicitly instead of leaving it
+ * to be discovered at the login screen.
+ */
+export async function findUndecryptableTotpUsers(dbi: Db): Promise<UndecryptableTotpUser[]> {
+  let rows: { email: string; is_super_admin: boolean | null; secret: string }[] = [];
+  try {
+    const res = await dbi.execute(sql`
+      SELECT email, is_super_admin, tfa_totp_secret_encrypted AS secret
+      FROM users
+      WHERE tfa_enabled = true
+        AND tfa_totp_verified = true
+        AND tfa_totp_secret_encrypted IS NOT NULL
+        AND tfa_totp_secret_encrypted <> ''
+      ORDER BY is_super_admin DESC, email ASC
+    `);
+    rows = res.rows as typeof rows;
+  } catch {
+    return [];
+  }
+  if (rows.length === 0) return [];
+  const { decrypt } = await import('../utils/encryption.js');
+  const { looksLikeCiphertext } = await import('./tfa.service.js');
+  const locked: UndecryptableTotpUser[] = [];
+  for (const row of rows) {
+    // Pre-hardening rows stored the raw base32 secret; those still verify.
+    if (!looksLikeCiphertext(row.secret)) continue;
+    try {
+      decrypt(row.secret);
+    } catch {
+      locked.push({ email: row.email, isSuperAdmin: row.is_super_admin === true });
+    }
+  }
+  return locked;
 }
 
 async function firstRow(dbi: Db, q: ReturnType<typeof sql>): Promise<Record<string, unknown> | undefined> {
@@ -445,8 +492,27 @@ export async function buildRestoreChecklist(dbi: Db): Promise<Record<string, Che
 
   const users = await firstRow(dbi, sql`SELECT COUNT(*)::int AS cnt FROM users`);
   const tenants = await firstRow(dbi, sql`SELECT COUNT(*)::int AS cnt FROM tenants`);
-  checklist['users'] = { status: 'ok', message: `${Number(users?.['cnt'] ?? 0)} user accounts restored` };
+  const userCount = Number(users?.['cnt'] ?? 0);
+  checklist['users'] = userCount > 0
+    ? { status: 'ok', message: `${userCount} user accounts restored` }
+    : { status: 'warning', message: 'No user accounts in this backup — create an admin account to access the restored data' };
   checklist['tenants'] = { status: 'ok', message: `${Number(tenants?.['cnt'] ?? 0)} companies restored` };
+
+  // Authenticator (TOTP) secrets live in users.tfa_totp_secret_encrypted
+  // under PLAID_ENCRYPTION_KEY. The credential probe above never samples the
+  // users table, so a cross-host restore could report green while every
+  // 2FA user — the super admin included — was locked out at the code step.
+  const lockedTotp = await findUndecryptableTotpUsers(dbi);
+  if (lockedTotp.length > 0) {
+    const admins = lockedTotp.filter((u) => u.isSuperAdmin).map((u) => u.email);
+    checklist['tfa'] = {
+      status: 'error',
+      message:
+        `${lockedTotp.length} user(s) with authenticator-app 2FA cannot sign in: their TOTP secrets were encrypted ` +
+        `under a different PLAID_ENCRYPTION_KEY${admins.length ? ` (super admin: ${admins.join(', ')})` : ''}. ` +
+        'Enter your original recovery key below to re-encrypt them, or run scripts/disable-2fa.ts for the affected accounts.',
+    };
+  }
 
   return checklist;
 }

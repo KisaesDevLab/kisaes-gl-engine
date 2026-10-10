@@ -5,6 +5,7 @@
 import { Router, type Request, type Response } from 'express';
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
+import fs from 'fs';
 import { sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
@@ -12,14 +13,42 @@ import {
   readSentinelHeader,
   createSentinel,
   deleteSentinel,
+  getSentinelPath,
   SentinelError,
 } from '../services/sentinel.service.js';
 import { ensureHostId, readHostId } from '../services/host-id.service.js';
 import { getSetting, setSetting } from '../services/admin.service.js';
 import { SystemSettingsKeys } from '../constants/system-settings-keys.js';
-import { withSetupLock } from '../services/setup.service.js';
+import { withSetupLock, getInitializedMarkerPath, countTenantsAndUsers } from '../services/setup.service.js';
+import { recoveryFileExists, readRecoveryFile } from '../services/env-recovery.service.js';
+import { writeRestoreIntent, restoreIntentExists } from '../services/restore-intent.service.js';
 import { sentinelAudit } from '../startup/sentinel-audit.js';
 import type { ValidationResult } from '../startup/installation-validator.js';
+
+interface DiagnosticUserRow {
+  id: string;
+  passwordHash: string;
+  isSuperAdmin: boolean;
+  email: string;
+}
+
+// Small in-memory limiter for the two credential-bearing endpoints below.
+// The diagnostic app mounts no shared rate-limit store (no Redis, by
+// design), so this mirrors env-missing-app's 10/min/IP bucket.
+const RATE_LIMIT_MAX = 10;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+function allowAttempt(ip: string): boolean {
+  const now = Date.now();
+  const bucket = rateBuckets.get(ip);
+  if (!bucket || now > bucket.resetAt) {
+    rateBuckets.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return true;
+  }
+  if (bucket.count >= RATE_LIMIT_MAX) return false;
+  bucket.count += 1;
+  return true;
+}
 
 /**
  * Diagnostic routes — the only HTTP endpoints mounted when the app is
@@ -39,6 +68,17 @@ import type { ValidationResult } from '../startup/installation-validator.js';
  *     DB installation_id. Used for Case 5 (wrong key / corrupt sentinel)
  *     recovery where the user still has valid admin credentials and a
  *     working ENCRYPTION_KEY.
+ *
+ *   POST /api/diagnostic/prepare-restore
+ *     The same-host disaster-recovery path for DATABASE_RESET_DETECTED /
+ *     ORPHANED_DATA: Postgres was lost but /data survived. The database is
+ *     EMPTY, so no account can authenticate; the operator proves intent and
+ *     ownership with the installation's recovery key instead (it decrypts
+ *     /data/.env.recovery). On success the sentinel and the `.initialized`
+ *     marker are set aside (copies kept), `.host-id` is KEPT so the restore
+ *     is recognised as same-host, and `/data/.restore-intent` is written so
+ *     preflight treats the next boot as a sanctioned fresh install whose
+ *     wizard offers "Restore from backup".
  */
 export function createDiagnosticRouter(cached: ValidationResult): Router {
   const router = Router();
@@ -57,6 +97,10 @@ export function createDiagnosticRouter(cached: ValidationResult): Router {
       result: cached,
       sentinelHeader: header,
       hostId: readHostId(),
+      // Lets the DATABASE_RESET_DETECTED page decide between the recovery-key
+      // form (prepare-restore) and the manual filesystem instructions.
+      recoveryFilePresent: recoveryFileExists(),
+      restoreIntent: restoreIntentExists(),
     });
   });
 
@@ -81,7 +125,7 @@ export function createDiagnosticRouter(cached: ValidationResult): Router {
         WHERE email = ${email}
         LIMIT 1
       `);
-      const row = (rows.rows as any[])[0];
+      const row = (rows.rows as unknown as DiagnosticUserRow[])[0];
       if (row) {
         user = { id: row.id, passwordHash: row.passwordHash, isSuperAdmin: row.isSuperAdmin, email: row.email };
       }
@@ -152,6 +196,121 @@ export function createDiagnosticRouter(cached: ValidationResult): Router {
     }
 
     res.json({ success: true, message: 'Sentinel regenerated. Restart the container to reload.' });
+  });
+
+  router.post('/prepare-restore', async (req: Request, res: Response) => {
+    const ip = (req.ip ?? req.socket.remoteAddress ?? 'unknown').toString();
+    if (!allowAttempt(ip)) {
+      res.status(429).json({ error: { message: 'too many attempts — wait a minute and retry' } });
+      return;
+    }
+    const body = (req.body ?? {}) as { recoveryKey?: unknown; confirm?: unknown };
+    const recoveryKey = typeof body.recoveryKey === 'string' ? body.recoveryKey.trim() : '';
+    const confirm = typeof body.confirm === 'string' ? body.confirm.trim() : '';
+
+    const code = cached.status === 'blocked' ? cached.code : null;
+    if (code !== 'DATABASE_RESET_DETECTED' && code !== 'ORPHANED_DATA') {
+      res.status(409).json({
+        error: { message: `prepare-restore is only available in the DATABASE_RESET_DETECTED or ORPHANED_DATA state (current: ${code ?? cached.status})` },
+      });
+      return;
+    }
+    if (confirm !== 'RESTORE') {
+      res.status(400).json({ error: { message: 'type RESTORE in the confirm field to continue' } });
+      return;
+    }
+
+    // Ownership proof: the recovery key must decrypt /data/.env.recovery.
+    // Without a recovery file there is nothing to verify against, so the
+    // operator has to act on the filesystem (which is its own proof).
+    if (!recoveryFileExists()) {
+      res.status(409).json({
+        error: {
+          message:
+            'No /data/.env.recovery file exists on this server, so the recovery key cannot be verified. ' +
+            'Use the manual commands shown on this page instead.',
+          code: 'NO_RECOVERY_FILE',
+        },
+      });
+      return;
+    }
+    if (!recoveryKey) {
+      res.status(400).json({ error: { message: 'recoveryKey required' } });
+      return;
+    }
+    let previousInstallationId: string | null = null;
+    try {
+      const contents = readRecoveryFile(recoveryKey);
+      previousInstallationId = contents?.installationId ?? null;
+    } catch {
+      res.status(401).json({ error: { message: 'recovery key did not decrypt the recovery file' } });
+      return;
+    }
+
+    // Safety: the database must really be empty of accounts. If users exist
+    // this is not a reset — it is a mismatch, and the regenerate-sentinel
+    // form (super-admin login) is the right tool.
+    try {
+      const counts = await countTenantsAndUsers();
+      if (counts.users > 0) {
+        res.status(409).json({
+          error: {
+            message: `The database still holds ${counts.users} user account(s). This is not an empty database — ` +
+              'use "Regenerate the sentinel" with a super-admin login instead of preparing a restore.',
+          },
+        });
+        return;
+      }
+    } catch (err) {
+      res.status(503).json({ error: { message: `database unreachable — cannot confirm it is empty: ${(err as Error).message}` } });
+      return;
+    }
+
+    const stamp = Date.now();
+    const setAside: string[] = [];
+    try {
+      const sentinelPath = getSentinelPath();
+      if (sentinelExists()) {
+        const copy = `${sentinelPath}.pre-restore-${stamp}`;
+        fs.copyFileSync(sentinelPath, copy);
+        setAside.push(copy);
+        deleteSentinel();
+      }
+      const marker = getInitializedMarkerPath();
+      if (fs.existsSync(marker)) {
+        const copy = `${marker}.pre-restore-${stamp}`;
+        fs.copyFileSync(marker, copy);
+        setAside.push(copy);
+        fs.unlinkSync(marker);
+      }
+      writeRestoreIntent({
+        previousInstallationId,
+        hostId: readHostId(),
+        source: 'diagnostic-prepare-restore',
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: { message: `could not prepare the volume for restore: ${(err as Error).message}. Check that /data is writable by the container (UID 1001).` },
+      });
+      return;
+    }
+
+    sentinelAudit('installation.restore_prepared', {
+      source: 'diagnostic-endpoint',
+      previousInstallationId,
+      hostId: readHostId(),
+      blockedCode: code,
+      setAside,
+    });
+
+    res.json({
+      success: true,
+      message:
+        'This server is ready to be restored. Restart the api container; the setup wizard will open — choose "Restore from backup" ' +
+        '(or "New installation" to start over). Your existing files, host identity and recovery key are preserved.',
+      setAside,
+      restoreIntent: restoreIntentExists(),
+    });
   });
 
   return router;

@@ -32,6 +32,15 @@ export interface ValidationInput {
   currentHostId: string | null;
   /** Outcome of trying to read the sentinel. */
   sentinel: SentinelReadResult;
+  /**
+   * `/data/.restore-intent` is present: the operator used the diagnostic
+   * prepare-restore flow after a DATABASE_RESET_DETECTED block. The flow
+   * removes the sentinel and the `.initialized` marker but keeps `.host-id`
+   * so the upcoming restore is recognised as same-host. That combination
+   * (host-id, no sentinel, empty DB) is ORPHANED_DATA on its own; with the
+   * recorded intent it is a sanctioned fresh install.
+   */
+  restoreIntent?: boolean;
 }
 
 export type ValidationBlockedCode =
@@ -83,6 +92,7 @@ export type ValidationResult =
 
 export function validateInstallation(input: ValidationInput): ValidationResult {
   const { dbInstallationId, currentHostId, sentinel } = input;
+  const restoreIntent = input.restoreIntent === true;
 
   switch (sentinel.kind) {
     case 'corrupt':
@@ -108,7 +118,7 @@ export function validateInstallation(input: ValidationInput): ValidationResult {
         // Nothing in DB, nothing in sentinel. If the host-id file already
         // exists, someone populated /data/ without going through setup —
         // orphaned data. Otherwise, genuinely fresh install.
-        if (currentHostId !== null) {
+        if (currentHostId !== null && !restoreIntent) {
           return {
             status: 'blocked',
             code: 'ORPHANED_DATA',

@@ -27,6 +27,7 @@ import {
   type ValidationResult,
 } from './installation-validator.js';
 import { sentinelAudit } from './sentinel-audit.js';
+import { restoreIntentExists } from '../services/restore-intent.service.js';
 
 /**
  * Preflight — runs migrations, gathers DB / sentinel / host-id state, calls
@@ -132,10 +133,12 @@ export async function runPreflight(): Promise<ValidationResult> {
   const sentinel = await readSentinelState();
 
   // Step 5: pure decision.
+  const restoreIntent = restoreIntentExists();
   const result = validateInstallation({
     dbInstallationId,
     currentHostId,
     sentinel,
+    restoreIntent,
   });
 
   // Step 6: side-effects based on the result.
@@ -151,7 +154,11 @@ export async function runPreflight(): Promise<ValidationResult> {
       // Don't create the host-id yet — the setup wizard will do that in
       // completeSetupSentinel so orphan detection can still catch a stale
       // host-id file if the wizard is never completed.
-      console.log('[preflight] fresh installation — setup wizard will run');
+      console.log(
+        restoreIntent
+          ? '[preflight] fresh installation (restore intent recorded) — setup wizard will run; choose Restore from backup'
+          : '[preflight] fresh installation — setup wizard will run',
+      );
       return result;
 
     case 'regenerate-sentinel': {

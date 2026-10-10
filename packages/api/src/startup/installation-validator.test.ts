@@ -202,3 +202,31 @@ describe('validateInstallation — 12 scenario matrix', () => {
     if (result.status === 'blocked') expect(result.code).toBe('ORPHANED_DATA');
   });
 });
+
+describe('validateInstallation — restore intent (prepare-restore flow)', () => {
+  // After DATABASE_RESET_DETECTED the diagnostic prepare-restore endpoint
+  // removes the sentinel + marker but KEEPS .host-id so the upcoming restore
+  // is recognised as same-host. Without the recorded intent that trio is
+  // ORPHANED_DATA; with it, the wizard must be allowed to run.
+  it('host-id present, no sentinel, empty DB, intent recorded → fresh-install', () => {
+    const result = run({ currentHostId: HOST_X, restoreIntent: true });
+    expect(result.status).toBe('fresh-install');
+  });
+
+  it('host-id present, no sentinel, empty DB, NO intent → ORPHANED_DATA (unchanged)', () => {
+    const result = run({ currentHostId: HOST_X });
+    expect(result.status).toBe('blocked');
+    if (result.status === 'blocked') expect(result.code).toBe('ORPHANED_DATA');
+  });
+
+  it('intent never overrides a surviving sentinel (DATABASE_RESET_DETECTED still blocks)', () => {
+    const result = run({ currentHostId: HOST_X, sentinel: fullSentinel(INSTALL_A, HOST_X), restoreIntent: true });
+    expect(result.status).toBe('blocked');
+    if (result.status === 'blocked') expect(result.code).toBe('DATABASE_RESET_DETECTED');
+  });
+
+  it('intent never overrides a populated database (regenerate path unchanged)', () => {
+    const result = run({ dbInstallationId: INSTALL_A, currentHostId: HOST_X, restoreIntent: true });
+    expect(result.status).toBe('regenerate-sentinel');
+  });
+});

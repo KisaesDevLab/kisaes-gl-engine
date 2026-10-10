@@ -189,6 +189,18 @@ authRouter.post('/tfa/verify', authLimiter, async (req, res) => {
 
   await tfaService.assertLoginTfaMethodAllowed(payload.userId, String(method ?? ''), payload.origin);
   const result = await tfaService.verifyCode(payload.userId, code, method);
+  if (!result.valid && result.secretUnreadable) {
+    res.status(409).json({
+      error: {
+        code: 'TFA_SECRET_UNREADABLE',
+        message:
+          'Your authenticator secret cannot be read on this server (it was encrypted under a different key, ' +
+          'typically after a restore onto a new server). Ask your administrator to run credential recovery with the ' +
+          'installation recovery key (Admin → Installation Security), or use a different sign-in method.',
+      },
+    });
+    return;
+  }
   if (!result.valid) {
     res.status(400).json({
       error: {

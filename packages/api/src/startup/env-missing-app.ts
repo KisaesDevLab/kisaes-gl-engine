@@ -5,6 +5,7 @@
 import express, { type Express } from 'express';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import {
   sentinelExists,
   readSentinelHeader,
@@ -28,8 +29,17 @@ import { writeAtomicSync } from '../utils/atomic-write.js';
  *   - GET  /api/diagnostic/env-status — returns sentinel header + whether
  *     /data/.env.recovery exists (tells the frontend which UI to render)
  *   - POST /api/diagnostic/env-recovery — takes a recovery key, decrypts
- *     /data/.env.recovery, writes a fresh /data/config/.env with the
- *     recovered values, responds "restart required"
+ *     /data/.env.recovery, writes /data/config/.env containing ONLY the
+ *     recovered secrets, responds "restart required". Nothing else is
+ *     written: docker-entrypoint.sh uses that file to fill in variables the
+ *     compose environment leaves blank, so hardcoded REDIS_URL / CORS /
+ *     PORT defaults here would otherwise shadow the operator's real
+ *     configuration on every later boot.
+ *     A v1 recovery file carries no PLAID_ENCRYPTION_KEY. If that variable
+ *     is also absent from the environment the api would boot straight back
+ *     into this page, so the handler reports it (409) and only mints a new
+ *     key when the operator explicitly accepts that existing encrypted
+ *     credentials become unreadable (`generateMissingKeys: true`).
  *   - static frontend from packages/web/dist if available
  *
  * Safety:
@@ -65,6 +75,35 @@ export interface EnvMissingContext {
   sentinelReadable: boolean;
 }
 
+/** Every variable bootstrap.ts requires before it will start the real app. */
+export const REQUIRED_ENV_VARS = ['DATABASE_URL', 'JWT_SECRET', 'ENCRYPTION_KEY', 'PLAID_ENCRYPTION_KEY'] as const;
+
+export interface RecoveredEnvValues {
+  databaseUrl: string;
+  jwtSecret: string;
+  encryptionKey: string;
+  plaidEncryptionKey?: string;
+}
+
+/**
+ * Body of the recovered /data/config/.env: secrets only. Exported for the
+ * headless scripts/recover-env.ts so both paths write the same file.
+ */
+export function renderRecoveredEnv(values: RecoveredEnvValues, source: string): string {
+  return `# Vibe MyBooks — secrets recovered from /data/.env.recovery (${source})
+# ${new Date().toISOString()}
+#
+# Only the secrets that cannot be reconstructed any other way are written
+# here. docker-entrypoint.sh uses this file to FILL IN variables the compose
+# environment leaves unset or empty; every other setting (ports, Redis, CORS,
+# SMTP, storage paths) keeps coming from docker-compose.yml / the install .env.
+
+DATABASE_URL=${values.databaseUrl}
+JWT_SECRET=${values.jwtSecret}
+ENCRYPTION_KEY=${values.encryptionKey}
+${values.plaidEncryptionKey ? `PLAID_ENCRYPTION_KEY=${values.plaidEncryptionKey}\n` : ''}`;
+}
+
 export function createEnvMissingApp(ctx: EnvMissingContext): Express {
   const app = express();
   app.use(express.json({ limit: '16kb' }));
@@ -96,8 +135,9 @@ export function createEnvMissingApp(ctx: EnvMissingContext): Express {
       return;
     }
 
-    const body = req.body as { recoveryKey?: string } | undefined;
-    const recoveryKey = body?.recoveryKey?.toString();
+    const body = req.body as { recoveryKey?: unknown; generateMissingKeys?: unknown } | undefined;
+    const recoveryKey = typeof body?.recoveryKey === 'string' ? body.recoveryKey.trim() : '';
+    const generateMissingKeys = body?.generateMissingKeys === true;
     if (!recoveryKey) {
       res.status(400).json({ error: { message: 'recoveryKey required' } });
       return;
@@ -121,33 +161,53 @@ export function createEnvMissingApp(ctx: EnvMissingContext): Express {
       return;
     }
 
-    // Write a fresh /data/config/.env with the recovered values. Phase B
-    // intentionally only writes the three recovered fields plus a header
-    // comment; SMTP / Plaid / AI keys must be re-entered via admin
-    // settings after the app restarts.
+    // Would the api still be missing a required variable after this file is
+    // loaded? A v1 recovery file has no PLAID_ENCRYPTION_KEY; if compose does
+    // not supply one either, writing the file just loops the operator back
+    // to this page. Say so, and only mint a replacement key on explicit
+    // consent — a new key cannot decrypt existing Plaid/SMS/TOTP ciphertext.
+    const values: RecoveredEnvValues = {
+      databaseUrl: contents.databaseUrl,
+      jwtSecret: contents.jwtSecret,
+      encryptionKey: contents.encryptionKey,
+      ...(contents.plaidEncryptionKey ? { plaidEncryptionKey: contents.plaidEncryptionKey } : {}),
+    };
+    const envHas = (k: string) => !!process.env[k] && process.env[k]!.trim() !== '';
+    const missingAfterRecovery = REQUIRED_ENV_VARS.filter((k) => {
+      if (k === 'PLAID_ENCRYPTION_KEY') return !values.plaidEncryptionKey && !envHas(k);
+      return false; // the other three are mandatory fields of every recovery file
+    });
+    const generatedKeys: string[] = [];
+    if (missingAfterRecovery.includes('PLAID_ENCRYPTION_KEY')) {
+      if (!generateMissingKeys) {
+        res.status(409).json({
+          error: {
+            code: 'MISSING_AFTER_RECOVERY',
+            message:
+              'The recovery file predates v2 and does not include PLAID_ENCRYPTION_KEY, and the environment does not ' +
+              'supply one. Add the original PLAID_ENCRYPTION_KEY to the install .env if you still have it. If it is lost, ' +
+              'you can generate a new one — the app will start, but credentials and authenticator secrets encrypted under ' +
+              'the old key (Plaid, SMTP, SMS, AI keys, TOTP) become unreadable and must be re-entered.',
+            missingAfterRecovery,
+          },
+        });
+        return;
+      }
+      values.plaidEncryptionKey = crypto.randomBytes(32).toString('hex');
+      generatedKeys.push('PLAID_ENCRYPTION_KEY');
+    }
+
     const configDir = process.env['CONFIG_DIR'] || '/data/config';
     if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
     const envPath = path.join(configDir, '.env');
-    const envBody = `# KIS Books Configuration — Recovered from /data/.env.recovery
-# ${new Date().toISOString()}
-# Phase B recovery: only the three secrets that cannot be reconstructed
-# from admin settings are written here. SMTP, Plaid, AI, and other
-# optional credentials must be re-entered after the container restarts.
-
-DATABASE_URL=${contents.databaseUrl}
-JWT_SECRET=${contents.jwtSecret}
-ENCRYPTION_KEY=${contents.encryptionKey}
-${contents.plaidEncryptionKey ? `PLAID_ENCRYPTION_KEY=${contents.plaidEncryptionKey}\n` : ''}
-# Sensible defaults — adjust after logging in:
-NODE_ENV=production
-PORT=3001
-REDIS_URL=redis://redis:6379
-CORS_ORIGIN=http://localhost:5173
-UPLOAD_DIR=/data/uploads
-BACKUP_DIR=/data/backups
-`;
+    const envBody = renderRecoveredEnv(values, 'env-missing recovery page');
 
     try {
+      if (fs.existsSync(envPath)) {
+        // Never destroy an existing file — it may hold values the operator
+        // wants back. Keep a timestamped copy beside it.
+        try { fs.copyFileSync(envPath, `${envPath}.pre-recovery-${Date.now()}`); } catch { /* best-effort */ }
+      }
       writeAtomicSync(envPath, envBody, 0o600);
     } catch (err) {
       res.status(500).json({
@@ -164,12 +224,16 @@ BACKUP_DIR=/data/backups
         event: 'recovery.key_used',
         source: 'env-missing-app',
         installationId: contents.installationId,
+        generatedKeys,
       })}`,
     );
 
     res.json({
       success: true,
-      message: 'Configuration recovered. Restart the API container to reload with the recovered values.',
+      message: generatedKeys.length
+        ? 'Configuration recovered with a NEW PLAID_ENCRYPTION_KEY. Restart the API container; re-enter provider credentials and re-enrol authenticator apps afterwards.'
+        : 'Configuration recovered. Restart the API container to reload with the recovered values.',
+      generatedKeys,
     });
   });
 

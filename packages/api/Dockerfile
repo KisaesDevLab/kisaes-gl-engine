@@ -63,6 +63,14 @@ COPY packages/shared/ ./packages/shared/
 COPY packages/api/ ./packages/api/
 COPY packages/worker/ ./packages/worker/
 
+# Operator CLI scripts (reset-sentinel, recover-env, verify-installation,
+# disable-2fa, reset-admin-password, …). They import from
+# ../packages/api/src/*, which this image ships, so
+# `docker compose exec api npx tsx scripts/<name>.ts` works as documented.
+# Without this COPY every recovery runbook command failed with "Cannot find
+# module" on the published image.
+COPY scripts/ ./scripts/
+
 # Build shared package
 RUN npm run build --workspace=@kis-books/shared
 

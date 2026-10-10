@@ -274,6 +274,22 @@ export async function deactivate(tenantId: string, id: string, userId?: string) 
   return updated;
 }
 
+/**
+ * Resolve a chart-of-accounts template the same way `seedFromTemplate` does
+ * and throw if it does not exist. First-run setup calls this BEFORE writing
+ * any tenant/user row so an unknown `businessType` can never leave a
+ * half-provisioned installation behind.
+ */
+export async function assertTemplateExists(templateName: string): Promise<void> {
+  const template =
+    (await coaTemplatesService.getAccountsForSeed(templateName)) ??
+    COA_TEMPLATES[templateName] ??
+    (templateName === 'default' ? COA_TEMPLATES['default'] : undefined);
+  if (!template) {
+    throw AppError.badRequest(`Unknown chart-of-accounts template: ${templateName}`);
+  }
+}
+
 export async function seedFromTemplate(
   tenantId: string,
   templateName: string = 'default',
