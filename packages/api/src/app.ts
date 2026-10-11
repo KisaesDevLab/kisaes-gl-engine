@@ -68,6 +68,7 @@ import { featureFlagsRouter, adminFeatureFlagsRouter } from './routes/feature-fl
 import { tbRouter } from './routes/tb.routes.js';
 import { taxEstimatorRouter } from './routes/tax-estimator.routes.js';
 import { taxParametersAdminRouter } from './routes/tax-parameters-admin.routes.js';
+import { taxStateRulesAdminRouter } from './routes/tax-state-rules-admin.routes.js';
 import { tbAdminRouter } from './routes/tb-admin.routes.js';
 import { practiceClassificationRouter } from './routes/practice-classification.routes.js';
 import { uncategorizedRouter } from './routes/uncategorized.routes.js';
@@ -570,6 +571,7 @@ app.use('/api/v1/tb', tbRouter);
 app.use('/api/v1/tax-estimator', taxEstimatorRouter);
 app.use('/api/v1/admin/tb', tbAdminRouter);
 app.use('/api/v1/admin/tax-parameters', taxParametersAdminRouter);
+app.use('/api/v1/admin/tax-state-rules', taxStateRulesAdminRouter);
 app.use('/api/v1/admin/feature-flags', adminFeatureFlagsRouter);
 app.use('/api/v1/practice/uncategorized', uncategorizedRouter);
 app.use('/api/v1/practice/classification', practiceClassificationRouter);

@@ -73,6 +73,8 @@ export const portalContactCompanies = pgTable('portal_contact_companies', {
   // Migration 0175 / AP_BILL_CAPTURE_V1 — may upload vendor bills into the
   // company's Bill Capture queue from the portal.
   billUploadAccess: boolean('bill_upload_access').notNull().default(false),
+  // Tax Estimator (TAX_ESTIMATOR_V1) — may view tax estimates for linked taxpayers.
+  taxEstimatesAccess: boolean('tax_estimates_access').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   pk: primaryKey({ columns: [table.contactId, table.companyId] }),

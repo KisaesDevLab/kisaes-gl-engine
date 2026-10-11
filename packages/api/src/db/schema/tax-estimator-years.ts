@@ -1,0 +1,128 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Small Business License 1.0.0.
+// Free for small businesses; see LICENSE for terms.
+
+// Tax Estimator Phase 5 tables — annual settings, scenarios, adjustments, state rows,
+// firm settings. SQL lives in migrations/parts/years.sql (assembled into 0201 by the
+// orchestrator). Prior-year tax / AGI are tax return information (D9): *_encrypted text.
+
+import {
+  pgTable, uuid, varchar, text, boolean, integer, smallint, jsonb, numeric, char, timestamp, index, unique, uniqueIndex,
+} from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { taxEstTaxpayers, taxEstPersons, taxEstLinks } from './tax-estimator-taxpayers.js';
+
+export const taxEstYears = pgTable('tax_est_years', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  taxpayerId: uuid('taxpayer_id').notNull().references(() => taxEstTaxpayers.id, { onDelete: 'cascade' }),
+  taxYear: integer('tax_year').notNull(),
+  priorYearTaxEncrypted: text('prior_year_tax_encrypted'),
+  priorYearAgiEncrypted: text('prior_year_agi_encrypted'),
+  priorYearTwelveMonths: boolean('prior_year_twelve_months').notNull().default(true),
+  priorYearFiled: boolean('prior_year_filed').notNull().default(true),
+  safeHarborRule: varchar('safe_harbor_rule', { length: 20 }),
+  rateMode: varchar('rate_mode', { length: 10 }).notNull().default('brackets'),
+  effectiveRateOverride: numeric('effective_rate_override', { precision: 7, scale: 6 }),
+  deductionMode: varchar('deduction_mode', { length: 10 }).notNull().default('auto'),
+  itemized: jsonb('itemized').$type<Record<string, number>>().notNull().default({}),
+  sch1a: jsonb('sch1a').$type<Record<string, Record<string, number>>>().notNull().default({}),
+  creditsNonrefundable: numeric('credits_nonrefundable', { precision: 19, scale: 4 }).notNull().default('0'),
+  creditsRefundable: numeric('credits_refundable', { precision: 19, scale: 4 }).notNull().default('0'),
+  hsaCoverage: jsonb('hsa_coverage').$type<Record<string, string>>().notNull().default({}),
+  withholding: jsonb('withholding').$type<{ federal?: number; states?: Record<string, number> }>().notNull().default({}),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique('uniq_tax_est_years_taxpayer_year').on(t.taxpayerId, t.taxYear),
+]);
+
+export const taxEstScenarios = pgTable('tax_est_scenarios', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  taxpayerId: uuid('taxpayer_id').notNull().references(() => taxEstTaxpayers.id, { onDelete: 'cascade' }),
+  taxYear: integer('tax_year').notNull(),
+  name: varchar('name', { length: 120 }).notNull(),
+  isBase: boolean('is_base').notNull().default(false),
+  sortOrder: integer('sort_order').notNull().default(0),
+  sourceScenarioId: uuid('source_scenario_id'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index('idx_tax_est_scenarios_taxpayer_year').on(t.taxpayerId, t.taxYear),
+  uniqueIndex('uniq_tax_est_scenarios_one_base').on(t.taxpayerId, t.taxYear).where(sql`${t.isBase}`),
+]);
+
+export const taxEstAdjustmentTypes = pgTable('tax_est_adjustment_types', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  firmId: uuid('firm_id'),
+  code: varchar('code', { length: 40 }),
+  name: varchar('name', { length: 120 }).notNull(),
+  kind: varchar('kind', { length: 10 }).notNull(),
+  affectsSe: boolean('affects_se').notNull().default(false),
+  affectsQbi: boolean('affects_qbi').notNull().default(false),
+  isCapitalGainLt: boolean('is_capital_gain_lt').notNull().default(false),
+  isCapitalGainSt: boolean('is_capital_gain_st').notNull().default(false),
+  isQualifiedDividend: boolean('is_qualified_dividend').notNull().default(false),
+  isReitDividend: boolean('is_reit_dividend').notNull().default(false),
+  isPtp: boolean('is_ptp').notNull().default(false),
+  is1231: boolean('is_1231').notNull().default(false),
+  isAboveTheLine: boolean('is_above_the_line').notNull().default(false),
+  nonRecurring: boolean('non_recurring').notNull().default(false),
+  defaultPct: numeric('default_pct', { precision: 7, scale: 4 }),
+  isActive: boolean('is_active').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index('idx_tax_est_adjustment_types_firm').on(t.firmId),
+]);
+
+export const taxEstAdjustments = pgTable('tax_est_adjustments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  scenarioId: uuid('scenario_id').notNull().references(() => taxEstScenarios.id, { onDelete: 'cascade' }),
+  adjustmentTypeId: uuid('adjustment_type_id').notNull().references(() => taxEstAdjustmentTypes.id, { onDelete: 'restrict' }),
+  personId: uuid('person_id').references(() => taxEstPersons.id, { onDelete: 'set null' }),
+  linkId: uuid('link_id').references(() => taxEstLinks.id, { onDelete: 'set null' }),
+  label: varchar('label', { length: 200 }).notNull().default(''),
+  amount: numeric('amount', { precision: 19, scale: 4 }),
+  pct: numeric('pct', { precision: 7, scale: 4 }),
+  cadence: varchar('cadence', { length: 10 }).notNull(),
+  startMonth: smallint('start_month').notNull().default(1),
+  endMonth: smallint('end_month').notNull().default(12),
+  glLinked: boolean('gl_linked').notNull().default(false),
+  tenantId: uuid('tenant_id'),
+  companyId: uuid('company_id'),
+  accountId: uuid('account_id'),
+  nonRecurring: boolean('non_recurring').notNull().default(false),
+  memo: text('memo'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index('idx_tax_est_adjustments_scenario').on(t.scenarioId),
+]);
+
+export const taxEstStateRows = pgTable('tax_est_state_rows', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  scenarioId: uuid('scenario_id').notNull().references(() => taxEstScenarios.id, { onDelete: 'cascade' }),
+  residency: varchar('residency', { length: 12 }).notNull(),
+  state: char('state', { length: 2 }).notNull(),
+  effectiveRate: numeric('effective_rate', { precision: 7, scale: 6 }).notNull(),
+  base: varchar('base', { length: 16 }).notNull().default('federal_agi'),
+  customBase: numeric('custom_base', { precision: 19, scale: 4 }),
+  sourcedIncome: numeric('sourced_income', { precision: 19, scale: 4 }),
+  sourcedManual: boolean('sourced_manual').notNull().default(false),
+  creditOverride: numeric('credit_override', { precision: 19, scale: 4 }),
+  memo: text('memo'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique('uniq_tax_est_state_rows_state').on(t.scenarioId, t.state),
+  uniqueIndex('uniq_tax_est_state_rows_one_resident').on(t.scenarioId).where(sql`${t.residency} = 'resident'`),
+]);
+
+export const taxEstFirmSettings = pgTable('tax_est_firm_settings', {
+  firmId: uuid('firm_id').primaryKey(),
+  safeHarborDefault: varchar('safe_harbor_default', { length: 20 }).notNull().default('lesser_of'),
+  disclaimerText: text('disclaimer_text'),
+  portalShows: varchar('portal_shows', { length: 10 }).notNull().default('live'),
+  updatedBy: uuid('updated_by'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});

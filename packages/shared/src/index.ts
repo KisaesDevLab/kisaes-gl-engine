@@ -84,6 +84,10 @@ export * from './schemas/firm-peers.js';
 export * from './schemas/report-letters.js';
 export * from './schemas/tb.js';
 export * from './schemas/tax-estimator.js';
+export * from './schemas/tax-estimator-taxpayers.js';
+export * from './schemas/tax-estimator-state-rules.js';
+export * from './schemas/tax-estimator-entities.js';
+export * from './schemas/tax-estimator-years.js';
 
 // Constants
 export * from './constants/coa-templates.js';

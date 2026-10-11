@@ -1,0 +1,127 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Small Business License 1.0.0.
+// Free for small businesses; see LICENSE for terms.
+
+// Tax Estimator taxpayers / persons / links request schemas (MODULE.md D1).
+// None of these accept a firm id, an allowed-tenant list or a role: the firm
+// scope is resolved server-side. `tenantId` on a link names the TARGET tenant
+// and is validated against the server-resolved allowed set.
+import { z } from 'zod';
+import { FILING_STATUSES, ACTIVITY_TYPES } from '../tax-estimator/types.js';
+
+const MIN_TAX_YEAR = 2000;
+const MAX_TAX_YEAR = 2100;
+const MAX_LIMIT = 500;
+const DEFAULT_LIMIT = 50;
+const MAX_NAME = 255;
+const MAX_PERSON_NAME = 120;
+const MAX_MEMO = 2000;
+const MIN_REASON_LEN = 3;
+const MONTHS = 12;
+const PCT_MAX = 100;
+
+export const SAFE_HARBOR_OVERRIDES = ['prior_year', 'lesser_of', 'current_year'] as const;
+export const PORTAL_SHOWS = ['live', 'snapshot'] as const;
+export const PERSON_ROLES = ['primary', 'spouse'] as const;
+export const PARTNER_SE_STATUSES = ['general', 'limited', 'llc_member_manager'] as const;
+export const TAXPAYER_LIST_SORT_KEYS = ['displayName', 'filingStatus', 'residentState', 'createdAt'] as const;
+export const TAXPAYER_STATUS_FILTERS = ['active', 'archived', 'all'] as const;
+
+const uuid = z.string().uuid();
+const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD');
+const stateCode = z.string().trim().length(2).regex(/^[A-Za-z]{2}$/).transform((s) => s.toUpperCase());
+const pct = z.coerce.number().min(0).max(PCT_MAX);
+const optionalReason = z.string().trim().max(MAX_MEMO);
+
+export const taxpayerIdParamsSchema = z.object({ id: uuid });
+export const personRoleParamsSchema = z.object({ id: uuid, role: z.enum(PERSON_ROLES) });
+export const linkIdParamsSchema = z.object({ id: uuid, linkId: uuid });
+export const contactIdParamsSchema = z.object({ id: uuid, contactId: uuid });
+
+export const createTaxpayerSchema = z.object({
+  displayName: z.string().trim().min(1).max(MAX_NAME),
+  filingStatus: z.enum(FILING_STATUSES).default('single'),
+  residentState: stateCode.nullable().optional(),
+  safeHarborOverride: z.enum(SAFE_HARBOR_OVERRIDES).nullable().optional(),
+  portalShows: z.enum(PORTAL_SHOWS).nullable().optional(),
+});
+export type CreateTaxpayerInput = z.infer<typeof createTaxpayerSchema>;
+
+export const updateTaxpayerSchema = z.object({
+  displayName: z.string().trim().min(1).max(MAX_NAME).optional(),
+  filingStatus: z.enum(FILING_STATUSES).optional(),
+  residentState: stateCode.nullable().optional(),
+  safeHarborOverride: z.enum(SAFE_HARBOR_OVERRIDES).nullable().optional(),
+  portalShows: z.enum(PORTAL_SHOWS).nullable().optional(),
+});
+export type UpdateTaxpayerInput = z.infer<typeof updateTaxpayerSchema>;
+
+export const listTaxpayersQuerySchema = z.object({
+  q: z.string().trim().max(MAX_NAME).optional(),
+  status: z.enum(TAXPAYER_STATUS_FILTERS).default('active'),
+  /** Comma separated filing statuses. */
+  filingStatus: z.string().optional().transform((s) => (s ? s.split(',').filter(Boolean) : undefined))
+    .pipe(z.array(z.enum(FILING_STATUSES)).optional()),
+  sortBy: z.enum(TAXPAYER_LIST_SORT_KEYS).default('displayName'),
+  sortDir: z.enum(['asc', 'desc']).default('asc'),
+  limit: z.coerce.number().int().min(1).max(MAX_LIMIT).default(DEFAULT_LIMIT),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+export type ListTaxpayersQuery = z.infer<typeof listTaxpayersQuerySchema>;
+
+/** Twelve booleans Jan..Dec; true = the month is SEHI-eligible (no employer plan available). */
+export const sehiMonthsSchema = z.array(z.boolean()).length(MONTHS);
+
+export const upsertPersonSchema = z.object({
+  firstName: z.string().trim().min(1).max(MAX_PERSON_NAME),
+  lastName: z.string().trim().min(1).max(MAX_PERSON_NAME),
+  dateOfBirth: isoDate.nullable().optional(),
+  isBlind: z.boolean().default(false),
+  sehiEligibleMonths: sehiMonthsSchema.optional(),
+});
+export type UpsertPersonInput = z.infer<typeof upsertPersonSchema>;
+
+export const linksQuerySchema = z.object({ taxYear: z.coerce.number().int().min(MIN_TAX_YEAR).max(MAX_TAX_YEAR) });
+
+const moneyInput = z.union([z.number(), z.string().trim().regex(/^-?\d+(\.\d{1,4})?$/)])
+  .transform((v) => String(v));
+
+export const upsertLinkSchema = z.object({
+  personRole: z.enum(PERSON_ROLES),
+  taxYear: z.number().int().min(MIN_TAX_YEAR).max(MAX_TAX_YEAR),
+  tenantId: uuid,
+  companyId: uuid,
+  profitPct: pct.nullable().optional(),
+  lossPct: pct.nullable().optional(),
+  capitalPct: pct.nullable().optional(),
+  partnerSeStatus: z.enum(PARTNER_SE_STATUSES).nullable().optional(),
+  partnerSeMemo: optionalReason.nullable().optional(),
+  isOfficer: z.boolean().default(false),
+  activityType: z.enum(ACTIVITY_TYPES).default('active'),
+  activeParticipation: z.boolean().default(false),
+  /** null/omitted = use the derived default (rental follows the entity setting). */
+  qbiEligible: z.boolean().nullable().optional(),
+  qbiOverrideReason: optionalReason.nullable().optional(),
+  allowedLossOverride: moneyInput.nullable().optional(),
+  allowedLossReason: optionalReason.nullable().optional(),
+});
+export type UpsertLinkInput = z.infer<typeof upsertLinkSchema>;
+export const MIN_OVERRIDE_REASON_LEN = MIN_REASON_LEN;
+
+export const companyOptionsQuerySchema = z.object({
+  q: z.string().trim().max(MAX_NAME).optional(),
+  limit: z.coerce.number().int().min(1).max(MAX_LIMIT).default(DEFAULT_LIMIT),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+export type CompanyOptionsQuery = z.infer<typeof companyOptionsQuerySchema>;
+
+export const linkContactSchema = z.object({
+  portalContactId: uuid,
+  /** When true, flips portal_contact_companies.tax_estimates_access for the taxpayer's linked companies in the contact's tenant. */
+  grantAccess: z.boolean().default(false),
+});
+export type LinkContactInput = z.infer<typeof linkContactSchema>;
+
+export const unlinkContactQuerySchema = z.object({
+  revokeAccess: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+});

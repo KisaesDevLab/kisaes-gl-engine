@@ -188,6 +188,15 @@ async function start() {
     console.error('Failed to sync tax parameter seeds:', err);
   }
 
+  // Tax Estimator Phase 2: re-sync the shipped state estimate-rule seeds (same contract).
+  try {
+    const { syncShippedStateRules } = await import('./services/tax-estimator/tax-state-rules.service.js');
+    const r = await syncShippedStateRules();
+    if (r.rows > 0) console.log(`Synced ${r.rows} state rule seed rows across ${r.groups} state-year set(s)`);
+  } catch (err) {
+    console.error('Failed to sync state rule seeds:', err);
+  }
+
   // Start server
   const server = app.listen(env.PORT, () => {
     console.log(`Vibe MyBooks API listening on port ${env.PORT}`);
