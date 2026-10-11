@@ -18,7 +18,7 @@ export const IA_RULES: StateRuleSeedRow[] = [
   {
     state: 'IA', year: 2025, key: 'required_threshold',
     value: 200,
-    citation: "2025 IA 2210 (45-007a/b), revenue.iowa.gov/media/4399/download lines 3 and 6 ('If less than $200, stop. You do not owe a penalty'); Iowa DOR 'Estimated Income Tax Payments' page, revenue.iowa.gov/taxes/tax-guidance/individual-income-tax/estimated-income-tax-payments ('estimate they will owe $200 ($1,000 for tax years beginning on or after January 1, 2026)'). Measured on tax after listed credits (line 3) and again after Iowa withholding (line 6).",
+    citation: "2025 IA 2210 (45-007a/b/c/d), revenue.iowa.gov/media/4399/download lines 3 and 6 ('If less than $200, stop. You do not owe a penalty'), measured on tax after refundable credits (line 3) and again after Iowa withholding (line 6); Iowa DOR 'Estimated Income Tax Payments' page, revenue.iowa.gov/taxes/tax-guidance/individual-income-tax/estimated-income-tax-payments ('estimate they will owe $200 ($1,000 for tax years beginning on or after January 1, 2026) or more'); Iowa Code 422.16(12)(a)(1) editor's note (2025 Acts ch 148 amendment to $1,000 applies to tax years beginning on or after January 1, 2026), legis.iowa.gov/docs/code/422.16.pdf.",
     status: 'verified',
   },
   {
@@ -42,19 +42,19 @@ export const IA_RULES: StateRuleSeedRow[] = [
   {
     state: 'IA', year: 2025, key: 'installments.due_dates',
     value: ["2025-04-30", "2025-06-30", "2025-09-30", "2026-02-02"],
-    citation: "2025 IA 2210 (45-007a/b), revenue.iowa.gov/media/4399/download page 2 'Due Dates of Installments' (April 30, 2025; June 30, 2025; Sept. 30, 2025; Jan. 31, 2026); Iowa DOR 'Estimated Income Tax Payments' page, revenue.iowa.gov/taxes/tax-guidance/individual-income-tax/estimated-income-tax-payments ('If a due date ends on a weekend or holiday as defined in Iowa Code section 421.9A, substitute the next regular business day'); Iowa Code 421.9A (due dates and holidays) subsection 2. Jan. 31, 2026 is a Saturday -> Monday Feb. 2, 2026.",
+    citation: "2025 IA 2210 (45-007a/b/c/d), revenue.iowa.gov/media/4399/download page 2 'Due Dates of Installments' (April 30, 2025; June 30, 2025; Sept. 30, 2025; Jan. 31, 2026) and instructions note ('If a due date ends on a weekend or holiday as defined in Iowa Code section 421.9A, substitute the next regular business day'); Iowa Code 422.16(12)(b)(1) (last day of 4th, 6th, 9th month and of the first month after the tax year); Iowa Code 421.9A(2). Jan. 31, 2026 is a Saturday -> Monday Feb. 2, 2026.",
     status: 'verified',
   },
   {
     state: 'IA', year: 2025, key: 'installments.pcts',
     value: [0.25, 0.25, 0.25, 0.25],
-    citation: "2025 IA 2210 (45-007a/b), revenue.iowa.gov/media/4399/download line 17 ('Divide the amount on line 8 by the number of installments required'); schedule has four installments",
+    citation: "2025 IA 2210 (45-007a/b/c/d), revenue.iowa.gov/media/4399/download line 17 ('Divide the amount on line 8 by the number of installments required') with four installments for requirements first met by April 1 (instructions table); Iowa Code 422.16(12)(b)(1) ('quarterly installments').",
     status: 'verified',
   },
   {
     state: 'IA', year: 2025, key: 'farmer.rule',
-    value: {"ratio": 0.6666666667, "current_pct": 0.667, "due_date": "2026-01-15", "file_by": "2026-03-01"},
-    citation: "2025 IA 2210F (45-008a), revenue.iowa.gov/media/4398/download (line 4 'Multiply line 3 by 66.7% (.667)'; exceptions: pay the installment by January 15, 2026, or file the return and pay in full by March 1, 2026, check box on IA 1040 line 35); Iowa DOR 'Estimated Income Tax Payments' page, revenue.iowa.gov/taxes/tax-guidance/individual-income-tax/estimated-income-tax-payments 'Farmers and Fishers' (two-thirds of annual income; pay by January 15 and file by April 30, or file and pay by March 1). file_by stored as stated (March 1, 2026 is a Sunday; Iowa Code 421.9A (due dates and holidays) would move it to Monday March 2).",
+    value: {"ratio": 0.6666666666, "current_pct": 0.667, "due_date": "2026-01-15", "file_by": "2026-03-02"},
+    citation: "2025 IA 2210F (45-008a/b), revenue.iowa.gov/media/4398/download (line 4 'Multiply line 3 by 66.7% (.667)'; instructions: gross income from farming or fishing at least two-thirds of gross annual income per Treas. Reg. 1.6073-1(b); avoid the penalty by paying in full by January 15, 2026 or by filing and paying in full by March 1, 2026; 'Note: If a due date ends on a weekend or holiday as defined in Iowa Code section 421.9A, substitute the next regular business day for the due date'); 2025 IA 2210 (45-007a/b/c/d), revenue.iowa.gov/media/4399/download instructions 'Farmers and Fishers' (same two exceptions) and the same roll note; Iowa Code 422.16(12)(a)(2) (IRC farmer/fisher exceptions apply). March 1, 2026 is a Sunday -> stored rolled to Monday March 2, 2026 (Iowa Code 421.9A(2)); Jan. 15, 2026 is a Thursday. Ratio stored just under 2/3 (federal/MO seed convention, 'at least two-thirds'). Iowa's form uses 66.7%, not 66 2/3%.",
     status: 'verified',
   },
   {
@@ -66,26 +66,26 @@ export const IA_RULES: StateRuleSeedRow[] = [
   {
     state: 'IA', year: 2025, key: 'penalty.rate',
     value: 0.1,
-    citation: "2025 IA 2210F (45-008a), revenue.iowa.gov/media/4398/download instructions ('10% per annum = 0.027397% per day (01/01/26 - 12/31/26)'); 2025 IA 2210 (45-007a/b), revenue.iowa.gov/media/4399/download lines 24a/24b (same daily factor applied to days in 2025 and to days in 2026 through April 30, 2026). Simple daily rate.",
+    citation: "2025 IA 2210 (45-007a/b/c/d), revenue.iowa.gov/media/4399/download instructions line 24 ('Line 24a: 10% per annum = 0.027397% per day (01/01/25 - 12/31/25); Line 24b: 10% per annum = 0.027397% per day (01/01/26 - 12/31/26)'), days counted through the payment date or April 30, 2026; Iowa Code 422.16(12)(d)(3) (IRC 6654 method at the rate in effect under 421.7); Iowa Code 421.7. Simple daily rate; same 10% for all days of a TY2025 underpayment.",
     status: 'verified',
   },
   {
     state: 'IA', year: 2025, key: 'credit_for_other_state',
     value: true,
-    citation: "Iowa Code 422.8(1)(a) (credit against Iowa tax for income tax paid to another state or foreign country on income derived outside Iowa, limited by a ratio formula), legis.iowa.gov/docs/code/422.8.pdf; 2025 IA 1040 expanded instructions 'Out-of-State Tax Credit' / IA 130 (revenue.iowa.gov/media/4435/download)",
+    citation: "Iowa Code 422.8(1)(a) (credit against Iowa tax for income tax paid to another state or foreign country by a resident on income derived outside Iowa, limited by the ratio formula), legis.iowa.gov/docs/code/422.8.pdf; 2025 IA 2210 (45-007a/b/c/d), revenue.iowa.gov/media/4399/download (IA 2210 line 3 tax after credits).",
     status: 'verified',
   },
   {
     state: 'IA', year: 2025, key: 'nonresident_method',
     value: "ratio",
-    citation: "Verified for 2026 on the 2026 IA 1040ES instructions (45-009a/b, 08/29/2025), revenue.iowa.gov/media/2725/download traditional worksheet lines 9-11 ('Percentage of Iowa income vs. total income ... Estimated Iowa tax. Multiply line 8 by line 10'). Iowa Code 422.8(2)(a) allocates nonresident net income to Iowa. The 2025 IA 1040ES instructions were not located (only the 2024 version was indexed), so the 2025 application is carried back from 2026.",
-    status: 'unverified',
+    citation: "2025 IA 126 Iowa Nonresident and Part-Year Resident Credit Schedule, revenue.iowa.gov/media/4385/download lines 29-34 (Iowa income percentage = Iowa-source income / all-source income; credit = tax after credits x (100% - Iowa percentage)), i.e. resident-basis tax times the Iowa-source ratio; Iowa Code 422.8(2)(a) (nonresident net income allocated to Iowa); 2026 IA 1040ES instructions (45-009a/b, 08/29/2025), revenue.iowa.gov/media/2725/download traditional worksheet lines 9-11 (same ratio for estimates).",
+    status: 'verified',
   },
   {
     state: 'IA', year: 2025, key: 'holidays',
     value: ["2025-01-01", "2025-01-20", "2025-02-12", "2025-02-17", "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01", "2025-10-13", "2025-11-11", "2025-11-27", "2025-11-28", "2025-12-25", "2026-01-01", "2026-01-19", "2026-02-12", "2026-02-16", "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07", "2026-10-12", "2026-11-11", "2026-11-26", "2026-11-27", "2026-12-25"],
-    citation: "Iowa Code 421.9A(1) defines 'holiday' as a legal public holiday (Iowa Code 1C.1: Jan 1, MLK, Feb 12, Washington's Birthday, Memorial Day, Jul 4, Labor Day, Nov 11, Thanksgiving, Dec 25), a state paid holiday (1C.2: adds Friday after Thanksgiving; Saturday holidays taken the preceding Friday, Sunday the following Monday), a federal holiday observed by USPS, or a Federal Reserve banking holiday (adds Juneteenth, Columbus Day). Statute text read at legis.iowa.gov/docs/code/1C.1.pdf, 1C.2.pdf, 421.9A.pdf. UNVERIFIED because the federal-observance dates were computed from federal rules, not read from a USPS/Federal Reserve list in this task. Calendar years 2025-2026.",
-    status: 'unverified',
+    citation: "Iowa Code 421.9A(1) (Iowa Code 2026, read at legis.iowa.gov/docs/code/421.9A.pdf): 'holiday' = (a) legal public holiday under 1C.1 (Jan 1; 3rd Mon Jan; Feb 12; 3rd Mon Feb; last Mon May; Jul 4; 1st Mon Sep; Nov 11; 4th Thu Nov; Dec 25 - legis.iowa.gov/docs/code/1C.1.pdf, no weekend shift), (b) paid holiday under 1C.2(1) (adds Friday after Thanksgiving - legis.iowa.gov/docs/code/1C.2.pdf) and executive-council days under 1C.2(2)(b), (c) a federal holiday observed by USPS, (d) a Federal Reserve banking holiday, (e) department closure days under 4.1(34). Federal observed dates read from the OPM federal holiday schedules (opm.gov/policy-data-oversight/pay-leave/federal-holidays, 5 U.S.C. 6103: Juneteenth, Columbus Day, Saturday holidays observed the preceding Friday, Sunday holidays the following Monday) and the Federal Reserve Board holiday schedule (federalreserve.gov/aboutthefed/k8.htm). The USPS holiday page (about.usps.com/newsroom/events/holidays.htm) returned 404; USPS observance of the 5 U.S.C. 6103 days is assumed from the OPM schedule. Weekend-falling statutory dates (e.g. Jul 4 on a Saturday) are omitted because weekends roll anyway. Ad hoc executive-council (1C.2(2)(b)) or 4.1(34) closure days are not predictable and are not listed. None of the TY installment or farmer dates is affected by a holiday (only by weekends). Calendar years 2025-2026.",
+    status: 'verified',
   },
   // ------------------------------------------------------------------ 2026
   {
@@ -97,14 +97,14 @@ export const IA_RULES: StateRuleSeedRow[] = [
   {
     state: 'IA', year: 2026, key: 'required_threshold',
     value: 1000,
-    citation: "2026 IA 1040ES instructions (45-009a/b, 08/29/2025), revenue.iowa.gov/media/2725/download 'Who needs to file and pay estimates' ('tax liability of $1,000 or more from income not subject to withholding') and worksheet line 15; Iowa DOR 'Estimated Income Tax Payments' page, revenue.iowa.gov/taxes/tax-guidance/individual-income-tax/estimated-income-tax-payments; Iowa Tax Year 2025 form changes page (threshold raised from $200 to $1,000 starting tax year 2026)",
+    citation: "Iowa Code 422.16(12)(a)(1) (Iowa Code 2026, legis.iowa.gov/docs/code/422.16.pdf: estimates required if Iowa income tax liability 'can reasonably be expected to amount to one thousand dollars or more'; 2025 Acts ch 148 amendment applies to tax years beginning on or after January 1, 2026); 2026 IA 1040ES instructions (45-009a/b, 08/29/2025), revenue.iowa.gov/media/2725/download 'Who needs to file and pay estimates' ($1,000 or more from income not subject to withholding) and worksheet line 15 (estimated tax after all credits and withholding; 'not required if line 15 is less than $1,000'); Iowa DOR 'Estimated Income Tax Payments' page.",
     status: 'verified',
   },
   {
     state: 'IA', year: 2026, key: 'safe_harbor.current_pct',
     value: 0.9,
-    citation: "2026 IA 2210 not yet published; 90% of current-year tax per 2025 IA 2210 (45-007a/b), revenue.iowa.gov/media/4399/download line 4 and Iowa DOR 'Estimated Income Tax Payments' page, revenue.iowa.gov/taxes/tax-guidance/individual-income-tax/estimated-income-tax-payments 'Avoiding Penalty' (current-year payments at least 90% of tax on annualized income). The 2026 IA 1040ES instructions (45-009a/b, 08/29/2025), revenue.iowa.gov/media/2725/download itself lists only the prior-year methods and the traditional worksheet.",
-    status: 'unverified',
+    citation: "Iowa Code 422.16(12)(d)(3) (Iowa Code 2026, legis.iowa.gov/docs/code/422.16.pdf: the IRC 6654 method applies and 'the exceptions in the Internal Revenue Code also apply', i.e. 90% of current-year tax under IRC 6654(d)(1)(B)(i)); Iowa DOR 'Estimated Income Tax Payments' page, revenue.iowa.gov/taxes/tax-guidance/individual-income-tax/estimated-income-tax-payments 'Avoiding Penalty' (at least 90% of the tax on the current year's annualized taxable income). The 2026 IA 2210 is not yet published.",
+    status: 'verified',
   },
   {
     state: 'IA', year: 2026, key: 'safe_harbor.prior_pct',
@@ -132,9 +132,9 @@ export const IA_RULES: StateRuleSeedRow[] = [
   },
   {
     state: 'IA', year: 2026, key: 'farmer.rule',
-    value: {"ratio": 0.6666666667, "current_pct": 0.667, "due_date": "2027-01-15", "file_by": "2027-03-01"},
-    citation: "2026 IA 1040ES instructions (45-009a/b, 08/29/2025), revenue.iowa.gov/media/2725/download 'Farmers and Fishers' (two-thirds or more of estimated gross income from farming or commercial fishing: pay in one payment by January 15, 2027 and file by April 30, 2027, or file and pay in full by March 1, 2027) verified; current_pct 0.667 is carried from 2025 IA 2210F (45-008a), revenue.iowa.gov/media/4398/download line 4 because the 2026 IA 2210F is not yet published.",
-    status: 'unverified',
+    value: {"ratio": 0.6666666666, "current_pct": 0.667, "due_date": "2027-01-15", "file_by": "2027-03-01"},
+    citation: "2026 IA 1040ES instructions (45-009a/b, 08/29/2025), revenue.iowa.gov/media/2725/download 'Farmers and Fishers' (two-thirds or more of estimated gross income from farming or commercial fishing: pay in one payment on or before January 15, 2027 and file by April 30, 2027, or file and pay in full on or before March 1, 2027); Iowa Code 422.16(12)(a)(2) (IRC farmer/fisher exceptions apply, IRC 6654(i) = 66 2/3%). current_pct 0.667 follows Iowa's own form convention (2025 IA 2210F line 4 'Multiply line 3 by 66.7% (.667)', revenue.iowa.gov/media/4398/download); the 2026 IA 2210F is not yet published. Jan. 15, 2027 (Fri) and Mar. 1, 2027 (Mon) need no roll. Ratio stored just under 2/3 (seed convention).",
+    status: 'verified',
   },
   {
     state: 'IA', year: 2026, key: 'penalty.rate_source',
@@ -145,7 +145,7 @@ export const IA_RULES: StateRuleSeedRow[] = [
   {
     state: 'IA', year: 2026, key: 'penalty.rate',
     value: 0.1,
-    citation: "2025 IA 2210F (45-008a), revenue.iowa.gov/media/4398/download ('10% per annum = 0.027397% per day (01/01/26 - 12/31/26)') covers calendar 2026 days only; the rate for 2027 days (TY2026 underpayments run to April 30, 2027) is not yet published, and the 2026 IA 2210 is not out.",
+    citation: "Calendar-2026 days: 10% per annum (Iowa DOR press release 2025-10-21 'IDR announces 2026 individual income tax and interest rates', revenue.iowa.gov/press-release/2025-10-21/idr-announces-2026-individual-income-tax-and-interest-rates: 10.0% annually, 0.027397% daily; 2025 IA 2210F, revenue.iowa.gov/media/4398/download '10% per annum ... (01/01/26 - 12/31/26)'). UNVERIFIED for the Jan 1 - Apr 30, 2027 days of a TY2026 underpayment: the 2027 rate is not yet announced (Iowa Code 421.7(6) advisory notice due November). PROJECTION: under Iowa Code 421.7(2)-(3) (legis.iowa.gov/docs/code/421.7.pdf) the 2027 rate = average monthly prime Oct 2025-Sep 2026 rounded to the nearest 1% plus 2 points, kept at 10% unless it moves by at least 1 point; monthly prime (FRED MPRIME, secondary) averages about 6.83% -> 7% + 2 = 9%, a full point lower, so 2027 days would likely accrue at 9%, not 10%. Single-rate key cannot express the split.",
     status: 'unverified',
   },
   {
@@ -162,8 +162,8 @@ export const IA_RULES: StateRuleSeedRow[] = [
   },
   {
     state: 'IA', year: 2026, key: 'holidays',
-    value: ["2026-01-01", "2026-01-19", "2026-02-12", "2026-02-16", "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07", "2026-10-12", "2026-11-11", "2026-11-26", "2026-11-27", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-12", "2027-02-15", "2027-05-31", "2027-06-18", "2027-07-05", "2027-09-06", "2027-10-11", "2027-11-11", "2027-11-25", "2027-11-26", "2027-12-24"],
-    citation: "Iowa Code 421.9A(1) defines 'holiday' as a legal public holiday (Iowa Code 1C.1: Jan 1, MLK, Feb 12, Washington's Birthday, Memorial Day, Jul 4, Labor Day, Nov 11, Thanksgiving, Dec 25), a state paid holiday (1C.2: adds Friday after Thanksgiving; Saturday holidays taken the preceding Friday, Sunday the following Monday), a federal holiday observed by USPS, or a Federal Reserve banking holiday (adds Juneteenth, Columbus Day). Statute text read at legis.iowa.gov/docs/code/1C.1.pdf, 1C.2.pdf, 421.9A.pdf. UNVERIFIED because the federal-observance dates were computed from federal rules, not read from a USPS/Federal Reserve list in this task. Calendar years 2026-2027.",
-    status: 'unverified',
+    value: ["2026-01-01", "2026-01-19", "2026-02-12", "2026-02-16", "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07", "2026-10-12", "2026-11-11", "2026-11-26", "2026-11-27", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-12", "2027-02-15", "2027-05-31", "2027-06-18", "2027-07-05", "2027-09-06", "2027-10-11", "2027-11-11", "2027-11-25", "2027-11-26", "2027-12-24", "2027-12-31"],
+    citation: "Iowa Code 421.9A(1) (Iowa Code 2026, read at legis.iowa.gov/docs/code/421.9A.pdf): 'holiday' = (a) legal public holiday under 1C.1 (Jan 1; 3rd Mon Jan; Feb 12; 3rd Mon Feb; last Mon May; Jul 4; 1st Mon Sep; Nov 11; 4th Thu Nov; Dec 25 - legis.iowa.gov/docs/code/1C.1.pdf, no weekend shift), (b) paid holiday under 1C.2(1) (adds Friday after Thanksgiving - legis.iowa.gov/docs/code/1C.2.pdf) and executive-council days under 1C.2(2)(b), (c) a federal holiday observed by USPS, (d) a Federal Reserve banking holiday, (e) department closure days under 4.1(34). Federal observed dates read from the OPM federal holiday schedules (opm.gov/policy-data-oversight/pay-leave/federal-holidays, 5 U.S.C. 6103: Juneteenth, Columbus Day, Saturday holidays observed the preceding Friday, Sunday holidays the following Monday) and the Federal Reserve Board holiday schedule (federalreserve.gov/aboutthefed/k8.htm). The USPS holiday page (about.usps.com/newsroom/events/holidays.htm) returned 404; USPS observance of the 5 U.S.C. 6103 days is assumed from the OPM schedule. Weekend-falling statutory dates (e.g. Jul 4 on a Saturday) are omitted because weekends roll anyway. Ad hoc executive-council (1C.2(2)(b)) or 4.1(34) closure days are not predictable and are not listed. None of the TY installment or farmer dates is affected by a holiday (only by weekends). Calendar years 2026-2027; 2027-12-31 is the OPM/Federal Reserve Board observed day for New Year's Day 2028 (a Saturday).",
+    status: 'verified',
   },
 ];

@@ -52,20 +52,20 @@ export const KY_RULES: StateRuleSeedRow[] = [
   },
   {
     state: 'KY', year: 2025, key: 'farmer.rule',
-    value: {"ratio": 0.6666666667, "current_pct": 0.6666666667, "due_date": "2026-01-15", "file_by": "2026-03-01"},
-    citation: "Kentucky 2025 Instructions for Filing Estimated Tax Vouchers (42A740-S4 (9-24)), revenue.ky.gov/Forms/740-ES%20Instructions%20(2024).pdf Special Rules ('If at least two-thirds of your gross income for 2024 or 2025 is from farming, substitute 66 2/3% for 90%'; 'Pay all of your estimated tax by January 15, 2026' or 'File your 2025 Form 740 or Form 740-NP by March 1, 2026, and pay the total tax due'). file_by stored as stated (March 1, 2026 is a Sunday).",
+    value: {"ratio": 0.6666666666, "current_pct": 0.6666666667, "due_date": "2026-01-15", "file_by": "2026-03-02"},
+    citation: "Kentucky 2025 Instructions for Filing Estimated Tax Vouchers (42A740-S4 (9-24)), revenue.ky.gov/Forms/740-ES%20Instructions%20(2024).pdf Special Rules ('If at least two-thirds of your gross income for 2024 or 2025 is from farming, substitute 66 2/3% for 90%'; 'Pay all of your estimated tax by January 15, 2026' or 'File your 2025 Form 740 or Form 740-NP by March 1, 2026, and pay the total tax due'). file_by ROLLED: March 1, 2026 is a Sunday and the 2025 Form 2210-K instructions (in Kentucky 2025 Form 740 packet instructions, revenue.ky.gov/Forms/740%20Packet%20Instructions.pdf, Instructions for Form 2210-K, Part I Exceptions) state the farmer exception as 'paid the entire tax due by March 2, 2026'. Farmers are also exempt from the 110% high-AGI rule (not expressible).",
     status: 'verified',
   },
   {
     state: 'KY', year: 2025, key: 'penalty.rate_source',
     value: "state",
-    citation: "Kentucky 2025 Instructions for Filing Estimated Tax Vouchers (42A740-S4 (9-24)), revenue.ky.gov/Forms/740-ES%20Instructions%20(2024).pdf 'Penalty for untimely estimated payment' ('calculated using the rate provided by KRS 131.183'); Kentucky 2025 Form 740-NP packet instructions, revenue.ky.gov/Forms/740-NP%20Packet%20Instructions%20(2025).pdf Form 2210-K instructions line 21 ('The annual percentage rate is established by the Department of Revenue for each calendar year')",
+    citation: "Kentucky 2025 Instructions for Filing Estimated Tax Vouchers (42A740-S4 (9-24)), revenue.ky.gov/Forms/740-ES%20Instructions%20(2024).pdf 'Penalty for untimely estimated payment' ('calculated using the rate provided by KRS 131.183'); Kentucky 2025 Form 740 packet instructions, revenue.ky.gov/Forms/740%20Packet%20Instructions.pdf Instructions for Form 2210-K: penalty is figured like interest on each underpayment for the number of days unpaid (Figuring the Penalty; Lines 19-21), at the annual rate established by the Department of Revenue for each calendar year. It is NOT a flat 10% addition.",
     status: 'verified',
   },
   {
     state: 'KY', year: 2025, key: 'penalty.rate',
     value: 0.1,
-    citation: "Kentucky 2025 Form 740-NP packet instructions, revenue.ky.gov/Forms/740-NP%20Packet%20Instructions%20(2025).pdf Form 2210-K instructions line 21 ('The percentage rate for calendar years 2025 is 10 percent'); Kentucky DOR 'Tax Interest Rate Update for 01-01-25' (base 8%, unpaid-tax rate 10% under KRS 131.183(2)(a)2), revenue.ky.gov/News/Pages/Tax-Interest-Rate-Update-for-01-01-25.aspx. CAUTION: single-rate key; the part of a TY2025 underpayment running into calendar 2026 accrues at the 2026 rate (9%, Kentucky DOR 'Tax Interest Rate Update for 01-01-26' (base 7%, unpaid-tax rate 9%), revenue.ky.gov/News/Pages/Tax-Interest-Rate-Update-for-01-01-26.aspx).",
+    citation: "Kentucky 2025 Form 740 packet instructions, revenue.ky.gov/Forms/740%20Packet%20Instructions.pdf Instructions for Form 2210-K, Line 21 ('The annual percentage rate is established by the Department of Revenue for each calendar year. The percentage rate for calendar year 2025 is 10 percent and 2026 is 9 percent. The penalty calculation for the required third installment payment may be calculated using two different rates'); same text in revenue.ky.gov/Forms/740-NP%20Packet%20Instructions%20(2025).pdf (which prints '2026 is ? percent'); Kentucky DOR 'Tax Interest Rate Update for 01-01-25' (KRS 131.183 tax interest rate 10%). CAUTION: single-rate key; days of a TY2025 underpayment falling in calendar 2026 (the Sept. 15 and Jan. 15 installments) accrue at 9%.",
     status: 'verified',
   },
   {
@@ -82,8 +82,8 @@ export const KY_RULES: StateRuleSeedRow[] = [
   },
   {
     state: 'KY', year: 2025, key: 'holidays',
-    value: ["2025-01-20", "2025-04-18", "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01", "2025-11-11", "2025-11-27", "2025-11-28", "2025-12-25", "2025-12-26", "2026-01-01", "2026-01-02", "2026-01-19", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07", "2026-11-11", "2026-11-26", "2026-11-27", "2026-12-24", "2026-12-25", "2026-12-31"],
-    citation: "Kentucky Personnel Cabinet holiday lists: Personnel Memo 24-20 '2025 Holidays for State Personnel' (extranet.personnel.ky.gov/Personnel%20Memos/2024-20.pdf; cites KRS 18A.190, KRS 2.110, KRS 2.190, EO 2024-155) and the 2026 State Holidays list at extranet.personnel.ky.gov/Pages/Leave.aspx. Used as the proxy for 'holiday' (the 740-ES instructions state no weekend/holiday rule). Good Friday is a half day and is listed. Calendar years 2025-2026.",
+    value: ["2025-01-01", "2025-01-20", "2025-04-18", "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01", "2025-11-11", "2025-11-27", "2025-11-28", "2025-12-25", "2025-12-26", "2026-01-01", "2026-01-02", "2026-01-19", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07", "2026-11-11", "2026-11-26", "2026-11-27", "2026-12-24", "2026-12-25", "2026-12-31"],
+    citation: "Kentucky Personnel Cabinet holiday lists (state office closures): Personnel Memo 24-20 '2025 Holidays for State Personnel' (extranet.personnel.ky.gov/Personnel%20Memos/2024-20.pdf; cites KRS 18A.190, KRS 2.110, KRS 2.190, EO 2024-155; Jan 20, 2025 through Jan 2, 2026) and the '2026 State Holidays' list at extranet.personnel.ky.gov/Pages/Leave.aspx. Jan 1, 2025 (New Year's Day) added from KRS 2.110(1) (apps.legislature.ky.gov/law/statutes/statute.aspx?id=46); it falls before the 2025 memo's range. Used as the proxy for 'holiday' (the 740-ES instructions state no weekend/holiday rule; the 2025 instructions themselves print the rolled June 16 date). KRS 2.110(1) also lists days on which offices 'may' close but do not (Jan 19 Robert E. Lee Day, Jan 30, Feb 12, 3rd Mon Feb, June 3, 2nd Mon Oct); these are not included. Good Friday is a half day and is listed. Calendar years 2025-2026.",
     status: 'verified',
   },
   // ------------------------------------------------------------------ 2026
@@ -131,7 +131,7 @@ export const KY_RULES: StateRuleSeedRow[] = [
   },
   {
     state: 'KY', year: 2026, key: 'farmer.rule',
-    value: {"ratio": 0.6666666667, "current_pct": 0.6666666667, "due_date": "2027-01-15", "file_by": "2027-03-01"},
+    value: {"ratio": 0.6666666666, "current_pct": 0.6666666667, "due_date": "2027-01-15", "file_by": "2027-03-01"},
     citation: "Kentucky 2026 Instructions for Filing Estimated Tax Vouchers (42A740-S4 (9-25)), revenue.ky.gov/Forms/740-ES%20Instructions%20(2025).pdf Special Rules ('substitute 66 2/3% for 90%'; 'Pay all of your estimated tax by January 15, 2027' or 'File your 2026 Form 740 or Form 740-NP by March 1, 2027, and pay the total tax due')",
     status: 'verified',
   },
@@ -144,20 +144,20 @@ export const KY_RULES: StateRuleSeedRow[] = [
   {
     state: 'KY', year: 2026, key: 'penalty.rate',
     value: 0.09,
-    citation: "Kentucky DOR 'Tax Interest Rate Update for 01-01-26' (base 7%, unpaid-tax rate 9%), revenue.ky.gov/News/Pages/Tax-Interest-Rate-Update-for-01-01-26.aspx gives 9% for calendar 2026. The rate for calendar 2027 (days of a TY2026 underpayment after Dec. 31, 2026) is set by the Commissioner under KRS 131.183 and not yet published; the 2026 Form 2210-K is not yet published.",
-    status: 'unverified',
+    citation: "Kentucky 2025 Form 740 packet instructions, revenue.ky.gov/Forms/740%20Packet%20Instructions.pdf Instructions for Form 2210-K, Line 21 ('The percentage rate for calendar year 2025 is 10 percent and 2026 is 9 percent'); Kentucky DOR 'Tax Interest Rate Update for 01-01-26' (tax interest rate 9% under KRS 131.183), revenue.ky.gov/News/Pages/Tax-Interest-Rate-Update-for-01-01-26.aspx; 2026 740-ES instructions 'Penalty for untimely estimated payment' (rate provided by KRS 131.183). CAUTION: single-rate key; days of a TY2026 underpayment falling in calendar 2027 (Jan. 15, 2027 installment onward) accrue at the 2027 rate, which the Department has not yet published.",
+    status: 'verified',
   },
   {
     state: 'KY', year: 2026, key: 'credit_for_other_state',
     value: true,
-    citation: "Verified for 2025 on the Kentucky 2025 Form 740 packet instructions, revenue.ky.gov/Forms/740%20Packet%20Instructions.pdf (Line 6; KRS 141.070); 2026 packet not yet published, carried forward",
-    status: 'unverified',
+    citation: "KRS 141.070(1) (apps.legislature.ky.gov/law/statutes/statute.aspx?id=53502; effective March 31, 2023, no later amendment): a Kentucky resident liable for income tax to another state on income from sources outside Kentucky gets a credit for the tax paid, limited so Kentucky tax is not reduced below the tax computed with the other-state income ignored. Same rule on the Kentucky 2025 Form 740 packet instructions Line 6 (revenue.ky.gov/Forms/740%20Packet%20Instructions.pdf); 2026 packet not yet published. Note KRS 141.070(2): residents of reciprocal states are exempt from Kentucky tax on wages (not expressible).",
+    status: 'verified',
   },
   {
     state: 'KY', year: 2026, key: 'nonresident_method',
     value: "sourced_flat",
-    citation: "Verified for 2025 on Form 740-NP line 14 (four percent x Kentucky taxable income); 2026 Form 740-NP not yet published (2026 rate 3.5% per the 2026 estimated-tax worksheet), carried forward",
-    status: 'unverified',
+    citation: "KRS 141.020 (apps.legislature.ky.gov/law/statutes/statute.aspx?id=56339; effective June 27, 2025): subsection (4) a nonresident 'shall be taxable only upon the amount of income received ... from labor performed, business done, or from other activities in this state' (remainder nontaxable); subsection (2)(f) flat 3.5% of net income for taxable years beginning on or after January 1, 2026; subsection (3)(b) credits prorated by Kentucky AGI / federal AGI. Same mechanics on the 2025 Form 740-NP (lines 7-14: Kentucky AGI less ratio-prorated deductions x 4%); 2026 Form 740-NP not yet published.",
+    status: 'verified',
   },
   {
     state: 'KY', year: 2026, key: 'holidays',

@@ -31,7 +31,7 @@ export const CA_RULES: StateRuleSeedRow[] = [
   },
   {
     state: 'CA', year: 2025, key: 'safe_harbor.high_agi_rule', value: { threshold: 150000, pct: 1.1 },
-    citation: '2025 Instructions for Form 540-ES, Section C "Limit on the Use of Prior Year\'s Tax" and Worksheet lines 19c-19f (prior-year AGI over $150,000, $75,000 if MFS: lesser of 90% current or 110% prior; farmers/fishermen exempt; AGI of $1,000,000 or more ($500,000 MFS) must use current-year tax only). The $1M current-year-only rule and the MFS threshold are not expressible.',
+    citation: '2025 Instructions for Form 540-ES, Section C "Limit on the Use of Prior Year\'s Tax" and Worksheet lines 19c-19f (prior-year AGI over $150,000, $75,000 if MFS: lesser of 90% current or 110% prior; farmers/fishermen exempt; AGI of $1,000,000 or more ($500,000 MFS) must use current-year tax only). Also form FTB 5805 (2025) Part II lines 5-6. NOT EXPRESSIBLE: (a) the $1,000,000 ($500,000 MFS) rule is tested on CURRENT-year California AGI and removes the prior-year safe harbor entirely (required payment = 90% of current-year tax), not a higher prior pct; (b) the MFS $75,000 threshold. Underlying statute (R&TC 19136.3) not read: leginfo returned 403.',
     status: 'verified',
   },
   {
@@ -56,7 +56,7 @@ export const CA_RULES: StateRuleSeedRow[] = [
   },
   {
     state: 'CA', year: 2025, key: 'penalty.rate', value: 0.07,
-    citation: 'FTB interest and estimate penalty rates page: 8% for 01/01/2025-06/30/2025, 7% for 07/01/2025-06/30/2026; form FTB 5805 (2025) daily factor .00019 (about 7%). CAUTION: single-rate key; underpayment days in 1H2025 accrue at 8%.',
+    citation: 'FTB interest and estimate penalty rates page: 8% for 01/01/2025-06/30/2025, 7% for 07/01/2025-06/30/2026; form FTB 5805 (2025) daily factor .00019 (about 7%). CAUTION: single-rate key; underpayment days in 1H2025 (first installment, 04/15-06/30/2025) accrue at 8%; FTB 5805 short method embeds the 7% rate.',
     status: 'verified',
   },
   {
@@ -71,7 +71,7 @@ export const CA_RULES: StateRuleSeedRow[] = [
   },
   {
     state: 'CA', year: 2025, key: 'holidays', value: ['2025-01-01', '2025-01-20', '2025-02-17', '2025-03-31', '2025-05-26', '2025-07-04', '2025-09-01', '2025-11-11', '2025-11-27', '2025-11-28', '2025-12-25', '2026-01-01', '2026-01-19', '2026-02-16', '2026-03-31', '2026-05-25', '2026-07-04', '2026-09-07', '2026-11-11', '2026-11-26', '2026-11-27', '2026-12-25'],
-    citation: 'California Secretary of State "State Holidays" page (sos.ca.gov/state-holidays), 2025 and 2026 lists read as printed (including Day after Thanksgiving, Cesar Chavez Day/Farmworkers Day on March 31). Calendar years 2025-2026.',
+    citation: 'California Secretary of State "State Holidays" page (sos.ca.gov/state-holidays), 2025 and 2026 lists read as printed (including Day after Thanksgiving, Cesar Chavez Day/Farmworkers Day on March 31; no Juneteenth, Lincoln Day, Columbus Day or Native American Day), consistent with the CalHR state-employee holiday rule list. Gov. Code 6700 (leginfo 403) not read; any extra 6700 holidays cannot fall on an estimated-tax due date in 2025-2026. Calendar years 2025-2026.',
     status: 'verified',
   },
   // ------------------------------------------------------------------ 2026
@@ -97,7 +97,7 @@ export const CA_RULES: StateRuleSeedRow[] = [
   },
   {
     state: 'CA', year: 2026, key: 'safe_harbor.high_agi_rule', value: { threshold: 150000, pct: 1.1 },
-    citation: '2026 Instructions for Form 540-ES (ftb.ca.gov/forms/2026/2026-540-es-instructions.pdf), Section C "Limit on the Use of Prior Year\'s Tax" and Worksheet lines 19c-19f (prior-year AGI over $150,000, $75,000 if MFS: lesser of 90% current or 110% prior; farmers/fishermen exempt; AGI of $1,000,000 or more ($500,000 MFS) must use current-year tax only). The $1M current-year-only rule and the MFS threshold are not expressible.',
+    citation: '2026 Instructions for Form 540-ES (ftb.ca.gov/forms/2026/2026-540-es-instructions.pdf), Section C "Limit on the Use of Prior Year\'s Tax" and Worksheet lines 19c-19f (prior-year AGI over $150,000, $75,000 if MFS: lesser of 90% current or 110% prior; farmers/fishermen exempt; AGI of $1,000,000 or more ($500,000 MFS) must use current-year tax only). Also form FTB 5805 (2025) Part II lines 5-6. NOT EXPRESSIBLE: (a) the $1,000,000 ($500,000 MFS) rule is tested on CURRENT-year California AGI and removes the prior-year safe harbor entirely (required payment = 90% of current-year tax), not a higher prior pct; (b) the MFS $75,000 threshold. Underlying statute (R&TC 19136.3) not read: leginfo returned 403.',
     status: 'verified',
   },
   {
@@ -137,7 +137,7 @@ export const CA_RULES: StateRuleSeedRow[] = [
   },
   {
     state: 'CA', year: 2026, key: 'holidays', value: ['2026-01-01', '2026-01-19', '2026-02-16', '2026-03-31', '2026-05-25', '2026-07-04', '2026-09-07', '2026-11-11', '2026-11-26', '2026-11-27', '2026-12-25', '2027-01-01', '2027-01-18', '2027-02-15', '2027-03-31', '2027-05-31', '2027-07-04', '2027-07-05', '2027-09-06', '2027-11-11', '2027-11-25', '2027-11-26', '2027-12-25'],
-    citation: 'UNVERIFIED for 2027 dates: California Secretary of State "State Holidays" page lists 2026 as printed; the 2027 dates are computed from the same pattern (no official 2027 list retrieved). Calendar years 2026-2027.',
+    citation: 'UNVERIFIED for 2027 dates: California Secretary of State "State Holidays" page (sos.ca.gov/state-holidays) 2026 list read as printed (July 4, 2026 Saturday, no Friday observance). 2027 dates computed from the CalHR Leave Benefits > Holidays rule list (calhr.ca.gov/employees/pages/state-holidays.aspx: Jan 1, 3rd Mon Jan, 3rd Mon Feb, Mar 31, last Mon May, Jul 4, 1st Mon Sep, Nov 11, 4th Thu Nov + day after, Dec 25; Sunday holiday observed Monday; Saturday holiday = holiday credit only, not moved; Nov 11 on Saturday observed Friday) - no official 2027 list published. Gov. Code 6700 (leginfo 403) not read; it may list further holidays (none can fall on an estimated-tax due date). Calendar years 2026-2027.',
     status: 'unverified',
   },
 ];

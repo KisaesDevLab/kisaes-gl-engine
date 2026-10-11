@@ -41,12 +41,12 @@ export const CO_RULES: StateRuleSeedRow[] = [
   },
   {
     state: 'CO', year: 2025, key: 'installments.pcts', value: [0.25, 0.25, 0.25, 0.25],
-    citation: 'Colorado DOR "Individual Income Tax - Estimated Payments" page ("four equal installments"); DR 0204 (09/25/25) Part 3 line 7 ("Divide the amount on line 6 by four")',
+    citation: 'Colorado DR 0204 (09/25/25) Part 3 line 7 ("Divide the amount on line 6 by four", columns April 15 / June 15 / Sept 15 / January 15); annualized alternative 17.5/35/52.5/70% (line 25) not representable',
     status: 'verified',
   },
   {
     state: 'CO', year: 2025, key: 'farmer.rule', value: { ratio: 0.6666666666, current_pct: 0.5, due_date: '2026-01-15', file_by: '2026-03-02' },
-    citation: 'Colorado DR 0104EP 2025, "Required Payments" (at least 2/3 of income from farming or fishing: 50% of actual net Colorado tax liability); DR 0204 (09/25/25) Exception 1 (file and pay by March 1; farmers pay a single payment by January 15 and only column four is used); DOR Individual Income Tax Guide. March 1, 2026 is a Sunday, so file_by is rolled to 2026-03-02 (seed convention; the state text says "March 1").',
+    citation: 'Colorado DR 0104EP 2025 (rev. 07/03/24), "Required Payments" ("If at least 2/3 of your income is from farming or fishing, 50% of the actual net Colorado tax liability") and "Penalties" (farmers/fishermen who file and remit full payment by March 1 excepted); DR 0204 (09/25/25) Exception Number 1 (2/3 of gross income for the current or prior year; file and pay by March 1), line 4(b) ("only enter 50%" if Exception 1 box checked), line 5(b) (no 10% high-AGI addition for farmers), line 7 and instructions Part 3 (single payment by January 15, column four only). 50% is Colorado-specific, NOT the federal 66 2/3%. March 1, 2026 is a Sunday, so file_by is rolled to 2026-03-02 (seed convention; the state text says "March 1").',
     status: 'verified',
   },
   {
@@ -56,7 +56,7 @@ export const CO_RULES: StateRuleSeedRow[] = [
   },
   {
     state: 'CO', year: 2025, key: 'penalty.rate', value: 0.12,
-    citation: 'Colorado DR 0204 (09/25/25) line 15 (underpayment x 12% for days through the payment date or December 31, 2025) and line 18 (x 11% for days January 1 - April 15, 2026); Tax Topics: Penalties and Interest (2025 regular rate 12%, 2026 11%). CAUTION: single-rate key; days falling in 2026 accrue at 11%.',
+    citation: 'Colorado DR 0204 (09/25/25) line 15 (underpayment x 12% for days through the payment date or December 31, 2025) and line 18 (x 11% for days January 1 - April 15, 2026); Tax Topics: Penalties and Interest (Revised October 2025) table "Annual Interest Rates on Tax Underpayments" (2025 regular rate 12%, 2026 11%). CAUTION: single-rate key; days falling in 2026 accrue at 11%.',
     status: 'verified',
   },
   {
@@ -71,7 +71,7 @@ export const CO_RULES: StateRuleSeedRow[] = [
   },
   {
     state: 'CO', year: 2025, key: 'holidays', value: ['2025-01-01', '2025-01-20', '2025-02-17', '2025-05-26', '2025-06-19', '2025-07-04', '2025-09-01', '2025-10-06', '2025-11-11', '2025-11-27', '2025-12-25', '2026-01-01', '2026-01-19', '2026-02-16', '2026-05-25', '2026-06-19', '2026-07-03', '2026-07-04', '2026-09-07', '2026-10-05', '2026-11-11', '2026-11-26', '2026-12-25'],
-    citation: 'UNVERIFIED: Colorado DOR "Colorado State Holidays" page (tax.colorado.gov/holidays) lists 2026 only (Frances Xavier Cabrini Day on the first Monday of October, Juneteenth June 19, Independence Day observed Friday July 3). C.R.S. 24-11-101 itself was not read; 2025 dates and Saturday/Sunday observance pattern computed from the 2026 list. Calendar years 2025-2026.',
+    citation: 'UNVERIFIED for 2025 dates: the 2026 dates match the Colorado DOR "Colorado State Holidays" page (tax.colorado.gov/holidays, 2026 only: Cabrini Day Oct 5, Juneteenth Jun 19, Independence Day observed Fri Jul 3; Jul 4 itself not listed, harmless Saturday) and the Colorado Judicial Branch memo "Calendar Year 2026 Holiday Schedule" (Sept 2, 2025, coloradojudicial.gov/media/7751). No official 2025 list could be read (DPA/DHR 2025 schedule PDF and CDHS page returned 403); 2025 dates computed from the same pattern (Cabrini Day 1st Mon Oct = Oct 6, 2025). C.R.S. 24-11-101 not read. Calendar years 2025-2026.',
     status: 'unverified',
   },
   // ------------------------------------------------------------------ 2026
@@ -107,22 +107,22 @@ export const CO_RULES: StateRuleSeedRow[] = [
   },
   {
     state: 'CO', year: 2026, key: 'installments.pcts', value: [0.25, 0.25, 0.25, 0.25],
-    citation: 'Colorado DOR "Individual Income Tax - Estimated Payments" page ("four equal installments"); DR 0204 (09/25/25) Part 3 line 7 ("Divide the amount on line 6 by four")',
+    citation: 'Colorado DR 0204 (09/25/25) Part 3 line 7 ("Divide the amount on line 6 by four", columns April 15 / June 15 / Sept 15 / January 15); annualized alternative 17.5/35/52.5/70% (line 25) not representable',
     status: 'verified',
   },
   {
     state: 'CO', year: 2026, key: 'farmer.rule', value: { ratio: 0.6666666666, current_pct: 0.5, due_date: '2027-01-15', file_by: '2027-03-01' },
-    citation: 'Colorado DR 0104EP 2026, "Required Payments" (50% for farmers/fishers with at least 2/3 of income from farming/fishing); DOR Individual Income Tax Guide (one payment due January 15; exempt if returns filed and paid by March 1)',
+    citation: 'Colorado DR 0104EP 2026 (rev. 06/10/25), "Required Payments" ("If at least 2/3 of your income is from farming or fishing, 50% of the actual net Colorado tax liability") and "Penalties" (exception for farmers/fishermen who file and remit full payment by March 1); DR 0204 (09/25/25) Exception Number 1, lines 4(b), 5(b), 7 and instructions Part 3 (single payment by January 15). March 1, 2027 is a Monday (no roll). 50% is Colorado-specific, NOT the federal 66 2/3%.',
     status: 'verified',
   },
   {
     state: 'CO', year: 2026, key: 'penalty.rate_source', value: 'state',
-    citation: 'Colorado DOR Tax Topics: Penalties and Interest (annual interest rates on underpayments: 2025 12%, 2026 11%; state-set); DR 0204 computes the estimated tax penalty as interest',
+    citation: 'Colorado DOR Tax Topics: Penalties and Interest (Revised October 2025), "Annual Interest Rates on Tax Underpayments" table (state-set calendar-year rates; cites C.R.S. 39-21-109 and 39-21-110.5); DR 0204 (09/25/25) lines 15/18 compute the estimated tax penalty as interest at the regular rate',
     status: 'verified',
   },
   {
     state: 'CO', year: 2026, key: 'penalty.rate', value: 0.11,
-    citation: 'Colorado DOR Tax Topics: Penalties and Interest (2026 regular rate 11%). CAUTION: the 2027 rate (for TY2026 underpayment days in January-April 2027) and the 2026 DR 0204 form were not published at research time.',
+    citation: 'Colorado DOR Tax Topics: Penalties and Interest (Revised October 2025), table "Annual Interest Rates on Tax Underpayments": 2026 regular rate 11% (DR 0204 uses the regular rate). CAUTION: the 2027 rate (for TY2026 underpayment days in January-April 2027) and the 2026 DR 0204 form were not published at research time.',
     status: 'verified',
   },
   {
@@ -137,7 +137,7 @@ export const CO_RULES: StateRuleSeedRow[] = [
   },
   {
     state: 'CO', year: 2026, key: 'holidays', value: ['2026-01-01', '2026-01-19', '2026-02-16', '2026-05-25', '2026-06-19', '2026-07-03', '2026-07-04', '2026-09-07', '2026-10-05', '2026-11-11', '2026-11-26', '2026-12-25', '2027-01-01', '2027-01-18', '2027-02-15', '2027-05-31', '2027-06-18', '2027-06-19', '2027-07-04', '2027-07-05', '2027-09-06', '2027-10-04', '2027-11-11', '2027-11-25', '2027-12-24', '2027-12-25'],
-    citation: 'UNVERIFIED: Colorado DOR "Colorado State Holidays" page lists 2026 only; 2027 dates computed from the same pattern (DHR schedule snippets show 2027 New Year, MLK, Presidents, Memorial, Juneteenth observed June 18). C.R.S. 24-11-101 not read. Calendar years 2026-2027.',
+    citation: 'UNVERIFIED for 2027 dates: 2026 dates match the Colorado DOR "Colorado State Holidays" page (tax.colorado.gov/holidays) and the Colorado Judicial Branch "Calendar Year 2026 Holiday Schedule" memo (coloradojudicial.gov/media/7751). 2027 dates computed from the 2026 pattern (Saturday holiday observed Friday: Juneteenth Jun 18, Christmas Dec 24; Sunday observed Monday: Jul 5); no official 2027 list read. C.R.S. 24-11-101 not read. Calendar years 2026-2027.',
     status: 'unverified',
   },
 ];
