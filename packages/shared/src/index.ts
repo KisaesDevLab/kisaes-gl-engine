@@ -109,6 +109,7 @@ export * from './reports/registry.js';
 export * from './reports/letter-variables.js';
 export * from './reports/pack-filename.js';
 export * from './financial-statements/index.js';
+export * from './tax-estimator/index.js';
 
 // Utils
 export * from './utils/money.js';

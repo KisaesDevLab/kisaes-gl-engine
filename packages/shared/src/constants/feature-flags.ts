@@ -107,6 +107,10 @@ export const PRACTICE_FEATURE_FLAGS = [
   // letterhead / letters / style presets / layout templates, finalize +
   // portal publish. Requires TRIAL_BALANCE_V1. Default OFF.
   'FINANCIAL_STATEMENTS_V1',
+  // Tax Estimator module (features/tax-estimator/MODULE.md, migration 0201).
+  // Firm-side estimated-tax projections for Taxpayers who may span tenants,
+  // plus a Report Pack section and a per-contact portal view. Default OFF.
+  'TAX_ESTIMATOR_V1',
 ] as const;
 
 export type PracticeFeatureFlagKey = typeof PRACTICE_FEATURE_FLAGS[number];

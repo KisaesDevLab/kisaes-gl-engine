@@ -60,6 +60,7 @@ export const PERMISSION_RESOURCES = [
   // by staff/firm guards on the tb router, not by this matrix; client
   // portal users never reach the module at all.
   { key: 'trial_balance', label: 'Trial Balance', group: 'Trial Balance', writable: true },
+  { key: 'tax_estimator', label: 'Tax Estimator', group: 'Trial Balance', writable: true },
   // Manage
   { key: 'accounts', label: 'Chart of Accounts', group: 'Manage', writable: true },
   { key: 'contacts', label: 'Contacts', group: 'Manage', writable: true },

@@ -9,6 +9,8 @@
 export const MODULE_LICENSE_TIERS = {
   // Trial Balance module (docs/tb/BUILD_PLAN.md) — firm-side feature.
   tb: 'base',
+  // Tax Estimator (features/tax-estimator/MODULE.md) — included in all tiers.
+  taxEstimator: 'base',
 } as const;
 
 export type ModuleKey = keyof typeof MODULE_LICENSE_TIERS;

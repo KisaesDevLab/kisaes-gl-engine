@@ -146,6 +146,7 @@ export const FLAGS_DEFAULT_OFF_FOR_NEW_TENANTS: ReadonlySet<string> = new Set([
   'AP_BILL_CAPTURE_V1',
   'ACCRUALS_V1',
   'FINANCIAL_STATEMENTS_V1',
+  'TAX_ESTIMATOR_V1',
 ]);
 
 export async function seedDefaultsForNewTenant(tenantId: string): Promise<void> {

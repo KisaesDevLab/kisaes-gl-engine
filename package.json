@@ -22,7 +22,8 @@
     "license:sbom": "bash scripts/generate-sbom.sh",
     "migrations:check": "bash scripts/check-migration-policy.sh",
     "any:check": "bash scripts/check-any-baseline.sh",
-    "prepare": "husky || true"
+    "prepare": "husky || true",
+    "test:tax-oracle": "python3 -I features/tax-estimator/docs/reference-calc/rivera_fixture.py > /dev/null && git diff --exit-code -- features/tax-estimator/docs/reference-calc/rivera_expected.json"
   },
   "lint-staged": {
     "packages/**/*.{ts,tsx,js,jsx,mjs,cjs,sql,sh,py}": "bash scripts/check-license-headers.sh",
