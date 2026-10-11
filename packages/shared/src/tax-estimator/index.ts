@@ -8,4 +8,5 @@
 // identical numbers (same pattern as financial-statements/, rule TB14).
 export * from './types.js';
 export * from './parameterKeys.js';
+export * from './parameter-api.js';
 export * from './engine/index.js';
