@@ -65,5 +65,8 @@ export * from './backup-runs.js';
 export * from './share.js';
 export * from './tb.js';
 export * from './tax-estimator.js';
+export * from './tax-estimator-taxpayers.js';
+export * from './tax-estimator-entities.js';
+export * from './tax-estimator-state-rules.js';
 export * from './check-signatures.js';
 export * from './financial-statements.js';

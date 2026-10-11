@@ -8,6 +8,8 @@ import { requireResource } from '../middleware/permission.js';
 import { requireFeatureFlag } from '../middleware/feature-flag.js';
 import { resolveTaxEstimatorScope, getScope } from '../middleware/tax-estimator-scope.js';
 import { AppError } from '../utils/errors.js';
+import { taxpayersRouter } from './tax-estimator/taxpayers.routes.js';
+import { entitiesRouter } from './tax-estimator/entities.routes.js';
 import { taxParameterYearParamsSchema } from '@kis-books/shared';
 import * as taxParametersService from '../services/tax-estimator/tax-parameters.service.js';
 
@@ -47,3 +49,6 @@ taxEstimatorRouter.get('/parameters/:year', async (req, res) => {
   const { year } = taxParameterYearParamsSchema.parse(req.params);
   res.json({ data: await taxParametersService.getParameters(year) });
 });
+
+taxEstimatorRouter.use('/taxpayers', taxpayersRouter);
+taxEstimatorRouter.use('/entities', entitiesRouter);
