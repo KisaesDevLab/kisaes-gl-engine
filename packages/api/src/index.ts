@@ -178,6 +178,16 @@ async function start() {
     console.error('Failed to seed default JE templates:', err);
   }
 
+  // Tax Estimator: re-sync the shipped federal parameter seeds (idempotent;
+  // never touches super-admin overrides). A bad seed row is logged, not fatal.
+  try {
+    const { syncShippedSeeds } = await import('./services/tax-estimator/tax-parameters.service.js');
+    const r = await syncShippedSeeds();
+    if (r.rows > 0) console.log(`Synced ${r.rows} tax parameter seed rows across ${r.years} year(s)`);
+  } catch (err) {
+    console.error('Failed to sync tax parameter seeds:', err);
+  }
+
   // Start server
   const server = app.listen(env.PORT, () => {
     console.log(`Vibe MyBooks API listening on port ${env.PORT}`);

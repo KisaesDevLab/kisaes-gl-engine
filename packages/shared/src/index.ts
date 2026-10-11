@@ -83,6 +83,7 @@ export * from './schemas/firm-integrations.js';
 export * from './schemas/firm-peers.js';
 export * from './schemas/report-letters.js';
 export * from './schemas/tb.js';
+export * from './schemas/tax-estimator.js';
 
 // Constants
 export * from './constants/coa-templates.js';

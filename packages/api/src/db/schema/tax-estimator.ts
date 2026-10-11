@@ -5,4 +5,37 @@
 // Tax Estimator tables (features/tax-estimator/MODULE.md). Phases 1-12 add
 // tables here and to migration 0201_tax_estimator.sql (one consolidated,
 // additive migration; renumbered to the next free idx at merge, D6).
-export {};
+
+import { pgTable, uuid, varchar, text, jsonb, timestamp, integer, index, unique } from 'drizzle-orm/pg-core';
+
+// Phase 1: GLOBAL (no tenant_id) shipped parameter rows, synced from code.
+export const taxParameters = pgTable('tax_parameters', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  taxYear: integer('tax_year').notNull(),
+  key: varchar('key', { length: 120 }).notNull(),
+  value: jsonb('value').notNull(),
+  status: varchar('status', { length: 20 }).notNull(),
+  citation: text('citation').notNull().default(''),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique('uniq_tax_parameters_year_key').on(t.taxYear, t.key),
+  index('idx_tax_parameters_year').on(t.taxYear),
+]);
+
+// Phase 1: GLOBAL super-admin overrides and provisional (created-from-prior) rows.
+export const taxParameterOverrides = pgTable('tax_parameter_overrides', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  taxYear: integer('tax_year').notNull(),
+  key: varchar('key', { length: 120 }).notNull(),
+  value: jsonb('value').notNull(),
+  status: varchar('status', { length: 20 }).notNull(),
+  reason: text('reason').notNull(),
+  createdFromYear: integer('created_from_year'),
+  createdBy: uuid('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique('uniq_tax_parameter_overrides_year_key').on(t.taxYear, t.key),
+  index('idx_tax_parameter_overrides_year').on(t.taxYear),
+]);

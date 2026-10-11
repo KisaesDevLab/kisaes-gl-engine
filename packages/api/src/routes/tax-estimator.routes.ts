@@ -8,6 +8,8 @@ import { requireResource } from '../middleware/permission.js';
 import { requireFeatureFlag } from '../middleware/feature-flag.js';
 import { resolveTaxEstimatorScope, getScope } from '../middleware/tax-estimator-scope.js';
 import { AppError } from '../utils/errors.js';
+import { taxParameterYearParamsSchema } from '@kis-books/shared';
+import * as taxParametersService from '../services/tax-estimator/tax-parameters.service.js';
 
 // Tax Estimator staff router (features/tax-estimator/MODULE.md).
 //
@@ -37,4 +39,11 @@ taxEstimatorRouter.get('/scope', (req, res) => {
   res.json({
     data: { firmId: scope.firmId, firmRole: scope.firmRole, managedTenantCount: scope.allowedTenantIds.length },
   });
+});
+
+// GET /parameters/:year — effective federal parameters for a tax year (read-only
+// for every firm member who passes the guard chain above).
+taxEstimatorRouter.get('/parameters/:year', async (req, res) => {
+  const { year } = taxParameterYearParamsSchema.parse(req.params);
+  res.json({ data: await taxParametersService.getParameters(year) });
 });

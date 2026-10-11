@@ -43,7 +43,13 @@ P = dict(
   sch_ai_applicable_pcts=[0.225, 0.45, 0.675, 0.90],
   sch_ai_months=[3, 5, 8, 12],
   # §6654 underpayment rate by calendar quarter: list of (from, to, annual rate). [VERIFY] placeholder 7%
-  underpayment_rates=[(date(2026,1,1), date(2027,12,31), 0.07)],
+  # Quarterly §6654 rates, mirrors seeds/federal/2026.ts penalty.underpayment_rate
+  # (Q2 2026 = 6%; 2027 quarters are unpublished placeholders at 7%). [VERIFY 2027]
+  underpayment_rates=[
+    (date(2026,1,1), date(2026,3,31), 0.07), (date(2026,4,1), date(2026,6,30), 0.06),
+    (date(2026,7,1), date(2026,9,30), 0.07), (date(2026,10,1), date(2026,12,31), 0.07),
+    (date(2027,1,1), date(2027,3,31), 0.07), (date(2027,4,1), date(2027,6,30), 0.07),
+  ],
   return_due=date(2027,4,15),
   installment_due=[date(2026,4,15), date(2026,6,15), date(2026,9,15), date(2027,1,15)],
 )
