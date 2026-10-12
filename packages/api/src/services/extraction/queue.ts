@@ -63,6 +63,20 @@ export function makeRedisConnection(): RedisClient {
   return new Redis(url, { maxRetriesPerRequest: null });
 }
 
+// BullMQ custom job ids. BullMQ 5 throws "Custom Id cannot contain :" for any
+// custom id containing ':' that doesn't split into exactly 3 parts (a legacy
+// repeatable-job carve-out it plans to drop), so `stmt:<id>` / `pack:<id>` /
+// `render:<id>` made EVERY enqueue throw and each caller silently fell back to
+// in-process work. Use '-' only. Deterministic ids keep re-enqueues idempotent
+// (BullMQ ignores an add whose id already exists).
+export const queueJobIds = {
+  statementParse: (jobId: string) => `stmt-${jobId}`,
+  reportPack: (runId: string) => `pack-${runId}`,
+  render: (jobId: string) => `render-${jobId}`,
+  extract: (jobId: string, pageNo: number) => `extract-${jobId}-${pageNo}`,
+  billCapture: (captureId: string, attempt: number) => `bcap-${captureId}-${attempt}`,
+};
+
 let sharedConnection: RedisClient | null = null;
 function getSharedConnection(): RedisClient {
   if (!sharedConnection) sharedConnection = makeRedisConnection();
@@ -146,7 +160,7 @@ function getReportPackQueue(): Queue<ReportPackJobData> {
 
 /** Enqueue a statement parse. jobId as the BullMQ job id makes it idempotent. */
 export async function enqueueStatementParse(data: StatementParseJobData): Promise<void> {
-  await getStatementParseQueue().add('parse', data, { jobId: `stmt:${data.jobId}` });
+  await getStatementParseQueue().add('parse', data, { jobId: queueJobIds.statementParse(data.jobId) });
 }
 
 function getBillCaptureQueue(): Queue<BillCaptureJobData> {
@@ -161,12 +175,12 @@ function getBillCaptureQueue(): Queue<BillCaptureJobData> {
 
 /** Enqueue a Bill Capture extraction. captureId+attempt as the BullMQ job id. */
 export async function enqueueBillCapture(data: BillCaptureJobData): Promise<void> {
-  await getBillCaptureQueue().add('extract', data, { jobId: `bcap:${data.captureId}:${data.attempt}` });
+  await getBillCaptureQueue().add('extract', data, { jobId: queueJobIds.billCapture(data.captureId, data.attempt) });
 }
 
 /** Enqueue a report-pack render. runId as the BullMQ job id makes it idempotent. */
 export async function enqueueReportPack(data: ReportPackJobData): Promise<void> {
-  await getReportPackQueue().add('render', data, { jobId: `pack:${data.runId}` });
+  await getReportPackQueue().add('render', data, { jobId: queueJobIds.reportPack(data.runId) });
 }
 
 // Report-pack background health for the UI: whether Redis is reachable and
@@ -195,13 +209,13 @@ export async function getReportPackQueueHealth(
 export async function enqueueRender(data: RenderJobData): Promise<void> {
   // jobId as the BullMQ job id makes the enqueue idempotent — re-enqueuing
   // the same document won't create a duplicate render job.
-  await getRenderQueue().add('render', data, { jobId: `render:${data.jobId}` });
+  await getRenderQueue().add('render', data, { jobId: queueJobIds.render(data.jobId) });
 }
 
 /** Enqueue the extract step for one rendered page. */
 export async function enqueueExtract(data: ExtractJobData): Promise<void> {
   await getExtractQueue().add('extract', data, {
-    jobId: `extract:${data.jobId}:${data.pageNo}`,
+    jobId: queueJobIds.extract(data.jobId, data.pageNo),
   });
 }
 
