@@ -315,6 +315,7 @@ export async function putTransactionFlags(
 
 const PL_COST_TYPES = new Set(['expense', 'other_expense', 'cogs']);
 const MEALS_PCT = '50';
+const ENTERTAINMENT_PCT = '100';
 
 interface SuggestRule {
   treatment: AccountTreatment;
@@ -339,9 +340,23 @@ const SUGGEST_RULES: SuggestRule[] = [
       && /(owner|officer|shareholder|partner|member|self[-\s]?employed)/.test(n),
     reason: (t) => `Name refers to owner/officer health insurance (${t} account); routed to the owner as self-employed health insurance.`,
   },
+  // QA D15: entertainment is not deductible at all (§274(a)(1)); only business MEALS are 50%
+  // (§274(n)). An account naming both gets 50% with a note to split out the entertainment.
   {
     treatment: 'nondeductible_pct',
-    test: (n, t) => PL_COST_TYPES.has(t) && /\bmeals?\b|entertain/.test(n),
+    test: (n, t) => PL_COST_TYPES.has(t) && /entertain/.test(n) && !/\bmeals?\b/.test(n),
+    pct: ENTERTAINMENT_PCT,
+    reason: (t) => `Name refers to entertainment (${t} account); entertainment is not deductible (IRC §274(a)), so 100% is nondeductible.`,
+  },
+  {
+    treatment: 'nondeductible_pct',
+    test: (n, t) => PL_COST_TYPES.has(t) && /\bmeals?\b/.test(n) && /entertain/.test(n),
+    pct: MEALS_PCT,
+    reason: (t) => `Name refers to meals and entertainment (${t} account); business meals are generally 50% deductible, but entertainment is 100% nondeductible (IRC §274(a)) — split the entertainment into its own account or raise the percentage.`,
+  },
+  {
+    treatment: 'nondeductible_pct',
+    test: (n, t) => PL_COST_TYPES.has(t) && /\bmeals?\b/.test(n),
     pct: MEALS_PCT,
     reason: (t) => `Name refers to meals (${t} account); business meals are generally 50% deductible.`,
   },
