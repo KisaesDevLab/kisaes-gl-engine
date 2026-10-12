@@ -129,7 +129,9 @@ describe('entity type resolution (D3)', () => {
 
   it('settings and year-input writes are audited against the books tenant', async () => {
     await upsertYearInputs(scope, tA, cA, 2026, { ubia: '125000' });
-    expect((await getYearInputs(scope, tA, cA, 2026)).ubia).toBe('125000.0000');
+    expect(await getYearInputs(scope, tA, cA, 2026)).toMatchObject({ ubia: '125000.0000', includeSehiInW2Wages: false }); // Q41 default: excluded
+    await upsertYearInputs(scope, tA, cA, 2026, { includeSehiInW2Wages: true });
+    expect(await getYearInputs(scope, tA, cA, 2026)).toMatchObject({ ubia: '125000.0000', includeSehiInW2Wages: true }); // ubia untouched by a partial patch
     await expect(upsertYearInputs(scope, tA, cA, 2026, { w2WagesOverride: '1000' }))
       .rejects.toMatchObject({ code: 'TE_W2_OVERRIDE_REASON' });
     const audits = await db.execute<{ entity_type: string }>(sql`

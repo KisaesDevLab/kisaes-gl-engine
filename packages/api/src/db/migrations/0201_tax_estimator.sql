@@ -637,3 +637,11 @@ ALTER TABLE state_estimate_rule_overrides ADD COLUMN IF NOT EXISTS verification_
 -- that year ships, so the Verify screen never shows a blank Citation column; overrides set by
 -- hand leave it ''. The state override table already had this column.
 ALTER TABLE tax_parameter_overrides ADD COLUMN IF NOT EXISTS citation TEXT NOT NULL DEFAULT '';
+
+-- ── Q41: include >2% shareholder health in §199A W-2 wages (per entity year) ────────────────
+--
+-- Tax Estimator Q41 part: CPA-decided switch (OPEN-QUESTIONS.md Q41 item 1). Assembled AFTER the
+-- R6 lifecycle part. Additive only. Per entity and tax year: include the >2% S corporation
+-- shareholder health insurance added to the officer's W-2 box 1 in the W-2 wages used for the
+-- §199A wage limit. Default FALSE = excluded (Kurt's decision, 2026-10-12).
+ALTER TABLE tax_est_entity_year_inputs ADD COLUMN IF NOT EXISTS include_sehi_in_w2_wages BOOLEAN NOT NULL DEFAULT FALSE;

@@ -1009,6 +1009,7 @@ async function compute(
       overrideReason: yearInputs?.w2WagesOverrideReason ?? null,
       effective: s4(override !== null ? dec(override) : w2Projected),
       source: override !== null ? 'override' : 'books',
+      includeSehiInW2Wages: yearInputs?.includeSehiInW2Wages ?? false,
       byPerson: [...w2ByPerson.entries()].map(([personId, v]) => ({ personId, ytd: s4(v) })).sort((x, y) => x.personId.localeCompare(y.personId)),
     },
     ubia: yearInputs?.ubia ?? null,

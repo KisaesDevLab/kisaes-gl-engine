@@ -2,7 +2,12 @@
 -- Licensed under the PolyForm Small Business License 1.0.0.
 -- Free for small businesses; see LICENSE for terms.
 --
--- Rollback for 0201_tax_estimator, children first (R6 lifecycle, R7 verification, phases 13, 12, 10b, 5, 4, 3, 2, then 1 and 0).
+-- Rollback for 0201_tax_estimator, children first (Q41 switch, R6 lifecycle, R7 verification, phases 13, 12, 10b, 5, 4, 3, 2, then 1 and 0).
+
+-- Q41: include >2% shareholder health in §199A W-2 wages (per entity year)
+--
+-- Rollback for the Tax Estimator Q41 SEHI-in-W-2-wages part (runs FIRST, before the R6 lifecycle part).
+ALTER TABLE IF EXISTS tax_est_entity_year_inputs DROP COLUMN IF EXISTS include_sehi_in_w2_wages;
 
 -- R6: parameter lifecycle review (citation on created years)
 --

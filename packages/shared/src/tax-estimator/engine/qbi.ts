@@ -32,7 +32,7 @@ import {
   ZERO, ONE, dAbs, dAdd, dClamp, dCmp, dDiv, dFloorZero, dIsNeg, dIsPos, dIsZero, dMax, dMin, dMul, dNeg, dSub, dSum, dec, percentToFraction, type Dec,
 } from '../decimal.js';
 import type { EngineContext } from './context.js';
-import { adjustmentCharacter, type AggregatedIncome, type AllocatedEntity, type AllocatedShare } from './income.js';
+import { adjustmentCharacter, entityId, type AggregatedIncome, type AllocatedEntity, type AllocatedShare } from './income.js';
 import type { EngineAdjustment, QbiComponentResult, QbiInput, QbiResult } from './types.js';
 
 const STEP_QBI = 'qbi';
@@ -98,6 +98,32 @@ function eligibility(s: AllocatedShare, e: AllocatedEntity | undefined): { eligi
 
 const positive = (weights: Array<[string, Dec]>): Array<[string, Dec]> => weights.filter(([, w]) => dIsPos(w));
 
+/**
+ * The entity's full-year W-2 wages for the §199A limit. Q41 (CPA decision): the >2% S corporation
+ * shareholder health insurance added to the officer's W-2 box 1 is EXCLUDED unless the entity
+ * year's `includeSehiInW2Wages` switch is on, in which case the projected add-on (Σ owner items,
+ * one amount per person) is added to w2WagesEffective. Unknown wages stay unknown unless the
+ * switch alone contributes a positive amount.
+ */
+function entityW2Wages(e: AllocatedEntity, ctx: EngineContext): Dec | null {
+  const base = e.entity.w2WagesEffective == null ? null : dec(e.entity.w2WagesEffective);
+  if (!e.entity.includeSehiInW2Wages) return base;
+  const seen = new Set<string>();
+  let addOn: Dec = ZERO;
+  for (const s of e.shares) {
+    if (seen.has(s.personId)) continue;
+    seen.add(s.personId);
+    addOn = dAdd(addOn, s.sehiAsW2Wages);
+  }
+  if (!dIsPos(addOn)) return base;
+  const total = dAdd(base ?? ZERO, addOn);
+  ctx.trace.add({
+    step: STEP_QBI, id: `qbi.w2_sehi.${e.entity.companyId}`, label: `${e.entity.companyName} — >2% shareholder health included in §199A W-2 wages (entity-year switch)`,
+    exact: total, source: 'input', formula: `W-2 wages ${base ?? 'unknown'} + health add-on ${addOn}`, entityId: entityId(e.entity),
+  });
+  return total;
+}
+
 export function computeQbi(input: QbiInput, q: QbiContext, ctx: EngineContext): QbiExact {
   const { params, filingStatus: fs } = ctx;
   const rate = params.rate('qbi.rate');
@@ -150,7 +176,8 @@ export function computeQbi(input: QbiInput, q: QbiContext, ctx: EngineContext): 
         attributable = dAdd(seAlloc.get(s.linkId) ?? ZERO, sehiAlloc.get(s.linkId) ?? ZERO);
         qbi = dSub(items, attributable);
         const fraction = s.profitFraction;
-        w2 = e?.entity.w2WagesEffective == null ? null : dMul(e.entity.w2WagesEffective, fraction);
+        const entityW2 = e ? entityW2Wages(e, ctx) : null;
+        w2 = entityW2 == null ? null : dMul(entityW2, fraction);
         ubia = e?.entity.ubia == null ? null : dMul(e.entity.ubia, fraction);
         if (sstb && aboveThreshold) {
           if (fullyPhased) {

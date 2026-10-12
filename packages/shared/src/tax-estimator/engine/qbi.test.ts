@@ -223,3 +223,63 @@ describe('§199A eligibility and override', () => {
     expect(ctx.trace.rows().find((t) => t.id === 'qbi')!.label).toMatch(/MANUAL OVERRIDE/);
   });
 });
+
+describe('Q41: >2% shareholder health insurance in the §199A W-2 wages (per-entity-year switch)', () => {
+  // Single filer, taxable income 300,000: above threshold 201,750 + range 75,000 = 276,750, so the
+  // W-2 / UBIA limit applies in full (phase-in fraction 1). One S corporation, 100% owner-officer:
+  //   QBI (ordinary profit)          200,000          tentative 20% × 200,000 = 40,000
+  //   officer W-2 wages (books)       60,000          >2% shareholder health on W-2 box 1: 20,000
+  //   UBIA                                 0
+  // Switch OFF (default — the add-on is NOT §199A W-2 wages):
+  //   limit = max(50% × 60,000, 25% × 60,000 + 2.5% × 0) = max(30,000, 15,000) = 30,000  → binds → component 30,000
+  //   overall limit 20% × (300,000 − 0) = 60,000 → deduction 30,000
+  // Switch ON (the add-on counts):
+  //   wages 60,000 + 20,000 = 80,000; limit = max(50% × 80,000, 25% × 80,000) = 40,000 → does not bind → component 40,000
+  //   deduction 40,000. The switch moves the deduction by 10,000 and the limit from binding to not binding.
+  const scorp = (includeSehiInW2Wages: boolean | undefined) => entity('s', '200000', {
+    entityType: 's_corp', w2WagesEffective: '60000', ubia: '0',
+    officerWages: [{ personId: P, amount: '60000' }],
+    ownerItems: [{ personId: P, sehi: '0', retirement: '0', sehiAsW2Wages: '20000' }],
+    ...(includeSehiInW2Wages === undefined ? {} : { includeSehiInW2Wages }),
+  }, { isOfficer: true });
+
+  it('default (switch off / absent): the add-on is excluded, the 50%-of-wages limit binds at 30,000', () => {
+    for (const flag of [undefined, false]) {
+      const { r, comp, ctx } = run([scorp(flag)], { ti: '300000', fs: 'single' });
+      const c = comp('l-s');
+      expect(c.w2Wages).toBe('60000');
+      expect(c.tentative).toBe('40000');
+      expect(c.wageUbiaLimit).toBe('30000');
+      expect(c.limitApplied).toBe(true);
+      expect(c.component).toBe('30000');
+      expect(r.deduction).toBe('30000');
+      expect(ctx.trace.rows().some((t) => t.id === 'qbi.w2_sehi.s')).toBe(false);
+    }
+  });
+
+  it('switch on: the add-on is W-2 wages (80,000), the limit (40,000) no longer binds and the deduction is 40,000', () => {
+    const { r, comp, ctx } = run([scorp(true)], { ti: '300000', fs: 'single' });
+    const c = comp('l-s');
+    expect(c.w2Wages).toBe('80000');
+    expect(c.wageUbiaLimit).toBe('40000');
+    expect(c.limitApplied).toBe(false);
+    expect(c.component).toBe('40000');
+    expect(r.deduction).toBe('40000');
+    const t = ctx.trace.rows().find((x) => x.id === 'qbi.w2_sehi.s');
+    expect(t?.exact).toBe('80000');
+    expect(t?.formula).toContain('60000');
+    expect(t?.formula).toContain('20000');
+  });
+
+  it('switch on with unknown books wages: the add-on alone is the known wage figure; with no add-on the switch changes nothing', () => {
+    const { comp, ctx } = run([scorp(true)], { ti: '300000', fs: 'single' });
+    expect(comp('l-s').w2Wages).toBe('80000');
+    const unknown = run([entity('s', '200000', { entityType: 's_corp', w2WagesEffective: null, ubia: '0', includeSehiInW2Wages: true, ownerItems: [{ personId: P, sehi: '0', retirement: '0', sehiAsW2Wages: '20000' }] }, { isOfficer: true })], { ti: '300000', fs: 'single' });
+    expect(unknown.comp('l-s').w2Wages).toBe('20000');
+    expect(warned(unknown.ctx, 'TE_QBI_W2_WAGES_MISSING')).toBe(false);
+    const none = run([entity('s', '200000', { entityType: 's_corp', w2WagesEffective: null, ubia: '0', includeSehiInW2Wages: true }, { isOfficer: true })], { ti: '300000', fs: 'single' });
+    expect(none.comp('l-s').w2Wages).toBeNull();
+    expect(warned(none.ctx, 'TE_QBI_W2_WAGES_MISSING')).toBe(true);
+    expect(warned(ctx, 'TE_QBI_W2_WAGES_MISSING')).toBe(false);
+  });
+});

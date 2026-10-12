@@ -312,6 +312,7 @@ async function runEntities(scope: FirmScope, req: EstimateRequest, g: Gathered, 
       ...base, companyName: pl.companyName, entityType: pl.entityType, throughMonth: pl.throughMonth, throughMonthSource: pl.throughMonthSource,
       monthsElapsed: pl.monthsElapsed, monthsRemaining: pl.monthsRemaining, glVersionStamp: pl.glVersionStamp, providerCached: pl.cached,
       basis: pl.basis, throughMonthReason: pl.throughMonthReason, nonRecurringYtd: pl.nonRecurring, reclass: reclassOf(pl),
+      includeSehiInW2Wages: pl.w2Wages.includeSehiInW2Wages ?? false,
     };
     if (!pl.entityType) {
       warnings.push({ code: 'TE_ENTITY_TYPE_MISSING', severity: 'warning', message: `${pl.companyName} has no tax entity type (no TB profile and no estimator setting); left out of the estimate.`, details: { companyId: c.companyId } });

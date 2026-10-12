@@ -24,5 +24,9 @@
  *              Schedule 1-A tips / overtime phase-out steps round DOWN (whole
  *              $1,000s, 2025 Schedule 1-A lines 11 / 19); car-loan interest keeps
  *              rounding UP (line 28) — Q37 oracle batch 2 (R7-06).
+ *   1.0.0-rc.3 Q41 (CPA decision): the >2% S corporation shareholder health
+ *              add-on (W-2 box 1) is excluded from the §199A W-2 wages by default
+ *              and included per entity year when `includeSehiInW2Wages` is on;
+ *              the default reproduces rc.2 to the cent.
  */
-export const TAX_ENGINE_VERSION = '1.0.0-rc.2';
+export const TAX_ENGINE_VERSION = '1.0.0-rc.3';

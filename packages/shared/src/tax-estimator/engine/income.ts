@@ -101,7 +101,8 @@ export interface AllocatedEntity {
 
 const SE_PARTNER_STATUSES: ReadonlySet<PartnerSeStatus> = new Set<PartnerSeStatus>(['general', 'llc_member_manager']);
 
-function entityId(e: EngineEntity): string {
+/** Trace / warning id of an entity: `${tenantId}:${companyId}`. */
+export function entityId(e: EngineEntity): string {
   return `${e.tenantId}:${e.companyId}`;
 }
 
