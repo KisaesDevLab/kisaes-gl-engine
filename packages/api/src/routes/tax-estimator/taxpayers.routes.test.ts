@@ -200,6 +200,21 @@ describe('taxpayer CRUD', () => {
     expect((await request('GET', `${BASE}?status=archived`, staffToken)).json.total).toBe(1);
   });
 
+  it('QA D4: rejects a resident state outside the 51 jurisdictions (400) and filters the list by state (D29)', async () => {
+    const zz = await request('POST', BASE, staffToken, { displayName: 'ZZ case', filingStatus: 'single', residentState: 'ZZ' });
+    expect(zz.status).toBe(400);
+    expect(JSON.stringify(zz.json)).toContain('two-letter state code');
+    expect((await request('POST', BASE, staffToken, { displayName: 'Missouri', filingStatus: 'single', residentState: 'Missouri' })).status).toBe(400);
+    const mo = await mkTaxpayer(staffToken, { displayName: 'Mo person', residentState: 'mo' }) as { id: string; residentState: string };
+    expect(mo.residentState).toBe('MO');
+    const tp = await mkTaxpayer(staffToken, { displayName: 'Ks person', residentState: 'KS' });
+    expect((await request('PATCH', `${BASE}/${tp.id}`, staffToken, { residentState: 'ZZ' })).status).toBe(400);
+    const list = await request('GET', `${BASE}?residentState=mo`, staffToken);
+    expect(list.status).toBe(200);
+    expect(list.json.data.map((r: { displayName: string }) => r.displayName)).toEqual(['Mo person']);
+    expect((await request('GET', `${BASE}?residentState=ZZ`, staffToken)).status).toBe(400);
+  });
+
   it('rejects invalid input (422/400) and audits mutations in the caller\'s active tenant with the firm id', async () => {
     expect((await request('POST', BASE, staffToken, { displayName: '', filingStatus: 'mfj' })).status).toBe(400);
     expect((await request('POST', BASE, staffToken, { displayName: 'X', filingStatus: 'nope' })).status).toBe(400);

@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { ENTITY_TAX_TYPES, TAX_METHODS } from '../tax-estimator/types.js';
 import { ACCOUNT_TREATMENTS, allowsPersonTarget } from '../tax-estimator/entities-api.js';
+import { taxEstimatorStateCodeSchema } from './tax-estimator-taxpayers.js';
 
 const MIN_TAX_YEAR = 2000;
 const MAX_TAX_YEAR = 2100;
@@ -36,7 +37,7 @@ export const upsertEntitySettingsSchema = z.object({
   largeCorporation: z.boolean().optional(),
   farmerOverride: z.boolean().nullable().optional(),
   rentalQbiTradeOrBusiness: z.boolean().optional(),
-  stateSourcing: z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/).nullable().optional(),
+  stateSourcing: taxEstimatorStateCodeSchema.nullable().optional(),
 }).strict();
 export type UpsertEntitySettingsInput = z.infer<typeof upsertEntitySettingsSchema>;
 
@@ -59,7 +60,7 @@ export const accountTreatmentInputSchema = z.object({
   pct: z.string().trim().regex(PCT_RE).nullable().optional(),
   paymentTaxpayerId: z.string().uuid().nullable().optional(),
   paymentPersonId: z.string().uuid().nullable().optional(),
-  paymentJurisdiction: z.string().trim().regex(/^(federal|[A-Z]{2})$/).nullable().optional(),
+  paymentJurisdiction: z.union([z.literal('federal'), taxEstimatorStateCodeSchema]).nullable().optional(),
   nonRecurring: z.boolean().default(false),
 }).strict().superRefine((v, ctx) => {
   if (v.treatment === 'nondeductible_pct') {

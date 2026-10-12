@@ -140,6 +140,7 @@ export async function listTaxpayers(scope: FirmScope, query: ListTaxpayersQuery)
   if (query.status === 'active') conds.push(eq(taxEstTaxpayers.isActive, true));
   if (query.status === 'archived') conds.push(eq(taxEstTaxpayers.isActive, false));
   if (query.filingStatus && query.filingStatus.length > 0) conds.push(inArray(taxEstTaxpayers.filingStatus, query.filingStatus));
+  if (query.residentState && query.residentState.length > 0) conds.push(inArray(taxEstTaxpayers.residentState, query.residentState));
   if (query.q) {
     const like = `%${query.q.replace(/[\\%_]/g, '\\$&')}%`;
     conds.push(or(

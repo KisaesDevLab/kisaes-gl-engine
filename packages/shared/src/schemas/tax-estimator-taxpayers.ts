@@ -8,6 +8,7 @@
 // and is validated against the server-resolved allowed set.
 import { z } from 'zod';
 import { FILING_STATUSES, ACTIVITY_TYPES } from '../tax-estimator/types.js';
+import { STATE_CODES } from '../tax-estimator/stateRuleKeys.js';
 
 const MIN_TAX_YEAR = 2000;
 const MAX_TAX_YEAR = 2100;
@@ -29,7 +30,14 @@ export const TAXPAYER_STATUS_FILTERS = ['active', 'archived', 'all'] as const;
 
 const uuid = z.string().uuid();
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD');
-const stateCode = z.string().trim().length(2).regex(/^[A-Za-z]{2}$/).transform((s) => s.toUpperCase());
+export const TE_STATE_CODE_MESSAGE = 'Use a two-letter state code (one of the 50 states or DC)';
+/**
+ * QA D3/D4: a state code must be one of the 51 jurisdictions the module has
+ * rules for. Any other two letters ("ZZ") are rejected (400), never stored.
+ */
+export const taxEstimatorStateCodeSchema = z.string().trim().toUpperCase()
+  .refine((s) => (STATE_CODES as readonly string[]).includes(s), { message: TE_STATE_CODE_MESSAGE });
+const stateCode = taxEstimatorStateCodeSchema;
 const pct = z.coerce.number().min(0).max(PCT_MAX);
 const optionalReason = z.string().trim().max(MAX_MEMO);
 
@@ -62,6 +70,9 @@ export const listTaxpayersQuerySchema = z.object({
   /** Comma separated filing statuses. */
   filingStatus: z.string().optional().transform((s) => (s ? s.split(',').filter(Boolean) : undefined))
     .pipe(z.array(z.enum(FILING_STATUSES)).optional()),
+  /** QA D29: comma separated resident-state codes. */
+  residentState: z.string().optional().transform((s) => (s ? s.split(',').map((x) => x.trim().toUpperCase()).filter(Boolean) : undefined))
+    .pipe(z.array(taxEstimatorStateCodeSchema).optional()),
   sortBy: z.enum(TAXPAYER_LIST_SORT_KEYS).default('displayName'),
   sortDir: z.enum(['asc', 'desc']).default('asc'),
   limit: z.coerce.number().int().min(1).max(MAX_LIMIT).default(DEFAULT_LIMIT),

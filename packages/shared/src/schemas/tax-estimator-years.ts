@@ -7,7 +7,7 @@
 // adjustment's tenantId/companyId/accountId name the GL TARGET and are validated
 // server-side against the firm scope (404 TE_TENANT_NOT_MANAGED).
 import { z } from 'zod';
-import { SAFE_HARBOR_OVERRIDES, PORTAL_SHOWS } from './tax-estimator-taxpayers.js';
+import { SAFE_HARBOR_OVERRIDES, PORTAL_SHOWS, taxEstimatorStateCodeSchema } from './tax-estimator-taxpayers.js';
 
 const MIN_TAX_YEAR = 2000;
 const MAX_TAX_YEAR = 2100;
@@ -31,7 +31,7 @@ export const DEFAULT_DISCLAIMER_TEXT = 'Projection based on bookkeeping records 
 
 const uuid = z.string().uuid();
 const taxYear = z.coerce.number().int().min(MIN_TAX_YEAR).max(MAX_TAX_YEAR);
-const stateCode = z.string().trim().length(2).regex(/^[A-Za-z]{2}$/).transform((s) => s.toUpperCase());
+const stateCode = taxEstimatorStateCodeSchema;
 const money = z.union([z.number(), z.string().trim().regex(/^-?\d+(\.\d{1,4})?$/)]).transform((v) => String(v));
 const nonNegMoney = money.refine((v) => Number(v) >= 0, 'Must not be negative');
 const CENTS = 100;
