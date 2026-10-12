@@ -23,6 +23,11 @@ export const taxParameterKeyParamsSchema = z.object({ year: taxYearParamSchema, 
 export const setTaxParameterOverrideSchema = z.object({
   value: z.unknown().refine((v) => v !== undefined, { message: 'value is required' }),
   reason: z.string().trim().min(MIN_REASON_LEN).max(MAX_REASON_LEN),
+  /** QA D6: the other half of an installment pair (percentages + due dates / months), saved in the same transaction. */
+  companion: z.object({
+    key: z.string().min(1).max(100),
+    value: z.unknown().refine((v) => v !== undefined, { message: 'value is required' }),
+  }).optional(),
 });
 
 export const adoptShippedParametersSchema = z.object({

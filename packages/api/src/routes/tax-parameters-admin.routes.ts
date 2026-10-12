@@ -30,7 +30,7 @@ taxParametersAdminRouter.get('/:year', async (req, res) => {
 taxParametersAdminRouter.put('/:year/:key', async (req, res) => {
   const { year, key } = taxParameterKeyParamsSchema.parse(req.params);
   const body = setTaxParameterOverrideSchema.parse(req.body);
-  res.json({ data: await svc.setOverride(year, key, body.value, body.reason, req.userId) });
+  res.json({ data: await svc.setOverride(year, key, body.value, body.reason, req.userId, body.companion) });
 });
 
 taxParametersAdminRouter.delete('/:year/:key', async (req, res) => {

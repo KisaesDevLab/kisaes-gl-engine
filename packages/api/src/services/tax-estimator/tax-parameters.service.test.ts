@@ -151,6 +151,19 @@ describe('getParameters', () => {
   });
 });
 
+describe('QA D6: installment percentages vs due dates (federal)', () => {
+  it('refuses a list that does not total 100% or does not match the due dates; a companion saves both; revert keeps the pair whole', async () => {
+    await expect(svc.setOverride(Y1, 'installments.pcts', [0.5], 'QA D6')).rejects.toMatchObject({ statusCode: 400, code: 'TE_PARAM_INVALID', message: expect.stringMatching(/add up to 100%/) });
+    await expect(svc.setOverride(Y1, 'installments.pcts', [0.5, 0.5], 'QA D6')).rejects.toMatchObject({ statusCode: 400, message: expect.stringMatching(/has 2 entries but installments.due_dates has 1/) });
+    await expect(svc.setOverride(Y1, 'installments.pcts', [1], 'x', undefined, { key: 'se.ss_rate', value: 0.1 })).rejects.toMatchObject({ code: 'TE_PARAM_INVALID' });
+    expect((await svc.setOverride(Y1, 'installments.pcts', [1], 'one installment')).value).toEqual([1]);
+    await svc.setOverride(Y1, 'installments.pcts', [0.5, 0.5], 'two', undefined, { key: 'installments.due_dates', value: ['2090-06-16', '2090-09-15'] });
+    expect(pick(await svc.getParameters(Y1), 'installments.due_dates')!.value).toEqual(['2090-06-16', '2090-09-15']);
+    // Reverting the dates to the shipped single date would orphan the two-entry list, which has no shipped row: refused.
+    await expect(svc.revertOverride(Y1, 'installments.due_dates')).rejects.toMatchObject({ statusCode: 400, code: 'TE_PARAM_INVALID' });
+  });
+});
+
 describe('setOverride / revertOverride', () => {
   it('rejects unknown keys, bad values and short reasons with TE_PARAM_INVALID', async () => {
     await expect(svc.setOverride(Y1, 'nope', 1, 'because')).rejects.toMatchObject({ statusCode: 400, code: 'TE_PARAM_INVALID' });

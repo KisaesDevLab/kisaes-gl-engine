@@ -27,6 +27,7 @@ import {
   type StateRulesDTO, type StateRuleRowDTO, type StateRuleSummaryDTO,
   type CreateStateYearFromPriorResult, type StateRuleDiffRowDTO, type StateRuleChangeDTO,
   type VerifyStateRulesResult,
+  STATE_INSTALLMENT_PAIRS, installmentPairOf, installmentPartnerKey, installmentPairError,
 } from '@kis-books/shared';
 import { db, type DbOrTx } from '../../db/index.js';
 import { stateEstimateRules, stateEstimateRuleOverrides } from '../../db/schema/tax-estimator-state-rules.js';
@@ -350,42 +351,76 @@ async function getRow(year: number, state: StateCode, key: string): Promise<Stat
   return row;
 }
 
+/** A second key saved in the same request (QA D6: the other half of an installment pair). */
+export interface StateRuleCompanion { key: string; value: unknown }
+
+/** Effective value of `key` for the state-year (override, else shipped); undefined when the rule has no row. */
+async function effectiveValue(exec: DbOrTx, year: number, state: StateCode, key: string): Promise<unknown> {
+  const loaded = await loadYear(exec, year, state);
+  return resolveRows(loaded.seeds.get(state) ?? [], loaded.overrides.get(state) ?? []).get(key)?.value;
+}
+
+/** QA D6: the installment percentages must match the due dates and add up to 100% after the edit. */
+async function assertInstallmentShape(exec: DbOrTx, year: number, state: StateCode, edits: Map<string, unknown>): Promise<void> {
+  for (const key of edits.keys()) {
+    const pair = installmentPairOf(STATE_INSTALLMENT_PAIRS, key);
+    if (!pair) continue;
+    const pick = async (k: string) => (edits.has(k) ? edits.get(k) : (await effectiveValue(exec, year, state, k)) ?? null);
+    const err = installmentPairError(pair, await pick(pair.pcts), await pick(pair.schedule));
+    if (err) throw new AppError(400, `${state}: ${err}`, 'TE_STATE_RULE_INVALID', { year, state, key });
+  }
+}
+
 export async function setOverride(
-  year: number, stateIn: string, key: string, value: unknown, reason: string, userId?: string,
+  year: number, stateIn: string, key: string, value: unknown, reason: string, userId?: string, companion?: StateRuleCompanion,
 ): Promise<StateRuleRowDTO> {
   const state = assertState(stateIn);
-  const def = getStateRuleDef(key);
-  if (!def) throw AppError.badRequest(`Unknown state rule '${key}'`, 'TE_STATE_RULE_INVALID');
-  const err = validateStateRuleValue(def, value);
-  if (err) throw AppError.badRequest(`Invalid value for '${key}': ${err}`, 'TE_STATE_RULE_INVALID');
+  const edits = new Map<string, unknown>([[key, value]]);
+  if (companion) {
+    if (installmentPartnerKey(STATE_INSTALLMENT_PAIRS, key) !== companion.key) {
+      throw AppError.badRequest(`'${companion.key}' cannot be saved together with '${key}'`, 'TE_STATE_RULE_INVALID');
+    }
+    edits.set(companion.key, companion.value);
+  }
+  for (const [k, v] of edits) {
+    const def = getStateRuleDef(k);
+    if (!def) throw AppError.badRequest(`Unknown state rule '${k}'`, 'TE_STATE_RULE_INVALID');
+    const err = validateStateRuleValue(def, v);
+    if (err) throw AppError.badRequest(`Invalid value for '${k}': ${err}`, 'TE_STATE_RULE_INVALID');
+  }
   const why = (reason ?? '').trim();
   if (why.length < MIN_REASON_LEN) throw AppError.badRequest('A reason of at least 3 characters is required', 'TE_STATE_RULE_INVALID');
 
   await db.transaction(async (tx) => {
     await assertStateEditable(tx, year, state);
-    const [prev] = await tx.select().from(stateEstimateRuleOverrides).where(and(
-      eq(stateEstimateRuleOverrides.state, state), eq(stateEstimateRuleOverrides.taxYear, year), eq(stateEstimateRuleOverrides.key, key)));
-    const [seed] = await tx.select().from(stateEstimateRules).where(and(
-      eq(stateEstimateRules.state, state), eq(stateEstimateRules.taxYear, year), eq(stateEstimateRules.key, key)));
-    // R6-08: the same value again keeps the sign-off; a provisional copy with no shipped row stays provisional.
-    const sameValue = !!prev && deepEqual(prev.value, value);
-    const status = prev?.status === 'provisional' && !seed ? 'provisional' : 'override';
-    const [saved] = await tx.insert(stateEstimateRuleOverrides).values({
-      state, taxYear: year, key, value: jsonb(value), status, reason: why, createdBy: userId ?? null,
-    }).onConflictDoUpdate({
-      target: [stateEstimateRuleOverrides.state, stateEstimateRuleOverrides.taxYear, stateEstimateRuleOverrides.key],
-      // A new override value is a new decision: any earlier verification is cleared (R7 Verify).
-      set: {
-        value: jsonb(value), status, reason: why, createdBy: userId ?? null, updatedAt: sql`now()`,
-        ...(sameValue ? {} : { verifiedAt: null, verifiedBy: null, verificationNote: null }),
-      },
-    }).returning();
-    // R6-09: `before` is the value the engine was reading (override, else the shipped seed).
-    await auditLog(ZERO_TENANT, 'override', AUDIT_ENTITY, saved!.id,
-      { year, state, key, value: prev?.value ?? seed?.value ?? null },
-      { op: 'override_set', year, state, key, value, reason: why }, userId, tx);
+    await assertInstallmentShape(tx, year, state, edits);
+    for (const [k, v] of edits) await upsertOverride(tx, year, state, k, v, why, userId);
   });
   return getRow(year, state, key);
+}
+
+async function upsertOverride(tx: DbOrTx, year: number, state: StateCode, key: string, value: unknown, why: string, userId?: string): Promise<void> {
+  const [prev] = await tx.select().from(stateEstimateRuleOverrides).where(and(
+    eq(stateEstimateRuleOverrides.state, state), eq(stateEstimateRuleOverrides.taxYear, year), eq(stateEstimateRuleOverrides.key, key)));
+  const [seed] = await tx.select().from(stateEstimateRules).where(and(
+    eq(stateEstimateRules.state, state), eq(stateEstimateRules.taxYear, year), eq(stateEstimateRules.key, key)));
+  // R6-08: the same value again keeps the sign-off; a provisional copy with no shipped row stays provisional.
+  const sameValue = !!prev && deepEqual(prev.value, value);
+  const status = prev?.status === 'provisional' && !seed ? 'provisional' : 'override';
+  const [saved] = await tx.insert(stateEstimateRuleOverrides).values({
+    state, taxYear: year, key, value: jsonb(value), status, reason: why, createdBy: userId ?? null,
+  }).onConflictDoUpdate({
+    target: [stateEstimateRuleOverrides.state, stateEstimateRuleOverrides.taxYear, stateEstimateRuleOverrides.key],
+    // A new override value is a new decision: any earlier verification is cleared (R7 Verify).
+    set: {
+      value: jsonb(value), status, reason: why, createdBy: userId ?? null, updatedAt: sql`now()`,
+      ...(sameValue ? {} : { verifiedAt: null, verifiedBy: null, verificationNote: null }),
+    },
+  }).returning();
+  // R6-09: `before` is the value the engine was reading (override, else the shipped seed).
+  await auditLog(ZERO_TENANT, 'override', AUDIT_ENTITY, saved!.id,
+    { year, state, key, value: prev?.value ?? seed?.value ?? null },
+    { op: 'override_set', year, state, key, value, reason: why }, userId, tx);
 }
 
 export async function revertOverride(year: number, stateIn: string, key: string, userId?: string): Promise<void> {
@@ -411,6 +446,29 @@ export async function revertOverride(year: number, stateIn: string, key: string,
     await auditLog(ZERO_TENANT, 'override', AUDIT_ENTITY, row.id,
       { year, state, key, value: row.value },
       { op: 'override_reverted', year, state, key, value: null, reason: null }, userId, tx);
+    // QA D6: back on the shipped value, the installment pair must still line up; when it no
+    // longer does, the partner's override goes back to shipped too (in the same transaction).
+    const pair = installmentPairOf(STATE_INSTALLMENT_PAIRS, key);
+    if (pair) {
+      const partner = pair.pcts === key ? pair.schedule : pair.pcts;
+      const pcts = (await effectiveValue(tx, year, state, pair.pcts)) ?? null;
+      const sched = (await effectiveValue(tx, year, state, pair.schedule)) ?? null;
+      if (installmentPairError(pair, pcts, sched)) {
+        const [p] = await tx.select().from(stateEstimateRuleOverrides).where(and(
+          eq(stateEstimateRuleOverrides.state, state), eq(stateEstimateRuleOverrides.taxYear, year), eq(stateEstimateRuleOverrides.key, partner)));
+        const [pSeed] = await tx.select({ id: stateEstimateRules.id }).from(stateEstimateRules).where(and(
+          eq(stateEstimateRules.state, state), eq(stateEstimateRules.taxYear, year), eq(stateEstimateRules.key, partner)));
+        if (p && !pSeed) {
+          throw new AppError(400, `Reverting ${key} would leave it out of line with ${partner}; override both together instead`, 'TE_STATE_RULE_INVALID', { year, state, key });
+        }
+        if (p) {
+          await tx.delete(stateEstimateRuleOverrides).where(eq(stateEstimateRuleOverrides.id, p.id));
+          await auditLog(ZERO_TENANT, 'override', AUDIT_ENTITY, p.id,
+            { year, state, key: partner, value: p.value },
+            { op: 'override_reverted', year, state, key: partner, value: null, reason: `reverted with ${key}` }, userId, tx);
+        }
+      }
+    }
   });
 }
 

@@ -67,7 +67,7 @@ taxStateRulesAdminRouter.get('/:year/:state', async (req, res) => {
 taxStateRulesAdminRouter.put('/:year/:state/:key', async (req, res) => {
   const { year, state, key } = stateRuleKeyParamsSchema.parse(req.params);
   const body = setStateRuleOverrideSchema.parse(req.body);
-  res.json({ data: await svc.setOverride(year, state, key, body.value, body.reason, req.userId) });
+  res.json({ data: await svc.setOverride(year, state, key, body.value, body.reason, req.userId, body.companion) });
 });
 
 taxStateRulesAdminRouter.delete('/:year/:state/:key', async (req, res) => {

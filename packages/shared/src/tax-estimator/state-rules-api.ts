@@ -68,6 +68,8 @@ export interface SetStateRuleOverrideInput {
   value: unknown;
   /** Required, 3+ chars. Audited. */
   reason: string;
+  /** QA D6: the other half of an installment pair, saved in the same transaction. */
+  companion?: { key: string; value: unknown };
 }
 
 export interface CreateStateYearFromPriorResult {

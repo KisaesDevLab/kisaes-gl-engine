@@ -24,6 +24,7 @@ import {
   type ParameterSeedRow, type ParameterStatus,
   type TaxParametersDTO, type TaxParameterRowDTO, type TaxParameterYearsDTO,
   type CreateYearFromPriorResult, type TaxParameterDiffRowDTO, type TaxParameterChangeDTO, type VerifyTaxParametersResult,
+  FEDERAL_INSTALLMENT_PAIRS, installmentPairOf, installmentPartnerKey, installmentPairError,
 } from '@kis-books/shared';
 import { db, type DbOrTx } from '../../db/index.js';
 import { taxParameters, taxParameterOverrides } from '../../db/schema/tax-estimator.js';
@@ -277,41 +278,78 @@ async function getRow(year: number, key: string): Promise<TaxParameterRowDTO> {
   return row;
 }
 
+/** QA D6: the other half of an installment pair, saved in the same request. */
+export interface ParameterCompanion { key: string; value: unknown }
+
+/** Stored value of `key` for `year` (override, else shipped seed); null when neither exists. */
+async function storedValue(exec: DbOrTx, year: number, key: string): Promise<unknown> {
+  const [ov] = await exec.select({ value: taxParameterOverrides.value }).from(taxParameterOverrides)
+    .where(and(eq(taxParameterOverrides.taxYear, year), eq(taxParameterOverrides.key, key)));
+  if (ov) return ov.value;
+  const [seed] = await exec.select({ value: taxParameters.value }).from(taxParameters)
+    .where(and(eq(taxParameters.taxYear, year), eq(taxParameters.key, key)));
+  return seed ? seed.value : null;
+}
+
+async function assertInstallmentShape(exec: DbOrTx, year: number, edits: Map<string, unknown>): Promise<void> {
+  for (const key of edits.keys()) {
+    const pair = installmentPairOf(FEDERAL_INSTALLMENT_PAIRS, key);
+    if (!pair) continue;
+    const pick = async (k: string) => (edits.has(k) ? edits.get(k) : await storedValue(exec, year, k));
+    const err = installmentPairError(pair, await pick(pair.pcts), await pick(pair.schedule));
+    if (err) throw new AppError(400, err, 'TE_PARAM_INVALID', { year, key });
+  }
+}
+
 export async function setOverride(
-  year: number, key: string, value: unknown, reason: string, userId?: string,
+  year: number, key: string, value: unknown, reason: string, userId?: string, companion?: ParameterCompanion,
 ): Promise<TaxParameterRowDTO> {
-  const def = getParameterDef(key);
-  if (!isParameterKey(key) || !def) throw AppError.badRequest(`Unknown tax parameter '${key}'`, 'TE_PARAM_INVALID');
-  const err = validateParameterValue(def.def.type, value);
-  if (err) throw AppError.badRequest(`Invalid value for '${key}': ${err}`, 'TE_PARAM_INVALID');
+  const edits = new Map<string, unknown>([[key, value]]);
+  if (companion) {
+    if (installmentPartnerKey(FEDERAL_INSTALLMENT_PAIRS, key) !== companion.key) {
+      throw AppError.badRequest(`'${companion.key}' cannot be saved together with '${key}'`, 'TE_PARAM_INVALID');
+    }
+    edits.set(companion.key, companion.value);
+  }
+  for (const [k, v] of edits) {
+    const def = getParameterDef(k);
+    if (!isParameterKey(k) || !def) throw AppError.badRequest(`Unknown tax parameter '${k}'`, 'TE_PARAM_INVALID');
+    const err = validateParameterValue(def.def.type, v);
+    if (err) throw AppError.badRequest(`Invalid value for '${k}': ${err}`, 'TE_PARAM_INVALID');
+  }
   const why = (reason ?? '').trim();
   if (why.length < MIN_REASON_LEN) throw AppError.badRequest('A reason of at least 3 characters is required', 'TE_PARAM_INVALID');
 
   await db.transaction(async (tx) => {
     await assertYearEditable(tx, year);
-    const [prev] = await tx.select().from(taxParameterOverrides)
-      .where(and(eq(taxParameterOverrides.taxYear, year), eq(taxParameterOverrides.key, key)));
-    const [seed] = await tx.select().from(taxParameters).where(and(eq(taxParameters.taxYear, year), eq(taxParameters.key, key)));
-    // R6-08: the same value again (a reason edit) is not a new decision — the sign-off stays; and a
-    // provisional copy that still has no shipped row stays provisional so it remains in the diff / adopt flow.
-    const sameValue = !!prev && deepEqual(prev.value, value);
-    const status = prev?.status === 'provisional' && !seed ? 'provisional' : 'override';
-    const [saved] = await tx.insert(taxParameterOverrides).values({
-      taxYear: year, key, value, status, reason: why, createdBy: userId ?? null,
-    }).onConflictDoUpdate({
-      target: [taxParameterOverrides.taxYear, taxParameterOverrides.key],
-      // A new override value is a new decision: any earlier verification is cleared (R7 Verify).
-      set: {
-        value, status, reason: why, createdBy: userId ?? null, updatedAt: sql`now()`,
-        ...(sameValue ? {} : { verifiedAt: null, verifiedBy: null, verificationNote: null }),
-      },
-    }).returning();
-    // R6-09: `before` is the value the engine was reading (override, else the shipped seed).
-    await auditLog(ZERO_TENANT, 'override', AUDIT_ENTITY, saved!.id,
-      { year, key, value: prev?.value ?? seed?.value ?? null },
-      { op: 'override_set', year, key, value, reason: why }, userId, tx);
+    await assertInstallmentShape(tx, year, edits);
+    for (const [k, v] of edits) await upsertOverride(tx, year, k, v, why, userId);
   });
   return getRow(year, key);
+}
+
+async function upsertOverride(tx: DbOrTx, year: number, key: string, value: unknown, why: string, userId?: string): Promise<void> {
+  const [prev] = await tx.select().from(taxParameterOverrides)
+    .where(and(eq(taxParameterOverrides.taxYear, year), eq(taxParameterOverrides.key, key)));
+  const [seed] = await tx.select().from(taxParameters).where(and(eq(taxParameters.taxYear, year), eq(taxParameters.key, key)));
+  // R6-08: the same value again (a reason edit) is not a new decision — the sign-off stays; and a
+  // provisional copy that still has no shipped row stays provisional so it remains in the diff / adopt flow.
+  const sameValue = !!prev && deepEqual(prev.value, value);
+  const status = prev?.status === 'provisional' && !seed ? 'provisional' : 'override';
+  const [saved] = await tx.insert(taxParameterOverrides).values({
+    taxYear: year, key, value, status, reason: why, createdBy: userId ?? null,
+  }).onConflictDoUpdate({
+    target: [taxParameterOverrides.taxYear, taxParameterOverrides.key],
+    // A new override value is a new decision: any earlier verification is cleared (R7 Verify).
+    set: {
+      value, status, reason: why, createdBy: userId ?? null, updatedAt: sql`now()`,
+      ...(sameValue ? {} : { verifiedAt: null, verifiedBy: null, verificationNote: null }),
+    },
+  }).returning();
+  // R6-09: `before` is the value the engine was reading (override, else the shipped seed).
+  await auditLog(ZERO_TENANT, 'override', AUDIT_ENTITY, saved!.id,
+    { year, key, value: prev?.value ?? seed?.value ?? null },
+    { op: 'override_set', year, key, value, reason: why }, userId, tx);
 }
 
 export async function revertOverride(year: number, key: string, userId?: string): Promise<void> {
@@ -334,6 +372,24 @@ export async function revertOverride(year: number, key: string, userId?: string)
     await auditLog(ZERO_TENANT, 'override', AUDIT_ENTITY, row.id,
       { year, key, value: row.value },
       { op: 'override_reverted', year, key, value: null, reason: null }, userId, tx);
+    // QA D6: an installment pair that no longer lines up on the shipped value takes its partner back too.
+    const pair = installmentPairOf(FEDERAL_INSTALLMENT_PAIRS, key);
+    if (pair && installmentPairError(pair, await storedValue(tx, year, pair.pcts), await storedValue(tx, year, pair.schedule))) {
+      const partner = pair.pcts === key ? pair.schedule : pair.pcts;
+      const [p] = await tx.select().from(taxParameterOverrides)
+        .where(and(eq(taxParameterOverrides.taxYear, year), eq(taxParameterOverrides.key, partner)));
+      const [pSeed] = await tx.select({ id: taxParameters.id }).from(taxParameters)
+        .where(and(eq(taxParameters.taxYear, year), eq(taxParameters.key, partner)));
+      if (p && !pSeed) {
+        throw new AppError(400, `Reverting ${key} would leave it out of line with ${partner}; override both together instead`, 'TE_PARAM_INVALID', { year, key });
+      }
+      if (p) {
+        await tx.delete(taxParameterOverrides).where(eq(taxParameterOverrides.id, p.id));
+        await auditLog(ZERO_TENANT, 'override', AUDIT_ENTITY, p.id,
+          { year, key: partner, value: p.value },
+          { op: 'override_reverted', year, key: partner, value: null, reason: `reverted with ${key}` }, userId, tx);
+      }
+    }
   });
 }
 

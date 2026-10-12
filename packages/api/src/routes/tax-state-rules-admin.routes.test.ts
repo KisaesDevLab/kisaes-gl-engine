@@ -145,6 +145,16 @@ describe('tax-state-rules admin routes', () => {
     expect((await request('DELETE', `${BASE}/${Y1}/AR/required_threshold`, undefined, S())).status).toBe(404);
   });
 
+  it('QA D6: PUT installments.pcts that does not fit the due dates is 400 with a message; a companion saves both', async () => {
+    const bad = await request('PUT', `${BASE}/${Y1}/AR/installments.pcts`, { value: [0.25], reason: 'QA D6' }, S());
+    expect(bad.status).toBe(400);
+    expect(bad.json.error).toMatchObject({ code: 'TE_STATE_RULE_INVALID', message: expect.stringMatching(/add up to 100%/) });
+    const both = await request('PUT', `${BASE}/${Y1}/AR/installments.pcts`,
+      { value: [0.5, 0.5], reason: 'Two installments', companion: { key: 'installments.due_dates', value: ['2086-04-15', '2086-09-15'] } }, S());
+    expect(both.status).toBe(200);
+    expect(both.json.data.value).toEqual([0.5, 0.5]);
+  });
+
   it('create-from-prior, diff, adopt-shipped and changes', async () => {
     const created = await request('POST', `${BASE}/${Y2}/create-from-prior`, undefined, S());
     expect(created.status).toBe(201);

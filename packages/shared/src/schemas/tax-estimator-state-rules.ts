@@ -23,6 +23,11 @@ export const stateRuleKeyParamsSchema = z.object({ year: taxYearParamSchema, sta
 export const setStateRuleOverrideSchema = z.object({
   value: z.unknown().refine((v) => v !== undefined, { message: 'value is required' }),
   reason: z.string().trim().min(MIN_REASON_LEN).max(MAX_REASON_LEN),
+  /** QA D6: the other half of an installment pair (pcts + due dates), saved in the same transaction. */
+  companion: z.object({
+    key: z.string().min(1).max(100),
+    value: z.unknown().refine((v) => v !== undefined, { message: 'value is required' }),
+  }).optional(),
 });
 
 export const adoptShippedStateRulesSchema = z.object({

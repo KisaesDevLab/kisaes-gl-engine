@@ -169,6 +169,34 @@ describe('setOverride validation', () => {
   });
 });
 
+describe('QA D6: installment percentages vs due dates', () => {
+  const pctsOf = async () => (await svc.getStateRules(Y1, 'MO')).rules.find((r) => r.key === 'installments.pcts')!;
+  const datesOf = async () => (await svc.getStateRules(Y1, 'MO')).rules.find((r) => r.key === 'installments.due_dates')!;
+
+  it('refuses a list that does not total 100% or does not match the due dates (400, nothing saved)', async () => {
+    await expect(svc.setOverride(Y1, 'MO', 'installments.pcts', [0.25], 'QA D6')).rejects.toMatchObject({
+      statusCode: 400, code: 'TE_STATE_RULE_INVALID', message: expect.stringMatching(/add up to 100%/),
+    });
+    await expect(svc.setOverride(Y1, 'MO', 'installments.pcts', [0.5, 0.5], 'QA D6')).rejects.toMatchObject({
+      statusCode: 400, code: 'TE_STATE_RULE_INVALID', message: expect.stringMatching(/has 2 entries but installments.due_dates has 1/),
+    });
+    expect((await pctsOf()).source).toBe('seed');
+  });
+
+  it('saves both halves together with a companion, and reverting one reverts an incoherent partner', async () => {
+    const dates = ['2080-04-15', '2080-09-15'];
+    const row = await svc.setOverride(Y1, 'MO', 'installments.pcts', [0.5, 0.5], 'Two installments', undefined,
+      { key: 'installments.due_dates', value: dates });
+    expect(row.value).toEqual([0.5, 0.5]);
+    expect((await datesOf()).value).toEqual(dates);
+    await expect(svc.setOverride(Y1, 'MO', 'installments.pcts', [1], 'x', undefined, { key: 'penalty.rate', value: 0.1 }))
+      .rejects.toMatchObject({ code: 'TE_STATE_RULE_INVALID' });
+    await svc.revertOverride(Y1, 'MO', 'installments.pcts');
+    expect((await pctsOf()).source).toBe('seed');
+    expect((await datesOf()).source).toBe('seed');
+  });
+});
+
 describe('R5 key validation', () => {
   const bad = (key: string, value: unknown) => expect(svc.setOverride(Y1, 'AR', key, value, 'abc')).rejects.toMatchObject({ code: 'TE_STATE_RULE_INVALID' });
 
