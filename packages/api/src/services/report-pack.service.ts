@@ -338,6 +338,10 @@ export async function createRun(
       }),
     ]);
     queued = true;
+    // Enqueue succeeds even when no worker consumes the queue (worker
+    // container down / older image). Without this the run would sit 'queued'
+    // forever and the UI poll would never finish.
+    scheduleReportPackWatchdog(run!.id);
   } catch (err) {
     console.warn(`[report-pack] queue unavailable for run ${run!.id}; generating inline:`, err instanceof Error ? err.message : err);
   }
@@ -354,6 +358,36 @@ export async function createRun(
   }
   await auditLog(tenantId, 'create', 'report_pack_run', run!.id, null, run, userId);
   return run!;
+}
+
+// Grace period before the API takes over a run no worker has claimed. A
+// healthy idle worker claims within a second or two; the worker renders one
+// pack at a time, so a run queued behind a long render is also taken over —
+// the claim is a compare-and-swap, so the two can never both render it.
+// Mirrors the statement-parse and bill-capture watchdogs.
+export const REPORT_PACK_WATCHDOG_MS = 30_000;
+
+function scheduleReportPackWatchdog(runId: string): void {
+  const timer = setTimeout(() => { void runReportPackWatchdog(runId); }, REPORT_PACK_WATCHDOG_MS);
+  // Don't keep the event loop alive on shutdown for a pending watchdog.
+  timer.unref?.();
+}
+
+/** Generate in-process a run that is still 'queued' (no worker claimed it). */
+export async function runReportPackWatchdog(runId: string): Promise<void> {
+  try {
+    const run = await db.query.reportPackRuns.findFirst({
+      where: eq(reportPackRuns.id, runId),
+      columns: { status: true },
+    });
+    if (run?.status !== 'queued') return;
+    console.warn(`[report-pack] no worker claimed run ${runId} within ${REPORT_PACK_WATCHDOG_MS}ms; generating inline`);
+    const { generateReportPackRun } = await import('./report-pack-generate.service.js');
+    await generateReportPackRun(runId, { onlyIfQueued: true });
+  } catch (err) {
+    // generateReportPackRun marks the run failed on throw; log for ops.
+    console.error(`[report-pack] watchdog generation failed for run ${runId}:`, err);
+  }
 }
 
 export async function getRun(tenantId: string, runId: string): Promise<PackRunRow> {

@@ -110,7 +110,13 @@ async function appendLeadsheetAttachments(tenantId: string, companyId: string, a
  * succeeded / partial / failed. Idempotent enough for at-least-once delivery —
  * a re-run simply re-uploads and overwrites the run's transient artifact.
  */
-export async function generateReportPackRun(runId: string): Promise<void> {
+export interface GenerateRunOptions {
+  /** Claim only a still-'queued' run (the API watchdog): never re-run one a
+   *  worker already finished as 'failed' between the watchdog's check and here. */
+  onlyIfQueued?: boolean;
+}
+
+export async function generateReportPackRun(runId: string, opts: GenerateRunOptions = {}): Promise<void> {
   const run = await db.query.reportPackRuns.findFirst({ where: eq(reportPackRuns.id, runId) });
   if (!run) {
     console.error(`[report-pack] run ${runId} not found — skipping`);
@@ -137,21 +143,12 @@ export async function generateReportPackRun(runId: string): Promise<void> {
   // 'failed' stays claimable so a queued retry after a failure still runs.
   const claimed = await db.update(reportPackRuns)
     .set({ status: 'running', startedAt: new Date() })
-    .where(and(eq(reportPackRuns.id, runId), inArray(reportPackRuns.status, ['queued', 'failed'])))
+    .where(and(eq(reportPackRuns.id, runId), inArray(reportPackRuns.status, opts.onlyIfQueued ? ['queued'] : ['queued', 'failed'])))
     .returning({ id: reportPackRuns.id });
   if (claimed.length === 0) {
     console.log(`[report-pack] run ${runId} already claimed by another generator — skipping`);
     return;
   }
-
-  const companyRow = await db.execute(
-    sql`SELECT business_name FROM companies WHERE id = ${run.companyId}`,
-  );
-  const companyName = (companyRow.rows as Array<{ business_name?: string }>)[0]?.business_name || 'Company';
-  const tenantFooter = await getReportFooter(run.tenantId);
-  // A pack-level per-page footer (user-typed) overrides the tenant default so
-  // every page of THIS pack carries the caller's footer text.
-  const footer = (pack.pageFooter && pack.pageFooter.trim()) ? pack.pageFooter.trim() : tenantFooter;
 
   const rangeStart = run.rangeStart ?? '';
   const rangeEnd = run.rangeEnd ?? '';
@@ -160,9 +157,23 @@ export async function generateReportPackRun(runId: string): Promise<void> {
   const sections: RenderedSection[] = [];
   const failures: SectionFailure[] = [];
 
-  const browser = await launchPdfBrowser();
-
+  // Everything after the claim runs inside the try: a throw here (Chromium
+  // failing to launch, a footer/company lookup error) must mark the run
+  // 'failed' — outside the try it left the run 'running' forever, which the
+  // claim above then refuses to re-run.
+  let browser: Awaited<ReturnType<typeof launchPdfBrowser>> | null = null;
   try {
+    const companyRow = await db.execute(
+      sql`SELECT business_name FROM companies WHERE id = ${run.companyId}`,
+    );
+    const companyName = (companyRow.rows as Array<{ business_name?: string }>)[0]?.business_name || 'Company';
+    const tenantFooter = await getReportFooter(run.tenantId);
+    // A pack-level per-page footer (user-typed) overrides the tenant default so
+    // every page of THIS pack carries the caller's footer text.
+    const footer = (pack.pageFooter && pack.pageFooter.trim()) ? pack.pageFooter.trim() : tenantFooter;
+
+    const pdfBrowser = await launchPdfBrowser();
+    browser = pdfBrowser;
     // Engagement letter (SSARS 21) — rendered FIRST, before any financial
     // statement, so it opens the pack. Reuses the pack's date range + default
     // basis. A missing/inactive letter is skipped silently; a render error
@@ -182,7 +193,7 @@ export async function generateReportPackRun(runId: string): Promise<void> {
           // Footer is stamped on EVERY page after merge (below), not embedded
           // in the flowed HTML (which only lands on the last page).
           const letterHtml = buildLetterPageHtml({ title, bodyHtml, companyName, footer: '', fontStack });
-          const bytes = await htmlToPdfBytes(browser, letterHtml, false);
+          const bytes = await htmlToPdfBytes(pdfBrowser, letterHtml, false);
           const doc = await PDFDocument.load(bytes);
           sections.push({ reportId: '__letter__', label: title, bytes, pageCount: doc.getPageCount(), startPage: 0 });
         }
@@ -221,7 +232,7 @@ export async function generateReportPackRun(runId: string): Promise<void> {
             asOfDate,
             allowTaxEstimate: run.allowTaxEstimate,
             requestedBy: run.requestedBy,
-            renderHtml: (html) => htmlToPdfBytes(browser, html, false),
+            renderHtml: (html) => htmlToPdfBytes(pdfBrowser, html, false),
           });
           const doc = await PDFDocument.load(bytes);
           sections.push({ reportId: item.reportId, label: def.label, bytes, pageCount: doc.getPageCount(), startPage: 0 });
@@ -248,7 +259,7 @@ export async function generateReportPackRun(runId: string): Promise<void> {
         const sectionHtml = buildReportPackSectionHtml({
           title: def.label, companyName, dateLabel, tableHtml, footer: '',
         });
-        let bytes = await htmlToPdfBytes(browser, sectionHtml, orientation === 'landscape');
+        let bytes = await htmlToPdfBytes(pdfBrowser, sectionHtml, orientation === 'landscape');
         // Leadsheets can carry their row attachments (stamped) as part
         // of the package — merged into the section so the TOC and the
         // cross-document page numbering stay correct.
@@ -278,10 +289,10 @@ export async function generateReportPackRun(runId: string): Promise<void> {
     const merged = await PDFDocument.create();
     if (coverPages > 0) {
       const dateLabel = `${formatIsoUS(rangeStart)} to ${formatIsoUS(rangeEnd)}`;
-      await appendPdf(merged, await htmlToPdfBytes(browser, coverHtml(pack.name, companyName, dateLabel), false));
+      await appendPdf(merged, await htmlToPdfBytes(pdfBrowser, coverHtml(pack.name, companyName, dateLabel), false));
     }
     if (tocPages > 0) {
-      const tocBytes = await htmlToPdfBytes(browser, tocHtml(sections.map((s) => ({ label: s.label, startPage: s.startPage }))), false);
+      const tocBytes = await htmlToPdfBytes(pdfBrowser, tocHtml(sections.map((s) => ({ label: s.label, startPage: s.startPage }))), false);
       await appendPdf(merged, tocBytes);
     }
     for (const s of sections) await appendPdf(merged, s.bytes);
@@ -327,6 +338,6 @@ export async function generateReportPackRun(runId: string): Promise<void> {
     }).where(and(eq(reportPackRuns.id, runId)));
     throw err;
   } finally {
-    await browser.close();
+    await browser?.close().catch(() => undefined);
   }
 }

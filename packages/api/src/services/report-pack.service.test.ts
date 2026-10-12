@@ -11,12 +11,34 @@ vi.mock('./extraction/queue.js', () => ({
   enqueueReportPack: (data: { runId: string; tenantId: string }) => enqueueSpy(data),
 }));
 
+// Chromium is not needed: the browser handle and HTML→PDF step are stubbed;
+// `launchFails` simulates a Chromium that can't start (worker-path defect).
+const pdfMocks = vi.hoisted(() => ({ launchFails: false, launches: 0 }));
+vi.mock('./pdf-merge.util.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./pdf-merge.util.js')>();
+  const { PDFDocument } = await import('pdf-lib');
+  return {
+    ...real,
+    launchPdfBrowser: async () => {
+      pdfMocks.launches++;
+      if (pdfMocks.launchFails) throw new Error('Failed to launch the browser process');
+      return { close: async () => {} };
+    },
+    htmlToPdfBytes: async () => {
+      const d = await PDFDocument.create();
+      d.addPage();
+      return d.save();
+    },
+  };
+});
+
 import { db } from '../db/index.js';
 import {
   tenants, users, sessions, companies, auditLog,
   reportPacks, reportPackItems, reportPackRuns,
 } from '../db/schema/index.js';
 import * as packService from './report-pack.service.js';
+import { generateReportPackRun } from './report-pack-generate.service.js';
 
 let tenantId: string;
 let companyId: string;
@@ -72,6 +94,8 @@ describe('report-pack.service', () => {
     await cleanDb();
     await seed();
     enqueueSpy.mockClear();
+    pdfMocks.launchFails = false;
+    pdfMocks.launches = 0;
   });
 
   it('creates a pack with ordered items', async () => {
@@ -170,5 +194,55 @@ describe('report-pack.service', () => {
     const allowed = await packService.createRun(tenantId, companyId, pack.id, USER_ID, {}, { attachments: true, transactions: true });
     expect(allowed.allowAttachments).toBe(true);
     expect(allowed.allowTransactions).toBe(true);
+  });
+
+  // ─── worker path ────────────────────────────────────────────────────
+  // Before the BullMQ job-id fix every enqueue threw and runs were generated
+  // inline; now they reach the worker, so a run no worker picks up, or a
+  // Chromium that fails to start, must still reach a terminal state.
+
+  async function runRow(runId: string) {
+    const [row] = await db.select().from(reportPackRuns).where(eq(reportPackRuns.id, runId));
+    return row!;
+  }
+
+  it('a Chromium launch failure fails the run instead of leaving it running forever', async () => {
+    const pack = await packService.createPack(tenantId, companyId, USER_ID, baseInput());
+    const run = await packService.createRun(tenantId, companyId, pack.id, USER_ID, {});
+    pdfMocks.launchFails = true;
+    await expect(generateReportPackRun(run.id)).rejects.toThrow(/launch the browser/);
+    const row = await runRow(run.id);
+    expect(row.status).toBe('failed');
+    expect(row.finishedAt).not.toBeNull();
+    expect(JSON.stringify(row.errorJson)).toContain('launch the browser');
+  });
+
+  it('onlyIfQueued never re-claims a failed run', async () => {
+    const pack = await packService.createPack(tenantId, companyId, USER_ID, baseInput());
+    const run = await packService.createRun(tenantId, companyId, pack.id, USER_ID, {});
+    await db.update(reportPackRuns).set({ status: 'failed' }).where(eq(reportPackRuns.id, run.id));
+    await generateReportPackRun(run.id, { onlyIfQueued: true });
+    expect((await runRow(run.id)).status).toBe('failed');
+    expect(pdfMocks.launches).toBe(0);
+  });
+
+  it('the watchdog generates in-process a run no worker claimed', async () => {
+    const pack = await packService.createPack(tenantId, companyId, USER_ID, baseInput({ coverPage: false, toc: false }));
+    const run = await packService.createRun(tenantId, companyId, pack.id, USER_ID, {});
+    expect((await runRow(run.id)).status).toBe('queued');
+    await packService.runReportPackWatchdog(run.id);
+    const row = await runRow(run.id);
+    expect(row.status).toBe('succeeded');
+    expect(row.progress).toBe(100);
+    expect(pdfMocks.launches).toBe(1);
+  });
+
+  it('the watchdog leaves alone a run a worker already claimed', async () => {
+    const pack = await packService.createPack(tenantId, companyId, USER_ID, baseInput());
+    const run = await packService.createRun(tenantId, companyId, pack.id, USER_ID, {});
+    await db.update(reportPackRuns).set({ status: 'running', startedAt: new Date() }).where(eq(reportPackRuns.id, run.id));
+    await packService.runReportPackWatchdog(run.id);
+    expect((await runRow(run.id)).status).toBe('running');
+    expect(pdfMocks.launches).toBe(0);
   });
 });
