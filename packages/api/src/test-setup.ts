@@ -8,7 +8,18 @@ import path from 'path';
 
 // Use a separate test database to avoid wiping dev data
 process.env['DATABASE_URL'] = process.env['DATABASE_URL'] || 'postgresql://kisbooks:kisbooks@localhost:5434/kisbooks_test';
-process.env['REDIS_URL'] = process.env['REDIS_URL'] || 'redis://localhost:6379';
+// R6-12 / D13: never default to the production Redis (6379). The estimate, snapshot and portal
+// tests write te:estimate:* cache entries, so on a host that runs the app this must point at a
+// TEST instance (redis://localhost:6390 here). CI has no Redis at all; it gets a harmless
+// unreachable test URL (the clients fall back exactly as they did before).
+const PROD_REDIS_PORT = /:6379(\/|$)/;
+const redisUrl = process.env['REDIS_URL'];
+if (!redisUrl) {
+  if (!process.env['CI']) throw new Error('REDIS_URL is not set. Export a TEST Redis URL (e.g. REDIS_URL=redis://localhost:6390) before running the API tests; refusing to default to the production instance on 6379 (D13).');
+  process.env['REDIS_URL'] = 'redis://localhost:6390';
+} else if (PROD_REDIS_PORT.test(redisUrl) && !process.env['CI']) {
+  throw new Error(`REDIS_URL=${redisUrl} points at the default (production) Redis port; the API tests write cache entries, so use a TEST instance such as redis://localhost:6390 (D13).`);
+}
 process.env['JWT_SECRET'] = 'test-secret-key-for-testing-only';
 // Installation sentinel encryption key — stable value for reproducible tests.
 // The sentinel service test overrides DATA_DIR so real sentinels are never
