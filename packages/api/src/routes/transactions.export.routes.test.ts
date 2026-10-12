@@ -409,12 +409,12 @@ describe.skipIf(!HAS_CHROME)('GET /transactions/export — PDF (real render)', (
     expect(text).toMatch(/Printed \d{2}\/\d{2}\/\d{4} \d{1,2}:\d{2} [AP]M C[SD]T/);
     expect(text).toContain('Page 1 of 1');
     // Column headers (the report stylesheet upper-cases them).
-    for (const h of ['DATE', 'TYPE', 'REF #', 'NAME', 'DESCRIPTION', 'ACCOUNT / CATEGORY', 'DEBIT', 'CREDIT']) {
+    for (const h of ['DATE', 'TYPE', 'REF #', 'NAME', 'DESCRIPTION', 'ACCOUNT / CATEGORY', 'TAG', 'DEBIT', 'CREDIT']) {
       expect(text).toContain(h);
     }
     expect(text).not.toContain('STATUS');
-    // PDF stays GL-like: no Tag / Status columns.
-    expect(text).not.toContain('XP Tag');
+    // Tag column: the tagged expense shows its tag (no Status column).
+    expect(text).toContain('XP Tag');
     expect(text).toContain('XP Sales');
     expect(text).toContain('250.00');
     expect(text).toContain('275.00');

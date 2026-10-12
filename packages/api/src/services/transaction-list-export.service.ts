@@ -10,8 +10,10 @@
 // scoping, same filter and sort SQL) with paging replaced by a cap.
 //
 // Columns follow the General Ledger report: Date | Type | Ref # | Name |
-// Description | Account / Category | Debit | Credit (no running balance),
-// then a totals row. CSV adds Tag and Status.
+// Description | Account / Category | Tag | Debit | Credit (no running
+// balance), then a totals row. CSV has Tag after Credit and adds Status.
+// Tag is the same value in both: the distinct tag names on the
+// transaction's lines, joined with '; '.
 //
 // Debit / Credit — the same rules the list screen uses:
 //   - Void transactions are reversed, so they show 0 / 0 (and add nothing
@@ -251,28 +253,37 @@ export function toTransactionListCsv(x: TxnExport): string {
   return '\uFEFF' + lines.join('\r\n') + '\r\n';
 }
 
-const PDF_COLUMNS: Array<{ key: keyof TxnExportRow; label: string; width?: string; right?: boolean }> = [
-  { key: 'date', label: 'Date', width: '68px' },
-  { key: 'type', label: 'Type', width: '92px' },
-  { key: 'ref', label: 'Ref #', width: '60px' },
-  { key: 'name', label: 'Name', width: '140px' },
+// Landscape letter leaves ~900px of table. To fit Tag, every fixed
+// column gave up some width and cells use 5px side padding (TABLE_STYLE)
+// instead of the report chrome's 8px, so Description — the flex column —
+// keeps ~145px. `wrap` breaks long unspaced values (tag names) inside the
+// column instead of letting them push the amounts off the page.
+const PDF_COLUMNS: Array<{ key: keyof TxnExportRow; label: string; width?: string; right?: boolean; wrap?: boolean }> = [
+  { key: 'date', label: 'Date', width: '64px' },
+  { key: 'type', label: 'Type', width: '72px' },
+  { key: 'ref', label: 'Ref #', width: '50px' },
+  { key: 'name', label: 'Name', width: '110px' },
   { key: 'description', label: 'Description' },
-  { key: 'category', label: 'Account / Category', width: '150px' },
-  { key: 'debit', label: 'Debit', width: '84px', right: true },
-  { key: 'credit', label: 'Credit', width: '84px', right: true },
+  { key: 'category', label: 'Account / Category', width: '120px' },
+  { key: 'tag', label: 'Tag', width: '96px', wrap: true },
+  { key: 'debit', label: 'Debit', width: '76px', right: true },
+  { key: 'credit', label: 'Credit', width: '76px', right: true },
 ];
+const TABLE_STYLE = '<style>table.txn-list th,table.txn-list td{padding-left:5px;padding-right:5px}</style>';
 
 /** The report-table markup (same classes as reports.routes buildHtmlTable)
  *  inside the shared report chrome (toReportHtml), so the printout matches
  *  the General Ledger PDF. */
 export function toTransactionListHtml(x: TxnExport): string {
-  const cell = (v: string, right?: boolean, width?: string) =>
-    `<td${right ? ' class="amount"' : ''}${width ? ` style="width:${width}"` : ''}>${escapeHtml(v)}</td>`;
+  const cell = (v: string, right?: boolean, width?: string, wrap?: boolean) => {
+    const styles = [width ? `width:${width}` : '', wrap ? 'overflow-wrap:anywhere' : ''].filter(Boolean).join(';');
+    return `<td${right ? ' class="amount"' : ''}${styles ? ` style="${styles}"` : ''}>${escapeHtml(v)}</td>`;
+  };
   const header = PDF_COLUMNS.map((c) =>
     `<th${c.right ? ' class="amount"' : ''}${c.width ? ` style="width:${c.width}"` : ''}>${escapeHtml(c.label)}</th>`).join('');
   const body = x.rows.map((r) => `<tr>${PDF_COLUMNS.map((c) => {
     const v = r[c.key];
-    return cell(c.right ? pdfMoney(v as Decimal | null) : String(v ?? ''), c.right, c.width);
+    return cell(c.right ? pdfMoney(v as Decimal | null) : String(v ?? ''), c.right, c.width, c.wrap);
   }).join('')}</tr>`).join('');
   const totalCells = PDF_COLUMNS.map((c) => {
     if (c.key === 'debit') return cell(pdfMoney(x.totals.debit), true);
@@ -288,7 +299,7 @@ export function toTransactionListHtml(x: TxnExport): string {
     x.truncated ? `<div style="color:#b45309;font-weight:600">${escapeHtml(truncationNote(x))}</div>` : '',
   ].join('');
   const table = `<div class="meta" style="margin-top:-14px">${meta}</div>`
-    + `<table><thead><tr>${header}</tr></thead><tbody>${empty}${body}`
+    + `${TABLE_STYLE}<table class="txn-list"><thead><tr>${header}</tr></thead><tbody>${empty}${body}`
     + `<tr class="total-row" style="font-weight:700;border-top:2px solid #111">${totalCells}</tr></tbody></table>`;
   return toReportHtml('Transactions', x.companyName, x.dateLabel, table);
 }

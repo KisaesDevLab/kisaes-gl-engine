@@ -106,15 +106,18 @@ describe('toTransactionListHtml', () => {
     expect(html).toContain('Account: 1000 Checking');
     expect(html).toContain('Search: &quot;paper&quot;');
     const headers = [...html.matchAll(/<th[^>]*>([^<]*)<\/th>/g)].map((m) => m[1]);
-    expect(headers).toEqual(['Date', 'Type', 'Ref #', 'Name', 'Description', 'Account / Category', 'Debit', 'Credit']);
+    expect(headers).toEqual(['Date', 'Type', 'Ref #', 'Name', 'Description', 'Account / Category', 'Tag', 'Debit', 'Credit']);
     // Escaped user text, GL money formatting, Split label.
     expect(html).toContain('Office &lt;b&gt;Supplies&lt;/b&gt;');
     expect(html).not.toContain('<b>Supplies');
     expect(html).toContain('1,234.50');
     expect(html).toContain('>Split<');
-    expect(html).toMatch(/class="total-row"[^>]*>.*>Total<\/td><td class="amount">1,234.50<\/td><td class="amount">250.00<\/td><\/tr>/);
-    // PDF stays GL-like: no Tag / Status.
-    expect(html).not.toContain('East; West');
+    expect(html).toMatch(/class="total-row"[^>]*>.*>Total<\/td><td><\/td><td class="amount">1,234.50<\/td><td class="amount">250.00<\/td><\/tr>/);
+    // Tag column (same value as the CSV's), wrapping inside its width;
+    // an untagged row's cell is empty. No Status column.
+    expect(html).toMatch(/<td style="[^"]*overflow-wrap:anywhere[^"]*">East; West<\/td><td class="amount"[^>]*>1,234.50<\/td>/);
+    expect(html).toMatch(/>Split<\/td><td style="[^"]*">\s*<\/td><td class="amount"/);
+    expect(html).not.toContain('>Status<');
     expect(html).not.toContain('Truncated');
   });
 
