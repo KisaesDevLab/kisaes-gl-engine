@@ -272,6 +272,18 @@ tab also lists suggestions the company's own team members sent from Banking →
 Uncategorized (badge **Team member** vs **Client**); both share the same queue and the
 same one-live-answer-per-row rule.
 
+Staff email (2026-10-12, migration 0203 `suggestion_notify_settings`): the
+"<Client>: <Contact> categorized N transactions" email goes ONLY to the client's own
+notify list — Client suggested tab → **Email notifications**, the same checklist as a
+document request's "Email staff when the client submits" (active staff users with active
+access to the tenant; never client-type users). **Empty list = no email** (the default for
+every client, including existing ones — before this it went to EVERY reviewer with access,
+which is why whole teams got it). The answers still show as unread on Client suggested.
+Team-member suggestions follow the same list; the submitting team member is never emailed.
+Recipients are re-checked at send time. Edited by reviewers only (`GET/PUT
+/practice/uncategorized/notify-settings`, 403 `SUGGEST_ONLY_MODE` otherwise), audit-logged
+as `suggestion_notify_settings`. Every staff email is also audit-logged as `staff_email`.
+
 Inline review (2026-10-05): each row's category and payee are pickers prefilled with the
 client's pick ("Client said: …" stays visible once changed); the row's **Approve** posts it
 with those values (a drifted row's button reads **Approve anyway**), and bulk Approve uses

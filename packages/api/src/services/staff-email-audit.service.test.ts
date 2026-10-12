@@ -29,7 +29,7 @@ import {
 } from '../db/schema/index.js';
 import { recordStaffEmail } from './staff-email-audit.service.js';
 import { notifyStaffOfSubmission } from './recurring-doc-request.service.js';
-import { notifyStaffOfSuggestions } from './client-suggestion-review.service.js';
+import { notifyStaffOfSuggestions, setSuggestionNotifyList } from './client-suggestion-review.service.js';
 import { notifyStaffOfPortalBillUpload } from './bill-capture.service.js';
 
 interface StaffEmailRow {
@@ -165,7 +165,8 @@ describe('staff email audit', () => {
   });
 
   describe('client suggestion notice', () => {
-    it('records every reviewer it emailed (self-managed: owners), minus failures', async () => {
+    it('records every listed recipient it emailed, minus failures', async () => {
+      await setSuggestionNotifyList(tenantId, [kurt.id, dawn.id], kurt.id);
       failFor = dawn.email;
       const out = await notifyStaffOfSuggestions(tenantId, companyId, { contactId }, 3);
       expect(out.sent).toBe(1);

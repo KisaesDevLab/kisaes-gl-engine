@@ -103,6 +103,20 @@ uncategorizedRouter.get('/mode', async (req, res) => {
   res.json(await resolveReviewMode(req.tenantId, req.userId, req.userRole, !!req.isSuperAdmin));
 });
 
+// ── Who gets the "client categorized N transactions" email ──
+// Per client (tenant). Empty = nobody is emailed; suggestions still show as
+// unread here. Reviewers only — the same people who act on the suggestions.
+const notifySettingsSchema = z.object({
+  notifyUserIds: z.array(z.string().uuid()).max(200),
+});
+uncategorizedRouter.get('/notify-settings', requireSuggestionReviewer, async (req, res) => {
+  res.json({ notifyUserIds: await suggestionReview.getSuggestionNotifyList(req.tenantId) });
+});
+uncategorizedRouter.put('/notify-settings', requireSuggestionReviewer, validate(notifySettingsSchema), async (req, res) => {
+  const ids = await suggestionReview.setSuggestionNotifyList(req.tenantId, req.body.notifyUserIds as string[], req.userId);
+  res.json({ notifyUserIds: ids });
+});
+
 // ── Team members: suggest a category (Banking → Uncategorized) ──
 // The same write path the client portal uses, with the tenant user as the
 // submitter. Only amounts already in suspense may be answered here; nothing

@@ -158,8 +158,8 @@ the tenant flag `UNCATEGORIZED_REVIEW_V1` is on. Firm members and super admins a
 redirected to Practice → Uncategorized, which is now firm-members-only. The team view
 shows only amounts in suspense and is SUGGEST-ONLY: a short income/expense category list
 (same sanitized list as the client portal) plus *Personal / not business* and *Not sure*
-(note required), a note box, and one **Send N answers** button per batch (one reviewer
-email per batch). Answers land as `client_category_suggestions` rows with
+(note required), a note box, and one **Send N answers** button per batch (one email per
+batch to the client's Email notifications list — nobody if it is empty). Answers land as `client_category_suggestions` rows with
 `submitted_by_user_id` set; the row stays marked "Sent · awaiting review" with a Withdraw
 for the author only; a team member can never overwrite someone else's pending answer
 (`already_answered`). Reviewers: staff of the firm ACTIVELY managing the tenant (any firm

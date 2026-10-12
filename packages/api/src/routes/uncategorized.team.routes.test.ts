@@ -273,3 +273,38 @@ describe('team suggestions', () => {
     expect((await request('POST', `${B}/team/suggest`, { items: [{ targetId: 'nope', categoryId: 'personal' }] }, acct.token)).status).toBe(400);
   });
 });
+
+describe('suggestion notify list (GET/PUT /notify-settings)', () => {
+  it('reviewers read and edit it; suggest-only users are refused; bad ids are 400; changes are audited', async () => {
+    await assignFirm(firmId);
+    const staff = await seedUser('accountant', { displayName: 'Firm Staffer' });
+    await db.insert(firmUsers).values({ firmId, userId: staff.id, firmRole: 'firm_staff' });
+    const acct = await seedUser('accountant');
+    const clientUser = await seedUser('readonly', { userType: 'client' });
+
+    const empty = await request('GET', `${B}/notify-settings`, undefined, staff.token);
+    expect(empty.status).toBe(200);
+    expect(empty.json).toEqual({ notifyUserIds: [] });
+
+    // Not a reviewer on a firm-managed client → 403 for both read and write.
+    for (const [m, body] of [['GET', undefined], ['PUT', { notifyUserIds: [acct.id] }]] as const) {
+      const r = await request(m, `${B}/notify-settings`, body, acct.token);
+      expect(r.status, m).toBe(403);
+      expect(r.json.error.code).toBe('SUGGEST_ONLY_MODE');
+    }
+
+    const bad = await request('PUT', `${B}/notify-settings`, { notifyUserIds: [clientUser.id] }, staff.token);
+    expect(bad.status).toBe(400);
+    const notUuid = await request('PUT', `${B}/notify-settings`, { notifyUserIds: ['nope'] }, staff.token);
+    expect(notUuid.status).toBe(400);
+
+    const ok = await request('PUT', `${B}/notify-settings`, { notifyUserIds: [staff.id, acct.id] }, staff.token);
+    expect(ok.status).toBe(200);
+    expect(ok.json).toEqual({ notifyUserIds: [staff.id, acct.id] });
+    expect((await request('GET', `${B}/notify-settings`, undefined, staff.token)).json).toEqual({ notifyUserIds: [staff.id, acct.id] });
+
+    const audits = await db.select().from(auditLogTable).where(eq(auditLogTable.tenantId, tenantId));
+    const row = audits.find((a) => a.entityType === 'suggestion_notify_settings');
+    expect(row?.userId).toBe(staff.id);
+  });
+});

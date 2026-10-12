@@ -18,12 +18,14 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   clientCategorySuggestions, accounts, bankFeedItems, transactions,
-  tenants, companies, portalContacts, users, userTenantAccess, contacts } from '../db/schema/index.js';
+  tenants, companies, portalContacts, users, userTenantAccess, contacts,
+  suggestionNotifySettings } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { env } from '../config/env.js';
 import * as systemEmail from './system-email.service.js';
 import { recordStaffEmail } from './staff-email-audit.service.js';
+import { assertNotifyUsersInTenant } from './recurring-doc-request.service.js';
 import * as bankFeedService from './bank-feed.service.js';
 import * as suspenseService from './suspense.service.js';
 import * as classificationService from './practice-classification.service.js';
@@ -465,10 +467,57 @@ export async function countUnread(tenantId: string, companyId?: string): Promise
 
 // ── Notification ────────────────────────────────────────────────
 
+function idsOf(v: unknown): string[] {
+  return Array.isArray(v) ? (v as unknown[]).filter((x): x is string => typeof x === 'string') : [];
+}
+
 /**
- * Tell staff a client answered. Contract copied from
- * notifyStaffOfSubmission: never throws, re-validates recipients at send
- * time, and logs structured JSON. One email per batch, not per answer.
+ * The per-client notify list for the "client categorized N transactions"
+ * email (migration 0203). No row = empty = no email.
+ */
+export async function getSuggestionNotifyList(tenantId: string): Promise<string[]> {
+  const row = await db.query.suggestionNotifySettings.findFirst({
+    where: eq(suggestionNotifySettings.tenantId, tenantId),
+  });
+  return idsOf(row?.notifyUserIds);
+}
+
+/**
+ * Replace the notify list. Every id must be an active STAFF user with active
+ * access to this client (same rule as the doc-request notify list), so the
+ * email can never be pointed at a client-type user or an unrelated firm.
+ */
+export async function setSuggestionNotifyList(
+  tenantId: string, userIds: string[], actorUserId: string,
+): Promise<string[]> {
+  const ids = await assertNotifyUsersInTenant(tenantId, userIds);
+  const before = await db.query.suggestionNotifySettings.findFirst({
+    where: eq(suggestionNotifySettings.tenantId, tenantId),
+  });
+  const now = new Date();
+  await db.insert(suggestionNotifySettings)
+    .values({ tenantId, notifyUserIds: ids, updatedBy: actorUserId, updatedAt: now })
+    .onConflictDoUpdate({
+      target: suggestionNotifySettings.tenantId,
+      set: { notifyUserIds: ids, updatedBy: actorUserId, updatedAt: now },
+    });
+  await auditLog(
+    tenantId, before ? 'update' : 'create', 'suggestion_notify_settings', tenantId,
+    before ? { notifyUserIds: idsOf(before.notifyUserIds) } : null,
+    { notifyUserIds: ids },
+    actorUserId,
+  );
+  return ids;
+}
+
+/**
+ * Tell staff a client (or a team member) suggested categories. Goes ONLY to
+ * the client's notify list (getSuggestionNotifyList); an empty list sends
+ * nothing — the suggestions still show as unread on Uncategorized. Contract
+ * copied from notifyStaffOfSubmission: never throws, re-validates recipients
+ * (active staff with active access) at send time, logs structured JSON.
+ * One email per batch, not per answer; never to the team member who
+ * submitted.
  */
 export async function notifyStaffOfSuggestions(
   tenantId: string,
@@ -488,33 +537,26 @@ export async function notifyStaffOfSuggestions(
     }));
   };
   try {
+    const listed = (await getSuggestionNotifyList(tenantId)).filter((id) => id !== submitterUserId);
+    if (listed.length === 0) return { sent: 0, skipped: 'no_recipients' };
     if (!(await systemEmail.isSmtpConfigured())) return { sent: 0, skipped: 'smtp_not_configured' };
 
-    // Membership is re-checked HERE, not at submission time: a staffer removed
-    // from the client since then must stop receiving their data.
-    const candidates = await db
-      .select({ id: users.id, email: users.email, role: userTenantAccess.role })
+    // Membership is re-checked HERE, not when the list was saved: a staffer
+    // removed from the client since then must stop receiving their data.
+    const recipients = await db
+      .select({ id: users.id, email: users.email })
       .from(users)
       .innerJoin(userTenantAccess, eq(userTenantAccess.userId, users.id))
       .where(and(
         eq(userTenantAccess.tenantId, tenantId),
         eq(userTenantAccess.isActive, true),
+        inArray(users.id, listed),
         eq(users.isActive, true),
         sql`${users.userType} <> 'client'`,
-        inArray(users.role, ['owner', 'accountant', 'bookkeeper']),
       ));
-    // Only people who can actually REVIEW get the mail (firm staff of the
-    // managing firm, or the owner of self-managed books) — and never the
-    // team member who just submitted.
-    const recipients: Array<{ id: string; email: string }> = [];
-    let managedByFirm = false;
-    for (const u of candidates) {
-      if (submitterUserId && u.id === submitterUserId) continue;
-      const m = await resolveReviewMode(tenantId, u.id, u.role ?? undefined, false);
-      managedByFirm = m.managedByFirm;
-      if (m.canReview) recipients.push({ id: u.id, email: u.email });
-    }
     if (recipients.length === 0) return { sent: 0, skipped: 'no_eligible_recipients' };
+    // Only used to word the link (Practice vs Banking), not to pick people.
+    const { managedByFirm } = await resolveReviewMode(tenantId, recipients[0]!.id, undefined, false);
 
     const [tenant, company, contact, submitterUser] = await Promise.all([
       db.query.tenants.findFirst({ where: eq(tenants.id, tenantId), columns: { name: true } }),

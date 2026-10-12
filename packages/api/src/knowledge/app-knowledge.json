@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-12T17:53:51.394Z",
+  "generatedAt": "2026-10-12T18:13:37.020Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -19,7 +19,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 139329
+    "totalBytes": 141058
   },
   "screens": [
     {
@@ -1669,6 +1669,7 @@
     "\"How does AI categorization work?\"",
     "\"A screen isn't showing a change I just made (or someone else made). How do I refresh it?\"",
     "\"How do I get a vendor's account number to print on the check memo?\"",
+    "\"Why did my whole team get an email when a client categorized transactions?\" / \"Who gets the 'categorized N transactions' email?\"",
     "Cash vs. Accrual Basis",
     "Fiscal-Year Date Presets",
     "Two-Factor Authentication (2FA)",

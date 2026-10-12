@@ -262,7 +262,8 @@ async function assertContactInTenant(tenantId: string, contactId: string, what =
 // tenant — otherwise a rule could be pointed at a client-type user (who
 // would receive another client's filenames) or at a user from a firm
 // that has no business with this tenant. Returns the de-duplicated list.
-async function assertNotifyUsersInTenant(tenantId: string, ids: string[]): Promise<string[]> {
+// Also used by the client-suggestion notify list (client-suggestion-review).
+export async function assertNotifyUsersInTenant(tenantId: string, ids: string[]): Promise<string[]> {
   const unique = Array.from(new Set(ids));
   if (unique.length === 0) return [];
   const rows = await db

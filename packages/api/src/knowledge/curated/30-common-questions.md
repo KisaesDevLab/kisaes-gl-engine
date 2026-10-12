@@ -187,3 +187,12 @@ then on, **Write Check** fills the Printed Memo with `Acct <number>` when you pi
 and **Pay Bills** checks default to `Acct <number> - <invoice numbers>`. You can still edit the
 memo on Write Check, in the *Memo on check* field on Pay Bills, or per check in the Print Checks
 queue. Vendors with no account number print the same memo as before.
+
+### "Why did my whole team get an email when a client categorized transactions?" / "Who gets the 'categorized N transactions' email?"
+Since October 2026 that email goes only to the people on that client's own list:
+**Practice → Uncategorized → Client suggested → Email notifications** (owners of
+self-managed books: Banking → Uncategorized → Suggested). Tick the staff who should get
+it; nobody ticked means no email — the answers still show as unread on the Client
+suggested tab. Every client starts with nobody ticked. Before this change the email went
+to every reviewer with access to the client. Document-request upload emails are separate
+and follow each request rule's "Email staff when the client submits" list.

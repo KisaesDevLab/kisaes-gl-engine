@@ -9,7 +9,7 @@
 // existing posting primitives. See migration 0164 for the full rationale,
 // including why this is not columns on transaction_classification_state.
 
-import { pgTable, uuid, varchar, text, boolean, timestamp, date, numeric, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, boolean, timestamp, date, numeric, index, jsonb } from 'drizzle-orm/pg-core';
 import { tenants } from './auth.js';
 import { companies } from './company.js';
 import { accounts } from './accounts.js';
@@ -91,3 +91,15 @@ export const clientCategorySuggestions = pgTable('client_category_suggestions', 
   // Partial (WHERE submitted_by_user_id IS NOT NULL) in the migration.
   userIdx: index('idx_ccs_user').on(table.submittedByUserId, table.submittedAt),
 }));
+
+/**
+ * Per-client notify list for the "client categorized N transactions" staff
+ * email (migration 0203). No row / empty list = no email. User ids are
+ * validated as active staff with access on save and re-checked at send.
+ */
+export const suggestionNotifySettings = pgTable('suggestion_notify_settings', {
+  tenantId: uuid('tenant_id').primaryKey().references(() => tenants.id, { onDelete: 'cascade' }),
+  notifyUserIds: jsonb('notify_user_ids').notNull().default([]),
+  updatedBy: uuid('updated_by'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});

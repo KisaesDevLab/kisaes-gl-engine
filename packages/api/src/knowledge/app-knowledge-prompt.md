@@ -332,8 +332,8 @@ the tenant flag `UNCATEGORIZED_REVIEW_V1` is on. Firm members and super admins a
 redirected to Practice → Uncategorized, which is now firm-members-only. The team view
 shows only amounts in suspense and is SUGGEST-ONLY: a short income/expense category list
 (same sanitized list as the client portal) plus *Personal / not business* and *Not sure*
-(note required), a note box, and one **Send N answers** button per batch (one reviewer
-email per batch). Answers land as `client_category_suggestions` rows with
+(note required), a note box, and one **Send N answers** button per batch (one email per
+batch to the client's Email notifications list — nobody if it is empty). Answers land as `client_category_suggestions` rows with
 `submitted_by_user_id` set; the row stays marked "Sent · awaiting review" with a Withdraw
 for the author only; a team member can never overwrite someone else's pending answer
 (`already_answered`). Reviewers: staff of the firm ACTIVELY managing the tenant (any firm
@@ -631,6 +631,15 @@ then on, **Write Check** fills the Printed Memo with `Acct <number>` when you pi
 and **Pay Bills** checks default to `Acct <number> - <invoice numbers>`. You can still edit the
 memo on Write Check, in the *Memo on check* field on Pay Bills, or per check in the Print Checks
 queue. Vendors with no account number print the same memo as before.
+
+### "Why did my whole team get an email when a client categorized transactions?" / "Who gets the 'categorized N transactions' email?"
+Since October 2026 that email goes only to the people on that client's own list:
+**Practice → Uncategorized → Client suggested → Email notifications** (owners of
+self-managed books: Banking → Uncategorized → Suggested). Tick the staff who should get
+it; nobody ticked means no email — the answers still show as unread on the Client
+suggested tab. Every client starts with nobody ticked. Before this change the email went
+to every reviewer with access to the client. Document-request upload emails are separate
+and follow each request rule's "Email staff when the client submits" list.
 
 ## Reports Quick Reference
 
@@ -1660,6 +1669,18 @@ Uncategorized → Client suggested, where staff approve, override or send them b
 tab also lists suggestions the company's own team members sent from Banking →
 Uncategorized (badge **Team member** vs **Client**); both share the same queue and the
 same one-live-answer-per-row rule.
+
+Staff email (2026-10-12, migration 0203 `suggestion_notify_settings`): the
+"<Client>: <Contact> categorized N transactions" email goes ONLY to the client's own
+notify list — Client suggested tab → **Email notifications**, the same checklist as a
+document request's "Email staff when the client submits" (active staff users with active
+access to the tenant; never client-type users). **Empty list = no email** (the default for
+every client, including existing ones — before this it went to EVERY reviewer with access,
+which is why whole teams got it). The answers still show as unread on Client suggested.
+Team-member suggestions follow the same list; the submitting team member is never emailed.
+Recipients are re-checked at send time. Edited by reviewers only (`GET/PUT
+/practice/uncategorized/notify-settings`, 403 `SUGGEST_ONLY_MODE` otherwise), audit-logged
+as `suggestion_notify_settings`. Every staff email is also audit-logged as `staff_email`.
 
 Inline review (2026-10-05): each row's category and payee are pickers prefilled with the
 client's pick ("Client said: …" stays visible once changed); the row's **Approve** posts it
