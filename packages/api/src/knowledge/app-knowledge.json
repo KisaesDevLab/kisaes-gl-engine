@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-08T21:42:51.370Z",
+  "generatedAt": "2026-10-12T05:58:40.609Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -8,6 +8,7 @@
       "30-common-questions.md",
       "40-reports.md",
       "45-trial-balance.md",
+      "47-tax-estimator.md",
       "50-errors.md",
       "60-capability-boundaries.md",
       "70-security-auth.md",
@@ -18,7 +19,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 130166
+    "totalBytes": 135977
   },
   "screens": [
     {
@@ -163,6 +164,15 @@
       "sourceFile": null,
       "title": "Portal Bill Upload",
       "section": "Bill upload",
+      "actions": []
+    },
+    {
+      "id": "tax-estimates",
+      "path": "tax-estimates",
+      "component": "PortalTaxEstimatesPage",
+      "sourceFile": null,
+      "title": "Portal Tax Estimates",
+      "section": "Tax estimates",
       "actions": []
     },
     {
@@ -1396,6 +1406,69 @@
       "sourceFile": null,
       "title": "Firm Settings",
       "section": "Firm",
+      "actions": []
+    },
+    {
+      "id": "taxpayers",
+      "path": "taxpayers",
+      "component": "TaxpayerListPage",
+      "sourceFile": null,
+      "title": "Taxpayer List",
+      "section": "Taxpayers",
+      "actions": []
+    },
+    {
+      "id": "taxpayers",
+      "path": "taxpayers/:id",
+      "component": "TaxpayerDetailPage",
+      "sourceFile": null,
+      "title": "Taxpayer Detail",
+      "section": "Taxpayers",
+      "actions": []
+    },
+    {
+      "id": "taxpayers-annual-settings",
+      "path": "taxpayers/:id/annual-settings",
+      "component": "AnnualSettingsPage",
+      "sourceFile": null,
+      "title": "Annual Settings",
+      "section": "Taxpayers",
+      "actions": []
+    },
+    {
+      "id": "taxpayers-estimate",
+      "path": "taxpayers/:id/estimate",
+      "component": "EstimateSummaryPage",
+      "sourceFile": null,
+      "title": "Estimate Summary",
+      "section": "Taxpayers",
+      "actions": []
+    },
+    {
+      "id": "taxpayers-scenarios",
+      "path": "taxpayers/:id/scenarios",
+      "component": "ScenarioComparePage",
+      "sourceFile": null,
+      "title": "Scenario Compare",
+      "section": "Taxpayers",
+      "actions": []
+    },
+    {
+      "id": "taxpayers-snapshots",
+      "path": "taxpayers/:id/snapshots/:snapshotId",
+      "component": "SnapshotViewPage",
+      "sourceFile": null,
+      "title": "Snapshot View",
+      "section": "Taxpayers",
+      "actions": []
+    },
+    {
+      "id": "entities",
+      "path": "entities/:tenantId/:companyId",
+      "component": "EntityTaxSetupPage",
+      "sourceFile": null,
+      "title": "Entity Tax Setup",
+      "section": "Entities",
       "actions": []
     },
     {
