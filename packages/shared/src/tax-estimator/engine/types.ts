@@ -197,19 +197,36 @@ export interface EngineYearInputs {
   collectiblesGain: string;
   /** User flags AMT exposure → warning line only (AMT is out of scope). */
   amtExposureFlagged: boolean;
+  /**
+   * MFS only (§469(i)(5)): true = the spouses lived apart ALL year → the
+   * `mfs_living_apart` rental-allowance parameters; false / absent = lived
+   * together at some time → no §469(i) allowance (warning). Ignored otherwise.
+   */
+  mfsLivedApartAllYear?: boolean;
 }
 
 // ── Phase 7 extension points (typed now, implemented in Phase 7) ─────
 
-/** §199A input. Phase 6: `manualDeduction` is the stub (fixture-supplied); Phase 7 computes when null. */
+/**
+ * §199A input. The engine computes the deduction (Phase 7); `manualDeduction`
+ * is the CPA override and wins when set (the computed figure stays on the
+ * result as `computedDeduction` for comparison). W-2 wages and UBIA come from
+ * the entities (D8).
+ */
 export interface QbiInput {
   manualDeduction: string | null;
 }
 
-/** Additional Medicare tax and NIIT (MODULE.md step 13). Phase 6: stubs; Phase 7 computes when null. */
+/**
+ * Additional Medicare tax and NIIT (MODULE.md step 13). Both are computed
+ * (Phase 7); a non-null `additionalMedicareTax` / `niit` is a CPA override.
+ * `niiAllocableDeductions` (Form 8960 Part II: investment interest, state tax
+ * allocable to NII, …) reduces net investment income; blank = none.
+ */
 export interface OtherTaxesInput {
   additionalMedicareTax: string | null;
   niit: string | null;
+  niiAllocableDeductions?: string | null;
 }
 
 // ── Engine input ─────────────────────────────────────────────────────
@@ -414,18 +431,150 @@ export interface DeductionsResult {
   sch1a: Sch1aResult;
 }
 
+/** One §199A component (one link = one trade or business interest). */
+export interface QbiComponentResult {
+  linkId: string;
+  personId: string;
+  companyName: string;
+  entityType: EntityTaxType;
+  activityType: ActivityType;
+  eligible: boolean;
+  /** Why the link is excluded (null when eligible). */
+  reason: string | null;
+  sstb: boolean;
+  /** Qualified items of the share (ordinary + rental when a §162 rental + §1231 loss share), before attributable deductions. */
+  qualifiedItems: string;
+  /** ½ SE tax + SEHI + retirement allocated to this business (Reg. 1.199A-3(b)(1)(vi)). */
+  attributableDeductions: string;
+  /** QBI after attributable deductions and the SSTB applicable percentage (a loss is negative). */
+  qbi: string;
+  /** QBI after the within-year loss netting (Reg. 1.199A-1(d)(2)(iii)); 0 for a loss business. */
+  qbiAfterNetting: string;
+  /** Allocable W-2 wages (× SSTB applicable %); null = unknown (treated as 0 above the threshold). */
+  w2Wages: string | null;
+  /** Allocable UBIA; null = not entered → UBIA limb not computed (D8). */
+  ubia: string | null;
+  /** qbi.rate × qbiAfterNetting. */
+  tentative: string;
+  /** max(50% W-2, 25% W-2 + 2.5% UBIA) — null below the threshold (not applied). */
+  wageUbiaLimit: string | null;
+  limitApplied: boolean;
+  /** The component after the W-2 / UBIA limit and phase-in. */
+  component: string;
+}
+
 export interface QbiResult {
-  /** 'manual' = Phase 6 stub from input; 'computed' once Phase 7 lands; 'none' = no input. */
+  /** 'computed' = engine computation; 'manual' = `manualDeduction` override in use; 'none' = nothing qualified. */
   method: 'manual' | 'computed' | 'none';
+  /** The deduction actually taken (manual override when set). */
   deduction: string;
+  /** The engine's §199A computation (equals `deduction` unless overridden). */
+  computedDeduction: string;
+  /** Taxable income before QBI on the pre-§68 deduction (Q32). */
+  taxableIncomeBeforeQbi: string;
+  threshold: string;
+  phaseInRange: string;
+  /** 0 = at or below the threshold, 1 = at or above threshold + range, fraction in between. */
+  phaseInFraction: string;
+  components: QbiComponentResult[];
+  /** Net QBI loss carried forward when losses exceed income (not tracked across years). */
+  netLossCarryforward: string;
+  reitPtpIncome: string;
+  reitPtpComponent: string;
+  /** Σ components + REIT/PTP component (before the overall limit). */
+  combined: string;
+  /** qbi.taxable_income_limit_pct × (taxable income before QBI − net capital gain incl. qualified dividends). */
+  overallLimit: string;
+  /** Aggregate QBI of the active (nonpassive) qualified businesses — the §199A(i) test base. */
+  activeQbi: string;
+  minimumApplied: boolean;
+}
+
+export interface LossLimitationShareResult {
+  linkId: string;
+  personId: string;
+  companyName: string;
+  activityType: ActivityType;
+  /** passive or rental activity (subject to §469). */
+  passive: boolean;
+  /** Net share before limitations (a loss is negative). */
+  net: string;
+  /** Loss disallowed by `allowed_loss_override` (basis / at-risk), positive. */
+  overrideDisallowed: string;
+  /** Passive loss suspended under §469, positive. */
+  passiveSuspended: string;
+  /** Net share after limitations. */
+  allowed: string;
+}
+
+export interface RentalAllowanceResult {
+  /** 'standard' | 'mfs_living_apart' | 'none' (MFS lived together → §469(i)(5)(B)) | 'not_needed' (no active-participation rental loss). */
+  variant: 'standard' | 'mfs_living_apart' | 'none' | 'not_needed';
+  maximum: string;
+  /** MAGI used for the phase-out (AGI without passive losses); null when not needed. */
+  magi: string | null;
+  afterPhaseOut: string;
+  /** Net active-participation rental loss eligible for the allowance (positive). */
+  eligibleLoss: string;
+  used: string;
 }
 
 export interface LossLimitationResult {
-  /** false until Phase 7 implements §469 / §461(l) / basis. */
+  /** true once the limitations have run (Phase 7). */
   applied: boolean;
+  overrideDisallowed: string;
+  /** Passive income available to absorb passive losses (positive). */
+  passiveIncome: string;
+  /** Passive losses before netting (positive). */
+  passiveLosses: string;
+  rentalAllowance: RentalAllowanceResult;
   suspendedPassiveLoss: string;
+  /** Aggregate trade-or-business net (after §469) tested under §461(l); a loss is negative. */
+  businessNet: string;
+  eblThreshold: string;
   excessBusinessLoss: string;
+  shares: LossLimitationShareResult[];
   notes: string[];
+}
+
+export interface AdditionalMedicareResult {
+  method: 'manual' | 'computed';
+  /** Medicare wages of all persons (outside W-2 wages at the higher of box 1 / Social Security wages + officer wages). */
+  medicareWages: string;
+  /** Net earnings from self-employment of all persons (Form 8959 line 8). */
+  nese: string;
+  threshold: string;
+  /** Form 8959 Part I: wages above the threshold. */
+  wagesAboveThreshold: string;
+  /** Form 8959 Part II: NESE above the threshold reduced by wages first. */
+  neseAboveThreshold: string;
+  tax: string;
+}
+
+export interface NiitResult {
+  method: 'manual' | 'computed';
+  interest: string;
+  dividends: string;
+  /** Net capital gain or limited loss (Form 8960 line 5). */
+  capitalGains: string;
+  /** Rental income after loss limitations. */
+  rental: string;
+  /** Ordinary income of passive / investment interests after loss limitations. */
+  passiveOrdinary: string;
+  allocableDeductions: string;
+  /** max(0, items − allocable deductions). */
+  netInvestmentIncome: string;
+  /** AGI (no foreign earned income exclusion modelled). */
+  magi: string;
+  threshold: string;
+  /** min(NII, MAGI − threshold), floored at 0. */
+  base: string;
+  tax: string;
+}
+
+export interface OtherTaxesResult {
+  additionalMedicare: AdditionalMedicareResult;
+  niit: NiitResult;
 }
 
 export interface CapitalGainWorksheetResult {
@@ -503,6 +652,8 @@ export interface FederalResult {
   seTax: string;
   additionalMedicareTax: string;
   niit: string;
+  /** Step 13 detail (Form 8959 / 8960 lines). */
+  otherTaxes: OtherTaxesResult;
   /** regular − nonrefundable + SE + Additional Medicare + NIIT − refundable (step 14). Negative = refund. */
   federalTotal: string;
   exact: FederalExactTotals;

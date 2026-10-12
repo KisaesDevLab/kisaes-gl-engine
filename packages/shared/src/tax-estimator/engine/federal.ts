@@ -3,35 +3,40 @@
 // Free for small businesses; see LICENSE for terms.
 
 // MODULE.md "Federal calculation order (individual)" — the pure orchestrator.
-// Steps 1–2, 4–8, 10–12, 14 are computed here (Phase 6); step 3 (loss limits),
-// step 9 (QBI) and step 13 (Additional Medicare, NIIT) are typed extension
-// points filled in Phase 7 and currently pass through / read stub inputs.
-// Everything is unrounded until the result DTO is assembled.
+// Steps 1–14 are all computed (Phase 6 core + Phase 7 loss limits, §199A,
+// Additional Medicare and NIIT). Step 3's §469(i) allowance depends on MAGI
+// (AGI without passive losses), so steps 3–7 run twice when an active-
+// participation rental loss exists: a probe pass on a scratch context
+// suspends every excess passive loss and yields the MAGI; the real pass uses
+// it. Step 9 takes taxable income on the pre-§68 deduction (Q32) so the
+// QBI → itemized → QBI chain stays acyclic. Everything is unrounded until the
+// result DTO is assembled.
 
 import type { CharacterAmounts } from '../entities-api.js';
 import {
-  ZERO, dAdd, dCmp, dFloorZero, dIsPos, dIsZero, dMin, dRoundDollars, dSub, dSum, dec, type Dec,
+  ZERO, dAdd, dCmp, dFloorZero, dIsPos, dIsZero, dMax, dMin, dRoundDollars, dRoundRate, dSub, dSum, dec, type Dec,
 } from '../decimal.js';
 import { EngineContext, ageAtYearEnd } from './context.js';
-import { allocateEntity, aggregatePersons, netIncome, type AllocatedEntity, type AllocatedShare, type PersonIncome } from './income.js';
-import { applyLossLimitations } from './loss-limits.js';
+import { allocateEntity, aggregatePersons, netIncome, type AggregatedIncome, type AllocatedEntity, type AllocatedShare, type IncomeExact, type PersonIncome } from './income.js';
+import { applyLossLimitations, isPassiveActivity, type LossLimitationExact } from './loss-limits.js';
 import { computeSeTax } from './se-tax.js';
 import { computeRetirementLimit, computeSehiLimit, computeHsaLimit, seEarnedIncomeBase } from './owner-deductions.js';
 import { computeStandardDeduction, computeItemizedDeductions, chooseDeduction, computeSch1a, type DeductionPerson } from './deductions.js';
-import { computeQbi } from './qbi.js';
+import { computeQbi, type QbiPersonDeductions } from './qbi.js';
+import { computeOtherTaxes, type OtherTaxesPerson } from './other-taxes.js';
 import { computeRegularTax } from './bracket-tax.js';
 import { TAX_ENGINE_VERSION } from './version.js';
 import type {
-  EngineEntity, EnginePerson, EntityResult, EntityShareResult, FederalEngineInput, FederalResult, PersonResult, OtherTaxesInput,
+  EngineEntity, EnginePerson, EntityResult, EntityShareResult, FederalEngineInput, FederalResult, LossLimitationResult, PersonResult, QbiComponentResult, QbiResult,
 } from './types.js';
 
 const STEP_AGI = 'agi';
 const STEP_TAXABLE_INCOME = 'taxable_income';
 const STEP_CREDITS = 'credits';
-const STEP_OTHER_TAXES = 'other_taxes';
 const STEP_TOTAL = 'federal_total';
 
 const R = dRoundDollars;
+const RN = (v: Dec | null): string | null => (v == null ? null : R(v));
 
 function roundCharacters(c: CharacterAmounts): CharacterAmounts {
   const out = { ...c };
@@ -56,36 +61,56 @@ function entityResult(a: AllocatedEntity): EntityResult {
   };
 }
 
-/** Step 13 stubs: Additional Medicare and NIIT from input until Phase 7 computes them. */
-function otherTaxes(input: OtherTaxesInput, ctx: EngineContext): { additionalMedicareTax: Dec; niit: Dec } {
-  const additionalMedicareTax = input.additionalMedicareTax == null ? ZERO : dFloorZero(dec(input.additionalMedicareTax));
-  const niit = input.niit == null ? ZERO : dFloorZero(dec(input.niit));
-  ctx.info('TE_OTHER_TAXES_STUB', 'Additional Medicare tax and NIIT are manual inputs (zero when blank) until Phase 7 computes them.', { additionalMedicareTax, niit });
-  ctx.trace.add({ step: STEP_OTHER_TAXES, id: 'additional_medicare', label: `Additional Medicare tax (${input.additionalMedicareTax == null ? 'not computed — Phase 7' : 'manual input'})`, exact: additionalMedicareTax, source: 'input' });
-  ctx.trace.add({ step: STEP_OTHER_TAXES, id: 'niit', label: `Net investment income tax (${input.niit == null ? 'not computed — Phase 7' : 'manual input'})`, exact: niit, source: 'input' });
-  return { additionalMedicareTax, niit };
+function roundLossLimits(l: LossLimitationExact): LossLimitationResult {
+  return {
+    applied: l.applied, overrideDisallowed: R(l.overrideDisallowed), passiveIncome: R(l.passiveIncome), passiveLosses: R(l.passiveLosses),
+    rentalAllowance: { variant: l.rentalAllowance.variant, maximum: R(l.rentalAllowance.maximum), magi: RN(l.rentalAllowance.magi), afterPhaseOut: R(l.rentalAllowance.afterPhaseOut), eligibleLoss: R(l.rentalAllowance.eligibleLoss), used: R(l.rentalAllowance.used) },
+    suspendedPassiveLoss: R(l.suspendedPassiveLoss), businessNet: R(l.businessNet), eblThreshold: R(l.eblThreshold), excessBusinessLoss: R(l.excessBusinessLoss),
+    shares: l.shares.map((s) => ({ ...s, net: R(s.net), overrideDisallowed: R(s.overrideDisallowed), passiveSuspended: R(s.passiveSuspended), allowed: R(s.allowed) })),
+    notes: l.notes,
+  };
 }
 
-export function computeFederal(input: FederalEngineInput): FederalResult {
-  const ctx = new EngineContext(input.parameters, input.taxYear, input.filingStatus);
-  if (input.persons.length === 0) throw new Error('TE_NO_PERSONS: the taxpayer has no persons');
-  ctx.setPersons(input.persons);
-  const personById = new Map(input.persons.map((p) => [p.personId, p]));
+function roundQbiComponent(c: QbiComponentResult): QbiComponentResult {
+  return {
+    ...c, qualifiedItems: R(c.qualifiedItems), attributableDeductions: R(c.attributableDeductions), qbi: R(c.qbi), qbiAfterNetting: R(c.qbiAfterNetting),
+    w2Wages: RN(c.w2Wages), ubia: RN(c.ubia), tentative: R(c.tentative), wageUbiaLimit: RN(c.wageUbiaLimit), component: R(c.component),
+  };
+}
 
-  // Steps 1–2: entity income by character → projection → allocation → adjustments.
-  const allocated = input.entities.map((e) => allocateEntity(e, input.adjustments, ctx));
-  const agg = aggregatePersons(allocated, input.persons, input.adjustments, ctx);
+function roundQbi(q: QbiResult): QbiResult {
+  return {
+    ...q, deduction: R(q.deduction), computedDeduction: R(q.computedDeduction), taxableIncomeBeforeQbi: R(q.taxableIncomeBeforeQbi), threshold: R(q.threshold),
+    phaseInRange: R(q.phaseInRange), phaseInFraction: dRoundRate(q.phaseInFraction), components: q.components.map(roundQbiComponent), netLossCarryforward: R(q.netLossCarryforward),
+    reitPtpIncome: R(q.reitPtpIncome), reitPtpComponent: R(q.reitPtpComponent), combined: R(q.combined), overallLimit: R(q.overallLimit), activeQbi: R(q.activeQbi),
+  };
+}
 
-  // Step 3: loss limitations (Phase 7 extension point).
-  const lossLimits = applyLossLimitations(agg, ctx);
+function scratchContext(input: FederalEngineInput): EngineContext {
+  const c = new EngineContext(input.parameters, input.taxYear, input.filingStatus);
+  c.setPersons(input.persons);
+  return c;
+}
 
+interface AgiBlock {
+  personResults: PersonResult[];
+  deductionPersons: DeductionPerson[];
+  personDeductions: Map<string, QbiPersonDeductions>;
+  otherTaxPersons: OtherTaxesPerson[];
+  income: IncomeExact;
+  seTax: Dec; halfSeTax: Dec; retirement: Dec; sehi: Dec; hsa: Dec; otherAboveTheLine: Dec; adjustmentsTotal: Dec;
+  agi: Dec;
+}
+
+/** Steps 4–7: SE tax, owner-deduction limits and AGI for an (already loss-limited) income. */
+function computeAgiBlock(input: FederalEngineInput, agg: AggregatedIncome, ctx: EngineContext): AgiBlock {
   const income = netIncome([...agg.byPerson.values()], ctx);
-
-  // Steps 4–6 per person: SE tax, retirement / SEHI / HSA limits.
   const personResults: PersonResult[] = [];
+  const deductionPersons: DeductionPerson[] = [];
+  const personDeductions = new Map<string, QbiPersonDeductions>();
+  const otherTaxPersons: OtherTaxesPerson[] = [];
   let totalSeTax: Dec = ZERO; let totalHalfSe: Dec = ZERO; let totalRetirement: Dec = ZERO; let totalSehi: Dec = ZERO; let totalHsa: Dec = ZERO;
   let otherAboveTheLine: Dec = agg.otherAboveTheLine;
-  const deductionPersons: DeductionPerson[] = [];
   for (const p of input.persons) {
     const pi: PersonIncome = agg.byPerson.get(p.personId)!;
     const age = ageAtYearEnd(p.dateOfBirth, input.taxYear, false);
@@ -101,6 +126,10 @@ export function computeFederal(input: FederalEngineInput): FederalResult {
     totalRetirement = dAdd(totalRetirement, retirement.deducted); totalSehi = dAdd(totalSehi, sehi.deducted); totalHsa = dAdd(totalHsa, hsa.deducted);
     otherAboveTheLine = dAdd(otherAboveTheLine, pi.otherAboveTheLine);
     deductionPersons.push({ personId: p.personId, role: p.role, label: p.displayName, age: ageJan1, isBlind: p.isBlind, sch1a: p.sch1a });
+    personDeductions.set(p.personId, { halfSeTax: se.halfSeTax, sehi: sehi.deducted, retirement: retirement.deducted });
+    // Medicare wages (Form 8959): outside wages at the higher of box 1 / Social Security wages (box 5 is uncapped) + all officer wages.
+    const allOfficerWages = dSum(pi.shares.map((s) => s.officerWages));
+    otherTaxPersons.push({ personId: p.personId, label: p.displayName, medicareWages: dAdd(dMax(dec(p.w2Wages), p.w2SocialSecurityWages == null ? ZERO : dec(p.w2SocialSecurityWages)), allOfficerWages), nese: se.nese });
     personResults.push({
       personId: p.personId, role: p.role, displayName: p.displayName, ageAtYearEnd: age, w2Wages: R(p.w2Wages), totalWages: R(pi.wages),
       seIncome: R(pi.seIncome), nese: R(se.nese), seTaxSocialSecurity: R(se.socialSecurity), seTaxMedicare: R(se.medicare), seTax: R(se.seTax), halfSeTax: R(se.halfSeTax),
@@ -114,18 +143,56 @@ export function computeFederal(input: FederalEngineInput): FederalResult {
   const adjustmentsTotal = dSum([totalHalfSe, totalRetirement, totalSehi, totalHsa, otherAboveTheLine]);
   const agi = dSub(income.totalIncome, adjustmentsTotal);
   ctx.trace.add({ step: STEP_AGI, id: 'agi', label: 'Adjusted gross income', exact: agi, source: 'gl_map', formula: `total income ${income.totalIncome} − ½ SE ${totalHalfSe} − retirement ${totalRetirement} − SEHI ${totalSehi} − HSA ${totalHsa} − other ${otherAboveTheLine}` });
+  return {
+    personResults, deductionPersons, personDeductions, otherTaxPersons, income,
+    seTax: totalSeTax, halfSeTax: totalHalfSe, retirement: totalRetirement, sehi: totalSehi, hsa: totalHsa, otherAboveTheLine, adjustmentsTotal, agi,
+  };
+}
+
+export function computeFederal(input: FederalEngineInput): FederalResult {
+  const ctx = new EngineContext(input.parameters, input.taxYear, input.filingStatus);
+  if (input.persons.length === 0) throw new Error('TE_NO_PERSONS: the taxpayer has no persons');
+  ctx.setPersons(input.persons);
+
+  // Steps 1–2: entity income by character → projection → allocation → adjustments.
+  const allocated = input.entities.map((e) => allocateEntity(e, input.adjustments, ctx));
+  const agg = aggregatePersons(allocated, input.persons, input.adjustments, ctx);
+
+  // Step 3: loss limitations. The §469(i) allowance needs MAGI = AGI without passive losses:
+  // probe on a scratch context (allowance withheld), then run for real with the figure.
+  const companyNames = new Map<string, string>();
+  for (const a of allocated) for (const s of a.shares) companyNames.set(s.linkId, a.entity.companyName);
+  const lossOptions = { mfsLivedApartAllYear: input.year.mfsLivedApartAllYear ?? false, companyNames };
+  const probeCtx = scratchContext(input);
+  const probe = applyLossLimitations(agg, { ...lossOptions, magi: null }, probeCtx);
+  const magi = probe.needsMagi ? computeAgiBlock(input, probe.income, probeCtx).agi : null;
+  const lossLimits = applyLossLimitations(agg, { ...lossOptions, magi }, ctx);
+  const limited = lossLimits.income;
+
+  // Steps 4–7.
+  const block = computeAgiBlock(input, limited, ctx);
+  const { income, agi } = block;
 
   // Step 8: deductions and Schedule 1-A (MAGI taken as AGI).
-  const standard = computeStandardDeduction(deductionPersons, dec(input.year.itemized.charitableCash), ctx);
-  const sch1a = computeSch1a(deductionPersons, agi, ctx);
+  const standard = computeStandardDeduction(block.deductionPersons, dec(input.year.itemized.charitableCash), ctx);
+  const sch1a = computeSch1a(block.deductionPersons, agi, ctx);
 
-  // Step 9: QBI (Phase 6 stub; Phase 7 computes). Taken before the itemized §68 base so the chain is acyclic.
+  // Step 9: QBI on taxable income before QBI using the pre-§68 deduction (Q32): the itemized total
+  // before the benefit cap comes from a scratch run (the real itemized run follows, with the §68 base).
+  const itemizedPre = computeItemizedDeductions(input.year.itemized, limited.itemizedOther, agi, ZERO, scratchContext(input));
+  const preDeduction = input.year.deductionMode === 'standard' ? standard.total : input.year.deductionMode === 'itemized' ? itemizedPre.total : dMax(standard.total, itemizedPre.total);
   const netCapitalGainWithQd = dAdd(dFloorZero(income.netLongTermGainForWorksheet), dFloorZero(income.qualifiedDividends));
-  const qbi = computeQbi(input.qbi, { taxableIncomeBeforeQbi: dSub(dSub(agi, standard.total), sch1a.total), netCapitalGainWithQd, income: agg }, ctx);
+  const qbi = computeQbi(input.qbi, {
+    taxableIncomeBeforeQbi: dSub(dSub(agi, preDeduction), sch1a.total), netCapitalGainWithQd, income: limited, entities: allocated,
+    adjustments: input.adjustments, personDeductions: block.personDeductions, section1231Net: income.section1231,
+  }, ctx);
 
   const taxableIncomeBeforeItemized = dSub(dSub(agi, sch1a.total), qbi.deduction);
-  const itemized = computeItemizedDeductions(input.year.itemized, agg.itemizedOther, agi, taxableIncomeBeforeItemized, ctx);
+  const itemized = computeItemizedDeductions(input.year.itemized, limited.itemizedOther, agi, taxableIncomeBeforeItemized, ctx);
   const choice = chooseDeduction(input.year.deductionMode, standard, itemized, ctx);
+  if (choice.chosen === 'itemized' && dIsPos(itemized.benefitCapReduction)) {
+    ctx.info('TE_QBI_PRE_68_BASIS', `The §199A overall limit used taxable income on the itemized deduction before the §68 reduction (${itemized.benefitCapReduction}); the actual taxable income is higher by that amount (Q32).`, { reduction: itemized.benefitCapReduction });
+  }
 
   // Step 10: taxable income.
   const taxableIncomeBeforeQbi = dSub(dSub(agi, choice.deduction), sch1a.total);
@@ -147,30 +214,36 @@ export function computeFederal(input: FederalEngineInput): FederalResult {
   ctx.trace.add({ step: STEP_CREDITS, id: 'credits.nonrefundable', label: 'Nonrefundable credits (capped at regular tax)', exact: nonrefundableAllowed, source: 'input', formula: `min(${nonrefundableRequested}, ${regular.tax})` });
   if (dIsPos(refundable)) ctx.trace.add({ step: STEP_CREDITS, id: 'credits.refundable', label: 'Refundable credits', exact: refundable, source: 'input' });
 
-  // Step 13: Additional Medicare / NIIT (Phase 7).
-  const other = otherTaxes(input.otherTaxes, ctx);
+  // Step 13: Additional Medicare / NIIT.
+  const passiveOrdinary = dSum([...limited.byPerson.values()].flatMap((p) => p.shares.filter((s) => isPassiveActivity(s.activityType) || s.activityType === 'investment').map((s) => s.share.ordinary)));
+  const other = computeOtherTaxes(input.otherTaxes, {
+    persons: block.otherTaxPersons, interest: income.interest, dividends: income.dividends, capitalGains: income.capitalGainNet, rental: income.rental, passiveOrdinary, agi,
+  }, ctx);
+  const additionalMedicareTax = other.additionalMedicare.tax;
+  const niit = other.niit.tax;
   if (input.year.amtExposureFlagged) ctx.warn('TE_AMT_NOT_MODELLED', 'AMT exposure was flagged; the alternative minimum tax is out of scope and not included.');
 
   // Step 14: federal total.
-  const federalTotal = dSub(dSum([dSub(regular.tax, nonrefundableAllowed), totalSeTax, other.additionalMedicareTax, other.niit]), refundable);
-  ctx.trace.add({ step: STEP_TOTAL, id: 'federal_total', label: 'Federal tax (regular − nonrefundable credits + SE + Additional Medicare + NIIT − refundable)', exact: federalTotal, source: 'gl_map', formula: `${regular.tax} − ${nonrefundableAllowed} + ${totalSeTax} + ${other.additionalMedicareTax} + ${other.niit} − ${refundable}` });
+  const federalTotal = dSub(dSum([dSub(regular.tax, nonrefundableAllowed), block.seTax, additionalMedicareTax, niit]), refundable);
+  ctx.trace.add({ step: STEP_TOTAL, id: 'federal_total', label: 'Federal tax (regular − nonrefundable credits + SE + Additional Medicare + NIIT − refundable)', exact: federalTotal, source: 'gl_map', formula: `${regular.tax} − ${nonrefundableAllowed} + ${block.seTax} + ${additionalMedicareTax} + ${niit} − ${refundable}` });
   if (dIsZero(federalTotal) && dIsZero(income.totalIncome)) ctx.info('TE_NO_INCOME', 'No income was found for the year.');
 
   const w = regular.worksheet;
+  const am = other.additionalMedicare; const ni = other.niit;
   return {
     engineVersion: TAX_ENGINE_VERSION,
     taxYear: input.taxYear,
     filingStatus: input.filingStatus,
-    persons: personResults,
+    persons: block.personResults,
     entities: allocated.map(entityResult),
-    lossLimitations: { applied: lossLimits.applied, suspendedPassiveLoss: R(lossLimits.suspendedPassiveLoss), excessBusinessLoss: R(lossLimits.excessBusinessLoss), notes: lossLimits.notes },
+    lossLimitations: roundLossLimits(lossLimits),
     income: {
       wages: R(income.wages), businessOrdinary: R(income.businessOrdinary), guaranteedPayments: R(income.guaranteedPayments), rental: R(income.rental),
       interest: R(income.interest), dividends: R(income.dividends), qualifiedDividends: R(income.qualifiedDividends),
       capitalGainShortTerm: R(income.capitalGainShortTerm), capitalGainLongTerm: R(income.capitalGainLongTerm), section1231: R(income.section1231),
       capitalGainNet: R(income.capitalGainNet), capitalLossDisallowed: R(income.capitalLossDisallowed), otherIncome: R(income.otherIncome), totalIncome: R(income.totalIncome),
     },
-    adjustmentsToIncome: { halfSeTax: R(totalHalfSe), retirement: R(totalRetirement), sehi: R(totalSehi), hsa: R(totalHsa), other: R(otherAboveTheLine), total: R(adjustmentsTotal) },
+    adjustmentsToIncome: { halfSeTax: R(block.halfSeTax), retirement: R(block.retirement), sehi: R(block.sehi), hsa: R(block.hsa), other: R(block.otherAboveTheLine), total: R(block.adjustmentsTotal) },
     agi: R(agi),
     deductions: {
       mode: input.year.deductionMode, chosen: choice.chosen,
@@ -183,7 +256,7 @@ export function computeFederal(input: FederalEngineInput): FederalResult {
       deduction: R(choice.deduction),
       sch1a: { inEffect: sch1a.inEffect, senior: R(sch1a.senior), tips: R(sch1a.tips), overtime: R(sch1a.overtime), carLoanInterest: R(sch1a.carLoanInterest), total: R(sch1a.total) },
     },
-    qbi: { method: qbi.method, deduction: R(qbi.deduction) },
+    qbi: roundQbi(qbi),
     taxableIncomeBeforeQbi: R(taxableIncomeBeforeQbi),
     taxableIncome: R(taxableIncome),
     regularTax: {
@@ -196,13 +269,20 @@ export function computeFederal(input: FederalEngineInput): FederalResult {
       },
     },
     credits: { nonrefundableRequested: R(nonrefundableRequested), nonrefundableAllowed: R(nonrefundableAllowed), refundable: R(refundable) },
-    seTax: R(totalSeTax),
-    additionalMedicareTax: R(other.additionalMedicareTax),
-    niit: R(other.niit),
+    seTax: R(block.seTax),
+    additionalMedicareTax: R(additionalMedicareTax),
+    niit: R(niit),
+    otherTaxes: {
+      additionalMedicare: { method: am.method, medicareWages: R(am.medicareWages), nese: R(am.nese), threshold: R(am.threshold), wagesAboveThreshold: R(am.wagesAboveThreshold), neseAboveThreshold: R(am.neseAboveThreshold), tax: R(am.tax) },
+      niit: {
+        method: ni.method, interest: R(ni.interest), dividends: R(ni.dividends), capitalGains: R(ni.capitalGains), rental: R(ni.rental), passiveOrdinary: R(ni.passiveOrdinary), allocableDeductions: R(ni.allocableDeductions),
+        netInvestmentIncome: R(ni.netInvestmentIncome), magi: R(ni.magi), threshold: R(ni.threshold), base: R(ni.base), tax: R(ni.tax),
+      },
+    },
     federalTotal: R(federalTotal),
     exact: {
       totalIncome: income.totalIncome, agi, deduction: choice.deduction, sch1a: sch1a.total, qbi: qbi.deduction, taxableIncomeBeforeQbi, taxableIncome,
-      regularTax: regular.tax, nonrefundableCredits: nonrefundableAllowed, seTax: totalSeTax, additionalMedicareTax: other.additionalMedicareTax, niit: other.niit,
+      regularTax: regular.tax, nonrefundableCredits: nonrefundableAllowed, seTax: block.seTax, additionalMedicareTax, niit,
       refundableCredits: refundable, federalTotal,
     },
     trace: ctx.trace.rows(),

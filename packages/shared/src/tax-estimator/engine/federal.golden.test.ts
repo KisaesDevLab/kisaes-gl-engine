@@ -4,11 +4,11 @@
 
 // Golden test (MODULE.md "Tests"): the engine must match
 // features/tax-estimator/docs/reference-calc/rivera_expected.json, produced by
-// rivera_fixture.py, for every federal line through the federal total. Phase 6
-// stubs the §199A deduction from the fixture formula (Phase 7 computes it) and
-// Additional Medicare / NIIT (both 0 for Rivera). Parameters are the 2026
-// federal seed values; a guard below checks them against the seed file so the
-// test cannot drift from what ships.
+// rivera_fixture.py, for every federal line through the federal total. Since
+// Phase 7 the §199A deduction, Additional Medicare / NIIT (both 0 for Rivera)
+// and the loss limitations are computed by the engine — no fixture-fed stubs.
+// Parameters are the 2026 federal seed values; a guard below checks them
+// against the seed file so the test cannot drift from what ships.
 
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { computeFederal } from './federal.js';
 import { characters } from './income.js';
-import { dAdd, dDiv, dMin, dMul, dSub, dSum } from '../decimal.js';
+import { dAdd, dDiv, dMul, dSub, dSum } from '../decimal.js';
 import type { EngineAdjustment, EngineEntity, EnginePerson, FederalEngineInput, ParameterMap } from './types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -62,7 +62,22 @@ const SEED_2026: Record<string, { value: unknown; status: 'verified' | 'unverifi
   'sch1a.first_year': { value: 2025, status: 'verified' },
   'sch1a.last_year': { value: 2028, status: 'verified' },
   'qbi.rate': { value: 0.2, status: 'verified' },
+  'qbi.threshold.mfj': { value: 403500, status: 'verified' },
+  'qbi.phase_in_range.mfj': { value: 150000, status: 'verified' },
+  'qbi.w2_wage_pct': { value: 0.5, status: 'verified' },
+  'qbi.alt_w2_wage_pct': { value: 0.25, status: 'verified' },
+  'qbi.ubia_pct': { value: 0.025, status: 'verified' },
   'qbi.taxable_income_limit_pct': { value: 0.2, status: 'verified' },
+  'qbi.min_deduction_amount': { value: 400, status: 'verified' },
+  'qbi.min_deduction_active_qbi_threshold': { value: 1000, status: 'verified' },
+  'addl_medicare.rate': { value: 0.009, status: 'verified' },
+  'addl_medicare.threshold.mfj': { value: 250000, status: 'verified' },
+  'niit.rate': { value: 0.038, status: 'verified' },
+  'niit.threshold.mfj': { value: 250000, status: 'verified' },
+  'ebl.threshold.mfj': { value: 512000, status: 'verified' },
+  'passive.rental_allowance.standard': { value: 25000, status: 'verified' },
+  'passive.rental_allowance_phaseout_start.standard': { value: 100000, status: 'verified' },
+  'passive.rental_allowance_phaseout_end.standard': { value: 150000, status: 'verified' },
   'retirement.sep.pct_of_comp': { value: 0.25, status: 'verified' },
   'retirement.sep.dollar_limit': { value: 72000, status: 'verified' },
   'retirement.comp_limit': { value: 360000, status: 'verified' },
@@ -92,7 +107,7 @@ const linkBase = { profitPct: 100, lossPct: null, partnerSeStatus: null, isOffic
 const adjBase: EngineAdjustment = { id: '', label: '', typeCode: null, kind: 'income', amount: '0', pct: null, personId: null, linkId: null, affectsSe: false, affectsQbi: false, isCapitalGainLt: false, isCapitalGainSt: false, isQualifiedDividend: false, isReitDividend: false, isPtp: false, is1231: false, isAboveTheLine: false, nonRecurring: false };
 
 /** Rivera books after the treatment map (Phase 4 reproduces 115,400 → 128,000 for the Sch C). */
-function riveraInput(s: Scenario, qbiManual: string | null): FederalEngineInput {
+function riveraInput(s: Scenario, qbiManual: string | null = null): FederalEngineInput {
   return {
     taxYear: 2026,
     filingStatus: 'mfj',
@@ -120,22 +135,8 @@ function riveraInput(s: Scenario, qbiManual: string | null): FederalEngineInput 
   };
 }
 
-/**
- * Phase 6 QBI stub, exactly the oracle's formula on the engine's unrounded lines:
- * min(rate × (Sch C − ½ SE − SEHI − SEP) + rate × S corp K-1, limit × taxable income before QBI).
- */
-function qbiStub(s: Scenario): string {
-  const pass1 = computeFederal(riveraInput(s, null));
-  const exact = (id: string) => pass1.trace.find((t) => t.id === id)!.exact;
-  const rate = String(SEED_2026['qbi.rate']!.value); const limitPct = String(SEED_2026['qbi.taxable_income_limit_pct']!.value);
-  const schc = dSub(dSub(dSub(s.schcTaxProfit, exact(`half_se_tax.${CARLOS}`)), exact(`sehi.${CARLOS}`)), exact(`retirement.${CARLOS}`));
-  const scorpK1 = pass1.trace.find((t) => t.id === 'share.l-scorp')!.exact;
-  const components = dAdd(dMul(rate, schc), dMul(rate, scorpK1));
-  return dMin(components, dMul(limitPct, pass1.exact.taxableIncomeBeforeQbi));
-}
-
 function run(s: Scenario) {
-  return computeFederal(riveraInput(s, qbiStub(s)));
+  return computeFederal(riveraInput(s));
 }
 
 function expectFederalLines(r: ReturnType<typeof computeFederal>, e: Record<string, number | string>) {
@@ -161,7 +162,20 @@ describe('Rivera golden (rivera_expected.json)', () => {
     expect(r.persons.find((p) => p.personId === MARIA)!.totalWages).toBe('54000');
     expect(r.persons.find((p) => p.personId === MARIA)!.seIncome).toBe('0');
     expect(r.income.rental).toBe('8000');
-    expect(r.qbi.method).toBe('manual');
+    // §199A computed by the engine: Sch C after ½ SE / SEHI / SEP + Maria's S corp K-1; LP rental is not a trade or business.
+    expect(r.qbi.method).toBe('computed');
+    expect(r.qbi.taxableIncomeBeforeQbi).toBe('165357');
+    expect(r.qbi.phaseInFraction).toBe('0');
+    const schc = r.qbi.components.find((c) => c.linkId === 'l-schc')!;
+    expect(schc.attributableDeductions).toBe(String(Number(r.adjustmentsToIncome.halfSeTax) + 10800 + 15000));
+    expect(schc.component).toBe('18631');
+    expect(r.qbi.components.find((c) => c.linkId === 'l-scorp')!.component).toBe('8000');
+    const lp = r.qbi.components.find((c) => c.linkId === 'l-lp')!;
+    expect(lp.eligible).toBe(false);
+    expect(lp.reason).toMatch(/rental/);
+    expect(r.qbi.overallLimit).toBe('33071');
+    expect(r.qbi.minimumApplied).toBe(false);
+    expect(r.warnings.some((w) => w.code === 'TE_QBI_UBIA_MISSING')).toBe(false);
   });
 
   it('truck scenario: SEP capped at 12,639 with a warning', () => {
@@ -208,17 +222,75 @@ describe('Rivera golden (rivera_expected.json)', () => {
     expect(r.trace.find((t) => t.id === 'federal_total')!.amount).toBe(String(expected['base']!['federal_total']));
   });
 
-  it('stubs: Additional Medicare and NIIT are 0 and labelled pending Phase 7; loss limits not applied', () => {
+  it('Phase 7: Additional Medicare and NIIT are computed (0 for Rivera), loss limits applied, no stub warnings', () => {
     const r = run(BASE);
     expect(r.additionalMedicareTax).toBe('0');
     expect(r.niit).toBe('0');
-    expect(r.lossLimitations.applied).toBe(false);
-    expect(r.warnings.some((w) => w.code === 'TE_OTHER_TAXES_STUB')).toBe(true);
-    expect(r.warnings.some((w) => w.code === 'TE_QBI_STUB')).toBe(true);
+    expect(r.otherTaxes.additionalMedicare.method).toBe('computed');
+    expect(r.otherTaxes.additionalMedicare.medicareWages).toBe('54000');
+    expect(r.otherTaxes.additionalMedicare.nese).toBe('118208');
+    // NII = interest + the LP rental (passive K-1); MAGI is under the threshold.
+    expect(r.otherTaxes.niit.interest).toBe('2400');
+    expect(r.otherTaxes.niit.rental).toBe('8000');
+    expect(r.otherTaxes.niit.netInvestmentIncome).toBe('10400');
+    expect(r.otherTaxes.niit.base).toBe('0');
+    expect(r.lossLimitations.applied).toBe(true);
+    expect(r.lossLimitations.suspendedPassiveLoss).toBe('0');
+    expect(r.lossLimitations.excessBusinessLoss).toBe('0');
+    expect(r.lossLimitations.shares).toHaveLength(3);
+    for (const code of ['TE_OTHER_TAXES_STUB', 'TE_QBI_STUB', 'TE_LOSS_LIMITS_NOT_APPLIED']) expect(r.warnings.some((w) => w.code === code)).toBe(false);
+  });
+
+  it('Phase 7: Additional Medicare and NIIT apply when Maria earns 280,000 (threshold used by wages first; NII = interest + LP rental)', () => {
+    const r = run({ ...BASE, mariaWages: '280000' });
+    const nese = r.trace.find((t) => t.id === `nese.${CARLOS}`)!.exact;
+    expect(r.additionalMedicareTax).toBe(String(Math.round(0.009 * (280000 + Number(nese) - 250000))));
+    expect(r.otherTaxes.additionalMedicare.wagesAboveThreshold).toBe('30000');
+    expect(r.otherTaxes.additionalMedicare.neseAboveThreshold).toBe(nese);
+    expect(r.niit).toBe(String(Math.round(0.038 * 10400)));
+    expect(r.otherTaxes.niit.base).toBe('10400');
+    expect(Number(r.federalTotal)).toBe(Number(r.regularTax.tax) - Number(r.credits.nonrefundableAllowed) + Number(r.seTax) + Number(r.additionalMedicareTax) + Number(r.niit));
+  });
+
+  it('Phase 7: an LP rental loss with active participation — MAGI is probed without the passive loss (§469(i), D10)', () => {
+    const lossy = (s: Scenario): FederalEngineInput => {
+      const input = riveraInput(s);
+      const lp = input.entities[2]!;
+      lp.ytd = characters({ rental: '-30000' }); lp.recurringYtd = characters({ rental: '-30000' });
+      lp.links[0]!.activeParticipation = true;
+      return input;
+    };
+    // Base books: MAGI without the passive loss ≈ 189,557 ≥ 150,000 → allowance fully phased out, whole loss suspended.
+    const high = computeFederal(lossy(BASE));
+    expect(high.lossLimitations.rentalAllowance.variant).toBe('standard');
+    expect(high.lossLimitations.rentalAllowance.magi).toBe(String(Number(expected['base']!['agi']) - 8000));
+    expect(high.lossLimitations.rentalAllowance.afterPhaseOut).toBe('0');
+    expect(high.lossLimitations.suspendedPassiveLoss).toBe('30000');
+    expect(high.income.rental).toBe('0');
+    expect(high.agi).toBe(high.lossLimitations.rentalAllowance.magi);
+    expect(high.warnings.some((w) => w.code === 'TE_PASSIVE_LOSS_SUSPENDED')).toBe(true);
+    expect(high.trace.filter((t) => t.id === 'agi')).toHaveLength(1);
+    // Truck books and no wages for Maria: MAGI ≈ 82,157 < 100,000 → the full 25,000 is allowed, 5,000 suspended.
+    const low = computeFederal(lossy({ ...BASE, schcTaxProfit: '68000', mariaWages: '0' }));
+    expect(Number(low.lossLimitations.rentalAllowance.magi)).toBeLessThan(100000);
+    expect(low.lossLimitations.rentalAllowance.used).toBe('25000');
+    expect(low.lossLimitations.suspendedPassiveLoss).toBe('5000');
+    expect(low.income.rental).toBe('-25000');
+    expect(Number(low.agi)).toBe(Number(low.lossLimitations.rentalAllowance.magi) - 25000);
+    expect(low.otherTaxes.niit.rental).toBe('-25000');
+    expect(low.lossLimitations.shares.find((s) => s.linkId === 'l-lp')!.passiveSuspended).toBe('5000');
+  });
+
+  it('Phase 7: a manual §199A override wins and keeps the computed figure for comparison', () => {
+    const r = computeFederal(riveraInput(BASE, '20000'));
+    expect(r.qbi.method).toBe('manual');
+    expect(r.qbi.deduction).toBe('20000');
+    expect(r.qbi.computedDeduction).toBe(String(expected['base']!['qbi']));
+    expect(r.warnings.some((w) => w.code === 'TE_QBI_MANUAL_OVERRIDE')).toBe(true);
   });
 
   it('effective-rate override replaces the brackets and is labelled', () => {
-    const input = riveraInput(BASE, qbiStub(BASE));
+    const input = riveraInput(BASE);
     input.year = { ...input.year, rateMode: 'effective', effectiveRateOverride: '0.15' };
     const r = computeFederal(input);
     expect(r.regularTax.method).toBe('effective');
@@ -228,7 +300,7 @@ describe('Rivera golden (rivera_expected.json)', () => {
   });
 
   it('SEHI eligibility: months flagged false are excluded (true = deductible)', () => {
-    const input = riveraInput(BASE, qbiStub(BASE));
+    const input = riveraInput(BASE);
     const months = allMonths(); months[0] = false; months[1] = false; months[2] = false;
     input.persons[0]!.sehiEligibleMonths = months;
     const r = computeFederal(input);
@@ -239,8 +311,8 @@ describe('Rivera golden (rivera_expected.json)', () => {
     expect(Number(r.agi)).toBe(Number(expected['base']!['agi']) + 2700);
   });
 
-  it('a partial year projects to the same full-year figures when income is level (8 closed months)', () => {
-    const input = riveraInput(BASE, qbiStub(BASE));
+  it('a partial year projects to the same full-year figures when income is level (8 closed months) and reproduces the oracle Schedule AI period-3 column', () => {
+    const input = riveraInput(BASE);
     for (const e of input.entities) {
       e.monthsElapsed = 8; e.monthsRemaining = 4;
       const scale = (v: string) => dDiv(dMul(v, '8'), '12');
@@ -251,6 +323,16 @@ describe('Rivera golden (rivera_expected.json)', () => {
     }
     const r = computeFederal(input);
     expectFederalLines(r, expected['base']!);
+    // Oracle's fourth scenario: with level income the Schedule AI period-3 (Jan–Aug, ×1.5) column equals the full-year
+    // figures. The engine's 8-month run-rate projection is the same arithmetic; the true Schedule AI (Phase 10) differs
+    // only in the prorated SE wage base, which Rivera does not reach.
+    const ai = expected['schedule_ai_period3']!;
+    expect(Number(r.agi)).toBe(ai['annualized_agi']);
+    expect(Number(r.qbi.deduction)).toBe(ai['annualized_qbi']);
+    expect(Number(r.taxableIncome)).toBe(ai['annualized_taxable_income']);
+    expect(Number(r.regularTax.tax)).toBe(ai['annualized_income_tax']);
+    expect(Number(r.seTax)).toBe(ai['annualized_se_tax']);
+    expect(Number(r.federalTotal)).toBe(ai['annualized_total_tax']);
   });
 
   it('the embedded parameter values equal the shipped 2026 seed file', () => {
