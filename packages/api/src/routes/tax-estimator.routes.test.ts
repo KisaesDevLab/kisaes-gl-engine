@@ -29,6 +29,7 @@ const ids = { t1: '', t2: '', t3: '', t4: '', firmA: '', firmB: '' };
 const userIds: string[] = [];
 let staffToken = '';
 let readonlyToken = '';
+let tenantReadonlyToken = '';
 let clientUserToken = '';
 let outsiderToken = '';
 let superToken = '';
@@ -118,6 +119,11 @@ beforeEach(async () => {
   readonlyToken = ro.token;
   await db.insert(firmUsers).values({ firmId: ids.firmA, userId: ro.id, firmRole: 'firm_readonly' });
   await db.insert(userTenantAccess).values({ userId: ro.id, tenantId: ids.t1, role: 'accountant' });
+  // QA D2: firm staff whose ACTIVE-tenant role is `readonly`.
+  const tro = await mkUser(ids.t1, 'readonly');
+  tenantReadonlyToken = tro.token;
+  await db.insert(firmUsers).values({ firmId: ids.firmA, userId: tro.id, firmRole: 'firm_staff' });
+  await db.insert(userTenantAccess).values({ userId: tro.id, tenantId: ids.t1, role: 'readonly' });
   clientUserToken = (await mkUser(ids.t1, 'owner', { userType: 'client' })).token;
   outsiderToken = (await mkUser(ids.t1, 'accountant')).token; // staff, no firm membership
   superToken = (await mkUser(ids.t1, 'owner', { isSuperAdmin: true })).token;
@@ -188,6 +194,16 @@ describe('firm scope (MODULE.md D1)', () => {
     const r = await request('GET', '/api/v1/tax-estimator/scope', readonlyToken);
     expect(r.status).toBe(200);
     expect(r.json.data.firmRole).toBe('firm_readonly');
+  });
+
+  it('QA D2: scope.canWrite is true only for firm admin/staff with the update permission; a tenant-readonly member reads but cannot write', async () => {
+    expect((await request('GET', '/api/v1/tax-estimator/scope', staffToken)).json.data.canWrite).toBe(true);
+    expect((await request('GET', '/api/v1/tax-estimator/scope', readonlyToken)).json.data.canWrite).toBe(false);
+    const tro = await request('GET', '/api/v1/tax-estimator/scope', tenantReadonlyToken);
+    expect(tro.status).toBe(200);
+    expect(tro.json.data).toMatchObject({ firmRole: 'firm_staff', canWrite: false });
+    expect((await request('GET', '/api/v1/tax-estimator/taxpayers', tenantReadonlyToken)).status).toBe(200);
+    expect((await request('POST', '/api/v1/tax-estimator/taxpayers', tenantReadonlyToken)).status).toBe(403);
   });
 
   it('super admin must name a firm, then sees the firm\'s full managed set', async () => {

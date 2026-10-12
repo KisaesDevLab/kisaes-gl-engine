@@ -4,7 +4,7 @@
 
 import { Router } from 'express';
 import { authenticate, requireSessionAuth } from '../middleware/auth.js';
-import { requirePermission } from '../middleware/permission.js';
+import { requirePermission, resolvePermissionsForRequest } from '../middleware/permission.js';
 import { requireFeatureFlag } from '../middleware/feature-flag.js';
 import { resolveTaxEstimatorScope, getScope } from '../middleware/tax-estimator-scope.js';
 import { AppError } from '../utils/errors.js';
@@ -15,7 +15,7 @@ import { yearsRouter } from './tax-estimator/years.routes.js';
 import { estimateRouter } from './tax-estimator/estimate.routes.js';
 import { pdfRouter } from './tax-estimator/pdf.routes.js';
 import { registerRouter } from './tax-estimator/register.routes.js';
-import { taxParameterYearParamsSchema } from '@kis-books/shared';
+import { taxParameterYearParamsSchema, can } from '@kis-books/shared';
 import * as taxParametersService from '../services/tax-estimator/tax-parameters.service.js';
 
 // Tax Estimator staff router (features/tax-estimator/MODULE.md).
@@ -59,10 +59,15 @@ taxEstimatorRouter.use('/register', registerRouter);
 taxEstimatorRouter.use(resolveTaxEstimatorScope);
 
 // GET /scope — who am I acting as. Counts only; ids stay server-side.
-taxEstimatorRouter.get('/scope', (req, res) => {
+// QA D2: `canWrite` mirrors the mutation guards (firm_admin / firm_staff AND the
+// `tax_estimator` update permission in the active tenant), so a member whose
+// tenant role is `readonly` gets the read-only screens instead of buttons that 403.
+taxEstimatorRouter.get('/scope', async (req, res) => {
   const scope = getScope(req);
+  const firmWriter = scope.firmRole === 'firm_admin' || scope.firmRole === 'firm_staff';
+  const canWrite = firmWriter && can(await resolvePermissionsForRequest(req), 'tax_estimator', 'update');
   res.json({
-    data: { firmId: scope.firmId, firmRole: scope.firmRole, managedTenantCount: scope.allowedTenantIds.length },
+    data: { firmId: scope.firmId, firmRole: scope.firmRole, managedTenantCount: scope.allowedTenantIds.length, canWrite },
   });
 });
 
