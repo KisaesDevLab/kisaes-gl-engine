@@ -51,6 +51,7 @@ import * as attachmentService from './attachment.service.js';
 import * as billService from './bill.service.js';
 import * as contactsService from './contacts.service.js';
 import * as systemEmail from './system-email.service.js';
+import { recordStaffEmail } from './staff-email-audit.service.js';
 import { getCompanySettings } from './portal-contact.service.js';
 import { matchByName } from './ai-name-match.js';
 import { verifyAttachmentContent } from '../routes/attachments.routes.js';
@@ -758,16 +759,16 @@ export async function notifyStaffOfPortalBillUpload(params: {
       getCompanySettings(params.tenantId, params.companyId).catch(() => null),
       db.query.companies.findFirst({ where: eq(companies.id, params.companyId) }),
     ]);
-    let recipients: string[] = [];
+    let recipients: Array<{ id: string; email: string }> = [];
     const notifyUserId = settings?.billPayNotifyUserId ?? null;
     if (notifyUserId) {
       const u = await db.query.users.findFirst({ where: and(eq(users.id, notifyUserId), eq(users.tenantId, params.tenantId)) });
-      if (u && u.isActive) recipients = [u.email];
+      if (u && u.isActive) recipients = [{ id: u.id, email: u.email }];
     }
     if (recipients.length === 0) {
-      const owners = await db.select({ email: users.email }).from(users)
+      const owners = await db.select({ id: users.id, email: users.email }).from(users)
         .where(and(eq(users.tenantId, params.tenantId), eq(users.role, 'owner'), eq(users.isActive, true)));
-      recipients = owners.slice(0, 5).map((o) => o.email);
+      recipients = owners.slice(0, 5);
     }
     if (recipients.length === 0) return;
 
@@ -775,9 +776,10 @@ export async function notifyStaffOfPortalBillUpload(params: {
     const companyName = company?.businessName ?? 'a client company';
     const baseUrl = process.env['CORS_ORIGIN'] || 'http://localhost:5173';
     const n = params.fileCount;
-    const results = await Promise.allSettled(recipients.map((to) => systemEmail.sendActionEmail({
+    const subject = `${n} bill${n === 1 ? '' : 's'} uploaded — ${companyName}`;
+    const results = await Promise.allSettled(recipients.map(({ email: to }) => systemEmail.sendActionEmail({
       to,
-      subject: `${n} bill${n === 1 ? '' : 's'} uploaded — ${companyName}`,
+      subject,
       bodyText: `${who}${contact?.email ? ` (${contact.email})` : ''} uploaded ${n} vendor bill${n === 1 ? '' : 's'} in the client portal for ${companyName}.\n\nThey are being read now and will appear under Payables → Bill Capture for review.`,
       cta: { label: 'Open Bill Capture', url: `${baseUrl}/bills/capture` },
     })));
@@ -786,6 +788,11 @@ export async function notifyStaffOfPortalBillUpload(params: {
         log.warn({ component: 'bill-capture', event: 'notify_email_failed', err: r.reason instanceof Error ? r.reason.message : String(r.reason), tenantId: params.tenantId });
       }
     }
+    await recordStaffEmail({
+      tenantId: params.tenantId, kind: 'bill_capture_upload', subject,
+      recipientUserIds: recipients.filter((_, i) => results[i]!.status === 'fulfilled').map((r) => r.id),
+      sourceEntityType: 'company', sourceEntityId: params.companyId,
+    });
   } catch (err) {
     log.warn({ component: 'bill-capture', event: 'notify_failed', err: err instanceof Error ? err.message : String(err), tenantId: params.tenantId });
   }

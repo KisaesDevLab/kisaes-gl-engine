@@ -208,7 +208,10 @@ describe('portal bank repair', () => {
     expect(connMocks.refreshItemStatus).toHaveBeenCalledWith(ids['broken']);
     expect(syncMocks.syncItem).toHaveBeenCalledWith(ids['broken']);
     const audits = await db.select().from(auditLog).where(eq(auditLog.tenantId, tenantId));
-    const kinds = audits.map((a) => (typeof a.afterData === 'string' ? JSON.parse(a.afterData) : a.afterData)?.action).sort();
+    // The fire-and-forget heads-up email adds its own 'staff_email' row
+    // (racy relative to the response), so it is excluded here.
+    const kinds = audits.filter((a) => a.entityType !== 'staff_email')
+      .map((a) => (typeof a.afterData === 'string' ? JSON.parse(a.afterData) : a.afterData)?.action).sort();
     expect(kinds).toEqual(['portal_repair_complete', 'portal_repair_link_token']);
     // Now healthy → no longer flagged.
     const list = await request('GET', `/api/portal/banking/connections?companyId=${co()}`, cookies['fixer']);

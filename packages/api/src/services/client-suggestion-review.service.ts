@@ -23,6 +23,7 @@ import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { env } from '../config/env.js';
 import * as systemEmail from './system-email.service.js';
+import { recordStaffEmail } from './staff-email-audit.service.js';
 import * as bankFeedService from './bank-feed.service.js';
 import * as suspenseService from './suspense.service.js';
 import * as classificationService from './practice-classification.service.js';
@@ -487,7 +488,7 @@ export async function notifyStaffOfSuggestions(
     }));
   };
   try {
-    if (!systemEmail.isSmtpConfigured()) return { sent: 0, skipped: 'smtp_not_configured' };
+    if (!(await systemEmail.isSmtpConfigured())) return { sent: 0, skipped: 'smtp_not_configured' };
 
     // Membership is re-checked HERE, not at submission time: a staffer removed
     // from the client since then must stop receiving their data.
@@ -550,6 +551,7 @@ export async function notifyStaffOfSuggestions(
     ];
 
     let sent = 0;
+    const sentTo: string[] = [];
     for (const u of recipients) {
       try {
         await systemEmail.sendActionEmail({
@@ -557,10 +559,17 @@ export async function notifyStaffOfSuggestions(
           cta: { label: 'Review suggestions', url },
         });
         sent += 1;
+        sentTo.push(u.id);
       } catch (e) {
         log('error', { userId: u.id, error: e instanceof Error ? e.message : String(e) });
       }
     }
+    await recordStaffEmail({
+      tenantId, kind: 'client_suggestions', subject, recipientUserIds: sentTo,
+      sourceEntityType: contactId ? 'portal_contact' : 'user',
+      sourceEntityId: contactId ?? submitterUserId,
+      ...(submitterUserId ? { actorUserId: submitterUserId } : {}),
+    });
     log('sent', { sent, recipients: recipients.length });
     return { sent, skipped: null };
   } catch (e) {

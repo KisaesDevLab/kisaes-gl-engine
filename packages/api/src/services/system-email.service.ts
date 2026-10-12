@@ -96,16 +96,17 @@ export async function sendPasswordResetEmail(email: string, resetToken: string, 
   });
 }
 
-export async function sendInviteEmail(email: string, inviterName: string, tenantName: string, temporaryPassword: string, appUrl?: string): Promise<void> {
+export async function sendInviteEmail(email: string, inviterName: string, tenantName: string, temporaryPassword: string, appUrl?: string): Promise<string> {
   const { from, transport } = await createTransport();
   const name = await brandName();
   const baseUrl = appUrl || process.env['CORS_ORIGIN'] || 'http://localhost:5173';
   const loginLink = `${baseUrl}/login`;
 
+  const subject = `${name} — You've been invited to ${safeSubjectSegment(tenantName)}`;
   await transport.sendMail({
     from,
     to: email,
-    subject: `${name} — You've been invited to ${safeSubjectSegment(tenantName)}`,
+    subject,
     text: `${inviterName} has invited you to access "${tenantName}" on ${name}.\n\nYour temporary login credentials:\nEmail: ${email}\nPassword: ${temporaryPassword}\n\nLog in at: ${loginLink}\n\nPlease change your password after your first login.`,
     html: `
       <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:480px;margin:0 auto;padding:20px">
@@ -127,6 +128,7 @@ export async function sendInviteEmail(email: string, inviterName: string, tenant
       </div>
     `,
   });
+  return subject;
 }
 
 /**
@@ -136,16 +138,17 @@ export async function sendInviteEmail(email: string, inviterName: string, tenant
  * handoff; the password is admin-chosen, so we still push them to change
  * it on first login.
  */
-export async function sendAccountCreatedEmail(email: string, tenantName: string, password: string, appUrl?: string): Promise<void> {
+export async function sendAccountCreatedEmail(email: string, tenantName: string, password: string, appUrl?: string): Promise<string> {
   const { from, transport } = await createTransport();
   const name = await brandName();
   const baseUrl = appUrl || process.env['CORS_ORIGIN'] || 'http://localhost:5173';
   const loginLink = `${baseUrl}/login`;
 
+  const subject = `${name} — Your account for ${safeSubjectSegment(tenantName)}`;
   await transport.sendMail({
     from,
     to: email,
-    subject: `${name} — Your account for ${safeSubjectSegment(tenantName)}`,
+    subject,
     text: `An account has been created for you to access "${tenantName}" on ${name}.\n\nYour login credentials:\nEmail: ${email}\nPassword: ${password}\n\nLog in at: ${loginLink}\n\nPlease change your password after your first login.`,
     html: `
       <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:480px;margin:0 auto;padding:20px">
@@ -167,17 +170,19 @@ export async function sendAccountCreatedEmail(email: string, tenantName: string,
       </div>
     `,
   });
+  return subject;
 }
 
-export async function sendAccessGrantedEmail(email: string, tenantName: string, appUrl?: string): Promise<void> {
+export async function sendAccessGrantedEmail(email: string, tenantName: string, appUrl?: string): Promise<string> {
   const { from, transport } = await createTransport();
   const name = await brandName();
   const baseUrl = appUrl || process.env['CORS_ORIGIN'] || 'http://localhost:5173';
 
+  const subject = `${name} — Access granted to ${safeSubjectSegment(tenantName)}`;
   await transport.sendMail({
     from,
     to: email,
-    subject: `${name} — Access granted to ${safeSubjectSegment(tenantName)}`,
+    subject,
     text: `You've been granted access to "${tenantName}" on ${name}.\n\nLog in with your existing credentials at: ${baseUrl}/login\n\nYou can switch to this company from the company switcher in the sidebar.`,
     html: `
       <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:480px;margin:0 auto;padding:20px">
@@ -194,6 +199,7 @@ export async function sendAccessGrantedEmail(email: string, tenantName: string, 
       </div>
     `,
   });
+  return subject;
 }
 
 /**

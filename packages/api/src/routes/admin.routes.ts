@@ -328,7 +328,11 @@ delegable.post(userSupport, '/users/create', validate(adminCreateUserSchema), as
     // forget — the admin already has the password to hand off manually
     // if SMTP is down, so a send failure must not fail the create.
     const { sendAccountCreatedEmail } = await import('../services/system-email.service.js');
-    sendAccountCreatedEmail(user.email, tenant.name, password).catch((err) => {
+    const { recordStaffEmail } = await import('../services/staff-email-audit.service.js');
+    sendAccountCreatedEmail(user.email, tenant.name, password).then((subject) => recordStaffEmail({
+      tenantId, kind: 'account_created', subject, recipientUserIds: [user.id],
+      sourceEntityType: 'user', sourceEntityId: user.id, actorUserId: req.userId,
+    })).catch((err) => {
       // eslint-disable-next-line no-console
       console.warn(`[admin.routes] account-created email to ${user.email} failed:`, err?.message ?? err);
     });

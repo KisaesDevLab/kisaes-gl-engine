@@ -23,6 +23,7 @@ import { getSmtpSettings } from './admin.service.js';
 import { env } from '../config/env.js';
 import { appBasePath } from '../utils/base-url.js';
 import { escapeHtml, safeSubjectSegment } from '../utils/html-escape.js';
+import { recordStaffEmail } from './staff-email-audit.service.js';
 
 export const INVITE_TTL_DAYS = 7;
 
@@ -658,6 +659,11 @@ export async function completeInviteConnection(
         `${metadata.institutionName ? ` at ${metadata.institutionName}` : ''} using your invite (${firmName}).\n\n` +
         `Open Banking → Bank Connections in MyBooks to map the new accounts to the books.`;
       await mailer.send(invite.createdByEmail, subject, `<p>${escapeHtml(body).replace(/\n\n/g, '</p><p>')}</p>`, body);
+      await recordStaffEmail({
+        tenantId: invite.tenantId, kind: 'bank_connect_invite_connected', subject,
+        recipientUserIds: [invite.createdBy],
+        sourceEntityType: 'bank_connect_invite', sourceEntityId: invite.id,
+      });
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn('[bank-connect] inviter notification failed:', err instanceof Error ? err.message : err);
@@ -718,6 +724,11 @@ export async function completeInviteRepair(token: string): Promise<{ ok: true; i
       const body = `${invite.recipientName} updated their bank login for ${bank} (${firmName}).` +
         (healthy ? ' The connection is syncing again.' : ' The next scheduled sync will confirm the repair.');
       await mailer.send(invite.createdByEmail, subject, `<p>${escapeHtml(body)}</p>`, body);
+      await recordStaffEmail({
+        tenantId: invite.tenantId, kind: 'bank_connect_invite_repaired', subject,
+        recipientUserIds: [invite.createdBy],
+        sourceEntityType: 'bank_connect_invite', sourceEntityId: invite.id,
+      });
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn('[bank-connect] repair notification failed:', err instanceof Error ? err.message : err);

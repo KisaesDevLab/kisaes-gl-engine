@@ -31,6 +31,7 @@ import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { env } from '../config/env.js';
 import { isSmtpConfigured, sendActionEmail } from './system-email.service.js';
+import { recordStaffEmail } from './staff-email-audit.service.js';
 
 // RECURRING_DOC_REQUESTS_V1 — service layer for the standing rule
 // ("ask client X for their bank statement on the 3rd of every month")
@@ -1484,6 +1485,7 @@ export async function notifyStaffOfSubmission(
     const url = `${base}/practice/reminders?tab=open&filter=unread`;
 
     let sent = 0;
+    const sentTo: string[] = [];
     for (const u of recipients) {
       try {
         await sendActionEmail({
@@ -1493,6 +1495,7 @@ export async function notifyStaffOfSubmission(
           cta: { label: 'Review submission', url },
         });
         sent += 1;
+        sentTo.push(u.id);
       } catch (e) {
         log('error', { userId: u.id, error: e instanceof Error ? e.message : String(e) });
       }
@@ -1505,6 +1508,10 @@ export async function notifyStaffOfSubmission(
       null,
       { receiptId, recipients: recipients.map((u) => u.id), sent },
     );
+    await recordStaffEmail({
+      tenantId, kind: 'doc_request_submission', subject, recipientUserIds: sentTo,
+      sourceEntityType: 'document_request', sourceEntityId: documentRequestId,
+    });
     log('sent', { sent, recipients: recipients.length });
     return { sent, skipped: null };
   } catch (e) {

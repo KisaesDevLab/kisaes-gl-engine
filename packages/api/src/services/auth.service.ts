@@ -15,6 +15,7 @@ import { auditLog } from '../middleware/audit.js';
 import { createCompanyForTenant } from './company.service.js';
 import { seedFromTemplate } from './accounts.service.js';
 import * as systemEmail from './system-email.service.js';
+import { recordStaffEmail } from './staff-email-audit.service.js';
 import { checkPasswordBreached } from '../utils/hibp.js';
 import { seedDefaultsForNewTenant as seedFeatureFlags } from './feature-flags.service.js';
 import { assignTenantToApplianceFirm, resolveFirmForNewClient } from './firm-provisioning.service.js';
@@ -955,7 +956,10 @@ export async function inviteUser(tenantId: string, input: { email: string; displ
     // notification mustn't block the grant. Log so an admin can see if
     // SMTP is broken and follow up with the user manually.
     const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
-    systemEmail.sendAccessGrantedEmail(existing.email, tenant?.name || 'Company').catch((err) => {
+    systemEmail.sendAccessGrantedEmail(existing.email, tenant?.name || 'Company').then((subject) => recordStaffEmail({
+      tenantId, kind: 'team_access_granted', subject, recipientUserIds: [existing.id],
+      sourceEntityType: 'user', sourceEntityId: existing.id, ...(inviterUserId ? { actorUserId: inviterUserId } : {}),
+    })).catch((err) => {
       // eslint-disable-next-line no-console
       console.warn(`[auth.service] access-granted email to ${existing.email} failed:`, err?.message ?? err);
     });
@@ -990,7 +994,10 @@ export async function inviteUser(tenantId: string, input: { email: string; displ
   const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId) });
   const inviter = inviterUserId ? await db.query.users.findFirst({ where: eq(users.id, inviterUserId) }) : null;
   const inviterName = inviter?.displayName || inviter?.email || 'An administrator';
-  systemEmail.sendInviteEmail(user.email, inviterName, tenant?.name || 'Company', temporaryPassword).catch((err) => {
+  systemEmail.sendInviteEmail(user.email, inviterName, tenant?.name || 'Company', temporaryPassword).then((subject) => recordStaffEmail({
+    tenantId, kind: 'team_invite', subject, recipientUserIds: [user.id],
+    sourceEntityType: 'user', sourceEntityId: user.id, ...(inviterUserId ? { actorUserId: inviterUserId } : {}),
+  })).catch((err) => {
     // eslint-disable-next-line no-console
     console.warn(`[auth.service] invite email to ${user.email} failed:`, err?.message ?? err);
   });

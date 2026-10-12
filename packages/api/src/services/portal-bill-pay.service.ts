@@ -31,6 +31,7 @@ import { payBills } from './bill-payment.service.js';
 import { getCompanySettings } from './portal-contact.service.js';
 import { tenantHasSingleCompany } from './portal-banking.service.js';
 import * as systemEmail from './system-email.service.js';
+import { recordStaffEmail } from './staff-email-audit.service.js';
 
 export interface PortalBillPayCtx {
   tenantId: string;
@@ -309,19 +310,19 @@ async function notifyChecksQueued(params: {
 }): Promise<void> {
   // Recipient: the per-company selected staff user, if still active in
   // this tenant; otherwise every active owner (capped, best-effort).
-  let recipients: string[] = [];
+  let recipients: Array<{ id: string; email: string }> = [];
   if (params.notifyUserId) {
     const u = await db.query.users.findFirst({
       where: and(eq(users.id, params.notifyUserId), eq(users.tenantId, params.tenantId)),
     });
-    if (u && u.isActive) recipients = [u.email];
+    if (u && u.isActive) recipients = [{ id: u.id, email: u.email }];
   }
   if (recipients.length === 0) {
     const owners = await db
-      .select({ email: users.email })
+      .select({ id: users.id, email: users.email })
       .from(users)
       .where(and(eq(users.tenantId, params.tenantId), eq(users.role, 'owner'), eq(users.isActive, true)));
-    recipients = owners.slice(0, 5).map((o) => o.email);
+    recipients = owners.slice(0, 5);
   }
   if (recipients.length === 0) return;
 
@@ -342,11 +343,12 @@ async function notifyChecksQueued(params: {
     `Total: ${money(total.toFixed(2))}. The checks are queued and unnumbered until you print them.`;
 
   const baseUrl = process.env['CORS_ORIGIN'] || 'http://localhost:5173';
+  const subject = `Checks ready to print — ${companyName}`;
   const results = await Promise.allSettled(
-    recipients.map((to) =>
+    recipients.map(({ email: to }) =>
       systemEmail.sendActionEmail({
         to,
-        subject: `Checks ready to print — ${companyName}`,
+        subject,
         bodyText,
         cta: { label: 'Open print queue', url: `${baseUrl}/checks/print` },
       }),
@@ -362,4 +364,9 @@ async function notifyChecksQueued(params: {
       });
     }
   }
+  await recordStaffEmail({
+    tenantId: params.tenantId, kind: 'portal_bill_pay', subject,
+    recipientUserIds: recipients.filter((_, i) => results[i]!.status === 'fulfilled').map((r) => r.id),
+    sourceEntityType: 'company', sourceEntityId: params.companyId,
+  });
 }

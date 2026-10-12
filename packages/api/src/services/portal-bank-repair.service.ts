@@ -185,11 +185,17 @@ export async function completeRepair(
         const systemEmail = await import('./system-email.service.js');
         const [company] = await db.select({ name: companies.businessName }).from(companies).where(eq(companies.id, companyId)).limit(1);
         const bank = conn.institutionName || 'their bank';
+        const subject = `${company?.name ?? 'A client'} fixed the ${bank} connection`;
         await systemEmail.sendActionEmail({
           to: notify,
-          subject: `${company?.name ?? 'A client'} fixed the ${bank} connection`,
+          subject,
           bodyText: `A client user for ${company?.name ?? 'the company'} re-authenticated the ${bank} bank connection from the client portal.`
             + (healthy ? ' The connection is syncing again.' : ' The next scheduled sync will confirm the repair.'),
+        });
+        const { recordStaffEmail } = await import('./staff-email-audit.service.js');
+        await recordStaffEmail({
+          tenantId, kind: 'portal_bank_repair', subject, recipientEmails: [notify],
+          sourceEntityType: 'plaid_item', sourceEntityId: plaidItemId,
         });
       } catch (err) {
         log.warn({ component: 'portal-bank-repair', event: 'notify_failed', err: err instanceof Error ? err.message : String(err) });

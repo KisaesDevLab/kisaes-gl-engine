@@ -37,6 +37,7 @@ import { firmInvites, firms, firmUsers, tenants, users, userTenantAccess } from 
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as systemEmail from './system-email.service.js';
+import { recordStaffEmail } from './staff-email-audit.service.js';
 import * as tenantFirmAssignmentService from './tenant-firm-assignment.service.js';
 import { getBranding } from './admin.service.js';
 
@@ -109,7 +110,7 @@ async function sendInviteEmail(args: {
   code: string;
   expiresAt: Date;
   baseUrl: string;
-}): Promise<{ sent: boolean; error?: string }> {
+}): Promise<{ sent: boolean; subject: string; error?: string }> {
   const app = await appName();
   const inviter = args.inviterName?.trim() || args.inviterEmail || 'A client';
   const inviterLine = args.inviterEmail ? `${inviter} (${args.inviterEmail})` : inviter;
@@ -122,18 +123,19 @@ async function sendInviteEmail(args: {
     `    ${args.code}\n\n` +
     `This invitation expires on ${expires} (${FIRM_INVITE_TTL_DAYS} days). ` +
     `If you weren't expecting it, you can ignore this email.`;
+  const subject = `${inviter} invited you to manage ${args.tenantName} on ${app}`;
   try {
     await systemEmail.sendActionEmail({
       to: args.to,
-      subject: `${inviter} invited you to manage ${args.tenantName} on ${app}`,
+      subject,
       bodyText,
       cta: { label: 'Accept invitation', url: link },
     });
-    return { sent: true };
+    return { sent: true, subject };
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[firm-invite.service] invite email failed:', (err as Error)?.message ?? err);
-    return { sent: false, error: (err as Error)?.message ?? 'send failed' };
+    return { sent: false, subject, error: (err as Error)?.message ?? 'send failed' };
   }
 }
 
@@ -197,6 +199,12 @@ export async function createInvite(args: {
   await auditLog(args.tenantId, 'create', 'firm_invite', row.id, null, {
     email, expiresAt: expiresAt.toISOString(), sent: mail.sent, error: mail.error,
   }, args.createdBy);
+  if (mail.sent) {
+    await recordStaffEmail({
+      tenantId: args.tenantId, kind: 'firm_invite', subject: mail.subject, recipientEmails: [email],
+      sourceEntityType: 'firm_invite', sourceEntityId: row.id, actorUserId: args.createdBy,
+    });
+  }
 
   return { inviteId: row.id, expiresAt: expiresAt.toISOString(), sent: mail.sent, resent: false, ...(mail.error ? { error: mail.error } : {}) };
 }
@@ -262,6 +270,12 @@ export async function resendInvite(
   await auditLog(tenantId, 'update', 'firm_invite', invite.id, { status: invite.status }, {
     action: 'resend', expiresAt: expiresAt.toISOString(), sent: mail.sent, error: mail.error,
   }, userId);
+  if (mail.sent) {
+    await recordStaffEmail({
+      tenantId, kind: 'firm_invite', subject: mail.subject, recipientEmails: [invite.recipientEmail],
+      sourceEntityType: 'firm_invite', sourceEntityId: invite.id, actorUserId: userId,
+    });
+  }
   return { expiresAt: expiresAt.toISOString(), sent: mail.sent, ...(mail.error ? { error: mail.error } : {}) };
 }
 
@@ -459,13 +473,17 @@ export async function accept(
   // Best-effort inviter notification.
   if (invite.createdByEmail) {
     const acceptorName = user.displayName?.trim() || user.email;
+    const subject = `${acceptorName} accepted your accountant invitation`;
     void systemEmail.sendActionEmail({
       to: invite.createdByEmail,
-      subject: `${acceptorName} accepted your accountant invitation`,
+      subject,
       bodyText:
         `${tenantName} is now managed by ${target.name}. ${acceptorName} (${user.email}) has accountant access to your books.\n\n` +
         `You can review who has access under Settings → Team.`,
-    }).catch((err) => {
+    }).then(() => recordStaffEmail({
+      tenantId: invite.tenantId, kind: 'firm_invite_accepted', subject, recipientUserIds: [invite.createdBy],
+      sourceEntityType: 'firm_invite', sourceEntityId: invite.id, actorUserId: user.id,
+    })).catch((err) => {
       // eslint-disable-next-line no-console
       console.warn('[firm-invite.service] acceptance notification failed:', (err as Error)?.message ?? err);
     });

@@ -179,7 +179,7 @@ export async function sendConnectionErrorNotice(
   const bank = institutionName || 'Your bank';
   for (const tenantId of tenantIds) {
     try {
-      const owners = await db.select({ email: users.email, displayName: users.displayName }).from(users)
+      const owners = await db.select({ id: users.id, email: users.email, displayName: users.displayName }).from(users)
         .where(and(eq(users.tenantId, tenantId), eq(users.role, 'owner'), eq(users.isActive, true)));
       if (owners.length === 0) continue;
       const { from, transport } = await createTransport(tenantId);
@@ -187,12 +187,15 @@ export async function sendConnectionErrorNotice(
         try { const { getBranding } = await import('./admin.service.js'); return (await getBranding()).appName; }
         catch { return 'Vibe MyBooks'; }
       })();
-      for (const owner of owners) {
-        await transport.sendMail({
-          from,
-          to: owner.email,
-          subject: safeSubject`Action needed: ${bank} connection stopped syncing`,
-          text: `Hi ${owner.displayName || ''},
+      const subject = safeSubject`Action needed: ${bank} connection stopped syncing`;
+      const sentTo: string[] = [];
+      try {
+        for (const owner of owners) {
+          await transport.sendMail({
+            from,
+            to: owner.email,
+            subject,
+            text: `Hi ${owner.displayName || ''},
 
 Your bank connection to ${bank} has stopped syncing${errorMessage ? `:
 
@@ -201,6 +204,15 @@ Your bank connection to ${bank} has stopped syncing${errorMessage ? `:
 New transactions will not be imported until it is repaired. Open Banking → Bank Connections and click "Fix Now" to re-authenticate.
 
 — ${brand}`,
+          });
+          sentTo.push(owner.id);
+        }
+      } finally {
+        // Whatever went out before a failure still went out.
+        const { recordStaffEmail } = await import('./staff-email-audit.service.js');
+        await recordStaffEmail({
+          tenantId, kind: 'plaid_connection_error', subject, recipientUserIds: sentTo,
+          sourceEntityType: 'plaid_item', sourceEntityId: plaidItemId,
         });
       }
     } catch (err) {
