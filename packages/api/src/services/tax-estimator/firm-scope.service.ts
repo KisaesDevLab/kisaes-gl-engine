@@ -34,20 +34,30 @@ export interface FirmScope {
   allowedTenantIds: string[];
   /** D17: who is looking, for `visibleTaxpayerFilter`. Server-resolved, never client input. */
   viewer: TaxpayerViewer;
+  /**
+   * D18: present ONLY on a scope returned by `scopeForTaxpayer` that widened
+   * `allowedTenantIds` for ONE taxpayer (the viewer is on its staff list). Never set by
+   * `resolveScope`, never client input. Writes that add / modify links, entity settings,
+   * treatments, GL references, payments pinned to a transaction and portal contacts use
+   * `baseScope(scope)` so the widening can never reach them.
+   */
+  elevation?: { taxpayerId: string; baseTenantIds: string[] };
 }
 
 /**
- * D17 (Kurt, 2026-10-12) — taxpayer visibility. Resolved once per request by `resolveScope`.
+ * D17 + D18 (Kurt, 2026-10-12) — taxpayer visibility. Resolved once per request by `resolveScope`.
  *
  *   bypass (firm_admin in the firm, or super admin) → every taxpayer of the firm.
- *   otherwise, ALL of:
- *     - staff allow-list: the taxpayer has no `tax_est_taxpayer_staff` rows, or one names the user;
- *     - when the firm switch `restrict_taxpayers_to_linked_tenants` is ON (default):
- *         a link of the taxpayer points into a tenant of `allowedTenantIds` (any year), OR
- *         the taxpayer has no active link (no link into a tenant the firm still actively
- *         manages) and the user created it (`created_by`; NULL = firm admins only).
+ *   taxpayer WITH a staff list (`tax_est_taxpayer_staff` rows; D18) → visible iff the list
+ *     names the user. The list REPLACES the linked-tenant rule: tenant reach and the firm
+ *     switch play no part (and `scopeForTaxpayer` widens that taxpayer's reads to its links).
+ *   taxpayer with NO staff list → the D17 firm rule: when the switch
+ *     `restrict_taxpayers_to_linked_tenants` is ON (default), a link of the taxpayer points
+ *     into a tenant of `allowedTenantIds` (any year), OR the taxpayer has no active link (no
+ *     link into a tenant the firm still actively manages) and the user created it
+ *     (`created_by`; NULL = firm admins only); switch OFF → visible.
  *
- * Data from linked tenants outside `allowedTenantIds` stays hidden as before (partial view).
+ * Under the firm rule, data from linked tenants outside `allowedTenantIds` stays hidden (partial view).
  */
 export interface TaxpayerViewer {
   /** The acting user; null only for UNRESTRICTED_VIEWER. */
@@ -150,9 +160,10 @@ export function visibleTaxpayerFilter(scope: FirmScope): SQL {
   if (v.bypass) return firm;
   if (!v.userId) return sql`false`;
   const uid = sql`${v.userId}::uuid`;
-  const allowList = sql`(NOT EXISTS (SELECT 1 FROM tax_est_taxpayer_staff tes WHERE tes.firm_id = ${TP}.firm_id AND tes.taxpayer_id = ${TP}.id)
-    OR EXISTS (SELECT 1 FROM tax_est_taxpayer_staff tes WHERE tes.firm_id = ${TP}.firm_id AND tes.taxpayer_id = ${TP}.id AND tes.user_id = ${uid}))`;
-  if (!v.restrictToLinkedTenants) return sql`(${firm} AND ${allowList})`;
+  // D18: on a non-empty list → that alone decides; empty list → the D17 firm rule.
+  const listed = sql`EXISTS (SELECT 1 FROM tax_est_taxpayer_staff tes WHERE tes.firm_id = ${TP}.firm_id AND tes.taxpayer_id = ${TP}.id AND tes.user_id = ${uid})`;
+  const noList = sql`NOT EXISTS (SELECT 1 FROM tax_est_taxpayer_staff tes WHERE tes.firm_id = ${TP}.firm_id AND tes.taxpayer_id = ${TP}.id)`;
+  if (!v.restrictToLinkedTenants) return sql`(${firm} AND (${listed} OR ${noList}))`;
   const reachable = scope.allowedTenantIds.length === 0
     ? sql`false`
     : sql`EXISTS (SELECT 1 FROM tax_est_links tel WHERE tel.taxpayer_id = ${TP}.id AND ${tenantInScopeSql(scope, sql.raw('tel.tenant_id'))})`;
@@ -160,8 +171,52 @@ export function visibleTaxpayerFilter(scope: FirmScope): SQL {
     SELECT 1 FROM tax_est_links tel
     JOIN tenant_firm_assignments tfa ON tfa.tenant_id = tel.tenant_id AND tfa.firm_id = ${TP}.firm_id AND tfa.is_active = true
     WHERE tel.taxpayer_id = ${TP}.id))`;
-  return sql`(${firm} AND ${allowList} AND (${reachable} OR ${unlinkedOwn}))`;
+  return sql`(${firm} AND (${listed} OR (${noList} AND (${reachable} OR ${unlinkedOwn}))))`;
 }
+
+/**
+ * D18 (Kurt, 2026-10-12) — "full data" for a user on a taxpayer's staff list.
+ *
+ * Returns the scope to use for reads / computations OF `taxpayerId` (its links, its
+ * entities' tax-basis figures, readiness, payments, Schedule AI figures, snapshots, PDFs,
+ * Report Pack section): when the viewer is NOT a bypass user and the taxpayer's staff list
+ * names them, `allowedTenantIds` gains every tenant the firm still ACTIVELY manages that the
+ * taxpayer links into (any year) — the same tenants a super admin would read for it.
+ * Otherwise the scope is returned unchanged (no `elevation`). Self-contained: membership is
+ * checked here (firm + taxpayer + user), so a stray call can never widen anything.
+ *
+ * The widening is limited to that taxpayer's linked tenants (not the firm's whole set) and
+ * must never feed a write that adds / modifies links, entity settings, treatments, GL
+ * references or portal contacts (`baseScope`), raw books routes, company pickers or other
+ * taxpayers. Cache keys built from the scope pick up the widened tenant set and the flag.
+ */
+export async function scopeForTaxpayer(scope: FirmScope, taxpayerId: string): Promise<FirmScope> {
+  if (scope.elevation?.taxpayerId === taxpayerId) return scope;
+  const base = baseScope(scope);
+  const v = base.viewer;
+  if (v.bypass || !v.userId) return base;
+  const rows = (await db.execute(sql`SELECT DISTINCT tel.tenant_id::text AS tenant_id
+    FROM tax_est_links tel
+    JOIN tax_est_taxpayers tp ON tp.id = tel.taxpayer_id AND tp.firm_id = ${base.firmId}::uuid
+    JOIN tenant_firm_assignments tfa ON tfa.tenant_id = tel.tenant_id AND tfa.firm_id = ${base.firmId}::uuid AND tfa.is_active = true
+    WHERE tel.taxpayer_id = ${taxpayerId}::uuid
+      AND EXISTS (SELECT 1 FROM tax_est_taxpayer_staff tes
+        WHERE tes.firm_id = ${base.firmId}::uuid AND tes.taxpayer_id = ${taxpayerId}::uuid AND tes.user_id = ${v.userId}::uuid)
+    ORDER BY 1`)).rows as Array<{ tenant_id: string }>;
+  const extra = rows.map((r) => r.tenant_id).filter((t) => !base.allowedTenantIds.includes(t));
+  if (extra.length === 0) return base;
+  return { ...base, allowedTenantIds: [...base.allowedTenantIds, ...extra], elevation: { taxpayerId, baseTenantIds: base.allowedTenantIds } };
+}
+
+/** D18: the caller's own scope, without any per-taxpayer widening. Use at every write entry point. */
+export function baseScope(scope: FirmScope): FirmScope {
+  if (!scope.elevation) return scope;
+  const { elevation, ...rest } = scope;
+  return { ...rest, allowedTenantIds: elevation.baseTenantIds };
+}
+
+/** D18: true when `scope` carries widened data (audit metadata `elevated: true`, UI note). */
+export const isElevated = (scope: FirmScope): boolean => scope.elevation !== undefined;
 
 /** True when `tenantId` is inside the scope. Use before any single-row cross-tenant write or read. */
 export function isTenantInScope(scope: FirmScope, tenantId: string): boolean {

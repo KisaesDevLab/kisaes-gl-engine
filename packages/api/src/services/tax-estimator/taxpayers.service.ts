@@ -36,11 +36,12 @@ import {
 } from '../../db/schema/tax-estimator-taxpayers.js';
 import { companies } from '../../db/schema/company.js';
 import { tenants } from '../../db/schema/auth.js';
+import { tenantFirmAssignments } from '../../db/schema/index.js';
 import { companyTaxProfiles } from '../../db/schema/tb.js';
 import { portalContacts, portalContactCompanies } from '../../db/schema/portal-contacts.js';
 import { auditLog } from '../../middleware/audit.js';
 import { AppError } from '../../utils/errors.js';
-import { isTenantInScope, tenantInScopeSql, visibleTaxpayerFilter, type FirmScope } from './firm-scope.service.js';
+import { baseScope, isElevated, isTenantInScope, scopeForTaxpayer, tenantInScopeSql, visibleTaxpayerFilter, type FirmScope } from './firm-scope.service.js';
 
 /** Who is acting: audit tenant = the caller's ACTIVE tenant (not a linked tenant). */
 export interface Actor {
@@ -200,6 +201,7 @@ export async function getTaxpayer(scope: FirmScope, id: string): Promise<Taxpaye
     taxpayer: toTaxpayerDTO(row),
     persons: persons.sort((a, b) => a.role.localeCompare(b.role)).map(toPersonDTO),
     staffRestricted: staff?.on === true,
+    elevatedAccess: isElevated(await scopeForTaxpayer(scope, id)),
   };
 }
 
@@ -369,6 +371,7 @@ function toLinkDTO(scope: FirmScope, l: LinkRow, roleByPerson: Map<string, Perso
     taxYear: l.taxYear, tenantId: l.tenantId, companyId: l.companyId,
     tenantName: m?.tenantName ?? null, companyName: m?.companyName ?? null,
     entityKind: m?.kind ?? null, returnForm: m?.returnForm ?? null, outOfScope,
+    viaStaffList: !outOfScope && !!scope.elevation && !scope.elevation.baseTenantIds.includes(l.tenantId),
     profitPct: numOrNull(l.profitPct), lossPct: numOrNull(l.lossPct), capitalPct: numOrNull(l.capitalPct),
     partnerSeStatus: l.partnerSeStatus as PartnerSeStatus | null, partnerSeMemo: l.partnerSeMemo,
     isOfficer: l.isOfficer, activityType: l.activityType as ActivityType, activeParticipation: l.activeParticipation,
@@ -386,6 +389,7 @@ async function hydrateLinks(scope: FirmScope, taxpayerId: string, rows: LinkRow[
 
 export async function listLinks(scope: FirmScope, taxpayerId: string, taxYear: number): Promise<LinkListDTO> {
   await loadTaxpayer(scope, taxpayerId);
+  scope = await scopeForTaxpayer(scope, taxpayerId); // D18: a listed user sees every linked company
   const rows = await db.select().from(taxEstLinks)
     .where(and(eq(taxEstLinks.taxpayerId, taxpayerId), eq(taxEstLinks.taxYear, taxYear)))
     .orderBy(asc(taxEstLinks.createdAt), asc(taxEstLinks.id));
@@ -403,6 +407,8 @@ function validateLinkFlags(input: UpsertLinkInput, kind: LinkEntityKind | null) 
 }
 
 export async function upsertLink(scope: FirmScope, actor: Actor, taxpayerId: string, input: UpsertLinkInput): Promise<LinkUpsertResultDTO> {
+  // D18: adding / changing a link needs the caller's OWN reach, never a staff-list widening.
+  scope = baseScope(scope);
   // Scope first: a tenant outside the allowed set is a 404 before anything else is read.
   if (!isTenantInScope(scope, input.tenantId)) throw notManaged();
 
@@ -484,6 +490,15 @@ export async function removeLink(scope: FirmScope, actor: Actor, taxpayerId: str
     const [link] = await tx.select().from(taxEstLinks)
       .where(and(eq(taxEstLinks.id, linkId), eq(taxEstLinks.taxpayerId, taxpayerId)));
     if (!link) throw new AppError(404, 'Link not found', 'TE_LINK_NOT_FOUND');
+    // D18: removing a link is a link change — staff need their OWN reach into its tenant while
+    // the firm still manages it (a staff-list member cannot unlink a company they could not
+    // have linked). A link into a client the firm no longer manages stays removable by anyone
+    // who sees the taxpayer (tidy-up); firm admins and super admins may always remove.
+    if (scope.firmRole !== 'firm_admin' && !isTenantInScope(baseScope(scope), link.tenantId)) {
+      const [managed] = await tx.select({ id: tenantFirmAssignments.tenantId }).from(tenantFirmAssignments).where(and(
+        eq(tenantFirmAssignments.tenantId, link.tenantId), eq(tenantFirmAssignments.firmId, scope.firmId), eq(tenantFirmAssignments.isActive, true)));
+      if (managed) throw notManaged();
+    }
     await tx.delete(taxEstLinks).where(eq(taxEstLinks.id, linkId));
     await audit(scope, actor, 'delete', 'tax_est_link', linkId, link, null, tx);
   });
@@ -492,6 +507,7 @@ export async function removeLink(scope: FirmScope, actor: Actor, taxpayerId: str
 // ── company options (cross-tenant picker) ──────────────────────────────
 
 export async function listCompanyOptions(scope: FirmScope, query: CompanyOptionsQuery): Promise<CompanyOptionListDTO> {
+  scope = baseScope(scope); // D18: the picker is always the caller's own reach
   const conds: SQL[] = [tenantInScopeSql(scope, sql`${companies.tenantId}`)];
   if (query.q) {
     const like = `%${query.q.replace(/[\\%_]/g, '\\$&')}%`;
@@ -598,6 +614,7 @@ export async function listContactCandidates(scope: FirmScope, taxpayerId: string
 }
 
 export async function linkContact(scope: FirmScope, actor: Actor, taxpayerId: string, input: LinkContactInput): Promise<LinkContactResultDTO> {
+  scope = baseScope(scope); // D18: portal contacts follow the caller's own reach
   const granted = await db.transaction(async (tx) => {
     await loadTaxpayer(scope, taxpayerId, tx, true);
     // The contact must belong to a tenant in scope; anything else is indistinguishable from "no such contact".
@@ -624,6 +641,7 @@ export async function linkContact(scope: FirmScope, actor: Actor, taxpayerId: st
 export async function unlinkContact(
   scope: FirmScope, actor: Actor, taxpayerId: string, portalContactId: string, revokeAccess: boolean,
 ): Promise<UnlinkContactResultDTO> {
+  scope = baseScope(scope); // D18
   return db.transaction(async (tx) => {
     await loadTaxpayer(scope, taxpayerId, tx, true);
     const [mapping] = await tx.select().from(taxEstTaxpayerContacts).where(and(

@@ -54,6 +54,11 @@ export interface TaxpayerDetailDTO {
   persons: PersonDTO[];
   /** D17: a staff allow-list is set. */
   staffRestricted: boolean;
+  /**
+   * D18: the viewer is on this taxpayer's staff list and reads it with linked companies in
+   * clients they cannot otherwise open (the estimator's "full data"). Server-derived.
+   */
+  elevatedAccess: boolean;
 }
 
 // ── D17 taxpayer visibility: per-taxpayer staff allow-list ─────────────
@@ -106,6 +111,12 @@ export interface LinkDTO {
   returnForm: string | null;
   /** True when the link's tenant is outside the caller's current scope. Stored, but excluded from computation and options. */
   outOfScope: boolean;
+  /**
+   * D18: true when the caller reads this link only because they are on the taxpayer's staff
+   * list (the company is in a client they cannot otherwise open). Its figures are included;
+   * the link itself and the company's entity setup stay read-only for them.
+   */
+  viaStaffList?: boolean;
   profitPct: number | null;
   lossPct: number | null;
   capitalPct: number | null;

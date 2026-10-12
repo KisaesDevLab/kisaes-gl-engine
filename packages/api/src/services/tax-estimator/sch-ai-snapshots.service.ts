@@ -18,7 +18,7 @@ import { dDiv, dMul, engineEntityFromTaxBasisPl } from '@kis-books/shared';
 import { db } from '../../db/index.js';
 import { taxEstSchAiSnapshots } from '../../db/schema/tax-estimator-estimate.js';
 import { AppError } from '../../utils/errors.js';
-import { isTenantInScope, type FirmScope } from './firm-scope.service.js';
+import { isElevated, isTenantInScope, scopeForTaxpayer, type FirmScope } from './firm-scope.service.js';
 import { getTaxBasisPl } from './pl-provider.service.js';
 import { getEntitySettings } from './entity-settings.service.js';
 import { getParameters } from './tax-parameters.service.js';
@@ -79,6 +79,7 @@ export function periodFiguresFromPl(pl: TaxBasisPl, periodMonths: number): SchAi
 
 /** Stored figures for in-scope tenants only, keyed `${periodIndex}|${tenantId}|${companyId}`. */
 export async function loadSnapshotFigures(scope: FirmScope, taxpayerId: string, taxYear: number): Promise<Map<string, SchAiFigures>> {
+  scope = await scopeForTaxpayer(scope, taxpayerId); // D18
   const rows = await db.select().from(taxEstSchAiSnapshots).where(and(
     eq(taxEstSchAiSnapshots.firmId, scope.firmId), eq(taxEstSchAiSnapshots.taxpayerId, taxpayerId), eq(taxEstSchAiSnapshots.taxYear, taxYear),
   ));
@@ -92,6 +93,7 @@ export async function loadSnapshotFigures(scope: FirmScope, taxpayerId: string, 
 
 export async function listSnapshots(scope: FirmScope, taxpayerId: string, taxYear: number): Promise<SchAiSnapshotDTO[]> {
   await loadTaxpayerForFirm(scope, taxpayerId);
+  scope = await scopeForTaxpayer(scope, taxpayerId); // D18
   const rows = await db.select().from(taxEstSchAiSnapshots).where(and(
     eq(taxEstSchAiSnapshots.firmId, scope.firmId), eq(taxEstSchAiSnapshots.taxpayerId, taxpayerId), eq(taxEstSchAiSnapshots.taxYear, taxYear),
   )).orderBy(asc(taxEstSchAiSnapshots.periodIndex), asc(taxEstSchAiSnapshots.capturedAt));
@@ -120,6 +122,9 @@ export async function captureSnapshots(
   scope: FirmScope, actor: Actor, taxpayerId: string, taxYear: number, input: CaptureSchAiSnapshotsInput, opts: { today?: Date } = {},
 ): Promise<{ captured: SchAiSnapshotDTO[]; skipped: TaxEstimatorWarning[] }> {
   await loadTaxpayerForFirm(scope, taxpayerId);
+  // D18: a listed user captures the taxpayer's linked companies even outside their own reach
+  // (estimator figures only; the books themselves stay closed to them).
+  scope = await scopeForTaxpayer(scope, taxpayerId);
   const today = opts.today ?? new Date();
   const periods = (await schAiPeriods(taxYear)).filter((p) => input.periodIndex === undefined || p.periodIndex === input.periodIndex);
   const complete = lastCompleteMonth(today);
@@ -196,7 +201,7 @@ export async function captureSnapshots(
         });
       }
       await auditYears(scope, actor, 'update', 'tax_est_sch_ai_snapshots', taxpayerId, null,
-        { taxYear, periods: periods.map((p) => p.periodIndex), written: toWrite.length, replace: input.replace }, tx);
+        { taxYear, periods: periods.map((p) => p.periodIndex), written: toWrite.length, replace: input.replace, ...(isElevated(scope) ? { elevated: true } : {}) }, tx);
     });
   }
   return { captured: await listSnapshots(scope, taxpayerId, taxYear), skipped };

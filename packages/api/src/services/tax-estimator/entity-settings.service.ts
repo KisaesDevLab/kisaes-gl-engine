@@ -16,7 +16,7 @@ import { db } from '../../db/index.js';
 import { taxEstEntitySettings, taxEstEntityYearInputs } from '../../db/schema/index.js';
 import { auditLog } from '../../middleware/audit.js';
 import { AppError } from '../../utils/errors.js';
-import type { FirmScope } from './firm-scope.service.js';
+import { baseScope, type FirmScope } from './firm-scope.service.js';
 import { assertEntityInScope, resolveForCompany } from './entity-type.service.js';
 
 type SettingsRow = typeof taxEstEntitySettings.$inferSelect;
@@ -66,6 +66,7 @@ export async function getEntitySettings(scope: FirmScope, tenantId: string, comp
 export async function upsertEntitySettings(
   scope: FirmScope, tenantId: string, companyId: string, input: UpsertEntitySettingsInput, userId?: string,
 ): Promise<EntitySettingsResponse> {
+  scope = baseScope(scope); // D18: entity writes never use a staff-list widening
   const company = await assertEntityInScope(scope, tenantId, companyId);
   await db.transaction(async (tx) => {
     const [before] = await tx.select().from(taxEstEntitySettings)
@@ -109,6 +110,7 @@ export async function getYearInputs(scope: FirmScope, tenantId: string, companyI
 export async function upsertYearInputs(
   scope: FirmScope, tenantId: string, companyId: string, taxYear: number, input: UpsertEntityYearInputsInput, userId?: string,
 ): Promise<EntityYearInputsDto> {
+  scope = baseScope(scope); // D18
   const company = await assertEntityInScope(scope, tenantId, companyId);
   // QA2-03: the >2% shareholder health switch exists only for S corporations (Q41).
   if (input.includeSehiInW2Wages === true && (await resolveForCompany(company)).entityType !== 's_corp') {

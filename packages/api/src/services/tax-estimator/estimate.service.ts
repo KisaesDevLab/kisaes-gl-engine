@@ -44,7 +44,7 @@ import { tbCacheGet, tbCacheSet } from '../tb/tb-redis.js';
 import { AppError } from '../../utils/errors.js';
 import { encrypt, decrypt } from '../../utils/encryption.js';
 import { getFirmSettings } from './firm-settings.service.js';
-import { isTenantInScope, type FirmScope } from './firm-scope.service.js';
+import { isElevated, isTenantInScope, scopeForTaxpayer, type FirmScope } from './firm-scope.service.js';
 import { getTaxBasisPl, loadConfigVersion } from './pl-provider.service.js';
 import { getReadiness } from './readiness.service.js';
 import { getEntitySettings } from './entity-settings.service.js';
@@ -279,6 +279,8 @@ function inputsHash(scope: FirmScope, req: EstimateRequest, g: Gathered, today: 
     // adjustment into a non-linked company is read only when its tenant is in scope), so
     // two firm members with different tenant access never share a cache entry.
     tenants: [...scope.allowedTenantIds].sort(),
+    // D18: a listed user's widened read is its own cache entry (flag + tenant set above).
+    elevated: isElevated(scope),
     filingStatus: g.taxpayerFilingStatus, year: g.year, persons: g.persons, links: g.links,
     companies: g.companies.map((c) => ({ t: c.tenantId, c: c.companyId, stamp: c.glVersionStamp, cfg: c.configVersion, s: c.settings })),
     adjustments: g.adjustments, types: g.types, stateRows: g.stateRows, params: g.paramsDto, stateRules: g.stateRules,
@@ -776,6 +778,8 @@ export async function computeEstimateWithInputs(
   scope: FirmScope, req: EstimateRequest, opts: EstimateOptions = {},
 ): Promise<{ result: EstimateResultDTO; inputs: EstimateInputsForSnapshot }> {
   const today = opts.today ?? new Date();
+  // D18: a user on the taxpayer's staff list reads it with its linked tenants (full data).
+  scope = await scopeForTaxpayer(scope, req.taxpayerId);
   const g = withPaymentsAsOf(await gather(scope, req), opts.paymentsAsOf);
   const hash = inputsHash(scope, req, g, today);
   const inputs: EstimateInputsForSnapshot = {
@@ -789,7 +793,7 @@ export async function computeEstimateWithInputs(
     const hit = await cacheGetEstimate(key);
     if (hit) return { result: { ...hit, cached: true }, inputs };
   }
-  const result = await assembleWithAssumptions(scope, req, g, opts, today, hash);
+  const result: EstimateResultDTO = { ...(await assembleWithAssumptions(scope, req, g, opts, today, hash)), elevatedAccess: isElevated(scope) };
   await cacheSetEstimate(key, result);
   return { result, inputs };
 }
@@ -821,6 +825,7 @@ export async function getEstimateReadiness(
   scope: FirmScope, taxpayerId: string, taxYear: number, opts: { today?: Date; throughMonth?: string } = {},
 ): Promise<EstimateReadinessDTO> {
   await loadTaxpayerForFirm(scope, taxpayerId);
+  scope = await scopeForTaxpayer(scope, taxpayerId); // D18
   const today = opts.today ?? new Date();
   const links = (await listLinks(scope, taxpayerId, taxYear)).data;
   const warnings: TaxEstimatorWarning[] = [];
@@ -833,6 +838,7 @@ export async function getEstimateReadiness(
     else byCompany.set(k, { tenantId: l.tenantId, companyId: l.companyId, companyName: inScope ? l.companyName : null, count: 1, inScope });
   }
   const entities: EstimateReadinessEntityDTO[] = [];
+  const viaList = (tenantId: string) => (scope.elevation && !scope.elevation.baseTenantIds.includes(tenantId) ? { viaStaffList: true } : {});
   let outOfScopeLinks = 0;
   for (const c of byCompany.values()) {
     if (!c.inScope) {
@@ -846,10 +852,10 @@ export async function getEstimateReadiness(
       // QA D20: the range the summary is showing ("Actuals through"), else each entity's default.
       const readiness = await getReadiness(scope, { tenantId: c.tenantId, companyId: c.companyId, taxYear, throughMonth: opts.throughMonth }, { today });
       warnings.push(...readiness.warnings.map((w) => ({ ...w, details: { ...(w.details ?? {}), companyId: c.companyId } })));
-      entities.push({ tenantId: c.tenantId, companyId: c.companyId, companyName: c.companyName, linkCount: c.count, inScope: true, readiness, error: null });
+      entities.push({ tenantId: c.tenantId, companyId: c.companyId, companyName: c.companyName, linkCount: c.count, inScope: true, readiness, error: null, ...viaList(c.tenantId) });
     } catch (err) {
       if (!(err instanceof AppError)) throw err;
-      entities.push({ tenantId: c.tenantId, companyId: c.companyId, companyName: c.companyName, linkCount: c.count, inScope: true, readiness: null, error: err.message });
+      entities.push({ tenantId: c.tenantId, companyId: c.companyId, companyName: c.companyName, linkCount: c.count, inScope: true, readiness: null, error: err.message, ...viaList(c.tenantId) });
       warnings.push({ code: err.code ?? 'TE_READINESS_FAILED', severity: 'warning', message: `${c.companyName ?? 'A linked company'}: ${err.message}` });
     }
   }

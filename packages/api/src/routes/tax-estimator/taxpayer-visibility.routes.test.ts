@@ -2,7 +2,8 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-// D17 (Kurt, 2026-10-12) — taxpayer visibility controls, HTTP level.
+// D17 (Kurt, 2026-10-12) — taxpayer visibility controls, HTTP level. D18 (a non-empty staff
+// list replaces the linked-tenant rule, full data) is covered in taxpayer-list-override.routes.test.ts.
 //
 // Fixture (Rivera household, firm A, links into T.schc / T.scorp / T.lp; practice tenant P
 // with the flag ON is every staff user's ACTIVE tenant):
@@ -419,9 +420,9 @@ describe('D17 per-taxpayer staff allow-list', () => {
     expect(await db.select().from(auditLog).where(and(eq(auditLog.entityType, 'tax_est_taxpayer_staff'), eq(auditLog.entityId, tp.rivera)))).toHaveLength(1);
   });
 
-  it('the list never overrides the linked-tenant rule (switch ON); with the switch OFF it alone decides', async () => {
+  it('D18: a non-empty list replaces the linked-tenant rule — with the switch ON or OFF it alone decides', async () => {
     expect((await setStaff([uid['none']!])).status).toBe(200);
-    expect((await call('GET', `${TE}/taxpayers/${tp.rivera}`, 'none')).status).toBe(404); // member, but reaches no linked tenant
+    expect((await call('GET', `${TE}/taxpayers/${tp.rivera}`, 'none')).status).toBe(200); // member, reaches no linked tenant (D18)
     expect((await call('GET', `${TE}/taxpayers/${tp.rivera}`, 'all')).status).toBe(404); // reaches schc, not a member
     expect((await setSwitch(false)).status).toBe(200);
     expect((await call('GET', `${TE}/taxpayers/${tp.rivera}`, 'none')).status).toBe(200);
