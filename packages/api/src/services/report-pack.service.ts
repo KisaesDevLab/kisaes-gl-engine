@@ -5,9 +5,10 @@
 // Report Packs — pack CRUD, run creation, and transient-artifact reads.
 // Tenant-scoped and audit-logged. Company is pinned on the pack.
 
-import { and, eq, isNull, asc, desc, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, asc, desc, notExists, sql } from 'drizzle-orm';
 import {
   PACK_MAX_COUNT,
+  TAX_ESTIMATOR_REPORT_IDS,
   getReportDef,
   resolvePreset,
   reportPackItemOptionsSchema,
@@ -22,9 +23,22 @@ import { auditLog } from '../middleware/audit.js';
 import { enqueueReportPack } from './extraction/queue.js';
 import { getProviderForTenant } from './storage/storage-provider.factory.js';
 import { tenantStorageKey } from './storage/storage-keys.js';
+import { decryptBuffer, encryptBuffer } from '../utils/encryption.js';
 
 // Transient PDF artifacts live for 60 minutes after a successful render.
 const ARTIFACT_TTL_MS = 60 * 60 * 1000;
+// R4-01: an artifact holding the Tax Estimate section (personal return information) is
+// stored ENCRYPTED (utils/encryption.ts, AES-256-GCM; key suffix `.pdf.enc`) and kept for
+// 15 minutes only — long enough to download what was just generated. It is a storage
+// object, not a DB column, so it is not in the key-rotation sweep: an artifact that no
+// longer decrypts (key rotated within its lifetime) answers 410 like an expired one.
+const TAX_ARTIFACT_TTL_MS = 15 * 60 * 1000;
+const ENCRYPTED_SUFFIX = '.enc';
+
+/** Does this item list contain a Tax Estimator section (R4-01 gate)? */
+export function hasTaxEstimateItem(items: ReadonlyArray<{ reportId: string }>): boolean {
+  return items.some((i) => TAX_ESTIMATOR_REPORT_IDS.includes(i.reportId));
+}
 
 // How long to wait for the Redis queue to accept a job before falling back to
 // inline generation. A healthy local Redis enqueues in well under this.
@@ -97,10 +111,17 @@ function normalizeItems(items: PackItemInput[]): Array<{ reportId: string; optio
   });
 }
 
+/**
+ * `includeTaxEstimate: false` (callers outside the Tax Estimator gates, R4-01) leaves out
+ * every pack that contains the Tax Estimate section, so its configuration (the taxpayer
+ * id) is not listed to them.
+ */
 export async function listPacks(
   tenantId: string,
   companyId: string,
+  opts: { includeTaxEstimate?: boolean } = {},
 ): Promise<Array<PackRow & { itemCount: number }>> {
+  const includeTax = opts.includeTaxEstimate ?? true;
   const rows = await db
     .select({
       pack: reportPacks,
@@ -112,6 +133,10 @@ export async function listPacks(
       eq(reportPacks.tenantId, tenantId),
       eq(reportPacks.companyId, companyId),
       isNull(reportPacks.deletedAt),
+      includeTax ? undefined : notExists(
+        db.select({ one: sql`1` }).from(reportPackItems)
+          .where(and(eq(reportPackItems.packId, reportPacks.id), inArray(reportPackItems.reportId, [...TAX_ESTIMATOR_REPORT_IDS]))),
+      ),
     ))
     .groupBy(reportPacks.id)
     .orderBy(desc(reportPacks.updatedAt));
@@ -339,6 +364,33 @@ export async function getRun(tenantId: string, runId: string): Promise<PackRunRo
   return run;
 }
 
+/** The report ids of a pack's items (R4-01 gate on runs: is the pack tax-bearing?). */
+export async function packItemReportIds(packId: string): Promise<string[]> {
+  const rows = await db.select({ reportId: reportPackItems.reportId }).from(reportPackItems).where(eq(reportPackItems.packId, packId));
+  return rows.map((r) => r.reportId);
+}
+
+/**
+ * Store a run's merged PDF. `encrypt` (a run carrying the Tax Estimate section) stores
+ * AES-256-GCM ciphertext under `<runId>.pdf.enc`. Returns the storage key and expiry.
+ */
+export async function storeRunArtifact(
+  tenantId: string,
+  runId: string,
+  pdf: Buffer,
+  opts: { encrypt: boolean },
+): Promise<{ key: string; expiresAt: Date; byteSize: number }> {
+  const key = reportPackArtifactKey(tenantId, runId, opts.encrypt);
+  const body = opts.encrypt ? Buffer.from(encryptBuffer(pdf), 'utf8') : pdf;
+  const provider = await getProviderForTenant(tenantId);
+  await provider.upload(key, body, {
+    fileName: `${runId}.pdf${opts.encrypt ? ENCRYPTED_SUFFIX : ''}`,
+    mimeType: opts.encrypt ? 'application/octet-stream' : 'application/pdf',
+    sizeBytes: body.length,
+  });
+  return { key, expiresAt: new Date(Date.now() + (opts.encrypt ? TAX_ARTIFACT_TTL_MS : ARTIFACT_TTL_MS)), byteSize: pdf.length };
+}
+
 /** Read the transient PDF for download. Throws 410 if expired/swept. */
 export async function readRunArtifact(
   tenantId: string,
@@ -353,7 +405,15 @@ export async function readRunArtifact(
   }
   const pack = await db.query.reportPacks.findFirst({ where: eq(reportPacks.id, run.packId) });
   const provider = await getProviderForTenant(tenantId);
-  const buffer = await provider.download(run.transientKey);
+  const stored = await provider.download(run.transientKey);
+  let buffer = stored;
+  if (run.transientKey.endsWith(ENCRYPTED_SUFFIX)) {
+    try {
+      buffer = decryptBuffer(stored.toString('utf8'));
+    } catch {
+      throw new AppError(410, 'Report pack PDF can no longer be read; regenerate it', 'PACK_ARTIFACT_EXPIRED');
+    }
+  }
   const [tenant, company] = await Promise.all([
     db.query.tenants.findFirst({ where: eq(tenants.id, tenantId), columns: { name: true } }),
     db.query.companies.findFirst({
@@ -372,9 +432,9 @@ export async function readRunArtifact(
   return { buffer, filename, pageCount: run.pageCount };
 }
 
-/** Storage key for a run's transient artifact (shared with the worker). */
-export function reportPackArtifactKey(tenantId: string, runId: string): string {
-  return tenantStorageKey(tenantId, 'reports', 'packs', 'transient', `${runId}.pdf`);
+/** Storage key for a run's transient artifact (shared with the worker); `.pdf.enc` when encrypted. */
+export function reportPackArtifactKey(tenantId: string, runId: string, encrypted = false): string {
+  return tenantStorageKey(tenantId, 'reports', 'packs', 'transient', `${runId}.pdf${encrypted ? ENCRYPTED_SUFFIX : ''}`);
 }
 
-export { ARTIFACT_TTL_MS };
+export { ARTIFACT_TTL_MS, TAX_ARTIFACT_TTL_MS };

@@ -6,9 +6,15 @@
 // standards"). Every estimate PDF the app hands out is printed FROM a frozen
 // snapshot, so what was given to a client can always be reproduced:
 //
-//   standalone Print / Download  → snapshot reason 'pdf'         → renderEstimatePdf
-//   Report Pack `tax-estimate`   → snapshot reason 'report_pack' → renderEstimatePdf
-//   snapshot history Download    → the existing snapshot         → renderEstimatePdf
+//   standalone Print / Download  → snapshot reason 'pdf'         → renderEstimatePdf (preparer)
+//   Report Pack `tax-estimate`   → snapshot reason 'report_pack' → renderEstimatePdf (client, R4-04)
+//   snapshot history Download    → the existing snapshot         → renderEstimatePdf (preparer)
+//
+// The Report Pack section is a client deliverable, so it prints the CLIENT variant (no
+// readiness codes, unverified-parameter dumps, engine version or prior-year AGI notes);
+// the staff screens keep the full working paper. A pack run that carries the section is
+// stored encrypted, short-lived, and readable only by its requester while they still pass
+// these gates (report-packs.routes.ts, report-pack.service.ts — R4-01 / R4-10).
 //
 // Report Pack gating (the pack builder, the ad-hoc /reports/tax-estimate endpoint and
 // the worker that renders a run): the pack's tenant must be managed by a firm the
@@ -17,9 +23,10 @@
 // requester's tenant access) must reach it. The taxpayer must belong to that firm and
 // be linked to the pack's company for the tax year.
 import { and, asc, desc, eq } from 'drizzle-orm';
-import type { EstimateSnapshotDTO, SnapshotReason, TaxEstimatePackTaxpayerDTO } from '@kis-books/shared';
+import { can, type EstimateSnapshotDTO, type SnapshotReason, type TaxEstimatePackTaxpayerDTO } from '@kis-books/shared';
 import { db } from '../../db/index.js';
-import { tenantFirmAssignments, users } from '../../db/schema/index.js';
+import { tenantFirmAssignments, userTenantAccess, users } from '../../db/schema/index.js';
+import * as permissionService from '../permission.service.js';
 import { taxEstLinks, taxEstTaxpayers } from '../../db/schema/tax-estimator-taxpayers.js';
 import { taxEstScenarios } from '../../db/schema/tax-estimator-years.js';
 import { AppError } from '../../utils/errors.js';
@@ -28,7 +35,7 @@ import * as featureFlags from '../feature-flags.service.js';
 import * as firmsService from '../firms.service.js';
 import { isTenantInScope, resolveScope, type FirmScope } from './firm-scope.service.js';
 import { createSnapshot, getSnapshot, type CreateSnapshotRequest } from './estimate-snapshots.service.js';
-import { renderEstimatePdf } from './estimate-pdf.service.js';
+import { renderEstimatePdf, type EstimatePdfAudience } from './estimate-pdf.service.js';
 import type { EstimateOptions } from './estimate.service.js';
 import type { Actor } from './year-access.js';
 
@@ -50,7 +57,7 @@ async function firmName(firmId: string): Promise<string | null> {
 }
 
 /** Print a snapshot. The figures, assumptions and disclaimer are the FROZEN ones. */
-export async function renderSnapshotPdf(scope: FirmScope, snap: EstimateSnapshotDTO): Promise<IssuedPdf> {
+export async function renderSnapshotPdf(scope: FirmScope, snap: EstimateSnapshotDTO, audience: EstimatePdfAudience = 'preparer'): Promise<IssuedPdf> {
   const p = snap.payload;
   const name = p.inputs.taxpayer.displayName;
   const bytes = await renderEstimatePdf({ ...p.result, assumptions: p.assumptions }, {
@@ -58,6 +65,7 @@ export async function renderSnapshotPdf(scope: FirmScope, snap: EstimateSnapshot
     firmName: await firmName(scope.firmId),
     disclaimer: p.disclaimerText,
     snapshot: { id: snap.id, createdAt: snap.createdAt, reason: snap.reason },
+    audience,
   });
   return { bytes, filename: `tax-estimate-${snap.taxYear}-${slugify(name)}.pdf`, snapshotId: snap.id };
 }
@@ -74,12 +82,17 @@ async function auditDownload(scope: FirmScope, actor: Actor, snap: EstimateSnaps
   }, actor.userId);
 }
 
-/** Freeze a snapshot with `reason`, then print it (standalone PDF, Report Pack section). */
+/**
+ * Freeze a snapshot with `reason`, then print it (standalone PDF, Report Pack section).
+ * R4-09: a 'pdf' / 'report_pack' issue with the same inputs on the same day reuses the
+ * snapshot already frozen for it (createSnapshot `reuseSameDay`) instead of storing another.
+ */
 export async function issueEstimatePdf(
   scope: FirmScope, actor: Actor, req: CreateSnapshotRequest & { reason: SnapshotReason }, opts: EstimateOptions = {},
+  audience: EstimatePdfAudience = 'preparer',
 ): Promise<IssuedPdf> {
-  const snap = await createSnapshot(scope, actor, req, opts);
-  const pdf = await renderSnapshotPdf(scope, snap);
+  const snap = await createSnapshot(scope, actor, req, opts, { reuseSameDay: true });
+  const pdf = await renderSnapshotPdf(scope, snap, audience);
   await auditDownload(scope, actor, snap, true);
   return pdf;
 }
@@ -119,11 +132,27 @@ export async function resolvePackScope(tenantId: string, userId: string, isSuper
   return scope;
 }
 
-/** Worker path: the run records only the requester; re-derive everything at render time. */
+/**
+ * Worker path: the run records only the requester; re-derive EVERYTHING the request-side
+ * gate (middleware/tax-estimator-scope.ts `taxEstimateReportScope`) checked, at render
+ * time (R4-03): the user is active and not a client user, holds the `tax_estimator`
+ * resource in THIS tenant (role from their tenant access row, as switch-tenant issues it;
+ * a super admin without a row is 'owner'), then firm membership, flag and D1 scope.
+ * The request's `authKind` cannot change after the fact: a non-session caller never gets
+ * `allow_tax_estimate` on its run, and the renderer refuses runs without it.
+ */
 export async function resolvePackScopeForUser(tenantId: string, userId: string): Promise<FirmScope> {
-  const [u] = await db.select({ isSuperAdmin: users.isSuperAdmin, isActive: users.isActive }).from(users).where(eq(users.id, userId));
-  if (!u || u.isActive === false) throw notAvailable();
-  return resolvePackScope(tenantId, userId, u.isSuperAdmin === true);
+  const [u] = await db.select({ isSuperAdmin: users.isSuperAdmin, isActive: users.isActive, userType: users.userType })
+    .from(users).where(eq(users.id, userId));
+  if (!u || u.isActive === false || u.userType === 'client') throw notAvailable();
+  const superAdmin = u.isSuperAdmin === true;
+  const [access] = await db.select({ role: userTenantAccess.role, isActive: userTenantAccess.isActive }).from(userTenantAccess)
+    .where(and(eq(userTenantAccess.userId, userId), eq(userTenantAccess.tenantId, tenantId)))
+    .limit(1);
+  if (!superAdmin && (!access || access.isActive === false)) throw notAvailable();
+  const perms = await permissionService.getEffectivePermissions(tenantId, userId, access?.role ?? 'owner', 'staff', superAdmin);
+  if (!can(perms, 'tax_estimator', 'read')) throw notAvailable();
+  return resolvePackScope(tenantId, userId, superAdmin);
 }
 
 /** Option choices: the firm's active taxpayers linked to this company, with the years they are linked for. */
@@ -167,7 +196,11 @@ export function packPeriod(asOfDate: string): { taxYear: number; throughMonth?: 
   return d === lastDayOfMonth(y, mo) ? { taxYear: y, throughMonth: `${m[1]}-${m[2]}` } : { taxYear: y };
 }
 
-/** Render the Report Pack `tax-estimate` section (also the ad-hoc /reports/tax-estimate PDF). */
+/**
+ * Render the Report Pack `tax-estimate` section (also the ad-hoc /reports/tax-estimate PDF):
+ * the CLIENT variant of the estimate PDF (R4-04). Without an explicit scenario it prints
+ * the BASE scenario or nothing (R4-06) — never whichever what-if happens to come first.
+ */
 export async function renderPackSection(scope: FirmScope, actor: Actor, req: PackSectionRequest, opts: EstimateOptions = {}): Promise<IssuedPdf> {
   if (!req.taxpayerId) throw AppError.badRequest('Pick a taxpayer for the Tax Estimate section', 'TE_PACK_TAXPAYER_REQUIRED');
   if (!isTenantInScope(scope, req.tenantId)) throw notAvailable();
@@ -185,9 +218,9 @@ export async function renderPackSection(scope: FirmScope, actor: Actor, req: Pac
   }
   const scenarios = await db.select({ id: taxEstScenarios.id, isBase: taxEstScenarios.isBase }).from(taxEstScenarios)
     .where(and(eq(taxEstScenarios.taxpayerId, req.taxpayerId), eq(taxEstScenarios.taxYear, taxYear)));
-  const scenario = req.scenarioId ? scenarios.find((s) => s.id === req.scenarioId) : scenarios.find((s) => s.isBase) ?? scenarios[0];
+  const scenario = req.scenarioId ? scenarios.find((s) => s.id === req.scenarioId) : scenarios.find((s) => s.isBase);
   if (!scenario) throw new AppError(404, `No ${taxYear} scenario exists for this taxpayer`, 'TE_SCENARIO_NOT_FOUND');
   return issueEstimatePdf(scope, actor, {
     taxpayerId: req.taxpayerId, taxYear, scenarioId: scenario.id, throughMonth, reason: 'report_pack',
-  }, opts);
+  }, opts, 'client');
 }

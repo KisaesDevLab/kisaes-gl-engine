@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest';
 import type { EstimateResultDTO } from '@kis-books/shared';
 import { PDFDocument } from 'pdf-lib';
 import { renderEstimatePdf } from './estimate-pdf.service.js';
+import { pdfText } from './pdf-text.test-fixtures.js';
 
 const inst = (i: number) => ({
   index: i, label: `Q${i + 1}`, dueDate: `2026-0${4 + i}-15`, regularInstallment: '7000', annualizedInstallment: i === 0 ? '5000' : null,
@@ -68,5 +69,25 @@ describe('renderEstimatePdf', () => {
     // Summary pages + the assumptions page always starts on a new page.
     expect(doc.getPageCount()).toBeGreaterThanOrEqual(2);
     expect(doc.getTitle()).toContain('2026 Tax Estimate');
+  });
+
+  it('R4-05: disclaimer newlines are paragraphs, never "?"', async () => {
+    const withParas = { ...dto, assumptions: { ...dto.assumptions!, disclaimerText: 'Paragraph one ends here.\nParagraph two starts here.\n\nThird.' } } as EstimateResultDTO;
+    const text = pdfText(await renderEstimatePdf(withParas, { taxpayerName: 'Rivera' }));
+    expect(text).not.toMatch(/here\.\?|\?\?Third/);
+    expect(text.split('\n')).toEqual(expect.arrayContaining(['Paragraph one ends here.', 'Paragraph two starts here.', 'Third.']));
+  });
+
+  it('R4-04: the client audience drops warnings, readiness, unverified parameters, engine version and verify markers', async () => {
+    const preparer = pdfText(await renderEstimatePdf(dto, { taxpayerName: 'Rivera' }));
+    expect(preparer).toContain('engine x');
+    expect(preparer).toContain('Unverified and provisional parameters');
+    expect(preparer).toContain('Warnings');
+    const client = pdfText(await renderEstimatePdf(dto, { taxpayerName: 'Rivera', audience: 'client' }));
+    for (const banned of ['engine x', 'Warnings', 'Readiness warnings', 'Unverified and provisional parameters', 'PROVISIONAL', 'unverified', '(verify)', 'TE_X']) {
+      expect(client, banned).not.toContain(banned);
+    }
+    expect(client).toContain('Payment vouchers');
+    expect(client).toContain('Firm disclaimer from the assumptions block.');
   });
 });

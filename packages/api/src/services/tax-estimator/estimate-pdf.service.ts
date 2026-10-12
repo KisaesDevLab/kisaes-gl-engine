@@ -24,7 +24,21 @@ export interface EstimatePdfOptions {
   disclaimer?: string | null;
   /** Set when the PDF prints a frozen snapshot (every PDF the app issues is one). */
   snapshot?: { id: string; createdAt: string; reason: SnapshotReason } | null;
+  /**
+   * R4-04. 'preparer' (default): the full working paper — warnings, every assumptions
+   * section (readiness codes, unverified / provisional parameters, engine approximations,
+   * safe-harbor workings incl. the prior-year AGI notes), verify markers and the engine
+   * version. 'client': the deliverable a client may hold — summary, federal / state
+   * figures, safe-harbor AMOUNTS, vouchers, the projection / exclusion assumptions and the
+   * disclaimer; nothing a preparer still has to review. The Report Pack section is 'client'.
+   */
+  audience?: EstimatePdfAudience;
 }
+
+export type EstimatePdfAudience = 'preparer' | 'client';
+
+/** Assumptions sections a client deliverable carries (R4-04): method / months, exclusions. */
+const CLIENT_ASSUMPTION_SECTIONS: ReadonlySet<string> = new Set(['projection', 'non_recurring']);
 
 const PAGE_W = 612;
 const PAGE_H = 792;
@@ -47,9 +61,13 @@ const pct = (v: unknown, places = 1): string => `${(num(v) * 100).toFixed(places
 /** Percent with float noise trimmed: 1.1 → "110", 0.9 → "90", 0.6667 → "66.67". */
 const pctShort = (v: unknown): string => String(Number((num(v) * 100).toFixed(2)));
 
-/** Standard-font text must be WinAnsi; replace anything the font cannot encode. */
+/**
+ * Standard-font text must be WinAnsi; replace anything the font cannot encode. Control
+ * whitespace (newline, tab, CR) becomes a space first (R4-05: it used to print as "?");
+ * callers that want line breaks split into paragraphs before calling (see `paragraphs`).
+ */
 function safe(text: string): string {
-  return text.replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[–—]/g, '-').replace(/…/g, '...').replace(/§/g, 'Sec. ')
+  return text.replace(/[\t\n\v\f\r]/g, ' ').replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[–—]/g, '-').replace(/…/g, '...').replace(/§/g, 'Sec. ')
     .replace(/[^\x20-\x7E -ÿ]/g, '?');
 }
 
@@ -79,6 +97,14 @@ class Writer {
     this.y -= 4;
     this.page.drawLine({ start: { x: MARGIN, y: this.y }, end: { x: PAGE_W - MARGIN, y: this.y }, thickness: 0.6, color: RULE });
     this.y -= LINE;
+  }
+  /** Firm-typed text (the disclaimer): each line is its own wrapped paragraph (R4-05). */
+  paragraphs(t: string, size = 9, indent = 0, color = INK) {
+    const paras = paragraphs(t);
+    paras.forEach((p, i) => {
+      this.wrap(p, size, indent, color);
+      if (i < paras.length - 1) this.y -= LINE / 3;
+    });
   }
   wrap(t: string, size = 9, indent = 0, color = INK) {
     const maxW = PAGE_W - 2 * MARGIN - indent;
@@ -120,6 +146,11 @@ class Writer {
 
 const RIGHT = PAGE_W - MARGIN;
 
+/** Split firm-typed text on newlines into trimmed, non-empty paragraphs (R4-05). */
+export function paragraphs(t: string): string[] {
+  return t.replace(/\r\n?/g, '\n').split(/\n+/).map((p) => p.trim()).filter((p) => p.length > 0);
+}
+
 const BADGE_TEXT: Record<AssumptionBadge, string> = {
   verify: 'VERIFY', estimate_may_differ: 'ESTIMATE MAY DIFFER', unverified: 'UNVERIFIED', provisional: 'PROVISIONAL',
 };
@@ -133,18 +164,25 @@ export function assumptionsFor(r: EstimateResultDTO, disclaimer?: string | null)
   return r.assumptions ?? buildEstimateAssumptions(r, { disclaimerText: disclaimer ?? r.disclaimerText ?? null });
 }
 
-/** Assumptions page: every section of the Phase 12 block in order, the disclaimer last (its own heading). */
-function renderAssumptions(w: Writer, a: EstimateAssumptionsDTO) {
+/**
+ * Assumptions page: every section of the Phase 12 block in order, the disclaimer last
+ * (its own heading). The client audience gets only CLIENT_ASSUMPTION_SECTIONS, unbadged.
+ */
+function renderAssumptions(w: Writer, a: EstimateAssumptionsDTO, audience: EstimatePdfAudience) {
+  const client = audience === 'client';
   w.newPage();
   w.text('Assumptions', MARGIN, 14, { bold: true });
   w.y -= 18;
-  w.wrap('Everything this estimate assumed, approximated or could not verify. Items marked VERIFY or UNVERIFIED need a preparer\'s review before the figures are relied on.', 8.5, 0, MUTED);
+  w.wrap(client
+    ? 'How the figures in this estimate were projected. Your accountant can explain any of them.'
+    : 'Everything this estimate assumed, approximated or could not verify. Items marked VERIFY or UNVERIFIED need a preparer\'s review before the figures are relied on.', 8.5, 0, MUTED);
   for (const section of a.sections) {
     if (section.id === 'disclaimer') continue;
+    if (client && !CLIENT_ASSUMPTION_SECTIONS.has(section.id)) continue;
     w.heading(section.title);
     if (section.items.length === 0) { w.wrap('None.', 8.5, 0, MUTED); continue; }
     for (const item of section.items) {
-      const badge = item.badge ? ` [${BADGE_TEXT[item.badge]}]` : '';
+      const badge = item.badge && !client ? ` [${BADGE_TEXT[item.badge]}]` : '';
       w.wrap(`${item.label}${badge}: ${item.detail}`, 8.5, 8);
     }
   }
@@ -156,7 +194,11 @@ export async function renderEstimatePdf(r: EstimateResultDTO, opts: EstimatePdfO
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
   doc.setTitle(safe(`${r.taxYear} Tax Estimate - ${opts.taxpayerName ?? ''}`));
-  const w = new Writer(doc, font, bold, `${opts.firmName?.trim() ? `${opts.firmName.trim()} - ` : ''}${r.taxYear} tax estimate - ${r.scenarioName} - engine ${r.engineVersion}`);
+  const audience: EstimatePdfAudience = opts.audience ?? 'preparer';
+  const client = audience === 'client';
+  // Preparer-only markers (R4-04): verify flags and the engine version.
+  const mark = (on: boolean | undefined, text: string) => (on && !client ? text : '');
+  const w = new Writer(doc, font, bold, `${opts.firmName?.trim() ? `${opts.firmName.trim()} - ` : ''}${r.taxYear} tax estimate - ${r.scenarioName}${client ? '' : ` - engine ${r.engineVersion}`}`);
 
   const assumptions = assumptionsFor(r, opts.disclaimer);
   // Firm header: the preparing firm's name, then the document title and who it is for.
@@ -218,7 +260,7 @@ export async function renderEstimatePdf(r: EstimateResultDTO, opts: EstimatePdfO
   else {
     for (const s of r.state.rows) {
       const tag = s.residency === 'resident' ? 'resident' : 'nonresident';
-      w.row([`${s.state} (${tag})${s.verify ? ' - unverified' : ''}`, usd(s.netTax)], cols);
+      w.row([`${s.state} (${tag})${mark(s.verify, ' - unverified')}`, usd(s.netTax)], cols);
       if (s.method === 'nonresident_flat') w.wrap('Nonresident: effective-rate estimate; most states compute nonresident tax by ratio of the full return.', 8, 12, MUTED);
       if (num(s.creditForOtherStates) > 0) w.wrap(`Less credit for other-state tax: ${usd(s.creditForOtherStates)}`, 8, 12, MUTED);
     }
@@ -231,7 +273,7 @@ export async function renderEstimatePdf(r: EstimateResultDTO, opts: EstimatePdfO
   for (const e of all) {
     const sh = e.safeHarbor;
     w.ensure(3 * LINE);
-    w.text(`${e.jurisdiction === 'federal' ? 'Federal' : e.jurisdiction}${e.verify ? ' (verify)' : ''} - recommended: ${sh.appliedRule}`, MARGIN, 9, { bold: true });
+    w.text(`${e.jurisdiction === 'federal' ? 'Federal' : e.jurisdiction}${mark(e.verify, ' (verify)')} - recommended: ${sh.appliedRule}`, MARGIN, 9, { bold: true });
     w.y -= LINE;
     w.row([`  ${pctShort(sh.currentYear.pct)}% of current-year tax`, usd(sh.currentYear.amount)], cols);
     w.row([`  ${sh.priorYear.pct == null ? 'Prior-year' : `${pctShort(sh.priorYear.pct)}% of prior-year`} tax${sh.priorYear.available ? '' : ' (unavailable)'}`, sh.priorYear.amount == null ? 'n/a' : usd(sh.priorYear.amount)], cols);
@@ -280,16 +322,16 @@ export async function renderEstimatePdf(r: EstimateResultDTO, opts: EstimatePdfO
     }
   }
 
-  // Warnings
-  if (r.warnings.length > 0) {
+  // Warnings (preparer only: readiness codes and engine notes are review items, R4-04)
+  if (!client && r.warnings.length > 0) {
     w.heading('Warnings');
     for (const wn of r.warnings.slice(0, 40)) w.wrap(`- ${wn.message}`, 8.5);
   }
 
-  renderAssumptions(w, assumptions);
+  renderAssumptions(w, assumptions, audience);
 
   w.heading('Disclaimer');
-  w.wrap(assumptions.disclaimerText?.trim() || opts.disclaimer?.trim() || DEFAULT_DISCLAIMER_TEXT, 9);
+  w.paragraphs(assumptions.disclaimerText?.trim() || opts.disclaimer?.trim() || DEFAULT_DISCLAIMER_TEXT, 9);
 
   w.finish();
   return doc.save();

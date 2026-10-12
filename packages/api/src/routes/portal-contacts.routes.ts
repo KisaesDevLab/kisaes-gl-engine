@@ -9,6 +9,7 @@ import { validate } from '../middleware/validate.js';
 import { AppError } from '../utils/errors.js';
 import * as svc from '../services/portal-contact.service.js';
 import * as portalAuth from '../services/portal-auth.service.js';
+import { taxEstimateReportScope } from '../middleware/tax-estimator-scope.js';
 import { PORTAL_PREVIEW_COOKIE } from '../middleware/portal-auth.js';
 import { resolvedSecure, appendSetCookie } from '../utils/cookie-secure.js';
 import { resolveEmailBaseUrl } from './portal-auth.routes.js';
@@ -90,7 +91,10 @@ portalContactsRouter.get('/contacts/:id', async (req, res) => {
 });
 
 portalContactsRouter.post('/contacts', validate(createContactSchema), async (req, res) => {
-  const result = await svc.createContact(req.tenantId, req.body, req.userId);
+  // R4-08: a tax_estimates_access grant needs the Tax Estimator gates (firm staff).
+  const wantsTax = (req.body.companies as Array<{ taxEstimatesAccess?: boolean }>).some((c) => c.taxEstimatesAccess === true);
+  const canGrantTaxEstimates = wantsTax && (await taxEstimateReportScope(req)) !== null;
+  const result = await svc.createContact(req.tenantId, req.body, req.userId, { canGrantTaxEstimates });
   // The invitation is sent here rather than inside createContact so a mail
   // failure can never roll back a contact that was created correctly, and
   // the service stays free of mail concerns. The response says what
@@ -186,7 +190,10 @@ portalContactsRouter.put(
   '/contacts/:id/companies',
   validate(setAssignmentsSchema),
   async (req, res) => {
-    await svc.setCompanyAssignments(req.tenantId, req.params['id']!, req.body.companies, req.userId);
+    // R4-08: omitted taxEstimatesAccess keeps the stored value; a new grant needs the Tax Estimator gates.
+    const wantsTax = (req.body.companies as Array<{ taxEstimatesAccess?: boolean }>).some((c) => c.taxEstimatesAccess === true);
+    const canGrantTaxEstimates = wantsTax && (await taxEstimateReportScope(req)) !== null;
+    await svc.setCompanyAssignments(req.tenantId, req.params['id']!, req.body.companies, req.userId, { canGrantTaxEstimates });
     res.json({ ok: true });
   },
 );

@@ -6,10 +6,10 @@
 // packs as an install-wide template; staff apply a template to create an
 // ordinary pack in the client they are working in. Templates carry only
 // portable settings: per-client ids (default tag, a report's tag filter,
-// the Transaction Report's account filter) are stripped on save.
+// the Transaction Report's account filter, the Tax Estimate taxpayer) are stripped on save.
 
 import { and, asc, eq, isNull } from 'drizzle-orm';
-import { reportPackItemOptionsSchema, type PeriodPreset, type ReportPackItemOptions } from '@kis-books/shared';
+import { reportPackItemOptionsSchema, TAX_ESTIMATOR_REPORT_IDS, type PeriodPreset, type ReportPackItemOptions } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { reportPackTemplates, reportLetters } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -46,9 +46,9 @@ export interface PackTemplateSummary {
 
 type TemplateRow = typeof reportPackTemplates.$inferSelect;
 
-/** Drop the options that point at one client's data. */
+/** Drop the options that point at one client's data (incl. the Tax Estimate taxpayer / scenario, R4-01). */
 export function portableOptions(options: ReportPackItemOptions): ReportPackItemOptions {
-  const { tagId: _tag, accountId: _account, ...rest } = options;
+  const { tagId: _tag, accountId: _account, taxpayerId: _taxpayer, scenarioId: _scenario, ...rest } = options;
   return rest;
 }
 
@@ -153,6 +153,8 @@ export async function applyTemplate(
   userId: string,
   templateId: string,
   input: { name?: string } = {},
+  /** R4-01: false (caller outside the Tax Estimator gates) drops the template's Tax Estimate section. */
+  opts: { allowTaxEstimate?: boolean } = {},
 ) {
   const tpl = await loadOrThrow(templateId);
   const s = (tpl.settings as Partial<PackTemplateSettings>) ?? {};
@@ -179,6 +181,8 @@ export async function applyTemplate(
     filenameTemplate: s.filenameTemplate,
     onError: s.onError,
     letterId,
-    items: ((tpl.items as PackTemplateItem[]) ?? []).map((i) => ({ reportId: i.reportId, options: portableOptions(i.options ?? {}) })),
+    items: ((tpl.items as PackTemplateItem[]) ?? [])
+      .filter((i) => opts.allowTaxEstimate !== false || !TAX_ESTIMATOR_REPORT_IDS.includes(i.reportId))
+      .map((i) => ({ reportId: i.reportId, options: portableOptions(i.options ?? {}) })),
   });
 }

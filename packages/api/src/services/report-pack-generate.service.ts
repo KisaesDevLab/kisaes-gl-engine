@@ -17,6 +17,7 @@ import { sql } from 'drizzle-orm';
 import {
   getReportDef,
   resolveReportDates,
+  TAX_ESTIMATOR_REPORT_IDS,
   reportPackItemOptionsSchema,
   formatIsoUS,
 } from '@kis-books/shared';
@@ -27,8 +28,7 @@ import { REPORT_PACK_DOCUMENT_RENDERERS } from './report-pack-documents.js';
 import { buildReportPackSectionHtml, escapeHtml } from './report-export.service.js';
 import { getLetter, resolveLetterContent, buildLetterPageHtml } from './report-letter.service.js';
 import { getReportFooter } from './tenant-report-settings.service.js';
-import { getProviderForTenant } from './storage/storage-provider.factory.js';
-import { reportPackArtifactKey, ARTIFACT_TTL_MS } from './report-pack.service.js';
+import { storeRunArtifact } from './report-pack.service.js';
 import { log } from '../utils/logger.js';
 import { appendPdf, htmlToPdfBytes, launchPdfBrowser, stampCaption, stampPageFooter } from './pdf-merge.util.js';
 import { listRowAttachments, renderRowAttachmentPdf } from './tb/row-attachments.service.js';
@@ -295,9 +295,10 @@ export async function generateReportPackRun(runId: string): Promise<void> {
 
     const mergedBytes = await merged.save();
     const buffer = Buffer.from(mergedBytes);
-    const key = reportPackArtifactKey(run.tenantId, runId);
-    const provider = await getProviderForTenant(run.tenantId);
-    await provider.upload(key, buffer, { fileName: `${runId}.pdf`, mimeType: 'application/pdf', sizeBytes: buffer.length });
+    // R4-01: a pack holding the Tax Estimate section is personal return information —
+    // stored encrypted with a short TTL (report-pack.service.ts storeRunArtifact).
+    const carriesTax = sections.some((s) => TAX_ESTIMATOR_REPORT_IDS.includes(s.reportId));
+    const { key, expiresAt } = await storeRunArtifact(run.tenantId, runId, buffer, { encrypt: carriesTax });
 
     const status = failures.length > 0 ? 'partial' : 'succeeded';
     await db.update(reportPackRuns).set({
@@ -305,7 +306,7 @@ export async function generateReportPackRun(runId: string): Promise<void> {
       progress: 100,
       currentReportId: null,
       transientKey: key,
-      expiresAt: new Date(Date.now() + ARTIFACT_TTL_MS),
+      expiresAt,
       pageCount: merged.getPageCount(),
       byteSize: buffer.length,
       errorJson: failures.length > 0 ? { failures } : null,
@@ -320,6 +321,9 @@ export async function generateReportPackRun(runId: string): Promise<void> {
       currentReportId: null,
       errorJson: { message, failures },
       finishedAt: new Date(),
+      // R4-03: 'failed' stays claimable (queue retry); the Tax Estimate grant does not
+      // survive it — a retried run renders without the section until it is re-requested.
+      allowTaxEstimate: false,
     }).where(and(eq(reportPackRuns.id, runId)));
     throw err;
   } finally {

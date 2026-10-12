@@ -12,6 +12,7 @@ import { AppError } from '../utils/errors.js';
 import { getRateLimitStore } from '../utils/rate-limit-store.js';
 import * as flags from '../services/feature-flags.service.js';
 import * as portalEstimates from '../services/tax-estimator/portal-estimates.service.js';
+import { resolvePackScopeForUser } from '../services/tax-estimator/estimate-documents.service.js';
 
 // Tax Estimator Phase 13 — read-only client-portal view (MODULE.md "Access", D5, D10;
 // UI-SPEC §05). Mounted at /api/portal/tax-estimates. Portal cookie auth only:
@@ -21,6 +22,11 @@ import * as portalEstimates from '../services/tax-estimator/portal-estimates.ser
 //     (services/tax-estimator/portal-estimates.service.ts owns the predicate),
 //   - Vibe PM peer requests are refused (the peer contract does not include tax
 //     estimates), and a "View as Client" preview stays pinned to its company.
+//   - R4-02: a "View as Client" preview substitutes a STAFF initiator for the contact,
+//     so the initiator must pass the same Tax Estimator gates as the staff side
+//     (active, not a client user, the tax_estimator resource in the contact's tenant,
+//     member of its managing firm or super admin, flag on, tenant in D1 scope —
+//     resolvePackScopeForUser). Otherwise the preview sees featureEnabled:false / 404.
 // Every miss is a 404 (TE_PORTAL_FORBIDDEN) that does not say why. GET-only.
 
 export const portalTaxEstimatesPublicRouter = Router();
@@ -65,23 +71,42 @@ function caller(req: Request): portalEstimates.PortalCaller & { year?: number } 
   const q = querySchema.parse(req.query);
   let companyId = scopedCompanyId(req, q.companyId) ?? null;
   if (pc.isPreview && pc.previewCompanyId) {
-    if (companyId && companyId !== pc.previewCompanyId) throw AppError.forbidden('Preview is scoped to one company');
+    // R4-07: the uniform 404, not a 403 that says why.
+    if (companyId && companyId !== pc.previewCompanyId) throw forbidden();
     companyId = pc.previewCompanyId;
   }
   return { contactId: pc.contactId, tenantId: pc.tenantId, companyId, year: q.year };
+}
+
+/**
+ * Flags on the contact's tenant AND, in a "View as Client" preview, the initiating staff
+ * user passes the Tax Estimator gates there (R4-02). A preview without an initiator is refused.
+ */
+async function available(req: Request, tenantId: string): Promise<boolean> {
+  if (!(await featureOn(tenantId))) return false;
+  const pc = req.portalContact;
+  if (!pc?.isPreview) return true;
+  if (!pc.previewInitiatorId) return false;
+  try {
+    await resolvePackScopeForUser(tenantId, pc.previewInitiatorId);
+    return true;
+  } catch (err) {
+    if (err instanceof AppError && err.statusCode === 404) return false;
+    throw err;
+  }
 }
 
 // GET /api/portal/tax-estimates?companyId= — the taxpayers this contact may open.
 // featureEnabled:false (200) lets the dashboard hide its entry quietly.
 portalTaxEstimatesPublicRouter.get('/', async (req, res) => {
   const c = caller(req);
-  if (!(await featureOn(c.tenantId))) {
+  res.setHeader('Cache-Control', 'no-store');
+  if (!(await available(req, c.tenantId))) {
     const body: PortalTaxEstimateListDTO = { featureEnabled: false, taxpayers: [] };
     res.json(body);
     return;
   }
   const body: PortalTaxEstimateListDTO = { featureEnabled: true, taxpayers: await portalEstimates.listForContact(c) };
-  res.setHeader('Cache-Control', 'no-store');
   res.json(body);
 });
 
@@ -90,7 +115,7 @@ portalTaxEstimatesPublicRouter.get('/:taxpayerId', computeLimiter, async (req, r
   const c = caller(req);
   const taxpayerId = uuid.safeParse(req.params['taxpayerId']);
   if (!taxpayerId.success) throw forbidden();
-  if (!(await featureOn(c.tenantId))) throw forbidden();
+  if (!(await available(req, c.tenantId))) throw forbidden();
   res.setHeader('Cache-Control', 'no-store');
   res.json(await portalEstimates.getForContact(c, taxpayerId.data, c.year));
 });
@@ -100,7 +125,7 @@ portalTaxEstimatesPublicRouter.get('/:taxpayerId/vouchers.pdf', computeLimiter, 
   const c = caller(req);
   const taxpayerId = uuid.safeParse(req.params['taxpayerId']);
   if (!taxpayerId.success) throw forbidden();
-  if (!(await featureOn(c.tenantId))) throw forbidden();
+  if (!(await available(req, c.tenantId))) throw forbidden();
   const { estimate } = await portalEstimates.getForContact(c, taxpayerId.data, c.year);
   if (!estimate) throw forbidden();
   const bytes = await portalEstimates.renderVouchersPdf(estimate);

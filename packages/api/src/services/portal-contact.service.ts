@@ -203,10 +203,27 @@ export async function getContact(
   };
 }
 
+/**
+ * R4-08 — `tax_estimates_access` is one of the two keys to another natural person's
+ * return information (the other, the taxpayer ↔ contact mapping, is firm-only). Turning
+ * it ON therefore needs the Tax Estimator gates (the route passes `canGrantTaxEstimates`
+ * from taxEstimateReportScope); turning it off — or leaving it as it is — does not, so
+ * tenant staff can always withdraw a client's access. Every change is audited as
+ * `tax_est_contact_access`.
+ */
+export interface TaxEstimatesGrantOptions {
+  canGrantTaxEstimates?: boolean;
+}
+
+const grantForbidden = () => AppError.forbidden(
+  'Granting tax estimate access needs Tax Estimator access for this client (firm staff)', 'TE_ACCESS_GRANT_FORBIDDEN',
+);
+
 export async function createContact(
   tenantId: string,
   input: CreatePortalContactInput,
   actorUserId?: string,
+  grant: TaxEstimatesGrantOptions = {},
 ): Promise<{ id: string }> {
   if (!input.email || !input.email.includes('@')) {
     throw AppError.badRequest('Email is required', 'EMAIL_REQUIRED');
@@ -214,6 +231,8 @@ export async function createContact(
   if (!input.companies || input.companies.length === 0) {
     throw AppError.badRequest('Contact must be linked to at least one company', 'COMPANIES_REQUIRED');
   }
+  const taxGranted = input.companies.filter((c) => c.taxEstimatesAccess === true).map((c) => c.companyId);
+  if (taxGranted.length > 0 && !grant.canGrantTaxEstimates) throw grantForbidden();
 
   const email = normalizeEmail(input.email);
   const companyIds = input.companies.map((c) => c.companyId);
@@ -266,7 +285,10 @@ export async function createContact(
       })),
     );
 
-    await auditLog(tenantId, 'create', 'portal_contact', row.id, null, { email, companies: companyIds }, actorUserId);
+    await auditLog(tenantId, 'create', 'portal_contact', row.id, null, { email, companies: companyIds }, actorUserId, tx);
+    if (taxGranted.length > 0) {
+      await auditLog(tenantId, 'create', 'tax_est_contact_access', row.id, null, { granted: taxGranted }, actorUserId, tx);
+    }
     return { id: row.id };
   });
 
@@ -375,11 +397,17 @@ export async function softDeleteContact(
   await auditLog(tenantId, 'delete', 'portal_contact', contactId, before, { ...before, status: 'deleted' }, actorUserId);
 }
 
+/**
+ * Replace a contact's company assignments. R4-08: an assignment that OMITS
+ * `taxEstimatesAccess` keeps the stored value for that company (older bundles, scripts
+ * and imports no longer wipe a firm's grant); a new grant needs `canGrantTaxEstimates`.
+ */
 export async function setCompanyAssignments(
   tenantId: string,
   contactId: string,
   assignments: PortalContactCompanyAssignment[],
   actorUserId?: string,
+  grant: TaxEstimatesGrantOptions = {},
 ): Promise<void> {
   const before = await db.query.portalContacts.findFirst({
     where: and(eq(portalContacts.tenantId, tenantId), eq(portalContacts.id, contactId)),
@@ -390,6 +418,13 @@ export async function setCompanyAssignments(
   await ensureCompaniesBelongToTenant(tenantId, companyIds);
 
   await db.transaction(async (tx) => {
+    const current = new Map((await tx.select({ companyId: portalContactCompanies.companyId, on: portalContactCompanies.taxEstimatesAccess })
+      .from(portalContactCompanies).where(eq(portalContactCompanies.contactId, contactId))
+      .for('update')).map((r) => [r.companyId, r.on]));
+    const nextTax = new Map(assignments.map((a) => [a.companyId, a.taxEstimatesAccess ?? current.get(a.companyId) ?? false]));
+    const granted = [...nextTax].filter(([id, on]) => on && current.get(id) !== true).map(([id]) => id);
+    const revoked = [...current].filter(([id, on]) => on && nextTax.get(id) !== true).map(([id]) => id);
+    if (granted.length > 0 && !grant.canGrantTaxEstimates) throw grantForbidden();
     await tx.delete(portalContactCompanies).where(eq(portalContactCompanies.contactId, contactId));
     if (assignments.length > 0) {
       await tx.insert(portalContactCompanies).values(
@@ -406,9 +441,12 @@ export async function setCompanyAssignments(
           categorizeAccess: a.categorizeAccess ?? false,
           bankRepairAccess: a.bankRepairAccess ?? false,
           billUploadAccess: a.billUploadAccess ?? false,
-          taxEstimatesAccess: a.taxEstimatesAccess ?? false,
+          taxEstimatesAccess: nextTax.get(a.companyId) ?? false,
         })),
       );
+    }
+    if (granted.length > 0 || revoked.length > 0) {
+      await auditLog(tenantId, 'update', 'tax_est_contact_access', contactId, null, { granted, revoked }, actorUserId, tx);
     }
   });
 

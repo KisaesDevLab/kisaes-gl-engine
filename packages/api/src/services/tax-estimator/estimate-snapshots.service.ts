@@ -23,7 +23,7 @@
 // reaches one of them sees the history row without figures and gets 404 on view /
 // compare.
 import { createHash } from 'node:crypto';
-import { and, count, desc, eq } from 'drizzle-orm';
+import { and, count, desc, eq, gte } from 'drizzle-orm';
 import type {
   EstimateReadinessDTO, EstimateResultDTO, EstimateSnapshotDTO, EstimateSnapshotInputsDTO, EstimateSnapshotListDTO,
   EstimateSnapshotListItemDTO, EstimateSnapshotPayload, EstimateSummaryDTO, SnapshotCompareDTO, SnapshotDiffRowDTO,
@@ -87,14 +87,47 @@ function auditShape(r: Row) {
   };
 }
 
+/** Reasons whose snapshots are only the record of a printout, so an identical one may be reused (R4-09). */
+const REUSABLE_REASONS: readonly SnapshotReason[] = ['pdf', 'report_pack'];
+
+/**
+ * R4-09: the newest snapshot this user froze TODAY (UTC) for the same reason, scenario and
+ * inputs. `inputsHash` covers the engine version, the firm scope, the request (incl. the
+ * through month), the books' GL stamps, every input row, the parameters and the firm
+ * settings (disclaimer) and the as-of day — so a match prints exactly the same figures.
+ */
+async function reusableSnapshot(scope: FirmScope, actor: Actor, req: CreateSnapshotRequest, reason: SnapshotReason, inputsHash: string): Promise<Row | null> {
+  if (!REUSABLE_REASONS.includes(reason)) return null;
+  const now = new Date();
+  const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const [row] = await db.select().from(taxEstSnapshots).where(and(
+    eq(taxEstSnapshots.firmId, scope.firmId), eq(taxEstSnapshots.taxpayerId, req.taxpayerId), eq(taxEstSnapshots.taxYear, req.taxYear),
+    eq(taxEstSnapshots.scenarioId, req.scenarioId), eq(taxEstSnapshots.reason, reason), eq(taxEstSnapshots.inputsHash, inputsHash),
+    eq(taxEstSnapshots.createdBy, actor.userId), gte(taxEstSnapshots.createdAt, dayStart),
+  )).orderBy(desc(taxEstSnapshots.createdAt)).limit(1);
+  return row && accessible(scope, row) ? row : null;
+}
+
+export interface CreateSnapshotBehaviour {
+  /** R4-09: reuse an identical same-day 'pdf' / 'report_pack' snapshot instead of freezing another (≤ 12 MB each). */
+  reuseSameDay?: boolean;
+}
+
 /** Finalize: compute fresh, freeze, audit. Also called when vouchers are issued / a PDF or Report Pack section is generated. */
 export async function createSnapshot(
-  scope: FirmScope, actor: Actor, req: CreateSnapshotRequest, opts: EstimateOptions = {},
+  scope: FirmScope, actor: Actor, req: CreateSnapshotRequest, opts: EstimateOptions = {}, behaviour: CreateSnapshotBehaviour = {},
 ): Promise<EstimateSnapshotDTO> {
   await loadTaxpayerForFirm(scope, req.taxpayerId);
   const { result, inputs } = await computeEstimateWithInputs(scope, {
     taxpayerId: req.taxpayerId, taxYear: req.taxYear, scenarioId: req.scenarioId, throughMonth: req.throughMonth, refresh: true,
   }, opts);
+  if (behaviour.reuseSameDay) {
+    const existing = await reusableSnapshot(scope, actor, req, req.reason ?? 'finalize', result.inputsHash);
+    if (existing) {
+      const payload = readPayload(existing);
+      return { ...listItem(scope, existing, payload.result.summary), payloadSha256: existing.payloadSha256, payload: redactForView(payload) };
+    }
+  }
   let readiness: EstimateReadinessDTO | null = null;
   try {
     readiness = await getEstimateReadiness(scope, req.taxpayerId, req.taxYear, { today: opts.today });

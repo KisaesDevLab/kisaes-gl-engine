@@ -13,8 +13,18 @@
 // 'delete')` can NEVER be satisfied (cap() limits reports to 'view'). Report
 // packs perform no ledger mutation — they save config and render data the
 // caller can already read — so every endpoint gates on reports:read.
+//
+// Tax Estimator (R4-01 / R4-10): a pack that contains the Tax Estimate section, and any
+// run that rendered it (allow_tax_estimate), carries a taxpayer's personal return
+// information. For those, every read and write here additionally requires the Tax
+// Estimator gates (taxEstimateReportScope: session auth, not a client user, the
+// tax_estimator resource, TAX_ESTIMATOR_V1, membership in the managing firm, tenant in
+// D1 scope) and answers 404 otherwise — the pack is not listed, its config (taxpayer id)
+// is not returned, it cannot be edited, copied, deleted or run, and the section cannot
+// be added. A run that rendered the section is further readable only by the user who
+// requested it, in the company it was run for (runs are otherwise tenant-scoped).
 
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import { z } from 'zod';
 import { can, reportPackItemOptionsSchema } from '@kis-books/shared';
 import { authenticate, requireSuperAdmin } from '../middleware/auth.js';
@@ -41,6 +51,49 @@ reportPacksRouter.use(companyContext);
 reportPacksRouter.use(['/catalog', '/letters', '/packs', '/pack-templates'], expensiveOpLimiter);
 
 const readPerm = requirePermission('reports', 'read');
+
+// ─── Tax Estimator gate (R4-01) ───
+const taxGateCache = new WeakMap<Request, Promise<boolean>>();
+/** Does this caller pass the Tax Estimator gates for the active tenant? (memoized per request) */
+function passesTaxGate(req: Request): Promise<boolean> {
+  let p = taxGateCache.get(req);
+  if (!p) {
+    p = taxEstimateReportScope(req).then((scope) => scope !== null);
+    taxGateCache.set(req, p);
+  }
+  return p;
+}
+const packNotFound = () => AppError.notFound('Report pack not found');
+const runNotFound = () => AppError.notFound('Report pack run not found');
+
+/** Load a pack for any per-pack endpoint; a tax-bearing pack is 404 to callers outside the gate. */
+async function loadGatedPack(req: Request, id: string) {
+  const pack = await packService.getPack(req.tenantId, id);
+  if (packService.hasTaxEstimateItem(pack.items) && !(await passesTaxGate(req))) throw packNotFound();
+  return pack;
+}
+
+/** The section cannot be added by a caller who could not see it in the catalog. */
+async function assertItemsAllowed(req: Request, items: Array<{ reportId: string }>) {
+  if (!packService.hasTaxEstimateItem(items) || (await passesTaxGate(req))) return;
+  const id = items.find((i) => TAX_ESTIMATOR_REPORT_IDS.includes(i.reportId))!.reportId;
+  throw AppError.badRequest(`Unknown report id: ${id}`, 'PACK_UNKNOWN_REPORT');
+}
+
+/**
+ * Load a run for status / download. Runs that rendered (or may render) the Tax Estimate
+ * section — allow_tax_estimate, or the pack has the section — need the gate; one that
+ * rendered it is readable only by its requester, in the run's company (R4-10).
+ */
+async function loadGatedRun(req: Request, runId: string) {
+  const run = await packService.getRun(req.tenantId, runId);
+  const taxPack = packService.hasTaxEstimateItem((await packService.packItemReportIds(run.packId)).map((reportId) => ({ reportId })));
+  if (run.allowTaxEstimate || taxPack) {
+    if (!(await passesTaxGate(req))) throw runNotFound();
+    if (run.allowTaxEstimate && (run.requestedBy !== req.userId || run.companyId !== req.companyId)) throw runNotFound();
+  }
+  return run;
+}
 
 const packItemSchema = z.object({
   reportId: z.string().min(1),
@@ -78,7 +131,7 @@ const runBodySchema = z.object({
 // ─── Catalog ───
 // The Tax Estimator section (Phase 13) is listed only for callers who pass its gates.
 reportPacksRouter.get('/catalog', readPerm, async (req, res) => {
-  const taxOk = (await taxEstimateReportScope(req)) !== null;
+  const taxOk = await passesTaxGate(req);
   res.json({ catalog: taxOk ? REPORT_CATALOG : REPORT_CATALOG.filter((d) => !TAX_ESTIMATOR_REPORT_IDS.includes(d.id)) });
 });
 
@@ -91,11 +144,12 @@ reportPacksRouter.get('/letters', readPerm, async (_req, res) => {
 
 // ─── Pack CRUD ───
 reportPacksRouter.get('/packs', readPerm, async (req, res) => {
-  const packs = await packService.listPacks(req.tenantId, req.companyId);
+  const packs = await packService.listPacks(req.tenantId, req.companyId, { includeTaxEstimate: await passesTaxGate(req) });
   res.json({ packs });
 });
 
 reportPacksRouter.post('/packs', readPerm, validate(packBodySchema), async (req, res) => {
+  await assertItemsAllowed(req, req.body.items);
   const pack = await packService.createPack(req.tenantId, req.companyId, req.userId, req.body);
   res.status(201).json(pack);
 });
@@ -109,21 +163,25 @@ reportPacksRouter.get('/packs/worker-health', readPerm, async (_req, res) => {
 });
 
 reportPacksRouter.get('/packs/:id', readPerm, async (req, res) => {
-  const pack = await packService.getPack(req.tenantId, req.params['id']!);
+  const pack = await loadGatedPack(req, req.params['id']!);
   res.json(pack);
 });
 
 reportPacksRouter.put('/packs/:id', readPerm, validate(packBodySchema), async (req, res) => {
+  await loadGatedPack(req, req.params['id']!);
+  await assertItemsAllowed(req, req.body.items);
   const pack = await packService.updatePack(req.tenantId, req.params['id']!, req.userId, req.body);
   res.json(pack);
 });
 
 reportPacksRouter.delete('/packs/:id', readPerm, async (req, res) => {
+  await loadGatedPack(req, req.params['id']!);
   await packService.softDeletePack(req.tenantId, req.params['id']!, req.userId);
   res.status(204).end();
 });
 
 reportPacksRouter.post('/packs/:id/duplicate', readPerm, async (req, res) => {
+  await loadGatedPack(req, req.params['id']!);
   const pack = await packService.duplicatePack(req.tenantId, req.params['id']!, req.userId);
   res.status(201).json(pack);
 });
@@ -140,6 +198,7 @@ const templateMetaSchema = z.object({
 });
 
 reportPacksRouter.post('/packs/:id/save-as-template', requireSuperAdmin, validate(templateMetaSchema), async (req, res) => {
+  await loadGatedPack(req, req.params['id']!);
   const template = await templateService.saveAsTemplate(req.tenantId, req.params['id']!, req.userId, req.body);
   res.status(201).json({ template });
 });
@@ -152,7 +211,10 @@ reportPacksRouter.get('/pack-templates', readPerm, async (req, res) => {
 
 reportPacksRouter.post('/pack-templates/:id/apply', readPerm, validate(z.object({ name: z.string().trim().max(200).optional() })), async (req, res) => {
   staffOnly(req);
-  const pack = await templateService.applyTemplate(req.tenantId, req.companyId, req.userId, req.params['id']!, req.body);
+  // A template's Tax Estimate section is applied only for callers who pass its gates.
+  const pack = await templateService.applyTemplate(req.tenantId, req.companyId, req.userId, req.params['id']!, req.body, {
+    allowTaxEstimate: await passesTaxGate(req),
+  });
   res.status(201).json(pack);
 });
 
@@ -168,6 +230,7 @@ reportPacksRouter.delete('/pack-templates/:id', requireSuperAdmin, async (req, r
 
 // ─── Runs ───
 reportPacksRouter.post('/packs/:id/runs', readPerm, validate(runBodySchema), async (req, res) => {
+  await loadGatedPack(req, req.params['id']!);
   // The run renders in the worker; record what THIS requester may see so
   // source-document sections honour it (files, transaction detail).
   const perms = await resolvePermissionsForRequest(req);
@@ -175,18 +238,19 @@ reportPacksRouter.post('/packs/:id/runs', readPerm, validate(runBodySchema), asy
     attachments: can(perms, 'attachments', 'read'),
     transactions: can(perms, 'transactions', 'read'),
     // Tax Estimator (Phase 13): gates passed now; the worker re-derives the firm scope.
-    taxEstimate: (await taxEstimateReportScope(req)) !== null,
+    taxEstimate: await passesTaxGate(req),
     requestedBy: req.userId,
   });
   res.status(202).json(run);
 });
 
 reportPacksRouter.get('/packs/runs/:runId', readPerm, async (req, res) => {
-  const run = await packService.getRun(req.tenantId, req.params['runId']!);
+  const run = await loadGatedRun(req, req.params['runId']!);
   res.json(run);
 });
 
 reportPacksRouter.get('/packs/runs/:runId/pdf', readPerm, async (req, res) => {
+  await loadGatedRun(req, req.params['runId']!);
   const { buffer, filename } = await packService.readRunArtifact(req.tenantId, req.params['runId']!);
   res.setHeader('Content-Type', 'application/pdf');
   // filename is already ASCII-safe (renderPackFilename); filename* for

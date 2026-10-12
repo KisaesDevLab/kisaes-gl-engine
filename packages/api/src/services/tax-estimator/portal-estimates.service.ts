@@ -207,7 +207,8 @@ export async function getForContact(
 
   const scenarios = await db.select({ id: taxEstScenarios.id, isBase: taxEstScenarios.isBase }).from(taxEstScenarios)
     .where(and(eq(taxEstScenarios.taxpayerId, taxpayerId), eq(taxEstScenarios.taxYear, taxYear)));
-  const base = scenarios.find((s) => s.isBase) ?? scenarios[0];
+  // R4-06: the BASE scenario or nothing — never a what-if that happens to sort first.
+  const base = scenarios.find((s) => s.isBase);
   if (!base) throw notFound();
   const result = await computeEstimate(scope, { taxpayerId, taxYear, scenarioId: base.id }, opts);
   return {
@@ -225,9 +226,13 @@ const usd = (v: string) => {
   const n = Math.round(Number(v) || 0);
   return `${n < 0 ? '-' : ''}$${Math.abs(n).toLocaleString('en-US')}`;
 };
-const winAnsi = (t: string) => t.replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[–—]/g, '-').replace(/[^\x20-\x7E\xA0-\xFF]/g, '?');
+const winAnsi = (t: string) => t.replace(/[\t\n\v\f\r]/g, ' ').replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[–—]/g, '-').replace(/[^\x20-\x7E\xA0-\xFF]/g, '?');
 
-/** One page per jurisdiction that requires estimates: the remaining installments to pay. */
+/**
+ * One page per jurisdiction that requires estimates: the remaining installments to pay.
+ * R4-05: the firm disclaimer prints one paragraph per line it was typed with, and a long
+ * disclaimer continues on a new page instead of running past the bottom margin.
+ */
 export async function renderVouchersPdf(e: PortalTaxEstimateDTO): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
   const font = await doc.embedFont(StandardFonts.Helvetica);
@@ -239,10 +244,19 @@ export async function renderVouchersPdf(e: PortalTaxEstimateDTO): Promise<Uint8A
   const muted = rgb(0.35, 0.38, 0.41);
   const due = e.jurisdictions.filter((j) => j.estimatesRequired && j.installments.some((i) => Number(i.remaining) > 0));
   const pages = due.length > 0 ? due : [null];
+  const FOOTER_Y = M - 20;
   for (const j of pages) {
-    const page = doc.addPage([W, 792]);
+    let page = doc.addPage([W, 792]);
     let y = 792 - M;
     const text = (t: string, x: number, size: number, b = false, color = ink) => page.drawText(winAnsi(t), { x, y, size, font: b ? bold : font, color });
+    /** Room for one more disclaimer line above the footer; else continue on a new page. */
+    const room = (h: number) => {
+      if (y - h >= FOOTER_Y + 14) return;
+      page = doc.addPage([W, 792]);
+      y = 792 - M;
+      text(`${e.taxYear} estimated tax payment voucher - ${e.taxpayer.displayName} (continued)`, M, 9, true, muted);
+      y -= 20;
+    };
     if (e.firmName) { text(e.firmName, M, 10, true, muted); y -= 22; }
     text(`${e.taxYear} estimated tax payment voucher`, M, 18, true); y -= 20;
     text(`${e.taxpayer.displayName}`, M, 11, true); y -= 16;
@@ -265,14 +279,19 @@ export async function renderVouchersPdf(e: PortalTaxEstimateDTO): Promise<Uint8A
       text(how, M, 8.5, false, muted); y -= 14;
     }
     y -= 10;
-    // Firm disclaimer, wrapped to the page width.
-    let line = '';
-    for (const word of winAnsi(e.disclaimer).split(/\s+/)) {
-      const next = line ? `${line} ${word}` : word;
-      if (font.widthOfTextAtSize(next, 8) > W - 2 * M && line) { text(line, M, 8, false, muted); y -= 11; line = word; } else line = next;
-    }
-    if (line) { text(line, M, 8, false, muted); y -= 11; }
-    y = M - 20;
+    // Firm disclaimer: one paragraph per typed line, each wrapped to the page width.
+    const paras = e.disclaimer.replace(/\r\n?/g, '\n').split(/\n+/).map((p) => p.trim()).filter((p) => p.length > 0);
+    paras.forEach((para, pi) => {
+      let line = '';
+      const flush = () => { room(11); text(line, M, 8, false, muted); y -= 11; };
+      for (const word of winAnsi(para).split(/\s+/).filter(Boolean)) {
+        const next = line ? `${line} ${word}` : word;
+        if (font.widthOfTextAtSize(next, 8) > W - 2 * M && line) { flush(); line = word; } else line = next;
+      }
+      if (line) flush();
+      if (pi < paras.length - 1) y -= 4;
+    });
+    y = FOOTER_Y;
     text(`Figures as of ${e.asOf.slice(0, 10)}.`, M, 8, false, muted);
   }
   return doc.save();
