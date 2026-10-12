@@ -13,7 +13,7 @@ import { db, pool } from '../../db/index.js';
 import { companies, accounts, taxEstTaxpayers } from '../../db/schema/index.js';
 import { reconciliations } from '../../db/schema/banking.js';
 import { closeTbRedis } from '../tb/tb-redis.js';
-import { tenantInScopeSql, type FirmScope } from './firm-scope.service.js';
+import { tenantInScopeSql, type FirmScope, UNRESTRICTED_VIEWER } from './firm-scope.service.js';
 import { getParameters, syncShippedSeeds } from './tax-parameters.service.js';
 import { getStateRules, syncShippedStateRules } from './tax-state-rules.service.js';
 import { createTaxpayer, upsertPerson, upsertLink } from './taxpayers.service.js';
@@ -73,8 +73,8 @@ beforeAll(async () => {
     await post(T.linked, C.linked, `2026-${mm(m)}-15`, [[A.chk, 10000, 0], [rev1, 0, 10000]]);
     await post(T.unlinked, C.unlinked, `2026-${mm(m)}-15`, [[A.exp2, 1000, 0], [chk2, 0, 1000]]);
   }
-  scopeFull = { firmId: FIRM, firmRole: 'firm_staff', allowedTenantIds: [T.linked, T.unlinked] };
-  scopePartial = { firmId: FIRM, firmRole: 'firm_staff', allowedTenantIds: [T.linked] };
+  scopeFull = { firmId: FIRM, firmRole: 'firm_staff', allowedTenantIds: [T.linked, T.unlinked], viewer: UNRESTRICTED_VIEWER };
+  scopePartial = { firmId: FIRM, firmRole: 'firm_staff', allowedTenantIds: [T.linked], viewer: UNRESTRICTED_VIEWER };
   actor = { tenantId: T.linked, userId: USER };
 
   const tp = await mkTp('R3 Probe');
@@ -354,7 +354,7 @@ describe('R3-14 — tenantInScopeSql binds every tenant id as a parameter', () =
 
 describe('R3-17 — a firm sharing the books cannot re-point another firm\'s payment mapping', () => {
   it('firm B sees the row without firm A ids and gets 409 on a change', async () => {
-    const scopeB: FirmScope = { firmId: FIRM_B, firmRole: 'firm_staff', allowedTenantIds: [T.linked] };
+    const scopeB: FirmScope = { firmId: FIRM_B, firmRole: 'firm_staff', allowedTenantIds: [T.linked], viewer: UNRESTRICTED_VIEWER };
     const tpB = (await createTaxpayer(scopeB, actor, { displayName: 'Firm B client', filingStatus: 'single', residentState: 'MO' })).id;
     taxpayers.push(tpB);
     const listed = await listTreatments(scopeB, T.linked, C.linked, { limit: 50, offset: 0 });

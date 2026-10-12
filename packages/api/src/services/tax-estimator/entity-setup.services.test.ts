@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { db, pool } from '../../db/index.js';
 import { companyTaxProfiles, reconciliations, taxEstAccountTreatments, taxEstEntitySettings } from '../../db/schema/index.js';
 import { importSeed } from '../tb/tax-code-seed.service.js';
-import type { FirmScope } from './firm-scope.service.js';
+import { UNRESTRICTED_VIEWER, type FirmScope } from './firm-scope.service.js';
 import { decide1040Type, resolveEntityTax, scopeWarningForLink } from './entity-type.service.js';
 import { closedThroughMonthOf, getReadiness } from './readiness.service.js';
 import { getTaxBasisPl } from './pl-provider.service.js';
@@ -76,7 +76,7 @@ beforeAll(async () => {
   otherTxn = await post(tOther, cOther, '2026-02-02', [[otherAccount, 10, 0], [otherCash, 0, 10]]);
   await db.insert(taxEstAccountTreatments).values({ tenantId: tOther, companyId: cOther, accountId: otherAccount, treatment: 'nondeductible_pct', pct: '50' });
 
-  scope = { firmId: '00000000-0000-0000-0000-0000000000f2', firmRole: 'firm_staff', allowedTenantIds: [tA] };
+  scope = { firmId: '00000000-0000-0000-0000-0000000000f2', firmRole: 'firm_staff', allowedTenantIds: [tA], viewer: UNRESTRICTED_VIEWER };
 }, 60_000);
 
 afterAll(async () => {

@@ -41,7 +41,7 @@ import { taxEstScenarios, taxEstYears } from '../../db/schema/tax-estimator-year
 import { taxEstSnapshots } from '../../db/schema/tax-estimator-estimate.js';
 import { AppError } from '../../utils/errors.js';
 import * as firmsService from '../firms.service.js';
-import { allowedTenantIds, type FirmScope } from './firm-scope.service.js';
+import { allowedTenantIds, UNRESTRICTED_VIEWER, type FirmScope } from './firm-scope.service.js';
 import { getFirmSettings } from './firm-settings.service.js';
 import { computeEstimate, type EstimateOptions } from './estimate.service.js';
 import { getSnapshot } from './estimate-snapshots.service.js';
@@ -182,7 +182,8 @@ export async function getForContact(
   const taxpayer = { id: rows[0]!.id, displayName: rows[0]!.displayName };
 
   // The firm's full managed set: the portal has no user to intersect with (D1 note above).
-  const scope: FirmScope = { firmId, firmRole: 'firm_readonly', allowedTenantIds: await allowedTenantIds(firmId, '', true) };
+  // D17: the portal is governed by the contact mapping, not staff visibility.
+  const scope: FirmScope = { firmId, firmRole: 'firm_readonly', allowedTenantIds: await allowedTenantIds(firmId, '', true), viewer: UNRESTRICTED_VIEWER };
   const [tp] = await db.select({ portalShows: taxEstTaxpayers.portalShows }).from(taxEstTaxpayers).where(eq(taxEstTaxpayers.id, taxpayerId));
   const firm = await getFirmSettings(scope);
   const shows: PortalShows = (tp?.portalShows as PortalShows | null) ?? firm.portalShows;

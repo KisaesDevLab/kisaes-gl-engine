@@ -38,6 +38,8 @@ export interface PersonDTO {
 export interface TaxpayerListItemDTO extends TaxpayerDTO {
   personNames: string[];
   linkCount: number;
+  /** D17: a staff allow-list is set (the list shows a lock). */
+  staffRestricted: boolean;
 }
 
 export interface TaxpayerListDTO {
@@ -50,6 +52,43 @@ export interface TaxpayerListDTO {
 export interface TaxpayerDetailDTO {
   taxpayer: TaxpayerDTO;
   persons: PersonDTO[];
+  /** D17: a staff allow-list is set. */
+  staffRestricted: boolean;
+}
+
+// ── D17 taxpayer visibility: per-taxpayer staff allow-list ─────────────
+
+export interface TaxpayerStaffMemberDTO {
+  userId: string;
+  /** Empty when the user record no longer exists. */
+  email: string;
+  displayName: string | null;
+  /** The member's current firm role; null = no longer an active member of the firm. */
+  firmRole: 'firm_admin' | 'firm_staff' | 'firm_readonly' | null;
+  addedAt: string;
+}
+
+export interface TaxpayerStaffDTO {
+  taxpayerId: string;
+  /** Empty = everyone the linked-tenant rule allows; non-empty = only these users plus firm admins. */
+  members: TaxpayerStaffMemberDTO[];
+  total: number;
+  /** The firm switch (restrict_taxpayers_to_linked_tenants) at read time. */
+  restrictToLinkedTenants: boolean;
+  /** The caller is a firm admin / super admin and may change the list. */
+  canEdit: boolean;
+}
+
+export interface TaxpayerStaffCandidateDTO {
+  userId: string;
+  email: string;
+  displayName: string | null;
+  firmRole: 'firm_staff' | 'firm_readonly';
+}
+
+export interface TaxpayerStaffCandidateListDTO {
+  data: TaxpayerStaffCandidateDTO[];
+  total: number;
 }
 
 export interface LinkDTO {

@@ -32,9 +32,10 @@ import type {
 import { buildEstimateAssumptions, dSub } from '@kis-books/shared';
 import { db } from '../../db/index.js';
 import { taxEstSnapshots } from '../../db/schema/tax-estimator-estimate.js';
+import { taxEstTaxpayers } from '../../db/schema/tax-estimator-taxpayers.js';
 import { encrypt, decrypt } from '../../utils/encryption.js';
 import { AppError } from '../../utils/errors.js';
-import { isTenantInScope, type FirmScope } from './firm-scope.service.js';
+import { isTenantInScope, visibleTaxpayerFilter, type FirmScope } from './firm-scope.service.js';
 import { computeEstimate, computeEstimateWithInputs, getEstimateReadiness, type EstimateInputsForSnapshot, type EstimateOptions } from './estimate.service.js';
 import { auditYears, loadTaxpayerForFirm, type Actor } from './year-access.js';
 
@@ -215,9 +216,12 @@ export async function listSnapshots(scope: FirmScope, taxpayerId: string, taxYea
   return { data: rows.map((r) => listItem(scope, r)), total: Number(tot?.n ?? 0), limit: q.limit, offset: q.offset };
 }
 
+/** By id: the firm AND the taxpayer's D17 visibility; a hidden taxpayer's snapshot is the same 404 as another firm's. */
 async function loadSnapshotRow(scope: FirmScope, snapshotId: string): Promise<Row> {
-  const [row] = await db.select().from(taxEstSnapshots)
-    .where(and(eq(taxEstSnapshots.id, snapshotId), eq(taxEstSnapshots.firmId, scope.firmId)));
+  const [hit] = await db.select({ s: taxEstSnapshots }).from(taxEstSnapshots)
+    .innerJoin(taxEstTaxpayers, eq(taxEstTaxpayers.id, taxEstSnapshots.taxpayerId))
+    .where(and(eq(taxEstSnapshots.id, snapshotId), eq(taxEstSnapshots.firmId, scope.firmId), visibleTaxpayerFilter(scope)));
+  const row = hit?.s;
   if (!row) throw snapshotNotFound();
   if (!accessible(scope, row)) throw new AppError(404, 'The snapshot includes a client your firm no longer manages (or you can no longer reach)', 'TE_TENANT_NOT_MANAGED');
   return row;

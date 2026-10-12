@@ -22,7 +22,7 @@ import { db } from '../../db/index.js';
 import { taxEstTransactionFlags, transactions } from '../../db/schema/index.js';
 import { AppError } from '../../utils/errors.js';
 import { isTenantInScope, type FirmScope } from './firm-scope.service.js';
-import { listPackTaxpayers } from './estimate-documents.service.js';
+import { isCompanyLinkedInFirm, listPackTaxpayers } from './estimate-documents.service.js';
 import * as treatmentsService from './treatments.service.js';
 
 const COMPANY_FLAGS_LIMIT = 500;
@@ -43,7 +43,9 @@ export async function getTransactionFlag(
   scope: FirmScope, tenantId: string, activeCompanyId: string, transactionId: string,
 ): Promise<RegisterTransactionFlagDTO> {
   const txn = await loadTransaction(scope, tenantId, activeCompanyId, transactionId);
+  // D17: `taxpayers` lists only those the caller may see; `linked` is firm-wide (the flag is entity data).
   const taxpayers = txn.companyId ? await listPackTaxpayers(scope, tenantId, txn.companyId) : [];
+  const linked = txn.companyId ? await isCompanyLinkedInFirm(scope, tenantId, txn.companyId) : false;
   const [flag] = await db.select({ nonRecurring: taxEstTransactionFlags.nonRecurring, updatedAt: taxEstTransactionFlags.updatedAt })
     .from(taxEstTransactionFlags)
     .where(and(eq(taxEstTransactionFlags.tenantId, tenantId), eq(taxEstTransactionFlags.transactionId, txn.id)))
@@ -51,7 +53,7 @@ export async function getTransactionFlag(
   return {
     transactionId: txn.id,
     companyId: txn.companyId ?? null,
-    linked: taxpayers.length > 0,
+    linked,
     taxpayers,
     nonRecurring: flag?.nonRecurring === true,
     canEdit: canEdit(scope),
@@ -76,7 +78,7 @@ export async function setTransactionFlag(
 /** Flagged transactions of the active company, for the register badges. Empty when the company is not linked. */
 export async function listCompanyFlags(scope: FirmScope, tenantId: string, companyId: string): Promise<RegisterCompanyFlagsDTO> {
   if (!isTenantInScope(scope, tenantId)) throw AppError.notFound('Feature not available');
-  const linked = (await listPackTaxpayers(scope, tenantId, companyId)).length > 0;
+  const linked = await isCompanyLinkedInFirm(scope, tenantId, companyId);
   if (!linked) return { companyId, linked, canEdit: canEdit(scope), transactionIds: [], total: 0, limit: COMPANY_FLAGS_LIMIT };
   const page = await treatmentsService.listTransactionFlags(scope, tenantId, companyId, { limit: COMPANY_FLAGS_LIMIT, offset: 0 });
   return {

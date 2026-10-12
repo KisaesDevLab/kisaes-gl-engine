@@ -219,5 +219,11 @@ export interface FirmSettingsDTO {
   /** The text actually used (custom, else the shipped default). */
   effectiveDisclaimerText: string;
   portalShows: PortalShows;
+  /**
+   * D17: ON (default) = a staff member who is not a firm admin sees a taxpayer only when
+   * they can reach at least one tenant it is linked to (an unlinked taxpayer: its creator
+   * only). OFF = every firm taxpayer is visible (subject to a per-taxpayer staff list).
+   */
+  restrictTaxpayersToLinkedTenants: boolean;
   updatedAt: string | null;
 }

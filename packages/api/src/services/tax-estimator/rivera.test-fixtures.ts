@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { importSeed } from '../tb/tax-code-seed.service.js';
-import type { FirmScope } from './firm-scope.service.js';
+import { UNRESTRICTED_VIEWER, type FirmScope } from './firm-scope.service.js';
 import { syncShippedSeeds } from './tax-parameters.service.js';
 import { syncShippedStateRules } from './tax-state-rules.service.js';
 import { createTaxpayer, upsertPerson, upsertLink } from './taxpayers.service.js';
@@ -130,8 +130,8 @@ export async function seedRivera(FIRM_A: string, FIRM_B: string, userId: string)
   T.other = await mkTenant('TE10 Other Firm Client');
   C.other = await mkCompany(T.other, 'Other Firm Co', { accountingMethod: 'cash', entityType: 'sole_prop' });
 
-  scopeA = { firmId: FIRM_A, firmRole: 'firm_staff', allowedTenantIds: [T.schc, T.scorp, T.lp] };
-  scopeB = { firmId: FIRM_B, firmRole: 'firm_staff', allowedTenantIds: [T.other, T.schc] };
+  scopeA = { firmId: FIRM_A, firmRole: 'firm_staff', allowedTenantIds: [T.schc, T.scorp, T.lp], viewer: UNRESTRICTED_VIEWER };
+  scopeB = { firmId: FIRM_B, firmRole: 'firm_staff', allowedTenantIds: [T.other, T.schc], viewer: UNRESTRICTED_VIEWER };
   actor = { tenantId: T.schc, userId };
 
   // ── taxpayer setup through the services ──

@@ -32,7 +32,7 @@ import { taxEstScenarios } from '../../db/schema/tax-estimator-years.js';
 import { AppError } from '../../utils/errors.js';
 import { auditLog } from '../../middleware/audit.js';
 import * as firmsService from '../firms.service.js';
-import { isTenantInScope, resolveScope, type FirmScope } from './firm-scope.service.js';
+import { isTenantInScope, resolveScope, visibleTaxpayerFilter, type FirmScope } from './firm-scope.service.js';
 import { createSnapshot, getSnapshot, type CreateSnapshotRequest } from './estimate-snapshots.service.js';
 import { renderEstimatePdf, type EstimatePdfAudience } from './estimate-pdf.service.js';
 import type { EstimateOptions } from './estimate.service.js';
@@ -115,6 +115,21 @@ export async function snapshotPdf(scope: FirmScope, actor: Actor, snapshotId: st
 const notAvailable = () => AppError.notFound('Feature not available');
 
 /**
+ * True when ANY active taxpayer of the scope's firm is linked to the company, whoever may see
+ * it. Entity-level gates (the register non-recurring flag) use this; taxpayer names never
+ * leave through it (D17).
+ */
+export async function isCompanyLinkedInFirm(scope: FirmScope, tenantId: string, companyId: string): Promise<boolean> {
+  if (!isTenantInScope(scope, tenantId)) return false;
+  const [row] = await db.select({ id: taxEstLinks.id }).from(taxEstLinks)
+    .innerJoin(taxEstTaxpayers, eq(taxEstTaxpayers.id, taxEstLinks.taxpayerId))
+    .where(and(eq(taxEstTaxpayers.firmId, scope.firmId), eq(taxEstTaxpayers.isActive, true),
+      eq(taxEstLinks.tenantId, tenantId), eq(taxEstLinks.companyId, companyId)))
+    .limit(1);
+  return !!row;
+}
+
+/**
  * The firm scope a Report Pack request in `tenantId` acts under: the firm that actively
  * manages the tenant, the requester's membership in it (super admins: the firm's full
  * managed set), the tenant inside the scope, and the flag (QA D9: this tenant or another
@@ -172,14 +187,17 @@ export async function resolvePackScopeForUser(tenantId: string, userId: string):
   return resolvePackScope(tenantId, userId, superAdmin);
 }
 
-/** Option choices: the firm's active taxpayers linked to this company, with the years they are linked for. */
+/**
+ * Option choices: the firm's active taxpayers linked to this company that the requester may
+ * see (D17 `visibleTaxpayerFilter`), with the years they are linked for.
+ */
 export async function listPackTaxpayers(scope: FirmScope, tenantId: string, companyId: string): Promise<TaxEstimatePackTaxpayerDTO[]> {
   if (!isTenantInScope(scope, tenantId)) return [];
   const rows = await db.selectDistinct({ id: taxEstTaxpayers.id, displayName: taxEstTaxpayers.displayName, taxYear: taxEstLinks.taxYear })
     .from(taxEstLinks)
     .innerJoin(taxEstTaxpayers, eq(taxEstTaxpayers.id, taxEstLinks.taxpayerId))
     .where(and(
-      eq(taxEstTaxpayers.firmId, scope.firmId), eq(taxEstTaxpayers.isActive, true),
+      visibleTaxpayerFilter(scope), eq(taxEstTaxpayers.isActive, true),
       eq(taxEstLinks.tenantId, tenantId), eq(taxEstLinks.companyId, companyId),
     ))
     .orderBy(asc(taxEstTaxpayers.displayName), desc(taxEstLinks.taxYear));
@@ -234,11 +252,13 @@ export async function renderPackSection(scope: FirmScope, actor: Actor, req: Pac
   if (!req.taxpayerId) throw AppError.badRequest('Pick a taxpayer for the Tax Estimate section', 'TE_PACK_TAXPAYER_REQUIRED');
   if (!isTenantInScope(scope, req.tenantId)) throw notAvailable();
   const { taxYear, throughMonth } = packPeriod(req.asOfDate);
-  // The taxpayer must belong to the firm AND be linked to THIS company for the year.
+  // The taxpayer must belong to the firm, be visible to the requester (D17; on the worker
+  // path `scope` is re-derived from the run's requester, so this is the render-time re-check)
+  // AND be linked to THIS company for the year.
   const [link] = await db.select({ id: taxEstLinks.id }).from(taxEstLinks)
     .innerJoin(taxEstTaxpayers, eq(taxEstTaxpayers.id, taxEstLinks.taxpayerId))
     .where(and(
-      eq(taxEstLinks.taxpayerId, req.taxpayerId), eq(taxEstTaxpayers.firmId, scope.firmId),
+      eq(taxEstLinks.taxpayerId, req.taxpayerId), visibleTaxpayerFilter(scope),
       eq(taxEstLinks.tenantId, req.tenantId), eq(taxEstLinks.companyId, req.companyId), eq(taxEstLinks.taxYear, taxYear),
     ))
     .limit(1);
