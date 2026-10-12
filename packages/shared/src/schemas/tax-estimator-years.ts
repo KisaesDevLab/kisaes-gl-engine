@@ -228,6 +228,8 @@ export const upsertFirmSettingsSchema = z.object({
   disclaimerText: z.string().trim().max(MAX_DISCLAIMER).nullable().optional()
     .transform((v) => (v === '' ? null : v)),
   portalShows: z.enum(PORTAL_SHOWS).optional(),
+  /** D17: a non-admin sees a taxpayer only through a linked tenant they can reach. Default ON. */
+  restrictTaxpayersToLinkedTenants: z.boolean().optional(),
 });
 export type UpsertFirmSettingsInput = z.infer<typeof upsertFirmSettingsSchema>;
 

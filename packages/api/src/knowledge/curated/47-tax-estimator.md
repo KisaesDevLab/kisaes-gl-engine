@@ -19,6 +19,21 @@ books.
   limited to clients the firm actively manages AND the signed-in user can
   access. Has a filing status, resident state, persons, and a safe-harbor
   and portal-view override.
+- **Who sees which taxpayer**: firm administrators and super admins see
+  every taxpayer of the firm. With the firm setting "Staff see only
+  taxpayers linked to clients they can access" ON (the default, in the
+  firm estimator settings), other staff see a taxpayer only when they can
+  access at least one client company it is linked to; an unlinked taxpayer
+  only by the person who created it. Turning the setting OFF shows every
+  firm taxpayer to all staff with Tax Estimator access. A taxpayer page's
+  "Who can see this taxpayer" card lets a firm administrator limit it to
+  named staff (a lock icon shows in the list); listed staff still need a
+  linked client they can access while the setting is ON. Anyone else gets
+  "Taxpayer not found", the same as another firm's taxpayer. Figures from
+  linked clients a person cannot access stay hidden either way. Only firm
+  administrators can change the setting or the list; every change is in
+  the audit log. The client portal is not affected (portal contacts see the
+  taxpayers they are mapped to).
 - **Persons**: the people on the return; one primary; months eligible for
   self-employed health insurance.
 - **Links**: person x company x tax year with profit/loss/capital %,

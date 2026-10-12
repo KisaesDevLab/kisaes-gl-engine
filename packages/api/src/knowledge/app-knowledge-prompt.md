@@ -873,6 +873,21 @@ books.
   limited to clients the firm actively manages AND the signed-in user can
   access. Has a filing status, resident state, persons, and a safe-harbor
   and portal-view override.
+- **Who sees which taxpayer**: firm administrators and super admins see
+  every taxpayer of the firm. With the firm setting "Staff see only
+  taxpayers linked to clients they can access" ON (the default, in the
+  firm estimator settings), other staff see a taxpayer only when they can
+  access at least one client company it is linked to; an unlinked taxpayer
+  only by the person who created it. Turning the setting OFF shows every
+  firm taxpayer to all staff with Tax Estimator access. A taxpayer page's
+  "Who can see this taxpayer" card lets a firm administrator limit it to
+  named staff (a lock icon shows in the list); listed staff still need a
+  linked client they can access while the setting is ON. Anyone else gets
+  "Taxpayer not found", the same as another firm's taxpayer. Figures from
+  linked clients a person cannot access stay hidden either way. Only firm
+  administrators can change the setting or the list; every change is in
+  the audit log. The client portal is not affected (portal contacts see the
+  taxpayers they are mapped to).
 - **Persons**: the people on the return; one primary; months eligible for
   self-employed health insurance.
 - **Links**: person x company x tax year with profit/loss/capital %,
@@ -884,10 +899,17 @@ books.
   W-2 wages override and UBIA, and the GL tax treatment table that says
   what each profit and loss account means for tax. Suggestions are never
   applied automatically. Unmapped accounts with activity are treated as
-  ordinary with a warning.
+  ordinary with a warning. A single transaction can be marked
+  **non-recurring** from its transaction detail page (the "Tax Estimator"
+  card, shown to firm staff when the flag is on in that client and the
+  company is linked to a taxpayer); the account register shows an "NR"
+  badge on it. It is counted once and left out of the run-rate.
 - **Annual settings** (per taxpayer and year): deduction method, federal
   method (bracket or effective-rate override), credits, withholding,
-  Schedule 1-A, HSA, prior-year tax and AGI (stored encrypted), state rows
+  Schedule 1-A (chips per type opening a per-person dialog for tips,
+  overtime and car-loan interest; the senior deduction follows each
+  person's date of birth; not allowed when married filing separately),
+  HSA, prior-year tax and AGI (stored encrypted), state rows
   (one resident state), firm settings (safe-harbor default, disclaimer,
   portal view), and the **People** card: per person, W-2 wages (box 1) and
   Social Security wages (box 3) from jobs OUTSIDE the linked businesses,

@@ -35,11 +35,12 @@ import type {
 } from '@kis-books/shared';
 import { db, type DbOrTx } from '../../db/index.js';
 import { taxEstPayments } from '../../db/schema/tax-estimator-estimate.js';
+import { taxEstTaxpayers } from '../../db/schema/tax-estimator-taxpayers.js';
 import { taxEstAccountTreatments } from '../../db/schema/tax-estimator-entities.js';
 import { transactions } from '../../db/schema/index.js';
 import { buildAccountDetailReport } from '../report.service.js';
 import { AppError } from '../../utils/errors.js';
-import { isTenantInScope, type FirmScope } from './firm-scope.service.js';
+import { isTenantInScope, visibleTaxpayerFilter, type FirmScope } from './firm-scope.service.js';
 import { getParameters } from './tax-parameters.service.js';
 import { listLinks } from './taxpayers.service.js';
 import {
@@ -363,9 +364,12 @@ export async function createPayment(
   }
 }
 
+/** By id: the firm AND the taxpayer's D17 visibility (a hidden taxpayer's payment is the same 404 as another firm's). */
 async function loadPaymentForFirm(scope: FirmScope, paymentId: string, exec: DbOrTx): Promise<PaymentRow> {
-  const [row] = await exec.select().from(taxEstPayments)
-    .where(and(eq(taxEstPayments.id, paymentId), eq(taxEstPayments.firmId, scope.firmId)));
+  const [hit] = await exec.select({ p: taxEstPayments }).from(taxEstPayments)
+    .innerJoin(taxEstTaxpayers, eq(taxEstTaxpayers.id, taxEstPayments.taxpayerId))
+    .where(and(eq(taxEstPayments.id, paymentId), eq(taxEstPayments.firmId, scope.firmId), visibleTaxpayerFilter(scope)));
+  const row = hit?.p;
   if (!row) throw paymentNotFound();
   return row;
 }

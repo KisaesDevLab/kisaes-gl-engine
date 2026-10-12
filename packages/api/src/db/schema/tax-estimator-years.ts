@@ -140,6 +140,8 @@ export const taxEstFirmSettings = pgTable('tax_est_firm_settings', {
   safeHarborDefault: varchar('safe_harbor_default', { length: 20 }).notNull().default('lesser_of'),
   disclaimerText: text('disclaimer_text'),
   portalShows: varchar('portal_shows', { length: 10 }).notNull().default('live'),
+  /** D17 (migration 0202): default ON — non-admins see taxpayers only through a reachable linked tenant. */
+  restrictTaxpayersToLinkedTenants: boolean('restrict_taxpayers_to_linked_tenants').notNull().default(true),
   updatedBy: uuid('updated_by'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

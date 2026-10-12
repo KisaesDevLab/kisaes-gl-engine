@@ -19,7 +19,7 @@ import { db, pool } from '../../db/index.js';
 import { taxEstTaxpayers } from '../../db/schema/index.js';
 import { importSeed } from '../tb/tax-code-seed.service.js';
 import { closeTbRedis } from '../tb/tb-redis.js';
-import type { FirmScope } from './firm-scope.service.js';
+import { UNRESTRICTED_VIEWER, type FirmScope } from './firm-scope.service.js';
 import { syncShippedSeeds } from './tax-parameters.service.js';
 import { syncShippedStateRules } from './tax-state-rules.service.js';
 import { createTaxpayer, upsertPerson, upsertLink } from './taxpayers.service.js';
@@ -132,8 +132,8 @@ beforeAll(async () => {
   T.other = await mkTenant('TE10 Other Firm Client');
   C.other = await mkCompany(T.other, 'Other Firm Co', { accountingMethod: 'cash', entityType: 'sole_prop' });
 
-  scopeA = { firmId: FIRM_A, firmRole: 'firm_staff', allowedTenantIds: [T.schc, T.scorp, T.lp] };
-  scopeB = { firmId: FIRM_B, firmRole: 'firm_staff', allowedTenantIds: [T.other, T.schc] };
+  scopeA = { firmId: FIRM_A, firmRole: 'firm_staff', allowedTenantIds: [T.schc, T.scorp, T.lp], viewer: UNRESTRICTED_VIEWER };
+  scopeB = { firmId: FIRM_B, firmRole: 'firm_staff', allowedTenantIds: [T.other, T.schc], viewer: UNRESTRICTED_VIEWER };
   actor = { tenantId: T.schc, userId: actor.userId };
 
   // ── taxpayer setup through the services ──

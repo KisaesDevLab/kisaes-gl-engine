@@ -18,7 +18,7 @@ import {
   taxEstPersons, taxEstTaxpayers, tbTaxEntries, tbTaxEntryLines,
 } from '../../db/schema/index.js';
 import { importSeed } from '../tb/tax-code-seed.service.js';
-import type { FirmScope } from './firm-scope.service.js';
+import { UNRESTRICTED_VIEWER, type FirmScope } from './firm-scope.service.js';
 import { characterForCode, getTaxBasisPl, loadConfigVersion, SEED_CODE_MEANING } from './pl-provider.service.js';
 import { getReadiness } from './readiness.service.js';
 import { putTreatments, suggestTreatments } from './treatments.service.js';
@@ -53,7 +53,7 @@ async function mkPerson(first: string): Promise<string> {
 beforeAll(async () => {
   await importSeed({ taxYear: 2025, buffer: readFileSync(SEED_FILE_PATH), dryRun: false });
   tenant = await mkTenant('TE R1');
-  scope = { firmId: FIRM, firmRole: 'firm_staff', allowedTenantIds: [tenant] };
+  scope = { firmId: FIRM, firmRole: 'firm_staff', allowedTenantIds: [tenant], viewer: UNRESTRICTED_VIEWER };
   personA = await mkPerson('Alex');
   personB = await mkPerson('Blair');
   personM = await mkPerson('Maria');

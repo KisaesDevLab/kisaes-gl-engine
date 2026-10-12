@@ -46,6 +46,19 @@ export const personRoleParamsSchema = z.object({ id: uuid, role: z.enum(PERSON_R
 export const linkIdParamsSchema = z.object({ id: uuid, linkId: uuid });
 export const contactIdParamsSchema = z.object({ id: uuid, contactId: uuid });
 
+/**
+ * D17 (2026-10-12): replace a taxpayer's staff allow-list. Firm admins / super admins only
+ * (403 TE_FIRM_ADMIN_REQUIRED otherwise). Empty = every staff member the linked-tenant
+ * rule allows; non-empty = only these users (plus firm admins). Ids are validated
+ * server-side against the firm's eligible members (422 TE_STAFF_NOT_ELIGIBLE).
+ */
+export const MAX_TAXPAYER_STAFF = 200;
+export const replaceTaxpayerStaffSchema = z.object({
+  userIds: z.array(uuid).max(MAX_TAXPAYER_STAFF)
+    .refine((ids) => new Set(ids).size === ids.length, { message: 'Each user may appear once' }),
+});
+export type ReplaceTaxpayerStaffInput = z.infer<typeof replaceTaxpayerStaffSchema>;
+
 export const createTaxpayerSchema = z.object({
   displayName: z.string().trim().min(1).max(MAX_NAME),
   filingStatus: z.enum(FILING_STATUSES).default('single'),

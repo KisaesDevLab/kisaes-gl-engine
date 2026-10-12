@@ -15,7 +15,7 @@ import { db } from '../../db/index.js';
 import {
   tenants, users, tenantFeatureFlags, firms, firmUsers, tenantFirmAssignments, userTenantAccess,
   companies, companyTaxProfiles, portalContacts, portalContactCompanies, auditLog,
-  taxEstTaxpayers,
+  taxEstTaxpayers, taxEstFirmSettings,
 } from '../../db/schema/index.js';
 import { taxEstimatorRouter } from '../tax-estimator.routes.js';
 import { errorHandler } from '../../middleware/error-handler.js';
@@ -83,6 +83,7 @@ async function cleanDb() {
   const tids = [ids.t1, ids.t2, ids.t3, ids.t4].filter(Boolean);
   const fids = [ids.firmA, ids.firmB].filter(Boolean);
   if (fids.length) await db.delete(taxEstTaxpayers).where(inArray(taxEstTaxpayers.firmId, fids)); // persons/links/contacts cascade
+  if (fids.length) await db.delete(taxEstFirmSettings).where(inArray(taxEstFirmSettings.firmId, fids));
   if (tids.length) {
     await db.delete(auditLog).where(inArray(auditLog.tenantId, tids));
     await db.delete(portalContacts).where(inArray(portalContacts.tenantId, tids)); // cascades company grants
@@ -117,6 +118,10 @@ beforeEach(async () => {
   const [fa] = await db.insert(firms).values({ name: 'TP Firm A', slug: slug('fa') }).returning();
   const [fb] = await db.insert(firms).values({ name: 'TP Firm B', slug: slug('fb') }).returning();
   ids.firmA = fa!.id; ids.firmB = fb!.id;
+  // D17: this suite pins the pre-D17 view (every firm member sees every firm taxpayer), so the
+  // firm switch is OFF here; the visibility rules have their own suite
+  // (taxpayer-visibility.routes.test.ts).
+  await db.insert(taxEstFirmSettings).values({ firmId: ids.firmA, restrictTaxpayersToLinkedTenants: false });
   await db.insert(tenantFirmAssignments).values([
     { tenantId: ids.t1, firmId: ids.firmA }, { tenantId: ids.t2, firmId: ids.firmA },
     { tenantId: ids.t3, firmId: ids.firmA }, { tenantId: ids.t4, firmId: ids.firmB },

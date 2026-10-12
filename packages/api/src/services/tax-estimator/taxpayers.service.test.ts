@@ -8,14 +8,14 @@ import { randomUUID } from 'crypto';
 import { db } from '../../db/index.js';
 import { tenants, companies, companyTaxProfiles, auditLog, taxEstTaxpayers } from '../../db/schema/index.js';
 import * as svc from './taxpayers.service.js';
-import type { FirmScope } from './firm-scope.service.js';
+import { UNRESTRICTED_VIEWER, type FirmScope } from './firm-scope.service.js';
 
 // Service-level contract tests: the scope object is the only authority.
 const firmA = randomUUID();
 const firmB = randomUUID();
 let t1 = ''; let t2 = ''; let c1 = ''; let c2 = '';
 const actor = () => ({ tenantId: t1, userId: randomUUID() });
-const scope = (firmId: string, allowed: string[]): FirmScope => ({ firmId, firmRole: 'firm_staff', allowedTenantIds: allowed });
+const scope = (firmId: string, allowed: string[]): FirmScope => ({ firmId, firmRole: 'firm_staff', allowedTenantIds: allowed, viewer: UNRESTRICTED_VIEWER });
 
 async function mk(name: string) {
   const [t] = await db.insert(tenants).values({ name, slug: `${name}-${Math.random().toString(36).slice(2, 8)}` }).returning();

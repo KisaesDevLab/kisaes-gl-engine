@@ -125,6 +125,10 @@ beforeEach(async () => {
   const [fa] = await db.insert(firms).values({ name: 'TP Firm A', slug: slug('fa') }).returning();
   const [fb] = await db.insert(firms).values({ name: 'TP Firm B', slug: slug('fb') }).returning();
   ids.firmA = fa!.id; ids.firmB = fb!.id;
+  // D17: this suite pins the pre-D17 view (every firm member sees every firm taxpayer), so the
+  // firm switch is OFF here; the visibility rules have their own suite
+  // (taxpayer-visibility.routes.test.ts).
+  await db.insert(taxEstFirmSettings).values({ firmId: ids.firmA, restrictTaxpayersToLinkedTenants: false });
   await db.insert(tenantFirmAssignments).values([
     { tenantId: ids.t1, firmId: ids.firmA }, { tenantId: ids.t2, firmId: ids.firmA },
     { tenantId: ids.t3, firmId: ids.firmA }, { tenantId: ids.t4, firmId: ids.firmB },

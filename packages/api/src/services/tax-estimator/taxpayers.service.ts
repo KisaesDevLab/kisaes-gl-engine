@@ -40,7 +40,7 @@ import { companyTaxProfiles } from '../../db/schema/tb.js';
 import { portalContacts, portalContactCompanies } from '../../db/schema/portal-contacts.js';
 import { auditLog } from '../../middleware/audit.js';
 import { AppError } from '../../utils/errors.js';
-import { isTenantInScope, tenantInScopeSql, type FirmScope } from './firm-scope.service.js';
+import { isTenantInScope, tenantInScopeSql, visibleTaxpayerFilter, type FirmScope } from './firm-scope.service.js';
 
 /** Who is acting: audit tenant = the caller's ACTIVE tenant (not a linked tenant). */
 export interface Actor {
@@ -101,14 +101,25 @@ async function audit(
   await auditLog(actor.tenantId, action, entityType, entityId, tag(before), tag(after), actor.userId, exec);
 }
 
-/** The ONLY way a taxpayer is loaded by id: firm-checked. `lock` serialises concurrent link edits. */
+/**
+ * The ONLY way a taxpayer is loaded by id: firm-checked AND visibility-checked (D17,
+ * `visibleTaxpayerFilter`). `lock` serialises concurrent link edits.
+ */
 async function loadTaxpayer(scope: FirmScope, id: string, exec: DbOrTx = db, lock = false): Promise<TaxpayerRow> {
   const q = exec.select().from(taxEstTaxpayers)
-    .where(and(eq(taxEstTaxpayers.id, id), eq(taxEstTaxpayers.firmId, scope.firmId)));
+    .where(and(eq(taxEstTaxpayers.id, id), visibleTaxpayerFilter(scope)));
   const [row] = lock ? await q.for('update') : await q;
   if (!row) throw taxpayerNotFound();
   return row;
 }
+
+/**
+ * D17: the taxpayer has a staff allow-list (list lock icon). Row-local EXISTS, no N+1.
+ * Fully qualified raw names: drizzle renders a lone column unqualified in a select list,
+ * which inside the subquery would bind to the subquery's own table.
+ */
+const staffRestrictedSql = () => sql<boolean>`EXISTS (SELECT 1 FROM tax_est_taxpayer_staff tes
+  WHERE tes.taxpayer_id = "tax_est_taxpayers"."id" AND tes.firm_id = "tax_est_taxpayers"."firm_id")`;
 
 function assertDobNotFuture(dob: string | null | undefined) {
   if (!dob) return;
@@ -136,7 +147,8 @@ export async function createTaxpayer(scope: FirmScope, actor: Actor, input: Crea
 }
 
 export async function listTaxpayers(scope: FirmScope, query: ListTaxpayersQuery): Promise<TaxpayerListDTO> {
-  const conds: SQL[] = [eq(taxEstTaxpayers.firmId, scope.firmId)];
+  // D17: the visibility predicate is part of the WHERE, so `total` counts only what the caller sees.
+  const conds: SQL[] = [visibleTaxpayerFilter(scope)];
   if (query.status === 'active') conds.push(eq(taxEstTaxpayers.isActive, true));
   if (query.status === 'archived') conds.push(eq(taxEstTaxpayers.isActive, false));
   if (query.filingStatus && query.filingStatus.length > 0) conds.push(inArray(taxEstTaxpayers.filingStatus, query.filingStatus));
@@ -157,8 +169,9 @@ export async function listTaxpayers(scope: FirmScope, query: ListTaxpayersQuery)
   const order = query.sortDir === 'desc' ? desc(sortCol) : asc(sortCol);
 
   const [countRow] = await db.select({ n: sql<number>`count(*)::int` }).from(taxEstTaxpayers).where(where);
-  const rows = await db.select().from(taxEstTaxpayers).where(where)
-    .orderBy(order, asc(taxEstTaxpayers.id)).limit(query.limit).offset(query.offset);
+  const rows = await db.select({ t: taxEstTaxpayers, staffRestricted: staffRestrictedSql() }).from(taxEstTaxpayers).where(where)
+    .orderBy(order, asc(taxEstTaxpayers.id)).limit(query.limit).offset(query.offset)
+    .then((rs) => rs.map((r) => ({ ...r.t, staffRestricted: r.staffRestricted === true })));
 
   const ids = rows.map((r) => r.id);
   const persons = ids.length ? await db.select().from(taxEstPersons).where(inArray(taxEstPersons.taxpayerId, ids)) : [];
@@ -170,6 +183,7 @@ export async function listTaxpayers(scope: FirmScope, query: ListTaxpayersQuery)
   return {
     data: rows.map((r) => ({
       ...toTaxpayerDTO(r),
+      staffRestricted: r.staffRestricted,
       personNames: persons.filter((p) => p.taxpayerId === r.id)
         .sort((a, b) => a.role.localeCompare(b.role)).map((p) => `${p.firstName} ${p.lastName}`),
       linkCount: countBy.get(r.id) ?? 0,
@@ -181,9 +195,11 @@ export async function listTaxpayers(scope: FirmScope, query: ListTaxpayersQuery)
 export async function getTaxpayer(scope: FirmScope, id: string): Promise<TaxpayerDetailDTO> {
   const row = await loadTaxpayer(scope, id);
   const persons = await db.select().from(taxEstPersons).where(eq(taxEstPersons.taxpayerId, id));
+  const [staff] = await db.select({ on: staffRestrictedSql() }).from(taxEstTaxpayers).where(eq(taxEstTaxpayers.id, id));
   return {
     taxpayer: toTaxpayerDTO(row),
     persons: persons.sort((a, b) => a.role.localeCompare(b.role)).map(toPersonDTO),
+    staffRestricted: staff?.on === true,
   };
 }
 

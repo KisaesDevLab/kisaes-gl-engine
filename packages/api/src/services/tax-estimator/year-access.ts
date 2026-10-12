@@ -4,14 +4,16 @@
 
 // Firm-checked loaders shared by the Phase 5 services (years, scenarios, adjustments,
 // state rows). Every Phase 5 row hangs off a taxpayer, and a taxpayer is only ever
-// loaded with `firm_id = scope.firmId` (404 TE_TAXPAYER_NOT_FOUND otherwise).
+// loaded through `visibleTaxpayerFilter(scope)` — its firm AND the D17 visibility rule
+// (404 TE_TAXPAYER_NOT_FOUND / TE_SCENARIO_NOT_FOUND / TE_ADJUSTMENT_NOT_FOUND otherwise,
+// the same answer an id of another firm gets).
 import { and, eq } from 'drizzle-orm';
 import { db, type DbOrTx } from '../../db/index.js';
 import { taxEstTaxpayers } from '../../db/schema/tax-estimator-taxpayers.js';
 import { taxEstScenarios, taxEstAdjustments } from '../../db/schema/tax-estimator-years.js';
 import { auditLog } from '../../middleware/audit.js';
 import { AppError } from '../../utils/errors.js';
-import type { FirmScope } from './firm-scope.service.js';
+import { visibleTaxpayerFilter, type FirmScope } from './firm-scope.service.js';
 
 export interface Actor {
   tenantId: string;
@@ -29,7 +31,7 @@ export const tenantNotManaged = () => new AppError(404, 'Client is not managed b
 
 export async function loadTaxpayerForFirm(scope: FirmScope, id: string, exec: DbOrTx = db, lock = false): Promise<TaxpayerRow> {
   const q = exec.select().from(taxEstTaxpayers)
-    .where(and(eq(taxEstTaxpayers.id, id), eq(taxEstTaxpayers.firmId, scope.firmId)));
+    .where(and(eq(taxEstTaxpayers.id, id), visibleTaxpayerFilter(scope)));
   const [row] = lock ? await q.for('update') : await q;
   if (!row) throw taxpayerNotFound();
   return row;
@@ -39,7 +41,7 @@ export async function loadTaxpayerForFirm(scope: FirmScope, id: string, exec: Db
 export async function loadScenarioForFirm(scope: FirmScope, scenarioId: string, exec: DbOrTx = db): Promise<ScenarioRow> {
   const [row] = await exec.select({ s: taxEstScenarios }).from(taxEstScenarios)
     .innerJoin(taxEstTaxpayers, eq(taxEstTaxpayers.id, taxEstScenarios.taxpayerId))
-    .where(and(eq(taxEstScenarios.id, scenarioId), eq(taxEstTaxpayers.firmId, scope.firmId)));
+    .where(and(eq(taxEstScenarios.id, scenarioId), visibleTaxpayerFilter(scope)));
   if (!row) throw scenarioNotFound();
   return row.s;
 }
@@ -50,7 +52,7 @@ export async function loadAdjustmentForFirm(
   const [row] = await exec.select({ a: taxEstAdjustments, s: taxEstScenarios }).from(taxEstAdjustments)
     .innerJoin(taxEstScenarios, eq(taxEstScenarios.id, taxEstAdjustments.scenarioId))
     .innerJoin(taxEstTaxpayers, eq(taxEstTaxpayers.id, taxEstScenarios.taxpayerId))
-    .where(and(eq(taxEstAdjustments.id, adjustmentId), eq(taxEstTaxpayers.firmId, scope.firmId)));
+    .where(and(eq(taxEstAdjustments.id, adjustmentId), visibleTaxpayerFilter(scope)));
   if (!row) throw adjustmentNotFound();
   return { adjustment: row.a, scenario: row.s };
 }

@@ -15,7 +15,7 @@ import { db, pool } from '../../db/index.js';
 import { taxEstAccountTreatments, taxEstEntitySettings, taxEstTransactionFlags } from '../../db/schema/index.js';
 import { importSeed } from '../tb/tax-code-seed.service.js';
 import { getGlVersionStamp } from '../tb/balance-engine.service.js';
-import type { FirmScope } from './firm-scope.service.js';
+import { UNRESTRICTED_VIEWER, type FirmScope } from './firm-scope.service.js';
 import {
   characterForCode, getTaxBasisPl, monthsBetween, resolveThroughMonth, taxBasisCacheKey, taxYearWindow,
 } from './pl-provider.service.js';
@@ -84,7 +84,7 @@ beforeAll(async () => {
     await post(bt, bc, d, [[B.officer, 4500, 0], [B.checking, 0, 4500]]);
   }
 
-  scope = { firmId: '00000000-0000-0000-0000-0000000000f1', firmRole: 'firm_staff', allowedTenantIds: [rivera.tenantId, bakery.tenantId] };
+  scope = { firmId: '00000000-0000-0000-0000-0000000000f1', firmRole: 'firm_staff', allowedTenantIds: [rivera.tenantId, bakery.tenantId], viewer: UNRESTRICTED_VIEWER };
 
   await putTreatments(scope, t, c, [
     { accountId: R.health, treatment: 'owner_sehi', nonRecurring: false },

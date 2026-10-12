@@ -7,10 +7,13 @@ import {
   createTaxpayerSchema, updateTaxpayerSchema, listTaxpayersQuerySchema, taxpayerIdParamsSchema,
   personRoleParamsSchema, upsertPersonSchema, linksQuerySchema, upsertLinkSchema, linkIdParamsSchema,
   companyOptionsQuerySchema, linkContactSchema, contactIdParamsSchema, unlinkContactQuerySchema,
+  replaceTaxpayerStaffSchema, can,
 } from '@kis-books/shared';
+import { resolvePermissionsForRequest } from '../../middleware/permission.js';
 import { getScope, requireTaxEstimatorWrite } from '../../middleware/tax-estimator-scope.js';
 import { listPageQuerySchema, pageOf } from './paging.js';
 import * as taxpayersService from '../../services/tax-estimator/taxpayers.service.js';
+import * as staffService from '../../services/tax-estimator/taxpayer-staff.service.js';
 
 // taxpayers router — mounted by tax-estimator.routes.ts AFTER its guard chain
 // (session auth, client 404, flag, resource, firm scope). The firm and the
@@ -109,4 +112,27 @@ taxpayersRouter.delete('/:id/contacts/:contactId', requireTaxEstimatorWrite, asy
   const { id, contactId } = contactIdParamsSchema.parse(req.params);
   const { revokeAccess } = unlinkContactQuerySchema.parse(req.query);
   res.json({ data: await taxpayersService.unlinkContact(getScope(req), actor(req), id, contactId, revokeAccess) });
+});
+
+// ── D17: who can see this taxpayer (staff allow-list) ──
+// Read: anyone who can see the taxpayer. Change / candidates: firm admins and super admins
+// only (403 TE_FIRM_ADMIN_REQUIRED). A taxpayer the caller cannot see is a 404 first.
+// `canEdit` mirrors GET /scope `canWrite` (a member whose active-tenant role is readonly
+// gets the read-only card).
+const canWrite = async (req: Request) => can(await resolvePermissionsForRequest(req), 'tax_estimator', 'update');
+
+taxpayersRouter.get('/:id/staff', async (req, res) => {
+  const { id } = taxpayerIdParamsSchema.parse(req.params);
+  res.json({ data: await staffService.getTaxpayerStaff(getScope(req), id, await canWrite(req)) });
+});
+
+taxpayersRouter.get('/:id/staff-candidates', async (req, res) => {
+  const { id } = taxpayerIdParamsSchema.parse(req.params);
+  res.json(await staffService.getStaffCandidates(getScope(req), id, req.tenantId));
+});
+
+taxpayersRouter.put('/:id/staff', requireTaxEstimatorWrite, async (req, res) => {
+  const { id } = taxpayerIdParamsSchema.parse(req.params);
+  const { userIds } = replaceTaxpayerStaffSchema.parse(req.body);
+  res.json({ data: await staffService.replaceTaxpayerStaff(getScope(req), actor(req), id, userIds, await canWrite(req)) });
 });
