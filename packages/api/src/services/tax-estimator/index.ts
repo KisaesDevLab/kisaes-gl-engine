@@ -19,3 +19,6 @@ export * as adjustmentsService from './adjustments.service.js';
 export * as adjustmentTypesService from './adjustment-types.service.js';
 export * as stateRowsService from './state-rows.service.js';
 export * as firmSettingsService from './firm-settings.service.js';
+export * as paymentsService from './payments.service.js';
+export * as schAiSnapshotsService from './sch-ai-snapshots.service.js';
+export * as estimateService from './estimate.service.js';

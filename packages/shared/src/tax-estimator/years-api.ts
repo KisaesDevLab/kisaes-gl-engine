@@ -24,6 +24,20 @@ export interface Sch1aPersonDTO { qualifiedTips?: number; qualifiedOvertime?: nu
 export interface Sch1aDTO { primary?: Sch1aPersonDTO; spouse?: Sch1aPersonDTO }
 export interface HsaCoverageDTO { primary?: HsaCoverage; spouse?: HsaCoverage }
 export interface WithholdingDTO { federal?: number; states?: Record<string, number> }
+export type RetirementPlanTypeDTO = 'sep' | 'solo_401k' | 'simple' | 'none';
+/** Phase 10b (Q28): per-person year inputs. */
+export interface PersonYearInputDTO {
+  retirementPlanType?: RetirementPlanTypeDTO | null;
+  employeeDeferral?: number | null;
+  /** Outside W-2 box 1 wages. */
+  w2Wages?: number | null;
+  w2SocialSecurityWages?: number | null;
+}
+export interface PersonInputsDTO { primary?: PersonYearInputDTO; spouse?: PersonYearInputDTO }
+export interface FarmerGrossPersonDTO { farming?: number; fishing?: number; totalGross?: number }
+export interface FarmerGrossYearDTO { primary?: FarmerGrossPersonDTO; spouse?: FarmerGrossPersonDTO }
+/** Phase 10b (Q34): manual farmer gross-income figures; a year present wins over the books. */
+export interface FarmerGrossDTO { current?: FarmerGrossYearDTO; prior?: FarmerGrossYearDTO }
 
 export interface YearSettingsDTO {
   id: string;
@@ -47,6 +61,13 @@ export interface YearSettingsDTO {
   creditsRefundable: string;
   hsaCoverage: HsaCoverageDTO;
   withholding: WithholdingDTO;
+  // Phase 10b inputs — always present in API responses; optional for older fixtures.
+  personInputs?: PersonInputsDTO;
+  mfsLivedApartAllYear?: boolean;
+  /** Form 8960 Part II allocable deductions; null = none. */
+  niiAllocableDeductions?: string | null;
+  farmerGross?: FarmerGrossDTO;
+  isFisherman?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -143,6 +164,18 @@ export interface StateRowDTO {
   sourcedManual: boolean;
   creditOverride: string | null;
   memo: string | null;
+  // Phase 10b gate inputs (D12b) — always present in API responses; optional for older fixtures.
+  /** null = the year's withholding.states[state]. */
+  withholding?: string | null;
+  otherCredits?: string | null;
+  grossIncome?: string | null;
+  priorYearGrossIncome?: string | null;
+  nonWithheldIncome?: string | null;
+  exemptions?: string | null;
+  stateDeductions?: string | null;
+  /** Prior-year state tax / AGI are never returned (D9); only whether they are on file. */
+  priorYearTaxPresent?: boolean;
+  priorYearAgiPresent?: boolean;
 }
 
 export interface AdjustmentListDTO {

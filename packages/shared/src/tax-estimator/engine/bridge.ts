@@ -110,6 +110,24 @@ export interface YearExtras {
   unrecaptured1250Gain?: number | string | null;
   collectiblesGain?: number | string | null;
   amtExposureFlagged?: boolean;
+  /** §469(i)(5) MFS flag; default = YearSettingsDTO.mfsLivedApartAllYear (Phase 10b). */
+  mfsLivedApartAllYear?: boolean;
+}
+
+/**
+ * Phase 10b (Q28): the year's per-person inputs (YearSettingsDTO.personInputs, keyed
+ * by role) → PersonYearInputs for enginePersonFromDto. Withholding stays at the
+ * taxpayer level (the voucher path credits YearSettingsDTO.withholding.federal).
+ */
+export function personYearInputsFromDto(year: YearSettingsDTO, role: PersonDTO['role']): PersonYearInputs {
+  const p = role === 'primary' ? year.personInputs?.primary : year.personInputs?.spouse;
+  if (!p) return {};
+  return {
+    w2Wages: p.w2Wages ?? null,
+    w2SocialSecurityWages: p.w2SocialSecurityWages ?? null,
+    retirementPlan: p.retirementPlanType ?? null,
+    retirementEmployeeDeferral: p.employeeDeferral ?? null,
+  };
 }
 
 export function engineYearFromDto(y: YearSettingsDTO, extra: YearExtras = {}): EngineYearInputs {
@@ -127,5 +145,6 @@ export function engineYearFromDto(y: YearSettingsDTO, extra: YearExtras = {}): E
     unrecaptured1250Gain: num(extra.unrecaptured1250Gain),
     collectiblesGain: num(extra.collectiblesGain),
     amtExposureFlagged: extra.amtExposureFlagged ?? false,
+    mfsLivedApartAllYear: extra.mfsLivedApartAllYear ?? y.mfsLivedApartAllYear ?? false,
   };
 }

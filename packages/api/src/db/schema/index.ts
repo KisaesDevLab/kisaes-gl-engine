@@ -69,5 +69,6 @@ export * from './tax-estimator-taxpayers.js';
 export * from './tax-estimator-entities.js';
 export * from './tax-estimator-state-rules.js';
 export * from './tax-estimator-years.js';
+export * from './tax-estimator-estimate.js';
 export * from './check-signatures.js';
 export * from './financial-statements.js';

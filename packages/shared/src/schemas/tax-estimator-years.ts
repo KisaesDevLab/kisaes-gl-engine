@@ -54,6 +54,27 @@ export const sch1aSchema = z.object({ primary: sch1aPersonSchema.optional(), spo
 export const hsaCoverageSchema = z.object({
   primary: z.enum(HSA_COVERAGES).optional(), spouse: z.enum(HSA_COVERAGES).optional(),
 }).strict();
+export const RETIREMENT_PLAN_TYPES = ['sep', 'solo_401k', 'simple', 'none'] as const;
+
+/** Phase 10b (Q28): per-person year inputs keyed by role. Money as plain numbers like the other jsonb inputs. */
+const personYearInputSchema = z.object({
+  retirementPlanType: z.enum(RETIREMENT_PLAN_TYPES).nullable().optional(),
+  /** Elective-deferral portion of the owner retirement contributions (solo 401(k) / SIMPLE). */
+  employeeDeferral: nonNegNumber.nullable().optional(),
+  /** W-2 box 1 wages from jobs OUTSIDE the linked entities. */
+  w2Wages: nonNegNumber.nullable().optional(),
+  /** Social Security wages of those jobs; blank = same as box 1. */
+  w2SocialSecurityWages: nonNegNumber.nullable().optional(),
+}).strict();
+export const personInputsSchema = z.object({ primary: personYearInputSchema.optional(), spouse: personYearInputSchema.optional() }).strict();
+
+/** Phase 10b (Q34): farmer / fisherman gross-income test figures; a year present here wins over the books. */
+const farmerGrossPersonSchema = z.object({
+  farming: nonNegNumber.optional(), fishing: nonNegNumber.optional(), totalGross: nonNegNumber.optional(),
+}).strict();
+const farmerGrossYearSchema = z.object({ primary: farmerGrossPersonSchema.optional(), spouse: farmerGrossPersonSchema.optional() }).strict();
+export const farmerGrossSchema = z.object({ current: farmerGrossYearSchema.optional(), prior: farmerGrossYearSchema.optional() }).strict();
+
 export const withholdingSchema = z.object({
   federal: nonNegNumber.optional(),
   states: z.record(stateCode, nonNegNumber).optional(),
@@ -75,6 +96,11 @@ export const upsertYearSchema = z.object({
   creditsRefundable: nonNegMoney.optional(),
   hsaCoverage: hsaCoverageSchema.optional(),
   withholding: withholdingSchema.optional(),
+  personInputs: personInputsSchema.optional(),
+  mfsLivedApartAllYear: z.boolean().optional(),
+  niiAllocableDeductions: nonNegMoney.nullable().optional(),
+  farmerGross: farmerGrossSchema.optional(),
+  isFisherman: z.boolean().optional(),
 }).superRefine((v, ctx) => {
   if (v.rateMode === 'effective' && v.effectiveRateOverride === null) {
     ctx.addIssue({ code: 'custom', path: ['effectiveRateOverride'], message: 'Effective-rate mode needs a rate' });
@@ -162,6 +188,18 @@ export const stateRowSchema = z.object({
   sourcedManual: z.boolean().default(false),
   creditOverride: money.nullable().optional(),
   memo: z.string().trim().max(MAX_MEMO).nullable().optional(),
+  // Phase 10b gate inputs (D12b). On PUT: omitted = keep the value saved for this state,
+  // null = clear. withholding null falls back to the year's withholding.states[state].
+  withholding: nonNegMoney.nullable().optional(),
+  otherCredits: nonNegMoney.nullable().optional(),
+  grossIncome: money.nullable().optional(),
+  priorYearGrossIncome: money.nullable().optional(),
+  nonWithheldIncome: money.nullable().optional(),
+  exemptions: nonNegMoney.nullable().optional(),
+  stateDeductions: nonNegMoney.nullable().optional(),
+  /** Prior-year STATE tax / AGI (D9): write-only, encrypted at rest; omitted = keep, null = clear. */
+  priorYearTax: nonNegMoney.nullable().optional(),
+  priorYearAgi: money.nullable().optional(),
 }).superRefine((v, ctx) => {
   if (v.base === 'custom' && v.customBase == null) {
     ctx.addIssue({ code: 'custom', path: ['customBase'], message: 'A custom base needs an amount' });

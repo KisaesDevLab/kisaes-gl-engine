@@ -11,7 +11,7 @@
 import { and, asc, eq, sql } from 'drizzle-orm';
 import type {
   UpsertYearInput, YearDetailDTO, YearSettingsDTO, YearSummaryDTO, SafeHarborOverride, RateMode, DeductionMode,
-  ItemizedDTO, Sch1aDTO, HsaCoverageDTO, WithholdingDTO,
+  ItemizedDTO, Sch1aDTO, HsaCoverageDTO, WithholdingDTO, PersonInputsDTO, FarmerGrossDTO, SafeHarborRuleSource,
 } from '@kis-books/shared';
 import { db } from '../../db/index.js';
 import { taxEstYears, taxEstScenarios } from '../../db/schema/tax-estimator-years.js';
@@ -44,6 +44,8 @@ function toYearDTO(r: YearRow, withSecrets: boolean): YearSettingsDTO {
     itemized: r.itemized as ItemizedDTO, sch1a: r.sch1a as Sch1aDTO,
     creditsNonrefundable: r.creditsNonrefundable, creditsRefundable: r.creditsRefundable,
     hsaCoverage: r.hsaCoverage as HsaCoverageDTO, withholding: r.withholding as WithholdingDTO,
+    personInputs: r.personInputs as PersonInputsDTO, mfsLivedApartAllYear: r.mfsLivedApartAllYear,
+    niiAllocableDeductions: r.niiAllocableDeductions, farmerGross: r.farmerGross as FarmerGrossDTO, isFisherman: r.isFisherman,
     createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString(),
   };
 }
@@ -61,6 +63,7 @@ function defaultYearDTO(taxpayerId: string, taxYear: number): YearSettingsDTO {
     priorYearAgiPresent: false, priorYearTwelveMonths: true, priorYearFiled: true, safeHarborRule: null,
     rateMode: 'brackets', effectiveRateOverride: null, deductionMode: 'auto', itemized: {}, sch1a: {},
     creditsNonrefundable: '0.0000', creditsRefundable: '0.0000', hsaCoverage: {}, withholding: {},
+    personInputs: {}, mfsLivedApartAllYear: false, niiAllocableDeductions: null, farmerGross: {}, isFisherman: false,
     createdAt: now, updatedAt: now,
   };
 }
@@ -129,6 +132,11 @@ export async function upsertYear(
     if (input.creditsRefundable !== undefined) patch.creditsRefundable = input.creditsRefundable;
     if (input.hsaCoverage !== undefined) patch.hsaCoverage = input.hsaCoverage as Record<string, string>;
     if (input.withholding !== undefined) patch.withholding = input.withholding as { federal?: number; states?: Record<string, number> };
+    if (input.personInputs !== undefined) patch.personInputs = input.personInputs as Record<string, Record<string, number | string | null>>;
+    if (input.mfsLivedApartAllYear !== undefined) patch.mfsLivedApartAllYear = input.mfsLivedApartAllYear;
+    if (input.niiAllocableDeductions !== undefined) patch.niiAllocableDeductions = input.niiAllocableDeductions;
+    if (input.farmerGross !== undefined) patch.farmerGross = input.farmerGross as Record<string, Record<string, Record<string, number>>>;
+    if (input.isFisherman !== undefined) patch.isFisherman = input.isFisherman;
 
     let row: YearRow | undefined;
     if (before) {
@@ -148,4 +156,24 @@ export async function upsertYear(
     await auditYears(scope, actor, before ? 'update' : 'create', 'tax_est_year', row.id, beforeShape, afterShape, tx);
   });
   return getYear(scope, taxpayerId, taxYear);
+}
+
+/**
+ * Estimate assembly (Phase 10b): the year WITH decrypted prior-year values plus the
+ * resolved safe-harbor rule and where it came from (year → taxpayer → firm default).
+ * Server-internal: the decrypted values feed the engine and are never returned by a
+ * route except the single-year GET above (D9).
+ */
+export async function loadYearForEngine(scope: FirmScope, taxpayerId: string, taxYear: number): Promise<{
+  exists: boolean; year: YearSettingsDTO; rule: SafeHarborOverride; ruleSource: SafeHarborRuleSource;
+}> {
+  const taxpayer = await loadTaxpayerForFirm(scope, taxpayerId);
+  const [row] = await db.select().from(taxEstYears)
+    .where(and(eq(taxEstYears.taxpayerId, taxpayerId), eq(taxEstYears.taxYear, taxYear)));
+  const year = row ? toYearDTO(row, true) : defaultYearDTO(taxpayerId, taxYear);
+  const override = taxpayer.safeHarborOverride as SafeHarborOverride | null;
+  if (year.safeHarborRule) return { exists: !!row, year, rule: year.safeHarborRule, ruleSource: 'year' };
+  if (override) return { exists: !!row, year, rule: override, ruleSource: 'taxpayer' };
+  const firm = await getFirmSettings(scope);
+  return { exists: !!row, year, rule: firm.safeHarborDefault, ruleSource: 'firm_default' };
 }

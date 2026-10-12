@@ -30,6 +30,13 @@ export const taxEstYears = pgTable('tax_est_years', {
   creditsRefundable: numeric('credits_refundable', { precision: 19, scale: 4 }).notNull().default('0'),
   hsaCoverage: jsonb('hsa_coverage').$type<Record<string, string>>().notNull().default({}),
   withholding: jsonb('withholding').$type<{ federal?: number; states?: Record<string, number> }>().notNull().default({}),
+  // Phase 10b (migrations/parts/estimate.sql): per-person year inputs keyed by role,
+  // §469(i)(5) MFS flag, Form 8960 allocable deductions, farmer gross-income figures.
+  personInputs: jsonb('person_inputs').$type<Record<string, Record<string, number | string | null>>>().notNull().default({}),
+  mfsLivedApartAllYear: boolean('mfs_lived_apart_all_year').notNull().default(false),
+  niiAllocableDeductions: numeric('nii_allocable_deductions', { precision: 19, scale: 4 }),
+  farmerGross: jsonb('farmer_gross').$type<Record<string, Record<string, Record<string, number>>>>().notNull().default({}),
+  isFisherman: boolean('is_fisherman').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
@@ -111,6 +118,16 @@ export const taxEstStateRows = pgTable('tax_est_state_rows', {
   sourcedManual: boolean('sourced_manual').notNull().default(false),
   creditOverride: numeric('credit_override', { precision: 19, scale: 4 }),
   memo: text('memo'),
+  // Phase 10b gate inputs (D12b) and prior-year state figures (D9, *_encrypted).
+  withholding: numeric('withholding', { precision: 19, scale: 4 }),
+  otherCredits: numeric('other_credits', { precision: 19, scale: 4 }),
+  grossIncome: numeric('gross_income', { precision: 19, scale: 4 }),
+  priorYearGrossIncome: numeric('prior_year_gross_income', { precision: 19, scale: 4 }),
+  nonWithheldIncome: numeric('non_withheld_income', { precision: 19, scale: 4 }),
+  exemptions: numeric('exemptions', { precision: 19, scale: 4 }),
+  stateDeductions: numeric('state_deductions', { precision: 19, scale: 4 }),
+  priorYearTaxEncrypted: text('prior_year_tax_encrypted'),
+  priorYearAgiEncrypted: text('prior_year_agi_encrypted'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [

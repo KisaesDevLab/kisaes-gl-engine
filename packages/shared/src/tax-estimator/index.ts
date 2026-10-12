@@ -16,5 +16,8 @@ export * from './engine/index.js';
 export * from './state-rules-api.js';
 export * from './entities-api.js';
 export * from './years-api.js';
+export * from './estimate-api.js';
+// Phase 10b bridge helper (kept out of engine/index.ts, which the engine owner maintains).
+export { personYearInputsFromDto } from './engine/bridge.js';
 export * from './allocation.js';
 export * from './decimal.js';
