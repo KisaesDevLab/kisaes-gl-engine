@@ -27,3 +27,5 @@ export * from './assumptions.js';
 export * from './snapshots-api.js';
 export * from './portal-api.js';
 export * from './installments-as-of.js';
+// The Calculation view's lines (web Calculation table + estimate PDF "Detailed calculation").
+export * from './calc-lines.js';

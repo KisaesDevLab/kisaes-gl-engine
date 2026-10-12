@@ -10,7 +10,7 @@
 
 import type { BooksReadiness, CharacterAmounts, PaymentJurisdiction, TaxEstimatorWarning, ThroughMonthSource } from './entities-api.js';
 import type { EntityTaxType, FilingStatus, TaxMethod } from './types.js';
-import type { SafeHarborOverride, PortalShows } from './taxpayers-api.js';
+import type { PersonRole, SafeHarborOverride, PortalShows } from './taxpayers-api.js';
 import type { FederalResult, ParameterUse } from './engine/types.js';
 import type { StateResult, StateRuleUse } from './engine/state-types.js';
 import type { JurisdictionEstimate } from './engine/vouchers.js';
@@ -93,6 +93,22 @@ export interface EstimateEntityDTO {
   reclass?: EstimateEntityReclassDTO | null;
   /** Q41: whether the >2% shareholder health W-2 add-on was counted as §199A W-2 wages for this entity (S corps; absent = default, excluded). */
   includeSehiInW2Wages?: boolean;
+  /**
+   * Owner request 2026-10-12 (optional, additive): who owns the business, one entry per
+   * taxpayer link (tax_est_links). Absent on results / snapshots computed before it.
+   */
+  owners?: EstimateEntityOwnerDTO[];
+}
+
+/** One person's ownership of a linked business, as the engine allocated it. */
+export interface EstimateEntityOwnerDTO {
+  personId: string;
+  personRole: PersonRole;
+  displayName: string;
+  /** Profit share in percent (0-100) as allocated: a blank stored % reads 100 for a sole owner, else 0. */
+  profitPct: number;
+  /** Loss share in percent; equals profitPct when the link stores none. */
+  lossPct: number;
 }
 
 /** YTD GL reclass totals applied by the treatment map before the engine (positive magnitudes). */

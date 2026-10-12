@@ -23,7 +23,7 @@ import { createHash } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 import type {
-  AdjustmentDTO, AdjustmentTypeDTO, CcorpResult, EngineEntity, EnginePerson, EstimateEntityDTO, EstimatePayment, EstimatePaymentDTO,
+  AdjustmentDTO, AdjustmentTypeDTO, CcorpResult, EngineEntity, EnginePerson, EstimateEntityDTO, EstimateEntityOwnerDTO, EstimatePayment, EstimatePaymentDTO,
   EstimateReadinessDTO, EstimateReadinessEntityDTO, EstimateReadinessPeriodDTO, EstimateResultDTO, EngineYearInputs, FarmerResult,
   FarmerYearGross, FarmerGrossYearDTO, FederalEngineInput, FederalResult, JurisdictionEstimate, LinkDTO, ParameterUse, PersonDTO,
   SchAiPeriodSourceDTO, StateResult, StateRuleUse, StateRulesDTO, TaxBasisPl, TaxEstimatorWarning, EntitySettingsResponse,
@@ -66,7 +66,8 @@ type DecJs = InstanceType<typeof Decimal>;
 
 // v2 (Phase 12): the cached payload is AES-encrypted (D9) and carries the assumptions block.
 // v3 (QA2-04): adjustments carry their monthly allocation.
-const CACHE_VERSION = 'te-estimate-v3';
+// v4 (2026-10-12): entities carry their owners (PDF "Businesses included").
+const CACHE_VERSION = 'te-estimate-v4';
 const FEDERAL = 'federal';
 const MONTHS_PER_YEAR = 12;
 const MAX_ADJUSTMENTS = 500;
@@ -304,7 +305,7 @@ async function runEntities(scope: FirmScope, req: EstimateRequest, g: Gathered, 
     const base: EstimateEntityDTO = {
       tenantId: c.tenantId, companyId: c.companyId, companyName: c.companyName ?? c.settings.resolved.companyName, entityType: null,
       path: 'skipped', skippedReason: null, throughMonth: null, throughMonthSource: null, monthsElapsed: 0, monthsRemaining: 0,
-      glVersionStamp: c.glVersionStamp, providerCached: false,
+      glVersionStamp: c.glVersionStamp, providerCached: false, owners: ownersOf(g, c.tenantId, c.companyId),
     };
     let pl: TaxBasisPl;
     try {
@@ -337,6 +338,24 @@ async function runEntities(scope: FirmScope, req: EstimateRequest, g: Gathered, 
     out.push({ company: c, pl, dto: { ...dto, path: 'individual' }, engine });
   }
   return out;
+}
+
+/**
+ * Who owns the business (owner request 2026-10-12): one entry per in-scope link, with the
+ * percentages the engine allocates (income.ts linkFractions: a blank profit % is 100 for a
+ * sole owner, else 0; a blank loss % follows the profit %). Display data only.
+ */
+function ownersOf(g: Pick<Gathered, 'links' | 'persons'>, tenantId: string, companyId: string): EstimateEntityOwnerDTO[] {
+  const own = g.links.filter((l) => l.tenantId === tenantId && l.companyId === companyId);
+  return own.map((l) => {
+    const p = g.persons.find((x) => x.id === l.personId);
+    const profitPct = l.profitPct ?? (own.length === 1 ? 100 : 0);
+    return {
+      personId: l.personId, personRole: l.personRole,
+      displayName: p ? `${p.firstName} ${p.lastName}`.trim() : l.personRole,
+      profitPct, lossPct: l.lossPct ?? profitPct,
+    };
+  });
 }
 
 /** YTD treatment-map reclass totals for the assumptions page (sums of provider figures; no tax math). */
