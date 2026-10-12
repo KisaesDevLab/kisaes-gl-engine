@@ -130,8 +130,15 @@ describe('entity type resolution (D3)', () => {
   it('settings and year-input writes are audited against the books tenant', async () => {
     await upsertYearInputs(scope, tA, cA, 2026, { ubia: '125000' });
     expect(await getYearInputs(scope, tA, cA, 2026)).toMatchObject({ ubia: '125000.0000', includeSehiInW2Wages: false }); // Q41 default: excluded
-    await upsertYearInputs(scope, tA, cA, 2026, { includeSehiInW2Wages: true });
-    expect(await getYearInputs(scope, tA, cA, 2026)).toMatchObject({ ubia: '125000.0000', includeSehiInW2Wages: true }); // ubia untouched by a partial patch
+    // QA2-03: S corporations only.
+    await expect(upsertYearInputs(scope, tA, cA, 2026, { includeSehiInW2Wages: true })).rejects.toMatchObject({ statusCode: 422, code: 'TE_SEHI_W2_S_CORP_ONLY' });
+    await upsertYearInputs(scope, tA, cA, 2026, { includeSehiInW2Wages: false });
+    expect(await getYearInputs(scope, tA, cA, 2026)).toMatchObject({ ubia: '125000.0000', includeSehiInW2Wages: false }); // ubia untouched by a partial patch
+    const prior = (await getEntitySettings(scope, tA, cTypes)).settings.taxEntityType;
+    await upsertEntitySettings(scope, tA, cTypes, { taxEntityType: 's_corp' });
+    await upsertYearInputs(scope, tA, cTypes, 2026, { includeSehiInW2Wages: true });
+    expect(await getYearInputs(scope, tA, cTypes, 2026)).toMatchObject({ includeSehiInW2Wages: true });
+    await upsertEntitySettings(scope, tA, cTypes, { taxEntityType: prior });
     await expect(upsertYearInputs(scope, tA, cA, 2026, { w2WagesOverride: '1000' }))
       .rejects.toMatchObject({ code: 'TE_W2_OVERRIDE_REASON' });
     const audits = await db.execute<{ entity_type: string }>(sql`

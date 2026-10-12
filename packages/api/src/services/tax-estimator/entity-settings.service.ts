@@ -109,7 +109,11 @@ export async function getYearInputs(scope: FirmScope, tenantId: string, companyI
 export async function upsertYearInputs(
   scope: FirmScope, tenantId: string, companyId: string, taxYear: number, input: UpsertEntityYearInputsInput, userId?: string,
 ): Promise<EntityYearInputsDto> {
-  await assertEntityInScope(scope, tenantId, companyId);
+  const company = await assertEntityInScope(scope, tenantId, companyId);
+  // QA2-03: the >2% shareholder health switch exists only for S corporations (Q41).
+  if (input.includeSehiInW2Wages === true && (await resolveForCompany(company)).entityType !== 's_corp') {
+    throw new AppError(422, 'Including >2% shareholder health insurance in W-2 wages applies to S corporations only', 'TE_SEHI_W2_S_CORP_ONLY');
+  }
   const after = await db.transaction(async (tx) => {
     const [before] = await tx.select().from(taxEstEntityYearInputs)
       .where(and(

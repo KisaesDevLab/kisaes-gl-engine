@@ -152,6 +152,16 @@ describe('entities routes — happy path inside the scope', () => {
     const yi = await request('GET', `${b}/year-inputs/2026`, staffToken);
     expect((yi.json.data as { ubia: string }).ubia).toBe('5000.0000');
 
+    // QA2-03: the >2% shareholder health switch is S-corporation only.
+    const notS = await request('PUT', `${b}/year-inputs/2026`, staffToken, { includeSehiInW2Wages: true });
+    expect(notS.status).toBe(422);
+    expect((notS.json.error as { code: string }).code).toBe('TE_SEHI_W2_S_CORP_ONLY');
+    expect((await request('PUT', `${b}/year-inputs/2026`, staffToken, { includeSehiInW2Wages: false })).status).toBe(200);
+    expect((await request('PUT', `${b}/settings`, staffToken, { taxEntityType: 's_corp' })).status).toBe(200);
+    expect((await request('PUT', `${b}/year-inputs/2026`, staffToken, { includeSehiInW2Wages: true })).status).toBe(200);
+    expect((await request('PUT', `${b}/year-inputs/2026`, staffToken, { includeSehiInW2Wages: false })).status).toBe(200);
+    expect((await request('PUT', `${b}/settings`, staffToken, { taxEntityType: null })).status).toBe(200);
+
     const sug = await request('GET', `${b}/treatment-suggestions`, staffToken);
     expect((sug.json.data as Array<{ accountId: string }>).map((x) => x.accountId)).toContain(X.meals2);
 
