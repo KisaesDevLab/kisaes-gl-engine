@@ -224,6 +224,17 @@ describe('Rivera golden (rivera_expected.json)', () => {
     expect(r.trace.find((t) => t.id === 'federal_total')!.amount).toBe(String(expected['base']!['federal_total']));
   });
 
+  it('QA D7: regular tax carries one trace-only row per bracket reached; they add up to the regular tax exactly', () => {
+    const r = run(BASE);
+    const rows = r.trace.filter((t) => t.id.startsWith('regular_tax.bracket.'));
+    expect(rows.map((t) => t.id)).toEqual(['regular_tax.bracket.1', 'regular_tax.bracket.2', 'regular_tax.bracket.3']);
+    expect(rows.map((t) => t.marginalRate)).toEqual(['0.1', '0.12', '0.22']);
+    for (const t of rows) expect(t).toMatchObject({ step: 'regular_tax', source: 'parameter' });
+    expect(dSum(rows.map((t) => t.exact))).toBe(r.trace.find((t) => t.id === 'regular_tax')!.exact);
+    // Trace only: the federal total is still the oracle's.
+    expect(r.trace.find((t) => t.id === 'federal_total')!.amount).toBe(String(expected['base']!['federal_total']));
+  });
+
   it('Phase 7: Additional Medicare and NIIT are computed (0 for Rivera), loss limits applied, no stub warnings', () => {
     const r = run(BASE);
     expect(r.additionalMedicareTax).toBe('0');

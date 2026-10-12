@@ -21,6 +21,7 @@ import type { JurisdictionEstimate } from './engine/vouchers.js';
 import { NONRESIDENT_FLAT_RATE_LABEL } from './engine/state-types.js';
 import { dIsZero, dRound, dRoundDollars, dSum } from './decimal.js';
 import { DEFAULT_DISCLAIMER_TEXT } from '../schemas/tax-estimator-years.js';
+import { presentEngineText } from './format-text.js';
 
 /**
  * Shipped default disclaimer (MODULE.md "License and gating"); firms may replace it (D4).
@@ -140,10 +141,11 @@ const DOUBLED_PREFIX = /^([A-Z]{2}|[A-Za-z]+): (?:\1: )+/;
  * prior-year harbor fraction reads as a percent, and a doubled "AR: AR: " prefix collapses.
  */
 export function tidyNote(text: string): string {
-  return text
+  // QA D19: plus the shared presentation (comparison words, grouped numbers).
+  return presentEngineText(text
     .replace(DOUBLED_PREFIX, '$1: ')
     .replace(HARBOR_FRACTION, (_m, f: string) => `harbor is ${formatPct(f)} of prior-year tax`)
-    .replace(LONG_DECIMAL, (m) => dRound(m, 2));
+    .replace(LONG_DECIMAL, (m) => dRound(m, 2)));
 }
 
 /** Drop a leading "<label>: " the engine already put on a message shown under that label. */
@@ -165,7 +167,7 @@ function rateModeSection(r: EstimateResultDTO): AssumptionSectionDTO {
   if (rt.method === 'effective') {
     items.push({ label: 'Federal income tax', detail: `Effective-rate override: ${formatPct(rt.effectiveRate)} of taxable income ${formatDollars(rt.taxableIncome)} (brackets not used).`, badge: 'verify' });
   } else {
-    items.push({ label: 'Federal income tax', detail: `${r.taxYear} brackets for ${r.filingStatus.toUpperCase()}${rt.worksheet ? ' with the qualified dividends and capital gain worksheet' : ''}; marginal ordinary rate ${formatPct(rt.marginalOrdinaryRate)}, effective ${formatPct(rt.effectiveRate)}.` });
+    items.push({ label: 'Federal income tax', detail: `${r.taxYear} brackets for ${r.filingStatus.toUpperCase()}${rt.worksheet ? ' with the qualified dividends and capital gain worksheet' : ''}; marginal ordinary rate ${formatPct(rt.marginalOrdinaryRate)}, effective ${formatPct(dRound(rt.effectiveRate, 4))}.` });
   }
   for (const row of r.state?.rows ?? []) {
     items.push({ label: `${row.state} (${row.residency})`, detail: `User-entered effective rate ${formatPct(row.effectiveRate)} on ${row.method === 'nonresident_flat' ? 'income sourced to the state' : `base "${row.base}"`}.` });

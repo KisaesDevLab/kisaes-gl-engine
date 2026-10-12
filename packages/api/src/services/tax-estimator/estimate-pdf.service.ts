@@ -12,7 +12,7 @@
 
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
 import {
-  buildEstimateAssumptions, DEFAULT_DISCLAIMER_TEXT,
+  buildEstimateAssumptions, DEFAULT_DISCLAIMER_TEXT, presentEngineText, presentWarningMessage, recommendedHarborRule,
   type AssumptionBadge, type EstimateAssumptionsDTO, type EstimateResultDTO, type SnapshotReason,
 } from '@kis-books/shared';
 
@@ -273,7 +273,9 @@ export async function renderEstimatePdf(r: EstimateResultDTO, opts: EstimatePdfO
   for (const e of all) {
     const sh = e.safeHarbor;
     w.ensure(3 * LINE);
-    w.text(`${e.jurisdiction === 'federal' ? 'Federal' : e.jurisdiction}${mark(e.verify, ' (verify)')} - recommended: ${sh.appliedRule}`, MARGIN, 9, { bold: true });
+    // QA D8 / D19: name the recommended rule in words (under "lesser of", the lower available amount).
+    const rec = recommendedHarborRule(sh) === 'prior_year' ? 'prior-year rule' : 'current-year rule';
+    w.text(`${e.jurisdiction === 'federal' ? 'Federal' : e.jurisdiction}${mark(e.verify, ' (verify)')} - recommended: ${rec}${sh.appliedRule === 'lesser_of' ? ' (lesser of the two)' : ''}`, MARGIN, 9, { bold: true });
     w.y -= LINE;
     w.row([`  ${pctShort(sh.currentYear.pct)}% of current-year tax`, usd(sh.currentYear.amount)], cols);
     w.row([`  ${sh.priorYear.pct == null ? 'Prior-year' : `${pctShort(sh.priorYear.pct)}% of prior-year`} tax${sh.priorYear.available ? '' : ' (unavailable)'}`, sh.priorYear.amount == null ? 'n/a' : usd(sh.priorYear.amount)], cols);
@@ -286,7 +288,7 @@ export async function renderEstimatePdf(r: EstimateResultDTO, opts: EstimatePdfO
     w.ensure(4 * LINE);
     w.text(`${e.jurisdiction === 'federal' ? 'Federal' : e.jurisdiction}`, MARGIN, 9, { bold: true });
     w.y -= LINE;
-    if (!e.estimatesRequired || e.installments.length === 0) { w.wrap(`No estimated payments required: ${e.estimatesRequiredReason}`, 8.5, 12, MUTED); continue; }
+    if (!e.estimatesRequired || e.installments.length === 0) { w.wrap(`No estimated payments required: ${presentEngineText(e.estimatesRequiredReason)}`, 8.5, 12, MUTED); continue; }
     w.row(['  Installment / due', 'Regular', 'Sch AI', 'Paid', 'Penalty', 'Pay now'], vc, { bold: true, size: 8 });
     const penalties = e.penalty?.installments ?? [];
     for (const i of e.installments) {
@@ -325,7 +327,7 @@ export async function renderEstimatePdf(r: EstimateResultDTO, opts: EstimatePdfO
   // Warnings (preparer only: readiness codes and engine notes are review items, R4-04)
   if (!client && r.warnings.length > 0) {
     w.heading('Warnings');
-    for (const wn of r.warnings.slice(0, 40)) w.wrap(`- ${wn.message}`, 8.5);
+    for (const wn of r.warnings.slice(0, 40)) w.wrap(`- ${presentWarningMessage(wn)}`, 8.5);
   }
 
   renderAssumptions(w, assumptions, audience);

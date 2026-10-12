@@ -794,7 +794,7 @@ export async function computeEstimateWithInputs(
  * reached, closed and frozen by snapshots.
  */
 export async function getEstimateReadiness(
-  scope: FirmScope, taxpayerId: string, taxYear: number, opts: { today?: Date } = {},
+  scope: FirmScope, taxpayerId: string, taxYear: number, opts: { today?: Date; throughMonth?: string } = {},
 ): Promise<EstimateReadinessDTO> {
   await loadTaxpayerForFirm(scope, taxpayerId);
   const today = opts.today ?? new Date();
@@ -819,7 +819,8 @@ export async function getEstimateReadiness(
       continue;
     }
     try {
-      const readiness = await getReadiness(scope, { tenantId: c.tenantId, companyId: c.companyId, taxYear }, { today });
+      // QA D20: the range the summary is showing ("Actuals through"), else each entity's default.
+      const readiness = await getReadiness(scope, { tenantId: c.tenantId, companyId: c.companyId, taxYear, throughMonth: opts.throughMonth }, { today });
       warnings.push(...readiness.warnings.map((w) => ({ ...w, details: { ...(w.details ?? {}), companyId: c.companyId } })));
       entities.push({ tenantId: c.tenantId, companyId: c.companyId, companyName: c.companyName, linkCount: c.count, inScope: true, readiness, error: null });
     } catch (err) {

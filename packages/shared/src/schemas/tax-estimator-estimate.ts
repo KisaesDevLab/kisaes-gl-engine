@@ -59,6 +59,9 @@ export const paymentsQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
+/** GET .../readiness query (QA D20: readiness for the month the summary shows). */
+export const estimateReadinessQuerySchema = z.object({ throughMonth: ym.optional() });
+
 /** POST .../estimate body. */
 export const computeEstimateSchema = z.object({
   /** Range end for every linked entity ('YYYY-MM'); default = each entity's last closed / complete month. */

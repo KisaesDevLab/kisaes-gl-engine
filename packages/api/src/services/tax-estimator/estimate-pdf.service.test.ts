@@ -78,6 +78,16 @@ describe('renderEstimatePdf', () => {
     expect(text.split('\n')).toEqual(expect.arrayContaining(['Paragraph one ends here.', 'Paragraph two starts here.', 'Third.']));
   });
 
+  it('QA D8 / D19: the recommended rule is named in words and warnings print formatted, never as raw JSON or enum names', async () => {
+    const value = [{ from: '2026-01-01', to: '2026-03-31', rate: '0.07' }];
+    const withWarn = { ...dto, warnings: [...dto.warnings, { code: 'TE_PARAM_UNVERIFIED', severity: 'warning' as const, message: `Tax parameter 'penalty.underpayment_rate' is unverified (not CPA-verified); the estimate uses its current value ${JSON.stringify(value)}.`, details: { key: 'penalty.underpayment_rate', status: 'unverified', value } }] };
+    const text = pdfText(await renderEstimatePdf(withWarn, { taxpayerName: 'Rivera' }));
+    expect(text).not.toContain('recommended: lesser_of');
+    expect(text).toMatch(/recommended: (current|prior)-year rule/);
+    expect(text).toContain('a table of 1 row');
+    expect(text).not.toContain('"rate"');
+  });
+
   it('R4-04: the client audience drops warnings, readiness, unverified parameters, engine version and verify markers', async () => {
     const preparer = pdfText(await renderEstimatePdf(dto, { taxpayerName: 'Rivera' }));
     expect(preparer).toContain('engine x');

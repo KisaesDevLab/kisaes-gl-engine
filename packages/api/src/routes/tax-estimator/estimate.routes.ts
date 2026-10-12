@@ -4,7 +4,7 @@
 
 import { Router, type Request } from 'express';
 import {
-  yearParamsSchema, estimateParamsSchema, paymentIdParamsSchema, computeEstimateSchema, createPaymentSchema, updatePaymentSchema,
+  yearParamsSchema, estimateReadinessQuerySchema, estimateParamsSchema, paymentIdParamsSchema, computeEstimateSchema, createPaymentSchema, updatePaymentSchema,
   paymentsQuerySchema, captureSchAiSnapshotsSchema, createSnapshotSchema, snapshotIdParamsSchema, snapshotsQuerySchema,
 } from '@kis-books/shared';
 import { getScope, requireTaxEstimatorWrite } from '../../middleware/tax-estimator-scope.js';
@@ -31,7 +31,8 @@ estimateRouter.post('/taxpayers/:id/years/:taxYear/scenarios/:scenarioId/estimat
 });
 estimateRouter.get('/taxpayers/:id/years/:taxYear/readiness', async (req, res) => {
   const { id, taxYear } = yearParamsSchema.parse(req.params);
-  res.json({ data: await estimateService.getEstimateReadiness(getScope(req), id, taxYear) });
+  const { throughMonth } = estimateReadinessQuerySchema.parse(req.query);
+  res.json({ data: await estimateService.getEstimateReadiness(getScope(req), id, taxYear, { throughMonth }) });
 });
 
 // ── payment ledger ──

@@ -12,6 +12,7 @@ export * from './parameter-api.js';
 export * from './taxpayers-api.js';
 export * from './stateRuleKeys.js';
 export * from './installment-shape.js';
+export * from './format-text.js';
 export * from './dates.js';
 export * from './engine/index.js';
 export * from './state-rules-api.js';

@@ -34,6 +34,36 @@ export function bracketTax(income: Dec, brackets: ReadonlyArray<BracketRow>): De
   return tax;
 }
 
+/** One bracket's slice of `income` (trace only; the sum of `tax` equals bracketTax). */
+export interface BracketSlice { index: number; lower: Dec; upper: Dec | null; rate: Dec; taxable: Dec; tax: Dec }
+
+/** The brackets `income` reaches, bottom up — the same walk as bracketTax, kept for the trace (QA D7). */
+export function bracketSlices(income: Dec, brackets: ReadonlyArray<BracketRow>): BracketSlice[] {
+  const out: BracketSlice[] = [];
+  if (!dIsPos(income)) return out;
+  let lower: Dec = ZERO;
+  for (const [i, b] of brackets.entries()) {
+    if (dCmp(income, lower) <= 0) break;
+    const top = b.upper == null ? income : dMin(b.upper, income);
+    const taxable = dSub(top, lower);
+    out.push({ index: i + 1, lower, upper: b.upper ?? null, rate: b.rate, taxable, tax: dMul(taxable, b.rate) });
+    if (b.upper == null || dCmp(income, b.upper) <= 0) break;
+    lower = b.upper;
+  }
+  return out;
+}
+
+/** Trace-only rows, one per bracket reached (QA D7). They do not change any figure. */
+function traceBrackets(ctx: EngineContext, idPrefix: string, income: Dec, brackets: ReadonlyArray<BracketRow>, bracketsKey: string): void {
+  for (const s of bracketSlices(income, brackets)) {
+    ctx.trace.add({
+      step: STEP_REGULAR_TAX, id: `${idPrefix}.bracket.${s.index}`,
+      label: `Bracket ${s.index}: ${s.lower} to ${s.upper ?? 'no limit'} at ${s.rate}`,
+      exact: s.tax, source: 'parameter', formula: `${s.taxable} × ${s.rate}`, parameterKeys: [bracketsKey], marginalRate: s.rate,
+    });
+  }
+}
+
 /** Rate of the bracket the last dollar of `income` falls in (bottom rate for ≤ 0). */
 export function marginalBracketRate(income: Dec, brackets: ReadonlyArray<BracketRow>): Dec {
   for (const b of brackets) {
@@ -150,6 +180,7 @@ export function computeRegularTax(input: RegularTaxInput, ctx: EngineContext): R
   if (!hasPreferential) {
     const tax = bracketTax(positiveTi, brackets);
     const marginal = marginalBracketRate(positiveTi, brackets);
+    traceBrackets(ctx, 'regular_tax', positiveTi, brackets, bracketsKey);
     ctx.trace.add({ step: STEP_REGULAR_TAX, id: 'regular_tax', label: 'Regular tax (ordinary brackets)', exact: tax, source: 'parameter', formula: `bracket tax on ${positiveTi}`, parameterKeys: [bracketsKey], marginalRate: marginal });
     return { method: 'brackets', taxableIncome: ti, tax, marginalOrdinaryRate: marginal, marginalCapitalGainRate: ZERO, effectiveRate: dIsPos(positiveTi) ? dRoundRate(dDiv(tax, positiveTi)) : ZERO, worksheet: null };
   }
@@ -164,6 +195,7 @@ export function computeRegularTax(input: RegularTaxInput, ctx: EngineContext): R
   const marginalOrdinaryRate = marginalBracketRate(w.ordinaryPortion, brackets);
   const marginalCapitalGainRate = dIsPos(w.taxedAtTwenty) ? rates[rates.length - 1]! : dIsPos(w.taxedAtFifteen) ? rates[1]! : rates[0]!;
   const keys = [bracketsKey, breakpointsKey, 'ltcg.rates', 'unrecaptured_1250_rate', 'collectibles_rate'];
+  traceBrackets(ctx, 'regular_tax.ordinary', w.ordinaryPortion, brackets, bracketsKey);
   ctx.trace.add({ step: STEP_REGULAR_TAX, id: 'regular_tax.ordinary', label: 'Tax on ordinary income (worksheet)', exact: w.ordinaryTax, source: 'parameter', formula: `bracket tax on ${w.ordinaryPortion}`, parameterKeys: [bracketsKey], marginalRate: marginalOrdinaryRate });
   ctx.trace.add({ step: STEP_REGULAR_TAX, id: 'regular_tax.preferential', label: 'Tax on qualified dividends and long-term gains (0 / 15 / 20 / 25 / 28)', exact: w.preferentialTax, source: 'parameter', formula: `${w.taxedAtZero} @ ${rates[0]} + ${w.taxedAtFifteen} @ ${rates[1]} + ${w.taxedAtTwenty} @ ${rates[rates.length - 1]} + ${w.taxedAtTwentyFive} @ ${rate25} + ${w.taxedAtTwentyEight} @ ${rate28}`, parameterKeys: keys, marginalRate: marginalCapitalGainRate });
   ctx.trace.add({ step: STEP_REGULAR_TAX, id: 'regular_tax', label: dIsZero(dSub(tax, w.worksheetTax)) ? 'Regular tax (QD / LTCG worksheet)' : 'Regular tax (all-ordinary, lower than the worksheet)', exact: tax, source: 'parameter', formula: `min(worksheet ${w.worksheetTax}, all ordinary ${w.allOrdinaryTax})`, parameterKeys: keys, marginalRate: marginalOrdinaryRate });
