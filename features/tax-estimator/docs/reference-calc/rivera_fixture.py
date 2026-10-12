@@ -25,9 +25,27 @@ v2.1 → v2.2 (2026-10-11, repo adaptation review, both logged in OPEN-QUESTIONS
     or the return due date (Apr 15, 2027). The Q3 shortfall is cured by the
     Jan 15 payment, so the fixture's penalty is unchanged (~$11) — but it is
     now derived from the right rule.
+
+v2.2 → v2.3 (2026-10-12, R2 O-1 / OPEN-QUESTIONS Q35, oracle-verifier):
+  * penalty_schedule priced every accrual leg at the rate in force on the leg's
+    START date and never split at a quarter boundary (all legs happened to be
+    7%, so the $11 agreed by accident). It now follows the Form 2210 Part III
+    Section B worksheet: Rate Period 1 counts "days from the due date to the
+    date paid or 6/30, whichever is earlier"; Rate Period 2 counts "days from
+    6/30 [the date on line 5] to the date paid or 9/30"; Rate Period 4 counts
+    "days from 12/31 to the date paid or 4/15" ÷ the NEW year's day count
+    (Instructions for Form 2210 (2025), Worksheet for Part III, Section B,
+    lines 2–13). So the day that ENDS on Jul 1 (Jun 30 → Jul 1) already carries
+    the Q3 rate, and the day ending Jan 1 carries the new year's rate and 365/366
+    — the engine's R2-09 convention. Legs are split at every rate-period end
+    date and at Dec 31; each leg is balance × rate × days ÷ days-in-year.
+  * Accrual is capped at the return due date (a payment dated later still
+    clears the balance but accrues nothing after Apr 15, 2027).
+  Rivera's Q3 leg (Sep 15 → Jan 15) is 7% throughout both years, so the $11 is
+  unchanged; the rows now carry the per-leg `segments`.
 """
 import json, math
-from datetime import date
+from datetime import date, timedelta
 
 P = dict(
   se_nese=0.9235, se_ss=0.124, se_med=0.029, ss_wage_base=184500, se_half=0.5,
@@ -139,14 +157,36 @@ def schedule_ai_column(period_idx, *, schc_books, schc_owner_hi_booked, schc_mea
                 annualized_taxable_income=r(ti_a), annualized_income_tax=r(inc_tax_a), annualized_se_tax=r(se_a),
                 annualized_total_tax=r(total_a), required_cumulative_through_period=r(total_a*pct))
 
+def days_in_year(y):
+    return 366 if (y % 4 == 0 and y % 100 != 0) or y % 400 == 0 else 365
+
+def rate_on(rates, d):
+    for a, b, rt in rates:
+        if a <= d <= b: return rt
+    raise ValueError(f'no underpayment rate for {d}')
+
+def accrue_legs(balance, start, end, rates):
+    """Form 2210 Part III Section B convention: the day start → start+1 is priced at the rate (and year length) in
+    force on start+1, so legs split at every rate-period END date and at Dec 31 (the worksheet's "from 6/30",
+    "from 9/30", "from 12/31" computation starting dates). Returns one dict per leg (balance × rate × days ÷ days-in-year)."""
+    legs = []
+    cuts = sorted({b for _, b, _ in rates if start < b < end} | {date(y, 12, 31) for y in range(start.year, end.year + 1) if start < date(y, 12, 31) < end})
+    s = start
+    for b in cuts + [end]:
+        if b <= s: continue
+        priced = s + timedelta(days=1)                     # every day d → d+1 in [s, b) has d+1 in (s, b], one rate period
+        rt = rate_on(rates, priced); diy = days_in_year(priced.year); days = (b - s).days
+        legs.append(dict(**{'from': s.isoformat(), 'to': b.isoformat()}, days=days, rate=rt, days_in_year=diy, balance=round(balance, 6), amount=round(balance * rt * days / diy, 6)))
+        s = b
+    return legs
+
 def penalty_schedule(required_per_installment, due_dates, withholding_per_q, payments, rates, return_due):
     """§6654 estimate. `payments` = [(date, amount)] estimated-tax payments. Withholding is treated as paid
     evenly on each due date. Every payment is applied to the EARLIEST installment with an unpaid balance.
-    Each installment's unpaid balance accrues at the quarterly rate from its due date to the earlier of
-    the date it is paid down or the return due date. Returns per-installment rows + total penalty."""
+    Each installment's unpaid balance accrues from its due date to the earlier of the date it is paid down or
+    the return due date, split into rate legs by `accrue_legs`. Returns per-installment rows + total penalty."""
     n = len(required_per_installment)
     balance = [0.0]*n                       # unpaid balance per installment, created on its due date
-    paid_on_due = [0.0]*n                   # withholding + estimates dated on/before the due date and applied
     events = []                             # (date, kind, amount, idx)
     for i,d in enumerate(due_dates):
         events.append((d, 'due', required_per_installment[i], i))
@@ -155,21 +195,20 @@ def penalty_schedule(required_per_installment, due_dates, withholding_per_q, pay
         events.append((d, 'pay', amt, -1))
     events.append((return_due, 'end', 0, -1))
     events.sort(key=lambda e: (e[0], 0 if e[1]=='due' else 1 if e[1]=='pay' else 2))
-    def rate_on(d):
-        for a,b,rt in rates:
-            if a <= d <= b: return rt
-        raise ValueError(f'no underpayment rate for {d}')
-    penalty = [0.0]*n; last = [None]*n; paid_dates = [None]*n; over = 0.0
+    penalty = [0.0]*n; legs = [[] for _ in range(n)]; last = [None]*n; paid_dates = [None]*n; over = 0.0
     def accrue_to(d):
+        d = min(d, return_due)                                          # nothing accrues after the return due date
         for i in range(n):
             if balance[i] > 0 and last[i] is not None and d > last[i]:
-                penalty[i] += balance[i]*rate_on(last[i])*(d-last[i]).days/365
-            if last[i] is not None: last[i] = d
+                for leg in accrue_legs(balance[i], last[i], d, rates):
+                    legs[i].append(leg); penalty[i] += balance[i] * leg['rate'] * leg['days'] / leg['days_in_year']
+            if last[i] is not None and d > last[i]: last[i] = d
     for d,kind,amt,idx in events:
         accrue_to(d)
         if kind=='due':
             balance[idx] = amt - over; over = 0.0                        # earlier overpayment reduces this installment
             if balance[idx] < 0: over = -balance[idx]; balance[idx] = 0.0
+            if balance[idx] == 0: paid_dates[idx] = d
             last[idx] = d
         elif kind=='pay':
             remaining = amt
@@ -185,59 +224,64 @@ def penalty_schedule(required_per_installment, due_dates, withholding_per_q, pay
     for i in range(n):
         rows.append(dict(q=f"Q{i+1}", due=due_dates[i].isoformat(), required=r(required_per_installment[i]),
                          withholding=r(withholding_per_q), still_unpaid_at_return_due=r(balance[i]),
-                         paid_in_full_on=paid_dates[i].isoformat() if paid_dates[i] else None, penalty=r(penalty[i])))
+                         paid_in_full_on=paid_dates[i].isoformat() if paid_dates[i] else None, penalty=r(penalty[i]),
+                         penalty_exact=round(penalty[i], 6), segments=legs[i]))
     return rows, r(sum(penalty))
 
 # ---------------------------------------------------------------- scenarios
-base_in = dict(schc_books=115400, schc_owner_hi_booked=10800, schc_meals_nd=1800, scorp_k1=40000, wages=54000,
-               lp_rental=8000, interest=2400, sep=15000, sehi=10800, ar_source=8000)
-res = {}
-res['base'] = calc('Base', **base_in)
-res['truck'] = calc('Buy truck in December', **{**base_in, 'schc_books':115400-60000})
-extra=18000; fica=extra*0.0765
-res['raise'] = calc("Raise Maria's wages", **{**base_in, 'wages':72000, 'scorp_k1':40000-(extra+fica)*0.5})
+def main():
+    base_in = dict(schc_books=115400, schc_owner_hi_booked=10800, schc_meals_nd=1800, scorp_k1=40000, wages=54000,
+                   lp_rental=8000, interest=2400, sep=15000, sehi=10800, ar_source=8000)
+    res = {}
+    res['base'] = calc('Base', **base_in)
+    res['truck'] = calc('Buy truck in December', **{**base_in, 'schc_books':115400-60000})
+    extra=18000; fica=extra*0.0765
+    res['raise'] = calc("Raise Maria's wages", **{**base_in, 'wages':72000, 'scorp_k1':40000-(extra+fica)*0.5})
 
-# Schedule AI, period 3 (Jan 1 – Aug 31): actual YTD = 8/12 of annual because the fixture's income is level.
-p3 = {k: v*8/12 for k,v in base_in.items() if k != 'ar_source'}
-res['schedule_ai_period3'] = schedule_ai_column(2, **p3)
-res['schedule_ai_period3']['note'] = ("Level income, so the annualized column reproduces the full-year figures and the "
-    "required cumulative amount through Q3 (67.5%) equals three regular installments. A seasonal fixture "
-    "(Phase 14) is where Schedule AI lowers the early installments.")
+    # Schedule AI, period 3 (Jan 1 – Aug 31): actual YTD = 8/12 of annual because the fixture's income is level.
+    p3 = {k: v*8/12 for k,v in base_in.items() if k != 'ar_source'}
+    res['schedule_ai_period3'] = schedule_ai_column(2, **p3)
+    res['schedule_ai_period3']['note'] = ("Level income, so the annualized column reproduces the full-year figures and the "
+        "required cumulative amount through Q3 (67.5%) equals three regular installments. A seasonal fixture "
+        "(Phase 14) is where Schedule AI lowers the early installments.")
 
-# Safe harbor + vouchers (federal), firm default = lesser-of; show both
-fed = res['base']['federal_total']; prior_tax=31500; prior_agi=182000
-cur = P['sh_current']*fed; pri = (P['sh_prior_high'] if prior_agi>P['sh_high_agi'] else 1.0)*prior_tax
-req = min(cur,pri); inst=req/4; wh_q=6000/4
-pays = [6600,6600,6000]; carry=0; sched=[]; q4_need_exact=0.0
-due = [d.isoformat() for d in P['installment_due']]
-for i in range(4):
-    need = inst-wh_q-carry
-    paid = pays[i] if i<3 else 0
-    diff = paid-need
-    sched.append(dict(q=f"Q{i+1}", due=due[i], required=r(inst), withholding=r(wh_q), from_estimates=r(need),
-                      paid=paid if i<3 else None, short=r(-diff) if diff<0 and i<3 else 0, over=r(diff) if diff>0 and i<3 else 0))
-    carry = diff if i<3 else 0   # overpayment reduces, shortfall increases, the next installment's need
-    if i==3: q4_need_exact = need
-q4_from_estimates = sched[3]['from_estimates']
-# Payments as dated events; the Q4 voucher is assumed paid in full on its due date.
-payments = list(zip(P['installment_due'][:3], pays)) + [(P['installment_due'][3], q4_need_exact)]
-pen_rows, pen_total = penalty_schedule([inst]*4, P['installment_due'], wh_q, payments, P['underpayment_rates'], P['return_due'])
-res['safe_harbor'] = dict(current_90=r(cur), prior_110=r(pri), required_lesser_of=r(req), installment=r(inst),
-                          withholding_per_q=r(wh_q), schedule=sched, q4_due_from_estimates=q4_from_estimates,
-                          penalty_by_installment=pen_rows, penalty_total_if_q4_paid_on_time=pen_total,
-                          penalty_rule=("Each installment's unpaid balance accrues at the quarterly §6654 rate from its due date to the "
-                                        "earlier of the date it is paid (payments applied to the earliest unpaid installment) or the "
-                                        "return due date; withholding counted evenly on each due date."))
-# Consistency check: level income => Schedule AI cumulative through Q3 == 3 regular installments (within rounding)
-assert abs(res['schedule_ai_period3']['required_cumulative_through_period'] - 3*inst) <= 2, \
-    (res['schedule_ai_period3']['required_cumulative_through_period'], 3*inst)
+    # Safe harbor + vouchers (federal), firm default = lesser-of; show both
+    fed = res['base']['federal_total']; prior_tax=31500; prior_agi=182000
+    cur = P['sh_current']*fed; pri = (P['sh_prior_high'] if prior_agi>P['sh_high_agi'] else 1.0)*prior_tax
+    req = min(cur,pri); inst=req/4; wh_q=6000/4
+    pays = [6600,6600,6000]; carry=0; sched=[]; q4_need_exact=0.0
+    due = [d.isoformat() for d in P['installment_due']]
+    for i in range(4):
+        need = inst-wh_q-carry
+        paid = pays[i] if i<3 else 0
+        diff = paid-need
+        sched.append(dict(q=f"Q{i+1}", due=due[i], required=r(inst), withholding=r(wh_q), from_estimates=r(need),
+                          paid=paid if i<3 else None, short=r(-diff) if diff<0 and i<3 else 0, over=r(diff) if diff>0 and i<3 else 0))
+        carry = diff if i<3 else 0   # overpayment reduces, shortfall increases, the next installment's need
+        if i==3: q4_need_exact = need
+    q4_from_estimates = sched[3]['from_estimates']
+    # Payments as dated events; the Q4 voucher is assumed paid in full on its due date.
+    payments = list(zip(P['installment_due'][:3], pays)) + [(P['installment_due'][3], q4_need_exact)]
+    pen_rows, pen_total = penalty_schedule([inst]*4, P['installment_due'], wh_q, payments, P['underpayment_rates'], P['return_due'])
+    res['safe_harbor'] = dict(current_90=r(cur), prior_110=r(pri), required_lesser_of=r(req), installment=r(inst),
+                              withholding_per_q=r(wh_q), schedule=sched, q4_due_from_estimates=q4_from_estimates,
+                              penalty_by_installment=pen_rows, penalty_total_if_q4_paid_on_time=pen_total,
+                              penalty_rule=("Each installment's unpaid balance accrues at the quarterly §6654 rate from its due date to the "
+                                            "earlier of the date it is paid (payments applied to the earliest unpaid installment) or the "
+                                            "return due date; withholding counted evenly on each due date."))
+    # Consistency check: level income => Schedule AI cumulative through Q3 == 3 regular installments (within rounding)
+    assert abs(res['schedule_ai_period3']['required_cumulative_through_period'] - 3*inst) <= 2, \
+        (res['schedule_ai_period3']['required_cumulative_through_period'], 3*inst)
 
-# Missouri estimate (state rules: 90% current or 100% prior; threshold $100 [VERIFY])
-mo = res['base']['mo']; mo_req=min(0.9*mo, 7050); mo_wh=2000
-res['missouri'] = dict(current_90=r(0.9*mo), prior_100=7050, required=r(mo_req), withholding=mo_wh,
-                       per_installment_from_estimates=r((mo_req-mo_wh)/4))
-res['truck_delta'] = res['base']['total']-res['truck']['total']
-res['raise_delta'] = res['raise']['total']-res['base']['total']
-print(json.dumps(res, indent=2))
-import os
-json.dump(res, open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'rivera_expected.json'),'w'), indent=2)
+    # Missouri estimate (state rules: 90% current or 100% prior; threshold $100 [VERIFY])
+    mo = res['base']['mo']; mo_req=min(0.9*mo, 7050); mo_wh=2000
+    res['missouri'] = dict(current_90=r(0.9*mo), prior_100=7050, required=r(mo_req), withholding=mo_wh,
+                           per_installment_from_estimates=r((mo_req-mo_wh)/4))
+    res['truck_delta'] = res['base']['total']-res['truck']['total']
+    res['raise_delta'] = res['raise']['total']-res['base']['total']
+    print(json.dumps(res, indent=2))
+    import os
+    json.dump(res, open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'rivera_expected.json'),'w'), indent=2)
+
+if __name__ == '__main__':
+    main()

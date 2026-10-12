@@ -146,7 +146,9 @@
         "withholding": 1500,
         "still_unpaid_at_return_due": 0,
         "paid_in_full_on": "2026-04-15",
-        "penalty": 0
+        "penalty": 0,
+        "penalty_exact": 0.0,
+        "segments": []
       },
       {
         "q": "Q2",
@@ -155,7 +157,9 @@
         "withholding": 1500,
         "still_unpaid_at_return_due": 0,
         "paid_in_full_on": "2026-06-15",
-        "penalty": 0
+        "penalty": 0,
+        "penalty_exact": 0.0,
+        "segments": []
       },
       {
         "q": "Q3",
@@ -164,7 +168,37 @@
         "withholding": 1500,
         "still_unpaid_at_return_due": 0,
         "paid_in_full_on": "2027-01-15",
-        "penalty": 11
+        "penalty": 11,
+        "penalty_exact": 11.337727,
+        "segments": [
+          {
+            "from": "2026-09-15",
+            "to": "2026-09-30",
+            "days": 15,
+            "rate": 0.07,
+            "days_in_year": 365,
+            "balance": 484.575,
+            "amount": 1.393983
+          },
+          {
+            "from": "2026-09-30",
+            "to": "2026-12-31",
+            "days": 92,
+            "rate": 0.07,
+            "days_in_year": 365,
+            "balance": 484.575,
+            "amount": 8.549762
+          },
+          {
+            "from": "2026-12-31",
+            "to": "2027-01-15",
+            "days": 15,
+            "rate": 0.07,
+            "days_in_year": 365,
+            "balance": 484.575,
+            "amount": 1.393983
+          }
+        ]
       },
       {
         "q": "Q4",
@@ -173,7 +207,9 @@
         "withholding": 1500,
         "still_unpaid_at_return_due": 0,
         "paid_in_full_on": "2027-01-15",
-        "penalty": 0
+        "penalty": 0,
+        "penalty_exact": 0.0,
+        "segments": []
       }
     ],
     "penalty_total_if_q4_paid_on_time": 11,
