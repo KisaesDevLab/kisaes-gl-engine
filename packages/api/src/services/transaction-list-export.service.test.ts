@@ -75,6 +75,15 @@ describe('deriveDebitCredit', () => {
   });
 });
 
+describe('tag separator', () => {
+  it('joins several tags with "; " (shared by GL and Transactions exports)', async () => {
+    const { joinTagNames, TAG_SEPARATOR } = await import('./report-export.service.js');
+    expect(TAG_SEPARATOR).toBe('; ');
+    expect(joinTagNames(['East', 'West'])).toBe('East; West');
+    expect(joinTagNames(null)).toBe('');
+  });
+});
+
 describe('toTransactionListCsv', () => {
   it('writes RFC 4180 records with the formula guard and plain 2-decimal money', () => {
     const csv = svc.toTransactionListCsv(sample());

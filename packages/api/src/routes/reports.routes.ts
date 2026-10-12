@@ -511,8 +511,8 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
     // Explicit column widths so the Date column doesn't expand to fit
     // the longest section-header label. The Description column is the
     // only flex column — it takes the remaining horizontal space. Tag
-    // (the line's tag, else its transaction's — buildGeneralLedger's
-    // tagLabel) wraps inside its width; the fixed columns each gave up a
+    // (the line's own tag — buildGeneralLedger's tagLabel) wraps inside
+    // its width; the fixed columns each gave up a
     // little (Name 40px) so Description keeps ~150px on landscape letter.
     const columns: ExportColumn[] = [
       { key: 'date', label: 'Date', width: '68px' },

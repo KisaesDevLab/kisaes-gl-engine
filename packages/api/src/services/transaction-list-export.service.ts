@@ -13,7 +13,7 @@
 // Description | Account / Category | Tag | Debit | Credit (no running
 // balance), then a totals row. CSV has Tag after Credit and adds Status.
 // Tag is the same value in both: the distinct tag names on the
-// transaction's lines, joined with '; '.
+// transaction's lines, joined with '; ' (report-export TAG_SEPARATOR).
 //
 // Debit / Credit — the same rules the list screen uses:
 //   - Void transactions are reversed, so they show 0 / 0 (and add nothing
@@ -34,7 +34,7 @@ import { PDFDocument } from 'pdf-lib';
 import { TXN_TYPE_LABELS, formatIsoUS } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import * as ledger from './ledger.service.js';
-import { escapeHtml, toPdf, toReportHtml } from './report-export.service.js';
+import { escapeHtml, joinTagNames, toPdf, toReportHtml } from './report-export.service.js';
 import { toCsvRow } from './export.service.js';
 import { stampPageFooter } from './pdf-merge.util.js';
 import { safeTimeZone } from './transaction-report.service.js';
@@ -203,7 +203,7 @@ export async function buildTransactionListExport(
       category: cats.length === 0 ? '' : cats.length === 1 ? cats[0]! : 'Split',
       debit: isVoid || !debit.isZero() ? debit : null,
       credit: isVoid || !credit.isZero() ? credit : null,
-      tag: tagsOnLines.join('; '),
+      tag: joinTagNames(tagsOnLines),
       status: t.status ?? '',
     };
   });

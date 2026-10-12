@@ -35,6 +35,13 @@ export function neutralizeFormula(s: string): string {
   return s;
 }
 
+/** How several tag names print in one cell, everywhere (GL and
+ *  Transactions list, CSV and PDF): semicolon + space. */
+export const TAG_SEPARATOR = '; ';
+export function joinTagNames(names: readonly string[] | null | undefined): string {
+  return (names ?? []).join(TAG_SEPARATOR);
+}
+
 export function toCsv(data: Record<string, unknown>[], columns: Array<{ key: string; label: string }>): string {
   const header = columns.map((c) => `"${neutralizeFormula(c.label).replace(/"/g, '""')}"`).join(',');
   const rows = data.map((row) =>

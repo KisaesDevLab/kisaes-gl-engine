@@ -4,13 +4,13 @@
 
 // General Ledger "Tag" column (GET /reports/general-ledger).
 // Guards:
-//   - each line carries tagLabel: its OWN tag (tagSource 'line'), else its
-//     transaction's tags — the distinct tags on the transaction's other
-//     lines plus header tags in transaction_tags — sorted, ', '-joined
-//     (tagSource 'transaction'); '' / null when neither
+//   - each line carries tagLabel = its OWN tag only; '' when the line is
+//     untagged, even if other lines / the transaction header are tagged
+//     (no transaction-level fallback — matches the line-level filter)
 //   - tenant isolation: a foreign tenant's tag or junction row never
 //     surfaces on this tenant's lines
-//   - the line-level tag filter is unchanged (only lines carrying the tag)
+//   - filter parity: the tag filter returns exactly the lines whose
+//     Tag cell shows that tag
 //   - cash basis carries the column too
 //   - CSV has a Tag column between Description and Debit
 //   - PDF (real render, where Chromium exists) prints the TAG header and
@@ -75,7 +75,7 @@ function get(path: string): Promise<{ status: number; contentType: string; body:
   });
 }
 
-interface GLLine { description: string; debit: number; credit: number; tagId: string | null; tagName: string | null; tagLabel: string; tagSource: 'line' | 'transaction' | null }
+interface GLLine { description: string; debit: number; credit: number; tagId: string | null; tagName: string | null; tagLabel: string }
 interface GLAcct { name: string; lines: GLLine[] }
 
 async function gl(qs = ''): Promise<GLAcct[]> {
@@ -84,10 +84,10 @@ async function gl(qs = ''): Promise<GLAcct[]> {
   return (JSON.parse(r.body.toString('utf8')) as { accounts: GLAcct[] }).accounts;
 }
 
-/** "<account> | <description>" → [tagLabel, tagSource] for every line. */
-function labels(accts: GLAcct[]): Record<string, [string, string | null]> {
-  const out: Record<string, [string, string | null]> = {};
-  for (const a of accts) for (const l of a.lines) out[`${a.name} | ${l.description}`] = [l.tagLabel, l.tagSource];
+/** "<account> | <description>" → tagLabel for every line. */
+function labels(accts: GLAcct[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const a of accts) for (const l of a.lines) out[`${a.name} | ${l.description}`] = l.tagLabel;
   return out;
 }
 
@@ -163,42 +163,43 @@ afterAll(async () => {
 });
 
 describe('GET /reports/general-ledger — Tag column', () => {
-  it('uses the line tag, else the transaction tags (sorted, comma-joined), else empty', async () => {
+  it('shows each line’s OWN tag; the untagged side of a tagged transaction is blank', async () => {
     const l = labels(await gl());
-    expect(l['GLT Rent | T1 rent']).toEqual(['East Region', 'line']);
-    expect(l['GLT Cash | T1 cash']).toEqual(['East Region', 'transaction']);
-    expect(l['GLT Rent | T2 rent west']).toEqual(['West', 'line']);
-    expect(l['GLT Rent | T2 rent east']).toEqual(['East Region', 'line']);
-    expect(l['GLT Cash | T2 cash']).toEqual(['East Region, West', 'transaction']);
-    expect(l['GLT Rent | T3 rent']).toEqual(['Header Only', 'transaction']);
-    expect(l['GLT Cash | T3 cash']).toEqual(['Header Only', 'transaction']);
+    expect(l['GLT Rent | T1 rent']).toBe('East Region');
+    expect(l['GLT Cash | T1 cash']).toBe('');
+    expect(l['GLT Rent | T2 rent west']).toBe('West');
+    expect(l['GLT Rent | T2 rent east']).toBe('East Region');
+    expect(l['GLT Cash | T2 cash']).toBe('');
+    // Header-only (transaction_tags) tags do not show on lines.
+    expect(l['GLT Rent | T3 rent']).toBe('');
+    expect(l['GLT Cash | T3 cash']).toBe('');
   });
 
-  it('keeps tagId / tagName as the line’s own tag (unchanged contract)', async () => {
-    const cash = (await gl()).find((a) => a.name === 'GLT Cash')!;
-    const t1 = cash.lines.find((x) => x.description === 'T1 cash')!;
-    expect(t1.tagId).toBeNull();
-    expect(t1.tagName).toBeNull();
+  it('tagLabel agrees with tagId / tagName (the line’s own tag)', async () => {
+    for (const a of await gl()) for (const x of a.lines) expect(x.tagLabel).toBe(x.tagName ?? '');
   });
 
   it('never surfaces another tenant’s tag or junction row', async () => {
     const accts = await gl();
     const l = labels(accts);
-    expect(l['GLT Rent | T4 rent']).toEqual(['', null]);
-    expect(l['GLT Cash | T4 cash']).toEqual(['', null]);
+    expect(l['GLT Rent | T4 rent']).toBe('');
+    expect(l['GLT Cash | T4 cash']).toBe('');
     expect(JSON.stringify(accts)).not.toContain('FOREIGN SECRET TAG');
   });
 
-  it('the tag filter stays line-level: only lines carrying the tag, labelled with it', async () => {
+  it('filter parity: the tag filter returns exactly the lines whose Tag cell shows that tag', async () => {
+    const all = labels(await gl());
+    const shown = Object.keys(all).filter((k) => all[k] === 'East Region').sort();
     const l = labels(await gl(`&tag_id=${eastId}`));
-    expect(Object.keys(l).sort()).toEqual(['GLT Rent | T1 rent', 'GLT Rent | T2 rent east']);
-    expect(Object.values(l)).toEqual([['East Region', 'line'], ['East Region', 'line']]);
+    expect(Object.keys(l).sort()).toEqual(shown);
+    expect(shown).toEqual(['GLT Rent | T1 rent', 'GLT Rent | T2 rent east']);
+    expect(Object.values(l)).toEqual(['East Region', 'East Region']);
   });
 
   it('cash basis carries the column too', async () => {
     const l = labels(await gl('&basis=cash'));
-    expect(l['GLT Cash | T1 cash']).toEqual(['East Region', 'transaction']);
-    expect(l['GLT Rent | T1 rent']).toEqual(['East Region', 'line']);
+    expect(l['GLT Cash | T1 cash']).toBe('');
+    expect(l['GLT Rent | T1 rent']).toBe('East Region');
   });
 
   it('CSV puts Tag between Description and Debit', async () => {
@@ -206,8 +207,10 @@ describe('GET /reports/general-ledger — Tag column', () => {
     expect(r.status).toBe(200);
     const lines = r.body.toString('utf8').split('\n');
     expect(lines[0]).toBe('"Date","Type","Ref","Name","Description","Tag","Debit","Credit","Balance"');
-    const t2 = lines.find((x) => x.includes('"T2 cash"'))!;
-    expect(t2).toContain('"T2 cash","East Region, West","","50.00"');
+    const t2 = lines.find((x) => x.includes('"T2 rent west"'))!;
+    expect(t2).toContain('"T2 rent west","West","30.00",""');
+    const t2c = lines.find((x) => x.includes('"T2 cash"'))!;
+    expect(t2c).toContain('"T2 cash","","","50.00"');
     const t4 = lines.find((x) => x.includes('"T4 cash"'))!;
     expect(t4).toContain('"T4 cash","",""');
     expect(r.body.toString('utf8')).not.toContain('FOREIGN SECRET TAG');
@@ -230,7 +233,8 @@ describe.skipIf(!HAS_CHROME)('GET /reports/general-ledger — Tag column in the 
     const text = (await extractTextLayer(r.body)).map((p) => p.text).join('\n');
     for (const h of ['DESCRIPTION', 'TAG', 'DEBIT', 'CREDIT', 'BALANCE']) expect(text).toContain(h);
     expect(text).toContain('East Region');
-    expect(text).toContain('Header Only');
+    expect(text).toContain('West');
+    expect(text).not.toContain('Header Only');
     expect(text).not.toContain('FOREIGN SECRET TAG');
   }, 60_000);
 });

@@ -125,10 +125,10 @@ tenant's are ignored. Report Packs always include the unfiltered General Ledger.
 
 ### General Ledger Tag Column
 The **General Ledger** has a **Tag** column between Description and Debit, on
-screen and in the CSV, PDF and Report Pack versions. Each line shows its own tag;
-a line with no tag of its own (typically the bank, A/P or A/R side of a tagged
-expense or invoice) shows its transaction's tags instead — shown in gray on
-screen, several joined with commas. Blank = neither the line nor its transaction
-is tagged. The Tag filter is unchanged and line-level: it keeps only lines that
-carry the tag themselves. API: each GL line carries `tagLabel` and `tagSource`
-(`line`, `transaction`, or null); `tagId` / `tagName` remain the line's own tag.
+screen and in the CSV, PDF and Report Pack versions. Each line shows its OWN tag
+only; an untagged line is blank even when other lines of the same transaction
+are tagged (e.g. the bank side of a tagged expense). This matches the Tag filter
+exactly: filtering by a tag keeps just the lines that show it. Several tags in
+one cell (anywhere in reports/exports) are separated by "; ". API: each GL line
+carries `tagLabel` (the line's tag name, '' when untagged) alongside `tagId` /
+`tagName`.
