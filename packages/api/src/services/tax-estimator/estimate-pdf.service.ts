@@ -183,7 +183,9 @@ function renderAssumptions(w: Writer, a: EstimateAssumptionsDTO, audience: Estim
     if (section.items.length === 0) { w.wrap('None.', 8.5, 0, MUTED); continue; }
     for (const item of section.items) {
       const badge = item.badge && !client ? ` [${BADGE_TEXT[item.badge]}]` : '';
-      w.wrap(`${item.label}${badge}: ${item.detail}`, 8.5, 8);
+      // QA D19: through the shared presenter at render time too, so a snapshot frozen with
+      // raw engine text (JSON values, base keys, unformatted money) prints for people.
+      w.wrap(`${item.label}${badge}: ${presentEngineText(item.detail)}`, 8.5, 8);
     }
   }
 }
@@ -226,7 +228,7 @@ export async function renderEstimatePdf(r: EstimateResultDTO, opts: EstimatePdfO
     w.row(['Business', 'Type', 'Path', 'Through'], ec, { bold: true, size: 8 });
     for (const e of r.entities) {
       w.row([e.companyName, (e.entityType ?? 'unknown').replace('_', ' '), e.path === 'c_corp' ? 'entity level' : e.path, e.throughMonth ?? '-'], ec, { size: 8.5 });
-      if (e.path === 'skipped' && e.skippedReason) w.wrap(`Skipped: ${e.skippedReason}`, 8, 12, MUTED);
+      if (e.path === 'skipped' && e.skippedReason) w.wrap(`Skipped: ${presentEngineText(e.skippedReason)}`, 8, 12, MUTED);
     }
   }
 
@@ -260,7 +262,8 @@ export async function renderEstimatePdf(r: EstimateResultDTO, opts: EstimatePdfO
   else {
     for (const s of r.state.rows) {
       const tag = s.residency === 'resident' ? 'resident' : 'nonresident';
-      w.row([`${s.state} (${tag})${mark(s.verify, ' - unverified')}`, usd(s.netTax)], cols);
+      // QA D18: the same review marker as the screen ("Verify"), preparer copy only.
+      w.row([`${s.state} (${tag})${mark(s.verify, ' - verify')}`, usd(s.netTax)], cols);
       if (s.method === 'nonresident_flat') w.wrap('Nonresident: effective-rate estimate; most states compute nonresident tax by ratio of the full return.', 8, 12, MUTED);
       if (num(s.creditForOtherStates) > 0) w.wrap(`Less credit for other-state tax: ${usd(s.creditForOtherStates)}`, 8, 12, MUTED);
     }
@@ -307,7 +310,7 @@ export async function renderEstimatePdf(r: EstimateResultDTO, opts: EstimatePdfO
       : 'Does not meet the gross-income test; the regular quarterly schedule applies.', 9);
     if (fm.qualifies && fm.requiredAnnualPayment) w.row(['  Required annual payment', usd(fm.requiredAnnualPayment.required)], cols, { bold: true });
     for (const inst of fm.qualifies ? fm.installments : []) w.row([`  Installment ${inst.number} due ${inst.dueDate}`, pct(inst.pct, 0)], cols);
-    if (fm.fileAndPayNote) w.wrap(fm.fileAndPayNote, 8, 12, MUTED);
+    if (fm.fileAndPayNote) w.wrap(presentEngineText(fm.fileAndPayNote), 8, 12, MUTED);
   }
 
   // Linked C corporations: entity level, not in the taxpayer totals.

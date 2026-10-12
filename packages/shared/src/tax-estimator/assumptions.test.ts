@@ -151,7 +151,9 @@ describe('buildEstimateAssumptions', () => {
     expect(mi.detail).toBe(STATE_PENALTY_ADDON_NOTES['MI']);
     expect(mi.badge).toBe('estimate_may_differ');
     expect(s.items.some((i) => i.label === 'MO penalty')).toBe(false);
-    expect(text(a, 'state_methods')).toContain('MO resident: Base "federal_agi" $197,550 × 4%; credit for tax paid to other states $312');
+    // QA D19: the base is named in words, not as its key.
+    expect(text(a, 'state_methods')).toContain('MO resident: Base federal AGI $197,550 × 4%; credit for tax paid to other states $312');
+    expect(text(a, 'state_methods')).not.toContain('federal_agi');
   });
 
   it('lists only unverified / provisional parameters and rules, and every readiness warning (warnings first)', () => {
@@ -212,9 +214,9 @@ describe('buildEstimateAssumptions', () => {
     expect(sh).toContain('AR estimates: Not required: estimates are not required');
     expect(sh).not.toMatch(/AR: AR:/);
     const st = text(a, 'state_methods');
-    expect(st).toContain('Tax 311.99 less withholding 0');
+    expect(st).toContain('Tax $311.99 less withholding $0'); // QA D19: money-formatted
     expect(st).not.toMatch(/\d\.\d{3,}/);
-    expect(st.match(/Tax 311\.99 less/g)?.length).toBe(1);
+    expect(st.match(/Tax \$311\.99 less/g)?.length).toBe(1);
     expect(text(a, 'projection')).toContain('books through 2026-06 (requested)');
     expect(text(a, 'projection')).not.toContain('Range end requested explicitly');
     expect(text(a, 'readiness')).toContain('AR: estimates are not required.');
@@ -225,4 +227,21 @@ describe('buildEstimateAssumptions', () => {
     expect(tidyNote('Reg. 1.199A-3(b)(1)(iv) and rate 0.07')).toBe('Reg. 1.199A-3(b)(1)(iv) and rate 0.07');
     expect(tidyNote('ratio 0.666666666667')).toBe('ratio 0.67');
   });
+
+  it('QA D19: gate notes read as money, no double period, structured parameters never dump JSON', () => {
+    const r = riveraLike();
+    const rows = (r.state!.rows as unknown as Array<{ gate: { notes: string[] } }>);
+    rows[0]!.gate.notes = ['Tax 7590.29 less withholding 2000 and credits 0 = 5590.29; threshold 100 (at_least).', 'Underpayment penalty add-ons and caps (where the state has them) are not modelled; the penalty estimate may differ.'];
+    const table = Array.from({ length: 12 }, (_, i) => ({ from: `2026-0${(i % 9) + 1}-01`, to: `2026-0${(i % 9) + 1}-28`, rate: 0.07 }));
+    const withTable = { ...r, parametersUsed: [{ key: 'penalty.underpayment_rate', status: 'unverified', value: table }],
+      warnings: [{ code: 'TE_PARAM_UNVERIFIED', severity: 'warning', message: `Tax parameter 'penalty.underpayment_rate' is unverified (not CPA-verified); the estimate uses its current value ${JSON.stringify(table)}.`, details: { key: 'penalty.underpayment_rate', status: 'unverified', value: table } }] } as unknown as EstimateResultDTO;
+    const a = buildEstimateAssumptions(withTable);
+    const sm = text(a, 'state_methods');
+    expect(sm).toContain('Tax $7,590.29 less withholding $2,000 and credits $0 = $5,590.29; threshold: at least $100');
+    expect(sm).not.toContain('..');
+    expect(text(a, 'parameters')).toContain('a table of 12 rows');
+    expect(text(a, 'readiness')).toContain('a table of 12 rows');
+    for (const id of ['parameters', 'readiness']) expect(text(a, id)).not.toMatch(/[{}"]/);
+  });
 });
+

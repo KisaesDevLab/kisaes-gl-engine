@@ -50,6 +50,14 @@ const COMPARISON_GATE = /\((\w+), threshold (-?\d+(?:\.\d+)?) (more_than|at_leas
 const COMPARISON_WORD = /\b(more_than|at_least)\b/g;
 const DOUBLED_PREFIX_ANY = /^([A-Z]{2}|[A-Za-z]+): (?:\1: )+/;
 const HARBOR_FRACTION_TEXT = /harbor is (\d+(?:\.\d+)?) of prior-year tax/g;
+// QA D19: the state gate note "Tax 7590.29 less withholding 2000 and credits 0 = 5590.29; threshold 100 (at_least)".
+const GATE_MONEY = /(\b(?:Tax|withholding|credits|threshold)|=) (-?\d+(?:\.\d+)?)(?![\d.,]*\d)/g;
+const THRESHOLD_CMP = /threshold (\$[\d,.]+) \((more than|at least)\)/g;
+const DOUBLE_PERIOD = /(?<!\.)\.\.(?!\.)/g;
+const BASE_KEYS: Record<string, string> = { federal_agi: 'federal AGI', federal_taxable: 'federal taxable income' };
+const BASE_KEY = /"?\b(federal_agi|federal_taxable)\b"?/g;
+// A JSON table frozen into older text (complete, or cut off with an ellipsis).
+const JSON_TABLE = /\[\{"(?:[^\]…]*)(?:\}\]|…)/g;
 const PERCENT_SCALE = 100;
 const PCT_PLACES = 2;
 
@@ -63,10 +71,27 @@ const pctOf = (fraction: string) => `${trimZeros(dRound(String(Number(fraction) 
  */
 export function presentEngineText(text: string): string {
   return formatNumbersInText(text
+    .replace(JSON_TABLE, (m) => {
+      const rows = m.split('{').length - 1;
+      return m.endsWith('}]') ? `a table of ${rows} ${rows === 1 ? 'row' : 'rows'} (see Admin > Tax parameters)` : 'a table of values (see Admin > Tax parameters)';
+    })
     .replace(DOUBLED_PREFIX_ANY, '$1: ')
     .replace(COMPARISON_GATE, (_m, _method: string, threshold: string, cmp: string) => `(required when the tax is ${cmp === 'more_than' ? 'more than' : 'at least'} $${moneyText(threshold)})`)
     .replace(COMPARISON_WORD, (w) => (w === 'more_than' ? 'more than' : 'at least'))
-    .replace(HARBOR_FRACTION_TEXT, (_m, f: string) => `harbor is ${pctOf(f)} of prior-year tax`));
+    .replace(GATE_MONEY, (_m, word: string, n: string) => `${word} $${moneyText(n)}`)
+    .replace(THRESHOLD_CMP, (_m, amount: string, cmp: string) => `threshold: ${cmp} ${amount}`)
+    .replace(BASE_KEY, (_m, k: string) => BASE_KEYS[k] ?? k)
+    .replace(HARBOR_FRACTION_TEXT, (_m, f: string) => `harbor is ${pctOf(f)} of prior-year tax`)
+    .replace(DOUBLE_PERIOD, '.'));
+}
+
+/** A parameter value for people: numbers formatted, a structured value named by its shape (never JSON). */
+export function presentParameterValue(v: unknown): string {
+  if (typeof v === 'number') return formatNumberToken(String(v));
+  if (typeof v === 'string') return presentEngineText(v);
+  if (Array.isArray(v)) return `a table of ${v.length} ${v.length === 1 ? 'row' : 'rows'} (see Admin > Tax parameters)`;
+  if (v !== null && typeof v === 'object') return 'a structured value (see Admin > Tax parameters)';
+  return String(v);
 }
 
 interface PresentableWarning { code: string; message: string; details?: Record<string, unknown> }

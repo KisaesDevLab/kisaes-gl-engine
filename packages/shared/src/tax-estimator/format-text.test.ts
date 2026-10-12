@@ -36,6 +36,20 @@ describe('presentation helpers (QA D8 / D19)', () => {
     expect(msg).toBe("Tax parameter 'penalty.underpayment_rate' is unverified (not CPA-verified); the estimate uses its current value (a table of 2 rows; see Admin > Tax parameters).");
     expect(msg).not.toContain('{');
   });
+  it('QA D19: money in gate notes, no doubled periods, base keys and frozen JSON tables read for people', () => {
+    expect(presentEngineText('Tax 312 less withholding 0 and credits 0 = 312; threshold 1000 (more_than). The penalty estimate may differ..'))
+      .toBe('Tax $312 less withholding $0 and credits $0 = $312; threshold: more than $1,000. The penalty estimate may differ.');
+    expect(presentEngineText('Base "federal_agi" $197,557 × 4%; base federal_taxable.')).toBe('Base federal AGI $197,557 × 4%; base federal taxable income.');
+    // A snapshot frozen before this fix carries the truncated JSON value; it still reads as a table.
+    expect(presentEngineText('[{"to":"2025-03-31","from":"2025-01-01","rate":0.07},{"to":"2025-06-30","from… (unverified).'))
+      .toBe('a table of values (see Admin > Tax parameters) (unverified).');
+    expect(presentEngineText('current value [{"to":"2025-03-31","rate":0.07},{"to":"2025-06-30","rate":0.07}].'))
+      .toBe('current value a table of 2 rows (see Admin > Tax parameters).');
+    // Idempotent, and an ellipsis is not a double period.
+    const once = presentEngineText('Tax 7590.29 less withholding 2000 and credits 0 = 5590.29; threshold 100 (at_least)...');
+    expect(presentEngineText(once)).toBe(once);
+    expect(once.endsWith('...')).toBe(true);
+  });
   it('marks the lower tile under lesser_of', () => {
     const sh = (cur: string, prior: string | null) => ({ appliedRule: 'lesser_of', currentYear: { amount: cur }, priorYear: { available: prior != null, amount: prior } });
     expect(recommendedHarborRule(sh('32246', '34650'))).toBe('current_year');

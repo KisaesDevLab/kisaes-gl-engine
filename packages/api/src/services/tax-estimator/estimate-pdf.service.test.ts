@@ -100,4 +100,27 @@ describe('renderEstimatePdf', () => {
     expect(client).toContain('Payment vouchers');
     expect(client).toContain('Firm disclaimer from the assumptions block.');
   });
+
+  it('QA D18 / D19: every text goes through the presenter, also for a snapshot frozen with raw engine text', async () => {
+    const frozen = { ...dto, assumptions: { ...dto.assumptions, sections: [
+      { id: 'projection', title: 'Projection', items: [{ label: 'Rivera', detail: 'Books through 2026-09; withholding 2000 projected.', badge: null }] },
+      { id: 'state_methods', title: 'State methods', items: [
+        { label: 'MO resident', detail: 'Base "federal_agi" $197,557 × 4%; credit for tax paid to other states $312.', badge: null },
+        { label: 'MO requirement test', detail: 'threshold: estimates required - Tax 7590.29 less withholding 2000 and credits 0 = 5590.29; threshold 100 (at_least). The penalty estimate may differ..', badge: null },
+      ] },
+      { id: 'parameters', title: 'Unverified and provisional parameters', items: [{ label: 'Federal penalty.underpayment_rate', detail: '[{"to":"2025-03-31","from":"2025-01-01","rate":0.07},{"to":"2025-06-30","from… (unverified).', badge: 'unverified' }] },
+      ...dto.assumptions!.sections.filter((x) => x.id === 'disclaimer'),
+    ] } } as unknown as EstimateResultDTO;
+    const preparer = pdfText(await renderEstimatePdf(frozen, { taxpayerName: 'Rivera' })).replace(/\n/g, ' ');
+    for (const banned of ['federal_agi', 'may differ..', '{"', 'withholding 2000', '7590.29', '(nonresident) - unverified']) expect(preparer, banned).not.toContain(banned);
+    expect(preparer).toContain('Tax $7,590.29 less withholding $2,000 and credits $0 = $5,590.29; threshold: at least $100');
+    expect(preparer).toContain('Base federal AGI $197,557');
+    expect(preparer).toContain('a table of values (see Admin > Tax parameters)');
+    // The preparer marker matches the screen ("Verify" = needs review), never "unverified" for a reviewed-rule state.
+    expect(preparer).toContain('AR (nonresident) - verify');
+    const client = pdfText(await renderEstimatePdf(frozen, { taxpayerName: 'Rivera', audience: 'client' })).replace(/\n/g, ' ');
+    for (const banned of ['unverified', 'verify', 'VERIFY', 'federal_agi', '{"']) expect(client, banned).not.toContain(banned);
+    expect(client).toContain('withholding $2,000 projected.');
+  });
 });
+

@@ -122,7 +122,7 @@ describe('R4-01 / R4-04 — the generated pack artifact', () => {
     expect(text).toContain('Payment vouchers');
     expect(text).toMatch(/Disclaimer/);
     // R4-04: none of the preparer-only content.
-    for (const banned of ['engine ', 'Readiness warnings', 'Unverified and provisional parameters', 'Engine approximations', 'Prior-year AGI', 'TE_', '[VERIFY]', '(verify)', '- unverified']) {
+    for (const banned of ['engine ', 'Readiness warnings', 'Unverified and provisional parameters', 'Engine approximations', 'Prior-year AGI', 'TE_', '[VERIFY]', '(verify)', '- unverified', '- verify']) {
       expect(text, banned).not.toContain(banned);
     }
   }, 300_000);

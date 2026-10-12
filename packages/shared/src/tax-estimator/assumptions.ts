@@ -21,7 +21,7 @@ import type { JurisdictionEstimate } from './engine/vouchers.js';
 import { NONRESIDENT_FLAT_RATE_LABEL } from './engine/state-types.js';
 import { dIsZero, dRound, dRoundDollars, dSum } from './decimal.js';
 import { DEFAULT_DISCLAIMER_TEXT } from '../schemas/tax-estimator-years.js';
-import { presentEngineText } from './format-text.js';
+import { presentEngineText, presentParameterValue, presentWarningMessage } from './format-text.js';
 
 /**
  * Shipped default disclaimer (MODULE.md "License and gating"); firms may replace it (D4).
@@ -170,7 +170,7 @@ function rateModeSection(r: EstimateResultDTO): AssumptionSectionDTO {
     items.push({ label: 'Federal income tax', detail: `${r.taxYear} brackets for ${r.filingStatus.toUpperCase()}${rt.worksheet ? ' with the qualified dividends and capital gain worksheet' : ''}; marginal ordinary rate ${formatPct(rt.marginalOrdinaryRate)}, effective ${formatPct(dRound(rt.effectiveRate, 4))}.` });
   }
   for (const row of r.state?.rows ?? []) {
-    items.push({ label: `${row.state} (${row.residency})`, detail: `User-entered effective rate ${formatPct(row.effectiveRate)} on ${row.method === 'nonresident_flat' ? 'income sourced to the state' : `base "${row.base}"`}.` });
+    items.push({ label: `${row.state} (${row.residency})`, detail: `User-entered effective rate ${formatPct(row.effectiveRate)} on ${row.method === 'nonresident_flat' ? 'income sourced to the state' : `base ${baseLabel(row.base)}`}.` });
   }
   return section('rate_mode', items);
 }
@@ -313,13 +313,13 @@ function stateMethodsSection(r: EstimateResultDTO): AssumptionSectionDTO {
       });
     } else {
       const credit = nonZero(row.creditForOtherStates) ? `; credit for tax paid to other states ${formatDollars(row.creditForOtherStates)}` : '';
-      items.push({ label: `${row.state} resident`, detail: `Base "${row.base}" ${formatDollars(row.baseAmount)} × ${formatPct(row.effectiveRate)}${credit}.` });
+      items.push({ label: `${row.state} resident`, detail: `Base ${baseLabel(row.base)} ${formatDollars(row.baseAmount)} × ${formatPct(row.effectiveRate)}${credit}.` });
     }
     const g = row.gate;
     const required = g.required == null ? 'cannot be determined from the inputs' : g.required ? 'required' : 'not required';
     items.push({
       label: `${row.state} requirement test`,
-      detail: `${g.method.replace(/_/g, ' ')}: estimates ${required}${g.notes.length ? ` — ${[...new Set(g.notes.map((n) => tidyNote(withoutLabel(n, row.state))))].join(' ')}` : ''}.`,
+      detail: tidyNote(`${g.method.replace(/_/g, ' ')}: estimates ${required}${g.notes.length ? ` — ${[...new Set(g.notes.map((n) => tidyNote(withoutLabel(n, row.state))))].join(' ')}` : ''}.`),
       badge: g.verify || row.verify || row.usesFederalFallback ? 'verify' : null,
     });
   }
@@ -331,8 +331,15 @@ function stateMethodsSection(r: EstimateResultDTO): AssumptionSectionDTO {
   return section('state_methods', items, 'No state rows on this scenario.');
 }
 
+/** QA D19: a parameter value never prints as JSON (a rate table reads "a table of 12 rows"). */
+/** QA D19: a state base in words ("federal AGI"), never its key. */
+const BASE_LABELS: Record<string, string> = { federal_agi: 'federal AGI', federal_taxable: 'federal taxable income', custom: 'entered amount' };
+function baseLabel(base: string): string {
+  return BASE_LABELS[base] ?? base;
+}
+
 function shortValue(v: unknown): string {
-  const s = typeof v === 'string' ? v : JSON.stringify(v);
+  const s = presentParameterValue(v);
   return s.length > 80 ? `${s.slice(0, 77)}…` : s;
 }
 
@@ -351,7 +358,7 @@ function parametersSection(r: EstimateResultDTO): AssumptionSectionDTO {
 
 function readinessSection(r: EstimateResultDTO): AssumptionSectionDTO {
   const ordered = [...r.warnings.filter((w) => w.severity === 'warning'), ...r.warnings.filter((w) => w.severity !== 'warning')];
-  return section('readiness', ordered.map((w) => ({ code: w.code, label: w.code, detail: tidyNote(w.message), badge: w.severity === 'warning' ? 'verify' as const : null })),
+  return section('readiness', ordered.map((w) => ({ code: w.code, label: w.code, detail: tidyNote(presentWarningMessage(w)), badge: w.severity === 'warning' ? 'verify' as const : null })),
     'No readiness warnings.');
 }
 
