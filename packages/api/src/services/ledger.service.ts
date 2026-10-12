@@ -893,6 +893,9 @@ export async function listTransactions(tenantId: string, filters: {
   sortBy?: 'date' | 'type' | 'number' | 'payee' | 'memo' | 'category' | 'amount' | 'status' | 'dueDate' | 'balanceDue' | 'invoiceStatus';
   sortDir?: 'asc' | 'desc';
   limit?: number; offset?: number;
+  /** List export (transaction-list-export.service): also return each
+   *  transaction's category-side debit/credit sums. Not a query param. */
+  withCategoryAmounts?: boolean;
 }, companyId?: string) {
   const conditions = [eq(transactions.tenantId, tenantId)];
   if (companyId) conditions.push(eq(transactions.companyId, companyId));
@@ -1033,6 +1036,23 @@ export async function listTransactions(tenantId: string, filters: {
         ? sql<string | null>`(SELECT SUM(jl8.credit) FROM journal_lines jl8
             WHERE jl8.transaction_id = ${transactions.id}
               AND jl8.tenant_id = ${tenantId} AND jl8.account_id = ${filters.accountId})`
+        : sql<string | null>`NULL`,
+      // Export only: debit / credit posted to the transaction's category
+      // account(s) — the same lines lineCategories names. Void-reversal
+      // rows are excluded so a voided entry reports its original legs.
+      categoryDebit: filters.withCategoryAmounts
+        ? sql<string | null>`(SELECT SUM(jl9.debit) FROM journal_lines jl9
+            JOIN accounts a2 ON a2.id = jl9.account_id
+            WHERE jl9.transaction_id = ${transactions.id}
+              AND jl9.tenant_id = ${tenantId} AND jl9.is_void_reversal = false
+              AND ${categoryAccountFilter})`
+        : sql<string | null>`NULL`,
+      categoryCredit: filters.withCategoryAmounts
+        ? sql<string | null>`(SELECT SUM(jl10.credit) FROM journal_lines jl10
+            JOIN accounts a2 ON a2.id = jl10.account_id
+            WHERE jl10.transaction_id = ${transactions.id}
+              AND jl10.tenant_id = ${tenantId} AND jl10.is_void_reversal = false
+              AND ${categoryAccountFilter})`
         : sql<string | null>`NULL`,
       amountPaid: transactions.amountPaid,
       balanceDue: transactions.balanceDue,

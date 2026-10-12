@@ -30,6 +30,8 @@ import * as customerRefundService from '../services/customer-refund.service.js';
 import * as attachmentService from '../services/attachment.service.js';
 import * as transactionReport from '../services/transaction-report.service.js';
 import * as transactionActivity from '../services/transaction-activity.service.js';
+import * as txnListExport from '../services/transaction-list-export.service.js';
+import { auditLog } from '../middleware/audit.js';
 
 export const transactionsRouter = Router();
 transactionsRouter.use(authenticate);
@@ -44,6 +46,46 @@ transactionsRouter.get('/', async (req, res) => {
   const filters = transactionFiltersSchema.parse(req.query);
   const result = await ledger.listTransactions(req.tenantId, filters, req.companyId);
   res.json(result);
+});
+
+// Transactions list → CSV / PDF. The WHOLE filtered + sorted list (every
+// page, capped — see TXN_EXPORT_LIMITS), one row per transaction in the
+// General Ledger's column layout. Same filters, tenant/company scope and
+// permission (the router's requireResource('transactions')) as GET '/'.
+// Paging params are accepted and ignored so the screen can pass its query
+// string through unchanged. Static path, declared before '/:id'.
+const transactionListExportSchema = transactionFiltersSchema
+  .omit({ limit: true, offset: true, invoiceStatus: true })
+  .extend({
+    format: z.enum(['csv', 'pdf']),
+    tz: z.string().max(64).optional(),
+  });
+
+transactionsRouter.get('/export', expensiveOpLimiter, async (req, res) => {
+  const { limit: _l, offset: _o, ...query } = req.query;
+  const parsed = transactionListExportSchema.safeParse(query);
+  if (!parsed.success) throw AppError.badRequest(parsed.error.issues[0]?.message ?? 'Invalid export filters');
+  const { format, tz, ...filters } = parsed.data;
+  const data = await txnListExport.buildTransactionListExport(req.tenantId, req.companyId, filters, format);
+
+  // Metadata only — the filters asked for and what came back, never rows.
+  await auditLog(req.tenantId, 'download', 'transaction_list_export', null, null, {
+    format, rowCount: data.rows.length, matched: data.matched, truncated: data.truncated, companyId: req.companyId, filters,
+  }, req.userId);
+
+  res.setHeader('X-Export-Row-Count', String(data.rows.length));
+  res.setHeader('X-Export-Truncated', String(data.truncated));
+  res.setHeader('Access-Control-Expose-Headers', 'X-Export-Row-Count, X-Export-Truncated, Content-Disposition');
+  if (format === 'csv') {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${txnListExport.exportFileName('csv')}"`);
+    res.send(txnListExport.toTransactionListCsv(data));
+    return;
+  }
+  const pdf = await txnListExport.toTransactionListPdf(data, { timeZone: tz });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${txnListExport.exportFileName('pdf')}"`);
+  res.send(pdf);
 });
 
 // How a date-range Transaction Report will be split: the parts, each with

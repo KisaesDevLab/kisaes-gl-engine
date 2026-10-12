@@ -91,6 +91,22 @@ Use the **Show** dropdown next to the pager at the bottom of the Transactions li
 50, 100, 250, 500, or **All** (loads the entire filtered set). The choice is
 remembered per company.
 
+### "Can I export or print the Transactions list?"
+Yes. On the **Transactions** page, set the filters, search, date range, and sort
+you want, then click **CSV** (downloads a spreadsheet) or **Print / PDF** (opens a
+printable landscape PDF in a new tab). Both export **every matching transaction
+across all pages**, not just the visible page, one row per transaction in the
+General Ledger layout: Date, Type, Ref #, Name, Description, Account / Category,
+Debit, Credit, and a Total row. When the list is filtered by an account, Debit /
+Credit are that account's side (register view); otherwise they are the amounts
+posted to the category (expenses as debits, income as credits), multi-category
+transactions show "Split", transfers and payments with no category show their
+amount in both columns, and void transactions show 0.00. The CSV also has Tag and
+Status columns. The PDF header shows the company, date range, filters applied,
+the printed date/time, and page numbers. Exports cap at 50,000 rows (CSV) and
+10,000 (PDF) with an "Export truncated" note — narrow the filters to get the rest.
+Each export is recorded in the audit log (filters and row count only).
+
 ### "How do I sort or filter a table by column?"
 
 Click any column header to sort by it (click again to reverse). Every list —
