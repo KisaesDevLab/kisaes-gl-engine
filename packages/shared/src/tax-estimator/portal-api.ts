@@ -94,6 +94,8 @@ export interface TaxEstimatePackTaxpayerDTO {
   displayName: string;
   /** Tax years this taxpayer is linked to the company for, newest first. */
   years: number[];
+  /** QA D10: the scenarios of those years (Base first), for the optional scenario picker. */
+  scenarios?: Array<{ id: string; name: string; taxYear: number; isBase: boolean }>;
 }
 
 /**

@@ -114,7 +114,8 @@ describe('Report Pack tax-estimate gates', () => {
   it('taxpayer choices: the linked taxpayer for staff; 404 for client users, another firm, flag off', async () => {
     const ok = await get('/api/v1/reports/tax-estimate/taxpayers', tokens['staff']!);
     expect(ok.status).toBe(200);
-    expect(ok.json).toEqual({ data: [{ id: fx.taxpayerId, displayName: 'Carlos & Maria Rivera', years: [2026] }], total: 1 });
+    expect(ok.json).toEqual({ data: [{ id: fx.taxpayerId, displayName: 'Carlos & Maria Rivera', years: [2026], scenarios: expect.any(Array) }], total: 1 });
+    expect(ok.json.data[0].scenarios[0]).toMatchObject({ taxYear: 2026, isBase: true }); // QA D10
     expect((await get('/api/v1/reports/tax-estimate/taxpayers', tokens['client']!)).status).toBe(404);
     expect((await get('/api/v1/reports/tax-estimate/taxpayers', tokens['otherFirm']!)).status).toBe(404);
     await setFlag(false);

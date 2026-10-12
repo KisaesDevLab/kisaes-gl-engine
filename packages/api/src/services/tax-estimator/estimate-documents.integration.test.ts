@@ -129,19 +129,32 @@ describe('Report Pack tax-estimate section', () => {
     expect(() => packPeriod('')).toThrow();
   });
 
-  it('pack scope: the active tenant\'s managing firm, flag on, tenant in the requester\'s scope — else 404', async () => {
+  it('pack scope: the active tenant\'s managing firm, flag on (here or in a firm tenant in scope, QA D9), tenant in the requester\'s scope — else 404', async () => {
     const scope = await resolvePackScope(fx.T.schc, USER, false);
     expect(scope.firmId).toBe(FIRM_A);
     expect(scope.allowedTenantIds.sort()).toEqual([fx.T.schc, fx.T.scorp, fx.T.lp].sort());
     await expect(resolvePackScope(fx.T.other, USER, false)).rejects.toMatchObject({ statusCode: 404 }); // another firm's client
-    await expect(resolvePackScope(fx.T.scorp, USER, false)).rejects.toMatchObject({ statusCode: 404 }); // flag OFF there
+    // QA D9: the flag is OFF on the S corp's own tenant but ON in another tenant of the same firm in
+    // the caller's scope (the practice tenant pattern), so the section is offered there too...
+    expect((await resolvePackScope(fx.T.scorp, USER, false)).firmId).toBe(FIRM_A);
+    // ...and with the flag off everywhere in the firm's scope, it is not.
+    await db.update(tenantFeatureFlags).set({ enabled: false }).where(and(eq(tenantFeatureFlags.tenantId, fx.T.schc), eq(tenantFeatureFlags.flagKey, 'TAX_ESTIMATOR_V1')));
+    try {
+      await expect(resolvePackScope(fx.T.scorp, USER, false)).rejects.toMatchObject({ statusCode: 404 });
+      await expect(resolvePackScope(fx.T.schc, USER, false)).rejects.toMatchObject({ statusCode: 404 });
+    } finally {
+      await db.update(tenantFeatureFlags).set({ enabled: true }).where(and(eq(tenantFeatureFlags.tenantId, fx.T.schc), eq(tenantFeatureFlags.flagKey, 'TAX_ESTIMATOR_V1')));
+    }
     await expect(resolvePackScope(fx.T.schc, randomUUID(), false)).rejects.toMatchObject({ statusCode: 404 }); // not a member
     await expect(resolvePackScopeForUser(fx.T.schc, randomUUID())).rejects.toMatchObject({ statusCode: 404 }); // no such user
   });
 
   it('option choices list only the firm\'s taxpayers linked to the pack company', async () => {
     const scope = await resolvePackScope(fx.T.schc, USER, false);
-    expect(await listPackTaxpayers(scope, fx.T.schc, fx.C.schc)).toEqual([{ id: fx.taxpayerId, displayName: 'Carlos & Maria Rivera', years: [2026] }]);
+    const choices = await listPackTaxpayers(scope, fx.T.schc, fx.C.schc);
+    expect(choices.map(({ scenarios: _s, ...t }) => t)).toEqual([{ id: fx.taxpayerId, displayName: 'Carlos & Maria Rivera', years: [2026] }]);
+    // QA D10: the scenarios of the linked years ride along (Base first) for the builder's picker.
+    expect(choices[0]!.scenarios![0]).toMatchObject({ id: fx.baseScenarioId, taxYear: 2026, isBase: true });
     expect(await listPackTaxpayers(scope, fx.T.other, fx.C.other)).toEqual([]);
   });
 

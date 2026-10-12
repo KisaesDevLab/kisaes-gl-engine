@@ -22,16 +22,15 @@
 // on for that tenant, and the requester's firm scope (D1: firm assignments ∩ the
 // requester's tenant access) must reach it. The taxpayer must belong to that firm and
 // be linked to the pack's company for the tax year.
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import { can, type EstimateSnapshotDTO, type SnapshotReason, type TaxEstimatePackTaxpayerDTO } from '@kis-books/shared';
 import { db } from '../../db/index.js';
-import { tenantFirmAssignments, userTenantAccess, users } from '../../db/schema/index.js';
+import { tenantFeatureFlags, tenantFirmAssignments, userTenantAccess, users } from '../../db/schema/index.js';
 import * as permissionService from '../permission.service.js';
 import { taxEstLinks, taxEstTaxpayers } from '../../db/schema/tax-estimator-taxpayers.js';
 import { taxEstScenarios } from '../../db/schema/tax-estimator-years.js';
 import { AppError } from '../../utils/errors.js';
 import { auditLog } from '../../middleware/audit.js';
-import * as featureFlags from '../feature-flags.service.js';
 import * as firmsService from '../firms.service.js';
 import { isTenantInScope, resolveScope, type FirmScope } from './firm-scope.service.js';
 import { createSnapshot, getSnapshot, type CreateSnapshotRequest } from './estimate-snapshots.service.js';
@@ -112,11 +111,11 @@ const notAvailable = () => AppError.notFound('Feature not available');
 /**
  * The firm scope a Report Pack request in `tenantId` acts under: the firm that actively
  * manages the tenant, the requester's membership in it (super admins: the firm's full
- * managed set), the flag on the tenant, and the tenant inside the scope. Anything else
+ * managed set), the tenant inside the scope, and the flag (QA D9: this tenant or another
+ * tenant of the firm in the caller's scope, i.e. the practice tenant). Anything else
  * is a 404 (the section does not exist for this caller).
  */
 export async function resolvePackScope(tenantId: string, userId: string, isSuperAdmin: boolean): Promise<FirmScope> {
-  if (!(await featureFlags.isEnabled(tenantId, 'TAX_ESTIMATOR_V1'))) throw notAvailable();
   const [assignment] = await db.select({ firmId: tenantFirmAssignments.firmId }).from(tenantFirmAssignments)
     .where(and(eq(tenantFirmAssignments.tenantId, tenantId), eq(tenantFirmAssignments.isActive, true)))
     .limit(1);
@@ -129,7 +128,19 @@ export async function resolvePackScope(tenantId: string, userId: string, isSuper
     throw err;
   }
   if (!isTenantInScope(scope, tenantId)) throw notAvailable();
+  // QA D9 (MODULE.md D5): the firm turns the module on in its PRACTICE tenant(s), where staff
+  // work; a pack is built inside the client company. The section is offered when the flag is
+  // ON in the pack's tenant OR in any other tenant of the same firm inside the caller's D1 scope.
+  if (!(await packFlagOn(tenantId, scope))) throw notAvailable();
   return scope;
+}
+
+async function packFlagOn(tenantId: string, scope: FirmScope): Promise<boolean> {
+  const tenants = [...new Set([tenantId, ...scope.allowedTenantIds])];
+  const [row] = await db.select({ tenantId: tenantFeatureFlags.tenantId }).from(tenantFeatureFlags)
+    .where(and(inArray(tenantFeatureFlags.tenantId, tenants), eq(tenantFeatureFlags.flagKey, 'TAX_ESTIMATOR_V1'), eq(tenantFeatureFlags.enabled, true)))
+    .limit(1);
+  return !!row;
 }
 
 /**
@@ -171,6 +182,18 @@ export async function listPackTaxpayers(scope: FirmScope, tenantId: string, comp
     const t = byId.get(r.id) ?? { id: r.id, displayName: r.displayName, years: [] };
     if (!t.years.includes(r.taxYear)) t.years.push(r.taxYear);
     byId.set(r.id, t);
+  }
+  // QA D10: the scenarios of the linked years feed the builder's optional scenario picker.
+  const ids = [...byId.keys()];
+  if (ids.length > 0) {
+    const sc = await db.select({ id: taxEstScenarios.id, name: taxEstScenarios.name, taxYear: taxEstScenarios.taxYear, isBase: taxEstScenarios.isBase, taxpayerId: taxEstScenarios.taxpayerId })
+      .from(taxEstScenarios).where(inArray(taxEstScenarios.taxpayerId, ids))
+      .orderBy(desc(taxEstScenarios.taxYear), desc(taxEstScenarios.isBase), asc(taxEstScenarios.sortOrder), asc(taxEstScenarios.name));
+    for (const s of sc) {
+      const t = byId.get(s.taxpayerId);
+      if (!t || !t.years.includes(s.taxYear)) continue;
+      (t.scenarios ??= []).push({ id: s.id, name: s.name, taxYear: s.taxYear, isBase: s.isBase });
+    }
   }
   return [...byId.values()];
 }
