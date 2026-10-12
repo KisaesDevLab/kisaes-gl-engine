@@ -21,7 +21,7 @@ import type { RegisterCompanyFlagsDTO, RegisterTransactionFlagDTO } from '@kis-b
 import { db } from '../../db/index.js';
 import { taxEstTransactionFlags, transactions } from '../../db/schema/index.js';
 import { AppError } from '../../utils/errors.js';
-import { isTenantInScope, type FirmScope } from './firm-scope.service.js';
+import { baseScope, isTenantInScope, type FirmScope } from './firm-scope.service.js';
 import { isCompanyLinkedInFirm, listPackTaxpayers } from './estimate-documents.service.js';
 import * as treatmentsService from './treatments.service.js';
 
@@ -64,6 +64,7 @@ export async function getTransactionFlag(
 export async function setTransactionFlag(
   scope: FirmScope, tenantId: string, activeCompanyId: string, transactionId: string, nonRecurring: boolean, userId?: string,
 ): Promise<RegisterTransactionFlagDTO> {
+  scope = baseScope(scope); // D18
   const current = await getTransactionFlag(scope, tenantId, activeCompanyId, transactionId);
   if (!current.linked || !current.companyId) {
     throw AppError.conflict('This company is not linked to a taxpayer in the Tax Estimator', 'TE_COMPANY_NOT_LINKED');

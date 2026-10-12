@@ -35,7 +35,7 @@ import {
 } from '../../db/schema/index.js';
 import { auditLog } from '../../middleware/audit.js';
 import { AppError } from '../../utils/errors.js';
-import type { FirmScope } from './firm-scope.service.js';
+import { baseScope, type FirmScope } from './firm-scope.service.js';
 import { assertEntityInScope, resolveForCompany } from './entity-type.service.js';
 import { listAssignments } from '../tb/balance-engine.service.js';
 import { impliedTreatmentForCode } from './pl-provider.service.js';
@@ -184,6 +184,7 @@ export function validateTreatmentRules(
 export async function putTreatments(
   scope: FirmScope, tenantId: string, companyId: string, inputs: AccountTreatmentInput[], userId?: string,
 ): Promise<PagedList<AccountTreatmentDto>> {
+  scope = baseScope(scope); // D18: treatment writes never use a staff-list widening
   const company = await assertEntityInScope(scope, tenantId, companyId);
   const accountIds = [...new Set(inputs.map((i) => i.accountId))];
   if (accountIds.length !== inputs.length) throw AppError.badRequest('Each account may appear once', 'TE_DUPLICATE_ACCOUNT');
@@ -242,6 +243,7 @@ export async function putTreatments(
 export async function listTransactionFlags(
   scope: FirmScope, tenantId: string, companyId: string, opts: ListOptions,
 ): Promise<PagedList<TransactionFlagDto>> {
+  scope = baseScope(scope); // D18
   await assertEntityInScope(scope, tenantId, companyId);
   const where = and(
     eq(taxEstTransactionFlags.tenantId, tenantId),

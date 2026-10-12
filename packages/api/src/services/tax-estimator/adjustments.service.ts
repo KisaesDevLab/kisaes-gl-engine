@@ -18,7 +18,7 @@ import { taxEstPersons, taxEstLinks } from '../../db/schema/tax-estimator-taxpay
 import { companies } from '../../db/schema/company.js';
 import { accounts } from '../../db/schema/accounts.js';
 import { AppError } from '../../utils/errors.js';
-import { isTenantInScope, type FirmScope } from './firm-scope.service.js';
+import { baseScope, isTenantInScope, type FirmScope } from './firm-scope.service.js';
 import { loadVisibleType } from './adjustment-types.service.js';
 import {
   auditYears, loadAdjustmentForFirm, loadScenarioForFirm, tenantNotManaged, type Actor, type AdjustmentRow, type ScenarioRow,
@@ -75,7 +75,8 @@ async function assertOwnedRefs(exec: DbOrTx, scenario: ScenarioRow, personId: st
 
 /** GL link: tenant in the server-resolved scope, then company and account inside that tenant. */
 async function assertGlLink(scope: FirmScope, exec: DbOrTx, tenantId: string, companyId: string, accountId: string) {
-  if (!isTenantInScope(scope, tenantId)) throw tenantNotManaged();
+  // D18: a GL reference reads raw books — the caller's OWN reach, never a staff-list widening.
+  if (!isTenantInScope(baseScope(scope), tenantId)) throw tenantNotManaged();
   const [c] = await exec.select({ id: companies.id }).from(companies)
     .where(and(eq(companies.id, companyId), eq(companies.tenantId, tenantId)));
   if (!c) throw new AppError(404, 'Company not found', 'TE_COMPANY_NOT_FOUND');

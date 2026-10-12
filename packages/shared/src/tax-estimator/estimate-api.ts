@@ -240,6 +240,11 @@ export interface EstimateResultDTO {
   portalShows?: PortalShows;
   /** Phase 12: the firm's safe-harbor default at compute time (D4). */
   firmSafeHarborDefault?: SafeHarborOverride;
+  /**
+   * D18: true when the requester is on the taxpayer's staff list and this result includes
+   * linked companies in clients outside their own access. Part of the cache key.
+   */
+  elevatedAccess?: boolean;
 }
 
 export interface SchAiSnapshotDTO {
@@ -262,6 +267,8 @@ export interface EstimateReadinessEntityDTO {
   linkCount: number;
   /** false = the link's tenant left the caller's scope: excluded from the estimate (D1). */
   inScope: boolean;
+  /** D18: in scope only through the taxpayer's staff list (the client stays closed to the caller; no entity-setup link). */
+  viaStaffList?: boolean;
   readiness: BooksReadiness | null;
   error: string | null;
 }

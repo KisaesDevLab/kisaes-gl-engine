@@ -40,7 +40,7 @@ import { taxEstAccountTreatments } from '../../db/schema/tax-estimator-entities.
 import { transactions } from '../../db/schema/index.js';
 import { buildAccountDetailReport } from '../report.service.js';
 import { AppError } from '../../utils/errors.js';
-import { isTenantInScope, visibleTaxpayerFilter, type FirmScope } from './firm-scope.service.js';
+import { baseScope, isTenantInScope, scopeForTaxpayer, visibleTaxpayerFilter, type FirmScope } from './firm-scope.service.js';
 import { getParameters } from './tax-parameters.service.js';
 import { listLinks } from './taxpayers.service.js';
 import {
@@ -228,6 +228,7 @@ export async function getPaymentLedger(
   pre?: { links?: ReadonlyArray<LinkDTO>; limit?: number; offset?: number },
 ): Promise<PaymentLedgerDTO> {
   await loadTaxpayerForFirm(scope, taxpayerId);
+  scope = await scopeForTaxpayer(scope, taxpayerId); // D18: a listed user's ledger is the full one
   if (scenarioId) await assertScenarioOf(scope, scenarioId, taxpayerId, taxYear);
   const win = await paymentWindow(taxYear);
   const links = pre?.links ?? (await listLinks(scope, taxpayerId, taxYear)).data;
@@ -342,6 +343,7 @@ const duplicate = () => new AppError(409, 'This transaction is already recorded 
 export async function createPayment(
   scope: FirmScope, actor: Actor, taxpayerId: string, taxYear: number, input: CreatePaymentInput,
 ): Promise<EstimatePaymentDTO> {
+  scope = baseScope(scope); // D18: a GL reference needs the caller's OWN reach
   try {
     return await db.transaction(async (tx) => {
       await loadTaxpayerForFirm(scope, taxpayerId, tx);
@@ -375,6 +377,7 @@ async function loadPaymentForFirm(scope: FirmScope, paymentId: string, exec: DbO
 }
 
 export async function updatePayment(scope: FirmScope, actor: Actor, paymentId: string, input: UpdatePaymentInput): Promise<EstimatePaymentDTO> {
+  scope = baseScope(scope); // D18
   try {
     return await db.transaction(async (tx) => {
       const before = await loadPaymentForFirm(scope, paymentId, tx);

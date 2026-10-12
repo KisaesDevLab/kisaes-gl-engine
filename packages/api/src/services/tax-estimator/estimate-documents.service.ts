@@ -32,7 +32,7 @@ import { taxEstScenarios } from '../../db/schema/tax-estimator-years.js';
 import { AppError } from '../../utils/errors.js';
 import { auditLog } from '../../middleware/audit.js';
 import * as firmsService from '../firms.service.js';
-import { isTenantInScope, resolveScope, visibleTaxpayerFilter, type FirmScope } from './firm-scope.service.js';
+import { isElevated, isTenantInScope, resolveScope, scopeForTaxpayer, visibleTaxpayerFilter, type FirmScope } from './firm-scope.service.js';
 import { createSnapshot, getSnapshot, type CreateSnapshotRequest } from './estimate-snapshots.service.js';
 import { renderEstimatePdf, type EstimatePdfAudience } from './estimate-pdf.service.js';
 import type { EstimateOptions } from './estimate.service.js';
@@ -81,9 +81,12 @@ export function estimatePdfFilename(taxYear: number, taxpayerName: string, scena
  * leads to the frozen, encrypted payload).
  */
 async function auditDownload(scope: FirmScope, actor: Actor, snap: EstimateSnapshotDTO, issued: boolean): Promise<void> {
+  // D18: `elevated: true` when the requester read the taxpayer through its staff list with
+  // tenants outside their own client access (metadata only).
+  const elevated = isElevated(await scopeForTaxpayer(scope, snap.taxpayerId));
   await auditLog(actor.tenantId, 'download', 'tax_est_snapshot', snap.id, null, {
     firmId: scope.firmId, taxpayerId: snap.taxpayerId, taxYear: snap.taxYear, scenarioId: snap.scenarioId,
-    snapshotReason: snap.reason, format: 'pdf', issued, payloadSha256: snap.payloadSha256,
+    snapshotReason: snap.reason, format: 'pdf', issued, payloadSha256: snap.payloadSha256, ...(elevated ? { elevated: true } : {}),
   }, actor.userId);
 }
 

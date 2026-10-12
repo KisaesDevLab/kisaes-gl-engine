@@ -35,7 +35,7 @@ import { taxEstSnapshots } from '../../db/schema/tax-estimator-estimate.js';
 import { taxEstTaxpayers } from '../../db/schema/tax-estimator-taxpayers.js';
 import { encrypt, decrypt } from '../../utils/encryption.js';
 import { AppError } from '../../utils/errors.js';
-import { isTenantInScope, visibleTaxpayerFilter, type FirmScope } from './firm-scope.service.js';
+import { isElevated, isTenantInScope, scopeForTaxpayer, visibleTaxpayerFilter, type FirmScope } from './firm-scope.service.js';
 import { computeEstimate, computeEstimateWithInputs, getEstimateReadiness, type EstimateInputsForSnapshot, type EstimateOptions } from './estimate.service.js';
 import { auditYears, loadTaxpayerForFirm, type Actor } from './year-access.js';
 
@@ -119,6 +119,7 @@ export async function createSnapshot(
   scope: FirmScope, actor: Actor, req: CreateSnapshotRequest, opts: EstimateOptions = {}, behaviour: CreateSnapshotBehaviour = {},
 ): Promise<EstimateSnapshotDTO> {
   await loadTaxpayerForFirm(scope, req.taxpayerId);
+  scope = await scopeForTaxpayer(scope, req.taxpayerId); // D18: a listed user freezes the full estimate
   const { result, inputs } = await computeEstimateWithInputs(scope, {
     taxpayerId: req.taxpayerId, taxYear: req.taxYear, scenarioId: req.scenarioId, throughMonth: req.throughMonth, refresh: true,
   }, opts);
@@ -164,7 +165,7 @@ export async function createSnapshot(
       payloadBytes: bytes, createdBy: actor.userId,
     }).returning();
     if (!row) throw new AppError(500, 'Snapshot insert failed', 'TE_SNAPSHOT_SAVE_FAILED');
-    await auditYears(scope, actor, 'create', 'tax_est_snapshot', row.id, null, auditShape(row), tx);
+    await auditYears(scope, actor, 'create', 'tax_est_snapshot', row.id, null, { ...auditShape(row), ...(isElevated(scope) ? { elevated: true } : {}) }, tx);
     return { ...listItem(scope, row, result.summary), payloadSha256: row.payloadSha256, payload: redactForView(payload) };
   });
 }
@@ -205,6 +206,7 @@ function redactForView(p: EstimateSnapshotPayload): EstimateSnapshotPayload {
 /** GET .../snapshots — history, newest first, paged with a total. */
 export async function listSnapshots(scope: FirmScope, taxpayerId: string, taxYear: number, q: SnapshotsQuery): Promise<EstimateSnapshotListDTO> {
   await loadTaxpayerForFirm(scope, taxpayerId);
+  scope = await scopeForTaxpayer(scope, taxpayerId); // D18
   const where = and(
     eq(taxEstSnapshots.firmId, scope.firmId), eq(taxEstSnapshots.taxpayerId, taxpayerId), eq(taxEstSnapshots.taxYear, taxYear),
     q.scenarioId ? eq(taxEstSnapshots.scenarioId, q.scenarioId) : undefined,
@@ -216,15 +218,20 @@ export async function listSnapshots(scope: FirmScope, taxpayerId: string, taxYea
   return { data: rows.map((r) => listItem(scope, r)), total: Number(tot?.n ?? 0), limit: q.limit, offset: q.offset };
 }
 
-/** By id: the firm AND the taxpayer's D17 visibility; a hidden taxpayer's snapshot is the same 404 as another firm's. */
-async function loadSnapshotRow(scope: FirmScope, snapshotId: string): Promise<Row> {
+/**
+ * By id: the firm AND the taxpayer's D17 / D18 visibility; a hidden taxpayer's snapshot is the
+ * same 404 as another firm's. Returns the scope the snapshot is read under (D18: widened for a
+ * user on its taxpayer's staff list).
+ */
+async function loadSnapshotRow(scope: FirmScope, snapshotId: string): Promise<{ row: Row; scope: FirmScope }> {
   const [hit] = await db.select({ s: taxEstSnapshots }).from(taxEstSnapshots)
     .innerJoin(taxEstTaxpayers, eq(taxEstTaxpayers.id, taxEstSnapshots.taxpayerId))
     .where(and(eq(taxEstSnapshots.id, snapshotId), eq(taxEstSnapshots.firmId, scope.firmId), visibleTaxpayerFilter(scope)));
   const row = hit?.s;
   if (!row) throw snapshotNotFound();
-  if (!accessible(scope, row)) throw new AppError(404, 'The snapshot includes a client your firm no longer manages (or you can no longer reach)', 'TE_TENANT_NOT_MANAGED');
-  return row;
+  const effective = await scopeForTaxpayer(scope, row.taxpayerId);
+  if (!accessible(effective, row)) throw new AppError(404, 'The snapshot includes a client your firm no longer manages (or you can no longer reach)', 'TE_TENANT_NOT_MANAGED');
+  return { row, scope: effective };
 }
 
 function readPayload(row: Row): EstimateSnapshotPayload {
@@ -233,7 +240,9 @@ function readPayload(row: Row): EstimateSnapshotPayload {
 
 /** GET /snapshots/:id — the read-only view. */
 export async function getSnapshot(scope: FirmScope, snapshotId: string): Promise<EstimateSnapshotDTO> {
-  const row = await loadSnapshotRow(scope, snapshotId);
+  const loaded = await loadSnapshotRow(scope, snapshotId);
+  const row = loaded.row;
+  scope = loaded.scope;
   const payload = readPayload(row);
   return { ...listItem(scope, row, payload.result.summary), payloadSha256: row.payloadSha256, payload: redactForView(payload) };
 }
@@ -325,7 +334,9 @@ function warningDiff(a: TaxEstimatorWarning[], b: TaxEstimatorWarning[]): TaxEst
 
 /** GET /snapshots/:id/compare — the frozen result vs a live computation of the same scenario and range. */
 export async function compareSnapshot(scope: FirmScope, snapshotId: string, opts: EstimateOptions = {}): Promise<SnapshotCompareDTO> {
-  const row = await loadSnapshotRow(scope, snapshotId);
+  const loaded = await loadSnapshotRow(scope, snapshotId);
+  const row = loaded.row;
+  scope = loaded.scope;
   const payload = readPayload(row);
   const snap = payload.result;
   let live: EstimateResultDTO;
