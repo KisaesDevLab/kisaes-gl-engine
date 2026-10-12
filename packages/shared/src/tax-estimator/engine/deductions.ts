@@ -13,8 +13,10 @@
 //   interest) on top of either, each with its MAGI phase-out, in effect only
 //   between sch1a.first_year and sch1a.last_year; the senior phase-out is linear
 //   (§151(d)(5)(C)(iii): 6% of the excess), tips / overtime / car-loan interest
-//   step by `sch1a.phaseout_step` or fraction thereof (§224(b)(2), §225(b)(2),
-//   §163(h)(4)(E): $100 / $100 / $200 per $1,000). A married taxpayer must file
+//   step by `sch1a.phaseout_step`: tips and overtime by WHOLE steps — "$100 for
+//   each $1,000" (§224(b)(2), §225(b)(2); 2025 Schedule 1-A lines 11 / 19 round the
+//   quotient DOWN), car-loan interest by steps begun — "$200 for each $1,000 (or
+//   portion thereof)" (§163(h)(4)(E); line 28 rounds UP). A married taxpayer must file
 //   jointly for every Schedule 1-A deduction (§151(d)(5)(C)(v), §224(f), §225(e),
 //   §163(h)(4)(F)): MFS gets nothing (R2-02).
 // MAGI is taken as AGI (no foreign-income exclusions are modelled).
@@ -163,16 +165,22 @@ export function chooseDeduction(mode: DeductionMode, standard: StandardDeduction
   return { chosen, deduction };
 }
 
+/** How a fractional MAGI step counts: 'down' = whole steps only ("for each $1,000"), 'up' = steps begun ("or portion thereof"). */
+type StepRounding = 'down' | 'up';
+
 /**
  * min(amount, max) reduced by rate × (MAGI − threshold), floored at zero. With a
- * `step`, the excess is rounded UP to the next whole step first ("$100 for each
- * $1,000 or fraction thereof"): the reduction is rate × step per step begun.
+ * `step`, the excess is first rounded to a whole number of steps — DOWN for the
+ * tips / overtime deductions ("$100 for each $1,000"; 2025 Schedule 1-A lines 11 and
+ * 19: "decrease the result to the next lower whole number"), UP for car-loan
+ * interest ("$200 for each $1,000 (or portion thereof)"; line 28: "increase the
+ * result to the next higher whole number"). The reduction is rate × the rounded excess.
  */
-function phasedOut(amount: Dec, max: Dec | null, magi: Dec, threshold: Dec, rate: Dec, step: Dec | null = null): Dec {
+function phasedOut(amount: Dec, max: Dec | null, magi: Dec, threshold: Dec, rate: Dec, step: Dec | null = null, stepRounding: StepRounding = 'up'): Dec {
   const capped = max == null ? dFloorZero(amount) : dMin(dFloorZero(amount), max);
   if (!dIsPos(capped)) return ZERO;
   let excess = dFloorZero(dSub(magi, threshold));
-  if (step != null && dIsPos(step) && dIsPos(excess)) excess = dMul(dCeilDiv(excess, step), step);
+  if (step != null && dIsPos(step) && dIsPos(excess)) excess = dMul(stepRounding === 'up' ? dCeilDiv(excess, step) : dFloorDiv(excess, step), step);
   return dFloorZero(dSub(capped, dMul(rate, excess)));
 }
 
@@ -182,6 +190,14 @@ function dCeilDiv(a: Dec, b: Dec): Dec {
   const whole = dRound(q, 0);
   // dRound is half-up; step up when the rounded quotient fell short of the exact one.
   return dCmp(whole, q) < 0 ? dAdd(whole, ONE) : whole;
+}
+
+/** ⌊a ÷ b⌋ for positive decimals: whole steps completed. */
+function dFloorDiv(a: Dec, b: Dec): Dec {
+  const q = dDiv(a, b);
+  const whole = dRound(q, 0);
+  // dRound is half-up; step down when the rounded quotient overshot the exact one.
+  return dCmp(whole, q) > 0 ? dSub(whole, ONE) : whole;
 }
 
 export function computeSch1a(persons: DeductionPerson[], magi: Dec, ctx: EngineContext): Sch1aExact {
@@ -204,21 +220,22 @@ export function computeSch1a(persons: DeductionPerson[], magi: Dec, ctx: EngineC
   const seniors = counted.filter((p) => p.age != null && p.age >= seniorAge).length;
   const senior = phasedOut(dMul(seniorEach, String(seniors)), null, magi, params.moneyFs('sch1a.senior.phaseout_threshold', fs), params.rate('sch1a.senior.phaseout_rate'));
 
-  const tips = phasedOut(dSum(counted.map((p) => p.sch1a.qualifiedTips)), params.money('sch1a.tips.max'), magi, params.moneyFs('sch1a.tips.phaseout_threshold', fs), params.rate('sch1a.tips.phaseout_rate'), step);
+  const tips = phasedOut(dSum(counted.map((p) => p.sch1a.qualifiedTips)), params.money('sch1a.tips.max'), magi, params.moneyFs('sch1a.tips.phaseout_threshold', fs), params.rate('sch1a.tips.phaseout_rate'), step, 'down');
   const overtimeMaxKey = fs === 'mfj' ? 'sch1a.overtime.max.mfj' : 'sch1a.overtime.max.standard';
-  const overtime = phasedOut(dSum(counted.map((p) => p.sch1a.qualifiedOvertime)), params.money(overtimeMaxKey), magi, params.moneyFs('sch1a.overtime.phaseout_threshold', fs), params.rate('sch1a.overtime.phaseout_rate'), step);
-  const car = phasedOut(dSum(counted.map((p) => p.sch1a.carLoanInterest)), params.money('sch1a.car_interest.max'), magi, params.moneyFs('sch1a.car_interest.phaseout_threshold', fs), params.rate('sch1a.car_interest.phaseout_rate'), step);
+  const overtime = phasedOut(dSum(counted.map((p) => p.sch1a.qualifiedOvertime)), params.money(overtimeMaxKey), magi, params.moneyFs('sch1a.overtime.phaseout_threshold', fs), params.rate('sch1a.overtime.phaseout_rate'), step, 'down');
+  const car = phasedOut(dSum(counted.map((p) => p.sch1a.carLoanInterest)), params.money('sch1a.car_interest.max'), magi, params.moneyFs('sch1a.car_interest.phaseout_threshold', fs), params.rate('sch1a.car_interest.phaseout_rate'), step, 'up');
   const total = dSum([senior, tips, overtime, car]);
 
   const add = (id: string, label: string, exact: Dec, keys: string[], formula: string) => {
     if (dIsZero(exact)) return;
     ctx.trace.add({ step: STEP_DEDUCTIONS, id, label, exact, source: 'parameter', formula, parameterKeys: keys });
   };
-  const stepped = `capped, less rate × MAGI excess over the threshold rounded up to the next ${step} step`;
+  const steppedDown = `capped, less rate × MAGI excess over the threshold in whole ${step} steps (fraction dropped)`;
+  const steppedUp = `capped, less rate × MAGI excess over the threshold rounded up to the next ${step} step`;
   add('sch1a.senior', `Schedule 1-A — senior deduction (${seniors} eligible)`, senior, ['sch1a.senior.amount', 'sch1a.senior.age', `sch1a.senior.phaseout_threshold.${fs}`, 'sch1a.senior.phaseout_rate'], 'less rate × MAGI excess over the threshold (linear)');
-  add('sch1a.tips', 'Schedule 1-A — qualified tips', tips, ['sch1a.tips.max', `sch1a.tips.phaseout_threshold.${fs}`, 'sch1a.tips.phaseout_rate', 'sch1a.phaseout_step'], stepped);
-  add('sch1a.overtime', 'Schedule 1-A — qualified overtime', overtime, [overtimeMaxKey, `sch1a.overtime.phaseout_threshold.${fs}`, 'sch1a.overtime.phaseout_rate', 'sch1a.phaseout_step'], stepped);
-  add('sch1a.car_interest', 'Schedule 1-A — car-loan interest', car, ['sch1a.car_interest.max', `sch1a.car_interest.phaseout_threshold.${fs}`, 'sch1a.car_interest.phaseout_rate', 'sch1a.phaseout_step'], stepped);
+  add('sch1a.tips', 'Schedule 1-A — qualified tips', tips, ['sch1a.tips.max', `sch1a.tips.phaseout_threshold.${fs}`, 'sch1a.tips.phaseout_rate', 'sch1a.phaseout_step'], steppedDown);
+  add('sch1a.overtime', 'Schedule 1-A — qualified overtime', overtime, [overtimeMaxKey, `sch1a.overtime.phaseout_threshold.${fs}`, 'sch1a.overtime.phaseout_rate', 'sch1a.phaseout_step'], steppedDown);
+  add('sch1a.car_interest', 'Schedule 1-A — car-loan interest', car, ['sch1a.car_interest.max', `sch1a.car_interest.phaseout_threshold.${fs}`, 'sch1a.car_interest.phaseout_rate', 'sch1a.phaseout_step'], steppedUp);
   if (dIsPos(total)) ctx.trace.add({ step: STEP_DEDUCTIONS, id: 'sch1a.total', label: 'Schedule 1-A deductions', exact: total, source: 'parameter', parameterKeys: ['sch1a.first_year', 'sch1a.last_year'] });
   return { inEffect: true, senior, tips, overtime, carLoanInterest: car, total };
 }

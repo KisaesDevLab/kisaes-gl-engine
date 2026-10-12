@@ -69,6 +69,14 @@ P = dict(
   niit_rate=0.038, niit_thr=dict(single=200000, mfj=250000, mfs=125000),
   sep_pct=0.25, sep_dollar_limit=72000, comp_limit=360000,
   passive_allowance=25000, passive_phaseout=(100000, 150000),       # MFS living together: no allowance (§469(i)(5)(B))
+  ebl_threshold=dict(single=256000, mfj=512000),                     # §461(l)(3) as indexed for 2026 (Rev. Proc. 2025-32 §4.31)
+  # Schedule 1-A (2025 form, Parts II–V; 2026 seed amounts). Tips / overtime: $100 for each WHOLE $1,000 of MAGI over the
+  # threshold (form lines 11 / 19: "decrease the result to the next lower whole number"); car-loan interest: $200 for each
+  # $1,000 "or portion thereof" (line 28: "increase the result to the next higher whole number"); seniors: linear 6% (line 34).
+  sch1a_senior=6000, sch1a_senior_rate=0.06, sch1a_senior_thr=dict(single=75000, mfj=150000),
+  sch1a_tips_max=25000, sch1a_tips_thr=dict(single=150000, mfj=300000), sch1a_tips_per_step=100,
+  sch1a_ot_max=dict(single=12500, mfj=25000), sch1a_ot_thr=dict(single=150000, mfj=300000), sch1a_ot_per_step=100,
+  sch1a_car_max=10000, sch1a_car_thr=dict(single=100000, mfj=200000), sch1a_car_per_step=200, sch1a_step=1000,
   sh_current=0.90, sh_prior=1.00, sh_prior_high=1.10, sh_high_agi=dict(standard=150000, mfs=75000), sh_min_balance=1000,
   installment_due=[date(2026,4,15), date(2026,6,15), date(2026,9,15), date(2027,1,15)],
   return_due=date(2027,4,15), q4_file_and_pay=date(2027,2,1),
@@ -157,6 +165,27 @@ def safe_harbor(fed_tax_rounded, prior_tax, prior_agi, fs, withholding, rule='le
     return dict(current_90=r(cur), prior=r(pri), prior_pct_high_agi_applied=high, required=r(req), installment=r(inst),
                 withholding_per_q=r(withholding / 4), net_per_installment=r(inst - withholding / 4), required_exact=req)
 
+def schedule_1a(fs, magi, seniors, tips=0.0, overtime=0.0, car=0.0):
+    """2025 Schedule 1-A, Parts II–V, line by line. MAGI = AGI (no exclusions modelled). A married taxpayer must file
+    jointly for every Part (§151(d)(5)(C)(v), §224(f), §225(e), §163(h)(4)(F)): MFS gets zero.
+      Part II  lines 7–13: smaller of tips / 25,000; excess MAGI over 150,000 / 300,000 ÷ 1,000 rounded DOWN × $100.
+      Part III lines 15–21: smaller of overtime / 12,500 (25,000 joint); same threshold and rounding as tips.
+      Part IV  lines 24–30: smaller of interest / 10,000; excess over 100,000 / 200,000 ÷ 1,000 rounded UP × $200.
+      Part V   lines 31–36: 6,000 per 65+ person; less 6% of MAGI over 75,000 / 150,000 (linear)."""
+    zero = dict(senior=0.0, tips=0.0, overtime=0.0, car=0.0, total=0.0, steps=dict(tips=0, overtime=0, car=0))
+    if fs == 'mfs': return zero
+    step = P['sch1a_step']
+    excess = lambda thr: max(0.0, magi - thr)
+    tips_steps = math.floor(excess(P['sch1a_tips_thr'][fs]) / step)                     # line 11: next LOWER whole number
+    ot_steps = math.floor(excess(P['sch1a_ot_thr'][fs]) / step)                         # line 19: next LOWER whole number
+    car_steps = math.ceil(excess(P['sch1a_car_thr'][fs]) / step)                        # line 28: next HIGHER whole number
+    tips_d = max(0.0, min(tips, P['sch1a_tips_max']) - tips_steps * P['sch1a_tips_per_step']) if tips > 0 else 0.0
+    ot_d = max(0.0, min(overtime, P['sch1a_ot_max'][fs]) - ot_steps * P['sch1a_ot_per_step']) if overtime > 0 else 0.0
+    car_d = max(0.0, min(car, P['sch1a_car_max']) - car_steps * P['sch1a_car_per_step']) if car > 0 else 0.0
+    senior_d = max(0.0, P['sch1a_senior'] * seniors - P['sch1a_senior_rate'] * excess(P['sch1a_senior_thr'][fs])) if seniors > 0 else 0.0
+    return dict(senior=senior_d, tips=tips_d, overtime=ot_d, car=car_d, total=senior_d + tips_d + ot_d + car_d,
+                steps=dict(tips=tips_steps, overtime=ot_steps, car=car_steps))
+
 # ---------------------------------------------------------------- Form 1040 (individual), form order
 
 def se_person_ss_wages(inputs):
@@ -166,11 +195,13 @@ def se_person_ss_wages(inputs):
 
 def form_1040(fs, *, wages=0.0, wages_are_spouses=False, officer_wages=0.0, se_businesses=(), passthrough=(), interest=0.0,
               qualified_dividends=0.0, ltcg=0.0, rental=0.0, suspended_passive_loss=0.0, sep=0.0, sehi=0.0,
-              itemized=None, seniors=0, charitable_cash_nonitemizer=0.0, credits=0.0, wage_base=None):
+              itemized=None, seniors=0, charitable_cash_nonitemizer=0.0, credits=0.0, wage_base=None, sch1a=None, ebl_addback=0.0):
     """One return. `se_businesses` = [dict(profit, w2, ubia, sstb)] (Sch C, one owner, all QBI-eligible);
     `passthrough` = [dict(ordinary, sstb, active)] (S corp K-1: not SE income; QBI when active, excluded when SSTB
     above the range); `rental` = passive K-1 rental after §469 (never QBI); `itemized` = dict(salt, mortgage,
-    charity, other) or None. `wage_base` prorates the SE Social Security limit (Schedule AI Part II)."""
+    charity, other) or None. `wage_base` prorates the SE Social Security limit (Schedule AI Part II).
+    `sch1a` = dict(tips, overtime, car) → Schedule 1-A with the `seniors` count (None = no Schedule 1-A items);
+    `ebl_addback` = the §461(l) excess business loss disallowed this year (added back to ordinary income, an NOL note)."""
     ss_w = se_person_ss_wages(dict(wages=wages, wages_are_spouses=wages_are_spouses))
     se_income = sum(b['profit'] for b in se_businesses)
     se = se_tax(se_income, ss_w, wage_base)
@@ -179,7 +210,7 @@ def form_1040(fs, *, wages=0.0, wages_are_spouses=False, officer_wages=0.0, se_b
     sehi_used = min(sehi, max(0.0, se_income - se['half'] - sep_used) + officer_wages)
     business = se_income + sum(k['ordinary'] for k in passthrough)
     total_wages = wages + officer_wages
-    total_income = total_wages + business + interest + qualified_dividends + ltcg + rental
+    total_income = total_wages + business + interest + qualified_dividends + ltcg + rental + ebl_addback
     agi = total_income - se['half'] - sep_used - sehi_used
     # deductions
     std = P['std'][fs] + seniors * (P['std_addl_65_married'] if fs in ('mfj', 'mfs') else P['std_addl_65_unmarried'])
@@ -196,13 +227,16 @@ def form_1040(fs, *, wages=0.0, wages_are_spouses=False, officer_wages=0.0, se_b
                   charity_gross=itemized['charity'], charity_floor=charity_floor, charity_allowed=max(0.0, itemized['charity'] - charity_floor), other=itemized.get('other', 0.0))
         it['before_68'] = it['salt_allowed'] + it['mortgage'] + it['charity_allowed'] + it['other']
     pre_68_deduction = max(std_total, it['before_68']) if it else std_total
-    sch1a = 0.0                                                  # every scenario here: MFS (disallowed) or no eligible items
+    s1a = schedule_1a(fs, agi, seniors, **sch1a) if sch1a else None        # MAGI = AGI
+    sch1a = s1a['total'] if s1a else 0.0
     # §199A on taxable income before QBI, itemized taken BEFORE §68 (the §68 base needs QBI; MODULE.md Q32)
     ti_before_qbi = agi - pre_68_deduction - sch1a
     components = []
-    attributable = se['half'] + sep_used + sehi_used              # one SE business per scenario carries all of it
+    attributable = se['half'] + sep_used + sehi_used              # Reg. 1.199A-3(b)(1)(vi): allocated to the SE businesses pro rata by their (positive) SE income
+    positive_profit = sum(b['profit'] for b in se_businesses if b['profit'] > 0)
     for b in se_businesses:
-        c = qbi_component(b['profit'] - attributable, b.get('w2', 0.0), b.get('ubia'), ti_before_qbi, fs, b.get('sstb', False)); c['source'] = 'sch_c'; components.append(c)
+        weight = b['profit'] / positive_profit if b['profit'] > 0 and positive_profit > 0 else 0.0
+        c = qbi_component(b['profit'] - attributable * weight, b.get('w2', 0.0), b.get('ubia'), ti_before_qbi, fs, b.get('sstb', False)); c['source'] = 'sch_c'; components.append(c)
     for k in passthrough:
         if k.get('active', True):
             c = qbi_component(k['ordinary'], k.get('w2', 0.0), k.get('ubia'), ti_before_qbi, fs, k.get('sstb', False)); c['source'] = 's_corp'; components.append(c)
@@ -226,7 +260,7 @@ def form_1040(fs, *, wages=0.0, wages_are_spouses=False, officer_wages=0.0, se_b
     inc_tax = tax_ws['tax']
     nr = min(credits, inc_tax)
     addl = addl_medicare(total_wages, se['nese'], fs)
-    nii = interest + qualified_dividends + max(0.0, ltcg) + rental
+    nii = max(0.0, interest + qualified_dividends + max(0.0, ltcg) + rental)   # Form 8960 line 8 floored (a net rental loss cannot make NII negative)
     nii_tax = niit(nii, agi, fs)
     fed = inc_tax - nr + se['se'] + addl + nii_tax
     out = dict(total_income=r(total_income), se_income=r(se_income), nese=r(se['nese']), se_tax=r(se['se']), half_se=r(se['half']),
@@ -239,6 +273,8 @@ def form_1040(fs, *, wages=0.0, wages_are_spouses=False, officer_wages=0.0, se_b
                credits_nonrefundable=r(nr), addl_medicare=r(addl), nii=r(nii), niit=r(nii_tax), suspended_passive_loss=r(suspended_passive_loss),
                federal_total=r(fed), federal_total_exact=fed)
     if it: out['itemized'] = {k: (round(v, 6) if isinstance(v, float) else v) for k, v in it.items()}
+    if s1a: out['sch1a'] = dict(senior=r(s1a['senior']), tips=r(s1a['tips']), overtime=r(s1a['overtime']), car_loan_interest=r(s1a['car']), total=r(s1a['total']), steps=s1a['steps'])
+    if ebl_addback: out['ebl_addback'] = r(ebl_addback)
     return out
 
 # ---------------------------------------------------------------- Form 2210 Schedule AI

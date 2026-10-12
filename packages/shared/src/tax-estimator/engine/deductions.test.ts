@@ -185,17 +185,24 @@ describe('computeSch1a', () => {
     const single = computeSch1a([p[0]!], '100000', ctx('single'));
     expect(single.overtime).toBe('12500');
   });
-  it('R2-14: tips / overtime / car-loan phase-outs step by $1,000 or fraction thereof (§224(b)(2), §225(b)(2), §163(h)(4)(E)); the senior deduction stays linear', () => {
+  it('R2-14 / Q37: tips and overtime step by WHOLE $1,000s (round DOWN, 2025 Schedule 1-A lines 11 / 19); car-loan interest by $1,000 or portion thereof (round UP, line 28); the senior deduction stays linear', () => {
     const p = [person('a', 'primary', 66, false, { qualifiedTips: '25000', qualifiedOvertime: '25000', carLoanInterest: '10000' }), person('b', 'spouse', 40)];
-    // MAGI 300,500: excess 500 → one full step: tips 25,000 − 100; overtime 25,000 − 100; car (threshold 200,000) excess 100,500 → 101 steps × 200 = 20,200 → 0.
+    // MAGI 300,500: excess 500 → 0.5 → "decrease the result to the next lower whole number" → 0 steps: tips and overtime untouched;
+    // car (threshold 200,000) excess 100,500 → 100.5 → "increase the result to the next higher whole number" → 101 steps × 200 = 20,200 → 0.
     const r = computeSch1a(p, '300500', ctx());
-    expect(r.tips).toBe('24900');
-    expect(r.overtime).toBe('24900');
+    expect(r.tips).toBe('25000');
+    expect(r.overtime).toBe('25000');
     expect(r.carLoanInterest).toBe('0');
-    // exactly on a step boundary: excess 2,000 → 2 steps.
+    // MAGI 302,350 (the Q37 oracle case): 2.35 → 2 steps → 25,000 − 200.
+    const q37 = computeSch1a(p, '302350', ctx());
+    expect(q37.tips).toBe('24800');
+    expect(q37.overtime).toBe('24800');
+    // exactly on a step boundary: excess 2,000 → 2 steps either way.
     expect(computeSch1a(p, '302000', ctx()).tips).toBe('24800');
-    // car: MAGI 200,001 → excess 1 → one step of 200.
+    // car: MAGI 200,001 → excess 1 → 0.001 → one step of 200 (portion thereof).
     expect(computeSch1a([person('a', 'primary', 40, false, { qualifiedTips: '0', qualifiedOvertime: '0', carLoanInterest: '10000' })], '200001', ctx()).carLoanInterest).toBe('9800');
+    // car: MAGI 203,400 → 3.4 → 4 steps × 200 = 800.
+    expect(computeSch1a([person('a', 'primary', 40, false, { qualifiedTips: '0', qualifiedOvertime: '0', carLoanInterest: '3700' })], '203400', ctx()).carLoanInterest).toBe('2900');
     // senior: 6% linear → 6,000 − 0.06 × 500 = 5,970 at MAGI 150,500.
     expect(computeSch1a([person('a', 'primary', 66)], '150500', ctx()).senior).toBe('5970');
   });

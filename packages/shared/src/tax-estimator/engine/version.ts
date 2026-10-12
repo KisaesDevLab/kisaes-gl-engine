@@ -21,5 +21,8 @@
  *              SIMPLE deferral leg and the SIMPLE match (R7-01); a non-recurring
  *              GL-linked adjustment is never run-rated (R7-05);
  *              TE_SS_WAGES_DEFAULTED is a warning with its dollar effect (R7-12).
+ *              Schedule 1-A tips / overtime phase-out steps round DOWN (whole
+ *              $1,000s, 2025 Schedule 1-A lines 11 / 19); car-loan interest keeps
+ *              rounding UP (line 28) — Q37 oracle batch 2 (R7-06).
  */
 export const TAX_ENGINE_VERSION = '1.0.0-rc.2';

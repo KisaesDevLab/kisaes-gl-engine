@@ -1,0 +1,1104 @@
+{
+  "ccorp_fye_june": {
+    "large": {
+      "company": "Ozark Fabrication Inc.",
+      "tax_year": 2026,
+      "fiscal_year_start": "2026-07-01",
+      "fiscal_year_end": "2027-06-30",
+      "taxable_income": 2400000,
+      "federal_tax": 504000,
+      "states": [
+        {
+          "state": "MO",
+          "apportionment_pct": 0.6,
+          "effective_rate": 0.04,
+          "apportioned": 1440000,
+          "tax": 57600
+        },
+        {
+          "state": "KS",
+          "apportionment_pct": 0.15,
+          "effective_rate": 0.035,
+          "apportioned": 360000,
+          "tax": 12600
+        }
+      ],
+      "state_total": 70200,
+      "total_tax": 574200,
+      "large_corporation": true,
+      "large_corporation_source": "derived",
+      "estimates_required": true,
+      "prior_year_rule": {
+        "available": true,
+        "applies_to": "first_installment"
+      },
+      "required_annual_payment": {
+        "current_year": 504000,
+        "prior_year": 300000,
+        "required": 504000
+      },
+      "installments": [
+        {
+          "number": 1,
+          "fiscal_month": 4,
+          "statutory_due_date": "2026-10-15",
+          "due_date": "2026-10-15",
+          "pct": 0.25,
+          "current_year_basis": 126000,
+          "prior_year_basis": 75000,
+          "recapture": 0,
+          "required": 75000,
+          "cumulative_required": 75000,
+          "basis": "prior_year"
+        },
+        {
+          "number": 2,
+          "fiscal_month": 6,
+          "statutory_due_date": "2026-12-15",
+          "due_date": "2026-12-15",
+          "pct": 0.25,
+          "current_year_basis": 126000,
+          "prior_year_basis": null,
+          "recapture": 51000,
+          "required": 177000,
+          "cumulative_required": 252000,
+          "basis": "current_year"
+        },
+        {
+          "number": 3,
+          "fiscal_month": 9,
+          "statutory_due_date": "2027-03-15",
+          "due_date": "2027-03-15",
+          "pct": 0.25,
+          "current_year_basis": 126000,
+          "prior_year_basis": null,
+          "recapture": 0,
+          "required": 126000,
+          "cumulative_required": 378000,
+          "basis": "current_year"
+        },
+        {
+          "number": 4,
+          "fiscal_month": 12,
+          "statutory_due_date": "2027-06-15",
+          "due_date": "2027-06-15",
+          "pct": 0.25,
+          "current_year_basis": 126000,
+          "prior_year_basis": null,
+          "recapture": 0,
+          "required": 126000,
+          "cumulative_required": 504000,
+          "basis": "current_year"
+        }
+      ]
+    },
+    "non_large": {
+      "company": "Ozark Fabrication Inc. (non-large variant)",
+      "tax_year": 2026,
+      "fiscal_year_start": "2026-07-01",
+      "fiscal_year_end": "2027-06-30",
+      "taxable_income": 400000,
+      "federal_tax": 84000,
+      "states": [],
+      "state_total": 0,
+      "total_tax": 84000,
+      "large_corporation": false,
+      "large_corporation_source": "not_large",
+      "estimates_required": true,
+      "prior_year_rule": {
+        "available": true,
+        "applies_to": "all"
+      },
+      "required_annual_payment": {
+        "current_year": 84000,
+        "prior_year": 60000,
+        "required": 60000
+      },
+      "installments": [
+        {
+          "number": 1,
+          "fiscal_month": 4,
+          "statutory_due_date": "2026-10-15",
+          "due_date": "2026-10-15",
+          "pct": 0.25,
+          "current_year_basis": 21000,
+          "prior_year_basis": 15000,
+          "recapture": 0,
+          "required": 15000,
+          "cumulative_required": 15000,
+          "basis": "prior_year"
+        },
+        {
+          "number": 2,
+          "fiscal_month": 6,
+          "statutory_due_date": "2026-12-15",
+          "due_date": "2026-12-15",
+          "pct": 0.25,
+          "current_year_basis": 21000,
+          "prior_year_basis": 15000,
+          "recapture": 0,
+          "required": 15000,
+          "cumulative_required": 30000,
+          "basis": "prior_year"
+        },
+        {
+          "number": 3,
+          "fiscal_month": 9,
+          "statutory_due_date": "2027-03-15",
+          "due_date": "2027-03-15",
+          "pct": 0.25,
+          "current_year_basis": 21000,
+          "prior_year_basis": 15000,
+          "recapture": 0,
+          "required": 15000,
+          "cumulative_required": 45000,
+          "basis": "prior_year"
+        },
+        {
+          "number": 4,
+          "fiscal_month": 12,
+          "statutory_due_date": "2027-06-15",
+          "due_date": "2027-06-15",
+          "pct": 0.25,
+          "current_year_basis": 21000,
+          "prior_year_basis": 15000,
+          "recapture": 0,
+          "required": 15000,
+          "cumulative_required": 60000,
+          "basis": "prior_year"
+        }
+      ]
+    },
+    "below_minimum": {
+      "company": "Ozark Fabrication Inc. (below the $500 minimum)",
+      "tax_year": 2026,
+      "fiscal_year_start": "2026-07-01",
+      "fiscal_year_end": "2027-06-30",
+      "taxable_income": 2000,
+      "federal_tax": 420,
+      "states": [],
+      "state_total": 0,
+      "total_tax": 420,
+      "large_corporation": false,
+      "large_corporation_source": "not_large",
+      "estimates_required": false,
+      "prior_year_rule": {
+        "available": false,
+        "applies_to": "none"
+      },
+      "required_annual_payment": {
+        "current_year": 420,
+        "prior_year": null,
+        "required": 420
+      },
+      "installments": [
+        {
+          "number": 1,
+          "fiscal_month": 4,
+          "statutory_due_date": "2026-10-15",
+          "due_date": "2026-10-15",
+          "pct": 0.25,
+          "current_year_basis": 105,
+          "prior_year_basis": null,
+          "recapture": 0,
+          "required": 105,
+          "cumulative_required": 105,
+          "basis": "current_year"
+        },
+        {
+          "number": 2,
+          "fiscal_month": 6,
+          "statutory_due_date": "2026-12-15",
+          "due_date": "2026-12-15",
+          "pct": 0.25,
+          "current_year_basis": 105,
+          "prior_year_basis": null,
+          "recapture": 0,
+          "required": 105,
+          "cumulative_required": 210,
+          "basis": "current_year"
+        },
+        {
+          "number": 3,
+          "fiscal_month": 9,
+          "statutory_due_date": "2027-03-15",
+          "due_date": "2027-03-15",
+          "pct": 0.25,
+          "current_year_basis": 105,
+          "prior_year_basis": null,
+          "recapture": 0,
+          "required": 105,
+          "cumulative_required": 315,
+          "basis": "current_year"
+        },
+        {
+          "number": 4,
+          "fiscal_month": 12,
+          "statutory_due_date": "2027-06-15",
+          "due_date": "2027-06-15",
+          "pct": 0.25,
+          "current_year_basis": 105,
+          "prior_year_basis": null,
+          "recapture": 0,
+          "required": 105,
+          "cumulative_required": 420,
+          "basis": "current_year"
+        }
+      ]
+    },
+    "note": "\u00a76655(d)(2): a large corporation (taxable income \u2265 1,000,000 in one of the three preceding years) may base only its FIRST installment on the prior year (25% \u00d7 300,000 = 75,000 instead of 126,000); the 51,000 reduction is added to the second installment (177,000); installments 3\u20134 are 126,000; \u03a3 = 504,000 = 100% of the current-year tax. Due dates: the 15th of the 4th / 6th / 9th / 12th fiscal months (Oct 15, Dec 15, 2026; Mar 15, Jun 15, 2027), none of which falls on a weekend or holiday."
+  },
+  "farmer_prior_year": {
+    "gross_income_test": {
+      "current": {
+        "farming_and_fishing": 150000,
+        "total_gross": 250000,
+        "ratio": 0.6,
+        "passes": false
+      },
+      "prior": {
+        "farming_and_fishing": 210000,
+        "total_gross": 260000,
+        "ratio": 0.807692307692,
+        "passes": true
+      },
+      "qualifies": true,
+      "basis": "prior_year",
+      "joint_test": true,
+      "required_ratio": 0.6666666666
+    },
+    "federal": {
+      "total_income": 190000,
+      "se_income": 90000,
+      "nese": 83115,
+      "se_tax": 12717,
+      "half_se": 6358,
+      "sep_deducted": 0,
+      "sep_limit": 0,
+      "sehi": 0,
+      "agi": 183642,
+      "standard_deduction": 32200,
+      "nonitemizer_charitable": 0,
+      "deduction_chosen": "standard",
+      "deduction": 32200,
+      "sch1a_total": 0,
+      "taxable_income_before_qbi": 151442,
+      "qbi": 16728,
+      "qbi_components": [
+        {
+          "source": "sch_c",
+          "component": 16728,
+          "phase_in": 0.0,
+          "wage_ubia_limit": null,
+          "excluded": null
+        }
+      ],
+      "qbi_overall_limit": 30288,
+      "taxable_income": 134713,
+      "income_tax": 19061,
+      "worksheet": null,
+      "credits_nonrefundable": 0,
+      "addl_medicare": 0,
+      "nii": 5000,
+      "niit": 0,
+      "suspended_passive_loss": 0,
+      "federal_total": 31778,
+      "federal_total_exact": 31777.534640000005
+    },
+    "safe_harbor": {
+      "regime": "farmer",
+      "current_pct": 0.6666666667,
+      "prior_pct": 1.0,
+      "high_agi_rule_applies": false,
+      "current": 21185,
+      "prior": 24000,
+      "required": 21185,
+      "installment": 21185,
+      "withholding": 9000,
+      "net_required": 12185
+    },
+    "installments": [
+      {
+        "number": 1,
+        "due_date": "2027-01-15",
+        "pct": 1.0
+      }
+    ],
+    "file_and_pay_by": "2027-03-01",
+    "paid_jan_15": {
+      "payment": 12186,
+      "penalty_by_installment": [
+        {
+          "q": "Q1",
+          "due": "2027-01-15",
+          "required": 21185,
+          "withholding": 9000,
+          "still_unpaid_at_return_due": 0,
+          "paid_in_full_on": "2027-01-15",
+          "penalty": 0,
+          "penalty_exact": 0.0,
+          "segments": []
+        }
+      ],
+      "penalty_total": 0
+    },
+    "paid_mar_1": {
+      "payment": 12186,
+      "penalty_by_installment": [
+        {
+          "q": "Q1",
+          "due": "2027-01-15",
+          "required": 21185,
+          "withholding": 9000,
+          "still_unpaid_at_return_due": 0,
+          "paid_in_full_on": "2027-03-01",
+          "penalty": 105,
+          "penalty_exact": 105.161096,
+          "segments": [
+            {
+              "from": "2027-01-15",
+              "to": "2027-03-01",
+              "days": 45,
+              "rate": 0.07,
+              "days_in_year": 365,
+              "balance": 12185.333334,
+              "amount": 105.161096
+            }
+          ]
+        }
+      ],
+      "penalty_total": 105,
+      "relief": "\u00a76654(i)(1)(D): no addition to tax if the return is filed and the tax paid in full by Mar 1, 2027 \u2014 a note on the estimate, not assumed (the penalty shown accrues Jan 15 \u2192 Mar 1 at the 2027 Q1 rate)."
+    },
+    "regular_rules_for_contrast": {
+      "current_90": 28600,
+      "prior": 26400,
+      "prior_pct_high_agi_applied": true,
+      "required": 26400,
+      "installment": 6600,
+      "withholding_per_q": 2250,
+      "net_per_installment": 4350,
+      "required_exact": 26400.000000000004
+    },
+    "note": "\u00a76654(i)(2)(B): the two-thirds test is met on the PRIOR year (210,000 \u00f7 260,000 = 80.8%) although the current year fails (150,000 \u00f7 250,000 = 60%), so the farmer rules apply: one installment of 100% due Jan 15, 2027; required annual payment = lesser of 66\u2154% of the current-year tax and 100% of the prior-year tax (24,000) \u2014 the 110% rule for prior-year AGI over 150,000 does not apply (\u00a76654(i)(1)(C)); 66\u2154% \u00d7 31,778 = 21,185 binds."
+  },
+  "passive_ebl": {
+    "loss_limits": {
+      "magi": 124000,
+      "magi_ebl_addback": 44000,
+      "allowance_maximum": 25000,
+      "phaseout": {
+        "start": 100000,
+        "end": 150000
+      },
+      "allowance_after_phaseout": 13000,
+      "eligible_loss": 30000,
+      "allowance_used": 13000,
+      "suspended_passive_loss": 17000,
+      "rental_allowed": -13000,
+      "business_net": -313000,
+      "ebl_threshold": 256000,
+      "excess_business_loss": 57000,
+      "nol_note": "\u00a7461(l): 57000 of the business loss is disallowed in 2026 and becomes a net operating loss carryover (\u00a7461(l)(2)); the \u00a7199A loss carryforward is overstated by up to that amount (Reg. 1.199A-3(b)(1)(iv))."
+    },
+    "federal": {
+      "total_income": 124000,
+      "se_income": -300000,
+      "nese": 0,
+      "se_tax": 0,
+      "half_se": 0,
+      "sep_deducted": 0,
+      "sep_limit": 0,
+      "sehi": 0,
+      "agi": 124000,
+      "standard_deduction": 16100,
+      "nonitemizer_charitable": 0,
+      "deduction_chosen": "standard",
+      "deduction": 16100,
+      "sch1a_total": 0,
+      "taxable_income_before_qbi": 107900,
+      "qbi": 0,
+      "qbi_components": [
+        {
+          "source": "sch_c",
+          "component": 0,
+          "phase_in": 0.0,
+          "wage_ubia_limit": null,
+          "excluded": null
+        }
+      ],
+      "qbi_overall_limit": 21580,
+      "taxable_income": 107900,
+      "income_tax": 18494,
+      "worksheet": null,
+      "credits_nonrefundable": 0,
+      "addl_medicare": 1620,
+      "nii": 0,
+      "niit": 0,
+      "suspended_passive_loss": 17000,
+      "federal_total": 20114,
+      "federal_total_exact": 20114.0,
+      "ebl_addback": 57000
+    },
+    "safe_harbor": {
+      "current_90": 18103,
+      "prior": 99000,
+      "prior_pct_high_agi_applied": true,
+      "required": 18103,
+      "installment": 4526,
+      "withholding_per_q": 2500,
+      "net_per_installment": 2026,
+      "required_exact": 18102.600000000002
+    },
+    "note": "\u00a7469(i): MAGI = AGI without passive losses = 380,000 \u2212 300,000 + 44,000 (the \u00a7461(l) add-back on the nonpassive loss alone, which is what AGI contains when the passive loss is disregarded) = 124,000 \u2192 allowance 25,000 \u2212 50% \u00d7 24,000 = 13,000 of the 30,000 active-participation rental loss; 17,000 suspended. \u00a7461(l) after \u00a7469: business loss 300,000 + 13,000 = 313,000 exceeds the 2026 single threshold 256,000 by 57,000, which is disallowed and added back (NOL carryover). AGI = 380,000 \u2212 300,000 \u2212 13,000 + 57,000 = 124,000; Additional Medicare on wages over 200,000; no NIIT (AGI < 200,000)."
+  },
+  "senior_sch1a": {
+    "persons": {
+      "samir": {
+        "dob": "1959-05-10",
+        "age_2026": 67
+      },
+      "leila": {
+        "dob": "1962-01-01",
+        "age_rule": "born before January 2, 1962 \u2192 65 for 2026 (2025 Schedule 1-A line 36b wording shifted one year)"
+      }
+    },
+    "in_band": {
+      "inputs": {
+        "wages_samir": 40000,
+        "tips": 4300,
+        "car_loan_interest": 3700,
+        "wages_leila": 150000,
+        "overtime": 7500,
+        "interest": 6000,
+        "qualified_dividends": 7400,
+        "cash_gifts": 3000,
+        "withholding": 12000
+      },
+      "federal": {
+        "total_income": 203400,
+        "se_income": 0,
+        "nese": 0,
+        "se_tax": 0,
+        "half_se": 0,
+        "sep_deducted": 0,
+        "sep_limit": 0,
+        "sehi": 0,
+        "agi": 203400,
+        "standard_deduction": 37500,
+        "nonitemizer_charitable": 2000,
+        "deduction_chosen": "standard",
+        "deduction": 37500,
+        "sch1a_total": 23496,
+        "taxable_income_before_qbi": 142404,
+        "qbi": 0,
+        "qbi_components": [],
+        "qbi_overall_limit": 27001,
+        "taxable_income": 142404,
+        "income_tax": 20235,
+        "worksheet": {
+          "ordinary_portion": 135004,
+          "taxed_at_zero": 0,
+          "taxed_at_fifteen": 7400,
+          "taxed_at_twenty": 0
+        },
+        "credits_nonrefundable": 0,
+        "addl_medicare": 0,
+        "nii": 13400,
+        "niit": 0,
+        "suspended_passive_loss": 0,
+        "federal_total": 20235,
+        "federal_total_exact": 20234.88,
+        "sch1a": {
+          "senior": 8796,
+          "tips": 4300,
+          "overtime": 7500,
+          "car_loan_interest": 2900,
+          "total": 23496,
+          "steps": {
+            "tips": 0,
+            "overtime": 0,
+            "car": 4
+          }
+        }
+      },
+      "safe_harbor": {
+        "current_90": 18212,
+        "prior": 33000,
+        "prior_pct_high_agi_applied": true,
+        "required": 18212,
+        "installment": 4553,
+        "withholding_per_q": 3000,
+        "net_per_installment": 1553,
+        "required_exact": 18211.5
+      }
+    },
+    "above_tips_threshold": {
+      "inputs": {
+        "wages_samir": 45000,
+        "tips": 6200,
+        "car_loan_interest": 3700,
+        "wages_leila": 240000,
+        "overtime": 21000,
+        "interest": 10000,
+        "qualified_dividends": 7350,
+        "cash_gifts": 3000,
+        "withholding": 30000
+      },
+      "federal": {
+        "total_income": 302350,
+        "se_income": 0,
+        "nese": 0,
+        "se_tax": 0,
+        "half_se": 0,
+        "sep_deducted": 0,
+        "sep_limit": 0,
+        "sehi": 0,
+        "agi": 302350,
+        "standard_deduction": 37500,
+        "nonitemizer_charitable": 2000,
+        "deduction_chosen": "standard",
+        "deduction": 37500,
+        "sch1a_total": 29659,
+        "taxable_income_before_qbi": 235191,
+        "qbi": 0,
+        "qbi_components": [],
+        "qbi_overall_limit": 45568,
+        "taxable_income": 235191,
+        "income_tax": 40980,
+        "worksheet": {
+          "ordinary_portion": 227841,
+          "taxed_at_zero": 0,
+          "taxed_at_fifteen": 7350,
+          "taxed_at_twenty": 0
+        },
+        "credits_nonrefundable": 0,
+        "addl_medicare": 315,
+        "nii": 17350,
+        "niit": 659,
+        "suspended_passive_loss": 0,
+        "federal_total": 41955,
+        "federal_total_exact": 41954.64,
+        "sch1a": {
+          "senior": 2859,
+          "tips": 6000,
+          "overtime": 20800,
+          "car_loan_interest": 0,
+          "total": 29659,
+          "steps": {
+            "tips": 2,
+            "overtime": 2,
+            "car": 103
+          }
+        }
+      },
+      "safe_harbor": {
+        "current_90": 37760,
+        "prior": 33000,
+        "prior_pct_high_agi_applied": true,
+        "required": 33000,
+        "installment": 8250,
+        "withholding_per_q": 7500,
+        "net_per_installment": 750,
+        "required_exact": 33000.0
+      },
+      "if_rounded_up_instead": {
+        "tips": 5900,
+        "overtime": 20700,
+        "note": "what a round-UP reading of \u00a7224(b)(2) / \u00a7225(b)(2) would give \u2014 the 2025 Schedule 1-A lines 11 / 19 say round DOWN"
+      }
+    },
+    "note": "Schedule 1-A (2025 form): Part V seniors 2 \u00d7 6,000 less 6% of MAGI over 150,000 (linear, lines 33\u201335); Part IV car-loan interest 3,700 less $200 per $1,000 \"or portion thereof\" of MAGI over 200,000 (line 28 rounds UP: 3,400 \u2192 4 steps \u2192 800); Parts II / III tips and overtime less $100 per WHOLE $1,000 over 300,000 (lines 11 / 19 round DOWN: 2,350 \u2192 2 steps \u2192 200). Standard deduction 32,200 + 2 \u00d7 1,650 + 2,000 \u00a7170(p)."
+  },
+  "multistate": {
+    "federal": {
+      "total_income": 234000,
+      "se_income": 160000,
+      "nese": 147760,
+      "se_tax": 22607,
+      "half_se": 11304,
+      "sep_deducted": 0,
+      "sep_limit": 0,
+      "sehi": 0,
+      "agi": 222696,
+      "standard_deduction": 32200,
+      "nonitemizer_charitable": 0,
+      "deduction_chosen": "standard",
+      "deduction": 32200,
+      "sch1a_total": 0,
+      "taxable_income_before_qbi": 190496,
+      "qbi": 29739,
+      "qbi_components": [
+        {
+          "source": "sch_c",
+          "component": 22304,
+          "phase_in": 0.0,
+          "wage_ubia_limit": null,
+          "excluded": null
+        },
+        {
+          "source": "sch_c",
+          "component": 7435,
+          "phase_in": 0.0,
+          "wage_ubia_limit": null,
+          "excluded": null
+        }
+      ],
+      "qbi_overall_limit": 38099,
+      "taxable_income": 160757,
+      "income_tax": 24791,
+      "worksheet": null,
+      "credits_nonrefundable": 0,
+      "addl_medicare": 0,
+      "nii": 14000,
+      "niit": 0,
+      "suspended_passive_loss": 0,
+      "federal_total": 47398,
+      "federal_total_exact": 47397.83936
+    },
+    "safe_harbor": {
+      "current_90": 42658,
+      "prior": 30800,
+      "prior_pct_high_agi_applied": true,
+      "required": 30800,
+      "installment": 7700,
+      "withholding_per_q": 1250,
+      "net_per_installment": 6450,
+      "required_exact": 30800.000000000004
+    },
+    "states": {
+      "KS": {
+        "state": "KS",
+        "residency": "nonresident",
+        "sourced_income": 40000,
+        "effective_rate": 0.057,
+        "gross_tax": 2280,
+        "credit": 0,
+        "net_tax": 2280,
+        "gate": {
+          "method": "threshold",
+          "measured": 2280.0,
+          "threshold": 500,
+          "comparison": "at_least",
+          "required": true,
+          "withholding": 0
+        }
+      },
+      "AR": {
+        "state": "AR",
+        "residency": "nonresident",
+        "sourced_income": 12000,
+        "effective_rate": 0.039,
+        "gross_tax": 468,
+        "credit": 0,
+        "net_tax": 468,
+        "gate": {
+          "method": "threshold",
+          "measured": 468.0,
+          "threshold": 1000,
+          "comparison": "more_than",
+          "required": false,
+          "withholding": 0
+        }
+      },
+      "MO": {
+        "state": "MO",
+        "residency": "resident",
+        "base": 222696,
+        "effective_rate": 0.04,
+        "gross_tax": 8908,
+        "credit": 2068,
+        "credit_details": [
+          {
+            "state": "KS",
+            "other_state_tax": 2280,
+            "resident_rate_on_sourced": 1600,
+            "allowed": 1600,
+            "limited": true
+          },
+          {
+            "state": "AR",
+            "other_state_tax": 468,
+            "resident_rate_on_sourced": 480,
+            "allowed": 468,
+            "limited": false
+          }
+        ],
+        "net_tax": 6840,
+        "gate": {
+          "method": "threshold",
+          "measured": 4439.84,
+          "threshold": 100,
+          "comparison": "at_least",
+          "required": true,
+          "withholding": 2400
+        }
+      }
+    },
+    "state_total": 9588,
+    "sourcing": {
+      "KS": {
+        "company": "Okafor KC-Kansas",
+        "income": 40000
+      },
+      "AR": {
+        "company": "Riverbend Flats LP",
+        "income": 12000
+      }
+    },
+    "vouchers": {
+      "MO": {
+        "current": 6156,
+        "prior": 6000,
+        "required": 6000,
+        "installment": 1500,
+        "withholding_per_q": 600,
+        "net_per_installment": 900,
+        "due_dates": [
+          "2026-04-15",
+          "2026-06-15",
+          "2026-09-15",
+          "2027-01-15"
+        ],
+        "return_due": "2027-04-15",
+        "penalty_rate": 0.07,
+        "payments": [],
+        "penalty_by_installment": [
+          {
+            "q": "Q1",
+            "due": "2026-04-15",
+            "required": 1500,
+            "withholding": 600,
+            "still_unpaid_at_return_due": 0,
+            "paid_in_full_on": "2026-09-15",
+            "penalty": 16,
+            "penalty_exact": 15.821918,
+            "segments": [
+              {
+                "from": "2026-04-15",
+                "to": "2026-06-15",
+                "days": 61,
+                "rate": 0.07,
+                "days_in_year": 365,
+                "balance": 900.0,
+                "amount": 10.528767
+              },
+              {
+                "from": "2026-06-15",
+                "to": "2026-09-15",
+                "days": 92,
+                "rate": 0.07,
+                "days_in_year": 365,
+                "balance": 300.0,
+                "amount": 5.293151
+              }
+            ]
+          },
+          {
+            "q": "Q2",
+            "due": "2026-06-15",
+            "required": 1500,
+            "withholding": 600,
+            "still_unpaid_at_return_due": 600,
+            "paid_in_full_on": null,
+            "penalty": 65,
+            "penalty_exact": 64.89863,
+            "segments": [
+              {
+                "from": "2026-06-15",
+                "to": "2026-09-15",
+                "days": 92,
+                "rate": 0.07,
+                "days_in_year": 365,
+                "balance": 1500.0,
+                "amount": 26.465753
+              },
+              {
+                "from": "2026-09-15",
+                "to": "2026-12-31",
+                "days": 107,
+                "rate": 0.07,
+                "days_in_year": 365,
+                "balance": 1200.0,
+                "amount": 24.624658
+              },
+              {
+                "from": "2026-12-31",
+                "to": "2027-01-15",
+                "days": 15,
+                "rate": 0.07,
+                "days_in_year": 365,
+                "balance": 1200.0,
+                "amount": 3.452055
+              },
+              {
+                "from": "2027-01-15",
+                "to": "2027-04-15",
+                "days": 90,
+                "rate": 0.07,
+                "days_in_year": 365,
+                "balance": 600.0,
+                "amount": 10.356164
+              }
+            ]
+          },
+          {
+            "q": "Q3",
+            "due": "2026-09-15",
+            "required": 1500,
+            "withholding": 600,
+            "still_unpaid_at_return_due": 1500,
+            "paid_in_full_on": null,
+            "penalty": 61,
+            "penalty_exact": 60.986301,
+            "segments": [
+              {
+                "from": "2026-09-15",
+                "to": "2026-12-31",
+                "days": 107,
+                "rate": 0.07,
+                "days_in_year": 365,
+                "balance": 1500.0,
+                "amount": 30.780822
+              },
+              {
+                "from": "2026-12-31",
+                "to": "2027-01-15",
+                "days": 15,
+                "rate": 0.07,
+                "days_in_year": 365,
+                "balance": 1500.0,
+                "amount": 4.315068
+              },
+              {
+                "from": "2027-01-15",
+                "to": "2027-04-15",
+                "days": 90,
+                "rate": 0.07,
+                "days_in_year": 365,
+                "balance": 1500.0,
+                "amount": 25.890411
+              }
+            ]
+          },
+          {
+            "q": "Q4",
+            "due": "2027-01-15",
+            "required": 1500,
+            "withholding": 600,
+            "still_unpaid_at_return_due": 1500,
+            "paid_in_full_on": null,
+            "penalty": 26,
+            "penalty_exact": 25.890411,
+            "segments": [
+              {
+                "from": "2027-01-15",
+                "to": "2027-04-15",
+                "days": 90,
+                "rate": 0.07,
+                "days_in_year": 365,
+                "balance": 1500.0,
+                "amount": 25.890411
+              }
+            ]
+          }
+        ],
+        "penalty_total": 168,
+        "penalty_waived_below_min_balance": false,
+        "penalty_total_before_waiver": 168
+      },
+      "KS": {
+        "current": 2052,
+        "prior": null,
+        "required": 2052,
+        "installment": 513,
+        "withholding_per_q": 0,
+        "net_per_installment": 513,
+        "due_dates": [
+          "2026-04-15",
+          "2026-06-15",
+          "2026-09-15",
+          "2027-01-15"
+        ],
+        "return_due": "2027-04-15",
+        "penalty_rate": 0.08,
+        "payments": [
+          {
+            "date": "2026-07-01",
+            "amount": 1026.0
+          }
+        ],
+        "penalty_by_installment": [
+          {
+            "q": "Q1",
+            "due": "2026-04-15",
+            "required": 513,
+            "withholding": 0,
+            "still_unpaid_at_return_due": 0,
+            "paid_in_full_on": "2026-07-01",
+            "penalty": 9,
+            "penalty_exact": 8.657753,
+            "segments": [
+              {
+                "from": "2026-04-15",
+                "to": "2026-06-15",
+                "days": 61,
+                "rate": 0.08,
+                "days_in_year": 365,
+                "balance": 513.0,
+                "amount": 6.85874
+              },
+              {
+                "from": "2026-06-15",
+                "to": "2026-07-01",
+                "days": 16,
+                "rate": 0.08,
+                "days_in_year": 365,
+                "balance": 513.0,
+                "amount": 1.799014
+              }
+            ]
+          },
+          {
+            "q": "Q2",
+            "due": "2026-06-15",
+            "required": 513,
+            "withholding": 0,
+            "still_unpaid_at_return_due": 0,
+            "paid_in_full_on": "2026-07-01",
+            "penalty": 2,
+            "penalty_exact": 1.799014,
+            "segments": [
+              {
+                "from": "2026-06-15",
+                "to": "2026-07-01",
+                "days": 16,
+                "rate": 0.08,
+                "days_in_year": 365,
+                "balance": 513.0,
+                "amount": 1.799014
+              }
+            ]
+          },
+          {
+            "q": "Q3",
+            "due": "2026-09-15",
+            "required": 513,
+            "withholding": 0,
+            "still_unpaid_at_return_due": 513,
+            "paid_in_full_on": null,
+            "penalty": 24,
+            "penalty_exact": 23.836932,
+            "segments": [
+              {
+                "from": "2026-09-15",
+                "to": "2026-12-31",
+                "days": 107,
+                "rate": 0.08,
+                "days_in_year": 365,
+                "balance": 513.0,
+                "amount": 12.030904
+              },
+              {
+                "from": "2026-12-31",
+                "to": "2027-01-15",
+                "days": 15,
+                "rate": 0.08,
+                "days_in_year": 365,
+                "balance": 513.0,
+                "amount": 1.686575
+              },
+              {
+                "from": "2027-01-15",
+                "to": "2027-04-15",
+                "days": 90,
+                "rate": 0.08,
+                "days_in_year": 365,
+                "balance": 513.0,
+                "amount": 10.119452
+              }
+            ]
+          },
+          {
+            "q": "Q4",
+            "due": "2027-01-15",
+            "required": 513,
+            "withholding": 0,
+            "still_unpaid_at_return_due": 513,
+            "paid_in_full_on": null,
+            "penalty": 10,
+            "penalty_exact": 10.119452,
+            "segments": [
+              {
+                "from": "2027-01-15",
+                "to": "2027-04-15",
+                "days": 90,
+                "rate": 0.08,
+                "days_in_year": 365,
+                "balance": 513.0,
+                "amount": 10.119452
+              }
+            ]
+          }
+        ],
+        "penalty_total": 44,
+        "penalty_waived_below_min_balance": false,
+        "penalty_total_before_waiver": 44
+      }
+    },
+    "note": "MO resident: AGI \u00d7 4% less the credit for taxes paid to KS and AR, each limited to the MO rate on the income sourced there \u2014 KS 40,000 \u00d7 5.7% = 2,280 is limited to 1,600, AR 12,000 \u00d7 3.9% = 468 is allowed in full (480 limit). Gates: MO \u2265 100 after 2,400 withholding \u2192 required; KS 2,280 \u2265 500 \u2192 required; AR 468 is not more than 1,000 \u2192 not required. KS vouchers: no prior-year KS tax \u2192 90% of current, 513 per installment; Q1 and Q2 paid together on Jul 1, 2026 \u2192 penalty at the KS 8% rate for 77 and 16 days; Q3 and Q4 unpaid accrue to Apr 15, 2027 across Dec 31."
+  },
+  "multistate_gates": {
+    "federal": {
+      "total_income": 114000,
+      "agi": 112304,
+      "deduction": 16100,
+      "federal_total": 18287
+    },
+    "states": {
+      "AZ": {
+        "residency": "resident",
+        "effective_rate": 0.025,
+        "gross_tax": 2808,
+        "credit": 600,
+        "net_tax": 2208,
+        "gate": {
+          "method": "gross_income_both_years",
+          "measured": 1207.6,
+          "threshold": 1000,
+          "gate_satisfied": true,
+          "required": true,
+          "gross_income": 114000,
+          "prior_year_gross": 80000
+        }
+      },
+      "GA": {
+        "residency": "nonresident",
+        "effective_rate": 0.0539,
+        "sourced_income": 9000,
+        "net_tax": 485,
+        "gate": {
+          "method": "gross_over_exemptions_deductions",
+          "measured": 9000,
+          "threshold": 17100,
+          "gate_satisfied": false,
+          "required": false
+        }
+      },
+      "PA": {
+        "residency": "nonresident",
+        "effective_rate": 0.0307,
+        "sourced_income": 15000,
+        "net_tax": 461,
+        "gate": {
+          "method": "non_withheld_income",
+          "measured": 24000,
+          "threshold": 11000,
+          "gate_satisfied": true,
+          "required": true
+        }
+      }
+    },
+    "note": "AZ (A.R.S. 43-581(A)): gross income over 75,000 in both 2025 (80,000) and 2026 (federal total income) AND tax after withholding \u2265 1,000 \u2192 required. GA (O.C.G.A. 48-7-114(b)): the gross-income test replaces the tax-due test \u2014 9,000 GA-source gross is not more than exemptions 0 + deductions (federal 16,100 used when state deductions are blank) + 1,000 \u2192 not required. PA (REV-413): income not subject to withholding 24,000 exceeds 11,000 \u2192 required."
+  }
+}
