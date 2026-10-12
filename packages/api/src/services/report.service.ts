@@ -2152,6 +2152,44 @@ export async function build1099VendorSummary(tenantId: string, year: string, com
 // ─── GENERAL ─────────────────────────────────────────────────────
 
 /**
+ * General Ledger "Tag" column — the transaction-level fallback for a line
+ * that carries no tag of its own. A line's OWN tag (journal_lines.tag_id)
+ * always wins; that is the tag the GL's line-level tag filter matches.
+ * An untagged line (typically the bank / A/P / A/R side of a tagged
+ * expense or invoice) shows its TRANSACTION's tags instead — the same
+ * transaction-level semantic the Trial Balance filter and the
+ * Transactions list's Tag column use: the distinct tags on the
+ * transaction's lines, plus any header tags in transaction_tags (the
+ * authoritative store for tenants still on header-level tagging).
+ * Names sorted and joined with ', '. Every join is tenant-scoped, so a
+ * foreign tag or junction row can never surface. Evaluated in the same
+ * query as a LATERAL subquery (no N+1); the `lineTagCol IS NULL` guard
+ * turns it into a one-time-filtered no-op for tagged lines.
+ * `txnIdCol` / `lineTagCol` are code-controlled column refs, never input.
+ */
+function glTxnTagFallback(tenantId: string, txnIdCol: string, lineTagCol: string) {
+  const txnId = sql.raw(txnIdCol);
+  const lineTag = sql.raw(lineTagCol);
+  return sql`LEFT JOIN LATERAL (
+      SELECT string_agg(n.name, ', ' ORDER BY n.name) AS names
+      FROM (
+        SELECT ftg.name
+        FROM journal_lines fjl
+        JOIN tags ftg ON ftg.id = fjl.tag_id AND ftg.tenant_id = ${tenantId}
+        WHERE ${lineTag} IS NULL
+          AND fjl.transaction_id = ${txnId} AND fjl.tenant_id = ${tenantId}
+          AND fjl.tag_id IS NOT NULL
+        UNION
+        SELECT ftg.name
+        FROM transaction_tags ftt
+        JOIN tags ftg ON ftg.id = ftt.tag_id AND ftg.tenant_id = ${tenantId}
+        WHERE ${lineTag} IS NULL
+          AND ftt.transaction_id = ${txnId} AND ftt.tenant_id = ${tenantId}
+      ) n
+    ) txn_tag ON TRUE`;
+}
+
+/**
  * General Ledger report — properly grouped by account, with beginning
  * balance, line-by-line running balance, period totals, and ending
  * balance for each account. This matches the format any accountant or
@@ -2293,12 +2331,14 @@ export async function buildGeneralLedger(
           cb.account_id, cb.debit, cb.credit,
           cb.description AS line_description, cb.line_order,
           cb.tag_id AS line_tag_id, tag.name AS line_tag_name,
+          txn_tag.names AS txn_tag_names,
           cb.transaction_id, cb.txn_date, cb.txn_type, cb.txn_number,
           cb.memo AS txn_memo,
           c.display_name AS contact_name
         FROM cb_lines cb
         LEFT JOIN contacts c ON c.id = cb.txn_contact_id AND c.tenant_id = ${tenantId}
         LEFT JOIN tags tag ON tag.id = cb.tag_id AND tag.tenant_id = ${tenantId}
+        ${glTxnTagFallback(tenantId, 'cb.transaction_id', 'cb.tag_id')}
         WHERE (cb.debit <> 0 OR cb.credit <> 0)${cbTag}${idFilter('cb.account_id')}
         ORDER BY cb.account_id, cb.txn_date, cb.line_order
       `)
@@ -2313,6 +2353,7 @@ export async function buildGeneralLedger(
       -- ADR 0XX §6.3 — per-line tag surfaced for CSV/Excel export.
       jl.tag_id AS line_tag_id,
       tag.name AS line_tag_name,
+      txn_tag.names AS txn_tag_names,
       t.id AS transaction_id,
       t.txn_date,
       t.txn_type,
@@ -2325,6 +2366,7 @@ export async function buildGeneralLedger(
     JOIN transactions t ON t.id = jl.transaction_id
     LEFT JOIN contacts c ON c.id = t.contact_id
     LEFT JOIN tags tag ON tag.id = jl.tag_id AND tag.tenant_id = ${tenantId}
+    ${glTxnTagFallback(tenantId, 'jl.transaction_id', 'jl.tag_id')}
     WHERE jl.tenant_id = ${tenantId}
       AND t.status = 'posted'
       AND t.basis <> 'cash'  -- basis: exclude cash-only entries from the accrual ledger
@@ -2353,6 +2395,7 @@ export async function buildGeneralLedger(
     line_order: number;
     line_tag_id: string | null;
     line_tag_name: string | null;
+    txn_tag_names: string | null;
     transaction_id: string;
     txn_date: string;
     txn_type: string;
@@ -2429,6 +2472,11 @@ export async function buildGeneralLedger(
           // CSV/Excel exports can include a `line_tag` column.
           tagId: line.line_tag_id,
           tagName: line.line_tag_name,
+          // The GL "Tag" column: the line's own tag, else its
+          // transaction's tags (glTxnTagFallback). '' when neither.
+          // tagSource says which, so the screen can mark inherited tags.
+          tagLabel: line.line_tag_name || line.txn_tag_names || '',
+          tagSource: (line.line_tag_name ? 'line' : line.txn_tag_names ? 'transaction' : null) as 'line' | 'transaction' | null,
           runningBalance: running,
         };
       });

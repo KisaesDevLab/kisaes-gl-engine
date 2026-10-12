@@ -94,7 +94,9 @@ function fmtTxnType(t: string | null | undefined): string {
 //              <td> in the rendered table. Columns without an explicit
 //              width auto-size, so a flex column like Description gets
 //              the leftover space.
-type ExportColumn = { key: string; label: string; align?: 'left' | 'right'; width?: string };
+// `wrap`: break long unspaced values (tag names) inside the column's
+// width instead of letting them widen it — PDF only.
+type ExportColumn = { key: string; label: string; align?: 'left' | 'right'; width?: string; wrap?: boolean };
 
 // Optional per-row rendering directives. A row that sets `_section: true`
 // is rendered as a single cell spanning the full table (gray header band)
@@ -508,16 +510,20 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
   if (Array.isArray(reportData.accounts) && reportData.accounts[0]?.lines !== undefined) {
     // Explicit column widths so the Date column doesn't expand to fit
     // the longest section-header label. The Description column is the
-    // only flex column — it takes the remaining horizontal space.
+    // only flex column — it takes the remaining horizontal space. Tag
+    // (the line's tag, else its transaction's — buildGeneralLedger's
+    // tagLabel) wraps inside its width; the fixed columns each gave up a
+    // little (Name 40px) so Description keeps ~150px on landscape letter.
     const columns: ExportColumn[] = [
-      { key: 'date', label: 'Date', width: '72px' },
-      { key: 'type', label: 'Type', width: '52px' },
-      { key: 'ref', label: 'Ref', width: '64px' },
-      { key: 'name', label: 'Name', width: '160px' },
+      { key: 'date', label: 'Date', width: '68px' },
+      { key: 'type', label: 'Type', width: '44px' },
+      { key: 'ref', label: 'Ref', width: '56px' },
+      { key: 'name', label: 'Name', width: '120px' },
       { key: 'description', label: 'Description' },
-      { key: 'debit', label: 'Debit', align: 'right', width: '92px' },
-      { key: 'credit', label: 'Credit', align: 'right', width: '92px' },
-      { key: 'balance', label: 'Balance', align: 'right', width: '100px' },
+      { key: 'tag', label: 'Tag', width: '96px', wrap: true },
+      { key: 'debit', label: 'Debit', align: 'right', width: '84px' },
+      { key: 'credit', label: 'Credit', align: 'right', width: '84px' },
+      { key: 'balance', label: 'Balance', align: 'right', width: '92px' },
     ];
     const rows: ExportRow[] = [];
     for (const acct of reportData.accounts as any[]) {
@@ -531,7 +537,7 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
         _section: true,
         _label: sectionLabel,
         date: '', type: '', ref: '', name: '',
-        description: sectionLabel,
+        description: sectionLabel, tag: '',
         debit: '', credit: '', balance: '',
       });
 
@@ -540,7 +546,7 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
       rows.push({
         _summary: true,
         date: '', type: '', ref: '', name: '',
-        description: 'Beginning balance',
+        description: 'Beginning balance', tag: '',
         debit: '', credit: '',
         balance: fmtNum(acct.beginningBalance),
       });
@@ -554,6 +560,7 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
           ref: line.txnNumber || '',
           name: line.contactName || '',
           description: line.description || '',
+          tag: line.tagLabel || '',
           debit: line.debit ? fmtNum(line.debit) : '',
           credit: line.credit ? fmtNum(line.credit) : '',
           balance: fmtNum(line.runningBalance),
@@ -564,7 +571,7 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
       rows.push({
         _summary: true,
         date: '', type: '', ref: '', name: '',
-        description: 'Total period activity',
+        description: 'Total period activity', tag: '',
         debit: fmtNum(acct.periodDebits),
         credit: fmtNum(acct.periodCredits),
         balance: '',
@@ -574,13 +581,13 @@ export function extractDataAndColumns(reportData: any): { rows: any[]; columns: 
       rows.push({
         _summary: true,
         date: '', type: '', ref: '', name: '',
-        description: 'Ending balance',
+        description: 'Ending balance', tag: '',
         debit: '', credit: '',
         balance: fmtNum(acct.endingBalance),
       });
 
       // Spacer row between accounts
-      rows.push({ date: '', type: '', ref: '', name: '', description: '', debit: '', credit: '', balance: '' });
+      rows.push({ date: '', type: '', ref: '', name: '', description: '', tag: '', debit: '', credit: '', balance: '' });
     }
     return { rows, columns };
   }
@@ -830,6 +837,7 @@ export function buildHtmlTable(rows: ExportRow[], columns: ExportColumn[]): stri
       // Merge width + grouped-mode indentation into one style attribute.
       const styles: string[] = [];
       if (c.width) styles.push(`width:${c.width}`);
+      if (c.wrap) styles.push('overflow-wrap:anywhere');
       if (idx === 0 && row._indent) styles.push('padding-left:22px');
       const styleAttr = styles.length ? ` style="${styles.join(';')}"` : '';
       const rendered = val === null || val === undefined
@@ -914,8 +922,8 @@ async function respond(res: any, reportData: any, format: string | undefined) {
     } catch { /* use default */ }
 
     // Wide reports use landscape so all columns fit without truncation.
-    // The General Ledger has 8 columns (Date / Type / Ref / Name /
-    // Description / Debit / Credit / Balance) which won't fit on portrait
+    // The General Ledger has 9 columns (Date / Type / Ref / Name /
+    // Description / Tag / Debit / Credit / Balance) which won't fit on portrait
     // letter at a readable font size.
     const isWideReport = (Array.isArray(reportData.accounts) && reportData.accounts[0]?.lines !== undefined)
       // Expenses by Category detail mode shares the GL's 8-column layout.

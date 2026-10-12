@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-12T21:43:58.071Z",
+  "generatedAt": "2026-10-12T23:41:19.459Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -19,7 +19,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 144107
+    "totalBytes": 144884
   },
   "screens": [
     {
@@ -1674,6 +1674,7 @@
     "Cash vs. Accrual Basis",
     "Fiscal-Year Date Presets",
     "General Ledger Account Filter",
+    "General Ledger Tag Column",
     "Two-Factor Authentication (2FA)",
     "Passkeys (Passwordless Login)",
     "Magic Links",
