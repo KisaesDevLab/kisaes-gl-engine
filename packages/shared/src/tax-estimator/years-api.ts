@@ -126,6 +126,32 @@ export interface AdjustmentTypeDTO {
   isShipped: boolean;
 }
 
+/**
+ * QA D1: shipped deduction types that are a business's own expense. They reduce
+ * that entity's profit, SE income, QBI and §461(l) business income, so they are
+ * only meaningful attached to an entity link; unlinked, the engine would treat
+ * them as an itemized "other" deduction.
+ */
+export const LINK_REQUIRED_ADJUSTMENT_CODES: readonly string[] = ['vehicle_179', 'depreciation_tax_vs_book'];
+/**
+ * Owner-level deductions the engine routes per PERSON with their own limits
+ * (SEHI limited to SE earnings, retirement and HSA limits). Linked to an entity
+ * they would be applied as an entity expense instead, so a link is refused.
+ */
+export const PERSON_LEVEL_ADJUSTMENT_CODES: readonly string[] = ['owner_health_insurance', 'sep_solo_401k', 'hsa_contribution', 'retirement_catch_up'];
+export type AdjustmentLinkRule = 'required' | 'optional' | 'not_allowed';
+export const ADJUSTMENT_LINK_REQUIRED_MESSAGE = 'Choose the business this deduction belongs to. Without an entity it would be treated as an itemized deduction, not a business expense.';
+export const ADJUSTMENT_LINK_NOT_ALLOWED_MESSAGE = 'This owner-level deduction is figured per person and cannot be attached to an entity.';
+
+/** Whether an adjustment of this type needs, may have, or must not have an entity link (QA D1). */
+export function adjustmentLinkRule(t: Pick<AdjustmentTypeDTO, 'code' | 'kind' | 'affectsSe' | 'affectsQbi' | 'isAboveTheLine'>): AdjustmentLinkRule {
+  if (t.code && PERSON_LEVEL_ADJUSTMENT_CODES.includes(t.code)) return 'not_allowed';
+  if (t.code && LINK_REQUIRED_ADJUSTMENT_CODES.includes(t.code)) return 'required';
+  // Firm-defined business deductions (they affect SE income or QBI and are not above the line).
+  if (t.kind === 'deduction' && !t.isAboveTheLine && (t.affectsSe || t.affectsQbi)) return 'required';
+  return 'optional';
+}
+
 export interface AdjustmentDTO {
   id: string;
   scenarioId: string;

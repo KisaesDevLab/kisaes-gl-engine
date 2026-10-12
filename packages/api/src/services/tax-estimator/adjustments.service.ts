@@ -8,7 +8,8 @@
 // the tenant is validated against the SERVER-resolved scope (404 TE_TENANT_NOT_MANAGED).
 import { and, asc, eq, sql } from 'drizzle-orm';
 import {
-  allocateAdjustment, createAdjustmentSchema,
+  allocateAdjustment, createAdjustmentSchema, adjustmentLinkRule, ADJUSTMENT_LINK_REQUIRED_MESSAGE, ADJUSTMENT_LINK_NOT_ALLOWED_MESSAGE,
+  type AdjustmentKind,
   type AdjustmentDTO, type AdjustmentListDTO, type CreateAdjustmentInput, type UpdateAdjustmentInput, type AdjustmentCadenceDTO,
 } from '@kis-books/shared';
 import { db, type DbOrTx } from '../../db/index.js';
@@ -105,6 +106,13 @@ function toValues(m: Merged) {
 async function validate(scope: FirmScope, exec: DbOrTx, scenario: ScenarioRow, m: Merged, checkTypeActive: boolean) {
   const t = await loadVisibleType(scope, m.adjustmentTypeId, exec);
   if (checkTypeActive && !t.isActive) throw AppError.unprocessableEntity('Adjustment type is inactive', 'TE_ADJUSTMENT_TYPE_INACTIVE');
+  // QA D1: a business deduction (§179 vehicle, tax-vs-book depreciation, a firm type that affects
+  // SE/QBI) must name the entity link it belongs to; a person-level owner deduction must not.
+  const rule = adjustmentLinkRule({
+    code: t.code, kind: t.kind as AdjustmentKind, affectsSe: t.affectsSe, affectsQbi: t.affectsQbi, isAboveTheLine: t.isAboveTheLine,
+  });
+  if (rule === 'required' && !m.linkId) throw AppError.unprocessableEntity(ADJUSTMENT_LINK_REQUIRED_MESSAGE, 'TE_ADJUSTMENT_LINK_REQUIRED');
+  if (rule === 'not_allowed' && m.linkId) throw AppError.unprocessableEntity(ADJUSTMENT_LINK_NOT_ALLOWED_MESSAGE, 'TE_ADJUSTMENT_LINK_NOT_ALLOWED');
   await assertOwnedRefs(exec, scenario, m.personId, m.linkId);
   if (m.glLinked) await assertGlLink(scope, exec, m.tenantId!, m.companyId!, m.accountId!);
 }

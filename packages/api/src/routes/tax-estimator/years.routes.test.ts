@@ -323,6 +323,33 @@ describe('adjustments', () => {
     expect((await request('DELETE', `${API}/adjustments/${a.json.data.id}`, staffToken)).status).toBe(204);
   });
 
+  it('QA D1: a §179 vehicle / tax-vs-book depreciation needs an entity link (422), owner SEHI refuses one, and a link is accepted', async () => {
+    const tp = await mkTaxpayer();
+    const base = await baseScenario(tp);
+    const person = await request('PUT', `${BASE}/${tp}/persons/primary`, staffToken, { firstName: 'Carlos', lastName: 'Rivera', isBlind: false });
+    expect(person.status).toBe(200);
+    const link = await request('PUT', `${BASE}/${tp}/links`, staffToken, { personRole: 'primary', taxYear: 2026, tenantId: ids.t2, companyId: ids.c2, profitPct: 100, lossPct: 100 });
+    expect(link.status).toBe(200);
+    const linkId = link.json.data.link.id as string;
+    const truck = { adjustmentTypeId: await typeId('vehicle_179'), label: 'Truck', amount: 60000, cadence: 'one_time', startMonth: 12, endMonth: 12 };
+    const unlinked = await request('POST', `${API}/scenarios/${base}/adjustments`, staffToken, truck);
+    expect(unlinked.status).toBe(422);
+    expect(unlinked.json.error.code).toBe('TE_ADJUSTMENT_LINK_REQUIRED');
+    expect(unlinked.json.error.message).toMatch(/itemized/);
+    const dep = await request('POST', `${API}/scenarios/${base}/adjustments`, staffToken, { ...truck, adjustmentTypeId: await typeId('depreciation_tax_vs_book') });
+    expect(dep.json.error.code).toBe('TE_ADJUSTMENT_LINK_REQUIRED');
+    const linked = await request('POST', `${API}/scenarios/${base}/adjustments`, staffToken, { ...truck, linkId });
+    expect(linked.status).toBe(201);
+    expect(linked.json.data.linkId).toBe(linkId);
+    // Clearing the link on update is refused the same way.
+    const cleared = await request('PATCH', `${API}/adjustments/${linked.json.data.id}`, staffToken, { linkId: null });
+    expect(cleared.json.error.code).toBe('TE_ADJUSTMENT_LINK_REQUIRED');
+    const sehi = await request('POST', `${API}/scenarios/${base}/adjustments`, staffToken, await adjBody({ adjustmentTypeId: await typeId('owner_health_insurance'), linkId }));
+    expect(sehi.status).toBe(422);
+    expect(sehi.json.error.code).toBe('TE_ADJUSTMENT_LINK_NOT_ALLOWED');
+    expect((await request('POST', `${API}/scenarios/${base}/adjustments`, staffToken, await adjBody({ adjustmentTypeId: await typeId('owner_health_insurance') }))).status).toBe(201);
+  });
+
   it('rejects a person that is not the taxpayer\'s and an inactive or unknown type', async () => {
     const tp = await mkTaxpayer();
     const base = await baseScenario(tp);
