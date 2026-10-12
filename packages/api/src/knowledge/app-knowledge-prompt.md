@@ -890,10 +890,18 @@ books.
   only by the person who created it. Turning the setting OFF shows every
   firm taxpayer to all staff with Tax Estimator access. A taxpayer page's
   "Who can see this taxpayer" card lets a firm administrator limit it to
-  named staff (a lock icon shows in the list); listed staff still need a
-  linked client they can access while the setting is ON. Anyone else gets
-  "Taxpayer not found", the same as another firm's taxpayer. Figures from
-  linked clients a person cannot access stay hidden either way. Only firm
+  named staff (a lock icon shows in the list). A list REPLACES the firm
+  setting for that taxpayer: exactly the listed people (and firm
+  administrators) see it, whether or not they can open any of its linked
+  clients, and they see its COMPLETE estimate, including companies in
+  clients they cannot otherwise open (the estimate page says "Includes
+  companies outside your client access because you're on this taxpayer's
+  access list"; those links show "Via access list"). The list does not open
+  those clients' books, entity tax setup or treatments, and listed staff
+  cannot add, change or remove links into them. Anyone not on the list gets
+  "Taxpayer not found", even with access to a linked client. With an empty
+  list the firm setting decides, and figures from linked clients a person
+  cannot access stay hidden. Only firm
   administrators can change the setting or the list; every change is in
   the audit log. The client portal is not affected (portal contacts see the
   taxpayers they are mapped to).
