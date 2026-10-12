@@ -88,6 +88,7 @@ export const PARAMETER_REGISTRY: readonly ParameterDef[] = [
   D('ltcg.rates', 'rate_list', 'rate', 'Brackets and capital gains', 'LTCG rates (0 / 15 / 20)'),
   D('collectibles_rate', 'rate', 'rate', 'Brackets and capital gains', 'Collectibles gain maximum rate'),
   D('unrecaptured_1250_rate', 'rate', 'rate', 'Brackets and capital gains', 'Unrecaptured §1250 gain maximum rate'),
+  D('capital_loss.limit', 'money', 'usd', 'Brackets and capital gains', 'Net capital loss deductible against ordinary income (§1211(b))', { variants: 'standard_mfs' }),
   // ── Medicare and NIIT ──────────────────────────────────────────────────
   D('addl_medicare.rate', 'rate', 'rate', 'Medicare and NIIT', 'Additional Medicare tax rate'),
   D('addl_medicare.threshold', 'money', 'usd', 'Medicare and NIIT', 'Additional Medicare threshold', { variants: 'fs' }),
@@ -96,6 +97,7 @@ export const PARAMETER_REGISTRY: readonly ParameterDef[] = [
   // ── Deductions ─────────────────────────────────────────────────────────
   D('std_deduction', 'money', 'usd', 'Deductions', 'Standard deduction', { variants: 'fs' }),
   D('std_deduction.additional_65_blind', 'money', 'usd', 'Deductions', 'Additional standard deduction (65 / blind), per person', { variants: 'unmarried_married' }),
+  D('std_deduction.additional_age', 'int', 'count', 'Deductions', 'Age at year end for the additional standard deduction (§63(f))'),
   D('salt.cap', 'money', 'usd', 'Deductions', 'SALT deduction cap', { variants: 'standard_mfs' }),
   D('salt.phase_down.threshold', 'money', 'usd', 'Deductions', 'SALT cap phase-down MAGI threshold', { variants: 'standard_mfs' }),
   D('salt.phase_down.rate', 'rate', 'rate', 'Deductions', 'SALT cap phase-down rate'),
@@ -105,6 +107,7 @@ export const PARAMETER_REGISTRY: readonly ParameterDef[] = [
   D('itemized.benefit_cap_rate', 'rate', 'rate', 'Deductions', 'Itemized deduction tax-benefit cap rate'),
   // ── Schedule 1-A ───────────────────────────────────────────────────────
   D('sch1a.senior.amount', 'money', 'usd', 'Schedule 1-A', 'Senior deduction (per eligible person)'),
+  D('sch1a.senior.age', 'int', 'count', 'Schedule 1-A', 'Age at year end for the senior deduction'),
   D('sch1a.senior.phaseout_threshold', 'money', 'usd', 'Schedule 1-A', 'Senior deduction MAGI phase-out start', { variants: 'fs' }),
   D('sch1a.senior.phaseout_rate', 'rate', 'rate', 'Schedule 1-A', 'Senior deduction phase-out rate'),
   D('sch1a.tips.max', 'money', 'usd', 'Schedule 1-A', 'Qualified tips deduction maximum'),
@@ -140,10 +143,14 @@ export const PARAMETER_REGISTRY: readonly ParameterDef[] = [
   D('retirement.401k.deferral', 'money', 'usd', 'Retirement and HSA', '401(k) elective deferral limit'),
   D('retirement.401k.catch_up_50', 'money', 'usd', 'Retirement and HSA', '401(k) catch-up (age 50+)'),
   D('retirement.401k.catch_up_60_63', 'money', 'usd', 'Retirement and HSA', '401(k) catch-up (ages 60–63)'),
+  D('retirement.catch_up_age', 'int', 'count', 'Retirement and HSA', 'Age at year end for the 401(k) / SIMPLE catch-up (§414(v))'),
+  D('retirement.401k.catch_up_60_63_ages', 'int_list', 'count', 'Retirement and HSA', 'Age range [first, last] at year end for the higher 401(k) catch-up (§414(v)(2)(E))'),
   D('retirement.simple.deferral', 'money', 'usd', 'Retirement and HSA', 'SIMPLE IRA deferral limit'),
   D('retirement.simple.catch_up', 'money', 'usd', 'Retirement and HSA', 'SIMPLE IRA catch-up (age 50+)'),
+  D('retirement.simple.match_pct', 'rate', 'rate', 'Retirement and HSA', 'SIMPLE IRA employer matching contribution (% of net SE earnings)'),
   D('hsa.limit', 'money', 'usd', 'Retirement and HSA', 'HSA contribution limit', { variants: 'self_family' }),
   D('hsa.catch_up_55', 'money', 'usd', 'Retirement and HSA', 'HSA catch-up (age 55+)'),
+  D('hsa.catch_up_age', 'int', 'count', 'Retirement and HSA', 'Age at year end for the HSA catch-up (§223(b)(3))'),
   // ── C corporation ──────────────────────────────────────────────────────
   D('ccorp.rate', 'rate', 'rate', 'C corporation', 'C corporation tax rate'),
   D('ccorp.large_corp_threshold', 'money', 'usd', 'C corporation', 'Large corporation taxable-income threshold'),

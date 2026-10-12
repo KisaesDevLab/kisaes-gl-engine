@@ -903,4 +903,52 @@ export const FEDERAL_2026_SEEDS: ParameterSeedRow[] = [
     citation: "Legal holidays of 2026 and 2027 for the IRC §7503 weekend/holiday rule (\"legal holiday\" = legal holiday in the District of Columbia): federal holidays per 5 U.S.C. 6103(a) as listed on the OPM Federal Holidays schedules for 2026 and 2027 (observed dates; Saturday holidays observed the preceding Friday, Sunday holidays the following Monday per 5 U.S.C. 6103(b) / E.O. 11582), plus DC Emancipation Day (April 16) per D.C. Code §1-612.02(a)(11) and (b)(1). 2027-12-31 is the observed New Year's Day 2028 holiday. Ad hoc executive-order closures (e.g. 2025-01-09, 2025-12-24, 2025-12-26) are not statutory legal holidays and are excluded.",
     status: 'verified',
   },
+  {
+    key: 'capital_loss.limit.standard',
+    value: 3000,
+    citation: "IRC §1211(b)(1) (net capital loss allowed against ordinary income limited to $3,000); Schedule D line 21. Statutory, not indexed. Added by the Phase 6 engine author — CPA to verify.",
+    status: 'unverified',
+  },
+  {
+    key: 'capital_loss.limit.mfs',
+    value: 1500,
+    citation: "IRC §1211(b)(1) ($1,500 in the case of a married individual filing a separate return); Schedule D line 21. Added by the Phase 6 engine author — CPA to verify.",
+    status: 'unverified',
+  },
+  {
+    key: 'std_deduction.additional_age',
+    value: 65,
+    citation: "IRC §63(f)(1)(A) (additional amount for a taxpayer who has attained age 65 before the close of the taxable year); Pub. 501 'Age' (65 on the day before the 65th birthday). Added by the Phase 6 engine author — CPA to verify.",
+    status: 'unverified',
+  },
+  {
+    key: 'sch1a.senior.age',
+    value: 65,
+    citation: "IRC §151(d)(5) as added by Pub. L. 119-21 (OBBBA) §70103 (qualified individual = attained age 65 before the close of the taxable year). Added by the Phase 6 engine author — CPA to verify.",
+    status: 'unverified',
+  },
+  {
+    key: 'retirement.catch_up_age',
+    value: 50,
+    citation: "IRC §414(v)(5)(A) (eligible participant = would attain age 50 by the end of the taxable year); applies to 401(k) and SIMPLE catch-ups. Added by the Phase 6 engine author — CPA to verify.",
+    status: 'unverified',
+  },
+  {
+    key: 'retirement.401k.catch_up_60_63_ages',
+    value: [60, 63],
+    citation: "IRC §414(v)(2)(E) as added by SECURE 2.0 §109 (participant who would attain age 60, 61, 62 or 63 by the end of the taxable year). Added by the Phase 6 engine author — CPA to verify.",
+    status: 'unverified',
+  },
+  {
+    key: 'retirement.simple.match_pct',
+    value: 0.03,
+    citation: "IRC §408(p)(2)(A)(iii) (employer matching contribution of 3% of compensation); Pub. 560 ch. 3 (self-employed: 3% of net earnings from self-employment). Added by the Phase 6 engine author — CPA to verify.",
+    status: 'unverified',
+  },
+  {
+    key: 'hsa.catch_up_age',
+    value: 55,
+    citation: "IRC §223(b)(3)(A) (additional contribution for an individual who has attained age 55 before the close of the taxable year). Added by the Phase 6 engine author — CPA to verify.",
+    status: 'unverified',
+  },
 ];

@@ -17,3 +17,4 @@ export * from './state-rules-api.js';
 export * from './entities-api.js';
 export * from './years-api.js';
 export * from './allocation.js';
+export * from './decimal.js';

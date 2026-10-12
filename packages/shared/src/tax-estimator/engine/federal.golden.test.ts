@@ -1,0 +1,268 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Small Business License 1.0.0.
+// Free for small businesses; see LICENSE for terms.
+
+// Golden test (MODULE.md "Tests"): the engine must match
+// features/tax-estimator/docs/reference-calc/rivera_expected.json, produced by
+// rivera_fixture.py, for every federal line through the federal total. Phase 6
+// stubs the §199A deduction from the fixture formula (Phase 7 computes it) and
+// Additional Medicare / NIIT (both 0 for Rivera). Parameters are the 2026
+// federal seed values; a guard below checks them against the seed file so the
+// test cannot drift from what ships.
+
+import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { computeFederal } from './federal.js';
+import { characters } from './income.js';
+import { dAdd, dDiv, dMin, dMul, dSub, dSum } from '../decimal.js';
+import type { EngineAdjustment, EngineEntity, EnginePerson, FederalEngineInput, ParameterMap } from './types.js';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const repoRoot = join(here, '..', '..', '..', '..', '..');
+const expected = JSON.parse(readFileSync(join(repoRoot, 'features', 'tax-estimator', 'docs', 'reference-calc', 'rivera_expected.json'), 'utf8')) as Record<string, Record<string, number | string>>;
+
+// 2026 federal seed values the Rivera computation reads (statuses as seeded; the age keys are the Phase 6 additions, unverified).
+const SEED_2026: Record<string, { value: unknown; status: 'verified' | 'unverified' | 'provisional' }> = {
+  'se.nese_factor': { value: 0.9235, status: 'verified' },
+  'se.min_nese': { value: 400, status: 'verified' },
+  'se.ss_rate': { value: 0.124, status: 'verified' },
+  'se.medicare_rate': { value: 0.029, status: 'verified' },
+  'se.ss_wage_base': { value: 184500, status: 'verified' },
+  'se.deduction_factor': { value: 0.5, status: 'verified' },
+  'brackets.mfj': { value: [[24800, 0.1], [100800, 0.12], [211400, 0.22], [403550, 0.24], [512450, 0.32], [768700, 0.35], [null, 0.37]], status: 'verified' },
+  'ltcg.breakpoints.mfj': { value: [98900, 613700], status: 'verified' },
+  'ltcg.rates': { value: [0, 0.15, 0.2], status: 'verified' },
+  'collectibles_rate': { value: 0.28, status: 'verified' },
+  'unrecaptured_1250_rate': { value: 0.25, status: 'verified' },
+  'std_deduction.mfj': { value: 32200, status: 'verified' },
+  'std_deduction.additional_65_blind.married': { value: 1650, status: 'verified' },
+  'std_deduction.additional_age': { value: 65, status: 'unverified' },
+  'salt.cap.standard': { value: 40400, status: 'verified' },
+  'salt.phase_down.threshold.standard': { value: 505000, status: 'verified' },
+  'salt.phase_down.rate': { value: 0.3, status: 'verified' },
+  'salt.floor.standard': { value: 10000, status: 'verified' },
+  'charity.agi_floor_pct': { value: 0.005, status: 'verified' },
+  'charity.nonitemizer.mfj': { value: 2000, status: 'verified' },
+  'itemized.benefit_cap_rate': { value: 0.35, status: 'unverified' },
+  'sch1a.senior.amount': { value: 6000, status: 'verified' },
+  'sch1a.senior.age': { value: 65, status: 'unverified' },
+  'sch1a.senior.phaseout_threshold.mfj': { value: 150000, status: 'verified' },
+  'sch1a.senior.phaseout_rate': { value: 0.06, status: 'verified' },
+  'sch1a.tips.max': { value: 25000, status: 'verified' },
+  'sch1a.tips.phaseout_threshold.mfj': { value: 300000, status: 'verified' },
+  'sch1a.tips.phaseout_rate': { value: 0.1, status: 'verified' },
+  'sch1a.overtime.max.mfj': { value: 25000, status: 'verified' },
+  'sch1a.overtime.phaseout_threshold.mfj': { value: 300000, status: 'verified' },
+  'sch1a.overtime.phaseout_rate': { value: 0.1, status: 'verified' },
+  'sch1a.car_interest.max': { value: 10000, status: 'verified' },
+  'sch1a.car_interest.phaseout_threshold.mfj': { value: 200000, status: 'verified' },
+  'sch1a.car_interest.phaseout_rate': { value: 0.2, status: 'verified' },
+  'sch1a.first_year': { value: 2025, status: 'verified' },
+  'sch1a.last_year': { value: 2028, status: 'verified' },
+  'qbi.rate': { value: 0.2, status: 'verified' },
+  'qbi.taxable_income_limit_pct': { value: 0.2, status: 'verified' },
+  'retirement.sep.pct_of_comp': { value: 0.25, status: 'verified' },
+  'retirement.sep.dollar_limit': { value: 72000, status: 'verified' },
+  'retirement.comp_limit': { value: 360000, status: 'verified' },
+  'capital_loss.limit.standard': { value: 3000, status: 'unverified' },
+};
+const params: ParameterMap = Object.fromEntries(Object.entries(SEED_2026).map(([key, v]) => [key, { key, value: v.value, status: v.status }]));
+
+const CARLOS = 'carlos'; const MARIA = 'maria';
+const allMonths = (): boolean[] => Array(12).fill(true);
+const persons = (): EnginePerson[] => [
+  { personId: CARLOS, role: 'primary', displayName: 'Carlos Rivera', dateOfBirth: '1981-05-10', isBlind: false, sehiEligibleMonths: allMonths(), w2Wages: '0', w2SocialSecurityWages: null, withholding: '0', retirementPlan: 'sep', retirementEmployeeDeferral: null, hsaCoverage: 'none', hsaContribution: '0', sch1a: { qualifiedTips: '0', qualifiedOvertime: '0', carLoanInterest: '0' } },
+  { personId: MARIA, role: 'spouse', displayName: 'Maria Rivera', dateOfBirth: '1983-09-22', isBlind: false, sehiEligibleMonths: allMonths(), w2Wages: '0', w2SocialSecurityWages: null, withholding: '6000', retirementPlan: 'none', retirementEmployeeDeferral: null, hsaCoverage: 'none', hsaContribution: '0', sch1a: { qualifiedTips: '0', qualifiedOvertime: '0', carLoanInterest: '0' } },
+];
+
+interface Scenario { schcTaxProfit: string; scorpOrdinary: string; mariaWages: string; lpRental: string; interest: string; sep: string; sehi: string }
+// Maria owns 50% of the S corp: the oracle's K-1 of 40,000 is half of an 80,000 entity profit, and the raise
+// scenario reduces her K-1 by half of (raise + employer FICA).
+const BASE: Scenario = { schcTaxProfit: '128000', scorpOrdinary: '80000', mariaWages: '54000', lpRental: '8000', interest: '2400', sep: '15000', sehi: '10800' };
+const MARIA_SCORP_PCT = 50;
+
+const entityBase = (over: Partial<EngineEntity>): EngineEntity => ({
+  tenantId: 'tenant-rivera', companyId: 'c', companyName: 'Co', entityType: 'sch_c', monthsElapsed: 12, monthsRemaining: 0,
+  ytd: characters({}), recurringYtd: characters({}), ownerItems: [], guaranteedPayments: [], officerWages: [], taxDepreciationBookYtd: '0',
+  links: [], isSstb: false, rentalQbiTradeOrBusiness: false, w2WagesEffective: null, ubia: null, warnings: [], ...over,
+});
+const linkBase = { profitPct: 100, lossPct: null, partnerSeStatus: null, isOfficer: false, activityType: 'active' as const, activeParticipation: false, qbiEligible: null, allowedLossOverride: null };
+const adjBase: EngineAdjustment = { id: '', label: '', typeCode: null, kind: 'income', amount: '0', pct: null, personId: null, linkId: null, affectsSe: false, affectsQbi: false, isCapitalGainLt: false, isCapitalGainSt: false, isQualifiedDividend: false, isReitDividend: false, isPtp: false, is1231: false, isAboveTheLine: false, nonRecurring: false };
+
+/** Rivera books after the treatment map (Phase 4 reproduces 115,400 → 128,000 for the Sch C). */
+function riveraInput(s: Scenario, qbiManual: string | null): FederalEngineInput {
+  return {
+    taxYear: 2026,
+    filingStatus: 'mfj',
+    parameters: params,
+    persons: persons(),
+    entities: [
+      entityBase({ companyId: 'schc', companyName: 'Rivera Plumbing (Sch C)', entityType: 'sch_c', ytd: characters({ ordinary: s.schcTaxProfit }), recurringYtd: characters({ ordinary: s.schcTaxProfit }),
+        ownerItems: [{ personId: null, sehi: s.sehi, retirement: '0', sehiAsW2Wages: '0' }], links: [{ ...linkBase, linkId: 'l-schc', personId: CARLOS }] }),
+      entityBase({ companyId: 'scorp', companyName: 'Maria Designs Inc (S corp)', entityType: 's_corp', ytd: characters({ ordinary: s.scorpOrdinary }), recurringYtd: characters({ ordinary: s.scorpOrdinary }),
+        officerWages: [{ personId: MARIA, amount: s.mariaWages }], links: [{ ...linkBase, linkId: 'l-scorp', personId: MARIA, isOfficer: true, profitPct: MARIA_SCORP_PCT }] }),
+      entityBase({ companyId: 'lp', companyName: 'Oak Street Rentals LP', entityType: 'partnership', ytd: characters({ rental: s.lpRental }), recurringYtd: characters({ rental: s.lpRental }),
+        links: [{ ...linkBase, linkId: 'l-lp', personId: CARLOS, partnerSeStatus: 'limited', activityType: 'rental' }] }),
+    ],
+    adjustments: [
+      { ...adjBase, id: 'interest', label: 'Interest income', typeCode: 'interest_income', kind: 'income', amount: s.interest },
+      { ...adjBase, id: 'sep', label: 'SEP contribution', typeCode: 'sep_solo_401k', kind: 'deduction', amount: s.sep, isAboveTheLine: true, personId: CARLOS },
+    ],
+    year: {
+      rateMode: 'brackets', effectiveRateOverride: null, deductionMode: 'auto',
+      itemized: { saltPaid: '0', mortgageInterest: '0', charitableCash: '0', charitableNoncash: '0', other: '0' },
+      creditsNonrefundable: '2200', creditsRefundable: '0', unrecaptured1250Gain: '0', collectiblesGain: '0', amtExposureFlagged: false,
+    },
+    qbi: { manualDeduction: qbiManual },
+    otherTaxes: { additionalMedicareTax: null, niit: null },
+  };
+}
+
+/**
+ * Phase 6 QBI stub, exactly the oracle's formula on the engine's unrounded lines:
+ * min(rate × (Sch C − ½ SE − SEHI − SEP) + rate × S corp K-1, limit × taxable income before QBI).
+ */
+function qbiStub(s: Scenario): string {
+  const pass1 = computeFederal(riveraInput(s, null));
+  const exact = (id: string) => pass1.trace.find((t) => t.id === id)!.exact;
+  const rate = String(SEED_2026['qbi.rate']!.value); const limitPct = String(SEED_2026['qbi.taxable_income_limit_pct']!.value);
+  const schc = dSub(dSub(dSub(s.schcTaxProfit, exact(`half_se_tax.${CARLOS}`)), exact(`sehi.${CARLOS}`)), exact(`retirement.${CARLOS}`));
+  const scorpK1 = pass1.trace.find((t) => t.id === 'share.l-scorp')!.exact;
+  const components = dAdd(dMul(rate, schc), dMul(rate, scorpK1));
+  return dMin(components, dMul(limitPct, pass1.exact.taxableIncomeBeforeQbi));
+}
+
+function run(s: Scenario) {
+  return computeFederal(riveraInput(s, qbiStub(s)));
+}
+
+function expectFederalLines(r: ReturnType<typeof computeFederal>, e: Record<string, number | string>) {
+  const carlos = r.persons.find((p) => p.personId === CARLOS)!;
+  const got = {
+    sch_c_tax_profit: Number(r.entities[0]!.projectedProfit), total_income: Number(r.income.totalIncome), se_tax: Number(r.seTax), half_se: Number(r.adjustmentsToIncome.halfSeTax),
+    sep_deducted: Number(carlos.retirement.deducted), sep_limit: Number(carlos.retirement.limit), sehi: Number(r.adjustmentsToIncome.sehi), agi: Number(r.agi),
+    std_deduction: Number(r.deductions.deduction), qbi: Number(r.qbi.deduction), taxable_income: Number(r.taxableIncome), income_tax_brackets: Number(r.regularTax.tax),
+    credits_nonrefundable: Number(r.credits.nonrefundableAllowed), addl_medicare: Number(r.additionalMedicareTax), niit: Number(r.niit), federal_total: Number(r.federalTotal),
+  };
+  const want = Object.fromEntries(Object.keys(got).map((k) => [k, e[k]]));
+  expect(got).toEqual(want);
+}
+
+describe('Rivera golden (rivera_expected.json)', () => {
+  it('base scenario matches every federal line through the federal total', () => {
+    const r = run(BASE);
+    expectFederalLines(r, expected['base']!);
+    expect(r.deductions.chosen).toBe('standard');
+    expect(r.regularTax.method).toBe('brackets');
+    expect(r.regularTax.marginalOrdinaryRate).toBe('0.22');
+    expect(r.regularTax.worksheet).toBeNull();
+    expect(r.persons.find((p) => p.personId === MARIA)!.totalWages).toBe('54000');
+    expect(r.persons.find((p) => p.personId === MARIA)!.seIncome).toBe('0');
+    expect(r.income.rental).toBe('8000');
+    expect(r.qbi.method).toBe('manual');
+  });
+
+  it('truck scenario: SEP capped at 12,639 with a warning', () => {
+    const r = run({ ...BASE, schcTaxProfit: '68000' });
+    expectFederalLines(r, expected['truck']!);
+    const carlos = r.persons.find((p) => p.personId === CARLOS)!;
+    expect(carlos.retirement.capped).toBe(true);
+    expect(carlos.retirement.limit).toBe('12639');
+    expect(carlos.retirement.deducted).toBe('12639');
+    const w = r.warnings.find((x) => x.code === 'TE_RETIREMENT_CAPPED')!;
+    expect(w).toBeDefined();
+    expect(w.message).toContain('12639');
+    expect(r.trace.find((t) => t.id === `retirement.${CARLOS}`)!.label).toMatch(/capped/);
+  });
+
+  it("raise scenario (Maria's wages 72,000; S corp profit down by the raise + employer FICA)", () => {
+    const extra = '18000'; const fica = dMul(extra, '0.0765');
+    const r = run({ ...BASE, mariaWages: '72000', scorpOrdinary: dSub(BASE.scorpOrdinary, dAdd(extra, fica)) });
+    expectFederalLines(r, expected['raise']!);
+    expect(r.income.wages).toBe('72000');
+  });
+
+  it('total = base − truck delta and raise delta as in the oracle', () => {
+    const base = run(BASE); const truck = run({ ...BASE, schcTaxProfit: '68000' });
+    // Oracle deltas are on the grand total incl. states (Phase 8); the federal part of the delta is checked here.
+    expect(Number(base.federalTotal) - Number(truck.federalTotal)).toBe(Number(expected['base']!['federal_total']) - Number(expected['truck']!['federal_total']));
+  });
+
+  it('D12a: every unverified parameter the calc read is warned once, and nothing else is flagged', () => {
+    const r = run(BASE);
+    const flagged = r.warnings.filter((w) => w.code === 'TE_PARAM_UNVERIFIED').map((w) => w.details!['key']);
+    const expectedUnverified = r.parametersUsed.filter((u) => u.status !== 'verified').map((u) => u.key);
+    expect(flagged.sort()).toEqual([...expectedUnverified].sort());
+    expect(expectedUnverified).toEqual(expect.arrayContaining(['std_deduction.additional_age', 'sch1a.senior.age']));
+    expect(flagged).not.toContain('retirement.catch_up_age');
+  });
+
+  it('trace carries a row for every federal step computed in Phase 6 with rounded amounts', () => {
+    const r = run(BASE);
+    const steps = new Set(r.trace.map((t) => t.step));
+    for (const s of ['entity_income', 'allocation', 'se_tax', 'owner_limits', 'agi', 'deductions', 'qbi', 'taxable_income', 'regular_tax', 'credits', 'other_taxes', 'federal_total'] as const) expect(steps.has(s)).toBe(true);
+    for (const t of r.trace) expect(t.amount).toMatch(/^-?\d+$/);
+    expect(r.trace.find((t) => t.id === 'regular_tax')!.marginalRate).toBe('0.22');
+    expect(r.trace.find((t) => t.id === 'federal_total')!.amount).toBe(String(expected['base']!['federal_total']));
+  });
+
+  it('stubs: Additional Medicare and NIIT are 0 and labelled pending Phase 7; loss limits not applied', () => {
+    const r = run(BASE);
+    expect(r.additionalMedicareTax).toBe('0');
+    expect(r.niit).toBe('0');
+    expect(r.lossLimitations.applied).toBe(false);
+    expect(r.warnings.some((w) => w.code === 'TE_OTHER_TAXES_STUB')).toBe(true);
+    expect(r.warnings.some((w) => w.code === 'TE_QBI_STUB')).toBe(true);
+  });
+
+  it('effective-rate override replaces the brackets and is labelled', () => {
+    const input = riveraInput(BASE, qbiStub(BASE));
+    input.year = { ...input.year, rateMode: 'effective', effectiveRateOverride: '0.15' };
+    const r = computeFederal(input);
+    expect(r.regularTax.method).toBe('effective');
+    expect(r.regularTax.tax).toBe(String(Math.round(Number(r.exact.taxableIncome) * 0.15)));
+    expect(r.warnings.some((w) => w.code === 'TE_EFFECTIVE_RATE_OVERRIDE')).toBe(true);
+    expect(r.trace.find((t) => t.id === 'regular_tax')!.label).toMatch(/EFFECTIVE-RATE OVERRIDE/);
+  });
+
+  it('SEHI eligibility: months flagged false are excluded (true = deductible)', () => {
+    const input = riveraInput(BASE, qbiStub(BASE));
+    const months = allMonths(); months[0] = false; months[1] = false; months[2] = false;
+    input.persons[0]!.sehiEligibleMonths = months;
+    const r = computeFederal(input);
+    const carlos = r.persons.find((p) => p.personId === CARLOS)!;
+    expect(carlos.sehi.eligibleMonths).toBe(9);
+    expect(carlos.sehi.deducted).toBe('8100');
+    expect(r.adjustmentsToIncome.sehi).toBe('8100');
+    expect(Number(r.agi)).toBe(Number(expected['base']!['agi']) + 2700);
+  });
+
+  it('a partial year projects to the same full-year figures when income is level (8 closed months)', () => {
+    const input = riveraInput(BASE, qbiStub(BASE));
+    for (const e of input.entities) {
+      e.monthsElapsed = 8; e.monthsRemaining = 4;
+      const scale = (v: string) => dDiv(dMul(v, '8'), '12');
+      e.ytd = { ...e.ytd, ordinary: scale(e.ytd.ordinary), rental: scale(e.ytd.rental) };
+      e.recurringYtd = { ...e.ytd };
+      e.ownerItems = e.ownerItems.map((o) => ({ ...o, sehi: scale(o.sehi) }));
+      e.officerWages = e.officerWages.map((w) => ({ ...w, amount: scale(w.amount) }));
+    }
+    const r = computeFederal(input);
+    expectFederalLines(r, expected['base']!);
+  });
+
+  it('the embedded parameter values equal the shipped 2026 seed file', () => {
+    const seed = readFileSync(join(repoRoot, 'packages', 'api', 'src', 'db', 'seeds', 'tax-estimator', 'federal', '2026.ts'), 'utf8');
+    const rowRe = /key: '([^']+)',\s*value: ([^\n]+?),\s*citation:[\s\S]*?status: '(\w+)'/g;
+    const fromSeed = new Map<string, { value: unknown; status: string }>();
+    for (let m = rowRe.exec(seed); m; m = rowRe.exec(seed)) {
+      if (!(m[1]! in SEED_2026)) continue;
+      fromSeed.set(m[1]!, { value: JSON.parse(m[2]!.replace(/'/g, '"')), status: m[3]! });
+    }
+    const mismatches = Object.entries(SEED_2026).filter(([k, v]) => JSON.stringify(fromSeed.get(k)) !== JSON.stringify({ value: v.value, status: v.status })).map(([k]) => k);
+    expect(mismatches).toEqual([]);
+    expect(dSum(['1', '1'])).toBe('2');
+  });
+});

@@ -1,0 +1,117 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Small Business License 1.0.0.
+// Free for small businesses; see LICENSE for terms.
+
+// The engine's only door to tax constants. Every read goes through a
+// ParameterReader, which (a) converts JSON values to decimal strings, (b)
+// records the keys the calculation actually touched and (c) emits one
+// TE_PARAM_UNVERIFIED warning per non-verified parameter read (D12a: the
+// engine uses the best seeded value and warns on the trace / assumptions page).
+
+import type { FilingStatus, ParameterStatus } from '../types.js';
+import type { TaxEstimatorWarning } from '../entities-api.js';
+import type { TaxParameterRowDTO } from '../parameter-api.js';
+import { filingStatusKey } from '../parameterKeys.js';
+import { dec, type Dec } from '../decimal.js';
+import type { ParameterMap, ParameterUse, ResolvedParameter } from './types.js';
+
+export interface BracketRow {
+  /** Upper bound of the bracket (decimal string); null = no upper bound. */
+  upper: Dec | null;
+  rate: Dec;
+}
+
+export function parameterMapFromRows(rows: ReadonlyArray<Pick<TaxParameterRowDTO, 'key' | 'value' | 'status'> & Partial<Pick<TaxParameterRowDTO, 'source' | 'citation'>>>): ParameterMap {
+  const out: Record<string, ResolvedParameter> = {};
+  for (const r of rows) out[r.key] = { key: r.key, value: r.value, status: r.status, source: r.source, citation: r.citation };
+  return out;
+}
+
+const isFiniteNumber = (x: unknown): x is number => typeof x === 'number' && Number.isFinite(x);
+
+export class ParameterReader {
+  private readonly usedKeys = new Map<string, ParameterUse>();
+
+  constructor(private readonly map: ParameterMap) {}
+
+  private raw(key: string): ResolvedParameter {
+    const p = this.map[key];
+    if (!p) throw new Error(`TE_PARAM_MISSING: tax parameter '${key}' is not in the resolved parameter set`);
+    if (!this.usedKeys.has(key)) this.usedKeys.set(key, { key, status: p.status, value: p.value });
+    return p;
+  }
+
+  private invalid(key: string, expected: string): never {
+    throw new Error(`TE_PARAM_INVALID: tax parameter '${key}' is not ${expected}`);
+  }
+
+  /** Money or rate — any finite JSON number, returned as a decimal string. */
+  private number(key: string): Dec {
+    const v = this.raw(key).value;
+    if (!isFiniteNumber(v)) this.invalid(key, 'a number');
+    return dec(v);
+  }
+
+  money(key: string): Dec { return this.number(key); }
+  rate(key: string): Dec { return this.number(key); }
+
+  int(key: string): number {
+    const v = this.raw(key).value;
+    if (!Number.isInteger(v)) this.invalid(key, 'an integer');
+    return v as number;
+  }
+
+  private numberList(key: string): Dec[] {
+    const v = this.raw(key).value;
+    if (!Array.isArray(v) || !v.every(isFiniteNumber)) this.invalid(key, 'a list of numbers');
+    return (v as number[]).map((n) => dec(n));
+  }
+
+  moneyList(key: string): Dec[] { return this.numberList(key); }
+  rateList(key: string): Dec[] { return this.numberList(key); }
+
+  intList(key: string): number[] {
+    const v = this.raw(key).value;
+    if (!Array.isArray(v) || !v.every((n) => Number.isInteger(n))) this.invalid(key, 'a list of integers');
+    return v as number[];
+  }
+
+  brackets(key: string): BracketRow[] {
+    const v = this.raw(key).value;
+    if (!Array.isArray(v) || v.length === 0) this.invalid(key, 'a bracket table');
+    return (v as unknown[]).map((row) => {
+      if (!Array.isArray(row) || !isFiniteNumber(row[1]) || !(row[0] === null || isFiniteNumber(row[0]))) this.invalid(key, 'a bracket table');
+      return { upper: row[0] === null ? null : dec(row[0] as number), rate: dec(row[1] as number) };
+    });
+  }
+
+  /** `${base}.${fs}` */
+  moneyFs(base: string, fs: FilingStatus): Dec { return this.money(filingStatusKey(base, fs)); }
+  rateFs(base: string, fs: FilingStatus): Dec { return this.rate(filingStatusKey(base, fs)); }
+  moneyListFs(base: string, fs: FilingStatus): Dec[] { return this.moneyList(filingStatusKey(base, fs)); }
+  bracketsFs(base: string, fs: FilingStatus): BracketRow[] { return this.brackets(filingStatusKey(base, fs)); }
+
+  /** Every parameter read so far, in first-read order. */
+  used(): ParameterUse[] {
+    return [...this.usedKeys.values()];
+  }
+
+  /** One warning per non-verified parameter read (D12a). */
+  warnings(): TaxEstimatorWarning[] {
+    const out: TaxEstimatorWarning[] = [];
+    for (const u of this.usedKeys.values()) {
+      if (u.status === 'verified') continue;
+      out.push(unverifiedWarning(u.key, u.status, u.value));
+    }
+    return out;
+  }
+}
+
+export function unverifiedWarning(key: string, status: ParameterStatus, value: unknown): TaxEstimatorWarning {
+  return {
+    code: 'TE_PARAM_UNVERIFIED',
+    severity: 'warning',
+    message: `Tax parameter '${key}' is ${status} (not CPA-verified); the estimate uses its current value ${JSON.stringify(value)}.`,
+    details: { key, status, value },
+  };
+}
