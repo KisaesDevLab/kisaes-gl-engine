@@ -14,7 +14,9 @@ import * as documents from '../../services/tax-estimator/estimate-documents.serv
 // another firm is a 404 and out-of-scope tenants are left out. Every download FREEZES a
 // snapshot (reason 'pdf') and prints it, so the issued document can be reproduced; the
 // snapshot id is returned in X-Tax-Estimate-Snapshot-Id. (The snapshot is an audit
-// record of what was issued, so firm_readonly downloads create one too.)
+// record of what was issued, so firm_readonly downloads create one too.) Every PDF also
+// writes a `download` audit row (metadata only, R3-06). The route is a READ for the
+// permission matrix (R3-07): requirePermission('tax_estimator', 'read').
 export const pdfRouter = Router();
 
 function sendPdf(res: Response, pdf: documents.IssuedPdf) {
@@ -35,8 +37,9 @@ pdfRouter.post('/taxpayers/:id/years/:taxYear/scenarios/:scenarioId/pdf', async 
   }));
 });
 
-// Re-print an existing snapshot (history list / read-only view). No new snapshot.
+// Re-print an existing snapshot (history list / read-only view). No new snapshot; the
+// download itself is audited (metadata only).
 pdfRouter.get('/snapshots/:snapshotId/pdf', async (req, res) => {
   const { snapshotId } = snapshotIdParamsSchema.parse(req.params);
-  sendPdf(res, await documents.snapshotPdf(getScope(req), snapshotId));
+  sendPdf(res, await documents.snapshotPdf(getScope(req), actor(req), snapshotId));
 });

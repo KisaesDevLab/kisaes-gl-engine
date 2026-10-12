@@ -224,12 +224,14 @@ export async function getStateRules(year: number, stateIn: string, executor: DbO
   }
   const isFallback = fallbackYear !== null && resolved.size > 0;
   const missing = missingKeys(state, resolved);
+  // R3-04: a fallback year's date rules are rolled to the requested year.
+  const rolled = isFallback ? rollStateDates(resolved, fallbackYear!, year) : new Map<string, unknown>();
   const rules: StateRuleRowDTO[] = [];
   for (const def of STATE_RULE_REGISTRY) {
     const r = resolved.get(def.key);
     if (!r) continue;
     const row: StateRuleRowDTO = {
-      state, key: def.key, label: def.label, type: def.type, value: r.value,
+      state, key: def.key, label: def.label, type: def.type, value: rolled.has(def.key) ? rolled.get(def.key) : r.value,
       status: isFallback ? 'provisional' : r.status,
       source: isFallback ? 'fallback' : r.source,
       citation: r.citation,
@@ -353,6 +355,39 @@ export async function revertOverride(year: number, stateIn: string, key: string,
 const rollIso = (d: unknown, fromYear: number, toYear: number): unknown =>
   typeof d === 'string' ? rollDateToYear(d, fromYear, toYear) : d;
 
+/**
+ * One state's date-valued rules rolled from `fromYear` to `toYear` (key → rolled value, in
+ * registry order). The state's own rolled holidays feed the business-day landing of its
+ * dates; penalty rate legs keep their rates. Shared by "create year from prior" and the
+ * missing-year fallback of getStateRules (R3-04).
+ */
+function rollStateDates(resolved: Map<string, ResolvedValue>, fromYear: number, year: number): Map<string, unknown> {
+  const out = new Map<string, unknown>();
+  const ph = resolved.get(HOLIDAYS_KEY)?.value;
+  const holidays = Array.isArray(ph) ? ph.map((d) => String(rollIso(d, fromYear, year))) : [];
+  const biz = (d: unknown): unknown => (typeof d === 'string' ? nextBusinessDay(rollDateToYear(d, fromYear, year), holidays) : d);
+  for (const def of STATE_RULE_REGISTRY) {
+    const value = resolved.get(def.key)?.value;
+    if (value === undefined) continue;
+    if (def.key === HOLIDAYS_KEY && Array.isArray(value)) {
+      out.set(def.key, holidays);
+    } else if (def.key === DUE_DATES_KEY && Array.isArray(value)) {
+      out.set(def.key, value.map(biz));
+    } else if (SINGLE_DATE_KEYS.includes(def.key) && typeof value === 'string') {
+      out.set(def.key, biz(value));
+    } else if (def.key === RATE_SCHEDULE_KEY && Array.isArray(value)) {
+      // Same calendar legs one year later; the rates themselves must be re-read (provisional).
+      out.set(def.key, (value as Array<{ from: string; to: string; rate: number }>).map((p) => ({
+        from: rollDateToYear(p.from, fromYear, year), to: rollDateToYear(p.to, fromYear, year), rate: p.rate,
+      })));
+    } else if (def.key === FARMER_KEY && value && typeof value === 'object') {
+      const f = value as { due_date?: unknown; file_by?: unknown };
+      out.set(def.key, { ...f, due_date: biz(f.due_date), file_by: biz(f.file_by) });
+    }
+  }
+  return out;
+}
+
 export async function createYearFromPrior(year: number, userId?: string): Promise<CreateStateYearFromPriorResult> {
   return db.transaction(async (tx) => {
     if (await anyRowsInYear(tx, year)) throw AppError.conflict(`State rules for ${year} already exist`, 'TE_YEAR_EXISTS');
@@ -368,30 +403,12 @@ export async function createYearFromPrior(year: number, userId?: string): Promis
       const resolved = resolveRows(prior.seeds.get(state) ?? [], prior.overrides.get(state) ?? []);
       if (resolved.size === 0) continue;
       states++;
-      // This state's own holidays (rolled) feed the business-day landing of its dates.
-      const ph = resolved.get(HOLIDAYS_KEY)?.value;
-      const holidays = Array.isArray(ph) ? ph.map((d) => String(rollIso(d, fromYear, year))) : [];
-      const biz = (d: unknown): unknown => (typeof d === 'string' ? nextBusinessDay(rollDateToYear(d, fromYear, year), holidays) : d);
+      const rolled = rollStateDates(resolved, fromYear, year);
+      for (const k of rolled.keys()) rolledDates.push(`${state}:${k}`);
       for (const def of STATE_RULE_REGISTRY) {
         const p = resolved.get(def.key);
         if (!p) continue;
-        let value = p.value;
-        if (def.key === HOLIDAYS_KEY && Array.isArray(value)) {
-          value = holidays; rolledDates.push(`${state}:${def.key}`);
-        } else if (def.key === DUE_DATES_KEY && Array.isArray(value)) {
-          value = value.map(biz); rolledDates.push(`${state}:${def.key}`);
-        } else if (SINGLE_DATE_KEYS.includes(def.key) && typeof value === 'string') {
-          value = biz(value); rolledDates.push(`${state}:${def.key}`);
-        } else if (def.key === RATE_SCHEDULE_KEY && Array.isArray(value)) {
-          // Same calendar legs one year later; the rates themselves must be re-read (provisional).
-          value = (value as Array<{ from: string; to: string; rate: number }>).map((p) => ({
-            from: rollDateToYear(p.from, fromYear, year), to: rollDateToYear(p.to, fromYear, year), rate: p.rate,
-          }));
-          rolledDates.push(`${state}:${def.key}`);
-        } else if (def.key === FARMER_KEY && value && typeof value === 'object') {
-          const f = value as { due_date?: unknown; file_by?: unknown };
-          value = { ...f, due_date: biz(f.due_date), file_by: biz(f.file_by) }; rolledDates.push(`${state}:${def.key}`);
-        }
+        const value = rolled.has(def.key) ? rolled.get(def.key) : p.value;
         values.push({
           state, taxYear: year, key: def.key, value: jsonb(value), status: 'provisional', citation: p.citation,
           reason, createdFromYear: fromYear, createdBy: userId ?? null,

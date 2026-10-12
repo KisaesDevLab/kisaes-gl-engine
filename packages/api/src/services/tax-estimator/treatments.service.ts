@@ -17,6 +17,11 @@
 // types (guaranteed_payment = partnership only → 422
 // TE_TREATMENT_NOT_FOR_ENTITY); a guaranteed payment and an S corp owner item
 // need a person target (422 TE_PERSON_REQUIRED).
+//
+// Shared books (R3-17): several firms may manage one tenant, and a treatment row is
+// books-scoped (one per account). A row whose taxpayer / person target belongs to another
+// firm is that firm's mapping: this firm sees it without the foreign ids
+// (`targetOtherFirm`) and cannot re-point or delete it (409 TE_TREATMENT_OTHER_FIRM).
 
 import { and, count, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import type {
@@ -49,6 +54,30 @@ function companyAccountCond(tenantId: string, companyId: string) {
   return and(eq(accounts.tenantId, tenantId), or(eq(accounts.companyId, companyId), isNull(accounts.companyId)));
 }
 
+type TreatmentRow = typeof taxEstAccountTreatments.$inferSelect;
+
+/** Ids of the rows whose payment taxpayer / person belongs to a firm other than the caller's. */
+async function otherFirmRowIds(scope: FirmScope, rows: ReadonlyArray<Pick<TreatmentRow, 'id' | 'paymentTaxpayerId' | 'paymentPersonId'>>): Promise<Set<string>> {
+  const tpIds = [...new Set(rows.map((r) => r.paymentTaxpayerId).filter((x): x is string => !!x))];
+  const personIds = [...new Set(rows.map((r) => r.paymentPersonId).filter((x): x is string => !!x))];
+  const foreignTp = new Set<string>();
+  const foreignPerson = new Set<string>();
+  if (tpIds.length > 0) {
+    const own = await db.select({ id: taxEstTaxpayers.id }).from(taxEstTaxpayers)
+      .where(and(inArray(taxEstTaxpayers.id, tpIds), eq(taxEstTaxpayers.firmId, scope.firmId)));
+    const mine = new Set(own.map((r) => r.id));
+    for (const id of tpIds) if (!mine.has(id)) foreignTp.add(id);
+  }
+  if (personIds.length > 0) {
+    const own = await db.select({ id: taxEstPersons.id }).from(taxEstPersons)
+      .innerJoin(taxEstTaxpayers, eq(taxEstTaxpayers.id, taxEstPersons.taxpayerId))
+      .where(and(inArray(taxEstPersons.id, personIds), eq(taxEstTaxpayers.firmId, scope.firmId)));
+    const mine = new Set(own.map((r) => r.id));
+    for (const id of personIds) if (!mine.has(id)) foreignPerson.add(id);
+  }
+  return new Set(rows.filter((r) => (r.paymentTaxpayerId && foreignTp.has(r.paymentTaxpayerId)) || (r.paymentPersonId && foreignPerson.has(r.paymentPersonId))).map((r) => r.id));
+}
+
 export async function listTreatments(
   scope: FirmScope, tenantId: string, companyId: string, opts: ListOptions,
 ): Promise<PagedList<AccountTreatmentDto>> {
@@ -66,8 +95,14 @@ export async function listTreatments(
     .orderBy(accounts.accountNumber, accounts.name)
     .limit(opts.limit)
     .offset(opts.offset);
+  const foreign = await otherFirmRowIds(scope, rows.map((r) => r.t));
   return {
-    items: rows.map((r) => ({
+    items: rows.map((r) => foreign.has(r.t.id) ? {
+      id: r.t.id, accountId: r.t.accountId, accountNumber: r.accountNumber, accountName: r.accountName, accountType: r.accountType,
+      treatment: (r.t.treatment as AccountTreatment | null) ?? null, pct: r.t.pct,
+      paymentTaxpayerId: null, paymentPersonId: null, paymentJurisdiction: r.t.paymentJurisdiction,
+      nonRecurring: r.t.nonRecurring, updatedAt: r.t.updatedAt.toISOString(), targetOtherFirm: true,
+    } : ({
       id: r.t.id,
       accountId: r.t.accountId,
       accountNumber: r.accountNumber,
@@ -168,6 +203,9 @@ export async function putTreatments(
         ))
         .for('update')
         .limit(1);
+      if (before && (await otherFirmRowIds(scope, [before])).has(before.id)) {
+        throw new AppError(409, 'This account\'s treatment belongs to another firm that also manages these books; it cannot be changed here', 'TE_TREATMENT_OTHER_FIRM', { accountId: input.accountId });
+      }
       if (input.treatment === null && !input.nonRecurring) {
         if (before) {
           await tx.delete(taxEstAccountTreatments)

@@ -315,7 +315,7 @@ const isoDate = (v: unknown): string => {
  * entity-setting writes invalidate the cache explicitly by changing the key),
  * TB assignments / profile / tax RJEs, the FIRM codes those assignments use
  * (a description edit can change character, R1 F13), and account + company
- * metadata.
+ * metadata, and the reconciliation state (it moves the default range end, R3-03).
  */
 export async function loadConfigVersion(tenantId: string, companyId: string, taxYear: number): Promise<string> {
   const res = await db.execute<{ v: string }>(sql`
@@ -341,7 +341,13 @@ export async function loadConfigVersion(tenantId: string, companyId: string, tax
       (SELECT count(*)::text || ':' || coalesce(max(updated_at)::text, '') FROM accounts
         WHERE tenant_id = ${tenantId}),
       (SELECT coalesce(max(updated_at)::text, '') FROM companies
-        WHERE tenant_id = ${tenantId} AND id = ${companyId})
+        WHERE tenant_id = ${tenantId} AND id = ${companyId}),
+      -- R3-03: reconciliation state moves the default range end (last CLOSED month) and
+      -- the readiness warnings; a completed / reopened / deleted reconciliation changes it.
+      (SELECT count(*)::text || ':' || coalesce(md5(string_agg(
+          id::text || ':' || coalesce(status, '') || ':' || statement_date::text || ':' || coalesce(completed_at::text, '') || ':' || coalesce(updated_at::text, ''),
+          ',' ORDER BY id)), '')
+        FROM reconciliations WHERE tenant_id = ${tenantId})
     )) AS v
   `);
   return (res.rows as Array<{ v: string }>)[0]?.v ?? 'none';

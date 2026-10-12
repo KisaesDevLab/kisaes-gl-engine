@@ -31,6 +31,8 @@ import { createTaxpayer, upsertLink, upsertPerson, updateTaxpayer } from '../ser
 import { upsertYear } from '../services/tax-estimator/years.service.js';
 import { createSnapshot } from '../services/tax-estimator/estimate-snapshots.service.js';
 import { portalTaxEstimatesPublicRouter } from './portal-tax-estimates-public.routes.js';
+import { PORTAL_TE_COMPUTE_PER_MINUTE } from './portal-tax-estimates-public.routes.js';
+import { defaultYear } from '../services/tax-estimator/portal-estimates.service.js';
 
 const FIRM_A = randomUUID();
 const FIRM_B = randomUUID();
@@ -255,5 +257,32 @@ describe('GET /api/portal/tax-estimates/:taxpayerId', () => {
     expect((await request(BASE, cookies['good'])).json.taxpayers).toEqual([]);
     expect((await request(`${BASE}/${fx.taxpayerId}?year=2026`, cookies['good'])).status).toBe(404);
     await db.update(tenantFirmAssignments).set({ isActive: true }).where(and(eq(tenantFirmAssignments.tenantId, fx.T.schc), eq(tenantFirmAssignments.firmId, FIRM_A)));
+  });
+});
+
+describe('Phase 13 follow-ups', () => {
+  it('live compute is rate limited per portal contact (detail + vouchers), other contacts unaffected', async () => {
+    process.env['TE_PORTAL_RATE_LIMIT_TEST'] = '1';
+    try {
+      const url = `${BASE}/${fx.taxpayerId}?year=2026`;
+      for (let i = 0; i < PORTAL_TE_COMPUTE_PER_MINUTE; i++) {
+        expect((await request(url, cookies['noAccess'])).status).toBe(404); // counted, then refused by the predicate
+      }
+      const limited = await request(`${BASE}/${fx.taxpayerId}/vouchers.pdf?year=2026`, cookies['noAccess']);
+      expect(limited.status).toBe(429);
+      expect(limited.json.error.code).toBe('RATE_LIMIT');
+      expect((await request(url, cookies['unmapped'])).status).toBe(404);
+      // The list endpoint (no compute) is not limited.
+      expect((await request(BASE, cookies['noAccess'])).status).toBe(200);
+    } finally {
+      delete process.env['TE_PORTAL_RATE_LIMIT_TEST'];
+    }
+  });
+
+  it('default year: the newest year not after the current one (shared with the portal page)', () => {
+    const today = new Date('2026-10-12T00:00:00Z');
+    expect(defaultYear([2027, 2026, 2025], today)).toBe(2026);
+    expect(defaultYear([2028, 2027], today)).toBe(2028);
+    expect(defaultYear([], today)).toBeUndefined();
   });
 });

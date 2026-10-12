@@ -264,3 +264,87 @@ describe('POST .../scenarios/:scenarioId/pdf', () => {
     expect((await request('GET', `${API}/snapshots/${snapId}/pdf`, firmBToken)).status).toBe(404);
   });
 });
+
+describe('R3 fixes on the PDF / estimate routes', () => {
+  async function tenantReadonlyMember() {
+    // The natural pairing R3-07 found: firm_readonly + an ACTIVE-tenant role of `readonly`.
+    const u = await mkUser(ids.t1, 'readonly');
+    await db.insert(firmUsers).values({ firmId: ids.firmA, userId: u.id, firmRole: 'firm_readonly' });
+    await db.insert(userTenantAccess).values([
+      { userId: u.id, tenantId: ids.t1, role: 'readonly' },
+      { userId: u.id, tenantId: ids.t2, role: 'readonly' },
+    ]);
+    return u.token;
+  }
+
+  it('R3-07: a tenant-readonly member may POST /estimate and /pdf (reads) but not mutate', async () => {
+    const tp = await mkTaxpayer();
+    await mkPersonAndLink(tp);
+    const sid = await baseScenario(tp);
+    const ro = await tenantReadonlyMember();
+    const e = await request('POST', est(tp, sid), ro, { throughMonth: '2026-09' });
+    expect(e.status).toBe(200);
+    expect(e.json.data.taxpayerId).toBe(tp);
+    const pdf = await request('POST', pdfUrl(tp, sid), ro, { throughMonth: '2026-09' });
+    expect(pdf.status).toBe(200);
+    expect(pdf.raw.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    // Mutations still need write permission on the resource (and a staff firm role).
+    const create = await request('POST', BASE, ro, { displayName: 'Nope', filingStatus: 'single', residentState: 'MO' });
+    expect(create.status).toBe(403);
+    expect(create.json.error.code).toBe('PERMISSION_DENIED');
+    const snap = await request('POST', `${yr(tp)}/scenarios/${sid}/snapshots`, ro, {});
+    expect(snap.status).toBe(403);
+  });
+
+  it('R3-06 / R3-16: every PDF writes a metadata-only download audit row (issued and re-printed)', async () => {
+    const tp = await mkTaxpayer();
+    await mkPersonAndLink(tp);
+    const sid = await baseScenario(tp);
+    await request('PUT', yr(tp), staffToken, { priorYearTax: '31500', priorYearAgi: '182000' });
+    const r = await request('POST', pdfUrl(tp, sid), staffToken, { throughMonth: '2026-09' });
+    expect(r.status).toBe(200);
+    const snapId = String(r.headers['x-tax-estimate-snapshot-id']);
+    const again = await request('GET', `${API}/snapshots/${snapId}/pdf`, staffToken);
+    expect(again.status).toBe(200);
+    const rows = await db.select().from(auditLog)
+      .where(and(eq(auditLog.entityType, 'tax_est_snapshot'), eq(auditLog.entityId, snapId), eq(auditLog.action, 'download')));
+    expect(rows).toHaveLength(2);
+    const parse = (v: unknown) => (typeof v === 'string' ? JSON.parse(v) : v) as Record<string, unknown>;
+    const datas = rows.map((x) => parse(x.afterData));
+    expect(datas.map((d) => d['issued']).sort()).toEqual([false, true]);
+    for (const d of datas) {
+      expect(d).toMatchObject({ firmId: ids.firmA, taxpayerId: tp, taxYear: 2026, scenarioId: sid, snapshotReason: 'pdf', format: 'pdf' });
+      const blob = JSON.stringify(d);
+      // Metadata only: no figures, no prior-year return information.
+      expect(blob).not.toContain('31500');
+      expect(blob).not.toContain('182000');
+      expect(Object.keys(d).sort()).toEqual(['firmId', 'format', 'issued', 'payloadSha256', 'scenarioId', 'snapshotReason', 'taxYear', 'taxpayerId']);
+    }
+    expect(rows.every((x) => x.tenantId === ids.t1)).toBe(true);
+  });
+
+  it('R3-12: small lists accept limit/offset and return a total', async () => {
+    const tp = await mkTaxpayer();
+    await mkPersonAndLink(tp);
+    await baseScenario(tp);
+    await setUpYear(tp, {}, 2027);
+    const years = await request('GET', `${BASE}/${tp}/years?limit=1&offset=1`, staffToken);
+    expect(years.status).toBe(200);
+    expect(years.json.total).toBe(2);
+    expect(years.json.data).toHaveLength(1);
+    expect(years.json.data[0].taxYear).toBe(2027);
+    expect(years.json).toMatchObject({ limit: 1, offset: 1 });
+    const scen = await request('GET', `${yr(tp)}/scenarios`, staffToken);
+    expect(scen.json.total).toBe(1);
+    const types = await request('GET', `${API}/adjustment-types?limit=2`, staffToken);
+    expect(types.status).toBe(200);
+    expect(types.json.data).toHaveLength(2);
+    expect(types.json.total).toBeGreaterThan(2);
+    const links = await request('GET', `${BASE}/${tp}/links?taxYear=2026&limit=1`, staffToken);
+    expect(links.json).toMatchObject({ total: 1, limit: 1, offset: 0 });
+    expect(Array.isArray(links.json.warnings)).toBe(true);
+    const contacts = await request('GET', `${BASE}/${tp}/contacts`, staffToken);
+    expect(contacts.json).toMatchObject({ total: 0, data: [] });
+    expect((await request('GET', `${API}/adjustment-types?limit=0`, staffToken)).status).toBe(400);
+  });
+});

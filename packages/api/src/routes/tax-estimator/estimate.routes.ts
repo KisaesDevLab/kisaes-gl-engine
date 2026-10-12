@@ -8,6 +8,7 @@ import {
   paymentsQuerySchema, captureSchAiSnapshotsSchema, createSnapshotSchema, snapshotIdParamsSchema, snapshotsQuerySchema,
 } from '@kis-books/shared';
 import { getScope, requireTaxEstimatorWrite } from '../../middleware/tax-estimator-scope.js';
+import { listPageQuerySchema, pageOf } from './paging.js';
 import * as estimateService from '../../services/tax-estimator/estimate.service.js';
 import * as paymentsService from '../../services/tax-estimator/payments.service.js';
 import * as schAiSnapshotsService from '../../services/tax-estimator/sch-ai-snapshots.service.js';
@@ -58,8 +59,7 @@ estimateRouter.delete('/payments/:paymentId', requireTaxEstimatorWrite, async (r
 // ── Schedule AI period snapshots ──
 estimateRouter.get('/taxpayers/:id/years/:taxYear/sch-ai-snapshots', async (req, res) => {
   const { id, taxYear } = yearParamsSchema.parse(req.params);
-  const data = await schAiSnapshotsService.listSnapshots(getScope(req), id, taxYear);
-  res.json({ data, total: data.length });
+  res.json(pageOf(await schAiSnapshotsService.listSnapshots(getScope(req), id, taxYear), listPageQuerySchema.parse(req.query)));
 });
 estimateRouter.post('/taxpayers/:id/years/:taxYear/sch-ai-snapshots', requireTaxEstimatorWrite, async (req, res) => {
   const { id, taxYear } = yearParamsSchema.parse(req.params);

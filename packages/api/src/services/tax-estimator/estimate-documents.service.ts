@@ -23,6 +23,7 @@ import { tenantFirmAssignments, users } from '../../db/schema/index.js';
 import { taxEstLinks, taxEstTaxpayers } from '../../db/schema/tax-estimator-taxpayers.js';
 import { taxEstScenarios } from '../../db/schema/tax-estimator-years.js';
 import { AppError } from '../../utils/errors.js';
+import { auditLog } from '../../middleware/audit.js';
 import * as featureFlags from '../feature-flags.service.js';
 import * as firmsService from '../firms.service.js';
 import { isTenantInScope, resolveScope, type FirmScope } from './firm-scope.service.js';
@@ -61,17 +62,34 @@ export async function renderSnapshotPdf(scope: FirmScope, snap: EstimateSnapshot
   return { bytes, filename: `tax-estimate-${snap.taxYear}-${slugify(name)}.pdf`, snapshotId: snap.id };
 }
 
+/**
+ * R3-06 / R3-16: return information leaving the system is audited — one `download` row
+ * per PDF, under the caller's active tenant, METADATA ONLY (never figures; the snapshot id
+ * leads to the frozen, encrypted payload).
+ */
+async function auditDownload(scope: FirmScope, actor: Actor, snap: EstimateSnapshotDTO, issued: boolean): Promise<void> {
+  await auditLog(actor.tenantId, 'download', 'tax_est_snapshot', snap.id, null, {
+    firmId: scope.firmId, taxpayerId: snap.taxpayerId, taxYear: snap.taxYear, scenarioId: snap.scenarioId,
+    snapshotReason: snap.reason, format: 'pdf', issued, payloadSha256: snap.payloadSha256,
+  }, actor.userId);
+}
+
 /** Freeze a snapshot with `reason`, then print it (standalone PDF, Report Pack section). */
 export async function issueEstimatePdf(
   scope: FirmScope, actor: Actor, req: CreateSnapshotRequest & { reason: SnapshotReason }, opts: EstimateOptions = {},
 ): Promise<IssuedPdf> {
   const snap = await createSnapshot(scope, actor, req, opts);
-  return renderSnapshotPdf(scope, snap);
+  const pdf = await renderSnapshotPdf(scope, snap);
+  await auditDownload(scope, actor, snap, true);
+  return pdf;
 }
 
-/** GET /snapshots/:id/pdf — re-print an existing snapshot (no new snapshot). */
-export async function snapshotPdf(scope: FirmScope, snapshotId: string): Promise<IssuedPdf> {
-  return renderSnapshotPdf(scope, await getSnapshot(scope, snapshotId));
+/** GET /snapshots/:id/pdf — re-print an existing snapshot (no new snapshot; the download is audited). */
+export async function snapshotPdf(scope: FirmScope, actor: Actor, snapshotId: string): Promise<IssuedPdf> {
+  const snap = await getSnapshot(scope, snapshotId);
+  const pdf = await renderSnapshotPdf(scope, snap);
+  await auditDownload(scope, actor, snap, false);
+  return pdf;
 }
 
 // ── Report Pack section ─────────────────────────────────────────────────

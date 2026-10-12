@@ -33,7 +33,7 @@ import type {
   EstimateResultDTO, PortalShows, PortalTaxEstimateDTO, PortalTaxEstimateListItemDTO, PortalTaxEstimateResponseDTO,
   PortalTaxJurisdictionDTO,
 } from '@kis-books/shared';
-import { DEFAULT_DISCLAIMER_TEXT, STATE_NAMES, dRoundDollars } from '@kis-books/shared';
+import { DEFAULT_DISCLAIMER_TEXT, STATE_NAMES, dRoundDollars, portalDefaultYear } from '@kis-books/shared';
 import { db } from '../../db/index.js';
 import { portalContactCompanies, tenantFirmAssignments } from '../../db/schema/index.js';
 import { taxEstLinks, taxEstTaxpayerContacts, taxEstTaxpayers } from '../../db/schema/tax-estimator-taxpayers.js';
@@ -99,11 +99,8 @@ export async function listForContact(caller: PortalCaller): Promise<PortalTaxEst
   return [...byId.values()];
 }
 
-/** Default year: the newest year not after the current calendar year, else the newest. */
-export function defaultYear(years: number[], today = new Date()): number | undefined {
-  const sorted = [...years].sort((a, b) => b - a);
-  return sorted.find((y) => y <= today.getUTCFullYear()) ?? sorted[0];
-}
+/** Default year: the newest year not after the current calendar year, else the newest (shared with the portal page). */
+export const defaultYear = portalDefaultYear;
 
 const R = (v: string | null | undefined) => dRoundDollars(v ?? '0');
 

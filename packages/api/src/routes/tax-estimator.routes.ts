@@ -4,7 +4,7 @@
 
 import { Router } from 'express';
 import { authenticate, requireSessionAuth } from '../middleware/auth.js';
-import { requireResource } from '../middleware/permission.js';
+import { requirePermission } from '../middleware/permission.js';
 import { requireFeatureFlag } from '../middleware/feature-flag.js';
 import { resolveTaxEstimatorScope, getScope } from '../middleware/tax-estimator-scope.js';
 import { AppError } from '../utils/errors.js';
@@ -22,7 +22,8 @@ import * as taxParametersService from '../services/tax-estimator/tax-parameters.
 // Guard order matters and is pinned by tax-estimator.routes.test.ts:
 //   authenticate → session-only (API keys are single-tenant; this module
 //   reads across tenants) → client user_type 404 (TB13 pattern) → flag →
-//   resource permission → firm + allowed-tenant scope.
+//   resource permission (method-inferred; POST /estimate and /pdf are reads) → firm +
+//   allowed-tenant scope.
 // The flag is evaluated on the caller's ACTIVE tenant like every other module,
 // so enable TAX_ESTIMATOR_V1 on the firm's practice tenant(s).
 export const taxEstimatorRouter = Router();
@@ -36,7 +37,20 @@ taxEstimatorRouter.use((req, _res, next) => {
   next();
 });
 taxEstimatorRouter.use(requireFeatureFlag('TAX_ESTIMATOR_V1'));
-taxEstimatorRouter.use(requireResource('tax_estimator'));
+// R3-07: the resource check infers read/write from the method EXCEPT for the two POSTs
+// that are reads (compute an estimate, print the estimate PDF): a member whose
+// active-tenant role is `readonly` may use them, like every GET. Mutations additionally
+// pass requireTaxEstimatorWrite (firm role).
+const READ_POSTS: readonly RegExp[] = [
+  /^\/taxpayers\/[^/]+\/years\/[^/]+\/scenarios\/[^/]+\/(estimate|pdf)\/?$/,
+];
+const readGuard = requirePermission('tax_estimator', 'read');
+const writeGuard = requirePermission('tax_estimator', 'update');
+taxEstimatorRouter.use((req, res, next) => {
+  const isRead = req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS'
+    || (req.method === 'POST' && READ_POSTS.some((re) => re.test(req.path)));
+  return (isRead ? readGuard : writeGuard)(req, res, next);
+});
 taxEstimatorRouter.use(resolveTaxEstimatorScope);
 
 // GET /scope — who am I acting as. Counts only; ids stay server-side.

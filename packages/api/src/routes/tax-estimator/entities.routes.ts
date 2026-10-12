@@ -9,6 +9,7 @@ import {
   upsertEntityYearInputsSchema,
 } from '@kis-books/shared';
 import { getScope, requireTaxEstimatorWrite } from '../../middleware/tax-estimator-scope.js';
+import { listPageQuerySchema, pageOf } from './paging.js';
 import * as entitySettingsService from '../../services/tax-estimator/entity-settings.service.js';
 import * as treatmentsService from '../../services/tax-estimator/treatments.service.js';
 import * as plProviderService from '../../services/tax-estimator/pl-provider.service.js';
@@ -63,7 +64,7 @@ entitiesRouter.put(`${BASE}/treatments`, requireTaxEstimatorWrite, async (req, r
 // Suggestions only — the client confirms each one through PUT /treatments.
 entitiesRouter.get(`${BASE}/treatment-suggestions`, async (req, res) => {
   const { tenantId, companyId } = taxEstEntityParamsSchema.parse(req.params);
-  res.json({ data: await treatmentsService.suggestTreatments(getScope(req), tenantId, companyId) });
+  res.json(pageOf(await treatmentsService.suggestTreatments(getScope(req), tenantId, companyId), listPageQuerySchema.parse(req.query)));
 });
 
 entitiesRouter.get(`${BASE}/transaction-flags`, async (req, res) => {

@@ -97,9 +97,12 @@ export function isTenantInScope(scope: FirmScope, tenantId: string): boolean {
   return scope.allowedTenantIds.includes(tenantId);
 }
 
-/** SQL fragment: `tenant_id = ANY(<scope ids>)`. An empty scope matches nothing. */
+/**
+ * SQL fragment: `tenant_id IN (<scope ids>)`, every id a bound parameter (rule #19; R3-14).
+ * An empty scope matches nothing.
+ */
 export function tenantInScopeSql(scope: FirmScope, column = sql.raw('tenant_id')) {
   return scope.allowedTenantIds.length === 0
     ? sql`false`
-    : sql`${column} = ANY(${sql.raw(`ARRAY[${scope.allowedTenantIds.map((id) => `'${id.replace(/[^0-9a-fA-F-]/g, '')}'::uuid`).join(',')}]`)})`;
+    : sql`${column} IN (${sql.join(scope.allowedTenantIds.map((id) => sql`${id}::uuid`), sql`, `)})`;
 }

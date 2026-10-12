@@ -49,8 +49,13 @@ export interface PaymentLedgerDTO {
   taxpayerId: string;
   taxYear: number;
   scenarioId: string | null;
-  /** GL read window: Jan 1 of the tax year → the federal return due date (Q4 January payments included). */
-  window: { start: string; end: string };
+  /**
+   * GL attribution window (R3-02): the day after the PRIOR year's Q4 cutoff → this year's Q4
+   * cutoff (the later of the last installment due date and the Q4 file-and-pay date, in the
+   * next calendar year). Consecutive years never overlap, so a booked payment is credited to
+   * exactly one year; a stored row pins it to another. `returnDueDate` is the penalty end.
+   */
+  window: { start: string; end: string; returnDueDate?: string | null };
   /** Effective ledger (stored rows first, then GL rows not superseded by a stored row with the same transaction); paged by limit / offset. */
   payments: EstimatePaymentDTO[];
   /** Rows in the full effective ledger (before paging). */

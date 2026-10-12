@@ -43,6 +43,11 @@ describe('Phase 10b request schemas', () => {
   it('year: person inputs, MFS, NII deductions, farmer figures', () => {
     expect(upsertYearSchema.safeParse({ personInputs: { primary: { retirementPlanType: 'simple', employeeDeferral: 16500 } }, mfsLivedApartAllYear: true, niiAllocableDeductions: '100.25', farmerGross: { prior: { primary: { farming: 1, totalGross: 2 } } }, isFisherman: true }).success).toBe(true);
     expect(upsertYearSchema.safeParse({ personInputs: { primary: { retirementPlanType: 'ira' } } }).success).toBe(false);
+    // R3-13: jsonb money carried as JSON numbers must be whole cents (exact through jsonb + the string bridge).
+    expect(upsertYearSchema.safeParse({ itemized: { saltPaid: 10000.25 }, withholding: { federal: 4500.1, states: { MO: 0.07 } } }).success).toBe(true);
+    expect(upsertYearSchema.safeParse({ itemized: { saltPaid: 10000.123 } }).success).toBe(false);
+    expect(upsertYearSchema.safeParse({ withholding: { states: { MO: 0.005 } } }).success).toBe(false);
+    expect(upsertYearSchema.safeParse({ farmerGross: { current: { primary: { farming: 0.1 + 0.2 } } } }).success).toBe(true);
     expect(upsertYearSchema.safeParse({ niiAllocableDeductions: '-1' }).success).toBe(false);
     expect(upsertYearSchema.safeParse({ farmerGross: { current: { primary: { acres: 3 } } } }).success).toBe(false);
   });

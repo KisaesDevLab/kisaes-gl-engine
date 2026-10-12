@@ -20,6 +20,7 @@ import { taxEstSchAiSnapshots } from '../../db/schema/tax-estimator-estimate.js'
 import { AppError } from '../../utils/errors.js';
 import { isTenantInScope, type FirmScope } from './firm-scope.service.js';
 import { getTaxBasisPl } from './pl-provider.service.js';
+import { getEntitySettings } from './entity-settings.service.js';
 import { getParameters } from './tax-parameters.service.js';
 import { listLinks } from './taxpayers.service.js';
 import { lastCompleteMonth } from './periods.js';
@@ -136,15 +137,45 @@ export async function captureSnapshots(
   // Read every period's figures first (provider calls stay outside the transaction), then
   // write them and the audit row atomically (auditLog with the executor).
   const toWrite: Array<typeof taxEstSchAiSnapshots.$inferInsert> = [];
+  // R3-08: resolve the entity type FIRST. A C corporation (or a company with no tax type)
+  // has no individual Schedule AI column, and a fiscal-year C corp would reject calendar
+  // period months (TE_THROUGH_OUT_OF_RANGE) — skip it before the provider is asked.
+  const individual: typeof companies = [];
+  for (const c of companies) {
+    let entityType: string | null = null;
+    let name: string | null = c.companyName;
+    try {
+      const es = await getEntitySettings(scope, c.tenantId, c.companyId);
+      entityType = es.resolved.entityType;
+      name = es.resolved.companyName ?? name;
+    } catch (err) {
+      if (!(err instanceof AppError)) throw err;
+      skipped.push({ code: 'TE_SCH_AI_ENTITY_SKIPPED', severity: 'info', message: `${name ?? 'A linked company'}: ${err.message}; not captured.`, details: { tenantId: c.tenantId, companyId: c.companyId } });
+      continue;
+    }
+    if (!entityType || entityType === 'c_corp') {
+      skipped.push({ code: 'TE_SCH_AI_ENTITY_SKIPPED', severity: 'info', message: `${name ?? 'A linked company'}: ${entityType ? 'C corporations have no individual Schedule AI column' : 'no tax entity type'}; not captured.`, details: { tenantId: c.tenantId, companyId: c.companyId } });
+      continue;
+    }
+    individual.push(c);
+  }
   for (const p of periods) {
     if (p.periodMonth > complete) {
       skipped.push({ code: 'TE_SCH_AI_PERIOD_OPEN', severity: 'info', message: `The ${p.periodEnd} period has not ended; nothing captured.`, details: { periodIndex: p.periodIndex } });
       continue;
     }
-    for (const c of companies) {
+    for (const c of individual) {
       const key = `${p.periodIndex}|${c.tenantId}|${c.companyId}`;
       if (have.has(key) && !input.replace) continue;
-      const pl = await getTaxBasisPl(scope, { tenantId: c.tenantId, companyId: c.companyId, taxYear, throughMonth: p.periodMonth }, { today });
+      let pl: TaxBasisPl;
+      try {
+        pl = await getTaxBasisPl(scope, { tenantId: c.tenantId, companyId: c.companyId, taxYear, throughMonth: p.periodMonth }, { today });
+      } catch (err) {
+        // One entity that cannot be read never fails the whole capture (runEntities pattern).
+        if (!(err instanceof AppError)) throw err;
+        skipped.push({ code: err.code ?? 'TE_SCH_AI_ENTITY_SKIPPED', severity: 'warning', message: `${c.companyName ?? 'A linked company'} (${p.periodEnd}): ${err.message}; not captured.`, details: { tenantId: c.tenantId, companyId: c.companyId, periodIndex: p.periodIndex } });
+        continue;
+      }
       if (!pl.entityType || pl.entityType === 'c_corp') {
         skipped.push({ code: 'TE_SCH_AI_ENTITY_SKIPPED', severity: 'info', message: `${pl.companyName}: ${pl.entityType ? 'C corporations have no individual Schedule AI column' : 'no tax entity type'}; not captured.`, details: { tenantId: c.tenantId, companyId: c.companyId } });
         continue;

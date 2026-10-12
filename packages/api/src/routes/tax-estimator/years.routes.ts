@@ -11,6 +11,7 @@ import {
   upsertFirmSettingsSchema,
 } from '@kis-books/shared';
 import { getScope, requireTaxEstimatorWrite } from '../../middleware/tax-estimator-scope.js';
+import { listPageQuerySchema, pageOf } from './paging.js';
 import * as yearsService from '../../services/tax-estimator/years.service.js';
 import * as scenariosService from '../../services/tax-estimator/scenarios.service.js';
 import * as adjustmentsService from '../../services/tax-estimator/adjustments.service.js';
@@ -33,7 +34,7 @@ const pageQuerySchema = z.object({
 // ── years ──
 yearsRouter.get('/taxpayers/:id/years', async (req, res) => {
   const { id } = taxpayerIdParamsSchema.parse(req.params);
-  res.json({ data: await yearsService.listYears(getScope(req), id) });
+  res.json(pageOf(await yearsService.listYears(getScope(req), id), listPageQuerySchema.parse(req.query)));
 });
 yearsRouter.get('/taxpayers/:id/years/:taxYear', async (req, res) => {
   const { id, taxYear } = yearParamsSchema.parse(req.params);
@@ -48,7 +49,7 @@ yearsRouter.put('/taxpayers/:id/years/:taxYear', requireTaxEstimatorWrite, async
 // ── scenarios ──
 yearsRouter.get('/taxpayers/:id/years/:taxYear/scenarios', async (req, res) => {
   const { id, taxYear } = yearParamsSchema.parse(req.params);
-  res.json({ data: await scenariosService.listScenarios(getScope(req), id, taxYear) });
+  res.json(pageOf(await scenariosService.listScenarios(getScope(req), id, taxYear), listPageQuerySchema.parse(req.query)));
 });
 yearsRouter.post('/taxpayers/:id/years/:taxYear/scenarios', requireTaxEstimatorWrite, async (req, res) => {
   const { id, taxYear } = yearParamsSchema.parse(req.params);
@@ -95,7 +96,7 @@ yearsRouter.delete('/adjustments/:adjustmentId', requireTaxEstimatorWrite, async
 // ── state rows ──
 yearsRouter.get('/scenarios/:scenarioId/state-rows', async (req, res) => {
   const { scenarioId } = scenarioIdParamsSchema.parse(req.params);
-  res.json({ data: await stateRowsService.listStateRows(getScope(req), scenarioId) });
+  res.json(pageOf(await stateRowsService.listStateRows(getScope(req), scenarioId), listPageQuerySchema.parse(req.query)));
 });
 yearsRouter.put('/scenarios/:scenarioId/state-rows', requireTaxEstimatorWrite, async (req, res) => {
   const { scenarioId } = scenarioIdParamsSchema.parse(req.params);
@@ -106,7 +107,7 @@ yearsRouter.put('/scenarios/:scenarioId/state-rows', requireTaxEstimatorWrite, a
 // ── adjustment types ──
 yearsRouter.get('/adjustment-types', async (req, res) => {
   const { includeInactive } = listAdjustmentTypesQuerySchema.parse(req.query);
-  res.json({ data: await adjustmentTypesService.listAdjustmentTypes(getScope(req), includeInactive) });
+  res.json(pageOf(await adjustmentTypesService.listAdjustmentTypes(getScope(req), includeInactive), listPageQuerySchema.parse(req.query)));
 });
 yearsRouter.post('/adjustment-types', requireTaxEstimatorWrite, async (req, res) => {
   const input = createAdjustmentTypeSchema.parse(req.body);

@@ -109,11 +109,17 @@ export interface SnapshotParameterChangeDTO {
 export interface SnapshotCompareDTO {
   snapshotId: string;
   snapshotCreatedAt: string;
-  liveComputedAt: string;
+  /** Null when no live estimate could be computed (see `liveUnavailable`). */
+  liveComputedAt: string | null;
+  /**
+   * Why there is no live side (R3-18): the scenario was deleted after the snapshot, or the
+   * live compute failed. The frozen snapshot is still returned; differences are empty.
+   */
+  liveUnavailable: { code: string; message: string } | null;
   engineVersionChanged: boolean;
   /** The estimate inputs hash differs (it includes the as-of day, so a later day always differs). */
   inputsHashChanged: boolean;
-  summary: { snapshot: EstimateSummaryDTO; live: EstimateSummaryDTO };
+  summary: { snapshot: EstimateSummaryDTO; live: EstimateSummaryDTO | null };
   /** Money lines that differ (same order as SNAPSHOT_COMPARE_LINES); unchanged lines are omitted. */
   differences: SnapshotDiffRowDTO[];
   /** Parameters / state rules used by either computation whose value or status changed. */

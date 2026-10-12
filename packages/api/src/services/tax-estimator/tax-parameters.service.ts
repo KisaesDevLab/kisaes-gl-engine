@@ -158,6 +158,26 @@ async function resolveYear(exec: DbOrTx, year: number): Promise<Map<string, Reso
   return out;
 }
 
+/**
+ * Roll every `rollsWithYear` date key from `fromYear` to `toYear`: holidays shift by the
+ * year difference, every other date also lands on the next business day after the rolled
+ * holidays. Shared by "create year from prior" and the missing-year fallback (R3-04), so a
+ * fallback year's calendar is THAT year's calendar, not last year's.
+ */
+function rollYearDates(resolved: Map<string, ResolvedValue>, fromYear: number, toYear: number): { values: Map<string, unknown>; rolled: string[] } {
+  const priorHolidays = resolved.get(HOLIDAYS_KEY)?.value;
+  const holidays = Array.isArray(priorHolidays) ? priorHolidays.map((d) => rollDateToYear(String(d), fromYear, toYear)) : [];
+  const values = new Map<string, unknown>();
+  const rolled: string[] = [];
+  for (const e of expandParameterKeys()) {
+    const p = resolved.get(e.key);
+    if (!p || !e.def.rollsWithYear) continue;
+    values.set(e.key, rollValue(e.def.type, p.value, fromYear, toYear, holidays, e.key !== HOLIDAYS_KEY));
+    rolled.push(e.key);
+  }
+  return { values, rolled };
+}
+
 export async function getParameters(year: number, executor: DbOrTx = db): Promise<TaxParametersDTO> {
   let resolveFrom = year;
   let fallbackYear: number | null = null;
@@ -171,6 +191,9 @@ export async function getParameters(year: number, executor: DbOrTx = db): Promis
     ? await resolveYear(executor, resolveFrom)
     : new Map<string, ResolvedValue>();
 
+  // R3-04: fallback dates are rolled to the requested year (due dates, return due date,
+  // farmer dates, holidays); amounts and rates are served as they are (provisional).
+  const rolled = isFallback && fallbackYear !== null ? rollYearDates(resolved, fallbackYear, year).values : new Map<string, unknown>();
   const parameters: TaxParameterRowDTO[] = [];
   const missing: string[] = [];
   const expanded = expandParameterKeys();
@@ -179,7 +202,7 @@ export async function getParameters(year: number, executor: DbOrTx = db): Promis
     if (!r) { missing.push(e.key); continue; }
     const row: TaxParameterRowDTO = {
       key: e.key, label: e.def.label, group: e.def.group, type: e.def.type, unit: e.def.unit,
-      value: r.value,
+      value: rolled.has(e.key) ? rolled.get(e.key) : r.value,
       status: isFallback ? 'provisional' : r.status,
       source: isFallback ? 'fallback' : r.source,
       citation: r.citation,
@@ -264,24 +287,15 @@ export async function createYearFromPrior(year: number, userId?: string): Promis
     const fromYear = await latestYearBefore(tx, year);
     if (fromYear === null) throw AppError.badRequest('No earlier tax year to copy from', 'TE_NO_PRIOR_YEAR');
     const prior = await resolveYear(tx, fromYear);
-
     // Holidays first: they feed the business-day landing of every other date.
-    const priorHolidays = prior.get(HOLIDAYS_KEY)?.value;
-    const holidays = Array.isArray(priorHolidays)
-      ? priorHolidays.map((d) => rollDateToYear(String(d), fromYear, year))
-      : [];
+    const { values: rolledValues, rolled: rolledDates } = rollYearDates(prior, fromYear, year);
 
     const reason = `Created from ${fromYear}; verify`;
-    const rolledDates: string[] = [];
     const values: Array<typeof taxParameterOverrides.$inferInsert> = [];
     for (const e of expandParameterKeys()) {
       const p = prior.get(e.key);
       if (!p) continue;
-      let value = p.value;
-      if (e.def.rollsWithYear) {
-        value = rollValue(e.def.type, p.value, fromYear, year, holidays, e.key !== HOLIDAYS_KEY);
-        rolledDates.push(e.key);
-      }
+      const value = rolledValues.has(e.key) ? rolledValues.get(e.key) : p.value;
       values.push({
         taxYear: year, key: e.key, value, status: 'provisional', reason, createdFromYear: fromYear, createdBy: userId ?? null,
       });

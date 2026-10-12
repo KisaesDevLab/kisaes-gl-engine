@@ -16,6 +16,7 @@ import type {
 import { db } from '../../db/index.js';
 import { taxEstYears, taxEstScenarios } from '../../db/schema/tax-estimator-years.js';
 import { encrypt, decrypt } from '../../utils/encryption.js';
+import { AppError } from '../../utils/errors.js';
 import type { FirmScope } from './firm-scope.service.js';
 import { getFirmSettings } from './firm-settings.service.js';
 import { toScenarioDTO } from './scenarios.service.js';
@@ -150,7 +151,7 @@ export async function upsertYear(
         await tx.insert(taxEstScenarios).values({ taxpayerId, taxYear, name: BASE_SCENARIO_NAME, isBase: true, sortOrder: 0 });
       }
     }
-    if (!row) throw new Error('Year upsert failed');
+    if (!row) throw new AppError(500, 'Year upsert failed', 'TE_YEAR_SAVE_FAILED');
     const beforeShape = before ? auditShape(before) : null;
     const afterShape = { ...auditShape(row), ...(priorChanged ? { priorYearChanged: { changed: true } } : {}) };
     await auditYears(scope, actor, before ? 'update' : 'create', 'tax_est_year', row.id, beforeShape, afterShape, tx);

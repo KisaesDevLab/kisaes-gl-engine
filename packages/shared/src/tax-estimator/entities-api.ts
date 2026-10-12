@@ -175,6 +175,11 @@ export interface AccountTreatmentDto {
   paymentJurisdiction: PaymentJurisdiction | null;
   nonRecurring: boolean;
   updatedAt: string;
+  /**
+   * R3-17: the row's taxpayer / person target belongs to ANOTHER firm that also manages
+   * these books. Its ids are withheld (null) and the row is read-only for this firm.
+   */
+  targetOtherFirm?: boolean;
 }
 
 export interface TreatmentSuggestion {

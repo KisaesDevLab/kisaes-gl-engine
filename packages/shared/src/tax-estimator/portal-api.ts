@@ -95,3 +95,13 @@ export interface TaxEstimatePackTaxpayerDTO {
   /** Tax years this taxpayer is linked to the company for, newest first. */
   years: number[];
 }
+
+/**
+ * Default tax year of the portal view: the newest year not after the current calendar
+ * year, else the newest. ONE definition for the server (portal-estimates.service) and the
+ * portal page, so a page that does not name a year shows the year the server would pick.
+ */
+export function portalDefaultYear(years: readonly number[], today: Date = new Date()): number | undefined {
+  const sorted = [...years].sort((a, b) => b - a);
+  return sorted.find((y) => y <= today.getUTCFullYear()) ?? sorted[0];
+}

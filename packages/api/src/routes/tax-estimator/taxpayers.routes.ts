@@ -9,6 +9,7 @@ import {
   companyOptionsQuerySchema, linkContactSchema, contactIdParamsSchema, unlinkContactQuerySchema,
 } from '@kis-books/shared';
 import { getScope, requireTaxEstimatorWrite } from '../../middleware/tax-estimator-scope.js';
+import { listPageQuerySchema, pageOf } from './paging.js';
 import * as taxpayersService from '../../services/tax-estimator/taxpayers.service.js';
 
 // taxpayers router — mounted by tax-estimator.routes.ts AFTER its guard chain
@@ -68,7 +69,8 @@ taxpayersRouter.delete('/:id/persons/:role', requireTaxEstimatorWrite, async (re
 taxpayersRouter.get('/:id/links', async (req, res) => {
   const { id } = taxpayerIdParamsSchema.parse(req.params);
   const { taxYear } = linksQuerySchema.parse(req.query);
-  res.json(await taxpayersService.listLinks(getScope(req), id, taxYear));
+  const list = await taxpayersService.listLinks(getScope(req), id, taxYear);
+  res.json({ ...list, ...pageOf(list.data, listPageQuerySchema.parse(req.query)) });
 });
 
 taxpayersRouter.put('/:id/links', requireTaxEstimatorWrite, async (req, res) => {
@@ -86,7 +88,8 @@ taxpayersRouter.delete('/:id/links/:linkId', requireTaxEstimatorWrite, async (re
 // ── portal contacts ──
 taxpayersRouter.get('/:id/contacts', async (req, res) => {
   const { id } = taxpayerIdParamsSchema.parse(req.params);
-  res.json(await taxpayersService.listContacts(getScope(req), id));
+  const list = await taxpayersService.listContacts(getScope(req), id);
+  res.json({ ...list, ...pageOf(list.data, listPageQuerySchema.parse(req.query)) });
 });
 
 taxpayersRouter.post('/:id/contacts', requireTaxEstimatorWrite, async (req, res) => {

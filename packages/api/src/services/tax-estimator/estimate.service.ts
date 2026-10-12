@@ -220,7 +220,7 @@ async function gather(scope: FirmScope, req: EstimateRequest): Promise<Gathered>
     warnings.push({ code: 'TE_YEAR_NOT_SAVED', severity: 'warning', message: `No annual settings are saved for ${req.taxYear}; defaults were used (no prior-year tax, no withholding, no credits).` });
   }
   if (paramsDto.isFallback) {
-    warnings.push({ code: 'TE_PARAMS_FALLBACK_YEAR', severity: 'warning', message: `No federal parameters exist for ${req.taxYear}; the ${paramsDto.fallbackYear} values were used (all provisional).`, details: { fallbackYear: paramsDto.fallbackYear } });
+    warnings.push({ code: 'TE_PARAMS_FALLBACK_YEAR', severity: 'warning', message: `No federal parameters exist for ${req.taxYear}; the ${paramsDto.fallbackYear} values were used (all provisional). Due dates, the return due date and holidays were rolled forward to ${req.taxYear}; rates, amounts and the penalty rate table are ${paramsDto.fallbackYear}'s.`, details: { fallbackYear: paramsDto.fallbackYear } });
   }
 
   // D1: a link whose tenant left the scope is excluded, with a readiness warning.
@@ -262,6 +262,10 @@ async function gather(scope: FirmScope, req: EstimateRequest): Promise<Gathered>
 function inputsHash(scope: FirmScope, req: EstimateRequest, g: Gathered, today: Date): string {
   const payload = {
     v: CACHE_VERSION, engine: TAX_ENGINE_VERSION, firm: scope.firmId, req: { ...req, refresh: undefined }, day: today.toISOString().slice(0, 10),
+    // R3-01 (D1): the result depends on WHICH tenants the caller reaches (a GL-linked
+    // adjustment into a non-linked company is read only when its tenant is in scope), so
+    // two firm members with different tenant access never share a cache entry.
+    tenants: [...scope.allowedTenantIds].sort(),
     filingStatus: g.taxpayerFilingStatus, year: g.year, persons: g.persons, links: g.links,
     companies: g.companies.map((c) => ({ t: c.tenantId, c: c.companyId, stamp: c.glVersionStamp, cfg: c.configVersion, s: c.settings })),
     adjustments: g.adjustments, types: g.types, stateRows: g.stateRows, params: g.paramsDto, stateRules: g.stateRules,
@@ -347,8 +351,17 @@ async function adjustmentMonths(
     const throughIdx = monthIndex(through, req.taxYear);
     let basis: TaxMethod | undefined = run?.pl?.basis;
     if (!basis) {
-      const settings = await getEntitySettings(scope, a.tenantId, a.companyId);
-      basis = settings.resolved.taxMethod;
+      try {
+        const settings = await getEntitySettings(scope, a.tenantId, a.companyId);
+        basis = settings.resolved.taxMethod;
+      } catch (err) {
+        // R3-10: a deleted / unreadable company degrades this ONE adjustment to its manual
+        // amount (like every other per-entity failure) instead of failing the estimate.
+        if (!(err instanceof AppError)) throw err;
+        warnings.push({ code: 'TE_ADJUSTMENT_ACCOUNT_UNREADABLE', severity: 'warning', message: `Adjustment "${a.label || a.adjustmentTypeName}" reads an account whose company could not be read (${err.message}); only its manual amount is used.`, details: { adjustmentId: a.id } });
+        out.set(a.id, a.amount == null ? new Array<number>(MONTHS_PER_YEAR).fill(0) : a.monthly);
+        continue;
+      }
     }
     const actuals = await glMonthlyActuals(a.tenantId, a.companyId, a.accountId, req.taxYear, throughIdx, basis);
     out.set(a.id, allocateAdjustment({ amount: a.amount, cadence: a.cadence, startMonth: a.startMonth, endMonth: a.endMonth, glLinked: true }, req.taxYear, { throughMonth: throughIdx, glActuals: actuals }));
@@ -408,6 +421,39 @@ function farmerYearFromBooks(runs: EntityRun[], farmIds: Set<string>, federal: F
       const f = farming.get(p.id) ?? new Decimal(0);
       const total = p.id === primary.id ? f.plus(otherNet) : f;
       return { personId: p.id, farming: f.toFixed(4), fishing: '0', totalGross: total.toFixed(4) };
+    }),
+  };
+}
+
+/**
+ * R3-09: prior-year farmer leg from the books. Farming gross = the provider's prior-year
+ * farming income of each farm entity (a complete year, not run-rated) split by the
+ * CURRENT link percentages; total gross = farming gross + the prior-year AGI on the
+ * primary (AGI already contains the farm's net, so the ratio is understated — a taxpayer
+ * who fails this leg can still enter real figures). Null when there is nothing to test.
+ */
+function farmerPriorYearFromBooks(runs: EntityRun[], farmIds: Set<string>, priorYearAgi: string | null, persons: PersonDTO[]): FarmerYearGross | null {
+  if (priorYearAgi == null || farmIds.size === 0) return null;
+  const farming = new Map<string, DecJs>(persons.map((p) => [p.id, new Decimal(0)]));
+  let any = false;
+  for (const r of runs) {
+    if (!r.engine || !r.pl || !farmIds.has(r.engine.companyId)) continue;
+    const prior = new Decimal(r.pl.farmingGrossIncome.priorYear);
+    if (prior.isZero()) continue;
+    any = true;
+    const own = r.engine.links;
+    for (const l of own) {
+      const pct = l.profitPct == null ? (own.length === 1 ? 100 : 0) : l.profitPct;
+      farming.set(l.personId, (farming.get(l.personId) ?? new Decimal(0)).plus(prior.times(pct).dividedBy(100)));
+    }
+  }
+  if (!any) return null;
+  const primary = persons.find((p) => p.role === 'primary') ?? persons[0]!;
+  const agi = Decimal.max(new Decimal(0), new Decimal(priorYearAgi));
+  return {
+    byPerson: persons.map((p) => {
+      const f = farming.get(p.id) ?? new Decimal(0);
+      return { personId: p.id, farming: f.toFixed(4), fishing: '0', totalGross: (p.id === primary.id ? f.plus(agi) : f).toFixed(4) };
     }),
   };
 }
@@ -505,18 +551,39 @@ async function assemble(scope: FirmScope, req: EstimateRequest, g: Gathered, opt
   }
 
   // Farmer / fisherman (§6654(i)).
-  const farmIds = new Set(individual.filter((r) => r.engine.entityType === 'sch_f' || r.company.settings.settings.farmerOverride === true).map((r) => r.engine.companyId));
-  const anyOverride = runs.some((r) => r.company.settings.settings.farmerOverride === true);
+  // R3-05: the entity override is tri-state. `false` ("not a farmer") is honoured: that
+  // entity is never a farm source, and an explicit false anywhere wins over a true elsewhere
+  // (warned) — the conservative choice, regular quarterly installments.
+  const overrideOf = (r: EntityRun) => r.company.settings.settings.farmerOverride;
+  const farmIds = new Set(individual
+    .filter((r) => overrideOf(r) !== false && (r.engine.entityType === 'sch_f' || overrideOf(r) === true))
+    .map((r) => r.engine.companyId));
+  const anyTrue = runs.some((r) => overrideOf(r) === true);
+  const anyFalse = runs.some((r) => overrideOf(r) === false);
+  const farmerOverride: boolean | null = anyFalse ? false : anyTrue ? true : null;
+  if (anyFalse && (anyTrue || farmIds.size > 0)) {
+    warnings.push({ code: 'TE_FARMER_OVERRIDE_CONFLICT', severity: 'warning', message: 'One linked entity is marked "not a farmer" while another is a farm (Schedule F or marked "farmer"); the "not a farmer" override was applied to the taxpayer, so the regular installment rules are used.' });
+  }
   const fg = y.farmerGross ?? {};
   let farmer: FarmerResult | null = null;
-  if (farmIds.size > 0 || fg.current || fg.prior || anyOverride) {
+  if (farmIds.size > 0 || fg.current || fg.prior || farmerOverride !== null) {
     const currentYear = fg.current ? farmerYearFromManual(fg.current, g.persons) : farmerYearFromBooks(runs, farmIds, federal, g.persons);
     if (!fg.current) warnings.push({ code: 'TE_FARMER_GROSS_FROM_BOOKS', severity: 'info', message: 'Farmer test: gross farming income comes from the books (run-rated to the full year) and other income at its net amount. Enter the gross-income figures on the annual settings to confirm.' });
-    if (!fg.prior) warnings.push({ code: 'TE_FARMER_PRIOR_GROSS_MISSING', severity: 'info', message: 'Farmer test: no prior-year gross-income figures were entered, so only the current year was tested.' });
+    // R3-09: without manual prior-year figures, the prior-year leg uses the provider's
+    // prior-year farming gross from the books and the prior-year AGI (conservative).
+    let priorYear: FarmerYearGross | null = fg.prior ? farmerYearFromManual(fg.prior, g.persons) : null;
+    if (!priorYear) {
+      priorYear = farmerPriorYearFromBooks(runs, farmIds, y.priorYearAgi, g.persons);
+      if (priorYear) {
+        warnings.push({ code: 'TE_FARMER_PRIOR_GROSS_FROM_BOOKS', severity: 'info', message: 'Farmer test, prior year: gross farming income comes from the books; total gross income is approximated as that farming income plus the prior-year AGI (conservative). Enter the prior-year gross-income figures on the annual settings to confirm.' });
+      } else {
+        warnings.push({ code: 'TE_FARMER_PRIOR_GROSS_MISSING', severity: 'info', message: 'Farmer test: no prior-year gross-income figures were entered and the books have no prior-year farming income (or no prior-year AGI is on file), so only the current year was tested.' });
+      }
+    }
     const primary = g.persons.find((p) => p.role === 'primary') ?? g.persons[0]!;
     farmer = runEngine(() => computeFarmer({
-      taxYear, filingStatus, parameters, primaryPersonId: primary.id, currentYear, priorYear: fg.prior ? farmerYearFromManual(fg.prior, g.persons) : null,
-      farmerOverride: anyOverride ? true : null, isFisherman: y.isFisherman ?? false,
+      taxYear, filingStatus, parameters, primaryPersonId: primary.id, currentYear, priorYear,
+      farmerOverride, isFisherman: y.isFisherman ?? false,
       tax: { currentYearTax: federal.federalTotal, priorYearTax: y.priorYearTax, priorYearFullTwelveMonths: y.priorYearTwelveMonths && y.priorYearFiled, priorYearAgi: y.priorYearAgi },
     }));
   }

@@ -6,7 +6,7 @@
 // kisbooks_test (three linked companies in three tenants, D1) must produce the oracle
 // (features/tax-estimator/docs/reference-calc/rivera_expected.json) end to end:
 // books → P&L provider → bridge → computeFederal / computeState → payment ledger
-// (GL + manual, window Jan 1 → return due date, dedupe) → computeFederalEstimates /
+// (GL + manual, attribution window (prior Q4 cutoff, Q4 cutoff], dedupe) → computeFederalEstimates /
 // computeStateEstimates. Plus D1 isolation: another firm gets 404 and never sees this
 // firm's data; a tenant that leaves the scope drops out of the next estimate with a warning.
 
@@ -184,9 +184,10 @@ const estimate = (scope = scopeA, extra: { throughMonth?: string; refresh?: bool
   computeEstimate(scope, { taxpayerId, taxYear: 2026, scenarioId: baseScenarioId, throughMonth: '2026-12', refresh: true, ...extra }, { today: TODAY, skipProviderCache: true });
 
 describe('payment ledger (GL reader + manual rows)', () => {
-  it('reads estimated_tax_payment lines Jan 1 → return due date: Jan 15 Q4 payment in, Dec prior-year payment out', async () => {
+  it('reads estimated_tax_payment lines over the attribution window: Jan 15 Q4 payment in, Dec prior-year payment out', async () => {
     const ledger = await getPaymentLedger(scopeA, taxpayerId, 2026, baseScenarioId);
-    expect(ledger.window).toEqual({ start: '2026-01-01', end: '2027-04-15' });
+    // R3-02: the attribution window — (2025 Q4 cutoff Feb 2, 2026, 2026 Q4 cutoff Feb 1, 2027].
+    expect(ledger.window).toEqual({ start: '2026-02-03', end: '2027-02-01', returnDueDate: '2027-04-15' });
     expect(ledger.payments.map((p) => [p.date, Number(p.amount), p.jurisdiction, p.source])).toEqual([
       ['2026-04-15', 6600, 'federal', 'gl'], ['2026-06-15', 6600, 'federal', 'gl'], ['2026-09-15', 6000, 'federal', 'gl'], ['2027-01-15', 7046.1, 'federal', 'gl'],
     ]);

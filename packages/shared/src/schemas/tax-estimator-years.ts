@@ -34,7 +34,15 @@ const taxYear = z.coerce.number().int().min(MIN_TAX_YEAR).max(MAX_TAX_YEAR);
 const stateCode = z.string().trim().length(2).regex(/^[A-Za-z]{2}$/).transform((s) => s.toUpperCase());
 const money = z.union([z.number(), z.string().trim().regex(/^-?\d+(\.\d{1,4})?$/)]).transform((v) => String(v));
 const nonNegMoney = money.refine((v) => Number(v) >= 0, 'Must not be negative');
-const nonNegNumber = z.number().min(0).max(1e12);
+const CENTS = 100;
+const CENT_EPSILON = 1e-6;
+/**
+ * Money carried as a JSON number in jsonb inputs (itemized, Schedule 1-A, withholding,
+ * person inputs, farmer gross). R3-13: whole cents only, so the number round-trips through
+ * jsonb and the string-decimal bridge exactly (|v| <= 1e12 keeps v × 100 inside 2^53).
+ */
+const nonNegNumber = z.number().min(0).max(1e12)
+  .refine((v) => Math.abs(v * CENTS - Math.round(v * CENTS)) < CENT_EPSILON, 'At most 2 decimal places (whole cents)');
 const month = z.number().int().min(1).max(12);
 
 export const yearParamsSchema = z.object({ id: uuid, taxYear });

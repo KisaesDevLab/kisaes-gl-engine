@@ -8,16 +8,27 @@
 //            pinned GL rows) for the year (scenario_id NULL) + the scenario's own rows
 //          + LIVE GL rows: lines on accounts treated `estimated_tax_payment` and tied to
 //            this taxpayer, in every linked company whose tenant is in the caller's
-//            scope (D1), read on a CASH basis (R1 F4) over the window
-//            Jan 1 of the tax year → the federal return due date, so the January
-//            payment for Q4 counts (PROGRESS.md "Known gaps").
-//   dedupe = a stored row with the same (jurisdiction, transaction id) supersedes the
-//            GL row (the engine's own dedupe key), so a manual entry that mirrors a
-//            booked payment is never counted twice.
+//            scope (D1), read on a CASH basis (R1 F4) over the year's ATTRIBUTION
+//            window (R3-02, MODULE.md "Safe harbor ... Payments"):
+//              start = the day after the PRIOR year's Q4 cutoff (Jan 1 – Jan 31 of the
+//                      tax year belongs to the prior year's January installment),
+//              end   = this year's Q4 cutoff = the later of the last installment due
+//                      date and the Q4 file-and-pay date (Jan 31 of the next year when
+//                      neither parameter is usable).
+//            Consecutive windows never overlap, so one GL transaction is credited to
+//            exactly one tax year by default. A payment made between the Q4 cutoff and
+//            the return due date (a late Q4 / extension payment) is credited to the NEXT
+//            year unless a stored row pins it: a stored row for ANY year carrying the
+//            transaction id removes it from every other year's live read, and one
+//            transaction can be pinned to one tax year only (409 TE_PAYMENT_OTHER_YEAR).
+//   dedupe = a stored row with the same transaction id supersedes every GL row of that
+//            transaction in its year, whatever the jurisdiction (R3-11; a corrected
+//            jurisdiction is warned), so a pin that mirrors a booked payment is never
+//            counted twice.
 //
 // Reads books only through the report builder (buildAccountDetailReport); its own SQL
 // touches estimator rows, always pinned to the firm and to in-scope tenants.
-import { and, asc, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, ne, or } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 import type {
   CreatePaymentInput, UpdatePaymentInput, EstimatePaymentDTO, EstimatePaymentSourceDTO, LinkDTO, PaymentLedgerDTO, TaxEstimatorWarning,
@@ -44,6 +55,8 @@ const dec = (x: string | number | null | undefined) => new Decimal(x ?? 0);
 const ALL_ACCOUNT_TYPES = ['asset', 'liability', 'equity', 'revenue', 'cogs', 'expense', 'other_revenue', 'other_expense'];
 const FEDERAL = 'federal';
 const RETURN_DUE_DATE_KEY = 'return_due_date';
+const DUE_DATES_KEY = 'installments.due_dates';
+const Q4_FILE_AND_PAY_KEY = 'installments.q4_file_and_pay_date';
 
 type PaymentRow = typeof taxEstPayments.$inferSelect;
 
@@ -69,15 +82,50 @@ function toStoredDTO(r: PaymentRow): EstimatePaymentDTO {
 /** Audit shape: amounts and dates are bookkeeping data, not return information. */
 const auditShape = (r: PaymentRow) => toStoredDTO(r);
 
-/** GL window: Jan 1 of the tax year → the federal return due date (parameter, else Apr 15 of the next year). */
-export async function paymentWindow(taxYear: number): Promise<{ start: string; end: string; warning: TaxEstimatorWarning | null }> {
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const isIso = (v: unknown): v is string => typeof v === 'string' && ISO_DATE.test(v);
+
+/** The day after an ISO date (UTC). */
+function nextDay(d: string): string {
+  const t = new Date(`${d}T00:00:00Z`);
+  t.setUTCDate(t.getUTCDate() + 1);
+  return t.toISOString().slice(0, 10);
+}
+
+/**
+ * Q4 cutoff of `taxYear` (R3-02): the latest of the last individual installment due date
+ * and the Q4 file-and-pay date that falls in the NEXT calendar year; GL payments dated
+ * after Dec 31 and on or before it are the year's January (Q4) installment. Defaults to
+ * Jan 31 of the next year when neither parameter is usable.
+ */
+async function q4Cutoff(taxYear: number): Promise<{ date: string; returnDueDate: string | null; defaulted: boolean }> {
   const params = await getParameters(taxYear);
-  const row = params.parameters.find((p) => p.key === RETURN_DUE_DATE_KEY);
-  const start = `${taxYear}-01-01`;
-  if (row && typeof row.value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(row.value)) return { start, end: row.value, warning: null };
+  const val = (k: string) => params.parameters.find((p) => p.key === k)?.value;
+  const nextYear = `${taxYear}-12-31`;
+  const due = val(DUE_DATES_KEY);
+  const candidates = [
+    ...(Array.isArray(due) ? due.slice(-1) : []),
+    val(Q4_FILE_AND_PAY_KEY),
+  ].filter((d): d is string => isIso(d) && d > nextYear);
+  const rdd = val(RETURN_DUE_DATE_KEY);
+  const returnDueDate = isIso(rdd) ? rdd : null;
+  if (candidates.length === 0) return { date: `${taxYear + 1}-01-31`, returnDueDate, defaulted: true };
+  return { date: candidates.sort()[candidates.length - 1]!, returnDueDate, defaulted: false };
+}
+
+/**
+ * GL attribution window of a tax year (R3-02): (prior year's Q4 cutoff, this year's Q4
+ * cutoff]. Consecutive years' windows never overlap. `returnDueDate` is informational
+ * (penalty accrual end); payments after the Q4 cutoff belong to the next year unless pinned.
+ */
+export async function paymentWindow(taxYear: number): Promise<{ start: string; end: string; returnDueDate: string | null; warning: TaxEstimatorWarning | null }> {
+  const [prev, cur] = await Promise.all([q4Cutoff(taxYear - 1), q4Cutoff(taxYear)]);
+  const start = nextDay(prev.date);
   return {
-    start, end: `${taxYear + 1}-04-15`,
-    warning: { code: 'TE_PAYMENT_WINDOW_DEFAULTED', severity: 'warning', message: `No ${RETURN_DUE_DATE_KEY} parameter for ${taxYear}; GL payments are read through April 15 of the next year.` },
+    start, end: cur.date, returnDueDate: cur.returnDueDate,
+    warning: cur.defaulted || prev.defaulted
+      ? { code: 'TE_PAYMENT_WINDOW_DEFAULTED', severity: 'warning', message: `No usable Q4 installment date for ${cur.defaulted ? taxYear : taxYear - 1}; January 31 was used as the Q4 cutoff. GL payments are credited to ${taxYear} from ${start} through ${cur.date}.` }
+      : null,
   };
 }
 
@@ -146,6 +194,14 @@ export async function readGlPayments(
   return { payments: out, warnings };
 }
 
+/** The first individual installment due date of the year (parameter), or null. */
+async function firstInstallmentDue(taxYear: number): Promise<string | null> {
+  const params = await getParameters(taxYear);
+  const due = params.parameters.find((p) => p.key === DUE_DATES_KEY)?.value;
+  const first = Array.isArray(due) ? due[0] : null;
+  return isIso(first) ? first : null;
+}
+
 async function storedRows(scope: FirmScope, taxpayerId: string, taxYear: number, scenarioId: string | null): Promise<PaymentRow[]> {
   return db.select().from(taxEstPayments).where(and(
     eq(taxEstPayments.firmId, scope.firmId),
@@ -187,9 +243,43 @@ export async function getPaymentLedger(
   const gl = await readGlPayments(scope, taxpayerId, taxYear, links, win);
   warnings.push(...gl.warnings);
 
-  const storedKeys = new Set(stored.filter((p) => p.transactionId).map((p) => `${p.jurisdiction}|${p.transactionId}`));
-  const duplicatesDropped = gl.payments.filter((p) => storedKeys.has(`${p.jurisdiction}|${p.transactionId}`));
-  const payments = [...stored, ...gl.payments.filter((p) => !storedKeys.has(`${p.jurisdiction}|${p.transactionId}`))];
+  // R3-02: a transaction pinned (stored) under ANOTHER tax year is that year's payment.
+  const glTxnIds = [...new Set(gl.payments.map((p) => p.transactionId).filter((t): t is string => !!t))];
+  const pinnedElsewhere = new Map<string, number>();
+  if (glTxnIds.length > 0) {
+    const rows = await db.select({ transactionId: taxEstPayments.transactionId, taxYear: taxEstPayments.taxYear }).from(taxEstPayments).where(and(
+      eq(taxEstPayments.firmId, scope.firmId), eq(taxEstPayments.taxpayerId, taxpayerId),
+      ne(taxEstPayments.taxYear, taxYear), inArray(taxEstPayments.transactionId, glTxnIds),
+    ));
+    for (const r of rows) if (r.transactionId) pinnedElsewhere.set(r.transactionId, r.taxYear);
+  }
+  const live = gl.payments.filter((p) => {
+    const other = p.transactionId ? pinnedElsewhere.get(p.transactionId) : undefined;
+    if (other === undefined) return true;
+    warnings.push({ code: 'TE_PAYMENT_PINNED_OTHER_YEAR', severity: 'info', message: `A ${p.jurisdiction} payment of ${p.amount} on ${p.date} is recorded for tax year ${other}; it is not credited to ${taxYear}.`, details: { transactionId: p.transactionId, taxYear: other } });
+    return false;
+  });
+  // Ambiguous by date: after the prior year's Q4 cutoff but before this year's first
+  // installment — usually a late prior-year payment or an extension payment. Credited here
+  // by the attribution rule; say so.
+  const firstDue = await firstInstallmentDue(taxYear);
+  for (const p of live) {
+    if (p.date && firstDue && p.date < firstDue) {
+      warnings.push({ code: 'TE_PAYMENT_YEAR_ASSUMED', severity: 'info', message: `A ${p.jurisdiction} payment of ${p.amount} on ${p.date} falls after the ${taxYear - 1} Q4 cutoff and before the first ${taxYear} installment; it is credited to ${taxYear}. If it was a late ${taxYear - 1} payment, record it under ${taxYear - 1}.`, details: { transactionId: p.transactionId } });
+    }
+  }
+
+  // R3-11: a stored row supersedes EVERY GL row of its transaction (whatever the jurisdiction).
+  const storedByTxn = new Map<string, EstimatePaymentDTO>();
+  for (const p of stored) if (p.transactionId) storedByTxn.set(p.transactionId, p);
+  const duplicatesDropped = live.filter((p) => p.transactionId && storedByTxn.has(p.transactionId));
+  for (const d of duplicatesDropped) {
+    const s = storedByTxn.get(d.transactionId!)!;
+    if (s.jurisdiction !== d.jurisdiction) {
+      warnings.push({ code: 'TE_PAYMENT_JURISDICTION_CHANGED', severity: 'info', message: `A payment booked to a ${d.jurisdiction} payment account on ${d.date} is recorded as ${s.jurisdiction}; the recorded jurisdiction is used.`, details: { transactionId: d.transactionId, booked: d.jurisdiction, recorded: s.jurisdiction } });
+    }
+  }
+  const payments = [...stored, ...live.filter((p) => !(p.transactionId && storedByTxn.has(p.transactionId)))];
 
   const totals: Record<string, string> = {};
   const sums = new Map<string, Dec>();
@@ -198,7 +288,7 @@ export async function getPaymentLedger(
   const offset = pre?.offset ?? 0;
   const limit = pre?.limit ?? Math.max(payments.length, 1);
   return {
-    taxpayerId, taxYear, scenarioId, window: { start: win.start, end: win.end },
+    taxpayerId, taxYear, scenarioId, window: { start: win.start, end: win.end, returnDueDate: win.returnDueDate },
     payments: pre?.limit === undefined && pre?.offset === undefined ? payments : payments.slice(offset, offset + limit),
     total: payments.length, limit, offset, duplicatesDropped, totals, warnings,
   };
@@ -217,7 +307,7 @@ interface Merged {
   memo: string | null;
 }
 
-async function validateMerged(scope: FirmScope, exec: DbOrTx, taxpayerId: string, taxYear: number, m: Merged) {
+async function validateMerged(scope: FirmScope, exec: DbOrTx, taxpayerId: string, taxYear: number, m: Merged, selfId?: string) {
   if (m.source !== 'prior_year_overpayment' && !m.date) throw AppError.unprocessableEntity('A payment needs a date', 'TE_PAYMENT_DATE_REQUIRED');
   if (m.source === 'gl' && (!m.transactionId || !m.tenantId)) throw AppError.unprocessableEntity('A GL payment needs tenantId and transactionId', 'TE_PAYMENT_GL_REF_REQUIRED');
   if (m.transactionId && !m.tenantId) throw AppError.unprocessableEntity('transactionId needs tenantId', 'TE_PAYMENT_GL_REF_REQUIRED');
@@ -229,6 +319,15 @@ async function validateMerged(scope: FirmScope, exec: DbOrTx, taxpayerId: string
         .where(and(eq(transactions.id, m.transactionId), eq(transactions.tenantId, m.tenantId)));
       if (!t) throw new AppError(404, 'Transaction not found', 'TE_TRANSACTION_NOT_FOUND');
     }
+  }
+  // R3-02: one booked transaction is credited to ONE tax year.
+  if (m.transactionId) {
+    const [other] = await exec.select({ taxYear: taxEstPayments.taxYear }).from(taxEstPayments).where(and(
+      eq(taxEstPayments.firmId, scope.firmId), eq(taxEstPayments.taxpayerId, taxpayerId),
+      eq(taxEstPayments.transactionId, m.transactionId), ne(taxEstPayments.taxYear, taxYear),
+      selfId ? ne(taxEstPayments.id, selfId) : undefined,
+    )).limit(1);
+    if (other) throw new AppError(409, `This transaction is already recorded for tax year ${other.taxYear}`, 'TE_PAYMENT_OTHER_YEAR');
   }
 }
 
@@ -288,7 +387,7 @@ export async function updatePayment(scope: FirmScope, actor: Actor, paymentId: s
       };
       // A row that already points out of scope can only be deleted, never re-pointed or edited (D1).
       if (before.tenantId && !isTenantInScope(scope, before.tenantId)) throw tenantNotManaged();
-      await validateMerged(scope, tx, before.taxpayerId, before.taxYear, m);
+      await validateMerged(scope, tx, before.taxpayerId, before.taxYear, m, before.id);
       const [row] = await tx.update(taxEstPayments).set({
         scenarioId: m.scenarioId, jurisdiction: m.jurisdiction, paymentDate: m.date, amount: m.amount, source: m.source,
         tenantId: m.tenantId, transactionId: m.transactionId, memo: m.memo, updatedAt: new Date(),

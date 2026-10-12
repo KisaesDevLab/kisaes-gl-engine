@@ -129,7 +129,7 @@ export async function createSnapshot(
       summaryEncrypted: encrypt(summaryPlain), summarySha256: sha256(summaryPlain),
       payloadBytes: bytes, createdBy: actor.userId,
     }).returning();
-    if (!row) throw new Error('Snapshot insert failed');
+    if (!row) throw new AppError(500, 'Snapshot insert failed', 'TE_SNAPSHOT_SAVE_FAILED');
     await auditYears(scope, actor, 'create', 'tax_est_snapshot', row.id, null, auditShape(row), tx);
     return { ...listItem(scope, row, result.summary), payloadSha256: row.payloadSha256, payload: redactForView(payload) };
   });
@@ -290,11 +290,28 @@ export async function compareSnapshot(scope: FirmScope, snapshotId: string, opts
   const row = await loadSnapshotRow(scope, snapshotId);
   const payload = readPayload(row);
   const snap = payload.result;
-  const live = await computeEstimate(scope, {
-    taxpayerId: row.taxpayerId, taxYear: row.taxYear, scenarioId: row.scenarioId, throughMonth: payload.inputs.throughMonth ?? undefined,
-  }, opts);
+  let live: EstimateResultDTO;
+  try {
+    live = await computeEstimate(scope, {
+      taxpayerId: row.taxpayerId, taxYear: row.taxYear, scenarioId: row.scenarioId, throughMonth: payload.inputs.throughMonth ?? undefined,
+    }, opts);
+  } catch (err) {
+    // R3-18: a deleted scenario (or any refused live compute) must not look like a missing
+    // snapshot — return the frozen side with no live side.
+    if (!(err instanceof AppError)) throw err;
+    const message = err.code === 'TE_SCENARIO_NOT_FOUND'
+      ? `The scenario "${row.scenarioName}" no longer exists, so there is no live estimate to compare with.`
+      : `A live estimate could not be computed: ${err.message}`;
+    return {
+      snapshotId: row.id, snapshotCreatedAt: row.createdAt.toISOString(), liveComputedAt: null,
+      liveUnavailable: { code: err.code ?? 'TE_LIVE_UNAVAILABLE', message },
+      engineVersionChanged: false, inputsHashChanged: false,
+      summary: { snapshot: snap.summary, live: null },
+      differences: [], parameterChanges: [], warningsAdded: [], warningsRemoved: [],
+    };
+  }
   return {
-    snapshotId: row.id, snapshotCreatedAt: row.createdAt.toISOString(), liveComputedAt: live.computedAt,
+    snapshotId: row.id, snapshotCreatedAt: row.createdAt.toISOString(), liveComputedAt: live.computedAt, liveUnavailable: null,
     engineVersionChanged: snap.engineVersion !== live.engineVersion, inputsHashChanged: snap.inputsHash !== live.inputsHash,
     summary: { snapshot: snap.summary, live: live.summary },
     differences: diffLines(snap, live),

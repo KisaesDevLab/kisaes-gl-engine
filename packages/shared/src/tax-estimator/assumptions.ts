@@ -19,7 +19,7 @@ import { ASSUMPTION_SECTION_IDS } from './estimate-api.js';
 import type { CharacterAmounts, ThroughMonthSource } from './entities-api.js';
 import type { JurisdictionEstimate } from './engine/vouchers.js';
 import { NONRESIDENT_FLAT_RATE_LABEL } from './engine/state-types.js';
-import { dIsZero, dRoundDollars, dSum } from './decimal.js';
+import { dIsZero, dRound, dRoundDollars, dSum } from './decimal.js';
 import { DEFAULT_DISCLAIMER_TEXT } from '../schemas/tax-estimator-years.js';
 
 /**
@@ -130,6 +130,27 @@ const THROUGH_SOURCE_LABELS: Record<ThroughMonthSource, string> = {
   last_complete_month: 'last complete month',
 };
 
+const LONG_DECIMAL = /(?<![\w.])-?\d+\.\d{3,}(?![\w.])/g;
+const HARBOR_FRACTION = /harbor is (\d+(?:\.\d+)?) of prior-year tax/g;
+const DOUBLED_PREFIX = /^([A-Z]{2}|[A-Za-z]+): (?:\1: )+/;
+
+/**
+ * Engine prose tidied for the assumptions page (Phase 13 follow-up): decimals with more
+ * than two places are rounded to cents (state gate notes carry unrounded figures), the
+ * prior-year harbor fraction reads as a percent, and a doubled "AR: AR: " prefix collapses.
+ */
+export function tidyNote(text: string): string {
+  return text
+    .replace(DOUBLED_PREFIX, '$1: ')
+    .replace(HARBOR_FRACTION, (_m, f: string) => `harbor is ${formatPct(f)} of prior-year tax`)
+    .replace(LONG_DECIMAL, (m) => dRound(m, 2));
+}
+
+/** Drop a leading "<label>: " the engine already put on a message shown under that label. */
+function withoutLabel(text: string, label: string): string {
+  return text.startsWith(`${label}: `) ? text.slice(label.length + 2) : text;
+}
+
 function nonZero(v: string | null | undefined): boolean {
   return v != null && v !== '' && !dIsZero(v);
 }
@@ -159,8 +180,10 @@ function projectionSection(r: EstimateResultDTO): AssumptionSectionDTO {
       items.push({ label: e.companyName, detail: `Left out of the estimate: ${e.skippedReason ?? 'no reason recorded'}.`, badge: 'verify' });
       continue;
     }
+    // A requested range end needs no reason ("requested: Range end requested explicitly." said it twice).
+    const reason = e.throughMonthReason && e.throughMonthSource !== 'requested' ? `: ${e.throughMonthReason}` : '';
     const through = e.throughMonth
-      ? `books through ${e.throughMonth} (${e.throughMonthSource ? THROUGH_SOURCE_LABELS[e.throughMonthSource] : 'default'}${e.throughMonthReason ? `: ${e.throughMonthReason}` : ''})`
+      ? `books through ${e.throughMonth} (${e.throughMonthSource ? THROUGH_SOURCE_LABELS[e.throughMonthSource] : 'default'}${reason})`
       : 'no month range';
     const method = e.monthsRemaining > 0
       ? `${e.monthsElapsed} months actual + ${e.monthsRemaining} projected (year-to-date + recurring ÷ ${e.monthsElapsed} × ${e.monthsRemaining})`
@@ -233,9 +256,12 @@ function harborItems(e: JurisdictionEstimate, label: string, ruleSourceText: str
     badge: sh.verify || sh.priorYear.highAgiUntested ? 'verify' : null,
   });
   if (sh.noPenaltyReason === 'prior_year_zero_tax') items.push({ label: `${label} penalty`, detail: 'No underpayment penalty: the prior-year return showed zero tax for a full 12-month year.' });
-  if (!e.estimatesRequired) items.push({ label: `${label} estimates`, detail: `Not required: ${e.estimatesRequiredReason}` });
+  if (!e.estimatesRequired) items.push({ label: `${label} estimates`, detail: `Not required: ${tidyNote(withoutLabel(e.estimatesRequiredReason, label))}` });
   if (e.usesFederalFallback) items.push({ label: `${label} rules`, detail: 'No verified state rules: the federal pattern was used.', badge: 'verify' });
-  for (const n of [...sh.notes, ...e.notes, ...(e.penalty?.notes ?? [])]) items.push({ label: `${label} note`, detail: n });
+  // The safe-harbor notes are repeated on the estimate (and the penalty): list each once.
+  const notes = new Set<string>();
+  for (const n of [...sh.notes, ...e.notes, ...(e.penalty?.notes ?? [])]) notes.add(tidyNote(withoutLabel(n, label)));
+  for (const n of notes) items.push({ label: `${label} note`, detail: n });
   if (e.penalty && !e.penalty.computed) items.push({ label: `${label} penalty`, detail: 'The penalty method cannot be computed from a rate; no penalty is shown.', badge: 'verify' });
   return items;
 }
@@ -282,7 +308,7 @@ function stateMethodsSection(r: EstimateResultDTO): AssumptionSectionDTO {
     const required = g.required == null ? 'cannot be determined from the inputs' : g.required ? 'required' : 'not required';
     items.push({
       label: `${row.state} requirement test`,
-      detail: `${g.method.replace(/_/g, ' ')}: estimates ${required}${g.notes.length ? ` — ${g.notes.join(' ')}` : ''}.`,
+      detail: `${g.method.replace(/_/g, ' ')}: estimates ${required}${g.notes.length ? ` — ${[...new Set(g.notes.map((n) => tidyNote(withoutLabel(n, row.state))))].join(' ')}` : ''}.`,
       badge: g.verify || row.verify || row.usesFederalFallback ? 'verify' : null,
     });
   }
@@ -314,7 +340,7 @@ function parametersSection(r: EstimateResultDTO): AssumptionSectionDTO {
 
 function readinessSection(r: EstimateResultDTO): AssumptionSectionDTO {
   const ordered = [...r.warnings.filter((w) => w.severity === 'warning'), ...r.warnings.filter((w) => w.severity !== 'warning')];
-  return section('readiness', ordered.map((w) => ({ code: w.code, label: w.code, detail: w.message, badge: w.severity === 'warning' ? 'verify' as const : null })),
+  return section('readiness', ordered.map((w) => ({ code: w.code, label: w.code, detail: tidyNote(w.message), badge: w.severity === 'warning' ? 'verify' as const : null })),
     'No readiness warnings.');
 }
 

@@ -3,11 +3,13 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router, type Request } from 'express';
+import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import type { PortalTaxEstimateListDTO } from '@kis-books/shared';
 import { portalAuthenticate } from '../middleware/portal-auth.js';
 import { scopedCompanyId } from '../middleware/peer-auth.js';
 import { AppError } from '../utils/errors.js';
+import { getRateLimitStore } from '../utils/rate-limit-store.js';
 import * as flags from '../services/feature-flags.service.js';
 import * as portalEstimates from '../services/tax-estimator/portal-estimates.service.js';
 
@@ -28,6 +30,22 @@ const uuid = z.string().uuid();
 const querySchema = z.object({
   companyId: uuid.optional(),
   year: z.coerce.number().int().min(2000).max(2100).optional(),
+});
+
+// Phase 13 follow-up: the detail and voucher endpoints compute a LIVE estimate (Redis-
+// cached, but a cold compute reads every linked company's books). Per portal contact,
+// 20 a minute — far above what the page needs (one per taxpayer / year switch).
+export const PORTAL_TE_COMPUTE_PER_MINUTE = 20;
+const computeLimiter = rateLimit({
+  windowMs: 60_000,
+  max: PORTAL_TE_COMPUTE_PER_MINUTE,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: getRateLimitStore('portal-tax-estimates'),
+  keyGenerator: (req) => (req.portalContact ? `contact:${req.portalContact.contactId}` : `ip:${req.ip || 'unknown'}`),
+  message: { error: { message: 'Too many requests. Try again in a minute.', code: 'RATE_LIMIT' } },
+  // Off in tests like every portal limiter, unless a test opts in to exercise it.
+  skip: () => process.env['NODE_ENV'] === 'test' && process.env['TE_PORTAL_RATE_LIMIT_TEST'] !== '1',
 });
 
 const forbidden = () => new AppError(404, 'Tax estimate not found', 'TE_PORTAL_FORBIDDEN');
@@ -68,7 +86,7 @@ portalTaxEstimatesPublicRouter.get('/', async (req, res) => {
 });
 
 // GET /api/portal/tax-estimates/:taxpayerId?year=&companyId=
-portalTaxEstimatesPublicRouter.get('/:taxpayerId', async (req, res) => {
+portalTaxEstimatesPublicRouter.get('/:taxpayerId', computeLimiter, async (req, res) => {
   const c = caller(req);
   const taxpayerId = uuid.safeParse(req.params['taxpayerId']);
   if (!taxpayerId.success) throw forbidden();
@@ -78,7 +96,7 @@ portalTaxEstimatesPublicRouter.get('/:taxpayerId', async (req, res) => {
 });
 
 // GET /api/portal/tax-estimates/:taxpayerId/vouchers.pdf?year=&companyId=
-portalTaxEstimatesPublicRouter.get('/:taxpayerId/vouchers.pdf', async (req, res) => {
+portalTaxEstimatesPublicRouter.get('/:taxpayerId/vouchers.pdf', computeLimiter, async (req, res) => {
   const c = caller(req);
   const taxpayerId = uuid.safeParse(req.params['taxpayerId']);
   if (!taxpayerId.success) throw forbidden();

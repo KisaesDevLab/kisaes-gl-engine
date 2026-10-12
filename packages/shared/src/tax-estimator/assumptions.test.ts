@@ -3,7 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { describe, it, expect } from 'vitest';
-import { buildEstimateAssumptions, formatDollars, formatPct, STATE_PENALTY_ADDON_NOTES } from './assumptions.js';
+import { buildEstimateAssumptions, formatDollars, formatPct, STATE_PENALTY_ADDON_NOTES, tidyNote } from './assumptions.js';
 import { ASSUMPTION_SECTION_IDS, type EstimateResultDTO } from './estimate-api.js';
 import { NONRESIDENT_FLAT_RATE_LABEL } from './engine/state-types.js';
 import { DEFAULT_DISCLAIMER_TEXT } from '../schemas/tax-estimator-years.js';
@@ -180,5 +180,41 @@ describe('buildEstimateAssumptions', () => {
     expect(formatDollars(null)).toBe('—');
     expect(formatPct('0.0725')).toBe('7.25%');
     expect(formatPct('1.1')).toBe('110%');
+  });
+
+  it('Phase 13 follow-up: notes are listed once, prefixes are not doubled, decimals are rounded, a requested range has no echo', () => {
+    const agiNote = 'Prior-year AGI 182000 exceeds 150000: the prior-year harbor is 1.1 of prior-year tax.';
+    const fed = jurisdiction('federal', { safeHarbor: harbor({ notes: [agiNote] }), notes: [agiNote], scheduleAi: { periods: [] } });
+    const ar = jurisdiction('AR', { estimatesRequired: false, estimatesRequiredReason: 'AR: estimates are not required (threshold, threshold 1000 more_than).' });
+    const base = riveraLike();
+    const rows = (base.state!.rows as unknown as Array<Record<string, unknown>>).map((r) => r['state'] === 'AR'
+      ? { ...r, gate: { ...(r['gate'] as object), notes: ['Tax 311.98765432 less withholding 0 and credits 0 = 311.98765432; threshold 1000 (more_than).', 'Tax 311.98765432 less withholding 0 and credits 0 = 311.98765432; threshold 1000 (more_than).'] } }
+      : r);
+    const entities = base.entities.map((e, i) => (i === 0 ? { ...e, throughMonth: '2026-06', throughMonthSource: 'requested' as const, throughMonthReason: 'Range end requested explicitly.' } : e));
+    const a = buildEstimateAssumptions(riveraLike({
+      federalEstimates: fed as unknown as EstimateResultDTO['federalEstimates'],
+      stateEstimates: [ar] as unknown as EstimateResultDTO['stateEstimates'],
+      state: { ...base.state!, rows } as unknown as EstimateResultDTO['state'],
+      entities,
+      warnings: [{ code: 'TE_ESTIMATES_NOT_REQUIRED', severity: 'info', message: 'AR: AR: estimates are not required.' }],
+    }), { disclaimerText: null });
+    const sh = text(a, 'safe_harbor');
+    expect(sh.match(/Prior-year AGI/g)?.length).toBe(1);
+    expect(sh).toContain('harbor is 110% of prior-year tax');
+    expect(sh).toContain('AR estimates: Not required: estimates are not required');
+    expect(sh).not.toMatch(/AR: AR:/);
+    const st = text(a, 'state_methods');
+    expect(st).toContain('Tax 311.99 less withholding 0');
+    expect(st).not.toMatch(/\d\.\d{3,}/);
+    expect(st.match(/Tax 311\.99 less/g)?.length).toBe(1);
+    expect(text(a, 'projection')).toContain('books through 2026-06 (requested)');
+    expect(text(a, 'projection')).not.toContain('Range end requested explicitly');
+    expect(text(a, 'readiness')).toContain('AR: estimates are not required.');
+    expect(text(a, 'readiness')).not.toContain('AR: AR:');
+  });
+
+  it('tidyNote leaves citations and short decimals alone', () => {
+    expect(tidyNote('Reg. 1.199A-3(b)(1)(iv) and rate 0.07')).toBe('Reg. 1.199A-3(b)(1)(iv) and rate 0.07');
+    expect(tidyNote('ratio 0.666666666667')).toBe('ratio 0.67');
   });
 });
