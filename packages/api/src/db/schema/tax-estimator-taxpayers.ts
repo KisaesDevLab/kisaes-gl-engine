@@ -81,3 +81,19 @@ export const taxEstTaxpayerContacts = pgTable('tax_est_taxpayer_contacts', {
   unique('uniq_tax_est_taxpayer_contacts').on(t.taxpayerId, t.portalContactId),
   index('idx_tax_est_taxpayer_contacts_contact').on(t.portalContactId),
 ]);
+
+// D17 (migration 0202, parts/taxpayer-visibility.sql): per-taxpayer staff allow-list.
+// No rows = everyone the firm's linked-tenant rule allows; rows = only these users plus
+// firm admins / super admins. Read ONLY through firm-scope.service visibleTaxpayerFilter
+// and taxpayer-staff.service.
+export const taxEstTaxpayerStaff = pgTable('tax_est_taxpayer_staff', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  firmId: uuid('firm_id').notNull(),
+  taxpayerId: uuid('taxpayer_id').notNull().references(() => taxEstTaxpayers.id, { onDelete: 'cascade' }),
+  userId: uuid('user_id').notNull(),
+  createdBy: uuid('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique('uniq_tax_est_taxpayer_staff').on(t.firmId, t.taxpayerId, t.userId),
+  index('idx_tax_est_taxpayer_staff_taxpayer').on(t.taxpayerId, t.userId),
+]);
