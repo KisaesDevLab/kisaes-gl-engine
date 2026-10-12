@@ -109,3 +109,16 @@ that follow the company's fiscal year start (set under **Settings → Preference
 so companies with a non-January fiscal year can select the right period in one
 click. **Budget vs. Actual** prorates budget amounts to whatever reporting window
 you select.
+
+### General Ledger Account Filter
+The **General Ledger** has an account dropdown (default **All accounts**) that
+lists every active account, grouped by type in chart-of-accounts order, with a
+search box and a select-all checkbox on each type heading. Picking accounts
+shows only those accounts' sections; each one keeps its full beginning, running
+and ending balances (the filter drops whole accounts, never individual lines),
+and the bottom totals cover just the selected accounts (no out-of-balance
+warning on a filtered view). CSV and PDF exports follow the selection, and the
+PDF header lists the selected accounts, or the count when more than five. The
+choice is remembered for the browser tab session. API: `account_ids` (comma-
+separated account ids) on `/api/v1/reports/general-ledger`; ids that aren't the
+tenant's are ignored. Report Packs always include the unfiltered General Ledger.
