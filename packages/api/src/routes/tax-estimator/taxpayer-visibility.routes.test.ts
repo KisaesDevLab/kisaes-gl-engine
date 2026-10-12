@@ -345,7 +345,7 @@ describe('D17 firm switch', () => {
     expect((await setSwitch(true)).status).toBe(200);
     expect((await listNames('none')).total).toBe(0);
     const rows = await db.select().from(auditLog).where(and(eq(auditLog.entityType, 'tax_est_visibility_switch'), eq(auditLog.entityId, FIRM_A)));
-    const changes = rows.map((r) => [(r.beforeData as Record<string, boolean>).restrictTaxpayersToLinkedTenants, (r.afterData as Record<string, boolean>).restrictTaxpayersToLinkedTenants]);
+    const changes = rows.map((r) => [(r.beforeData as Record<string, boolean>)["restrictTaxpayersToLinkedTenants"], (r.afterData as Record<string, boolean>)["restrictTaxpayersToLinkedTenants"]]);
     expect(changes).toEqual(expect.arrayContaining([[true, false], [false, true]]));
     expect(rows.every((r) => r.userId === uid['admin'] && r.tenantId === P)).toBe(true);
     expect(Object.keys(rows[0]!.afterData as object).sort()).toEqual(['firmId', 'restrictTaxpayersToLinkedTenants']);
