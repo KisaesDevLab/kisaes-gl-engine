@@ -14,6 +14,7 @@ import { stateRulesRouter } from './tax-estimator/state-rules.routes.js';
 import { yearsRouter } from './tax-estimator/years.routes.js';
 import { estimateRouter } from './tax-estimator/estimate.routes.js';
 import { pdfRouter } from './tax-estimator/pdf.routes.js';
+import { registerRouter } from './tax-estimator/register.routes.js';
 import { taxParameterYearParamsSchema } from '@kis-books/shared';
 import * as taxParametersService from '../services/tax-estimator/tax-parameters.service.js';
 
@@ -51,6 +52,10 @@ taxEstimatorRouter.use((req, res, next) => {
     || (req.method === 'POST' && READ_POSTS.some((re) => re.test(req.path)));
   return (isRead ? readGuard : writeGuard)(req, res, next);
 });
+// Register / transaction-detail flag: same guards as above, but the firm is the ACTIVE
+// tenant's managing firm (the caller is working inside a client), so it resolves its own
+// scope instead of the membership/X-Firm-Id one below.
+taxEstimatorRouter.use('/register', registerRouter);
 taxEstimatorRouter.use(resolveTaxEstimatorScope);
 
 // GET /scope — who am I acting as. Counts only; ids stay server-side.

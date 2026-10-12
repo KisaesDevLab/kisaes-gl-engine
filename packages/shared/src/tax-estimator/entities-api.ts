@@ -205,6 +205,38 @@ export interface TransactionFlagDto {
   updatedAt: string;
 }
 
+/** A firm taxpayer the company is linked to (any tax year), for the register surface. */
+export interface RegisterLinkedTaxpayerDTO {
+  id: string;
+  displayName: string;
+  years: number[];
+}
+
+/** GET/PUT /tax-estimator/register/transactions/:transactionId. */
+export interface RegisterTransactionFlagDTO {
+  transactionId: string;
+  /** null = the transaction carries no company, so no estimate can read it. */
+  companyId: string | null;
+  /** The company is linked to at least one active taxpayer of the managing firm. */
+  linked: boolean;
+  taxpayers: RegisterLinkedTaxpayerDTO[];
+  nonRecurring: boolean;
+  /** firm_admin / firm_staff; firm_readonly sees the state only. */
+  canEdit: boolean;
+  updatedAt: string | null;
+}
+
+/** GET /tax-estimator/register/flags — flagged transactions of the active company (badge source). */
+export interface RegisterCompanyFlagsDTO {
+  companyId: string;
+  linked: boolean;
+  canEdit: boolean;
+  /** Ids of flagged transactions, oldest first, at most `limit`. */
+  transactionIds: string[];
+  total: number;
+  limit: number;
+}
+
 export interface PagedList<T> {
   items: T[];
   total: number;

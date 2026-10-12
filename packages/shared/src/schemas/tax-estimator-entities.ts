@@ -92,6 +92,20 @@ export const putTransactionFlagsSchema = z.object({
 }).strict();
 export type PutTransactionFlagsInput = z.infer<typeof putTransactionFlagsSchema>;
 
+/**
+ * Register / transaction-detail surface (R7-07 #2): one transaction in the caller's
+ * ACTIVE tenant and company. The tenant is never a parameter — the server uses the
+ * session's active tenant (D1 scope re-checked).
+ */
+export const taxEstRegisterTxnParamsSchema = z.object({
+  transactionId: z.string().uuid(),
+});
+export const putRegisterTransactionFlagSchema = z.object({
+  /** false removes the flag. */
+  nonRecurring: z.boolean(),
+}).strict();
+export type PutRegisterTransactionFlagInput = z.infer<typeof putRegisterTransactionFlagSchema>;
+
 export const taxEstListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(MAX_LIMIT).default(DEFAULT_LIMIT),
   offset: z.coerce.number().int().min(0).default(0),
