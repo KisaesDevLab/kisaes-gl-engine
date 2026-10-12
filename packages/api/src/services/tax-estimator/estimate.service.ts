@@ -65,7 +65,8 @@ const Decimal = DecimalLib.default || DecimalLib;
 type DecJs = InstanceType<typeof Decimal>;
 
 // v2 (Phase 12): the cached payload is AES-encrypted (D9) and carries the assumptions block.
-const CACHE_VERSION = 'te-estimate-v2';
+// v3 (QA2-04): adjustments carry their monthly allocation.
+const CACHE_VERSION = 'te-estimate-v3';
 const FEDERAL = 'federal';
 const MONTHS_PER_YEAR = 12;
 const MAX_ADJUSTMENTS = 500;
@@ -707,7 +708,7 @@ async function assemble(scope: FirmScope, req: EstimateRequest, g: Gathered, opt
       const t = typeById.get(a.adjustmentTypeId)!;
       return {
         id: a.id, label: a.label, typeName: t.name, typeCode: t.code ?? null, kind: t.kind,
-        fullYearAmount: dSum((months.get(a.id) ?? a.monthly).map((v) => String(v))), cadence: a.cadence, glLinked: a.glLinked,
+        fullYearAmount: dSum((months.get(a.id) ?? a.monthly).map((v) => String(v))), monthly: [...(months.get(a.id) ?? a.monthly)], cadence: a.cadence, glLinked: a.glLinked,
         nonRecurring: a.nonRecurring, personId: a.personId, linkId: a.linkId,
       };
     }),

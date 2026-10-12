@@ -107,6 +107,10 @@ describe('R3-01 — the estimate cache is per tenant scope (D1)', () => {
     const req = { taxpayerId, taxYear: 2026, scenarioId: baseId, throughMonth: '2026-08' };
     const full = await computeEstimate(scopeFull, { ...req, refresh: true }, { today: TODAY });
     expect(full.adjustments!.find((a) => a.label === 'T2 secret')!.fullYearAmount).toBe('12000');
+    // QA2-04: the 12-month allocation the engine used travels with it (the editor's strip shows it).
+    const months = full.adjustments!.find((a) => a.label === 'T2 secret')!.monthly!;
+    expect(months).toHaveLength(12);
+    expect(months.reduce((t, v) => t + v, 0)).toBe(12000);
     const partial = await computeEstimate(scopePartial, req, { today: TODAY });
     expect(partial.cached).toBe(false);
     expect(partial.inputsHash).not.toBe(full.inputsHash);

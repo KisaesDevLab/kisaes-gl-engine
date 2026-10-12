@@ -117,6 +117,11 @@ export interface EstimateAdjustmentSummaryDTO {
   kind: string;
   /** Σ of the 12-month allocation actually fed to the engine (GL-linked: actuals + plan). */
   fullYearAmount: string;
+  /**
+   * QA2-04: that 12-month allocation (Jan..Dec), so the adjustment editor can show what a
+   * GL-linked (run-rate) row actually contributes. Absent on results cached / frozen before it.
+   */
+  monthly?: number[];
   cadence: string | null;
   glLinked: boolean;
   nonRecurring: boolean;
