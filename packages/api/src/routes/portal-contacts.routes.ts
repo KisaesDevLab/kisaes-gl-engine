@@ -47,6 +47,7 @@ const companyAssignmentSchema = z.object({
   categorizeAccess: z.boolean().optional(),
   bankRepairAccess: z.boolean().optional(),
   billUploadAccess: z.boolean().optional(),
+  taxEstimatesAccess: z.boolean().optional(),
 });
 
 const createContactSchema = z.object({

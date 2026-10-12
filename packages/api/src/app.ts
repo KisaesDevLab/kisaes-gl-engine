@@ -84,6 +84,7 @@ import { portalAuthRouter } from './routes/portal-auth.routes.js';
 import { portalQuestionsRouter } from './routes/portal-questions.routes.js';
 import { portalQuestionsPublicRouter } from './routes/portal-questions-public.routes.js';
 import { portalFinancialsPublicRouter } from './routes/portal-financials-public.routes.js';
+import { portalTaxEstimatesPublicRouter } from './routes/portal-tax-estimates-public.routes.js';
 import { portalRemindersRouter } from './routes/portal-reminders.routes.js';
 import { portalTrackingRouter } from './routes/portal-tracking.routes.js';
 import { portal1099Router } from './routes/portal-1099.routes.js';
@@ -599,6 +600,8 @@ app.use('/api/v1/practice', recurringDocRequestsRouter);
 app.use('/api/portal', portalAuthRouter);
 app.use('/api/portal/questions', portalQuestionsPublicRouter);
 app.use('/api/portal/financials', portalFinancialsPublicRouter);
+// TAX_ESTIMATOR_V1 — read-only tax estimate for the contact's linked taxpayers (Phase 13).
+app.use('/api/portal/tax-estimates', portalTaxEstimatesPublicRouter);
 // Tracking pixel + click wrapper — public, no auth.
 app.use('/api/portal', portalTrackingRouter);
 // Public W-9 form — token in URL is the auth.

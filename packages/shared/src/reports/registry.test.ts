@@ -11,6 +11,7 @@ import {
   reportPackItemOptionsSchema,
   PACK_MAX_COUNT,
   PACK_WARN_COUNT,
+  TAX_ESTIMATOR_REPORT_IDS,
   type ReportDef,
 } from './registry.js';
 
@@ -91,6 +92,14 @@ describe('REPORT_CATALOG', () => {
     expect(getReportDef('general-ledger')?.orientation).toBe('landscape');
   });
 
+  it('tax-estimate: a Tax-group document section with a taxpayer option, gated as a Tax Estimator report', () => {
+    const def = getReportDef('tax-estimate');
+    expect(def).toMatchObject({ group: 'Tax', kind: 'document', temporal: 'as-of', endpoint: 'tax-estimate', options: { taxpayer: true } });
+    expect(TAX_ESTIMATOR_REPORT_IDS).toEqual(['tax-estimate']);
+    for (const id of TAX_ESTIMATOR_REPORT_IDS) expect(getReportDef(id)).toBeDefined();
+    expect(resolveReportDates(def!, { start: '2026-07-01', end: '2026-09-30' })).toEqual({ as_of_date: '2026-09-30' });
+  });
+
   it('exposes sane pack count bounds', () => {
     expect(PACK_WARN_COUNT).toBeLessThan(PACK_MAX_COUNT);
     expect(PACK_MAX_COUNT).toBe(30);
@@ -115,6 +124,12 @@ describe('reportPackItemOptionsSchema', () => {
     expect(getReportDef('balance-sheet')?.options.compare).toBe(true);
     // Non-comparative reports do not offer it.
     expect(getReportDef('cash-flow')?.options.compare).toBeUndefined();
+  });
+
+  it('accepts a tax-estimate taxpayer / scenario and rejects a non-uuid', () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    expect(reportPackItemOptionsSchema.parse({ taxpayerId: id, scenarioId: id })).toEqual({ taxpayerId: id, scenarioId: id });
+    expect(() => reportPackItemOptionsSchema.parse({ taxpayerId: 'nope' })).toThrow();
   });
 
   it('accepts an empty object', () => {

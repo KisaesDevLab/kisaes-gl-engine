@@ -39,6 +39,8 @@ export interface PortalContactCompanyAssignment {
   categorizeAccess?: boolean;
   bankRepairAccess?: boolean;
   billUploadAccess?: boolean;
+  /** Tax Estimator (D5): the contact may see tax estimates for taxpayers linked to this company. */
+  taxEstimatesAccess?: boolean;
 }
 
 export interface CreatePortalContactInput {
@@ -160,6 +162,7 @@ export async function getContact(
     categorizeAccess: boolean;
     bankRepairAccess: boolean;
     billUploadAccess: boolean;
+    taxEstimatesAccess: boolean;
   }>;
 }> {
   const contact = await db.query.portalContacts.findFirst({
@@ -181,6 +184,7 @@ export async function getContact(
       categorizeAccess: portalContactCompanies.categorizeAccess,
       bankRepairAccess: portalContactCompanies.bankRepairAccess,
       billUploadAccess: portalContactCompanies.billUploadAccess,
+      taxEstimatesAccess: portalContactCompanies.taxEstimatesAccess,
     })
     .from(portalContactCompanies)
     .innerJoin(companies, eq(portalContactCompanies.companyId, companies.id))
@@ -258,6 +262,7 @@ export async function createContact(
         categorizeAccess: c.categorizeAccess ?? false,
         bankRepairAccess: c.bankRepairAccess ?? false,
         billUploadAccess: c.billUploadAccess ?? false,
+        taxEstimatesAccess: c.taxEstimatesAccess ?? false,
       })),
     );
 
@@ -401,6 +406,7 @@ export async function setCompanyAssignments(
           categorizeAccess: a.categorizeAccess ?? false,
           bankRepairAccess: a.bankRepairAccess ?? false,
           billUploadAccess: a.billUploadAccess ?? false,
+          taxEstimatesAccess: a.taxEstimatesAccess ?? false,
         })),
       );
     }

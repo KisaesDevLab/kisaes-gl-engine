@@ -20,9 +20,13 @@ import type { CharacterAmounts, ThroughMonthSource } from './entities-api.js';
 import type { JurisdictionEstimate } from './engine/vouchers.js';
 import { NONRESIDENT_FLAT_RATE_LABEL } from './engine/state-types.js';
 import { dIsZero, dRoundDollars, dSum } from './decimal.js';
+import { DEFAULT_DISCLAIMER_TEXT } from '../schemas/tax-estimator-years.js';
 
-/** Shipped default disclaimer (MODULE.md "License and gating"); firms may replace it (D4). */
-export const DEFAULT_ASSUMPTIONS_DISCLAIMER = 'Projection based on bookkeeping records and the assumptions listed. Not a tax return.';
+/**
+ * Shipped default disclaimer (MODULE.md "License and gating"); firms may replace it (D4).
+ * ONE constant: an alias of DEFAULT_DISCLAIMER_TEXT so the screen, PDF, snapshot and portal agree.
+ */
+export const DEFAULT_ASSUMPTIONS_DISCLAIMER = DEFAULT_DISCLAIMER_TEXT;
 
 const SECTION_TITLES: Record<AssumptionSectionId, string> = {
   rate_mode: 'Rate mode',

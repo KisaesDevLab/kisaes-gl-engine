@@ -24,6 +24,7 @@ import { buildReportPackSectionHtml, escapeHtml } from './report-export.service.
 import { buildReconciliationDetail } from './report.service.js';
 import { appendFramedPdf, appendPdf, stampCaption } from './pdf-merge.util.js';
 import { generateTransactionRangeReportPdf, planTransactionRangeReport } from './transaction-report.service.js';
+import { renderPackSection, resolvePackScopeForUser } from './tax-estimator/estimate-documents.service.js';
 
 export interface DocumentSectionContext {
   tenantId: string;
@@ -36,6 +37,12 @@ export interface DocumentSectionContext {
   allowAttachments: boolean;
   /** The requester may read transactions (the Transaction Report). */
   allowTransactions: boolean;
+  /** The run's as-of date (as-of sections: the Tax Estimate); falls back to rangeEnd. */
+  asOfDate?: string;
+  /** Tax Estimator Phase 13: the requester passed the Tax Estimator gates when the run was created. */
+  allowTaxEstimate?: boolean;
+  /** The requesting user; the tax-estimate section re-derives its firm scope from it. */
+  requestedBy?: string | null;
   /** HTML → PDF (portrait Letter) through the pack's hardened browser. */
   renderHtml: (html: string) => Promise<Uint8Array>;
 }
@@ -410,8 +417,32 @@ const renderTransactionReport: DocumentSectionRenderer = async (ctx) => {
   return out.save();
 };
 
+// ─── Tax Estimate (Tax Estimator Phase 13, D15) ──────────────────
+
+/**
+ * The taxpayer's estimate PDF — the SAME renderer as the standalone Print / Download
+ * (estimate-pdf.service.ts), printed from a snapshot frozen with reason 'report_pack'.
+ * The run carries only who asked and whether they passed the gates at create time; the
+ * firm scope, the flag and the taxpayer-to-company link are re-checked here (D1).
+ */
+const renderTaxEstimate: DocumentSectionRenderer = async (ctx) => {
+  if (!ctx.allowTaxEstimate || !ctx.requestedBy) {
+    throw new Error('The Tax Estimate section needs Tax Estimator access.');
+  }
+  const scope = await resolvePackScopeForUser(ctx.tenantId, ctx.requestedBy);
+  const pdf = await renderPackSection(scope, { tenantId: ctx.tenantId, userId: ctx.requestedBy }, {
+    tenantId: ctx.tenantId,
+    companyId: ctx.companyId,
+    taxpayerId: ctx.options.taxpayerId,
+    scenarioId: ctx.options.scenarioId ?? null,
+    asOfDate: ctx.asOfDate || ctx.rangeEnd,
+  });
+  return pdf.bytes;
+};
+
 export const REPORT_PACK_DOCUMENT_RENDERERS: Record<string, DocumentSectionRenderer> = {
   'bank-reconciliations': renderBankReconciliations,
   'bank-statements': renderBankStatements,
   'transaction-report': renderTransactionReport,
+  'tax-estimate': renderTaxEstimate,
 };

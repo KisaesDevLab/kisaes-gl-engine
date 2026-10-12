@@ -228,3 +228,18 @@ describe('report-pack-documents', () => {
     });
   });
 });
+
+// Every catalog entry must render somewhere: a table renderer or a document renderer
+// (Tax Estimator Phase 13 added the `tax-estimate` document section).
+describe('report pack catalog coverage', () => {
+  it('each REPORT_CATALOG id has exactly one renderer; document sections use the document map', async () => {
+    const { REPORT_CATALOG } = await import('@kis-books/shared');
+    const { REPORT_PACK_RENDERERS } = await import('./report-pack-render.js');
+    for (const def of REPORT_CATALOG) {
+      const table = def.id in REPORT_PACK_RENDERERS;
+      const doc = def.id in REPORT_PACK_DOCUMENT_RENDERERS;
+      expect({ id: def.id, rendered: table !== doc }).toEqual({ id: def.id, rendered: true });
+      expect({ id: def.id, document: doc }).toEqual({ id: def.id, document: def.kind === 'document' });
+    }
+  });
+});

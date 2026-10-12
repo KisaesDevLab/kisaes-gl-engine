@@ -2,7 +2,14 @@
 -- Licensed under the PolyForm Small Business License 1.0.0.
 -- Free for small businesses; see LICENSE for terms.
 --
--- Rollback for 0201_tax_estimator, children first (phases 12, 10b, 5, 4, 3, 2, then 1 and 0).
+-- Rollback for 0201_tax_estimator, children first (phases 13, 12, 10b, 5, 4, 3, 2, then 1 and 0).
+
+-- Phase 13: Report Pack tax-estimate section
+--
+-- Rollback for the Tax Estimator Phase 13 Report Pack part (runs BEFORE the snapshots part).
+ALTER TABLE IF EXISTS report_pack_runs
+  DROP COLUMN IF EXISTS allow_tax_estimate,
+  DROP COLUMN IF EXISTS requested_by;
 
 -- Phase 12: immutable estimate snapshots
 --

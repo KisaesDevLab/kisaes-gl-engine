@@ -15,7 +15,7 @@ import { db } from '../../db/index.js';
 import {
   tenants, users, tenantFeatureFlags, firms, firmUsers, tenantFirmAssignments, userTenantAccess,
   companies, companyTaxProfiles, portalContacts, portalContactCompanies, auditLog,
-  taxEstTaxpayers, taxEstYears, taxEstFirmSettings, taxEstAdjustmentTypes, accounts,
+  taxEstTaxpayers, taxEstYears, taxEstFirmSettings, taxEstAdjustmentTypes, accounts, taxEstSnapshots,
 } from '../../db/schema/index.js';
 import { taxEstimatorRouter } from '../tax-estimator.routes.js';
 import { syncShippedSeeds } from '../../services/tax-estimator/tax-parameters.service.js';
@@ -234,5 +234,33 @@ describe('POST .../scenarios/:scenarioId/pdf', () => {
     const sid2 = await baseScenario(tp2);
     expect((await request('POST', pdfUrl(tp, sid2), staffToken, {})).status).toBe(404);
     expect((await request('POST', pdfUrl(tp, sid), staffToken, { tenantIds: [ids.t4] })).status).toBe(400);
+  });
+
+  it('Phase 13: every download freezes a pdf snapshot and prints it (firm header, assumptions page); the snapshot re-prints', async () => {
+    const tp = await mkTaxpayer();
+    await mkPersonAndLink(tp);
+    const sid = await baseScenario(tp);
+    const r = await request('POST', pdfUrl(tp, sid), staffToken, { throughMonth: '2026-09' });
+    expect(r.status).toBe(200);
+    const snapId = String(r.headers['x-tax-estimate-snapshot-id']);
+    expect(snapId).toMatch(/^[0-9a-f-]{36}$/);
+    const [row] = await db.select().from(taxEstSnapshots).where(eq(taxEstSnapshots.id, snapId));
+    expect(row?.reason).toBe('pdf');
+    expect(row?.taxpayerId).toBe(tp);
+    expect(row?.firmId).toBe(ids.firmA);
+    // Read-only members download too: the snapshot is the audit record of what was issued.
+    const ro = await request('POST', pdfUrl(tp, sid), readonlyToken, { throughMonth: '2026-09' });
+    expect(ro.status).toBe(200);
+    const all = await db.select().from(taxEstSnapshots).where(eq(taxEstSnapshots.taxpayerId, tp));
+    expect(all.filter((x) => x.reason === 'pdf')).toHaveLength(2);
+    // Re-print: same bytes shape, no new snapshot; another firm cannot.
+    // The read-only member cannot reach T2 (D1), so this snapshot is not theirs to view.
+    expect((await request('GET', `${API}/snapshots/${snapId}/pdf`, readonlyToken)).status).toBe(404);
+    const again = await request('GET', `${API}/snapshots/${snapId}/pdf`, staffToken);
+    expect(again.status).toBe(200);
+    expect(again.raw.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    expect(again.headers['x-tax-estimate-snapshot-id']).toBe(snapId);
+    expect((await db.select().from(taxEstSnapshots).where(eq(taxEstSnapshots.taxpayerId, tp))).length).toBe(2);
+    expect((await request('GET', `${API}/snapshots/${snapId}/pdf`, firmBToken)).status).toBe(404);
   });
 });

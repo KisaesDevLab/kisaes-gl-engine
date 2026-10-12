@@ -2,31 +2,41 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { Router } from 'express';
-import { estimateParamsSchema, computeEstimateSchema } from '@kis-books/shared';
+import { Router, type Request, type Response } from 'express';
+import { estimateParamsSchema, computeEstimateSchema, snapshotIdParamsSchema } from '@kis-books/shared';
 import { getScope } from '../../middleware/tax-estimator-scope.js';
-import * as estimateService from '../../services/tax-estimator/estimate.service.js';
-import * as taxpayersService from '../../services/tax-estimator/taxpayers.service.js';
-import * as firmSettingsService from '../../services/tax-estimator/firm-settings.service.js';
-import { renderEstimatePdf } from '../../services/tax-estimator/estimate-pdf.service.js';
+import * as documents from '../../services/tax-estimator/estimate-documents.service.js';
 
-// Standalone estimate PDF (Phase 11, D15). Mounted by tax-estimator.routes.ts AFTER its guard
-// chain (session auth -> client 404 -> flag -> tax_estimator resource -> firm scope). It is a
-// read (any firm role): the estimate is computed through the same scoped service as /estimate,
-// so a taxpayer or scenario of another firm is a 404 and out-of-scope tenants are left out.
+// Standalone estimate PDF (Phase 11, D15; Phase 13: printed from a snapshot). Mounted by
+// tax-estimator.routes.ts AFTER its guard chain (session auth -> client 404 -> flag ->
+// tax_estimator resource -> firm scope). Any firm role may download: the estimate is
+// computed through the same scoped service as /estimate, so a taxpayer or scenario of
+// another firm is a 404 and out-of-scope tenants are left out. Every download FREEZES a
+// snapshot (reason 'pdf') and prints it, so the issued document can be reproduced; the
+// snapshot id is returned in X-Tax-Estimate-Snapshot-Id. (The snapshot is an audit
+// record of what was issued, so firm_readonly downloads create one too.)
 export const pdfRouter = Router();
 
-const slugify = (s: string) => s.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'taxpayer';
+function sendPdf(res: Response, pdf: documents.IssuedPdf) {
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${pdf.filename}"`);
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Tax-Estimate-Snapshot-Id', pdf.snapshotId);
+  res.send(Buffer.from(pdf.bytes));
+}
+
+const actor = (req: Request) => ({ tenantId: req.tenantId, userId: req.userId });
 
 pdfRouter.post('/taxpayers/:id/years/:taxYear/scenarios/:scenarioId/pdf', async (req, res) => {
   const { id, taxYear, scenarioId } = estimateParamsSchema.parse(req.params);
   const body = computeEstimateSchema.parse(req.body ?? {});
-  const scope = getScope(req);
-  const result = await estimateService.computeEstimate(scope, { taxpayerId: id, taxYear, scenarioId, throughMonth: body.throughMonth, refresh: body.refresh });
-  const [detail, firm] = await Promise.all([taxpayersService.getTaxpayer(scope, id), firmSettingsService.getFirmSettings(scope)]);
-  const bytes = await renderEstimatePdf(result, { taxpayerName: detail.taxpayer.displayName, disclaimer: firm.effectiveDisclaimerText });
-  res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', `attachment; filename="tax-estimate-${taxYear}-${slugify(detail.taxpayer.displayName)}.pdf"`);
-  res.setHeader('Cache-Control', 'no-store');
-  res.send(Buffer.from(bytes));
+  sendPdf(res, await documents.issueEstimatePdf(getScope(req), actor(req), {
+    taxpayerId: id, taxYear, scenarioId, throughMonth: body.throughMonth, reason: 'pdf',
+  }));
+});
+
+// Re-print an existing snapshot (history list / read-only view). No new snapshot.
+pdfRouter.get('/snapshots/:snapshotId/pdf', async (req, res) => {
+  const { snapshotId } = snapshotIdParamsSchema.parse(req.params);
+  sendPdf(res, await documents.snapshotPdf(getScope(req), snapshotId));
 });

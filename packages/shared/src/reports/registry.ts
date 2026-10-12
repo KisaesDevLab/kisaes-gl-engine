@@ -39,6 +39,9 @@ export interface ReportOptionSpec {
   statements?: boolean;
   // transaction-report: type / account / include-voided filters.
   txnFilters?: boolean;
+  // tax-estimate: pick the taxpayer (and optionally a scenario) the section
+  // prints. Choices = taxpayers linked to the pack's company (firm-scoped).
+  taxpayer?: boolean;
   // Comparison modes this report supports (mirrors the standalone report's
   // Compare selector). Present only when `compare` is true.
   compareModes?: ReportCompareMode[];
@@ -177,7 +180,16 @@ export const REPORT_CATALOG: ReportDef[] = [
   { id: 'tb-m2', label: 'Schedule M-2 Rollforward', group: 'Trial Balance', endpoint: 'tb-m2', temporal: 'as-of', orientation: 'portrait', options: { basis: true } },
   { id: 'tb-workpaper-index', label: 'Workpaper Index', group: 'Trial Balance', endpoint: 'tb-workpaper-index', temporal: 'as-of', orientation: 'portrait', options: {} },
   { id: 'tb-diagnostics', label: 'TB Diagnostics', group: 'Trial Balance', endpoint: 'tb-diagnostics', temporal: 'as-of', orientation: 'portrait', options: { basis: true } },
+  // ── Tax Estimator (TAX_ESTIMATOR_V1, MODULE.md D15). Firm staff only;
+  // the section is the same PDF as the taxpayer screen's Print / Download.
+  // As-of: the tax year is the as-of date's calendar year; a month-end
+  // as-of date sets "actuals through" to that month (else the last
+  // closed month). Generating it freezes a snapshot (reason report_pack).
+  { id: 'tax-estimate', label: 'Tax Estimate', group: 'Tax', endpoint: 'tax-estimate', temporal: 'as-of', orientation: 'portrait', kind: 'document', options: { taxpayer: true } },
 ];
+
+/** Report ids that answer to the Tax Estimator gates (flag + resource + firm staff). */
+export const TAX_ESTIMATOR_REPORT_IDS: readonly string[] = ['tax-estimate'];
 
 /** Fast lookup by report id. */
 export function getReportDef(id: string): ReportDef | undefined {
@@ -295,6 +307,10 @@ export const reportPackItemOptionsSchema = z
     txnType: z.string().refine((v) => v in TXN_TYPE_LABELS, 'Unknown transaction type').optional(),
     accountId: z.string().uuid().optional(),
     includeVoid: z.boolean().optional(),
+    // tax-estimate: the taxpayer the section prints (required to render) and
+    // an optional scenario (default = the year's base scenario).
+    taxpayerId: z.string().uuid().optional(),
+    scenarioId: z.string().uuid().optional(),
   })
   .strict();
 

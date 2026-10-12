@@ -16,6 +16,8 @@ import * as comparisonService from '../services/report-comparison.service.js';
 import * as tbReports from '../services/tb/tb-reports.service.js';
 import { parseActivityView, type TbViewFilters } from '../services/tb/activity-view.service.js';
 import * as featureFlags from '../services/feature-flags.service.js';
+import { taxEstimateReportScope } from '../middleware/tax-estimator-scope.js';
+import * as taxEstimateDocuments from '../services/tax-estimator/estimate-documents.service.js';
 
 // Build-plan Phase 5 cache-invalidation hook. We don't run a Redis
 // report cache today, but clients may cache report responses locally
@@ -1764,6 +1766,47 @@ for (const [slug, builder] of Object.entries(TB_REPORTS)) {
     await respond(res, data, (req.query as Record<string, string>)['format']);
   });
 }
+
+// ── Tax Estimator report section (Phase 13, D15) ───────────────────
+// Firm-side like the TB family, with the Tax Estimator gates: interactive session,
+// not a client user, TAX_ESTIMATOR_V1 on the active tenant, the tax_estimator
+// resource, membership in the firm that manages this tenant, and the tenant inside
+// the caller's D1 scope (middleware/tax-estimator-scope.ts). Anything else is 404.
+// The PDF is the standalone estimate PDF, printed from a snapshot frozen with
+// reason 'report_pack' (the same path as the Report Pack section).
+async function taxEstimateGuard(req: Request) {
+  const scope = await taxEstimateReportScope(req);
+  if (!scope) throw AppError.notFound('Feature not available');
+  const companyId = req.companyId;
+  if (!companyId) throw AppError.badRequest('A company is required for the Tax Estimate');
+  return { scope, companyId };
+}
+
+// Pack-builder option choices: taxpayers linked to the active company.
+reportsRouter.get('/tax-estimate/taxpayers', async (req, res) => {
+  const { scope, companyId } = await taxEstimateGuard(req);
+  const data = await taxEstimateDocuments.listPackTaxpayers(scope, req.tenantId, companyId);
+  res.json({ data, total: data.length });
+});
+
+reportsRouter.get('/tax-estimate', async (req, res) => {
+  const { scope, companyId } = await taxEstimateGuard(req);
+  const q = req.query as Record<string, unknown>;
+  const str = (k: string) => (typeof q[k] === 'string' ? String(q[k]) : '');
+  const taxpayerId = str('taxpayer_id');
+  const scenarioId = str('scenario_id');
+  if (!UUID_RE.test(taxpayerId)) throw AppError.badRequest('taxpayer_id must be a UUID', 'TE_PACK_TAXPAYER_REQUIRED');
+  if (scenarioId && !UUID_RE.test(scenarioId)) throw AppError.badRequest('scenario_id must be a UUID');
+  const asOfDate = str('as_of_date') || str('end_date') || new Date().toISOString().slice(0, 10);
+  const pdf = await taxEstimateDocuments.renderPackSection(scope, { tenantId: req.tenantId, userId: req.userId }, {
+    tenantId: req.tenantId, companyId, taxpayerId, scenarioId: scenarioId || null, asOfDate,
+  });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${pdf.filename}"`);
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Tax-Estimate-Snapshot-Id', pdf.snapshotId);
+  res.send(Buffer.from(pdf.bytes));
+});
 
 reportsRouter.get('/transaction-list', async (req, res) => {
   const { start_date, end_date, txn_type, account_id, format } = req.query as Record<string, string>;

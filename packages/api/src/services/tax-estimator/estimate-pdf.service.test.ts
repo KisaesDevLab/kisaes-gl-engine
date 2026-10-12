@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { EstimateResultDTO } from '@kis-books/shared';
+import { PDFDocument } from 'pdf-lib';
 import { renderEstimatePdf } from './estimate-pdf.service.js';
 
 const inst = (i: number) => ({
@@ -35,6 +36,16 @@ const dto = {
   federalEstimates: estimate('federal', true), stateEstimates: [estimate('MO', true), estimate('AR', false)],
   warnings: [{ code: 'TE_X', severity: 'warning', message: 'Section §179 “quoted” — unverified' }],
   parametersUsed: [{ key: 'a', status: 'provisional', value: 1 }], rulesUsed: [{ state: 'AR', key: 'b', status: 'unverified', value: 1 }],
+  entities: [], ccorps: [], farmer: null, payments: [], adjustments: [], scheduleAi: [],
+  assumptions: {
+    version: 1, disclaimerText: 'Firm disclaimer from the assumptions block.',
+    sections: [
+      { id: 'rate_mode', title: 'Rate mode', items: [{ label: 'Federal', detail: 'Brackets', badge: null }] },
+      { id: 'parameters', title: 'Unverified and provisional parameters', items: [{ label: 'Federal a', detail: '1 (provisional).', badge: 'provisional' }] },
+      { id: 'readiness', title: 'Readiness warnings', items: [] },
+      { id: 'disclaimer', title: 'Disclaimer', items: [{ label: 'Disclaimer', detail: 'Firm disclaimer from the assumptions block.' }] },
+    ],
+  },
 } as unknown as EstimateResultDTO;
 
 describe('renderEstimatePdf', () => {
@@ -47,5 +58,15 @@ describe('renderEstimatePdf', () => {
   it('renders with defaults and no state', async () => {
     const bytes = await renderEstimatePdf({ ...dto, state: null, stateEstimates: [], warnings: [] } as unknown as EstimateResultDTO);
     expect(bytes.length).toBeGreaterThan(1500);
+  });
+
+  it('prints the firm header, the snapshot provenance and an assumptions page (one page per section block)', async () => {
+    const bytes = await renderEstimatePdf(dto, {
+      taxpayerName: 'Rivera', firmName: 'Sample CPA Firm', snapshot: { id: '11111111-2222-4333-8444-555555555555', createdAt: '2026-10-12T04:00:00.000Z', reason: 'report_pack' },
+    });
+    const doc = await PDFDocument.load(bytes);
+    // Summary pages + the assumptions page always starts on a new page.
+    expect(doc.getPageCount()).toBeGreaterThanOrEqual(2);
+    expect(doc.getTitle()).toContain('2026 Tax Estimate');
   });
 });

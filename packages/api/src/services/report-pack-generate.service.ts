@@ -218,6 +218,9 @@ export async function generateReportPackRun(runId: string): Promise<void> {
             options: reportPackItemOptionsSchema.parse(item.optionsJson ?? {}),
             allowAttachments: run.allowAttachments,
             allowTransactions: run.allowTransactions,
+            asOfDate,
+            allowTaxEstimate: run.allowTaxEstimate,
+            requestedBy: run.requestedBy,
             renderHtml: (html) => htmlToPdfBytes(browser, html, false),
           });
           const doc = await PDFDocument.load(bytes);

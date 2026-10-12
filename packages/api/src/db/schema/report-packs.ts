@@ -103,6 +103,11 @@ export const reportPackRuns = pgTable('report_pack_runs', {
   // transaction detail. Migration 0192.
   allowAttachments: boolean('allow_attachments').notNull().default(false),
   allowTransactions: boolean('allow_transactions').notNull().default(false),
+  // Tax Estimator Phase 13 (migration 0201): who asked, and whether they passed
+  // the Tax Estimator gates at create time. The worker re-derives the firm scope
+  // from requested_by when it renders a `tax-estimate` section (D1).
+  requestedBy: uuid('requested_by'),
+  allowTaxEstimate: boolean('allow_tax_estimate').notNull().default(false),
   startedAt: timestamp('started_at', { withTimezone: true }),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

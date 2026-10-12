@@ -70,6 +70,14 @@ export interface RunPermissions {
   attachments: boolean;
   /** transactions:read — the Transaction Report section. */
   transactions: boolean;
+  /**
+   * Tax Estimator Phase 13: the requester passed the Tax Estimator gates (client 404,
+   * TAX_ESTIMATOR_V1, tax_estimator resource, firm membership). The worker still
+   * re-derives the firm scope from `requestedBy` at render time.
+   */
+  taxEstimate?: boolean;
+  /** The requesting user (recorded on the run for the tax-estimate section). */
+  requestedBy?: string | null;
 }
 
 type PackRow = typeof reportPacks.$inferSelect;
@@ -286,6 +294,8 @@ export async function createRun(
     progress: 0,
     allowAttachments: permissions.attachments,
     allowTransactions: permissions.transactions,
+    allowTaxEstimate: permissions.taxEstimate ?? false,
+    requestedBy: permissions.requestedBy ?? null,
   }).returning();
   // Prefer the background worker (Redis-backed queue) so the heavy multi-render
   // stays off the request path. But appliance deployments may not run a

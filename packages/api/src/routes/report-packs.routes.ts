@@ -27,7 +27,8 @@ import * as packService from '../services/report-pack.service.js';
 import * as templateService from '../services/report-pack-templates.service.js';
 import { listActiveLetters } from '../services/report-letter.service.js';
 import { getReportPackQueueHealth } from '../services/extraction/queue.js';
-import { REPORT_CATALOG } from '@kis-books/shared';
+import { REPORT_CATALOG, TAX_ESTIMATOR_REPORT_IDS } from '@kis-books/shared';
+import { taxEstimateReportScope } from '../middleware/tax-estimator-scope.js';
 
 export const reportPacksRouter = Router();
 reportPacksRouter.use(authenticate);
@@ -75,8 +76,10 @@ const runBodySchema = z.object({
 }).default({});
 
 // ─── Catalog ───
-reportPacksRouter.get('/catalog', readPerm, (_req, res) => {
-  res.json({ catalog: REPORT_CATALOG });
+// The Tax Estimator section (Phase 13) is listed only for callers who pass its gates.
+reportPacksRouter.get('/catalog', readPerm, async (req, res) => {
+  const taxOk = (await taxEstimateReportScope(req)) !== null;
+  res.json({ catalog: taxOk ? REPORT_CATALOG : REPORT_CATALOG.filter((d) => !TAX_ESTIMATOR_REPORT_IDS.includes(d.id)) });
 });
 
 // Active engagement letters, for the pack builder's letter picker. Read-only
@@ -171,6 +174,9 @@ reportPacksRouter.post('/packs/:id/runs', readPerm, validate(runBodySchema), asy
   const run = await packService.createRun(req.tenantId, req.companyId, req.params['id']!, req.userId, req.body, {
     attachments: can(perms, 'attachments', 'read'),
     transactions: can(perms, 'transactions', 'read'),
+    // Tax Estimator (Phase 13): gates passed now; the worker re-derives the firm scope.
+    taxEstimate: (await taxEstimateReportScope(req)) !== null,
+    requestedBy: req.userId,
   });
   res.status(202).json(run);
 });
