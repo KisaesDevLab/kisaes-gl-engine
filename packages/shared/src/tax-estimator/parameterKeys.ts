@@ -161,6 +161,9 @@ export const PARAMETER_REGISTRY: readonly ParameterDef[] = [
   D('ccorp.sch_ai.period_ends', 'month_day_list', 'month_day', 'C corporation', 'Annualization period ends (C corporation)'),
   D('ccorp.sch_ai.annualization_factors', 'number_list', 'factor', 'C corporation', 'Annualization factors (C corporation)'),
   D('ccorp.sch_ai.applicable_pcts', 'rate_list', 'rate', 'C corporation', 'Applicable percentages (C corporation)'),
+  D('ccorp.installment_day', 'int', 'count', 'C corporation', 'Installment due day of the month (15th day of the 4th/6th/9th/12th month)'),
+  D('ccorp.large_corp_lookback_years', 'int', 'count', 'C corporation', 'Large corporation test: number of preceding tax years examined'),
+  D('ccorp.min_tax_for_estimates', 'money', 'usd', 'C corporation', 'No estimated-tax requirement (no §6655 addition) when the tax is less than this'),
   // ── Individual safe harbor ─────────────────────────────────────────────
   D('safe_harbor.current_pct', 'rate', 'rate', 'Individual safe harbor', 'Safe harbor: % of current-year tax'),
   D('safe_harbor.prior_pct', 'rate', 'rate', 'Individual safe harbor', 'Safe harbor: % of prior-year tax'),

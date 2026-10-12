@@ -15,6 +15,13 @@ import { filingStatusKey } from '../parameterKeys.js';
 import { dec, type Dec } from '../decimal.js';
 import type { ParameterMap, ParameterUse, ResolvedParameter } from './types.js';
 
+/** One dated leg of a rate schedule, inclusive calendar dates. */
+export interface RatePeriod {
+  from: string;
+  to: string;
+  rate: Dec;
+}
+
 export interface BracketRow {
   /** Upper bound of the bracket (decimal string); null = no upper bound. */
   upper: Dec | null;
@@ -28,6 +35,8 @@ export function parameterMapFromRows(rows: ReadonlyArray<Pick<TaxParameterRowDTO
 }
 
 const isFiniteNumber = (x: unknown): x is number => typeof x === 'number' && Number.isFinite(x);
+const MONTH_DAY_RE = /^\d\d-\d\d$/;
+const ISO_DATE_RE = /^\d\d\d\d-\d\d-\d\d$/;
 
 export class ParameterReader {
   private readonly usedKeys = new Map<string, ParameterUse>();
@@ -74,6 +83,38 @@ export class ParameterReader {
     const v = this.raw(key).value;
     if (!Array.isArray(v) || !v.every((n) => Number.isInteger(n))) this.invalid(key, 'a list of integers');
     return v as number[];
+  }
+
+  /** 'YYYY-MM-DD' parameter (due dates, file-by dates). */
+  date(key: string): string {
+    const v = this.raw(key).value;
+    if (typeof v !== 'string' || !ISO_DATE_RE.test(v)) this.invalid(key, 'a YYYY-MM-DD date');
+    return v as string;
+  }
+
+  /** 'YYYY-MM-DD'[] parameter (installment due dates, holidays). */
+  dateList(key: string): string[] {
+    const v = this.raw(key).value;
+    if (!Array.isArray(v) || !v.every((d) => typeof d === 'string' && ISO_DATE_RE.test(d))) this.invalid(key, 'a list of YYYY-MM-DD dates');
+    return v as string[];
+  }
+
+  /** 'MM-DD'[] parameter (sch_ai.period_ends). */
+  monthDayList(key: string): string[] {
+    const v = this.raw(key).value;
+    if (!Array.isArray(v) || !v.every((d) => typeof d === 'string' && MONTH_DAY_RE.test(d))) this.invalid(key, 'a list of MM-DD values');
+    return [...(v as string[])];
+  }
+
+  /** { from, to, rate }[] parameter (penalty.underpayment_rate), rates as decimal strings. */
+  ratePeriods(key: string): RatePeriod[] {
+    const v = this.raw(key).value;
+    if (!Array.isArray(v) || v.length === 0) this.invalid(key, 'a list of { from, to, rate } periods');
+    return (v as unknown[]).map((row) => {
+      const r = row as { from?: unknown; to?: unknown; rate?: unknown } | null;
+      if (!r || typeof r.from !== 'string' || !ISO_DATE_RE.test(r.from) || typeof r.to !== 'string' || !ISO_DATE_RE.test(r.to) || !isFiniteNumber(r.rate)) this.invalid(key, 'a list of { from, to, rate } periods');
+      return { from: r.from as string, to: r.to as string, rate: dec(r.rate as number) };
+    });
   }
 
   brackets(key: string): BracketRow[] {

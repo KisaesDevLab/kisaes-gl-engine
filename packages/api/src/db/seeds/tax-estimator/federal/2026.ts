@@ -778,6 +778,24 @@ export const FEDERAL_2026_SEEDS: ParameterSeedRow[] = [
     status: 'verified',
   },
   {
+    key: 'ccorp.installment_day',
+    value: 15,
+    citation: "IRC §6655(c)(2) (installments due on the 15th day of the 4th, 6th, 9th and 12th months of the taxable year); Instructions for Form 2220 (2026) \"15th day of the 4th, 6th, 9th, and 12th months of the tax year\"; weekend/holiday roll per IRC §7503",
+    status: 'unverified',
+  },
+  {
+    key: 'ccorp.large_corp_lookback_years',
+    value: 3,
+    citation: "IRC §6655(g)(2)(A) (\"any taxable year during the testing period\" = the 3 taxable years immediately preceding the taxable year involved, §6655(g)(2)(B)(i)); Instructions for Form 2220 (2026) \"any of the 3 tax years immediately preceding\"",
+    status: 'unverified',
+  },
+  {
+    key: 'ccorp.min_tax_for_estimates',
+    value: 500,
+    citation: "IRC §6655(f) (no addition to tax if the tax shown on the return, or if no return is filed the tax, is less than $500); Instructions for Form 2220 (2026) \"corporation does not owe the penalty if the tax ... is less than $500\"; Form 1120-W discontinued after 2022 — same $500 floor",
+    status: 'unverified',
+  },
+  {
     key: 'safe_harbor.current_pct',
     value: 0.9,
     citation: "IRC §6654(d)(1)(B)(i) (90 percent of current-year tax)",
