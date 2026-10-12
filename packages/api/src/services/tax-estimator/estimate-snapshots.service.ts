@@ -265,7 +265,8 @@ function linesOf(r: EstimateResultDTO): Lines {
   for (const row of r.state?.rows ?? []) put(`state.${row.state}.netTax`, `${row.state} net tax`, row.netTax);
   for (const j of [r.federalEstimates, ...r.stateEstimates]) {
     const name = j.jurisdiction === 'federal' ? 'Federal' : j.jurisdiction;
-    put(`estimates.${j.jurisdiction}.requiredAnnualPayment`, `${name} required annual payment`, j.safeHarbor.requiredAnnualPayment);
+    // QA D24: the federal figure is already the summary line; list it once.
+    if (j.jurisdiction !== 'federal') put(`estimates.${j.jurisdiction}.requiredAnnualPayment`, `${name} required annual payment`, j.safeHarbor.requiredAnnualPayment);
     for (const i of j.installments) {
       put(`estimates.${j.jurisdiction}.${i.label}.required`, `${name} ${i.label} required`, i.required);
       put(`estimates.${j.jurisdiction}.${i.label}.unpaid`, `${name} ${i.label} unpaid`, i.unpaid);

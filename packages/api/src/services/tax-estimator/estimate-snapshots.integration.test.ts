@@ -220,6 +220,9 @@ describe('finalize → immutable snapshot', () => {
     expect(c.engineVersionChanged).toBe(false);
     expect(c.inputsHashChanged).toBe(true);
     const paths = c.differences.map((d) => d.path);
+    // QA D24: each line once (the federal required annual payment is only the summary line).
+    expect(new Set(c.differences.map((d) => d.label)).size).toBe(c.differences.length);
+    expect(paths).not.toContain('estimates.federal.requiredAnnualPayment');
     expect(paths).toEqual(expect.arrayContaining(['summary.federalTotal', 'federal.agi', 'state.MO.netTax']));
     expect(c.differences.find((d) => d.path === 'state.AR.netTax')).toMatchObject({ live: null, delta: null }); // AR row removed after finalize
     const agi = c.differences.find((d) => d.path === 'federal.agi')!;

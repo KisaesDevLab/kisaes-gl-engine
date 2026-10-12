@@ -66,7 +66,13 @@ export async function renderSnapshotPdf(scope: FirmScope, snap: EstimateSnapshot
     snapshot: { id: snap.id, createdAt: snap.createdAt, reason: snap.reason },
     audience,
   });
-  return { bytes, filename: `tax-estimate-${snap.taxYear}-${slugify(name)}.pdf`, snapshotId: snap.id };
+  return { bytes, filename: estimatePdfFilename(snap.taxYear, name, p.result.scenarioName), snapshotId: snap.id };
+}
+
+/** QA D25: a non-Base scenario's PDF carries the scenario in its name, so compare downloads do not collide. */
+export function estimatePdfFilename(taxYear: number, taxpayerName: string, scenarioName?: string | null): string {
+  const scenario = scenarioName && scenarioName.trim().toLowerCase() !== 'base' ? `-${slugify(scenarioName)}` : '';
+  return `tax-estimate-${taxYear}-${slugify(taxpayerName)}${scenario}.pdf`;
 }
 
 /**

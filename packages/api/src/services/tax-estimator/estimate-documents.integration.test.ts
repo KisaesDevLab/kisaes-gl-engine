@@ -24,7 +24,7 @@ import { assign, mkAccount, mkCompany, mkTenant, post, purgeTenants, setProfile 
 import { seedRivera, type RiveraFixture } from './rivera.test-fixtures.js';
 import { createTaxpayer, upsertLink, upsertPerson } from './taxpayers.service.js';
 import { upsertYear } from './years.service.js';
-import { issueEstimatePdf, packPeriod, renderPackSection, resolvePackScope, resolvePackScopeForUser, listPackTaxpayers } from './estimate-documents.service.js';
+import { issueEstimatePdf, packPeriod, renderPackSection, resolvePackScope, resolvePackScopeForUser, listPackTaxpayers, estimatePdfFilename } from './estimate-documents.service.js';
 import { REPORT_PACK_DOCUMENT_RENDERERS, type DocumentSectionContext } from '../report-pack-documents.js';
 
 const FIRM_A = randomUUID();
@@ -109,6 +109,9 @@ describe('one PDF renderer for every entity type (printed from a snapshot)', () 
     expect(info.pages).toBeGreaterThanOrEqual(3); // summary pages + the assumptions page
     expect(info.title).toContain('2026 Tax Estimate');
     expect(pdf.filename).toBe('tax-estimate-2026-Carlos-Maria-Rivera.pdf');
+    // QA D25: a what-if scenario's PDF is named after it.
+    expect(estimatePdfFilename(2026, 'Carlos & Maria Rivera', 'Buy truck in December')).toBe('tax-estimate-2026-Carlos-Maria-Rivera-Buy-truck-in-December.pdf');
+    expect(estimatePdfFilename(2026, 'Carlos & Maria Rivera', 'Base')).toBe('tax-estimate-2026-Carlos-Maria-Rivera.pdf');
     const [snap] = await db.select().from(taxEstSnapshots).where(eq(taxEstSnapshots.id, pdf.snapshotId));
     expect(snap?.reason).toBe('pdf');
     expect(snap?.tenantIds.sort()).toEqual([fx.T.schc, fx.T.scorp, fx.T.lp].sort());
