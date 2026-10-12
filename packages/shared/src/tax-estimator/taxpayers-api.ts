@@ -129,6 +129,26 @@ export interface TaxpayerContactDTO {
   createdAt: string;
 }
 
+/**
+ * QA D11: a portal contact the taxpayer could be linked to — an active contact of one of
+ * the taxpayer's linked companies, in a tenant inside the caller's D1 scope (whatever the
+ * caller's active tenant is).
+ */
+export interface TaxpayerContactCandidateDTO {
+  portalContactId: string;
+  tenantId: string;
+  email: string;
+  firstName: string | null;
+  lastName: string | null;
+  /** The linked companies this contact has portal access to. */
+  companyNames: string[];
+}
+
+export interface TaxpayerContactCandidateListDTO {
+  data: TaxpayerContactCandidateDTO[];
+  total: number;
+}
+
 export interface TaxpayerContactListDTO {
   data: TaxpayerContactDTO[];
   total: number;

@@ -26,7 +26,7 @@ import type {
   CreateTaxpayerInput, UpdateTaxpayerInput, ListTaxpayersQuery, UpsertPersonInput, UpsertLinkInput,
   CompanyOptionsQuery, LinkContactInput, TaxpayerDTO, PersonDTO, TaxpayerListDTO, TaxpayerDetailDTO,
   LinkDTO, LinkWarningDTO, LinkUpsertResultDTO, LinkListDTO, CompanyOptionListDTO, TaxpayerContactDTO,
-  TaxpayerContactListDTO, LinkContactResultDTO, UnlinkContactResultDTO, LinkEntityKind, PersonRole,
+  TaxpayerContactListDTO, TaxpayerContactCandidateDTO, TaxpayerContactCandidateListDTO, LinkContactResultDTO, UnlinkContactResultDTO, LinkEntityKind, PersonRole,
   FilingStatus, ActivityType, SafeHarborOverride, PortalShows, PartnerSeStatus,
 } from '@kis-books/shared';
 import { MIN_OVERRIDE_REASON_LEN } from '@kis-books/shared';
@@ -545,6 +545,39 @@ export async function listContacts(scope: FirmScope, taxpayerId: string): Promis
     }
     data.push(toContactDTO({ ...r, access }, scope));
   }
+  return { data, total: data.length };
+}
+
+/**
+ * QA D11: contacts that can be linked — active portal contacts with access to one of the
+ * taxpayer's linked companies, in tenants inside the server-resolved scope (D1). Works from
+ * the practice tenant: nothing here depends on the caller's active tenant.
+ */
+export async function listContactCandidates(scope: FirmScope, taxpayerId: string): Promise<TaxpayerContactCandidateListDTO> {
+  await loadTaxpayer(scope, taxpayerId);
+  if (scope.allowedTenantIds.length === 0) return { data: [], total: 0 };
+  const rows = await db.selectDistinct({
+    contactId: portalContacts.id, tenantId: portalContacts.tenantId, email: portalContacts.email,
+    firstName: portalContacts.firstName, lastName: portalContacts.lastName, companyName: companies.businessName,
+  }).from(taxEstLinks)
+    .innerJoin(portalContactCompanies, eq(portalContactCompanies.companyId, taxEstLinks.companyId))
+    .innerJoin(portalContacts, and(eq(portalContacts.id, portalContactCompanies.contactId), eq(portalContacts.tenantId, taxEstLinks.tenantId)))
+    .innerJoin(companies, eq(companies.id, taxEstLinks.companyId))
+    .where(and(
+      eq(taxEstLinks.taxpayerId, taxpayerId),
+      inArray(taxEstLinks.tenantId, scope.allowedTenantIds),
+      eq(portalContacts.status, 'active'),
+    ))
+    .orderBy(asc(portalContacts.email));
+  const byId = new Map<string, TaxpayerContactCandidateDTO>();
+  for (const r of rows) {
+    const c = byId.get(r.contactId) ?? {
+      portalContactId: r.contactId, tenantId: r.tenantId, email: r.email, firstName: r.firstName, lastName: r.lastName, companyNames: [],
+    };
+    if (r.companyName && !c.companyNames.includes(r.companyName)) c.companyNames.push(r.companyName);
+    byId.set(r.contactId, c);
+  }
+  const data = [...byId.values()];
   return { data, total: data.length };
 }
 

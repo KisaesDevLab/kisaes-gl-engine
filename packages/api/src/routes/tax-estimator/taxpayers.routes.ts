@@ -92,6 +92,13 @@ taxpayersRouter.get('/:id/contacts', async (req, res) => {
   res.json({ ...list, ...pageOf(list.data, listPageQuerySchema.parse(req.query)) });
 });
 
+// QA D11: contacts of the taxpayer's linked client companies (any tenant in scope), for the picker.
+taxpayersRouter.get('/:id/contact-candidates', async (req, res) => {
+  const { id } = taxpayerIdParamsSchema.parse(req.params);
+  const list = await taxpayersService.listContactCandidates(getScope(req), id);
+  res.json({ ...list, ...pageOf(list.data, listPageQuerySchema.parse(req.query)) });
+});
+
 taxpayersRouter.post('/:id/contacts', requireTaxEstimatorWrite, async (req, res) => {
   const { id } = taxpayerIdParamsSchema.parse(req.params);
   const input = linkContactSchema.parse(req.body);

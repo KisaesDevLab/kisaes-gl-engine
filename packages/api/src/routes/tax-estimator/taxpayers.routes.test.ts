@@ -443,6 +443,22 @@ describe('portal contacts', () => {
     expect((await request('GET', `${BASE}/${tp.id}/contacts`, staffToken)).json.total).toBe(0);
   });
 
+  it('QA D11: from the practice tenant, the picker lists the linked client companies\' active contacts (in scope only)', async () => {
+    const tp = await mkTaxpayer(); await mkPerson(tp.id, 'primary');
+    await request('PUT', `${BASE}/${tp.id}/links`, staffToken, linkBody()); // c2 in t2; the caller's active tenant is t1
+    const yes = await mkContact(ids.t2, 'owner@client.test');
+    await db.insert(portalContactCompanies).values({ contactId: yes, companyId: ids.c2 });
+    await mkContact(ids.t2, 'no-company@client.test'); // a contact of the tenant without access to the linked company
+    const gone = await mkContact(ids.t2, 'deleted@client.test');
+    await db.update(portalContacts).set({ status: 'deleted' }).where(eq(portalContacts.id, gone));
+    await db.insert(portalContactCompanies).values({ contactId: gone, companyId: ids.c2 });
+    const r = await request('GET', `${BASE}/${tp.id}/contact-candidates`, staffToken);
+    expect(r.status).toBe(200);
+    expect(r.json.data).toEqual([expect.objectContaining({ portalContactId: yes, tenantId: ids.t2, email: 'owner@client.test', companyNames: ['Reachable Co'] })]);
+    expect(r.json.total).toBe(1);
+    expect((await request('GET', `${BASE}/${tp.id}/contact-candidates`, firmBToken)).status).toBe(404);
+  });
+
   it('links an in-scope contact, grants tax_estimates_access only with grantAccess, and revokes on unlink', async () => {
     const tp = await mkTaxpayer(); await mkPerson(tp.id, 'primary');
     await request('PUT', `${BASE}/${tp.id}/links`, staffToken, linkBody());
