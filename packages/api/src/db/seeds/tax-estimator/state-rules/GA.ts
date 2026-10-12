@@ -210,4 +210,14 @@ export const GA_RULES: StateRuleSeedRow[] = [
     citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
     status: 'unverified',
   },
+  {
+    state: 'GA', year: 2025, key: 'requirement_gate', value: { kind: 'gross_over_exemptions_deductions', non_withheld_floor: 1000 },
+    citation: 'O.C.G.A. 48-7-114(b) (declaration required when gross income can reasonably be expected to exceed the sum of personal exemptions, deductions and $1,000 of income not subject to withholding; text read via law.onecle.com copy); Georgia Form 500-ES 2025 (Rev. 07/24/24) "Who must file estimated tax"; Georgia IT-511 2025 booklet p.14 "Estimated Tax". Phase 8 D12b gate key (2026-10-12): the gross-income test replaces the (zero) tax-due test in required_threshold. Not yet CPA-verified.',
+    status: 'unverified',
+  },
+  {
+    state: 'GA', year: 2026, key: 'requirement_gate', value: { kind: 'gross_over_exemptions_deductions', non_withheld_floor: 1000 },
+    citation: 'O.C.G.A. 48-7-114(b) (gross income > exemptions + deductions + $1,000 not subject to withholding; law.onecle.com copy); Georgia Form 500-ES 2026 (Rev. 05/12/25) "Who must file estimated tax". Phase 8 D12b gate key (2026-10-12): the gross-income test replaces the (zero) tax-due test in required_threshold. Not yet CPA-verified.',
+    status: 'unverified',
+  },
 ];

@@ -211,4 +211,14 @@ export const NM_RULES: StateRuleSeedRow[] = [
     citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
     status: 'unverified',
   },
+  {
+    state: 'NM', year: 2025, key: 'requirement_gate', value: { kind: 'nets_withholding_only' },
+    citation: '2025 PIT-ES Instructions (realfile.tax.newmexico.gov/2025pit-es-ins.pdf) "Who must pay estimated taxes": no penalty when "Your tax for the current year, less amounts withheld, is under $1,000" — the $1,000 in required_threshold is measured on tax less withholding only (other credits are not subtracted); oil-and-gas withholding (7-3A) excluded. Phase 8 D12b gate key (2026-10-12). Not yet CPA-verified.',
+    status: 'unverified',
+  },
+  {
+    state: 'NM', year: 2026, key: 'requirement_gate', value: { kind: 'nets_withholding_only' },
+    citation: '2025 PIT-ES Instructions "Who must pay estimated taxes" (tax for the year less amounts withheld under $1,000; NM TRD "Estimated Payments : Individuals" page, instructions not tax-year specific). The $1,000 in required_threshold is measured on tax less withholding only. Phase 8 D12b gate key (2026-10-12). Not yet CPA-verified.',
+    status: 'unverified',
+  },
 ];

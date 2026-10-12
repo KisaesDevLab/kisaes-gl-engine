@@ -211,4 +211,14 @@ export const ME_RULES: StateRuleSeedRow[] = [
     citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
     status: 'unverified',
   },
+  {
+    state: 'ME', year: 2025, key: 'requirement_gate', value: { kind: 'prior_year_liability_also', threshold: 1000 },
+    citation: '36 M.R.S. 5228(2)(C)-(D) (estimates waived if the current-year liability net of withholding and credits is less than $1,000 OR the prior-year liability was less than $1,000); Form 1040ES-ME 2025 Instructions item 1 ("$1,000 or more and if your tax liability for the prior year was also $1,000 or more"); Form 2210ME (2025) "Who Must Pay the Underpayment Penalty?" (prior-year liability measured before credits, withholding or other payments). Phase 8 D12b gate key (2026-10-12): second leg of the two-part test (required_threshold carries the current-year $1,000). Not yet CPA-verified.',
+    status: 'unverified',
+  },
+  {
+    state: 'ME', year: 2026, key: 'requirement_gate', value: { kind: 'prior_year_liability_also', threshold: 1000 },
+    citation: '36 M.R.S. 5228(2)(C)-(D); Form 1040ES-ME 2026 Instructions item 1 ("$1,000 or more and if your tax liability for the prior year was also $1,000 or more"). Phase 8 D12b gate key (2026-10-12): second leg of the two-part test (required_threshold carries the current-year $1,000). Not yet CPA-verified.',
+    status: 'unverified',
+  },
 ];

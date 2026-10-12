@@ -212,4 +212,14 @@ export const AZ_RULES: StateRuleSeedRow[] = [
     citation: "Arizona Form 221 (2025) Line 6 (\"If less than $1,000, you do not owe the penalty\"); 2026 Form 221 not yet published. A.R.S. 43-581(E)(2).",
     status: 'unverified',
   },
+  {
+    state: 'AZ', year: 2025, key: 'requirement_gate', value: { kind: 'gross_income_both_years', threshold: 75000, threshold_mfj: 150000 },
+    citation: 'A.R.S. 43-581(A) (estimated payments required only when Arizona gross income exceeds $75,000, or $150,000 for a married couple filing jointly, in BOTH the preceding and the current taxable year); Arizona Form 140ES 2025 Instructions "Required Payments" table; Form 221 (2025) Instructions "Am I Subject to the Penalty?" (same two-year test). Phase 8 D12b gate key (2026-10-12); the tax-due $1,000 stays in required_threshold / penalty.min_balance_due as the additional condition. Not yet CPA-verified.',
+    status: 'unverified',
+  },
+  {
+    state: 'AZ', year: 2026, key: 'requirement_gate', value: { kind: 'gross_income_both_years', threshold: 75000, threshold_mfj: 150000 },
+    citation: 'A.R.S. 43-581(A); Arizona Form 140ES 2026 Booklet "Required Payments" table (Arizona gross income for 2025 greater than $75,000 AND for 2026 exceeds $75,000; $150,000 married filing joint). Phase 8 D12b gate key (2026-10-12); the tax-due $1,000 stays in required_threshold / penalty.min_balance_due as the additional condition. Not yet CPA-verified.',
+    status: 'unverified',
+  },
 ];

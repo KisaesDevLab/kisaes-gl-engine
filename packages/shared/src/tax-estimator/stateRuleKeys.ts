@@ -28,7 +28,7 @@ export function isIncomeTaxState(code: StateCode): boolean {
   return !NO_BROAD_INCOME_TAX_STATES.includes(code);
 }
 
-export const STATE_RULE_VALUE_TYPES = ['bool', 'money', 'rate', 'date', 'date_list', 'rate_list', 'enum', 'high_agi_rule', 'farmer_rule', 'rate_schedule'] as const;
+export const STATE_RULE_VALUE_TYPES = ['bool', 'money', 'rate', 'date', 'date_list', 'rate_list', 'enum', 'high_agi_rule', 'farmer_rule', 'rate_schedule', 'requirement_gate'] as const;
 export type StateRuleValueType = typeof STATE_RULE_VALUE_TYPES[number];
 
 /** `required_threshold` / `penalty.min_balance_due` boundary: "$X or more" vs "more than $X". */
@@ -51,6 +51,35 @@ export type FarmerTreatment = typeof FARMER_TREATMENTS[number];
 /** One dated leg of `penalty.rate_schedule`, inclusive calendar dates. */
 export interface StateRatePeriod { from: string; to: string; rate: number }
 
+/**
+ * `requirement_gate` kinds (D12b, OPEN-QUESTIONS Q26): income-based tests that
+ * replace or qualify the plain `required_threshold` test of "tax after
+ * withholding and credits". Absent / null = the plain threshold test.
+ * - gross_income_both_years: estimates required only when state gross income
+ *   exceeds `threshold` (`threshold_mfj` joint) in BOTH the current and the
+ *   preceding year, in addition to the threshold test (AZ).
+ * - gross_over_exemptions_deductions: required when gross income exceeds
+ *   exemptions + deductions + `non_withheld_floor` (GA; no tax-due minimum).
+ * - non_withheld_income: required when income not subject to withholding
+ *   exceeds `threshold` (PA), regardless of the tax-due figure.
+ * - prior_year_liability_also: the threshold test must ALSO hold for the
+ *   prior-year liability (ME: current and prior-year liability both at least $1,000).
+ * - nets_withholding_only: the threshold is measured on tax less withholding
+ *   only — credits are not subtracted (NM).
+ */
+export const REQUIREMENT_GATE_KINDS = ['gross_income_both_years', 'gross_over_exemptions_deductions', 'non_withheld_income', 'prior_year_liability_also', 'nets_withholding_only'] as const;
+export type RequirementGateKind = typeof REQUIREMENT_GATE_KINDS[number];
+
+export interface RequirementGateRule {
+  kind: RequirementGateKind;
+  /** gross_income_both_years / non_withheld_income / prior_year_liability_also. */
+  threshold?: number;
+  /** gross_income_both_years: the married-filing-jointly threshold (defaults to `threshold`). */
+  threshold_mfj?: number;
+  /** gross_over_exemptions_deductions: the fixed add-on to exemptions + deductions. */
+  non_withheld_floor?: number;
+}
+
 export interface StateRuleDef {
   key: string;
   type: StateRuleValueType;
@@ -59,6 +88,8 @@ export interface StateRuleDef {
   options?: readonly string[];
   /** If true the value may be JSON null (rule does not exist in that state). */
   nullable?: boolean;
+  /** If true the key is not part of the required (complete) key set; only the states it applies to seed it. */
+  optional?: boolean;
 }
 
 export const STATE_RULE_REGISTRY: readonly StateRuleDef[] = [
@@ -82,9 +113,10 @@ export const STATE_RULE_REGISTRY: readonly StateRuleDef[] = [
   { key: 'credit_for_other_state', type: 'bool', label: 'Credit for tax paid to other states' },
   { key: 'nonresident_method', type: 'enum', label: 'How nonresident tax is computed', options: ['ratio', 'sourced_flat', 'other'] },
   { key: 'holidays', type: 'date_list', label: 'State holidays used for due-date roll-forward' },
+  { key: 'requirement_gate', type: 'requirement_gate', label: 'Income-based estimate-requirement gate ({ kind, threshold?, threshold_mfj?, non_withheld_floor? }; absent = plain threshold test)', nullable: true, optional: true },
 ];
 
-const REQUIRED_WHEN_TAXED = STATE_RULE_REGISTRY.map((d) => d.key);
+const REQUIRED_WHEN_TAXED = STATE_RULE_REGISTRY.filter((d) => !d.optional).map((d) => d.key);
 
 /** Keys a complete (state, year) row set must contain. */
 export function requiredStateRuleKeys(hasIncomeTax: boolean): string[] {
@@ -131,6 +163,17 @@ export function validateStateRuleValue(def: StateRuleDef, value: unknown): strin
       if (v.treatment !== undefined && !(FARMER_TREATMENTS as readonly unknown[]).includes(v.treatment)) {
         return `treatment must be one of ${FARMER_TREATMENTS.join(', ')}`;
       }
+      return null;
+    }
+    case 'requirement_gate': {
+      if (!isObj(value)) return 'expected { kind, ... }';
+      const v = value as { kind?: unknown; threshold?: unknown; threshold_mfj?: unknown; non_withheld_floor?: unknown };
+      if (!(REQUIREMENT_GATE_KINDS as readonly unknown[]).includes(v.kind)) return `kind must be one of ${REQUIREMENT_GATE_KINDS.join(', ')}`;
+      const optNum = (x: unknown) => x === undefined || (isNum(x) && x >= 0);
+      if (!optNum(v.threshold) || !optNum(v.threshold_mfj) || !optNum(v.non_withheld_floor)) return 'threshold / threshold_mfj / non_withheld_floor must be non-negative numbers';
+      const needsThreshold = v.kind === 'gross_income_both_years' || v.kind === 'non_withheld_income' || v.kind === 'prior_year_liability_also';
+      if (needsThreshold && !isNum(v.threshold)) return `${String(v.kind)} needs a threshold`;
+      if (v.kind === 'gross_over_exemptions_deductions' && !isNum(v.non_withheld_floor)) return 'gross_over_exemptions_deductions needs non_withheld_floor';
       return null;
     }
     case 'rate_schedule': {

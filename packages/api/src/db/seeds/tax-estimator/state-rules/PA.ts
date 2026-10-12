@@ -211,4 +211,14 @@ export const PA_RULES: StateRuleSeedRow[] = [
     citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
     status: 'unverified',
   },
+  {
+    state: 'PA', year: 2025, key: 'requirement_gate', value: { kind: 'non_withheld_income', threshold: 11000 },
+    citation: '2025 REV-413 (I) Instructions for Estimating PA Personal Income Tax (Individuals Only) "Who must make estimated tax payments": individuals who expect $11,000 or more of income not subject to employer withholding for 2025 (the $338 in required_threshold is $11,000 x 3.07%); threshold table $8,000 (2023) -> $9,500 (2024) -> $11,000 (2025) -> $14,000 (2026). Phase 8 D12b gate key (2026-10-12): the income test replaces the tax-due test. Boundary ("more than" vs "at least") to be confirmed by the CPA. Not yet CPA-verified.',
+    status: 'unverified',
+  },
+  {
+    state: 'PA', year: 2026, key: 'requirement_gate', value: { kind: 'non_withheld_income', threshold: 11000 },
+    citation: '2026 REV-413 (I) Instructions for Estimating PA Personal Income Tax (Individuals Only) "Who must make estimated tax payments": $14,000 of income not subject to employer withholding for 2026 (required_threshold $430 = $14,000 x 3.07%); threshold table steps to $17,000 (2027) and $20,000 (2028). Phase 8 D12b gate key (2026-10-12): the income test replaces the tax-due test. Boundary to be confirmed by the CPA. Not yet CPA-verified.',
+    status: 'unverified',
+  },
 ];
