@@ -9,7 +9,7 @@
 import { Router } from 'express';
 import {
   taxParameterYearParamsSchema, taxParameterKeyParamsSchema, setTaxParameterOverrideSchema,
-  adoptShippedParametersSchema, taxParameterChangesQuerySchema,
+  adoptShippedParametersSchema, taxParameterChangesQuerySchema, verifyTaxParameterSchema, verifyAllTaxParametersSchema,
 } from '@kis-books/shared';
 import { authenticate, requireSuperAdmin } from '../middleware/auth.js';
 import * as svc from '../services/tax-estimator/tax-parameters.service.js';
@@ -59,4 +59,18 @@ taxParametersAdminRouter.get('/:year/changes', async (req, res) => {
   taxParameterYearParamsSchema.parse(req.params);
   const { limit } = taxParameterChangesQuerySchema.parse(req.query);
   res.json({ data: { rows: await svc.listChanges(limit) } });
+});
+
+// R7 in-app Verify (Kurt's sign-off): marks the CURRENT value verified, records who / when /
+// note and audits it. Changes nothing else; a verified row can still be overridden with a reason.
+taxParametersAdminRouter.post('/:year/verify-all', async (req, res) => {
+  const { year } = taxParameterYearParamsSchema.parse(req.params);
+  const body = verifyAllTaxParametersSchema.parse(req.body ?? {});
+  res.json({ data: await svc.verifyAllParameters(year, body.note, req.userId) });
+});
+
+taxParametersAdminRouter.post('/:year/:key/verify', async (req, res) => {
+  const { year, key } = taxParameterKeyParamsSchema.parse(req.params);
+  const body = verifyTaxParameterSchema.parse(req.body ?? {});
+  res.json({ data: await svc.verifyParameter(year, key, body.note, req.userId) });
 });

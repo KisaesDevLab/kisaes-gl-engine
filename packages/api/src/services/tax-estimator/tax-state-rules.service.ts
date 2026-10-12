@@ -24,6 +24,7 @@ import {
   type StateCode, type StateRuleSeedRow, type ParameterStatus,
   type StateRulesDTO, type StateRuleRowDTO, type StateRuleSummaryDTO,
   type CreateStateYearFromPriorResult, type StateRulesEngineView, type StateRuleDiffRowDTO, type StateRuleChangeDTO,
+  type VerifyStateRulesResult,
 } from '@kis-books/shared';
 import { db, type DbOrTx } from '../../db/index.js';
 import { stateEstimateRules, stateEstimateRuleOverrides } from '../../db/schema/tax-estimator-state-rules.js';
@@ -32,6 +33,7 @@ import { users } from '../../db/schema/auth.js';
 import { auditLog } from '../../middleware/audit.js';
 import { AppError } from '../../utils/errors.js';
 import { STATE_RULE_SEEDS } from '../../db/seeds/tax-estimator/state-rules/index.js';
+import { verifierEmails } from './tax-parameters.service.js';
 
 const ZERO_TENANT = '00000000-0000-0000-0000-000000000000';
 const AUDIT_ENTITY = 'tax_state_rule';
@@ -53,6 +55,9 @@ interface ResolvedValue {
   citation: string;
   reason: string | null;
   shippedValue?: unknown;
+  verifiedAt: Date | null;
+  verifiedBy: string | null;
+  verificationNote: string | null;
 }
 
 type SeedRow = typeof stateEstimateRules.$inferSelect;
@@ -122,7 +127,14 @@ export async function syncShippedStateRules(
           state, taxYear: year, key: row.key, value: jsonb(row.value), status: row.status, citation: row.citation,
         }).onConflictDoUpdate({
           target: [stateEstimateRules.state, stateEstimateRules.taxYear, stateEstimateRules.key],
-          set: { value: jsonb(row.value), status: row.status, citation: row.citation, updatedAt: sql`now()` },
+          // R7 Verify: an in-app verification survives the re-sync only while the shipped value is unchanged.
+          set: {
+            value: jsonb(row.value), citation: row.citation, updatedAt: sql`now()`,
+            status: sql`CASE WHEN "state_estimate_rules"."verified_at" IS NOT NULL AND "state_estimate_rules"."value" = excluded."value" THEN 'verified' ELSE excluded."status" END`,
+            verifiedAt: sql`CASE WHEN "state_estimate_rules"."value" = excluded."value" THEN "state_estimate_rules"."verified_at" ELSE NULL END`,
+            verifiedBy: sql`CASE WHEN "state_estimate_rules"."value" = excluded."value" THEN "state_estimate_rules"."verified_by" ELSE NULL END`,
+            verificationNote: sql`CASE WHEN "state_estimate_rules"."value" = excluded."value" THEN "state_estimate_rules"."verification_note" ELSE NULL END`,
+          },
         });
         total++;
       }
@@ -186,14 +198,18 @@ function resolveRows(seedRows: SeedRow[], ovRows: OverrideRow[]): Map<string, Re
       const isOverride = ov.status === 'override';
       out.set(def.key, {
         value: ov.value,
-        status: isOverride ? 'unverified' : 'provisional',
+        status: ov.verifiedAt ? 'verified' : isOverride ? 'unverified' : 'provisional',
         source: isOverride ? 'override' : 'provisional',
         citation: ov.citation || seed?.citation || '',
         reason: ov.reason,
         shippedValue: seed && !deepEqual(seed.value, ov.value) ? seed.value : undefined,
+        verifiedAt: ov.verifiedAt, verifiedBy: ov.verifiedBy, verificationNote: ov.verificationNote,
       });
     } else if (seed) {
-      out.set(def.key, { value: seed.value, status: seed.status as ParameterStatus, source: 'seed', citation: seed.citation, reason: null });
+      out.set(def.key, {
+        value: seed.value, status: seed.status as ParameterStatus, source: 'seed', citation: seed.citation, reason: null,
+        verifiedAt: seed.verifiedAt, verifiedBy: seed.verifiedBy, verificationNote: seed.verificationNote,
+      });
     }
   }
   return out;
@@ -227,6 +243,7 @@ export async function getStateRules(year: number, stateIn: string, executor: DbO
   // R3-04: a fallback year's date rules are rolled to the requested year.
   const rolled = isFallback ? rollStateDates(resolved, fallbackYear!, year) : new Map<string, unknown>();
   const rules: StateRuleRowDTO[] = [];
+  const emails = isFallback ? new Map<string, string>() : await verifierEmails(executor, [...resolved.values()].map((r) => r.verifiedBy));
   for (const def of STATE_RULE_REGISTRY) {
     const r = resolved.get(def.key);
     if (!r) continue;
@@ -239,6 +256,12 @@ export async function getStateRules(year: number, stateIn: string, executor: DbO
     if (!isFallback && r.reason) row.reason = r.reason;
     if (!isFallback && r.shippedValue !== undefined) row.shippedValue = r.shippedValue;
     if (isFallback) row.fallbackYear = fallbackYear;
+    if (!isFallback && r.verifiedAt) {
+      row.verifiedAt = r.verifiedAt.toISOString();
+      row.verifiedBy = r.verifiedBy;
+      row.verifiedByEmail = r.verifiedBy ? emails.get(r.verifiedBy) ?? null : null;
+      row.verificationNote = r.verificationNote;
+    }
     rules.push(row);
   }
   return {
@@ -330,7 +353,8 @@ export async function setOverride(
       state, taxYear: year, key, value: jsonb(value), status: 'override', reason: why, createdBy: userId ?? null,
     }).onConflictDoUpdate({
       target: [stateEstimateRuleOverrides.state, stateEstimateRuleOverrides.taxYear, stateEstimateRuleOverrides.key],
-      set: { value: jsonb(value), status: 'override', reason: why, createdBy: userId ?? null, updatedAt: sql`now()` },
+      // A new override value is a new decision: any earlier verification is cleared (R7 Verify).
+      set: { value: jsonb(value), status: 'override', reason: why, createdBy: userId ?? null, updatedAt: sql`now()`, verifiedAt: null, verifiedBy: null, verificationNote: null },
     }).returning();
     await auditLog(ZERO_TENANT, 'override', AUDIT_ENTITY, saved!.id,
       { year, state, key, value: prev?.value ?? null },
@@ -349,6 +373,60 @@ export async function revertOverride(year: number, stateIn: string, key: string,
     await auditLog(ZERO_TENANT, 'override', AUDIT_ENTITY, row.id,
       { year, state, key, value: row.value },
       { op: 'override_reverted', year, state, key, value: null, reason: null }, userId, tx);
+  });
+}
+
+// ── in-app Verify (R7; super admin only — enforced by the admin router) ────
+
+const cleanNote = (note: string | undefined): string | null => {
+  const t = (note ?? '').trim();
+  return t === '' ? null : t;
+};
+
+/** Mark one (state, key) verified for its current value; the override/provisional row wins over the seed. Already verified = no-op. */
+async function verifyOne(tx: DbOrTx, year: number, state: StateCode, key: string, note: string | null, userId: string | undefined): Promise<boolean> {
+  const now = new Date();
+  const [ov] = await tx.select().from(stateEstimateRuleOverrides).where(and(
+    eq(stateEstimateRuleOverrides.state, state), eq(stateEstimateRuleOverrides.taxYear, year), eq(stateEstimateRuleOverrides.key, key)));
+  if (ov) {
+    if (ov.verifiedAt) return false;
+    await tx.update(stateEstimateRuleOverrides).set({ verifiedAt: now, verifiedBy: userId ?? null, verificationNote: note }).where(eq(stateEstimateRuleOverrides.id, ov.id));
+    await auditLog(ZERO_TENANT, 'signoff', AUDIT_ENTITY, ov.id,
+      { year, state, key, value: ov.value, status: ov.status },
+      { op: 'verified', year, state, key, value: ov.value, source: ov.status, reason: note }, userId, tx);
+    return true;
+  }
+  const [seed] = await tx.select().from(stateEstimateRules).where(and(
+    eq(stateEstimateRules.state, state), eq(stateEstimateRules.taxYear, year), eq(stateEstimateRules.key, key)));
+  if (!seed) throw AppError.notFound('State rule not found');
+  if (seed.status === 'verified') return false;
+  await tx.update(stateEstimateRules).set({ status: 'verified', verifiedAt: now, verifiedBy: userId ?? null, verificationNote: note }).where(eq(stateEstimateRules.id, seed.id));
+  await auditLog(ZERO_TENANT, 'signoff', AUDIT_ENTITY, seed.id,
+    { year, state, key, value: seed.value, status: seed.status },
+    { op: 'verified', year, state, key, value: seed.value, source: 'seed', reason: note }, userId, tx);
+  return true;
+}
+
+export async function verifyStateRule(year: number, stateIn: string, key: string, note: string | undefined, userId?: string): Promise<StateRuleRowDTO> {
+  const state = assertState(stateIn);
+  if (!getStateRuleDef(key)) throw AppError.badRequest(`Unknown state rule '${key}'`, 'TE_STATE_RULE_INVALID');
+  await db.transaction(async (tx) => { await verifyOne(tx, year, state, key, cleanNote(note), userId); });
+  return getRow(year, state, key);
+}
+
+/** Bulk Verify for ONE jurisdiction's year: every rule whose effective status is not verified. Returns `ST:key` refs. */
+export async function verifyAllStateRules(year: number, stateIn: string, note: string | undefined, userId?: string): Promise<VerifyStateRulesResult> {
+  const state = assertState(stateIn);
+  const why = cleanNote(note);
+  return db.transaction(async (tx) => {
+    const loaded = await loadYear(tx, year, state);
+    const resolved = resolveRows(loaded.seeds.get(state) ?? [], loaded.overrides.get(state) ?? []);
+    const verified: string[] = [];
+    for (const [key, r] of resolved) {
+      if (r.status === 'verified') continue;
+      if (await verifyOne(tx, year, state, key, why, userId)) verified.push(stateRuleRef(state, key));
+    }
+    return { verified };
   });
 }
 
@@ -489,7 +567,7 @@ export async function listChanges(limit: number): Promise<StateRuleChangeDTO[]> 
     const b = parse(r.before);
     const a = parse(r.after);
     const op = a.op;
-    if (op !== 'override_set' && op !== 'override_reverted' && op !== 'year_created' && op !== 'shipped_adopted') continue;
+    if (op !== 'override_set' && op !== 'override_reverted' && op !== 'year_created' && op !== 'shipped_adopted' && op !== 'verified') continue;
     const st = a.state ?? b.state ?? null;
     out.push({
       at: (r.at ?? new Date(0)).toISOString(),

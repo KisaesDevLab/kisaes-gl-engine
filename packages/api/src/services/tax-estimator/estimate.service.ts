@@ -364,7 +364,9 @@ async function adjustmentMonths(
       }
     }
     const actuals = await glMonthlyActuals(a.tenantId, a.companyId, a.accountId, req.taxYear, throughIdx, basis);
-    out.set(a.id, allocateAdjustment({ amount: a.amount, cadence: a.cadence, startMonth: a.startMonth, endMonth: a.endMonth, glLinked: true }, req.taxYear, { throughMonth: throughIdx, glActuals: actuals }));
+    // R7-05: a non-recurring adjustment (row or type flag) is never run-rated to year end.
+    const nonRecurring = a.nonRecurring || g.types.some((t) => t.id === a.adjustmentTypeId && t.nonRecurring);
+    out.set(a.id, allocateAdjustment({ amount: a.amount, cadence: a.cadence, startMonth: a.startMonth, endMonth: a.endMonth, glLinked: true, nonRecurring }, req.taxYear, { throughMonth: throughIdx, glActuals: actuals }));
   }
   return out;
 }

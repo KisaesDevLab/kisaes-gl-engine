@@ -196,3 +196,30 @@ describe('tax-parameters admin routes', () => {
     expect(bad.json.error?.code).toBe('TE_PARAM_INVALID');
   });
 });
+
+describe('R7 in-app Verify routes', () => {
+  it('super admin only; per-row verify records who/when/note; bulk verify needs confirm:true', async () => {
+    for (const [p, b] of [[`/${Y1}/return_due_date/verify`, {}], [`/${Y1}/verify-all`, { confirm: true }]] as const) {
+      expect((await request('POST', BASE + p, b)).status).toBe(401);
+      expect((await request('POST', BASE + p, b, staffToken)).status).toBe(403);
+    }
+    await syncShippedSeeds({ [Y1]: [
+      { key: 'se.nese_factor', value: 0.9235, status: 'unverified', citation: 'IRC 1402(a)(12)' },
+      { key: 'return_due_date', value: '2096-04-15', status: 'unverified', citation: 'Fixture' },
+    ] });
+    const one = await request('POST', `${BASE}/${Y1}/se.nese_factor/verify`, { note: 'Statute' }, S());
+    expect(one.status).toBe(200);
+    expect(one.json.data).toMatchObject({ key: 'se.nese_factor', status: 'verified', verificationNote: 'Statute' });
+    expect(one.json.data.verifiedByEmail).toMatch(/tp-super/);
+    expect((await request('POST', `${BASE}/${Y1}/verify-all`, {}, S())).status).toBe(400);
+    const all = await request('POST', `${BASE}/${Y1}/verify-all`, { confirm: true, note: 'Batch' }, S());
+    expect(all.status).toBe(200);
+    expect(all.json.data.verified).toEqual(['return_due_date']);
+    expect((await request('POST', `${BASE}/${Y1}/not.a.key/verify`, {}, S())).json.error?.code).toBe('TE_PARAM_INVALID');
+    // still overridable with a reason
+    const ov = await request('PUT', `${BASE}/${Y1}/se.nese_factor`, { value: 0.9, reason: 'Testing' }, S());
+    expect(ov.json.data).toMatchObject({ source: 'override', status: 'unverified' });
+    const changes = await request('GET', `${BASE}/${Y1}/changes?limit=5`, undefined, S());
+    expect(changes.json.data.rows.map((r: { action: string }) => r.action)).toEqual(['override_set', 'verified', 'verified']);
+  });
+});

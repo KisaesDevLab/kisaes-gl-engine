@@ -17,6 +17,10 @@ export const stateEstimateRules = pgTable('state_estimate_rules', {
   status: varchar('status', { length: 20 }).notNull(),
   citation: text('citation').notNull().default(''),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  // R7 in-app Verify: who verified the CURRENT value, when, and why (null = not verified in-app).
+  verifiedBy: uuid('verified_by'),
+  verifiedAt: timestamp('verified_at', { withTimezone: true }),
+  verificationNote: text('verification_note'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   unique('uniq_state_estimate_rules_state_year_key').on(t.state, t.taxYear, t.key),
@@ -36,6 +40,10 @@ export const stateEstimateRuleOverrides = pgTable('state_estimate_rule_overrides
   createdFromYear: integer('created_from_year'),
   createdBy: uuid('created_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  // R7 in-app Verify: who verified the CURRENT value, when, and why (null = not verified in-app).
+  verifiedBy: uuid('verified_by'),
+  verifiedAt: timestamp('verified_at', { withTimezone: true }),
+  verificationNote: text('verification_note'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   unique('uniq_state_estimate_rule_overrides_state_year_key').on(t.state, t.taxYear, t.key),

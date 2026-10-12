@@ -65,6 +65,20 @@ describe('allocateAdjustment', () => {
     expect(m.slice(0, 3)).toEqual([100, 200, 150]);
     expect(m[11]).toBe(150);
   });
+
+  it('R7-05: a non-recurring GL-linked adjustment with no manual amount is actuals only (never run-rated)', () => {
+    // one-time 30,000 recovery in March, through September: no phantom 10,000 for Oct–Dec
+    const actuals = [0, 0, 30000, 0, 0, 0, 0, 0, 0];
+    const m = allocateAdjustment({ ...base, amount: null, cadence: 'monthly', glLinked: true, nonRecurring: true }, 2026, { throughMonth: 9, glActuals: actuals });
+    expect(m.slice(9)).toEqual([0, 0, 0]);
+    expect(sumMonthly(m)).toBe(30000);
+  });
+
+  it('R7-05: a non-recurring GL-linked adjustment with a plan keeps the plan for the remaining months', () => {
+    const m = allocateAdjustment({ ...base, amount: '100', cadence: 'monthly', glLinked: true, nonRecurring: true }, 2026, { throughMonth: 2, glActuals: [500, 0] });
+    expect(m.slice(0, 3)).toEqual([500, 0, 100]);
+    expect(sumMonthly(m)).toBe(500 + 1000);
+  });
 });
 
 describe('splitActualsAndRemaining', () => {

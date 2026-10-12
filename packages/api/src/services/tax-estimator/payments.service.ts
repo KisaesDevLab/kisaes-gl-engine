@@ -410,10 +410,4 @@ export async function deletePayment(scope: FirmScope, actor: Actor, paymentId: s
   });
 }
 
-/** Test / maintenance helper: delete every stored payment of the given taxpayers (firm-pinned). */
-export async function purgeTaxpayerPayments(scope: FirmScope, taxpayerIds: string[]): Promise<void> {
-  if (taxpayerIds.length === 0) return;
-  await db.delete(taxEstPayments).where(and(eq(taxEstPayments.firmId, scope.firmId), inArray(taxEstPayments.taxpayerId, taxpayerIds)));
-}
-
 export { FEDERAL as FEDERAL_JURISDICTION };

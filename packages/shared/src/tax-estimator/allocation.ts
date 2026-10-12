@@ -26,6 +26,11 @@ export interface AllocatableAdjustment {
   /** 1-12 */
   endMonth: number;
   glLinked?: boolean;
+  /**
+   * R7-05: a non-recurring GL-linked adjustment is never run-rated — with no manual amount
+   * the remaining months are zero (actuals only); with a plan the plan is kept.
+   */
+  nonRecurring?: boolean;
 }
 
 export interface AllocationContext {
@@ -139,7 +144,8 @@ export function allocateAdjustment(adj: AllocatableAdjustment, _taxYear: number,
     return allocateCents(adj).map(centsToNumber);
   }
   const planned = adj.amount == null ? new Array<number>(MONTHS).fill(0) : allocateCents(adj);
-  return splitActualsAndRemainingCents(planned, ctx.throughMonth!, ctx.glActuals, adj.amount == null).months.map(centsToNumber);
+  const runRate = adj.amount == null && adj.nonRecurring !== true;
+  return splitActualsAndRemainingCents(planned, ctx.throughMonth!, ctx.glActuals, runRate).months.map(centsToNumber);
 }
 
 /** Dollar-valued variant of splitActualsAndRemainingCents. */

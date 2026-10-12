@@ -99,6 +99,43 @@ describe('computeRetirementLimit — solo 401(k)', () => {
   });
 });
 
+describe('computeRetirementLimit — R7-01 recorded employee deferral', () => {
+  it('solo 401(k): the deferral leg is what was actually deferred; the employer leg is the rest, capped at the 20% share', () => {
+    // base 100,000: deferred 10,000 + employer 40,000 contributed; employer share cap 20,000 → 30,000 deductible (was 44,500 assuming a maximum deferral)
+    const r = computeRetirementLimit({ personId: 'p1', label: 'x', planType: 'solo_401k', contributed: '50000', employeeDeferral: '10000', seIncome: '100000', halfSeTax: '0', age: 45 }, ctx());
+    expect(r.limit).toBe('30000');
+    expect(r.deducted).toBe('30000');
+    expect(r.capped).toBe(true);
+  });
+  it('solo 401(k): an excess deferral is not deductible above the §402(g) limit', () => {
+    // deferred 30,000 (limit 24,500), nothing else contributed → 24,500 deductible
+    const r = computeRetirementLimit({ personId: 'p1', label: 'x', planType: 'solo_401k', contributed: '30000', employeeDeferral: '30000', seIncome: '100000', halfSeTax: '0', age: 45 }, ctx());
+    expect(r.deducted).toBe('24500');
+    expect(r.capped).toBe(true);
+  });
+  it('solo 401(k): a deferral larger than the total contributed is limited to the total', () => {
+    const r = computeRetirementLimit({ personId: 'p1', label: 'x', planType: 'solo_401k', contributed: '5000', employeeDeferral: '9000', seIncome: '100000', halfSeTax: '0', age: 45 }, ctx());
+    expect(r.deducted).toBe('5000');
+    expect(r.capped).toBe(false);
+  });
+  it('solo 401(k): a full deferral gives the same answer as the unknown-deferral upper bound', () => {
+    const known = computeRetirementLimit({ personId: 'p1', label: 'x', planType: 'solo_401k', contributed: '44500', employeeDeferral: '24500', seIncome: '100000', halfSeTax: '0', age: 45 }, ctx());
+    const unknown = computeRetirementLimit({ personId: 'p1', label: 'x', planType: 'solo_401k', contributed: '44500', employeeDeferral: null, seIncome: '100000', halfSeTax: '0', age: 45 }, ctx());
+    expect(known.deducted).toBe(unknown.deducted);
+    expect(known.deducted).toBe('44500');
+  });
+  it('SIMPLE: the 3% match is dollar-for-dollar on what was actually deferred (§408(p)(2)(A)(iii))', () => {
+    // NESE 92,350; deferred 1,000 → match min(2,770.5, 1,000) = 1,000; contributed 5,000 → 2,000 deductible
+    const r = computeRetirementLimit({ personId: 'p1', label: 'x', planType: 'simple', contributed: '5000', employeeDeferral: '1000', seIncome: '100000', halfSeTax: '0', age: 45 }, ctx());
+    expect(r.limit).toBe('2000');
+    expect(r.deducted).toBe('2000');
+  });
+  it('SEP ignores a recorded deferral', () => {
+    const r = computeRetirementLimit({ personId: 'p1', label: 'x', planType: 'sep', contributed: '15000', employeeDeferral: '5000', seIncome: '128000', halfSeTax: '9042.912', age: 45 }, ctx());
+    expect(r.deducted).toBe('15000');
+  });
+});
+
 describe('computeRetirementLimit — SIMPLE', () => {
   it('R2-13: deferral + 3% match on §1402(a) net earnings (92.35% of profit, before ½ SE tax — §408(p)(6)(A)(ii)), with the age-50 catch-up', () => {
     // compensation = 100,000 × 0.9235 = 92,350 (the ½ SE tax passed in is ignored for SIMPLE); match 3% = 2,770.5

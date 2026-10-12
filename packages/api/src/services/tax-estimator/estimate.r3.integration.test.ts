@@ -278,6 +278,28 @@ describe('R3-10 — a GL-linked adjustment into a deleted company degrades to a 
   });
 });
 
+describe('R7-05 — a non-recurring GL-linked adjustment is never run-rated', () => {
+  it('run-rate from GL on a one-time March amount: actuals only when flagged non-recurring', async () => {
+    const co = await mkCompany(T.linked, 'R7-05 Recovery Co', { accountingMethod: 'cash', entityType: 'sole_prop' });
+    const chk = await mkAccount(T.linked, co, '1705', 'R7-05 Checking', 'asset', { detailType: 'checking' });
+    const recovery = await mkAccount(T.linked, co, '6950', 'Insurance recovery', 'expense');
+    await post(T.linked, co, '2026-03-10', [[recovery, 30000, 0], [chk, 0, 30000]]);
+    const tp = await mkTp('R7-05');
+    await upsertLink(scopeFull, actor, tp.id, { personRole: 'primary', taxYear: 2026, tenantId: T.linked, companyId: C.linked, profitPct: 100, lossPct: 100, isOfficer: false, activityType: 'active', activeParticipation: false });
+    const y = await upsertYear(scopeFull, actor, tp.id, 2026, {});
+    const base = y.scenarios.find((s) => s.isBase)!.id;
+    const otherDed = (await listAdjustmentTypes(scopeFull)).find((t) => t.code === 'other_deduction')!.id;
+    const gl = { adjustmentTypeId: otherDed, amount: null, cadence: 'monthly' as const, startMonth: 1, endMonth: 12, glLinked: true, tenantId: T.linked, companyId: co, accountId: recovery };
+    await createAdjustment(scopeFull, actor, base, { ...gl, label: 'One-time recovery', nonRecurring: true });
+    await createAdjustment(scopeFull, actor, base, { ...gl, label: 'Same, recurring', nonRecurring: false });
+    const r = await computeEstimate(scopeFull, { taxpayerId: tp.id, taxYear: 2026, scenarioId: base, throughMonth: '2026-09', refresh: true }, { today: TODAY });
+    const amt = (label: string) => Math.abs(Number(r.adjustments!.find((a) => a.label === label)!.fullYearAmount));
+    // Recurring: 30,000 + 3 × round(30,000 ÷ 9 = 3,333.33) = 39,999.99 (run-rated). Non-recurring: the 30,000 actual, no phantom ~10,000 for Oct–Dec.
+    expect(amt('Same, recurring')).toBe(39999.99);
+    expect(amt('One-time recovery')).toBe(30000);
+  });
+});
+
 describe('R3-08 — Schedule AI capture skips a fiscal-year C corp instead of failing', () => {
   it('captures the individual entity and lists the C corp as skipped', async () => {
     T.cc = await mkTenant('R3 C corp');

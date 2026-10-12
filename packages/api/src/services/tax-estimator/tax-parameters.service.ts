@@ -21,7 +21,7 @@ import {
   rollDateToYear, nextBusinessDay,
   type ParameterSeedRow, type ParameterStatus,
   type TaxParametersDTO, type TaxParameterRowDTO, type TaxParameterYearsDTO,
-  type CreateYearFromPriorResult, type TaxParameterDiffRowDTO, type TaxParameterChangeDTO,
+  type CreateYearFromPriorResult, type TaxParameterDiffRowDTO, type TaxParameterChangeDTO, type VerifyTaxParametersResult,
 } from '@kis-books/shared';
 import { db, type DbOrTx } from '../../db/index.js';
 import { taxParameters, taxParameterOverrides } from '../../db/schema/tax-estimator.js';
@@ -46,6 +46,9 @@ interface ResolvedValue {
   reason: string | null;
   shippedValue?: unknown;
   hasShipped: boolean;
+  verifiedAt: Date | null;
+  verifiedBy: string | null;
+  verificationNote: string | null;
 }
 
 function deepEqual(a: unknown, b: unknown): boolean {
@@ -98,7 +101,14 @@ export async function syncShippedSeeds(seeds: SeedMap = FEDERAL_SEEDS): Promise<
           taxYear: year, key: row.key, value: row.value, status: row.status, citation: row.citation,
         }).onConflictDoUpdate({
           target: [taxParameters.taxYear, taxParameters.key],
-          set: { value: row.value, status: row.status, citation: row.citation, updatedAt: sql`now()` },
+          // R7 Verify: an in-app verification survives the re-sync only while the shipped value is unchanged.
+          set: {
+            value: row.value, citation: row.citation, updatedAt: sql`now()`,
+            status: sql`CASE WHEN "tax_parameters"."verified_at" IS NOT NULL AND "tax_parameters"."value" = excluded."value" THEN 'verified' ELSE excluded."status" END`,
+            verifiedAt: sql`CASE WHEN "tax_parameters"."value" = excluded."value" THEN "tax_parameters"."verified_at" ELSE NULL END`,
+            verifiedBy: sql`CASE WHEN "tax_parameters"."value" = excluded."value" THEN "tax_parameters"."verified_by" ELSE NULL END`,
+            verificationNote: sql`CASE WHEN "tax_parameters"."value" = excluded."value" THEN "tax_parameters"."verification_note" ELSE NULL END`,
+          },
         });
         total++;
       }
@@ -141,17 +151,19 @@ async function resolveYear(exec: DbOrTx, year: number): Promise<Map<string, Reso
       const isOverride = ov.status === 'override';
       out.set(key, {
         value: ov.value,
-        status: isOverride ? 'unverified' : 'provisional',
+        status: ov.verifiedAt ? 'verified' : isOverride ? 'unverified' : 'provisional',
         source: isOverride ? 'override' : 'provisional',
         citation: seed?.citation ?? '',
         reason: ov.reason,
         shippedValue: seed && !deepEqual(seed.value, ov.value) ? seed.value : undefined,
         hasShipped: !!seed,
+        verifiedAt: ov.verifiedAt, verifiedBy: ov.verifiedBy, verificationNote: ov.verificationNote,
       });
     } else if (seed) {
       out.set(key, {
         value: seed.value, status: seed.status as ParameterStatus, source: 'seed',
         citation: seed.citation, reason: null, hasShipped: true,
+        verifiedAt: seed.verifiedAt, verifiedBy: seed.verifiedBy, verificationNote: seed.verificationNote,
       });
     }
   }
@@ -197,6 +209,7 @@ export async function getParameters(year: number, executor: DbOrTx = db): Promis
   const parameters: TaxParameterRowDTO[] = [];
   const missing: string[] = [];
   const expanded = expandParameterKeys();
+  const emails = isFallback ? new Map<string, string>() : await verifierEmails(executor, [...resolved.values()].map((r) => r.verifiedBy));
   for (const e of expanded) {
     const r = resolved.get(e.key);
     if (!r) { missing.push(e.key); continue; }
@@ -210,6 +223,12 @@ export async function getParameters(year: number, executor: DbOrTx = db): Promis
     if (!isFallback && r.reason) row.reason = r.reason;
     if (!isFallback && r.shippedValue !== undefined) row.shippedValue = r.shippedValue;
     if (isFallback) row.fallbackYear = fallbackYear;
+    if (!isFallback && r.verifiedAt) {
+      row.verifiedAt = r.verifiedAt.toISOString();
+      row.verifiedBy = r.verifiedBy;
+      row.verifiedByEmail = r.verifiedBy ? emails.get(r.verifiedBy) ?? null : null;
+      row.verificationNote = r.verificationNote;
+    }
     parameters.push(row);
   }
   return {
@@ -217,6 +236,14 @@ export async function getParameters(year: number, executor: DbOrTx = db): Promis
     completeness: { total: expanded.length, present: parameters.length, missing },
     parameters,
   };
+}
+
+/** Email of each verifier (display only). Exported for the state-rule store. */
+export async function verifierEmails(exec: DbOrTx, ids: Array<string | null>): Promise<Map<string, string>> {
+  const unique = [...new Set(ids.filter((x): x is string => !!x))];
+  if (unique.length === 0) return new Map();
+  const rows = await exec.select({ id: users.id, email: users.email }).from(users).where(inArray(users.id, unique));
+  return new Map(rows.map((r) => [r.id, r.email]));
 }
 
 export async function getYears(): Promise<TaxParameterYearsDTO> {
@@ -250,7 +277,8 @@ export async function setOverride(
       taxYear: year, key, value, status: 'override', reason: why, createdBy: userId ?? null,
     }).onConflictDoUpdate({
       target: [taxParameterOverrides.taxYear, taxParameterOverrides.key],
-      set: { value, status: 'override', reason: why, createdBy: userId ?? null, updatedAt: sql`now()` },
+      // A new override value is a new decision: any earlier verification is cleared (R7 Verify).
+      set: { value, status: 'override', reason: why, createdBy: userId ?? null, updatedAt: sql`now()`, verifiedAt: null, verifiedBy: null, verificationNote: null },
     }).returning();
     await auditLog(ZERO_TENANT, 'override', AUDIT_ENTITY, saved!.id,
       { year, key, value: prev?.value ?? null },
@@ -268,6 +296,60 @@ export async function revertOverride(year: number, key: string, userId?: string)
     await auditLog(ZERO_TENANT, 'override', AUDIT_ENTITY, row.id,
       { year, key, value: row.value },
       { op: 'override_reverted', year, key, value: null, reason: null }, userId, tx);
+  });
+}
+
+// ── in-app Verify (R7; super admin only — enforced by the admin router) ────
+
+const cleanNote = (note: string | undefined): string | null => {
+  const t = (note ?? '').trim();
+  return t === '' ? null : t;
+};
+
+/**
+ * Mark ONE row verified for its current value: the override / provisional row when one
+ * exists (it is what the engine reads), else the shipped seed row. Already verified =
+ * no-op (no audit). Only status + verified_* change — value, citation and every other
+ * row are untouched. Returns true when a row changed.
+ */
+async function verifyOne(tx: DbOrTx, year: number, key: string, note: string | null, userId: string | undefined): Promise<boolean> {
+  const now = new Date();
+  const [ov] = await tx.select().from(taxParameterOverrides).where(and(eq(taxParameterOverrides.taxYear, year), eq(taxParameterOverrides.key, key)));
+  if (ov) {
+    if (ov.verifiedAt) return false;
+    await tx.update(taxParameterOverrides).set({ verifiedAt: now, verifiedBy: userId ?? null, verificationNote: note }).where(eq(taxParameterOverrides.id, ov.id));
+    await auditLog(ZERO_TENANT, 'signoff', AUDIT_ENTITY, ov.id,
+      { year, key, value: ov.value, status: ov.status },
+      { op: 'verified', year, key, value: ov.value, source: ov.status, reason: note }, userId, tx);
+    return true;
+  }
+  const [seed] = await tx.select().from(taxParameters).where(and(eq(taxParameters.taxYear, year), eq(taxParameters.key, key)));
+  if (!seed) throw AppError.notFound('Parameter not found');
+  if (seed.status === 'verified') return false;
+  await tx.update(taxParameters).set({ status: 'verified', verifiedAt: now, verifiedBy: userId ?? null, verificationNote: note }).where(eq(taxParameters.id, seed.id));
+  await auditLog(ZERO_TENANT, 'signoff', AUDIT_ENTITY, seed.id,
+    { year, key, value: seed.value, status: seed.status },
+    { op: 'verified', year, key, value: seed.value, source: 'seed', reason: note }, userId, tx);
+  return true;
+}
+
+export async function verifyParameter(year: number, key: string, note: string | undefined, userId?: string): Promise<TaxParameterRowDTO> {
+  if (!isParameterKey(key) || !getParameterDef(key)) throw AppError.badRequest(`Unknown tax parameter '${key}'`, 'TE_PARAM_INVALID');
+  await db.transaction(async (tx) => { await verifyOne(tx, year, key, cleanNote(note), userId); });
+  return getRow(year, key);
+}
+
+/** Bulk Verify: every row of `year` whose effective status is not verified. A fallback year has no rows → nothing. */
+export async function verifyAllParameters(year: number, note: string | undefined, userId?: string): Promise<VerifyTaxParametersResult> {
+  const why = cleanNote(note);
+  return db.transaction(async (tx) => {
+    const resolved = await resolveYear(tx, year);
+    const verified: string[] = [];
+    for (const [key, r] of resolved) {
+      if (r.status === 'verified') continue;
+      if (await verifyOne(tx, year, key, why, userId)) verified.push(key);
+    }
+    return { verified };
   });
 }
 
@@ -372,7 +454,7 @@ export async function listChanges(limit: number): Promise<TaxParameterChangeDTO[
     const b = parse(r.before);
     const a = parse(r.after);
     const op = a.op;
-    if (op !== 'override_set' && op !== 'override_reverted' && op !== 'year_created' && op !== 'shipped_adopted') continue;
+    if (op !== 'override_set' && op !== 'override_reverted' && op !== 'year_created' && op !== 'shipped_adopted' && op !== 'verified') continue;
     out.push({
       at: (r.at ?? new Date(0)).toISOString(),
       userId: r.userId ?? null,

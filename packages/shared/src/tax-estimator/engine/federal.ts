@@ -118,7 +118,14 @@ function computeAgiBlock(input: FederalEngineInput, agg: AggregatedIncome, ctx: 
     const ageJan1 = ageAtYearEnd(p.dateOfBirth, input.taxYear, true);
     const se = computeSeTax({ personId: p.personId, label: p.displayName, seIncome: pi.seIncome, socialSecurityWages: pi.socialSecurityWages }, ctx);
     if (p.w2SocialSecurityWages == null && dIsPos(dec(p.w2Wages)) && dIsPos(pi.seIncome)) {
-      ctx.info('TE_SS_WAGES_DEFAULTED', `${p.displayName}: Social Security wages were not entered; box 1 wages ${R(p.w2Wages)} were used for the SE wage-base offset (box 3 is usually higher when there are 401(k) deferrals, so SE tax may be overstated).`, { personId: p.personId });
+      // R7-12: the most SE tax this default can overstate is the whole SE Social Security part (box 3 large
+      // enough to fill the wage base would remove it); a warning while that is positive, an info otherwise.
+      const maxOverstatement = R(se.socialSecurity);
+      if (dIsPos(se.socialSecurity)) {
+        ctx.warn('TE_SS_WAGES_DEFAULTED', `${p.displayName}: Social Security wages (W-2 box 3) were not entered; box 1 wages ${R(p.w2Wages)} were used for the SE wage-base offset. Box 3 is usually higher when there are 401(k) deferrals, so SE tax may be overstated by up to ${Number(maxOverstatement).toLocaleString('en-US')}. Enter box 3 on Annual settings → People.`, { personId: p.personId, maxOverstatement });
+      } else {
+        ctx.info('TE_SS_WAGES_DEFAULTED', `${p.displayName}: Social Security wages (W-2 box 3) were not entered; box 1 wages ${R(p.w2Wages)} already use the whole Social Security wage base, so the default does not change SE tax.`, { personId: p.personId, maxOverstatement });
+      }
     }
     const retirement = computeRetirementLimit({ personId: p.personId, label: p.displayName, planType: p.retirementPlan, contributed: pi.retirementContributions, employeeDeferral: p.retirementEmployeeDeferral == null ? null : dec(p.retirementEmployeeDeferral), seIncome: pi.seIncome, halfSeTax: se.halfSeTax, age }, ctx);
     // SEHI cap: earned income from the SE businesses after ½ SE and retirement, plus S corp officer Medicare wages.

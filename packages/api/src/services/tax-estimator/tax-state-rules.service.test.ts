@@ -339,3 +339,39 @@ describe('audit', () => {
     expect(changes[0]).toMatchObject({ state: 'AR', key: 'required_threshold' });
   });
 });
+
+describe('R7 in-app Verify (super-admin sign-off)', () => {
+  const ADMIN = '00000000-0000-4000-8000-0000000000a7';
+
+  it('marks one MO rule verified (who / when / note), audits it, and the engine badge clears only when every rule is verified', async () => {
+    const row = await svc.verifyStateRule(Y1, 'MO', 'required_threshold', 'MO DOR form MO-1040ES', ADMIN);
+    expect(row).toMatchObject({ status: 'verified', source: 'seed', value: 1000, verifiedBy: ADMIN, verificationNote: 'MO DOR form MO-1040ES' });
+    expect(rule(await svc.getStateRules(Y1, 'MO'), 'safe_harbor.current_pct')!.status).toBe('unverified');
+    expect((await svc.resolveStateRulesForEngine('MO', Y1)).verifyBadge).toBe(true);
+    const audit = await db.select().from(auditLogTable).where(and(eq(auditLogTable.tenantId, ZERO), eq(auditLogTable.entityType, 'tax_state_rule')));
+    expect(audit.map((a) => a.action)).toEqual(['signoff']);
+    const [change] = await svc.listChanges(1);
+    expect(change).toMatchObject({ action: 'verified', state: 'MO', key: 'required_threshold' });
+
+    const all = await svc.verifyAllStateRules(Y1, 'MO', 'MO batch reviewed', ADMIN);
+    expect(all.verified).toHaveLength(NKEYS - 1);
+    expect(all.verified.every((k) => k.startsWith('MO:'))).toBe(true);
+    expect((await svc.resolveStateRulesForEngine('MO', Y1)).verifyBadge).toBe(false);
+    // AR (other jurisdiction) untouched
+    expect((await svc.getStateRules(Y1, 'AR')).rules.every((r) => r.verifiedAt == null)).toBe(true);
+  });
+
+  it('re-sync keeps a verification while the shipped value is unchanged; an override clears it; unknown key / no row errors', async () => {
+    await svc.verifyStateRule(Y1, 'MO', 'required_threshold', undefined, ADMIN);
+    await svc.syncShippedStateRules(FIXTURE);
+    expect(rule(await svc.getStateRules(Y1, 'MO'), 'required_threshold')!.status).toBe('verified');
+    const ov = await svc.setOverride(Y1, 'MO', 'required_threshold', 100, 'MO threshold is $100', ADMIN);
+    expect(ov).toMatchObject({ source: 'override', status: 'unverified' });
+    expect((await svc.verifyStateRule(Y1, 'MO', 'required_threshold', undefined, ADMIN)).status).toBe('verified');
+    await svc.syncShippedStateRules(FIXTURE.map((r) => (r.state === 'MO' && r.key === 'required_threshold' ? { ...r, value: 200 } : r)));
+    await svc.revertOverride(Y1, 'MO', 'required_threshold', ADMIN);
+    expect(rule(await svc.getStateRules(Y1, 'MO'), 'required_threshold')).toMatchObject({ value: 200, status: 'unverified' });
+    await expect(svc.verifyStateRule(Y1, 'MO', 'not_a_rule', undefined, ADMIN)).rejects.toMatchObject({ code: 'TE_STATE_RULE_INVALID' });
+    await expect(svc.verifyStateRule(Y1, 'KS', 'holidays', undefined, ADMIN)).rejects.toMatchObject({ statusCode: 404 });
+  });
+});

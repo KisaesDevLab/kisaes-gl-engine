@@ -225,3 +225,65 @@ describe('audit and change history', () => {
     expect(await svc.listChanges(2)).toHaveLength(2);
   });
 });
+
+describe('R7 in-app Verify (super-admin sign-off)', () => {
+  const ADMIN = '00000000-0000-4000-8000-0000000000a7';
+
+  it('marks a shipped unverified row verified with who / when / note, audits it, and changes nothing else', async () => {
+    const before = pick(await svc.getParameters(Y1), 'se.ss_wage_base')!;
+    const row = await svc.verifyParameter(Y1, 'se.ss_wage_base', 'Checked against SSA fact sheet', ADMIN);
+    expect(row).toMatchObject({ value: before.value, citation: before.citation, source: 'seed', status: 'verified', verifiedBy: ADMIN, verificationNote: 'Checked against SSA fact sheet' });
+    expect(row.verifiedAt).toBeTruthy();
+    const others = (await svc.getParameters(Y1)).parameters.filter((p) => p.key !== 'se.ss_wage_base');
+    expect(others.every((p) => p.verifiedAt == null)).toBe(true);
+    const audit = await db.select().from(auditLogTable).where(and(eq(auditLogTable.tenantId, ZERO), eq(auditLogTable.entityType, 'tax_parameter')));
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.action).toBe('signoff');
+    expect(audit[0]!.userId).toBe(ADMIN);
+    const [change] = await svc.listChanges(1);
+    expect(change).toMatchObject({ action: 'verified', year: Y1, key: 'se.ss_wage_base', reason: 'Checked against SSA fact sheet' });
+  });
+
+  it('an already verified row is a no-op (no audit); an unknown key is TE_PARAM_INVALID; a key with no row is 404', async () => {
+    await svc.verifyParameter(Y1, 'se.nese_factor', undefined, ADMIN);
+    expect(await db.select().from(auditLogTable).where(and(eq(auditLogTable.tenantId, ZERO), eq(auditLogTable.entityType, 'tax_parameter')))).toHaveLength(0);
+    await expect(svc.verifyParameter(Y1, 'not.a.key', undefined, ADMIN)).rejects.toMatchObject({ code: 'TE_PARAM_INVALID' });
+    await expect(svc.verifyParameter(Y1, 'se.ss_rate', undefined, ADMIN)).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it('the startup re-sync keeps a verification while the shipped value is unchanged and drops it when the value changes', async () => {
+    await svc.verifyParameter(Y1, 'se.ss_wage_base', 'ok', ADMIN);
+    await svc.syncShippedSeeds(FIXTURE);
+    expect(pick(await svc.getParameters(Y1), 'se.ss_wage_base')).toMatchObject({ status: 'verified', verifiedBy: ADMIN });
+    await svc.syncShippedSeeds({ [Y1]: [...FIXTURE[Y1]!.filter((r) => r.key !== 'se.ss_wage_base'), seed('se.ss_wage_base', 180000, 'unverified')] });
+    const after = pick(await svc.getParameters(Y1), 'se.ss_wage_base')!;
+    expect(after).toMatchObject({ value: 180000, status: 'unverified' });
+    expect(after.verifiedAt ?? null).toBeNull();
+  });
+
+  it('a verified row can still be overridden with a reason; a new override value is unverified until verified again', async () => {
+    await svc.verifyParameter(Y1, 'se.ss_wage_base', 'ok', ADMIN);
+    const ov = await svc.setOverride(Y1, 'se.ss_wage_base', 184500, 'Correct 2026 base', ADMIN);
+    expect(ov).toMatchObject({ value: 184500, source: 'override', status: 'unverified' });
+    const v = await svc.verifyParameter(Y1, 'se.ss_wage_base', 'override checked', ADMIN);
+    expect(v).toMatchObject({ source: 'override', status: 'verified', verificationNote: 'override checked' });
+    const again = await svc.setOverride(Y1, 'se.ss_wage_base', 184600, 'Typo fix', ADMIN);
+    expect(again).toMatchObject({ status: 'unverified' });
+    expect(again.verifiedAt ?? null).toBeNull();
+    await svc.revertOverride(Y1, 'se.ss_wage_base', ADMIN);
+    expect(pick(await svc.getParameters(Y1), 'se.ss_wage_base')).toMatchObject({ source: 'seed', status: 'verified', value: 176100 });
+  });
+
+  it('verify all: every not-yet-verified row of the year (seed + provisional), nothing already verified, nothing in a fallback year', async () => {
+    await svc.createYearFromPrior(Y2);
+    const r = await svc.verifyAllParameters(Y2, 'Bulk after review', ADMIN);
+    expect(r.verified.sort()).toEqual(FIXTURE[Y1]!.map((x) => x.key).sort());
+    const dto = await svc.getParameters(Y2);
+    expect(dto.parameters.every((p) => p.status === 'verified' && p.source === 'provisional')).toBe(true);
+    expect((await svc.verifyAllParameters(Y2, undefined, ADMIN)).verified).toEqual([]);
+    const y1 = await svc.verifyAllParameters(Y1, undefined, ADMIN);
+    expect(y1.verified).toEqual(['se.ss_wage_base']);
+    expect((await svc.verifyAllParameters(Y_EMPTY, undefined, ADMIN)).verified).toEqual([]);
+    expect((await svc.getParameters(Y_EMPTY)).parameters.every((p) => p.status === 'provisional')).toBe(true);
+  });
+});

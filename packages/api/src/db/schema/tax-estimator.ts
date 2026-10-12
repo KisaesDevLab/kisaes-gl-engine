@@ -17,6 +17,10 @@ export const taxParameters = pgTable('tax_parameters', {
   status: varchar('status', { length: 20 }).notNull(),
   citation: text('citation').notNull().default(''),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  // R7 in-app Verify: who verified the CURRENT value, when, and why (null = not verified in-app).
+  verifiedBy: uuid('verified_by'),
+  verifiedAt: timestamp('verified_at', { withTimezone: true }),
+  verificationNote: text('verification_note'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   unique('uniq_tax_parameters_year_key').on(t.taxYear, t.key),
@@ -34,6 +38,10 @@ export const taxParameterOverrides = pgTable('tax_parameter_overrides', {
   createdFromYear: integer('created_from_year'),
   createdBy: uuid('created_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  // R7 in-app Verify: who verified the CURRENT value, when, and why (null = not verified in-app).
+  verifiedBy: uuid('verified_by'),
+  verifiedAt: timestamp('verified_at', { withTimezone: true }),
+  verificationNote: text('verification_note'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   unique('uniq_tax_parameter_overrides_year_key').on(t.taxYear, t.key),

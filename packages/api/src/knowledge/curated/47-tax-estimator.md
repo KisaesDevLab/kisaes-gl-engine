@@ -35,9 +35,21 @@ books.
   method (bracket or effective-rate override), credits, withholding,
   Schedule 1-A, HSA, prior-year tax and AGI (stored encrypted), state rows
   (one resident state), firm settings (safe-harbor default, disclaimer,
-  portal view).
+  portal view), and the **People** card: per person, W-2 wages (box 1) and
+  Social Security wages (box 3) from jobs OUTSIDE the linked businesses,
+  retirement plan type (SEP, solo 401(k), SIMPLE, none) and employee
+  deferral; plus Form 8960 allocable deductions, the MFS "lived apart all
+  year" flag and farmer/fisherman gross-income figures (current and prior
+  year). Outside wages go in the People card, never in an adjustment: an
+  adjustment is business income and loses the SE wage-base offset.
 - **Scenarios and adjustments**: Base plus clones; adjustments cover
-  anything outside the books and are spread evenly over remaining quarters.
+  anything else outside the books (interest, dividends, a sale, a planned
+  purchase). Each is allocated by its cadence: monthly in every active
+  month, quarterly split one third per month of the quarter, annual spread
+  over the start-to-end months, one-time in its month. A GL-linked
+  adjustment uses actuals through the last closed month, then its plan
+  amount or (with no plan amount) the year-to-date run-rate; flagged
+  non-recurring, it is never run-rated.
 
 ## Reading an estimate
 
@@ -57,8 +69,10 @@ with warnings in the trace, the warnings list and the assumptions.
 ## Snapshots, PDF, Report Pack
 
 Finalize & issue vouchers, downloading the PDF, and generating a Report
-Pack that has the Tax Estimate section each freeze an immutable snapshot
-(never edited or deleted; finalize a new one). A snapshot can be compared
+Pack that has the Tax Estimate section freeze an immutable snapshot
+(never edited or deleted; finalize a new one). Identical same-day PDF or
+Report Pack issues of the same figures reuse one snapshot rather than
+making a new one each time. A snapshot can be compared
 with live to see changed figures, new or resolved warnings and parameter
 changes. The PDF equals the screen. The Report Pack section is "Tax
 Estimate" in group Tax; pick the taxpayer (and optionally scenario) in the
@@ -73,8 +87,9 @@ Estimator flags are on for the client's tenant, the contact is linked to
 the taxpayer (taxpayer page -> Portal contacts), the taxpayer links the
 year to a company of that tenant whose portal access has "Tax estimates"
 ticked (Practice -> Client Portal), and the year has settings. The
-portal shows the live estimate by default; the firm or the taxpayer can
-switch it to the latest finalized snapshot. Clients never see persons,
+portal shows the live estimate by default; only firm staff can switch it
+to the latest finalized snapshot (per taxpayer, or the firm default in
+Firm settings). The client has no control over it. Clients never see persons,
 other owners, adjustments, traces, parameters or prior-year figures.
 
 ## Super admin
@@ -83,12 +98,22 @@ Admin -> Tax parameters edits federal parameters per tax year and the
 state rules for 50 states plus DC; changes are overrides with a required
 reason, audited, and can be reverted to the shipped value. Firms cannot
 override parameters; they only set safe-harbor default, disclaimer and
-portal view.
+portal view. "Mark verified" on a row (and "Verify all unverified" per
+year, or per state and year, after a confirmation) records the CPA
+sign-off: status verified plus who, when and an optional note, audited.
+Nothing else changes; a verified row can still be overridden with a
+reason (the new value starts unverified). A verification survives
+releases while the shipped value is unchanged.
 
 ## Version 1 limits (say so when asked)
 
-Quarterly adjustments spread evenly; withholding treated as even; no QBI
-loss carryforward across years; retirement plan assumed SEP; charitable
+Withholding treated as even; no QBI loss carryforward across years; when
+a person's retirement plan type is not recorded the limit is figured as a
+SEP (with a warning), and a solo 401(k)/SIMPLE without a recorded
+employee deferral assumes the maximum deferral; Social Security wages
+left blank default to box 1 (warning with the possible SE overstatement);
+unrecaptured section 1250 gain, collectibles gain and an AMT flag have no
+input in v1 (AMT is not modeled); charitable
 60 percent AGI and mortgage-interest limits not applied; MAGI = AGI for
 phase-outs; nonresident state tax is an effective-rate estimate (sourced
 income times a user-entered rate, not the ratio-of-return method many

@@ -185,3 +185,20 @@ describe('tax-state-rules admin routes', () => {
     expect(bad.json.error?.code).toBe('TE_STATE_RULE_INVALID');
   });
 });
+
+describe('R7 in-app Verify routes', () => {
+  it('super admin only; per-row and per-jurisdiction bulk verify', async () => {
+    for (const [p, b] of [[`/${Y1}/AR/required_threshold/verify`, {}], [`/${Y1}/AR/verify-all`, { confirm: true }]] as const) {
+      expect((await request('POST', BASE + p, b)).status).toBe(401);
+      expect((await request('POST', BASE + p, b, staffToken)).status).toBe(403);
+    }
+    await syncShippedStateRules(FIXTURE.map((r) => (r.state === 'AR' ? { ...r, status: 'unverified' as const } : r)));
+    const one = await request('POST', `${BASE}/${Y1}/AR/required_threshold/verify`, { note: 'AR DFA' }, S());
+    expect(one.status).toBe(200);
+    expect(one.json.data).toMatchObject({ state: 'AR', key: 'required_threshold', status: 'verified', verificationNote: 'AR DFA' });
+    expect((await request('POST', `${BASE}/${Y1}/AR/verify-all`, { confirm: false }, S())).status).toBe(400);
+    const all = await request('POST', `${BASE}/${Y1}/ar/verify-all`, { confirm: true }, S());
+    expect(all.status).toBe(200);
+    expect(all.json.data.verified.sort()).toEqual(['AR:has_income_tax', 'AR:installments.due_dates']);
+  });
+});

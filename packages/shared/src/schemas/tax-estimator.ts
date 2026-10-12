@@ -32,3 +32,13 @@ export const adoptShippedParametersSchema = z.object({
 export const taxParameterChangesQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(MAX_LIMIT).default(DEFAULT_LIMIT),
 });
+
+/** Verify one parameter (super admin; sign-off workflow). The note is optional and audited. */
+export const verifyTaxParameterSchema = z.object({
+  note: z.string().trim().max(MAX_REASON_LEN).optional(),
+});
+/** Bulk verify every not-yet-verified row of a year (or of one state's year). `confirm` must be true. */
+export const verifyAllTaxParametersSchema = z.object({
+  confirm: z.literal(true),
+  note: z.string().trim().max(MAX_REASON_LEN).optional(),
+});

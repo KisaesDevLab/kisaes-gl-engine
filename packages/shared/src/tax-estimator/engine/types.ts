@@ -64,14 +64,21 @@ export interface EnginePerson {
   w2Wages: string;
   /** Full-year Social Security wages for the SE wage-base offset; null = same as w2Wages + officer wages. */
   w2SocialSecurityWages: string | null;
-  /** Full-year federal income tax withheld (Phase 10 uses it; carried for completeness). */
+  /**
+   * NOT READ by any engine function (R7-04): vouchers credit the YEAR-level withholding
+   * (YearSettingsDTO.withholding.federal). The app bridge always sends '0'; kept on the
+   * type so fixtures stay source-compatible. Do not start reading it without wiring an input.
+   */
   withholding: string;
   /** Plan type the person's owner retirement contributions belong to; null = SEP assumed (warning). */
   retirementPlan: RetirementPlanType | null;
-  /** Elective deferral portion of the contributions (solo 401(k) / SIMPLE); null = unknown (deferral filled first). */
+  /** Elective deferral portion of the contributions (solo 401(k) / SIMPLE); null = unknown (maximum deferral assumed — upper bound). R7-01: when known, caps the deferral leg and the SIMPLE match. */
   retirementEmployeeDeferral: string | null;
   hsaCoverage: HsaCoverage;
-  /** HSA contributions for the year (positive). */
+  /**
+   * HSA contributions not captured as an `hsa_contribution` adjustment (positive). Read by the
+   * HSA limit; the app bridge always sends '0' (HSA contributions are entered as adjustments, R7-04).
+   */
   hsaContribution: string;
   sch1a: EngineSch1aPerson;
 }

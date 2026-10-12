@@ -29,6 +29,11 @@ export interface TaxParameterRowDTO {
   shippedValue?: unknown;
   /** Set on rows resolved through the missing-year fallback. */
   fallbackYear?: number | null;
+  /** Sign-off record (in-app Verify): present when a super admin verified this row's current value. */
+  verifiedAt?: string | null;
+  verifiedBy?: string | null;
+  verifiedByEmail?: string | null;
+  verificationNote?: string | null;
 }
 
 export interface TaxParametersDTO {
@@ -74,10 +79,15 @@ export interface TaxParameterChangeDTO {
   at: string;
   userId: string | null;
   userEmail: string | null;
-  action: 'override_set' | 'override_reverted' | 'year_created' | 'shipped_adopted';
+  action: 'override_set' | 'override_reverted' | 'year_created' | 'shipped_adopted' | 'verified';
   year: number;
   key: string | null;
   before: unknown;
   after: unknown;
   reason: string | null;
+}
+
+/** Result of a single or bulk Verify. `verified` lists the keys (state rules: `ST:key`) whose status became verified. */
+export interface VerifyTaxParametersResult {
+  verified: string[];
 }

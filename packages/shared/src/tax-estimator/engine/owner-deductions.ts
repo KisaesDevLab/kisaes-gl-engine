@@ -33,7 +33,12 @@ export interface RetirementLimitInput {
   planType: RetirementPlanType | null;
   /** Owner contributions from the books plus retirement adjustments (positive). */
   contributed: Dec;
-  /** Elective deferral part when known (solo 401(k) / SIMPLE). */
+  /**
+   * Elective deferral part when known (solo 401(k) / SIMPLE). null = unknown: the limit
+   * assumes the maximum deferral was made (an upper bound). When known (R7-01), the
+   * deferral leg is what was actually deferred (capped at §402(g) / §408(p)) and the
+   * rest of `contributed` is the employer leg, capped at the employer share / match.
+   */
   employeeDeferral: Dec | null;
   seIncome: Dec;
   halfSeTax: Dec;
@@ -68,6 +73,10 @@ export function computeRetirementLimit(input: RetirementLimitInput, ctx: EngineC
   let formula = 'no plan';
   const keys: string[] = [];
 
+  // R7-01: split a known deferral out of the contribution (never more than was contributed).
+  const knownDeferral = input.employeeDeferral == null ? null : dMin(dFloorZero(dec(input.employeeDeferral)), dFloorZero(input.contributed));
+  const employerContributed = knownDeferral == null ? null : dFloorZero(dSub(input.contributed, knownDeferral));
+
   if (planType !== 'none') {
     const planPct = params.rate('retirement.sep.pct_of_comp');
     const dollarLimit = params.money('retirement.sep.dollar_limit');
@@ -100,8 +109,14 @@ export function computeRetirementLimit(input: RetirementLimitInput, ctx: EngineC
         keys.push(inHigherRange ? 'retirement.401k.catch_up_60_63' : 'retirement.401k.catch_up_50');
       }
       const deferral = dMin(dAdd(deferralLimit, catchUp), base);
-      limit = dMin(dAdd(dollarLimit, catchUp), dAdd(deferral, employerShare));
-      formula = `min(${dollarLimit} + catch-up ${catchUp}, deferral min(${deferralLimit} + ${catchUp}, ${base}) + employer ${seRate} × ${base})`;
+      if (knownDeferral == null) {
+        limit = dMin(dAdd(dollarLimit, catchUp), dAdd(deferral, employerShare));
+        formula = `min(${dollarLimit} + catch-up ${catchUp}, deferral min(${deferralLimit} + ${catchUp}, ${base}) + employer ${seRate} × ${base})`;
+      } else {
+        const deferralLeg = dMin(knownDeferral, deferral);
+        limit = dMin(dAdd(dollarLimit, catchUp), dAdd(deferralLeg, dMin(employerContributed!, employerShare)));
+        formula = `min(${dollarLimit} + catch-up ${catchUp}, deferred min(${knownDeferral}, ${deferralLimit} + ${catchUp}, ${base}) + employer min(${employerContributed}, ${seRate} × ${base}))`;
+      }
     } else {
       const deferralLimit = params.money('retirement.simple.deferral');
       const matchPct = params.rate('retirement.simple.match_pct');
@@ -111,8 +126,17 @@ export function computeRetirementLimit(input: RetirementLimitInput, ctx: EngineC
       let catchUp: Dec = ZERO;
       if (eligibleCatchUp()) { catchUp = params.money('retirement.simple.catch_up'); keys.push('retirement.simple.catch_up'); }
       const deferral = dMin(dAdd(deferralLimit, catchUp), simpleBase);
-      limit = dAdd(deferral, dMul(matchPct, simpleBase));
-      formula = `deferral min(${deferralLimit} + catch-up ${catchUp}, NESE ${simpleBase}) + match ${matchPct} × ${simpleBase}`;
+      const match = dMul(matchPct, simpleBase);
+      if (knownDeferral == null) {
+        limit = dAdd(deferral, match);
+        formula = `deferral min(${deferralLimit} + catch-up ${catchUp}, NESE ${simpleBase}) + match ${matchPct} × ${simpleBase}`;
+      } else {
+        // §408(p)(2)(A)(iii): the match is dollar-for-dollar on the deferral, up to matchPct of compensation.
+        const deferralLeg = dMin(knownDeferral, deferral);
+        const matchLeg = dMin(dMin(match, deferralLeg), employerContributed!);
+        limit = dAdd(deferralLeg, matchLeg);
+        formula = `deferred min(${knownDeferral}, ${deferralLimit} + catch-up ${catchUp}, NESE ${simpleBase}) + match min(${matchPct} × ${simpleBase}, deferred, employer ${employerContributed})`;
+      }
     }
   }
 

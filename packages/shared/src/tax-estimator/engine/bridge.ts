@@ -50,15 +50,17 @@ export function engineEntityFromTaxBasisPl(pl: TaxBasisPl, links: ReadonlyArray<
   };
 }
 
+/**
+ * Per-person year inputs the app collects (Annual settings → People, R7-01). R7-04: no
+ * person-level withholding or HSA contribution input exists — withholding is year-level and
+ * HSA contributions are adjustments — so EnginePerson.withholding / .hsaContribution are '0'.
+ */
 export interface PersonYearInputs {
   /** Outside W-2 wages (box 1) for the year; officer wages come from the entities. */
   w2Wages?: number | string | null;
   w2SocialSecurityWages?: number | string | null;
-  withholding?: number | string | null;
   retirementPlan?: RetirementPlanType | null;
   retirementEmployeeDeferral?: number | string | null;
-  /** HSA contributions not captured as an adjustment. */
-  hsaContribution?: number | string | null;
 }
 
 export function enginePersonFromDto(p: PersonDTO, year: YearSettingsDTO, extra: PersonYearInputs = {}): EnginePerson {
@@ -73,11 +75,11 @@ export function enginePersonFromDto(p: PersonDTO, year: YearSettingsDTO, extra: 
     sehiEligibleMonths: [...p.sehiEligibleMonths],
     w2Wages: num(extra.w2Wages),
     w2SocialSecurityWages: extra.w2SocialSecurityWages == null ? null : num(extra.w2SocialSecurityWages),
-    withholding: num(extra.withholding),
+    withholding: '0',
     retirementPlan: extra.retirementPlan ?? null,
     retirementEmployeeDeferral: extra.retirementEmployeeDeferral == null ? null : num(extra.retirementEmployeeDeferral),
     hsaCoverage: hsa ?? 'none',
-    hsaContribution: num(extra.hsaContribution),
+    hsaContribution: '0',
     sch1a: { qualifiedTips: num(sch1a?.qualifiedTips), qualifiedOvertime: num(sch1a?.qualifiedOvertime), carLoanInterest: num(sch1a?.carLoanInterest) },
   };
 }

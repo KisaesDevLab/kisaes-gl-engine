@@ -2,7 +2,27 @@
 -- Licensed under the PolyForm Small Business License 1.0.0.
 -- Free for small businesses; see LICENSE for terms.
 --
--- Rollback for 0201_tax_estimator, children first (phases 13, 12, 10b, 5, 4, 3, 2, then 1 and 0).
+-- Rollback for 0201_tax_estimator, children first (R7 verification, phases 13, 12, 10b, 5, 4, 3, 2, then 1 and 0).
+
+-- R7: in-app Verify (super-admin sign-off)
+--
+-- Rollback for the Tax Estimator R7 verification part (runs FIRST).
+ALTER TABLE IF EXISTS state_estimate_rule_overrides
+  DROP COLUMN IF EXISTS verification_note,
+  DROP COLUMN IF EXISTS verified_at,
+  DROP COLUMN IF EXISTS verified_by;
+ALTER TABLE IF EXISTS state_estimate_rules
+  DROP COLUMN IF EXISTS verification_note,
+  DROP COLUMN IF EXISTS verified_at,
+  DROP COLUMN IF EXISTS verified_by;
+ALTER TABLE IF EXISTS tax_parameter_overrides
+  DROP COLUMN IF EXISTS verification_note,
+  DROP COLUMN IF EXISTS verified_at,
+  DROP COLUMN IF EXISTS verified_by;
+ALTER TABLE IF EXISTS tax_parameters
+  DROP COLUMN IF EXISTS verification_note,
+  DROP COLUMN IF EXISTS verified_at,
+  DROP COLUMN IF EXISTS verified_by;
 
 -- Phase 13: Report Pack tax-estimate section
 --

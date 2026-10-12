@@ -337,3 +337,19 @@ describe('fixture parameters', () => {
     expect(drift).toEqual([]);
   });
 });
+
+describe('R7-12 — TE_SS_WAGES_DEFAULTED carries its dollar effect', () => {
+  it('a warning with the SE Social Security amount at stake when the defaulted wages leave room under the wage base (Hale: Dana)', () => {
+    // Dana: box 1 170,000, no SS wages entered; wage base 184,500 − 170,000 = 14,500 left → SE SS 0.124 × 14,500 = 1,798 at most overstated.
+    const w = computeFederal(hale()).warnings.find((x) => x.code === 'TE_SS_WAGES_DEFAULTED' && x.details?.['personId'] === DANA);
+    expect(w?.severity).toBe('warning');
+    expect(w?.message).toContain('1,798');
+    expect(w?.details?.['maxOverstatement']).toBe('1798');
+  });
+  it('stays an info when the box 1 wages alone already use the whole wage base (Okafor: no SE Social Security to overstate)', () => {
+    const input = okafor();
+    input.persons[0]!.w2SocialSecurityWages = null; // Femi: box 1 1,000,000 > wage base
+    const w = computeFederal(input).warnings.find((x) => x.code === 'TE_SS_WAGES_DEFAULTED');
+    expect(w?.severity).toBe('info');
+  });
+});

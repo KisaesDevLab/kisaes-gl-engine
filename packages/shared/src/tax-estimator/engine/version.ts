@@ -17,5 +17,9 @@
  *              (R2-14), SIMPLE compensation base (R2-13), Form 2210 day
  *              convention (R2-09), derived state sourcing after loss limits
  *              (R2-15).
+ *   1.0.0-rc.2 R7 fixes: a recorded employee deferral caps the solo 401(k) /
+ *              SIMPLE deferral leg and the SIMPLE match (R7-01); a non-recurring
+ *              GL-linked adjustment is never run-rated (R7-05);
+ *              TE_SS_WAGES_DEFAULTED is a warning with its dollar effect (R7-12).
  */
-export const TAX_ENGINE_VERSION = '1.0.0-rc.1';
+export const TAX_ENGINE_VERSION = '1.0.0-rc.2';
