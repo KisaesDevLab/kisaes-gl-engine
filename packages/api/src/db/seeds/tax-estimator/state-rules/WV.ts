@@ -150,4 +150,74 @@ export const WV_RULES: StateRuleSeedRow[] = [
     citation: "W. Va. Code 2-2-1(a)-(b) (Jan 1; 3rd Mon Jan; 3rd Mon Feb; last Mon May; June 20 West Virginia Day; July 4; 1st Mon Sep; 2nd Mon Oct; Nov 11; Thanksgiving and the day after (Lincoln's Day); Dec 25; (13) \"Any day on which a general, primary or special election is held\"; (14) even-year general election day; Sunday holiday -> Monday, Saturday holiday -> preceding Friday, not applied to (13)-(15)); W. Va. Code 3-5-1 (primary \"on the second Tuesday in May\" in even years) -> AUDIT ADDED primary day May 12, 2026; general election Nov 3, 2026 (Tuesday after first Monday). Special-election and governor-proclaimed days (2-2-1(a)(15)) cannot be known in advance and are omitted. Calendar years 2025-2027. Dates computed from the statute (read 2026-10-11).",
     status: 'verified',
   },
+  {
+    state: 'WV', year: 2025, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2025 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'WV', year: 2025, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'WV', year: 2025, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'WV', year: 2025, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'WV', year: 2025, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'WV', year: 2025, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'WV', year: 2025, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'WV', year: 2026, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2026 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'WV', year: 2026, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'WV', year: 2026, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'WV', year: 2026, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'WV', year: 2026, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'WV', year: 2026, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'WV', year: 2026, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
 ];

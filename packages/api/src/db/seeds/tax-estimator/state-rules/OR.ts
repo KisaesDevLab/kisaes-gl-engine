@@ -141,4 +141,74 @@ export const OR_RULES: StateRuleSeedRow[] = [
     citation: 'ORS 187.010(1)-(2) (legal holidays; oregon.public.law/statutes/ors_187.010, reproducing the 2021 text): each Sunday; New Year\'s Day; MLK Day (3rd Mon Jan); Presidents Day (3rd Mon Feb); Memorial Day; Juneteenth (June 19); July 4; Labor Day; Veterans Day (Nov 11); Thanksgiving; Christmas. A holiday on a Saturday is observed the preceding Friday, on a Sunday the following Monday (187.010(2)); 187.010(3): an act due on a holiday may be done the next business day. No Columbus Day. Dec 31, 2027 included (Jan 1, 2028 is a Saturday). Calendar years 2025-2027 computed.',
     status: 'verified',
   },
+  {
+    state: 'OR', year: 2025, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2025 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'OR', year: 2025, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'OR', year: 2025, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'OR', year: 2025, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'OR', year: 2025, key: 'penalty.rate_schedule', value: [{"from": "2025-01-01", "to": "2025-12-31", "rate": 0.09}, {"from": "2026-01-01", "to": "2026-12-31", "rate": 0.08}],
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md Part B2: calendar-year rate that changes on January 1); primary source not re-read in this task (agency page blocked or not reached). 9% for 2025 days, 8% for 2026 days.",
+    status: 'unverified',
+  },
+  {
+    state: 'OR', year: 2025, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'OR', year: 2025, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'OR', year: 2026, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2026 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'OR', year: 2026, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'OR', year: 2026, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'OR', year: 2026, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'OR', year: 2026, key: 'penalty.rate_schedule', value: [{"from": "2026-01-01", "to": "2026-12-31", "rate": 0.08}],
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md Part B2: calendar-year rate); primary source not re-read in this task (agency page blocked or not reached). 8% for 2026 days; calendar-2027 rate not set.",
+    status: 'unverified',
+  },
+  {
+    state: 'OR', year: 2026, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'OR', year: 2026, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
 ];

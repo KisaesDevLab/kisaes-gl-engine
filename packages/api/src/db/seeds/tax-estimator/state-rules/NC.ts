@@ -141,4 +141,74 @@ export const NC_RULES: StateRuleSeedRow[] = [
     citation: 'NCDOR Directive TA-16-1 (Apr 12, 2016, ncdor.gov, read in audit 2026-10-11): G.S. 105-263(a) makes IRC §§7502 and 7503 govern timeliness, so a "legal holiday" is a District of Columbia legal holiday (the Directive\'s worked example rolls an April 15 due date for DC Emancipation Day) plus a statewide legal holiday in North Carolina; tax payments due on a Saturday, Sunday or legal holiday are timely on the next business day. List = union of (1) federal/DC legal holidays (New Year, MLK, Washington, DC Emancipation Day Apr 16, Memorial, Juneteenth, July 4, Labor, Columbus, Veterans, Thanksgiving, Christmas; 2025-01-20 is also Inauguration Day; Saturday holidays observed the Friday before, Sunday the Monday after, incl. 2027-12-31 for Jan 1, 2028) and (2) G.S. 103-4(a) legal public holidays (read at ncleg.gov: adds Jan 19 R.E. Lee, Mar 25 Greek Independence, Apr 12 Halifax Resolves, May 10 Confederate Memorial, May 20 Mecklenburg Declaration, Good Friday, Sept 11 First Responders Day, Yom Kippur, election Tuesday in general-election years; 103-4(b) Sunday -> Monday). Yom Kippur dates (2025-10-02, 2026-09-21, 2027-10-11) are from the Jewish calendar. NC-40 "When To Pay": a Saturday/Sunday/holiday due date moves to the next business day. Calendar 2025-2027 computed. Audit 2026-10-11 added the federal/DC dates (Emancipation Day, Juneteenth, Friday/Monday observances); the researcher\'s G.S. 103-4-only list missed them.',
     status: 'verified',
   },
+  {
+    state: 'NC', year: 2025, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2025 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'NC', year: 2025, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NC', year: 2025, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NC', year: 2025, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NC', year: 2025, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NC', year: 2025, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NC', year: 2025, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NC', year: 2026, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2026 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'NC', year: 2026, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NC', year: 2026, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NC', year: 2026, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NC', year: 2026, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NC', year: 2026, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NC', year: 2026, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
 ];

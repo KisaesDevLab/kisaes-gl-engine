@@ -77,12 +77,9 @@ export const UT_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'UT', year: 2025, key: 'holidays', value: [
-      "2025-01-01", "2025-01-20", "2025-02-17", "2025-05-26", "2025-06-16", "2025-07-04", "2025-07-24", "2025-09-01", "2025-10-13", "2025-11-11", "2025-11-27", "2025-12-25",
-      "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25", "2026-06-15", "2026-07-03", "2026-07-24", "2026-09-07", "2026-10-12", "2026-11-11", "2026-11-26", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26", "2027-05-31", "2027-06-18", "2027-07-05", "2027-07-23", "2027-09-06", "2027-10-11", "2027-11-11", "2027-11-25", "2027-12-24"
-    ],
-    citation: "Utah Code 63G-1-301 as in force on each date: version effective 5/7/2025 (superseded 5/6/2026) for 2025 and Jan 1 - May 5, 2026 (Jan 1, July 4, July 24, Nov 11, Dec 25 move to the preceding Friday / following Monday when on Saturday / Sunday; 3rd Mon Jan; 3rd Mon Feb; last Mon May; 1st Mon Sep; 2nd Mon Oct; 4th Thu Nov; Juneteenth June 19 observed the preceding Monday when Tue-Fri and the following Monday when Sat/Sun); version effective 5/6/2026 (superseded 1/1/2027) adds Good Friday, so Good Friday April 3, 2026 was NOT a legal holiday (the amendment took effect after it) - AUDIT CORRECTION removed 2026-04-03; version effective 1/1/2027 (Juneteenth becomes a fixed June 19 date under the Saturday/Sunday rule; Good Friday March 26, 2027). Easter Sunday and other Sundays omitted (weekends roll anyway). Dates computed from the statute texts read 2026-10-11. Calendar years 2025-2027.",
-    status: 'verified',
+    state: 'UT', year: 2025, key: 'holidays', value: ["2025-01-01", "2025-01-20", "2025-02-17", "2025-05-26", "2025-06-16", "2025-07-04", "2025-07-24", "2025-09-01", "2025-10-13", "2025-11-11", "2025-11-27", "2025-12-25", "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25", "2026-06-15", "2026-07-03", "2026-07-24", "2026-09-07", "2026-10-12", "2026-11-11", "2026-11-26", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26", "2027-05-31", "2027-06-21", "2027-07-05", "2027-07-23", "2027-09-06", "2027-10-11", "2027-11-11", "2027-11-25", "2027-12-24"],
+    citation: "Corrected per R5 review m9 (Utah Code 63G-1-301(2)(d): a Saturday/Sunday Juneteenth moves to the following Monday, so June 19, 2027 -> June 21; Good Friday became a holiday effective 5/6/2026 and is not added); not re-read in this task. Previous citation: Utah Code 63G-1-301 as in force on each date: version effective 5/7/2025 (superseded 5/6/2026) for 2025 and Jan 1 - May 5, 2026 (Jan 1, July 4, July 24, Nov 11, Dec 25 move to the preceding Friday / following Monday when on Saturday / Sunday; 3rd Mon Jan; 3rd Mon Feb; last Mon May; 1st Mon Sep; 2nd Mon Oct; 4th Thu Nov; Juneteenth June 19 observed the preceding Monday when Tue-Fri and the following Monday when Sat/Sun); version effective 5/6/2026 (superseded 1/1/2027) adds Good Friday, so Good Friday April 3, 2026 was NOT a legal holiday (the amendment took effect after it) - AUDIT CORRECTION removed 2026-04-03; version effective 1/1/2027 (Juneteenth becomes a fixed June 19 date under the Saturday/Sunday rule; Good Friday March 26, 2027). Easter Sunday and other Sundays omitted (weekends roll anyway). Dates computed from the statute texts read 2026-10-11. Calendar years 2025-2027.",
+    status: 'unverified',
   },
   // ------------------------------------------------------------------ 2026
   {
@@ -146,11 +143,78 @@ export const UT_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'UT', year: 2026, key: 'holidays', value: [
-      "2025-01-01", "2025-01-20", "2025-02-17", "2025-05-26", "2025-06-16", "2025-07-04", "2025-07-24", "2025-09-01", "2025-10-13", "2025-11-11", "2025-11-27", "2025-12-25",
-      "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25", "2026-06-15", "2026-07-03", "2026-07-24", "2026-09-07", "2026-10-12", "2026-11-11", "2026-11-26", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26", "2027-05-31", "2027-06-18", "2027-07-05", "2027-07-23", "2027-09-06", "2027-10-11", "2027-11-11", "2027-11-25", "2027-12-24"
-    ],
-    citation: "Utah Code 63G-1-301 as in force on each date: version effective 5/7/2025 (superseded 5/6/2026) for 2025 and Jan 1 - May 5, 2026 (Jan 1, July 4, July 24, Nov 11, Dec 25 move to the preceding Friday / following Monday when on Saturday / Sunday; 3rd Mon Jan; 3rd Mon Feb; last Mon May; 1st Mon Sep; 2nd Mon Oct; 4th Thu Nov; Juneteenth June 19 observed the preceding Monday when Tue-Fri and the following Monday when Sat/Sun); version effective 5/6/2026 (superseded 1/1/2027) adds Good Friday, so Good Friday April 3, 2026 was NOT a legal holiday (the amendment took effect after it) - AUDIT CORRECTION removed 2026-04-03; version effective 1/1/2027 (Juneteenth becomes a fixed June 19 date under the Saturday/Sunday rule; Good Friday March 26, 2027). Easter Sunday and other Sundays omitted (weekends roll anyway). Dates computed from the statute texts read 2026-10-11. Calendar years 2025-2027 (2025 dates harmless).",
+    state: 'UT', year: 2026, key: 'holidays', value: ["2025-01-01", "2025-01-20", "2025-02-17", "2025-05-26", "2025-06-16", "2025-07-04", "2025-07-24", "2025-09-01", "2025-10-13", "2025-11-11", "2025-11-27", "2025-12-25", "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25", "2026-06-15", "2026-07-03", "2026-07-24", "2026-09-07", "2026-10-12", "2026-11-11", "2026-11-26", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26", "2027-05-31", "2027-06-21", "2027-07-05", "2027-07-23", "2027-09-06", "2027-10-11", "2027-11-11", "2027-11-25", "2027-12-24"],
+    citation: "Corrected per R5 review m9 (Utah Code 63G-1-301(2)(d): a Saturday/Sunday Juneteenth moves to the following Monday, so June 19, 2027 -> June 21; Good Friday became a holiday effective 5/6/2026 and is not added); not re-read in this task. Previous citation: Utah Code 63G-1-301 as in force on each date: version effective 5/7/2025 (superseded 5/6/2026) for 2025 and Jan 1 - May 5, 2026 (Jan 1, July 4, July 24, Nov 11, Dec 25 move to the preceding Friday / following Monday when on Saturday / Sunday; 3rd Mon Jan; 3rd Mon Feb; last Mon May; 1st Mon Sep; 2nd Mon Oct; 4th Thu Nov; Juneteenth June 19 observed the preceding Monday when Tue-Fri and the following Monday when Sat/Sun); version effective 5/6/2026 (superseded 1/1/2027) adds Good Friday, so Good Friday April 3, 2026 was NOT a legal holiday (the amendment took effect after it) - AUDIT CORRECTION removed 2026-04-03; version effective 1/1/2027 (Juneteenth becomes a fixed June 19 date under the Saturday/Sunday rule; Good Friday March 26, 2027). Easter Sunday and other Sundays omitted (weekends roll anyway). Dates computed from the statute texts read 2026-10-11. Calendar years 2025-2027 (2025 dates harmless).",
+    status: 'unverified',
+  },
+  {
+    state: 'UT', year: 2025, key: 'estimates_required', value: false,
+    citation: "Utah TC-40 2025 Instructions, tax.utah.gov/forms/current/tc-40inst.pdf, read 2026-10-12: \"Utah does not require quarterly estimated tax payments. You can prepay at any time ...\" The one-time prepayment test (threshold 0, one 100% item on April 15) describes the extension prepayment only.",
     status: 'verified',
+  },
+  {
+    state: 'UT', year: 2025, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'UT', year: 2025, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'UT', year: 2025, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'UT', year: 2025, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'UT', year: 2025, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'UT', year: 2025, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'UT', year: 2026, key: 'estimates_required', value: false,
+    citation: "Utah TC-40 2025 Instructions, tax.utah.gov/forms/current/tc-40inst.pdf, read 2026-10-12 (current booklet): \"Utah does not require quarterly estimated tax payments.\" 2026 instructions not yet published.",
+    status: 'unverified',
+  },
+  {
+    state: 'UT', year: 2026, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'UT', year: 2026, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'UT', year: 2026, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'UT', year: 2026, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'UT', year: 2026, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'UT', year: 2026, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
   },
 ];

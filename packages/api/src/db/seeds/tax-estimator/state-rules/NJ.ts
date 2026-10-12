@@ -141,4 +141,74 @@ export const NJ_RULES: StateRuleSeedRow[] = [
     citation: 'N.J.S.A. 36:1-1(a)-(d) (read in the Legislature\'s STATUTES-TEXT bulk file, pub.njleg.state.nj.us/statutes): New Year\'s Day; MLK Day (3rd Mon Jan); Washington\'s Birthday (3rd Mon Feb); Good Friday; Memorial Day; Juneteenth (3rd Friday in June); July 4; Labor Day; Columbus Day (2nd Mon Oct); Nov 11; Thanksgiving; Dec 25; any general election day (Tuesday after first Monday in Nov, held every year); a Sunday holiday moves to Monday (36:1-1(b)); a holiday falling on Saturday is observed on the preceding Friday, when public offices of the State are closed (N.J.S.A. 36:1-1.2; audit 2026-10-11 added 2026-07-03 and 2027-12-24, the Saturday dates are kept and are weekends anyway). Lincoln\'s Birthday (Feb 12) is listed but 36:1-1(d) says it is NOT a public holiday for State government business, so it is omitted. Calendar years 2025-2027; dates computed from the statute (Easter-based Good Friday computed). 36:1-1(c) applies the list to "the transaction of business in the public offices of this State"; the Division of Taxation\'s own roll rule is 2026 Form NJ-1040-ES Instructions "When to File" ("When any date falls on a Saturday, Sunday, or legal holiday, substitute the next regular workday").',
     status: 'verified',
   },
+  {
+    state: 'NJ', year: 2025, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2025 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'NJ', year: 2025, key: 'threshold_comparison', value: "more_than",
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md m1/D2: the requirement and penalty tests read \"more than\" the dollar threshold); primary source not re-read in this task (agency page blocked or not reached).",
+    status: 'unverified',
+  },
+  {
+    state: 'NJ', year: 2025, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NJ', year: 2025, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NJ', year: 2025, key: 'penalty.rate_schedule', value: [{"from": "2025-01-01", "to": "2025-12-31", "rate": 0.1075}, {"from": "2026-01-01", "to": "2026-12-31", "rate": 0.1}],
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md Part B2: calendar-year rate that changes on January 1); primary source not re-read in this task (agency page blocked or not reached). 10.75% for 2025 days, 10% for 2026 days.",
+    status: 'unverified',
+  },
+  {
+    state: 'NJ', year: 2025, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NJ', year: 2025, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NJ', year: 2026, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2026 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'NJ', year: 2026, key: 'threshold_comparison', value: "more_than",
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md m1/D2: the requirement and penalty tests read \"more than\" the dollar threshold); primary source not re-read in this task (agency page blocked or not reached).",
+    status: 'unverified',
+  },
+  {
+    state: 'NJ', year: 2026, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NJ', year: 2026, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NJ', year: 2026, key: 'penalty.rate_schedule', value: [{"from": "2026-01-01", "to": "2026-12-31", "rate": 0.1}],
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md Part B2: calendar-year rate); primary source not re-read in this task (agency page blocked or not reached). 10% for 2026 days; calendar-2027 rate not set.",
+    status: 'unverified',
+  },
+  {
+    state: 'NJ', year: 2026, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NJ', year: 2026, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
 ];

@@ -61,7 +61,12 @@ CREATE TABLE IF NOT EXISTS tax_est_account_treatments (
   treatment VARCHAR(30)
     CHECK (treatment IS NULL OR treatment IN (
       'nondeductible_pct', 'owner_sehi', 'owner_retirement', 'owner_personal',
-      'estimated_tax_payment', 'tax_depreciation_differs', 'w2_wages')),
+      'estimated_tax_payment', 'tax_depreciation_differs', 'w2_wages',
+      -- Partnership guaranteed payment to the partner in payment_person_id (R1 F1).
+      'guaranteed_payment',
+      -- Character treatments for income accounts the TB seed has no code for (R1 F6).
+      'capital_gain_lt', 'capital_gain_st', 'section_1231', 'interest',
+      'dividends_ordinary', 'dividends_qualified')),
   -- Percent 0..100 (meals default 50). Required for nondeductible_pct only.
   pct NUMERIC(7,4) CHECK (pct IS NULL OR (pct >= 0 AND pct <= 100)),
   payment_taxpayer_id UUID REFERENCES tax_est_taxpayers(id) ON DELETE SET NULL,
@@ -77,9 +82,15 @@ CREATE TABLE IF NOT EXISTS tax_est_account_treatments (
   -- CASE/COALESCE, not bare comparisons: a NULL treatment must not make the CHECK pass by NULL.
   CONSTRAINT chk_tax_est_account_treatments_pct
     CHECK (CASE WHEN treatment = 'nondeductible_pct' THEN pct IS NOT NULL ELSE pct IS NULL END),
+  -- Jurisdiction: payments only. Person target (payment_taxpayer_id / payment_person_id):
+  -- payments, guaranteed payments (the partner), owner SEHI / retirement (the
+  -- S corp officer) and W-2 wages (officer wages). "GP needs a person" and
+  -- "S corp owner items need a person" are enforced by the API, not here: the
+  -- person FK is ON DELETE SET NULL, and a CHECK would block deleting a person.
   CONSTRAINT chk_tax_est_account_treatments_payment
-    CHECK (COALESCE(treatment, '') = 'estimated_tax_payment'
-      OR (payment_taxpayer_id IS NULL AND payment_person_id IS NULL AND payment_jurisdiction IS NULL)),
+    CHECK ((COALESCE(treatment, '') = 'estimated_tax_payment' OR payment_jurisdiction IS NULL)
+      AND (COALESCE(treatment, '') IN ('estimated_tax_payment', 'guaranteed_payment', 'owner_sehi', 'owner_retirement', 'w2_wages')
+        OR (payment_taxpayer_id IS NULL AND payment_person_id IS NULL))),
   CONSTRAINT chk_tax_est_account_treatments_nonempty
     CHECK (treatment IS NOT NULL OR non_recurring)
 );

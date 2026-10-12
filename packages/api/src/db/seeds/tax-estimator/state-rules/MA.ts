@@ -45,8 +45,8 @@ export const MA_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'MA', year: 2025, key: 'farmer.rule', value: {"ratio": 0.6666666666, "current_pct": 0.6666666667, "due_date": "2026-03-02", "file_by": "2026-03-02"},
-    citation: "G.L. c.62B s.14(c) (66 2/3% for a farmer or fisherman) and s.14(h) (no addition if a farmer or fisherman, gross income from farming or fishing at least two-thirds of total gross income for the year or the preceding year, files and pays in full \"on or before March first of the following taxable year\"); Form M-2210 (2025) Exceptions (\"filed and paid in full with your return by March 1, 2026\"); AP 241 s.241.4 Exception 2. Massachusetts has NO single January 15 farmer installment: the farmer otherwise owes four 25% installments of 66 2/3%; due_date = file_by = March 1. March 1, 2026 is a Sunday -> March 2, 2026 under G.L. c.4 s.9 (act or payment due on a Sunday or legal holiday may be performed on the next succeeding business day) and Form M-2210 (2025) General Information (\"Whenever a due date falls on a Saturday, Sunday or legal holiday, the payment may be made on the next succeeding business day\").",
+    state: 'MA', year: 2025, key: 'farmer.rule', value: {"ratio": 0.6666666666, "current_pct": 0.6666666667, "due_date": "2026-01-15", "file_by": "2026-03-02", "treatment": "quarterly"},
+    citation: "M.G.L. c.62B §14(c) (malegislature.gov, read 2026-10-12): \"there shall be four required installments\" (Apr 15, Jun 15, Sep 15, Jan 15), the required annual payment being the lesser of 80% \"or sixty-six and two-thirds per cent in the case of a farmer or fisherman\" or 100% of prior-year tax; §14(h): no addition if a farmer or fisherman (two-thirds test, current or preceding year) files and pays in full \"on or before March first of the following taxable year\". treatment quarterly = the regular four installments at 66 2/3%; due_date = last installment; file_by = the March 1 waiver (R5 M14). March 1, 2026 (Sunday) stored rolled to March 2.",
     status: 'verified',
   },
   {
@@ -111,8 +111,8 @@ export const MA_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'MA', year: 2026, key: 'farmer.rule', value: {"ratio": 0.6666666666, "current_pct": 0.6666666667, "due_date": "2027-03-01", "file_by": "2027-03-01"},
-    citation: "G.L. c.62B s.14(c) (66 2/3% for a farmer or fisherman) and s.14(h) (file and pay in full \"on or before March first of the following taxable year\"; two-thirds gross-income test); AP 241 s.241.4 Exception 2 (\"on or before the first day of the third month of the following year\"). No single January 15 farmer installment in Massachusetts; due_date = file_by = March 1, 2027 (a Monday, no roll). Statutes read 2026-10-11 are current law for TY2026.",
+    state: 'MA', year: 2026, key: 'farmer.rule', value: {"ratio": 0.6666666666, "current_pct": 0.6666666667, "due_date": "2027-01-15", "file_by": "2027-03-01", "treatment": "quarterly"},
+    citation: "M.G.L. c.62B §14(c) (malegislature.gov, read 2026-10-12): \"there shall be four required installments\" (Apr 15, Jun 15, Sep 15, Jan 15), the required annual payment being the lesser of 80% \"or sixty-six and two-thirds per cent in the case of a farmer or fisherman\" or 100% of prior-year tax; §14(h): no addition if a farmer or fisherman (two-thirds test, current or preceding year) files and pays in full \"on or before March first of the following taxable year\". treatment quarterly = the regular four installments at 66 2/3%; due_date = last installment; file_by = the March 1 waiver (R5 M14).",
     status: 'verified',
   },
   {
@@ -139,5 +139,75 @@ export const MA_RULES: StateRuleSeedRow[] = [
     state: 'MA', year: 2026, key: 'holidays', value: ["2025-01-01", "2025-01-20", "2025-02-17", "2025-04-21", "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01", "2025-10-13", "2025-11-11", "2025-11-27", "2025-12-25", "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-20", "2026-05-25", "2026-06-19", "2026-07-04", "2026-09-07", "2026-10-12", "2026-11-11", "2026-11-26", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-04-19", "2027-05-31", "2027-06-19", "2027-07-05", "2027-09-06", "2027-10-11", "2027-11-11", "2027-11-25", "2027-12-25"],
     citation: "G.L. c.4 7 Eighteenth (Jan 1, June 19, July 4, Nov 11, Dec 25 or the following day if Sunday; 3rd Mon Jan, 3rd Mon Feb, 3rd Mon Apr (Patriots' Day), last Mon May, 1st Mon Sep, 2nd Mon Oct, Thanksgiving). Suffolk County-only days (Evacuation Day, Bunker Hill Day) excluded. Saturday holidays not moved. Calendar 2025-2027 computed from the statute.",
     status: 'verified',
+  },
+  {
+    state: 'MA', year: 2025, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2025 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'MA', year: 2025, key: 'threshold_comparison', value: "more_than",
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md m1/D2: the requirement and penalty tests read \"more than\" the dollar threshold); primary source not re-read in this task (agency page blocked or not reached).",
+    status: 'unverified',
+  },
+  {
+    state: 'MA', year: 2025, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MA', year: 2025, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MA', year: 2025, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MA', year: 2025, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MA', year: 2025, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MA', year: 2026, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2026 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'MA', year: 2026, key: 'threshold_comparison', value: "more_than",
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md m1/D2: the requirement and penalty tests read \"more than\" the dollar threshold); primary source not re-read in this task (agency page blocked or not reached).",
+    status: 'unverified',
+  },
+  {
+    state: 'MA', year: 2026, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MA', year: 2026, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MA', year: 2026, key: 'penalty.rate_schedule', value: [{"from": "2026-01-01", "to": "2026-03-31", "rate": 0.08}, {"from": "2026-04-01", "to": "2026-06-30", "rate": 0.07}, {"from": "2026-07-01", "to": "2026-12-31", "rate": 0.08}],
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md M12: TIR 25-4, 26-2, 26-5; Q1 2026 8%, Q2 7%, Q3-Q4 8%; Q1 2027 unpublished); primary source not re-read in this task (agency page blocked or not reached).",
+    status: 'unverified',
+  },
+  {
+    state: 'MA', year: 2026, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MA', year: 2026, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
   },
 ];

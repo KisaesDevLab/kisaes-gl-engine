@@ -23,7 +23,7 @@ import {
   requiredStateRuleKeys, isIncomeTaxState, rollDateToYear, nextBusinessDay, stateRuleRef,
   type StateCode, type StateRuleSeedRow, type ParameterStatus,
   type StateRulesDTO, type StateRuleRowDTO, type StateRuleSummaryDTO,
-  type CreateStateYearFromPriorResult, type StateRuleDiffRowDTO, type StateRuleChangeDTO,
+  type CreateStateYearFromPriorResult, type StateRulesEngineView, type StateRuleDiffRowDTO, type StateRuleChangeDTO,
 } from '@kis-books/shared';
 import { db, type DbOrTx } from '../../db/index.js';
 import { stateEstimateRules, stateEstimateRuleOverrides } from '../../db/schema/tax-estimator-state-rules.js';
@@ -39,6 +39,11 @@ const MIN_REASON_LEN = 3;
 const HOLIDAYS_KEY = 'holidays';
 const DUE_DATES_KEY = 'installments.due_dates';
 const FARMER_KEY = 'farmer.rule';
+const SINGLE_DATE_KEYS: readonly string[] = ['installments.q4_file_and_pay_date', 'return_due_date'];
+const RATE_SCHEDULE_KEY = 'penalty.rate_schedule';
+const ESTIMATES_REQUIRED_KEY = 'estimates_required';
+/** Voucher-schedule keys withheld from the engine when a state has no estimate regime. */
+const VOUCHER_KEYS: readonly string[] = ['installments.due_dates', 'installments.pcts', 'installments.q4_file_and_pay_date'];
 const STATUSES: readonly string[] = ['verified', 'unverified', 'provisional'];
 
 interface ResolvedValue {
@@ -250,23 +255,25 @@ function countsOf(resolved: Map<string, ResolvedValue>): StateRuleSummaryDTO['co
   return counts;
 }
 
-interface EngineView { rules: Record<string, unknown>; usesFederalFallback: boolean; verifyBadge: boolean }
+type EngineView = StateRulesEngineView;
 
 /** The shared decision behind summaries and the engine resolver (no earlier-year fallback). */
 function engineView(state: StateCode, resolved: Map<string, ResolvedValue>): EngineView {
   if (resolved.size === 0) {
-    if (!isIncomeTaxState(state)) return { rules: { has_income_tax: false }, usesFederalFallback: false, verifyBadge: true };
-    return { rules: {}, usesFederalFallback: true, verifyBadge: true };
+    if (!isIncomeTaxState(state)) return { rules: { has_income_tax: false }, usesFederalFallback: false, verifyBadge: true, estimatesRequired: false };
+    return { rules: {}, usesFederalFallback: true, verifyBadge: true, estimatesRequired: true };
   }
   const allVerified = [...resolved.values()].every((r) => r.status === 'verified');
   if (!incomeTaxOf(state, resolved)) {
     const flag = resolved.get('has_income_tax');
-    return { rules: { has_income_tax: false }, usesFederalFallback: false, verifyBadge: !flag || flag.status !== 'verified' };
+    return { rules: { has_income_tax: false }, usesFederalFallback: false, verifyBadge: !flag || flag.status !== 'verified', estimatesRequired: false };
   }
   const rules: Record<string, unknown> = {};
   for (const [k, r] of resolved) rules[k] = r.value;
-  if (missingKeys(state, resolved).length > 0) return { rules, usesFederalFallback: true, verifyBadge: true };
-  return { rules, usesFederalFallback: false, verifyBadge: !allVerified };
+  if (missingKeys(state, resolved).length > 0) return { rules, usesFederalFallback: true, verifyBadge: true, estimatesRequired: true };
+  const estimatesRequired = rules[ESTIMATES_REQUIRED_KEY] !== false;
+  if (!estimatesRequired) for (const k of VOUCHER_KEYS) delete rules[k];
+  return { rules, usesFederalFallback: false, verifyBadge: !allVerified, estimatesRequired };
 }
 
 export async function listSummaries(year: number, executor: DbOrTx = db): Promise<StateRuleSummaryDTO[]> {
@@ -373,6 +380,14 @@ export async function createYearFromPrior(year: number, userId?: string): Promis
           value = holidays; rolledDates.push(`${state}:${def.key}`);
         } else if (def.key === DUE_DATES_KEY && Array.isArray(value)) {
           value = value.map(biz); rolledDates.push(`${state}:${def.key}`);
+        } else if (SINGLE_DATE_KEYS.includes(def.key) && typeof value === 'string') {
+          value = biz(value); rolledDates.push(`${state}:${def.key}`);
+        } else if (def.key === RATE_SCHEDULE_KEY && Array.isArray(value)) {
+          // Same calendar legs one year later; the rates themselves must be re-read (provisional).
+          value = (value as Array<{ from: string; to: string; rate: number }>).map((p) => ({
+            from: rollDateToYear(p.from, fromYear, year), to: rollDateToYear(p.to, fromYear, year), rate: p.rate,
+          }));
+          rolledDates.push(`${state}:${def.key}`);
         } else if (def.key === FARMER_KEY && value && typeof value === 'object') {
           const f = value as { due_date?: unknown; file_by?: unknown };
           value = { ...f, due_date: biz(f.due_date), file_by: biz(f.file_by) }; rolledDates.push(`${state}:${def.key}`);

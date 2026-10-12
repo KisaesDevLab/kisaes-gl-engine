@@ -9,14 +9,21 @@
 //
 // Every function runs the D1 scope guard first, and every query is pinned to
 // that single verified tenant (+ company). Writes are audited against the
-// books tenant with entityType 'tax_est_treatment'. Suggestions are returned,
-// never applied.
+// books tenant with entityType 'tax_est_treatment', tagged with the acting
+// firm (R1 F16). Suggestions are returned, never applied.
+//
+// Validation (R1 F1, F9, F10): each treatment applies only to its account
+// types (TREATMENT_ACCOUNT_TYPES → 422 TE_TREATMENT_ACCOUNT_TYPE) and entity
+// types (guaranteed_payment = partnership only → 422
+// TE_TREATMENT_NOT_FOR_ENTITY); a guaranteed payment and an S corp owner item
+// need a person target (422 TE_PERSON_REQUIRED).
 
 import { and, count, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import type {
-  AccountTreatment, AccountTreatmentDto, AccountTreatmentInput, PagedList, PutTransactionFlagsInput,
-  TransactionFlagDto, TreatmentSuggestion,
+  AccountTreatment, AccountTreatmentDto, AccountTreatmentInput, EntityTaxType, PagedList, PutTransactionFlagsInput,
+  TaxCodeRef, TransactionFlagDto, TreatmentSuggestion,
 } from '@kis-books/shared';
+import { TREATMENT_ACCOUNT_TYPES, TREATMENT_ENTITY_TYPES, allowsPersonTarget, personRequiredFor } from '@kis-books/shared';
 import { db } from '../../db/index.js';
 import {
   accounts, taxEstAccountTreatments, taxEstPersons, taxEstTaxpayers, taxEstTransactionFlags, transactions,
@@ -24,9 +31,16 @@ import {
 import { auditLog } from '../../middleware/audit.js';
 import { AppError } from '../../utils/errors.js';
 import type { FirmScope } from './firm-scope.service.js';
-import { assertEntityInScope } from './entity-type.service.js';
+import { assertEntityInScope, resolveForCompany } from './entity-type.service.js';
+import { listAssignments } from '../tb/balance-engine.service.js';
+import { impliedTreatmentForCode } from './pl-provider.service.js';
 
 const AUDIT_ENTITY = 'tax_est_treatment';
+
+/** Audit row tagged with the acting firm, like the taxpayer audits (R1 F16). */
+function tagFirm(scope: FirmScope, v: unknown | null): unknown | null {
+  return v ? { ...(v as object), firmId: scope.firmId } : null;
+}
 
 export interface ListOptions { limit: number; offset: number }
 
@@ -99,15 +113,49 @@ async function validatePaymentTargets(scope: FirmScope, inputs: AccountTreatment
   }
 }
 
+/** Account-type, entity-type and person-target rules (R1 F1, F9, F10). Exported for tests. */
+export function validateTreatmentRules(
+  inputs: AccountTreatmentInput[], accountTypes: Map<string, string>, entityType: EntityTaxType | null,
+): void {
+  for (const i of inputs) {
+    const t = i.treatment;
+    if (!t) continue;
+    const accountType = accountTypes.get(i.accountId) ?? '';
+    const allowedTypes = TREATMENT_ACCOUNT_TYPES[t];
+    if (allowedTypes && !allowedTypes.includes(accountType)) {
+      throw AppError.unprocessableEntity(
+        `The ${t} treatment does not apply to a ${accountType} account (allowed: ${allowedTypes.join(', ')})`,
+        'TE_TREATMENT_ACCOUNT_TYPE', { accountId: i.accountId, treatment: t, accountType },
+      );
+    }
+    const allowedEntities = TREATMENT_ENTITY_TYPES[t];
+    if (allowedEntities && (!entityType || !allowedEntities.includes(entityType))) {
+      throw AppError.unprocessableEntity(
+        `The ${t} treatment applies to ${allowedEntities.join(' / ')} entities only (this entity: ${entityType ?? 'not set'})`,
+        'TE_TREATMENT_NOT_FOR_ENTITY', { accountId: i.accountId, treatment: t, entityType },
+      );
+    }
+    if (personRequiredFor(t, entityType) && !i.paymentPersonId) {
+      throw AppError.unprocessableEntity(
+        t === 'guaranteed_payment'
+          ? 'A guaranteed payment needs the partner it is paid to'
+          : 'An S corp owner treatment needs the officer (person) it belongs to',
+        'TE_PERSON_REQUIRED', { accountId: i.accountId, treatment: t },
+      );
+    }
+  }
+}
+
 export async function putTreatments(
   scope: FirmScope, tenantId: string, companyId: string, inputs: AccountTreatmentInput[], userId?: string,
 ): Promise<PagedList<AccountTreatmentDto>> {
-  await assertEntityInScope(scope, tenantId, companyId);
+  const company = await assertEntityInScope(scope, tenantId, companyId);
   const accountIds = [...new Set(inputs.map((i) => i.accountId))];
   if (accountIds.length !== inputs.length) throw AppError.badRequest('Each account may appear once', 'TE_DUPLICATE_ACCOUNT');
-  const found = await db.select({ id: accounts.id }).from(accounts)
+  const found = await db.select({ id: accounts.id, accountType: accounts.accountType }).from(accounts)
     .where(and(companyAccountCond(tenantId, companyId), inArray(accounts.id, accountIds)));
   if (found.length !== accountIds.length) throw new AppError(404, 'Account not found', 'TE_ACCOUNT_NOT_FOUND');
+  validateTreatmentRules(inputs, new Map(found.map((a) => [a.id, a.accountType])), (await resolveForCompany(company)).entityType);
   await validatePaymentTargets(scope, inputs);
 
   await db.transaction(async (tx) => {
@@ -124,16 +172,17 @@ export async function putTreatments(
         if (before) {
           await tx.delete(taxEstAccountTreatments)
             .where(and(eq(taxEstAccountTreatments.tenantId, tenantId), eq(taxEstAccountTreatments.id, before.id)));
-          await auditLog(tenantId, 'delete', AUDIT_ENTITY, before.id, before, null, userId, tx);
+          await auditLog(tenantId, 'delete', AUDIT_ENTITY, before.id, tagFirm(scope, before), null, userId, tx);
         }
         continue;
       }
       const isPayment = input.treatment === 'estimated_tax_payment';
+      const hasPerson = allowsPersonTarget(input.treatment);
       const values = {
         treatment: input.treatment,
         pct: input.treatment === 'nondeductible_pct' ? input.pct ?? null : null,
-        paymentTaxpayerId: isPayment ? input.paymentTaxpayerId ?? null : null,
-        paymentPersonId: isPayment ? input.paymentPersonId ?? null : null,
+        paymentTaxpayerId: hasPerson ? input.paymentTaxpayerId ?? null : null,
+        paymentPersonId: hasPerson ? input.paymentPersonId ?? null : null,
         paymentJurisdiction: isPayment ? input.paymentJurisdiction ?? null : null,
         nonRecurring: input.nonRecurring,
         updatedBy: userId ?? null,
@@ -146,7 +195,7 @@ export async function putTreatments(
         : await tx.insert(taxEstAccountTreatments)
           .values({ tenantId, companyId, accountId: input.accountId, ...values })
           .returning();
-      await auditLog(tenantId, before ? 'update' : 'create', AUDIT_ENTITY, after!.id, before ?? null, after, userId, tx);
+      await auditLog(tenantId, before ? 'update' : 'create', AUDIT_ENTITY, after!.id, tagFirm(scope, before ?? null), tagFirm(scope, after), userId, tx);
     }
   });
   return listTreatments(scope, tenantId, companyId, { limit: 500, offset: 0 });
@@ -210,7 +259,7 @@ export async function putTransactionFlags(
         if (before) {
           await tx.delete(taxEstTransactionFlags)
             .where(and(eq(taxEstTransactionFlags.tenantId, tenantId), eq(taxEstTransactionFlags.id, before.id)));
-          await auditLog(tenantId, 'delete', AUDIT_ENTITY, before.id, { ...before, kind: 'transaction_flag' }, null, userId, tx);
+          await auditLog(tenantId, 'delete', AUDIT_ENTITY, before.id, tagFirm(scope, { ...before, kind: 'transaction_flag' }), null, userId, tx);
         }
         continue;
       }
@@ -218,7 +267,7 @@ export async function putTransactionFlags(
       const [after] = await tx.insert(taxEstTransactionFlags)
         .values({ tenantId, transactionId: f.transactionId, nonRecurring: true, updatedBy: userId ?? null })
         .returning();
-      await auditLog(tenantId, 'create', AUDIT_ENTITY, after!.id, null, { ...after, kind: 'transaction_flag' }, userId, tx);
+      await auditLog(tenantId, 'create', AUDIT_ENTITY, after!.id, null, tagFirm(scope, { ...after, kind: 'transaction_flag' }), userId, tx);
     }
   });
   return listTransactionFlags(scope, tenantId, companyId, { limit: 500, offset: 0 });
@@ -276,14 +325,41 @@ export function suggestTreatmentFor(name: string, accountType: string): Omit<Tre
       pct: rule.pct ?? null,
       paymentJurisdiction: rule.jurisdiction ? rule.jurisdiction(n) : null,
       reason: rule.reason(accountType),
+      basis: 'name',
     };
   }
   return null;
 }
 
+/**
+ * Suggestion from the account's TB tax code (R1 F1, F3): 1065 guaranteed-
+ * payment codes → guaranteed_payment (partnership only; the partner must
+ * still be picked); 1040 Sch 1 L17 SEHI codes → owner_sehi (the provider
+ * already honours the code — the suggestion lets the CPA confirm it).
+ * Exported for tests.
+ */
+export function suggestFromCode(
+  code: TaxCodeRef | null, accountType: string, entityType: EntityTaxType | null,
+): Omit<TreatmentSuggestion, 'accountId' | 'accountNumber' | 'accountName' | 'accountType'> | null {
+  const implied = impliedTreatmentForCode(code);
+  if (!implied || !code) return null;
+  if (!(TREATMENT_ACCOUNT_TYPES[implied] ?? []).includes(accountType)) return null;
+  if (implied === 'guaranteed_payment' && entityType !== 'partnership') return null;
+  return {
+    treatment: implied,
+    pct: null,
+    paymentJurisdiction: null,
+    reason: implied === 'guaranteed_payment'
+      ? `TB code ${code.code}${code.description ? ` (${code.description})` : ''} is a guaranteed payment; pick the partner it is paid to so it reaches that partner's income.`
+      : `TB code ${code.code}${code.description ? ` (${code.description})` : ''} is owner self-employed health insurance; already routed to the owner from the TB code.`,
+    basis: 'tb_code',
+  };
+}
+
 export async function suggestTreatments(scope: FirmScope, tenantId: string, companyId: string): Promise<TreatmentSuggestion[]> {
-  await assertEntityInScope(scope, tenantId, companyId);
-  const [accts, existing] = await Promise.all([
+  const company = await assertEntityInScope(scope, tenantId, companyId);
+  const resolved = await resolveForCompany(company);
+  const [accts, existing, assignments] = await Promise.all([
     db.select({
       id: accounts.id, accountNumber: accounts.accountNumber, name: accounts.name, accountType: accounts.accountType,
     }).from(accounts)
@@ -292,12 +368,22 @@ export async function suggestTreatments(scope: FirmScope, tenantId: string, comp
     db.select({ accountId: taxEstAccountTreatments.accountId, treatment: taxEstAccountTreatments.treatment })
       .from(taxEstAccountTreatments)
       .where(and(eq(taxEstAccountTreatments.tenantId, tenantId), eq(taxEstAccountTreatments.companyId, companyId))),
+    listAssignments(tenantId, companyId),
   ]);
+  // Seed code per account (account-level row first), by code identity.
+  const codeByAccount = new Map<string, TaxCodeRef>();
+  for (const a of [...assignments].sort((x, y) => (x.activityUnitId === null ? -1 : 0) - (y.activityUnitId === null ? -1 : 0))) {
+    if (codeByAccount.has(a.accountId) || !a.seedCode || !a.seedActivityType) continue;
+    codeByAccount.set(a.accountId, {
+      returnForm: resolved.tbReturnForm ?? '', activityType: a.seedActivityType, code: a.seedCode, description: '', source: 'seed',
+    });
+  }
   const treated = new Set(existing.filter((e) => e.treatment !== null).map((e) => e.accountId));
   const out: TreatmentSuggestion[] = [];
   for (const a of accts) {
     if (treated.has(a.id)) continue;
-    const s = suggestTreatmentFor(a.name, a.accountType);
+    const s = suggestFromCode(codeByAccount.get(a.id) ?? null, a.accountType, resolved.entityType)
+      ?? suggestTreatmentFor(a.name, a.accountType);
     if (!s) continue;
     out.push({ accountId: a.id, accountNumber: a.accountNumber, accountName: a.name, accountType: a.accountType, ...s });
   }

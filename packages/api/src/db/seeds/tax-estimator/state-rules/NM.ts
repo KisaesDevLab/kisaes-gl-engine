@@ -46,8 +46,8 @@ export const NM_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'NM', year: 2025, key: 'farmer.rule', value: {"ratio": 0.6666666666, "current_pct": 0.9, "due_date": "2026-01-15", "file_by": "2026-03-01"},
-    citation: '2025 PIT-ES Instructions "Exception for farmers and ranchers" (at least 2/3 of gross income from farming/ranching this year or last: one payment of the required annual payment on or before January 15, or file and pay in full on or before March 1); Form RPD-41272 (2025) instruction 10 ("If you are a qualified farmer or rancher, enter 100% of the required annual payment on line 12, column d"; filed and paid in full by March 1 = no penalty) with lines 5-7 (required annual payment = lesser of 90% of current-year tax and 100% of prior-year tax). NM therefore uses 90% (not the federal 66 2/3%) for farmers despite calling the rule "identical to the federal rule"; current_pct 0.9 confirmed and the prior-year 100% alternative also applies. March 1 dates stored as printed (TY2025: Sunday). Audit 2026-10-11: upgraded from unverified.',
+    state: 'NM', year: 2025, key: 'farmer.rule', value: {"ratio": 0.6666666666, "current_pct": 0.6666666667, "due_date": "2026-01-15", "file_by": "2026-03-01"},
+    citation: "NMSA 1978 §7-2-12.2(E) as enacted by Laws 2011, HB 470 (nmlegis.gov/Sessions/11 Regular/final/HB0470.pdf, read 2026-10-12): a rancher or farmer (two-thirds of gross income from ranching/farming this year OR the previous year) may pay the required annual payment in one installment by January 15 or file and pay by March 1, and \"A penalty under Subsection G of this section shall not be imposed unless the rancher or farmer underpays the tax by more than one-third\" — i.e. 66 2/3% (R5 M4). March 1, 2026 stored as printed (statutory date; R5 m10 convention note).",
     status: 'verified',
   },
   {
@@ -71,9 +71,9 @@ export const NM_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'NM', year: 2025, key: 'holidays', value: ["2025-01-01", "2025-01-20", "2025-02-17", "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01", "2025-10-13", "2025-11-11", "2025-11-27", "2025-11-28", "2025-12-25", "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25", "2026-06-19", "2026-07-03", "2026-07-04", "2026-09-07", "2026-10-12", "2026-11-11", "2026-11-26", "2026-11-27", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-05-31", "2027-06-18", "2027-06-19", "2027-07-04", "2027-07-05", "2027-09-06", "2027-10-11", "2027-11-11", "2027-11-25", "2027-12-24", "2027-12-25", "2027-12-31"],
-    citation: 'Form RPD-41272 (2025, Rev. 12/22/2025) instructions "Due dates": "The Department does observe Federal and State holidays ... If the due date falls on a Saturday, Sunday, or a Federal/State holiday the due date is the next business day." List = union of (1) federal legal public holidays, 5 U.S.C. §6103(a) (read at law.cornell.edu: New Year, MLK, Washington, Memorial, Juneteenth, July 4, Labor, Columbus, Veterans, Thanksgiving, Christmas; Saturday -> preceding Friday per §6103(b)(1), Sunday -> Monday per Executive Order 11582 (EO not read), incl. 2027-12-31 for Jan 1, 2028) and (2) the New Mexico State Personnel Board paid holiday schedules: SPO General Memorandum 2024-007 (2025: adds Fri Nov 28, 2025 "Presidents\' Day (Observed)") and General Memorandum 2025-015 (2026: Independence Day observed Fri July 3, Presidents\' Day observed Fri Nov 27, 2026). The 2027 state schedule is not yet published, so 2027 carries only federal dates (the likely Fri Nov 26, 2027 state day is omitted; it affects no TY2026 date). NMSA 1978 §12-5-2 still not readable (403). Audit 2026-10-11: replaced the researcher\'s bank-holiday list (which lacked the Friday-after-Thanksgiving state days and the Saturday->Friday observances) and upgraded from unverified.',
-    status: 'verified',
+    state: 'NM', year: 2025, key: 'holidays', value: ["2025-01-01", "2025-01-20", "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01", "2025-10-13", "2025-11-11", "2025-11-27", "2025-11-28", "2025-12-25", "2026-01-01", "2026-01-19", "2026-05-25", "2026-06-19", "2026-07-03", "2026-07-04", "2026-09-07", "2026-10-12", "2026-11-11", "2026-11-26", "2026-11-27", "2026-12-25", "2027-01-01", "2027-01-18", "2027-05-31", "2027-06-18", "2027-06-19", "2027-07-04", "2027-07-05", "2027-09-06", "2027-10-11", "2027-11-11", "2027-11-25", "2027-12-24", "2027-12-25", "2027-12-31"],
+    citation: "Corrected per R5 review m6 (SPO General Memoranda 2024-007 and 2025-015: Presidents' Day is observed on the day after Thanksgiving, not in February); not re-read in this task. Previous citation: Form RPD-41272 (2025, Rev. 12/22/2025) instructions \"Due dates\": \"The Department does observe Federal and State holidays ... If the due date falls on a Saturday, Sunday, or a Federal/State holiday the due date is the next business day.\" List = union of (1) federal legal public holidays, 5 U.S.C. §6103(a) (read at law.cornell.edu: New Year, MLK, Washington, Memorial, Juneteenth, July 4, Labor, Columbus, Veterans, Thanksgiving, Christmas; Saturday -> preceding Friday per §6103(b)(1), Sunday -> Monday per Executive Order 11582 (EO not read), incl. 2027-12-31 for Jan 1, 2028) and (2) the New Mexico State Personnel Board paid holiday schedules: SPO General Memorandum 2024-007 (2025: adds Fri Nov 28, 2025 \"Presidents' Day (Observed)\") and General Memorandum 2025-015 (2026: Independence Day observed Fri July 3, Presidents' Day observed Fri Nov 27, 2026). The 2027 state schedule is not yet published, so 2027 carries only federal dates (the likely Fri Nov 26, 2027 state day is omitted; it affects no TY2026 date). NMSA 1978 §12-5-2 still not readable (403). Audit 2026-10-11: replaced the researcher's bank-holiday list (which lacked the Friday-after-Thanksgiving state days and the Saturday->Friday observances) and upgraded from unverified.",
+    status: 'unverified',
   },
   // ------------------------------------------------------------------ 2026
   {
@@ -112,8 +112,8 @@ export const NM_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'NM', year: 2026, key: 'farmer.rule', value: {"ratio": 0.6666666666, "current_pct": 0.9, "due_date": "2027-01-15", "file_by": "2027-03-01"},
-    citation: '2025 PIT-ES Instructions "Exception for farmers and ranchers" (at least 2/3 of gross income from farming/ranching this year or last: one payment of the required annual payment on or before January 15, or file and pay in full on or before March 1); Form RPD-41272 (2025) instruction 10 ("If you are a qualified farmer or rancher, enter 100% of the required annual payment on line 12, column d"; filed and paid in full by March 1 = no penalty) with lines 5-7 (required annual payment = lesser of 90% of current-year tax and 100% of prior-year tax). NM therefore uses 90% (not the federal 66 2/3%) for farmers despite calling the rule "identical to the federal rule"; current_pct 0.9 confirmed and the prior-year 100% alternative also applies. March 1 dates stored as printed (TY2025: Sunday). Audit 2026-10-11: upgraded from unverified.',
+    state: 'NM', year: 2026, key: 'farmer.rule', value: {"ratio": 0.6666666666, "current_pct": 0.6666666667, "due_date": "2027-01-15", "file_by": "2027-03-01"},
+    citation: "NMSA 1978 §7-2-12.2(E) as enacted by Laws 2011, HB 470 (nmlegis.gov/Sessions/11 Regular/final/HB0470.pdf, read 2026-10-12): a rancher or farmer (two-thirds of gross income from ranching/farming this year OR the previous year) may pay the required annual payment in one installment by January 15 or file and pay by March 1, and \"A penalty under Subsection G of this section shall not be imposed unless the rancher or farmer underpays the tax by more than one-third\" — i.e. 66 2/3% (R5 M4).",
     status: 'verified',
   },
   {
@@ -137,8 +137,78 @@ export const NM_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'NM', year: 2026, key: 'holidays', value: ["2025-01-01", "2025-01-20", "2025-02-17", "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01", "2025-10-13", "2025-11-11", "2025-11-27", "2025-11-28", "2025-12-25", "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25", "2026-06-19", "2026-07-03", "2026-07-04", "2026-09-07", "2026-10-12", "2026-11-11", "2026-11-26", "2026-11-27", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-05-31", "2027-06-18", "2027-06-19", "2027-07-04", "2027-07-05", "2027-09-06", "2027-10-11", "2027-11-11", "2027-11-25", "2027-12-24", "2027-12-25", "2027-12-31"],
-    citation: 'Form RPD-41272 (2025, Rev. 12/22/2025) instructions "Due dates": "The Department does observe Federal and State holidays ... If the due date falls on a Saturday, Sunday, or a Federal/State holiday the due date is the next business day." List = union of (1) federal legal public holidays, 5 U.S.C. §6103(a) (read at law.cornell.edu: New Year, MLK, Washington, Memorial, Juneteenth, July 4, Labor, Columbus, Veterans, Thanksgiving, Christmas; Saturday -> preceding Friday per §6103(b)(1), Sunday -> Monday per Executive Order 11582 (EO not read), incl. 2027-12-31 for Jan 1, 2028) and (2) the New Mexico State Personnel Board paid holiday schedules: SPO General Memorandum 2024-007 (2025: adds Fri Nov 28, 2025 "Presidents\' Day (Observed)") and General Memorandum 2025-015 (2026: Independence Day observed Fri July 3, Presidents\' Day observed Fri Nov 27, 2026). The 2027 state schedule is not yet published, so 2027 carries only federal dates (the likely Fri Nov 26, 2027 state day is omitted; it affects no TY2026 date). NMSA 1978 §12-5-2 still not readable (403). Audit 2026-10-11: replaced the researcher\'s bank-holiday list (which lacked the Friday-after-Thanksgiving state days and the Saturday->Friday observances) and upgraded from unverified.',
+    state: 'NM', year: 2026, key: 'holidays', value: ["2025-01-01", "2025-01-20", "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01", "2025-10-13", "2025-11-11", "2025-11-27", "2025-11-28", "2025-12-25", "2026-01-01", "2026-01-19", "2026-05-25", "2026-06-19", "2026-07-03", "2026-07-04", "2026-09-07", "2026-10-12", "2026-11-11", "2026-11-26", "2026-11-27", "2026-12-25", "2027-01-01", "2027-01-18", "2027-05-31", "2027-06-18", "2027-06-19", "2027-07-04", "2027-07-05", "2027-09-06", "2027-10-11", "2027-11-11", "2027-11-25", "2027-11-26", "2027-12-24", "2027-12-25", "2027-12-31"],
+    citation: "Corrected per R5 review m6 (SPO General Memoranda 2024-007 and 2025-015: Presidents' Day is observed on the day after Thanksgiving, not in February); not re-read in this task. Previous citation: Form RPD-41272 (2025, Rev. 12/22/2025) instructions \"Due dates\": \"The Department does observe Federal and State holidays ... If the due date falls on a Saturday, Sunday, or a Federal/State holiday the due date is the next business day.\" List = union of (1) federal legal public holidays, 5 U.S.C. §6103(a) (read at law.cornell.edu: New Year, MLK, Washington, Memorial, Juneteenth, July 4, Labor, Columbus, Veterans, Thanksgiving, Christmas; Saturday -> preceding Friday per §6103(b)(1), Sunday -> Monday per Executive Order 11582 (EO not read), incl. 2027-12-31 for Jan 1, 2028) and (2) the New Mexico State Personnel Board paid holiday schedules: SPO General Memorandum 2024-007 (2025: adds Fri Nov 28, 2025 \"Presidents' Day (Observed)\") and General Memorandum 2025-015 (2026: Independence Day observed Fri July 3, Presidents' Day observed Fri Nov 27, 2026). The 2027 state schedule is not yet published, so 2027 carries only federal dates (the likely Fri Nov 26, 2027 state day is omitted; it affects no TY2026 date). NMSA 1978 §12-5-2 still not readable (403). Audit 2026-10-11: replaced the researcher's bank-holiday list (which lacked the Friday-after-Thanksgiving state days and the Saturday->Friday observances) and upgraded from unverified.",
+    status: 'unverified',
+  },
+  {
+    state: 'NM', year: 2025, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2025 installments.due_dates row). R5 key (2026-10-12).",
     status: 'verified',
+  },
+  {
+    state: 'NM', year: 2025, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NM', year: 2025, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NM', year: 2025, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NM', year: 2025, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NM', year: 2025, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NM', year: 2025, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NM', year: 2026, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2026 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'NM', year: 2026, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NM', year: 2026, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NM', year: 2026, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NM', year: 2026, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NM', year: 2026, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NM', year: 2026, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
   },
 ];

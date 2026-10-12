@@ -164,10 +164,11 @@ describe('books readiness', () => {
     expect(closed.unreconciledAccounts).toHaveLength(0);
   });
 
-  it('a never-reconciled active account → no closed month', async () => {
+  it('a never-reconciled active account is closed only through the month before its first activity (R1 F11)', async () => {
     await db.delete(reconciliations).where(and(eq(reconciliations.tenantId, tA), eq(reconciliations.accountId, A.card)));
     const r = await getReadiness(scope, { tenantId: tA, companyId: cA, throughMonth: '2026-06' });
-    expect(r.lastClosedMonth).toBeNull();
+    // Amex first used Feb 3 → closed through Jan; checking through Sep.
+    expect(r.lastClosedMonth).toBe('2026-01');
     expect(r.unreconciledAccounts.map((a) => a.accountId)).toEqual([A.card]);
   });
 

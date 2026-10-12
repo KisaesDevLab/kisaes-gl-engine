@@ -165,4 +165,74 @@ export const HI_RULES: StateRuleSeedRow[] = [
     citation: "Hawaii DHRD 'Holidays to be observed in 2026 and 2027' (HRS 8-1), dhrd.hawaii.gov/wp-content/uploads/2026/06/State-Holidays-2026-2027.pdf (created 01/12/2026, subject to change); 2026 dates match DoTax CY 2026 Calendar of Due Dates. Calendar years 2026-2027.; statute HRS 8-1 (read 2026-10-11 at data.capitol.hawaii.gov/hrscurrent/Vol01_Ch0001-0042F/HRS0008/HRS_0008-0001.htm): Jan 1; 3rd Mon Jan; 3rd Mon Feb; Mar 26 (Prince Kuhio Day); Good Friday; last Mon May; Jun 11 (Kamehameha Day); Jul 4; 3rd Fri Aug (Statehood Day); 1st Mon Sep; Nov 11; 4th Thu Nov; Dec 25; 'All election days, except primary and special election days' (general election in even years: Nov 3, 2026). Observed dates for Saturday/Sunday holidays taken from the DHRD lists (e.g. Jul 4, 2026 -> Jul 3; Dec 25, 2027 -> Dec 24). 2027 Good Friday coincides with Prince Kuhio Day (Mar 26, 2027).",
     status: 'verified',
   },
+  {
+    state: 'HI', year: 2025, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2025 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'HI', year: 2025, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'HI', year: 2025, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'HI', year: 2025, key: 'return_due_date', value: "2026-04-20",
+    citation: "Form N-210 (2025) Instructions Part IV, files.hawaii.gov/tax/forms/2025/n210ins.pdf, read 2026-10-12: period of underpayment counted \"to and including the date of payment or April 20, 2026, whichever is earlier\".",
+    status: 'verified',
+  },
+  {
+    state: 'HI', year: 2025, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'HI', year: 2025, key: 'penalty.method', value: "monthly_or_fraction",
+    citation: "Form N-210 (2025) Instructions Part IV, files.hawaii.gov/tax/forms/2025/n210ins.pdf, read 2026-10-12: \"The underpayment penalty is computed on a monthly basis ... at the rate of 2/3% (.00667) a month or part of a month\"; \"A part of a month is counted as one month.\" penalty.rate 0.08 is the nominal annual equivalent (2/3% x 12). HRS §235-97(f).",
+    status: 'verified',
+  },
+  {
+    state: 'HI', year: 2025, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'HI', year: 2026, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2026 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'HI', year: 2026, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'HI', year: 2026, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'HI', year: 2026, key: 'return_due_date', value: "2027-04-20",
+    citation: "Hawaii individual return due the 20th day of the 4th month (Form N-210 2025 Part IV pattern: April 20 ends the penalty period). April 20, 2027 is a Tuesday. 2026 N-210 not read.",
+    status: 'unverified',
+  },
+  {
+    state: 'HI', year: 2026, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'HI', year: 2026, key: 'penalty.method', value: "monthly_or_fraction",
+    citation: "Form N-210 (2025) Instructions Part IV, files.hawaii.gov/tax/forms/2025/n210ins.pdf, read 2026-10-12 (2025 form; 2026 N-210 not yet published): 2/3% a month or part of a month. HRS §235-97(f).",
+    status: 'unverified',
+  },
+  {
+    state: 'HI', year: 2026, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
 ];

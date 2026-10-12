@@ -56,7 +56,7 @@ export const MI_RULES: StateRuleSeedRow[] = [
   },
   {
     state: 'MI', year: 2025, key: 'penalty.rate', value: 0.0866,
-    citation: "MCL 205.23(2) (deficiency in an estimated payment bears interest at 1 percentage point above the adjusted prime rate, reset January 1 and July 1); MI-2210 (2025) lines 19-21: Rate Period 1 9.47% (Apr 15-Jun 30, 2025); Period 2 8.66% (Jul 1-Dec 31, 2025); Period 3 8.48% (Jan 1-Jun 30, 2026); Revenue Administrative Bulletin 2026-10 rate table (same rates). CAUTION: three rates apply within one TY2025 underpayment; 8.66% (the period covering most installment-days) is stored. NOT EXPRESSIBLE: Michigan also adds a separate PENALTY of 10% of the underpaid installment (minimum $10) or 25% for not paying at all (minimum $25) per MI-2210 Part 3 / MI-1040ES; this key holds only the interest rate.",
+    citation: "Superseded on covered days by penalty.rate_schedule (R5 M9). MCL 205.23(2) (deficiency in an estimated payment bears interest at 1 percentage point above the adjusted prime rate, reset January 1 and July 1); MI-2210 (2025) lines 19-21: Rate Period 1 9.47% (Apr 15-Jun 30, 2025); Period 2 8.66% (Jul 1-Dec 31, 2025); Period 3 8.48% (Jan 1-Jun 30, 2026); Revenue Administrative Bulletin 2026-10 rate table (same rates). CAUTION: three rates apply within one TY2025 underpayment; 8.66% (the period covering most installment-days) is stored. NOT EXPRESSIBLE: Michigan also adds a separate PENALTY of 10% of the underpaid installment (minimum $10) or 25% for not paying at all (minimum $25) per MI-2210 Part 3 / MI-1040ES; this key holds only the interest rate.",
     status: 'verified',
   },
   {
@@ -70,9 +70,9 @@ export const MI_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'MI', year: 2025, key: 'holidays', value: ["2025-01-01", "2025-01-20", "2025-02-12", "2025-02-17", "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01", "2025-10-13", "2025-11-11", "2025-11-27", "2025-12-25", "2026-01-01", "2026-01-19", "2026-02-12", "2026-02-16", "2026-05-25", "2026-06-19", "2026-07-04", "2026-09-07", "2026-10-12", "2026-11-11", "2026-11-26", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-12", "2027-02-15", "2027-05-31", "2027-06-19", "2027-07-04", "2027-09-06", "2027-10-11", "2027-11-11", "2027-11-25", "2027-12-25"],
-    citation: "MCL 435.101(1) (Jan 1; MLK 3rd Mon Jan; Feb 12; Washington's Birthday 3rd Mon Feb; Memorial Day; June 19; July 4; Labor Day; Columbus Day 2nd Mon Oct; Nov 11; Thanksgiving; Dec 25; Saturday afternoons are half-holidays). The statute has no Sunday-to-Monday shift. Calendar 2025-2027 computed from the statute.",
-    status: 'verified',
+    state: 'MI', year: 2025, key: 'holidays', value: ["2025-01-01", "2025-01-20", "2025-02-17", "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01", "2025-11-11", "2025-11-27", "2025-11-28", "2025-12-24", "2025-12-25", "2025-12-31", "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07", "2026-11-03", "2026-11-11", "2026-11-26", "2026-11-27", "2026-12-24", "2026-12-25", "2026-12-31"],
+    citation: "Corrected per R5 review m5 (michigan.gov/som state holidays, Civil Service Commission Reg 5.08 — the previous list was New York's); not re-read in this task. The 2027 Michigan list is not published (only Jan 1, 2027 kept). Previous citation: MCL 435.101(1) (Jan 1; MLK 3rd Mon Jan; Feb 12; Washington's Birthday 3rd Mon Feb; Memorial Day; June 19; July 4; Labor Day; Columbus Day 2nd Mon Oct; Nov 11; Thanksgiving; Dec 25; Saturday afternoons are half-holidays). The statute has no Sunday-to-Monday shift. Calendar 2025-2027 computed from the statute.",
+    status: 'unverified',
   },
   // ------------------------------------------------------------ 2026
   {
@@ -122,7 +122,7 @@ export const MI_RULES: StateRuleSeedRow[] = [
   },
   {
     state: 'MI', year: 2026, key: 'penalty.rate', value: 0.0785,
-    citation: "MCL 205.23(2) (1 percentage point above the adjusted prime rate, reset January 1 and July 1); Revenue Administrative Bulletin 2026-10 (approved Sept. 30, 2026) table: Jan 1-Jun 30, 2026 8.48%; Jul 1-Dec 31, 2026 7.85%; Jan 1-Jun 30, 2027 7.77%. CAUTION: rate changes every six months; 7.85% (second half of 2026) stored as a single value. NOT EXPRESSIBLE: separate 10%/25% penalty on underpaid/unpaid installments (MI-1040ES (2026) \"Nonpayment, Late Payment, or Underpayment of Estimates\").",
+    citation: "Superseded on covered days by penalty.rate_schedule (R5 M9). MCL 205.23(2) (1 percentage point above the adjusted prime rate, reset January 1 and July 1); Revenue Administrative Bulletin 2026-10 (approved Sept. 30, 2026) table: Jan 1-Jun 30, 2026 8.48%; Jul 1-Dec 31, 2026 7.85%; Jan 1-Jun 30, 2027 7.77%. CAUTION: rate changes every six months; 7.85% (second half of 2026) stored as a single value. NOT EXPRESSIBLE: separate 10%/25% penalty on underpaid/unpaid installments (MI-1040ES (2026) \"Nonpayment, Late Payment, or Underpayment of Estimates\").",
     status: 'verified',
   },
   {
@@ -136,8 +136,78 @@ export const MI_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'MI', year: 2026, key: 'holidays', value: ["2025-01-01", "2025-01-20", "2025-02-12", "2025-02-17", "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01", "2025-10-13", "2025-11-11", "2025-11-27", "2025-12-25", "2026-01-01", "2026-01-19", "2026-02-12", "2026-02-16", "2026-05-25", "2026-06-19", "2026-07-04", "2026-09-07", "2026-10-12", "2026-11-11", "2026-11-26", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-12", "2027-02-15", "2027-05-31", "2027-06-19", "2027-07-04", "2027-09-06", "2027-10-11", "2027-11-11", "2027-11-25", "2027-12-25"],
-    citation: "MCL 435.101(1) (Jan 1; MLK 3rd Mon Jan; Feb 12; Washington's Birthday 3rd Mon Feb; Memorial Day; June 19; July 4; Labor Day; Columbus Day 2nd Mon Oct; Nov 11; Thanksgiving; Dec 25; Saturday afternoons are half-holidays). The statute has no Sunday-to-Monday shift. Calendar 2025-2027 computed from the statute.",
+    state: 'MI', year: 2026, key: 'holidays', value: ["2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07", "2026-11-03", "2026-11-11", "2026-11-26", "2026-11-27", "2026-12-24", "2026-12-25", "2026-12-31", "2027-01-01"],
+    citation: "Corrected per R5 review m5 (michigan.gov/som state holidays, Civil Service Commission Reg 5.08 — the previous list was New York's); not re-read in this task. The 2027 Michigan list is not published (only Jan 1, 2027 kept). Previous citation: MCL 435.101(1) (Jan 1; MLK 3rd Mon Jan; Feb 12; Washington's Birthday 3rd Mon Feb; Memorial Day; June 19; July 4; Labor Day; Columbus Day 2nd Mon Oct; Nov 11; Thanksgiving; Dec 25; Saturday afternoons are half-holidays). The statute has no Sunday-to-Monday shift. Calendar 2025-2027 computed from the statute.",
+    status: 'unverified',
+  },
+  {
+    state: 'MI', year: 2025, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2025 installments.due_dates row). R5 key (2026-10-12).",
     status: 'verified',
+  },
+  {
+    state: 'MI', year: 2025, key: 'threshold_comparison', value: "more_than",
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md m1/D2: the requirement and penalty tests read \"more than\" the dollar threshold); primary source not re-read in this task (agency page blocked or not reached).",
+    status: 'unverified',
+  },
+  {
+    state: 'MI', year: 2025, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MI', year: 2025, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MI', year: 2025, key: 'penalty.rate_schedule', value: [{"from": "2025-01-01", "to": "2025-06-30", "rate": 0.0947}, {"from": "2025-07-01", "to": "2025-12-31", "rate": 0.0866}, {"from": "2026-01-01", "to": "2026-06-30", "rate": 0.0848}],
+    citation: "Michigan RAB 2026-10 (approved Sept. 30, 2026; michigan.gov/taxes, read 2026-10-12) rate table: Jan 1-Jun 30, 2025 9.47%; Jul 1-Dec 31, 2025 8.66%; Jan 1-Jun 30, 2026 8.48%; Jul 1-Dec 31, 2026 7.85%; Jan 1-Jun 30, 2027 7.77%. MCL 205.23(2) (1 point above adjusted prime, semiannual). The MI-2210 flat 10% (min $10) add-on is not representable (Q26).",
+    status: 'verified',
+  },
+  {
+    state: 'MI', year: 2025, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MI', year: 2025, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MI', year: 2026, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2026 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'MI', year: 2026, key: 'threshold_comparison', value: "more_than",
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md m1/D2: the requirement and penalty tests read \"more than\" the dollar threshold); primary source not re-read in this task (agency page blocked or not reached).",
+    status: 'unverified',
+  },
+  {
+    state: 'MI', year: 2026, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MI', year: 2026, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MI', year: 2026, key: 'penalty.rate_schedule', value: [{"from": "2026-01-01", "to": "2026-06-30", "rate": 0.0848}, {"from": "2026-07-01", "to": "2026-12-31", "rate": 0.0785}, {"from": "2027-01-01", "to": "2027-06-30", "rate": 0.0777}],
+    citation: "Michigan RAB 2026-10 (approved Sept. 30, 2026; michigan.gov/taxes, read 2026-10-12) rate table: Jan 1-Jun 30, 2025 9.47%; Jul 1-Dec 31, 2025 8.66%; Jan 1-Jun 30, 2026 8.48%; Jul 1-Dec 31, 2026 7.85%; Jan 1-Jun 30, 2027 7.77%. MCL 205.23(2) (1 point above adjusted prime, semiannual). The MI-2210 flat 10% (min $10) add-on is not representable (Q26).",
+    status: 'verified',
+  },
+  {
+    state: 'MI', year: 2026, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MI', year: 2026, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
   },
 ];

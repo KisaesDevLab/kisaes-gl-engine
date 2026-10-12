@@ -52,10 +52,16 @@ export const taxEstAccountTreatments = pgTable('tax_est_account_treatments', {
   tenantId: uuid('tenant_id').notNull(),
   companyId: uuid('company_id').notNull(),
   accountId: uuid('account_id').notNull(),
-  /** NULL = flag-only row (non_recurring without a treatment). */
+  /**
+   * NULL = flag-only row (non_recurring without a treatment). One of the
+   * shared ACCOUNT_TREATMENTS (CHECK in 0201): the D3 list + guaranteed_payment
+   * + the character treatments (capital_gain_lt/st, section_1231, interest,
+   * dividends_ordinary/qualified).
+   */
   treatment: varchar('treatment', { length: 30 }),
   /** Percent 0..100; required for nondeductible_pct only. */
   pct: numeric('pct', { precision: 7, scale: 4 }),
+  /** Person target: payments, guaranteed_payment (the partner), owner_sehi / owner_retirement (S corp officer), w2_wages. */
   paymentTaxpayerId: uuid('payment_taxpayer_id'),
   paymentPersonId: uuid('payment_person_id'),
   paymentJurisdiction: varchar('payment_jurisdiction', { length: 10 }),

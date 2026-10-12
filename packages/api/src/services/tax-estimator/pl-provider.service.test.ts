@@ -171,7 +171,7 @@ describe('W-2 wages (D8)', () => {
     await putTreatments(scope, bakery.tenantId, bakery.companyId, [{ accountId: B.officer, treatment: 'w2_wages', nonRecurring: false }]);
     let pl = await getTaxBasisPl(scope, { ...bakery, taxYear: 2026, throughMonth: '2026-12' }, { skipCache: true });
     expect(pl.entityType).toBe('s_corp');
-    expect(d(pl.w2Wages.booksYtd)).toBe(54000);
+    expect(d(pl.w2Wages.ytd)).toBe(54000);
     expect(pl.w2Wages).toMatchObject({ source: 'books', override: null });
     expect(d(pl.w2Wages.effective)).toBe(54000);
     expect(d(pl.taxBasisProfit)).toBe(240000 - 54000); // wages stay deductible
@@ -181,7 +181,7 @@ describe('W-2 wages (D8)', () => {
     pl = await getTaxBasisPl(scope, { ...bakery, taxYear: 2026, throughMonth: '2026-12' }, { skipCache: true });
     expect(pl.w2Wages.source).toBe('override');
     expect(d(pl.w2Wages.effective)).toBe(60000);
-    expect(d(pl.w2Wages.booksYtd)).toBe(54000);
+    expect(d(pl.w2Wages.ytd)).toBe(54000);
 
     await upsertYearInputs(scope, bakery.tenantId, bakery.companyId, 2026, { w2WagesOverride: null });
     pl = await getTaxBasisPl(scope, { ...bakery, taxYear: 2026, throughMonth: '2026-12' }, { skipCache: true });
@@ -239,26 +239,31 @@ describe('cache (TB1/TB6 pattern)', () => {
     const afterTreatment = await getTaxBasisPl(scope, req);
     expect(afterTreatment.cached).toBe(false);
     expect(afterTreatment.configVersion).not.toBe(after.configVersion);
-    expect(d(afterTreatment.w2Wages.booksYtd)).toBe(0);
+    expect(d(afterTreatment.w2Wages.ytd)).toBe(0);
     const rows = await db.select().from(taxEstAccountTreatments).where(eq(taxEstAccountTreatments.tenantId, bakery.tenantId));
     expect(rows).toHaveLength(0);
   });
 });
 
 describe('pure helpers', () => {
-  it('character mapping from TB codes', () => {
-    const code = (activityType: string, description: string) => ({ returnForm: '1065', activityType, code: 'x', description });
-    expect(characterForCode(code('rental', 'Rent; L01 - Gross rents'), 'revenue')).toBe('rental');
-    expect(characterForCode(code('farm_rental', 'FRent; L01 - Income'), 'revenue')).toBe('rental');
-    expect(characterForCode(code('common', 'Sch K; L05 - Interest income'), 'other_revenue')).toBe('interest');
-    expect(characterForCode(code('business', 'Sch C; L16b - Interest - other'), 'expense')).toBe('ordinary');
-    expect(characterForCode(code('common', 'Sch K; L06a - Ordinary dividends'), 'other_revenue')).toBe('dividends_ordinary');
-    expect(characterForCode(code('common', 'Sch K; L06b - Qualified dividends'), 'other_revenue')).toBe('dividends_qualified');
-    expect(characterForCode(code('common', 'Sch D; L14 - Capital gain distributions'), 'other_revenue')).toBe('capital_gain_lt');
-    expect(characterForCode(code('common', 'Sch D; L7 - Short-term capital gain'), 'other_revenue')).toBe('capital_gain_st');
-    expect(characterForCode(code('common', 'Sch K; L13a - Capital gain property (20%)'), 'expense')).toBe('ordinary');
-    expect(characterForCode(code('common', '4797; Section 1231 gain'), 'other_revenue')).toBe('section_1231');
-    expect(characterForCode(code('common', 'R/E Wrk; var - Dividend distributions'), 'other_revenue')).toBe('ordinary');
+  it('character mapping: seed codes by CODE identity, FIRM codes by description', () => {
+    const seed = (returnForm: string, activityType: string, code: string, isM1Adjustment = false) =>
+      ({ returnForm, activityType, code, description: '', source: 'seed' as const, isM1Adjustment });
+    const firm = (description: string, isM1Adjustment = false) =>
+      ({ returnForm: '1065', activityType: 'common', code: 'FIRM:X', description, source: 'firm' as const, isM1Adjustment });
+    expect(characterForCode(seed('1065', 'rental', '502'), 'revenue')).toBe('rental');
+    expect(characterForCode(seed('1065', 'farm_rental', '701'), 'revenue')).toBe('rental');
+    expect(characterForCode(seed('1065', 'common', '110'), 'other_revenue')).toBe('interest');
+    expect(characterForCode(seed('1065', 'business', '206'), 'expense')).toBe('ordinary');
+    expect(characterForCode(seed('1065', 'common', '111'), 'other_revenue')).toBe('dividends_ordinary');
+    expect(characterForCode(seed('1065', 'common', '399'), 'other_revenue')).toBe('capital_gain_lt');
+    expect(characterForCode(seed('1065', 'common', '227'), 'expense')).toBe('ordinary');
+    expect(characterForCode(seed('1065', 'common', '491', true), 'other_revenue')).toBe('ordinary'); // M-1, not §1231
+    expect(characterForCode(seed('1120S', 'common', '498'), 'other_revenue')).toBe('ordinary');
+    expect(characterForCode(firm('Short-term capital gain'), 'other_revenue')).toBe('capital_gain_st');
+    expect(characterForCode(firm('Section 1231 gain'), 'other_revenue')).toBe('section_1231');
+    expect(characterForCode(firm('Qualified dividends'), 'other_revenue')).toBe('dividends_qualified');
+    expect(characterForCode(firm('4797 gain - book', true), 'other_revenue')).toBe('ordinary');
   });
 
   it('windows: calendar year for individuals, fiscal year for C corps', () => {
@@ -266,7 +271,8 @@ describe('pure helpers', () => {
     expect(taxYearWindow(2026, 'c_corp', 7)).toMatchObject({ start: '2025-07-01', end: '2026-06-30', startMonth: '2025-07', endMonth: '2026-06' });
     expect(monthsBetween('2025-11', '2026-02')).toEqual(['2025-11', '2025-12', '2026-01', '2026-02']);
     const w = taxYearWindow(2026, 'sch_c', 1);
-    expect(resolveThroughMonth(w, undefined, new Date('2026-10-11T00:00:00Z'))).toBe('2026-10');
+    // Never the current partial month (R1 F5): the last COMPLETE month.
+    expect(resolveThroughMonth(w, undefined, new Date('2026-10-11T00:00:00Z'))).toBe('2026-09');
     expect(resolveThroughMonth(w, undefined, new Date('2027-03-01T00:00:00Z'))).toBe('2026-12');
     expect(() => resolveThroughMonth(w, '2027-01')).toThrow(/through must be/);
   });

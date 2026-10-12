@@ -76,11 +76,9 @@ export const AR_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'AR', year: 2025, key: 'holidays',
-    value: ['2025-01-01', '2025-01-20', '2025-02-17', '2025-05-26', '2025-07-04', '2025-09-01', '2025-11-11', '2025-11-27', '2025-12-24', '2025-12-25',
-      '2026-01-01', '2026-01-19', '2026-02-16', '2026-05-25', '2026-07-03', '2026-09-07', '2026-11-11', '2026-11-26', '2026-12-24', '2026-12-25'],
-    citation: 'UNVERIFIED: Ark. Code §1-5-101 (state holidays) could not be read in a primary source (Justia/arkleg returned 403); list built from secondary summaries of that section (New Year\'s Day; MLK Day 3rd Mon Jan; George Washington\'s Birthday and Daisy Gatson Bates Day 3rd Mon Feb; Memorial Day; Independence Day; Labor Day; Veterans Day; Thanksgiving; Christmas Eve; Christmas Day; Saturday -> preceding Friday, Sunday -> following Monday). Juneteenth and day-after-Thanksgiving status unconfirmed. Calendar years 2025-2026. No TY2025 installment date falls on a listed holiday except the farmer Feb 16, 2026 (also a federal holiday).',
-    status: 'unverified',
+    state: 'AR', year: 2025, key: 'holidays', value: ["2025-01-01", "2025-01-20", "2025-02-17", "2025-05-26", "2025-07-04", "2025-09-01", "2025-11-11", "2025-11-27", "2025-12-24", "2025-12-25", "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25", "2026-07-03", "2026-09-07", "2026-11-11", "2026-11-26", "2026-12-24", "2026-12-25"],
+    citation: "Arkansas OPM Policy 52 \"Holidays and Birthday Leave\" (eff. 5/22/2025; authority Ark. Code Ann. §§1-5-101-104; sas.arkansas.gov/wp-content/uploads/52-Holidays-and-Birthday-Leave-5.23.2025.pdf, read 2026-10-12): New Year's Day; MLK Day (3rd Mon Jan); George Washington's Birthday and Daisy Gatson Bates Day (3rd Mon Feb); Memorial Day (last Mon May); Independence Day; Labor Day (1st Mon Sep); Veterans Day (Nov 11); Thanksgiving (4th Thu Nov); Christmas Eve; Christmas Day; item 6: \"Holidays which occur on a Saturday will be observed on the preceding Friday. Holidays which occur on a Sunday will be observed on the following Monday.\" No Juneteenth; day after Thanksgiving only by Governor's proclamation. Dates recomputed 2026-10-12 and match (R5 m2). Calendar years 2025-2026.",
+    status: 'verified',
   },
   // ------------------------------------------------------------------ 2026
   {
@@ -144,10 +142,78 @@ export const AR_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'AR', year: 2026, key: 'holidays',
-    value: ['2026-01-01', '2026-01-19', '2026-02-16', '2026-05-25', '2026-07-03', '2026-09-07', '2026-11-11', '2026-11-26', '2026-12-24', '2026-12-25',
-      '2027-01-01', '2027-01-18', '2027-02-15', '2027-05-31', '2027-07-05', '2027-09-06', '2027-11-11', '2027-11-25', '2027-12-24'],
-    citation: 'UNVERIFIED: Ark. Code §1-5-101 could not be read in a primary source (403); list built from secondary summaries (see TY2025 row). Calendar years 2026-2027; Dec 25, 2027 (Saturday) observance overlaps Christmas Eve Fri Dec 24, 2027 - exact 2027 observance not confirmed. Juneteenth status unconfirmed. Relevant roll: farmer due date Feb 15, 2027 (3rd Mon Feb, also a federal holiday).',
-    status: 'unverified',
+    state: 'AR', year: 2026, key: 'holidays', value: ["2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25", "2026-07-03", "2026-09-07", "2026-11-11", "2026-11-26", "2026-12-24", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-05-31", "2027-07-05", "2027-09-06", "2027-11-11", "2027-11-25", "2027-12-24"],
+    citation: "Arkansas OPM Policy 52 \"Holidays and Birthday Leave\" (eff. 5/22/2025; authority Ark. Code Ann. §§1-5-101-104; sas.arkansas.gov/wp-content/uploads/52-Holidays-and-Birthday-Leave-5.23.2025.pdf, read 2026-10-12): New Year's Day; MLK Day (3rd Mon Jan); George Washington's Birthday and Daisy Gatson Bates Day (3rd Mon Feb); Memorial Day (last Mon May); Independence Day; Labor Day (1st Mon Sep); Veterans Day (Nov 11); Thanksgiving (4th Thu Nov); Christmas Eve; Christmas Day; item 6: \"Holidays which occur on a Saturday will be observed on the preceding Friday. Holidays which occur on a Sunday will be observed on the following Monday.\" No Juneteenth; day after Thanksgiving only by Governor's proclamation. Dates recomputed 2026-10-12 and match (R5 m2). Calendar years 2026-2027 (Dec 24, 2027 covers Christmas Eve and the Saturday Christmas).",
+    status: 'verified',
+  },
+  {
+    state: 'AR', year: 2025, key: 'estimates_required', value: true,
+    citation: "AR1000ES 2025 (\"Who must file\": individuals expecting estimated tax of more than $1,000 file a declaration; vouchers due April 15, June 15, September 15, January 15); AR2210 (2025, R 6/6/2025) and AR2210 Instructions (dfa.arkansas.gov, read 2026-10-12) Instr. 1(a),(c)",
+    status: 'verified',
+  },
+  {
+    state: 'AR', year: 2025, key: 'threshold_comparison', value: "more_than",
+    citation: "AR2210 (2025, R 6/6/2025) and AR2210 Instructions (dfa.arkansas.gov, read 2026-10-12) Part II line 4 (\"Subtract line 3 from line 1: (If the result is $1,000 or less, stop here. Do not complete this schedule.)\"); AR1000ES 2026 \"Who must file\" (\"more than one thousand dollars ($1,000)\"). The worksheet line 8 note says \"$1,000 or more\"; the penalty schedule and the filing requirement both use \"more than\".",
+    status: 'verified',
+  },
+  {
+    state: 'AR', year: 2025, key: 'installments.q4_file_and_pay_date', value: "2026-02-02",
+    citation: "AR2210 (2025, R 6/6/2025) and AR2210 Instructions (dfa.arkansas.gov, read 2026-10-12) Instructions Exception 2 (\"In lieu of filing the fourth (4th) quarter installment the taxpayer may file an income tax return and pay the tax on or before January 31 or on the last day of the first (1st) month after the close of the income year\"). Jan 31, 2026 is a Saturday -> Monday Feb 2, 2026 per the AR1000ES Important Notice (Saturday, Sunday or legal holiday -> next succeeding business day).",
+    status: 'verified',
+  },
+  {
+    state: 'AR', year: 2025, key: 'return_due_date', value: "2026-04-15",
+    citation: "AR2210 (2025, R 6/6/2025) and AR2210 Instructions (dfa.arkansas.gov, read 2026-10-12) Part III line 15 (days to the payment date \"or 4-15-2026, whichever is earlier\"). Note Reg. 1997-4 §1.26-18-208(6) also ends the period at return filing, which this key cannot express.",
+    status: 'verified',
+  },
+  {
+    state: 'AR', year: 2025, key: 'penalty.rate_schedule', value: null,
+    citation: "Fixed statutory rate, not indexed: AR2210 (2025, R 6/6/2025) and AR2210 Instructions (dfa.arkansas.gov, read 2026-10-12) line 16 (\"x .10\") and Instr. Part II (\"divided by 365, times ten percent (10%)\"); AR1000ES 2025 (\"a penalty of ten percent (10%) per annum\"). The single penalty.rate (0.10) applies to every day.",
+    status: 'verified',
+  },
+  {
+    state: 'AR', year: 2025, key: 'penalty.method', value: "daily_simple",
+    citation: "AR2210 (2025, R 6/6/2025) and AR2210 Instructions (dfa.arkansas.gov, read 2026-10-12) line 16 (underpayment x days / 365 x .10) and Instructions \"Penalty computation example\" (61/365 X .10 X $250)",
+    status: 'verified',
+  },
+  {
+    state: 'AR', year: 2025, key: 'penalty.min_balance_due', value: null,
+    citation: "AR2210 (2025, R 6/6/2025) and AR2210 Instructions (dfa.arkansas.gov, read 2026-10-12) Part II line 4: the penalty floor is the same $1,000 of net tax less Arkansas withholding as the declaration threshold (required_threshold, \"more than\" per threshold_comparison), so no separate value. Instructions note: \"No penalty shall be imposed ... if the tax shown on the return ... is less than $1,000\".",
+    status: 'verified',
+  },
+  {
+    state: 'AR', year: 2026, key: 'estimates_required', value: true,
+    citation: "AR1000ES 2026 (\"Who must file\": individuals expecting estimated tax of more than $1,000 file a declaration; vouchers due April 15, June 15, September 15, January 15); AR2210 (2025, R 6/6/2025) and AR2210 Instructions (dfa.arkansas.gov, read 2026-10-12) Instr. 1(a),(c)",
+    status: 'verified',
+  },
+  {
+    state: 'AR', year: 2026, key: 'threshold_comparison', value: "more_than",
+    citation: "AR2210 (2025, R 6/6/2025) and AR2210 Instructions (dfa.arkansas.gov, read 2026-10-12) Part II line 4 (\"Subtract line 3 from line 1: (If the result is $1,000 or less, stop here. Do not complete this schedule.)\"); AR1000ES 2026 \"Who must file\" (\"more than one thousand dollars ($1,000)\"). The worksheet line 8 note says \"$1,000 or more\"; the penalty schedule and the filing requirement both use \"more than\".",
+    status: 'verified',
+  },
+  {
+    state: 'AR', year: 2026, key: 'installments.q4_file_and_pay_date', value: "2027-02-01",
+    citation: "AR2210 (2025, R 6/6/2025) and AR2210 Instructions (dfa.arkansas.gov, read 2026-10-12) Instructions Exception 2 (file and pay by January 31 in lieu of the fourth installment). Jan 31, 2027 is a Sunday -> Monday Feb 1, 2027 per the AR1000ES 2026 Important Notice (next succeeding business day).",
+    status: 'verified',
+  },
+  {
+    state: 'AR', year: 2026, key: 'return_due_date', value: "2027-04-15",
+    citation: "AR2210 (2025, R 6/6/2025) and AR2210 Instructions (dfa.arkansas.gov, read 2026-10-12) Part III line 15 pattern (period ends on the 15th day of the 4th month after year end; 2025 form prints 4-15-2026). April 15, 2027 is a Thursday. 2026 AR2210 not yet published.",
+    status: 'verified',
+  },
+  {
+    state: 'AR', year: 2026, key: 'penalty.rate_schedule', value: null,
+    citation: "Fixed statutory rate, not indexed: AR2210 (2025, R 6/6/2025) and AR2210 Instructions (dfa.arkansas.gov, read 2026-10-12) line 16 (\"x .10\") and Instr. Part II (\"divided by 365, times ten percent (10%)\"); AR1000ES 2026 (\"a penalty of ten percent (10%) per annum\"). The single penalty.rate (0.10) applies to every day.",
+    status: 'verified',
+  },
+  {
+    state: 'AR', year: 2026, key: 'penalty.method', value: "daily_simple",
+    citation: "AR2210 (2025, R 6/6/2025) and AR2210 Instructions (dfa.arkansas.gov, read 2026-10-12) line 16 (underpayment x days / 365 x .10) and Instructions \"Penalty computation example\" (61/365 X .10 X $250)",
+    status: 'verified',
+  },
+  {
+    state: 'AR', year: 2026, key: 'penalty.min_balance_due', value: null,
+    citation: "AR2210 (2025, R 6/6/2025) and AR2210 Instructions (dfa.arkansas.gov, read 2026-10-12) Part II line 4: the penalty floor is the same $1,000 of net tax less Arkansas withholding as the declaration threshold (required_threshold, \"more than\" per threshold_comparison), so no separate value. Instructions note: \"No penalty shall be imposed ... if the tax shown on the return ... is less than $1,000\".",
+    status: 'verified',
   },
 ];

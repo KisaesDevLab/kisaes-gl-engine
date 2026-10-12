@@ -47,9 +47,9 @@ export const VT_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'VT', year: 2025, key: 'farmer.rule', value: null,
-    citation: "MAPPING (key set cannot express): Vermont exempts a person receiving at least two-thirds of income from farming or fishing from estimated payments entirely - 32 V.S.A. §5852(a) (\"other than a person receiving at least two-thirds of his or her income from farming or fishing as defined under the laws of the United States\"); IN-114 Instructions \"Who Must Make Estimated Income Tax Payments?\". No reduced-payment/January-15 alternative exists, so null is stored. Primary sources: 32 V.S.A. §5852(a); 2025 Form IN-114 Instructions.",
-    status: 'unverified',
+    state: 'VT', year: 2025, key: 'farmer.rule', value: {"ratio": 0.6666666666, "current_pct": 0, "due_date": "2026-04-15", "file_by": "2026-04-15", "treatment": "exempt"},
+    citation: "32 V.S.A. §5852(a) (Vermont Statutes Online, 2025 session, read 2026-10-12): \"Every individual ... (other than a person receiving at least two-thirds of his or her income from farming or fishing as defined under the laws of the United States) shall make installment payments\". Farmers/fishermen are EXEMPT (treatment exempt; current_pct 0; placeholder dates = return due date) (R5 D5).",
+    status: 'verified',
   },
   {
     state: 'VT', year: 2025, key: 'penalty.rate_source', value: "state",
@@ -116,9 +116,9 @@ export const VT_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'VT', year: 2026, key: 'farmer.rule', value: null,
-    citation: "MAPPING (key set cannot express): Vermont exempts a person receiving at least two-thirds of income from farming or fishing from estimated payments entirely - 32 V.S.A. §5852(a) (\"other than a person receiving at least two-thirds of his or her income from farming or fishing as defined under the laws of the United States\"); IN-114 Instructions \"Who Must Make Estimated Income Tax Payments?\". No reduced-payment/January-15 alternative exists, so null is stored. Primary sources: 32 V.S.A. §5852(a); 2026 Form IN-114 Instructions.",
-    status: 'unverified',
+    state: 'VT', year: 2026, key: 'farmer.rule', value: {"ratio": 0.6666666666, "current_pct": 0, "due_date": "2027-04-15", "file_by": "2027-04-15", "treatment": "exempt"},
+    citation: "32 V.S.A. §5852(a) (Vermont Statutes Online, 2025 session, read 2026-10-12): \"Every individual ... (other than a person receiving at least two-thirds of his or her income from farming or fishing as defined under the laws of the United States) shall make installment payments\". Farmers/fishermen are EXEMPT (treatment exempt; current_pct 0; placeholder dates = return due date) (R5 D5).",
+    status: 'verified',
   },
   {
     state: 'VT', year: 2026, key: 'penalty.rate_source', value: "state",
@@ -147,5 +147,75 @@ export const VT_RULES: StateRuleSeedRow[] = [
     ],
     citation: "1 V.S.A. §371(a)-(b) (see 2025 row). Calendar years 2025-2027. Dates computed from the statute.",
     status: 'verified',
+  },
+  {
+    state: 'VT', year: 2025, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2025 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'VT', year: 2025, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'VT', year: 2025, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'VT', year: 2025, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'VT', year: 2025, key: 'penalty.rate_schedule', value: [{"from": "2025-01-01", "to": "2025-12-31", "rate": 0.085}, {"from": "2026-01-01", "to": "2026-12-31", "rate": 0.0775}],
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md Part B2: calendar-year rate that changes on January 1); primary source not re-read in this task (agency page blocked or not reached). 8.5% for 2025 days, 7.75% for 2026 days.",
+    status: 'unverified',
+  },
+  {
+    state: 'VT', year: 2025, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'VT', year: 2025, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'VT', year: 2026, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2026 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'VT', year: 2026, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'VT', year: 2026, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'VT', year: 2026, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'VT', year: 2026, key: 'penalty.rate_schedule', value: [{"from": "2026-01-01", "to": "2026-12-31", "rate": 0.0775}],
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md Part B2: calendar-year rate); primary source not re-read in this task (agency page blocked or not reached). 7.75% for 2026 days; calendar-2027 rate not set.",
+    status: 'unverified',
+  },
+  {
+    state: 'VT', year: 2026, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'VT', year: 2026, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
   },
 ];

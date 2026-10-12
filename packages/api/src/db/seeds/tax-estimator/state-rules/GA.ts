@@ -65,8 +65,8 @@ export const GA_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'GA', year: 2025, key: 'nonresident_method', value: 'ratio',
-    citation: 'Georgia IT-511 2025 Individual Income Tax Booklet (dor.georgia.gov/document/document/2025-it-511-individual-income-tax-booklet/download) Form 500 Schedule 3 (Rev. 07/09/25): Line 9 ratio = Georgia AGI (Col C) / federal-after-Georgia-adjustment AGI (Col A); Line 13 = (standard/itemized deduction + $4,000 dependent exemptions) x ratio; Line 14 = Georgia AGI - Line 13; flat rate applied. With a single flat rate this equals resident-basis tax x Georgia income ratio, i.e. the ratio method (corrected from sourced_flat, which would not prorate deductions).',
+    state: 'GA', year: 2025, key: 'nonresident_method', value: "sourced_flat",
+    citation: "Georgia IT-511 2025 booklet (dor.georgia.gov, read 2026-10-12), Form 500 Schedule 3 instructions: \"LINE 13: Multiply Line 12 [deductions and exemptions] by the ratio on Line 9\"; \"LINE 14: Subtract Line 13 from Line 8, Column C [Georgia income]\" = Georgia taxable income, taxed directly. Georgia-source income less prorated deductions = sourced_flat, not a ratio of full-return tax (R5 M6).",
     status: 'verified',
   },
   {
@@ -131,13 +131,83 @@ export const GA_RULES: StateRuleSeedRow[] = [
     status: 'unverified',
   },
   {
-    state: 'GA', year: 2026, key: 'nonresident_method', value: 'ratio',
-    citation: 'UNVERIFIED for TY2026: Georgia IT-511 2025 Individual Income Tax Booklet (dor.georgia.gov/document/document/2025-it-511-individual-income-tax-booklet/download) Form 500 Schedule 3 (Rev. 07/09/25) ratio mechanics (Georgia AGI / total AGI applied to deductions and exemptions, flat rate; equivalent to the ratio method); TY2026 booklet not yet published.',
+    state: 'GA', year: 2026, key: 'nonresident_method', value: "sourced_flat",
+    citation: "Georgia IT-511 2025 booklet (dor.georgia.gov, read 2026-10-12), Form 500 Schedule 3 instructions: \"LINE 13: Multiply Line 12 [deductions and exemptions] by the ratio on Line 9\"; \"LINE 14: Subtract Line 13 from Line 8, Column C [Georgia income]\" = Georgia taxable income, taxed directly. Georgia-source income less prorated deductions = sourced_flat, not a ratio of full-return tax (R5 M6). 2026 booklet not yet published.",
     status: 'unverified',
   },
   {
     state: 'GA', year: 2026, key: 'holidays', value: ['2026-01-01', '2026-01-19', '2026-04-03', '2026-05-25', '2026-06-19', '2026-07-03', '2026-09-07', '2026-10-12', '2026-11-11', '2026-11-26', '2026-11-27', '2026-12-24', '2026-12-25', '2027-01-01', '2027-01-18', '2027-03-26', '2027-05-31', '2027-06-18', '2027-07-05', '2027-09-06', '2027-10-11', '2027-11-11', '2027-11-25', '2027-11-26', '2027-12-23', '2027-12-24'],
     citation: 'State of Georgia Holiday Schedule (team.georgia.gov/all-articles/state-georgia-holiday-schedule, read 2026-10-11): 2026 and 2027 dates as printed (Good Friday state holiday April 3, 2026 / March 26, 2027; Independence Day observed July 3, 2026 / July 5, 2027; Washington\'s Birthday observed Dec 24, 2026 / Dec 23, 2027; Christmas observed Dec 24, 2027). Calendar years 2026-2027.',
     status: 'verified',
+  },
+  {
+    state: 'GA', year: 2025, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2025 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'GA', year: 2025, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'GA', year: 2025, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'GA', year: 2025, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'GA', year: 2025, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'GA', year: 2025, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'GA', year: 2025, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'GA', year: 2026, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2026 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'GA', year: 2026, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'GA', year: 2026, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'GA', year: 2026, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'GA', year: 2026, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'GA', year: 2026, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'GA', year: 2026, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
   },
 ];

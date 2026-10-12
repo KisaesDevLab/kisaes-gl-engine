@@ -232,6 +232,10 @@ export interface PLEntry {
   name: string;
   accountNumber: string | null;
   amount: number;
+  // Present only when built with { exactAmounts: true }: the unrounded
+  // numeric (decimal string) behind `amount` — for callers that must never
+  // round-trip money through a JS number (Tax Estimator, R1 F15).
+  amountExact?: string;
   // Present only when the report was built with groupBy: 'detail_type'.
   // Additive so the default response shape is unchanged for existing
   // consumers (PDF, comparative, portal blocks, MCP).
@@ -357,6 +361,8 @@ export async function buildProfitAndLoss(
   // each entry plus per-section `groups` — additive only; the default
   // (ungrouped) response shape is untouched.
   groupBy: ReportGroupBy | null = null,
+  // Additive: exactAmounts adds PLEntry.amountExact (decimal string).
+  plOpts: { exactAmounts?: boolean } = {},
 ): Promise<PLResult> {
   // Cash basis: revenue recognized when cash is received, expenses when
   // cash is paid — implemented by the virtual cash-basis ledger (see
@@ -426,12 +432,18 @@ export async function buildProfitAndLoss(
     const amount = isIncome
       ? sub(row.total_credit, row.total_debit)
       : sub(row.total_debit, row.total_credit);
-    if (amount === 0) continue;
+    const exact = plOpts.exactAmounts
+      ? (isIncome
+        ? new Decimal(row.total_credit || 0).minus(row.total_debit || 0)
+        : new Decimal(row.total_debit || 0).minus(row.total_credit || 0))
+      : null;
+    if (amount === 0 && (!exact || exact.isZero())) continue;
     const entry: PLEntry = {
       accountId: row.id,
       name: row.name,
       accountNumber: row.account_number,
       amount,
+      ...(exact ? { amountExact: exact.toString() } : {}),
       ...(grouped ? { detailType: (row.detail_type as string | null) ?? null } : {}),
     };
     switch (row.account_type) {
@@ -1052,6 +1064,9 @@ export interface ExpenseCategoryDetailLine {
   memo: string;
   debit: number;
   credit: number;
+  // Present only with opts.exactAmounts: unrounded decimal strings of debit / credit.
+  debitExact?: string;
+  creditExact?: string;
   // Running period total for the account (starts at 0, accumulates
   // debit − credit through Decimal like the General Ledger).
   balance: number;
@@ -1303,6 +1318,8 @@ export interface AccountDetailReportOpts {
   // Cash basis sources from the virtual cash-basis ledger (recognition at
   // payment dates); accrual (default) reads the posted journal.
   basis?: Basis;
+  // Additive: detail lines also carry debitExact / creditExact (decimal strings).
+  exactAmounts?: boolean;
 }
 
 export async function buildAccountDetailReport(
@@ -1509,6 +1526,9 @@ export async function buildAccountDetailReport(
         memo: line.line_description || line.txn_memo || '',
         debit,
         credit,
+        ...(opts.exactAmounts
+          ? { debitExact: new Decimal(line.debit || 0).toString(), creditExact: new Decimal(line.credit || 0).toString() }
+          : {}),
         balance: running,
       };
     });

@@ -166,4 +166,74 @@ export const IA_RULES: StateRuleSeedRow[] = [
     citation: "Iowa Code 421.9A(1) (Iowa Code 2026, read at legis.iowa.gov/docs/code/421.9A.pdf): 'holiday' = (a) legal public holiday under 1C.1 (Jan 1; 3rd Mon Jan; Feb 12; 3rd Mon Feb; last Mon May; Jul 4; 1st Mon Sep; Nov 11; 4th Thu Nov; Dec 25 - legis.iowa.gov/docs/code/1C.1.pdf, no weekend shift), (b) paid holiday under 1C.2(1) (adds Friday after Thanksgiving - legis.iowa.gov/docs/code/1C.2.pdf) and executive-council days under 1C.2(2)(b), (c) a federal holiday observed by USPS, (d) a Federal Reserve banking holiday, (e) department closure days under 4.1(34). Federal observed dates read from the OPM federal holiday schedules (opm.gov/policy-data-oversight/pay-leave/federal-holidays, 5 U.S.C. 6103: Juneteenth, Columbus Day, Saturday holidays observed the preceding Friday, Sunday holidays the following Monday) and the Federal Reserve Board holiday schedule (federalreserve.gov/aboutthefed/k8.htm). The USPS holiday page (about.usps.com/newsroom/events/holidays.htm) returned 404; USPS observance of the 5 U.S.C. 6103 days is assumed from the OPM schedule. Weekend-falling statutory dates (e.g. Jul 4 on a Saturday) are omitted because weekends roll anyway. Ad hoc executive-council (1C.2(2)(b)) or 4.1(34) closure days are not predictable and are not listed. None of the TY installment or farmer dates is affected by a holiday (only by weekends). Calendar years 2026-2027; 2027-12-31 is the OPM/Federal Reserve Board observed day for New Year's Day 2028 (a Saturday).",
     status: 'verified',
   },
+  {
+    state: 'IA', year: 2025, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2025 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'IA', year: 2025, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'IA', year: 2025, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'IA', year: 2025, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'IA', year: 2025, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'IA', year: 2025, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'IA', year: 2025, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'IA', year: 2026, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2026 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'IA', year: 2026, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'IA', year: 2026, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'IA', year: 2026, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'IA', year: 2026, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'IA', year: 2026, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'IA', year: 2026, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
 ];

@@ -40,15 +40,13 @@ export const ID_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'ID', year: 2025, key: 'installments.due_dates',
-    value: ["2025-04-15", "2025-06-16", "2025-09-15", "2026-01-15"],
-    citation: "Federal-style placeholder dates. Idaho law fixes no individual installment dates; the Form 51 voucher (Idaho Form 51 voucher (EFO00092, 09-18-2025), tax.idaho.gov/document-mngr/forms_EFO00092/) carries none. Idaho Code 63-3036A(b) adopts the IRC dates for CORPORATE estimates only. June 15, 2025 is a Sunday -> June 16. RE-AUDITED 2026-10-11 against primary sources, conclusion confirmed: tax.idaho.gov/taxes/income-tax/withholding/help/ ('Idaho doesn't require estimated tax payments from individuals, but you can make payments at any time'); Idaho Code 63-3036A(a) (read at legislature.idaho.gov/statutesrules/idstat/title63/t63ch30/sect63-3036a/: 'Any corporation subject to this chapter which is required to make a payment of estimated taxes to the internal revenue service and will have an Idaho income tax liability of five hundred dollars ($500) or more shall pay ... estimated taxes'), the $500 threshold is corporate-only; IDAPA 35.01.01 Rules 820-825 (adminrules.idaho.gov/rules/current/35/350101.pdf) govern only 'Corporate Estimated Payments'; Idaho Code 63-3046 contains no individual estimated-tax underpayment addition; 63-3036 is farm-employer withholding and 63-3029B is the capital investment credit (neither concerns individual estimates).",
+    state: 'ID', year: 2025, key: 'installments.due_dates', value: ["2026-04-15"],
+    citation: "Idaho has NO individual estimated-tax regime (estimates_required = false; Form 40 Instructions EIN00046 (03-02-2026): \"Idaho doesn't require estimated tax payments\"). Neutral placeholder: the one Form 51 extension-prepayment date (April 15). The engine never builds vouchers from this row while estimates_required is false (R5 M1/M2).",
     status: 'unverified',
   },
   {
-    state: 'ID', year: 2025, key: 'installments.pcts',
-    value: [0.25, 0.25, 0.25, 0.25],
-    citation: "Placeholder equal installments; Idaho prescribes none for individuals. MODELING PLACEHOLDER: Idaho does not require individuals to make estimated payments (Idaho 2025 Individual Income Tax booklet (EIN00046, rev. 03-02-2026), tax.idaho.gov/wp-content/uploads/forms/EIN00046/EIN00046_03-02-2026.pdf, 'Idaho doesn't require estimated tax payments. You can prepay at any time ... or mail your payment with Form 51'); Idaho Code 63-3036A (estimated tax) applies only to corporations. The key set cannot express 'not required'. RE-AUDITED 2026-10-11 against primary sources, conclusion confirmed: tax.idaho.gov/taxes/income-tax/withholding/help/ ('Idaho doesn't require estimated tax payments from individuals, but you can make payments at any time'); Idaho Code 63-3036A(a) (read at legislature.idaho.gov/statutesrules/idstat/title63/t63ch30/sect63-3036a/: 'Any corporation subject to this chapter which is required to make a payment of estimated taxes to the internal revenue service and will have an Idaho income tax liability of five hundred dollars ($500) or more shall pay ... estimated taxes'), the $500 threshold is corporate-only; IDAPA 35.01.01 Rules 820-825 (adminrules.idaho.gov/rules/current/35/350101.pdf) govern only 'Corporate Estimated Payments'; Idaho Code 63-3046 contains no individual estimated-tax underpayment addition; 63-3036 is farm-employer withholding and 63-3029B is the capital investment credit (neither concerns individual estimates).",
+    state: 'ID', year: 2025, key: 'installments.pcts', value: [1.0],
+    citation: "Idaho has NO individual estimated-tax regime (estimates_required = false; Form 40 Instructions EIN00046 (03-02-2026): \"Idaho doesn't require estimated tax payments\"). Neutral placeholder: one 100% item (the Form 51 extension prepayment). The engine never builds vouchers from this row while estimates_required is false (R5 M1/M2).",
     status: 'unverified',
   },
   {
@@ -119,15 +117,13 @@ export const ID_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'ID', year: 2026, key: 'installments.due_dates',
-    value: ["2026-04-15", "2026-06-15", "2026-09-15", "2027-01-15"],
-    citation: "Federal-style placeholder dates. Idaho law fixes no individual installment dates; the Form 51 voucher (Idaho Form 51 voucher (EFO00092, 09-18-2025), tax.idaho.gov/document-mngr/forms_EFO00092/) carries none. Idaho Code 63-3036A(b) adopts the IRC dates for CORPORATE estimates only.  RE-AUDITED 2026-10-11 against primary sources, conclusion confirmed: tax.idaho.gov/taxes/income-tax/withholding/help/ ('Idaho doesn't require estimated tax payments from individuals, but you can make payments at any time'); Idaho Code 63-3036A(a) (read at legislature.idaho.gov/statutesrules/idstat/title63/t63ch30/sect63-3036a/: 'Any corporation subject to this chapter which is required to make a payment of estimated taxes to the internal revenue service and will have an Idaho income tax liability of five hundred dollars ($500) or more shall pay ... estimated taxes'), the $500 threshold is corporate-only; IDAPA 35.01.01 Rules 820-825 (adminrules.idaho.gov/rules/current/35/350101.pdf) govern only 'Corporate Estimated Payments'; Idaho Code 63-3046 contains no individual estimated-tax underpayment addition; 63-3036 is farm-employer withholding and 63-3029B is the capital investment credit (neither concerns individual estimates).",
+    state: 'ID', year: 2026, key: 'installments.due_dates', value: ["2027-04-15"],
+    citation: "Idaho has NO individual estimated-tax regime (estimates_required = false; Form 40 Instructions EIN00046 (03-02-2026): \"Idaho doesn't require estimated tax payments\"). Neutral placeholder: the one Form 51 extension-prepayment date (April 15). The engine never builds vouchers from this row while estimates_required is false (R5 M1/M2).",
     status: 'unverified',
   },
   {
-    state: 'ID', year: 2026, key: 'installments.pcts',
-    value: [0.25, 0.25, 0.25, 0.25],
-    citation: "Placeholder equal installments; Idaho prescribes none for individuals. MODELING PLACEHOLDER: Idaho does not require individuals to make estimated payments (Idaho 2025 Individual Income Tax booklet (EIN00046, rev. 03-02-2026), tax.idaho.gov/wp-content/uploads/forms/EIN00046/EIN00046_03-02-2026.pdf, 'Idaho doesn't require estimated tax payments. You can prepay at any time ... or mail your payment with Form 51'); Idaho Code 63-3036A (estimated tax) applies only to corporations. The key set cannot express 'not required'. RE-AUDITED 2026-10-11 against primary sources, conclusion confirmed: tax.idaho.gov/taxes/income-tax/withholding/help/ ('Idaho doesn't require estimated tax payments from individuals, but you can make payments at any time'); Idaho Code 63-3036A(a) (read at legislature.idaho.gov/statutesrules/idstat/title63/t63ch30/sect63-3036a/: 'Any corporation subject to this chapter which is required to make a payment of estimated taxes to the internal revenue service and will have an Idaho income tax liability of five hundred dollars ($500) or more shall pay ... estimated taxes'), the $500 threshold is corporate-only; IDAPA 35.01.01 Rules 820-825 (adminrules.idaho.gov/rules/current/35/350101.pdf) govern only 'Corporate Estimated Payments'; Idaho Code 63-3046 contains no individual estimated-tax underpayment addition; 63-3036 is farm-employer withholding and 63-3029B is the capital investment credit (neither concerns individual estimates).",
+    state: 'ID', year: 2026, key: 'installments.pcts', value: [1.0],
+    citation: "Idaho has NO individual estimated-tax regime (estimates_required = false; Form 40 Instructions EIN00046 (03-02-2026): \"Idaho doesn't require estimated tax payments\"). Neutral placeholder: one 100% item (the Form 51 extension prepayment). The engine never builds vouchers from this row while estimates_required is false (R5 M1/M2).",
     status: 'unverified',
   },
   {
@@ -165,5 +161,75 @@ export const ID_RULES: StateRuleSeedRow[] = [
     value: ["2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25", "2026-07-03", "2026-09-07", "2026-10-12", "2026-11-11", "2026-11-26", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-05-31", "2027-07-05", "2027-09-06", "2027-10-11", "2027-11-11", "2027-11-25", "2027-12-24"],
     citation: "Idaho Code 73-108 (legislature.idaho.gov Title 73 Ch 1): Jan 1; 3rd Mon Jan; 3rd Mon Feb; last Mon May; Jul 4; 1st Mon Sep; 2nd Mon Oct; Nov 11; 4th Thu Nov; Dec 25; a Saturday holiday is observed the preceding Friday and a Sunday holiday the following Monday. Dates computed from the statute for calendar years 2026-2027. Statute re-read 2026-10-11 at legislature.idaho.gov/statutesrules/idstat/title73/t73ch1/sect73-108/ (list and Saturday->Friday / Sunday->Monday observance confirmed; 'Every Sunday' and proclaimed days also holidays).",
     status: 'verified',
+  },
+  {
+    state: 'ID', year: 2025, key: 'estimates_required', value: false,
+    citation: "Idaho Form 40 Instructions EIN00046 (03-02-2026), tax.idaho.gov, read 2026-10-12: \"Idaho doesn't require estimated tax payments. You can prepay at any time ... or mail your payment with Form 51.\" Form 51 is only the extension prepayment (R5 M1).",
+    status: 'verified',
+  },
+  {
+    state: 'ID', year: 2025, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'ID', year: 2025, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'ID', year: 2025, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'ID', year: 2025, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'ID', year: 2025, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'ID', year: 2025, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'ID', year: 2026, key: 'estimates_required', value: false,
+    citation: "Idaho Form 40 Instructions EIN00046 (03-02-2026), tax.idaho.gov, read 2026-10-12 (2025 return booklet): \"Idaho doesn't require estimated tax payments.\" 2026 instructions not yet published (R5 M1).",
+    status: 'unverified',
+  },
+  {
+    state: 'ID', year: 2026, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'ID', year: 2026, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'ID', year: 2026, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'ID', year: 2026, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'ID', year: 2026, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'ID', year: 2026, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
   },
 ];

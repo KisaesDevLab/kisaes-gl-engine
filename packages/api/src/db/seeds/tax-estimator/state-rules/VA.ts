@@ -148,4 +148,74 @@ export const VA_RULES: StateRuleSeedRow[] = [
     citation: "Va. Code §2.2-3300 (see 2025 row). Calendar years 2025-2027. Dates computed from the statute.",
     status: 'verified',
   },
+  {
+    state: 'VA', year: 2025, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2025 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'VA', year: 2025, key: 'threshold_comparison', value: "more_than",
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md m1/D2: the requirement and penalty tests read \"more than\" the dollar threshold); primary source not re-read in this task (agency page blocked or not reached).",
+    status: 'unverified',
+  },
+  {
+    state: 'VA', year: 2025, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'VA', year: 2025, key: 'return_due_date', value: "2026-05-01",
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md D6: Virginia individual return due May 1; Form 760C penalty period ends May 1, 2026 (a Friday)); primary source not re-read in this task (agency page blocked or not reached).",
+    status: 'unverified',
+  },
+  {
+    state: 'VA', year: 2025, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'VA', year: 2025, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'VA', year: 2025, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'VA', year: 2026, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2026 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'VA', year: 2026, key: 'threshold_comparison', value: "more_than",
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md m1/D2: the requirement and penalty tests read \"more than\" the dollar threshold); primary source not re-read in this task (agency page blocked or not reached).",
+    status: 'unverified',
+  },
+  {
+    state: 'VA', year: 2026, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'VA', year: 2026, key: 'return_due_date', value: "2027-05-03",
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md D6: Virginia return due May 1); primary source not re-read in this task (agency page blocked or not reached). May 1, 2027 is a Saturday; next business day assumed.",
+    status: 'unverified',
+  },
+  {
+    state: 'VA', year: 2026, key: 'penalty.rate_schedule', value: [{"from": "2026-05-01", "to": "2026-06-30", "rate": 0.08}, {"from": "2026-07-01", "to": "2026-12-31", "rate": 0.09}],
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md M11: Tax Bulletins 26-2, 26-3, 26-4; 8% May 1-Jun 30, 2026, 9% Q3-Q4 2026; Q1 2027 not set; §58.1-15(B) carries the Q1 rate to May 1); primary source not re-read in this task (agency page blocked or not reached).",
+    status: 'unverified',
+  },
+  {
+    state: 'VA', year: 2026, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'VA', year: 2026, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
 ];

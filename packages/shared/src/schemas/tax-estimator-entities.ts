@@ -5,7 +5,7 @@
 // Tax Estimator Phase 4 request schemas — entity tax setup (MODULE.md D3, D8).
 import { z } from 'zod';
 import { ENTITY_TAX_TYPES, TAX_METHODS } from '../tax-estimator/types.js';
-import { ACCOUNT_TREATMENTS } from '../tax-estimator/entities-api.js';
+import { ACCOUNT_TREATMENTS, allowsPersonTarget } from '../tax-estimator/entities-api.js';
 
 const MIN_TAX_YEAR = 2000;
 const MAX_TAX_YEAR = 2100;
@@ -66,9 +66,15 @@ export const accountTreatmentInputSchema = z.object({
   } else if (v.pct != null) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['pct'], message: 'pct applies to nondeductible_pct only' });
   }
-  if (v.treatment !== 'estimated_tax_payment'
-    && (v.paymentTaxpayerId != null || v.paymentPersonId != null || v.paymentJurisdiction != null)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['treatment'], message: 'payment fields apply to estimated_tax_payment only' });
+  if (v.treatment !== 'estimated_tax_payment' && v.paymentJurisdiction != null) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['paymentJurisdiction'], message: 'paymentJurisdiction applies to estimated_tax_payment only' });
+  }
+  // Person target: payments, guaranteed payments, owner SEHI / retirement, W-2 wages (officer).
+  if (!allowsPersonTarget(v.treatment) && (v.paymentTaxpayerId != null || v.paymentPersonId != null)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['treatment'], message: 'a person target applies to payment, guaranteed-payment, owner and W-2 wage treatments only' });
+  }
+  if (v.treatment === 'guaranteed_payment' && v.paymentPersonId == null) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['paymentPersonId'], message: 'a guaranteed payment needs the partner (paymentPersonId)' });
   }
 });
 export type AccountTreatmentInput = z.infer<typeof accountTreatmentInputSchema>;

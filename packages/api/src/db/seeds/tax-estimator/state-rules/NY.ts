@@ -141,4 +141,74 @@ export const NY_RULES: StateRuleSeedRow[] = [
     citation: 'N.Y. General Construction Law §24 public holidays (verbatim text re-read in audit 2026-10-11 via newyork.public.law, which reproduces nysenate.gov/legislation/laws/GCN/24 as updated Oct. 16, 2020; "if any of such days except Flag day is Sunday, the next day thereafter"; "each general election day"): New Year\'s Day; MLK Day (3rd Mon Jan); Lincoln\'s Birthday (Feb 12); Washington\'s Birthday (3rd Mon Feb); Memorial Day; Flag Day (2nd Sunday in June, always a Sunday); Juneteenth (June 19); July 4; Labor Day; Columbus Day (2nd Mon Oct); Veterans\' Day (Nov 11); Thanksgiving; Christmas; each general election day (Tuesday after first Monday in Nov, assumed every year incl. odd-year local general elections). A fixed-date holiday falling on Sunday moves to the next day; Saturday not moved. IT-2105-I says a due date on a Saturday, Sunday or legal holiday moves to the next regular workday. Calendar years 2025-2027 computed.',
     status: 'verified',
   },
+  {
+    state: 'NY', year: 2025, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2025 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'NY', year: 2025, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NY', year: 2025, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NY', year: 2025, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NY', year: 2025, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NY', year: 2025, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NY', year: 2025, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NY', year: 2026, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2026 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'NY', year: 2026, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NY', year: 2026, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NY', year: 2026, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NY', year: 2026, key: 'penalty.rate_schedule', value: [{"from": "2026-04-01", "to": "2026-06-30", "rate": 0.085}, {"from": "2026-07-01", "to": "2026-12-31", "rate": 0.095}],
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md M10: tax.ny.gov quarterly rates, 8.5% Apr 1-Jun 30, 2026, 9.5% Q3-Q4 2026; Q1 2027 not set); primary source not re-read in this task (agency page blocked or not reached). Days before Apr 1, 2026 are not penalty days for TY2026.",
+    status: 'unverified',
+  },
+  {
+    state: 'NY', year: 2026, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'NY', year: 2026, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
 ];

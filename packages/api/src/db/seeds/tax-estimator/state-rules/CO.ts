@@ -140,4 +140,74 @@ export const CO_RULES: StateRuleSeedRow[] = [
     citation: 'UNVERIFIED for 2027 dates: 2026 dates match the Colorado DOR "Colorado State Holidays" page (tax.colorado.gov/holidays) and the Colorado Judicial Branch "Calendar Year 2026 Holiday Schedule" memo (coloradojudicial.gov/media/7751). 2027 dates computed from the 2026 pattern (Saturday holiday observed Friday: Juneteenth Jun 18, Christmas Dec 24; Sunday observed Monday: Jul 5); no official 2027 list read. C.R.S. 24-11-101 not read. Calendar years 2026-2027.',
     status: 'unverified',
   },
+  {
+    state: 'CO', year: 2025, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2025 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'CO', year: 2025, key: 'threshold_comparison', value: "more_than",
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md m1/D2: the requirement and penalty tests read \"more than\" the dollar threshold); primary source not re-read in this task (agency page blocked or not reached).",
+    status: 'unverified',
+  },
+  {
+    state: 'CO', year: 2025, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'CO', year: 2025, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'CO', year: 2025, key: 'penalty.rate_schedule', value: [{"from": "2025-01-01", "to": "2025-12-31", "rate": 0.12}, {"from": "2026-01-01", "to": "2026-12-31", "rate": 0.11}],
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md Part B2: calendar-year rate that changes on January 1); primary source not re-read in this task (agency page blocked or not reached). 12% for 2025 days, 11% for 2026 days.",
+    status: 'unverified',
+  },
+  {
+    state: 'CO', year: 2025, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'CO', year: 2025, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'CO', year: 2026, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2026 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'CO', year: 2026, key: 'threshold_comparison', value: "more_than",
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md m1/D2: the requirement and penalty tests read \"more than\" the dollar threshold); primary source not re-read in this task (agency page blocked or not reached).",
+    status: 'unverified',
+  },
+  {
+    state: 'CO', year: 2026, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'CO', year: 2026, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'CO', year: 2026, key: 'penalty.rate_schedule', value: [{"from": "2026-01-01", "to": "2026-12-31", "rate": 0.11}],
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md Part B2: calendar-year rate); primary source not re-read in this task (agency page blocked or not reached). 11% for 2026 days; calendar-2027 rate not set.",
+    status: 'unverified',
+  },
+  {
+    state: 'CO', year: 2026, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'CO', year: 2026, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
 ];

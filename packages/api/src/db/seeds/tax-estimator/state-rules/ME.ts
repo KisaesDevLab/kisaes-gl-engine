@@ -71,9 +71,9 @@ export const ME_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'ME', year: 2025, key: 'holidays', value: ["2025-01-01", "2025-01-20", "2025-02-17", "2025-04-21", "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01", "2025-10-13", "2025-11-11", "2025-11-27", "2025-12-25", "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-20", "2026-05-25", "2026-06-19", "2026-07-04", "2026-09-07", "2026-10-12", "2026-11-11", "2026-11-26", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-04-19", "2027-05-31", "2027-06-19", "2027-07-05", "2027-09-06", "2027-10-11", "2027-11-11", "2027-11-25", "2027-12-25"],
-    citation: "4 M.R.S. 1051 Legal holidays (read 2026-10-11: Jan 1; MLK 3rd Mon Jan; Washington's Birthday 3rd Mon Feb; Patriot's Day 3rd Mon Apr; Memorial Day last Mon May; Juneteenth June 19; July 4; Labor Day; Indigenous Peoples Day 2nd Mon Oct; Veterans Day Nov 11; Thanksgiving; Christmas; \"When any one of the holidays named in this section falls on Sunday, the Monday following must be observed\"). Saturday holidays not moved. Used by 36 M.R.S. 153(2) (\"legal holiday in this State\"). Calendar 2025-2027 computed from the statute and re-checked by the auditor.",
-    status: 'verified',
+    state: 'ME', year: 2025, key: 'holidays', value: ["2025-01-01", "2025-01-20", "2025-02-17", "2025-04-21", "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01", "2025-10-13", "2025-11-11", "2025-11-27", "2025-11-28", "2025-12-25", "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-20", "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07", "2026-10-12", "2026-11-11", "2026-11-26", "2026-11-27", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-04-19", "2027-05-31", "2027-06-19", "2027-07-05", "2027-09-06", "2027-10-11", "2027-11-11", "2027-11-25", "2027-12-25"],
+    citation: "Corrected per R5 review m8 (Maine BHR holiday schedule: Friday after Thanksgiving added; July 4, 2026 observed July 3); not re-read in this task. Previous citation: 4 M.R.S. 1051 Legal holidays (read 2026-10-11: Jan 1; MLK 3rd Mon Jan; Washington's Birthday 3rd Mon Feb; Patriot's Day 3rd Mon Apr; Memorial Day last Mon May; Juneteenth June 19; July 4; Labor Day; Indigenous Peoples Day 2nd Mon Oct; Veterans Day Nov 11; Thanksgiving; Christmas; \"When any one of the holidays named in this section falls on Sunday, the Monday following must be observed\"). Saturday holidays not moved. Used by 36 M.R.S. 153(2) (\"legal holiday in this State\"). Calendar 2025-2027 computed from the statute and re-checked by the auditor.",
+    status: 'unverified',
   },
   // ------------------------------------------------------------ 2026
   {
@@ -137,8 +137,78 @@ export const ME_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'ME', year: 2026, key: 'holidays', value: ["2025-01-01", "2025-01-20", "2025-02-17", "2025-04-21", "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01", "2025-10-13", "2025-11-11", "2025-11-27", "2025-12-25", "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-20", "2026-05-25", "2026-06-19", "2026-07-04", "2026-09-07", "2026-10-12", "2026-11-11", "2026-11-26", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-04-19", "2027-05-31", "2027-06-19", "2027-07-05", "2027-09-06", "2027-10-11", "2027-11-11", "2027-11-25", "2027-12-25"],
-    citation: "4 M.R.S. 1051 Legal holidays (read 2026-10-11; same list as TY2025; Sunday -> following Monday, e.g. July 4, 2027 -> July 5, 2027; Saturday not moved). Used by 36 M.R.S. 153(2). Calendar 2025-2027 computed from the statute and re-checked by the auditor.",
+    state: 'ME', year: 2026, key: 'holidays', value: ["2025-01-01", "2025-01-20", "2025-02-17", "2025-04-21", "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01", "2025-10-13", "2025-11-11", "2025-11-27", "2025-11-28", "2025-12-25", "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-20", "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07", "2026-10-12", "2026-11-11", "2026-11-26", "2026-11-27", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-04-19", "2027-05-31", "2027-06-19", "2027-07-05", "2027-09-06", "2027-10-11", "2027-11-11", "2027-11-25", "2027-12-25"],
+    citation: "Corrected per R5 review m8 (Maine BHR holiday schedule: Friday after Thanksgiving added; July 4, 2026 observed July 3); not re-read in this task. Previous citation: 4 M.R.S. 1051 Legal holidays (read 2026-10-11; same list as TY2025; Sunday -> following Monday, e.g. July 4, 2027 -> July 5, 2027; Saturday not moved). Used by 36 M.R.S. 153(2). Calendar 2025-2027 computed from the statute and re-checked by the auditor.",
+    status: 'unverified',
+  },
+  {
+    state: 'ME', year: 2025, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2025 installments.due_dates row). R5 key (2026-10-12).",
     status: 'verified',
+  },
+  {
+    state: 'ME', year: 2025, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'ME', year: 2025, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'ME', year: 2025, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'ME', year: 2025, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'ME', year: 2025, key: 'penalty.method', value: "monthly_compound",
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md Part B2 / D3: 2210ME .8333%/month (2025) and .75%/month (2026) per month or fraction, compounded monthly); primary source not re-read in this task (agency page blocked or not reached).",
+    status: 'unverified',
+  },
+  {
+    state: 'ME', year: 2025, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'ME', year: 2026, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2026 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'ME', year: 2026, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'ME', year: 2026, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'ME', year: 2026, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'ME', year: 2026, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'ME', year: 2026, key: 'penalty.method', value: "monthly_compound",
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md Part B2 / D3: 2210ME .8333%/month (2025) and .75%/month (2026) per month or fraction, compounded monthly); primary source not re-read in this task (agency page blocked or not reached).",
+    status: 'unverified',
+  },
+  {
+    state: 'ME', year: 2026, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
   },
 ];

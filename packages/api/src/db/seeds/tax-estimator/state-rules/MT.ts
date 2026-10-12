@@ -45,8 +45,8 @@ export const MT_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'MT', year: 2025, key: 'farmer.rule', value: null,
-    citation: "Montana has NO farmer installment/Jan-15 rule: Form EST-I (2025) Instructions list \"At least two-thirds of your gross income is derived from farming or ranching operations\" among the conditions under which \"You are not required to make estimated tax payments\"; Publication 1 (2026) says the same (\"Montana does not apply a lookback provision\"). The key set cannot express \"exempt from estimates entirely\", so null is stored; the engine should treat a farming/ranching taxpayer (>= 2/3 of gross income) as owing no Montana estimates.",
+    state: 'MT', year: 2025, key: 'farmer.rule', value: {"ratio": 0.6666666666, "current_pct": 0, "due_date": "2026-04-15", "file_by": "2026-04-15", "treatment": "exempt"},
+    citation: "MCA 15-30-2512(1)(a) (Montana Code Annotated 2025, archive.legmt.gov, read 2026-10-12): \"Each individual subject to tax under this chapter, except farmers or ranchers as defined in subsection (6), shall pay ... estimated tax in four installments\". Farmers/ranchers are EXEMPT (treatment exempt; current_pct 0; placeholder dates = return due date). No prior-year lookback (R5 D5).",
     status: 'verified',
   },
   {
@@ -55,8 +55,8 @@ export const MT_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'MT', year: 2025, key: 'penalty.rate', value: 0.07,
-    citation: "Form EST-I (2025) \"2026 Interest Rate\" (\"As of January 1, 2026, the interest rate is 7 percent ... daily rate is 0.0192 percent\"); Montana Publication 1 (2026) (\"interest on underpayment of estimated taxes for tax year 2026 will be calculated using the interest rate effective for 2027, because the 2026 income tax return is due in 2027\" -- i.e. TY2025 uses the 2026 rate)",
+    state: 'MT', year: 2025, key: 'penalty.rate', value: 0.08,
+    citation: "Montana DOR \"Penalty and Interest\" page (revenue.mt.gov, read 2026-10-12) historical table: individual income tax 2025 = 8.00% (R5 M5; the EST-I 2025 \"7% as of January 1, 2026\" is the 2026 rate). MCA 15-1-216(7). Days in 2026 accrue at 7%: see penalty.rate_schedule, which supersedes this single rate.",
     status: 'verified',
   },
   {
@@ -111,8 +111,8 @@ export const MT_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'MT', year: 2026, key: 'farmer.rule', value: null,
-    citation: "Montana has NO farmer installment/Jan-15 rule: Form EST-I (2025) Instructions list \"At least two-thirds of your gross income is derived from farming or ranching operations\" among the conditions under which \"You are not required to make estimated tax payments\"; Publication 1 (2026) says the same (\"Montana does not apply a lookback provision\"). The key set cannot express \"exempt from estimates entirely\", so null is stored; the engine should treat a farming/ranching taxpayer (>= 2/3 of gross income) as owing no Montana estimates.",
+    state: 'MT', year: 2026, key: 'farmer.rule', value: {"ratio": 0.6666666666, "current_pct": 0, "due_date": "2027-04-15", "file_by": "2027-04-15", "treatment": "exempt"},
+    citation: "MCA 15-30-2512(1)(a) (Montana Code Annotated 2025, archive.legmt.gov, read 2026-10-12): \"Each individual subject to tax under this chapter, except farmers or ranchers as defined in subsection (6), shall pay ... estimated tax in four installments\". Farmers/ranchers are EXEMPT (treatment exempt; current_pct 0; placeholder dates = return due date). No prior-year lookback (R5 D5).",
     status: 'verified',
   },
   {
@@ -139,5 +139,75 @@ export const MT_RULES: StateRuleSeedRow[] = [
     state: 'MT', year: 2026, key: 'holidays', value: ["2025-01-01", "2025-01-20", "2025-02-17", "2025-05-26", "2025-07-04", "2025-09-01", "2025-10-13", "2025-11-11", "2025-11-27", "2025-12-25", "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25", "2026-07-03", "2026-09-07", "2026-10-12", "2026-11-03", "2026-11-11", "2026-11-26", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-05-31", "2027-07-05", "2027-09-06", "2027-10-11", "2027-11-11", "2027-11-25", "2027-12-24", "2027-12-31"],
     citation: "MCA 1-1-216 (2025) legal holidays: each Sunday; Jan 1; MLK 3rd Mon Jan; Presidents' Day 3rd Mon Feb; Memorial Day; July 4; Labor Day; Indigenous Peoples' Day and Columbus Day 2nd Mon Oct; Nov 11; Thanksgiving; Dec 25; state general election day; holiday on Sunday -> following Monday, on Saturday -> preceding Friday. The text read (amended by L. 2025 ch. 561) does not list Juneteenth. Calendar 2025-2027 computed (Nov 3, 2026 is general election day; Jan 1, 2028 Saturday -> Dec 31, 2027).",
     status: 'verified',
+  },
+  {
+    state: 'MT', year: 2025, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2025 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'MT', year: 2025, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MT', year: 2025, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MT', year: 2025, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MT', year: 2025, key: 'penalty.rate_schedule', value: [{"from": "2025-01-01", "to": "2025-12-31", "rate": 0.08}, {"from": "2026-01-01", "to": "2026-12-31", "rate": 0.07}],
+    citation: "Montana DOR \"Penalty and Interest\" page, revenue.mt.gov, read 2026-10-12 (historical table: individual income tax 2025 = 8.00%; \"The 2026 annual interest rate on individual income tax ... and the underpayment of estimated taxes is 7%\")",
+    status: 'verified',
+  },
+  {
+    state: 'MT', year: 2025, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MT', year: 2025, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MT', year: 2026, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2026 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'MT', year: 2026, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MT', year: 2026, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MT', year: 2026, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MT', year: 2026, key: 'penalty.rate_schedule', value: [{"from": "2026-01-01", "to": "2026-12-31", "rate": 0.07}],
+    citation: "Montana DOR \"Penalty and Interest\" page, revenue.mt.gov, read 2026-10-12 (historical table: individual income tax 2025 = 8.00%; \"The 2026 annual interest rate on individual income tax ... and the underpayment of estimated taxes is 7%\"). Calendar-2027 rate not published on 2026-10-12.",
+    status: 'verified',
+  },
+  {
+    state: 'MT', year: 2026, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'MT', year: 2026, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
   },
 ];

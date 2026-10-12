@@ -177,7 +177,22 @@ describe('entities routes — happy path inside the scope', () => {
 
     const rd = await request('GET', `${b}/readiness?through=2026-03`, staffToken);
     expect(rd.status).toBe(200);
-    expect((rd.json.data as { lastClosedMonth: string | null }).lastClosedMonth).toBeNull();
+    // Bank never reconciled, first used Feb 10 → closed through January only (R1 F11).
+    expect((rd.json.data as { lastClosedMonth: string | null }).lastClosedMonth).toBe('2026-01');
+
+    // R1: guaranteed payments need the partner (Zod 400) and a partnership (422).
+    expect((await request('PUT', `${b}/treatments`, staffToken, {
+      treatments: [{ accountId: X.meals2, treatment: 'guaranteed_payment', nonRecurring: false }],
+    })).status).toBe(400);
+    const gp = await request('PUT', `${b}/treatments`, staffToken, {
+      treatments: [{ accountId: X.meals2, treatment: 'guaranteed_payment', paymentPersonId: '00000000-0000-0000-0000-00000000abcd', nonRecurring: false }],
+    });
+    expect(gp.status).toBe(422);
+    expect((gp.json as { code?: string; error?: { code?: string } }).error?.code ?? (gp.json as { code?: string }).code).toBe('TE_TREATMENT_NOT_FOR_ENTITY');
+    // R1 F9: a character treatment on an expense account.
+    expect((await request('PUT', `${b}/treatments`, staffToken, {
+      treatments: [{ accountId: X.meals2, treatment: 'interest', nonRecurring: false }],
+    })).status).toBe(422);
 
     expect((await request('GET', `${b}/tax-basis-pl?taxYear=2026&through=2027-01`, staffToken)).status).toBe(400);
     expect((await request('GET', `${b}/readiness?through=2026-13`, staffToken)).status).toBe(400);

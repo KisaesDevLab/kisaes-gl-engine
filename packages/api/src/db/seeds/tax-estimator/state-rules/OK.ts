@@ -71,8 +71,8 @@ export const OK_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'OK', year: 2025, key: 'holidays', value: ["2025-01-01", "2025-01-20", "2025-02-17", "2025-05-26", "2025-07-04", "2025-09-01", "2025-11-11", "2025-11-27", "2025-11-28", "2025-12-25", "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25", "2026-07-03", "2026-09-07", "2026-11-11", "2026-11-26", "2026-11-27", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-05-31", "2027-07-05", "2027-09-06", "2027-11-11", "2027-11-25", "2027-11-26", "2027-12-23", "2027-12-24", "2027-12-25", "2027-12-31"],
-    citation: '25 O.S. 2021 §82.1 as reproduced in the Oklahoma Legislature\'s HB 1692 (2025, as introduced; oklegislature.gov), read in audit 2026-10-11: A. holidays are each Saturday, Sunday, New Year\'s Day (Jan 1), MLK (3rd Mon Jan), Presidents\' Day (3rd Mon Feb), Memorial Day, Independence Day (July 4), Labor Day, Veterans\' Day (Nov 11), Thanksgiving, the day after Thanksgiving, Christmas (Dec 25), the day before or after Christmas if Christmas is not on a weekend, the Thursday and Friday before Christmas if Christmas is on a Saturday; holidays other than Christmas on a Saturday move to the preceding Friday and on a Sunday to the succeeding Monday; C. an act due on a holiday may be performed on the next succeeding business day. Juneteenth and Columbus Day are NOT in §82.1 (audit removed 2025-06-19, 2026-06-19, 2027-06-18 which the researcher had included). 2027-12-23/24 added (Christmas 2027 is a Saturday); 2027-12-31 is the Friday for Jan 1, 2028. UNVERIFIED because (1) the Governor\'s executive order picks the day before or after Christmas in 2025 and 2026 (not read; neither date can move an installment or farmer date, so both are omitted), and (2) HB 1692\'s text adds "the day upon which any General Election is held" and the underlining that marks new language was lost in text extraction, so whether election day is current law is unconfirmed (omitted; the bill\'s purpose is to add it). Calendar 2025-2027.',
+    state: 'OK', year: 2025, key: 'holidays', value: ["2025-01-01", "2025-01-20", "2025-02-17", "2025-05-26", "2025-07-04", "2025-09-01", "2025-11-11", "2025-11-27", "2025-11-28", "2025-12-24", "2025-12-25", "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25", "2026-07-03", "2026-09-07", "2026-11-11", "2026-11-26", "2026-11-27", "2026-12-24", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-05-31", "2027-07-05", "2027-09-06", "2027-11-11", "2027-11-25", "2027-11-26", "2027-12-23", "2027-12-24"],
+    citation: "Corrected per R5 review m7 (OMES holidays page; EO 2025-14 and EO 2026-26: Dec 24 & 25, 2025/2026; 2027 Christmas observed Dec 23-24); not re-read in this task. Previous citation: 25 O.S. 2021 §82.1 as reproduced in the Oklahoma Legislature's HB 1692 (2025, as introduced; oklegislature.gov), read in audit 2026-10-11: A. holidays are each Saturday, Sunday, New Year's Day (Jan 1), MLK (3rd Mon Jan), Presidents' Day (3rd Mon Feb), Memorial Day, Independence Day (July 4), Labor Day, Veterans' Day (Nov 11), Thanksgiving, the day after Thanksgiving, Christmas (Dec 25), the day before or after Christmas if Christmas is not on a weekend, the Thursday and Friday before Christmas if Christmas is on a Saturday; holidays other than Christmas on a Saturday move to the preceding Friday and on a Sunday to the succeeding Monday; C. an act due on a holiday may be performed on the next succeeding business day. Juneteenth and Columbus Day are NOT in §82.1 (audit removed 2025-06-19, 2026-06-19, 2027-06-18 which the researcher had included). 2027-12-23/24 added (Christmas 2027 is a Saturday); 2027-12-31 is the Friday for Jan 1, 2028. UNVERIFIED because (1) the Governor's executive order picks the day before or after Christmas in 2025 and 2026 (not read; neither date can move an installment or farmer date, so both are omitted), and (2) HB 1692's text adds \"the day upon which any General Election is held\" and the underlining that marks new language was lost in text extraction, so whether election day is current law is unconfirmed (omitted; the bill's purpose is to add it). Calendar 2025-2027.",
     status: 'unverified',
   },
   // ------------------------------------------------------------------ 2026
@@ -137,8 +137,78 @@ export const OK_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'OK', year: 2026, key: 'holidays', value: ["2025-01-01", "2025-01-20", "2025-02-17", "2025-05-26", "2025-07-04", "2025-09-01", "2025-11-11", "2025-11-27", "2025-11-28", "2025-12-25", "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25", "2026-07-03", "2026-09-07", "2026-11-11", "2026-11-26", "2026-11-27", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-05-31", "2027-07-05", "2027-09-06", "2027-11-11", "2027-11-25", "2027-11-26", "2027-12-23", "2027-12-24", "2027-12-25", "2027-12-31"],
-    citation: '25 O.S. 2021 §82.1 as reproduced in the Oklahoma Legislature\'s HB 1692 (2025, as introduced; oklegislature.gov), read in audit 2026-10-11: A. holidays are each Saturday, Sunday, New Year\'s Day (Jan 1), MLK (3rd Mon Jan), Presidents\' Day (3rd Mon Feb), Memorial Day, Independence Day (July 4), Labor Day, Veterans\' Day (Nov 11), Thanksgiving, the day after Thanksgiving, Christmas (Dec 25), the day before or after Christmas if Christmas is not on a weekend, the Thursday and Friday before Christmas if Christmas is on a Saturday; holidays other than Christmas on a Saturday move to the preceding Friday and on a Sunday to the succeeding Monday; C. an act due on a holiday may be performed on the next succeeding business day. Juneteenth and Columbus Day are NOT in §82.1 (audit removed 2025-06-19, 2026-06-19, 2027-06-18 which the researcher had included). 2027-12-23/24 added (Christmas 2027 is a Saturday); 2027-12-31 is the Friday for Jan 1, 2028. UNVERIFIED because (1) the Governor\'s executive order picks the day before or after Christmas in 2025 and 2026 (not read; neither date can move an installment or farmer date, so both are omitted), and (2) HB 1692\'s text adds "the day upon which any General Election is held" and the underlining that marks new language was lost in text extraction, so whether election day is current law is unconfirmed (omitted; the bill\'s purpose is to add it). Calendar 2025-2027.',
+    state: 'OK', year: 2026, key: 'holidays', value: ["2025-01-01", "2025-01-20", "2025-02-17", "2025-05-26", "2025-07-04", "2025-09-01", "2025-11-11", "2025-11-27", "2025-11-28", "2025-12-24", "2025-12-25", "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25", "2026-07-03", "2026-09-07", "2026-11-11", "2026-11-26", "2026-11-27", "2026-12-24", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-05-31", "2027-07-05", "2027-09-06", "2027-11-11", "2027-11-25", "2027-11-26", "2027-12-23", "2027-12-24"],
+    citation: "Corrected per R5 review m7 (OMES holidays page; EO 2025-14 and EO 2026-26: Dec 24 & 25, 2025/2026; 2027 Christmas observed Dec 23-24); not re-read in this task. Previous citation: 25 O.S. 2021 §82.1 as reproduced in the Oklahoma Legislature's HB 1692 (2025, as introduced; oklegislature.gov), read in audit 2026-10-11: A. holidays are each Saturday, Sunday, New Year's Day (Jan 1), MLK (3rd Mon Jan), Presidents' Day (3rd Mon Feb), Memorial Day, Independence Day (July 4), Labor Day, Veterans' Day (Nov 11), Thanksgiving, the day after Thanksgiving, Christmas (Dec 25), the day before or after Christmas if Christmas is not on a weekend, the Thursday and Friday before Christmas if Christmas is on a Saturday; holidays other than Christmas on a Saturday move to the preceding Friday and on a Sunday to the succeeding Monday; C. an act due on a holiday may be performed on the next succeeding business day. Juneteenth and Columbus Day are NOT in §82.1 (audit removed 2025-06-19, 2026-06-19, 2027-06-18 which the researcher had included). 2027-12-23/24 added (Christmas 2027 is a Saturday); 2027-12-31 is the Friday for Jan 1, 2028. UNVERIFIED because (1) the Governor's executive order picks the day before or after Christmas in 2025 and 2026 (not read; neither date can move an installment or farmer date, so both are omitted), and (2) HB 1692's text adds \"the day upon which any General Election is held\" and the underlining that marks new language was lost in text extraction, so whether election day is current law is unconfirmed (omitted; the bill's purpose is to add it). Calendar 2025-2027.",
+    status: 'unverified',
+  },
+  {
+    state: 'OK', year: 2025, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2025 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'OK', year: 2025, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'OK', year: 2025, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'OK', year: 2025, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'OK', year: 2025, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'OK', year: 2025, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'OK', year: 2025, key: 'penalty.min_balance_due', value: 1000,
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md D1: 68 O.S. §2385.13(C), no underpayment interest if the tax shown on the return is less than $1,000, while the requirement threshold is $500); primary source not re-read in this task (agency page blocked or not reached).",
+    status: 'unverified',
+  },
+  {
+    state: 'OK', year: 2026, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2026 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'OK', year: 2026, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'OK', year: 2026, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'OK', year: 2026, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'OK', year: 2026, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'OK', year: 2026, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'OK', year: 2026, key: 'penalty.min_balance_due', value: 1000,
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md D1: 68 O.S. §2385.13(C), no underpayment interest if the tax shown on the return is less than $1,000, while the requirement threshold is $500); primary source not re-read in this task (agency page blocked or not reached).",
     status: 'unverified',
   },
 ];

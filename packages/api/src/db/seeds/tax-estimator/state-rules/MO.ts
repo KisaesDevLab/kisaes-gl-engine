@@ -147,4 +147,74 @@ export const MO_RULES: StateRuleSeedRow[] = [
     citation: 'RSMo §9.010 public holidays (statutory dates; Sunday -> following Monday, e.g. July 4, 2027 -> July 5, 2027; Saturday holidays not moved) used by RSMo §143.851. Calendar years 2026-2027 (all installment and farmer dates of TY2026). Dates computed from the statute.',
     status: 'verified',
   },
+  {
+    state: 'MO', year: 2025, key: 'estimates_required', value: true,
+    citation: "RSMo §143.521.1 (declaration of estimated tax required at $100 or more) and §143.541.1(1) (four installments April 15, June 15, September 15, January 15); Form MO-1040ES 2025 General Instruction 4 (read 2026-10-12)",
+    status: 'verified',
+  },
+  {
+    state: 'MO', year: 2025, key: 'threshold_comparison', value: "at_least",
+    citation: "RSMo §143.521.1 (\"at least one hundred dollars\"); MO-1040ES 2025 Instr. 1-2 (\"$100.00 or more\"); Form MO-2210 (2025), dor.mo.gov/forms/MO-2210_2025.pdf, read 2026-10-12 Part I line 4 (\"If less than $500, stop here\") — both boundaries are \"at least\"",
+    status: 'verified',
+  },
+  {
+    state: 'MO', year: 2025, key: 'installments.q4_file_and_pay_date', value: "2026-02-02",
+    citation: "RSMo §143.521.6 (return filed and tax paid in full \"on or before January thirty-first\" of the succeeding year stands as the declaration due January 15; read on revisor.mo.gov 2026-10-12); Form MO-2210 (2025), dor.mo.gov/forms/MO-2210_2025.pdf, read 2026-10-12 Instruction H (\"If you filed your return and paid the balance of tax due on or before January 31, 2026, consider the balance paid as of January 15, 2026\"); MO-1040ES 2026 Instr. 4. Jan 31, 2026 is a Saturday -> Monday Feb 2, 2026 under RSMo §143.851 (Saturday, Sunday or legal holiday -> next succeeding day).",
+    status: 'verified',
+  },
+  {
+    state: 'MO', year: 2025, key: 'return_due_date', value: "2026-04-15",
+    citation: "RSMo §143.511 (return and payment due \"on or before the fifteenth day of the fourth month following the close of the taxpayer's taxable year\"; read 2026-10-12); Form MO-2210 (2025), dor.mo.gov/forms/MO-2210_2025.pdf, read 2026-10-12 lines 26/27b (penalty period ends at payment or \"April 15, 2026\")",
+    status: 'verified',
+  },
+  {
+    state: 'MO', year: 2025, key: 'penalty.rate_schedule', value: [{"from": "2025-01-01", "to": "2025-12-31", "rate": 0.08}, {"from": "2026-01-01", "to": "2026-12-31", "rate": 0.07}],
+    citation: "12 CSR 10-41.010(1) table (calendar 2025 = 8%, 2026 = 7%; emergency amendment filed Oct. 2025, dor.mo.gov, read 2026-10-12); Form MO-2210 (2025), dor.mo.gov/forms/MO-2210_2025.pdf, read 2026-10-12 lines 27a/27b and 28a/28b: 8% for days through December 31, 2025, 7% for days from January 1, 2026 to payment or April 15, 2026. RSMo §32.065.",
+    status: 'verified',
+  },
+  {
+    state: 'MO', year: 2025, key: 'penalty.method', value: "daily_simple",
+    citation: "Form MO-2210 (2025), dor.mo.gov/forms/MO-2210_2025.pdf, read 2026-10-12 lines 28a/28b instructions: \"Multiply the amount on Line 25 by the number of days ... Divide this amount by 365 days and multiply the product by\" the annual rate; RSMo §143.761.1 (rate under §32.065, per diem, not compounded)",
+    status: 'verified',
+  },
+  {
+    state: 'MO', year: 2025, key: 'penalty.min_balance_due', value: 500,
+    citation: "Form MO-2210 (2025), dor.mo.gov/forms/MO-2210_2025.pdf, read 2026-10-12 Part I line 4: \"Subtract Line 3 [withholding] from Line 1 [2025 tax after credits]. If less than $500, stop here; do not complete or file this form. You do not owe the penalty.\" Distinct from the $100 declaration threshold (required_threshold).",
+    status: 'verified',
+  },
+  {
+    state: 'MO', year: 2026, key: 'estimates_required', value: true,
+    citation: "RSMo §143.521.1 (declaration of estimated tax required at $100 or more) and §143.541.1(1) (four installments April 15, June 15, September 15, January 15); Form MO-1040ES 2026 General Instruction 4 (read 2026-10-12)",
+    status: 'verified',
+  },
+  {
+    state: 'MO', year: 2026, key: 'threshold_comparison', value: "at_least",
+    citation: "RSMo §143.521.1 (\"at least one hundred dollars\"); MO-1040ES 2026 Instr. 1-2 (\"$100.00 or more\"); Form MO-2210 (2025), dor.mo.gov/forms/MO-2210_2025.pdf, read 2026-10-12 Part I line 4 (\"If less than $500, stop here\") — both boundaries are \"at least\"",
+    status: 'verified',
+  },
+  {
+    state: 'MO', year: 2026, key: 'installments.q4_file_and_pay_date', value: "2027-02-01",
+    citation: "RSMo §143.521.6 (\"on or before January thirty-first\"; read on revisor.mo.gov 2026-10-12); MO-1040ES 2026 (Rev. 12-2025) General Instruction 4 (\"no declaration need be filed on January 15, if you file a voucher and pay the tax on or before January 31\"). Jan 31, 2027 is a Sunday -> Monday Feb 1, 2027 under RSMo §143.851.",
+    status: 'verified',
+  },
+  {
+    state: 'MO', year: 2026, key: 'return_due_date', value: "2027-04-15",
+    citation: "RSMo §143.511 (fifteenth day of the fourth month; read on revisor.mo.gov 2026-10-12). April 15, 2027 is a Thursday (no roll). MO-2210 (2025) lines 26/27b show the penalty period ending on that date.",
+    status: 'verified',
+  },
+  {
+    state: 'MO', year: 2026, key: 'penalty.rate_schedule', value: [{"from": "2026-01-01", "to": "2026-12-31", "rate": 0.07}],
+    citation: "12 CSR 10-41.010(1) (calendar 2026 = 7%, read 2026-10-12). The calendar-2027 rate (days Jan 1-Apr 15, 2027 of a TY2026 underpayment) is posted by Oct. 22, 2026 under 12 CSR 10-41.010(4) / RSMo §32.065 and was not published on 2026-10-12; days after 12/31/2026 are deliberately uncovered so the engine falls back to penalty.rate with a verify flag. Add the 2027 leg when posted.",
+    status: 'verified',
+  },
+  {
+    state: 'MO', year: 2026, key: 'penalty.method', value: "daily_simple",
+    citation: "Form MO-2210 (2025), dor.mo.gov/forms/MO-2210_2025.pdf, read 2026-10-12 lines 28a/28b instructions: \"Multiply the amount on Line 25 by the number of days ... Divide this amount by 365 days and multiply the product by\" the annual rate; RSMo §143.761.1 (rate under §32.065, per diem, not compounded)",
+    status: 'verified',
+  },
+  {
+    state: 'MO', year: 2026, key: 'penalty.min_balance_due', value: 500,
+    citation: "Form MO-2210 (2025), dor.mo.gov/forms/MO-2210_2025.pdf, read 2026-10-12 Part I line 4: \"Subtract Line 3 [withholding] from Line 1 [2025 tax after credits]. If less than $500, stop here; do not complete or file this form. You do not owe the penalty.\" Distinct from the $100 declaration threshold (required_threshold). The 2026 MO-2210 is not yet published; value carried from the current (2025) form.",
+    status: 'verified',
+  },
 ];

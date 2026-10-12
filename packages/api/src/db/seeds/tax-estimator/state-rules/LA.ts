@@ -165,4 +165,74 @@ export const LA_RULES: StateRuleSeedRow[] = [
     citation: "La. R.S. 1:55 (legis.la.gov/Legis/LawPrint.aspx?d=74097, current text incl. Acts 2026 Nos. 40 and 113). Union of: (A)(1) legal holidays - Jan 1; Jan 8 (Battle of New Orleans); 3rd Mon Jan (MLK); 3rd Mon Feb (Washington's Birthday); Mardi Gras; Good Friday; last Mon May; Jul 4; Aug 30 (Huey P. Long Day); 1st Mon Sep; 2nd Mon Oct (Columbus); Nov 1 (All Saints'); Nov 11; 4th Thu Nov; Dec 25; (A)(4) Jan 1/Jul 4/Dec 25 falling on a Sunday -> Monday holiday; (B)(1)(a) state-department holiday on the first Tuesday after the first Monday in November in even-numbered years (Election Day); plus Governor-proclaimed state holidays read in State Civil Service General Circulars: 2025-053 / Proclamation 74 JML 2025 (Dec 31, 2025; Jan 2, 2026), 2026-010 (Lundi Gras Feb 16, 2026), 2026-023 / Proclamations 06 and 07 JML 2026 (Memorial Day May 25, 2026; Juneteenth Jun 19, 2026) (civilservice.louisiana.gov/files/general_circulars/). Movable dates computed (Easter 2025 Apr 20, 2026 Apr 5, 2027 Mar 28). The IT-540ESi says only 'weekend or legal holiday'. UNVERIFIED because the Governor proclaims further holidays year by year (e.g. 2025 Lundi Gras/Juneteenth/Dec 26, and all 2027 proclamations) and no complete official dated calendar was found; some (A)(1) days (Jan 8, Aug 30, Columbus, Nov 1) are legal holidays but not observed by state departments under (B). No installment or farmer date falls on any of these. Calendar years 2026-2027.",
     status: 'unverified',
   },
+  {
+    state: 'LA', year: 2025, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2025 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'LA', year: 2025, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'LA', year: 2025, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'LA', year: 2025, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'LA', year: 2025, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'LA', year: 2025, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'LA', year: 2025, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'LA', year: 2026, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2026 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'LA', year: 2026, key: 'threshold_comparison', value: null,
+    citation: "No separate boundary wording recorded for this state; null = 'at least' (the required_threshold default). Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'LA', year: 2026, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'LA', year: 2026, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'LA', year: 2026, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'LA', year: 2026, key: 'penalty.method', value: null,
+    citation: "Not separately researched; null = daily simple accrual (rate x days / 365, the federal pattern). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'LA', year: 2026, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
 ];

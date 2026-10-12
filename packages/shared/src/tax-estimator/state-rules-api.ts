@@ -88,5 +88,24 @@ export interface StateRuleChangeDTO {
   reason: string | null;
 }
 
+/**
+ * What the estimator engine receives for one (state, year) — see
+ * resolveStateRulesForEngine. `rules` maps registry keys to effective values;
+ * read the penalty rate for a day with statePenaltyRateOn (penalty.rate_schedule
+ * legs supersede penalty.rate).
+ */
+export interface StateRulesEngineView {
+  rules: Record<string, unknown>;
+  /** Apply the federal pattern for this state (no or incomplete rule set) and show "verify". */
+  usesFederalFallback: boolean;
+  verifyBadge: boolean;
+  /**
+   * False when the state has no individual estimated-tax regime (estimates_required =
+   * false, e.g. ID, UT) or no income tax: no vouchers and no underpayment penalty. The
+   * voucher-schedule keys are withheld from `rules` in that case.
+   */
+  estimatesRequired: boolean;
+}
+
 /** Adopt-shipped identifies a row as `ST:key`. */
 export const stateRuleRef = (state: string, key: string): string => `${state}:${key}`;

@@ -52,10 +52,9 @@ export const IL_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'IL', year: 2025, key: 'farmer.rule',
-    value: null,
-    citation: "Illinois farmers are EXEMPT from estimated tax (35 ILCS 5/803(a) 'Every taxpayer other than ... farmer'; 803(e) farmer = gross income from farming at least 2/3 of total estimated gross income for the year), Illinois Income Tax Act full text, ilga.gov/legislation/ILCS/details?ActID=577&ChapterID=8&ChapAct=FullText; Illinois Publication 105 (R-12/25), tax.illinois.gov/content/dam/soi/en/web/tax/research/publications/pubs/documents/pub-105.pdf 'Are there any exceptions' (two-thirds of total federal gross income from farming); Form IL-1040-ES (2026) (R-09/26), tax.illinois.gov/content/dam/soi/en/web/tax/forms/incometax/documents/currentyear/individual/il-1040-es.pdf 'Are there any exceptions?'; 2025 IL-2210 Instructions (R-12/25) (.../currentyear/individual/il-2210-instr.pdf) p.1 and 2025 IL-1040 Instructions Line 34a (no late-payment penalty for underpayment of estimated tax if you qualify as a farmer). The farmer.rule shape {ratio,current_pct,due_date,file_by} cannot express a full exemption, so the value is null; ENGINE NOTE: null here must mean 'farmers owe no IL estimates', not 'no special farmer rule'. Farmer test is 2/3 of the CURRENT year's gross income (no prior-year alternative).",
-    status: 'verified',
+    state: 'IL', year: 2025, key: 'farmer.rule', value: {"ratio": 0.6666666666, "current_pct": 0, "due_date": "2026-04-15", "file_by": "2026-04-15", "treatment": "exempt"},
+    citation: "IL-1040-ES (2026) \"Are there any exceptions?\" (tax.illinois.gov, read 2026-10-12): \"You do not have to make estimated payments if you are ... a farmer. We consider you a farmer if at least two-thirds of your total federal gross income is from farming.\" 35 ILCS 5/803(a),(e). Farmers are EXEMPT (treatment exempt; current_pct 0; placeholder dates = return due date) (R5 M7). The 2025 IL-1040-ES is no longer posted; the exemption is statutory (803(a)) and unchanged.",
+    status: 'unverified',
   },
   {
     state: 'IL', year: 2025, key: 'penalty.rate_source',
@@ -82,10 +81,9 @@ export const IL_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'IL', year: 2025, key: 'holidays',
-    value: ["2025-01-01", "2025-01-20", "2025-02-12", "2025-02-17", "2025-03-03", "2025-04-18", "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01", "2025-10-13", "2025-11-11", "2025-11-27", "2025-12-25", "2026-01-01", "2026-01-19", "2026-02-12", "2026-02-16", "2026-03-02", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-04", "2026-09-07", "2026-10-12", "2026-11-03", "2026-11-11", "2026-11-26", "2026-12-25"],
-    citation: "Illinois statutory legal holidays, 205 ILCS 630/17(a) (Promissory Note and Bank Holiday Act: Jan 1; 3rd Mon Jan; Feb 12; 3rd Mon Feb; 1st Mon Mar (Casimir Pulaski); Good Friday; last Mon May; June 19; July 4; 1st Mon Sep; 2nd Mon Oct; Nov 11; 4th Thu Nov; Dec 25; general-election days for the U.S. House (even years); days proclaimed by the Governor), ilga.gov/legislation/ILCS/details?ActID=1195&ChapterID=20&ChapAct=FullText, with 5 ILCS 490/60 (Lincoln's Birthday on a Sunday -> following Monday) and 5 ILCS 490/63 (Juneteenth on a Sunday -> following Monday; Saturday not moved), ilga.gov ActID=134. Due-date roll: 5 ILCS 70/1.11 (Statute on Statutes: a last day falling on Saturday, Sunday or 'a holiday as defined or fixed in any statute' is excluded, and so is a succeeding Saturday/Sunday/holiday), ilga.gov ActID=79; IDOR states the same rule (Pub 105 'weekend or holiday ... next business day'; 2025 IL-2210 Instructions line 9a; 2025 IL-1040 Instructions 'When must I file?'). No other statutory weekend shift; the day after Thanksgiving is NOT a statutory legal holiday (state-employee leave only). Dates computed from the statutes. Calendar years 2025-2026 (no general election in 2025; Nov 3, 2026 general election). No installment date of TY2025 falls on one of these holidays.",
-    status: 'verified',
+    state: 'IL', year: 2025, key: 'holidays', value: ["2025-01-01", "2025-01-20", "2025-02-12", "2025-02-17", "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01", "2025-10-13", "2025-11-11", "2025-11-27", "2025-11-28", "2025-12-25", "2026-01-01", "2026-01-19", "2026-02-12", "2026-02-16", "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07", "2026-10-12", "2026-11-03", "2026-11-11", "2026-11-26", "2026-11-27", "2026-12-25"],
+    citation: "Corrected per R5 review m4 (CMS state holidays page + memo 11/18/2025: no Casimir Pulaski Day or Good Friday; day after Thanksgiving added; July 4, 2026 observed July 3; 2027 Juneteenth June 18, July 4 -> July 5, Christmas -> Dec 24); not re-read in this task. Previous citation: Illinois statutory legal holidays, 205 ILCS 630/17(a) (Promissory Note and Bank Holiday Act: Jan 1; 3rd Mon Jan; Feb 12; 3rd Mon Feb; 1st Mon Mar (Casimir Pulaski); Good Friday; last Mon May; June 19; July 4; 1st Mon Sep; 2nd Mon Oct; Nov 11; 4th Thu Nov; Dec 25; general-election days for the U.S. House (even years); days proclaimed by the Governor), ilga.gov/legislation/ILCS/details?ActID=1195&ChapterID=20&ChapAct=FullText, with 5 ILCS 490/60 (Lincoln's Birthday on a Sunday -> following Monday) and 5 ILCS 490/63 (Juneteenth on a Sunday -> following Monday; Saturday not moved), ilga.gov ActID=134. Due-date roll: 5 ILCS 70/1.11 (Statute on Statutes: a last day falling on Saturday, Sunday or 'a holiday as defined or fixed in any statute' is excluded, and so is a succeeding Saturday/Sunday/holiday), ilga.gov ActID=79; IDOR states the same rule (Pub 105 'weekend or holiday ... next business day'; 2025 IL-2210 Instructions line 9a; 2025 IL-1040 Instructions 'When must I file?'). No other statutory weekend shift; the day after Thanksgiving is NOT a statutory legal holiday (state-employee leave only). Dates computed from the statutes. Calendar years 2025-2026 (no general election in 2025; Nov 3, 2026 general election). No installment date of TY2025 falls on one of these holidays.",
+    status: 'unverified',
   },
   // ------------------------------------------------------------------ 2026
   {
@@ -131,9 +129,8 @@ export const IL_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'IL', year: 2026, key: 'farmer.rule',
-    value: null,
-    citation: "Illinois farmers are EXEMPT from estimated tax (35 ILCS 5/803(a) 'Every taxpayer other than ... farmer'; 803(e) farmer = gross income from farming at least 2/3 of total estimated gross income for the year), Illinois Income Tax Act full text, ilga.gov/legislation/ILCS/details?ActID=577&ChapterID=8&ChapAct=FullText; Illinois Publication 105 (R-12/25), tax.illinois.gov/content/dam/soi/en/web/tax/research/publications/pubs/documents/pub-105.pdf 'Are there any exceptions' (two-thirds of total federal gross income from farming); Form IL-1040-ES (2026) (R-09/26), tax.illinois.gov/content/dam/soi/en/web/tax/forms/incometax/documents/currentyear/individual/il-1040-es.pdf 'Are there any exceptions?'; 2025 IL-2210 Instructions (R-12/25) (.../currentyear/individual/il-2210-instr.pdf) p.1 and 2025 IL-1040 Instructions Line 34a (no late-payment penalty for underpayment of estimated tax if you qualify as a farmer). The farmer.rule shape {ratio,current_pct,due_date,file_by} cannot express a full exemption, so the value is null; ENGINE NOTE: null here must mean 'farmers owe no IL estimates', not 'no special farmer rule'. Farmer test is 2/3 of the CURRENT year's gross income (no prior-year alternative).",
+    state: 'IL', year: 2026, key: 'farmer.rule', value: {"ratio": 0.6666666666, "current_pct": 0, "due_date": "2027-04-15", "file_by": "2027-04-15", "treatment": "exempt"},
+    citation: "IL-1040-ES (2026) \"Are there any exceptions?\" (tax.illinois.gov, read 2026-10-12): \"You do not have to make estimated payments if you are ... a farmer. We consider you a farmer if at least two-thirds of your total federal gross income is from farming.\" 35 ILCS 5/803(a),(e). Farmers are EXEMPT (treatment exempt; current_pct 0; placeholder dates = return due date) (R5 M7).",
     status: 'verified',
   },
   {
@@ -161,9 +158,78 @@ export const IL_RULES: StateRuleSeedRow[] = [
     status: 'verified',
   },
   {
-    state: 'IL', year: 2026, key: 'holidays',
-    value: ["2026-01-01", "2026-01-19", "2026-02-12", "2026-02-16", "2026-03-02", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-04", "2026-09-07", "2026-10-12", "2026-11-03", "2026-11-11", "2026-11-26", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-12", "2027-02-15", "2027-03-01", "2027-03-26", "2027-05-31", "2027-06-19", "2027-07-04", "2027-09-06", "2027-10-11", "2027-11-11", "2027-11-25", "2027-12-25"],
-    citation: "Illinois statutory legal holidays, 205 ILCS 630/17(a) (Promissory Note and Bank Holiday Act: Jan 1; 3rd Mon Jan; Feb 12; 3rd Mon Feb; 1st Mon Mar (Casimir Pulaski); Good Friday; last Mon May; June 19; July 4; 1st Mon Sep; 2nd Mon Oct; Nov 11; 4th Thu Nov; Dec 25; general-election days for the U.S. House (even years); days proclaimed by the Governor), ilga.gov/legislation/ILCS/details?ActID=1195&ChapterID=20&ChapAct=FullText, with 5 ILCS 490/60 (Lincoln's Birthday on a Sunday -> following Monday) and 5 ILCS 490/63 (Juneteenth on a Sunday -> following Monday; Saturday not moved), ilga.gov ActID=134. Due-date roll: 5 ILCS 70/1.11 (Statute on Statutes: a last day falling on Saturday, Sunday or 'a holiday as defined or fixed in any statute' is excluded, and so is a succeeding Saturday/Sunday/holiday), ilga.gov ActID=79; IDOR states the same rule (Pub 105 'weekend or holiday ... next business day'; 2025 IL-2210 Instructions line 9a; 2025 IL-1040 Instructions 'When must I file?'). No other statutory weekend shift; the day after Thanksgiving is NOT a statutory legal holiday (state-employee leave only). Dates computed from the statutes. Calendar years 2026-2027 (no general election in 2027). No installment date of TY2026 falls on one of these holidays.",
+    state: 'IL', year: 2026, key: 'holidays', value: ["2025-11-28", "2026-01-01", "2026-01-19", "2026-02-12", "2026-02-16", "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07", "2026-10-12", "2026-11-03", "2026-11-11", "2026-11-26", "2026-11-27", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-12", "2027-02-15", "2027-05-31", "2027-06-18", "2027-07-05", "2027-09-06", "2027-10-11", "2027-11-11", "2027-11-25", "2027-11-26", "2027-12-24"],
+    citation: "Corrected per R5 review m4 (CMS state holidays page + memo 11/18/2025: no Casimir Pulaski Day or Good Friday; day after Thanksgiving added; July 4, 2026 observed July 3; 2027 Juneteenth June 18, July 4 -> July 5, Christmas -> Dec 24); not re-read in this task. Previous citation: Illinois statutory legal holidays, 205 ILCS 630/17(a) (Promissory Note and Bank Holiday Act: Jan 1; 3rd Mon Jan; Feb 12; 3rd Mon Feb; 1st Mon Mar (Casimir Pulaski); Good Friday; last Mon May; June 19; July 4; 1st Mon Sep; 2nd Mon Oct; Nov 11; 4th Thu Nov; Dec 25; general-election days for the U.S. House (even years); days proclaimed by the Governor), ilga.gov/legislation/ILCS/details?ActID=1195&ChapterID=20&ChapAct=FullText, with 5 ILCS 490/60 (Lincoln's Birthday on a Sunday -> following Monday) and 5 ILCS 490/63 (Juneteenth on a Sunday -> following Monday; Saturday not moved), ilga.gov ActID=134. Due-date roll: 5 ILCS 70/1.11 (Statute on Statutes: a last day falling on Saturday, Sunday or 'a holiday as defined or fixed in any statute' is excluded, and so is a succeeding Saturday/Sunday/holiday), ilga.gov ActID=79; IDOR states the same rule (Pub 105 'weekend or holiday ... next business day'; 2025 IL-2210 Instructions line 9a; 2025 IL-1040 Instructions 'When must I file?'). No other statutory weekend shift; the day after Thanksgiving is NOT a statutory legal holiday (state-employee leave only). Dates computed from the statutes. Calendar years 2026-2027 (no general election in 2027). No installment date of TY2026 falls on one of these holidays.",
+    status: 'unverified',
+  },
+  {
+    state: 'IL', year: 2025, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2025 installments.due_dates row). R5 key (2026-10-12).",
     status: 'verified',
+  },
+  {
+    state: 'IL', year: 2025, key: 'threshold_comparison', value: "more_than",
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md m1/D2: the requirement and penalty tests read \"more than\" the dollar threshold); primary source not re-read in this task (agency page blocked or not reached).",
+    status: 'unverified',
+  },
+  {
+    state: 'IL', year: 2025, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'IL', year: 2025, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'IL', year: 2025, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'IL', year: 2025, key: 'penalty.method', value: "tiered_flat",
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md D3: Illinois late-payment penalty is a tiered flat 2%/10% (35 ILCS 735/3-3), not a rate over time; penalty.rate stays null); primary source not re-read in this task (agency page blocked or not reached).",
+    status: 'unverified',
+  },
+  {
+    state: 'IL', year: 2025, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'IL', year: 2026, key: 'estimates_required', value: true,
+    citation: "Quarterly individual estimated-tax regime: the state's own installment schedule (same primary source as this state's 2026 installments.due_dates row). R5 key (2026-10-12).",
+    status: 'verified',
+  },
+  {
+    state: 'IL', year: 2026, key: 'threshold_comparison', value: "more_than",
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md m1/D2: the requirement and penalty tests read \"more than\" the dollar threshold); primary source not re-read in this task (agency page blocked or not reached).",
+    status: 'unverified',
+  },
+  {
+    state: 'IL', year: 2026, key: 'installments.q4_file_and_pay_date', value: null,
+    citation: "No January file-and-pay relief recorded for this state (not researched in R5); null = none applied, so an early filer may see a last-installment penalty the state would waive. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'IL', year: 2026, key: 'return_due_date', value: null,
+    citation: "Not separately researched; null = April 15 of the following year ends the penalty period. R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'IL', year: 2026, key: 'penalty.rate_schedule', value: null,
+    citation: "No dated rate schedule recorded; the single penalty.rate applies to every penalty day. Not confirmed that the state's rate is unchanged across Jan 1 / mid-year resets (R5 Part D3). R5 key (2026-10-12).",
+    status: 'unverified',
+  },
+  {
+    state: 'IL', year: 2026, key: 'penalty.method', value: "tiered_flat",
+    citation: "Per R5 review (features/tax-estimator/docs/reviews/R5-state-rules-sample.md D3: Illinois late-payment penalty is a tiered flat 2%/10% (35 ILCS 735/3-3), not a rate over time; penalty.rate stays null); primary source not re-read in this task (agency page blocked or not reached).",
+    status: 'unverified',
+  },
+  {
+    state: 'IL', year: 2026, key: 'penalty.min_balance_due', value: null,
+    citation: "No separate penalty floor found in the sources read for this state; null = the floor equals required_threshold. Not researched in R5. R5 key (2026-10-12).",
+    status: 'unverified',
   },
 ];
