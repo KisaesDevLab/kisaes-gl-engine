@@ -2,11 +2,14 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
-import type { EstimateResultDTO } from '@kis-books/shared';
+import { buildCalcSections, type EstimateResultDTO } from '@kis-books/shared';
 import { PDFDocument } from 'pdf-lib';
 import { renderEstimatePdf } from './estimate-pdf.service.js';
-import { pdfText } from './pdf-text.test-fixtures.js';
+import { pdfDrawnText, pdfText, type DrawnText } from './pdf-text.test-fixtures.js';
 
 const inst = (i: number) => ({
   index: i, label: `Q${i + 1}`, dueDate: `2026-0${4 + i}-15`, regularInstallment: '7000', annualizedInstallment: i === 0 ? '5000' : null,
@@ -124,3 +127,129 @@ describe('renderEstimatePdf', () => {
   });
 });
 
+
+// The Rivera household's real engine result (base scenario, full year through 2026-12),
+// captured from estimate.service against the rivera.test-fixtures.ts seed on 2026-10-12.
+const rivera = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'rivera-estimate.test-fixture.json'), 'utf8')) as EstimateResultDTO;
+/** Same whole-dollar format the PDF uses everywhere ("$35,829", "-$2,200"). */
+const money = (v: string) => { const n = Math.round(Number(v)); return `${n < 0 ? '-' : ''}$${Math.abs(n).toLocaleString('en-US')}`; };
+const FOOTER = /Page \d+ of \d+$/;
+const body = (t: DrawnText[]) => t.filter((x) => !FOOTER.test(x.text));
+/** Pages whose drawn text includes `needle`. */
+const pagesWith = (t: DrawnText[], needle: string) => [...new Set(t.filter((x) => x.text === needle).map((x) => x.page))];
+
+describe('Detailed calculation page (owner request 2026-10-12)', () => {
+  for (const audience of ['preparer', 'client'] as const) {
+    it(`${audience}: the vouchers end a page and "Detailed calculation" starts the next one`, async () => {
+      const bytes = await renderEstimatePdf(rivera, { taxpayerName: 'Carlos & Maria Rivera', firmName: 'Rivera CPA LLC', audience });
+      const t = pdfDrawnText(bytes);
+      expect(new Set(t.map((x) => x.page)).size).toBe((await PDFDocument.load(bytes)).getPageCount());
+      const [calcPage] = pagesWith(t, 'Detailed calculation');
+      expect(calcPage).toBeDefined();
+      // The calculation title is the first thing drawn on its page...
+      expect(body(t).find((x) => x.page === calcPage)!.text).toBe('Detailed calculation');
+      // ...and the page before it ends with the vouchers (its last body text is a voucher row).
+      const prev = body(t).filter((x) => x.page === calcPage! - 1);
+      const vouchersAt = t.findIndex((x) => x.text === 'Payment vouchers');
+      expect(t[vouchersAt]!.page).toBeLessThan(calcPage!);
+      const lastVoucherRow = body(t).filter((x) => x.text.startsWith('  Q4') || x.text === '  Estimated penalty' || x.text.startsWith('No estimated payments required')).at(-1)!;
+      expect(lastVoucherRow.page).toBe(calcPage! - 1);
+      expect(prev.at(-1)!.y).toBeGreaterThanOrEqual(lastVoucherRow.y - 2 * 13);
+      expect(prev.some((x) => x.y < lastVoucherRow.y - 26)).toBe(false);
+    });
+  }
+
+  it('prints every Calculation line exactly as the screen builds it, with the YTD and projected columns on the same row', async () => {
+    const t = pdfDrawnText(await renderEstimatePdf(rivera, { taxpayerName: 'Rivera' }));
+    const calcStart = pagesWith(t, 'Detailed calculation')[0]!;
+    const calc = body(t).filter((x) => x.page >= calcStart);
+    // Column headers like the screen.
+    expect(calc.some((x) => x.text === 'YTD tax basis')).toBe(true);
+    expect(calc.some((x) => x.text === '2026 Projected')).toBe(true);
+    const sections = buildCalcSections(rivera);
+    for (const s of sections) expect(calc.some((x) => x.text === s.title), s.title).toBe(true);
+    const lines = sections.flatMap((s) => s.lines);
+    expect(lines.length).toBeGreaterThanOrEqual(20);
+    for (const l of lines) {
+      const label = calc.find((x) => x.text.replace(/ \[.*\]$/, '') === l.label.replace(/—/g, '-'));
+      expect(label, l.label).toBeDefined();
+      const row = calc.filter((x) => x.page === label!.page && Math.abs(x.y - label!.y) < 0.5).map((x) => x.text);
+      expect(row, l.label).toContain(l.projected == null ? '-' : money(l.projected));
+      if (l.ytd != null) expect(row, l.label).toContain(money(l.ytd));
+      if (l.sub) expect(calc.some((x) => x.text.includes(l.sub!.replace(/—/g, '-').slice(0, 40))), `${l.label} sub`).toBe(true);
+    }
+    const text = calc.map((x) => x.text);
+    // The screen's figures for Rivera.
+    for (const v of ['Rivera Plumbing LLC', 'Maria Designs Inc', 'Oak Street Rentals LP', 'W-2 wages', 'Total income', 'Half of self-employment tax',
+      'Adjusted gross income', 'Standard deduction', 'Qualified business income deduction', 'Taxable income', 'Regular income tax',
+      'Self-employment tax - Carlos Rivera', 'Federal total', 'MO - resident', 'AR - nonresident', 'State total', 'Total estimated tax']) {
+      expect(text.some((x) => x.replace(/ \[.*\]$/, '') === v), v).toBe(true);
+    }
+    for (const v of ['$54,000', '$232,400', '$35,829', '$7,590', '$312', '$7,902', '$43,732']) expect(text, v).toContain(v);
+    expect(text).toContain('Itemized would be 0 (auto)');
+    expect(text).toContain('Marginal rate 22%');
+    expect(text).toContain('Sch C · active');
+    // Subtotals are bold (Helvetica-Bold is the second embedded font; drawn with /F2... checked via layout: bold rows exist).
+  });
+
+  it('repeats the column header on a continuation page', async () => {
+    // Many businesses push the table past one page.
+    const many = structuredClone(rivera) as EstimateResultDTO;
+    const e0 = many.federal.entities[0]!;
+    many.federal.entities = Array.from({ length: 60 }, (_, i) => ({ ...e0, companyId: `c${i}`, companyName: `Business ${i + 1}` }));
+    const t = pdfDrawnText(await renderEstimatePdf(many, { taxpayerName: 'Rivera' }));
+    const calcStart = pagesWith(t, 'Detailed calculation')[0]!;
+    const headerPages = pagesWith(t, 'YTD tax basis').filter((p) => p >= calcStart);
+    expect(headerPages.length).toBeGreaterThanOrEqual(2);
+    expect(headerPages).toEqual([...new Set(body(t).filter((x) => x.page >= calcStart && x.text.startsWith('Business ')).map((x) => x.page))]);
+    expect(t.filter((x) => x.text === 'Detailed calculation (continued)').map((x) => x.page)).toEqual(headerPages.slice(1));
+  });
+
+  it('client audience: no trace / formula text and no review markers; preparer: no trace text either', async () => {
+    const formulas = [...rivera.federal.trace, ...(rivera.state?.trace ?? [])].map((x) => x.formula).filter((x): x is string => !!x && x.length > 12);
+    expect(formulas.length).toBeGreaterThan(5);
+    for (const audience of ['client', 'preparer'] as const) {
+      const text = pdfText(await renderEstimatePdf(rivera, { taxpayerName: 'Rivera', audience }));
+      expect(text).toContain('Detailed calculation');
+      for (const f of formulas) expect(text, `${audience}: ${f}`).not.toContain(f.replace(/[×]/g, 'x').slice(0, 30));
+      expect(text).not.toMatch(/\bTrace\b/);
+    }
+    const client = pdfText(await renderEstimatePdf(rivera, { taxpayerName: 'Rivera', audience: 'client' }));
+    expect(client).not.toContain('[Rules unverified]');
+    expect(client).not.toContain('[Verify]');
+  });
+});
+
+describe('Businesses included: ownership per person (owner request 2026-10-12)', () => {
+  it('shows each person\'s profit % for every linked business (Carlos 100% / Maria 50%)', async () => {
+    const text = pdfText(await renderEstimatePdf(rivera, { taxpayerName: 'Rivera' }));
+    const lines = text.split('\n');
+    const at = (company: string) => lines[lines.indexOf(company) + 4];
+    expect(lines).toContain('Rivera Plumbing LLC');
+    expect(at('Rivera Plumbing LLC')).toBe('Owners: Carlos Rivera 100%');
+    expect(at('Maria Designs Inc')).toBe('Owners: Maria Rivera 50%');
+    expect(at('Oak Street Rentals LP')).toBe('Owners: Carlos Rivera 100%');
+    // Type column uses the screen's short labels.
+    expect(lines[lines.indexOf('Maria Designs Inc') + 1]).toBe('S corp');
+  });
+
+  it('prints the loss % only when it differs, and joins several owners', async () => {
+    const r = structuredClone(rivera) as EstimateResultDTO;
+    r.entities[1]!.owners = [
+      { personId: 'a', personRole: 'primary', displayName: 'Carlos Rivera', profitPct: 60, lossPct: 40 },
+      { personId: 'b', personRole: 'spouse', displayName: 'Maria Rivera', profitPct: 40, lossPct: 40 },
+    ];
+    const text = pdfText(await renderEstimatePdf(r, { taxpayerName: 'Rivera' }));
+    expect(text).toContain('Owners: Carlos Rivera 60% (loss 40%), Maria Rivera 40%');
+  });
+
+  it('an old snapshot without owners still renders (no ownership line, everything else intact)', async () => {
+    const old = structuredClone(rivera) as EstimateResultDTO;
+    for (const e of old.entities) delete (e as { owners?: unknown }).owners;
+    const text = pdfText(await renderEstimatePdf(old, { taxpayerName: 'Rivera', snapshot: { id: '11111111-2222-4333-8444-555555555555', createdAt: '2026-01-02T03:04:05Z', reason: 'pdf' } }));
+    expect(text).toContain('Rivera Plumbing LLC');
+    expect(text).not.toContain('Owners:');
+    expect(text).toContain('Detailed calculation');
+    expect(text).toContain('$35,829');
+  });
+});

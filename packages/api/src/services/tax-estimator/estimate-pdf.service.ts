@@ -12,8 +12,8 @@
 
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
 import {
-  buildEstimateAssumptions, DEFAULT_DISCLAIMER_TEXT, presentEngineText, presentWarningMessage, recommendedHarborRule,
-  type AssumptionBadge, type EstimateAssumptionsDTO, type EstimateResultDTO, type SnapshotReason,
+  buildCalcSections, buildEstimateAssumptions, calcEntityTypeLabel, DEFAULT_DISCLAIMER_TEXT, presentEngineText, presentWarningMessage, recommendedHarborRule,
+  type AssumptionBadge, type CalcLine, type EstimateAssumptionsDTO, type EstimateEntityOwnerDTO, type EstimateResultDTO, type SnapshotReason,
 } from '@kis-books/shared';
 
 export interface EstimatePdfOptions {
@@ -74,12 +74,15 @@ function safe(text: string): string {
 class Writer {
   page!: PDFPage;
   y = 0;
+  /** Drawn at the top of every page this writer adds while set (a table's repeated header). */
+  onNewPage?: () => void;
   constructor(readonly doc: PDFDocument, readonly font: PDFFont, readonly bold: PDFFont, private readonly footer: string) {
     this.newPage();
   }
   newPage() {
     this.page = this.doc.addPage([PAGE_W, PAGE_H]);
     this.y = PAGE_H - MARGIN;
+    this.onNewPage?.();
   }
   ensure(h: number) {
     if (this.y - h < MARGIN + 20) this.newPage();
@@ -136,6 +139,17 @@ class Writer {
     for (let i = 1; i < cells.length; i++) this.text(cells[i] ?? '', rights[i - 1] as number, size, { bold: opts.bold, color, right: true });
     this.y -= LINE;
   }
+  /** Word-wrap `t` into lines no wider than `maxW` (no drawing). */
+  lines(t: string, size: number, maxW: number, font: PDFFont = this.font): string[] {
+    const out: string[] = [];
+    let line = '';
+    for (const word of safe(t).split(/\s+/).filter(Boolean)) {
+      const next = line ? `${line} ${word}` : word;
+      if (line && font.widthOfTextAtSize(next, size) > maxW) { out.push(line); line = word; } else line = next;
+    }
+    if (line) out.push(line);
+    return out;
+  }
   finish() {
     const pages = this.doc.getPages();
     pages.forEach((p, i) => {
@@ -190,6 +204,92 @@ function renderAssumptions(w: Writer, a: EstimateAssumptionsDTO, audience: Estim
   }
 }
 
+/** "Carlos Rivera 100%, Maria Rivera 50% (loss 40%)": profit %, the loss % only when it differs. */
+export function ownersText(owners: EstimateEntityOwnerDTO[]): string {
+  const p = (v: unknown) => `${Number(num(v).toFixed(2))}%`;
+  return owners.map((o) => `${o.displayName} ${p(o.profitPct)}${num(o.lossPct) !== num(o.profitPct) ? ` (loss ${p(o.lossPct)})` : ''}`).join(', ');
+}
+
+/** Truncate a one-line label with "..." so it never runs into the money columns. */
+function fit(w: Writer, t: string, size: number, maxW: number, bold = false): string {
+  const f = bold ? w.bold : w.font;
+  let s = safe(t);
+  if (f.widthOfTextAtSize(s, size) <= maxW) return s;
+  while (s.length > 1 && f.widthOfTextAtSize(`${s}...`, size) > maxW) s = s.slice(0, -1);
+  return `${s.trimEnd()}...`;
+}
+
+const CALC_YTD_RIGHT = RIGHT - 110;
+const CALC_LABEL_W = CALC_YTD_RIGHT - 90 - MARGIN;
+const CALC_SUB = 7.5;
+const CALC_SUB_LINE = 9.5;
+/** Space under a line's last sub-line before the next line. */
+const CALC_SUB_GAP = 4;
+const SUBTOTAL_FILL = rgb(0.95, 0.95, 0.94);
+
+/**
+ * "Detailed calculation" (owner request 2026-10-12): the web Calculation view on its own page(s),
+ * the same lines from the shared buildCalcSections (no tax math here), with the YTD tax basis and
+ * projected columns. The column header repeats on continuation pages. Both audiences; no trace or
+ * formula text for either, and the client copy drops the preparer review chips ("Verify").
+ */
+function renderDetailedCalculation(w: Writer, r: EstimateResultDTO, audience: EstimatePdfAudience) {
+  const client = audience === 'client';
+  const columns = () => {
+    w.text('Line', MARGIN, 8, { bold: true, color: MUTED });
+    w.text('YTD tax basis', CALC_YTD_RIGHT, 8, { bold: true, color: MUTED, right: true });
+    w.text(`${r.taxYear} Projected`, RIGHT, 8, { bold: true, color: MUTED, right: true });
+    w.y -= 5;
+    w.page.drawLine({ start: { x: MARGIN, y: w.y }, end: { x: RIGHT, y: w.y }, thickness: 0.6, color: RULE });
+    w.y -= LINE;
+  };
+  w.onNewPage = undefined;
+  w.newPage();
+  w.text('Detailed calculation', MARGIN, 14, { bold: true });
+  w.y -= 18;
+  w.wrap('Each line of the estimate: the year-to-date tax basis from the books and the full-year projection the tax is computed on.', 8.5, 0, MUTED);
+  w.y -= 4;
+  columns();
+  w.onNewPage = () => {
+    w.text('Detailed calculation (continued)', MARGIN, 11, { bold: true });
+    w.y -= 16;
+    columns();
+  };
+  const lineHeight = (subs: string[]) => (subs.length ? (subs.length + 1) * CALC_SUB_LINE + CALC_SUB_GAP : LINE);
+  const subLines = (l: CalcLine) => (l.sub ? w.lines(l.sub, CALC_SUB, CALC_LABEL_W - 8) : []);
+  let sections: ReturnType<typeof buildCalcSections>;
+  try {
+    sections = buildCalcSections(r);
+  } catch {
+    // A frozen snapshot missing calculation fields still prints; only this page is skipped.
+    w.onNewPage = undefined;
+    w.wrap('The detailed calculation is not available for this estimate.', 9, 0, MUTED);
+    return;
+  }
+  for (const section of sections) {
+    const first = section.lines[0];
+    // Keep a section heading with its first line.
+    w.ensure(LINE + 4 + (first ? lineHeight(subLines(first)) : 0));
+    w.y -= 4;
+    w.text(section.title, MARGIN, 9.5, { bold: true });
+    w.y -= LINE;
+    for (const l of section.lines) {
+      const subs = subLines(l);
+      w.ensure(lineHeight(subs));
+      const chips = (l.chips ?? []).filter((c) => !(client && c.review)).map((c) => ` [${c.text}]`).join('');
+      if (l.bold) w.page.drawRectangle({ x: MARGIN - 4, y: w.y - 3.5, width: RIGHT - MARGIN + 8, height: LINE, color: SUBTOTAL_FILL });
+      w.text(fit(w, `${l.label}${chips}`, 9, CALC_LABEL_W, l.bold), MARGIN, 9, { bold: l.bold });
+      if (l.ytd != null) w.text(usd(l.ytd), CALC_YTD_RIGHT, 9, { bold: l.bold, right: true });
+      w.text(l.projected == null ? '-' : usd(l.projected), RIGHT, 9, { bold: l.bold, right: true });
+      if (subs.length === 0) { w.y -= LINE; continue; }
+      w.y -= CALC_SUB_LINE;
+      for (const s of subs) { w.text(s, MARGIN + 8, CALC_SUB, { color: MUTED }); w.y -= CALC_SUB_LINE; }
+      w.y -= CALC_SUB_GAP;
+    }
+  }
+  w.onNewPage = undefined;
+}
+
 /** Render one scenario's estimate as a PDF. Pure apart from pdf-lib; safe to call from a worker. */
 export async function renderEstimatePdf(r: EstimateResultDTO, opts: EstimatePdfOptions = {}): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
@@ -227,7 +327,9 @@ export async function renderEstimatePdf(r: EstimateResultDTO, opts: EstimatePdfO
     const ec = [RIGHT - 200, RIGHT - 90, RIGHT];
     w.row(['Business', 'Type', 'Path', 'Through'], ec, { bold: true, size: 8 });
     for (const e of r.entities) {
-      w.row([e.companyName, (e.entityType ?? 'unknown').replace('_', ' '), e.path === 'c_corp' ? 'entity level' : e.path, e.throughMonth ?? '-'], ec, { size: 8.5 });
+      w.row([e.companyName, calcEntityTypeLabel(e.entityType), e.path === 'c_corp' ? 'entity level' : e.path, e.throughMonth ?? '-'], ec, { size: 8.5 });
+      // Owner request 2026-10-12: who owns it, from the links (absent on older results / snapshots).
+      if (e.owners?.length) w.wrap(`Owners: ${ownersText(e.owners)}`, 8, 12, MUTED);
       if (e.path === 'skipped' && e.skippedReason) w.wrap(`Skipped: ${presentEngineText(e.skippedReason)}`, 8, 12, MUTED);
     }
   }
@@ -300,6 +402,9 @@ export async function renderEstimatePdf(r: EstimateResultDTO, opts: EstimatePdfO
     }
     if (e.penalty) w.row(['  Estimated penalty', '', '', '', usd(e.penalty.total), ''], vc, { size: 8.5, bold: true });
   }
+
+  // Owner request 2026-10-12: page break after the vouchers, then the screen's Calculation view.
+  renderDetailedCalculation(w, r, audience);
 
   // Farmer / fisherman rules (single installment, file-and-pay relief).
   if (r.farmer) {

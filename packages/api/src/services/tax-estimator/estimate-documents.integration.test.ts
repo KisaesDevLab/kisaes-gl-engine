@@ -22,6 +22,7 @@ import { closeTbRedis } from '../tb/tb-redis.js';
 import type { FirmScope } from './firm-scope.service.js';
 import { assign, mkAccount, mkCompany, mkTenant, post, purgeTenants, setProfile } from './entities.test-fixtures.js';
 import { seedRivera, type RiveraFixture } from './rivera.test-fixtures.js';
+import { pdfText } from './pdf-text.test-fixtures.js';
 import { createTaxpayer, upsertLink, upsertPerson } from './taxpayers.service.js';
 import { upsertYear } from './years.service.js';
 import { issueEstimatePdf, packPeriod, renderPackSection, resolvePackScope, resolvePackScopeForUser, listPackTaxpayers, estimatePdfFilename } from './estimate-documents.service.js';
@@ -109,6 +110,12 @@ describe('one PDF renderer for every entity type (printed from a snapshot)', () 
     expect(info.pages).toBeGreaterThanOrEqual(3); // summary pages + the assumptions page
     expect(info.title).toContain('2026 Tax Estimate');
     expect(pdf.filename).toBe('tax-estimate-2026-Carlos-Maria-Rivera.pdf');
+    // Owner request 2026-10-12: ownership from the links (estimate.service) and the detailed calculation page.
+    const text = pdfText(pdf.bytes).split('\n');
+    expect(text[text.indexOf('Rivera Plumbing LLC') + 4]).toBe('Owners: Carlos Rivera 100%');
+    expect(text[text.indexOf('Maria Designs Inc') + 4]).toBe('Owners: Maria Rivera 50%');
+    expect(text).toContain('Detailed calculation');
+    expect(text).toContain('Self-employment tax - Carlos Rivera');
     // QA D25: a what-if scenario's PDF is named after it.
     expect(estimatePdfFilename(2026, 'Carlos & Maria Rivera', 'Buy truck in December')).toBe('tax-estimate-2026-Carlos-Maria-Rivera-Buy-truck-in-December.pdf');
     expect(estimatePdfFilename(2026, 'Carlos & Maria Rivera', 'Base')).toBe('tax-estimate-2026-Carlos-Maria-Rivera.pdf');
