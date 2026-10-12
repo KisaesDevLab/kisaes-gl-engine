@@ -21,3 +21,5 @@ export * from './estimate-api.js';
 export { personYearInputsFromDto } from './engine/bridge.js';
 export * from './allocation.js';
 export * from './decimal.js';
+export * from './assumptions.js';
+export * from './snapshots-api.js';

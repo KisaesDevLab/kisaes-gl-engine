@@ -354,4 +354,78 @@ describe('Phase 10b inputs on the year and state rows', () => {
   });
 });
 
+describe('Phase 12 snapshot routes', () => {
+  it('finalize (staff), history (any member), read-only view and compare; PUT / PATCH / DELETE are 409 TE_SNAPSHOT_IMMUTABLE', async () => {
+    const tp = await mkTaxpayer();
+    await mkPersonAndLink(tp);
+    const sid = await baseScenario(tp);
+    const fin = `${yr(tp)}/scenarios/${sid}/snapshots`;
+    expect((await request('POST', fin, readonlyToken, {})).status).toBe(403);
+    expect((await request('POST', fin, staffToken, { reason: 'nope' })).status).toBe(400);
+    const created = await request('POST', fin, staffToken, { throughMonth: '2026-09', note: 'Q3' });
+    expect(created.status).toBe(201);
+    const snap = created.json.data;
+    expect(snap).toMatchObject({ reason: 'finalize', note: 'Q3', accessible: true, scenarioId: sid });
+    expect(snap.payload.assumptions.sections).toHaveLength(11);
+    expect(snap.payload.disclaimerText).toBe('Projection based on bookkeeping records and the assumptions listed. Not a tax return.');
+
+    const list = await request('GET', `${yr(tp)}/snapshots?limit=10`, staffToken);
+    expect(list.status).toBe(200);
+    expect(list.json.total).toBe(1);
+    expect(list.json.data[0].id).toBe(snap.id);
+    const view = await request('GET', `${API}/snapshots/${snap.id}`, staffToken);
+    expect(view.status).toBe(200);
+    expect(view.json.data.payloadSha256).toBe(snap.payloadSha256);
+    const cmp = await request('GET', `${API}/snapshots/${snap.id}/compare`, staffToken);
+    expect(cmp.status).toBe(200);
+    expect(cmp.json.data.summary.snapshot).toEqual(snap.summary);
+
+    for (const m of ['PUT', 'PATCH', 'DELETE']) {
+      const r = await request(m, `${API}/snapshots/${snap.id}`, staffToken, m === 'DELETE' ? undefined : { note: 'x' });
+      expect(r.status).toBe(409);
+      expect(r.json.error?.code ?? r.json.code).toBe('TE_SNAPSHOT_IMMUTABLE');
+    }
+    const audits = await db.select().from(auditLog).where(and(eq(auditLog.tenantId, ids.t1), eq(auditLog.entityType, 'tax_est_snapshot')));
+    expect(audits.map((a) => a.action)).toEqual(['create']);
+  });
+
+  it('cross-firm and client isolation: firm B and a client user get 404 on every snapshot route', async () => {
+    const tp = await mkTaxpayer();
+    await mkPersonAndLink(tp);
+    const sid = await baseScenario(tp);
+    const created = await request('POST', `${yr(tp)}/scenarios/${sid}/snapshots`, staffToken, { throughMonth: '2026-09' });
+    expect(created.status).toBe(201);
+    const id = created.json.data.id as string;
+    for (const token of [firmBToken, clientUserToken]) {
+      expect((await request('GET', `${API}/snapshots/${id}`, token)).status).toBe(404);
+      expect((await request('GET', `${API}/snapshots/${id}/compare`, token)).status).toBe(404);
+      expect((await request('GET', `${yr(tp)}/snapshots`, token)).status).toBe(404);
+      expect((await request('POST', `${yr(tp)}/scenarios/${sid}/snapshots`, token, {})).status).toBe(404);
+    }
+    // The read-only member cannot reach the T2 company in the snapshot (D1): row without figures, view 404.
+    const ro = await request('GET', `${yr(tp)}/snapshots`, readonlyToken);
+    expect(ro.status).toBe(200);
+    expect(ro.json.data[0]).toMatchObject({ id, accessible: false, summary: null });
+    const roView = await request('GET', `${API}/snapshots/${id}`, readonlyToken);
+    expect(roView.status).toBe(404);
+    expect(roView.json.error?.code ?? roView.json.code).toBe('TE_TENANT_NOT_MANAGED');
+  });
+
+  it('the firm disclaimer and portal default set on the firm-settings route flow into the estimate and the next snapshot', async () => {
+    const tp = await mkTaxpayer();
+    await mkPersonAndLink(tp);
+    const sid = await baseScenario(tp);
+    expect((await request('PUT', `${API}/firm-settings`, adminToken, { disclaimerText: 'Firm A words.', portalShows: 'snapshot', safeHarborDefault: 'current_year' })).status).toBe(200);
+    const e = await request('POST', est(tp, sid), staffToken, { throughMonth: '2026-09', refresh: true });
+    expect(e.json.data).toMatchObject({ disclaimerText: 'Firm A words.', portalShows: 'snapshot', firmSafeHarborDefault: 'current_year', safeHarborRule: 'current_year', safeHarborRuleSource: 'firm_default' });
+    expect(e.json.data.assumptions.disclaimerText).toBe('Firm A words.');
+    const s = await request('POST', `${yr(tp)}/scenarios/${sid}/snapshots`, staffToken, { throughMonth: '2026-09' });
+    expect(s.json.data.payload.disclaimerText).toBe('Firm A words.');
+    expect(s.json.data.payload.firmSettings).toMatchObject({ portalShows: 'snapshot', safeHarborDefault: 'current_year' });
+    // Firm B's estimate is untouched by firm A's settings.
+    const fb = await request('GET', `${API}/firm-settings`, firmBToken);
+    expect(fb.json.data.effectiveDisclaimerText).not.toBe('Firm A words.');
+  });
+});
+
 afterAll(async () => { await closeTbRedis(); });

@@ -2,7 +2,13 @@
 -- Licensed under the PolyForm Small Business License 1.0.0.
 -- Free for small businesses; see LICENSE for terms.
 --
--- Rollback for 0201_tax_estimator, children first (phases 10b, 5, 4, 3, 2, then 1 and 0).
+-- Rollback for 0201_tax_estimator, children first (phases 12, 10b, 5, 4, 3, 2, then 1 and 0).
+
+-- Phase 12: immutable estimate snapshots
+--
+-- Rollback for the Tax Estimator Phase 12 snapshots part (runs BEFORE the estimate part).
+DROP TABLE IF EXISTS tax_est_snapshots;
+DROP FUNCTION IF EXISTS tax_est_snapshots_immutable();
 
 -- Phase 10b: estimate inputs, payment ledger, Schedule AI snapshots
 --

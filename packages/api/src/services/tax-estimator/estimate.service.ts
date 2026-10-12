@@ -27,14 +27,14 @@ import type {
   EstimateReadinessDTO, EstimateReadinessEntityDTO, EstimateReadinessPeriodDTO, EstimateResultDTO, EngineYearInputs, FarmerResult,
   FarmerYearGross, FarmerGrossYearDTO, FederalEngineInput, FederalResult, JurisdictionEstimate, LinkDTO, ParameterUse, PersonDTO,
   SchAiPeriodSourceDTO, StateResult, StateRuleUse, StateRulesDTO, TaxBasisPl, TaxEstimatorWarning, EntitySettingsResponse,
-  StateGateInputs, TaxMethod,
+  StateGateInputs, TaxMethod, EstimateAdjustmentSummaryDTO, EstimateEntityReclassDTO, FirmSettingsDTO, PortalShows,
 } from '@kis-books/shared';
 import {
   computeFederal, computeState, computeFederalEstimates, computeStateEstimates, computeCcorp, computeFarmer,
   engineEntityFromTaxBasisPl, enginePersonFromDto, engineAdjustmentFromDto, engineYearFromDto, personYearInputsFromDto,
   parameterMapFromRows, jurisdictionFromStateRules, federalFiguresFromResult, stateRowFromDto, sourcedEntitiesFromFederal,
   projectCharacters, sumCharacters, allocateAdjustment, FARMER_SAFE_HARBOR_POLICY, FARMER_INSTALLMENT_POLICY, TAX_ENGINE_VERSION,
-  dAdd, dDiv, dMul, dSum, dRoundDollars,
+  dAdd, dDiv, dMul, dSum, dRoundDollars, buildEstimateAssumptions,
 } from '@kis-books/shared';
 import { db } from '../../db/index.js';
 import { accounts } from '../../db/schema/index.js';
@@ -42,6 +42,8 @@ import { buildAccountDetailReport } from '../report.service.js';
 import { getGlVersionStamp } from '../tb/balance-engine.service.js';
 import { tbCacheGet, tbCacheSet } from '../tb/tb-redis.js';
 import { AppError } from '../../utils/errors.js';
+import { encrypt, decrypt } from '../../utils/encryption.js';
+import { getFirmSettings } from './firm-settings.service.js';
 import { isTenantInScope, type FirmScope } from './firm-scope.service.js';
 import { getTaxBasisPl, loadConfigVersion } from './pl-provider.service.js';
 import { getReadiness } from './readiness.service.js';
@@ -57,12 +59,13 @@ import { listStateRowsForEngine, type StateRowForEngine } from './state-rows.ser
 import { getPaymentLedger } from './payments.service.js';
 import { inScopeCompanies, loadSnapshotFigures, periodFiguresFromPl, schAiPeriods, listSnapshots, type SchAiFigures } from './sch-ai-snapshots.service.js';
 import { lastCompleteMonth, monthEnd } from './periods.js';
-import { loadScenarioForFirm, loadTaxpayerForFirm, scenarioNotFound } from './year-access.js';
+import { loadScenarioForFirm, loadTaxpayerForFirm, scenarioNotFound, type TaxpayerRow } from './year-access.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
 type DecJs = InstanceType<typeof Decimal>;
 
-const CACHE_VERSION = 'te-estimate-v1';
+// v2 (Phase 12): the cached payload is AES-encrypted (D9) and carries the assumptions block.
+const CACHE_VERSION = 'te-estimate-v2';
 const FEDERAL = 'federal';
 const MONTHS_PER_YEAR = 12;
 const MAX_ADJUSTMENTS = 500;
@@ -176,6 +179,8 @@ interface CompanyInputs {
 }
 
 interface Gathered {
+  taxpayer: TaxpayerRow;
+  firmSettings: FirmSettingsDTO;
   taxpayerFilingStatus: FederalEngineInput['filingStatus'];
   scenarioName: string;
   year: Awaited<ReturnType<typeof loadYearForEngine>>;
@@ -199,7 +204,7 @@ async function gather(scope: FirmScope, req: EstimateRequest): Promise<Gathered>
   if (scenario.taxpayerId !== taxpayer.id || scenario.taxYear !== req.taxYear) throw scenarioNotFound();
   const warnings: TaxEstimatorWarning[] = [];
 
-  const [year, detail, linkList, adjustmentList, types, stateRows, paramsDto, snapshots] = await Promise.all([
+  const [year, detail, linkList, adjustmentList, types, stateRows, paramsDto, snapshots, firmSettings] = await Promise.all([
     loadYearForEngine(scope, taxpayer.id, req.taxYear),
     getTaxpayer(scope, taxpayer.id),
     listLinks(scope, taxpayer.id, req.taxYear),
@@ -208,6 +213,7 @@ async function gather(scope: FirmScope, req: EstimateRequest): Promise<Gathered>
     listStateRowsForEngine(scope, scenario.id),
     getParameters(req.taxYear),
     loadSnapshotFigures(scope, taxpayer.id, req.taxYear),
+    getFirmSettings(scope),
   ]);
   if (detail.persons.length === 0) throw AppError.unprocessableEntity('Add the taxpayer (primary person) before estimating', 'TE_NO_PERSONS');
   if (!year.exists) {
@@ -246,6 +252,7 @@ async function gather(scope: FirmScope, req: EstimateRequest): Promise<Gathered>
     warnings.push({ code: 'TE_ADJUSTMENTS_TRUNCATED', severity: 'warning', message: `Only the first ${adjustmentList.data.length} adjustments were used.` });
   }
   return {
+    taxpayer, firmSettings,
     taxpayerFilingStatus: taxpayer.filingStatus as FederalEngineInput['filingStatus'], scenarioName: scenario.name, year,
     persons: detail.persons, linksAll, links, companies, adjustments: adjustmentList.data, types, stateRows, paramsDto, stateRules,
     ledger, snapshots, warnings,
@@ -259,6 +266,8 @@ function inputsHash(scope: FirmScope, req: EstimateRequest, g: Gathered, today: 
     companies: g.companies.map((c) => ({ t: c.tenantId, c: c.companyId, stamp: c.glVersionStamp, cfg: c.configVersion, s: c.settings })),
     adjustments: g.adjustments, types: g.types, stateRows: g.stateRows, params: g.paramsDto, stateRules: g.stateRules,
     payments: g.ledger.payments, snapshots: [...g.snapshots.entries()],
+    // Phase 12: the disclaimer / portal default / safe-harbor default land on the result.
+    firmSettings: { ...g.firmSettings, updatedAt: undefined }, portalShows: g.taxpayer.portalShows,
   };
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }
@@ -293,6 +302,7 @@ async function runEntities(scope: FirmScope, req: EstimateRequest, g: Gathered, 
     const dto: EstimateEntityDTO = {
       ...base, companyName: pl.companyName, entityType: pl.entityType, throughMonth: pl.throughMonth, throughMonthSource: pl.throughMonthSource,
       monthsElapsed: pl.monthsElapsed, monthsRemaining: pl.monthsRemaining, glVersionStamp: pl.glVersionStamp, providerCached: pl.cached,
+      basis: pl.basis, throughMonthReason: pl.throughMonthReason, nonRecurringYtd: pl.nonRecurring, reclass: reclassOf(pl),
     };
     if (!pl.entityType) {
       warnings.push({ code: 'TE_ENTITY_TYPE_MISSING', severity: 'warning', message: `${pl.companyName} has no tax entity type (no TB profile and no estimator setting); left out of the estimate.`, details: { companyId: c.companyId } });
@@ -309,6 +319,16 @@ async function runEntities(scope: FirmScope, req: EstimateRequest, g: Gathered, 
     out.push({ company: c, pl, dto: { ...dto, path: 'individual' }, engine });
   }
   return out;
+}
+
+/** YTD treatment-map reclass totals for the assumptions page (sums of provider figures; no tax math). */
+function reclassOf(pl: TaxBasisPl): EstimateEntityReclassDTO {
+  return {
+    ownerSehi: pl.ownerLevel.ownerSehi, ownerRetirement: pl.ownerLevel.ownerRetirement, ownerPersonalDropped: pl.ownerLevel.ownerPersonalDropped,
+    sehiAsW2Wages: pl.ownerLevel.sehiAsW2Wages, guaranteedPayments: dSum(pl.guaranteedPayments.map((x) => x.amount)),
+    nondeductibleAddBack: pl.nondeductibleAddBack, estimatedTaxPayments: dSum(pl.estimatedPayments.map((x) => x.amount)),
+    taxDepreciationBook: dSum(pl.taxDepreciationDiffers.map((x) => x.bookAmount)),
+  };
 }
 
 async function adjustmentMonths(
@@ -601,22 +621,94 @@ async function assemble(scope: FirmScope, req: EstimateRequest, g: Gathered, opt
       farmer?.parametersUsed ?? [], ...ccorps.map((c) => c.parametersUsed),
     ]),
     rulesUsed: uniqueRules([state?.rulesUsed ?? [], ...stateEstimates.map((e) => e.rulesUsed)]),
+    adjustments: usable.map((a): EstimateAdjustmentSummaryDTO => {
+      const t = typeById.get(a.adjustmentTypeId)!;
+      return {
+        id: a.id, label: a.label, typeName: t.name, typeCode: t.code ?? null, kind: t.kind,
+        fullYearAmount: dSum((months.get(a.id) ?? a.monthly).map((v) => String(v))), cadence: a.cadence, glLinked: a.glLinked,
+        nonRecurring: a.nonRecurring, personId: a.personId, linkId: a.linkId,
+      };
+    }),
+    disclaimerText: g.firmSettings.effectiveDisclaimerText,
+    portalShows: (g.taxpayer.portalShows as PortalShows | null) ?? g.firmSettings.portalShows,
+    firmSafeHarborDefault: g.firmSettings.safeHarborDefault,
   };
+}
+
+/** Assemble + attach the assumptions block (Phase 12): one place, so the cache, the snapshot and the PDF agree. */
+async function assembleWithAssumptions(scope: FirmScope, req: EstimateRequest, g: Gathered, opts: EstimateOptions, today: Date, hash: string): Promise<EstimateResultDTO> {
+  const result = await assemble(scope, req, g, opts, today, hash);
+  return { ...result, assumptions: buildEstimateAssumptions(result, { disclaimerText: result.disclaimerText }) };
+}
+
+// ── Encrypted estimate cache (D9) ───────────────────────────────────────
+// The cached estimate contains prior-year tax / AGI and figures derived from them
+// (safe-harbor amounts, required payments): tax return information. Redis holds only
+// AES-256-GCM ciphertext (utils/encryption.ts); a value that does not decrypt — a
+// rotated key or a pre-v2 plaintext entry — is a cache miss, never an error.
+
+export function estimateCacheKey(scope: FirmScope, req: Pick<EstimateRequest, 'taxpayerId' | 'scenarioId'>, hash: string): string {
+  return `te:estimate:${CACHE_VERSION}:${scope.firmId}:${req.taxpayerId}:${req.scenarioId}:${hash}`;
+}
+
+async function cacheGetEstimate(key: string): Promise<EstimateResultDTO | null> {
+  const hit = await tbCacheGet<{ enc?: unknown }>(key);
+  if (!hit || typeof hit.enc !== 'string') return null;
+  try {
+    return JSON.parse(decrypt(hit.enc)) as EstimateResultDTO;
+  } catch {
+    return null;
+  }
+}
+
+async function cacheSetEstimate(key: string, result: EstimateResultDTO): Promise<void> {
+  await tbCacheSet(key, { enc: encrypt(JSON.stringify(result)) });
 }
 
 /** POST .../estimate — live compute, Redis-cached by GL stamps + inputs hash. */
 export async function computeEstimate(scope: FirmScope, req: EstimateRequest, opts: EstimateOptions = {}): Promise<EstimateResultDTO> {
+  return (await computeEstimateWithInputs(scope, req, opts)).result;
+}
+
+/** What the estimate read, for the immutable snapshot (Phase 12). Server-internal: holds DECRYPTED prior-year figures. */
+export interface EstimateInputsForSnapshot {
+  taxpayer: TaxpayerRow;
+  firmSettings: FirmSettingsDTO;
+  scenarioName: string;
+  year: Gathered['year'];
+  persons: PersonDTO[];
+  links: LinkDTO[];
+  companies: Array<{ tenantId: string; companyId: string; companyName: string | null; glVersionStamp: number; configVersion: string; settings: EntitySettingsResponse }>;
+  adjustments: AdjustmentDTO[];
+  types: AdjustmentTypeDTO[];
+  stateRows: StateRowForEngine[];
+  federalParameters: Gathered['paramsDto'];
+  stateRules: StateRulesDTO[];
+  payments: EstimatePaymentDTO[];
+  schAiFigures: Array<{ key: string; figures: SchAiFigures }>;
+}
+
+/** Live compute plus the inputs it read. `req.refresh` bypasses (but still refills) the encrypted cache. */
+export async function computeEstimateWithInputs(
+  scope: FirmScope, req: EstimateRequest, opts: EstimateOptions = {},
+): Promise<{ result: EstimateResultDTO; inputs: EstimateInputsForSnapshot }> {
   const today = opts.today ?? new Date();
   const g = await gather(scope, req);
   const hash = inputsHash(scope, req, g, today);
-  const key = `te:estimate:${CACHE_VERSION}:${scope.firmId}:${req.taxpayerId}:${req.scenarioId}:${hash}`;
+  const inputs: EstimateInputsForSnapshot = {
+    taxpayer: g.taxpayer, firmSettings: g.firmSettings, scenarioName: g.scenarioName, year: g.year, persons: g.persons, links: g.links,
+    companies: g.companies.map((c) => ({ tenantId: c.tenantId, companyId: c.companyId, companyName: c.companyName, glVersionStamp: c.glVersionStamp, configVersion: c.configVersion, settings: c.settings })),
+    adjustments: g.adjustments, types: g.types, stateRows: g.stateRows, federalParameters: g.paramsDto, stateRules: g.stateRules,
+    payments: g.ledger.payments, schAiFigures: [...g.snapshots.entries()].map(([key, figures]) => ({ key, figures })),
+  };
+  const key = estimateCacheKey(scope, req, hash);
   if (!req.refresh) {
-    const hit = await tbCacheGet<EstimateResultDTO>(key);
-    if (hit) return { ...hit, cached: true };
+    const hit = await cacheGetEstimate(key);
+    if (hit) return { result: { ...hit, cached: true }, inputs };
   }
-  const result = await assemble(scope, req, g, opts, today, hash);
-  await tbCacheSet(key, result);
-  return result;
+  const result = await assembleWithAssumptions(scope, req, g, opts, today, hash);
+  await cacheSetEstimate(key, result);
+  return { result, inputs };
 }
 
 // ── Snapshot readiness ──────────────────────────────────────────────────

@@ -133,7 +133,9 @@ export async function captureSnapshots(
     .where(and(eq(taxEstSchAiSnapshots.firmId, scope.firmId), eq(taxEstSchAiSnapshots.taxpayerId, taxpayerId), eq(taxEstSchAiSnapshots.taxYear, taxYear)));
   const have = new Set(existing.map((e) => `${e.periodIndex}|${e.tenantId}|${e.companyId}`));
 
-  let written = 0;
+  // Read every period's figures first (provider calls stay outside the transaction), then
+  // write them and the audit row atomically (auditLog with the executor).
+  const toWrite: Array<typeof taxEstSchAiSnapshots.$inferInsert> = [];
   for (const p of periods) {
     if (p.periodMonth > complete) {
       skipped.push({ code: 'TE_SCH_AI_PERIOD_OPEN', severity: 'info', message: `The ${p.periodEnd} period has not ended; nothing captured.`, details: { periodIndex: p.periodIndex } });
@@ -148,19 +150,23 @@ export async function captureSnapshots(
         continue;
       }
       const figures = periodFiguresFromPl(pl, p.months);
-      await db.insert(taxEstSchAiSnapshots).values({
+      toWrite.push({
         firmId: scope.firmId, taxpayerId, taxYear, periodIndex: p.periodIndex, periodEnd: p.periodEnd, tenantId: c.tenantId, companyId: c.companyId,
         throughMonth: pl.throughMonth, glVersionStamp: pl.glVersionStamp, figures: figures as unknown as Record<string, unknown>, capturedBy: actor.userId,
-      }).onConflictDoUpdate({
-        target: [taxEstSchAiSnapshots.taxpayerId, taxEstSchAiSnapshots.taxYear, taxEstSchAiSnapshots.periodIndex, taxEstSchAiSnapshots.tenantId, taxEstSchAiSnapshots.companyId],
-        set: { periodEnd: p.periodEnd, throughMonth: pl.throughMonth, glVersionStamp: pl.glVersionStamp, figures: figures as unknown as Record<string, unknown>, capturedBy: actor.userId, capturedAt: new Date() },
       });
-      written++;
     }
   }
-  if (written > 0) {
-    await auditYears(scope, actor, 'update', 'tax_est_sch_ai_snapshots', taxpayerId, null,
-      { taxYear, periods: periods.map((p) => p.periodIndex), written, replace: input.replace }, db);
+  if (toWrite.length > 0) {
+    await db.transaction(async (tx) => {
+      for (const v of toWrite) {
+        await tx.insert(taxEstSchAiSnapshots).values(v).onConflictDoUpdate({
+          target: [taxEstSchAiSnapshots.taxpayerId, taxEstSchAiSnapshots.taxYear, taxEstSchAiSnapshots.periodIndex, taxEstSchAiSnapshots.tenantId, taxEstSchAiSnapshots.companyId],
+          set: { periodEnd: v.periodEnd, throughMonth: v.throughMonth, glVersionStamp: v.glVersionStamp, figures: v.figures, capturedBy: actor.userId, capturedAt: new Date() },
+        });
+      }
+      await auditYears(scope, actor, 'update', 'tax_est_sch_ai_snapshots', taxpayerId, null,
+        { taxYear, periods: periods.map((p) => p.periodIndex), written: toWrite.length, replace: input.replace }, tx);
+    });
   }
   return { captured: await listSnapshots(scope, taxpayerId, taxYear), skipped };
 }

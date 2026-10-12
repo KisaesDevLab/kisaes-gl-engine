@@ -496,6 +496,12 @@ export const FEDERAL_2025_SEEDS: ParameterSeedRow[] = [
     status: 'verified',
   },
   {
+    key: 'sch1a.phaseout_step',
+    value: 1000,
+    citation: "IRC §224(b)(2) and §225(b)(2) (deduction reduced by $100 for each $1,000 by which MAGI exceeds the threshold) and §163(h)(4)(E) ($200 for each $1,000 (or fraction thereof)), all added by Pub. L. 119-21 (OBBBA) §§70201, 70202, 70203; the engine multiplies the phase-out rate by the excess rounded UP to the next whole step (2025 Schedule 1-A instructions worksheets round the quotient up). Added by the R2 engine fix (2026-10-12) — CPA to verify the round-up reading for §224 / §225.",
+    status: 'unverified',
+  },
+  {
     key: 'sch1a.first_year',
     value: 2025,
     citation: "IRC §224 and §225 apply to tax years beginning after Dec 31, 2024 (OBBBA §70201(j), §70202); §163(h)(4)(A) 2025-2028; §151(d)(5)(C) per 2025 Schedule 1-A Part V",

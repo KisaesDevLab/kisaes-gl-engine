@@ -8,9 +8,9 @@
 // engine results unchanged (federal, state, vouchers, farmer, C corp) so the UI, the
 // PDF and the portal read one contract; services never re-implement tax math.
 
-import type { BooksReadiness, PaymentJurisdiction, TaxEstimatorWarning, ThroughMonthSource } from './entities-api.js';
-import type { EntityTaxType, FilingStatus } from './types.js';
-import type { SafeHarborOverride } from './taxpayers-api.js';
+import type { BooksReadiness, CharacterAmounts, PaymentJurisdiction, TaxEstimatorWarning, ThroughMonthSource } from './entities-api.js';
+import type { EntityTaxType, FilingStatus, TaxMethod } from './types.js';
+import type { SafeHarborOverride, PortalShows } from './taxpayers-api.js';
 import type { FederalResult, ParameterUse } from './engine/types.js';
 import type { StateResult, StateRuleUse } from './engine/state-types.js';
 import type { JurisdictionEstimate } from './engine/vouchers.js';
@@ -78,6 +78,75 @@ export interface EstimateEntityDTO {
   monthsRemaining: number;
   glVersionStamp: number;
   providerCached: boolean;
+  /** Phase 12 (optional, additive): tax method the books were read on. */
+  basis?: TaxMethod | null;
+  /** Phase 12: why `throughMonth` was chosen (provider's explanation). */
+  throughMonthReason?: string | null;
+  /** Phase 12: YTD amounts flagged non-recurring (excluded from the run-rate), by character. */
+  nonRecurringYtd?: CharacterAmounts | null;
+  /** Phase 12: YTD treatment-map reclass totals (assumptions page). */
+  reclass?: EstimateEntityReclassDTO | null;
+}
+
+/** YTD GL reclass totals applied by the treatment map before the engine (positive magnitudes). */
+export interface EstimateEntityReclassDTO {
+  ownerSehi: string;
+  ownerRetirement: string;
+  ownerPersonalDropped: string;
+  sehiAsW2Wages: string;
+  guaranteedPayments: string;
+  nondeductibleAddBack: string;
+  estimatedTaxPayments: string;
+  /** Book depreciation kept in profit on accounts flagged tax_depreciation_differs (profit-positive, so ≤ 0). */
+  taxDepreciationBook: string;
+}
+
+/** One scenario adjustment as used by the estimate (full-year total of its monthly allocation). */
+export interface EstimateAdjustmentSummaryDTO {
+  id: string;
+  label: string;
+  typeName: string | null;
+  typeCode: string | null;
+  kind: string;
+  /** Σ of the 12-month allocation actually fed to the engine (GL-linked: actuals + plan). */
+  fullYearAmount: string;
+  cadence: string | null;
+  glLinked: boolean;
+  nonRecurring: boolean;
+  personId: string | null;
+  linkId: string | null;
+}
+
+// ── Assumptions block (Phase 12) ──────────────────────────────────────
+
+export const ASSUMPTION_SECTION_IDS = [
+  'rate_mode', 'projection', 'non_recurring', 'reclass', 'adjustments', 'safe_harbor', 'state_methods',
+  'parameters', 'readiness', 'engine_notes', 'disclaimer',
+] as const;
+export type AssumptionSectionId = typeof ASSUMPTION_SECTION_IDS[number];
+
+/** 'verify' = CPA must check; 'estimate_may_differ' = known simplification (D12b); statuses = parameter status (D12a). */
+export type AssumptionBadge = 'verify' | 'estimate_may_differ' | 'unverified' | 'provisional';
+
+export interface AssumptionItemDTO {
+  label: string;
+  detail: string;
+  badge?: AssumptionBadge | null;
+  /** Stable code where one exists (warning code, parameter key, Q-number). */
+  code?: string | null;
+}
+
+export interface AssumptionSectionDTO {
+  id: AssumptionSectionId;
+  title: string;
+  items: AssumptionItemDTO[];
+}
+
+/** The assumptions page (MODULE.md "Scenarios, snapshots, standards"): every section always present, in order. */
+export interface EstimateAssumptionsDTO {
+  version: 1;
+  sections: AssumptionSectionDTO[];
+  disclaimerText: string;
 }
 
 /** Where each Schedule AI column's actuals came from. */
@@ -133,6 +202,16 @@ export interface EstimateResultDTO {
   warnings: TaxEstimatorWarning[];
   parametersUsed: ParameterUse[];
   rulesUsed: StateRuleUse[];
+  /** Phase 12 (optional, additive): adjustments as fed to the engine. */
+  adjustments?: EstimateAdjustmentSummaryDTO[];
+  /** Phase 12: the assumptions block (buildEstimateAssumptions). */
+  assumptions?: EstimateAssumptionsDTO;
+  /** Phase 12: firm disclaimer in effect (firm text, else the shipped default). */
+  disclaimerText?: string;
+  /** Phase 12: what the portal shows for this taxpayer (taxpayer override, else the firm default; D10). */
+  portalShows?: PortalShows;
+  /** Phase 12: the firm's safe-harbor default at compute time (D4). */
+  firmSafeHarborDefault?: SafeHarborOverride;
 }
 
 export interface SchAiSnapshotDTO {

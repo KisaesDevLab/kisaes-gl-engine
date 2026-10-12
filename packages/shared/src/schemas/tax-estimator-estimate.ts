@@ -76,3 +76,24 @@ export const captureSchAiSnapshotsSchema = z.object({
   replace: z.boolean().default(false),
 }).strict();
 export type CaptureSchAiSnapshotsInput = z.infer<typeof captureSchAiSnapshotsSchema>;
+
+// ── Phase 12: immutable estimate snapshots ──
+const SNAPSHOT_REASON_VALUES = ['finalize', 'vouchers', 'pdf', 'report_pack'] as const;
+const MAX_SNAPSHOT_NOTE = 2000;
+
+export const snapshotIdParamsSchema = z.object({ snapshotId: uuid });
+
+/** POST .../scenarios/:scenarioId/snapshots — finalize: compute fresh and freeze. */
+export const createSnapshotSchema = z.object({
+  throughMonth: ym.optional(),
+  reason: z.enum(SNAPSHOT_REASON_VALUES).default('finalize'),
+  note: z.string().trim().max(MAX_SNAPSHOT_NOTE).nullable().optional(),
+}).strict();
+export type CreateSnapshotInput = z.infer<typeof createSnapshotSchema>;
+
+export const snapshotsQuerySchema = z.object({
+  scenarioId: uuid.optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+export type SnapshotsQuery = z.infer<typeof snapshotsQuerySchema>;

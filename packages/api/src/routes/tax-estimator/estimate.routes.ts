@@ -5,12 +5,13 @@
 import { Router, type Request } from 'express';
 import {
   yearParamsSchema, estimateParamsSchema, paymentIdParamsSchema, computeEstimateSchema, createPaymentSchema, updatePaymentSchema,
-  paymentsQuerySchema, captureSchAiSnapshotsSchema,
+  paymentsQuerySchema, captureSchAiSnapshotsSchema, createSnapshotSchema, snapshotIdParamsSchema, snapshotsQuerySchema,
 } from '@kis-books/shared';
 import { getScope, requireTaxEstimatorWrite } from '../../middleware/tax-estimator-scope.js';
 import * as estimateService from '../../services/tax-estimator/estimate.service.js';
 import * as paymentsService from '../../services/tax-estimator/payments.service.js';
 import * as schAiSnapshotsService from '../../services/tax-estimator/sch-ai-snapshots.service.js';
+import * as snapshotsService from '../../services/tax-estimator/estimate-snapshots.service.js';
 
 // Phase 10b router — live estimate, estimate (snapshot) readiness, payment ledger,
 // Schedule AI period snapshots. Mounted by tax-estimator.routes.ts AFTER its guard chain
@@ -64,4 +65,30 @@ estimateRouter.post('/taxpayers/:id/years/:taxYear/sch-ai-snapshots', requireTax
   const { id, taxYear } = yearParamsSchema.parse(req.params);
   const input = captureSchAiSnapshotsSchema.parse(req.body ?? {});
   res.json({ data: await schAiSnapshotsService.captureSnapshots(getScope(req), actor(req), id, taxYear, input) });
+});
+
+// ── Phase 12: immutable estimate snapshots ──
+// Finalize = staff write; history / view / compare = any firm member (D1 scope applies).
+// There is no update or delete: PUT / PATCH / DELETE answer 409 TE_SNAPSHOT_IMMUTABLE.
+estimateRouter.post('/taxpayers/:id/years/:taxYear/scenarios/:scenarioId/snapshots', requireTaxEstimatorWrite, async (req, res) => {
+  const { id, taxYear, scenarioId } = estimateParamsSchema.parse(req.params);
+  const body = createSnapshotSchema.parse(req.body ?? {});
+  res.status(201).json({ data: await snapshotsService.createSnapshot(getScope(req), actor(req), { taxpayerId: id, taxYear, scenarioId, ...body }) });
+});
+estimateRouter.get('/taxpayers/:id/years/:taxYear/snapshots', async (req, res) => {
+  const { id, taxYear } = yearParamsSchema.parse(req.params);
+  const q = snapshotsQuerySchema.parse(req.query);
+  res.json(await snapshotsService.listSnapshots(getScope(req), id, taxYear, q));
+});
+estimateRouter.get('/snapshots/:snapshotId', async (req, res) => {
+  const { snapshotId } = snapshotIdParamsSchema.parse(req.params);
+  res.json({ data: await snapshotsService.getSnapshot(getScope(req), snapshotId) });
+});
+estimateRouter.get('/snapshots/:snapshotId/compare', async (req, res) => {
+  const { snapshotId } = snapshotIdParamsSchema.parse(req.params);
+  res.json({ data: await snapshotsService.compareSnapshot(getScope(req), snapshotId) });
+});
+estimateRouter.all('/snapshots/:snapshotId', (req, _res, next) => {
+  if (req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE') throw snapshotsService.snapshotImmutable();
+  next();
 });
