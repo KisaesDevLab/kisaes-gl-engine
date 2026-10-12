@@ -68,6 +68,18 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      # test-setup.ts never defaults to the production Redis port (D13): CI
+      # supplies the TEST instance on 6390 that the estimate / snapshot / portal
+      # cache tests expect.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6390:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v5
       - name: Set up Node
@@ -88,6 +100,7 @@ jobs:
       - name: Run api unit tests
         env:
           DATABASE_URL: postgresql://kisbooks:kisbooks@localhost:5434/kisbooks_test
+          REDIS_URL: redis://127.0.0.1:6390
           JWT_SECRET: test-secret-key-for-testing-only
         run: npm test
         working-directory: packages/api

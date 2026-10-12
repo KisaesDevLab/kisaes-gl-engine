@@ -75,6 +75,20 @@ export async function restoreTableRows(
   const out = { inserted: 0, conflicts: 0, failed: [] as Array<{ row: Record<string, unknown>; error: string }> };
   if (!rows.length || !IDENT_RE.test(tableName)) return out;
 
+  // json/jsonb columns need the JSON *document* even when it is a bare string, number, boolean or
+  // null (tax_parameters.value / state_estimate_rules.value hold such scalars). Without the column
+  // type a string like 2026-02-02 reaches Postgres as invalid JSON text and a JSON null becomes SQL
+  // NULL against a NOT NULL column. Look the types up once per table.
+  const colInfo = await dbi.execute(sql`
+    SELECT column_name, data_type, is_nullable
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = ${tableName}
+  `);
+  const jsonCols = new Map<string, boolean>(); // column -> nullable
+  for (const c of colInfo.rows as Array<{ column_name: string; data_type: string; is_nullable: string }>) {
+    if (c.data_type === 'jsonb' || c.data_type === 'json') jsonCols.set(c.column_name, c.is_nullable === 'YES');
+  }
+
   for (const row of rows) {
     const cols = Object.keys(row).filter((k) => IDENT_RE.test(k));
     if (cols.length === 0) continue;
@@ -82,7 +96,12 @@ export async function restoreTableRows(
     const colNames = cols.map((c) => sql.identifier(c));
     const values = cols.map((c) => {
       const v = row[c];
-      if (v === null || v === undefined) return sql`NULL`;
+      const jsonNullable = jsonCols.get(c);
+      if (v === null || v === undefined) {
+        // A NOT NULL jsonb column that exported null held the JSON value null.
+        return jsonNullable === false ? sql`'null'::jsonb` : sql`NULL`;
+      }
+      if (jsonNullable !== undefined) return sql`${JSON.stringify(v)}::jsonb`;
       if (typeof v === 'object') return sql`${JSON.stringify(v)}::jsonb`;
       return sql`${String(v)}`;
     });

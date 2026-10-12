@@ -18,6 +18,7 @@ import {
   taxEstTaxpayers, taxEstYears, taxEstFirmSettings, taxEstAdjustmentTypes, accounts,
 } from '../../db/schema/index.js';
 import { taxEstimatorRouter } from '../tax-estimator.routes.js';
+import { ensureShippedAdjustmentTypes } from '../../services/tax-estimator/tax-parameters.service.js';
 import { errorHandler } from '../../middleware/error-handler.js';
 
 // Phase 5 route tests (annual settings, scenarios, adjustments, state rows, firm settings) (MODULE.md D1). Fixture = the Phase 0 harness:
@@ -111,6 +112,8 @@ async function cleanDb() {
 
 beforeEach(async () => {
   await cleanDb();
+  // Other suites truncate firms (cascading to the shipped adjustment-type catalog); restore it.
+  await ensureShippedAdjustmentTypes();
   ids.t1 = await mkTenant('TP Practice');
   ids.t2 = await mkTenant('TP Client Reachable');
   ids.t3 = await mkTenant('TP Client Unreachable');

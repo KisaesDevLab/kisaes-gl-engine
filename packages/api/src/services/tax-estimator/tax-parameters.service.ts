@@ -18,6 +18,7 @@
 // change is written to audit_log under the all-zero tenant id with entity
 // type 'tax_parameter'. The DTO-level operation lives in after_data.op.
 
+import { SHIPPED_ADJUSTMENT_TYPES_SQL } from '../../db/seeds/tax-estimator/adjustment-types.js';
 import { and, desc, eq, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
 import {
   expandParameterKeys, getParameterDef, isParameterKey, validateParameterValue, deriveFederalDates,
@@ -77,6 +78,11 @@ function validateSeedRow(year: number, row: ParameterSeedRow): void {
   if (!['verified', 'unverified', 'provisional'].includes(row.status)) throw new Error(`${where}: invalid status '${row.status}'`);
 }
 
+/** Re-insert the shipped adjustment-type catalog if its rows are missing (idempotent). */
+export async function ensureShippedAdjustmentTypes(): Promise<void> {
+  await db.execute(sql.raw(SHIPPED_ADJUSTMENT_TYPES_SQL));
+}
+
 /**
  * Idempotently upsert the shipped seeds into tax_parameters. Never touches
  * tax_parameter_overrides. For each non-empty seed year, rows whose key is no
@@ -98,6 +104,7 @@ export async function syncShippedSeeds(seeds: SeedMap = FEDERAL_SEEDS): Promise<
   }
   let total = 0;
   await db.transaction(async (tx) => {
+    await tx.execute(sql.raw(SHIPPED_ADJUSTMENT_TYPES_SQL));
     for (const [year, rows] of plan) {
       for (const row of rows) {
         await tx.insert(taxParameters).values({
