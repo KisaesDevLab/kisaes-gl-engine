@@ -30,10 +30,17 @@ books.
   W-2 wages override and UBIA, and the GL tax treatment table that says
   what each profit and loss account means for tax. Suggestions are never
   applied automatically. Unmapped accounts with activity are treated as
-  ordinary with a warning.
+  ordinary with a warning. A single transaction can be marked
+  **non-recurring** from its transaction detail page (the "Tax Estimator"
+  card, shown to firm staff when the flag is on in that client and the
+  company is linked to a taxpayer); the account register shows an "NR"
+  badge on it. It is counted once and left out of the run-rate.
 - **Annual settings** (per taxpayer and year): deduction method, federal
   method (bracket or effective-rate override), credits, withholding,
-  Schedule 1-A, HSA, prior-year tax and AGI (stored encrypted), state rows
+  Schedule 1-A (chips per type opening a per-person dialog for tips,
+  overtime and car-loan interest; the senior deduction follows each
+  person's date of birth; not allowed when married filing separately),
+  HSA, prior-year tax and AGI (stored encrypted), state rows
   (one resident state), firm settings (safe-harbor default, disclaimer,
   portal view), and the **People** card: per person, W-2 wages (box 1) and
   Social Security wages (box 3) from jobs OUTSIDE the linked businesses,
