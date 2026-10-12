@@ -44,6 +44,8 @@ export const upsertEntityYearInputsSchema = z.object({
   w2WagesOverride: money.nullable().optional(),
   w2WagesOverrideReason: z.string().trim().max(MAX_REASON_LEN).nullable().optional(),
   ubia: money.nullable().optional(),
+  /** Q41: include the >2% shareholder health W-2 add-on in §199A W-2 wages (default false). */
+  includeSehiInW2Wages: z.boolean().optional(),
 }).strict().refine(
   (v) => !v.w2WagesOverride || (v.w2WagesOverrideReason ?? '').trim().length > 0,
   { message: 'A reason is required when overriding W-2 wages', path: ['w2WagesOverrideReason'] },

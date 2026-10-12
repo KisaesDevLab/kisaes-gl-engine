@@ -145,8 +145,13 @@ export interface EngineEntity {
   /** Phase 7 inputs, carried through. */
   isSstb: boolean;
   rentalQbiTradeOrBusiness: boolean;
-  /** Full-year W-2 wages for the §199A limit (D8), null = unknown. */
+  /** Full-year W-2 wages for the §199A limit (D8), null = unknown. Does NOT include the >2% shareholder health add-on. */
   w2WagesEffective: string | null;
+  /**
+   * Q41 (CPA decision): add the projected Σ ownerItems.sehiAsW2Wages to w2WagesEffective for the
+   * §199A wage limit. Absent / false = excluded (the default).
+   */
+  includeSehiInW2Wages?: boolean;
   ubia: string | null;
   /** Readiness / provider warnings to surface on the assumptions page. */
   warnings: TaxEstimatorWarning[];

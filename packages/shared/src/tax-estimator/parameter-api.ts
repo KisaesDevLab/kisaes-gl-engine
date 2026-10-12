@@ -27,6 +27,8 @@ export interface TaxParameterRowDTO {
   reason?: string | null;
   /** The shipped seed value when it differs from `value` (override/provisional rows). */
   shippedValue?: unknown;
+  /** Override / provisional rows: whether a shipped seed row exists for this key (revert restores it; R6-07). */
+  hasShipped?: boolean;
   /** Set on rows resolved through the missing-year fallback. */
   fallbackYear?: number | null;
   /** Sign-off record (in-app Verify): present when a super admin verified this row's current value. */
@@ -62,7 +64,7 @@ export interface CreateYearFromPriorResult {
   year: number;
   fromYear: number;
   created: number;
-  /** Date-valued keys that were rolled forward and are flagged "verify". */
+  /** Date-valued keys derived for the new year from the statute and the computed holiday calendar (R6-01), flagged "verify". */
   rolledDates: string[];
 }
 
@@ -73,6 +75,8 @@ export interface TaxParameterDiffRowDTO {
   shippedStatus: ParameterStatus;
   shippedCitation: string;
   provisionalValue: unknown;
+  /** The provisional copy equals the shipped value (R6-05): adopting it only lets the shipped status and citation through. */
+  same: boolean;
 }
 
 export interface TaxParameterChangeDTO {
@@ -87,7 +91,12 @@ export interface TaxParameterChangeDTO {
   reason: string | null;
 }
 
-/** Result of a single or bulk Verify. `verified` lists the keys (state rules: `ST:key`) whose status became verified. */
+/**
+ * Result of a single or bulk Verify. `verified` lists the keys (state rules: `ST:key`) whose status
+ * became verified. `changed` (R6-04, bulk only) lists keys whose value changed under the bulk
+ * verify after it was read: they were NOT signed and must be reviewed again.
+ */
 export interface VerifyTaxParametersResult {
   verified: string[];
+  changed?: string[];
 }

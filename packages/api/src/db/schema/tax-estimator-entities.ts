@@ -40,6 +40,8 @@ export const taxEstEntityYearInputs = pgTable('tax_est_entity_year_inputs', {
   w2WagesOverride: numeric('w2_wages_override', { precision: 19, scale: 4 }),
   w2WagesOverrideReason: text('w2_wages_override_reason'),
   ubia: numeric('ubia', { precision: 19, scale: 4 }),
+  /** Q41: count the >2% shareholder health add-on (W-2 box 1) as §199A W-2 wages. Default false = excluded (CPA decision). */
+  includeSehiInW2Wages: boolean('include_sehi_in_w2_wages').notNull().default(false),
   updatedBy: uuid('updated_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

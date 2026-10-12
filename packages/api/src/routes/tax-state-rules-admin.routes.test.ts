@@ -200,5 +200,10 @@ describe('R7 in-app Verify routes', () => {
     const all = await request('POST', `${BASE}/${Y1}/ar/verify-all`, { confirm: true }, S());
     expect(all.status).toBe(200);
     expect(all.json.data.verified.sort()).toEqual(['AR:has_income_tax', 'AR:installments.due_dates']);
+    // R6-04: a stale expectedValue is refused
+    await request('PUT', `${BASE}/${Y1}/AR/required_threshold`, { value: 1200, reason: 'DFA notice' }, S());
+    const stale = await request('POST', `${BASE}/${Y1}/AR/required_threshold/verify`, { expectedValue: 1000 }, S());
+    expect(stale.status).toBe(409);
+    expect(stale.json.error?.code).toBe('TE_PARAM_CHANGED');
   });
 });

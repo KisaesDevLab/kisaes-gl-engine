@@ -24,6 +24,8 @@ import { listAdjustmentTypes } from './adjustment-types.service.js';
 import { upsertEntitySettings } from './entity-settings.service.js';
 import { createScenario, deleteScenario } from './scenarios.service.js';
 import { createPayment, getPaymentLedger, paymentWindow } from './payments.service.js';
+import { replaceStateRows } from './state-rows.service.js';
+import { listSummaries } from './tax-state-rules.service.js';
 import { computeEstimate } from './estimate.service.js';
 import { createSnapshot, compareSnapshot } from './estimate-snapshots.service.js';
 import { captureSnapshots } from './sch-ai-snapshots.service.js';
@@ -206,6 +208,27 @@ describe('R3-04 — fallback-year dates are rolled to the requested year', () =>
     const due = dto.rules.find((r) => r.key === 'installments.due_dates')!.value as string[];
     expect(due[0]!.slice(0, 4)).toBe('2031');
     expect(due[due.length - 1]!.slice(0, 4)).toBe('2032');
+  });
+
+  it('R6-03: an estimate for a year with no MO rules warns TE_STATE_RULES_FALLBACK_YEAR, and the admin summary says the same (status fallback)', async () => {
+    const latestShipped = 2026; // the newest shipped MO rule set
+    const year = 2027; // the fixture has a 2027 year; no 2027 state rules ship yet
+    const mo = await getStateRules(year, 'MO');
+    if (!mo.isFallback) return; // 2027 MO rules have shipped: nothing to fall back from
+    expect(mo.fallbackYear).toBe(latestShipped);
+    const y = await upsertYear(scopeFull, actor, taxpayerId, year, {});
+    const scenarioId = y.scenarios.find((s) => s.isBase)!.id;
+    await replaceStateRows(scopeFull, actor, scenarioId, { rows: [{ residency: 'resident', state: 'MO', effectiveRate: 0.04, base: 'federal_agi', sourcedManual: false }] });
+    const r = await computeEstimate(scopeFull, { taxpayerId, taxYear: year, scenarioId, throughMonth: `${year}-01`, refresh: true }, { today: new Date(`${year}-02-15T12:00:00Z`) });
+    const w = r.warnings.find((x) => x.code === 'TE_STATE_RULES_FALLBACK_YEAR');
+    expect(w).toBeDefined();
+    expect(w!.details).toMatchObject({ state: 'MO', fallbackYear: mo.fallbackYear });
+    expect(r.warnings.some((x) => x.code === 'TE_PARAMS_FALLBACK_YEAR')).toBe(true);
+    // the rules the engine used are MO's, provisional, with the dates derived for the year
+    expect(r.rulesUsed.filter((u) => u.state === 'MO').every((u) => u.status === 'provisional')).toBe(true);
+    const summary = (await listSummaries(year)).find((s) => s.state === 'MO')!;
+    expect(summary).toMatchObject({ status: 'fallback', fallbackYear: mo.fallbackYear, usesFederalFallback: false });
+    expect(r.stateEstimates.find((s) => s.jurisdiction === 'MO')?.usesFederalFallback).toBe(false);
   });
 });
 

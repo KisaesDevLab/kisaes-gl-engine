@@ -9,16 +9,18 @@
 //   tax_parameter_overrides super-admin overrides + provisional rows created
 //                           by "create year from prior"
 // Effective value per key: override > provisional > shipped seed. A year with
-// no rows at all falls back to the latest earlier year, flagged provisional.
+// no rows at all falls back to the latest earlier year, flagged provisional (dates
+// derived for the requested year, R6-01); such a year cannot be edited or signed
+// until it is created from the prior year (R6-02), so one stray row never ends the
+// fallback.
 //
 // Audit: parameters have no tenant, so (like the tax-code seed admin) every
 // change is written to audit_log under the all-zero tenant id with entity
 // type 'tax_parameter'. The DTO-level operation lives in after_data.op.
 
-import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
 import {
-  expandParameterKeys, getParameterDef, isParameterKey, validateParameterValue,
-  rollDateToYear, nextBusinessDay,
+  expandParameterKeys, getParameterDef, isParameterKey, validateParameterValue, deriveFederalDates,
   type ParameterSeedRow, type ParameterStatus,
   type TaxParametersDTO, type TaxParameterRowDTO, type TaxParameterYearsDTO,
   type CreateYearFromPriorResult, type TaxParameterDiffRowDTO, type TaxParameterChangeDTO, type VerifyTaxParametersResult,
@@ -34,7 +36,7 @@ import { FEDERAL_SEEDS } from '../../db/seeds/tax-estimator/federal/index.js';
 const ZERO_TENANT = '00000000-0000-0000-0000-000000000000';
 const AUDIT_ENTITY = 'tax_parameter';
 const MIN_REASON_LEN = 3;
-const HOLIDAYS_KEY = 'holidays';
+const CARRIED_PREFIX = 'Carried from';
 
 type SeedMap = Readonly<Record<number, readonly ParameterSeedRow[]>>;
 
@@ -101,13 +103,14 @@ export async function syncShippedSeeds(seeds: SeedMap = FEDERAL_SEEDS): Promise<
           taxYear: year, key: row.key, value: row.value, status: row.status, citation: row.citation,
         }).onConflictDoUpdate({
           target: [taxParameters.taxYear, taxParameters.key],
-          // R7 Verify: an in-app verification survives the re-sync only while the shipped value is unchanged.
+          // R7 Verify: an in-app verification survives the re-sync only while the shipped value AND its
+          // citation are unchanged (R6-10: "verified" means checked against the cited source).
           set: {
             value: row.value, citation: row.citation, updatedAt: sql`now()`,
-            status: sql`CASE WHEN "tax_parameters"."verified_at" IS NOT NULL AND "tax_parameters"."value" = excluded."value" THEN 'verified' ELSE excluded."status" END`,
-            verifiedAt: sql`CASE WHEN "tax_parameters"."value" = excluded."value" THEN "tax_parameters"."verified_at" ELSE NULL END`,
-            verifiedBy: sql`CASE WHEN "tax_parameters"."value" = excluded."value" THEN "tax_parameters"."verified_by" ELSE NULL END`,
-            verificationNote: sql`CASE WHEN "tax_parameters"."value" = excluded."value" THEN "tax_parameters"."verification_note" ELSE NULL END`,
+            status: sql`CASE WHEN "tax_parameters"."verified_at" IS NOT NULL AND "tax_parameters"."value" = excluded."value" AND "tax_parameters"."citation" = excluded."citation" THEN 'verified' ELSE excluded."status" END`,
+            verifiedAt: sql`CASE WHEN "tax_parameters"."value" = excluded."value" AND "tax_parameters"."citation" = excluded."citation" THEN "tax_parameters"."verified_at" ELSE NULL END`,
+            verifiedBy: sql`CASE WHEN "tax_parameters"."value" = excluded."value" AND "tax_parameters"."citation" = excluded."citation" THEN "tax_parameters"."verified_by" ELSE NULL END`,
+            verificationNote: sql`CASE WHEN "tax_parameters"."value" = excluded."value" AND "tax_parameters"."citation" = excluded."citation" THEN "tax_parameters"."verification_note" ELSE NULL END`,
           },
         });
         total++;
@@ -137,6 +140,18 @@ async function latestYearBefore(exec: DbOrTx, year: number): Promise<number | nu
   return ys.length > 0 ? Math.max(...ys) : null;
 }
 
+/**
+ * R6-02: a year served through the missing-year fallback has nothing of its own to edit or sign.
+ * One stray override would end the fallback (the year becomes 1/161 complete, every estimate
+ * fails TE_PARAM_MISSING) and block create-from-prior with TE_YEAR_EXISTS. A year with nothing
+ * to fall back to (no earlier year at all) may still be built by hand.
+ */
+async function assertYearEditable(exec: DbOrTx, year: number): Promise<void> {
+  if (await yearHasRows(exec, year)) return;
+  if ((await latestYearBefore(exec, year)) === null) return;
+  throw AppError.conflict(`Tax year ${year} has no parameters of its own (it is served from an earlier year); create ${year} from the prior year first`, 'TE_YEAR_NOT_CREATED', { year });
+}
+
 /** Resolve registry keys for a year that has rows. Unknown DB keys are ignored. */
 async function resolveYear(exec: DbOrTx, year: number): Promise<Map<string, ResolvedValue>> {
   const seedRows = await exec.select().from(taxParameters).where(eq(taxParameters.taxYear, year));
@@ -153,7 +168,8 @@ async function resolveYear(exec: DbOrTx, year: number): Promise<Map<string, Reso
         value: ov.value,
         status: ov.verifiedAt ? 'verified' : isOverride ? 'unverified' : 'provisional',
         source: isOverride ? 'override' : 'provisional',
-        citation: seed?.citation ?? '',
+        // R6-06: a created year has no seed yet; its rows carry the prior year's citation.
+        citation: seed ? seed.citation : ov.citation,
         reason: ov.reason,
         shippedValue: seed && !deepEqual(seed.value, ov.value) ? seed.value : undefined,
         hasShipped: !!seed,
@@ -171,20 +187,20 @@ async function resolveYear(exec: DbOrTx, year: number): Promise<Map<string, Reso
 }
 
 /**
- * Roll every `rollsWithYear` date key from `fromYear` to `toYear`: holidays shift by the
- * year difference, every other date also lands on the next business day after the rolled
- * holidays. Shared by "create year from prior" and the missing-year fallback (R3-04), so a
- * fallback year's calendar is THAT year's calendar, not last year's.
+ * Every `rollsWithYear` date key of `toYear` that the source year carries, DERIVED from the
+ * registry's statutory rule and the computed legal-holiday calendar (shared deriveFederalDates;
+ * R6-01). The prior year's stored dates are never rolled: they are observed dates (June 16,
+ * 2025 for a Sunday June 15) and floating holidays, so a month/day shift lands on wrong days.
+ * Shared by "create year from prior" and the missing-year fallback (R3-04), so a fallback
+ * year's calendar is THAT year's calendar.
  */
-function rollYearDates(resolved: Map<string, ResolvedValue>, fromYear: number, toYear: number): { values: Map<string, unknown>; rolled: string[] } {
-  const priorHolidays = resolved.get(HOLIDAYS_KEY)?.value;
-  const holidays = Array.isArray(priorHolidays) ? priorHolidays.map((d) => rollDateToYear(String(d), fromYear, toYear)) : [];
+function rollYearDates(resolved: Map<string, ResolvedValue>, toYear: number): { values: Map<string, unknown>; rolled: string[] } {
+  const derived = deriveFederalDates(toYear);
   const values = new Map<string, unknown>();
   const rolled: string[] = [];
   for (const e of expandParameterKeys()) {
-    const p = resolved.get(e.key);
-    if (!p || !e.def.rollsWithYear) continue;
-    values.set(e.key, rollValue(e.def.type, p.value, fromYear, toYear, holidays, e.key !== HOLIDAYS_KEY));
+    if (!resolved.has(e.key) || !derived.has(e.key)) continue;
+    values.set(e.key, derived.get(e.key));
     rolled.push(e.key);
   }
   return { values, rolled };
@@ -205,7 +221,7 @@ export async function getParameters(year: number, executor: DbOrTx = db): Promis
 
   // R3-04: fallback dates are rolled to the requested year (due dates, return due date,
   // farmer dates, holidays); amounts and rates are served as they are (provisional).
-  const rolled = isFallback && fallbackYear !== null ? rollYearDates(resolved, fallbackYear, year).values : new Map<string, unknown>();
+  const rolled = isFallback ? rollYearDates(resolved, year).values : new Map<string, unknown>();
   const parameters: TaxParameterRowDTO[] = [];
   const missing: string[] = [];
   const expanded = expandParameterKeys();
@@ -222,6 +238,7 @@ export async function getParameters(year: number, executor: DbOrTx = db): Promis
     };
     if (!isFallback && r.reason) row.reason = r.reason;
     if (!isFallback && r.shippedValue !== undefined) row.shippedValue = r.shippedValue;
+    if (!isFallback && r.source !== 'seed') row.hasShipped = r.hasShipped;
     if (isFallback) row.fallbackYear = fallbackYear;
     if (!isFallback && r.verifiedAt) {
       row.verifiedAt = r.verifiedAt.toISOString();
@@ -271,17 +288,27 @@ export async function setOverride(
   if (why.length < MIN_REASON_LEN) throw AppError.badRequest('A reason of at least 3 characters is required', 'TE_PARAM_INVALID');
 
   await db.transaction(async (tx) => {
+    await assertYearEditable(tx, year);
     const [prev] = await tx.select().from(taxParameterOverrides)
       .where(and(eq(taxParameterOverrides.taxYear, year), eq(taxParameterOverrides.key, key)));
+    const [seed] = await tx.select().from(taxParameters).where(and(eq(taxParameters.taxYear, year), eq(taxParameters.key, key)));
+    // R6-08: the same value again (a reason edit) is not a new decision — the sign-off stays; and a
+    // provisional copy that still has no shipped row stays provisional so it remains in the diff / adopt flow.
+    const sameValue = !!prev && deepEqual(prev.value, value);
+    const status = prev?.status === 'provisional' && !seed ? 'provisional' : 'override';
     const [saved] = await tx.insert(taxParameterOverrides).values({
-      taxYear: year, key, value, status: 'override', reason: why, createdBy: userId ?? null,
+      taxYear: year, key, value, status, reason: why, createdBy: userId ?? null,
     }).onConflictDoUpdate({
       target: [taxParameterOverrides.taxYear, taxParameterOverrides.key],
       // A new override value is a new decision: any earlier verification is cleared (R7 Verify).
-      set: { value, status: 'override', reason: why, createdBy: userId ?? null, updatedAt: sql`now()`, verifiedAt: null, verifiedBy: null, verificationNote: null },
+      set: {
+        value, status, reason: why, createdBy: userId ?? null, updatedAt: sql`now()`,
+        ...(sameValue ? {} : { verifiedAt: null, verifiedBy: null, verificationNote: null }),
+      },
     }).returning();
+    // R6-09: `before` is the value the engine was reading (override, else the shipped seed).
     await auditLog(ZERO_TENANT, 'override', AUDIT_ENTITY, saved!.id,
-      { year, key, value: prev?.value ?? null },
+      { year, key, value: prev?.value ?? seed?.value ?? null },
       { op: 'override_set', year, key, value, reason: why }, userId, tx);
   });
   return getRow(year, key);
@@ -289,10 +316,21 @@ export async function setOverride(
 
 export async function revertOverride(year: number, key: string, userId?: string): Promise<void> {
   await db.transaction(async (tx) => {
-    const [row] = await tx.delete(taxParameterOverrides)
-      .where(and(eq(taxParameterOverrides.taxYear, year), eq(taxParameterOverrides.key, key)))
-      .returning();
+    const [row] = await tx.select().from(taxParameterOverrides)
+      .where(and(eq(taxParameterOverrides.taxYear, year), eq(taxParameterOverrides.key, key)));
     if (!row) throw AppError.notFound('No override or provisional value for this parameter');
+    const [seed] = await tx.select({ id: taxParameters.id }).from(taxParameters).where(and(eq(taxParameters.taxYear, year), eq(taxParameters.key, key)));
+    if (!seed) {
+      // R6-07: with no shipped row underneath, deleting leaves the key missing for the year (the year still has
+      // rows, so no fallback; the next estimate throws TE_PARAM_MISSING). Edit the value instead. The one
+      // exception: this is the year's only row, and removing it restores the fallback.
+      const [ovs] = await tx.select({ n: sql<number>`count(*)::int` }).from(taxParameterOverrides).where(eq(taxParameterOverrides.taxYear, year));
+      const [seeds] = await tx.select({ n: sql<number>`count(*)::int` }).from(taxParameters).where(eq(taxParameters.taxYear, year));
+      if ((ovs?.n ?? 0) + (seeds?.n ?? 0) > 1) {
+        throw AppError.conflict(`${key} has no shipped value for ${year}; removing it would leave the key missing for the year. Edit the value instead.`, 'TE_NO_SHIPPED_VALUE', { year, key });
+      }
+    }
+    await tx.delete(taxParameterOverrides).where(eq(taxParameterOverrides.id, row.id));
     await auditLog(ZERO_TENANT, 'override', AUDIT_ENTITY, row.id,
       { year, key, value: row.value },
       { op: 'override_reverted', year, key, value: null, reason: null }, userId, tx);
@@ -306,61 +344,106 @@ const cleanNote = (note: string | undefined): string | null => {
   return t === '' ? null : t;
 };
 
+/** jsonb equality (semantic: 1.0 = 1, key order ignored, array order significant) against a JS value. */
+const jsonbEquals = (column: Parameters<typeof eq>[0], value: unknown) => sql`${column} = ${JSON.stringify(value)}::jsonb`;
+
+const changedError = (year: number, key: string, currentValue: unknown) => AppError.conflict(
+  `The value of ${key} for ${year} changed since you read it; review the current value and verify again`,
+  'TE_PARAM_CHANGED', { year, key, currentValue },
+);
+
+interface VerifyOpts {
+  /** The value the caller saw (R6-04). undefined = sign whatever the row carries now (scripts, bulk reads it itself). */
+  expectedValue?: { value: unknown };
+  /** Bulk verify: a row whose value changed under us is skipped, not thrown. */
+  onChanged: 'throw' | 'skip';
+}
+
+type VerifyOutcome = 'verified' | 'already' | 'changed';
+
 /**
- * Mark ONE row verified for its current value: the override / provisional row when one
- * exists (it is what the engine reads), else the shipped seed row. Already verified =
- * no-op (no audit). Only status + verified_* change — value, citation and every other
- * row are untouched. Returns true when a row changed.
+ * Mark ONE row verified for the value the caller saw: the override / provisional row when one
+ * exists (it is what the engine reads), else the shipped seed row. Already verified = no-op (no
+ * audit). The write is a conditional UPDATE … WHERE verified_at IS NULL AND value = <expected>
+ * RETURNING (R6-04): two admins racing on one row produce exactly one sign-off and one audit row,
+ * and a row whose value was overridden after the admin read it is never signed (409
+ * TE_PARAM_CHANGED, or `changed` under bulk). Only status + verified_* change — value, citation
+ * and every other row are untouched.
  */
-async function verifyOne(tx: DbOrTx, year: number, key: string, note: string | null, userId: string | undefined): Promise<boolean> {
+async function verifyOne(tx: DbOrTx, year: number, key: string, note: string | null, userId: string | undefined, opts: VerifyOpts): Promise<VerifyOutcome> {
   const now = new Date();
   const [ov] = await tx.select().from(taxParameterOverrides).where(and(eq(taxParameterOverrides.taxYear, year), eq(taxParameterOverrides.key, key)));
   if (ov) {
-    if (ov.verifiedAt) return false;
-    await tx.update(taxParameterOverrides).set({ verifiedAt: now, verifiedBy: userId ?? null, verificationNote: note }).where(eq(taxParameterOverrides.id, ov.id));
+    if (ov.verifiedAt) return 'already';
+    const expected = opts.expectedValue ? opts.expectedValue.value : ov.value;
+    if (!deepEqual(expected, ov.value)) return changed(year, key, ov.value, opts);
+    const updated = await tx.update(taxParameterOverrides).set({ verifiedAt: now, verifiedBy: userId ?? null, verificationNote: note })
+      .where(and(eq(taxParameterOverrides.id, ov.id), isNull(taxParameterOverrides.verifiedAt), jsonbEquals(taxParameterOverrides.value, expected)))
+      .returning({ id: taxParameterOverrides.id });
+    if (updated.length === 0) {
+      const [now2] = await tx.select().from(taxParameterOverrides).where(eq(taxParameterOverrides.id, ov.id));
+      if (!now2) throw AppError.notFound('Parameter not found');
+      if (now2.verifiedAt) return 'already';
+      return changed(year, key, now2.value, opts);
+    }
     await auditLog(ZERO_TENANT, 'signoff', AUDIT_ENTITY, ov.id,
       { year, key, value: ov.value, status: ov.status },
       { op: 'verified', year, key, value: ov.value, source: ov.status, reason: note }, userId, tx);
-    return true;
+    return 'verified';
   }
   const [seed] = await tx.select().from(taxParameters).where(and(eq(taxParameters.taxYear, year), eq(taxParameters.key, key)));
   if (!seed) throw AppError.notFound('Parameter not found');
-  if (seed.status === 'verified') return false;
-  await tx.update(taxParameters).set({ status: 'verified', verifiedAt: now, verifiedBy: userId ?? null, verificationNote: note }).where(eq(taxParameters.id, seed.id));
+  if (seed.status === 'verified') return 'already';
+  const expected = opts.expectedValue ? opts.expectedValue.value : seed.value;
+  if (!deepEqual(expected, seed.value)) return changed(year, key, seed.value, opts);
+  const updated = await tx.update(taxParameters).set({ status: 'verified', verifiedAt: now, verifiedBy: userId ?? null, verificationNote: note })
+    .where(and(eq(taxParameters.id, seed.id), ne(taxParameters.status, 'verified'), jsonbEquals(taxParameters.value, expected)))
+    .returning({ id: taxParameters.id });
+  if (updated.length === 0) {
+    const [now2] = await tx.select().from(taxParameters).where(eq(taxParameters.id, seed.id));
+    if (!now2) throw AppError.notFound('Parameter not found');
+    if (now2.status === 'verified') return 'already';
+    return changed(year, key, now2.value, opts);
+  }
   await auditLog(ZERO_TENANT, 'signoff', AUDIT_ENTITY, seed.id,
     { year, key, value: seed.value, status: seed.status },
     { op: 'verified', year, key, value: seed.value, source: 'seed', reason: note }, userId, tx);
-  return true;
+  return 'verified';
 }
 
-export async function verifyParameter(year: number, key: string, note: string | undefined, userId?: string): Promise<TaxParameterRowDTO> {
+function changed(year: number, key: string, currentValue: unknown, opts: VerifyOpts): VerifyOutcome {
+  if (opts.onChanged === 'throw') throw changedError(year, key, currentValue);
+  return 'changed';
+}
+
+export async function verifyParameter(year: number, key: string, note: string | undefined, userId?: string, expectedValue?: unknown): Promise<TaxParameterRowDTO> {
   if (!isParameterKey(key) || !getParameterDef(key)) throw AppError.badRequest(`Unknown tax parameter '${key}'`, 'TE_PARAM_INVALID');
-  await db.transaction(async (tx) => { await verifyOne(tx, year, key, cleanNote(note), userId); });
+  await db.transaction(async (tx) => {
+    await assertYearEditable(tx, year);
+    await verifyOne(tx, year, key, cleanNote(note), userId, { expectedValue: expectedValue === undefined ? undefined : { value: expectedValue }, onChanged: 'throw' });
+  });
   return getRow(year, key);
 }
 
-/** Bulk Verify: every row of `year` whose effective status is not verified. A fallback year has no rows → nothing. */
+/**
+ * Bulk Verify: every row of `year` whose effective status is not verified, each signed for the
+ * value read in this transaction; a row overridden under us is listed in `changed`, not signed.
+ * A fallback year has no rows → nothing.
+ */
 export async function verifyAllParameters(year: number, note: string | undefined, userId?: string): Promise<VerifyTaxParametersResult> {
   const why = cleanNote(note);
   return db.transaction(async (tx) => {
     const resolved = await resolveYear(tx, year);
     const verified: string[] = [];
+    const changedKeys: string[] = [];
     for (const [key, r] of resolved) {
       if (r.status === 'verified') continue;
-      if (await verifyOne(tx, year, key, why, userId)) verified.push(key);
+      const outcome = await verifyOne(tx, year, key, why, userId, { expectedValue: { value: r.value }, onChanged: 'skip' });
+      if (outcome === 'verified') verified.push(key);
+      else if (outcome === 'changed') changedKeys.push(key);
     }
-    return { verified };
+    return changedKeys.length > 0 ? { verified, changed: changedKeys } : { verified };
   });
-}
-
-function rollValue(type: string, value: unknown, fromYear: number, toYear: number, holidays: string[], business: boolean): unknown {
-  const roll = (d: string): string => {
-    const r = rollDateToYear(d, fromYear, toYear);
-    return business ? nextBusinessDay(r, holidays) : r;
-  };
-  if (type === 'date' && typeof value === 'string') return roll(value);
-  if (type === 'date_list' && Array.isArray(value)) return value.map((d) => roll(String(d)));
-  return value;
 }
 
 export async function createYearFromPrior(year: number, userId?: string): Promise<CreateYearFromPriorResult> {
@@ -369,8 +452,8 @@ export async function createYearFromPrior(year: number, userId?: string): Promis
     const fromYear = await latestYearBefore(tx, year);
     if (fromYear === null) throw AppError.badRequest('No earlier tax year to copy from', 'TE_NO_PRIOR_YEAR');
     const prior = await resolveYear(tx, fromYear);
-    // Holidays first: they feed the business-day landing of every other date.
-    const { values: rolledValues, rolled: rolledDates } = rollYearDates(prior, fromYear, year);
+    // Dates come from the statute + the computed holiday calendar for `year`, not from the prior rows.
+    const { values: rolledValues, rolled: rolledDates } = rollYearDates(prior, year);
 
     const reason = `Created from ${fromYear}; verify`;
     const values: Array<typeof taxParameterOverrides.$inferInsert> = [];
@@ -378,8 +461,10 @@ export async function createYearFromPrior(year: number, userId?: string): Promis
       const p = prior.get(e.key);
       if (!p) continue;
       const value = rolledValues.has(e.key) ? rolledValues.get(e.key) : p.value;
+      // R6-06: carry the source the admin will check the value against (the seed for `year` does not exist yet).
+      const citation = p.citation === '' || p.citation.startsWith(CARRIED_PREFIX) ? p.citation : `${CARRIED_PREFIX} ${fromYear}: ${p.citation}`;
       values.push({
-        taxYear: year, key: e.key, value, status: 'provisional', reason, createdFromYear: fromYear, createdBy: userId ?? null,
+        taxYear: year, key: e.key, value, status: 'provisional', reason, citation, createdFromYear: fromYear, createdBy: userId ?? null,
       });
     }
     if (values.length > 0) await tx.insert(taxParameterOverrides).values(values);
@@ -408,6 +493,7 @@ export async function diffShippedVsProvisional(year: number): Promise<TaxParamet
         key: o.key, label: def.def.label,
         shippedValue: s.value, shippedStatus: s.status as ParameterStatus, shippedCitation: s.citation,
         provisionalValue: o.value,
+        same: deepEqual(s.value, o.value),
       },
     });
   }
@@ -436,13 +522,18 @@ export async function adoptShipped(year: number, keys: string[] | undefined, use
 
 interface ChangeBlob { op?: string; year?: number; key?: string | null; value?: unknown; reason?: string | null }
 
-export async function listChanges(limit: number): Promise<TaxParameterChangeDTO[]> {
+/** Recent parameter changes, newest first; `year` (R6-09) limits the feed to one tax year. */
+export async function listChanges(limit: number, year?: number): Promise<TaxParameterChangeDTO[]> {
   const rows = await db.select({
     id: auditLogTable.id, at: auditLogTable.createdAt, userId: auditLogTable.userId,
     before: auditLogTable.beforeData, after: auditLogTable.afterData, email: users.email,
   }).from(auditLogTable)
     .leftJoin(users, eq(users.id, auditLogTable.userId))
-    .where(and(eq(auditLogTable.tenantId, ZERO_TENANT), eq(auditLogTable.entityType, AUDIT_ENTITY)))
+    .where(and(
+      eq(auditLogTable.tenantId, ZERO_TENANT), eq(auditLogTable.entityType, AUDIT_ENTITY),
+      // The audit writer stores JSON.stringify(after) in the jsonb column, so the blob is a jsonb STRING scalar; unwrap it first.
+      year === undefined ? undefined : sql`((CASE WHEN jsonb_typeof(${auditLogTable.afterData}) = 'string' THEN (${auditLogTable.afterData} #>> '{}')::jsonb ELSE ${auditLogTable.afterData} END)->>'year')::int = ${year}`,
+    ))
     .orderBy(desc(auditLogTable.id))
     .limit(limit);
   const out: TaxParameterChangeDTO[] = [];

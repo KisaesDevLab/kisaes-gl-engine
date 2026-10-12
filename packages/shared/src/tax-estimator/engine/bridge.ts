@@ -45,6 +45,7 @@ export function engineEntityFromTaxBasisPl(pl: TaxBasisPl, links: ReadonlyArray<
     isSstb: settings.isSstb,
     rentalQbiTradeOrBusiness: settings.rentalQbiTradeOrBusiness,
     w2WagesEffective: pl.w2Wages.effective,
+    includeSehiInW2Wages: pl.w2Wages.includeSehiInW2Wages ?? false,
     ubia: pl.ubia,
     warnings: pl.warnings,
   };

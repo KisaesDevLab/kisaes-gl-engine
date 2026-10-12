@@ -218,6 +218,15 @@ function reclassSection(r: EstimateResultDTO): AssumptionSectionDTO {
       const v = e.reclass[k];
       if (nonZero(v)) items.push({ label: `${e.companyName} — ${RECLASS_LABELS[k]}`, detail: `${formatDollars(k === 'taxDepreciationBook' ? String(v).replace(/^-/, '') : v)} year to date.` });
     }
+    // Q41 (CPA decision): say which §199A W-2 wage treatment of the >2% shareholder health add-on was used.
+    if (e.entityType === 's_corp' && e.path === 'individual') {
+      items.push({
+        code: 'Q41', label: `${e.companyName} — §199A W-2 wages`,
+        detail: e.includeSehiInW2Wages
+          ? '>2% shareholder health insurance (W-2 box 1) is INCLUDED in the W-2 wages for the §199A wage limit (entity-year switch on).'
+          : '>2% shareholder health insurance (W-2 box 1) is EXCLUDED from the W-2 wages for the §199A wage limit (default; switch per entity year on Entity tax setup).',
+      });
+    }
   }
   return section('reclass', items, 'No GL amounts were reclassified by the treatment map.');
 }

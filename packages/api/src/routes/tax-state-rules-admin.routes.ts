@@ -28,9 +28,9 @@ taxStateRulesAdminRouter.get('/:year/diff', async (req, res) => {
 });
 
 taxStateRulesAdminRouter.get('/:year/changes', async (req, res) => {
-  stateRuleYearParamsSchema.parse(req.params);
+  const { year } = stateRuleYearParamsSchema.parse(req.params);
   const { limit } = stateRuleChangesQuerySchema.parse(req.query);
-  res.json({ data: { rows: await svc.listChanges(limit) } });
+  res.json({ data: { rows: await svc.listChanges(limit, year) } });
 });
 
 taxStateRulesAdminRouter.post('/:year/create-from-prior', async (req, res) => {
@@ -45,7 +45,8 @@ taxStateRulesAdminRouter.post('/:year/adopt-shipped', async (req, res) => {
 });
 
 // R7 in-app Verify (Kurt's sign-off), per rule and per jurisdiction-year. Registered before
-// the generic /:year/:state routes; changes only status + verified_*.
+// the generic /:year/:state routes; changes only status + verified_*. R6-04: the per-rule body
+// carries expectedValue (the value the admin saw); a changed row answers 409 TE_PARAM_CHANGED.
 taxStateRulesAdminRouter.post('/:year/:state/verify-all', async (req, res) => {
   const { year, state } = stateRuleStateParamsSchema.parse(req.params);
   const body = verifyAllStateRulesSchema.parse(req.body ?? {});
@@ -55,7 +56,7 @@ taxStateRulesAdminRouter.post('/:year/:state/verify-all', async (req, res) => {
 taxStateRulesAdminRouter.post('/:year/:state/:key/verify', async (req, res) => {
   const { year, state, key } = stateRuleKeyParamsSchema.parse(req.params);
   const body = verifyStateRuleSchema.parse(req.body ?? {});
-  res.json({ data: await svc.verifyStateRule(year, state, key, body.note, req.userId) });
+  res.json({ data: await svc.verifyStateRule(year, state, key, body.note, req.userId, body.expectedValue) });
 });
 
 taxStateRulesAdminRouter.get('/:year/:state', async (req, res) => {

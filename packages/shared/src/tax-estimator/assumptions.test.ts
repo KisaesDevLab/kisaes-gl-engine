@@ -96,7 +96,8 @@ describe('buildEstimateAssumptions', () => {
   });
 
   it('rate mode, projection months, non-recurring, reclass and adjustments come from the result', () => {
-    const a = buildEstimateAssumptions(riveraLike());
+    const r = riveraLike();
+    const a = buildEstimateAssumptions(r);
     expect(text(a, 'rate_mode')).toMatch(/2026 brackets for MFJ.*marginal ordinary rate 22%/);
     expect(text(a, 'rate_mode')).toContain('MO (resident): User-entered effective rate 4%');
     expect(text(a, 'projection')).toContain('books through 2026-09 (last closed month: reconciled through September); 9 months actual + 3 projected');
@@ -105,6 +106,13 @@ describe('buildEstimateAssumptions', () => {
     expect(text(a, 'non_recurring')).toContain('ordinary $4,200');
     expect(text(a, 'non_recurring')).toContain('Equipment sale: Adjustment flagged non-recurring: $5,000');
     expect(text(a, 'reclass')).toContain('Owner health insurance moved to the owner (SEHI): $8,100 year to date');
+    // Q41: every S corporation in the estimate says which §199A W-2 wage treatment of the health add-on was used
+    const scorps = r.entities.filter((e) => e.entityType === 's_corp' && e.path === 'individual');
+    if (scorps.length) {
+      expect(text(a, 'reclass')).toContain('EXCLUDED from the W-2 wages for the §199A wage limit');
+      const on = buildEstimateAssumptions({ ...r, entities: r.entities.map((e) => (e.entityType === 's_corp' ? { ...e, includeSehiInW2Wages: true } : e)) });
+      expect(text(on, 'reclass')).toContain('INCLUDED in the W-2 wages for the §199A wage limit (entity-year switch on)');
+    }
     expect(text(a, 'reclass')).toContain('Estimated tax payments removed from expenses: $19,200');
     expect(text(a, 'reclass')).not.toContain('Owner retirement');
     expect(text(a, 'adjustments')).toContain('Interest income: income $2,400 for the year; annual');

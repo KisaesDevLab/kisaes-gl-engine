@@ -35,6 +35,8 @@ export const taxParameterOverrides = pgTable('tax_parameter_overrides', {
   value: jsonb('value').notNull(),
   status: varchar('status', { length: 20 }).notNull(),
   reason: text('reason').notNull(),
+  /** R6-06: a created year carries the prior year's citation ("Carried from Y: …") until the seed ships. */
+  citation: text('citation').notNull().default(''),
   createdFromYear: integer('created_from_year'),
   createdBy: uuid('created_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

@@ -56,12 +56,13 @@ taxParametersAdminRouter.post('/:year/adopt-shipped', async (req, res) => {
 });
 
 taxParametersAdminRouter.get('/:year/changes', async (req, res) => {
-  taxParameterYearParamsSchema.parse(req.params);
+  const { year } = taxParameterYearParamsSchema.parse(req.params);
   const { limit } = taxParameterChangesQuerySchema.parse(req.query);
-  res.json({ data: { rows: await svc.listChanges(limit) } });
+  res.json({ data: { rows: await svc.listChanges(limit, year) } });
 });
 
-// R7 in-app Verify (Kurt's sign-off): marks the CURRENT value verified, records who / when /
+// R7 in-app Verify (Kurt's sign-off): marks the value the admin SAW verified (R6-04: the body's
+// expectedValue must still be the row's value, else 409 TE_PARAM_CHANGED), records who / when /
 // note and audits it. Changes nothing else; a verified row can still be overridden with a reason.
 taxParametersAdminRouter.post('/:year/verify-all', async (req, res) => {
   const { year } = taxParameterYearParamsSchema.parse(req.params);
@@ -72,5 +73,5 @@ taxParametersAdminRouter.post('/:year/verify-all', async (req, res) => {
 taxParametersAdminRouter.post('/:year/:key/verify', async (req, res) => {
   const { year, key } = taxParameterKeyParamsSchema.parse(req.params);
   const body = verifyTaxParameterSchema.parse(req.body ?? {});
-  res.json({ data: await svc.verifyParameter(year, key, body.note, req.userId) });
+  res.json({ data: await svc.verifyParameter(year, key, body.note, req.userId, body.expectedValue) });
 });

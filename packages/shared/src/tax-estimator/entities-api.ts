@@ -157,6 +157,13 @@ export interface EntityYearInputsDto {
   w2WagesOverride: string | null;
   w2WagesOverrideReason: string | null;
   ubia: string | null;
+  /**
+   * Q41 (CPA decision 2026-10-12): whether the >2% S corporation shareholder health insurance
+   * added to the officer's W-2 box 1 counts as W-2 wages for the §199A wage limit. Default
+   * false = excluded; true = included (the entity's projected sehiAsW2Wages is added to the
+   * W-2 wages the engine uses).
+   */
+  includeSehiInW2Wages: boolean;
   updatedAt: string | null;
 }
 
@@ -413,9 +420,11 @@ export interface TaxBasisPl {
     projectedYear: string;
     override: string | null;
     overrideReason: string | null;
-    /** FULL-YEAR wages for the §199A limit: override when set, else projectedYear. */
+    /** FULL-YEAR wages for the §199A limit: override when set, else projectedYear. Excludes the >2% shareholder health add-on; see includeSehiInW2Wages. */
     effective: string;
     source: 'books' | 'override';
+    /** Q41 switch for this entity year (absent = false): the engine adds the projected sehiAsW2Wages to `effective` for the §199A limit. */
+    includeSehiInW2Wages?: boolean;
     /** Wage accounts with a person target (officer wages per officer), YTD. */
     byPerson: Array<{ personId: string; ytd: string }>;
   };

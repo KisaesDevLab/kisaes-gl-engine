@@ -10,7 +10,7 @@
 // required for every taxed state: a value, or an explicit cited null.
 
 import { describe, it, expect } from 'vitest';
-import { STATE_CODES, getStateRuleDef, requiredStateRuleKeys, validateStateRuleValue } from '@kis-books/shared';
+import { STATE_CODES, getStateRuleDef, requiredStateRuleKeys, validateStateRuleValue, rollStateRuleDates } from '@kis-books/shared';
 import { STATE_RULE_SEEDS } from './index.js';
 
 const YEARS = [2025, 2026];
@@ -54,6 +54,26 @@ describe('state rule seeds', () => {
       });
     }
   }
+
+  // R6-01: the state roll infers each statutory day from the stored observed date and regenerates the
+  // holiday list from the rules it follows; rolling the owner states' 2025 rows must give the 2026 rows.
+  const DATE_KEYS = ['installments.due_dates', 'installments.q4_file_and_pay_date', 'return_due_date', 'farmer.rule', 'holidays'];
+  const valuesOf = (state: string, year: number) => new Map(STATE_RULE_SEEDS.filter((r) => r.state === state && r.year === year).map((r) => [r.key, r.value]));
+
+  it('rolling the MO 2025 rows to 2026 reproduces every shipped MO 2026 date rule and the holiday list', () => {
+    const rolled = rollStateRuleDates(valuesOf('MO', 2025), 2025, 2026);
+    const shipped = valuesOf('MO', 2026);
+    for (const key of DATE_KEYS) expect(rolled.get(key), `MO ${key}`).toEqual(shipped.get(key));
+  });
+
+  it('rolling the AR 2025 rows to 2026 reproduces the shipped AR 2026 dates (farmer Feb 15 → Tue Feb 16, 2027 after Presidents\' Day)', () => {
+    const rolled = rollStateRuleDates(valuesOf('AR', 2025), 2025, 2026);
+    const shipped = valuesOf('AR', 2026);
+    for (const key of DATE_KEYS.filter((k) => k !== 'holidays')) expect(rolled.get(key), `AR ${key}`).toEqual(shipped.get(key));
+    // AR Policy 52 item 6 observes a Saturday holiday on the preceding Friday: New Year's Day 2028 (Saturday) is
+    // Fri Dec 31, 2027. The shipped list is framed by holiday year and leaves that one entry out; nothing is due that day.
+    expect(rolled.get('holidays')).toEqual([...(shipped.get('holidays') as string[]), '2027-12-31']);
+  });
 
   it('the R5 keys are part of the required key set for taxed states', () => {
     expect(requiredStateRuleKeys(true)).toEqual(expect.arrayContaining(R5_KEYS));

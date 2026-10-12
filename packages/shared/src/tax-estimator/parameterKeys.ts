@@ -56,6 +56,25 @@ export const VARIANT_SETS = {
 } as const;
 export type VariantSetName = keyof typeof VARIANT_SETS;
 
+/** A statutory calendar day: `monthDay` 'MM-DD' in the tax year (`yearOffset` 0) or the following year (1). */
+export interface StatutoryDate {
+  monthDay: string;
+  yearOffset: 0 | 1;
+}
+
+/**
+ * How a `rollsWithYear` key is DERIVED for a target tax year (R6-01). The seeds store the
+ * observed dates (e.g. 2025-06-16 because June 15, 2025 was a Sunday), so a year roll must
+ * never start from the stored date: it starts from the statute and lands on the next
+ * business day under IRC §7503 using the target year's legal-holiday calendar.
+ *  - `statutory`: the fixed statutory days (IRC §6654(c)/(h)/(i), §6072(a)) in registry order.
+ *  - `legal_holidays`: the federal + DC legal-holiday calendar for the tax year and the
+ *    following year, computed from 5 U.S.C. 6103 / D.C. Code §1-612.02 (shared dates.ts).
+ */
+export type DateRollRule =
+  | { kind: 'statutory'; dates: ReadonlyArray<StatutoryDate> }
+  | { kind: 'legal_holidays' };
+
 export interface ParameterDef {
   /** Base key. A variant key is `${key}.${variant}`. */
   key: string;
@@ -65,14 +84,19 @@ export interface ParameterDef {
   label: string;
   /** Expands into one concrete key per member of the named set. */
   variants?: VariantSetName;
-  /** Present on keys whose value is a calendar date or date list: rolled forward by "create year from prior year". */
+  /** Present on keys whose value is a calendar date or date list: derived for the target year by "create year from prior year" and the missing-year fallback. */
   rollsWithYear?: boolean;
+  /** Required when `rollsWithYear` is set: how the target year's value is derived (never from the stored observed date). */
+  roll?: DateRollRule;
 }
 
 const D = (
   key: string, type: ParameterValueType, unit: ParameterUnit, group: ParameterGroup, label: string,
-  extra: Partial<Pick<ParameterDef, 'variants' | 'rollsWithYear'>> = {},
+  extra: Partial<Pick<ParameterDef, 'variants' | 'rollsWithYear' | 'roll'>> = {},
 ): ParameterDef => ({ key, type, unit, group, label, ...extra });
+
+const SD = (monthDay: string, yearOffset: 0 | 1 = 0): StatutoryDate => ({ monthDay, yearOffset });
+const statutory = (...dates: StatutoryDate[]): DateRollRule => ({ kind: 'statutory', dates });
 
 export const PARAMETER_REGISTRY: readonly ParameterDef[] = [
   // ── Self-employment ────────────────────────────────────────────────────
@@ -172,10 +196,13 @@ export const PARAMETER_REGISTRY: readonly ParameterDef[] = [
   D('safe_harbor.high_agi_threshold', 'money', 'usd', 'Individual safe harbor', 'High-AGI threshold (prior-year AGI)', { variants: 'standard_mfs' }),
   D('safe_harbor.min_balance_due', 'money', 'usd', 'Individual safe harbor', 'No penalty if balance due is below'),
   // ── Installments ───────────────────────────────────────────────────────
-  D('installments.due_dates', 'date_list', 'date', 'Installments', 'Individual estimated-tax due dates', { rollsWithYear: true }),
+  // IRC §6654(c)(2): April 15, June 15, September 15 and January 15 of the following year.
+  D('installments.due_dates', 'date_list', 'date', 'Installments', 'Individual estimated-tax due dates', { rollsWithYear: true, roll: statutory(SD('04-15'), SD('06-15'), SD('09-15'), SD('01-15', 1)) }),
   D('installments.pcts', 'rate_list', 'rate', 'Installments', 'Individual installment percentages'),
-  D('installments.q4_file_and_pay_date', 'date', 'date', 'Installments', 'File and pay by this date to avoid a Q4 penalty', { rollsWithYear: true }),
-  D('return_due_date', 'date', 'date', 'Installments', 'Return due date (penalty accrual end)', { rollsWithYear: true }),
+  // IRC §6654(h): January 31 of the following year.
+  D('installments.q4_file_and_pay_date', 'date', 'date', 'Installments', 'File and pay by this date to avoid a Q4 penalty', { rollsWithYear: true, roll: statutory(SD('01-31', 1)) }),
+  // IRC §6072(a): the 15th day of April following the calendar year.
+  D('return_due_date', 'date', 'date', 'Installments', 'Return due date (penalty accrual end)', { rollsWithYear: true, roll: statutory(SD('04-15', 1)) }),
   // ── Schedule AI ────────────────────────────────────────────────────────
   D('sch_ai.period_ends', 'month_day_list', 'month_day', 'Schedule AI', 'Annualization period ends'),
   D('sch_ai.annualization_factors', 'number_list', 'factor', 'Schedule AI', 'Annualization factors'),
@@ -185,12 +212,13 @@ export const PARAMETER_REGISTRY: readonly ParameterDef[] = [
   D('farmer.gross_income_ratio', 'rate', 'rate', 'Farmers and fishermen', 'Gross income from farming/fishing test (fraction)'),
   D('farmer.safe_harbor_current_pct', 'rate', 'rate', 'Farmers and fishermen', 'Safe harbor: % of current-year tax'),
   D('farmer.safe_harbor_prior_pct', 'rate', 'rate', 'Farmers and fishermen', 'Safe harbor: % of prior-year tax'),
-  D('farmer.single_due_date', 'date', 'date', 'Farmers and fishermen', 'Single installment due date', { rollsWithYear: true }),
-  D('farmer.file_by_date', 'date', 'date', 'Farmers and fishermen', 'File and pay by this date for no penalty', { rollsWithYear: true }),
+  // IRC §6654(i)(1)(B): January 15 of the following year; §6654(i)(1)(D)(i): March 1 of the following year.
+  D('farmer.single_due_date', 'date', 'date', 'Farmers and fishermen', 'Single installment due date', { rollsWithYear: true, roll: statutory(SD('01-15', 1)) }),
+  D('farmer.file_by_date', 'date', 'date', 'Farmers and fishermen', 'File and pay by this date for no penalty', { rollsWithYear: true, roll: statutory(SD('03-01', 1)) }),
   // ── Penalty ────────────────────────────────────────────────────────────
   D('penalty.underpayment_rate', 'rate_period_list', 'table', 'Penalty', 'Underpayment rate by quarter'),
   // ── Calendar ───────────────────────────────────────────────────────────
-  D('holidays', 'date_list', 'date', 'Calendar', 'Federal / DC legal holidays (date roll-forward)', { rollsWithYear: true }),
+  D('holidays', 'date_list', 'date', 'Calendar', 'Federal / DC legal holidays (date roll-forward)', { rollsWithYear: true, roll: { kind: 'legal_holidays' } }),
 ];
 
 export interface ExpandedParameterKey {

@@ -245,6 +245,11 @@ async function gather(scope: FirmScope, req: EstimateRequest): Promise<Gathered>
 
   const states = [...new Set(stateRows.map((r) => r.dto.state))];
   const stateRules = await Promise.all(states.map((s) => getStateRules(req.taxYear, s)));
+  // R6-03: the state mirror of TE_PARAMS_FALLBACK_YEAR — the admin States screen says the same (status `fallback`).
+  for (const sr of stateRules) {
+    if (!sr.isFallback) continue;
+    warnings.push({ code: 'TE_STATE_RULES_FALLBACK_YEAR', severity: 'warning', message: `No ${sr.state} rules exist for ${req.taxYear}; the ${sr.fallbackYear} ${sr.state} rules were used (all provisional). Due dates, the return due date, the farmer dates and holidays were derived for ${req.taxYear}; thresholds, percentages and penalty rates are ${sr.fallbackYear}'s.`, details: { state: sr.state, fallbackYear: sr.fallbackYear } });
+  }
   const ledger = await getPaymentLedger(scope, taxpayer.id, req.taxYear, scenario.id, { links: linksAll });
   warnings.push(...ledger.warnings);
 
@@ -307,6 +312,7 @@ async function runEntities(scope: FirmScope, req: EstimateRequest, g: Gathered, 
       ...base, companyName: pl.companyName, entityType: pl.entityType, throughMonth: pl.throughMonth, throughMonthSource: pl.throughMonthSource,
       monthsElapsed: pl.monthsElapsed, monthsRemaining: pl.monthsRemaining, glVersionStamp: pl.glVersionStamp, providerCached: pl.cached,
       basis: pl.basis, throughMonthReason: pl.throughMonthReason, nonRecurringYtd: pl.nonRecurring, reclass: reclassOf(pl),
+      includeSehiInW2Wages: pl.w2Wages.includeSehiInW2Wages ?? false,
     };
     if (!pl.entityType) {
       warnings.push({ code: 'TE_ENTITY_TYPE_MISSING', severity: 'warning', message: `${pl.companyName} has no tax entity type (no TB profile and no estimator setting); left out of the estimate.`, details: { companyId: c.companyId } });

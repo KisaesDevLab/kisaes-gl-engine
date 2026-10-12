@@ -91,6 +91,8 @@ export interface EstimateEntityDTO {
   nonRecurringYtd?: CharacterAmounts | null;
   /** Phase 12: YTD treatment-map reclass totals (assumptions page). */
   reclass?: EstimateEntityReclassDTO | null;
+  /** Q41: whether the >2% shareholder health W-2 add-on was counted as §199A W-2 wages for this entity (S corps; absent = default, excluded). */
+  includeSehiInW2Wages?: boolean;
 }
 
 /** YTD GL reclass totals applied by the treatment map before the engine (positive magnitudes). */

@@ -9,21 +9,23 @@
 //   state_estimate_rule_overrides super-admin overrides + provisional rows created
 //                                 by "create year from prior"
 // Effective value per (state, key): override > provisional > shipped seed. A state
-// with no rows for a year falls back (display only) to its latest earlier year,
-// flagged provisional. The estimator itself uses resolveStateRulesForEngine():
-// a state with no usable rule set is computed with the federal pattern and a
-// "verify" badge.
+// with no rows for a year falls back to its latest earlier year (dates derived for
+// the requested year, every row provisional) — in the admin summary AND in the
+// estimate, which both go through getStateRules + jurisdictionFromStateRules (the
+// one resolver, R6-03). A state with no usable rule set in any year is computed
+// with the federal pattern and a "verify" badge. A state served through the
+// fallback cannot be edited or signed until the year is created (R6-02).
 //
 // Audit: global data, so changes are written to audit_log under the all-zero
 // tenant id with entity type 'tax_state_rule' (operation in after_data.op).
 
-import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
 import {
   STATE_CODES, STATE_NAMES, STATE_RULE_REGISTRY, getStateRuleDef, validateStateRuleValue,
-  requiredStateRuleKeys, isIncomeTaxState, rollDateToYear, nextBusinessDay, stateRuleRef,
+  requiredStateRuleKeys, isIncomeTaxState, rollStateRuleDates, stateRuleRef, jurisdictionFromStateRules,
   type StateCode, type StateRuleSeedRow, type ParameterStatus,
   type StateRulesDTO, type StateRuleRowDTO, type StateRuleSummaryDTO,
-  type CreateStateYearFromPriorResult, type StateRulesEngineView, type StateRuleDiffRowDTO, type StateRuleChangeDTO,
+  type CreateStateYearFromPriorResult, type StateRuleDiffRowDTO, type StateRuleChangeDTO,
   type VerifyStateRulesResult,
 } from '@kis-books/shared';
 import { db, type DbOrTx } from '../../db/index.js';
@@ -38,14 +40,6 @@ import { verifierEmails } from './tax-parameters.service.js';
 const ZERO_TENANT = '00000000-0000-0000-0000-000000000000';
 const AUDIT_ENTITY = 'tax_state_rule';
 const MIN_REASON_LEN = 3;
-const HOLIDAYS_KEY = 'holidays';
-const DUE_DATES_KEY = 'installments.due_dates';
-const FARMER_KEY = 'farmer.rule';
-const SINGLE_DATE_KEYS: readonly string[] = ['installments.q4_file_and_pay_date', 'return_due_date'];
-const RATE_SCHEDULE_KEY = 'penalty.rate_schedule';
-const ESTIMATES_REQUIRED_KEY = 'estimates_required';
-/** Voucher-schedule keys withheld from the engine when a state has no estimate regime. */
-const VOUCHER_KEYS: readonly string[] = ['installments.due_dates', 'installments.pcts', 'installments.q4_file_and_pay_date'];
 const STATUSES: readonly string[] = ['verified', 'unverified', 'provisional'];
 
 interface ResolvedValue {
@@ -55,6 +49,7 @@ interface ResolvedValue {
   citation: string;
   reason: string | null;
   shippedValue?: unknown;
+  hasShipped: boolean;
   verifiedAt: Date | null;
   verifiedBy: string | null;
   verificationNote: string | null;
@@ -127,13 +122,14 @@ export async function syncShippedStateRules(
           state, taxYear: year, key: row.key, value: jsonb(row.value), status: row.status, citation: row.citation,
         }).onConflictDoUpdate({
           target: [stateEstimateRules.state, stateEstimateRules.taxYear, stateEstimateRules.key],
-          // R7 Verify: an in-app verification survives the re-sync only while the shipped value is unchanged.
+          // R7 Verify: an in-app verification survives the re-sync only while the shipped value AND its
+          // citation are unchanged (R6-10: "verified" means checked against the cited source).
           set: {
             value: jsonb(row.value), citation: row.citation, updatedAt: sql`now()`,
-            status: sql`CASE WHEN "state_estimate_rules"."verified_at" IS NOT NULL AND "state_estimate_rules"."value" = excluded."value" THEN 'verified' ELSE excluded."status" END`,
-            verifiedAt: sql`CASE WHEN "state_estimate_rules"."value" = excluded."value" THEN "state_estimate_rules"."verified_at" ELSE NULL END`,
-            verifiedBy: sql`CASE WHEN "state_estimate_rules"."value" = excluded."value" THEN "state_estimate_rules"."verified_by" ELSE NULL END`,
-            verificationNote: sql`CASE WHEN "state_estimate_rules"."value" = excluded."value" THEN "state_estimate_rules"."verification_note" ELSE NULL END`,
+            status: sql`CASE WHEN "state_estimate_rules"."verified_at" IS NOT NULL AND "state_estimate_rules"."value" = excluded."value" AND "state_estimate_rules"."citation" = excluded."citation" THEN 'verified' ELSE excluded."status" END`,
+            verifiedAt: sql`CASE WHEN "state_estimate_rules"."value" = excluded."value" AND "state_estimate_rules"."citation" = excluded."citation" THEN "state_estimate_rules"."verified_at" ELSE NULL END`,
+            verifiedBy: sql`CASE WHEN "state_estimate_rules"."value" = excluded."value" AND "state_estimate_rules"."citation" = excluded."citation" THEN "state_estimate_rules"."verified_by" ELSE NULL END`,
+            verificationNote: sql`CASE WHEN "state_estimate_rules"."value" = excluded."value" AND "state_estimate_rules"."citation" = excluded."citation" THEN "state_estimate_rules"."verification_note" ELSE NULL END`,
           },
         });
         total++;
@@ -179,11 +175,29 @@ async function latestYearBefore(exec: DbOrTx, year: number, state?: string): Pro
   return ys.length > 0 ? Math.max(...ys) : null;
 }
 
-async function anyRowsInYear(exec: DbOrTx, year: number): Promise<boolean> {
-  const [a] = await exec.select({ n: sql<number>`count(*)::int` }).from(stateEstimateRules).where(eq(stateEstimateRules.taxYear, year));
-  if ((a?.n ?? 0) > 0) return true;
-  const [b] = await exec.select({ n: sql<number>`count(*)::int` }).from(stateEstimateRuleOverrides).where(eq(stateEstimateRuleOverrides.taxYear, year));
-  return (b?.n ?? 0) > 0;
+/** Latest earlier year per state (both tables), for the states that need a fallback. */
+async function latestYearsBefore(exec: DbOrTx, year: number): Promise<Map<string, number>> {
+  const a = await exec.select({ state: stateEstimateRules.state, y: sql<number>`max(${stateEstimateRules.taxYear})::int` })
+    .from(stateEstimateRules).where(lt(stateEstimateRules.taxYear, year)).groupBy(stateEstimateRules.state);
+  const b = await exec.select({ state: stateEstimateRuleOverrides.state, y: sql<number>`max(${stateEstimateRuleOverrides.taxYear})::int` })
+    .from(stateEstimateRuleOverrides).where(lt(stateEstimateRuleOverrides.taxYear, year)).groupBy(stateEstimateRuleOverrides.state);
+  const out = new Map<string, number>();
+  for (const r of [...a, ...b]) out.set(r.state, Math.max(out.get(r.state) ?? 0, r.y));
+  return out;
+}
+
+const stateHasRows = (loaded: Loaded, state: string): boolean =>
+  (loaded.seeds.get(state)?.length ?? 0) + (loaded.overrides.get(state)?.length ?? 0) > 0;
+
+/**
+ * R6-02: a state served through the fallback has nothing of its own to edit or sign; one stray
+ * row would end its fallback (a 1/20 "partial" set) and, before R6-02, block create-from-prior
+ * for all 51 jurisdictions. A state with no rows in any year may still be built by hand.
+ */
+async function assertStateEditable(exec: DbOrTx, year: number, state: StateCode): Promise<void> {
+  if (stateHasRows(await loadYear(exec, year, state), state)) return;
+  if ((await latestYearBefore(exec, year, state)) === null) return;
+  throw AppError.conflict(`${state} has no ${year} rules of its own (it is served from an earlier year); create the ${year} state rules from the prior year first`, 'TE_YEAR_NOT_CREATED', { year, state });
 }
 
 /** Resolve registry keys for one state's rows. Unknown DB keys are ignored. */
@@ -200,14 +214,15 @@ function resolveRows(seedRows: SeedRow[], ovRows: OverrideRow[]): Map<string, Re
         value: ov.value,
         status: ov.verifiedAt ? 'verified' : isOverride ? 'unverified' : 'provisional',
         source: isOverride ? 'override' : 'provisional',
-        citation: ov.citation || seed?.citation || '',
+        citation: seed ? seed.citation : ov.citation,
         reason: ov.reason,
         shippedValue: seed && !deepEqual(seed.value, ov.value) ? seed.value : undefined,
+        hasShipped: !!seed,
         verifiedAt: ov.verifiedAt, verifiedBy: ov.verifiedBy, verificationNote: ov.verificationNote,
       });
     } else if (seed) {
       out.set(def.key, {
-        value: seed.value, status: seed.status as ParameterStatus, source: 'seed', citation: seed.citation, reason: null,
+        value: seed.value, status: seed.status as ParameterStatus, source: 'seed', citation: seed.citation, reason: null, hasShipped: true,
         verifiedAt: seed.verifiedAt, verifiedBy: seed.verifiedBy, verificationNote: seed.verificationNote,
       });
     }
@@ -226,24 +241,13 @@ function missingKeys(state: StateCode, resolved: Map<string, ResolvedValue>): st
 
 // ── reads ───────────────────────────────────────────────────────────────
 
-export async function getStateRules(year: number, stateIn: string, executor: DbOrTx = db): Promise<StateRulesDTO> {
-  const state = assertState(stateIn);
-  let loaded = await loadYear(executor, year, state);
-  let resolved = resolveRows(loaded.seeds.get(state) ?? [], loaded.overrides.get(state) ?? []);
-  let fallbackYear: number | null = null;
-  if (resolved.size === 0) {
-    fallbackYear = await latestYearBefore(executor, year, state);
-    if (fallbackYear !== null) {
-      loaded = await loadYear(executor, fallbackYear, state);
-      resolved = resolveRows(loaded.seeds.get(state) ?? [], loaded.overrides.get(state) ?? []);
-    }
-  }
-  const isFallback = fallbackYear !== null && resolved.size > 0;
+/** One state-year DTO from its resolved rows (`fallbackYear` set = served through the fallback: dates derived for `year`, everything provisional). */
+function buildStateRulesDto(year: number, state: StateCode, resolved: Map<string, ResolvedValue>, fallbackYear: number | null, emails: Map<string, string>): StateRulesDTO {
+  const isFallback = fallbackYear !== null;
   const missing = missingKeys(state, resolved);
-  // R3-04: a fallback year's date rules are rolled to the requested year.
-  const rolled = isFallback ? rollStateDates(resolved, fallbackYear!, year) : new Map<string, unknown>();
+  // R3-04 / R6-01: a fallback year's date rules are derived for the requested year.
+  const rolled = isFallback ? rollStateDates(resolved, fallbackYear, year) : new Map<string, unknown>();
   const rules: StateRuleRowDTO[] = [];
-  const emails = isFallback ? new Map<string, string>() : await verifierEmails(executor, [...resolved.values()].map((r) => r.verifiedBy));
   for (const def of STATE_RULE_REGISTRY) {
     const r = resolved.get(def.key);
     if (!r) continue;
@@ -255,6 +259,7 @@ export async function getStateRules(year: number, stateIn: string, executor: DbO
     };
     if (!isFallback && r.reason) row.reason = r.reason;
     if (!isFallback && r.shippedValue !== undefined) row.shippedValue = r.shippedValue;
+    if (!isFallback && r.source !== 'seed') row.hasShipped = r.hasShipped;
     if (isFallback) row.fallbackYear = fallbackYear;
     if (!isFallback && r.verifiedAt) {
       row.verifiedAt = r.verifiedAt.toISOString();
@@ -266,9 +271,31 @@ export async function getStateRules(year: number, stateIn: string, executor: DbO
   }
   return {
     year, state, hasIncomeTax: incomeTaxOf(state, resolved),
-    isFallback, fallbackYear: isFallback ? fallbackYear : null,
+    isFallback, fallbackYear,
     complete: missing.length === 0, missing, rules,
   };
+}
+
+/**
+ * THE state-year read (R6-03): the estimate (gather → jurisdictionFromStateRules), the admin
+ * detail screen and the summaries all resolve through it, so they cannot disagree about a
+ * state with no rows for the year (served from its latest earlier year, flagged).
+ */
+export async function getStateRules(year: number, stateIn: string, executor: DbOrTx = db): Promise<StateRulesDTO> {
+  const state = assertState(stateIn);
+  let loaded = await loadYear(executor, year, state);
+  let resolved = resolveRows(loaded.seeds.get(state) ?? [], loaded.overrides.get(state) ?? []);
+  let fallbackYear: number | null = null;
+  if (resolved.size === 0) {
+    const fy = await latestYearBefore(executor, year, state);
+    if (fy !== null) {
+      loaded = await loadYear(executor, fy, state);
+      resolved = resolveRows(loaded.seeds.get(state) ?? [], loaded.overrides.get(state) ?? []);
+      if (resolved.size > 0) fallbackYear = fy;
+    }
+  }
+  const emails = fallbackYear !== null ? new Map<string, string>() : await verifierEmails(executor, [...resolved.values()].map((r) => r.verifiedBy));
+  return buildStateRulesDto(year, state, resolved, fallbackYear, emails);
 }
 
 function countsOf(resolved: Map<string, ResolvedValue>): StateRuleSummaryDTO['counts'] {
@@ -280,50 +307,38 @@ function countsOf(resolved: Map<string, ResolvedValue>): StateRuleSummaryDTO['co
   return counts;
 }
 
-type EngineView = StateRulesEngineView;
-
-/** The shared decision behind summaries and the engine resolver (no earlier-year fallback). */
-function engineView(state: StateCode, resolved: Map<string, ResolvedValue>): EngineView {
-  if (resolved.size === 0) {
-    if (!isIncomeTaxState(state)) return { rules: { has_income_tax: false }, usesFederalFallback: false, verifyBadge: true, estimatesRequired: false };
-    return { rules: {}, usesFederalFallback: true, verifyBadge: true, estimatesRequired: true };
-  }
-  const allVerified = [...resolved.values()].every((r) => r.status === 'verified');
-  if (!incomeTaxOf(state, resolved)) {
-    const flag = resolved.get('has_income_tax');
-    return { rules: { has_income_tax: false }, usesFederalFallback: false, verifyBadge: !flag || flag.status !== 'verified', estimatesRequired: false };
-  }
-  const rules: Record<string, unknown> = {};
-  for (const [k, r] of resolved) rules[k] = r.value;
-  if (missingKeys(state, resolved).length > 0) return { rules, usesFederalFallback: true, verifyBadge: true, estimatesRequired: true };
-  const estimatesRequired = rules[ESTIMATES_REQUIRED_KEY] !== false;
-  if (!estimatesRequired) for (const k of VOUCHER_KEYS) delete rules[k];
-  return { rules, usesFederalFallback: false, verifyBadge: !allVerified, estimatesRequired };
-}
-
+/**
+ * One summary per jurisdiction, with the SAME resolution the estimate uses (R6-03): a state with
+ * no rows for `year` reports status `fallback` + `fallbackYear` (its rules are served, all
+ * provisional), `missing` only when it has no rows in any year; `usesFederalFallback` is
+ * jurisdictionFromStateRules' decision on that same DTO.
+ */
 export async function listSummaries(year: number, executor: DbOrTx = db): Promise<StateRuleSummaryDTO[]> {
   const loaded = await loadYear(executor, year);
+  const fallbackYears = await latestYearsBefore(executor, year);
+  const fallbackLoaded = new Map<number, Loaded>();
+  for (const state of STATE_CODES) {
+    const fy = fallbackYears.get(state);
+    if (fy !== undefined && !stateHasRows(loaded, state) && !fallbackLoaded.has(fy)) fallbackLoaded.set(fy, await loadYear(executor, fy));
+  }
   return STATE_CODES.map((state) => {
-    const resolved = resolveRows(loaded.seeds.get(state) ?? [], loaded.overrides.get(state) ?? []);
-    const missing = missingKeys(state, resolved);
-    const status: StateRuleSummaryDTO['status'] = resolved.size === 0 ? 'missing' : missing.length === 0 ? 'complete' : 'partial';
+    let resolved = resolveRows(loaded.seeds.get(state) ?? [], loaded.overrides.get(state) ?? []);
+    let fallbackYear: number | null = null;
+    const fy = fallbackYears.get(state);
+    if (resolved.size === 0 && fy !== undefined) {
+      const fl = fallbackLoaded.get(fy)!;
+      resolved = resolveRows(fl.seeds.get(state) ?? [], fl.overrides.get(state) ?? []);
+      if (resolved.size > 0) fallbackYear = fy;
+    }
+    const dto = buildStateRulesDto(year, state, resolved, fallbackYear, new Map());
+    const status: StateRuleSummaryDTO['status'] = resolved.size === 0 ? 'missing' : fallbackYear !== null ? 'fallback' : dto.complete ? 'complete' : 'partial';
     return {
-      state, name: STATE_NAMES[state], hasIncomeTax: incomeTaxOf(state, resolved), status,
-      counts: countsOf(resolved),
-      usesFederalFallback: engineView(state, resolved).usesFederalFallback,
+      state, name: STATE_NAMES[state], hasIncomeTax: dto.hasIncomeTax, status,
+      counts: fallbackYear !== null ? { verified: 0, unverified: 0, provisional: resolved.size, override: 0 } : countsOf(resolved),
+      usesFederalFallback: jurisdictionFromStateRules(dto).usesFederalFallback,
+      fallbackYear,
     };
   });
-}
-
-/**
- * Engine entry point. `usesFederalFallback` means the caller must apply the federal
- * pattern for this state and show a "verify" badge. States without an income tax
- * return only { has_income_tax: false }.
- */
-export async function resolveStateRulesForEngine(stateIn: string, year: number, executor: DbOrTx = db): Promise<EngineView> {
-  const state = assertState(stateIn);
-  const loaded = await loadYear(executor, year, state);
-  return engineView(state, resolveRows(loaded.seeds.get(state) ?? [], loaded.overrides.get(state) ?? []));
 }
 
 // ── writes ──────────────────────────────────────────────────────────────
@@ -347,17 +362,27 @@ export async function setOverride(
   if (why.length < MIN_REASON_LEN) throw AppError.badRequest('A reason of at least 3 characters is required', 'TE_STATE_RULE_INVALID');
 
   await db.transaction(async (tx) => {
+    await assertStateEditable(tx, year, state);
     const [prev] = await tx.select().from(stateEstimateRuleOverrides).where(and(
       eq(stateEstimateRuleOverrides.state, state), eq(stateEstimateRuleOverrides.taxYear, year), eq(stateEstimateRuleOverrides.key, key)));
+    const [seed] = await tx.select().from(stateEstimateRules).where(and(
+      eq(stateEstimateRules.state, state), eq(stateEstimateRules.taxYear, year), eq(stateEstimateRules.key, key)));
+    // R6-08: the same value again keeps the sign-off; a provisional copy with no shipped row stays provisional.
+    const sameValue = !!prev && deepEqual(prev.value, value);
+    const status = prev?.status === 'provisional' && !seed ? 'provisional' : 'override';
     const [saved] = await tx.insert(stateEstimateRuleOverrides).values({
-      state, taxYear: year, key, value: jsonb(value), status: 'override', reason: why, createdBy: userId ?? null,
+      state, taxYear: year, key, value: jsonb(value), status, reason: why, createdBy: userId ?? null,
     }).onConflictDoUpdate({
       target: [stateEstimateRuleOverrides.state, stateEstimateRuleOverrides.taxYear, stateEstimateRuleOverrides.key],
       // A new override value is a new decision: any earlier verification is cleared (R7 Verify).
-      set: { value: jsonb(value), status: 'override', reason: why, createdBy: userId ?? null, updatedAt: sql`now()`, verifiedAt: null, verifiedBy: null, verificationNote: null },
+      set: {
+        value: jsonb(value), status, reason: why, createdBy: userId ?? null, updatedAt: sql`now()`,
+        ...(sameValue ? {} : { verifiedAt: null, verifiedBy: null, verificationNote: null }),
+      },
     }).returning();
+    // R6-09: `before` is the value the engine was reading (override, else the shipped seed).
     await auditLog(ZERO_TENANT, 'override', AUDIT_ENTITY, saved!.id,
-      { year, state, key, value: prev?.value ?? null },
+      { year, state, key, value: prev?.value ?? seed?.value ?? null },
       { op: 'override_set', year, state, key, value, reason: why }, userId, tx);
   });
   return getRow(year, state, key);
@@ -366,10 +391,23 @@ export async function setOverride(
 export async function revertOverride(year: number, stateIn: string, key: string, userId?: string): Promise<void> {
   const state = assertState(stateIn);
   await db.transaction(async (tx) => {
-    const [row] = await tx.delete(stateEstimateRuleOverrides).where(and(
-      eq(stateEstimateRuleOverrides.state, state), eq(stateEstimateRuleOverrides.taxYear, year), eq(stateEstimateRuleOverrides.key, key),
-    )).returning();
+    const [row] = await tx.select().from(stateEstimateRuleOverrides).where(and(
+      eq(stateEstimateRuleOverrides.state, state), eq(stateEstimateRuleOverrides.taxYear, year), eq(stateEstimateRuleOverrides.key, key)));
     if (!row) throw AppError.notFound('No override or provisional value for this state rule');
+    const [seed] = await tx.select({ id: stateEstimateRules.id }).from(stateEstimateRules).where(and(
+      eq(stateEstimateRules.state, state), eq(stateEstimateRules.taxYear, year), eq(stateEstimateRules.key, key)));
+    if (!seed) {
+      // R6-07: no shipped row underneath — deleting leaves the rule missing (an incomplete set, federal pattern)
+      // unless this is the state-year's only row, in which case removing it restores the fallback.
+      const [n] = await tx.select({ n: sql<number>`count(*)::int` }).from(stateEstimateRuleOverrides).where(and(
+        eq(stateEstimateRuleOverrides.state, state), eq(stateEstimateRuleOverrides.taxYear, year)));
+      const [m] = await tx.select({ n: sql<number>`count(*)::int` }).from(stateEstimateRules).where(and(
+        eq(stateEstimateRules.state, state), eq(stateEstimateRules.taxYear, year)));
+      if ((n?.n ?? 0) + (m?.n ?? 0) > 1) {
+        throw AppError.conflict(`${state} ${key} has no shipped value for ${year}; removing it would leave the rule missing. Edit the value instead.`, 'TE_NO_SHIPPED_VALUE', { year, state, key });
+      }
+    }
+    await tx.delete(stateEstimateRuleOverrides).where(eq(stateEstimateRuleOverrides.id, row.id));
     await auditLog(ZERO_TENANT, 'override', AUDIT_ENTITY, row.id,
       { year, state, key, value: row.value },
       { op: 'override_reverted', year, state, key, value: null, reason: null }, userId, tx);
@@ -383,38 +421,89 @@ const cleanNote = (note: string | undefined): string | null => {
   return t === '' ? null : t;
 };
 
-/** Mark one (state, key) verified for its current value; the override/provisional row wins over the seed. Already verified = no-op. */
-async function verifyOne(tx: DbOrTx, year: number, state: StateCode, key: string, note: string | null, userId: string | undefined): Promise<boolean> {
+const changedError = (year: number, state: StateCode, key: string, currentValue: unknown) => AppError.conflict(
+  `The value of ${state} ${key} for ${year} changed since you read it; review the current value and verify again`,
+  'TE_PARAM_CHANGED', { year, state, key, currentValue },
+);
+
+interface VerifyOpts {
+  /** The value the caller saw (R6-04). undefined = sign whatever the row carries now. */
+  expectedValue?: { value: unknown };
+  /** Bulk verify: a row whose value changed under us is skipped, not thrown. */
+  onChanged: 'throw' | 'skip';
+}
+
+type VerifyOutcome = 'verified' | 'already' | 'changed';
+
+function changed(year: number, state: StateCode, key: string, currentValue: unknown, opts: VerifyOpts): VerifyOutcome {
+  if (opts.onChanged === 'throw') throw changedError(year, state, key, currentValue);
+  return 'changed';
+}
+
+/**
+ * Mark one (state, key) verified for the value the caller saw; the override/provisional row wins
+ * over the seed. Already verified = no-op. Conditional UPDATE … WHERE not yet verified AND value =
+ * expected RETURNING (R6-04): one sign-off and one audit row per race, and a value changed after
+ * it was read is never signed (409 TE_PARAM_CHANGED, or `changed` under bulk).
+ */
+async function verifyOne(tx: DbOrTx, year: number, state: StateCode, key: string, note: string | null, userId: string | undefined, opts: VerifyOpts): Promise<VerifyOutcome> {
   const now = new Date();
   const [ov] = await tx.select().from(stateEstimateRuleOverrides).where(and(
     eq(stateEstimateRuleOverrides.state, state), eq(stateEstimateRuleOverrides.taxYear, year), eq(stateEstimateRuleOverrides.key, key)));
   if (ov) {
-    if (ov.verifiedAt) return false;
-    await tx.update(stateEstimateRuleOverrides).set({ verifiedAt: now, verifiedBy: userId ?? null, verificationNote: note }).where(eq(stateEstimateRuleOverrides.id, ov.id));
+    if (ov.verifiedAt) return 'already';
+    const expected = opts.expectedValue ? opts.expectedValue.value : ov.value;
+    if (!deepEqual(expected, ov.value)) return changed(year, state, key, ov.value, opts);
+    const updated = await tx.update(stateEstimateRuleOverrides).set({ verifiedAt: now, verifiedBy: userId ?? null, verificationNote: note })
+      .where(and(eq(stateEstimateRuleOverrides.id, ov.id), isNull(stateEstimateRuleOverrides.verifiedAt), sql`${stateEstimateRuleOverrides.value} = ${jsonb(expected)}`))
+      .returning({ id: stateEstimateRuleOverrides.id });
+    if (updated.length === 0) {
+      const [now2] = await tx.select().from(stateEstimateRuleOverrides).where(eq(stateEstimateRuleOverrides.id, ov.id));
+      if (!now2) throw AppError.notFound('State rule not found');
+      if (now2.verifiedAt) return 'already';
+      return changed(year, state, key, now2.value, opts);
+    }
     await auditLog(ZERO_TENANT, 'signoff', AUDIT_ENTITY, ov.id,
       { year, state, key, value: ov.value, status: ov.status },
       { op: 'verified', year, state, key, value: ov.value, source: ov.status, reason: note }, userId, tx);
-    return true;
+    return 'verified';
   }
   const [seed] = await tx.select().from(stateEstimateRules).where(and(
     eq(stateEstimateRules.state, state), eq(stateEstimateRules.taxYear, year), eq(stateEstimateRules.key, key)));
   if (!seed) throw AppError.notFound('State rule not found');
-  if (seed.status === 'verified') return false;
-  await tx.update(stateEstimateRules).set({ status: 'verified', verifiedAt: now, verifiedBy: userId ?? null, verificationNote: note }).where(eq(stateEstimateRules.id, seed.id));
+  if (seed.status === 'verified') return 'already';
+  const expected = opts.expectedValue ? opts.expectedValue.value : seed.value;
+  if (!deepEqual(expected, seed.value)) return changed(year, state, key, seed.value, opts);
+  const updated = await tx.update(stateEstimateRules).set({ status: 'verified', verifiedAt: now, verifiedBy: userId ?? null, verificationNote: note })
+    .where(and(eq(stateEstimateRules.id, seed.id), ne(stateEstimateRules.status, 'verified'), sql`${stateEstimateRules.value} = ${jsonb(expected)}`))
+    .returning({ id: stateEstimateRules.id });
+  if (updated.length === 0) {
+    const [now2] = await tx.select().from(stateEstimateRules).where(eq(stateEstimateRules.id, seed.id));
+    if (!now2) throw AppError.notFound('State rule not found');
+    if (now2.status === 'verified') return 'already';
+    return changed(year, state, key, now2.value, opts);
+  }
   await auditLog(ZERO_TENANT, 'signoff', AUDIT_ENTITY, seed.id,
     { year, state, key, value: seed.value, status: seed.status },
     { op: 'verified', year, state, key, value: seed.value, source: 'seed', reason: note }, userId, tx);
-  return true;
+  return 'verified';
 }
 
-export async function verifyStateRule(year: number, stateIn: string, key: string, note: string | undefined, userId?: string): Promise<StateRuleRowDTO> {
+export async function verifyStateRule(year: number, stateIn: string, key: string, note: string | undefined, userId?: string, expectedValue?: unknown): Promise<StateRuleRowDTO> {
   const state = assertState(stateIn);
   if (!getStateRuleDef(key)) throw AppError.badRequest(`Unknown state rule '${key}'`, 'TE_STATE_RULE_INVALID');
-  await db.transaction(async (tx) => { await verifyOne(tx, year, state, key, cleanNote(note), userId); });
+  await db.transaction(async (tx) => {
+    await assertStateEditable(tx, year, state);
+    await verifyOne(tx, year, state, key, cleanNote(note), userId, { expectedValue: expectedValue === undefined ? undefined : { value: expectedValue }, onChanged: 'throw' });
+  });
   return getRow(year, state, key);
 }
 
-/** Bulk Verify for ONE jurisdiction's year: every rule whose effective status is not verified. Returns `ST:key` refs. */
+/**
+ * Bulk Verify for ONE jurisdiction's year: every rule whose effective status is not verified, each
+ * signed for the value read in this transaction; a rule overridden under us is listed in `changed`.
+ * Returns `ST:key` refs.
+ */
 export async function verifyAllStateRules(year: number, stateIn: string, note: string | undefined, userId?: string): Promise<VerifyStateRulesResult> {
   const state = assertState(stateIn);
   const why = cleanNote(note);
@@ -422,64 +511,55 @@ export async function verifyAllStateRules(year: number, stateIn: string, note: s
     const loaded = await loadYear(tx, year, state);
     const resolved = resolveRows(loaded.seeds.get(state) ?? [], loaded.overrides.get(state) ?? []);
     const verified: string[] = [];
+    const changedKeys: string[] = [];
     for (const [key, r] of resolved) {
       if (r.status === 'verified') continue;
-      if (await verifyOne(tx, year, state, key, why, userId)) verified.push(stateRuleRef(state, key));
+      const outcome = await verifyOne(tx, year, state, key, why, userId, { expectedValue: { value: r.value }, onChanged: 'skip' });
+      if (outcome === 'verified') verified.push(stateRuleRef(state, key));
+      else if (outcome === 'changed') changedKeys.push(stateRuleRef(state, key));
     }
-    return { verified };
+    return changedKeys.length > 0 ? { verified, changed: changedKeys } : { verified };
   });
 }
 
-const rollIso = (d: unknown, fromYear: number, toYear: number): unknown =>
-  typeof d === 'string' ? rollDateToYear(d, fromYear, toYear) : d;
-
 /**
- * One state's date-valued rules rolled from `fromYear` to `toYear` (key → rolled value, in
- * registry order). The state's own rolled holidays feed the business-day landing of its
- * dates; penalty rate legs keep their rates. Shared by "create year from prior" and the
- * missing-year fallback of getStateRules (R3-04).
+ * One state's date-valued rules rolled from `fromYear` to `year` (key → rolled value, in
+ * registry order) through the shared rollStateRuleDates (R6-01): the state's holiday list is
+ * regenerated from the rules it evidently follows, each observed date is un-bumped to its
+ * statutory day and landed on the next business day under the new list; penalty rate legs
+ * keep their rates. Shared by "create year from prior" and the missing-year fallback of
+ * getStateRules (R3-04). Every result is provisional and flagged "verify".
  */
 function rollStateDates(resolved: Map<string, ResolvedValue>, fromYear: number, year: number): Map<string, unknown> {
-  const out = new Map<string, unknown>();
-  const ph = resolved.get(HOLIDAYS_KEY)?.value;
-  const holidays = Array.isArray(ph) ? ph.map((d) => String(rollIso(d, fromYear, year))) : [];
-  const biz = (d: unknown): unknown => (typeof d === 'string' ? nextBusinessDay(rollDateToYear(d, fromYear, year), holidays) : d);
+  const values = new Map<string, unknown>();
   for (const def of STATE_RULE_REGISTRY) {
-    const value = resolved.get(def.key)?.value;
-    if (value === undefined) continue;
-    if (def.key === HOLIDAYS_KEY && Array.isArray(value)) {
-      out.set(def.key, holidays);
-    } else if (def.key === DUE_DATES_KEY && Array.isArray(value)) {
-      out.set(def.key, value.map(biz));
-    } else if (SINGLE_DATE_KEYS.includes(def.key) && typeof value === 'string') {
-      out.set(def.key, biz(value));
-    } else if (def.key === RATE_SCHEDULE_KEY && Array.isArray(value)) {
-      // Same calendar legs one year later; the rates themselves must be re-read (provisional).
-      out.set(def.key, (value as Array<{ from: string; to: string; rate: number }>).map((p) => ({
-        from: rollDateToYear(p.from, fromYear, year), to: rollDateToYear(p.to, fromYear, year), rate: p.rate,
-      })));
-    } else if (def.key === FARMER_KEY && value && typeof value === 'object') {
-      const f = value as { due_date?: unknown; file_by?: unknown };
-      out.set(def.key, { ...f, due_date: biz(f.due_date), file_by: biz(f.file_by) });
-    }
+    const r = resolved.get(def.key);
+    if (r) values.set(def.key, r.value);
   }
-  return out;
+  return rollStateRuleDates(values, fromYear, year);
 }
 
+/**
+ * Create `year` for every jurisdiction that has rows in the latest earlier year and none for
+ * `year` yet (R6-02: per state — a jurisdiction that already has rows is skipped and reported,
+ * never a reason to refuse the other fifty). 409 TE_YEAR_EXISTS only when nothing is left to create.
+ */
 export async function createYearFromPrior(year: number, userId?: string): Promise<CreateStateYearFromPriorResult> {
   return db.transaction(async (tx) => {
-    if (await anyRowsInYear(tx, year)) throw AppError.conflict(`State rules for ${year} already exist`, 'TE_YEAR_EXISTS');
     const fromYear = await latestYearBefore(tx, year);
     if (fromYear === null) throw AppError.badRequest('No earlier tax year to copy from', 'TE_NO_PRIOR_YEAR');
+    const existing = await loadYear(tx, year);
     const prior = await loadYear(tx, fromYear);
 
     const reason = `Created from ${fromYear}; verify`;
     const rolledDates: string[] = [];
+    const skipped: StateCode[] = [];
     const values: Array<typeof stateEstimateRuleOverrides.$inferInsert> = [];
     let states = 0;
     for (const state of STATE_CODES) {
       const resolved = resolveRows(prior.seeds.get(state) ?? [], prior.overrides.get(state) ?? []);
       if (resolved.size === 0) continue;
+      if (stateHasRows(existing, state)) { skipped.push(state); continue; }
       states++;
       const rolled = rollStateDates(resolved, fromYear, year);
       for (const k of rolled.keys()) rolledDates.push(`${state}:${k}`);
@@ -493,11 +573,12 @@ export async function createYearFromPrior(year: number, userId?: string): Promis
         });
       }
     }
-    if (values.length > 0) await tx.insert(stateEstimateRuleOverrides).values(values);
+    if (values.length === 0) throw AppError.conflict(`State rules for ${year} already exist for every jurisdiction that has ${fromYear} rules`, 'TE_YEAR_EXISTS', { skipped });
+    await tx.insert(stateEstimateRuleOverrides).values(values);
     await auditLog(ZERO_TENANT, 'override', AUDIT_ENTITY, null,
       { year, state: null, key: null, value: null },
-      { op: 'year_created', year, state: null, key: null, value: { fromYear, created: values.length, states, rolledDates }, reason }, userId, tx);
-    return { year, fromYear, created: values.length, states, rolledDates };
+      { op: 'year_created', year, state: null, key: null, value: { fromYear, created: values.length, states, skipped, rolledDates }, reason }, userId, tx);
+    return { year, fromYear, created: values.length, states, skipped, rolledDates };
   });
 }
 
@@ -520,6 +601,7 @@ export async function diffShippedVsProvisional(year: number): Promise<StateRuleD
         state: o.state, key: o.key, label: def.label,
         shippedValue: s.value, shippedStatus: s.status as ParameterStatus, shippedCitation: s.citation,
         provisionalValue: o.value,
+        same: deepEqual(s.value, o.value),
       },
     });
   }
@@ -549,13 +631,18 @@ export async function adoptShipped(year: number, keys: string[] | undefined, use
 
 interface ChangeBlob { op?: string; year?: number; state?: string | null; key?: string | null; value?: unknown; reason?: string | null }
 
-export async function listChanges(limit: number): Promise<StateRuleChangeDTO[]> {
+/** Recent state-rule changes, newest first; `year` (R6-09) limits the feed to one tax year. */
+export async function listChanges(limit: number, year?: number): Promise<StateRuleChangeDTO[]> {
   const rows = await db.select({
     id: auditLogTable.id, at: auditLogTable.createdAt, userId: auditLogTable.userId,
     before: auditLogTable.beforeData, after: auditLogTable.afterData, email: users.email,
   }).from(auditLogTable)
     .leftJoin(users, eq(users.id, auditLogTable.userId))
-    .where(and(eq(auditLogTable.tenantId, ZERO_TENANT), eq(auditLogTable.entityType, AUDIT_ENTITY)))
+    .where(and(
+      eq(auditLogTable.tenantId, ZERO_TENANT), eq(auditLogTable.entityType, AUDIT_ENTITY),
+      // The audit writer stores JSON.stringify(after) in the jsonb column, so the blob is a jsonb STRING scalar; unwrap it first.
+      year === undefined ? undefined : sql`((CASE WHEN jsonb_typeof(${auditLogTable.afterData}) = 'string' THEN (${auditLogTable.afterData} #>> '{}')::jsonb ELSE ${auditLogTable.afterData} END)->>'year')::int = ${year}`,
+    ))
     .orderBy(desc(auditLogTable.id))
     .limit(limit);
   const parse = (v: unknown): ChangeBlob => {

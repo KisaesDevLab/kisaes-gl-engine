@@ -45,6 +45,7 @@ function toYearDto(tenantId: string, companyId: string, taxYear: number, row: Ye
     w2WagesOverride: row?.w2WagesOverride ?? null,
     w2WagesOverrideReason: row?.w2WagesOverrideReason ?? null,
     ubia: row?.ubia ?? null,
+    includeSehiInW2Wages: row?.includeSehiInW2Wages ?? false,
     updatedAt: row?.updatedAt ? row.updatedAt.toISOString() : null,
   };
 }
@@ -129,6 +130,7 @@ export async function upsertYearInputs(
       // A cleared override clears its reason too (the CHECK requires one only while set).
       w2WagesOverrideReason: reason,
       ...(input.ubia !== undefined ? { ubia: input.ubia } : {}),
+      ...(input.includeSehiInW2Wages !== undefined ? { includeSehiInW2Wages: input.includeSehiInW2Wages } : {}),
       updatedBy: userId ?? null,
       updatedAt: new Date(),
     };
