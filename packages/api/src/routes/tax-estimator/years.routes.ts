@@ -6,7 +6,7 @@ import { Router, type Request } from 'express';
 import { z } from 'zod';
 import {
   taxpayerIdParamsSchema, yearParamsSchema, scenarioIdParamsSchema, adjustmentIdParamsSchema, adjustmentTypeIdParamsSchema,
-  upsertYearSchema, createScenarioSchema, updateScenarioSchema, createAdjustmentSchema, updateAdjustmentSchema,
+  upsertYearSchema, createScenarioSchema, updateScenarioSchema, cloneScenarioSchema, createAdjustmentSchema, updateAdjustmentSchema,
   replaceStateRowsSchema, createAdjustmentTypeSchema, updateAdjustmentTypeSchema, listAdjustmentTypesQuerySchema,
   upsertFirmSettingsSchema,
 } from '@kis-books/shared';
@@ -68,7 +68,8 @@ yearsRouter.delete('/scenarios/:scenarioId', requireTaxEstimatorWrite, async (re
 });
 yearsRouter.post('/scenarios/:scenarioId/clone', requireTaxEstimatorWrite, async (req, res) => {
   const { scenarioId } = scenarioIdParamsSchema.parse(req.params);
-  res.status(201).json({ data: await scenariosService.cloneScenario(getScope(req), actor(req), scenarioId) });
+  const { name } = cloneScenarioSchema.parse(req.body ?? {});
+  res.status(201).json({ data: await scenariosService.cloneScenario(getScope(req), actor(req), scenarioId, name) });
 });
 
 // ── adjustments ──

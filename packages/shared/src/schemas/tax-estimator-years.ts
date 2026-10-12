@@ -120,6 +120,8 @@ export const scenarioNameSchema = z.string().trim().min(1).max(MAX_NAME);
 export const createScenarioSchema = z.object({ name: scenarioNameSchema });
 export type CreateScenarioInput = z.infer<typeof createScenarioSchema>;
 export const updateScenarioSchema = z.object({ name: scenarioNameSchema });
+/** QA D21: POST .../clone — optional name for the copy. */
+export const cloneScenarioSchema = z.object({ name: scenarioNameSchema.optional() });
 export type UpdateScenarioInput = z.infer<typeof updateScenarioSchema>;
 
 const adjustmentBase = z.object({

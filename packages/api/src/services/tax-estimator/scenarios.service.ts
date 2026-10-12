@@ -78,6 +78,8 @@ export async function createScenario(
 export async function renameScenario(scope: FirmScope, actor: Actor, scenarioId: string, name: string): Promise<ScenarioDTO> {
   return db.transaction(async (tx) => {
     const before = await loadScenarioForFirm(scope, scenarioId, tx);
+    // QA D21: Base keeps its name (it is the scenario the portal, packs and finalize default to).
+    if (before.isBase && name !== before.name) throw AppError.unprocessableEntity('The Base scenario cannot be renamed', 'TE_BASE_SCENARIO_PROTECTED');
     await loadTaxpayerForFirm(scope, before.taxpayerId, tx, true);
     await assertNameFree(tx, before.taxpayerId, before.taxYear, name, scenarioId);
     const [row] = await tx.update(taxEstScenarios).set({ name, updatedAt: new Date() })
@@ -98,13 +100,15 @@ export async function deleteScenario(scope: FirmScope, actor: Actor, scenarioId:
 }
 
 /** Deep copy: every adjustment and state row of the source is duplicated under the new scenario. */
-export async function cloneScenario(scope: FirmScope, actor: Actor, scenarioId: string): Promise<ScenarioDTO> {
+export async function cloneScenario(scope: FirmScope, actor: Actor, scenarioId: string, requestedName?: string): Promise<ScenarioDTO> {
   return db.transaction(async (tx) => {
     const source = await loadScenarioForFirm(scope, scenarioId, tx);
     await loadTaxpayerForFirm(scope, source.taxpayerId, tx, true);
     await assertCapacity(tx, source.taxpayerId, source.taxYear);
-    let name = `Copy of ${source.name}`.slice(0, MAX_NAME);
-    for (let i = 2; ; i++) {
+    // QA D21: the caller names the copy; without a name it is "Copy of …" (numbered when taken).
+    if (requestedName) await assertNameFree(tx, source.taxpayerId, source.taxYear, requestedName);
+    let name = requestedName ?? `Copy of ${source.name}`.slice(0, MAX_NAME);
+    for (let i = 2; !requestedName; i++) {
       try { await assertNameFree(tx, source.taxpayerId, source.taxYear, name); break; }
       catch (e) {
         if (i > MAX_SCENARIOS_PER_YEAR + 1) throw e;

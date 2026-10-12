@@ -274,6 +274,15 @@ describe('scenarios', () => {
 
     expect((await request('PATCH', `${API}/scenarios/${cid}`, staffToken, { name: 'Buy truck in Dec' })).json.data.name).toBe('Buy truck in Dec');
     expect((await request('PATCH', `${API}/scenarios/${cid}`, staffToken, { name: 'base' })).json.error.code).toBe('TE_SCENARIO_NAME_TAKEN');
+    // QA D21: Base keeps its name; a clone can be named.
+    const renBase = await request('PATCH', `${API}/scenarios/${base}`, staffToken, { name: 'Not Base' });
+    expect(renBase.status).toBe(422);
+    expect(renBase.json.error.code).toBe('TE_BASE_SCENARIO_PROTECTED');
+    const named = await request('POST', `${API}/scenarios/${base}/clone`, staffToken, { name: 'Buy truck in December' });
+    expect(named.status).toBe(201);
+    expect(named.json.data.name).toBe('Buy truck in December');
+    expect((await request('POST', `${API}/scenarios/${base}/clone`, staffToken, { name: 'buy truck in december' })).json.error.code).toBe('TE_SCENARIO_NAME_TAKEN');
+    expect((await request('DELETE', `${API}/scenarios/${named.json.data.id}`, staffToken)).status).toBe(204);
     const delBase = await request('DELETE', `${API}/scenarios/${base}`, staffToken);
     expect(delBase.status).toBe(422);
     expect(delBase.json.error.code).toBe('TE_BASE_SCENARIO_PROTECTED');
