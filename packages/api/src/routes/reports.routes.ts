@@ -924,7 +924,8 @@ async function respond(res: any, reportData: any, format: string | undefined) {
       || reportData._landscape === true;
     const orientation: 'portrait' | 'landscape' = isWideReport ? 'landscape' : 'portrait';
 
-    const html = exportService.toReportHtml(reportData.title || 'Report', companyName, dateLabel, tableHtml, footer);
+    const headerNote = typeof reportData._headerNote === 'string' ? reportData._headerNote : '';
+    const html = exportService.toReportHtml(reportData.title || 'Report', companyName, dateLabel, tableHtml, footer, headerNote);
     const pdf = await exportService.toPdf(html, { orientation });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${asciiFilename(reportData.title)}.pdf"`);
@@ -1637,11 +1638,40 @@ reportsRouter.get('/vendor-1099-summary', async (req, res) => {
 });
 
 // General
+// Printed-header note for a filtered General Ledger: lists the selected
+// accounts when there are only a few, otherwise just the count. Account
+// numbers follow the on-screen "Account #" option. '' = unfiltered.
+const GL_FILTER_NOTE_MAX_LISTED = 5;
+export function glAccountFilterNote(
+  filter: { accounts: Array<{ accountNumber: string | null; name: string }> } | undefined,
+  hideAccountNumbers: boolean,
+): string {
+  if (!filter) return '';
+  const accts = filter.accounts;
+  if (accts.length === 0) return 'Accounts: none of the selected accounts were found';
+  if (accts.length > GL_FILTER_NOTE_MAX_LISTED) return `Accounts: ${accts.length} accounts selected`;
+  const label = (a: { accountNumber: string | null; name: string }) =>
+    (!hideAccountNumbers && a.accountNumber ? `${a.accountNumber} ${a.name}` : a.name);
+  return `Accounts: ${accts.map(label).join(', ')}`;
+}
+
 reportsRouter.get('/general-ledger', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
   const today = new Date();
-  const data = await reportService.buildGeneralLedger(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!, resolveCompanyScope(req), readTagFilter(req), readBasis(req));
-  await respond(res, { ...data, ...readHideAcctNums(req) }, format);
+  const data = await reportService.buildGeneralLedger(
+    req.tenantId,
+    start_date || `${today.getFullYear()}-01-01`,
+    end_date || today.toISOString().split('T')[0]!,
+    resolveCompanyScope(req),
+    readTagFilter(req),
+    readBasis(req),
+    // ?account_ids= — whole-section filter; foreign/malformed ids are
+    // dropped (readAccountIds + the tenant-scoped accounts query).
+    readAccountIds(req),
+  );
+  const hide = readHideAcctNums(req);
+  const headerNote = glAccountFilterNote(data.accountFilter, hide._hideAccountNumbers === true);
+  await respond(res, { ...data, ...hide, ...(headerNote ? { _headerNote: headerNote } : {}) }, format);
 });
 
 reportsRouter.get('/trial-balance', async (req, res) => {

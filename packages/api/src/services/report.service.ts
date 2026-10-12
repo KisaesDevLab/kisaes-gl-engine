@@ -2179,7 +2179,22 @@ export async function buildGeneralLedger(
   // activity, so the ledger reads as the segment's standalone book.
   tagId: string | null = null,
   basis: Basis = 'accrual',
+  // Optional account filter (?account_ids=). Removes whole account
+  // SECTIONS — never individual lines — so each returned account's
+  // beginning / running / ending balances are exactly what the
+  // unfiltered ledger shows. Ids are validated by the tenant-scoped
+  // accounts query itself: a foreign-tenant id simply matches nothing
+  // (never widens, never leaks). An explicitly selected account with
+  // no activity still gets an (empty) section. Null/empty = all.
+  accountIds: string[] | null = null,
 ) {
+  const hasIdFilter = !!accountIds && accountIds.length > 0;
+  // colRef is a code-controlled constant, never user input; the ids
+  // themselves are bound parameters.
+  const idFilter = (colRef: string) =>
+    hasIdFilter
+      ? sql` AND ${sql.raw(colRef)} IN (${sql.join(accountIds!.map((id) => sql`${id}`), sql`, `)})`
+      : sql``;
   // Evaluated as an inline conjunct. Empty sql`` is a no-op append.
   const tagClause = tagId ? sql` AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
   const cbTag = tagId ? sql` AND cb.tag_id IN ${tagIn(tagId)}` : sql``;
@@ -2201,7 +2216,7 @@ export async function buildGeneralLedger(
   const accountsResult = await db.execute(sql`
     SELECT id, account_number, name, account_type, system_tag, is_system
     FROM accounts
-    WHERE tenant_id = ${tenantId}
+    WHERE tenant_id = ${tenantId}${idFilter('id')}
     ORDER BY
       CASE account_type
         WHEN 'asset' THEN 1
@@ -2235,7 +2250,7 @@ export async function buildGeneralLedger(
           ), 0) AS begin_credit
         FROM accounts a
         LEFT JOIN cb_lines cb ON cb.account_id = a.id${cbTag}
-        WHERE a.tenant_id = ${tenantId}
+        WHERE a.tenant_id = ${tenantId}${idFilter('a.id')}
         GROUP BY a.id
       `)
     : await db.execute(sql`
@@ -2265,7 +2280,7 @@ export async function buildGeneralLedger(
       )${tagClause}
     LEFT JOIN transactions t
       ON t.id = jl.transaction_id
-    WHERE a.tenant_id = ${tenantId}
+    WHERE a.tenant_id = ${tenantId}${idFilter('a.id')}
     GROUP BY a.id
   `);
 
@@ -2284,7 +2299,7 @@ export async function buildGeneralLedger(
         FROM cb_lines cb
         LEFT JOIN contacts c ON c.id = cb.txn_contact_id AND c.tenant_id = ${tenantId}
         LEFT JOIN tags tag ON tag.id = cb.tag_id AND tag.tenant_id = ${tenantId}
-        WHERE (cb.debit <> 0 OR cb.credit <> 0)${cbTag}
+        WHERE (cb.debit <> 0 OR cb.credit <> 0)${cbTag}${idFilter('cb.account_id')}
         ORDER BY cb.account_id, cb.txn_date, cb.line_order
       `)
     : await db.execute(sql`
@@ -2315,7 +2330,7 @@ export async function buildGeneralLedger(
       AND t.basis <> 'cash'  -- basis: exclude cash-only entries from the accrual ledger
       AND t.txn_date >= ${startDate}
       AND t.txn_date <= ${endDate}
-      AND ${companyFilter(companyId)}${tagClause}
+      AND ${companyFilter(companyId)}${tagClause}${idFilter('jl.account_id')}
     ORDER BY jl.account_id, t.txn_date, t.created_at, jl.line_order
   `);
 
@@ -2379,7 +2394,9 @@ export async function buildGeneralLedger(
 
       // Skip accounts with no activity AND no beginning balance — they're
       // noise on the report. (This is what every commercial GL does.)
-      if (periodLines.length === 0 && Math.abs(beginningBalance) < 0.005) {
+      // Explicitly selected accounts are kept: a user filtering to 3
+      // accounts should see all 3.
+      if (!hasIdFilter && periodLines.length === 0 && Math.abs(beginningBalance) < 0.005) {
         return null;
       }
 
@@ -2442,6 +2459,12 @@ export async function buildGeneralLedger(
     accounts,
     totalDebits,
     totalCredits,
+    // Present only when filtered: the tenant-owned accounts the filter
+    // resolved to (foreign / unknown ids already dropped), in report
+    // order — drives the printed header note.
+    ...(hasIdFilter
+      ? { accountFilter: { accounts: allAccounts.map((a) => ({ id: a.id, accountNumber: a.account_number, name: a.name })) } }
+      : {}),
   };
 }
 

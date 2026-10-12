@@ -442,6 +442,7 @@ export const swaggerSpec = {
         parameters: [
           { name: 'start_date', in: 'query', schema: { type: 'string', format: 'date' } },
           { name: 'end_date', in: 'query', schema: { type: 'string', format: 'date' } },
+          { name: 'account_ids', in: 'query', description: 'Comma-separated account UUIDs; returns only those account sections (unknown ids are ignored). Omit for all accounts.', schema: { type: 'string' } },
         ],
         responses: { 200: { description: 'General ledger entries' } },
       },

@@ -53,6 +53,9 @@ export function toReportHtml(
   dateLabel: string,
   tableHtml: string,
   footer?: string,
+  // Optional second header line under the date (e.g. the General
+  // Ledger's "Accounts: …" filter note). Empty = nothing rendered.
+  headerNote?: string,
 ): string {
   // Footer: rendered below the table at small caption size. Multi-line
   // text (newlines from the textarea) is preserved by escaping then
@@ -76,7 +79,7 @@ export function toReportHtml(
 <body>
   <h1>${escapeHtml(companyName)}</h1>
   <div style="font-size:16px;font-weight:600;margin-bottom:2px">${escapeHtml(title)}</div>
-  <div class="meta">${escapeHtml(dateLabel)}</div>
+  <div class="meta">${escapeHtml(dateLabel)}${headerNote && headerNote.trim() ? `<br>${escapeHtml(headerNote)}` : ''}</div>
   ${tableHtml}
   ${footerHtml}
 </body></html>`;
