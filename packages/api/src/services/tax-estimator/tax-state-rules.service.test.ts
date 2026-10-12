@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import { and, eq, gte } from 'drizzle-orm';
-import { STATE_CODES, nextBusinessDay, rollDateToYear, statePenaltyRateOn, type StateRuleSeedRow, type StateCode } from '@kis-books/shared';
+import { STATE_CODES, nextBusinessDay, rollDateToYear, rollStateRuleDates, statePenaltyRateOn, type StateRuleSeedRow, type StateCode } from '@kis-books/shared';
 import { db } from '../../db/index.js';
 import { stateEstimateRules, stateEstimateRuleOverrides } from '../../db/schema/tax-estimator-state-rules.js';
 import { auditLog as auditLogTable } from '../../db/schema/audit-log.js';
@@ -253,8 +253,15 @@ describe('summaries and engine resolution', () => {
   });
 });
 
+/** Expected rolled values for one fixture state: the shared roll applied to that state's seeded + overridden values. */
+const expectedRoll = (state: StateCode, over: Record<string, unknown> = {}) => {
+  const values = new Map(FIXTURE.filter((r) => r.state === state).map((r) => [r.key, r.value]));
+  for (const [k, v] of Object.entries(over)) values.set(k, v);
+  return rollStateRuleDates(values, Y1, Y2);
+};
+
 describe('createYearFromPrior', () => {
-  it('copies per state as provisional and rolls dates with that state\'s own holidays', async () => {
+  it('copies per state as provisional and derives dates with that state\'s own regenerated holiday list (R6-01)', async () => {
     const r = await svc.createYearFromPrior(Y2);
     expect(r).toMatchObject({ year: Y2, fromYear: Y1, states: 4 });
     expect(r.created).toBe(NKEYS + NKEYS + 1 + 2);
@@ -263,14 +270,21 @@ describe('createYearFromPrior', () => {
     const ar = await svc.getStateRules(Y2, 'AR');
     const mo = await svc.getStateRules(Y2, 'MO');
     expect(ar.rules.every((x) => x.source === 'provisional' && x.status === 'provisional')).toBe(true);
-    // AR lists the rolled date as a holiday, so its installment moves; MO's does not.
-    expect(rule(ar, 'holidays')!.value).toEqual([weekday]);
-    expect(rule(ar, 'installments.due_dates')!.value).toEqual([nextBusinessDay(weekday, [weekday])]);
-    expect(rule(mo, 'installments.due_dates')!.value).toEqual([weekday]);
-    expect(rule(ar, 'installments.due_dates')!.value).not.toEqual(rule(mo, 'installments.due_dates')!.value);
-    const farmer = rule(ar, 'farmer.rule')!.value as { due_date: string; file_by: string };
-    expect(farmer.due_date).toBe(nextBusinessDay(weekday, [weekday]));
-    expect(farmer.file_by).toBe(nextBusinessDay('2082-03-01', [weekday]));
+    const expAr = expectedRoll('AR');
+    const expMo = expectedRoll('MO');
+    for (const key of ['holidays', 'installments.due_dates', 'farmer.rule', 'return_due_date', 'installments.q4_file_and_pay_date']) {
+      expect(rule(ar, key)!.value, `AR ${key}`).toEqual(expAr.get(key));
+      // MO's farmer.rule is an explicit null: nothing to roll, copied as is.
+      expect(rule(mo, key)!.value, `MO ${key}`).toEqual(expMo.has(key) ? expMo.get(key) : null);
+    }
+    // AR's fixture holiday (a fixed month-day) is regenerated for the new year and its following year; MO has none.
+    expect((rule(ar, 'holidays')!.value as string[])[0]).toBe(weekday);
+    expect((rule(ar, 'holidays')!.value as string[]).map((d) => d.slice(0, 4))).toEqual([String(Y2), String(Y2 + 1)]);
+    expect(rule(mo, 'holidays')!.value).toEqual([]);
+    // Every rolled due date is a business day of the new year under that state's list.
+    for (const d of rule(ar, 'installments.due_dates')!.value as string[]) expect(nextBusinessDay(d, rule(ar, 'holidays')!.value as string[])).toBe(d);
+    for (const d of rule(mo, 'installments.due_dates')!.value as string[]) expect(nextBusinessDay(d, [])).toBe(d);
+    expect((rule(ar, 'installments.due_dates')!.value as string[])[0]!.slice(0, 4)).toBe(String(Y2));
     expect(rule(ar, 'required_threshold')).toMatchObject({ value: 1000, citation: 'Fixture AR required_threshold', reason: `Created from ${Y1}; verify` });
     // pure copy keys are unchanged
     expect(rule(ar, 'safe_harbor.prior_pct')!.value).toBe(1);
@@ -281,8 +295,9 @@ describe('createYearFromPrior', () => {
     const r = await svc.createYearFromPrior(Y2);
     expect(r.rolledDates).toEqual(expect.arrayContaining(['AR:return_due_date', 'AR:installments.q4_file_and_pay_date', 'MO:penalty.rate_schedule']));
     const ar = await svc.getStateRules(Y2, 'AR');
-    expect(rule(ar, 'return_due_date')!.value).toBe(nextBusinessDay('2082-04-15', [weekday]));
-    expect(rule(ar, 'installments.q4_file_and_pay_date')!.value).toBe(nextBusinessDay('2082-01-31', [weekday]));
+    // Statutory Apr 15 / Jan 31 of the following year, landed under AR's regenerated list (not the stored date shifted by a year).
+    expect(rule(ar, 'return_due_date')!.value).toBe(nextBusinessDay('2082-04-15', rule(ar, 'holidays')!.value as string[]));
+    expect(rule(ar, 'installments.q4_file_and_pay_date')!.value).toBe(nextBusinessDay('2082-01-31', rule(ar, 'holidays')!.value as string[]));
     expect(rule(await svc.getStateRules(Y2, 'MO'), 'penalty.rate_schedule')!.value).toEqual([{ from: '2081-01-01', to: '2081-12-31', rate: 0.08 }]);
   });
 

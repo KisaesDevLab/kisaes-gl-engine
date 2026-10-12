@@ -6,7 +6,7 @@
 // carry every registry key exactly once, with a valid value and a citation.
 
 import { describe, it, expect } from 'vitest';
-import { expandParameterKeys, validateParameterValue, getParameterDef } from '@kis-books/shared';
+import { expandParameterKeys, validateParameterValue, getParameterDef, deriveFederalDates, PARAMETER_REGISTRY } from '@kis-books/shared';
 import { FEDERAL_SEEDS } from './index.js';
 
 const YEARS = Object.keys(FEDERAL_SEEDS).map(Number);
@@ -39,6 +39,17 @@ describe('federal seeds', () => {
           return err ? [`${r.key}: ${err}`] : [];
         });
         expect(bad).toEqual([]);
+      });
+
+      // R6-01: the year roll derives every date key from the statute + the computed legal-holiday
+      // calendar. This is "roll the prior year and compare with the shipped seed" in one assertion:
+      // the roll never reads the prior year's dates, so deriving `year` IS rolling `year - 1`.
+      it('every rollsWithYear date equals the statutory day landed under the computed holiday calendar', () => {
+        const derived = deriveFederalDates(year);
+        const rollKeys = PARAMETER_REGISTRY.filter((d) => d.rollsWithYear).map((d) => d.key);
+        expect([...derived.keys()].sort()).toEqual([...rollKeys].sort());
+        const seeded = new Map(rows.map((r) => [r.key, r.value]));
+        for (const key of rollKeys) expect(seeded.get(key), key).toEqual(derived.get(key));
       });
 
       it('has a citation and a valid status on every row', () => {

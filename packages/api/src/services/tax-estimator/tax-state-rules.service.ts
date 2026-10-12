@@ -20,7 +20,7 @@
 import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
 import {
   STATE_CODES, STATE_NAMES, STATE_RULE_REGISTRY, getStateRuleDef, validateStateRuleValue,
-  requiredStateRuleKeys, isIncomeTaxState, rollDateToYear, nextBusinessDay, stateRuleRef,
+  requiredStateRuleKeys, isIncomeTaxState, rollStateRuleDates, stateRuleRef,
   type StateCode, type StateRuleSeedRow, type ParameterStatus,
   type StateRulesDTO, type StateRuleRowDTO, type StateRuleSummaryDTO,
   type CreateStateYearFromPriorResult, type StateRulesEngineView, type StateRuleDiffRowDTO, type StateRuleChangeDTO,
@@ -38,11 +38,6 @@ import { verifierEmails } from './tax-parameters.service.js';
 const ZERO_TENANT = '00000000-0000-0000-0000-000000000000';
 const AUDIT_ENTITY = 'tax_state_rule';
 const MIN_REASON_LEN = 3;
-const HOLIDAYS_KEY = 'holidays';
-const DUE_DATES_KEY = 'installments.due_dates';
-const FARMER_KEY = 'farmer.rule';
-const SINGLE_DATE_KEYS: readonly string[] = ['installments.q4_file_and_pay_date', 'return_due_date'];
-const RATE_SCHEDULE_KEY = 'penalty.rate_schedule';
 const ESTIMATES_REQUIRED_KEY = 'estimates_required';
 /** Voucher-schedule keys withheld from the engine when a state has no estimate regime. */
 const VOUCHER_KEYS: readonly string[] = ['installments.due_dates', 'installments.pcts', 'installments.q4_file_and_pay_date'];
@@ -430,40 +425,21 @@ export async function verifyAllStateRules(year: number, stateIn: string, note: s
   });
 }
 
-const rollIso = (d: unknown, fromYear: number, toYear: number): unknown =>
-  typeof d === 'string' ? rollDateToYear(d, fromYear, toYear) : d;
-
 /**
- * One state's date-valued rules rolled from `fromYear` to `toYear` (key → rolled value, in
- * registry order). The state's own rolled holidays feed the business-day landing of its
- * dates; penalty rate legs keep their rates. Shared by "create year from prior" and the
- * missing-year fallback of getStateRules (R3-04).
+ * One state's date-valued rules rolled from `fromYear` to `year` (key → rolled value, in
+ * registry order) through the shared rollStateRuleDates (R6-01): the state's holiday list is
+ * regenerated from the rules it evidently follows, each observed date is un-bumped to its
+ * statutory day and landed on the next business day under the new list; penalty rate legs
+ * keep their rates. Shared by "create year from prior" and the missing-year fallback of
+ * getStateRules (R3-04). Every result is provisional and flagged "verify".
  */
 function rollStateDates(resolved: Map<string, ResolvedValue>, fromYear: number, year: number): Map<string, unknown> {
-  const out = new Map<string, unknown>();
-  const ph = resolved.get(HOLIDAYS_KEY)?.value;
-  const holidays = Array.isArray(ph) ? ph.map((d) => String(rollIso(d, fromYear, year))) : [];
-  const biz = (d: unknown): unknown => (typeof d === 'string' ? nextBusinessDay(rollDateToYear(d, fromYear, year), holidays) : d);
+  const values = new Map<string, unknown>();
   for (const def of STATE_RULE_REGISTRY) {
-    const value = resolved.get(def.key)?.value;
-    if (value === undefined) continue;
-    if (def.key === HOLIDAYS_KEY && Array.isArray(value)) {
-      out.set(def.key, holidays);
-    } else if (def.key === DUE_DATES_KEY && Array.isArray(value)) {
-      out.set(def.key, value.map(biz));
-    } else if (SINGLE_DATE_KEYS.includes(def.key) && typeof value === 'string') {
-      out.set(def.key, biz(value));
-    } else if (def.key === RATE_SCHEDULE_KEY && Array.isArray(value)) {
-      // Same calendar legs one year later; the rates themselves must be re-read (provisional).
-      out.set(def.key, (value as Array<{ from: string; to: string; rate: number }>).map((p) => ({
-        from: rollDateToYear(p.from, fromYear, year), to: rollDateToYear(p.to, fromYear, year), rate: p.rate,
-      })));
-    } else if (def.key === FARMER_KEY && value && typeof value === 'object') {
-      const f = value as { due_date?: unknown; file_by?: unknown };
-      out.set(def.key, { ...f, due_date: biz(f.due_date), file_by: biz(f.file_by) });
-    }
+    const r = resolved.get(def.key);
+    if (r) values.set(def.key, r.value);
   }
-  return out;
+  return rollStateRuleDates(values, fromYear, year);
 }
 
 export async function createYearFromPrior(year: number, userId?: string): Promise<CreateStateYearFromPriorResult> {

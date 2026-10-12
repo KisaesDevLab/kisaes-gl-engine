@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import { and, eq, gte } from 'drizzle-orm';
-import { expandParameterKeys, type ParameterSeedRow } from '@kis-books/shared';
+import { expandParameterKeys, deriveFederalDates, legalHolidaysForTaxYear, type ParameterSeedRow } from '@kis-books/shared';
 import { db } from '../../db/index.js';
 import { taxParameters, taxParameterOverrides } from '../../db/schema/tax-estimator.js';
 import { auditLog as auditLogTable } from '../../db/schema/audit-log.js';
@@ -155,7 +155,7 @@ describe('setOverride / revertOverride', () => {
 });
 
 describe('createYearFromPrior', () => {
-  it('copies resolved values as provisional and rolls dates to business days', async () => {
+  it('copies resolved values as provisional and derives the dates from the statute and the computed holiday calendar (R6-01)', async () => {
     await svc.setOverride(Y1, 'se.ss_wage_base', 180000, 'Admin edit'); // resolved (override) value is what is copied
     const res = await svc.createYearFromPrior(Y2);
     expect(res).toMatchObject({ year: Y2, fromYear: Y1, created: 5 });
@@ -163,13 +163,41 @@ describe('createYearFromPrior', () => {
     const dto = await svc.getParameters(Y2);
     expect(dto.isFallback).toBe(false);
     expect(pick(dto, 'se.ss_wage_base')).toMatchObject({ value: 180000, source: 'provisional', status: 'provisional', reason: 'Created from 2090; verify' });
-    // 2091-06-16 is a Saturday; 06-17 Sunday; 06-18 is a listed holiday -> Tue 06-19.
-    expect(pick(dto, 'installments.due_dates')?.value).toEqual(['2091-06-19']);
-    expect(pick(dto, 'return_due_date')?.value).toBe('2091-06-14'); // Thursday, unchanged
-    expect(pick(dto, 'holidays')?.value).toEqual(['2091-06-18']); // rolled, not business-day adjusted
+    // The fixture stores an observed Saturday-ish date list and a made-up holiday; neither is rolled.
+    // The new year's dates come from the registry's statutory days under the computed legal-holiday calendar.
+    const derived = deriveFederalDates(Y2);
+    expect(pick(dto, 'installments.due_dates')?.value).toEqual(derived.get('installments.due_dates'));
+    expect((pick(dto, 'installments.due_dates')?.value as string[]).length).toBe(4);
+    expect(pick(dto, 'installments.due_dates')?.value).not.toEqual(['2091-06-16']);
+    expect(pick(dto, 'return_due_date')?.value).toBe(derived.get('return_due_date'));
+    expect(pick(dto, 'return_due_date')?.value).toBe('2092-04-15'); // Apr 15, 2092 is a Friday
+    expect(pick(dto, 'holidays')?.value).toEqual(legalHolidaysForTaxYear(Y2));
+    expect(pick(dto, 'holidays')?.value).not.toContain('2091-06-18');
     const [row] = await db.select().from(taxParameterOverrides)
       .where(and(eq(taxParameterOverrides.taxYear, Y2), eq(taxParameterOverrides.key, 'se.nese_factor')));
     expect(row?.createdFromYear).toBe(Y1);
+  });
+
+  it('the missing-year fallback serves the same derived dates for the requested year (R3-04 / R6-14)', async () => {
+    const dto = await svc.getParameters(Y_EMPTY);
+    expect(dto).toMatchObject({ isFallback: true, fallbackYear: Y1 });
+    const derived = deriveFederalDates(Y_EMPTY);
+    expect(pick(dto, 'installments.due_dates')).toMatchObject({ value: derived.get('installments.due_dates'), source: 'fallback', status: 'provisional' });
+    expect(pick(dto, 'return_due_date')?.value).toBe(derived.get('return_due_date'));
+    expect(pick(dto, 'holidays')?.value).toEqual(legalHolidaysForTaxYear(Y_EMPTY));
+    expect(pick(dto, 'se.nese_factor')?.value).toBe(0.9235); // amounts and rates are the fallback year's
+  });
+
+  it('TY2027 from the shipped 2026 seed (read through the fallback, no writes): the hand-checked 2028 dates', async () => {
+    const dto = await svc.getParameters(2027);
+    if (!dto.isFallback) return; // a 2027 seed has shipped: covered by the seed completeness roll test instead
+    expect(dto.fallbackYear).toBe(2026);
+    expect(pick(dto, 'installments.due_dates')?.value).toEqual(['2027-04-15', '2027-06-15', '2027-09-15', '2028-01-18']); // Sat Jan 15 → Mon 17 is MLK Day → Tue 18
+    expect(pick(dto, 'installments.q4_file_and_pay_date')?.value).toBe('2028-01-31'); // a Monday
+    expect(pick(dto, 'return_due_date')?.value).toBe('2028-04-18'); // Sat Apr 15 → Mon 17 is observed Emancipation Day → Tue 18
+    expect(pick(dto, 'farmer.single_due_date')?.value).toBe('2028-01-18');
+    expect(pick(dto, 'farmer.file_by_date')?.value).toBe('2028-03-01');
+    expect(pick(dto, 'holidays')?.value).toEqual(expect.arrayContaining(['2027-12-31', '2028-01-17', '2028-04-17', '2028-11-10']));
   });
 
   it('409 TE_YEAR_EXISTS when the year already has rows', async () => {
