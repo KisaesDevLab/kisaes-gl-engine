@@ -56,9 +56,9 @@ taxParametersAdminRouter.post('/:year/adopt-shipped', async (req, res) => {
 });
 
 taxParametersAdminRouter.get('/:year/changes', async (req, res) => {
-  taxParameterYearParamsSchema.parse(req.params);
+  const { year } = taxParameterYearParamsSchema.parse(req.params);
   const { limit } = taxParameterChangesQuerySchema.parse(req.query);
-  res.json({ data: { rows: await svc.listChanges(limit) } });
+  res.json({ data: { rows: await svc.listChanges(limit, year) } });
 });
 
 // R7 in-app Verify (Kurt's sign-off): marks the value the admin SAW verified (R6-04: the body's

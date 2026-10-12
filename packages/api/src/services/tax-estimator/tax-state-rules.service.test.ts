@@ -3,8 +3,9 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
-import { and, eq, gte } from 'drizzle-orm';
-import { STATE_CODES, nextBusinessDay, rollDateToYear, rollStateRuleDates, statePenaltyRateOn, type StateRuleSeedRow, type StateCode } from '@kis-books/shared';
+import { and, eq, gte, sql } from 'drizzle-orm';
+import { STATE_CODES, nextBusinessDay, rollDateToYear, rollStateRuleDates, statePenaltyRateOn, jurisdictionFromStateRules, type StateRuleSeedRow, type StateCode, type StateRulesDTO } from '@kis-books/shared';
+import { and as andOp, lt } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { stateEstimateRules, stateEstimateRuleOverrides } from '../../db/schema/tax-estimator-state-rules.js';
 import { auditLog as auditLogTable } from '../../db/schema/audit-log.js';
@@ -15,6 +16,8 @@ const Y1 = 2080;
 const Y2 = 2081;
 const Y_FALLBACK = 2085;
 const Y_NONE = 2084;
+/** Below every shipped seed year: a state has nothing to fall back to here. */
+const Y_OLD = 1900;
 const ZERO = '00000000-0000-0000-0000-000000000000';
 
 const BASE: Record<string, unknown> = {
@@ -43,6 +46,9 @@ const BASE: Record<string, unknown> = {
 /** Every registry key is in BASE (20 keys since the R5 review). */
 const NKEYS = 20;
 
+/** JSON null is a legitimate rule value; a bare JS null would become SQL NULL, so always send explicit JSON. */
+const jsonbv = (v: unknown) => sql`${JSON.stringify(v)}::jsonb`;
+
 const full = (state: StateCode, year: number, over: Record<string, unknown> = {}, status: StateRuleSeedRow['status'] = 'verified'): StateRuleSeedRow[] =>
   Object.entries({ ...BASE, ...over }).map(([key, value]) => ({ state, year, key, value, status, citation: `Fixture ${state} ${key}` }));
 
@@ -61,6 +67,7 @@ const FIXTURE: StateRuleSeedRow[] = [
 async function clean() {
   await db.delete(stateEstimateRules).where(gte(stateEstimateRules.taxYear, Y1));
   await db.delete(stateEstimateRuleOverrides).where(gte(stateEstimateRuleOverrides.taxYear, Y1));
+  await db.delete(stateEstimateRuleOverrides).where(eq(stateEstimateRuleOverrides.taxYear, Y_OLD));
   await db.delete(auditLogTable).where(and(eq(auditLogTable.tenantId, ZERO), eq(auditLogTable.entityType, 'tax_state_rule')));
 }
 
@@ -68,6 +75,12 @@ beforeEach(async () => { await clean(); await svc.syncShippedStateRules(FIXTURE)
 afterAll(async () => { await clean(); });
 
 const rule = (dto: Awaited<ReturnType<typeof svc.getStateRules>>, key: string) => dto.rules.find((r) => r.key === key);
+/** The engine's view of a state-year — the one resolver (R6-03). */
+const engineOf = async (state: string, year: number) => jurisdictionFromStateRules(await svc.getStateRules(year, state));
+const valuesOf = (dto: StateRulesDTO): Record<string, unknown> => Object.fromEntries(dto.rules.map((r) => [r.key, r.value]));
+/** Does this state have rows (shipped seeds synced by other test files) in any year before `year`? */
+const hasEarlierRows = async (state: string, year: number) =>
+  (await db.select({ y: stateEstimateRules.taxYear }).from(stateEstimateRules).where(andOp(eq(stateEstimateRules.state, state), lt(stateEstimateRules.taxYear, year))).limit(1)).length > 0;
 
 describe('syncShippedStateRules', () => {
   it('is idempotent, updates changed rows and removes dropped keys', async () => {
@@ -113,10 +126,16 @@ describe('getStateRules resolution', () => {
     await expect(svc.revertOverride(Y1, 'AR', 'required_threshold')).rejects.toMatchObject({ statusCode: 404 });
   });
 
-  it('can override into a state that has no seed rows', async () => {
-    const row = await svc.setOverride(Y1, 'ID', 'has_income_tax', true, 'Seed missing');
+  it('R6-02: a state served through the fallback cannot be overridden or verified (409 TE_YEAR_NOT_CREATED); a state with no rows anywhere can be built by hand', async () => {
+    // KS has no Y_FALLBACK rows but has Y1 rows: served from Y1
+    expect((await svc.getStateRules(Y_FALLBACK, 'KS'))).toMatchObject({ isFallback: true, fallbackYear: Y1 });
+    await expect(svc.setOverride(Y_FALLBACK, 'KS', 'has_income_tax', true, 'stray edit')).rejects.toMatchObject({ statusCode: 409, code: 'TE_YEAR_NOT_CREATED' });
+    await expect(svc.verifyStateRule(Y_FALLBACK, 'KS', 'has_income_tax', undefined, '00000000-0000-4000-8000-0000000000a7')).rejects.toMatchObject({ statusCode: 409, code: 'TE_YEAR_NOT_CREATED' });
+    expect((await svc.getStateRules(Y_FALLBACK, 'KS')).isFallback).toBe(true);
+    // nothing to fall back to: building a first rule set by hand is allowed
+    const row = await svc.setOverride(Y_OLD, 'ID', 'has_income_tax', true, 'Seed missing');
     expect(row.source).toBe('override');
-    expect((await svc.getStateRules(Y1, 'ID')).complete).toBe(false);
+    expect((await svc.getStateRules(Y_OLD, 'ID'))).toMatchObject({ isFallback: false, complete: false });
   });
 
   it('a state with no rows falls back to its latest earlier year as provisional', async () => {
@@ -195,61 +214,81 @@ describe('summaries and engine resolution', () => {
     const by = Object.fromEntries(list.map((s) => [s.state, s]));
     expect(by['AR']).toMatchObject({ name: 'Arkansas', status: 'complete', hasIncomeTax: true, usesFederalFallback: false, counts: { verified: NKEYS, unverified: 0, provisional: 0, override: 0 } });
     expect(by['MO']!.counts.unverified).toBe(NKEYS);
-    expect(by['TX']).toMatchObject({ status: 'complete', hasIncomeTax: false, usesFederalFallback: false });
+    expect(by['TX']).toMatchObject({ status: 'complete', hasIncomeTax: false, usesFederalFallback: false, fallbackYear: null });
     expect(by['KS']).toMatchObject({ status: 'partial', usesFederalFallback: true });
-    expect(by['CA']).toMatchObject({ status: 'missing', usesFederalFallback: true });
+    // CA has no fixture rows: `missing` on a bare test DB, `fallback` when another test file synced the shipped seeds.
+    if (await hasEarlierRows('CA', Y1)) expect(by['CA']).toMatchObject({ status: 'fallback', usesFederalFallback: false });
+    else expect(by['CA']).toMatchObject({ status: 'missing', usesFederalFallback: true, fallbackYear: null });
     await svc.setOverride(Y1, 'AR', 'required_threshold', 5, 'abc');
     expect((await svc.listSummaries(Y1)).find((s) => s.state === 'AR')!.counts).toMatchObject({ verified: NKEYS - 1, override: 1 });
   });
 
+  it('R6-03: the summary says what the estimate does — a state with no rows for the year is `fallback` with the year served, and agrees with getStateRules', async () => {
+    const list = await svc.listSummaries(Y_FALLBACK);
+    const ar = list.find((s) => s.state === 'AR')!;
+    expect(ar).toMatchObject({ status: 'fallback', fallbackYear: Y1, usesFederalFallback: false, counts: { provisional: NKEYS, verified: 0 } });
+    const ks = list.find((s) => s.state === 'KS')!;
+    expect(ks).toMatchObject({ status: 'fallback', fallbackYear: Y1, usesFederalFallback: true }); // incomplete even in its fallback year
+    for (const s of ['AR', 'KS', 'MO', 'TX']) {
+      const dto = await svc.getStateRules(Y_FALLBACK, s);
+      expect(dto).toMatchObject({ isFallback: true, fallbackYear: Y1 });
+      expect(jurisdictionFromStateRules(dto).usesFederalFallback, s).toBe(list.find((x) => x.state === s)!.usesFederalFallback);
+    }
+  });
+
   it('complete states resolve for the engine, with a badge unless fully verified', async () => {
-    const ar = await svc.resolveStateRulesForEngine('AR', Y1);
+    const ar = await engineOf('AR', Y1);
     expect(ar).toMatchObject({ usesFederalFallback: false, verifyBadge: false });
-    expect(ar.rules['required_threshold']).toBe(1000);
-    const mo = await svc.resolveStateRulesForEngine('MO', Y1);
+    expect(ar.rules['required_threshold']!.value).toBe(1000);
+    const mo = await engineOf('MO', Y1);
     expect(mo).toMatchObject({ usesFederalFallback: false, verifyBadge: true });
     await svc.setOverride(Y1, 'AR', 'required_threshold', 5, 'abc');
-    const edited = await svc.resolveStateRulesForEngine('AR', Y1);
-    expect(edited.rules['required_threshold']).toBe(5);
+    const edited = await engineOf('AR', Y1);
+    expect(edited.rules['required_threshold']!.value).toBe(5);
     expect(edited.verifyBadge).toBe(true);
   });
 
-  it('estimates_required=false yields a readable flag and never a voucher schedule', async () => {
-    const ar = await svc.resolveStateRulesForEngine('AR', Y1);
+  it('estimates_required=false reaches the engine as estimatesRequired: false (the engine skips vouchers and the penalty on it)', async () => {
+    const ar = await engineOf('AR', Y1);
     expect(ar.estimatesRequired).toBe(true);
-    expect(ar.rules['installments.due_dates']).toEqual([priorOf(weekday)]);
+    expect(ar.rules['installments.due_dates']!.value).toEqual([priorOf(weekday)]);
     await svc.setOverride(Y1, 'AR', 'estimates_required', false, 'No estimate regime (ID/UT pattern)');
-    const off = await svc.resolveStateRulesForEngine('AR', Y1);
+    const off = await engineOf('AR', Y1);
     expect(off).toMatchObject({ estimatesRequired: false, usesFederalFallback: false });
-    expect(off.rules['estimates_required']).toBe(false);
-    for (const k of ['installments.due_dates', 'installments.pcts', 'installments.q4_file_and_pay_date']) expect(off.rules).not.toHaveProperty(k);
+    expect(off.rules['estimates_required']!.value).toBe(false);
     // the admin view still shows the stored (placeholder) rows
     expect(rule(await svc.getStateRules(Y1, 'AR'), 'installments.due_dates')).toBeDefined();
   });
 
   it('penalty.rate_schedule takes precedence over penalty.rate on covered days', async () => {
     await svc.setOverride(Y1, 'AR', 'penalty.rate', 0.08, 'Single rate');
-    expect(statePenaltyRateOn((await svc.resolveStateRulesForEngine('AR', Y1)).rules, '2081-02-01')).toEqual({ rate: 0.08, fromSchedule: false, covered: true });
+    expect(statePenaltyRateOn(valuesOf(await svc.getStateRules(Y1, 'AR')), '2081-02-01')).toEqual({ rate: 0.08, fromSchedule: false, covered: true });
     await svc.setOverride(Y1, 'AR', 'penalty.rate_schedule', [
       { from: '2080-01-01', to: '2080-12-31', rate: 0.08 }, { from: '2081-01-01', to: '2081-12-31', rate: 0.07 },
     ], 'Calendar-year legs');
-    const rules = (await svc.resolveStateRulesForEngine('AR', Y1)).rules;
+    const rules = valuesOf(await svc.getStateRules(Y1, 'AR'));
     expect(statePenaltyRateOn(rules, '2080-12-31')).toEqual({ rate: 0.08, fromSchedule: true, covered: true });
     expect(statePenaltyRateOn(rules, '2081-02-01')).toEqual({ rate: 0.07, fromSchedule: true, covered: true });
     // a day outside every leg (next year's rate unpublished) falls back to the single rate, flagged uncovered
     expect(statePenaltyRateOn(rules, '2082-02-01')).toEqual({ rate: 0.08, fromSchedule: false, covered: false });
   });
 
-  it('no-income-tax states return only has_income_tax:false', async () => {
-    expect(await svc.resolveStateRulesForEngine('TX', Y1)).toEqual({ rules: { has_income_tax: false }, usesFederalFallback: false, verifyBadge: false, estimatesRequired: false });
-    // and with no rows at all for a state that statutorily has no income tax
-    expect(await svc.resolveStateRulesForEngine('WA', Y_NONE)).toEqual({ rules: { has_income_tax: false }, usesFederalFallback: false, verifyBadge: true, estimatesRequired: false });
+  it('no-income-tax states: no federal pattern, no estimates; a badge only when the has_income_tax row itself is not verified or is missing', async () => {
+    expect(await engineOf('TX', Y1)).toMatchObject({ usesFederalFallback: false, verifyBadge: false, estimatesRequired: false });
+    expect(Object.keys((await engineOf('TX', Y1)).rules)).toEqual(['has_income_tax']);
+    // a statutorily no-tax state with no rows for the year: served from its latest year (badge) or, on a bare DB, from the statute (badge)
+    const wa = await engineOf('WA', Y_OLD);
+    expect(wa).toMatchObject({ usesFederalFallback: false, verifyBadge: true, estimatesRequired: false });
   });
 
-  it('incomplete or absent income-tax states use the federal fallback with a verify badge', async () => {
-    expect(await svc.resolveStateRulesForEngine('KS', Y1)).toMatchObject({ usesFederalFallback: true, verifyBadge: true });
-    expect(await svc.resolveStateRulesForEngine('CA', Y1)).toEqual({ rules: {}, usesFederalFallback: true, verifyBadge: true, estimatesRequired: true });
-    expect(await svc.resolveStateRulesForEngine('AR', Y_NONE)).toMatchObject({ usesFederalFallback: true });
+  it('incomplete income-tax states use the federal pattern with a verify badge; a state with no rows for the year is served its latest earlier year (R6-03)', async () => {
+    expect(await engineOf('KS', Y1)).toMatchObject({ usesFederalFallback: true, verifyBadge: true });
+    // nothing anywhere (below every seed year): federal pattern
+    expect(await engineOf('CA', Y_OLD)).toMatchObject({ usesFederalFallback: true, verifyBadge: true, estimatesRequired: true });
+    // AR has a complete Y1 set, so Y_NONE is served from it — the SAME thing the estimate computes with
+    const ar = await svc.getStateRules(Y_NONE, 'AR');
+    expect(ar).toMatchObject({ isFallback: true, fallbackYear: Y1, complete: true });
+    expect(jurisdictionFromStateRules(ar)).toMatchObject({ usesFederalFallback: false, verifyBadge: true, estimatesRequired: true });
   });
 });
 
@@ -301,16 +340,57 @@ describe('createYearFromPrior', () => {
     expect(rule(await svc.getStateRules(Y2, 'MO'), 'penalty.rate_schedule')!.value).toEqual([{ from: '2081-01-01', to: '2081-12-31', rate: 0.08 }]);
   });
 
-  it('refuses an existing year and a missing prior year', async () => {
-    await svc.createYearFromPrior(Y2);
-    await expect(svc.createYearFromPrior(Y2)).rejects.toMatchObject({ statusCode: 409 });
+  it('refuses a year every jurisdiction already has, and a missing prior year', async () => {
+    const first = await svc.createYearFromPrior(Y2);
+    expect(first.skipped).toEqual([]);
+    await expect(svc.createYearFromPrior(Y2)).rejects.toMatchObject({ statusCode: 409, code: 'TE_YEAR_EXISTS' });
     await expect(svc.createYearFromPrior(1950)).rejects.toMatchObject({ code: 'TE_NO_PRIOR_YEAR' });
+  });
+
+  it('R6-02: create is per state — a jurisdiction that already has rows is skipped, the others are created', async () => {
+    // Build MO Y2 by hand first (allowed: MO has no fallback? no — it does; so copy it through create then edit)
+    await db.insert(stateEstimateRuleOverrides).values({ state: 'MO', taxYear: Y2, key: 'required_threshold', value: jsonbv(777), status: 'override', reason: 'pre-existing', citation: '' });
+    const r = await svc.createYearFromPrior(Y2);
+    expect(r).toMatchObject({ year: Y2, fromYear: Y1, states: 3, skipped: ['MO'] });
+    expect(r.created).toBe(NKEYS + 1 + 2);
+    expect((await svc.getStateRules(Y2, 'AR')).rules.every((x) => x.source === 'provisional')).toBe(true);
+    expect(rule(await svc.getStateRules(Y2, 'MO'), 'required_threshold')).toMatchObject({ value: 777, source: 'override' });
+    expect((await svc.getStateRules(Y2, 'MO')).rules).toHaveLength(1);
+    expect((await svc.listSummaries(Y2)).find((s) => s.state === 'MO')!.status).toBe('partial');
   });
 
   it('complete provisional sets are usable by the engine with a verify badge', async () => {
     await svc.createYearFromPrior(Y2);
-    expect(await svc.resolveStateRulesForEngine('AR', Y2)).toMatchObject({ usesFederalFallback: false, verifyBadge: true });
-    expect(await svc.resolveStateRulesForEngine('TX', Y2)).toMatchObject({ rules: { has_income_tax: false }, usesFederalFallback: false });
+    expect(await engineOf('AR', Y2)).toMatchObject({ usesFederalFallback: false, verifyBadge: true });
+    expect(await engineOf('TX', Y2)).toMatchObject({ usesFederalFallback: false, estimatesRequired: false });
+  });
+
+  it('R6-07: reverting a provisional rule with no shipped counterpart is refused unless it is the state-year\'s last row', async () => {
+    await svc.createYearFromPrior(Y2);
+    expect(rule(await svc.getStateRules(Y2, 'AR'), 'required_threshold')).toMatchObject({ source: 'provisional', hasShipped: false });
+    await expect(svc.revertOverride(Y2, 'AR', 'required_threshold')).rejects.toMatchObject({ statusCode: 409, code: 'TE_NO_SHIPPED_VALUE' });
+    expect((await svc.getStateRules(Y2, 'AR')).complete).toBe(true);
+    // KS Y2 is one provisional row (has_income_tax) + required_threshold: remove one → refused; the last one → fallback restored
+    await svc.revertOverride(Y2, 'KS', 'required_threshold').catch(() => undefined);
+    expect((await svc.getStateRules(Y2, 'KS')).rules).toHaveLength(2);
+    await db.delete(stateEstimateRuleOverrides).where(and(eq(stateEstimateRuleOverrides.taxYear, Y2), eq(stateEstimateRuleOverrides.state, 'KS'), eq(stateEstimateRuleOverrides.key, 'required_threshold')));
+    await svc.revertOverride(Y2, 'KS', 'has_income_tax');
+    expect((await svc.getStateRules(Y2, 'KS'))).toMatchObject({ isFallback: true, fallbackYear: Y1 });
+  });
+
+  it('R6-08 / R6-09 / R6-05: same-value re-override keeps the sign-off, audit before is the seed value, identical diff rows are marked same', async () => {
+    const ADMIN = '00000000-0000-4000-8000-0000000000a7';
+    await svc.setOverride(Y1, 'AR', 'required_threshold', 1000, 'same as seed', ADMIN);
+    expect((await svc.listChanges(1, Y1))[0]).toMatchObject({ action: 'override_set', before: 1000, after: 1000 });
+    await svc.verifyStateRule(Y1, 'AR', 'required_threshold', 'ok', ADMIN, 1000);
+    expect((await svc.setOverride(Y1, 'AR', 'required_threshold', 1000, 'reason edited', ADMIN)).status).toBe('verified');
+    expect((await svc.setOverride(Y1, 'AR', 'required_threshold', 1001, 'new', ADMIN)).status).toBe('unverified');
+    await svc.createYearFromPrior(Y2);
+    await svc.syncShippedStateRules([...FIXTURE, ...full('AR', Y2)]);
+    const diff = await svc.diffShippedVsProvisional(Y2);
+    expect(diff.find((d) => d.key === 'required_threshold' && d.state === 'AR')).toMatchObject({ shippedValue: 1000, provisionalValue: 1001, same: false });
+    expect(diff.find((d) => d.key === 'safe_harbor.prior_pct' && d.state === 'AR')).toMatchObject({ same: true });
+    expect((await svc.listChanges(50, Y2)).every((c) => c.year === Y2)).toBe(true);
   });
 });
 
@@ -362,7 +442,7 @@ describe('R7 in-app Verify (super-admin sign-off)', () => {
     const row = await svc.verifyStateRule(Y1, 'MO', 'required_threshold', 'MO DOR form MO-1040ES', ADMIN);
     expect(row).toMatchObject({ status: 'verified', source: 'seed', value: 1000, verifiedBy: ADMIN, verificationNote: 'MO DOR form MO-1040ES' });
     expect(rule(await svc.getStateRules(Y1, 'MO'), 'safe_harbor.current_pct')!.status).toBe('unverified');
-    expect((await svc.resolveStateRulesForEngine('MO', Y1)).verifyBadge).toBe(true);
+    expect((await engineOf('MO', Y1)).verifyBadge).toBe(true);
     const audit = await db.select().from(auditLogTable).where(and(eq(auditLogTable.tenantId, ZERO), eq(auditLogTable.entityType, 'tax_state_rule')));
     expect(audit.map((a) => a.action)).toEqual(['signoff']);
     const [change] = await svc.listChanges(1);
@@ -371,7 +451,7 @@ describe('R7 in-app Verify (super-admin sign-off)', () => {
     const all = await svc.verifyAllStateRules(Y1, 'MO', 'MO batch reviewed', ADMIN);
     expect(all.verified).toHaveLength(NKEYS - 1);
     expect(all.verified.every((k) => k.startsWith('MO:'))).toBe(true);
-    expect((await svc.resolveStateRulesForEngine('MO', Y1)).verifyBadge).toBe(false);
+    expect((await engineOf('MO', Y1)).verifyBadge).toBe(false);
     // AR (other jurisdiction) untouched
     expect((await svc.getStateRules(Y1, 'AR')).rules.every((r) => r.verifiedAt == null)).toBe(true);
   });

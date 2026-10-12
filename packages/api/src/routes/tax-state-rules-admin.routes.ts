@@ -28,9 +28,9 @@ taxStateRulesAdminRouter.get('/:year/diff', async (req, res) => {
 });
 
 taxStateRulesAdminRouter.get('/:year/changes', async (req, res) => {
-  stateRuleYearParamsSchema.parse(req.params);
+  const { year } = stateRuleYearParamsSchema.parse(req.params);
   const { limit } = stateRuleChangesQuerySchema.parse(req.query);
-  res.json({ data: { rows: await svc.listChanges(limit) } });
+  res.json({ data: { rows: await svc.listChanges(limit, year) } });
 });
 
 taxStateRulesAdminRouter.post('/:year/create-from-prior', async (req, res) => {

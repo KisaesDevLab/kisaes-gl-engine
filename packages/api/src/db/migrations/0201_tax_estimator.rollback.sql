@@ -2,7 +2,12 @@
 -- Licensed under the PolyForm Small Business License 1.0.0.
 -- Free for small businesses; see LICENSE for terms.
 --
--- Rollback for 0201_tax_estimator, children first (R7 verification, phases 13, 12, 10b, 5, 4, 3, 2, then 1 and 0).
+-- Rollback for 0201_tax_estimator, children first (R6 lifecycle, R7 verification, phases 13, 12, 10b, 5, 4, 3, 2, then 1 and 0).
+
+-- R6: parameter lifecycle review (citation on created years)
+--
+-- Rollback for the Tax Estimator R6 lifecycle part (runs FIRST, before the R7 verification part).
+ALTER TABLE IF EXISTS tax_parameter_overrides DROP COLUMN IF EXISTS citation;
 
 -- R7: in-app Verify (super-admin sign-off)
 --

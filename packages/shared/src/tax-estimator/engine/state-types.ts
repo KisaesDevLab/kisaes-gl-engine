@@ -24,7 +24,7 @@ import type { ParameterMap, ParameterUse, ResolvedParameter } from './types.js';
 /** Registry key → resolved value WITH status, for one (state, year). Built by `stateRuleMapFromRows`. */
 export type StateRuleMap = Readonly<Record<string, ResolvedParameter>>;
 
-/** One jurisdiction's resolved rule set as the engine sees it (mirrors StateRulesEngineView + statuses). */
+/** One jurisdiction's resolved rule set as the engine sees it (built from a StateRulesDTO by jurisdictionFromStateRules — the one resolver, R6-03). */
 export interface StateJurisdictionInput {
   state: string;
   rules: StateRuleMap;

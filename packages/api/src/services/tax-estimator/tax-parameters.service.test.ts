@@ -120,13 +120,34 @@ describe('getParameters', () => {
     expect(dto.completeness.present).toBe(5);
   });
 
-  it('getYears lists years and shipped years', async () => {
-    await svc.setOverride(Y_EMPTY, 'se.ss_rate', 0.124, 'Override only year');
+  it('getYears lists years and shipped years; a created year counts as a year but not a shipped one', async () => {
+    await svc.createYearFromPrior(Y2);
     const y = await svc.getYears();
     expect(y.years).toContain(Y1);
-    expect(y.years).toContain(Y_EMPTY);
+    expect(y.years).toContain(Y2);
+    expect(y.years).not.toContain(Y_EMPTY);
     expect(y.shippedYears).toContain(Y1);
-    expect(y.shippedYears).not.toContain(Y_EMPTY);
+    expect(y.shippedYears).not.toContain(Y2);
+  });
+
+  it('R6-02: a year served through the fallback cannot be overridden or verified (409 TE_YEAR_NOT_CREATED); the fallback survives', async () => {
+    await expect(svc.setOverride(Y_EMPTY, 'se.ss_wage_base', 190000, 'stray edit')).rejects.toMatchObject({ statusCode: 409, code: 'TE_YEAR_NOT_CREATED' });
+    await expect(svc.verifyParameter(Y_EMPTY, 'se.ss_wage_base', undefined, '00000000-0000-4000-8000-0000000000a7')).rejects.toMatchObject({ statusCode: 409, code: 'TE_YEAR_NOT_CREATED' });
+    const dto = await svc.getParameters(Y_EMPTY);
+    expect(dto).toMatchObject({ isFallback: true, fallbackYear: Y1 });
+    expect(dto.completeness.present).toBe(5);
+    expect((await svc.getYears()).years).not.toContain(Y_EMPTY);
+    // create-from-prior is still possible for it
+    expect((await svc.createYearFromPrior(Y_EMPTY)).created).toBe(5);
+  });
+
+  it('R6-06: a created year carries the prior year\'s citations ("Carried from Y: …") until its seed ships', async () => {
+    await svc.createYearFromPrior(Y2);
+    expect(pick(await svc.getParameters(Y2), 'se.nese_factor')?.citation).toBe(`Carried from ${Y1}: Fixture se.nese_factor`);
+    await svc.createYearFromPrior(Y2 + 1); // from Y2: not prefixed twice
+    expect(pick(await svc.getParameters(Y2 + 1), 'se.nese_factor')?.citation).toBe(`Carried from ${Y1}: Fixture se.nese_factor`);
+    await svc.syncShippedSeeds({ ...FIXTURE, [Y2]: [seed('se.nese_factor', 0.9235)] });
+    expect(pick(await svc.getParameters(Y2), 'se.nese_factor')?.citation).toBe('Fixture se.nese_factor'); // the shipped citation wins once it exists
   });
 });
 
@@ -138,19 +159,62 @@ describe('setOverride / revertOverride', () => {
     expect(await db.select().from(taxParameterOverrides).where(eq(taxParameterOverrides.taxYear, Y1))).toHaveLength(0);
   });
 
-  it('upserts on repeat and reverts, 404 when nothing to revert', async () => {
-    await svc.setOverride(Y1, 'se.ss_rate', 0.1, 'first');
-    await svc.setOverride(Y1, 'se.ss_rate', 0.2, 'second');
+  it('upserts on repeat and reverts, 404 when nothing to revert; an override-only key cannot be removed into a hole (R6-07)', async () => {
+    await svc.setOverride(Y1, 'se.ss_wage_base', 1, 'first');
+    await svc.setOverride(Y1, 'se.ss_wage_base', 2, 'second');
     expect(await db.select().from(taxParameterOverrides).where(eq(taxParameterOverrides.taxYear, Y1))).toHaveLength(1);
-    await svc.revertOverride(Y1, 'se.ss_rate');
-    expect(pick(await svc.getParameters(Y1), 'se.ss_rate')).toBeUndefined();
-    await expect(svc.revertOverride(Y1, 'se.ss_rate')).rejects.toMatchObject({ statusCode: 404 });
+    await svc.revertOverride(Y1, 'se.ss_wage_base');
+    expect(pick(await svc.getParameters(Y1), 'se.ss_wage_base')).toMatchObject({ source: 'seed' });
+    await expect(svc.revertOverride(Y1, 'se.ss_wage_base')).rejects.toMatchObject({ statusCode: 404 });
+    // a key the seed does not carry: deleting it would make the key missing for the year
+    await svc.setOverride(Y1, 'se.ss_rate', 0.1, 'added by hand');
+    await expect(svc.revertOverride(Y1, 'se.ss_rate')).rejects.toMatchObject({ statusCode: 409, code: 'TE_NO_SHIPPED_VALUE' });
+    expect(pick(await svc.getParameters(Y1), 'se.ss_rate')).toMatchObject({ value: 0.1, hasShipped: false });
   });
 
   it('reverting an override restores the shipped value', async () => {
     await svc.setOverride(Y1, 'se.ss_wage_base', 1, 'temp');
+    expect(pick(await svc.getParameters(Y1), 'se.ss_wage_base')?.hasShipped).toBe(true);
     await svc.revertOverride(Y1, 'se.ss_wage_base');
     expect(pick(await svc.getParameters(Y1), 'se.ss_wage_base')).toMatchObject({ value: 176100, source: 'seed' });
+  });
+
+  it('R6-07: reverting a provisional row with no shipped counterpart is refused (409 TE_NO_SHIPPED_VALUE) unless it is the year\'s last row', async () => {
+    await svc.createYearFromPrior(Y2);
+    expect(pick(await svc.getParameters(Y2), 'se.nese_factor')).toMatchObject({ source: 'provisional', hasShipped: false });
+    await expect(svc.revertOverride(Y2, 'se.nese_factor')).rejects.toMatchObject({ statusCode: 409, code: 'TE_NO_SHIPPED_VALUE' });
+    expect((await svc.getParameters(Y2)).completeness.present).toBe(5); // no hole
+    // once the seed ships, revert is a normal "back to shipped"
+    await svc.syncShippedSeeds({ ...FIXTURE, [Y2]: [seed('se.nese_factor', 0.8)] });
+    await svc.revertOverride(Y2, 'se.nese_factor');
+    expect(pick(await svc.getParameters(Y2), 'se.nese_factor')).toMatchObject({ value: 0.8, source: 'seed' });
+    // a year whose only row is one stray override: removing it restores the fallback (the recovery path)
+    await db.delete(taxParameters).where(eq(taxParameters.taxYear, Y2));
+    await db.delete(taxParameterOverrides).where(eq(taxParameterOverrides.taxYear, Y2));
+    await db.insert(taxParameterOverrides).values({ taxYear: Y2, key: 'se.ss_rate', value: 0.124, status: 'override', reason: 'stray' });
+    expect((await svc.getParameters(Y2)).isFallback).toBe(false);
+    await svc.revertOverride(Y2, 'se.ss_rate');
+    expect((await svc.getParameters(Y2))).toMatchObject({ isFallback: true, fallbackYear: Y1 });
+  });
+
+  it('R6-08: re-saving the same value keeps the sign-off; editing a provisional row without a seed keeps it provisional', async () => {
+    const ADMIN = '00000000-0000-4000-8000-0000000000a7';
+    await svc.setOverride(Y1, 'se.ss_wage_base', 184500, 'Correct base', ADMIN);
+    await svc.verifyParameter(Y1, 'se.ss_wage_base', 'checked', ADMIN, 184500);
+    const same = await svc.setOverride(Y1, 'se.ss_wage_base', 184500, 'Correct base (typo in reason fixed)', ADMIN);
+    expect(same).toMatchObject({ status: 'verified', reason: 'Correct base (typo in reason fixed)', verifiedBy: ADMIN });
+    const changed = await svc.setOverride(Y1, 'se.ss_wage_base', 184600, 'New figure', ADMIN);
+    expect(changed.status).toBe('unverified');
+    await svc.createYearFromPrior(Y2);
+    const edited = await svc.setOverride(Y2, 'se.nese_factor', 0.9, 'Rev. Proc. draft', ADMIN);
+    expect(edited).toMatchObject({ source: 'provisional', status: 'provisional', value: 0.9 });
+    const [row] = await db.select().from(taxParameterOverrides).where(and(eq(taxParameterOverrides.taxYear, Y2), eq(taxParameterOverrides.key, 'se.nese_factor')));
+    expect(row).toMatchObject({ status: 'provisional', createdFromYear: Y1 });
+    // it therefore still shows in the diff once the seed ships, and can be adopted
+    await svc.syncShippedSeeds({ ...FIXTURE, [Y2]: [seed('se.nese_factor', 0.8)] });
+    expect((await svc.diffShippedVsProvisional(Y2)).map((d) => d.key)).toEqual(['se.nese_factor']);
+    // editing a row that HAS a seed makes it an override
+    expect((await svc.setOverride(Y2, 'se.nese_factor', 0.95, 'edit', ADMIN)).source).toBe('override');
   });
 });
 
@@ -215,7 +279,9 @@ describe('diff and adopt', () => {
     const diff = await svc.diffShippedVsProvisional(Y2);
     expect(diff.map((d) => d.key).sort()).toEqual(['se.nese_factor', 'se.ss_wage_base']);
     const nese = diff.find((d) => d.key === 'se.nese_factor')!;
-    expect(nese).toMatchObject({ shippedValue: 0.8, provisionalValue: 0.9235, shippedStatus: 'verified', shippedCitation: 'Fixture se.nese_factor' });
+    expect(nese).toMatchObject({ shippedValue: 0.8, provisionalValue: 0.9235, shippedStatus: 'verified', shippedCitation: 'Fixture se.nese_factor', same: false });
+    // R6-05: an identical provisional copy is listed (it still shadows the shipped status) but marked `same`
+    expect(diff.find((d) => d.key === 'se.ss_wage_base')).toMatchObject({ shippedValue: 176100, provisionalValue: 176100, same: true });
     // Before adopting, the provisional copy still wins.
     expect(pick(await svc.getParameters(Y2), 'se.nese_factor')?.value).toBe(0.9235);
 
@@ -247,10 +313,14 @@ describe('audit and change history', () => {
     const changes = await svc.listChanges(10);
     expect(changes.map((c) => c.action)).toEqual(['shipped_adopted', 'year_created', 'override_reverted', 'override_set']);
     const set = changes[3]!;
-    expect(set).toMatchObject({ year: Y1, key: 'se.ss_wage_base', after: 190000, reason: 'Edit one' });
+    // R6-09: `before` is the value the engine was reading (the seed's), not null
+    expect(set).toMatchObject({ year: Y1, key: 'se.ss_wage_base', before: 176100, after: 190000, reason: 'Edit one' });
     expect(changes[2]).toMatchObject({ before: 190000, after: null });
     expect(changes[1]).toMatchObject({ year: Y2, key: null });
     expect(await svc.listChanges(2)).toHaveLength(2);
+    // R6-09: the per-year feed
+    expect((await svc.listChanges(10, Y1)).map((c) => c.action)).toEqual(['override_reverted', 'override_set']);
+    expect((await svc.listChanges(10, Y2)).map((c) => c.action)).toEqual(['shipped_adopted', 'year_created']);
   });
 });
 
@@ -279,10 +349,14 @@ describe('R7 in-app Verify (super-admin sign-off)', () => {
     await expect(svc.verifyParameter(Y1, 'se.ss_rate', undefined, ADMIN)).rejects.toMatchObject({ statusCode: 404 });
   });
 
-  it('the startup re-sync keeps a verification while the shipped value is unchanged and drops it when the value changes', async () => {
+  it('the startup re-sync keeps a verification while the shipped value and citation are unchanged and drops it when either changes', async () => {
     await svc.verifyParameter(Y1, 'se.ss_wage_base', 'ok', ADMIN);
     await svc.syncShippedSeeds(FIXTURE);
     expect(pick(await svc.getParameters(Y1), 'se.ss_wage_base')).toMatchObject({ status: 'verified', verifiedBy: ADMIN });
+    // R6-10: a re-sourced citation is a new thing to check against
+    await svc.syncShippedSeeds({ [Y1]: [...FIXTURE[Y1]!.filter((r) => r.key !== 'se.ss_wage_base'), { ...seed('se.ss_wage_base', 176100, 'unverified'), citation: 'SSA fact sheet 2026' }] });
+    expect(pick(await svc.getParameters(Y1), 'se.ss_wage_base')).toMatchObject({ value: 176100, status: 'unverified', citation: 'SSA fact sheet 2026' });
+    await svc.verifyParameter(Y1, 'se.ss_wage_base', 'ok again', ADMIN);
     await svc.syncShippedSeeds({ [Y1]: [...FIXTURE[Y1]!.filter((r) => r.key !== 'se.ss_wage_base'), seed('se.ss_wage_base', 180000, 'unverified')] });
     const after = pick(await svc.getParameters(Y1), 'se.ss_wage_base')!;
     expect(after).toMatchObject({ value: 180000, status: 'unverified' });

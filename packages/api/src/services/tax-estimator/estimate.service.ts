@@ -245,6 +245,11 @@ async function gather(scope: FirmScope, req: EstimateRequest): Promise<Gathered>
 
   const states = [...new Set(stateRows.map((r) => r.dto.state))];
   const stateRules = await Promise.all(states.map((s) => getStateRules(req.taxYear, s)));
+  // R6-03: the state mirror of TE_PARAMS_FALLBACK_YEAR — the admin States screen says the same (status `fallback`).
+  for (const sr of stateRules) {
+    if (!sr.isFallback) continue;
+    warnings.push({ code: 'TE_STATE_RULES_FALLBACK_YEAR', severity: 'warning', message: `No ${sr.state} rules exist for ${req.taxYear}; the ${sr.fallbackYear} ${sr.state} rules were used (all provisional). Due dates, the return due date, the farmer dates and holidays were derived for ${req.taxYear}; thresholds, percentages and penalty rates are ${sr.fallbackYear}'s.`, details: { state: sr.state, fallbackYear: sr.fallbackYear } });
+  }
   const ledger = await getPaymentLedger(scope, taxpayer.id, req.taxYear, scenario.id, { links: linksAll });
   warnings.push(...ledger.warnings);
 

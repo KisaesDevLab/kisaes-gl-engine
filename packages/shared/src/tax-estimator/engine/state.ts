@@ -307,11 +307,17 @@ export function stateRuleMapFromRows(rows: ReadonlyArray<Pick<StateRuleRowDTO, '
   return out;
 }
 
-/** StateRulesDTO (getStateRules) → jurisdiction input; mirrors the service's engine view (complete set required, verify when any row is non-verified). */
+/**
+ * StateRulesDTO (getStateRules) → jurisdiction input. THE resolver for a state-year (R6-03): the
+ * estimate and the admin States screen both go through it, so a state with no rows for the year
+ * is served its latest earlier year's rules (dto.isFallback) in both places. A complete set is
+ * required for the state's own rules; "verify" when any row is non-verified, the set is a
+ * fallback, or (no-income-tax state) the has_income_tax row itself is missing.
+ */
 export function jurisdictionFromStateRules(dto: StateRulesDTO): StateJurisdictionInput {
   const rules = stateRuleMapFromRows(dto.rules);
   const allVerified = dto.rules.every((r) => r.status === 'verified');
-  if (!dto.hasIncomeTax) return { state: dto.state, rules, usesFederalFallback: false, verifyBadge: !allVerified || dto.isFallback, estimatesRequired: false };
+  if (!dto.hasIncomeTax) return { state: dto.state, rules, usesFederalFallback: false, verifyBadge: !allVerified || dto.isFallback || !dto.complete, estimatesRequired: false };
   const usesFederalFallback = !dto.complete;
   const estimatesRequired = rules[KEY_ESTIMATES_REQUIRED]?.value !== false;
   return { state: dto.state, rules, usesFederalFallback, verifyBadge: usesFederalFallback || !allVerified || dto.isFallback, estimatesRequired };
