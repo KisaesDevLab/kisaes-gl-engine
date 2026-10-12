@@ -85,6 +85,13 @@ export interface EstimateRequest {
 
 export interface EstimateOptions {
   today?: Date;
+  /**
+   * QA D13 (as-of semantics, client portal): payments dated after this day (YYYY-MM-DD) are
+   * not paid yet, so they are left out of the computation (a TE_PAYMENTS_AFTER_AS_OF note
+   * says how many). Undated rows (prior-year overpayment) always count. Staff estimates
+   * leave it unset: they project every known payment, scheduled ones included.
+   */
+  paymentsAsOf?: string;
   /** Bypass the P&L provider cache as well (tests). */
   skipProviderCache?: boolean;
 }
@@ -768,7 +775,7 @@ export async function computeEstimateWithInputs(
   scope: FirmScope, req: EstimateRequest, opts: EstimateOptions = {},
 ): Promise<{ result: EstimateResultDTO; inputs: EstimateInputsForSnapshot }> {
   const today = opts.today ?? new Date();
-  const g = await gather(scope, req);
+  const g = withPaymentsAsOf(await gather(scope, req), opts.paymentsAsOf);
   const hash = inputsHash(scope, req, g, today);
   const inputs: EstimateInputsForSnapshot = {
     taxpayer: g.taxpayer, firmSettings: g.firmSettings, scenarioName: g.scenarioName, year: g.year, persons: g.persons, links: g.links,
@@ -784,6 +791,22 @@ export async function computeEstimateWithInputs(
   const result = await assembleWithAssumptions(scope, req, g, opts, today, hash);
   await cacheSetEstimate(key, result);
   return { result, inputs };
+}
+
+/** QA D13: drop payments dated after `asOf` (not paid yet as of that day). */
+function withPaymentsAsOf(g: Gathered, asOf: string | undefined): Gathered {
+  if (!asOf) return g;
+  const later = g.ledger.payments.filter((p) => p.date != null && p.date > asOf);
+  if (later.length === 0) return g;
+  return {
+    ...g,
+    ledger: { ...g.ledger, payments: g.ledger.payments.filter((p) => p.date == null || p.date <= asOf) },
+    warnings: [...g.warnings, {
+      code: 'TE_PAYMENTS_AFTER_AS_OF', severity: 'info',
+      message: `${later.length} payment(s) dated after ${asOf} are not counted as paid yet.`,
+      details: { asOf, count: later.length },
+    }],
+  };
 }
 
 // ── Snapshot readiness ──────────────────────────────────────────────────

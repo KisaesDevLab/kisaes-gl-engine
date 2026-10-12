@@ -115,13 +115,20 @@ function jurisdictionLabel(j: string): string {
  */
 export function toPortalEstimate(r: EstimateResultDTO, meta: {
   taxpayer: { id: string; displayName: string }; source: 'live' | 'snapshot'; asOf: string; firmName: string | null; disclaimer: string;
+  /** QA D12: the client's "today" (YYYY-MM-DD); the next payment is the next UPCOMING due date. */
+  today: string;
 }): PortalTaxEstimateDTO {
   const jurisdictions: PortalTaxJurisdictionDTO[] = [r.federalEstimates, ...r.stateEstimates].map((e) => {
     const installments = e.estimatesRequired ? e.installments.map((i) => ({
       label: i.label, dueDate: i.dueDate, amount: R(i.netRequired), paid: R(i.estimatesApplied), remaining: R(i.unpaid),
       status: i.status, paidOn: i.paidInFullOn ?? null,
     })) : [];
-    const next = e.estimatesRequired ? e.installments.find((i) => i.status === 'unpaid' && Number(i.unpaid) > 0) : undefined;
+    // QA D12: the next payment is the first installment due today or later that still needs money
+    // (its catch-up amount carries any earlier unpaid balance). Past-due installments stay in the
+    // list, flagged; they are never presented as the "next" date.
+    const next = e.estimatesRequired
+      ? e.installments.find((i) => i.dueDate >= meta.today && Number(i.catchUpAmount) > 0)
+      : undefined;
     return {
       jurisdiction: e.jurisdiction,
       label: jurisdictionLabel(e.jurisdiction),
@@ -145,7 +152,9 @@ export function toPortalEstimate(r: EstimateResultDTO, meta: {
     disclaimer: meta.disclaimer,
     totals: { total: R(r.summary.total), federal: R(r.summary.federalTotal), state: R(r.summary.stateTotal) },
     jurisdictions,
+    // QA D13: a payment dated after today is not "on record" yet.
     payments: r.payments
+      .filter((p) => p.date == null || p.date <= meta.today)
       .map((p) => ({ date: p.date, jurisdiction: p.jurisdiction, amount: R(p.amount) }))
       .sort((a, b) => (a.date ?? '').localeCompare(b.date ?? '')),
   };
@@ -178,6 +187,7 @@ export async function getForContact(
   const firm = await getFirmSettings(scope);
   const shows: PortalShows = (tp?.portalShows as PortalShows | null) ?? firm.portalShows;
   const name = await firmName(firmId);
+  const today = (opts.today ?? new Date()).toISOString().slice(0, 10);
 
   if (shows === 'snapshot') {
     const [snap] = await db.select({ id: taxEstSnapshots.id }).from(taxEstSnapshots)
@@ -198,7 +208,7 @@ export async function getForContact(
     }
     return {
       estimate: toPortalEstimate(s.payload.result, {
-        taxpayer, source: 'snapshot', asOf: s.createdAt, firmName: name,
+        taxpayer, source: 'snapshot', asOf: s.createdAt, firmName: name, today,
         disclaimer: s.payload.disclaimerText?.trim() || DEFAULT_DISCLAIMER_TEXT,
       }),
       unavailableReason: null,
@@ -210,10 +220,11 @@ export async function getForContact(
   // R4-06: the BASE scenario or nothing — never a what-if that happens to sort first.
   const base = scenarios.find((s) => s.isBase);
   if (!base) throw notFound();
-  const result = await computeEstimate(scope, { taxpayerId, taxYear, scenarioId: base.id }, opts);
+  // QA D13: as-of semantics — a payment dated after today is not paid yet.
+  const result = await computeEstimate(scope, { taxpayerId, taxYear, scenarioId: base.id }, { ...opts, paymentsAsOf: today });
   return {
     estimate: toPortalEstimate(result, {
-      taxpayer, source: 'live', asOf: result.computedAt, firmName: name,
+      taxpayer, source: 'live', asOf: result.computedAt, firmName: name, today,
       disclaimer: result.disclaimerText?.trim() || firm.effectiveDisclaimerText || DEFAULT_DISCLAIMER_TEXT,
     }),
     unavailableReason: null,

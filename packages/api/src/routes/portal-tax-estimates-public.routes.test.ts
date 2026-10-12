@@ -221,6 +221,13 @@ describe('GET /api/portal/tax-estimates/:taxpayerId', () => {
     expect(e.jurisdictions[0].installments).toHaveLength(4);
     expect(Number(e.totals.total)).toBeGreaterThan(0);
     expect(new Date(e.asOf).toString()).not.toBe('Invalid Date');
+    // QA D12 / D13: the next payment is never a past date, and a payment dated after today
+    // (Rivera books one on 2027-01-15) is neither "on record" nor counted as paid yet.
+    const todayIso = new Date().toISOString().slice(0, 10);
+    for (const j of e.jurisdictions as Array<{ nextPayment: { dueDate: string } | null }>) {
+      if (j.nextPayment) expect(j.nextPayment.dueDate >= todayIso).toBe(true);
+    }
+    for (const p of e.payments as Array<{ date: string | null }>) if (p.date) expect(p.date <= todayIso).toBe(true);
     // Values: no other business names, no persons, no prior-year tax / AGI or the prior-year harbor.
     const text = r.raw.toString('utf8');
     for (const banned of ['Maria Designs', 'Oak Street', 'Rivera Plumbing', '31500', '182000', '34650', '7050', 'SEP contribution', 'Interest income', 'trace', 'parameter', 'rate']) {
