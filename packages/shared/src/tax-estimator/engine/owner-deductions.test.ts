@@ -17,6 +17,7 @@ const params: ParameterMap = {
   'retirement.simple.deferral': { key: 'retirement.simple.deferral', value: 17000, status: 'verified' },
   'retirement.simple.catch_up': { key: 'retirement.simple.catch_up', value: 4000, status: 'verified' },
   'retirement.simple.match_pct': { key: 'retirement.simple.match_pct', value: 0.03, status: 'unverified' },
+  'se.nese_factor': { key: 'se.nese_factor', value: 0.9235, status: 'verified' },
   'retirement.catch_up_age': { key: 'retirement.catch_up_age', value: 50, status: 'unverified' },
   'retirement.401k.catch_up_60_63_ages': { key: 'retirement.401k.catch_up_60_63_ages', value: [60, 63], status: 'unverified' },
   'hsa.limit.self': { key: 'hsa.limit.self', value: 4400, status: 'verified' },
@@ -99,11 +100,13 @@ describe('computeRetirementLimit — solo 401(k)', () => {
 });
 
 describe('computeRetirementLimit — SIMPLE', () => {
-  it('deferral + 3% match, with the age-50 catch-up', () => {
-    const r = computeRetirementLimit({ personId: 'p1', label: 'x', planType: 'simple', contributed: '25000', employeeDeferral: null, seIncome: '100000', halfSeTax: '0', age: 45 }, ctx());
-    expect(r.limit).toBe('20000');
+  it('R2-13: deferral + 3% match on §1402(a) net earnings (92.35% of profit, before ½ SE tax — §408(p)(6)(A)(ii)), with the age-50 catch-up', () => {
+    // compensation = 100,000 × 0.9235 = 92,350 (the ½ SE tax passed in is ignored for SIMPLE); match 3% = 2,770.5
+    const r = computeRetirementLimit({ personId: 'p1', label: 'x', planType: 'simple', contributed: '25000', employeeDeferral: null, seIncome: '100000', halfSeTax: '7000', age: 45 }, ctx());
+    expect(r.limit).toBe('19770.5');
+    expect(r.parameterKeys).toContain('se.nese_factor');
     const c = computeRetirementLimit({ personId: 'p1', label: 'x', planType: 'simple', contributed: '25000', employeeDeferral: null, seIncome: '100000', halfSeTax: '0', age: 55 }, ctx());
-    expect(c.limit).toBe('24000');
+    expect(c.limit).toBe('23770.5');
   });
 });
 

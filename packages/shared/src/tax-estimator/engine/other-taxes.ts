@@ -32,7 +32,7 @@ export interface OtherTaxesPerson {
 export interface OtherTaxesContext {
   persons: ReadonlyArray<OtherTaxesPerson>;
   interest: Dec;
-  /** Ordinary dividends including qualified. */
+  /** Total dividends (ordinary + qualified buckets). */
   dividends: Dec;
   /** Net capital gain after the §1211 limit (may be a limited loss). */
   capitalGains: Dec;

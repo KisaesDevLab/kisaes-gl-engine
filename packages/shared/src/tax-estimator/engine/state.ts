@@ -20,7 +20,7 @@ import {
   ZERO, dAdd, dCmp, dFloorZero, dIsPos, dMin, dMul, dRoundDollars, dSub, dSum, dec, type Dec,
 } from '../decimal.js';
 import { EngineContext } from './context.js';
-import { sumCharacters } from './income.js';
+import type { IncomeCharacter } from '../entities-api.js';
 import { evaluateEstimateGate, type GateContext } from './state-gates.js';
 import {
   StateRuleReader, StateTraceBuilder, NONRESIDENT_FLAT_RATE_LABEL,
@@ -204,6 +204,9 @@ function residentTax(row: StateEngineRow, res: Resolved, others: NonresidentDone
       credit = gross;
     }
   }
+  if (details.length > 0) {
+    ctx.info('TE_STATE_CREDIT_RESIDENT_SIDE', `${row.state}: the credit for taxes paid to other states is taken on the resident return. Reverse-credit pairs (AZ, CA, OR, VA, IN and DC with each other) grant it on the NONRESIDENT return instead — not modelled; the estimate may differ.`, { state: row.state });
+  }
   ctx.trace.add({ step: STEP_CREDIT, id: `state.${row.state}.credit`, state: row.state, label: `${row.state} credit for taxes paid to other states`, exact: credit, source: creditKeys.length > 0 ? 'state_rule' : 'input', ruleKeys: creditKeys, formula: details.map((d) => `${d.state} ${d.allowed}`).join(' + ') || undefined });
   const net = dSub(gross, credit);
   ctx.trace.add({ step: STEP_TAX, id: `state.${row.state}.tax`, state: row.state, label: `${row.state} resident tax after credit`, exact: net, source: 'input', formula: `${gross} − ${credit}` });
@@ -333,10 +336,15 @@ export function stateRowFromDto(dto: StateRowDTO, gate: Partial<StateGateInputs>
   };
 }
 
+const SOURCED_CHARACTERS: readonly IncomeCharacter[] = ['ordinary', 'rental', 'section_1231'];
+
 /**
- * Entity income sourced by state, from the federal result: the taxpayer's shares
- * (all characters + guaranteed payments, whole dollars) of each entity, with the
- * entity's `state_sourcing` from the estimator settings.
+ * Entity income sourced by state, from the federal result (R2-15): the taxpayer's
+ * BUSINESS characters (ordinary + rental + §1231) of each share AFTER the step-3
+ * loss limitations, plus guaranteed payments, whole dollars, with the entity's
+ * `state_sourcing` from the estimator settings. Portfolio income (interest,
+ * dividends, capital gains) is left to the residence state. A derived figure is
+ * an estimate; the row's manual `sourced_income` wins when set (Q11).
  */
 export function sourcedEntitiesFromFederal(federal: FederalResult, sourcing: ReadonlyArray<{ companyId: string; stateSourcing: string | null }>): StateSourcedEntity[] {
   const byCompany = new Map(sourcing.map((s) => [s.companyId, s.stateSourcing]));
@@ -344,6 +352,6 @@ export function sourcedEntitiesFromFederal(federal: FederalResult, sourcing: Rea
     companyId: e.companyId,
     companyName: e.companyName,
     state: byCompany.get(e.companyId) ?? null,
-    income: dSum(e.shares.map((s) => dAdd(sumCharacters(s.share), s.guaranteedPayment))),
+    income: dSum(e.shares.map((s) => dAdd(dSum(SOURCED_CHARACTERS.map((k) => s.shareAfterLossLimits[k])), s.guaranteedPayment))),
   }));
 }

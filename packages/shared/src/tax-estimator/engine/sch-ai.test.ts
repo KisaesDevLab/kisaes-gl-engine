@@ -59,6 +59,34 @@ describe('annualizeFederalInput', () => {
   });
 });
 
+describe('R2-05: Schedule AI column SEHI uses the eligible months WITHIN the period', () => {
+  const flags = Array(12).fill(false) as boolean[]; flags[0] = flags[1] = flags[2] = true; // deductible Jan–Mar only
+  const withFlags = (ordinary: string, months: number, sehi: string): FederalEngineInput => {
+    const i = input(ordinary, months);
+    i.persons = [person({ sehiEligibleMonths: [...flags] })];
+    i.entities = [{ ...i.entities[0]!, ownerItems: [{ personId: null, sehi, retirement: '0', sehiAsW2Wages: '0' }] }];
+    i.adjustments = [...i.adjustments, { ...i.adjustments[0]!, id: 'ohi', typeCode: 'owner_health_insurance', kind: 'deduction', amount: '300', personId: 'p' }];
+    return i;
+  };
+  it('period 1 (Jan–Mar, all three months eligible): premiums × 4 with every column month deductible', () => {
+    const a = annualizeFederalInput(withFlags('2000', 3, '3000'), '4', 3);
+    expect(a.entities[0]!.ownerItems[0]!.sehi).toBe('12000');
+    expect(a.adjustments.find((x) => x.id === 'ohi')!.amount).toBe('1200');
+    expect(a.persons[0]!.sehiEligibleMonths.every((f) => f)).toBe(true);
+  });
+  it('period 2 (Jan–May, 3 of 5 months eligible): premiums × 2.4 × 3/5', () => {
+    const a = annualizeFederalInput(withFlags('5000', 5, '5000'), '2.4', 5);
+    expect(a.entities[0]!.ownerItems[0]!.sehi).toBe('7200');
+    expect(a.adjustments.find((x) => x.id === 'ohi')!.amount).toBe('432');
+    expect(a.persons[0]!.sehiEligibleMonths.every((f) => f)).toBe(true);
+  });
+  it('without a period month count (C corp policy) the flags and premiums are left to the engine', () => {
+    const a = annualizeFederalInput(withFlags('2000', 3, '3000'), '4');
+    expect(a.entities[0]!.ownerItems[0]!.sehi).toBe('12000');
+    expect(a.persons[0]!.sehiEligibleMonths).toEqual(flags);
+  });
+});
+
 describe('computeScheduleAi — lines 22–27 with recapture', () => {
   const ctx = () => new EstimateContext(params, 2026, 'mfj');
   const run = (periods: (FederalEngineInput | null)[], base = input('40000', 12)) =>
@@ -107,9 +135,32 @@ describe('computeScheduleAi — lines 22–27 with recapture', () => {
     expect(() => computeScheduleAi({ base: input('40000', 12), periodActuals: [], requiredAnnualPayment: '4000', installmentPcts: ['1'], calc: stub }, ctx())).toThrow(/TE_SCH_AI_SHAPE/);
   });
 
+  it('R2-06: column warnings reach the estimate context with the period, and column parameter reads are unioned (unverified ones warn once)', () => {
+    const noisy: FederalCalculator = (s) => ({
+      ...stub(s),
+      warnings: [{ code: 'TE_SEHI_CAPPED', severity: 'warning', message: 'capped', details: { personId: 'p' } }, { code: 'TE_PARAM_UNVERIFIED', severity: 'warning', message: 'x', details: { key: 'salt.cap.standard' } }],
+      parametersUsed: [{ key: 'salt.cap.standard', status: 'unverified', value: 40400 }],
+    } as unknown as FederalResult);
+    const c = ctx();
+    computeScheduleAi({ base: input('40000', 12), periodActuals: [input('2000', 3), input('6000', 5), input('30000', 8)], requiredAnnualPayment: '4000', installmentPcts: ['0.25', '0.25', '0.25', '0.25'], calc: noisy }, c);
+    const capped = c.allWarnings().filter((w) => w.code === 'TE_SEHI_CAPPED');
+    expect(capped.map((w) => w.details!['period'])).toEqual([1, 2, 3]); // the full-year column's warnings belong to the federal result, not here
+    expect(capped[0]!.message).toMatch(/Schedule AI period 1/);
+    expect(c.allWarnings().filter((w) => w.code === 'TE_PARAM_UNVERIFIED' && w.details!['key'] === 'salt.cap.standard')).toHaveLength(1);
+    expect(c.parametersUsed().some((u) => u.key === 'salt.cap.standard' && u.status === 'unverified')).toBe(true);
+  });
+
+  it('R2-07: Part II is rebuilt from the EXACT per-person SE income and Social Security wages, not the rounded box-1 totals', () => {
+    const exactSe: FederalCalculator = (s) => ({ ...stub(s), persons: [{ personId: 'p', seIncome: '300000', totalWages: '12000', exact: { seIncome: '300000.6', socialSecurityWages: '1500' } }], exact: { ...stub(s).exact, seTax: '0' } } as unknown as FederalResult);
+    const r = computeScheduleAi({ base: input('40000', 12), periodActuals: [null, null, input('30000', 8)], requiredAnnualPayment: '4000', installmentPcts: ['0.25', '0.25', '0.25', '0.25'], calc: exactSe }, ctx());
+    const pii = r.periods[2]!.partIi[0]!;
+    expect(pii.periodSeIncome).toBe('200000.4');
+    expect(pii.periodSocialSecurityWages).toBe('1000');
+  });
+
   it('Part II: period SE income against the prorated wage base, then × factor', () => {
     // Engine stub reports annualized SE income 300,000 for one person (period 8 months → 200,000 actual).
-    const withSe: FederalCalculator = (s) => ({ ...stub(s), persons: [{ personId: 'p', seIncome: '300000', totalWages: '0' }], exact: { ...stub(s).exact, seTax: '0' } } as unknown as FederalResult);
+    const withSe: FederalCalculator = (s) => ({ ...stub(s), persons: [{ personId: 'p', seIncome: '300000', totalWages: '0', exact: { seIncome: '300000', socialSecurityWages: '0' } }], exact: { ...stub(s).exact, seTax: '0' } } as unknown as FederalResult);
     const c = ctx();
     const r = computeScheduleAi({ base: input('40000', 12), periodActuals: [null, null, input('30000', 8)], requiredAnnualPayment: '4000', installmentPcts: ['0.25', '0.25', '0.25', '0.25'], calc: withSe }, c);
     const pii = r.periods[2]!.partIi[0]!;

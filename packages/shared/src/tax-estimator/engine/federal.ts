@@ -21,7 +21,7 @@ import { allocateEntity, aggregatePersons, netIncome, type AggregatedIncome, typ
 import { applyLossLimitations, isPassiveActivity, type LossLimitationExact } from './loss-limits.js';
 import { computeSeTax } from './se-tax.js';
 import { computeRetirementLimit, computeSehiLimit, computeHsaLimit, seEarnedIncomeBase } from './owner-deductions.js';
-import { computeStandardDeduction, computeItemizedDeductions, chooseDeduction, computeSch1a, type DeductionPerson } from './deductions.js';
+import { computeStandardDeduction, computeItemizedDeductions, chooseDeduction, computeSch1a, type DeductionPerson, type ItemizedExact } from './deductions.js';
 import { computeQbi, type QbiPersonDeductions } from './qbi.js';
 import { computeOtherTaxes, type OtherTaxesPerson } from './other-taxes.js';
 import { computeRegularTax } from './bracket-tax.js';
@@ -44,20 +44,21 @@ function roundCharacters(c: CharacterAmounts): CharacterAmounts {
   return out;
 }
 
-function shareResult(s: AllocatedShare): EntityShareResult {
+function shareResult(s: AllocatedShare, limited: ReadonlyMap<string, CharacterAmounts>): EntityShareResult {
   return {
     linkId: s.linkId, personId: s.personId, entityType: s.entityType, activityType: s.activityType,
     profitFraction: s.profitFraction, lossFraction: s.lossFraction, share: roundCharacters(s.share),
     guaranteedPayment: R(s.guaranteedPayment), officerWages: R(s.officerWages), sehiAsW2Wages: R(s.sehiAsW2Wages), seIncome: R(s.seIncome),
+    shareAfterLossLimits: roundCharacters(limited.get(s.linkId) ?? s.share),
   };
 }
 
-function entityResult(a: AllocatedEntity): EntityResult {
+function entityResult(a: AllocatedEntity, limited: ReadonlyMap<string, CharacterAmounts>): EntityResult {
   const e: EngineEntity = a.entity;
   return {
     tenantId: e.tenantId, companyId: e.companyId, companyName: e.companyName, entityType: e.entityType,
     monthsElapsed: e.monthsElapsed, monthsRemaining: e.monthsRemaining, ytd: roundCharacters(e.ytd),
-    projected: roundCharacters(a.projected), projectedProfit: R(a.projectedProfit), shares: a.shares.map(shareResult),
+    projected: roundCharacters(a.projected), projectedProfit: R(a.projectedProfit), shares: a.shares.map((s) => shareResult(s, limited)),
   };
 }
 
@@ -116,6 +117,9 @@ function computeAgiBlock(input: FederalEngineInput, agg: AggregatedIncome, ctx: 
     const age = ageAtYearEnd(p.dateOfBirth, input.taxYear, false);
     const ageJan1 = ageAtYearEnd(p.dateOfBirth, input.taxYear, true);
     const se = computeSeTax({ personId: p.personId, label: p.displayName, seIncome: pi.seIncome, socialSecurityWages: pi.socialSecurityWages }, ctx);
+    if (p.w2SocialSecurityWages == null && dIsPos(dec(p.w2Wages)) && dIsPos(pi.seIncome)) {
+      ctx.info('TE_SS_WAGES_DEFAULTED', `${p.displayName}: Social Security wages were not entered; box 1 wages ${R(p.w2Wages)} were used for the SE wage-base offset (box 3 is usually higher when there are 401(k) deferrals, so SE tax may be overstated).`, { personId: p.personId });
+    }
     const retirement = computeRetirementLimit({ personId: p.personId, label: p.displayName, planType: p.retirementPlan, contributed: pi.retirementContributions, employeeDeferral: p.retirementEmployeeDeferral == null ? null : dec(p.retirementEmployeeDeferral), seIncome: pi.seIncome, halfSeTax: se.halfSeTax, age }, ctx);
     // SEHI cap: earned income from the SE businesses after ½ SE and retirement, plus S corp officer Medicare wages.
     const officerWages = dSum(pi.shares.filter((s) => s.entityType === 's_corp').map((s) => s.officerWages));
@@ -136,6 +140,7 @@ function computeAgiBlock(input: FederalEngineInput, agg: AggregatedIncome, ctx: 
       retirement: { planType: retirement.planType, contributed: R(retirement.contributed), limit: R(retirement.limit), deducted: R(retirement.deducted), capped: retirement.capped },
       sehi: { premiums: R(sehi.premiums), eligibleMonths: sehi.eligibleMonths, afterMonths: R(sehi.afterMonths), earnedIncomeCap: R(sehi.earnedIncomeCap), deducted: R(sehi.deducted), capped: sehi.capped },
       hsa: { coverage: hsa.coverage, contributed: R(hsa.contributed), limit: R(hsa.limit), deducted: R(hsa.deducted), capped: hsa.capped },
+      exact: { seIncome: pi.seIncome, socialSecurityWages: pi.socialSecurityWages },
     });
   }
 
@@ -179,7 +184,12 @@ export function computeFederal(input: FederalEngineInput): FederalResult {
 
   // Step 9: QBI on taxable income before QBI using the pre-§68 deduction (Q32): the itemized total
   // before the benefit cap comes from a scratch run (the real itemized run follows, with the §68 base).
-  const itemizedPre = computeItemizedDeductions(input.year.itemized, limited.itemizedOther, agi, ZERO, scratchContext(input));
+  // With no itemized inputs at all (and not forced to itemize) the itemized runs are skipped so a
+  // standard-deduction return never reads the SALT / §68 parameters (R2-11).
+  const it = input.year.itemized;
+  const skipItemized = input.year.deductionMode !== 'itemized' && [it.saltPaid, it.mortgageInterest, it.charitableCash, it.charitableNoncash, it.other, limited.itemizedOther].every((v) => dIsZero(dec(v)));
+  const noItemized: ItemizedExact = { saltPaid: ZERO, saltCap: ZERO, saltAllowed: ZERO, mortgageInterest: ZERO, charitableGross: ZERO, charitableFloor: ZERO, charitableAllowed: ZERO, other: ZERO, beforeBenefitCap: ZERO, benefitCapReduction: ZERO, total: ZERO };
+  const itemizedPre = skipItemized ? noItemized : computeItemizedDeductions(input.year.itemized, limited.itemizedOther, agi, ZERO, scratchContext(input));
   const preDeduction = input.year.deductionMode === 'standard' ? standard.total : input.year.deductionMode === 'itemized' ? itemizedPre.total : dMax(standard.total, itemizedPre.total);
   const netCapitalGainWithQd = dAdd(dFloorZero(income.netLongTermGainForWorksheet), dFloorZero(income.qualifiedDividends));
   const qbi = computeQbi(input.qbi, {
@@ -188,7 +198,7 @@ export function computeFederal(input: FederalEngineInput): FederalResult {
   }, ctx);
 
   const taxableIncomeBeforeItemized = dSub(dSub(agi, sch1a.total), qbi.deduction);
-  const itemized = computeItemizedDeductions(input.year.itemized, limited.itemizedOther, agi, taxableIncomeBeforeItemized, ctx);
+  const itemized = skipItemized ? noItemized : computeItemizedDeductions(input.year.itemized, limited.itemizedOther, agi, taxableIncomeBeforeItemized, ctx);
   const choice = chooseDeduction(input.year.deductionMode, standard, itemized, ctx);
   if (choice.chosen === 'itemized' && dIsPos(itemized.benefitCapReduction)) {
     ctx.info('TE_QBI_PRE_68_BASIS', `The §199A overall limit used taxable income on the itemized deduction before the §68 reduction (${itemized.benefitCapReduction}); the actual taxable income is higher by that amount (Q32).`, { reduction: itemized.benefitCapReduction });
@@ -230,12 +240,14 @@ export function computeFederal(input: FederalEngineInput): FederalResult {
 
   const w = regular.worksheet;
   const am = other.additionalMedicare; const ni = other.niit;
+  const limitedShares = new Map<string, CharacterAmounts>();
+  for (const p of limited.byPerson.values()) for (const s of p.shares) limitedShares.set(s.linkId, s.share);
   return {
     engineVersion: TAX_ENGINE_VERSION,
     taxYear: input.taxYear,
     filingStatus: input.filingStatus,
     persons: block.personResults,
-    entities: allocated.map(entityResult),
+    entities: allocated.map((a) => entityResult(a, limitedShares)),
     lossLimitations: roundLossLimits(lossLimits),
     income: {
       wages: R(income.wages), businessOrdinary: R(income.businessOrdinary), guaranteedPayments: R(income.guaranteedPayments), rental: R(income.rental),

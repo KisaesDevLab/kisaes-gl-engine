@@ -52,6 +52,7 @@ const params: ParameterMap = {
   'sch1a.car_interest.phaseout_threshold.mfj': { key: 'sch1a.car_interest.phaseout_threshold.mfj', value: 200000, status: 'verified' },
   'sch1a.car_interest.phaseout_threshold.single': { key: 'sch1a.car_interest.phaseout_threshold.single', value: 100000, status: 'verified' },
   'sch1a.car_interest.phaseout_rate': { key: 'sch1a.car_interest.phaseout_rate', value: 0.2, status: 'verified' },
+  'sch1a.phaseout_step': { key: 'sch1a.phaseout_step', value: 1000, status: 'unverified' },
   'sch1a.first_year': { key: 'sch1a.first_year', value: 2025, status: 'verified' },
   'sch1a.last_year': { key: 'sch1a.last_year', value: 2028, status: 'verified' },
 };
@@ -183,5 +184,30 @@ describe('computeSch1a', () => {
     expect(high.carLoanInterest).toBe('0');
     const single = computeSch1a([p[0]!], '100000', ctx('single'));
     expect(single.overtime).toBe('12500');
+  });
+  it('R2-14: tips / overtime / car-loan phase-outs step by $1,000 or fraction thereof (§224(b)(2), §225(b)(2), §163(h)(4)(E)); the senior deduction stays linear', () => {
+    const p = [person('a', 'primary', 66, false, { qualifiedTips: '25000', qualifiedOvertime: '25000', carLoanInterest: '10000' }), person('b', 'spouse', 40)];
+    // MAGI 300,500: excess 500 → one full step: tips 25,000 − 100; overtime 25,000 − 100; car (threshold 200,000) excess 100,500 → 101 steps × 200 = 20,200 → 0.
+    const r = computeSch1a(p, '300500', ctx());
+    expect(r.tips).toBe('24900');
+    expect(r.overtime).toBe('24900');
+    expect(r.carLoanInterest).toBe('0');
+    // exactly on a step boundary: excess 2,000 → 2 steps.
+    expect(computeSch1a(p, '302000', ctx()).tips).toBe('24800');
+    // car: MAGI 200,001 → excess 1 → one step of 200.
+    expect(computeSch1a([person('a', 'primary', 40, false, { qualifiedTips: '0', qualifiedOvertime: '0', carLoanInterest: '10000' })], '200001', ctx()).carLoanInterest).toBe('9800');
+    // senior: 6% linear → 6,000 − 0.06 × 500 = 5,970 at MAGI 150,500.
+    expect(computeSch1a([person('a', 'primary', 66)], '150500', ctx()).senior).toBe('5970');
+  });
+  it.each(['senior', 'tips', 'overtime', 'carLoanInterest'] as const)('R2-02: MFS gets no Schedule 1-A %s deduction (joint return required)', (line) => {
+    const c = ctx('mfs');
+    const p = [person('a', 'primary', 70, false, { qualifiedTips: '8000', qualifiedOvertime: '5000', carLoanInterest: '3000' })];
+    const r = computeSch1a(p, '60000', c);
+    expect(r.inEffect).toBe(true);
+    expect(r[line]).toBe('0');
+    expect(r.total).toBe('0');
+    expect(c.allWarnings().some((w) => w.code === 'TE_SCH1A_MFS_NOT_ALLOWED')).toBe(true);
+    // D12a: the .mfs Schedule 1-A keys are never read, so they do not warn.
+    expect(c.params.used().map((u) => u.key).filter((k) => k.startsWith('sch1a.') && k.endsWith('.mfs'))).toEqual([]);
   });
 });

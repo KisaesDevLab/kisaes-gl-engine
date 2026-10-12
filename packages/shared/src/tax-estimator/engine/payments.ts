@@ -70,7 +70,11 @@ export interface PaymentApplicationInput {
   /** Withholding credited on each installment's due date (same length as `installments`). */
   withholdingShares: Dec[];
   payments: EstimatePayment[];
-  /** Accrual horizon (return due date): balances are reported "unpaid at end" as of this date. */
+  /**
+   * Accrual horizon (return due date). Payments dated after it are STILL applied — `unpaidAtEnd`
+   * is "unpaid after every known payment" (R2-10) — but penalty.ts never accrues past this date,
+   * and such a payment is flagged TE_PAYMENT_AFTER_RETURN_DUE.
+   */
   endDate: string;
 }
 
@@ -98,8 +102,9 @@ export interface InstallmentApplication {
   /** Required − withholding share − carried in (floored at 0) — what estimates had to cover. */
   netRequired: Dec;
   applied: AppliedPayment[];
-  /** Date the balance reached zero (null = still unpaid at `endDate`). */
+  /** Date the balance reached zero (null = never, given the payments known); may be after `endDate`. */
   paidInFullOn: string | null;
+  /** Balance after every known payment, whatever its date (not "as of endDate"; see `endDate`). */
   unpaidAtEnd: Dec;
   /** Balance timeline (unrounded) for the penalty accrual; first point = due date. */
   timeline: BalancePoint[];
@@ -140,7 +145,7 @@ export function applyPayments(input: PaymentApplicationInput, ctx?: EstimateCont
   for (const p of input.payments) {
     const amt = dec(p.amount);
     if (!dIsPos(amt)) { ctx?.warn('TE_PAYMENT_NOT_POSITIVE', `Payment ${p.id} (${p.date}) is not positive and was ignored.`, { paymentId: p.id }); continue; }
-    if (p.date > input.endDate) ctx?.info('TE_PAYMENT_AFTER_RETURN_DUE', `Payment ${p.id} is dated ${p.date}, after the return due date ${input.endDate}; it reduces the balance but not the penalty.`, { paymentId: p.id });
+    if (p.date > input.endDate) ctx?.info('TE_PAYMENT_AFTER_RETURN_DUE', `Payment ${p.id} is dated ${p.date}, after the return due date ${input.endDate}; it reduces the unpaid balance shown on the voucher but the underpayment penalty still accrued to ${input.endDate}.`, { paymentId: p.id });
     // Same-day order: due → withholding shares → estimated payments (index n sorts after every installment index).
     events.push({ date: p.date, kind: 'pay', amount: amt, index: n, payment: { paymentId: p.id, date: p.date, amount: amt, source: p.source } });
   }
@@ -186,7 +191,7 @@ export function applyPayments(input: PaymentApplicationInput, ctx?: EstimateCont
     const net = dIsPos(netRequired) ? netRequired : ZERO;
     const whCredited = dMin(wh, dSub(dec(inst.required), carriedIn[i]!));
     const exact = { required: dec(inst.required), withholdingCredited: dIsPos(whCredited) ? whCredited : ZERO, carriedIn: carriedIn[i]!, netRequired: net, unpaidAtEnd: balance[i]! };
-    ctx?.trace.add({ step: STEP, id: `${input.jurisdiction}.installment.${i + 1}.unpaid`, jurisdiction: input.jurisdiction, label: `${input.jurisdiction} installment ${i + 1} (due ${inst.dueDate}) unpaid at ${input.endDate}`, exact: balance[i]!, source: 'input', formula: `required ${inst.required} − withholding ${wh} − carried ${carriedIn[i]} − estimates ${dSum(applied[i]!.filter((a) => a.source !== 'withholding' && a.source !== 'carry').map((a) => a.amount))}` });
+    ctx?.trace.add({ step: STEP, id: `${input.jurisdiction}.installment.${i + 1}.unpaid`, jurisdiction: input.jurisdiction, label: `${input.jurisdiction} installment ${i + 1} (due ${inst.dueDate}) unpaid after known payments`, exact: balance[i]!, source: 'input', formula: `required ${inst.required} − withholding ${wh} − carried ${carriedIn[i]} − estimates ${dSum(applied[i]!.filter((a) => a.source !== 'withholding' && a.source !== 'carry').map((a) => a.amount))}` });
     return {
       index: i, dueDate: inst.dueDate, required: R(exact.required), withholdingCredited: R(exact.withholdingCredited), carriedIn: R(exact.carriedIn), netRequired: R(net),
       applied: applied[i]!, paidInFullOn: paidOn[i]!, unpaidAtEnd: R(balance[i]!), timeline: timeline[i]!, exact,

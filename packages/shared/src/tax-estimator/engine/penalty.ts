@@ -5,7 +5,11 @@
 // MODULE.md "Penalty (D7)" — event-driven underpayment accrual (§6654(a)-(b),
 // Form 2210 Part III): each installment's UNPAID balance (payments.ts timeline)
 // accrues from its due date to the earlier of the date it is paid or the return
-// due date, at the rate in force each day:
+// due date, at the rate in force each day. Day convention (R2-09, Form 2210
+// Penalty Worksheet): the form counts "days from the due date to 6/30" at the
+// first rate and "days from 6/30 to the payment date" at the next, so the day
+// that ENDS on Jul 1 already carries the Q3 rate — a day d → d+1 takes the rate
+// (and the year length) in force on d+1. Methods:
 //   daily_simple        balance × rate × days ÷ days-in-year (federal; most states)
 //   monthly_or_fraction balance × rate ÷ 12 × months-or-fraction (HI)
 //   monthly_compound    balance × ((1 + rate ÷ 12)^months − 1) (ME)
@@ -149,8 +153,10 @@ function accrueDaily(balance: Dec, from: string, to: string, policy: PenaltyPoli
     segments.push({ from: runStart, to: end, units, balance, rate, daysInYear: runYearDays, rateUncovered: !runRate.covered, amount });
   };
   while (day < to) {
-    const r = policy.rateOn(day);
-    const yearDays = daysInYear(yearOf(day));
+    // Form 2210 convention: the day d → d+1 is priced at the rate and year length of d+1.
+    const priced = addDays(day, 1);
+    const r = policy.rateOn(priced);
+    const yearDays = daysInYear(yearOf(priced));
     if (r.rate == null) verify = true;
     if (!r.covered) verify = true;
     if (!runRate || r.rate !== runRate.rate || r.covered !== runRate.covered || yearDays !== runYearDays) {

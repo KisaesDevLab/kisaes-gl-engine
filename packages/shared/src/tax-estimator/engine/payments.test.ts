@@ -8,7 +8,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { applyPayments, dedupePayments, withholdingShares, type EstimatePayment } from './payments.js';
-import type { InstallmentDue } from './estimate-types.js';
+import { EstimateContext, type InstallmentDue } from './estimate-types.js';
 
 const DUE = ['2026-04-15', '2026-06-15', '2026-09-15', '2027-01-15'];
 const END = '2027-04-15';
@@ -90,6 +90,17 @@ describe('applyPayments', () => {
     const late = apply(inst('1000'), [pay('after', '2027-05-01', '4000')]);
     expect(late.installments.every((i) => i.unpaidAtEnd === '0')).toBe(true);
     expect(late.installments[0]!.paidInFullOn).toBe('2027-05-01');
+  });
+
+  it('R2-10: a payment dated after the return due date is flagged — the voucher balance is cleared, the penalty (penalty.ts) still runs to the return due date', () => {
+    const ctx = new EstimateContext({}, 2026, 'mfj');
+    const late = applyPayments({ jurisdiction: 'federal', installments: inst('1000'), withholdingShares: ['0', '0', '0', '0'], payments: [pay('after', '2027-06-01', '1000')], endDate: END }, ctx);
+    expect(late.installments[0]!.unpaidAtEnd).toBe('0');
+    expect(late.installments[0]!.paidInFullOn).toBe('2027-06-01');
+    expect(late.installments[0]!.timeline).toEqual([{ date: DUE[0], balance: '1000' }, { date: '2027-06-01', balance: '0' }]);
+    const w = ctx.allWarnings().find((x) => x.code === 'TE_PAYMENT_AFTER_RETURN_DUE');
+    expect(w).toBeDefined();
+    expect(w!.message).toMatch(/still accrued to 2027-04-15/);
   });
 
   it('withholding shares flow to the earliest unpaid installment like any payment', () => {

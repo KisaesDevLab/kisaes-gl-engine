@@ -124,6 +124,50 @@ describe('passive activity netting (§469)', () => {
   });
 });
 
+describe('§469(i) allowance allocation (Form 8582 Worksheets 4–5, R2-03)', () => {
+  it('the allowance is applied to active-participation rental losses before any other passive loss is allowed', () => {
+    const { agg, ctx } = build([entity('w', '80000'), rental('r', '-20000', true), passiveK1('biz', '-20000')], 'single');
+    const r = applyLossLimitations(agg, opts('80000'), ctx);
+    expect(r.rentalAllowance.used).toBe('20000');
+    expect(r.suspendedPassiveLoss).toBe('20000');
+    expect(shareOf(r, 'l-r').allowed).toBe('-20000');   // fully allowed by the $25,000 allowance
+    expect(shareOf(r, 'l-r').passiveSuspended).toBe('0');
+    expect(shareOf(r, 'l-biz').allowed).toBe('0');      // no passive income → fully suspended
+    expect(shareOf(r, 'l-biz').passiveSuspended).toBe('20000');
+    expect(rentalOf(r.income)).toBe('-20000');
+    expect(ordinaryOf(r.income)).toBe('80000');
+    // invariant: Σ allowed = −(min(passive losses, passive income) + allowance used)
+    const allowedPassive = r.shares.filter((s) => s.passive).reduce((a, s) => a + Number(s.allowed), 0);
+    expect(allowedPassive).toBe(-(Math.min(40000, 0) + 20000));
+  });
+  it('a partly covered rental loss: Worksheet 4 nets the allowance against the rental first, Worksheet 5 spreads the unallowed rest over the remaining losses', () => {
+    // rental −30,000 (active), passive business −20,000, passive income +10,000: PAL 40,000; allowance min(30,000, 25,000) = 25,000; unallowed 15,000.
+    // Wks 4: rental 30,000 − 25,000 = 5,000 remaining. Wks 5 ratios 5,000 : 20,000 → rental 3,000 / business 12,000 unallowed.
+    const { agg, ctx } = build([rental('r', '-30000', true), passiveK1('biz', '-20000'), passiveK1('inc', '10000')], 'single');
+    const r = applyLossLimitations(agg, opts('90000'), ctx);
+    expect(r.rentalAllowance.used).toBe('25000');
+    expect(r.suspendedPassiveLoss).toBe('15000');
+    expect(shareOf(r, 'l-r').passiveSuspended).toBe('3000');
+    expect(shareOf(r, 'l-r').allowed).toBe('-27000');
+    expect(shareOf(r, 'l-biz').passiveSuspended).toBe('12000');
+    expect(shareOf(r, 'l-biz').allowed).toBe('-8000');
+    // net passive result = +10,000 income − 35,000 losses allowed (10,000 against income + 25,000 allowance) = −25,000
+    expect(Number(rentalOf(r.income)) + Number(ordinaryOf(r.income))).toBe(10000 - (10000 + 25000));
+  });
+  it('the per-activity carryforwards sum to the suspended total with several rental and non-rental losers', () => {
+    const { agg, ctx } = build([rental('r1', '-10000', true), rental('r2', '-30000', true), passiveK1('b1', '-15000'), passiveK1('b2', '-5000')], 'mfj');
+    const r = applyLossLimitations(agg, opts('120000'), ctx); // allowance 15,000 after phase-out
+    expect(r.rentalAllowance.used).toBe('15000');
+    expect(r.suspendedPassiveLoss).toBe('45000');
+    // Wks 4: 15,000 × 10/40 = 3,750 to r1, 11,250 to r2 → remaining 6,250 / 18,750; Wks 5 over 6,250 + 18,750 + 15,000 + 5,000 = 45,000 → everything remaining is unallowed.
+    expect(shareOf(r, 'l-r1').passiveSuspended).toBe('6250');
+    expect(shareOf(r, 'l-r2').passiveSuspended).toBe('18750');
+    expect(shareOf(r, 'l-b1').passiveSuspended).toBe('15000');
+    expect(shareOf(r, 'l-b2').passiveSuspended).toBe('5000');
+    expect(r.shares.reduce((a, s) => a + Number(s.passiveSuspended), 0)).toBe(45000);
+  });
+});
+
 describe('§469(i) rental real estate allowance (D10)', () => {
   it('allows up to the parameter allowance against nonpassive income below the phase-out start', () => {
     const { agg, ctx } = build([entity('c', '100000'), rental('r', '-30000', true)]);
@@ -180,6 +224,9 @@ describe('excess business loss (§461(l))', () => {
     expect(shareOf(r, 'l-c').allowed).toBe('-400000');
     expect(ctx.allWarnings().find((w) => w.code === 'TE_EXCESS_BUSINESS_LOSS')!.message).toMatch(/net operating loss/);
     expect(r.notes.some((n) => n.includes('§461(l)'))).toBe(true);
+    // R2-20: the disallowed loss still reduced QBI this year; the assumptions page says so.
+    expect(r.notes.some((n) => n.includes('1.199A-3(b)(1)(iv)'))).toBe(true);
+    expect(ctx.allWarnings().some((w) => w.code === 'TE_EBL_QBI_TIMING')).toBe(true);
   });
   it('uses the joint threshold for MFJ and nets business income first', () => {
     const { agg, ctx } = build([entity('c', '-400000'), entity('d', '50000')], 'mfj');

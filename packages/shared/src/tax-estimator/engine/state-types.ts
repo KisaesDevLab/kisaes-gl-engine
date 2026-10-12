@@ -92,7 +92,7 @@ export interface StateSourcedEntity {
   companyName: string;
   /** Entity `state_sourcing`; null = not sourced to any state. */
   state: string | null;
-  /** Taxpayer's share of the entity's projected income (all characters + guaranteed payments), profit-positive. */
+  /** Taxpayer's share of the entity's business income (ordinary + rental + §1231 after loss limits, + guaranteed payments), profit-positive; portfolio income excluded (R2-15). */
   income: Dec;
 }
 

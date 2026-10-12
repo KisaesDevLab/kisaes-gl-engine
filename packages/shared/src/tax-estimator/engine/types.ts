@@ -299,6 +299,8 @@ export interface EntityShareResult {
   sehiAsW2Wages: string;
   /** Portion of `share` that is SE income (ordinary + GP for SE statuses). */
   seIncome: string;
+  /** `share` after step 3 (basis / at-risk override, §469 suspension); §461(l) is a person-level add-back and is not reflected here. */
+  shareAfterLossLimits: CharacterAmounts;
 }
 
 export interface EntityResult {
@@ -358,6 +360,8 @@ export interface PersonResult {
   retirement: RetirementLimitResult;
   sehi: SehiLimitResult;
   hsa: HsaLimitResult;
+  /** Unrounded per-person figures later steps rebuild from (Schedule AI Part II, R2-07). */
+  exact: { seIncome: string; socialSecurityWages: string };
 }
 
 export interface IncomeResult {
@@ -366,8 +370,9 @@ export interface IncomeResult {
   guaranteedPayments: string;
   rental: string;
   interest: string;
-  /** Ordinary dividends INCLUDING qualified. */
+  /** Total dividends (Form 1040 line 3b): the exclusive ordinary + qualified buckets added. */
   dividends: string;
+  /** Qualified dividends (line 3a), part of `dividends`. */
   qualifiedDividends: string;
   capitalGainShortTerm: string;
   capitalGainLongTerm: string;

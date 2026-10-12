@@ -11,13 +11,18 @@
 //   taxable income over the start of the top bracket; 0.37 vs 0.37 → nothing);
 //   larger wins unless forced. Schedule 1-A (senior, tips, overtime, car-loan
 //   interest) on top of either, each with its MAGI phase-out, in effect only
-//   between sch1a.first_year and sch1a.last_year.
+//   between sch1a.first_year and sch1a.last_year; the senior phase-out is linear
+//   (§151(d)(5)(C)(iii): 6% of the excess), tips / overtime / car-loan interest
+//   step by `sch1a.phaseout_step` or fraction thereof (§224(b)(2), §225(b)(2),
+//   §163(h)(4)(E): $100 / $100 / $200 per $1,000). A married taxpayer must file
+//   jointly for every Schedule 1-A deduction (§151(d)(5)(C)(v), §224(f), §225(e),
+//   §163(h)(4)(F)): MFS gets nothing (R2-02).
 // MAGI is taken as AGI (no foreign-income exclusions are modelled).
 
 import type { FilingStatus } from '../types.js';
 import type { DeductionMode } from '../years-api.js';
 import {
-  ZERO, dAdd, dCmp, dDiv, dFloorZero, dIsPos, dIsZero, dMax, dMin, dMul, dSub, dSum, dec, type Dec,
+  ZERO, ONE, dAdd, dCmp, dDiv, dFloorZero, dIsPos, dIsZero, dMax, dMin, dMul, dRound, dSub, dSum, dec, type Dec,
 } from '../decimal.js';
 import type { EngineContext } from './context.js';
 import type { EngineItemized, EngineSch1aPerson } from './types.js';
@@ -158,11 +163,25 @@ export function chooseDeduction(mode: DeductionMode, standard: StandardDeduction
   return { chosen, deduction };
 }
 
-/** min(amount, max) reduced by rate × (MAGI − threshold), floored at zero. */
-function phasedOut(amount: Dec, max: Dec | null, magi: Dec, threshold: Dec, rate: Dec): Dec {
+/**
+ * min(amount, max) reduced by rate × (MAGI − threshold), floored at zero. With a
+ * `step`, the excess is rounded UP to the next whole step first ("$100 for each
+ * $1,000 or fraction thereof"): the reduction is rate × step per step begun.
+ */
+function phasedOut(amount: Dec, max: Dec | null, magi: Dec, threshold: Dec, rate: Dec, step: Dec | null = null): Dec {
   const capped = max == null ? dFloorZero(amount) : dMin(dFloorZero(amount), max);
   if (!dIsPos(capped)) return ZERO;
-  return dFloorZero(dSub(capped, dMul(rate, dFloorZero(dSub(magi, threshold)))));
+  let excess = dFloorZero(dSub(magi, threshold));
+  if (step != null && dIsPos(step) && dIsPos(excess)) excess = dMul(dCeilDiv(excess, step), step);
+  return dFloorZero(dSub(capped, dMul(rate, excess)));
+}
+
+/** ⌈a ÷ b⌉ for positive decimals: whole steps begun. */
+function dCeilDiv(a: Dec, b: Dec): Dec {
+  const q = dDiv(a, b);
+  const whole = dRound(q, 0);
+  // dRound is half-up; step up when the rounded quotient fell short of the exact one.
+  return dCmp(whole, q) < 0 ? dAdd(whole, ONE) : whole;
 }
 
 export function computeSch1a(persons: DeductionPerson[], magi: Dec, ctx: EngineContext): Sch1aExact {
@@ -173,27 +192,33 @@ export function computeSch1a(persons: DeductionPerson[], magi: Dec, ctx: EngineC
     ctx.info('TE_SCH1A_NOT_IN_EFFECT', `Schedule 1-A deductions do not apply to tax year ${taxYear}.`);
     return { inEffect: false, senior: ZERO, tips: ZERO, overtime: ZERO, carLoanInterest: ZERO, total: ZERO };
   }
+  if (fs === 'mfs') {
+    ctx.info('TE_SCH1A_MFS_NOT_ALLOWED', 'Married filing separately: no Schedule 1-A deduction (senior, tips, overtime, car-loan interest) — each requires a joint return for a married taxpayer (§151(d)(5)(C)(v), §224(f), §225(e), §163(h)(4)(F)).');
+    return { inEffect: true, senior: ZERO, tips: ZERO, overtime: ZERO, carLoanInterest: ZERO, total: ZERO };
+  }
   const counted = countedPersons(persons, fs);
+  const step = params.money('sch1a.phaseout_step');
 
   const seniorAge = params.int('sch1a.senior.age');
   const seniorEach = params.money('sch1a.senior.amount');
   const seniors = counted.filter((p) => p.age != null && p.age >= seniorAge).length;
   const senior = phasedOut(dMul(seniorEach, String(seniors)), null, magi, params.moneyFs('sch1a.senior.phaseout_threshold', fs), params.rate('sch1a.senior.phaseout_rate'));
 
-  const tips = phasedOut(dSum(counted.map((p) => p.sch1a.qualifiedTips)), params.money('sch1a.tips.max'), magi, params.moneyFs('sch1a.tips.phaseout_threshold', fs), params.rate('sch1a.tips.phaseout_rate'));
+  const tips = phasedOut(dSum(counted.map((p) => p.sch1a.qualifiedTips)), params.money('sch1a.tips.max'), magi, params.moneyFs('sch1a.tips.phaseout_threshold', fs), params.rate('sch1a.tips.phaseout_rate'), step);
   const overtimeMaxKey = fs === 'mfj' ? 'sch1a.overtime.max.mfj' : 'sch1a.overtime.max.standard';
-  const overtime = phasedOut(dSum(counted.map((p) => p.sch1a.qualifiedOvertime)), params.money(overtimeMaxKey), magi, params.moneyFs('sch1a.overtime.phaseout_threshold', fs), params.rate('sch1a.overtime.phaseout_rate'));
-  const car = phasedOut(dSum(counted.map((p) => p.sch1a.carLoanInterest)), params.money('sch1a.car_interest.max'), magi, params.moneyFs('sch1a.car_interest.phaseout_threshold', fs), params.rate('sch1a.car_interest.phaseout_rate'));
+  const overtime = phasedOut(dSum(counted.map((p) => p.sch1a.qualifiedOvertime)), params.money(overtimeMaxKey), magi, params.moneyFs('sch1a.overtime.phaseout_threshold', fs), params.rate('sch1a.overtime.phaseout_rate'), step);
+  const car = phasedOut(dSum(counted.map((p) => p.sch1a.carLoanInterest)), params.money('sch1a.car_interest.max'), magi, params.moneyFs('sch1a.car_interest.phaseout_threshold', fs), params.rate('sch1a.car_interest.phaseout_rate'), step);
   const total = dSum([senior, tips, overtime, car]);
 
-  const add = (id: string, label: string, exact: Dec, keys: string[]) => {
+  const add = (id: string, label: string, exact: Dec, keys: string[], formula: string) => {
     if (dIsZero(exact)) return;
-    ctx.trace.add({ step: STEP_DEDUCTIONS, id, label, exact, source: 'parameter', formula: 'capped, less phase-out above the MAGI threshold', parameterKeys: keys });
+    ctx.trace.add({ step: STEP_DEDUCTIONS, id, label, exact, source: 'parameter', formula, parameterKeys: keys });
   };
-  add('sch1a.senior', `Schedule 1-A — senior deduction (${seniors} eligible)`, senior, ['sch1a.senior.amount', 'sch1a.senior.age', `sch1a.senior.phaseout_threshold.${fs}`, 'sch1a.senior.phaseout_rate']);
-  add('sch1a.tips', 'Schedule 1-A — qualified tips', tips, ['sch1a.tips.max', `sch1a.tips.phaseout_threshold.${fs}`, 'sch1a.tips.phaseout_rate']);
-  add('sch1a.overtime', 'Schedule 1-A — qualified overtime', overtime, [overtimeMaxKey, `sch1a.overtime.phaseout_threshold.${fs}`, 'sch1a.overtime.phaseout_rate']);
-  add('sch1a.car_interest', 'Schedule 1-A — car-loan interest', car, ['sch1a.car_interest.max', `sch1a.car_interest.phaseout_threshold.${fs}`, 'sch1a.car_interest.phaseout_rate']);
+  const stepped = `capped, less rate × MAGI excess over the threshold rounded up to the next ${step} step`;
+  add('sch1a.senior', `Schedule 1-A — senior deduction (${seniors} eligible)`, senior, ['sch1a.senior.amount', 'sch1a.senior.age', `sch1a.senior.phaseout_threshold.${fs}`, 'sch1a.senior.phaseout_rate'], 'less rate × MAGI excess over the threshold (linear)');
+  add('sch1a.tips', 'Schedule 1-A — qualified tips', tips, ['sch1a.tips.max', `sch1a.tips.phaseout_threshold.${fs}`, 'sch1a.tips.phaseout_rate', 'sch1a.phaseout_step'], stepped);
+  add('sch1a.overtime', 'Schedule 1-A — qualified overtime', overtime, [overtimeMaxKey, `sch1a.overtime.phaseout_threshold.${fs}`, 'sch1a.overtime.phaseout_rate', 'sch1a.phaseout_step'], stepped);
+  add('sch1a.car_interest', 'Schedule 1-A — car-loan interest', car, ['sch1a.car_interest.max', `sch1a.car_interest.phaseout_threshold.${fs}`, 'sch1a.car_interest.phaseout_rate', 'sch1a.phaseout_step'], stepped);
   if (dIsPos(total)) ctx.trace.add({ step: STEP_DEDUCTIONS, id: 'sch1a.total', label: 'Schedule 1-A deductions', exact: total, source: 'parameter', parameterKeys: ['sch1a.first_year', 'sch1a.last_year'] });
   return { inEffect: true, senior, tips, overtime, carLoanInterest: car, total };
 }

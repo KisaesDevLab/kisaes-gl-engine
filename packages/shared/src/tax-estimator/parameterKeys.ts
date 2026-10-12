@@ -119,6 +119,7 @@ export const PARAMETER_REGISTRY: readonly ParameterDef[] = [
   D('sch1a.car_interest.max', 'money', 'usd', 'Schedule 1-A', 'Car-loan interest deduction maximum'),
   D('sch1a.car_interest.phaseout_threshold', 'money', 'usd', 'Schedule 1-A', 'Car-loan interest MAGI phase-out start', { variants: 'fs' }),
   D('sch1a.car_interest.phaseout_rate', 'rate', 'rate', 'Schedule 1-A', 'Car-loan interest phase-out rate'),
+  D('sch1a.phaseout_step', 'money', 'usd', 'Schedule 1-A', 'MAGI step for the tips / overtime / car-loan phase-outs (reduction = rate × step per step or fraction thereof)'),
   D('sch1a.first_year', 'int', 'year', 'Schedule 1-A', 'First tax year Schedule 1-A applies'),
   D('sch1a.last_year', 'int', 'year', 'Schedule 1-A', 'Last tax year Schedule 1-A applies'),
   // ── QBI ────────────────────────────────────────────────────────────────

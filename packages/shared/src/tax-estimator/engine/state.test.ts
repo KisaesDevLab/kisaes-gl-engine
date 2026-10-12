@@ -283,18 +283,18 @@ describe('DTO bridges', () => {
     expect(federalFiguresFromResult(fed)).toEqual({ agi: '197556.7', taxableIncome: '138726.1', totalIncome: '232400', wages: '54000', deduction: '32200' });
   });
 
-  it('sourcedEntitiesFromFederal sums the taxpayer shares per entity with its sourcing state', () => {
-    const share = (ordinary: string, rental: string, gp: string) => ({
-      share: { ordinary, rental, interest: '0', dividends_ordinary: '0', dividends_qualified: '0', capital_gain_st: '0', capital_gain_lt: '0', section_1231: '0' },
-      guaranteedPayment: gp,
-    });
+  it('R2-15: sourcedEntitiesFromFederal sums the business characters of the shares AFTER loss limits (+ GP) per entity with its sourcing state; portfolio income stays with the residence state', () => {
+    const chars = (ordinary: string, rental: string, interest = '0', lt = '0') => ({ ordinary, rental, interest, dividends_ordinary: '0', dividends_qualified: '0', capital_gain_st: '0', capital_gain_lt: lt, section_1231: '0' });
+    const share = (pre: ReturnType<typeof chars>, post: ReturnType<typeof chars>, gp: string) => ({ share: pre, shareAfterLossLimits: post, guaranteedPayment: gp });
     const fed = { entities: [
-      { companyId: 'lp', companyName: 'LP', shares: [share('0', '8000', '0')] },
-      { companyId: 'ps', companyName: 'PS', shares: [share('30000', '0', '12000'), share('30000', '0', '0')] },
+      // LP rental −30,000 before limits, −25,000 allowed after the §469(i) allowance.
+      { companyId: 'lp', companyName: 'LP', shares: [share(chars('0', '-30000'), chars('0', '-25000'), '0')] },
+      // Partnership: ordinary + GP are sourced; its interest and capital gain are not.
+      { companyId: 'ps', companyName: 'PS', shares: [share(chars('30000', '0', '500', '2000'), chars('30000', '0', '500', '2000'), '12000'), share(chars('30000', '0'), chars('30000', '0'), '0')] },
     ] } as unknown as FederalResult;
     const out = sourcedEntitiesFromFederal(fed, [{ companyId: 'lp', stateSourcing: 'AR' }]);
     expect(out).toEqual([
-      { companyId: 'lp', companyName: 'LP', state: 'AR', income: '8000' },
+      { companyId: 'lp', companyName: 'LP', state: 'AR', income: '-25000' },
       { companyId: 'ps', companyName: 'PS', state: null, income: '72000' },
     ]);
   });

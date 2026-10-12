@@ -12,7 +12,7 @@ import { describe, it, expect } from 'vitest';
 import { accruePenalty, flatRateLookup, scheduleRateLookup, type PenaltyPolicy } from './penalty.js';
 import { applyPayments, withholdingShares, type EstimatePayment } from './payments.js';
 import type { InstallmentDue } from './estimate-types.js';
-import { dMul, dDiv } from '../decimal.js';
+import { dAdd, dMul, dDiv } from '../decimal.js';
 
 const DUE = ['2026-04-15', '2026-06-15', '2026-09-15', '2027-01-15'];
 const END = '2027-04-15';
@@ -51,20 +51,35 @@ describe('accruePenalty — daily_simple (federal)', () => {
     expect(onTime.total).toBe('0');
   });
 
-  it('late payment: Q1 1,000 paid Jul 1 accrues 6% for the 77 days Apr 15 → Jul 1 in one segment', () => {
+  it('late payment: Q1 1,000 paid Jul 1 accrues 77 days Apr 15 → Jul 1 — Form 2210 counts Apr 15 → Jun 30 (76) at the Q2 rate and Jun 30 → Jul 1 (1) at the Q3 rate', () => {
     const r = accruePenalty(applied(inst('1000'), [pay('late', '2026-07-01', '1000')]), policy());
     const q1 = r.installments[0]!;
-    expect(q1.segments.map((s) => [s.from, s.to, s.units, s.rate])).toEqual([[DUE[0], '2026-07-01', 77, '0.06']]);
-    expect(q1.exact).toBe(dDiv(dMul(dMul('1000', '0.06'), '77'), '365'));
+    expect(q1.segments.map((s) => [s.from, s.to, s.units, s.rate])).toEqual([[DUE[0], '2026-06-30', 76, '0.06'], ['2026-06-30', '2026-07-01', 1, '0.07']]);
+    expect(q1.exact).toBe(dAdd(dDiv(dMul(dMul('1000', '0.06'), '76'), '365'), dDiv(dMul(dMul('1000', '0.07'), '1'), '365')));
     expect(r.installments.slice(1).every((i) => i.accruedTo === END)).toBe(true);
-    expect(r.installments.map((i) => i.segments.length)).toEqual([1, 2, 1, 1]); // Q2 spans the Jun 30 → Jul 1 rate change
+    expect(r.installments.map((i) => i.segments.length)).toEqual([2, 2, 1, 1]); // Q1 and Q2 span the Jun 30 rate change
     expect(r.installments[3]!.segments[0]!.units).toBe(90); // Jan 15 → Apr 15, 2027
   });
 
-  it('late payment across a rate change splits the accrual at the quarter boundary', () => {
+  it('R2-09: late payment across a rate change splits at the Form 2210 boundary ("days from 6/30 to the payment date" at the new rate)', () => {
     const r = accruePenalty(applied(inst('1000'), [pay('late', '2026-08-01', '1000')]), policy());
     const q1 = r.installments[0]!;
-    expect(q1.segments.map((s) => [s.from, s.to, s.units, s.rate])).toEqual([[DUE[0], '2026-07-01', 77, '0.06'], ['2026-07-01', '2026-08-01', 31, '0.07']]);
+    expect(q1.segments.map((s) => [s.from, s.to, s.units, s.rate])).toEqual([[DUE[0], '2026-06-30', 76, '0.06'], ['2026-06-30', '2026-08-01', 32, '0.07']]);
+  });
+
+  it('R2-09 (T5): Jun 15 → Jul 15 is 15 days at the Q2 rate and 15 at the Q3 rate, as Form 2210 Part III shows it', () => {
+    const r = accruePenalty(applied([{ index: 0, dueDate: '2026-06-15', required: '1000' }], [pay('p', '2026-07-15', '1000')]), policy());
+    expect(r.installments[0]!.segments.map((s) => [s.from, s.to, s.units, s.rate])).toEqual([['2026-06-15', '2026-06-30', 15, '0.06'], ['2026-06-30', '2026-07-15', 15, '0.07']]);
+    expect(Number(r.installments[0]!.exact)).toBeCloseTo(1000 * (0.06 * 15 + 0.07 * 15) / 365, 9);
+  });
+
+  it('R2-09: the day Dec 31 → Jan 1 takes the new year\'s rate and year length (Form 2210 "from 12/31" column)', () => {
+    const rates = scheduleRateLookup([{ from: '2027-01-01', to: '2027-12-31', rate: '0.07' }, { from: '2028-01-01', to: '2028-12-31', rate: '0.08' }], ['k']);
+    const r = accruePenalty(
+      applyPayments({ jurisdiction: 'federal', installments: [{ index: 0, dueDate: '2027-12-30', required: '1000' }], withholdingShares: ['0'], payments: [pay('p', '2028-01-02', '1000')], endDate: '2028-04-17' }),
+      policy({ rateOn: rates, returnDueDate: '2028-04-17' }),
+    );
+    expect(r.installments[0]!.segments.map((s) => [s.from, s.to, s.units, s.rate, s.daysInYear])).toEqual([['2027-12-30', '2027-12-31', 1, '0.07', 365], ['2027-12-31', '2028-01-02', 2, '0.08', 366]]);
   });
 
   it('overpayment carry: a big Q1 payment leaves nothing to accrue on Q2 even though no Q2 payment was made', () => {
@@ -76,6 +91,7 @@ describe('accruePenalty — daily_simple (federal)', () => {
 
   it('a partial payment reduces the accruing balance from its date (two balance segments)', () => {
     const r = accruePenalty(applied(inst('1000'), [pay('half', '2026-05-15', '500'), pay('rest', '2026-06-15', '500')]), policy());
+    // withholding is 0 here, so the only balance change is the May 15 payment
     const q1 = r.installments[0]!;
     expect(q1.segments.map((s) => [s.balance, s.units])).toEqual([['1000', 30], ['500', 31]]);
     expect(q1.accruedTo).toBe('2026-06-15');

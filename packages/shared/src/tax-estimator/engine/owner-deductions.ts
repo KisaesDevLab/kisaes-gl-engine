@@ -3,8 +3,10 @@
 // Free for small businesses; see LICENSE for terms.
 
 // MODULE.md step 6 — limits on owner deductions, each capped with a warning:
-//   SEP / solo 401(k) / SIMPLE on net SE earnings after ½ SE tax (Pub. 560:
-//   the self-employed rate is plan rate ÷ (1 + plan rate), so 25% → 20%);
+//   SEP / solo 401(k) on net SE earnings after ½ SE tax (Pub. 560: the
+//   self-employed rate is plan rate ÷ (1 + plan rate), so 25% → 20%); SIMPLE on
+//   §1402(a) net earnings from self-employment (SE income × se.nese_factor,
+//   before ½ SE tax — §408(p)(6)(A)(ii), R2-13);
 //   HSA by coverage type with the 55+ catch-up; SEHI only for months flagged
 //   deductible, capped at earned income from the businesses the plan is under.
 
@@ -103,12 +105,14 @@ export function computeRetirementLimit(input: RetirementLimitInput, ctx: EngineC
     } else {
       const deferralLimit = params.money('retirement.simple.deferral');
       const matchPct = params.rate('retirement.simple.match_pct');
-      keys.push('retirement.simple.deferral', 'retirement.simple.match_pct');
+      // §408(p)(6)(A)(ii): a self-employed individual's compensation is §1402(a) net earnings (SE income × 92.35%), not reduced by ½ SE tax.
+      const simpleBase = dFloorZero(dMul(input.seIncome, params.rate('se.nese_factor')));
+      keys.push('retirement.simple.deferral', 'retirement.simple.match_pct', 'se.nese_factor');
       let catchUp: Dec = ZERO;
       if (eligibleCatchUp()) { catchUp = params.money('retirement.simple.catch_up'); keys.push('retirement.simple.catch_up'); }
-      const deferral = dMin(dAdd(deferralLimit, catchUp), base);
-      limit = dAdd(deferral, dMul(matchPct, base));
-      formula = `deferral min(${deferralLimit} + catch-up ${catchUp}, ${base}) + match ${matchPct} × ${base}`;
+      const deferral = dMin(dAdd(deferralLimit, catchUp), simpleBase);
+      limit = dAdd(deferral, dMul(matchPct, simpleBase));
+      formula = `deferral min(${deferralLimit} + catch-up ${catchUp}, NESE ${simpleBase}) + match ${matchPct} × ${simpleBase}`;
     }
   }
 

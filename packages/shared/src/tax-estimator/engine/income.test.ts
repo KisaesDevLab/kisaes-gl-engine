@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import { EngineContext } from './context.js';
 import {
-  characters, projectAmount, projectCharacters, allocateEntity, aggregatePersons, netIncome,
+  characters, sumCharacters, projectAmount, projectCharacters, allocateEntity, aggregatePersons, netIncome,
 } from './income.js';
 import type { EngineAdjustment, EngineEntity, EngineLink, EnginePerson, ParameterMap } from './types.js';
 
@@ -177,7 +177,7 @@ describe('aggregatePersons + netIncome', () => {
     expect(b.wages).toBe('54000');
     expect(b.hsaContributions).toBe('1000');
     expect(b.character.dividends_qualified).toBe('300');
-    expect(b.character.dividends_ordinary).toBe('300');
+    expect(b.character.dividends_ordinary).toBe('0'); // R2-01: the buckets are exclusive
     expect(agg.otherAboveTheLine).toBe('500');
     expect(agg.itemizedOther).toBe('250');
     const inc = netIncome([...agg.byPerson.values()], ctx);
@@ -217,6 +217,50 @@ describe('aggregatePersons + netIncome', () => {
     expect(gain.capitalGainLongTerm).toBe('400');
     expect(gain.capitalGainNet).toBe('500');
     expect(gain.netLongTermGainForWorksheet).toBe('400');
+  });
+
+  it('R2-01: qualified dividends are counted exactly once whether they come from the books or an adjustment', () => {
+    const p1 = person('p1', 'primary');
+    const ctx = ctxWith([p1]);
+    const books = allocateEntity(entity({ companyId: 'inv', entityType: 'partnership', ytd: characters({ ordinary: '100000', dividends_qualified: '20000' }), recurringYtd: characters({ ordinary: '100000', dividends_qualified: '20000' }), links: [link('l1', 'p1', { partnerSeStatus: 'limited', activityType: 'investment' })] }), [], ctx);
+    expect(sumCharacters(books.shares[0]!.share)).toBe('120000');
+    const fromBooks = netIncome([...aggregatePersons([books], [p1], [], ctx).byPerson.values()], ctx);
+    const fromAdj = netIncome([...aggregatePersons([], [p1], [adj({ id: 'o', kind: 'income', amount: '100000' }), adj({ id: 'qd', kind: 'income', amount: '20000', isQualifiedDividend: true })], ctx).byPerson.values()], ctx);
+    for (const inc of [fromBooks, fromAdj]) {
+      expect(inc.totalIncome).toBe('120000');
+      expect(inc.dividends).toBe('20000');
+      expect(inc.qualifiedDividends).toBe('20000');
+    }
+    const aggAdj = aggregatePersons([], [p1], [adj({ id: 'qd', kind: 'income', amount: '20000', isQualifiedDividend: true })], ctx);
+    expect(sumCharacters(aggAdj.byPerson.get('p1')!.character)).toBe('20000');
+    expect(aggAdj.byPerson.get('p1')!.character.dividends_ordinary).toBe('0');
+  });
+
+  it('R2-12: a deduction adjustment with no link and not above the line is reported as itemized "other"', () => {
+    const p1 = person('p1', 'primary');
+    const ctx = ctxWith([p1]);
+    const agg = aggregatePersons([], [p1], [adj({ id: 'x', label: 'Section 179', typeCode: 'vehicle_179', kind: 'deduction', amount: '250' })], ctx);
+    expect(agg.itemizedOther).toBe('250');
+    const w = ctx.allWarnings().find((x) => x.code === 'TE_ADJUSTMENT_UNLINKED_DEDUCTION');
+    expect(w).toBeDefined();
+    expect(w!.details).toMatchObject({ adjustmentId: 'x' });
+  });
+
+  it('R2-17: a net entity loss allocated by loss % notes that positive items follow the loss %', () => {
+    const ctx = ctxWith([person('p1', 'primary'), person('p2', 'spouse')]);
+    const links = [link('l1', 'p1', { profitPct: 50, lossPct: 90, partnerSeStatus: 'limited' }), link('l2', 'p2', { profitPct: 50, lossPct: 10, partnerSeStatus: 'limited' })];
+    const r = allocateEntity(entity({ entityType: 'partnership', ytd: characters({ ordinary: '-50000', rental: '10000' }), recurringYtd: characters({ ordinary: '-50000', rental: '10000' }), links }), [], ctx);
+    expect(r.shares[0]!.share.rental).toBe('9000');
+    expect(ctx.allWarnings().some((w) => w.code === 'TE_LOSS_PCT_ALL_ITEMS')).toBe(true);
+  });
+
+  it('R2-23: the synthetic share for owner items without a link is not a QBI component', () => {
+    const ctx = ctxWith([person('p1', 'primary'), person('p2', 'spouse')]);
+    const r = allocateEntity(entity({ entityType: 'partnership', ytd: characters({ ordinary: '1000' }), recurringYtd: characters({ ordinary: '1000' }), guaranteedPayments: [{ personId: 'p2', amount: '5000' }], links: [link('l1', 'p1', { partnerSeStatus: 'general' })] }), [], ctx);
+    const synthetic = r.shares.find((s) => s.personId === 'p2')!;
+    expect(synthetic.qbiEligible).toBe(false);
+    expect(synthetic.seIncome).toBe('5000');
+    expect(ctx.allWarnings().some((w) => w.code === 'TE_OWNER_ITEM_NO_LINK')).toBe(true);
   });
 
   it('uses the MFS capital loss limit', () => {

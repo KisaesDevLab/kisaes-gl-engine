@@ -14,8 +14,11 @@
 //      otherwise no allowance (§469(i)(5)(B)). MAGI = AGI computed without any
 //      passive loss (§469(i)(3)(E)) — federal.ts probes it with a first pass
 //      (`magi: null` suspends everything) and calls again with the figure.
-//      The suspended excess is allocated to the loss activities pro rata
-//      (Form 8582 worksheet 5) and shown, not deducted (no carryforward tracking).
+//      Allocation follows Form 8582: Worksheet 4 nets the §469(i) allowance
+//      against the active-participation rental losers first (pro rata by their
+//      loss); Worksheet 5 then spreads the unallowed total over the REMAINING
+//      losses (the rental remainders and every other passive loser) pro rata.
+//      The suspended amounts are shown, not deducted (no carryforward tracking).
 //   3. Excess business loss (§461(l)): the aggregate trade-or-business net
 //      (ordinary + rental + §1231 of non-investment links + guaranteed payments,
 //      after §469) below −threshold is disallowed and becomes an NOL note.
@@ -169,14 +172,29 @@ export function applyLossLimitations(income: AggregatedIncome, options: LossLimi
   const suspended = dFloorZero(dSub(excess, rental.used));
   if (dIsPos(suspended)) {
     const losers = passive.filter((w) => dIsNeg(sumCharacters(w.current)));
+    // Form 8582 Worksheet 4: the allowance goes to the active-participation rental losers first, pro rata by loss.
+    const remainingLoss = new Map<Work, Dec>();
+    const rentalLosers = losers.filter((w) => w.share.activityType === 'rental' && w.share.activeParticipation);
+    const rentalLossSum = dSum(rentalLosers.map((w) => dAbs(sumCharacters(w.current))));
+    let allowanceLeft = rental.used;
+    losers.forEach((w) => remainingLoss.set(w, dAbs(sumCharacters(w.current))));
+    rentalLosers.forEach((w, i) => {
+      const loss = remainingLoss.get(w)!;
+      const covered = i === rentalLosers.length - 1 ? dMin(allowanceLeft, loss) : dMin(loss, dDiv(dMul(rental.used, loss), rentalLossSum));
+      allowanceLeft = dSub(allowanceLeft, covered);
+      remainingLoss.set(w, dSub(loss, covered));
+    });
+    // Worksheet 5: the unallowed total over the remaining losses, pro rata.
+    const remainingSum = dSum([...remainingLoss.values()]);
     let remaining = suspended;
     losers.forEach((w, i) => {
-      const loss = dAbs(sumCharacters(w.current));
-      const part = i === losers.length - 1 ? dMin(remaining, loss) : dMin(remaining, dDiv(dMul(suspended, loss), passiveLosses));
+      const loss = remainingLoss.get(w)!;
+      const part = i === losers.length - 1 ? dMin(remaining, loss) : dMin(remaining, loss, dIsPos(remainingSum) ? dDiv(dMul(suspended, loss), remainingSum) : ZERO);
       w.current = addBackLoss(w.current, part);
       w.passiveSuspended = part;
       remaining = dSub(remaining, part);
-      ctx.trace.add({ step: STEP, id: `passive_suspended.${w.share.linkId}`, label: `${label(w, names)} — passive loss suspended (§469)`, exact: dNeg(part), source: 'parameter', formula: `${suspended} suspended × ${loss} ÷ ${passiveLosses}`, personId: w.share.personId });
+      if (!dIsPos(part)) return;
+      ctx.trace.add({ step: STEP, id: `passive_suspended.${w.share.linkId}`, label: `${label(w, names)} — passive loss suspended (§469)`, exact: dNeg(part), source: 'parameter', formula: `${suspended} unallowed × ${loss} ÷ ${remainingSum} (Form 8582 Wks 5; rental losses first reduced by the §469(i) allowance ${rental.used}, Wks 4)`, personId: w.share.personId });
     });
     if (options.magi != null || !needsMagi) {
       const allowanceNote = dIsPos(rental.used) ? ' and the §469(i) allowance ' + rental.used : '';
@@ -231,6 +249,8 @@ export function applyLossLimitations(income: AggregatedIncome, options: LossLimi
       });
       ctx.warn('TE_EXCESS_BUSINESS_LOSS', `Aggregate business loss ${dAbs(businessNet)} exceeds the §461(l) threshold ${eblThreshold}; ${excessBusinessLoss} is disallowed this year and becomes a net operating loss carryforward (not tracked).`, { excessBusinessLoss });
       notes.push(`Excess business loss (§461(l)): ${excessBusinessLoss} disallowed; treated as an NOL carryforward (not tracked).`);
+      ctx.info('TE_EBL_QBI_TIMING', `The §461(l) disallowed loss ${excessBusinessLoss} still reduces this year's qualified business income; Reg. 1.199A-3(b)(1)(iv) takes it into QBI only in the year it is allowed, so the (untracked) QBI loss carryforward is overstated by up to that amount.`, { excessBusinessLoss });
+      notes.push(`QBI is figured before the §461(l) disallowance; the disallowed loss reduces QBI in the year it is allowed (Reg. 1.199A-3(b)(1)(iv)) — the QBI loss carryforward shown is overstated by up to ${excessBusinessLoss}.`);
     }
     ctx.trace.add({ step: STEP, id: 'ebl', label: 'Excess business loss disallowed (§461(l))', exact: excessBusinessLoss, source: 'parameter', formula: `max(0, business loss ${dAbs(businessNet)} − threshold ${eblThreshold})`, parameterKeys: [key] });
   }

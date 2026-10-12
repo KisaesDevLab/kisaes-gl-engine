@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { computeFederal } from './federal.js';
+import { TAX_ENGINE_VERSION } from './version.js';
 import { characters } from './income.js';
 import { dAdd, dDiv, dMul, dSub, dSum } from '../decimal.js';
 import type { EngineAdjustment, EngineEntity, EnginePerson, FederalEngineInput, ParameterMap } from './types.js';
@@ -59,6 +60,7 @@ const SEED_2026: Record<string, { value: unknown; status: 'verified' | 'unverifi
   'sch1a.car_interest.max': { value: 10000, status: 'verified' },
   'sch1a.car_interest.phaseout_threshold.mfj': { value: 200000, status: 'verified' },
   'sch1a.car_interest.phaseout_rate': { value: 0.2, status: 'verified' },
+  'sch1a.phaseout_step': { value: 1000, status: 'unverified' },
   'sch1a.first_year': { value: 2025, status: 'verified' },
   'sch1a.last_year': { value: 2028, status: 'verified' },
   'qbi.rate': { value: 0.2, status: 'verified' },
@@ -333,6 +335,31 @@ describe('Rivera golden (rivera_expected.json)', () => {
     expect(Number(r.regularTax.tax)).toBe(ai['annualized_income_tax']);
     expect(Number(r.seTax)).toBe(ai['annualized_se_tax']);
     expect(Number(r.federalTotal)).toBe(ai['annualized_total_tax']);
+  });
+
+  it('R2-04: the result carries the engine version, which was bumped past the Phase 6 string', () => {
+    const r = run(BASE);
+    expect(r.engineVersion).toBe(TAX_ENGINE_VERSION);
+    expect(TAX_ENGINE_VERSION).toMatch(/^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/);
+    expect(TAX_ENGINE_VERSION).not.toBe('0.6.0');
+    expect(TAX_ENGINE_VERSION).toBe('1.0.0-rc.1');
+  });
+
+  it('R2-11: a standard-deduction return with no itemized inputs does not read the itemized parameters', () => {
+    const r = run(BASE);
+    const keys = r.parametersUsed.map((u) => u.key);
+    expect(keys).not.toContain('itemized.benefit_cap_rate');
+    expect(keys).not.toContain('salt.cap.standard');
+    expect(r.deductions.itemized.total).toBe('0');
+    expect(r.deductions.chosen).toBe('standard');
+  });
+
+  it('R2-22: outside W-2 wages without Social Security wages default to box 1 with an info when the person has SE income', () => {
+    const input = riveraInput(BASE);
+    input.persons[0]!.w2Wages = '30000';
+    const r = computeFederal(input);
+    expect(r.warnings.some((w) => w.code === 'TE_SS_WAGES_DEFAULTED' && w.details?.['personId'] === CARLOS)).toBe(true);
+    expect(run(BASE).warnings.some((w) => w.code === 'TE_SS_WAGES_DEFAULTED')).toBe(false);
   });
 
   it('the embedded parameter values equal the shipped 2026 seed file', () => {

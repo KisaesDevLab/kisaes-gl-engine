@@ -13,7 +13,15 @@
 //            amounts (Q13a, assumption); tax on annualized taxable income;
 //            × applicable percentage (`sch_ai.applicable_pcts`) = line 22.
 //   Part II  SE tax on the PERIOD net earnings against the wage base prorated
-//            by `sch_ai.period_months`/12, then × factor (line 15).
+//            by `sch_ai.period_months`/12, then × factor (line 15) — rebuilt from
+//            the engine's EXACT per-person SE income / Social Security wages (R2-07).
+//   SEHI     a column deducts the period's premiums for the months deductible
+//            WITHIN the period, annualized (Sch AI line 4): the eligible-month
+//            fraction is applied here and the column sees every month as
+//            deductible, so the engine does not apply the year fraction again (R2-05).
+//   Column warnings (other than the D12a parameter ones) are forwarded to the
+//            estimate context tagged with the period; column parameter reads are
+//            unioned into the estimate's `parametersUsed` (R2-06).
 //   Lines 23–27: per installment the lesser of the annualized amount or the
 //            regular installment with recapture of the regular amount skipped
 //            in an earlier column (line 26).
@@ -63,15 +71,22 @@ export const CCORP_SCH_AI_POLICY: SchAiPolicy = {
 const scale = (v: string, f: Dec): string => dMul(dec(v), f);
 const scaleNullable = (v: string | null, f: Dec): string | null => (v == null ? null : scale(v, f));
 
-function annualizeEntity(e: EngineEntity, f: Dec): EngineEntity {
+/** Fraction of the period's SEHI premiums that is deductible: eligible months within the period ÷ period months (null = leave to the engine). */
+type SehiFractionFor = (personId: string | null, entity: EngineEntity | null) => Dec | null;
+
+function annualizeEntity(e: EngineEntity, f: Dec, sehiFraction: SehiFractionFor): EngineEntity {
   const chars = (c: EngineEntity['ytd']): EngineEntity['ytd'] => Object.fromEntries(Object.entries(c).map(([k, v]) => [k, scale(v, f)])) as EngineEntity['ytd'];
+  const sehi = (o: EngineEntity['ownerItems'][number]): string => {
+    const fraction = sehiFraction(o.personId, e);
+    return fraction == null ? scale(o.sehi, f) : scale(o.sehi, dMul(f, fraction));
+  };
   return {
     ...e,
     monthsElapsed: FULL_YEAR_MONTHS,
     monthsRemaining: 0,
     ytd: chars(e.ytd),
     recurringYtd: chars(e.recurringYtd),
-    ownerItems: e.ownerItems.map((o) => ({ ...o, sehi: scale(o.sehi, f), retirement: scale(o.retirement, f), sehiAsW2Wages: scale(o.sehiAsW2Wages, f) })),
+    ownerItems: e.ownerItems.map((o) => ({ ...o, sehi: sehi(o), retirement: scale(o.retirement, f), sehiAsW2Wages: scale(o.sehiAsW2Wages, f) })),
     guaranteedPayments: e.guaranteedPayments.map((g) => ({ ...g, amount: scale(g.amount, f) })),
     officerWages: e.officerWages.map((w) => ({ ...w, amount: scale(w.amount, f) })),
     taxDepreciationBookYtd: scale(e.taxDepreciationBookYtd, f),
@@ -79,9 +94,11 @@ function annualizeEntity(e: EngineEntity, f: Dec): EngineEntity {
   };
 }
 
-function annualizePerson(p: EnginePerson, f: Dec): EnginePerson {
+function annualizePerson(p: EnginePerson, f: Dec, sehiFraction: Dec | null): EnginePerson {
   return {
     ...p,
+    // With a period month count the column's SEHI months are all deductible (the period fraction is pre-applied to the premiums).
+    sehiEligibleMonths: sehiFraction == null ? p.sehiEligibleMonths : new Array<boolean>(FULL_YEAR_MONTHS).fill(true),
     w2Wages: scale(p.w2Wages, f),
     w2SocialSecurityWages: scaleNullable(p.w2SocialSecurityWages, f),
     retirementEmployeeDeferral: scaleNullable(p.retirementEmployeeDeferral, f),
@@ -90,8 +107,35 @@ function annualizePerson(p: EnginePerson, f: Dec): EnginePerson {
   };
 }
 
-function annualizeAdjustment(a: EngineAdjustment, f: Dec): EngineAdjustment {
-  return { ...a, amount: scale(a.amount, f) };
+const SEHI_ADJUSTMENT_CODE = 'owner_health_insurance';
+
+function annualizeAdjustment(a: EngineAdjustment, f: Dec, sehiFraction: SehiFractionFor): EngineAdjustment {
+  const fraction = a.kind === 'deduction' && a.typeCode === SEHI_ADJUSTMENT_CODE ? sehiFraction(a.personId, null) : null;
+  return { ...a, amount: scale(a.amount, fraction == null ? f : dMul(f, fraction)) };
+}
+
+/**
+ * Per-person deductible fraction of the period's SEHI premiums (R2-05): eligible
+ * months among the first `periodMonths` ÷ `periodMonths`. A null-person owner item
+ * resolves like the engine's ownerPerson (single link → that person, else primary);
+ * an unknown person resolves to the primary. null when no period month count is
+ * known (C corp policy) or the flags are malformed (the engine warns about those).
+ */
+function sehiFractionResolver(actuals: FederalEngineInput, periodMonths: number | null | undefined): SehiFractionFor {
+  if (periodMonths == null || periodMonths <= 0 || periodMonths >= FULL_YEAR_MONTHS) return () => null;
+  const primary = actuals.persons.find((p) => p.role === 'primary') ?? actuals.persons[0];
+  const fractions = new Map<string, Dec | null>();
+  for (const p of actuals.persons) {
+    if (p.sehiEligibleMonths.length !== FULL_YEAR_MONTHS) { fractions.set(p.personId, null); continue; }
+    const eligible = p.sehiEligibleMonths.slice(0, periodMonths).filter((m) => m === true).length;
+    fractions.set(p.personId, dDiv(String(eligible), String(periodMonths)));
+  }
+  return (personId, entity) => {
+    let pid = personId;
+    if (pid == null && entity && entity.links.length === 1) pid = entity.links[0]!.personId;
+    if (pid == null || !fractions.has(pid)) pid = primary?.personId ?? null;
+    return pid == null ? null : (fractions.get(pid) ?? null);
+  };
 }
 
 /** Credits stay full-year (Q13b); itemized deductions and preferential-gain splits are annualized (Sch AI line 4). */
@@ -108,16 +152,21 @@ function annualizeYear(y: EngineYearInputs, f: Dec): EngineYearInputs {
  * Period actuals (Jan 1 – period end) → the annualized full-year scenario the
  * federal engine prices: every book / owner / wage / adjustment flow × factor,
  * months set to a closed year so nothing is projected again; the standard
- * deduction, credits, UBIA, eligibility flags and rate mode are untouched.
+ * deduction, credits, UBIA and rate mode are untouched. With `periodMonths`
+ * the SEHI premiums are first reduced to the period's deductible fraction and
+ * the column's eligibility flags set to all-deductible (R2-05); without it (C corp
+ * policy, legacy callers) the flags pass through unchanged.
  * Add a field here when a new money flow joins the engine input.
  */
-export function annualizeFederalInput(actuals: FederalEngineInput, factor: Dec): FederalEngineInput {
+export function annualizeFederalInput(actuals: FederalEngineInput, factor: Dec, periodMonths?: number | null): FederalEngineInput {
   const f = dec(factor);
+  const sehiFraction = sehiFractionResolver(actuals, periodMonths);
+  const flagsHandled = periodMonths != null && periodMonths > 0 && periodMonths < FULL_YEAR_MONTHS;
   return {
     ...actuals,
-    persons: actuals.persons.map((p) => annualizePerson(p, f)),
-    entities: actuals.entities.map((e) => annualizeEntity(e, f)),
-    adjustments: actuals.adjustments.map((a) => annualizeAdjustment(a, f)),
+    persons: actuals.persons.map((p) => annualizePerson(p, f, flagsHandled && p.sehiEligibleMonths.length === FULL_YEAR_MONTHS ? sehiFraction(p.personId, null) : null)),
+    entities: actuals.entities.map((e) => annualizeEntity(e, f, sehiFraction)),
+    adjustments: actuals.adjustments.map((a) => annualizeAdjustment(a, f, sehiFraction)),
     year: annualizeYear(actuals.year, f),
   };
 }
@@ -225,7 +274,7 @@ export const SCH_AI_ASSUMPTIONS = {
   qbi: 'Q13a: the §199A deduction in each Schedule AI column is figured on the annualized amounts (Schedule AI line 9).',
   credits: 'Q13b: credits in each column are the FULL-YEAR credits, not annualized (Schedule AI line 19); the standard deduction is the full-year amount (line 7).',
   seDeduction: 'The deductible part of SE tax in each column follows the engine\'s SE tax on the annualized inputs; it equals Part II when the factor is 12 ÷ months.',
-  itemized: 'Itemized deductions, HSA, retirement deferrals and Schedule 1-A amounts are annualized with the income (Schedule AI line 4); UBIA is not.',
+  itemized: 'Itemized deductions, HSA, retirement deferrals and Schedule 1-A amounts are annualized with the income (Schedule AI line 4); UBIA is not. Self-employed health insurance in a column is the period\'s premiums for the months deductible within the period, annualized.',
 } as const;
 
 const R = dRoundDollars;
@@ -239,10 +288,12 @@ function partIi(result: FederalResult, factor: Dec, months: number, ctx: Estimat
   const wageBase = p.money('se.ss_wage_base');
   const prorated = dDiv(dMul(wageBase, String(months)), MONTHS_PER_YEAR);
   return result.persons.map((person) => {
-    const seIncomeA = dec(person.seIncome);
+    // Exact per-person figures (R2-07): rounding the annualized SE income first would drift line 15 by ±$1, and
+    // box-1 wages overstate the wage-base offset (the >2% health add-on is not Social Security wages).
+    const seIncomeA = dec(person.exact.seIncome);
     const periodSeIncome = dDiv(seIncomeA, factor);
     const periodNese = dIsPos(periodSeIncome) ? dMul(periodSeIncome, neseFactor) : ZERO;
-    const periodSsWages = dDiv(dec(person.totalWages), factor);
+    const periodSsWages = dDiv(dec(person.exact.socialSecurityWages), factor);
     const remainingBase = dFloorZero(dSub(prorated, periodSsWages));
     const periodSeTax = dAdd(dMul(ssRate, dMin(periodNese, remainingBase)), dMul(medicareRate, periodNese));
     return { personId: person.personId, periodSeIncome, periodNese, proratedWageBase: prorated, periodSocialSecurityWages: periodSsWages, periodSeTax, annualizedSeTax: dMul(periodSeTax, factor) };
@@ -293,8 +344,17 @@ export function computeScheduleAi(input: ScheduleAiInput, ctx: EstimateContext):
       continue;
     }
 
-    const scenario = isLast ? actuals : annualizeFederalInput(actuals, factor);
+    const scenario = isLast ? actuals : annualizeFederalInput(actuals, factor, months);
     const result = isLast && input.baseResult ? input.baseResult : input.calc(scenario);
+    if (!isLast) {
+      // R2-06: a condition that exists only in this column (SEHI capped, SALT phased down, W-2 missing above the
+      // threshold …) must reach the assumptions page; the full-year column's warnings belong to the federal result.
+      for (const w of result.warnings ?? []) {
+        if (w.code === 'TE_PARAM_UNVERIFIED') continue; // covered by the parameter union below, once per key
+        ctx.warn(w.code, `Schedule AI period ${i + 1} (through ${periodEnd}): ${w.message}`, { ...(w.details ?? {}), period: i + 1 }, w.severity);
+      }
+      ctx.params.noteUsed(result.parametersUsed ?? []);
+    }
     const engineSeTax = dec(result.exact.seTax);
     const pii = months != null ? partIi(result, factor, months, ctx) : [];
     const partIiSeTax = months != null ? dSum(pii.map((x) => x.annualizedSeTax)) : engineSeTax;

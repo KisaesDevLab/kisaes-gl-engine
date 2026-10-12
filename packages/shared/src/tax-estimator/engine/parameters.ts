@@ -132,6 +132,15 @@ export class ParameterReader {
   moneyListFs(base: string, fs: FilingStatus): Dec[] { return this.moneyList(filingStatusKey(base, fs)); }
   bracketsFs(base: string, fs: FilingStatus): BracketRow[] { return this.brackets(filingStatusKey(base, fs)); }
 
+  /**
+   * Record parameter uses made by a NESTED calculation (a Schedule AI column priced
+   * by the federal engine on its own context) so `used()` / `warnings()` cover
+   * them too — each key once, the first status seen wins (R2-06).
+   */
+  noteUsed(uses: ReadonlyArray<ParameterUse>): void {
+    for (const u of uses) if (!this.usedKeys.has(u.key)) this.usedKeys.set(u.key, { key: u.key, status: u.status, value: u.value });
+  }
+
   /** Every parameter read so far, in first-read order. */
   used(): ParameterUse[] {
     return [...this.usedKeys.values()];

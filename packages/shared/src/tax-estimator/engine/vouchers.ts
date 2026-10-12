@@ -108,7 +108,7 @@ export interface VoucherInstallment {
   netRequired: Dec;
   /** Estimated-tax payments applied to this installment. */
   estimatesApplied: Dec;
-  /** Still unpaid as of the return due date, given the payments known. */
+  /** Still unpaid after every KNOWN payment (a payment dated after the return due date still reduces it; the penalty accrual stops at the return due date regardless — R2-10). */
   unpaid: Dec;
   /** Amount to pay with this voucher to be current: its own unpaid balance plus every earlier installment's. */
   catchUpAmount: Dec;
@@ -228,6 +228,7 @@ function runPipeline(p: PipelineInput): JurisdictionEstimate {
       index: i, label: installmentLabel(i, n), dueDate: schedule.dueDates[i] as string, statutoryDueDate: schedule.statutoryDueDates[i] as string,
       regularInstallment: R(regular[i] as Dec), annualizedInstallment: annualized == null ? null : R(annualized), required: a.required,
       withholdingShare: R(shares[i] as Dec), carriedIn: a.carriedIn, netRequired: a.netRequired, estimatesApplied: R(estimates), unpaid: a.unpaidAtEnd, catchUpAmount: R(cumulativeUnpaid),
+      // 'paid' = fully covered by known payments, even one dated after the return due date (the penalty still ran to that date).
       paidInFullOn: a.paidInFullOn, status: dIsPos(a.exact.unpaidAtEnd) ? 'unpaid' : 'paid',
       exact: { regularInstallment: regular[i] as Dec, annualizedInstallment: annualized, required: a.exact.required, netRequired: a.exact.netRequired, carriedIn: a.exact.carriedIn, unpaid: a.exact.unpaidAtEnd, catchUpAmount: cumulativeUnpaid },
     };
@@ -427,6 +428,20 @@ function stateSafeHarborRates(rules: StateRuleReader, filingStatus: FilingStatus
   return { currentPct, priorPct, priorPctHighAgi, highAgiThreshold, priorHarborCurrentAgiCutoff: cutoff, keys, priorUnavailableReason: null };
 }
 
+/** Rates for a state without a quarterly regime: nothing is required, so a cited null current pct reads as 0 instead of throwing (R2-18). */
+function noRegimeSafeHarborRates(rules: StateRuleReader, state: string): SafeHarborRates {
+  const currentPct = rules.money(SK.currentPct) ?? ZERO;
+  const priorPct = rules.money(SK.priorPct);
+  return { currentPct, priorPct, priorPctHighAgi: null, highAgiThreshold: null, priorHarborCurrentAgiCutoff: null, keys: [SK.estimatesRequired, SK.currentPct, SK.priorPct], priorUnavailableReason: priorPct == null ? `${state} has no quarterly estimate regime.` : null };
+}
+
+/** R2-19: no state Schedule AI equivalent is computed; say so on the assumptions page. */
+function noAnnualizationNote(state: string, ctx: EstimateContext): string {
+  const note = `${state}: installments use the regular method only; annualized-income installments (the state's Schedule AI equivalent, where it allows one) are not computed, so a federal Schedule AI reduction does not carry to the state vouchers.`;
+  ctx.info('TE_STATE_NO_ANNUALIZATION', note, { state });
+  return note;
+}
+
 function stateSchedule(rules: StateRuleReader, ctx: EstimateContext): Schedule {
   const statutory = ruleDateList(rules, SK.dueDates);
   const pcts = ruleRateList(rules, SK.pcts);
@@ -514,12 +529,14 @@ export function computeStateEstimates(input: StateEstimatesInput): JurisdictionE
     const schedule = federalSchedule(ctx, INDIVIDUAL_INSTALLMENT_POLICY);
     const req = federalRequirement(safeHarbor, INDIVIDUAL_SAFE_HARBOR_POLICY, input.stateTax, input.withholding, ctx, state);
     const gateOff = input.gate?.required === false;
+    const notes = [`${state}: federal pattern applied (no verified state rules). Verify.`];
+    if (req.required && !gateOff) notes.push(noAnnualizationNote(state, ctx));
     return runPipeline({
       jurisdiction: state, ctx, safeHarbor, schedule, withholding: dec(input.withholding), payments: input.payments.filter((p) => p.jurisdiction === state),
       priorYearOverpayment: overpaymentFor(input, ctx), scheduleAi: null, rateOn: federalRateLookup(ctx), penaltyMethod: DEFAULT_PENALTY_METHOD,
       waiver: gateOff ? { reason: 'estimates_not_required', detail: `${state} does not require estimated payments from this taxpayer.` } : req.waiver,
       estimatesRequired: req.required && !gateOff, estimatesRequiredReason: gateOff ? `${state}: estimates are not required (${input.gate?.method}).` : req.reason,
-      usesFederalFallback: true, verify: true, notes: [`${state}: federal pattern applied (no verified state rules). Verify.`],
+      usesFederalFallback: true, verify: true, notes,
     });
   }
 
@@ -533,12 +550,12 @@ export function computeStateEstimates(input: StateEstimatesInput): JurisdictionE
     });
   }
 
-  const rates = stateSafeHarborRates(rules, input.filingStatus, ctx);
-  const safeHarbor = { ...resolveSafeHarbor({ jurisdiction: state, currentYearTax: input.stateTax, currentYearAgi: input.currentYearAgi, priorYear: input.priorYear, rule: input.rule, ruleSource: input.ruleSource, rates }, ctx), policy: `${state} state_estimate_rules` };
-
-  // No quarterly regime (ID, UT): no vouchers, no penalty.
+  // No quarterly regime (ID, UT): no vouchers, no penalty. Decided BEFORE the safe-harbor rates are read, because a
+  // no-regime row may carry a cited null safe_harbor.current_pct (R2-18) — the safe harbor shown is informational.
   const estimatesRegime = rules.bool(SK.estimatesRequired) !== false && j.estimatesRequired;
   if (!estimatesRegime) {
+    const rates = noRegimeSafeHarborRates(rules, state);
+    const safeHarbor = { ...resolveSafeHarbor({ jurisdiction: state, currentYearTax: input.stateTax, currentYearAgi: input.currentYearAgi, priorYear: input.priorYear, rule: input.rule, ruleSource: input.ruleSource, rates }, ctx), policy: `${state} state_estimate_rules (no quarterly regime)` };
     return runPipeline({
       jurisdiction: state, ctx, safeHarbor, schedule: { statutoryDueDates: [], dueDates: [], pcts: [], returnDueDate: ruleDate(rules, SK.returnDueDate) ?? ctx.params.date(KEY_RETURN_DUE_DATE), reliefDate: null, keys: [], ruleKeys: [SK.estimatesRequired] },
       withholding: dec(input.withholding), payments: [], priorYearOverpayment: null, scheduleAi: null, rateOn: () => ({ rate: null, covered: true, keys: [] }), penaltyMethod: DEFAULT_PENALTY_METHOD,
@@ -547,12 +564,15 @@ export function computeStateEstimates(input: StateEstimatesInput): JurisdictionE
     });
   }
 
+  const rates = stateSafeHarborRates(rules, input.filingStatus, ctx);
+  const safeHarbor = { ...resolveSafeHarbor({ jurisdiction: state, currentYearTax: input.stateTax, currentYearAgi: input.currentYearAgi, priorYear: input.priorYear, rule: input.rule, ruleSource: input.ruleSource, rates }, ctx), policy: `${state} state_estimate_rules` };
   const schedule = stateSchedule(rules, ctx);
   const req = stateRequirement(input, rules, safeHarbor, ctx);
   const rate = stateRateLookup(rules, ctx);
   const method = statePenaltyMethod(rules);
   const notes = [...rate.notes];
   if (method !== DEFAULT_PENALTY_METHOD) notes.push(`${state} accrues its underpayment penalty as ${method}; add-ons and caps are not modelled.`);
+  if (req.required) notes.push(noAnnualizationNote(state, ctx));
   return runPipeline({
     jurisdiction: state, ctx, safeHarbor, schedule, withholding: dec(input.withholding), payments: input.payments.filter((p) => p.jurisdiction === state),
     priorYearOverpayment: overpaymentFor(input, ctx), scheduleAi: null, rateOn: rate.rateOn, penaltyMethod: method, waiver: req.waiver,

@@ -9,6 +9,10 @@
 //
 // Internal amounts are unrounded decimal strings; federal.ts rounds for the
 // result DTO. Character amounts are profit-positive (a loss is negative).
+// The dividend characters are EXCLUSIVE buckets (R2-01): `dividends_ordinary`
+// holds non-qualified dividends only, `dividends_qualified` the qualified ones;
+// total dividends = the two added. Every producer (P&L provider, adjustments)
+// writes exactly one bucket, so `sumCharacters` never double counts.
 
 import type { ActivityType, EntityTaxType } from '../types.js';
 import { INCOME_CHARACTERS, type CharacterAmounts, type IncomeCharacter } from '../entities-api.js';
@@ -168,7 +172,6 @@ function applyLinkAdjustments(share: CharacterAmounts, seIncome: Dec, fraction: 
       character = 'ordinary';
     }
     out = { ...out, [character]: dAdd(out[character], effect) };
-    if (character === 'dividends_qualified') out = { ...out, dividends_ordinary: dAdd(out.dividends_ordinary, effect) };
     if (a.affectsSe && character === 'ordinary') se = dAdd(se, effect);
     ctx.trace.add({
       step: STEP_ALLOCATE, id: `adjustment.${a.id}`, label: `${a.label} (${e.companyName})`, exact: effect, source: 'adjustment',
@@ -211,6 +214,9 @@ export function allocateEntity(e: EngineEntity, adjustments: EngineAdjustment[],
 
   const fractions = linkFractions(e, ctx);
   const useLoss = dIsNeg(projectedProfit);
+  if (useLoss && INCOME_CHARACTERS.some((k) => dIsPos(projected[k]))) {
+    ctx.info('TE_LOSS_PCT_ALL_ITEMS', `${e.companyName}: the entity has a net loss, so every item — including its positive items — is allocated by the loss %, not item by item (MODULE.md step 2).`, { entityId: eid });
+  }
   const gpByPerson = new Map<string, Dec>();
   for (const g of e.guaranteedPayments) sumTo(gpByPerson, ownerPerson(e, g.personId, ctx), projectWhole(g.amount, e));
   const wagesByPerson = new Map<string, Dec>();
@@ -262,7 +268,8 @@ export function allocateEntity(e: EngineEntity, adjustments: EngineAdjustment[],
       profitFraction: ZERO, lossFraction: ZERO, share: characters({}), guaranteedPayment: gpByPerson.get(pid) ?? ZERO,
       officerWages: wagesByPerson.get(pid) ?? ZERO, sehiAsW2Wages: sehiW2ByPerson.get(pid) ?? ZERO, ownerSehi: sehiByPerson.get(pid) ?? ZERO,
       ownerRetirement: retirementByPerson.get(pid) ?? ZERO, seIncome: seIncomeFor(e.entityType, null, ZERO, gpByPerson.get(pid) ?? ZERO),
-      qbiEligible: null, activeParticipation: false, allowedLossOverride: null,
+      // Not a trade-or-business interest: a guaranteed payment is never QBI and the share holds no items.
+      qbiEligible: false, activeParticipation: false, allowedLossOverride: null,
     });
     linked.add(pid);
   }
@@ -350,6 +357,7 @@ export function aggregatePersons(entities: AllocatedEntity[], persons: EnginePer
         ctx.trace.add({ step: STEP_INCOME, id: `adjustment.${a.id}`, label: a.label, exact: dNeg(a.amount), source: 'adjustment', formula: 'above-the-line deduction', personId: a.personId });
       } else {
         itemizedOther = dAdd(itemizedOther, a.amount);
+        ctx.warn('TE_ADJUSTMENT_UNLINKED_DEDUCTION', `${a.label}: a deduction with no entity link that is not above the line is treated as an itemized deduction (other) — it is not SE, QBI or §461(l) business income. Link it to an entity if it is a business deduction.`, { adjustmentId: a.id }, 'info');
         ctx.trace.add({ step: STEP_INCOME, id: `adjustment.${a.id}`, label: a.label, exact: dNeg(a.amount), source: 'adjustment', formula: 'itemized deduction (other)', personId: a.personId });
       }
       continue;
@@ -357,7 +365,6 @@ export function aggregatePersons(entities: AllocatedEntity[], persons: EnginePer
     const effect = adjustmentEffect(a);
     const character = a.kind === 'income' ? adjustmentCharacter(a) : 'ordinary';
     p.character = { ...p.character, [character]: dAdd(p.character[character], effect) };
-    if (character === 'dividends_qualified') p.character = { ...p.character, dividends_ordinary: dAdd(p.character.dividends_ordinary, effect) };
     if (a.isReitDividend) p.reitDividends = dAdd(p.reitDividends, effect);
     if (a.isPtp) p.ptpIncome = dAdd(p.ptpIncome, effect);
     if (a.affectsSe && character === 'ordinary') p.seIncome = dAdd(p.seIncome, effect);
@@ -378,7 +385,9 @@ export interface IncomeExact {
   guaranteedPayments: Dec;
   rental: Dec;
   interest: Dec;
+  /** Total dividends (ordinary + qualified buckets, which are exclusive). */
   dividends: Dec;
+  /** The qualified part of `dividends`. */
   qualifiedDividends: Dec;
   capitalGainShortTerm: Dec;
   capitalGainLongTerm: Dec;
@@ -418,10 +427,12 @@ export function netIncome(persons: PersonIncome[], ctx: EngineContext): IncomeEx
   }
   const netLongTermGainForWorksheet = dIsPos(lt) && dIsPos(netGain) ? dMin(lt, netGain) : ZERO;
 
-  const totalIncome = dSum([wages, businessOrdinary, total.rental, total.interest, total.dividends_ordinary, capitalGainNet]);
+  // The dividend buckets are EXCLUSIVE (R2-01): `dividends` is the Form 1040 line 3b total, `qualifiedDividends` the line 3a part of it.
+  const dividends = dAdd(total.dividends_ordinary, total.dividends_qualified);
+  const totalIncome = dSum([wages, businessOrdinary, total.rental, total.interest, dividends, capitalGainNet]);
   ctx.trace.add({ step: STEP_INCOME, id: 'total_income', label: 'Total income', exact: totalIncome, source: 'gl_map', formula: 'wages + business + rental + interest + dividends + net capital gain' });
   return {
-    wages, businessOrdinary, guaranteedPayments, rental: total.rental, interest: total.interest, dividends: total.dividends_ordinary,
+    wages, businessOrdinary, guaranteedPayments, rental: total.rental, interest: total.interest, dividends,
     qualifiedDividends: total.dividends_qualified, capitalGainShortTerm: st, capitalGainLongTerm: lt, section1231: s1231,
     capitalGainNet, capitalLossDisallowed: disallowed, otherIncome: ZERO, totalIncome, netLongTermGainForWorksheet,
   };

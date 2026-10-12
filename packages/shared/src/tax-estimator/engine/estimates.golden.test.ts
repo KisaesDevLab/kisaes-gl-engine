@@ -100,6 +100,35 @@ function federalInput(withQ4: boolean, over: Partial<FederalEstimatesInput> = {}
   };
 }
 
+describe('R2-05 / R2-07: Schedule AI columns with the real engine', () => {
+  it('level income: period 3 reproduces the full-year figures exactly, so Part II never differs from the engine SE tax', () => {
+    const est = computeFederalEstimates(federalInput(false));
+    expect(est.warnings.filter((w) => w.code === 'TE_SCH_AI_SE_PART2_DIFFERS')).toEqual([]);
+    const p3 = est.scheduleAi!.periods[2]!;
+    expect(p3.annualizedAgi).toBe(baseResult.agi);
+    expect(p3.annualizedSeTax).toBe(baseResult.seTax);
+    expect(p3.engineSeTax).toBe(baseResult.seTax);
+    // Part II reads the exact per-person figures (R2-07): Carlos 128,000 ÷ 1.5 SE income, Maria 54,000 ÷ 1.5 Social Security wages.
+    const carlos = p3.partIi.find((x) => x.personId === CARLOS)!;
+    const maria = p3.partIi.find((x) => x.personId === MARIA)!;
+    expect(carlos.periodSeIncome).toBe(dDiv('128000', '1.5'));
+    expect(maria.periodSocialSecurityWages).toBe(dDiv('54000', '1.5'));
+  });
+
+  it('SEHI deductible Jan–Mar only: column 3 annualizes the period deduction (7,200 × 3/8 × 1.5 = 4,050) while the full year deducts 2,700', () => {
+    const flags = allMonths(); flags[3] = flags[4] = flags[5] = flags[6] = flags[7] = flags[8] = flags[9] = flags[10] = flags[11] = false;
+    const withFlags = (i: FederalEngineInput): FederalEngineInput => ({ ...i, persons: i.persons.map((p) => (p.personId === CARLOS ? { ...p, sehiEligibleMonths: [...flags] } : p)) });
+    const full = computeFederal(withFlags(base));
+    expect(full.adjustmentsToIncome.sehi).toBe('2700');
+    const est = computeFederalEstimates(federalInput(false, { currentYearTax: full.federalTotal, currentYearAgi: full.exact.agi, scheduleAi: { base: withFlags(base), baseResult: full, periodActuals: [null, null, withFlags(rivera(8))], calc: computeFederal } }));
+    const p3 = est.scheduleAi!.periods[2]!;
+    expect(Number(p3.annualizedAgi)).toBe(Number(full.agi) - (4050 - 2700));
+    expect(Number(p3.annualizedAgi)).toBeLessThanOrEqual(Number(full.agi));
+    // R2-06: the column's own SEHI warning is NOT raised (all column months deductible); the full-year warning belongs to the federal result.
+    expect(est.warnings.filter((w) => w.code === 'TE_SEHI_MONTHS_EXCLUDED')).toEqual([]);
+  });
+});
+
 describe('Rivera federal estimates (oracle safe_harbor + schedule_ai_period3 blocks)', () => {
   it('the base engine still matches the oracle federal total (precondition)', () => {
     expect(baseResult.federalTotal).toBe(String(BASE['federal_total']));
@@ -310,6 +339,27 @@ describe('Rivera state estimates (oracle missouri block + AR)', () => {
     expect(r.estimatesRequired).toBe(false);
     expect(r.installments).toEqual([]);
     expect(r.estimatesRequiredReason).toMatch(/no quarterly/);
+    expect(r.warnings.some((w) => w.code === 'TE_STATE_NO_ANNUALIZATION')).toBe(false);
+  });
+
+  it('R2-18: a no-regime state with a cited null safe_harbor.current_pct does not throw — the regime check runs first', () => {
+    const r = computeStateEstimates(stateInput({ state: 'UT', jurisdiction: juris('UT', rules({ ...MO_RULES, estimates_required: false, 'safe_harbor.current_pct': null, 'safe_harbor.prior_pct': null, 'installments.due_dates': null, 'installments.pcts': null }), { estimatesRequired: false }), gate: null }));
+    expect(r.estimatesRequired).toBe(false);
+    expect(r.installments).toEqual([]);
+    expect(r.penalty).toBeNull();
+    expect(r.safeHarbor.currentYear.amount).toBe('0');
+    expect(r.estimatesRequiredReason).toMatch(/no quarterly/);
+  });
+
+  it('R2-19: a state with a quarterly regime notes that annualized-income installments are not computed for it', () => {
+    const r = computeStateEstimates(stateInput({}));
+    expect(r.scheduleAi).toBeNull();
+    const w = r.warnings.find((x) => x.code === 'TE_STATE_NO_ANNUALIZATION');
+    expect(w).toBeDefined();
+    expect(w!.severity).toBe('info');
+    expect(r.notes.some((n) => /annualized/i.test(n))).toBe(true);
+    const fallback = computeStateEstimates(stateInput({ state: 'XX', jurisdiction: null, gate: null }));
+    expect(fallback.warnings.some((x) => x.code === 'TE_STATE_NO_ANNUALIZATION')).toBe(true);
   });
 
   it('state high-AGI rule and CA-style current-AGI cutoff are read from safe_harbor.high_agi_rule', () => {
@@ -324,7 +374,8 @@ describe('Rivera state estimates (oracle missouri block + AR)', () => {
     const r = computeStateEstimates(stateInput({ jurisdiction: juris('MO', rules({ ...MO_RULES, holidays: ['2026-04-15'], 'penalty.rate_source': 'federal' })), payments: [pay('late', '2026-07-15', '1207.75', 'MO')] }));
     expect(r.installments[0]!.dueDate).toBe('2026-04-16');
     expect(r.installments[0]!.statutoryDueDate).toBe('2026-04-15');
-    expect(r.penalty!.installments[0]!.segments.map((s) => [s.from, s.rate])).toEqual([['2026-04-16', '0.06'], ['2026-06-15', '0.06'], ['2026-07-01', '0.07']]);
+    // R2-09: Form 2210 day convention — the Jun 30 → Jul 1 day already carries the Q3 rate.
+    expect(r.penalty!.installments[0]!.segments.map((s) => [s.from, s.rate])).toEqual([['2026-04-16', '0.06'], ['2026-06-15', '0.06'], ['2026-06-30', '0.07']]);
     expect(r.parametersUsed.some((u) => u.key === 'penalty.underpayment_rate')).toBe(true);
   });
 });
