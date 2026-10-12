@@ -13,6 +13,7 @@ import { entitiesRouter } from './tax-estimator/entities.routes.js';
 import { stateRulesRouter } from './tax-estimator/state-rules.routes.js';
 import { yearsRouter } from './tax-estimator/years.routes.js';
 import { estimateRouter } from './tax-estimator/estimate.routes.js';
+import { pdfRouter } from './tax-estimator/pdf.routes.js';
 import { taxParameterYearParamsSchema } from '@kis-books/shared';
 import * as taxParametersService from '../services/tax-estimator/tax-parameters.service.js';
 
@@ -58,3 +59,4 @@ taxEstimatorRouter.use('/entities', entitiesRouter);
 taxEstimatorRouter.use('/state-rules', stateRulesRouter);
 taxEstimatorRouter.use('/', yearsRouter);
 taxEstimatorRouter.use('/', estimateRouter);
+taxEstimatorRouter.use('/', pdfRouter);
