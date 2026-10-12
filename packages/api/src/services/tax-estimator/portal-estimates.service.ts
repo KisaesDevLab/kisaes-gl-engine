@@ -33,7 +33,7 @@ import type {
   EstimateResultDTO, PortalShows, PortalTaxEstimateDTO, PortalTaxEstimateListItemDTO, PortalTaxEstimateResponseDTO,
   PortalTaxJurisdictionDTO,
 } from '@kis-books/shared';
-import { DEFAULT_DISCLAIMER_TEXT, STATE_NAMES, dRoundDollars, portalDefaultYear } from '@kis-books/shared';
+import { DEFAULT_DISCLAIMER_TEXT, STATE_NAMES, dRoundDollars, installmentsAsOf, portalDefaultYear } from '@kis-books/shared';
 import { db } from '../../db/index.js';
 import { portalContactCompanies, tenantFirmAssignments } from '../../db/schema/index.js';
 import { taxEstLinks, taxEstTaxpayerContacts, taxEstTaxpayers } from '../../db/schema/tax-estimator-taxpayers.js';
@@ -119,25 +119,31 @@ export function toPortalEstimate(r: EstimateResultDTO, meta: {
   today: string;
 }): PortalTaxEstimateDTO {
   const jurisdictions: PortalTaxJurisdictionDTO[] = [r.federalEstimates, ...r.stateEstimates].map((e) => {
-    const installments = e.estimatesRequired ? e.installments.map((i) => ({
-      label: i.label, dueDate: i.dueDate, amount: R(i.netRequired), paid: R(i.estimatesApplied), remaining: R(i.unpaid),
-      status: i.status, paidOn: i.paidInFullOn ?? null,
-    })) : [];
+    // QA2-01 / D13: status, paid, remaining, the next payment and the totals are all AS OF
+    // the client's today. The engine credits every known amount whatever its date (a
+    // post-dated payment, a later installment's withholding share), which would show a
+    // past-due installment as "Paid" on a future date. A frozen snapshot is projected the
+    // same way; its stored figures are not changed.
+    const asOf = e.payments ? installmentsAsOf(e, r.payments, meta.today) : null;
+    const rows = e.estimatesRequired ? e.installments.map((i, k) => {
+      const a = asOf?.installments[k];
+      return a
+        ? { label: i.label, dueDate: i.dueDate, amount: R(i.netRequired), paid: a.paid, remaining: a.remaining, status: a.status, paidOn: a.paidOn, catchUp: a.catchUpAmount }
+        : { label: i.label, dueDate: i.dueDate, amount: R(i.netRequired), paid: R(i.estimatesApplied), remaining: R(i.unpaid), status: i.status, paidOn: i.paidInFullOn ?? null, catchUp: R(i.catchUpAmount) };
+    }) : [];
     // QA D12: the next payment is the first installment due today or later that still needs money
     // (its catch-up amount carries any earlier unpaid balance). Past-due installments stay in the
     // list, flagged; they are never presented as the "next" date.
-    const next = e.estimatesRequired
-      ? e.installments.find((i) => i.dueDate >= meta.today && Number(i.catchUpAmount) > 0)
-      : undefined;
+    const next = rows.find((i) => i.dueDate >= meta.today && Number(i.catchUp) > 0);
     return {
       jurisdiction: e.jurisdiction,
       label: jurisdictionLabel(e.jurisdiction),
       estimatesRequired: e.estimatesRequired,
-      installments,
-      nextPayment: next ? { label: next.label, dueDate: next.dueDate, amount: R(next.catchUpAmount) } : null,
+      installments: rows.map(({ catchUp: _catchUp, ...i }) => i),
+      nextPayment: next ? { label: next.label, dueDate: next.dueDate, amount: next.catchUp } : null,
       totals: {
         required: R(e.totals.required), withholding: R(e.totals.withholding),
-        estimatesPaid: R(e.totals.estimatesPaid), remaining: R(e.totals.unpaid),
+        estimatesPaid: asOf ? asOf.estimatesPaid : R(e.totals.estimatesPaid), remaining: asOf ? asOf.remaining : R(e.totals.unpaid),
       },
     };
   });

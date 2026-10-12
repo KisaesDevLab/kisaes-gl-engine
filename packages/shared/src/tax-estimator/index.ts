@@ -26,3 +26,4 @@ export * from './decimal.js';
 export * from './assumptions.js';
 export * from './snapshots-api.js';
 export * from './portal-api.js';
+export * from './installments-as-of.js';
