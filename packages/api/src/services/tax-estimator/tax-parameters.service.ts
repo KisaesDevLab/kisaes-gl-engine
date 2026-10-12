@@ -15,7 +15,7 @@
 // change is written to audit_log under the all-zero tenant id with entity
 // type 'tax_parameter'. The DTO-level operation lives in after_data.op.
 
-import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
 import {
   expandParameterKeys, getParameterDef, isParameterKey, validateParameterValue, deriveFederalDates,
   type ParameterSeedRow, type ParameterStatus,
@@ -304,50 +304,104 @@ const cleanNote = (note: string | undefined): string | null => {
   return t === '' ? null : t;
 };
 
+/** jsonb equality (semantic: 1.0 = 1, key order ignored, array order significant) against a JS value. */
+const jsonbEquals = (column: Parameters<typeof eq>[0], value: unknown) => sql`${column} = ${JSON.stringify(value)}::jsonb`;
+
+const changedError = (year: number, key: string, currentValue: unknown) => AppError.conflict(
+  `The value of ${key} for ${year} changed since you read it; review the current value and verify again`,
+  'TE_PARAM_CHANGED', { year, key, currentValue },
+);
+
+interface VerifyOpts {
+  /** The value the caller saw (R6-04). undefined = sign whatever the row carries now (scripts, bulk reads it itself). */
+  expectedValue?: { value: unknown };
+  /** Bulk verify: a row whose value changed under us is skipped, not thrown. */
+  onChanged: 'throw' | 'skip';
+}
+
+type VerifyOutcome = 'verified' | 'already' | 'changed';
+
 /**
- * Mark ONE row verified for its current value: the override / provisional row when one
- * exists (it is what the engine reads), else the shipped seed row. Already verified =
- * no-op (no audit). Only status + verified_* change — value, citation and every other
- * row are untouched. Returns true when a row changed.
+ * Mark ONE row verified for the value the caller saw: the override / provisional row when one
+ * exists (it is what the engine reads), else the shipped seed row. Already verified = no-op (no
+ * audit). The write is a conditional UPDATE … WHERE verified_at IS NULL AND value = <expected>
+ * RETURNING (R6-04): two admins racing on one row produce exactly one sign-off and one audit row,
+ * and a row whose value was overridden after the admin read it is never signed (409
+ * TE_PARAM_CHANGED, or `changed` under bulk). Only status + verified_* change — value, citation
+ * and every other row are untouched.
  */
-async function verifyOne(tx: DbOrTx, year: number, key: string, note: string | null, userId: string | undefined): Promise<boolean> {
+async function verifyOne(tx: DbOrTx, year: number, key: string, note: string | null, userId: string | undefined, opts: VerifyOpts): Promise<VerifyOutcome> {
   const now = new Date();
   const [ov] = await tx.select().from(taxParameterOverrides).where(and(eq(taxParameterOverrides.taxYear, year), eq(taxParameterOverrides.key, key)));
   if (ov) {
-    if (ov.verifiedAt) return false;
-    await tx.update(taxParameterOverrides).set({ verifiedAt: now, verifiedBy: userId ?? null, verificationNote: note }).where(eq(taxParameterOverrides.id, ov.id));
+    if (ov.verifiedAt) return 'already';
+    const expected = opts.expectedValue ? opts.expectedValue.value : ov.value;
+    if (!deepEqual(expected, ov.value)) return changed(year, key, ov.value, opts);
+    const updated = await tx.update(taxParameterOverrides).set({ verifiedAt: now, verifiedBy: userId ?? null, verificationNote: note })
+      .where(and(eq(taxParameterOverrides.id, ov.id), isNull(taxParameterOverrides.verifiedAt), jsonbEquals(taxParameterOverrides.value, expected)))
+      .returning({ id: taxParameterOverrides.id });
+    if (updated.length === 0) {
+      const [now2] = await tx.select().from(taxParameterOverrides).where(eq(taxParameterOverrides.id, ov.id));
+      if (!now2) throw AppError.notFound('Parameter not found');
+      if (now2.verifiedAt) return 'already';
+      return changed(year, key, now2.value, opts);
+    }
     await auditLog(ZERO_TENANT, 'signoff', AUDIT_ENTITY, ov.id,
       { year, key, value: ov.value, status: ov.status },
       { op: 'verified', year, key, value: ov.value, source: ov.status, reason: note }, userId, tx);
-    return true;
+    return 'verified';
   }
   const [seed] = await tx.select().from(taxParameters).where(and(eq(taxParameters.taxYear, year), eq(taxParameters.key, key)));
   if (!seed) throw AppError.notFound('Parameter not found');
-  if (seed.status === 'verified') return false;
-  await tx.update(taxParameters).set({ status: 'verified', verifiedAt: now, verifiedBy: userId ?? null, verificationNote: note }).where(eq(taxParameters.id, seed.id));
+  if (seed.status === 'verified') return 'already';
+  const expected = opts.expectedValue ? opts.expectedValue.value : seed.value;
+  if (!deepEqual(expected, seed.value)) return changed(year, key, seed.value, opts);
+  const updated = await tx.update(taxParameters).set({ status: 'verified', verifiedAt: now, verifiedBy: userId ?? null, verificationNote: note })
+    .where(and(eq(taxParameters.id, seed.id), ne(taxParameters.status, 'verified'), jsonbEquals(taxParameters.value, expected)))
+    .returning({ id: taxParameters.id });
+  if (updated.length === 0) {
+    const [now2] = await tx.select().from(taxParameters).where(eq(taxParameters.id, seed.id));
+    if (!now2) throw AppError.notFound('Parameter not found');
+    if (now2.status === 'verified') return 'already';
+    return changed(year, key, now2.value, opts);
+  }
   await auditLog(ZERO_TENANT, 'signoff', AUDIT_ENTITY, seed.id,
     { year, key, value: seed.value, status: seed.status },
     { op: 'verified', year, key, value: seed.value, source: 'seed', reason: note }, userId, tx);
-  return true;
+  return 'verified';
 }
 
-export async function verifyParameter(year: number, key: string, note: string | undefined, userId?: string): Promise<TaxParameterRowDTO> {
+function changed(year: number, key: string, currentValue: unknown, opts: VerifyOpts): VerifyOutcome {
+  if (opts.onChanged === 'throw') throw changedError(year, key, currentValue);
+  return 'changed';
+}
+
+export async function verifyParameter(year: number, key: string, note: string | undefined, userId?: string, expectedValue?: unknown): Promise<TaxParameterRowDTO> {
   if (!isParameterKey(key) || !getParameterDef(key)) throw AppError.badRequest(`Unknown tax parameter '${key}'`, 'TE_PARAM_INVALID');
-  await db.transaction(async (tx) => { await verifyOne(tx, year, key, cleanNote(note), userId); });
+  await db.transaction(async (tx) => {
+    await verifyOne(tx, year, key, cleanNote(note), userId, { expectedValue: expectedValue === undefined ? undefined : { value: expectedValue }, onChanged: 'throw' });
+  });
   return getRow(year, key);
 }
 
-/** Bulk Verify: every row of `year` whose effective status is not verified. A fallback year has no rows → nothing. */
+/**
+ * Bulk Verify: every row of `year` whose effective status is not verified, each signed for the
+ * value read in this transaction; a row overridden under us is listed in `changed`, not signed.
+ * A fallback year has no rows → nothing.
+ */
 export async function verifyAllParameters(year: number, note: string | undefined, userId?: string): Promise<VerifyTaxParametersResult> {
   const why = cleanNote(note);
   return db.transaction(async (tx) => {
     const resolved = await resolveYear(tx, year);
     const verified: string[] = [];
+    const changedKeys: string[] = [];
     for (const [key, r] of resolved) {
       if (r.status === 'verified') continue;
-      if (await verifyOne(tx, year, key, why, userId)) verified.push(key);
+      const outcome = await verifyOne(tx, year, key, why, userId, { expectedValue: { value: r.value }, onChanged: 'skip' });
+      if (outcome === 'verified') verified.push(key);
+      else if (outcome === 'changed') changedKeys.push(key);
     }
-    return { verified };
+    return changedKeys.length > 0 ? { verified, changed: changedKeys } : { verified };
   });
 }
 

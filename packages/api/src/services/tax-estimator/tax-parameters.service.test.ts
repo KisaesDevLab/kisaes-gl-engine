@@ -302,6 +302,39 @@ describe('R7 in-app Verify (super-admin sign-off)', () => {
     expect(pick(await svc.getParameters(Y1), 'se.ss_wage_base')).toMatchObject({ source: 'seed', status: 'verified', value: 176100 });
   });
 
+  it('R6-04: two admins verifying the same row at once produce one sign-off, one verifier and one audit row', async () => {
+    const ADMIN_B = '00000000-0000-4000-8000-0000000000b8';
+    const results = await Promise.allSettled([
+      svc.verifyParameter(Y1, 'se.ss_wage_base', 'admin A', ADMIN),
+      svc.verifyParameter(Y1, 'se.ss_wage_base', 'admin B', ADMIN_B),
+    ]);
+    expect(results.every((r) => r.status === 'fulfilled')).toBe(true);
+    const row = pick(await svc.getParameters(Y1), 'se.ss_wage_base')!;
+    expect(row.status).toBe('verified');
+    const audit = await db.select().from(auditLogTable).where(and(eq(auditLogTable.tenantId, ZERO), eq(auditLogTable.entityType, 'tax_parameter')));
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.userId).toBe(row.verifiedBy);
+    expect([ADMIN, ADMIN_B]).toContain(row.verifiedBy);
+    expect(row.verificationNote).toBe(row.verifiedBy === ADMIN ? 'admin A' : 'admin B');
+  });
+
+  it('R6-04: a verify that names a stale expectedValue is refused with 409 TE_PARAM_CHANGED and signs nothing', async () => {
+    // seed row: the dialog showed a value the seed no longer carries
+    await expect(svc.verifyParameter(Y1, 'se.ss_wage_base', undefined, ADMIN, 170000)).rejects.toMatchObject({ code: 'TE_PARAM_CHANGED', details: { currentValue: 176100 } });
+    await svc.setOverride(Y1, 'se.ss_wage_base', 184500, 'Correct base', ADMIN); // the admin's dialog still shows 176100
+    await expect(svc.verifyParameter(Y1, 'se.ss_wage_base', 'checked', ADMIN, 176100))
+      .rejects.toMatchObject({ statusCode: 409, code: 'TE_PARAM_CHANGED', details: { year: Y1, key: 'se.ss_wage_base', currentValue: 184500 } });
+    const row = pick(await svc.getParameters(Y1), 'se.ss_wage_base')!;
+    expect(row).toMatchObject({ value: 184500, status: 'unverified' });
+    expect(row.verifiedAt ?? null).toBeNull();
+    const audit = await db.select().from(auditLogTable).where(and(eq(auditLogTable.tenantId, ZERO), eq(auditLogTable.entityType, 'tax_parameter')));
+    expect(audit.map((a) => a.action)).toEqual(['override']);
+    // the value the admin actually sees is accepted (jsonb equality is semantic: 184500.0 = 184500)
+    expect((await svc.verifyParameter(Y1, 'se.ss_wage_base', 'checked', ADMIN, 184500.0)).status).toBe('verified');
+    // an already-verified row stays a no-op whatever the expectation (nothing to sign)
+    expect((await svc.verifyParameter(Y1, 'se.nese_factor', undefined, ADMIN, 0.5)).status).toBe('verified');
+  });
+
   it('verify all: every not-yet-verified row of the year (seed + provisional), nothing already verified, nothing in a fallback year', async () => {
     await svc.createYearFromPrior(Y2);
     const r = await svc.verifyAllParameters(Y2, 'Bulk after review', ADMIN);

@@ -17,7 +17,7 @@
 // Audit: global data, so changes are written to audit_log under the all-zero
 // tenant id with entity type 'tax_state_rule' (operation in after_data.op).
 
-import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
 import {
   STATE_CODES, STATE_NAMES, STATE_RULE_REGISTRY, getStateRuleDef, validateStateRuleValue,
   requiredStateRuleKeys, isIncomeTaxState, rollStateRuleDates, stateRuleRef,
@@ -378,38 +378,88 @@ const cleanNote = (note: string | undefined): string | null => {
   return t === '' ? null : t;
 };
 
-/** Mark one (state, key) verified for its current value; the override/provisional row wins over the seed. Already verified = no-op. */
-async function verifyOne(tx: DbOrTx, year: number, state: StateCode, key: string, note: string | null, userId: string | undefined): Promise<boolean> {
+const changedError = (year: number, state: StateCode, key: string, currentValue: unknown) => AppError.conflict(
+  `The value of ${state} ${key} for ${year} changed since you read it; review the current value and verify again`,
+  'TE_PARAM_CHANGED', { year, state, key, currentValue },
+);
+
+interface VerifyOpts {
+  /** The value the caller saw (R6-04). undefined = sign whatever the row carries now. */
+  expectedValue?: { value: unknown };
+  /** Bulk verify: a row whose value changed under us is skipped, not thrown. */
+  onChanged: 'throw' | 'skip';
+}
+
+type VerifyOutcome = 'verified' | 'already' | 'changed';
+
+function changed(year: number, state: StateCode, key: string, currentValue: unknown, opts: VerifyOpts): VerifyOutcome {
+  if (opts.onChanged === 'throw') throw changedError(year, state, key, currentValue);
+  return 'changed';
+}
+
+/**
+ * Mark one (state, key) verified for the value the caller saw; the override/provisional row wins
+ * over the seed. Already verified = no-op. Conditional UPDATE … WHERE not yet verified AND value =
+ * expected RETURNING (R6-04): one sign-off and one audit row per race, and a value changed after
+ * it was read is never signed (409 TE_PARAM_CHANGED, or `changed` under bulk).
+ */
+async function verifyOne(tx: DbOrTx, year: number, state: StateCode, key: string, note: string | null, userId: string | undefined, opts: VerifyOpts): Promise<VerifyOutcome> {
   const now = new Date();
   const [ov] = await tx.select().from(stateEstimateRuleOverrides).where(and(
     eq(stateEstimateRuleOverrides.state, state), eq(stateEstimateRuleOverrides.taxYear, year), eq(stateEstimateRuleOverrides.key, key)));
   if (ov) {
-    if (ov.verifiedAt) return false;
-    await tx.update(stateEstimateRuleOverrides).set({ verifiedAt: now, verifiedBy: userId ?? null, verificationNote: note }).where(eq(stateEstimateRuleOverrides.id, ov.id));
+    if (ov.verifiedAt) return 'already';
+    const expected = opts.expectedValue ? opts.expectedValue.value : ov.value;
+    if (!deepEqual(expected, ov.value)) return changed(year, state, key, ov.value, opts);
+    const updated = await tx.update(stateEstimateRuleOverrides).set({ verifiedAt: now, verifiedBy: userId ?? null, verificationNote: note })
+      .where(and(eq(stateEstimateRuleOverrides.id, ov.id), isNull(stateEstimateRuleOverrides.verifiedAt), sql`${stateEstimateRuleOverrides.value} = ${jsonb(expected)}`))
+      .returning({ id: stateEstimateRuleOverrides.id });
+    if (updated.length === 0) {
+      const [now2] = await tx.select().from(stateEstimateRuleOverrides).where(eq(stateEstimateRuleOverrides.id, ov.id));
+      if (!now2) throw AppError.notFound('State rule not found');
+      if (now2.verifiedAt) return 'already';
+      return changed(year, state, key, now2.value, opts);
+    }
     await auditLog(ZERO_TENANT, 'signoff', AUDIT_ENTITY, ov.id,
       { year, state, key, value: ov.value, status: ov.status },
       { op: 'verified', year, state, key, value: ov.value, source: ov.status, reason: note }, userId, tx);
-    return true;
+    return 'verified';
   }
   const [seed] = await tx.select().from(stateEstimateRules).where(and(
     eq(stateEstimateRules.state, state), eq(stateEstimateRules.taxYear, year), eq(stateEstimateRules.key, key)));
   if (!seed) throw AppError.notFound('State rule not found');
-  if (seed.status === 'verified') return false;
-  await tx.update(stateEstimateRules).set({ status: 'verified', verifiedAt: now, verifiedBy: userId ?? null, verificationNote: note }).where(eq(stateEstimateRules.id, seed.id));
+  if (seed.status === 'verified') return 'already';
+  const expected = opts.expectedValue ? opts.expectedValue.value : seed.value;
+  if (!deepEqual(expected, seed.value)) return changed(year, state, key, seed.value, opts);
+  const updated = await tx.update(stateEstimateRules).set({ status: 'verified', verifiedAt: now, verifiedBy: userId ?? null, verificationNote: note })
+    .where(and(eq(stateEstimateRules.id, seed.id), ne(stateEstimateRules.status, 'verified'), sql`${stateEstimateRules.value} = ${jsonb(expected)}`))
+    .returning({ id: stateEstimateRules.id });
+  if (updated.length === 0) {
+    const [now2] = await tx.select().from(stateEstimateRules).where(eq(stateEstimateRules.id, seed.id));
+    if (!now2) throw AppError.notFound('State rule not found');
+    if (now2.status === 'verified') return 'already';
+    return changed(year, state, key, now2.value, opts);
+  }
   await auditLog(ZERO_TENANT, 'signoff', AUDIT_ENTITY, seed.id,
     { year, state, key, value: seed.value, status: seed.status },
     { op: 'verified', year, state, key, value: seed.value, source: 'seed', reason: note }, userId, tx);
-  return true;
+  return 'verified';
 }
 
-export async function verifyStateRule(year: number, stateIn: string, key: string, note: string | undefined, userId?: string): Promise<StateRuleRowDTO> {
+export async function verifyStateRule(year: number, stateIn: string, key: string, note: string | undefined, userId?: string, expectedValue?: unknown): Promise<StateRuleRowDTO> {
   const state = assertState(stateIn);
   if (!getStateRuleDef(key)) throw AppError.badRequest(`Unknown state rule '${key}'`, 'TE_STATE_RULE_INVALID');
-  await db.transaction(async (tx) => { await verifyOne(tx, year, state, key, cleanNote(note), userId); });
+  await db.transaction(async (tx) => {
+    await verifyOne(tx, year, state, key, cleanNote(note), userId, { expectedValue: expectedValue === undefined ? undefined : { value: expectedValue }, onChanged: 'throw' });
+  });
   return getRow(year, state, key);
 }
 
-/** Bulk Verify for ONE jurisdiction's year: every rule whose effective status is not verified. Returns `ST:key` refs. */
+/**
+ * Bulk Verify for ONE jurisdiction's year: every rule whose effective status is not verified, each
+ * signed for the value read in this transaction; a rule overridden under us is listed in `changed`.
+ * Returns `ST:key` refs.
+ */
 export async function verifyAllStateRules(year: number, stateIn: string, note: string | undefined, userId?: string): Promise<VerifyStateRulesResult> {
   const state = assertState(stateIn);
   const why = cleanNote(note);
@@ -417,11 +467,14 @@ export async function verifyAllStateRules(year: number, stateIn: string, note: s
     const loaded = await loadYear(tx, year, state);
     const resolved = resolveRows(loaded.seeds.get(state) ?? [], loaded.overrides.get(state) ?? []);
     const verified: string[] = [];
+    const changedKeys: string[] = [];
     for (const [key, r] of resolved) {
       if (r.status === 'verified') continue;
-      if (await verifyOne(tx, year, state, key, why, userId)) verified.push(stateRuleRef(state, key));
+      const outcome = await verifyOne(tx, year, state, key, why, userId, { expectedValue: { value: r.value }, onChanged: 'skip' });
+      if (outcome === 'verified') verified.push(stateRuleRef(state, key));
+      else if (outcome === 'changed') changedKeys.push(stateRuleRef(state, key));
     }
-    return { verified };
+    return changedKeys.length > 0 ? { verified, changed: changedKeys } : { verified };
   });
 }
 

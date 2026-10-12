@@ -87,7 +87,12 @@ export interface TaxParameterChangeDTO {
   reason: string | null;
 }
 
-/** Result of a single or bulk Verify. `verified` lists the keys (state rules: `ST:key`) whose status became verified. */
+/**
+ * Result of a single or bulk Verify. `verified` lists the keys (state rules: `ST:key`) whose status
+ * became verified. `changed` (R6-04, bulk only) lists keys whose value changed under the bulk
+ * verify after it was read: they were NOT signed and must be reviewed again.
+ */
 export interface VerifyTaxParametersResult {
   verified: string[];
+  changed?: string[];
 }

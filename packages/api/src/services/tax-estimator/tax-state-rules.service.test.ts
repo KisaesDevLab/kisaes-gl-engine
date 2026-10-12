@@ -376,6 +376,27 @@ describe('R7 in-app Verify (super-admin sign-off)', () => {
     expect((await svc.getStateRules(Y1, 'AR')).rules.every((r) => r.verifiedAt == null)).toBe(true);
   });
 
+  it('R6-04: concurrent verifies of one rule write one audit row; a stale expectedValue is 409 TE_PARAM_CHANGED', async () => {
+    const ADMIN_B = '00000000-0000-4000-8000-0000000000b8';
+    const results = await Promise.allSettled([
+      svc.verifyStateRule(Y1, 'MO', 'required_threshold', 'A', ADMIN),
+      svc.verifyStateRule(Y1, 'MO', 'required_threshold', 'B', ADMIN_B),
+    ]);
+    expect(results.every((r) => r.status === 'fulfilled')).toBe(true);
+    const audit = await db.select().from(auditLogTable).where(and(eq(auditLogTable.tenantId, ZERO), eq(auditLogTable.entityType, 'tax_state_rule')));
+    expect(audit).toHaveLength(1);
+    const row = rule(await svc.getStateRules(Y1, 'MO'), 'required_threshold')!;
+    expect(row.status).toBe('verified');
+    expect(audit[0]!.userId).toBe(row.verifiedBy);
+
+    await svc.setOverride(Y1, 'MO', 'safe_harbor.current_pct', 0.8, 'Changed by someone else', ADMIN_B);
+    await expect(svc.verifyStateRule(Y1, 'MO', 'safe_harbor.current_pct', 'checked', ADMIN, 0.9))
+      .rejects.toMatchObject({ statusCode: 409, code: 'TE_PARAM_CHANGED', details: { state: 'MO', key: 'safe_harbor.current_pct', currentValue: 0.8 } });
+    expect(rule(await svc.getStateRules(Y1, 'MO'), 'safe_harbor.current_pct')!.status).toBe('unverified');
+    // an explicit JSON null is a legitimate expected value for a nullable rule
+    expect((await svc.verifyStateRule(Y1, 'MO', 'farmer.rule', undefined, ADMIN, null)).status).toBe('verified');
+  });
+
   it('re-sync keeps a verification while the shipped value is unchanged; an override clears it; unknown key / no row errors', async () => {
     await svc.verifyStateRule(Y1, 'MO', 'required_threshold', undefined, ADMIN);
     await svc.syncShippedStateRules(FIXTURE);

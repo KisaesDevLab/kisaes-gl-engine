@@ -33,9 +33,14 @@ export const taxParameterChangesQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(MAX_LIMIT).default(DEFAULT_LIMIT),
 });
 
-/** Verify one parameter (super admin; sign-off workflow). The note is optional and audited. */
+/**
+ * Verify one parameter (super admin; sign-off workflow). The note is optional and audited.
+ * R6-04: `expectedValue` is the value the admin saw; the server signs the row only while it still
+ * carries that value (409 TE_PARAM_CHANGED otherwise). Omitted (scripts) = sign the current value.
+ */
 export const verifyTaxParameterSchema = z.object({
   note: z.string().trim().max(MAX_REASON_LEN).optional(),
+  expectedValue: z.unknown().optional(),
 });
 /** Bulk verify every not-yet-verified row of a year (or of one state's year). `confirm` must be true. */
 export const verifyAllTaxParametersSchema = z.object({

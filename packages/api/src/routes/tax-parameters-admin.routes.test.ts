@@ -219,7 +219,13 @@ describe('R7 in-app Verify routes', () => {
     // still overridable with a reason
     const ov = await request('PUT', `${BASE}/${Y1}/se.nese_factor`, { value: 0.9, reason: 'Testing' }, S());
     expect(ov.json.data).toMatchObject({ source: 'override', status: 'unverified' });
+    // R6-04: the dialog's expectedValue must still be the row's value
+    const stale = await request('POST', `${BASE}/${Y1}/se.nese_factor/verify`, { expectedValue: 0.9235 }, S());
+    expect(stale.status).toBe(409);
+    expect(stale.json.error?.code).toBe('TE_PARAM_CHANGED');
+    expect(stale.json.error?.details).toMatchObject({ currentValue: 0.9 });
+    expect((await request('POST', `${BASE}/${Y1}/se.nese_factor/verify`, { expectedValue: 0.9 }, S())).json.data.status).toBe('verified');
     const changes = await request('GET', `${BASE}/${Y1}/changes?limit=5`, undefined, S());
-    expect(changes.json.data.rows.map((r: { action: string }) => r.action)).toEqual(['override_set', 'verified', 'verified']);
+    expect(changes.json.data.rows.map((r: { action: string }) => r.action)).toEqual(['verified', 'override_set', 'verified', 'verified']);
   });
 });
