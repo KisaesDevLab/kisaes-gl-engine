@@ -253,3 +253,44 @@ describe('Businesses included: ownership per person (owner request 2026-10-12)',
     expect(text).toContain('$35,829');
   });
 });
+
+describe('keep-with-next: no heading is orphaned at the bottom of a page (coordinator follow-up 2026-10-12)', () => {
+  const HEADINGS = new Set(['Businesses included', 'Summary', 'Federal calculation (full-year projection)', 'State calculation', 'Safe harbor', 'Payment vouchers',
+    'Warnings', 'Assumptions', 'Disclaimer', 'Income', 'Adjustments', 'Deductions', 'Federal tax', 'State tax', 'Total']);
+  /**
+   * Every heading has at least min(3, its block's line count) body LINES (distinct baselines)
+   * below it on its own page; a block runs to the next heading or the end of the document.
+   */
+  const orphans = (t: DrawnText[], min = 3) => {
+    const b = body(t);
+    return b.flatMap((x, i) => {
+      if (!HEADINGS.has(x.text)) return [];
+      const rest = b.slice(i + 1);
+      const end = rest.findIndex((y) => HEADINGS.has(y.text));
+      const block = end < 0 ? rest : rest.slice(0, end);
+      const lines = (xs: DrawnText[]) => new Set(xs.map((y) => `${y.page}:${y.y.toFixed(1)}`)).size;
+      return lines(block.filter((y) => y.page === x.page)) < Math.min(min, lines(block)) ? [`${x.text} (page ${x.page})`] : [];
+    });
+  };
+
+  it('Rivera, both audiences: every heading keeps its first lines on its page ("Safe harbor" was alone at the bottom of page 1)', async () => {
+    for (const audience of ['preparer', 'client'] as const) {
+      // The sample-estimate.pdf options (the snapshot line moves "Safe harbor" to the foot of page 1).
+      const t = pdfDrawnText(await renderEstimatePdf(rivera, {
+        taxpayerName: 'Carlos & Maria Rivera', firmName: 'Rivera CPA LLC', audience,
+        snapshot: { id: '5f0c2a8e-1111-4333-8444-555555555555', createdAt: '2026-10-12T19:40:00.000Z', reason: 'pdf' },
+      }));
+      expect(orphans(t), audience).toEqual([]);
+    }
+  });
+
+  it('calculation group headings move to the next page with their lines, whatever the table length', async () => {
+    for (let n = 30; n <= 52; n++) {
+      const many = structuredClone(rivera) as EstimateResultDTO;
+      const e0 = many.federal.entities[0]!;
+      many.federal.entities = Array.from({ length: n }, (_, i) => ({ ...e0, companyId: `c${i}`, companyName: `Business ${i + 1}` }));
+      const t = pdfDrawnText(await renderEstimatePdf(many, { taxpayerName: 'Rivera' }));
+      expect(orphans(t), `n=${n}`).toEqual([]);
+    }
+  });
+});

@@ -100,6 +100,14 @@ changes. The PDF equals the screen. The Report Pack section is "Tax
 Estimate" in group Tax; pick the taxpayer (and optionally scenario) in the
 section options.
 
+The PDF's "Businesses included" list shows each owner's share of every
+linked business ("Owners: Maria Rivera 50%"; the loss share only when it
+differs). After the payment vouchers a new page, "Detailed calculation",
+repeats the Calculation tab line by line with the YTD tax basis and
+projected columns. Both the preparer PDF and the client copy (Report Pack)
+include it; the client copy leaves out review markers and neither prints
+the trace.
+
 ## Client portal
 
 Portal contacts see a read-only Tax estimate tile and page (projected

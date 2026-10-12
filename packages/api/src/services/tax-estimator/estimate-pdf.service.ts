@@ -47,6 +47,10 @@ const LINE = 13;
 const INK = rgb(0.09, 0.1, 0.12);
 const MUTED = rgb(0.35, 0.38, 0.41);
 const RULE = rgb(0.8, 0.8, 0.78);
+/** Vertical space a heading() takes (gap, title, rule). */
+const HEADING_H = 8 + 4 + LINE;
+/** Body lines a heading keeps with it on its page (keep-with-next). */
+const KEEP_WITH_NEXT_LINES = 3;
 
 const num = (v: unknown): number => {
   const n = Number(v);
@@ -93,8 +97,12 @@ class Writer {
     const w = f.widthOfTextAtSize(s, size);
     this.page.drawText(s, { x: opts.right ? x - w : x, y: this.y, size, font: f, color: opts.color ?? INK });
   }
-  heading(t: string) {
-    this.ensure(30);
+  /**
+   * Section heading. Keep-with-next: when fewer than `keepLines` body lines fit below it, it
+   * starts the next page instead of being stranded at the foot of this one.
+   */
+  heading(t: string, keepLines = KEEP_WITH_NEXT_LINES) {
+    this.ensure(HEADING_H + keepLines * LINE);
     this.y -= 8;
     this.text(t, MARGIN, 12, { bold: true });
     this.y -= 4;
@@ -267,9 +275,10 @@ function renderDetailedCalculation(w: Writer, r: EstimateResultDTO, audience: Es
     return;
   }
   for (const section of sections) {
-    const first = section.lines[0];
-    // Keep a section heading with its first line.
-    w.ensure(LINE + 4 + (first ? lineHeight(subLines(first)) : 0));
+    // Keep-with-next: a group heading starts the next page unless its first lines (up to
+    // KEEP_WITH_NEXT_LINES) fit below it.
+    const keep = section.lines.slice(0, KEEP_WITH_NEXT_LINES).reduce((h, l) => h + lineHeight(subLines(l)), 0);
+    w.ensure(LINE + 4 + keep);
     w.y -= 4;
     w.text(section.title, MARGIN, 9.5, { bold: true });
     w.y -= LINE;
