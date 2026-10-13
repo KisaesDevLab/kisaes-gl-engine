@@ -3,5 +3,5 @@
 useDefault = true
 
 [allowlist]
-description = "In-app help documentation shows illustrative curl examples with placeholder credentials (YOUR_API_KEY, truncated eyJhbG...). Real secrets never live in this file."
-paths = ['''packages/web/src/features/help/articles\.ts''']
+description = "In-app help documentation shows illustrative curl examples with placeholder credentials (YOUR_API_KEY, truncated eyJhbG...). Real secrets never live in this file. Tax-estimator parameter seeds are `key: '<dotted.parameter.name>'` rows (e.g. care.phase1.min_rate) that the generic-api-key rule misreads; they hold public tax amounts only."
+paths = ['''packages/web/src/features/help/articles\.ts''', '''packages/api/src/db/seeds/tax-estimator/.*\.ts''']
