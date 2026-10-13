@@ -65,6 +65,10 @@ export const createDailySalesEntrySchema = z.object({
   tagId: z.string().uuid().nullable().optional(),
   notes: z.string().max(2000).nullable().optional(),
   values: z.array(entryValueSchema).max(200).default([]),
+  // Files uploaded on the new-entry screen before the draft exists sit
+  // under attachable_type 'draft' with this id; creating the draft moves
+  // them onto the entry (and posting moves them onto the journal entry).
+  draftAttachmentId: z.string().uuid().optional(),
 });
 export type CreateDailySalesEntryInput = z.infer<typeof createDailySalesEntrySchema>;
 
