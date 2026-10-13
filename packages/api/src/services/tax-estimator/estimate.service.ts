@@ -417,9 +417,9 @@ async function runEntities(scope: FirmScope, req: EstimateRequest, g: Gathered, 
       out.push({ company: c, pl, dto: { ...dto, path: 'c_corp' }, engine: null });
       continue;
     }
-    const bridged = engineEntityFromTaxBasisPl(pl, g.links, {
+    const bridged = ownItemsOnly(engineEntityFromTaxBasisPl(pl, g.links, {
       isSstb: c.settings.settings.isSstb, rentalQbiTradeOrBusiness: c.settings.settings.rentalQbiTradeOrBusiness,
-    });
+    }), g.persons);
     // Q46: prior-year figures split at THIS year's through month (calendar window: months elapsed).
     const engine: EngineEntity = c.projectionMethod === 'run_rate' ? bridged : {
       ...bridged,
@@ -428,6 +428,25 @@ async function runEntities(scope: FirmScope, req: EstimateRequest, g: Gathered, 
     out.push({ company: c, pl, dto: { ...dto, path: 'individual' }, engine });
   }
   return out;
+}
+
+/**
+ * The provider's per-person owner items (officer wages, owner / officer health and retirement,
+ * guaranteed payments) cover EVERY owner of the business. In this taxpayer's estimate only the
+ * items of this taxpayer's own persons count: another household's shareholder / partner is
+ * estimated in their own taxpayer (Q50 splits between owners of different taxpayers, e.g. a
+ * 60 / 40 officer-wage split). Without this the engine attributed another owner's items to this
+ * taxpayer's primary person (`resolvePerson` → TE_UNKNOWN_PERSON). Items with no person are
+ * kept (the engine's unattributed-item rule). Entity-level figures are unchanged.
+ */
+function ownItemsOnly(e: EngineEntity, persons: ReadonlyArray<{ id: string }>): EngineEntity {
+  const mine = new Set(persons.map((p) => p.id));
+  const keep = (personId: string | null | undefined) => !personId || mine.has(personId);
+  const ownerItems = e.ownerItems.filter((o) => keep(o.personId));
+  const guaranteedPayments = e.guaranteedPayments.filter((x) => keep(x.personId));
+  const officerWages = e.officerWages.filter((x) => keep(x.personId));
+  if (ownerItems.length === e.ownerItems.length && guaranteedPayments.length === e.guaranteedPayments.length && officerWages.length === e.officerWages.length) return e;
+  return { ...e, ownerItems, guaranteedPayments, officerWages };
 }
 
 /**
@@ -686,11 +705,12 @@ async function assemble(scope: FirmScope, req: EstimateRequest, g: Gathered, opt
       if (!available) break;
       const snap = g.snapshots.get(`${p.periodIndex}|${r.engine.tenantId}|${r.engine.companyId}`);
       // Q46: a period column uses actuals only — never the prior-year trend.
-      if (snap) { ents.push({ ...r.engine, ...snap, priorYearTrend: undefined }); snapshotEntities++; continue; }
+      // Period figures carry every owner's items again: keep this taxpayer's own (ownItemsOnly).
+      if (snap) { ents.push(ownItemsOnly({ ...r.engine, ...snap, priorYearTrend: undefined }, g.persons)); snapshotEntities++; continue; }
       if (r.pl.throughMonth < p.periodMonth) { available = false; break; }
       const ppl = r.pl.throughMonth === p.periodMonth ? r.pl
         : await getTaxBasisPl(scope, { tenantId: r.engine.tenantId, companyId: r.engine.companyId, taxYear, throughMonth: p.periodMonth }, { today, skipCache: opts.skipProviderCache });
-      ents.push({ ...r.engine, ...periodFiguresFromPl(ppl, p.months), priorYearTrend: undefined });
+      ents.push(ownItemsOnly({ ...r.engine, ...periodFiguresFromPl(ppl, p.months), priorYearTrend: undefined }, g.persons));
       liveEntities++;
     }
     // Q45: outside businesses — full-year entries spread evenly; YTD entries prorated up to their

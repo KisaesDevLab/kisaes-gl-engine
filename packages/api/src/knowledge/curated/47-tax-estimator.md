@@ -137,7 +137,9 @@ books.
   way lands on each shareholder's W-2 box 1 and their health deduction.
   Estimated tax payments can be split between taxpayers; each taxpayer's
   payment ledger gets its share of every payment. The calculation trace
-  shows each share. "Use one owner" goes back to a single person.
+  shows each share. "Use one owner" goes back to a single person. When the
+  owners are different taxpayers (households), each taxpayer's estimate
+  counts only its own share.
 - **Projection method** (Entity tax setup, year inputs, per company and
   tax year): how the rest of the year's ORDINARY income is projected.
   "Run rate" (default) = year-to-date recurring per month x months left.
