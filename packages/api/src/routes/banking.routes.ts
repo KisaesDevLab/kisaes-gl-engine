@@ -13,15 +13,18 @@ import {
   bulkReprocessRulesSchema,
   createManualConnectionSchema, updateFeedItemSchema, bankStatementFiltersSchema,
   confirmStatementLineSchema, createFromStatementLineSchema, importOfxStatementSchema,
+  can,
 } from '@kis-books/shared';
+import { AppError } from '../utils/errors.js';
 import { authenticate } from '../middleware/auth.js';
-import { requireResource } from '../middleware/permission.js';
+import { requireResource, resolvePermissionsForRequest } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as bankConnectionService from '../services/bank-connection.service.js';
 import * as bankFeedService from '../services/bank-feed.service.js';
 import * as suspenseService from '../services/suspense.service.js';
 import * as reconciliationService from '../services/reconciliation.service.js';
+import * as reconciliationSignoffService from '../services/reconciliation-signoff.service.js';
 import { buildReconciliationProof } from '../services/reconciliation-proof.service.js';
 import * as bankStatementsService from '../services/bank-statements.service.js';
 import * as statementMatchService from '../services/statement-match.service.js';
@@ -377,7 +380,11 @@ bankingRouter.post('/statements/backfill', async (req, res) => {
 
 bankingRouter.get('/reconciliations', async (req, res) => {
   const history = await reconciliationService.getHistory(req.tenantId, req.query['account_id'] as string);
-  res.json({ reconciliations: history });
+  // Electronic sign-off badges (migration 0214); staleness evaluated here.
+  const signoffs = await reconciliationSignoffService.getReconSignoffsForMany(
+    req.tenantId, history.map((r) => ({ id: r.id, status: r.status })),
+  );
+  res.json({ reconciliations: history.map((r) => ({ ...r, signoffs: signoffs.get(r.id) })) });
 });
 
 bankingRouter.post('/reconciliations', validate(startReconciliationSchema), async (req, res) => {
@@ -540,6 +547,36 @@ bankingRouter.get('/reconciliations/:id/proof', async (req, res) => {
   res.json({ proof });
 });
 
+// Electronic sign-off (migration 0214): Preparer, then a different firm-staff
+// Reviewer, on a completed reconciliation. GET is a read (banking:read via the
+// router guard); POST / DELETE need banking write. The service enforces the
+// order / different-person / firm-staff / own-signature rules.
+const reconSignoffRoleSchema = z.object({ role: z.enum(['preparer', 'reviewer']) });
+
+bankingRouter.get('/reconciliations/:id/signoffs', async (req, res) => {
+  const canWrite = can(await resolvePermissionsForRequest(req), 'banking', 'update');
+  const view = await reconciliationSignoffService.getReconSignoffView(req.tenantId, req.params['id']!, {
+    userId: req.userId, isSuperAdmin: !!req.isSuperAdmin, canWrite,
+  });
+  res.json(view);
+});
+
+bankingRouter.post('/reconciliations/:id/signoffs', validate(reconSignoffRoleSchema), async (req, res) => {
+  const signoffs = await reconciliationSignoffService.signReconciliation(
+    req.tenantId, req.params['id']!, req.body.role, { userId: req.userId, isSuperAdmin: !!req.isSuperAdmin },
+  );
+  res.status(201).json({ signoffs });
+});
+
+bankingRouter.delete('/reconciliations/:id/signoffs/:role', async (req, res) => {
+  const parsed = reconSignoffRoleSchema.safeParse({ role: req.params['role'] });
+  if (!parsed.success) throw AppError.badRequest('role must be preparer or reviewer', 'VALIDATION_ERROR');
+  const signoffs = await reconciliationSignoffService.removeReconSignoff(
+    req.tenantId, req.params['id']!, parsed.data.role, { userId: req.userId, isSuperAdmin: !!req.isSuperAdmin },
+  );
+  res.json({ signoffs });
+});
+
 bankingRouter.get('/reconciliations/:id', async (req, res) => {
   const recon = await reconciliationService.getReconciliation(req.tenantId, req.params['id']!);
   res.json({ reconciliation: recon });
@@ -574,6 +611,6 @@ bankingRouter.post('/reconciliations/:id/complete', async (req, res) => {
 });
 
 bankingRouter.post('/reconciliations/:id/undo', async (req, res) => {
-  await reconciliationService.undo(req.tenantId, req.params['id']!);
+  await reconciliationService.undo(req.tenantId, req.params['id']!, req.userId);
   res.json({ message: 'Reconciliation undone' });
 });

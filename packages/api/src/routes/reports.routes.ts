@@ -1507,9 +1507,11 @@ reportsRouter.get('/bank-reconciliation-summary', async (req, res) => {
       });
     }
   }
-  const proofRows = data.proofs.flatMap((p) => proofCsvRows(p, { mode: 'summary' }));
+  // Browser IANA zone for the sign-off timestamps (validated by the formatter; UTC fallback).
+  const timeZone = typeof req.query['tz'] === 'string' ? req.query['tz'] : undefined;
+  const proofRows = data.proofs.flatMap((p) => proofCsvRows(p, { mode: 'summary', timeZone }));
   const single = data.proofs.length === 1 && reconciliationId ? data.proofs[0]! : null;
-  const pdfBody = format === 'pdf' ? summaryPdfHtml(data) : undefined;
+  const pdfBody = format === 'pdf' ? summaryPdfHtml(data, timeZone) : undefined;
   await respond(res, {
     ...data,
     title: single
@@ -1522,7 +1524,7 @@ reportsRouter.get('/bank-reconciliation-summary', async (req, res) => {
   }, format);
 });
 
-function summaryPdfHtml(data: Awaited<ReturnType<typeof reportService.buildBankReconciliationSummary>>): string {
+function summaryPdfHtml(data: Awaited<ReturnType<typeof reportService.buildBankReconciliationSummary>>, timeZone?: string): string {
   const esc = exportService.escapeHtml;
   const m = (v: number | null) => (v == null ? '' : reconMoney(v));
   const overview = `<table>
@@ -1542,7 +1544,7 @@ function summaryPdfHtml(data: Awaited<ReturnType<typeof reportService.buildBankR
     <tbody>${data.staleChecks.map((c) => `<tr><td>${esc(c.accountName)}</td><td>${esc(formatIsoUS(c.txnDate))}</td><td>${esc(c.checkNumber ?? '')}</td><td>${esc(c.payee ?? '')}</td><td class="amount">${m(c.amount)}</td></tr>`).join('')}</tbody></table>`;
   const proofs = data.proofs.map((p) => `<div style="page-break-before:always">
     <div style="font-size:15px;font-weight:600;margin:0 0 4px 0">${esc(p.accountNumber ? `${p.accountNumber} ${p.accountName}` : p.accountName)} — reconciliation as of ${esc(formatIsoUS(p.statementDate))}</div>
-    ${renderProofHtml(p, { mode: 'summary' })}</div>`).join('');
+    ${renderProofHtml(p, { mode: 'summary', timeZone })}</div>`).join('');
   const none = data.proofs.length === 0 ? '<p style="color:#6b7280;font-size:11px">No completed reconciliations yet — the bank-to-books reconciliation appears once an account has one.</p>' : '';
   return overview + stale + none + proofs;
 }
@@ -1562,6 +1564,7 @@ reportsRouter.get('/reconciliation-detail', async (req, res) => {
   const data = await reportService.buildReconciliationDetail(req.tenantId, reconciliationId);
   const renderOpts = {
     mode: 'detail' as const,
+    timeZone: typeof req.query['tz'] === 'string' ? req.query['tz'] : undefined,
     cleared: data.cleared,
     clearedTotals: { payments: data.totals.clearedPayments, deposits: data.totals.clearedDeposits },
   };

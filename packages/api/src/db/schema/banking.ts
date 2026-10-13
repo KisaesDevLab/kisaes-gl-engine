@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+import { sql } from 'drizzle-orm';
 import { pgTable, uuid, varchar, text, decimal, boolean, date, timestamp, index, uniqueIndex, jsonb, integer } from 'drizzle-orm/pg-core';
 
 export const bankConnections = pgTable('bank_connections', {
@@ -111,6 +112,31 @@ export const reconciliationLines = pgTable('reconciliation_lines', {
   isCleared: boolean('is_cleared').default(false),
   clearedAt: timestamp('cleared_at', { withTimezone: true }),
 });
+
+// Electronic sign-off on a completed reconciliation (migration 0214).
+// Preparer, then Reviewer (a different user, firm staff). `fingerprint` hashes
+// the reconciliation's substance at signing (see reconciliation-signoff.service
+// computeReconFingerprint); a mismatch on read, a reopen/undo, or the
+// preparer's removal sets invalidated_at + invalidated_reason. One LIVE
+// (invalidated_at IS NULL) sign-off per (reconciliation, role).
+export const reconciliationSignoffs = pgTable('reconciliation_signoffs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull(),
+  reconciliationId: uuid('reconciliation_id').notNull().references(() => reconciliations.id, { onDelete: 'cascade' }),
+  role: varchar('role', { length: 10 }).notNull(), // preparer | reviewer
+  userId: uuid('user_id').notNull(),
+  signerName: varchar('signer_name', { length: 255 }).notNull(),
+  signedAt: timestamp('signed_at', { withTimezone: true }).notNull().defaultNow(),
+  fingerprint: text('fingerprint').notNull(),
+  invalidatedAt: timestamp('invalidated_at', { withTimezone: true }),
+  // removed | preparer_removed | reconciliation_reopened | data_changed
+  invalidatedReason: varchar('invalidated_reason', { length: 40 }),
+  invalidatedDetail: text('invalidated_detail'),
+  invalidatedBy: uuid('invalidated_by'),
+}, (t) => [
+  uniqueIndex('uniq_reconciliation_signoffs_live').on(t.reconciliationId, t.role).where(sql`${t.invalidatedAt} IS NULL`),
+  index('idx_reconciliation_signoffs_rec').on(t.tenantId, t.reconciliationId, t.signedAt),
+]);
 
 // Statement-driven reconciliation (migration 0115): parsed bank statements
 // as first-class records. Captured on statement import (from the ai_jobs

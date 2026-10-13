@@ -2,6 +2,8 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+import type { ReconSignoffSummary } from './reconciliation-signoff.js';
+
 // 'assigned' — a category has been STAGED on the item (assigned_* columns)
 // but NOT yet posted to the ledger. It stays actionable ("ready to approve")
 // until approval flips it to 'categorized'. See migration 0119.
@@ -137,6 +139,8 @@ export interface Reconciliation {
   completedBy: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Electronic sign-off state (history list only — GET /banking/reconciliations). */
+  signoffs?: ReconSignoffSummary;
 }
 
 export interface ReconciliationLine {
