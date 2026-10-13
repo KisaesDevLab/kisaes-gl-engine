@@ -21,13 +21,14 @@ import {
   type UpdateDailySalesEntryInput,
   type PreviewDailySalesEntryInput,
 } from '@kis-books/shared';
-import { db } from '../db/index.js';
+import { db, type DbOrTx } from '../db/index.js';
 import {
   dailySalesTemplates,
   dailySalesTemplateLines,
   dailySalesEntries,
   dailySalesEntryValues,
   accounts,
+  attachments,
 } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -36,8 +37,17 @@ import * as ledger from './ledger.service.js';
 // banking, imports and the Practice surfaces share one implementation.
 import { getOrCreateSystemAccount } from './system-accounts.service.js';
 import { assertTagsInTenant } from './tags.service.js';
+import { reassignDraftAttachments } from './attachment.service.js';
 
 const TOLERANCE = new Decimal(BALANCE_TOLERANCE);
+
+// Attachment homes. An unposted (draft) entry has no transaction yet, so its
+// files live on the entry itself; posting moves them onto the journal entry
+// under the transaction's own txn_type ('daily_sales') — the convention
+// TransactionDetail, the Transaction Report and the attachment library use —
+// so after posting they are ordinary transaction attachments.
+export const DAILY_SALES_ENTRY_ATTACHABLE = 'daily_sales_entry';
+export const DAILY_SALES_TXN_ATTACHABLE = 'daily_sales';
 
 // ── Templates ───────────────────────────────────────────────────
 export async function getTemplate(tenantId: string, id: string) {
@@ -303,6 +313,18 @@ export async function listEntries(
     totalPayments: dailySalesEntries.totalPayments,
     postedAt: dailySalesEntries.postedAt,
     createdAt: dailySalesEntries.createdAt,
+    // Files on the entry (draft) or, once posted, on its journal entry
+    // (same type set the Transaction Report reads for a transaction).
+    attachmentCount: sql<number>`(
+      SELECT COUNT(*) FROM attachments a
+      WHERE a.tenant_id = ${dailySalesEntries.tenantId}
+        AND (
+          (a.attachable_type = ${DAILY_SALES_ENTRY_ATTACHABLE} AND a.attachable_id = ${dailySalesEntries.id})
+          OR (${dailySalesEntries.transactionId} IS NOT NULL
+              AND a.attachable_id = ${dailySalesEntries.transactionId}
+              AND a.attachable_type IN (${DAILY_SALES_TXN_ATTACHABLE}, 'transaction', 'journal_entry'))
+        )
+    )::int`.mapWith(Number),
   })
     .from(dailySalesEntries)
     .leftJoin(dailySalesTemplates, eq(dailySalesTemplates.id, dailySalesEntries.templateId))
@@ -330,7 +352,12 @@ export async function createDraft(tenantId: string, input: CreateDailySalesEntry
     tagId: input.tagId ?? null, notes: input.notes ?? null, createdBy: userId ?? null,
   }).returning();
   await saveValues(tenantId, entry!.id, input.values);
-  await auditLog(tenantId, 'create', 'daily_sales_entry', entry!.id, null, entry, userId);
+  // Files attached on the new-entry screen before this draft existed.
+  const attachmentsLinked = input.draftAttachmentId
+    ? await reassignDraftAttachments(tenantId, input.draftAttachmentId, DAILY_SALES_ENTRY_ATTACHABLE, entry!.id)
+    : 0;
+  await auditLog(tenantId, 'create', 'daily_sales_entry', entry!.id, null,
+    attachmentsLinked ? { ...entry, attachmentsLinked } : entry, userId);
   return getEntry(tenantId, entry!.id);
 }
 
@@ -360,7 +387,12 @@ export async function deleteEntry(tenantId: string, id: string, userId?: string)
   if (entry.status === 'posted') throw AppError.badRequest('Void a posted entry instead of deleting it.');
   await db.delete(dailySalesEntryValues).where(and(eq(dailySalesEntryValues.tenantId, tenantId), eq(dailySalesEntryValues.entryId, id)));
   await db.delete(dailySalesEntries).where(and(eq(dailySalesEntries.tenantId, tenantId), eq(dailySalesEntries.id, id)));
-  await auditLog(tenantId, 'delete', 'daily_sales_entry', id, entry, null, userId);
+  // Don't strand the entry's files: return them to the unfiled pool
+  // ('draft', same as an unsaved form's uploads) so they stay in the
+  // attachment library and can be attached elsewhere.
+  const attachmentsUnfiled = await moveEntryAttachments(db, tenantId, id, 'draft', id);
+  await auditLog(tenantId, 'delete', 'daily_sales_entry', id, entry,
+    attachmentsUnfiled ? { attachmentsUnfiled } : null, userId);
 }
 
 // Live balance / over-short for unsaved values (UI preview, no writes).
@@ -437,11 +469,32 @@ export async function postEntry(tenantId: string, id: string, userId?: string, c
       updatedAt: new Date(),
     }).where(and(eq(dailySalesEntries.tenantId, tenantId), eq(dailySalesEntries.id, id)));
 
-    await auditLog(tenantId, 'create', 'daily_sales_entry_post', id, null, { transactionId: posted.id, overShort: delta.toFixed(4) }, userId, tx);
+    // The draft's files follow it onto the posted journal entry (same
+    // transaction, so a failed post leaves them on the draft).
+    const attachmentsMoved = await moveEntryAttachments(tx, tenantId, id, DAILY_SALES_TXN_ATTACHABLE, posted.id);
+
+    await auditLog(tenantId, 'create', 'daily_sales_entry_post', id, null, {
+      transactionId: posted.id, overShort: delta.toFixed(4),
+      ...(attachmentsMoved ? { attachmentsMoved } : {}),
+    }, userId, tx);
     return posted;
   });
 
   return getEntry(tenantId, id);
+}
+
+async function moveEntryAttachments(
+  conn: DbOrTx, tenantId: string, entryId: string, newType: string, newId: string,
+): Promise<number> {
+  const moved = await conn.update(attachments)
+    .set({ attachableType: newType, attachableId: newId })
+    .where(and(
+      eq(attachments.tenantId, tenantId),
+      eq(attachments.attachableType, DAILY_SALES_ENTRY_ATTACHABLE),
+      eq(attachments.attachableId, entryId),
+    ))
+    .returning({ id: attachments.id });
+  return moved.length;
 }
 
 export async function voidEntry(tenantId: string, id: string, userId?: string) {

@@ -661,6 +661,18 @@ at the template default and can be changed for that entry. To rename a template,
 edit **Template name** and click **Save template**. **Duplicate** copies the saved
 template (lines, accounts, tags, memo) under a new name you choose.
 
+### "Can I attach files to a Daily Sales entry or a journal entered from a template?"
+Yes. Both screens (Daily Sales → New daily entry, and Transactions → Journal
+Templates → Enter journal) have an **Attachments** section at the bottom: upload a
+file or use **Attach Existing** from the library. On a template journal, the files
+link to the journal entry when you click **Post journal entry**. On a daily sales
+entry, **Save draft** keeps them with the draft, and **Post entry** moves them to
+the posted journal entry, so they show on the transaction, in its Transaction
+Report and in the attachment library. Reopen the entry from the Daily Sales list
+to add or remove files later, even after posting. The Daily Sales list shows a
+paperclip count per day. Deleting a draft daily entry sends its files back to the
+library as unfiled; it does not delete them.
+
 ### "How do I set up a recurring bill?"
 Enter the bill normally, then on the bill detail page click **Make Recurring**. Choose
 frequency (monthly, weekly, etc.), mode (auto-post or reminder), and start date. The
