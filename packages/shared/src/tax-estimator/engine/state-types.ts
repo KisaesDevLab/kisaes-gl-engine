@@ -84,7 +84,21 @@ export interface StateEngineRow {
   /** Resident rows: replaces the computed credit for other-state taxes when set. */
   creditOverride: Dec | null;
   gate: StateGateInputs;
+  /**
+   * Q53: 'brackets' (default) = the state's rate schedule (falls back to the effective rate with a
+   * warning when the schedule is missing / null); 'effective' = the effective-rate override. Absent = 'brackets'.
+   */
+  rateMode?: StateRateMode;
+  /**
+   * Q53 (nonresident rows, brackets mode): 'ratio' (default) = the state's own method on the full
+   * schedule (ratio of the as-if-resident tax, or prorated deductions for sourced_flat / other
+   * states); 'sourced_rate' = sourced income × the effective rate (the v1 flat estimate). Absent = 'ratio'.
+   */
+  nonresidentMode?: StateNonresidentMode;
 }
+
+export type StateRateMode = 'brackets' | 'effective';
+export type StateNonresidentMode = 'ratio' | 'sourced_rate';
 
 /** One linked entity's full-year income allocated to this taxpayer, with the entity's sourcing state. */
 export interface StateSourcedEntity {
@@ -103,6 +117,16 @@ export interface FederalFiguresForState {
   wages: Dec;
   /** Deduction actually taken (standard or itemized). */
   deduction: Dec;
+  /** Q53: net long-term gain limited by the overall net gain (worksheet), for the state capital gains rules. Absent = 0. */
+  netLongTermGain?: Dec;
+  /** Q53: net capital gain / (limited loss) in federal AGI. Absent = 0. */
+  capitalGainNet?: Dec;
+  /** Q53: qualified dividends. Absent = 0. */
+  qualifiedDividends?: Dec;
+  /** Q53: the §199A deduction (MT adds it back to federal taxable income). Absent = 0. */
+  qbiDeduction?: Dec;
+  /** Q53: federal income tax (regular tax − nonrefundable credits, ≥ 0) for the AL / MO / OR deduction. Absent = not known. */
+  federalIncomeTax?: Dec;
 }
 
 export interface StateEngineInput {
@@ -217,8 +241,18 @@ export interface StateRowResult {
   rowId: string;
   state: string;
   residency: StateResidency;
-  /** 'resident' = base × rate − credit; 'nonresident_flat' = sourced × rate (NONRESIDENT_FLAT_RATE_LABEL). */
-  method: 'resident' | 'nonresident_flat';
+  /**
+   * 'resident'; 'nonresident_flat' = sourced × effective rate (NONRESIDENT_FLAT_RATE_LABEL);
+   * Q53 'nonresident_ratio' = as-if-resident schedule tax × sourced ÷ federal AGI;
+   * 'nonresident_prorated' = schedule on (sourced − deductions × ratio) for sourced_flat / other states.
+   */
+  method: 'resident' | 'nonresident_flat' | 'nonresident_ratio' | 'nonresident_prorated';
+  /** Q53: the rate mode applied (after any fallback) and the one the row asked for. */
+  rateMode?: StateRateMode;
+  rateModeRequested?: StateRateMode;
+  nonresidentMode?: StateNonresidentMode;
+  /** Q53: the schedule computation (brackets mode), whole dollars. */
+  schedule?: StateScheduleSummary;
   /** The state's actual nonresident method per its rules (informational, nonresident rows). */
   nonresidentMethod: NonresidentMethod | null;
   base: StateBase;
@@ -241,6 +275,27 @@ export interface StateRowResult {
   usesFederalFallback: boolean;
   verify: boolean;
   exact: StateRowExact;
+}
+
+/** Q53: the rate-schedule figures of one row (whole dollars; ratio to 6 places). */
+export interface StateScheduleSummary {
+  startingPoint: string;
+  start: Dec;
+  capitalGainExclusion: Dec;
+  federalTaxDeduction: Dec;
+  standardDeduction: Dec;
+  exemptions: Dec;
+  taxableIncome: Dec;
+  /** Schedule tax before exemption credits (nonresident ratio: the as-if-resident figure). */
+  scheduleTax: Dec;
+  scheduleLabel: string;
+  capitalGainsTreatment: string | null;
+  /** Nonresident ratio / prorated: sourced income ÷ federal AGI; resident: null. */
+  ratio: Dec | null;
+  /** Nonresident ratio: the as-if-resident tax after exemption credits, before the ratio. */
+  fullYearTax: Dec | null;
+  /** Capital gains excise (WA) taxable gain. */
+  exciseTaxableGain?: Dec;
 }
 
 export interface StateResult {

@@ -35,10 +35,23 @@ export const CHARACTER_TREATMENTS = [
 ] as const;
 export type CharacterTreatment = typeof CHARACTER_TREATMENTS[number];
 
+/**
+ * Q53 / Q39: long-term gain SUBSETS — the account's amount is a long-term capital gain
+ * (character capital_gain_lt) AND feeds the 25% unrecaptured §1250 / 28% collectibles buckets of
+ * the Schedule D worksheet (added to the year inputs by the taxpayer's share of the entity's gain).
+ */
+export const LTCG_SUBSET_TREATMENTS = ['unrecaptured_1250', 'collectibles_gain'] as const;
+export type LtcgSubsetTreatment = typeof LTCG_SUBSET_TREATMENTS[number];
+
+export function isLtcgSubsetTreatment(t: AccountTreatment | null | undefined): t is LtcgSubsetTreatment {
+  return !!t && (LTCG_SUBSET_TREATMENTS as readonly string[]).includes(t);
+}
+
 export const ACCOUNT_TREATMENTS = [
   'nondeductible_pct', 'owner_sehi', 'owner_retirement', 'owner_personal',
   'estimated_tax_payment', 'tax_depreciation_differs', 'w2_wages', 'guaranteed_payment',
   ...CHARACTER_TREATMENTS,
+  ...LTCG_SUBSET_TREATMENTS,
 ] as const;
 export type AccountTreatment = typeof ACCOUNT_TREATMENTS[number];
 
@@ -84,6 +97,8 @@ export const TREATMENT_ACCOUNT_TYPES: Record<AccountTreatment, readonly string[]
   interest: INCOME_ACCOUNT_TYPES,
   dividends_ordinary: INCOME_ACCOUNT_TYPES,
   dividends_qualified: INCOME_ACCOUNT_TYPES,
+  unrecaptured_1250: INCOME_ACCOUNT_TYPES,
+  collectibles_gain: INCOME_ACCOUNT_TYPES,
 };
 
 /** Entity types a treatment is allowed on; null = any. Guaranteed payments exist only in partnerships. */
@@ -329,6 +344,8 @@ export interface EstimatedTaxPaymentTxn {
   memo: string | null;
 }
 
+export interface LtcgSubsetAmounts { ytd: string; recurringYtd: string }
+
 export interface TaxBasisMonth {
   /** 'YYYY-MM' */
   month: string;
@@ -437,6 +454,11 @@ export interface TaxBasisPl {
   };
   /** Manual per-year UBIA input (D8); null = UBIA limb not computed. */
   ubia: string | null;
+  /**
+   * Q53 / Q39: long-term gain subsets booked to accounts treated `unrecaptured_1250` /
+   * `collectibles_gain` (profit-positive, already inside byCharacter.capital_gain_lt). Absent in older caches.
+   */
+  ltcgSubsets?: { unrecaptured1250: LtcgSubsetAmounts; collectibles: LtcgSubsetAmounts };
   accounts: TaxBasisAccountLine[];
   trace: TraceRow[];
   warnings: TaxEstimatorWarning[];

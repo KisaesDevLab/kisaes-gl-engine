@@ -32,10 +32,10 @@ import type {
 } from '@kis-books/shared';
 import {
   computeFederal, computeState, computeFederalEstimates, computeStateEstimates, computeCcorp, computeFarmer,
-  engineEntityFromTaxBasisPl, enginePersonFromDto, engineAdjustmentFromDto, engineYearFromDto, personYearInputsFromDto, engineDependentFromDto, activeDependents,
+  engineEntityFromTaxBasisPl, enginePersonFromDto, engineAdjustmentFromDto, engineYearFromDto, ltcgSubsetsFromPl, personYearInputsFromDto, engineDependentFromDto, activeDependents,
   parameterMapFromRows, jurisdictionFromStateRules, federalFiguresFromResult, stateRowFromDto, sourcedEntitiesFromFederal,
   projectCharacters, sumCharacters, allocateAdjustment, FARMER_SAFE_HARBOR_POLICY, FARMER_INSTALLMENT_POLICY, TAX_ENGINE_VERSION,
-  dAdd, dDiv, dMul, dSum, dRoundDollars, buildEstimateAssumptions, engineEntityFromOutside, outsidePeriodEntity, OUTSIDE_TENANT_ID,
+  dAdd, dDiv, dIsPos, dMul, dSum, dRoundDollars, dec, buildEstimateAssumptions, engineEntityFromOutside, outsidePeriodEntity, OUTSIDE_TENANT_ID,
   priorYearTrendFor, DEFAULT_PROJECTION_METHOD, PROJECTION_METHOD_LABELS, PY_TREND_FALLBACK_LABELS,
 } from '@kis-books/shared';
 import { db } from '../../db/index.js';
@@ -72,7 +72,8 @@ type DecJs = InstanceType<typeof Decimal>;
 // v4 (2026-10-12): entities carry their owners (PDF "Businesses included").
 // v5 (Q45): businesses outside MyBooks (entities carry `source` / `outside`).
 // v6 (Q46): projection method + prior-year trend figures per company (entity results carry `projection`).
-const CACHE_VERSION = 'te-estimate-v6';
+// v9 (Q53 state rate schedules; above the Q49–Q52 integration branch's v8).
+const CACHE_VERSION = 'te-estimate-v9';
 const FEDERAL = 'federal';
 const MONTHS_PER_YEAR = 12;
 const MAX_ADJUSTMENTS = 500;
@@ -610,7 +611,23 @@ async function assemble(scope: FirmScope, req: EstimateRequest, g: Gathered, opt
 
   // Federal.
   const persons = g.persons.map((p) => enginePersonFromDto(p, y, personYearInputsFromDto(y, p.role)));
-  const engineYear = engineYearFromDto(y);
+  // Q53 / Q39: the 25% / 28% buckets = the year inputs + the taxpayer's share of the long-term gain
+  // subsets booked to `unrecaptured_1250` / `collectibles_gain` accounts of the linked businesses.
+  let books1250 = '0';
+  let booksCollectibles = '0';
+  for (const r of individual) {
+    if (!r.pl) continue;
+    const sub = ltcgSubsetsFromPl(r.pl, r.engine.links.filter((l) => g.persons.some((p) => p.id === l.personId)));
+    books1250 = dAdd(books1250, sub.unrecaptured1250);
+    booksCollectibles = dAdd(booksCollectibles, sub.collectibles);
+  }
+  if (dIsPos(books1250) || dIsPos(booksCollectibles)) {
+    warnings.push({ code: 'TE_LTCG_SUBSETS_FROM_BOOKS', severity: 'info', message: `Unrecaptured §1250 gain ${dRoundDollars(books1250)} and collectibles gain ${dRoundDollars(booksCollectibles)} come from the books (accounts treated as such, projected and allocated by the owner's profit %), added to the amounts entered for the year.`, details: { unrecaptured1250: books1250, collectibles: booksCollectibles } });
+  }
+  const engineYear = engineYearFromDto(y, {
+    unrecaptured1250Gain: dAdd(dec(y.unrecaptured1250Gain ?? '0'), books1250),
+    collectiblesGain: dAdd(dec(y.collectiblesGain ?? '0'), booksCollectibles),
+  });
   const engineDependents = g.dependents.map(engineDependentFromDto);
   const federalInput: FederalEngineInput = {
     taxYear, filingStatus, parameters, persons, dependents: engineDependents, entities: engineEntities, adjustments: adjustmentsFor(null), year: engineYear,

@@ -156,6 +156,28 @@ describe('buildEstimateAssumptions', () => {
     expect(text(a, 'state_methods')).not.toContain('federal_agi');
   });
 
+  it('Q53: rate-schedule rows describe the computation (calc view + assumptions); the override and the fallback are labelled', () => {
+    const r = riveraLike();
+    const [mo, ar] = r.state!.rows;
+    const sched = { startingPoint: 'federal_agi', start: '147000', capitalGainExclusion: '63000', federalTaxDeduction: '1638', standardDeduction: '31500', exemptions: '0', taxableIncome: '50862', scheduleTax: '2215', scheduleLabel: 'main schedule', capitalGainsTreatment: 'exclusion', ratio: null, fullYearTax: null };
+    const rows = [
+      { ...mo!, rateMode: 'brackets' as const, rateModeRequested: 'brackets' as const, nonresidentMode: 'ratio' as const, grossTax: '2215', creditForOtherStates: '1582', netTax: '633', schedule: sched },
+      { ...ar!, method: 'nonresident_ratio' as const, rateMode: 'brackets' as const, rateModeRequested: 'brackets' as const, nonresidentMode: 'ratio' as const, sourcedIncome: '20000', netTax: '574',
+        schedule: { ...sched, startingPoint: 'state_specific', capitalGainExclusion: '30000', federalTaxDeduction: '0', standardDeduction: '4940', taxableIncome: '112060', scheduleTax: '4279', ratio: '0.136054', fullYearTax: '4221', capitalGainsTreatment: 'exclusion' } },
+    ];
+    const a = buildEstimateAssumptions({ ...r, state: { ...r.state!, rows } });
+    expect(text(a, 'rate_mode')).toContain('MO (resident): 2026 MO rate schedule (main schedule) for MFJ.');
+    const st = text(a, 'state_methods');
+    expect(st).toContain('MO resident: Rate schedule: federal AGI $147,000, less capital gain exclusion $63,000, less federal income tax deduction $1,638, less standard deduction $31,500 = state taxable income $50,862; rate-schedule tax $2,215');
+    expect(st).toContain('AR nonresident: Ratio method (as if resident):');
+    expect(st).toContain('× income ratio 13.6');
+    // Override and fallback rows.
+    const eff = buildEstimateAssumptions({ ...r, state: { ...r.state!, rows: [{ ...mo!, rateMode: 'effective' as const, rateModeRequested: 'effective' as const }] } });
+    expect(text(eff, 'rate_mode')).toContain('MO (resident): Effective-rate override: 4%');
+    const fb = buildEstimateAssumptions({ ...r, state: { ...r.state!, rows: [{ ...mo!, rateMode: 'effective' as const, rateModeRequested: 'brackets' as const }] } });
+    expect(text(fb, 'rate_mode')).toContain('No rate schedule on file — effective rate used');
+  });
+
   it('lists only unverified / provisional parameters and rules, and every readiness warning (warnings first)', () => {
     const a = buildEstimateAssumptions(riveraLike());
     const p = sectionOf(a, 'parameters').items;

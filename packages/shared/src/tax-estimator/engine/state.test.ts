@@ -44,7 +44,8 @@ const juris = (state: string, r: StateRuleMap, extra: Partial<StateJurisdictionI
 const federal = { agi: b('agi'), taxableIncome: b('taxable_income'), totalIncome: b('total_income'), wages: '54000', deduction: b('std_deduction') };
 
 const row = (partial: Partial<StateEngineRow> & Pick<StateEngineRow, 'state' | 'residency' | 'effectiveRate'>): StateEngineRow => ({
-  rowId: `row-${partial.state}`, base: 'federal_agi', customBase: null, sourcedIncome: null, sourcedManual: false, creditOverride: null, gate: { ...EMPTY_GATE_INPUTS }, ...partial,
+  // Q53: these cases test the v1 effective-rate formulas, so rows are pinned to the effective-rate override.
+  rowId: `row-${partial.state}`, base: 'federal_agi', customBase: null, sourcedIncome: null, sourcedManual: false, creditOverride: null, gate: { ...EMPTY_GATE_INPUTS }, rateMode: 'effective', ...partial,
 });
 
 function riveraInput(over: Partial<StateEngineInput> = {}): StateEngineInput {
@@ -280,7 +281,11 @@ describe('DTO bridges', () => {
     expect(r).toMatchObject({ rowId: 'r1', state: 'AR', effectiveRate: '0.039', sourcedIncome: '8000', sourcedManual: true });
     expect(r.gate).toMatchObject({ withholding: '100', credits: '0', priorYearLiability: null });
     const fed = { exact: { agi: '197556.7', taxableIncome: '138726.1', totalIncome: '232400', deduction: '32200' }, income: { wages: '54000' } } as unknown as FederalResult;
-    expect(federalFiguresFromResult(fed)).toEqual({ agi: '197556.7', taxableIncome: '138726.1', totalIncome: '232400', wages: '54000', deduction: '32200' });
+    expect(federalFiguresFromResult(fed)).toMatchObject({ agi: '197556.7', taxableIncome: '138726.1', totalIncome: '232400', wages: '54000', deduction: '32200' });
+    // Q53: the row modes default to brackets / ratio; capital-gain figures and federal income tax come from the result.
+    expect(r).toMatchObject({ rateMode: 'brackets', nonresidentMode: 'ratio' });
+    const fed2 = { ...fed, exact: { ...(fed as { exact: object }).exact, regularTax: '20000', nonrefundableCredits: '2500', netLongTermGain: '9000', capitalGainNet: '10000', qualifiedDividends: '400' } } as unknown as FederalResult;
+    expect(federalFiguresFromResult(fed2)).toMatchObject({ netLongTermGain: '9000', capitalGainNet: '10000', qualifiedDividends: '400', federalIncomeTax: '17500' });
   });
 
   it('R2-15: sourcedEntitiesFromFederal sums the business characters of the shares AFTER loss limits (+ GP) per entity with its sourcing state; portfolio income stays with the residence state', () => {

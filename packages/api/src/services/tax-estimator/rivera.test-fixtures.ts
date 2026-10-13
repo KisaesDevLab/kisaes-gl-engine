@@ -166,8 +166,9 @@ export async function seedRivera(FIRM_A: string, FIRM_B: string, userId: string)
   await createAdjustment(scopeA, actor, baseScenarioId, { adjustmentTypeId: typeId('sep_solo_401k'), label: 'SEP contribution', personId: carlosId, amount: '15000', cadence: 'annual', startMonth: 1, endMonth: 12, glLinked: false, nonRecurring: false });
 
   await replaceStateRows(scopeA, actor, baseScenarioId, { rows: [
-    { residency: 'resident', state: 'MO', effectiveRate: 0.04, base: 'federal_agi', sourcedManual: false, priorYearTax: '7050' },
-    { residency: 'nonresident', state: 'AR', effectiveRate: 0.039, base: 'federal_agi', sourcedManual: true, sourcedIncome: '8000', priorYearTax: '300' },
+    // Q53: the Rivera oracle computes the v1 effective-rate formulas — pinned to the effective-rate override.
+    { residency: 'resident', state: 'MO', effectiveRate: 0.04, rateMode: 'effective', base: 'federal_agi', sourcedManual: false, priorYearTax: '7050' },
+    { residency: 'nonresident', state: 'AR', effectiveRate: 0.039, rateMode: 'effective', base: 'federal_agi', sourcedManual: true, sourcedIncome: '8000', priorYearTax: '300' },
   ] });
   return { T, C, scopeA, scopeB, actor, taxpayerId, baseScenarioId, carlosId, mariaId, q1Txn, decPriorTxn, janQ4Txn };
 }

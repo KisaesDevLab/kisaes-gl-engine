@@ -127,7 +127,7 @@ describe('estimate under each method', () => {
     expect(entityA(r).projected.ordinary).toBe('132000');
     expect(entityA(r)).not.toHaveProperty('projection');
     expect(r.entities.find((e) => e.companyId === C.a)).not.toHaveProperty('projectionMethod');
-    expect(r.engineVersion).toBe('1.0.0-rc.6');
+    expect(r.engineVersion).toBe('1.0.0-rc.9');
   });
 
   it('scaled: 99,000 + 57,000 × (99,000 ÷ 81,000); dollar: 99,000 + 57,000; the cache re-keys on the method', async () => {

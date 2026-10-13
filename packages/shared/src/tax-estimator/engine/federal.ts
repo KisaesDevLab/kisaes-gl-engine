@@ -349,6 +349,8 @@ export function computeFederal(input: FederalEngineInput): FederalResult {
       totalIncome: income.totalIncome, agi, deduction: choice.deduction, sch1a: sch1a.total, qbi: qbi.deduction, taxableIncomeBeforeQbi, taxableIncome,
       regularTax: regular.tax, nonrefundableCredits: nonrefundableAllowed, seTax: block.seTax, additionalMedicareTax, niit,
       refundableCredits: refundable, federalTotal,
+      // Q53: state capital-gain treatment inputs.
+      netLongTermGain: dFloorZero(income.netLongTermGainForWorksheet), capitalGainNet: income.capitalGainNet, qualifiedDividends: income.qualifiedDividends,
     },
     trace: ctx.trace.rows(),
     warnings: ctx.allWarnings(),

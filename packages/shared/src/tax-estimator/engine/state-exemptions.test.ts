@@ -25,7 +25,7 @@ function rules(entries: Record<string, unknown>): StateRuleMap {
 }
 const row = (state: string, extra: Partial<StateEngineRow> = {}): StateEngineRow => ({
   rowId: `r-${state}`, state, residency: 'resident', effectiveRate: '0.04', base: 'federal_agi', customBase: null, sourcedIncome: null, sourcedManual: false, creditOverride: null,
-  gate: { ...EMPTY_GATE_INPUTS }, ...extra,
+  gate: { ...EMPTY_GATE_INPUTS }, rateMode: 'effective', ...extra, // Q53: the Q44 cases test the effective-rate formula.
 });
 function input(state: string, ex: unknown, over: Partial<StateEngineInput> = {}, extraRules: Record<string, unknown> = {}): StateEngineInput {
   return {

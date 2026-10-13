@@ -44,6 +44,7 @@ function toYearDTO(r: YearRow, withSecrets: boolean): YearSettingsDTO {
     deductionMode: r.deductionMode as DeductionMode,
     itemized: r.itemized as ItemizedDTO, sch1a: r.sch1a as Sch1aDTO,
     creditsNonrefundable: r.creditsNonrefundable, creditsRefundable: r.creditsRefundable, careExpenses: r.careExpenses,
+    unrecaptured1250Gain: r.unrecaptured1250Gain, collectiblesGain: r.collectiblesGain,
     hsaCoverage: r.hsaCoverage as HsaCoverageDTO, withholding: r.withholding as WithholdingDTO,
     personInputs: r.personInputs as PersonInputsDTO, mfsLivedApartAllYear: r.mfsLivedApartAllYear,
     niiAllocableDeductions: r.niiAllocableDeductions, farmerGross: r.farmerGross as FarmerGrossDTO, isFisherman: r.isFisherman,
@@ -63,7 +64,7 @@ function defaultYearDTO(taxpayerId: string, taxYear: number): YearSettingsDTO {
     id: '', taxpayerId, taxYear, priorYearTax: null, priorYearAgi: null, priorYearTaxPresent: false,
     priorYearAgiPresent: false, priorYearTwelveMonths: true, priorYearFiled: true, safeHarborRule: null,
     rateMode: 'brackets', effectiveRateOverride: null, deductionMode: 'auto', itemized: {}, sch1a: {},
-    creditsNonrefundable: '0.0000', creditsRefundable: '0.0000', careExpenses: '0.0000', hsaCoverage: {}, withholding: {},
+    creditsNonrefundable: '0.0000', creditsRefundable: '0.0000', careExpenses: '0.0000', unrecaptured1250Gain: '0.0000', collectiblesGain: '0.0000', hsaCoverage: {}, withholding: {},
     personInputs: {}, mfsLivedApartAllYear: false, niiAllocableDeductions: null, farmerGross: {}, isFisherman: false,
     createdAt: now, updatedAt: now,
   };
@@ -132,6 +133,8 @@ export async function upsertYear(
     if (input.creditsNonrefundable !== undefined) patch.creditsNonrefundable = input.creditsNonrefundable;
     if (input.creditsRefundable !== undefined) patch.creditsRefundable = input.creditsRefundable;
     if (input.careExpenses !== undefined) patch.careExpenses = input.careExpenses;
+    if (input.unrecaptured1250Gain !== undefined) patch.unrecaptured1250Gain = input.unrecaptured1250Gain;
+    if (input.collectiblesGain !== undefined) patch.collectiblesGain = input.collectiblesGain;
     if (input.hsaCoverage !== undefined) patch.hsaCoverage = input.hsaCoverage as Record<string, string>;
     if (input.withholding !== undefined) patch.withholding = input.withholding as { federal?: number; states?: Record<string, number> };
     if (input.personInputs !== undefined) patch.personInputs = input.personInputs as Record<string, Record<string, number | string | null>>;

@@ -12,7 +12,7 @@
 
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
 import {
-  buildCalcSections, buildEstimateAssumptions, calcEntityTypeLabel, DEFAULT_DISCLAIMER_TEXT, presentEngineText, presentWarningMessage, recommendedHarborRule,
+  buildCalcSections, buildEstimateAssumptions, calcEntityTypeLabel, DEFAULT_DISCLAIMER_TEXT, presentEngineText, presentWarningMessage, recommendedHarborRule, stateRowDetail,
   type AssumptionBadge, type CalcLine, type EstimateAssumptionsDTO, type EstimateEntityOwnerDTO, type EstimateResultDTO, type SnapshotReason,
 } from '@kis-books/shared';
 
@@ -402,10 +402,15 @@ export async function renderEstimatePdf(r: EstimateResultDTO, opts: EstimatePdfO
       const tag = s.residency === 'resident' ? 'resident' : 'nonresident';
       // QA D18: the same review marker as the screen ("Verify"), preparer copy only.
       w.row([`${s.state} (${tag})${mark(s.verify, ' - verify')}`, usd(s.netTax)], cols);
-      if (s.method === 'nonresident_flat') w.wrap('Nonresident: effective-rate estimate; most states compute nonresident tax by ratio of the full return.', 8, 12, MUTED);
-      if (s.exemptions && num(s.exemptions) > 0) w.wrap(`Personal / dependent exemptions off the base: ${usd(s.exemptions)}`, 8, 12, MUTED);
-      if (s.exemptionCredits && num(s.exemptionCredits) > 0) w.wrap(`Less personal / dependent exemption credits: ${usd(s.exemptionCredits)}`, 8, 12, MUTED);
-      if (num(s.creditForOtherStates) > 0) w.wrap(`Less credit for other-state tax: ${usd(s.creditForOtherStates)}`, 8, 12, MUTED);
+      // Q53: the rate-schedule computation (or the effective-rate override) in words, as on the screen.
+      if (s.schedule) w.wrap(`${s.method === 'nonresident_ratio' ? 'Brackets, ratio method' : s.method === 'nonresident_prorated' ? 'Brackets, sourced income' : s.schedule.capitalGainsTreatment === 'excise' ? 'Capital gains excise' : 'Brackets'}: ${stateRowDetail(s)}.`, 8, 12, MUTED);
+      else {
+        if (s.method === 'nonresident_flat') w.wrap(`Nonresident${s.rateModeRequested === 'effective' ? ' (effective-rate override)' : ''}: effective-rate estimate; most states compute nonresident tax by ratio of the full return.`, 8, 12, MUTED);
+        else if (s.hasIncomeTax) w.wrap(s.rateModeRequested === 'effective' ? 'Effective-rate override (state rate schedule not used).' : 'No rate schedule on file: effective rate used.', 8, 12, MUTED);
+        if (s.exemptions && num(s.exemptions) > 0) w.wrap(`Personal / dependent exemptions off the base: ${usd(s.exemptions)}`, 8, 12, MUTED);
+        if (s.exemptionCredits && num(s.exemptionCredits) > 0) w.wrap(`Less personal / dependent exemption credits: ${usd(s.exemptionCredits)}`, 8, 12, MUTED);
+        if (num(s.creditForOtherStates) > 0) w.wrap(`Less credit for other-state tax: ${usd(s.creditForOtherStates)}`, 8, 12, MUTED);
+      }
     }
     w.row(['State total', usd(r.state.stateTotal)], cols, { bold: true });
   }

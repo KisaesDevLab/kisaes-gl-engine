@@ -32,7 +32,7 @@ export { computeFederal } from './federal.js';
 export { computeDependentCredits, activeDependents, careRateFor, type DependentCreditsInput, type DependentCreditsExact, type EarnedIncomePerson } from './dependents.js';
 export {
   engineEntityFromTaxBasisPl, enginePersonFromDto, engineAdjustmentFromDto, engineYearFromDto, engineDependentFromDto,
-  engineEntityFromOutside, outsidePeriodEntity,
+  engineEntityFromOutside, outsidePeriodEntity, ltcgSubsetsFromPl,
   type EntitySettingsForEngine, type PersonYearInputs, type YearExtras,
 } from './bridge.js';
 export * from './state-types.js';
@@ -40,6 +40,11 @@ export { evaluateEstimateGate, meetsThreshold, balanceAfterWithholdingAndCredits
 export {
   computeState, computeCcorpStateTax, StateContext, stateRuleMapFromRows, jurisdictionFromStateRules, federalFiguresFromResult, stateRowFromDto, sourcedEntitiesFromFederal, EMPTY_GATE_INPUTS,
 } from './state.js';
+export {
+  computeScheduleTax, chooseSchedule, tieredExclusion, stateScheduleTax, bracketAdds, incomeRatio, capitalGainsExcise, gainsFromFederal, scheduleAvailable, toBracketRows,
+  KEY_STARTING_POINT, KEY_BRACKETS, KEY_STANDARD_DEDUCTION, KEY_CAPITAL_GAINS, KEY_FEDERAL_TAX_DEDUCTION, KEY_CAPITAL_GAINS_EXCISE,
+  type ScheduleCalc, type ScheduleArgs, type StateGains,
+} from './state-schedule.js';
 export {
   computeCcorp, ccorpInstallmentDates, CCORP_STEPS,
   type CcorpEngineInput, type CcorpStateRow, type CcorpPriorYear, type CcorpResult, type CcorpInstallment, type CcorpInstallmentExact, type CcorpStateResult,

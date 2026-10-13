@@ -18,7 +18,7 @@ import type {
 import { ASSUMPTION_SECTION_IDS } from './estimate-api.js';
 import type { CharacterAmounts, ThroughMonthSource } from './entities-api.js';
 import type { JurisdictionEstimate } from './engine/vouchers.js';
-import { NONRESIDENT_FLAT_RATE_LABEL } from './engine/state-types.js';
+import { NONRESIDENT_FLAT_RATE_LABEL, type StateRowResult } from './engine/state-types.js';
 import type { EntityProjectionResult } from './engine/types.js';
 import { PROJECTION_METHOD_LABELS, PY_TREND_FALLBACK_LABELS } from './projection-method.js';
 import { dIsZero, dRound, dRoundDollars, dSum } from './decimal.js';
@@ -171,9 +171,29 @@ function rateModeSection(r: EstimateResultDTO): AssumptionSectionDTO {
     items.push({ label: 'Federal income tax', detail: `Effective-rate override: ${formatPct(rt.effectiveRate)} of taxable income ${formatDollars(rt.taxableIncome)} (brackets not used).`, badge: 'verify' });
   } else {
     items.push({ label: 'Federal income tax', detail: `${r.taxYear} brackets for ${r.filingStatus.toUpperCase()}${rt.worksheet ? ' with the qualified dividends and capital gain worksheet' : ''}; marginal ordinary rate ${formatPct(rt.marginalOrdinaryRate)}, effective ${formatPct(dRound(rt.effectiveRate, 4))}.` });
+    // Q53 / Q39: the 25% / 28% worksheet buckets (year inputs + accounts treated as such).
+    const w = rt.worksheet;
+    if (w && (nonZero(w.unrecaptured1250) || nonZero(w.collectibles))) {
+      items.push({ label: 'Unrecaptured §1250 / collectibles gain', detail: `Unrecaptured §1250 gain ${formatDollars(w.unrecaptured1250)} taxed at up to 25% and collectibles gain ${formatDollars(w.collectibles)} at up to 28% (Schedule D Tax Worksheet), from the year inputs plus accounts treated as such.` });
+    }
   }
   for (const row of r.state?.rows ?? []) {
-    items.push({ label: `${row.state} (${row.residency})`, detail: `User-entered effective rate ${formatPct(row.effectiveRate)} on ${row.method === 'nonresident_flat' ? 'income sourced to the state' : `base ${baseLabel(row.base)}`}.` });
+    if (row.rateModeRequested === undefined && !row.schedule) {
+      // A result from before Q53 (snapshot): the v1 wording.
+      items.push({ label: `${row.state} (${row.residency})`, detail: `User-entered effective rate ${formatPct(row.effectiveRate)} on ${row.method === 'nonresident_flat' ? 'income sourced to the state' : `base ${baseLabel(row.base)}`}.` });
+      continue;
+    }
+    if (!row.hasIncomeTax && !row.schedule) continue;
+    if (row.rateMode === 'brackets' || row.schedule) {
+      items.push({ label: `${row.state} (${row.residency})`, detail: `${r.taxYear} ${row.state} rate schedule${row.schedule ? ` (${row.schedule.scheduleLabel})` : ''} for ${r.filingStatus.toUpperCase()}.` });
+    } else {
+      const fellBack = row.rateModeRequested === 'brackets' && !(row.residency === 'nonresident' && row.nonresidentMode === 'sourced_rate');
+      items.push({
+        label: `${row.state} (${row.residency})`,
+        detail: `${fellBack ? 'No rate schedule on file — effective rate used' : 'Effective-rate override'}: ${formatPct(row.effectiveRate)} on ${row.method === 'nonresident_flat' ? 'income sourced to the state' : `base ${baseLabel(row.base)}`} (state rate schedule not used).`,
+        badge: 'verify',
+      });
+    }
   }
   return section('rate_mode', items);
 }
@@ -378,7 +398,11 @@ function stateMethodsSection(r: EstimateResultDTO): AssumptionSectionDTO {
       items.push({ label: row.state, detail: 'No broad-based individual income tax.' });
       continue;
     }
-    if (row.method === 'nonresident_flat') {
+    if (row.schedule && (row.method === 'nonresident_ratio' || row.method === 'nonresident_prorated')) {
+      items.push({ label: `${row.state} nonresident`, detail: stateRowDetail(row), badge: 'estimate_may_differ' });
+    } else if (row.schedule && row.residency === 'resident') {
+      items.push({ label: `${row.state} resident`, detail: stateRowDetail(row) });
+    } else if (row.method === 'nonresident_flat') {
       items.push({
         label: `${row.state} nonresident`,
         detail: `Sourced income ${formatDollars(row.sourcedIncome)} (${row.sourcedDerived ? 'derived from entity sourcing × share' : 'entered'}) × ${formatPct(row.effectiveRate)}: ${NONRESIDENT_FLAT_RATE_LABEL}${row.nonresidentMethod ? ` (the state's method: ${row.nonresidentMethod})` : ''}.`,
@@ -407,6 +431,42 @@ function stateMethodsSection(r: EstimateResultDTO): AssumptionSectionDTO {
 }
 
 /** QA D19: a parameter value never prints as JSON (a rate table reads "a table of 12 rows"). */
+const STARTING_POINT_LABELS: Record<string, string> = {
+  federal_agi: 'federal AGI', federal_taxable: 'federal taxable income', federal_taxable_before_qbi: 'federal taxable income before the QBI deduction',
+  state_specific: 'federal AGI (the state computes its own income; approximation)', row_base: 'the row base (no starting point on file)', custom: 'entered state taxable income',
+  sourced: 'income sourced to the state', net_long_term_gain: 'net long-term capital gain',
+};
+
+/**
+ * Q53: one state row in words — the rate-schedule computation (starting point, capital gain exclusion,
+ * federal tax deduction, standard deduction, exemptions, taxable income, schedule tax, ratio) or the
+ * effective-rate formula. Shared by the assumptions page, the Calculation view and the PDF.
+ */
+export function stateRowDetail(row: StateRowResult): string {
+  const s = row.schedule;
+  const credit = nonZero(row.creditForOtherStates) ? `; credit for tax paid to other states ${formatDollars(row.creditForOtherStates)} (limit: resident tax × sourced ÷ resident AGI)` : '';
+  const exCr = row.exemptionCredits && nonZero(row.exemptionCredits) ? `; exemption credits ${formatDollars(row.exemptionCredits)}` : '';
+  if (!s) {
+    if (row.method === 'nonresident_flat') return `Sourced income ${formatDollars(row.sourcedIncome)} × ${formatPct(row.effectiveRate)} — ${NONRESIDENT_FLAT_RATE_LABEL}`;
+    const ex = row.exemptions && nonZero(row.exemptions) ? ` less exemptions ${formatDollars(row.exemptions)}` : '';
+    return `Effective-rate override: base ${baseLabel(row.base)} ${formatDollars(row.baseAmount)}${ex} × ${formatPct(row.effectiveRate)}${exCr}${credit}`;
+  }
+  if (s.capitalGainsTreatment === 'excise') return `Capital gains excise: net long-term gain ${formatDollars(s.start)} less the standard deduction = ${formatDollars(s.taxableIncome)} taxed on the excise schedule = ${formatDollars(s.scheduleTax)}`;
+  const parts = [`${STARTING_POINT_LABELS[s.startingPoint] ?? s.startingPoint} ${formatDollars(s.start)}`];
+  if (nonZero(s.capitalGainExclusion)) parts.push(`less capital gain exclusion ${formatDollars(s.capitalGainExclusion)}`);
+  if (nonZero(s.federalTaxDeduction)) parts.push(`less federal income tax deduction ${formatDollars(s.federalTaxDeduction)}`);
+  if (nonZero(s.standardDeduction)) parts.push(`less standard deduction ${formatDollars(s.standardDeduction)}${row.method === 'nonresident_prorated' ? ' (× income ratio)' : ''}`);
+  if (nonZero(s.exemptions)) parts.push(`less exemptions ${formatDollars(s.exemptions)}`);
+  const base = `${parts.join(', ')} = state taxable income ${formatDollars(s.taxableIncome)}; rate-schedule tax ${formatDollars(s.scheduleTax)}`;
+  if (row.method === 'nonresident_ratio') {
+    return `Ratio method (as if resident): ${base}${exCr} → ${formatDollars(s.fullYearTax ?? '0')} × income ratio ${formatPct(s.ratio ?? '0')} (sourced ${formatDollars(row.sourcedIncome)} ÷ federal AGI) = ${formatDollars(row.netTax)}`;
+  }
+  if (row.method === 'nonresident_prorated') {
+    return `Schedule on sourced income (the state's method: ${row.nonresidentMethod ?? 'n/a'}; deductions × income ratio ${formatPct(s.ratio ?? '0')}): ${base}${exCr} = ${formatDollars(row.netTax)}`;
+  }
+  return `Rate schedule: ${base}${exCr}${credit}`;
+}
+
 /** QA D19: a state base in words ("federal AGI"), never its key. */
 const BASE_LABELS: Record<string, string> = { federal_agi: 'federal AGI', federal_taxable: 'federal taxable income', custom: 'entered amount' };
 function baseLabel(base: string): string {

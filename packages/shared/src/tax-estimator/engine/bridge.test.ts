@@ -3,7 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { describe, it, expect } from 'vitest';
-import { engineEntityFromTaxBasisPl, enginePersonFromDto, engineAdjustmentFromDto, engineYearFromDto } from './bridge.js';
+import { engineEntityFromTaxBasisPl, enginePersonFromDto, engineAdjustmentFromDto, engineYearFromDto, ltcgSubsetsFromPl } from './bridge.js';
 import { characters } from './income.js';
 import type { TaxBasisPl } from '../entities-api.js';
 import type { LinkDTO, PersonDTO } from '../taxpayers-api.js';
@@ -88,5 +88,21 @@ describe('engineAdjustmentFromDto', () => {
     expect(e.kind).toBe('addback');
     expect(e.affectsSe).toBe(true);
     expect(e.linkId).toBe('l1');
+  });
+});
+
+describe('Q53 / Q39: unrecaptured §1250 / collectibles inputs', () => {
+  it('ltcgSubsetsFromPl projects the books subsets (YTD + recurring run rate) and allocates them by the profit %', () => {
+    const pl = { monthsElapsed: 9, monthsRemaining: 3, ltcgSubsets: { unrecaptured1250: { ytd: '9000', recurringYtd: '0' }, collectibles: { ytd: '900', recurringYtd: '900' } } };
+    expect(ltcgSubsetsFromPl(pl, [{ profitPct: 50 }])).toEqual({ unrecaptured1250: '4500', collectibles: '600' });
+    expect(ltcgSubsetsFromPl(pl, [{ profitPct: null }])).toEqual({ unrecaptured1250: '9000', collectibles: '1200' });
+    expect(ltcgSubsetsFromPl({ monthsElapsed: 9, monthsRemaining: 3 }, [{ profitPct: 100 }])).toEqual({ unrecaptured1250: '0', collectibles: '0' });
+    expect(ltcgSubsetsFromPl({ ...pl, ltcgSubsets: { unrecaptured1250: { ytd: '-500', recurringYtd: '0' }, collectibles: { ytd: '0', recurringYtd: '0' } } }, [{ profitPct: 100 }]).unrecaptured1250).toBe('0');
+  });
+
+  it('engineYearFromDto reads the year inputs unless the caller passes the totals', () => {
+    const y = { rateMode: 'brackets', effectiveRateOverride: null, deductionMode: 'auto', itemized: { saltPaid: '0', mortgageInterest: '0', charitableCash: '0', charitableNoncash: '0', other: '0' }, creditsNonrefundable: '0', creditsRefundable: '0', unrecaptured1250Gain: '1500.0000', collectiblesGain: '200.0000' } as unknown as YearSettingsDTO;
+    expect(engineYearFromDto(y)).toMatchObject({ unrecaptured1250Gain: '1500', collectiblesGain: '200' });
+    expect(engineYearFromDto(y, { unrecaptured1250Gain: '2000', collectiblesGain: '0' })).toMatchObject({ unrecaptured1250Gain: '2000', collectiblesGain: '0' });
   });
 });

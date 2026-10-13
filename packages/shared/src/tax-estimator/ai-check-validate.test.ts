@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  validateAiCheck, parseFoundValue, aiValuesEqual, quoteAppearsIn, canonicalUrl, type AiCheckValidationInput,
+  validateAiCheck, parseFoundValue, aiValuesEqual, aiComparableValue, quoteAppearsIn, canonicalUrl, type AiCheckValidationInput,
 } from './ai-check-validate.js';
 import { allowedDomainsFor, isUrlAllowed, STATE_TRUSTED_DOMAINS, FEDERAL_TRUSTED_DOMAINS } from './ai-check-sources.js';
 import { STATE_CODES, getStateRuleDef, validateStateRuleValue } from './stateRuleKeys.js';
@@ -220,5 +220,27 @@ describe('validateAiCheck', () => {
     // A model verdict of "matches" with a value that differs is re-decided as differs.
     const relabelled = validateAiCheck(input({ retrieved: [{ url: RP, text, origin: 'fetch' }], answer: answer({ verdict: 'matches' }) }));
     expect(relabelled.verdict).toBe('differs');
+  });
+});
+
+describe('Q53: structured state rules (bracket tables)', () => {
+  const MO_URL = 'https://dor.mo.gov/forms/MO-1040%20Instructions_2025.pdf';
+  const MO_TEXT = 'Missouri tax rate chart 2025: if Missouri taxable income is over $9,191, the tax is $256 plus 4.7% of the excess over $9,191.';
+  const sched = (top: number) => ({ single: [{ over: 0, rate: 0 }, { over: 1313, rate: 0.02 }, { over: 9191, rate: top }], mfj: [{ over: 0, rate: 0 }], mfs: [{ over: 0, rate: 0 }], hoh: [{ over: 0, rate: 0 }], qss: [{ over: 0, rate: 0 }] });
+  const def = getStateRuleDef('brackets')!;
+  const run = (found: unknown, stored: unknown) => validateAiCheck(input({
+    valueType: 'brackets', validateValue: (v) => validateStateRuleValue(def, v), storedValue: stored, taxYear: 2025,
+    allowedDomains: allowedDomainsFor('MO'), retrievedUrls: [MO_URL], retrieved: [{ url: MO_URL, text: MO_TEXT, origin: 'pdf' }],
+    answer: answer({ verdict: 'matches', foundValue: JSON.stringify(found), quote: 'the tax is $256 plus 4.7% of the excess over $9,191', sourceUrl: MO_URL, sourceTaxYear: 2025, sourceKind: 'form_instructions' }),
+  }));
+
+  it('arrays of bracket objects compare by figures; the note / simplified annotations are ignored', () => {
+    expect(aiComparableValue({ ...sched(0.047), note: 'x', simplified: true })).toEqual(sched(0.047));
+    expect(run(sched(0.047), { ...sched(0.047), note: 'MFJ uses the single chart', simplified: true }).verdict).toBe('matches');
+    expect(run(sched(0.048), { ...sched(0.047), note: 'n' }).verdict).toBe('differs');
+  });
+
+  it('an AI value that is not a valid bracket table is unconfirmed', () => {
+    expect(run({ single: [{ over: 5, rate: 0.02 }] }, sched(0.047)).verdict).toBe('unconfirmed');
   });
 });

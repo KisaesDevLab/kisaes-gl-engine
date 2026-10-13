@@ -11,6 +11,7 @@
 // and an owner's YTD share (entity YTD × allocated %). Q45 outside businesses: see the income block.
 // Q46: an entity with a prior-year trend method carries the method sub-label and comparison chips.
 import type { EstimateResultDTO } from './estimate-api.js';
+import { stateRowDetail } from './assumptions.js';
 
 const num = (v: unknown): number => {
   const n = Number(v);
@@ -183,7 +184,10 @@ export function buildCalcSections(r: EstimateResultDTO): CalcSection[] {
   const tax: CalcLine[] = [
     {
       key: 'tax.regular', label: 'Regular income tax', projected: f.regularTax.tax,
-      sub: f.regularTax.method === 'effective' ? 'Effective-rate override' : `Marginal rate ${pct(f.regularTax.marginalOrdinaryRate)}`,
+      sub: f.regularTax.method === 'effective' ? 'Effective-rate override' : `Marginal rate ${pct(f.regularTax.marginalOrdinaryRate)}${
+        // Q53 / Q39: the 25% / 28% worksheet buckets when present.
+        f.regularTax.worksheet && (nonZero(f.regularTax.worksheet.unrecaptured1250) || nonZero(f.regularTax.worksheet.collectibles))
+          ? `; unrecaptured §1250 ${num(f.regularTax.worksheet.unrecaptured1250).toLocaleString('en-US')} (25%), collectibles ${num(f.regularTax.worksheet.collectibles).toLocaleString('en-US')} (28%)` : ''}`,
       trace: { kind: 'federal', steps: ['regular_tax'] },
     },
   ];
@@ -213,9 +217,13 @@ export function buildCalcSections(r: EstimateResultDTO): CalcSection[] {
       else if (s.verify) chips.push({ text: 'Verify', tone: 'warn', review: true });
       return {
         key: `st.${s.rowId}`, label: `${s.state} — ${s.residency === 'resident' ? 'resident' : 'nonresident'}`,
-        sub: s.residency === 'resident'
-          ? `${s.exemptions && nonZero(s.exemptions) ? `Exemptions ${num(s.exemptions).toLocaleString('en-US')} off the base; ` : ''}${s.exemptionCredits && nonZero(s.exemptionCredits) ? `exemption credits ${num(s.exemptionCredits).toLocaleString('en-US')}; ` : ''}Gross ${num(s.grossTax).toLocaleString('en-US')} less ${num(s.creditForOtherStates).toLocaleString('en-US')} other-state credit`
-          : `Sourced income ${num(s.sourcedIncome).toLocaleString('en-US')} × ${pct(s.effectiveRate, 2)} — effective-rate estimate; most states compute nonresident tax by ratio of the full return`,
+        // Q53: "brackets" (the rate-schedule computation and, nonresident, the ratio formula) vs
+        // "effective-rate override" — the same words as the assumptions page.
+        sub: s.schedule
+          ? `${s.schedule.capitalGainsTreatment === 'excise' ? '' : s.residency === 'resident' ? 'Brackets — ' : s.method === 'nonresident_ratio' ? 'Brackets, ratio method — ' : 'Brackets, sourced income — '}${stateRowDetail(s)}`
+          : s.residency === 'resident'
+            ? `${s.rateModeRequested === 'effective' ? 'Effective-rate override — ' : s.hasIncomeTax ? 'No rate schedule on file, effective rate — ' : ''}${s.exemptions && nonZero(s.exemptions) ? `Exemptions ${num(s.exemptions).toLocaleString('en-US')} off the base; ` : ''}${s.exemptionCredits && nonZero(s.exemptionCredits) ? `exemption credits ${num(s.exemptionCredits).toLocaleString('en-US')}; ` : ''}Gross ${num(s.grossTax).toLocaleString('en-US')} less ${num(s.creditForOtherStates).toLocaleString('en-US')} other-state credit`
+            : `${s.rateModeRequested === 'effective' ? 'Effective-rate override — ' : s.nonresidentMode === 'sourced_rate' ? 'Sourced income × rate (chosen) — ' : ''}Sourced income ${num(s.sourcedIncome).toLocaleString('en-US')} × ${pct(s.effectiveRate, 2)} — effective-rate estimate; most states compute nonresident tax by ratio of the full return`,
         projected: s.netTax, chips: chips.length ? chips : undefined, trace: { kind: 'state', state: s.state },
       };
     });

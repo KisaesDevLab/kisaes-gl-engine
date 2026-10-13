@@ -168,8 +168,9 @@ beforeAll(async () => {
   await createAdjustment(scopeA, actor, baseScenarioId, { adjustmentTypeId: typeId('sep_solo_401k'), label: 'SEP contribution', personId: carlosId, amount: '15000', cadence: 'annual', startMonth: 1, endMonth: 12, glLinked: false, nonRecurring: false });
 
   await replaceStateRows(scopeA, actor, baseScenarioId, { rows: [
-    { residency: 'resident', state: 'MO', effectiveRate: 0.04, base: 'federal_agi', sourcedManual: false, priorYearTax: '7050' },
-    { residency: 'nonresident', state: 'AR', effectiveRate: 0.039, base: 'federal_agi', sourcedManual: true, sourcedIncome: '8000', priorYearTax: '300' },
+    // Q53: the Rivera oracle computes the v1 effective-rate formulas — pinned to the effective-rate override.
+    { residency: 'resident', state: 'MO', effectiveRate: 0.04, rateMode: 'effective', base: 'federal_agi', sourcedManual: false, priorYearTax: '7050' },
+    { residency: 'nonresident', state: 'AR', effectiveRate: 0.039, rateMode: 'effective', base: 'federal_agi', sourcedManual: true, sourcedIncome: '8000', priorYearTax: '300' },
   ] });
 }, 180_000);
 
@@ -306,6 +307,31 @@ describe('Rivera estimate through the services (rivera_expected.json)', () => {
     expect(mo.priorYearTaxPresent).toBe(true);
     expect(JSON.stringify(rows)).not.toContain('7050');
   });
+
+  it('Q53: on the rate schedule (shipped 2026 MO / AR rows) the rows compute from the brackets; flipping back restores the oracle figures', async () => {
+    const sched = await replaceStateRows(scopeA, actor, baseScenarioId, { rows: [
+      { residency: 'resident', state: 'MO', effectiveRate: 0.04, rateMode: 'brackets', base: 'federal_agi', sourcedManual: false },
+      { residency: 'nonresident', state: 'AR', effectiveRate: 0.039, rateMode: 'brackets', nonresidentMode: 'ratio', base: 'federal_agi', sourcedManual: true, sourcedIncome: '8000' },
+    ] });
+    expect(sched.map((x) => x.rateMode)).toEqual(['brackets', 'brackets']);
+    const r = await estimate();
+    const mo = r.state!.rows.find((x) => x.state === 'MO')!;
+    const ar = r.state!.rows.find((x) => x.state === 'AR')!;
+    expect(mo).toMatchObject({ rateMode: 'brackets', method: 'resident' });
+    // 2026 MO: federal AGI start, standard deduction = federal MFJ 32,200 (2026 withholding formula), top rate 4.7%.
+    expect(mo.schedule).toMatchObject({ startingPoint: 'federal_agi', standardDeduction: '32200' });
+    expect(Number(mo.schedule!.taxableIncome)).toBe(Number(mo.schedule!.start) - Number(mo.schedule!.capitalGainExclusion) - Number(mo.schedule!.federalTaxDeduction) - 32200);
+    expect(ar).toMatchObject({ rateMode: 'brackets', method: 'nonresident_ratio' });
+    expect(r.state!.trace.some((t) => t.id.startsWith('state.MO.schedule.bracket.'))).toBe(true);
+    expect(r.warnings.some((w) => w.code === 'TE_STATE_BRACKETS_UNAVAILABLE')).toBe(false);
+    // Back to the override: the v1 figures again.
+    await replaceStateRows(scopeA, actor, baseScenarioId, { rows: [
+      { residency: 'resident', state: 'MO', effectiveRate: 0.04, rateMode: 'effective', base: 'federal_agi', sourcedManual: false },
+      { residency: 'nonresident', state: 'AR', effectiveRate: 0.039, rateMode: 'effective', base: 'federal_agi', sourcedManual: true, sourcedIncome: '8000' },
+    ] });
+    const back = await estimate();
+    expect(back.state!.rows.find((x) => x.state === 'MO')!.netTax).toBe(String(BASE['mo']));
+  }, 120_000);
 });
 
 describe('Schedule AI snapshots and readiness', () => {
