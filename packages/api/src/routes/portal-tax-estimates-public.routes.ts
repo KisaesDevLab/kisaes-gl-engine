@@ -5,7 +5,8 @@
 import { Router, type Request } from 'express';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
-import type { PortalTaxEstimateListDTO } from '@kis-books/shared';
+import { portalTaxEstimateQuerySchema, type PortalTaxEstimateListDTO } from '@kis-books/shared';
+import { auditLog } from '../middleware/audit.js';
 import { portalAuthenticate } from '../middleware/portal-auth.js';
 import { scopedCompanyId } from '../middleware/peer-auth.js';
 import { AppError } from '../utils/errors.js';
@@ -27,16 +28,18 @@ import { resolvePackScopeForUser } from '../services/tax-estimator/estimate-docu
 //     (active, not a client user, the tax_estimator resource in the contact's tenant,
 //     member of its managing firm or super admin, flag on, tenant in D1 scope —
 //     resolvePackScopeForUser). Otherwise the preview sees featureEnabled:false / 404.
+//   - Q51: per-contact options (tax_est_portal_contact_options) decide which sections the
+//     detail carries; disabled sections are ABSENT from the JSON, the voucher PDF needs
+//     quarterly_estimates, the portal-safe estimate PDF pdf_download, and a scenario the firm did
+//     not share is the same 404.
 // Every miss is a 404 (TE_PORTAL_FORBIDDEN) that does not say why. GET-only.
 
 export const portalTaxEstimatesPublicRouter = Router();
 portalTaxEstimatesPublicRouter.use(portalAuthenticate);
 
 const uuid = z.string().uuid();
-const querySchema = z.object({
-  companyId: uuid.optional(),
-  year: z.coerce.number().int().min(2000).max(2100).optional(),
-});
+// Q51: ?scenarioId= picks a shared scenario (Base when absent). A malformed id is the uniform 404.
+const querySchema = portalTaxEstimateQuerySchema;
 
 // Phase 13 follow-up: the detail and voucher endpoints compute a LIVE estimate (Redis-
 // cached, but a cold compute reads every linked company's books). Per portal contact,
@@ -64,18 +67,20 @@ async function featureOn(tenantId: string): Promise<boolean> {
   return portal && te;
 }
 
-function caller(req: Request): portalEstimates.PortalCaller & { year?: number } {
+function caller(req: Request): portalEstimates.PortalCaller & { year?: number; scenarioId?: string } {
   const pc = req.portalContact;
   if (!pc) throw AppError.unauthorized('No portal session');
   if (pc.viaPeer || req.peerLink) throw forbidden();
-  const q = querySchema.parse(req.query);
+  const parsed = querySchema.safeParse(req.query);
+  if (!parsed.success) throw forbidden();
+  const q = parsed.data;
   let companyId = scopedCompanyId(req, q.companyId) ?? null;
   if (pc.isPreview && pc.previewCompanyId) {
     // R4-07: the uniform 404, not a 403 that says why.
     if (companyId && companyId !== pc.previewCompanyId) throw forbidden();
     companyId = pc.previewCompanyId;
   }
-  return { contactId: pc.contactId, tenantId: pc.tenantId, companyId, year: q.year };
+  return { contactId: pc.contactId, tenantId: pc.tenantId, companyId, year: q.year, scenarioId: q.scenarioId };
 }
 
 /**
@@ -117,7 +122,9 @@ portalTaxEstimatesPublicRouter.get('/:taxpayerId', computeLimiter, async (req, r
   if (!taxpayerId.success) throw forbidden();
   if (!(await available(req, c.tenantId))) throw forbidden();
   res.setHeader('Cache-Control', 'no-store');
-  res.json(await portalEstimates.getForContact(c, taxpayerId.data, c.year));
+  // Q51: the response carries only the sections this contact's options allow (a "View as
+  // Client" preview runs as the previewed contact, so it shows that contact's options).
+  res.json(await portalEstimates.getForContact(c, taxpayerId.data, c.year, {}, { scenarioId: c.scenarioId }));
 });
 
 // GET /api/portal/tax-estimates/:taxpayerId/vouchers.pdf?year=&companyId=
@@ -126,11 +133,38 @@ portalTaxEstimatesPublicRouter.get('/:taxpayerId/vouchers.pdf', computeLimiter, 
   const taxpayerId = uuid.safeParse(req.params['taxpayerId']);
   if (!taxpayerId.success) throw forbidden();
   if (!(await available(req, c.tenantId))) throw forbidden();
-  const { estimate } = await portalEstimates.getForContact(c, taxpayerId.data, c.year);
-  if (!estimate) throw forbidden();
+  const r = await portalEstimates.resolveForContact(c, taxpayerId.data, c.year, {}, { scenarioId: c.scenarioId });
+  // Q51: vouchers are part of the quarterly-estimates section.
+  if (!r.full || !r.options.quarterlyEstimates) throw forbidden();
+  const estimate = r.full;
   const bytes = await portalEstimates.renderVouchersPdf(estimate);
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="estimated-tax-vouchers-${estimate.taxYear}.pdf"`);
   res.setHeader('Cache-Control', 'no-store');
   res.send(Buffer.from(bytes));
+});
+
+// GET /api/portal/tax-estimates/:taxpayerId/estimate.pdf?year=&companyId=&scenarioId=
+// Q51: the PORTAL-SAFE estimate PDF, only when the contact's `pdf_download` option is on. It
+// is rendered from the same option-filtered DTO the JSON carries (never the engine result), so
+// it shows exactly what this contact may see. Every download is audited on the contact's
+// tenant (tax_est_portal_pdf).
+portalTaxEstimatesPublicRouter.get('/:taxpayerId/estimate.pdf', computeLimiter, async (req, res) => {
+  const c = caller(req);
+  const taxpayerId = uuid.safeParse(req.params['taxpayerId']);
+  if (!taxpayerId.success) throw forbidden();
+  if (!(await available(req, c.tenantId))) throw forbidden();
+  const r = await portalEstimates.resolveForContact(c, taxpayerId.data, c.year, {}, { scenarioId: c.scenarioId });
+  if (!r.options.pdfDownload || !r.result || !r.response.estimate) throw forbidden();
+  const pdf = await portalEstimates.renderPortalSafePdf(r);
+  const pc = req.portalContact!;
+  await auditLog(c.tenantId, 'download', 'tax_est_portal_pdf', taxpayerId.data, null, {
+    portalContactId: c.contactId, taxYear: r.result.taxYear, scenarioId: r.scenarioId, source: r.snapshot ? 'snapshot' : 'live',
+    snapshotId: r.snapshot?.id ?? null, inputsHash: r.result.inputsHash, engineVersion: r.result.engineVersion, computedAt: r.result.computedAt,
+    preview: pc.isPreview === true,
+  }, pc.isPreview ? pc.previewInitiatorId : undefined);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${pdf.filename.replace(/["\\\r\n]/g, '')}"`);
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(Buffer.from(pdf.bytes));
 });

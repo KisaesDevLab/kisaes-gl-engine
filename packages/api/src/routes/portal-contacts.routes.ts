@@ -10,6 +10,8 @@ import { AppError } from '../utils/errors.js';
 import * as svc from '../services/portal-contact.service.js';
 import * as portalAuth from '../services/portal-auth.service.js';
 import { taxEstimateReportScope } from '../middleware/tax-estimator-scope.js';
+import { portalContactTaxOptionsSchema, type PortalContactTaxOptionsResponseDTO } from '@kis-books/shared';
+import * as portalOptions from '../services/tax-estimator/portal-options.service.js';
 import { PORTAL_PREVIEW_COOKIE } from '../middleware/portal-auth.js';
 import { resolvedSecure, appendSetCookie } from '../utils/cookie-secure.js';
 import { resolveEmailBaseUrl } from './portal-auth.routes.js';
@@ -197,6 +199,24 @@ portalContactsRouter.put(
     res.json({ ok: true });
   },
 );
+
+// Tax Estimator Q51: what this contact may see of the tax estimates shared with them (one
+// setting per contact). Turning a section ON is a grant and needs the Tax Estimator gates
+// (firm staff); turning one OFF is a revoke any staff managing the contact may do (Q41(7)).
+portalContactsRouter.get('/contacts/:id/tax-estimate-options', async (req, res) => {
+  const options = await portalOptions.getContactOptions(req.tenantId, req.params['id']!);
+  const body: PortalContactTaxOptionsResponseDTO = { options, canGrant: (await taxEstimateReportScope(req)) !== null };
+  res.json(body);
+});
+
+portalContactsRouter.put('/contacts/:id/tax-estimate-options', validate(portalContactTaxOptionsSchema), async (req, res) => {
+  const canGrant = (await taxEstimateReportScope(req)) !== null;
+  const options = await portalOptions.setContactOptions(req.tenantId, req.params['id']!, req.body, {
+    actorUserId: req.userId, canGrant, via: 'portal_contact',
+  });
+  const body: PortalContactTaxOptionsResponseDTO = { options, canGrant };
+  res.json(body);
+});
 
 const csvImportSchema = z.object({
   rows: z.array(

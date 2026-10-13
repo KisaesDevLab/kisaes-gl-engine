@@ -21,19 +21,27 @@
 // owners, links, entities, adjustments, rates, traces, parameters, readiness and the
 // safe-harbor workings (incl. prior-year tax / AGI, D9) never leave this file.
 //
+// PER-CONTACT OPTIONS (Q51). `applyPortalOptions` then drops what the contact's
+// tax_est_portal_contact_options row switches off (installments / next payment, payments on
+// record) and adds the calculation summary (shared/portal-summary.ts, its own allow-list) when
+// switched on — as absent keys, never hidden ones. Staff share what-if scenarios one by one
+// (tax_est_scenarios.show_in_portal); Base is always offered. The voucher PDF needs
+// `quarterly_estimates`, the portal-safe estimate PDF (rendered from the filtered DTO) `pdf_download`. The estimate is computed /
+// cached once for everyone; the options are applied per request after it.
+//
 // LIVE vs SNAPSHOT (D10). Default live: computed on request through the same scoped
 // service as the staff screen (encrypted Redis cache keyed by GL stamps + inputs hash)
 // under the FIRM's full managed-tenant set — the portal contact has no user, and the
 // output is only the taxpayer-level figures the firm chose to share. When the taxpayer's
 // portal_shows (else the firm default) is 'snapshot', the latest finalized snapshot
 // (reason finalize / vouchers) is shown instead, or nothing yet.
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import type {
-  EstimateResultDTO, PortalShows, PortalTaxEstimateDTO, PortalTaxEstimateListItemDTO, PortalTaxEstimateResponseDTO,
-  PortalTaxJurisdictionDTO,
+  EstimateResultDTO, PortalContactTaxOptionsDTO, PortalShows, PortalTaxEstimateDTO, PortalTaxEstimateListItemDTO, PortalTaxEstimateResponseDTO,
+  PortalTaxJurisdictionDTO, PortalTaxPaymentDTO, SnapshotReason,
 } from '@kis-books/shared';
-import { DEFAULT_DISCLAIMER_TEXT, STATE_NAMES, dRoundDollars, installmentsAsOf, portalDefaultYear } from '@kis-books/shared';
+import { DEFAULT_DISCLAIMER_TEXT, STATE_NAMES, buildPortalCalcSummary, dRoundDollars, installmentsAsOf, portalDefaultYear } from '@kis-books/shared';
 import { db } from '../../db/index.js';
 import { portalContactCompanies, tenantFirmAssignments } from '../../db/schema/index.js';
 import { taxEstLinks, taxEstTaxpayerContacts, taxEstTaxpayers } from '../../db/schema/tax-estimator-taxpayers.js';
@@ -45,6 +53,9 @@ import { allowedTenantIds, UNRESTRICTED_VIEWER, type FirmScope } from './firm-sc
 import { getFirmSettings } from './firm-settings.service.js';
 import { computeEstimate, type EstimateOptions } from './estimate.service.js';
 import { getSnapshot } from './estimate-snapshots.service.js';
+import { renderPortalEstimatePdf } from './portal-estimate-pdf.service.js';
+import { estimatePdfFilename } from './estimate-documents.service.js';
+import { optionsForContact } from './portal-options.service.js';
 
 export interface PortalCaller {
   contactId: string;
@@ -109,6 +120,9 @@ function jurisdictionLabel(j: string): string {
   return (STATE_NAMES as Record<string, string>)[j] ?? j;
 }
 
+/** The projection before the per-contact options (Q51): every section present. */
+export type FullPortalEstimate = PortalTaxEstimateDTO & { jurisdictions: PortalTaxJurisdictionDTO[]; payments: PortalTaxPaymentDTO[] };
+
 /**
  * The ALLOW-LIST projection. Reads only voucher / payment / total fields; adding a field
  * here is a privacy decision (see PortalTaxEstimateDTO and the route test's key list).
@@ -117,7 +131,7 @@ export function toPortalEstimate(r: EstimateResultDTO, meta: {
   taxpayer: { id: string; displayName: string }; source: 'live' | 'snapshot'; asOf: string; firmName: string | null; disclaimer: string;
   /** QA D12: the client's "today" (YYYY-MM-DD); the next payment is the next UPCOMING due date. */
   today: string;
-}): PortalTaxEstimateDTO {
+}): FullPortalEstimate {
   const jurisdictions: PortalTaxJurisdictionDTO[] = [r.federalEstimates, ...r.stateEstimates].map((e) => {
     // QA2-01 / D13: status, paid, remaining, the next payment and the totals are all AS OF
     // the client's today. The engine credits every known amount whatever its date (a
@@ -175,10 +189,53 @@ async function firmName(firmId: string): Promise<string | null> {
   }
 }
 
-/** GET /api/portal/tax-estimates/:taxpayerId?year= */
-export async function getForContact(
-  caller: PortalCaller, taxpayerId: string, year: number | undefined, opts: EstimateOptions = {},
-): Promise<PortalTaxEstimateResponseDTO> {
+export interface PortalScenarioPick {
+  /** Requested scenario (?scenarioId=); absent = Base (or the first offered). */
+  scenarioId?: string;
+}
+
+/**
+ * Everything one portal request resolves to. `response` is the per-contact, option-filtered
+ * DTO the route sends; `full` is the unfiltered allow-list projection (voucher PDF) and
+ * `result` the engine result it came from (audit metadata only; the portal-safe PDF reads `response`). Neither leaves the server.
+ */
+export interface ResolvedPortalEstimate {
+  response: PortalTaxEstimateResponseDTO;
+  options: PortalContactTaxOptionsDTO;
+  full: FullPortalEstimate | null;
+  result: EstimateResultDTO | null;
+  taxpayer: { id: string; displayName: string };
+  firmName: string | null;
+  disclaimer: string | null;
+  snapshot: { id: string; createdAt: string; reason: SnapshotReason } | null;
+  scenarioId: string | null;
+  /** Q51: the shown scenario's name (staff-named, as the picker shows it). */
+  scenarioName: string | null;
+}
+
+/**
+ * Q51: drop the sections this contact may not see (server-side: an absent key, never a
+ * hidden one) and add the calculation summary when shared. Runs per request on the computed
+ * estimate, AFTER the shared Redis cache, so one contact's options never reach another.
+ */
+export function applyPortalOptions(e: PortalTaxEstimateDTO, r: EstimateResultDTO, o: PortalContactTaxOptionsDTO): PortalTaxEstimateDTO {
+  const out: PortalTaxEstimateDTO = { ...e };
+  if (!o.quarterlyEstimates) delete out.jurisdictions;
+  if (!o.paymentsOnRecord) delete out.payments;
+  if (o.calculationSummary) {
+    try {
+      out.calculationSummary = buildPortalCalcSummary(r);
+    } catch {
+      // A frozen snapshot that cannot be summarised still shows the rest of the estimate.
+    }
+  }
+  return out;
+}
+
+/** Resolve the contact's view of one taxpayer-year (and scenario). Every miss is the uniform 404. */
+export async function resolveForContact(
+  caller: PortalCaller, taxpayerId: string, year: number | undefined, opts: EstimateOptions = {}, pick: PortalScenarioPick = {},
+): Promise<ResolvedPortalEstimate> {
   const firmId = await firmForTenant(caller.tenantId);
   if (!firmId) throw notFound();
   const rows = await visible(caller, firmId, taxpayerId);
@@ -186,6 +243,7 @@ export async function getForContact(
   const taxYear = year ?? defaultYear(rows.map((r) => r.taxYear));
   if (taxYear == null || !rows.some((r) => r.taxYear === taxYear)) throw notFound();
   const taxpayer = { id: rows[0]!.id, displayName: rows[0]!.displayName };
+  const options = await optionsForContact(caller.tenantId, caller.contactId);
 
   // The firm's full managed set: the portal has no user to intersect with (D1 note above).
   // D17: the portal is governed by the contact mapping, not staff visibility.
@@ -196,46 +254,96 @@ export async function getForContact(
   const name = await firmName(firmId);
   const today = (opts.today ?? new Date()).toISOString().slice(0, 10);
 
-  if (shows === 'snapshot') {
-    const [snap] = await db.select({ id: taxEstSnapshots.id }).from(taxEstSnapshots)
-      .where(and(
-        eq(taxEstSnapshots.firmId, firmId), eq(taxEstSnapshots.taxpayerId, taxpayerId), eq(taxEstSnapshots.taxYear, taxYear),
-        inArray(taxEstSnapshots.reason, FINALIZED_REASONS),
-      ))
-      .orderBy(desc(taxEstSnapshots.createdAt), desc(taxEstSnapshots.id))
-      .limit(1);
-    if (!snap) return { estimate: null, unavailableReason: 'no_snapshot' };
-    let s;
-    try {
-      s = await getSnapshot(scope, snap.id);
-    } catch (err) {
-      // A snapshot including a client the firm no longer manages is not shown (D1).
-      if (err instanceof AppError && err.statusCode === 404) return { estimate: null, unavailableReason: 'no_snapshot' };
-      throw err;
-    }
-    return {
-      estimate: toPortalEstimate(s.payload.result, {
-        taxpayer, source: 'snapshot', asOf: s.createdAt, firmName: name, today,
-        disclaimer: s.payload.disclaimerText?.trim() || DEFAULT_DISCLAIMER_TEXT,
-      }),
-      unavailableReason: null,
-    };
-  }
-
-  const scenarios = await db.select({ id: taxEstScenarios.id, isBase: taxEstScenarios.isBase }).from(taxEstScenarios)
-    .where(and(eq(taxEstScenarios.taxpayerId, taxpayerId), eq(taxEstScenarios.taxYear, taxYear)));
-  // R4-06: the BASE scenario or nothing — never a what-if that happens to sort first.
+  // Q51: the scenarios staff share — Base always, plus what-ifs marked show_in_portal. R4-06:
+  // without a Base there is nothing to show, never a what-if in its place.
+  const scenarios = await db.select({ id: taxEstScenarios.id, name: taxEstScenarios.name, isBase: taxEstScenarios.isBase, showInPortal: taxEstScenarios.showInPortal })
+    .from(taxEstScenarios)
+    .where(and(eq(taxEstScenarios.taxpayerId, taxpayerId), eq(taxEstScenarios.taxYear, taxYear)))
+    .orderBy(desc(taxEstScenarios.isBase), asc(taxEstScenarios.sortOrder), asc(taxEstScenarios.createdAt));
   const base = scenarios.find((s) => s.isBase);
   if (!base) throw notFound();
-  // QA D13: as-of semantics — a payment dated after today is not paid yet.
-  const result = await computeEstimate(scope, { taxpayerId, taxYear, scenarioId: base.id }, { ...opts, paymentsAsOf: today });
-  return {
-    estimate: toPortalEstimate(result, {
-      taxpayer, source: 'live', asOf: result.computedAt, firmName: name, today,
-      disclaimer: result.disclaimerText?.trim() || firm.effectiveDisclaimerText || DEFAULT_DISCLAIMER_TEXT,
-    }),
-    unavailableReason: null,
+  const shared = scenarios.filter((s) => s.isBase || s.showInPortal);
+
+  const resolved = (r: Omit<ResolvedPortalEstimate, 'options' | 'taxpayer' | 'firmName'>): ResolvedPortalEstimate => ({ ...r, options, taxpayer, firmName: name });
+  const withPicker = (offered: typeof shared, chosen: string | null, body: PortalTaxEstimateResponseDTO): PortalTaxEstimateResponseDTO => {
+    const out: PortalTaxEstimateResponseDTO = { ...body };
+    if (offered.length > 1 && chosen) {
+      out.scenarios = offered.map((s) => ({ id: s.id, name: s.name, isBase: s.isBase }));
+      out.scenarioId = chosen;
+    }
+    if (options.pdfDownload && body.estimate) out.pdfDownload = true;
+    return out;
   };
+
+  if (shows === 'snapshot') {
+    // Per scenario: its latest FINALIZED snapshot; a shared scenario without one is not offered.
+    const latest = new Map<string, string>();
+    for (const s of shared) {
+      const [snap] = await db.select({ id: taxEstSnapshots.id }).from(taxEstSnapshots)
+        .where(and(
+          eq(taxEstSnapshots.firmId, firmId), eq(taxEstSnapshots.taxpayerId, taxpayerId), eq(taxEstSnapshots.taxYear, taxYear),
+          eq(taxEstSnapshots.scenarioId, s.id), inArray(taxEstSnapshots.reason, FINALIZED_REASONS),
+        ))
+        .orderBy(desc(taxEstSnapshots.createdAt), desc(taxEstSnapshots.id))
+        .limit(1);
+      if (snap) latest.set(s.id, snap.id);
+    }
+    const offered = shared.filter((s) => latest.has(s.id));
+    if (pick.scenarioId && !offered.some((s) => s.id === pick.scenarioId)) throw notFound();
+    const chosen = pick.scenarioId ?? offered[0]?.id ?? null;
+    const none = () => resolved({
+      response: { estimate: null, unavailableReason: 'no_snapshot' }, full: null, result: null, disclaimer: null, snapshot: null, scenarioId: null, scenarioName: null,
+    });
+    if (!chosen) return none();
+    let s;
+    try {
+      s = await getSnapshot(scope, latest.get(chosen)!);
+    } catch (err) {
+      // A snapshot including a client the firm no longer manages is not shown (D1).
+      if (err instanceof AppError && err.statusCode === 404) return none();
+      throw err;
+    }
+    const disclaimer = s.payload.disclaimerText?.trim() || DEFAULT_DISCLAIMER_TEXT;
+    const full = toPortalEstimate(s.payload.result, { taxpayer, source: 'snapshot', asOf: s.createdAt, firmName: name, today, disclaimer });
+    return resolved({
+      response: withPicker(offered, chosen, { estimate: applyPortalOptions(full, s.payload.result, options), unavailableReason: null }),
+      full, result: { ...s.payload.result, assumptions: s.payload.assumptions }, disclaimer: s.payload.disclaimerText ?? null,
+      snapshot: { id: s.id, createdAt: s.createdAt, reason: s.reason }, scenarioId: chosen,
+      scenarioName: offered.find((x) => x.id === chosen)?.name ?? null,
+    });
+  }
+
+  if (pick.scenarioId && !shared.some((s) => s.id === pick.scenarioId)) throw notFound();
+  const chosen = pick.scenarioId ?? base.id;
+  // QA D13: as-of semantics — a payment dated after today is not paid yet. The estimate
+  // itself is the shared (Redis-cached) staff computation; options are applied after it.
+  const result = await computeEstimate(scope, { taxpayerId, taxYear, scenarioId: chosen }, { ...opts, paymentsAsOf: today });
+  const disclaimer = result.disclaimerText?.trim() || firm.effectiveDisclaimerText || DEFAULT_DISCLAIMER_TEXT;
+  const full = toPortalEstimate(result, { taxpayer, source: 'live', asOf: result.computedAt, firmName: name, today, disclaimer });
+  return resolved({
+    response: withPicker(shared, chosen, { estimate: applyPortalOptions(full, result, options), unavailableReason: null }),
+    full, result, disclaimer, snapshot: null, scenarioId: chosen,
+    scenarioName: shared.find((x) => x.id === chosen)?.name ?? null,
+  });
+}
+
+/** GET /api/portal/tax-estimates/:taxpayerId?year=&scenarioId= */
+export async function getForContact(
+  caller: PortalCaller, taxpayerId: string, year: number | undefined, opts: EstimateOptions = {}, pick: PortalScenarioPick = {},
+): Promise<PortalTaxEstimateResponseDTO> {
+  return (await resolveForContact(caller, taxpayerId, year, opts, pick)).response;
+}
+
+/**
+ * Q51 (Kurt: "Portal-safe PDF"): the estimate PDF a portal contact downloads, rendered ONLY
+ * from the option-filtered portal DTO (portal-estimate-pdf.service), so it never shows more
+ * than the portal JSON. Not the Report Pack client copy.
+ */
+export async function renderPortalSafePdf(r: ResolvedPortalEstimate): Promise<{ bytes: Uint8Array; filename: string }> {
+  const e = r.response.estimate;
+  if (!e) throw notFound();
+  const bytes = await renderPortalEstimatePdf(e, { scenarioName: r.scenarioName });
+  return { bytes, filename: estimatePdfFilename(e.taxYear, r.taxpayer.displayName, r.scenarioName) };
 }
 
 // ── Voucher PDF (built from the projected DTO only, so it cannot carry more) ──
@@ -260,7 +368,7 @@ export async function renderVouchersPdf(e: PortalTaxEstimateDTO): Promise<Uint8A
   const M = 54;
   const ink = rgb(0.09, 0.1, 0.12);
   const muted = rgb(0.35, 0.38, 0.41);
-  const due = e.jurisdictions.filter((j) => j.estimatesRequired && j.installments.some((i) => Number(i.remaining) > 0));
+  const due = (e.jurisdictions ?? []).filter((j) => j.estimatesRequired && j.installments.some((i) => Number(i.remaining) > 0));
   const pages = due.length > 0 ? due : [null];
   const FOOTER_Y = M - 20;
   for (const j of pages) {

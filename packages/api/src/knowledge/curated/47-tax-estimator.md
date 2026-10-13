@@ -227,6 +227,30 @@ to the latest finalized snapshot (per taxpayer, or the firm default in
 Firm settings). The client has no control over it. Clients never see persons,
 other owners, adjustments, traces, parameters or prior-year figures.
 
+What each contact sees is set PER CONTACT (a spouse or a bookkeeper can see
+less): on the taxpayer page open Portal contacts -> "What they see", or in
+Practice -> Client Portal edit the contact -> "Tax estimates in the
+portal". The switches are Calculation summary (off by default: income by
+business showing only the household's share, adjustments total, AGI, the
+deduction, QBI deduction, taxable income, regular tax, credits,
+self-employment and other taxes, federal total, tax per state and the
+total; no rates, formulas or adjustment detail), Quarterly estimates and
+vouchers (on), Payments on record (on) and Download the estimate PDF (off;
+a PDF of exactly what that contact sees in the portal: the projected total
+plus the sections switched on, never business totals, other owners, rates
+or adjustment detail; it is not the Report Pack client copy). The projected total always shows.
+One setting covers every taxpayer the contact can open. Turning a switch on
+needs firm staff with Tax Estimator access; the client's own staff can only
+turn switches off. A switched-off section is not sent to the portal at all.
+
+Scenarios: the Base scenario is always shown. To share a what-if, select it
+on Annual settings and tick "Show this scenario in the client portal"; with
+more than one shared scenario the client gets a scenario picker. Clients see
+the scenario name exactly as written, so name it for them ("If you buy the
+truck"). When the portal shows finalized snapshots, each shared scenario
+shows its own latest finalized snapshot and a scenario without one is not
+offered. "View as Client" shows exactly what the previewed contact sees.
+
 ## Super admin
 
 Admin -> Tax parameters edits federal parameters per tax year and the

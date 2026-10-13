@@ -30,6 +30,8 @@ export * from './decimal.js';
 export * from './assumptions.js';
 export * from './snapshots-api.js';
 export * from './portal-api.js';
+// Q51: the client portal's calculation summary (server-side allow-list projection).
+export * from './portal-summary.js';
 export * from './installments-as-of.js';
 // The Calculation view's lines (web Calculation table + estimate PDF "Detailed calculation").
 export * from './calc-lines.js';

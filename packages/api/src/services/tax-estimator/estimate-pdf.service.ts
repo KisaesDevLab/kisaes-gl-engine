@@ -61,10 +61,10 @@ function creditRows(c: EstimateResultDTO['federal']['credits'], kind: 'nonrefund
 
 const PAGE_W = 612;
 const PAGE_H = 792;
-const MARGIN = 48;
-const LINE = 13;
+export const MARGIN = 48;
+export const LINE = 13;
 const INK = rgb(0.09, 0.1, 0.12);
-const MUTED = rgb(0.35, 0.38, 0.41);
+export const MUTED = rgb(0.35, 0.38, 0.41);
 const RULE = rgb(0.8, 0.8, 0.78);
 /** Vertical space a heading() takes (gap, title, rule). */
 const HEADING_H = 8 + 4 + LINE;
@@ -94,7 +94,8 @@ function safe(text: string): string {
     .replace(/[^\x20-\x7E -ÿ]/g, '?');
 }
 
-class Writer {
+/** Shared page writer (also used by the Q51 portal-safe PDF, portal-estimate-pdf.service.ts). */
+export class Writer {
   page!: PDFPage;
   y = 0;
   /** Drawn at the top of every page this writer adds while set (a table's repeated header). */
@@ -185,7 +186,7 @@ class Writer {
   }
 }
 
-const RIGHT = PAGE_W - MARGIN;
+export const RIGHT = PAGE_W - MARGIN;
 
 /** Split firm-typed text on newlines into trimmed, non-empty paragraphs (R4-05). */
 export function paragraphs(t: string): string[] {

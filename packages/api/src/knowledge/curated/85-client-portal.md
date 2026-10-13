@@ -247,6 +247,16 @@ Being processed / Entered / Reviewed. No amounts or accounting detail are shown.
 the company's **Payables → Bill Capture** queue for staff; one email per upload batch goes to the
 company's bill-pay notify user, else the owners. Preview ("View as Client") cannot upload.
 
+### Tax estimates in the portal
+Flags `CLIENT_PORTAL_V1` + `TAX_ESTIMATOR_V1` on the client tenant, the per-company **Tax
+estimates** toggle, and the contact linked to the taxpayer on the Tax Estimator taxpayer page
+(full rules: the Tax Estimator knowledge). What each contact sees is a per-contact setting —
+**Tax estimates in the portal** in the Edit contact dialog (or the taxpayer page's Portal
+contacts → What they see): Calculation summary (off), Quarterly estimates and vouchers (on),
+Payments on record (on), Download the estimate PDF (off); the projected total always shows.
+Only firm staff with Tax Estimator access can turn a switch on; the client's own staff can turn
+switches off. Shared what-if scenarios get a picker; Base is always shown.
+
 ## Clients suggesting categories ("What was this?")
 
 Feature flags: `PORTAL_CATEGORIZE_V1` (the client half) and `UNCATEGORIZED_REVIEW_V1`

@@ -58,8 +58,8 @@ yearsRouter.post('/taxpayers/:id/years/:taxYear/scenarios', requireTaxEstimatorW
 });
 yearsRouter.patch('/scenarios/:scenarioId', requireTaxEstimatorWrite, async (req, res) => {
   const { scenarioId } = scenarioIdParamsSchema.parse(req.params);
-  const { name } = updateScenarioSchema.parse(req.body);
-  res.json({ data: await scenariosService.renameScenario(getScope(req), actor(req), scenarioId, name) });
+  const input = updateScenarioSchema.parse(req.body);
+  res.json({ data: await scenariosService.updateScenario(getScope(req), actor(req), scenarioId, input) });
 });
 yearsRouter.delete('/scenarios/:scenarioId', requireTaxEstimatorWrite, async (req, res) => {
   const { scenarioId } = scenarioIdParamsSchema.parse(req.params);

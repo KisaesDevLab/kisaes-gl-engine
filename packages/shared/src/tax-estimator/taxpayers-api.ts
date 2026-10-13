@@ -4,6 +4,7 @@
 
 // Tax Estimator taxpayers API DTOs (MODULE.md D1).
 import type { FilingStatus, ActivityType } from './types.js';
+import type { PortalContactTaxOptionsDTO } from './portal-api.js';
 
 export type SafeHarborOverride = 'prior_year' | 'lesser_of' | 'current_year';
 export type PortalShows = 'live' | 'snapshot';
@@ -209,6 +210,11 @@ export interface TaxpayerContactDTO {
   lastName: string | null;
   outOfScope: boolean;
   taxEstimatesAccess: boolean;
+  /**
+   * Q51: what the contact may see in the portal (one setting per contact, applies to every
+   * taxpayer the contact can open). null for a contact outside the caller's scope.
+   */
+  portalOptions: PortalContactTaxOptionsDTO | null;
   createdAt: string;
 }
 

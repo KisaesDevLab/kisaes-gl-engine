@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-13T15:48:54.122Z",
+  "generatedAt": "2026-10-13T15:50:10.059Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -19,7 +19,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 153868
+    "totalBytes": 156270
   },
   "screens": [
     {
@@ -1709,6 +1709,7 @@
     "Document requests — one-time and standing",
     "Document requests — unread client submissions & staff notification",
     "Sending bills from the portal (Bill Capture)",
+    "Tax estimates in the portal",
     "Managing Multiple Companies",
     "The Clients Screen",
     "Backup & Restore",

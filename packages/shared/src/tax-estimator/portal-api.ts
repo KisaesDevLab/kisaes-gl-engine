@@ -61,8 +61,119 @@ export interface PortalTaxEstimateDTO {
   firmName: string | null;
   disclaimer: string;
   totals: { total: string; federal: string; state: string };
-  jurisdictions: PortalTaxJurisdictionDTO[];
-  payments: PortalTaxPaymentDTO[];
+  /**
+   * Q51: present only when the contact's `quarterly_estimates` option is on (default on).
+   * Absent = the installment table, next payment and voucher PDF are not shared.
+   */
+  jurisdictions?: PortalTaxJurisdictionDTO[];
+  /** Q51: present only when the contact's `payments_on_record` option is on (default on). */
+  payments?: PortalTaxPaymentDTO[];
+  /** Q51: present only when the contact's `calculation_summary` option is on (default off). */
+  calculationSummary?: PortalTaxCalcSummaryDTO;
+}
+
+// ── Q51: per-contact portal options ─────────────────────────────────────
+
+/**
+ * What one portal contact may see of the tax estimates shared with them (OPEN-QUESTIONS
+ * Q51). One row per portal contact; it applies to every taxpayer the contact can open.
+ * No row = DEFAULT_PORTAL_CONTACT_TAX_OPTIONS (exactly the view before Q51). The
+ * projected total is always shown while the contact has tax_estimates_access.
+ */
+export interface PortalContactTaxOptionsDTO {
+  /** The client-friendly calculation summary (PortalTaxCalcSummaryDTO). Default off. */
+  calculationSummary: boolean;
+  /** The installment table, next payment and the payment-voucher PDF. Default on. */
+  quarterlyEstimates: boolean;
+  /** The list of estimated-tax payments on record. Default on. */
+  paymentsOnRecord: boolean;
+  /** Download of the client-audience estimate PDF. Default off. */
+  pdfDownload: boolean;
+}
+
+export type PortalContactTaxOptionKey = keyof PortalContactTaxOptionsDTO;
+export const PORTAL_CONTACT_TAX_OPTION_KEYS: readonly PortalContactTaxOptionKey[] = [
+  'calculationSummary', 'quarterlyEstimates', 'paymentsOnRecord', 'pdfDownload',
+] as const;
+
+/** Today's view (before Q51): installments + payments on, summary + PDF off. */
+export const DEFAULT_PORTAL_CONTACT_TAX_OPTIONS: Readonly<PortalContactTaxOptionsDTO> = Object.freeze({
+  calculationSummary: false, quarterlyEstimates: true, paymentsOnRecord: true, pdfDownload: false,
+});
+
+/** Staff-facing labels (one source for both option editors and the audit trail). */
+export const PORTAL_CONTACT_TAX_OPTION_LABELS: Record<PortalContactTaxOptionKey, string> = {
+  calculationSummary: 'Calculation summary',
+  quarterlyEstimates: 'Quarterly estimates and vouchers',
+  paymentsOnRecord: 'Payments on record',
+  pdfDownload: 'Download the estimate PDF',
+};
+
+/**
+ * Turning a section ON is a grant, OFF a revoke (Q41(7) asymmetry: tenant-side staff may
+ * revoke but not grant). Keys absent from `next` keep their `current` value.
+ */
+export function portalOptionChanges(
+  current: PortalContactTaxOptionsDTO, next: Partial<PortalContactTaxOptionsDTO>,
+): { merged: PortalContactTaxOptionsDTO; granted: PortalContactTaxOptionKey[]; revoked: PortalContactTaxOptionKey[] } {
+  const merged = { ...current };
+  const granted: PortalContactTaxOptionKey[] = [];
+  const revoked: PortalContactTaxOptionKey[] = [];
+  for (const k of PORTAL_CONTACT_TAX_OPTION_KEYS) {
+    const v = next[k];
+    if (v === undefined || v === current[k]) continue;
+    merged[k] = v;
+    (v ? granted : revoked).push(k);
+  }
+  return { merged, granted, revoked };
+}
+
+/** GET/PUT .../portal/contacts/:id/tax-estimate-options (tenant side). */
+export interface PortalContactTaxOptionsResponseDTO {
+  options: PortalContactTaxOptionsDTO;
+  /** false = the caller may only switch sections OFF (Q41(7)); the UI disables turning one on. */
+  canGrant: boolean;
+}
+
+/** A scenario the contact may pick (Q51); listed only when more than one is shared. */
+export interface PortalTaxScenarioOptionDTO {
+  id: string;
+  /** Shown as named by staff (name scenarios client-appropriately). */
+  name: string;
+  isBase: boolean;
+}
+
+/**
+ * Q51 calculation summary — a client-friendly, whole-dollar projection of the estimate.
+ * Built server-side by buildPortalCalcSummary (ALLOW-LIST): the taxpayer's OWN share of each
+ * business only. Never entity totals, other owners, ownership %, adjustment detail, rates,
+ * traces, formulas, review chips or warnings.
+ */
+export interface PortalTaxCalcSummaryDTO {
+  /** One row per business: the taxpayer's (and spouse's) combined share of its projected income. */
+  businesses: Array<{ name: string; amount: string }>;
+  /** Wages, interest, dividends, capital gains, other income (non-zero lines only). */
+  otherIncome: Array<{ label: string; amount: string }>;
+  totalIncome: string;
+  /** Adjustments to income, total only. */
+  adjustmentsTotal: string;
+  agi: string;
+  deduction: { kind: 'standard' | 'itemized'; amount: string };
+  /** Schedule 1-A deductions (tips / overtime / car-loan interest / seniors); '0' when none. */
+  additionalDeductions: string;
+  qbiDeduction: string;
+  taxableIncome: string;
+  regularTax: string;
+  /** All credits applied (nonrefundable allowed + refundable), as a positive amount. */
+  credits: string;
+  selfEmploymentTax: string;
+  additionalMedicareTax: string;
+  niit: string;
+  federalTotal: string;
+  /** One row per state (resident and nonresident rows of a state combined). */
+  states: Array<{ state: string; label: string; amount: string }>;
+  stateTotal: string;
+  total: string;
 }
 
 /** GET /api/portal/tax-estimates — the taxpayers this contact may see. */
@@ -86,6 +197,15 @@ export interface PortalTaxEstimateListDTO {
 export interface PortalTaxEstimateResponseDTO {
   estimate: PortalTaxEstimateDTO | null;
   unavailableReason: 'no_snapshot' | null;
+  /**
+   * Q51: the scenarios this contact may pick, Base first — present only when more than one
+   * is offered (no key at all otherwise, so the default response is unchanged).
+   */
+  scenarios?: PortalTaxScenarioOptionDTO[];
+  /** Q51: the scenario shown; present together with `scenarios`. */
+  scenarioId?: string;
+  /** Q51: true when the contact may download the client estimate PDF (absent = not offered). */
+  pdfDownload?: true;
 }
 
 /** GET /api/v1/reports/tax-estimate/taxpayers — Report Pack option choices for the active company. */
