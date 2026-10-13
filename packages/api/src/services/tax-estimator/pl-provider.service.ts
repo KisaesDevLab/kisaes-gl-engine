@@ -130,7 +130,8 @@ const FARM_ACTIVITIES = new Set(['farm', 'farm_rental']);
 // v2: R1 DTO (GPs, per-person owner level, W-2 projection, through source).
 // v3: Q49 — the entity type is resolved per tax year (override); new TE_ENTITY_TYPE_SETTING_IGNORED text.
 //     Q50 owner splits (account-line splits, per-portion trace placeholders, split warnings).
-const CACHE_VERSION = 'v3';
+// v4: v0.9.228 integration of Q49 + Q50 (each was v3 on its own branch; the merged DTO differs from both).
+const CACHE_VERSION = 'v4';
 
 export interface CacheKeyParts {
   tenantId: string; companyId: string; taxYear: number; basis: TaxMethod;

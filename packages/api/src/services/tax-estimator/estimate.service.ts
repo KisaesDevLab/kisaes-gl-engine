@@ -76,7 +76,9 @@ type DecJs = InstanceType<typeof Decimal>;
 // v6 (Q46): projection method + prior-year trend figures per company (entity results carry `projection`).
 // v7 (Q49): per-year entity type override (resolved per tax year; `eto` in the key; entities may carry `entityTypeOverride`).
 // v7 (Q50): owner splits (per-portion owner items / payments, split warnings; snapshot inputs carry the splits).
-const CACHE_VERSION = 'te-estimate-v7';
+// v8 (v0.9.228 integration): Q49 + Q50 together — both branches changed the key inputs (`eto`, `os`) and
+//     the payload independently as v7, so the merged code gets a version neither used alone.
+const CACHE_VERSION = 'te-estimate-v8';
 const FEDERAL = 'federal';
 const MONTHS_PER_YEAR = 12;
 const MAX_ADJUSTMENTS = 500;

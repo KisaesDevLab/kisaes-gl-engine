@@ -264,7 +264,7 @@ describe('Q50 (3)(4) — % split: officer wages + >2% shareholder health across 
     expect(after).not.toBe(before);
     const key = (v: string) => taxBasisCacheKey({ tenantId: tenant, companyId: S, taxYear: 2026, basis: 'cash', throughMonth: '2026-12', glVersionStamp: 1, configVersion: v });
     expect(key(after)).not.toBe(key(before));
-    expect(key(after)).toMatch(/^te:pl:v3:/);
+    expect(key(after)).toMatch(/^te:pl:v4:/);
     await db.execute(sql`UPDATE tax_est_account_treatment_splits SET pct = 60 WHERE person_id = ${kurt}::uuid AND pct = 59 AND tenant_id = ${tenant}::uuid`);
   });
 
