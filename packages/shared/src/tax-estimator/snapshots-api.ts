@@ -58,7 +58,8 @@ export interface EstimateSnapshotInputsDTO {
   safeHarbor: { rule: string; ruleSource: string };
   persons: unknown[];
   links: unknown[];
-  companies: Array<{ tenantId: string; companyId: string; companyName: string | null; glVersionStamp: number; configVersion: string; settings: unknown }>;
+  /** Q50: `ownerSplits` (optional, additive) = the company's owner splits as read, when it has any. */
+  companies: Array<{ tenantId: string; companyId: string; companyName: string | null; glVersionStamp: number; configVersion: string; settings: unknown; ownerSplits?: unknown[] }>;
   adjustments: unknown[];
   adjustmentTypes: unknown[];
   /** State rows; on the view prior-year state tax / AGI are redacted. */

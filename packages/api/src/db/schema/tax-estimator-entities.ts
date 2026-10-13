@@ -70,12 +70,40 @@ export const taxEstAccountTreatments = pgTable('tax_est_account_treatments', {
   paymentPersonId: uuid('payment_person_id'),
   paymentJurisdiction: varchar('payment_jurisdiction', { length: 10 }),
   nonRecurring: boolean('non_recurring').notNull().default(false),
+  /** Q50 (migration 0210): 'pct' (default) | 'amount' — how tax_est_account_treatment_splits share the account. */
+  splitMode: varchar('split_mode', { length: 10 }).notNull().default('pct'),
   updatedBy: uuid('updated_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   unique('uniq_tax_est_account_treatments_account').on(t.tenantId, t.companyId, t.accountId),
   index('idx_tax_est_account_treatments_company').on(t.tenantId, t.companyId, t.treatment),
+]);
+
+// Q50 (migration 0210, parts/treatment-splits.sql): owner split of a person-target treatment.
+// No rows = the treatment's single payment_person_id / payment_taxpayer_id takes 100% (every
+// treatment saved before Q50). Rows carry tenant_id + company_id (books-scoped, D1) and are
+// read / written only through treatments.service (after the scope guard) and the providers.
+export const taxEstAccountTreatmentSplits = pgTable('tax_est_account_treatment_splits', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  treatmentId: uuid('treatment_id').notNull().references(() => taxEstAccountTreatments.id, { onDelete: 'cascade' }),
+  tenantId: uuid('tenant_id').notNull(),
+  companyId: uuid('company_id').notNull(),
+  /** Payments: the taxpayer credited. Owner items: the person's taxpayer. */
+  taxpayerId: uuid('taxpayer_id'),
+  personId: uuid('person_id'),
+  /** pct mode: 0 < pct <= 100; the rows total 100. */
+  pct: numeric('pct', { precision: 9, scale: 6 }),
+  /** amount mode: fixed ANNUAL amount for tax_year. */
+  amount: numeric('amount', { precision: 19, scale: 4 }),
+  taxYear: integer('tax_year'),
+  sortOrder: integer('sort_order').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index('idx_tax_est_treatment_splits_treatment').on(t.treatmentId, t.sortOrder),
+  index('idx_tax_est_treatment_splits_company').on(t.tenantId, t.companyId),
+  index('idx_tax_est_treatment_splits_taxpayer').on(t.taxpayerId),
 ]);
 
 export const taxEstTransactionFlags = pgTable('tax_est_transaction_flags', {

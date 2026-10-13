@@ -5,13 +5,14 @@
 import { Router } from 'express';
 import {
   putAccountTreatmentsSchema, putTransactionFlagsSchema, taxEstEntityParamsSchema, taxEstEntityYearParamsSchema,
-  taxEstListQuerySchema, taxEstReadinessQuerySchema, taxEstTaxBasisPlQuerySchema, upsertEntitySettingsSchema,
+  taxEstListQuerySchema, taxEstOwnerCandidatesQuerySchema, taxEstReadinessQuerySchema, taxEstTaxBasisPlQuerySchema, upsertEntitySettingsSchema,
   upsertEntityYearInputsSchema,
 } from '@kis-books/shared';
 import { getScope, requireTaxEstimatorWrite } from '../../middleware/tax-estimator-scope.js';
 import { listPageQuerySchema, pageOf } from './paging.js';
 import * as entitySettingsService from '../../services/tax-estimator/entity-settings.service.js';
 import * as treatmentsService from '../../services/tax-estimator/treatments.service.js';
+import * as treatmentSplitsService from '../../services/tax-estimator/treatment-splits.service.js';
 import * as plProviderService from '../../services/tax-estimator/pl-provider.service.js';
 import * as readinessService from '../../services/tax-estimator/readiness.service.js';
 
@@ -59,6 +60,15 @@ entitiesRouter.put(`${BASE}/treatments`, requireTaxEstimatorWrite, async (req, r
   const { tenantId, companyId } = taxEstEntityParamsSchema.parse(req.params);
   const { treatments } = putAccountTreatmentsSchema.parse(req.body);
   res.json({ data: await treatmentsService.putTreatments(getScope(req), tenantId, companyId, treatments, req.userId) });
+});
+
+// Q50: the owners the treatment pickers may offer — persons of the caller's visible taxpayers
+// linked to THIS business (D17 / D18), with their profit % for the default split. It feeds a
+// write and names taxpayers, so firm_admin / firm_staff only (readonly 403).
+entitiesRouter.get(`${BASE}/owner-candidates`, requireTaxEstimatorWrite, async (req, res) => {
+  const { tenantId, companyId } = taxEstEntityParamsSchema.parse(req.params);
+  const { taxYear } = taxEstOwnerCandidatesQuerySchema.parse(req.query);
+  res.json({ data: await treatmentSplitsService.listOwnerCandidates(getScope(req), tenantId, companyId, taxYear) });
 });
 
 // Suggestions only — the client confirms each one through PUT /treatments.

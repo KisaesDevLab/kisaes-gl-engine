@@ -21,6 +21,10 @@
 //            year unless a stored row pins it: a stored row for ANY year carrying the
 //            transaction id removes it from every other year's live read, and one
 //            transaction can be pinned to one tax year only (409 TE_PAYMENT_OTHER_YEAR).
+//            Q50: an account SPLIT between taxpayers credits each taxpayer its portion of
+//            every line (pct, or in proportion to the year's fixed amounts; 4 places,
+//            remainder to the last row — the same helper as the P&L provider); the window,
+//            pin and dedupe rules apply per taxpayer to the portion.
 //   dedupe = a stored row with the same transaction id supersedes every GL row of that
 //            transaction in its year, whatever the jurisdiction (R3-11; a corrected
 //            jurisdiction is warned), so a pin that mirrors a booked payment is never
@@ -28,8 +32,9 @@
 //
 // Reads books only through the report builder (buildAccountDetailReport); its own SQL
 // touches estimator rows, always pinned to the firm and to in-scope tenants.
-import { and, asc, eq, inArray, isNull, ne, or } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
+import { allocateByWeights } from '@kis-books/shared';
 import type {
   CreatePaymentInput, UpdatePaymentInput, EstimatePaymentDTO, EstimatePaymentSourceDTO, LinkDTO, PaymentLedgerDTO, TaxEstimatorWarning,
 } from '@kis-books/shared';
@@ -43,6 +48,8 @@ import { AppError } from '../../utils/errors.js';
 import { baseScope, isTenantInScope, scopeForTaxpayer, visibleTaxpayerFilter, type FirmScope } from './firm-scope.service.js';
 import { getParameters } from './tax-parameters.service.js';
 import { listLinks } from './taxpayers.service.js';
+import { loadSplitsByTreatment } from './treatment-splits.service.js';
+import { resolveAccountSplit } from './pl-provider.service.js';
 import {
   auditYears, loadScenarioForFirm, loadTaxpayerForFirm, scenarioNotFound, tenantNotManaged, type Actor,
 } from './year-access.js';
@@ -150,10 +157,31 @@ export async function readGlPayments(
       eq(taxEstAccountTreatments.tenantId, c.tenantId),
       eq(taxEstAccountTreatments.companyId, c.companyId),
       eq(taxEstAccountTreatments.treatment, 'estimated_tax_payment'),
-      eq(taxEstAccountTreatments.paymentTaxpayerId, taxpayerId),
+      or(
+        eq(taxEstAccountTreatments.paymentTaxpayerId, taxpayerId),
+        sql`EXISTS (SELECT 1 FROM tax_est_account_treatment_splits s WHERE s.treatment_id = ${taxEstAccountTreatments.id}
+          AND s.tenant_id = ${c.tenantId} AND s.taxpayer_id = ${taxpayerId})`,
+      ),
     ));
     if (treated.length === 0) continue;
     const byAccount = new Map(treated.map((t) => [t.accountId, t]));
+    // Q50: split accounts → this taxpayer's share of each line (null = not split: 100%).
+    const splits = await loadSplitsByTreatment(c.tenantId, c.companyId, treated.map((t) => t.id));
+    const shareOf = new Map<string, ((amount: Dec) => Dec) | null>();
+    for (const t of treated) {
+      const rows = splits.get(t.id);
+      const sp = rows ? resolveAccountSplit({
+        accountId: t.accountId, treatment: 'estimated_tax_payment', pct: null, paymentTaxpayerId: t.paymentTaxpayerId,
+        paymentPersonId: t.paymentPersonId, paymentJurisdiction: t.paymentJurisdiction, nonRecurring: t.nonRecurring,
+        splitMode: t.splitMode as 'pct' | 'amount', splits: rows,
+      }, taxYear) : null;
+      if (!sp) { shareOf.set(t.accountId, null); continue; }
+      const mine = sp.targets.map((x, i) => (x.taxpayerId === taxpayerId ? i : -1)).filter((i) => i >= 0);
+      shareOf.set(t.accountId, (amount: Dec) => {
+        const parts = allocateByWeights(amount.toFixed(), sp.targets.map((x) => x.weight));
+        return mine.reduce((acc, i) => acc.plus(dec(parts[i])), ZERO);
+      });
+    }
     const detail = await buildAccountDetailReport(c.tenantId, window.start, window.end, {
       title: 'tax-estimator-payment-ledger', accountTypes: ALL_ACCOUNT_TYPES, normalSide: 'debit', companyId: c.companyId,
       accountIds: [...byAccount.keys()], detail: true, basis: 'cash', exactAmounts: true,
@@ -167,8 +195,10 @@ export async function readGlPayments(
         warnings.push({ code: 'TE_PAYMENT_JURISDICTION_MISSING', severity: 'warning', message: `Payment account ${g.name} has no jurisdiction; its payments are not credited. Set federal or a state on the treatment.`, details: { accountId: g.accountId } });
         continue;
       }
+      const share = shareOf.get(g.accountId) ?? null;
       for (const line of g.lines) {
-        const amount = lineDebit(line).minus(lineCredit(line));
+        const full = lineDebit(line).minus(lineCredit(line));
+        const amount = share ? share(full) : full;
         if (amount.isZero() || !line.transactionId) continue;
         const key = `${line.transactionId}|${t.paymentJurisdiction}`;
         const prev = agg.get(key);

@@ -19,6 +19,8 @@ export * from './dates.js';
 export * from './engine/index.js';
 export * from './state-rules-api.js';
 export * from './entities-api.js';
+// Q50: owner splits on person-target treatments (pct / fixed amount).
+export * from './treatment-splits.js';
 export * from './years-api.js';
 export * from './estimate-api.js';
 // Phase 10b bridge helper (kept out of engine/index.ts, which the engine owner maintains).

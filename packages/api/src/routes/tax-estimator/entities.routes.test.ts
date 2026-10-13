@@ -20,8 +20,8 @@ import jwt from 'jsonwebtoken';
 import { eq, inArray } from 'drizzle-orm';
 import { db, pool } from '../../db/index.js';
 import {
-  firms, firmUsers, taxEstAccountTreatments, taxEstEntitySettings, taxEstEntityYearInputs, taxEstTransactionFlags,
-  tenantFeatureFlags, tenantFirmAssignments, userTenantAccess, users,
+  firms, firmUsers, taxEstAccountTreatments, taxEstEntitySettings, taxEstEntityYearInputs, taxEstLinks, taxEstPersons,
+  taxEstTaxpayers, taxEstTransactionFlags, tenantFeatureFlags, tenantFirmAssignments, userTenantAccess, users,
 } from '../../db/schema/index.js';
 import { taxEstimatorRouter } from '../tax-estimator.routes.js';
 import { errorHandler } from '../../middleware/error-handler.js';
@@ -38,11 +38,13 @@ const firmIds: string[] = [];
 const userIds: string[] = [];
 let staffToken = '';
 let readonlyToken = '';
+let clientToken = '';
+const Q50 = { linkedPerson: '', unlinkedPerson: '' };
 
-async function mkUser(tenantId: string, role: string): Promise<{ id: string; token: string }> {
+async function mkUser(tenantId: string, role: string, userType = 'staff'): Promise<{ id: string; token: string }> {
   const [u] = await db.insert(users).values({
     tenantId, email: `${uniq('u')}@example.com`, passwordHash: await bcrypt.hash('x-secret-12345', 4),
-    displayName: role, role, isSuperAdmin: false, userType: 'staff',
+    displayName: role, role, isSuperAdmin: false, userType,
   }).returning();
   userIds.push(u!.id);
   const token = jwt.sign({ userId: u!.id, tenantId, role, isSuperAdmin: false }, process.env['JWT_SECRET']!, { expiresIn: '5m' });
@@ -105,7 +107,16 @@ beforeAll(async () => {
     { userId: ro.id, tenantId: T.t1, role: 'accountant' }, { userId: ro.id, tenantId: T.t2, role: 'accountant' },
   ]);
 
+  clientToken = (await mkUser(T.t2, 'owner', 'client')).token;
+
   C.c2 = await mkCompany(T.t2, 'Client Two', { accountingMethod: 'cash' });
+  // Q50: one firm-A taxpayer linked to Client Two, one not linked.
+  for (const [key, name] of [['linkedPerson', 'Linked Lee'], ['unlinkedPerson', 'Unlinked Una']] as const) {
+    const [tp] = await db.insert(taxEstTaxpayers).values({ firmId: fa!.id, displayName: name }).returning();
+    const [p] = await db.insert(taxEstPersons).values({ taxpayerId: tp!.id, role: 'primary', firstName: name.split(' ')[0]!, lastName: name.split(' ')[1]!, sehiEligibleMonths: Array(12).fill(true) }).returning();
+    Q50[key] = p!.id;
+    if (key === 'linkedPerson') await db.insert(taxEstLinks).values({ taxpayerId: tp!.id, personId: p!.id, taxYear: 2026, tenantId: T.t2, companyId: C.c2, profitPct: '100' });
+  }
   C.c3 = await mkCompany(T.t3, 'Client Three');
   C.c4 = await mkCompany(T.t4, 'Client Four');
   const bank2 = await mkAccount(T.t2, C.c2, '1010', 'Bank', 'asset', { detailType: 'checking' });
@@ -129,6 +140,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (server) await new Promise<void>((r) => server!.close(() => r()));
   if (userIds.length) await db.delete(userTenantAccess).where(inArray(userTenantAccess.userId, userIds));
+  await db.delete(taxEstTaxpayers).where(inArray(taxEstTaxpayers.firmId, firmIds));
   await db.delete(firmUsers).where(inArray(firmUsers.firmId, firmIds));
   await db.delete(tenantFirmAssignments).where(inArray(tenantFirmAssignments.firmId, firmIds));
   await db.delete(firms).where(inArray(firms.id, firmIds));
@@ -230,6 +242,36 @@ describe('entities routes — happy path inside the scope', () => {
     expect((await request('PUT', `${b}/treatments`, readonlyToken, {
       treatments: [{ accountId: X.meals2, treatment: null, nonRecurring: false }],
     })).status).toBe(403);
+    // Q50: the owner picker feeds a write → staff / admin only.
+    expect((await request('GET', `${b}/owner-candidates?taxYear=2026`, readonlyToken)).status).toBe(403);
+  });
+
+  it('Q50: owner candidates = owners linked to this business; splits validated (400 total, 422 unlinked)', async () => {
+    const b = base(T.t2, C.c2);
+    const r = await request('GET', `${b}/owner-candidates?taxYear=2026`, staffToken);
+    expect(r.status).toBe(200);
+    const data = r.json.data as { taxYear: number; candidates: Array<{ personId: string; defaultPct: string | null; taxpayerName: string }> };
+    expect(data.taxYear).toBe(2026);
+    expect(data.candidates.map((c) => [c.personId, c.defaultPct, c.taxpayerName])).toEqual([[Q50.linkedPerson, '100', 'Linked Lee']]);
+    const bad = await request('PUT', `${b}/treatments`, staffToken, { treatments: [{
+      accountId: X.meals2, treatment: 'w2_wages', nonRecurring: false, splitMode: 'pct',
+      splits: [{ personId: Q50.linkedPerson, pct: '60' }, { personId: Q50.unlinkedPerson, pct: '30' }],
+    }] });
+    expect(bad.status).toBe(400);
+    expect(bad.json.error?.code).toBe('TE_SPLIT_PCT_TOTAL');
+    const unlinked = await request('PUT', `${b}/treatments`, staffToken, { treatments: [{
+      accountId: X.meals2, treatment: 'w2_wages', nonRecurring: false, splitMode: 'pct',
+      splits: [{ personId: Q50.linkedPerson, pct: '60' }, { personId: Q50.unlinkedPerson, pct: '40' }],
+    }] });
+    expect(unlinked.status).toBe(422);
+    expect(unlinked.json.error?.code).toBe('TE_TARGET_NOT_LINKED');
+    // Nothing was saved: the account keeps its earlier treatment.
+    const rows = await db.select().from(taxEstAccountTreatments).where(eq(taxEstAccountTreatments.accountId, X.meals2));
+    expect(rows.every((x) => x.treatment !== 'w2_wages')).toBe(true);
+  });
+
+  it('Q50: a client user gets 404 on the owner picker', async () => {
+    expect((await request('GET', `${base(T.t2, C.c2)}/owner-candidates`, clientToken)).status).toBe(404);
   });
 });
 
@@ -243,6 +285,7 @@ describe('entities routes — isolation (D1)', () => {
     ['GET', `${base(t, c)}/treatments`],
     ['PUT', `${base(t, c)}/treatments`, { treatments: [{ accountId: account, treatment: 'owner_personal', nonRecurring: false }] }],
     ['GET', `${base(t, c)}/treatment-suggestions`],
+    ['GET', `${base(t, c)}/owner-candidates?taxYear=2026`],
     ['GET', `${base(t, c)}/transaction-flags`],
     ['PUT', `${base(t, c)}/transaction-flags`, { flags: [{ transactionId: txn, nonRecurring: true }] }],
     ['GET', `${base(t, c)}/readiness?through=2026-03`],

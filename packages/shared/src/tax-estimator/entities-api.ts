@@ -14,6 +14,7 @@
 // are POSITIVE magnitudes.
 
 import type { ProjectionMethod } from './projection-method.js';
+import type { SplitMode } from './treatment-splits.js';
 import type { EntityTaxType, TaxMethod, TraceRow } from './types.js';
 
 export const INCOME_CHARACTERS = [
@@ -194,6 +195,62 @@ export interface AccountTreatmentDto {
    * these books. Its ids are withheld (null) and the row is read-only for this firm.
    */
   targetOtherFirm?: boolean;
+  /**
+   * Q50: how a split shares the account ('pct' default). Absent on rows read before Q50.
+   * With no `splits` the single person / taxpayer target above takes 100%.
+   */
+  splitMode?: SplitMode;
+  /**
+   * Q50: the owner split (2+ rows, or amount mode). Empty / absent = the single target above
+   * (100%). When present, paymentTaxpayerId / paymentPersonId mirror the FIRST row.
+   */
+  splits?: TreatmentSplitDto[];
+}
+
+/** One row of an owner split (Q50). pct mode: `pct` set; amount mode: `amount` + `taxYear` set. */
+export interface TreatmentSplitDto {
+  /** Payments: the taxpayer credited (required). Owner items: the person's taxpayer (informational). */
+  taxpayerId: string | null;
+  /** Owner items: the owner / officer / partner (required). Payments: optional person. */
+  personId: string | null;
+  /** 0 < pct <= 100, up to 6 places; the rows total exactly 100. */
+  pct: string | null;
+  /** Fixed ANNUAL amount for `taxYear` (amount mode). */
+  amount: string | null;
+  taxYear: number | null;
+  sortOrder: number;
+}
+
+/**
+ * GET /tax-estimator/entities/:tenantId/:companyId/owner-candidates (Q50): the persons of the
+ * caller's VISIBLE taxpayers (D17 / D18) linked to THIS business — the only allowed targets of
+ * owner-item and payment treatments. Firm admin / staff only (it feeds a write).
+ */
+export interface OwnerCandidateDto {
+  taxpayerId: string;
+  taxpayerName: string;
+  personId: string;
+  personRole: string;
+  firstName: string;
+  lastName: string;
+  /** Tax years with a link of this person to the business. */
+  years: number[];
+  /** Profit % on the link for `taxYear` of the response (else the latest linked year); null = blank. */
+  profitPct: string | null;
+  isOfficer: boolean;
+  /**
+   * Default split % (profit % normalized to 100 across the owners linked for that year; a
+   * single owner = 100). null when the person has no link for that year.
+   */
+  defaultPct: string | null;
+}
+
+export interface OwnerCandidatesDto {
+  tenantId: string;
+  companyId: string;
+  /** The year the profit % / defaults come from (the requested year, else the latest linked year; null = no links). */
+  taxYear: number | null;
+  candidates: OwnerCandidateDto[];
 }
 
 export interface TreatmentSuggestion {
@@ -314,6 +371,12 @@ export interface TaxBasisAccountLine {
   nonRecurringBookAmount: string;
   /** TB Tax RJE for the tax year on this account (profit-positive). Informational; NOT applied. */
   tbTaxRje: string;
+  /**
+   * Q50: the owner split applied to this account (absent when one person / taxpayer takes 100%).
+   * `allocated` = the positive magnitude each portion received over the range.
+   */
+  splitMode?: SplitMode;
+  splits?: Array<{ personId: string | null; taxpayerId: string | null; pct: string | null; amount: string | null; allocated: string }>;
 }
 
 export interface EstimatedTaxPaymentTxn {
