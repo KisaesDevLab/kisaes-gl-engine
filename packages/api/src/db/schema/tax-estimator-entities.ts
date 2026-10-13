@@ -44,6 +44,11 @@ export const taxEstEntityYearInputs = pgTable('tax_est_entity_year_inputs', {
   includeSehiInW2Wages: boolean('include_sehi_in_w2_wages').notNull().default(false),
   /** Q46 (migration 0207): projection of the ordinary character — run_rate (default) | prior_year_scaled | prior_year_dollar (CHECK). */
   projectionMethod: text('projection_method').notNull().default('run_rate'),
+  /**
+   * Q49 (migration 0209): per-tax-year entity type override — one of ENTITY_TAX_TYPES (CHECK) or NULL.
+   * When set it wins over the TB profile, the estimator setting and companies.entity_type (D3 amendment).
+   */
+  entityTypeOverride: text('entity_type_override'),
   updatedBy: uuid('updated_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

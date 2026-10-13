@@ -7,6 +7,7 @@ import { buildEstimateAssumptions, formatDollars, formatPct, STATE_PENALTY_ADDON
 import { ASSUMPTION_SECTION_IDS, type EstimateResultDTO } from './estimate-api.js';
 import { NONRESIDENT_FLAT_RATE_LABEL } from './engine/state-types.js';
 import { DEFAULT_DISCLAIMER_TEXT } from '../schemas/tax-estimator-years.js';
+import { entityTypeOverrideText, entityTypeOverrideYearText } from './entity-type-override.js';
 
 const chars = (over: Record<string, string> = {}) => ({
   ordinary: '0', capital_gain_st: '0', capital_gain_lt: '0', section_1231: '0', interest: '0', dividends_ordinary: '0', dividends_qualified: '0', rental: '0', ...over,
@@ -324,5 +325,50 @@ describe('Q46 — projection method on the assumptions page', () => {
 
   it('the run rate keeps the existing wording', () => {
     expect(text(buildEstimateAssumptions(riveraLike()), 'projection')).toContain('9 months actual + 3 projected (year-to-date + recurring ÷ 9 × 3)');
+  });
+});
+
+describe('Q49 — per-year entity type override on the assumptions page', () => {
+  const override = { taxYear: 2026, overrideType: 's_corp', baseEntityType: 'partnership', baseEntityTypeSource: 'tb_profile', tbReturnForm: '1065' } as const;
+  const overridden = (path: 'individual' | 'c_corp' = 'individual', type: 's_corp' | 'c_corp' = 's_corp') => {
+    const base = riveraLike();
+    return riveraLike({
+      entities: [{ ...base.entities[0]!, entityType: type, path, entityTypeSource: 'estimator_override', entityTypeOverride: { ...override, overrideType: type } }],
+      warnings: [
+        { code: 'TE_ENTITY_TYPE_OVERRIDDEN', severity: 'info', message: 'Rivera Plumbing LLC: Entity type overridden for 2026: S corp (TB profile says 1065).' },
+        { code: 'TE_OTHER', severity: 'info', message: 'Something else.' },
+      ],
+    });
+  };
+
+  it('states the override in the (preparer-only) readiness section, once, and keeps other warnings', () => {
+    const t = text(buildEstimateAssumptions(overridden()), 'readiness');
+    expect(t).toContain('Rivera Plumbing LLC — entity type: Entity type overridden for 2026: S corp (TB profile says 1065).');
+    expect(t).toContain('the Trial Balance tax profile is not changed');
+    expect(t).not.toContain('TE_ENTITY_TYPE_OVERRIDDEN');
+    expect(t).toContain('Something else.');
+    expect(sectionOf(buildEstimateAssumptions(overridden()), 'readiness').items[0]!.code).toBe('Q49');
+  });
+
+  it('a C corp override says it is estimated at entity level; the client-facing projection section has no override text', () => {
+    const a = buildEstimateAssumptions(overridden('c_corp', 'c_corp'));
+    expect(text(a, 'readiness')).toContain('Entity type overridden for 2026: C corp (TB profile says 1065)');
+    expect(text(a, 'readiness')).toContain('estimated at entity level as a C corporation');
+    expect(text(a, 'projection')).not.toContain('overridden');
+  });
+
+  it('no override: the readiness section is unchanged', () => {
+    expect(text(buildEstimateAssumptions(riveraLike()), 'readiness')).not.toContain('entity type');
+  });
+});
+
+describe('Q49 — override display text', () => {
+  it('names what the type would otherwise have been', () => {
+    const o = { taxYear: 2026, overrideType: 's_corp', baseEntityType: 'partnership', baseEntityTypeSource: 'tb_profile', tbReturnForm: '1065' } as const;
+    expect(entityTypeOverrideText(o)).toBe('Entity type overridden: S corp (TB profile says 1065)');
+    expect(entityTypeOverrideYearText(o)).toBe('Entity type overridden for 2026: S corp (TB profile says 1065)');
+    expect(entityTypeOverrideText({ ...o, baseEntityTypeSource: 'estimator_setting', tbReturnForm: null })).toBe('Entity type overridden: S corp (estimator setting says Partnership)');
+    expect(entityTypeOverrideText({ ...o, baseEntityTypeSource: 'company_entity_type', baseEntityType: 'sch_c', tbReturnForm: null })).toBe('Entity type overridden: S corp (company entity type says Sch C)');
+    expect(entityTypeOverrideText({ ...o, overrideType: 'c_corp', baseEntityTypeSource: 'none', baseEntityType: null, tbReturnForm: null })).toBe('Entity type overridden: C corp (no other entity type is set)');
   });
 });

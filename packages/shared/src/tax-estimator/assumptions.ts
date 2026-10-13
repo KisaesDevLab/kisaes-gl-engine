@@ -24,6 +24,7 @@ import { PROJECTION_METHOD_LABELS, PY_TREND_FALLBACK_LABELS } from './projection
 import { dIsZero, dRound, dRoundDollars, dSum } from './decimal.js';
 import { DEFAULT_DISCLAIMER_TEXT } from '../schemas/tax-estimator-years.js';
 import { presentEngineText, presentParameterValue, presentWarningMessage } from './format-text.js';
+import { entityTypeOverrideYearText } from './entity-type-override.js';
 
 /**
  * Shipped default disclaimer (MODULE.md "License and gating"); firms may replace it (D4).
@@ -432,9 +433,19 @@ function parametersSection(r: EstimateResultDTO): AssumptionSectionDTO {
 }
 
 function readinessSection(r: EstimateResultDTO): AssumptionSectionDTO {
-  const ordered = [...r.warnings.filter((w) => w.severity === 'warning'), ...r.warnings.filter((w) => w.severity !== 'warning')];
-  return section('readiness', ordered.map((w) => ({ code: w.code, label: w.code, detail: tidyNote(presentWarningMessage(w)), badge: w.severity === 'warning' ? 'verify' as const : null })),
-    'No readiness warnings.');
+  // Q49: one line per business whose entity year overrides the entity type (preparer audience:
+  // the client PDF leaves this section out and shows only the effective type). The matching
+  // TE_ENTITY_TYPE_OVERRIDDEN warning is folded into it rather than printed twice.
+  const overrides: AssumptionItemDTO[] = r.entities.filter((e) => e.entityTypeOverride).map((e) => ({
+    code: 'Q49', label: `${e.companyName} — entity type`,
+    detail: `${entityTypeOverrideYearText(e.entityTypeOverride!)}. The estimator's per-year override decides the entity type${e.path === 'c_corp' ? ' (estimated at entity level as a C corporation)' : ''}; the Trial Balance tax profile is not changed.`,
+  }));
+  const ws = r.warnings.filter((w) => !(w.code === 'TE_ENTITY_TYPE_OVERRIDDEN' && overrides.length > 0));
+  const ordered = [...ws.filter((w) => w.severity === 'warning'), ...ws.filter((w) => w.severity !== 'warning')];
+  return section('readiness', [
+    ...overrides,
+    ...ordered.map((w) => ({ code: w.code, label: w.code, detail: tidyNote(presentWarningMessage(w)), badge: w.severity === 'warning' ? 'verify' as const : null })),
+  ], 'No readiness warnings.');
 }
 
 function engineNotesSection(r: EstimateResultDTO): AssumptionSectionDTO {

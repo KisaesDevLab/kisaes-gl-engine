@@ -25,7 +25,7 @@ import {
 } from '../../db/schema/index.js';
 import { taxEstimatorRouter } from '../tax-estimator.routes.js';
 import { errorHandler } from '../../middleware/error-handler.js';
-import { mkAccount, mkCompany, mkTenant, post, purgeTenants, uniq } from '../../services/tax-estimator/entities.test-fixtures.js';
+import { mkAccount, mkCompany, mkTenant, post, purgeTenants, setProfile, uniq } from '../../services/tax-estimator/entities.test-fixtures.js';
 
 interface Resp { status: number; json: { data?: unknown; error?: { code?: string } } }
 
@@ -38,11 +38,12 @@ const firmIds: string[] = [];
 const userIds: string[] = [];
 let staffToken = '';
 let readonlyToken = '';
+let clientToken = '';
 
-async function mkUser(tenantId: string, role: string): Promise<{ id: string; token: string }> {
+async function mkUser(tenantId: string, role: string, userType: 'staff' | 'client' = 'staff'): Promise<{ id: string; token: string }> {
   const [u] = await db.insert(users).values({
     tenantId, email: `${uniq('u')}@example.com`, passwordHash: await bcrypt.hash('x-secret-12345', 4),
-    displayName: role, role, isSuperAdmin: false, userType: 'staff',
+    displayName: role, role, isSuperAdmin: false, userType,
   }).returning();
   userIds.push(u!.id);
   const token = jwt.sign({ userId: u!.id, tenantId, role, isSuperAdmin: false }, process.env['JWT_SECRET']!, { expiresIn: '5m' });
@@ -104,6 +105,11 @@ beforeAll(async () => {
   await db.insert(userTenantAccess).values([
     { userId: ro.id, tenantId: T.t1, role: 'accountant' }, { userId: ro.id, tenantId: T.t2, role: 'accountant' },
   ]);
+
+  // Q49: a client (portal) user of the reachable client — the guard chain 404s every route.
+  const cu = await mkUser(T.t2, 'owner', 'client');
+  clientToken = cu.token;
+  await db.insert(userTenantAccess).values({ userId: cu.id, tenantId: T.t2, role: 'owner' });
 
   C.c2 = await mkCompany(T.t2, 'Client Two', { accountingMethod: 'cash' });
   C.c3 = await mkCompany(T.t3, 'Client Three');
@@ -233,6 +239,61 @@ describe('entities routes — happy path inside the scope', () => {
   });
 });
 
+describe('entities routes — Q49 per-year entity type override', () => {
+  it('sets and clears the override per tax year; the TB profile stays; settings resolve it for ?taxYear=', async () => {
+    const b = base(T.t2, C.c2);
+    await setProfile(T.t2, C.c2, '1065', 'business');
+    type Resolved = { entityType: string; entityTypeSource: string; tbReturnForm: string; entityTypeOverride?: { taxYear: number; baseEntityType: string } ; warnings: Array<{ code: string; message: string }> };
+    const resolved = async (q = '') => ((await request('GET', `${b}/settings${q}`, staffToken)).json.data as { resolved: Resolved }).resolved;
+
+    expect(((await request('GET', `${b}/year-inputs/2026`, staffToken)).json.data as { entityTypeOverride: unknown }).entityTypeOverride).toBeNull();
+    expect((await request('PUT', `${b}/year-inputs/2026`, staffToken, { entityTypeOverride: 'llc' })).status).toBe(400); // enum
+    const set = await request('PUT', `${b}/year-inputs/2026`, staffToken, { entityTypeOverride: 's_corp', includeSehiInW2Wages: true });
+    expect(set.status).toBe(200); // the S corp switch is checked against the EFFECTIVE type of this request
+    expect(set.json.data).toMatchObject({ entityTypeOverride: 's_corp', includeSehiInW2Wages: true });
+
+    expect(await resolved('?taxYear=2026')).toMatchObject({
+      entityType: 's_corp', entityTypeSource: 'estimator_override', tbReturnForm: '1065',
+      entityTypeOverride: { taxYear: 2026, overrideType: 's_corp', baseEntityType: 'partnership', baseEntityTypeSource: 'tb_profile' },
+    });
+    expect(await resolved('?taxYear=2025')).toMatchObject({ entityType: 'partnership', entityTypeSource: 'tb_profile' }); // per year
+    const yearless = await resolved();
+    expect(yearless).toMatchObject({ entityType: 'partnership', entityTypeSource: 'tb_profile' });
+    expect(yearless).not.toHaveProperty('entityTypeOverride');
+    expect((await request('GET', `${b}/settings?taxYear=1999`, staffToken)).status).toBe(400);
+
+    // The estimator setting is still ignored under a TB profile; the info points at the per-year override.
+    expect((await request('PUT', `${b}/settings?taxYear=2025`, staffToken, { taxEntityType: 's_corp' })).status).toBe(200);
+    const ignored = (await resolved('?taxYear=2025')).warnings.find((w) => w.code === 'TE_ENTITY_TYPE_SETTING_IGNORED')!;
+    expect(ignored.message).toContain("use 'Override entity type for 2025' on the business's year inputs");
+    expect((await request('PUT', `${b}/settings`, staffToken, { taxEntityType: null })).status).toBe(200);
+
+    // A C corp override refuses a prior-year projection method in the same request (effective type).
+    const cc = await request('PUT', `${b}/year-inputs/2026`, staffToken, { entityTypeOverride: 'c_corp', includeSehiInW2Wages: false, projectionMethod: 'prior_year_dollar' });
+    expect(cc.status).toBe(422);
+    expect(cc.json.error?.code).toBe('TE_PROJECTION_METHOD_NOT_SUPPORTED');
+
+    // Clearing: null = the TB profile decides again; the SEHI switch is refused for the partnership.
+    expect((await request('PUT', `${b}/year-inputs/2026`, staffToken, { entityTypeOverride: null, includeSehiInW2Wages: true })).status).toBe(422);
+    const cleared = await request('PUT', `${b}/year-inputs/2026`, staffToken, { entityTypeOverride: null, includeSehiInW2Wages: false });
+    expect(cleared.status).toBe(200);
+    expect(cleared.json.data).toMatchObject({ entityTypeOverride: null });
+    expect(await resolved('?taxYear=2026')).toMatchObject({ entityType: 'partnership', entityTypeSource: 'tb_profile' });
+    const [row] = await db.select().from(taxEstEntityYearInputs).where(eq(taxEstEntityYearInputs.companyId, C.c2));
+    expect(row!.entityTypeOverride).toBeNull();
+  });
+
+  it('firm_readonly can read the override but not set it (403); a client user is 404', async () => {
+    const b = base(T.t2, C.c2);
+    expect((await request('GET', `${b}/year-inputs/2026`, readonlyToken)).status).toBe(200);
+    expect((await request('PUT', `${b}/year-inputs/2026`, readonlyToken, { entityTypeOverride: 's_corp' })).status).toBe(403);
+    expect((await request('GET', `${b}/settings?taxYear=2026`, clientToken)).status).toBe(404);
+    expect((await request('PUT', `${b}/year-inputs/2026`, clientToken, { entityTypeOverride: 's_corp' })).status).toBe(404);
+    const [row] = await db.select().from(taxEstEntityYearInputs).where(eq(taxEstEntityYearInputs.companyId, C.c2));
+    expect(row?.entityTypeOverride ?? null).toBeNull();
+  });
+});
+
 describe('entities routes — isolation (D1)', () => {
   const endpoints = (t: string, c: string, account: string, txn: string): Array<[string, string, unknown?]> => [
     ['GET', `${base(t, c)}/settings`],
@@ -240,6 +301,8 @@ describe('entities routes — isolation (D1)', () => {
     ['GET', `${base(t, c)}/year-inputs/2026`],
     ['PUT', `${base(t, c)}/year-inputs/2026`, { ubia: '1' }],
     ['PUT', `${base(t, c)}/year-inputs/2026`, { projectionMethod: 'prior_year_scaled' }],
+    ['PUT', `${base(t, c)}/year-inputs/2026`, { entityTypeOverride: 's_corp' }],
+    ['GET', `${base(t, c)}/settings?taxYear=2026`],
     ['GET', `${base(t, c)}/treatments`],
     ['PUT', `${base(t, c)}/treatments`, { treatments: [{ accountId: account, treatment: 'owner_personal', nonRecurring: false }] }],
     ['GET', `${base(t, c)}/treatment-suggestions`],

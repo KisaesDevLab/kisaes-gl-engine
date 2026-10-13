@@ -9,7 +9,7 @@
 // PDF and the portal read one contract; services never re-implement tax math.
 
 import type { ProjectionMethod } from './projection-method.js';
-import type { BooksReadiness, CharacterAmounts, PaymentJurisdiction, TaxEstimatorWarning, ThroughMonthSource } from './entities-api.js';
+import type { BooksReadiness, CharacterAmounts, EntityTypeOverrideInfo, EntityTypeSource, PaymentJurisdiction, TaxEstimatorWarning, ThroughMonthSource } from './entities-api.js';
 import type { EntityTaxType, FilingStatus, TaxMethod } from './types.js';
 import type { PersonRole, SafeHarborOverride, PortalShows } from './taxpayers-api.js';
 import type { EntitySource, OutsideAmountBasis, OutsideEntryMode } from './outside-entities-api.js';
@@ -110,6 +110,13 @@ export interface EstimateEntityDTO {
    * federal EntityResult.projection.
    */
   projectionMethod?: ProjectionMethod;
+  /**
+   * Q49 (optional, additive): present only when the entity year's override decided the entity type —
+   * the source ('estimator_override') and what the type would otherwise have been. `entityType` is
+   * always the EFFECTIVE type. Absent = the D3 precedence decided it (results unchanged).
+   */
+  entityTypeSource?: EntityTypeSource;
+  entityTypeOverride?: EntityTypeOverrideInfo;
 }
 
 /** Q45: entry details of a business outside MyBooks, for the Calculation view, PDF and assumptions page. */

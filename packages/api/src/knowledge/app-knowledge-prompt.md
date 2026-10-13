@@ -1014,6 +1014,20 @@ books.
   card, shown to firm staff when the flag is on in that client and the
   company is linked to a taxpayer); the account register shows an "NR"
   badge on it. It is counted once and left out of the run-rate.
+- **Entity type for <year>** (Entity tax setup, year inputs, per company
+  and tax year): "Use TB profile" (default) or Schedule C, Schedule F,
+  S corporation, Partnership or C corporation. It wins over the Trial
+  Balance tax profile and the estimator setting for THAT tax year only;
+  the TB profile and other years are not changed. Example: an LLC that
+  files 1065 but elected S corporation status for 2026. The estimate
+  follows it (S corp: no SE tax on the K-1, officer wages, officer links
+  allowed for that year; partnership: guaranteed payments and partner SE
+  tax; C corp: entity-level estimate, out of the owners' totals). Inputs
+  that only fit the other type are ignored with a warning, not an error.
+  The Calculation view shows "Entity type overridden: S corp (TB profile
+  says 1065)" on the company line and the preparer assumptions page says
+  so; client copies show only the type used. The old "estimator setting is
+  ignored" note now points to this option.
 - **Projection method** (Entity tax setup, year inputs, per company and
   tax year): how the rest of the year's ORDINARY income is projected.
   "Run rate" (default) = year-to-date recurring per month x months left.

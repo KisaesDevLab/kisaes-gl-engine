@@ -6,10 +6,13 @@
 // entity scope guard every Phase 4 service runs FIRST (D1).
 
 import { and, eq } from 'drizzle-orm';
-import type { EntityTaxType, EntityTypeSource, ResolvedEntityTax, TaxEstimatorWarning, TaxMethod } from '@kis-books/shared';
+import type {
+  BaseEntityTypeSource, EntityTaxType, EntityTypeOverrideInfo, EntityTypeSource, ResolvedEntityTax, TaxEstimatorWarning, TaxMethod,
+} from '@kis-books/shared';
+import { ENTITY_TAX_TYPES, entityTypeOverrideYearText } from '@kis-books/shared';
 import { db } from '../../db/index.js';
 import {
-  accounts, accountTaxAssignments, companies, companyTaxProfiles, firmTaxCodes, taxEstEntitySettings,
+  accounts, accountTaxAssignments, companies, companyTaxProfiles, firmTaxCodes, taxEstEntitySettings, taxEstEntityYearInputs,
 } from '../../db/schema/index.js';
 import { AppError } from '../../utils/errors.js';
 import { isTenantInScope, type FirmScope } from './firm-scope.service.js';
@@ -125,10 +128,38 @@ async function assignmentActivityCounts(tenantId: string, companyId: string): Pr
   return counts;
 }
 
-/** Resolution for an entity ALREADY verified by assertEntityInScope. */
-export async function resolveForCompany(company: ScopedCompany): Promise<ResolvedEntityTax> {
+/**
+ * The entity-type warnings the per-year override makes moot (they describe the type it replaced).
+ * The 1040 rental note stays when the override is still Schedule C (it is about Sch C treatment).
+ */
+const OVERRIDDEN_TYPE_WARNINGS = new Set(['TE_ENTITY_TYPE_SETTING_IGNORED', 'TE_ENTITY_TYPE_FROM_COMPANY', 'TE_ENTITY_TYPE_MISSING']);
+const mootUnderOverride = (code: string, override: EntityTaxType) =>
+  OVERRIDDEN_TYPE_WARNINGS.has(code) || (code === 'TE_ENTITY_1040_RENTAL' && override !== 'sch_c');
+
+/** Q49: the entity year's override (tax_est_entity_year_inputs.entity_type_override), or null. */
+export async function loadEntityTypeOverride(tenantId: string, companyId: string, taxYear: number): Promise<EntityTaxType | null> {
+  const [row] = await db.select({ v: taxEstEntityYearInputs.entityTypeOverride }).from(taxEstEntityYearInputs)
+    .where(and(
+      eq(taxEstEntityYearInputs.tenantId, tenantId),
+      eq(taxEstEntityYearInputs.companyId, companyId),
+      eq(taxEstEntityYearInputs.taxYear, taxYear),
+    ))
+    .limit(1);
+  const v = row?.v ?? null;
+  return v && (ENTITY_TAX_TYPES as readonly string[]).includes(v) ? (v as EntityTaxType) : null;
+}
+
+/**
+ * Resolution for an entity ALREADY verified by assertEntityInScope (MODULE.md D3 + the Q49 amendment).
+ *
+ * Precedence: the entity YEAR's override (`taxYear` given and tax_est_entity_year_inputs.entity_type_override
+ * set) → TB company_tax_profiles.return_form → estimator tax_est_entity_settings.tax_entity_type →
+ * companies.entity_type. Without `taxYear` (or with no override for it) the result is exactly the
+ * pre-Q49 D3 resolution. The TB profile is never changed by the override.
+ */
+export async function resolveForCompany(company: ScopedCompany, taxYear?: number | null): Promise<ResolvedEntityTax> {
   const { tenantId, companyId } = company;
-  const [[profile], [settings]] = await Promise.all([
+  const [[profile], [settings], override] = await Promise.all([
     db.select({ returnForm: companyTaxProfiles.returnForm, defaultActivityType: companyTaxProfiles.defaultActivityType })
       .from(companyTaxProfiles)
       .where(and(eq(companyTaxProfiles.tenantId, tenantId), eq(companyTaxProfiles.companyId, companyId)))
@@ -137,8 +168,9 @@ export async function resolveForCompany(company: ScopedCompany): Promise<Resolve
       .from(taxEstEntitySettings)
       .where(and(eq(taxEstEntitySettings.tenantId, tenantId), eq(taxEstEntitySettings.companyId, companyId)))
       .limit(1),
+    taxYear != null ? loadEntityTypeOverride(tenantId, companyId, taxYear) : Promise.resolve(null),
   ]);
-  const warnings: TaxEstimatorWarning[] = [];
+  let warnings: TaxEstimatorWarning[] = [];
 
   let entityType: EntityTaxType | null = null;
   let entityTypeSource: EntityTypeSource = 'none';
@@ -159,7 +191,7 @@ export async function resolveForCompany(company: ScopedCompany): Promise<Resolve
     if (entityType && settings?.taxEntityType && settings.taxEntityType !== entityType) {
       warnings.push({
         code: 'TE_ENTITY_TYPE_SETTING_IGNORED', severity: 'info',
-        message: `The Trial Balance tax profile (${profile.returnForm}) decides the entity type; the estimator setting (${settings.taxEntityType}) is ignored.`,
+        message: `The Trial Balance tax profile (${profile.returnForm}) decides the entity type; the estimator setting (${settings.taxEntityType}) is ignored; use 'Override entity type for ${taxYear ?? '<year>'}' on the business's year inputs to change it.`,
       });
     }
   }
@@ -177,6 +209,23 @@ export async function resolveForCompany(company: ScopedCompany): Promise<Resolve
   }
   if (!entityType) {
     warnings.push({ code: 'TE_ENTITY_TYPE_MISSING', severity: 'warning', message: 'No entity tax type: set a TB tax profile or the estimator entity type.' });
+  }
+
+  // Q49: the entity year's override wins over everything above.
+  let entityTypeOverride: EntityTypeOverrideInfo | undefined;
+  if (override && taxYear != null) {
+    entityTypeOverride = {
+      taxYear, overrideType: override, baseEntityType: entityType,
+      baseEntityTypeSource: entityTypeSource as BaseEntityTypeSource, tbReturnForm: profile?.returnForm ?? null,
+    };
+    entityType = override;
+    entityTypeSource = 'estimator_override';
+    warnings = warnings.filter((w) => !mootUnderOverride(w.code, override));
+    warnings.push({
+      code: 'TE_ENTITY_TYPE_OVERRIDDEN', severity: 'info',
+      message: `${company.businessName}: ${entityTypeOverrideYearText(entityTypeOverride)}.`,
+      details: { taxYear, entityType: override, baseEntityType: entityTypeOverride.baseEntityType, baseEntityTypeSource: entityTypeOverride.baseEntityTypeSource },
+    });
   }
 
   const booksMethod: TaxMethod = company.accountingMethod === 'cash' ? 'cash' : 'accrual';
@@ -199,10 +248,11 @@ export async function resolveForCompany(company: ScopedCompany): Promise<Resolve
     fiscalYearStartMonth: company.fiscalYearStartMonth,
     closingDate: company.lockDate,
     warnings,
+    ...(entityTypeOverride ? { entityTypeOverride } : {}),
   };
 }
 
-export async function resolveEntityTax(scope: FirmScope, tenantId: string, companyId: string): Promise<ResolvedEntityTax> {
+export async function resolveEntityTax(scope: FirmScope, tenantId: string, companyId: string, taxYear?: number | null): Promise<ResolvedEntityTax> {
   const company = await assertEntityInScope(scope, tenantId, companyId);
-  return resolveForCompany(company);
+  return resolveForCompany(company, taxYear);
 }

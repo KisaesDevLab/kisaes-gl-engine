@@ -45,7 +45,8 @@ export async function loadPriorYearTrendInputs(
   if (entityType === 'c_corp') return { figures: null, reason: 'not_supported_entity' };
   const py = taxYear - 1;
   try {
-    const pl = await getTaxBasisPl(scope, { tenantId, companyId, taxYear: py, throughMonth: `${py}-12` }, opts);
+    // Q49: the prior year's books are read with THIS year's entity type (its override, if any).
+    const pl = await getTaxBasisPl(scope, { tenantId, companyId, taxYear: py, throughMonth: `${py}-12` }, { ...opts, entityTypeYear: taxYear });
     if (pl.entityType === 'c_corp') return { figures: null, reason: 'not_supported_entity' };
     const byMonth = new Map(pl.months.map((m) => [m.month, m]));
     const months = monthsBetween(`${py}-01`, `${py}-12`);
