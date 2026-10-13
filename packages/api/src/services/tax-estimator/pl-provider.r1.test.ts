@@ -15,7 +15,7 @@ import { accountTreatmentInputSchema } from '@kis-books/shared';
 import { db, pool } from '../../db/index.js';
 import {
   accountTaxAssignments, billPaymentApplications, firmTaxCodes, paymentApplications, reconciliations, taxCodes,
-  taxEstPersons, taxEstTaxpayers, tbTaxEntries, tbTaxEntryLines,
+  taxEstLinks, taxEstPersons, taxEstTaxpayers, tbTaxEntries, tbTaxEntryLines,
 } from '../../db/schema/index.js';
 import { importSeed } from '../tb/tax-code-seed.service.js';
 import { UNRESTRICTED_VIEWER, type FirmScope } from './firm-scope.service.js';
@@ -50,6 +50,12 @@ async function mkPerson(first: string): Promise<string> {
   return p!.id;
 }
 
+/** Q50: owner-item targets must be owners linked to the business. */
+async function linkOwner(personId: string, companyId: string, profitPct: string | null = null) {
+  const [p] = await db.select({ taxpayerId: taxEstPersons.taxpayerId }).from(taxEstPersons).where(eq(taxEstPersons.id, personId));
+  await db.insert(taxEstLinks).values({ taxpayerId: p!.taxpayerId, personId, taxYear: 2026, tenantId: tenant, companyId, profitPct });
+}
+
 beforeAll(async () => {
   await importSeed({ taxYear: 2025, buffer: readFileSync(SEED_FILE_PATH), dryRun: false });
   tenant = await mkTenant('TE R1');
@@ -77,6 +83,8 @@ beforeAll(async () => {
   await post(t, P, '2026-04-01', [[ids.pGp, 60000, 0], [ids.pChk, 0, 60000]]);
   await post(t, P, '2026-04-02', [[ids.pHealth, 10000, 0], [ids.pChk, 0, 10000]]);
   await post(t, P, '2026-05-02', [[ids.pChk, 40000, 0], [ids.pGain, 0, 40000]]);
+  await linkOwner(personA, P, '50');
+  await linkOwner(personB, P, '50');
 
   // ── S corp (1120S): 240,000 sales, officer wages 4,500/mo, officer health 1,000/mo, officer SEP 6,000 ──
   const S = await mkCompany(t, 'Ozark Officer Co', { accountingMethod: 'cash', entityType: 's_corp' });
@@ -95,6 +103,7 @@ beforeAll(async () => {
     await post(t, S, dt, [[ids.sHealth, 1000, 0], [ids.sChk, 0, 1000]]);
   }
   await post(t, S, '2026-12-15', [[ids.sSep, 6000, 0], [ids.sChk, 0, 6000]]);
+  await linkOwner(personM, S, '100');
 
   // ── Sch C with a TB 887 SEHI code and no estimator treatment (F3), never reconciled (F5) ──
   const C = await mkCompany(t, 'Coded Plumbing', { accountingMethod: 'cash', entityType: 'single_member_llc' });

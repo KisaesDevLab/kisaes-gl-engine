@@ -36,6 +36,8 @@ const Decimal = DecimalLib.default || DecimalLib;
 const MAPPING_WARNING_CODES = new Set([
   'TE_UNMAPPED_ACCOUNTS', 'TE_GP_CODE_WITHOUT_TREATMENT', 'TE_M1_CODE_ON_PL_ACCOUNT', 'TE_OWNER_PERSON_MISSING',
   'TE_TREATMENT_NOT_FOR_ENTITY', 'TE_FARM_INCOME_ASSUMED', 'TE_FARM_INCOME_UNASSIGNED',
+  // Q50: owner splits / unlinked treatment targets.
+  'TE_TARGET_NOT_LINKED', 'TE_SPLIT_REMAINDER', 'TE_SPLIT_AMOUNT_YEAR_MISSING',
 ]);
 
 export interface ReadinessRequest {

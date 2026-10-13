@@ -1028,6 +1028,25 @@ books.
   says 1065)" on the company line and the preparer assumptions page says
   so; client copies show only the type used. The old "estimator setting is
   ignored" note now points to this option.
+- **Owner pickers and owner splits** (GL tax treatment table): the person
+  or taxpayer for W-2 wages (officer wages), owner / officer health
+  insurance, owner / officer retirement, guaranteed payments and
+  estimated tax payments lists ONLY the owners linked to this business
+  (Taxpayers > the taxpayer > Linked businesses). No linked owner = a note
+  to link the owner first; saving an unlinked person is refused, and an
+  older row naming one keeps computing with a "not linked" warning.
+  "Split between owners" shares one account: by % (must total exactly
+  100%; "Default from ownership" fills each owner's profit %) or by fixed
+  annual $ for the year (each owner gets the fixed amount, the last owner
+  in the list takes the difference from the books, with a warning; until
+  the year is complete the year-to-date books amount is shared in
+  proportion to the fixed amounts). Example: "6800 Salaries - Officers"
+  101,640.24 split 60% / 40% gives 60,984.14 officer wages to one
+  shareholder and 40,656.10 to the other; officer health split the same
+  way lands on each shareholder's W-2 box 1 and their health deduction.
+  Estimated tax payments can be split between taxpayers; each taxpayer's
+  payment ledger gets its share of every payment. The calculation trace
+  shows each share. "Use one owner" goes back to a single person.
 - **Projection method** (Entity tax setup, year inputs, per company and
   tax year): how the rest of the year's ORDINARY income is projected.
   "Run rate" (default) = year-to-date recurring per month x months left.

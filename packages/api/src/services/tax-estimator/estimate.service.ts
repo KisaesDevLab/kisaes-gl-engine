@@ -48,6 +48,7 @@ import { encrypt, decrypt } from '../../utils/encryption.js';
 import { getFirmSettings } from './firm-settings.service.js';
 import { isElevated, isTenantInScope, scopeForTaxpayer, type FirmScope } from './firm-scope.service.js';
 import { getTaxBasisPl, loadConfigVersion } from './pl-provider.service.js';
+import { loadCompanyOwnerSplits, type CompanyOwnerSplit } from './treatment-splits.service.js';
 import { getReadiness } from './readiness.service.js';
 import { getEntitySettings, getYearInputs } from './entity-settings.service.js';
 import { loadPriorYearTrendInputs, priorYearTrendReadinessWarning, type PriorYearTrendInputs } from './prior-year-trend.service.js';
@@ -73,6 +74,7 @@ type DecJs = InstanceType<typeof Decimal>;
 // v5 (Q45): businesses outside MyBooks (entities carry `source` / `outside`).
 // v6 (Q46): projection method + prior-year trend figures per company (entity results carry `projection`).
 // v7 (Q49): per-year entity type override (resolved per tax year; `eto` in the key; entities may carry `entityTypeOverride`).
+// v7 (Q50): owner splits (per-portion owner items / payments, split warnings; snapshot inputs carry the splits).
 const CACHE_VERSION = 'te-estimate-v7';
 const FEDERAL = 'federal';
 const MONTHS_PER_YEAR = 12;
@@ -197,6 +199,8 @@ interface CompanyInputs {
   projectionMethod: ProjectionMethod;
   /** Q46: prior-year monthly figures (or why none) — read only when a prior-year method is selected. */
   priorYear: PriorYearTrendInputs | null;
+  /** Q50: the company's owner splits as read (empty = none); frozen by snapshots. */
+  ownerSplits: CompanyOwnerSplit[];
 }
 
 interface Gathered {
@@ -261,19 +265,20 @@ async function gather(scope: FirmScope, req: EstimateRequest): Promise<Gathered>
 
   const companies: CompanyInputs[] = [];
   for (const c of inScopeCompanies(scope, links)) {
-    const [settings, glVersionStamp, configVersion, yearInputs] = await Promise.all([
+    const [settings, glVersionStamp, configVersion, yearInputs, ownerSplits] = await Promise.all([
       // Q49: resolved for the tax year (the entity year's override decides the type when set).
       getEntitySettings(scope, c.tenantId, c.companyId, req.taxYear),
       getGlVersionStamp(c.tenantId, c.companyId),
       loadConfigVersion(c.tenantId, c.companyId, req.taxYear),
       getYearInputs(scope, c.tenantId, c.companyId, req.taxYear),
+      loadCompanyOwnerSplits(c.tenantId, c.companyId),
     ]);
     // Q46: the prior year is read (through the same provider, Redis-cached by the GL stamp) only
     // when a prior-year method is selected; its figures go into the cache key and the snapshot.
     const projectionMethod = yearInputs.projectionMethod ?? DEFAULT_PROJECTION_METHOD;
     const priorYear = projectionMethod === 'run_rate' ? null
       : await loadPriorYearTrendInputs(scope, c.tenantId, c.companyId, req.taxYear, settings.resolved.entityType ?? null);
-    companies.push({ ...c, settings, glVersionStamp, configVersion, projectionMethod, priorYear });
+    companies.push({ ...c, settings, glVersionStamp, configVersion, projectionMethod, priorYear, ownerSplits });
   }
 
   const states = [...new Set(stateRows.map((r) => r.dto.state))];
@@ -310,8 +315,13 @@ function inputsHash(scope: FirmScope, req: EstimateRequest, g: Gathered, today: 
     filingStatus: g.taxpayerFilingStatus, year: g.year, persons: g.persons, dependents: g.dependents, links: g.links,
     // Q45: any change to an outside business or its year amounts re-keys the live estimate.
     outside: g.outside,
-    // Q49: the per-year entity type override (and its effective type) is part of the key.
-    companies: g.companies.map((c) => ({ t: c.tenantId, c: c.companyId, stamp: c.glVersionStamp, cfg: c.configVersion, s: c.settings, pm: c.projectionMethod, py: c.priorYear, eto: c.settings.resolved.entityTypeOverride ?? null })),
+    companies: g.companies.map((c) => ({
+      t: c.tenantId, c: c.companyId, stamp: c.glVersionStamp, cfg: c.configVersion, s: c.settings, pm: c.projectionMethod, py: c.priorYear,
+      // Q49: the per-year entity type override (and its effective type) is part of the key.
+      eto: c.settings.resolved.entityTypeOverride ?? null,
+      // Q50 (also in cfg): only a company with splits carries them.
+      ...(c.ownerSplits.length > 0 ? { os: c.ownerSplits } : {}),
+    })),
     adjustments: g.adjustments, types: g.types, stateRows: g.stateRows, params: g.paramsDto, stateRules: g.stateRules,
     payments: g.ledger.payments, snapshots: [...g.snapshots.entries()],
     // Phase 12: the disclaimer / portal default / safe-harbor default land on the result.
@@ -937,6 +947,8 @@ export interface EstimateInputsForSnapshot {
     tenantId: string; companyId: string; companyName: string | null; glVersionStamp: number; configVersion: string; settings: EntitySettingsResponse;
     /** Q46: present only when a prior-year method was selected — the method and the PY figures used. */
     projectionMethod?: ProjectionMethod; priorYear?: PriorYearTrendInputs | null;
+    /** Q50: present only when the company has owner splits — the splits as read. */
+    ownerSplits?: CompanyOwnerSplit[];
   }>;
   adjustments: AdjustmentDTO[];
   types: AdjustmentTypeDTO[];
@@ -962,6 +974,7 @@ export async function computeEstimateWithInputs(
     companies: g.companies.map((c) => ({
       tenantId: c.tenantId, companyId: c.companyId, companyName: c.companyName, glVersionStamp: c.glVersionStamp, configVersion: c.configVersion, settings: c.settings,
       ...(c.projectionMethod !== 'run_rate' ? { projectionMethod: c.projectionMethod, priorYear: c.priorYear } : {}),
+      ...(c.ownerSplits.length > 0 ? { ownerSplits: c.ownerSplits } : {}),
     })),
     adjustments: g.adjustments, types: g.types, stateRows: g.stateRows, federalParameters: g.paramsDto, stateRules: g.stateRules,
     payments: g.ledger.payments, schAiFigures: [...g.snapshots.entries()].map(([key, figures]) => ({ key, figures })),

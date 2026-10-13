@@ -72,6 +72,19 @@
 // configuration rows, always pinned to the single tenant verified against the
 // firm scope (D1).
 //
+// OWNER SPLITS (Q50): a person-target treatment may be shared between several owners linked
+// to the business (tax_est_account_treatment_splits). The entity-level figures (profit,
+// month totals, Σ owner SEHI, Σ GPs, W-2 YTD) are unchanged; only WHO gets each amount is:
+//   pct    → every month's amount (every payment line) × pct, 4 places, residual on the last row;
+//   amount → YTD shared in proportion to the year's fixed annual amounts; when the tax year is
+//            complete (no months remaining) each owner but the last gets exactly the fixed
+//            amount and the last the remainder (TE_SPLIT_REMAINDER whenever the projected books
+//            total differs from Σ fixed). Payments are always shared proportionally per line.
+// No split rows = the single target takes 100% through the exact pre-Q50 code path, so
+// single-owner results are byte-identical. Trace rows name each portion with a person
+// placeholder that getTaxBasisPl resolves for the caller (names of visible taxpayers only;
+// the cached computation never holds names).
+//
 // SIGN CONVENTION (see shared entities-api.ts): profit-positive amounts
 // (income +, expense −); owner-level amounts, GPs, payments, add-backs, wages
 // and farming gross income are positive magnitudes. Money is decimal.js in
@@ -81,10 +94,10 @@ import { and, eq, sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 import type {
   AccountTreatment, CharacterAmounts, EntityTaxType, EstimatedTaxPaymentTxn, GuaranteedPaymentDto, IncomeCharacter,
-  OwnerLevelPerson, ResolvedEntityTax, TaxBasisAccountLine, TaxBasisMonth, TaxBasisPl, TaxCodeRef, TaxEstimatorWarning,
+  OwnerLevelPerson, ResolvedEntityTax, SplitMode, TaxBasisAccountLine, TaxBasisMonth, TaxBasisPl, TaxCodeRef, TaxEstimatorWarning,
   TaxMethod, ThroughMonthSource, TraceRow, TreatmentRoute,
 } from '@kis-books/shared';
-import { INCOME_CHARACTERS, isCharacterTreatment } from '@kis-books/shared';
+import { INCOME_CHARACTERS, allocateByWeights, allowsPersonTarget, fixedAmountTargets, isCharacterTreatment } from '@kis-books/shared';
 import { db } from '../../db/index.js';
 import {
   taxEstAccountTreatments, taxEstEntitySettings, taxEstEntityYearInputs, taxEstTransactionFlags, transactions,
@@ -97,6 +110,7 @@ import { log } from '../../utils/logger.js';
 import type { FirmScope } from './firm-scope.service.js';
 import { assertEntityInScope, resolveForCompany } from './entity-type.service.js';
 import { chooseThroughMonth } from './closed-month.service.js';
+import { linkedTargets, loadSplitsByTreatment, visiblePersonNames, type SplitRow } from './treatment-splits.service.js';
 import { currentMonth, monthEnd, monthsBetween, taxYearWindow, type TaxYearWindow } from './periods.js';
 
 // Pure period helpers live in periods.ts; re-exported for existing callers.
@@ -115,6 +129,7 @@ const ALL_ACCOUNT_TYPES = ['asset', 'liability', 'equity', ...PL_TYPES];
 const FARM_ACTIVITIES = new Set(['farm', 'farm_rental']);
 // v2: R1 DTO (GPs, per-person owner level, W-2 projection, through source).
 // v3: Q49 — the entity type is resolved per tax year (override); new TE_ENTITY_TYPE_SETTING_IGNORED text.
+//     Q50 owner splits (account-line splits, per-portion trace placeholders, split warnings).
 const CACHE_VERSION = 'v3';
 
 export interface CacheKeyParts {
@@ -239,6 +254,54 @@ interface TreatmentRow {
   paymentPersonId: string | null;
   paymentJurisdiction: string | null;
   nonRecurring: boolean;
+  /** Q50 (absent = no split). */
+  splitMode?: SplitMode;
+  splits?: SplitRow[];
+}
+
+/** One portion target of an owner split (Q50). `weight` = pct, or the fixed annual amount. */
+interface SplitTarget { personId: string | null; taxpayerId: string | null; pct: string | null; amount: string | null; weight: string }
+interface AccountSplit { mode: SplitMode; targets: SplitTarget[]; taxYear: number | null }
+
+/** Trace placeholder for a person's display name; resolved per caller by getTaxBasisPl. */
+const PERSON_TOKEN_RE = /\{\{(person|taxpayer):([0-9a-f-]{36}|none)\}\}/g;
+const personToken = (id: string | null) => `{{person:${id ?? 'none'}}}`;
+const taxpayerToken = (id: string | null) => `{{taxpayer:${id ?? 'none'}}}`;
+const money2 = (d: Dec) => {
+  const [w, f] = d.toFixed(2).split('.');
+  return `${w!.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}.${f}`;
+};
+
+/**
+ * Owner split of a stored treatment for `taxYear` (Q50), or null (single target, 100%).
+ * Amount mode uses the rows of `taxYear`; with none, the latest EARLIER year's rows (else the
+ * earliest later year's) as ratios — reported through `fallbackYear`. Exported for tests.
+ */
+export function resolveAccountSplit(t: TreatmentRow | undefined, taxYear: number): (AccountSplit & { fallbackYear: number | null }) | null {
+  if (!t || !allowsPersonTarget(t.treatment) || !t.splits || t.splits.length === 0) return null;
+  const rows = [...t.splits].sort((a, b) => a.sortOrder - b.sortOrder);
+  if ((t.splitMode ?? 'pct') === 'pct') {
+    const pctRows = rows.filter((r) => r.pct !== null);
+    if (pctRows.length === 0) return null;
+    return {
+      mode: 'pct', taxYear: null, fallbackYear: null,
+      targets: pctRows.map((r) => ({ personId: r.personId, taxpayerId: r.taxpayerId, pct: r.pct, amount: null, weight: r.pct! })),
+    };
+  }
+  const years = [...new Set(rows.filter((r) => r.taxYear !== null && r.amount !== null).map((r) => r.taxYear!))].sort((a, b) => a - b);
+  if (years.length === 0) return null;
+  const earlier = years.filter((y) => y < taxYear);
+  const year = years.includes(taxYear) ? taxYear : earlier.length > 0 ? earlier[earlier.length - 1]! : years[0]!;
+  return {
+    mode: 'amount', taxYear: year, fallbackYear: year === taxYear ? null : year,
+    targets: rows.filter((r) => r.taxYear === year && r.amount !== null)
+      .map((r) => ({ personId: r.personId, taxpayerId: r.taxpayerId, pct: null, amount: r.amount, weight: r.amount! })),
+  };
+}
+
+/** Portions of `amount` over a split's targets (Q50 rounding: 4 places, residual on the last). */
+function splitPortions(sp: AccountSplit, amount: Dec): Dec[] {
+  return allocateByWeights(amount.toFixed(), sp.targets.map((x) => x.weight)).map((v) => new Decimal(v));
 }
 
 /** The treatment actually applied to an account and where its amount goes. */
@@ -318,12 +381,22 @@ const isoDate = (v: unknown): string => {
  * entity-setting writes invalidate the cache explicitly by changing the key),
  * TB assignments / profile / tax RJEs, the FIRM codes those assignments use
  * (a description edit can change character, R1 F13), and account + company
- * metadata, and the reconciliation state (it moves the default range end, R3-03).
+ * metadata, and the reconciliation state (it moves the default range end, R3-03),
+ * the owner splits and the business's links (Q50).
  */
 export async function loadConfigVersion(tenantId: string, companyId: string, taxYear: number): Promise<string> {
   const res = await db.execute<{ v: string }>(sql`
     SELECT md5(concat_ws('|',
       (SELECT count(*)::text || ':' || coalesce(max(updated_at)::text, '') FROM tax_est_account_treatments
+        WHERE tenant_id = ${tenantId} AND company_id = ${companyId}),
+      -- Q50: owner splits (a split edit also touches its treatment row; this makes it exact).
+      (SELECT count(*)::text || ':' || coalesce(md5(string_agg(
+          treatment_id::text || ':' || coalesce(person_id::text, '') || ':' || coalesce(taxpayer_id::text, '') || ':'
+          || coalesce(pct::text, '') || ':' || coalesce(amount::text, '') || ':' || coalesce(tax_year::text, '') || ':' || sort_order::text,
+          ',' ORDER BY treatment_id, sort_order, id)), '')
+        FROM tax_est_account_treatment_splits WHERE tenant_id = ${tenantId} AND company_id = ${companyId}),
+      -- Q50: links to this business move the TE_TARGET_NOT_LINKED warning.
+      (SELECT count(*)::text || ':' || coalesce(max(updated_at)::text, '') FROM tax_est_links
         WHERE tenant_id = ${tenantId} AND company_id = ${companyId}),
       (SELECT count(*)::text || ':' || coalesce(max(f.updated_at)::text, '') FROM tax_est_transaction_flags f
         JOIN transactions t ON t.id = f.transaction_id AND t.tenant_id = ${tenantId}
@@ -480,7 +553,42 @@ export async function getTaxBasisPl(scope: FirmScope, req: TaxBasisPlRequest, op
       message: `The range runs through ${throughMonth}, which is not over yet; it is counted as a whole month in the run-rate.`,
     });
   }
-  return { ...result, throughMonthSource: choice.source, throughMonthReason: choice.reason, warnings };
+  const out: TaxBasisPl = { ...result, throughMonthSource: choice.source, throughMonthReason: choice.reason, warnings };
+  return resolvePersonTokens(scope, out);
+}
+
+/**
+ * Q50: replace the per-portion trace placeholders with the person's name when the caller may
+ * see the person's taxpayer (D17 / D18), else a neutral label. A result without split
+ * portions has no placeholder and is returned as is.
+ */
+async function resolvePersonTokens(scope: FirmScope, pl: TaxBasisPl): Promise<TaxBasisPl> {
+  const has = (txt: string | undefined) => !!txt && (txt.includes('{{person:') || txt.includes('{{taxpayer:'));
+  const rows = (r: TraceRow[]) => r.some((x) => has(x.label) || has(x.formula));
+  const any = rows(pl.trace) || pl.ownerLevel.byPerson.some((p) => rows(p.trace)) || pl.guaranteedPayments.some((g) => rows(g.trace));
+  if (!any) return pl;
+  const personIds = new Set<string>();
+  const taxpayerIds = new Set<string>();
+  const collect = (txt: string | undefined) => {
+    for (const m of (txt ?? '').matchAll(PERSON_TOKEN_RE)) {
+      if (m[2] === 'none') continue;
+      (m[1] === 'person' ? personIds : taxpayerIds).add(m[2]!);
+    }
+  };
+  const all = [...pl.trace, ...pl.ownerLevel.byPerson.flatMap((p) => p.trace), ...pl.guaranteedPayments.flatMap((g) => g.trace)];
+  for (const r of all) { collect(r.label); collect(r.formula); }
+  const names = await visiblePersonNames(scope, [...personIds], [...taxpayerIds]);
+  const sub = (txt: string) => txt.replace(PERSON_TOKEN_RE, (_m, kind: string, id: string) => {
+    if (id === 'none') return kind === 'person' ? 'no person' : 'no taxpayer';
+    return names.get(`${kind}:${id}`) ?? (kind === 'person' ? 'an owner' : 'a taxpayer');
+  });
+  const fix = (r: TraceRow[]) => r.map((x) => ({ ...x, label: sub(x.label), ...(x.formula !== undefined ? { formula: sub(x.formula) } : {}) }));
+  return {
+    ...pl,
+    trace: fix(pl.trace),
+    ownerLevel: { ...pl.ownerLevel, byPerson: pl.ownerLevel.byPerson.map((p) => ({ ...p, trace: fix(p.trace) })) },
+    guaranteedPayments: pl.guaranteedPayments.map((g) => ({ ...g, trace: fix(g.trace) })),
+  };
 }
 
 interface PersonAcc { sehi: Dec; ret: Dec; w2: Dec; empRet: Dec; trace: TraceRow[] }
@@ -531,6 +639,10 @@ async function compute(
       .where(and(eq(taxEstEntitySettings.tenantId, tenantId), eq(taxEstEntitySettings.companyId, companyId)))
       .limit(1),
   ]);
+  const [splitRows, linked] = await Promise.all([
+    treatmentRows.length > 0 ? loadSplitsByTreatment(tenantId, companyId) : Promise.resolve(new Map<string, SplitRow[]>()),
+    treatmentRows.some((t) => allowsPersonTarget(t.treatment as AccountTreatment | null)) ? linkedTargets(tenantId, companyId) : Promise.resolve(null),
+  ]);
   const treatments = new Map<string, TreatmentRow>(treatmentRows.map((t) => [t.accountId, {
     accountId: t.accountId,
     treatment: (t.treatment as AccountTreatment | null) ?? null,
@@ -539,7 +651,24 @@ async function compute(
     paymentPersonId: t.paymentPersonId,
     paymentJurisdiction: t.paymentJurisdiction,
     nonRecurring: t.nonRecurring,
+    ...(splitRows.has(t.id) ? { splitMode: t.splitMode as SplitMode, splits: splitRows.get(t.id)! } : {}),
   }]));
+  // Q50: owner splits for this tax year (amount mode picks the year's fixed amounts).
+  const splitOf = new Map<string, AccountSplit>();
+  const splitYearFallback: Array<{ accountId: string; usedYear: number }> = [];
+  for (const t of treatments.values()) {
+    const sp = resolveAccountSplit(t, taxYear);
+    if (!sp) continue;
+    splitOf.set(t.accountId, sp);
+    if (sp.fallbackYear !== null) splitYearFallback.push({ accountId: t.accountId, usedYear: sp.fallbackYear });
+  }
+  /** Σ allocated magnitude per split portion over the range (account → portion index). */
+  const splitAlloc = new Map<string, Dec[]>();
+  const addAlloc = (accountId: string, idx: number, v: Dec) => {
+    const arr = splitAlloc.get(accountId) ?? splitOf.get(accountId)!.targets.map(() => ZERO);
+    arr[idx] = arr[idx]!.plus(v);
+    splitAlloc.set(accountId, arr);
+  };
   const monthIdx = new Map(months.map((m, i) => [m, i]));
   const appliedCache = new Map<string, AppliedTreatment>();
   const appliedFor = (accountId: string): AppliedTreatment => {
@@ -573,6 +702,8 @@ async function compute(
     }
   }
 
+  const label = (m: AccountMeta) => (m.accountNumber ? `${m.accountNumber} ${m.name}` : m.name);
+
   // 4. Apply character + treatments per account per month.
   const totals = { recurring: emptyChars(), nonRecurring: emptyChars() };
   let bookNet = ZERO;
@@ -590,6 +721,41 @@ async function compute(
   };
   const monthsOut: TaxBasisMonth[] = [];
   const perAccount = new Map<string, { book: Dec; tax: Dec; nonRec: Dec }>();
+  /** Per-person side of an owner item (the month totals are kept by the caller). */
+  const creditPerson = (a: AppliedTreatment, accountId: string, personId: string | null, amt: Dec) => {
+    switch (a.route) {
+      case 'owner_sehi': person(personId).sehi = person(personId).sehi.plus(amt); break;
+      case 'owner_retirement': person(personId).ret = person(personId).ret.plus(amt); break;
+      case 'officer_sehi': {
+        const p = person(personId);
+        p.sehi = p.sehi.plus(amt);
+        p.w2 = p.w2.plus(amt);
+        break;
+      }
+      case 'officer_retirement': person(personId).empRet = person(personId).empRet.plus(amt); break;
+      case 'guaranteed_payment': {
+        let g = gps.get(personId);
+        if (!g) { g = { amount: ZERO, accounts: new Map(), trace: [] }; gps.set(personId, g); }
+        g.amount = g.amount.plus(amt);
+        const ga = g.accounts.get(accountId) ?? { name: meta.get(accountId)!.name, amount: ZERO };
+        ga.amount = ga.amount.plus(amt);
+        g.accounts.set(accountId, ga);
+        break;
+      }
+      default: break;
+    }
+    if (a.treatment === 'w2_wages' && personId) w2ByPerson.set(personId, (w2ByPerson.get(personId) ?? ZERO).plus(amt));
+  };
+  /** Credit `removed` to the account's person(s): its split portions (Q50), else the single target. */
+  const creditPersons = (a: AppliedTreatment, accountId: string, removed: Dec) => {
+    const sp = splitOf.get(accountId);
+    if (!sp) { creditPerson(a, accountId, a.personId, removed); return; }
+    splitPortions(sp, removed).forEach((v, idx) => {
+      creditPerson(a, accountId, sp.targets[idx]!.personId, v);
+      addAlloc(accountId, idx, v);
+    });
+  };
+  const PERSON_ROUTES = new Set<TreatmentRoute>(['owner_sehi', 'owner_retirement', 'officer_sehi', 'officer_retirement', 'guaranteed_payment']);
 
   const accountIds = [...meta.keys()];
   for (let i = 0; i < months.length; i++) {
@@ -616,29 +782,13 @@ async function compute(
       non[a.character] = non[a.character].plus(eN);
       mBook = mBook.plus(x);
       const removed = x.negated(); // positive magnitude of an expense
+      // Month totals (entity level) — unchanged by an owner split (Q50).
       switch (a.route) {
-        case 'owner_sehi': mSehi = mSehi.plus(removed); person(a.personId).sehi = person(a.personId).sehi.plus(removed); break;
-        case 'owner_retirement': mRet = mRet.plus(removed); person(a.personId).ret = person(a.personId).ret.plus(removed); break;
-        case 'officer_sehi': {
-          // D10: S corp keeps the deduction; officer W-2 box 1 + owner SEHI.
-          mSehi = mSehi.plus(removed);
-          mSehiW2 = mSehiW2.plus(removed);
-          const p = person(a.personId);
-          p.sehi = p.sehi.plus(removed);
-          p.w2 = p.w2.plus(removed);
-          break;
-        }
-        case 'officer_retirement': person(a.personId).empRet = person(a.personId).empRet.plus(removed); break;
-        case 'guaranteed_payment': {
-          mGp = mGp.plus(removed);
-          let g = gps.get(a.personId);
-          if (!g) { g = { amount: ZERO, accounts: new Map(), trace: [] }; gps.set(a.personId, g); }
-          g.amount = g.amount.plus(removed);
-          const ga = g.accounts.get(accountId) ?? { name: meta.get(accountId)!.name, amount: ZERO };
-          ga.amount = ga.amount.plus(removed);
-          g.accounts.set(accountId, ga);
-          break;
-        }
+        case 'owner_sehi': mSehi = mSehi.plus(removed); break;
+        case 'owner_retirement': mRet = mRet.plus(removed); break;
+        // D10: S corp keeps the deduction; officer W-2 box 1 + owner SEHI.
+        case 'officer_sehi': mSehi = mSehi.plus(removed); mSehiW2 = mSehiW2.plus(removed); break;
+        case 'guaranteed_payment': mGp = mGp.plus(removed); break;
         default: break;
       }
       if (a.treatment === 'owner_personal' && a.route === 'dropped') ownerPersonal = ownerPersonal.plus(removed);
@@ -647,8 +797,9 @@ async function compute(
         mW2 = mW2.plus(removed);
         w2Rec = w2Rec.plus(r.negated());
         w2Non = w2Non.plus(n.negated());
-        if (a.personId) w2ByPerson.set(a.personId, (w2ByPerson.get(a.personId) ?? ZERO).plus(removed));
       }
+      // Per-person side: the split portions (Q50), else the single target.
+      if (PERSON_ROUTES.has(a.route) || a.treatment === 'w2_wages') creditPersons(a, accountId, removed);
       const acc = perAccount.get(accountId) ?? { book: ZERO, tax: ZERO, nonRec: ZERO };
       acc.book = acc.book.plus(x);
       acc.tax = acc.tax.plus(eR).plus(eN);
@@ -722,9 +873,23 @@ async function compute(
     if ('groups' in detail) {
       for (const g of detail.groups) {
         const t = treatments.get(g.accountId);
+        const sp = splitOf.get(g.accountId);
         for (const line of g.lines) {
           const amount = lineDebit(line).minus(lineCredit(line));
           if (amount.isZero()) continue;
+          if (sp) {
+            // Q50: each split portion is its own payment row referencing the same transaction.
+            splitPortions(sp, amount).forEach((v, idx) => {
+              addAlloc(g.accountId, idx, v);
+              if (v.isZero()) return;
+              const target = sp.targets[idx]!;
+              estimatedPayments.push({
+                transactionId: line.transactionId, date: isoDate(line.date), amount: s4(v), accountId: g.accountId, accountName: g.name,
+                taxpayerId: target.taxpayerId, personId: target.personId, jurisdiction: t?.paymentJurisdiction ?? null, memo: line.memo || null,
+              });
+            });
+            continue;
+          }
           estimatedPayments.push({
             transactionId: line.transactionId,
             date: isoDate(line.date),
@@ -746,6 +911,82 @@ async function compute(
         code: 'TE_PAYMENT_ACCOUNT_UNASSIGNED', severity: 'info',
         message: 'Some estimated-tax payment accounts are not tied to a taxpayer; their payments are listed but cannot be credited automatically.',
         details: { accountIds: unassigned.map((t) => t.accountId) },
+      });
+    }
+  }
+
+  // 6b. Owner splits (Q50): complete-year fixed amounts, the remainder warning, a missing
+  //     year's amounts, and stored targets that are not linked to this business.
+  const splitRemainders: Array<Record<string, unknown>> = [];
+  const splitComplete = new Map<string, { targets: Dec[] | null }>();
+  for (const [accountId, sp] of splitOf) {
+    const t = treatments.get(accountId)!;
+    if (sp.mode !== 'amount' || t.treatment === 'estimated_tax_payment' || !perAccount.has(accountId)) continue;
+    const a = appliedFor(accountId);
+    if (!PERSON_ROUTES.has(a.route) && a.treatment !== 'w2_wages') continue;
+    const acc = perAccount.get(accountId)!;
+    const ytd = acc.book.negated();
+    const recurring = acc.book.minus(acc.nonRec).negated();
+    const projected = months.length > 0 && monthsRemaining > 0 ? ytd.plus(recurring.dividedBy(months.length).times(monthsRemaining)) : ytd;
+    const fixed = sp.targets.map((x) => dec(x.amount));
+    const fixedTotal = fixed.reduce((x, y) => x.plus(y), ZERO);
+    let targets: Dec[] | null = null;
+    if (monthsRemaining === 0) {
+      const fx = fixedAmountTargets(ytd.toFixed(), fixed.map((f) => f.toFixed()));
+      targets = fx ? fx.map((v) => new Decimal(v)) : null;
+      if (targets) {
+        const alloc = splitAlloc.get(accountId) ?? sp.targets.map(() => ZERO);
+        targets.forEach((target, idx) => {
+          const delta = target.minus(alloc[idx]!);
+          if (delta.isZero()) return;
+          creditPerson(a, accountId, sp.targets[idx]!.personId, delta);
+          addAlloc(accountId, idx, delta);
+        });
+      }
+      splitComplete.set(accountId, { targets });
+    }
+    const remainder = projected.minus(fixedTotal);
+    if (remainder.abs().greaterThanOrEqualTo('0.01')) {
+      const last = sp.targets[sp.targets.length - 1]!;
+      splitRemainders.push({
+        accountId, name: label(meta.get(accountId)!), taxYear: sp.taxYear, booksYear: s4(projected), fixedTotal: s4(fixedTotal),
+        remainder: s4(remainder), lastPersonId: last.personId, yearComplete: monthsRemaining === 0,
+        applied: monthsRemaining === 0 ? (targets ? 'remainder_to_last' : 'proportional_negative_remainder') : 'proportional_ytd',
+      });
+    }
+  }
+  if (splitRemainders.length > 0) {
+    warnings.push({
+      code: 'TE_SPLIT_REMAINDER', severity: 'warning',
+      message: `${splitRemainders.length} account(s) split by fixed annual amounts do not match the books' (projected) total for the year. Until the year is complete the books amount is shared in proportion to the fixed amounts; for the complete year each owner gets the fixed amount and the LAST owner in the split takes the difference.`,
+      details: { accounts: splitRemainders },
+    });
+  }
+  if (splitYearFallback.length > 0) {
+    warnings.push({
+      code: 'TE_SPLIT_AMOUNT_YEAR_MISSING', severity: 'info',
+      message: `${splitYearFallback.length} account(s) split by fixed annual amounts have no amounts for ${taxYear}; the ratios of another year's amounts were used. Enter the ${taxYear} amounts on the treatment.`,
+      details: { accounts: splitYearFallback },
+    });
+  }
+  if (linked) {
+    const notLinked: Array<{ accountId: string; treatment: string; personId: string | null; taxpayerId: string | null }> = [];
+    for (const t of treatments.values()) {
+      if (!allowsPersonTarget(t.treatment)) continue;
+      const payment = t.treatment === 'estimated_tax_payment';
+      const targets = t.splits && t.splits.length > 0
+        ? t.splits.map((x) => ({ personId: x.personId, taxpayerId: x.taxpayerId }))
+        : [{ personId: t.paymentPersonId, taxpayerId: t.paymentTaxpayerId }];
+      for (const x of targets) {
+        const bad = payment ? !!x.taxpayerId && !linked.taxpayers.has(x.taxpayerId) : !!x.personId && !linked.persons.has(x.personId);
+        if (bad) notLinked.push({ accountId: t.accountId, treatment: t.treatment ?? '', personId: x.personId, taxpayerId: x.taxpayerId });
+      }
+    }
+    if (notLinked.length > 0) {
+      warnings.push({
+        code: 'TE_TARGET_NOT_LINKED', severity: 'warning',
+        message: `${notLinked.length} treatment target(s) name an owner or taxpayer that is not linked to this business; the amounts are still attributed to them. Link the owner to this business (Taxpayers → the taxpayer → Linked businesses) or pick a linked owner.`,
+        details: { targets: notLinked },
       });
     }
   }
@@ -797,7 +1038,6 @@ async function compute(
   const notForEntity: Array<{ accountId: string; name: string; treatment: string }> = [];
   const impliedConflict: Array<{ accountId: string; name: string; code: string; treatment: string }> = [];
   const taxDep: TaxBasisPl['taxDepreciationDiffers'] = [];
-  const label = (m: AccountMeta) => (m.accountNumber ? `${m.accountNumber} ${m.name}` : m.name);
   for (const [accountId, acc] of perAccount) {
     const m = meta.get(accountId)!;
     const t = treatments.get(accountId);
@@ -813,6 +1053,13 @@ async function compute(
       bookAmount: s4(acc.book), taxAmount: s4(acc.tax), reclass: s4(reclass),
       nonRecurringBookAmount: s4(acc.nonRec),
       tbTaxRje: s4(rjeByAccount.get(accountId) ?? ZERO),
+      ...(splitOf.has(accountId) ? {
+        splitMode: splitOf.get(accountId)!.mode,
+        splits: splitOf.get(accountId)!.targets.map((x, idx) => ({
+          personId: x.personId, taxpayerId: x.taxpayerId, pct: x.pct, amount: x.amount,
+          allocated: s4(splitAlloc.get(accountId)?.[idx] ?? ZERO),
+        })),
+      } : {}),
     });
     const lbl = label(m);
     if (!code && !a.treatment) unmapped.push({ accountId, name: lbl });
@@ -833,6 +1080,41 @@ async function compute(
     const book = s4(acc.book);
     const mag = s4(acc.book.negated());
     const fromCode = a.source === 'tb_code' ? `; from TB code ${code?.code ?? ''}` : '';
+    // Q50: one trace row per split portion ("6800 Salaries - Officers 101,640.24 × 60% → Kurt").
+    const sp = splitOf.get(accountId);
+    const portionRows = (what: string): Array<{ personId: string | null; row: TraceRow }> => {
+      if (!sp) return [];
+      const alloc = splitAlloc.get(accountId) ?? sp.targets.map(() => ZERO);
+      const total = acc.book.negated();
+      const complete = splitComplete.get(accountId)?.targets ?? null;
+      const fixedTotal = sp.targets.reduce((x, y) => x.plus(dec(y.amount)), ZERO);
+      const others = sp.targets.slice(0, -1).reduce((x, y) => x.plus(dec(y.amount)), ZERO);
+      return sp.targets.map((x, idx) => {
+        const who = personToken(x.personId);
+        const last = idx === sp.targets.length - 1;
+        const share = sp.mode === 'pct'
+          ? `× ${dec(x.pct).toString()}%`
+          : complete
+            ? (last ? `remainder (books ${money2(total)} − fixed ${money2(others)})` : `fixed annual ${money2(dec(x.amount))}`)
+            : `× ${money2(dec(x.amount))} / ${money2(fixedTotal)} (fixed annual $ ${sp.taxYear ?? ''})`;
+        return {
+          personId: x.personId,
+          row: {
+            label: `${lbl} ${money2(total)} ${share} → ${who}`,
+            amount: s4(alloc[idx]!),
+            formula: `${what}: ${money2(total)} ${share} = ${money2(alloc[idx]!)}`,
+            source: 'gl_map',
+          },
+        };
+      });
+    };
+    /** Main trace + the person's own trace: split portions, or the whole row for a single target. */
+    const toPersons = (row: TraceRow, what: string, push: (personId: string | null, r: TraceRow) => void) => {
+      trace.push(row);
+      if (!sp) { push(a.personId, row); return; }
+      for (const pr of portionRows(what)) { trace.push(pr.row); push(pr.personId, pr.row); }
+    };
+    const pushPerson = (personId: string | null, r: TraceRow) => { person(personId).trace.push(r); };
     if (a.exclusion) {
       trace.push({
         label: `${lbl}: ${a.exclusion === 'tax_exempt' ? 'tax-exempt' : 'nondeductible'} TB code ${code?.code ?? ''}, excluded from entity profit`,
@@ -845,32 +1127,27 @@ async function compute(
     switch (a.route) {
       case 'owner_sehi': {
         const row: TraceRow = { label: `${lbl} → owner self-employed health insurance (removed from entity profit)`, amount: s4(reclass), formula: `book ${book} → entity 0; owner SEHI ${mag}${fromCode}`, source: 'gl_map' };
-        trace.push(row);
-        person(a.personId).trace.push(row);
+        toPersons(row, 'owner SEHI', pushPerson);
         break;
       }
       case 'owner_retirement': {
         const row: TraceRow = { label: `${lbl} → owner retirement contribution (removed from entity profit)`, amount: s4(reclass), formula: `book ${book} → entity 0; owner retirement ${mag}${fromCode}`, source: 'gl_map' };
-        trace.push(row);
-        person(a.personId).trace.push(row);
+        toPersons(row, 'owner retirement', pushPerson);
         break;
       }
       case 'officer_sehi': {
         const row: TraceRow = { label: `${lbl} → S corp >2% shareholder health: kept as the S corp's deduction; officer W-2 box 1 + SEHI`, amount: mag, formula: `book ${book} stays in entity profit; officer W-2 box 1 +${mag} (not SS/Medicare wages); owner SEHI ${mag}${fromCode}`, source: 'gl_map' };
-        trace.push(row);
-        person(a.personId).trace.push(row);
+        toPersons(row, 'officer W-2 box 1 (not SS/Medicare wages) + owner SEHI', pushPerson);
         break;
       }
       case 'officer_retirement': {
         const row: TraceRow = { label: `${lbl} → S corp retirement contribution for the officer: the corporation's deduction (no owner deduction)`, amount: mag, formula: `book ${book} stays in entity profit`, source: 'gl_map' };
-        trace.push(row);
-        person(a.personId).trace.push(row);
+        toPersons(row, 'officer retirement (informational)', pushPerson);
         break;
       }
       case 'guaranteed_payment': {
         const row: TraceRow = { label: `${lbl} → guaranteed payment to the partner (deducted by the partnership; partner's ordinary SE income)`, amount: mag, formula: `book ${book} stays in entity profit; partner GP ${mag}`, source: 'gl_map' };
-        trace.push(row);
-        gps.get(a.personId)?.trace.push(row);
+        toPersons(row, 'partner guaranteed payment', (personId, r) => { gps.get(personId)?.trace.push(r); });
         break;
       }
       case 'dropped':
@@ -882,7 +1159,10 @@ async function compute(
         trace.push({ label: `${lbl}: estimated tax payments removed from profit (payment ledger)`, amount: s4(reclass), formula: `book ${book} → 0`, source: 'gl_map' });
         break;
       default:
-        if (a.treatment === 'nondeductible_pct') {
+        if (a.treatment === 'w2_wages' && sp) {
+          // Q50: officer wages per officer, split.
+          for (const pr of portionRows('officer W-2 wages')) trace.push(pr.row);
+        } else if (a.treatment === 'nondeductible_pct') {
           trace.push({ label: `${lbl}: ${dec(a.pct).toString()}% nondeductible add-back`, amount: s4(reclass), formula: `${mag} × ${dec(a.pct).toString()}%`, source: 'gl_map' });
         } else if (a.treatment === 'tax_depreciation_differs') {
           trace.push({ label: `${lbl}: book depreciation kept; tax amount comes from an adjustment`, amount: '0.0000', formula: `book ${book}`, source: 'gl_map' });
@@ -897,6 +1177,26 @@ async function compute(
         source: 'gl_map',
       });
     }
+  }
+  // Q50: estimated-tax payment accounts split between taxpayers — one trace row per portion
+  // (payment accounts are often balance-sheet accounts, so this is outside the P&L loop).
+  for (const [accountId, sp] of splitOf) {
+    if (treatments.get(accountId)?.treatment !== 'estimated_tax_payment') continue;
+    const alloc = splitAlloc.get(accountId);
+    if (!alloc) continue;
+    const total = alloc.reduce((x, y) => x.plus(y), ZERO);
+    const name = estimatedPayments.find((p) => p.accountId === accountId)?.accountName ?? meta.get(accountId)?.name ?? 'Estimated tax payments';
+    const fixedTotal = sp.targets.reduce((x, y) => x.plus(dec(y.amount)), ZERO);
+    sp.targets.forEach((x, idx) => {
+      const who = x.personId ? personToken(x.personId) : taxpayerToken(x.taxpayerId);
+      const share = sp.mode === 'pct' ? `× ${dec(x.pct).toString()}%` : `× ${money2(dec(x.amount))} / ${money2(fixedTotal)} (fixed annual $ ${sp.taxYear ?? ''})`;
+      trace.push({
+        label: `${name}: estimated tax payments ${money2(total)} ${share} → ${who}`,
+        amount: s4(alloc[idx]!),
+        formula: `each payment line ${share}, 4 places, remainder to the last row; = ${money2(alloc[idx]!)}`,
+        source: 'gl_map',
+      });
+    });
   }
   accountLines.sort((a, b) => (a.accountNumber ?? '').localeCompare(b.accountNumber ?? '') || a.name.localeCompare(b.name));
   if (unmapped.length > 0) {

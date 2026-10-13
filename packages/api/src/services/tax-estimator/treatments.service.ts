@@ -22,16 +22,28 @@
 // books-scoped (one per account). A row whose taxpayer / person target belongs to another
 // firm is that firm's mapping: this firm sees it without the foreign ids
 // (`targetOtherFirm`) and cannot re-point or delete it (409 TE_TREATMENT_OTHER_FIRM).
+//
+// Owner splits (Q50): a person-target treatment may carry split rows
+// (tax_est_account_treatment_splits; pct or fixed annual $). No rows = the single target takes
+// 100%; a single 100% pct row is stored as that single target. With rows, the treatment's
+// payment_taxpayer_id / payment_person_id mirror the FIRST row. pcts must total exactly 100
+// (400 TE_SPLIT_PCT_TOTAL); a target may appear once (400 TE_SPLIT_DUPLICATE_TARGET); every
+// NEW target must be an owner linked to this business and visible to the caller (422
+// TE_TARGET_NOT_LINKED — targets already stored are kept, the provider warns instead).
 
 import { and, count, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import type {
   AccountTreatment, AccountTreatmentDto, AccountTreatmentInput, EntityTaxType, PagedList, PutTransactionFlagsInput,
-  TaxCodeRef, TransactionFlagDto, TreatmentSuggestion,
+  SplitMode, TaxCodeRef, TransactionFlagDto, TreatmentSplitDto, TreatmentSuggestion,
 } from '@kis-books/shared';
-import { ENTITY_TAX_TYPES, TREATMENT_ACCOUNT_TYPES, TREATMENT_ENTITY_TYPES, allowsPersonTarget, personRequiredFor } from '@kis-books/shared';
+import {
+  TREATMENT_ACCOUNT_TYPES, TREATMENT_ENTITY_TYPES, allowsPersonTarget, dIsPos, dIsZero, dSum, pctTotal, pctTotalIs100,
+  personRequiredFor,
+} from '@kis-books/shared';
+import { ENTITY_TAX_TYPES } from '@kis-books/shared';
 import { db } from '../../db/index.js';
 import {
-  accounts, taxEstAccountTreatments, taxEstEntityYearInputs, taxEstPersons, taxEstTaxpayers, taxEstTransactionFlags, transactions,
+  accounts, taxEstAccountTreatments, taxEstAccountTreatmentSplits, taxEstEntityYearInputs, taxEstPersons, taxEstTaxpayers, taxEstTransactionFlags, transactions,
 } from '../../db/schema/index.js';
 import { auditLog } from '../../middleware/audit.js';
 import { AppError } from '../../utils/errors.js';
@@ -39,6 +51,7 @@ import { baseScope, type FirmScope } from './firm-scope.service.js';
 import { assertEntityInScope, resolveForCompany } from './entity-type.service.js';
 import { listAssignments } from '../tb/balance-engine.service.js';
 import { impliedTreatmentForCode } from './pl-provider.service.js';
+import { listOwnerCandidates, loadSplitsByTreatment, toSplitDto, type SplitRow } from './treatment-splits.service.js';
 
 const AUDIT_ENTITY = 'tax_est_treatment';
 
@@ -56,10 +69,19 @@ function companyAccountCond(tenantId: string, companyId: string) {
 
 type TreatmentRow = typeof taxEstAccountTreatments.$inferSelect;
 
-/** Ids of the rows whose payment taxpayer / person belongs to a firm other than the caller's. */
-async function otherFirmRowIds(scope: FirmScope, rows: ReadonlyArray<Pick<TreatmentRow, 'id' | 'paymentTaxpayerId' | 'paymentPersonId'>>): Promise<Set<string>> {
-  const tpIds = [...new Set(rows.map((r) => r.paymentTaxpayerId).filter((x): x is string => !!x))];
-  const personIds = [...new Set(rows.map((r) => r.paymentPersonId).filter((x): x is string => !!x))];
+/**
+ * Ids of the rows whose payment taxpayer / person — or any owner-split target (Q50) — belongs to
+ * a firm other than the caller's.
+ */
+async function otherFirmRowIds(
+  scope: FirmScope, rows: ReadonlyArray<Pick<TreatmentRow, 'id' | 'paymentTaxpayerId' | 'paymentPersonId'>>,
+  splits: ReadonlyMap<string, ReadonlyArray<Pick<SplitRow, 'taxpayerId' | 'personId'>>> = new Map(),
+): Promise<Set<string>> {
+  const targets = (r: Pick<TreatmentRow, 'id' | 'paymentTaxpayerId' | 'paymentPersonId'>) => [
+    { taxpayerId: r.paymentTaxpayerId, personId: r.paymentPersonId }, ...(splits.get(r.id) ?? []),
+  ];
+  const tpIds = [...new Set(rows.flatMap((r) => targets(r).map((t) => t.taxpayerId)).filter((x): x is string => !!x))];
+  const personIds = [...new Set(rows.flatMap((r) => targets(r).map((t) => t.personId)).filter((x): x is string => !!x))];
   const foreignTp = new Set<string>();
   const foreignPerson = new Set<string>();
   if (tpIds.length > 0) {
@@ -75,7 +97,7 @@ async function otherFirmRowIds(scope: FirmScope, rows: ReadonlyArray<Pick<Treatm
     const mine = new Set(own.map((r) => r.id));
     for (const id of personIds) if (!mine.has(id)) foreignPerson.add(id);
   }
-  return new Set(rows.filter((r) => (r.paymentTaxpayerId && foreignTp.has(r.paymentTaxpayerId)) || (r.paymentPersonId && foreignPerson.has(r.paymentPersonId))).map((r) => r.id));
+  return new Set(rows.filter((r) => targets(r).some((t) => (t.taxpayerId && foreignTp.has(t.taxpayerId)) || (t.personId && foreignPerson.has(t.personId)))).map((r) => r.id));
 }
 
 export async function listTreatments(
@@ -95,13 +117,17 @@ export async function listTreatments(
     .orderBy(accounts.accountNumber, accounts.name)
     .limit(opts.limit)
     .offset(opts.offset);
-  const foreign = await otherFirmRowIds(scope, rows.map((r) => r.t));
+  const splits = await loadSplitsByTreatment(tenantId, companyId, rows.map((r) => r.t.id));
+  const foreign = await otherFirmRowIds(scope, rows.map((r) => r.t), splits);
+  const splitsOf = (id: string, hideIds: boolean): TreatmentSplitDto[] =>
+    (splits.get(id) ?? []).map((x) => (hideIds ? { ...toSplitDto(x), taxpayerId: null, personId: null } : toSplitDto(x)));
   return {
     items: rows.map((r) => foreign.has(r.t.id) ? {
       id: r.t.id, accountId: r.t.accountId, accountNumber: r.accountNumber, accountName: r.accountName, accountType: r.accountType,
       treatment: (r.t.treatment as AccountTreatment | null) ?? null, pct: r.t.pct,
       paymentTaxpayerId: null, paymentPersonId: null, paymentJurisdiction: r.t.paymentJurisdiction,
       nonRecurring: r.t.nonRecurring, updatedAt: r.t.updatedAt.toISOString(), targetOtherFirm: true,
+      splitMode: r.t.splitMode as SplitMode, splits: splitsOf(r.t.id, true),
     } : ({
       id: r.t.id,
       accountId: r.t.accountId,
@@ -115,6 +141,8 @@ export async function listTreatments(
       paymentJurisdiction: r.t.paymentJurisdiction,
       nonRecurring: r.t.nonRecurring,
       updatedAt: r.t.updatedAt.toISOString(),
+      splitMode: r.t.splitMode as SplitMode,
+      splits: splitsOf(r.t.id, false),
     })),
     total: Number(totalRow?.n ?? 0),
     limit: opts.limit,
@@ -122,9 +150,21 @@ export async function listTreatments(
   };
 }
 
-async function validatePaymentTargets(scope: FirmScope, inputs: AccountTreatmentInput[]): Promise<void> {
-  const taxpayerIds = [...new Set(inputs.map((i) => i.paymentTaxpayerId).filter((x): x is string => !!x))];
-  const personIds = [...new Set(inputs.map((i) => i.paymentPersonId).filter((x): x is string => !!x))];
+/** A person / taxpayer target of an input: the single target, or each owner-split row (Q50). */
+interface Target { taxpayerId: string | null; personId: string | null }
+
+function targetsOf(i: AccountTreatmentInput): Target[] {
+  const rows = i.splits ?? [];
+  if (rows.length > 0) return rows.map((r) => ({ taxpayerId: r.taxpayerId ?? null, personId: r.personId ?? null }));
+  return [{ taxpayerId: i.paymentTaxpayerId ?? null, personId: i.paymentPersonId ?? null }];
+}
+
+/** Firm ownership of every target (404) and person ↔ taxpayer agreement (400). Returns person → taxpayer. */
+async function validatePaymentTargets(scope: FirmScope, inputs: AccountTreatmentInput[]): Promise<Map<string, string>> {
+  const all = inputs.flatMap(targetsOf);
+  const taxpayerIds = [...new Set(all.map((t) => t.taxpayerId).filter((x): x is string => !!x))];
+  const personIds = [...new Set(all.map((t) => t.personId).filter((x): x is string => !!x))];
+  const personTaxpayer = new Map<string, string>();
   if (taxpayerIds.length > 0) {
     // Taxpayers are firm-scoped (D1): only the caller's firm's taxpayers may receive payments.
     const found = await db.select({ id: taxEstTaxpayers.id }).from(taxEstTaxpayers)
@@ -137,13 +177,89 @@ async function validatePaymentTargets(scope: FirmScope, inputs: AccountTreatment
       .innerJoin(taxEstTaxpayers, eq(taxEstTaxpayers.id, taxEstPersons.taxpayerId))
       .where(and(inArray(taxEstPersons.id, personIds), eq(taxEstTaxpayers.firmId, scope.firmId)));
     const byId = new Map(found.map((p) => [p.id, p.taxpayerId]));
-    for (const i of inputs) {
-      if (!i.paymentPersonId) continue;
-      const tp = byId.get(i.paymentPersonId);
+    for (const t of all) {
+      if (!t.personId) continue;
+      const tp = byId.get(t.personId);
       if (!tp) throw new AppError(404, 'Person not found', 'TE_PERSON_NOT_FOUND');
-      if (i.paymentTaxpayerId && tp !== i.paymentTaxpayerId) {
+      if (t.taxpayerId && tp !== t.taxpayerId) {
         throw AppError.badRequest('The person does not belong to the payment taxpayer', 'TE_PERSON_TAXPAYER_MISMATCH');
       }
+      personTaxpayer.set(t.personId, tp);
+    }
+  }
+  return personTaxpayer;
+}
+
+/**
+ * Split shape rules the schema cannot express (Q50): pcts total exactly 100 (400
+ * TE_SPLIT_PCT_TOTAL), each target once (per tax year in amount mode; 400
+ * TE_SPLIT_DUPLICATE_TARGET), and each amount-mode year has a positive total (400
+ * TE_SPLIT_AMOUNT_TOTAL_ZERO). Exported for tests.
+ */
+export function validateSplitRules(inputs: AccountTreatmentInput[]): void {
+  for (const i of inputs) {
+    const rows = i.splits ?? [];
+    if (rows.length === 0) continue;
+    const mode: SplitMode = i.splitMode ?? 'pct';
+    const keyOf = (r: (typeof rows)[number]) => i.treatment === 'estimated_tax_payment'
+      ? `${r.taxpayerId ?? ''}|${r.personId ?? ''}` : (r.personId ?? '');
+    const seen = new Set<string>();
+    for (const r of rows) {
+      const k = mode === 'amount' ? `${r.taxYear}|${keyOf(r)}` : keyOf(r);
+      if (seen.has(k)) throw new AppError(400, 'Each owner may appear once in a split', 'TE_SPLIT_DUPLICATE_TARGET', { accountId: i.accountId });
+      seen.add(k);
+    }
+    if (mode === 'pct') {
+      const pcts = rows.map((r) => r.pct ?? '0');
+      if (pcts.some((p) => !dIsPos(p)) || !pctTotalIs100(pcts)) {
+        throw new AppError(400,
+          `The split percentages must each be above 0 and total exactly 100% (they total ${pctTotal(pcts)}%)`,
+          'TE_SPLIT_PCT_TOTAL', { accountId: i.accountId, total: pctTotal(pcts) },
+        );
+      }
+    } else {
+      const years = new Map<number, string[]>();
+      for (const r of rows) years.set(r.taxYear!, [...(years.get(r.taxYear!) ?? []), r.amount ?? '0']);
+      for (const [taxYear, amounts] of years) {
+        if (dIsZero(dSum(amounts))) {
+          throw new AppError(400, `The fixed amounts for ${taxYear} total zero`, 'TE_SPLIT_AMOUNT_TOTAL_ZERO', { accountId: i.accountId, taxYear });
+        }
+      }
+    }
+  }
+}
+
+/** Collapse a lone 100% pct row into the single target (Q50: stored as before, byte-identical). */
+function normalizeInput(i: AccountTreatmentInput): AccountTreatmentInput {
+  const rows = i.splits ?? [];
+  if (!allowsPersonTarget(i.treatment) || rows.length === 0) return { ...i, splits: [], splitMode: 'pct' };
+  if ((i.splitMode ?? 'pct') === 'pct' && rows.length === 1) {
+    return { ...i, paymentTaxpayerId: rows[0]!.taxpayerId ?? null, paymentPersonId: rows[0]!.personId ?? null, splits: [], splitMode: 'pct' };
+  }
+  return { ...i, splitMode: i.splitMode ?? 'pct' };
+}
+
+const targetKey = (payment: boolean, t: Target) => (payment ? `tp:${t.taxpayerId ?? ''}` : `p:${t.personId ?? ''}`);
+
+/**
+ * Q50 (1)(2): every NEW target must be an owner linked to this business and visible to the
+ * caller. Payments check the taxpayer; owner items check the person. A target already stored
+ * on the row is accepted unchanged (existing data keeps computing; the provider warns).
+ */
+function assertTargetsLinked(
+  input: AccountTreatmentInput, existing: Set<string>, linkedPersons: Set<string>, linkedTaxpayers: Set<string>,
+): void {
+  const payment = input.treatment === 'estimated_tax_payment';
+  for (const t of targetsOf(input)) {
+    const id = payment ? t.taxpayerId : t.personId;
+    if (!id || existing.has(targetKey(payment, t))) continue;
+    if (!(payment ? linkedTaxpayers : linkedPersons).has(id)) {
+      throw AppError.unprocessableEntity(
+        payment
+          ? 'This taxpayer is not linked to this business. Link the owner to this business first (Taxpayers → the taxpayer → Linked businesses).'
+          : 'This person is not an owner linked to this business. Link the owner to this business first (Taxpayers → the taxpayer → Linked businesses).',
+        'TE_TARGET_NOT_LINKED', { accountId: input.accountId, ...(payment ? { taxpayerId: id } : { personId: id }) },
+      );
     }
   }
 }
@@ -181,7 +297,7 @@ export function validateTreatmentRules(
     }
     const fitting = candidates.filter((c) => !allowedEntities || allowedEntities.includes(c));
     const needsPerson = fitting.length ? fitting.some((c) => personRequiredFor(t, c)) : personRequiredFor(t, entityType);
-    if (needsPerson && !i.paymentPersonId) {
+    if (needsPerson && !i.paymentPersonId && (i.splits ?? []).length === 0) {
       throw AppError.unprocessableEntity(
         t === 'guaranteed_payment'
           ? 'A guaranteed payment needs the partner it is paid to'
@@ -216,10 +332,17 @@ export async function putTreatments(
     inputs, new Map(found.map((a) => [a.id, a.accountType])), (await resolveForCompany(company)).entityType,
     await overrideTypesOf(tenantId, companyId),
   );
-  await validatePaymentTargets(scope, inputs);
+  validateSplitRules(inputs);
+  const normalized = inputs.map(normalizeInput);
+  const personTaxpayer = await validatePaymentTargets(scope, normalized);
+  // Q50: the allowed targets — owners linked to this business, visible to the caller (any year).
+  const needsLinkCheck = normalized.some((i) => allowsPersonTarget(i.treatment) && targetsOf(i).some((t) => t.personId || t.taxpayerId));
+  const candidates = needsLinkCheck ? (await listOwnerCandidates(scope, tenantId, companyId)).candidates : [];
+  const linkedPersons = new Set(candidates.map((c) => c.personId));
+  const linkedTaxpayers = new Set(candidates.map((c) => c.taxpayerId));
 
   await db.transaction(async (tx) => {
-    for (const input of inputs) {
+    for (const input of normalized) {
       const [before] = await tx.select().from(taxEstAccountTreatments)
         .where(and(
           eq(taxEstAccountTreatments.tenantId, tenantId),
@@ -228,26 +351,44 @@ export async function putTreatments(
         ))
         .for('update')
         .limit(1);
-      if (before && (await otherFirmRowIds(scope, [before])).has(before.id)) {
+      const beforeSplits = before
+        ? await tx.select().from(taxEstAccountTreatmentSplits).where(and(
+          eq(taxEstAccountTreatmentSplits.tenantId, tenantId), eq(taxEstAccountTreatmentSplits.treatmentId, before.id),
+        )).orderBy(taxEstAccountTreatmentSplits.sortOrder)
+        : [];
+      if (before && (await otherFirmRowIds(scope, [before], new Map([[before.id, beforeSplits]]))).has(before.id)) {
         throw new AppError(409, 'This account\'s treatment belongs to another firm that also manages these books; it cannot be changed here', 'TE_TREATMENT_OTHER_FIRM', { accountId: input.accountId });
       }
+      const beforeAudit = before ? { ...before, splits: beforeSplits.map(toSplitDto) } : null;
       if (input.treatment === null && !input.nonRecurring) {
         if (before) {
+          // Split rows go with the treatment (FK ON DELETE CASCADE).
           await tx.delete(taxEstAccountTreatments)
             .where(and(eq(taxEstAccountTreatments.tenantId, tenantId), eq(taxEstAccountTreatments.id, before.id)));
-          await auditLog(tenantId, 'delete', AUDIT_ENTITY, before.id, tagFirm(scope, before), null, userId, tx);
+          await auditLog(tenantId, 'delete', AUDIT_ENTITY, before.id, tagFirm(scope, beforeAudit), null, userId, tx);
         }
         continue;
       }
       const isPayment = input.treatment === 'estimated_tax_payment';
       const hasPerson = allowsPersonTarget(input.treatment);
+      if (hasPerson) {
+        const existing = new Set([
+          ...(before ? [targetKey(isPayment, { taxpayerId: before.paymentTaxpayerId, personId: before.paymentPersonId })] : []),
+          ...beforeSplits.map((x) => targetKey(isPayment, x)),
+        ]);
+        assertTargetsLinked(input, existing, linkedPersons, linkedTaxpayers);
+      }
+      const rows = hasPerson ? input.splits ?? [] : [];
+      const first = rows[0];
       const values = {
         treatment: input.treatment,
         pct: input.treatment === 'nondeductible_pct' ? input.pct ?? null : null,
-        paymentTaxpayerId: hasPerson ? input.paymentTaxpayerId ?? null : null,
-        paymentPersonId: hasPerson ? input.paymentPersonId ?? null : null,
+        // Q50: with split rows, the single-target columns mirror the FIRST row.
+        paymentTaxpayerId: hasPerson ? (first ? first.taxpayerId ?? (first.personId ? personTaxpayer.get(first.personId) ?? null : null) : input.paymentTaxpayerId ?? null) : null,
+        paymentPersonId: hasPerson ? (first ? first.personId ?? null : input.paymentPersonId ?? null) : null,
         paymentJurisdiction: isPayment ? input.paymentJurisdiction ?? null : null,
         nonRecurring: input.nonRecurring,
+        splitMode: rows.length > 0 ? input.splitMode ?? 'pct' : 'pct',
         updatedBy: userId ?? null,
         updatedAt: new Date(),
       };
@@ -258,7 +399,22 @@ export async function putTreatments(
         : await tx.insert(taxEstAccountTreatments)
           .values({ tenantId, companyId, accountId: input.accountId, ...values })
           .returning();
-      await auditLog(tenantId, before ? 'update' : 'create', AUDIT_ENTITY, after!.id, tagFirm(scope, before ?? null), tagFirm(scope, after), userId, tx);
+      if (beforeSplits.length > 0) {
+        await tx.delete(taxEstAccountTreatmentSplits).where(and(
+          eq(taxEstAccountTreatmentSplits.tenantId, tenantId), eq(taxEstAccountTreatmentSplits.treatmentId, after!.id),
+        ));
+      }
+      const afterSplits = rows.length === 0 ? [] : await tx.insert(taxEstAccountTreatmentSplits).values(rows.map((r, idx) => ({
+        treatmentId: after!.id, tenantId, companyId,
+        taxpayerId: r.taxpayerId ?? (r.personId ? personTaxpayer.get(r.personId) ?? null : null),
+        personId: r.personId ?? null,
+        pct: values.splitMode === 'pct' ? r.pct ?? null : null,
+        amount: values.splitMode === 'amount' ? r.amount ?? null : null,
+        taxYear: values.splitMode === 'amount' ? r.taxYear ?? null : null,
+        sortOrder: idx,
+      }))).returning();
+      await auditLog(tenantId, before ? 'update' : 'create', AUDIT_ENTITY, after!.id, tagFirm(scope, beforeAudit),
+        tagFirm(scope, { ...after, splits: afterSplits.map(toSplitDto) }), userId, tx);
     }
   });
   return listTreatments(scope, tenantId, companyId, { limit: 500, offset: 0 });
