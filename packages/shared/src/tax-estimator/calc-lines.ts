@@ -7,7 +7,8 @@
 // and the estimate PDF's "Detailed calculation" page, so both print the same lines.
 // YTD tax basis is filled only for income lines (the engine computes tax on the projection only,
 // so the YTD column is blank for deduction and tax lines). No tax math here: every figure is a
-// field of the DTO; the only arithmetic is the YTD column's sum of the entity's YTD characters.
+// field of the DTO; the only arithmetic is the YTD column's sum of the entity's YTD characters
+// and an owner's YTD share (entity YTD × allocated %).
 import type { EstimateResultDTO } from './estimate-api.js';
 
 const num = (v: unknown): number => {
@@ -33,6 +34,10 @@ export interface CalcLine {
   ytd?: string | null;
   projected: string | null;
   bold?: boolean;
+  /** Context row shown for reference and NOT part of the section total (entity totals). */
+  muted?: boolean;
+  /** Child row of the line above (an owner's share of a business). */
+  indent?: boolean;
   /** review = a preparer review marker ("Verify", "Rules unverified"); a client deliverable drops it. */
   chips?: Array<{ text: string; tone: 'warn' | 'info'; review?: boolean }>;
   trace?: TraceScope;
@@ -48,21 +53,41 @@ export function calcEntityTypeLabel(entityType: string | null | undefined): stri
   return ENTITY_LABEL[entityType] ?? entityType.replace(/_/g, ' ');
 }
 const nonZero = (v: unknown) => Math.abs(num(v)) > 0;
-const sum = (o: Record<string, string>) => Object.values(o).reduce((a, v) => a + num(v), 0);
+const sum = (o: Record<string, string> | null | undefined) => Object.values(o ?? {}).reduce((a, v) => a + num(v), 0);
 
 export function buildCalcSections(r: EstimateResultDTO): CalcSection[] {
   const f = r.federal;
   const sections: CalcSection[] = [];
 
-  const income: CalcLine[] = f.entities.map((e) => {
+  // Each business prints as the entity total (context only, not added into income) followed by one
+  // row per owner link with that person's share; the share rows are what Total income adds up.
+  // YTD share = entity YTD × the allocated % (profit %, or loss % when the projection is a loss);
+  // the projected share is the engine's allocation, which also carries link adjustments.
+  const ownersByCompany = new Map((r.entities ?? []).map((d) => [d.companyId, d.owners ?? []]));
+  const income: CalcLine[] = f.entities.flatMap((e) => {
     const shares = e.shares;
     const activity = [...new Set(shares.map((s) => s.activityType))].join(', ');
-    return {
+    const entityYtd = sum(e.ytd as unknown as Record<string, string>);
+    const useLoss = num(e.projectedProfit) < 0;
+    const owners = ownersByCompany.get(e.companyId) ?? [];
+    const lines: CalcLine[] = [{
       key: `inc.${e.companyId}`, label: e.companyName,
-      sub: [calcEntityTypeLabel(e.entityType), activity].filter(Boolean).join(' · '),
-      ytd: String(sum(e.ytd as unknown as Record<string, string>)), projected: e.projectedProfit,
+      sub: [calcEntityTypeLabel(e.entityType), activity, 'Entity total (100%)'].filter(Boolean).join(' · '),
+      ytd: String(entityYtd), projected: e.projectedProfit, muted: true,
       trace: { kind: 'federal', steps: ['entity_income', 'allocation'], idPrefix: undefined },
-    } satisfies CalcLine;
+    }];
+    for (const s of shares) {
+      const fraction = num(useLoss ? s.lossFraction : s.profitFraction);
+      const name = owners.find((o) => o.personId === s.personId)?.displayName;
+      lines.push({
+        key: `inc.${e.companyId}.${s.linkId}`,
+        label: `${name ? `${name}'s share` : 'Share'} (${pct(fraction, 2)}${useLoss ? ' of loss' : ''})`,
+        ytd: String(Math.round(entityYtd * fraction * 100) / 100),
+        projected: String(sum(s.share as unknown as Record<string, string>)),
+        indent: true,
+      });
+    }
+    return lines;
   });
   const otherIncome: Array<[string, string, string]> = [
     ['wages', 'W-2 wages', f.income.wages], ['int', 'Interest', f.income.interest], ['div', 'Dividends', f.income.dividends],

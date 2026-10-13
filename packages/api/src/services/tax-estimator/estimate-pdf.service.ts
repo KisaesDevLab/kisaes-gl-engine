@@ -306,9 +306,12 @@ function renderDetailedCalculation(w: Writer, r: EstimateResultDTO, audience: Es
       w.ensure(lineHeight(subs));
       const chips = (l.chips ?? []).filter((c) => !(client && c.review)).map((c) => ` [${c.text}]`).join('');
       if (l.bold) w.page.drawRectangle({ x: MARGIN - 4, y: w.y - 3.5, width: RIGHT - MARGIN + 8, height: LINE, color: SUBTOTAL_FILL });
-      w.text(fit(w, `${l.label}${chips}`, 9, CALC_LABEL_W, l.bold), MARGIN, 9, { bold: l.bold });
-      if (l.ytd != null) w.text(usd(l.ytd), CALC_YTD_RIGHT, 9, { bold: l.bold, right: true });
-      w.text(l.projected == null ? '-' : usd(l.projected), RIGHT, 9, { bold: l.bold, right: true });
+      // Entity totals print muted (reference only, not in the section total); owner shares indent under them.
+      const x = l.indent ? MARGIN + 12 : MARGIN;
+      const tone = l.muted ? { color: MUTED } : {};
+      w.text(fit(w, `${l.label}${chips}`, 9, CALC_LABEL_W - (x - MARGIN), l.bold), x, 9, { bold: l.bold, ...tone });
+      if (l.ytd != null) w.text(usd(l.ytd), CALC_YTD_RIGHT, 9, { bold: l.bold, right: true, ...tone });
+      w.text(l.projected == null ? '-' : usd(l.projected), RIGHT, 9, { bold: l.bold, right: true, ...tone });
       if (subs.length === 0) { w.y -= LINE; continue; }
       w.y -= CALC_SUB_LINE;
       for (const s of subs) { w.text(s, MARGIN + 8, CALC_SUB, { color: MUTED }); w.y -= CALC_SUB_LINE; }
