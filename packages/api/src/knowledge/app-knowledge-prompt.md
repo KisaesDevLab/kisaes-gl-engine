@@ -1160,6 +1160,26 @@ truck"). When the portal shows finalized snapshots, each shared scenario
 shows its own latest finalized snapshot and a scenario without one is not
 offered. "View as Client" shows exactly what the previewed contact sees.
 
+## Dashboard cards
+
+Company dashboard (TAX_ESTIMATOR_V1 on for the client's own tenant): for
+each taxpayer linked to the active company, "Next estimated payment" (next
+federal and state voucher: date, amount, paid or unpaid), "Projected tax
+for the year" (federal + state total, change since the last finalized
+estimate, books-through month) and "Paid vs required to date" (shortfall;
+staff also see the estimated penalty). Firm staff with Tax Estimator access
+see every linked taxpayer they may see, with Refresh and "Not computed yet".
+The company owner sees only the taxpayer mapped to the portal contact with
+the owner's e-mail and Tax estimates access on the company, with the same
+figures as the client portal (no penalty). Other users see nothing.
+Tax Estimator home (above the taxpayer list): "Vouchers due in the next 30
+days" and "Behind on payments" across every visible taxpayer, each row
+opening the taxpayer, with a per-row refresh. Loading a dashboard never
+computes an estimate: the cards use today's cached live estimate, else the
+last finalized snapshot (firm cards: the newest stored live estimate or
+snapshot), each labelled live or finalized and "as of" a date. Refresh,
+opening the estimate or finalizing fills them.
+
 ## Super admin
 
 Admin -> Tax parameters edits federal parameters per tax year and the

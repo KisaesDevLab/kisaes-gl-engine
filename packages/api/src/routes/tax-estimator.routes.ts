@@ -15,6 +15,7 @@ import { yearsRouter } from './tax-estimator/years.routes.js';
 import { estimateRouter } from './tax-estimator/estimate.routes.js';
 import { pdfRouter } from './tax-estimator/pdf.routes.js';
 import { registerRouter } from './tax-estimator/register.routes.js';
+import { dashboardRouter } from './tax-estimator/dashboard.routes.js';
 import { taxParameterYearParamsSchema, can } from '@kis-books/shared';
 import * as taxParametersService from '../services/tax-estimator/tax-parameters.service.js';
 
@@ -44,6 +45,8 @@ taxEstimatorRouter.use(requireFeatureFlag('TAX_ESTIMATOR_V1'));
 // pass requireTaxEstimatorWrite (firm role).
 const READ_POSTS: readonly RegExp[] = [
   /^\/taxpayers\/[^/]+\/years\/[^/]+\/scenarios\/[^/]+\/(estimate|pdf)\/?$/,
+  // Q52: the firm dashboard card "Refresh" is a live compute of the Base scenario (a read).
+  /^\/dashboard\/taxpayers\/[^/]+\/years\/[^/]+\/refresh\/?$/,
 ];
 const readGuard = requirePermission('tax_estimator', 'read');
 const writeGuard = requirePermission('tax_estimator', 'update');
@@ -84,3 +87,4 @@ taxEstimatorRouter.use('/state-rules', stateRulesRouter);
 taxEstimatorRouter.use('/', yearsRouter);
 taxEstimatorRouter.use('/', estimateRouter);
 taxEstimatorRouter.use('/', pdfRouter);
+taxEstimatorRouter.use('/', dashboardRouter); // Q52 firm-wide cards

@@ -10,12 +10,15 @@ import * as dashboardService from '../services/dashboard.service.js';
 import * as budgetService from '../services/budget.service.js';
 import * as flags from '../services/feature-flags.service.js';
 import { closeHandledSuggestions } from '../services/client-suggestion-review.service.js';
+import { dashboardTaxEstimatesRouter } from './dashboard-tax-estimates.routes.js';
 import { db } from '../db/index.js';
 import { portalQuestions, portalReceipts, documentRequests, clientCategorySuggestions } from '../db/schema/index.js';
 
 export const dashboardRouter = Router();
 dashboardRouter.use(authenticate);
 dashboardRouter.use(requirePermission('dashboard', 'read'));
+// Tax Estimator cards (Q52): own guard chain + audience, see dashboard-tax-estimates.routes.ts.
+dashboardRouter.use('/tax-estimates', dashboardTaxEstimatesRouter);
 
 // Build the budget-performance panel. Extracted into a helper so the
 // single-request /summary endpoint can call the same code path as the

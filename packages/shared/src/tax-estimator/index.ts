@@ -40,3 +40,5 @@ export * from './entity-type-override.js';
 export * from './ai-check-sources.js';
 export * from './ai-check-api.js';
 export * from './ai-check-validate.js';
+// Dashboard cards (Q52): company + firm-wide card DTOs and the as-of selection helpers.
+export * from './dashboard-api.js';
