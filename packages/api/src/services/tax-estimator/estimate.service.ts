@@ -63,6 +63,7 @@ import { getPaymentLedger } from './payments.service.js';
 import { inScopeCompanies, loadSnapshotFigures, periodFiguresFromPl, schAiPeriods, listSnapshots, type SchAiFigures } from './sch-ai-snapshots.service.js';
 import { lastCompleteMonth, monthEnd } from './periods.js';
 import { loadScenarioForFirm, loadTaxpayerForFirm, scenarioNotFound, type TaxpayerRow } from './year-access.js';
+import { recordDashboardSummary } from './dashboard-summaries.service.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
 type DecJs = InstanceType<typeof Decimal>;
@@ -929,11 +930,30 @@ export async function computeEstimateWithInputs(
   const key = estimateCacheKey(scope, req, hash);
   if (!req.refresh) {
     const hit = await cacheGetEstimate(key);
-    if (hit) return { result: { ...hit, cached: true }, inputs };
+    if (hit) {
+      const cached: EstimateResultDTO = { ...hit, cached: true };
+      await recordDashboardSummary(scope, req, opts, cached, inputs); // Q52: firm dashboard cards
+      return { result: cached, inputs };
+    }
   }
   const result: EstimateResultDTO = { ...(await assembleWithAssumptions(scope, req, g, opts, today, hash)), elevatedAccess: isElevated(scope) };
   await cacheSetEstimate(key, result);
+  await recordDashboardSummary(scope, req, opts, result, inputs); // Q52: firm dashboard cards
   return { result, inputs };
+}
+
+/**
+ * Q52 (dashboard cards): the cached live estimate IF it is current — the same gather + inputs
+ * hash + cache key as `computeEstimateWithInputs`, without running the engine or the P&L
+ * provider on a miss. null = not cached for today's inputs (the caller falls back to the
+ * latest finalized snapshot). Throws what `gather` throws (hidden taxpayer 404, no persons 422 …).
+ */
+export async function peekCachedEstimate(scope: FirmScope, req: EstimateRequest, opts: EstimateOptions = {}): Promise<EstimateResultDTO | null> {
+  const today = opts.today ?? new Date();
+  scope = await scopeForTaxpayer(scope, req.taxpayerId); // D18, exactly as the compute path
+  const g = withPaymentsAsOf(await gather(scope, req), opts.paymentsAsOf);
+  const hit = await cacheGetEstimate(estimateCacheKey(scope, req, inputsHash(scope, req, g, today)));
+  return hit ? { ...hit, cached: true } : null;
 }
 
 /** QA D13: drop payments dated after `asOf` (not paid yet as of that day). */
