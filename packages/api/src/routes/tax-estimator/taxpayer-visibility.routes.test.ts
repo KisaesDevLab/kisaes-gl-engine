@@ -19,6 +19,14 @@
 // Taxpayers of firm A: Rivera (linked), Solo (unlinked, by creator), Ghost (unlinked, no
 // creator → admins only), Departed (linked ONLY into a tenant firm A no longer manages, by
 // creator → counts as unlinked).
+//
+// Q54 (Kurt, 2026-10-13) restated these expectations: the D17 firm rule now applies only to
+// members holding the firm capability "Tax Estimator: view taxpayers" — every non-admin member
+// of firm A below is GRANTED it in beforeAll so the D17 rule is tested unchanged; a non-empty
+// staff list must include a manager (a firm admin), so `setStaff` adds `admin` to every
+// non-empty list (pass raw=true to send exactly the ids), and firm admins are ordinary list
+// candidates. The Q54 matrix (capability off, unlisted firm admin, …) is in
+// taxpayer-visibility-q54.routes.test.ts.
 
 import { randomUUID } from 'node:crypto';
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
@@ -112,7 +120,9 @@ const listNames = async (key: string, q = 'limit=50') => {
   expect(r.status, key).toBe(200);
   return { names: (r.json.data as Array<{ displayName: string }>).map((t) => t.displayName).sort(), total: r.json.total as number, rows: r.json.data as Array<{ id: string; displayName: string; staffRestricted: boolean }> };
 };
-const setStaff = (userIds: string[], taxpayerId = tp.rivera, key = 'admin') => call('PUT', `${TE}/taxpayers/${taxpayerId}/staff`, key, { userIds });
+// Q54: a non-empty list must name a manager — the firm admin is added unless `raw`.
+const setStaff = (userIds: string[], taxpayerId = tp.rivera, key = 'admin', raw = false) =>
+  call('PUT', `${TE}/taxpayers/${taxpayerId}/staff`, key, { userIds: raw || userIds.length === 0 ? userIds : [uid['admin']!, ...userIds] });
 const setSwitch = (on: boolean, key = 'admin') => call('PUT', `${TE}/firm-settings`, key, { restrictTaxpayersToLinkedTenants: on });
 
 async function resetVisibility() {
@@ -145,6 +155,10 @@ beforeAll(async () => {
   await mkUser('ro', P, { firm: FIRM_A, firmRole: 'firm_readonly', access: [P, fx.T.schc] });
   await mkUser('peer', P, { firm: FIRM_A, access: [P, fx.T.schc] });
   await mkUser('fb', fx.T.other, { firm: FIRM_B, access: [fx.T.other, fx.T.schc] });
+  // Q54: the D17 rule below is conditioned on the firm capability; grant it to every member
+  // except the admin (who sees unlisted taxpayers without it) so D17 is exercised as before.
+  await db.update(firmUsers).set({ capabilities: { tax_estimator_view_taxpayers: true } })
+    .where(inArray(firmUsers.userId, ['all', 'partial', 'none', 'creator', 'ro', 'peer', 'fb'].map((k) => uid[k]!)));
 
   const app = express();
   app.use(express.json());
@@ -361,12 +375,12 @@ describe('D17 firm switch', () => {
 });
 
 describe('D17 per-taxpayer staff allow-list', () => {
-  it('candidates: firm admins only; active firm staff / readonly holding tax_estimator', async () => {
+  it('candidates: firm admins only; active firm members (Q54: firm admins too) holding tax_estimator', async () => {
     const r = await call('GET', `${TE}/taxpayers/${tp.rivera}/staff-candidates`, 'admin');
     expect(r.status).toBe(200);
     const ids = (r.json.data as Array<{ userId: string }>).map((c) => c.userId);
-    for (const key of ['all', 'partial', 'none', 'creator', 'ro', 'peer']) expect(ids, key).toContain(uid[key]);
-    for (const key of ['admin', 'super', 'fb']) expect(ids, key).not.toContain(uid[key]);
+    for (const key of ['admin', 'all', 'partial', 'none', 'creator', 'ro', 'peer']) expect(ids, key).toContain(uid[key]);
+    for (const key of ['super', 'fb']) expect(ids, key).not.toContain(uid[key]); // super: no firm membership
     expect(r.json.total).toBe(ids.length);
     const staff = await call('GET', `${TE}/taxpayers/${tp.rivera}/staff-candidates`, 'all');
     expect(staff.status).toBe(403);
@@ -383,19 +397,25 @@ describe('D17 per-taxpayer staff allow-list', () => {
     expect(await db.select().from(taxEstTaxpayerStaff).where(eq(taxEstTaxpayerStaff.taxpayerId, tp.rivera))).toHaveLength(0);
   });
 
-  it('only eligible users can be added (422 TE_STAFF_NOT_ELIGIBLE)', async () => {
-    for (const key of ['admin', 'fb']) {
-      const r = await setStaff([uid[key]!]);
-      expect(r.status, key).toBe(422);
-      expect(r.json.error.code, key).toBe('TE_STAFF_NOT_ELIGIBLE');
-    }
+  it('only eligible users can be added (422 TE_STAFF_NOT_ELIGIBLE); Q54: a firm admin is eligible', async () => {
+    const r = await setStaff([uid['fb']!]);
+    expect(r.status).toBe(422);
+    expect(r.json.error.code).toBe('TE_STAFF_NOT_ELIGIBLE');
     expect((await setStaff([randomUUID()])).status).toBe(422);
+    expect((await setStaff([uid['admin']!], tp.ghost, 'admin', true)).status).toBe(200);
   });
 
-  it('a list: members see it, non-members get 404, firm admins and super admins always see it; changes audited', async () => {
+  it('Q54: a non-empty list without a firm admin / super admin is refused (422 TE_STAFF_LIST_NO_MANAGER)', async () => {
+    const r = await setStaff([uid['all']!], tp.rivera, 'admin', true);
+    expect(r.status).toBe(422);
+    expect(r.json.error.code).toBe('TE_STAFF_LIST_NO_MANAGER');
+    expect(await db.select().from(taxEstTaxpayerStaff).where(eq(taxEstTaxpayerStaff.taxpayerId, tp.rivera))).toHaveLength(0);
+  });
+
+  it('a list: members see it, non-members get 404, super admins always see it (Q54: the listed admin too); changes audited', async () => {
     const put = await setStaff([uid['all']!]);
     expect(put.status).toBe(200);
-    expect(put.json.data.members.map((m: { userId: string }) => m.userId)).toEqual([uid['all']]);
+    expect(put.json.data.members.map((m: { userId: string }) => m.userId).sort()).toEqual([uid['admin'], uid['all']].sort());
     expect(put.json.data.canEdit).toBe(true);
 
     const mine = await listNames('all');
@@ -415,13 +435,15 @@ describe('D17 per-taxpayer staff allow-list', () => {
     const view = await call('GET', `${TE}/taxpayers/${tp.rivera}/staff`, 'all');
     expect(view.status).toBe(200);
     expect(view.json.data.canEdit).toBe(false);
-    expect(view.json.data.members[0].firmRole).toBe('firm_staff');
+    expect(view.json.data.members.find((m: { userId: string }) => m.userId === uid['all']).firmRole).toBe('firm_staff');
+    expect(view.json.data.members.find((m: { userId: string }) => m.userId === uid['admin']).firmRole).toBe('firm_admin');
 
     const rows = await db.select().from(auditLog).where(and(eq(auditLog.entityType, 'tax_est_taxpayer_staff'), eq(auditLog.entityId, tp.rivera)));
     expect(rows).toHaveLength(1);
     expect(rows[0]!.userId).toBe(uid['admin']);
     expect(rows[0]!.beforeData).toMatchObject({ userIds: [] });
-    expect(rows[0]!.afterData).toMatchObject({ userIds: [uid['all']], added: [uid['all']], removed: [], firmId: FIRM_A });
+    const both = [uid['admin']!, uid['all']!].sort();
+    expect(rows[0]!.afterData).toMatchObject({ userIds: both, added: both, removed: [], firmId: FIRM_A });
     // An unchanged PUT writes no audit row.
     expect((await setStaff([uid['all']!])).status).toBe(200);
     expect(await db.select().from(auditLog).where(and(eq(auditLog.entityType, 'tax_est_taxpayer_staff'), eq(auditLog.entityId, tp.rivera)))).toHaveLength(1);
@@ -444,7 +466,7 @@ describe('D17 per-taxpayer staff allow-list', () => {
     expect(cleared.json.data.members).toEqual([]);
     expect((await call('GET', `${TE}/taxpayers/${tp.rivera}`, 'partial')).status).toBe(200);
     const rows = await db.select().from(auditLog).where(and(eq(auditLog.entityType, 'tax_est_taxpayer_staff'), eq(auditLog.entityId, tp.rivera)));
-    expect(rows.some((r) => JSON.stringify((r.afterData as { removed: string[] }).removed) === JSON.stringify([uid['all']]))).toBe(true);
+    expect(rows.some((r) => JSON.stringify((r.afterData as { removed: string[] }).removed) === JSON.stringify([uid['admin']!, uid['all']!].sort()))).toBe(true);
   });
 });
 

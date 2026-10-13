@@ -2,15 +2,18 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-// D17 (Kurt, 2026-10-12) — per-taxpayer staff allow-list ("Who can see this taxpayer").
+// D17 / D18 (Kurt, 2026-10-12) as amended by Q54 (Kurt, 2026-10-13) — per-taxpayer staff
+// allow-list ("Who can see this taxpayer").
 //
-//   * EMPTY list  = every staff member the firm's linked-tenant rule allows;
-//   * NON-EMPTY   = only the listed users (plus firm admins / super admins), still subject
-//                   to the linked-tenant rule.
+//   * EMPTY list  = the firm rule: firm admins, plus staff holding the firm capability
+//                   "Tax Estimator: view taxpayers" whom the linked-tenant rule allows;
+//   * NON-EMPTY   = ONLY the listed users plus super admins — firm admins included (Q54).
 // The rule itself is enforced in ONE place, firm-scope.service `visibleTaxpayerFilter`;
-// this service only reads and replaces the rows. Only firm admins and super admins (the
-// bypass users, `scope.firmRole === 'firm_admin'`) may change the list (403
-// TE_FIRM_ADMIN_REQUIRED); everyone who can see the taxpayer may read it. Every change is
+// this service only reads and replaces the rows. Who may change the list: super admins, and
+// firm admins who can SEE the taxpayer (on its list, or no list yet) — everyone else 403
+// TE_FIRM_ADMIN_REQUIRED, a firm admin who cannot see it the uniform 404. A non-empty list must
+// keep a manager: at least one active firm admin of the firm or super admin (422
+// TE_STAFF_LIST_NO_MANAGER), so a list can never orphan the taxpayer. Every change is
 // audited, metadata only (user ids).
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { can, type TaxpayerStaffDTO, type TaxpayerStaffCandidateDTO, type TaxpayerStaffCandidateListDTO } from '@kis-books/shared';
@@ -23,7 +26,8 @@ import type { FirmScope } from './firm-scope.service.js';
 import { auditYears, loadTaxpayerForFirm, type Actor } from './year-access.js';
 
 type MemberRole = TaxpayerStaffDTO['members'][number]['firmRole'];
-const ELIGIBLE_ROLES = ['firm_staff', 'firm_readonly'] as const;
+// Q54: firm admins may (and, for a manager, must) be listed too.
+const ELIGIBLE_ROLES = ['firm_admin', 'firm_staff', 'firm_readonly'] as const;
 
 function requireFirmAdmin(scope: FirmScope): void {
   if (scope.firmRole !== 'firm_admin') {
@@ -55,10 +59,11 @@ export async function getTaxpayerStaff(scope: FirmScope, taxpayerId: string, can
 }
 
 /**
- * The picker (D17 item 5): ACTIVE firm members with role firm_staff or firm_readonly, active
- * staff users, who hold the `tax_estimator` resource in `tenantId` (the admin's ACTIVE tenant —
- * the practice tenant where the firm runs the module; a member without access to it is not
- * offered). Firm admins are never offered: they always see every taxpayer.
+ * The picker (D17 item 5, Q54): ACTIVE firm members of any firm role (firm_admin, firm_staff,
+ * firm_readonly), active staff users, who hold the `tax_estimator` resource in `tenantId` (the
+ * admin's ACTIVE tenant — the practice tenant where the firm runs the module; a member without
+ * access to it is not offered). Q54: firm admins ARE offered — a listed taxpayer is hidden from
+ * every firm admin the list does not name.
  */
 export async function listStaffCandidates(scope: FirmScope, tenantId: string): Promise<TaxpayerStaffCandidateDTO[]> {
   const rows = await db.select({
@@ -116,6 +121,12 @@ export async function replaceTaxpayerStaff(
         throw AppError.unprocessableEntity('Only active firm staff with Tax Estimator access can be added', 'TE_STAFF_NOT_ELIGIBLE', { userIds: bad });
       }
     }
+    // Q54: a non-empty list must keep someone able to manage it.
+    if (wanted.length > 0 && !(await includesManager(scope.firmId, wanted))) {
+      throw AppError.unprocessableEntity(
+        'The list must include at least one firm admin (or super admin), or nobody could manage it',
+        'TE_STAFF_LIST_NO_MANAGER');
+    }
     if (added.length === 0 && removed.length === 0) return;
     if (removed.length > 0) {
       await tx.delete(taxEstTaxpayerStaff).where(and(
@@ -131,5 +142,24 @@ export async function replaceTaxpayerStaff(
       { userIds: [...current].sort() },
       { userIds: [...wanted].sort(), added: [...added].sort(), removed: [...removed].sort() }, tx);
   });
+  // Q54: a firm admin who saved a list without themselves no longer sees the taxpayer.
+  if (!scope.viewer.bypass && wanted.length > 0 && !wanted.includes(actor.userId)) {
+    return {
+      taxpayerId, members: [], total: 0, restrictToLinkedTenants: scope.viewer.restrictToLinkedTenants,
+      canEdit: false, callerLostAccess: true,
+    };
+  }
   return getTaxpayerStaff(scope, taxpayerId, canWrite);
+}
+
+/** Q54: does `userIds` name an ACTIVE firm admin of the (active) firm, or an active super admin? */
+async function includesManager(firmId: string, userIds: readonly string[]): Promise<boolean> {
+  const rows = await db.select({ id: users.id }).from(users)
+    .leftJoin(firmUsers, and(eq(firmUsers.userId, users.id), eq(firmUsers.firmId, firmId), eq(firmUsers.isActive, true), eq(firmUsers.firmRole, 'firm_admin')))
+    .where(and(
+      inArray(users.id, [...userIds]), sql`coalesce(${users.isActive}, true)`,
+      sql`(${users.isSuperAdmin} = true OR (${firmUsers.id} IS NOT NULL AND EXISTS (SELECT 1 FROM firms f WHERE f.id = ${firmId}::uuid AND f.is_active = true)))`,
+    ))
+    .limit(1);
+  return rows.length > 0;
 }

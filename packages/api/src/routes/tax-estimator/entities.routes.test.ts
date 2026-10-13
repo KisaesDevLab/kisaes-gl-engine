@@ -2,6 +2,10 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+// Q54 (Kurt, 2026-10-13): firm_staff / firm_readonly members below hold "Tax Estimator: view
+// taxpayers" (capabilities) so these pre-Q54 expectations hold as written; the Q54 matrix itself
+// (capability off, unlisted firm admin, ...) is in tax-estimator/taxpayer-visibility-q54.routes.test.ts.
+
 // Entities routes (Phase 4) behind the real Tax Estimator guard chain.
 // T1 practice tenant (flag ON), T2 managed client the staff user can reach,
 // T3 managed client the user can NOT reach, T4 another firm's client the user
@@ -94,7 +98,7 @@ beforeAll(async () => {
   }
   const staff = await mkUser(T.t1, 'accountant');
   staffToken = staff.token;
-  await db.insert(firmUsers).values({ firmId: fa!.id, userId: staff.id, firmRole: 'firm_staff' });
+  await db.insert(firmUsers).values({ firmId: fa!.id, userId: staff.id, firmRole: 'firm_staff', capabilities: { tax_estimator_view_taxpayers: true } });
   await db.insert(userTenantAccess).values([
     { userId: staff.id, tenantId: T.t1, role: 'accountant' },
     { userId: staff.id, tenantId: T.t2, role: 'accountant' },
@@ -102,7 +106,7 @@ beforeAll(async () => {
   ]);
   const ro = await mkUser(T.t1, 'accountant');
   readonlyToken = ro.token;
-  await db.insert(firmUsers).values({ firmId: fa!.id, userId: ro.id, firmRole: 'firm_readonly' });
+  await db.insert(firmUsers).values({ firmId: fa!.id, userId: ro.id, firmRole: 'firm_readonly', capabilities: { tax_estimator_view_taxpayers: true } });
   await db.insert(userTenantAccess).values([
     { userId: ro.id, tenantId: T.t1, role: 'accountant' }, { userId: ro.id, tenantId: T.t2, role: 'accountant' },
   ]);

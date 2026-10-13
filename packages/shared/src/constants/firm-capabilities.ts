@@ -8,22 +8,25 @@
 // capabilities. They are stored firm-wide on the membership row and
 // resolved by `resolveFirmCapabilities` (utils/firm-capabilities.ts).
 //
-// Two scopes:
+// Three scopes:
 //   'tenant' — elevates the member to owner parity for one settings area
 //              on a tenant the firm manages AND the member already has
 //              active user_tenant_access on. Never grants access by itself.
 //   'admin'  — unlocks a delegated slice of the super-admin area, scoped
 //              to the tenants of the firms where the member holds it.
+//   'firm_data' — lets the member SEE a class of firm data they otherwise
+//              would not (view only; never owner or admin power). The one
+//              scope a firm_readonly member may hold (Q54).
 //
 // Keep in sync with:
 //   - requireTenantCapability(...) / requireAdminCapability(...) guards
 //     (packages/api/src/middleware/firm-capabilities.ts)
 //   - the delegation manifest test on admin.routes.ts
 //   - FirmMemberCapabilitiesDrawer (packages/web)
-export const FIRM_CAPABILITY_GROUPS = ['Client settings', 'Administration'] as const;
+export const FIRM_CAPABILITY_GROUPS = ['Client settings', 'Administration', 'Tax Estimator'] as const;
 export type FirmCapabilityGroup = typeof FIRM_CAPABILITY_GROUPS[number];
 
-export type FirmCapabilityScope = 'tenant' | 'admin';
+export type FirmCapabilityScope = 'tenant' | 'admin' | 'firm_data';
 
 export interface FirmCapabilityDef {
   key: string;
@@ -84,6 +87,15 @@ export const FIRM_CAPABILITIES = [
     description:
       'Admin → Users for users of the firm\'s clients only: create, unlock, send password reset, activate/deactivate, change role, and manage tenant and company access. Never impersonation, typed password resets, or super-admin changes.',
   },
+  // ── Tax Estimator (firm data visibility; Q54) ──
+  {
+    key: 'tax_estimator_view_taxpayers',
+    label: 'Tax Estimator: view taxpayers',
+    group: 'Tax Estimator',
+    scope: 'firm_data',
+    description:
+      'See Tax Estimator taxpayers that have no "Who can see this taxpayer" list, limited to taxpayers linked to clients this member can access (when the firm restricts taxpayers to linked clients). Without it the member sees only taxpayers whose list names them and unlinked taxpayers they created. Client access alone no longer reveals a taxpayer. Firm admins see unlisted taxpayers without it; a listed taxpayer is visible only to the people on its list and super admins.',
+  },
 ] as const satisfies readonly FirmCapabilityDef[];
 
 export type FirmCapabilityKey = typeof FIRM_CAPABILITIES[number]['key'];
@@ -96,6 +108,11 @@ export const TENANT_CAPABILITY_KEYS: readonly FirmCapabilityKey[] = FIRM_CAPABIL
 
 export const ADMIN_CAPABILITY_KEYS: readonly FirmCapabilityKey[] = FIRM_CAPABILITIES
   .filter((c) => c.scope === 'admin')
+  .map((c) => c.key);
+
+// Q54: view-only firm-data capabilities — the only keys a firm_readonly member may hold.
+export const FIRM_DATA_CAPABILITY_KEYS: readonly FirmCapabilityKey[] = FIRM_CAPABILITIES
+  .filter((c) => c.scope === 'firm_data')
   .map((c) => c.key);
 
 export function isFirmCapabilityKey(key: string): key is FirmCapabilityKey {

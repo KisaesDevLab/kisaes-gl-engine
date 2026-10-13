@@ -132,7 +132,7 @@ describe('Q50 (1) — owner candidates: owners linked to THIS business only', ()
     try {
       const staff: FirmScope = {
         firmId: FIRM, firmRole: 'firm_staff', allowedTenantIds: [tenant],
-        viewer: { userId: STAFF_USER, bypass: false, restrictToLinkedTenants: true },
+        viewer: { userId: STAFF_USER, bypass: false, firmAdmin: false, canViewUnlisted: true, restrictToLinkedTenants: true }, // Q54: capability held
       };
       const r = await listOwnerCandidates(staff, tenant, S, 2026);
       expect(r.candidates.map((c) => c.personId)).toEqual([kurt]);
@@ -247,7 +247,7 @@ describe('Q50 (3)(4) — % split: officer wages + >2% shareholder health across 
     try {
       const staff: FirmScope = {
         firmId: FIRM, firmRole: 'firm_readonly', allowedTenantIds: [tenant],
-        viewer: { userId: STAFF_USER, bypass: false, restrictToLinkedTenants: true },
+        viewer: { userId: STAFF_USER, bypass: false, firmAdmin: false, canViewUnlisted: true, restrictToLinkedTenants: true }, // Q54: capability held
       };
       const r = await pl('2026-12', staff);
       expect(r.trace.some((t) => t.label === '6800 Salaries - Officers 101,640.24 × 40% → an owner')).toBe(true);

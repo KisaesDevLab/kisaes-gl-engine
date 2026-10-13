@@ -29,6 +29,7 @@ import {
   ADMIN_CAPABILITY_KEYS,
   emptyFirmCapabilities,
   isCapabilityEligibleRole,
+  isCapabilityKeyEligibleForRole,
   normalizeFirmCapabilityMap,
   resolveFirmCapabilities,
   unionFirmCapabilities,
@@ -201,8 +202,10 @@ export interface SetForMemberResult {
 }
 
 // Store an explicit set (customized) or NULL (back to role defaults).
-// firm_readonly members are ineligible: the resolver would return none
-// anyway, but refusing the write keeps the UI honest and the row clean.
+// firm_readonly members may hold ONLY the view-only 'firm_data' keys (Q54:
+// "Tax Estimator: view taxpayers"); granting them any owner / admin key is
+// refused (400 FIRM_ROLE_INELIGIBLE) — the resolver would ignore it anyway,
+// but refusing keeps the UI honest and the row clean.
 export async function setForMember(
   firmId: string,
   firmUserId: string,
@@ -210,15 +213,21 @@ export async function setForMember(
   actingUserId: string,
 ): Promise<SetForMemberResult> {
   const row = await loadMember(firmId, firmUserId);
-  if (!isCapabilityEligibleRole(row.firmRole)) {
-    throw AppError.badRequest(
-      'Read-only firm members cannot hold access rights. Change their firm role to firm_staff first.',
-      'FIRM_ROLE_INELIGIBLE',
-    );
-  }
-  const next: FirmCapabilityMap | null = input.capabilities === null
+  let next: FirmCapabilityMap | null = input.capabilities === null
     ? null
     : normalizeFirmCapabilityMap(input.capabilities);
+  if (!isCapabilityEligibleRole(row.firmRole)) {
+    const refused = next ? Object.entries(next).filter(([k, v]) => v === true && !isCapabilityKeyEligibleForRole(k, row.firmRole)) : [];
+    if (refused.length > 0 || (row.firmRole !== 'firm_readonly')) {
+      throw AppError.badRequest(
+        'Read-only firm members can hold only view rights (Tax Estimator: view taxpayers). Change their firm role to firm_staff first.',
+        'FIRM_ROLE_INELIGIBLE',
+      );
+    }
+    if (next) {
+      next = Object.fromEntries(Object.entries(next).filter(([k]) => isCapabilityKeyEligibleForRole(k, row.firmRole))) as FirmCapabilityMap;
+    }
+  }
   const [updated] = await db
     .update(firmUsers)
     .set({

@@ -16,6 +16,12 @@
 //   owner   tenant owner of T.schc, not a firm member, e-mail = Rivera's portal contact
 //   owner2  tenant owner of T.schc with no matching contact
 //   client  client user (user_type client, role bookkeeper) whose e-mail ALSO matches the contact
+//
+// Q54 (Kurt, 2026-10-13): (1) firm_staff members need the firm capability "Tax Estimator: view
+// taxpayers" for the D17 rule — staff / none / peer / fb are granted it below so the Q52
+// expectations hold as written; (2) company-dashboard cards appear only for taxpayers switched
+// to "Show on linked company dashboards" (default OFF) — both taxpayers are switched ON in
+// beforeAll, and the 'Q54 company-dashboard switch' block tests the OFF default.
 
 import { randomUUID } from 'node:crypto';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -135,6 +141,8 @@ beforeAll(async () => {
   await mkUser('owner', fx.T.schc, { role: 'owner', access: [fx.T.schc], email: CONTACT_EMAIL.toUpperCase() });
   await mkUser('owner2', fx.T.schc, { role: 'owner', access: [fx.T.schc] });
   await mkUser('client', fx.T.schc, { role: 'bookkeeper', userType: 'client', access: [fx.T.schc], email: `x${CONTACT_EMAIL}` });
+  await db.update(firmUsers).set({ capabilities: { tax_estimator_view_taxpayers: true } })
+    .where(inArray(firmUsers.userId, ['staff', 'none', 'peer', 'fb'].map((k) => uid[k]!)));
 
   // A second firm-A taxpayer linked to the same company, not mapped to the owner's contact.
   const o = await createTaxpayer(fx.scopeA, fx.actor, { displayName: 'Other Owner', filingStatus: 'single', residentState: 'MO' });
@@ -142,6 +150,8 @@ beforeAll(async () => {
   await upsertPerson(fx.scopeA, fx.actor, o.id, 'primary', { firstName: 'Other', lastName: 'Owner', dateOfBirth: '1970-01-01', isBlind: false });
   await upsertLink(fx.scopeA, fx.actor, o.id, { personRole: 'primary', taxYear: YEAR, tenantId: fx.T.schc, companyId: fx.C.schc, profitPct: 10, isOfficer: false, activityType: 'active', activeParticipation: false });
   await upsertYear(fx.scopeA, fx.actor, o.id, YEAR, {});
+  // Q54: both taxpayers on the company dashboards (the switch defaults OFF).
+  await db.update(taxEstTaxpayers).set({ showOnCompanyDashboard: true }).where(inArray(taxEstTaxpayers.id, [fx.taxpayerId, o.id]));
 
   // The owner's portal contact: Rivera mapped, tax estimates access on the Sch C company.
   const [c] = await db.insert(portalContacts).values({ tenantId: fx.T.schc, email: CONTACT_EMAIL, status: 'active' }).returning();
@@ -477,5 +487,91 @@ describe('owner card × Q51 portal options', () => {
     } finally {
       await updateTaxpayer(fx.scopeA, fx.actor, fx.taxpayerId, { portalShows: null });
     }
+  });
+});
+
+// Q54 (Kurt, 2026-10-13): per-taxpayer switch "Show on linked company dashboards" (migration
+// 0215, default OFF). OFF hides the taxpayer's company cards for staff AND the owner; the
+// firm-wide cards are unaffected; editing it is a taxpayer write (audited, readonly 403,
+// hidden 404).
+describe('Q54 company-dashboard switch', () => {
+  const setShow = (key: string, id: string, on: boolean) => new Promise<Res>((resolve, reject) => {
+    const data = JSON.stringify({ showOnCompanyDashboard: on });
+    const r = http.request({
+      hostname: '127.0.0.1', port, path: `${TE}/taxpayers/${id}`, method: 'PATCH',
+      headers: { Authorization: `Bearer ${tokens[key]}`, 'Content-Type': 'application/json', 'Content-Length': String(Buffer.byteLength(data)) },
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => { let json: unknown = null; try { json = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { json = null; } resolve({ status: res.statusCode ?? 0, json }); });
+    });
+    r.on('error', reject); r.write(data); r.end();
+  });
+
+  it('a new taxpayer defaults OFF', async () => {
+    const t = await createTaxpayer(fx.scopeA, fx.actor, { displayName: 'Default Off', filingStatus: 'single' });
+    expect(t.showOnCompanyDashboard).toBe(false);
+    await db.delete(taxEstTaxpayers).where(eq(taxEstTaxpayers.id, t.id));
+  });
+
+  it('OFF hides the company cards for staff and owner (section gone when none qualifies); firm cards unaffected; ON restores', async () => {
+    await db.update(taxEstTaxpayers).set({ showOnCompanyDashboard: false }).where(eq(taxEstTaxpayers.id, fx.taxpayerId));
+    try {
+      const staff = await call('GET', DASH, 'staff');
+      expect(names(staff.json.data)).toEqual(['Other Owner']);
+      const owner = await call('GET', DASH, 'owner');
+      expect(owner.status).toBe(200);
+      expect(owner.json.data).toBeNull(); // the owner's only taxpayer is switched off → no section
+      const refresh = await call('POST', `${DASH}/${fx.taxpayerId}/refresh`, 'admin');
+      expect(refresh.status).toBe(404);
+      expect(refresh.json.error.code).toBe('TE_TAXPAYER_NOT_FOUND');
+      await db.update(taxEstTaxpayers).set({ showOnCompanyDashboard: false }).where(eq(taxEstTaxpayers.id, otherOwner));
+      const none = await call('GET', DASH, 'admin');
+      expect(none.json.data).toBeNull();
+      // Firm-wide Tax Estimator cards still count both taxpayers.
+      const firm = await call('GET', `${TE}/dashboard`, tokenIn('admin', P));
+      expect(firm.json.data.visibleTaxpayers).toBe(2);
+    } finally {
+      await db.update(taxEstTaxpayers).set({ showOnCompanyDashboard: true }).where(inArray(taxEstTaxpayers.id, [fx.taxpayerId, otherOwner]));
+    }
+    expect(names((await call('GET', DASH, 'staff')).json.data)).toEqual(['Carlos & Maria Rivera', 'Other Owner']);
+    expect((await call('GET', DASH, 'owner')).json.data.audience).toBe('owner');
+  });
+
+  it('ON still follows visibility: a staff list that does not name the viewer hides the card', async () => {
+    await db.insert(taxEstTaxpayerStaff).values([
+      { firmId: FIRM_A, taxpayerId: otherOwner, userId: uid['admin']!, createdBy: uid['admin']! },
+    ]);
+    try {
+      expect(names((await call('GET', DASH, 'staff')).json.data)).toEqual(['Carlos & Maria Rivera']);
+      expect(names((await call('GET', DASH, 'admin')).json.data)).toEqual(['Carlos & Maria Rivera', 'Other Owner']);
+    } finally {
+      await db.delete(taxEstTaxpayerStaff).where(eq(taxEstTaxpayerStaff.firmId, FIRM_A));
+    }
+  });
+
+  it('toggle: firm staff may (audited before/after); readonly 403; a hidden taxpayer 404', async () => {
+    const pt = tokenIn('staff', P);
+    const off = await setShow(pt, otherOwner, false);
+    expect(off.status, JSON.stringify(off.json)).toBe(200);
+    expect(off.json.data.showOnCompanyDashboard).toBe(false);
+    const rows = await db.select().from(auditLog).where(eq(auditLog.entityId, otherOwner));
+    const row = rows.find((r) => r.entityType === 'tax_est_taxpayer' && r.userId === uid['staff']);
+    expect(row).toBeDefined();
+    expect((row!.beforeData as { showOnCompanyDashboard: boolean }).showOnCompanyDashboard).toBe(true);
+    expect((row!.afterData as { showOnCompanyDashboard: boolean }).showOnCompanyDashboard).toBe(false);
+    expect((await setShow(pt, otherOwner, true)).status).toBe(200);
+
+    await mkUser('ro', P, { firm: FIRM_A, firmRole: 'firm_readonly', access: [P, fx.T.schc] });
+    await db.update(firmUsers).set({ capabilities: { tax_estimator_view_taxpayers: true } }).where(eq(firmUsers.userId, uid['ro']!));
+    const ro = await setShow('ro', otherOwner, false);
+    expect(ro.status).toBe(403);
+
+    // `none` reaches no linked tenant → Other Owner is hidden from it.
+    const hidden = await setShow('none', otherOwner, false);
+    expect(hidden.status).toBe(404);
+    expect(hidden.json.error.code).toBe('TE_TAXPAYER_NOT_FOUND');
+    const [t] = await db.select({ on: taxEstTaxpayers.showOnCompanyDashboard }).from(taxEstTaxpayers).where(eq(taxEstTaxpayers.id, otherOwner));
+    expect(t!.on).toBe(true);
   });
 });

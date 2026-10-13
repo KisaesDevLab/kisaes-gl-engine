@@ -19,29 +19,32 @@ books.
   limited to clients the firm actively manages AND the signed-in user can
   access. Has a filing status, resident state, persons, and a safe-harbor
   and portal-view override.
-- **Who sees which taxpayer**: firm administrators and super admins see
-  every taxpayer of the firm. With the firm setting "Staff see only
-  taxpayers linked to clients they can access" ON (the default, in the
-  firm estimator settings), other staff see a taxpayer only when they can
-  access at least one client company it is linked to; an unlinked taxpayer
-  only by the person who created it. Turning the setting OFF shows every
-  firm taxpayer to all staff with Tax Estimator access. A taxpayer page's
-  "Who can see this taxpayer" card lets a firm administrator limit it to
-  named staff (a lock icon shows in the list). A list REPLACES the firm
-  setting for that taxpayer: exactly the listed people (and firm
-  administrators) see it, whether or not they can open any of its linked
-  clients, and they see its COMPLETE estimate, including companies in
-  clients they cannot otherwise open (the estimate page says "Includes
-  companies outside your client access because you're on this taxpayer's
-  access list"; those links show "Via access list"). The list does not open
-  those clients' books, entity tax setup or treatments, and listed staff
-  cannot add, change or remove links into them. Anyone not on the list gets
-  "Taxpayer not found", even with access to a linked client. With an empty
-  list the firm setting decides, and figures from linked clients a person
-  cannot access stay hidden. Only firm
-  administrators can change the setting or the list; every change is in
-  the audit log. The client portal is not affected (portal contacts see the
-  taxpayers they are mapped to).
+- **Who sees which taxpayer**: super admins see every taxpayer of the firm.
+  A taxpayer page's "Who can see this taxpayer" card can limit a taxpayer
+  to named people (a lock icon shows in the list). With a list, ONLY the
+  people listed and super admins see it - firm administrators included: a
+  firm administrator who is not on the list gets "Taxpayer not found"
+  everywhere (list, estimate, PDFs, Report Pack, dashboards). Listed people
+  see its COMPLETE estimate, including companies in clients they cannot
+  otherwise open (the estimate page says "Includes companies outside your
+  client access because you're on this taxpayer's access list"; those links
+  show "Via access list"); the list does not open those clients' books,
+  entity tax setup or treatments, and listed staff cannot add, change or
+  remove links into them. Without a list: firm administrators see the
+  taxpayer; other staff (including read-only firm members) see it only if a
+  firm administrator granted them "Tax Estimator: view taxpayers" (Firm ->
+  Staff -> Access rights; OFF by default) AND, with the firm setting "Staff
+  see only taxpayers linked to clients they can access" ON (the default),
+  they can access at least one client company it is linked to. Access to a
+  client company alone never shows its taxpayers. An unlinked taxpayer is
+  also visible to the person who created it. Staff who see nothing get "Ask
+  a firm admin for Tax Estimator access". Who can change a list: super
+  admins and firm administrators who can see the taxpayer. A list must keep
+  at least one firm administrator (or super admin) on it; removing yourself
+  asks first because you lose access. Figures from linked clients a person
+  cannot access stay hidden. Every change of the setting, the list and the
+  access right is in the audit log. The client portal is not affected
+  (portal contacts see the taxpayers they are mapped to).
 - **Persons**: the people on the return; one primary; months eligible for
   self-employed health insurance.
 - **Dependents** (taxpayer page, Dependents card): name, date of birth,
@@ -284,7 +287,10 @@ offered. "View as Client" shows exactly what the previewed contact sees.
 ## Dashboard cards
 
 Company dashboard (TAX_ESTIMATOR_V1 on for the client's own tenant): for
-each taxpayer linked to the active company, "Next estimated payment" (next
+each taxpayer linked to the active company whose "Show on linked company
+dashboards" switch is ON (taxpayer page; OFF by default for every taxpayer,
+so no cards show until someone turns it on; staff who can edit the
+taxpayer change it, and it is audited), "Next estimated payment" (next
 federal and state voucher: date, amount, paid or unpaid), "Projected tax
 for the year" (federal + state total, change since the last finalized
 estimate, books-through month) and "Paid vs required to date" (shortfall;
@@ -297,7 +303,8 @@ mode: Base's latest finalized snapshot). The owner's cards follow that
 contact's portal options: with "Quarterly estimates and vouchers" off only
 the projected tax shows (no next payment, no paid vs required). Several
 active contacts with the owner's e-mail: the most restrictive options apply.
-Other users see nothing.
+Other users see nothing. With the switch OFF the taxpayer's cards appear for
+nobody (staff or owner); the Tax Estimator home cards still include it.
 Tax Estimator home (above the taxpayer list): "Vouchers due in the next 30
 days" and "Behind on payments" across every visible taxpayer, each row
 opening the taxpayer, with a per-row refresh. Loading a dashboard never

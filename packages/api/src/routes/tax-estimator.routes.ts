@@ -18,6 +18,7 @@ import { registerRouter } from './tax-estimator/register.routes.js';
 import { dashboardRouter } from './tax-estimator/dashboard.routes.js';
 import { taxParameterYearParamsSchema, can } from '@kis-books/shared';
 import * as taxParametersService from '../services/tax-estimator/tax-parameters.service.js';
+import { canViewUnlistedTaxpayers } from '../services/tax-estimator/firm-scope.service.js';
 
 // Tax Estimator staff router (features/tax-estimator/MODULE.md).
 //
@@ -70,7 +71,12 @@ taxEstimatorRouter.get('/scope', async (req, res) => {
   const firmWriter = scope.firmRole === 'firm_admin' || scope.firmRole === 'firm_staff';
   const canWrite = firmWriter && can(await resolvePermissionsForRequest(req), 'tax_estimator', 'update');
   res.json({
-    data: { firmId: scope.firmId, firmRole: scope.firmRole, managedTenantCount: scope.allowedTenantIds.length, canWrite },
+    data: {
+      firmId: scope.firmId, firmRole: scope.firmRole, managedTenantCount: scope.allowedTenantIds.length, canWrite,
+      // Q54: false = a firm_staff / firm_readonly member without "Tax Estimator: view taxpayers"
+      // (they see only taxpayers whose list names them and unlinked ones they created).
+      canViewUnlistedTaxpayers: canViewUnlistedTaxpayers(scope.viewer),
+    },
   });
 });
 

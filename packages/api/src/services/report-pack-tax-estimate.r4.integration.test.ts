@@ -2,6 +2,10 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+// Q54 (Kurt, 2026-10-13): firm_staff / firm_readonly members below hold "Tax Estimator: view
+// taxpayers" (capabilities) so these pre-Q54 expectations hold as written; the Q54 matrix itself
+// (capability off, unlisted firm admin, ...) is in routes/tax-estimator/taxpayer-visibility-q54.routes.test.ts.
+
 // Tax Estimator R4 review regressions (features/tax-estimator/docs/reviews/R4-portal-pack.md),
 // Report Pack generation and the worker path:
 //   R4-01  a run carrying the Tax Estimate section is stored ENCRYPTED with a short TTL and
@@ -60,7 +64,7 @@ async function mkFirmUser(key: string, role: string) {
   const id = randomUUID();
   ids[key] = id;
   await db.insert(users).values({ id, tenantId: fx.T.schc, email: `te-r4s-${key}-${id.slice(0, 8)}@example.com`, passwordHash: 'x', displayName: key, role });
-  await db.insert(firmUsers).values({ firmId: FIRM_A, userId: id, firmRole: 'firm_staff' });
+  await db.insert(firmUsers).values({ firmId: FIRM_A, userId: id, firmRole: 'firm_staff', capabilities: { tax_estimator_view_taxpayers: true } });
   await db.insert(userTenantAccess).values([fx.T.schc, fx.T.scorp, fx.T.lp].map((tenantId) => ({ userId: id, tenantId, role })));
 }
 

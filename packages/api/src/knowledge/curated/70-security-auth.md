@@ -80,7 +80,7 @@ more firms (**Admin → Firms →**), or change which firm manages a company (te
 ### Firm member access rights (capabilities)
 A firm admin can give any firm_admin or firm_staff member extra rights from **Firm → Staff →
 Access rights** (super admins from **Admin → Firms → Members**, the only way for Default
-Practice). Two groups: **Client settings** — on client companies the member already has access
+Practice). Three groups: **Client settings** — on client companies the member already has access
 to, act as the owner for *Team management* (invite/edit/unlock/deactivate users, permission
 templates, owner role changes), *Integrations & payments* (Stripe, AI processing consent,
 "Invite my accountant"), *Check signatures*, *Screen share admin*. **Administration** — a
@@ -89,8 +89,11 @@ Tenants: feature flags, enable/disable, managing firm, CoA template, retained ea
 system accounts, create client) and *User support* (Admin → Users: create, unlock, send
 password reset, activate/deactivate, role, tenant/company access). Never delegable: deleting
 data, impersonation, typed password resets, system configuration (SMTP/AI/MCP/2FA/backup/
-Plaid), installation security, super-admin changes. Defaults: new firm_admins get every
-right, firm_staff none, firm_readonly cannot hold rights; existing firm_admins at upgrade
+Plaid), installation security, super-admin changes. **Tax Estimator** — *Tax Estimator: view
+taxpayers* (Q54): see taxpayers with no "Who can see this taxpayer" list (plus the firm's
+linked-clients rule); without it staff see only taxpayers whose list names them and unlinked
+ones they created — client access alone never shows a taxpayer; OFF by default. Defaults: new
+firm_admins get every right, firm_staff none, firm_readonly only the Tax Estimator view right; existing firm_admins at upgrade
 started with none. A member shows "Using role defaults" or "Customized"; "Reset to role
 defaults" restores the role set, and changing a member's firm role resets their rights.
 Delegated admin pages use the same session expiry as super admins (re-sign-in after the

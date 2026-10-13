@@ -95,7 +95,9 @@ async function mkUser(key: string, tenantId: string, opts: { role?: string; firm
     displayName: key, role, userType: 'staff',
   }).returning();
   userIds[key] = u!.id;
-  if (opts.firm) await db.insert(firmUsers).values({ firmId: opts.firm, userId: u!.id, firmRole: 'firm_staff' });
+  // Q54: firm staff see unlisted taxpayers only with "Tax Estimator: view taxpayers"; granted here so
+  // the firm-side expectations below (written before Q54) hold as stated.
+  if (opts.firm) await db.insert(firmUsers).values({ firmId: opts.firm, userId: u!.id, firmRole: 'firm_staff', capabilities: { tax_estimator_view_taxpayers: true } });
   for (const t of opts.access ?? []) await db.insert(userTenantAccess).values({ userId: u!.id, tenantId: t, role });
   tokens[key] = jwt.sign({ userId: u!.id, tenantId, role, isSuperAdmin: false }, process.env['JWT_SECRET']!, { expiresIn: '10m' });
 }

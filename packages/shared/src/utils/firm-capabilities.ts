@@ -5,6 +5,7 @@
 import type { FirmRole } from '../types/firms.js';
 import {
   FIRM_CAPABILITY_KEYS,
+  FIRM_DATA_CAPABILITY_KEYS,
   type FirmCapabilityMap,
   type EffectiveFirmCapabilities,
 } from '../constants/firm-capabilities.js';
@@ -23,11 +24,22 @@ export function emptyFirmCapabilities(): EffectiveFirmCapabilities {
   return fill(false);
 }
 
-// Which firm roles may hold capabilities at all. firm_readonly is
-// deliberately ineligible: it is the "observe only" role and must never
-// pick up owner-level or admin-level power through this matrix.
+// Which firm roles may hold owner / admin capabilities ('tenant' and
+// 'admin' scopes). firm_readonly is deliberately ineligible: it is the
+// "observe only" role and must never pick up owner-level or admin-level
+// power through this matrix.
 export function isCapabilityEligibleRole(role: FirmRole | string | null | undefined): boolean {
   return role === 'firm_admin' || role === 'firm_staff';
+}
+
+// Q54: may this role hold this particular key? 'firm_data' keys (view
+// only) are open to firm_readonly as well; every other key follows
+// isCapabilityEligibleRole.
+export function isCapabilityKeyEligibleForRole(key: string, role: FirmRole | string | null | undefined): boolean {
+  if ((FIRM_DATA_CAPABILITY_KEYS as readonly string[]).includes(key)) {
+    return role === 'firm_admin' || role === 'firm_staff' || role === 'firm_readonly';
+  }
+  return isCapabilityEligibleRole(role);
 }
 
 // Role defaults, used when the membership row has no stored set (NULL):
@@ -39,17 +51,17 @@ export function defaultFirmCapabilities(role: FirmRole | string | null | undefin
 }
 
 // Resolve the effective set for one membership row.
-//   ineligible role      → all false, regardless of what is stored
+//   ineligible role      → all false, regardless of what is stored —
+//                          except firm_readonly's stored 'firm_data' keys (Q54)
 //   stored == null       → role defaults
 //   stored is an object  → exactly the stored map; absent keys are false
 export function resolveFirmCapabilities(
   role: FirmRole | string | null | undefined,
   stored: FirmCapabilityMap | null | undefined,
 ): EffectiveFirmCapabilities {
-  if (!isCapabilityEligibleRole(role)) return emptyFirmCapabilities();
   if (stored == null) return defaultFirmCapabilities(role);
   const out = emptyFirmCapabilities();
-  for (const k of FIRM_CAPABILITY_KEYS) out[k] = stored[k] === true;
+  for (const k of FIRM_CAPABILITY_KEYS) out[k] = stored[k] === true && isCapabilityKeyEligibleForRole(k, role);
   return out;
 }
 

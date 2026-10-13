@@ -79,6 +79,8 @@ export const updateTaxpayerSchema = z.object({
   residentState: stateCode.nullable().optional(),
   safeHarborOverride: z.enum(SAFE_HARBOR_OVERRIDES).nullable().optional(),
   portalShows: z.enum(PORTAL_SHOWS).nullable().optional(),
+  /** Q54: "Show on linked company dashboards" (default false). */
+  showOnCompanyDashboard: z.boolean().optional(),
 });
 export type UpdateTaxpayerInput = z.infer<typeof updateTaxpayerSchema>;
 
