@@ -46,5 +46,17 @@
  *              months; `prior_year_dollar`: YTD + PY remaining) with guardrail
  *              fallbacks to the run rate (TE_PY_TREND_FALLBACK / _CAPPED); entity
  *              results carry `projection`. Run rate (the default) reproduces rc.5.
+ *   1.0.0-rc.9 Q53 state rate schedules (numbered above the Q49–Q52 integration
+ *              branch): state rows default to rate_mode 'brackets' — starting
+ *              point, capital gain treatment, federal tax deduction (AL / MO / OR),
+ *              standard deduction and exemptions, then the state's schedule
+ *              (alternative / separate capital-gain rates, MD surtax); nonresident
+ *              rows default to the state's method on the schedule (ratio or
+ *              prorated deductions); the resident other-state credit limit is
+ *              resident tax × sourced ÷ resident state AGI; WA capital gains
+ *              excise; the 25% / 28% worksheet buckets are fed from the year
+ *              inputs and `unrecaptured_1250` / `collectibles_gain` accounts. A row
+ *              in rate_mode 'effective' / nonresident_mode 'sourced_rate'
+ *              reproduces rc.6.
  */
-export const TAX_ENGINE_VERSION = '1.0.0-rc.6';
+export const TAX_ENGINE_VERSION = '1.0.0-rc.9';

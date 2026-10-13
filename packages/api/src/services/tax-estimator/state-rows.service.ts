@@ -3,7 +3,8 @@
 // Free for small businesses; see LICENSE for terms.
 
 // Tax Estimator state rows (Phase 5): exactly ONE resident row per scenario plus any
-// number of nonresident rows (flat effective-rate estimate). PUT replaces the set
+// number of nonresident rows. Q53: each row has a rate mode (state rate schedule | effective-rate
+// override) and nonresident rows a nonresident mode (state method | sourced × effective rate). PUT replaces the set
 // atomically. `sourced_manual = false` on a nonresident row means "derive sourced
 // income later" (engine phase: entity state x share); the value is left NULL here.
 //
@@ -11,7 +12,7 @@
 // never returned and never audited — the DTO carries only `priorYear*Present`). On PUT a
 // field that is OMITTED keeps the value saved for the same state; null clears it.
 import { asc, eq } from 'drizzle-orm';
-import type { StateRowDTO, StateRowInput, ReplaceStateRowsInput, StateResidency, StateBase } from '@kis-books/shared';
+import type { StateRowDTO, StateRowInput, ReplaceStateRowsInput, StateResidency, StateBase, StateRowRateMode, StateRowNonresidentMode } from '@kis-books/shared';
 import { db } from '../../db/index.js';
 import { encrypt, decrypt } from '../../utils/encryption.js';
 import { taxEstStateRows } from '../../db/schema/tax-estimator-years.js';
@@ -24,7 +25,8 @@ type Row = typeof taxEstStateRows.$inferSelect;
 function toDTO(r: Row): StateRowDTO {
   return {
     id: r.id, scenarioId: r.scenarioId, residency: r.residency as StateResidency, state: r.state.trim(),
-    effectiveRate: Number(r.effectiveRate), base: r.base as StateBase, customBase: r.customBase,
+    effectiveRate: Number(r.effectiveRate), base: r.base as StateBase,
+    rateMode: r.rateMode as StateRowRateMode, nonresidentMode: r.nonresidentMode as StateRowNonresidentMode, customBase: r.customBase,
     sourcedIncome: r.sourcedIncome, sourcedManual: r.sourcedManual, creditOverride: r.creditOverride, memo: r.memo,
     withholding: r.withholding, otherCredits: r.otherCredits, grossIncome: r.grossIncome,
     priorYearGrossIncome: r.priorYearGrossIncome, nonWithheldIncome: r.nonWithheldIncome, exemptions: r.exemptions,
@@ -99,6 +101,9 @@ export async function replaceStateRows(
       const saved = savedByState.get(r.state);
       return {
         scenarioId, residency: r.residency, state: r.state, effectiveRate: String(r.effectiveRate), base: r.base,
+        // Q53: omitted = keep the mode saved for this state; a new row takes the defaults.
+        rateMode: r.rateMode ?? saved?.rateMode ?? 'brackets',
+        nonresidentMode: r.nonresidentMode ?? saved?.nonresidentMode ?? 'ratio',
         customBase: r.base === 'custom' ? (r.customBase ?? null) : null,
         sourcedManual: nonresident && r.sourcedManual,
         sourcedIncome: nonresident && r.sourcedManual ? (r.sourcedIncome ?? null) : null,

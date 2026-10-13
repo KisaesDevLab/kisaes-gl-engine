@@ -162,8 +162,10 @@ books.
   Schedule 1-A (chips per type opening a per-person dialog for tips,
   overtime and car-loan interest; the senior deduction follows each
   person's date of birth; not allowed when married filing separately),
-  HSA, prior-year tax and AGI (stored encrypted), state rows
-  (one resident state), firm settings (safe-harbor default, disclaimer,
+  HSA, prior-year tax and AGI (stored encrypted), unrecaptured section 1250
+  gain and collectibles gain (25% / 28% worksheet amounts; accounts treated
+  "Long-term gain: unrecaptured §1250 / collectibles" add the books'
+  share), state rows (one resident state; see State tax below), firm settings (safe-harbor default, disclaimer,
   portal view), and the **People** card: per person, W-2 wages (box 1) and
   Social Security wages (box 3) from jobs OUTSIDE the linked businesses,
   retirement plan type (SEP, solo 401(k), SIMPLE, none) and employee
@@ -179,6 +181,32 @@ books.
   adjustment uses actuals through the last closed month, then its plan
   amount or (with no plan amount) the year-to-date run-rate; flagged
   non-recurring, it is never run-rated.
+
+## State tax (Q53)
+
+Each state row has "Tax computed by": **State rate schedule** (default) or
+**Effective-rate override**. On the schedule: the state's starting point
+(federal AGI / federal taxable income; own-income states start from
+federal AGI as an approximation), capital gains rule (MO 100% subtraction
+from 2025 (HB 594), AR 50% of net long-term gain (all of it over $10M),
+WI 30%, ND 40%, SC 44%, AZ 25%, VT up to $5,000, NM up to $2,500, HI 7.25%
+maximum rate, MT separate long-term schedule, MA 8.5% short-term, MD 2%
+surtax over federal AGI $350,000; in-state / long-held asset deductions
+are not applied), federal income tax deduction (MO by MO AGI tier with a
+$5,000 / $10,000 cap, AL full, OR capped and phased out), standard
+deduction, exemptions, then the brackets for the filing status (AR uses
+its income-dependent tables). No schedule on file = the row's rate with a
+warning. Nonresident rows default to the state's method: as-if-resident
+tax x sourced income / federal AGI (ratio states) or the schedule on the
+sourced income less prorated deductions (states taxing in-state income
+only); "Sourced income x rate" keeps the flat estimate. Resident credit for
+other-state tax = smaller of that tax and resident tax x sourced income /
+resident state AGI. WA: capital gains excise on residents' long-term gains
+over the standard deduction (7%, 9.9% over $1M), no estimates. Every
+schedule value is unverified until a super admin verifies it (Admin > Tax
+parameters > States shows the bracket tables; AI check works on them).
+Existing rows moved to the schedule on deploy (the entered rate stays as
+the override value); snapshots are unchanged.
 
 ## Reading an estimate
 
@@ -318,12 +346,12 @@ a person's retirement plan type is not recorded the limit is figured as a
 SEP (with a warning), and a solo 401(k)/SIMPLE without a recorded
 employee deferral assumes the maximum deferral; Social Security wages
 left blank default to box 1 (warning with the possible SE overstatement);
-unrecaptured section 1250 gain, collectibles gain and an AMT flag have no
-input in v1 (AMT is not modeled); charitable
+AMT is not modeled; charitable
 60 percent AGI and mortgage-interest limits not applied; MAGI = AGI for
-phase-outs; nonresident state tax is an effective-rate estimate (sourced
-income times a user-entered rate, not the ratio-of-return method many
-states use); state penalty add-ons that compound or run per month are
+phase-outs; state schedules simplify what they cannot express (NY / CT
+recapture, table midpoints, UT taxpayer credit, deduction phase-outs,
+in-state-asset capital gain deductions) and say so; local taxes are not
+included; state penalty add-ons that compound or run per month are
 noted, not computed; C corporation short years and Form 2220 annualized
 installments are not modeled; some parameters and state rules are still
 unverified; the earned income credit, the 3+ children additional child

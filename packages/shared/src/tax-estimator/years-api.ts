@@ -16,6 +16,10 @@ export type AdjustmentCadenceDTO = 'monthly' | 'quarterly' | 'annual' | 'one_tim
 export type AdjustmentKind = 'income' | 'deduction' | 'addback';
 export type StateResidency = 'resident' | 'nonresident';
 export type StateBase = 'federal_agi' | 'federal_taxable' | 'custom';
+/** Q53: state row rate mode — the state's rate schedule (default) or the effective-rate override. */
+export type StateRowRateMode = 'brackets' | 'effective';
+/** Q53: nonresident computation — the state's method on the schedule (default) or sourced income × effective rate. */
+export type StateRowNonresidentMode = 'ratio' | 'sourced_rate';
 
 export interface ItemizedDTO {
   saltPaid?: number; mortgageInterest?: number; charitableCash?: number; charitableNoncash?: number; other?: number;
@@ -63,6 +67,9 @@ export interface YearSettingsDTO {
   creditsRefundable: string;
   /** Q44: child and dependent care expenses paid in the year (Form 2441). */
   careExpenses?: string;
+  /** Q53 / Q39: unrecaptured §1250 gain and collectibles gain entered for the year (part of long-term gains). */
+  unrecaptured1250Gain?: string;
+  collectiblesGain?: string;
   hsaCoverage: HsaCoverageDTO;
   withholding: WithholdingDTO;
   // Phase 10b inputs — always present in API responses; optional for older fixtures.
@@ -194,6 +201,9 @@ export interface StateRowDTO {
   state: string;
   effectiveRate: number;
   base: StateBase;
+  /** Q53: absent in older fixtures = 'brackets' / 'ratio'. */
+  rateMode?: StateRowRateMode;
+  nonresidentMode?: StateRowNonresidentMode;
   customBase: string | null;
   sourcedIncome: string | null;
   sourcedManual: boolean;

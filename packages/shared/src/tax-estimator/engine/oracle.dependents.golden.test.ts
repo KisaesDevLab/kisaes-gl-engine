@@ -80,7 +80,8 @@ const rules = (state: string): StateRuleMap => {
   return Object.fromEntries(Object.entries(entries).map(([key, value]) => [key, { key, value, status: 'unverified' as const }]));
 };
 const stateRow = (state: string, rate: string): StateEngineRow => ({
-  rowId: state, state, residency: 'resident', effectiveRate: rate, base: 'federal_agi', customBase: null, sourcedIncome: null, sourcedManual: false, creditOverride: null, gate: { ...EMPTY_GATE_INPUTS },
+  // Q53: the dependents oracle computes the effective-rate formula — pinned to the effective-rate override.
+  rowId: state, state, residency: 'resident', effectiveRate: rate, base: 'federal_agi', customBase: null, sourcedIncome: null, sourcedManual: false, creditOverride: null, gate: { ...EMPTY_GATE_INPUTS }, rateMode: 'effective',
 });
 
 const SCENARIOS: Array<[string, Parameters<typeof input>[0]]> = [

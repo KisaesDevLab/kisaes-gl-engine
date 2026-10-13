@@ -437,6 +437,41 @@ describe('state rows', () => {
     // After every failed replace the original set is intact.
     expect((await request('GET', url, staffToken)).json.data).toHaveLength(2);
   });
+
+  it('Q53: rate mode and nonresident mode default to brackets / ratio, round-trip, are kept when omitted, and are validated', async () => {
+    const tp = await mkTaxpayer();
+    const base = await baseScenario(tp);
+    const url = `${API}/scenarios/${base}/state-rows`;
+    const first = await request('PUT', url, staffToken, { rows: [
+      { residency: 'resident', state: 'mo', effectiveRate: 0 },
+      { residency: 'nonresident', state: 'ks', effectiveRate: 0.05, sourcedManual: true, sourcedIncome: 40000 },
+    ] });
+    expect(first.status).toBe(200);
+    expect(first.json.data.map((r: { state: string; rateMode: string; nonresidentMode: string }) => [r.state, r.rateMode, r.nonresidentMode])).toEqual([['MO', 'brackets', 'ratio'], ['KS', 'brackets', 'ratio']]);
+    const set = await request('PUT', url, staffToken, { rows: [
+      { residency: 'resident', state: 'mo', effectiveRate: 0.04, rateMode: 'effective' },
+      { residency: 'nonresident', state: 'ks', effectiveRate: 0.05, sourcedManual: true, sourcedIncome: 40000, nonresidentMode: 'sourced_rate' },
+    ] });
+    expect(set.json.data.map((r: { rateMode: string; nonresidentMode: string }) => [r.rateMode, r.nonresidentMode])).toEqual([['effective', 'ratio'], ['brackets', 'sourced_rate']]);
+    // Omitted on PUT = keep the saved modes (an older client).
+    const kept = await request('PUT', url, staffToken, { rows: [
+      { residency: 'resident', state: 'mo', effectiveRate: 0.04 },
+      { residency: 'nonresident', state: 'ks', effectiveRate: 0.05, sourcedManual: true, sourcedIncome: 40000 },
+    ] });
+    expect(kept.json.data.map((r: { rateMode: string; nonresidentMode: string }) => [r.rateMode, r.nonresidentMode])).toEqual([['effective', 'ratio'], ['brackets', 'sourced_rate']]);
+    expect((await request('PUT', url, staffToken, { rows: [{ residency: 'resident', state: 'mo', effectiveRate: 0.04, rateMode: 'table' }] })).status).toBe(400);
+    expect((await request('PUT', url, staffToken, { rows: [{ residency: 'resident', state: 'mo', effectiveRate: 0.04, nonresidentMode: 'flat' }] })).status).toBe(400);
+  });
+
+  it('Q53 / Q39: the year inputs carry the unrecaptured §1250 and collectibles gains', async () => {
+    const tp = await mkTaxpayer();
+    const d = await setUpYear(tp, { unrecaptured1250Gain: 15000, collectiblesGain: 5000 });
+    expect(Number(d.year['unrecaptured1250Gain'])).toBe(15000);
+    expect(Number(d.year['collectiblesGain'])).toBe(5000);
+    const again = await setUpYear(tp, { careExpenses: 100 });
+    expect(Number(again.year['unrecaptured1250Gain'])).toBe(15000);
+    expect((await request('PUT', yr(tp), staffToken, { collectiblesGain: -1 })).status).toBe(400);
+  });
 });
 
 describe('adjustment types', () => {

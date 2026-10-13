@@ -184,8 +184,10 @@ const AZ_RULES = rules({ ...COMMON, required_threshold: 1000, threshold_comparis
 const GA_RULES = rules({ ...COMMON, 'safe_harbor.current_pct': 0.7, required_threshold: 0, threshold_comparison: null, 'installments.q4_file_and_pay_date': null, return_due_date: null, 'penalty.rate': 0.09, 'penalty.method': null, 'penalty.min_balance_due': null, nonresident_method: 'sourced_flat', requirement_gate: { kind: 'gross_over_exemptions_deductions', non_withheld_floor: 1000 } }, GATE_UNVERIFIED);
 const PA_RULES = rules({ ...COMMON, required_threshold: 430, threshold_comparison: null, 'installments.q4_file_and_pay_date': null, return_due_date: null, 'penalty.rate': 0.07, 'penalty.method': null, 'penalty.min_balance_due': null, nonresident_method: 'sourced_flat', requirement_gate: { kind: 'non_withheld_income', threshold: 11000 } }, GATE_UNVERIFIED);
 const juris = (state: string, r: StateRuleMap, verifyBadge = false): StateJurisdictionInput => ({ state, rules: r, usesFederalFallback: false, verifyBadge, estimatesRequired: true });
+// Q53: the multistate oracle computes the v1 effective-rate formulas, so its rows are pinned to the
+// effective-rate override (the rate-schedule path has its own oracle, state_brackets_fixture.py).
 const row = (partial: Partial<StateEngineRow> & Pick<StateEngineRow, 'state' | 'residency' | 'effectiveRate'>, gate: Partial<StateGateInputs> = {}): StateEngineRow => ({
-  rowId: `row-${partial.state}`, base: 'federal_agi', customBase: null, sourcedIncome: null, sourcedManual: false, creditOverride: null, ...partial, gate: { ...EMPTY_GATE_INPUTS, ...gate },
+  rowId: `row-${partial.state}`, base: 'federal_agi', customBase: null, sourcedIncome: null, sourcedManual: false, creditOverride: null, rateMode: 'effective', ...partial, gate: { ...EMPTY_GATE_INPUTS, ...gate },
 });
 
 function expectGate(got: { method: string; required: boolean | null; measured: string | null; threshold: string | null; gateSatisfied: boolean | null }, e: OracleGate): void {

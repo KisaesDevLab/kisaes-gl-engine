@@ -28,7 +28,8 @@ export function isIncomeTaxState(code: StateCode): boolean {
   return !NO_BROAD_INCOME_TAX_STATES.includes(code);
 }
 
-export const STATE_RULE_VALUE_TYPES = ['bool', 'money', 'rate', 'date', 'date_list', 'rate_list', 'enum', 'high_agi_rule', 'farmer_rule', 'rate_schedule', 'requirement_gate', 'exemptions'] as const;
+export const STATE_RULE_VALUE_TYPES = ['bool', 'money', 'rate', 'date', 'date_list', 'rate_list', 'enum', 'high_agi_rule', 'farmer_rule', 'rate_schedule', 'requirement_gate', 'exemptions',
+  'brackets', 'standard_deduction', 'capital_gains', 'federal_tax_deduction', 'capital_gains_excise'] as const;
 export type StateRuleValueType = typeof STATE_RULE_VALUE_TYPES[number];
 
 /** `required_threshold` / `penalty.min_balance_due` boundary: "$X or more" vs "more than $X". */
@@ -101,6 +102,98 @@ export interface StateExemptionsRule {
   note?: string;
 }
 
+// ── Q53: state rate schedules, standard deduction, starting point, capital gains ──
+
+/**
+ * `starting_point`: what the state return starts from. federal_taxable_before_qbi = federal taxable
+ * income with the §199A deduction added back (MT); state_specific = the state's own gross income
+ * (approximated by federal AGI, info).
+ */
+export const STATE_STARTING_POINTS = ['federal_agi', 'federal_taxable', 'federal_taxable_before_qbi', 'state_specific'] as const;
+export type StateStartingPoint = typeof STATE_STARTING_POINTS[number];
+
+/**
+ * One marginal bracket: `rate` applies to state taxable income above `over` up to the next bracket's
+ * `over`. `add` (optional) = a fixed amount added once the income exceeds `over` (a schedule notch,
+ * e.g. OH "$342 plus 2.75% of the excess over $26,050").
+ */
+export interface StateBracket { over: number; rate: number; add?: number }
+export type StateBracketsByStatus = Record<typeof EXEMPTION_STATUSES[number], StateBracket[]>;
+
+/**
+ * `brackets` (Q53): the state's rate schedule by filing status (flat-rate state = one bracket
+ * `[{ over: 0, rate }]`). `schedules_by_income` = alternative schedules the state switches to by
+ * state taxable income (AR): the engine uses the LAST entry whose `income_over` is below the state
+ * taxable income, else the main schedule. `simplified` = features the shape cannot express (benefit
+ * recapture, table midpoints, bracket-adjustment credits) — described in `note`; the engine warns.
+ */
+export interface StateBracketsRule extends StateBracketsByStatus {
+  schedules_by_income?: Array<StateBracketsByStatus & { income_over: number }>;
+  simplified?: boolean;
+  note?: string;
+}
+
+/** `standard_deduction` (Q53): whole-return amount by filing status (0 = none / already in the base). */
+export interface StateStandardDeductionRule extends Record<typeof EXEMPTION_STATUSES[number], number> {
+  simplified?: boolean;
+  note?: string;
+}
+
+/**
+ * `capital_gains` (Q53/Kurt): the state's treatment of capital gains.
+ * - ordinary: taxed like other income;
+ * - exclusion: `exclusion_tiers` (marginal % of the gain excluded between `over` and the next `over`),
+ *   floored at `exclusion_min` (capped at the gain) and capped at `exclusion_cap`, subtracted from the base;
+ * - alternative_rate: tax = lesser of the regular schedule and schedule(TI − gain) + gain × `max_rate` (HI);
+ * - separate_rates: `ltcg_brackets` stacked on top of ordinary taxable income (MT) and/or `stcg_rate` on the
+ *   net short-term gain (MA);
+ * - qualifying_assets_only: a deduction for specific assets only (in-state property, holding period, business
+ *   sale) the estimator cannot identify — nothing is applied (info).
+ * `applies_to`: net_ltcg = net long-term gain; net_capital_gain = net short + long-term gain.
+ */
+export const CAPITAL_GAINS_TREATMENTS = ['ordinary', 'exclusion', 'alternative_rate', 'separate_rates', 'qualifying_assets_only'] as const;
+export type CapitalGainsTreatment = typeof CAPITAL_GAINS_TREATMENTS[number];
+export const CAPITAL_GAINS_APPLIES_TO = ['net_ltcg', 'net_capital_gain'] as const;
+export interface StateCapitalGainsRule {
+  treatment: CapitalGainsTreatment;
+  applies_to?: typeof CAPITAL_GAINS_APPLIES_TO[number];
+  exclusion_tiers?: Array<{ over: number; pct: number }> | null;
+  exclusion_min?: number | null;
+  exclusion_cap?: number | null;
+  max_rate?: number | null;
+  ltcg_brackets?: StateBracketsByStatus | null;
+  stcg_rate?: number | null;
+  /** Surtax on the gain (any treatment) when federal AGI exceeds `surtax_agi_over` (MD 2%). */
+  surtax_rate?: number | null;
+  surtax_agi_over?: number | null;
+  includes_qualified_dividends?: boolean;
+  simplified?: boolean;
+  note?: string;
+}
+
+/**
+ * `federal_tax_deduction` (Q53; AL, MO, OR): deduction of federal income tax from the state base.
+ * The tier is chosen by the state AGI (last tier whose `agi_over` is below it); deduction =
+ * min(federal income tax × pct, cap[fs]) — no cap when `cap` is absent / null.
+ */
+export interface StateFederalTaxDeductionRule {
+  tiers: Array<{ agi_over: number; pct: number; cap?: Partial<Record<typeof EXEMPTION_STATUSES[number], number>> | null }>;
+  simplified?: boolean;
+  note?: string;
+}
+
+/**
+ * `capital_gains_excise` (Q53/Kurt; WA RCW 82.87): a capital gains tax in a state with no broad income
+ * tax. Resident rows only: tax = Σ `brackets` over (net long-term gain − `standard_deduction`), the
+ * bracket `over` measured on that taxable gain. `estimates_required` false = due with the return.
+ */
+export interface StateCapitalGainsExciseRule {
+  standard_deduction: number;
+  brackets: StateBracket[];
+  estimates_required?: boolean;
+  note?: string;
+}
+
 export interface StateRuleDef {
   key: string;
   type: StateRuleValueType;
@@ -135,6 +228,14 @@ export const STATE_RULE_REGISTRY: readonly StateRuleDef[] = [
   { key: 'nonresident_method', type: 'enum', label: 'How nonresident tax is computed', options: ['ratio', 'sourced_flat', 'other'] },
   { key: 'holidays', type: 'date_list', label: 'State holidays used for due-date roll-forward' },
   { key: 'exemptions', type: 'exemptions', label: 'Personal / dependent exemptions and exemption credits ({ personal_exemption, dependent_exemption, personal_credit, dependent_credit, *_by_status?, simplified?, note? }; null = not sourced)', nullable: true, optional: true },
+  // Q53: rate schedules (optional keys, seeded for every income-tax state + DC; missing / null → the
+  // row falls back to its effective rate with a warning).
+  { key: 'starting_point', type: 'enum', label: 'Starting point of the state return (state_specific = approximated by federal AGI)', options: STATE_STARTING_POINTS, nullable: true, optional: true },
+  { key: 'brackets', type: 'brackets', label: 'Rate schedule by filing status ({ single, mfj, mfs, hoh, qss: [{ over, rate }] } + optional schedules_by_income, simplified, note; null = not sourced)', nullable: true, optional: true },
+  { key: 'standard_deduction', type: 'standard_deduction', label: 'Standard deduction by filing status ({ single, mfj, mfs, hoh, qss } + optional simplified, note; 0 = none)', nullable: true, optional: true },
+  { key: 'capital_gains', type: 'capital_gains', label: 'Capital gains treatment ({ treatment, applies_to, exclusion_tiers, exclusion_min, exclusion_cap, max_rate, ltcg_brackets, stcg_rate, includes_qualified_dividends, simplified, note }; null = not sourced)', nullable: true, optional: true },
+  { key: 'federal_tax_deduction', type: 'federal_tax_deduction', label: 'Deduction for federal income tax ({ tiers: [{ agi_over, pct, cap? }] }; AL, MO, OR)', nullable: true, optional: true },
+  { key: 'capital_gains_excise', type: 'capital_gains_excise', label: 'Capital gains excise tax for a state with no income tax ({ standard_deduction, brackets: [{ over, rate }], estimates_required }; WA)', nullable: true, optional: true },
   { key: 'requirement_gate', type: 'requirement_gate', label: 'Income-based estimate-requirement gate ({ kind, threshold?, threshold_mfj?, non_withheld_floor? }; absent = plain threshold test)', nullable: true, optional: true },
 ];
 
@@ -157,6 +258,137 @@ function isIsoDate(s: string): boolean {
 
 export function getStateRuleDef(key: string): StateRuleDef | undefined {
   return STATE_RULE_REGISTRY.find((d) => d.key === key);
+}
+
+// ── Q53 validators ──
+
+function validateBracketList(list: unknown, where: string): string | null {
+  if (!Array.isArray(list) || list.length === 0) return `${where}: expected a non-empty list of { over, rate }`;
+  let prev = -1;
+  for (const [i, b] of (list as unknown[]).entries()) {
+    if (!isObj(b)) return `${where}: expected { over, rate }`;
+    const r = b as { over?: unknown; rate?: unknown };
+    if (!isNum(r.over) || r.over < 0 || !isNum(r.rate) || r.rate < 0 || r.rate >= 1) return `${where}: each bracket needs over ≥ 0 and a rate between 0 and 1`;
+    if (i === 0 && r.over !== 0) return `${where}: the first bracket must start at over 0`;
+    const add = (b as { add?: unknown }).add;
+    if (add !== undefined && !(isNum(add) && add >= 0)) return `${where}: add must be a non-negative number`;
+    if (r.over <= prev) return `${where}: brackets must be in ascending order of over`;
+    prev = r.over;
+  }
+  return null;
+}
+
+function validateByStatusBrackets(v: Record<string, unknown>, where: string): string | null {
+  for (const fs of EXEMPTION_STATUSES) {
+    const err = validateBracketList(v[fs], `${where}${fs}`);
+    if (err) return err;
+  }
+  return null;
+}
+
+function validateNoteFlags(v: Record<string, unknown>): string | null {
+  if (v['simplified'] !== undefined && typeof v['simplified'] !== 'boolean') return 'simplified must be true/false';
+  if (v['note'] !== undefined && typeof v['note'] !== 'string') return 'note must be text';
+  return null;
+}
+
+function validateBracketsRule(value: unknown): string | null {
+  if (!isObj(value)) return 'expected { single, mfj, mfs, hoh, qss: [{ over, rate }] }';
+  const v = value as Record<string, unknown>;
+  const main = validateByStatusBrackets(v, '');
+  if (main) return main;
+  if (v['schedules_by_income'] !== undefined) {
+    if (!Array.isArray(v['schedules_by_income'])) return 'schedules_by_income must be a list';
+    let prev = -1;
+    for (const [i, sch] of (v['schedules_by_income'] as unknown[]).entries()) {
+      if (!isObj(sch)) return 'schedules_by_income: expected { income_over, single, mfj, mfs, hoh, qss }';
+      const o = sch as Record<string, unknown>;
+      if (!isNum(o['income_over']) || (o['income_over'] as number) < 0) return `schedules_by_income[${i}]: income_over must be a non-negative number`;
+      if ((o['income_over'] as number) <= prev) return 'schedules_by_income must be in ascending order of income_over';
+      prev = o['income_over'] as number;
+      const err = validateByStatusBrackets(o, `schedules_by_income[${i}].`);
+      if (err) return err;
+    }
+  }
+  return validateNoteFlags(v);
+}
+
+function validateStandardDeductionRule(value: unknown): string | null {
+  if (!isObj(value)) return 'expected { single, mfj, mfs, hoh, qss }';
+  const v = value as Record<string, unknown>;
+  for (const fs of EXEMPTION_STATUSES) {
+    if (!(isNum(v[fs]) && (v[fs] as number) >= 0)) return `${fs} must be a non-negative number`;
+  }
+  return validateNoteFlags(v);
+}
+
+function validateCapitalGainsRule(value: unknown): string | null {
+  if (!isObj(value)) return 'expected { treatment, ... }';
+  const v = value as Record<string, unknown>;
+  if (!(CAPITAL_GAINS_TREATMENTS as readonly unknown[]).includes(v['treatment'])) return `treatment must be one of ${CAPITAL_GAINS_TREATMENTS.join(', ')}`;
+  if (v['applies_to'] !== undefined && !(CAPITAL_GAINS_APPLIES_TO as readonly unknown[]).includes(v['applies_to'])) return `applies_to must be one of ${CAPITAL_GAINS_APPLIES_TO.join(', ')}`;
+  const optNonNeg = (k: string) => v[k] === undefined || v[k] === null || (isNum(v[k]) && (v[k] as number) >= 0);
+  for (const k of ['exclusion_min', 'exclusion_cap', 'max_rate', 'stcg_rate', 'surtax_rate', 'surtax_agi_over']) if (!optNonNeg(k)) return `${k} must be a non-negative number or null`;
+  if (isNum(v['surtax_rate']) && !isNum(v['surtax_agi_over'])) return 'surtax_rate needs surtax_agi_over';
+  for (const k of ['max_rate', 'stcg_rate', 'surtax_rate']) if (isNum(v[k]) && (v[k] as number) >= 1) return `${k} must be a rate below 1`;
+  const tiers = v['exclusion_tiers'];
+  if (tiers !== undefined && tiers !== null) {
+    if (!Array.isArray(tiers) || tiers.length === 0) return 'exclusion_tiers must be a non-empty list of { over, pct } or null';
+    let prev = -1;
+    for (const [i, t] of (tiers as unknown[]).entries()) {
+      if (!isObj(t)) return 'exclusion_tiers: expected { over, pct }';
+      const o = t as { over?: unknown; pct?: unknown };
+      if (!isNum(o.over) || o.over < 0 || !isNum(o.pct) || o.pct < 0 || o.pct > 1) return 'exclusion_tiers: over ≥ 0 and pct between 0 and 1';
+      if (i === 0 && o.over !== 0) return 'exclusion_tiers: the first tier must start at over 0';
+      if (o.over <= prev) return 'exclusion_tiers must be in ascending order of over';
+      prev = o.over;
+    }
+  }
+  if (v['treatment'] === 'exclusion' && !(Array.isArray(tiers) && tiers.length > 0) && !isNum(v['exclusion_min'])) return 'exclusion needs exclusion_tiers or exclusion_min';
+  if (v['treatment'] === 'alternative_rate' && !isNum(v['max_rate'])) return 'alternative_rate needs max_rate';
+  if (v['ltcg_brackets'] !== undefined && v['ltcg_brackets'] !== null) {
+    if (!isObj(v['ltcg_brackets'])) return 'ltcg_brackets must be { single, mfj, mfs, hoh, qss } or null';
+    const err = validateByStatusBrackets(v['ltcg_brackets'] as Record<string, unknown>, 'ltcg_brackets.');
+    if (err) return err;
+  }
+  if (v['treatment'] === 'separate_rates' && !isObj(v['ltcg_brackets']) && !isNum(v['stcg_rate'])) return 'separate_rates needs ltcg_brackets or stcg_rate';
+  if (v['includes_qualified_dividends'] !== undefined && typeof v['includes_qualified_dividends'] !== 'boolean') return 'includes_qualified_dividends must be true/false';
+  return validateNoteFlags(v);
+}
+
+function validateFederalTaxDeductionRule(value: unknown): string | null {
+  if (!isObj(value)) return 'expected { tiers: [{ agi_over, pct, cap? }] }';
+  const v = value as Record<string, unknown>;
+  const tiers = v['tiers'];
+  if (!Array.isArray(tiers) || tiers.length === 0) return 'tiers must be a non-empty list';
+  let prev = -1;
+  for (const [i, t] of (tiers as unknown[]).entries()) {
+    if (!isObj(t)) return 'tiers: expected { agi_over, pct, cap? }';
+    const o = t as Record<string, unknown>;
+    if (!isNum(o['agi_over']) || (o['agi_over'] as number) < 0 || !isNum(o['pct']) || (o['pct'] as number) < 0 || (o['pct'] as number) > 1) return 'tiers: agi_over ≥ 0 and pct between 0 and 1';
+    if (i === 0 && o['agi_over'] !== 0) return 'tiers: the first tier must start at agi_over 0';
+    if ((o['agi_over'] as number) <= prev) return 'tiers must be in ascending order of agi_over';
+    prev = o['agi_over'] as number;
+    if (o['cap'] !== undefined && o['cap'] !== null) {
+      if (!isObj(o['cap'])) return 'cap must be an object keyed by filing status';
+      for (const [fs, n] of Object.entries(o['cap'] as Record<string, unknown>)) {
+        if (!(EXEMPTION_STATUSES as readonly string[]).includes(fs)) return `cap: unknown filing status ${fs}`;
+        if (!(isNum(n) && n >= 0)) return `cap.${fs} must be a non-negative number`;
+      }
+    }
+  }
+  return validateNoteFlags(v);
+}
+
+function validateCapitalGainsExciseRule(value: unknown): string | null {
+  if (!isObj(value)) return 'expected { standard_deduction, brackets }';
+  const v = value as Record<string, unknown>;
+  if (!(isNum(v['standard_deduction']) && (v['standard_deduction'] as number) >= 0)) return 'standard_deduction must be a non-negative number';
+  const err = validateBracketList(v['brackets'], 'brackets');
+  if (err) return err;
+  if (v['estimates_required'] !== undefined && typeof v['estimates_required'] !== 'boolean') return 'estimates_required must be true/false';
+  if (v['note'] !== undefined && typeof v['note'] !== 'string') return 'note must be text';
+  return null;
 }
 
 export function validateStateRuleValue(def: StateRuleDef, value: unknown): string | null {
@@ -217,6 +449,11 @@ export function validateStateRuleValue(def: StateRuleDef, value: unknown): strin
       if (v['note'] !== undefined && typeof v['note'] !== 'string') return 'note must be text';
       return null;
     }
+    case 'brackets': return validateBracketsRule(value);
+    case 'standard_deduction': return validateStandardDeductionRule(value);
+    case 'capital_gains': return validateCapitalGainsRule(value);
+    case 'federal_tax_deduction': return validateFederalTaxDeductionRule(value);
+    case 'capital_gains_excise': return validateCapitalGainsExciseRule(value);
     case 'rate_schedule': {
       if (!Array.isArray(value) || value.length === 0) return 'expected a non-empty list of { from, to, rate }';
       let prevTo = '';

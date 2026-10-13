@@ -391,6 +391,21 @@ describe('F6 — character is mapped by seed CODE identity, tied to the real see
     expect(r.warnings.find((w) => w.code === 'TE_M1_CODE_ON_PL_ACCOUNT')).toBeUndefined();
   });
 
+  it('Q53 / Q39: an unrecaptured_1250 / collectibles_gain treatment is a long-term gain AND reported as that subset', async () => {
+    await putTreatments(scope, tenant, ids.P!, [{ accountId: ids.pGain!, treatment: 'unrecaptured_1250', nonRecurring: false }]);
+    let r = await pl(ids.P!);
+    expect(r.accounts.find((a) => a.accountId === ids.pGain)).toMatchObject({ character: 'capital_gain_lt', characterSource: 'treatment' });
+    expect(d(r.byCharacter.capital_gain_lt)).toBe(40000);
+    expect(d(r.ltcgSubsets!.unrecaptured1250.ytd)).toBe(40000);
+    expect(d(r.ltcgSubsets!.collectibles.ytd)).toBe(0);
+    await putTreatments(scope, tenant, ids.P!, [{ accountId: ids.pGain!, treatment: 'collectibles_gain', nonRecurring: false }]);
+    r = await pl(ids.P!);
+    expect(d(r.ltcgSubsets!.collectibles.ytd)).toBe(40000);
+    expect(d(r.ltcgSubsets!.unrecaptured1250.ytd)).toBe(0);
+    // Income accounts only.
+    await expect(putTreatments(scope, tenant, ids.P!, [{ accountId: ids.pSup!, treatment: 'collectibles_gain', nonRecurring: false }])).rejects.toMatchObject({ code: 'TE_TREATMENT_ACCOUNT_TYPE' });
+  });
+
   it('Sch C bank interest: the interest treatment makes it interest (no 1040 interest code exists)', async () => {
     await putTreatments(scope, tenant, ids.C!, [{ accountId: ids.cInterest!, treatment: 'interest', nonRecurring: false }]);
     const r = await pl(ids.C!);

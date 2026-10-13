@@ -97,7 +97,7 @@ import type {
   OwnerLevelPerson, ResolvedEntityTax, SplitMode, TaxBasisAccountLine, TaxBasisMonth, TaxBasisPl, TaxCodeRef, TaxEstimatorWarning,
   TaxMethod, ThroughMonthSource, TraceRow, TreatmentRoute,
 } from '@kis-books/shared';
-import { INCOME_CHARACTERS, allocateByWeights, allowsPersonTarget, fixedAmountTargets, isCharacterTreatment } from '@kis-books/shared';
+import { INCOME_CHARACTERS, allocateByWeights, allowsPersonTarget, fixedAmountTargets, isCharacterTreatment, isLtcgSubsetTreatment } from '@kis-books/shared';
 import { db } from '../../db/index.js';
 import {
   taxEstAccountTreatments, taxEstEntitySettings, taxEstEntityYearInputs, taxEstTransactionFlags, transactions,
@@ -131,7 +131,9 @@ const FARM_ACTIVITIES = new Set(['farm', 'farm_rental']);
 // v3: Q49 — the entity type is resolved per tax year (override); new TE_ENTITY_TYPE_SETTING_IGNORED text.
 //     Q50 owner splits (account-line splits, per-portion trace placeholders, split warnings).
 // v4: v0.9.228 integration of Q49 + Q50 (each was v3 on its own branch; the merged DTO differs from both).
-const CACHE_VERSION = 'v4';
+// v5 (Q53): ltcgSubsets added (on a base without Q49–Q52).
+// v6: v0.9.229 integration of Q49–Q52 + Q53 (the merged DTO differs from both v4 and v5).
+const CACHE_VERSION = 'v6';
 
 export interface CacheKeyParts {
   tenantId: string; companyId: string; taxYear: number; basis: TaxMethod;
@@ -342,6 +344,10 @@ export function applyTreatment(
   if (isCharacterTreatment(treatment)) {
     // The CPA's explicit character wins over the code (and over a code exclusion).
     return { ...base, character: treatment, characterSource: 'treatment', exclusion: null, m1Warning: false };
+  }
+  if (isLtcgSubsetTreatment(treatment)) {
+    // Q53 / Q39: a long-term gain that also feeds the 25% / 28% worksheet bucket.
+    return { ...base, character: 'capital_gain_lt', characterSource: 'treatment', exclusion: null, m1Warning: false };
   }
   if (base.exclusion) return { ...base, route: 'dropped' };
   switch (treatment) {
@@ -713,6 +719,8 @@ async function compute(
   let w2Rec = ZERO;
   let w2Non = ZERO;
   const w2ByPerson = new Map<string, Dec>();
+  // Q53 / Q39: long-term gain subsets (recurring / non-recurring, profit-positive).
+  const subsets = { unrecaptured_1250: { rec: ZERO, non: ZERO }, collectibles_gain: { rec: ZERO, non: ZERO } };
   const persons = new Map<string | null, PersonAcc>();
   const gps = new Map<string | null, GpAcc>();
   const person = (id: string | null) => {
@@ -781,6 +789,10 @@ async function compute(
       const eN = entityShare(n, a);
       rec[a.character] = rec[a.character].plus(eR);
       non[a.character] = non[a.character].plus(eN);
+      if (isLtcgSubsetTreatment(a.treatment)) {
+        subsets[a.treatment].rec = subsets[a.treatment].rec.plus(eR);
+        subsets[a.treatment].non = subsets[a.treatment].non.plus(eN);
+      }
       mBook = mBook.plus(x);
       const removed = x.negated(); // positive magnitude of an expense
       // Month totals (entity level) — unchanged by an owner split (Q50).
@@ -1068,7 +1080,7 @@ async function compute(
     if (implied === 'guaranteed_payment' && entityType === 'partnership' && a.treatment !== 'guaranteed_payment' && !acc.book.isZero()) {
       gpCodeNoTreatment.push({ accountId, name: lbl, code: code!.code, bookAmount: s4(acc.book) });
     }
-    if (implied && t?.treatment && t.treatment !== implied && !isCharacterTreatment(t.treatment)) {
+    if (implied && t?.treatment && t.treatment !== implied && !isCharacterTreatment(t.treatment) && !isLtcgSubsetTreatment(t.treatment)) {
       impliedConflict.push({ accountId, name: lbl, code: code!.code, treatment: t.treatment });
     }
     if (a.m1Warning) m1Accounts.push({ accountId, name: lbl, code: code?.code ?? '' });
@@ -1312,6 +1324,10 @@ async function compute(
       byPerson,
     },
     guaranteedPayments,
+    ltcgSubsets: {
+      unrecaptured1250: { ytd: s4(subsets.unrecaptured_1250.rec.plus(subsets.unrecaptured_1250.non)), recurringYtd: s4(subsets.unrecaptured_1250.rec) },
+      collectibles: { ytd: s4(subsets.collectibles_gain.rec.plus(subsets.collectibles_gain.non)), recurringYtd: s4(subsets.collectibles_gain.rec) },
+    },
     nondeductibleAddBack: s4(addBack),
     taxDepreciationDiffers: taxDep,
     estimatedPayments,

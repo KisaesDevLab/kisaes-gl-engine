@@ -829,6 +829,10 @@ export interface FederalExactTotals {
   niit: string;
   refundableCredits: string;
   federalTotal: string;
+  /** Q53: net long-term gain for the worksheet (≥ 0), net capital gain / (limited loss), qualified dividends — the state capital-gain inputs. Optional for older snapshots. */
+  netLongTermGain?: string;
+  capitalGainNet?: string;
+  qualifiedDividends?: string;
 }
 
 export interface FederalResult {

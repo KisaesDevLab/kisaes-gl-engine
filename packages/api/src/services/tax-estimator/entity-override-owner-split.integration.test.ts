@@ -11,7 +11,7 @@
 //       each owner's (separate) taxpayer estimate gets only their own portion.
 //   (b) peekCachedEstimate builds exactly the compute path's cache key (taxYear-threaded entity
 //       type, split rows): peek-after-compute hits; a split edit or an override change misses.
-//   (a) the merged cache versions (te-estimate-v8, te:pl:v4).
+//   (a) the merged cache versions (te-estimate-v10, te:pl:v6 since the v0.9.229 integration with Q53).
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { inArray } from 'drizzle-orm';
@@ -180,9 +180,9 @@ describe('(b) Q52 peekCachedEstimate = the compute path\'s key after Q49 / Q50 /
 });
 
 describe('(a) merged cache versions', () => {
-  it('estimate te-estimate-v8, P&L provider te:pl:v4', () => {
-    expect(estimateCacheKey(scope, req('ann'), 'h')).toMatch(/^te:estimate:te-estimate-v8:/);
+  it('estimate te-estimate-v10, P&L provider te:pl:v6', () => {
+    expect(estimateCacheKey(scope, req('ann'), 'h')).toMatch(/^te:estimate:te-estimate-v10:/);
     expect(taxBasisCacheKey({ tenantId: T, companyId: C, taxYear: 2026, basis: 'cash', throughMonth: '2026-12', glVersionStamp: 1, configVersion: 'x' }))
-      .toMatch(/^te:pl:v4:/);
+      .toMatch(/^te:pl:v6:/);
   });
 });

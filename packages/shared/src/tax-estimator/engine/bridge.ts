@@ -12,7 +12,8 @@ import { INCOME_CHARACTERS, type CharacterAmounts, type TaxBasisPl } from '../en
 import { OUTSIDE_TENANT_ID, outsideLinkId, type OutsideEntityDTO, type OutsideEntityYearDTO } from '../outside-entities-api.js';
 import type { DependentDTO, LinkDTO, PersonDTO } from '../taxpayers-api.js';
 import type { AdjustmentDTO, AdjustmentTypeDTO, YearSettingsDTO } from '../years-api.js';
-import { ZERO, dDiv, dIsZero, dMul, dSum, dec, type Dec } from '../decimal.js';
+import { ZERO, dDiv, dIsPos, dIsZero, dMul, dSum, dec, type Dec } from '../decimal.js';
+import { projectAmount } from './income.js';
 import type { EngineAdjustment, EngineDependent, EngineEntity, EngineItemized, EnginePerson, EngineYearInputs, RetirementPlanType } from './types.js';
 
 const num = (v: number | string | null | undefined): Dec => (v == null || v === '' ? ZERO : dec(v));
@@ -248,9 +249,28 @@ export function engineYearFromDto(y: YearSettingsDTO, extra: YearExtras = {}): E
     creditsNonrefundable: num(y.creditsNonrefundable),
     creditsRefundable: num(y.creditsRefundable),
     careExpenses: num(y.careExpenses),
-    unrecaptured1250Gain: num(extra.unrecaptured1250Gain),
-    collectiblesGain: num(extra.collectiblesGain),
+    // Q53 / Q39: the year inputs, unless the caller passes the total (year input + books).
+    unrecaptured1250Gain: num(extra.unrecaptured1250Gain ?? y.unrecaptured1250Gain),
+    collectiblesGain: num(extra.collectiblesGain ?? y.collectiblesGain),
     amtExposureFlagged: extra.amtExposureFlagged ?? false,
     mfsLivedApartAllYear: extra.mfsLivedApartAllYear ?? y.mfsLivedApartAllYear ?? false,
   };
+}
+
+/**
+ * Q53 / Q39: the taxpayer's share of the long-term gain subsets booked to `unrecaptured_1250` /
+ * `collectibles_gain` accounts of one linked business, projected like the other characters
+ * (YTD + recurring run rate) and allocated by the links' profit % (a single link with a blank % =
+ * 100%). Positive only (a subset is part of a GAIN). Zero when the P&L carries no subsets.
+ */
+export function ltcgSubsetsFromPl(pl: Pick<TaxBasisPl, 'ltcgSubsets' | 'monthsElapsed' | 'monthsRemaining'>, links: ReadonlyArray<{ profitPct: number | null }>): { unrecaptured1250: Dec; collectibles: Dec } {
+  const subs = pl.ltcgSubsets;
+  if (!subs) return { unrecaptured1250: ZERO, collectibles: ZERO };
+  const pct = links.length === 1 && links[0]!.profitPct == null ? dec(1) : dDiv(dSum(links.map((l) => num(l.profitPct))), '100');
+  const share = (x: { ytd: string; recurringYtd: string }): Dec => {
+    const projected = projectAmount(dec(x.ytd), dec(x.recurringYtd), pl.monthsElapsed, pl.monthsRemaining);
+    const v = dMul(projected, pct);
+    return dIsPos(v) ? v : ZERO;
+  };
+  return { unrecaptured1250: share(subs.unrecaptured1250), collectibles: share(subs.collectibles) };
 }

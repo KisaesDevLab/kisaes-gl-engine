@@ -30,6 +30,9 @@ export const taxEstYears = pgTable('tax_est_years', {
   creditsRefundable: numeric('credits_refundable', { precision: 19, scale: 4 }).notNull().default('0'),
   /** Q44 (migration 0204): child and dependent care expenses paid (Form 2441). */
   careExpenses: numeric('care_expenses', { precision: 19, scale: 4 }).notNull().default('0'),
+  /** Q53 / Q39 (migration 0213): unrecaptured §1250 gain (25%) and collectibles gain (28%) included in long-term gains. */
+  unrecaptured1250Gain: numeric('unrecaptured_1250_gain', { precision: 19, scale: 4 }).notNull().default('0'),
+  collectiblesGain: numeric('collectibles_gain', { precision: 19, scale: 4 }).notNull().default('0'),
   hsaCoverage: jsonb('hsa_coverage').$type<Record<string, string>>().notNull().default({}),
   withholding: jsonb('withholding').$type<{ federal?: number; states?: Record<string, number> }>().notNull().default({}),
   // Phase 10b (migrations/parts/estimate.sql): per-person year inputs keyed by role,
@@ -117,6 +120,10 @@ export const taxEstStateRows = pgTable('tax_est_state_rows', {
   state: char('state', { length: 2 }).notNull(),
   effectiveRate: numeric('effective_rate', { precision: 7, scale: 6 }).notNull(),
   base: varchar('base', { length: 16 }).notNull().default('federal_agi'),
+  /** Q53 (migration 0213): 'brackets' (state rate schedule) | 'effective' (effective_rate override). */
+  rateMode: varchar('rate_mode', { length: 12 }).notNull().default('brackets'),
+  /** Q53: nonresident rows — 'ratio' (state method on the schedule) | 'sourced_rate' (sourced × effective_rate). */
+  nonresidentMode: varchar('nonresident_mode', { length: 12 }).notNull().default('ratio'),
   customBase: numeric('custom_base', { precision: 19, scale: 4 }),
   sourcedIncome: numeric('sourced_income', { precision: 19, scale: 4 }),
   sourcedManual: boolean('sourced_manual').notNull().default(false),

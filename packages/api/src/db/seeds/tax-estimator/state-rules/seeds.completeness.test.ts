@@ -103,6 +103,39 @@ describe('state rule seeds', () => {
     expect(STATE_RULE_SEEDS.find((r) => r.state === 'AR' && r.year === 2025 && r.key === 'threshold_comparison')?.value).toBe('more_than');
   });
 
+  it('Q53: every income-tax state + DC carries starting_point, brackets, standard_deduction and capital_gains (value or cited null) for 2025 and 2026, all unverified', () => {
+    const KEYS = ['starting_point', 'brackets', 'standard_deduction', 'capital_gains'];
+    const missing: string[] = [];
+    for (const state of STATE_CODES) {
+      for (const year of YEARS) {
+        const hasTax = STATE_RULE_SEEDS.find((r) => r.state === state && r.year === year && r.key === 'has_income_tax')?.value === true;
+        for (const key of KEYS) {
+          const rows = STATE_RULE_SEEDS.filter((r) => r.state === state && r.year === year && r.key === key);
+          if (hasTax && rows.length !== 1) missing.push(`${state} ${year} ${key} (${rows.length})`);
+          if (!hasTax && rows.length > 0) missing.push(`${state} ${year} ${key}: no-income-tax state`);
+          for (const r of rows) {
+            if (r.status !== 'unverified') missing.push(`${state} ${year} ${key}: ${r.status}`);
+            if (r.value === null && !/null|not (yet )?(published|sourced)|unsourceable/i.test(r.citation)) missing.push(`${state} ${year} ${key}: null without an explanation`);
+          }
+        }
+      }
+    }
+    expect(missing).toEqual([]);
+    const ftd = STATE_RULE_SEEDS.filter((r) => r.key === 'federal_tax_deduction').map((r) => `${r.state} ${r.year}`).sort();
+    expect(ftd).toEqual(['AL 2025', 'AL 2026', 'MO 2025', 'MO 2026', 'OR 2025', 'OR 2026']);
+    expect(STATE_RULE_SEEDS.filter((r) => r.key === 'capital_gains_excise').map((r) => `${r.state} ${r.year}`).sort()).toEqual(['WA 2025', 'WA 2026']);
+  });
+
+  it('Q53: Missouri and Arkansas schedules (owner states)', () => {
+    const v = (state: string, year: number, key: string) => STATE_RULE_SEEDS.find((r) => r.state === state && r.year === year && r.key === key)?.value as Record<string, unknown>;
+    const mo = v('MO', 2025, 'brackets') as { single: Array<{ over: number; rate: number }> };
+    expect(mo.single[mo.single.length - 1]).toEqual({ over: 9191, rate: 0.047 });
+    expect(v('MO', 2025, 'standard_deduction')).toMatchObject({ single: 15750, mfj: 31500 });
+    expect(v('MO', 2025, 'capital_gains')).toMatchObject({ treatment: 'exclusion', applies_to: 'net_capital_gain', exclusion_tiers: [{ over: 0, pct: 1 }] });
+    expect(v('AR', 2025, 'capital_gains')).toMatchObject({ treatment: 'exclusion', applies_to: 'net_ltcg', exclusion_tiers: [{ over: 0, pct: 0.5 }, { over: 10000000, pct: 1 }] });
+    expect(STATE_RULE_SEEDS.find((r) => r.state === 'AR' && r.year === 2025 && r.key === 'starting_point')?.value).toBe('state_specific');
+  });
+
   it('every row sits in its own file: state and year match', async () => {
     const wrong: string[] = [];
     for (const code of STATE_CODES) {

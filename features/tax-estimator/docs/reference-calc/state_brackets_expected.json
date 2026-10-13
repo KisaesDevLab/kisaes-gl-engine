@@ -1,0 +1,100 @@
+{
+  "mo_high_buckets": {
+    "AR": {
+      "capital_gain_exclusion": 100000,
+      "full_year_tax": 26958,
+      "ratio": 0.125,
+      "tax": 3370,
+      "taxable_income": 695060
+    },
+    "MO": {
+      "capital_gain_exclusion": 200000,
+      "credit": 3370,
+      "credits": {
+        "AR": {
+          "allowed": 3370,
+          "limit": 4424
+        }
+      },
+      "federal_tax_deduction": 0,
+      "federal_tax_deduction_pct": 0.0,
+      "gross_tax": 26544,
+      "mo_agi": 600000,
+      "net_tax": 23174,
+      "standard_deduction": 31500,
+      "taxable_income": 568500
+    },
+    "federal": {
+      "addl_medicare": 3150,
+      "agi": 800000,
+      "federal_income_tax": 181892,
+      "federal_total": 192642,
+      "niit": 7600,
+      "regular_tax": 181892,
+      "taxable_income": 768500,
+      "worksheet": {
+        "at_fifteen": 31550,
+        "at_twenty": 78450,
+        "at_twenty_eight": 30000,
+        "at_twenty_five": 60000,
+        "at_zero": 0,
+        "ordinary_portion": 568500
+      }
+    },
+    "state_total": 26544
+  },
+  "mo_resident_ks_ar": {
+    "AR": {
+      "capital_gain_exclusion": 30000,
+      "full_year_tax": 4221,
+      "ratio": 0.136054,
+      "tax": 574,
+      "taxable_income": 112060
+    },
+    "KS": {
+      "full_year_tax": 6546,
+      "ratio": 0.272109,
+      "tax": 1781,
+      "taxable_income": 120440
+    },
+    "MO": {
+      "capital_gain_exclusion": 63000,
+      "credit": 1582,
+      "credits": {
+        "AR": {
+          "allowed": 527,
+          "limit": 527
+        },
+        "KS": {
+          "allowed": 1055,
+          "limit": 1055
+        }
+      },
+      "federal_tax_deduction": 1638,
+      "federal_tax_deduction_pct": 0.15,
+      "gross_tax": 2215,
+      "mo_agi": 84000,
+      "net_tax": 633,
+      "standard_deduction": 31500,
+      "taxable_income": 50862
+    },
+    "federal": {
+      "addl_medicare": 0,
+      "agi": 147000,
+      "federal_income_tax": 10923,
+      "federal_total": 10923,
+      "niit": 0,
+      "regular_tax": 10923,
+      "taxable_income": 115500,
+      "worksheet": {
+        "at_fifteen": 18800,
+        "at_twenty": 0,
+        "at_twenty_eight": 0,
+        "at_twenty_five": 0,
+        "at_zero": 25200,
+        "ordinary_portion": 71500
+      }
+    },
+    "state_total": 2988
+  }
+}

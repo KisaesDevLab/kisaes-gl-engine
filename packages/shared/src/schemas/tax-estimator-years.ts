@@ -24,6 +24,9 @@ export const ADJUSTMENT_CADENCES = ['monthly', 'quarterly', 'annual', 'one_time'
 export const ADJUSTMENT_KINDS = ['income', 'deduction', 'addback'] as const;
 export const STATE_RESIDENCIES = ['resident', 'nonresident'] as const;
 export const STATE_BASES = ['federal_agi', 'federal_taxable', 'custom'] as const;
+/** Q53: state row rate mode (default brackets) and nonresident mode (default ratio). */
+export const STATE_RATE_MODES = ['brackets', 'effective'] as const;
+export const STATE_NONRESIDENT_MODES = ['ratio', 'sourced_rate'] as const;
 export const ITEMIZED_KEYS = ['saltPaid', 'mortgageInterest', 'charitableCash', 'charitableNoncash', 'other'] as const;
 export const SCH1A_KEYS = ['qualifiedTips', 'qualifiedOvertime', 'carLoanInterest'] as const;
 export const MAX_SCENARIOS_PER_YEAR = 6;
@@ -104,6 +107,9 @@ export const upsertYearSchema = z.object({
   creditsRefundable: nonNegMoney.optional(),
   /** Q44: child and dependent care expenses paid (Form 2441). */
   careExpenses: nonNegMoney.optional(),
+  /** Q53 / Q39: unrecaptured §1250 gain (25% bucket) and collectibles gain (28% bucket) entered for the year — part of the long-term gains. */
+  unrecaptured1250Gain: nonNegMoney.optional(),
+  collectiblesGain: nonNegMoney.optional(),
   hsaCoverage: hsaCoverageSchema.optional(),
   withholding: withholdingSchema.optional(),
   personInputs: personInputsSchema.optional(),
@@ -199,6 +205,10 @@ export const stateRowSchema = z.object({
   state: stateCode,
   effectiveRate: z.number().min(0).max(MAX_STATE_RATE),
   base: z.enum(STATE_BASES).default('federal_agi'),
+  /** Q53: 'brackets' (state rate schedule, default) | 'effective' (effective-rate override). Omitted on PUT = keep the saved mode. */
+  rateMode: z.enum(STATE_RATE_MODES).optional(),
+  /** Q53 nonresident rows: 'ratio' (the state's method on the schedule, default) | 'sourced_rate' (sourced × effective rate). Omitted = keep. */
+  nonresidentMode: z.enum(STATE_NONRESIDENT_MODES).optional(),
   customBase: money.nullable().optional(),
   /** null + sourcedManual=false means "derive from entity state x share" (engine phase). */
   sourcedIncome: money.nullable().optional(),

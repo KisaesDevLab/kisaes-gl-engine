@@ -116,7 +116,7 @@ describe('estimate carries the firm settings and the assumptions block', () => {
     const a = r.assumptions!;
     expect(a.sections.map((s) => s.id)).toEqual([...ASSUMPTION_SECTION_IDS]);
     expect(sectionText(a, 'rate_mode')).toMatch(/2026 brackets for MFJ/);
-    expect(sectionText(a, 'rate_mode')).toContain('MO (resident): User-entered effective rate 4%');
+    expect(sectionText(a, 'rate_mode')).toContain('MO (resident): Effective-rate override: 4% on base federal AGI'); // Q53: the Rivera rows are pinned to the override
     const proj = sectionText(a, 'projection');
     for (const c of ['Rivera Plumbing LLC', 'Maria Designs Inc', 'Oak Street Rentals LP']) expect(proj).toContain(`${c}: books through 2026-12`);
     expect(proj).toContain('12 months actual (year closed; no projection)');

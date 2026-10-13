@@ -140,6 +140,22 @@ export function aiValuesEqual(a: unknown, b: unknown): boolean {
   return ak.length === bk.length && ak.every((k) => k in bo && aiValuesEqual(ao[k], bo[k]));
 }
 
+/**
+ * Q53: the part of a structured value the law states — the modelling annotations `note` and
+ * `simplified` are dropped (at any depth), so an AI-found bracket table / standard deduction /
+ * capital gains rule is compared on its figures only. Arrays of objects keep their order.
+ */
+export function aiComparableValue(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(aiComparableValue);
+  if (v === null || typeof v !== 'object') return v;
+  const out: Record<string, unknown> = {};
+  for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+    if (k === 'note' || k === 'simplified') continue;
+    out[k] = aiComparableValue(x);
+  }
+  return out;
+}
+
 /** The textual forms a quote may use for a scalar value (compact, lower-case). Empty = no check for this type. */
 function valueForms(value: unknown, valueType: string): string[] {
   if (!isNum(value)) return [];
@@ -228,7 +244,7 @@ export function validateAiCheck(input: AiCheckValidationInput): AiCheckValidatio
   if (quoteStatesValue(quote, found, input.valueType) === false) return unconfirmed('The quote does not state the found value.');
 
   // 7. the server decides matches vs differs.
-  const verdict = aiValuesEqual(found, input.storedValue) ? 'matches' : 'differs';
+  const verdict = aiValuesEqual(aiComparableValue(found), aiComparableValue(input.storedValue)) ? 'matches' : 'differs';
   if (verdict !== answer.verdict) notes.push(`Model said '${answer.verdict}'; the server comparison says '${verdict}'.`);
   return { verdict, foundValue: found, notes };
 }
