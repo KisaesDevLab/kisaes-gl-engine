@@ -25,6 +25,7 @@ import {
   type ParameterSeedRow, type ParameterStatus,
   type TaxParametersDTO, type TaxParameterRowDTO, type TaxParameterYearsDTO,
   type CreateYearFromPriorResult, type TaxParameterDiffRowDTO, type TaxParameterChangeDTO, type VerifyTaxParametersResult,
+  isAiCitation, type OverrideWriteOptions,
   FEDERAL_INSTALLMENT_PAIRS, installmentPairOf, installmentPartnerKey, installmentPairError,
 } from '@kis-books/shared';
 import { db, type DbOrTx } from '../../db/index.js';
@@ -177,7 +178,8 @@ async function resolveYear(exec: DbOrTx, year: number): Promise<Map<string, Reso
         status: ov.verifiedAt ? 'verified' : isOverride ? 'unverified' : 'provisional',
         source: isOverride ? 'override' : 'provisional',
         // R6-06: a created year has no seed yet; its rows carry the prior year's citation.
-        citation: seed ? seed.citation : ov.citation,
+        // Q48: an "Apply AI value" citation on the override row replaces the seed's (it describes the applied value).
+        citation: isAiCitation(ov.citation) ? ov.citation : seed ? seed.citation : ov.citation,
         reason: ov.reason,
         shippedValue: seed && !deepEqual(seed.value, ov.value) ? seed.value : undefined,
         hasShipped: !!seed,
@@ -310,6 +312,7 @@ async function assertInstallmentShape(exec: DbOrTx, year: number, edits: Map<str
 
 export async function setOverride(
   year: number, key: string, value: unknown, reason: string, userId?: string, companion?: ParameterCompanion,
+  opts?: OverrideWriteOptions,
 ): Promise<TaxParameterRowDTO> {
   const edits = new Map<string, unknown>([[key, value]]);
   if (companion) {
@@ -330,12 +333,14 @@ export async function setOverride(
   await db.transaction(async (tx) => {
     await assertYearEditable(tx, year);
     await assertInstallmentShape(tx, year, edits);
-    for (const [k, v] of edits) await upsertOverride(tx, year, k, v, why, userId);
+    for (const [k, v] of edits) await upsertOverride(tx, year, k, v, why, userId, k === key ? opts : undefined);
   });
   return getRow(year, key);
 }
 
-async function upsertOverride(tx: DbOrTx, year: number, key: string, value: unknown, why: string, userId?: string): Promise<void> {
+async function upsertOverride(
+  tx: DbOrTx, year: number, key: string, value: unknown, why: string, userId?: string, opts?: OverrideWriteOptions,
+): Promise<void> {
   const [prev] = await tx.select().from(taxParameterOverrides)
     .where(and(eq(taxParameterOverrides.taxYear, year), eq(taxParameterOverrides.key, key)));
   const [seed] = await tx.select().from(taxParameters).where(and(eq(taxParameters.taxYear, year), eq(taxParameters.key, key)));
@@ -343,20 +348,24 @@ async function upsertOverride(tx: DbOrTx, year: number, key: string, value: unkn
   // provisional copy that still has no shipped row stays provisional so it remains in the diff / adopt flow.
   const sameValue = !!prev && deepEqual(prev.value, value);
   const status = prev?.status === 'provisional' && !seed ? 'provisional' : 'override';
+  // Q48: Apply AI value may set the citation; a later manual value change drops an AI citation.
+  const citation = opts?.citation !== undefined ? opts.citation : (!sameValue && isAiCitation(prev?.citation) ? '' : undefined);
   const [saved] = await tx.insert(taxParameterOverrides).values({
     taxYear: year, key, value, status, reason: why, createdBy: userId ?? null,
+    ...(citation !== undefined ? { citation } : {}),
   }).onConflictDoUpdate({
     target: [taxParameterOverrides.taxYear, taxParameterOverrides.key],
     // A new override value is a new decision: any earlier verification is cleared (R7 Verify).
     set: {
       value, status, reason: why, createdBy: userId ?? null, updatedAt: sql`now()`,
+      ...(citation !== undefined ? { citation } : {}),
       ...(sameValue ? {} : { verifiedAt: null, verifiedBy: null, verificationNote: null }),
     },
   }).returning();
   // R6-09: `before` is the value the engine was reading (override, else the shipped seed).
   await auditLog(ZERO_TENANT, 'override', AUDIT_ENTITY, saved!.id,
     { year, key, value: prev?.value ?? seed?.value ?? null },
-    { op: 'override_set', year, key, value, reason: why }, userId, tx);
+    { op: 'override_set', year, key, value, reason: why, ...(opts?.citation !== undefined ? { citation: opts.citation } : {}), ...(opts?.audit ?? {}) }, userId, tx);
 }
 
 export async function revertOverride(year: number, key: string, userId?: string): Promise<void> {

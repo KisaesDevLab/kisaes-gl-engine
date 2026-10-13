@@ -207,6 +207,26 @@ Nothing else changes; a verified row can still be overridden with a
 reason (the new value starts unverified). A verification survives
 releases while the shipped value is unchanged.
 
+## AI parameter check (super admin)
+
+On Admin -> Tax parameters the "AI check" column asks Claude to confirm a
+federal parameter or state rule from government sources only (irs.gov,
+U.S. Code, eCFR, Federal Register, govinfo, congress.gov, ssa.gov and the
+state's revenue department / statutes). "Check" does one row; "AI check
+unverified" does every unverified row of a federal year or one state-year
+as a background run with progress and Cancel. Needs AI on and an Anthropic
+API key in Admin -> AI (otherwise the buttons are disabled with the
+reason); each row uses Anthropic usage on that key. Results: matches,
+differs, unconfirmed (no confirming government text found) or error, with
+date and a "stale" flag if the value changed since. The drawer shows the
+quote, source link, tax year and reasoning. The app re-checks the answer
+(trusted and actually retrieved source, quote present in that page, right
+tax year, app-side value compare); failures show as unconfirmed. Advisory
+only: it never changes values or marks anything verified. "Apply AI
+value" on a differs result saves an audited override (optionally with the
+AI source as citation) that stays unverified until a super admin checks
+the source and uses Mark verified. No client data is sent to the AI.
+
 ## Version 1 limits (say so when asked)
 
 Withholding treated as even; no QBI loss carryforward across years; when

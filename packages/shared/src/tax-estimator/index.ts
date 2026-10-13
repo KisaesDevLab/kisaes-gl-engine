@@ -31,3 +31,7 @@ export * from './portal-api.js';
 export * from './installments-as-of.js';
 // The Calculation view's lines (web Calculation table + estimate PDF "Detailed calculation").
 export * from './calc-lines.js';
+// AI parameter check (OPEN-QUESTIONS Q48): trusted sources, wire types, server-side validator.
+export * from './ai-check-sources.js';
+export * from './ai-check-api.js';
+export * from './ai-check-validate.js';

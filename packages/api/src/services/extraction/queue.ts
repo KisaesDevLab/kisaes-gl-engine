@@ -24,6 +24,8 @@ export const DOC_EXTRACT_QUEUE = 'doc-extract';
 export const STATEMENT_PARSE_QUEUE = 'statement-parse';
 export const REPORT_PACK_QUEUE = 'report-pack';
 export const BILL_CAPTURE_QUEUE = 'bill-capture';
+/** AI parameter check runs (Tax Estimator, OPEN-QUESTIONS Q48). */
+export const TAX_PARAM_AI_CHECK_QUEUE = 'tax-param-ai-check';
 
 export interface StatementParseJobData {
   jobId: string;
@@ -37,6 +39,10 @@ export interface BillCaptureJobData {
   // Reprocess bumps this so the BullMQ job id is fresh (a completed id is
   // a silent no-op on re-add).
   attempt: number;
+}
+
+export interface TaxParamAiCheckJobData {
+  runId: string;
 }
 
 export interface ReportPackJobData {
@@ -75,6 +81,7 @@ export const queueJobIds = {
   render: (jobId: string) => `render-${jobId}`,
   extract: (jobId: string, pageNo: number) => `extract-${jobId}-${pageNo}`,
   billCapture: (captureId: string, attempt: number) => `bcap-${captureId}-${attempt}`,
+  taxParamAiCheck: (runId: string) => `taxai-${runId}`,
 };
 
 let sharedConnection: RedisClient | null = null;
@@ -117,6 +124,7 @@ let extractQueue: Queue<ExtractJobData> | null = null;
 let statementParseQueue: Queue<StatementParseJobData> | null = null;
 let reportPackQueue: Queue<ReportPackJobData> | null = null;
 let billCaptureQueue: Queue<BillCaptureJobData> | null = null;
+let taxParamAiCheckQueue: Queue<TaxParamAiCheckJobData> | null = null;
 
 function getRenderQueue(): Queue<RenderJobData> {
   if (!renderQueue) {
@@ -178,6 +186,23 @@ export async function enqueueBillCapture(data: BillCaptureJobData): Promise<void
   await getBillCaptureQueue().add('extract', data, { jobId: queueJobIds.billCapture(data.captureId, data.attempt) });
 }
 
+// An AI check run is many paid API calls tracked by its tax_param_ai_check_runs row; a retry
+// would re-check (and re-bill) every row, so no auto-retry (attempts: 1).
+function getTaxParamAiCheckQueue(): Queue<TaxParamAiCheckJobData> {
+  if (!taxParamAiCheckQueue) {
+    taxParamAiCheckQueue = new Queue<TaxParamAiCheckJobData>(TAX_PARAM_AI_CHECK_QUEUE, {
+      connection: getSharedConnection() as ConnectionOptions,
+      defaultJobOptions: REPORT_PACK_JOB_OPTIONS,
+    });
+  }
+  return taxParamAiCheckQueue;
+}
+
+/** Enqueue an AI parameter check run. runId as the BullMQ job id ('-' only, never ':') makes it idempotent. */
+export async function enqueueTaxParamAiCheck(data: TaxParamAiCheckJobData): Promise<void> {
+  await getTaxParamAiCheckQueue().add('check', data, { jobId: queueJobIds.taxParamAiCheck(data.runId) });
+}
+
 /** Enqueue a report-pack render. runId as the BullMQ job id makes it idempotent. */
 export async function enqueueReportPack(data: ReportPackJobData): Promise<void> {
   await getReportPackQueue().add('render', data, { jobId: queueJobIds.reportPack(data.runId) });
@@ -227,12 +252,14 @@ export async function closeQueues(): Promise<void> {
     statementParseQueue?.close(),
     reportPackQueue?.close(),
     billCaptureQueue?.close(),
+    taxParamAiCheckQueue?.close(),
   ]);
   renderQueue = null;
   extractQueue = null;
   statementParseQueue = null;
   reportPackQueue = null;
   billCaptureQueue = null;
+  taxParamAiCheckQueue = null;
   if (sharedConnection) {
     await sharedConnection.quit().catch(() => undefined);
     sharedConnection = null;

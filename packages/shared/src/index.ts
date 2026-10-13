@@ -89,6 +89,7 @@ export * from './schemas/tax-estimator-state-rules.js';
 export * from './schemas/tax-estimator-entities.js';
 export * from './schemas/tax-estimator-years.js';
 export * from './schemas/tax-estimator-estimate.js';
+export * from './schemas/tax-estimator-ai-check.js';
 
 // Constants
 export * from './constants/coa-templates.js';

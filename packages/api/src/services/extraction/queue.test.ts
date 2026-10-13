@@ -18,6 +18,7 @@ import {
   enqueueRender,
   enqueueExtract,
   enqueueBillCapture,
+  enqueueTaxParamAiCheck,
   closeQueues,
   makeRedisConnection,
   STATEMENT_PARSE_QUEUE,
@@ -25,6 +26,7 @@ import {
   DOC_RENDER_QUEUE,
   DOC_EXTRACT_QUEUE,
   BILL_CAPTURE_QUEUE,
+  TAX_PARAM_AI_CHECK_QUEUE,
 } from './queue.js';
 
 const conn = makeRedisConnection();
@@ -69,6 +71,13 @@ describe('BullMQ producers', () => {
     await expect(enqueueReportPack(data)).resolves.toBeUndefined();
     await expect(enqueueReportPack(data)).resolves.toBeUndefined();
     await expectSingleJob(REPORT_PACK_QUEUE, `pack-${data.runId}`, data);
+  });
+
+  it('enqueues an AI parameter check run (and re-enqueue is a no-op)', async () => {
+    const data = { runId: crypto.randomUUID() };
+    await expect(enqueueTaxParamAiCheck(data)).resolves.toBeUndefined();
+    await expect(enqueueTaxParamAiCheck(data)).resolves.toBeUndefined();
+    await expectSingleJob(TAX_PARAM_AI_CHECK_QUEUE, `taxai-${data.runId}`, data);
   });
 
   it('enqueues a document render (and re-enqueue is a no-op)', async () => {
