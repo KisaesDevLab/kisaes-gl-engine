@@ -28,6 +28,7 @@ import {
   type CreateStateYearFromPriorResult, type StateRuleDiffRowDTO, type StateRuleChangeDTO,
   type VerifyStateRulesResult,
   STATE_INSTALLMENT_PAIRS, installmentPairOf, installmentPartnerKey, installmentPairError,
+  isAiCitation, type OverrideWriteOptions,
 } from '@kis-books/shared';
 import { db, type DbOrTx } from '../../db/index.js';
 import { stateEstimateRules, stateEstimateRuleOverrides } from '../../db/schema/tax-estimator-state-rules.js';
@@ -215,7 +216,8 @@ function resolveRows(seedRows: SeedRow[], ovRows: OverrideRow[]): Map<string, Re
         value: ov.value,
         status: ov.verifiedAt ? 'verified' : isOverride ? 'unverified' : 'provisional',
         source: isOverride ? 'override' : 'provisional',
-        citation: seed ? seed.citation : ov.citation,
+        // Q44: an "Apply AI value" citation on the override row replaces the seed's (it describes the applied value).
+        citation: isAiCitation(ov.citation) ? ov.citation : seed ? seed.citation : ov.citation,
         reason: ov.reason,
         shippedValue: seed && !deepEqual(seed.value, ov.value) ? seed.value : undefined,
         hasShipped: !!seed,
@@ -373,6 +375,7 @@ async function assertInstallmentShape(exec: DbOrTx, year: number, state: StateCo
 
 export async function setOverride(
   year: number, stateIn: string, key: string, value: unknown, reason: string, userId?: string, companion?: StateRuleCompanion,
+  opts?: OverrideWriteOptions,
 ): Promise<StateRuleRowDTO> {
   const state = assertState(stateIn);
   const edits = new Map<string, unknown>([[key, value]]);
@@ -394,12 +397,14 @@ export async function setOverride(
   await db.transaction(async (tx) => {
     await assertStateEditable(tx, year, state);
     await assertInstallmentShape(tx, year, state, edits);
-    for (const [k, v] of edits) await upsertOverride(tx, year, state, k, v, why, userId);
+    for (const [k, v] of edits) await upsertOverride(tx, year, state, k, v, why, userId, k === key ? opts : undefined);
   });
   return getRow(year, state, key);
 }
 
-async function upsertOverride(tx: DbOrTx, year: number, state: StateCode, key: string, value: unknown, why: string, userId?: string): Promise<void> {
+async function upsertOverride(
+  tx: DbOrTx, year: number, state: StateCode, key: string, value: unknown, why: string, userId?: string, opts?: OverrideWriteOptions,
+): Promise<void> {
   const [prev] = await tx.select().from(stateEstimateRuleOverrides).where(and(
     eq(stateEstimateRuleOverrides.state, state), eq(stateEstimateRuleOverrides.taxYear, year), eq(stateEstimateRuleOverrides.key, key)));
   const [seed] = await tx.select().from(stateEstimateRules).where(and(
@@ -407,20 +412,24 @@ async function upsertOverride(tx: DbOrTx, year: number, state: StateCode, key: s
   // R6-08: the same value again keeps the sign-off; a provisional copy with no shipped row stays provisional.
   const sameValue = !!prev && deepEqual(prev.value, value);
   const status = prev?.status === 'provisional' && !seed ? 'provisional' : 'override';
+  // Q44: Apply AI value may set the citation; a later manual value change drops an AI citation.
+  const citation = opts?.citation !== undefined ? opts.citation : (!sameValue && isAiCitation(prev?.citation) ? '' : undefined);
   const [saved] = await tx.insert(stateEstimateRuleOverrides).values({
     state, taxYear: year, key, value: jsonb(value), status, reason: why, createdBy: userId ?? null,
+    ...(citation !== undefined ? { citation } : {}),
   }).onConflictDoUpdate({
     target: [stateEstimateRuleOverrides.state, stateEstimateRuleOverrides.taxYear, stateEstimateRuleOverrides.key],
     // A new override value is a new decision: any earlier verification is cleared (R7 Verify).
     set: {
       value: jsonb(value), status, reason: why, createdBy: userId ?? null, updatedAt: sql`now()`,
+      ...(citation !== undefined ? { citation } : {}),
       ...(sameValue ? {} : { verifiedAt: null, verifiedBy: null, verificationNote: null }),
     },
   }).returning();
   // R6-09: `before` is the value the engine was reading (override, else the shipped seed).
   await auditLog(ZERO_TENANT, 'override', AUDIT_ENTITY, saved!.id,
     { year, state, key, value: prev?.value ?? seed?.value ?? null },
-    { op: 'override_set', year, state, key, value, reason: why }, userId, tx);
+    { op: 'override_set', year, state, key, value, reason: why, ...(opts?.citation !== undefined ? { citation: opts.citation } : {}), ...(opts?.audit ?? {}) }, userId, tx);
 }
 
 export async function revertOverride(year: number, stateIn: string, key: string, userId?: string): Promise<void> {
