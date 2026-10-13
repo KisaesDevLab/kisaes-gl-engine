@@ -36,6 +36,7 @@ import * as taxEntriesService from '../services/tb/tax-entries.service.js';
 import * as m1Service from '../services/tb/m1.service.js';
 import * as exportsService from '../services/tb/exports.service.js';
 import * as rowAttachmentsService from '../services/tb/row-attachments.service.js';
+import { periodEndSchema, resolvePeriodScope } from '../services/tb/period-scope.js';
 import { db } from '../db/index.js';
 import { companies, companyTaxProfiles, tbStatus } from '../db/schema/index.js';
 import { and, eq, sql } from 'drizzle-orm';
@@ -299,7 +300,9 @@ tbRouter.put('/status', validate(statusSchema), async (req, res) => {
   if (workflowState === 'complete') {
     // 7.8: completion requires reviewer sign-off on every grouping;
     // only a FIRM ADMIN may override, and the override is audited.
-    const gate = await signoffsService.checkCompletionGate(req.tenantId, req.companyId!, taxYear);
+    // tb_status is per tax year → gate on the tax year's FY-end period.
+    const scope = await resolvePeriodScope(req.tenantId, req.companyId!, { taxYear });
+    const gate = await signoffsService.checkCompletionGate(req.tenantId, req.companyId!, scope.periodEnd);
     const isFirmAdmin = req.isSuperAdmin || req.userRole === 'owner';
     if (!gate.ok) {
       if (!(overrideConfirmed && isFirmAdmin)) {
@@ -685,14 +688,29 @@ tbRouter.delete('/tickmarks/:id', async (req, res) => {
   res.status(204).end();
 });
 
+// Tickmark applications, notes and sign-offs are scoped to the workpaper
+// PERIOD END (migration 0208). Reads take ?periodEnd=YYYY-MM-DD; a caller
+// that omits it gets the FY end of ?taxYear (or of the current tax year)
+// — documented fallback, the web always sends periodEnd. Writes REQUIRE
+// periodEnd; tax_year is derived server-side (a client taxYear is ignored).
+const periodReadSchema = z.object({
+  periodEnd: periodEndSchema.optional(),
+  taxYear: z.coerce.number().int().min(2000).max(2100).optional(),
+});
+async function readScope(req: Request) {
+  const q = periodReadSchema.parse(req.query);
+  return resolvePeriodScope(req.tenantId, req.companyId!, q);
+}
+
 tbRouter.get('/tickmark-applications', async (req, res) => {
-  const taxYear = Number(req.query['taxYear']) || new Date().getUTCFullYear();
-  const applications = await groupingsService.listTickmarkApplications(req.tenantId, req.companyId!, taxYear);
-  res.json({ applications });
+  const scope = await readScope(req);
+  const applications = await groupingsService.listTickmarkApplications(req.tenantId, req.companyId!, scope.periodEnd);
+  res.json({ applications, periodEnd: scope.periodEnd, taxYear: scope.taxYear });
 });
 
 tbRouter.post('/tickmark-applications', validate(z.object({
-  taxYear: z.coerce.number().int(),
+  periodEnd: periodEndSchema,
+  taxYear: z.coerce.number().int().optional(),
   accountId: z.string().uuid(),
   column: z.enum(['unadjusted', 'aje', 'adjusted', 'tax_rje', 'tax']),
   tickmarkId: z.string().uuid(),
@@ -709,13 +727,14 @@ tbRouter.delete('/tickmark-applications/:id', async (req, res) => {
 
 // Notes.
 tbRouter.get('/notes', async (req, res) => {
-  const taxYear = Number(req.query['taxYear']) || new Date().getUTCFullYear();
-  const notes = await groupingsService.listNotes(req.tenantId, req.companyId!, taxYear);
-  res.json({ notes });
+  const scope = await readScope(req);
+  const notes = await groupingsService.listNotes(req.tenantId, req.companyId!, scope.periodEnd);
+  res.json({ notes, periodEnd: scope.periodEnd, taxYear: scope.taxYear });
 });
 
 tbRouter.post('/notes', validate(z.object({
-  taxYear: z.coerce.number().int(),
+  periodEnd: periodEndSchema,
+  taxYear: z.coerce.number().int().optional(),
   accountId: z.string().uuid().nullable().optional(),
   body: z.string().min(1).max(5000),
 })), async (req, res) => {
@@ -735,13 +754,14 @@ tbRouter.delete('/notes/:id', async (req, res) => {
 
 // Sign-offs (7.6/7.7).
 tbRouter.get('/signoffs', async (req, res) => {
-  const taxYear = Number(req.query['taxYear']) || new Date().getUTCFullYear();
-  const result = await signoffsService.listSignoffs(req.tenantId, req.companyId!, taxYear);
-  res.json(result);
+  const scope = await readScope(req);
+  const result = await signoffsService.listSignoffs(req.tenantId, req.companyId!, scope.periodEnd);
+  res.json({ ...result, periodEnd: scope.periodEnd, taxYear: scope.taxYear });
 });
 
 tbRouter.post('/signoffs', validate(z.object({
-  taxYear: z.coerce.number().int(),
+  periodEnd: periodEndSchema,
+  taxYear: z.coerce.number().int().optional(),
   groupingId: z.string().uuid(),
   role: z.enum(['preparer', 'reviewer']),
 })), async (req, res) => {

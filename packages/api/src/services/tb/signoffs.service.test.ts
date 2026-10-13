@@ -7,7 +7,7 @@
 // the tb_status completion gate.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db, pool } from '../../db/index.js';
 import {
   accounts, companies, journalLines, tbGroupingAccounts, tbGroupings,
@@ -15,6 +15,7 @@ import {
 } from '../../db/schema/index.js';
 import { seedDefaultGroupings, listGroupings, setAccountGrouping, seedStandardTickmarks, listTickmarks } from './groupings.service.js';
 import { checkCompletionGate, listSignoffs, sign, unsign } from './signoffs.service.js';
+import { resolvePeriodScope } from './period-scope.js';
 
 let tenantId: string;
 let companyId: string;
@@ -84,18 +85,20 @@ describe('groupings + tickmarks seed', () => {
 });
 
 describe('sign-off workflow (7.6–7.8)', () => {
-  const TY = 2026;
+  // Sign-offs are period-end scoped (0208); the FY-end period is what
+  // the tb_status completion gate reads.
+  const TY = '2026-12-31';
 
   it('enforces preparer-before-reviewer and gates completion', async () => {
     const { groupings } = await listGroupings(tenantId, companyId);
     const target = groupings[0]!;
 
     // Reviewer first → refused.
-    await expect(sign(tenantId, companyId, { taxYear: TY, groupingId: target.id, role: 'reviewer' }, userId))
+    await expect(sign(tenantId, companyId, { periodEnd: TY, groupingId: target.id, role: 'reviewer' }, userId))
       .rejects.toMatchObject({ statusCode: 422, code: 'TB_SIGNOFF_ORDER' });
 
-    await sign(tenantId, companyId, { taxYear: TY, groupingId: target.id, role: 'preparer' }, userId);
-    await sign(tenantId, companyId, { taxYear: TY, groupingId: target.id, role: 'reviewer' }, userId);
+    await sign(tenantId, companyId, { periodEnd: TY, groupingId: target.id, role: 'preparer' }, userId);
+    await sign(tenantId, companyId, { periodEnd: TY, groupingId: target.id, role: 'reviewer' }, userId);
 
     // Gate: only one of many groupings reviewer-signed → not ok.
     const gate = await checkCompletionGate(tenantId, companyId, TY);
@@ -104,8 +107,8 @@ describe('sign-off workflow (7.6–7.8)', () => {
 
     // Sign the rest → gate passes.
     for (const g of groupings.slice(1)) {
-      await sign(tenantId, companyId, { taxYear: TY, groupingId: g.id, role: 'preparer' }, userId);
-      await sign(tenantId, companyId, { taxYear: TY, groupingId: g.id, role: 'reviewer' }, userId);
+      await sign(tenantId, companyId, { periodEnd: TY, groupingId: g.id, role: 'preparer' }, userId);
+      await sign(tenantId, companyId, { periodEnd: TY, groupingId: g.id, role: 'reviewer' }, userId);
     }
     expect((await checkCompletionGate(tenantId, companyId, TY)).ok).toBe(true);
   });
@@ -130,7 +133,7 @@ describe('sign-off workflow (7.6–7.8)', () => {
     // invalidates the reviewer (review must follow prep).
     const { groupings } = await listGroupings(tenantId, companyId);
     const target = groupings[0]!;
-    await sign(tenantId, companyId, { taxYear: TY, groupingId: target.id, role: 'preparer' }, userId);
+    await sign(tenantId, companyId, { periodEnd: TY, groupingId: target.id, role: 'preparer' }, userId);
     const after = await listSignoffs(tenantId, companyId, TY);
     const targetSignoffs = after.signoffs.filter((s) => s.groupingId === target.id);
     expect(targetSignoffs).toHaveLength(1); // reviewer invalidated
@@ -147,5 +150,94 @@ describe('sign-off workflow (7.6–7.8)', () => {
     await unsign(tenantId, companyId, reviewerSig.id, userId);
     const after = await listSignoffs(tenantId, companyId, TY);
     expect(after.signoffs.find((s) => s.id === reviewerSig.id)).toBeUndefined();
+  });
+});
+
+describe('sign-offs are period-end scoped (0208)', () => {
+  const TY_END = '2026-12-31';
+  const JUL = '2026-07-31';
+  const AUG = '2026-08-31';
+
+  it('signing Aug does not satisfy Jul (list, order rule, gate)', async () => {
+    const { groupings } = await listGroupings(tenantId, companyId);
+    const g = groupings[2]!;
+    const aug = await sign(tenantId, companyId, { periodEnd: AUG, groupingId: g.id, role: 'preparer' }, userId);
+    expect(aug.periodEnd).toBe(AUG);
+    expect(aug.taxYear).toBe(2026); // derived from the period end
+
+    const julList = await listSignoffs(tenantId, companyId, JUL);
+    expect(julList.signoffs.find((s) => s.groupingId === g.id)).toBeUndefined();
+    const augList = await listSignoffs(tenantId, companyId, AUG);
+    expect(augList.signoffs.filter((s) => s.groupingId === g.id).map((s) => s.role)).toEqual(['preparer']);
+
+    // Aug's preparer does not unlock a Jul reviewer sign-off.
+    await expect(sign(tenantId, companyId, { periodEnd: JUL, groupingId: g.id, role: 'reviewer' }, userId))
+      .rejects.toMatchObject({ statusCode: 422, code: 'TB_SIGNOFF_ORDER' });
+
+    // Interim sign-offs never complete the year: sign every grouping
+    // (prep + review) on AUG only → the FY-end gate is unaffected.
+    const fyBefore = await checkCompletionGate(tenantId, companyId, TY_END);
+    for (const x of groupings) {
+      await sign(tenantId, companyId, { periodEnd: AUG, groupingId: x.id, role: 'preparer' }, userId);
+      await sign(tenantId, companyId, { periodEnd: AUG, groupingId: x.id, role: 'reviewer' }, userId);
+    }
+    expect((await checkCompletionGate(tenantId, companyId, AUG)).ok).toBe(true);
+    expect((await checkCompletionGate(tenantId, companyId, JUL)).ok).toBe(false);
+    expect((await checkCompletionGate(tenantId, companyId, TY_END)).missing).toEqual(fyBefore.missing);
+  });
+
+  it('uniqueness is one live sign-off per (grouping, period end, role)', async () => {
+    const { groupings } = await listGroupings(tenantId, companyId);
+    const g = groupings[3]!;
+    // Live preparer on JUL, AUG and 12/31 (signed in the block above) at
+    // the same time is fine — one per period end.
+    await sign(tenantId, companyId, { periodEnd: JUL, groupingId: g.id, role: 'preparer' }, userId);
+    const liveBoth = await db.select().from(tbLeadsheetSignoffs).where(and(
+      eq(tbLeadsheetSignoffs.groupingId, g.id), eq(tbLeadsheetSignoffs.role, 'preparer'), isNull(tbLeadsheetSignoffs.invalidatedAt),
+    ));
+    expect(liveBoth.map((s) => s.periodEnd).sort()).toEqual([JUL, AUG, TY_END]);
+
+    // Re-signing JUL invalidates only JUL's prior signature (and JUL's
+    // reviewer chain), never AUG's.
+    const augBefore = (await listSignoffs(tenantId, companyId, AUG)).signoffs.filter((s) => s.groupingId === g.id);
+    await sign(tenantId, companyId, { periodEnd: JUL, groupingId: g.id, role: 'preparer' }, userId);
+    const augAfter = (await listSignoffs(tenantId, companyId, AUG)).signoffs.filter((s) => s.groupingId === g.id);
+    expect(augAfter.map((s) => s.id).sort()).toEqual(augBefore.map((s) => s.id).sort());
+    expect((await listSignoffs(tenantId, companyId, JUL)).signoffs.filter((s) => s.groupingId === g.id)).toHaveLength(1);
+
+    // The DB index itself refuses a second live row for the same period.
+    const scope = await resolvePeriodScope(tenantId, companyId, { periodEnd: JUL });
+    await expect(db.insert(tbLeadsheetSignoffs).values({
+      tenantId, companyId, taxYear: scope.taxYear, periodEnd: JUL, groupingId: g.id, role: 'preparer', userId, glVersionStampAtSignoff: 0,
+    })).rejects.toThrow();
+  });
+
+  it('staleness is still computed against the live GL stamp per period', async () => {
+    const { groupings } = await listGroupings(tenantId, companyId);
+    const g = groupings[4]!;
+    await sign(tenantId, companyId, { periodEnd: JUL, groupingId: g.id, role: 'preparer' }, userId);
+    expect((await listSignoffs(tenantId, companyId, JUL)).signoffs.find((s) => s.groupingId === g.id)!.stale).toBe(false);
+    const [txn] = await db.insert(transactions).values({
+      tenantId, companyId, txnType: 'journal_entry', txnDate: '2026-07-15', status: 'posted', basis: 'both',
+    }).returning();
+    await db.insert(journalLines).values([
+      { tenantId, transactionId: txn!.id, accountId: cashId, debit: '5', credit: '0', lineOrder: 0 },
+      { tenantId, transactionId: txn!.id, accountId: revenueId, debit: '0', credit: '5', lineOrder: 1 },
+    ]);
+    expect((await listSignoffs(tenantId, companyId, JUL)).signoffs.find((s) => s.groupingId === g.id)!.stale).toBe(true);
+  });
+
+  it('tenant isolation: another tenant sees no sign-offs and cannot sign this grouping', async () => {
+    const [t2] = await db.insert(tenants).values({ name: 'tb-so-other', slug: `tb-so-o-${Date.now()}` }).returning();
+    const [c2] = await db.insert(companies).values({ tenantId: t2!.id, businessName: 'Other Co', fiscalYearStartMonth: 1 }).returning();
+    try {
+      expect((await listSignoffs(t2!.id, c2!.id, JUL)).signoffs).toHaveLength(0);
+      const { groupings } = await listGroupings(tenantId, companyId);
+      await expect(sign(t2!.id, c2!.id, { periodEnd: JUL, groupingId: groupings[0]!.id, role: 'preparer' }, userId))
+        .rejects.toMatchObject({ statusCode: 404 });
+    } finally {
+      await db.delete(companies).where(eq(companies.tenantId, t2!.id));
+      await db.delete(tenants).where(eq(tenants.id, t2!.id));
+    }
   });
 });

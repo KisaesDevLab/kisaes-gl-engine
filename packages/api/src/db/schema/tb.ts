@@ -223,11 +223,17 @@ export const tbTickmarks = pgTable('tb_tickmarks', {
   uniqueIndex('uniq_tb_tickmarks_symbol').on(t.tenantId, t.symbol),
 ]);
 
+// Applications, notes and sign-offs are PERIOD-END scoped (migration
+// 0208): they belong to the workpaper period end (the TB as-of date) they
+// were made under — a mark on 08/31 never shows on 07/31. tax_year is
+// kept as a derived column (taxYearOf(period_end, FY start month)) for
+// indexing/back-compat; period_end is the scoping key. No roll-forward.
 export const tbTickmarkApplications = pgTable('tb_tickmark_applications', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull(),
   companyId: uuid('company_id').notNull(),
   taxYear: integer('tax_year').notNull(),
+  periodEnd: date('period_end').notNull(),
   accountId: uuid('account_id').notNull(),
   // Which workpaper column the mark annotates: unadjusted|aje|adjusted|tax_rje|tax.
   column: varchar('column', { length: 20 }).notNull(),
@@ -236,7 +242,7 @@ export const tbTickmarkApplications = pgTable('tb_tickmark_applications', {
   appliedBy: uuid('applied_by'),
   appliedAt: timestamp('applied_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
-  index('idx_tb_tickmark_apps_lookup').on(t.companyId, t.taxYear, t.accountId),
+  index('idx_tb_tickmark_apps_lookup').on(t.companyId, t.periodEnd, t.accountId),
   index('idx_tb_tickmark_apps_tenant').on(t.tenantId),
 ]);
 
@@ -245,6 +251,8 @@ export const tbNotes = pgTable('tb_notes', {
   tenantId: uuid('tenant_id').notNull(),
   companyId: uuid('company_id').notNull(),
   taxYear: integer('tax_year').notNull(),
+  // Workpaper period end the note belongs to (0208).
+  periodEnd: date('period_end').notNull(),
   // NULL = TB-level note (not tied to one account).
   accountId: uuid('account_id'),
   body: text('body').notNull(),
@@ -254,7 +262,7 @@ export const tbNotes = pgTable('tb_notes', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
-  index('idx_tb_notes_lookup').on(t.companyId, t.taxYear),
+  index('idx_tb_notes_lookup').on(t.companyId, t.periodEnd),
   index('idx_tb_notes_tenant').on(t.tenantId),
 ]);
 
@@ -264,6 +272,8 @@ export const tbLeadsheetSignoffs = pgTable('tb_leadsheet_signoffs', {
   tenantId: uuid('tenant_id').notNull(),
   companyId: uuid('company_id').notNull(),
   taxYear: integer('tax_year').notNull(),
+  // Workpaper period end signed (0208): signing 08/31 never satisfies 07/31.
+  periodEnd: date('period_end').notNull(),
   groupingId: uuid('grouping_id').notNull().references(() => tbGroupings.id, { onDelete: 'cascade' }),
   role: varchar('role', { length: 10 }).notNull(), // preparer | reviewer
   userId: uuid('user_id').notNull(),
@@ -272,9 +282,9 @@ export const tbLeadsheetSignoffs = pgTable('tb_leadsheet_signoffs', {
   glVersionStampAtSignoff: bigint('gl_version_stamp_at_signoff', { mode: 'number' }).notNull(),
   invalidatedAt: timestamp('invalidated_at', { withTimezone: true }),
 }, (t) => [
-  // One live sign-off per (grouping, tax year, role); re-signs invalidate first.
-  uniqueIndex('uniq_tb_leadsheet_signoffs_live').on(t.groupingId, t.taxYear, t.role).where(sql`${t.invalidatedAt} IS NULL`),
-  index('idx_tb_leadsheet_signoffs_lookup').on(t.companyId, t.taxYear),
+  // One live sign-off per (grouping, period end, role); re-signs invalidate first.
+  uniqueIndex('uniq_tb_leadsheet_signoffs_live').on(t.groupingId, t.periodEnd, t.role).where(sql`${t.invalidatedAt} IS NULL`),
+  index('idx_tb_leadsheet_signoffs_lookup').on(t.companyId, t.periodEnd),
 ]);
 
 // Per-row leadsheet PDF attachments (ref-coded A001…; annotations are
