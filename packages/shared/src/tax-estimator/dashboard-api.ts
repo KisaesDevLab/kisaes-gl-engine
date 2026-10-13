@@ -78,9 +78,15 @@ export interface TaxEstDashboardTaxpayerDTO {
   totals: { total: string; federal: string; state: string } | null;
   /** Projected total minus the latest finalized snapshot's total; null when there is none or the figures ARE that snapshot. */
   changeSinceSnapshot: { amount: string; snapshotAt: string } | null;
-  jurisdictions: TaxEstDashboardJurisdictionDTO[];
-  /** Σ jurisdiction shortfalls. */
-  shortfall: string;
+  /**
+   * Per-jurisdiction voucher / paid-vs-required figures. ABSENT (not empty) for the owner
+   * audience when the owner's portal contact has the Q51 "Quarterly estimates" option off —
+   * the owner card mirrors the portal, where that option hides the installments and the next
+   * payment; the projected total always shows.
+   */
+  jurisdictions?: TaxEstDashboardJurisdictionDTO[];
+  /** Σ jurisdiction shortfalls. Absent exactly when `jurisdictions` is. */
+  shortfall?: string;
   /** Σ jurisdiction penalties (staff only; null for the owner audience). */
   penalty: string | null;
 }

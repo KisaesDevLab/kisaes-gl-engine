@@ -101,6 +101,19 @@ export const DEFAULT_PORTAL_CONTACT_TAX_OPTIONS: Readonly<PortalContactTaxOption
   calculationSummary: false, quarterlyEstimates: true, paymentsOnRecord: true, pdfDownload: false,
 });
 
+/**
+ * The most restrictive combination of several contacts' options (AND of every switch). Used
+ * where one person is matched to more than one portal contact (Q52 owner card: every active
+ * contact of the tenant with the owner's e-mail) so that person never sees more than any of
+ * those contacts would. No contacts = the defaults.
+ */
+export function mostRestrictivePortalOptions(list: readonly PortalContactTaxOptionsDTO[]): PortalContactTaxOptionsDTO {
+  if (list.length === 0) return { ...DEFAULT_PORTAL_CONTACT_TAX_OPTIONS };
+  const out = { calculationSummary: true, quarterlyEstimates: true, paymentsOnRecord: true, pdfDownload: true };
+  for (const o of list) for (const k of PORTAL_CONTACT_TAX_OPTION_KEYS) out[k] = out[k] && o[k];
+  return out;
+}
+
 /** Staff-facing labels (one source for both option editors and the audit trail). */
 export const PORTAL_CONTACT_TAX_OPTION_LABELS: Record<PortalContactTaxOptionKey, string> = {
   calculationSummary: 'Calculation summary',

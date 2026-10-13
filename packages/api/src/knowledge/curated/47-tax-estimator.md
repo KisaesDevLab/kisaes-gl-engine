@@ -262,7 +262,12 @@ staff also see the estimated penalty). Firm staff with Tax Estimator access
 see every linked taxpayer they may see, with Refresh and "Not computed yet".
 The company owner sees only the taxpayer mapped to the portal contact with
 the owner's e-mail and Tax estimates access on the company, with the same
-figures as the client portal (no penalty). Other users see nothing.
+figures as the client portal (no penalty), for the Base scenario (snapshot
+mode: Base's latest finalized snapshot). The owner's cards follow that
+contact's portal options: with "Quarterly estimates and vouchers" off only
+the projected tax shows (no next payment, no paid vs required). Several
+active contacts with the owner's e-mail: the most restrictive options apply.
+Other users see nothing.
 Tax Estimator home (above the taxpayer list): "Vouchers due in the next 30
 days" and "Behind on payments" across every visible taxpayer, each row
 opening the taxpayer, with a per-row refresh. Loading a dashboard never

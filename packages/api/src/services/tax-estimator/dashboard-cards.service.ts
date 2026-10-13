@@ -18,6 +18,13 @@
 //            the same figures in the client portal, so the card shows nothing new. Portal-style
 //            data only (the portal allow-list projection; no penalty, other owners, rates,
 //            traces or adjustments); a taxpayer with no figures is omitted.
+//            Q51 portal options: the card follows the contact's per-contact options — with
+//            "Quarterly estimates" off the next voucher and paid-vs-required are ABSENT (the
+//            projected total stays, as in the portal). When several active contacts of the
+//            tenant carry the owner's e-mail, the most restrictive combination (AND of the
+//            switches) of ALL of them applies (portal-options `mostRestrictiveOptionsForContacts`).
+//            Scenario: the one the portal shows by default — Base (live: Base's cache entry;
+//            snapshot: Base's latest finalized snapshot only, never a shared what-if's).
 //   anyone else — `null` (cards hidden), indistinguishable from "flag off / nothing linked".
 //
 // FIRM-WIDE (GET /api/v1/tax-estimator/dashboard, Tax Estimator home): "Vouchers due in the
@@ -57,6 +64,7 @@ import { computeEstimate, peekCachedEstimate } from './estimate.service.js';
 import { getSnapshot } from './estimate-snapshots.service.js';
 import { listPackTaxpayers } from './estimate-documents.service.js';
 import { toPortalEstimate, type FullPortalEstimate } from './portal-estimates.service.js';
+import { mostRestrictiveOptionsForContacts } from './portal-options.service.js';
 import { loadDashboardSummaries, payloadAsEstimate } from './dashboard-summaries.service.js';
 import { loadTaxpayerForFirm, scenarioNotFound, taxpayerNotFound } from './year-access.js';
 
@@ -100,7 +108,7 @@ function jurisdictionFigures(p: FullPortalEstimate, r: EstimateResultDTO, today:
 
 function card(
   taxpayer: { id: string; displayName: string }, taxYear: number, f: Figures | null, snapshotTotal: { total: string; at: string } | null,
-  today: string, withPenalty: boolean,
+  today: string, withPenalty: boolean, showInstallments = true,
 ): TaxEstDashboardTaxpayerDTO {
   if (!f) {
     return {
@@ -111,12 +119,15 @@ function card(
   const p = project(f, taxpayer, today);
   const jurisdictions = jurisdictionFigures(p, f.result, today, withPenalty);
   const t = dashboardTotals(jurisdictions, withPenalty);
-  return {
+  const out: TaxEstDashboardTaxpayerDTO = {
     taxpayerId: taxpayer.id, displayName: taxpayer.displayName, taxYear, status: 'ok', source: f.source, asOf: f.asOf,
     booksThrough: p.booksThrough, totals: p.totals,
     changeSinceSnapshot: f.source === 'live' && snapshotTotal ? { amount: R(dSub(p.totals.total, R(snapshotTotal.total))), snapshotAt: snapshotTotal.at } : null,
     jurisdictions, shortfall: t.shortfall, penalty: t.penalty,
   };
+  // Q51: the portal option is off → absent keys (never empty-but-present), like the portal DTO.
+  if (!showInstallments) { delete out.jurisdictions; delete out.shortfall; }
+  return out;
 }
 
 async function baseScenarioId(taxpayerId: string, taxYear: number): Promise<string | null> {
@@ -126,7 +137,7 @@ async function baseScenarioId(taxpayerId: string, taxYear: number): Promise<stri
 }
 
 /** Latest finalized snapshot id per (taxpayer, year) in the firm — metadata only (one query). */
-async function latestFinalized(firmId: string, taxpayerIds: readonly string[], years: readonly number[]) {
+async function latestFinalized(firmId: string, taxpayerIds: readonly string[], years: readonly number[], scenarioId?: string) {
   const out = new Map<string, { id: string; createdAt: Date; tenantIds: string[] }>();
   if (taxpayerIds.length === 0 || years.length === 0) return out;
   const rows = await db.selectDistinctOn([taxEstSnapshots.taxpayerId, taxEstSnapshots.taxYear], {
@@ -136,6 +147,8 @@ async function latestFinalized(firmId: string, taxpayerIds: readonly string[], y
     .where(and(
       eq(taxEstSnapshots.firmId, firmId), inArray(taxEstSnapshots.taxpayerId, [...taxpayerIds]),
       inArray(taxEstSnapshots.taxYear, [...years]), inArray(taxEstSnapshots.reason, FINALIZED_REASONS),
+      // Q51 / Q52: the owner card reads Base's own snapshot only (what the portal shows by default).
+      ...(scenarioId ? [eq(taxEstSnapshots.scenarioId, scenarioId)] : []),
     ))
     .orderBy(taxEstSnapshots.taxpayerId, taxEstSnapshots.taxYear, desc(taxEstSnapshots.createdAt), desc(taxEstSnapshots.id));
   for (const r of rows) out.set(`${r.taxpayerId}|${r.taxYear}`, { id: r.id, createdAt: r.createdAt, tenantIds: r.tenantIds });
@@ -163,16 +176,20 @@ async function peek(scope: FirmScope, taxpayerId: string, taxYear: number, scena
   }
 }
 
-/** Staff + owner: cached live → latest finalized snapshot → none. */
+/**
+ * Staff + owner: cached live → latest finalized snapshot → none. `baseSnapshotOnly` (owner):
+ * the snapshot must be the Base scenario's (Q51: the portal shows Base by default).
+ */
 async function figuresFor(
-  scope: FirmScope, taxpayerId: string, taxYear: number, opts: { today: Date; paymentsAsOf?: string; liveAllowed: boolean },
+  scope: FirmScope, taxpayerId: string, taxYear: number,
+  opts: { today: Date; paymentsAsOf?: string; liveAllowed: boolean; baseSnapshotOnly?: boolean },
 ): Promise<{ figures: Figures | null; snapshot: { total: string; at: string } | null }> {
   let live: EstimateResultDTO | null = null;
-  if (opts.liveAllowed) {
-    const base = await baseScenarioId(taxpayerId, taxYear);
-    if (base) live = await peek(scope, taxpayerId, taxYear, base, opts);
-  }
-  const snapMeta = (await latestFinalized(scope.firmId, [taxpayerId], [taxYear])).get(`${taxpayerId}|${taxYear}`);
+  const base = opts.liveAllowed || opts.baseSnapshotOnly ? await baseScenarioId(taxpayerId, taxYear) : null;
+  if (opts.liveAllowed && base) live = await peek(scope, taxpayerId, taxYear, base, opts);
+  // R4-06: without a Base scenario the portal shows nothing; the owner card follows it.
+  if (opts.baseSnapshotOnly && !base) return { figures: null, snapshot: null };
+  const snapMeta = (await latestFinalized(scope.firmId, [taxpayerId], [taxYear], opts.baseSnapshotOnly ? base! : undefined)).get(`${taxpayerId}|${taxYear}`);
   const snap = snapMeta ? await readSnapshot(scope, snapMeta.id) : null;
   const snapshot = snap ? { total: snap.result.summary.total, at: snap.createdAt } : null;
   if (live) return { figures: { result: live, source: 'live', asOf: live.computedAt }, snapshot };
@@ -223,13 +240,24 @@ async function firmForTenant(tenantId: string): Promise<string | null> {
   return row?.firmId ?? null;
 }
 
+/** The owner user's e-mail (null when none). */
+async function ownerEmail(userId: string): Promise<string | null> {
+  const [u] = await db.select({ email: users.email }).from(users).where(eq(users.id, userId));
+  return u?.email || null;
+}
+
+/** Every ACTIVE portal contact of the tenant carrying this e-mail (case-insensitive). */
+async function ownerContactIds(tenantId: string, email: string): Promise<string[]> {
+  const rows = await db.select({ id: portalContacts.id }).from(portalContacts)
+    .where(and(eq(portalContacts.tenantId, tenantId), eq(portalContacts.status, 'active'), sql`lower(${portalContacts.email}) = lower(${email})`));
+  return rows.map((r) => r.id);
+}
+
 /**
  * The taxpayers (and years) the owner user personally is, for this company: the portal
  * access predicate with the contact found by the user's e-mail (see the header).
  */
-async function ownerTaxpayers(userId: string, tenantId: string, companyId: string, firmId: string) {
-  const [u] = await db.select({ email: users.email }).from(users).where(eq(users.id, userId));
-  if (!u?.email) return [];
+async function ownerTaxpayers(email: string, tenantId: string, companyId: string, firmId: string) {
   return db.selectDistinct({
     id: taxEstTaxpayers.id, displayName: taxEstTaxpayers.displayName, portalShows: taxEstTaxpayers.portalShows, taxYear: taxEstLinks.taxYear,
   })
@@ -246,7 +274,7 @@ async function ownerTaxpayers(userId: string, tenantId: string, companyId: strin
     .where(and(
       eq(portalContacts.tenantId, tenantId),
       eq(portalContacts.status, 'active'),
-      sql`lower(${portalContacts.email}) = lower(${u.email})`,
+      sql`lower(${portalContacts.email}) = lower(${email})`,
       eq(taxEstTaxpayers.firmId, firmId),
       eq(taxEstTaxpayers.isActive, true),
     ))
@@ -259,8 +287,12 @@ export async function companyCardsForOwner(userId: string, tenantId: string, com
   const today = isoDay(now);
   const firmId = await firmForTenant(tenantId);
   if (!firmId) return null;
-  const rows = await ownerTaxpayers(userId, tenantId, companyId, firmId);
+  const email = await ownerEmail(userId);
+  if (!email) return null;
+  const rows = await ownerTaxpayers(email, tenantId, companyId, firmId);
   if (rows.length === 0) return null;
+  // Q51: the contact's per-contact portal options; several contacts with this e-mail → most restrictive.
+  const options = await mostRestrictiveOptionsForContacts(tenantId, await ownerContactIds(tenantId, email));
   // The portal's scope: the firm's full managed set, contact mapping governs (D17 item 6).
   const scope: FirmScope = { firmId, firmRole: 'firm_readonly', allowedTenantIds: await allowedTenantIds(firmId, '', true), viewer: UNRESTRICTED_VIEWER };
   const firm = await getFirmSettings(scope);
@@ -276,9 +308,9 @@ export async function companyCardsForOwner(userId: string, tenantId: string, com
     if (taxYear == null) continue;
     const shows: PortalShows = (t.portalShows as PortalShows | null) ?? firm.portalShows;
     // QA D13 as-of semantics, exactly the portal's live request (same cache entry).
-    const { figures, snapshot } = await figuresFor(scope, t.id, taxYear, { today: now, paymentsAsOf: today, liveAllowed: shows === 'live' });
+    const { figures, snapshot } = await figuresFor(scope, t.id, taxYear, { today: now, paymentsAsOf: today, liveAllowed: shows === 'live', baseSnapshotOnly: true });
     if (!figures) continue; // the owner never sees "not computed"
-    taxpayers.push(card({ id: t.id, displayName: t.displayName }, taxYear, figures, snapshot, today, false));
+    taxpayers.push(card({ id: t.id, displayName: t.displayName }, taxYear, figures, snapshot, today, false, options.quarterlyEstimates));
   }
   return taxpayers.length > 0 ? { audience: 'owner', today, taxpayers } : null;
 }

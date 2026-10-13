@@ -34,6 +34,9 @@ import {
   taxEstTaxpayerStaff, tenantFeatureFlags, tenantFirmAssignments, userTenantAccess, users,
 } from '../db/schema/index.js';
 import { taxEstDashboardSummaries } from '../db/schema/tax-estimator-dashboard.js';
+import { taxEstPortalContactOptions } from '../db/schema/tax-estimator-portal.js';
+import { taxEstScenarios } from '../db/schema/tax-estimator-years.js';
+import { createScenario } from '../services/tax-estimator/scenarios.service.js';
 import { errorHandler } from '../middleware/error-handler.js';
 import { closeTbRedis } from '../services/tb/tb-redis.js';
 import { mkTenant, purgeTenants } from '../services/tax-estimator/entities.test-fixtures.js';
@@ -60,6 +63,7 @@ let server: Server | null = null;
 let port = 0;
 let P = '';
 let otherOwner = '';
+let ownerContactId = '';
 const CONTACT_EMAIL = `rivera-${randomUUID().slice(0, 8)}@example.com`;
 const tokens: Record<string, string> = {};
 const uid: Record<string, string> = {};
@@ -143,6 +147,7 @@ beforeAll(async () => {
   const [c] = await db.insert(portalContacts).values({ tenantId: fx.T.schc, email: CONTACT_EMAIL, status: 'active' }).returning();
   await db.insert(portalContactCompanies).values({ contactId: c!.id, companyId: fx.C.schc, taxEstimatesAccess: true });
   await db.insert(taxEstTaxpayerContacts).values({ taxpayerId: fx.taxpayerId, portalContactId: c!.id });
+  ownerContactId = c!.id;
   // The client user's contact (same mapping) — a client user who is not the owner still sees nothing.
   const [c2] = await db.insert(portalContacts).values({ tenantId: fx.T.schc, email: `x${CONTACT_EMAIL}`, status: 'active' }).returning();
   await db.insert(portalContactCompanies).values({ contactId: c2!.id, companyId: fx.C.schc, taxEstimatesAccess: true });
@@ -212,7 +217,7 @@ describe('company cards: data source precedence (cache → snapshot → not comp
     const p = toPortalEstimate(live, { taxpayer: { id: fx.taxpayerId, displayName: 'x' }, source: 'live', asOf: live.computedAt, firmName: null, disclaimer: '', today: '2026-12-16' });
     let short = '0';
     for (const j of p.jurisdictions) {
-      const fig = r.jurisdictions.find((x) => x.jurisdiction === j.jurisdiction)!;
+      const fig = r.jurisdictions!.find((x) => x.jurisdiction === j.jurisdiction)!;
       const due = j.installments.filter((i) => i.dueDate <= '2026-12-16');
       const exp = due.reduce((s, i) => dAdd(s, i.remaining), '0');
       expect(fig.shortfall).toBe(dRoundDollars(exp));
@@ -223,7 +228,7 @@ describe('company cards: data source precedence (cache → snapshot → not comp
       expect(fig.nextVoucher?.dueDate ?? null).toBe(next?.dueDate ?? null);
     }
     expect(r.shortfall).toBe(dRoundDollars(short));
-    const fed = r.jurisdictions.find((x) => x.jurisdiction === 'federal')!;
+    const fed = r.jurisdictions!.find((x) => x.jurisdiction === 'federal')!;
     expect(fed.penalty).toBe(dRoundDollars(live.federalEstimates.penalty?.total ?? '0'));
     expect(r.penalty).toBe(dRoundDollars([live.federalEstimates, ...live.stateEstimates].reduce((s, e) => dAdd(s, e.penalty?.total ?? '0'), '0')));
   });
@@ -325,7 +330,7 @@ describe('routes: company dashboard audience and isolation', () => {
     expect(t.status).toBe('ok');
     expect(t.source).toBe('snapshot'); // portal_shows live, no portal cache entry today → finalized snapshot
     expect(t.penalty).toBeNull();
-    expect(t.jurisdictions.every((j) => j.penalty === null)).toBe(true);
+    expect(t.jurisdictions!.every((j) => j.penalty === null)).toBe(true);
     expect(Object.keys(t).sort()).toEqual(['asOf', 'booksThrough', 'changeSinceSnapshot', 'displayName', 'jurisdictions', 'penalty', 'shortfall', 'source', 'status', 'taxYear', 'taxpayerId', 'totals']);
     // The owner may not refresh.
     expect((await call('POST', `${DASH}/${fx.taxpayerId}/refresh`, 'owner')).status).toBe(404);
@@ -398,4 +403,74 @@ describe('routes: firm-wide dashboard', () => {
     expect(r.status).toBe(404);
   });
 
+});
+
+// Integration (v0.9.228): the owner card follows the Q51 portal options and the scenario the
+// portal shows by default (Base; snapshot mode = Base's own latest finalized snapshot).
+describe('owner card × Q51 portal options', () => {
+  const ownerCard = async () => {
+    const r = await call('GET', DASH, 'owner');
+    expect(r.status).toBe(200);
+    expect(r.json.data.audience).toBe('owner');
+    return r.json.data.taxpayers[0] as CompanyTaxEstimatesDTO['taxpayers'][number];
+  };
+  const setOptions = (contactId: string, quarterlyEstimates: boolean) => db.insert(taxEstPortalContactOptions)
+    .values({ portalContactId: contactId, tenantId: fx.T.schc, quarterlyEstimates })
+    .onConflictDoUpdate({ target: taxEstPortalContactOptions.portalContactId, set: { quarterlyEstimates } });
+
+  it('Quarterly estimates OFF for the contact: no next voucher / paid-vs-required; the projected total stays', async () => {
+    const before = await ownerCard();
+    expect(before.jurisdictions).toBeDefined();
+    await setOptions(ownerContactId, false);
+    try {
+      const t = await ownerCard();
+      expect(t.status).toBe('ok');
+      expect(t.totals).toEqual(before.totals);
+      expect('jurisdictions' in t).toBe(false);
+      expect('shortfall' in t).toBe(false);
+      expect(t.penalty).toBeNull();
+    } finally {
+      await db.delete(taxEstPortalContactOptions).where(eq(taxEstPortalContactOptions.portalContactId, ownerContactId));
+    }
+    expect((await ownerCard()).jurisdictions).toBeDefined();
+  });
+
+  it('several contacts with the owner\'s e-mail: the most restrictive options apply (AND)', async () => {
+    // A second active contact of the tenant with the same e-mail (other case), not even mapped
+    // to the taxpayer, has the section off — the owner card hides it although the mapped one allows it.
+    const [dup] = await db.insert(portalContacts).values({ tenantId: fx.T.schc, email: CONTACT_EMAIL.toUpperCase(), status: 'active' }).returning();
+    try {
+      await setOptions(dup!.id, false);
+      await setOptions(ownerContactId, true);
+      const t = await ownerCard();
+      expect('jurisdictions' in t).toBe(false);
+      expect(t.totals).not.toBeNull();
+      // A paused duplicate does not count.
+      await db.update(portalContacts).set({ status: 'paused' }).where(eq(portalContacts.id, dup!.id));
+      expect((await ownerCard()).jurisdictions).toBeDefined();
+    } finally {
+      await db.delete(taxEstPortalContactOptions).where(inArray(taxEstPortalContactOptions.portalContactId, [ownerContactId, dup!.id]));
+      await db.delete(portalContacts).where(eq(portalContacts.id, dup!.id));
+    }
+  });
+
+  it('snapshot mode: Base\'s latest finalized snapshot only, never a newer one of a shared what-if', async () => {
+    const adminScope = await resolvePackScope(fx.T.schc, uid['admin']!, false);
+    const base = await createSnapshot(adminScope, { tenantId: fx.T.schc, userId: uid['admin']! }, { taxpayerId: fx.taxpayerId, taxYear: YEAR, scenarioId: fx.baseScenarioId, reason: 'finalize' }, { today: SNAP_DAY });
+    const whatIf = (await createScenario(fx.scopeA, fx.actor, fx.taxpayerId, YEAR, 'If you buy the truck')).id;
+    await db.update(taxEstScenarios).set({ showInPortal: true }).where(eq(taxEstScenarios.id, whatIf));
+    const wi = await createSnapshot(adminScope, { tenantId: fx.T.schc, userId: uid['admin']! }, { taxpayerId: fx.taxpayerId, taxYear: YEAR, scenarioId: whatIf, reason: 'finalize' }, { today: SNAP_DAY });
+    expect(wi.createdAt > base.createdAt).toBe(true); // the what-if's is the newest finalized snapshot
+    await updateTaxpayer(fx.scopeA, fx.actor, fx.taxpayerId, { portalShows: 'snapshot' });
+    try {
+      const t = await ownerCard();
+      expect(t.source).toBe('snapshot');
+      expect(t.asOf).toBe(base.createdAt);
+      // Staff cards are unchanged by this rule (newest finalized snapshot of the year).
+      const staff = await companyCardsForStaff(adminScope, fx.T.schc, fx.C.schc, { today: TODAY });
+      expect(staff!.taxpayers.find((x) => x.taxpayerId === fx.taxpayerId)).toBeDefined();
+    } finally {
+      await updateTaxpayer(fx.scopeA, fx.actor, fx.taxpayerId, { portalShows: null });
+    }
+  });
 });

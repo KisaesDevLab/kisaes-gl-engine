@@ -17,7 +17,7 @@
 // CONTACT's tenant with before / after and the granted / revoked keys.
 import { and, eq } from 'drizzle-orm';
 import {
-  DEFAULT_PORTAL_CONTACT_TAX_OPTIONS, portalOptionChanges,
+  DEFAULT_PORTAL_CONTACT_TAX_OPTIONS, mostRestrictivePortalOptions, portalOptionChanges,
   type PortalContactTaxOptionsDTO, type PortalContactTaxOptionsInput,
 } from '@kis-books/shared';
 import { db, type DbOrTx } from '../../db/index.js';
@@ -41,6 +41,15 @@ export async function optionsForContact(tenantId: string, contactId: string, exe
   const [row] = await exec.select().from(taxEstPortalContactOptions)
     .where(and(eq(taxEstPortalContactOptions.portalContactId, contactId), eq(taxEstPortalContactOptions.tenantId, tenantId)));
   return toDTO(row);
+}
+
+/**
+ * Q52: the options one PERSON matched to several contacts of the tenant gets — the most
+ * restrictive combination (AND of every switch) of each contact's `optionsForContact`.
+ */
+export async function mostRestrictiveOptionsForContacts(tenantId: string, contactIds: readonly string[], exec: DbOrTx = db): Promise<PortalContactTaxOptionsDTO> {
+  const list = await Promise.all([...new Set(contactIds)].map((id) => optionsForContact(tenantId, id, exec)));
+  return mostRestrictivePortalOptions(list);
 }
 
 async function contactInTenant(tenantId: string, contactId: string, exec: DbOrTx) {
