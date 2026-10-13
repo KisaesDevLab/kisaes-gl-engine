@@ -358,7 +358,12 @@ export async function renderEstimatePdf(r: EstimateResultDTO, opts: EstimatePdfO
     const ec = [RIGHT - 200, RIGHT - 90, RIGHT];
     w.row(['Business', 'Type', 'Path', 'Through'], ec, { bold: true, size: 8 });
     for (const e of r.entities) {
-      w.row([e.companyName, calcEntityTypeLabel(e.entityType), e.path === 'c_corp' ? 'entity level' : e.path, e.throughMonth ?? '-'], ec, { size: 8.5 });
+      // Q45: a business outside MyBooks prints "entered" and its entry (full year / YTD month), not a books range.
+      const o = e.source === 'outside' ? e.outside : undefined;
+      const through = o ? (o.entryMode === 'ytd' && o.throughMonth ? `YTD ${r.taxYear}-${String(o.throughMonth).padStart(2, '0')}` : 'full year') : (e.throughMonth ?? '-');
+      const path = e.path === 'c_corp' ? 'entity level' : e.source === 'outside' ? 'entered' : e.path;
+      w.row([e.companyName, calcEntityTypeLabel(e.entityType), path, through], ec, { size: 8.5 });
+      if (o) w.wrap(`Outside MyBooks, entered manually: ${o.amountBasis === 'owner_share' ? `amounts are the owner's share (K-1)${o.statedProfitPct != null ? `, ${o.statedProfitPct}% owned (informational)` : ''}` : 'amounts are the entity total, allocated by the owner %'}.`, 8, 12, MUTED);
       // Owner request 2026-10-12: who owns it, from the links (absent on older results / snapshots).
       if (e.owners?.length) w.wrap(`Owners: ${ownersText(e.owners)}`, 8, 12, MUTED);
       if (e.path === 'skipped' && e.skippedReason) w.wrap(`Skipped: ${presentEngineText(e.skippedReason)}`, 8, 12, MUTED);

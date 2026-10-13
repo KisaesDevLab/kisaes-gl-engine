@@ -13,7 +13,7 @@
 
 import type {
   AssumptionItemDTO, AssumptionSectionDTO, AssumptionSectionId, EstimateAssumptionsDTO, EstimateEntityReclassDTO,
-  EstimateResultDTO,
+  EstimateOutsideEntityDTO, EstimateResultDTO,
 } from './estimate-api.js';
 import { ASSUMPTION_SECTION_IDS } from './estimate-api.js';
 import type { CharacterAmounts, ThroughMonthSource } from './entities-api.js';
@@ -183,6 +183,10 @@ function projectionSection(r: EstimateResultDTO): AssumptionSectionDTO {
       items.push({ label: e.companyName, detail: `Left out of the estimate: ${e.skippedReason ?? 'no reason recorded'}.`, badge: 'verify' });
       continue;
     }
+    if (e.source === 'outside' && e.outside) {
+      items.push({ label: `${e.companyName} (outside MyBooks)`, detail: outsideProjectionDetail(e.outside, r.taxYear, e.path === 'c_corp') });
+      continue;
+    }
     // A requested range end needs no reason ("requested: Range end requested explicitly." said it twice).
     const reason = e.throughMonthReason && e.throughMonthSource !== 'requested' ? `: ${e.throughMonthReason}` : '';
     const through = e.throughMonth
@@ -195,7 +199,24 @@ function projectionSection(r: EstimateResultDTO): AssumptionSectionDTO {
     const path = e.path === 'c_corp' ? ' — C corporation, estimated at entity level and not in the taxpayer totals' : '';
     items.push({ label: e.companyName, detail: `${through}; ${method}${basis}${path}.` });
   }
-  return section('projection', items, 'No linked entities were included.');
+  return section('projection', items, 'No businesses were included.');
+}
+
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const FULL_YEAR_MONTHS = 12;
+
+/** Q45: how an outside business's hand-entered amounts were used (mode, basis, as-of). */
+function outsideProjectionDetail(o: EstimateOutsideEntityDTO, taxYear: number, ccorp: boolean): string {
+  const through = o.throughMonth ?? FULL_YEAR_MONTHS;
+  const mode = o.entryMode === 'ytd'
+    ? `entered year to date through ${MONTH_NAMES[through - 1]} ${taxYear}${through < FULL_YEAR_MONTHS ? ` and projected (year-to-date + year-to-date ÷ ${through} × ${FULL_YEAR_MONTHS - through}; every entered amount treated as recurring); Schedule AI periods ending by then use the year-to-date prorated by month, later periods the regular installment` : ' (full year; no projection)'}`
+    : 'entered as full-year amounts and used as entered (no projection); Schedule AI periods spread them evenly by month';
+  const pctText = (v: number | null) => (v == null ? null : `${v}%`);
+  const basis = o.amountBasis === 'owner_share'
+    ? `amounts are the owner's share (K-1)${o.statedProfitPct != null ? `; the stated ${pctText(o.statedProfitPct)} ownership is informational and not applied` : ''}`
+    : `amounts are the entity's 100% totals, allocated by the owner's ${pctText(o.statedProfitPct) ?? '100%'} profit / ${pctText(o.statedLossPct ?? o.statedProfitPct) ?? '100%'} loss share`;
+  const path = ccorp ? ' — C corporation, estimated at entity level and not in the taxpayer totals' : '';
+  return `Entered manually (not from the books): ${mode}; ${basis}${path}.`;
 }
 
 function nonRecurringSection(r: EstimateResultDTO): AssumptionSectionDTO {

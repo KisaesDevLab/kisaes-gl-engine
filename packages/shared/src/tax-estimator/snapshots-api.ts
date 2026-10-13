@@ -66,6 +66,8 @@ export interface EstimateSnapshotInputsDTO {
   payments: unknown[];
   /** Schedule AI period figures frozen by tax_est_sch_ai_snapshots at the time. */
   schAiFigures: Array<{ key: string; figures: unknown }>;
+  /** Q45 (optional, additive): businesses outside MyBooks with the year's entered amounts, as used. */
+  outsideEntities?: unknown[];
 }
 
 /** The encrypted payload (version 1). */

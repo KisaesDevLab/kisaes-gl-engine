@@ -60,6 +60,8 @@ function entityResult(a: AllocatedEntity, limited: ReadonlyMap<string, Character
     tenantId: e.tenantId, companyId: e.companyId, companyName: e.companyName, entityType: e.entityType,
     monthsElapsed: e.monthsElapsed, monthsRemaining: e.monthsRemaining, ytd: roundCharacters(e.ytd),
     projected: roundCharacters(a.projected), projectedProfit: R(a.projectedProfit), shares: a.shares.map((s) => shareResult(s, limited)),
+    // Q45: only outside businesses carry the markers, so book results stay byte-identical to rc.4.
+    ...(e.source === 'outside' ? { source: 'outside' as const, amountBasis: e.amountBasis ?? 'entity_total', entryMode: e.entryMode ?? 'full_year' } : {}),
   };
 }
 

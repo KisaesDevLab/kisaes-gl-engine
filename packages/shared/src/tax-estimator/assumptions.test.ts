@@ -272,3 +272,28 @@ describe('Q44 dependents section', () => {
     expect(t).not.toContain('Tobi');
   });
 });
+
+describe('Q45 — businesses outside MyBooks on the assumptions page', () => {
+  const outside = (o: Record<string, unknown>) => ({
+    tenantId: 'outside', companyId: String(o['id']), companyName: String(o['name']), entityType: o['entityType'] ?? 'partnership', path: o['path'] ?? 'individual', skippedReason: null,
+    throughMonth: null, throughMonthSource: null, monthsElapsed: 12, monthsRemaining: 0, glVersionStamp: 0, providerCached: false, source: 'outside',
+    outside: { outsideEntityId: String(o['id']), entryMode: 'full_year', amountBasis: 'owner_share', throughMonth: null, statedProfitPct: null, statedLossPct: null, ...(o['outside'] as object) },
+  });
+
+  it('lists each outside business in the projection section with its mode, basis and as-of month', () => {
+    const base = riveraLike();
+    const a = buildEstimateAssumptions(riveraLike({ entities: [...base.entities,
+      outside({ id: 'o1', name: 'Lakeside Partners LP', outside: { statedProfitPct: 25 } }),
+      outside({ id: 'o2', name: 'Leo Design', entityType: 'sch_c', outside: { entryMode: 'ytd', throughMonth: 6, amountBasis: 'entity_total', statedProfitPct: 100 } }),
+      outside({ id: 'o3', name: 'Holdco Inc', entityType: 'c_corp', path: 'c_corp', outside: { amountBasis: 'entity_total' } }),
+    ] as unknown as EstimateResultDTO['entities'] }));
+    const t = text(a, 'projection');
+    expect(t).toContain("Lakeside Partners LP (outside MyBooks): Entered manually (not from the books): entered as full-year amounts and used as entered (no projection); Schedule AI periods spread them evenly by month; amounts are the owner's share (K-1); the stated 25% ownership is informational and not applied.");
+    expect(t).toContain('Leo Design (outside MyBooks): Entered manually (not from the books): entered year to date through June 2026 and projected (year-to-date + year-to-date ÷ 6 × 6');
+    expect(t).toContain("amounts are the entity's 100% totals, allocated by the owner's 100% profit / 100% loss share.");
+    expect(t).toContain('Holdco Inc (outside MyBooks)');
+    expect(t).toContain('C corporation, estimated at entity level');
+    // The linked company keeps its books line.
+    expect(t).toContain('books through 2026-09');
+  });
+});

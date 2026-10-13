@@ -29,7 +29,7 @@ import type {
   EstimateSnapshotListItemDTO, EstimateSnapshotPayload, EstimateSummaryDTO, SnapshotCompareDTO, SnapshotDiffRowDTO,
   SnapshotParameterChangeDTO, SnapshotReason, SnapshotsQuery, TaxEstimatorWarning, FilingStatus,
 } from '@kis-books/shared';
-import { buildEstimateAssumptions, dSub } from '@kis-books/shared';
+import { buildEstimateAssumptions, dSub, OUTSIDE_TENANT_ID } from '@kis-books/shared';
 import { db } from '../../db/index.js';
 import { taxEstSnapshots } from '../../db/schema/tax-estimator-estimate.js';
 import { taxEstTaxpayers } from '../../db/schema/tax-estimator-taxpayers.js';
@@ -66,6 +66,8 @@ function inputsOf(i: EstimateInputsForSnapshot, throughMonth: string | null): Es
     safeHarbor: { rule: i.year.rule, ruleSource: i.year.ruleSource },
     persons: i.persons, links: i.links, companies: i.companies, adjustments: i.adjustments, adjustmentTypes: i.types,
     stateRows: i.stateRows, payments: i.payments, schAiFigures: i.schAiFigures,
+    // Q45: hand-entered businesses (no tenant), frozen with the amounts used.
+    ...(i.outsideEntities.length ? { outsideEntities: i.outsideEntities } : {}),
   };
 }
 
@@ -74,7 +76,8 @@ function tenantsOf(i: EstimateInputsForSnapshot, r: EstimateResultDTO): string[]
   const ids = new Set<string>();
   for (const c of i.companies) ids.add(c.tenantId);
   for (const l of i.links) ids.add(l.tenantId);
-  for (const e of r.entities) ids.add(e.tenantId);
+  // Q45: an outside business carries the OUTSIDE_TENANT_ID sentinel, never a books tenant.
+  for (const e of r.entities) if (e.source !== 'outside' && e.tenantId !== OUTSIDE_TENANT_ID) ids.add(e.tenantId);
   for (const a of i.adjustments) if (a.tenantId) ids.add(a.tenantId);
   for (const p of i.payments) if (p.tenantId) ids.add(p.tenantId);
   return [...ids].sort();

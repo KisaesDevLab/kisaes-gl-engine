@@ -1,0 +1,31 @@
+{
+  "outside_mix": {
+    "federal": {
+      "addl_medicare": 0,
+      "agi": 270164,
+      "income_tax": 30968,
+      "nii": 75000,
+      "niit": 766,
+      "qbi": 44993,
+      "qbi_components": [
+        22304,
+        16728,
+        12000
+      ],
+      "se_tax": 29672,
+      "taxable_income": 192971,
+      "total_income": 285000
+    },
+    "federal_total": 61406,
+    "federal_total_exact": 61405.945115,
+    "projected": {
+      "linked_schc": 120000,
+      "outside_k1_share": 75000,
+      "outside_schc": 90000
+    },
+    "se": {
+      "leo": 12717,
+      "maya": 16955
+    }
+  }
+}

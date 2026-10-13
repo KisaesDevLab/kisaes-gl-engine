@@ -8,6 +8,7 @@ import {
   personRoleParamsSchema, upsertPersonSchema, linksQuerySchema, upsertLinkSchema, linkIdParamsSchema,
   companyOptionsQuerySchema, linkContactSchema, contactIdParamsSchema, unlinkContactQuerySchema,
   replaceTaxpayerStaffSchema, can, upsertDependentSchema, dependentIdParamsSchema,
+  outsideEntitiesQuerySchema, upsertOutsideEntitySchema, upsertOutsideEntityYearSchema, outsideEntityIdParamsSchema, outsideEntityYearParamsSchema,
 } from '@kis-books/shared';
 import { resolvePermissionsForRequest } from '../../middleware/permission.js';
 import { getScope, requireTaxEstimatorWrite } from '../../middleware/tax-estimator-scope.js';
@@ -90,6 +91,42 @@ taxpayersRouter.put('/:id/dependents/:dependentId', requireTaxEstimatorWrite, as
 taxpayersRouter.delete('/:id/dependents/:dependentId', requireTaxEstimatorWrite, async (req, res) => {
   const { id, dependentId } = dependentIdParamsSchema.parse(req.params);
   res.json({ data: await taxpayersService.removeDependent(getScope(req), actor(req), id, dependentId) });
+});
+
+// ── businesses outside MyBooks (Q45) — part of the taxpayer like dependents; writes need requireTaxEstimatorWrite ──
+taxpayersRouter.get('/:id/outside-entities', async (req, res) => {
+  const { id } = taxpayerIdParamsSchema.parse(req.params);
+  const { taxYear } = outsideEntitiesQuerySchema.parse(req.query);
+  const list = await taxpayersService.listOutsideEntities(getScope(req), id, taxYear);
+  res.json({ ...list, ...pageOf(list.data, listPageQuerySchema.parse(req.query)) });
+});
+
+taxpayersRouter.post('/:id/outside-entities', requireTaxEstimatorWrite, async (req, res) => {
+  const { id } = taxpayerIdParamsSchema.parse(req.params);
+  const input = upsertOutsideEntitySchema.parse(req.body);
+  res.status(201).json({ data: await taxpayersService.createOutsideEntity(getScope(req), actor(req), id, input) });
+});
+
+taxpayersRouter.put('/:id/outside-entities/:outsideEntityId', requireTaxEstimatorWrite, async (req, res) => {
+  const { id, outsideEntityId } = outsideEntityIdParamsSchema.parse(req.params);
+  const input = upsertOutsideEntitySchema.parse(req.body);
+  res.json({ data: await taxpayersService.updateOutsideEntity(getScope(req), actor(req), id, outsideEntityId, input) });
+});
+
+taxpayersRouter.delete('/:id/outside-entities/:outsideEntityId', requireTaxEstimatorWrite, async (req, res) => {
+  const { id, outsideEntityId } = outsideEntityIdParamsSchema.parse(req.params);
+  res.json({ data: await taxpayersService.removeOutsideEntity(getScope(req), actor(req), id, outsideEntityId) });
+});
+
+taxpayersRouter.put('/:id/outside-entities/:outsideEntityId/years/:taxYear', requireTaxEstimatorWrite, async (req, res) => {
+  const { id, outsideEntityId, taxYear } = outsideEntityYearParamsSchema.parse(req.params);
+  const input = upsertOutsideEntityYearSchema.parse(req.body);
+  res.json({ data: await taxpayersService.upsertOutsideEntityYear(getScope(req), actor(req), id, outsideEntityId, taxYear, input) });
+});
+
+taxpayersRouter.delete('/:id/outside-entities/:outsideEntityId/years/:taxYear', requireTaxEstimatorWrite, async (req, res) => {
+  const { id, outsideEntityId, taxYear } = outsideEntityYearParamsSchema.parse(req.params);
+  res.json({ data: await taxpayersService.removeOutsideEntityYear(getScope(req), actor(req), id, outsideEntityId, taxYear) });
 });
 
 // ── links ──

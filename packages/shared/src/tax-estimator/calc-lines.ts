@@ -8,7 +8,7 @@
 // YTD tax basis is filled only for income lines (the engine computes tax on the projection only,
 // so the YTD column is blank for deduction and tax lines). No tax math here: every figure is a
 // field of the DTO; the only arithmetic is the YTD column's sum of the entity's YTD characters
-// and an owner's YTD share (entity YTD × allocated %).
+// and an owner's YTD share (entity YTD × allocated %). Q45 outside businesses: see the income block.
 import type { EstimateResultDTO } from './estimate-api.js';
 
 const num = (v: unknown): number => {
@@ -63,17 +63,43 @@ export function buildCalcSections(r: EstimateResultDTO): CalcSection[] {
   // row per owner link with that person's share; the share rows are what Total income adds up.
   // YTD share = entity YTD × the allocated % (profit %, or loss % when the projection is a loss);
   // the projected share is the engine's allocation, which also carries link adjustments.
-  const ownersByCompany = new Map((r.entities ?? []).map((d) => [d.companyId, d.owners ?? []]));
+  // Q45 businesses outside MyBooks: sub-label "Outside MyBooks · entered"; full-year entries have no
+  // YTD column; an owner's-share (K-1) entry prints the share row only, labelled with the stated %.
+  const dtoByCompany = new Map((r.entities ?? []).map((d) => [d.companyId, d]));
   const income: CalcLine[] = f.entities.flatMap((e) => {
     const shares = e.shares;
+    const dto = dtoByCompany.get(e.companyId);
+    const outside = dto?.outside ?? null;
+    const isOutside = e.source === 'outside' || dto?.source === 'outside';
+    const ownerShare = isOutside && (e.amountBasis ?? outside?.amountBasis) === 'owner_share';
+    const fullYear = isOutside && (e.entryMode ?? outside?.entryMode) !== 'ytd';
     const activity = [...new Set(shares.map((s) => s.activityType))].join(', ');
     const entityYtd = sum(e.ytd as unknown as Record<string, string>);
     const useLoss = num(e.projectedProfit) < 0;
-    const owners = ownersByCompany.get(e.companyId) ?? [];
+    const owners = dto?.owners ?? [];
+    const enteredSub = isOutside
+      ? `Outside MyBooks · entered${fullYear ? ' (full year)' : outside?.throughMonth ? ` (YTD through month ${outside.throughMonth})` : ' (YTD)'}`
+      : null;
+    const ytdOf = (v: number): string | null => (fullYear ? null : String(Math.round(v * 100) / 100));
+    if (ownerShare) {
+      // The entered amounts ARE the owner's share: no entity-total row; the stated % is informational.
+      const stated = useLoss ? (outside?.statedLossPct ?? outside?.statedProfitPct ?? null) : (outside?.statedProfitPct ?? null);
+      return shares.map((s): CalcLine => {
+        const name = owners.find((o) => o.personId === s.personId)?.displayName;
+        return {
+          key: `inc.${e.companyId}.${s.linkId}`,
+          label: `${e.companyName} — ${name ? `${name}'s share` : 'Share'} (K-1 share${stated != null ? `, ${stated}% owned` : ''})`,
+          sub: [calcEntityTypeLabel(e.entityType), activity, enteredSub].filter(Boolean).join(' · '),
+          ytd: ytdOf(entityYtd),
+          projected: String(sum(s.share as unknown as Record<string, string>)),
+          trace: { kind: 'federal', steps: ['entity_income', 'allocation'], idPrefix: undefined },
+        };
+      });
+    }
     const lines: CalcLine[] = [{
       key: `inc.${e.companyId}`, label: e.companyName,
-      sub: [calcEntityTypeLabel(e.entityType), activity, 'Entity total (100%)'].filter(Boolean).join(' · '),
-      ytd: String(entityYtd), projected: e.projectedProfit, muted: true,
+      sub: [calcEntityTypeLabel(e.entityType), activity, 'Entity total (100%)', enteredSub].filter(Boolean).join(' · '),
+      ytd: ytdOf(entityYtd), projected: e.projectedProfit, muted: true,
       trace: { kind: 'federal', steps: ['entity_income', 'allocation'], idPrefix: undefined },
     }];
     for (const s of shares) {
@@ -82,7 +108,7 @@ export function buildCalcSections(r: EstimateResultDTO): CalcSection[] {
       lines.push({
         key: `inc.${e.companyId}.${s.linkId}`,
         label: `${name ? `${name}'s share` : 'Share'} (${pct(fraction, 2)}${useLoss ? ' of loss' : ''})`,
-        ytd: String(Math.round(entityYtd * fraction * 100) / 100),
+        ytd: ytdOf(entityYtd * fraction),
         projected: String(sum(s.share as unknown as Record<string, string>)),
         indent: true,
       });

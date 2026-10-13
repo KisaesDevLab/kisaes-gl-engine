@@ -972,6 +972,32 @@ books.
   partner SE status, activity type (active, passive, rental, investment),
   active participation (for the $25,000 rental allowance), QBI eligibility
   and an allowed-loss override.
+- **Outside businesses** (taxpayer page, "Outside businesses" card, next
+  to the company links): businesses whose books are NOT in MyBooks (a K-1,
+  a spouse's practice). The business carries forward (name, type: Sch C /
+  Sch F / S corp / partnership / C corp, owner, profit / loss %, activity,
+  partner SE status, officer, QBI / SSTB, state sourcing); the amounts are
+  entered per tax year with "Enter amounts": ordinary, rental, interest,
+  ordinary / qualified dividends, short / long capital gain, section 1231,
+  guaranteed payments (partnership), officer wages and the >2% health
+  add-on (S corp), owner health insurance / retirement, W-2 wages and UBIA
+  for QBI, allowed-loss override. Each year chooses an ENTRY MODE: "Full-
+  year projection" (used as entered; spread evenly by month for the
+  annualized-income method) or "Year to date" through a month (projected
+  to December like the books, everything recurring; annualized columns
+  after that month use the regular installment). And an AMOUNT BASIS:
+  "Entity total" (100%, allocated by the owner's %) or "Owner's share"
+  (already the owner's share, e.g. a K-1 — the % is informational and not
+  applied). New years default to full year + owner's share. They get the
+  full treatment (SE tax, QBI, passive / excess business loss, NIIT,
+  state sourcing). The Calculation view marks them "Outside MyBooks ·
+  entered"; an owner's-share entry prints only the share row "(K-1 share,
+  N% owned)". A C corporation is estimated at the entity level (calendar
+  year, not in the individual totals). An outside farm does not trigger
+  the farmer test by itself (enter the gross-income figures on Annual
+  settings). Readiness shows an "entered manually" note, never "not
+  closed". Same visibility as the taxpayer; read-only staff cannot edit.
+  A business owned by both spouses is entered once per spouse.
 - **Entity tax setup** (per company): entity type (from the Trial Balance
   tax profile), tax method, state sourcing, SSTB/large-corp/farmer flags,
   W-2 wages override and UBIA, and the GL tax treatment table that says
@@ -1087,7 +1113,11 @@ installments are not modeled; some parameters and state rules are still
 unverified; the earned income credit, the 3+ children additional child
 tax credit alternative, employer dependent-care benefits and state
 exemption phase-outs are not computed, and head of household is not
-chosen automatically. The estimator does not give legal or tax advice; the preparer
+chosen automatically. Outside businesses (entered by hand): every
+year-to-date amount is treated as recurring, the annualized-income
+periods use an even monthly spread (full year) or a straight proration of
+the year to date, and their period figures are not frozen by the
+Schedule AI period snapshots. The estimator does not give legal or tax advice; the preparer
 is responsible for the figures.
 
 ## Error Resolution

@@ -204,11 +204,15 @@ export function allocateEntity(e: EngineEntity, adjustments: EngineAdjustment[],
   if (e.monthsElapsed <= 0) ctx.warn('TE_NO_MONTHS_ELAPSED', `${e.companyName}: no closed months; the projection equals the year-to-date books.`, { entityId: eid });
   for (const w of e.warnings) ctx.warn(w.code, `${e.companyName}: ${w.message}`, w.details, w.severity);
 
+  // Q45: an outside business's amounts were entered by hand (trace source 'input', not the GL map).
+  const outside = e.source === 'outside';
+  const entered = outside ? (e.amountBasis === 'owner_share' ? ' (entered, owner\'s share)' : ' (entered, entity total)') : '';
   for (const k of INCOME_CHARACTERS) {
     if (dIsZero(projected[k]) && dIsZero(e.ytd[k])) continue;
     ctx.trace.add({
-      step: STEP_INCOME, id: `entity.${eid}.${k}`, label: `${e.companyName} — ${k} (projected)`, exact: projected[k], source: 'gl_map',
-      formula: e.monthsRemaining > 0 ? `YTD ${e.ytd[k]} + recurring ${e.recurringYtd[k]} ÷ ${e.monthsElapsed} × ${e.monthsRemaining}` : `YTD ${e.ytd[k]} (year closed)`,
+      step: STEP_INCOME, id: `entity.${eid}.${k}`, label: `${e.companyName} — ${k} (projected)${entered}`, exact: projected[k], source: outside ? 'input' : 'gl_map',
+      formula: e.monthsRemaining > 0 ? `YTD ${e.ytd[k]} + recurring ${e.recurringYtd[k]} ÷ ${e.monthsElapsed} × ${e.monthsRemaining}`
+        : outside && e.entryMode !== 'ytd' ? `full-year ${e.ytd[k]} as entered` : `YTD ${e.ytd[k]} (year closed)`,
       entityId: eid,
     });
   }
@@ -251,7 +255,7 @@ export function allocateEntity(e: EngineEntity, adjustments: EngineAdjustment[],
     };
     ctx.trace.add({
       step: STEP_ALLOCATE, id: `share.${l.linkId}`, label: `${e.companyName} — share of ${useLoss ? 'loss' : 'profit'}`, exact: sumCharacters(share.share),
-      source: 'input', formula: `${projectedProfit} × ${fraction} (${useLoss ? 'loss' : 'profit'} %)`, personId, entityId: eid,
+      source: 'input', formula: e.amountBasis === 'owner_share' ? `${projectedProfit} × 1 (entered as the owner's share; the stated % is informational)` : `${projectedProfit} × ${fraction} (${useLoss ? 'loss' : 'profit'} %)`, personId, entityId: eid,
     });
     if (dIsPos(gp)) ctx.trace.add({ step: STEP_ALLOCATE, id: `gp.${l.linkId}`, label: `${e.companyName} — guaranteed payment`, exact: gp, source: 'gl_map', personId, entityId: eid });
     if (dIsPos(share.officerWages)) ctx.trace.add({ step: STEP_ALLOCATE, id: `officer_wages.${l.linkId}`, label: `${e.companyName} — officer W-2 wages`, exact: share.officerWages, source: 'gl_map', personId, entityId: eid });

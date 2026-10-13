@@ -118,3 +118,60 @@ export const taxEstDependents = pgTable('tax_est_dependents', {
 }, (t) => [
   index('idx_tax_est_dependents_taxpayer').on(t.taxpayerId),
 ]);
+
+// Q45 (migration 0206, parts/outside-entities.sql): businesses OUTSIDE MyBooks. The definition is
+// persistent and scoped through the taxpayer like tax_est_links (owner = a person, cascade); read /
+// written only after the taxpayer's firm + D17 / D18 visibility check (taxpayers.service loadTaxpayer).
+export const taxEstOutsideEntities = pgTable('tax_est_outside_entities', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  taxpayerId: uuid('taxpayer_id').notNull().references(() => taxEstTaxpayers.id, { onDelete: 'cascade' }),
+  personId: uuid('person_id').notNull().references(() => taxEstPersons.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 255 }).notNull(),
+  entityType: varchar('entity_type', { length: 20 }).notNull(),
+  profitPct: numeric('profit_pct', { precision: 7, scale: 4 }),
+  lossPct: numeric('loss_pct', { precision: 7, scale: 4 }),
+  partnerSeStatus: varchar('partner_se_status', { length: 20 }),
+  isOfficer: boolean('is_officer').notNull().default(false),
+  activityType: varchar('activity_type', { length: 12 }).notNull().default('active'),
+  activeParticipation: boolean('active_participation').notNull().default(false),
+  qbiEligible: boolean('qbi_eligible'),
+  isSstb: boolean('is_sstb').notNull().default(false),
+  rentalQbiTradeOrBusiness: boolean('rental_qbi_trade_or_business').notNull().default(false),
+  stateSourcing: char('state_sourcing', { length: 2 }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index('idx_tax_est_outside_entities_taxpayer').on(t.taxpayerId),
+  index('idx_tax_est_outside_entities_person').on(t.personId),
+]);
+
+/** Q45: one row per outside business per tax year (amounts, entry mode, basis, through month). */
+export const taxEstOutsideEntityYears = pgTable('tax_est_outside_entity_years', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  outsideEntityId: uuid('outside_entity_id').notNull().references(() => taxEstOutsideEntities.id, { onDelete: 'cascade' }),
+  taxYear: integer('tax_year').notNull(),
+  entryMode: varchar('entry_mode', { length: 10 }).notNull().default('full_year'),
+  amountBasis: varchar('amount_basis', { length: 12 }).notNull().default('owner_share'),
+  throughMonth: smallint('through_month'),
+  ordinary: numeric('ordinary', { precision: 19, scale: 4 }).notNull().default('0'),
+  rental: numeric('rental', { precision: 19, scale: 4 }).notNull().default('0'),
+  interest: numeric('interest', { precision: 19, scale: 4 }).notNull().default('0'),
+  dividendsOrdinary: numeric('dividends_ordinary', { precision: 19, scale: 4 }).notNull().default('0'),
+  dividendsQualified: numeric('dividends_qualified', { precision: 19, scale: 4 }).notNull().default('0'),
+  capitalGainSt: numeric('capital_gain_st', { precision: 19, scale: 4 }).notNull().default('0'),
+  capitalGainLt: numeric('capital_gain_lt', { precision: 19, scale: 4 }).notNull().default('0'),
+  section1231: numeric('section_1231', { precision: 19, scale: 4 }).notNull().default('0'),
+  guaranteedPayments: numeric('guaranteed_payments', { precision: 19, scale: 4 }).notNull().default('0'),
+  officerWages: numeric('officer_wages', { precision: 19, scale: 4 }).notNull().default('0'),
+  ownerSehi: numeric('owner_sehi', { precision: 19, scale: 4 }).notNull().default('0'),
+  ownerRetirement: numeric('owner_retirement', { precision: 19, scale: 4 }).notNull().default('0'),
+  sehiAsW2Wages: numeric('sehi_as_w2_wages', { precision: 19, scale: 4 }).notNull().default('0'),
+  w2Wages: numeric('w2_wages', { precision: 19, scale: 4 }),
+  ubia: numeric('ubia', { precision: 19, scale: 4 }),
+  includeSehiInW2Wages: boolean('include_sehi_in_w2_wages').notNull().default(false),
+  allowedLossOverride: numeric('allowed_loss_override', { precision: 19, scale: 4 }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique('uniq_tax_est_outside_entity_years').on(t.outsideEntityId, t.taxYear),
+]);

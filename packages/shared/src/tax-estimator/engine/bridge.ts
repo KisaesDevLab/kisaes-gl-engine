@@ -8,10 +8,11 @@
 // types), and calls these builders. Kept in the engine so the shapes cannot
 // drift apart; services never assemble FederalEngineInput by hand.
 
-import type { TaxBasisPl } from '../entities-api.js';
+import { INCOME_CHARACTERS, type CharacterAmounts, type TaxBasisPl } from '../entities-api.js';
+import { OUTSIDE_TENANT_ID, outsideLinkId, type OutsideEntityDTO, type OutsideEntityYearDTO } from '../outside-entities-api.js';
 import type { DependentDTO, LinkDTO, PersonDTO } from '../taxpayers-api.js';
 import type { AdjustmentDTO, AdjustmentTypeDTO, YearSettingsDTO } from '../years-api.js';
-import { ZERO, dSum, dec, type Dec } from '../decimal.js';
+import { ZERO, dDiv, dIsZero, dMul, dSum, dec, type Dec } from '../decimal.js';
 import type { EngineAdjustment, EngineDependent, EngineEntity, EngineItemized, EnginePerson, EngineYearInputs, RetirementPlanType } from './types.js';
 
 const num = (v: number | string | null | undefined): Dec => (v == null || v === '' ? ZERO : dec(v));
@@ -48,6 +49,98 @@ export function engineEntityFromTaxBasisPl(pl: TaxBasisPl, links: ReadonlyArray<
     includeSehiInW2Wages: pl.w2Wages.includeSehiInW2Wages ?? false,
     ubia: pl.ubia,
     warnings: pl.warnings,
+  };
+}
+
+// ── Businesses outside MyBooks (Q45) ─────────────────────────────────
+
+const FULL_YEAR_MONTHS = 12;
+
+function enteredCharacters(a: Partial<Record<string, string | number | null>> | null | undefined): CharacterAmounts {
+  return Object.fromEntries(INCOME_CHARACTERS.map((k) => [k, num(a?.[k])])) as CharacterAmounts;
+}
+
+/**
+ * Q45: one outside business (definition) + one tax year's amounts → engine entity, so every
+ * engine step treats it exactly like a linked business.
+ *  - `full_year`: monthsElapsed 12 / remaining 0 → the amounts are used as entered.
+ *  - `ytd`: monthsElapsed = through month, remaining = 12 − it → the engine projects YTD + YTD ÷
+ *    elapsed × remaining; every amount is recurring (no non-recurring split for entered figures).
+ *  - `owner_share`: the single owner link is sent with a blank % (= 100% for a sole link), so the engine allocates
+ *    all of it (the stated % is informational and shown from the DTO); `entity_total`: the
+ *    stated % (blank profit % = 100 for the single owner, blank loss % = the profit %).
+ * Guaranteed payments, officer wages and owner items are the owner's own in both bases.
+ */
+export function engineEntityFromOutside(def: OutsideEntityDTO, year: OutsideEntityYearDTO): EngineEntity {
+  const ytdMode = year.entryMode === 'ytd';
+  const elapsed = ytdMode ? Math.min(FULL_YEAR_MONTHS, Math.max(1, year.throughMonth ?? FULL_YEAR_MONTHS)) : FULL_YEAR_MONTHS;
+  const ownerShare = year.amountBasis === 'owner_share';
+  const amounts = enteredCharacters(year.amounts as unknown as Record<string, string>);
+  const pid = def.personId;
+  const ownerItem = { personId: pid, sehi: num(year.ownerSehi), retirement: num(year.ownerRetirement), sehiAsW2Wages: def.entityType === 's_corp' ? num(year.sehiAsW2Wages) : ZERO };
+  const hasOwnerItem = [ownerItem.sehi, ownerItem.retirement, ownerItem.sehiAsW2Wages].some((v) => !dIsZero(v));
+  const gp = def.entityType === 'partnership' ? num(year.guaranteedPayments) : ZERO;
+  const wages = def.entityType === 's_corp' ? num(year.officerWages) : ZERO;
+  return {
+    tenantId: OUTSIDE_TENANT_ID,
+    companyId: def.id,
+    companyName: def.name,
+    entityType: def.entityType,
+    monthsElapsed: elapsed,
+    monthsRemaining: FULL_YEAR_MONTHS - elapsed,
+    ytd: amounts,
+    recurringYtd: amounts,
+    ownerItems: hasOwnerItem ? [ownerItem] : [],
+    guaranteedPayments: dIsZero(gp) ? [] : [{ personId: pid, amount: gp }],
+    officerWages: dIsZero(wages) ? [] : [{ personId: pid, amount: wages }],
+    taxDepreciationBookYtd: ZERO,
+    links: [{
+      linkId: outsideLinkId(def.id), personId: pid,
+      // Owner's share: a blank % on the single owner link = 100% (income.ts linkFractions), so all of it is allocated.
+      profitPct: ownerShare ? null : def.profitPct, lossPct: ownerShare ? null : def.lossPct,
+      partnerSeStatus: def.entityType === 'partnership' ? def.partnerSeStatus : null, isOfficer: def.entityType === 's_corp' && def.isOfficer,
+      activityType: def.activityType, activeParticipation: def.activityType === 'rental' && def.activeParticipation,
+      qbiEligible: def.qbiEligible, allowedLossOverride: year.allowedLossOverride == null ? null : num(year.allowedLossOverride),
+    }],
+    isSstb: def.isSstb,
+    rentalQbiTradeOrBusiness: def.rentalQbiTradeOrBusiness,
+    w2WagesEffective: year.w2Wages == null ? null : num(year.w2Wages),
+    includeSehiInW2Wages: def.entityType === 's_corp' && year.includeSehiInW2Wages,
+    ubia: year.ubia == null ? null : num(year.ubia),
+    warnings: [],
+    source: 'outside',
+    amountBasis: year.amountBasis,
+    entryMode: year.entryMode,
+  };
+}
+
+/**
+ * Q45: Schedule AI period figures (Jan 1 → end of month `periodMonths`) of an outside business,
+ * as the engine input for that column (annualizeFederalInput then scales them).
+ *  - `full_year`: the entered amounts spread evenly by month (× periodMonths ÷ 12).
+ *  - `ytd` through month T: the YTD prorated evenly (× periodMonths ÷ T) when the period ends by T;
+ *    null (column unavailable — the installment falls back to the regular amount, like a linked
+ *    business whose books do not reach the period end) when it ends after T.
+ * §199A W-2 wages are a full-year figure (× periodMonths ÷ 12, like a linked W-2 override); UBIA is kept.
+ */
+export function outsidePeriodEntity(e: EngineEntity, periodMonths: number): EngineEntity | null {
+  const ytdMode = e.entryMode === 'ytd';
+  if (ytdMode && periodMonths > e.monthsElapsed) return null;
+  const base = String(ytdMode ? e.monthsElapsed : FULL_YEAR_MONTHS);
+  // Multiply first, then divide (exact for whole months: 60,000 × 5 ÷ 6 = 50,000).
+  const scale = (v: string): Dec => dDiv(dMul(v, String(periodMonths)), base);
+  const chars = (c: CharacterAmounts): CharacterAmounts => Object.fromEntries(INCOME_CHARACTERS.map((k) => [k, scale(c[k])])) as CharacterAmounts;
+  return {
+    ...e,
+    monthsElapsed: periodMonths,
+    monthsRemaining: FULL_YEAR_MONTHS - periodMonths,
+    ytd: chars(e.ytd),
+    recurringYtd: chars(e.recurringYtd),
+    ownerItems: e.ownerItems.map((o) => ({ ...o, sehi: scale(o.sehi), retirement: scale(o.retirement), sehiAsW2Wages: scale(o.sehiAsW2Wages) })),
+    guaranteedPayments: e.guaranteedPayments.map((g) => ({ ...g, amount: scale(g.amount) })),
+    officerWages: e.officerWages.map((w) => ({ ...w, amount: scale(w.amount) })),
+    taxDepreciationBookYtd: scale(e.taxDepreciationBookYtd),
+    w2WagesEffective: e.w2WagesEffective == null ? null : dDiv(dMul(e.w2WagesEffective, String(periodMonths)), String(FULL_YEAR_MONTHS)),
   };
 }
 

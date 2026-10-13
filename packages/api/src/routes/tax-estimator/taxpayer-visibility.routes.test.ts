@@ -242,6 +242,10 @@ describe('D17 linked-tenant rule (switch ON by default)', () => {
       // Q44: dependents are part of the taxpayer (same visibility).
       ['GET', `${base}/dependents`], ['POST', `${base}/dependents`, { displayName: 'Kid', dateOfBirth: '2016-01-01', kind: 'qualifying_child' }],
       ['PUT', `${base}/dependents/00000000-0000-4000-8000-000000000001`, { displayName: 'Kid', dateOfBirth: '2016-01-01', kind: 'qualifying_child' }], ['DELETE', `${base}/dependents/00000000-0000-4000-8000-000000000001`],
+      // Q45: outside businesses are part of the taxpayer (same visibility).
+      ['GET', `${base}/outside-entities`], ['POST', `${base}/outside-entities`, { name: 'K-1 LP', entityType: 'partnership', personRole: 'primary' }],
+      ['PUT', `${base}/outside-entities/00000000-0000-4000-8000-000000000001`, { name: 'K-1 LP', entityType: 'partnership', personRole: 'primary' }], ['DELETE', `${base}/outside-entities/00000000-0000-4000-8000-000000000001`],
+      ['PUT', `${base}/outside-entities/00000000-0000-4000-8000-000000000001/years/2026`, { entryMode: 'full_year', amountBasis: 'owner_share', amounts: { ordinary: 1000 } }], ['DELETE', `${base}/outside-entities/00000000-0000-4000-8000-000000000001/years/2026`],
     ];
     for (const [method, path, body] of probes) {
       const r = await call(method, path, 'none', body);

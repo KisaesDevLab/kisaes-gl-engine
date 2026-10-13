@@ -29,11 +29,14 @@ import type {
   LinkDTO, LinkWarningDTO, LinkUpsertResultDTO, LinkListDTO, CompanyOptionListDTO, TaxpayerContactDTO,
   TaxpayerContactListDTO, TaxpayerContactCandidateDTO, TaxpayerContactCandidateListDTO, LinkContactResultDTO, UnlinkContactResultDTO, LinkEntityKind, PersonRole,
   FilingStatus, ActivityType, SafeHarborOverride, PortalShows, PartnerSeStatus,
+  UpsertOutsideEntityInput, UpsertOutsideEntityYearInput, OutsideEntityDTO, OutsideEntityYearDTO, OutsideEntityListDTO,
+  OutsideEntryMode, OutsideAmountBasis, EntityTaxType, CharacterAmounts,
 } from '@kis-books/shared';
-import { MIN_OVERRIDE_REASON_LEN, MAX_DEPENDENTS } from '@kis-books/shared';
+import { MIN_OVERRIDE_REASON_LEN, MAX_DEPENDENTS, MAX_OUTSIDE_ENTITIES } from '@kis-books/shared';
 import { db, type DbOrTx } from '../../db/index.js';
 import {
   taxEstTaxpayers, taxEstPersons, taxEstLinks, taxEstTaxpayerContacts, taxEstDependents,
+  taxEstOutsideEntities, taxEstOutsideEntityYears,
 } from '../../db/schema/tax-estimator-taxpayers.js';
 import { companies } from '../../db/schema/company.js';
 import { tenants } from '../../db/schema/auth.js';
@@ -115,7 +118,7 @@ function dependentAuditView(d: DependentDTO): Record<string, unknown> {
 
 async function audit(
   scope: FirmScope, actor: Actor, action: 'create' | 'update' | 'delete',
-  entityType: 'tax_est_taxpayer' | 'tax_est_person' | 'tax_est_link' | 'tax_est_dependent', entityId: string,
+  entityType: 'tax_est_taxpayer' | 'tax_est_person' | 'tax_est_link' | 'tax_est_dependent' | 'tax_est_outside_entity' | 'tax_est_outside_entity_year', entityId: string,
   before: unknown | null, after: unknown | null, exec: DbOrTx,
 ) {
   const tag = (v: unknown | null) => (v ? { ...(v as object), firmId: scope.firmId } : null);
@@ -370,6 +373,213 @@ export async function removeDependent(scope: FirmScope, actor: Actor, taxpayerId
       .where(and(eq(taxEstDependents.id, dependentId), eq(taxEstDependents.taxpayerId, taxpayerId))).returning();
     if (!row) throw dependentNotFound();
     await audit(scope, actor, 'delete', 'tax_est_dependent', row.id, dependentAuditView(toDependentDTO(row)), null, tx);
+    return { removed: true as const };
+  });
+}
+
+// ── businesses outside MyBooks (Q45) ───────────────────────────────────
+// Part of the taxpayer like dependents: every call first loads the taxpayer through loadTaxpayer
+// (firm + D17 / D18 visibility; a hidden or foreign taxpayer is the uniform 404) and every query is
+// keyed by that taxpayer id, so another taxpayer's outside id is TE_OUTSIDE_ENTITY_NOT_FOUND.
+// Writes are gated by requireTaxEstimatorWrite at the route. No tenant is involved (the figures are
+// typed in), so the D18 elevation never matters here. Audit: the definition row and the year row
+// (amounts included, like links and adjustments).
+
+type OutsideRow = typeof taxEstOutsideEntities.$inferSelect;
+type OutsideYearRow = typeof taxEstOutsideEntityYears.$inferSelect;
+
+function outsideNotFound(): AppError {
+  return new AppError(404, 'Outside business not found', 'TE_OUTSIDE_ENTITY_NOT_FOUND');
+}
+
+/** NUMERIC(19,4) → a plain decimal string without trailing zeros ("60000.0000" → "60000"). */
+function money(v: string): string {
+  return v.includes('.') ? v.replace(/0+$/, '').replace(/\.$/, '') : v;
+}
+const moneyOrNull = (v: string | null): string | null => (v == null ? null : money(v));
+
+function toOutsideYearDTO(r: OutsideYearRow): OutsideEntityYearDTO {
+  const amounts: CharacterAmounts = {
+    ordinary: money(r.ordinary), rental: money(r.rental), interest: money(r.interest), dividends_ordinary: money(r.dividendsOrdinary),
+    dividends_qualified: money(r.dividendsQualified), capital_gain_st: money(r.capitalGainSt), capital_gain_lt: money(r.capitalGainLt), section_1231: money(r.section1231),
+  };
+  return {
+    outsideEntityId: r.outsideEntityId, taxYear: r.taxYear, entryMode: r.entryMode as OutsideEntryMode, amountBasis: r.amountBasis as OutsideAmountBasis,
+    throughMonth: r.throughMonth, amounts, guaranteedPayments: money(r.guaranteedPayments), officerWages: money(r.officerWages),
+    ownerSehi: money(r.ownerSehi), ownerRetirement: money(r.ownerRetirement), sehiAsW2Wages: money(r.sehiAsW2Wages),
+    w2Wages: moneyOrNull(r.w2Wages), ubia: moneyOrNull(r.ubia), includeSehiInW2Wages: r.includeSehiInW2Wages,
+    allowedLossOverride: moneyOrNull(r.allowedLossOverride), updatedAt: r.updatedAt.toISOString(),
+  };
+}
+
+function toOutsideDTO(r: OutsideRow, role: PersonRole, years: OutsideYearRow[], taxYear: number | undefined): OutsideEntityDTO {
+  const own = years.filter((y) => y.outsideEntityId === r.id).sort((a, b) => a.taxYear - b.taxYear);
+  const year = taxYear == null ? undefined : own.find((y) => y.taxYear === taxYear);
+  return {
+    id: r.id, taxpayerId: r.taxpayerId, name: r.name, entityType: r.entityType as EntityTaxType, personId: r.personId, personRole: role,
+    profitPct: numOrNull(r.profitPct), lossPct: numOrNull(r.lossPct), partnerSeStatus: r.partnerSeStatus as PartnerSeStatus | null,
+    isOfficer: r.isOfficer, activityType: r.activityType as ActivityType, activeParticipation: r.activeParticipation, qbiEligible: r.qbiEligible,
+    isSstb: r.isSstb, rentalQbiTradeOrBusiness: r.rentalQbiTradeOrBusiness, stateSourcing: r.stateSourcing,
+    createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString(),
+    years: own.map((y) => y.taxYear), year: year ? toOutsideYearDTO(year) : null,
+  };
+}
+
+/** Type-specific flags mirror the link rules (TE_LIMITED_ONLY_PARTNERSHIP / TE_OFFICER_ONLY_SCORP); other flags are normalised. */
+function outsideValues(input: UpsertOutsideEntityInput, personId: string) {
+  if (input.partnerSeStatus === 'limited' && input.entityType !== 'partnership') {
+    throw AppError.unprocessableEntity('Limited partner status applies only to partnerships', 'TE_LIMITED_ONLY_PARTNERSHIP');
+  }
+  if (input.isOfficer && input.entityType !== 's_corp') {
+    throw AppError.unprocessableEntity('Officer applies only to S corporations', 'TE_OFFICER_ONLY_SCORP');
+  }
+  const pctStr = (v: number | null | undefined) => (v == null ? null : String(v));
+  return {
+    personId, name: input.name, entityType: input.entityType, profitPct: pctStr(input.profitPct), lossPct: pctStr(input.lossPct),
+    partnerSeStatus: input.entityType === 'partnership' ? (input.partnerSeStatus ?? null) : null,
+    isOfficer: input.entityType === 's_corp' && input.isOfficer, activityType: input.activityType,
+    activeParticipation: input.activityType === 'rental' && input.activeParticipation, qbiEligible: input.qbiEligible ?? null,
+    isSstb: input.isSstb, rentalQbiTradeOrBusiness: input.rentalQbiTradeOrBusiness, stateSourcing: input.stateSourcing ?? null,
+  };
+}
+
+function outsideYearValues(input: UpsertOutsideEntityYearInput, entityType: EntityTaxType) {
+  const nz = (v: string | null | undefined) => v != null && Number(v) !== 0;
+  if (entityType !== 'partnership' && nz(input.guaranteedPayments)) {
+    throw AppError.unprocessableEntity('Guaranteed payments apply only to partnerships', 'TE_OUTSIDE_FIELD_NOT_APPLICABLE');
+  }
+  if (entityType !== 's_corp' && (nz(input.officerWages) || nz(input.sehiAsW2Wages))) {
+    throw AppError.unprocessableEntity('Officer wages and the >2% shareholder health add-on apply only to S corporations', 'TE_OUTSIDE_FIELD_NOT_APPLICABLE');
+  }
+  const a = input.amounts;
+  return {
+    entryMode: input.entryMode, amountBasis: input.amountBasis, throughMonth: input.entryMode === 'ytd' ? (input.throughMonth ?? null) : null,
+    ordinary: a.ordinary, rental: a.rental, interest: a.interest, dividendsOrdinary: a.dividends_ordinary, dividendsQualified: a.dividends_qualified,
+    capitalGainSt: a.capital_gain_st, capitalGainLt: a.capital_gain_lt, section1231: a.section_1231,
+    guaranteedPayments: input.guaranteedPayments, officerWages: input.officerWages, ownerSehi: input.ownerSehi, ownerRetirement: input.ownerRetirement,
+    sehiAsW2Wages: input.sehiAsW2Wages, w2Wages: input.w2Wages ?? null, ubia: input.ubia ?? null,
+    includeSehiInW2Wages: entityType === 's_corp' && input.includeSehiInW2Wages, allowedLossOverride: input.allowedLossOverride ?? null,
+  };
+}
+
+async function personForRole(exec: DbOrTx, taxpayerId: string, role: PersonRole): Promise<PersonRow> {
+  const [p] = await exec.select().from(taxEstPersons).where(and(eq(taxEstPersons.taxpayerId, taxpayerId), eq(taxEstPersons.role, role)));
+  if (!p) throw AppError.unprocessableEntity(`Add the ${role === 'primary' ? 'taxpayer' : 'spouse'} under Persons before giving them a business`, 'TE_OUTSIDE_PERSON_MISSING');
+  return p;
+}
+
+async function loadOutside(exec: DbOrTx, taxpayerId: string, outsideEntityId: string, lock = false): Promise<OutsideRow> {
+  const q = exec.select().from(taxEstOutsideEntities)
+    .where(and(eq(taxEstOutsideEntities.id, outsideEntityId), eq(taxEstOutsideEntities.taxpayerId, taxpayerId)));
+  const [row] = lock ? await q.for('update') : await q;
+  if (!row) throw outsideNotFound();
+  return row;
+}
+
+async function outsideDTOs(exec: DbOrTx, taxpayerId: string, rows: OutsideRow[], taxYear: number | undefined): Promise<OutsideEntityDTO[]> {
+  if (rows.length === 0) return [];
+  const [persons, years] = await Promise.all([
+    exec.select({ id: taxEstPersons.id, role: taxEstPersons.role }).from(taxEstPersons).where(eq(taxEstPersons.taxpayerId, taxpayerId)),
+    exec.select().from(taxEstOutsideEntityYears).where(inArray(taxEstOutsideEntityYears.outsideEntityId, rows.map((r) => r.id))),
+  ]);
+  const roleOf = new Map(persons.map((p) => [p.id, p.role as PersonRole]));
+  return rows.map((r) => toOutsideDTO(r, roleOf.get(r.personId) ?? 'primary', years, taxYear));
+}
+
+/** List the taxpayer's outside businesses; `taxYear` attaches that year's amounts (`year`, null when none). */
+export async function listOutsideEntities(scope: FirmScope, taxpayerId: string, taxYear?: number): Promise<OutsideEntityListDTO> {
+  await loadTaxpayer(scope, taxpayerId);
+  const rows = await db.select().from(taxEstOutsideEntities).where(eq(taxEstOutsideEntities.taxpayerId, taxpayerId))
+    .orderBy(asc(taxEstOutsideEntities.name), asc(taxEstOutsideEntities.createdAt));
+  const data = await outsideDTOs(db, taxpayerId, rows, taxYear);
+  return { data, total: data.length };
+}
+
+async function outsideDTO(exec: DbOrTx, taxpayerId: string, row: OutsideRow, taxYear?: number): Promise<OutsideEntityDTO> {
+  return (await outsideDTOs(exec, taxpayerId, [row], taxYear))[0]!;
+}
+
+/** Audit view of a definition (the stored row's attributes; amounts live on the year rows). */
+function outsideAuditView(d: OutsideEntityDTO): Record<string, unknown> {
+  const { years: _y, year: _yr, createdAt: _c, updatedAt: _u, ...rest } = d;
+  return rest;
+}
+
+export async function createOutsideEntity(scope: FirmScope, actor: Actor, taxpayerId: string, input: UpsertOutsideEntityInput): Promise<OutsideEntityDTO> {
+  return db.transaction(async (tx) => {
+    await loadTaxpayer(scope, taxpayerId, tx, true);
+    const person = await personForRole(tx, taxpayerId, input.personRole);
+    const [count] = await tx.select({ n: sql<number>`count(*)::int` }).from(taxEstOutsideEntities).where(eq(taxEstOutsideEntities.taxpayerId, taxpayerId));
+    if ((count?.n ?? 0) >= MAX_OUTSIDE_ENTITIES) throw AppError.unprocessableEntity(`A taxpayer has at most ${MAX_OUTSIDE_ENTITIES} outside businesses`, 'TE_OUTSIDE_ENTITY_LIMIT');
+    const [row] = await tx.insert(taxEstOutsideEntities).values({ taxpayerId, ...outsideValues(input, person.id) }).returning();
+    if (!row) throw AppError.internal('Outside business save failed');
+    const dto = await outsideDTO(tx, taxpayerId, row);
+    await audit(scope, actor, 'create', 'tax_est_outside_entity', row.id, null, outsideAuditView(dto), tx);
+    return dto;
+  });
+}
+
+export async function updateOutsideEntity(scope: FirmScope, actor: Actor, taxpayerId: string, outsideEntityId: string, input: UpsertOutsideEntityInput): Promise<OutsideEntityDTO> {
+  return db.transaction(async (tx) => {
+    await loadTaxpayer(scope, taxpayerId, tx, true);
+    const before = await loadOutside(tx, taxpayerId, outsideEntityId, true);
+    const beforeDto = await outsideDTO(tx, taxpayerId, before);
+    const person = await personForRole(tx, taxpayerId, input.personRole);
+    const values = outsideValues(input, person.id);
+    const [row] = await tx.update(taxEstOutsideEntities).set({ ...values, updatedAt: new Date() })
+      .where(and(eq(taxEstOutsideEntities.id, outsideEntityId), eq(taxEstOutsideEntities.taxpayerId, taxpayerId))).returning();
+    if (!row) throw outsideNotFound();
+    // A type change makes type-specific year amounts meaningless: zero them (audited with the change).
+    if (before.entityType !== row.entityType) {
+      const reset: Partial<typeof taxEstOutsideEntityYears.$inferInsert> = {};
+      if (row.entityType !== 'partnership') reset.guaranteedPayments = '0';
+      if (row.entityType !== 's_corp') { reset.officerWages = '0'; reset.sehiAsW2Wages = '0'; reset.includeSehiInW2Wages = false; }
+      if (Object.keys(reset).length) await tx.update(taxEstOutsideEntityYears).set({ ...reset, updatedAt: new Date() }).where(eq(taxEstOutsideEntityYears.outsideEntityId, row.id));
+    }
+    const dto = await outsideDTO(tx, taxpayerId, row);
+    await audit(scope, actor, 'update', 'tax_est_outside_entity', row.id, outsideAuditView(beforeDto), outsideAuditView(dto), tx);
+    return dto;
+  });
+}
+
+export async function removeOutsideEntity(scope: FirmScope, actor: Actor, taxpayerId: string, outsideEntityId: string): Promise<{ removed: true; removedYears: number }> {
+  return db.transaction(async (tx) => {
+    await loadTaxpayer(scope, taxpayerId, tx, true);
+    const row = await loadOutside(tx, taxpayerId, outsideEntityId, true);
+    const dto = await outsideDTO(tx, taxpayerId, row);
+    await tx.delete(taxEstOutsideEntities).where(and(eq(taxEstOutsideEntities.id, outsideEntityId), eq(taxEstOutsideEntities.taxpayerId, taxpayerId)));
+    await audit(scope, actor, 'delete', 'tax_est_outside_entity', row.id, { ...outsideAuditView(dto), years: dto.years }, null, tx);
+    return { removed: true as const, removedYears: dto.years.length };
+  });
+}
+
+export async function upsertOutsideEntityYear(
+  scope: FirmScope, actor: Actor, taxpayerId: string, outsideEntityId: string, taxYear: number, input: UpsertOutsideEntityYearInput,
+): Promise<OutsideEntityDTO> {
+  return db.transaction(async (tx) => {
+    await loadTaxpayer(scope, taxpayerId, tx, true);
+    const row = await loadOutside(tx, taxpayerId, outsideEntityId, true);
+    const values = outsideYearValues(input, row.entityType as EntityTaxType);
+    const [before] = await tx.select().from(taxEstOutsideEntityYears)
+      .where(and(eq(taxEstOutsideEntityYears.outsideEntityId, row.id), eq(taxEstOutsideEntityYears.taxYear, taxYear)));
+    const [saved] = before
+      ? await tx.update(taxEstOutsideEntityYears).set({ ...values, updatedAt: new Date() }).where(eq(taxEstOutsideEntityYears.id, before.id)).returning()
+      : await tx.insert(taxEstOutsideEntityYears).values({ outsideEntityId: row.id, taxYear, ...values }).returning();
+    if (!saved) throw AppError.internal('Outside business amounts save failed');
+    await audit(scope, actor, before ? 'update' : 'create', 'tax_est_outside_entity_year', saved.id,
+      before ? { ...toOutsideYearDTO(before), taxpayerId } : null, { ...toOutsideYearDTO(saved), taxpayerId }, tx);
+    return outsideDTO(tx, taxpayerId, row, taxYear);
+  });
+}
+
+export async function removeOutsideEntityYear(scope: FirmScope, actor: Actor, taxpayerId: string, outsideEntityId: string, taxYear: number): Promise<{ removed: true }> {
+  return db.transaction(async (tx) => {
+    await loadTaxpayer(scope, taxpayerId, tx, true);
+    const row = await loadOutside(tx, taxpayerId, outsideEntityId, true);
+    const [gone] = await tx.delete(taxEstOutsideEntityYears)
+      .where(and(eq(taxEstOutsideEntityYears.outsideEntityId, row.id), eq(taxEstOutsideEntityYears.taxYear, taxYear))).returning();
+    if (!gone) throw outsideNotFound();
+    await audit(scope, actor, 'delete', 'tax_est_outside_entity_year', gone.id, { ...toOutsideYearDTO(gone), taxpayerId }, null, tx);
     return { removed: true as const };
   });
 }

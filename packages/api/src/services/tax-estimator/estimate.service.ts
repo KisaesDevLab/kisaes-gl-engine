@@ -27,14 +27,14 @@ import type {
   EstimateReadinessDTO, EstimateReadinessEntityDTO, EstimateReadinessPeriodDTO, EstimateResultDTO, EngineYearInputs, FarmerResult,
   FarmerYearGross, FarmerGrossYearDTO, FederalEngineInput, FederalResult, JurisdictionEstimate, LinkDTO, ParameterUse, PersonDTO, DependentDTO,
   SchAiPeriodSourceDTO, StateResult, StateRuleUse, StateRulesDTO, TaxBasisPl, TaxEstimatorWarning, EntitySettingsResponse,
-  StateGateInputs, TaxMethod, EstimateAdjustmentSummaryDTO, EstimateEntityReclassDTO, FirmSettingsDTO, PortalShows,
+  StateGateInputs, TaxMethod, EstimateAdjustmentSummaryDTO, EstimateEntityReclassDTO, FirmSettingsDTO, PortalShows, OutsideEntityDTO,
 } from '@kis-books/shared';
 import {
   computeFederal, computeState, computeFederalEstimates, computeStateEstimates, computeCcorp, computeFarmer,
   engineEntityFromTaxBasisPl, enginePersonFromDto, engineAdjustmentFromDto, engineYearFromDto, personYearInputsFromDto, engineDependentFromDto, activeDependents,
   parameterMapFromRows, jurisdictionFromStateRules, federalFiguresFromResult, stateRowFromDto, sourcedEntitiesFromFederal,
   projectCharacters, sumCharacters, allocateAdjustment, FARMER_SAFE_HARBOR_POLICY, FARMER_INSTALLMENT_POLICY, TAX_ENGINE_VERSION,
-  dAdd, dDiv, dMul, dSum, dRoundDollars, buildEstimateAssumptions,
+  dAdd, dDiv, dMul, dSum, dRoundDollars, buildEstimateAssumptions, engineEntityFromOutside, outsidePeriodEntity, OUTSIDE_TENANT_ID,
 } from '@kis-books/shared';
 import { db } from '../../db/index.js';
 import { accounts } from '../../db/schema/index.js';
@@ -51,7 +51,7 @@ import { getEntitySettings } from './entity-settings.service.js';
 import { scopeWarningForLink } from './entity-type.service.js';
 import { getParameters } from './tax-parameters.service.js';
 import { getStateRules } from './tax-state-rules.service.js';
-import { getTaxpayer, listLinks } from './taxpayers.service.js';
+import { getTaxpayer, listLinks, listOutsideEntities } from './taxpayers.service.js';
 import { loadYearForEngine } from './years.service.js';
 import { listAdjustments } from './adjustments.service.js';
 import { listAdjustmentTypes } from './adjustment-types.service.js';
@@ -67,7 +67,8 @@ type DecJs = InstanceType<typeof Decimal>;
 // v2 (Phase 12): the cached payload is AES-encrypted (D9) and carries the assumptions block.
 // v3 (QA2-04): adjustments carry their monthly allocation.
 // v4 (2026-10-12): entities carry their owners (PDF "Businesses included").
-const CACHE_VERSION = 'te-estimate-v4';
+// v5 (Q45): businesses outside MyBooks (entities carry `source` / `outside`).
+const CACHE_VERSION = 'te-estimate-v5';
 const FEDERAL = 'federal';
 const MONTHS_PER_YEAR = 12;
 const MAX_ADJUSTMENTS = 500;
@@ -200,6 +201,8 @@ interface Gathered {
   dependents: DependentDTO[];
   linksAll: LinkDTO[];
   links: LinkDTO[];
+  /** Q45: businesses outside MyBooks that have amounts for this tax year (definition + `year`). */
+  outside: OutsideEntityDTO[];
   companies: CompanyInputs[];
   adjustments: AdjustmentDTO[];
   types: AdjustmentTypeDTO[];
@@ -217,10 +220,11 @@ async function gather(scope: FirmScope, req: EstimateRequest): Promise<Gathered>
   if (scenario.taxpayerId !== taxpayer.id || scenario.taxYear !== req.taxYear) throw scenarioNotFound();
   const warnings: TaxEstimatorWarning[] = [];
 
-  const [year, detail, linkList, adjustmentList, types, stateRows, paramsDto, snapshots, firmSettings] = await Promise.all([
+  const [year, detail, linkList, outsideList, adjustmentList, types, stateRows, paramsDto, snapshots, firmSettings] = await Promise.all([
     loadYearForEngine(scope, taxpayer.id, req.taxYear),
     getTaxpayer(scope, taxpayer.id),
     listLinks(scope, taxpayer.id, req.taxYear),
+    listOutsideEntities(scope, taxpayer.id, req.taxYear),
     listAdjustments(scope, scenario.id, { limit: MAX_ADJUSTMENTS, offset: 0 }),
     listAdjustmentTypes(scope, true),
     listStateRowsForEngine(scope, scenario.id),
@@ -272,7 +276,8 @@ async function gather(scope: FirmScope, req: EstimateRequest): Promise<Gathered>
   return {
     taxpayer, firmSettings,
     taxpayerFilingStatus: taxpayer.filingStatus as FederalEngineInput['filingStatus'], scenarioName: scenario.name, year,
-    persons: detail.persons, dependents: detail.dependents ?? [], linksAll, links, companies, adjustments: adjustmentList.data, types, stateRows, paramsDto, stateRules,
+    persons: detail.persons, dependents: detail.dependents ?? [], linksAll, links, outside: outsideList.data.filter((o) => o.year != null), companies,
+    adjustments: adjustmentList.data, types, stateRows, paramsDto, stateRules,
     ledger, snapshots, warnings,
   };
 }
@@ -287,6 +292,8 @@ function inputsHash(scope: FirmScope, req: EstimateRequest, g: Gathered, today: 
     // D18: a listed user's widened read is its own cache entry (flag + tenant set above).
     elevated: isElevated(scope),
     filingStatus: g.taxpayerFilingStatus, year: g.year, persons: g.persons, dependents: g.dependents, links: g.links,
+    // Q45: any change to an outside business or its year amounts re-keys the live estimate.
+    outside: g.outside,
     companies: g.companies.map((c) => ({ t: c.tenantId, c: c.companyId, stamp: c.glVersionStamp, cfg: c.configVersion, s: c.settings })),
     adjustments: g.adjustments, types: g.types, stateRows: g.stateRows, params: g.paramsDto, stateRules: g.stateRules,
     payments: g.ledger.payments, snapshots: [...g.snapshots.entries()],
@@ -361,6 +368,39 @@ function ownersOf(g: Pick<Gathered, 'links' | 'persons'>, tenantId: string, comp
       displayName: p ? `${p.firstName} ${p.lastName}`.trim() : l.personRole,
       profitPct, lossPct: l.lossPct ?? profitPct,
     };
+  });
+}
+
+interface OutsideRun {
+  def: OutsideEntityDTO;
+  engine: EngineEntity;
+  dto: EstimateEntityDTO;
+}
+
+/**
+ * Q45: businesses outside MyBooks with amounts for the year → engine entities (the shared bridge)
+ * and estimate DTOs. A C corporation takes the entity-level path like a linked one. No tenant,
+ * no books readiness: the figures are typed in. Owners show the STATED % (on an owner's share it
+ * is informational; the engine allocates 100% of the entered share).
+ */
+function runOutside(g: Pick<Gathered, 'outside' | 'persons'>): OutsideRun[] {
+  return g.outside.filter((o) => o.year).map((o) => {
+    const y = o.year!;
+    const engine = engineEntityFromOutside(o, y);
+    const p = g.persons.find((x) => x.id === o.personId);
+    const profitPct = o.profitPct ?? 100;
+    const dto: EstimateEntityDTO = {
+      tenantId: OUTSIDE_TENANT_ID, companyId: o.id, companyName: o.name, entityType: o.entityType,
+      path: o.entityType === 'c_corp' ? 'c_corp' : 'individual', skippedReason: null, throughMonth: null, throughMonthSource: null,
+      monthsElapsed: engine.monthsElapsed, monthsRemaining: engine.monthsRemaining, glVersionStamp: 0, providerCached: false,
+      owners: [{ personId: o.personId, personRole: o.personRole, displayName: p ? `${p.firstName} ${p.lastName}`.trim() : o.personRole, profitPct, lossPct: o.lossPct ?? profitPct }],
+      source: 'outside',
+      outside: {
+        outsideEntityId: o.id, entryMode: y.entryMode, amountBasis: y.amountBasis, throughMonth: y.entryMode === 'ytd' ? y.throughMonth : null,
+        statedProfitPct: o.profitPct, statedLossPct: o.lossPct,
+      },
+    };
+    return { def: o, engine, dto };
   });
 }
 
@@ -518,7 +558,10 @@ async function assemble(scope: FirmScope, req: EstimateRequest, g: Gathered, opt
   // Entities.
   const runs = await runEntities(scope, req, g, opts, today, warnings);
   const individual = runs.filter((r) => r.engine) as Array<EntityRun & { engine: EngineEntity; pl: TaxBasisPl }>;
-  const engineEntities = individual.map((r) => r.engine);
+  // Q45: businesses outside MyBooks join the same engine input (C corps go to the entity-level path).
+  const outsideRuns = runOutside(g);
+  const outsideIndividual = outsideRuns.filter((r) => r.dto.path === 'individual');
+  const engineEntities = [...individual.map((r) => r.engine), ...outsideIndividual.map((r) => r.engine)];
   const individualLinkIds = new Set(engineEntities.flatMap((e) => e.links.map((l) => l.linkId)));
 
   // Adjustments (GL-linked: actuals through the entity's month + plan / run-rate).
@@ -560,7 +603,7 @@ async function assemble(scope: FirmScope, req: EstimateRequest, g: Gathered, opt
   for (const p of periods) {
     let snapshotEntities = 0;
     let liveEntities = 0;
-    let available = individual.length > 0;
+    let available = individual.length > 0 || outsideIndividual.length > 0;
     const ents: EngineEntity[] = [];
     for (const r of individual) {
       if (!available) break;
@@ -571,6 +614,14 @@ async function assemble(scope: FirmScope, req: EstimateRequest, g: Gathered, opt
         : await getTaxBasisPl(scope, { tenantId: r.engine.tenantId, companyId: r.engine.companyId, taxYear, throughMonth: p.periodMonth }, { today, skipCache: opts.skipProviderCache });
       ents.push({ ...r.engine, ...periodFiguresFromPl(ppl, p.months) });
       liveEntities++;
+    }
+    // Q45: outside businesses — full-year entries spread evenly; YTD entries prorated up to their
+    // through month (a later period end makes the column unavailable, like books not reaching it).
+    for (const r of outsideIndividual) {
+      if (!available) break;
+      const pe = outsidePeriodEntity(r.engine, p.months);
+      if (!pe) { available = false; break; }
+      ents.push(pe);
     }
     if (!available) {
       periodActuals.push(null);
@@ -586,6 +637,7 @@ async function assemble(scope: FirmScope, req: EstimateRequest, g: Gathered, opt
     scheduleAi.push({
       periodIndex: p.periodIndex, periodEnd: p.periodEnd, snapshotEntities, liveEntities,
       source: snapshotEntities > 0 && liveEntities > 0 ? 'mixed' : snapshotEntities > 0 ? 'snapshot' : 'live',
+      ...(outsideIndividual.length > 0 ? { outsideEntities: outsideIndividual.length } : {}),
     });
   }
   if (prorated) {
@@ -607,6 +659,11 @@ async function assemble(scope: FirmScope, req: EstimateRequest, g: Gathered, opt
     warnings.push({ code: 'TE_FARMER_OVERRIDE_CONFLICT', severity: 'warning', message: 'One linked entity is marked "not a farmer" while another is a farm (Schedule F or marked "farmer"); the "not a farmer" override was applied to the taxpayer, so the regular installment rules are used.' });
   }
   const fg = y.farmerGross ?? {};
+  // Q45: an outside Schedule F has no gross-income figures, so it never makes the farmer test run on
+  // its own; with manual gross figures on the annual settings the test runs as usual.
+  if (outsideIndividual.some((r) => r.engine.entityType === 'sch_f') && !fg.current) {
+    warnings.push({ code: 'TE_OUTSIDE_FARM_GROSS_MANUAL', severity: 'info', message: 'A Schedule F business outside MyBooks is not tested for the farmer / fisherman rules automatically (no gross-income figures). Enter the gross-income figures on the annual settings to apply the test.' });
+  }
   let farmer: FarmerResult | null = null;
   if (farmIds.size > 0 || fg.current || fg.prior || farmerOverride !== null) {
     const currentYear = fg.current ? farmerYearFromManual(fg.current, g.persons) : farmerYearFromBooks(runs, farmIds, federal, g.persons);
@@ -659,7 +716,10 @@ async function assemble(scope: FirmScope, req: EstimateRequest, g: Gathered, opt
       deductions: r.dto.stateDeductions ?? null,
     });
     const rows = g.stateRows.map((r) => stateRowFromDto(r.dto, gateOf(r)));
-    const sourcing = individual.map((r) => ({ companyId: r.engine.companyId, stateSourcing: r.company.settings.settings.stateSourcing }));
+    const sourcing = [
+      ...individual.map((r) => ({ companyId: r.engine.companyId, stateSourcing: r.company.settings.settings.stateSourcing })),
+      ...outsideIndividual.map((r) => ({ companyId: r.def.id, stateSourcing: r.def.stateSourcing })),
+    ];
     state = runEngine(() => computeState({
       taxYear, filingStatus, parameters, federal: federalFiguresFromResult(federal), rows, jurisdictions, entities: sourcedEntitiesFromFederal(federal, sourcing),
       // Q44: personal exemptions count the filers (two on a joint return, whether or not the spouse is on file),
@@ -705,6 +765,21 @@ async function assemble(scope: FirmScope, req: EstimateRequest, g: Gathered, opt
       warnings.push({ code: err.code ?? 'TE_CCORP_FAILED', severity: 'warning', message: `${pl.companyName}: ${err.message}`, details: { companyId: pl.companyId } });
     }
   }
+  // Q45: an outside C corporation — entity level on the entered taxable income (projected for YTD entry),
+  // calendar year, not a large corporation.
+  for (const r of outsideRuns.filter((x) => x.dto.path === 'c_corp')) {
+    const taxable = sumCharacters(projectCharacters(r.engine.ytd, r.engine.recurringYtd, r.engine.monthsElapsed, r.engine.monthsRemaining));
+    try {
+      ccorps.push(runEngine(() => computeCcorp({
+        taxYear, parameters, tenantId: OUTSIDE_TENANT_ID, companyId: r.def.id, companyName: r.def.name,
+        fiscalYearStartMonth: 1, taxableIncome: taxable, largeCorporation: false, priorYearsTaxableIncome: null, priorYear: null, states: [],
+      })));
+      warnings.push({ code: 'TE_OUTSIDE_CCORP_DEFAULTS', severity: 'info', message: `${r.def.name} (outside MyBooks): estimated as a calendar-year C corporation that is not a large corporation, on the entered taxable income.`, details: { outsideEntityId: r.def.id } });
+    } catch (err) {
+      if (!(err instanceof AppError)) throw err;
+      warnings.push({ code: err.code ?? 'TE_CCORP_FAILED', severity: 'warning', message: `${r.def.name}: ${err.message}`, details: { outsideEntityId: r.def.id } });
+    }
+  }
   if (ccorps.length > 0) {
     warnings.push({ code: 'TE_CCORP_INPUTS_LIMITED', severity: 'warning', message: 'C corporation estimates use the current-year rule only and no state tax: prior-year tax, prior taxable incomes and state apportionment are not stored yet.' });
   }
@@ -719,7 +794,7 @@ async function assemble(scope: FirmScope, req: EstimateRequest, g: Gathered, opt
     taxpayerId: req.taxpayerId, taxYear, scenarioId: req.scenarioId, scenarioName: g.scenarioName, filingStatus,
     engineVersion: TAX_ENGINE_VERSION, computedAt: new Date().toISOString(), cached: false, inputsHash: hash,
     safeHarborRule: g.year.rule, safeHarborRuleSource: g.year.ruleSource,
-    entities: runs.map((r) => r.dto), federal, state, federalEstimates, stateEstimates, farmer, ccorps,
+    entities: [...runs.map((r) => r.dto), ...outsideRuns.map((r) => r.dto)], federal, state, federalEstimates, stateEstimates, farmer, ccorps,
     payments: ledgerPayments, scheduleAi,
     summary: {
       // The combined total rounds the UNROUNDED sum (oracle `total`), not the sum of the rounded lines.
@@ -791,6 +866,8 @@ export interface EstimateInputsForSnapshot {
   persons: PersonDTO[];
   dependents: DependentDTO[];
   links: LinkDTO[];
+  /** Q45: outside businesses with the year's amounts, as used. */
+  outsideEntities: OutsideEntityDTO[];
   companies: Array<{ tenantId: string; companyId: string; companyName: string | null; glVersionStamp: number; configVersion: string; settings: EntitySettingsResponse }>;
   adjustments: AdjustmentDTO[];
   types: AdjustmentTypeDTO[];
@@ -812,6 +889,7 @@ export async function computeEstimateWithInputs(
   const hash = inputsHash(scope, req, g, today);
   const inputs: EstimateInputsForSnapshot = {
     taxpayer: g.taxpayer, firmSettings: g.firmSettings, scenarioName: g.scenarioName, year: g.year, persons: g.persons, dependents: g.dependents, links: g.links,
+    outsideEntities: g.outside,
     companies: g.companies.map((c) => ({ tenantId: c.tenantId, companyId: c.companyId, companyName: c.companyName, glVersionStamp: c.glVersionStamp, configVersion: c.configVersion, settings: c.settings })),
     adjustments: g.adjustments, types: g.types, stateRows: g.stateRows, federalParameters: g.paramsDto, stateRules: g.stateRules,
     payments: g.ledger.payments, schAiFigures: [...g.snapshots.entries()].map(([key, figures]) => ({ key, figures })),
@@ -896,6 +974,12 @@ export async function getEstimateReadiness(
     snapshotsCaptured: snapshots.filter((s) => s.periodIndex === p.periodIndex && individual.some((e) => e.tenantId === s.tenantId && e.companyId === s.companyId)).length,
     entitiesExpected: individual.length,
   }));
+  // Q45: outside businesses are entered by hand — never "not closed"; one info line each.
+  for (const o of (await listOutsideEntities(scope, taxpayerId, taxYear)).data) {
+    if (!o.year) continue;
+    const how = o.year.entryMode === 'ytd' ? `year to date through month ${o.year.throughMonth}` : 'full-year amounts';
+    warnings.push({ code: 'TE_OUTSIDE_ENTITY_ENTERED', severity: 'info', message: `${o.name}: outside MyBooks, entered manually (${how}); no books readiness check applies.`, details: { outsideEntityId: o.id } });
+  }
   const deduped = dedupeWarnings(warnings);
   return {
     taxpayerId, taxYear, entities, outOfScopeLinks, schAiPeriods: schAiPeriods_,

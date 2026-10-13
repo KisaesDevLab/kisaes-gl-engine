@@ -184,6 +184,8 @@ describe('D18 visibility: a non-empty list replaces the linked-tenant rule', () 
       expect(d.json.data.staffRestricted).toBe(true);
       // Q44: dependents are part of the taxpayer — readable by every listed user.
       expect((await call('GET', `${TE}/taxpayers/${fx.taxpayerId}/dependents`, key)).status, key).toBe(200);
+      // Q45: outside businesses are part of the taxpayer too.
+      expect((await call('GET', `${TE}/taxpayers/${fx.taxpayerId}/outside-entities?taxYear=2026`, key)).status, key).toBe(200);
     }
     expect(await listIds('all')).not.toContain(fx.taxpayerId);
     expect((await call('GET', `${TE}/taxpayers/${fx.taxpayerId}`, 'all')).status).toBe(404);
@@ -210,6 +212,9 @@ describe('D18 visibility: a non-empty list replaces the linked-tenant rule', () 
       ['PUT', `${base}/staff`, 'TE_TAXPAYER_NOT_FOUND', { userIds: [] }],
       ['GET', `${base}/dependents`, 'TE_TAXPAYER_NOT_FOUND'], ['POST', `${base}/dependents`, 'TE_TAXPAYER_NOT_FOUND', { displayName: 'Kid', dateOfBirth: '2016-01-01', kind: 'qualifying_child' }],
       ['PUT', `${base}/dependents/00000000-0000-4000-8000-000000000001`, 'TE_TAXPAYER_NOT_FOUND', { displayName: 'Kid', dateOfBirth: '2016-01-01', kind: 'qualifying_child' }], ['DELETE', `${base}/dependents/00000000-0000-4000-8000-000000000001`, 'TE_TAXPAYER_NOT_FOUND'],
+      ['GET', `${base}/outside-entities`, 'TE_TAXPAYER_NOT_FOUND'], ['POST', `${base}/outside-entities`, 'TE_TAXPAYER_NOT_FOUND', { name: 'K-1 LP', entityType: 'partnership', personRole: 'primary' }],
+      ['PUT', `${base}/outside-entities/00000000-0000-4000-8000-000000000001`, 'TE_TAXPAYER_NOT_FOUND', { name: 'K-1 LP', entityType: 'partnership', personRole: 'primary' }], ['DELETE', `${base}/outside-entities/00000000-0000-4000-8000-000000000001`, 'TE_TAXPAYER_NOT_FOUND'],
+      ['PUT', `${base}/outside-entities/00000000-0000-4000-8000-000000000001/years/2026`, 'TE_TAXPAYER_NOT_FOUND', { entryMode: 'full_year', amountBasis: 'owner_share', amounts: { ordinary: 1000 } }], ['DELETE', `${base}/outside-entities/00000000-0000-4000-8000-000000000001/years/2026`, 'TE_TAXPAYER_NOT_FOUND'],
       ['GET', `${TE}/scenarios/${fx.baseScenarioId}/adjustments`, 'TE_SCENARIO_NOT_FOUND'],
       ['GET', `${TE}/scenarios/${fx.baseScenarioId}/state-rows`, 'TE_SCENARIO_NOT_FOUND'],
       ['PATCH', `${TE}/scenarios/${fx.baseScenarioId}`, 'TE_SCENARIO_NOT_FOUND', { name: 'Renamed' }],

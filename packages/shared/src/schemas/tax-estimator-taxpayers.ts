@@ -7,7 +7,9 @@
 // scope is resolved server-side. `tenantId` on a link names the TARGET tenant
 // and is validated against the server-resolved allowed set.
 import { z } from 'zod';
-import { FILING_STATUSES, ACTIVITY_TYPES } from '../tax-estimator/types.js';
+import { FILING_STATUSES, ACTIVITY_TYPES, ENTITY_TAX_TYPES } from '../tax-estimator/types.js';
+import { INCOME_CHARACTERS } from '../tax-estimator/entities-api.js';
+import { OUTSIDE_ENTRY_MODES, OUTSIDE_AMOUNT_BASES } from '../tax-estimator/outside-entities-api.js';
 import { STATE_CODES } from '../tax-estimator/stateRuleKeys.js';
 
 const MIN_TAX_YEAR = 2000;
@@ -46,6 +48,8 @@ export const personRoleParamsSchema = z.object({ id: uuid, role: z.enum(PERSON_R
 export const linkIdParamsSchema = z.object({ id: uuid, linkId: uuid });
 export const contactIdParamsSchema = z.object({ id: uuid, contactId: uuid });
 export const dependentIdParamsSchema = z.object({ id: uuid, dependentId: uuid });
+export const outsideEntityIdParamsSchema = z.object({ id: uuid, outsideEntityId: uuid });
+export const outsideEntityYearParamsSchema = z.object({ id: uuid, outsideEntityId: uuid, taxYear: z.coerce.number().int().min(MIN_TAX_YEAR).max(MAX_TAX_YEAR) });
 
 /**
  * D17 (2026-10-12): replace a taxpayer's staff allow-list. Firm admins / super admins only
@@ -159,6 +163,60 @@ export const upsertLinkSchema = z.object({
   allowedLossReason: optionalReason.nullable().optional(),
 });
 export type UpsertLinkInput = z.infer<typeof upsertLinkSchema>;
+
+// ── Businesses outside MyBooks (OPEN-QUESTIONS Q45) ────────────────────
+// Definition (persistent) and per-year amounts. The entity-type-specific checks (partner SE
+// status only on a partnership, officer only on an S corp, guaranteed payments only on a
+// partnership, officer wages / health add-on only on an S corp) run in the service with the
+// link error codes, because the year body does not carry the type.
+const MAX_OUTSIDE_NAME = 255;
+const MAX_MONEY_DIGITS = 15;
+const signedMoney = z.union([z.number(), z.string().trim().regex(/^-?\d+(\.\d{1,4})?$/)])
+  .transform((v) => String(v))
+  .refine((v) => Math.abs(Number(v)) < 10 ** MAX_MONEY_DIGITS, { message: 'Amount is too large' });
+const nonNegativeMoney = signedMoney.refine((v) => Number(v) >= 0, { message: 'Enter a positive amount' });
+
+export const outsideEntitiesQuerySchema = z.object({ taxYear: z.coerce.number().int().min(MIN_TAX_YEAR).max(MAX_TAX_YEAR).optional() });
+
+export const upsertOutsideEntitySchema = z.object({
+  name: z.string().trim().min(1).max(MAX_OUTSIDE_NAME),
+  entityType: z.enum(ENTITY_TAX_TYPES),
+  personRole: z.enum(PERSON_ROLES),
+  profitPct: pct.nullable().optional(),
+  lossPct: pct.nullable().optional(),
+  partnerSeStatus: z.enum(PARTNER_SE_STATUSES).nullable().optional(),
+  isOfficer: z.boolean().default(false),
+  activityType: z.enum(ACTIVITY_TYPES).default('active'),
+  activeParticipation: z.boolean().default(false),
+  qbiEligible: z.boolean().nullable().optional(),
+  isSstb: z.boolean().default(false),
+  rentalQbiTradeOrBusiness: z.boolean().default(false),
+  stateSourcing: stateCode.nullable().optional(),
+});
+export type UpsertOutsideEntityInput = z.infer<typeof upsertOutsideEntitySchema>;
+
+const characterAmountsInput = z.object(Object.fromEntries(INCOME_CHARACTERS.map((k) => [k, signedMoney.default('0')])) as Record<typeof INCOME_CHARACTERS[number], z.ZodDefault<typeof signedMoney>>);
+
+export const upsertOutsideEntityYearSchema = z.object({
+  entryMode: z.enum(OUTSIDE_ENTRY_MODES).default('full_year'),
+  amountBasis: z.enum(OUTSIDE_AMOUNT_BASES).default('owner_share'),
+  throughMonth: z.number().int().min(1).max(MONTHS).nullable().optional(),
+  amounts: characterAmountsInput.default({}),
+  guaranteedPayments: nonNegativeMoney.default('0'),
+  officerWages: nonNegativeMoney.default('0'),
+  ownerSehi: nonNegativeMoney.default('0'),
+  ownerRetirement: nonNegativeMoney.default('0'),
+  sehiAsW2Wages: nonNegativeMoney.default('0'),
+  w2Wages: nonNegativeMoney.nullable().optional(),
+  ubia: nonNegativeMoney.nullable().optional(),
+  includeSehiInW2Wages: z.boolean().default(false),
+  allowedLossOverride: nonNegativeMoney.nullable().optional(),
+}).superRefine((v, ctx) => {
+  if (v.entryMode === 'ytd' && v.throughMonth == null) {
+    ctx.addIssue({ code: 'custom', path: ['throughMonth'], message: 'Year-to-date amounts need the month they run through' });
+  }
+});
+export type UpsertOutsideEntityYearInput = z.infer<typeof upsertOutsideEntityYearSchema>;
 export const MIN_OVERRIDE_REASON_LEN = MIN_REASON_LEN;
 
 export const companyOptionsQuerySchema = z.object({

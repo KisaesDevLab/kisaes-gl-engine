@@ -19,6 +19,7 @@ import type { ActivityType, EntityTaxType, FilingStatus, ParameterStatus, TraceR
 import type { CharacterAmounts, TaxEstimatorWarning } from '../entities-api.js';
 import type { PartnerSeStatus, PersonRole } from '../taxpayers-api.js';
 import type { AdjustmentKind, DeductionMode, HsaCoverage, RateMode } from '../years-api.js';
+import type { EntitySource, OutsideAmountBasis, OutsideEntryMode } from '../outside-entities-api.js';
 
 // ── Parameters ───────────────────────────────────────────────────────
 
@@ -189,6 +190,19 @@ export interface EngineEntity {
   ubia: string | null;
   /** Readiness / provider warnings to surface on the assumptions page. */
   warnings: TaxEstimatorWarning[];
+  /**
+   * Q45: 'outside' = a business outside MyBooks whose amounts were entered by hand
+   * (engineEntityFromOutside); absent = 'books'. Labels / trace only — the math is the same.
+   */
+  source?: EntitySource;
+  /**
+   * Q45 (outside businesses): 'owner_share' = the amounts are already the owner's share (the
+   * bridge sends a 100% link, so the engine allocates all of it); 'entity_total' = 100% of the
+   * entity, allocated by the link %. Absent on book entities (always entity totals).
+   */
+  amountBasis?: OutsideAmountBasis;
+  /** Q45 (outside businesses): 'full_year' amounts (no projection) or 'ytd' (projected). */
+  entryMode?: OutsideEntryMode;
 }
 
 // ── Adjustments ──────────────────────────────────────────────────────
@@ -368,6 +382,12 @@ export interface EntityResult {
   projected: CharacterAmounts;
   projectedProfit: string;
   shares: EntityShareResult[];
+  /** Q45 (optional, additive): 'outside' for a business entered by hand; absent = books (results before rc.5). */
+  source?: EntitySource;
+  /** Q45: outside businesses only — what the entered amounts are (see EngineEntity.amountBasis). */
+  amountBasis?: OutsideAmountBasis;
+  /** Q45: outside businesses only — full-year or year-to-date entry. */
+  entryMode?: OutsideEntryMode;
 }
 
 export interface RetirementLimitResult {

@@ -284,6 +284,77 @@ describe('Q44 dependents and care expenses flow into the estimate', () => {
   });
 });
 
+describe('Q45 businesses outside MyBooks flow into the estimate', () => {
+  it('an outside K-1 (owner share, passive, full year) is taxed like a linked business; amount changes re-key the cache; readiness, assumptions and a snapshot work', async () => {
+    const tp = await mkTaxpayer();
+    await mkPersonAndLink(tp);
+    const sid = await baseScenario(tp);
+    const def = await request('POST', `${BASE}/${tp}/outside-entities`, staffToken, { name: 'Lakeside Partners LP', entityType: 'partnership', personRole: 'primary', profitPct: 25, partnerSeStatus: 'limited', activityType: 'passive' });
+    expect(def.status, JSON.stringify(def.json)).toBe(201);
+    const oid = def.json.data.id as string;
+    const putYear = (ordinary: string) => request('PUT', `${BASE}/${tp}/outside-entities/${oid}/years/2026`, staffToken, { entryMode: 'full_year', amountBasis: 'owner_share', amounts: { ordinary } });
+    expect((await putYear('100000')).status).toBe(200);
+
+    const a = await request('POST', est(tp, sid), staffToken, { throughMonth: '2026-09', refresh: true });
+    expect(a.status, JSON.stringify(a.json)).toBe(200);
+    const d = a.json.data;
+    // AGI 100,000 (the whole entered share, not × 25%); standard deduction 32,200; QBI = 20% × 67,800 (overall limit) = 13,560;
+    // TI 54,240; tax 2,480 + 12% × 29,440 = 6,012.80. Limited partner: no SE tax.
+    expect(d.federal.income.totalIncome).toBe('100000');
+    expect(d.federal.qbi.deduction).toBe('13560');
+    expect(d.federal.seTax).toBe('0');
+    expect(d.federal.federalTotal).toBe('6013');
+    const dto = d.entities.find((e: { companyId: string }) => e.companyId === oid);
+    expect(dto).toMatchObject({ tenantId: 'outside', source: 'outside', path: 'individual', throughMonth: null, outside: { entryMode: 'full_year', amountBasis: 'owner_share', statedProfitPct: 25 } });
+    expect(d.federal.entities.find((e: { companyId: string }) => e.companyId === oid)).toMatchObject({ source: 'outside', amountBasis: 'owner_share', entryMode: 'full_year' });
+    const projection = d.assumptions.sections.find((x: { id: string }) => x.id === 'projection');
+    expect(JSON.stringify(projection)).toContain('Lakeside Partners LP (outside MyBooks)');
+    expect(d.engineVersion).toBe('1.0.0-rc.5');
+
+    expect((await request('POST', est(tp, sid), staffToken, { throughMonth: '2026-09' })).json.data.cached).toBe(true);
+    expect((await putYear('80000')).status).toBe(200);
+    const c = await request('POST', est(tp, sid), staffToken, { throughMonth: '2026-09' });
+    expect(c.json.data.cached).toBe(false);
+    expect(c.json.data.federal.income.totalIncome).toBe('80000');
+
+    const rd = await request('GET', `${yr(tp)}/readiness`, staffToken);
+    expect(rd.status).toBe(200);
+    expect(rd.json.data.warnings).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'TE_OUTSIDE_ENTITY_ENTERED', severity: 'info' })]));
+
+    // A snapshot freezes the outside business without treating it as a books tenant.
+    const snap = await request('POST', `${yr(tp)}/scenarios/${sid}/snapshots`, staffToken, { throughMonth: '2026-09' });
+    expect(snap.status, JSON.stringify(snap.json)).toBe(201);
+    expect(snap.json.data.payload.inputs.outsideEntities).toHaveLength(1);
+    expect(snap.json.data.payload.result.entities.some((e: { source?: string }) => e.source === 'outside')).toBe(true);
+  });
+
+  it('YTD entry projects, a C corporation goes to the entity-level path, and firm B cannot see any of it', async () => {
+    const tp = await mkTaxpayer();
+    await mkPersonAndLink(tp);
+    const sid = await baseScenario(tp);
+    const schc = (await request('POST', `${BASE}/${tp}/outside-entities`, staffToken, { name: 'Side Practice', entityType: 'sch_c', personRole: 'primary' })).json.data.id as string;
+    expect((await request('PUT', `${BASE}/${tp}/outside-entities/${schc}/years/2026`, staffToken, { entryMode: 'ytd', throughMonth: 6, amountBasis: 'entity_total', amounts: { ordinary: '30000' } })).status).toBe(200);
+    const corp = (await request('POST', `${BASE}/${tp}/outside-entities`, staffToken, { name: 'Holdco Inc', entityType: 'c_corp', personRole: 'primary' })).json.data.id as string;
+    expect((await request('PUT', `${BASE}/${tp}/outside-entities/${corp}/years/2026`, staffToken, { entryMode: 'full_year', amountBasis: 'entity_total', amounts: { ordinary: '100000' } })).status).toBe(200);
+    const r = await request('POST', est(tp, sid), staffToken, { throughMonth: '2026-09', refresh: true });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    const f = r.json.data.federal;
+    expect(f.entities.find((e: { companyId: string }) => e.companyId === schc).projectedProfit).toBe('60000');
+    expect(f.income.totalIncome).toBe('60000');
+    expect(Number(f.seTax)).toBeGreaterThan(0);
+    expect(r.json.data.entities.find((e: { companyId: string }) => e.companyId === corp).path).toBe('c_corp');
+    expect(r.json.data.ccorps.map((c: { companyId: string }) => c.companyId)).toEqual([corp]);
+    expect(f.entities.some((e: { companyId: string }) => e.companyId === corp)).toBe(false);
+    // Schedule AI: the Sch C was entered through June, so the March / May columns prorate its YTD and the
+    // August column is unavailable (that installment falls back to the regular amount).
+    const cols = r.json.data.scheduleAi as Array<{ periodEnd: string; source: string; outsideEntities?: number }>;
+    expect(cols.slice(0, 3).map((p) => [p.periodEnd, p.source, p.outsideEntities ?? 0])).toEqual([
+      ['2026-03-31', 'live', 1], ['2026-05-31', 'live', 1], ['2026-08-31', 'unavailable', 0],
+    ]);
+    expect((await request('POST', est(tp, sid), firmBToken, { throughMonth: '2026-09' })).status).toBe(404);
+  });
+});
+
 describe('payment ledger routes', () => {
   it('CRUD with audit; readonly may read but not write; firm B gets 404', async () => {
     const tp = await mkTaxpayer();

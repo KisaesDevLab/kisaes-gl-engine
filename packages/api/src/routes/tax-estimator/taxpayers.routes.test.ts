@@ -362,6 +362,115 @@ describe('dependents (Q44)', () => {
   });
 });
 
+describe('outside businesses (Q45)', () => {
+  const biz = (extra: Record<string, unknown> = {}) => ({ name: 'Lakeside Partners LP', entityType: 'partnership', personRole: 'primary', profitPct: 25, partnerSeStatus: 'limited', activityType: 'passive', ...extra });
+  const amounts = (extra: Record<string, unknown> = {}) => ({ entryMode: 'full_year', amountBasis: 'owner_share', amounts: { ordinary: '60000', interest: 2000 }, ...extra });
+
+  it('CRUD: definition, per-year amounts (list by taxYear), clear a year, remove — audited', async () => {
+    const tp = await mkTaxpayer(); await mkPerson(tp.id, 'primary');
+    const created = await request('POST', `${BASE}/${tp.id}/outside-entities`, staffToken, biz());
+    expect(created.status, JSON.stringify(created.json)).toBe(201);
+    const id = created.json.data.id as string;
+    expect(created.json.data).toMatchObject({ name: 'Lakeside Partners LP', entityType: 'partnership', personRole: 'primary', profitPct: 25, partnerSeStatus: 'limited', years: [], year: null });
+
+    const y = await request('PUT', `${BASE}/${tp.id}/outside-entities/${id}/years/2026`, staffToken, amounts());
+    expect(y.status, JSON.stringify(y.json)).toBe(200);
+    expect(y.json.data.years).toEqual([2026]);
+    expect(y.json.data.year).toMatchObject({ taxYear: 2026, entryMode: 'full_year', amountBasis: 'owner_share', throughMonth: null, guaranteedPayments: '0' });
+    expect(y.json.data.year.amounts).toMatchObject({ ordinary: '60000', interest: '2000', rental: '0' });
+    // A second year has its own mode, basis and through month; the definition carries forward.
+    const y25 = await request('PUT', `${BASE}/${tp.id}/outside-entities/${id}/years/2025`, staffToken, amounts({ entryMode: 'ytd', throughMonth: 9, amountBasis: 'entity_total', amounts: { ordinary: '-1500.25' } }));
+    expect(y25.json.data.year).toMatchObject({ taxYear: 2025, entryMode: 'ytd', throughMonth: 9, amountBasis: 'entity_total' });
+    expect(y25.json.data.year.amounts.ordinary).toBe('-1500.25');
+
+    const l26 = await request('GET', `${BASE}/${tp.id}/outside-entities?taxYear=2026`, readonlyToken);
+    expect(l26.status).toBe(200);
+    expect(l26.json.total).toBe(1);
+    expect(l26.json.data[0].years).toEqual([2025, 2026]);
+    expect(l26.json.data[0].year.amountBasis).toBe('owner_share');
+    const l24 = await request('GET', `${BASE}/${tp.id}/outside-entities?taxYear=2024`, readonlyToken);
+    expect(l24.json.data[0].year).toBeNull();
+
+    const upd = await request('PUT', `${BASE}/${tp.id}/outside-entities/${id}`, staffToken, biz({ name: 'Lakeside LP', stateSourcing: 'ks' }));
+    expect(upd.status).toBe(200);
+    expect(upd.json.data).toMatchObject({ name: 'Lakeside LP', stateSourcing: 'KS' });
+
+    expect((await request('DELETE', `${BASE}/${tp.id}/outside-entities/${id}/years/2025`, staffToken)).status).toBe(200);
+    expect((await request('DELETE', `${BASE}/${tp.id}/outside-entities/${id}/years/2025`, staffToken)).json.error.code).toBe('TE_OUTSIDE_ENTITY_NOT_FOUND');
+    const del = await request('DELETE', `${BASE}/${tp.id}/outside-entities/${id}`, staffToken);
+    expect(del.json.data).toEqual({ removed: true, removedYears: 1 });
+    expect((await request('GET', `${BASE}/${tp.id}/outside-entities`, staffToken)).json.total).toBe(0);
+
+    const rows = await db.select().from(auditLog).where(inArray(auditLog.entityType, ['tax_est_outside_entity', 'tax_est_outside_entity_year']));
+    const mine = rows.filter((r) => JSON.stringify([r.beforeData, r.afterData]).includes(tp.id));
+    expect(mine.filter((r) => r.entityType === 'tax_est_outside_entity').map((r) => r.action).sort()).toEqual(['create', 'delete', 'update']);
+    expect(mine.filter((r) => r.entityType === 'tax_est_outside_entity_year').map((r) => r.action).sort()).toEqual(['create', 'create', 'delete']);
+    expect(JSON.stringify(mine.map((r) => r.afterData))).toContain(ids.firmA);
+  });
+
+  it('validation mirrors the link rules and the entity type; YTD needs a through month', async () => {
+    const tp = await mkTaxpayer(); await mkPerson(tp.id, 'primary');
+    const url = `${BASE}/${tp.id}/outside-entities`;
+    const limited = await request('POST', url, staffToken, biz({ entityType: 'sch_c' }));
+    expect(limited.status).toBe(422);
+    expect(limited.json.error.code).toBe('TE_LIMITED_ONLY_PARTNERSHIP');
+    const officer = await request('POST', url, staffToken, biz({ isOfficer: true }));
+    expect(officer.json.error.code).toBe('TE_OFFICER_ONLY_SCORP');
+    const spouse = await request('POST', url, staffToken, biz({ personRole: 'spouse' }));
+    expect(spouse.status).toBe(422);
+    expect(spouse.json.error.code).toBe('TE_OUTSIDE_PERSON_MISSING');
+    expect((await request('POST', url, staffToken, biz({ stateSourcing: 'ZZ' }))).status).toBe(400);
+    expect((await request('POST', url, staffToken, biz({ profitPct: 101 }))).status).toBe(400);
+    expect((await request('POST', url, staffToken, biz({ entityType: 'trust' }))).status).toBe(400);
+    const schc = (await request('POST', url, staffToken, biz({ entityType: 'sch_c', partnerSeStatus: null, name: 'Side gig' }))).json.data.id as string;
+    const yUrl = `${url}/${schc}/years/2026`;
+    expect((await request('PUT', yUrl, staffToken, amounts({ entryMode: 'ytd' }))).status).toBe(400);
+    expect((await request('PUT', yUrl, staffToken, amounts({ entryMode: 'ytd', throughMonth: 13 }))).status).toBe(400);
+    expect((await request('PUT', yUrl, staffToken, amounts({ ownerSehi: '-5' }))).status).toBe(400);
+    expect((await request('PUT', yUrl, staffToken, amounts({ amounts: { ordinary: 'lots' } }))).status).toBe(400);
+    const gp = await request('PUT', yUrl, staffToken, amounts({ guaranteedPayments: 5000 }));
+    expect(gp.status).toBe(422);
+    expect(gp.json.error.code).toBe('TE_OUTSIDE_FIELD_NOT_APPLICABLE');
+    expect((await request('PUT', yUrl, staffToken, amounts({ officerWages: 5000 }))).json.error.code).toBe('TE_OUTSIDE_FIELD_NOT_APPLICABLE');
+    expect((await request('PUT', `${BASE}/${tp.id}/outside-entities/${schc}/years/1999`, staffToken, amounts())).status).toBe(400);
+  });
+
+  it('an outside id of another taxpayer is TE_OUTSIDE_ENTITY_NOT_FOUND (keyed by the taxpayer)', async () => {
+    const a = await mkTaxpayer(); await mkPerson(a.id, 'primary');
+    const b = await mkTaxpayer(staffToken, { displayName: 'Other' }); await mkPerson(b.id, 'primary');
+    const id = (await request('POST', `${BASE}/${a.id}/outside-entities`, staffToken, biz())).json.data.id as string;
+    for (const [method, path, body] of [
+      ['PUT', `${BASE}/${b.id}/outside-entities/${id}`, biz()], ['DELETE', `${BASE}/${b.id}/outside-entities/${id}`],
+      ['PUT', `${BASE}/${b.id}/outside-entities/${id}/years/2026`, amounts()], ['DELETE', `${BASE}/${b.id}/outside-entities/${id}/years/2026`],
+    ] as Array<[string, string, unknown?]>) {
+      const r = await request(method, path, staffToken, body);
+      expect(r.status, `${method} ${path}`).toBe(404);
+      expect(r.json.error.code).toBe('TE_OUTSIDE_ENTITY_NOT_FOUND');
+    }
+    expect((await request('GET', `${BASE}/${b.id}/outside-entities`, staffToken)).json.total).toBe(0);
+  });
+
+  it('firm_readonly reads but cannot write (403); firm B and client users get 404; removing the person removes the business', async () => {
+    const tp = await mkTaxpayer(); await mkPerson(tp.id, 'primary'); await mkPerson(tp.id, 'spouse');
+    const id = (await request('POST', `${BASE}/${tp.id}/outside-entities`, staffToken, biz({ personRole: 'spouse' }))).json.data.id as string;
+    expect((await request('GET', `${BASE}/${tp.id}/outside-entities`, readonlyToken)).status).toBe(200);
+    const writes: Array<[string, string, unknown?]> = [
+      ['POST', `${BASE}/${tp.id}/outside-entities`, biz()], ['PUT', `${BASE}/${tp.id}/outside-entities/${id}`, biz()],
+      ['DELETE', `${BASE}/${tp.id}/outside-entities/${id}`], ['PUT', `${BASE}/${tp.id}/outside-entities/${id}/years/2026`, amounts()],
+      ['DELETE', `${BASE}/${tp.id}/outside-entities/${id}/years/2026`],
+    ];
+    for (const [method, path, body] of writes) expect((await request(method, path, readonlyToken, body)).status, `readonly ${method} ${path}`).toBe(403);
+    for (const [method, path, body] of [['GET', `${BASE}/${tp.id}/outside-entities`] as [string, string, unknown?], ...writes]) {
+      const fb = await request(method, path, firmBToken, body);
+      expect(fb.status, `${method} ${path}`).toBe(404);
+      expect(fb.json.error.code).toBe('TE_TAXPAYER_NOT_FOUND');
+      expect((await request(method, path, clientUserToken, body)).status, `client ${method} ${path}`).toBe(404);
+    }
+    expect((await request('DELETE', `${BASE}/${tp.id}/persons/spouse`, staffToken)).status).toBe(200);
+    expect((await request('GET', `${BASE}/${tp.id}/outside-entities`, staffToken)).json.total).toBe(0);
+  });
+});
+
 describe('links: firm scope (D1)', () => {
   it('linking a company in a tenant the firm manages but the caller cannot reach -> 404 TE_TENANT_NOT_MANAGED', async () => {
     const tp = await mkTaxpayer(); await mkPerson(tp.id, 'primary');

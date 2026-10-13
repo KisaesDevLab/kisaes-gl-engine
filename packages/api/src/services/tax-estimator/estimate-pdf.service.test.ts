@@ -170,8 +170,13 @@ describe('Detailed calculation page (owner request 2026-10-12)', () => {
     for (const s of sections) expect(calc.some((x) => x.text === s.title), s.title).toBe(true);
     const lines = sections.flatMap((s) => s.lines);
     expect(lines.length).toBeGreaterThanOrEqual(20);
+    // Two businesses can have the same share label ("Carlos Rivera's share (100%)"): match the n-th occurrence.
+    const seen = new Map<string, number>();
     for (const l of lines) {
-      const label = calc.find((x) => x.text.replace(/ \[.*\]$/, '') === l.label.replace(/—/g, '-'));
+      const want = l.label.replace(/—/g, '-');
+      const nth = seen.get(want) ?? 0;
+      seen.set(want, nth + 1);
+      const label = calc.filter((x) => x.text.replace(/ \[.*\]$/, '') === want)[nth];
       expect(label, l.label).toBeDefined();
       const row = calc.filter((x) => x.page === label!.page && Math.abs(x.y - label!.y) < 0.5).map((x) => x.text);
       expect(row, l.label).toContain(l.projected == null ? '-' : money(l.projected));
@@ -188,7 +193,7 @@ describe('Detailed calculation page (owner request 2026-10-12)', () => {
     for (const v of ['$54,000', '$232,400', '$35,829', '$7,590', '$312', '$7,902', '$43,732']) expect(text, v).toContain(v);
     expect(text).toContain('Itemized would be 0 (auto)');
     expect(text).toContain('Marginal rate 22%');
-    expect(text).toContain('Sch C · active');
+    expect(text.some((x) => x.startsWith('Sch C · active'))).toBe(true); // 0eb9b138: '· Entity total (100%)' follows
     // Subtotals are bold (Helvetica-Bold is the second embedded font; drawn with /F2... checked via layout: bold rows exist).
   });
 
@@ -201,7 +206,10 @@ describe('Detailed calculation page (owner request 2026-10-12)', () => {
     const calcStart = pagesWith(t, 'Detailed calculation')[0]!;
     const headerPages = pagesWith(t, 'YTD tax basis').filter((p) => p >= calcStart);
     expect(headerPages.length).toBeGreaterThanOrEqual(2);
-    expect(headerPages).toEqual([...new Set(body(t).filter((x) => x.page >= calcStart && x.text.startsWith('Business ')).map((x) => x.page))]);
+    // Every page the business rows (entity total + owner share rows) run onto repeats the header; the table can
+    // continue past the last business (later sections), and those pages repeat it too.
+    const businessPages = [...new Set(body(t).filter((x) => x.page >= calcStart && (x.text.startsWith('Business ') || x.text.includes("'s share ("))).map((x) => x.page))];
+    expect(headerPages.slice(0, businessPages.length)).toEqual(businessPages);
     expect(t.filter((x) => x.text === 'Detailed calculation (continued)').map((x) => x.page)).toEqual(headerPages.slice(1));
   });
 
@@ -292,5 +300,31 @@ describe('keep-with-next: no heading is orphaned at the bottom of a page (coordi
       const t = pdfDrawnText(await renderEstimatePdf(many, { taxpayerName: 'Rivera' }));
       expect(orphans(t), `n=${n}`).toEqual([]);
     }
+  });
+});
+
+describe('Q45: a business outside MyBooks in the PDF', () => {
+  it('Businesses included says "entered" with the entry, and the detailed calculation prints the K-1 share line', async () => {
+    const r = structuredClone(rivera) as EstimateResultDTO;
+    r.entities.push({
+      tenantId: 'outside', companyId: 'o1', companyName: 'Lakeside Partners LP', entityType: 'partnership', path: 'individual', skippedReason: null,
+      throughMonth: null, throughMonthSource: null, monthsElapsed: 12, monthsRemaining: 0, glVersionStamp: 0, providerCached: false, source: 'outside',
+      owners: [{ personId: r.federal.persons[0]!.personId, personRole: 'primary', displayName: 'Carlos Rivera', profitPct: 25, lossPct: 25 }],
+      outside: { outsideEntityId: 'o1', entryMode: 'full_year', amountBasis: 'owner_share', throughMonth: null, statedProfitPct: 25, statedLossPct: null },
+    });
+    const zero = { ordinary: '0', rental: '0', interest: '0', dividends_ordinary: '0', dividends_qualified: '0', capital_gain_st: '0', capital_gain_lt: '0', section_1231: '0' };
+    r.federal.entities.push({
+      tenantId: 'outside', companyId: 'o1', companyName: 'Lakeside Partners LP', entityType: 'partnership', monthsElapsed: 12, monthsRemaining: 0,
+      ytd: { ...zero, ordinary: '12000' }, projected: { ...zero, ordinary: '12000' }, projectedProfit: '12000', source: 'outside', amountBasis: 'owner_share', entryMode: 'full_year',
+      shares: [{ linkId: 'outside:o1', personId: r.federal.persons[0]!.personId, entityType: 'partnership', activityType: 'passive', profitFraction: '1', lossFraction: '1', share: { ...zero, ordinary: '12000' }, guaranteedPayment: '0', officerWages: '0', sehiAsW2Wages: '0', seIncome: '0', shareAfterLossLimits: { ...zero, ordinary: '12000' } }],
+    });
+    const text = pdfText(await renderEstimatePdf(r, { taxpayerName: 'Rivera' }));
+    const lines = text.split('\n');
+    const at = lines.indexOf('Lakeside Partners LP');
+    expect(at).toBeGreaterThan(-1);
+    expect(lines.slice(at + 1, at + 4)).toEqual(['Partnership', 'entered', 'full year']);
+    expect(text).toContain("Outside MyBooks, entered manually: amounts are the owner's share (K-1), 25% owned (informational).");
+    expect(text).toContain("Lakeside Partners LP - Carlos Rivera's share (K-1 share, 25% owned)"); // the PDF prints the em dash as '-'
+    expect(text).toContain('Outside MyBooks · entered (full year)');
   });
 });

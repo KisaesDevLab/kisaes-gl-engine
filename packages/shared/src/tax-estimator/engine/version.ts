@@ -35,5 +35,10 @@
  *              personal / dependent exemptions and exemption credits
  *              (`exemptions` state rule). A taxpayer with no dependents, no care
  *              expenses and states without an `exemptions` rule reproduces rc.3.
+ *   1.0.0-rc.5 Q45 businesses outside MyBooks: hand-entered entities (full-year or
+ *              year-to-date, entity total or owner's share) enter the engine as
+ *              EngineEntity (`source: 'outside'`) and flow through every step;
+ *              entity results carry the source / basis / entry-mode markers. A
+ *              taxpayer with no outside businesses reproduces rc.4.
  */
-export const TAX_ENGINE_VERSION = '1.0.0-rc.4';
+export const TAX_ENGINE_VERSION = '1.0.0-rc.5';

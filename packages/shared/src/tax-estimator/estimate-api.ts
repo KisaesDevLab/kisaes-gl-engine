@@ -11,6 +11,7 @@
 import type { BooksReadiness, CharacterAmounts, PaymentJurisdiction, TaxEstimatorWarning, ThroughMonthSource } from './entities-api.js';
 import type { EntityTaxType, FilingStatus, TaxMethod } from './types.js';
 import type { PersonRole, SafeHarborOverride, PortalShows } from './taxpayers-api.js';
+import type { EntitySource, OutsideAmountBasis, OutsideEntryMode } from './outside-entities-api.js';
 import type { FederalResult, ParameterUse } from './engine/types.js';
 import type { StateResult, StateRuleUse } from './engine/state-types.js';
 import type { JurisdictionEstimate } from './engine/vouchers.js';
@@ -98,6 +99,22 @@ export interface EstimateEntityDTO {
    * taxpayer link (tax_est_links). Absent on results / snapshots computed before it.
    */
   owners?: EstimateEntityOwnerDTO[];
+  /** Q45 (optional, additive): 'outside' = a business outside MyBooks, entered by hand; absent = books. */
+  source?: EntitySource;
+  /** Q45: outside businesses only — how the amounts were entered (absent on book entities). */
+  outside?: EstimateOutsideEntityDTO;
+}
+
+/** Q45: entry details of a business outside MyBooks, for the Calculation view, PDF and assumptions page. */
+export interface EstimateOutsideEntityDTO {
+  outsideEntityId: string;
+  entryMode: OutsideEntryMode;
+  amountBasis: OutsideAmountBasis;
+  /** 1–12 for year-to-date entry; null for full-year amounts. */
+  throughMonth: number | null;
+  /** The ownership % as entered (informational on an owner's share; null = not stated). */
+  statedProfitPct: number | null;
+  statedLossPct: number | null;
 }
 
 /** One person's ownership of a linked business, as the engine allocated it. */
@@ -185,6 +202,8 @@ export interface SchAiPeriodSourceDTO {
   source: 'snapshot' | 'live' | 'mixed' | 'unavailable';
   snapshotEntities: number;
   liveEntities: number;
+  /** Q45 (optional, additive): outside businesses in the column (entered figures spread / prorated by month). */
+  outsideEntities?: number;
 }
 
 export interface EstimateSummaryDTO {

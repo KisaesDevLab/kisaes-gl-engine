@@ -31,6 +31,7 @@ export { computeFederal } from './federal.js';
 export { computeDependentCredits, activeDependents, careRateFor, type DependentCreditsInput, type DependentCreditsExact, type EarnedIncomePerson } from './dependents.js';
 export {
   engineEntityFromTaxBasisPl, enginePersonFromDto, engineAdjustmentFromDto, engineYearFromDto, engineDependentFromDto,
+  engineEntityFromOutside, outsidePeriodEntity,
   type EntitySettingsForEngine, type PersonYearInputs, type YearExtras,
 } from './bridge.js';
 export * from './state-types.js';
