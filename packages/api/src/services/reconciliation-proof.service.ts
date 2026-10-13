@@ -30,6 +30,8 @@
 //   changes to prior-reconciled lines (cleared-now vs cleared-at-completion),
 //   prior-reconciled lines now dated after D, lines cleared here that are dated
 //   after D / voided / moved, and the residual beginning-balance variance.
+// Section E:  the stored Preparer / Reviewer electronic sign-offs
+//             (reconciliation-signoff.service; stale ones flagged).
 //
 // reconciliation_lines holds one row PER reconciliation a line appeared on
 // (an item outstanding for months has one per month), so every "is it
@@ -53,6 +55,7 @@ import {
 } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { AppError } from '../utils/errors.js';
+import { getReconSignoffs } from './reconciliation-signoff.service.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
 type Dec = InstanceType<typeof Decimal>;
@@ -505,6 +508,9 @@ export async function buildReconciliationProof(
     }
   }
 
+  // ── Section E: stored electronic sign-offs (staleness evaluated here) ──
+  const signoffs = await getReconSignoffs(tenantId, reconciliationId, db, status);
+
   const proof: ReconProof = {
     reconciliationId,
     accountId,
@@ -569,12 +575,15 @@ export async function buildReconciliationProof(
       explanations: bookExplanations,
     },
     signOff: {
-      preparedBy: isComplete
+      preparedBy: signoffs.preparer.state === 'signed' ? signoffs.preparer.signerName : null,
+      preparedAt: signoffs.preparer.state === 'signed' ? signoffs.preparer.signedAt : null,
+      reviewedBy: signoffs.reviewer.state === 'signed' ? signoffs.reviewer.signerName : null,
+      reviewedAt: signoffs.reviewer.state === 'signed' ? signoffs.reviewer.signedAt : null,
+      completedBy: isComplete
         ? ((rec['completed_by_name'] as string | null) || (rec['completed_by_email'] as string | null) || null)
         : null,
-      preparedAt: isComplete ? isoOf(rec['completed_at']) : null,
-      reviewedBy: null,
-      reviewedAt: null,
+      completedAt: isComplete ? isoOf(rec['completed_at']) : null,
+      signoffs,
       statementFileName: (stmt?.['file_name'] as string | null) ?? null,
       statementAttachmentId: (stmt?.['attachment_id'] as string | null) ?? null,
       statementPeriod: stmt

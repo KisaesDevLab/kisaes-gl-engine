@@ -44,7 +44,10 @@
 - **Reconciliation Detail** — one reconciliation in full professional format
   (opened from Reconciliation History → Report): summary to books, cleared roll,
   deposits-in-transit / outstanding-checks schedules with stale flags, cleared
-  list, subsequent activity, discrepancies, sign-off.
+  list, subsequent activity, discrepancies, sign-off (electronic preparer /
+  reviewer stamps "/s/ Name, date time", "Not signed", or "Stale — data
+  changed after sign-off"). The Report Pack's Bank Reconciliations summary
+  page has a "Signed off" column with the same status per reconciliation.
 - **Deposit Detail** — breakdown of each bank deposit and its component payments.
 - **Check Register** — all checks written, with check numbers, payees, and amounts.
 - **1099 Vendor Summary** — detailed 1099-eligible payments per vendor.

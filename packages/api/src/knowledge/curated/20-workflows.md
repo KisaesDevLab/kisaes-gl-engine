@@ -135,11 +135,28 @@ undo and redo the affected reconciliation.
 **Reports.** Reconciliation Detail (History → Report) = bank-to-books summary,
 cleared-activity roll, supporting schedules (date, type, number, payee, age,
 amount, flag), cleared list, subsequent activity (after the statement date +
-today's register balance), book-side proof, sign-off (prepared/reviewed by,
-statement file). Bank Reconciliation Summary (Reports → Banking, or History →
+today's register balance), book-side proof, sign-off (the stored electronic
+preparer/reviewer sign-offs, completed-by, statement file). Bank Reconciliation Summary (Reports → Banking, or History →
 Summary for one rec) = the same per account for its latest completed rec, with
 schedule totals and the oldest items. PDF, CSV and the Report Pack's Bank
 Reconciliations section use the same layout.
+
+**Electronic sign-off.** A COMPLETED reconciliation can be signed on the
+Reconcile screen or the Reconciliation Detail report: "Sign as preparer"
+(anyone with Banking write access), then "Sign as reviewer" — a DIFFERENT
+person who is firm staff (active firm admin/staff of the firm assigned to the
+client) or a super admin, only after the preparer. No re-authentication; the
+stamp is "/s/ Name, date time zone". In-progress recs can't be signed (buttons
+disabled). Each signer can remove their own sign-off; removing the preparer's
+invalidates the reviewer's. A sign-off goes STALE (amber "Signed off by X on D
+— data changed since; re-sign required", button returns) when the rec is
+undone/reopened, a cleared transaction is edited / deleted / voided / re-dated /
+moved, or the GL balance or outstanding items as of the statement date change
+(e.g. a backdated transaction). Activity after the statement date and
+recategorizing the expense/income side of a cleared transaction don't stale
+it. Sign / remove / invalidate are audit-logged. Shown in report Section E
+(screen/PDF/CSV), Report Pack bank-rec pages + summary "Signed off" column,
+and badges on Reconciliation History.
 
 If the difference is off by a small amount like $0.01, it's almost always a
 rounding mismatch on a journal entry. Common causes: tax calculation rounding,

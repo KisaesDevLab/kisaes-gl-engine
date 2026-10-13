@@ -16,7 +16,7 @@
 
 import { sql } from 'drizzle-orm';
 import { PDFDocument, StandardFonts, type PDFFont } from 'pdf-lib';
-import { formatIsoUS, reconMoney, type ReportPackItemOptions } from '@kis-books/shared';
+import { formatIsoUS, reconMoney, reconSignoffShortText, type ReconSignoffEntry, type ReportPackItemOptions } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { log } from '../utils/logger.js';
 import { readAttachmentBytes } from './attachment.service.js';
@@ -86,6 +86,7 @@ const EXTRA_CSS = `<style>
   h3{font-size:13px;margin:18px 0 6px 0}
   .muted{color:#6b7280;font-size:11px}
   .warn{color:#b91c1c;font-size:11px}
+  .stale{color:#b45309;font-weight:600;font-size:11px}
 </style>`;
 
 function sectionHtml(ctx: DocumentSectionContext, title: string, body: string): string {
@@ -231,9 +232,15 @@ const renderBankReconciliations: DocumentSectionRenderer = async (ctx) => {
   const details = [];
   for (const r of recs) details.push(await buildReconciliationDetail(ctx.tenantId, r.id));
 
-  // Summary page: one row per reconciliation, carried through to the books.
+  // Summary page: one row per reconciliation, carried through to the books,
+  // with the electronic sign-offs (migration 0214; stale ones flagged).
+  const signoffCell = (e: ReconSignoffEntry) => {
+    const label = e.role === 'preparer' ? 'Prepared' : 'Reviewed';
+    const text = escapeHtml(`${label}: ${reconSignoffShortText(e)}`);
+    return e.state === 'stale' ? `<span class="stale">${text}</span>` : e.state === 'unsigned' ? `<span class="muted">${text}</span>` : text;
+  };
   const summary = `<table>
-    <thead><tr><th>Account</th><th>Statement date</th><th class="amount">Statement balance</th><th class="amount">Adjusted bank balance</th><th class="amount">Balance per books</th><th class="amount">Unreconciled</th><th>Completed</th></tr></thead>
+    <thead><tr><th>Account</th><th>Statement date</th><th class="amount">Statement balance</th><th class="amount">Adjusted bank balance</th><th class="amount">Balance per books</th><th class="amount">Unreconciled</th><th>Completed</th><th>Signed off</th></tr></thead>
     <tbody>${details.map((d) => `<tr>
       <td>${escapeHtml(accountLabel(d.reconciliation.accountName, d.reconciliation.accountNumber))}</td>
       <td>${escapeHtml(formatIsoUS(d.reconciliation.statementDate))}</td>
@@ -242,7 +249,9 @@ const renderBankReconciliations: DocumentSectionRenderer = async (ctx) => {
       <td class="amount">${reconMoney(d.proof.summary.bookBalance)}</td>
       <td class="amount">${d.proof.summary.reconciledToBooks ? '0.00' : `<span class="warn">${reconMoney(d.proof.summary.unreconciledDifference)}</span>`}</td>
       <td>${d.reconciliation.completedAt ? escapeHtml(formatIsoUS(new Date(d.reconciliation.completedAt).toISOString())) : ''}${d.reconciliation.completedBy ? ` — ${escapeHtml(d.reconciliation.completedBy)}` : ''}</td>
+      <td>${signoffCell(d.proof.signOff.signoffs.preparer)}<br>${signoffCell(d.proof.signOff.signoffs.reviewer)}</td>
     </tr>`).join('')}</tbody></table>
+    <p class="muted">Sign-off times are shown in UTC. A stale sign-off was given before the reconciliation or its transactions changed and must be re-signed.</p>
     <p class="muted">Credit card and other liability accounts show balances as amounts owed.</p>
     ${includeStatements && !ctx.allowAttachments ? `<p class="muted">${ATTACHMENTS_DENIED}</p>` : ''}`;
   await appendPdf(out, await ctx.renderHtml(sectionHtml(ctx, 'Bank Reconciliations', summary)));

@@ -22,6 +22,8 @@
 // yet (deposits in transit for a bank; charges for a card); "decreases" lower it
 // (outstanding checks and payments for a bank; payments and credits for a card).
 
+import type { ReconSignoffSummary } from './reconciliation-signoff.js';
+
 /** An outstanding check / payment older than this many days is "stale". */
 export const RECON_OUTSTANDING_STALE_DAYS = 90;
 /** An outstanding check / payment older than this many days is "stale-dated" (review / void / escheat). */
@@ -279,12 +281,20 @@ export interface ReconProof {
     explanations: string[];
   };
 
-  /** Section E — sign-off. */
+  /**
+   * Section E — sign-off. preparedBy/At and reviewedBy/At are the LIVE stored
+   * electronic sign-offs (null when not signed or stale); `signoffs` carries
+   * the full state incl. stale signatures; completedBy/At is who clicked
+   * Complete (not a signature).
+   */
   signOff: {
     preparedBy: string | null;
     preparedAt: string | null;
     reviewedBy: string | null;
     reviewedAt: string | null;
+    completedBy: string | null;
+    completedAt: string | null;
+    signoffs: ReconSignoffSummary;
     statementFileName: string | null;
     statementAttachmentId: string | null;
     statementPeriod: string | null;

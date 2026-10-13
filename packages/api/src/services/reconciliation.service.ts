@@ -9,6 +9,7 @@ import { db } from '../db/index.js';
 import { reconciliations, reconciliationLines, journalLines, transactions, accounts, bankStatements } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import { invalidateForReopen } from './reconciliation-signoff.service.js';
 
 export interface ContinuityWarning {
   expected: number; // prior completed reconciliation's ending balance
@@ -569,7 +570,7 @@ export async function complete(tenantId: string, reconciliationId: string, userI
   });
 }
 
-export async function undo(tenantId: string, reconciliationId: string) {
+export async function undo(tenantId: string, reconciliationId: string, userId?: string) {
   // Same locking pattern as complete(). Preventing interleaved undo
   // and complete() calls keeps the status transitions deterministic.
   await db.transaction(async (tx) => {
@@ -602,6 +603,11 @@ export async function undo(tenantId: string, reconciliationId: string) {
       completedBy: null,
       updatedAt: new Date(),
     }).where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)));
+
+    // Reopening voids every electronic sign-off on this reconciliation
+    // (migration 0214) — in the same transaction, so a rolled-back undo
+    // leaves the signatures intact.
+    await invalidateForReopen(tenantId, reconciliationId, userId ?? null, tx);
 
     // Unmark all cleared lines
     await tx.update(reconciliationLines).set({

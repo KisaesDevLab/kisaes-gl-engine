@@ -14,6 +14,7 @@ export * from './types/contacts.js';
 export * from './types/transactions.js';
 export * from './types/banking.js';
 export * from './types/reconciliation-proof.js';
+export * from './types/reconciliation-signoff.js';
 export * from './types/client-banking.js';
 export * from './types/client-portal-activity.js';
 export * from './types/tags.js';

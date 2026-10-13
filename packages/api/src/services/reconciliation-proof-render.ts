@@ -14,11 +14,16 @@ import {
   reconClearedRollLines,
   reconDiscrepancyComponentLines,
   reconDiscrepancyReasonLabel,
+  formatReconSignoffTime,
   reconMoney,
+  reconSignoffShortText,
+  reconSignoffStaleText,
+  reconSignoffStamp,
   reconSubsequentLines,
   reconSummaryLines,
   type ReconProof,
   type ReconSchedule,
+  type ReconSignoffEntry,
   type ReconStatementLine,
 } from '@kis-books/shared';
 import { escapeHtml } from './report-export.service.js';
@@ -41,6 +46,8 @@ export interface ProofRenderOptions {
   topItems?: number;
   /** Extra paragraph under the sign-off (e.g. the pack's statement-file status). */
   statementFileNote?: string;
+  /** IANA zone for the sign-off timestamps (UTC when absent). */
+  timeZone?: string;
 }
 
 export const PROOF_CSS = `<style>
@@ -202,14 +209,33 @@ export function renderProofHtml(p: ReconProof, opts: ProofRenderOptions): string
     }</tbody></table>`);
   }
 
-  // Section E
+  // Section E — the stored electronic sign-offs.
   const so = p.signOff;
+  const tz = opts.timeZone;
+  const sigCell = (e: ReconSignoffEntry) => (e.state === 'signed'
+    ? escapeHtml(`/s/ ${e.signerName ?? ''}`)
+    : e.state === 'stale'
+      ? `<span class="flag">${escapeHtml(reconSignoffShortText(e, tz))}</span>`
+      : '<span class="muted">Not signed</span>');
+  const dateCell = (e: ReconSignoffEntry) => (e.state === 'signed' ? escapeHtml(formatReconSignoffTime(e.signedAt, tz)) : '');
   parts.push('<div class="avoid"><h2>Sign-off</h2><div class="sign">');
-  parts.push(`<div><div class="ln">${escapeHtml(so.preparedBy ?? '')}</div><div class="cap">Prepared by</div></div>`);
-  parts.push(`<div><div class="ln">${escapeHtml(so.preparedAt ? formatIsoUS(so.preparedAt) : '')}</div><div class="cap">Date</div></div>`);
-  parts.push(`<div><div class="ln">${escapeHtml(so.reviewedBy ?? '')}</div><div class="cap">Reviewed by</div></div>`);
-  parts.push(`<div><div class="ln">${escapeHtml(so.reviewedAt ? formatIsoUS(so.reviewedAt) : '')}</div><div class="cap">Date</div></div>`);
+  parts.push(`<div><div class="ln">${sigCell(so.signoffs.preparer)}</div><div class="cap">Prepared by</div></div>`);
+  parts.push(`<div><div class="ln">${dateCell(so.signoffs.preparer)}</div><div class="cap">Date</div></div>`);
+  parts.push(`<div><div class="ln">${sigCell(so.signoffs.reviewer)}</div><div class="cap">Reviewed by</div></div>`);
+  parts.push(`<div><div class="ln">${dateCell(so.signoffs.reviewer)}</div><div class="cap">Date</div></div>`);
   parts.push('</div>');
+  for (const e of [so.signoffs.preparer, so.signoffs.reviewer]) {
+    if (e.state === 'stale') {
+      parts.push(`<p class="flag">${escapeHtml(`${e.role === 'preparer' ? 'Preparer' : 'Reviewer'}: ${reconSignoffStaleText(e, tz)}.`)}</p>`);
+    }
+  }
+  const signedLines = [so.signoffs.preparer, so.signoffs.reviewer].filter((e) => e.state === 'signed');
+  if (signedLines.length > 0) {
+    parts.push(`<p class="muted">Signed electronically: ${escapeHtml(signedLines.map((e) => `${e.role === 'preparer' ? 'Prepared' : 'Reviewed'} ${reconSignoffStamp(e, tz)}`).join(' · '))}.</p>`);
+  }
+  if (so.completedBy || so.completedAt) {
+    parts.push(`<p class="muted">${escapeHtml(`Completed in the books${so.completedBy ? ` by ${so.completedBy}` : ''}${so.completedAt ? ` on ${formatIsoUS(so.completedAt)}` : ''}.`)}</p>`);
+  }
   const stmtRef = so.statementPeriod
     ? `Bank statement: ${so.statementPeriod}${so.statementFileName ? ` — ${so.statementFileName}` : ' — no file attached'}`
     : 'Bank statement: none linked to this reconciliation.';
@@ -295,8 +321,18 @@ export function proofCsvRows(p: ReconProof, opts: ProofRenderOptions): CsvRow[] 
     });
   }
   rows.push({ line: '--- Sign-off ---' });
-  rows.push({ line: 'Prepared by', description: p.signOff.preparedBy ?? '', date: p.signOff.preparedAt ? p.signOff.preparedAt.slice(0, 10) : '' });
-  rows.push({ line: 'Reviewed by', description: p.signOff.reviewedBy ?? '', date: p.signOff.reviewedAt ? p.signOff.reviewedAt.slice(0, 10) : '' });
+  const tz = opts.timeZone;
+  for (const e of [p.signOff.signoffs.preparer, p.signOff.signoffs.reviewer]) {
+    rows.push({
+      line: e.role === 'preparer' ? 'Prepared by' : 'Reviewed by',
+      description: e.state === 'signed' ? `/s/ ${e.signerName ?? ''}` : e.state === 'stale' ? reconSignoffStaleText(e, tz) : 'Not signed',
+      date: e.state === 'signed' ? formatReconSignoffTime(e.signedAt, tz) : '',
+      flag: e.state === 'stale' ? reconSignoffShortText(e, tz) : '',
+    });
+  }
+  if (p.signOff.completedBy || p.signOff.completedAt) {
+    rows.push({ line: 'Completed in the books', description: p.signOff.completedBy ?? '', date: p.signOff.completedAt ? p.signOff.completedAt.slice(0, 10) : '' });
+  }
   rows.push({ line: 'Bank statement', description: p.signOff.statementPeriod ? `${p.signOff.statementPeriod}${p.signOff.statementFileName ? ` — ${p.signOff.statementFileName}` : ''}` : 'none linked' });
   return rows;
 }
