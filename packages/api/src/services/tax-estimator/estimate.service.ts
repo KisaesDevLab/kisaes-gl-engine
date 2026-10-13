@@ -25,13 +25,13 @@ import DecimalLib from 'decimal.js';
 import type {
   AdjustmentDTO, AdjustmentTypeDTO, CcorpResult, EngineEntity, EnginePerson, EstimateEntityDTO, EstimateEntityOwnerDTO, EstimatePayment, EstimatePaymentDTO,
   EstimateReadinessDTO, EstimateReadinessEntityDTO, EstimateReadinessPeriodDTO, EstimateResultDTO, EngineYearInputs, FarmerResult,
-  FarmerYearGross, FarmerGrossYearDTO, FederalEngineInput, FederalResult, JurisdictionEstimate, LinkDTO, ParameterUse, PersonDTO,
+  FarmerYearGross, FarmerGrossYearDTO, FederalEngineInput, FederalResult, JurisdictionEstimate, LinkDTO, ParameterUse, PersonDTO, DependentDTO,
   SchAiPeriodSourceDTO, StateResult, StateRuleUse, StateRulesDTO, TaxBasisPl, TaxEstimatorWarning, EntitySettingsResponse,
   StateGateInputs, TaxMethod, EstimateAdjustmentSummaryDTO, EstimateEntityReclassDTO, FirmSettingsDTO, PortalShows,
 } from '@kis-books/shared';
 import {
   computeFederal, computeState, computeFederalEstimates, computeStateEstimates, computeCcorp, computeFarmer,
-  engineEntityFromTaxBasisPl, enginePersonFromDto, engineAdjustmentFromDto, engineYearFromDto, personYearInputsFromDto,
+  engineEntityFromTaxBasisPl, enginePersonFromDto, engineAdjustmentFromDto, engineYearFromDto, personYearInputsFromDto, engineDependentFromDto, activeDependents,
   parameterMapFromRows, jurisdictionFromStateRules, federalFiguresFromResult, stateRowFromDto, sourcedEntitiesFromFederal,
   projectCharacters, sumCharacters, allocateAdjustment, FARMER_SAFE_HARBOR_POLICY, FARMER_INSTALLMENT_POLICY, TAX_ENGINE_VERSION,
   dAdd, dDiv, dMul, dSum, dRoundDollars, buildEstimateAssumptions,
@@ -73,6 +73,8 @@ const MONTHS_PER_YEAR = 12;
 const MAX_ADJUSTMENTS = 500;
 const ALL_ACCOUNT_TYPES = ['asset', 'liability', 'equity', 'revenue', 'cogs', 'expense', 'other_revenue', 'other_expense'];
 const INCOME_ACCOUNT_TYPES = new Set(['revenue', 'other_revenue']);
+/** Q44: a joint return has two filers for the state personal exemptions. */
+const JOINT_RETURN_FILERS = 2;
 const R = dRoundDollars;
 
 export interface EstimateRequest {
@@ -194,6 +196,8 @@ interface Gathered {
   scenarioName: string;
   year: Awaited<ReturnType<typeof loadYearForEngine>>;
   persons: PersonDTO[];
+  /** Q44: the taxpayer's dependents (all years; the engine filters by tax year). */
+  dependents: DependentDTO[];
   linksAll: LinkDTO[];
   links: LinkDTO[];
   companies: CompanyInputs[];
@@ -268,7 +272,7 @@ async function gather(scope: FirmScope, req: EstimateRequest): Promise<Gathered>
   return {
     taxpayer, firmSettings,
     taxpayerFilingStatus: taxpayer.filingStatus as FederalEngineInput['filingStatus'], scenarioName: scenario.name, year,
-    persons: detail.persons, linksAll, links, companies, adjustments: adjustmentList.data, types, stateRows, paramsDto, stateRules,
+    persons: detail.persons, dependents: detail.dependents ?? [], linksAll, links, companies, adjustments: adjustmentList.data, types, stateRows, paramsDto, stateRules,
     ledger, snapshots, warnings,
   };
 }
@@ -282,7 +286,7 @@ function inputsHash(scope: FirmScope, req: EstimateRequest, g: Gathered, today: 
     tenants: [...scope.allowedTenantIds].sort(),
     // D18: a listed user's widened read is its own cache entry (flag + tenant set above).
     elevated: isElevated(scope),
-    filingStatus: g.taxpayerFilingStatus, year: g.year, persons: g.persons, links: g.links,
+    filingStatus: g.taxpayerFilingStatus, year: g.year, persons: g.persons, dependents: g.dependents, links: g.links,
     companies: g.companies.map((c) => ({ t: c.tenantId, c: c.companyId, stamp: c.glVersionStamp, cfg: c.configVersion, s: c.settings })),
     adjustments: g.adjustments, types: g.types, stateRows: g.stateRows, params: g.paramsDto, stateRules: g.stateRules,
     payments: g.ledger.payments, snapshots: [...g.snapshots.entries()],
@@ -540,8 +544,9 @@ async function assemble(scope: FirmScope, req: EstimateRequest, g: Gathered, opt
   // Federal.
   const persons = g.persons.map((p) => enginePersonFromDto(p, y, personYearInputsFromDto(y, p.role)));
   const engineYear = engineYearFromDto(y);
+  const engineDependents = g.dependents.map(engineDependentFromDto);
   const federalInput: FederalEngineInput = {
-    taxYear, filingStatus, parameters, persons, entities: engineEntities, adjustments: adjustmentsFor(null), year: engineYear,
+    taxYear, filingStatus, parameters, persons, dependents: engineDependents, entities: engineEntities, adjustments: adjustmentsFor(null), year: engineYear,
     qbi: { manualDeduction: null },
     otherTaxes: { additionalMedicareTax: null, niit: null, niiAllocableDeductions: y.niiAllocableDeductions ?? null },
   };
@@ -657,6 +662,9 @@ async function assemble(scope: FirmScope, req: EstimateRequest, g: Gathered, opt
     const sourcing = individual.map((r) => ({ companyId: r.engine.companyId, stateSourcing: r.company.settings.settings.stateSourcing }));
     state = runEngine(() => computeState({
       taxYear, filingStatus, parameters, federal: federalFiguresFromResult(federal), rows, jurisdictions, entities: sourcedEntitiesFromFederal(federal, sourcing),
+      // Q44: personal exemptions count the filers (two on a joint return, whether or not the spouse is on file),
+      // dependent exemptions the dependents active this year.
+      household: { filers: filingStatus === 'mfj' ? JOINT_RETURN_FILERS : 1, dependents: activeDependents(engineDependents, taxYear).length },
     }));
     for (const rr of state.rows) {
       const src = g.stateRows.find((r) => r.dto.state === rr.state)!;
@@ -781,6 +789,7 @@ export interface EstimateInputsForSnapshot {
   scenarioName: string;
   year: Gathered['year'];
   persons: PersonDTO[];
+  dependents: DependentDTO[];
   links: LinkDTO[];
   companies: Array<{ tenantId: string; companyId: string; companyName: string | null; glVersionStamp: number; configVersion: string; settings: EntitySettingsResponse }>;
   adjustments: AdjustmentDTO[];
@@ -802,7 +811,7 @@ export async function computeEstimateWithInputs(
   const g = withPaymentsAsOf(await gather(scope, req), opts.paymentsAsOf);
   const hash = inputsHash(scope, req, g, today);
   const inputs: EstimateInputsForSnapshot = {
-    taxpayer: g.taxpayer, firmSettings: g.firmSettings, scenarioName: g.scenarioName, year: g.year, persons: g.persons, links: g.links,
+    taxpayer: g.taxpayer, firmSettings: g.firmSettings, scenarioName: g.scenarioName, year: g.year, persons: g.persons, dependents: g.dependents, links: g.links,
     companies: g.companies.map((c) => ({ tenantId: c.tenantId, companyId: c.companyId, companyName: c.companyName, glVersionStamp: c.glVersionStamp, configVersion: c.configVersion, settings: c.settings })),
     adjustments: g.adjustments, types: g.types, stateRows: g.stateRows, federalParameters: g.paramsDto, stateRules: g.stateRules,
     payments: g.ledger.payments, schAiFigures: [...g.snapshots.entries()].map(([key, figures]) => ({ key, figures })),

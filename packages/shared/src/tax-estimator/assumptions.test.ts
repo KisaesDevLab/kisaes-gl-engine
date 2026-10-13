@@ -245,3 +245,30 @@ describe('buildEstimateAssumptions', () => {
   });
 });
 
+
+describe('Q44 dependents section', () => {
+  it('lists initials and age group only (no name, no date of birth) with the credit lines; empty when no dependents', () => {
+    const none = buildEstimateAssumptions(riveraLike());
+    expect(text(none, 'dependents')).toContain('No dependents');
+    const base = riveraLike();
+    const r = { ...base, federal: {
+      ...base.federal,
+      credits: { ...base.federal.credits, careCredit: '600', childTaxCredit: '3700', additionalChildTaxCredit: '0', otherNonrefundableAllowed: '0', otherRefundable: '0' },
+      dependentCredits: {
+        method: 'computed', ctcChildren: 2, otherDependents: 1, careQualifyingPersons: 1, ctcTentative: '4400', odcTentative: '500', phaseOutMagi: '423473', phaseOutThreshold: '400000', phaseOutReduction: '1200',
+        ctcOdcAfterPhaseOut: '3700', ctcOdcAllowed: '3700', earnedIncome: '423473', actcByChildren: '3400', actcByEarnedIncome: '63146', actc: '0',
+        careExpenses: '7000', careExpenseLimit: '3000', careEarnedIncomeLimit: '60000', careAllowedExpenses: '3000', careRate: '0.2', careTentative: '600', careAllowed: '600',
+        dependents: [
+          { dependentId: 'a', displayName: 'Tobi Okafor', kind: 'qualifying_child', ageAtYearEnd: 10, ageGroup: 'under_13', childTaxCredit: true, otherDependentCredit: false, careQualifying: true, eitcQualifying: true },
+          { dependentId: 'b', displayName: 'Ike Okafor', kind: 'qualifying_child', ageAtYearEnd: 18, ageGroup: '17_to_18', childTaxCredit: false, otherDependentCredit: true, careQualifying: false, eitcQualifying: true },
+        ],
+      },
+    } } as EstimateResultDTO;
+    const t = text(buildEstimateAssumptions(r), 'dependents');
+    expect(t).toContain('T.O. (qualifying child): Age group under 13 at year end; child tax credit, care credit qualifying person.');
+    expect(t).toContain('I.O. (qualifying child): Age group 17–18 at year end; credit for other dependents.');
+    expect(t).toContain('reduced by $1,200');
+    expect(t).toContain('× 20%');
+    expect(t).not.toContain('Tobi');
+  });
+});

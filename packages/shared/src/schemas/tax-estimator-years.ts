@@ -102,6 +102,8 @@ export const upsertYearSchema = z.object({
   sch1a: sch1aSchema.optional(),
   creditsNonrefundable: nonNegMoney.optional(),
   creditsRefundable: nonNegMoney.optional(),
+  /** Q44: child and dependent care expenses paid (Form 2441). */
+  careExpenses: nonNegMoney.optional(),
   hsaCoverage: hsaCoverageSchema.optional(),
   withholding: withholdingSchema.optional(),
   personInputs: personInputsSchema.optional(),

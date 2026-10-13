@@ -239,6 +239,9 @@ describe('D17 linked-tenant rule (switch ON by default)', () => {
       ['POST', `${base}/years/2026/scenarios`, { name: 'What if' }],
       ['POST', `${sc}/snapshots`, {}],
       ['PUT', `${base}/staff`, { userIds: [] }],
+      // Q44: dependents are part of the taxpayer (same visibility).
+      ['GET', `${base}/dependents`], ['POST', `${base}/dependents`, { displayName: 'Kid', dateOfBirth: '2016-01-01', kind: 'qualifying_child' }],
+      ['PUT', `${base}/dependents/00000000-0000-4000-8000-000000000001`, { displayName: 'Kid', dateOfBirth: '2016-01-01', kind: 'qualifying_child' }], ['DELETE', `${base}/dependents/00000000-0000-4000-8000-000000000001`],
     ];
     for (const [method, path, body] of probes) {
       const r = await call(method, path, 'none', body);

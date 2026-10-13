@@ -353,7 +353,7 @@ describe('Rivera golden (rivera_expected.json)', () => {
     expect(r.engineVersion).toBe(TAX_ENGINE_VERSION);
     expect(TAX_ENGINE_VERSION).toMatch(/^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/);
     expect(TAX_ENGINE_VERSION).not.toBe('0.6.0');
-    expect(TAX_ENGINE_VERSION).toBe('1.0.0-rc.3');
+    expect(TAX_ENGINE_VERSION).toBe('1.0.0-rc.4');
   });
 
   it('R2-11: a standard-deduction return with no itemized inputs does not read the itemized parameters', () => {

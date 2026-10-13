@@ -28,8 +28,9 @@ export { computeQbi, type QbiContext, type QbiExact, type QbiPersonDeductions } 
 export { applyLossLimitations, addBackLoss, isPassiveActivity, type LossLimitationExact, type LossLimitationOptions } from './loss-limits.js';
 export { computeOtherTaxes, type OtherTaxesContext, type OtherTaxesPerson, type OtherTaxesExact } from './other-taxes.js';
 export { computeFederal } from './federal.js';
+export { computeDependentCredits, activeDependents, careRateFor, type DependentCreditsInput, type DependentCreditsExact, type EarnedIncomePerson } from './dependents.js';
 export {
-  engineEntityFromTaxBasisPl, enginePersonFromDto, engineAdjustmentFromDto, engineYearFromDto,
+  engineEntityFromTaxBasisPl, enginePersonFromDto, engineAdjustmentFromDto, engineYearFromDto, engineDependentFromDto,
   type EntitySettingsForEngine, type PersonYearInputs, type YearExtras,
 } from './bridge.js';
 export * from './state-types.js';

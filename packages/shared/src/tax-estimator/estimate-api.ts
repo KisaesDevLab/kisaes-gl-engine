@@ -148,7 +148,7 @@ export interface EstimateAdjustmentSummaryDTO {
 // ── Assumptions block (Phase 12) ──────────────────────────────────────
 
 export const ASSUMPTION_SECTION_IDS = [
-  'rate_mode', 'projection', 'non_recurring', 'reclass', 'adjustments', 'safe_harbor', 'state_methods',
+  'rate_mode', 'projection', 'non_recurring', 'reclass', 'adjustments', 'dependents', 'safe_harbor', 'state_methods',
   'parameters', 'readiness', 'engine_notes', 'disclaimer',
 ] as const;
 export type AssumptionSectionId = typeof ASSUMPTION_SECTION_IDS[number];

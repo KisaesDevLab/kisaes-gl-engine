@@ -25,6 +25,7 @@ import { computeStandardDeduction, computeItemizedDeductions, chooseDeduction, c
 import { computeQbi, type QbiPersonDeductions } from './qbi.js';
 import { computeOtherTaxes, type OtherTaxesPerson } from './other-taxes.js';
 import { computeRegularTax } from './bracket-tax.js';
+import { computeDependentCredits, type EarnedIncomePerson } from './dependents.js';
 import { TAX_ENGINE_VERSION } from './version.js';
 import type {
   EngineEntity, EnginePerson, EntityResult, EntityShareResult, FederalEngineInput, FederalResult, LossLimitationResult, PersonResult, QbiComponentResult, QbiResult,
@@ -98,6 +99,8 @@ interface AgiBlock {
   deductionPersons: DeductionPerson[];
   personDeductions: Map<string, QbiPersonDeductions>;
   otherTaxPersons: OtherTaxesPerson[];
+  /** Q44: per-person earned income (wages + SE income − ½ SE tax) for the §21 / §24 limits. */
+  earnedPersons: EarnedIncomePerson[];
   income: IncomeExact;
   seTax: Dec; halfSeTax: Dec; retirement: Dec; sehi: Dec; hsa: Dec; otherAboveTheLine: Dec; adjustmentsTotal: Dec;
   agi: Dec;
@@ -110,6 +113,7 @@ function computeAgiBlock(input: FederalEngineInput, agg: AggregatedIncome, ctx: 
   const deductionPersons: DeductionPerson[] = [];
   const personDeductions = new Map<string, QbiPersonDeductions>();
   const otherTaxPersons: OtherTaxesPerson[] = [];
+  const earnedPersons: EarnedIncomePerson[] = [];
   let totalSeTax: Dec = ZERO; let totalHalfSe: Dec = ZERO; let totalRetirement: Dec = ZERO; let totalSehi: Dec = ZERO; let totalHsa: Dec = ZERO;
   let otherAboveTheLine: Dec = agg.otherAboveTheLine;
   for (const p of input.persons) {
@@ -138,6 +142,7 @@ function computeAgiBlock(input: FederalEngineInput, agg: AggregatedIncome, ctx: 
     otherAboveTheLine = dAdd(otherAboveTheLine, pi.otherAboveTheLine);
     deductionPersons.push({ personId: p.personId, role: p.role, label: p.displayName, age: ageJan1, isBlind: p.isBlind, sch1a: p.sch1a });
     personDeductions.set(p.personId, { halfSeTax: se.halfSeTax, sehi: sehi.deducted, retirement: retirement.deducted });
+    earnedPersons.push({ personId: p.personId, role: p.role, label: p.displayName, earned: dSub(dAdd(pi.wages, pi.seIncome), se.halfSeTax) });
     // Medicare wages (Form 8959): outside wages at the higher of box 1 / Social Security wages (box 5 is uncapped) + all officer wages.
     const allOfficerWages = dSum(pi.shares.map((s) => s.officerWages));
     otherTaxPersons.push({ personId: p.personId, label: p.displayName, medicareWages: dAdd(dMax(dec(p.w2Wages), p.w2SocialSecurityWages == null ? ZERO : dec(p.w2SocialSecurityWages)), allOfficerWages), nese: se.nese });
@@ -156,7 +161,7 @@ function computeAgiBlock(input: FederalEngineInput, agg: AggregatedIncome, ctx: 
   const agi = dSub(income.totalIncome, adjustmentsTotal);
   ctx.trace.add({ step: STEP_AGI, id: 'agi', label: 'Adjusted gross income', exact: agi, source: 'gl_map', formula: `total income ${income.totalIncome} − ½ SE ${totalHalfSe} − retirement ${totalRetirement} − SEHI ${totalSehi} − HSA ${totalHsa} − other ${otherAboveTheLine}` });
   return {
-    personResults, deductionPersons, personDeductions, otherTaxPersons, income,
+    personResults, deductionPersons, personDeductions, otherTaxPersons, earnedPersons, income,
     seTax: totalSeTax, halfSeTax: totalHalfSe, retirement: totalRetirement, sehi: totalSehi, hsa: totalHsa, otherAboveTheLine, adjustmentsTotal, agi,
   };
 }
@@ -223,13 +228,23 @@ export function computeFederal(input: FederalEngineInput): FederalResult {
     rateMode: input.year.rateMode, effectiveRateOverride: input.year.effectiveRateOverride == null ? null : dec(input.year.effectiveRateOverride),
   }, ctx);
 
-  // Step 12: credits.
-  const nonrefundableRequested = dFloorZero(dec(input.year.creditsNonrefundable));
-  const nonrefundableAllowed = dMin(nonrefundableRequested, regular.tax);
-  if (dCmp(nonrefundableRequested, nonrefundableAllowed) > 0) ctx.warn('TE_NONREFUNDABLE_CREDIT_CAPPED', `Nonrefundable credits ${R(nonrefundableRequested)} exceed the regular tax ${R(regular.tax)}; only ${R(nonrefundableAllowed)} is used.`, { requested: nonrefundableRequested, allowed: nonrefundableAllowed });
-  const refundable = dFloorZero(dec(input.year.creditsRefundable));
-  ctx.trace.add({ step: STEP_CREDITS, id: 'credits.nonrefundable', label: 'Nonrefundable credits (capped at regular tax)', exact: nonrefundableAllowed, source: 'input', formula: `min(${nonrefundableRequested}, ${regular.tax})` });
-  if (dIsPos(refundable)) ctx.trace.add({ step: STEP_CREDITS, id: 'credits.refundable', label: 'Refundable credits', exact: refundable, source: 'input' });
+  // Step 12: credits (Q44 order against regular tax: §21 care, §24 CTC + ODC, then the other manual credits).
+  const dep = computeDependentCredits({
+    dependents: input.dependents ?? [], filingStatus: input.filingStatus, taxYear: input.taxYear, agi, regularTax: regular.tax,
+    persons: block.earnedPersons, careExpenses: dec(input.year.careExpenses ?? ZERO), fixed: input.year.fixedDependentCredits ?? null,
+  }, ctx);
+  const otherNonrefundableRequested = dFloorZero(dec(input.year.creditsNonrefundable));
+  const otherNonrefundableAllowed = dMin(otherNonrefundableRequested, dFloorZero(dep.taxAfterDependentCredits));
+  if (dCmp(otherNonrefundableRequested, otherNonrefundableAllowed) > 0) {
+    const room = dep.method === 'none' ? `the regular tax ${R(regular.tax)}` : `the regular tax ${R(dep.taxAfterDependentCredits)} left after the dependent credits`;
+    ctx.warn('TE_NONREFUNDABLE_CREDIT_CAPPED', `Nonrefundable credits ${R(otherNonrefundableRequested)} exceed ${room}; only ${R(otherNonrefundableAllowed)} is used.`, { requested: otherNonrefundableRequested, allowed: otherNonrefundableAllowed });
+  }
+  const nonrefundableAllowed = dSum([dep.careAllowed, dep.ctcOdcAllowed, otherNonrefundableAllowed]);
+  const otherRefundable = dFloorZero(dec(input.year.creditsRefundable));
+  const refundable = dAdd(dep.actc, otherRefundable);
+  const dependentCreditsUsed = dep.method !== 'none';
+  ctx.trace.add({ step: STEP_CREDITS, id: 'credits.nonrefundable', label: dependentCreditsUsed ? 'Other nonrefundable credits (manual; after the dependent credits, capped at the regular tax left)' : 'Nonrefundable credits (capped at regular tax)', exact: otherNonrefundableAllowed, source: 'input', formula: `min(${otherNonrefundableRequested}, ${dependentCreditsUsed ? dFloorZero(dep.taxAfterDependentCredits) : regular.tax})` });
+  if (dIsPos(otherRefundable)) ctx.trace.add({ step: STEP_CREDITS, id: 'credits.refundable', label: dependentCreditsUsed ? 'Other refundable credits (manual)' : 'Refundable credits', exact: otherRefundable, source: 'input' });
 
   // Step 13: Additional Medicare / NIIT.
   const passiveOrdinary = dSum([...limited.byPerson.values()].flatMap((p) => p.shares.filter((s) => isPassiveActivity(s.activityType) || s.activityType === 'investment').map((s) => s.share.ordinary)));
@@ -287,7 +302,19 @@ export function computeFederal(input: FederalEngineInput): FederalResult {
         ordinaryPortion: R(w.ordinaryPortion), ordinaryTax: R(w.ordinaryTax), preferentialTax: R(w.preferentialTax), worksheetTax: R(w.worksheetTax), allOrdinaryTax: R(w.allOrdinaryTax),
       },
     },
-    credits: { nonrefundableRequested: R(nonrefundableRequested), nonrefundableAllowed: R(nonrefundableAllowed), refundable: R(refundable) },
+    credits: {
+      nonrefundableRequested: R(otherNonrefundableRequested), nonrefundableAllowed: R(nonrefundableAllowed), refundable: R(refundable),
+      careCredit: R(dep.careAllowed), childTaxCredit: R(dep.ctcOdcAllowed), otherNonrefundableAllowed: R(otherNonrefundableAllowed),
+      additionalChildTaxCredit: R(dep.actc), otherRefundable: R(otherRefundable),
+    },
+    dependentCredits: {
+      method: dep.method, dependents: dep.dependents, ctcChildren: dep.ctcChildren, otherDependents: dep.otherDependents, careQualifyingPersons: dep.careQualifyingPersons,
+      ctcTentative: R(dep.ctcTentative), odcTentative: R(dep.odcTentative), phaseOutMagi: R(dep.phaseOutMagi), phaseOutThreshold: R(dep.phaseOutThreshold), phaseOutReduction: R(dep.phaseOutReduction),
+      ctcOdcAfterPhaseOut: R(dep.ctcOdcAfterPhaseOut), ctcOdcAllowed: R(dep.ctcOdcAllowed), earnedIncome: R(dep.earnedIncome),
+      actcByChildren: R(dep.actcByChildren), actcByEarnedIncome: R(dep.actcByEarnedIncome), actc: R(dep.actc),
+      careExpenses: R(dep.careExpenses), careExpenseLimit: R(dep.careExpenseLimit), careEarnedIncomeLimit: R(dep.careEarnedIncomeLimit), careAllowedExpenses: R(dep.careAllowedExpenses),
+      careRate: dRoundRate(dep.careRate), careTentative: R(dep.careTentative), careAllowed: R(dep.careAllowed),
+    },
     seTax: R(block.seTax),
     additionalMedicareTax: R(additionalMedicareTax),
     niit: R(niit),

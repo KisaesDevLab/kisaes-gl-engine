@@ -28,7 +28,7 @@ export function isIncomeTaxState(code: StateCode): boolean {
   return !NO_BROAD_INCOME_TAX_STATES.includes(code);
 }
 
-export const STATE_RULE_VALUE_TYPES = ['bool', 'money', 'rate', 'date', 'date_list', 'rate_list', 'enum', 'high_agi_rule', 'farmer_rule', 'rate_schedule', 'requirement_gate'] as const;
+export const STATE_RULE_VALUE_TYPES = ['bool', 'money', 'rate', 'date', 'date_list', 'rate_list', 'enum', 'high_agi_rule', 'farmer_rule', 'rate_schedule', 'requirement_gate', 'exemptions'] as const;
 export type StateRuleValueType = typeof STATE_RULE_VALUE_TYPES[number];
 
 /** `required_threshold` / `penalty.min_balance_due` boundary: "$X or more" vs "more than $X". */
@@ -80,6 +80,27 @@ export interface RequirementGateRule {
   non_withheld_floor?: number;
 }
 
+/**
+ * `exemptions` (Q44): a state's personal / dependent exemptions (reduce the state base) and
+ * personal / dependent exemption CREDITS (reduce the state tax), resident returns. Per
+ * component: a number (0 = the state has none, cited) or null (could not be sourced — the
+ * engine applies nothing for it and warns). `*_by_status` = the WHOLE-RETURN amount for a
+ * filing status when it is not simply per-filer × filers (wins over the per-filer figure).
+ * `simplified` = income phase-outs / tiers / age-based amounts are not modelled (the stored
+ * figure is the base or maximum, described in `note`); the engine warns.
+ */
+export const EXEMPTION_STATUSES = ['single', 'mfj', 'mfs', 'hoh', 'qss'] as const;
+export interface StateExemptionsRule {
+  personal_exemption: number | null;
+  personal_exemption_by_status?: Partial<Record<typeof EXEMPTION_STATUSES[number], number>>;
+  dependent_exemption: number | null;
+  personal_credit: number | null;
+  personal_credit_by_status?: Partial<Record<typeof EXEMPTION_STATUSES[number], number>>;
+  dependent_credit: number | null;
+  simplified?: boolean;
+  note?: string;
+}
+
 export interface StateRuleDef {
   key: string;
   type: StateRuleValueType;
@@ -113,6 +134,7 @@ export const STATE_RULE_REGISTRY: readonly StateRuleDef[] = [
   { key: 'credit_for_other_state', type: 'bool', label: 'Credit for tax paid to other states' },
   { key: 'nonresident_method', type: 'enum', label: 'How nonresident tax is computed', options: ['ratio', 'sourced_flat', 'other'] },
   { key: 'holidays', type: 'date_list', label: 'State holidays used for due-date roll-forward' },
+  { key: 'exemptions', type: 'exemptions', label: 'Personal / dependent exemptions and exemption credits ({ personal_exemption, dependent_exemption, personal_credit, dependent_credit, *_by_status?, simplified?, note? }; null = not sourced)', nullable: true, optional: true },
   { key: 'requirement_gate', type: 'requirement_gate', label: 'Income-based estimate-requirement gate ({ kind, threshold?, threshold_mfj?, non_withheld_floor? }; absent = plain threshold test)', nullable: true, optional: true },
 ];
 
@@ -174,6 +196,25 @@ export function validateStateRuleValue(def: StateRuleDef, value: unknown): strin
       const needsThreshold = v.kind === 'gross_income_both_years' || v.kind === 'non_withheld_income' || v.kind === 'prior_year_liability_also';
       if (needsThreshold && !isNum(v.threshold)) return `${String(v.kind)} needs a threshold`;
       if (v.kind === 'gross_over_exemptions_deductions' && !isNum(v.non_withheld_floor)) return 'gross_over_exemptions_deductions needs non_withheld_floor';
+      return null;
+    }
+    case 'exemptions': {
+      if (!isObj(value)) return 'expected { personal_exemption, dependent_exemption, personal_credit, dependent_credit }';
+      const v = value as Record<string, unknown>;
+      for (const k of ['personal_exemption', 'dependent_exemption', 'personal_credit', 'dependent_credit']) {
+        if (!(k in v)) return `missing ${k} (use null when not sourced)`;
+        if (v[k] !== null && !(isNum(v[k]) && (v[k] as number) >= 0)) return `${k} must be a non-negative number or null`;
+      }
+      for (const k of ['personal_exemption_by_status', 'personal_credit_by_status']) {
+        if (v[k] === undefined) continue;
+        if (!isObj(v[k])) return `${k} must be an object keyed by filing status`;
+        for (const [fs, n] of Object.entries(v[k] as Record<string, unknown>)) {
+          if (!(EXEMPTION_STATUSES as readonly string[]).includes(fs)) return `${k}: unknown filing status ${fs}`;
+          if (!(isNum(n) && n >= 0)) return `${k}.${fs} must be a non-negative number`;
+        }
+      }
+      if (v['simplified'] !== undefined && typeof v['simplified'] !== 'boolean') return 'simplified must be true/false';
+      if (v['note'] !== undefined && typeof v['note'] !== 'string') return 'note must be text';
       return null;
     }
     case 'rate_schedule': {

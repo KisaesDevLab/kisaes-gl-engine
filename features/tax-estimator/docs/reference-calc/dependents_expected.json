@@ -1,0 +1,124 @@
+{
+  "dependents_low_income": {
+    "credits": {
+      "actc": 3400,
+      "actc_by_children": 3400,
+      "actc_by_earned_income": 4725,
+      "care_allowed_expenses": 3000,
+      "care_credit": 180,
+      "care_expense_limit": 3000,
+      "care_qualifying": 1,
+      "care_rate": 0.4,
+      "ctc_children": 2,
+      "ctc_odc_after_phaseout": 4900,
+      "ctc_odc_allowed": 0,
+      "ctc_tentative": 4400,
+      "earned_income": 34000,
+      "odc_tentative": 500,
+      "other_dependents": 1,
+      "phaseout_reduction": 0
+    },
+    "dependents": [
+      {
+        "age": 10,
+        "care": true,
+        "ctc": true,
+        "name": "Tobi"
+      },
+      {
+        "age": 15,
+        "care": false,
+        "ctc": true,
+        "name": "Zara"
+      },
+      {
+        "age": 18,
+        "care": false,
+        "ctc": false,
+        "name": "Ike"
+      }
+    ],
+    "federal": {
+      "addl_medicare": 0,
+      "agi": 34000,
+      "income_tax": 180,
+      "niit": 0,
+      "qbi": 0,
+      "se_tax": 0,
+      "taxable_income": 1800
+    },
+    "federal_total": -3400,
+    "federal_total_exact": -3400,
+    "state": {
+      "AR": {
+        "exemption_credits": 145,
+        "net_tax": 1181
+      },
+      "GA": {
+        "exemptions": 15000,
+        "net_tax": 950
+      }
+    }
+  },
+  "dependents_phaseout": {
+    "credits": {
+      "actc": 0,
+      "actc_by_children": 3400,
+      "actc_by_earned_income": 63146,
+      "care_allowed_expenses": 3000,
+      "care_credit": 600,
+      "care_expense_limit": 3000,
+      "care_qualifying": 1,
+      "care_rate": 0.2,
+      "ctc_children": 2,
+      "ctc_odc_after_phaseout": 3700,
+      "ctc_odc_allowed": 3700,
+      "ctc_tentative": 4400,
+      "earned_income": 423473,
+      "odc_tentative": 500,
+      "other_dependents": 1,
+      "phaseout_reduction": 1200
+    },
+    "dependents": [
+      {
+        "age": 10,
+        "care": true,
+        "ctc": true,
+        "name": "Tobi"
+      },
+      {
+        "age": 15,
+        "care": false,
+        "ctc": true,
+        "name": "Zara"
+      },
+      {
+        "age": 18,
+        "care": false,
+        "ctc": false,
+        "name": "Ike"
+      }
+    ],
+    "federal": {
+      "addl_medicare": 1448,
+      "agi": 423473,
+      "income_tax": 61655,
+      "niit": 0,
+      "qbi": 72695,
+      "se_tax": 33055,
+      "taxable_income": 318578
+    },
+    "federal_total": 91858,
+    "federal_total_exact": 91858.0,
+    "state": {
+      "AR": {
+        "exemption_credits": 145,
+        "net_tax": 16370
+      },
+      "GA": {
+        "exemptions": 15000,
+        "net_tax": 20424
+      }
+    }
+  }
+}

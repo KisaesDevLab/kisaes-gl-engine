@@ -83,6 +83,40 @@ export interface EnginePerson {
   sch1a: EngineSch1aPerson;
 }
 
+// ── Dependents (Q44) ─────────────────────────────────────────────────
+
+export type EngineDependentKind = 'qualifying_child' | 'qualifying_relative';
+
+/** A dependent of the taxpayer. Ages are computed at Dec 31 of the tax year from `dateOfBirth`. */
+export interface EngineDependent {
+  dependentId: string;
+  displayName: string;
+  /** 'YYYY-MM-DD' (required). */
+  dateOfBirth: string;
+  kind: EngineDependentKind;
+  /** 0–12; null = not recorded (the residency test is assumed met). */
+  monthsLivedWith: number | null;
+  isStudent: boolean;
+  isDisabled: boolean;
+  /** The dependent counts only in tax years inside [firstTaxYear, lastTaxYear] (null = open). */
+  firstTaxYear: number | null;
+  lastTaxYear: number | null;
+}
+
+/**
+ * Full-year dependent-credit amounts BEFORE the regular-tax limit, used as-is by a
+ * Schedule AI annualized column (D7 / Q13: credits are full-year). Set by computeScheduleAi,
+ * never by the app.
+ */
+export interface FixedDependentCredits {
+  /** §21 credit before the tax limit. */
+  care: string;
+  /** §24 child tax credit + credit for other dependents after the phase-out, before the tax limit. */
+  ctcOdc: string;
+  /** Additional child tax credit (refundable). */
+  actc: string;
+}
+
 // ── Entities and links ───────────────────────────────────────────────
 
 export interface EngineLink {
@@ -201,8 +235,14 @@ export interface EngineYearInputs {
   effectiveRateOverride: string | null;
   deductionMode: DeductionMode;
   itemized: EngineItemized;
+  /** Other nonrefundable credits (manual; NOT the dependent credits, which are computed). */
   creditsNonrefundable: string;
+  /** Other refundable credits (manual; NOT the additional child tax credit). */
   creditsRefundable: string;
+  /** Child and dependent care expenses paid in the year (Form 2441); absent = 0. */
+  careExpenses?: string;
+  /** Schedule AI columns only: full-year dependent credits used instead of recomputing (D7). */
+  fixedDependentCredits?: FixedDependentCredits | null;
   /** Unrecaptured §1250 gain included in long-term gains (25% bucket). */
   unrecaptured1250Gain: string;
   /** Collectibles / §1202 gain included in long-term gains (28% bucket). */
@@ -248,6 +288,8 @@ export interface FederalEngineInput {
   filingStatus: FilingStatus;
   parameters: ParameterMap;
   persons: EnginePerson[];
+  /** Q44: the taxpayer's dependents (all years; the engine keeps those active in taxYear). Absent = none. */
+  dependents?: EngineDependent[];
   entities: EngineEntity[];
   adjustments: EngineAdjustment[];
   year: EngineYearInputs;
@@ -628,9 +670,69 @@ export interface RegularTaxResult {
 }
 
 export interface CreditsResult {
+  /** Other (manual) nonrefundable credits requested. */
   nonrefundableRequested: string;
+  /** ALL nonrefundable credits allowed: care + child tax credit / ODC + other (manual), limited by regular tax. */
   nonrefundableAllowed: string;
+  /** ALL refundable credits: additional child tax credit + other (manual). */
   refundable: string;
+  /** §21 credit allowed (Q44 ordering: first against regular tax). */
+  careCredit: string;
+  /** §24 child tax credit + credit for other dependents allowed (second). */
+  childTaxCredit: string;
+  /** Other nonrefundable credits allowed (third). */
+  otherNonrefundableAllowed: string;
+  /** Additional child tax credit (refundable). */
+  additionalChildTaxCredit: string;
+  /** Other refundable credits (manual). */
+  otherRefundable: string;
+}
+
+/** Age group printed for a dependent (no date of birth leaves the engine). */
+export type DependentAgeGroup = 'under_13' | '13_to_16' | '17_to_18' | '19_to_23' | '24_plus';
+
+export interface DependentCreditPersonResult {
+  dependentId: string;
+  displayName: string;
+  kind: EngineDependentKind;
+  ageAtYearEnd: number;
+  ageGroup: DependentAgeGroup;
+  /** Counts for the child tax credit (qualifying child under the age limit). */
+  childTaxCredit: boolean;
+  /** Counts for the credit for other dependents. */
+  otherDependentCredit: boolean;
+  /** Qualifying person for the care credit (under 13 during the year, or disabled). */
+  careQualifying: boolean;
+  /** Counts as an EITC qualifying child (warning only; EITC is not computed). */
+  eitcQualifying: boolean;
+}
+
+export interface DependentCreditsResult {
+  /** 'computed' | 'fixed' (Schedule AI column: full-year amounts) | 'none' (no dependents and no care expenses). */
+  method: 'computed' | 'fixed' | 'none';
+  dependents: DependentCreditPersonResult[];
+  ctcChildren: number;
+  otherDependents: number;
+  careQualifyingPersons: number;
+  ctcTentative: string;
+  odcTentative: string;
+  phaseOutMagi: string;
+  phaseOutThreshold: string;
+  phaseOutReduction: string;
+  /** CTC + ODC after the phase-out, before the tax limit. */
+  ctcOdcAfterPhaseOut: string;
+  ctcOdcAllowed: string;
+  earnedIncome: string;
+  actcByChildren: string;
+  actcByEarnedIncome: string;
+  actc: string;
+  careExpenses: string;
+  careExpenseLimit: string;
+  careEarnedIncomeLimit: string;
+  careAllowedExpenses: string;
+  careRate: string;
+  careTentative: string;
+  careAllowed: string;
 }
 
 export interface FederalExactTotals {
@@ -666,6 +768,8 @@ export interface FederalResult {
   taxableIncome: string;
   regularTax: RegularTaxResult;
   credits: CreditsResult;
+  /** Q44 dependent credits detail (§21, §24). */
+  dependentCredits: DependentCreditsResult;
   seTax: string;
   additionalMedicareTax: string;
   niit: string;

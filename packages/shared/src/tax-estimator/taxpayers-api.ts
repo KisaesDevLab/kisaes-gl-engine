@@ -35,6 +35,37 @@ export interface PersonDTO {
   sehiEligibleMonths: boolean[];
 }
 
+export type DependentKind = 'qualifying_child' | 'qualifying_relative';
+export type DependentRelationship =
+  | 'son' | 'daughter' | 'stepchild' | 'foster_child' | 'grandchild' | 'sibling' | 'niece_nephew' | 'parent' | 'grandparent' | 'other_relative' | 'other';
+
+/**
+ * A dependent of the taxpayer (OPEN-QUESTIONS Q44). Part of the taxpayer: same firm and
+ * D17 / D18 visibility checks as persons. No SSN is stored.
+ */
+export interface DependentDTO {
+  id: string;
+  taxpayerId: string;
+  displayName: string;
+  dateOfBirth: string;
+  relationship: DependentRelationship;
+  kind: DependentKind;
+  /** Months the dependent lived with the taxpayer (0–12); null = not recorded (full year assumed). */
+  monthsLivedWith: number | null;
+  isStudent: boolean;
+  isDisabled: boolean;
+  /** First / last tax year the dependent counts (null = open). */
+  firstTaxYear: number | null;
+  lastTaxYear: number | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DependentListDTO {
+  data: DependentDTO[];
+  total: number;
+}
+
 export interface TaxpayerListItemDTO extends TaxpayerDTO {
   personNames: string[];
   linkCount: number;
@@ -52,6 +83,8 @@ export interface TaxpayerListDTO {
 export interface TaxpayerDetailDTO {
   taxpayer: TaxpayerDTO;
   persons: PersonDTO[];
+  /** Q44: the taxpayer's dependents (all years; the estimate filters by first / last tax year). */
+  dependents: DependentDTO[];
   /** D17: a staff allow-list is set. */
   staffRestricted: boolean;
   /**
@@ -207,7 +240,7 @@ export interface TaxpayerContactListDTO {
 /** Error codes the taxpayers API can return. */
 export const TAXPAYER_ERROR_CODES = [
   'TE_TENANT_NOT_MANAGED', 'TE_LINK_PCT_OVER_100', 'TE_LIMITED_ONLY_PARTNERSHIP', 'TE_OFFICER_ONLY_SCORP',
-  'TE_TAXPAYER_NOT_FOUND', 'TE_PERSON_LIMIT',
+  'TE_TAXPAYER_NOT_FOUND', 'TE_PERSON_LIMIT', 'TE_DEPENDENT_NOT_FOUND', 'TE_DEPENDENT_LIMIT',
 ] as const;
 
 export interface LinkContactResultDTO {

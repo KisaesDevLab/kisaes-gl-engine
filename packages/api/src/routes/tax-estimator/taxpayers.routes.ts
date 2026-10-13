@@ -7,7 +7,7 @@ import {
   createTaxpayerSchema, updateTaxpayerSchema, listTaxpayersQuerySchema, taxpayerIdParamsSchema,
   personRoleParamsSchema, upsertPersonSchema, linksQuerySchema, upsertLinkSchema, linkIdParamsSchema,
   companyOptionsQuerySchema, linkContactSchema, contactIdParamsSchema, unlinkContactQuerySchema,
-  replaceTaxpayerStaffSchema, can,
+  replaceTaxpayerStaffSchema, can, upsertDependentSchema, dependentIdParamsSchema,
 } from '@kis-books/shared';
 import { resolvePermissionsForRequest } from '../../middleware/permission.js';
 import { getScope, requireTaxEstimatorWrite } from '../../middleware/tax-estimator-scope.js';
@@ -66,6 +66,30 @@ taxpayersRouter.put('/:id/persons/:role', requireTaxEstimatorWrite, async (req, 
 taxpayersRouter.delete('/:id/persons/:role', requireTaxEstimatorWrite, async (req, res) => {
   const { id, role } = personRoleParamsSchema.parse(req.params);
   res.json({ data: await taxpayersService.removePerson(getScope(req), actor(req), id, role) });
+});
+
+// ── dependents (Q44) — part of the taxpayer: same visibility as persons, writes need requireTaxEstimatorWrite ──
+taxpayersRouter.get('/:id/dependents', async (req, res) => {
+  const { id } = taxpayerIdParamsSchema.parse(req.params);
+  const list = await taxpayersService.listDependents(getScope(req), id);
+  res.json({ ...list, ...pageOf(list.data, listPageQuerySchema.parse(req.query)) });
+});
+
+taxpayersRouter.post('/:id/dependents', requireTaxEstimatorWrite, async (req, res) => {
+  const { id } = taxpayerIdParamsSchema.parse(req.params);
+  const input = upsertDependentSchema.parse(req.body);
+  res.status(201).json({ data: await taxpayersService.createDependent(getScope(req), actor(req), id, input) });
+});
+
+taxpayersRouter.put('/:id/dependents/:dependentId', requireTaxEstimatorWrite, async (req, res) => {
+  const { id, dependentId } = dependentIdParamsSchema.parse(req.params);
+  const input = upsertDependentSchema.parse(req.body);
+  res.json({ data: await taxpayersService.updateDependent(getScope(req), actor(req), id, dependentId, input) });
+});
+
+taxpayersRouter.delete('/:id/dependents/:dependentId', requireTaxEstimatorWrite, async (req, res) => {
+  const { id, dependentId } = dependentIdParamsSchema.parse(req.params);
+  res.json({ data: await taxpayersService.removeDependent(getScope(req), actor(req), id, dependentId) });
 });
 
 // ── links ──

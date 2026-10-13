@@ -23,16 +23,17 @@
 
 import { and, asc, desc, eq, ilike, inArray, ne, or, sql, type SQL } from 'drizzle-orm';
 import type {
-  CreateTaxpayerInput, UpdateTaxpayerInput, ListTaxpayersQuery, UpsertPersonInput, UpsertLinkInput,
+  CreateTaxpayerInput, UpdateTaxpayerInput, ListTaxpayersQuery, UpsertPersonInput, UpsertLinkInput, UpsertDependentInput,
+  DependentDTO, DependentListDTO, DependentKind, DependentRelationship,
   CompanyOptionsQuery, LinkContactInput, TaxpayerDTO, PersonDTO, TaxpayerListDTO, TaxpayerDetailDTO,
   LinkDTO, LinkWarningDTO, LinkUpsertResultDTO, LinkListDTO, CompanyOptionListDTO, TaxpayerContactDTO,
   TaxpayerContactListDTO, TaxpayerContactCandidateDTO, TaxpayerContactCandidateListDTO, LinkContactResultDTO, UnlinkContactResultDTO, LinkEntityKind, PersonRole,
   FilingStatus, ActivityType, SafeHarborOverride, PortalShows, PartnerSeStatus,
 } from '@kis-books/shared';
-import { MIN_OVERRIDE_REASON_LEN } from '@kis-books/shared';
+import { MIN_OVERRIDE_REASON_LEN, MAX_DEPENDENTS } from '@kis-books/shared';
 import { db, type DbOrTx } from '../../db/index.js';
 import {
-  taxEstTaxpayers, taxEstPersons, taxEstLinks, taxEstTaxpayerContacts,
+  taxEstTaxpayers, taxEstPersons, taxEstLinks, taxEstTaxpayerContacts, taxEstDependents,
 } from '../../db/schema/tax-estimator-taxpayers.js';
 import { companies } from '../../db/schema/company.js';
 import { tenants } from '../../db/schema/auth.js';
@@ -63,6 +64,7 @@ const COMPANY_ENTITY_KIND: Readonly<Record<string, LinkEntityKind>> = {
 type TaxpayerRow = typeof taxEstTaxpayers.$inferSelect;
 type PersonRow = typeof taxEstPersons.$inferSelect;
 type LinkRow = typeof taxEstLinks.$inferSelect;
+type DependentRow = typeof taxEstDependents.$inferSelect;
 
 // ── helpers ────────────────────────────────────────────────────────────
 
@@ -93,9 +95,27 @@ function toPersonDTO(r: PersonRow): PersonDTO {
   };
 }
 
+function toDependentDTO(r: DependentRow): DependentDTO {
+  return {
+    id: r.id, taxpayerId: r.taxpayerId, displayName: r.displayName, dateOfBirth: r.dateOfBirth,
+    relationship: r.relationship as DependentRelationship, kind: r.kind as DependentKind,
+    monthsLivedWith: r.monthsLivedWith, isStudent: r.isStudent, isDisabled: r.isDisabled,
+    firstTaxYear: r.firstTaxYear, lastTaxYear: r.lastTaxYear,
+    createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString(),
+  };
+}
+
+/** Audit payload for a dependent: metadata only — no name, no date of birth (birth YEAR kept for review). */
+function dependentAuditView(d: DependentDTO): Record<string, unknown> {
+  return {
+    id: d.id, taxpayerId: d.taxpayerId, kind: d.kind, relationship: d.relationship, birthYear: Number(d.dateOfBirth.slice(0, 4)),
+    monthsLivedWith: d.monthsLivedWith, isStudent: d.isStudent, isDisabled: d.isDisabled, firstTaxYear: d.firstTaxYear, lastTaxYear: d.lastTaxYear,
+  };
+}
+
 async function audit(
   scope: FirmScope, actor: Actor, action: 'create' | 'update' | 'delete',
-  entityType: 'tax_est_taxpayer' | 'tax_est_person' | 'tax_est_link', entityId: string,
+  entityType: 'tax_est_taxpayer' | 'tax_est_person' | 'tax_est_link' | 'tax_est_dependent', entityId: string,
   before: unknown | null, after: unknown | null, exec: DbOrTx,
 ) {
   const tag = (v: unknown | null) => (v ? { ...(v as object), firmId: scope.firmId } : null);
@@ -196,10 +216,13 @@ export async function listTaxpayers(scope: FirmScope, query: ListTaxpayersQuery)
 export async function getTaxpayer(scope: FirmScope, id: string): Promise<TaxpayerDetailDTO> {
   const row = await loadTaxpayer(scope, id);
   const persons = await db.select().from(taxEstPersons).where(eq(taxEstPersons.taxpayerId, id));
+  const dependents = await db.select().from(taxEstDependents).where(eq(taxEstDependents.taxpayerId, id))
+    .orderBy(asc(taxEstDependents.dateOfBirth), asc(taxEstDependents.createdAt));
   const [staff] = await db.select({ on: staffRestrictedSql() }).from(taxEstTaxpayers).where(eq(taxEstTaxpayers.id, id));
   return {
     taxpayer: toTaxpayerDTO(row),
     persons: persons.sort((a, b) => a.role.localeCompare(b.role)).map(toPersonDTO),
+    dependents: dependents.map(toDependentDTO),
     staffRestricted: staff?.on === true,
     elevatedAccess: isElevated(await scopeForTaxpayer(scope, id)),
   };
@@ -282,6 +305,72 @@ export async function removePerson(scope: FirmScope, actor: Actor, taxpayerId: s
     await tx.delete(taxEstPersons).where(eq(taxEstPersons.id, person.id)); // links cascade
     await audit(scope, actor, 'delete', 'tax_est_person', person.id, toPersonDTO(person), { removedLinks: links.length }, tx);
     return { removedLinks: links.length };
+  });
+}
+
+// ── dependents (Q44) ───────────────────────────────────────────────────
+// Part of the taxpayer: every call first loads the taxpayer through loadTaxpayer (firm +
+// D17 / D18 visibility; a hidden or foreign taxpayer is the uniform 404), and every
+// dependent query is keyed by that taxpayer id, so a dependent id of another taxpayer is
+// TE_DEPENDENT_NOT_FOUND. Writes are gated by requireTaxEstimatorWrite at the route, like persons.
+
+function dependentNotFound(): AppError {
+  return new AppError(404, 'Dependent not found', 'TE_DEPENDENT_NOT_FOUND');
+}
+
+function dependentValues(input: UpsertDependentInput) {
+  return {
+    displayName: input.displayName, dateOfBirth: input.dateOfBirth, relationship: input.relationship, kind: input.kind,
+    monthsLivedWith: input.monthsLivedWith ?? null, isStudent: input.isStudent, isDisabled: input.isDisabled,
+    firstTaxYear: input.firstTaxYear ?? null, lastTaxYear: input.lastTaxYear ?? null,
+  };
+}
+
+export async function listDependents(scope: FirmScope, taxpayerId: string): Promise<DependentListDTO> {
+  await loadTaxpayer(scope, taxpayerId);
+  const rows = await db.select().from(taxEstDependents).where(eq(taxEstDependents.taxpayerId, taxpayerId))
+    .orderBy(asc(taxEstDependents.dateOfBirth), asc(taxEstDependents.createdAt));
+  return { data: rows.map(toDependentDTO), total: rows.length };
+}
+
+export async function createDependent(scope: FirmScope, actor: Actor, taxpayerId: string, input: UpsertDependentInput): Promise<DependentDTO> {
+  assertDobNotFuture(input.dateOfBirth);
+  return db.transaction(async (tx) => {
+    await loadTaxpayer(scope, taxpayerId, tx, true);
+    const [count] = await tx.select({ n: sql<number>`count(*)::int` }).from(taxEstDependents).where(eq(taxEstDependents.taxpayerId, taxpayerId));
+    if ((count?.n ?? 0) >= MAX_DEPENDENTS) throw AppError.unprocessableEntity(`A taxpayer has at most ${MAX_DEPENDENTS} dependents`, 'TE_DEPENDENT_LIMIT');
+    const [row] = await tx.insert(taxEstDependents).values({ taxpayerId, ...dependentValues(input) }).returning();
+    if (!row) throw AppError.internal('Dependent save failed');
+    const dto = toDependentDTO(row);
+    await audit(scope, actor, 'create', 'tax_est_dependent', row.id, null, dependentAuditView(dto), tx);
+    return dto;
+  });
+}
+
+export async function updateDependent(scope: FirmScope, actor: Actor, taxpayerId: string, dependentId: string, input: UpsertDependentInput): Promise<DependentDTO> {
+  assertDobNotFuture(input.dateOfBirth);
+  return db.transaction(async (tx) => {
+    await loadTaxpayer(scope, taxpayerId, tx, true);
+    const [before] = await tx.select().from(taxEstDependents)
+      .where(and(eq(taxEstDependents.id, dependentId), eq(taxEstDependents.taxpayerId, taxpayerId)));
+    if (!before) throw dependentNotFound();
+    const [row] = await tx.update(taxEstDependents).set({ ...dependentValues(input), updatedAt: new Date() })
+      .where(and(eq(taxEstDependents.id, dependentId), eq(taxEstDependents.taxpayerId, taxpayerId))).returning();
+    if (!row) throw dependentNotFound();
+    const dto = toDependentDTO(row);
+    await audit(scope, actor, 'update', 'tax_est_dependent', row.id, dependentAuditView(toDependentDTO(before)), dependentAuditView(dto), tx);
+    return dto;
+  });
+}
+
+export async function removeDependent(scope: FirmScope, actor: Actor, taxpayerId: string, dependentId: string): Promise<{ removed: true }> {
+  return db.transaction(async (tx) => {
+    await loadTaxpayer(scope, taxpayerId, tx, true);
+    const [row] = await tx.delete(taxEstDependents)
+      .where(and(eq(taxEstDependents.id, dependentId), eq(taxEstDependents.taxpayerId, taxpayerId))).returning();
+    if (!row) throw dependentNotFound();
+    await audit(scope, actor, 'delete', 'tax_est_dependent', row.id, dependentAuditView(toDependentDTO(row)), null, tx);
+    return { removed: true as const };
   });
 }
 

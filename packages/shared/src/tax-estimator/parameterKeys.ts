@@ -41,7 +41,7 @@ export type ParameterUnit = typeof PARAMETER_UNITS[number];
 export const PARAMETER_GROUPS = [
   'Self-employment', 'Brackets and capital gains', 'Medicare and NIIT', 'Deductions', 'Schedule 1-A',
   'QBI (§199A)', 'Loss limits', 'Retirement and HSA', 'C corporation', 'Individual safe harbor',
-  'Installments', 'Schedule AI', 'Farmers and fishermen', 'Penalty', 'Calendar',
+  'Installments', 'Schedule AI', 'Farmers and fishermen', 'Penalty', 'Calendar', 'Credits',
 ] as const;
 export type ParameterGroup = typeof PARAMETER_GROUPS[number];
 
@@ -53,6 +53,7 @@ export const VARIANT_SETS = {
   self_family: ['self', 'family'],
   unmarried_married: ['unmarried', 'married'],
   standard_mfs_living_apart: ['standard', 'mfs_living_apart'],
+  one_two_plus: ['one', 'two_plus'],
 } as const;
 export type VariantSetName = keyof typeof VARIANT_SETS;
 
@@ -217,6 +218,31 @@ export const PARAMETER_REGISTRY: readonly ParameterDef[] = [
   D('farmer.file_by_date', 'date', 'date', 'Farmers and fishermen', 'File and pay by this date for no penalty', { rollsWithYear: true, roll: statutory(SD('03-01', 1)) }),
   // ── Penalty ────────────────────────────────────────────────────────────
   D('penalty.underpayment_rate', 'rate_period_list', 'table', 'Penalty', 'Underpayment rate by quarter'),
+  // ── Credits (Q44: dependents) ─────────────────────────────────────────
+  D('ctc.amount', 'money', 'usd', 'Credits', 'Child tax credit per qualifying child (§24(h)(2))'),
+  D('ctc.refundable_max', 'money', 'usd', 'Credits', 'Additional child tax credit cap per qualifying child (§24(h)(5))'),
+  D('ctc.child_age_limit', 'int', 'count', 'Credits', 'Child tax credit: qualifying child must be under this age at year end (§24(c)(1))'),
+  D('ctc.odc_amount', 'money', 'usd', 'Credits', 'Credit for other dependents per dependent (§24(h)(4))'),
+  D('ctc.phaseout_threshold', 'money', 'usd', 'Credits', 'Child tax credit / ODC phase-out MAGI threshold (§24(h)(3))', { variants: 'standard_mfj' }),
+  D('ctc.phaseout_step', 'money', 'usd', 'Credits', 'Child tax credit phase-out step (each step or fraction of MAGI above the threshold)'),
+  D('ctc.phaseout_reduction', 'money', 'usd', 'Credits', 'Child tax credit reduction per phase-out step (§24(b)(1))'),
+  D('ctc.earned_income_floor', 'money', 'usd', 'Credits', 'Additional child tax credit: earned income floor (§24(h)(6))'),
+  D('ctc.earned_income_rate', 'rate', 'rate', 'Credits', 'Additional child tax credit: rate on earned income above the floor (§24(d)(1)(B)(i))'),
+  D('ctc.alt_formula_min_children', 'int', 'count', 'Credits', 'Qualifying children from which the Schedule 8812 Part II-B alternative (not modelled) may apply'),
+  D('dependents.qc_age_limit', 'int', 'count', 'Credits', 'Qualifying child age test: under this age at year end (§152(c)(3)(A)(i))'),
+  D('dependents.qc_student_age_limit', 'int', 'count', 'Credits', 'Qualifying child age test for a student: under this age at year end (§152(c)(3)(A)(ii))'),
+  D('dependents.residency_min_months', 'int', 'months', 'Credits', 'Months lived with the taxpayer for "more than one-half of the year" (§152(c)(1)(B), month approximation)'),
+  D('care.expense_limit', 'money', 'usd', 'Credits', 'Child and dependent care expense limit (§21(c)), one / two or more qualifying persons', { variants: 'one_two_plus' }),
+  D('care.qualifying_age', 'int', 'count', 'Credits', 'Care credit: qualifying child under this age (§21(b)(1)(A))'),
+  D('care.max_rate', 'rate', 'rate', 'Credits', 'Care credit: maximum applicable percentage (§21(a)(2))'),
+  D('care.rate_step', 'rate', 'rate', 'Credits', 'Care credit: percentage-point reduction per AGI step'),
+  D('care.phase1.start', 'money', 'usd', 'Credits', 'Care credit: AGI above which the first reduction starts'),
+  D('care.phase1.agi_step', 'money', 'usd', 'Credits', 'Care credit: first reduction AGI step (each step or fraction)'),
+  D('care.phase1.min_rate', 'rate', 'rate', 'Credits', 'Care credit: floor of the first reduction'),
+  D('care.phase2.start', 'money', 'usd', 'Credits', 'Care credit: AGI above which the second reduction starts (2026+)', { variants: 'standard_mfj' }),
+  D('care.phase2.agi_step', 'money', 'usd', 'Credits', 'Care credit: second reduction AGI step (2026+)', { variants: 'standard_mfj' }),
+  D('care.phase2.min_rate', 'rate', 'rate', 'Credits', 'Care credit: floor of the second reduction (equal to the first floor = no second reduction)'),
+  D('eitc.max_agi', 'money_list', 'usd', 'Credits', 'EITC completed phase-out AGI for 1 / 2 / 3+ qualifying children (warning only)', { variants: 'standard_mfj' }),
   // ── Calendar ───────────────────────────────────────────────────────────
   D('holidays', 'date_list', 'date', 'Calendar', 'Federal / DC legal holidays (date roll-forward)', { rollsWithYear: true, roll: { kind: 'legal_holidays' } }),
 ];

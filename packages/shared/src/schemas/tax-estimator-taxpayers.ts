@@ -45,6 +45,7 @@ export const taxpayerIdParamsSchema = z.object({ id: uuid });
 export const personRoleParamsSchema = z.object({ id: uuid, role: z.enum(PERSON_ROLES) });
 export const linkIdParamsSchema = z.object({ id: uuid, linkId: uuid });
 export const contactIdParamsSchema = z.object({ id: uuid, contactId: uuid });
+export const dependentIdParamsSchema = z.object({ id: uuid, dependentId: uuid });
 
 /**
  * D17 (2026-10-12): replace a taxpayer's staff allow-list. Firm admins / super admins only
@@ -104,6 +105,34 @@ export const upsertPersonSchema = z.object({
   sehiEligibleMonths: sehiMonthsSchema.optional(),
 });
 export type UpsertPersonInput = z.infer<typeof upsertPersonSchema>;
+
+// ── Dependents (OPEN-QUESTIONS Q44) ────────────────────────────────────
+// No SSN is ever stored. The kind is the user's call (the engine re-checks the
+// qualifying-child age test and warns); relationship is informational.
+export const DEPENDENT_KINDS = ['qualifying_child', 'qualifying_relative'] as const;
+export const DEPENDENT_RELATIONSHIPS = [
+  'son', 'daughter', 'stepchild', 'foster_child', 'grandchild', 'sibling', 'niece_nephew', 'parent', 'grandparent', 'other_relative', 'other',
+] as const;
+export const MAX_DEPENDENTS = 20;
+const MAX_DEPENDENT_NAME = 120;
+const MAX_DEPENDENT_MONTHS = 12;
+
+export const upsertDependentSchema = z.object({
+  displayName: z.string().trim().min(1).max(MAX_DEPENDENT_NAME),
+  dateOfBirth: isoDate,
+  relationship: z.enum(DEPENDENT_RELATIONSHIPS).default('other'),
+  kind: z.enum(DEPENDENT_KINDS),
+  monthsLivedWith: z.number().int().min(0).max(MAX_DEPENDENT_MONTHS).nullable().optional(),
+  isStudent: z.boolean().default(false),
+  isDisabled: z.boolean().default(false),
+  firstTaxYear: z.number().int().min(MIN_TAX_YEAR).max(MAX_TAX_YEAR).nullable().optional(),
+  lastTaxYear: z.number().int().min(MIN_TAX_YEAR).max(MAX_TAX_YEAR).nullable().optional(),
+}).superRefine((v, ctx) => {
+  if (v.firstTaxYear != null && v.lastTaxYear != null && v.lastTaxYear < v.firstTaxYear) {
+    ctx.addIssue({ code: 'custom', path: ['lastTaxYear'], message: 'Last tax year must not be before the first tax year' });
+  }
+});
+export type UpsertDependentInput = z.infer<typeof upsertDependentSchema>;
 
 export const linksQuerySchema = z.object({ taxYear: z.coerce.number().int().min(MIN_TAX_YEAR).max(MAX_TAX_YEAR) });
 

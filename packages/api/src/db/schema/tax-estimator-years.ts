@@ -28,6 +28,8 @@ export const taxEstYears = pgTable('tax_est_years', {
   sch1a: jsonb('sch1a').$type<Record<string, Record<string, number>>>().notNull().default({}),
   creditsNonrefundable: numeric('credits_nonrefundable', { precision: 19, scale: 4 }).notNull().default('0'),
   creditsRefundable: numeric('credits_refundable', { precision: 19, scale: 4 }).notNull().default('0'),
+  /** Q44 (migration 0204): child and dependent care expenses paid (Form 2441). */
+  careExpenses: numeric('care_expenses', { precision: 19, scale: 4 }).notNull().default('0'),
   hsaCoverage: jsonb('hsa_coverage').$type<Record<string, string>>().notNull().default({}),
   withholding: jsonb('withholding').$type<{ federal?: number; states?: Record<string, number> }>().notNull().default({}),
   // Phase 10b (migrations/parts/estimate.sql): per-person year inputs keyed by role,

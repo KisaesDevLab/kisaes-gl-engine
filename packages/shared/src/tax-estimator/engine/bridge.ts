@@ -9,10 +9,10 @@
 // drift apart; services never assemble FederalEngineInput by hand.
 
 import type { TaxBasisPl } from '../entities-api.js';
-import type { LinkDTO, PersonDTO } from '../taxpayers-api.js';
+import type { DependentDTO, LinkDTO, PersonDTO } from '../taxpayers-api.js';
 import type { AdjustmentDTO, AdjustmentTypeDTO, YearSettingsDTO } from '../years-api.js';
 import { ZERO, dSum, dec, type Dec } from '../decimal.js';
-import type { EngineAdjustment, EngineEntity, EngineItemized, EnginePerson, EngineYearInputs, RetirementPlanType } from './types.js';
+import type { EngineAdjustment, EngineDependent, EngineEntity, EngineItemized, EnginePerson, EngineYearInputs, RetirementPlanType } from './types.js';
 
 const num = (v: number | string | null | undefined): Dec => (v == null || v === '' ? ZERO : dec(v));
 
@@ -85,6 +85,15 @@ export function enginePersonFromDto(p: PersonDTO, year: YearSettingsDTO, extra: 
   };
 }
 
+/** Q44: a stored dependent → engine dependent (the engine applies the first / last tax-year window). */
+export function engineDependentFromDto(d: DependentDTO): EngineDependent {
+  return {
+    dependentId: d.id, displayName: d.displayName, dateOfBirth: d.dateOfBirth, kind: d.kind,
+    monthsLivedWith: d.monthsLivedWith, isStudent: d.isStudent, isDisabled: d.isDisabled,
+    firstTaxYear: d.firstTaxYear, lastTaxYear: d.lastTaxYear,
+  };
+}
+
 /** The adjustment's FULL-YEAR amount is the sum of its 12-month allocation (actuals + plan / run-rate). */
 export function engineAdjustmentFromDto(a: AdjustmentDTO, type: Pick<AdjustmentTypeDTO, 'code' | 'kind' | 'affectsSe' | 'affectsQbi' | 'isCapitalGainLt' | 'isCapitalGainSt' | 'isQualifiedDividend' | 'isReitDividend' | 'isPtp' | 'is1231' | 'isAboveTheLine' | 'nonRecurring' | 'defaultPct'>): EngineAdjustment {
   return {
@@ -145,6 +154,7 @@ export function engineYearFromDto(y: YearSettingsDTO, extra: YearExtras = {}): E
     itemized,
     creditsNonrefundable: num(y.creditsNonrefundable),
     creditsRefundable: num(y.creditsRefundable),
+    careExpenses: num(y.careExpenses),
     unrecaptured1250Gain: num(extra.unrecaptured1250Gain),
     collectiblesGain: num(extra.collectiblesGain),
     amtExposureFlagged: extra.amtExposureFlagged ?? false,

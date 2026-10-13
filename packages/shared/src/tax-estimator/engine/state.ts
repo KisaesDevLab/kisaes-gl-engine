@@ -38,6 +38,7 @@ const KEY_HAS_INCOME_TAX = 'has_income_tax';
 const KEY_CREDIT_FOR_OTHER_STATE = 'credit_for_other_state';
 const KEY_NONRESIDENT_METHOD = 'nonresident_method';
 const KEY_ESTIMATES_REQUIRED = 'estimates_required';
+const KEY_EXEMPTIONS = 'exemptions';
 const NONRESIDENT_METHODS: readonly NonresidentMethod[] = ['ratio', 'sourced_flat', 'other'];
 
 const R = dRoundDollars;
@@ -111,6 +112,79 @@ function baseAmount(row: StateEngineRow, federal: FederalFiguresForState, ctx: S
   }
 }
 
+// ── Q44: personal / dependent exemptions and exemption credits ─────────
+
+interface ExemptionsExact {
+  /** Total exemptions for the household (null = the rule is missing / unsourced). */
+  exemption: Dec | null;
+  credit: Dec | null;
+  keys: string[];
+}
+
+type ExemptionStatusMap = Partial<Record<string, number>>;
+
+/**
+ * The household's exemption and exemption-credit totals under the state's `exemptions` rule.
+ * Pure arithmetic; WHERE they apply is the caller's (resident rows only, exemptions only on a
+ * computed base). Warnings: rule missing (info), rule a cited null (warning), a component
+ * the household needs that is null (warning), simplified (info with the note).
+ */
+function stateExemptions(row: StateEngineRow, res: Resolved, input: StateEngineInput, ctx: StateContext): ExemptionsExact {
+  if (!res.rules || !res.hasIncomeTax || res.usesFederalFallback) return { exemption: null, credit: null, keys: [] };
+  if (!res.rules.has(KEY_EXEMPTIONS)) {
+    ctx.info('TE_STATE_EXEMPTIONS_MISSING', `${row.state}: no personal / dependent exemption rule is on file for the year; none was applied.`, { state: row.state });
+    return { exemption: null, credit: null, keys: [] };
+  }
+  const v = res.rules.object(KEY_EXEMPTIONS);
+  if (!v) {
+    ctx.warn('TE_STATE_EXEMPTIONS_UNSOURCED', `${row.state}: the personal / dependent exemption amounts could not be sourced for the year (stored as an explicit null); none were applied. Verify.`, { state: row.state });
+    return { exemption: null, credit: null, keys: [KEY_EXEMPTIONS] };
+  }
+  const filers = input.household?.filers ?? 1;
+  const dependents = input.household?.dependents ?? 0;
+  const fs = input.filingStatus;
+  const num = (x: unknown): Dec | null => (typeof x === 'number' && Number.isFinite(x) ? dec(x) : null);
+  const missing: string[] = [];
+  const perFiler = (byStatusKey: string, perKey: string): Dec => {
+    const byStatus = v[byStatusKey] as ExemptionStatusMap | undefined;
+    const whole = byStatus ? num(byStatus[fs]) : null;
+    if (whole != null) return whole;
+    const per = num(v[perKey]);
+    if (per == null) { missing.push(perKey); return ZERO; }
+    return dMul(per, String(filers));
+  };
+  const perDependent = (key: string): Dec => {
+    if (dependents === 0) return ZERO;
+    const per = num(v[key]);
+    if (per == null) { missing.push(key); return ZERO; }
+    return dMul(per, String(dependents));
+  };
+  const personalEx = perFiler('personal_exemption_by_status', 'personal_exemption');
+  const dependentEx = perDependent('dependent_exemption');
+  const personalCr = perFiler('personal_credit_by_status', 'personal_credit');
+  const dependentCr = perDependent('dependent_credit');
+  if (missing.length > 0) {
+    ctx.warn('TE_STATE_EXEMPTIONS_COMPONENT_UNSOURCED', `${row.state}: ${missing.join(', ')} could not be sourced for the year (null); treated as 0. Verify.`, { state: row.state, missing });
+  }
+  if (v['simplified'] === true) {
+    ctx.info('TE_STATE_EXEMPTIONS_SIMPLIFIED', `${row.state}: exemptions / exemption credits use the base or maximum amount; income phase-outs, tiers or age-based amounts are not modelled${typeof v['note'] === 'string' && v['note'] ? ` (${v['note']})` : ''}. The estimate may differ.`, { state: row.state });
+  }
+  const exemption = dAdd(personalEx, dependentEx);
+  const credit = dAdd(personalCr, dependentCr);
+  ctx.trace.add({ step: STEP_TAX, id: `state.${row.state}.exemption_amounts`, state: row.state, label: `${row.state} personal + dependent exemptions (${filers} filer${filers === 1 ? '' : 's'}, ${dependents} dependent${dependents === 1 ? '' : 's'})`, exact: exemption, source: 'state_rule', ruleKeys: [KEY_EXEMPTIONS], formula: `personal ${personalEx} + dependents ${dependentEx}` });
+  return { exemption, credit, keys: [KEY_EXEMPTIONS] };
+}
+
+/**
+ * Nonresident rows: the effective-rate × sourced-income simplification takes no exemptions
+ * (most states prorate them by the income ratio — part of the "effective-rate estimate"
+ * label). The amounts are still read when the row has an income-based gate (GA).
+ */
+function nonresidentExemptions(row: StateEngineRow, res: Resolved, input: StateEngineInput, ctx: StateContext): ExemptionsExact {
+  if (!res.rules || !res.rules.has('requirement_gate') || res.rules.value('requirement_gate') == null) return { exemption: null, credit: null, keys: [] };
+  return stateExemptions(row, res, input, ctx);
+}
+
 interface NonresidentExact {
   sourced: Dec; derived: boolean; tax: Dec; method: NonresidentMethod | null;
 }
@@ -157,19 +231,38 @@ function nonresidentTax(row: StateEngineRow, res: Resolved, input: StateEngineIn
 
 interface NonresidentDone { row: StateEngineRow; exact: NonresidentExact }
 
-interface ResidentExact { base: Dec; gross: Dec; credit: Dec; details: StateCreditDetail[]; net: Dec }
+interface ResidentExact { base: Dec; gross: Dec; credit: Dec; details: StateCreditDetail[]; net: Dec; exemptions: Dec; exemptionCredits: Dec }
 
-function residentTax(row: StateEngineRow, res: Resolved, others: NonresidentDone[], input: StateEngineInput, ctx: StateContext): ResidentExact {
+function residentTax(row: StateEngineRow, res: Resolved, others: NonresidentDone[], input: StateEngineInput, ctx: StateContext, ex: ExemptionsExact): ResidentExact {
   const rate = dec(row.effectiveRate);
-  const base = baseAmount(row, input.federal, ctx);
-  ctx.trace.add({ step: STEP_TAX, id: `state.${row.state}.base`, state: row.state, label: `${row.state} base (${row.base})`, exact: base, source: row.base === 'custom' ? 'input' : 'gl_map' });
+  const rawBase = baseAmount(row, input.federal, ctx);
+  ctx.trace.add({ step: STEP_TAX, id: `state.${row.state}.base`, state: row.state, label: `${row.state} base (${row.base})`, exact: rawBase, source: row.base === 'custom' ? 'input' : 'gl_map' });
   if (!res.hasIncomeTax) {
     ctx.info('TE_STATE_NO_INCOME_TAX', `${row.state} has no broad-based personal income tax; the row computes 0.`, { state: row.state });
     ctx.trace.add({ step: STEP_TAX, id: `state.${row.state}.gross`, state: row.state, label: `${row.state} resident tax (no income tax)`, exact: ZERO, source: 'state_rule', ruleKeys: [KEY_HAS_INCOME_TAX] });
-    return { base, gross: ZERO, credit: ZERO, details: [], net: ZERO };
+    return { base: rawBase, gross: ZERO, credit: ZERO, details: [], net: ZERO, exemptions: ZERO, exemptionCredits: ZERO };
   }
-  const gross = dMul(dFloorZero(base), rate);
-  ctx.trace.add({ step: STEP_TAX, id: `state.${row.state}.gross`, state: row.state, label: `${row.state} resident tax before credits`, exact: gross, source: 'input', formula: `base ${dFloorZero(base)} × rate ${rate}` });
+  // Q44: exemptions reduce a COMPUTED base (federal AGI / federal taxable income); a custom base is
+  // the user's own state base and is taken as entered. Exemption credits reduce the tax in every mode.
+  let base = rawBase;
+  let exemptions: Dec = ZERO;
+  if (ex.exemption != null && dIsPos(ex.exemption)) {
+    if (row.base === 'custom') {
+      ctx.info('TE_STATE_EXEMPTIONS_CUSTOM_BASE', `${row.state}: the base is a custom amount, so the personal / dependent exemptions (${R(ex.exemption)}) were not subtracted; enter the base after exemptions.`, { state: row.state });
+    } else {
+      exemptions = dMin(ex.exemption, dFloorZero(rawBase));
+      base = dSub(rawBase, exemptions);
+      ctx.trace.add({ step: STEP_TAX, id: `state.${row.state}.exemptions`, state: row.state, label: `${row.state} base after personal / dependent exemptions`, exact: base, source: 'state_rule', ruleKeys: ex.keys, formula: `${rawBase} − exemptions ${ex.exemption}, not below 0` });
+    }
+  }
+  const beforeCredits = dMul(dFloorZero(base), rate);
+  ctx.trace.add({ step: STEP_TAX, id: `state.${row.state}.gross`, state: row.state, label: `${row.state} resident tax before credits`, exact: beforeCredits, source: 'input', formula: `base ${dFloorZero(base)} × rate ${rate}` });
+  let exemptionCredits: Dec = ZERO;
+  if (ex.credit != null && dIsPos(ex.credit)) {
+    exemptionCredits = dMin(ex.credit, beforeCredits);
+    ctx.trace.add({ step: STEP_CREDIT, id: `state.${row.state}.exemption_credits`, state: row.state, label: `${row.state} personal / dependent exemption credits (nonrefundable)`, exact: exemptionCredits, source: 'state_rule', ruleKeys: ex.keys, formula: `min(${ex.credit}, ${beforeCredits})` });
+  }
+  const gross = dSub(beforeCredits, exemptionCredits);
 
   // Credit for taxes paid to other states.
   let creditAllowed = true;
@@ -210,11 +303,17 @@ function residentTax(row: StateEngineRow, res: Resolved, others: NonresidentDone
   ctx.trace.add({ step: STEP_CREDIT, id: `state.${row.state}.credit`, state: row.state, label: `${row.state} credit for taxes paid to other states`, exact: credit, source: creditKeys.length > 0 ? 'state_rule' : 'input', ruleKeys: creditKeys, formula: details.map((d) => `${d.state} ${d.allowed}`).join(' + ') || undefined });
   const net = dSub(gross, credit);
   ctx.trace.add({ step: STEP_TAX, id: `state.${row.state}.tax`, state: row.state, label: `${row.state} resident tax after credit`, exact: net, source: 'input', formula: `${gross} − ${credit}` });
-  return { base, gross, credit, details, net };
+  return { base, gross, credit, details, net, exemptions, exemptionCredits };
 }
 
-function gateFor(row: StateEngineRow, res: Resolved, netTax: Dec, input: StateEngineInput, ctx: StateContext): StateEstimateGate {
-  return evaluateEstimateGate({ state: row.state, filingStatus: input.filingStatus, jurisdiction: res.jurisdiction, rules: res.rules, stateTax: netTax, gate: row.gate, federal: input.federal }, ctx);
+function gateFor(row: StateEngineRow, res: Resolved, netTax: Dec, input: StateEngineInput, ctx: StateContext, ex: ExemptionsExact): StateEstimateGate {
+  // Q44: the GA gross-over-exemptions gate reads the computed exemptions when none were entered.
+  let gate = row.gate;
+  if (gate.exemptions == null && ex.exemption != null) {
+    gate = { ...gate, exemptions: ex.exemption };
+    ctx.info('TE_STATE_GATE_EXEMPTIONS_COMPUTED', `${row.state}: the estimate-requirement gate used the computed personal / dependent exemptions ${R(ex.exemption)} (none were entered).`, { state: row.state });
+  }
+  return evaluateEstimateGate({ state: row.state, filingStatus: input.filingStatus, jurisdiction: res.jurisdiction, rules: res.rules, stateTax: netTax, gate, federal: input.federal }, ctx);
 }
 
 function validateRows(rows: StateEngineRow[]): void {
@@ -236,25 +335,28 @@ export function computeState(input: StateEngineInput): StateResult {
   // Nonresident rows first; the resident credit depends on them.
   const nonresidents: NonresidentDone[] = input.rows.filter((r) => r.residency === 'nonresident').map((row) => ({ row, exact: nonresidentTax(row, resolved.get(row.state)!, input, ctx) }));
   const resident = input.rows.find((r) => r.residency === 'resident') ?? null;
-  const residentExact = resident ? residentTax(resident, resolved.get(resident.state)!, nonresidents, input, ctx) : null;
+  // Q44: exemptions are read for every row (the GA gate needs them); only the resident row applies them.
+  const exemptionsByState = new Map(input.rows.map((r) => [r.state, r.residency === 'resident' ? stateExemptions(r, resolved.get(r.state)!, input, ctx) : nonresidentExemptions(r, resolved.get(r.state)!, input, ctx)]));
+  const residentExact = resident ? residentTax(resident, resolved.get(resident.state)!, nonresidents, input, ctx, exemptionsByState.get(resident.state)!) : null;
 
   const results: StateRowResult[] = [];
   for (const row of input.rows) {
     const res = resolved.get(row.state)!;
     if (row.residency === 'resident') {
       const e = residentExact!;
-      const gate = gateFor(row, res, e.net, input, ctx);
+      const gate = gateFor(row, res, e.net, input, ctx, exemptionsByState.get(row.state)!);
       results.push({
         rowId: row.rowId, state: row.state, residency: row.residency, method: 'resident', nonresidentMethod: null, base: row.base,
         baseAmount: R(e.base), effectiveRate: dec(row.effectiveRate), sourcedIncome: ZERO, sourcedDerived: false,
+        exemptions: R(e.exemptions), exemptionCredits: R(e.exemptionCredits),
         grossTax: R(e.gross), creditForOtherStates: R(e.credit),
         creditDetails: e.details.map((d) => ({ state: d.state, otherStateTax: R(d.otherStateTax), residentRateOnSourced: R(d.residentRateOnSourced), allowed: R(d.allowed) })),
         netTax: R(e.net), gate, hasIncomeTax: res.hasIncomeTax, usesFederalFallback: res.usesFederalFallback, verify: res.verify || gate.verify,
-        exact: { baseAmount: e.base, sourcedIncome: ZERO, grossTax: e.gross, credit: e.credit, netTax: e.net },
+        exact: { baseAmount: e.base, sourcedIncome: ZERO, grossTax: e.gross, credit: e.credit, netTax: e.net, exemptions: e.exemptions, exemptionCredits: e.exemptionCredits },
       });
     } else {
       const e = nonresidents.find((n) => n.row === row)!.exact;
-      const gate = gateFor(row, res, e.tax, input, ctx);
+      const gate = gateFor(row, res, e.tax, input, ctx, exemptionsByState.get(row.state)!);
       results.push({
         rowId: row.rowId, state: row.state, residency: row.residency, method: 'nonresident_flat', nonresidentMethod: e.method, base: row.base,
         baseAmount: R(e.sourced), effectiveRate: dec(row.effectiveRate), sourcedIncome: R(e.sourced), sourcedDerived: e.derived,

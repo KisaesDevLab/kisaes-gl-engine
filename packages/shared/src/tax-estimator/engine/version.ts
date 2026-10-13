@@ -28,5 +28,12 @@
  *              add-on (W-2 box 1) is excluded from the §199A W-2 wages by default
  *              and included per entity year when `includeSehiInW2Wages` is on;
  *              the default reproduces rc.2 to the cent.
+ *   1.0.0-rc.4 Q44 dependents: §21 child and dependent care credit, §24 child
+ *              tax credit / credit for other dependents with the phase-out and
+ *              the additional child tax credit (Schedule AI columns use the
+ *              full-year amounts), EITC / head-of-household warnings, and state
+ *              personal / dependent exemptions and exemption credits
+ *              (`exemptions` state rule). A taxpayer with no dependents, no care
+ *              expenses and states without an `exemptions` rule reproduces rc.3.
  */
-export const TAX_ENGINE_VERSION = '1.0.0-rc.3';
+export const TAX_ENGINE_VERSION = '1.0.0-rc.4';

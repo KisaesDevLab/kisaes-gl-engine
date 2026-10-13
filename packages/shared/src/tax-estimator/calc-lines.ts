@@ -113,11 +113,19 @@ export function buildCalcSections(r: EstimateResultDTO): CalcSection[] {
       trace: { kind: 'federal', steps: ['regular_tax'] },
     },
   ];
-  if (nonZero(f.credits.nonrefundableAllowed)) tax.push({ key: 'tax.cr', label: 'Nonrefundable credits', projected: `-${f.credits.nonrefundableAllowed}`, trace: { kind: 'federal', steps: ['credits'] } });
+  // Q44: the dependent credits are their own lines; "Nonrefundable credits" is then the other (manual) credits.
+  const cr = f.credits;
+  const split = cr.careCredit !== undefined;
+  if (split && nonZero(cr.careCredit)) tax.push({ key: 'tax.cr.care', label: 'Child and dependent care credit', projected: `-${cr.careCredit}`, trace: { kind: 'federal', steps: ['credits'], idPrefix: 'credits.care' } });
+  if (split && nonZero(cr.childTaxCredit)) tax.push({ key: 'tax.cr.ctc', label: 'Child tax credit / credit for other dependents', projected: `-${cr.childTaxCredit}`, trace: { kind: 'federal', steps: ['credits'], idPrefix: 'credits.ctc' } });
+  const otherNonref = split ? cr.otherNonrefundableAllowed : cr.nonrefundableAllowed;
+  if (nonZero(otherNonref)) tax.push({ key: 'tax.cr', label: split && (nonZero(cr.careCredit) || nonZero(cr.childTaxCredit)) ? 'Other nonrefundable credits' : 'Nonrefundable credits', projected: `-${otherNonref}`, trace: { kind: 'federal', steps: ['credits'], idPrefix: 'credits.nonrefundable' } });
   for (const p of f.persons) if (nonZero(p.seTax)) tax.push({ key: `tax.se.${p.personId}`, label: `Self-employment tax — ${p.displayName}`, projected: p.seTax, trace: { kind: 'federal', steps: ['se_tax'], idPrefix: `se_tax.${p.personId}` } });
   if (nonZero(f.additionalMedicareTax)) tax.push({ key: 'tax.am', label: 'Additional Medicare tax', projected: f.additionalMedicareTax, trace: { kind: 'federal', steps: ['other_taxes'] } });
   if (nonZero(f.niit)) tax.push({ key: 'tax.niit', label: 'Net investment income tax', projected: f.niit, trace: { kind: 'federal', steps: ['other_taxes'] } });
-  if (nonZero(f.credits.refundable)) tax.push({ key: 'tax.rf', label: 'Refundable credits', projected: `-${f.credits.refundable}`, trace: { kind: 'federal', steps: ['credits'] } });
+  if (split && nonZero(cr.additionalChildTaxCredit)) tax.push({ key: 'tax.rf.actc', label: 'Additional child tax credit (refundable)', projected: `-${cr.additionalChildTaxCredit}`, trace: { kind: 'federal', steps: ['credits'], idPrefix: 'credits.actc' } });
+  const otherRef = split ? cr.otherRefundable : cr.refundable;
+  if (nonZero(otherRef)) tax.push({ key: 'tax.rf', label: split && nonZero(cr.additionalChildTaxCredit) ? 'Other refundable credits' : 'Refundable credits', projected: `-${otherRef}`, trace: { kind: 'federal', steps: ['credits'], idPrefix: 'credits.refundable' } });
   tax.push({ key: 'tax.fed', label: 'Federal total', projected: f.federalTotal, bold: true, trace: { kind: 'federal', steps: ['federal_total'] } });
   sections.push({ key: 'federal', title: 'Federal tax', lines: tax });
 
@@ -132,7 +140,7 @@ export function buildCalcSections(r: EstimateResultDTO): CalcSection[] {
       return {
         key: `st.${s.rowId}`, label: `${s.state} — ${s.residency === 'resident' ? 'resident' : 'nonresident'}`,
         sub: s.residency === 'resident'
-          ? `Gross ${num(s.grossTax).toLocaleString('en-US')} less ${num(s.creditForOtherStates).toLocaleString('en-US')} other-state credit`
+          ? `${s.exemptions && nonZero(s.exemptions) ? `Exemptions ${num(s.exemptions).toLocaleString('en-US')} off the base; ` : ''}${s.exemptionCredits && nonZero(s.exemptionCredits) ? `exemption credits ${num(s.exemptionCredits).toLocaleString('en-US')}; ` : ''}Gross ${num(s.grossTax).toLocaleString('en-US')} less ${num(s.creditForOtherStates).toLocaleString('en-US')} other-state credit`
           : `Sourced income ${num(s.sourcedIncome).toLocaleString('en-US')} × ${pct(s.effectiveRate, 2)} — effective-rate estimate; most states compute nonresident tax by ratio of the full return`,
         projected: s.netTax, chips: chips.length ? chips : undefined, trace: { kind: 'state', state: s.state },
       };

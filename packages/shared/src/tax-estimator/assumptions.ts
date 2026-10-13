@@ -35,6 +35,7 @@ const SECTION_TITLES: Record<AssumptionSectionId, string> = {
   non_recurring: 'Non-recurring exclusions',
   reclass: 'Reclassifications from the books',
   adjustments: 'Adjustments',
+  dependents: 'Dependents and dependent credits',
   safe_harbor: 'Safe harbor and installments',
   state_methods: 'State methods',
   parameters: 'Unverified and provisional parameters',
@@ -251,6 +252,37 @@ function adjustmentsSection(r: EstimateResultDTO): AssumptionSectionDTO {
   return section('adjustments', items, 'No scenario adjustments.');
 }
 
+/** Initials only ("Ava Lee" → "A.L."): the assumptions page never prints a dependent's full name or date of birth. */
+export function dependentInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  return parts.length ? parts.map((p) => `${p[0]!.toUpperCase()}.`).join('') : '—';
+}
+
+const AGE_GROUP_LABELS: Record<string, string> = {
+  under_13: 'under 13', '13_to_16': '13–16', '17_to_18': '17–18', '19_to_23': '19–23', '24_plus': '24 or older',
+};
+
+function dependentsSection(r: EstimateResultDTO): AssumptionSectionDTO {
+  const items: AssumptionItemDTO[] = [];
+  const d = r.federal.dependentCredits;
+  const c = r.federal.credits;
+  if (d && d.method !== 'none') {
+    for (const p of d.dependents) {
+      const uses = [p.childTaxCredit ? 'child tax credit' : 'credit for other dependents', ...(p.careQualifying ? ['care credit qualifying person'] : [])];
+      items.push({ label: `${dependentInitials(p.displayName)} (${p.kind === 'qualifying_child' ? 'qualifying child' : 'qualifying relative'})`, detail: `Age group ${AGE_GROUP_LABELS[p.ageGroup] ?? p.ageGroup} at year end; ${uses.join(', ')}.` });
+    }
+    if (nonZero(d.ctcTentative) || nonZero(d.odcTentative)) {
+      items.push({ label: 'Child tax credit / other dependents', detail: `${d.ctcChildren} child(ren) and ${d.otherDependents} other dependent(s): ${formatDollars(dSum([d.ctcTentative, d.odcTentative]))} before the phase-out${nonZero(d.phaseOutReduction) ? `, reduced by ${formatDollars(d.phaseOutReduction)} (MAGI ${formatDollars(d.phaseOutMagi)} over ${formatDollars(d.phaseOutThreshold)})` : ''}; ${formatDollars(c.childTaxCredit)} used against the tax${nonZero(c.additionalChildTaxCredit) ? `, ${formatDollars(c.additionalChildTaxCredit)} refundable (additional child tax credit, earned income ${formatDollars(d.earnedIncome)})` : ''}.` });
+    }
+    if (nonZero(d.careExpenses)) {
+      items.push({ label: 'Child and dependent care credit', detail: `Expenses ${formatDollars(d.careExpenses)}, ${d.careQualifyingPersons} qualifying person(s): ${formatDollars(d.careAllowedExpenses)} allowed (limit ${formatDollars(d.careExpenseLimit)}, earned income ${formatDollars(d.careEarnedIncomeLimit)}) × ${formatPct(d.careRate)} = ${formatDollars(c.careCredit)} used.` });
+    }
+    items.push({ label: 'Credit order', detail: 'Nonrefundable credits are taken against the regular tax in this order: care credit, child tax credit / credit for other dependents, then other credits entered on the annual settings.' });
+    items.push({ label: 'Approximations', detail: 'Ages at December 31. A child turning 13 during the year counts for the care credit (only expenses before the birthday qualify). Social Security numbers are assumed valid. The earned income credit, the 3+ children additional child tax credit alternative and employer dependent-care benefits are not computed; head of household is not inferred.', badge: 'estimate_may_differ' });
+  }
+  return section('dependents', items, 'No dependents or child-care expenses for the year.');
+}
+
 function harborItems(e: JurisdictionEstimate, label: string, ruleSourceText: string | null): AssumptionItemDTO[] {
   const sh = e.safeHarbor;
   const items: AssumptionItemDTO[] = [];
@@ -313,7 +345,9 @@ function stateMethodsSection(r: EstimateResultDTO): AssumptionSectionDTO {
       });
     } else {
       const credit = nonZero(row.creditForOtherStates) ? `; credit for tax paid to other states ${formatDollars(row.creditForOtherStates)}` : '';
-      items.push({ label: `${row.state} resident`, detail: `Base ${baseLabel(row.base)} ${formatDollars(row.baseAmount)} × ${formatPct(row.effectiveRate)}${credit}.` });
+      const ex = row.exemptions && nonZero(row.exemptions) ? ` less personal / dependent exemptions ${formatDollars(row.exemptions)}` : '';
+      const exCr = row.exemptionCredits && nonZero(row.exemptionCredits) ? `; exemption credits ${formatDollars(row.exemptionCredits)}` : '';
+      items.push({ label: `${row.state} resident`, detail: `Base ${baseLabel(row.base)} ${formatDollars(row.baseAmount)}${ex} × ${formatPct(row.effectiveRate)}${exCr}${credit}.` });
     }
     const g = row.gate;
     const required = g.required == null ? 'cannot be determined from the inputs' : g.required ? 'required' : 'not required';
@@ -378,6 +412,7 @@ export function buildEstimateAssumptions(result: EstimateResultDTO, opts: { disc
     non_recurring: nonRecurringSection(result),
     reclass: reclassSection(result),
     adjustments: adjustmentsSection(result),
+    dependents: dependentsSection(result),
     safe_harbor: safeHarborSection(result),
     state_methods: stateMethodsSection(result),
     parameters: parametersSection(result),

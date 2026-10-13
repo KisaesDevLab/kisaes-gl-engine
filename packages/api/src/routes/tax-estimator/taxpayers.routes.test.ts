@@ -295,6 +295,73 @@ describe('persons', () => {
   });
 });
 
+describe('dependents (Q44)', () => {
+  const kid = (extra: Record<string, unknown> = {}) => ({ displayName: 'Tobi Rivera', dateOfBirth: '2016-03-10', relationship: 'son', kind: 'qualifying_child', ...extra });
+
+  it('CRUD: create, list (on the detail and the list route), update, remove — audited without name or date of birth', async () => {
+    const tp = await mkTaxpayer();
+    const created = await request('POST', `${BASE}/${tp.id}/dependents`, staffToken, kid({ isStudent: false, monthsLivedWith: 12 }));
+    expect(created.status, JSON.stringify(created.json)).toBe(201);
+    const depId = created.json.data.id as string;
+    expect(created.json.data).toMatchObject({ displayName: 'Tobi Rivera', dateOfBirth: '2016-03-10', kind: 'qualifying_child', monthsLivedWith: 12, firstTaxYear: null });
+    const detail = await request('GET', `${BASE}/${tp.id}`, readonlyToken);
+    expect(detail.json.data.dependents.map((d: { id: string }) => d.id)).toEqual([depId]);
+    const list = await request('GET', `${BASE}/${tp.id}/dependents`, readonlyToken);
+    expect(list.status).toBe(200);
+    expect(list.json.total).toBe(1);
+    const upd = await request('PUT', `${BASE}/${tp.id}/dependents/${depId}`, staffToken, kid({ displayName: 'Tobi R.', isDisabled: true, lastTaxYear: 2030 }));
+    expect(upd.status).toBe(200);
+    expect(upd.json.data).toMatchObject({ displayName: 'Tobi R.', isDisabled: true, lastTaxYear: 2030 });
+    expect((await request('DELETE', `${BASE}/${tp.id}/dependents/${depId}`, staffToken)).status).toBe(200);
+    expect((await request('DELETE', `${BASE}/${tp.id}/dependents/${depId}`, staffToken)).json.error.code).toBe('TE_DEPENDENT_NOT_FOUND');
+    const rows = await db.select().from(auditLog).where(and(eq(auditLog.entityType, 'tax_est_dependent'), eq(auditLog.entityId, depId)));
+    expect(rows.map((r) => r.action).sort()).toEqual(['create', 'delete', 'update']);
+    const blob = JSON.stringify(rows.map((r) => [r.beforeData, r.afterData]));
+    expect(blob).not.toContain('Tobi');
+    expect(blob).not.toContain('2016-03-10');
+  });
+
+  it('validation: date of birth required and not in the future, months 0–12, last year not before first, no SSN field', async () => {
+    const tp = await mkTaxpayer();
+    const url = `${BASE}/${tp.id}/dependents`;
+    expect((await request('POST', url, staffToken, { displayName: 'x', kind: 'qualifying_child' })).status).toBe(400);
+    expect((await request('POST', url, staffToken, kid({ monthsLivedWith: 13 }))).status).toBe(400);
+    expect((await request('POST', url, staffToken, kid({ firstTaxYear: 2027, lastTaxYear: 2026 }))).status).toBe(400);
+    const future = await request('POST', url, staffToken, kid({ dateOfBirth: '2999-01-01' }));
+    expect(future.status).toBe(422);
+    expect(future.json.error.code).toBe('TE_DOB_IN_FUTURE');
+    const ssn = await request('POST', url, staffToken, kid({ ssn: '123-45-6789' }));
+    expect(ssn.status).toBe(201);
+    expect(JSON.stringify(ssn.json)).not.toContain('123-45-6789');
+  });
+
+  it('a dependent id of another taxpayer is TE_DEPENDENT_NOT_FOUND (keyed by the taxpayer)', async () => {
+    const a = await mkTaxpayer(); const b = await mkTaxpayer(staffToken, { displayName: 'Other' });
+    const dep = (await request('POST', `${BASE}/${a.id}/dependents`, staffToken, kid())).json.data.id as string;
+    const r = await request('PUT', `${BASE}/${b.id}/dependents/${dep}`, staffToken, kid({ displayName: 'Moved' }));
+    expect(r.status).toBe(404);
+    expect(r.json.error.code).toBe('TE_DEPENDENT_NOT_FOUND');
+    expect((await request('DELETE', `${BASE}/${b.id}/dependents/${dep}`, staffToken)).status).toBe(404);
+  });
+
+  it('firm_readonly reads but cannot write (403); firm B and client users get 404', async () => {
+    const tp = await mkTaxpayer();
+    const dep = (await request('POST', `${BASE}/${tp.id}/dependents`, staffToken, kid())).json.data.id as string;
+    expect((await request('POST', `${BASE}/${tp.id}/dependents`, readonlyToken, kid())).status).toBe(403);
+    expect((await request('PUT', `${BASE}/${tp.id}/dependents/${dep}`, readonlyToken, kid())).status).toBe(403);
+    expect((await request('DELETE', `${BASE}/${tp.id}/dependents/${dep}`, readonlyToken)).status).toBe(403);
+    for (const [method, path, body] of [
+      ['GET', `${BASE}/${tp.id}/dependents`], ['POST', `${BASE}/${tp.id}/dependents`, kid()],
+      ['PUT', `${BASE}/${tp.id}/dependents/${dep}`, kid()], ['DELETE', `${BASE}/${tp.id}/dependents/${dep}`],
+    ] as Array<[string, string, unknown?]>) {
+      const fb = await request(method, path, firmBToken, body);
+      expect(fb.status, `${method} ${path}`).toBe(404);
+      expect(fb.json.error.code).toBe('TE_TAXPAYER_NOT_FOUND');
+      expect((await request(method, path, clientUserToken, body)).status, `client ${method} ${path}`).toBe(404);
+    }
+  });
+});
+
 describe('links: firm scope (D1)', () => {
   it('linking a company in a tenant the firm manages but the caller cannot reach -> 404 TE_TENANT_NOT_MANAGED', async () => {
     const tp = await mkTaxpayer(); await mkPerson(tp.id, 'primary');

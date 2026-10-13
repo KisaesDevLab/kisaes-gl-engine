@@ -54,8 +54,11 @@ import { WA_RULES } from './WA.js';
 import { WV_RULES } from './WV.js';
 import { WI_RULES } from './WI.js';
 import { WY_RULES } from './WY.js';
+import { STATE_EXEMPTION_RULES } from './exemptions.js';
 
 /** Every shipped state-rule seed row (all states, all years). */
 export const STATE_RULE_SEEDS: readonly StateRuleSeedRow[] = [
   ...AL_RULES, ...AK_RULES, ...AZ_RULES, ...AR_RULES, ...CA_RULES, ...CO_RULES, ...CT_RULES, ...DE_RULES, ...DC_RULES, ...FL_RULES, ...GA_RULES, ...HI_RULES, ...ID_RULES, ...IL_RULES, ...IN_RULES, ...IA_RULES, ...KS_RULES, ...KY_RULES, ...LA_RULES, ...ME_RULES, ...MD_RULES, ...MA_RULES, ...MI_RULES, ...MN_RULES, ...MS_RULES, ...MO_RULES, ...MT_RULES, ...NE_RULES, ...NV_RULES, ...NH_RULES, ...NJ_RULES, ...NM_RULES, ...NY_RULES, ...NC_RULES, ...ND_RULES, ...OH_RULES, ...OK_RULES, ...OR_RULES, ...PA_RULES, ...RI_RULES, ...SC_RULES, ...SD_RULES, ...TN_RULES, ...TX_RULES, ...UT_RULES, ...VT_RULES, ...VA_RULES, ...WA_RULES, ...WV_RULES, ...WI_RULES, ...WY_RULES,
+  // Q44: personal / dependent exemptions (one row per income-tax state and year).
+  ...STATE_EXEMPTION_RULES,
 ];

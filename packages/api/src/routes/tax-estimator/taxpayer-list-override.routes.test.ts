@@ -182,6 +182,8 @@ describe('D18 visibility: a non-empty list replaces the linked-tenant rule', () 
       const d = await call('GET', `${TE}/taxpayers/${fx.taxpayerId}`, key);
       expect(d.status, key).toBe(200);
       expect(d.json.data.staffRestricted).toBe(true);
+      // Q44: dependents are part of the taxpayer — readable by every listed user.
+      expect((await call('GET', `${TE}/taxpayers/${fx.taxpayerId}/dependents`, key)).status, key).toBe(200);
     }
     expect(await listIds('all')).not.toContain(fx.taxpayerId);
     expect((await call('GET', `${TE}/taxpayers/${fx.taxpayerId}`, 'all')).status).toBe(404);
@@ -206,6 +208,8 @@ describe('D18 visibility: a non-empty list replaces the linked-tenant rule', () 
       ['POST', `${base}/years/2026/scenarios`, 'TE_TAXPAYER_NOT_FOUND', { name: 'What if' }],
       ['POST', `${sc()}/snapshots`, 'TE_TAXPAYER_NOT_FOUND', {}],
       ['PUT', `${base}/staff`, 'TE_TAXPAYER_NOT_FOUND', { userIds: [] }],
+      ['GET', `${base}/dependents`, 'TE_TAXPAYER_NOT_FOUND'], ['POST', `${base}/dependents`, 'TE_TAXPAYER_NOT_FOUND', { displayName: 'Kid', dateOfBirth: '2016-01-01', kind: 'qualifying_child' }],
+      ['PUT', `${base}/dependents/00000000-0000-4000-8000-000000000001`, 'TE_TAXPAYER_NOT_FOUND', { displayName: 'Kid', dateOfBirth: '2016-01-01', kind: 'qualifying_child' }], ['DELETE', `${base}/dependents/00000000-0000-4000-8000-000000000001`, 'TE_TAXPAYER_NOT_FOUND'],
       ['GET', `${TE}/scenarios/${fx.baseScenarioId}/adjustments`, 'TE_SCENARIO_NOT_FOUND'],
       ['GET', `${TE}/scenarios/${fx.baseScenarioId}/state-rows`, 'TE_SCENARIO_NOT_FOUND'],
       ['PATCH', `${TE}/scenarios/${fx.baseScenarioId}`, 'TE_SCENARIO_NOT_FOUND', { name: 'Renamed' }],

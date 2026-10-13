@@ -10,7 +10,7 @@
 // tenant the firm manages, so links carry tenant_id explicitly.
 
 import {
-  pgTable, uuid, varchar, text, boolean, integer, date, jsonb, numeric, char, timestamp, index, unique,
+  pgTable, uuid, varchar, text, boolean, integer, smallint, date, jsonb, numeric, char, timestamp, index, unique,
 } from 'drizzle-orm/pg-core';
 import { portalContacts } from './portal-contacts.js';
 
@@ -96,4 +96,25 @@ export const taxEstTaxpayerStaff = pgTable('tax_est_taxpayer_staff', {
 }, (t) => [
   unique('uniq_tax_est_taxpayer_staff').on(t.firmId, t.taxpayerId, t.userId),
   index('idx_tax_est_taxpayer_staff_taxpayer').on(t.taxpayerId, t.userId),
+]);
+
+// Q44 (migration 0204, parts/dependents.sql): dependents of a taxpayer. Scoped through the
+// taxpayer like tax_est_persons; read / written only after the taxpayer's firm + D17 / D18
+// visibility check (taxpayers.service loadTaxpayer). No SSN is stored.
+export const taxEstDependents = pgTable('tax_est_dependents', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  taxpayerId: uuid('taxpayer_id').notNull().references(() => taxEstTaxpayers.id, { onDelete: 'cascade' }),
+  displayName: varchar('display_name', { length: 120 }).notNull(),
+  dateOfBirth: date('date_of_birth').notNull(),
+  relationship: varchar('relationship', { length: 20 }).notNull().default('other'),
+  kind: varchar('kind', { length: 20 }).notNull(),
+  monthsLivedWith: smallint('months_lived_with'),
+  isStudent: boolean('is_student').notNull().default(false),
+  isDisabled: boolean('is_disabled').notNull().default(false),
+  firstTaxYear: integer('first_tax_year'),
+  lastTaxYear: integer('last_tax_year'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index('idx_tax_est_dependents_taxpayer').on(t.taxpayerId),
 ]);

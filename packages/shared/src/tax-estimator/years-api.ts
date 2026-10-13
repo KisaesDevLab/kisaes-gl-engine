@@ -57,8 +57,12 @@ export interface YearSettingsDTO {
   deductionMode: DeductionMode;
   itemized: ItemizedDTO;
   sch1a: Sch1aDTO;
+  /** Other nonrefundable credits (manual; the dependent credits are computed — Q44). */
   creditsNonrefundable: string;
+  /** Other refundable credits (manual; the additional child tax credit is computed — Q44). */
   creditsRefundable: string;
+  /** Q44: child and dependent care expenses paid in the year (Form 2441). */
+  careExpenses?: string;
   hsaCoverage: HsaCoverageDTO;
   withholding: WithholdingDTO;
   // Phase 10b inputs — always present in API responses; optional for older fixtures.

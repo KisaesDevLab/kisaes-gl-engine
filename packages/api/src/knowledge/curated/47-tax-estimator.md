@@ -44,6 +44,27 @@ books.
   taxpayers they are mapped to).
 - **Persons**: the people on the return; one primary; months eligible for
   self-employed health insurance.
+- **Dependents** (taxpayer page, Dependents card): name, date of birth,
+  relationship, qualifying child or qualifying relative, months lived with
+  the taxpayer, student, disabled, first / last tax year counted. No SSN.
+  Same visibility as the taxpayer. Ages are figured at Dec 31 of the tax
+  year: qualifying child under 17 -> child tax credit ($2,200 for 2025 and
+  2026) with the refundable additional child tax credit (up to $1,700 per
+  child, 15% of earned income over $2,500); everyone else -> credit for
+  other dependents ($500); both phase out by $50 per $1,000 of AGI over
+  $400,000 joint / $200,000 others. Care credit: child under 13 (turning
+  13 during the year counts) or disabled dependent, with the year's care
+  expenses from Annual settings ($3,000 / $6,000 limit, lower-earning
+  spouse's earned income, 2025 35%->20%, 2026+ 50%->35%->20%). Order
+  against the regular tax: care, child tax credit / other dependents,
+  then the manual "other" credits. EITC is not computed (warning when it
+  may apply); head of household is not inferred (reminder when single
+  with a qualifying child). State: the resident state's personal /
+  dependent exemptions come off a federal-AGI or federal-taxable base,
+  exemption credits off the tax (e.g. AR $29 credits, GA dependent
+  exemption, MO head-of-household $1,400); phase-outs not modelled; the
+  GA estimate-requirement test uses the computed exemptions when none was
+  entered on the state row.
 - **Links**: person x company x tax year with profit/loss/capital %,
   partner SE status, activity type (active, passive, rental, investment),
   active participation (for the $25,000 rental allowance), QBI eligibility
@@ -59,7 +80,9 @@ books.
   company is linked to a taxpayer); the account register shows an "NR"
   badge on it. It is counted once and left out of the run-rate.
 - **Annual settings** (per taxpayer and year): deduction method, federal
-  method (bracket or effective-rate override), credits, withholding,
+  method (bracket or effective-rate override), OTHER credits (not the
+  dependent credits, which are computed), child and dependent care
+  expenses paid, withholding,
   Schedule 1-A (chips per type opening a per-person dialog for tips,
   overtime and car-loan interest; the senior deduction follows each
   person's date of birth; not allowed when married filing separately),
@@ -158,5 +181,8 @@ income times a user-entered rate, not the ratio-of-return method many
 states use); state penalty add-ons that compound or run per month are
 noted, not computed; C corporation short years and Form 2220 annualized
 installments are not modeled; some parameters and state rules are still
-unverified. The estimator does not give legal or tax advice; the preparer
+unverified; the earned income credit, the 3+ children additional child
+tax credit alternative, employer dependent-care benefits and state
+exemption phase-outs are not computed, and head of household is not
+chosen automatically. The estimator does not give legal or tax advice; the preparer
 is responsible for the figures.

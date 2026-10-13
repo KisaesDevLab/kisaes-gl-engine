@@ -112,6 +112,12 @@ export interface StateEngineInput {
   parameters: ParameterMap;
   federal: FederalFiguresForState;
   rows: StateEngineRow[];
+  /**
+   * Q44: who the state exemptions count. `filers` = 1, or 2 on a joint return (the caller
+   * counts the persons); `dependents` = dependents active in the tax year. Absent = 1 filer,
+   * no dependents.
+   */
+  household?: { filers: number; dependents: number };
   /** One per distinct state in `rows`; a missing jurisdiction is treated as the federal fallback. */
   jurisdictions: StateJurisdictionInput[];
   entities: StateSourcedEntity[];
@@ -201,6 +207,10 @@ export interface StateRowExact {
   grossTax: Dec;
   credit: Dec;
   netTax: Dec;
+  /** Q44: personal + dependent exemptions subtracted from the base (resident, agi / taxable base). */
+  exemptions?: Dec;
+  /** Q44: personal + dependent exemption credits subtracted from the tax (resident). */
+  exemptionCredits?: Dec;
 }
 
 export interface StateRowResult {
@@ -217,6 +227,11 @@ export interface StateRowResult {
   /** Nonresident rows: income sourced to the state; resident rows: 0. */
   sourcedIncome: Dec;
   sourcedDerived: boolean;
+  /** Q44: personal + dependent exemptions subtracted from the base (whole dollars). */
+  exemptions?: Dec;
+  /** Q44: personal + dependent exemption credits subtracted from the tax (whole dollars). */
+  exemptionCredits?: Dec;
+  /** Resident: base after exemptions × rate − exemption credits (before the credit for other-state taxes). */
   grossTax: Dec;
   creditForOtherStates: Dec;
   creditDetails: StateCreditDetail[];

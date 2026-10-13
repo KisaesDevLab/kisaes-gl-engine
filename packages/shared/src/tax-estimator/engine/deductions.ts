@@ -185,7 +185,7 @@ function phasedOut(amount: Dec, max: Dec | null, magi: Dec, threshold: Dec, rate
 }
 
 /** ⌈a ÷ b⌉ for positive decimals: whole steps begun. */
-function dCeilDiv(a: Dec, b: Dec): Dec {
+export function dCeilDiv(a: Dec, b: Dec): Dec {
   const q = dDiv(a, b);
   const whole = dRound(q, 0);
   // dRound is half-up; step up when the rounded quotient fell short of the exact one.

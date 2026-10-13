@@ -38,7 +38,26 @@ export interface EstimatePdfOptions {
 export type EstimatePdfAudience = 'preparer' | 'client';
 
 /** Assumptions sections a client deliverable carries (R4-04): method / months, exclusions. */
-const CLIENT_ASSUMPTION_SECTIONS: ReadonlySet<string> = new Set(['projection', 'non_recurring']);
+const CLIENT_ASSUMPTION_SECTIONS: ReadonlySet<string> = new Set(['projection', 'non_recurring', 'dependents']);
+
+/**
+ * Q44: the federal credit rows — the dependent credits on their own lines when the result has
+ * them (older results / snapshots carry only the two totals).
+ */
+function creditRows(c: EstimateResultDTO['federal']['credits'], kind: 'nonrefundable' | 'refundable'): Array<[string, string]> {
+  if (c.careCredit === undefined) return kind === 'nonrefundable' ? [['Nonrefundable credits', c.nonrefundableAllowed]] : [['Refundable credits', c.refundable]];
+  const positive = (v: string | undefined) => v != null && Number(v) !== 0;
+  if (kind === 'nonrefundable') {
+    const rows: Array<[string, string]> = [];
+    if (positive(c.careCredit)) rows.push(['Child and dependent care credit', c.careCredit]);
+    if (positive(c.childTaxCredit)) rows.push(['Child tax credit / credit for other dependents', c.childTaxCredit]);
+    rows.push([rows.length ? 'Other nonrefundable credits' : 'Nonrefundable credits', c.otherNonrefundableAllowed]);
+    return rows;
+  }
+  return positive(c.additionalChildTaxCredit)
+    ? [['Additional child tax credit (refundable)', c.additionalChildTaxCredit], ['Other refundable credits', c.otherRefundable]]
+    : [['Refundable credits', c.otherRefundable]];
+}
 
 const PAGE_W = 612;
 const PAGE_H = 792;
@@ -361,9 +380,9 @@ export async function renderEstimatePdf(r: EstimateResultDTO, opts: EstimatePdfO
     ['Total income', f.income.totalIncome], ['Adjustments to income', f.adjustmentsToIncome.total], ['Adjusted gross income', f.agi, true],
     [`Deduction (${f.deductions.chosen})`, f.deductions.deduction], ['Qualified business income deduction', f.qbi.deduction],
     ['Taxable income', f.taxableIncome, true], [`Regular tax (${f.regularTax.method})`, f.regularTax.tax],
-    ['Nonrefundable credits', f.credits.nonrefundableAllowed], ['Self-employment tax', f.seTax],
+    ...creditRows(f.credits, 'nonrefundable'), ['Self-employment tax', f.seTax],
     ['Additional Medicare tax', f.additionalMedicareTax], ['Net investment income tax', f.niit],
-    ['Refundable credits', f.credits.refundable], ['Federal total', f.federalTotal, true],
+    ...creditRows(f.credits, 'refundable'), ['Federal total', f.federalTotal, true],
   ];
   for (const [label, v, b] of fed) w.row([label, usd(v)], cols, { bold: b });
 
@@ -376,6 +395,8 @@ export async function renderEstimatePdf(r: EstimateResultDTO, opts: EstimatePdfO
       // QA D18: the same review marker as the screen ("Verify"), preparer copy only.
       w.row([`${s.state} (${tag})${mark(s.verify, ' - verify')}`, usd(s.netTax)], cols);
       if (s.method === 'nonresident_flat') w.wrap('Nonresident: effective-rate estimate; most states compute nonresident tax by ratio of the full return.', 8, 12, MUTED);
+      if (s.exemptions && num(s.exemptions) > 0) w.wrap(`Personal / dependent exemptions off the base: ${usd(s.exemptions)}`, 8, 12, MUTED);
+      if (s.exemptionCredits && num(s.exemptionCredits) > 0) w.wrap(`Less personal / dependent exemption credits: ${usd(s.exemptionCredits)}`, 8, 12, MUTED);
       if (num(s.creditForOtherStates) > 0) w.wrap(`Less credit for other-state tax: ${usd(s.creditForOtherStates)}`, 8, 12, MUTED);
     }
     w.row(['State total', usd(r.state.stateTotal)], cols, { bold: true });

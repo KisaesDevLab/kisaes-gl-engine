@@ -256,6 +256,34 @@ describe('POST .../estimate and GET .../readiness', () => {
   });
 });
 
+describe('Q44 dependents and care expenses flow into the estimate', () => {
+  it('two children + 2,000 care expenses on 60,000 of wages: care 700, CTC 2,140, ACTC 2,260; a dependent change re-keys the cache', async () => {
+    const tp = await mkTaxpayer();
+    await mkPersonAndLink(tp);
+    await setUpYear(tp, { personInputs: { primary: { w2Wages: 60000 } }, careExpenses: 2000 });
+    const sid = (await setUpYear(tp)).scenarios.find((s) => s.isBase)!.id;
+    for (const dob of ['2016-04-01', '2018-09-09']) {
+      expect((await request('POST', `${BASE}/${tp}/dependents`, staffToken, { displayName: 'Kid', dateOfBirth: dob, kind: 'qualifying_child' })).status).toBe(201);
+    }
+    const a = await request('POST', est(tp, sid), staffToken, { throughMonth: '2026-09', refresh: true });
+    expect(a.status, JSON.stringify(a.json)).toBe(200);
+    const f = a.json.data.federal;
+    // AGI 60,000; TI 27,800; tax 2,840. §21 2026: 2,000 × 35% (floor) = 700. CTC min(4,400, 2,840 − 700). ACTC min(2,260, 3,400, 15% × 57,500).
+    expect(f.regularTax.tax).toBe('2840');
+    expect(f.credits).toMatchObject({ careCredit: '700', childTaxCredit: '2140', additionalChildTaxCredit: '2260', otherNonrefundableAllowed: '0' });
+    expect(f.federalTotal).toBe('-2260');
+    expect(f.dependentCredits.dependents.map((d: { ageGroup: string }) => d.ageGroup)).toEqual(['under_13', 'under_13']);
+    expect(JSON.stringify(f.dependentCredits)).not.toContain('2016-04-01');
+    const sectionIds = a.json.data.assumptions.sections.map((x: { id: string }) => x.id);
+    expect(sectionIds).toContain('dependents');
+    expect((await request('POST', est(tp, sid), staffToken, { throughMonth: '2026-09' })).json.data.cached).toBe(true);
+    expect((await request('POST', `${BASE}/${tp}/dependents`, staffToken, { displayName: 'Grandma', dateOfBirth: '1950-01-01', kind: 'qualifying_relative' })).status).toBe(201);
+    const c = await request('POST', est(tp, sid), staffToken, { throughMonth: '2026-09' });
+    expect(c.json.data.cached).toBe(false);
+    expect(c.json.data.federal.dependentCredits.otherDependents).toBe(1);
+  });
+});
+
 describe('payment ledger routes', () => {
   it('CRUD with audit; readonly may read but not write; firm B gets 404', async () => {
     const tp = await mkTaxpayer();
@@ -370,7 +398,7 @@ describe('Phase 12 snapshot routes', () => {
     expect(created.status).toBe(201);
     const snap = created.json.data;
     expect(snap).toMatchObject({ reason: 'finalize', note: 'Q3', accessible: true, scenarioId: sid });
-    expect(snap.payload.assumptions.sections).toHaveLength(11);
+    expect(snap.payload.assumptions.sections).toHaveLength(12); // Q44 added the "dependents" section
     expect(snap.payload.disclaimerText).toBe('Projection based on bookkeeping records and the assumptions listed. Not a tax return.');
 
     const list = await request('GET', `${yr(tp)}/snapshots?limit=10`, staffToken);

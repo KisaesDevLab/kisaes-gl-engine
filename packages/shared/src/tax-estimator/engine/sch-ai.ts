@@ -300,6 +300,16 @@ function partIi(result: FederalResult, factor: Dec, months: number, ctx: Estimat
   });
 }
 
+/** Q44: pin an annualized column's dependent credits to the full-year amounts (D7: credits are full-year). */
+export function withFixedDependentCredits(scenario: FederalEngineInput, full: FederalResult): FederalEngineInput {
+  const d = full.dependentCredits;
+  if (!d || d.method === 'none') return scenario;
+  return {
+    ...scenario,
+    year: { ...scenario.year, fixedDependentCredits: { care: d.careTentative, ctcOdc: d.ctcOdcAfterPhaseOut, actc: d.actc } },
+  };
+}
+
 /**
  * Compute Schedule AI. Reads the period parameters through the context, prices
  * each annualized column with `input.calc`, and runs lines 22–27.
@@ -318,6 +328,9 @@ export function computeScheduleAi(input: ScheduleAiInput, ctx: EstimateContext):
   const partIiKeys = ['se.nese_factor', 'se.ss_rate', 'se.medicare_rate', 'se.ss_wage_base'];
   const required = dec(input.requiredAnnualPayment);
   const assumptions = [SCH_AI_ASSUMPTIONS.qbi, SCH_AI_ASSUMPTIONS.credits, SCH_AI_ASSUMPTIONS.seDeduction, SCH_AI_ASSUMPTIONS.itemized];
+
+  let fullYearResult: FederalResult | null = input.baseResult ?? null;
+  const fullYear = (): FederalResult => (fullYearResult ??= input.calc(input.base));
 
   const periods: SchAiPeriodResult[] = [];
   let cumulativeLine27 = ZERO; // line 23 of the next column
@@ -344,7 +357,8 @@ export function computeScheduleAi(input: ScheduleAiInput, ctx: EstimateContext):
       continue;
     }
 
-    const scenario = isLast ? actuals : annualizeFederalInput(actuals, factor, months);
+    // Q44 / D7: an annualized column uses the FULL-YEAR dependent credits (only the regular-tax limit is re-applied).
+    const scenario = isLast ? actuals : withFixedDependentCredits(annualizeFederalInput(actuals, factor, months), fullYear());
     const result = isLast && input.baseResult ? input.baseResult : input.calc(scenario);
     if (!isLast) {
       // R2-06: a condition that exists only in this column (SEHI capped, SALT phased down, W-2 missing above the
