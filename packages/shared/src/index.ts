@@ -130,4 +130,5 @@ export * from './utils/firm-capabilities.js';
 export * from './utils/safe-regex.js';
 export * from './utils/address.js';
 export * from './utils/check-memo.js';
+export * from './utils/expression.js';
 export * from './utils/transaction-display.js';

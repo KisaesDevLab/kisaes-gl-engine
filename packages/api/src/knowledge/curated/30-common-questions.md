@@ -7,6 +7,23 @@ Bank Feed, Create Invoice, and Receive Payment. Only the shortcuts your permissi
 allow are shown. The Cash Position panel on the Dashboard is also clickable — each
 bank or credit-card line opens that account's register.
 
+### "Can I type a calculation into an amount field, like 145.15-50?"
+Yes. Every amount and number field works like a calculator: type the math and
+press Enter, Tab or click away, and the field shows the result (145.15-50 →
+95.15). It supports + - * / (also x, ×, ÷), parentheses, and % as "divide by 100"
+(200*15% → 30.00); $ signs, thousands commas and a leading = are ignored. A
+"= result" preview shows while you type. Money rounds to the cent. Enter only
+works out the math — it does not save the form; press Enter or the save
+shortcut again. Invalid math (a typo, dividing by zero) turns the field red and
+nothing is saved from it. Debit/credit/payment amounts can't go negative.
+Number-as-label fields (years, check numbers, ports, day of month) don't take math.
+
+### "After I pick an account with Enter, where does the cursor go?"
+To the next logical field: in a Journal Entry or AJE it jumps to that line's
+Debit; in Expense, Write Check, Enter Bill and Deposit lines it jumps to the
+Amount; in Transfer it goes From → To → Amount. Payee and other search
+dropdowns work the same way. Mouse picks and Tab behave as before.
+
 ### "How is the due date calculated on a bill?"
 The due date defaults to bill date + payment terms days. For Net 30, the due
 date is 30 days after the bill date. You can override it manually if the vendor
