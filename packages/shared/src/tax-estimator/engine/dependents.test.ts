@@ -106,10 +106,17 @@ describe('Q44 child tax credit / credit for other dependents', () => {
     expect(codes(warnings)).toContain('TE_DEPENDENT_QC_AGE');
   });
 
-  it('a child who lived with the taxpayer 6 months fails the residency test (other dependent, warning)', () => {
+  it('a child who lived with the taxpayer 6 months fails the residency test: warning only, the user\'s qualifying-child choice is trusted (Q44)', () => {
     const { r, warnings } = run({ dependents: [dep('2015-01-01', { monthsLivedWith: 6 })] });
-    expect(r.ctcChildren).toBe(0);
+    expect(r.ctcChildren).toBe(1);
     expect(codes(warnings)).toContain('TE_DEPENDENT_RESIDENCY');
+  });
+
+  it('a qualifying child over the age test (20, not a student) keeps qualifying-child status with a warning; the CTC still needs under 17 (Q44)', () => {
+    const { r, warnings } = run({ dependents: [dep('2005-06-01')] });
+    expect(r.ctcChildren).toBe(0);
+    expect(r.dependents[0]).toMatchObject({ otherDependentCredit: true, eitcQualifying: true });
+    expect(codes(warnings)).toContain('TE_DEPENDENT_QC_AGE');
   });
 
   it('first / last tax year and a birth after the year end drop the dependent', () => {

@@ -186,15 +186,17 @@ export function computeDependentCredits(input: DependentCreditsInput, ctx: Engin
     const ageAtStart = (ageAtYearEnd(d.dateOfBirth, input.taxYear, true) ?? 0) - 1;
     const residencyOk = d.monthsLivedWith == null || d.monthsLivedWith >= minMonths;
     const qcAgeOk = age < qcAge || (d.isStudent && age < qcStudentAge) || d.isDisabled;
-    const isQc = d.kind === 'qualifying_child' && qcAgeOk && residencyOk;
+    // Owner decision (Q44, 2026-10-13): the user's "qualifying child" choice is trusted. Failing the
+    // age or residency test only warns; the dependent keeps qualifying-child treatment.
+    const isQc = d.kind === 'qualifying_child';
     if (d.kind === 'qualifying_child' && !qcAgeOk) {
-      ctx.warn('TE_DEPENDENT_QC_AGE', `${d.displayName} (age ${age} at year end) does not meet the qualifying-child age test (under ${qcAge}, or a student under ${qcStudentAge}, or disabled); counted for the $${params.money('ctc.odc_amount')} credit for other dependents. Confirm the qualifying-relative tests (gross income, support).`, { dependentId: d.dependentId, age });
+      ctx.warn('TE_DEPENDENT_QC_AGE', `${d.displayName} (age ${age} at year end) does not meet the qualifying-child age test (under ${qcAge}, or a student under ${qcStudentAge}, or disabled); still treated as a qualifying child as entered. Review the classification (a qualifying relative gets only the $${params.money('ctc.odc_amount')} credit for other dependents).`, { dependentId: d.dependentId, age });
     }
     if (d.kind === 'qualifying_child' && !residencyOk) {
-      ctx.warn('TE_DEPENDENT_RESIDENCY', `${d.displayName} lived with the taxpayer ${d.monthsLivedWith} month(s); a qualifying child must live with the taxpayer more than half the year (exceptions for temporary absences, birth, divorced parents not modelled). Counted as an other dependent.`, { dependentId: d.dependentId });
+      ctx.warn('TE_DEPENDENT_RESIDENCY', `${d.displayName} lived with the taxpayer ${d.monthsLivedWith} month(s); a qualifying child must live with the taxpayer more than half the year (exceptions for temporary absences, birth, divorced parents not modelled). Still treated as a qualifying child as entered; review.`, { dependentId: d.dependentId });
     }
     const childTaxCredit = isQc && age < ctcAge;
-    const careQualifying = (d.kind === 'qualifying_child' && ageAtStart < careAge && residencyOk) || (d.isDisabled && residencyOk);
+    const careQualifying = (d.kind === 'qualifying_child' && ageAtStart < careAge) || d.isDisabled;
     if (careQualifying && !d.isDisabled && age >= careAge) {
       ctx.info('TE_CARE_CHILD_TURNS_13', `${d.displayName} turns ${careAge} during the year and is counted as a care-credit qualifying person; only expenses paid for care before the birthday qualify — enter those only.`, { dependentId: d.dependentId });
     }
